@@ -1,0 +1,147 @@
+// RunStore port + InMemoryRunStore (DES-010).
+import { randomUUID } from 'node:crypto';
+import type { Clock } from './clock.js';
+import type { RunSpec, RunStatusView, RunSummary, JournalEntry, TranscriptEvent, RunStatus, AgentRecord } from './types.js';
+
+/** Reconstructs the AgentRecord[] a run's getRun() should report (D-F9b) from its persisted
+ *  agent-<id>.jsonl transcripts — the single source of truth `getRun` reads from directly,
+ *  rather than relying on an in-process AgentExecutor's transient Map (D-V6/AgentTranscriptSink),
+ *  so `workflow_status.agents`/`workflow_agent_log` survive a real server restart. One agent's
+ *  record is derived from its last `usage` event (the same data AgentTranscriptSink already
+ *  captures); an agent with no `usage` event yet (still in flight, or no completion recorded) is
+ *  omitted, same as it would be from an in-process Map before its own capture() call resolves.
+ */
+export function deriveAgentRecords(transcripts: Map<string, TranscriptEvent[]>): AgentRecord[] {
+  const records: AgentRecord[] = [];
+  for (const [agentId, events] of transcripts) {
+    const usage = [...events].reverse().find((e) => e.kind === 'usage');
+    if (!usage) continue;
+    const data = usage.data as { tokens?: { input: number; output: number }; provider?: string; model?: string; reason?: string };
+    if (data.tokens) {
+      records.push({ agentId, state: 'done', provider: data.provider ?? 'unknown', model: data.model ?? '', tokens: data.tokens });
+    } else {
+      records.push({ agentId, state: 'failed', provider: data.provider ?? 'unknown', model: '', tokens: { input: 0, output: 0 } });
+    }
+  }
+  return records;
+}
+
+export interface RunStore {
+  /** `scriptVersion` (D-V7) is the resolved catalog version ("v2", ...) actually executed for this
+   *  run; defaults to 'v1' when omitted (inline/adhoc scripts, or callers not yet passing it). */
+  createRun(spec: RunSpec, scriptVersion?: string): Promise<string>;
+  appendJournal(runId: string, entry: JournalEntry): Promise<void>;
+  appendTranscript(runId: string, agentId: string, ev: TranscriptEvent): Promise<void>;
+  recordTransition(runId: string, from: RunStatus | null, to: RunStatus, ts: string): Promise<void>;
+  getRun(runId: string): Promise<RunStatusView | null>;
+  listRuns(): Promise<RunSummary[]>;
+  hydrateAll(): Promise<RunSummary[]>;
+  /** Persists the script's return value for a completed run (DES-001/REQ-005: workflow_result
+   *  returns the script return value, not the RunStatusView). */
+  recordResult(runId: string, result: unknown): Promise<void>;
+  getResult(runId: string): Promise<{ value: unknown } | null>;
+  /** The original submission (name/script/args/budget) — lets RunManager rebuild a live RunEntry
+   *  for a suspended/stopped run after a process restart (REQ-006 resume survives restart). */
+  getSpec(runId: string): Promise<RunSpec | null>;
+  /** Reads back the persisted transcript events for one agent (D-V6) — the real read-back path
+   *  McpFacade.workflow_agent_log delegates to, never a hard-coded []. */
+  getTranscript(runId: string, agentId: string): Promise<TranscriptEvent[]>;
+}
+
+interface StoredRun {
+  runId: string;
+  spec: RunSpec;
+  status: RunStatus;
+  scriptVersion: string;
+  createdAt: string;
+  journal: JournalEntry[];
+  transcripts: Map<string, TranscriptEvent[]>;
+  result?: unknown;
+  hasResult: boolean;
+}
+
+/** In-memory fake for unit tests — injected where RunStore is needed. */
+export class InMemoryRunStore implements RunStore {
+  private readonly _runs = new Map<string, StoredRun>();
+
+  constructor(private readonly _clock: Clock) {}
+
+  async createRun(spec: RunSpec, scriptVersion = 'v1'): Promise<string> {
+    const runId = randomUUID();
+    this._runs.set(runId, {
+      runId,
+      spec,
+      status: 'queued',
+      scriptVersion,
+      createdAt: this._clock.isoNow(),
+      journal: [],
+      transcripts: new Map(),
+      hasResult: false,
+    });
+    return runId;
+  }
+
+  async getSpec(runId: string): Promise<RunSpec | null> {
+    const run = this._runs.get(runId);
+    return run ? run.spec : null;
+  }
+
+  async recordResult(runId: string, result: unknown): Promise<void> {
+    const run = this._runs.get(runId);
+    if (!run) return;
+    run.result = result;
+    run.hasResult = true;
+  }
+
+  async getResult(runId: string): Promise<{ value: unknown } | null> {
+    const run = this._runs.get(runId);
+    if (!run || !run.hasResult) return null;
+    return { value: run.result };
+  }
+
+  async appendJournal(runId: string, entry: JournalEntry): Promise<void> {
+    const run = this._runs.get(runId);
+    if (!run) return;
+    run.journal.push(entry);
+  }
+
+  async appendTranscript(runId: string, agentId: string, ev: TranscriptEvent): Promise<void> {
+    const run = this._runs.get(runId);
+    if (!run) return;
+    const list = run.transcripts.get(agentId) ?? [];
+    list.push(ev);
+    run.transcripts.set(agentId, list);
+  }
+
+  async recordTransition(runId: string, _from: RunStatus | null, to: RunStatus, _ts: string): Promise<void> {
+    const run = this._runs.get(runId);
+    if (!run) return;
+    run.status = to;
+  }
+
+  async getRun(runId: string): Promise<RunStatusView | null> {
+    const run = this._runs.get(runId);
+    if (!run) return null;
+    return { runId: run.runId, status: run.status, phases: [], agents: deriveAgentRecords(run.transcripts), scriptVersion: run.scriptVersion };
+  }
+
+  async listRuns(): Promise<RunSummary[]> {
+    return [...this._runs.values()].map((r) => ({
+      runId: r.runId,
+      name: r.spec.name,
+      status: r.status,
+      scriptVersion: r.scriptVersion,
+      createdAt: r.createdAt,
+    }));
+  }
+
+  async hydrateAll(): Promise<RunSummary[]> {
+    return this.listRuns();
+  }
+
+  async getTranscript(runId: string, agentId: string): Promise<TranscriptEvent[]> {
+    const run = this._runs.get(runId);
+    if (!run) return [];
+    return run.transcripts.get(agentId) ?? [];
+  }
+}

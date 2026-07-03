@@ -1,0 +1,25 @@
+#!/bin/sh
+# iso-agile-sdlc trace launcher — cross-platform Python resolver + cache.
+# `python3` is not guaranteed on every host/platform; try python3 → python → py,
+# verify it's Python 3, cache the winner next to this script (.python-cmd), then run trace.py.
+# Usage: sh .sdlc/trace <ledger-dir> [--check | --impact ID]   (or: sh .sdlc/trace --features <repo>)
+d=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+c="$d/.python-cmd"
+py=""
+[ -s "$c" ] && py=$(cat "$c") 2>/dev/null
+# re-validate the cached interpreter still works; otherwise re-resolve
+if [ -n "$py" ] && ! "$py" -c '' 2>/dev/null; then py=""; fi
+if [ -z "$py" ]; then
+  for q in python3 python py; do
+    if command -v "$q" >/dev/null 2>&1 && "$q" -c 'import sys; raise SystemExit(0 if sys.version_info[0] == 3 else 1)' 2>/dev/null; then
+      py=$q
+      printf '%s' "$q" > "$c" 2>/dev/null || true
+      break
+    fi
+  done
+fi
+if [ -z "$py" ]; then
+  echo "iso-agile-sdlc: no Python 3 interpreter found (tried python3, python, py)." >&2
+  exit 127
+fi
+exec "$py" "$d/trace.py" "$@"
