@@ -127,35 +127,73 @@ status: draft
 - **estimate:** L
 - **iter:** v3
 
-### TASK-019 — Scheduler over catalog+run-manager (cron / one-shot / resident-trigger)
+> **v2 refinement (2026-07-04):** the coarse v2 placeholders below are split along their test seams
+> (adversarial-group task-splitting note) into one-implementer-one-go tasks. TASK-019..023 refined in
+> place; TASK-024..027 added for the split-out halves. All attach at existing v1 seams (Catalog/RunManager/
+> RunStore/Clock/MCP-facade) with zero v1 rework. Design in `04-design.md` DES-016..023.
+
+### TASK-019 — Schedule store + CRUD + `workflow_trigger` (resident) over Catalog+RunManager
 - **status:** draft
 - **traces:** ARCH-010
-- **estimate:** L
+- **estimate:** M
 - **iter:** v2
+- **note:** SQLite-persisted `Schedule` records (survive restart, like the catalog per REQ-014); `schedule_create/list/delete/setEnabled` + `workflow_trigger(name,args)` MCP tools returning `ResultEnvelope`; resident trigger starts a run via the SAME `RunManager.start` path as `workflow_run` (inherits per-run `budget` enforcement); disabled → `error{code:'SCHEDULE_DISABLED'}`, unknown workflow → `error{code:'WORKFLOW_NOT_FOUND'}`. cron/`at`/workflow-name validated at SUBMISSION (delegate to Catalog + DES-012). **Seam-consistency (Exit-Gate-5, KP-15 fix):** CRUD stamps `nextFire`/`lastFire` via the INJECTED `Clock` (never a bare `Date.now()`); the cron next-fire math itself is delegated to `computeNextFire` (TASK-024). The earlier "no clock needed" note was stale — `create` computes an initial `nextFire` so `tick()` has an immediately-usable due-time.
 
-### TASK-020 — Web Dashboard (read-only over the store, live tail)
+### TASK-024 — Cron/one-shot firing engine: pure `tick(now)` + `computeNextFire` over injected Clock+Ticker
+- **status:** draft
+- **traces:** ARCH-010
+- **estimate:** M
+- **iter:** v2
+- **note:** the clock/boundary-heavy half of the scheduler. Pure `tick(now)` returns due firings; pure `computeNextFire(cron,tz,after)`; injected `Ticker` port (real `setInterval`, fake `advance()`) + injected `Clock` (DES-014) — NO bare `Date.now()`/`setTimeout` in scheduler logic; every method that reads time takes the injected Clock (Exit-Gate-5 seam consistency). Missed-fire policy: cron = fire-once-on-catch-up-then-resume (never backfill every slot), one-shot past-`at` = fire-immediately then auto-complete (disable). Boot re-arm from persistence using the injected Clock. Overlap = allowed (each fire an independent run).
+
+### TASK-020 — Dashboard pure render model `buildDashboardModel` over the RunStore port
 - **status:** draft
 - **traces:** ARCH-011
-- **estimate:** L
+- **estimate:** S
 - **iter:** v2
+- **note:** the UT-able data layer: pure `buildDashboardModel(runs, view?) → DashboardVM` shaping exactly the existing `RunSummary[]`/`RunStatusView`/`TranscriptEvent[]` (no parallel dashboard DTO). Fully covered by UT against the InMemory RunStore fake.
 
-### TASK-021 — Asset Sync recursion-guarded upload + AssetValidator live probe
+### TASK-025 — Dashboard read-only HTTP transport + live-tail (poll RunStore) + static renderer
+- **status:** draft
+- **traces:** ARCH-011
+- **estimate:** M
+- **iter:** v2
+- **note:** read-only HTTP endpoints serving the DES-018 VM as JSON; live update = poll the already-injectable RunStore port (reuse the test seam, no bespoke event bus); NO mutation/write endpoint (cannot perturb a run); degrade on store read error (partial view + error badge, never a 500 that takes the page down). Transport validated at integration/real-tier.
+
+### TASK-021 — Asset Sync core: `asset_push/list/delete` + recursion-guard + path-safety predicates
 - **status:** draft
 - **traces:** ARCH-012
-- **estimate:** L
+- **estimate:** M
 - **iter:** v2
+- **note:** transport-agnostic, UT-heavy core writing into ARCH-007's workspace. `AssetPush{kind,name,files[{path,contentB64}]}`; recursion-guard predicate (D4): reject/strip self-MCP-config (endpoint resolves to this server's own bind addr/port) and this system's own plugin/guidance-skill identity (reserved name prefix), reporting every exclusion in the envelope `{stored[],excluded[{name,reason}]}`; path-safety predicate: every `files[].path` relative + normalizes INSIDE the target asset dir (reject `..`/absolute/symlink) — same rooting invariant as DES-011; partial-push atomicity (any file fails → reject whole push). All pure/UT-covered.
 
-### TASK-022 — Claude Code client plugin (MCP config + guidance skill, conflict-free)
+### TASK-026 — Asset MCP-config live-probe validator behind an injected `McpProbe` port
+- **status:** draft
+- **traces:** ARCH-012
+- **estimate:** S
+- **iter:** v2
+- **note:** the one network dependency, isolated behind an injected `McpProbe` port (fake accepts/rejects in UT; real probe exercised ONLY at real-tier). Classifies transport: remote-HTTP / npx-stdio = server-runnable → probed; non-runnable or interactively-authenticated-headless (compat-spec §5) → rejected with a machine-readable reason CODE (not just a human string; consumability). Rejection is at push time, before the asset lands.
+
+### TASK-022 — Claude Code client plugin artifact (dir layout + MCP config + guidance skill)
 - **status:** draft
 - **traces:** ARCH-013
 - **estimate:** M
 - **iter:** v2
+- **note:** mostly non-code. Plugin dir layout: MCP connection config (points at the remote server) + a guidance skill (markdown) teaching agents the async `submit→poll workflow_status→fetch workflow_result` contract, the new v2 tools' envelope-not-exception gotchas, and local-Workflow-tool vs remote coexistence (no tool-namespace collision). Self-excluded from asset sync (D4). Keep DES thin — one collision-avoidance + one self-exclusion invariant, no over-engineering.
 
-### TASK-023 — Deploy packaging (docker-compose / systemd + documented smoke check)
+### TASK-023 — Deploy packaging: docker-compose + systemd unit + documented smoke check
 - **status:** draft
 - **traces:** ARCH-014
 - **estimate:** M
 - **iter:** v2
+- **note:** docker-compose (with a LiteLLM-optional profile so the already-more-reliable direct-fetch/SDK path can run without the LiteLLM subprocess — replaceability) + systemd unit (`Restart=on-failure`, the self-healing seam); LiteLLM path requires Python 3.11/3.12 (D-R3, documented); scripted non-interactive exit-code smoke check (submit a sample workflow → completes); DEPLOY.md leads with the dependency-free path and loudly documents the v2 no-auth caveat (`asset_push` = server-side code execution → require SSH-tunnel/VPN until v3 auth). Identical steps localhost + remote.
+
+### TASK-027 — Deploy hardening: orphan-LiteLLM reap + configurable LiteLLM port + pre-bind check
+- **status:** draft
+- **traces:** ARCH-014
+- **estimate:** S
+- **iter:** v2
+- **note:** closes the real, repeatedly-Gate-7.5-reproduced operational hazards (both panels flagged binding): SIGTERM/SIGINT handler cascade-kills the LiteLLM child (process-group kill, not just `child.kill()` on the direct handle); LiteLLM port is configurable (not hard-coded 4000); pre-bind port ownership/liveness check fails fast with an actionable message instead of false-positive-attaching to a stale proxy. Verified inside the TASK-023 smoke check (boot→run→shutdown→assert no leaked child, no port clash).
 
 ## Template (reference — not a work item)
 <!-- TEMPLATE EXAMPLE (uncommented by the stage agent when writing real items)

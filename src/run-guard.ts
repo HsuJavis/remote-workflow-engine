@@ -71,14 +71,28 @@ export class RunGuard {
     }
   }
 
-  /** D-G8-6: atomically reserves this run's entire currently-remaining budget for one
-   *  about-to-dispatch agent() call — synchronous, no per-call cost estimate needed, so a burst of
-   *  concurrent parallel() calls cannot all pass assertBudget() before any one of them has
-   *  recorded real spend via addTokens(). No-op (returns 0) when the budget is unbounded. Release
-   *  the returned amount via releaseReserved() once the call settles, regardless of its real cost. */
+  /** Atomically reserves a per-call share of this run's budget for one about-to-dispatch agent()
+   *  call — synchronous, no `await` before the caller's own assertBudget() check, so a burst of
+   *  concurrent parallel() calls cannot all pass assertBudget() before any one of them has recorded
+   *  real spend via addTokens(). No-op (returns 0) when the budget is unbounded.
+   *
+   *  D-V2G8-2 (Gate 8 v2 review, adversarial.md finding V4 MEDIUM — a regression pin against this
+   *  method's own prior v1 fix, D-G8-6): reserving the ENTIRE remaining budget for a single call
+   *  fixed the TOCTOU race but overcorrected — the first call in a concurrent parallel() burst
+   *  monopolized 100% of it, so every other call in the SAME burst threw BudgetExceededError before
+   *  ever reaching the gateway and concurrency collapsed to exactly 1, always. There's no way to
+   *  know a call's real cost ahead of dispatch, so this reserves a flat HALF of the total budget per
+   *  call instead of all of it — a burst can never push more than 2 calls' worth of reservations
+   *  through before the 3rd (and every one after it) hits a real, unavoidable assertBudget() check
+   *  against what's actually left, restoring genuine concurrency for the common case (IT-037's
+   *  "generous budget" case) while still hard-capping overshoot once a budget is tight for real
+   *  (IT-030's near-exhausted case, IT-037's own "hard ceiling still holds" regression case).
+   *  Release the returned amount via releaseReserved() once the call settles, regardless of its
+   *  real cost. */
   reserve(): number {
     if (this.total === null) return 0;
-    const amount = Math.max(0, this.total - this._spent - this._reserved);
+    const remaining = Math.max(0, this.total - this._spent - this._reserved);
+    const amount = Math.min(remaining, this.total / 2);
     this._reserved += amount;
     return amount;
   }

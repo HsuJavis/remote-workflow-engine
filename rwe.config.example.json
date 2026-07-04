@@ -6,7 +6,7 @@
   "retries": 1,
   "gateway": "sdk",
   "agentDefinitionsDir": "./agents",
-  "defaultAllowedTools": ["Read", "Write", "Bash"],
+  "defaultAllowedTools": ["Read", "Write"],
   "aliases": {
     "sonnet":  { "provider": "anthropic", "model": "claude-3-5-sonnet-20241022" },
     "haiku":   { "provider": "anthropic", "model": "claude-3-5-haiku-20241022" },

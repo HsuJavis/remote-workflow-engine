@@ -1,0 +1,22 @@
+[Unit]
+Description=remote-workflow-engine -- MCP Streamable HTTP server (REQ-011, DES-022, TASK-023)
+After=network.target
+
+[Service]
+Type=simple
+User=rwe
+WorkingDirectory=/opt/remote-workflow-engine
+# Same entrypoint documented in README.md/DEPLOY.md (tsx-executed src/main.ts, Node 22.6+ native
+# type-stripping) -- this repo has no build step producing a compiled dist/main.js (see
+# package.json's own "scripts"), so this intentionally runs the exact command already relied on
+# for local/manual startup instead of inventing a separate compiled entrypoint.
+ExecStart=/usr/bin/npm run start
+# Self-healing seam (DES-022): a crashed server process is restarted automatically.
+Restart=on-failure
+RestartSec=2
+# Optional; holds RWE_CONFIG_PATH / RWE_BIND / RWE_PORT / provider API keys. Absent by default
+# ("-" prefix means systemd does not fail if the file doesn't exist).
+EnvironmentFile=-/opt/remote-workflow-engine/rwe.env
+
+[Install]
+WantedBy=multi-user.target

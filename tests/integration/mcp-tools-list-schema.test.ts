@@ -64,13 +64,23 @@ describe('MCP tools/list serves real, non-placeholder tool metadata (IT-028, D-G
     }
   });
 
-  it('every tool has an inputSchema with real (non-empty) properties', async () => {
+  // workflow_list, schedule_list, and asset_list are genuinely zero-argument tools
+  // per DES-001 (`workflow_list(a?: {})`, `list(): Promise<ScheduleStatus[]>`,
+  // `asset_list()`) — their correctly-empty `properties: {}` is real, not a
+  // placeholder, so they are exempt from the non-empty-properties check below.
+  const ZERO_ARG_TOOLS = ['workflow_list', 'schedule_list', 'asset_list'];
+
+  it('every tool has an inputSchema with real (non-empty) properties, or is a genuine zero-arg tool', async () => {
     const tools = await fetchTools();
     for (const tool of tools) {
       expect(tool.inputSchema?.type).toBe('object');
       // Forcing red today: every tool's inputSchema is `{type:'object'}` with no properties at all.
       expect(tool.inputSchema?.properties).toBeDefined();
-      expect(Object.keys(tool.inputSchema?.properties ?? {}).length).toBeGreaterThan(0);
+      if (ZERO_ARG_TOOLS.includes(tool.name)) {
+        expect(Object.keys(tool.inputSchema?.properties ?? {}).length).toBe(0);
+      } else {
+        expect(Object.keys(tool.inputSchema?.properties ?? {}).length).toBeGreaterThan(0);
+      }
     }
   });
 

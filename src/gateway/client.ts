@@ -24,8 +24,16 @@ export type GatewayResult =
 export interface GatewayClient {
   /** `signal` (D-F9a): an optional external AbortSignal — RunManager's own per-run
    *  abortController, threaded through AgentExecutor — that a real implementation should honor to
-   *  actually cancel an in-flight provider call on workflow_suspend, not merely stop waiting for it. */
-  invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal }): Promise<GatewayResult>;
+   *  actually cancel an in-flight provider call on workflow_suspend, not merely stop waiting for it.
+   *  `workspace` (D-V2V-1): the run's own on-disk workspace (AgentReq.workspace, always set by
+   *  AgentExecutor) — only ClaudeAgentSdkGatewayClient consumes it (to re-scope `cwd`/materialize
+   *  assets per call); other gateways ignore it, unchanged. */
+  invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string }): Promise<GatewayResult>;
+  /** D-V2I-6: optional lifecycle hook — a gateway that owns a subprocess (e.g.
+   *  `LiteLLMGatewayClient`'s managed `LiteLLMProxyManager`) cascades the stop here so
+   *  `Server.close()` can reap it regardless of which gateway-selection branch built it. Gateways
+   *  with nothing to release (e.g. the plain direct-fetch path with no proxy) simply omit it. */
+  stop?(): Promise<void>;
 }
 
 export interface GatewayConfig {
@@ -47,6 +55,10 @@ export interface GatewayConfig {
   useLiteLLMProxy?: boolean;
   /** Injectable proxy manager (tests) — defaults to a real LiteLLMProxyManager over `aliases`. */
   proxyManager?: LiteLLMProxyManager;
+  /** TASK-027: overrides the managed LiteLLM proxy's port (default 4000) when this client builds
+   *  its own default LiteLLMProxyManager (i.e. `proxyManager` above is not injected). Only takes
+   *  effect the same way `useLiteLLMProxy` does — no `proxyManager` injected. */
+  litellmPort?: number;
 }
 
 type ProviderTarget = AliasMap[string];
@@ -216,7 +228,8 @@ export class LiteLLMGatewayClient implements GatewayClient {
 
   constructor(private readonly _config: GatewayConfig) {
     if (this._config.useLiteLLMProxy) {
-      this._proxy = this._config.proxyManager ?? new LiteLLMProxyManager(this._config.aliases);
+      this._proxy =
+        this._config.proxyManager ?? new LiteLLMProxyManager(this._config.aliases, { port: this._config.litellmPort });
     }
   }
 
@@ -235,5 +248,12 @@ export class LiteLLMGatewayClient implements GatewayClient {
       if (last.ok) return last;
     }
     return last;
+  }
+
+  /** D-V2I-6: cascades to whichever `LiteLLMProxyManager` this client holds (injected OR
+   *  internally-constructed by the constructor above, same private field either way) — a safe
+   *  no-op when `useLiteLLMProxy` was never set (no proxy was ever built). */
+  async stop(): Promise<void> {
+    await this._proxy?.stop();
   }
 }

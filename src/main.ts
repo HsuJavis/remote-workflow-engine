@@ -20,6 +20,7 @@
 // undefined `config.gateway` falling through to LiteLLMGatewayClient) stays exactly as it was for
 // every test caller, none of which sets RWE_CONFIG_PATH/goes through main().
 import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from './server.js';
 import type { ServerConfig } from './server.js';
@@ -84,11 +85,12 @@ interface ComposeConfigDeps {
 export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigDeps = {}): Promise<ServerConfig> {
   const gatewayChoice: GatewayChoice = fileConfig.gateway ?? 'sdk';
   const aliases = fileConfig.aliases;
+  const workRoot = process.env['RWE_WORK_ROOT'] ?? fileConfig.workRoot;
 
   const config: ServerConfig = {
     bind: process.env['RWE_BIND'] ?? fileConfig.bind ?? '127.0.0.1',
     port: process.env['RWE_PORT'] ? Number(process.env['RWE_PORT']) : (fileConfig.port ?? 8787),
-    workRoot: process.env['RWE_WORK_ROOT'] ?? fileConfig.workRoot,
+    workRoot,
     aliases,
     // D-G8-4: same hardcoded fallback the legacy LiteLLMGatewayClient path already gets
     // (server.ts's own `config?.timeoutMs ?? 15000`) — without it, the zero-config ("just run it",
@@ -100,12 +102,33 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // D-F10(b): forwarded regardless of gateway choice — the agentType composition-root loader
     // (D-F2) is independent of which GatewayClient the run ends up dispatching through.
     agentDefinitionsDir: fileConfig.agentDefinitionsDir,
+    // TASK-027: forwarded regardless of gateway choice, same convention as agentDefinitionsDir
+    // above — the "sdk" branch below consumes it directly when constructing its own
+    // LiteLLMProxyManager; a "direct-fetch" caller's own ServerConfig.litellmPort reaches
+    // server.ts's LiteLLMGatewayClient construction unchanged.
+    litellmPort: fileConfig.litellmPort,
+    // DES-022 (standing rule 1, UT-033): forwarded regardless of gateway choice, same convention —
+    // both reach `server.ts`'s own default-path fallbacks (`join(workRoot,'schedules.db')` /
+    // `join(workRoot,'assets')`) unchanged when omitted.
+    schedulerDbPath: fileConfig.schedulerDbPath,
+    // D-V2V-1: default the same way server.ts's own AssetSyncService construction does
+    // (`join(workRoot, 'assets')`) — otherwise a zero-config run (no explicit assetRoot key) never
+    // forwards asset storage's real on-disk location to the SDK gateway below, silently breaking
+    // the REQ-009 wiring for every deployment that doesn't set assetRoot explicitly.
+    assetRoot: fileConfig.assetRoot ?? (workRoot ? join(workRoot, 'assets') : undefined),
   };
 
   if (gatewayChoice === 'sdk') {
     // Same managed LiteLLM proxy subprocess the direct-fetch path can opt into (D-R1) — started
     // once here so its baseUrl is known before constructing the SDK session's ANTHROPIC_BASE_URL.
-    const proxy = deps.proxyManager ?? new LiteLLMProxyManager(aliases ?? DEFAULT_ALIASES);
+    const proxy = deps.proxyManager ?? new LiteLLMProxyManager(aliases ?? DEFAULT_ALIASES, { port: fileConfig.litellmPort });
+    // TASK-027: keep the reference reachable off the returned config (the same field the
+    // "direct-fetch" path already threads a caller-supplied proxyManager through) so main()'s own
+    // shutdown handler can cascade-kill it — previously this local `proxy` was never retained
+    // anywhere once composeConfig() returned, so SIGTERM/SIGINT never reaped it (the repeatedly-
+    // Gate-7.5-reproduced orphan-litellm-on-shutdown hazard, for this — the mandated default (D-F4)
+    // — gateway path specifically).
+    config.proxyManager = proxy;
     const { baseUrl } = await proxy.start();
     // D-F10(a): forward aliases/timeoutMs/retries — previously omitted, which silently degraded
     // D-F7's timeout/retry bound to dead code and D-F6's alias-aware thinking policy to "always
@@ -124,6 +147,10 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
       // D-F11: forwarded so a configured core tool set actually reaches the constructed client —
       // same composition-root-forwarding convention as aliases/timeoutMs/retries above.
       defaultAllowedTools: fileConfig.defaultAllowedTools,
+      // D-V2V-1: the RESOLVED config.assetRoot (carries the same-as-server.ts default fallback
+      // above) — read fresh on every invoke() call so a push made after boot still reaches the
+      // very next run's mcpServers/skill materialization.
+      assetRoot: config.assetRoot,
     });
   }
 
@@ -144,6 +171,12 @@ async function main(): Promise<void> {
     console.log(`[remote-workflow-engine] received ${signal}, shutting down...`);
     server
       .close()
+      // TASK-027: cascade-kill the managed LiteLLM proxy subprocess (process-group signal, see
+      // LiteLLMProxyManager.stop()) as part of the same graceful shutdown — previously nothing
+      // ever called stop() on it here, so it outlived this process (the repeatedly-Gate-7.5-
+      // reproduced orphan-litellm-on-shutdown hazard). No-op when `gateway:"direct-fetch"` (no
+      // proxy was created by composeConfig() in that branch).
+      .then(() => config.proxyManager?.stop())
       .then(() => process.exit(0))
       .catch((err: unknown) => {
         console.error('[remote-workflow-engine] error during shutdown:', err);

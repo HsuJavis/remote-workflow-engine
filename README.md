@@ -2,7 +2,28 @@
 
 > 人類導向文件（繁體中文）。由 Gate 7.5 validator 依「實際把系統跑起來的步驟」撰寫——
 > 下方 quickstart 就是驗證腳本：照著貼上執行若跑不起來，就是缺口。
-> **本文件為第七輪 Gate 7.5（Gate 8 收尾修復的範圍化重新驗證）後改寫。**
+>
+> **v2 狀態（最新，2026-07-04，Gate 7.5 v2 ROUND 2 — GATE PASSED）：REQ-008/009/010/011/015
+> 皆已通過，且本輪由 validator 對一個獨立真實 process 逐項重新驗證（不只是相信 Gate 6 的實作報
+> 告）。REQ-009（資產同步）先前發現的「推送的 skill/MCP config 不會被接進 agent() 呼叫」缺口
+> 已修復（D-V2V-1 route-back）並在本輪真實驗證：真的推送一個 mcp-config + skill 資產、送出真實
+> `agent()` 呼叫，直接從真實作業系統行程表（`ps aux`，非讀原始碼）讀到真正被 spawn 出來的
+> `claude` CLI 子行程自己的命令列參數，看到真實的
+> `--mcp-config {"mcpServers":{"demo-mcp-v2r2":{...}}} --setting-sources=project
+> --strict-mcp-config`；並在 run 完成後確認推送的 `SKILL.md` 真的被實體化進「那一次 run 自己」
+> 的工作目錄下的 `.claude/skills/`。遞迴保護（D4）也對本輪自己的真實 instance 重新驗證：推送本
+> 產品自己的 guidance skill 與指向自己的 mcp-config，皆真實被排除且回報原因，未寫入磁碟。REQ-008
+> 的瀏覽器 dashboard 缺口也已修復（D-V2V-2 route-back）並在本輪真實驗證：真實 `GET /dashboard`
+> 回傳含 `<html>`/`<title>` 的真實 HTML 頁面與其真正的 client JS，並示範「不必手動重新整理」的
+> 即時更新（同一個 client 在送出新 run 前後重新輪詢 `/api/runs`，筆數從 1 變 2）。見下方
+> 「v2 新功能」一節與 `tests/integration/asset-mcp-config-wiring.test.ts`（IT-035）/
+> `tests/integration/asset-skill-materialization-wiring.test.ts`（IT-036）/
+> `tests/acceptance/val-018-dashboard-browser-ui.test.ts`（VAL-018）與
+> `.sdlc/features/001-remote-workflow-engine/08-validation.md` 的「v2 ROUND 2」章節。** v1
+> （REQ-001..007/013/014）功能沿用第七輪驗證結果，本輪未重新測試（見下方 v1 章節，依範圍規則
+> 凍結）。
+>
+> **本文件下方 v1 章節為第七輪 Gate 7.5（Gate 8 收尾修復的範圍化重新驗證）後改寫，原樣保留。**
 >
 > **第七輪（本輪）結果摘要**：任務是針對 Gate 8 review 修復（IMPL-051，D-G8-1~6）中前一輪標記
 > 「程式碼/測試層級已修復，尚未經獨立真實 process 重新驗證」的 3 項核心項目逐一實測：
@@ -218,10 +239,12 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 7. `budget.spent()`/`budget.remaining()` 即時反映真實用量；重啟後 per-agent 記錄/逐字稿仍正確；
    `bind:"0.0.0.0"` 可對外監聽（本輪首次重新以真實 process 驗證，`ss -tlnp` 確認）。
 
-**仍未修復（操作面風險，非 REQ 阻斷，自第二輪起已知，本輪重新確認仍存在）**：
-8. `litellm` 代理固定使用 4000 port，正常關機也不會停止它，若前一個伺服器留下孤兒 process，
-   新啟動的伺服器健康檢查可能誤判「通過」，實際上接的是舊代理（本輪已重現 2 次）——**啟動前務必
-   先確認沒有孤兒 `litellm` process**（見上方 quickstart 第 5 步）。
+**這條 v1 已知限制已於 v2 修復（TASK-027，見下方「v2 新功能」與 DEPLOY.md §1b/§6 第 7/8 項）**：
+8. ~~`litellm` 代理固定使用 4000 port，正常關機也不會停止它~~ **v2 起：正常 `SIGTERM` 關機現在會
+   連帶砍掉這個子行程（本輪 Gate 7.5 v2 ROUND 2 config-sync check 已重新以真實 `SIGTERM` 確認，
+   2 秒內兩個 process 都消失，無孤兒殘留），且可用新設定鍵 `litellmPort` 讓每個實例指定不同
+   port，徹底避開誤連舊代理的風險。啟動前確認沒有孤兒 `litellm` process（quickstart 第 5 步）
+   仍建議保留作為額外保險，但已不是唯一防線。
 
 **新發現的小瑕疵（第六輪，非 REQ 阻斷，記在 v1.1 backlog）**：
 9. 被 `workflow_suspend`/`workflow_stop` 中止的那次 agent 呼叫，其 `workflow_status.agents[]`
@@ -233,6 +256,132 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 持久化、含版本更新後舊 run 仍保留原版本號）都正確；`gateway:"sdk"` 正確把呼叫端指定的模型/別名
 帶入 SDK session；供應商真實錯誤（`is_error:true`）正確解析成 `null`；2 層巢狀 `workflow()` 正確
 被拒絕、1 層正確允許；未知模型別名在送出時就被拒絕（不會跑到一半才失敗）。
+
+## v2 新功能（Gate 7.5 v2 ROUND 1 對獨立真實 process 驗證 + Gate 6 v2 validation-round fixes）
+> **本輪結果摘要**：REQ-008（Dashboard）、REQ-010（Client Plugin）、REQ-011（部署封裝）、
+> REQ-015（排程/一次性/常駐執行模式）皆已對真實獨立 process 驗證通過（`real:true` 綠燈）。
+> **REQ-009（資產同步）先前發現的接線缺口已修復（D-V2V-1 route-back，2026-07-04）**：
+> `asset_push`/`asset_list`/`asset_delete`/遞迴保護（D4）/MCP config 真實連線探測本來就真的可用；
+> 現在**推送的 skill/hook/MCP server 設定會真的被接進下一次 `agent()` 呼叫**——`mcp-config` 資產
+> 在每次呼叫前重新從磁碟讀取、填進 `options.mcpServers`（`strictMcpConfig:true` 不變）；
+> `skill`/`hook` 資產被實體化進該次 run 自己工作目錄下的 `.claude/skills|hooks/<name>/`，該次
+> 呼叫的 `options.cwd` 改指到那個 run 工作目錄、`options.settingSources` 變成 `['project']`（宿主
+> 機層級的 `'user'`/`'local'` 來源仍然關閉，D-F11 隔離保證不變）。見
+> `tests/integration/asset-mcp-config-wiring.test.ts`（IT-035）/
+> `tests/integration/asset-skill-materialization-wiring.test.ts`（IT-036）。
+
+### Dashboard（REQ-008）—— 瀏覽器頁面 + 唯讀 JSON REST API
+> **D-V2V-2 route-back（2026-07-04）**：新增 `GET /dashboard`，同一個 port、同一個 `http.Server`，
+> 一個自成一體的靜態 HTML/JS 頁面——run 清單、點進去看 phase/agent tree（每個 agent 的
+> state + token usage）、逐字稿檢視、`setInterval` 輪詢自動更新（不必手動重新整理）。
+> `/dashboard/<runId>` 走同一個靜態頁面的 client-side 路由。頁面本身呼叫的是下面同一組唯讀
+> `/api/runs*` JSON API（DES-018）——一份資料模型，兩種傳輸方式（瀏覽器頁面 + 給其他工具消費的
+> JSON）。見 `tests/acceptance/val-018-dashboard-browser-ui.test.ts`（VAL-018）。
+```bash
+# 直接在瀏覽器打開（或用 curl 看原始 HTML）
+open http://127.0.0.1:8787/dashboard        # macOS；Linux 可用 xdg-open，或直接貼網址到瀏覽器
+
+# 底層唯讀 JSON API（dashboard 頁面自己的 JS 也是呼叫這幾支）：
+# 列出所有 run（含即時狀態）
+curl -s http://127.0.0.1:8787/api/runs
+
+# 點進單一 run（phase/agent tree，重複呼叫即可看到即時更新，不需重新整理任何東西）
+curl -s http://127.0.0.1:8787/api/runs/<runId>
+
+# 看某個 agent 的逐字稿
+curl -s http://127.0.0.1:8787/api/runs/<runId>/agents/<agentId>
+```
+
+### 排程 / 一次性 / 常駐觸發（REQ-015）
+```bash
+# 先註冊工作流程（排程/常駐目標必須是「已註冊」的工作流程，不能是臨時腳本）
+curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_register","arguments":{"name":"daily-report","script":"return {ok:true, args};"}}}'
+
+# cron 排程（每天 03:00 UTC；驗證時已用 "* * * * *" 對真實時鐘實測連續 2 次真實觸發）
+curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"schedule_create","arguments":{"kind":"cron","workflow":"daily-report","cron":"0 3 * * *","enabled":true}}}'
+
+# 一次性排程（T 到達時觸發一次後自動停用；若要「改時間」，目前做法是刪除舊排程、
+# 用新時間重新建立一筆——尚未提供專門的 schedule_update 工具，見已知限制）
+curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"schedule_create","arguments":{"kind":"once","workflow":"daily-report","at":"2026-08-01T00:00:00Z","enabled":true}}}'
+
+# 常駐（resident）：使用者隨時可觸發；停用時觸發會被拒絕
+curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"schedule_create","arguments":{"kind":"resident","workflow":"daily-report","enabled":true}}}'
+curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"workflow_trigger","arguments":{"workflow":"daily-report","args":{}}}}'
+
+# 查詢所有排程 / 刪除 / 啟停
+curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"schedule_list","arguments":{}}}'
+```
+
+### 資產同步：skill / hook / MCP config（REQ-009）
+```bash
+# 推送一個 skill（落地在伺服器端 workspace，且下一次 agent() 呼叫就會把它實體化進該次 run 的
+# .claude/skills/ 並以 settingSources:['project'] 載入——D-V2V-1 route-back，見上方 v2 新功能一節）
+curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"asset_push","arguments":{"kind":"skill","name":"my-skill","files":[{"path":"SKILL.md","contentB64":"<base64>"}]}}}'
+
+# 列出 / 刪除
+curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"asset_list","arguments":{}}}'
+curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"asset_delete","arguments":{"kind":"skill","name":"my-skill"}}}'
+
+# 遞迴保護（D4）：推送本產品自己的 client plugin / guidance skill / 指向本伺服器的 mcp-config
+# 一律會被排除，並在回應的 excluded[] 附上原因，不會靜默接受。
+```
+
+### Claude Code Client Plugin（REQ-010）
+```bash
+# 把 plugin/ 目錄下的 .mcp.json 複製到你的 Claude Code 專案目錄，並把 url 換成你實際的伺服器位址
+cp plugin/.mcp.json /path/to/your/claude-project/.mcp.json
+cd /path/to/your/claude-project
+claude mcp list     # 應會列出 remote-workflow-engine，狀態為「待批准」（Claude Code 的專案級信任機制）
+claude              # 互動啟動並批准這個專案級 MCP server 後，即可在對話中使用
+                     # remote-workflow-engine__workflow_run 等工具，guidance skill 會教 agent
+                     # 何時該用遠端服務、何時該用內建的本機動態 Workflow 工具（兩者不衝突）
+```
+
+### 安全模型（v2 Gate 8 review 收尾修復，D-V2G8-1）
+`gateway:"sdk"` 路徑（真正的 `@anthropic-ai/claude-agent-sdk` headless session）的三個關鍵行為，
+**修復後的實際現況**（不是計畫）——完整說明見 `DEPLOY.md` §1c：
+1. **不再用 `permissionMode:'bypassPermissions'`**：headless 但不再對每一次工具呼叫免裁決放行。
+2. **預設工具面不含 `Bash`**：內建預設是 `["Read","Write"]`；要用 `Bash`，必須在 `agentType` 的
+   `tools:`、呼叫端 `opts.allowedTools`、或 `defaultAllowedTools` 三者之一明確列出，是刻意的
+   opt-in，不是預設能力。
+3. **供應商 API 金鑰只給 LiteLLM 代理子行程，不給 agent CLI 子行程**：真實金鑰（如
+   `ANTHROPIC_API_KEY`）透過環境變數交給伺服器內部管理的 LiteLLM 代理；被 spawn 出來實際跑 agent
+   工具迴圈的 `claude` CLI 子行程只拿到一份白名單環境變數，從未看到真實金鑰。
+4. **每次 run 的工作目錄互相隔離，讀寫被限制在自己的工作目錄子樹內**：透過 SDK 的
+   `canUseTool` 回呼 + `PreToolUse` hook 雙重檢查一次工具呼叫自己帶的路徑參數，落在工作目錄以外
+   一律拒絕（已用真實 SDK session 端對端驗證過）。**這不是作業系統層級的 sandbox/jail**，是應用層
+   的權限裁決 + 路徑邊界檢查。
+
+### 部署封裝（REQ-011）：docker-compose / systemd / 上線煙霧測試
+見 `DEPLOY.md` §2b（本輪已對 `scripts/smoke.sh`、systemd unit 語法、docker-compose YAML 語法皆做
+真實驗證；`docker compose up`/`sudo systemctl enable --now` 因本次驗證環境沒有 docker/sudo 而未能
+實際執行，已在 `DEPLOY.md`/`08-validation.md` 誠實記錄為環境缺口，非靜默略過）。
+
+## 已知限制（v2）
+1. ~~REQ-009 核心承諾尚未打通~~ **已修復（D-V2V-1 route-back，2026-07-04）**：推送的 skill/hook/
+   MCP config 現在會真的被接進下一次 `agent()` 呼叫，見上方「v2 新功能」一節。
+2. `schedule_create`/`schedule_list`/`schedule_delete`/`schedule_setEnabled` 沒有 `schedule_
+   update`：要改一次性排程的時間，目前做法是刪除舊的、用新時間建立新的一筆（結果正確，只是 API
+   形狀稍嫌不便）。
+3. ~~Dashboard（REQ-008）目前只有唯讀 JSON REST API，沒有附一個可以直接點開的 HTML 頁面~~
+   **已修復（D-V2V-2 route-back，2026-07-04）**：新增 `GET /dashboard` 瀏覽器頁面，見上方
+   「v2 新功能」一節。
+4. v1 已知限制（本機小模型工具呼叫能力上限、litellm port 4000 碰撞風險等）詳見上方「v1，第七輪」
+   一節，本輪未重新測試（依 v2 迭代範圍規則凍結不動）。
+5. docker/systemd 部署封裝（REQ-011 §2b）僅做過語法/語意驗證（`docker compose config`、
+   `systemd-analyze verify`）——本次實作環境沒有 docker、也沒有可互動的 sudo 權限，兩支產物從未
+   在這個環境裡真正跑起來過（`npm` 路徑部署 + 煙霧測試 + 優雅關閉不留孤兒則已對真實獨立 process
+   驗證過）。ORCH 已接受此環境缺口（D-V2V-3），非阻擋項；詳見 `DEPLOY.md` 開頭摘要，部署到
+   docker/root 權限主機時請自行補驗這兩支產物。
 
 ## 更多
 - 部署 / 維運：見 `DEPLOY.md`

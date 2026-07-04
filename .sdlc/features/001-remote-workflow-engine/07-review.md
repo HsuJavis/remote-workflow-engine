@@ -1,8 +1,444 @@
 ---
 stage: review
-status: draft
+status: passed
 ---
 # 07 Review & Retro — Gate 8
+
+## v2 GATE 8 FINAL CLOSING REVIEW (2026-07-04 22:40, CURRENT / AUTHORITATIVE)
+
+> This section supersedes "## v2 GATE 8 CLOSING RE-REVIEW (2026-07-04 20:05)" immediately below
+> (kept for history). That 20:05 pass reviewed the working tree as IMPL-064 left it and correctly
+> reported the V3 HIGH as downgraded to MEDIUM. Between that pass and this one, a further real-run
+> defect was found and fixed **within the same fix round** (same binding decisions D-V2G8-1/D-V2G8-2,
+> no new decision needed): **IMPL-067** (journal 2026-07-04 21:20) — picking up IMPL-064's own
+> hand-off — ran a REAL (non-mocked) `@anthropic-ai/claude-agent-sdk` session and found that the
+> `canUseTool` callback IMPL-064 wired was **silently shadowed** for the default (no opt-in)
+> `Read`/`Write` case: a bare `allowedTools` entry auto-approves that tool call before `canUseTool`
+> is ever consulted (the SDK's own `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` runtime warning), so a real
+> unmocked `Read` of `/etc/hostname` (outside the workspace) SUCCEEDED despite the mocked UT-040
+> passing green — the exact default-path exfiltration vector the original V3 HIGH named, still open
+> in practice though closed on paper. IMPL-067 fixed this by wiring the SAME boundary decision as
+> BOTH `canUseTool` (unchanged) AND a new `hooks.PreToolUse` matcher (`makePreToolUseHook`,
+> `src/gateway/claude-agent-sdk-client.ts:164-180`) — the SDK's own documented alternative for a call
+> a bare `allowedTools` entry already auto-approved — without touching `allowedTools` itself (so the
+> pre-existing `UT-024`/D-F11 regression test, which requires the built-in fallback to stay bare,
+> stays green). This was independently re-verified for real at **Gate 7.5 v2 ROUND 4** (journal
+> 2026-07-04 22:10, `08-validation.md` "## v2 ROUND 4", VAL-019..022): live `ps aux` argv, live
+> `/proc/<pid>/environ` key-custody diffing, and the REAL captured `canUseTool`/`PreToolUse` callback
+> objects denying 3 real hostile-path attempts (LiteLLM's own config, a different real run's
+> workspace secret, `/etc/hostname`) while allowing a genuine in-workspace path. ROUND 4 also found
+> and fixed 1 new config-drift defect (`rwe.config.example.json`/DEPLOY.md's shipped example still
+> listed `Bash` in `defaultAllowedTools`, which the documented `cp ...example.json rwe.config.json`
+> quickstart would have silently re-enabled) — corrected to `["Read","Write"]`
+> (`rwe.config.example.json:9`), confirmed on disk above. **Net effect on the architecture-consistency
+> verdict below: unchanged in substance** — the residual V3 finding (Bash opt-in / symlink / other
+> file-tool bypass) the 2 architecture-expert panel reports already describe is exactly what survives
+> after IMPL-067 too (their critique was never about the shadowing bug — that was a real-execution-only
+> defect neither static architecture lens could see — and IMPL-067 didn't touch Bash/symlink/other-tool
+> coverage), so the panel reports at `.panel/review/*.md` remain valid without a re-spawn; only their
+> line-citations for `canUseTool` have drifted by a few lines (now ~147-159, not 140-148) since
+> IMPL-067 added `makePreToolUseHook` above it — noted here, not requiring a re-run.
+>
+> **V3/V4 resolved-on-disk verification performed this pass** (fresh, not trusted from the log):
+> - `permissionMode: 'default'` — `src/gateway/claude-agent-sdk-client.ts:293`.
+> - `BUILT_IN_CORE_TOOLS = ['Read', 'Write']` (no `Bash`) — `:118`.
+> - `canUseTool: makeCanUseTool(...)` — `:294`, `makeCanUseTool`/`toolUsePreCheck`/`isInsideWorkspace`
+>   — `:124-159`.
+> - `hooks: { PreToolUse: [{ hooks: [makePreToolUseHook(...)] }] }` (the IMPL-067 shadowing fix) —
+>   `:326`, `makePreToolUseHook` — `:164-180`.
+> - `env: buildSubprocessEnv(...)` (agent-CLI env allowlist, no host secrets) — `:329`,
+>   `buildSubprocessEnv`/`ENV_ALLOWLIST` — `:194-213`.
+> - Proxy-subprocess env custody (D-V2G8-1(c)) — `src/gateway/litellm-proxy.ts` `_doStart()`'s
+>   `spawnImpl(...)` explicit `env:` passthrough (unchanged since IMPL-064, re-verified present).
+> - `RunGuard.reserve()` reserves `Math.min(remaining, this.total / 2)`, not 100%-of-remaining —
+>   `src/run-guard.ts:92-98` (D-V2G8-2).
+> - New/route-back tests, re-run standalone this pass, all green: `UT-039` (3/3, permission
+>   hardening), `UT-040` (5/5, workspace boundary), `UT-041` (3/3, provider-key non-reachability),
+>   `IT-037` (2/2, parallel budget-estimate reservation), plus the pre-existing regression guard
+>   `UT-024` (3/3, D-F11 bare-`allowedTools` shape) confirmed still green (no shadowing-fix
+>   regression). Full suite re-run fresh this pass: 96 files / 356 tests, 354 pass / 2 fail — same 2
+>   pre-existing `IT-015`(env defect)/`IT-024`(in-flight-state test, ~1/6 documented flake, unrelated
+>   to the in-flight-agent-state test's own name collision with the route-back's `IT-037` — different
+>   files) failures, unchanged, no new regression.
+> - `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` re-run fresh this pass: 247
+>   items, 3 gaps (REQ-012 未實作/未驗證 + TASK-018 未實作, v3-out-of-scope baseline, byte-identical
+>   to every prior round), 0 orphan/broken-link/漂移/未真實驗證, `dashboard.html` regenerated.
+>
+> **Conclusion of this pass: V3 (HIGH) and V4 (MEDIUM regression) both confirmed resolved on disk**,
+> with real-execution re-verification (not just mocked-unit-test claims) at Gate 7.5 ROUND 4 — see
+> the updated Report block at the end of this section. The rest of the architecture-consistency
+> table (§2 below, unchanged from the 20:05 pass) still stands: 11 residual MEDIUM/LOW findings, 0
+> HIGH, recorded as v2.1 backlog, not blocking.
+
+### v2.1 backlog (carried, unchanged in substance by IMPL-067 — full detail in the 20:05 section §2/Retro below)
+V1 (auth no-op seam, worse in v2), V2 (RunGuard global-vs-per-run cap multiplication), V3-residual
+(Bash opt-in / symlink / non-`file_path`-tool workspace-confinement gaps — MEDIUM, not HIGH, since
+the default surface's real shadowing bug is now closed by IMPL-067), V4-residual (`total/2`
+budget-reservation magic constant, stale `run-manager.ts` comment), V5 (VM determinism guards
+bypassable), O-2 (no transition-history audit trail), R-1 (3 drifted `DEFAULT_ALIASES` tables), R-3
+(`workflow_artifacts` bypasses `RunStore`), C-2 (2 generic IPC error codes), C-3 (`workflow_status`
+non-uniform envelope), S-2 (no LiteLLM-proxy liveness/restart supervision). 11 items, all
+MEDIUM/Medium-High/LOW, 0 HIGH — not fixed this round, per binding scope (only V3/V4 were in scope
+for D-V2G8-1/D-V2G8-2).
+
+### Report (v2 Gate 8 FINAL CLOSING REVIEW, 2026-07-04 22:40 — CURRENT / AUTHORITATIVE)
+```
+Gaps: high=0 mid=2 low=1 (REQ-012 未實作/未驗證 + TASK-018 未實作, v3-out-of-scope, recorded as
+  known tech debt; re-confirmed byte-identical this pass: 247 items, 3 gaps, 0 severe)
+Drift: none (trace.py 0 漂移/orphan/broken-link gaps this pass; every v2 REQ/ARCH/TASK/DES/IMPL/UT
+  chain, incl. the route-back items UT-039..041/IT-037/IMPL-064/067, consistently iter:v2/v2g8)
+Architecture consistent: no — 11 residual findings, 0 HIGH (V3 HIGH from the original pre-route-back
+  pass is now genuinely resolved for the default path, real-execution-verified via IMPL-067 +
+  Gate 7.5 ROUND 4 VAL-019..022, and downgraded to MEDIUM for its acknowledged residual scope
+  — Bash opt-in / symlink / non-file_path-tool bypass). 5 MEDIUM/LOW from adversarial (V1, V2,
+  V3-downgraded, V4-downgraded, V5) + 6 Medium/Medium-High/Low-Medium from quality-dimensions (O-2,
+  R-1, R-3, C-2, C-3, S-2) — all in the v2.1 backlog above, none new, none blocking.
+Validation: real-tier all-green? yes (Gate 7.5 v2 ROUND 4, SCOPED security re-validation dispatched
+  standalone after IMPL-067, fresh independent process, VAL-019..022 confirm D-V2G8-1(a)(b)(c)(d) +
+  D-V2G8-2 for real via ps aux argv / /proc/<pid>/environ diffing / real captured canUseTool+
+  PreToolUse callback deny-tests / real parallel() concurrency-restored-to-2 with 3rd budget-capped;
+  0 mock-only/未驗證 among v1/v2 in-scope REQs) · README+DEPLOY present? yes, step-by-step, updated
+  ROUND 4 (1 new config-drift found+fixed this round: rwe.config.example.json/DEPLOY.md's shipped
+  defaultAllowedTools still listed Bash, corrected to ["Read","Write"])
+Conclusion: iteration can close. The pre-route-back HIGH (V3, agent-CLI Bash/default-path escaping
+  the trust boundary) is fixed and real-execution-verified twice over (IMPL-067's own repro +
+  Gate 7.5 ROUND 4's independent re-verification), not merely claimed from a mocked unit test. The
+  MEDIUM regression (V4, parallel() collapsing to 1 under budget) is fixed and confirmed restoring
+  concurrency to 2 with the hard ceiling intact. 11 residual MEDIUM/Medium-High/LOW
+  architecture-consistency findings are recorded as v1.1/v2.1 backlog, real and unresolved but none
+  HIGH and none blocking, per the same binding-deferral precedent set at v1's own Gate 8 close.
+  gates.review.passed -> true.
+```
+
+---
+
+## v2 GATE 8 CLOSING RE-REVIEW (2026-07-04 20:05, superseded by the FINAL CLOSING REVIEW above)
+
+> This section supersedes "## v2 GATE 8 REVIEW (2026-07-04, iteration v2)" immediately below, which
+> was the **as-found, pre-route-back** record (correctly identified 1 HIGH — V3, agent-CLI `Bash`
+> escapes the trust boundary — plus 2 related MEDIUM, V2/V4, and recommended a Gate 6 route-back).
+> That route-back happened: the orchestrator dispatched D-V2G8-1 (drop `bypassPermissions`, curate
+> the default tool surface to `['Read','Write']`, wire a `canUseTool` workspace-boundary callback,
+> explicit proxy-subprocess env custody) and D-V2G8-2 (per-call budget-reservation cap at
+> `total/2` instead of 100%-of-remaining) — RED tests (UT-039/040/041, IT-037) written at Gate 5,
+> GREENED at Gate 6 (**IMPL-064**), verification-closed at Gate 6.5/7 (**IMPL-065/066**), and the
+> whole iteration re-validated for real at Gate 7.5 **ROUND 3** (`08-validation.md`, `state.yaml`
+> `gates.validation.note`, journal 2026-07-04 19:15). This pass re-reviews the **post-fix** code
+> against the 2 architecture-expert reports, which were themselves **re-run against the fixed
+> source** (`.panel/review/adversarial.md`, `.panel/review/quality-dimensions.md`, both explicitly
+> scoped as "re-review after the Gate-8 v2 route-back, IMPL-064").
+
+### 1. Traceability consistency (`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine`, regenerated 2026-07-04)
+- `✓ 掃描 242 個工作項，偵測 3 個缺口`. `--check`: **3 gaps**, byte-identical to every prior round's
+  baseline:
+  - `mid` **REQ-012 未實作** — REQ-012 (v3 OAuth 2.0/OIDC, `01-requirements.md:194-200`, `iter: v3`,
+    explicitly "deferred by user decision D5") has no IMPL tracing to it.
+  - `mid` **REQ-012 未驗證** — same REQ, no UT/IT/VAL tracing to it.
+  - `low` **TASK-018 未實作** — TASK-018 (`03-tasks.md:124-128`, the v3 auth-middleware seam task,
+    `iter: v3`, `traces: ARCH-009`) has no IMPL.
+  - **0** broken-link (斷鏈), **0** orphan (孤兒), **0** doc↔code iteration-drift (漂移), **0**
+    未真實驗證 (mock-only), **0** unverified in-scope (v1 or v2) REQ.
+  - **gaps_high = 0, gaps_mid = 2, gaps_low = 1.** All 3 are known, accepted, out-of-scope (v3)
+    tech debt — recorded here per Exit-Gate criterion 1, not accidental.
+- **Doc↔code iteration drift**: none. Every v2 REQ (`REQ-008..011,015`, `iter: v2`) chains through
+  `ARCH-010..014` → `TASK-019..027` (v2, except v3 `TASK-018`) → `DES-016..023` → `IMPL-052..066` →
+  `UT-027..041`/`IT-031..037`/`E2E-004..005`/`VAL-008..011,016,017,018` all consistently `iter: v2`.
+  The Gate-8-route-back items (UT-039/040/041, IT-037, IMPL-064/065/066) all carry `iter: v2` and
+  trace to `ARCH-002/005/007` (pre-existing v1 ARCH items the v2 fix touches) — no DES/UT left
+  stamped with a stale iteration while its IMPL moved on. Exit-Gate criterion 2 satisfied.
+
+### 2. Architecture consistency (vs Gate 2 `02-architecture.md`) — post-route-back re-review
+Consolidated from the 2 **already-run** expert reports (not re-spawned, per instruction) at
+`.sdlc/features/001-remote-workflow-engine/.panel/review/`, both explicitly re-reviewing the
+IMPL-064-fixed source, not the pre-fix snapshot:
+- `adversarial.md` — security / scalability-consistency / testability (opus-4-8).
+- `quality-dimensions.md` — observability / replaceability / consumability / self-sustainability
+  (sonnet-4-6/5), each re-verifying every prior "resolved" claim against current source directly
+  (grep/read), not taken on the log's narrative.
+
+**Verdict: NOT (fully) consistent — but 0 HIGH remain.** The prior HIGH (V3) was **downgraded to
+MEDIUM**: IMPL-064 closed the *default* agent-CLI attack surface (`permissionMode:'default'`,
+`Bash` dropped from the default tool set, a `canUseTool` workspace-boundary callback) — confirmed
+genuinely fixed, not a paper patch. **11 findings remain open**, all MEDIUM/MEDIUM-HIGH/LOW, none HIGH:
+
+| # | ID | Lens | Severity | Finding (ARCH violated) | Evidence | Status |
+|---|----|------|----------|-------------------------|----------|--------|
+| 1 | V1 | adversarial | MEDIUM | ARCH-009 auth-middleware no-op seam still doesn't exist in `src/server.ts` — now *more* exposed (v2 added `/dashboard`, `/api/runs*`, RCE-capable `asset_push` on the same open unauthenticated listener) | `src/server.ts:471-521` | carried, worse than v1 |
+| 2 | V2 | adversarial | MEDIUM | `RunGuard`'s concurrency gate (`min(16,cores-2)`) and the ARCH-002 "global" agent counter (`≤1000`) are enforced **per-run** (fresh `RunGuard` per run) — K runs multiply both host caps by K, unbounded | `src/run-guard.ts:5,13,17-18,26-52`; `src/run-manager.ts:92,127` | open, newly precise this round |
+| 3 | V3 | adversarial | MEDIUM (↓ from HIGH) | Workspace confinement (`canUseTool`) covers only `Read`/`Write`'s `file_path`, lexically (not `realpath`) — an agentType opting into `Bash` (still fully supported), a symlink, or `Edit`/`Glob`/`Grep`/`NotebookEdit` bypasses it | `src/gateway/claude-agent-sdk-client.ts:118,124-128,140-148,233-236` | residual, downgraded |
+| 4 | V4 | adversarial | LOW (↓ from MEDIUM) | Flat `total/2` per-call budget reservation caps `parallel()` at 2 concurrent calls under a tight budget; `run-manager.ts:332-337`'s own comment still says "reserves the entire remaining budget" — stale, contradicts the code | `src/run-guard.ts:92-98`; `src/run-manager.ts:332-338` | residual, downgraded |
+| 5 | V5 | adversarial | LOW | Determinism guards (`Date.now`/`Math.random`) bypassable via VM host-realm `Function` escape; not a process-boundary property | `src/sandbox/guards.ts:163-175` | carried, unchanged |
+| 6 | O-2 | quality-dims | Medium-High | Both `RunStore` impls drop `recordTransition`'s `from`/`ts` — no transition-history audit trail despite ARCH-006's "one writer of every state transition (timestamp+runId)" | `src/run-store.ts:116-120`, `src/store/sqlite-run-store.ts:114-116` | carried, unchanged since v1 |
+| 7 | R-1 | quality-dims | Medium | 3 independently-maintained `DEFAULT_ALIASES` tables drifted (`run-manager.ts`/`main.ts` agree; `submission-validator.ts` differs) — ARCH-005 "config, singular" broken | `src/run-manager.ts:26-31`, `src/main.ts:40-45`, `src/submission-validator.ts:12-17` | carried, unchanged |
+| 8 | R-3 | quality-dims | Medium | `workflow_artifacts` bypasses `RunStore`, calls `readdirSync` directly on the workspace path — ARCH-001 "no direct persistence (reads via ARCH-006)" | `src/mcp-facade.ts:149-163` | carried, unchanged |
+| 9 | C-2 | quality-dims | Medium-High | Sandbox IPC boundary collapses every `agent()`/`workflow()` error into 1 of 2 generic codes (`AGENT_ERROR`/`NESTING_ERROR`) — ARCH-001 uniform-envelope/branch-identically promise broken | `src/sandbox/host.ts:74-104` | carried, unchanged |
+| 10 | C-3 | quality-dims | Low-Medium | `workflow_status` spreads extra top-level fields (`phases`/`agents`/`scriptVersion`), not uniform with the other 15 tools | `src/mcp-facade.ts:87-92` | carried, unchanged |
+| 11 | S-2 | quality-dims | Medium | `LiteLLMProxyManager` has no post-start liveness/restart supervision — a mid-run crash of the now-default gateway's always-on subprocess is permanent for the process's life | `src/gateway/litellm-proxy.ts` | carried, unchanged |
+
+**What the route-back genuinely fixed** (both lenses agree): no `bypassPermissions`, curated default
+tools (`Bash` off by default), a real `canUseTool` deny-callback, explicit proxy env custody
+(`ENV_ALLOWLIST`/`buildSubprocessEnv`), and atomic budget reservation replacing the prior
+stale-pre-check TOCTOU — all independently re-verified against current source, not trusted from
+`06-impl-log.md`'s narrative. **0 new violations were introduced by IMPL-064..066** within either
+lens's dimensions (quality-dimensions explicitly re-checked and confirms this).
+
+**Exit-Gate criterion 3**: architecture consistency is consolidated above; the residual
+inconsistency (11 MEDIUM/MEDIUM-HIGH/LOW findings, 0 HIGH) is reflected in the conclusion below.
+Unlike the pre-route-back finding (V3 at HIGH, which blocked closing and correctly routed back to
+Gate 6), none of the 11 residual findings rises to HIGH, and 2 of them (V3, V4) are the *same*
+findings already substantively fixed this round and merely downgraded, not new defects — consistent
+with the precedent set at v1's own Gate 8 close (7 MEDIUM/LOW backlogged, not blocking). Recorded as
+**v2.1 backlog** below rather than a further route-back.
+
+### 3. Validation & handover (Gate 7.5)
+- `gates.validation.passed` = **true** — v2 **ROUND 3** (2026-07-04 19:15), a fresh independent
+  validator dispatch (not trusting Round 2's narrative): re-ran the full boot from documented steps
+  only, fresh real `ps aux`-inspected agent-CLI argv, fresh real materialized `SKILL.md`, fresh real
+  `GET /dashboard` HTML + live-update-without-reload, fresh real `claude mcp list` recognition, fresh
+  real SIGTERM orphan-reap. Found + fixed 1 genuine doc drift (README/DEPLOY's stale claim that the
+  litellm port is fixed at 4000 and shutdown doesn't reap it — both false since TASK-027; corrected
+  in the same round).
+- `trace.py --check` confirms **0 未真實驗證 (mock-only)** and **0 in-scope 未驗證** gaps — the only
+  2 "未驗證" cards are REQ-012 (v3, explicitly out of scope).
+- `08-validation.md` exists (1906 lines), frontmatter `status: passed`, with a "v2 ROUND 3" section
+  (current head) containing fresh real-process evidence, superseding but preserving ROUND 1/2 for
+  history.
+- Handover docs present at `state.yaml layout.readme`/`layout.deploy`: `README.md` and `DEPLOY.md`
+  (product root), both step-by-step (numbered quickstart/deploy steps, health-check, rollback,
+  troubleshooting table, known-limitations sections in Traditional Chinese), both updated in ROUND 3
+  with the corrected litellm-port/shutdown claims.
+- **No REQ closed on mock-only evidence. No missing handover doc.** Exit-Gate criterion 4 satisfied.
+
+### Retro (v2 iteration, closing pass)
+- **What went well**: the Gate-8 route-back loop worked exactly as designed — a genuine HIGH
+  security finding (V3) was found by the architecture-consistency lens (not by Gate 7.5's
+  REQ-acceptance testing, which structurally couldn't reach it since no round tried an
+  adversarial/cross-workspace script), routed to Gate 6 with an explicit new decision (D-V2G8-1/2)
+  rather than a silent patch, RED-tested first (UT-039/040/041, IT-037), fixed, and **re-verified by
+  re-running the same 2 architecture experts against the fixed source** rather than trusting the
+  implementer's own claim — this is what caught that V3 is downgraded-but-not-eliminated (Bash
+  opt-in/symlink/other-file-tool gaps remain) instead of naively marking it "fixed."
+- **What to change next iteration**: (1) Gate 5's test matrix should include an adversarial-script
+  acceptance test ("agent() with Bash cannot read another run's workspace or the proxy's config")
+  from the start, not only after a Gate 8 finding forces it — the residual V3 gap (Bash opt-in path)
+  is exactly what such a test would keep pinned red until genuinely closed; (2) the 3-copy
+  `DEFAULT_ALIASES` drift (R-1) and the 2-generic-error-code IPC collapse (C-2) have now survived 2
+  full Gate-8 reviews (v1 and v2) unaddressed — should be scheduled explicitly in v2.1/v3, not
+  deferred a third time; (3) `RunGuard`'s global-vs-per-run cap question (V2) and its budget
+  reservation constant (V4) both point at the same underlying gap — a process-global concurrency/
+  agent-count semaphore plus a per-call budget *estimate* (reconciled in `capture()`) would fix both
+  in one coherent redesign instead of two separate constants.
+- **Known tech debt (recorded as known gaps, not silently dropped)**:
+  - v3-out-of-scope trace gaps (REQ-012, TASK-018) — deferred by the requirements Gate itself.
+  - v1.1 backlog (carried unfixed from the v1 Gate 8 review, unchanged by v2): O-2, R-1, R-3, C-2,
+    S-2, V1 (auth no-op seam — now worse, see above), C-3, V5(LOW, doc-wording).
+  - **v2.1 architecture backlog (this round)**: V2 (global-vs-per-run RunGuard caps), V3-residual
+    (Bash opt-in/symlink/other-tool workspace-confinement gaps — MEDIUM, not HIGH, since the
+    *default* surface is now safe), V4-residual (`total/2` budget-reservation magic constant + its
+    stale code comment).
+  - v2.1 non-architecture backlog (from `08-validation.md`): aborted-`AgentRecord` cosmetic state,
+    litellm port-4000 collision hazard (mitigated but not eliminated by TASK-027), tool-use re-test
+    against a larger local model/paid provider, latent `cwd`-not-per-run-workspace gap, `mkdtemp()`
+    temp-dir cleanup, D-V2V-3 docker/sudo environment gap (accepted, non-blocking).
+
+### Report (v2 Gate 8 CLOSING RE-REVIEW, 2026-07-04 20:05 — CURRENT / AUTHORITATIVE)
+```
+Gaps: high=0 mid=2 low=1 (REQ-012+TASK-018, v3-out-of-scope, recorded as known tech debt above)
+Drift: none (trace.py 0 漂移 gaps; every v2 REQ/ARCH/TASK/DES/IMPL/UT/route-back-test chain
+  consistently iter:v2, incl. the Gate-8 route-back items UT-039..041/IT-037/IMPL-064..066)
+Architecture consistent: no — 11 residual findings, 0 HIGH (down from 1 HIGH pre-route-back): 5
+  MEDIUM/LOW from the adversarial lens (V1, V2, V3-downgraded, V4-downgraded, V5) + 6 Medium/
+  Medium-High/Low-Medium from quality-dimensions (O-2, R-1, R-3, C-2, C-3, S-2) — see table above.
+  The prior blocking HIGH (V3, agent-CLI Bash escaping the trust boundary) is confirmed fixed at the
+  default-surface level (D-V2G8-1/IMPL-064) and downgraded to MEDIUM for its residual (opt-in
+  Bash/symlink/other-file-tool) scope.
+Validation: real-tier all-green? yes (Gate 7.5 v2 ROUND 3, fresh independent validator dispatch,
+  CONVERGENCE RULE satisfied, 0 mock-only/未驗證 among v1/v2 in-scope REQs) · README+DEPLOY present?
+  yes, step-by-step, updated ROUND 3 (1 doc-drift found+fixed: litellm port/shutdown claims)
+Conclusion: iteration can close. The 1 HIGH finding that blocked the prior (pre-route-back) Gate 8
+  pass is fixed and re-verified for real by re-running both architecture experts against the fixed
+  source (not trusted from the implementer's log). 11 residual MEDIUM/MEDIUM-HIGH/LOW
+  architecture-consistency findings (5 adversarial + 6 quality-dimensions) are recorded above as
+  v1.1/v2.1 backlog per the same binding-deferral precedent set at v1's own Gate 8 close — real,
+  confirmed, not silently dropped, but none blocking. gates.review.passed -> true.
+```
+
+---
+
+## v2 GATE 8 REVIEW (2026-07-04, iteration v2 — SUPERSEDED, see "CLOSING RE-REVIEW" above)
+
+> **Superseded 2026-07-04 20:05**: this section is the **as-found, pre-route-back** Gate 8 pass. It
+> correctly found 1 HIGH (V3) + 2 related MEDIUM (V2, V4) and recommended a Gate 6 route-back. That
+> route-back happened (D-V2G8-1/2, IMPL-064, re-verified at Gate 6.5/7/7.5 ROUND 3) — see the
+> "CLOSING RE-REVIEW" section above for the current, authoritative state. Preserved below UNCHANGED
+> for history; do not edit it to retroactively mark items fixed.
+
+> Everything below this section (down to "## v1 Gate 8 review — historical record") is the **v1**
+> Gate 8 pass (closed 2026-07-03). It is preserved unchanged for history. This new section is the
+> review of the **v2** iteration (TASK-019..027 / DES-016..023 / IMPL-052..063, scheduler + dashboard
+> + asset-sync + client plugin + deploy hardening), performed after Gate 7.5 v2 Round 2 flipped
+> `gates.validation.passed` to `true`.
+
+### 1. Traceability consistency (`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine`, regenerated 2026-07-04 10:10)
+- Total work items: **235**. `trace.py --check`: **3 gaps**, all on the identical pre-existing,
+  binding-decision v3-out-of-scope baseline:
+  - `mid` **REQ-012 未實作** — REQ-012 (v3 OAuth/OIDC) has no IMPL tracing to it.
+  - `mid` **REQ-012 未驗證** — REQ-012 has no UT/IT/VAL tracing to it.
+  - `low` **TASK-018 未實作** — TASK-018 (v3 auth middleware task) has no IMPL.
+  - **0** broken-link (斷鏈), **0** orphan (孤兒), **0** doc↔code iteration-drift (漂移) gaps, **0**
+    未真實驗證 (mock-only) gaps, **0** unverified in-scope (v1 or v2) REQ.
+  - **gaps_high = 0, gaps_mid = 2, gaps_low = 1.** All 3 are explicitly recorded here as **known,
+    accepted, out-of-v2-scope tech debt** (REQ-012/TASK-018 are `iter: v3`, deferred since Gate 1.5's
+    own requirements-slice decision, reconfirmed unchanged at every gate since) — not accidental.
+    Exit-gate criterion 1 satisfied.
+- **Doc↔code iteration drift**: none. `trace.py`'s own drift check (comparing each item's `iter:`
+  against its downstream/upstream neighbors' `iter:`) produced 0 findings. Spot-verified manually:
+  every v2 REQ (`REQ-008..011,015`, `iter: v2`) traces to `ARCH-010..014` (`iter: v2`) → `TASK-019..027`
+  (`iter: v2`, except `TASK-018` which is `iter: v3`) → `DES-016..023` (`iter: v2`) → `IMPL-052..063`
+  (`iter: v2`) → `UT-027..033`/`IT-031..036`/`E2E-004..005`/`VAL-008..011,016,017,018` (`iter: v2`) —
+  no DES/UT left at a stale `iter` while its IMPL moved on. Exit-gate criterion 2 satisfied.
+
+### 2. Architecture consistency (vs Gate 2 `02-architecture.md`)
+Consolidated from the 2 pre-run expert reports at `.sdlc/features/001-remote-workflow-engine/.panel/review/`
+(already present, not re-spawned, per instruction):
+- `adversarial.md` — security / scalability-consistency / testability (opus), scoped to the files each
+  touched `IMPL-*` lists plus directly-referenced module boundaries.
+- `quality-dimensions.md` — observability / replaceability / consumability / self-sustainability
+  (sonnet), same scoping; explicitly re-verifies (not trusts) each prior-round finding against the
+  current source tree.
+
+**Verdict: NOT consistent.** Of the v1 Gate-8 closing round's 10 architecture-consistency findings,
+**4 are now genuinely RESOLVED** (re-verified against current source, not taken on faith): O-1
+(transcript stream now captured, `claude-agent-sdk-client.ts:150-164,272-295` + `agent-executor.ts:108-113`),
+C-1 (`tools/list` real per-tool schemas, `server.ts:121-264`), S-1 (default `timeoutMs` fallback,
+`main.ts:100,145`), R-2 (`ENV_ALLOWLIST`, `claude-agent-sdk-client.ts:129-148`).
+
+**11 violations remain open or newly found** — 1 HIGH, 8 MEDIUM(-ish), 2 LOW:
+
+| # | ID | Severity | Finding | ARCH violated | Evidence | Status |
+|---|----|----------|---------|----------------|----------|--------|
+| 1 | V3 | **HIGH (NEW)** | The untrusted script's `agent()` call reaches a fully-privileged, `Bash`-capable CLI in the parent trust zone (`permissionMode:'bypassPermissions'`, default tools include `Bash`, the only fs confinement is `cwd`) — a script can have the agent `cat` the LiteLLM proxy's on-disk config (real provider API keys) or another run's workspace/journal and return it as the `agent()` result, exfiltrating host secrets and cross-run data straight through the trust boundary the architecture's whole security story rests on. | ARCH-007 (fs confinement to the run workspace), ARCH-005 (sole parent-only key custody), rationale D6/C1 (trust split removes keys/network/fs from blast radius) | `src/gateway/claude-agent-sdk-client.ts:222` (`bypassPermissions`), `:115` (`BUILT_IN_CORE_TOOLS` incl. `Bash`), `:219` (`cwd`-only confinement) | Open |
+| 2 | V2 | MEDIUM (NEW — corrects a prior round's mis-classification) | `RunGuard`'s concurrency gate (`min(16,cores-2)`) and the agent counter ARCH-002 explicitly calls **global** (`≤1000`) are both enforced **per-run** (`run-guard.ts:5,13,17-18,46-52`; a fresh `RunGuard` built per run at `run-manager.ts:127,226`) — K concurrent runs multiply both host-protection caps by K, unbounded, on the single node. | ARCH-002 | `src/run-guard.ts:5,13,17-18,26-44,46-52`; `src/run-manager.ts:92,127,226` | Open |
+| 3 | V4 | MEDIUM (NEW — side effect of the v1 Gate-8 fix for the prior V2) | The D-G8-6 budget-reservation fix (`reserve()`) reserves **100% of currently-remaining budget** per call, held for the whole call; under any bounded budget, `parallel([a,b,c])` has the first call reserve everything and the rest immediately throw `BudgetExceededError` (swallowed to `null` by `makeParallel`) — every bounded-budget run silently loses ALL concurrency, contradicting `parallel()`'s own concurrent semantics. | ARCH-002 ⟂ ARCH-003 | `src/run-guard.ts:79-84`; `src/run-manager.ts:338,378`; `src/sandbox/guards.ts:78-85` | Open |
+| 4 | O-2 | MEDIUM-HIGH (carried) | Both `RunStore` impls drop `recordTransition`'s `from`/`ts` params — no transition-history/audit trail exists despite ARCH-006's "one writer of every state transition (timestamp+runId)" promise. | ARCH-006 | `src/run-store.ts:116-120`, `src/store/sqlite-run-store.ts:114-116` | Open, unchanged since v1 |
+| 5 | C-2 | MEDIUM-HIGH (carried) | Sandbox IPC boundary collapses every distinct `agent()`/`workflow()` failure into 1 of 2 generic codes (`AGENT_ERROR`/`NESTING_ERROR`), discarding real error identity. | ARCH-001 (uniform envelope, branch identically) | `src/sandbox/host.ts:74-104` | Open, unchanged since v1 |
+| 6 | V1 | MEDIUM (carried) | ARCH-009's promised zero-v1-rework auth-middleware no-op seam still does not exist in `src/server.ts` — now MORE exposed (v2 added unauthenticated `/dashboard`, `/api/runs*`, and the RCE-capable `asset_push` on the same open listener). | ARCH-001, ARCH-009, rationale C4/D5 | `src/server.ts:471-521` | Open, worse than v1 |
+| 7 | R-1 | MEDIUM (carried) | 3 independently hand-maintained `DEFAULT_ALIASES` tables have drifted to different model-id values for the same alias names (`run-manager.ts`/`main.ts` agree; `submission-validator.ts` differs). | ARCH-005 (config as single source of truth), ARCH-008 | `src/run-manager.ts:26-31`, `src/main.ts:40-45`, `src/submission-validator.ts:12-17` | Open, unchanged since v1 |
+| 8 | R-3 | MEDIUM (carried) | `workflow_artifacts` bypasses `RunStore` entirely, calls `readdirSync` directly on the workspace path. | ARCH-001 (no direct persistence, reads via ARCH-006) | `src/mcp-facade.ts:149-163` | Open, unchanged since v1 |
+| 9 | S-2 | MEDIUM (carried) | `LiteLLMProxyManager` has no post-start liveness/restart supervision — a mid-run subprocess crash of the now-default gateway's always-on dependency is permanent for the server process's life. | ARCH-014 (self-healing framing) | `src/gateway/litellm-proxy.ts` | Open, unchanged since v1 |
+| 10 | C-3 | LOW-MEDIUM (carried) | `workflow_status`'s envelope spreads extra top-level fields (`phases`/`agents`/`scriptVersion`), not uniform with the other 9 (now 15, incl. v2) tools. | ARCH-001 (uniform envelope) | `src/mcp-facade.ts:87-92` | Open, unchanged since v1 |
+| 11 | V5 | LOW (carried) | Determinism guards (`Date.now`/`Math.random`) are advisory only, bypassable via the VM's host-realm `Function` constructor escape. | ARCH-003 | `src/sandbox/guards.ts:163-174` | Open, unchanged since v1 (correctly judged LOW — non-adversarial script threat model) |
+
+**What the impl got right this round** (both lenses, for balance): the prior v1 Gate-8 HIGH fixes hold
+under re-verification (env-allowlist, nested-`callSeq` namespacing, real `tools/list` schemas, default
+`timeoutMs`); all core seams (gateway/store/spawner/clock, `queryImpl`/`fetchImpl`/`mcpProbe`/
+`proxyManager`) remain constructor-injected; bind default and the fail-fast validator's ownership model
+are unchanged/compliant; the v2 scheduler/dashboard/asset-sync/plugin/deploy work introduces **0 new
+violations of its own** within either lens's dimensions — all 11 open findings are either carried
+unchanged from v1 or are newly-surfaced consequences of the v1 Gate-8 fixes themselves (V2, V4), not
+defects in the new v2 feature code.
+
+**Exit-gate criterion 3**: architecture consistency is consolidated above; the inconsistency is real
+and reflected in the conclusion below. **V3 (HIGH) is a genuine security-boundary violation that
+contradicts explicit Gate-2 rationale (D6/C1's blast-radius claim) and was not present/flagged in the
+v1 review** — it is newly surfaced now because `Bash`-capable tool-use against a real local model was
+only exercised for real starting in v2's validation rounds. This is not a "decision not honored, cheap
+fix" item like the v1 HIGH batch; it requires an actual architecture decision (jail/chroot the CLI
+subprocess's fs, or drop `Bash` from the default tool set, or move provider-key storage off any path
+the agent's fs access can reach) before a route-back implementation is dispatched — **recommend
+routing to Gate 2 (or at minimum Gate 6 with an explicit new ARCH decision, not a silent code patch)**
+for V3 specifically. V2 and V4 are consequences of a single v1 fix (D-G8-6) trading a real overshoot
+bug for a real concurrency-collapse bug — these should route back to Gate 6 together (a shared
+estimate-then-reconcile budget-reservation redesign fixes both without a new Gate-2 decision). The 7
+remaining MEDIUM/LOW carried items (O-2, C-2, V1, R-1, R-3, S-2, C-3, V5) may continue to be recorded
+as backlog (as they were after v1's Gate 8) if the team elects not to fix them this cycle, but they
+must stay recorded, not silently dropped.
+
+### 3. Validation & handover (Gate 7.5)
+- `gates.validation.passed` = **true** — v2 Round 2 (2026-07-04), CONVERGENCE RULE satisfied: all 5 v2
+  REQs (`REQ-008/009/010/011/015`) have real, fresh `real:true` green VAL/E2E evidence (`VAL-008..011,
+  016,017,018`), including round-2's re-verification of the 2 fixes (D-V2V-1 asset wiring via `ps aux`
+  argv inspection + on-disk skill materialization; D-V2V-2 real `GET /dashboard` HTML + live-update
+  demonstration) and no-regression smoke on REQ-010/011/015.
+- `trace.py --check` confirms **0 未真實驗證 (mock-only)** and **0 in-scope 未驗證** gaps — the only
+  2 "未驗證" cards are REQ-012, explicitly v3-out-of-scope.
+- `08-validation.md` exists (frontmatter `status: passed`), with a "v2 ROUND 2" section (current head)
+  containing real-process evidence (real spawned `claude` CLI argv via `ps aux`, real materialized
+  `SKILL.md` on disk, real `GET /dashboard` HTTP response, real `claude mcp list` recognition, real
+  `scripts/smoke.sh` pass + orphan-reap confirmation).
+- Handover docs present at `state.yaml layout.readme`/`layout.deploy`: `README.md` (372 lines) and
+  `DEPLOY.md` (465 lines), both step-by-step (numbered quickstart/deploy steps, health-check section,
+  rollback section, troubleshooting table, known-limitations section), both updated in v2 Round 2 with
+  fresh evidence (v2 status header flipped to GATE PASSED).
+- **No REQ closed on mock-only evidence. No missing handover doc.** Exit-gate criterion 4 satisfied at
+  the REQ-acceptance level.
+- **Caveat (same class as the v1 review's caveat)**: this Gate-8 architecture-consistency pass surfaced
+  V3 (HIGH), a real security exposure that Gate 7.5's 2 v2 rounds never exercised (both rounds' agent
+  tool-use tests used benign scripts, never a script attempting cross-workspace/secret-file access).
+  This is not a Gate 7.5 process failure — it tested every documented REQ acceptance clause — it is a
+  gap in what was tested, now found by this Gate 8 review, and should be added to Gate 7.5's test
+  matrix on the route-back (an adversarial-script acceptance test: "a workflow script's `agent()` call
+  cannot read another run's workspace or the litellm proxy's config file").
+
+### Retro (v2 iteration)
+- **What went well**: the v2 slice (scheduler + dashboard + asset-sync + plugin + deploy hardening) was
+  delivered with 0 new architecture-consistency violations of its own; Gate 7.5 found and route-backed
+  2 real defects (REQ-009 asset wiring never reaching any `agent()` call; REQ-008's dashboard not
+  actually being a browser page) rather than accepting weaker acceptance criteria, and both were
+  re-verified for real (not just re-tested) in Round 2 before `gates.validation.passed` flipped; the
+  quality-dimensions expert this round explicitly re-verified every prior "resolved" claim against
+  current source instead of trusting `06-impl-log.md`'s own narrative, catching that the process/data
+  is genuinely fixed for 4 of 10 prior findings.
+- **What to change next iteration**: (1) the architecture-consistency review should run **during**
+  implementation once real Bash-tool-use against a real local model is exercised for the first time —
+  V3 (the HIGH finding) was structurally invisible until an actual agent()-with-tools call was made for
+  real, which only happened in v2's validation rounds; a scoped adversarial-script test belongs in the
+  Gate 5 test matrix from now on, not discovered post-hoc at Gate 8; (2) a single-fix-at-a-time approach
+  to `RunGuard` (v1's D-G8-6 fixed one bug and introduced another, V4) suggests budget/concurrency
+  invariants need one coherent redesign (estimate-reserve + reconcile) rather than incremental patches;
+  (3) the 3-copy `DEFAULT_ALIASES` drift (R-1) and the 2-generic-error-code IPC collapse (C-2) have now
+  survived 2 full Gate-8 reviews unaddressed — recommend scheduling both explicitly in the v1.1/v2.1
+  backlog pass rather than leaving them permanently deferred.
+- **Known tech debt (recorded as known gaps)**:
+  - v3-out-of-scope trace gaps (REQ-012, TASK-018) — deferred by the requirements Gate itself.
+  - v1.1 backlog (carried unfixed from the v1 Gate 8 review): O-2 (transition audit trail), R-1
+    (duplicated `DEFAULT_ALIASES`), R-3 (`workflow_artifacts` bypasses `RunStore`), C-2 (collapsed
+    sandbox IPC error codes), S-2 (no litellm-proxy liveness supervision), V1 (auth no-op seam), C-3
+    (non-uniform `workflow_status` envelope), V5 (advisory-only determinism guards, LOW, doc-wording).
+  - v2.1 backlog (non-REQ improvement ideas, from `08-validation.md`): aborted-`AgentRecord` cosmetic
+    state, litellm port-4000 collision hazard, tool-use re-test against a larger local model / paid
+    provider, latent `cwd`-not-per-run-workspace gap, `mkdtemp()` temp-dir cleanup, D-V2V-3
+    docker/sudo environment gap (accepted).
+  - **NEW this round, NOT backlog-eligible — blocking**: V3 (HIGH, agent-CLI Bash escapes the trust
+    boundary to host secrets/other-run workspaces) and its close relatives V2/V4 (global-vs-per-run
+    resource caps; budget-reservation collapses `parallel()` concurrency) require a Gate 6 route-back
+    before this iteration can close, per the exit-gate contract ("any inconsistency reflected in the
+    conclusion, may send back to Gate 2/6").
+
+### Report (v2 Gate 8, 2026-07-04 — CURRENT / AUTHORITATIVE)
+```
+Gaps: high=0 mid=2 low=1 (REQ-012+TASK-018, v3-out-of-scope, recorded as known tech debt above)
+Drift: none (trace.py 0 漂移 gaps; all v2 REQ/ARCH/TASK/DES/IMPL/UT chains consistently iter:v2)
+Architecture consistent: no — 11 violations (1 HIGH: V3 agent-CLI Bash escapes trust boundary to host
+  secrets/other-run workspaces, NEW this round; 2 MEDIUM NEW: V2 global-vs-per-run RunGuard caps, V4
+  budget-reservation collapses parallel() concurrency; 8 MEDIUM/LOW carried unchanged from v1: O-2,
+  C-2, V1, R-1, R-3, S-2, C-3, V5) — see table above
+Validation: real-tier all-green? yes (Gate 7.5 v2 Round 2, CONVERGENCE RULE satisfied, 0 mock-only/
+  未驗證 among v1/v2 in-scope REQs) · README+DEPLOY present? yes, step-by-step, updated Round 2
+Conclusion: send back to Gate 6 (implementation route-back) for the 1 HIGH architecture-consistency
+  finding (V3 — jail/jail-equivalent the agent CLI's fs reach, or drop Bash from the default tool set,
+  or move provider-key storage off any agent-reachable path; needs an explicit new decision, not a
+  silent patch, so Gate 2 should bless the chosen fix) plus its 2 closely-related MEDIUM
+  consequences (V2, V4, both stemming from the same RunGuard area and cheapest fixed together via a
+  coherent estimate-reserve+reconcile redesign). The 8 remaining MEDIUM/LOW findings and the 3
+  pre-existing v3-out-of-scope trace gaps may be carried as known tech debt (as recorded above) if the
+  team elects not to fix them this cycle, but must stay recorded rather than silently dropped.
+  gates.review.passed stays false pending the Gate 6 route-back.
+```
+
+---
+
+## v1 Gate 8 review — historical record (2026-07-03, superseded by the v2 section above)
 
 > **Gate 8 closing-fixes update (IMPL-051, 2026-07-03):** the 4 HIGH architecture-consistency
 > findings below (V3, O-1, C-1, S-1) plus 2 of the 9 MEDIUM findings (V2, V5) are now FIXED per the

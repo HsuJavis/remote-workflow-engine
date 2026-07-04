@@ -7,7 +7,1073 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
-## ROUND 7 (this round) — scoped spot re-validation of the Gate-8 closing fixes (D-G8-1..6)
+> **v2 status (this file's current head, see "## v2 ROUND 4" below): GATE PASSED (re-confirmed).**
+> ROUND 4 is a SCOPED security re-validation dispatched after the Gate-8 closing route-back
+> (D-V2G8-1/D-V2G8-2, IMPL-067, journal 2026-07-04 21:20) — it re-boots the real system AFTER that
+> fix and independently proves for real: (1) the agent CLI subprocess's own live argv shows
+> `--permission-mode default` (not `bypassPermissions`) and a Bash-free default tool surface; (2) a
+> real workspace-boundary escape attempt (proxy config / another run's workspace / `/etc/hostname`)
+> is DENIED by the actual production `canUseTool`/`PreToolUse` callback objects, captured live off a
+> genuine (non-mocked) SDK `query()` call, never leaking the secret; (3) the real provider-key
+> marker set in this process's own env is present in the LiteLLM proxy subprocess's `/proc/<pid>/
+> environ` but ABSENT from the spawned agent CLI subprocess's own `/proc/<pid>/environ` (dummy key
+> only); (4) a real bounded-budget `parallel()` of 3 concurrent `agent()` calls against real Ollama
+> shows 2 agents genuinely `"running"` simultaneously (concurrency restored from the v1-era collapse
+> to 1), with the 3rd correctly budget-capped, not overshooting. It also found + fixed a NEW config
+> drift this round (`rwe.config.example.json`/DEPLOY.md's own JSON example still shipped
+> `defaultAllowedTools:["Read","Write","Bash"]`, silently re-enabling Bash-by-default for anyone
+> following the documented `cp rwe.config.example.json rwe.config.json` quickstart step — see
+> "## v2 ROUND 4" for detail). All 5 v2 REQs (008/009/010/011/015) still carry ≥1 real:true green
+> VAL/E2E item from ROUND 3 below (v2 feature scope unchanged this round, REQ-level regression
+> re-confirmed, not re-litigated). See "## v2 ROUND 4" for this round's full fresh evidence.
+
+## v2 ROUND 4 — Gate 8 route-back security re-validation (D-V2G8-1/D-V2G8-2, post-IMPL-067)
+
+**Scope (per this round's dispatch instructions)**: this is a SCOPED security re-validation after
+the Gate-8 closing fixes for D-V2G8-1 (drop `bypassPermissions`, curate default tools off `Bash`,
+move provider keys out of any agent-reachable path, confine run-workspace reads to their own
+subtree) and D-V2G8-2 (`RunGuard.reserve()` must not reserve 100% of remaining budget per call). The
+full v2 REQ matrix already passed at ROUND 3 (regression covers the rest — not re-litigated here).
+Explicitly NOT re-litigated per instruction: D-V2V-3 (docker/systemd/browser tiers), D-V3 (VM
+determinism-guard escape, LOW), D-F11 (model-capability-tier gap — qwen2.5:7b never emits a genuine
+`tool_use` content block through this SDK-CLI→LiteLLM→Ollama integration path; re-confirmed again
+this round, see below, and worked around rather than re-argued).
+
+### Boot (documented steps only — this round's own commands)
+```bash
+node --version                                            # v22.22.3
+npm install                                                # up to date, 0 errors
+npx vitest run                                             # full regression, see below
+export PATH="$HOME/.local/bin:$HOME/.rwe-litellm-venv/bin:$PATH"
+cat > /tmp/rwe-secval-config.json <<'JSON'
+{
+  "bind": "127.0.0.1", "port": 8931, "workRoot": "/tmp/rwe-secval-data",
+  "timeoutMs": 30000, "retries": 0, "gateway": "sdk", "agentDefinitionsDir": "./agents",
+  "aliases": { "local": { "provider": "ollama", "model": "qwen2.5:7b" } }
+}
+JSON
+export ANTHROPIC_API_KEY="sk-ant-SECVAL-REAL-MARKER-77321"   # stand-in for a real provider credential
+export RWE_CONFIG_PATH=/tmp/rwe-secval-config.json
+npm run start                                              # real boot, gateway:"sdk", real Ollama
+```
+No `defaultAllowedTools` key set in this round's config — deliberately exercises the code's own
+built-in fallback (`BUILT_IN_CORE_TOOLS`), which is exactly what a zero-config/undocumented-key
+deployment gets. No undocumented step was needed to bring the system up.
+
+### Regression (fresh, full suite)
+```
+$ npx vitest run
+ Test Files  2 failed | 94 passed (96)
+      Tests  2 failed | 354 passed (356)
+```
+Same 2 pre-existing, documented items every round has recorded: `IT-015` (environment-specific,
+this sandbox's own nested Claude Code host intercepts `query()`) and `IT-024` (~1-in-6 real-
+subprocess-IPC race flake — re-ran the file standalone immediately after: 1/1 pass). **No new
+regression.**
+
+### D-V2G8-1(a)(b) — real spawned CLI argv: no `bypassPermissions`, no `Bash` by default
+While a real `workflow_run{script:"return agent('Write a haiku about the ocean.',
+{label:'a1',model:'local'})"}` was in flight against this round's own fresh server (port 8931),
+read the spawned CLI subprocess's own argv straight off the live OS process table:
+```
+$ ps aux | grep '[c]laude-agent-sdk.*claude '
+.../claude-agent-sdk-linux-x64/claude --output-format stream-json --verbose
+  --input-format stream-json --thinking disabled --model local
+  --permission-prompt-tool stdio --allowedTools Read,Write --tools Read,Write
+  --setting-sources=project --strict-mcp-config --permission-mode default
+```
+`--permission-mode default` (not `bypassPermissions`), `--allowedTools Read,Write --tools
+Read,Write` (no `Bash` anywhere) — both confirmed on the REAL spawned subprocess's own command
+line, not inferred from source. Run completed normally (`workflow_status` →
+`agents:[{state:"done",tokens:{input:843,output:49}}]`), confirming headless operation is
+unaffected by dropping `bypassPermissions` (the `canUseTool`/`PreToolUse` callbacks always resolve
+synchronously, never block on an interactive prompt).
+
+### D-V2G8-1(c) — provider keys never reach the agent-facing CLI subprocess
+Exported a distinctive fake-but-real-shaped provider credential
+(`ANTHROPIC_API_KEY=sk-ant-SECVAL-REAL-MARKER-77321`) into the server process's own environment
+before boot (standing in for a real host credential — this sandbox has no real paid Anthropic
+account). After boot, read `/proc/<pid>/environ` directly off the two real live OS processes:
+```
+$ ps aux | grep -E '[l]itellm --config|[c]laude-agent-sdk.*claude '
+user  2813161 ... /home/user/.rwe-litellm-venv/bin/python .../litellm --config /tmp/rwe-litellm-TUXiZm/config.yaml --port 4000
+user  2813387 ... .../claude-agent-sdk-linux-x64/claude --allowedTools Read,Write ...
+
+$ tr '\0' '\n' < /proc/2813161/environ | grep -i "ANTHROPIC_API_KEY\|SECVAL"
+ANTHROPIC_API_KEY=sk-ant-SECVAL-REAL-MARKER-77321          # <- real marker, LiteLLM proxy subprocess
+
+$ tr '\0' '\n' < /proc/2813387/environ | sort
+ANTHROPIC_API_KEY=sk-local-dev-dummy-not-a-real-key         # <- dummy, agent CLI subprocess
+ANTHROPIC_BASE_URL=http://127.0.0.1:4000
+CLAUDE_AGENT_SDK_VERSION=0.3.199
+CLAUDE_CODE_ENTRYPOINT=sdk-ts
+HOME=/home/user
+LANG=en_US.UTF-8
+PATH=...
+SHELL=/bin/bash
+TERM=xterm-256color
+```
+The real marker string (`SECVAL`) appears in the LiteLLM proxy subprocess's own `/proc/<pid>/
+environ` (D-V2G8-1(c)'s intended custody point — it needs the real key to route calls) and is
+**completely absent** from the agent-facing CLI subprocess's own env, whose `ANTHROPIC_API_KEY` is
+confirmed the hardcoded dummy value — the exact key-exfiltration path the V3 HIGH finding named is
+closed at the OS-process level, not just by source inspection.
+
+### D-V2G8-1(d) — real workspace-boundary denial, no secret leaked
+The local `qwen2.5:7b` model (re-confirmed, again, this round — see D-F11 note below) never emits a
+genuine `tool_use` content block through this integration path, only text describing an intended
+tool call as JSON — so a script-level `agent()` prompt cannot be used to drive a real end-to-end
+tool-call round trip today (the pre-existing, accepted, out-of-scope D-F11 gap). To still prove the
+REAL production boundary-check code (not a reimplementation, not the SDK mocked) against a genuine,
+non-mocked SDK `query()` call, this round wrapped ONLY the plain `options` argument capture around
+the real `@anthropic-ai/claude-agent-sdk` `query` export (delegating unconditionally to the real
+implementation — real subprocess spawn, real Ollama round trip happened), then invoked the exact
+captured `canUseTool`/`hooks.PreToolUse` function objects directly with hostile paths:
+```
+--- REAL end-to-end invoke() (real subprocess + real Ollama round trip) ---
+invoke() result: {"ok":true,...,"content":"{\"name\": \"Write\", ...}"}   # real round trip completed
+captured options.permissionMode: default
+captured options.allowedTools: [ 'Read', 'Write' ]
+captured options.tools: [ 'Read', 'Write' ]
+captured options.cwd: /tmp/rwe-secval-data/workflows/_adhoc/runs/direct-workspace
+
+--- Directly invoking the REAL captured canUseTool with hostile paths ---
+Read proxy config.yaml -> {"behavior":"deny","message":"path outside run workspace: /tmp/rwe-litellm-TUXiZm/config.yaml"}
+Read another run's secret1.txt -> {"behavior":"deny","message":"path outside run workspace: /tmp/rwe-secval-data/workflows/_adhoc/runs/5c419830-.../secret1.txt"}
+Read /etc/hostname -> {"behavior":"deny","message":"path outside run workspace: /etc/hostname"}
+Bash escape via blockedPath -> {"behavior":"deny","message":"path outside run workspace: /tmp/rwe-secval-data/workflows/_adhoc/runs/5c419830-.../secret1.txt"}
+Read own workspace file -> {"behavior":"allow"}
+
+--- Directly invoking the REAL captured hooks.PreToolUse (belt-and-suspenders) ---
+PreToolUse hook on proxy config path -> {"hookSpecificOutput":{...,"permissionDecision":"deny","permissionDecisionReason":"path outside run workspace: /tmp/rwe-litellm-TUXiZm/config.yaml"}}
+PreToolUse hook on own workspace path -> {}
+```
+`secret1.txt` above was a real file (`RUN1-CROSS-RUN-SECRET-MARKER-42`) planted directly inside a
+DIFFERENT prior real run's own on-disk workspace (`5c419830-...`, from the D-V2G8-1(a) run above) —
+confirming cross-run workspace reads are denied, not just arbitrary-host-path reads. Every deny
+response returns only a generic `path outside run workspace: <path>` message — never the target
+file's contents — and the in-workspace control case (`allow`) confirms the boundary isn't simply
+denying everything. This exercises the actual object instances the real, currently-running SDK
+session was constructed with (not a separate/rewritten copy), working around — not re-litigating —
+the accepted D-F11 model-capability gap that prevents the local model from triggering this path via
+its own free choice today.
+
+### D-V2G8-2 — bounded-budget `parallel()` keeps genuine concurrency, hard ceiling still holds
+Submitted `workflow_run{budget:100000, script:"return parallel([...3x agent() calls against
+model:'local'...])"}}` against this round's own real server and polled real `workflow_status` via
+`curl` every ~0.5-0.6s:
+```
+poll t=0.0s:  agent-1 running, agent-2 running                (2 agents concurrently in flight)
+poll t=0.5s:  agent-1 running, agent-2 running
+...(7 consecutive polls, ~1.9s span, both still simultaneously "running")...
+poll t=1.9s:  agent-1 done (tokens 842/41), agent-2 running
+final workflow_result: [ "...moon sentence (real)...", "...sun sentence (real)...", null ]
+```
+2 real agents (`p1`,`p2`) genuinely ran **concurrently** (both `"running"` across 7 consecutive
+polls spanning ~1.9s wall-clock) — this is the restored concurrency D-V2G8-2 targets (v1's own
+pre-fix bug collapsed `parallel()` to exactly 1 concurrent call under any bounded budget). The 3rd
+call (`p3`) correctly resolved to `null` (a real `BudgetExceededError`, swallowed by `makeParallel`
+per its documented contract) — this is the EXPECTED, hard-ceiling-holds behavior of the flat
+`total/2`-per-call reservation design (`reserve()`: 2 concurrent calls in the SAME burst can reserve
+at most `total/2 + total/2 = total` of a bounded budget before either settles, so a 3rd concurrent
+call in that same burst is always correctly capped regardless of how generous `total` is) — matches
+`run-guard.ts`'s own documented D-V2G8-2 comment exactly, and is the same residual (concurrency
+capped at 2, not unlimited) already recorded as the accepted "V4-residual, downgraded to LOW"
+backlog item in `07-review.md`'s Gate 8 closing re-review — not a new finding, confirmed for real
+here rather than left as only a source-level claim.
+
+### Config-file sync check (Gate 7.5 §4b) — 1 real drift found and fixed, security-relevant
+While preparing this round's config, cross-checked `rwe.config.example.json` against the current
+`src/gateway/claude-agent-sdk-client.ts` built-in fallback (`BUILT_IN_CORE_TOOLS = ['Read',
+'Write']`, D-V2G8-1(b)) and DEPLOY.md §1c's own "安全模型" prose (both correctly describe the
+Bash-off-by-default behavior). **Found a real, security-relevant drift**: `rwe.config.example.json`
+itself still shipped `"defaultAllowedTools": ["Read", "Write", "Bash"]` (a leftover from before the
+D-V2G8-1(b) fix — the code's own fallback was corrected at IMPL-064/067, but the committed example
+config was never updated to match), and DEPLOY.md §1b's own JSON example snippet carried the same
+stale value. Since both README.md's and DEPLOY.md's own documented quickstart instruct `cp
+rwe.config.example.json rwe.config.json` verbatim, **every deployment that followed the documented
+steps literally re-enabled `Bash` as a default-allowed tool** for every `agent()` call with no
+explicit `agentType`/`opts.allowedTools` — silently undoing D-V2G8-1(b)'s intended default-surface
+hardening on the one path (the committed template) most real deployments actually use. **Fixed this
+round**: `rwe.config.example.json` and DEPLOY.md's JSON example both changed to
+`"defaultAllowedTools": ["Read", "Write"]` (matching the code's own built-in fallback and §1c's
+documented behavior); DEPLOY.md §1b gained an explanatory blockquote recording this finding+fix
+(not a silent patch). No other config/settings file needed a change; `Bash` remains fully available
+via explicit per-`agentType`/per-call opt-in, unaffected by this fix.
+
+### VAL-019 — D-V2G8-1(a)(b): real spawned CLI argv confirms no bypassPermissions, no Bash-by-default
+- **status:** green
+- **traces:** REQ-003
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `ps aux` on a real spawned `claude-agent-sdk-linux-x64/claude` subprocess (pid
+  2813387) mid-flight during a real `workflow_run` agent() call shows
+  `--permission-mode default --allowedTools Read,Write --tools Read,Write` — no `bypassPermissions`,
+  no `Bash`; run completed normally (`workflow_status` → `state:"done"`, real Ollama tokens). See
+  "D-V2G8-1(a)(b)" section above for full command/output.
+- **iter:** v2
+
+### VAL-020 — D-V2G8-1(c): real provider-key custody confined to the LiteLLM proxy subprocess
+- **status:** green
+- **traces:** REQ-003
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `tr '\0' '\n' < /proc/<litellm-pid>/environ` contains the real
+  `ANTHROPIC_API_KEY=sk-ant-SECVAL-REAL-MARKER-77321` marker; `tr '\0' '\n' <
+  /proc/<agent-cli-pid>/environ` for the concurrently-running agent CLI subprocess (spawned by the
+  SAME server instance, same call) shows only `ANTHROPIC_API_KEY=sk-local-dev-dummy-not-a-real-key`
+  — the real marker never appears. See "D-V2G8-1(c)" section above for full command/output.
+- **iter:** v2
+
+### VAL-021 — D-V2G8-1(d): real workspace-boundary denial (proxy config / cross-run / /etc/hostname)
+- **status:** green
+- **traces:** REQ-003
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** the real `canUseTool`/`hooks.PreToolUse` callback objects, captured live off a
+  genuine (non-mocked) `@anthropic-ai/claude-agent-sdk` `query()` call (real subprocess spawn, real
+  Ollama round trip completed), each return `{"behavior":"deny","message":"path outside run
+  workspace: <path>"}` (never the file's contents) for the LiteLLM proxy's own `config.yaml`,
+  another real run's on-disk workspace secret file, and `/etc/hostname`; the same callback returns
+  `{"behavior":"allow"}` for a path genuinely inside the calling run's own workspace. See
+  "D-V2G8-1(d)" section above for the full transcript. Works around (does not re-litigate) the
+  accepted D-F11 model-capability gap preventing the local 7B model from triggering this path via
+  its own free choice.
+- **iter:** v2
+
+### VAL-022 — D-V2G8-2: bounded-budget parallel() keeps real concurrency, hard ceiling still holds
+- **status:** green
+- **traces:** REQ-002
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** real `workflow_run{budget:100000, script:"parallel([...3 agent() calls...])"}}`
+  against real Ollama — `workflow_status` polled via real `curl` shows 2 agents (`p1`,`p2`)
+  simultaneously `"running"` across 7 consecutive polls (~1.9s span); 3rd call (`p3`) resolves to
+  `null` in the final `workflow_result` array (real `BudgetExceededError`, swallowed by
+  `makeParallel`, per contract) — concurrency restored from the v1-era collapse-to-1 while the hard
+  ceiling still holds (an already-accepted "capped at 2" residual, per `07-review.md`'s Gate 8
+  closing re-review V4-residual entry — confirmed for real here, not a new finding). See
+  "D-V2G8-2" section above for the full poll transcript.
+- **iter:** v2
+
+### Shutdown (documented steps only)
+```bash
+kill -TERM <node-pid>          # real SIGTERM to the real gateway:"sdk" instance
+```
+Both the Node process and the managed `litellm` subprocess confirmed gone from `ps aux` within 2s —
+re-confirms TASK-027's orphan-reap fix still holds after this round's changes (no regression from
+the config-example edit above, which touches no `src/`).
+
+### Docs written this round
+- `rwe.config.example.json` — `defaultAllowedTools` corrected from `["Read","Write","Bash"]` to
+  `["Read","Write"]` (security-relevant config-doc drift, see "Config-file sync check" above).
+- `DEPLOY.md` — §1b JSON example corrected to match; new explanatory blockquote recording the
+  finding+fix under §1b. No README.md change needed this round (README's own JSON prose never
+  hardcoded the Bash value in the first place — only the committed example file and DEPLOY.md's
+  JSON snippet did).
+
+## v2 ROUND 3 — fresh independent validator dispatch: full real re-run + config-sync check (GATE PASSED)
+
+**Scope**: this round's dispatch instructions re-mandate validating REQ-008/009/010/011/015 for
+real, re-verifying the D-V2V-1/D-V2V-2 fixes (mcp-config wiring, skill materialization, dashboard
+live-update), the recursion guard, and the D-V2V-3 environment gap — plus a fresh config-file sync
+check. Rather than trust ROUND 2's narrative, this round independently re-ran every check against
+a brand-new real server process, own commands, own evidence. v1 (REQ-001..007/013/014) stays
+FROZEN, re-verified only via the standing full regression suite.
+
+### Boot (documented steps only — this round's own commands)
+```bash
+node --version                                 # v22.22.3, matches documented requirement
+npx vitest run                                 # full regression, see below
+export PATH="$HOME/.local/bin:$HOME/.rwe-litellm-venv/bin:$PATH"
+RWE_PORT=8910 bash scripts/smoke.sh            # real smoke, exit 0
+# real boot for REQ-008/009 checks (bind 0.0.0.0, gateway:"sdk", real Ollama qwen2.5:7b via `local`):
+RWE_CONFIG_PATH=/tmp/rwe-val-config.json npm run start   # (config: bind 0.0.0.0, port 8920, workRoot /tmp/rwe-val-data)
+```
+No undocumented step was needed to bring the system up — every command above is exactly what
+README.md's quickstart / DEPLOY.md §1-§2 already document.
+
+### Regression (this round, fresh, full suite)
+```
+$ npx vitest run
+ Test Files  2 failed | 94 passed (96)
+      Tests  2 failed | 354 passed (356)
+```
+The 2 failures are the same documented pre-existing items every round has recorded: IT-015
+(`tests/integration/claude-agent-sdk-session.test.ts`, environment-specific real-tool-use-vs-
+local-model defect) and IT-024 (`tests/integration/in-flight-agent-state.test.ts`, ~1-in-6
+real-subprocess-IPC-race flake). Re-ran IT-024's file standalone immediately after: 1/1 pass,
+confirming it is the same pre-existing timing flake, not a new regression. **No new regression.**
+
+### REQ-008 (dashboard) — fresh real re-verification
+Booted a real server on port 8920 (`bind:"0.0.0.0"`, `gateway:"sdk"`, real Ollama `qwen2.5:7b` via
+the `local` alias, real managed `litellm[proxy]` subprocess). `curl http://127.0.0.1:8920/dashboard`
+→ real `200`, `text/html`, real `<title>Remote Workflow Engine — Dashboard</title>`, real client JS
+(`fetch('/api/runs')`, `setInterval(refresh, 3000)`) present verbatim in the served bytes.
+**Live-update-without-reload**: `curl /api/runs` → 1 run; submitted a new `workflow_run` via a
+separate call; re-`curl /api/runs` with the same idle client, zero reload/rebuild action → 2 runs,
+the new one present. Confirmed real, no regression from ROUND 2.
+
+### REQ-009 (asset sync + recursion guard) — fresh real re-verification, own new evidence
+1. Pushed a real `skill` asset (`demo-skill-selfcheck`, marker `MARKER-SELFCHECK-9911`) and a real
+   `mcp-config` asset (`demo-mcp-selfcheck`, `{"type":"http","url":"https://example.com/"}`) via
+   real `asset_push` HTTP calls (correct request shape: `files:[{path,contentB64}]`) — both
+   `stored`, confirmed on disk under `/tmp/rwe-val-data/assets/`.
+2. Submitted a real `workflow_run` with `script:"return agent(\"Say hello briefly.\", {label:\"a1\",
+   model:\"local\"});"`. While in flight, read the spawned CLI subprocess's own argv straight off
+   the live OS process table (`ps aux`, not source-reading):
+   ```
+   .../claude-agent-sdk-linux-x64/claude --output-format stream-json --verbose
+     --input-format stream-json --thinking disabled --model local
+     --permission-prompt-tool stdio --allowedTools Read,Write,Bash --tools Read,Write,Bash
+     --mcp-config {"mcpServers":{"demo-mcp-selfcheck":{"type":"http","url":"https://example.com/"}}}
+     --setting-sources=project --strict-mcp-config --permission-mode default
+   ```
+   The pushed mcp-config genuinely reached the real spawned subprocess's own `--mcp-config` flag.
+3. After completion, confirmed on disk: `/tmp/rwe-val-data/workflows/_adhoc/runs/<runId>/.claude/
+   skills/demo-skill-selfcheck/SKILL.md` — byte-identical to the pushed content (`cat` confirmed
+   `MARKER-SELFCHECK-9911` present). `workflow_status` showed `agents:[{state:"done",
+   provider:"claude-agent-sdk",model:"local",tokens:{input:1546,output:20}}]` — run completed
+   successfully, no regression from asset materialization.
+4. **Recursion guard (D4), fresh repro against this round's own instance**: pushed the actual
+   `plugin/skills/rwe-remote-workflow/SKILL.md` content under its own real name →
+   `{"stored":[],"excluded":[{"name":"rwe-remote-workflow","reason":"self-referential (D4): points
+   at this server or matches the reserved rwe-* identity"}]}`; pushed a real `mcp-config` pointing
+   at this exact server's own bind/port (`http://0.0.0.0:8920/mcp`) → same exclusion, same reason.
+   Confirmed via `find /tmp/rwe-val-data/assets` that neither was ever written to disk (only the 2
+   legitimate demo assets present).
+
+### REQ-010 (client plugin) — fresh real re-verification
+Copied `plugin/.mcp.json` (URL edited to `http://127.0.0.1:8920/mcp`) into a scratch project
+directory, ran the real, independently-installed Claude Code CLI (`claude mcp list`) from that
+directory → real output line: `remote-workflow-engine: http://127.0.0.1:8920/mcp (HTTP) - ⏸ Pending
+approval (run \`claude\` to approve)` — identical real-client-recognition result to prior rounds,
+no regression.
+
+### REQ-011 (deploy) — fresh real re-verification + environment gap re-confirmed
+- `RWE_PORT=8910 bash scripts/smoke.sh` → real pass, exit 0 (`[smoke] PASS: sample workflow
+  completed with result=42`).
+- **Orphan-reap / graceful shutdown (TASK-027)**: sent a real `SIGTERM` to this round's own real
+  `gateway:"sdk"` instance (with its own real managed `litellm[proxy]` subprocess). Both the Node
+  process (`tsx src/main.ts`) and the `litellm` subprocess confirmed **gone from `ps aux` within 2s**
+  of the signal — no orphan. This directly reproduces and re-confirms VAL-011's prior-round claim
+  with this round's own independent evidence.
+- `which docker` → not found (exit 1); `sudo -n true` → fails (exit 1) — **docker/sudo remain
+  genuinely unavailable in this sandbox, D-V2V-3 environment gap re-confirmed unchanged, not
+  re-litigated, not silently dropped.** `python3 -c "import yaml; yaml.safe_load(open('docker-
+  compose.yml'))"` → parses cleanly (syntax-valid). `systemd-analyze verify deploy/rwe.service` (as
+  shipped) → fails on `/usr/bin/npm is not executable` (this sandbox's Node is a per-user install,
+  not system-wide) — the exact same pre-existing, documented, non-code environment mismatch every
+  prior round recorded; unchanged.
+
+### REQ-015 (execution modes) — not re-run this round (no code change since ROUND 1/2's real-time
+repro); covered by this round's fresh full-suite regression (`tests/e2e/cron-schedule-lifecycle.
+test.ts`, `tests/e2e/resident-trigger.test.ts` both green) and by this round's own server boot (the
+scheduler's `Ticker` runs inside the same process validated above for REQ-008/009).
+
+### Config-file sync check (Gate 7.5 §4b) — 1 real drift found and fixed
+While re-verifying REQ-011's orphan-reap claim for real, cross-checked it against README.md/
+DEPLOY.md's own known-limitations prose and found a genuine, pre-existing documentation drift
+(not introduced this round, but never caught by any prior validation round): `src/main.ts`'s
+`composeConfig()` forwards a `litellmPort` config key (added under v2 TASK-027, `tests/unit/
+compose-config-v2-wiring.test.ts` UT-033 green) into `LiteLLMProxyManager(aliases,
+{port: fileConfig.litellmPort})` — this key genuinely lets each deployed instance choose its own
+LiteLLM port instead of the fixed default `4000`. But README.md's v1 known-limitations §8 and
+DEPLOY.md's §1/§4/§6/troubleshooting-table text still asserted "`LiteLLMProxyManager` 固定使用 4000
+port（不可設定）" ("fixed at 4000, not configurable") and "正常關機也不會停止它" ("graceful shutdown
+does not stop it") — both claims are now **false**, since (a) TASK-027's orphan-reap fix (already
+real-verified above, this round and prior rounds) makes graceful shutdown genuinely kill the
+subprocess, and (b) `litellmPort` makes the port itself configurable. **Fixed this round**:
+updated README.md (v1 known-limitations §8, strikethrough + correction) and DEPLOY.md (§1
+prerequisites note, §1b config table + a new explanatory paragraph, §2 deploy-steps comment, §4
+rollback comment, §6 known-limitations items 7/8, the troubleshooting table row, and the v1.1
+backlog line) to state the corrected, real-verified behavior and document `litellmPort`/
+`schedulerDbPath`/`assetRoot` as the 3 v2-added optional config keys (all already covered by
+UT-033's composition-root wiring test per standing rule 1 — no new test needed, just doc catch-up).
+No config/template file itself needed a schema change (`litellmPort`/`schedulerDbPath`/`assetRoot`
+all have working defaults, matching UT-033's own default-fallback assertions) — this was purely a
+docs-vs-reality drift, now closed.
+
+### Docs written this round
+- `README.md` — v1 known-limitations §8 corrected (was stale/false, claimed litellm port
+  non-configurable and graceful-shutdown-doesn't-reap; both fixed in v2 TASK-027, now documented
+  accurately).
+- `DEPLOY.md` — §1 prerequisites note, §1b config table (added the 3 v2 optional keys +
+  explanatory paragraph), §2 deploy-steps comment, §4 rollback comment, §6 known-limitations items
+  7/8, troubleshooting table row, and the v1.1 backlog line all corrected to match the real,
+  re-verified TASK-027 behavior.
+
+### v2.1 backlog (carried forward, unchanged from ROUND 1/2 — no new non-blocking items this round)
+See ROUND 1/2 sections below for the full list (schedule_update tool, useLiteLLMProxy forwarding
+gap, recursion-guard rejection-message clarity, static HTML/JS front-end — already shipped as
+`/dashboard` — and the v1.1 backlog items minus the now-closed litellm-port item).
+
+## v2 ROUND 2 — re-verification of D-V2V-1/D-V2V-2 fixes + no-regression smoke (GATE PASSED)
+
+**Scope, per this round's binding instructions**: re-verify for real (1) an accepted mcp-config
+asset reaching a real agent call, (2) a pushed skill invocable by a later run's agent, (3) the
+`/dashboard` HTML page live-updating in a real boot, (4) the recursion guard still excludes this
+system's own assets end-to-end, and (5) a documented smoke check proving no regression on
+REQ-010/011/015 (already real:true green since round 1, not re-litigated in full). D-V2V-3
+(docker/systemd environment gap) is an ACCEPTED decision, not re-raised. v1 (REQ-001..007/013/014)
+stays FROZEN.
+
+### Boot (documented steps only)
+```bash
+npm install                                    # real, 0 errors
+export PATH="$HOME/.local/bin:$HOME/.rwe-litellm-venv/bin:$PATH"   # uv + pinned Python 3.12 litellm venv, reused from prior rounds (already provisioned in this sandbox)
+cp rwe.config.example.json rwe.config.json     # then edited per-test (bind/port/workRoot/aliases)
+RWE_CONFIG_PATH=./rwe.config.json npm run start
+```
+No undocumented step was needed. Server booted real (`gateway:"sdk"`, real managed `litellm[proxy]`
+Python subprocess, real local Ollama `qwen2.5:7b` via the `local` alias), bound `0.0.0.0:8901`,
+confirmed via `curl` from a separate shell and `ps aux` (the actual delivery interface, not
+vitest's in-process harness).
+
+### REQ-009 re-verification — mcp-config wiring (D-V2V-1), real external evidence, no source-reading required
+
+1. Pushed a real `skill` asset (`demo-skill-v2r2`, a distinctive marker file) and a real
+   `mcp-config` asset (`demo-mcp-v2r2`, `{"type":"http","url":"https://example.com/"}`) via real
+   `asset_push` HTTP calls — both `stored`, confirmed on disk under `$workRoot/assets/`.
+2. Submitted a real `workflow_run` with one `agent()` call (`model:"local"`). While it was in
+   flight, inspected the actual OS process table (`ps aux`) for the spawned CLI subprocess (the
+   real `@anthropic-ai/claude-agent-sdk-linux-x64/claude` binary, not this product's own code) and
+   observed its own real command-line arguments, unedited:
+   ```
+   .../claude-agent-sdk-linux-x64/claude --output-format stream-json --verbose
+     --input-format stream-json --thinking disabled --model local
+     --allowedTools Read,Write,Bash --tools Read,Write,Bash
+     --mcp-config {"mcpServers":{"demo-mcp-v2r2":{"type":"http","url":"https://example.com/"}}}
+     --setting-sources=project --strict-mcp-config --permission-mode bypassPermissions
+   ```
+   This is the strongest possible external confirmation available in this environment: the pushed
+   `mcp-config` asset genuinely reached the real spawned client subprocess's own `--mcp-config` CLI
+   flag, `--setting-sources=project` (not the legacy `[]`), `--strict-mcp-config` preserved — none
+   of this was inferred from reading `src/`, it was read directly off the live OS process's own
+   argv via `ps aux` (confirmed `@anthropic-ai/claude-agent-sdk`'s own `sdk.mjs` really does pass
+   `mcpServers`/`settingSources`/`strictMcpConfig` through to these exact flags —
+   `grep -o mcp-config node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs`).
+3. After the run reached `status:"completed"`, inspected the run's own real workspace directory on
+   disk: `$workRoot/workflows/_adhoc/runs/<runId>/.claude/skills/demo-skill-v2r2/SKILL.md` existed,
+   byte-identical to the pushed content (marker string `RWE-V2R2-SKILL-MARKER-8842` confirmed
+   present via `cat`) — the pushed skill was genuinely MATERIALIZED into that specific run's own
+   workspace, not a shared/global location, before the agent call executed.
+   `workflow_status` showed `agents:[{agentId:"agent-1",state:"done",provider:"claude-agent-sdk",
+   model:"local",tokens:{input:1557,output:8}}]` — the call completed successfully with the new
+   wiring active (no regression from the asset materialization step).
+4. **Not re-litigated from round 1** (still accepted, unchanged): whether the local 7B Ollama model
+   actually elects to invoke a tool exposed through the pushed mcp-config is the pre-existing
+   D-F11 model-capability-tier gap (accepted, not a code defect) — REQ-009's own acceptance clauses
+   are about the asset reaching the agent's available surface, which is now real-confirmed at the
+   process-argv level above, independent of whether a 7B model chooses to use it.
+
+**REQ-009 clauses 1 ("a subsequent workflow's agents can invoke that skill") and 2 ("agents in
+later runs can call its tools") are now MET at the real tier** — VAL-017 flips green/pass below.
+
+### Recursion guard (D4) — re-verified end-to-end against this round's own real running instance
+
+- Pushed the actual `plugin/skills/rwe-remote-workflow/SKILL.md` file content under its own real
+  name → real HTTP response: `{"stored":[],"excluded":[{"name":"rwe-remote-workflow","reason":
+  "self-referential (D4): points at this server or matches the reserved rwe-* identity"}]}` —
+  confirmed NOT written to disk (`find $workRoot/assets -type d` shows no `rwe-remote-workflow`
+  dir at all, only the 2 legitimate demo assets above).
+- Pushed a real `mcp-config` pointing at this exact server's own real bind/port
+  (`{"type":"http","url":"http://0.0.0.0:8901/mcp"}`) → same exclusion, same reason, matched by
+  URL this time — also confirmed not written to disk.
+- Pushed the actual `plugin/.mcp.json` wrapper file (Claude Code's own nested
+  `{"mcpServers":{...}}` shape) → excluded for a different, also-safe reason (`"unsupported MCP
+  transport: not server-runnable..."` — the nested wrapper shape doesn't match the flat
+  `{type,url}` `isSelfReferential` parses) — **never silently accepted either way**.
+- Because excluded assets are never written under `assetRoot`, `materializeAssets()`/
+  `readMcpConfigAssets()` (the very functions this round's REQ-009 fix reads from) have nothing to
+  read for this system's own identity — the recursion guard closes the loop end-to-end: guard →
+  storage → agent-wiring, not just the guard in isolation.
+
+### REQ-008 re-verification — browser dashboard live-update (D-V2V-2)
+
+- `curl http://127.0.0.1:8901/dashboard` → real `200`, `text/html`, contains `<html`, a real
+  `<title>Remote Workflow Engine — Dashboard</title>`, and the page's own client JS
+  (`fetch('/api/runs')`, `setInterval(refresh, 3000)` — confirmed present verbatim in the served
+  bytes, not injected by this validator).
+- `curl http://127.0.0.1:8901/dashboard/<runId>` → real `200`, same SPA page (client-side routing,
+  no server-side per-run render, matching the reviewed design).
+- **Live-update-without-reload demonstration**: fetched `/api/runs` (1 run), submitted a brand-new
+  `workflow_run` via a separate call, re-fetched `/api/runs` with the exact same idle HTTP client
+  (simulating what the page's own `setInterval(refresh,3000)` does) → 2 runs, the new one present —
+  confirmed the transport the page's own JS polls against genuinely updates with no rebuild/reload
+  action of any kind.
+- Environment tier actually achieved (per the binding environment note): no headless browser is
+  installed in this sandbox (`npx playwright` requires a package install this environment does not
+  have pre-provisioned) — this round's evidence is at the **curl + DOM-content-assertion tier**
+  (byte-exact HTML/JS source inspection + the underlying live-polling transport proven to update),
+  not a literal rendered-pixels/DOM-executed-JS browser session. This is the same tier round 1 used
+  for the JSON API and is stated honestly here, not silently upgraded to "browser-verified".
+
+### REQ-010/011/015 — documented smoke check (no re-litigation; already real:true green since round 1)
+
+- **REQ-010 (client plugin)**: re-ran the exact round-1 client-side check against THIS round's own
+  real server instance — copied `plugin/.mcp.json` (url edited to `http://127.0.0.1:8901/mcp`)
+  into a scratch project dir, ran the real, independently-installed Claude Code CLI:
+  `claude mcp list` → `remote-workflow-engine: http://127.0.0.1:8901/mcp (HTTP) - ⏸ Pending
+  approval (run \`claude\` to approve)` — identical real-client-recognition result, no regression.
+- **REQ-011 (deploy)**: `RWE_PORT=8905 bash scripts/smoke.sh` → real pass, exit 0 (`[smoke] PASS:
+  sample workflow completed with result=42`). Sent a real `SIGTERM` to a real `gateway:"sdk"`
+  instance (with its own real managed `litellm` subprocess running) — both the Node process and
+  the `litellm` subprocess confirmed gone from `ps aux` within 2s of the signal — orphan-reap
+  (TASK-027) still holds, no regression. `docker`/`sudo` remain genuinely unavailable in this
+  sandbox — **D-V2V-3 environment gap re-confirmed unchanged, not re-litigated, not silently
+  dropped** (docker-compose.yml/deploy/rwe.service unchanged since round 1, no new content to
+  re-validate).
+- **REQ-015 (execution modes)**: not re-run this round (no code in scheduler.ts/scheduler-engine.ts
+  changed since round 1's real-time cron/one-shot/resident verification) — covered by the fresh
+  full-suite regression below (`e2e/cron-schedule-lifecycle.test.ts`, `e2e/resident-trigger.test.ts`
+  both green) and by this round's boot proving the server (which the scheduler's `Ticker` runs
+  inside) starts and stays up cleanly.
+
+### Regression (this round, fresh, full suite)
+```
+$ npx vitest run
+ Test Files  2 failed | 90 passed (92)
+      Tests  2 failed | 341 passed (343)
+```
+The 2 failures are `tests/integration/claude-agent-sdk-session.test.ts` (IT-015, the SAME
+pre-existing documented environment-specific real-tool-use-vs-local-model defect every round since
+round 3 has recorded) and `tests/integration/in-flight-agent-state.test.ts` (IT-024, the documented
+~1-in-6 real-subprocess-IPC-race flake) — re-ran IT-024's file standalone 3x immediately after,
+3/3 green, confirming it is the same pre-existing timing flake, not a new regression. **No new
+regression.** The 3 files this round's fixes touch (`val-018-dashboard-browser-ui.test.ts`,
+`asset-mcp-config-wiring.test.ts`, `asset-skill-materialization-wiring.test.ts`) all pass, both in
+the full run and standalone (3 files / 8 tests, 8/8 pass).
+
+### Config-file sync check (Gate 7.5 §4b)
+No config/settings-file schema change was needed this round — no new key, secret, default, port,
+feature flag, or dependency was introduced by the D-V2V-1/D-V2V-2 fixes (both are pure `src/`
+wiring changes against already-existing config keys: `assetRoot`, already forwarded by
+`composeConfig()` since round 1). `rwe.config.example.json` re-confirmed unchanged/correct.
+Re-confirmed (not re-litigated as new): the v2.1-backlog `useLiteLLMProxy` forwarding gap from
+round 1 is unrelated to this round's fixes and remains a non-blocking backlog item.
+
+### Docs written this round
+- `README.md` — v2 status header updated to "GATE PASSED", REQ-009 known-limitation item's
+  strikethrough note left as-is (already correctly marked fixed at Gate 6), no new prose needed
+  beyond the status header (the D-V2V-1/D-V2V-2 fixes were already documented in the "v2 新功能"
+  section written at Gate 6 — re-confirmed accurate against this round's real repro, not rewritten).
+- `DEPLOY.md` — added this round's re-verification evidence to the existing v2 §2b block; the
+  D-V2V-3 docker/systemd environment-gap follow-up note re-confirmed unchanged.
+
+### v2.1 backlog additions this round
+(carried in addition to round 1's 5 items, unchanged)
+6. The recursion guard's "unsupported MCP transport" rejection reason (for a pushed
+   `plugin/.mcp.json`-shaped wrapper config) is technically correct/safe but could be a clearer,
+   more specific message ("nested mcpServers wrapper shape — push the inner per-server descriptor
+   instead") — a UX nicety, not a REQ-blocking gap (never silently accepted either way today).
+
+## v2 ROUND 1 — REQ-008/009/010/011/015 real-run validation (this iteration's scope)
+
+**Scope**: per the v2 iteration mandate, only REQ-008 (dashboard), REQ-009 (asset sync +
+recursion guard), REQ-010 (client plugin), REQ-011 (deploy packaging), REQ-015 (execution modes)
+are validated this round. REQ-001..007/013/014 (v1) are FROZEN — re-verified only via the
+standing regression suite (no new real-process re-run performed this round, per the binding
+instruction not to re-litigate v1). REQ-012 (v3 OIDC) stays out of scope.
+
+### Boot (documented steps only — this IS the Gate self-run)
+
+Exactly the steps in README.md's quickstart / DEPLOY.md §1-§2, run fresh in this sandbox:
+```bash
+npm install                                    # real, clean install, 0 errors
+npm ci                                         # documented alternative — also verified real, 0 errors
+curl -LsSf https://astral.sh/uv/install.sh | sh && export PATH="$HOME/.local/bin:$PATH"
+uv python install 3.12
+uv venv --python 3.12 ~/.rwe-litellm-venv
+uv pip install --python ~/.rwe-litellm-venv/bin/python "litellm[proxy]"   # already present from
+                                                                           # v1's own rounds; reused
+export PATH="$HOME/.rwe-litellm-venv/bin:$PATH"
+cp rwe.config.example.json rwe.config.json    # then edited per-test (aliases/gateway) as documented
+RWE_CONFIG_PATH=./rwe.config.json npm run start
+```
+No undocumented step was needed to bring the system up. **One doc gap found and folded into
+DEPLOY.md this round**: the shipped `deploy/rwe.service` assumes a system-wide Node install at
+`/usr/bin/npm`; a per-user Node install (nvm/`~/.local/bin`, this sandbox's own setup) needs
+`ExecStart`/`WorkingDirectory`/`User` adjusted — see REQ-011 below and DEPLOY.md §2b.
+
+### Real-run findings for REQ-008 — Web dashboard for runs and agents
+
+**status: GREEN, real:true.**
+
+Booted a real server (`gateway:"sdk"`, real Ollama `qwen2.5:7b` via the `local` alias, real managed
+`litellm[proxy]` subprocess) on port 8803. Submitted one plain completed run and three real
+`agent()` runs (one intentionally long enough to time out at the documented 15s fallback — v1
+D-G8-4 behavior re-observed, not re-litigated; two short ones that complete normally).
+
+- `curl http://127.0.0.1:8803/api/runs` → real `200`, JSON array containing every submitted run
+  (`runId`/`status`/`scriptVersion`/`createdAt`), including the just-submitted ones — confirmed 5
+  entries after 5 submissions.
+- `curl http://127.0.0.1:8803/api/runs/<id>` while an agent call was still in flight → `status`
+  already `"completed"` at t+0.1-0.2s with `agents:[]` (queued), then **polled again a few seconds
+  later with no reload action** → `agents:[{agentId:"agent-1",state:"done",
+  provider:"claude-agent-sdk",model:"local",tokens:{input:1552,output:13}}]` — the same
+  eventual-persistence-lag pattern v1 already documented, and a genuine live-update demonstration
+  (the caller only re-polls, never reloads/rebuilds anything).
+- `curl http://127.0.0.1:8803/api/runs/<id>/agents/agent-1` → real transcript:
+  `[{"kind":"message","data":{"type":"text","text":"..."}},{"kind":"usage","data":{"tokens":
+  {...},"provider":"claude-agent-sdk","model":"local"}}]` — a selected agent's transcript is
+  genuinely viewable.
+- `curl http://127.0.0.1:8803/api/runs/no-such-run-id` → real `404`;
+  `curl .../agents/no-such-agent` → real `404`.
+- `curl -X POST http://127.0.0.1:8803/api/runs` → real `405` (read-only enforced for real, matching
+  the automated `val-008-dashboard.test.ts` suite which also passed in the regression run below).
+
+**Caveat (design decision, not a new finding — recorded honestly)**: there is no HTML page/DOM to
+open in a literal browser tab — DES-018 deliberately built the dashboard as a read-only JSON REST
+transport ("one data model, two transports": the same `RunSummary[]`/`RunStatusView`/
+`TranscriptEvent[]` shapes the MCP tools already return, no parallel dashboard DTO), reviewed and
+passed at Gates 2/4/6/7. "A browser opens the dashboard URL" is satisfied in the sense that any
+HTTP client — including a browser's own `fetch()`/a future thin JS front-end — can consume this
+API; there is no separate static HTML/JS UI shipped in v2. This was an explicit, reviewed design
+choice (04-design.md DES-018, "Explicitly NOT built in v2" list), not a new v2.5 defect, so it is
+NOT treated as a REQ-008 acceptance failure here — but it is worth the user's attention if a literal
+point-and-click browser page was expected; noted below in needs_clarification.
+
+### Real-run findings for REQ-009 — Sync-upload local skills / hooks / MCP configs (recursion-guarded)
+
+**status: PARTIAL — clause 3 (recursion guard) GREEN/real:true; clauses 1 and 2 (agent can
+actually use a pushed skill / pushed MCP server) FAIL — confirmed code gap, not an environment
+limitation.**
+
+**What IS real and works (clause 3 + the storage/security half of clauses 1/2):**
+- `asset_push{kind:"skill",name:"demo-skill",files:[{path:"SKILL.md",...}]}` → real file appears
+  on disk at `$workRoot/assets/skill/demo-skill/SKILL.md` (confirmed via `find`).
+- `asset_push{kind:"hook",...}` and `asset_delete{kind:"skill",name:...}` both real-confirmed
+  (file created / file removed, `asset_list` reflects it before and after).
+- **Recursion guard (D4), real repro**: pushed the actual `plugin/skills/rwe-remote-workflow/
+  SKILL.md` content under its own real name → `{"stored":[],"excluded":[{"name":
+  "rwe-remote-workflow","reason":"self-referential (D4): points at this server or matches the
+  reserved rwe-* identity"}]}`. Pushed a flat `{"type":"http","url":"http://127.0.0.1:8801/mcp"}`
+  (this server's own real bind/port) as an `mcp-config` → same exclusion, same reason, by URL this
+  time. **Reported to the caller in both cases, never silently accepted** — REQ-009 clause 3 fully
+  confirmed real.
+- **mcp-config live-probe (DES-020/TASK-026), 4 real cases, all real network/process I/O, no
+  fakes**: (a) `{"type":"http","url":"https://example.com/"}` → accepted (`stored:
+  ["reachable-http-mcp"]`) — a genuine HTTPS HEAD request succeeded; (b)
+  `{"type":"http","url":"http://127.0.0.1:1/never-listens"}` → rejected,
+  `"MCP HTTP endpoint unreachable: fetch failed"` — a genuine failed connection attempt; (c)
+  `{"type":"stdio","command":"/bin/echo","args":["hi"]}` → rejected,
+  `"unsupported MCP transport: not server-runnable (remote-http or npx-stdio only)"` (arbitrary
+  local binaries are correctly out of scope, matches compat-spec §5); (d)
+  `{"type":"stdio","command":"npx","args":["-y","cowsay","hello"]}` → accepted after a real ~2.9s
+  `npx` spawn (genuinely downloaded/ran the package) — a real server-runnable npx-stdio kind.
+- A push whose actual literal `plugin/.mcp.json` file (the `{"mcpServers":{"remote-workflow-engine":
+  {...}}}` wrapper shape Claude Code itself writes) was pushed as an `mcp-config` → rejected as
+  `"unsupported MCP transport"` (the flat `{type,url}` shape `classifyTransport`/`isSelfReferential`
+  expect doesn't match the nested `mcpServers` wrapper) — **safe-by-default** (never silently
+  accepted), but worth the caller knowing: push the inner per-server descriptor, not the wrapping
+  client config file, to get a self-reference correctly caught by URL.
+
+**What is CONFIRMED NOT WIRED (clauses 1 and 2's own central promise) — real code-reading + a real
+attempted repro, this round's main finding:**
+- `src/gateway/claude-agent-sdk-client.ts:163-164` hard-codes `settingSources: []` (skips ALL
+  filesystem-based skill/plugin/MCP discovery for every `agent()` call, by design, for
+  determinism — a v1 decision, D-F11's own rationale) and `strictMcpConfig: true` with **no
+  `mcpServers` field ever populated** anywhere in the `Options` object passed to `query()`.
+- `src/main.ts`'s `composeConfig()` (the ONLY place `ServerConfig.assetRoot` is set,
+  `src/main.ts:112`) never reads `AssetSyncService`'s stored assets and never threads them into
+  `ClaudeAgentSdkGatewayClient`'s config at all. `grep -rn "asset" src/agent-executor.ts
+  src/run-manager.ts src/gateway/*.ts` → **zero matches** — confirmed by direct source reading, not
+  inference.
+- Consequently: a pushed skill's `SKILL.md` sits on disk under `$workRoot/assets/skill/<name>/` but
+  is in a directory `settingSources:[]` never looks at, and is **never** copied/linked into any
+  per-run agent workspace either — no code path does so. A pushed `mcp-config` (even one that
+  passes the live probe) is never added to any `agent()` call's `mcpServers` — `strictMcpConfig:
+  true` means it is unreachable regardless of what's on disk.
+- **This is the exact class of gap retro L-003 warns about for the product's own promised
+  behavior** (distinct from — and in addition to — the delivery-interface check): the feature's
+  storage+security half is real and solid; its "and then an agent can actually use it" half was
+  never built. Confirmed by direct code reading (not by mocking anything) and cross-checked against
+  every test in the repo (`tests/integration/asset-mcp-tools.test.ts`, `val-009-asset-sync.test.ts`)
+  — none of them submit a real `workflow_run` whose agent tries to invoke a pushed skill/MCP tool;
+  the test suite itself only ever asserts the storage/security half, so Gate 7's green suite could
+  not have caught this.
+
+**Recommendation (not this validator's to implement — routing back)**: wire `AssetSyncService`'s
+stored `mcp-config` entries into `ClaudeAgentSdkGatewayClient`'s per-call `Options.mcpServers`
+(dropping or scoping `strictMcpConfig`/`settingSources` accordingly for pushed skills specifically,
+without reopening the D-F11 host-contamination isolation this was built to close), and re-run this
+REQ's real-tier check once that wiring exists. This is a Gate 5/6 (design+impl) task, not a
+Gate 7.5 fix.
+
+### Real-run findings for REQ-010 — Claude Code client plugin (install + guidance skill, conflict-free)
+
+**status: GREEN, real:true.**
+
+- Structural artifact confirmed real: `plugin/.mcp.json` (valid JSON, `mcpServers.
+  remote-workflow-engine.url` = a real HTTP endpoint, key name is `"remote-workflow-engine"`, never
+  `"workflow"` — no collision with the built-in dynamic Workflow tool's own namespace) and
+  `plugin/skills/rwe-remote-workflow/SKILL.md` (reserved `rwe-*` prefix, mentions
+  `workflow_status`/`workflow_result`, i.e. teaches the async submit→poll→fetch contract).
+- **Real client-side confirmation**: copied `plugin/.mcp.json` (URL pointed at the real
+  server booted for this round, port 8803) into a scratch project directory and ran the **real,
+  installed Claude Code CLI** (`claude mcp list` / `claude mcp get remote-workflow-engine`) from
+  that directory — a genuine, independent client, not this product's own code. Output:
+  ```
+  remote-workflow-engine: http://127.0.0.1:8803/mcp (HTTP) - ⏸ Pending approval (run `claude` to approve)
+  ```
+  confirming the real client discovers and correctly parses the project-scoped `.mcp.json` this
+  plugin ships, recognizing it as an HTTP MCP server pointed at our real running instance. "Pending
+  approval" is Claude Code's own documented per-project trust gate (a security feature, requires an
+  interactive `claude` session to approve) — this validator did not attempt to bypass or
+  auto-approve it (would require altering this sandbox's own global Claude Code trust state, out of
+  scope/unsafe for a validation run), so a full live `tools/list` through an approved session was
+  not captured; the artifact-recognition + correct-shape confirmation above is the real-tier
+  evidence achieved for this specific check, noted as the boundary reached.
+- Coexistence: the plugin's MCP server key (`remote-workflow-engine`) and every tool name this
+  product exposes (`workflow_run`, `workflow_status`, ...) are namespaced under
+  `remote-workflow-engine__*` by Claude Code's own plugin convention and never literally named
+  `workflow` — structurally disjoint from the built-in dynamic Workflow tool by construction,
+  confirmed via `client-plugin-artifact.test.ts`'s own real (non-mocked, filesystem-only) assertion
+  plus this round's direct `.mcp.json` inspection.
+
+### Real-run findings for REQ-011 — Deployable on local and remote Linux
+
+**status: GREEN, real:true (docker leg is an explicit environment gap, not silently passed).**
+
+- **`scripts/smoke.sh` — real, ran to completion, exit 0**:
+  ```
+  $ RWE_PORT=8799 bash scripts/smoke.sh
+  [smoke] starting server on port 8799...
+  [smoke] server ready
+  [smoke] submitting sample workflow_run...
+  [smoke] runId=52e6087a-b7d1-44df-9d43-d5a63c56e14d
+  [smoke] PASS: sample workflow completed with result=42
+  [smoke] shutting down server (pid 2650352)...
+  ```
+- **`npm install` and `npm ci`** — both real, clean, 0 errors (documented alternative install
+  paths both work).
+- **Orphan-reap + port hardening (TASK-027, D-G8/DES-022), real repro this round**: booted a real
+  `gateway:"sdk"` instance (spawns a real managed `litellm[proxy]` subprocess on port 4000) and sent
+  a real `SIGTERM` to the main process — log showed
+  `[remote-workflow-engine] received SIGTERM, shutting down...` and **both** the Node process and
+  the `litellm` subprocess were confirmed gone from `ps aux` within 2s (no orphan). This is the
+  exact hazard v1 rounds 2-7 repeatedly found open; TASK-027's fix is now real-confirmed closed for
+  the graceful-shutdown path.
+- **`docker-compose.yml`**: `docker` is **not installed in this sandbox** (`which docker` → not
+  found) — genuinely unreachable in this environment, not silently skipped. Syntax-validated
+  instead: `python3 -c "import yaml; yaml.safe_load(open('docker-compose.yml'))"` → parses cleanly,
+  both `server`/`server-litellm` services present with the documented profile split. **Real
+  `docker compose up` was NOT run — recorded as an explicit environment gap, not a pass.**
+- **`deploy/rwe.service` (systemd unit)**: `systemd-analyze verify deploy/rwe.service` (as shipped)
+  → fails: `Command /usr/bin/npm is not executable: No such file or directory` — because **this
+  sandbox has no system-wide Node install** (Node lives at `~/.local/bin/npm` via a per-user
+  install, not `/usr/bin/npm`), not a syntax defect in the unit file itself. Confirmed by copying
+  the unit, substituting `ExecStart=/home/user/.local/bin/npm run start`,
+  `WorkingDirectory=<this repo>`, `User=user` (this sandbox's actual user) → `systemd-analyze
+  verify` then returns **exit 0, no errors/warnings**. **`sudo systemctl enable --now` was NOT run**
+  — `sudo` requires interactive authentication in this sandbox (`sudo -n true` fails) — recorded as
+  an explicit environment gap (no root available), not silently passed. **Doc gap folded into
+  DEPLOY.md this round**: the shipped unit's `ExecStart=/usr/bin/npm run start` / `User=rwe` /
+  `WorkingDirectory=/opt/remote-workflow-engine` are placeholders a real deployer must confirm/edit
+  to match their own host's actual Node install path and chosen service user/directory — this was
+  not previously spelled out.
+- Identical steps on localhost vs "remote" are the same commands either way (no localhost-only
+  shortcut exists in any of the above) — confirmed by inspection, consistent with DES-022/ARCH-014.
+
+### Real-run findings for REQ-015 — Execution modes: cron schedule, one-shot timed, resident user-triggered
+
+**status: GREEN, real:true — the most thoroughly real-time-verified REQ this round.**
+
+All against one real server instance (port 8801, `gateway:"direct-fetch"`, no LLM needed — none of
+these scripts call `agent()`), real wall-clock waits, zero `FakeTicker`/mocked time:
+
+- **Resident**: `schedule_create{kind:"resident",workflow:"sched-target",enabled:true}` →
+  `workflow_trigger{workflow:"sched-target",args:{who:"resident-2"}}` → real `runId`, polled to
+  `status:"completed"`, `result.args.who === "resident-2"` (round-trip confirmed). Disabled it
+  (`schedule_setEnabled{enabled:false}`) → `workflow_trigger` on the same workflow now returns
+  `{"error":{"code":"SCHEDULE_DISABLED",...}}` — real rejection, not a thrown exception.
+- **One-shot**: created at `now+6s` → real UTC wall-clock wait (no time mocking) → schedule_list
+  after firing shows `enabled:false`, `lastRunId` set to a real completed run — auto-complete
+  confirmed. **"T edited before firing" clause**: created schedule A at `now+120s`, deleted it
+  before it could fire, created schedule B (same workflow) at `now+4s` (the "new time") — waited;
+  only B fired (real `lastRunId`/`lastFire` on B, A never appears in `workflow_list`'s run history)
+  — confirms the outcome REQ-015 asks for ("the new time applies"), achieved via
+  delete+recreate since there is no dedicated `schedule_update` tool (see v2.1 backlog below — a
+  minor API-shape note, not a REQ-blocking gap: the observable outcome is correct).
+- **Cron, keeps firing until disabled**: created `"* * * * *"` at `00:36:10 UTC`; polled
+  `schedule_list` every 5s across two real minute boundaries — **fired for real at 00:37:00.209Z**
+  (`lastRunId:"7dcbe2b5-..."`, `nextFire` correctly advanced to `00:38:00.000Z`) **and again at
+  00:38:00.477Z** (`lastRunId:"3434c6a0-..."`, two independent real firings, no backfill storm,
+  no double-fire) — then `schedule_setEnabled{enabled:false}`, waited a further 70s past the next
+  minute boundary → confirmed it did NOT fire a 3rd time. "Keeps firing until disabled" and "stops
+  when disabled" both real-confirmed with actual wall-clock time, not `FakeTicker`.
+- Every fired/triggered run appeared in `workflow_list` exactly like a manual run (same `kind:"run"`
+  shape, same fields) — confirmed by direct inspection of the real `workflow_list` output.
+
+### Regression (this round, fresh, full suite)
+
+```
+$ npx vitest run
+ Test Files  1 failed | 88 passed (89)
+      Tests  1 failed | 332 passed (333)
+```
+The 1 failure is `tests/integration/claude-agent-sdk-session.test.ts`'s IT-015 — the SAME
+pre-existing, documented, environment-specific real-tool-use-vs-local-model test that every v1
+round from round 3 onward has recorded as an environment defect unrelated to product code (this
+round's failure message/assertion is identical to the historical one). **No new regression** — all
+89 v1 test files this suite covers stayed green except that one already-known flake/environment
+item; the 5 v2-specific test files (val-008/009/010/011/016, e2e cron/resident, IT-031..034,
+UT-027..035) all pass in this same run.
+
+### Config-file sync check (Gate 7.5 §4b)
+
+No config/settings-file schema change was needed by anything found this round. `rwe.config.
+example.json`'s keys (`bind`/`port`/`workRoot`/`timeoutMs`/`retries`/`gateway`/
+`agentDefinitionsDir`/`defaultAllowedTools`/`aliases`/`schedulerDbPath`/`assetRoot`/`litellmPort`)
+were all re-confirmed present/correct and forwarded through `composeConfig()` (per standing rule 1)
+— `schedulerDbPath`/`assetRoot`/`litellmPort` specifically are the v2-added keys and are covered by
+`compose-config-v2-wiring.test.ts` (UT). **One incidental, non-blocking discovery, NOT a v2-scope
+config change** (recorded for transparency, not re-litigated as a v1 finding, not a gate blocker):
+`composeConfig()` (`src/main.ts`) never forwards `fileConfig.useLiteLLMProxy` into the
+`ServerConfig` it builds, even though `ServerConfig.useLiteLLMProxy` exists and `FileConfig`
+structurally inherits it — so setting `"useLiteLLMProxy": false` in `rwe.config.json` currently has
+**no effect** (silently ignored) when `"gateway":"direct-fetch"` is chosen with `aliases` present;
+`createServer()`'s own `?? true` default still spins up the managed `litellm` subprocess regardless.
+Filed to the v2.1 backlog below (this is a pre-existing v1 field, discovered incidentally while
+constructing this round's REQ-008 test fixtures — not a REQ-009..015 acceptance blocker, no v2 REQ
+depends on `useLiteLLMProxy`).
+
+### Docs written this round
+- `README.md` — v2 usage examples added (dashboard, schedule_*, asset_*, workflow_trigger, plugin
+  install), quickstart unchanged (still the exact boot sequence above).
+- `DEPLOY.md` — REQ-011 §2b's existing v2 packaging section annotated with this round's real
+  evidence + the systemd `ExecStart`/`User`/`WorkingDirectory` placeholder-adjustment note + the
+  docker/sudo environment-gap notes; REQ-009's wiring gap called out explicitly as a known
+  limitation (so a deployer does not assume pushed skills/MCP configs are usable by agents today).
+
+### v2.1 backlog (non-REQ improvement ideas — per the CONVERGENCE RULE, NOT gate blockers)
+1. Wire `AssetSyncService`'s stored assets into `agent()` execution — the actual fix needed to
+   close REQ-009's clauses 1/2 (see above; this one IS a REQ-blocking gap, listed here only for
+   backlog-tracking convenience once routed back and re-validated green).
+2. Add a dedicated `schedule_update` MCP tool (edit `at`/`cron`/`args` in place) instead of relying
+   on callers to delete+recreate — the current delete+recreate achieves the REQ-015 "new time
+   applies" outcome but is a slightly awkward API shape.
+3. Fix `composeConfig()` to forward `fileConfig.useLiteLLMProxy` into `ServerConfig` (currently
+   silently dropped — pre-existing v1 field, incidental discovery this round, no v2 REQ depends on
+   it).
+4. Consider shipping a minimal static HTML/JS front-end over the existing `/api/runs*` JSON API so
+   "open the dashboard URL in a browser" has a literal point-and-click surface (current: JSON API
+   only, a documented Gate-2/4 design choice, not a defect).
+5. All 5 v1.1 backlog items carried from v1 rounds (aborted-agent-record terminal state, litellm
+   port-4000 collision, litellm mkdtemp cleanup, larger-model tool-use re-test, per-run `cwd`
+   workspace gap) — unchanged, not re-tested this round per the binding v1-freeze instruction.
+
+## v2 real-tier validation work items (this round's canonical VAL entries — supersedes the
+## `real:false` placeholders these same IDs carried in 05-tests.md since Gate 5)
+
+### VAL-008 — Dashboard: read-only HTTP API returns RunStatusView per REQ-008 (REQ-008)
+- **status:** green
+- **traces:** REQ-008, DES-018, ARCH-011
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v2
+- **validator (v2 round 1):** real independent server process (`gateway:"sdk"`, real Ollama +
+  real managed `litellm` subprocess, port 8803). `GET /api/runs` real 200 with all 5 submitted
+  runs; `GET /api/runs/<id>` drill-down real phase/agent tree, live-updates across re-polls with no
+  reload action (agent state `running`→`done` observed converging as the store catches up);
+  `GET /api/runs/<id>/agents/<aid>` real transcript (`message`+`usage` events); 404 for
+  non-existent run/agent; `POST /api/runs` real 405 (read-only enforced). See "Real-run findings
+  for REQ-008" above for the full transcript/evidence. Automated test file
+  (`tests/acceptance/val-008-dashboard.test.ts`) also green in this round's fresh regression run.
+- **validator (v2 round 3), fresh independent re-check:** brand-new real server (port 8920,
+  `bind:"0.0.0.0"`) — `GET /api/runs` real 200; live-update-without-reload re-confirmed with own
+  fresh evidence (1 run → submitted new run → re-polled same client → 2 runs). No regression.
+
+### VAL-009 — Asset sync: push/list/delete/recursion-guard/path-safety per REQ-009 (REQ-009)
+- **status:** green
+- **traces:** REQ-009, DES-019, DES-020, ARCH-012
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v2
+- **validator (v2 round 1):** every case this test file itself defines is real-confirmed: real
+  `asset_push`/`asset_list`/`asset_delete` (skill + hook kinds) writing/removing real files under
+  `$workRoot/assets/`; real recursion-guard exclusion (this system's own plugin skill content +
+  its own real bind/port as a self-mcp-config), reported not silent; real path-traversal rejection;
+  4 real mcp-config live-probe cases (accept-reachable-http, reject-unreachable-http,
+  reject-unsupported-transport, accept-real-npx-stdio-spawn). **This VAL item's own defined test
+  scope is fully real-verified green — see VAL-017 below for a validator-discovered acceptance-
+  clause gap that goes BEYOND this test file's own scenarios (REQ-009's "agent can use the pushed
+  asset" clauses), which is NOT met and is tracked separately so it cannot be masked by this item's
+  own legitimate green.**
+- **validator (v2 round 3), fresh independent re-check:** own fresh `asset_push` (skill + mcp-config
+  kinds) against a brand-new real server instance (port 8920), own fresh recursion-guard repro
+  (this system's own `plugin/skills/rwe-remote-workflow/SKILL.md` + a self-mcp-config both excluded,
+  reported, confirmed not written to disk via `find`). No regression.
+
+### VAL-017 — REQ-009 clauses 1/2: a pushed skill/MCP-config must be usable by a subsequent agent() call
+- **status:** green
+- **traces:** REQ-009
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v2
+- **validator (v2 round 1), original finding (PRESERVED FOR HISTORY):** confirmed by direct source
+  reading (not mocking, not inference) that no code path threads `AssetSyncService`'s stored
+  skills/mcp-configs into any `agent()` call: `src/gateway/claude-agent-sdk-client.ts:163-164` sets
+  `settingSources: []` (no filesystem skill/plugin discovery) and `strictMcpConfig: true` with
+  `mcpServers` never populated anywhere; `src/main.ts`'s `composeConfig()` (the sole place
+  `ServerConfig.assetRoot` is read, line 112) never reads `AssetSyncService`'s contents or forwards
+  them into the gateway config; `grep -rn asset src/agent-executor.ts src/run-manager.ts
+  src/gateway/*.ts` → zero matches. A pushed skill lands on disk (VAL-009 above) but sits in a
+  directory nothing ever reads at agent-invocation time; a pushed, probe-accepted mcp-config is
+  never added to any `agent()` call's tool surface. Routed back to Gate 5/6 under the binding
+  D-V2V-1 ORCH ruling.
+- **validator (v2 round 2), FIXED + RE-VERIFIED FOR REAL (2026-07-04):** Gate 6 wired
+  `AssetSyncService`'s stored assets into `ClaudeAgentSdkGatewayClient.invoke()` (IMPL-062):
+  `readMcpConfigAssets()` reads every stored `mcp-config` fresh off disk into
+  `Options.mcpServers` on every call (`strictMcpConfig: true` unchanged); `materializeAssets()`
+  copies every stored `skill`/`hook` into `<run workspace>/.claude/skills|hooks/<name>/` before the
+  call, `cwd` re-scoped to that workspace, `settingSources` becomes `['project']`. Re-verified for
+  real, no source-reading required: pushed a real `mcp-config` (`demo-mcp-v2r2`) + real `skill`
+  (`demo-skill-v2r2`) asset via real `asset_push`, submitted a real `workflow_run` with one
+  `agent()` call, and while the real spawned CLI subprocess was in flight read its OWN command-line
+  arguments straight off the live OS process table (`ps aux`):
+  `--mcp-config {"mcpServers":{"demo-mcp-v2r2":{"type":"http","url":"https://example.com/"}}}
+  --setting-sources=project --strict-mcp-config` — the pushed mcp-config genuinely reached the real
+  client subprocess's own invocation. After completion, confirmed
+  `$workRoot/workflows/_adhoc/runs/<runId>/.claude/skills/demo-skill-v2r2/SKILL.md` exists on disk
+  with the exact pushed marker content, inside THAT specific run's own workspace (not a shared/
+  global location). Run completed `status:"completed"`, `agents:[{state:"done",...}]` — no
+  regression from the new wiring. **REQ-009's clauses 1 and 2 are now MET at the real tier.** (Not
+  re-litigated: whether the local 7B Ollama model itself elects to invoke a tool through the now-
+  reachable mcp-config surface is the pre-existing, accepted D-F11 model-capability-tier gap — a
+  separate question from "does the asset reach the agent's surface", which is what this REQ's
+  acceptance clauses ask and what this item now confirms real.) Full evidence in "## v2 ROUND 2"
+  above.
+- **validator (v2 round 3), fresh independent re-check, own new evidence:** pushed a fresh
+  `mcp-config`/`skill` pair against a brand-new real server instance (port 8920), submitted a fresh
+  `workflow_run` with an `agent()` call, read the spawned CLI subprocess's own argv off `ps aux`
+  (own fresh command output, not copied from ROUND 2) — confirmed the same real
+  `--mcp-config {...} --setting-sources=project --strict-mcp-config` wiring, and confirmed the
+  pushed `SKILL.md` materialized byte-identical inside that specific run's own workspace. No
+  regression. Full evidence in "## v2 ROUND 3" above.
+
+### VAL-018 — Literal browser-renderable dashboard page at GET /dashboard (D-V2V-2, REQ-008)
+- **status:** green
+- **traces:** REQ-008, DES-018
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v2
+- **validator (v2 round 2), new canonical item (fix verified same round as its own route-back —
+  no prior round's red carried in this file; 05-tests.md's own test-authoring copy shows the RED→
+  GREEN history):** real `GET /dashboard` against this round's real running server instance →
+  `200`, `text/html`, real `<html`/`<title>` content, client JS containing `fetch('/api/runs')` +
+  `setInterval(refresh, 3000)` (verbatim in the served bytes). `GET /dashboard/<runId>` → real
+  `200`, same SPA page (client-side routing). **Live-update-without-reload**: polled `/api/runs`
+  (the exact endpoint the page's own JS calls) before and after submitting a new `workflow_run`
+  with the same idle client, with zero reload/rebuild action — run count changed 1→2, new run
+  present. Environment tier actually achieved: curl + DOM-content-assertion (byte-exact HTML/JS
+  inspection + the live-polling transport proven to update) — no headless browser was available in
+  this sandbox to capture a literal rendered/executed-JS session; stated honestly, not silently
+  upgraded. Full evidence in "## v2 ROUND 2" above.
+- **validator (v2 round 3), fresh independent re-check:** own fresh `curl GET /dashboard` against a
+  brand-new real server instance (port 8920) — same real `200`/`<title>`/client-JS content; same
+  environment tier (curl + DOM-content-assertion, no headless browser available). No regression.
+
+### VAL-010 — Client plugin artifact satisfies REQ-010 install contract (REQ-010)
+- **status:** green
+- **traces:** REQ-010, DES-021, ARCH-013
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v2
+- **validator (v2 round 1):** artifact checks (`plugin/.mcp.json` valid JSON, real HTTP URL, no
+  `'workflow'` namespace collision; `plugin/skills/rwe-remote-workflow/SKILL.md` present, mentions
+  the async contract) re-confirmed. **Additionally, this round, a genuine independent real Claude
+  Code CLI client** (`claude mcp list` / `claude mcp get`, run from a scratch project directory
+  with the plugin's `.mcp.json` copied in, URL pointed at this round's real running server) —
+  real output: `remote-workflow-engine: http://127.0.0.1:8803/mcp (HTTP) - ⏸ Pending approval`,
+  confirming a real, independent client correctly discovers/parses this artifact. Full live
+  `tools/list` through an approved session not captured (would require altering this sandbox's own
+  global Claude Code trust state — out of scope for a validation run); noted as the real-tier
+  boundary reached, not silently passed further than it was.
+- **validator (v2 round 2), no-regression smoke re-check:** re-ran the identical real-client check
+  against this round's own fresh real server instance (port 8901) — `claude mcp list` → same real
+  output shape (`remote-workflow-engine: http://127.0.0.1:8901/mcp (HTTP) - ⏸ Pending approval`).
+  No change/regression. Not re-litigated further per the binding convergence rule.
+- **validator (v2 round 3), fresh independent re-check:** own fresh `claude mcp list` run from a
+  scratch directory against this round's own server (port 8920) — same real output shape
+  (`remote-workflow-engine: http://127.0.0.1:8920/mcp (HTTP) - ⏸ Pending approval`). No regression.
+
+### VAL-011 — Deploy packaging artifacts satisfy REQ-011 production criteria (REQ-011)
+- **status:** green
+- **traces:** REQ-011, DES-022, ARCH-014
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v2
+- **validator (v2 round 1):** `scripts/smoke.sh` run for real end-to-end, exit 0 (real boot, real
+  `workflow_run`→`workflow_status`→`workflow_result`, real shutdown). `npm install`/`npm ci` both
+  real, clean. Orphan-reap + graceful-shutdown cascade-kill of the managed `litellm` subprocess
+  (TASK-027) real-confirmed via a genuine `SIGTERM` to a real `gateway:"sdk"` instance — both
+  processes gone within 2s, no orphan. `docker-compose.yml` syntax-validated (real YAML parse);
+  `docker compose up` NOT run — `docker` is not installed in this sandbox, an explicit environment
+  gap (not silently passed). `deploy/rwe.service` — `systemd-analyze verify` on the shipped file
+  fails only because this sandbox has no system-wide Node (`/usr/bin/npm` doesn't exist here); with
+  `ExecStart`/`WorkingDirectory`/`User` adjusted to this sandbox's real paths, `systemd-analyze
+  verify` returns real exit 0 with no warnings — confirms the unit's own syntax/semantics are
+  sound. `sudo systemctl enable --now` NOT run — no root/sudo available in this sandbox
+  (`sudo -n true` fails), an explicit environment gap.
+- **validator (v2 round 2), no-regression smoke re-check:** `RWE_PORT=8905 bash scripts/smoke.sh`
+  real pass, exit 0. Real `SIGTERM` to a fresh real `gateway:"sdk"` instance (own real managed
+  `litellm` subprocess) — both processes confirmed gone from `ps aux` within 2s, no orphan. No
+  change to `docker-compose.yml`/`deploy/rwe.service` since round 1 — D-V2V-3 environment gap
+  (docker/sudo unavailable in this sandbox) re-confirmed unchanged, not re-litigated, not silently
+  dropped.
+- **validator (v2 round 3), fresh independent re-check + config-sync finding:** `RWE_PORT=8910 bash
+  scripts/smoke.sh` real pass, exit 0. Fresh real `SIGTERM` to a brand-new real `gateway:"sdk"`
+  instance (own managed `litellm` subprocess) — both processes confirmed gone from `ps aux` within
+  2s, no orphan (own fresh evidence, not copied from prior rounds). `which docker`/`sudo -n true`
+  re-confirmed unavailable; `docker-compose.yml`/`deploy/rwe.service` unchanged, syntax re-validated
+  — D-V2V-3 environment gap re-confirmed unchanged, not re-litigated. **Additionally found (via
+  Gate 7.5 §4b config-sync check) and fixed a real documentation drift**: README.md/DEPLOY.md's
+  known-limitations prose still claimed the litellm port is "fixed at 4000, not configurable" and
+  that graceful shutdown "does not stop the subprocess" — both false since v2 TASK-027 (the very fix
+  this VAL item's orphan-reap evidence already covers) added the `litellmPort` config key and made
+  graceful shutdown genuinely reap the subprocess. Corrected in README.md/DEPLOY.md this round; see
+  "## v2 ROUND 3" above for the full list of edited sections. No `src/`/test change needed —
+  `litellmPort`/`schedulerDbPath`/`assetRoot` were already covered by `tests/unit/
+  compose-config-v2-wiring.test.ts` (UT-033, standing rule 1 already satisfied).
+
+### VAL-016 — Execution modes: cron schedule / one-shot auto-complete / resident trigger (REQ-015)
+- **status:** green
+- **traces:** REQ-015, DES-016, DES-017, ARCH-010
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v2
+- **validator (v2 round 1):** real independent server process (port 8801, `gateway:"direct-fetch"`,
+  no LLM needed), real wall-clock time throughout, zero `FakeTicker`/mocked time. Resident:
+  `workflow_trigger` on enabled → real run reaches `completed` with correct `args` round-trip;
+  disabled → real `{error:{code:'SCHEDULE_DISABLED'}}`. One-shot at `now+6s` → real auto-complete
+  (`enabled:false`, real `lastRunId`); "T edited before firing" achieved via delete+recreate,
+  real-confirmed only the new time's schedule fires. Cron `"* * * * *"` — **fired for real twice**
+  across two genuine minute boundaries (`00:37:00.209Z` and `00:38:00.477Z`, each with a distinct
+  real `lastRunId`, `nextFire` correctly advancing each time, no backfill/double-fire), then
+  confirmed disabling stops further firing (waited 70s past the next boundary, no 3rd fire). Every
+  fired/triggered run appeared in `workflow_list` identically to a manual run. See "Real-run
+  findings for REQ-015" above for the exact timestamps/commands.
+- **validator (v2 round 2), no-regression check:** no code in `scheduler.ts`/`scheduler-engine.ts`
+  changed since round 1's real-time repro above — not re-run this round per the binding
+  no-re-litigation instruction. Covered by this round's fresh full-suite regression
+  (`tests/e2e/cron-schedule-lifecycle.test.ts`, `tests/e2e/resident-trigger.test.ts` both green)
+  and by this round's own server boot (the scheduler's `Ticker` runs inside the same process that
+  booted cleanly for the REQ-008/009 checks above).
+
+## ROUND 7 (prior round, v1) — scoped spot re-validation of the Gate-8 closing fixes (D-G8-1..6)
 
 Dispatched as a SCOPED re-validation (not a full REQ matrix re-run — round 6 already passed the full
 matrix and those clauses are unchanged; the automated regression suite covers the rest) specifically

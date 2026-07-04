@@ -14,6 +14,13 @@ import { LiteLLMGatewayClient, type AliasMap } from './gateway/client.js';
 import type { GatewayClient } from './gateway/client.js';
 import type { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { loadAgentDefinitions } from './agent-definitions.js';
+import { SqliteSchedulerPort, type Schedule, type NewSchedule } from './scheduler.js';
+import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
+import { AssetSyncService, type AssetPush, type AssetKind } from './asset-sync.js';
+import { classifyTransport, RealMcpProbe, type McpProbe, type McpServerConfig } from './mcp-probe.js';
+import { buildDashboardModel } from './dashboard.js';
+import { DASHBOARD_HTML } from './dashboard-page.js';
+import type { RunStore } from './run-store.js';
 
 export interface ServerConfig {
   bind?: string;   // default '127.0.0.1'
@@ -31,6 +38,9 @@ export interface ServerConfig {
   useLiteLLMProxy?: boolean;
   // Injectable proxy manager (tests only) — defaults to a real LiteLLMProxyManager.
   proxyManager?: LiteLLMProxyManager;
+  // TASK-027: overrides the managed LiteLLM proxy's hard-coded default port (4000) — closes the
+  // repeatedly-Gate-7.5-reproduced port-clash hazard when something else already owns 4000.
+  litellmPort?: number;
   // D-F2: a directory of `agents/*.md` frontmatter files (compat-spec §5) loaded ONCE at startup
   // into the agentType registry AgentExecutor resolves opts.agentType against. Omitted -> empty
   // registry (every agentType is "unknown", same as before this field existed).
@@ -40,6 +50,16 @@ export interface ServerConfig {
   // ClaudeAgentSdkGatewayClient session) instead of the aliases-driven LiteLLMGatewayClient built
   // below. No existing caller sets this, so it changes nothing unless explicitly used.
   gateway?: GatewayClient;
+  // TASK-026 (DES-020): the one network dependency in asset_push's mcp-config validation, isolated
+  // behind this port. Defaults to a real probe; tests inject a FakeMcpProbe to avoid a flaky
+  // network dependency (DES-023 mock policy — real handshake/spawn only exercised at real-tier).
+  mcpProbe?: McpProbe;
+  // DES-022 (standing rule 1, UT-033): overrides the schedule store's default on-disk path
+  // (`join(workRoot, 'schedules.db')`) — same override convention as workRoot itself.
+  schedulerDbPath?: string;
+  // DES-022 (standing rule 1, UT-033): overrides the asset store's default on-disk root
+  // (`join(workRoot, 'assets')`).
+  assetRoot?: string;
 }
 
 export interface Server {
@@ -66,6 +86,16 @@ const TOOL_NAMES = [
   'workflow_agent_log',
   'workflow_register',
   'workflow_artifacts',
+  // v2 (DES-016/TASK-019): schedule CRUD + resident trigger, over the same RunManager.start path.
+  'schedule_create',
+  'schedule_list',
+  'schedule_delete',
+  'schedule_setEnabled',
+  'workflow_trigger',
+  // v2 (DES-019/TASK-021): asset sync core — recursion-guard + path-safety enforced on every push.
+  'asset_push',
+  'asset_list',
+  'asset_delete',
 ] as const;
 
 type ToolName = (typeof TOOL_NAMES)[number];
@@ -158,6 +188,79 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     description: "Lists the relative file names present in a run's on-disk workspace.",
     inputSchema: { type: 'object', properties: { runId: { type: 'string', description: 'The run whose workspace files to list.' } }, required: ['runId'] },
   },
+  schedule_create: {
+    description: 'Creates a cron, one-shot (`at`), or resident schedule for a registered workflow; validated synchronously (cron syntax / `at` timestamp / workflow existence).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', description: "One of 'cron' | 'once' | 'resident'." },
+        workflow: { type: 'string', description: 'Name of a previously registered workflow (see workflow_register).' },
+        args: { description: 'Arbitrary arguments passed to the workflow on each fire/trigger.' },
+        cron: { type: 'string', description: "5-field cron expression (kind:'cron' only)." },
+        tz: { type: 'string', description: "Optional IANA timezone (kind:'cron' only)." },
+        at: { type: 'string', description: "ISO timestamp to fire once at (kind:'once' only)." },
+        enabled: { type: 'boolean', description: 'Whether the schedule is active.' },
+      },
+      required: ['kind', 'workflow', 'enabled'],
+    },
+  },
+  schedule_list: {
+    description: 'Lists every schedule with its current enabled/nextFire/lastFire/lastRunId observability fields.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  schedule_delete: {
+    description: 'Deletes a schedule by id.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'The schedule to delete.' } }, required: ['id'] },
+  },
+  schedule_setEnabled: {
+    description: 'Enables or disables a schedule by id, without deleting it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The schedule to update.' },
+        enabled: { type: 'boolean', description: 'New enabled state.' },
+      },
+      required: ['id', 'enabled'],
+    },
+  },
+  workflow_trigger: {
+    description: 'Immediately starts a run of a resident-scheduled workflow via the same path as workflow_run; a disabled resident returns error{code:SCHEDULE_DISABLED}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflow: { type: 'string', description: 'Name of the resident-scheduled workflow to trigger.' },
+        args: { description: 'Arbitrary arguments passed through to the script as `args`.' },
+      },
+      required: ['workflow'],
+    },
+  },
+  asset_push: {
+    description: "Stores a skill/hook/mcp-config asset under the workspace root; self-referential (D4, reserved rwe-* / this server's own mcp-config) and path-unsafe files are excluded/rejected, never silently.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', description: "One of 'skill' | 'hook' | 'mcp-config'." },
+        name: { type: 'string', description: 'Asset name.' },
+        files: { type: 'array', description: 'Array of { path, contentB64 } entries; every path must stay inside the asset dir.' },
+      },
+      required: ['kind', 'name', 'files'],
+    },
+  },
+  asset_list: {
+    description: 'Lists every stored asset as { kind, name }.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  asset_delete: {
+    description: 'Deletes a stored asset by kind + name.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', description: "One of 'skill' | 'hook' | 'mcp-config'." },
+        name: { type: 'string', description: 'Asset name to delete.' },
+      },
+      required: ['kind', 'name'],
+    },
+  },
 };
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -175,8 +278,37 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
+/** TASK-026 (DES-020): gates a mcp-config push on `classifyTransport` first (pure, synchronous —
+ *  no probe attempted for an already-`'unsupported'` transport), then the injected `McpProbe`.
+ *  Returns `null` when the push may proceed; otherwise the exclusion reason to report. Only the
+ *  first file that parses as JSON is treated as the server config (matches asset-sync.ts's own
+ *  `isSelfReferential` convention for mcp-config payloads). */
+async function checkMcpConfigTransport(push: AssetPush, probe: McpProbe): Promise<string | null> {
+  for (const f of push.files) {
+    let cfg: McpServerConfig;
+    try {
+      cfg = JSON.parse(Buffer.from(f.contentB64, 'base64').toString('utf-8')) as McpServerConfig;
+    } catch {
+      continue; // not parseable JSON — not this validator's concern
+    }
+    if (classifyTransport(cfg) === 'unsupported') {
+      return 'unsupported MCP transport: not server-runnable (remote-http or npx-stdio only)';
+    }
+    const probed = await probe.probe(cfg);
+    if (!probed.ok) return probed.message;
+  }
+  return null;
+}
+
 /** Dispatches a tools/call to the matching McpFacade method (pure delegation, DES-001). */
-async function callTool(facade: McpFacade, name: string, args: Record<string, unknown>): Promise<unknown> {
+async function callTool(
+  facade: McpFacade,
+  scheduler: SqliteSchedulerPort,
+  assetSync: AssetSyncService,
+  mcpProbe: McpProbe,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
   switch (name as ToolName) {
     case 'workflow_run': return facade.workflow_run(args as { name?: string; script?: string; args?: unknown; budget?: number | null });
     case 'workflow_status': return facade.workflow_status(args as { runId: string });
@@ -188,7 +320,87 @@ async function callTool(facade: McpFacade, name: string, args: Record<string, un
     case 'workflow_agent_log': return facade.workflow_agent_log(args as { runId: string; agentId: string });
     case 'workflow_register': return facade.workflow_register(args as { name: string; script: string });
     case 'workflow_artifacts': return facade.workflow_artifacts(args as { runId: string });
+    // v2 (DES-016/TASK-019): schedule CRUD + resident trigger — thin pass-through to SqliteSchedulerPort,
+    // whose own methods already return the { result?, error? } envelope shape (see scheduler.ts).
+    case 'schedule_create': return scheduler.create(args as unknown as NewSchedule);
+    case 'schedule_list': return { result: await scheduler.list() };
+    case 'schedule_delete': return scheduler.delete(args['id'] as string);
+    case 'schedule_setEnabled': return scheduler.setEnabled(args['id'] as string, args['enabled'] as boolean);
+    case 'workflow_trigger': return scheduler.trigger(args['workflow'] as string, args['args']);
+    // v2 (DES-019/TASK-021): asset_push reports a path-safety violation as a tool-result `error`
+    // (never a thrown JSON-RPC-level error) — DES-001's own "never throw across the tool boundary".
+    case 'asset_push': {
+      const push = args as unknown as AssetPush;
+      // TASK-026 (DES-020): a mcp-config push is rejected BEFORE it lands whenever its transport
+      // isn't server-runnable or fails the live probe — reported in `excluded[]` the same way
+      // asset-sync.ts's own self-referential check is (never silent, never a half-written asset dir).
+      if (push.kind === 'mcp-config') {
+        const reason = await checkMcpConfigTransport(push, mcpProbe);
+        if (reason !== null) return { result: { stored: [], excluded: [{ name: push.name, reason }] } };
+      }
+      try {
+        return { result: await assetSync.push(push) };
+      } catch (err) {
+        return { error: { code: 'ASSET_PATH_ESCAPE', message: (err as Error).message } };
+      }
+    }
+    case 'asset_list': return { result: await assetSync.list() };
+    case 'asset_delete':
+      await assetSync.delete(args as unknown as { kind: AssetKind; name: string });
+      return { result: undefined };
     default: throw new Error(`Unknown tool: ${name}`);
+  }
+}
+
+/** TASK-025 (DES-018): read-only HTTP dashboard transport. Reads through the same injectable
+ *  RunStore port + RunManager.status() the MCP tools already use (no bespoke event bus, no
+ *  parallel dashboard DTO — `buildDashboardModel` shapes exactly the existing
+ *  RunSummary[]/RunStatusView/TranscriptEvent[] shapes). Strictly GET-only; a store read error
+ *  degrades to a partial VM with `degraded` set, never a 500 that takes the page down. */
+async function handleDashboardRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: RunStore,
+  runManager: RunManager,
+): Promise<void> {
+  if (req.method !== 'GET') {
+    sendJson(res, 405, { error: 'Dashboard API is read-only: only GET is supported.' });
+    return;
+  }
+  const path = (req.url ?? '').split('?')[0]!;
+  const agentMatch = /^\/api\/runs\/([^/]+)\/agents\/([^/]+)$/.exec(path);
+  const runMatch = /^\/api\/runs\/([^/]+)$/.exec(path);
+  try {
+    if (path === '/api/runs') {
+      const runs = await store.listRuns();
+      sendJson(res, 200, buildDashboardModel(runs).runs);
+      return;
+    }
+    if (agentMatch) {
+      const [, runId, agentId] = agentMatch as unknown as [string, string, string];
+      const stored = await store.getRun(runId);
+      if (!stored) { sendJson(res, 404, { error: `Run not found: ${runId}` }); return; }
+      const view = await runManager.status(runId).catch(() => stored);
+      if (!view.agents.some((a) => a.agentId === agentId)) {
+        sendJson(res, 404, { error: `Agent not found: ${agentId}` });
+        return;
+      }
+      const transcript = await store.getTranscript(runId, agentId);
+      sendJson(res, 200, buildDashboardModel([], view, transcript).transcript);
+      return;
+    }
+    if (runMatch) {
+      const [, runId] = runMatch as unknown as [string, string];
+      const stored = await store.getRun(runId);
+      if (!stored) { sendJson(res, 404, { error: `Run not found: ${runId}` }); return; }
+      const view = await runManager.status(runId).catch(() => stored);
+      sendJson(res, 200, buildDashboardModel([], view).selected);
+      return;
+    }
+    sendJson(res, 404, { error: 'Not found' });
+  } catch (err) {
+    // DES-018: never a 500 — degrade to a partial/last-known view with an error badge.
+    sendJson(res, 200, buildDashboardModel([], undefined, undefined, (err as Error).message));
   }
 }
 
@@ -212,6 +424,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           // D-R1: production default = SDK+LiteLLM proxy path, explicit opt-out via useLiteLLMProxy:false.
           useLiteLLMProxy: config?.useLiteLLMProxy ?? true,
           proxyManager: config?.proxyManager,
+          litellmPort: config?.litellmPort,
         })
       : undefined);
   // D-F2: agentType composition-root loader — populated ONCE at startup from agents/*.md frontmatter.
@@ -219,8 +432,60 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes });
   const validator = new SubmissionValidator({ catalog, aliases: config?.aliases });
   const facade = new McpFacade({ clock, store, runManager, validator });
+  // v2 (DES-016/TASK-019): SQLite-persisted schedule store, same workRoot convention as
+  // catalog.db/store — survives restart (REQ-014-style persistence extended to schedules).
+  const scheduler = new SqliteSchedulerPort({
+    clock, catalog, runManager,
+    dbPath: config?.schedulerDbPath ?? join(workRoot, 'schedules.db'),
+  });
+  // D-V2I-2 (DES-017): re-derive nextFire for every persisted cron/once schedule from THIS boot's
+  // clock before the driver's first tick — matches DES-017's own "Boot re-arm from persistence".
+  scheduler.rearmAtBoot();
+  // v2 (DES-019/TASK-021): asset store rooted under workRoot; `selfBind` (this server's own
+  // address) is assigned once the real listening port is known, just below.
+  let assetSync: AssetSyncService;
+  // v2 (DES-020/TASK-026): defaults to a real network/spawn probe; tests inject a FakeMcpProbe.
+  const mcpProbe: McpProbe = config?.mcpProbe ?? new RealMcpProbe();
+  // D-V2I-2 (DES-017): the impure driver loop — every tick, pure `tick()` decides which persisted
+  // cron/once schedules are due; each due firing starts a run via the SAME RunManager.start() path
+  // as workflow_run/workflow_trigger (DES-016's "same run path" invariant), then the outcome is
+  // recorded back onto the schedule (auto-complete for `once`, fresh nextFire for `cron`).
+  const ticker: Ticker = new RealTicker(500);
+  ticker.start(() => {
+    const due = tick(scheduler.all(), clock.now());
+    for (const firing of due) {
+      runManager
+        .start({ name: firing.workflow, args: firing.args })
+        .then((runId) => scheduler.markFired(firing, runId))
+        .catch((err: unknown) => {
+          // A failed dispatch (e.g. the catalog entry was deleted after the schedule was created)
+          // must not wedge this schedule as permanently "due" — a bare console.error surfaces it
+          // without crashing the driver loop; targeted follow-up dispatch-failure handling is a
+          // documented v3 boundary (mirrors runManager.start's own existing error surface).
+          // eslint-disable-next-line no-console
+          console.error(`[remote-workflow-engine] scheduled firing ${firing.id} failed to start:`, err);
+        });
+    }
+  });
 
   const http = createHttpServer((req, res) => {
+    // D-V2V-2 (REQ-008 route-back): a real browser-renderable HTML/JS dashboard page, on the SAME
+    // port as /mcp and /api/runs* (one data model, two transports — now genuinely two). SPA-style
+    // routing: /dashboard/<runId> serves this exact same static page; its own client JS reads the
+    // runId back out of location.pathname.
+    if (req.method === 'GET' && (req.url === '/dashboard' || req.url?.startsWith('/dashboard/'))) {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(DASHBOARD_HTML);
+      return;
+    }
+    // TASK-025 (DES-018): read-only dashboard HTTP API, a distinct transport from /mcp on the
+    // SAME port (no separate dashboard listener/port — one server, two transports).
+    if (req.url?.startsWith('/api/runs')) {
+      handleDashboardRequest(req, res, store, runManager).catch(() => {
+        sendJson(res, 200, { degraded: 'internal dashboard error' });
+      });
+      return;
+    }
     if (req.method !== 'POST' || !req.url?.startsWith('/mcp')) {
       sendJson(res, 404, { jsonrpc: '2.0', id: null, error: { code: -32601, message: 'Not found' } });
       return;
@@ -242,7 +507,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         if (rpc.method === 'tools/call') {
           const name = rpc.params?.name ?? '';
           const args = rpc.params?.arguments ?? {};
-          const result = await callTool(facade, name, args);
+          const result = await callTool(facade, scheduler, assetSync, mcpProbe, name, args);
           sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } });
           return;
         }
@@ -260,14 +525,25 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   });
   const address = http.address();
   const port = typeof address === 'object' && address ? address.port : 0;
+  assetSync = new AssetSyncService({
+    assetRoot: config?.assetRoot ?? join(workRoot, 'assets'),
+    selfBind: { host: bind, port },
+  });
 
   return {
     port,
     workRoot,
     close(): Promise<void> {
-      return new Promise((resolve, reject) => {
+      // D-V2I-2: stop the firing-engine ticker so a closed server never fires another schedule.
+      ticker.stop();
+      return new Promise<void>((resolve, reject) => {
         http.close((err) => (err ? reject(err) : resolve()));
-      });
+      })
+        // D-V2I-6: cascade-stop an internally-constructed (or injected) LiteLLMProxyManager on
+        // whichever gateway path built one — closes the v1 DEPLOY known-open orphan-subprocess
+        // item for the direct-fetch/legacy gateway path too (the 'sdk' path's own proxy is already
+        // reaped by main.ts's shutdown handler via composeConfig()'s returned `proxyManager`).
+        .then(() => gateway?.stop?.());
     },
   };
 }

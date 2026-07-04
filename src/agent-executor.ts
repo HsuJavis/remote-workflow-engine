@@ -208,7 +208,9 @@ export class AgentExecutor implements AgentSpawner {
   }
 
   private async _invokeOnce(req: AgentReq, prompt: string, opts: AgentOpts): Promise<GatewayResult | 'aborted'> {
-    const invokePromise = this._gateway.invoke({ prompt, opts, runId: req.runId, agentId: req.agentId, signal: req.signal });
+    // D-V2V-1: forward the run's own workspace — only ClaudeAgentSdkGatewayClient consumes it
+    // (per-call cwd re-scoping + asset materialization); other gateways ignore the extra field.
+    const invokePromise = this._gateway.invoke({ prompt, opts, runId: req.runId, agentId: req.agentId, signal: req.signal, workspace: req.workspace });
     const aborted = new Promise<'aborted'>((resolve) => {
       req.signal.addEventListener('abort', () => resolve('aborted'), { once: true });
     });

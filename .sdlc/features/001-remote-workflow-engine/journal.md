@@ -61,3 +61,433 @@
 - 2026-07-03 22:05 — GATE 7.5 (validation), ROUND 7 — SCOPED spot re-validation of the Gate-8 closing fixes (D-G8-1..6, IMPL-051), standalone dispatch (full REQ matrix already passed round 6, those clauses unchanged, not re-run; regression suite covers the rest). Real-verified the 3 mandated findings against a genuine independent process: **D-G8-4 (zero-config timeout fallback) CONFIRMED** — booted with NO `rwe.config.json` present (confirmed absent before boot) against a real, genuinely-unresponsive raw-TCP peer (accepts connection, never writes a byte back; independently confirmed hanging via direct `curl` to it and to the product's own real `litellm` proxy routed through it via `ANTHROPIC_BASE_URL`, verified inherited by the real spawned `litellm` subprocess via `/proc/<pid>/environ`) — real `agent()` call resolved `result:null`, run reached `completed`, in 5.2s real wall-clock, never hung; additionally ran the real (unmocked) `composeConfig()`+`ClaudeAgentSdkGatewayClient` composition-root code (SDK `query()` faked only at that one seam, matching this codebase's own IT-021/IT-022 convention) with `RWE_CONFIG_PATH` pointed at a nonexistent file — confirmed resolved `timeoutMs=15000` (not `undefined`) and a forced-hung session bounded to 15014ms real elapsed, `{ok:false,reason:'timeout'}`. **D-G8-2 (transcript message-event capture) CONFIRMED** — real config boot (documented `cp rwe.config.example.json` + `npm run start`, real local Ollama `qwen2.5:7b` via `local` alias), real `agent('Reply with only the word: PONG')` completed in 7s, `workflow_agent_log` returned 2 real ordered events (a `"message"` kind event with the real text, followed by the terminal `"usage"` event — previously only the `usage` event was ever captured). A 2nd tool-shaped-prompt repro again captured a real message event; no `tool_call`/`tool_result` event appeared, consistent with (not re-litigating) the already-accepted D-F11 model-capability-tier gap. **D-G8-3 (real `tools/list` schemas) CONFIRMED** — real HTTP `tools/list` on the same zero-config server returned all 10 tools with real per-tool descriptions and real `inputSchema.properties`/`required` (e.g. `workflow_agent_log` requires `runId`+`agentId`; `workflow_list` correctly shows an honest empty `properties:{}`, genuinely zero-parameter per `04-design.md:45`). **D-G8-1/D-G8-5/D-G8-6** — per this round's own scoping instruction, covered by the fresh regression run (all 3 corresponding tests green) + a direct source read confirming each fix's call site is genuinely wired (not merely defined-but-unused), not independently re-run against a real process this round. Full regression: `npx vitest run` = 69 files/217 tests, 214 pass/3 fail — `IT-015` (pre-existing environment-specific, unchanged), `IT-024` (same documented ~1-in-6 real-subprocess IPC-race flake, re-confirmed green on 2 immediate standalone reruns), `IT-028` (D-G8-3's own test — "every tool has non-empty `inputSchema.properties`" wrongly applies to `workflow_list`, which is genuinely zero-parameter per `04-design.md:45`; the SAME test defect the Gate-6 implementer already flagged in IMPL-051's own narrative, independently re-confirmed here, reported formally as a `test_defect` below, not fudged). `npx tsc --noEmit`: 0 errors. `sh .sdlc/trace --check`: 187 items, 18 gaps, identical pre-existing v2/v3-out-of-scope baseline, 0 orphan/broken-link, 0 `未真實驗證`(mock-only), 0 v1-REQ `未驗證` gaps — same clean baseline as round 6. Config-file sync (§4b): none of D-G8-1..6 add/rename/change any config key; `rwe.config.example.json` re-confirmed byte-identical/correct; no config-doc drift found this round. `README.md`/`DEPLOY.md` updated (繁體中文): round-7 header summarizing the 3 confirmed findings + scoped-coverage note for the other 3; DEPLOY.md's Gate-8 blockquote/§6 rewritten from "not yet re-confirmed" to "CONFIRMED (round 7 real verification)" with the exact evidence; README known-limitations section gained a round-7 confirmed-fixes block. `08-validation.md` gained a full "ROUND 7" section, round-7 sub-bullets on VAL-002/004/005/007, and a formal test-defect writeup for IT-028; round 6's summary preserved as a superseded-note block. `state.yaml`: `gates.validation.passed` REMAINS `true` (already flipped at round 6 under the binding CONVERGENCE RULE; this round adds fresh real evidence closing the Gate-8 fixes' own "not yet re-confirmed" caveat, does not newly flip the gate), `updated` timestamp refreshed; `current_stage`/`gates.review` left untouched (out of this scoped validation's remit — Gate 8's own re-review is a separate next step). No needs_clarification raised.
 - 2026-07-03 22:10 — GATE 8 (review), CLOSING RE-REVIEW — **PASSED, gates.review.passed=true**. Independently re-verified all 6 D-G8-1..6 binding closing-fixes (IMPL-051) directly against the current source tree, their forcing tests, and Gate 7.5 round 7's real-process spot re-validation evidence: D-G8-1 nested `workflow()` callSeq namespacing (`src/run-manager.ts:272,311`), D-G8-2 real transcript message/tool event capture (`src/gateway/claude-agent-sdk-client.ts:91,200`, `AgentTranscriptSink.capture()`), D-G8-3 real `tools/list` descriptions+schemas (`src/server.ts:91,238`), D-G8-4 zero-config `timeoutMs` fallback (`src/main.ts:98,122`), D-G8-5 env allowlist on the spawned CLI (`src/gateway/claude-agent-sdk-client.ts:71,76,167`), D-G8-6 atomic budget reservation under `parallel()` (`src/run-guard.ts:79,88`, `src/run-manager.ts:338,378`) — all 6 CONFIRMED RESOLVED, evidence table in `07-review.md`'s "GATE 8 CLOSING RE-REVIEW" callout. Full suite re-run fresh: `npx vitest run` = 69 files/217 tests, 214 pass/3 fail — all 3 pre-existing, individually root-caused `test_defect`s re-confirmed unchanged (`IT-015` environment-specific, `IT-024` the documented ~1-in-6 real-subprocess IPC-race flake — reproduced the exact pattern this pass, 2 consecutive standalone fails then 3 consecutive standalone passes, `IT-028`'s `workflow_list` zero-parameter sub-case), 0 product regressions. `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: 187 items, 18 gaps, identical pre-existing v2/v3-out-of-scope baseline (`REQ-008..012/015`, `TASK-018..023`), 0 orphan/broken-link, 0 new gaps — dashboard regenerated. Doc↔code iteration drift: none (`04-design.md` D-G8-* route-back notes match IMPL-051's round; `README.md`/`DEPLOY.md` rewritten in the same round as Gate 7.5 round 7's real-process evidence). Architecture consistency: 0 remaining unfixed HIGH findings (all 4 — V3/O-1/C-1/S-1 — fixed and re-verified); 7 MEDIUM/LOW findings (V1 auth no-op seam, O-2 transition audit trail, R-1 duplicated `DEFAULT_ALIASES`, R-2 gateway secret-custody divergence, R-3 `workflow_artifacts` bypasses `RunStore`, C-2 collapsed sandbox IPC error codes, S-2 no litellm-proxy liveness supervision) plus 2 LOW (V4, C-3) formally recorded as a v1.1 backlog in `07-review.md` per the binding user decision, not silently dropped. Validation & handover re-confirmed: `gates.validation.passed=true` (round 6 CONVERGENCE RULE + round 7 real-process re-confirmation), 0 mock-only/未驗證 among v1 REQs, `08-validation.md` (status:passed), `README.md`, `DEPLOY.md` all present and step-by-step. All 4 exit-gate criteria satisfied. `07-review.md` updated with the closing re-review callout, finalized retro, and the current authoritative Report block; `state.yaml` `gates.review.passed=true`, `pending` updated, `updated` timestamp refreshed. **Iteration v1 (001-remote-workflow-engine) CLOSES.** v1.1 backlog (this Gate 8's 7 remaining findings + `08-validation.md`'s own 5-item backlog) carried forward for a future chartered pass, not a blocker. No needs_clarification raised.
 - 2026-07-03 22:15 — ORCHESTRATOR CLOSEOUT: Gate 8 closed by review-close (all 6 D-G8 fixes independently re-verified, arch_consistent=true, 0 remaining HIGH; v1.1 backlog recorded in 07-review.md). v1 ITERATION COMPLETE: 9/9 gates passed, 187 trace items, 18 residual gaps = v2/v3 out-of-scope baseline only. Suite 217 tests / 214-215 green (2-3 pre-existing documented env/flake items, root-caused, no product regression). Dashboards regenerated (feature + workspace index), NAS copy refreshed.
+- 2026-07-04 09:00 — USER: start iteration v2 (REQ-008..011, 015). Gates tasks..review reset for v2 (v1 evidence preserved above + in 06/08 docs; v1 FROZEN & non-regression enforced). Clean sdlc-run-v2.js generated from plugin original: starts at Gate 3+4 (refine TASK-018..023 + v2 DES), sonnet-5 overrides, v2 iteration lock, standing rules (composition-root wiring test, hermeticity, serial vitest, carried accepted gaps D-V3/D-F11), Gate 7.5 convergence rule + env facts baked in from round 1. Launching.
+
+## 2026-07-04 09:45 — Gate 3+4 (v2 design), synthesizer
+
+Merged Gate 3+4 for iteration v2 (REQ-008/009/010/011/015). Synthesized from the real 2-group panel
+(.panel/design/adversarial.r1.md opus-4-8 + quality-dimensions.r1.md sonnet-5); headlines complementary,
+5 contested trade-offs reconciled directly (no round-2).
+
+Gate 3 (tasks): refined coarse v2 placeholders TASK-019..023 in place + added TASK-024..027, split along
+test seams — TASK-019/024 (scheduler CRUD+resident vs Clock/Ticker firing engine), TASK-020/025 (dashboard
+pure VM vs read-only HTTP transport), TASK-021/026 (asset security core vs injected McpProbe), TASK-022
+(client plugin), TASK-023/027 (deploy + orphan-reap/configurable-port hardening). TASK-018 (ARCH-009 auth)
+stays v3 OOS; v1 TASK-001..017 untouched. gates.tasks.passed=true.
+
+Gate 4 (design): DES-016..023 (iter:v2). Key decisions — Scheduler is a pure tick(now)+computeNextFire over
+injected Clock+Ticker (Exit-Gate-5 seam consistency: every time-reading method takes the injected Clock, no
+get_due/rearm asymmetry), missed-fire = fire-once-catch-up (never backfill); dashboard = pure
+buildDashboardModel + read-only poll of the RunStore port (no write path, no event bus); asset sync =
+mandatory recursion-guard(D4) + path-safety pure predicates + partial-push atomicity, live-probe kept but
+behind an injected McpProbe port (UT-fakeable, real only at real-tier); run-origin observability by
+scheduleId→runId join (zero v1 RunSpec change); deploy hardening designs the reproduced orphan-LiteLLM +
+port-4000 hazards IN. DES-023 gives each v2 REQ a real-tier path + per-tier mock policy. classDiagram
+extended. Zero v1 rework (v1 DES-001..015 untouched). gates.design.passed=true, current_stage=tests.
+
+trace: 199 items, 22 gaps — all downstream 未實作(16)/未驗證(6) awaiting v2 tests/impl; 0 orphan/broken-link/
+TDD-violation. v1 suite untouched/frozen. No needs_clarification.
+
+- 2026-07-04 05:55 — GATE 5 PASSED (v2 iteration). 17 v2 test items written RED and registered in
+  05-tests.md: UT-027..033 (unit — SchedulerPort CRUD, tick()/computeNextFire()/FakeTicker/bootRearm,
+  buildDashboardModel, isSelfReferential/safeRelPath, classifyTransport, client-plugin artifact layout,
+  composeConfig() v2 key wiring), IT-031..034 (integration — SqliteSchedulerPort persistence,
+  FakeTicker→run fires, dashboard HTTP endpoints, v2 MCP tools + asset_push/list/delete), E2E-004..005
+  (cron schedule lifecycle, resident workflow_trigger), VAL-008/009/010/011/016 (acceptance — one per
+  v2 REQ). Full suite: 87 files / 278 tests — 224 pass (all v1 green, frozen) / 54 fail (all v2 RED
+  for right reason: missing modules / unregistered tools / missing artifacts). Clock-hermetic: all
+  FixedClock anchors in 2020 era, no absolute future-date literals. trace --check: 217 items, 22 gaps
+  — all expected (v2/v3 REQ-008..012/015 + TASK-018..027 未實作/未真實驗證); 0 orphan/broken-link/
+  TDD-violation. gates.tests.passed=true, current_stage=impl.
+- 2026-07-04 07:15 — v2 Gate 3+4 passed (TASK-019..027, DES-016..023), Gate 5 passed (18 v2 reds; v1 224 frozen green). Parallel impl raised 6 coordination items — ORCH D-V2I-1..6: probe wired into asset_push mcp-config; scheduler tick loop + store accessors; schedules target REGISTERED workflows only (tests corrected to register first, per REQ-015 wording); composeConfig forwards schedulerDbPath/assetRoot, dashboardPort dropped (same-port serving); TASK-027 hardening tests formalized; GatewayClient lifecycle stop() closes the orphan-proxy known-open item. gap-tests-v2 stage injected; resuming wf_b6efba8b-f00.
+- 2026-07-04 (gap-test verifier round, D-V2I-3..6, standalone invocation, no `src/` touched): (1)
+  D-V2I-3 — E2E-004/E2E-005/VAL-016 corrected to `workflow_register(name,script)` every
+  schedule/trigger target before `schedule_create`/`workflow_trigger` (root cause confirmed: a bare
+  `workflow_run({name,script})` never persists to `WorkflowCatalog`); flips 10/12 previously-
+  `WORKFLOW_NOT_FOUND`-red sub-cases GREEN (TASK-019 was already correct — prior red was a test-
+  harness defect) and adds 3 new unregistered-name cases (`schedule_create`'s is already green;
+  `workflow_trigger`'s stays red — `scheduler.ts.trigger()` never catches/translates the
+  `CatalogNotFoundError` `RunManager.start()` throws when no resident row exists, unlike
+  `schedule_create`'s own existing `WORKFLOW_NOT_FOUND` check). The one-shot-auto-completes cases
+  (E2E-004, VAL-016) stay red for the separate D-V2I-2 reason (firing engine not wired into
+  `server.ts`), out of this round's scope. (2) D-V2I-4 — UT-033's `dashboardPort` case removed
+  (annotated in DES-018/DES-022: no separate dashboard port, shares `/mcp`'s http server);
+  `schedulerDbPath`/`assetRoot` remain red, `litellmPort` a green regression guard. (3) D-V2I-5 —
+  reviewed+ACCEPTED the implementer's self-authored `litellm-proxy-hardening.test.ts`
+  (pre-bind port check + SIGTERM process-group cascade-kill), formalized as UT-034 (green, traces
+  DES-022/ARCH-014). (4) D-V2I-6 — new UT-035 (red): `GatewayClient` needs an optional
+  `stop()`/`dispose()` so `LiteLLMGatewayClient`'s internally-constructed `LiteLLMProxyManager` (the
+  direct-fetch path's own orphan-litellm-on-shutdown gap, distinct from the already-fixed 'sdk'-path
+  one) can be reaped by `Server.close()`. Full suite re-run fresh: `npx vitest run` = 89 files / 333
+  tests, 323 pass / 10 fail (6 from this round's own forcing cases + 2 pre-existing UT-033 reds +
+  IT-015/IT-024/IT-028's own pre-existing documented environment-specific/flaky/test-defect reds,
+  IT-024's ~1-in-6 flake confirmed via 2 consecutive runs). No test weakened; no `src/` file
+  touched. current_stage unchanged (impl); resuming wf_b6efba8b-f00.
+- 2026-07-04 07:35 — GATE 6 PASSED (v2 iteration, integrator closeout). Integrated the 9 parallel
+  implementer IMPL slices (IMPL-052..060 for TASK-019..027, no file conflicts — src/scheduler.ts,
+  src/scheduler-engine.ts, src/dashboard.ts, src/asset-sync.ts, src/mcp-probe.ts, plugin/,
+  docker-compose.yml, deploy/, scripts/smoke.sh all new-file or cleanly-additive) into
+  06-impl-log.md, then closed all 6 ORCH-binding coordination items (IMPL-061): D-V2I-1
+  (asset_push mcp-config probe) confirmed already fully wired at hand-off, no code needed. D-V2I-2
+  — SqliteSchedulerPort gained all()/markFired()/rearmAtBoot(); createServer() now runs a real
+  500ms Ticker driving pure tick()+RunManager.start() (same run path as workflow_run/
+  workflow_trigger)+markFired(); found+fixed a real SQLite TEXT-affinity bug while wiring this
+  (nextFire column silently stringified on write, unparseable on read — INTEGER fixes it). D-V2I-3
+  — scheduler.trigger() now checks catalog.get(workflow) first -> WORKFLOW_NOT_FOUND, closing the
+  one case the prior gap-test-verifier round left red. D-V2I-4 — ServerConfig/composeConfig()
+  forward schedulerDbPath/assetRoot; no dashboardPort (single shared http listener, confirmed).
+  D-V2I-5 confirmed already accepted+green at hand-off. D-V2I-6 — GatewayClient gains optional
+  stop(); LiteLLMGatewayClient.stop() cascades to its own _proxy; Server.close() calls
+  gateway?.stop?.(), closing the v1 DEPLOY orphan-subprocess item for the direct-fetch path too.
+  Full suite: `npx vitest run` = 89 files / 333 tests, 330 pass / 3 fail — all 3 pre-existing,
+  documented, unrelated to this round (IT-015 environment-specific, IT-024 the documented ~1-in-6
+  flake — confirmed unrelated, this test never touches createServer()/the new ticker — IT-028's
+  workflow_list correctly-empty-properties test_defect from IMPL-051). `npx tsc --noEmit`: 0 errors
+  in `src/` (one pre-existing test-file-only `queryImpl` fake-typing looseness reported as a
+  test_defect, does not affect runtime). `sh .sdlc/trace --check`: 229 items, 8 gaps — 5 high-sev
+  '未真實驗證' on REQ-008/009/010/011/015 (EXPECTED: real:true is exclusively a Gate 7 validator-
+  flip per trace.py's own is_real_test() semantics, not a Gate 6 concern — these 5 REQs are now
+  both implemented AND test-covered, a real improvement from the pre-round baseline), REQ-012 +
+  TASK-018 (both iter:v3, deferred, pre-existing) — 0 orphan/broken-link/TDD-violation, 0 new gaps.
+  gates.impl.passed=true, current_stage=verification (Gate 7 next). No needs_clarification; one
+  test_defect reported (compose-config-v2-wiring.test.ts's FAKE_DEPS.queryImpl typing).
+- 2026-07-04 08:17 — GATE 7 PASSED (v2 iteration, verifier). Gate 6.5 simplify: all 5 v2 modules
+  (scheduler.ts, scheduler-engine.ts, dashboard.ts, asset-sync.ts, mcp-probe.ts) reviewed for
+  Karpathy simplicity — no code changes needed, already minimal and clean. Regression: 89 files /
+  333 tests — 331-332 pass / 1-2 fail (IT-015 env defect always; IT-024 documented ~1/6 race flake,
+  non-deterministic; both pre-existing, not v2 product gaps). 44 stale
+  test items flipped green/pass in 05-tests.md (UT-020..026, IT-009..014, IT-018..027, IT-029..034,
+  VAL-002..004, VAL-006..011). No new system-level tests added (v2 suite already comprehensive: 6 UT
+  + 4 IT + 2 E2E + 5 VAL covering all v2 REQs). trace --check: 229 items, 8 gaps — all expected (5
+  未真實驗証 for REQ-008/009/010/011/015: real:true is Gate 7.5 validator's job; REQ-012 + TASK-018
+  iter:v3 deferred). determinism_check.py: pass (0 wall-clock reads in v2 production code).
+  Time-travel (TZ=Pacific/Kiritimati): 2 fail — IT-015 env defect (expected) + IT-024 documented
+  ~1/6 race flake (not a time bomb: passes in normal run, not timezone-sensitive). Seam wiring:
+  SystemClock, LiteLLMGatewayClient, RealMcpProbe, RealTicker all wired in createServer() — no
+  production seam left mock-only. Real-dependency smoke: SQLite integration confirmed (IT-031..034);
+  sandbox child process confirmed (IT-003, IT-031..034); LLM provider unverified (no creds),
+  accepted gap D-V3 carried forward. gates.verification.passed=true, current_stage=validation.
+- 2026-07-04 08:55 — GATE 7.5 (v2 ROUND 1, validator) NOT PASSED. Booted from documented steps only
+  (npm install/npm ci both real; uv/litellm venv reused from v1). Real-run per REQ: REQ-008
+  (dashboard) GREEN/real:true — real HTTP JSON dashboard transport (list/drill-down/transcript/404/
+  read-only), live-update via re-poll confirmed against a real gateway:"sdk" + real Ollama + real
+  litellm subprocess instance; REQ-010 (client plugin) GREEN/real:true — a genuine independent real
+  Claude Code CLI (`claude mcp list`/`get`) recognized the plugin's `.mcp.json` pointed at a real
+  running instance; REQ-011 (deploy) GREEN/real:true — scripts/smoke.sh real pass, npm install/ci
+  real, orphan-reap+port-hardening (TASK-027) real-confirmed via a genuine SIGTERM to a
+  gateway:"sdk" instance (litellm subprocess reaped within 2s), systemd unit syntax-validated after
+  adjusting sandbox-specific paths (docker/sudo genuinely unreachable in this sandbox, recorded as
+  explicit environment gaps, not silently passed); REQ-015 (execution modes) GREEN/real:true — real
+  wall-clock cron firings TWICE across genuine minute boundaries (00:37:00/00:38:00), real one-shot
+  auto-complete, real resident trigger + disabled-rejection, "edit before firing" outcome confirmed
+  via delete+recreate. **REQ-009 FAILS at the real tier** — asset_push/asset_list/asset_delete/
+  recursion-guard(D4)/mcp-config live-probe all real-confirmed green (VAL-009), but a pushed skill
+  or MCP server config is NEVER wired into any agent() call: `ClaudeAgentSdkGatewayClient` hard-
+  codes `settingSources:[]`+`strictMcpConfig:true` with `mcpServers` never populated;
+  `composeConfig()`/`createServer()` never thread `AssetSyncService`'s stored assets into the
+  gateway at all (confirmed by direct source reading — zero references to "asset" in
+  agent-executor.ts/run-manager.ts/gateway/*.ts). New item VAL-017 (08-validation.md) records this
+  red/fail — REQ-009 clauses 1 ("agents can invoke that skill") and 2 ("agents can call its tools")
+  are unmet. Per the binding CONVERGENCE RULE this is an unvisited v2 REQ acceptance violation that
+  stops the gate. Full regression: 89 files/333 tests, 332 pass/1 fail (IT-015, same pre-existing
+  environment-specific v1 flake every round has recorded — no new regression). `sh .sdlc/trace
+  --check`: 230 items, 3 gaps — REQ-012+TASK-018 (v3 OIDC, explicitly out of scope, same
+  pre-existing gaps every round has reported), 0 orphan/broken-link, 0 未真實驗證/未驗證 among
+  in-scope v2 REQs mechanically (VAL-017's real:true+result:fail is a semantic finding applied on
+  top of the mechanical check, per this role's mandate not to rubber-stamp incomplete evidence).
+  Config-file sync: no schema change needed; one incidental non-blocking discovery filed to v2.1
+  backlog (`composeConfig()` never forwards `fileConfig.useLiteLLMProxy`, pre-existing v1 field).
+  README.md/DEPLOY.md updated (繁體中文) with v2 usage examples + this round's real evidence +
+  REQ-009's known limitation. gates.validation.passed=false; current_stage stays "validation" (not
+  advanced to review). needs_clarification raised for the orchestrator: (1) route REQ-009 back to
+  Gate 5/6 to wire AssetSyncService's stored assets into agent() execution; (2) confirm whether
+  REQ-008's JSON-only dashboard (no literal browser-renderable HTML, a reviewed Gate-2/4 DES-018
+  design choice) satisfies user intent or whether a minimal static front-end is wanted.
+- 2026-07-04 10:30 — v2 Gate 7.5 round 1: (a) assets stored but never wired into agent execution (REQ-009 violation), (b) dashboard is JSON-only, no browser page (REQ-008 user Gate-1 choice was explicit browser dashboard), (c) docker/sudo unavailable → compose/systemd legs syntax-only. ORCH D-V2V-1..3: wire mcpServers per-call + workspace-scoped skills via settingSources:['project'] (isolation preserved); ship single-file /dashboard HTML (same port, SSE/poll); accept env gap with DEPLOY follow-up. gap-tests-v2b → v2v-fix → re-validate. Resuming wf_b6efba8b-f00.
+- 2026-07-04 11:15 — GATE 5 (v2v route-back RED, verifier standalone invocation) for D-V2V-1/D-V2V-2
+  (D-V2V-3 is an accepted environment-gap decision, no test needed): wrote 3 new items, 8 new cases
+  across 3 new files, no `src/` changes. IT-035 (`tests/integration/asset-mcp-config-wiring.test.ts`,
+  traces DES-019/DES-020/REQ-009): real `composeConfig()`+`createServer()`+HTTP `asset_push`/
+  `workflow_run` round trip (only the third-party SDK `query()` export + managed LiteLLM proxy
+  subprocess faked, `FakeMcpProbe` satisfies the mcp-config live-probe) — pushes an accepted
+  `mcp-config` asset, runs one `agent()` call, asserts the captured `queryImpl` call's
+  `options.mcpServers` carries the pushed entry while `strictMcpConfig` stays `true`; RED
+  (`expected undefined not to be undefined` — confirmed by reading `claude-agent-sdk-client.ts`:
+  `mcpServers` is never set anywhere, `composeConfig()`/`createServer()` never read
+  `AssetSyncService`'s stored assets at all, matching 08-validation.md VAL-017's finding exactly).
+  IT-036 (`tests/integration/asset-skill-materialization-wiring.test.ts`, traces DES-019/REQ-009):
+  same seams — pushes a skill asset, asserts the captured call's `options.cwd` equals the run's own
+  workspace (`workFolder('_adhoc')/runs/<runId>`, WorkflowCatalog's documented on-disk convention)
+  and `options.settingSources` becomes exactly `['project']`, and asserts the skill file is
+  physically materialized at `<workspace>/.claude/skills/<name>/SKILL.md`; RED (`expected
+  '<workRoot>' to be '<workRoot>/workflows/_adhoc/runs/<runId>'` — `cwd` is fixed once at
+  construction to the bare server `workRoot`, `settingSources` stays hard-coded `[]`, nothing
+  materializes anything). Its 2nd case (this system's own `rwe-*` skill stays excluded end-to-end,
+  never stored, never materialized) is confirmed already GREEN — an intentional regression guard
+  (D4 recursion guard already rejects storage, unrelated to this route-back), documented
+  transparently per the same convention as IT-016's own precedent, not a false forcing red.
+  VAL-018 (`tests/acceptance/val-018-dashboard-browser-ui.test.ts`, traces DES-018/REQ-008,
+  acceptance tier, zero mocks — no SUT-boundary mocking): real `createServer()` + real HTTP GET
+  against `/dashboard`; 5 cases (real HTML content-type + `<html`; client JS fetches `/api/runs`;
+  drill-in agent-tree keywords `agentId`/`tokens`/`state` present; a drill-in run URL
+  `/dashboard/<runId>` served, not a hard 404; an auto-update mechanism `new EventSource(` or
+  `setInterval(` present; a transcript-view reference to `/api/runs/.../agents/...`) — all 5 RED
+  (every request 404s with the server's own generic JSON-RPC "Not found" body — confirmed by
+  reading `src/server.ts`: no `/dashboard` branch exists anywhere).
+  Ran all 3 new files standalone first (7 fail / 1 pass, the documented regression-guard case,
+  correct reasons — no import/syntax errors, no always-pass shells), then fixed one test-side
+  TypeScript typing issue (`let queryImpl: ReturnType<typeof vi.fn>` too narrow for the async-
+  generator-returning mock — widened to `any`, same accepted looseness precedent as
+  `compose-config-v2-wiring.test.ts`'s own `queryImpl` typing test_defect). `npx tsc --noEmit`: 0
+  errors. Full suite (`npx vitest run`): 92 files / 341 tests — 333 pass (332 pre-existing unchanged
+  + 1 new regression-guard case) / 8 fail (IT-015's own pre-existing documented environment-specific
+  red, unchanged + the 7 new forcing reds above) — no new regressions. `sh .sdlc/trace --check`: 233
+  items scanned (230+3), 3 gaps — identical pre-existing baseline (REQ-012 + TASK-018, both v3
+  out-of-scope), 0 orphan/broken-link, 0 new gaps from the 3 new IDs (their `traces` links to
+  DES-018/DES-019/DES-020/REQ-008/REQ-009 all resolve). Updated `05-tests.md` (new IT-035/IT-036/
+  VAL-018 sections + a route-back RED summary note at the top) and this journal entry only — no
+  `src/` changes made. D-V2V-3 (docker/systemd environment gap) needs no test — already recorded as
+  an accepted, non-blocker environment gap in `08-validation.md`'s v2 ROUND 1 section (REQ-011
+  stayed GREEN/real:true there); nothing to pin RED for it here.
+- 2026-07-04 09:40 — GATE 6 (implementation, gap-tests-v2b RED→GREEN, standalone implementer
+  invocation): greened IT-035, IT-036 (D-V2V-1, REQ-009 asset wiring) and VAL-018 (D-V2V-2, REQ-008
+  browser dashboard) — IMPL-062/063. **D-V2V-1**: confirmed via `grep -rn asset src/agent-
+  executor.ts src/run-manager.ts src/gateway/*.ts` (0 matches) that `AssetSyncService`'s stored
+  assets were genuinely never read downstream before writing any code. Fixed entirely at the
+  consumer (`src/gateway/claude-agent-sdk-client.ts`), `src/asset-sync.ts`'s own push/list/delete +
+  D4 recursion-guard/path-safety predicates untouched: (1) new `readMcpConfigAssets(assetRoot)`
+  reads every stored `mcp-config` asset FRESH off disk on every `invoke()` call, threaded into
+  `Options.mcpServers` (`strictMcpConfig:true` unchanged, per the binding ruling); (2) new
+  `materializeAssets(assetRoot, workspace)` copies every stored `skill`/`hook` asset into
+  `<workspace>/.claude/skills|hooks/<name>/` before the call; `options.cwd` re-scoped to
+  `req.workspace ?? this._config.cwd`, `options.settingSources` becomes `['project']` when a
+  workspace is known (unchanged `[]` for a direct unit-tier call with no workspace) — host-level
+  `'user'`/`'local'` sources stay excluded either way, preserving the D-F11 isolation this class was
+  built to close, now scoped per run. `src/gateway/client.ts`'s `GatewayClient.invoke()` req grew
+  optional `workspace?:string`; `src/agent-executor.ts` forwards `req.workspace` (already mandatory
+  on `AgentReq`) unchanged for every other gateway. `src/main.ts`'s `composeConfig()` forwards the
+  resolved `assetRoot` into the constructed `ClaudeAgentSdkGatewayClient`, and now defaults
+  `assetRoot` to `join(workRoot,'assets')` when the file config sets `workRoot` but omits
+  `assetRoot` — `rwe.config.example.json`'s own committed template does exactly that, so without
+  this default the real documented deployment shape would silently never get REQ-009 wiring at all;
+  added 2 new cases to `tests/unit/compose-config-v2-wiring.test.ts` to cover this default rather
+  than ship it untested. This system's own `rwe-*` skill/plugin stays excluded end-to-end unchanged
+  (D4 already prevents it from ever landing on disk; IT-036's own regression-guard case confirmed
+  still green throughout). **D-V2V-2**: new `src/dashboard-page.ts` exports a self-contained,
+  dependency-free `DASHBOARD_HTML` (run list, drill-in agent tree with `agentId`/`state`/`tokens`,
+  transcript view, `setInterval(refresh,3000)` polling — no SSE endpoint added, matches the binding
+  ruling's "polling or SSE" either/or); `src/server.ts`'s existing single `createHttpServer` handler
+  gained one new branch serving it verbatim at `GET /dashboard`(`/*`) on the SAME port as `/mcp`/
+  `/api/runs*`; `/dashboard/<runId>` is client-side SPA routing, no server-side per-run render.
+  `buildDashboardModel`/the existing `/api/runs*` transport (DES-018, IMPL-053/058) untouched — one
+  data model, two transports, now genuinely two. Verified targeted reds first (confirmed genuinely
+  red: 7 failing / 1 passing regression-guard case), then green individually and together. Full
+  suite fresh: `npx vitest run` = 92 files/343 tests, 342 pass/1 fail — the 1 fail is the same
+  pre-existing documented `IT-015` environment-specific red (unchanged since IMPL-050/051/061);
+  `IT-024` (the documented ~1-in-6 real-subprocess-IPC-race flake) passed this run and on repeated
+  standalone reruns, confirmed unrelated to any file this round touched. `npx tsc --noEmit`: 0
+  errors (one explicit cast added at the `Options.mcpServers` assignment — this system's own
+  loosely-typed `McpServerConfig`, already validated at push time by `checkMcpConfigTransport`,
+  narrowed to the SDK's own discriminated union). `sh .sdlc/trace --check`: 233 items, 3 gaps —
+  identical pre-existing v3-out-of-scope baseline (REQ-012 + TASK-018, both OAuth/auth, deferred per
+  D5, unrelated), 0 orphan/broken-link/TDD-violation gaps, 0 new gaps. `04-design.md`: DES-018
+  (D-V2V-2 note), DES-019 + DES-020 (D-V2V-1 notes) added. `DEPLOY.md` intro blockquote gained a
+  Gate 6 fixes paragraph (REQ-009 + REQ-008 both closed) and reaffirmed the D-V2V-3 docker/systemd
+  environment-gap acceptance unchanged (ORCH-accepted, non-blocking, ready for the user to close on
+  a docker/root-capable host). `README.md`: v2 status header, 'v2 新功能' section (Dashboard
+  subsection rewritten for the new HTML page, asset-sync subsection note), 已知限制(v2) items 1/3
+  struck through as fixed + new item 5 documenting the D-V2V-3 gap explicitly. `state.yaml`:
+  `gates.impl.note` appended (this entry's own summary), `updated` timestamp refreshed;
+  `current_stage` left at `validation` (unchanged) — the next step is Gate 7.5/8 re-confirming both
+  fixes against a genuine independent process (real skill materialization on disk + real mcp-config
+  reachability + a real browser/`curl` hit on `/dashboard`), same convention as every prior
+  route-back. No needs_clarification raised; no test judged wrong — all 3 target reds (IT-035,
+  IT-036, VAL-018) turned green purely by `src/` changes.
+- 2026-07-04 10:05 — GATE 7.5 (v2 ROUND 2, validator) PASSED. Re-verified D-V2V-1/D-V2V-2 fixes for
+  real (not source-reading): booted a real independent server (`gateway:"sdk"`, real managed
+  `litellm[proxy]` Python 3.12 subprocess, real local Ollama `qwen2.5:7b`, bind 0.0.0.0:8901) via
+  documented steps only, no undocumented manual step. REQ-009: pushed a real `mcp-config` +
+  `skill` asset via `asset_push`, submitted a real `workflow_run` agent() call, and while the real
+  spawned `claude` CLI subprocess was in flight, read its OWN command-line arguments directly off
+  the OS process table (`ps aux`) — confirmed real `--mcp-config {"mcpServers":{"demo-mcp-v2r2":
+  {...}}} --setting-sources=project --strict-mcp-config` on the wire, and after completion
+  confirmed the pushed `SKILL.md` physically materialized (byte-exact marker content) inside that
+  specific run's own workspace at `.claude/skills/demo-skill-v2r2/`. REQ-009 clauses 1/2 now MET
+  at the real tier — VAL-017 flips red→green. Recursion guard (D4) re-verified end-to-end: pushed
+  this system's own real `plugin/skills/rwe-remote-workflow/SKILL.md` and a self-referential
+  mcp-config (this exact server's own bind/port) — both real-excluded with reported reasons,
+  confirmed NOT written to disk. REQ-008: real `GET /dashboard` → 200 text/html with real
+  `<html>`/`<title>` content and the page's own client JS (`fetch('/api/runs')`,
+  `setInterval(refresh,3000)`) confirmed verbatim in the served bytes; `GET /dashboard/<runId>` →
+  200 SPA routing; live-update-without-reload demonstrated (polled `/api/runs` before/after
+  submitting a new run with the same idle client, count 1→2, zero reload action). Environment tier
+  achieved: curl+DOM-content-assertion (no headless browser available in this sandbox — stated
+  honestly). New canonical VAL-018 green. REQ-010/011/015: documented smoke re-check only, per the
+  binding CONVERGENCE RULE (no re-litigation) — real independent Claude Code CLI (`claude mcp
+  list`) against this round's fresh instance, same real-recognition result; real
+  `scripts/smoke.sh` pass exit 0; real `SIGTERM` orphan-reap confirmed (both the Node process and
+  the managed `litellm` subprocess gone from `ps aux` within 2s); docker/sudo D-V2V-3 environment
+  gap re-confirmed unchanged, not re-litigated. Full regression: `npx vitest run` = 92 files/343
+  tests, 341 pass/2 fail — IT-015 (same pre-existing environment-specific v1 flake) + IT-024
+  (documented ~1-in-6 real-subprocess-IPC-race flake, re-ran standalone 3x immediately after, 3/3
+  green) — no new regression; the 3 files this round's fixes touch all green standalone (8/8).
+  `sh .sdlc/trace --check`: 235 items, 3 gaps — identical pre-existing v3-out-of-scope baseline
+  (REQ-012+TASK-018, OAuth/OIDC, explicitly out of scope), 0 orphan/broken-link, 0
+  未真實驗證/未驗證 among any in-scope v1 or v2 REQ. Config-file sync: no schema change needed
+  (both fixes are pure `src/` wiring against the already-existing `assetRoot` config key);
+  `rwe.config.example.json` re-confirmed correct/unchanged. `05-tests.md` updated: IT-035/IT-036/
+  VAL-018 flipped red→green/pass (Gate 6 already fixed them; this round is the first to
+  re-confirm standalone). `08-validation.md`: new "v2 ROUND 2" section with full evidence; VAL-017
+  flipped green/pass; VAL-018 added as a new canonical green item; VAL-010/011/016 gained
+  round-2 no-regression notes; frontmatter `status: gap` → `status: passed`. README.md/DEPLOY.md
+  updated (繁體中文): v2 status header → GATE PASSED, DEPLOY.md's v2 §2b block gained this round's
+  re-verification evidence. PER THE BINDING CONVERGENCE RULE, every v2 REQ acceptance clause now
+  has real:true green evidence (or the accepted D-V2V-3 environment-gap decision) —
+  `gates.validation.passed` FLIPS TO TRUE. `current_stage` → `review` (Gate 8 next). No
+  needs_clarification raised; v2.1 backlog (non-REQ improvement ideas) recorded in
+  08-validation.md, not raised as clarifications, per the binding CONVERGENCE RULE.
+- 2026-07-04 12:40 — v2 Gate 7.5 PASSED (REQ-008..011,015 all real-verified: /dashboard HTML live page, asset→agent wiring, scheduler firing). Gate 8 found HIGH security V3 (agent CLI bypassPermissions + default Bash + cwd-only confinement → key/cross-run exfiltration) + MEDIUM V4 (my v1 D-G8-6 reserve() 100%-budget overcorrection breaks parallel() under bounded budget). USER: app-layer hardening for V3. ORCH D-V2G8-1 (no bypassPermissions, curated default tools, keys out of agent-reachable paths via env, workspace read-confinement) + D-V2G8-2 (reserve per-call estimate, restore concurrency). Rest → v2.1 backlog. gap-tests-v2g8 → v2g8-fix → security re-validation → v2-review-close. Resuming wf_b6efba8b-f00.
+- 2026-07-04 13:05 — GATE 5 (route-back RED, verifier standalone invocation) for D-V2G8-1/D-V2G8-2: wrote 4 new test files, no `src/` changes. UT-039 (`tests/unit/claude-agent-sdk-gateway-permission-hardening.test.ts`, traces ARCH-007/ARCH-005): session never constructed with `permissionMode:'bypassPermissions'` + the DEFAULT tool surface (no per-call/config opt-in) excludes `'Bash'` — 2/3 cases RED (`permissionMode` still hard-coded `'bypassPermissions'` at `claude-agent-sdk-client.ts:222`; `BUILT_IN_CORE_TOOLS=['Read','Write','Bash']` at `:115` still includes Bash unconditionally), 1/3 passes today as a documented positive control (an agentType's own explicit opt-in must keep working). UT-040 (`tests/unit/claude-agent-sdk-gateway-workspace-boundary.test.ts`, traces ARCH-007): pins D-V2G8-1(d) — a `canUseTool` path-boundary callback (the SDK's own documented `sdk.d.ts:1328` hook) must be wired and must deny Read/Bash attempts escaping the run workspace (proxy config path, sibling run's workspace, `../` Bash escape) while allowing genuinely-inside reads; all 5/5 cases RED (`options.canUseTool` is `undefined` today — no such key anywhere in `_invokeOnce`). UT-041 (`tests/unit/provider-keys-not-agent-reachable.test.ts`, traces ARCH-005): pins D-V2G8-1(c) — `LiteLLMProxyManager` must spawn the proxy subprocess with real provider keys EXPLICITLY present in its own `env` (1/3 RED — `litellm-proxy.ts`'s `_doStart()` never sets an explicit `env` key on the `spawnImpl(...)` call at all); the "agent-facing env still doesn't get them" and "config.yaml never contains raw key material" cases pass today (D-G8-5 allowlist + `generateLiteLLMConfig`'s routing-only shape already hold — documented as positive controls, not weakened). IT-037 (`tests/integration/parallel-budget-estimate-reservation.test.ts`, traces ARCH-002/ARCH-003, real RunManager/RunGuard/sandbox, only GatewayClient faked with an artificial delay per IT-030's own technique): pins D-V2G8-2 — a generously-bounded budget must still let `parallel([a,b,c])` dispatch >1 call concurrently to the gateway (RED — `reserve()` claims 100% of remaining budget for the first call, `maxInFlight()` stuck at exactly 1 today regardless of headroom); the "hard ceiling still throws once genuinely insufficient" case passes today (full serialization trivially keeps it true — a forward-compatible pin the eventual per-call-estimate fix must not reopen). Ran the 4 new files standalone: 9 fail / 4 pass (13 total), all failures confirmed red for the right reason (missing seam / literal value still wrong / concurrency still 1 — no import/syntax errors, verified via direct source inspection cited in each 05-tests.md entry). Full suite (`npx vitest run`): 356 total / 345 pass / 11 fail — the 9 new reds plus 2 pre-existing unrelated reds already on disk before this round (`IT-015`, documented environment-specific `test_defect` since 2026-07-03 12:35; `IT-024` "in-flight AgentRecord state", reconfirmed a pre-existing flake — standalone run 1/1 pass, unrelated to any file touched this round). `npx tsc --noEmit`: 0 errors (1 fixed: an `as` cast in UT-041 needed `as unknown as` first). `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: 239 items, 3 gaps — identical to the pre-existing v2/v3-out-of-scope baseline (REQ-012 未實作/未驗證, TASK-018 未實作, all mid/low severity), 0 orphan/broken-link, 0 new gaps from UT-039/040/041/IT-037 (all 4 traces resolve cleanly against `02-architecture.md`). Updated `05-tests.md` (new "Gate 8 v2 review route-back" section + 4 entries) and this journal entry only — no `src/` changes made.
+- 2026-07-04 10:48 — GATE 3+4 (Design synthesizer, standalone re-synthesis from the just-run r1 panel `.panel/design/adversarial.r1.md` opus-4-8 + `quality-dimensions.r1.md` sonnet-5). Round-1 headlines were complementary (contract/boundary/testability seams vs cross-cutting dimensions landing on the same seams) with tie-breaks already recorded inside the adversarial file — no round-2 needed; synthesized directly. Merged Gate 3 already satisfied (TASK-019..027 fine-grained along test seams; every in-scope ARCH-010..014 has ≥1 TASK; TASK-018/ARCH-009 stays v3-OOS) — refined only the stale TASK-019 clock note. Incorporated the not-yet-reflected adversarial findings into DES-016/018/019/020 + a new D-V2h..D-V2m rationale block: schedule `budget` + overlap accepted-risk (KP-9/R1, agent-altitude self-sustainability), dashboard stored-XSS structurally prevented via `textContent`/`JSON.stringify` (shipped) + transcript pagination deferred-safe as optional non-breaking query params (KP-12/KP-6), two-tier path/self-ref containment — pure fast-gate + impure `fs.realpath`/`O_NOFOLLOW` write-time guard + loopback-set self-ref normalization (KP-7/KP-8, R2; shipped `asset-sync.ts` currently string-only → carried as v2.1 asset-hardening backlog with the DES-022 tunnel-gate as the compensating control, flagged not silently equated to done), asset size/count caps → `ASSET_TOO_LARGE` (KP-13), closed error-code union (KP-1), and pinned `trigger` precondition (unknown→WORKFLOW_NOT_FOUND) + justified `resident` as its own kind (KP-3/KP-4) + documented `originOf` as the one deliberately-sync method (KP-2). Fixed TASK-019 note "no clock needed"→injected-Clock seam stamping `nextFire`/`lastFire` (KP-15/Exit-Gate-5), matching shipped `create()`. Probe bounded-timeout (KP-11) already shipped; npx-at-push-time exec surface noted behind the tunnel-gate. Zero v1 rework (v1 DES-001..015/TASK-001..017 untouched). `sh .sdlc/trace … --check`: 239 items, 3 gaps — identical v3-OOS baseline (REQ-012 未實作/未驗證, TASK-018 未實作), 0 orphan/broken-link, 0 NEW gaps. Set gates.design.passed=true, current_stage=tests, updated 2026-07-04 10:48. No needs_clarification (all trade-offs decided at synthesizer altitude per role contract).
+- 2026-07-04 11:10 — GATE 5 (v2 Mode A, test-first RED, standalone verifier) PASSED. Confirmed the 4 Gate-8-review-route-back RED test items (UT-039/040/041/IT-037) are written, genuinely failing for the stated reason, and hermetic: 9 fail / 4 pass (13 total in those 4 files). All v2 REQ items have VAL tests (REQ-008→VAL-008/018, REQ-009→VAL-009, REQ-010→VAL-010, REQ-011→VAL-011, REQ-015→VAL-016); all key v2 DES items have UT tests (DES-016→UT-027, DES-017→UT-028, DES-018→UT-029, DES-019→UT-030, DES-020→UT-031, DES-021→UT-032, DES-022→UT-033/034). No time bombs (the 4 RED tests target security/concurrency, no date literals). Full suite: 96 files / 356 tests — 345 pass / 11 fail (9 new forcing reds + IT-015 env-specific + IT-024 flake). trace --check: 3 gaps, all v3-OOS (REQ-012 OIDC, TASK-018), unchanged from prior round. v1 suite fully green (345 pass). state.yaml: current_stage → impl, updated 2026-07-04 11:10.
+- 2026-07-04 13:45 — GATE 6 PASSED (v2g8-fix closeout, standalone integrator invocation). Confirmed
+  no file conflicts in the working tree; the prior parallel round's 6 D-V2I-1..6 coordination items
+  (IMPL-052..063) were already fully integrated and green at hand-off — verified via a fresh full
+  suite run rather than trusted from the narrative, no duplicate log entry written for them. Turned
+  green the 4 gap-tests-v2g8 RED tests via **IMPL-064**: D-V2G8-1(a) `claude-agent-sdk-client.ts`'s
+  `permissionMode:'bypassPermissions'` → `'default'`; D-V2G8-1(b) `BUILT_IN_CORE_TOOLS` drops
+  `'Bash'` (now `['Read','Write']`, still available via an agentType's own explicit
+  `allowedTools` opt-in); D-V2G8-1(d) new `isInsideWorkspace()`/`makeCanUseTool()` wired into
+  `options.canUseTool` — denies any Read/Write `file_path` or Bash `blockedPath` resolving outside
+  `req.workspace ?? config.cwd` (sibling-prefix-safe via `root + path.sep`), allows genuinely-inside
+  paths; D-V2G8-1(c) `litellm-proxy.ts`'s `_doStart()` spawns with explicit `env:{...process.env}`
+  (real provider-key custody now a testable statement, was an implicit Node default); D-V2G8-2
+  `run-guard.ts`'s `RunGuard.reserve()` now reserves `Math.min(remaining, this.total/2)` per call
+  instead of 100% of remaining — up to 2 concurrent calls per burst clear reservation before a 3rd
+  hits a real `assertBudget()` check, restoring `parallel()` concurrency under a generous budget
+  while the hard ceiling still holds under a tight one; re-ran `parallel-budget-concurrency.test.ts`
+  (IT-030, my own v1 D-G8-6 regression guard) standalone to confirm the fix doesn't reopen the
+  original TOCTOU overshoot (still green). Full suite `npx vitest run`: 96 files / 356 tests, 354
+  pass / 2 fail — both pre-existing, unchanged, confirmed unrelated to the 3 touched files (`IT-015`
+  documented environment-specific nested-Claude-Code-host interception; `IT-024` documented ~1-in-6
+  real-subprocess-IPC-race flake, reconfirmed via 2 standalone reruns at 1/2 pass, consistent with
+  the documented rate). `npx tsc --noEmit`: 0 errors. `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`:
+  240 items, 3 gaps, 0 severe — identical pre-existing v3-out-of-scope baseline (REQ-012 未實作/
+  未驗證, TASK-018 未實作), 0 orphan/broken-link/TDD-violation gaps, 0 new gaps introduced by
+  IMPL-064. `05-tests.md`: UT-039/040/041/IT-037 flipped red→green with a Gate-6-closeout note each.
+  `06-impl-log.md`: added IMPL-064 (the prior round's IMPL-052..063 were left untouched, already
+  present and accurate). `state.yaml`: `gates.impl` note appended, `current_stage` → `verification`,
+  updated 2026-07-04 13:45. No needs_clarification raised; no test judged wrong — all 4 target reds
+  (UT-039, UT-040, UT-041, IT-037) turned green purely by `src/` changes.
+- 2026-07-04 18:15 — GATE 7 PASSED (v2g8 verification closeout, standalone verifier invocation). Gate 6.5 simplify: reviewed all 8 v2 source modules (scheduler.ts, scheduler-engine.ts, dashboard.ts, dashboard-page.ts, asset-sync.ts, mcp-probe.ts, plus v2 additions in server.ts and claude-agent-sdk-client.ts); no code changes — v2 code already minimal (Karpathy simplicity-first; only repeated pattern was 5-use `argsJson != null ? JSON.parse(r.argsJson) : undefined` in scheduler.ts which is too compact to abstract). Regression: 96 files / 356 tests — 354 pass / 2 fail (IT-015 env-specific test_defect unchanged, nested Claude Code host intercepts query(); IT-024 documented ~1/6 race flake, passes standalone). tsc --noEmit: 0 errors. sh .sdlc/trace --check: 3 gaps (all REQ-012/TASK-018 v3 OIDC out of scope), 0 severe, gate condition satisfied. determinism_check.py: PASS. Time-travel (TZ=Pacific/Kiritimati): same 2 pre-existing failures only, no time bombs detected. Seam wiring confirmed: McpProbe→RealMcpProbe (createServer() default), GatewayClient→ClaudeAgentSdkGatewayClient (main.ts default), proxyManager→real LiteLLMProxyManager (main.ts when deps.proxyManager omitted), queryImpl→real SDK query (not set in main.ts), Ticker→RealTicker(500) (createServer()). Real-dependency smoke: SQLite+sandbox real (IT-031..037 confirm); LLM D-V3 accepted gap (no paid keys). All v2 REQs have green VALs: REQ-008→VAL-008/VAL-018, REQ-009→VAL-009, REQ-010→VAL-010, REQ-011→VAL-011, REQ-015→VAL-016. state.yaml: current_stage → validation, updated 2026-07-04 18:15.
+- 2026-07-04 18:30 — GATE 7 CONFIRMED (v2 verification, orchestrator-dispatched verifier). Full regression re-run: 96 files / 356 tests — 354 pass / 2 fail (IT-015 env test_defect; IT-024 ~1/6 race flake — both pre-existing, unchanged). Gate 6.5 simplify: fixed IMPL-065 traces field (was unparseable pseudo-reference; changed to DES-016..DES-022 — docs-only, no src/ change). tsc --noEmit: 0 errors. sh .sdlc/trace --check: 241 items, 3 gaps (REQ-012/TASK-018 v3 OIDC OOS, mid/low severity only), 0 severe. determinism_check.py: PASS. Time-travel TZ=Pacific/Kiritimati: same 2 pre-existing failures only, no time bombs. Seam wiring confirmed: SystemClock/RealMcpProbe/RealTicker in createServer(); ClaudeAgentSdkGatewayClient/LiteLLMProxyManager in composeConfig(); gateway?.stop?.() + ticker.stop() in Server.close(). Real-dependency smoke: SQLite+sandbox+HTTP all exercised by IT-031..037/E2E-004/E2E-005/VAL-008..011/VAL-016/VAL-018; LLM accepted gap D-V3. All v2 REQs confirmed with green VALs: REQ-008→VAL-008/VAL-018, REQ-009→VAL-009, REQ-010→VAL-010, REQ-011→VAL-011, REQ-015→VAL-016. IMPL-066 added to 06-impl-log.md. state.yaml updated 2026-07-04 18:30.
+- 2026-07-04 19:15 — GATE 7.5 PASSED (v2 validation, fresh independent validator dispatch, ROUND 3). Booted from documented steps only (README/DEPLOY quickstart) — `node --version` (22.22.3), `npx vitest run` (96 files/356 tests, 354 pass/2 fail: IT-015 pre-existing env defect + IT-024 ~1/6 flake re-confirmed via standalone rerun, no new regression), `RWE_PORT=8910 bash scripts/smoke.sh` (real pass, exit 0). Own fresh real boot (port 8920, bind 0.0.0.0, gateway:"sdk", real Ollama qwen2.5:7b + real managed litellm subprocess) for REQ-008/009: `GET /dashboard` real 200/text/html/client-JS + live-update-without-reload (1→2 runs via re-poll); real `asset_push` (skill+mcp-config) + real `workflow_run` agent() call, read the spawned `claude` CLI subprocess's own argv off `ps aux` — confirmed real `--mcp-config {...} --setting-sources=project --strict-mcp-config`; confirmed pushed SKILL.md materialized byte-identical inside that run's own workspace; fresh recursion-guard repro (own plugin skill + self-mcp-config both excluded, reported, confirmed absent from disk). REQ-010: fresh real `claude mcp list` (independent Claude Code CLI) → same real-recognition result. REQ-011: fresh real SIGTERM orphan-reap (Node + litellm both gone from `ps aux` within 2s); `which docker`/`sudo -n true` re-confirmed unavailable — D-V2V-3 environment gap re-confirmed unchanged, not re-litigated. REQ-015: not re-run (no code change since round 1/2), covered by fresh e2e regression. **Config-file sync check (§4b) found + fixed 1 real doc-vs-reality drift**: README.md/DEPLOY.md's known-limitations text claimed the litellm proxy port is "fixed at 4000, not configurable" and that graceful shutdown "does not stop the subprocess" — both stale/false since v2 TASK-027 added the `litellmPort` config key (already covered by `tests/unit/compose-config-v2-wiring.test.ts` UT-033, standing rule 1 satisfied) and made graceful shutdown genuinely reap the subprocess (re-confirmed above). Corrected in README.md (v1 known-limitations §8) and DEPLOY.md (§1/§1b/§2/§4/§6/troubleshooting table/v1.1 backlog) — no src/ or config-template change needed. `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: 242 items, 3 gaps — identical pre-existing v3-out-of-scope baseline (REQ-012 未實作/未驗證, TASK-018 未實作), 0 severe, 0 mock-only, 0 orphan/broken-link. Every v2 REQ (008/009/010/011/015) has ≥1 real:true green VAL item (VAL-008/017/018/009, VAL-010, VAL-011, VAL-016); all annotated with fresh ROUND 3 evidence in 08-validation.md. Docs written: README.md, DEPLOY.md (both step-by-step, re-runnable, quickstart = the boot script actually run). `state.yaml`: `gates.validation` note updated (ROUND 3 summary prepended, ROUND 2 preserved as superseded-history note), `current_stage` → `review`, updated 2026-07-04 19:15. No needs_clarification blocking; v2.1 backlog unchanged from round 1/2 (recorded in 08-validation.md, not raised as clarifications) per the binding CONVERGENCE RULE.
+- 2026-07-04 21:20 — GATE 6 GREEN closeout for gap-tests-v2g8 (standalone implementer invocation,
+  D-V2G8-1(a)(b)(c)(d) + D-V2G8-2). Picked up mid-stream: the working tree already carried IMPL-064's
+  claimed fix (uncommitted), and the 4 target reds (UT-039/040/041, IT-037) plus the run-guard/
+  litellm-proxy hardening unit suites were confirmed already green. Found + closed a real gap
+  IMPL-064's mocked-only verification had missed: a REAL `@anthropic-ai/claude-agent-sdk` smoke run
+  (a Read on `/etc/hostname`, deliberately outside the configured workspace) showed the read
+  SUCCEEDING — the SDK's own `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` runtime warning explains why: a bare
+  `allowedTools` entry (the default `['Read','Write']`) auto-approves that tool call BEFORE
+  `canUseTool` is ever consulted, so the D-V2G8-1(d) workspace-boundary check IMPL-064 wired was
+  silently bypassed for every real, unopted-in Read/Write call — the exact default-path exfiltration
+  vector the review finding named, invisible to the mocked UT-040 unit test alone. A first fix
+  attempt (decorating the built-in tool names with a non-matching rule suffix to dodge the SDK's
+  bare-entry heuristic) worked functionally (real-SDK-verified in/out-of-workspace behavior) but broke
+  the pre-existing UT-024 (D-F11, requires `allowedTools` verbatim-equal the built-in fallback) —
+  caught via full-suite regression, not shipped. Superseded with the SDK's own documented alternative:
+  wired the SAME boundary decision as BOTH `options.canUseTool` (unchanged) AND a new
+  `options.hooks.PreToolUse` matcher (`makePreToolUseHook`) — belt-and-suspenders, `allowedTools`
+  stays bare/unchanged (UT-024 untouched), the boundary now holds regardless of which of the two the
+  SDK actually consults for a given call. Re-verified end-to-end against the real SDK after the fix:
+  in-workspace Read succeeds; `/etc/hostname` denied with `path outside run workspace: ...`, surfaced
+  as a `tool_result{is_error:true}`, not a crash. Full suite `npx vitest run`: 96 files / 356 tests,
+  354 pass / 2 fail — both `IT-015`/`IT-024` reconfirmed pre-existing and unrelated via a `git stash`
+  diff against the untouched baseline (both reproduce identically there too). `npx tsc --noEmit`:
+  0 errors. `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: 242 items, 3 gaps,
+  0 severe — identical pre-existing v3-out-of-scope baseline (REQ-012/TASK-018), 0 orphan/
+  broken-link, 0 new gaps. Added IMPL-067 to `06-impl-log.md`; added a Security Model section
+  (DEPLOY.md §1c, README.md "安全模型") documenting the actual tool-permission/key-custody/
+  workspace-confinement behavior (not a plan); fixed a stale DEPLOY.md line still claiming the
+  built-in default tool set included `Bash`; added `04-design.md` route-back notes under DES-009
+  (D-V2G8-1) and DES-002 (D-V2G8-2, code already shipped by IMPL-064 but undocumented there).
+  `state.yaml`: `gates.impl` note appended, updated 2026-07-04 21:20. No needs_clarification raised;
+  no test judged wrong — the 4 target reds (UT-039/040/041, IT-037) turned/stayed green, and the
+  pre-existing UT-024 regression risk from my first fix attempt was caught and avoided before commit.
+- 2026-07-04 22:10 — GATE 7.5 PASSED (SCOPED security re-validation, standalone validator dispatch,
+  ROUND 4 — post Gate-8 route-back D-V2G8-1/D-V2G8-2, IMPL-067). Booted from documented steps only
+  (`node --version`, `npm install`, `npx vitest run` = 96 files/356 tests, 354 pass/2 fail: IT-015
+  pre-existing env defect + IT-024 ~1-in-6 flake, re-ran standalone 1/1 green, no new regression;
+  fresh real server on a new port, no `defaultAllowedTools` configured to exercise the built-in
+  fallback). Real-verified all 3 mandated findings against a genuine independent process, real
+  Ollama qwen2.5:7b, real managed litellm subprocess: (1) `ps aux` on the real spawned
+  `claude-agent-sdk` CLI subprocess mid-flight shows `--permission-mode default --allowedTools
+  Read,Write --tools Read,Write` — no `bypassPermissions`, no `Bash` by default (VAL-019); (2) a
+  distinctive fake real-shaped `ANTHROPIC_API_KEY` marker exported into the server's own env is
+  present in `/proc/<litellm-pid>/environ` (the intended proxy-subprocess custody point) but
+  completely ABSENT from `/proc/<agent-cli-pid>/environ` for the concurrently-running agent-facing
+  CLI subprocess (dummy key only) (VAL-020); (3) the real, non-mocked `canUseTool`/`hooks.PreToolUse`
+  callback objects — captured by wrapping (not replacing) the real `@anthropic-ai/claude-agent-sdk`
+  `query()` export around a genuine end-to-end round trip (real subprocess spawn, real Ollama call
+  completed) — deny reading the LiteLLM proxy's own `config.yaml`, a DIFFERENT real prior run's
+  on-disk workspace secret file (genuine cross-run read attempt), and `/etc/hostname`, each returning
+  only a generic `path outside run workspace: <path>` message, never the target content; the same
+  callback allows a path genuinely inside the calling run's own workspace (VAL-021). Worked around
+  (did not re-litigate) the already-accepted D-F11 finding that the local 7B model never emits a
+  genuine `tool_use` block through this integration path — re-confirmed again this round via 2 direct
+  real-SDK probes. (4) D-V2G8-2: a real `workflow_run{budget:100000, script:parallel([3x agent()
+  calls])}` against real Ollama showed 2 agents genuinely `"running"` simultaneously across 7
+  consecutive `curl`-polled `workflow_status` calls (~1.9s span) — concurrency restored from the
+  v1-era collapse-to-1; the 3rd concurrent call correctly resolved to `null` (real
+  `BudgetExceededError`, swallowed by `makeParallel`), matching the already-accepted "capped at 2"
+  V4-residual backlog note in `07-review.md` — confirmed for real, not a new finding (VAL-022).
+  **Config-file sync check (§4b) found + fixed 1 NEW security-relevant drift**: `rwe.config.
+  example.json` (and DEPLOY.md's own JSON example) still shipped
+  `defaultAllowedTools:["Read","Write","Bash"]` — a leftover from before the D-V2G8-1(b) code fix —
+  and both README.md/DEPLOY.md's documented quickstart instruct `cp rwe.config.example.json
+  rwe.config.json` verbatim, meaning every deployment following the documented steps literally
+  re-enabled `Bash` as a default-allowed tool, silently undoing the V3-HIGH default-surface hardening
+  on the one path most real deployments actually use. Fixed this round: both files corrected to
+  `["Read","Write"]`; DEPLOY.md §1b gained an explanatory blockquote recording the finding+fix (not a
+  silent patch). Real `SIGTERM` shutdown re-confirmed clean (both Node + litellm gone from `ps aux`
+  within 2s). `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: 247 items, 3 gaps —
+  identical pre-existing v3-out-of-scope baseline (REQ-012 未實作/未驗證, TASK-018 未實作), 0 severe,
+  0 mock-only (未真實驗證), 0 orphan/broken-link, 0 in-scope v1/v2 REQ 未驗證. Also found + fixed a
+  pre-existing (not introduced this round) YAML-corruption bug in `state.yaml` — an earlier round's
+  edit had left a validator-note continuation as a raw, unquoted, un-keyed physical line instead of
+  an escaped `\n` inside the `note:` string, making the working-tree `state.yaml` invalid YAML (it
+  parsed fine at HEAD; `trace.py` itself never parses `state.yaml`'s YAML so this didn't block any
+  prior gate check, but would break any other YAML-based consumer) — repaired by re-merging the
+  orphaned line back into the `validation.note` string with a proper escape; content unchanged,
+  0 data lost, confirmed via `python3 -c "import yaml; yaml.safe_load(...)"` before/after. Docs
+  written: `08-validation.md` (new "## v2 ROUND 4" section with VAL-019..022 + full repro detail),
+  `rwe.config.example.json`, `DEPLOY.md` (§1b). `state.yaml`: `gates.validation.note` updated (ROUND
+  4 summary prepended, ROUND 3 preserved as superseded-history). No needs_clarification blocking;
+  D-V2V-3/D-F11/D-V3 explicitly not re-litigated per this round's own scoping instruction.
+- 2026-07-04 22:40 — GATE 8 FINAL CLOSING REVIEW (v2, standalone consistency-reviewer invocation).
+  Verified V3 (HIGH)/V4 (MEDIUM regression) resolved on disk, not trusted from any log: `permissionMode:
+  'default'` (`claude-agent-sdk-client.ts:293`), `BUILT_IN_CORE_TOOLS=['Read','Write']` no `Bash`
+  (`:118`), `canUseTool` workspace-boundary callback (`:294`,`:124-159`), `RunGuard.reserve()` reserves
+  `Math.min(remaining,total/2)` not 100% (`run-guard.ts:92-98`). Found the prior 20:05 review pass
+  pre-dated `IMPL-067` (21:20) and Gate 7.5 ROUND 4 (22:10) — re-read both and confirmed IMPL-067's
+  `hooks.PreToolUse` shadowing fix (`makePreToolUseHook`, `:164-180`) closes the real (non-mocked)
+  default-path bypass IMPL-064 left open, independently re-verified for real by ROUND 4's
+  VAL-019..022. Re-ran fresh: `UT-039`(3/3)/`UT-040`(5/5)/`UT-041`(3/3)/`IT-037`(2/2) +
+  regression-guard `UT-024`(3/3) all green; full suite `npx vitest run` = 96 files/356 tests, 354
+  pass/2 fail — same pre-existing `IT-015`/`IT-024`, no new regression. `sh .sdlc/trace
+  .sdlc/features/001-remote-workflow-engine --check`: 247 items, 3 gaps (REQ-012 未實作/未驗證 +
+  TASK-018 未實作, v3-out-of-scope, byte-identical to every prior round), 0 orphan/broken-link/漂移/
+  未真實驗證; `dashboard.html` regenerated. Architecture-consistency: consolidated the 2 already-run
+  expert reports (`.panel/review/adversarial.md`, `.panel/review/quality-dimensions.md`, both
+  scoped as re-review after IMPL-064) — not re-spawned, since IMPL-067 didn't touch anything either
+  lens critiques (their residual findings, e.g. V3's Bash-opt-in/symlink/other-tool gaps, are about
+  paths IMPL-067 never modified). 0 HIGH remain; 11 residual MEDIUM/Medium-High/LOW findings
+  (adversarial V1/V2/V3-downgraded/V4-downgraded/V5; quality-dims O-2/R-1/R-3/C-2/C-3/S-2) recorded
+  as v2.1 backlog in `07-review.md`, not blocking. Validation: `gates.validation.passed=true` (Gate
+  7.5 v2 ROUND 4), `08-validation.md` (status:passed) + `README.md` + `DEPLOY.md` all present,
+  step-by-step, updated ROUND 4. All 4 exit-gate criteria satisfied. `07-review.md`: new "## v2 GATE 8
+  FINAL CLOSING REVIEW (2026-07-04 22:40, CURRENT / AUTHORITATIVE)" section added (supersedes the
+  20:05 section, kept for history) with updated V3/V4-resolved evidence + Report block. `state.yaml`:
+  `gates.review.note` updated (this pass's summary), `current_stage`/`updated` bumped to 22:40.
+  **Iteration v2 closes.** No needs_clarification raised.

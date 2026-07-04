@@ -7,6 +7,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import net from 'node:net';
 import type { AliasMap } from './client.js';
 
 export interface LiteLLMProxyOptions {
@@ -75,12 +76,34 @@ export class LiteLLMProxyManager {
   }
 
   private async _doStart(): Promise<{ baseUrl: string }> {
+    // TASK-027 hardening: pre-bind port ownership check. Without this, a stale `litellm` process
+    // left over from a previous run (the repeatedly-Gate-7.5-reproduced port hazard) can already be
+    // listening on `this._port` — the post-spawn health poll below would then answer `ok` from
+    // THAT foreign process on its very first iteration, before this instance's own spawn has even
+    // had a chance to fail, so `start()` would falsely resolve as if it had booted its own proxy.
+    // Actually trying to bind the port ourselves first turns that race into a fast, actionable
+    // failure instead.
+    await this._assertPortFree();
+
     const dir = await mkdtemp(path.join(tmpdir(), 'rwe-litellm-'));
     const configPath = path.join(dir, 'config.yaml');
     await writeFile(configPath, generateLiteLLMConfig(this._aliases), 'utf8');
 
+    // `detached: true` (TASK-027): makes this child its own process-group leader so `stop()` can
+    // cascade-kill it AND any worker processes `litellm` itself forks, via a single process-group
+    // signal — `child.kill()` alone only ever signalled this one direct handle, leaving `litellm`'s
+    // own forked workers orphaned on shutdown (the other repeatedly-Gate-7.5-reproduced hazard).
+    // D-V2G8-1(c): explicit `env` — the proxy subprocess is the ONE place the real provider API
+    // keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...) actually need to live, so it needs its own real
+    // host env to route calls. Previously omitted entirely, relying on Node's implicit
+    // process.env-inheritance-when-env-is-undefined default — that's an accident, not a testable
+    // custody statement; spelling it out here also gives this class a single, greppable place to
+    // narrow later if a future round needs to (see buildSubprocessEnv in claude-agent-sdk-client.ts
+    // for the CONTRASTING allowlist the agent-facing CLI subprocess gets — never these real keys).
     const proc = this._spawnImpl('litellm', ['--config', configPath, '--port', String(this._port)], {
       stdio: 'ignore',
+      detached: true,
+      env: { ...process.env },
     });
     this._proc = proc;
     const baseUrl = `http://127.0.0.1:${this._port}`;
@@ -102,13 +125,56 @@ export class LiteLLMProxyManager {
       }
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    proc.kill();
+    this._killProcessGroup(proc);
     this._startPromise = undefined;
     throw new Error(`litellm proxy did not become healthy within ${this._startupTimeoutMs}ms: ${String(lastErr)}`);
   }
 
+  /**
+   * TASK-027: verifies nobody already owns `this._port` before we spawn — real TCP bind attempt
+   * (not a health-endpoint fetch, which can't tell "our own booting process" apart from "a stale
+   * foreign process already answering on this port"). Closed immediately either way; the real
+   * spawn below does the actual, lasting bind.
+   */
+  private async _assertPortFree(): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const probe = net.createServer();
+      probe.once('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EADDRINUSE') {
+          reject(new Error(
+            `litellm proxy port ${this._port} is already in use (possibly a stale litellm process ` +
+            'left over from a previous run). Stop whatever is bound to it, or choose a different ' +
+            'port via LiteLLMProxyOptions.port / the litellmPort config key, then try again.',
+          ));
+        } else {
+          reject(err);
+        }
+      });
+      probe.listen(this._port, '127.0.0.1', () => probe.close(() => resolve()));
+    });
+  }
+
+  /**
+   * Cascade-kills the whole process group `proc` leads (it was spawned with `detached: true`,
+   * making its pid also its process-group id) via a single negative-pid signal — reaps any worker
+   * processes `litellm` itself forked, not just this one direct handle. Falls back to a plain
+   * `proc.kill()` when there's no usable pid (e.g. a test double).
+   */
+  private _killProcessGroup(proc: ChildProcess): void {
+    if (proc.pid !== undefined) {
+      try {
+        process.kill(-proc.pid, 'SIGTERM');
+        return;
+      } catch {
+        // Fall through to the direct-handle kill below (e.g. group already gone, or a
+        // non-POSIX/test-double pid that process.kill() doesn't accept).
+      }
+    }
+    proc.kill();
+  }
+
   async stop(): Promise<void> {
-    if (this._proc && this._proc.exitCode === null) this._proc.kill();
+    if (this._proc && this._proc.exitCode === null) this._killProcessGroup(this._proc);
     this._proc = undefined;
     this._baseUrl = undefined;
     this._startPromise = undefined;

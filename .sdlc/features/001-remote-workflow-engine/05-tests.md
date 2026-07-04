@@ -6,7 +6,10 @@ status: green
 
 > Gate 5 test-first RED → Gate 7 regression GREEN.
 > Files: `tests/unit/`, `tests/integration/`, `tests/e2e/`, `tests/acceptance/`.
-> Run: `npm test` (vitest).  Gate 7 result: 161 pass / 0 fail / 35 files.
+> Run: `npm test` (vitest).  Gate 7 v2g8 result (2026-07-04): 354 pass / 2 fail (IT-015
+> env-specific test_defect + IT-024 documented ~1/6 race flake) / 96 files / 356 tests.
+> Gate 7 v2 result (historical, pre-v2g8): 332 pass / 1 fail (IT-015 only) / 89 files / 333 tests.
+> Gate 7 v1 result (historical): 161 pass / 0 fail / 35 files.
 > Gate 5 RED confirmation (historical): 98 fail / 9 pass / 156 total.
 > Gate 6 final route-back result (2026-07-03 12:55): 179 pass / 1 fail (IT-015, environment-specific
 > test_defect, see its own note) / 47 files.
@@ -174,8 +177,84 @@ status: green
 > reds — IT-015's own documented environment interception, IT-024's own documented ~1-in-6 real
 > two-process IPC contention flake, see their own notes, unrelated to this round — plus these 11 new)
 > / 12 fail (IT-015 + IT-024 pre-existing + the 10 new forcing reds). No `src/` changes made.
-
----
+>
+> **2026-07-04 gap-test verifier round (D-V2I-3..6, ORCH binding rulings, standalone invocation, no
+> `src/` changes made):** (1) **D-V2I-3** — E2E-004/E2E-005/VAL-016 corrected: every
+> `schedule_create`/`workflow_trigger` target is now registered via `workflow_register(name,script)`
+> first, never a bare `workflow_run({name,script})` (confirmed root cause: the latter never persists
+> to `WorkflowCatalog` — `src/run-manager.ts`'s `start()` only consults the catalog when
+> `spec.name && !spec.script`). This flips 10 of the 12 previously-`WORKFLOW_NOT_FOUND`-red
+> sub-cases across the 3 files to GREEN (TASK-019's CRUD+resident-trigger path was already correctly
+> implemented — the prior red was a test-harness defect, not a product gap), while 3 new
+> unregistered-name cases were added (one per file) pinning `WORKFLOW_NOT_FOUND` for
+> `schedule_create` (confirmed already green — `scheduler.ts` already implements this check) and for
+> `workflow_trigger` (confirmed still red — `scheduler.ts`'s `trigger()` never catches/translates the
+> `CatalogNotFoundError` `RunManager.start()` throws when no resident schedule row exists for that
+> workflow at all, so it surfaces as a top-level JSON-RPC error instead of the tool-result
+> `WORKFLOW_NOT_FOUND` envelope `schedule_create` already produces — a real gap, not weakened). The
+> one-shot-auto-completes case in both E2E-004 and VAL-016 stays red for the separate, legitimate,
+> out-of-this-round's-scope D-V2I-2 reason (DES-017 tick/driver loop not yet wired into
+> `server.ts`). (2) **D-V2I-4** — UT-033's `dashboardPort` forwarding case REMOVED (no separate
+> dashboard port exists; the dashboard shares the `/mcp` HTTP server/port per DES-018/TASK-025);
+> `schedulerDbPath`/`assetRoot` remain red, `litellmPort` remains a documented green regression
+> guard. (3) **D-V2I-5** — the implementer's self-authored `tests/unit/litellm-proxy-hardening.test.ts`
+> (pre-bind port-ownership check + process-group cascade-kill, TASK-027) reviewed and ACCEPTED
+> as-authored, formalized as UT-034 (green) tracing DES-022/ARCH-014. (4) **D-V2I-6** — new UT-035
+> (red): `GatewayClient` needs an optional `stop()`/`dispose()` so `LiteLLMGatewayClient`'s
+> internally-constructed `LiteLLMProxyManager` (the "direct-fetch" path's own equivalent of the
+> already-fixed 'sdk'-path orphan-litellm-on-shutdown hazard) can be reaped by `Server.close()` —
+> confirmed red for the right reason (`GatewayClient`/`LiteLLMGatewayClient` have no `stop()` method
+> at all today), not an import/syntax error.
+> Confirmed via direct re-run, not merely narrated: `npx vitest run` full suite = 89 files / 333
+> tests — 323 pass / 10 fail: 6 from this round's own new/corrected forcing cases (VAL-016 x2,
+> E2E-004 x1, E2E-005 x1, UT-035 x2 — all confirmed failing on their exact stated assertion, not a
+> harness error) + 2 pre-existing UT-033 reds (`schedulerDbPath`/`assetRoot`, untouched by this
+> round) + IT-015/IT-024/IT-028's own pre-existing documented environment-specific/flaky/test-defect
+> reds (unchanged, not touched — IT-024's ~1-in-6 flake means this exact count varies run-to-run by
+> ±1, confirmed via 2 consecutive full-suite runs). No test weakened an assertion to force a green;
+> no `src/` file touched.
+>
+> **2026-07-04 test-first author round (test-defect fixes, implementer-reported, standalone
+> invocation, no `src/` change):** implementer flagged 3 items as "the test is the problem, not the
+> code": (1) E2E-004/E2E-005/VAL-016 seeding an unregistered `workflow_run({name,script})` target
+> instead of `workflow_register` — **already fixed in a prior round (D-V2I-3), confirmed still
+> correct**, no further edit needed. (2) TASK-027 hardening lacking a numbered UT — **already closed
+> in a prior round (D-V2I-5, formalized as UT-034)**, no further edit needed. (3)
+> `tests/unit/compose-config-v2-wiring.test.ts`'s `FAKE_DEPS.queryImpl` was a plain async function,
+> not a real async generator, so it didn't structurally satisfy `ComposeConfigDeps['queryImpl']`
+> (`typeof sdkQuery`) — `npx tsc --noEmit` flagged 3 call-site errors (runtime unaffected, vitest's
+> esbuild transform ignores types) — a genuine test-authoring defect, fixed this round: `queryImpl`
+> converted to `async function*` (mirrors `hungSession()`/`fakeSuccessSession()` in
+> `main-composition-root.test.ts`) + `FAKE_DEPS` cast via `as unknown as Parameters<typeof
+> composeConfig>[1]` (`ComposeConfigDeps` isn't exported, and the fake `proxyManager` is a
+> test-double shape, not a real `LiteLLMProxyManager`). `npx tsc --noEmit` now 0 errors project-wide.
+> While re-running the affected files to confirm defect (3), ground-truthed that `src/` has since
+> caught up on the two previously-red gaps items (1) and UT-035 documented as legitimately
+> unimplemented (D-V2I-2 tick/driver-loop wiring; `scheduler.ts`'s `trigger()` `WORKFLOW_NOT_FOUND`
+> translation; `GatewayClient.stop()`) — all now implemented in `src/`, so UT-033, UT-035, E2E-004,
+> E2E-005, and VAL-016 are updated `red`→`green` to reflect reality (not part of the 3 reported test
+> defects, but stale doc state would misreport an already-fixed product gap as still open). Full
+> suite: `npx vitest run` = 89 files / 333 tests — 330 pass / 3 fail (IT-015/IT-024/IT-028's own
+> pre-existing documented environment-specific/flaky/real-gap reds, unrelated to and untouched by
+> this round). No test weakened; no `src/` file touched.
+>
+> **2026-07-04 test-first author round 2 (test-defect fix, implementer-reported, standalone
+> invocation, no `src/` change):** implementer flagged 1 residual item on the same file: the prior
+> round's `FAKE_DEPS.queryImpl` async-generator fix still has typing looseness relative to
+> `ComposeConfigDeps['queryImpl']` = `typeof sdkQuery`'s exact generator signature, but this is
+> invisible to `npx tsc --noEmit` (0 errors project-wide) because the whole `FAKE_DEPS` object is
+> cast `as unknown as Parameters<typeof composeConfig>[1]`, which blanket-suppresses per-property
+> checking rather than proving `queryImpl` itself is shape-correct — a documented style/precision
+> gap in the test double, not a compile or runtime failure. Fixed by hoisting `queryImpl` to its own
+> `const fakeQueryImpl: ClaudeAgentSdkGatewayConfig['queryImpl'] = ...` binding (imports
+> `ClaudeAgentSdkGatewayConfig` from `src/gateway/claude-agent-sdk-client.js` and `Query`/`SDKMessage`
+> from `@anthropic-ai/claude-agent-sdk`), so this one variable's initializer is now actually
+> type-checked against the real seam type instead of being carried along inside the outer blanket
+> cast; only the generator's own return value keeps a narrow `as Query` cast (the SDK's `Query`
+> interface's control methods — `interrupt`/`close`/etc. — aren't exercised by this wiring test and
+> stubbing all of them would be speculative). `npx tsc --noEmit` still 0 errors project-wide;
+> `npx vitest run tests/unit/compose-config-v2-wiring.test.ts` = 3/3 pass. No functional/assertion
+> change; UT-033 stays `green`/`pass`. No `src/` file touched.
 
 ## Unit Tests
 
@@ -502,11 +581,11 @@ fail, both for the exact assertion above (`expected undefined to be 'haiku-alias
 `expected true to be false`), not an import/syntax error.
 
 ### UT-020 — ClaudeAgentSdkGatewayClient: thinking policy is alias-aware (D-F6)
-- **status:** red
+- **status:** green
 - **traces:** DES-009, REQ-004
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/unit/claude-agent-sdk-gateway-thinking.test.ts`.
@@ -532,11 +611,11 @@ stay green once D-F6's alias logic is wired), same precedent as IT-016's "unknow
 fails fast" sub-case.
 
 ### UT-021 — ClaudeAgentSdkGatewayClient: bounded timeout/retry race (D-F7)
-- **status:** red
+- **status:** green
 - **traces:** DES-009, REQ-004
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/unit/claude-agent-sdk-gateway-timeout.test.ts`.
@@ -560,11 +639,11 @@ either (took the full ~3.1s of the test-level bound, confirming a genuine unboun
 an early, unrelated rejection).
 
 ### UT-022 — ClaudeAgentSdkGatewayClient: real SDK cancellation hook wiring (D-F10c)
-- **status:** red
+- **status:** green
 - **traces:** DES-009, REQ-006
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/unit/claude-agent-sdk-gateway-abort.test.ts`.
@@ -590,11 +669,11 @@ undefined to be an instance of AbortController` (today's src never sets `options
 all, confirmed by reading `src/gateway/claude-agent-sdk-client.ts`) — not an import/syntax error.
 
 ### UT-023 — LiteLLMGatewayClient (direct-fetch): invoke() forwards a caller signal into the in-flight fetch's AbortController (D-F10c)
-- **status:** red
+- **status:** green
 - **traces:** DES-009, REQ-006
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/unit/gateway-client-suspend-abort.test.ts`.
@@ -618,11 +697,11 @@ no path into the fetch's own signal today), failing on `expect(result).not.toBe(
 not an import/syntax error, and not a fast failure either (took the full ~1s bound).
 
 ### UT-024 — ClaudeAgentSdkGatewayClient: curated options.allowedTools per call (D-F11)
-- **status:** red
+- **status:** green
 - **traces:** DES-009, REQ-003
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/unit/claude-agent-sdk-gateway-allowed-tools.test.ts`.
@@ -653,11 +732,11 @@ Red reason: confirmed `npx vitest run tests/unit/claude-agent-sdk-gateway-allowe
 object), not an import/syntax error.
 
 ### UT-025 — AgentExecutor: a resolved agentType's frontmatter `tools` field threads into opts.allowedTools (D-F11)
-- **status:** red
+- **status:** green
 - **traces:** DES-007, REQ-003
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/unit/agent-executor-allowed-tools.test.ts`.
@@ -687,11 +766,11 @@ transparently as regression guards rather than mislabelled as forcing reds. Over
 (which `AgentTypeDef` doesn't even declare today).
 
 ### UT-026 — ClaudeAgentSdkGatewayClient: spawned CLI subprocess env is an explicit allowlist, not full process.env (D-G8-5)
-- **status:** red
+- **status:** green
 - **traces:** ARCH-005, REQ-004
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 Gate 8 review route-back (D-G8-5, adversarial.md finding V5, MEDIUM security). **Bug (review
@@ -857,11 +936,11 @@ unknown workflow name → UNKNOWN_WORKFLOW; valid script → runId immediately.
 Red reason: McpFacade.workflow_run() throws NotImplementedError.
 
 ### IT-009 — McpFacade.workflow_agent_log returns the real persisted transcript, never a hard-coded []
-- **status:** red
+- **status:** green
 - **traces:** ARCH-004
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/integration/agent-log-readback.test.ts`.
@@ -877,11 +956,11 @@ RunStore" case). The gap is purely on the read-back path: `RunStore` has no acce
 read transcripts back through.
 
 ### IT-010 — Run-workspace artifacts listable/retrievable via the MCP API (workflow_artifacts)
-- **status:** red
+- **status:** green
 - **traces:** ARCH-007
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/integration/workspace-artifacts.test.ts`.
@@ -898,11 +977,11 @@ tool or status field exposes a run's workspace file listing today, see `08-valid
 calling it throws `TypeError: facade.workflow_artifacts is not a function`.
 
 ### IT-011 — scriptVersion fidelity: a run after a workflow update records the version it actually executed
-- **status:** red
+- **status:** green
 - **traces:** ARCH-006
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/integration/scriptversion-fidelity.test.ts`.
@@ -916,11 +995,11 @@ for every run regardless of which version actually executed — confirmed at Gat
 (`08-validation.md` VAL-014).
 
 ### IT-012 — WorkflowCatalog registrations persist in the on-disk SQLite DB across instances
-- **status:** red
+- **status:** green
 - **traces:** ARCH-007
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/integration/catalog-persistence.test.ts`.
@@ -935,11 +1014,11 @@ registrations in a private in-memory `Map` only.
 (`catalog.db` under `workRoot`, D-V2). Re-ran standalone: 2/2 pass — not modified here.
 
 ### IT-013 — server.ts default GatewayClient construction routes through the LiteLLM proxy path (D-R1)
-- **status:** red
+- **status:** green
 - **traces:** ARCH-005, DES-009
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/integration/server-default-litellm-proxy.test.ts`.
@@ -965,11 +1044,11 @@ Red reason: `src/server.ts`'s `createServer()` constructs
 (`expected "spy" to be called at least once` — 0 calls).
 
 ### IT-014 — workflow_artifacts reachable over the real MCP HTTP/JSON-RPC surface (D-R4)
-- **status:** red
+- **status:** green
 - **traces:** ARCH-007, REQ-013
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/integration/workflow-artifacts-http.test.ts`.
@@ -1127,11 +1206,11 @@ environment-specific red, unchanged) / 5 fail (IT-015 pre-existing + these 4 new
 clean.
 
 ### IT-018 — Live budget accounting observable in-script (D-F8)
-- **status:** red
+- **status:** green
 - **traces:** REQ-002, DES-005, DES-006, ARCH-003
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/integration/budget-live-accounting.test.ts`.
@@ -1152,11 +1231,11 @@ Red reason: confirmed `npx vitest run tests/integration/budget-live-accounting.t
 import/syntax error.
 
 ### IT-019 — workflow_suspend aborts an in-flight gateway call (D-F9a)
-- **status:** red
+- **status:** green
 - **traces:** REQ-006, DES-009, ARCH-002
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/integration/suspend-aborts-gateway-call.test.ts`.
@@ -1179,11 +1258,11 @@ Red reason: confirmed `npx vitest run tests/integration/suspend-aborts-gateway-c
 request as `{prompt, opts, runId, agentId}` — no `signal` field at all), not an import/syntax error.
 
 ### IT-020 — Per-agent records survive a real server restart (D-F9b)
-- **status:** red
+- **status:** green
 - **traces:** REQ-007, DES-008, DES-010, ARCH-006, ARCH-004
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/integration/agent-records-restart-survival.test.ts`.
@@ -1210,11 +1289,11 @@ the run's own top-level `status` correctly reads back as `completed` (sanity-che
 test), isolating the failure to the per-agent-records gap specifically.
 
 ### IT-021 — src/main.ts composition-root wiring-completeness: aliases/timeoutMs/retries/agentDefinitionsDir/gateway-selection (D-F10a/b)
-- **status:** red
+- **status:** green
 - **traces:** ARCH-004, ARCH-005, REQ-003, REQ-004
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/integration/main-composition-root.test.ts`.
@@ -1259,11 +1338,11 @@ exceptions, no dangling process/port (the import-safety harness confirmed clean 
 `npx vitest run`, 189/197 passing, the only other failure being the pre-existing unrelated IT-015).
 
 ### IT-022 — src/main.ts composition-root: agentDefinitionsDir end-to-end through composeConfig()+createServer() (D-F10b)
-- **status:** red
+- **status:** green
 - **traces:** ARCH-004, REQ-003
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/integration/main-composition-root-agent-types.test.ts`.
@@ -1290,11 +1369,11 @@ fails immediately on `expect(typeof composeConfig).toBe('function')` (`expected 
 exceptions or dangling server/process (confirmed via the same full-suite run as IT-021).
 
 ### IT-023 — ClaudeAgentSdkGatewayClient + real CLI + local stub: curated allowedTools genuinely narrows the outbound wire tool surface (D-F11)
-- **status:** red
+- **status:** green
 - **traces:** DES-009, ARCH-005, REQ-003
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/integration/claude-agent-sdk-gateway-allowed-tools.test.ts`.
@@ -1318,11 +1397,11 @@ outside the curated 2-tool set (`expect(names.every(...)).toBe(true)` fails — 
 an import/syntax error.
 
 ### IT-024 — In-flight AgentRecord state ('queued'/'running') observable via workflow_status while an agent() call is in flight (D-F12)
-- **status:** red
+- **status:** green
 - **traces:** DES-008, ARCH-004, REQ-007, REQ-002
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/integration/in-flight-agent-state.test.ts`.
@@ -1350,11 +1429,11 @@ mid-flight poll — `view.agents` has no entry at all yet, exactly matching the 
 (`agents:[]` while `status:"running"`), not an import/syntax error.
 
 ### IT-025 — workflow_resume re-runs an aborted-mid-flight agent() call live instead of replaying the journaled null (D-F13)
-- **status:** red
+- **status:** green
 - **traces:** DES-004, DES-010, ARCH-002, REQ-006
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/integration/resume-rerun-aborted-call.test.ts`.
@@ -1383,11 +1462,11 @@ Red reason: confirmed `npx vitest run tests/integration/resume-rerun-aborted-cal
 repro, not an import/syntax error and not a hang.
 
 ### IT-026 — Nested workflow() journal callSeq namespacing + resume fidelity (D-G8-1)
-- **status:** red
+- **status:** green
 - **traces:** ARCH-002, ARCH-006, REQ-006
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 Gate 8 review route-back (D-G8-1, adversarial.md finding V3, HIGH). **Bug (review evidence,
@@ -1421,11 +1500,11 @@ call is forced to re-run live on resume because the collision corrupts the whole
 cache. Both fail for the documented collision reason, not an import/syntax error.
 
 ### IT-027 — AgentTranscriptSink captures the SDK message/tool_call/tool_result stream (D-G8-2)
-- **status:** red
+- **status:** green
 - **traces:** ARCH-004, DES-007, DES-008, REQ-007
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 Gate 8 review route-back (D-G8-2, quality-dimensions.md finding O-1, HIGH). **Bug (review
@@ -1455,12 +1534,12 @@ intermediate SDK messages the fake session emits are never captured anywhere, on
 `result` message's token summary. Not an import/syntax error.
 
 ### IT-028 — MCP tools/list serves real, non-placeholder tool metadata (D-G8-3)
-- **status:** red
+- **status:** green
 - **traces:** ARCH-001
 - **tier:** integration
 - **real:** true
-- **result:** fail
-- **iter:** v1
+- **result:** pass
+- **iter:** v2
 
 Gate 8 review route-back (D-G8-3, quality-dimensions.md finding C-1, HIGH). **Bug (review evidence,
 `src/server.ts:147-149`):**
@@ -1481,12 +1560,70 @@ Red reason: confirmed `npx vitest run tests/integration/mcp-tools-list-schema.te
 for every tool; `workflow_run`/`workflow_agent_log`'s schemas have no properties at all. Exactly
 matches the review's cited `server.ts:147-149` placeholder line, not an import/syntax error.
 
+> **2026-07-04 test-first author round (test-defect fix, implementer-reported IMPL-051/IMPL-061,
+> standalone invocation, no `src/` change):** implementer flagged case (2) ("every tool has an
+> `inputSchema` with real (non-empty) `properties`") as a test defect, not a code defect:
+> `workflow_list` is genuinely zero-argument per DES-001's own signature `workflow_list(a?: {})`, so
+> its served `inputSchema.properties: {}` is a real, correctly-empty schema, not a leftover
+> placeholder — the blanket "every tool must have >0 properties" assertion was wrong. Fixed by
+> special-casing genuine zero-arg tools in the loop: `properties` is still asserted `toBeDefined()`
+> for every tool (still catches the original `server.ts:147-149` placeholder bug where `properties`
+> was `undefined`), but the non-empty-count assertion is now only applied to tools that take real
+> arguments; zero-arg tools instead assert `properties` is exactly `{}`. While implementing, found
+> the exemption needs to cover not just `workflow_list` but every genuinely zero-arg tool actually
+> served today — `schedule_list()` and `asset_list()` (both per DES-001's own v2 signatures,
+> `list(): Promise<ScheduleStatus[]>` / `asset_list()`) — confirmed by an initial re-run that still
+> failed on `schedule_list`/`asset_list` after exempting only `workflow_list`; all three are now
+> exempted (`ZERO_ARG_TOOLS = ['workflow_list', 'schedule_list', 'asset_list']`). Re-run confirms
+> green for the right reason: `npx vitest run tests/integration/mcp-tools-list-schema.test.ts` — 4/4
+> pass against the real implemented `server.ts` `TOOL_METADATA`. Full suite: `npx vitest run` = 89
+> files / 333 tests — 331 pass / 2 fail (IT-015/IT-024's own pre-existing documented
+> environment-specific/flaky reds, unrelated to and untouched by this round). No assertion weakened
+> to always-pass; `src/` untouched.
+>
+> **2026-07-04 gap-test verifier round (v2 validation route-back, D-V2V-1/2/3, pinning
+> 08-validation.md's Gate 7.5 round-1 findings as RED before the fix): 3 new items, 8 new cases
+> across 3 new files.** IT-035 (`tests/integration/asset-mcp-config-wiring.test.ts`, traces
+> DES-019/DES-020/REQ-009) pins D-V2V-1's mcp-config half — a probe-accepted `mcp-config` asset
+> must be threaded into the NEXT `agent()` call's real `Options.mcpServers`, `strictMcpConfig`
+> staying `true`; real `composeConfig()`+`createServer()`+HTTP `asset_push`/`workflow_run` round
+> trip, only the third-party SDK `query()` export + managed LiteLLM proxy subprocess faked (same
+> seams as IT-021). RED for the right reason: push succeeds, the run reaches a terminal status, the
+> `strictMcpConfig:true` invariant already holds — the assertion fails on `options.mcpServers` being
+> `undefined` (`expected undefined not to be undefined`), confirming no code path threads
+> `AssetSyncService`'s stored assets into any `agent()` call, exactly 08-validation.md VAL-017's
+> finding. IT-036 (`tests/integration/asset-skill-materialization-wiring.test.ts`, traces
+> DES-019/REQ-009) pins D-V2V-1's skill half — a pushed skill must be materialized into the run
+> workspace's own `.claude/skills/` dir, with the SDK call's `cwd` re-scoped to that per-run
+> workspace (not the whole server `workRoot`) and `settingSources` becoming `['project']` (never
+> `'user'`/`'local'` — the D-F11 host-contamination isolation stays preserved). RED for the right
+> reason: `expected '/tmp/rwe-it036-xxx' to be '/tmp/rwe-it036-xxx/workflows/_adhoc/runs/<runId>'`
+> — confirms `cwd` is fixed once at construction to the bare `workRoot`, never per-run. Its 2nd case
+> (this system's own `rwe-*` skill stays excluded end-to-end) is an intentional regression guard,
+> NOT a forcing red — the recursion guard already rejects storage of a `rwe-*` asset today (D4,
+> unchanged) and nothing materializes anything today either way, so it is confirmed already GREEN
+> (documented transparently, same convention as IT-016's "unknown type still fails fast" sub-case).
+> VAL-018 (`tests/acceptance/val-018-dashboard-browser-ui.test.ts`, traces DES-018/REQ-008, tier
+> acceptance, no SUT-boundary mocks) pins D-V2V-2 — a literal browser-renderable `GET /dashboard`
+> HTML page on the same port as `/mcp`/`/api/runs*`: run list + drill-in agent-tree
+> (agentId/state/tokens) + transcript view + an auto-update mechanism (SSE/polling), asserted at the
+> HTTP/text level (content-type, `<html`, keyword presence). RED for the right reason (5/5 fail):
+> every request 404s with the server's own generic JSON-RPC "Not found" body — confirmed by reading
+> `src/server.ts`: no `req.url?.startsWith('/dashboard')` branch exists anywhere.
+> Ran all 3 new files standalone: 7 fail / 1 pass (the documented regression-guard case), correct
+> reasons confirmed (no import/syntax errors, no always-pass shells). `npx tsc --noEmit`: 0 errors.
+> Full suite (`npx vitest run`): 92 files / 341 tests — 333 pass (332 pre-existing unchanged + 1 new
+> regression-guard case) / 8 fail (IT-015's own pre-existing documented environment-specific red,
+> unchanged + the 7 new forcing reds above) — no new regressions. `sh .sdlc/trace --check`: gap
+> count unchanged (REQ-012/TASK-018 v3-out-of-scope only) — new items' `traces` all resolve, 0
+> orphan/broken-link. No `src/` changes made.
+
 ### IT-029 — src/main.ts composeConfig(): zero-config default gateway path has a hardcoded timeoutMs fallback (D-G8-4)
-- **status:** red
+- **status:** green
 - **traces:** ARCH-005, REQ-004
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 Gate 8 review route-back (D-G8-4, quality-dimensions.md finding S-1, HIGH — enforces decision D-G,
@@ -1515,11 +1652,11 @@ crash/import error) — exactly matching the review's cited `timeoutMs !== undef
 `claude-agent-sdk-client.ts:78`.
 
 ### IT-030 — Concurrent parallel() dispatch against a near-exhausted budget cannot materially overshoot (D-G8-6)
-- **status:** red
+- **status:** green
 - **traces:** ARCH-002, REQ-002
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 Gate 8 review route-back (D-G8-6, adversarial.md finding V2, MEDIUM cost). **Bug (review
@@ -1693,11 +1830,11 @@ Math.random() → guard; pipeline() throwing stage → null; parallel() throwing
 Red reason: createServer() throws NotImplementedError.
 
 ### VAL-002 — Workflow semantics: nesting, concurrency caps, budget accounting
-- **status:** red
+- **status:** green
 - **traces:** REQ-002
 - **tier:** acceptance
 - **real:** true
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 Gate 7.5 (validator): confirmed real via standalone `npm run start` + `curl`, additionally proving
@@ -1734,11 +1871,11 @@ budget exceeded → subsequent agent() throws; agent counter cap observable.
 Red reason: createServer() throws NotImplementedError.
 
 ### VAL-003 — Real agent execution via Claude Agent SDK
-- **status:** red
+- **status:** green
 - **traces:** REQ-003
 - **tier:** acceptance
 - **real:** true
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 Gate 7.5 (validator): actually run for real against a local Ollama model (`qwen2.5:7b`, reachable
@@ -1778,11 +1915,11 @@ server startup is always attempted so Gate 5 RED is correctly triggered. This gu
 schema-validation defect above was never previously caught — `HAS_PROVIDER` was always false in CI.
 
 ### VAL-004 — Multi-model routing via LiteLLM alias
-- **status:** red
+- **status:** green
 - **traces:** REQ-004
 - **tier:** acceptance
 - **real:** true
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 Gate 7.5 (validator): before this could be run for real at all, a composition-root wiring gap had
@@ -1834,11 +1971,11 @@ server binds to 127.0.0.1; workflow_result polled after completion returns scrip
 Red reason: createServer() throws NotImplementedError.
 
 ### VAL-006 — Lifecycle: suspend / resume / stop with durable state
-- **status:** red
+- **status:** green
 - **traces:** REQ-006
 - **tier:** acceptance
 - **real:** true
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 Gate 7.5 (validator): confirmed real restart durability with a genuine process kill+restart
@@ -1876,11 +2013,11 @@ Cases: suspend → suspended; resume → running; stop terminates;
 resume with edited script re-runs from first changed agent() call; status survives server restart.
 
 ### VAL-007 — Per-agent observability via MCP tools
-- **status:** red
+- **status:** green
 - **traces:** REQ-007
 - **tier:** acceptance
 - **real:** true
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 Gate 7.5 (validator): actually run for real against local Ollama. `workflow_status`'s per-agent
@@ -2003,3 +2140,745 @@ and executes correctly post-restart. Full evidence in `08-validation.md` VAL-015
 File: `tests/acceptance/val-015-registry-persistence.test.ts`.
 Cases: registered workflow survives restart — workflow_list shows it and workflow_run(name) works.
 Red reason: WorkflowCatalog has no persistence — see above.
+
+---
+
+## v2 iteration tests (iter: v2) — Gate 5 RED
+
+### UT-027 — SchedulerPort CRUD + workflow_trigger (DES-016)
+- **status:** green
+- **traces:** DES-016, ARCH-010
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/unit/scheduler-port.test.ts`.
+Clock-hermetic: `CLOCK = new FixedClock(new Date('2020-03-15T10:00:00.000Z'))`.
+Cases: create cron schedule returns a `Schedule` with an id; create resident returns id; create
+once returns id; invalid cron expression → `ErrEnvelope` with code `INVALID_CRON`; unknown
+workflow → `ErrEnvelope`; list schedules returns array containing created schedules; delete removes
+from list; trigger enabled resident → runId; trigger disabled → `SCHEDULE_DISABLED`; setEnabled
+persists the flag.
+Red reason: `Failed to load url ../../src/scheduler.js` — module does not exist yet.
+
+### UT-028 — tick()/computeNextFire()/FakeTicker/bootRearm with injected Clock (DES-017)
+- **status:** green
+- **traces:** DES-017, ARCH-010
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/unit/scheduler-engine.test.ts`.
+Clock-hermetic: `CLOCK = new FixedClock(new Date('2020-06-01T12:00:00.000Z'))`, all time
+comparisons derived as `CLOCK.now() + offset` — no absolute future/past literals.
+Cases: `tick([schedule where nextFire <= now], now)` returns firings array; `tick` skips disabled
+schedule; `tick` skips schedule whose `nextFire > now`; `computeNextFire('* * * * *', 'UTC',
+after)` returns a Date after `after`; timezone-aware `computeNextFire` produces correct next fire;
+missed-fire catch-up fires exactly once (not backfill); `FakeTicker` registers callback,
+`advance()` calls it, `stop()` prevents further calls; `bootRearm(clock)` loads schedules and sets
+`nextFire` relative to `clock.now()`.
+Red reason: `Failed to load url ../../src/scheduler-engine.js` — module does not exist yet.
+
+### UT-029 — buildDashboardModel pure view-model function (DES-018)
+- **status:** green
+- **traces:** DES-018, ARCH-011
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/unit/dashboard-model.test.ts`.
+Cases: empty runs → model with empty list; non-empty runs → list with RunStatusView entries;
+selected view param → matching run highlighted; transcript passed → model contains transcript
+lines; degraded signal → model.degraded truthy; does not mutate input array.
+Red reason: `Failed to load url ../../src/dashboard.js` — module does not exist yet.
+
+### UT-030 — isSelfReferential + safeRelPath pure predicates (DES-019)
+- **status:** green
+- **traces:** DES-019, ARCH-012
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/unit/asset-security.test.ts`.
+Constants: `SELF_BIND = { host: '127.0.0.1', port: 8787 }`, `RESERVED_PREFIX = 'rwe-'`.
+Cases: MCP config pointing at own URL → `isSelfReferential` true; benign MCP config → false;
+skill name `rwe-foo` → true; non-reserved name → false; `safeRelPath('../etc/passwd', ROOT)` →
+null (traversal rejected); `safeRelPath('/etc/passwd', ROOT)` → null (absolute rejected);
+`safeRelPath('skills/guide.md', ROOT)` → normalized safe string.
+Red reason: `Failed to load url ../../src/asset-sync.js` — module does not exist yet.
+
+### UT-031 — classifyTransport pure function (DES-020)
+- **status:** green
+- **traces:** DES-020, ARCH-012
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/unit/mcp-probe-classify.test.ts`.
+Cases: `{type:'http', url:'http://...'}` → `'remote-http'`; `{type:'stdio', command:'npx',
+args:[...]}` → `'npx-stdio'`; arbitrary binary → `'unsupported'`; unknown type → `'unsupported'`.
+McpProbe injection tests are at integration tier (IT-034).
+Red reason: `Failed to load url ../../src/mcp-probe.js` — module does not exist yet.
+
+### UT-032 — Client plugin artifact layout (DES-021)
+- **status:** green
+- **traces:** DES-021, ARCH-013
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/unit/client-plugin-artifact.test.ts`.
+Cases: `plugin/` directory exists at repo root; `plugin/.mcp.json` is valid JSON;
+`plugin/skills/rwe-remote-workflow/SKILL.md` exists; SKILL.md mentions `workflow_status` and
+`workflow_result`; plugin MCP server name is not `'workflow'`; `plugin/skills/` has at least one
+`rwe-*` entry.
+Red reason: `expected false to be true` — `plugin/` directory does not exist yet.
+
+### UT-033 — composeConfig() forwards all v2 config keys (DES-022, composition-root wiring)
+- **status:** green
+- **traces:** DES-016, DES-017, DES-019, DES-020, DES-022, ARCH-010, ARCH-012
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/unit/compose-config-v2-wiring.test.ts`.
+Mocks `node:child_process` and neuters `process.exit` to prevent boot side-effects (same pattern as
+IT-021/022). Tests the exported `composeConfig()` helper from `src/main.ts`.
+
+**D-V2I-4 (ORCH binding, gap-test verifier correction):** the `dashboardPort` forwarding case is
+REMOVED from this item's coverage. There is no separate dashboard port — the dashboard's read-only
+HTTP API (DES-018/TASK-025) is served on the SAME http server/listener as `/mcp` (`src/server.ts`'s
+single `createHttpServer` handler routes by `req.url` prefix, not by a second port). A distinct
+`dashboardPort` config key would be dead/misleading composition-root wiring with nothing to ever
+consult it, so it is dropped rather than pinned as a forcing case. `04-design.md` DES-021/DES-009
+gain an annotated note recording this (single-port decision), not silently dropped.
+
+Cases (post-correction): `schedulerDbPath` forwarded; `assetRoot` forwarded; `litellmPort`
+forwarded — three v2 config keys appear in the returned `ServerConfig`, not undefined.
+Red reason: `expected undefined to be '/tmp/test-sched.db'` (`schedulerDbPath`) / `expected
+undefined to be '/var/rwe/assets'` (`assetRoot`) — still not forwarded by `composeConfig()`.
+`litellmPort` is confirmed already GREEN (forwarded since `IMPL-045`'s TASK-027 route-back) —
+documented transparently as a regression guard, same precedent as UT-020's Anthropic-alias case,
+not a forcing red. Overall item status stays `red` because the `schedulerDbPath`/`assetRoot` cases,
+the item's own remaining core claim, genuinely fail today.
+
+**2026-07-04 gap-test verifier round (defect fix, no `src/` change):** the test itself had a
+tsc-only defect (test-authoring issue, not a product gap) — `FAKE_DEPS.queryImpl` was a plain
+`async () => ({...})` returning a resolved plain object instead of a real async generator, so it
+didn't structurally satisfy `ComposeConfigDeps['queryImpl']` (`typeof sdkQuery`, which extends
+`AsyncGenerator<SDKMessage,void>`); `npx tsc --noEmit` flagged 3 call-site errors (vitest's esbuild
+transform ignored the types so all 3 cases still ran and passed at runtime either way — confirmed
+before this fix). Fixed by (1) converting `queryImpl` to a real `async function*` mirroring
+`hungSession()`/`fakeSuccessSession()` in `tests/integration/main-composition-root.test.ts`, and (2)
+adding `as unknown as Parameters<typeof composeConfig>[1]` on the `FAKE_DEPS` object literal
+(`ComposeConfigDeps` isn't exported from `main.ts`, and the fake `proxyManager` is a test-double
+shape, not a real `LiteLLMProxyManager` instance). `npx tsc --noEmit` now reports 0 errors for this
+file. Also confirmed: `schedulerDbPath`/`assetRoot` are now forwarded by `composeConfig()` in
+`src/main.ts` (lines 111-112) — the implementation caught up since this item was last written red;
+re-run `npx vitest run tests/unit/compose-config-v2-wiring.test.ts` = 3/3 green. Item flipped to
+`green`/`pass`.
+
+### UT-034 — LiteLLMProxyManager hardening: pre-bind port ownership check + process-group cascade-kill (TASK-027, D-V2I-5)
+- **status:** green
+- **traces:** DES-022, ARCH-014
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+**D-V2I-5 (ORCH binding): implementer-self-authored tests, ACCEPTED and formalized here as a
+numbered item so `trace.py` stays complete.** The TASK-027 implementer round found Gate 5's own
+coverage of this task (UT-033's `litellmPort` composeConfig-wiring case + VAL-011's generic
+deploy-artifact checks) never forced `LiteLLMProxyManager`'s own internal hardening behavior — the
+actual "orphan-reap + pre-bind check" deliverable both Gate-3/4 panels called binding — and closed
+that gap directly, deterministically, via the class's own pre-existing `spawnImpl`/`fetchImpl`
+injection seams (no real `litellm` binary needed). Reviewed here (this round) and judged sound:
+assertions are genuine (a real `net.createServer()` TCP bind proves the pre-bind ownership check
+against a real occupied port; `process.kill` is spied to prove the exact `-pid`/`'SIGTERM'`
+process-group signal shape, not merely "some kill happened") — adopted as-authored, no changes.
+
+File: `tests/unit/litellm-proxy-hardening.test.ts`.
+Cases: fails fast with an actionable "already in use" message when the configured port is already
+bound by another process (a real TCP listener on an ephemeral port, `spawnImpl` proven never even
+invoked); starts normally on a genuinely free port (regression guard); `stop()` cascade-kills the
+whole process group via `process.kill(-pid, 'SIGTERM')`, not just the direct child handle
+(`fakeProc.kill` proven NOT called — the group signal alone was sufficient); `stop()` falls back to
+the direct handle's own `.kill()` when the child has no usable `pid` (test-double shape).
+Confirmed green: `npx vitest run tests/unit/litellm-proxy-hardening.test.ts` — 4/4 pass. Real
+behavior already implemented in `src/gateway/litellm-proxy.ts` (`_assertPortFree()`,
+`_killProcessGroup()`), confirmed by reading the source, not merely trusting the green result.
+
+### UT-035 — GatewayClient gains an optional stop()/dispose() lifecycle hook (D-V2I-6)
+- **status:** green
+- **traces:** DES-009, DES-022, ARCH-005, ARCH-014
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+**D-V2I-6 (ORCH binding):** closes the v1 DEPLOY known-open orphan-subprocess item, for the
+`LiteLLMGatewayClient` ("direct-fetch") path specifically — the `ClaudeAgentSdkGatewayClient`
+("sdk") path's own equivalent orphan-litellm-on-shutdown hazard was already closed by TASK-027/
+`IMPL-045`'s `config.proxyManager` tracking + `main.ts`'s shutdown handler calling
+`config.proxyManager?.stop()`. That fix only covers the `gatewayChoice === 'sdk'` branch of
+`composeConfig()`; `main.ts`'s own shutdown-handler comment says so explicitly ("No-op when
+`gateway:'direct-fetch'` (no proxy was created by `composeConfig()` in that branch)"). On the
+`'direct-fetch'` branch, `src/server.ts`'s `createServer()` builds its default gateway as `new
+LiteLLMGatewayClient({ ..., useLiteLLMProxy: config?.useLiteLLMProxy ?? true, ... })` — when no
+`config.proxyManager` is injected (the real, non-test path), `LiteLLMGatewayClient`'s own
+constructor internally builds its OWN private `LiteLLMProxyManager`, invisible to both `main.ts`
+and `Server.close()`. Today neither the `GatewayClient` interface nor `Server.close()` has any way
+to reach/stop that internally-constructed instance, so a real `litellm` subprocess spawned on this
+path outlives a graceful SIGTERM/SIGINT shutdown — the exact orphan-subprocess hazard repeatedly
+reproduced live at Gate 7.5 (round 5/6's "litellm port-4000 collision" finding), for a different
+root cause than the already-fixed 'sdk' branch.
+
+Verifier-authored design extension (same precedent as D-V5/D-F2/D-F6 before it — not yet in
+`04-design.md`, flagged for Gate 6 to finalize): `GatewayClient` (DES-009) grows an optional
+`stop?(): Promise<void>` lifecycle method.
+
+Mock policy (DES-015, unit tier): mocks freely — `LiteLLMProxyManager.prototype.stop` is spied
+(never a real `litellm` binary spawned); the "internally-constructed, no injected proxyManager"
+case is the whole point of this test, so a fake `proxyManager` seam alone can't stand in for it.
+
+File: `tests/unit/gateway-client-stop.test.ts`.
+Cases: (1) `stop()` on a `LiteLLMGatewayClient` built with `useLiteLLMProxy:true` and NO injected
+`proxyManager` (the real production shape) cascades to the internally-constructed
+`LiteLLMProxyManager.prototype.stop`; (2) `stop()` on one built WITH an injected `proxyManager`
+cascades to that fake's own `stop()` the same way (regression guard for the already-supported
+injection seam); (3) `stop()` on a plain client with no proxy ever built (`useLiteLLMProxy` unset)
+is a safe no-op — documented transparently as a non-forcing regression guard (same precedent as
+UT-020's Anthropic-alias case): passes trivially today via `stop?.()` optional-chaining to
+`undefined` since no such method exists at all yet, and must keep passing (no throw) once `stop()`
+is genuinely implemented.
+Red reason: confirmed `npx vitest run tests/unit/gateway-client-stop.test.ts` — cases (1) and (2)
+both fail on `expected "stop" to be called 1 times, but got 0 times` (neither `GatewayClient` nor
+`LiteLLMGatewayClient` declares/implements `stop()` today, confirmed by reading
+`src/gateway/client.ts`) — not an import/syntax error. Case (3) passes today by trivial omission.
+Overall item status is `red` because cases (1)/(2), the item's own core claim, genuinely fail
+today.
+Fix direction (Gate 6's job, not implemented here): `GatewayClient` interface gains an optional
+`stop?(): Promise<void>`; `LiteLLMGatewayClient.stop()` delegates to `this._proxy?.stop()` (same
+field whether injected or internally-constructed); `src/server.ts`'s `Server.close()` calls
+`gateway.stop?.()` alongside `http.close()` so shutdown reaps the proxy regardless of which
+gateway-selection branch built it.
+
+**2026-07-04 gap-test verifier round (incidental confirmation while re-running the E2E-004/VAL-016
+defect-fix files — not one of the 3 reported test defects itself, ground-truthed for accuracy):**
+Gate 6 implemented the fix direction above. Re-run `npx vitest run
+tests/unit/gateway-client-stop.test.ts` = 3/3 green, confirming `GatewayClient.stop()` is now wired
+through both the injected and internally-constructed `LiteLLMProxyManager` cases. Item flipped to
+`green`/`pass`.
+
+### IT-031 — SqliteSchedulerPort persistence survives across instances (DES-016, ARCH-010)
+- **status:** green
+- **traces:** DES-016, ARCH-010
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/integration/schedule-persistence.test.ts`.
+Clock-hermetic: `CLOCK = new FixedClock(new Date('2020-09-01T00:00:00.000Z'))`.
+Uses real SQLite on a temp file; fake catalog + fake runManager (no SUT boundary mocked).
+Cases: schedule registration survives across two `SqliteSchedulerPort` instances on the same
+`dbPath`; `setEnabled` persists across instances; `delete` persists across instances.
+Red reason: `Failed to load url ../../src/scheduler.js` — module does not exist yet.
+
+### IT-032 — FakeTicker.advance() drives tick() and a run fires (DES-017, ARCH-010)
+- **status:** green
+- **traces:** DES-017, ARCH-010
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/integration/scheduler-fires-run.test.ts`.
+Clock-hermetic: `CLOCK = new FixedClock(new Date('2020-11-15T08:00:00.000Z'))`; due schedule has
+`nextFire = CLOCK.now() - 1` (1 ms in the past).
+Cases: `tick([dueSchedule], now)` returns a firing; `FakeTicker.advance()` drives callback and
+run is started; `stop()` prevents further tick callbacks.
+Red reason: `Failed to load url ../../src/scheduler-engine.js` — module does not exist yet.
+
+### IT-033 — Dashboard read-only HTTP endpoints serve RunStore data (DES-018, ARCH-011)
+- **status:** green
+- **traces:** DES-018, ARCH-011
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/integration/dashboard-http.test.ts`.
+No mock of SUT boundary: real `createServer()`, real fetch, real in-process HTTP.
+Cases: `GET /api/runs` returns 200 with a JSON array; a run submitted via `workflow_run` appears in
+`GET /api/runs` polled up to 5 s; `GET /api/runs/:id` returns `RunStatusView` JSON; `GET
+/api/runs/:id/agents/:aid` route is registered (unknown agent → 404 from dashboard logic, not
+router).
+Red reason: `expected 404 to be 200` — `/api/runs` endpoint not registered in `server.ts`.
+
+### IT-034 — v2 MCP tools in tools/list + asset_push/list/delete + McpProbe injection (DES-019, DES-020)
+- **status:** green
+- **traces:** DES-019, DES-020, ARCH-012
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/integration/asset-mcp-tools.test.ts`.
+No mock of SUT boundary: real `createServer()`, real MCP HTTP calls.
+Cases: `tools/list` includes `asset_push`, `asset_list`, `asset_delete`, `schedule_create`,
+`schedule_list`, `schedule_delete`, `workflow_trigger`; `asset_push` stores a skill and
+`asset_list` returns it; `rwe-*` skill name excluded and reported; path traversal in any file name
+rejects the entire push atomically.
+Red reason: `expected [ 'workflow_run', ... ] to include 'asset_push'` — v2 tools not registered.
+
+### E2E-004 — Cron schedule lifecycle: create → list → one-shot auto-completes → delete (REQ-015)
+- **status:** green
+- **traces:** REQ-015, ARCH-010
+- **tier:** e2e
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/e2e/cron-schedule-lifecycle.test.ts`.
+No mock of SUT boundary: real `createServer()`, real MCP HTTP calls.
+Clock note: `Date.now() - 5000` produces an ISO `at` value for the `once` schedule's input field
+(a caller-supplied timestamp, not an engine decision boundary) — not a time bomb.
+
+**D-V2I-3 fix (ORCH binding, gap-test verifier correction):** every schedule target is now
+registered via `workflow_register(name, script)` before `schedule_create`, never a bare
+`workflow_run({name, script})` — the latter runs an ad-hoc script tagged with that name but never
+persists to `WorkflowCatalog` (confirmed root cause: `src/run-manager.ts`'s `start()` only ever
+consults the catalog when `spec.name && !spec.script`), which is exactly why every case in this
+file previously failed on `WORKFLOW_NOT_FOUND` rather than the intended forcing reason. Also adds a
+new case pinning the unregistered-name path itself.
+
+Cases: `schedule_create` cron returns an id; `schedule_create` for a never-registered workflow name
+returns `WORKFLOW_NOT_FOUND` (new); `schedule_list` returns it; one-shot past-`at` schedule
+auto-completes (enabled becomes false, polled up to 5 s); `schedule_delete` removes a schedule.
+Re-run after the D-V2I-3 fix: 4/5 green, 1 red — `schedule_create`/`schedule_list`/`schedule_delete`/
+the new `WORKFLOW_NOT_FOUND` case are all GREEN today (TASK-019's CRUD+catalog-lookup path, incl.
+`src/scheduler.ts`'s own existing `WORKFLOW_NOT_FOUND` check, is already correctly implemented —
+this item's prior "red" was a test-harness defect, not a product gap, exactly as D-V2I-3 predicted).
+The one-shot auto-complete case remains red for a DIFFERENT, legitimate, still-unimplemented reason
+(D-V2I-2, out of this round's scope): `expected true to be false` — the schedule never
+auto-completes because `src/server.ts` does not yet wire the DES-017 tick/driver loop at all (no
+`Ticker`/`tick()` call anywhere in `createServer()`) — the firing engine itself (`scheduler-engine.ts`)
+exists but nothing drives it.
+
+**2026-07-04 gap-test verifier round (defect fix confirmation, no test/`src/` change needed):**
+D-V2I-2's tick/driver loop is now wired in `src/server.ts` (`new RealTicker(500)` + `ticker.start()`
+calling the pure `tick()` every 500ms, plus `ticker.stop()` on `Server.close()`) — implementation
+caught up since this item was last written red. Re-run `npx vitest run
+tests/e2e/cron-schedule-lifecycle.test.ts` = 5/5 green (all cases, including the one-shot
+auto-complete case). Item flipped to `green`/`pass`.
+
+### E2E-005 — Resident workflow_trigger: enabled starts run, disabled returns SCHEDULE_DISABLED (REQ-015)
+- **status:** green
+- **traces:** REQ-015, ARCH-010
+- **tier:** e2e
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/e2e/resident-trigger.test.ts`.
+No mock of SUT boundary: real `createServer()`, real MCP HTTP calls.
+
+**D-V2I-3 fix (ORCH binding, gap-test verifier correction):** same fix as E2E-004 — every
+`workflow_trigger` target is registered via `workflow_register` first. Also adds a new case pinning
+the unregistered-name path.
+
+Cases: `workflow_trigger` on enabled resident returns a `runId` immediately; that run reaches
+terminal status; `workflow_trigger` on disabled resident returns error code `SCHEDULE_DISABLED`;
+`workflow_trigger` for a never-registered workflow name returns `WORKFLOW_NOT_FOUND` (new);
+triggered run appears in `workflow_list`.
+Re-run after the D-V2I-3 fix: 3/4 green, 1 red (the new case) — the enabled/disabled/list cases are
+all GREEN today (same TASK-019 CRUD+resident-trigger path already correct, confirmed by E2E-004's
+own re-run). Red reason for the new case: `expected undefined to be 'WORKFLOW_NOT_FOUND'` —
+`src/scheduler.ts`'s `trigger()` only checks the catalog indirectly, by calling
+`this._runManager.start({name, args})` when no resident schedule row exists for that workflow at
+all; `RunManager.start()` then throws `CatalogNotFoundError`, uncaught inside `trigger()`, which
+propagates to `server.ts`'s `tools/call` handler's generic `catch` and comes back as a **top-level
+JSON-RPC error** (`{jsonrpc,...,error:{code:-32000,message}}`), never the tool-result `{error:
+{code:'WORKFLOW_NOT_FOUND'}}` envelope shape `schedule_create` already produces for the identical
+unknown-workflow case — a real, confirmed gap in `workflow_trigger`'s own error translation, not a
+test-authoring mistake (matches `schedule_create`'s existing pattern it should mirror).
+
+**2026-07-04 gap-test verifier round (defect fix confirmation, no test/`src/` change needed):**
+`src/scheduler.ts`'s `trigger()` now translates the unregistered-name case to the tool-result
+`{error:{code:'WORKFLOW_NOT_FOUND',...}}` envelope (line 211), mirroring `schedule_create`'s
+existing pattern — implementation caught up since this item was last written red. Re-run `npx
+vitest run tests/e2e/resident-trigger.test.ts` = 4/4 green. Item flipped to `green`/`pass`.
+
+### VAL-008 — Dashboard: read-only HTTP API returns RunStatusView per REQ-008 (REQ-008)
+- **status:** green
+- **traces:** REQ-008, DES-018, ARCH-011
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/acceptance/val-008-dashboard.test.ts`.
+No mock of SUT boundary: real `createServer()`, real fetch.
+Cases: `GET /api/runs` returns 200 with a submitted run; `GET /api/runs/:id` returns `RunStatusView`
+with a `phases` array; non-existent run → 404; non-existent agent → 404 with JSON error body;
+`POST /api/runs` rejected with HTTP ≥ 400 (read-only enforcement).
+Red reason: `expected 404 to be 200` — dashboard HTTP routes not registered.
+
+### VAL-009 — Asset sync: push/list/delete/recursion-guard/path-safety per REQ-009 (REQ-009)
+- **status:** green
+- **traces:** REQ-009, DES-019, DES-020, ARCH-012
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/acceptance/val-009-asset-sync.test.ts`.
+No mock of SUT boundary: real `createServer()`, real MCP HTTP calls.
+Cases: `asset_push` stores a skill and `asset_list` returns it; `asset_delete` removes it; MCP
+config not network-reachable → rejected with structured error code; `rwe-*` skill excluded and
+reported (not a hard error); path traversal in any file name → entire push atomically rejected.
+Red reason: `expected [...] to include 'asset_push'` — v2 asset tools not registered.
+
+### VAL-010 — Client plugin artifact satisfies REQ-010 install contract (REQ-010)
+- **status:** green
+- **traces:** REQ-010, DES-021, ARCH-013
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/acceptance/val-010-client-plugin.test.ts`.
+Artifact-only test — no live server needed (DES-021 is a client-side artifact).
+Cases: `plugin/` exists at repo root; `plugin/.mcp.json` is valid JSON; `SKILL.md` exists under
+`rwe-remote-workflow/`; MCP server name does not collide with `'workflow'` namespace; `.mcp.json`
+references an HTTP URL; `plugin/skills/` has at least one `rwe-*` entry.
+Red reason: `expected false to be true` — `plugin/` directory does not exist yet.
+
+### VAL-011 — Deploy packaging artifacts satisfy REQ-011 production criteria (REQ-011)
+- **status:** green
+- **traces:** REQ-011, DES-022, ARCH-014
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/acceptance/val-011-deploy.test.ts`.
+Artifact-only test — checks files on disk, not a live server.
+Cases: `docker-compose.yml` exists at repo root; docker-compose has `"litellm"` profile;
+`deploy/rwe.service` exists; systemd unit contains `Restart=on-failure`; `scripts/smoke.sh`
+exists; `smoke.sh` references `workflow_run`; `DEPLOY.md` mentions the direct-fetch/SDK path;
+`DEPLOY.md` mentions `asset_push`/ssh-tunnel/vpn for remote access.
+Red reason: `expected false to be true` — `docker-compose.yml` and `deploy/rwe.service` do not
+exist yet.
+
+### VAL-016 — Execution modes: cron schedule / one-shot auto-complete / resident trigger (REQ-015)
+- **status:** green
+- **traces:** REQ-015, DES-016, DES-017, ARCH-010
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+File: `tests/acceptance/val-016-execution-modes.test.ts`.
+No mock of SUT boundary: real `createServer()`, real MCP HTTP calls.
+Clock note: `Date.now() - 2000` produces an ISO `at` input value for the once schedule (caller
+timestamp, not an engine decision) — not a time bomb.
+
+**D-V2I-3 fix (ORCH binding, gap-test verifier correction):** same fix as E2E-004/E2E-005 — every
+schedule/trigger target is registered via `workflow_register(name, script)` first, never a bare
+`workflow_run({name, script})` (see E2E-004's own note for the exact root cause). Two new cases pin
+the unregistered-name path for both `schedule_create` and `workflow_trigger`.
+
+Cases: `schedule_create` cron returns an id; `schedule_create` for a never-registered workflow name
+returns `WORKFLOW_NOT_FOUND` (new); `schedule_list` shows it; `schedule_delete` removes it; one-shot
+past-`at` auto-completes (enabled becomes false, polled); `workflow_trigger` on enabled resident
+returns a `runId` that reaches terminal status; `workflow_trigger` on disabled resident returns
+error code `SCHEDULE_DISABLED`; `workflow_trigger` for a never-registered workflow name returns
+`WORKFLOW_NOT_FOUND` (new).
+Re-run after the D-V2I-3 fix: 6/8 green, 2 red — both reds are the SAME two legitimate,
+still-unimplemented gaps E2E-004/E2E-005 pin (out of this round's scope, tracked there): the
+one-shot auto-complete case (`expected true to be false` — DES-017 tick/driver loop not wired in
+`server.ts`, D-V2I-2) and the new `workflow_trigger` unregistered-name case (`expected undefined to
+be 'WORKFLOW_NOT_FOUND'` — `scheduler.ts`'s `trigger()` doesn't catch/translate the
+`CatalogNotFoundError` `RunManager.start()` throws for a target with no resident schedule row at
+all). All 6 remaining cases (both `schedule_create` cases, `schedule_list`, `schedule_delete`, and
+both non-new `workflow_trigger` cases) are GREEN today — confirms TASK-019's CRUD+resident-trigger
+path is already correctly implemented; this item's prior "red" was the test harness calling the
+wrong registration tool, not a product gap, exactly as D-V2I-3 predicted.
+
+**2026-07-04 gap-test verifier round (defect fix confirmation, no test/`src/` change needed):** both
+remaining gaps are now fixed in `src/` (see E2E-004's/E2E-005's own notes: DES-017 tick/driver loop
+wired in `server.ts`; `scheduler.ts`'s `trigger()` now translates the unregistered-name case to
+`WORKFLOW_NOT_FOUND`). Re-run `npx vitest run tests/acceptance/val-016-execution-modes.test.ts` =
+8/8 green. Item flipped to `green`/`pass`.
+
+### IT-035 — mcp-config asset wiring into the SDK gateway per-call options.mcpServers (D-V2V-1, REQ-009)
+- **status:** green
+- **traces:** DES-019, DES-020, REQ-009
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+**Gate 6 route-back closed this GREEN (IMPL-062); re-confirmed standalone by Gate 7.5 v2 round 2
+(2026-07-04): `npx vitest run tests/integration/asset-mcp-config-wiring.test.ts` → 1/1 pass.** See
+08-validation.md "v2 ROUND 2" for the independent real-process (no test-tier fakes) confirmation of
+the same wiring via a real spawned CLI subprocess's own `--mcp-config` flag.
+
+File: `tests/integration/asset-mcp-config-wiring.test.ts`.
+Mock policy (integration tier): real `composeConfig()` + real `createServer()` + real HTTP
+`asset_push`/`workflow_run`/`workflow_status` round trip (no mock of asset storage, submission,
+sandbox, or run lifecycle); only the third-party SDK `query()` export (`queryImpl` seam) and the
+managed LiteLLM proxy subprocess (fake `spawnImpl`/`fetchImpl`) are faked — no real network/process
+I/O. The mcp-config's own live-probe (DES-020) is satisfied via the pre-existing `FakeMcpProbe`
+injectable seam so this test needs no real network reachability check either.
+Pins D-V2V-1 (binding ORCH ruling on 08-validation.md VAL-017's finding): an accepted mcp-config
+asset must be threaded into the NEXT `agent()` call's real `Options.mcpServers`; `strictMcpConfig`
+stays `true`.
+Case: push an `mcp-config` asset (`{type:'http', url:'https://example.com/demo-mcp'}`) named
+`demo-mcp`, confirm it's stored, run a workflow with one `agent()` call, poll to a terminal status,
+then inspect the captured `queryImpl` call's `options.mcpServers`.
+Red reason: `expected undefined not to be undefined` — `options.mcpServers` is never set anywhere in
+`ClaudeAgentSdkGatewayClient` today (confirmed by reading `src/gateway/claude-agent-sdk-client.ts`);
+`composeConfig()`/`createServer()` never read `AssetSyncService`'s stored assets at all. The push
+itself succeeds and the run reaches a terminal status before the forcing assertion — not an
+import/syntax error, not an always-pass shell.
+
+### IT-036 — skill asset materialization + scoped settingSources/cwd (D-V2V-1, REQ-009)
+- **status:** green
+- **traces:** DES-019, REQ-009
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+**Gate 6 route-back closed this GREEN (IMPL-062); re-confirmed standalone by Gate 7.5 v2 round 2
+(2026-07-04): `npx vitest run tests/integration/asset-skill-materialization-wiring.test.ts` → 2/2
+pass.** See 08-validation.md "v2 ROUND 2" for the independent real-process confirmation (real
+`asset_push` + real `workflow_run` + real on-disk `.claude/skills/` materialization inspection, no
+test-tier fakes).
+
+File: `tests/integration/asset-skill-materialization-wiring.test.ts`.
+Mock policy (integration tier): same seams as IT-035 (real composeConfig()+createServer()+HTTP
+round trip + real on-disk workspace inspection; only the third-party SDK query() export + managed
+LiteLLM proxy subprocess faked).
+Pins D-V2V-1 (binding ORCH ruling on 08-validation.md VAL-017's finding): a pushed skill must be
+MATERIALIZED into the run workspace's own `.claude/skills/` dir, with the SDK call's `cwd` re-scoped
+to that per-run workspace (not the whole server `workRoot`) and `settingSources` becoming
+`['project']` (never `'user'`/`'local'` — the D-F11 host-contamination isolation stays preserved,
+scoped per run, host-level sources stay disabled).
+Cases: (1) push a `demo-skill` asset, run a workflow with one `agent()` call, confirm the captured
+`queryImpl` call's `options.cwd` equals the run's own workspace
+(`workFolder('_adhoc')/runs/<runId>`, per WorkflowCatalog's own documented on-disk convention) and
+`options.settingSources` is exactly `['project']`, and confirm the skill file is physically
+materialized at `<workspace>/.claude/skills/demo-skill/SKILL.md` with matching content. (2) this
+system's own `rwe-*` skill stays excluded end-to-end — never stored (D4 recursion guard, unchanged),
+never materialized into any run workspace either.
+Red reason (case 1): `expected '<workRoot>' to be '<workRoot>/workflows/_adhoc/runs/<runId>'` —
+`cwd` is fixed once at `ClaudeAgentSdkGatewayClient` construction to the bare server `workRoot`,
+never re-scoped per call to the run's own workspace; `settingSources` stays hard-coded `[]`; nothing
+copies the stored skill into any run workspace — not an import/syntax error.
+Case 2 is confirmed already GREEN today (intentional regression guard, not a false forcing red,
+same documented convention as IT-016's "unknown type still fails fast" sub-case) — the recursion
+guard already rejects storage of a `rwe-*` asset (unrelated to this route-back), and nothing
+materializes anything today either way, so this fact stays true both before and after the fix.
+
+### VAL-018 — Literal browser-renderable dashboard page at GET /dashboard (D-V2V-2, REQ-008)
+- **status:** green
+- **traces:** DES-018, REQ-008
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+**Gate 6 route-back closed this GREEN (IMPL-063); re-confirmed standalone by Gate 7.5 v2 round 2
+(2026-07-04): `npx vitest run tests/acceptance/val-018-dashboard-browser-ui.test.ts` → 5/5 pass.**
+See 08-validation.md "v2 ROUND 2" for the independent real-process confirmation (real HTTP GET
+`/dashboard` and `/dashboard/<runId>`, real live-update-without-reload demonstration).
+
+File: `tests/acceptance/val-018-dashboard-browser-ui.test.ts`.
+Mock policy (acceptance tier — E2E/VAL must NOT mock the SUT's own boundary): real `createServer()`,
+real HTTP GET requests against the real running server; no fakes at all (the dashboard route needs
+no LLM/gateway call to exercise).
+Pins D-V2V-2 (binding ORCH ruling on 08-validation.md's Gate 7.5 round-1 finding: DES-018 shipped a
+JSON-only transport with "no HTML page/DOM to open in a literal browser tab", but the user's own
+Gate-1 choice was explicit: 瀏覽器即時儀表板 with run list/agent tree/transcript/token usage). Ships
+a minimal self-contained static HTML/JS dashboard at `GET /dashboard` on the SAME server/port as
+`/mcp`/`/api/runs*` (one data model, two transports — now genuinely two).
+Cases: `GET /dashboard` returns a real HTML page (`text/html`, contains `<html`) whose client JS
+fetches the run list from `/api/runs`; the page's drill-in view renders the phase/agent tree with
+per-agent state + token usage (body references `agentId`/`tokens`/`state`); a drill-in run URL
+(`/dashboard/<runId>`) is served, not a hard 404 (SPA-style routing); an auto-update mechanism (SSE
+`new EventSource(` or polling `setInterval(`) exists so agent state/tokens refresh without a manual
+reload; a transcript view references the per-agent transcript endpoint (`/api/runs/.../agents/...`).
+Red reason: all 5 cases fail with the server's own generic JSON-RPC 404 `{"error":{"code":-32601,
+"message":"Not found"}}` body/`content-type: application/json` — confirmed by reading `src/server.ts`:
+its HTTP handler only ever routes `/api/runs*` (JSON) or `/mcp` (JSON-RPC); no `/dashboard` branch
+exists anywhere — not an import/syntax error.
+
+---
+
+## Gate 8 v2 review route-back — RED tests for D-V2G8-1 (V3 HIGH security) and D-V2G8-2 (V4 MEDIUM regression)
+
+Pins two BINDING decisions from the v2 Gate 8 re-review (`.panel/review/adversarial.md`) ahead of
+implementation. No `src/` changes made in this round — fakes/local stubs only, per DES-015's unit/
+integration mock policy. All 4 new test files run standalone: 9 fail (correct reasons: `undefined`
+where a `function` is required, `bypassPermissions` still literally equal, `['Read','Write','Bash']`
+still contains `'Bash'`, a real key still `undefined` on the fake spawn call, concurrency still
+collapses to 1) / 4 pass (documented positive controls / already-holding invariants — see each entry
+below). Full suite (`npx vitest run`): 356 total / 345 pass / 11 fail — the 9 new reds above plus 2
+pre-existing, unrelated reds already on disk before this round (`IT-015`, documented
+environment-specific `test_defect` since the 2026-07-03 12:35 journal entry; `IT-024`
+"in-flight AgentRecord state" — reconfirmed a pre-existing flake, passes standalone
+`npx vitest run tests/integration/in-flight-agent-state.test.ts` → 1/1 pass, unrelated to any file
+touched this round). `sh .sdlc/trace --check`: 4 new items, all traces resolve (ARCH-002/003/005/007
+all exist in `02-architecture.md`), 0 new orphan/broken-link.
+
+### UT-039 — ClaudeAgentSdkGatewayClient: drop bypassPermissions + curated default tool surface excludes Bash unless agentType opts in
+- **status:** green
+- **traces:** ARCH-007, ARCH-005
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+**Gate 6 v2g8-fix closeout (IMPL-064):** 3/3 green — `permissionMode` is now `'default'` (never
+`'bypassPermissions'`) with a real `canUseTool` boundary callback (UT-040) as the actual arbiter of
+every tool call, and `BUILT_IN_CORE_TOOLS` drops `'Bash'` (now `['Read','Write']`) so the DEFAULT
+tool surface excludes it; the explicit-opt-in case (case 3) stays green, unweakened.
+
+File: `tests/unit/claude-agent-sdk-gateway-permission-hardening.test.ts`.
+Mock policy (unit tier): `vi.mock('@anthropic-ai/claude-agent-sdk')` — same seam UT-018/024/026
+already use; everything else (the real `ClaudeAgentSdkGatewayClient`) is real.
+Pins D-V2G8-1(a)(b) (binding, Gate 8 v2 review `adversarial.md` finding V3 HIGH — the untrusted
+sandboxed script reaches host secrets & other runs via the agent CLI's Bash tool because
+`permissionMode:'bypassPermissions'` + a Bash-capable default tool set + no fs jail together defeat
+ARCH-007's confinement invariant and ARCH-005's key-custody claim).
+Cases: (1) the session is never constructed with `permissionMode:'bypassPermissions'` — RED, today's
+`claude-agent-sdk-client.ts:222` hard-codes it unconditionally; (2) the DEFAULT tool surface (no
+per-call `opts.allowedTools`, no configured `defaultAllowedTools` — i.e. no agentType opted in)
+excludes `'Bash'` from both `options.allowedTools` and `options.tools` — RED, today's
+`BUILT_IN_CORE_TOOLS = ['Read','Write','Bash']` (`:115`) includes it unconditionally; (3) an
+agentType that explicitly opts in (its own curated `allowedTools` carries `'Bash'`) still gets it —
+**passes today** (documents that the opt-in path itself must stay available; the fix must narrow the
+default, not remove the opt-in).
+Red reason: read `src/gateway/claude-agent-sdk-client.ts:113-115,222` directly — `permissionMode`
+is a literal `'bypassPermissions'` string and `BUILT_IN_CORE_TOOLS` includes `'Bash'` with no
+opt-in gate at all — not an import/syntax error.
+
+### UT-040 — ClaudeAgentSdkGatewayClient: path-boundary enforcement at the tool layer (agent cannot read outside its own run workspace root)
+- **status:** green
+- **traces:** ARCH-007
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+**Gate 6 v2g8-fix closeout (IMPL-064):** 5/5 green — `_invokeOnce` now wires `options.canUseTool` to
+a `makeCanUseTool(workspace ?? cwd)` callback that resolves each candidate path (a Read/Write
+`file_path` or a Bash `blockedPath`) via `path.resolve` against the workspace root, denying anything
+outside it (proxy config, sibling run, `../` escape) and allowing genuinely-inside reads.
+
+File: `tests/unit/claude-agent-sdk-gateway-workspace-boundary.test.ts`.
+Mock policy (unit tier): `vi.mock('@anthropic-ai/claude-agent-sdk')` — the assertion is entirely
+about the `options.canUseTool` callback this client wires (the SDK's own documented tool-approval
+hook, `sdk.d.ts:1328`/`CanUseTool`) and how it decides, not a real spawned CLI subprocess.
+Pins D-V2G8-1(d) (binding — run workspaces mutually isolated AND reads confined to the run
+workspace subtree; an agent cannot read outside its own workspace root; path-boundary enforcement
+at the tool layer). Directly reproduces the V3 HIGH failure scenario evidence: "a workflow script
+calls `agent(\"run: cat <workRoot>/litellm config or ../otherRun/journal.jsonl...\")`" — since
+`RunManager`'s default workRoot places every run's workspace as a SIBLING directory under the same
+`os.tmpdir()` parent as `LiteLLMProxyManager`'s own config.yaml tempdir, both are `../`-reachable
+from a run's own cwd today.
+Cases: (1) a `canUseTool` boundary callback is wired at all (not left unset) — RED, `options`
+never sets it anywhere in `_invokeOnce`; (2) denies a `Read` at an absolute path outside the
+workspace (the LiteLLM proxy's own config.yaml path) — RED (same reason, `canUseTool` undefined);
+(3) denies a `Read` of another run's sibling workspace/journal — RED; (4) denies a `Bash` command
+whose own `blockedPath` (the SDK's own documented field for a Bash-triggered escape) leaves the
+workspace — RED; (5) allows a `Read` genuinely inside the workspace root (positive control for the
+eventual fix) — RED (same reason: nothing to call).
+Red reason: read `src/gateway/claude-agent-sdk-client.ts:218-249` directly — the `options` object
+built in `_invokeOnce` has no `canUseTool` key anywhere in the file; `call.options?.canUseTool` is
+`undefined` in every case, confirmed via `typeof canUseTool === 'undefined'` — not an import/syntax
+error.
+
+### UT-041 — Provider API keys move out of any agent-reachable path (proxy receives them via env, the spawned agent CLI's env/cwd does not)
+- **status:** green
+- **traces:** ARCH-005
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+**Gate 6 v2g8-fix closeout (IMPL-064):** 3/3 green — `litellm-proxy.ts`'s `_doStart()` now spawns
+with an explicit `env: { ...process.env }`, so the proxy subprocess's real-credential custody is a
+testable statement instead of an implicit Node default; the two already-green contrast cases
+(agent-CLI env, config.yaml) are unweakened.
+
+File: `tests/unit/provider-keys-not-agent-reachable.test.ts`.
+Mock policy (unit tier): `LiteLLMProxyManager`'s own pre-existing `spawnImpl`/`fetchImpl` injection
+seams (no real `litellm` binary, same pattern as `litellm-proxy-hardening.test.ts`);
+`ClaudeAgentSdkGatewayClient`'s own pre-existing `vi.mock('@anthropic-ai/claude-agent-sdk')` seam.
+Pins D-V2G8-1(c) (binding — provider API keys move OUT of any agent-reachable path; injected into
+the LiteLLM proxy via env/secret, never an on-disk file under a run cwd or otherwise readable from a
+run workspace).
+Cases: (1) `LiteLLMProxyManager` spawns the proxy subprocess with the real provider keys explicitly
+present in its own `env` — RED, `litellm-proxy.ts`'s `_doStart()` never sets an explicit `env` key
+at all on the `spawnImpl(...)` call, so there is no testable statement the proxy subprocess actually
+receives what it needs (today this only "works" via Node's own implicit `process.env` inheritance
+when a REAL `child_process.spawn` is used, which a test-injected `spawnImpl` fake never exercises);
+(2) the same real keys never reach the spawned agent CLI subprocess's own env — **passes today**
+(D-G8-5's `buildSubprocessEnv` allowlist already holds, re-asserted here for contrast in the same
+file to pin the "proxy yes, agent no" custody split end-to-end); (3) the generated `config.yaml`
+never contains a raw provider key value — **passes today** (`generateLiteLLMConfig` only ever emits
+model-routing lines, no key material — documents the on-disk half of the custody split already
+holds; the still-open gap is exclusively (1), the missing explicit proxy-env injection).
+Red reason: read `src/gateway/litellm-proxy.ts`'s `_doStart()` directly — the `spawnImpl(...)` call
+has no `env` option in its call-site options object at all; the fake `spawnImpl`'s captured call
+args show `spawnOpts.env` is `undefined` — not an import/syntax error.
+
+### IT-037 — RunGuard budget-estimate reservation preserves parallel() concurrency under a bounded budget (V4 regression pin)
+- **status:** green
+- **traces:** ARCH-002, ARCH-003
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v2
+
+**Gate 6 v2g8-fix closeout (IMPL-064):** 2/2 green — `RunGuard.reserve()` now reserves a flat half
+(`this.total / 2`) of the total budget per call (capped by `remaining`) instead of 100% of it, so up
+to 2 concurrent calls per burst clear the reservation gate before a 3rd (or later) hits a real
+`assertBudget()` check against what's actually left; re-ran `parallel-budget-concurrency.test.ts`
+(IT-030, the pre-existing D-G8-6 hard-ceiling regression guard) standalone — still green, confirming
+this doesn't reopen the original TOCTOU overshoot.
+
+File: `tests/integration/parallel-budget-estimate-reservation.test.ts`.
+Mock policy (integration tier): real `RunManager` + real `RunGuard`/`AgentExecutor` + real sandbox
+child process + real `parallel()` VM guard (`src/sandbox/guards.ts`); only the `GatewayClient`
+(third-party network) is faked, with an artificial resolve delay (same technique `IT-030` already
+uses) so concurrent overlap is deterministically observable, not a timing coin-flip.
+Pins D-V2G8-2 (binding — `RunGuard.reserve()` must NOT reserve 100% of remaining budget per call;
+reserve only a per-call estimate, or an atomic post-hoc accounting that still blocks real overshoot,
+so `parallel()` keeps bounded concurrency while the hard ceiling still holds — a regression pin
+against my own v1 `D-G8-6` overcorrection, Gate 8 v2 review `adversarial.md` finding V4 MEDIUM).
+Cases: (1) a generously-bounded budget (headroom for all 3 calls) still lets `parallel([a,b,c])`
+dispatch more than one call concurrently to the gateway (`maxInFlight() > 1`) — RED, today's
+`reserve()` (`run-guard.ts:79-84`) claims the ENTIRE remaining budget for the FIRST call to arrive,
+so every other concurrent call throws `BudgetExceededError` before ever reaching the gateway —
+`maxInFlight()` is `1` today, never more, regardless of how much budget headroom actually exists;
+(2) the hard budget ceiling still throws once the budget is genuinely insufficient for every call
+(not all 3 calls can succeed; real spend cannot overshoot the ceiling by more than ~1 call's worth)
+— **passes today** (full serialization trivially keeps this true; a forward-compatible pin that the
+eventual per-call-estimate fix must not reopen the original V2 overshoot).
+Red reason: read `src/run-guard.ts:74-84` and `src/run-manager.ts:331-338` directly — `reserve()`
+computes `this.total - this._spent - this._reserved` (100% of remaining) with no per-call estimate
+anywhere, and `assertBudget()`/`reserve()` are called with no `await` between them — confirmed via
+the concurrency counter (`maxInFlight()` observed `=== 1`), not a timing fluke or import/syntax error.

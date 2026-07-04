@@ -124,6 +124,20 @@ Boundary/error: at exactly `concurrency` in-flight, the (N+1)th `acquireSlot()` 
 > (unbounded budget) when `total===null`, matching this section's existing `remaining()=Infinity`
 > convention. See `src/run-guard.ts`, `src/run-manager.ts`.
 
+> **Gate 8 v2 review route-back note (D-V2G8-2, IMPL-064/067; review finding V4 MEDIUM — a
+> regression against D-G8-6 directly above):** `reserve()` reserving the run's ENTIRE remaining
+> budget for ONE call overcorrected — under `parallel([a,b,c])`, the first concurrent `agent()` call
+> to reach `reserve()` monopolized 100% of whatever budget remained, so every other call in the SAME
+> burst synchronously threw `BudgetExceededError` before ever reaching the gateway: concurrency
+> collapsed to exactly 1, always, regardless of how much real headroom the budget had (REQ-002's
+> own `parallel()` concurrency promise broken). Fix: `reserve()` now reserves
+> `Math.min(remaining, this.total / 2)` — a flat half of the total budget per call, not the whole
+> remainder — so a burst can push at most 2 calls' worth of reservations through before a 3rd (or
+> later) hits a real `assertBudget()` check against what's genuinely left. Restores concurrency for
+> the common (generously-bounded) case (IT-037) while the hard ceiling still holds once a budget is
+> tight for real (IT-030's near-exhausted regression guard, re-verified green). See
+> `src/run-guard.ts`.
+
 ### DES-003 — Run state machine + suspend/resume/stop lifecycle
 - **status:** draft
 - **traces:** ARCH-002, TASK-004
@@ -534,6 +548,43 @@ Boundary/error (D-G, user-confirmed v1): unreachable/hung provider → bounded `
 > configuration happens to exist on the host machine running this product. See
 > `src/gateway/claude-agent-sdk-client.ts`, `src/main.ts`, `rwe.config.example.json`.
 
+> **Gate 8 v2 review route-back note (D-V2G8-1(a)(b)(c)(d), IMPL-064/067; review finding V3 HIGH):**
+> the D-F11 tool-curation note directly above closed the "which tools are on the wire" half of the
+> tool-use defect but left the PERMISSION half wide open: `options.permissionMode` was hard-coded
+> `'bypassPermissions'` (skips every tool-call decision outright, headless-safe but with zero
+> arbitration) paired with a default tool set that (pre-this-note) still included `'Bash'` and no
+> path-argument check at all — together these let any `agent()` prompt drive a fully-privileged
+> shell, or a Read/Write call reach any path on the host (the LiteLLM proxy's own `config.yaml`, a
+> sibling run's workspace/journal — both literally reachable via `../` from a run's own `cwd` since
+> `RunManager`'s default `workRoot` places every run's workspace as a sibling directory), closing
+> neither the key-exfiltration nor the cross-run-read path this finding named. Fix, four parts:
+> **(a)** `permissionMode` is now `'default'`, not `'bypassPermissions'` — headless behavior is
+> preserved because the callback in (d) below always resolves synchronously, never `null`/pending.
+> **(b)** `BUILT_IN_CORE_TOOLS` drops `'Bash'` (now `['Read','Write']`) — a privileged shell is now
+> an explicit `agentType`/`opts.allowedTools`/`defaultAllowedTools` opt-in, never silently default.
+> **(c)** `LiteLLMProxyManager._doStart()`'s subprocess spawn grows an explicit `env: {
+> ...process.env }` — the ONE place real provider keys need to live, now a real, testable custody
+> statement instead of an implicit Node default; the agent-facing CLI subprocess's own
+> `buildSubprocessEnv` allowlist (D-G8-5) is untouched — the "proxy yes, agent no" split holds.
+> **(d)** a new `isInsideWorkspace(candidate, root)` (`path.resolve` + `root + path.sep`-prefix
+> check, so a sibling dir sharing a string prefix is never wrongly treated as "inside") backs a
+> shared `toolUsePreCheck(root, candidate)` decision, wired into `options.canUseTool` (inspects a
+> tool call's own path argument — `input.file_path` for Read/Write, `options.blockedPath` for a Bash
+> escape — against `req.workspace ?? this._config.cwd`) **and** into an `options.hooks.PreToolUse`
+> matcher. Both are wired, not just `canUseTool` alone, because real-SDK verification (not just the
+> mocked unit tests) surfaced a genuine shadowing gap: the SDK's own
+> `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` runtime warning documents that a BARE `allowedTools` entry
+> (e.g. the default `'Read'`) auto-approves that tool call before `canUseTool` is ever consulted —
+> and (b)'s D-F11-mandated non-empty bare `allowedTools` default means the built-in Read/Write case
+> hits exactly that shadow. `hooks.PreToolUse` (the SDK's own suggested mechanism for this exact
+> case) fires for every tool call regardless of that shadow, so the workspace boundary holds either
+> way — confirmed end-to-end against a real `@anthropic-ai/claude-agent-sdk` session (not just the
+> mocked `UT-039/040/041` unit tests): a genuine out-of-workspace `Read` (`/etc/hostname`) is denied
+> with `path outside run workspace: ...`; a genuine in-workspace `Read` still succeeds. No workspace
+> root known at all (neither `req.workspace` nor a configured `cwd`) -> nothing to enforce against,
+> allow (unchanged legacy behavior for direct unit-tier calls). See
+> `src/gateway/claude-agent-sdk-client.ts`, `src/gateway/litellm-proxy.ts`.
+
 > **Gate 8 route-back note (D-G8-4, IMPL-051; review finding S-1, decision D-G):** this section's
 > own boundary text promises "bounded `timeoutMs` (config, sane default) ... never hangs" — but the
 > *default* production gateway path (`ClaudeAgentSdkGatewayClient`, selected by `main.ts`'s
@@ -720,6 +771,211 @@ Per-REQ real-tier path (what proves it, end to end):
 
 Per-tier mock policy: **unit** may mock freely — RunStore(InMemory), AgentSpawner(fake), GatewayClient(fake), Clock(Fixed) — to isolate logic. **integration** uses real adjacent components (real sandbox child + real RunStore), mocking ONLY third-party network you genuinely cannot run. **E2E/acceptance MUST NOT mock the SUT's own boundaries** (no faking the sandbox, store, or GatewayClient); external LLM providers go through a local Ollama or sandbox/test credentials. This is what lets Gate 7.5 actually run the system and blocks mock-only false-green.
 
+## Iteration v2 — extension-module design (ARCH-010..014; attaches at v1 seams, zero v1 rework)
+
+> **Panel provenance (v2):** `.panel/design/adversarial.r1.md` (interface-contract / boundary-error /
+> testability, opus-4-8) + `.panel/design/quality-dimensions.r1.md` (observability / replaceability /
+> consumability / self-sustainability, sonnet-5). Round-1 headlines were largely complementary (contract+
+> boundary+testability seams vs cross-cutting concerns landing on the same seams); the two material
+> conflicts (asset live-probe drop-vs-keep; scheduler catch-up backfill; asset re-probe) are reconciled in
+> the v2 Decision rationale at the foot of this file — synthesized directly, no round-2 needed.
+> Safety_class=QM → no functional-safety/cybersecurity lenses. All v2 tools return the DES-001
+> `ResultEnvelope` and pass the ARCH-009 auth no-op seam unchanged; new tools get real
+> `TOOL_METADATA.inputSchema` in the D-G8-3 shape (do NOT repeat the v1 placeholder-schema finding).
+
+### DES-016 — Scheduler port + Schedule record + persistence + `workflow_trigger`
+- **status:** draft
+- **traces:** ARCH-010, TASK-019
+- **signature:** discriminated `Schedule` union persisted in SQLite; `SchedulerPort` CRUD + resident trigger over Catalog(ARCH-007)+RunManager(ARCH-002); all tools return `ResultEnvelope`.
+- **iter:** v2
+
+```ts
+type Schedule =                        // each arm carries optional budget → the run it starts (KP-9)
+  | { kind:'cron';     id:string; workflow:string; args?:unknown; budget?:number|null; cron:string; tz?:string; enabled:boolean }
+  | { kind:'once';     id:string; workflow:string; args?:unknown; budget?:number|null; at:string /*ISO*/;        enabled:boolean }
+  | { kind:'resident'; id:string; workflow:string; args?:unknown; budget?:number|null;                            enabled:boolean };
+interface ScheduleStatus { id:string; kind:Schedule['kind']; workflow:string; enabled:boolean;
+                           nextFire?:string; lastFire?:string; lastRunId?:string; }
+// Closed error-code union (KP-1) — an agent caller branches retryable-vs-terminal without string-matching:
+type ScheduleErrCode = 'INVALID_CRON'|'AT_UNPARSEABLE'|'WORKFLOW_NOT_FOUND'|'SCHEDULE_NOT_FOUND'|'SCHEDULE_DISABLED'|'ALREADY_COMPLETED';
+interface SchedulerPort {
+  create(s: Omit<Schedule,'id'>): Promise<ResultEnvelope<Schedule>>;   // validates cron/at/name at SUBMISSION
+  list(): Promise<ScheduleStatus[]>;                                   // observability surface (schedule_list)
+  setEnabled(id: string, on: boolean): Promise<ResultEnvelope<void>>;
+  delete(id: string): Promise<ResultEnvelope<void>>;
+  trigger(workflow: string, args?: unknown): Promise<ResultEnvelope<{runId:string}>>; // resident; disabled → error
+  originOf(runId: string): 'manual'|'cron'|'once'|'resident';          // SYNC (KP-2): reads the schedule store synchronously (better-sqlite3), the one deliberately-sync method
+}
+// MCP tools: schedule_create / schedule_list / schedule_delete / workflow_trigger — each ResultEnvelope + real TOOL_METADATA.inputSchema.
+```
+Boundary/error: cron/`at` validated synchronously at `create` (invalid cron expr → `INVALID_CRON` / unparseable `at` → `AT_UNPARSEABLE` / unknown workflow name → `WORKFLOW_NOT_FOUND`, each an `ErrEnvelope` with `field`, never a run that silently never fires — reuse DES-012 fail-fast, delegate name-existence to Catalog). **`trigger` precondition pinned (KP-3):** unknown workflow → `WORKFLOW_NOT_FOUND`; a `resident` whose `enabled=false` → `SCHEDULE_DISABLED` (REQ-015 clause 3); never a thrown exception across the tool boundary. `setEnabled`/`delete` on an unknown id → `SCHEDULE_NOT_FOUND` (never throw). **Why `resident` is its own kind (KP-4):** trigger-eligibility is persisted and enable-gated uniformly in the ONE schedule store (a single `Schedule` union), rather than splitting an `enabled` flag onto the Catalog entry — simpler than a two-store split; it carries no time field. **Cost containment (KP-9 / R1, agent-altitude self-sustainability):** each `Schedule` arm carries an optional `budget` that flows into `RunManager.start(spec)` exactly like a manual run's budget (the run path already enforces it via RunGuard); absent → the server-level default cap applies (no unbounded-spend-on-an-unattended-timer). **Overlap = allowed and is an explicit accepted risk** (a slow cron can pile independent runs against paid providers); skip-if-running is a documented v2 non-goal — mitigated by per-run budget + the tunnel-gate (D5/C4), re-evaluate with auth in v3. **Same run path:** `trigger` and every scheduled fire call `RunManager.start(spec)` exactly like `workflow_run`, so scheduled/triggered runs appear in `workflow_list`/dashboard identically and are covered by the existing AgentSpawner stub (zero second execution path). **Persistence:** schedules live in SQLite under `workRoot` (same `better-sqlite3` dependency the catalog/store already use — no new dep, no ARCH-006/007 signature change), survive restart, re-armed at boot (DES-017). **Run-origin observability (zero v1 rework):** the scheduler records `scheduleId → runId` in its OWN store; `originOf(runId)` derives a run's origin by that join — the v1 `RunSpec`/`RunStore` are NOT modified (see rationale D-V2a).
+
+### DES-017 — Scheduler firing engine: pure `tick(now)` + `computeNextFire` + Ticker/Clock seam
+- **status:** draft
+- **traces:** ARCH-010, TASK-024
+- **signature:** the firing decision is a PURE function of persisted schedules + `now`; the only impure part is a driver loop; every time read goes through the injected Clock (Exit-Gate-5).
+- **iter:** v2
+
+```ts
+interface ScheduleFiring { id:string; workflow:string; args?:unknown; kind:Schedule['kind']; }
+interface Ticker { start(cb:()=>void): void; stop(): void; }        // real=setInterval; FakeTicker.advance() in UT
+function tick(schedules: Schedule[], now: number): ScheduleFiring[]; // PURE: what is due at `now`; starts no runs
+function computeNextFire(cron: string, tz: string|undefined, after: number): number; // PURE named helper (DST/rollover)
+// driver: onTick = () => { for (f of tick(store.all(), clock.now())) runManager.start(specOf(f)); store.markFired(f, clock.now()); }
+// bootRearm(clock: Clock): void  — re-computes nextFire for every persisted schedule from clock.now() at startup.
+```
+Boundary/error (all pure, table-driven UT via `FixedClock`+`FakeTicker`, zero wallclock waiting): **missed fire while server was down** — cron = **fire-once-on-catch-up-then-resume** (NEVER backfill every missed slot); one-shot whose `at` is already past at boot or at create = **fire-immediately**. A `once` **auto-completes** (sets `enabled=false`) after firing exactly once. **Overlap** = allowed (a fire while a prior run of the same workflow is still running starts an independent run — matches "appears like any manual run"; skip-if-running is a documented non-goal for v2). Editing `at` before firing applies the new time; editing after a `once` has fired → `error` (already completed). **Seam consistency (Exit-Gate 5, named per method):** `tick(now)` takes `now` (the driver passes `clock.now()`); `computeNextFire(...,after)` takes `after` (clock-sourced); `bootRearm(clock)` takes the injected Clock; `create`/`setEnabled`/`markFired` stamp `nextFire`/`lastFire` via the injected Clock. **No scheduler method reads the wall clock itself** — there is no `get_due(clock)`/`rearm(wall)` asymmetry (the exact time-bomb DES-014 forward-flagged for this module).
+
+### DES-018 — Dashboard: pure `buildDashboardModel` + read-only HTTP / live-tail
+- **status:** draft
+- **traces:** ARCH-011, TASK-020, TASK-025
+- **signature:** all data-shaping in a pure VM builder over the existing store shapes; HTML/transport is a dumb renderer; live update = poll the injectable RunStore port; strictly read-only.
+- **iter:** v2
+
+```ts
+interface DashboardVM { runs: RunSummary[]; selected?: RunStatusView; transcript?: TranscriptEvent[]; degraded?: string; }
+function buildDashboardModel(runs: RunSummary[], view?: RunStatusView, tr?: TranscriptEvent[]): DashboardVM; // PURE, UT
+// read-only HTTP: GET /api/runs → RunSummary[]; GET /api/runs/:id → RunStatusView; GET /api/runs/:id/agents/:aid → TranscriptEvent[]
+```
+Boundary/error: NO parallel dashboard DTO — payloads are exactly the shapes the MCP read-tools already return (one data model, two transports). **NO mutation/write endpoint exists** (cannot perturb a run — REQ-008/ARCH-011). Live update = **poll the already-injectable RunStore port** (reuse the established test seam; no bespoke store event-bus — simplicity+testability align). A store read error mid-tail returns a partial/last-known VM with `degraded` set + an error badge, **never a 500 that takes the page down**; the tail survives a run being stopped/deleted underneath it. **Stored-XSS invariant (KP-12):** the HTML page injects run/agent/transcript data — which includes model-produced text and tool args — into the DOM **only via `textContent` / `JSON.stringify`, never `innerHTML`** (see `src/dashboard-page.ts`), so a transcript containing `<script>` is structurally escaped on an unauthenticated dashboard; verifier asserts a `<script>`-bearing transcript renders escaped. **Transcript pagination (KP-6, deferred-safe):** `GET /api/runs/:id/agents/:aid` returns the whole `TranscriptEvent[]` today; an optional `?limit`/`?after` cursor is a NON-breaking additive extension (optional query params, default = whole), deferred to when a real long-run pain appears — no contract break to add later (Karpathy: not speculative now). Known boundary (v1.1 carry-forward): an aborted `AgentRecord` may still read `'running'`; the dashboard renders agent state as-recorded and does not fabricate liveness — the run's own final status is authoritative (documented, not fixed here — zero v1 rework).
+
+> **Gap-test verifier note (D-V2I-4, 2026-07-04):** confirmed there is no separate dashboard bind/port
+> — `read-only HTTP` above is served on the SAME `http` server/listener as `/mcp` (`src/server.ts`'s
+> single `createHttpServer` handler routes by `req.url` prefix, e.g. `/api/runs`, not by a second
+> port). A `dashboardPort` composition-root config key was removed from `UT-033`'s coverage for this
+> reason (dead wiring with nothing to ever consult it).
+
+> **Gate 6 route-back (D-V2V-2, 2026-07-04, gap-tests-v2b):** the user's own Gate-1 choice was an
+> explicit 瀏覽器即時儀表板 (browser live dashboard) — a JSON-only transport with no literal HTML page
+> to open in a browser tab did not satisfy that acceptance criterion (VAL-018 finding, Gate 7.5
+> round 1). Added `GET /dashboard` (+ `GET /dashboard/<runId>` SPA-style routing) on the SAME
+> server/port as `/api/runs*`/`/mcp` — a minimal self-contained static HTML/JS page
+> (`src/dashboard-page.ts`'s `DASHBOARD_HTML` const, served verbatim by `src/server.ts`): a run
+> list, a drill-in phase/agent-tree view (per-agent `agentId`/`state`/`tokens`), a transcript view,
+> and `setInterval`-based polling so state/tokens refresh with no manual reload. The page's own
+> client JS calls the SAME `buildDashboardModel`-shaped `/api/runs*` endpoints this section already
+> defines — **no parallel dashboard DTO, no second data model**: "one data model, two transports"
+> is now genuinely two (the JSON API the MCP tools/other clients still use, and this HTML page for
+> a human in a literal browser). `buildDashboardModel` itself is untouched. See
+> `tests/acceptance/val-018-dashboard-browser-ui.test.ts` (VAL-018).
+
+### DES-019 — Asset Sync core: push/list/delete + recursion-guard + path-safety
+- **status:** draft
+- **traces:** ARCH-012, TASK-021
+- **signature:** explicit `files[]` payload (inspectable without unpacking); two mandatory pure security predicates; partial-push atomicity.
+- **iter:** v2
+
+```ts
+type AssetKind = 'skill'|'hook'|'mcp-config';
+interface AssetPush { kind: AssetKind; name: string; files: Array<{ path:string; contentB64:string }>; }
+interface AssetPushResult { stored: string[]; excluded: Array<{ name:string; reason:string }>; }
+// MCP tools: asset_push(AssetPush) → ResultEnvelope<AssetPushResult>; asset_list() → {kind,name}[]; asset_delete({kind,name}).
+function isSelfReferential(a: AssetPush, selfBind: {host:string;port:number}, reservedPrefix: string): boolean; // pure fast-gate, D4
+function safeRelPath(p: string, assetRoot: string): string | null;   // pure fast-gate; null ⇒ escapes root ⇒ reject
+function assertContained(absTarget: string, assetRoot: string): void; // IMPURE write-time guard: fs.realpath prefix / O_NOFOLLOW
+```
+Boundary/error (fast pure gate + edge guard; both directions UT-covered): **(1) recursion guard (D4)** — reject/strip any asset that is (a) a `mcp-config` whose endpoint/URL resolves to *this* server's own bind addr/port, or (b) matches this system's own plugin / guidance-skill identity by reserved name prefix (`rwe-*`). Every exclusion is REPORTED in `excluded[]` (REQ-009 clause 3), never silent; UT with a self-config fixture (must reject) AND a benign-lookalike (must NOT over-reject). **Self-ref must NORMALIZE, not string-compare (KP-8):** resolve `localhost`/`0.0.0.0`/the loopback set / bind-equivalent addrs to "self" before comparing — a bare `hostname===host` compare under-rejects (`localhost`≡`127.0.0.1`) and the D4 guard fails OPEN, letting a remote agent re-invoke this service. **(2) path-traversal / workspace-escape — TWO-TIER (KP-7):** the pure `safeRelPath` fast-gate rejects `..`/absolute (fully UT'd both directions); a **pure string check cannot enforce symlink containment** (a component resolving through an existing symlinked dir redirects the write outside root, invisible to the string), so the write-time `assertContained` guard requires `fs.realpath(target)` to be a prefix of the realpathed asset root (or `O_NOFOLLOW` per component) — on a no-auth service where `asset_push` is already code-exec, path-containment is the LAST boundary and must hold on disk, not just in a testable string. Verified by a tmpdir-with-planted-symlink integration test (KP-17), not only pure UT. **(3) size/count caps (KP-13):** each file's decoded `contentB64` and the per-push total are capped (mirrors v1's 512 KB script cap) → `ASSET_TOO_LARGE`; guards disk-fill/OOM DoS on a no-auth surface. **Partial-push atomicity:** if ANY file fails ANY gate, reject the WHOLE push (no half-written asset dir). **Overwrite:** pushing an existing `(kind,name)` replaces it; a run already using the old version keeps its loaded copy (per-run resolution at spawn) — documented, does not crash. **Known boundary:** `agentType` (`agents/*.md`) definitions load once at `createServer()` and are NOT hot-synced by this path — documented asymmetry (assets sync live, agent prompts need restart), not silently equated.
+
+> **Gate 6 route-back (D-V2V-1, 2026-07-04, gap-tests-v2b):** this module (push/list/delete +
+> the two predicates) was already correct — the gap Gate 7.5 round 1 found (VAL-017) was that
+> NOTHING downstream ever read what it stored. Closed at the consumer, not here (this module stays
+> transport-agnostic, unchanged): `src/gateway/claude-agent-sdk-client.ts` now (a) reads every
+> stored `mcp-config` asset FRESH off disk (`assetRoot/mcp-config/<name>/...`) on every `invoke()`
+> call and threads it into `Options.mcpServers` (`strictMcpConfig:true` unchanged — see DES-020's
+> own note below), and (b) materializes every stored `skill`/`hook` asset into THAT call's own run
+> workspace (`AgentReq.workspace`, forwarded through `GatewayClient.invoke()`'s new optional
+> `workspace` field) at `<workspace>/.claude/skills|hooks/<name>/`, with `options.cwd` re-scoped to
+> that workspace and `options.settingSources` becoming `['project']` (host-level `'user'`/`'local'`
+> sources stay excluded either way — the D-F11 isolation this class was built to close is
+> preserved, now scoped per run instead of globally off). `composeConfig()` (`src/main.ts`) forwards
+> the resolved `assetRoot` (defaulting the same way `src/server.ts`'s own `AssetSyncService`
+> construction does, `join(workRoot,'assets')`, when the config file omits it) into the
+> constructed `ClaudeAgentSdkGatewayClient`. This system's own `rwe-*` skill/plugin is excluded
+> end-to-end unchanged (D4 already prevents it from ever landing on disk, so there is nothing for
+> the new read-side to find). See `tests/integration/asset-mcp-config-wiring.test.ts` (IT-035),
+> `tests/integration/asset-skill-materialization-wiring.test.ts` (IT-036).
+
+### DES-020 — Asset MCP-config live-probe validator behind injected `McpProbe` port
+- **status:** draft
+- **traces:** ARCH-012, TASK-026
+- **signature:** the one network dependency isolated behind an injected port; static transport classification first, live probe only for runnable kinds; machine-readable reason code.
+- **iter:** v2
+
+```ts
+interface McpProbe { probe(cfg: McpServerConfig): Promise<{ ok:true } | { ok:false; code:string; message:string }>; }
+// FakeMcpProbe (accept/reject) in UT; real connect/handshake (remote-HTTP) or npx-stdio-spawn exercised ONLY at real-tier.
+function classifyTransport(cfg: McpServerConfig): 'remote-http'|'npx-stdio'|'unsupported'; // PURE, UT
+```
+Boundary/error: `classifyTransport` (pure, UT) is the first gate — `remote-http` / `npx-stdio` are server-runnable and get probed; anything else (e.g. interactively-authenticated-headless per compat-spec §5) is rejected at push time with a **machine-readable `code`** (consumability: an agent client distinguishes "unsupported kind" from "unreachable" programmatically), not just a human string. The live probe is behind the injected `McpProbe` port so UT fakes accept/reject and the real handshake/spawn runs only at the real-tier (DES-023) — never a flaky network dependency in UT (adversarial C2/conflict-3 resolution: keep the REQ-mandated probe but inject it). Push is rejected BEFORE the asset lands (no half-validated config in the workspace). **Bounded + dangerous (KP-11):** the probe is hard-bounded by a timeout (shipped `PROBE_TIMEOUT_MS`, same breaker discipline as the gateway — a hung handshake never hangs the tool). Probing an `npx-stdio` config **spawns `npx <pkg>`**, i.e. installs+runs an arbitrary npm package at PUSH time, pulling code-exec forward from run-time to validate-time; on a no-auth service this is acceptable ONLY behind the DES-022 tunnel-gate (D5/C4) — documented as the compensating control, not silently ignored.
+
+> **Gate 6 route-back (D-V2V-1, 2026-07-04, gap-tests-v2b):** unchanged by the DES-019 note above —
+> this module still owns exactly the push-time gate (`classifyTransport` + the injected `McpProbe`,
+> both in `src/mcp-probe.ts`/`src/server.ts`'s `checkMcpConfigTransport`). Only an already-accepted
+> (server-runnable, probe-passed) `mcp-config` asset ever reaches disk, so the new
+> `readMcpConfigAssets()` read-side (DES-019's note) never encounters an unsupported/unreachable
+> config in the first place — no double-validation needed at the read side.
+
+### DES-021 — Claude Code client plugin artifact + guidance skill
+- **status:** draft
+- **traces:** ARCH-013, TASK-022
+- **signature:** client-side artifact (not a server API): plugin dir layout = MCP connection config + a guidance-skill markdown; two invariants only.
+- **iter:** v2
+
+```
+plugin/                         # installable Claude Code plugin dir
+  .mcp.json                     # MCP connection config → remote server (Streamable HTTP url + bind)
+  skills/rwe-remote-workflow/SKILL.md   # guidance skill (reserved rwe-* name → self-excluded by DES-019 D4)
+```
+Boundary/error (deliberately thin, mostly non-code): the guidance skill teaches (i) the async **`workflow_run` returns a `runId` → poll `workflow_status` → fetch `workflow_result`** contract (the single easiest thing a calling agent gets wrong), (ii) the new v2 tools' **envelope-not-exception** gotchas (e.g. `workflow_trigger` on a disabled resident returns `error{SCHEDULE_DISABLED}`, not a throw), and (iii) **when to use the remote service vs the built-in local dynamic Workflow tool**. Two invariants for the verifier: the plugin's MCP tool namespace must **NOT collide** with the local dynamic Workflow tool (both coexist — REQ-010), and the plugin + its `rwe-*` skill + this `.mcp.json` are **self-excluded** from asset sync (D4, DES-019). UT/artifact test: `.mcp.json` is valid JSON pointing at the configured server; `SKILL.md` present with the async-contract section; reserved-prefix name matches the DES-019 guard.
+
+### DES-022 — Deploy packaging + hardening (compose / systemd / smoke / orphan-reap / port-config)
+- **status:** draft
+- **traces:** ARCH-014, TASK-023, TASK-027
+- **signature:** docker-compose (LiteLLM-optional profile) + systemd unit (`Restart=on-failure`) + scripted smoke check; the reproduced orphan-child / port-collision hazards designed IN.
+- **iter:** v2
+
+```
+docker-compose.yml   # default profile: server only (direct-fetch/SDK path, no LiteLLM subprocess)
+                     # profile "litellm": + managed LiteLLM (Python 3.11/3.12 required, D-R3)
+deploy/rwe.service   # systemd: Restart=on-failure; ExecStart=node dist/main.js
+scripts/smoke.sh     # non-interactive, exit-code: boot → submit sample workflow → assert completed → shutdown
+```
+Boundary/error: **DEPLOY.md leads with the dependency-free direct-fetch/SDK path** and presents LiteLLM as opt-in (replaceability + the path repeatedly real-verified clean); LiteLLM path documents the **Python 3.11/3.12 pin** (system 3.14 lacks prebuilt wheels — real, found live). **No-auth caveat** documented loudly: `asset_push` = server-side code execution → require SSH-tunnel/VPN until v3 auth (D5/C4). **Hardening (TASK-027, both panels binding):** SIGTERM/SIGINT handler **cascade-kills the LiteLLM child via process-group kill** (not `child.kill()` on the direct handle — `Restart=on-failure` alone does not reap leaked children); LiteLLM **port is configurable** (not hard-coded 4000); **pre-bind port ownership/liveness check** fails fast with an actionable message instead of false-positive-attaching to a stale proxy. The `smoke.sh` exercises boot→run→shutdown and **asserts no leaked LiteLLM child + no port clash**, not just a happy-path submit (the real-tier obligation for REQ-011). **Wiring completeness (standing rule 1):** every new config key (scheduler db path, configurable litellm port, asset root) is threaded through the exported `composeConfig()` helper and covered by the composition-root wiring-completeness UT — wiring gaps caught at unit tier. (D-V2I-4, 2026-07-04: no separate "dashboard bind/port" key exists — the dashboard shares the `/mcp` server's own bind/port, see DES-018's own note; dropped from this list and from `UT-033`'s coverage.)
+
+### DES-023 — v2 real-tier validation paths + per-tier mock policy (extends DES-015)
+- **status:** draft
+- **traces:** ARCH-011, ARCH-012, ARCH-014
+- **signature:** per-REQ real entrypoint + real wiring for the v2 REQs; explicit per-tier mock policy so E2E/acceptance never mock the SUT's own boundaries.
+- **iter:** v2
+
+Real entrypoint(s): the running MCP Streamable HTTP server (REQ-009/010/015) + the read-only dashboard HTTP server (REQ-008) + the documented deploy bring-up (REQ-011). Real wiring reuses the v1 real chain (real sandbox child + real on-disk RunStore + real Catalog) and adds the real SQLite schedule store, real asset FS writes under the workspace root, and the real `McpProbe`.
+
+Per-REQ real-tier path (what proves it, end to end):
+- **REQ-008** — boot the server with a real completed run AND a real in-flight run; HTTP GET the dashboard, assert the run list + drill-in phase/agent tree render, agent states update **without manual reload** (poll observed to refresh), and a selected agent's transcript is viewable. `buildDashboardModel` proven at UT with the InMemory store fake.
+- **REQ-009** — `asset_push` a real local skill dir → it lands under the workspace root → a subsequent real `workflow_run` whose agent invokes that skill succeeds; push a real npx-stdio/remote-HTTP MCP config → real `McpProbe` accepts, a later run calls its tools; push a non-runnable config → rejected with a reason `code`; push this system's own plugin/guidance-skill/self-`.mcp.json` → excluded + reported in `excluded[]`.
+- **REQ-010** — install the plugin in a real Claude Code client → `tools/list`/MCP-server list shows the remote server + the guidance skill is available; a locally-generated dynamic workflow JS still runs via the local Workflow tool unaffected, and the same JS submitted through the plugin's MCP connection runs remotely (both coexist, no namespace collision).
+- **REQ-011** — on a clean Linux host, the documented DEPLOY.md steps only → server (+ LiteLLM when the profile is selected) boots and `smoke.sh` returns exit 0 (sample workflow completes); identical steps on localhost; shutdown leaves no orphan LiteLLM child and no port-4000 clash.
+- **REQ-015** — a near-term cron schedule fires a real run that appears in `workflow_list` and keeps firing until disabled; a one-shot fires exactly once then auto-completes; `workflow_trigger(name,args)` starts a run immediately, and a disabled resident → `error{SCHEDULE_DISABLED}`. Firing logic proven deterministically at UT via `FixedClock`+`FakeTicker` time-travel (missed-fire/catch-up cases included) with zero wallclock waiting.
+
+Per-tier mock policy: **unit** may mock freely — RunStore(InMemory), AgentSpawner(fake), `Clock`(Fixed), `Ticker`(Fake), `McpProbe`(Fake) — to isolate logic; tests construct servers via injected configs, never call paid endpoints, need no live credentials (fakes/local stubs only), `fileParallelism:false` kept. **integration** uses real adjacent components (real SQLite schedule store, real asset FS writes, real scheduler `tick` over a real Clock), mocking ONLY third-party network you genuinely cannot run. **E2E/acceptance MUST NOT mock the SUT's own boundaries** — no faking the dashboard HTTP server, the scheduler, the asset FS, or the `McpProbe`; external MCP servers probed go through a real sandbox MCP server / test npx package, and LLM providers go through local Ollama or sandbox/test credentials. This is what lets Gate 7.5 actually run the v2 system and blocks mock-only false-green.
+
+## v2 Decision rationale (contested / converged points)
+
+- **D-V2a — run-origin observability WITHOUT touching v1 RunSpec** (quality observability ⟂ Gate-2 zero-v1-rework): quality wanted `triggeredBy` threaded end-to-end into the journal; that would modify the v1 `RunSpec`/`RunStore`/`RunManager` signatures. **Resolved:** the scheduler records `scheduleId→runId` in its OWN store and exposes `originOf(runId)`; origin is derived by join, fully observable, with ZERO v1 signature change. Quality conceded the journal-field ask in exchange for keeping the Gate-2 promise; observability goal still met.
+- **D-V2b — asset live-probe: keep but inject** (adversarial testability/simplicity ⟂ REQ-009 + quality self-sustainability): adversarial preferred DROPPING the live probe for static classification (conflict-3, its strongest simplicity call); REQ-009's own acceptance and the dispatch explicitly require a live-probe validator. **Resolved (adversarial conceded the drop, kept the seam):** static `classifyTransport` gates first (pure, UT), then the REQ-mandated live probe runs behind an injected `McpProbe` port — UT-fakeable, real only at real-tier. Honors the REQ without a flaky UT dependency.
+- **D-V2c — scheduler catch-up: fire-once, never backfill** (adversarial boundary ⟂ quality self-sustainability): quality floated durable backfill of every missed slot ("never miss a job"); adversarial argued fire-once-catch-up as the boundary-safe minimum. **Resolved to fire-once-on-catch-up (cron) / fire-immediately (one-shot):** never a backfill storm; the whole decision is pure inside `tick(now)` and UT-covered for the downtime case. Quality's stronger ask was the higher-value-claim but the simpler policy delivers equal REQ-015 satisfaction — simpler wins (Karpathy tie-break).
+- **D-V2d — asset liveness: push-time-only, re-probe deferred** (quality self-sustainability ⟂ adversarial simplicity/no-auth-scope): quality wanted a lazy on-first-use re-probe for asset drift; adversarial resisted extra outbound traffic on an explicitly unauthenticated (D5) v2 service. **Resolved: push-time probe only for v2; asset drift documented as a known boundary, lazy re-probe deferred to v3 (post-auth).** Keeps the v2 attack surface unchanged and the design minimal.
+- **D-V2e — GatewayClient parity: documented decision, no new build** (quality replaceability): quality flagged the two `GatewayClient` impls have drifted (abort/timeout/thinking wired inconsistently). **Resolved to option (b):** the `sdk`/direct-fetch path is the documented PRIMARY (per D-F5/D1, already real-verified), LiteLLM a constrained fallback — recorded explicitly rather than building a v2 parity contract-test (that touches v1 code; out of the zero-rework v2 scope). No DES item.
+- **D-V2f — scheduler split, dashboard split, asset split along test seams** (adversarial task-splitting note, uncontested): TASK-019/024 (CRUD+resident vs clock/firing engine), TASK-020/025 (pure VM vs HTTP transport), TASK-021/026 (pure security core vs network probe) — each half has a distinct test seam and reviewer; lets the UT-heavy pure halves land fully tested even if the network/transport halves lag.
+- **D-V2g — orphan-reap + port-config designed in, not carried forward** (both panels binding): the repeatedly-Gate-7.5-reproduced orphan-LiteLLM + port-4000 hazards become TASK-027 with real assertions in `smoke.sh`, rather than surviving as "known limitations" a third iteration.
+- **D-V2h — schedule budget + overlap accepted-risk** (adversarial R1, agent-altitude self-sustainability): the single highest-value gap the just-run panel added — unattended cron/resident runs default to unbounded paid spend. **Resolved:** each `Schedule` arm carries an optional `budget` threaded into the SAME `RunManager.start` budget-enforcement path a manual run uses (the run spec already carries `budget?:number|null`, shipped), defaulting to a server-level cap when absent; overlap-allowed is kept but recorded as an EXPLICIT accepted risk (per-run budget + tunnel-gate are the compensating controls, skip-if-running deferred to v3-with-auth). Chosen over silence; simpler than a max-in-flight scheduler guard for a single-node QM tool.
+- **D-V2i — dashboard XSS already structurally prevented; pagination deferred-safe** (adversarial KP-12/KP-6): the shipped page renders untrusted model output via `textContent`/`JSON.stringify` only (no `innerHTML`), so stored XSS is prevented by construction — recorded as a verifier invariant, no code change. Transcript pagination is a NON-breaking additive `?limit`/`?after` extension (optional query params), so deferring it now is safe (Karpathy: not speculative) — added only when a real long-run pain appears.
+- **D-V2j — path/self-ref containment as TWO-TIER, with a shipped-code hardening item** (adversarial KP-7/KP-8, R2 HIGH given D5): the design mandates a pure fast-gate (`safeRelPath`/`isSelfReferential`, fully UT'd) PLUS an impure edge guard (`fs.realpath`-prefix / `O_NOFOLLOW` at write time; loopback-set normalization for self-ref). **Honest shipped state:** the current `src/asset-sync.ts` implements the pure string gates only (no realpath symlink guard; a bare-string self-ref compare that under-rejects `localhost`≡`127.0.0.1`). The tunnel-gate (D5/C4, DES-022) is the deployment-level compensating control that bounds severity for v2, but these two are carried as a **v2.1 asset-containment hardening backlog item** (target-tier tests: planted-symlink integration + `localhost`-vs-`127.0.0.1` self-ref real case) rather than closed — flagged, not silently equated to done.
+- **D-V2k — asset size/count caps** (adversarial KP-13): per-file + per-push byte caps → `ASSET_TOO_LARGE`, mirroring v1's 512 KB script cap; cheap DoS/disk-fill boundary on a no-auth surface. Design requirement added; carried with D-V2j as the same v2.1 asset-hardening item where not yet in shipped code.
+- **D-V2l — closed error-code union** (adversarial KP-1, both lenses agreed): the free-form `code` string becomes a documented closed union (`INVALID_CRON|AT_UNPARSEABLE|WORKFLOW_NOT_FOUND|SCHEDULE_NOT_FOUND|SCHEDULE_DISABLED|ALREADY_COMPLETED`; asset side `PATH_ESCAPE|SELF_REFERENTIAL|ASSET_TOO_LARGE|MCP_UNSUPPORTED|MCP_UNREACHABLE`) so an agent caller branches retryable-vs-terminal without string-matching — satisfies the contract-uniformity AND boundary-taxonomy lenses at once. Shipped scheduler codes already conform; formalized here.
+- **D-V2m — TASK-019 clock-seam note corrected (KP-15)** (adversarial testability, seam consistency): the stale "no clock needed" note contradicted DES-016/017 and the shipped `create` (which computes an initial `nextFire` via the injected Clock). Resolved via option (ii): CRUD takes the injected `Clock` and stamps `nextFire`/`lastFire` through it, delegating the cron math to `computeNextFire` — every scheduler method that reads time uses the injected Clock, no bare `Date.now()` (Exit-Gate-5). Note fixed in 03-tasks.md.
+- **Explicitly NOT built in v2** (both groups, Karpathy): no pluggable scheduler backend (in-process cron suffices for single-node QM), no store event-bus (poll the RunStore port), no schedule-status dashboard panel (MCP `schedule_list` tool is the v2 observability surface; dashboard schedule view deferred), no agent-prompt hot-reload, no background asset re-poller.
+
 ## Template (reference — not a work item)
 <!-- TEMPLATE EXAMPLE (uncommented by the stage agent when writing real items)
     ### DES-001 — <interface/function/data-model name>
@@ -825,4 +1081,51 @@ classDiagram
   LiteLLMGatewayClient ..|> GatewayClient
   RunStore --> Clock : timestamps
   RunManager --> Clock
+
+  %% --- v2 extension modules (attach at v1 seams) ---
+  class SchedulerPort {
+    <<interface>>
+    +create(s) ResultEnvelope
+    +list() ScheduleStatus[]
+    +setEnabled(id, on)
+    +delete(id)
+    +trigger(workflow, args) ResultEnvelope
+    +originOf(runId) origin
+  }
+  class FiringEngine {
+    +tick(schedules, now) ScheduleFiring[]
+    +computeNextFire(cron, tz, after) int
+    +bootRearm(clock)
+  }
+  class Ticker {
+    <<interface>>
+    +start(cb)
+    +stop()
+  }
+  class Dashboard {
+    +buildDashboardModel(runs, view, tr) DashboardVM
+    +GET /api/runs (read-only)
+  }
+  class AssetSync {
+    +asset_push(a) ResultEnvelope
+    +asset_list()
+    +asset_delete(a)
+    -isSelfReferential() D4 guard
+    -safeRelPath() root guard
+  }
+  class McpProbe {
+    <<interface>>
+    +probe(cfg) OkOrReason
+  }
+  McpFacade --> SchedulerPort : schedule/trigger tools
+  McpFacade --> AssetSync : asset tools
+  SchedulerPort --> WorkflowCatalog : validate name
+  SchedulerPort --> RunManager : start (same path)
+  SchedulerPort --> Clock
+  FiringEngine --> Ticker
+  FiringEngine --> Clock
+  SchedulerPort --> FiringEngine
+  Dashboard --> RunStore : reads (poll, read-only)
+  AssetSync --> WorkflowCatalog : workspace root
+  AssetSync --> McpProbe : mcp-config validate
 ```

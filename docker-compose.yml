@@ -1,0 +1,60 @@
+# docker-compose.yml — REQ-011 / DES-022 / TASK-023 deploy packaging.
+#
+# Default (`docker compose up`): the "server" service only — the dependency-free direct-fetch/SDK
+# gateway path, no LiteLLM/Python subprocess required (replaceability, D-V2e). Bind-mounts this
+# repo into the official Node 22 image and runs the exact same `npm ci && npm run start` sequence
+# documented in README.md/DEPLOY.md §2 — no separate container-only startup logic to maintain.
+#
+# Optional "litellm" profile (`docker compose --profile litellm up server-litellm`): same image,
+# but installs a pinned Python 3.11 venv + `litellm[proxy]` on PATH before boot, so the managed
+# LiteLLM proxy subprocess (src/gateway/litellm-proxy.ts, spawn('litellm', ...)) has a real
+# `litellm` binary to find. Only needed if rwe.config.json actually routes through that proxy
+# (D-R3: many hosts' system Python lacks prebuilt wheels for litellm's own dependencies, so this
+# is pinned/isolated rather than relying on whatever Python 3.x the base image ships).
+#
+# Identical steps on localhost and on a remote host — no localhost-only shortcut.
+services:
+  server:
+    image: node:22-bookworm
+    working_dir: /app
+    volumes:
+      - .:/app
+    ports:
+      - "${RWE_PORT:-8787}:8787"
+    environment:
+      RWE_BIND: "0.0.0.0"
+      RWE_PORT: "${RWE_PORT:-8787}"
+      RWE_CONFIG_PATH: "${RWE_CONFIG_PATH:-/app/rwe.config.json}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-}"
+    command: sh -c "npm ci && npm run start"
+    restart: on-failure
+
+  server-litellm:
+    profiles: ["litellm"]
+    image: node:22-bookworm
+    working_dir: /app
+    volumes:
+      - .:/app
+    ports:
+      - "${RWE_PORT:-8787}:8787"
+    environment:
+      RWE_BIND: "0.0.0.0"
+      RWE_PORT: "${RWE_PORT:-8787}"
+      RWE_CONFIG_PATH: "${RWE_CONFIG_PATH:-/app/rwe.config.json}"
+      RWE_LITELLM_PORT: "${RWE_LITELLM_PORT:-4000}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-}"
+    command: >
+      sh -c "apt-get update &&
+             apt-get install -y --no-install-recommends python3.11 python3.11-venv &&
+             python3.11 -m venv /opt/litellm-venv &&
+             /opt/litellm-venv/bin/pip install --no-cache-dir 'litellm[proxy]' &&
+             export PATH=/opt/litellm-venv/bin:$$PATH &&
+             npm ci &&
+             npm run start"
+    restart: on-failure

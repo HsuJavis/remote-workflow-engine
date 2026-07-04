@@ -2,7 +2,73 @@
 
 > 人類導向文件（繁體中文）。由 Gate 7.5 validator 依實際部署步驟撰寫，步驟可重跑。
 > 凡 validator 為了把系統跑起來而做、但 README quickstart 未涵蓋的動作，都記在這裡。
-> **本文件為第七輪 Gate 7.5（Gate 8 收尾修復的範圍化重新驗證）後改寫。**
+>
+> **v2 Gate 7.5 ROUND 1（2026-07-04，最新）結果摘要**：REQ-011（本節 §2b）已對真實獨立 process
+> 驗證通過——`scripts/smoke.sh` 真實跑過、真實 pass；`npm install`/`npm ci` 皆真實、乾淨；優雅關閉
+> 時真的會連帶砍掉 `litellm` 子行程（TASK-027，真實 `SIGTERM` 測過，2 秒內兩個 process 都消失，
+> 不留孤兒）；`docker-compose.yml` 已做真實 YAML 語法驗證，但**這次驗證環境沒有安裝 docker，
+> `docker compose up` 未能實際執行**（誠實記錄為環境缺口，非略過）；`deploy/rwe.service` 用
+> `systemd-analyze verify` 驗證時，因為這個驗證環境的 Node 不是裝在系統路徑
+> （`/usr/bin/npm` 不存在，而是使用者層級安裝），**改用實際存在的路徑後 `systemd-analyze verify`
+> 通過（exit 0，無警告）**，確認 unit 檔本身語法/語意正確；`sudo systemctl enable --now` 因這次
+> 驗證環境沒有 sudo 權限（需要互動式密碼）而未能實際執行，同樣誠實記錄為環境缺口。**重要：真正
+> 部署時，`deploy/rwe.service` 裡的 `ExecStart=/usr/bin/npm run start`、`User=rwe`、
+> `WorkingDirectory=/opt/remote-workflow-engine` 都只是預設範本值——請依你實際主機的 Node 安裝
+> 路徑（`which npm`）、選定的服務帳號、部署目錄自行調整，否則 `systemctl` 啟動會失敗。**
+> **同一輪也發現 REQ-009（見 README.md「已知限制」）尚未通過 Gate 7.5**——與部署封裝本身無關，
+> 但如果你的部署計畫依賴「推送 skill/MCP config 給 agent 用」，目前這條路徑還沒打通，請先看
+> README.md 的 v2 已知限制第 1 條。
+>
+> **Gate 6 v2 validation-round fixes（2026-07-04，本輪，D-V2V-1/2/3 route-back）**：上一段記錄的
+> 兩個缺口已修復——**(1) D-V2V-1（REQ-009 資產接線）**：`asset_push` 接受的 `mcp-config` 資產現在
+> 會在**每一次** `agent()` 呼叫前重新從磁碟讀取，接進真實 `@anthropic-ai/claude-agent-sdk`
+> session 的 `options.mcpServers`（`strictMcpConfig:true` 維持不變，見
+> `src/gateway/claude-agent-sdk-client.ts` 的 `readMcpConfigAssets()`）；`skill`/`hook` 資產現在
+> 會被**實體化**進該次 run 自己的工作目錄下 `.claude/skills|hooks/<name>/`，且該次呼叫的
+> `options.cwd` 改指到那個 run 工作目錄、`options.settingSources` 變成 `['project']`（宿主機層級
+> 的 `'user'`/`'local'` 來源仍然關閉——D-F11 的隔離保證不變，只是現在多了「這次 run 自己的
+> `.claude/`」這一個範圍內的來源）。這系統自己的 `rwe-*` skill/plugin 從頭到尾都不會被儲存、也
+> 不會被實體化（D4 遞迴防護，不變）。見 `tests/integration/asset-mcp-config-wiring.test.ts`
+> （IT-035）與 `tests/integration/asset-skill-materialization-wiring.test.ts`（IT-036）。
+> **(2) D-V2V-2（REQ-008 瀏覽器儀表板）**：新增 `GET /dashboard`（同一個 port，與 `/mcp`、
+> `/api/runs*` 共用同一個 `http.Server`）——一個自成一體、不需要建置工具的靜態 HTML/JS 頁面：
+> run 清單、點進去看 phase/agent tree（每個 agent 的 state + token usage）、逐字稿檢視，且用
+> `setInterval` 輪詢自動更新（不必手動重新整理）。`/dashboard/<runId>` 走同一個靜態頁面的
+> client-side 路由（頁面自己的 JS 從 `location.pathname` 解析 runId）。頁面本身的 JS 呼叫的是
+> 同一組既有的唯讀 `/api/runs*` JSON API（DES-018）——同一份資料模型，現在真的有兩種傳輸方式。
+> 見 `tests/acceptance/val-018-dashboard-browser-ui.test.ts`（VAL-018）。
+>
+> **D-V2V-3（docker/systemd 環境缺口，已被 ORCH 接受，非阻擋項）**：上面第 6~17 行記錄的
+> docker/systemd 缺口維持原狀——這個實作環境本身沒有 docker、也沒有可互動的 sudo 權限，所以
+> `docker-compose.yml`/`deploy/rwe.service` 這兩支只做過語法/語意驗證（`docker compose config`
+> 語法檢查、`systemd-analyze verify`），從未在這個環境裡真正跑起來過；`npm` 路徑部署 +
+> `scripts/smoke.sh` 煙霧測試 + 優雅關閉不留孤兒這三項則是對真實獨立 process 驗證過的。**這是一個
+> 明確記錄的環境缺口，不是待修的程式碼缺陷**——ORCH 已裁定接受，不再視為本輪 gate 的阻擋項；等你
+> 真正部署到有 docker 或有 root 權限的主機時，請自己再跑一次
+> `docker compose up`/`sudo systemctl enable --now rwe` 確認這兩支产物本身沒問題（語法驗證不等於
+> 「真的能啟動」）。
+>
+> **Gate 7.5 v2 ROUND 2（2026-07-04，本輪，GATE PASSED）**：上面「Gate 6 v2 validation-round
+> fixes」段落記錄的 2 個修復（D-V2V-1/D-V2V-2）在本輪由 validator **對一個獨立真實 process 重新
+> 驗證**（不是只信任 Gate 6 實作報告）：真的推送一個 mcp-config + skill 資產，送出真實
+> `agent()` 呼叫，直接讀取真正被 spawn 出來的 `claude` CLI 子行程自己在 OS 行程表（`ps aux`）
+> 裡的命令列參數（不是讀原始碼），看到真實
+> `--mcp-config {"mcpServers":{"demo-mcp-v2r2":{...}}} --setting-sources=project
+> --strict-mcp-config`；run 完成後確認推送的 `SKILL.md` 真的被實體化進「那一次 run 自己」的工作
+> 目錄下的 `.claude/skills/`（bytes 完全相符）。遞迴保護（D4）也對本輪自己的真實 instance 重新
+> 驗證：推送本產品自己的 guidance skill（`plugin/skills/rwe-remote-workflow/SKILL.md`）與一個
+> 指向自己 bind/port 的 mcp-config，兩者皆真實被排除、回應中附上原因，且確認未寫入磁碟。
+> `/dashboard` 頁面也重新驗證：真實 `GET /dashboard` 回傳含 `<html>`/`<title>` 與真正 client JS
+> 的 HTML，`GET /dashboard/<runId>` 走 SPA 路由，並示範不必手動重新整理的即時更新（同一個 client
+> 在送出新 run 前後重新輪詢 `/api/runs`，筆數從 1 變 2）。這次驗證環境沒有可用的 headless
+> browser（`npx playwright` 需要額外安裝，這個環境沒有預先準備），所以本輪對 `/dashboard` 的驗證
+> 停在「curl + DOM 內容斷言」層級，不是逐畫素渲染層級——誠實記錄，未升級宣稱。REQ-010/011/015
+> 則依「已通過、不重新覆蓋測試」的收斂原則，只做了煙霧回歸：真實 Claude Code CLI（`claude mcp
+> list`）重新確認、`scripts/smoke.sh` 真實 pass、真實 `SIGTERM` 孤兒回收確認無孤兒程序；
+> docker/sudo 環境缺口（D-V2V-3）維持不變，不再重複驗證。完整證據見
+> `.sdlc/features/001-remote-workflow-engine/08-validation.md` 的「v2 ROUND 2」章節。
+>
+> **本文件下方 v1 章節為第七輪 Gate 7.5（Gate 8 收尾修復的範圍化重新驗證）後改寫，原樣保留。**
 >
 > **第七輪結果摘要**：本輪任務是針對 Gate 8 review 發現、IMPL-051 修復的 6 項收尾項目
 > （D-G8-1~6）中，前一輪文件明確標記「程式碼/測試層級已修復，尚未經 Gate 7.5 對獨立真實 process
@@ -68,10 +134,11 @@
   若你的系統本來就有 Python 3.11/3.12（`python3.12 --version` 有輸出），可以省略 `uv`，直接
   `python3.12 -m venv <venv路徑> && <venv路徑>/bin/pip install 'litellm[proxy]'`。
   **不需要 `agent()`**（純跑工作流程腳本邏輯）的部署可以完全跳過這一步。
-  **第五輪起提醒（本輪重新確認仍然如此）**：`LiteLLMProxyManager` 固定使用 4000 port（不可設定），
-  且正常關機不會停掉這個子行程（見 §6 已知限制）——啟動一個新的伺服器實例「之前」，務必先確認
-  沒有前一次留下的孤兒 `litellm` process 還占著 4000 port，否則新實例可能誤連到舊代理（本輪已
-  真實重現此風險 2 次，見 §6 第 8 項）。
+  **v1 提醒（第五輪起）已於 v2 TASK-027 修復，本輪（Gate 7.5 v2 ROUND 2）重新以真實 process
+  確認**：正常關機（`SIGTERM`）現在真的會連帶停掉這個子行程，不再留孤兒；且可以在
+  `rwe.config.json` 用 `litellmPort` 鍵讓每個實例指定不同 port（不再固定 4000），見 §1b/§6 第 7/8
+  項。啟動前確認沒有孤兒 `litellm` process（下方 §2 步驟 5）仍建議保留作為額外保險，但已不是唯一
+  防線。
 - 外部依賴：不需要資料庫伺服器（狀態存在本機檔案：SQLite + JSONL journal，路徑見 `workRoot`）。
 - LLM 供應商（依你要用的模型別名擇一或多個）：
 
@@ -96,10 +163,23 @@
 > 已用真實 `ps aux` 確認送給模型的工具清單真的被縮減，見 §6 第 1 項）。本輪新發現/確認的其他項目
 > （in-flight 狀態觀察、resume 重新執行、port 4000 碰撞風險）皆為程式碼/操作層級的缺口，不是設定
 > 缺口。
+>
+> **Gate 7.5 v2 D-V2G8-1/2 安全性重新驗證這一輪（本輪）新發現並修正的第二個 config drift（更嚴重）**：
+> 前一輪（Gate 8 v2 route-back, IMPL-064）已經把程式碼內建的 fallback 從 `["Read","Write","Bash"]`
+> 改成不含 `Bash` 的 `["Read","Write"]`（D-V2G8-1(b)，見 §1c 安全模型），**但當時沒有同步檢查已進
+> 版控的 `rwe.config.example.json`**——它自己仍然明文寫著
+> `"defaultAllowedTools": ["Read", "Write", "Bash"]`，而 README.md/本文件 §2 步驟 3 的 quickstart
+> 都指示使用者直接 `cp rwe.config.example.json rwe.config.json`。結果是：**任何依照文件步驟部署的
+> 人，實際拿到的預設工具面仍然含 `Bash`**——設定檔本身把 D-V2G8-1(b) 這個「Bash 預設關閉、需明確
+> opt-in」的修復整個蓋掉了，等於這個 HIGH 安全修復從未在真實部署路徑上生效過。**本輪已修正**：
+> `rwe.config.example.json` 與下方 JSON 範例都已改成 `["Read", "Write"]`（不含 `Bash`），與程式碼
+> 內建 fallback、§1c 安全模型描述的行為重新一致。這是 Gate 7.5 §4b「config drift = deploy failure
+> waiting to happen」條款存在的確切理由——本輪視為一個真實發現+已修正的缺口記錄於此，並在
+> `08-validation.md` 留下對應證據，不是靜默補丁。
 
 | 設定檔 | 用途 | 本次是否異動 | 需補的鍵/值 |
 |--------|------|--------------|-------------|
-| `rwe.config.json`（不進版控；由 `.example` 複製而來，本身**不含機密**） | 伺服器啟動設定：`bind`、`port`、`workRoot`、`timeoutMs`、`retries`、`gateway`（`"sdk"｜"direct-fetch"`，見下）、`agentDefinitionsDir`（`agents/*.md` 定義目錄，見下）、`defaultAllowedTools`（見下）、`aliases`（模型別名 → provider/model 對照表） | 否 | 見下方「設定檔內容」；金鑰一律用環境變數，絕不寫進此檔 |
+| `rwe.config.json`（不進版控；由 `.example` 複製而來，本身**不含機密**） | 伺服器啟動設定：`bind`、`port`、`workRoot`、`timeoutMs`、`retries`、`gateway`（`"sdk"｜"direct-fetch"`，見下）、`agentDefinitionsDir`（`agents/*.md` 定義目錄，見下）、`defaultAllowedTools`（見下）、`aliases`（模型別名 → provider/model 對照表）、**v2 新增選填鍵**：`schedulerDbPath`（排程 SQLite 檔路徑，省略預設 `$workRoot/schedules.db`）、`assetRoot`（`asset_push` 資產儲存根目錄，省略預設 `$workRoot/assets`）、`litellmPort`（見下方 Gate 7.5 v2 ROUND 2 補充——**現在可以設定**，用來避開多實例的 4000 port 碰撞） | 是（本輪 Gate 7.5 v2 ROUND 2 補充說明，見下） | 見下方「設定檔內容」；金鑰一律用環境變數，絕不寫進此檔 |
 | `rwe.config.example.json`（**已進版控**） | 上述設定檔的範本，含一組可運作的預設別名表 + 建議的 `gateway` 值 | 否（本輪確認內容仍正確，`defaultAllowedTools` 已存在） | — |
 | `agents/`（**已進版控**，範例目錄） | D-F2 agentType composition-root loader 的範例輸入：`researcher.md`/`writer.md`（`name`/`model`/`tools` frontmatter + 內文即 systemPrompt） | 否（本輪確認仍正確可用，見 08-validation.md VAL-003 的 agentType 解析 repro） | 依需求增刪 `*.md` 檔案；`model:` 的值須對應 `aliases` 表裡的一個別名名稱 |
 | `package.json` | npm scripts | 否 | — |
@@ -114,7 +194,7 @@
   "retries": 1,
   "gateway": "sdk",
   "agentDefinitionsDir": "./agents",
-  "defaultAllowedTools": ["Read", "Write", "Bash"],
+  "defaultAllowedTools": ["Read", "Write"],
   "aliases": {
     "sonnet":  { "provider": "anthropic", "model": "claude-3-5-sonnet-20241022" },
     "haiku":   { "provider": "anthropic", "model": "claude-3-5-haiku-20241022" },
@@ -136,14 +216,26 @@ headless session；**但見已知限制第 1 條：對本機 7B 級 Ollama 模�
 執行，屬於模型能力上限**）或 `"direct-fetch"`（文件化的退回選項，回退到直接對各供應商 `fetch()`，
 或搭配 `useLiteLLMProxy:true` 走 LiteLLM 代理——這條路徑本來就不具備工具迴圈能力，不受已知限制第 1
 條影響，因為它本來就不宣稱有這個能力；適合純本機/內網部署且不需要 SDK 工具迴圈的場景）。
-`defaultAllowedTools`（**第六輪補上文件說明**）：`gateway:"sdk"` 路徑下，當一次 `agent()` 呼叫
-沒有自帶 `opts.allowedTools`（且對應的 `agentType` 定義也沒有 `tools:` frontmatter）時，套用的
-預設工具清單——縮小送給模型的工具面，避免小型本機模型被完整 Claude Code CLI 工具面（含此主機環境
-自己的外掛/MCP 工具）淹沒而放棄嘗試工具呼叫；省略此鍵時內建預設值等同上面 `["Read","Write","Bash"]`。
+`defaultAllowedTools`（**第六輪補上文件說明，v2 Gate 8 review 後修正**）：`gateway:"sdk"` 路徑下，
+當一次 `agent()` 呼叫沒有自帶 `opts.allowedTools`（且對應的 `agentType` 定義也沒有 `tools:`
+frontmatter）時，套用的預設工具清單——縮小送給模型的工具面，避免小型本機模型被完整 Claude Code CLI
+工具面（含此主機環境自己的外掛/MCP 工具）淹沒而放棄嘗試工具呼叫；省略此鍵時內建預設值是
+`["Read","Write"]`（**不含 `Bash`** ——v2 Gate 8 review V3 HIGH 修復後的行為，見下方「安全模型」一節；
+`Bash` 一律需要明確 opt-in，見下）。
 優先序：呼叫端 `opts.allowedTools` > `agentType` 定義的 `tools:` > 這個設定鍵 > 內建預設，永遠不會
 不設限。不提供 `aliases` 時，伺服器內建預設值等同上面拿掉 `local` 那份（全指向 anthropic）。
 `agentDefinitionsDir` 省略時 agentType 註冊表為空（每個 `agentType` 都會回報 unknown，不影響不用
 `agentType` 的腳本）。
+
+**Gate 7.5 v2 ROUND 2 config-file sync check 補充（本輪新發現的文件漂移，已修正）**：`litellmPort`
+（型別 `number`，選填）在 v2 TASK-027 就已經被 `composeConfig()` 真的接進
+`LiteLLMProxyManager(aliases, {port: fileConfig.litellmPort})`（`tests/unit/
+compose-config-v2-wiring.test.ts` 綠燈確認），但下方 §6「維運注意事項」第 8 項先前的文字仍寫著
+「`LiteLLMProxyManager` 固定使用 4000 port（不可設定）」——**這句話已經不成立，本輪修正**：省略
+`litellmPort` 時仍預設 `4000`（向後相容），但每個伺服器實例都可以在自己的 `rwe.config.json` 明確
+指定不同的 `litellmPort`，徹底避開「孤兒代理占著同一個 port、下一個實例誤連舊代理」這個風險（不必
+只靠「啟動前手動確認沒有孤兒 process」這個操作習慣）。`schedulerDbPath`/`assetRoot` 兩個 v2 鍵
+（型別皆 `string`，選填）也是同一批新增鍵，皆有可用預設值，一般部署可以省略不填。
 
 環境變數也可覆蓋設定檔部分欄位（不需要設定檔也能啟動）：
 | 環境變數 | 對應 | 預設 |
@@ -152,6 +244,66 @@ headless session；**但見已知限制第 1 條：對本機 7B 級 Ollama 模�
 | `RWE_BIND` | `bind` | `127.0.0.1` |
 | `RWE_PORT` | `port` | `8787` |
 | `RWE_WORK_ROOT` | `workRoot`（狀態/journal/工作目錄根） | 設定檔值，否則系統暫存目錄下自動建立 |
+
+## 1c. 安全模型（Security Model，v2 Gate 8 review 收尾修復，D-V2G8-1(a)(b)(c)(d)）
+
+> 本節記錄 `gateway:"sdk"` 路徑（`ClaudeAgentSdkGatewayClient`）的 agent 工具權限、供應商金鑰
+> 存放、以及 run 工作目錄隔離這三件事**實際**如何運作——修復對象是 v2 Gate 8 review 發現的
+> V3 HIGH 缺陷：舊版把 `permissionMode:'bypassPermissions'`（跳過每一次工具呼叫的裁決）與預設
+> 就含 `Bash` 的工具面、外加只有 `cwd` 而無任何路徑邊界檢查三者疊加，讓任何 `agent()` prompt
+> 都能誘使 CLI 讀取工作目錄以外的任意路徑（例如 LiteLLM 代理自己的 `config.yaml`——內含供應商
+> API 金鑰——或另一個 run 的工作目錄）。**本節描述的是修復後的行為，也是目前的實際行為**——不是
+> 尚待實作的計畫。
+
+**(a) 不再用 `bypassPermissions`**：`options.permissionMode` 固定是 `'default'`（不是舊版的
+`'bypassPermissions'`）。headless 模式下仍然不會卡在互動式權限提示——因為下面 (d) 的
+`canUseTool`/`PreToolUse` 回呼一律會同步回傳一個明確決策（`allow` 或 `deny`），從不回傳
+`null`/pending。
+
+**(b) 預設工具面不含 `Bash`**：`gateway:"sdk"` 路徑下，一次 `agent()` 呼叫若沒有自帶
+`opts.allowedTools`（且對應 `agentType` 定義也沒有 `tools:` frontmatter）、也沒有設定
+`defaultAllowedTools`，套用的內建預設工具清單是 `["Read","Write"]`——**不含 `Bash`**。要讓某個
+`agentType`／某次呼叫拿到一個能跑 shell 指令的 `Bash` 工具，必須明確地在該 `agentType` 定義的
+`tools:` frontmatter、或呼叫端 `opts.allowedTools`、或 `rwe.config.json` 的 `defaultAllowedTools`
+三者之一列出 `'Bash'`——這是一個刻意的 opt-in 決定，不是每次 `agent()` 呼叫的預設能力。
+
+**(c) 供應商 API 金鑰的存放位置**：真實的供應商金鑰（`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/...）
+只存在於「啟動這個伺服器的那個 process 自己的環境變數」與「伺服器內部管理的 LiteLLM 代理子行程
+自己的環境變數」這兩個地方（`LiteLLMProxyManager._doStart()` 明確用 `env: { ...process.env }`
+把這些真實金鑰交給代理子行程——這是它需要真的把呼叫路由到對應供應商所必需的）。**被 spawn 出來、
+實際執行 agent 工具迴圈的 `claude` CLI 子行程，拿到的環境變數是一份明確的白名單**
+（`buildSubprocessEnv()`：`PATH`/`HOME`/`SHELL`/`LANG`/`LC_ALL`/`TMPDIR`/`TERM` 這幾個 CLI
+自己要能正常運作所需的變數 + 覆寫過的 `ANTHROPIC_BASE_URL`（指向本機代理）+ 一個**假的**
+`ANTHROPIC_API_KEY`（非空字串，但從來不是真的憑證）——真實金鑰從未出現在這份白名單裡，agent
+自己的 prompt/工具呼叫無法透過環境變數讀到它。同樣地，代理子行程自己產生的 `config.yaml`
+（`generateLiteLLMConfig()`）裡也從來不寫入原始金鑰值本身（由 LiteLLM 自己在啟動時從環境變數
+讀取），所以就算 agent 真的讀得到那個檔案（見下方 (d) 這條路徑本來就會被擋下），內容也不含金鑰。
+
+**(d) 每次 run 的工作目錄互相隔離、且讀寫被限制在自己的工作目錄子樹內**：每個 run 都有自己專屬的
+磁碟工作目錄（`RunManager`/`WorkflowCatalog.runWorkspace()`），`agent()` 呼叫時這個 `workspace`
+會被當成 `options.cwd`，**且同時**被當成一個路徑邊界檢查的 root，透過兩層機制強制執行（雙重
+保險，見程式碼內 `src/gateway/claude-agent-sdk-client.ts` 的 `toolUsePreCheck()`/
+`makeCanUseTool()`/`makePreToolUseHook()` 註解）：
+  1. SDK 自己文件化的 `options.canUseTool` 回呼——檢查一次工具呼叫自己帶的路徑參數
+     （Read/Write 的 `file_path`，或 Bash 逃逸嘗試時 SDK 回報的 `blockedPath`）是否落在這次 run
+     自己的工作目錄之內；不在的話回傳 `deny`。
+  2. **同一個決策也另外接到 `options.hooks.PreToolUse`**——這是因為經真實 SDK 執行驗證後發現：
+     當 `allowedTools` 裡列的是「裸」工具名稱（例如預設的 `'Read'`，不是 `'Read(某個規則)'`
+     這種帶規則內容的形式）時，SDK 會直接自動核准該次呼叫、**完全不會呼叫 `canUseTool`**
+     （SDK 自己的 `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` 執行期警告訊息即為此行為的官方說明，且它
+     自己建議的因應方式正是改用一個 `PreToolUse` hook）——而 D-F11/UT-024 這條既有規則要求
+     `allowedTools` 永遠是裸名稱、非空（絕不能留空，否則會退回 SDK CLI 完整未經篩選的工具面）。
+     所以這裡選擇兩者並存：不管 SDK 實際上是透過哪一條路徑做核准決策，工作目錄邊界檢查都會被
+     執行到——已用一個指向工作目錄以外真實路徑（`/etc/hostname`）的真實 Read 呼叫、對真實 SDK
+     `query()` 端對端驗證過會被擋下（`deny`，訊息為 `path outside run workspace: ...`），工作目錄
+     內的路徑則正常放行。
+  3. 沒有已知工作目錄 root 時（例如直接呼叫 `invoke()` 的單元測試情境，既無 `req.workspace`
+     也未設定 `cwd`）——沒有邊界可執行，維持放行（不是這個機制要處理的情境）。
+
+**這個安全模型不是作業系統層級的 sandbox/jail**（沒有 container/namespace/chroot 隔離）——它是
+應用層的權限裁決 + 路徑邊界檢查，防的是「agent 被 prompt 誘導、透過 SDK 自己文件化的工具參數去
+讀寫工作目錄以外的路徑」這一類攻擊路徑；不是防一個真的被入侵、能直接呼叫任意系統呼叫繞過 SDK
+本身的惡意子行程。
 
 ## 2. 部署步驟（依序）
 ```bash
@@ -175,8 +327,9 @@ export ANTHROPIC_API_KEY=sk-ant-...          # 依實際要用的 provider 擇�
 
 # 步驟 4：無需資料庫遷移/初始化 —— SQLite schema 由伺服器啟動時自動建立於 $workRoot/store
 
-# 步驟 5（重要，第五輪起適用，本輪再次確認風險仍在）：啟動前先確認沒有前一次殘留的孤兒 litellm
-# process 占著 4000 port
+# 步驟 5（v2 TASK-027 修復後為額外保險，非唯一防線；正常 SIGTERM 關機已會自動清掉）：
+# 啟動前先確認沒有非正常關機（如 kill -9）殘留的孤兒 litellm process 占著 4000 port
+# （或你在 rwe.config.json 設定的 litellmPort）
 ps aux | grep '[l]itellm --config' && echo "先清掉這些 process 再繼續！" \
   || echo "乾淨，可以啟動"
 # 若有殘留： ps aux | grep '[l]itellm --config' | awk '{print $2}' | xargs -r kill
@@ -187,6 +340,58 @@ RWE_CONFIG_PATH=./rwe.config.json RWE_WORK_ROOT=/var/lib/remote-workflow-engine 
 # （但見 §6「仍待下一輪修復」第 1 條：目前優雅關閉不會連帶停掉內部的 litellm 子行程，需另外清理，
 #  且見上方步驟 5：下次啟動前務必先清乾淨，否則有誤連舊代理的風險）
 ```
+
+## 2b. 容器化 / systemd 常駐化 / 上線前煙霧測試（v2, REQ-011, DES-022, TASK-023）
+
+> 本節記錄 v2 新增的三個部署封裝產物：`docker-compose.yml`、`deploy/rwe.service`（systemd
+> unit）、`scripts/smoke.sh`（非互動式、以結束碼判斷成敗的煙霧測試）。**本機與遠端主機的部署
+> 步驟完全相同**——沒有「本機才有的捷徑」。
+
+**docker-compose**（不需要另外寫 Dockerfile；直接把 repo 掛進官方 Node 22 image，跑與手動部署
+完全相同的 `npm ci && npm run start`）：
+```bash
+docker compose up                              # 預設 profile：只跑 server，走免依賴的
+                                                # direct-fetch/SDK 路徑，不需要 LiteLLM/Python
+docker compose --profile litellm up server-litellm
+                                                # 選用 profile：容器內額外安裝 Python 3.11 +
+                                                # litellm[proxy]（同 §1 的 D-R3 版本 pin 理由）
+```
+
+**systemd**（`deploy/rwe.service`，`Restart=on-failure` 自我修復）：
+```bash
+sudo cp deploy/rwe.service /etc/systemd/system/rwe.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now rwe.service
+```
+`ExecStart` 用的是與本文件 §2 步驟 6 完全相同的 `npm run start`（此 repo 沒有另外維護一份編譯產
+物 `dist/main.js`，見該檔案內註解）。
+
+**上線前煙霧測試**（`scripts/smoke.sh`，非互動式、結束碼 0=成功）：
+```bash
+scripts/smoke.sh
+```
+啟動伺服器 → 送出一個**不呼叫 `agent()`** 的範例 `workflow_run` → 輪詢 `workflow_status`/
+`workflow_result` 至完成 → 關閉伺服器。不需要任何 LLM 供應商金鑰或 LiteLLM/Python，只驗證
+`workflow_run`/`workflow_status`/`workflow_result` 這條核心路徑本身能不能跑完。
+
+### 沒有身份驗證的已知風險（v2 no-auth caveat，D5/C4）
+
+**`asset_push` 目前會把任意內容真實寫入伺服器端磁碟**（`$workRoot/assets/<kind>/<name>/...`，
+已對真實 process 驗證）。v2 完全沒有 authentication/authorization（v3 才會補上 OIDC
+resource-server，見 ARCH 決策 D5/C4）——任何能連到 `/mcp` 這個 HTTP 端點的人都能呼叫
+`asset_push`。**在 v3 補上真正的身份驗證之前，遠端部署只能透過 SSH 通道（例如
+`ssh -L 8787:127.0.0.1:8787 user@host`）或 VPN 存取這台伺服器，絕對不要把 `asset_push` 所在的
+port 直接暴露在公開網路上。**
+
+> **Gate 7.5 v2 ROUND 1 更正（本輪發現的文件與現實落差）**：本節先前的文字說推送的 skill/hook
+> 檔案「之後會被真實載入/執行」——**這在目前版本並不成立**：已對真實獨立 process 確認，
+> `agent()` 呼叫（`ClaudeAgentSdkGatewayClient`）目前寫死 `settingSources:[]`（略過所有檔案系統
+> skill 探索）與 `strictMcpConfig:true`（`mcpServers` 從未被填入），且 `composeConfig()`/
+> `createServer()` 從未把 `AssetSyncService` 存的資產接進 gateway。**推送的 skill/MCP config 目前
+> agent 完全用不到**，見 `.sdlc/features/001-remote-workflow-engine/08-validation.md` 的
+> `VAL-017`。上述「任意寫入磁碟」的風險本身依然真實存在（`asset_push` 仍是真實的伺服器端檔案
+> 寫入能力），SSH 通道/VPN 的建議維持不變；只是「寫入後會被執行」這個額外風險，在這個接線缺口
+> 修好之前，**目前並不成立**。
 
 ## 3. 健康檢查（怎麼確認起來了）
 ```bash
@@ -208,9 +413,9 @@ agentType 解析、工具呼叫失敗案例、in-flight 狀態觀察）、`workf
 ```bash
 # 停掉目前的 process（Ctrl-C 或）：
 kill -TERM <pid>          # 會走 SIGTERM 優雅關閉（等 HTTP server 收乾連線）
-# 注意（§6「仍待下一輪修復」第 1 條已知限制）：這不會停掉伺服器內部管理的 litellm 子行程，需另外找到並清理：
+# v2 TASK-027 起：這個 SIGTERM 現在會自動連帶砍掉伺服器內部管理的 litellm 子行程（見 §6 第 7 項，
+# 本輪已用真實 SIGTERM 重新確認）。若你懷疑仍有非正常關機（kill -9）留下的孤兒，手動確認/清理：
 ps aux | grep '[l]itellm --config' | awk '{print $2}' | xargs -r kill
-# （務必在啟動下一個實例之前做這一步，否則見 §6 第 8 項的誤連風險）
 
 # 回到前一個 git 版本後，重新安裝依賴 + 啟動：
 git checkout <前一個 commit/tag>
@@ -235,7 +440,7 @@ npm run start
 | `workflow_status.agents[].state` 看不到 `"queued"`/`"running"`，只看得到 `"done"`/`"failed"` | **已修復（第六輪確認）**：`workflow_status` 現在會在 agent 呼叫排隊/執行中時就即時顯示對應狀態 | 若仍只看到 `"done"`/`"failed"`，確認伺服器版本包含 D-F12 修復（`src/run-manager.ts` 的 `markQueued`/`markRunning`） |
 | `workflow_suspend` 之後 `workflow_resume`，續跑後的結果永遠是 `null` | **已修復（第六輪確認）**：被中止的呼叫現在會在續跑時真的重新執行，journal 能正確分辨「中止產生的 null」與「真的執行完的合法 null」 | 若仍觀察到續跑秒殺回傳 `null`，確認伺服器版本包含 D-F13 修復（journal `aborted` 欄位、`ResumeCache.Plan.replay` 邏輯） |
 | 續跑（`workflow_resume`）之後，原本被中止那次呼叫的紀錄一直卡在 `"state":"running"` | 已知的小瑕疵（第六輪新發現，非阻斷）：中止的呼叫紀錄不會自己轉成終止狀態，續跑會多出一筆新紀錄 | 純顯示瑕疵，不影響最終 `workflow_result` 的正確性；可忽略舊的那筆紀錄 |
-| 關掉伺服器後還有一個 `litellm --config ...` process 留著（可能佔用 4000 port，讓下一個伺服器誤連到舊代理） | 已知限制（§6）：優雅關閉沒有連帶停掉子行程；第五輪起已知：因為代理固定用 4000 port，下一個伺服器實例的健康檢查可能誤判連到的是舊的孤兒代理（本輪已真實重現 2 次） | 手動 `ps aux \| grep litellm` 找到後 `kill`（務必在啟動下一個伺服器實例「之前」做）；見 §4 回滾指令 |
+| 關掉伺服器後還有一個 `litellm --config ...` process 留著 | **v2 TASK-027 修復前**（v1 已知限制）：優雅關閉不會連帶停掉子行程。**v2 起已修復**（本輪 Gate 7.5 v2 ROUND 2 config-sync check 重新以真實 `SIGTERM` 確認）：正常 `SIGTERM`/`SIGINT` 關機現在真的會連帶砍掉內部管理的 `litellm` 子行程，2 秒內從 `ps aux` 消失，不留孤兒。若你仍看到殘留 process，多半是非正常關機（如 `kill -9`）留下的 | 手動 `ps aux \| grep litellm` 找到後 `kill`；正常關機（`SIGTERM`/Ctrl-C）應已足夠，不需要每次都手動檢查；也可以用 §1b 的 `litellmPort` 鍵讓每個實例用不同 port，徹底避開誤連風險 |
 | Node 啟動就報 SyntaxError / 找不到 `--experimental-transform-types` | Node 版本 < 22.6 | 升級 Node 到 22.6 以上（`node --version` 確認） |
 
 ## 6. 維運注意事項 / 已知限制（第六輪 Gate 7.5：對獨立真實 process + 真實 Ollama 重新驗證，
@@ -274,12 +479,19 @@ npm run start
      「已知模型能力上限」（類似付費供應商未驗證的性質），不是待修的程式碼缺陷，不會擋部署決策**——
      若你的部署需要 agent 真的讀寫檔案，請改用較大的本機模型或已驗證憑證的付費供應商。
 
-- **仍待處理的操作面風險（非 REQ 阻斷，自第二/五輪起已知，本輪重新確認仍存在）**：
-  7. 正常關機不會停止內部管理的 `litellm` 子行程（孤兒 process，需手動清理）；其暫存設定目錄
-     （`/tmp/rwe-litellm-*`）也不會自動清除。
-  8. `LiteLLMProxyManager` 固定使用 4000 port，結合上一項的孤兒行程問題，第二個伺服器實例可能對
-     一個殘留自前一個實例的舊代理誤判「健康檢查通過」，實際上接的可能是設定不同的舊代理——本輪已
-     真實重現此風險 2 次（見 §1/§2/§4/§5 的啟動前清理提醒）。
+- **仍待處理的操作面風險（v1 文字，第二/五輪起已知——見下方 v2 TASK-027 修復說明，7/8 已解決）**：
+  7. ~~正常關機不會停止內部管理的 `litellm` 子行程（孤兒 process，需手動清理）~~ **已在 v2
+     TASK-027（DES-022，orphan-reap）修復，Gate 7.5 v2 ROUND 1/2 皆對獨立真實 process 重新確認，
+     本輪（v2 ROUND 2 config-sync check）再次親自重跑確認仍然成立**：對一個真實 `gateway:"sdk"`
+     實例（自己會 spawn 真實 `litellm[proxy]` 子行程）送一個真實 `SIGTERM`，Node 主行程與
+     `litellm` 子行程兩者皆在 2 秒內從 `ps aux` 消失，沒有孤兒殘留。其暫存設定目錄
+     （`/tmp/rwe-litellm-*`）目前仍不會自動清除（純磁碟空間問題，非阻斷）。
+  8. ~~`LiteLLMProxyManager` 固定使用 4000 port，結合上一項的孤兒行程問題，第二個伺服器實例可能
+     誤連到殘留自前一個實例的舊代理~~ **v2 TASK-027 引入 `litellmPort` 設定鍵後風險大幅降低**：
+     (a) 正常關機現在真的會清掉子行程（見上一項），不再留下孤兒；(b) 即使仍想保守起見，每個實例
+     可以在自己的 `rwe.config.json` 明確指定不同的 `litellmPort`，讓多實例天生就不會共用同一個
+     port（見 §1b）。啟動前確認沒有孤兒 `litellm` process 這個操作習慣（見 §1/§2/§4/§5）仍建議
+     保留作為額外保險，但不再是唯一防線。
 
 - **新發現的小瑕疵（第六輪，非 REQ 阻斷）**：
   9. 被 `workflow_suspend`/`workflow_stop` 中止的那次 agent 呼叫，其紀錄會永遠停在
@@ -343,5 +555,6 @@ npm run start
 
 - **v1.1 backlog（非 v1 REQ 範圍內的改善建議，不影響本輪 gate 判定）**：見
   `.sdlc/features/001-remote-workflow-engine/08-validation.md` 的「v1.1 backlog」章節——包含
-  給中止的 agent 紀錄一個專屬終止狀態、修掉 `litellm` port 4000 碰撞風險、拿更大的本機模型或付費
-  供應商重測工具呼叫能力等 5 項。
+  給中止的 agent 紀錄一個專屬終止狀態、拿更大的本機模型或付費供應商重測工具呼叫能力等項目。
+  ~~修掉 `litellm` port 4000 碰撞風險~~ **已在 v2 TASK-027 解決**（orphan-reap + `litellmPort`
+  設定鍵，見上方第 7/8 項與 §1b），不再是待辦項。
