@@ -66,6 +66,14 @@ describe('composeConfig() v2 key wiring (DES-022, standing rule 1)', () => {
     expect((cfg as Record<string, unknown>)['litellmPort']).toBe(4099);
   });
 
+  // Real-use gap: `useLiteLLMProxy` was NOT forwarded by composeConfig(), so `useLiteLLMProxy:false`
+  // in the config file had no effect and server.ts's `config?.useLiteLLMProxy ?? true` re-enabled it
+  // -> a dependency-free (Ollama-only) deploy still spawned `litellm` and crashed on every agent().
+  it('useLiteLLMProxy:false is forwarded from FileConfig into the returned ServerConfig', async () => {
+    const cfg = await composeConfig({ useLiteLLMProxy: false, gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['useLiteLLMProxy']).toBe(false);
+  });
+
   // D-V2V-1 (REQ-009 route-back, gap-tests-v2b): rwe.config.example.json's own committed template
   // sets `workRoot` but never `assetRoot` — without this default, that exact real deployment shape
   // would silently never thread AssetSyncService's on-disk location into the SDK gateway

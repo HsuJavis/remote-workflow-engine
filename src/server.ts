@@ -499,6 +499,29 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         return;
       }
       try {
+        // MCP lifecycle handshake (spec-required before a compliant client will call tools).
+        if (rpc.method === 'initialize') {
+          const clientProto = (rpc.params as { protocolVersion?: string } | undefined)?.protocolVersion;
+          sendJson(res, 200, {
+            jsonrpc: '2.0',
+            id: rpc.id,
+            result: {
+              protocolVersion: clientProto ?? '2025-06-18',
+              capabilities: { tools: {} },
+              serverInfo: { name: 'remote-workflow-engine', version: '1.0.0' },
+            },
+          });
+          return;
+        }
+        // Notifications carry no id and expect no JSON-RPC response body — just ack the POST.
+        if (rpc.method === 'notifications/initialized' || rpc.method?.startsWith('notifications/')) {
+          res.writeHead(202).end();
+          return;
+        }
+        if (rpc.method === 'ping') {
+          sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: {} });
+          return;
+        }
         if (rpc.method === 'tools/list') {
           const tools = TOOL_NAMES.map((name) => ({ name, ...TOOL_METADATA[name] }));
           sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { tools } });

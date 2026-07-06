@@ -5,11 +5,14 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/home/user/Documents/remote-workflow
+# systemd 用最小環境,node 由使用者版本管理器提供 —— 把它的 bin 放進 PATH,
+# 並用 node 絕對路徑直接跑 tsx(繞過不存在的 /usr/local/bin/npm)
+Environment=PATH=/home/user/.local/node/bin:/usr/local/bin:/usr/bin:/bin
 Environment=RWE_BIND=127.0.0.1
 Environment=RWE_PORT=8787
 Environment=RWE_CONFIG_PATH=/home/user/Documents/remote-workflow/rwe.config.json
 EnvironmentFile=-%h/.config/rwe.env
-ExecStart=/usr/local/bin/npm run start
+ExecStart=/home/user/.local/node/bin/node /home/user/Documents/remote-workflow/node_modules/tsx/dist/cli.mjs src/main.ts
 Restart=on-failure
 RestartSec=2
 

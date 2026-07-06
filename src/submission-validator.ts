@@ -64,8 +64,11 @@ export class SubmissionValidator {
 
     if (spec.script) {
       // ARCH-003 delegate: TS-not-JS parse rejection (same wrapping the sandbox evaluates).
+      // Strip the leading `export const meta = {...};` first — a bare `export` is illegal inside the
+      // async-function wrapper, exactly as the sandbox's evaluateScript strips it before compiling.
       try {
-        new vm.Script(`(async () => {\n${spec.script}\n})`, { filename: 'workflow-script.js' });
+        const body = spec.script.replace(/export\s+const\s+meta\s*=\s*[^;]*;/, '');
+        new vm.Script(`(async () => {\n${body}\n})`, { filename: 'workflow-script.js' });
       } catch (err) {
         errors.push({ code: 'PARSE_ERROR', message: err instanceof Error ? err.message : String(err), field: 'script' });
       }

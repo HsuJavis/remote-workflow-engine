@@ -9,6 +9,17 @@ describe('SubmissionValidator', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('a real Claude workflow starting with `export const meta = {...};` passes (export stripped before parse)', async () => {
+    // Real-use gap: every Claude-generated workflow begins with `export const meta = {...}`. The
+    // validator wrapped the raw script in an async function and compiled it, but a bare `export` is
+    // illegal inside a function body -> PARSE_ERROR "Unexpected token 'export'", so NO real workflow
+    // could ever be submitted. The validator must strip the meta first (as the sandbox does).
+    const v = new SubmissionValidator();
+    const script = `export const meta = { name: 'x', description: 'd', phases: [{ title: 'P' }] };\nphase('P');\nreturn 1;`;
+    const result = await v.validate({ script });
+    expect(result.ok).toBe(true);
+  });
+
   it('TypeScript syntax in script returns ok:false with PARSE_ERROR', async () => {
     const v = new SubmissionValidator();
     const result = await v.validate({ script: 'const x: number = 1; return x;' });

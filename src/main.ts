@@ -107,6 +107,10 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // LiteLLMProxyManager; a "direct-fetch" caller's own ServerConfig.litellmPort reaches
     // server.ts's LiteLLMGatewayClient construction unchanged.
     litellmPort: fileConfig.litellmPort,
+    // Forwarded regardless of gateway choice — the "direct-fetch" path's LiteLLMGatewayClient reads
+    // this to decide proxy-vs-direct per-provider fetch. Previously dropped, so `useLiteLLMProxy:false`
+    // in the config file had no effect and a dependency-free (e.g. Ollama-only) deploy still spawned litellm.
+    useLiteLLMProxy: fileConfig.useLiteLLMProxy,
     // DES-022 (standing rule 1, UT-033): forwarded regardless of gateway choice, same convention —
     // both reach `server.ts`'s own default-path fallbacks (`join(workRoot,'schedules.db')` /
     // `join(workRoot,'assets')`) unchanged when omitted.
