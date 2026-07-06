@@ -3,7 +3,7 @@
 > 單頁摘要(存於本 feature ledger)。完整追溯與進度:本 feature 的 `dashboard.html`
 > (或 workspace 索引 `.sdlc/dashboard.html`)。
 
-- **Status**: v1 done(Gate 1–8 全數通過,2026-07-03;v2 排程/同步/dashboard/plugin 待啟動)
+- **Status**: v2 done(Gate 1–8 全數通過,2026-07-07;v1+v2 = 核心引擎 + dashboard/資產同步/plugin/部署/排程。v3 認證待啟動)
 - **Current iteration**: v1(核心引擎)
 - **Owner**: hsuhungjung
 - **One line**: 讓 Claude 產生的 workflow JS 檔可以 100% 相容地跑在自架(本地/遠端 Linux)伺服器上 —— 以 MCP Streamable HTTP 為介面,可換用 OpenAI/Gemini/本地 LLM,支援 suspend/resume/stop 與逐 agent 觀察。

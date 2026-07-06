@@ -1,0 +1,17 @@
+[Unit]
+Description=remote-workflow-engine (MCP Streamable HTTP)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/user/Documents/remote-workflow
+Environment=RWE_BIND=127.0.0.1
+Environment=RWE_PORT=8787
+Environment=RWE_CONFIG_PATH=/home/user/Documents/remote-workflow/rwe.config.json
+EnvironmentFile=-%h/.config/rwe.env
+ExecStart=/usr/local/bin/npm run start
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
