@@ -1,0 +1,4 @@
+- **Bug**: The `update` function does not complete its logic; the line `newS` is incomplete.
+- **Risk**: The current implementation lacks collision detection for food, meaning the snake can overlap with itself after eating without triggering an alert.
+- **Missing Feature**: Direction changes are not implemented. The player cannot change direction.
+- **Risk**: The game does not handle all edge cases, such as wrapping around the canvas or handling simultaneous key presses that could lead to incorrect movement directions.

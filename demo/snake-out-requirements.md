@@ -1,0 +1,6 @@
+- When the "Start" button is clicked, the game should begin with a snake of length 3 segments moving right.
+- Pressing the arrow keys (up, down, left, right) should change the direction of the snake without reversing course immediately.
+- Eating the food item on the screen should increase the snake's length by one segment and update the score display.
+- If the snake collides with any part of itself, the game should end, and a "Game Over" message should be displayed.
+- If the snake collides with the wall boundaries of the browser window, the game should end, and a "Game Over" message should be displayed.
+- The current score should be displayed at the top or bottom of the screen during gameplay.
