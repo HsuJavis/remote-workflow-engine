@@ -366,6 +366,50 @@ sudo systemctl enable --now rwe.service
 `ExecStart` 用的是與本文件 §2 步驟 6 完全相同的 `npm run start`（此 repo 沒有另外維護一份編譯產
 物 `dist/main.js`，見該檔案內註解）。
 
+### 無 root 部署：systemd **user** service + 本地 Ollama（實測路徑，2026-07-07 驗證）
+
+> 沒有 sudo/root 時的正解——用 systemd 的 **user instance**（`systemctl --user`），unit 放
+> `~/.config/systemd/user/`，完全不需要 root。附檔 `deploy/rwe.user.service` 是這個版本的範本。
+> 全程只用本地 Ollama（`qwen2.5`），**零 API 金鑰、零 LiteLLM/Python 依賴**。
+
+```bash
+# 1. 安裝 unit（用 cp，不要手打 heredoc——長行/縮排容易被貼壞）
+cp deploy/rwe.user.service ~/.config/systemd/user/rwe.service
+cat ~/.config/systemd/user/rwe.service          # 確認完整 17 行、有 ExecStart 才繼續
+
+# 2. 啟用 + 啟動 + 讓它在登出後仍續存
+systemctl --user daemon-reload
+systemctl --user enable --now rwe.service
+loginctl enable-linger "$USER"                   # 登出/重開機後 user service 仍運行
+
+# 3. 驗證（看到 active + dashboard=200 即成功）
+systemctl --user is-active rwe.service
+curl -s -o /dev/null -w "dashboard=%{http_code}\n" http://127.0.0.1:8787/dashboard
+```
+
+**搭配的 `rwe.config.json`（Ollama-only、免依賴）**：
+```json
+{
+  "bind": "127.0.0.1", "port": 8787, "workRoot": "./data",
+  "timeoutMs": 300000, "gateway": "direct-fetch", "useLiteLLMProxy": false,
+  "aliases": { "default": { "provider": "ollama", "model": "qwen2.5:7b" } }
+}
+```
+
+**三個實際會踩到的坑（本次實測排除，v2.1 已修 + 補測試）**：
+1. **`ExecStart` 不要用 `npm`** —— 若 node 是用版本管理器裝的（例如在 `~/.local/node/bin/`），
+   `/usr/local/bin/npm` 可能是失效 symlink，而 systemd 用最小環境看不到互動 shell 的 PATH →
+   `status=203/EXEC`。範本改用 **node 絕對路徑直接跑 tsx**：
+   `ExecStart=<node 絕對路徑> node_modules/tsx/dist/cli.mjs src/main.ts`，並在 unit 裡設
+   `Environment=PATH=<node bin 目錄>:/usr/bin:/bin`。用 `node -e 'console.log(process.execPath)'`
+   查你的 node 真實路徑。
+2. **免依賴啟動要設 `useLiteLLMProxy:false`** —— 否則開機/首次 `agent()` 會去 `spawn litellm`，
+   沒裝就 `ENOENT` 崩潰。設 `gateway:"direct-fetch"` + `useLiteLLMProxy:false`，ollama 走原生直連
+   `localhost:11434`，完全不碰 LiteLLM。
+3. **`timeoutMs` 是「單次 `agent()` LLM 呼叫」的斷路器，不是整體 workflow 逾時**（workflow 本身
+   非同步、無總時長限制）。本地 7B 生成大回應會超過預設 15 秒 → 被切成 null；跑本地模型建議調高
+   到 `300000`（5 分鐘）。
+
 **上線前煙霧測試**（`scripts/smoke.sh`，非互動式、結束碼 0=成功）：
 ```bash
 scripts/smoke.sh
