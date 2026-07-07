@@ -71,6 +71,22 @@ describe('safeRelPath (pure, DES-019)', () => {
     expect(result).not.toBeNull();
     expect(result!.startsWith(ROOT)).toBe(true);
   });
+
+  // Real-use gap: a RELATIVE assetRoot (the real deployment shape — workRoot "./data" ->
+  // assetRoot "./data/assets") made resolve(p) absolute while the root stayed relative, so
+  // startsWith always failed and EVERY valid push was wrongly rejected as ASSET_PATH_ESCAPE.
+  // These pin the fix (normalize the root to absolute) while keeping traversal blocked.
+  const REL_ROOT = './data/assets/skill/demo-skill';
+
+  it('a simple filename under a RELATIVE assetRoot is accepted (not a false escape)', () => {
+    const result = safeRelPath('SKILL.md', REL_ROOT);
+    expect(result).not.toBeNull();
+    expect(result!.endsWith('/data/assets/skill/demo-skill/SKILL.md')).toBe(true);
+  });
+
+  it('traversal is still blocked under a RELATIVE assetRoot', () => {
+    expect(safeRelPath('../../../../tmp/pwned.txt', REL_ROOT)).toBeNull();
+  });
 });
 
 describe('asset_push atomicity (DES-019)', () => {

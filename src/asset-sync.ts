@@ -63,8 +63,12 @@ export function isSelfReferential(
  */
 export function safeRelPath(p: string, assetRoot: string): string | null {
   if (isAbsolute(p)) return null;
-  const resolved = resolve(assetRoot, p);
-  if (resolved !== assetRoot && !resolved.startsWith(assetRoot + sep)) return null;
+  // Normalize the root to absolute first: resolve(p) below is always absolute, so comparing it
+  // against a RELATIVE assetRoot (e.g. "./data/assets" from a relative workRoot) made startsWith
+  // always fail -> every valid push wrongly rejected as ASSET_PATH_ESCAPE.
+  const root = resolve(assetRoot);
+  const resolved = resolve(root, p);
+  if (resolved !== root && !resolved.startsWith(root + sep)) return null;
   return resolved;
 }
 
