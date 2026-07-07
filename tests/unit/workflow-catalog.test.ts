@@ -31,6 +31,21 @@ describe('WorkflowCatalog', () => {
     await expect(cat.get('no-such-workflow')).rejects.toThrow(CatalogNotFoundError);
   });
 
+  it('deregister removes a registered workflow (gone from get() and list())', async () => {
+    const cat = new WorkflowCatalog(WORK_ROOT);
+    await cat.register('temp-flow', 'return 1;');
+    const { removed } = await cat.deregister('temp-flow');
+    expect(removed).toBe(true);
+    await expect(cat.get('temp-flow')).rejects.toThrow(CatalogNotFoundError);
+    expect((await cat.list()).map((e) => e.name)).not.toContain('temp-flow');
+  });
+
+  it('deregister on an unknown name returns removed:false (no throw)', async () => {
+    const cat = new WorkflowCatalog(WORK_ROOT);
+    const { removed } = await cat.deregister('never-registered');
+    expect(removed).toBe(false);
+  });
+
   it('list() returns all registered workflows', async () => {
     const cat = new WorkflowCatalog(WORK_ROOT);
     await cat.register('alpha', 'return 1;');

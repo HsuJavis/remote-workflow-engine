@@ -58,6 +58,13 @@ export class WorkflowCatalog {
     return { version };
   }
 
+  /** Remove a registered workflow from the catalog. `removed:false` when the name was not present.
+   *  Prior runs' journals keep their own scriptVersion, so this only affects future run-by-name. */
+  async deregister(name: string): Promise<{ removed: boolean }> {
+    const info = this._db.prepare('DELETE FROM workflows WHERE name = ?').run(name);
+    return { removed: info.changes > 0 };
+  }
+
   async get(name: string): Promise<{ script: string; version: string }> {
     const row = this._db.prepare('SELECT script, version FROM workflows WHERE name = ?').get(name) as
       | { script: string; version: string }

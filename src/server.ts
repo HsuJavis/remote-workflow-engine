@@ -85,6 +85,7 @@ const TOOL_NAMES = [
   'workflow_list',
   'workflow_agent_log',
   'workflow_register',
+  'workflow_deregister',
   'workflow_artifacts',
   // v2 (DES-016/TASK-019): schedule CRUD + resident trigger, over the same RunManager.start path.
   'schedule_create',
@@ -182,6 +183,14 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
         script: { type: 'string', description: 'The workflow script text to save under this name.' },
       },
       required: ['name', 'script'],
+    },
+  },
+  workflow_deregister: {
+    description: 'Removes a registered workflow from the catalog by name (returns removed:false if it was not registered). Prior runs are unaffected.',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'The workflow name to remove from the catalog.' } },
+      required: ['name'],
     },
   },
   workflow_artifacts: {
@@ -319,6 +328,7 @@ async function callTool(
     case 'workflow_list': return facade.workflow_list();
     case 'workflow_agent_log': return facade.workflow_agent_log(args as { runId: string; agentId: string });
     case 'workflow_register': return facade.workflow_register(args as { name: string; script: string });
+    case 'workflow_deregister': return facade.workflow_deregister(args as { name: string });
     case 'workflow_artifacts': return facade.workflow_artifacts(args as { runId: string });
     // v2 (DES-016/TASK-019): schedule CRUD + resident trigger — thin pass-through to SqliteSchedulerPort,
     // whose own methods already return the { result?, error? } envelope shape (see scheduler.ts).

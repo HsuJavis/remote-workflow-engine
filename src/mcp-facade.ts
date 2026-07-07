@@ -84,6 +84,15 @@ export class McpFacade {
     }
   }
 
+  async workflow_deregister(a: { name: string }): Promise<ResultEnvelope<{ name: string; removed: boolean }>> {
+    try {
+      const { removed } = await this.runManager.catalog.deregister(a.name);
+      return { runId: '', status: 'completed', result: { name: a.name, removed } };
+    } catch (err) {
+      return { runId: '', status: 'failed', error: toErrEnvelope(err) };
+    }
+  }
+
   async workflow_status(a: { runId: string }): Promise<ResultEnvelope<RunStatusView> & Partial<RunStatusView>> {
     const view = await this.store.getRun(a.runId);
     if (!view) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
