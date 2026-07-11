@@ -3,7 +3,41 @@
 > 人類導向文件（繁體中文）。由 Gate 7.5 validator 依實際部署步驟撰寫，步驟可重跑。
 > 凡 validator 為了把系統跑起來而做、但 README quickstart 未涵蓋的動作，都記在這裡。
 >
-> **v2 Gate 7.5 ROUND 1（2026-07-04，最新）結果摘要**：REQ-011（本節 §2b）已對真實獨立 process
+> ---
+> ## ⭐ v3（2026-07-11，最新 — 目前實際部署狀態，凡與下方舊輪敘述衝突者，以本塊為準）
+>
+> 這一輪把系統實際切到 **`gateway:"sdk"`** 常駐運行，並經真實 Gate 7.5（透過 remote-workflow-plugin
+> 對真實 `qwen2.5:7b` 端對端）驗證。相對於下方 v1/v2 敘述，**三件事已改變**：
+>
+> 1. **實際部署走 `gateway:"sdk"`（不是 `direct-fetch`）**。這條路徑才有 agent 工具迴圈 + MCP，
+>    所以需要 LiteLLM 代理（見 §1 的 Python 3.11/3.12 setup）。若你只要純工作流程邏輯、不需要
+>    `agent()` 真的用工具，`direct-fetch` 仍是可用的免依賴退回選項（見 §2b Ollama-only）。
+>    **systemd unit 的 `PATH` 必須含 litellm venv 的 `bin/`**，否則 sdk 開機 `spawn('litellm')`
+>    會 `ENOENT` 失敗（範例：`Environment=PATH=/home/<you>/.rwe-litellm-venv/bin:/home/<you>/.local/node/bin:/usr/bin:/bin`）。
+>
+> 2. **預設工具面已擴充（D-V3M-3）**：`Read`/`Write` → **`Read`/`Write`/`Edit`/`Glob`/`Grep`/`Bash`**，
+>    全部**限制在該次 run 自己的工作目錄**（`cwd`=run workspace + §1c(d) 的 realpath 邊界檢查，
+>    每次呼叫都經 `canUseTool` 與 `PreToolUse` 強制）。這**刻意反轉了**舊 v2 §1c(b) 的「預設不含
+>    Bash」——當初排除 Bash 是因為那時**還沒有** fs jail；jail 現在存在了（§1c(a)(d)），所以
+>    Bash 以「confined 在固定工作目錄下」的形式回到預設。**Web 外連（`WebFetch`/`WebSearch`）與
+>    子 agent 生成（`Task`/`Agent`）仍不在預設**（破壞工作目錄封閉性 / 繞過引擎自己的
+>    orchestration+DOS 模型）——需要時仍可在某 `agentType` 的 `tools:` 或呼叫端 `opts.allowedTools`
+>    明確 opt-in（所有工具都仍可 opt-in 啟用，只是預設集不含它們）。
+>
+> 3. **LiteLLM 代理 port 改為動態（D-V3M-4）**：沒有設定 `litellmPort` 時，**綁一個 OS 分配的
+>    ephemeral 空閒 port**，不再霸佔寫死的 4000。這根治了「一台主機上多個 litellm（或跑測試時
+>    撞到常駐服務）搶 4000」的老問題——實測常駐 sdk 服務現在跑在動態 port（例如 `:34129`），
+>    可與完整測試套件並存。明確指定 `litellmPort` 仍有效（會走既有的 stale-owner pre-bind 檢查）。
+>
+> **v3 也啟用的能力**（sdk 模式下才有；細節見各自章節/`journal.md`）：MCP 依名 provisioning
+> （管理工具 `mcp_provision` 註冊 → workflow 用 `agent(p,{mcp:['name']})` 引用 → 只注入被引用者，
+> `strictMcpConfig` 隔離不變）、伺服器端 secret（config 內 `${secret:NAME}` handle → 由
+> `RWE_SECRET_<NAME>` 環境變數解析，缺失則該次 run 明確 `SECRET_MISSING` 失敗、絕不外洩字面值）、
+> 以及 D-DOS 觀測端點 `GET /api/status`（回 `{agentSemaphore:{total,inUse,queued}}`）。
+> hook 明確不支援（`asset_push` kind:hook 一律拒絕）。
+> ---
+>
+> **v2 Gate 7.5 ROUND 1（2026-07-04）結果摘要**：REQ-011（本節 §2b）已對真實獨立 process
 > 驗證通過——`scripts/smoke.sh` 真實跑過、真實 pass；`npm install`/`npm ci` 皆真實、乾淨；優雅關閉
 > 時真的會連帶砍掉 `litellm` 子行程（TASK-027，真實 `SIGTERM` 測過，2 秒內兩個 process 都消失，
 > 不留孤兒）；`docker-compose.yml` 已做真實 YAML 語法驗證，但**這次驗證環境沒有安裝 docker，
@@ -176,6 +210,9 @@
 > 內建 fallback、§1c 安全模型描述的行為重新一致。這是 Gate 7.5 §4b「config drift = deploy failure
 > waiting to happen」條款存在的確切理由——本輪視為一個真實發現+已修正的缺口記錄於此，並在
 > `08-validation.md` 留下對應證據，不是靜默補丁。
+> **（v3 更新，2026-07-11）**：上述 v2 敘述已被 D-V3M-3 取代——預設集現在**刻意含 `Bash`**（confined
+> 在工作目錄下），範例與內建 fallback 皆為 `["Read","Write","Edit","Glob","Grep","Bash"]`。詳見頂部
+> ⭐v3 塊與 §1c(b)。
 
 | 設定檔 | 用途 | 本次是否異動 | 需補的鍵/值 |
 |--------|------|--------------|-------------|
@@ -194,7 +231,7 @@
   "retries": 1,
   "gateway": "sdk",
   "agentDefinitionsDir": "./agents",
-  "defaultAllowedTools": ["Read", "Write"],
+  "defaultAllowedTools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
   "aliases": {
     "sonnet":  { "provider": "anthropic", "model": "claude-3-5-sonnet-20241022" },
     "haiku":   { "provider": "anthropic", "model": "claude-3-5-haiku-20241022" },
@@ -220,8 +257,8 @@ headless session；**但見已知限制第 1 條：對本機 7B 級 Ollama 模�
 當一次 `agent()` 呼叫沒有自帶 `opts.allowedTools`（且對應的 `agentType` 定義也沒有 `tools:`
 frontmatter）時，套用的預設工具清單——縮小送給模型的工具面，避免小型本機模型被完整 Claude Code CLI
 工具面（含此主機環境自己的外掛/MCP 工具）淹沒而放棄嘗試工具呼叫；省略此鍵時內建預設值是
-`["Read","Write"]`（**不含 `Bash`** ——v2 Gate 8 review V3 HIGH 修復後的行為，見下方「安全模型」一節；
-`Bash` 一律需要明確 opt-in，見下）。
+**`["Read","Write","Edit","Glob","Grep","Bash"]`**（v3 D-V3M-3；`Bash` 已在預設但被工作目錄邊界
+封閉，`WebFetch`/`WebSearch`/`Task`/`Agent` 仍需 opt-in——見下方「安全模型」(b)/(d)）。
 優先序：呼叫端 `opts.allowedTools` > `agentType` 定義的 `tools:` > 這個設定鍵 > 內建預設，永遠不會
 不設限。不提供 `aliases` 時，伺服器內建預設值等同上面拿掉 `local` 那份（全指向 anthropic）。
 `agentDefinitionsDir` 省略時 agentType 註冊表為空（每個 `agentType` 都會回報 unknown，不影響不用
@@ -230,11 +267,10 @@ frontmatter）時，套用的預設工具清單——縮小送給模型的工具
 **Gate 7.5 v2 ROUND 2 config-file sync check 補充（本輪新發現的文件漂移，已修正）**：`litellmPort`
 （型別 `number`，選填）在 v2 TASK-027 就已經被 `composeConfig()` 真的接進
 `LiteLLMProxyManager(aliases, {port: fileConfig.litellmPort})`（`tests/unit/
-compose-config-v2-wiring.test.ts` 綠燈確認），但下方 §6「維運注意事項」第 8 項先前的文字仍寫著
-「`LiteLLMProxyManager` 固定使用 4000 port（不可設定）」——**這句話已經不成立，本輪修正**：省略
-`litellmPort` 時仍預設 `4000`（向後相容），但每個伺服器實例都可以在自己的 `rwe.config.json` 明確
-指定不同的 `litellmPort`，徹底避開「孤兒代理占著同一個 port、下一個實例誤連舊代理」這個風險（不必
-只靠「啟動前手動確認沒有孤兒 process」這個操作習慣）。`schedulerDbPath`/`assetRoot` 兩個 v2 鍵
+compose-config-v2-wiring.test.ts` 綠燈確認）。**v3 D-V3M-4 更新**：省略 `litellmPort` 時**不再預設
+4000，而是綁一個 OS 分配的 ephemeral 空閒 port**（`net` 綁 `:0` 取得），徹底避開多實例/測試撞
+port 的問題（實測常駐 sdk 服務跑在動態 port，可與完整測試套件並存）；明確指定 `litellmPort` 仍
+有效，會走既有的 stale-owner pre-bind 檢查。`schedulerDbPath`/`assetRoot` 兩個 v2 鍵
 （型別皆 `string`，選填）也是同一批新增鍵，皆有可用預設值，一般部署可以省略不填。
 
 環境變數也可覆蓋設定檔部分欄位（不需要設定檔也能啟動）：
@@ -260,12 +296,19 @@ compose-config-v2-wiring.test.ts` 綠燈確認），但下方 §6「維運注意
 `canUseTool`/`PreToolUse` 回呼一律會同步回傳一個明確決策（`allow` 或 `deny`），從不回傳
 `null`/pending。
 
-**(b) 預設工具面不含 `Bash`**：`gateway:"sdk"` 路徑下，一次 `agent()` 呼叫若沒有自帶
-`opts.allowedTools`（且對應 `agentType` 定義也沒有 `tools:` frontmatter）、也沒有設定
-`defaultAllowedTools`，套用的內建預設工具清單是 `["Read","Write"]`——**不含 `Bash`**。要讓某個
-`agentType`／某次呼叫拿到一個能跑 shell 指令的 `Bash` 工具，必須明確地在該 `agentType` 定義的
-`tools:` frontmatter、或呼叫端 `opts.allowedTools`、或 `rwe.config.json` 的 `defaultAllowedTools`
-三者之一列出 `'Bash'`——這是一個刻意的 opt-in 決定，不是每次 `agent()` 呼叫的預設能力。
+**(b) 預設工具面 = 受限的檔案+搜尋+shell 集（v3 D-V3M-3 更新，取代舊的「不含 Bash」）**：
+`gateway:"sdk"` 路徑下，一次 `agent()` 呼叫若沒有自帶 `opts.allowedTools`（且對應 `agentType`
+定義也沒有 `tools:` frontmatter）、也沒有設定 `defaultAllowedTools`，套用的內建預設工具清單是
+**`["Read","Write","Edit","Glob","Grep","Bash"]`**——與真實 dynamic-workflow agent 的工作工具面
+對齊。**`Bash` 現在在預設集裡，但被 (d) 的工作目錄邊界封閉**（`cwd`=該次 run 工作目錄 + 每次呼叫
+的 realpath 路徑檢查；一個試圖逃出工作目錄的 Bash 指令會被 `deny`）。這**刻意反轉**了 v2 當初把
+Bash 排除於預設的決定：那個排除只在「還沒有 fs jail」時成立（Bash 預設 + `bypassPermissions` 會
+在父信任區跑任意 shell）；現在兩半都變了——`permissionMode` 是 `'default'`（見 (a)）、且 (d) 的
+realpath 邊界對每次呼叫強制，jail 已存在，所以 Bash 以「限制在固定工作目錄下」的形式回到預設。
+**仍不在預設、需明確 opt-in 的**：`WebFetch`/`WebSearch`（對外網連線，破壞工作目錄封閉性）與
+`Task`/`Agent`（在 agent 內再生子 agent，繞過引擎自己的 orchestration+DOS 追蹤模型）——所有工具
+仍可透過 `agentType` 的 `tools:` frontmatter 或呼叫端 `opts.allowedTools` 明確啟用，只是預設集不
+含它們。
 
 **(c) 供應商 API 金鑰的存放位置**：真實的供應商金鑰（`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/...）
 只存在於「啟動這個伺服器的那個 process 自己的環境變數」與「伺服器內部管理的 LiteLLM 代理子行程
