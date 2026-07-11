@@ -6,6 +6,8 @@
 // calls (AbortSignal) and kill the sandbox child, not just flip the status flag.
 import { cpus, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { materializeSeed } from './workspace-seed.js';
 import { IllegalTransitionError } from './errors.js';
 import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord } from './types.js';
 import type { RunStore } from './run-store.js';
@@ -141,6 +143,13 @@ export class RunManager {
 
     const runId = await this._store.createRun(spec, resolvedVersion);
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
+    // REQ-025 (v2): materialize the client seed tree into the workspace BEFORE any agent starts
+    // (engine-side, so replay/determinism holds) — `.claude` settings/hooks stripped, escapes
+    // rejected (workspace-seed.materializeSeed).
+    if (spec.seed && spec.seed.length > 0) {
+      mkdirSync(workspace, { recursive: true });
+      materializeSeed(workspace, spec.seed);
+    }
     const guard = new RunGuard({ concurrency: this._concurrency, budget: spec.budget ?? null });
     const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, agentTypes: this._agentTypes });
     const entry: RunEntry = {

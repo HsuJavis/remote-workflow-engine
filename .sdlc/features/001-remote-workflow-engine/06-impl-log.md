@@ -1716,3 +1716,20 @@ All v1 REQs have unchanged green VALs.
 - **status:** done
 - **iter:** v3
 - files: `src/workroot-guard.ts` (pure `assertWorkRootIsolated` + `WorkRootInsideProjectError`), `src/main.ts` (`composeConfig` calls it fail-closed on the resolved workRoot), `rwe.config.json`/`rwe.config.example.json` (workRoot → outside-repo path), `DEPLOY.md` (⭐v3 block item 4).
+
+### IMPL-081 — workspace-artifacts (REQ-022/023)
+- **status:** done
+- **traces:** DES-032
+- files: src/workspace-artifacts.ts, src/mcp-facade.ts (workflow_artifacts recursive, workflow_artifact_get), src/server.ts (tools)
+### IMPL-082 — readBody body cap (REQ-024)
+- **status:** done
+- **traces:** DES-033
+- files: src/server.ts
+### IMPL-083 — seed-into-workspace (REQ-025)
+- **status:** done
+- **traces:** DES-034, DES-035
+- files: src/workspace-seed.ts, src/types.ts (RunSpec.seed), src/run-manager.ts, src/mcp-facade.ts (workflow_run seed)
+### IMPL-084 — workspace retention purge+GC (REQ-026)
+- **status:** done
+- **traces:** DES-036
+- files: src/workspace-gc.ts, src/mcp-facade.ts (workspace_purge), src/server.ts (GC ticker + workspaceTtlMs)

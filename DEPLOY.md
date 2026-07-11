@@ -85,6 +85,12 @@
 > - **模型注意**: patch 模式的 git-plumbing agent(seed/finalize)**需要「真的會執行 Bash」的模型**。
 >   qwen2.5:7b 會把工具呼叫吐成文字(D-F11 能力層)沒真跑 → 這幾步請指定 Claude 或夠大的本地模型;
 >   引擎執行與 client 套用機制本身與模型無關,皆已驗證。
+> - **v1.5/v2 工具(支援大 patch / 整樹開發)**: `workflow_artifacts`(遞迸列檔 + sha256)、
+>   `workflow_artifact_get(runId,path,offset?,length?)`(分塊、限大小、realpath 封閉的 byte 取回,給太大塞不進
+>   inline result 的 patch/bundle)、`workspace_purge(runId)`(刪除 terminal run 的 workspace)。`workflow_run` 新增
+>   選填 `seed:[{path,contentB64}]`—引擎在 agents 啟動前把整棵 tree materialize 進 workspace(**strip 掉
+>   `.claude/settings*.json`+hooks**,關 RCE),讓 agents 直接編輯真實專案(而非只給 prompt 的 bounded base)。
+>   請求 body 上限 8 MiB(超過回 413,防 OOM)。選填 `workspaceTtlMs` 開啟周期 GC 回收舊 workspace。
 > ---
 >
 > **v2 Gate 7.5 ROUND 1（2026-07-04）結果摘要**：REQ-011（本節 §2b）已對真實獨立 process

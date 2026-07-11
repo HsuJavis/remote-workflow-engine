@@ -1346,3 +1346,24 @@ classDiagram
   AssetSync --> AssetIngestionPolicy : classify
   AssetIngestionPolicy --> McpRegistry : mcp-config redirect
 ```
+
+### DES-032 — listArtifacts / readArtifactChunk (src/workspace-artifacts.ts)
+- **status:** done
+- **traces:** TASK-039, TASK-040
+- `listArtifacts(workspace): {path,size,sha256}[]` (recursive, isPathContained-skip); `readArtifactChunk(workspace,relPath,offset?,length?,maxChunk=1MiB): {path,size,offset,length,eof,base64}|{error:'PATH_OUTSIDE_WORKSPACE'|'NOT_A_FILE'}` (positioned read).
+### DES-033 — readBody cap (src/server.ts)
+- **status:** done
+- **traces:** TASK-041
+- `readBody(req, maxBytes=8MiB)`: discards past cap (bounded memory), rejects BodyTooLargeError → 413.
+### DES-034 — materializeSeed (src/workspace-seed.ts)
+- **status:** done
+- **traces:** TASK-042
+- `materializeSeed(workspace, {path,contentB64}[]): {written,stripped,rejected}`; STRIP_RE for `.claude/settings*.json|hooks/**`; isPathContained + `.git` reject.
+### DES-035 — RunSpec.seed + RunManager.start materialization
+- **status:** done
+- **traces:** TASK-042
+- RunSpec.seed threaded from workflow_run; materialized before _runLive (replay-safe).
+### DES-036 — reclaimStaleWorkspaces + workspace_purge (src/workspace-gc.ts, McpFacade)
+- **status:** done
+- **traces:** TASK-043
+- `reclaimStaleWorkspaces(workRoot,ttlMs,statusOf,nowMs): reclaimedIds` (TERMINAL+old only); `McpFacade.workspace_purge` (terminal-only, idempotent).

@@ -49,10 +49,10 @@ describe('workflow_artifacts: run-workspace files retrievable via the API (IT-01
     writeFileSync(join(workspace, 'output.txt'), 'artifact content');
 
     const artifacts = await (facade as unknown as {
-      workflow_artifacts(a: { runId: string }): Promise<{ result?: string[]; error?: unknown }>;
+      workflow_artifacts(a: { runId: string }): Promise<{ result?: Array<{ path: string; size: number; sha256: string }>; error?: unknown }>;
     }).workflow_artifacts({ runId });
 
     expect(artifacts.error).toBeUndefined();
-    expect(artifacts.result).toContain('output.txt');
+    expect((artifacts.result ?? []).map((a) => a.path)).toContain('output.txt');
   }, 15000);
 });

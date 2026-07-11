@@ -75,6 +75,10 @@ describe('workflow_artifacts over the real MCP HTTP surface (IT-014, D-R4)', () 
     const artifacts = await toolCall(baseUrl, 'workflow_artifacts', { runId });
 
     expect(artifacts.error).toBeUndefined();
-    expect(artifacts.result).toContain('output.txt');
+    expect((artifacts.result as Array<{ path: string; size: number; sha256: string }>).map((a) => a.path)).toContain('output.txt');
+    // REQ-023: entries now carry size + sha256
+    const entry = (artifacts.result as Array<{ path: string; size: number; sha256: string }>).find((a) => a.path === 'output.txt')!;
+    expect(entry.size).toBeGreaterThan(0);
+    expect(entry.sha256).toMatch(/^[0-9a-f]{64}$/);
   }, 15000);
 });

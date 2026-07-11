@@ -4,8 +4,8 @@ feature: 001-remote-workflow-engine
 mode: new                # new | modify | refactor
 safety_class: QM         # Gate 1.5 triage: developer tooling, no safety/cyber-physical impact → QM (no safety work products)
 iteration: v3
-current_stage: verification
-updated: 2026-07-11   # REQ-021 hardening landed GREEN (symlink realpath + typed error fields + session-init re-walk; UT-052/053/054+VAL-024). v4 slice REQ-022..026 (v1.5/v2) NOT built — the Gate 2->8 run drifted to gap-closing on the mature 001 ledger; needs re-scoping (see journal).
+current_stage: review
+updated: 2026-07-11   # v4 slice v1.5+v2 BUILT direct-TDD: REQ-022..026 (recursive artifacts+sha256 / chunked realpath-contained artifact_get / readBody 413 cap / seed-into-workspace+.claude-strip / workspace_purge+TTL-GC). Full suite 492+ green; all 5 REQs real-validated on the live engine. ARCH-020..022/TASK-039..043/DES-032..036/IMPL-081..084/UT-055,056/IT-042.
 
 tech_stack: >-
   Node.js 22.6+ (real requirement, corrected at Gate 7.5 round 1 — native --experimental-transform-types;

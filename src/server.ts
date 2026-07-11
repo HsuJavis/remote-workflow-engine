@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { McpFacade } from './mcp-facade.js';
 import { RunManager } from './run-manager.js';
 import { createSemaphore } from './agent-semaphore.js';
+import { reclaimStaleWorkspaces } from './workspace-gc.js';
 import { SubmissionValidator } from './submission-validator.js';
 import { SqliteRunStore } from './store/sqlite-run-store.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
@@ -67,6 +68,10 @@ export interface ServerConfig {
   // Defaults to 32 (a generous backstop that never throttles a single workflow, whose own per-run
   // concurrency is already capped at min(16, cores-2)).
   agentSlots?: number;
+  // REQ-026 (v2): run-workspace retention TTL in ms. When set (>0), a periodic GC reclaims TERMINAL
+  // run workspaces older than this (never active/suspended). Omitted -> no auto-GC (workspaces are
+  // kept until an explicit workspace_purge), so no surprise deletion by default.
+  workspaceTtlMs?: number;
 }
 
 export interface Server {
@@ -94,6 +99,9 @@ const TOOL_NAMES = [
   'workflow_register',
   'workflow_deregister',
   'workflow_artifacts',
+  // v1.5/v2: byte-fetch a workspace file chunk (REQ-022) + purge a run's workspace (REQ-026).
+  'workflow_artifact_get',
+  'workspace_purge',
   // v2 (DES-016/TASK-019): schedule CRUD + resident trigger, over the same RunManager.start path.
   'schedule_create',
   'schedule_list',
@@ -203,8 +211,16 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     },
   },
   workflow_artifacts: {
-    description: "Lists the relative file names present in a run's on-disk workspace.",
+    description: "Recursively lists a run's workspace files (relative path + size + sha256), so a client can diff/verify what changed. Realpath-contained (never lists outside the workspace).",
     inputSchema: { type: 'object', properties: { runId: { type: 'string', description: 'The run whose workspace files to list.' } }, required: ['runId'] },
+  },
+  workflow_artifact_get: {
+    description: 'Reads a windowed, size-capped chunk of a run workspace file (base64), for fetching a patch/bundle too large for an inline workflow_result. Page by advancing `offset` until `eof`. A path escaping the workspace (../ or symlink) is denied.',
+    inputSchema: { type: 'object', properties: { runId: { type: 'string', description: 'The run.' }, path: { type: 'string', description: 'Workspace-relative file path.' }, offset: { type: 'number', description: 'Byte offset to start at (default 0).' }, length: { type: 'number', description: 'Max bytes to return (capped at the server chunk ceiling).' } }, required: ['runId', 'path'] },
+  },
+  workspace_purge: {
+    description: "Deletes a TERMINAL run's on-disk workspace tree (its journaled record/transcript is preserved). Refuses while the run is running/suspended/queued.",
+    inputSchema: { type: 'object', properties: { runId: { type: 'string', description: 'The run whose workspace to purge.' } }, required: ['runId'] },
   },
   schedule_create: {
     description: 'Creates a cron, one-shot (`at`), or resident schedule for a registered workflow; validated synchronously (cron syntax / `at` timestamp / workflow existence).',
@@ -293,11 +309,37 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
   },
 };
 
-function readBody(req: IncomingMessage): Promise<string> {
+// REQ-024 (v1.5, DoS): cap the request body so a large/hostile body can't buffer unbounded and OOM
+// the process. Default 8 MiB; a run submission carrying a seed tree or a large script stays well
+// under this, and the byte-fetch path (workflow_artifact_get) is what carries large payloads OUT.
+const MAX_BODY_BYTES = 8 * 1024 * 1024;
+
+class BodyTooLargeError extends Error {
+  readonly code = 'BODY_TOO_LARGE' as const;
+  constructor(max: number) {
+    super(`request body exceeds the ${max}-byte cap`);
+    this.name = 'BodyTooLargeError';
+  }
+}
+
+function readBody(req: IncomingMessage, maxBytes: number = MAX_BODY_BYTES): Promise<string> {
   return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (chunk) => { data += chunk; });
-    req.on('end', () => resolve(data));
+    let size = 0;
+    let capped = false;
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => {
+      if (capped) return; // already over cap — DISCARD further data (bounded memory), don't buffer
+      size += chunk.length;
+      if (size > maxBytes) {
+        capped = true;
+        reject(new BodyTooLargeError(maxBytes)); // caller sends 413; socket keeps draining (discarded)
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (!capped) resolve(Buffer.concat(chunks).toString('utf8'));
+    });
     req.on('error', reject);
   });
 }
@@ -341,7 +383,7 @@ async function callTool(
   args: Record<string, unknown>,
 ): Promise<unknown> {
   switch (name as ToolName) {
-    case 'workflow_run': return facade.workflow_run(args as { name?: string; script?: string; args?: unknown; budget?: number | null });
+    case 'workflow_run': return facade.workflow_run(args as { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[] });
     case 'workflow_status': return facade.workflow_status(args as { runId: string });
     case 'workflow_result': return facade.workflow_result(args as { runId: string });
     case 'workflow_suspend': return facade.workflow_suspend(args as { runId: string });
@@ -352,6 +394,8 @@ async function callTool(
     case 'workflow_register': return facade.workflow_register(args as { name: string; script: string });
     case 'workflow_deregister': return facade.workflow_deregister(args as { name: string });
     case 'workflow_artifacts': return facade.workflow_artifacts(args as { runId: string });
+    case 'workflow_artifact_get': return facade.workflow_artifact_get(args as { runId: string; path: string; offset?: number; length?: number });
+    case 'workspace_purge': return facade.workspace_purge(args as { runId: string });
     // v2 (DES-016/TASK-019): schedule CRUD + resident trigger — thin pass-through to SqliteSchedulerPort,
     // whose own methods already return the { result?, error? } envelope shape (see scheduler.ts).
     case 'schedule_create': return scheduler.create(args as unknown as NewSchedule);
@@ -525,6 +569,25 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     }
   });
 
+  // REQ-026 (v2): opt-in periodic run-workspace GC (only when a retention TTL is configured).
+  let gcTimer: ReturnType<typeof setInterval> | undefined;
+  if (config?.workspaceTtlMs && config.workspaceTtlMs > 0) {
+    const ttl = config.workspaceTtlMs;
+    const sweep = (): void => {
+      store
+        .listRuns()
+        .then((runs) => {
+          const statusByRun = new Map(runs.map((r) => [r.runId, r.status]));
+          reclaimStaleWorkspaces(workRoot, ttl, (id) => statusByRun.get(id) ?? null, Date.now()); // det:allow — GC sweep, not a workflow decision
+        })
+        .catch(() => {
+          /* a sweep error must never crash the server — retry next interval */
+        });
+    };
+    gcTimer = setInterval(sweep, Math.min(ttl, 60 * 60 * 1000)); // sweep at most hourly
+    gcTimer.unref?.();
+  }
+
   const http = createHttpServer((req, res) => {
     // D-V2V-2 (REQ-008 route-back): a real browser-renderable HTML/JS dashboard page, on the SAME
     // port as /mcp and /api/runs* (one data model, two transports — now genuinely two). SPA-style
@@ -602,7 +665,12 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       } catch (err) {
         sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32000, message: (err as Error).message } });
       }
-    }).catch(() => {
+    }).catch((err: unknown) => {
+      // REQ-024: an over-cap request body rejects readBody -> 413, not a 500/OOM.
+      if (err instanceof BodyTooLargeError) {
+        sendJson(res, 413, { jsonrpc: '2.0', id: null, error: { code: -32001, message: err.message } });
+        return;
+      }
       sendJson(res, 500, { jsonrpc: '2.0', id: null, error: { code: -32603, message: 'Internal error' } });
     });
   });
@@ -623,6 +691,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     close(): Promise<void> {
       // D-V2I-2: stop the firing-engine ticker so a closed server never fires another schedule.
       ticker.stop();
+      if (gcTimer) clearInterval(gcTimer); // REQ-026: stop the workspace GC sweep on shutdown
       return new Promise<void>((resolve, reject) => {
         http.close((err) => (err ? reject(err) : resolve()));
       })

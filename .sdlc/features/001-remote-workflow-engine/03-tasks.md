@@ -282,3 +282,19 @@ status: draft
 - **estimate:** <S/M/L or hours>
 - **iter:** v1
 -->
+
+### TASK-039 — recursive workflow_artifacts + sha256 (REQ-023)
+- **status:** done
+- **traces:** ARCH-020
+### TASK-040 — workflow_artifact_get chunked/capped/realpath-contained (REQ-022)
+- **status:** done
+- **traces:** ARCH-020
+### TASK-041 — readBody body-size cap → 413 (REQ-024)
+- **status:** done
+- **traces:** ARCH-020
+### TASK-042 — seed materialization into run workspace + .claude strip (REQ-025)
+- **status:** done
+- **traces:** ARCH-021
+### TASK-043 — workspace_purge + TTL GC (REQ-026)
+- **status:** done
+- **traces:** ARCH-022

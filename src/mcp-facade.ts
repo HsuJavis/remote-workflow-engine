@@ -1,7 +1,8 @@
 // McpFacade (DES-001 / ARCH-001 / TASK-002).
 // Pure delegation + uniform ResultEnvelope: every tool call resolves to an envelope,
 // never throws across the tool boundary (DES-001).
-import { readdirSync } from 'node:fs';
+import { rmSync } from 'node:fs';
+import { listArtifacts, readArtifactChunk, type ArtifactEntry, type ChunkResult } from './workspace-artifacts.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
 import type { RunStore } from './run-store.js';
@@ -58,14 +59,14 @@ export class McpFacade {
     this.validator = deps.validator ?? new SubmissionValidator({ catalog: this.runManager.catalog });
   }
 
-  async workflow_run(a: { name?: string; script?: string; args?: unknown; budget?: number | null }): Promise<ResultEnvelope<{ runId: string }>> {
+  async workflow_run(a: { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[] }): Promise<ResultEnvelope<{ runId: string }>> {
     // Fail fast at submission (DES-012/ARCH-008), never mid-run.
     const validation = await this.validator.validate({ name: a.name, script: a.script });
     if (!validation.ok) {
       return { runId: '', status: 'failed', error: validation.errors[0] };
     }
     try {
-      const runId = await this.runManager.start({ name: a.name, script: a.script, args: a.args, budget: a.budget ?? null });
+      const runId = await this.runManager.start({ name: a.name, script: a.script, args: a.args, budget: a.budget ?? null, seed: a.seed });
       const view = await this.store.getRun(runId);
       return { runId, status: view?.status ?? 'queued', result: { runId } };
     } catch (err) {
@@ -155,19 +156,47 @@ export class McpFacade {
   /** REQ-013/D-V7: lists the relative file names present in a run's on-disk workspace — the
    *  smaller of D-V7's two options (no change to the widely-shared RunStatusView/RunSummary
    *  shapes). Missing/never-materialized workspace (e.g. a run that wrote nothing) → []. */
-  async workflow_artifacts(a: { runId: string }): Promise<ResultEnvelope<string[]>> {
+  /** REQ-023 (v1.5): recursively list every file in the run's workspace with size + sha256, so a
+   *  client can diff/verify what changed without downloading everything. Escape-safe (realpath). */
+  async workflow_artifacts(a: { runId: string }): Promise<ResultEnvelope<ArtifactEntry[]>> {
     const stored = await this.store.getRun(a.runId);
     if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
     const workspace = await this.runManager.workspacePath(a.runId);
     if (!workspace) return { runId: a.runId, status: stored.status, result: [] };
-    let files: string[] = [];
+    let files: ArtifactEntry[] = [];
     try {
-      files = readdirSync(workspace, { withFileTypes: true })
-        .filter((d) => d.isFile())
-        .map((d) => d.name);
+      files = listArtifacts(workspace);
     } catch {
       files = []; // workspace dir never materialized (no writes yet) — not an error
     }
     return { runId: a.runId, status: stored.status, result: files };
+  }
+
+  /** REQ-022 (v1.5): read a windowed, size-capped, realpath-contained chunk of a workspace file, so
+   *  a patch/bundle too large for an inline workflow_result can be fetched without OOM. A path that
+   *  escapes the workspace (`../`/symlink) is denied with a typed error, never bytes from outside. */
+  async workflow_artifact_get(a: { runId: string; path: string; offset?: number; length?: number }): Promise<ResultEnvelope<ChunkResult>> {
+    const stored = await this.store.getRun(a.runId);
+    if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
+    const workspace = await this.runManager.workspacePath(a.runId);
+    if (!workspace) return { runId: a.runId, status: stored.status, error: { code: 'RUN_WORKSPACE_MISSING', message: `run ${a.runId} has no on-disk workspace` } };
+    const r = readArtifactChunk(workspace, String(a.path ?? ''), a.offset, a.length);
+    if ('error' in r) return { runId: a.runId, status: stored.status, error: { code: r.error, message: `artifact_get denied: ${r.error} (${a.path})` } };
+    return { runId: a.runId, status: stored.status, result: r };
+  }
+
+  /** REQ-026 (v2): delete a terminal run's on-disk workspace tree (its journaled record/transcript
+   *  is preserved). Refuses while the run is still active/suspended (would race the sandbox). */
+  async workspace_purge(a: { runId: string }): Promise<ResultEnvelope<{ purged: boolean }>> {
+    const stored = await this.store.getRun(a.runId);
+    if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
+    if (stored.status === 'running' || stored.status === 'suspended' || stored.status === 'queued') {
+      return { runId: a.runId, status: stored.status, error: { code: 'RUN_NOT_TERMINAL', message: `cannot purge workspace of a ${stored.status} run` } };
+    }
+    const workspace = await this.runManager.workspacePath(a.runId);
+    if (workspace) {
+      try { rmSync(workspace, { recursive: true, force: true }); } catch { /* already gone — idempotent */ }
+    }
+    return { runId: a.runId, status: stored.status, result: { purged: true } };
   }
 }

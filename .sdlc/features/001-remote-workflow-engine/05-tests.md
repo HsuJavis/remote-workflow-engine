@@ -3392,3 +3392,16 @@ Cases: a real `.git` file planted in a temp dir causes `assertWorkRootIsolated(w
 Red reason: `WorkRootInsideProjectError` typed fields absent + `buildSessionOptions` re-walk absent.
 Confirmed via a direct run (3/4 tests fail; 1 clean-workRoot test passes — not a syntax/import
 error).
+
+### UT-055 — workspace-artifacts + workspace-seed (REQ-022/023/025)
+- **status:** green
+- **traces:** DES-032, DES-034
+- tests/unit/workspace-artifacts-seed.test.ts (recursive list+sha256, symlink skip, windowed/capped read, escape denial, seed write + .claude strip + escape reject).
+### UT-056 — reclaimStaleWorkspaces (REQ-026)
+- **status:** green
+- **traces:** DES-036
+- tests/unit/workspace-gc.test.ts (terminal+old deleted; active/young/unknown kept).
+### IT-042 — v1.5/v2 workspace transport over HTTP (REQ-022..026)
+- **status:** green
+- **traces:** ARCH-020, ARCH-021, ARCH-022
+- tests/integration/v15-v2-workspace-transport.test.ts (seed→recursive artifacts+sha256+.claude-stripped→windowed artifact_get+escape-denied→purge; body-cap 413). Real-run validated on the live engine 2026-07-11 (all 5 REQs green via curl).

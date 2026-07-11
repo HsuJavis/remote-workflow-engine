@@ -199,3 +199,18 @@ flowchart TB
   ASYNC --> K1
   DEP["ARCH-014 Deploy Packaging\n(compose/systemd · v2)"] -.->|brings up| PARENT
 ```
+
+### ARCH-020 — Workspace byte-transport (recursive listing + sha256 + chunked realpath-contained get + body cap)
+- **status:** done
+- **traces:** REQ-022, REQ-023, REQ-024
+- workspace-artifacts (pure): recursive listArtifacts (rel path + size + sha256, symlink-escape skipped) + readArtifactChunk (windowed, size-capped, realpath-contained via isPathContained); server.ts readBody body-size cap (413).
+
+### ARCH-021 — Seed-into-workspace (pre-agent materialization + .claude RCE strip)
+- **status:** done
+- **traces:** REQ-025
+- workspace-seed.materializeSeed: engine-side, before agents start (RunManager.start); strips `.claude/settings*.json` + `.claude/hooks/**` (closes DES-028 hook-gate for the seed path), realpath-contained, rejects `.git` internals.
+
+### ARCH-022 — Run-workspace retention (manual purge + opt-in TTL GC)
+- **status:** done
+- **traces:** REQ-026
+- workspace_purge (terminal-only) + reclaimStaleWorkspaces (opt-in config.workspaceTtlMs, deletes TERMINAL+old, never active/suspended/unknown).

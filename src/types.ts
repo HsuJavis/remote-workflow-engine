@@ -72,6 +72,10 @@ export interface RunSpec {
   script?: string;
   args?: unknown;
   budget?: number | null;
+  /** REQ-025 (v2): optional seed tree materialized into the run workspace BEFORE agents start, so
+   *  the run's agents edit a real project in place. `.claude` settings/hooks are stripped and
+   *  escapes rejected by workspace-seed.materializeSeed. */
+  seed?: { path: string; contentB64: string }[];
 }
 
 export interface CallKey {
