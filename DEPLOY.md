@@ -48,6 +48,45 @@
 > hook 明確不支援（`asset_push` kind:hook 一律拒絕）。
 > ---
 >
+> ## ⭐ 區網部署 + remote→local 落地（v1，2026-07-11）
+>
+> ### A. 綁到區網（LAN）給其他機器用
+> 引擎預設綁 `127.0.0.1`（只本機）。要讓區網其他機器連進來:
+> 1. 把 bind 改成**這台的 LAN IP**（不要用 `0.0.0.0` 全開）。優先改 systemd unit 的
+>    `Environment=RWE_BIND=<你的 LAN IP>`（unit env 覆蓋 config），例:
+>    `Environment=RWE_BIND=192.168.0.125`，然後 `systemctl --user daemon-reload && systemctl --user restart rwe.service`。
+>    確認: `ss -ltnp | grep :8787` 應顯示 `192.168.0.125:8787`（不是 `127.0.0.1`）。
+> 2. **防火牆白名單（必做）**——引擎 **v3 前無任何 auth**,綁上區網 = 任何能連到 `/mcp` 的裝置都能
+>    送 workflow，讓 Bash agent 在**這台主機上執行任意程式碼**、`asset_push` 任意寫檔。用 OS 防火牆
+>    把 8787 限制到你信任的來源:
+>    ```bash
+>    sudo ufw allow from 192.168.0.0/24 to any port 8787 proto tcp comment 'rwe LAN'  # 或改成單一具體 IP
+>    sudo ufw deny to any port 8787 proto tcp
+>    sudo ufw reload && sudo ufw status numbered
+>    ```
+>    **綁 LAN 但還沒上防火牆的期間 = 對整個區網全開,請先上規則再對外用。**
+> 3. **DHCP 注意**: LAN IP 若是 DHCP 動態配發,重開機可能改變 → bind 會失效。請在路由器做 **DHCP
+>    保留 / 靜態 IP**,或改綁一個固定的 LAN IP。
+> 4. 仍建議: 跨機器的更安全選項是**維持 `127.0.0.1` + SSH 通道**
+>    （`ssh -L 8787:127.0.0.1:8787 user@<host>`）——零網路曝露,適合單人/跨網段。多租戶要等 v3 auth。
+>
+> ### B. 讓遠端 run 的程式碼變更「落地」到你本地(rwe-apply v1)
+> 引擎的 agent 被 **jail 在 server 端 per-run workspace**,碰不到 client 機器（設計如此）。要把
+> 「遠端推理」的程式碼變更帶回本地工作副本,用 **patch-in-result** 模式（設計由專家 panel 產出,
+> 見 client plugin `remote-workflow-plugin` 的 `skills/rwe-apply/`）:
+> 1. **workflow 回傳 git patch envelope**——用參考模式 `rwe-patch-return`（`skills/rwe-apply/references/`）:
+>    seed client 傳來的 bounded base（`args.files`=[{path,contentB64}]、`args.baseSha`）→ agent 編輯 →
+>    最後 `git diff --binary` → 腳本 `return { format:'git', baseSha, diff, touchedPaths, stats }`
+>    （`workflow_result` 原樣帶回,引擎零改動）。
+> 2. **client 端套用**——`/rwe-apply <runId>` skill:取 `workflow_result` → `apply_patch.py` 驗
+>    envelope + **路徑守衛**（拒絕 `../`/絕對/`.git` 內部）+ 驗 baseSha + `git apply --check --3way`
+>    dry-run → 經你**自己 session 的權限確認**套到新 `rwe/run-<id>` 分支（原分支不動）。變更只以
+>    **可審查的 diff** 越過邊界,server 永遠拿不到你機器的寫入權。
+> - **模型注意**: patch 模式的 git-plumbing agent(seed/finalize)**需要「真的會執行 Bash」的模型**。
+>   qwen2.5:7b 會把工具呼叫吐成文字(D-F11 能力層)沒真跑 → 這幾步請指定 Claude 或夠大的本地模型;
+>   引擎執行與 client 套用機制本身與模型無關,皆已驗證。
+> ---
+>
 > **v2 Gate 7.5 ROUND 1（2026-07-04）結果摘要**：REQ-011（本節 §2b）已對真實獨立 process
 > 驗證通過——`scripts/smoke.sh` 真實跑過、真實 pass；`npm install`/`npm ci` 皆真實、乾淨；優雅關閉
 > 時真的會連帶砍掉 `litellm` 子行程（TASK-027，真實 `SIGTERM` 測過，2 秒內兩個 process 都消失，
