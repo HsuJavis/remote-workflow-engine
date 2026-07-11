@@ -29,6 +29,7 @@ import type { ClaudeAgentSdkGatewayConfig } from './gateway/claude-agent-sdk-cli
 import { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import type { AliasMap } from './gateway/client.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
+import { assertWorkRootIsolated } from './workroot-guard.js';
 
 type GatewayChoice = 'sdk' | 'direct-fetch';
 
@@ -87,6 +88,11 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   const gatewayChoice: GatewayChoice = fileConfig.gateway ?? 'sdk';
   const aliases = fileConfig.aliases;
   const workRoot = process.env['RWE_WORK_ROOT'] ?? fileConfig.workRoot;
+  // D-V3M-5 (REQ-021): fail-closed if the configured workRoot is inside a Claude Code project — a
+  // nested run workspace makes the SDK-gateway agent CLI load that project's CLAUDE.md/auto-memory
+  // into the agent context (a session-init confinement leak the tool-jail can't catch). Only the
+  // explicit workRoot is checked; an omitted one falls through to server.ts's tmpdir default (clean).
+  if (workRoot !== undefined) assertWorkRootIsolated(workRoot);
 
   const config: ServerConfig = {
     bind: process.env['RWE_BIND'] ?? fileConfig.bind ?? '127.0.0.1',

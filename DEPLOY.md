@@ -29,6 +29,17 @@
 >    撞到常駐服務）搶 4000」的老問題——實測常駐 sdk 服務現在跑在動態 port（例如 `:34129`），
 >    可與完整測試套件並存。明確指定 `litellmPort` 仍有效（會走既有的 stale-owner pre-bind 檢查）。
 >
+> 4. **⚠️ `workRoot` 必須在任何 Claude project 之外（D-V3M-5，安全）**：每個 run 的 workspace 是
+>    `<workRoot>/workflows/.../runs/<id>/`。若 `workRoot` 巢狀在一個 Claude Code project 內（祖先目錄
+>    有 `.git` 或 `CLAUDE.md`），SDK-gateway 的 agent CLI（跑在 `settingSources:['project']` 以載入
+>    workspace 自己的 `.claude/skills`）會把 project root 解析到那個祖先、**載入該 project 的
+>    `CLAUDE.md` + `~/.claude/projects/<hash>/memory` 進 agent context**——這是**繞過 tool 層工作目錄
+>    jail** 的洩漏（session-init 載入，不經 Read 工具呼叫，§1c 的邊界檢查攔不到；實測 qwen agent 曾
+>    逐字吐回 operator 的 MEMORY.md）。**修復**：`composeConfig()` 現在啟動時 fail-closed——若 `workRoot`
+>    或其任一祖先含 `.git`/`CLAUDE.md`，直接以 `WORKROOT_INSIDE_PROJECT` 拒絕啟動並指出補救。
+>    **部署設定**：`workRoot` 請用 repo 外的絕對路徑（無 root 範例 `/home/user/.local/share/rwe-data`；
+>    有 root `/var/lib/remote-workflow-engine`）——**不要**用 `./data`（會落在 repo 內、觸發 guard）。
+>
 > **v3 也啟用的能力**（sdk 模式下才有；細節見各自章節/`journal.md`）：MCP 依名 provisioning
 > （管理工具 `mcp_provision` 註冊 → workflow 用 `agent(p,{mcp:['name']})` 引用 → 只注入被引用者，
 > `strictMcpConfig` 隔離不變）、伺服器端 secret（config 內 `${secret:NAME}` handle → 由

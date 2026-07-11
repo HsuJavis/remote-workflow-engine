@@ -3295,3 +3295,9 @@ resolving null (never hangs) — the pre-existing D-F7 abort race already satisf
 is BUILT ON resolves `ok:false` with a `kind:'timeout'` `FailureEnvelope` — the reusable v3 primitive
 this real path still needs to be re-plumbed through (D-DOS gauge/kill-on-timeout not yet observable).
 Red reason: `Failed to load url ../../src/timeout-race.js` — module does not exist yet.
+
+### UT-051 — assertWorkRootIsolated fails fast on a project-nested workRoot
+- **traces:** REQ-021
+- **status:** done
+- **iter:** v3
+- file: `tests/unit/workroot-guard.test.ts` — ancestor `.git`/`CLAUDE.md` → `WORKROOT_INSIDE_PROJECT`; clean data dir → no throw; walks to `/` without looping.
