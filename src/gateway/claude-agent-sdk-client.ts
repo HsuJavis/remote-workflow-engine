@@ -11,10 +11,13 @@
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { CanUseTool, HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync, readdirSync, statSync, readFileSync, mkdirSync, copyFileSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { join } from 'node:path';
 import type { AgentOpts, TranscriptEvent } from '../types.js';
-import type { McpServerConfig } from '../mcp-probe.js';
+import type { McpServerConfig, McpProbe } from '../mcp-probe.js';
 import type { AliasMap, GatewayClient, GatewayResult } from './client.js';
+import { isPathContained } from '../path-containment.js';
+import { McpRegistry } from '../mcp-registry.js';
+import { resolveConfig, type SecretSource } from '../secret-resolver.js';
 
 type QueryImpl = typeof sdkQuery;
 
@@ -54,7 +57,24 @@ export interface ClaudeAgentSdkGatewayConfig {
    *  no asset wiring at all (mcpServers stays unset, no skill/hook materialization) — unchanged
    *  legacy behavior for any caller that never configures asset storage. */
   assetRoot?: string;
+  /** D-V3M-1 (REQ-017 route-back, closes the ①/IT-035 gap): the MCP Provisioning Registry's own
+   *  on-disk SQLite path (server.ts's `join(workRoot,'mcp-registry.db')`, same value threaded here
+   *  by composeConfig). When set, an agent()'s `opts.mcp` names are resolved fresh off this DB per
+   *  invoke via McpRegistry.resolveInjected — so a provision made after boot reaches the very next
+   *  run, and ONLY explicitly-referenced entries are injected (strictMcpConfig preserved). Omitted
+   *  -> no registry-backed MCP injection (unchanged legacy behavior). */
+  mcpRegistryDbPath?: string;
+  /** D-V3M-1 (REQ-018): resolves `${secret:NAME}` handles inside a provisioned MCP config from the
+   *  server-side secret store (loadSecretSourceFromEnv — `RWE_SECRET_*`). When set, an unresolvable
+   *  handle fails the referencing agent() loudly (SECRET_MISSING) rather than passing the literal
+   *  handle through. Omitted -> configs are injected verbatim (no handle substitution attempted). */
+  secretSource?: SecretSource;
 }
+
+/** D-V3M-1: resolveInjected only ever reads (get/SELECT) — never register() — so the McpRegistry the
+ *  gateway opens for by-name resolution needs no live prober. This no-op satisfies the constructor
+ *  port without a second real probe wiring. */
+const NOOP_PROBE: McpProbe = { probe: async () => ({ ok: true }) };
 
 /** D-V2V-1: reads every stored mcp-config asset fresh off disk (`assetRoot/mcp-config/<name>/...`)
  *  keyed by its asset name — the shape `Options.mcpServers` expects. Only the first file per asset
@@ -120,11 +140,13 @@ const BUILT_IN_CORE_TOOLS = ['Read', 'Write'];
 /** D-V2G8-1(d): true only when `candidate` resolves to a path genuinely inside `root` (or IS
  *  `root` itself) — a plain string prefix check would wrongly allow a sibling directory that just
  *  happens to share a prefix (e.g. `/tmp/run-a` vs `/tmp/run-ab`), so this compares against
- *  `root + path.sep`. */
+ *  `root + path.sep`. DES-025/ARCH-016 hardening (REQ-018): delegates to the realpath-resolved
+ *  `isPathContained` so a planted symlink whose own path sits inside the workspace but whose real
+ *  target escapes it is ALSO denied — a plain `resolve()` string check (the old body here) is fooled
+ *  by that case; the plain-resolve `../` escape denial is preserved as a subset (falls back to the
+ *  resolved path when `realpathSync` fails, e.g. the target doesn't exist yet). */
 function isInsideWorkspace(candidate: string, root: string): boolean {
-  const resolvedRoot = resolve(root);
-  const resolvedCandidate = resolve(candidate);
-  return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(resolvedRoot + sep);
+  return isPathContained(candidate, root);
 }
 
 /** D-V2G8-1(d) (Gate 8 v2 review, adversarial.md finding V3 HIGH): the SDK's own documented
@@ -232,9 +254,44 @@ function extractEvents(msg: SDKMessage, ts: string): TranscriptEvent[] {
  *  `result` message off the session's own async-generator agent loop. */
 export class ClaudeAgentSdkGatewayClient implements GatewayClient {
   private readonly _query: QueryImpl;
+  /** D-V3M-1: one read connection to the registry DB, opened lazily and reused. A separate
+   *  connection from server.ts's own McpRegistry, but SQLite WAL makes every committed provision
+   *  visible to this reader — resolveInjected still returns fresh rows per call. */
+  private _mcpRegistry?: McpRegistry;
 
   constructor(private readonly _config: ClaudeAgentSdkGatewayConfig) {
     this._query = _config.queryImpl ?? sdkQuery;
+  }
+
+  /** D-V3M-1 (REQ-017/REQ-018, closes ①): resolves an agent()'s referenced `opts.mcp` names against
+   *  the MCP Provisioning Registry, substituting `${secret:NAME}` handles from the server-side
+   *  secret store. Returns ONLY the explicitly-referenced entries (strict-by-name isolation). An
+   *  unconfigured DB path / empty name list / an unprovisioned name (already rejected at submission)
+   *  all yield "no injection". A referenced config whose `${secret:...}` handle can't be resolved
+   *  THROWS with the code in the message (SECRET_MISSING / SECRET_HANDLE_INVALID) — REQ-018's
+   *  fail-loud contract: the run surfaces a clear error rather than silently running a tool with no
+   *  credential or (worse) smuggling the literal handle through as a value. The throw propagates up
+   *  as that agent()'s failure (same shape as an unknown agentType/MCP name). */
+  private resolveProvisionedMcp(names: string[] | undefined): Record<string, McpServerConfig> {
+    if (this._config.mcpRegistryDbPath === undefined || names === undefined || names.length === 0) return {};
+    if (this._mcpRegistry === undefined) {
+      this._mcpRegistry = new McpRegistry({ dbPath: this._config.mcpRegistryDbPath, probe: NOOP_PROBE });
+    }
+    const resolved = this._mcpRegistry.resolveInjected(names);
+    if ('error' in resolved) return {}; // MCP_NOT_PROVISIONED — submission already fails fast on this
+    const out: Record<string, McpServerConfig> = {};
+    for (const [name, config] of Object.entries(resolved.configs)) {
+      try {
+        out[name] = (this._config.secretSource !== undefined ? resolveConfig(config, this._config.secretSource) : config) as McpServerConfig;
+      } catch (err) {
+        const code = (err as { code?: unknown }).code;
+        if (code === 'SECRET_MISSING' || code === 'SECRET_HANDLE_INVALID') {
+          throw new Error(`${code}: provisioned MCP '${name}' has an unresolved secret handle — ${(err as Error).message}`);
+        }
+        throw err;
+      }
+    }
+    return out;
   }
 
   async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string }): Promise<GatewayResult> {
@@ -276,9 +333,16 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     if (req.workspace !== undefined && this._config.assetRoot !== undefined) {
       materializeAssets(this._config.assetRoot, req.workspace);
     }
-    // mcp-config assets are server-wide (not per-run), read fresh every call so a push made after
-    // boot still reaches the very next run — `strictMcpConfig: true` stays true regardless.
-    const mcpServers = this._config.assetRoot !== undefined ? readMcpConfigAssets(this._config.assetRoot) : undefined;
+    // D-V3M-1 (REQ-017, closes ①): the run's MCP surface = the legacy server-wide mcp-config assets
+    // (now effectively empty — mcp-config pushes redirect to provisioning, DES-028) MERGED with the
+    // registry-provisioned servers THIS agent explicitly references by name in `opts.mcp`, resolved
+    // fresh off the registry DB per call (so a provision after boot reaches the next run) with
+    // `${secret:NAME}` handles substituted server-side. `strictMcpConfig: true` stays true, so the
+    // model still sees ONLY this set — the VAL-003 host-ambient-MCP isolation invariant holds.
+    const assetMcp = this._config.assetRoot !== undefined ? readMcpConfigAssets(this._config.assetRoot) : {};
+    const provisionedMcp = this.resolveProvisionedMcp(req.opts.mcp);
+    const mergedMcp = { ...assetMcp, ...provisionedMcp };
+    const mcpServers = Object.keys(mergedMcp).length > 0 ? mergedMcp : undefined;
 
     const options: Options = {
       cwd: req.workspace ?? this._config.cwd,

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { McpFacade } from './mcp-facade.js';
 import { RunManager } from './run-manager.js';
+import { createSemaphore } from './agent-semaphore.js';
 import { SubmissionValidator } from './submission-validator.js';
 import { SqliteRunStore } from './store/sqlite-run-store.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
@@ -16,8 +17,9 @@ import type { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { loadAgentDefinitions } from './agent-definitions.js';
 import { SqliteSchedulerPort, type Schedule, type NewSchedule } from './scheduler.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
-import { AssetSyncService, type AssetPush, type AssetKind } from './asset-sync.js';
+import { AssetSyncService, classifyAsset, type AssetPush, type AssetKind } from './asset-sync.js';
 import { classifyTransport, RealMcpProbe, type McpProbe, type McpServerConfig } from './mcp-probe.js';
+import { McpRegistry, type McpKind } from './mcp-registry.js';
 import { buildDashboardModel } from './dashboard.js';
 import { DASHBOARD_HTML } from './dashboard-page.js';
 import type { RunStore } from './run-store.js';
@@ -60,6 +62,11 @@ export interface ServerConfig {
   // DES-022 (standing rule 1, UT-033): overrides the asset store's default on-disk root
   // (`join(workRoot, 'assets')`).
   assetRoot?: string;
+  // D-V3M-2 (REQ-020 / D-DOS, TASK-035): total process-global agent slots — the DOS cap on
+  // concurrent SDK-CLI subprocess spawns across ALL runs, observable via `GET /api/status`.
+  // Defaults to 32 (a generous backstop that never throttles a single workflow, whose own per-run
+  // concurrency is already capped at min(16, cores-2)).
+  agentSlots?: number;
 }
 
 export interface Server {
@@ -97,6 +104,8 @@ const TOOL_NAMES = [
   'asset_push',
   'asset_list',
   'asset_delete',
+  // v3 (DES-024/TASK-029): admin-write provisioning tool over the MCP Provisioning Registry.
+  'mcp_provision',
 ] as const;
 
 type ToolName = (typeof TOOL_NAMES)[number];
@@ -270,6 +279,18 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
       required: ['kind', 'name'],
     },
   },
+  mcp_provision: {
+    description: 'Admin tool: provisions an MCP server config by name after a live probe; a dead config is rejected and nothing is persisted. Provisioned names may then be referenced by agent()\'s `mcp` option.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The MCP name later referenced by agent({ mcp: [name] }).' },
+        kind: { type: 'string', description: "One of 'stdio' | 'http'." },
+        config: { description: 'The MCP server config (stdio: {command,args}; http: {url}).' },
+      },
+      required: ['name', 'kind', 'config'],
+    },
+  },
 };
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -315,6 +336,7 @@ async function callTool(
   scheduler: SqliteSchedulerPort,
   assetSync: AssetSyncService,
   mcpProbe: McpProbe,
+  mcpRegistry: McpRegistry,
   name: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
@@ -341,12 +363,17 @@ async function callTool(
     // (never a thrown JSON-RPC-level error) — DES-001's own "never throw across the tool boundary".
     case 'asset_push': {
       const push = args as unknown as AssetPush;
-      // TASK-026 (DES-020): a mcp-config push is rejected BEFORE it lands whenever its transport
-      // isn't server-runnable or fails the live probe — reported in `excluded[]` the same way
-      // asset-sync.ts's own self-referential check is (never silent, never a half-written asset dir).
-      if (push.kind === 'mcp-config') {
-        const reason = await checkMcpConfigTransport(push, mcpProbe);
-        if (reason !== null) return { result: { stored: [], excluded: [{ name: push.name, reason }] } };
+      // v3 (DES-028/TASK-034): classify BEFORE anything else touches disk/network — a `hook` is
+      // rejected by construction (never materialized, closes the arbitrary-server-side-code vector)
+      // and an `mcp-config` is redirected to the v3 Provisioning Registry (REQ-009 rescope: use
+      // `mcp_provision`, not a per-run materialized asset) — so the old mcp-config probe check
+      // below no longer runs for that kind at all.
+      const disposition = classifyAsset(push.kind, push);
+      if (disposition.action === 'reject') {
+        return { result: { stored: [], excluded: [{ name: push.name, reason: disposition.code }] } };
+      }
+      if (disposition.action === 'redirect-to-provisioning') {
+        return { result: { stored: [], redirected: true, excluded: [{ name: push.name, reason: 'REDIRECTED_TO_PROVISIONING: use mcp_provision instead of asset_push for mcp-config' }] } };
       }
       try {
         return { result: await assetSync.push(push) };
@@ -358,6 +385,16 @@ async function callTool(
     case 'asset_delete':
       await assetSync.delete(args as unknown as { kind: AssetKind; name: string });
       return { result: undefined };
+    // v3 (DES-024/TASK-029): probes the config first via the same injected McpProbe seam
+    // asset_push's mcp-config validation already uses (TASK-026) — dead config -> MCP_PROBE_FAILED,
+    // nothing persisted; live -> row persisted, later resolvable by name (never a thrown
+    // JSON-RPC-level error — DES-001's own tool-boundary envelope convention).
+    case 'mcp_provision': {
+      const outcome = await mcpRegistry.register(args as unknown as { name: string; kind: McpKind; config: unknown });
+      return outcome.ok
+        ? { result: { ok: true } }
+        : { error: { code: outcome.error, message: `MCP probe failed for '${(args as { name?: string }).name ?? ''}'` } };
+    }
     default: throw new Error(`Unknown tool: ${name}`);
   }
 }
@@ -439,8 +476,20 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       : undefined);
   // D-F2: agentType composition-root loader — populated ONCE at startup from agents/*.md frontmatter.
   const agentTypes = config?.agentDefinitionsDir ? loadAgentDefinitions(config.agentDefinitionsDir) : undefined;
-  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes });
-  const validator = new SubmissionValidator({ catalog, aliases: config?.aliases });
+  // D-V3M-2 (REQ-020 D-DOS): the ONE process-global agent-slot semaphore, shared by reference into
+  // the RunManager (rations every SDK-CLI dispatch) and surfaced read-only via GET /api/status.
+  const agentSemaphore = createSemaphore(config?.agentSlots ?? 32);
+  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore });
+  // v3 (DES-020/TASK-026): defaults to a real network/spawn probe; tests inject a FakeMcpProbe.
+  // Constructed here (moved up from its old asset_push-only spot) so the v3 MCP Provisioning
+  // Registry below can reuse the SAME injected probe seam (DES-024's "provision-time McpProbe
+  // wiring" — no second, undertested probe port).
+  const mcpProbe: McpProbe = config?.mcpProbe ?? new RealMcpProbe();
+  // v3 (DES-024/TASK-028/TASK-029): SQLite sibling catalog, same workRoot convention as
+  // catalog.db/store/schedules.db — survives restart. Referenced by the submission validator
+  // below (fail-fast on an unprovisioned `mcp` name) and by the mcp_provision admin tool.
+  const mcpRegistry = new McpRegistry({ dbPath: join(workRoot, 'mcp-registry.db'), probe: mcpProbe });
+  const validator = new SubmissionValidator({ catalog, aliases: config?.aliases, mcpRegistry });
   const facade = new McpFacade({ clock, store, runManager, validator });
   // v2 (DES-016/TASK-019): SQLite-persisted schedule store, same workRoot convention as
   // catalog.db/store — survives restart (REQ-014-style persistence extended to schedules).
@@ -454,8 +503,6 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v2 (DES-019/TASK-021): asset store rooted under workRoot; `selfBind` (this server's own
   // address) is assigned once the real listening port is known, just below.
   let assetSync: AssetSyncService;
-  // v2 (DES-020/TASK-026): defaults to a real network/spawn probe; tests inject a FakeMcpProbe.
-  const mcpProbe: McpProbe = config?.mcpProbe ?? new RealMcpProbe();
   // D-V2I-2 (DES-017): the impure driver loop — every tick, pure `tick()` decides which persisted
   // cron/once schedules are due; each due firing starts a run via the SAME RunManager.start() path
   // as workflow_run/workflow_trigger (DES-016's "same run path" invariant), then the outcome is
@@ -486,6 +533,13 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     if (req.method === 'GET' && (req.url === '/dashboard' || req.url?.startsWith('/dashboard/'))) {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(DASHBOARD_HTML);
+      return;
+    }
+    // D-V3M-2 (REQ-020 D-DOS gauge): read-only observability of the process-global agent-slot
+    // semaphore — GET /api/status -> { agentSemaphore: { total, inUse, queued } }. inUse rises with
+    // concurrent SDK-CLI dispatches and returns to baseline (0) once they settle.
+    if (req.method === 'GET' && (req.url === '/api/status' || req.url?.startsWith('/api/status?'))) {
+      sendJson(res, 200, { agentSemaphore: runManager.semaphoreGauge() });
       return;
     }
     // TASK-025 (DES-018): read-only dashboard HTTP API, a distinct transport from /mcp on the
@@ -540,7 +594,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         if (rpc.method === 'tools/call') {
           const name = rpc.params?.name ?? '';
           const args = rpc.params?.arguments ?? {};
-          const result = await callTool(facade, scheduler, assetSync, mcpProbe, name, args);
+          const result = await callTool(facade, scheduler, assetSync, mcpProbe, mcpRegistry, name, args);
           sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } });
           return;
         }

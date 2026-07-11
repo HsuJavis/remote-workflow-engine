@@ -1,0 +1,93 @@
+# Gate-2 Architecture Review — ADVERSARIAL GROUP (round 1, v3 slice)
+
+**Feature:** 001-remote-workflow-engine · **Iteration under review:** v3 (REQ-016 harness / REQ-017 provisioning / REQ-018 secrets / REQ-019 hooks-drop / REQ-020 sdk-timeout; REQ-012 OIDC deferred but its seam)
+**Lenses:** (a) Security — authn/authz, secret custody, attack surface · (b) Scalability/performance — state, horizontal scale, concurrency & consistency · (c) Testability — module boundaries, injectable deps · **Tie-breaker:** Karpathy simplicity-first (minimum architecture that solves the problem, nothing speculative).
+**Round:** 1 — independent proposal (no cross-lens reconciliation yet).
+
+## System-vs-agent altitude judgment (required first step)
+
+From `tech_stack` + requirements this project is **BOTH**, and the two altitudes fall on different modules — I apply each where it fits, and refuse to force the wrong one:
+
+- **Conventional-system altitude** governs the parts that are a self-hosted Linux service: the HTTP/MCP listener, SQLite index + filesystem journal, the **secret store** (systemd `LoadCredential`/env — REQ-018), the **MCP-provisioning registry** (REQ-017), deploy packaging, and the single-node **resource-exhaustion / DoS** surface. Here security = authn/authz + secret-at-rest custody + bind posture; scalability = process/CPU caps; testability = injectable ports.
+- **AI-agent altitude** governs the harness: the Claude Agent SDK session (REQ-016 tool-loop + MCP + skills for non-Anthropic models), the curated tool allowlist, `thinking`-disabled policy, per-agent transcript, and the SDK timeout race (REQ-020). Here security = *what the untrusted script can reach through a tool-capable agent*; scalability = per-agent subprocess + per-session stdio-MCP fan-out; testability = a **pure session-options builder** separable from the real CLI spawn.
+
+I do **not** apply agent-altitude reasoning to the secret store or the registry (they are plain server state), nor system-altitude reasoning to the tool-loop (its risk is agent-reach, not a port shape). Mixing them is the main way v3 gets over-built.
+
+---
+
+## Summary
+
+The v3 requirements do **not** call for a new decomposition — they call for **three new parent-side modules and two policy tightenings** hung on the *existing* ARCH-001..014 trust boundary (untrusted sandbox child ⟂ trusted run-host parent). The one load-bearing v3 decision is where REQ-018's absolute invariant — *"no provider/MCP secret is present on any path reachable from the run workspace or the untrusted VM sandbox"* — meets the still-open review finding V3 (a tool-capable `agent()` subprocess can read arbitrary host absolute paths via `Bash`/symlink/uncovered-file-tools). **These two collide head-on:** v3 introduces on-disk-capable secrets *and* (REQ-016) makes a genuinely tool-driving non-Anthropic agent the shipping product. The adversarial recommendation is a **two-layer secret containment** (keys off every agent-reachable filesystem + a realpath-complete, argument-complete, `Bash`-deny-outside-root confinement callback), because a lexical `file_path`-only check demonstrably under-builds the stated invariant — and under-building against a stated invariant is a defect, not a Karpathy win.
+
+Proposed v3 modules (attach at existing seams; zero v1 rework):
+
+| ID | Module | Realizes | Attaches to |
+|----|--------|----------|-------------|
+| **ARCH-015** | **MCP Provisioning Registry** — SQLite-backed, admin-write-only, `name → {kind: stdio\|http, config}`; `mcp_provision` out-of-band from run submission; resolve-by-name at session build; **only referenced entries injected** (`strictMcpConfig` preserved). | REQ-017 | sibling of K7 catalog (K6 store), consumed by K4/K5 session builder |
+| **ARCH-016** | **Secret Store + Resolver** — parent-only; loads `${secret:name}` sources from systemd `LoadCredential`/process env at startup into parent memory; resolves handles **at session-build time**, injects into the MCP/provider config the parent hands the SDK; **never writes plaintext to any workspace path**; missing handle → typed `MissingSecretError` (fail-closed). | REQ-018 | K5 gateway + ARCH-015 |
+| **ARCH-017** | **SDK Session-Options Builder (pure) + outer timeout race** — a pure function `(providerClass, alias, config, provisionedRefs, resolvedSecrets) → SDKOptions` that sets `thinking:{type:'disabled'}` for non-Anthropic aliases, the **curated tool allowlist**, and the explicitly-referenced MCP set; plus a `Promise.race(query, timeoutMs)` that **kills the CLI subprocess** on timeout → `agent()` resolves `null`. | REQ-016, REQ-020 | extends K4 executor / K5 gateway |
+
+Two policy tightenings (no new module):
+- **ARCH-018 (E4 tightening)** — asset ingestion **rejects hook-kind by construction** (REQ-019, closes the RCE vector) and **redirects MCP-config-kind to ARCH-015** rather than materializing per-run (REQ-009 rescope).
+- **ARCH-009 materialization** — the auth-middleware seam the review found *missing in code* is actually laid down as a real pass-through no-op, plus a **non-loopback bind guard** (refuse `bind != 127.0.0.1` unless an explicit `insecureNoAuth:true` is set) — the code half of C4/D5, cheap, closes the operational foot-gun now that v3 stacks RCE-capable provisioning + secrets on the open listener.
+
+Plus one **carried DoS fix** that v3 makes acute: **process-global agent counter + concurrency semaphore** shared across every run's `RunGuard` (review finding V2). v3's per-agent CLI subprocess + per-session stdio-MCP fan-out multiplies the already-per-run host caps; the scheduler can launch runs autonomously; leaving these per-run is a single-node exhaustion surface.
+
+---
+
+## Key points (three-lens argument)
+
+### (a) SECURITY
+
+- **REQ-018 is an invariant, not a feature — and only OS/off-disk containment makes it true (agent altitude).** REQ-018 states secrets must be absent from *any path reachable from the sandbox*. The real deployment keeps provider keys in the LiteLLM proxy's on-disk `config.yaml`; review V3 proves a tool-capable agent reads arbitrary absolute paths (`Bash` input has no `file_path` so the `canUseTool` callback returns `allow`; symlinks bypass lexical `path.resolve`; `Edit`/`Glob`/`Grep`/`NotebookEdit` use uncovered argument names). Therefore the ARCH-016 decision is: **(1)** provider keys live **only in the proxy process env/memory**, never under any directory an agent can absolute-path to; **(2)** MCP secrets are resolved into the SDK-injected config *in parent memory at session build* and never written to the workspace; **(3)** the confinement callback is made **realpath-based, argument-name-complete, and `Bash`-deny-outside-root** so ARCH-007's *general* cross-run confinement INV (protecting the OTHER secret: sibling runs' journals/workspaces) actually holds. This is the minimum that satisfies a stated invariant.
+- **REQ-019 hooks-drop is the cheapest security win in the whole slice — take it unconditionally (system altitude).** Rejecting hook-kind assets at the ingestion boundary removes arbitrary server-side code execution *by construction*. The engine's own internal `PreToolUse` workspace-boundary hook is a fixed control, not user-uploadable — keep it, and make the rejection a typed error, never a silent strip.
+- **REQ-017 provisioning re-trusts stdio — that trust must be anchored to admin-only write (system altitude).** Admin-provisioned stdio MCP is trusted *because* it is admin-provisioned out-of-band, not per-run-uploaded. The security-critical property is therefore the **write authority** on ARCH-015: `mcp_provision` must be an admin/out-of-band path, and `strictMcpConfig` + "only referenced injected" must be enforced at the builder so a run can never conjure an un-provisioned server or inherit the host's ambient MCP (the VAL-003 isolation invariant).
+- **REQ-012 / C4 — the seam the review says is missing must actually exist in v3, and the bind guard closes the stacked surface.** v3 puts an RCE-capable provisioning surface *and* a secret store on the same unauthenticated listener. Honoring the scope decision (OIDC deferred), I still require: the ARCH-009 no-op middleware present in *code* (the review found only the deployment half of C4 shipped), and a **fail-closed non-loopback bind guard**. Both are cheap; both are pure foot-gun removal, not speculative auth.
+
+### (b) SCALABILITY / PERFORMANCE
+
+- **The per-run→global cap gap (review V2) is now a genuine DoS, not a nit (system altitude).** v3's SDK harness spawns a full CLI subprocess *per agent* (heavier than direct-fetch), and each session may spawn N provisioned **stdio-MCP subprocesses** (REQ-017). With per-run `RunGuard` and an autonomous scheduler, total in-flight = `runs × min(16,cores−2) × (1 CLI + N MCP)` — host caps multiplied without bound. Fix: one **process-global concurrency semaphore + global agent counter** shared by all `RunGuard`s; budget stays per-run (that is correctly a per-run REQ-002 quantity — C2 licenses *budget* per-run, it does **not** license the explicitly-*global* agent counter or the CPU-derived gate being per-run).
+- **REQ-020 timeout is a liveness/slot-starvation property, not just an error path (agent altitude).** The SDK CLI runs its own ~4-min retry/backoff; without an **outer** bounded race that *kills the subprocess*, a hung provider holds a global concurrency slot for minutes — the exact resource that the semaphore above rations. ARCH-017's race must free the slot on timeout, then resolve `agent()` to `null`.
+- **stdio-MCP process lifecycle: per-session spawn, reap on session end, no pool (Karpathy).** Connection pooling of provisioned MCP servers is speculative at single-node localhost scale. Per-session spawn bounded by the global semaphore, with **guaranteed teardown** on session end/timeout/stop, is the minimum — and doubles as the orphan-reap the self-sustainability lens will (rightly) want.
+- **Secret + registry read paths are trivial to scale.** A handful of `${secret:name}` resolved from env/`LoadCredential` at startup and cached in parent memory; `name→config` is a single-row SQLite lookup. No caching layer, no external KMS.
+
+### (c) TESTABILITY
+
+- **The master v3 seam is the PURE session-options builder (ARCH-017).** Splitting "compute SDK options" (pure: provider-class → `thinking` flag, curated allowlist, injected MCP set, resolved-secret config) from "spawn and run the CLI" lets every REQ-016/017/018 *policy* acceptance be a **unit test with no CLI, no Ollama**: assert `thinking:{type:'disabled'}` for a non-Anthropic alias and unset for Anthropic (D-F6 regression guard); assert only referenced MCP names appear and `strictMcpConfig` is set (REQ-017 "observable in session init"); assert an unprovisioned name yields a typed error; assert a resolved secret value **never appears** in any workspace-written artifact (REQ-018 negative test).
+- **Secret resolution is a pure resolver → typed result.** `(registryEntry, secretSource) → resolvedConfig | MissingSecretError`. Unit-testable including the fail-closed and never-pass-the-literal-handle cases.
+- **Hook rejection (ARCH-018) is a pure classifier** at the asset boundary — one-line unit test per asset kind.
+- **The genuinely-real seam is unavoidable and the mock-hard-rule demands it anyway.** REQ-016's "native `tool_use`, tool actually executes, real round-trip against local Ollama" cannot be unit-tested; it is an integration test with real `litellm`+Ollama, and Gate 7.5's mock hard-rule requires exactly that real-tier green. The pure/impure split is what keeps *everything else* off the real path. Injection points already exist (`queryImpl`/`fetchImpl`/`mcpProbe`/`proxyManager`/`ticker`); ARCH-015/016 add two more injectable ports (registry, secret source) — and no more.
+
+---
+
+## Internal conflicts (adversarial group — surfaced, with round-1 tie-breaks)
+
+**IC1 — Security's OS-level per-run jail ⟂ Scalability + Testability + Simplicity.** The robust way to make REQ-018/ARCH-007 hold *generally* is an OS filesystem jail per run (per-run uid / mount namespace / chroot), which also kills the `Bash`/symlink/tool-coverage gaps at once. But it needs elevated caps or userns, complicates docker-compose/systemd deploy, is hard to exercise in CI, and makes each agent subprocess heavier. **Tie-break (round 1):** REQ-018's invariant is stated, and the review already ruled a lexical check under-builds it — so I do **not** let Karpathy rescue the `file_path`-only check. But full uid-per-run likely exceeds the QM warrant. The minimum that makes the invariant *true* is the **two-layer** approach: keys off any agent-reachable filesystem (env-only into the proxy) + realpath/argument-complete/`Bash`-deny confinement for cross-run data. Full OS jail is flagged as the robust alternative, deferred unless a HIGH re-escalates. **Winner: two-layer containment; OS jail noted, not built.**
+
+**IC2 — Scalability's global semaphore ⟂ throughput of the stdio-MCP fan-out.** Counting each session's N MCP subprocesses inside one global cap protects the host but can starve parallelism under many provisioned servers. **Tie-break:** correctness (host survival) beats throughput at single-node scale; bound at the global semaphore, reap on session end, and do **not** pre-build a pool. **Winner: global bound + reap, no pool.**
+
+**IC3 — Testability's pure builder ⟂ Security's want for the real jailed subprocess.** A uid/namespace jail is exactly the thing you can't unit-test cheaply. **Tie-break:** they compose — unit-test the *policy* (pure builder) exhaustively; integration-test the *containment* (real spawn) with the handful of tests the mock-hard-rule already forces. No conflict once the split is made. **Winner: split; both get their tier.**
+
+**IC4 — Security's fail-closed terseness ⟂ Consumability's helpful errors (previews the cross-lens fight below).** REQ-017/018 demand *clear* errors on missing secret / unprovisioned MCP, but on an unauthenticated listener, echoing the provisioned-MCP inventory or the set of secret names to any caller is info-disclosure. **Tie-break:** clear *typed* error to the submitting client (it is trusted-ish behind the tunnel), but the transcript/observability surface must **redact resolved secret values and not enumerate the secret set**. **Winner: clear-to-submitter, redacted-in-telemetry.**
+
+---
+
+## Risks
+
+- **R1 (HIGH) — REQ-018 declared "met" while a `Bash`/symlink/uncovered-tool path still reads host secrets.** The single most likely v3 failure is shipping ARCH-016 (handle indirection, `${secret:name}`) as the *whole* story while the agent subprocess can still `cat` the proxy config or a sibling run's journal. The indirection is worthless if the plaintext sits on a reachable path. Gate the requirement on the *containment* test, not the handle-shape test.
+- **R2 (HIGH) — global caps left per-run + autonomous scheduler = single-node DoS.** Carried from review V2, now acute because SDK harness + stdio-MCP multiply the multiplier. Must land with v3, not after.
+- **R3 (MED) — REQ-020 outer race that resolves `null` but does not KILL the CLI subprocess** leaves a zombie holding a slot for its full internal backoff; the "bound is observably applied" acceptance is not met by a bare `Promise.race`.
+- **R4 (MED) — ARCH-015 write authority under-specified → any MCP client provisions a trusted stdio server** on the no-auth listener, re-opening the RCE that REQ-019 just closed by a different door. `mcp_provision` must be an admin/out-of-band path, and the bind guard must be present.
+- **R5 (MED) — resolved secrets leaking into transcripts/dashboard/logs** (REQ-007/REQ-008 observability capturing the SDK-injected MCP env). Redaction must be part of ARCH-016, not an afterthought.
+- **R6 (LOW) — `thinking:{type:'disabled'}` keyed off a stale/misjudged provider-class map** silently 400s (or silently re-enables thinking) for a mis-mapped alias; make provider-class derivation a single source of truth used by both the builder and the alias validator.
+- **R7 (LOW) — determinism-guard bypass (review V5) unaffected by v3** but the resume cache now replays across a heavier harness; keep the design text honest that determinism is *encouraged*, not *enforced*.
+
+---
+
+## Expected disagreements with the other lens (quality-dimensions: observability / replaceability / consumability / self-sustainability, at both altitudes)
+
+- **Replaceability (secret store & MCP registry).** Quality will likely want ARCH-016/015 behind clean pluggable ports (env today, Vault/KMS tomorrow; a registry-backend interface). **I disagree on abstraction depth:** one concrete secret source (systemd `LoadCredential`/env) with a thin resolver and one SQLite registry — **no plugin abstraction until a second backend is a real requirement.** REQ-018 says the *store*, not a pluggable vault; a speculative port is the flexibility Karpathy cuts. Expected compromise: keep the resolver a small typed function (naturally swappable) without declaring a formal provider SPI.
+- **Observability (agent altitude) ⟂ my secret-protection.** Quality will want rich per-agent harness telemetry (tool-loop steps, each MCP tool call, `thinking` state, provider/model). **I agree on the telemetry but demand redaction:** resolved MCP env and `${secret:*}` values must never enter transcripts/dashboard/logs. This is IC4 surfaced across lenses — expect a redaction-vs-completeness negotiation.
+- **Consumability.** Quality will want smooth provisioning/secret UX and enumerable inventories. **I push fail-closed and non-enumerating** on the unauthenticated surface (don't list secret names or the full provisioned set to arbitrary callers). Clear typed error to the submitter: agreed; discoverability endpoints: resisted until auth (REQ-012) lands.
+- **Self-sustainability (agent altitude).** Likely **strong alignment**: quality will want orphan CLI/stdio-MCP reaping and proxy restart/self-heal — which is *also* my R2/IC2 DoS fix and the stale-doc/magic-constant drift the review already flagged. Expect us to co-sign reaping; possible minor split on how much auto-restart logic is warranted vs. letting systemd/docker restart-policy do it (I lean on the supervisor, not in-process self-heal — less code).
+- **Auth seam.** Quality (replaceability) and I (security) will **agree** the ARCH-009 no-op seam must exist in code. Possible split: quality may see the **non-loopback bind guard** as scope creep against the "OIDC deferred" decision; **I argue it is not auth** — it is a one-`if` fail-closed default that makes the deferral safe, and the review already logged the missing seam as a real deviation, not a defensible cut.

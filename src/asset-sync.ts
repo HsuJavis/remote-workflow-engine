@@ -77,6 +77,26 @@ export interface AssetPushResult {
   excluded: Array<{ name: string; reason: string }>;
 }
 
+/** Asset-Ingestion Policy disposition (DES-028 / ARCH-018 / TASK-034). */
+export type AssetDisposition =
+  | { action: 'materialize' }
+  | { action: 'redirect-to-provisioning' }
+  | { action: 'reject'; code: 'HOOKS_UNSUPPORTED' };
+
+/**
+ * Pure per-kind classifier at the asset boundary (DES-028): `hook` is rejected by construction
+ * (closes the arbitrary-server-side-code / RCE vector — never silently materialized; the engine's
+ * OWN internal PreToolUse workspace-boundary hook is a fixed control, not user-uploadable, and is
+ * unaffected); `mcp-config` redirects to provisioning (DES-024, REQ-009 rescope — not per-run
+ * materialized); `skill` materializes as before (ARCH-012 unchanged). Takes no action itself —
+ * callers (asset_push wiring) act on the returned disposition.
+ */
+export function classifyAsset(kind: AssetKind, _asset: unknown): AssetDisposition {
+  if (kind === 'hook') return { action: 'reject', code: 'HOOKS_UNSUPPORTED' };
+  if (kind === 'mcp-config') return { action: 'redirect-to-provisioning' };
+  return { action: 'materialize' };
+}
+
 /** Thrown when any `files[].path` in a push fails `safeRelPath` — the whole push is rejected (no
  *  half-written asset dir), same rooting invariant as DES-011's `WorkspaceEscapeError`. */
 export class AssetPathEscapeError extends Error {

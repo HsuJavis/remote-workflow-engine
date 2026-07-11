@@ -13,6 +13,7 @@ import { InMemoryRunStore } from './run-store.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
 import { RunGuard } from './run-guard.js';
+import { createSemaphore, type Semaphore, type SemaphoreGauge } from './agent-semaphore.js';
 import { SandboxHost } from './sandbox/host.js';
 import type { AgentSpawner, AgentTypeDef } from './agent-executor.js';
 import { AgentExecutor } from './agent-executor.js';
@@ -44,6 +45,12 @@ export interface RunManagerDeps {
   /** Server-side agent-type registry (D-F2), forwarded unchanged into every AgentExecutor this
    *  manager constructs — populated at the composition root (createServer()) from agents/*.md. */
   agentTypes?: Record<string, AgentTypeDef>;
+  /** D-V3M-2 (REQ-020 / D-DOS, TASK-035/DES-027/ARCH-002): the ONE process-global agent-slot
+   *  semaphore rationing SDK-CLI subprocess spawns across ALL runs — built at the composition root
+   *  (createServer) and observed via `GET /api/status`. Omitted (bare/test callers) -> an
+   *  effectively-unbounded local semaphore so direct RunManager construction keeps its exact prior
+   *  concurrency behavior; only the real cap is imposed at the composition root. */
+  semaphore?: Semaphore;
 }
 
 const TERMINAL: RunStatus[] = ['stopped', 'completed', 'failed'];
@@ -82,6 +89,7 @@ export class RunManager {
   private readonly _concurrency: number;
   private readonly _workRoot: string;
   private readonly _agentTypes: Record<string, AgentTypeDef>;
+  private readonly _semaphore: Semaphore;
   private readonly _runs = new Map<string, RunEntry>();
 
   constructor(deps: RunManagerDeps = {}) {
@@ -93,6 +101,15 @@ export class RunManager {
     this._workRoot = deps.workRoot ?? join(tmpdir(), 'remote-workflow-runs');
     this._catalog = deps.catalog ?? new WorkflowCatalog(this._workRoot, this._clock);
     this._agentTypes = deps.agentTypes ?? {};
+    // D-V3M-2: unbounded local default (1024 ≫ the 1000-agent lifetime cap) preserves the exact
+    // prior behavior for every direct RunManager caller; the real DOS cap is injected by createServer.
+    this._semaphore = deps.semaphore ?? createSemaphore(1024);
+  }
+
+  /** D-V3M-2 (REQ-020 D-DOS gauge): a snapshot of the process-global agent-slot semaphore, surfaced
+   *  by `GET /api/status` — total capacity, in-use slots, and the FIFO wait-queue depth. */
+  semaphoreGauge(): SemaphoreGauge {
+    return this._semaphore.gauge();
   }
 
   /** The catalog this manager resolves named workflows against (shared with SubmissionValidator). */
@@ -349,14 +366,19 @@ export class RunManager {
         if (entry.spawner instanceof AgentExecutor) {
           entry.spawner.markRunning(agentId);
         }
-        const outcome = await entry.spawner.run({
-          runId,
-          agentId,
-          prompt,
-          opts: key.opts,
-          workspace: entry.workspace,
-          signal: entry.abortController.signal,
-        });
+        // D-V3M-2 (REQ-020 D-DOS): the actual gateway dispatch (the SDK-CLI subprocess spawn) runs
+        // inside the process-global semaphore slot — so `GET /api/status`'s inUse reflects real
+        // concurrent spawns across all runs and returns to baseline once each settles.
+        const outcome = await this._semaphore.withSlot(() =>
+          entry.spawner.run({
+            runId,
+            agentId,
+            prompt,
+            opts: key.opts,
+            workspace: entry.workspace,
+            signal: entry.abortController.signal,
+          }),
+        );
         const value = outcome.kind === 'null' ? null : outcome.value;
         const journalEntry: JournalEntry = {
           callSeq,

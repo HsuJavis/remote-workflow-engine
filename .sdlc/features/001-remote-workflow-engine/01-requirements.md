@@ -153,14 +153,14 @@ flowchart LR
   - Given a selected agent in the dashboard Then its transcript is viewable
 - **iter:** v2
 
-### REQ-009 — Sync-upload local skills / hooks / MCP configs (recursion-guarded)
+### REQ-009 — Sync-upload local skills (recursion-guarded)
 - **status:** draft
 - **traces:** —
 - **acceptance:**
-  - Given MCP tools (e.g. `asset_push` for skill dirs / hook configs / MCP server configs, `asset_list`, `asset_delete`) When a local skill directory is pushed Then it lands in the server-side workspace and a subsequent workflow's agents can invoke that skill
-  - Given a pushed MCP server config of a server-side-runnable kind (remote HTTP MCP, or npx-installable stdio MCP) Then agents in later runs can call its tools; and given a config that cannot run server-side Then the push is rejected with a reason, not silently accepted
+  - Given `asset_push` for a skill directory (plus `asset_list` / `asset_delete`) When a local skill dir is pushed Then it lands in the server-side asset store and a later workflow's SDK-gateway agents can invoke that skill (materialized into the run workspace `.claude/skills/<name>/`, loaded via project-scope settingSources)
   - Given a push that includes this system's own client plugin, its guidance skill, or the MCP connection config pointing at this server When synced Then those items are excluded/filtered (recursion guard) and the exclusion is reported to the caller
-- **iter:** v2
+  - Given a pushed asset of an MCP-config kind Then it is NOT materialized per-run but redirected to server-side provisioning (REQ-017); and given a hook-kind asset Then it is rejected with a clear "hooks unsupported" reason (REQ-019)
+- **iter:** v3
 
 ### REQ-010 — Claude Code client plugin (install + guidance skill, conflict-free)
 - **status:** draft
@@ -189,7 +189,60 @@ flowchart LR
 
 ---
 
-## Iteration v3 — authentication
+## Iteration v3 — distributed harness, server-side provisioning, secrets, authentication
+
+> v3 goal (user 2026-07-10): non-Anthropic models (Ollama/qwen, OpenAI, Gemini, GLM, …) run the FULL
+> agent harness (tool loop + MCP + skills) through the Claude Agent SDK, with a convenient-and-safe
+> way to deliver harness pieces in the distributed (remote-engine) topology. Grounded by the
+> 2026-07-10 pre-Gate-1 spike (real qwen2.5:7b tool_use round-trip via LiteLLM+SDK).
+> **Scope decision (user 2026-07-10):** OIDC auth (REQ-012) stays DEFERRED to a later slice; this
+> slice's hard security boundary is **bind 127.0.0.1 only + SSH-tunnel/VPN for remote** — the
+> `mcp_provision` / asset / secret / `/mcp` surfaces must never be exposed publicly until auth lands.
+
+### REQ-016 — Non-Anthropic models run the full agent harness (tool loop + MCP + skills) via the SDK gateway
+- **status:** draft
+- **traces:** —
+- **acceptance:**
+  - Given an alias mapped to a non-Anthropic provider (Ollama/OpenAI/Gemini) and an `agent()` with at least one tool available When executed on the SDK gateway Then the model emits a **native `tool_use`** (not text), the tool actually executes in the run workspace, and its result is incorporated into the agent's final answer (real round-trip, observable in the per-agent transcript) — verified end-to-end for a local Ollama model
+  - Given a non-Anthropic alias When the SDK session is constructed Then extended thinking is disabled for it (`thinking:{type:'disabled'}`), so the provider does not 400 on `think:true`; and given an Anthropic-mapped alias Then thinking is left at SDK default — regression guard (D-F6)
+  - Given the SDK gateway path When an agent runs Then the tool surface exposed to the model is the curated allowlist only (never the full built-in Claude Code surface), so small models are not drowned into text-only degradation; the curated surface is observable in the session init
+  - Given only the documented deployment steps for a local Ollama host When followed Then the harness path (`gateway:"sdk"` + managed LiteLLM proxy on Python 3.11/3.12) boots and a sample workflow whose `agent()` uses a tool completes green
+- **iter:** v3
+
+### REQ-017 — MCP tools provisioned server-side (registry), referenced by name, explicitly injected
+- **status:** draft
+- **traces:** —
+- **acceptance:**
+  - Given an admin provisions an MCP server config into the engine's server-side registry once (out-of-band from workflow submission, e.g. `mcp_provision`) When a later workflow references that MCP by name Then its tools are available to that run's SDK agents
+  - Given a workflow references an MCP name that is not provisioned Then submission/run reports a clear error, not a silent no-op
+  - Given any run When the SDK session is built Then ONLY the explicitly-referenced provisioned MCP servers are injected (`strictMcpConfig` preserved); the host's ambient user/project MCP plugins are never inherited (the VAL-003 isolation invariant continues to hold)
+  - Given both admin-installed stdio and remote-HTTP provisioned MCP kinds Then both are usable (stdio is trusted because admin-provisioned, not per-run-uploaded)
+- **iter:** v3
+
+### REQ-018 — Secrets for providers / MCP via a server-side store, never workspace-reachable
+- **status:** draft
+- **traces:** —
+- **acceptance:**
+  - Given a provisioned MCP or a provider alias needs a token When configured Then the secret is supplied from a server-side store (systemd `LoadCredential` / process env), and the stored registry/asset entry carries only a reference handle (e.g. `${secret:name}`), never the plaintext value
+  - Given any run workspace or the untrusted VM sandbox When inspected Then no provider/MCP secret is present on any path reachable from it (extends D-R2 hermeticity / D-V2G8)
+  - Given a referenced secret is missing at run time Then the run reports a clear error — never a silent leak, a hang, or the literal handle passed through as a value
+- **iter:** v3
+
+### REQ-019 — Hooks are explicitly unsupported (uploaded user hooks removed)
+- **status:** draft
+- **traces:** —
+- **acceptance:**
+  - Given any provisioning/upload path receives a hook-kind asset When submitted Then it is rejected with a clear "hooks unsupported" reason (not silently materialized) — closes the arbitrary-server-side-code (RCE) vector by construction
+  - Given a run executes Then no user-supplied hook runs on the server; the engine's OWN internal `PreToolUse` workspace-boundary hook (a fixed security control, not user-uploadable) is unaffected and still fires
+- **iter:** v3
+
+### REQ-020 — SDK gateway path bounds a hung agent LLM call (timeout + retries)
+- **status:** draft
+- **traces:** —
+- **acceptance:**
+  - Given the SDK gateway path and a configured `timeoutMs`/`retries` When an agent's underlying LLM call hangs or its provider is unreachable Then the call is bounded by the same timeout+retry policy as the direct-fetch path, and the affected `agent()` resolves to `null` (the run continues, never hangs) — the bound is observably applied (closing the v2 state where `timeoutMs` had no effect on this path)
+  - Given a bounded failure Then the provider/timeout failure is visible in that agent's run record, never smuggled as fake success text
+- **iter:** v3
 
 ### REQ-012 — OAuth 2.0 via generic OIDC resource server (deferred by user decision D5)
 - **status:** draft

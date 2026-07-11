@@ -89,14 +89,18 @@ describe('Asset sync via MCP (REQ-009, VAL-009)', () => {
   });
 
   it('pushing a file with path traversal rejects the whole push (partial-push atomicity)', async () => {
+    // Uses kind 'skill' as the traversal-test vehicle — 'hook' is unconditionally rejected by
+    // classifyAsset (DES-028/REQ-019, v3 hook-ban) before the path-safety check is ever reached,
+    // so it can no longer isolate the path-traversal invariant under test here (that rejection
+    // path is separately covered by IT-041/VAL-022).
     const r = await mcpCall('asset_push', {
-      kind: 'hook',
-      name: 'evil-hook',
+      kind: 'skill',
+      name: 'evil-skill',
       files: [{ path: '../../etc/passwd', contentB64: btoa('evil') }],
     });
     // The entire push should be rejected
     expect(r['error']).toBeDefined();
     const stored = ((r['result'] as Record<string, unknown>)?.['stored'] as string[]) ?? [];
-    expect(stored).not.toContain('evil-hook');
+    expect(stored).not.toContain('evil-skill');
   });
 });

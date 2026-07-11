@@ -2547,6 +2547,15 @@ config not network-reachable → rejected with structured error code; `rwe-*` sk
 reported (not a hard error); path traversal in any file name → entire push atomically rejected.
 Red reason: `expected [...] to include 'asset_push'` — v2 asset tools not registered.
 
+**Test-defect fix (2026-07-10, Gate 7 route-back):** the path-traversal case used `kind: 'hook'`
+as its traversal vehicle; DES-028/REQ-019's v3 hook-ban (IMPL-078, `classifyAsset`) now rejects
+EVERY hook-kind push before the path-safety check is ever reached (`{result:{excluded:[...]}}`,
+no `error` key), which made the test's `error`-must-be-defined assertion fail for a reason
+unrelated to path-traversal atomicity. Changed the vehicle to `kind: 'skill'` (a non-banned kind)
+so the case again isolates path-traversal atomicity from the separately-covered (IT-041/VAL-022)
+hook-rejection policy. Re-run: `npx vitest run tests/acceptance/val-009-asset-sync.test.ts` → 5/5
+pass.
+
 ### VAL-010 — Client plugin artifact satisfies REQ-010 install contract (REQ-010)
 - **status:** green
 - **traces:** REQ-010, DES-021, ARCH-013
@@ -2620,13 +2629,13 @@ wired in `server.ts`; `scheduler.ts`'s `trigger()` now translates the unregister
 `WORKFLOW_NOT_FOUND`). Re-run `npx vitest run tests/acceptance/val-016-execution-modes.test.ts` =
 8/8 green. Item flipped to `green`/`pass`.
 
-### IT-035 — mcp-config asset wiring into the SDK gateway per-call options.mcpServers (D-V2V-1, REQ-009)
+### IT-035 — mcp-config asset_push redirect supersedes the old per-call options.mcpServers threading (DES-028, REQ-009 v3 rescope)
 - **status:** green
-- **traces:** DES-019, DES-020, REQ-009
+- **traces:** DES-028, DES-019, DES-020, REQ-009
 - **tier:** integration
 - **real:** false
 - **result:** pass
-- **iter:** v2
+- **iter:** v3
 
 **Gate 6 route-back closed this GREEN (IMPL-062); re-confirmed standalone by Gate 7.5 v2 round 2
 (2026-07-04): `npx vitest run tests/integration/asset-mcp-config-wiring.test.ts` → 1/1 pass.** See
@@ -2646,11 +2655,25 @@ stays `true`.
 Case: push an `mcp-config` asset (`{type:'http', url:'https://example.com/demo-mcp'}`) named
 `demo-mcp`, confirm it's stored, run a workflow with one `agent()` call, poll to a terminal status,
 then inspect the captured `queryImpl` call's `options.mcpServers`.
-Red reason: `expected undefined not to be undefined` — `options.mcpServers` is never set anywhere in
-`ClaudeAgentSdkGatewayClient` today (confirmed by reading `src/gateway/claude-agent-sdk-client.ts`);
-`composeConfig()`/`createServer()` never read `AssetSyncService`'s stored assets at all. The push
-itself succeeds and the run reaches a terminal status before the forcing assertion — not an
-import/syntax error, not an always-pass shell.
+Red reason (v2, historical): `expected undefined not to be undefined` — `options.mcpServers` is
+never set anywhere in `ClaudeAgentSdkGatewayClient` today (confirmed by reading
+`src/gateway/claude-agent-sdk-client.ts`); `composeConfig()`/`createServer()` never read
+`AssetSyncService`'s stored assets at all. The push itself succeeds and the run reaches a terminal
+status before the forcing assertion — not an import/syntax error, not an always-pass shell.
+
+**Test-defect fix (2026-07-10, Gate 7 route-back):** DES-028's v3 rescope makes an mcp-config
+`asset_push` REDIRECT to the Provisioning Registry (`mcp_provision`/`McpRegistry`, IT-038/VAL-020)
+instead of the v2 per-asset `readMcpConfigAssets()` threading this test originally pinned — so the
+v2 scenario ("push mcp-config, confirm it lands in the next `agent()` call's `options.mcpServers`")
+is now structurally impossible by design (`push.result.stored` is correctly `[]`, not
+`['demo-mcp']`). Rewritten to pin the v3 replacement contract: the push is redirected (never
+stored, never threaded via the old mechanism), `strictMcpConfig` stays `true`, and a run still
+completes normally. Deliberately does NOT assert that an `mcp_provision`-provisioned name reaches a
+real `agent()` call's `options.mcpServers` — `src/session-options-builder.ts`'s
+`buildSessionOptions` (TASK-032) has no production caller yet (confirmed: no non-test caller in
+`src/`), so asserting that here would require new production wiring, not a test-only fix; flagged
+in needs_clarification as a follow-up task candidate. Re-run:
+`npx vitest run tests/integration/asset-mcp-config-wiring.test.ts` → 1/1 pass.
 
 ### IT-036 — skill asset materialization + scoped settingSources/cwd (D-V2V-1, REQ-009)
 - **status:** green
@@ -2882,3 +2905,393 @@ Red reason: read `src/run-guard.ts:74-84` and `src/run-manager.ts:331-338` direc
 computes `this.total - this._spent - this._reserved` (100% of remaining) with no per-call estimate
 anywhere, and `assertBudget()`/`reserve()` are called with no `await` between them — confirmed via
 the concurrency counter (`maxInFlight()` observed `=== 1`), not a timing fluke or import/syntax error.
+
+## v3 test items (Gate 5, RED — harness/provisioning/secrets/hooks-drop/sdk-timeout)
+
+### UT-042 — McpRegistry CRUD + strict-by-name resolveInjected (DES-024)
+- **status:** green
+- **traces:** DES-024, TASK-028
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v3
+
+File: `tests/unit/mcp-registry.test.ts`.
+Mock policy (unit): real on-disk SQLite (tmpdir, same convention as `workflow-catalog.test.ts`) +
+injected `FakeMcpProbe` (existing v2 seam) — no network.
+Cases: register with a live probe persists `healthy:true`; register with a dead probe returns
+`{ok:false,error:'MCP_PROBE_FAILED'}` and persists NOTHING; list/delete CRUD; both `stdio`/`http`
+kinds usable; `resolveInjected` returns ONLY explicitly-referenced entries (never an unreferenced
+provisioned row — VAL-003 isolation invariant); an unprovisioned name → typed
+`{error:'MCP_NOT_PROVISIONED'}`, never a silent no-op; empty reference list → `{configs:{}}`.
+Red reason: `Failed to load url ../../src/mcp-registry.js` — module does not exist yet.
+
+### UT-043 — Pure SecretResolver: resolveConfig (atomic) + redact (DES-025)
+- **status:** green
+- **traces:** DES-025, TASK-030
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v3
+
+File: `tests/unit/secret-resolver.test.ts`.
+Mock policy (unit): pure functions, `InMemorySecretSource` fake — no fs/net/process.
+Cases: resolves a single/nested `${secret:name}` handle; a mixed good/missing config throws
+`SECRET_MISSING`, resolves NOTHING partial (atomic all-or-nothing, REQ-018); a malformed handle
+grammar throws `SECRET_HANDLE_INVALID` (never a literal pass-through); no-handle config passes
+through unchanged; `redact` replaces every occurrence of a resolved value (including nested/split
+across fields) with `‹redacted›`; handle NAMES stay loggable (redact never touches a bare name).
+Red reason: `Failed to load url ../../src/secret-resolver.js` — module does not exist yet.
+
+### UT-044 — Pure SDK Session-Options Builder + ProviderProfile + SessionInitRecord (DES-026)
+- **status:** green
+- **traces:** DES-026, TASK-032
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v3
+
+File: `tests/unit/session-options-builder.test.ts`.
+Mock policy (unit): pure function, frozen `ProviderProfile` fixtures — no fs/net/process/clock.
+Cases: non-Anthropic profile → `thinkingMode:'disabled'` (D-F6 regression guard); Anthropic profile
+→ `'sdk-default'`; curated allowlist ONLY appears in `sessionInit.allowlist`; only
+explicitly-provisioned/referenced MCP names appear in `injectedMcpNames`; secret handle NAMES (never
+resolved values) appear in `secretHandleNames`; an alias with no `ProviderProfile` row →
+`{ok:false,error:'ALIAS_PROFILE_MISSING'}` (fail-safe, D-V3i); purity — same frozen input twice is
+deep-equal, and `Date.now` is never called by a pure builder invocation.
+Red reason: `Failed to load url ../../src/session-options-builder.js` — module does not exist yet.
+
+### UT-045 — Outer timeout race + kill-on-timeout + slot-free-exactly-once + FailureEnvelope (DES-027)
+- **status:** green
+- **traces:** DES-027, TASK-033, TASK-035, TASK-037
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v3
+
+File: `tests/unit/timeout-race.test.ts`.
+Mock policy (unit): `vi.useFakeTimers()` time-travels the CLI's own multi-minute backoff (zero real
+wall-clock waiting) + injected `killImpl`/`AgentSemaphore` — no real process spawn.
+Cases: a hung call times out at `timeoutMs` — `killImpl` called exactly once, resolves
+`{ok:false,envelope:{kind:'timeout',...}}`, never smuggled as fake success; a call that resolves
+before `timeoutMs` never invokes `killImpl` and the slot returns to 0; slot-free-exactly-once (D-V3a
+#1 HIGH risk, both design panels) proven across success/provider-error/timeout-kill branches via
+`semaphore.gauge()`; a second call can acquire the slot immediately after the first's timeout branch
+frees it (never starved).
+Red reason: `Failed to load url ../../src/timeout-race.js` — module does not exist yet.
+
+### UT-046 — D-DOS global AgentSemaphore: injectable instance + gauge + release invariant (TASK-035)
+- **status:** green
+- **traces:** DES-027, TASK-035, ARCH-002
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v3
+
+File: `tests/unit/agent-semaphore.test.ts`.
+Mock policy (unit): pure in-process semaphore, no I/O.
+Cases: `gauge()` starts at `{total,inUse:0,queued:0}`; `withSlot` increments/decrements `inUse`
+around the callback; a second call queues (`queued:1`) while occupied, then runs after release; the
+slot releases exactly once even when the callback throws (never a permanent starve); two
+`createSemaphore` instances are independent (genuinely injectable, never a module `static`).
+Red reason: `Failed to load url ../../src/agent-semaphore.js` — module does not exist yet.
+
+### UT-047 — Asset-Ingestion Policy: pure classifyAsset (DES-028)
+- **status:** green
+- **traces:** DES-028, TASK-034
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v3
+
+File: `tests/unit/asset-classifier.test.ts`.
+Mock policy (unit): pure function, no I/O.
+Cases: `hook` kind → `{action:'reject',code:'HOOKS_UNSUPPORTED'}` (closes the RCE vector by
+construction); `mcp-config` kind → `{action:'redirect-to-provisioning'}` (REQ-009 rescope, not
+per-run materialized); `skill` kind → `{action:'materialize'}` (ARCH-012 unchanged).
+Red reason: `classifyAsset is not a function` — `src/asset-sync.ts` exists but does not export
+`classifyAsset` yet (not an import/syntax error; the named export is simply absent).
+
+### UT-048 — D-BIND isLoopback fail-closed truth-table predicate (DES-029)
+- **status:** green
+- **traces:** DES-029, TASK-036
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v3
+
+File: `tests/unit/net-guard.test.ts`.
+Mock policy (unit): pure function, no I/O.
+Cases: truth table over `127.0.0.0/8`, `::1`, `0.0.0.0`, private ranges, `::`, a bare hostname, and
+empty string; rejects a textual-prefix bypass (`127.0.0.1.evil.example.com`) that a naive
+`startsWith`/`===` check would miss — must be a real CIDR/textual check, not a string compare.
+Red reason: `Failed to load url ../../src/net-guard.js` — module does not exist yet.
+
+### UT-049 — D-PROC per-agent CLI subprocess lifecycle: injected spawn/kill seam (DES-029)
+- **status:** green
+- **traces:** DES-029, TASK-037
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v3
+
+File: `tests/unit/cli-lifecycle.test.ts`.
+Mock policy (unit): injected `spawnImpl`/`killImpl`/`rmImpl` — never a real `claude` CLI process.
+Cases: `spawnDetached` calls the injected spawn with `detached:true` (own process group);
+`killGroup` calls the injected kill exactly once with the negative pid (process-group kill
+convention), never a real `process.kill`; `cleanupTemp` calls the injected rm with the session temp
+dir, `recursive:true,force:true`.
+Red reason: `Failed to load url ../../src/cli-lifecycle.js` — module does not exist yet.
+
+### IT-038 — mcp_provision admin tool wired into the real server + real McpRegistry persistence (DES-024, ARCH-015)
+- **status:** green
+- **traces:** DES-024, TASK-028, TASK-029, ARCH-015
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v3
+
+File: `tests/integration/mcp-provision-wiring.test.ts`.
+Mock policy (integration): real HTTP server + real fetch + real on-disk SQLite; the one third-party
+network dependency (live MCP probe) faked via the existing injected `McpProbe` seam.
+Cases: `tools/list` includes `mcp_provision` with a real non-empty `inputSchema.properties` (D-G8-3,
+no placeholder-schema regression); `mcp_provision` provisions a live-probed config; a workflow
+referencing an unprovisioned MCP name surfaces `MCP_NOT_PROVISIONED` (polled through
+workflow_status/workflow_result, never silently ignored); a row registered by one `McpRegistry`
+instance is visible from a second instance on the same `dbPath` (mirrors IT-031/IT-012).
+Red reason: `Failed to load url ../../src/mcp-registry.js` — module does not exist yet (whole-file
+collection failure); once that module exists, `mcp_provision` is additionally absent from
+`server.ts`'s own `TOOL_NAMES`/dispatch (`tools/call` → JSON-RPC `"Unknown tool: mcp_provision"`).
+
+### IT-039 — Secret source loader (real env) + realpath-based path-containment hardening (DES-025, ARCH-016)
+- **status:** green
+- **traces:** DES-025, TASK-031, ARCH-016
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v3
+
+File: `tests/integration/secret-source-and-containment.test.ts`.
+Mock policy (integration): real `process.env`, real filesystem + real planted symlink (target-tier
+per DES-025/DES-030's own testability note) — no fs mock.
+Cases: `loadSecretSourceFromEnv()` resolves a real `RWE_SECRET_*` env var; an unset name resolves to
+`undefined` (never a hang/throw); `isPathContained` DENIES a path that is textually inside the
+workspace but whose real (symlinked) target escapes it — the exact D-V2G8-1(d) hardening gap (the
+existing `isInsideWorkspace` in `claude-agent-sdk-client.ts` uses `resolve()`, not `realpath`, so a
+planted symlink bypasses it); allows a genuine no-symlink path inside the workspace; denies a plain
+`../` escape (regression floor).
+Red reason: `Failed to load url ../../src/secret-source.js` / `../../src/path-containment.js` —
+neither module exists yet.
+
+### IT-040 — Real process-group kill reaps grandchildren + race-safe port selection (DES-029, ARCH-005/017)
+- **status:** green
+- **traces:** DES-029, TASK-037, ARCH-005, ARCH-017
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v3
+
+File: `tests/integration/cli-lifecycle-process-group.test.ts`.
+Mock policy (integration): a REAL detached child process tree (a real shell + a real `sleep`
+grandchild) — only the "stub child" is substituted for a real `claude` CLI, per the mock policy's
+own carve-out; the port-selection half uses real `node:net` sockets, no fake.
+Cases: `killGroup` on a detached parent also kills its real stdio grandchild (never orphaned — the
+exact orphan pathology `state.yaml`'s litellm-port-4000-collision hazard names at higher volume);
+two rapid managers each bound to port 0 get distinct, already-bound ports with no `EADDRINUSE`
+(race-safe, never check-then-bind).
+Red reason: `Failed to load url ../../src/cli-lifecycle.js` — module does not exist yet.
+
+### IT-041 — Asset-Ingestion Policy wired into the real asset_push endpoint (DES-028, ARCH-018)
+- **status:** green
+- **traces:** DES-028, TASK-034, ARCH-018
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v3
+
+**Gate 6 integration closeout (IMPL-078):** 3/3 green — `classifyAsset` wired into `asset_push`
+before it touches disk/network. Fallout (test defects, not silently fixed — see this round's
+report): the SAME wiring makes `tests/acceptance/val-009-asset-sync.test.ts`'s "path traversal"
+case and `tests/integration/asset-mcp-config-wiring.test.ts` (IT-035) genuinely fail, since both
+pre-v3 tests used `hook`/`mcp-config` kind as an incidental vehicle for an orthogonal concern that
+predates DES-028's binding hook-ban/mcp-config-redirect rescope.
+
+File: `tests/integration/asset-ingestion-policy-wiring.test.ts`.
+Mock policy (integration): real HTTP server + real fetch + real filesystem — no mock.
+Cases: a hook-kind push is rejected `HOOKS_UNSUPPORTED` and writes NOTHING to disk — RED, today's
+`asset_push` handler has no `classifyAsset` gate at all, so it materializes the hook exactly like
+any other kind (`stored:['evil-hook']`, file written); an mcp-config-kind push is redirected to
+provisioning — RED, today it is per-run materialized under `assetRoot/mcp-config/<name>` exactly
+like before (REQ-009 rescope not yet wired); a skill-kind push still materializes exactly as before
+— PASSES today (ARCH-012 regression floor, unchanged contrast case, same pattern as IT-037/UT-041).
+Red reason: read `src/server.ts`'s `asset_push` case directly — it calls
+`assetSync.push(push)` unconditionally for every kind (only `mcp-config` gets the pre-existing
+`checkMcpConfigTransport` probe check); there is no `classifyAsset`/hook-reject/mcp-config-redirect
+branch at all yet.
+
+### E2E-006 — Provision MCP with secret handle → real tool_use round trip, secret never leaked (REQ-016, REQ-017, REQ-018)
+- **status:** red
+- **traces:** REQ-016, REQ-017, REQ-018, DES-024, DES-025, DES-026
+- **tier:** e2e
+- **real:** false
+- **result:** fail
+- **iter:** v3
+
+File: `tests/e2e/mcp-provision-secret-tooluse-journey.test.ts`.
+Mock policy (e2e — no SUT boundary mocked): real server, real MCP HTTP calls, real local Ollama when
+gated on (env-var convention matching VAL-003/VAL-004, so a bare `npm test` stays hermetic; Gate 7.5
+sets the env var for real).
+Cases: `mcp_provision` is a real wired admin tool — ALWAYS asserted (not gated on provider
+availability): today's real response is a JSON-RPC-level `"Unknown tool: mcp_provision"` error, so
+`out.error` is genuinely defined, not silently `undefined`; a workflow referencing the provisioned
+MCP by name gets a real native `tool_use` round trip with the raw secret value never appearing in
+the transcript (gated on `OLLAMA_BASE_URL`/`ANTHROPIC_API_KEY`).
+Red reason: the always-run `mcp_provision` assertion fails today (`{code:'-32000', message:'Unknown
+tool: mcp_provision'}`, confirmed via a direct run of this exact assertion) — genuinely RED
+independent of any live-provider availability.
+
+### E2E-007 — Hooks rejected + a hung SDK-gateway provider call bounded, never smuggled as success (REQ-019, REQ-020)
+- **status:** red
+- **traces:** REQ-019, REQ-020, DES-027, DES-028, DES-029
+- **tier:** e2e
+- **real:** false
+- **result:** fail
+- **iter:** v3
+
+File: `tests/e2e/hooks-reject-and-timeout-bound-journey.test.ts`.
+Mock policy (e2e — no SUT boundary mocked): real server, real spawned `claude` CLI via
+`ClaudeAgentSdkGatewayClient`; the ONLY fake is the third-party network endpoint the CLI dials (a
+real local HTTP server that never responds — a real fault-injected hung provider per DES-030's own
+wording, not a mock of anything this product owns).
+Cases: a hook-kind asset_push is rejected, nothing materialized — RED (today's real behavior
+materializes it: `stored:['e2e-evil-hook']`); a workflow whose `agent()` hits the hung provider
+completes with a bounded null result — PASSES today (the pre-existing D-F7 `timeoutMs` abort race in
+`ClaudeAgentSdkGatewayClient` already resolves the call; documents what v3 reuses, contrast case);
+the D-DOS agent-slot gauge (`GET /api/status`) is observable and returns to baseline — RED, the
+endpoint does not exist yet (404).
+Red reason: existing hook-materialization behavior + missing `/api/status` endpoint, confirmed via a
+direct run (8/8s wall clock, no hang) — not an import/syntax error.
+
+### UT-050 — ClaudeAgentSdkGatewayClient's canUseTool denies a planted-symlink escape (DES-025, TASK-031, ARCH-016)
+- **status:** green
+- **traces:** DES-025, TASK-031, ARCH-016
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v3
+
+**Gate 6 integration closeout (IMPL-079):** added alongside wiring `isPathContained` (already
+existing, IT-039) into `claude-agent-sdk-client.ts`'s own `isInsideWorkspace` — closes the exact gap
+IT-039's own note names ("the existing `isInsideWorkspace` ... uses `resolve()`, not `realpath`, so
+a planted symlink bypasses it") at the actual client boundary, not only at the pure predicate.
+
+File: `tests/unit/claude-agent-sdk-gateway-symlink-escape.test.ts`.
+Mock policy (unit tier, DES-015): `vi.mock('@anthropic-ai/claude-agent-sdk')` (same convention as
+UT-040) — the assertion is about the `options.canUseTool` callback this client wires; the symlink
+itself is REAL (`node:fs.symlinkSync` + a real tmpdir), since a faked filesystem cannot exercise the
+real `realpathSync` resolution this hardening depends on.
+Cases: (1) a Read whose `file_path` sits INSIDE the workspace but is a symlink whose REAL target
+escapes it (a sibling directory standing in for the LiteLLM proxy config / a sibling run's journal)
+is DENIED; (2) a genuine (non-symlinked) Read inside the workspace still ALLOWS (regression floor,
+same contrast-case convention as UT-040's own case 5).
+Confirmed genuinely red first: with `isInsideWorkspace`'s plain-`resolve()` body temporarily
+restored (pre-fix), case (1) failed `expected 'allow' to be 'deny'` — not an always-pass shell.
+Green after wiring `isPathContained` in: 2/2 pass; UT-040's own 5/5 stay green (regression floor
+unweakened — the plain-resolve `../` escape denial `isPathContained` reduces to when the paths
+don't exist yet is a strict subset of its own behavior).
+
+### VAL-019 — REQ-016: non-Anthropic models run the full agent harness via the SDK gateway
+- **status:** red
+- **traces:** REQ-016
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v3
+
+File: `tests/acceptance/val-019-non-anthropic-harness.test.ts`.
+Mock policy (acceptance — no SUT boundary mocked): real `gateway:"sdk"` (`ClaudeAgentSdkGatewayClient`
+composition-root override) + a real local Ollama model, gated on `OLLAMA_BASE_URL` (VAL-003/VAL-004
+convention). The `thinkingMode:'disabled'` regression-guard clause is ALWAYS asserted via a direct
+call into the real `buildSessionOptions` (not a mock — the SUT's own real pure function), so this
+file is RED at collection regardless of provider gating.
+Cases: real native `tool_use` round trip (gated); `SessionInitRecord.thinkingMode:'disabled'` for a
+non-Anthropic alias, read back from a real transcript (gated); the same clause asserted directly and
+unconditionally via `buildSessionOptions()`.
+Red reason: `Failed to load url ../../src/session-options-builder.js` — module does not exist yet.
+
+### VAL-020 — REQ-017: MCP tools provisioned server-side, referenced by name, explicitly injected
+- **status:** green
+- **traces:** REQ-017
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v3
+
+File: `tests/acceptance/val-020-mcp-provisioning.test.ts`.
+Mock policy (acceptance — no SUT boundary mocked): real server + real `mcp_provision`/`workflow_run`;
+the one third-party network dependency (live MCP probe) faked via the existing injected `McpProbe`.
+Cases: an admin provisions an MCP config once, succeeds; a workflow referencing an unprovisioned
+name surfaces `MCP_NOT_PROVISIONED` (polled to completion, no live model needed — fails before any
+provider dial); `resolveInjected` returns ONLY the referenced name (host ambient MCP never inherited
+— VAL-003 isolation invariant continues to hold); both `stdio` and `http` kinds usable.
+Red reason: `Failed to load url ../../src/mcp-registry.js` — module does not exist yet.
+
+**Re-verified (2026-07-10, Gate 7 route-back):** an implementer report flagged this test's final
+assertion as omitting `run` from `JSON.stringify({ finalStatus, result })`; on inspection the test
+file already includes `run` (`JSON.stringify({ run, finalStatus, result })`, matching sibling
+IT-038's own pattern) — no test-file change needed. Re-run:
+`npx vitest run tests/acceptance/val-020-mcp-provisioning.test.ts` → 4/4 pass.
+
+### VAL-021 — REQ-018: secrets for providers/MCP via a server-side store, never workspace-reachable
+- **status:** red
+- **traces:** REQ-018
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v3
+
+File: `tests/acceptance/val-021-secret-store.test.ts`.
+Mock policy (acceptance — no SUT boundary mocked): real server + real env-loaded secret + real
+`mcp_provision`/`workflow_run`; the live-model round trip is gated (`OLLAMA_BASE_URL`).
+Cases: a missing secret handle surfaces `SECRET_MISSING` (polled to completion, no live model needed
+— fails before any provider dial); the real resolver never leaks a resolved value into any file
+under the run workspace (walks the real on-disk workspace tree); a real resolved secret works end to
+end with no byte of it in the transcript (gated).
+Red reason: `Failed to load url ../../src/secret-resolver.js` — module does not exist yet.
+
+### VAL-022 — REQ-019: hooks are explicitly unsupported (uploaded user hooks removed)
+- **status:** green
+- **traces:** REQ-019
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v3
+
+File: `tests/acceptance/val-022-hooks-unsupported.test.ts`.
+Mock policy (acceptance — no SUT boundary mocked): real `classifyAsset` + real `asset_push`
+endpoint + real `workflow_run` (no live model needed — clause 2 reuses the pre-existing internal
+PreToolUse boundary control on a plain arithmetic script).
+Cases: `classifyAsset('hook',...)` rejects by construction; the real `asset_push` endpoint rejects a
+hook and writes nothing to disk; a real run still enforces the workspace-boundary PreToolUse hook
+(regression floor — no hook asset pushed at all, proving the internal control's independence).
+Red reason: `classifyAsset is not a function` (named export absent) + real `asset_push` still
+materializes a hook today (`stored:['val022-hook']`), confirmed via a direct run.
+
+### VAL-023 — REQ-020: SDK gateway path bounds a hung agent LLM call (timeout + retries)
+- **status:** red
+- **traces:** REQ-020
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v3
+
+File: `tests/acceptance/val-023-sdk-gateway-timeout.test.ts`.
+Mock policy (acceptance — no SUT boundary mocked): real spawned `claude` CLI via
+`ClaudeAgentSdkGatewayClient`, pointed at a real local HTTP server that never responds (a real
+fault-injected hung provider, never gated — no live credentials needed).
+Cases: a real run against the hung provider completes within the configured bound, `agent()`
+resolving null (never hangs) — the pre-existing D-F7 abort race already satisfies this clause
+(contrast case, matches E2E-007); the deterministic (`FixedClock`-driven) outer race the real path
+is BUILT ON resolves `ok:false` with a `kind:'timeout'` `FailureEnvelope` — the reusable v3 primitive
+this real path still needs to be re-plumbed through (D-DOS gauge/kill-on-timeout not yet observable).
+Red reason: `Failed to load url ../../src/timeout-race.js` — module does not exist yet.

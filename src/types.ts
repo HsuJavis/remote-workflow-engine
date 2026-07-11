@@ -29,6 +29,12 @@ export interface AgentOpts {
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   isolation?: 'worktree';
   agentType?: string;
+  /** REQ-017 (D-V3M-1): names of server-side-provisioned MCP servers this agent references
+   *  (`agent(prompt, {mcp:['name']})`). Resolved by the SDK gateway against the MCP Provisioning
+   *  Registry at session-build time (McpRegistry.resolveInjected) — ONLY these explicitly-named
+   *  entries are injected (strictMcpConfig preserved); an unprovisioned name is already rejected at
+   *  submission (SubmissionValidator). Survives the sandbox boundary as an opaque opts field. */
+  mcp?: string[];
 }
 
 export interface AgentRecord {

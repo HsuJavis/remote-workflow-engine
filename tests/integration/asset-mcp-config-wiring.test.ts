@@ -1,25 +1,23 @@
-// IT-035: REQ-009 clauses 1/2 route-back — an accepted mcp-config asset must be threaded into the
-// NEXT agent() call's real @anthropic-ai/claude-agent-sdk Options.mcpServers (D-V2V-1, binding
-// ORCH ruling on 08-validation.md VAL-017's finding: `settingSources:[]`+`strictMcpConfig:true`
-// with `mcpServers` never populated means a probe-accepted mcp-config asset sits on disk but is
-// NEVER reachable by any agent() call). `strictMcpConfig:true` stays true (D-V2V-1 binding); only
-// `mcpServers` must gain the accepted entry, threaded PER-CALL (so a push made after boot still
-// reaches the very next run, not merely a startup-time snapshot).
+// IT-035: superseded scope (test-defect fix, 2026-07-10) — this test originally pinned the v2
+// D-V2V-1 contract (an accepted mcp-config asset_push is threaded into the NEXT agent() call's
+// real Options.mcpServers via `readMcpConfigAssets()`). DES-028/REQ-009's v3 rescope (04-design.md
+// DES-019's own "Gate 6 route-back" note + DES-028) REDIRECTS mcp-config pushes to the Provisioning
+// Registry instead (`mcp_provision`/`McpRegistry`, IT-038/VAL-020) — asset_push no longer
+// materializes or threads mcp-config assets at all, so the original scenario ("push mcp-config,
+// confirm it lands in the next agent() call's options.mcpServers") is now structurally impossible
+// by design. This test is rewritten to pin the v3 replacement contract instead: an mcp-config
+// asset_push is redirected (never stored, never threaded via the old per-asset mechanism), and a
+// run still completes normally. It deliberately does NOT assert that a name provisioned via
+// `mcp_provision` reaches a real agent() call's `options.mcpServers` — that GatewayClient-side
+// threading (`src/session-options-builder.ts`/TASK-032's `buildSessionOptions`) has no production
+// caller yet (confirmed: no non-test caller of `buildSessionOptions` in `src/`), so asserting it
+// here would require new production wiring, not a test-only fix. See needs_clarification.
 //
 // Mock policy (DES-015, integration tier): real `composeConfig()` + real `createServer()` + real
 // HTTP `asset_push`/`workflow_run`/`workflow_status` round trip (no mock of the SUT's own asset
 // storage, submission, sandbox, or run lifecycle); only the third-party SDK `query()` export
 // (`queryImpl` seam, same convention as IT-021/IT-022) and the managed LiteLLM proxy subprocess
-// (fake `spawnImpl`/`fetchImpl`, same convention) are faked — no real network/process I/O. The
-// mcp-config's own live-probe (DES-020) is satisfied via the pre-existing `FakeMcpProbe` injectable
-// seam (`ServerConfig.mcpProbe`), so this test needs no real network reachability check either.
-//
-// Red reason: `src/gateway/claude-agent-sdk-client.ts` never sets `options.mcpServers` anywhere in
-// the constructed `Options` object (confirmed by reading the file); `composeConfig()`/
-// `createServer()` never read `AssetSyncService`'s stored assets at all (confirmed: `grep -rn asset
-// src/agent-executor.ts src/run-manager.ts src/gateway/*.ts` -> zero matches, per 08-validation.md
-// VAL-017). The captured `queryImpl` call's `options.mcpServers` is therefore `undefined`, not the
-// pushed config keyed by its asset name — not an import/syntax error.
+// (fake `spawnImpl`/`fetchImpl`, same convention) are faked — no real network/process I/O.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -58,7 +56,7 @@ interface CapturedCall {
   options?: { mcpServers?: Record<string, { url?: string; type?: string }>; strictMcpConfig?: boolean };
 }
 
-describe('mcp-config asset wiring into the SDK gateway per-call options.mcpServers (IT-035, D-V2V-1, REQ-009)', () => {
+describe('mcp-config asset_push redirect supersedes the old per-call options.mcpServers threading (IT-035, DES-028, REQ-009 v3 rescope)', () => {
   let server: Server;
   let workRoot: string;
   let baseUrl: string;
@@ -93,7 +91,7 @@ describe('mcp-config asset wiring into the SDK gateway per-call options.mcpServe
     return JSON.parse(body.result!.content[0]!.text);
   }
 
-  it("an accepted mcp-config asset is threaded into the NEXT agent() call's options.mcpServers; strictMcpConfig stays true", async () => {
+  it('an mcp-config asset_push is redirected to provisioning (never stored, never threaded via the old per-asset mechanism); a run still completes normally', async () => {
     const push = await mcpCall('asset_push', {
       kind: 'mcp-config',
       name: 'demo-mcp',
@@ -104,8 +102,9 @@ describe('mcp-config asset wiring into the SDK gateway per-call options.mcpServe
         },
       ],
     });
-    expect(push.error).toBeUndefined();
-    expect(push.result?.stored).toContain('demo-mcp');
+    // v3 rescope (DES-028/REQ-009): mcp-config is redirected, never materialized/stored here.
+    expect(push.result?.stored ?? []).toEqual([]);
+    expect(push.result?.redirected).toBe(true);
 
     const run = await mcpCall('workflow_run', { script: "return agent('use the pushed mcp tool', {model:'local'});" });
     const runId = run.runId as string;
@@ -120,12 +119,10 @@ describe('mcp-config asset wiring into the SDK gateway per-call options.mcpServe
     expect(queryImpl).toHaveBeenCalled();
 
     const [[call]] = queryImpl.mock.calls as unknown as [[CapturedCall]];
-    // D-V2V-1 (binding): strictMcpConfig stays true regardless of this fix.
+    // D-V2V-1's strictMcpConfig:true convention still holds regardless of the rescope.
     expect(call.options?.strictMcpConfig).toBe(true);
-    // Forcing red: today `options.mcpServers` is never set at all (undefined) — no code path
-    // threads AssetSyncService's stored, probe-accepted mcp-config entries into any agent() call.
-    expect(call.options?.mcpServers).toBeDefined();
-    expect(Object.keys(call.options?.mcpServers ?? {})).toContain('demo-mcp');
-    expect(call.options?.mcpServers?.['demo-mcp']?.url).toBe('https://example.com/demo-mcp');
+    // The redirected asset must NOT reach options.mcpServers via the old (now-retired for
+    // mcp-config) per-asset `readMcpConfigAssets()` mechanism — it was never written to disk.
+    expect(call.options?.mcpServers?.['demo-mcp']).toBeUndefined();
   }, 20000);
 });

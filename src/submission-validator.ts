@@ -16,9 +16,16 @@ const DEFAULT_ALIASES: AliasMap = {
   default: { provider: 'anthropic', model: 'claude-sonnet' },
 };
 
+// TASK-029/DES-024: narrow duck-typed port (not the full McpRegistry) so this facade doesn't
+// couple to the registry's own storage/probe internals — only the by-name existence check.
+export interface McpNameLookup {
+  get(name: string): unknown;
+}
+
 export interface SubmissionValidatorDeps {
   aliases?: AliasMap;
   catalog?: WorkflowCatalog;
+  mcpRegistry?: McpNameLookup;
 }
 
 /** Static scan for `{model: '<alias>'}` occurrences in an inline script's `agent()` calls. */
@@ -32,13 +39,29 @@ function extractModelAliases(script: string): string[] {
   return aliases;
 }
 
+// TASK-029/DES-024: static scan for `mcp: [...]` occurrences in an inline script's `agent()`
+// calls — mirrors extractModelAliases' own static-scan convention (a dynamic script's referenced
+// MCP names aren't otherwise visible before it actually runs).
+function extractMcpNames(script: string): string[] {
+  const names: string[] = [];
+  const arrays = script.matchAll(/mcp\s*:\s*\[([^\]]*)\]/g);
+  for (const arr of arrays) {
+    for (const m of arr[1]!.matchAll(/['"]([^'"]+)['"]/g)) {
+      names.push(m[1]!);
+    }
+  }
+  return names;
+}
+
 export class SubmissionValidator {
   private readonly _aliases: AliasMap;
   private readonly _catalog?: WorkflowCatalog;
+  private readonly _mcpRegistry?: McpNameLookup;
 
   constructor(deps: SubmissionValidatorDeps = {}) {
     this._aliases = deps.aliases ?? DEFAULT_ALIASES;
     this._catalog = deps.catalog;
+    this._mcpRegistry = deps.mcpRegistry;
   }
 
   async validate(spec: RunSpec): Promise<{ ok: true } | { ok: false; errors: ErrEnvelope[] }> {
@@ -77,6 +100,16 @@ export class SubmissionValidator {
       for (const alias of extractModelAliases(spec.script)) {
         if (!this._aliases[alias]) {
           errors.push({ code: 'UNKNOWN_ALIAS', message: `Unknown model alias: ${alias}`, field: 'model' });
+        }
+      }
+
+      // DES-024 delegate: a referenced-but-unprovisioned MCP name fails fast at submission
+      // (never mid-run, never a silent no-op) — same fail-fast shape as the alias check above.
+      if (this._mcpRegistry) {
+        for (const name of extractMcpNames(spec.script)) {
+          if (!this._mcpRegistry.get(name)) {
+            errors.push({ code: 'MCP_NOT_PROVISIONED', message: `Unprovisioned MCP name: ${name}`, field: 'mcp' });
+          }
         }
       }
     }

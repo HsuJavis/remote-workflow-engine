@@ -1555,3 +1555,158 @@ All v1 REQs have unchanged green VALs.
   .sdlc/features/001-remote-workflow-engine/04-design.md
 - **commit:** (uncommitted — implementer stage)
 - **iter:** v2g8
+
+## v3 parallel implementation phase (Gate 6 integration closeout)
+
+> IDs below are renumbered from the parallel implementers' own reported labels (some used a
+> `IMPL-TASK-0NN`/`IMPL-PAR-TASKNNN` style) to plain `IMPL-0NN` — `trace.py`'s own `ITEM_RE`
+> (`[A-Z][A-Z0-9]{1,4}-\d+`, single hyphen + digits only) does not match a compound id like
+> `IMPL-TASK-028`; that heading would silently fail to parse as a work item at all (falls through
+> to the generic `HEADING_RE` branch, ending the previous item with no new one started) and its
+> `greens:`/`traces:` links would be lost. The original label each entry traces back to is noted
+> in its own body for continuity.
+
+### IMPL-068 — McpRegistry: SQLite CRUD + probe-gated register + strict-by-name resolveInjected (orig. IMPL-TASK-028)
+- **status:** done
+- **traces:** TASK-028, DES-024
+- **greens:** UT-042
+- **files:** src/mcp-registry.ts
+- **commit:** (uncommitted working tree)
+- **iter:** v3
+
+### IMPL-069 — Pure SecretResolver: resolveConfig (atomic all-or-nothing) + redact + InMemorySecretSource (orig. IMPL-TASK-030)
+- **status:** done
+- **traces:** TASK-030, DES-025
+- **greens:** UT-043
+- **files:** src/secret-resolver.ts
+- **commit:** (uncommitted working tree)
+- **iter:** v3
+
+### IMPL-070 — Pure buildSessionOptions: thinking-policy + curated allowlist + strict MCP/secret-handle-name passthrough + ALIAS_PROFILE_MISSING fail-safe (orig. IMPL-TASK-032)
+- **status:** done
+- **traces:** TASK-032, DES-026
+- **greens:** UT-044
+- **files:** src/session-options-builder.ts
+- **commit:** (uncommitted working tree)
+- **iter:** v3
+
+### IMPL-071 — D-DOS: global AgentSemaphore — injectable createSemaphore(total) with gauge() + FIFO withSlot (orig. IMPL-PAR-TASK035)
+- **status:** done
+- **traces:** TASK-035, DES-029
+- **greens:** UT-046
+- **files:** src/agent-semaphore.ts
+- **commit:** (uncommitted working tree)
+- **iter:** v3
+
+### IMPL-072 — D-PROC: RealCliLifecycle — detached process-group spawn/kill (SIGTERM->SIGKILL escalation) + temp-dir cleanup, injected spawnImpl/killImpl/rmImpl seam (orig. IMPL-PAR-TASK037)
+- **status:** done
+- **traces:** TASK-037, DES-029
+- **greens:** UT-049, IT-040
+- **files:** src/cli-lifecycle.ts
+- **commit:** (uncommitted working tree)
+- **iter:** v3
+
+### IMPL-073 — mcp_provision admin tool + provision-time McpProbe wiring (server.ts dispatch + submission-time MCP-name fail-fast) (orig. IMPL-TASK-029)
+- **status:** done
+- **traces:** TASK-029, DES-024
+- **greens:** IT-038, VAL-020
+- **files:** src/server.ts, src/submission-validator.ts
+- **commit:** (uncommitted working tree)
+- **iter:** v3
+
+### IMPL-074 — Secret source loader (real process.env, RWE_SECRET_ prefix) + realpath-based path-containment predicate (orig. IMPL-TASK-031)
+- **status:** done
+- **traces:** TASK-031, DES-025, ARCH-016
+- **greens:** IT-039
+- **files:** src/secret-source.ts, src/path-containment.ts
+- **commit:** (uncommitted working tree)
+- **iter:** v3
+
+### IMPL-075 — Impure outer timeout race + kill-on-timeout + slot-free-exactly-once + FailureEnvelope (orig. TASK-033)
+- **status:** done
+- **traces:** TASK-033, DES-027
+- **greens:** UT-045
+- **files:** src/timeout-race.ts
+- **commit:** (uncommitted working tree)
+- **iter:** v3
+
+### IMPL-076 — D-BIND: isLoopback fail-closed bind guard predicate (orig. TASK-036)
+- **status:** done
+- **traces:** TASK-036, DES-029
+- **greens:** UT-048
+- **files:** src/net-guard.ts
+- **commit:** (uncommitted working tree)
+- **iter:** v3
+
+### IMPL-077 — Asset-Ingestion Policy: pure classifyAsset (hooks-drop + MCP-config redirect) (orig. IMPL-034)
+- **status:** done
+- **traces:** TASK-034, DES-028
+- **greens:** UT-047
+- **files:** src/asset-sync.ts
+- **commit:** (uncommitted working tree)
+- **iter:** v3
+
+### IMPL-078 — Gate 6 integration: wire classifyAsset into the real asset_push endpoint (REQ-019 route-back)
+- **status:** done
+- **traces:** TASK-034, DES-028, ARCH-018, REQ-019
+- **signature:** deliberately deferred to the integrator (shared-file wiring — server.ts's `asset_push`
+  case is a hot spot for parallel-implementer collisions). Classifies BEFORE anything else touches
+  disk/network: `hook` → rejected (`excluded[].reason` carries `HOOKS_UNSUPPORTED`, nothing written);
+  `mcp-config` → redirected (`redirected:true` + an `excluded[]` entry pointing at `mcp_provision`,
+  nothing written under `assetRoot/mcp-config/<name>`); `skill`/other → unchanged materialize path.
+  The old TASK-026 `checkMcpConfigTransport` probe-gate call for `mcp-config` no longer runs (that
+  kind is redirected before it would ever be reached) — the function itself is left in place
+  (`classifyTransport` import too), NOT deleted, since v2's own `VAL-009` "unsupported stdio
+  transport" case still passes through the redirect's own `excluded[]` reporting either way; removing
+  it isn't required by this change and touching it further would be an unrelated refactor.
+- **known regression (test defect, reported not silently fixed):** this wiring is a REQUIRED,
+  approved v3 behavior change (DES-028's binding hook-ban / mcp-config-redirect), and it makes TWO
+  pre-existing v2 tests genuinely fail because they used `hook`/`mcp-config` as an incidental test
+  *vehicle* for an orthogonal concern, predating the v3 rescope:
+  1. `tests/acceptance/val-009-asset-sync.test.ts` — "pushing a file with path traversal rejects the
+     whole push (partial-push atomicity)" pushes a `hook`-kind asset with a `../` path and asserts
+     `r['error']` is defined. `classifyAsset` now rejects EVERY `hook` before the path-traversal
+     check is ever reached, so the push returns `{result:{excluded:[...]}}` (no `error` key) instead
+     — `stored` still correctly excludes the file (the atomicity invariant itself still holds), only
+     the `error`-vs-`excluded` shape assumption for this specific kind is now stale.
+  2. `tests/integration/asset-mcp-config-wiring.test.ts` (IT-035) — pins the v2 `D-V2V-1` behavior
+     (an accepted `mcp-config` push is threaded into the next `agent()` call's `options.mcpServers`)
+     that DES-028's own v3 REQ-009 rescope note (04-design.md, DES-019's "Gate 6 route-back" block)
+     explicitly supersedes: `mcp-config` no longer per-run materializes via `asset_push` at all — v3
+     replaces this path with `mcp_provision`/`McpRegistry` (IT-038) + the not-yet-wired
+     `session-options-builder.ts` (TASK-032) MCP-name passthrough. `IT-035` was never updated when
+     DES-028 was written.
+  Verified BOTH are caused by this exact wiring, not pre-existing, by reverting only this hunk (kept
+  every parallel implementer's other v3 work intact) and re-running: both pass on the unwired
+  baseline, both fail only once this wiring lands. See `test_defects` in this round's report for the
+  suggested fix (update the two tests, not the code — the code matches the approved DES-028 spec).
+- **greens:** IT-041 (3/3), VAL-022 (3/3)
+- **files:** src/server.ts
+- **commit:** (uncommitted working tree)
+- **iter:** v3
+
+### IMPL-079 — Gate 6 integration: wire realpath-based isPathContained into the SDK gateway's own workspace boundary (REQ-018 route-back)
+- **status:** done
+- **traces:** DES-025, TASK-031, ARCH-016, REQ-018
+- **signature:** deliberately deferred to the integrator (shared-file wiring — `claude-agent-sdk-
+  client.ts`'s `isInsideWorkspace` is a hot spot for parallel-implementer collisions). Replaced the
+  plain `resolve()`/`startsWith()` string-prefix body with a delegate to the already-existing, already
+  pure `isPathContained` (IT-039, src/path-containment.ts) — same signature/callers unchanged
+  (`toolUsePreCheck`/`canUseTool`/the `PreToolUse` hook all keep working exactly as before for every
+  existing case; `isPathContained`'s own realpath-miss fallback preserves the plain-`../`-escape
+  denial as a strict subset). Removed the now-orphaned `resolve`/`sep` imports from `node:path`
+  (only consumer was the old `isInsideWorkspace` body — the `resolve` identifier still used
+  elsewhere in the file is the unrelated local `Promise` executor parameter, not the import).
+- **new test written (Gate 6's untested-behavior guard):** added
+  `tests/unit/claude-agent-sdk-gateway-symlink-escape.test.ts` (UT-050, registered in `05-tests.md`
+  tracing DES-025/TASK-031/ARCH-016) — plants a REAL symlink (`node:fs.symlinkSync`) inside a real
+  run workspace pointing OUTSIDE it and asserts the client's own `canUseTool` callback DENIES a Read
+  through it; a second case confirms a genuine non-symlinked in-workspace Read still ALLOWS
+  (regression floor). Confirmed genuinely red first: with `isInsideWorkspace`'s old plain-`resolve()`
+  body temporarily restored, case 1 failed `expected 'allow' to be 'deny'`; green after the wiring.
+  UT-040's own pre-existing 5/5 boundary suite re-confirmed green afterward (unweakened).
+- **greens:** UT-050 (2/2), UT-040 (5/5, regression floor)
+- **files:** src/gateway/claude-agent-sdk-client.ts, tests/unit/claude-agent-sdk-gateway-symlink-escape.test.ts,
+  .sdlc/features/001-remote-workflow-engine/05-tests.md
+- **commit:** (uncommitted working tree)
+- **iter:** v3

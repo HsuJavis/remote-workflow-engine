@@ -28,6 +28,7 @@ import { ClaudeAgentSdkGatewayClient } from './gateway/claude-agent-sdk-client.j
 import type { ClaudeAgentSdkGatewayConfig } from './gateway/claude-agent-sdk-client.js';
 import { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import type { AliasMap } from './gateway/client.js';
+import { loadSecretSourceFromEnv } from './secret-source.js';
 
 type GatewayChoice = 'sdk' | 'direct-fetch';
 
@@ -155,6 +156,15 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
       // above) — read fresh on every invoke() call so a push made after boot still reaches the
       // very next run's mcpServers/skill materialization.
       assetRoot: config.assetRoot,
+      // D-V3M-1 (REQ-017, closes ①): the MCP Provisioning Registry DB path — SAME value server.ts
+      // builds the registry at (`join(workRoot,'mcp-registry.db')`) so a name provisioned via
+      // `mcp_provision` is resolvable by the gateway at session-build time. Undefined workRoot ->
+      // no registry-backed MCP injection (matches server.ts's own workRoot-required convention).
+      mcpRegistryDbPath: config.workRoot ? join(config.workRoot, 'mcp-registry.db') : undefined,
+      // D-V3M-1 (REQ-018): the server-side secret store (RWE_SECRET_* env) that resolves
+      // `${secret:NAME}` handles inside a provisioned MCP config — never a real key on any
+      // agent-reachable path (the value lives only in the parent process env).
+      secretSource: loadSecretSourceFromEnv(),
     });
   }
 
