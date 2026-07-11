@@ -146,6 +146,27 @@ function materializeAssets(assetRoot: string, workspace: string): void {
  *  the engine's own orchestration+DOS model respectively. */
 const BUILT_IN_CORE_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'];
 
+// A: built-in tools whose Anthropic-tuned schemas non-Anthropic models mis-use through LiteLLM's
+// translation. `Read` is the verified offender (its PDF `pages` field makes gpt-4.1 fail ~2/3 with
+// "invalid pages parameter"); its reliable replacement is a Bash `cat`/`grep`/`sed`.
+const NON_ANTHROPIC_EXCLUDED_TOOLS = new Set(['Read']);
+
+/** The provider a model alias maps to (or undefined when unknown / no alias table) — the same
+ *  lookup thinkingFor uses. */
+export function providerOf(aliases: AliasMap | undefined, model: string | undefined): string | undefined {
+  return model !== undefined ? aliases?.[model]?.provider : undefined;
+}
+
+/** A (per-provider tool curation): for a KNOWN non-Anthropic provider, drop the quirky-schema
+ *  built-ins non-Anthropic models mis-use and ensure Bash is present (file ops route through the
+ *  shell, verified reliable). Anthropic or an unknown/absent provider is returned unchanged, so
+ *  Claude keeps its native tools and direct/test callers are unaffected. */
+export function curateToolsForProvider(tools: string[], provider: string | undefined): string[] {
+  if (provider === undefined || provider === 'anthropic') return tools;
+  const filtered = tools.filter((t) => !NON_ANTHROPIC_EXCLUDED_TOOLS.has(t));
+  return filtered.includes('Bash') ? filtered : [...filtered, 'Bash'];
+}
+
 /** D-V2G8-1(d): true only when `candidate` resolves to a path genuinely inside `root` (or IS
  *  `root` itself) — a plain string prefix check would wrongly allow a sibling directory that just
  *  happens to share a prefix (e.g. `/tmp/run-a` vs `/tmp/run-ab`), so this compares against
@@ -328,10 +349,16 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
 
     // D-F11: caller-supplied (agentType-derived) curation wins; else the configured default core
     // set; else a built-in minimal core set — never left unset (see BUILT_IN_CORE_TOOLS above).
-    const curatedTools =
+    const baseTools =
       (req.opts as AgentOpts & { allowedTools?: string[] }).allowedTools ??
       this._config.defaultAllowedTools ??
       BUILT_IN_CORE_TOOLS;
+    // A (per-provider tool curation): a non-Anthropic model driving the claude CLI mis-uses the
+    // CLI's Anthropic-tuned built-in tool schemas via LiteLLM's translation — verified: gpt-4.1's
+    // `Read` fails ~2/3 ("invalid pages parameter", the PDF `pages` field), while Bash-based file
+    // ops are 3/3. So for a non-Anthropic-mapped alias, drop the offending tools and ensure Bash is
+    // present so reads/edits route through the shell. Anthropic (or unknown-provider) is unchanged.
+    const curatedTools = curateToolsForProvider(baseTools, providerOf(this._config.aliases, req.opts.model));
 
     // D-V2V-1 (REQ-009 route-back, binding ORCH ruling): a known run workspace gets its own
     // materialized `.claude/skills|hooks` dir and is loaded via `settingSources:['project']`,
