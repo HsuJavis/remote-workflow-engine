@@ -21,16 +21,50 @@ export interface AgentTypeDef {
   tools?: string[];
 }
 
-/** Parses a gateway result's `content` into a schema-validatable value: JSON.parse when it's a
- *  raw string (typical LLM text response), pass through unchanged when it's already an object.
- *  Returns undefined on unparsable JSON (treated as a schema mismatch, not a crash). */
+/** Parses a gateway result's `content` into a schema-validatable value. Tolerant of how real LLMs
+ *  (esp. OpenAI models after a tool loop) actually emit JSON: a raw object string, JSON wrapped in a
+ *  ```json code fence, or a JSON object embedded in surrounding prose — all yield the object. An
+ *  already-object content passes through. Returns undefined only when no JSON value can be recovered
+ *  (treated as a schema mismatch, not a crash). */
 function parseJsonContent(content: unknown): unknown {
   if (typeof content !== 'string') return content;
+  let s = content.trim();
+  const fence = /^```[a-zA-Z]*\s*\n?([\s\S]*?)\n?```$/.exec(s);
+  if (fence) s = fence[1]!.trim();
   try {
-    return JSON.parse(content);
+    return JSON.parse(s);
   } catch {
-    return undefined;
+    /* fall through — try to extract the first balanced JSON object/array embedded in prose */
   }
+  const start = s.search(/[{[]/);
+  if (start < 0) return undefined;
+  const open = s[start]!;
+  const close = open === '{' ? '}' : ']';
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i]!;
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === open) depth++;
+    else if (c === close) {
+      depth--;
+      if (depth === 0) {
+        try {
+          return JSON.parse(s.slice(start, i + 1));
+        } catch {
+          return undefined;
+        }
+      }
+    }
+  }
+  return undefined;
 }
 
 export interface AgentReq {
@@ -189,9 +223,22 @@ export class AgentExecutor implements AgentSpawner {
     // (never a type-cast passthrough). No schema → single attempt, final text.
     const validate = req.opts.schema ? ajv.compile(req.opts.schema as object) : undefined;
     const attempts = validate ? SCHEMA_RETRY_ATTEMPTS : 1;
+    // D-V4 hardening: the engine validates the agent's FINAL TEXT as JSON (no injected
+    // StructuredOutput tool), so — especially for OpenAI models, which after a multi-turn tool loop
+    // tend to answer in prose instead of raw JSON — the schema must be stated in the prompt and a
+    // failed attempt must be corrected, not silently re-run identically (which returned null on
+    // every gate of a real sdlc-run). Append the exact schema + an output contract when a schema is
+    // set; nudge harder on retry.
+    const schemaPrompt = validate
+      ? `${effectivePrompt}\n\n=== OUTPUT FORMAT (REQUIRED) ===\nAfter any tool use, your FINAL message MUST be ONLY a single JSON value that validates against this JSON Schema — no prose, no markdown code fences, no explanation before or after:\n${JSON.stringify(req.opts.schema)}`
+      : effectivePrompt;
 
     for (let attempt = 0; attempt < attempts; attempt++) {
-      const outcome = await this._invokeOnce(req, effectivePrompt, effectiveOpts);
+      const prompt =
+        attempt === 0
+          ? schemaPrompt
+          : `${schemaPrompt}\n\n(Your previous reply did not parse as JSON matching the schema above. Reply with ONLY the JSON value — nothing else.)`;
+      const outcome = await this._invokeOnce(req, prompt, effectiveOpts);
       if (outcome === 'aborted') return { kind: 'null', aborted: true };
       const result = outcome;
 
