@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { FakeMcpProbe } from '../../src/mcp-probe.js';
 
 const HAS_PROVIDER = !!(process.env['ANTHROPIC_API_KEY'] || process.env['OLLAMA_BASE_URL']);
 
@@ -24,6 +25,10 @@ beforeAll(async () => {
   server = await createServer({
     port: 0, bind: '127.0.0.1', workRoot: tmpDir,
     aliases: { 'local-qwen': { provider: 'ollama', model: 'qwen2.5:7b' } },
+    // The live MCP probe is a documented third-party seam (DES-020) — faked here exactly as
+    // IT-038/VAL-020/the asset tests do, so the "ALWAYS asserted" provisioning-wiring check is
+    // hermetic (no real outbound HEAD to example.com, which would MCP_PROBE_FAILED with no network).
+    mcpProbe: new FakeMcpProbe(true),
   });
 });
 
@@ -66,7 +71,7 @@ describe('E2E-006: provision → reference-by-name → real tool_use round trip,
   it('mcp_provision is a real wired admin tool (ALWAYS asserted — not gated on provider availability)', async () => {
     const out = await mcpCall('mcp_provision', {
       name: 'itest-secret-mcp', kind: 'http',
-      config: { url: 'https://example.com/mcp', headers: { Authorization: 'Bearer ${secret:ITTEST_TOKEN}' } },
+      config: { type: 'http', url: 'https://example.com/mcp', headers: { Authorization: 'Bearer ${secret:ITTEST_TOKEN}' } },
     });
     expect((out as { error?: { code: string } }).error).toBeUndefined();
   });

@@ -39,6 +39,21 @@ function findByLabel(agents: AgentRecord[], label: string): AgentRecord | undefi
   return agents.find((a) => a.label === label);
 }
 
+/** Polls workflow_status until `predicate(view.agents)` holds (or times out). B's `markQueued` is
+ *  recorded by `_handleAgentRequest` over the sandbox IPC boundary, which lands a beat AFTER A first
+ *  reaches the gateway (`aInvokedPromise`) — a single-shot snapshot at that instant races that IPC
+ *  hop (~1/3 flake). While A is gated (gateA unreleased) and B is behind the concurrency:1 cap, the
+ *  A='running' + B='queued' state is STABLE, so a bounded poll observes it deterministically without
+ *  changing any product behavior. */
+async function waitForAgents(mgr: RunManager, runId: string, predicate: (agents: AgentRecord[]) => boolean, maxIters = 60): Promise<AgentRecord[]> {
+  let view = await mgr.status(runId);
+  for (let i = 0; i < maxIters && !predicate(view.agents); i++) {
+    await new Promise((r) => setTimeout(r, 25));
+    view = await mgr.status(runId);
+  }
+  return view.agents;
+}
+
 describe('in-flight AgentRecord state observable via workflow_status (IT-024, D-F12)', () => {
   it('shows the in-flight agent as "running" and a same-slot-blocked agent as "queued" before either resolves', async () => {
     let releaseA!: () => void;
@@ -78,24 +93,27 @@ describe('in-flight AgentRecord state observable via workflow_status (IT-024, D-
     // Deterministic: wait for A to have actually reached the gateway (slot acquired, in flight)
     // before asserting — avoids a race against the real child process's own startup time.
     await aInvokedPromise;
-    let view = await mgr.status(runId);
-    expect(view.status).toBe('running'); // sanity: the run itself is genuinely mid-flight
+    expect((await mgr.status(runId)).status).toBe('running'); // sanity: the run itself is genuinely mid-flight
 
-    // Forcing red: today `capture()` only records once a call resolves, so `view.agents` has no
-    // entry for A yet at all (real round-5 repro: agents:[] while running).
-    expect(findByLabel(view.agents, 'A')?.state).toBe('running');
-    // Forcing red: B is genuinely queued behind the concurrency:1 cap (never reached the gateway
-    // yet, bInvokedPromise not resolved) — but no AgentRecord exists for it at all today, since an
-    // agentId is only ever allocated AFTER RunGuard.acquireSlot() resolves.
-    expect(findByLabel(view.agents, 'B')?.state).toBe('queued');
+    // A is in flight (slot acquired, markRunning done before the gateway call) and B is genuinely
+    // queued behind the concurrency:1 cap — a stable state while A stays gated. Poll for it (B's
+    // markQueued lands over IPC just after aInvokedPromise) rather than snapshot-and-race.
+    let agents = await waitForAgents(mgr, runId, (a) =>
+      findByLabel(a, 'A')?.state === 'running' && findByLabel(a, 'B')?.state === 'queued',
+    );
+    expect(findByLabel(agents, 'A')?.state).toBe('running');
+    expect(findByLabel(agents, 'B')?.state).toBe('queued');
 
-    // Release A -> its slot frees -> B should now be dispatched to the gateway.
+    // Release A -> its slot frees -> B should now be dispatched to the gateway. Poll for the stable
+    // post-release state (A terminal-captured 'done', B now in flight 'running' with gateB unreleased)
+    // — A's capture(done) and B's markRunning settle a beat after bInvokedPromise over the same IPC.
     releaseA();
     await bInvokedPromise;
-    view = await mgr.status(runId);
-    expect(findByLabel(view.agents, 'A')?.state).toBe('done'); // A's terminal capture already works today
-    // Forcing red: B is now genuinely in flight but still unresolved (gateB not released yet).
-    expect(findByLabel(view.agents, 'B')?.state).toBe('running');
+    agents = await waitForAgents(mgr, runId, (a) =>
+      findByLabel(a, 'A')?.state === 'done' && findByLabel(a, 'B')?.state === 'running',
+    );
+    expect(findByLabel(agents, 'A')?.state).toBe('done');
+    expect(findByLabel(agents, 'B')?.state).toBe('running');
 
     releaseB();
     const finalView = await pollUntilSettled(mgr, runId);
