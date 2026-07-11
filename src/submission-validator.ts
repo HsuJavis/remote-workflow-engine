@@ -3,6 +3,7 @@
 // the model-alias resolve check (ARCH-005), and the agentType/workflow-name existence check
 // (ARCH-007) into ONE error-reporting shape, so a bad submission fails fast, not mid-run.
 import * as vm from 'node:vm';
+import { checkMeta } from './sandbox/guards.js';
 import type { RunSpec, ErrEnvelope } from './types.js';
 import type { AliasMap } from './gateway/client.js';
 import type { WorkflowCatalog } from './workflow-catalog.js';
@@ -87,10 +88,13 @@ export class SubmissionValidator {
 
     if (spec.script) {
       // ARCH-003 delegate: TS-not-JS parse rejection (same wrapping the sandbox evaluates).
-      // Strip the leading `export const meta = {...};` first — a bare `export` is illegal inside the
+      // Strip the leading `export const meta = {...}` first — a bare `export` is illegal inside the
       // async-function wrapper, exactly as the sandbox's evaluateScript strips it before compiling.
+      // Uses the string-aware checkMeta scanner (NOT a `/[^;]*;/` regex, which truncated at the first
+      // semicolon inside a meta string value and left a dangling fragment → spurious PARSE_ERROR).
       try {
-        const body = spec.script.replace(/export\s+const\s+meta\s*=\s*[^;]*;/, '');
+        const meta = checkMeta(spec.script);
+        const body = meta.span !== undefined ? spec.script.replace(meta.span, '') : spec.script;
         new vm.Script(`(async () => {\n${body}\n})`, { filename: 'workflow-script.js' });
       } catch (err) {
         errors.push({ code: 'PARSE_ERROR', message: err instanceof Error ? err.message : String(err), field: 'script' });

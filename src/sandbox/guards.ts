@@ -4,6 +4,62 @@
 import * as vm from 'node:vm';
 import type { Budget } from '../types.js';
 
+// ── `export const meta = {…}` locator (compat-spec §1) ──────────────────────────────────────────
+// Defined HERE (not a separate module) on purpose: guards.ts is loaded by the sandbox CHILD
+// (child-entry.ts, run under `node --experimental-transform-types`, which does NOT resolve `.js`→
+// `.ts` for value imports the way the tsx main process does), yet guards.ts IS type-checked by tsc
+// (child-entry.ts is the only file tsconfig excludes). A cross-file value import satisfies at most
+// one of those two — inlining satisfies both. Exported for the submission validator + tests (main
+// process) to reuse the SAME scanner, so submission-time and run-time meta handling never diverge.
+
+export interface MetaCheck {
+  /** true when an `export const meta =` declaration is present at all. */
+  found: boolean;
+  /** the full `export const meta = {…}[;]` text to strip from the executed body (when found+parsed). */
+  span?: string;
+  /** the `{…}` object literal text (when found+parsed). */
+  objectText?: string;
+  /** true only when meta is a pure object literal (no template literal / spread outside strings). */
+  pureLiteral?: boolean;
+}
+
+const META_DECL_RE = /export\s+const\s+meta\s*=\s*/;
+
+/** Locates `export const meta = {…}` with a STRING-AWARE brace scan (the object's string values
+ *  routinely contain `;`, `{`, `}`), and flags a template literal / spread only when it appears
+ *  OUTSIDE a string. Replaces a prior `/[^;]*;/` regex that truncated the object at the first
+ *  in-string semicolon and wrongly rejected legitimate workflows (e.g. iso-agile-sdlc's sdlc-run.js
+ *  whose description is full of semicolons). */
+export function checkMeta(script: string): MetaCheck {
+  const m = META_DECL_RE.exec(script);
+  if (!m) return { found: false };
+  const objStart = m.index + m[0].length;
+  if (script[objStart] !== '{') return { found: true, pureLiteral: false }; // not an object literal
+  let depth = 0;
+  let str: string | null = null;
+  let impure = false;
+  let i = objStart;
+  for (; i < script.length; i++) {
+    const c = script[i];
+    if (str !== null) {
+      if (c === '\\') { i++; continue; }
+      if (c === str) str = null;
+      continue;
+    }
+    if (c === "'" || c === '"') { str = c; continue; }
+    if (c === '`') { impure = true; str = '`'; continue; }
+    if (c === '{') { depth++; continue; }
+    if (c === '}') { depth--; if (depth === 0) { i++; break; } continue; }
+    if (c === '.' && script[i + 1] === '.' && script[i + 2] === '.') impure = true;
+  }
+  if (depth !== 0) return { found: true, pureLiteral: false };
+  const objectText = script.slice(objStart, i);
+  let end = i;
+  while (end < script.length && /\s/.test(script[end]!)) end++;
+  if (script[end] === ';') end++;
+  return { found: true, span: script.slice(m.index, end), objectText, pureLiteral: !impure };
+}
+
 export interface ScriptResult {
   kind: 'done' | 'error';
   value?: unknown;
@@ -127,21 +183,19 @@ function makeWorkflow(api: SandboxApi) {
 // `export const meta = {...}` (compat-spec §1) must be a pure object literal — variables, calls,
 // spreads, and template interpolation are rejected. Matched separately (before wrapping the script
 // in an async function, since a bare `export` is not legal inside a function body) and stripped out
-// of the executed body once validated.
-const META_RE = /export\s+const\s+meta\s*=\s*([^;]*);/;
-
+// of the executed body once validated. Uses the string-aware `checkMeta` scanner above — a prior
+// `/[^;]*;/` regex truncated the object at the first semicolon inside a string VALUE and wrongly
+// rejected legitimate workflows whose description contained a `;` (e.g. sdlc-run.js).
 function checkMetaLiteral(script: string): { cleaned: string; error?: { code: string; message: string } } {
-  const match = META_RE.exec(script);
-  if (!match) return { cleaned: script };
-  const raw = match[1].trim();
-  const isPureLiteral = raw.startsWith('{') && raw.endsWith('}') && !raw.includes('`') && !raw.includes('...');
-  if (!isPureLiteral) {
+  const meta = checkMeta(script);
+  if (!meta.found) return { cleaned: script };
+  if (!meta.pureLiteral || meta.span === undefined) {
     return {
       cleaned: script,
       error: { code: 'INVALID_META', message: 'workflow meta must be a pure object literal — variables, calls, spreads, and template interpolation are rejected' },
     };
   }
-  return { cleaned: script.replace(match[0], '') };
+  return { cleaned: script.replace(meta.span, '') };
 }
 
 /**

@@ -66,6 +66,15 @@ export class SandboxHost {
       });
       this._active.set(runId, { child, settle });
 
+      // Capture the child's stderr so an uncaught crash (an exception/rejection that exits the
+      // process before it can send 'done'/'error') is not lost — its tail is surfaced in the
+      // ABORTED message below instead of an opaque "terminated before completion". (Previously the
+      // pipe had no reader, so every sandbox-child crash reason was discarded.)
+      let stderrTail = '';
+      child.stderr?.on('data', (d: Buffer) => {
+        stderrTail = (stderrTail + d.toString()).slice(-2000);
+      });
+
       child.on('message', (msg: any) => {
         switch (msg?.t) {
           case 'ready':
@@ -114,9 +123,19 @@ export class SandboxHost {
         }
       });
 
-      child.on('exit', () => {
-        // A killed/crashed child that never sent done/error (e.g. aborted mid-script).
-        settle({ error: { code: 'ABORTED', message: 'sandbox child process terminated before completion' } });
+      child.on('exit', (code, signal) => {
+        // A killed/crashed child that never sent done/error (e.g. aborted mid-script). Include the
+        // exit code/signal and the tail of the child's own stderr so a real crash (uncaught error,
+        // OOM, determinism-guard throw) is diagnosable instead of opaque.
+        const detail = stderrTail.trim();
+        settle({
+          error: {
+            code: 'ABORTED',
+            message:
+              `sandbox child process terminated before completion (exit ${code ?? 'null'}, signal ${signal ?? 'null'})` +
+              (detail ? `\n--- child stderr (tail) ---\n${detail}` : ''),
+          },
+        });
       });
 
       child.on('error', (err) => {

@@ -1,0 +1,9 @@
+project: snake-game
+feature: 002-snake-game
+mode: new
+safety_class: QM
+iteration: v1
+current_stage: architecture
+layout:
+  src: src
+  tests: tests
