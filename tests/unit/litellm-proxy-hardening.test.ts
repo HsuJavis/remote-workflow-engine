@@ -60,6 +60,27 @@ describe('LiteLLMProxyManager hardening (TASK-027)', () => {
     expect(fakeSpawn).toHaveBeenCalled();
   });
 
+  it('D-V3M-4: with NO configured port, binds a dynamic ephemeral port (never the old hard-coded 4000) and spawns litellm with it', async () => {
+    const { fakeSpawn } = makeFakeSpawn(321);
+    const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
+    const proxy = new LiteLLMProxyManager(ALIASES, {
+      // no `port` — the dynamic-port path
+      spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
+      fetchImpl: fakeHealthFetch as unknown as typeof fetch,
+    });
+
+    const { baseUrl } = await proxy.start();
+    const m = /^http:\/\/127\.0\.0\.1:(\d+)$/.exec(baseUrl);
+    expect(m).not.toBeNull();
+    const port = Number(m![1]);
+    expect(port).toBeGreaterThan(0);
+    expect(port).not.toBe(4000); // no more squatting the fixed port that collided across instances
+    // the SAME resolved port is what litellm was actually spawned with
+    const spawnArgs = (fakeSpawn.mock.calls[0] as unknown as unknown[])[1] as string[];
+    expect(spawnArgs).toContain('--port');
+    expect(spawnArgs[spawnArgs.indexOf('--port') + 1]).toBe(String(port));
+  });
+
   it('stop() cascade-kills the whole process group via a negative-pid signal, not just the direct handle', async () => {
     const { fakeSpawn, fakeProc } = makeFakeSpawn(789);
     const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);

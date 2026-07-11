@@ -50,7 +50,7 @@ export class LiteLLMProxyManager {
   private _proc: ChildProcess | undefined;
   private _baseUrl: string | undefined;
   private _startPromise: Promise<{ baseUrl: string }> | undefined;
-  private readonly _port: number;
+  private _port: number | undefined;
   private readonly _startupTimeoutMs: number;
   private readonly _spawnImpl: typeof spawn;
   private readonly _fetchImpl: typeof fetch;
@@ -59,7 +59,9 @@ export class LiteLLMProxyManager {
     private readonly _aliases: AliasMap,
     opts: LiteLLMProxyOptions = {},
   ) {
-    this._port = opts.port ?? 4000;
+    // D-V3M-4: undefined (no litellmPort configured) -> resolved to a free ephemeral port at
+    // start() time; no more hard-coded 4000 squat. An explicit port still pins it.
+    this._port = opts.port;
     this._startupTimeoutMs = opts.startupTimeoutMs ?? 20000;
     this._spawnImpl = opts.spawnImpl ?? spawn;
     this._fetchImpl = opts.fetchImpl ?? fetch;
@@ -83,7 +85,16 @@ export class LiteLLMProxyManager {
     // had a chance to fail, so `start()` would falsely resolve as if it had booted its own proxy.
     // Actually trying to bind the port ourselves first turns that race into a fast, actionable
     // failure instead.
-    await this._assertPortFree();
+    // D-V3M-4: no configured port -> bind an ephemeral free port dynamically instead of squatting a
+    // hard-coded 4000 (which collided with any other litellm on the host — a second server, or the
+    // test suite spawning its own proxy while a real sdk-mode deployment was already on 4000). A
+    // configured port still gets the stale-owner guard.
+    if (this._port === undefined) {
+      this._port = await this._findFreePort();
+    } else {
+      await this._assertPortFree();
+    }
+    const port = this._port;
 
     const dir = await mkdtemp(path.join(tmpdir(), 'rwe-litellm-'));
     const configPath = path.join(dir, 'config.yaml');
@@ -100,13 +111,13 @@ export class LiteLLMProxyManager {
     // custody statement; spelling it out here also gives this class a single, greppable place to
     // narrow later if a future round needs to (see buildSubprocessEnv in claude-agent-sdk-client.ts
     // for the CONTRASTING allowlist the agent-facing CLI subprocess gets — never these real keys).
-    const proc = this._spawnImpl('litellm', ['--config', configPath, '--port', String(this._port)], {
+    const proc = this._spawnImpl('litellm', ['--config', configPath, '--port', String(port)], {
       stdio: 'ignore',
       detached: true,
       env: { ...process.env },
     });
     this._proc = proc;
-    const baseUrl = `http://127.0.0.1:${this._port}`;
+    const baseUrl = `http://127.0.0.1:${port}`;
 
     const deadline = Date.now() + this._startupTimeoutMs;
     let lastErr: unknown;
@@ -136,6 +147,22 @@ export class LiteLLMProxyManager {
    * foreign process already answering on this port"). Closed immediately either way; the real
    * spawn below does the actual, lasting bind.
    */
+  /** D-V3M-4: binds an OS-assigned ephemeral port (:0), reads it back, releases it, and returns it —
+   *  the dynamic-port path when no litellmPort is configured. (Small bind→spawn TOCTOU window, same
+   *  as the configured-port `_assertPortFree` guard already carries; an ephemeral port is far less
+   *  likely to be re-grabbed than a fixed 4000.) */
+  private _findFreePort(): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const probe = net.createServer();
+      probe.once('error', reject);
+      probe.listen(0, '127.0.0.1', () => {
+        const addr = probe.address();
+        const port = typeof addr === 'object' && addr !== null ? addr.port : undefined;
+        probe.close(() => (port !== undefined ? resolve(port) : reject(new Error('could not obtain a free ephemeral port'))));
+      });
+    });
+  }
+
   private async _assertPortFree(): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       const probe = net.createServer();

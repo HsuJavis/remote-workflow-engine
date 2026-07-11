@@ -132,10 +132,19 @@ function materializeAssets(assetRoot: string, workspace: string): void {
 
 /** D-F11 built-in fallback — never leaves `options.allowedTools` unset even with no
  *  ClaudeAgentSdkGatewayConfig.defaultAllowedTools and no per-call req.opts.allowedTools.
- *  D-V2G8-1(b): 'Bash' is EXCLUDED from this default (Gate 8 v2 review, adversarial.md finding V3
- *  HIGH) — a fully-privileged shell must be an explicit agentType opt-in (via its own curated
- *  req.opts.allowedTools, still fully supported), never a silent default for every agent() call. */
-const BUILT_IN_CORE_TOOLS = ['Read', 'Write'];
+ *  D-V3M-3 (user directive 2026-07-11, dynamic-workflow-compat §5 tool parity): the default now
+ *  carries the confined file+search+shell set — Read, Write, Edit, Glob, Grep, Bash — so an
+ *  unspecified agent() has the working surface the real dynamic-workflow agent has, not just
+ *  Read/Write (which the user found "不太夠"). This DELIBERATELY supersedes D-V2G8-1(b)'s earlier
+ *  Bash-from-default exclusion: that exclusion existed because at the time there was NO fs jail (a
+ *  Bash default would have driven a shell anywhere in the parent trust zone). The jail now exists —
+ *  D-V2G8-1(d)'s realpath workspace-boundary is enforced for EVERY call via BOTH canUseTool and the
+ *  PreToolUse hook (a Bash command's own `blockedPath`, a Read/Write/Edit `file_path`), and cwd is
+ *  re-scoped to the run workspace — so Bash here is confined to that workspace, exactly the "bash
+ *  跑在固定工作目錄下" the user asked for. Web egress (WebFetch/WebSearch) and sub-agent spawning
+ *  (Task/Agent) stay OUT of the default (opt-in per agentType) — they break workspace confinement /
+ *  the engine's own orchestration+DOS model respectively. */
+const BUILT_IN_CORE_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'];
 
 /** D-V2G8-1(d): true only when `candidate` resolves to a path genuinely inside `root` (or IS
  *  `root` itself) — a plain string prefix check would wrongly allow a sibling directory that just
