@@ -1712,7 +1712,7 @@ All v1 REQs have unchanged green VALs.
 - **iter:** v3
 
 ### IMPL-080 — workRoot isolation guard (REQ-021, D-V3M-5)
-- **traces:** REQ-021, UT-051
+- **traces:** REQ-021, UT-051, TASK-038
 - **status:** done
 - **iter:** v3
 - files: `src/workroot-guard.ts` (pure `assertWorkRootIsolated` + `WorkRootInsideProjectError`), `src/main.ts` (`composeConfig` calls it fail-closed on the resolved workRoot), `rwe.config.json`/`rwe.config.example.json` (workRoot → outside-repo path), `DEPLOY.md` (⭐v3 block item 4).

@@ -49,3 +49,57 @@ describe('assertWorkRootIsolated (REQ-021)', () => {
     expect(() => assertWorkRootIsolated('/', exists)).not.toThrow();
   });
 });
+
+// UT-053 (DES-031): WorkRootInsideProjectError typed fields + assertWorkRootIsolated realpathImpl.
+// RED reasons: (a) .ancestor/.marker/.remedy fields do not exist on the error class yet;
+// (b) the 3rd realpathImpl param is not yet accepted — current impl uses resolve(), so a
+// symlinked workRoot is not canonicalised and the symlink-bypass case does not throw.
+const idRealpath = (p: string) => p; // identity realpathImpl — no symlink resolution
+
+describe('WorkRootInsideProjectError — typed fields (DES-031)', () => {
+  it('carries .ancestor pointing to the offending directory', () => {
+    const repo = '/home/user/Documents/repo';
+    const exists = fakeExists([join(repo, '.git')]);
+    let err: unknown;
+    try { assertWorkRootIsolated(join(repo, 'data'), exists, idRealpath); } catch (e) { err = e; }
+    expect(err).toBeInstanceOf(WorkRootInsideProjectError);
+    expect((err as WorkRootInsideProjectError).ancestor).toBe(repo);
+  });
+
+  it('carries .marker = ".git" when the tripping marker is .git', () => {
+    const repo = '/srv/proj-git';
+    const exists = fakeExists([join(repo, '.git')]);
+    let err: unknown;
+    try { assertWorkRootIsolated(join(repo, 'data'), exists, idRealpath); } catch (e) { err = e; }
+    expect((err as WorkRootInsideProjectError).marker).toBe('.git');
+  });
+
+  it('carries .marker = "CLAUDE.md" when the tripping marker is CLAUDE.md (not .git)', () => {
+    const proj = '/srv/proj-claude';
+    const exists = fakeExists([join(proj, 'CLAUDE.md')]);
+    let err: unknown;
+    try { assertWorkRootIsolated(join(proj, 'data'), exists, idRealpath); } catch (e) { err = e; }
+    expect((err as WorkRootInsideProjectError).marker).toBe('CLAUDE.md');
+  });
+
+  it('carries a non-empty string .remedy', () => {
+    const proj = '/srv/proj-remedy';
+    const exists = fakeExists([join(proj, '.git')]);
+    let err: unknown;
+    try { assertWorkRootIsolated(join(proj, 'data'), exists, idRealpath); } catch (e) { err = e; }
+    const e = err as WorkRootInsideProjectError;
+    expect(typeof e.remedy).toBe('string');
+    expect(e.remedy.length).toBeGreaterThan(0);
+  });
+
+  it('realpathImpl (3rd param) catches a symlinked workRoot into a project (Adv#5/R6)', () => {
+    // /tmp/symlink-work is a symlink → /home/user/repo/data; the repo has .git
+    const repo = '/home/user/repo-sym';
+    const exists = fakeExists([join(repo, '.git')]);
+    // real is: /tmp/symlink-work → /home/user/repo-sym/data
+    const realpath = (p: string) => p === '/tmp/symlink-work' ? join(repo, 'data') : p;
+    // Current impl: uses resolve('/tmp/symlink-work') = '/tmp/symlink-work' (no symlink resolution)
+    // → walks /tmp then / → no marker found → does NOT throw → assertion fails → RED
+    expect(() => assertWorkRootIsolated('/tmp/symlink-work', exists, realpath)).toThrow(WorkRootInsideProjectError);
+  });
+});

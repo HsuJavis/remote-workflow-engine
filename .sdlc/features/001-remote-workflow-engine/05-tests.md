@@ -3297,7 +3297,98 @@ this real path still needs to be re-plumbed through (D-DOS gauge/kill-on-timeout
 Red reason: `Failed to load url ../../src/timeout-race.js` — module does not exist yet.
 
 ### UT-051 — assertWorkRootIsolated fails fast on a project-nested workRoot
-- **traces:** REQ-021
-- **status:** done
+- **traces:** REQ-021, DES-031
+- **status:** green
+- **tier:** unit
+- **real:** false
+- **result:** pass
 - **iter:** v3
-- file: `tests/unit/workroot-guard.test.ts` — ancestor `.git`/`CLAUDE.md` → `WORKROOT_INSIDE_PROJECT`; clean data dir → no throw; walks to `/` without looping.
+
+File: `tests/unit/workroot-guard.test.ts`.
+Cases: ancestor `.git` → throws `WorkRootInsideProjectError` with `code: 'WORKROOT_INSIDE_PROJECT'`
+naming the offending ancestor in the message; ancestor `CLAUDE.md` → throws; clean data dir → no
+throw; walks to `/` without looping.
+Note: tests the 2-param signature `assertWorkRootIsolated(workRoot, existsImpl)` of the existing
+implementation. UT-053 covers the extended DES-031 contract (3rd param + typed error fields).
+
+### UT-052 — findProjectMarkerAncestor pure predicate — full truth table (DES-031)
+- **traces:** DES-031, TASK-038
+- **status:** red
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v3
+
+File: `tests/unit/workroot-guard-predicate.test.ts`.
+Pure (no real fs): all four params injected (`path`, `stopAt`, `existsImpl`, `realpathImpl`).
+Cases: marker at path itself → returns that path; marker at mid-ancestor → returns ancestor; `.git`
+FILE (worktree) and `.git` DIR both trip; `CLAUDE.md` also trips; clean-to-`/` → null, no
+infinite loop; `~/.claude` alone (no `.git`/`CLAUDE.md`) → null (no false positive); symlinked
+workRoot resolved by `realpathImpl` before walking → catches symlink bypass (Adv#5); session-init
+variant (`stopAt=workRoot`): marker inside workspace → returns it; `stopAt` excludes `workRoot`
+itself (no check at workRoot level); clean workspace → null.
+Red reason: `findProjectMarkerAncestor` is not yet exported from `workroot-guard.ts` →
+`TypeError: findProjectMarkerAncestor is not a function` on every call. Confirmed via a direct run
+(11/11 fail, no syntax errors).
+
+### UT-053 — WorkRootInsideProjectError typed fields + realpathImpl 3rd param (DES-031)
+- **traces:** DES-031, TASK-038
+- **status:** red
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v3
+
+File: `tests/unit/workroot-guard.test.ts` (new describe block appended).
+Pure (no real fs): injected `existsImpl` + `realpathImpl`.
+Cases: `.ancestor` field on thrown error equals the offending dir (currently undefined → fails);
+`.marker` field equals `'.git'` or `'CLAUDE.md'` per whichever marker tripped (currently
+undefined); `.remedy` field is a non-empty string (currently undefined); calling
+`assertWorkRootIsolated(symlinkedPath, exists, realpathImpl)` with a symlink that `realpathImpl`
+resolves into a project detects the marker (currently the 3rd param is ignored and
+`resolve()` is used, so no throw → fails).
+Red reason: `WorkRootInsideProjectError` class lacks `.ancestor`/`.marker`/`.remedy` typed fields;
+`assertWorkRootIsolated` ignores a 3rd `realpathImpl` argument. Confirmed via a direct run
+(5/5 new tests fail; 4 existing UT-051 tests still pass).
+
+### UT-054 — buildSessionOptions settingSources invariant + session-init re-walk (DES-026 R9, DES-031)
+- **traces:** DES-026, DES-031, TASK-038
+- **status:** red
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v3
+
+File: `tests/unit/session-options-builder.test.ts` (two new describe blocks appended).
+Pure (no fs/net): `existsImpl`/`realpathImpl` injected for the re-walk case.
+Cases: `out.sessionInit.settingSources` field exists and never contains `'user'` or `'local'`
+(R9 regression guard — currently field is absent → `expect(undefined).toBeDefined()` → fails);
+`out.sessionInit.resolvedProjectRoot` field exists (audit trail — currently absent → fails);
+`buildSessionOptions` called with a cwd that has a `.git` marker (and a `workRoot` stopAt) returns
+`{ ok: false, error: /PROJECT/ }` (session-init re-walk — currently no re-walk logic → returns
+`ok:true` → fails).
+Red reason: `SessionInitRecord` lacks `settingSources`/`resolvedProjectRoot`; `buildSessionOptions`
+has no session-init `findProjectMarkerAncestor` call. Confirmed via a direct run (3/3 new tests
+fail; 8 existing UT-044 tests still pass).
+
+### VAL-024 — REQ-021: workRoot project-isolation guard — boot fail-fast + session-init re-walk
+- **traces:** REQ-021, DES-031, ARCH-019
+- **status:** red
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v3
+
+File: `tests/acceptance/val-024-workroot-isolation.test.ts`.
+Mock policy (acceptance — no SUT boundary mocked): real fs operations (real `writeFileSync`/
+`mkdirSync` plant actual markers on disk); real `assertWorkRootIsolated` call with no injected
+seams (uses live `existsSync` and `realpathSync` defaults); real `buildSessionOptions` call.
+Cases: a real `.git` file planted in a temp dir causes `assertWorkRootIsolated(workRoot)` to throw
+`WorkRootInsideProjectError` with `.ancestor`, `.marker = '.git'`, and `.remedy` typed fields
+(clauses b — RED: typed fields absent); a real `CLAUDE.md` triggers `.marker = 'CLAUDE.md'`
+(RED: same); a bare temp dir with no markers does not throw (clause c — currently PASSES);
+`buildSessionOptions` with a cwd containing a real `.git` file returns `{ ok: false, error: /PROJECT/ }`
+(session-init re-walk — RED: not yet implemented).
+Red reason: `WorkRootInsideProjectError` typed fields absent + `buildSessionOptions` re-walk absent.
+Confirmed via a direct run (3/4 tests fail; 1 clean-workRoot test passes — not a syntax/import
+error).

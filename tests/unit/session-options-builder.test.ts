@@ -81,3 +81,48 @@ describe('buildSessionOptions — purity (DES-026 testability: frozen input -> d
     dateNowSpy.mockRestore();
   });
 });
+
+// UT-054 (DES-026 R9, DES-031): settingSources invariant + session-init re-walk refusal.
+// RED reasons:
+//   (a) SessionInitRecord.settingSources does not exist yet → expect(undefined).toBeDefined() fails.
+//   (b) SessionInitRecord.resolvedProjectRoot does not exist yet.
+//   (c) buildSessionOptions has no session-init re-walk → returns ok:true → expect(false) fails.
+describe('buildSessionOptions — settingSources invariant (DES-026 R9)', () => {
+  it('settingSources field exists in SessionInitRecord and never contains "user" or "local"', () => {
+    const out = buildSessionOptions('local-qwen', NON_ANTHROPIC_PROFILE, CONFIG, {}, [], ALLOWLIST);
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.sessionInit.settingSources).toBeDefined();
+      expect(out.sessionInit.settingSources).not.toContain('user');
+      expect(out.sessionInit.settingSources).not.toContain('local');
+    }
+  });
+
+  it('resolvedProjectRoot is present in the SessionInitRecord (audit trail, DES-031)', () => {
+    const out = buildSessionOptions('local-qwen', NON_ANTHROPIC_PROFILE, CONFIG, {}, [], ALLOWLIST);
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect('resolvedProjectRoot' in (out.sessionInit as object)).toBe(true);
+    }
+  });
+});
+
+describe('buildSessionOptions — session-init project-marker re-walk (DES-031)', () => {
+  it('refuses the build when the run-workspace cwd carries a .git marker (session-init re-walk)', () => {
+    const workRoot = '/work';
+    const cwd = `${workRoot}/runs/run-1`;
+    const existsImpl = (p: string) => p === `${cwd}/.git`;
+    const realpathImpl = (p: string) => p;
+    // After DES-031: buildSessionOptions extended to call findProjectMarkerAncestor(cwd, workRoot)
+    // and refuse if a marker is found. Until then, extra args are ignored → out.ok stays true.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = (buildSessionOptions as any)(
+      'local-qwen', NON_ANTHROPIC_PROFILE,
+      { modelId: 'qwen2.5:7b', cwd, workRoot },
+      {}, [], ALLOWLIST,
+      existsImpl, realpathImpl,
+    );
+    expect(out.ok).toBe(false);
+    expect((out as { ok: false; error: string }).error).toMatch(/PROJECT/i);
+  });
+});
