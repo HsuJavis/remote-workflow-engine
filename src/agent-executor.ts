@@ -151,7 +151,12 @@ export class AgentTranscriptSink {
         agentId: req.agentId, label: req.label, phase: req.phase,
         state: 'failed', provider: result.provider, model: '', tokens: { input: 0, output: 0 },
       });
-      await this._emit(runId, req.agentId, { ts, kind: 'usage', data: { reason: result.reason, provider: result.provider } });
+      // Forward any partial transcript + the CLI error detail captured before a terminal failure,
+      // so a 0-token `terminal` is diagnosable (the error subtype/text) instead of opaque.
+      for (const ev of result.events ?? []) {
+        await this._emit(runId, req.agentId, ev);
+      }
+      await this._emit(runId, req.agentId, { ts, kind: 'usage', data: { reason: result.reason, provider: result.provider, detail: result.detail } });
     }
   }
 

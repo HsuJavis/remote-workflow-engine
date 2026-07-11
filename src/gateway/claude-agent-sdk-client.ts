@@ -18,6 +18,7 @@ import type { AliasMap, GatewayClient, GatewayResult } from './client.js';
 import { isPathContained } from '../path-containment.js';
 import { McpRegistry } from '../mcp-registry.js';
 import { resolveConfig, type SecretSource } from '../secret-resolver.js';
+import { proxyModelName } from './litellm-proxy.js';
 
 type QueryImpl = typeof sdkQuery;
 
@@ -382,7 +383,10 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
 
     const options: Options = {
       cwd: req.workspace ?? this._config.cwd,
-      model: req.opts.model,
+      // Route via the proxy-facing alias name (see proxyModelName): the CLI would otherwise expand a
+      // bare shorthand like `haiku` to a dated Anthropic id the LiteLLM proxy has no entry for (0-token
+      // `terminal` with "Invalid model name … claude-haiku-…"). An absent model resolves to `default`.
+      model: proxyModelName(req.opts.model ?? 'default'),
       thinking: thinkingFor(this._config.aliases, req.opts.model),
       // D-V2G8-1(a): 'bypassPermissions' skipped EVERY tool-call decision outright — paired with a
       // curated-but-still-Bash-capable-by-opt-in tool set and no path check, this let any agent()
@@ -463,7 +467,10 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
           continue;
         }
         if (msg.subtype !== 'success' || msg.is_error) {
-          return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal' };
+          const m = msg as unknown as { subtype?: string; result?: string; error?: string };
+          const detail = [m.subtype, m.result ?? m.error].filter(Boolean).join(': ') || 'error';
+          events.push({ ts: new Date().toISOString(), kind: 'message', data: { type: 'error', detail } }); // det:allow — transcript timestamp
+          return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', detail, events };
         }
         return {
           ok: true,

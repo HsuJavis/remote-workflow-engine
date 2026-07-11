@@ -19,7 +19,15 @@ export type GatewayResult =
        *  event via AgentTranscriptSink.capture()). */
       events?: TranscriptEvent[];
     }
-  | { ok: false; provider: string; reason: 'timeout' | 'unreachable' | 'terminal' };
+  | {
+      ok: false; provider: string; reason: 'timeout' | 'unreachable' | 'terminal';
+      /** Observability: when a real SDK session ends in a non-success `result` message, the CLI's
+       *  error subtype (e.g. `error_during_execution`, `error_max_turns`) and any error text — so a
+       *  0-token `terminal` failure is diagnosable instead of opaque. Also carries the partial
+       *  transcript captured before the failure. */
+      detail?: string;
+      events?: TranscriptEvent[];
+    };
 
 export interface GatewayClient {
   /** `signal` (D-F9a): an optional external AbortSignal — RunManager's own per-run

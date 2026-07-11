@@ -8,6 +8,7 @@ import { cpus, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { materializeSeed } from './workspace-seed.js';
+import { initGitBaseline } from './workspace-git.js';
 import { IllegalTransitionError } from './errors.js';
 import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord } from './types.js';
 import type { RunStore } from './run-store.js';
@@ -149,6 +150,10 @@ export class RunManager {
     if (spec.seed && spec.seed.length > 0) {
       mkdirSync(workspace, { recursive: true });
       materializeSeed(workspace, spec.seed);
+      // REQ-027 (v2.5): the client cannot seed `.git/` (materializeSeed bars it), so the engine gives
+      // the seeded tree a brownfield git baseline here — the SDLC precheck requires a work tree and
+      // change-control needs a commit to diff against. Best-effort: a null baseSha never fails the run.
+      initGitBaseline(workspace);
     }
     const guard = new RunGuard({ concurrency: this._concurrency, budget: spec.budget ?? null });
     const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, agentTypes: this._agentTypes });

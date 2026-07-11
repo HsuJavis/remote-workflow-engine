@@ -140,9 +140,10 @@ describe('ClaudeAgentSdkGatewayClient — D-F5 route-back defects, real CLI + lo
 
       const messagesReq = textStub.requests.find((r) => typeof r.body['model'] === 'string');
       expect(messagesReq).toBeDefined();
-      // Forcing red: today's src never sets options.model, so the stub receives the CLI's own
-      // internal default model id, not the caller's resolved alias.
-      expect(messagesReq?.body['model']).toBe('haiku-alias');
+      // The caller's alias reaches the wire as its proxy-facing name (proxyModelName): the prefix
+      // stops the CLI from expanding a bare shorthand into a dated Anthropic id the LiteLLM proxy
+      // could not match. This is the exact model id the proxy keys its model_name list on.
+      expect(messagesReq?.body['model']).toBe('rwe-proxy-haiku-alias');
     },
     30000,
   );

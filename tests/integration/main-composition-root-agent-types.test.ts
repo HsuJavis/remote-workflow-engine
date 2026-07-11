@@ -166,8 +166,9 @@ describe('src/main.ts composition-root: agentDefinitionsDir end-to-end (IT-022, 
       // The definition's systemPrompt was prepended to the outbound prompt.
       expect(requests[0]!.prompt).toContain('You are a terse helper');
       // The definition's own `model:` (an alias name) routed the call — not the run's unrelated
-      // 'default' alias.
-      expect(requests[0]!.model).toBe('helper-alias');
+      // 'default' alias. It reaches the stub as its proxy-facing name (proxyModelName): the prefix
+      // keeps the alias verbatim past the CLI's shorthand expansion so the LiteLLM proxy matches it.
+      expect(requests[0]!.model).toBe('rwe-proxy-helper-alias');
     },
     30000,
   );

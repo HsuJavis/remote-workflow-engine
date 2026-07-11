@@ -34,6 +34,9 @@ export function listArtifacts(workspace: string): ArtifactEntry[] {
     for (const e of entries) {
       const abs = join(dir, e.name);
       if (!isPathContained(abs, workspace)) continue; // realpath escape guard (symlink)
+      // `.git/` is the engine's own seed baseline (REQ-027 initGitBaseline), not a client deliverable —
+      // its internals must never surface as pullable artifacts. Skip the whole directory at any depth.
+      if (e.isDirectory() && e.name === '.git') continue;
       if (e.isDirectory()) {
         walk(abs);
       } else if (e.isFile()) {

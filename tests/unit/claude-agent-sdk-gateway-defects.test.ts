@@ -63,8 +63,10 @@ describe('ClaudeAgentSdkGatewayClient — D-F5 route-back defects (UT-019)', () 
 
     expect(queryMock).toHaveBeenCalledTimes(1);
     const [[call]] = queryMock.mock.calls as [[{ options?: { model?: string } }]];
-    // Today's implementation never sets options.model at all (undefined) — this is the forcing red.
-    expect(call.options?.model).toBe('haiku-alias');
+    // The alias is routed via its proxy-facing name (proxyModelName): a bare shorthand like `haiku`
+    // would be expanded by the CLI to a dated Anthropic id the LiteLLM proxy has no entry for. The
+    // prefix keeps the name verbatim so the proxy matches its own model_name.
+    expect(call.options?.model).toBe('rwe-proxy-haiku-alias');
   });
 
   it('an is_error:true result on a subtype:"success" SDK message resolves { ok:false, reason:"terminal" }, never surfaced as success content', async () => {

@@ -26,14 +26,29 @@ function toLiteLLMModelName(target: AliasMap[string]): string {
 }
 
 /**
- * Renders a LiteLLM proxy `config.yaml`: one `model_list` entry per alias, mapping the alias name
- * straight to `litellm_params.model`. The shape is fixed and flat, so this is hand-emitted rather
- * than pulling in a YAML-writer dependency for a handful of lines.
+ * The proxy-facing name for an alias. The Claude CLI rewrites certain bare model strings BEFORE the
+ * request leaves for ANTHROPIC_BASE_URL: its built-in shorthands (`haiku`/`sonnet`/`opus`) expand to
+ * dated Anthropic ids (e.g. `haiku` → `claude-haiku-4-5-20251001`), and `claude-*` ids are likewise
+ * normalized. Since every alias here is served by THIS LiteLLM proxy (model_name == alias), that
+ * rewrite makes the CLI put a name on the wire the proxy has no `model_name` entry for — LiteLLM
+ * then falls through to its Anthropic passthrough and 400s ("Invalid model name … claude-haiku-…").
+ * Prefixing the proxy model_name with a token the CLI never treats as a shorthand keeps the name
+ * verbatim end-to-end. MUST be applied identically here and where the gateway sets `query()`'s
+ * `model`, so the two always name the same entry.
+ */
+export function proxyModelName(alias: string): string {
+  return `rwe-proxy-${alias}`;
+}
+
+/**
+ * Renders a LiteLLM proxy `config.yaml`: one `model_list` entry per alias, mapping the proxy-facing
+ * alias name (`proxyModelName`) straight to `litellm_params.model`. The shape is fixed and flat, so
+ * this is hand-emitted rather than pulling in a YAML-writer dependency for a handful of lines.
  */
 export function generateLiteLLMConfig(aliases: AliasMap): string {
   const lines = ['model_list:'];
   for (const [alias, target] of Object.entries(aliases)) {
-    lines.push(`  - model_name: ${JSON.stringify(alias)}`);
+    lines.push(`  - model_name: ${JSON.stringify(proxyModelName(alias))}`);
     lines.push('    litellm_params:');
     lines.push(`      model: ${JSON.stringify(toLiteLLMModelName(target))}`);
   }
