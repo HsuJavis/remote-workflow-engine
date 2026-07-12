@@ -48,6 +48,97 @@
 > hook 明確不支援（`asset_push` kind:hook 一律拒絕）。
 > ---
 >
+> ## ⭐ 情境配方：gateway:sdk + LiteLLM 前置「外部 OpenAI 相容端點」跑完整 sdlc-run（v3，2026-07-12）
+>
+> 目標：把引擎部署在一台**自架多個開源大模型、對外只暴露一個 OpenAI 相容 `/v1` 端點**的環境上，
+> 讓遠端 agent 走**完整 Claude harness**（工具迴圈 + agentType + MCP），能跑真正的 iso-agile-sdlc
+> `sdlc-run`。以下每一步都經本機端對端實測（用 Ollama 的 `/v1` 代打「外部端點」驗證整條鏈路）。
+>
+> ### 0) 那個端點是什麼牌子其實不重要
+> 我們**自己再跑一個 LiteLLM** 擋在前面，把它端點當成「一個 OpenAI 相容 server」。你只需確認
+> `POST $BASE/v1/chat/completions`（OpenAI 格式）能正常回應即可（要辨牌子見本文件底部「附錄：辨識端點」）。
+> `provider` 別名只支援 `anthropic|openai|gemini|ollama` 四種前綴；**任何 OpenAI 相容端點一律用
+> `provider:"openai"` + `OPENAI_API_BASE` 指過去**（vLLM/TGI/llama.cpp server/LiteLLM… 皆同一招）。
+>
+> ### 1) 設定檔（`rwe.config.json`）
+> ```json
+> {
+>   "bind": "127.0.0.1", "port": 8787,
+>   "workRoot": "/var/lib/remote-workflow-engine",   ⟵ 必須在任何 .git/CLAUDE.md 祖先之外（見 v3 塊第4點）
+>   "timeoutMs": 300000, "gateway": "sdk",
+>   "agentDefinitionsDir": "/opt/rwe-sdlc-agents",   ⟵ 見第3步：放 iso-agile-sdlc 的 sdlc-*.md
+>   "defaultAllowedTools": ["Read","Write","Edit","Glob","Grep","Bash"],
+>   "aliases": {
+>     "default":           { "provider": "openai", "model": "<你端點上的某個模型id>" },
+>     "claude-opus-4-8":   { "provider": "openai", "model": "<最強的那顆，給架構/設計決策 gate>" },
+>     "claude-sonnet-4-6": { "provider": "openai", "model": "<中階，給實作/驗證/審查>" },
+>     "haiku":             { "provider": "openai", "model": "<便宜快的，給 precheck/referee>" }
+>   }
+> }
+> ```
+> 別名右邊的 `model` 就是**打到 `$BASE/v1/models` 看到的那些 id**。`sdlc-run` 內部用
+> `claude-opus-4-8`/`claude-sonnet-4-6`/`haiku` 這三個別名選 tier（角色→tier 對照見 iso-agile-sdlc 的 SKILL.md §2.5 表），
+> 所以**這三個別名一定要在 aliases 表裡**、指向你端點上實際存在的模型。
+> **模型能力提醒**：架構/設計是「決策 + 產生可追溯文件 + 工具呼叫」的 gate，**別用太小的模型**
+> （7B 級的原生 tool-use 不穩、且當 synthesizer 會亂丟 `request-panel` 無限升級）；決策 gate 請挑
+> 你環境裡最能穩定做 native tool-use 的那顆（實測 gpt-4.1 級可、qwen2.5:7b 不行）。
+>
+> ### 2) 憑證環境變數（指向外部端點的關鍵）
+> ```bash
+> export OPENAI_API_BASE="http://<那台或端點host>:<port>/v1"   # ← 讓所有 openai/ 別名導向你的端點
+> export OPENAI_API_KEY="<端點需要的 key；不需認證就給任意非空字串，如 sk-dummy>"
+> ```
+> LiteLLM 子行程以 `{...process.env}` 繼承這兩個變數，`openai/<model>` 就會打到 `OPENAI_API_BASE`
+> 而非 api.openai.com——**這是純設定、不需改任何程式**（本機用 Ollama `/v1` 端對端實測通過）。
+> ⚠️ **key 檔格式坑**：若你的 key 存成 `OPENAI_API_KEY=sk-...` 這種**整行**檔，別直接 `$(cat 檔)`
+> （會把 `OPENAI_API_KEY=` 也當成 key 值 → LiteLLM 401）。要萃取值：
+> `export OPENAI_API_KEY="$(grep -oE 'sk-[A-Za-z0-9_-]+' 你的keyfile | head -1)"`。
+> ⚠️ **PATH**：`gateway:sdk` 開機會 `spawn('litellm')`，systemd/啟動 unit 的 `PATH` 必須含 litellm
+> venv 的 `bin/`（見 v3 塊第1點），否則 `ENOENT`。
+>
+> ### 3) 放 sdlc 角色 agent 定義（跑 sdlc-run 必要）
+> `sdlc-run` 每個 gate 用 `agentType` 分派到 `sdlc-architect`/`sdlc-designer`/`sdlc-verifier`/
+> `sdlc-implementer`/`sdlc-validator`/`sdlc-reviewer`/`sdlc-task-planner`。把 iso-agile-sdlc plugin 的
+> `agents/sdlc-*.md` 複製進 `agentDefinitionsDir`：
+> ```bash
+> mkdir -p /opt/rwe-sdlc-agents
+> cp <plugin>/skills/iso-agile-sdlc/agents/sdlc-*.md /opt/rwe-sdlc-agents/
+> ```
+> loader 用檔案 frontmatter 的 `name:`（**裸名**，如 `sdlc-architect`）當註冊鍵。各 agent frontmatter 的
+> `model:` 值（`claude-opus-4-8` 等）必須對應到你 aliases 表裡的別名（第1步已備妥）。
+>
+> ### 4) 實際跑 sdlc-run（透過 rwe-plugin 或直接 `workflow_run`）
+> 關鍵參數 **`args.agentPrefix: ""`（必填）**：`AT()` 預設會加 `iso-agile-sdlc:` 前綴，但引擎註冊的是
+> 裸名 → 不加空前綴會 `Unknown agentType: iso-agile-sdlc:sdlc-architect` 讓整個 run 失敗。範例 args：
+> ```json
+> { "feature":"NNN-slug", "sdlcDir":".sdlc/features/NNN-slug", "skillDir":"_skillref",
+>   "mode":"new", "safetyClass":"QM", "agentPrefix":"", "tier":"lean" }
+> ```
+> - **seed**：把 skill 目錄（放 `_skillref/`，**不要**放 `.claude/skills/` 以免被 CLI 當 project skill 載入）
+>   + `.sdlc/features/NNN/{01-requirements.md,state.yaml}` + `.sdlc/trace(.py)` 一起用 `workflow_run` 的
+>   `seed:[{path,contentB64}]` 帶上（Gate 1 需求要先在本地備好，state.yaml 的 `gates.requirements.passed=true`）。
+> - **git baseline 自動**：引擎會在 seed 落地後自動 `git init`+baseline commit（REQ-027），precheck 的
+>   `git rev-parse --is-inside-work-tree` 會通過——**你不用手動 seed `.git`**（materializeSeed 本來就會擋）。
+> - **model shorthand 自動處理**：`haiku`/`sonnet`/`opus` 被 CLI 展開成 Anthropic id 的老問題已由
+>   `proxyModelName` 前綴根治，你不需做任何事。
+> - **budget**：sdlc 全流程**吃 input token 很兇**（每個 agent 重讀 seed/docs，實作階段還會裝 venv 撐大
+>   context）。設 `budget`（token 數）當硬上限；實測一次 lean 全流程到 Gate 6 約 ~3M token。撞上限會在
+>   當前 gate 停（非 bug），可用 `resumeFromRunId` 續跑或調高 budget。
+> - **拉回產物**：完成後用 plugin 的 `pull_workspace`（`workflow_artifacts` + `workflow_artifact_get`）把
+>   `src/`、`tests/`、`.sdlc/*.md` 拉回本地；`.git/` 與 venv 不會列進 artifact（引擎已排除 `.git/`）。
+>
+> ### 5) 驗證這條路通了（花錢前先確認）
+> ```bash
+> # A. 我方 LiteLLM 真的把 openai/<model> 導到你的端點：
+> LPORT=$(pgrep -af '[l]itellm --config' | grep -oE 'port [0-9]+' | awk '{print $2}')
+> curl -s -X POST http://127.0.0.1:$LPORT/v1/messages -H 'content-type: application/json' \
+>   -H 'x-api-key: dummy' -H 'anthropic-version: 2023-06-01' \
+>   -d '{"model":"rwe-proxy-default","max_tokens":10,"messages":[{"role":"user","content":"ping"}]}'
+> #   → 回 anthropic 格式 message + usage>0 ⇒ 端點通；回 401/No deployments ⇒ 檢查 OPENAI_API_BASE/KEY。
+> # B. 一個極小 agent 端對端（透過引擎 /mcp 的 workflow_run，script: 'return agent("say ROUTED",{model:"default"})'）
+> #    回 "ROUTED" 且 agent tokens>0 ⇒ 整條 gateway:sdk→LiteLLM→你的端點 打通。
+> ```
+>
 > ## ⭐ 區網部署 + remote→local 落地（v1，2026-07-11）
 >
 > ### A. 綁到區網（LAN）給其他機器用
@@ -423,6 +514,9 @@ cp rwe.config.example.json rwe.config.json
 # defaultAllowedTools）
 export ANTHROPIC_API_KEY=sk-ant-...          # 依實際要用的 provider 擇一或多個設定
 # export OLLAMA_BASE_URL=http://localhost:11434
+# 指向「外部 OpenAI 相容端點」（自架 OSS 大模型）時，改設這兩個 —— 見頂部「⭐ 情境配方」：
+# export OPENAI_API_BASE=http://<端點host>:<port>/v1
+# export OPENAI_API_KEY=<key，或不需認證就給任意非空字串>   # openai/ 別名全導向此端點
 
 # 步驟 4：無需資料庫遷移/初始化 —— SQLite schema 由伺服器啟動時自動建立於 $workRoot/store
 
@@ -701,3 +795,24 @@ npm run start
   給中止的 agent 紀錄一個專屬終止狀態、拿更大的本機模型或付費供應商重測工具呼叫能力等項目。
   ~~修掉 `litellm` port 4000 碰撞風險~~ **已在 v2 TASK-027 解決**（orphan-reap + `litellmPort`
   設定鍵，見上方第 7/8 項與 §1b），不再是待辦項。
+
+## 附錄：辨識端點是 LiteLLM / vLLM / Ollama / 其他（`⭐ 情境配方` §0 引用）
+
+> 對本部署**不影響做法**（一律當 OpenAI 相容端點用 `provider:"openai"` + `OPENAI_API_BASE` 接），
+> 純供判斷對方在跑什麼。由能連到端點的機器執行，`BASE=http://那台:PORT`：
+
+```bash
+BASE=http://那台:PORT
+curl -s $BASE/health/liveliness ; echo    # LiteLLM ⇒ "I'm alive!"（其他多半 404）
+curl -s $BASE/version ; echo              # vLLM ⇒ {"version":"0.x.x"}
+curl -s $BASE/api/version ; echo          # Ollama ⇒ {"version":"0.x.x"}（另有 /api/tags）
+curl -s $BASE/v1/models | head -c 400     # 通用：看有哪些模型 id（右邊 aliases.model 就填這些）
+# 最有力：真打一次，看『回應標頭』指紋
+curl -s -D - -o /dev/null -X POST $BASE/v1/chat/completions \
+  -H 'content-type: application/json' -H 'authorization: Bearer dummy' \
+  -d '{"model":"<某個model>","messages":[{"role":"user","content":"hi"}],"max_tokens":5}' \
+  | grep -iE 'server:|x-litellm|x-vllm|openai-|via:'
+```
+- 回應標頭有 `x-litellm-*` ⇒ **LiteLLM**；`server: uvicorn` + 有 `/version` ⇒ **vLLM**；
+  有 `/api/version` ⇒ **Ollama**；三個探針都 404 但 `/v1/chat/completions` 正常 ⇒ 其他直連
+  OpenAI 相容 server（TGI/llama.cpp/LMDeploy…）。**只要最後那條 `/v1/chat/completions` 通，就能接。**
