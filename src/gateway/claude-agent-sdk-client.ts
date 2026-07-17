@@ -11,7 +11,7 @@
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { CanUseTool, HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync, readdirSync, statSync, readFileSync, mkdirSync, copyFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, isAbsolute } from 'node:path';
 import type { AgentOpts, TranscriptEvent } from '../types.js';
 import type { McpServerConfig, McpProbe } from '../mcp-probe.js';
 import type { AliasMap, GatewayClient, GatewayResult } from './client.js';
@@ -197,17 +197,47 @@ function isInsideWorkspace(candidate: string, root: string): boolean {
  *  decision as a `hooks.PreToolUse` matcher (the SDK's own documented suggestion for gating a call that
  *  bare `allowedTools` would otherwise auto-approve) — belt-and-suspenders: whichever of the two
  *  the SDK actually consults for a given call, the workspace boundary still holds. */
-function toolUsePreCheck(root: string | undefined, candidate: string | undefined): { behavior: 'allow' } | { behavior: 'deny'; message: string } {
-  if (root !== undefined && candidate !== undefined && !isInsideWorkspace(candidate, root)) {
-    return { behavior: 'deny', message: `path outside run workspace: ${candidate}` };
+// V3-residual (Gate 8 v2 review, adversarial finding V3, MEDIUM after the D-V2G8-1(d) downgrade):
+// the earlier boundary check only inspected `file_path` (Read/Write/Edit/NotebookEdit) + the Bash
+// `blockedPath`. Glob/Grep carry their search root in `path`, and NotebookEdit uses `notebook_path`
+// — an agent could Glob/Grep/read a notebook OUTSIDE the workspace through those un-inspected fields.
+// Every known path-bearing tool argument is now extracted and checked; a call is denied if ANY of
+// them escapes. (Bash beyond its SDK-computed `blockedPath` remains best-effort — arbitrary shell
+// isn't statically parseable — so Bash stays opt-in per agentType, never in the default surface for
+// untrusted work.)
+const PATH_ARG_FIELDS = ['file_path', 'path', 'notebook_path'] as const;
+
+function extractCandidatePaths(input: Record<string, unknown>, blockedPath?: string): string[] {
+  const out: string[] = [];
+  if (typeof blockedPath === 'string' && blockedPath.length > 0) out.push(blockedPath);
+  for (const field of PATH_ARG_FIELDS) {
+    const v = input[field];
+    if (typeof v === 'string' && v.length > 0) out.push(v);
+  }
+  return out;
+}
+
+/** A relative tool-path argument is relative to the CLI subprocess's cwd — which the engine
+ *  re-scopes to the run workspace (`root`) — NOT the engine process cwd `isPathContained`/`resolve`
+ *  would otherwise use. Resolve it against `root` first so the containment check has the right base
+ *  (a relative `../../etc/passwd` still resolves+realpaths out and is denied). */
+function resolveAgainstWorkspace(candidate: string, root: string): string {
+  return isAbsolute(candidate) ? candidate : join(root, candidate);
+}
+
+function toolUsePreCheck(root: string | undefined, candidates: string[]): { behavior: 'allow' } | { behavior: 'deny'; message: string } {
+  if (root === undefined) return { behavior: 'allow' }; // no workspace known → nothing to enforce
+  for (const candidate of candidates) {
+    if (!isInsideWorkspace(resolveAgainstWorkspace(candidate, root), root)) {
+      return { behavior: 'deny', message: `path outside run workspace: ${candidate}` };
+    }
   }
   return { behavior: 'allow' };
 }
 
 function makeCanUseTool(root: string | undefined): CanUseTool {
   return async (_toolName, input, options) => {
-    const candidate = options.blockedPath ?? (input as { file_path?: string }).file_path;
-    return toolUsePreCheck(root, candidate);
+    return toolUsePreCheck(root, extractCandidatePaths(input as Record<string, unknown>, options.blockedPath));
   };
 }
 
@@ -217,8 +247,7 @@ function makeCanUseTool(root: string | undefined): CanUseTool {
 function makePreToolUseHook(root: string | undefined): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== 'PreToolUse') return {};
-    const candidate = (input.tool_input as { file_path?: string } | undefined)?.file_path;
-    const decision = toolUsePreCheck(root, candidate);
+    const decision = toolUsePreCheck(root, extractCandidatePaths((input.tool_input ?? {}) as Record<string, unknown>));
     if (decision.behavior === 'deny') {
       return {
         hookSpecificOutput: {

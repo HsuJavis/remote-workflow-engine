@@ -55,4 +55,15 @@ describe('workflow_artifacts: run-workspace files retrievable via the API (IT-01
     expect(artifacts.error).toBeUndefined();
     expect((artifacts.result ?? []).map((a) => a.path)).toContain('output.txt');
   }, 15000);
+
+  it('R-3: RunManager owns the listing — listArtifacts is null for an unknown run (facade never touches fs)', async () => {
+    const store = new InMemoryRunStore(CLOCK);
+    const runManager = new RunManager({ store, clock: CLOCK });
+    // No such run → no workspace → null (the facade maps this to an empty result, not an fs error).
+    expect(await runManager.listArtifacts('no-such-run')).toBeNull();
+
+    const facade = new McpFacade({ clock: CLOCK, store, runManager });
+    const env = await facade.workflow_artifacts({ runId: 'no-such-run' });
+    expect(env.error).toBeDefined(); // unknown run → RUN_NOT_FOUND envelope, never a thrown readdir error
+  });
 });

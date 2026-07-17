@@ -91,7 +91,7 @@ describe('VAL-001: 100% workflow JS API compatibility (REQ-001)', () => {
     for (let i = 0; i < 30; i++) {
       const s = await callTool('workflow_status', { runId });
       if (s.status === 'completed') {
-        const phases = (s.phases as Array<{ title: string }>).map((p) => p.title);
+        const phases = (s.result.phases as Array<{ title: string }>).map((p) => p.title);
         expect(phases).toContain('init');
         expect(phases).toContain('process');
         return;

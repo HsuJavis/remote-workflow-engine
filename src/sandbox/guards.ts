@@ -90,6 +90,16 @@ class GuardError extends Error {
   }
 }
 
+// V5 (Gate 8 v2 review, adversarial finding, LOW — accepted architectural limitation, documented
+// here as its resolution): these `Date`/`Math` overrides are DETERMINISM HYGIENE for replay/resume
+// caching, NOT a security boundary. A `node:vm` context is not a sandbox (Node's own docs say so):
+// a script can reach the context realm's UN-guarded intrinsics via a Function-constructor escape,
+// e.g. `Function('return Date')().now()`, defeating THESE guards. That is acceptable because the
+// worst outcome is the script's own run becomes non-replayable — a self-inflicted correctness issue,
+// not a privilege escalation. The real containment is the PROCESS boundary (ARCH-003): SandboxHost
+// forks a per-run child holding no secrets/store/network handle, cwd jailed to the run workspace, so
+// the SAME escape cannot reach `process`/`require`/`fs`/host env — those are simply absent from the
+// context, not merely shadowed (proven by sandbox-guards.test.ts's realm-escape + no-fs/require cases).
 function guardedDate(): typeof Date {
   class GuardedDate extends Date {
     constructor(...args: unknown[]) {
@@ -175,7 +185,16 @@ function makeWorkflow(api: SandboxApi) {
     try {
       return await delegate(nameOrRef, args);
     } catch (err) {
-      throw new GuardError('NESTING_ERROR', err instanceof Error ? err.message : String(err));
+      // C-2: a delegate failure is not itself a nesting violation (the true one-level limit is the
+      // !delegate branch above → NESTING_ERROR). Preserve the delegate error's own code (child-entry
+      // sets it as .name on the rejection) so a caller can branch on CatalogNotFoundError etc. Inline
+      // (no import) — this module is loaded by the sandbox child, which doesn't resolve .js→.ts value imports.
+      const e = err as { code?: unknown; name?: unknown } | null;
+      const code =
+        (e && typeof e.code === 'string' && e.code) ? e.code :
+        (e && typeof e.name === 'string' && e.name && e.name !== 'Error') ? e.name :
+        'WORKFLOW_ERROR';
+      throw new GuardError(code, err instanceof Error ? err.message : String(err));
     }
   };
 }

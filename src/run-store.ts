@@ -1,7 +1,7 @@
 // RunStore port + InMemoryRunStore (DES-010).
 import { randomUUID } from 'node:crypto';
 import type { Clock } from './clock.js';
-import type { RunSpec, RunStatusView, RunSummary, JournalEntry, TranscriptEvent, RunStatus, AgentRecord } from './types.js';
+import type { RunSpec, RunStatusView, RunSummary, JournalEntry, TranscriptEvent, RunStatus, AgentRecord, StateTransition } from './types.js';
 
 /** Reconstructs the AgentRecord[] a run's getRun() should report (D-F9b) from its persisted
  *  agent-<id>.jsonl transcripts — the single source of truth `getRun` reads from directly,
@@ -33,6 +33,10 @@ export interface RunStore {
   appendJournal(runId: string, entry: JournalEntry): Promise<void>;
   appendTranscript(runId: string, agentId: string, ev: TranscriptEvent): Promise<void>;
   recordTransition(runId: string, from: RunStatus | null, to: RunStatus, ts: string): Promise<void>;
+  /** O-2: the ordered state-transition audit trail for a run (from/to/ts), oldest first — the
+   *  read side of recordTransition's "one writer of every transition" promise (ARCH-006). Empty
+   *  for an unknown run. */
+  getTransitions(runId: string): Promise<StateTransition[]>;
   getRun(runId: string): Promise<RunStatusView | null>;
   listRuns(): Promise<RunSummary[]>;
   hydrateAll(): Promise<RunSummary[]>;
@@ -56,6 +60,7 @@ interface StoredRun {
   createdAt: string;
   journal: JournalEntry[];
   transcripts: Map<string, TranscriptEvent[]>;
+  transitions: StateTransition[];
   result?: unknown;
   hasResult: boolean;
 }
@@ -76,6 +81,7 @@ export class InMemoryRunStore implements RunStore {
       createdAt: this._clock.isoNow(),
       journal: [],
       transcripts: new Map(),
+      transitions: [],
       hasResult: false,
     });
     return runId;
@@ -113,10 +119,16 @@ export class InMemoryRunStore implements RunStore {
     run.transcripts.set(agentId, list);
   }
 
-  async recordTransition(runId: string, _from: RunStatus | null, to: RunStatus, _ts: string): Promise<void> {
+  async recordTransition(runId: string, from: RunStatus | null, to: RunStatus, ts: string): Promise<void> {
     const run = this._runs.get(runId);
     if (!run) return;
+    run.transitions.push({ from, to, ts });
     run.status = to;
+  }
+
+  async getTransitions(runId: string): Promise<StateTransition[]> {
+    const run = this._runs.get(runId);
+    return run ? [...run.transitions] : [];
   }
 
   async getRun(runId: string): Promise<RunStatusView | null> {

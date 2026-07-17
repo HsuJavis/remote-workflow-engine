@@ -27,24 +27,15 @@ import type { ServerConfig } from './server.js';
 import { ClaudeAgentSdkGatewayClient } from './gateway/claude-agent-sdk-client.js';
 import type { ClaudeAgentSdkGatewayConfig } from './gateway/claude-agent-sdk-client.js';
 import { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
-import type { AliasMap } from './gateway/client.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { assertWorkRootIsolated } from './workroot-guard.js';
+import { DEFAULT_ALIASES } from './default-aliases.js';
 
 type GatewayChoice = 'sdk' | 'direct-fetch';
 
-// Same shape as run-manager.ts's/submission-validator.ts's own DEFAULT_ALIASES fallback (this
-// entrypoint doesn't import those private consts — matches the codebase's existing per-module
-// duplication pattern rather than introducing a new shared-export abstraction for one caller).
-// Used only to give the SDK gateway's managed LiteLLM proxy an alias table to route through when
-// the config file omits `aliases` entirely — the same anthropic-only default the rest of the
-// system already falls back to in that case.
-const DEFAULT_ALIASES: AliasMap = {
-  sonnet: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-  haiku: { provider: 'anthropic', model: 'claude-3-5-haiku-20241022' },
-  opus: { provider: 'anthropic', model: 'claude-opus-4-5' },
-  default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-};
+// DEFAULT_ALIASES (src/default-aliases.ts) is the single-source fallback table, used here only to
+// give the SDK gateway's managed LiteLLM proxy an alias table to route through when the config file
+// omits `aliases` entirely — the same anthropic-only default the rest of the system falls back to.
 
 // Omit ServerConfig's own `gateway` field (typed GatewayClient — an object seam, D-F1): the config
 // FILE's `gateway` key is a plain string choice this entrypoint resolves into that object itself.
@@ -132,7 +123,17 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   if (gatewayChoice === 'sdk') {
     // Same managed LiteLLM proxy subprocess the direct-fetch path can opt into (D-R1) — started
     // once here so its baseUrl is known before constructing the SDK session's ANTHROPIC_BASE_URL.
-    const proxy = deps.proxyManager ?? new LiteLLMProxyManager(aliases ?? DEFAULT_ALIASES, { port: fileConfig.litellmPort });
+    const proxy = deps.proxyManager ?? new LiteLLMProxyManager(aliases ?? DEFAULT_ALIASES, {
+      port: fileConfig.litellmPort,
+      // S-2: make supervised restarts of the always-on gateway subprocess observable in the logs
+      // (a silent crash+restart of the default gateway would otherwise be invisible).
+      onSupervisionEvent: (ev) =>
+        console.error(
+          ev.kind === 'restart'
+            ? `[litellm-proxy] subprocess exited (code ${ev.code}); auto-restarting (restart #${ev.restarts})`
+            : `[litellm-proxy] subprocess exited (code ${ev.code}); restart budget exhausted after ${ev.restarts} — gateway is DOWN until restart`,
+        ),
+    });
     // TASK-027: keep the reference reachable off the returned config (the same field the
     // "direct-fetch" path already threads a caller-supplied proxyManager through) so main()'s own
     // shutdown handler can cascade-kill it — previously this local `proxy` was never retained

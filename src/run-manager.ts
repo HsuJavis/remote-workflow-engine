@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { materializeSeed } from './workspace-seed.js';
 import { initGitBaseline } from './workspace-git.js';
+import { listArtifacts, type ArtifactEntry } from './workspace-artifacts.js';
 import { IllegalTransitionError } from './errors.js';
 import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord } from './types.js';
 import type { RunStore } from './run-store.js';
@@ -22,17 +23,12 @@ import type { AgentSpawner, AgentTypeDef } from './agent-executor.js';
 import { AgentExecutor } from './agent-executor.js';
 import { ResumeCache, MISS, type ResumePlan } from './resume-cache.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
-import type { GatewayClient, GatewayConfig, AliasMap } from './gateway/client.js';
+import type { GatewayClient, GatewayConfig } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
+import { DEFAULT_ALIASES } from './default-aliases.js';
 
-// Default model-alias table (REQ-004) for the gateway RunManager builds when no GatewayClient is
-// injected — same shape SubmissionValidator's default table validates against.
-const DEFAULT_ALIASES: AliasMap = {
-  sonnet: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-  haiku: { provider: 'anthropic', model: 'claude-3-5-haiku-20241022' },
-  opus: { provider: 'anthropic', model: 'claude-opus-4-5' },
-  default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-};
+// Default gateway config (REQ-004) for the gateway RunManager builds when no GatewayClient is
+// injected — routes through the single-source DEFAULT_ALIASES table (src/default-aliases.ts).
 const DEFAULT_GATEWAY_CONFIG: GatewayConfig = { aliases: DEFAULT_ALIASES, timeoutMs: 15000, retries: 1 };
 
 export interface RunManagerDeps {
@@ -129,6 +125,20 @@ export class RunManager {
     const spec = await this._store.getSpec(runId);
     if (!spec) return null;
     return this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
+  }
+
+  /** R-3 (review finding): the run-workspace artifact listing (REQ-023), owned by the workspace
+   *  owner (RunManager) so the MCP facade reads through this domain layer instead of reaching into
+   *  the filesystem itself. `null` when the run has no on-disk workspace (unknown run); `[]` when the
+   *  workspace dir was never materialized (a run that wrote nothing) — the latter is not an error. */
+  async listArtifacts(runId: string): Promise<ArtifactEntry[] | null> {
+    const workspace = await this.workspacePath(runId);
+    if (!workspace) return null;
+    try {
+      return listArtifacts(workspace);
+    } catch {
+      return [];
+    }
   }
 
   async start(spec: RunSpec): Promise<string> {
@@ -360,12 +370,14 @@ export class RunManager {
     }
 
     entry.guard.assertBudget();
-    // D-G8-6: reserve this run's entire currently-remaining budget for this one about-to-dispatch
-    // call BEFORE releasing control (no `await` between assertBudget() and reserve() — an atomic
-    // gate) — the single source of truth has no per-call cost estimate ahead of time, so this is
-    // the simplest atomic gate that stops a burst of concurrent parallel() calls from ALL passing
-    // the stale pre-dispatch check before any one of them has recorded its own real spend (review
-    // finding V2). Released in the finally block below regardless of the call's real cost.
+    // D-G8-6 + D-V2G8-2: reserve a per-call SHARE of this run's remaining budget for this one
+    // about-to-dispatch call BEFORE releasing control (no `await` between assertBudget() and
+    // reserve() — an atomic gate). There is no per-call cost estimate ahead of time, so reserve()
+    // takes a flat fraction (RESERVATION_FRACTION, see run-guard.ts) rather than the entire
+    // remainder: reserving 100% (the original D-G8-6 fix) stopped the TOCTOU race but collapsed
+    // parallel() concurrency to exactly 1; the fractional reserve stops a burst of concurrent
+    // calls from ALL passing the stale pre-dispatch check while still restoring real concurrency
+    // (review findings V2/V4). Released in the finally block below regardless of the call's real cost.
     const reserved = entry.guard.reserve();
     try {
       // D-F12: allocate the agentId and mark it "queued" BEFORE acquiring a concurrency slot — so a

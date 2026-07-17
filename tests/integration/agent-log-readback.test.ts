@@ -43,7 +43,7 @@ describe('workflow_agent_log real transcript read-back (IT-009, D-V6)', () => {
     const status = await pollUntilSettled(facade, runId);
     expect(status.status).toBe('completed');
 
-    const agents = (status as unknown as { agents: Array<{ agentId: string }> }).agents;
+    const agents = status.result!.agents as Array<{ agentId: string }>;
     expect(agents.length).toBeGreaterThan(0);
     const agentId = agents[0].agentId;
 

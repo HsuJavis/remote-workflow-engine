@@ -18,6 +18,14 @@ export interface LiteLLMProxyOptions {
   spawnImpl?: typeof spawn;
   /** Injectable health-check transport — defaults to the global fetch. */
   fetchImpl?: typeof fetch;
+  /** S-2 (review finding): max UNEXPECTED-crash auto-restarts over this manager's lifetime before it
+   *  stops supervising (a crash-loop guard). Default 3. */
+  maxRestarts?: number;
+  /** S-2: backoff before an auto-restart attempt. Default 250ms; tests pass 0 for determinism. */
+  restartDelayMs?: number;
+  /** S-2: observability hook fired on each supervised restart (and on final give-up) — lets the
+   *  composition root log that the always-on gateway subprocess died and was/wasn't revived. */
+  onSupervisionEvent?: (ev: { kind: 'restart' | 'exhausted'; restarts: number; code: number | null }) => void;
 }
 
 /** LiteLLM's own provider-prefixed model naming, e.g. "ollama/llama3:8b", "anthropic/claude-3-5-sonnet". */
@@ -69,6 +77,12 @@ export class LiteLLMProxyManager {
   private readonly _startupTimeoutMs: number;
   private readonly _spawnImpl: typeof spawn;
   private readonly _fetchImpl: typeof fetch;
+  // S-2: post-start liveness supervision state.
+  private _stopped = false;
+  private _restarts = 0;
+  private readonly _maxRestarts: number;
+  private readonly _restartDelayMs: number;
+  private readonly _onSupervisionEvent?: LiteLLMProxyOptions['onSupervisionEvent'];
 
   constructor(
     private readonly _aliases: AliasMap,
@@ -80,6 +94,16 @@ export class LiteLLMProxyManager {
     this._startupTimeoutMs = opts.startupTimeoutMs ?? 20000;
     this._spawnImpl = opts.spawnImpl ?? spawn;
     this._fetchImpl = opts.fetchImpl ?? fetch;
+    this._maxRestarts = opts.maxRestarts ?? 3;
+    this._restartDelayMs = opts.restartDelayMs ?? 250;
+    this._onSupervisionEvent = opts.onSupervisionEvent;
+  }
+
+  /** S-2: liveness snapshot — `up` reflects whether a healthy proxy is currently believed to be
+   *  running (cleared the moment the subprocess exits unexpectedly), `restarts` is the lifetime
+   *  count of supervised auto-restarts. */
+  liveness(): { up: boolean; restarts: number } {
+    return { up: this._baseUrl !== undefined, restarts: this._restarts };
   }
 
   get baseUrl(): string | undefined {
@@ -88,6 +112,7 @@ export class LiteLLMProxyManager {
 
   async start(): Promise<{ baseUrl: string }> {
     if (this._baseUrl) return { baseUrl: this._baseUrl };
+    this._stopped = false; // an explicit start is intent to run — (re)enable supervision
     if (!this._startPromise) this._startPromise = this._doStart();
     return this._startPromise;
   }
@@ -144,6 +169,7 @@ export class LiteLLMProxyManager {
         const res = await this._fetchImpl(`${baseUrl}/health/liveliness`);
         if (res.ok) {
           this._baseUrl = baseUrl;
+          this._superviseExit(proc); // S-2: watch for a mid-life crash of the now-healthy proxy
           return { baseUrl };
         }
       } catch (err) {
@@ -216,9 +242,40 @@ export class LiteLLMProxyManager {
   }
 
   async stop(): Promise<void> {
+    this._stopped = true; // S-2: mark BEFORE killing so the exit handler treats this as expected
     if (this._proc && this._proc.exitCode === null) this._killProcessGroup(this._proc);
     this._proc = undefined;
     this._baseUrl = undefined;
     this._startPromise = undefined;
+  }
+
+  /** S-2: attach a one-shot exit watcher to a freshly-healthy proxy proc. Skipped for a test double
+   *  that isn't an EventEmitter (no `once`) — the pre-existing hardening tests use such a double. */
+  private _superviseExit(proc: ChildProcess): void {
+    if (typeof proc.once !== 'function') return;
+    proc.once('exit', (code: number | null) => this._onUnexpectedExit(proc, code));
+  }
+
+  /** S-2: the always-on gateway subprocess died. Clear cached liveness (so `liveness().up` and
+   *  `baseUrl` immediately reflect "down"), then auto-restart within a bounded budget — otherwise a
+   *  mid-run crash of the default gateway would be permanent for the whole process's life. */
+  private _onUnexpectedExit(proc: ChildProcess, code: number | null): void {
+    if (proc !== this._proc) return; // stale handler from a proc we already replaced/stopped
+    if (this._stopped) return; // expected shutdown via stop()
+    this._baseUrl = undefined;
+    this._proc = undefined;
+    this._startPromise = undefined;
+    if (this._restarts >= this._maxRestarts) {
+      this._onSupervisionEvent?.({ kind: 'exhausted', restarts: this._restarts, code });
+      return; // crash-loop guard — stop trying, stays down until an explicit start()
+    }
+    this._restarts += 1;
+    this._onSupervisionEvent?.({ kind: 'restart', restarts: this._restarts, code });
+    setTimeout(() => {
+      if (this._stopped) return;
+      // Fire-and-forget: a failed restart leaves the manager down (liveness().up === false) rather
+      // than throwing into the timer; a later start()/dispatch can retry.
+      void this.start().catch(() => { /* stays down */ });
+    }, this._restartDelayMs);
   }
 }

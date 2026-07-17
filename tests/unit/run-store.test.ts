@@ -44,6 +44,25 @@ describe('InMemoryRunStore', () => {
     expect(view!.status).toBe('running');
   });
 
+  it('O-2: getTransitions returns the ordered from/to/ts audit trail', async () => {
+    const store = new InMemoryRunStore(CLOCK);
+    const runId = await store.createRun({ script: 'return 1;' });
+    await store.recordTransition(runId, null, 'queued', '2024-03-15T10:00:00Z');
+    await store.recordTransition(runId, 'queued', 'running', '2024-03-15T10:00:01Z');
+    await store.recordTransition(runId, 'running', 'completed', '2024-03-15T10:00:02Z');
+    const trail = await store.getTransitions(runId);
+    expect(trail).toEqual([
+      { from: null, to: 'queued', ts: '2024-03-15T10:00:00Z' },
+      { from: 'queued', to: 'running', ts: '2024-03-15T10:00:01Z' },
+      { from: 'running', to: 'completed', ts: '2024-03-15T10:00:02Z' },
+    ]);
+  });
+
+  it('O-2: getTransitions is empty for an unknown run', async () => {
+    const store = new InMemoryRunStore(CLOCK);
+    expect(await store.getTransitions('no-such-run')).toEqual([]);
+  });
+
   it('listRuns returns all created runs', async () => {
     const store = new InMemoryRunStore(CLOCK);
     await store.createRun({ script: 'return 1;', name: 'wf-a' });

@@ -4,6 +4,13 @@ import type { Budget } from './types.js';
 
 const AGENT_CAP = 1000;
 
+// D-V2G8-2 (review finding V4): fraction of the TOTAL budget each agent() call reserves ahead of
+// dispatch. There's no per-call cost estimate, so reserve() takes a flat share rather than the whole
+// remainder — reserving 100% collapsed parallel() to 1 concurrent call; a HALF lets a burst push at
+// most 2 calls' reservations through before the 3rd hits a real assertBudget() check against what's
+// actually left. Restores genuine concurrency while still hard-capping overshoot on a tight budget.
+const RESERVATION_FRACTION = 0.5;
+
 export interface RunGuardConfig {
   concurrency: number;
   budget: number | null;
@@ -44,6 +51,11 @@ export class RunGuard {
   }
 
   nextAgentId(): string {
+    // AGENT_CAP is a PER-RUN runaway-loop backstop (one workflow must not spawn >1000 agents over
+    // its whole life). The HOST-wide concurrency bound that review finding V2 was about — the one K
+    // runs must not multiply — is the process-global AgentSemaphore (D-DOS, 02-architecture.md §D-DOS),
+    // shared by every run and wrapping each real dispatch in RunManager. These are different caps:
+    // this one bounds a single run's lifetime issuance; the semaphore bounds concurrent host spawns.
     if (this._agentsIssued >= AGENT_CAP) {
       throw new AgentCapError();
     }
@@ -71,28 +83,17 @@ export class RunGuard {
     }
   }
 
-  /** Atomically reserves a per-call share of this run's budget for one about-to-dispatch agent()
-   *  call — synchronous, no `await` before the caller's own assertBudget() check, so a burst of
-   *  concurrent parallel() calls cannot all pass assertBudget() before any one of them has recorded
-   *  real spend via addTokens(). No-op (returns 0) when the budget is unbounded.
-   *
-   *  D-V2G8-2 (Gate 8 v2 review, adversarial.md finding V4 MEDIUM — a regression pin against this
-   *  method's own prior v1 fix, D-G8-6): reserving the ENTIRE remaining budget for a single call
-   *  fixed the TOCTOU race but overcorrected — the first call in a concurrent parallel() burst
-   *  monopolized 100% of it, so every other call in the SAME burst threw BudgetExceededError before
-   *  ever reaching the gateway and concurrency collapsed to exactly 1, always. There's no way to
-   *  know a call's real cost ahead of dispatch, so this reserves a flat HALF of the total budget per
-   *  call instead of all of it — a burst can never push more than 2 calls' worth of reservations
-   *  through before the 3rd (and every one after it) hits a real, unavoidable assertBudget() check
-   *  against what's actually left, restoring genuine concurrency for the common case (IT-037's
-   *  "generous budget" case) while still hard-capping overshoot once a budget is tight for real
-   *  (IT-030's near-exhausted case, IT-037's own "hard ceiling still holds" regression case).
-   *  Release the returned amount via releaseReserved() once the call settles, regardless of its
-   *  real cost. */
+  /** Atomically reserves a per-call share (RESERVATION_FRACTION of the total budget, capped at what's
+   *  actually left) for one about-to-dispatch agent() call — synchronous, no `await` before the
+   *  caller's own assertBudget() check, so a burst of concurrent parallel() calls cannot all pass
+   *  assertBudget() before any one of them has recorded real spend via addTokens(). See
+   *  RESERVATION_FRACTION (top of file) for why a flat fraction, not the whole remainder (D-V2G8-2,
+   *  review finding V4). No-op (returns 0) when the budget is unbounded. Release the returned amount
+   *  via releaseReserved() once the call settles, regardless of its real cost. */
   reserve(): number {
     if (this.total === null) return 0;
     const remaining = Math.max(0, this.total - this._spent - this._reserved);
-    const amount = Math.min(remaining, this.total / 2);
+    const amount = Math.min(remaining, this.total * RESERVATION_FRACTION);
     this._reserved += amount;
     return amount;
   }

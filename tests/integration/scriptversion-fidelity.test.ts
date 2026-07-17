@@ -37,13 +37,13 @@ describe('scriptVersion fidelity across a workflow update (IT-011, D-V7)', () =>
     const run1 = await facade.workflow_run({ name: 'sv-fidelity' });
     const status1 = await pollUntilSettled(facade, run1.result!.runId);
     expect(status1.status).toBe('completed');
-    const v1 = (status1 as unknown as { scriptVersion: string }).scriptVersion;
+    const v1 = status1.result!.scriptVersion;
 
     await runManager.catalog.register('sv-fidelity', `return 'version-two';`);
     const run2 = await facade.workflow_run({ name: 'sv-fidelity' });
     const status2 = await pollUntilSettled(facade, run2.result!.runId);
     expect(status2.status).toBe('completed');
-    const v2 = (status2 as unknown as { scriptVersion: string }).scriptVersion;
+    const v2 = status2.result!.scriptVersion;
 
     // The script content genuinely executes correctly (already green — VAL-014); what this test
     // pins is the METADATA: the second run's recorded scriptVersion must differ from the first's.

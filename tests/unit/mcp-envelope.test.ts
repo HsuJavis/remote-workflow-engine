@@ -30,4 +30,23 @@ describe('McpFacade — ResultEnvelope contract', () => {
     const env = await facade.workflow_list();
     expect(Array.isArray(env.result)).toBe(true);
   });
+
+  it('workflow_status is uniform: only {runId,status,result} at top level — RunStatusView lives in result (C-3)', async () => {
+    const facade = new McpFacade();
+    const run = await facade.workflow_run({ script: `phase('p'); return 1;` });
+    const runId = run.result!.runId;
+    let env = await facade.workflow_status({ runId });
+    for (let i = 0; i < 60 && (env.status === 'running' || env.status === 'queued'); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      env = await facade.workflow_status({ runId });
+    }
+    // The RunStatusView payload (phases/agents/scriptVersion) must NOT leak to the top level —
+    // it belongs under `result`, same envelope shape as every other tool.
+    expect(Object.keys(env).sort()).toEqual(['result', 'runId', 'status']);
+    expect(env).not.toHaveProperty('phases');
+    expect(env).not.toHaveProperty('agents');
+    expect(env).not.toHaveProperty('scriptVersion');
+    expect(env.result).toHaveProperty('phases');
+    expect(env.result).toHaveProperty('agents');
+  });
 });

@@ -63,7 +63,7 @@ describe('E2E: full workflow run lifecycle (REQ-001, REQ-005, REQ-007)', () => {
     await new Promise((r) => setTimeout(r, 500));
     const status = await mcpCall('tools/call', { name: 'workflow_status', arguments: { runId } });
     // After completion, phases should include step-1
-    expect(Array.isArray(status.phases)).toBe(true);
+    expect(Array.isArray(status.result.phases)).toBe(true);
   }, 15000);
 
   it('workflow_list includes the submitted run', async () => {

@@ -7,15 +7,7 @@ import { checkMeta } from './sandbox/guards.js';
 import type { RunSpec, ErrEnvelope } from './types.js';
 import type { AliasMap } from './gateway/client.js';
 import type { WorkflowCatalog } from './workflow-catalog.js';
-
-// Default alias set (REQ-004: sonnet/haiku/opus/default → provider models) — used when no
-// explicit AliasMap is injected (matches the server's default gateway config).
-const DEFAULT_ALIASES: AliasMap = {
-  sonnet: { provider: 'anthropic', model: 'claude-sonnet' },
-  haiku: { provider: 'anthropic', model: 'claude-haiku' },
-  opus: { provider: 'anthropic', model: 'claude-opus' },
-  default: { provider: 'anthropic', model: 'claude-sonnet' },
-};
+import { DEFAULT_ALIASES } from './default-aliases.js';
 
 // TASK-029/DES-024: narrow duck-typed port (not the full McpRegistry) so this facade doesn't
 // couple to the registry's own storage/probe internals — only the by-name existence check.

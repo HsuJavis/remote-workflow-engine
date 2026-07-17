@@ -108,4 +108,31 @@ describe('ClaudeAgentSdkGatewayClient: path-boundary enforcement at the tool lay
     const result = await canUseTool!('Read', { file_path: `${workspace}/output.txt` }, permOpts());
     expect(result?.behavior).toBe('allow');
   });
+
+  // V3-residual hardening: the boundary now inspects EVERY known path-bearing tool argument, not
+  // just file_path — Glob/Grep's `path`, NotebookEdit's `notebook_path`, and relative paths.
+  it('denies a Grep/Glob whose search `path` escapes the workspace (not a file_path field)', async () => {
+    const workspace = '/tmp/remote-workflow-runs/_adhoc/run-a';
+    const canUseTool = await invokeAndCaptureCanUseTool(workspace);
+    const escape = await canUseTool!('Grep', { pattern: 'KEY', path: '/tmp/remote-workflow-runs/_adhoc/run-b' }, permOpts());
+    expect(escape?.behavior).toBe('deny');
+    const ok = await canUseTool!('Glob', { pattern: '**/*.ts', path: `${workspace}/src` }, permOpts());
+    expect(ok?.behavior).toBe('allow');
+  });
+
+  it("denies a NotebookEdit whose `notebook_path` escapes the workspace", async () => {
+    const workspace = '/tmp/remote-workflow-runs/_adhoc/run-a';
+    const canUseTool = await invokeAndCaptureCanUseTool(workspace);
+    const result = await canUseTool!('NotebookEdit', { notebook_path: '/etc/secret.ipynb', new_source: 'x' }, permOpts());
+    expect(result?.behavior).toBe('deny');
+  });
+
+  it('denies a relative path that escapes the workspace (resolved against the workspace, not the engine cwd)', async () => {
+    const workspace = '/tmp/remote-workflow-runs/_adhoc/run-a';
+    const canUseTool = await invokeAndCaptureCanUseTool(workspace);
+    const escape = await canUseTool!('Read', { file_path: '../run-b/journal.jsonl' }, permOpts());
+    expect(escape?.behavior).toBe('deny');
+    const ok = await canUseTool!('Read', { file_path: 'nested/output.txt' }, permOpts());
+    expect(ok?.behavior).toBe('allow');
+  });
 });

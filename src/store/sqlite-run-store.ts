@@ -14,6 +14,7 @@ import type {
   JournalEntry,
   TranscriptEvent,
   RunStatus,
+  StateTransition,
 } from '../types.js';
 
 export class SqliteRunStore implements RunStore {
@@ -36,6 +37,17 @@ export class SqliteRunStore implements RunStore {
         script TEXT,
         args TEXT,
         budget TEXT
+      );
+    `);
+    // O-2: the state-transition audit trail (ARCH-006 "one writer of every transition, timestamp+runId").
+    // Append-only; `seq` (autoincrement rowid) preserves emission order for getTransitions.
+    this._db.exec(`
+      CREATE TABLE IF NOT EXISTS transitions (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        runId TEXT NOT NULL,
+        from_status TEXT,
+        to_status TEXT NOT NULL,
+        ts TEXT NOT NULL
       );
     `);
   }
@@ -111,8 +123,18 @@ export class SqliteRunStore implements RunStore {
     return map;
   }
 
-  async recordTransition(runId: string, _from: RunStatus | null, to: RunStatus, _ts: string): Promise<void> {
+  async recordTransition(runId: string, from: RunStatus | null, to: RunStatus, ts: string): Promise<void> {
+    // O-2: persist the transition (audit trail) BEFORE flipping the queryable status, so a reader
+    // never sees a status with no corresponding trail entry.
+    this._db.prepare('INSERT INTO transitions (runId, from_status, to_status, ts) VALUES (?, ?, ?, ?)').run(runId, from, to, ts);
     this._db.prepare('UPDATE runs SET status = ? WHERE runId = ?').run(to, runId);
+  }
+
+  async getTransitions(runId: string): Promise<StateTransition[]> {
+    const rows = this._db
+      .prepare('SELECT from_status, to_status, ts FROM transitions WHERE runId = ? ORDER BY seq ASC')
+      .all(runId) as Array<{ from_status: RunStatus | null; to_status: RunStatus; ts: string }>;
+    return rows.map((r) => ({ from: r.from_status, to: r.to_status, ts: r.ts }));
   }
 
   /** Persists the script's return value: SQLite row (queryable via getResult) + a journal.jsonl
