@@ -81,10 +81,10 @@ describe('VAL-014: named workflow registry (REQ-014)', () => {
         try {
           return await workflow('definitely-does-not-exist-xyz', {});
         } catch(e) {
-          // guards.ts's makeWorkflow normalizes every workflow() delegate failure's .code/.name
-          // to NESTING_ERROR (locked in by the passing sandbox-guards.test.ts nesting case) but
-          // preserves the original .message — REQ-014's "naming the missing workflow" lives there.
-          return 'caught: ' + e.message;
+          // C-2: guards.ts's makeWorkflow now PRESERVES the delegate failure's own code
+          // (CatalogNotFoundError here), not a flat NESTING_ERROR, and keeps the original .message —
+          // REQ-014's "naming the missing workflow" lives in .message.
+          return 'caught: ' + e.message + ' code=' + (e.name || e.code);
         }
       `,
     });
@@ -95,6 +95,8 @@ describe('VAL-014: named workflow registry (REQ-014)', () => {
         const res = await callTool('workflow_result', { runId });
         expect(String(res.result)).toMatch(/caught:/);
         expect(String(res.result)).toMatch(/definitely-does-not-exist-xyz/);
+        // C-2: the preserved code, not a flat NESTING_ERROR.
+        expect(String(res.result)).toMatch(/code=CatalogNotFoundError/);
         return;
       }
       await new Promise((r) => setTimeout(r, 200));

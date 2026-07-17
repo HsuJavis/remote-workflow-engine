@@ -57,15 +57,27 @@ describe('Sandbox VM guards', () => {
     expect(r.value).toBe(42);
   });
 
-  it('second-level workflow() nesting inside a script throws NESTING_ERROR', async () => {
-    const apiWithWorkflow: SandboxApi & { workflow?: unknown } = {
-      ...FAKE_API,
-      workflow: async () => { throw new Error('nested'); },
-    };
-    // The sandbox should prevent a second-level workflow() call with NESTING_ERROR
-    const r = await evaluateScript(`return workflow('child', {});`, apiWithWorkflow as SandboxApi);
+  it('second-level workflow() nesting (no delegate) throws NESTING_ERROR', async () => {
+    // The real second level has NO workflow delegate (the host only injects one at level 1) →
+    // the one-level limit fires. FAKE_API has no `workflow`, so this is that genuine case.
+    const r = await evaluateScript(`return workflow('child', {});`, FAKE_API);
     expect(r.kind).toBe('error');
     expect(r.error!.code).toBe('NESTING_ERROR');
+  });
+
+  it('C-2: a workflow() delegate failure preserves the underlying error code, not a flat NESTING_ERROR', async () => {
+    // A delegate present-but-throwing is NOT a nesting violation — its own code must survive
+    // (a caller catching workflow(unknownName) should see CatalogNotFoundError, e.g.).
+    const typedErr = Object.assign(new Error('Workflow not found in catalog: x'), { name: 'CatalogNotFoundError' });
+    const apiTyped: SandboxApi & { workflow?: unknown } = { ...FAKE_API, workflow: async () => { throw typedErr; } };
+    const rTyped = await evaluateScript(`return workflow('x', {});`, apiTyped as SandboxApi);
+    expect(rTyped.kind).toBe('error');
+    expect(rTyped.error!.code).toBe('CatalogNotFoundError');
+
+    // A delegate throwing an anonymous Error falls back to the generic WORKFLOW_ERROR (still not NESTING_ERROR).
+    const apiAnon: SandboxApi & { workflow?: unknown } = { ...FAKE_API, workflow: async () => { throw new Error('boom'); } };
+    const rAnon = await evaluateScript(`return workflow('x', {});`, apiAnon as SandboxApi);
+    expect(rAnon.error!.code).toBe('WORKFLOW_ERROR');
   });
 
   it('fs, require, process are not accessible in the sandbox', async () => {
@@ -75,6 +87,23 @@ describe('Sandbox VM guards', () => {
       expect(r.value).toBe('undefined');
     } else {
       expect(r.kind).toBe('error');
+    }
+  });
+
+  // V5 (accepted-limitation resolution): the vm determinism guards ARE escapable via a
+  // Function-constructor realm escape — but that escape reaches only realm INTRINSICS, never the
+  // absent host capabilities. This pins the actual risk profile: the SECURITY boundary holds under
+  // the exact vector that defeats the (self-only) determinism guards.
+  it('V5: a Function-constructor realm escape cannot reach process/require/fs (security boundary holds)', async () => {
+    for (const cap of ['process', 'require', 'fs', 'global', 'globalThis.process']) {
+      const r = await evaluateScript(`return typeof (Function('return ${cap}')());`, FAKE_API);
+      // Not reachable: the escape yields undefined (capability simply absent from the context),
+      // or the reference throws — never a live handle to the host capability.
+      if (r.kind === 'done') {
+        expect(r.value).toBe('undefined');
+      } else {
+        expect(r.kind).toBe('error');
+      }
     }
   });
 });

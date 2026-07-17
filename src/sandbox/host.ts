@@ -13,6 +13,19 @@ const CHILD_ENTRY = join(dirname(fileURLToPath(import.meta.url)), 'child-entry.t
 export type AgentRequestHandler = (prompt: string, opts: unknown, callSeq: number) => Promise<unknown> | unknown;
 export type WorkflowRequestHandler = (ref: unknown, args: unknown, callSeq: number) => Promise<unknown> | unknown;
 
+/** C-2 (review finding): carry the underlying error's OWN code across the sandbox IPC boundary
+ *  instead of flattening every agent()/workflow() failure to one of two generic codes — so a caller
+ *  can branch on `BudgetExceededError` / `AgentCapError` / `CatalogNotFoundError` / `WorkspaceEscapeError`
+ *  etc. Falls back to `fallback` only for anonymous errors (a bare `new Error()`, name === 'Error'). */
+export function ipcErrorCode(err: unknown, fallback: string): string {
+  if (err && typeof err === 'object') {
+    const e = err as { code?: unknown; name?: unknown };
+    if (typeof e.code === 'string' && e.code) return e.code;
+    if (typeof e.name === 'string' && e.name && e.name !== 'Error') return e.name;
+  }
+  return fallback;
+}
+
 export interface SandboxHostConfig {
   workspaceRoot: string;
   /** Handles a child's agent() call. Defaults to a canned response (no model call) — the
@@ -89,7 +102,7 @@ export class SandboxHost {
                 child.send({
                   t: 'agentThrow',
                   callSeq: msg.callSeq,
-                  error: { code: 'AGENT_ERROR', message: err instanceof Error ? err.message : String(err) },
+                  error: { code: ipcErrorCode(err, 'AGENT_ERROR'), message: err instanceof Error ? err.message : String(err) },
                 }),
               );
             break;
@@ -106,7 +119,9 @@ export class SandboxHost {
                 child.send({
                   t: 'agentThrow',
                   callSeq: msg.callSeq,
-                  error: { code: 'NESTING_ERROR', message: err instanceof Error ? err.message : String(err) },
+                  // A delegate present-but-throwing is NOT a nesting violation (that's the
+                  // !onWorkflowRequest branch above) — preserve the real code, e.g. CatalogNotFoundError.
+                  error: { code: ipcErrorCode(err, 'WORKFLOW_ERROR'), message: err instanceof Error ? err.message : String(err) },
                 }),
               );
             break;

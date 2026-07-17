@@ -2,6 +2,15 @@
 
 export type RunStatus = 'queued' | 'running' | 'suspended' | 'stopped' | 'completed' | 'failed';
 
+/** O-2 (review finding): one recorded state transition — the audit trail ARCH-006 promises
+ *  ("one writer of every state transition, timestamp+runId"). `from` is null for the initial
+ *  queued state. Persisted by RunStore.recordTransition, read back via RunStore.getTransitions. */
+export interface StateTransition {
+  from: RunStatus | null;
+  to: RunStatus;
+  ts: string;
+}
+
 export interface ErrEnvelope {
   code: string;
   message: string;

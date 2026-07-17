@@ -61,7 +61,7 @@ describe('Per-agent records survive a real server restart (IT-020, D-F9b)', () =
       }
       expect(status.status).toBe('completed');
       // Sanity: same-process observability already works today (D-V6 real read-back).
-      expect(status.agents?.[0]?.agentId).toBe('agent-1');
+      expect(status.result?.agents?.[0]?.agentId).toBe('agent-1');
 
       // --- "restart": fresh instances against the SAME on-disk data dir, no live process state ---
       const store2 = new SqliteRunStore(join(dir, 'store'), CLOCK);
@@ -72,7 +72,7 @@ describe('Per-agent records survive a real server restart (IT-020, D-F9b)', () =
       expect(statusAfterRestart.status).toBe('completed'); // run status itself already survives (real, Gate 7.5)
       // Forcing red: RunStore.getRun always returns agents:[] and nothing repopulates them from the
       // SqliteRunStore/agent-<id>.jsonl files after a restart.
-      expect(statusAfterRestart.agents?.length).toBeGreaterThan(0);
+      expect(statusAfterRestart.result?.agents?.length).toBeGreaterThan(0);
 
       const logAfterRestart = await facade2.workflow_agent_log({ runId, agentId: 'agent-1' });
       expect(logAfterRestart.error).toBeUndefined();

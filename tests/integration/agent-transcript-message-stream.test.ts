@@ -93,7 +93,7 @@ describe('AgentTranscriptSink captures the SDK message/tool_call/tool_result str
     }
     expect(status.status).toBe('completed');
 
-    const agents = (status as unknown as { agents: Array<{ agentId: string }> }).agents;
+    const agents = status.result!.agents as Array<{ agentId: string }>;
     expect(agents.length).toBeGreaterThan(0);
     const agentId = agents[0].agentId;
 

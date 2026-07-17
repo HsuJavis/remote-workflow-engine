@@ -2,7 +2,7 @@
 // Pure delegation + uniform ResultEnvelope: every tool call resolves to an envelope,
 // never throws across the tool boundary (DES-001).
 import { rmSync } from 'node:fs';
-import { listArtifacts, readArtifactChunk, type ArtifactEntry, type ChunkResult } from './workspace-artifacts.js';
+import { readArtifactChunk, type ArtifactEntry, type ChunkResult } from './workspace-artifacts.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
 import type { RunStore } from './run-store.js';
@@ -94,11 +94,14 @@ export class McpFacade {
     }
   }
 
-  async workflow_status(a: { runId: string }): Promise<ResultEnvelope<RunStatusView> & Partial<RunStatusView>> {
+  /** C-3 (review finding): returns the SAME uniform `{ runId, status, result }` envelope as every
+   *  other tool — the full RunStatusView (phases/agents/scriptVersion) is the `result` payload, NOT
+   *  spread at the top level (which previously made this the only non-uniform tool of the 16). */
+  async workflow_status(a: { runId: string }): Promise<ResultEnvelope<RunStatusView>> {
     const view = await this.store.getRun(a.runId);
     if (!view) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
     const merged = await this.runManager.status(a.runId).catch(() => view);
-    return { ...merged, result: merged };
+    return { runId: merged.runId, status: merged.status, result: merged };
   }
 
   /** Returns the script's own return value (REQ-005 acceptance), not the RunStatusView — poll
@@ -161,15 +164,10 @@ export class McpFacade {
   async workflow_artifacts(a: { runId: string }): Promise<ResultEnvelope<ArtifactEntry[]>> {
     const stored = await this.store.getRun(a.runId);
     if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
-    const workspace = await this.runManager.workspacePath(a.runId);
-    if (!workspace) return { runId: a.runId, status: stored.status, result: [] };
-    let files: ArtifactEntry[] = [];
-    try {
-      files = listArtifacts(workspace);
-    } catch {
-      files = []; // workspace dir never materialized (no writes yet) — not an error
-    }
-    return { runId: a.runId, status: stored.status, result: files };
+    // R-3: read through the workspace owner (RunManager), not a direct filesystem call from the
+    // facade. null (no workspace) and [] (materialized-but-empty) both surface as an empty list.
+    const files = await this.runManager.listArtifacts(a.runId);
+    return { runId: a.runId, status: stored.status, result: files ?? [] };
   }
 
   /** REQ-022 (v1.5): read a windowed, size-capped, realpath-contained chunk of a workspace file, so

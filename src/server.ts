@@ -186,7 +186,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
       type: 'object',
       properties: {
         runId: { type: 'string', description: 'The run the agent call belongs to.' },
-        agentId: { type: 'string', description: 'The agentId (from workflow_status\'s agents[]) to fetch the transcript for.' },
+        agentId: { type: 'string', description: 'The agentId (from workflow_status\'s result.agents[]) to fetch the transcript for.' },
       },
       required: ['runId', 'agentId'],
     },

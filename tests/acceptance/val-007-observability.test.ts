@@ -95,7 +95,7 @@ describe('VAL-007: per-agent observability (REQ-007)', () => {
         const body = await res.json() as { result?: { content: Array<{ text: string }> } };
         const s = JSON.parse(body.result!.content[0].text);
         if (s.status === 'completed') {
-          const phases = (s.phases as Array<{ title: string }>).map((p) => p.title);
+          const phases = (s.result.phases as Array<{ title: string }>).map((p) => p.title);
           expect(phases).toContain('alpha');
           expect(phases).toContain('beta');
           return;

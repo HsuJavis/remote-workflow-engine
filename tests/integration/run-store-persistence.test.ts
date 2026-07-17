@@ -68,6 +68,24 @@ describe('SqliteRunStore persistence (ARCH-006)', () => {
     expect(runs.length).toBe(2);
   });
 
+  it('O-2: the state-transition audit trail (from/to/ts) survives restart', async () => {
+    if (!SqliteRunStore) throw new Error('SqliteRunStore: not implemented');
+    const store1 = new SqliteRunStore(dir, CLOCK);
+    const runId = await store1.createRun({ script: 'return 1;' });
+    await store1.recordTransition(runId, null, 'queued', '2024-01-01T00:00:00Z');
+    await store1.recordTransition(runId, 'queued', 'running', '2024-01-01T00:00:01Z');
+    await store1.recordTransition(runId, 'running', 'completed', '2024-01-01T00:00:02Z');
+
+    // Fresh instance simulates restart — the trail must be read back off disk, in order.
+    const store2 = new SqliteRunStore(dir, CLOCK);
+    const trail = await store2.getTransitions(runId);
+    expect(trail).toEqual([
+      { from: null, to: 'queued', ts: '2024-01-01T00:00:00Z' },
+      { from: 'queued', to: 'running', ts: '2024-01-01T00:00:01Z' },
+      { from: 'running', to: 'completed', ts: '2024-01-01T00:00:02Z' },
+    ]);
+  });
+
   it('running runs re-hydrate as failed on restart (not silently left as running)', async () => {
     if (!SqliteRunStore) throw new Error('SqliteRunStore: not implemented');
     const store1 = new SqliteRunStore(dir, CLOCK);
