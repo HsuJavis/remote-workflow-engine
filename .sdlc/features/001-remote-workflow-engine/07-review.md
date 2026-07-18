@@ -4,6 +4,336 @@ status: passed
 ---
 # 07 Review & Retro — Gate 8
 
+## v4 GATE 8 CLOSING REVIEW (2026-07-19, CURRENT / AUTHORITATIVE)
+
+> This section supersedes "## v3 GATE 8 CLOSING REVIEW (2026-07-18)" below (kept for history). v4
+> adds workspace byte-transport (ARCH-020), seed-into-workspace + .claude RCE strip (ARCH-021), and
+> run-workspace retention / TTL GC (ARCH-022). REQ-022..026 / IMPL-081..084 / VAL-031..035.
+> REQ-022..026 requirement text was backfilled into 01-requirements.md on 2026-07-19, reconnecting
+> the five previously-broken ARCH-020..022 chains. Gate 7.5 v4 ROUND 1 PASSED 2026-07-19.
+
+### 1. Traceability (347 items, 3 gaps)
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` — 347 items scanned, 3 gaps
+detected (exit 1). Dashboard regenerated: `dashboard.html`.
+
+The five HIGH broken-chain gaps from v3 Gate 8 (ARCH-020..022 → missing REQ-022..026) are CLOSED:
+the requirement headings were backfilled into 01-requirements.md on 2026-07-19, reconnecting all
+chains. The 3 remaining gaps are pre-existing and out-of-v4-scope:
+
+| Sev | Type | ID | Description | Classification |
+|---|---|---|---|---|
+| HIGH | 未真實驗證 | REQ-012 | no real:true VAL; mock-only | OIDC deferred; accepted gap D5 |
+| MID | TDD | IMPL-082 | no test item directly cites IMPL-082 | trace-label cleanup; covered in substance (see §3) |
+| LOW | 未實作 | TASK-018 | no corresponding implementation | OIDC deferred; accepted gap D5 |
+
+Zero drift: no IMPL/DES/UT with mismatched `iter` stamps relative to their upstream within v4.
+
+**IMPL-082 detailed assessment**: The trace tool flags IMPL-082 (readBody body cap, `src/server.ts:315-335,
+620, 669-671`) as a TDD-ordering gap because no test item's `traces:` field directly references
+IMPL-082 or DES-033. However, IT-042 (`tests/integration/v15-v2-workspace-transport.test.ts`)
+explicitly includes a body-cap test at line 75 (`REQ-024: an over-cap request body is rejected with
+413, not buffered/OOMed`) and IT-042 traces to ARCH-020, whose note explicitly lists "server.ts
+readBody body-size cap (413)" as part of its scope. VAL-033 provides additional real-run evidence
+(30 MB POST → 413 on the live engine). **Assessment: trace-label cleanup item — the code is covered
+in substance by IT-042 and VAL-033. IT-042 should add DES-033 to its traces field to close the
+formal chain. Not a genuine uncovered-code gap. Not a blocker for this iteration.**
+
+### 2. Architecture Consistency — v4 ARCH-020..022 (lean-tier self-check, QM)
+
+No pre-run panel reports exist for the v4 scope (no new `.panel/review/*.md`). Per lean-tier rules
+(QM, single-area, v4 slice), the architecture-consistency check is performed here against the
+v4-touched files listed on each IMPL in 06-impl-log.md.
+
+**ARCH-020 (Workspace byte-transport) — IMPL-081, IMPL-082**
+`src/workspace-artifacts.ts`: `listArtifacts(workspace)` recursively walks the workspace directory,
+applying `isPathContained` (realpath-based) per entry — symlink escapes skipped, not silently
+included. `.git` directories are excluded at any depth (engine seed baseline, not client deliverable).
+Each regular file gets `{path, size, sha256}` with workspace-relative forward-slash paths.
+`readArtifactChunk(workspace, relPath, offset, length, maxChunk=1MiB)` applies `isPathContained`
+before any file open — a path escaping via `../` or symlink returns `{error:'PATH_OUTSIDE_WORKSPACE'}`
+with no bytes read. Positioned read (openSync/readSync at offset) so large files are never fully
+buffered for a windowed read. `src/server.ts:315-335`: `readBody(req, maxBytes=8MiB)` accumulates
+chunks into a buffer, calling `reject(new BodyTooLargeError(maxBytes))` as soon as accumulated
+length exceeds the cap — the socket continues draining (no back-pressure hang) and the caller sends
+413. Consistent with ARCH-020.
+
+**ARCH-021 (Seed-into-workspace) — IMPL-083**
+`src/workspace-seed.ts`: `materializeSeed(workspace, seed[])` applies `isPathContained` before every
+write (path-escape → `rejected[]`) and checks `.git` internals (`/.git/` or `/.git` suffix →
+`rejected[]`). `STRIP_RE = /(^|\/)\.claude\/(settings[^/]*\.json|hooks\/.*)$/` matches
+`.claude/settings.json`, `.claude/settings.local.json`, and `.claude/hooks/**` at any nesting depth
+— stripped entries go to `stripped[]` and are never written. `.claude/CLAUDE.md` and
+`.claude/skills/**` are explicitly NOT stripped (inert data / intended materialization surface).
+Seed materialization is called from `RunManager` before `_runLive` (pre-agent, replay-safe).
+Consistent with ARCH-021 (closes DES-028 hook-gate for the seed path).
+
+**ARCH-022 (Run-workspace retention) — IMPL-084**
+`src/workspace-gc.ts`: `reclaimStaleWorkspaces(workRoot, ttlMs, statusOf, nowMs)` only deletes a
+workspace when `statusOf(runId)` returns a TERMINAL status (`stopped|completed|failed`) AND the
+directory mtime is older than the TTL. A `null` status (store miss / unknown) or non-TERMINAL status
+is treated as keep — never deletes an active/suspended/queued run. `statusOf` and `nowMs` are
+injected (unit-testable without wall-clock). `src/mcp-facade.ts:188-192`: `workspace_purge` checks
+`stored.status` against TERMINAL states before deleting — returns `RUN_NOT_TERMINAL` error for
+active/suspended runs. `src/server.ts:572-581`: GC ticker only started when
+`config.workspaceTtlMs > 0` (opt-in; default = no auto-GC); cleared on server shutdown (line 694).
+Consistent with ARCH-022.
+
+**v4 architecture-consistency summary:**
+- New HIGH findings: 0
+- New MEDIUM findings: 0
+- New LOW findings: 0
+- All three ARCH-020..022 modules are implemented exactly as specified; no deviations found.
+- No amendments to prior backlog items: V1, V3 residual, V4, V5, O-2, R-1, R-3, C-2, C-3, S-2,
+  and the v3 LOW SessionInitRecord audit-fidelity note are unchanged.
+
+### 3. Validation and Handover
+
+Gate 7.5 v4 ROUND 1 passed (2026-07-19, `08-validation.md` §v4 ROUND 1). VAL-031..035 all real-tier:
+
+- VAL-031 (REQ-022): real — `workflow_artifacts` returned `sub/a.txt` with sha256 and nested path;
+  `.claude/hooks/evil.sh` absent (stripped, confirming VAL-034 / ARCH-021 wiring)
+- VAL-032 (REQ-023): real — windowed read returns first 5 bytes in base64; path-escape
+  `../../../../etc/passwd` returns `PATH_OUTSIDE_WORKSPACE` error, no bytes leaked
+- VAL-033 (REQ-024): real — 30 MB body → HTTP 413 on live engine, no OOM/buffering
+- VAL-034 (REQ-025): real — `.claude/hooks/evil.sh` seed entry stripped; `sub/a.txt` materialized
+  and readable (byte-verified via VAL-032)
+- VAL-035 (REQ-026): real — completed-run purge returns `{purged:true}`; post-purge `workflow_artifacts`
+  returns `[]`; active-run refusal exercised by IT-042 (`RUN_NOT_TERMINAL` assert, green in 522-test
+  suite)
+- REQ-012: deferred (D5); no VAL; accepted gap
+
+trace.py reports 0 未真實驗證 for REQ-022..026. REQ-012 HIGH gap is pre-existing, accepted.
+No new config keys, env vars, ports, or feature flags introduced by v4 (confirmed at Gate 7.5 v4
+ROUND 1). README.md and DEPLOY.md present; no new entries required for v4; no superseded commands or
+duplicated config keys.
+
+### 4. v4 Retro
+
+**What went well:**
+- All three ARCH-020..022 modules (workspace byte-transport, seed materialization + .claude strip,
+  workspace retention / TTL GC) implemented and validated in one Gate 7.5 pass without a route-back.
+- The `.git` directory exclusion in `listArtifacts` (skips the engine's own seed baseline) was added
+  proactively, closing a correctness gap that would have surfaced `.git` internals as client-pullable
+  artifacts — caught during implementation, not at review.
+- Realpath-based containment (`isPathContained`) applied consistently across all three path-sensitive
+  surfaces (list, read, write) — no lexical-only path check left.
+- Gate 7.5 real probes are fully deterministic (seed-based, no model execution needed); all five REQs
+  verified against the live production engine without modifying or restarting it.
+- Backfilling REQ-022..026 requirement text into 01-requirements.md closed five HIGH broken chains
+  in a single edit, consistent with the v3 retro recommendation ("REQ text committed before ARCH").
+- 522 tests all green; IMPL-082 body-cap coverage confirmed present in IT-042 (body-cap 413 test at
+  line 75 of v15-v2-workspace-transport.test.ts).
+
+**What to change next time:**
+- IMPL-082's DES-033 trace is not linked from any test item's `traces:` field — IT-042 covers the
+  behavior but omits the formal link. Add DES-033 to IT-042's traces as a follow-up trace-label
+  cleanup (low priority, no correctness risk).
+- Seed write in `materializeSeed` uses `writeFileSync(abs, Buffer.from(f.contentB64 ?? '', 'base64'))`
+  which silently writes a zero-byte file if contentB64 is malformed base64. A future iteration could
+  add a base64 validation guard (reject rather than silently materialize garbage).
+
+**Known tech debt (carried forward):**
+- IMPL-082 trace-label: IT-042 should cite DES-033 in its `traces:` field (trace-label cleanup; LOW)
+- V1: auth seam absent (MEDIUM) — no HTTP auth on engine endpoints; host firewall mitigation
+- V3 residual: Bash opt-in bypass (LOW) — workspace confinement covers Read/Write via realpath
+  callback; Bash requires explicit opt-in but is not blocked
+- V3 LOW: SessionInitRecord.resolvedProjectRoot audit-fidelity (stores workspace cwd instead of null
+  on clean path)
+- V4, V5, O-2, R-1, R-3, C-2, C-3, S-2: unchanged from v2/v3 Gate 8 backlog (see sections below)
+- REQ-012 / TASK-018 (OIDC): deferred per D5; no timeline
+
+### Report
+
+```
+Gaps: high=1 mid=1 low=1 (all 3 recorded as known backlog; none in v4 scope)
+  - high=1: REQ-012 (OIDC, 未真實驗證) — deferred D5, not a blocker
+  - mid=1:  IMPL-082 (TDD trace-label) — covered in substance by IT-042+VAL-033; cleanup item only
+  - low=1:  TASK-018 (OIDC auth middleware, 未實作) — deferred D5, not a blocker
+Drift: none
+Architecture consistent: yes — ARCH-020..022 fully consistent with IMPL-081..084;
+  no new findings (HIGH/MEDIUM/LOW); all v4 path-sensitive surfaces use realpath containment;
+  10 prior backlog items unchanged
+Validation: real-tier all-green? yes (VAL-031..035, 5/5 real:true; REQ-012 accepted D5)
+           README+DEPLOY present? yes (no v4-specific updates required)
+Conclusion: v4 slice closes; gates.review.passed stays true;
+  3 residual gaps are pre-existing accepted backlog (OIDC D5 x2 + IMPL-082 trace-label cleanup)
+```
+
+---
+
+## v3 GATE 8 CLOSING REVIEW (2026-07-18, CURRENT / AUTHORITATIVE)
+
+> This section supersedes "## v2 GATE 8 FINAL CLOSING REVIEW (2026-07-04 22:40)" below (kept for
+> history). v3 adds MCP-by-name provisioning (ARCH-015), server-side secrets (ARCH-016), SDK
+> session-options builder + timeout race (ARCH-017), asset-ingestion policy (ARCH-018), and workRoot
+> project-isolation guard (ARCH-019). REQ-016..021 / IMPL-068..080 / VAL-025..030.
+
+### 1. Traceability (337 items, 8 gaps)
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` — 337 items scanned, 8 gaps
+detected (exit 1 expected). Dashboard regenerated: `dashboard.html`.
+
+All 8 gaps are pre-existing or out-of-v3-scope; none introduced by v3 IMPL-068..080:
+
+| Sev | Type | ID | Description | Classification |
+|---|---|---|---|---|
+| HIGH | 斷鏈 | ARCH-020 | traces to non-existent REQ-022 | v4 chain — REQ text never written |
+| HIGH | 斷鏈 | ARCH-020 | traces to non-existent REQ-023 | v4 chain — REQ text never written |
+| HIGH | 斷鏈 | ARCH-020 | traces to non-existent REQ-024 | v4 chain — REQ text never written |
+| HIGH | 斷鏈 | ARCH-021 | traces to non-existent REQ-025 | v4 chain — REQ text never written |
+| HIGH | 斷鏈 | ARCH-022 | traces to non-existent REQ-026 | v4 chain — REQ text never written |
+| HIGH | 未真實驗證 | REQ-012 | mock-only, no real:true VAL | OIDC deferred; accepted gap D5 |
+| MID | TDD | IMPL-082 | no test coverage | v4 IMPL — backlog |
+| LOW | 未實作 | TASK-018 | no corresponding implementation | OIDC deferred; accepted gap D5 |
+
+Top v4 backlog item: **backfill REQ-022..026 requirement text + close v4 Gate 7.5/8** (closes 5 HIGH
+broken chains and 1 MID TDD gap for IMPL-082). REQ-012 and TASK-018 remain under decision D5 (OIDC
+deferred, no timeline set). Zero drift: no IMPL/DES/UT with mismatched `iter` stamps relative to their
+upstream within v3.
+
+### 2. Architecture Consistency — v3 ARCH-015..019 (lean-tier self-check, QM)
+
+The existing `.panel/review/adversarial.md` and `.panel/review/quality-dimensions.md` cover
+IMPL-001..066 (v2 baseline) only and are not applicable to the v3 scope. Per lean-tier rules (QM,
+single-area, v3 slice), the architecture-consistency check is performed here against the v3-touched
+files listed on each IMPL in 06-impl-log.md.
+
+**ARCH-015 (MCP Provisioning Registry) — IMPL-068, IMPL-073**
+`src/mcp-registry.ts`: SQLite-backed, probe-gated `register()` (returns `MCP_PROBE_FAILED` on failed
+probe), strict `resolveInjected(referencedNames)` returning `{error:'MCP_NOT_PROVISIONED'}` on first
+unknown name. Host ambient MCP never inherited (only explicitly referenced names returned). Consistent
+with ARCH-015.
+
+**ARCH-016 (Secret Store + Resolver) — IMPL-069, IMPL-074, IMPL-079**
+`src/secret-resolver.ts`: atomic all-or-nothing `resolveConfig()`, typed errors `SECRET_MISSING` /
+`SECRET_HANDLE_INVALID`, `redact()` baked in for transcript/dashboard sanitisation. `src/path-
+containment.ts`: `isPathContained()` uses `safeRealpath` (realpathSync with lexical fallback) —
+symlink-safe. Consistent with ARCH-016.
+Note: IMPL-079 closes the symlink escape from v2 adversarial finding V3 (realpath-based callback
+replaces prior lexical-resolve check). Bash opt-in bypass and non-`file_path` tools remain outside the
+realpath callback scope (carried residual — see V3 status update below).
+
+**ARCH-017 (SDK Session-Options Builder + outer timeout race) — IMPL-070, IMPL-072, IMPL-075**
+`src/session-options-builder.ts`: pure builder (no fs/net/process direct imports), `thinkingMode =
+'disabled'` for non-Anthropic (D-F6), `settingSources:['project']` hardcoded — never 'user' or
+'local' (R9), DES-031 session-init re-walk calls `findProjectMarkerAncestor(cwd, workRoot)` and
+returns `{ok:false, error:'WORKROOT_INSIDE_PROJECT'}` if hit. `src/timeout-race.ts`:
+`raceWithTimeout` calls `opts.kill()` on timeout (D-KILL, not bare abandon), wrapped in
+`semaphore.withSlot()` for slot accounting, returns `FailureEnvelope{kind,attempts,elapsedMs}`.
+Consistent with ARCH-017.
+LOW observation: `resolvedProjectRoot: config.cwd` at `session-options-builder.ts:115` — in the
+nominal clean path (no WORKROOT_INSIDE_PROJECT hit) there is no project root; the field should be null
+rather than the run-workspace cwd. The field is typed `string | null` but always receives `config.cwd`,
+conflating workspace path with project root in the audit record. Not a security issue; a low
+audit-fidelity concern.
+V2 finding CLOSED: `src/server.ts:525` creates `agentSemaphore = createSemaphore(config?.agentSlots ??
+32)` at the composition root, injected into `RunManager` and from there into each call's semaphore
+slot. Per-run `RunGuard` handles budget accounting; the process-global semaphore bounds concurrent host
+spawns. D-DOS wired correctly; V2 MEDIUM is closed.
+
+**ARCH-018 (Asset-Ingestion Policy) — IMPL-077, IMPL-078**
+`src/asset-sync.ts`: `classifyAsset()` — `hook → {action:'reject', code:'HOOKS_UNSUPPORTED'}`,
+`mcp-config → {action:'redirect-to-provisioning'}`, `skill/other → {action:'materialize'}`. Wired
+into the `asset_push` endpoint. Consistent with ARCH-018.
+
+**ARCH-019 (WorkRoot Project-Isolation Guard) — IMPL-080**
+`src/workroot-guard.ts`: `WorkRootInsideProjectError {code:'WORKROOT_INSIDE_PROJECT', ancestor, marker,
+remedy}`, `assertWorkRootIsolated()` walks all ancestors to the filesystem root (boot-time check),
+`findProjectMarkerAncestor()` uses `realpathImpl` first (symlink-safe), walks from resolved path to
+`stopAt` exclusive, checks both `.git` and `CLAUDE.md`. Session-init re-walk wired in
+`buildSessionOptions()`. Consistent with ARCH-019.
+
+**v3 architecture-consistency summary:**
+- New HIGH findings: 0
+- New MEDIUM findings: 0 (V2 CLOSED; V3 Bash residual downgraded — see below)
+- New LOW findings: 1 (SessionInitRecord.resolvedProjectRoot audit-fidelity, noted above)
+
+v2-era backlog item status after v3 review:
+- V2 (global-vs-per-run RunGuard, MEDIUM): CLOSED — AgentSemaphore wired process-global at composition root (server.ts:525)
+- V3 (Bash opt-in/symlink bypass, MEDIUM): PARTIALLY CLOSED — symlink escape fixed by IMPL-079 realpath; Bash opt-in bypass remains, downgraded to LOW (Bash is off-by-default; enabling requires explicit BUILT_IN_CORE_TOOLS extension, a deliberate operator choice not an oversight)
+- V1, V4, V5, O-2, R-1, R-3, C-2, C-3, S-2: unchanged (see v2 GATE 8 section for detail)
+
+Remaining open backlog items: 10 (V2 closed; V3 reduced to LOW residual; 9 others unchanged).
+
+### 3. Validation and Handover
+
+Gate 7.5 v3 ROUND 1 passed (2026-07-18, `08-validation.md` §v3 ROUND 1). VAL-025..030 all real-tier:
+
+- VAL-025 (REQ-016): real — SDK gateway executes end-to-end; D-F11 capability gap (qwen2.5:7b
+  does not emit native tool_use) accepted
+- VAL-026 (REQ-017): real — MCP_NOT_PROVISIONED error path; provision probe (real HTTP HEAD to live
+  engine); DB handle confirmed present
+- VAL-027 (REQ-018): real — SECRET_MISSING error; DB stores handle not value; workspace-clean grep
+  produced no output
+- VAL-028 (REQ-019): real — HOOKS_UNSUPPORTED returned; nothing written to workspace
+- VAL-029 (REQ-020): real — `val-023` test 2/2 pass in 7.76s with real fault-injected HTTP server +
+  real `ClaudeAgentSdkGatewayClient`
+- VAL-030 (REQ-021): real — WORKROOT_INSIDE_PROJECT exit=1 on nested path; clean boot reaches ready
+  (exit 124 = SIGTERM kill by timeout, not error)
+- REQ-012: deferred (D5); no VAL; accepted gap
+
+trace.py reports 0 未真實驗證 for REQ-016..021. REQ-012 HIGH gap is pre-existing, accepted.
+Config-key sync: no new required config keys introduced by v3 (verified at Gate 7.5).
+README.md (407 lines) and DEPLOY.md (835 lines) present; content verified at Gate 7.5 as step-by-step
+current-state. No superseded commands or duplicated config keys found.
+
+### 4. v3 Retro
+
+**What went well:**
+- All 5 ARCH-015..019 modules (MCP registry, secret resolver, session options builder, asset-ingestion
+  policy, workRoot guard) implemented and validated in one gate cycle without a route-back.
+- DES-031 (session-init re-walk for intra-run marker injection) was discovered and closed during test
+  writing inside the same iteration rather than slipping to a follow-up.
+- D-F6 (thinking-disabled for non-Anthropic) fixed a real 400 regression caught by the qwen2.5:7b
+  spike before any v3 code was written — spike-then-design sequence worked.
+- D-KILL (kill subprocess on timeout, not bare abandon) produces a deterministic `FailureEnvelope`
+  instead of a silently-hung slot — better observability than the v1/v2 era.
+- D-DOS global AgentSemaphore wired at composition root (server.ts:525) closes V2 (the per-run vs.
+  process-global RunGuard gap from v2 Gate 8 backlog) — confirmed by reading the wiring, not by
+  inference from the design docs.
+- IMPL-079 realpath-based path containment closes the symlink escape in the workspace confinement
+  callback (V3 MEDIUM → LOW residual Bash opt-in only).
+- Gate 7.5 round 1 passed without a repeat round; all 6 v3 REQs real-verified in a single pass.
+
+**What to change next time:**
+- REQ-022..026 were built opportunistically alongside v3 without writing requirement headings into
+  01-requirements.md first. Five HIGH broken chains resulted. Enforce: REQ text committed to
+  01-requirements.md before ARCH is created, even for exploratory slices.
+- IMPL-082 (v4) has no test coverage — the TDD discipline broke for the opportunistic v4 slice.
+  Enforce Gate 5 test-first before any IMPL is committed.
+- Future slices should complete their own gate sequence before building the next. Building v4 ARCH/IMPL
+  alongside v3 created debt that now requires a dedicated v4 Gate 1.5–8 backfill.
+
+**Known tech debt (v4 backlog):**
+- TOP: backfill REQ-022..026 requirement text + close v4 Gate 7.5/8 (closes 5 HIGH broken chains,
+  1 MID TDD gap IMPL-082)
+- V1: auth seam absent (MEDIUM) — no HTTP auth on engine endpoints; host firewall mitigation (ufw
+  192.168.0.0/24)
+- V3 residual: Bash opt-in bypass (LOW) — workspace confinement covers Read/Write via realpath
+  callback; Bash requires explicit opt-in but is not blocked
+- NEW LOW: SessionInitRecord.resolvedProjectRoot audit-fidelity (always stores workspace cwd, not
+  actual project root; should be null in the nominal clean path)
+- V4, V5, O-2, R-1, R-3, C-2, C-3, S-2: unchanged from v2 Gate 8 backlog (see section below)
+- REQ-012 (OIDC): deferred per D5; no timeline
+
+### Report
+
+```
+Gaps: high=6 mid=1 low=1 (all 8 recorded as known tech debt; none in v3 scope)
+Drift: none
+Architecture consistent: yes — ARCH-015..019 fully consistent with IMPL-068..080;
+  V2 finding CLOSED (D-DOS global semaphore at composition root);
+  V3 finding partially closed (symlink escape fixed by IMPL-079; Bash opt-in → LOW);
+  10 backlog items remain (was 11)
+Validation: real-tier all-green? yes (VAL-025..030, 6/6 real:true or accepted D5)
+           README+DEPLOY present? yes (README.md 407L, DEPLOY.md 835L)
+Conclusion: v3 iteration can close; gates.review.passed stays true;
+  v4 chain-backfill (REQ-022..026 requirement text + Gate 7.5/8) is the top backlog item
+```
+
+---
+
 ## v2 GATE 8 FINAL CLOSING REVIEW (2026-07-04 22:40, CURRENT / AUTHORITATIVE)
 
 > This section supersedes "## v2 GATE 8 CLOSING RE-REVIEW (2026-07-04 20:05)" immediately below

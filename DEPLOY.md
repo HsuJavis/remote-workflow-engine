@@ -4,10 +4,17 @@
 > 凡 validator 為了把系統跑起來而做、但 README quickstart 未涵蓋的動作，都記在這裡。
 >
 > ---
-> ## ⭐ v3（2026-07-11，最新 — 目前實際部署狀態，凡與下方舊輪敘述衝突者，以本塊為準）
+> ## ⭐ v3（2026-07-18，最新 — Gate 7.5 v3 ROUND 1 PASSED — 目前實際部署狀態，凡與下方舊輪敘述衝突者，以本塊為準）
+>
+> Gate 7.5 v3 ROUND 1（2026-07-18）：REQ-016..021 全部對真實系統驗證通過（VAL-025..030，見
+> `.sdlc/features/001-remote-workflow-engine/08-validation.md`）。生產引擎為 systemd user service，
+> 綁定 `0.0.0.0:8787`（ufw 白名單 `192.168.0.0/24` + SSH），`workRoot=/home/user/.local/share/rwe-data`，
+> `gateway:"sdk"` + managed LiteLLM proxy + Ollama `qwen2.5:7b`。新能力（v3）：MCP 依名 provisioning
+> （`mcp_provision` 工具）、伺服器端 `${secret:NAME}` handle 機制（`RWE_SECRET_<NAME>` 環境變數）、
+> hook 封鎖（`HOOKS_UNSUPPORTED`）、SDK gateway 逾時保底、workRoot 隔離保護（boot fail-fast）。
 >
 > 這一輪把系統實際切到 **`gateway:"sdk"`** 常駐運行，並經真實 Gate 7.5（透過 remote-workflow-plugin
-> 對真實 `qwen2.5:7b` 端對端）驗證。相對於下方 v1/v2 敘述，**三件事已改變**：
+> 對真實 `qwen2.5:7b` 端對端）驗證。相對於下方 v1/v2 敘述，**四件事已改變**：
 >
 > 1. **實際部署走 `gateway:"sdk"`（不是 `direct-fetch`）**。這條路徑才有 agent 工具迴圈 + MCP，
 >    所以需要 LiteLLM 代理（見 §1 的 Python 3.11/3.12 setup）。若你只要純工作流程邏輯、不需要
@@ -427,6 +434,7 @@ port 的問題（實測常駐 sdk 服務跑在動態 port，可與完整測試�
 | `RWE_BIND` | `bind` | `127.0.0.1` |
 | `RWE_PORT` | `port` | `8787` |
 | `RWE_WORK_ROOT` | `workRoot`（狀態/journal/工作目錄根） | 設定檔值，否則系統暫存目錄下自動建立 |
+| `RWE_SECRET_<NAME>` | **v3 新增** — 伺服器端 secret store（REQ-018）。provisioned MCP config 裡的 `${secret:NAME}` handle 由這個 env var 解析（`<NAME>` 對應 handle 裡的名稱，大小寫敏感）。引擎啟動時不驗證，只在有 run 引用 MCP 時才解析——缺少則該 run 以 `SECRET_MISSING` 報錯，從不外洩 handle 值或靜默跳過。**絕不放進 `rwe.config.json`（config 只存 handle，不存值）**；建議透過 systemd unit 的 `Environment=` 或 `EnvironmentFile=` 注入，或者 `export RWE_SECRET_MY_TOKEN=<value>` 方式設定。 | 無預設（缺少且 MCP 有引用時 run 報錯） |
 
 ## 1c. 安全模型（Security Model，v2 Gate 8 review 收尾修復，D-V2G8-1(a)(b)(c)(d)）
 
@@ -816,3 +824,12 @@ curl -s -D - -o /dev/null -X POST $BASE/v1/chat/completions \
 - 回應標頭有 `x-litellm-*` ⇒ **LiteLLM**；`server: uvicorn` + 有 `/version` ⇒ **vLLM**；
   有 `/api/version` ⇒ **Ollama**；三個探針都 404 但 `/v1/chat/completions` 正常 ⇒ 其他直連
   OpenAI 相容 server（TGI/llama.cpp/LMDeploy…）。**只要最後那條 `/v1/chat/completions` 通，就能接。**
+
+## §7 變更紀錄
+
+| 日期 | 迭代 | 變更 | 遷移動作 |
+|------|------|------|----------|
+| 2026-07-03 | v1 | 初版上線：MCP server + workflow runtime + agent SDK + LiteLLM proxy + SQLite store | 全新安裝，見 §2 |
+| 2026-07-04 | v2 | Dashboard（`GET /dashboard`）、asset sync（skill/MCP config 真實接入 agent session）、scheduler、client plugin、systemd unit、REQ-009 D-V2V-1 修復、D-V2G8-1/2 安全修復（bypassPermissions 移除、tool 白名單、key 隔離、workspace boundary realpath 封閉）、LiteLLM port 動態化（D-V3M-4）、孤兒 litellm 優雅關機（TASK-027） | `npm install`；複製 `rwe.config.example.json`→`rwe.config.json`，移除 `defaultAllowedTools:["Read","Write","Bash"]` 的 Bash（舊 example 有此鍵）；systemd unit 加 `PATH` 含 litellm venv bin/ |
+| 2026-07-11 | v3 | workRoot 隔離保護（boot fail-fast WORKROOT_INSIDE_PROJECT）、預設工具面恢復含 Bash（D-V3M-3，fs jail 已存在）、MCP provisioning registry（`mcp_provision` + `${secret:NAME}` handle 機制）、hook 封鎖（HOOKS_UNSUPPORTED）、SDK gateway thinking disabled for non-Anthropic（D-F6）、SDK gateway timeout（val-023 2/2）、REQ-021 | 確認 `workRoot` 在任何 `.git`/`CLAUDE.md` 祖先之外；`export RWE_SECRET_<NAME>=<value>` 注入 secret；`rwe.config.json` 的 `defaultAllowedTools` 改為 `["Read","Write","Edit","Glob","Grep","Bash"]` |
+| 2026-07-18 | v3 | Gate 7.5 v3 ROUND 1 PASSED：REQ-016..021 全部真實驗證（VAL-025..030）；`RWE_SECRET_<NAME>` 加入文件 env var 表；README tool 清單更新為 22 個工具 | 無破壞性變更，無遷移必要 |
