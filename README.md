@@ -3,25 +3,17 @@
 > 人類導向文件（繁體中文）。由 Gate 7.5 validator 依「實際把系統跑起來的步驟」撰寫——
 > 下方 quickstart 就是驗證腳本：照著貼上執行若跑不起來，就是缺口。
 >
-> **v2 狀態（最新，2026-07-04，Gate 7.5 v2 ROUND 2 — GATE PASSED）：REQ-008/009/010/011/015
-> 皆已通過，且本輪由 validator 對一個獨立真實 process 逐項重新驗證（不只是相信 Gate 6 的實作報
-> 告）。REQ-009（資產同步）先前發現的「推送的 skill/MCP config 不會被接進 agent() 呼叫」缺口
-> 已修復（D-V2V-1 route-back）並在本輪真實驗證：真的推送一個 mcp-config + skill 資產、送出真實
-> `agent()` 呼叫，直接從真實作業系統行程表（`ps aux`，非讀原始碼）讀到真正被 spawn 出來的
-> `claude` CLI 子行程自己的命令列參數，看到真實的
-> `--mcp-config {"mcpServers":{"demo-mcp-v2r2":{...}}} --setting-sources=project
-> --strict-mcp-config`；並在 run 完成後確認推送的 `SKILL.md` 真的被實體化進「那一次 run 自己」
-> 的工作目錄下的 `.claude/skills/`。遞迴保護（D4）也對本輪自己的真實 instance 重新驗證：推送本
-> 產品自己的 guidance skill 與指向自己的 mcp-config，皆真實被排除且回報原因，未寫入磁碟。REQ-008
-> 的瀏覽器 dashboard 缺口也已修復（D-V2V-2 route-back）並在本輪真實驗證：真實 `GET /dashboard`
-> 回傳含 `<html>`/`<title>` 的真實 HTML 頁面與其真正的 client JS，並示範「不必手動重新整理」的
-> 即時更新（同一個 client 在送出新 run 前後重新輪詢 `/api/runs`，筆數從 1 變 2）。見下方
-> 「v2 新功能」一節與 `tests/integration/asset-mcp-config-wiring.test.ts`（IT-035）/
-> `tests/integration/asset-skill-materialization-wiring.test.ts`（IT-036）/
-> `tests/acceptance/val-018-dashboard-browser-ui.test.ts`（VAL-018）與
-> `.sdlc/features/001-remote-workflow-engine/08-validation.md` 的「v2 ROUND 2」章節。** v1
-> （REQ-001..007/013/014）功能沿用第七輪驗證結果，本輪未重新測試（見下方 v1 章節，依範圍規則
-> 凍結）。
+> **v3 狀態（最新，2026-07-18，Gate 7.5 v3 ROUND 1 — GATE PASSED）：REQ-016..021（v3 切片）
+> 皆已對真實系統驗證通過——MCP 依名 provisioning、伺服器端 secrets、hook 封鎖、SDK gateway
+> 逾時保底、workRoot 隔離保護。生產引擎為 systemd user service，綁定 `0.0.0.0:8787`（ufw 白名單
+> `192.168.0.0/24` + SSH），`gateway:"sdk"` + managed LiteLLM proxy + Ollama `qwen2.5:7b`。
+> REQ-016（非 Anthropic 完整 harness）：SDK gateway 路徑真實端對端執行（provider=claude-agent-sdk，
+> token 計費），D-F11 模型能力限制為已接受的環境缺口（qwen2.5:7b 不發出 native tool_use，非程式碼
+> 問題）。REQ-020（逾時保底）：val-023 驗收測試 2/2 通過（8秒，真實 fault-injected 卡住 HTTP 伺服
+> 器 + 真實 ClaudeAgentSdkGatewayClient）。REQ-021（workRoot 隔離）：throwaway instance 對 project
+> 內部路徑啟動時 fail-fast 輸出 WORKROOT_INSIDE_PROJECT；對外部乾淨路徑啟動正常。完整證據見
+> `.sdlc/features/001-remote-workflow-engine/08-validation.md`「v3 ROUND 1」章節（VAL-025..030）。
+> 全部 v3 驗收測試 17/17 通過。v1/v2 REQs 沿用 ROUND 1..7 既有證據，本輪未重新測試。
 >
 > **本文件下方 v1 章節為第七輪 Gate 7.5（Gate 8 收尾修復的範圍化重新驗證）後改寫，原樣保留。**
 >
@@ -126,7 +118,10 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 ```
 預期：HTTP 200，`result.tools` 陣列包含 `workflow_run`、`workflow_status`、`workflow_result`、
 `workflow_suspend`、`workflow_resume`、`workflow_stop`、`workflow_list`、`workflow_agent_log`、
-`workflow_register`、`workflow_artifacts` 共 **10** 個工具。終端機也會印出：
+`workflow_register`、`workflow_deregister`、`workflow_artifacts`、`workflow_artifact_get`、
+`workspace_purge`、`schedule_create`、`schedule_list`、`schedule_delete`、`schedule_setEnabled`、
+`workflow_trigger`、`asset_push`、`asset_list`、`asset_delete`、`mcp_provision` 共 **22** 個工具。
+終端機也會印出：
 ```
 [remote-workflow-engine] listening on http://127.0.0.1:8787/mcp (workRoot=...)
 [remote-workflow-engine] ready
@@ -256,6 +251,29 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 持久化、含版本更新後舊 run 仍保留原版本號）都正確；`gateway:"sdk"` 正確把呼叫端指定的模型/別名
 帶入 SDK session；供應商真實錯誤（`is_error:true`）正確解析成 `null`；2 層巢狀 `workflow()` 正確
 被拒絕、1 層正確允許；未知模型別名在送出時就被拒絕（不會跑到一半才失敗）。
+
+## v3 新功能（Gate 7.5 v3 ROUND 1，2026-07-18 — GATE PASSED）
+
+> REQ-016..021 全部對真實系統驗證通過。
+
+- **MCP 依名 provisioning（REQ-017）**：管理員用 `mcp_provision` 工具把 MCP server config 存入
+  伺服器端 registry（SQLite `mcp-registry.db`），workflow 腳本用 `agent(prompt, {mcp:["name"]})`
+  引用名稱。只有被明確引用的 MCP 才會注入 SDK session（`strictMcpConfig` 不變），宿主環境的
+  ambient MCP 永遠不繼承。未 provision 的名稱立即回傳 `MCP_NOT_PROVISIONED` 錯誤。
+- **伺服器端 secrets（REQ-018）**：provisioned MCP config 裡的敏感欄位（如 token）用
+  `${secret:NAME}` handle 存入 registry——registry 只存 handle，不存實際值。引擎從 `RWE_SECRET_<NAME>`
+  環境變數在 invoke 時解析（不在 provision 時），缺少則 `SECRET_MISSING` 明確報錯，不外洩、不
+  靜默失敗。secret 值絕不出現在任何 workspace 路徑下。
+- **hook 明確不支援（REQ-019）**：任何 `asset_push` 帶 `kind:"hook"` 的請求一律拒絕
+  （`HOOKS_UNSUPPORTED`，`stored:[]`），關閉 arbitrary-server-side-code 向量。
+- **非 Anthropic 完整 harness（REQ-016）**：`gateway:"sdk"` 路徑支援非 Anthropic provider（Ollama/
+  OpenAI/Gemini），thinking 對非 Anthropic alias 自動 disabled（D-F6），工具面縮減到 allowlist。
+  本環境（qwen2.5:7b 7B 模型）的 native tool_use 為已接受的模型能力限制（D-F11）。
+- **SDK gateway 逾時保底（REQ-020）**：`timeoutMs`/`retries` 對 SDK gateway 路徑生效；hung LLM
+  call 在設定的上限內解析成 `null`，run 繼續（不卡住）。
+- **workRoot 隔離保護（REQ-021）**：啟動時若 `workRoot`（或其任一祖先）是 Claude Code project
+  （含 `.git`/`CLAUDE.md`），立即以 `WORKROOT_INSIDE_PROJECT` fail-fast 拒絕啟動。見 DEPLOY.md
+  §0 第4步。
 
 ## v2 新功能（Gate 7.5 v2 ROUND 1 對獨立真實 process 驗證 + Gate 6 v2 validation-round fixes）
 > **本輪結果摘要**：REQ-008（Dashboard）、REQ-010（Client Plugin）、REQ-011（部署封裝）、

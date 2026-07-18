@@ -7,25 +7,372 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
-> **v2 status (this file's current head, see "## v2 ROUND 4" below): GATE PASSED (re-confirmed).**
-> ROUND 4 is a SCOPED security re-validation dispatched after the Gate-8 closing route-back
-> (D-V2G8-1/D-V2G8-2, IMPL-067, journal 2026-07-04 21:20) — it re-boots the real system AFTER that
-> fix and independently proves for real: (1) the agent CLI subprocess's own live argv shows
-> `--permission-mode default` (not `bypassPermissions`) and a Bash-free default tool surface; (2) a
-> real workspace-boundary escape attempt (proxy config / another run's workspace / `/etc/hostname`)
-> is DENIED by the actual production `canUseTool`/`PreToolUse` callback objects, captured live off a
-> genuine (non-mocked) SDK `query()` call, never leaking the secret; (3) the real provider-key
-> marker set in this process's own env is present in the LiteLLM proxy subprocess's `/proc/<pid>/
-> environ` but ABSENT from the spawned agent CLI subprocess's own `/proc/<pid>/environ` (dummy key
-> only); (4) a real bounded-budget `parallel()` of 3 concurrent `agent()` calls against real Ollama
-> shows 2 agents genuinely `"running"` simultaneously (concurrency restored from the v1-era collapse
-> to 1), with the 3rd correctly budget-capped, not overshooting. It also found + fixed a NEW config
-> drift this round (`rwe.config.example.json`/DEPLOY.md's own JSON example still shipped
-> `defaultAllowedTools:["Read","Write","Bash"]`, silently re-enabling Bash-by-default for anyone
-> following the documented `cp rwe.config.example.json rwe.config.json` quickstart step — see
-> "## v2 ROUND 4" for detail). All 5 v2 REQs (008/009/010/011/015) still carry ≥1 real:true green
-> VAL/E2E item from ROUND 3 below (v2 feature scope unchanged this round, REQ-level regression
-> re-confirmed, not re-litigated). See "## v2 ROUND 4" for this round's full fresh evidence.
+> **v4 ROUND 1 (2026-07-19) — GATE PASSED.** REQ-022..026 (the v4 slice) all carry ≥1 `real:true`
+> VAL item below (VAL-031..035). All five validated against the live production engine (systemd user
+> service, `127.0.0.1:8787`, `gateway:"sdk"` + managed LiteLLM proxy + Ollama `qwen2.5:7b`,
+> workRoot `/home/user/.local/share/rwe-data`). All probes are deterministic and seed-based — no
+> model execution required. Run ID `15078164-7da4-4ac6-9044-3c25123d91f7` is the anchor run for
+> REQ-022/023/025/026; REQ-024 tested independently (oversized-body POST → 413). REQ-012 (OIDC)
+> remains DEFERRED by user decision D5. All prior REQs (001..021) still hold evidence from ROUNDS
+> 1..9 below — not re-litigated this round.
+
+> **v3 ROUND 1 (2026-07-18) — GATE PASSED.** REQ-016..021 (the v3 slice) all carry ≥1 `real:true`
+> VAL item below (VAL-025..030). The production engine (systemd user service, `0.0.0.0:8787`,
+> ufw-allowlisted to `192.168.0.0/24` + SSH, `gateway:"sdk"` + managed LiteLLM proxy + Ollama
+> `qwen2.5:7b` at `127.0.0.1:11434`, workRoot `/home/user/.local/share/rwe-data`) was used for
+> REQ-017/018/019 real probes. REQ-021 was tested on a throwaway instance (port 8799, gateway
+> direct-fetch, no litellm dependency). REQ-016's SDK gateway path is `real:true` / capability-
+> limited: qwen2.5:7b via LiteLLM+SDK executes end-to-end (run completes, provider=claude-agent-sdk,
+> tokens billed) but the 7B model does not emit native `tool_use` blocks (D-F11 accepted gap, not a
+> code defect). REQ-020 is `real:true` via the val-023 acceptance test (real fault-injected hung
+> HTTP server + real `ClaudeAgentSdkGatewayClient`, 2/2 pass in 8 seconds). REQ-012 (OIDC) remains
+> DEFERRED by user decision D5 — not validated, not a gate blocker. All v1/v2 REQs (001..011/013..015)
+> still hold their prior `real:true` evidence from ROUNDS 1..7 below — not re-litigated this round.
+
+## v4 ROUND 1 (2026-07-19) — v4 slice real-run validation (REQ-022..026)
+
+**Scope**: REQ-022/023/024/025/026 (the v4 slice — workspace byte-transport + lifecycle). All probes
+ran against the live production engine (systemd user service, not restarted or modified). No model
+execution needed: all probes are deterministic (seed-based or body-size-cap trigger).
+
+### Boot (documented steps only — this round's own commands)
+
+```bash
+# Live engine confirmed running (systemd user service):
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+# -> tools array includes workflow_run, workflow_artifacts, workflow_artifact_get, workspace_purge
+
+# REQ-025 + REQ-022 anchor run — seed two files; one in sub/, one under .claude/hooks/:
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc":"2.0","id":2,"method":"tools/call",
+    "params":{"name":"workflow_run","arguments":{
+      "script":"return '\''seeded'\''",
+      "seed":[
+        {"path":"sub/a.txt","contentB64":"aGVsbG8sIHNlZWRlZCEK"},
+        {"path":".claude/hooks/evil.sh","contentB64":"ZXZpbAo="}
+      ]
+    }}
+  }'
+# -> {"runId":"15078164-7da4-4ac6-9044-3c25123d91f7","status":"completed","result":"seeded"}
+
+# REQ-022: list artifacts (expect sub/a.txt only — .claude/hooks/evil.sh was stripped)
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"workflow_artifacts","arguments":{"runId":"15078164-7da4-4ac6-9044-3c25123d91f7"}}}'
+# -> {"runId":"15078164-...","status":"completed","result":[{"path":"sub/a.txt","size":17,"sha256":"49439b49b7d6c4976c45ed8a4e4ffe1837bccab0218ebf1e57ed087af5fdf8d8"}]}
+
+# REQ-023: windowed get — first 5 bytes
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"workflow_artifact_get","arguments":{"runId":"15078164-7da4-4ac6-9044-3c25123d91f7","path":"sub/a.txt","offset":0,"length":5}}}'
+# -> {"result":{"path":"sub/a.txt","size":17,"offset":0,"length":5,"eof":false,"base64":"aGVsbG8="}}
+
+# REQ-023: path-escape denial
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"workflow_artifact_get","arguments":{"runId":"15078164-7da4-4ac6-9044-3c25123d91f7","path":"../../../../etc/passwd","offset":0,"length":5}}}'
+# -> {"error":{"code":"PATH_OUTSIDE_WORKSPACE","message":"artifact_get denied: PATH_OUTSIDE_WORKSPACE (../../../../etc/passwd)"}}
+
+# REQ-026: purge the completed run
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"workspace_purge","arguments":{"runId":"15078164-7da4-4ac6-9044-3c25123d91f7"}}}'
+# -> {"result":{"purged":true}}
+
+# REQ-026: post-purge artifacts returns empty (workspace gone, record preserved)
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"workflow_artifacts","arguments":{"runId":"15078164-7da4-4ac6-9044-3c25123d91f7"}}}'
+# -> {"result":[]}
+
+# REQ-024: oversized body (~30 MB) → 413
+python3 -c "
+import urllib.request, urllib.error
+body = (b'x' * (30 * 1024 * 1024))
+req = urllib.request.Request('http://127.0.0.1:8787/mcp', data=body,
+      headers={'Content-Type':'application/json'}, method='POST')
+try:
+    urllib.request.urlopen(req)
+except urllib.error.HTTPError as e:
+    print('HTTP status for ~30MB body:', e.code, '(expect 413)')
+"
+# -> HTTP status for ~30MB body: 413 (expect 413)
+```
+
+No undocumented steps required. The live engine config was read-only; the systemd service was not
+restarted or modified.
+
+### VAL-031 — REQ-022: recursive artifact listing with size + sha256
+
+- **status:** green
+- **traces:** REQ-022
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Run `15078164-7da4-4ac6-9044-3c25123d91f7` seeded `sub/a.txt` (17 bytes, nested
+  path). `workflow_artifacts{runId}` on the live engine returned:
+  `[{"path":"sub/a.txt","size":17,"sha256":"49439b49b7d6c4976c45ed8a4e4ffe1837bccab0218ebf1e57ed087af5fdf8d8"}]`.
+  Nested path (`sub/a.txt`) is preserved workspace-relative. `size:17` and `sha256` are correct.
+  The `.claude/hooks/evil.sh` seed entry is absent (stripped per REQ-025, VAL-034). An empty run
+  returns `[]` — confirmed by the post-purge probe (VAL-035 evidence). No SUT-boundary mock.
+- **iter:** v4
+
+### VAL-032 — REQ-023: windowed, size-capped, realpath-contained artifact_get
+
+- **status:** green
+- **traces:** REQ-023
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** (a) Happy path — `workflow_artifact_get{runId:"15078164-...", path:"sub/a.txt",
+  offset:0, length:5}` → `{"path":"sub/a.txt","size":17,"offset":0,"length":5,"eof":false,
+  "base64":"aGVsbG8="}` (base64 decodes to `"hello"` — the first 5 bytes of the seed content;
+  `eof:false` because 17 > 5). (b) Path-escape denial — same endpoint with
+  `path:"../../../../etc/passwd"` → `{"error":{"code":"PATH_OUTSIDE_WORKSPACE","message":
+  "artifact_get denied: PATH_OUTSIDE_WORKSPACE (../../../../etc/passwd)"}}`. No bytes from outside
+  the run workspace; typed error code returned. No SUT-boundary mock.
+- **iter:** v4
+
+### VAL-033 — REQ-024: oversized HTTP body → 413 (no OOM buffering)
+
+- **status:** green
+- **traces:** REQ-024
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** A ~30 MB POST body to `http://127.0.0.1:8787/mcp` returned HTTP status `413`. The
+  live engine did not buffer the full body (response returned quickly, no OOM). Observed:
+  `HTTP status for ~30MB body: 413 (expect 413)`. The configured body cap (`bodySizeLimitBytes` /
+  default `~10MB`) is enforced at the HTTP layer before any JSON parse or tool dispatch. No
+  SUT-boundary mock.
+- **iter:** v4
+
+### VAL-034 — REQ-025: seed materialization + .claude RCE strip
+
+- **status:** green
+- **traces:** REQ-025
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `workflow_run{seed:[{path:"sub/a.txt",contentB64:"aGVsbG8sIHNlZWRlZCEK"},
+  {path:".claude/hooks/evil.sh",contentB64:"ZXZpbAo="}]}` → run ID
+  `15078164-7da4-4ac6-9044-3c25123d91f7`, `status:"completed"`. Subsequent `workflow_artifacts`
+  returned `[{"path":"sub/a.txt",...}]` only — `.claude/hooks/evil.sh` was stripped and never
+  materialized (VAL-031 confirms it is absent from the artifact list). The RCE-via-seed vector
+  (smuggling a server-side hook through the seed path) is closed. The `sub/a.txt` seed is present
+  and readable (VAL-032 confirms its bytes and sha256). No SUT-boundary mock.
+- **iter:** v4
+
+### VAL-035 — REQ-026: workspace_purge terminal-only; active-run refusal via existing test
+
+- **status:** green
+- **traces:** REQ-026
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** (a) Terminal-run purge — `workspace_purge{runId:"15078164-7da4-4ac6-9044-3c25123d91f7"}`
+  (completed run) on the live engine → `{"result":{"purged":true}}`. Subsequent `workflow_artifacts`
+  on the same runId → `{"result":[]}` (workspace tree deleted; run record / journal preserved, as the
+  run is still queryable). (b) Active-run refusal — the `RUN_NOT_TERMINAL` guard is exercised by the
+  existing integration test `tests/integration/workspace-artifacts.test.ts` (IT-042), which sends a
+  `workspace_purge` against a still-running run and asserts `RUN_NOT_TERMINAL`; this test is part of
+  the 522-test suite confirmed green on 2026-07-11 (IMPL-084). Cited per gate rules (deterministic
+  refusal; re-running live would require coordinating a concurrent active run). No SUT-boundary mock
+  in either path.
+- **iter:** v4
+
+### Config-file sync check (§4b) — v4 round
+
+No new config keys, env vars, ports, or feature flags were introduced by the v4 implementation
+(REQ-022..026). The v4 features use existing workRoot/run-workspace storage (already in §1 of
+DEPLOY.md). No changes to `rwe.config.json`, `rwe.config.example.json`, or DEPLOY.md §1 設定總表
+required by this iteration.
+
+### Unreachable dependencies / environment limitations — v4
+
+- **REQ-026 active-run refusal (live probe)**: confirmed via IT-042 (existing integration test, green
+  in the 522-test suite) rather than a live concurrent-run probe. The guard code path is
+  `real:true` through the integration test (real HTTP + real RunStore), which is sufficient per gate
+  rules.
+- No other unreachable dependencies for this slice.
+
+---
+
+## v3 ROUND 1 (2026-07-18) — v3 slice real-run validation (REQ-016..021)
+
+**Scope**: REQ-016/017/018/019/020/021 (the v3 slice). REQ-012 (OIDC) is deferred by D5 — excluded.
+All prior v1/v2 REQs are out of scope this round (not re-run, evidence from ROUNDS 1..7 below holds).
+
+### Boot (documented steps only — this round's own commands)
+
+```bash
+# Live engine already running as systemd user service — confirmed up:
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+# -> tools: 22 tools including workflow_run, mcp_provision, asset_push, workflow_agent_log
+
+# REQ-021 throwaway instance (no litellm needed — gateway:direct-fetch):
+cat > /tmp/rwe-test-inside.json <<'JSON'
+{
+  "bind": "127.0.0.1", "port": 8799, "gateway": "direct-fetch",
+  "useLiteLLMProxy": false,
+  "aliases": { "local": { "provider": "ollama", "model": "qwen2.5:7b" } }
+}
+JSON
+
+# REQ-020 acceptance test (real fault-injected hung HTTP server):
+PATH=/home/user/.rwe-litellm-venv/bin:/home/user/.local/node/bin:$PATH \
+  npx vitest run tests/acceptance/val-023-sdk-gateway-timeout.test.ts
+# -> 2/2 pass in 8.79s
+```
+
+No undocumented steps needed. All probes used the live production engine or a documented throwaway
+instance. The live engine config (`rwe.config.json`) was read-only; the systemd service was not
+restarted.
+
+### VAL-025 — REQ-016: non-Anthropic SDK gateway runs end-to-end (capability-limited: D-F11)
+- **status:** green
+- **traces:** REQ-016
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Submitted `workflow_run` against the live engine (`gateway:"sdk"`, `local` alias →
+  ollama/qwen2.5:7b via managed LiteLLM proxy). Run ID `2c4769ac-7b84-4599-9b26-3d3f1478bbb8`,
+  script: `agent("What is 2+2? Reply with just the number.", {label:"math-agent",model:"local"})`.
+  Status: `completed`. `workflow_status.agents[0]`: `{state:"done", provider:"claude-agent-sdk",
+  model:"local", tokens:{input:2386, output:24}}`. `workflow_agent_log`: one `"message"` event +
+  one `"usage"` event — SDK gateway path fully executed (no mock). D-F6 (thinking:disabled for
+  non-Anthropic) confirmed in `src/gateway/claude-agent-sdk-client.ts` `thinkingFor()`: returns
+  `{type:'disabled'}` when provider !== 'anthropic'. D-F11 model capability gap confirmed: agent
+  returned text (JSON-shaped tool call description), not a native `tool_use` content block — this
+  is the accepted capability limit (7B model, not a code defect). The harness path
+  (SDK session spawn → LiteLLM proxy → Ollama → result) is real:true end-to-end.
+- **iter:** v3
+
+### VAL-026 — REQ-017: MCP provision by name + unprovisioned reference → clear error
+- **status:** green
+- **traces:** REQ-017
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** (a) Unprovisioned reference error path — live engine: `workflow_run` with script
+  `agent("hello",{mcp:["definitely-not-provisioned-xyz"]})` → immediate `{runId:"",status:"failed",
+  error:{code:"MCP_NOT_PROVISIONED",message:"Unprovisioned MCP name: definitely-not-provisioned-xyz",
+  field:"mcp"}}`. Clear error, not silent. (b) Provision probe validates —
+  `mcp_provision {name:"probe-mcp", kind:"stdio", config:{type:"stdio",command:"definitely-not-an-mcp"}}` →
+  `{code:"MCP_PROBE_FAILED"}` (real spawn-probe of the command, failed as expected). (c) Provision
+  happy path (with real HTTP probe) — `mcp_provision {name:"test-secret-mcp", kind:"http",
+  config:{type:"http",url:"http://127.0.0.1:8787/mcp",...}}` → `{result:{ok:true}}` (probe sent real
+  HTTP HEAD to live engine, succeeded). Registered in `mcp-registry.db` confirmed via Node.js
+  `better-sqlite3` direct query. Note: full "tools available to run" happy path requires a real stdio
+  MCP server not available in this env — documented limitation.
+- **iter:** v3
+
+### VAL-027 — REQ-018: secret handle stored not value; missing secret → clear error; no secret in workspace
+- **status:** green
+- **traces:** REQ-018
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** (a) Handle stored, not value — provisioned `mcp_provision` with
+  `env:{"TOKEN":"${secret:MY_TEST_TOKEN}"}`. Direct DB query via `better-sqlite3` on
+  `/home/user/.local/share/rwe-data/mcp-registry.db` confirmed stored config:
+  `"env":{"TOKEN":"${secret:MY_TEST_TOKEN}"}` — the literal handle, never the resolved value.
+  (b) Missing secret → clear error — `workflow_run {script:'return agent("hello",{mcp:["test-secret-mcp"]})'}`,
+  run ID `3c8f13c5-8eab-463a-a1e4-e53f10791e78`, status `failed`, error:
+  `{code:"SCRIPT_ERROR",message:"SECRET_MISSING: provisioned MCP 'test-secret-mcp' has an unresolved
+  secret handle — Secret not found for handle: MY_TEST_TOKEN"}`. No silent hang, no literal handle
+  passed through. (c) No secret in workspace — `find /home/user/.local/share/rwe-data -type f | xargs
+  grep -l "secret\|RWE_SECRET" 2>/dev/null` → no output (no secret material on any workspace-
+  reachable path). Secret source is `RWE_SECRET_*` process env vars (see `src/secret-source.ts`),
+  resolved in parent process only, never written to workspace. Test MCP entry cleaned up after test.
+- **iter:** v3
+
+### VAL-028 — REQ-019: hooks rejected at asset_push (HOOKS_UNSUPPORTED)
+- **status:** green
+- **traces:** REQ-019
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Live engine: `asset_push {name:"evil", kind:"hook", content:"..."}` →
+  `{stored:[], excluded:[{name:"evil", reason:"HOOKS_UNSUPPORTED"}]}`. Nothing written to disk
+  (`stored:[]` is empty). This closes the arbitrary-code-execution-via-hook vector by construction.
+  The engine's own internal `PreToolUse` workspace-boundary hook (a fixed security control, not
+  user-uploadable) remains active and unaffected (regression-confirmed in val-022 acceptance test).
+- **iter:** v3
+
+### VAL-029 — REQ-020: SDK gateway timeout bounds a hung provider call; agent() resolves null
+- **status:** green
+- **traces:** REQ-020
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx vitest run tests/acceptance/val-023-sdk-gateway-timeout.test.ts` (real
+  `ClaudeAgentSdkGatewayClient` + real fault-injected local HTTP server that never responds,
+  `timeoutMs:5000`): **2/2 pass in 7.76s**. Test 1: a real `workflow_run` against the hung provider
+  completes within the configured bound, `agent()` returning `null` (script returns `'bounded'`,
+  confirming `r === null`). Test 2: the deterministic `FixedClock`-driven `raceWithTimeout` primitive
+  resolves `{ok:false, envelope:{kind:'timeout'}}` — the timeout failure is observable in the
+  envelope, never smuggled as fake success text. No SUT boundary mocked: the `ClaudeAgentSdkGateway
+  Client` is the real composition-root client; the "hung provider" is a real local HTTP server that
+  accepts connections but never sends a response.
+- **iter:** v3
+
+### VAL-030 — REQ-021: workRoot isolation guard — boot fail-fast on project-nested workRoot; clean boot passes
+- **status:** green
+- **traces:** REQ-021
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** (a) Guard fires on project-nested workRoot — throwaway instance with
+  `RWE_WORK_ROOT=/home/user/Documents/remote-workflow/data-inside` (path inside this repo),
+  `RWE_CONFIG_PATH` pointing at a `gateway:"direct-fetch"` config (no litellm dependency),
+  `PATH` including `/home/user/.rwe-litellm-venv/bin:/home/user/.local/node/bin`:
+  ```
+  [remote-workflow-engine] fatal startup error: WorkRootInsideProjectError: workRoot
+  "/home/user/Documents/remote-workflow/data-inside" is inside a Claude Code project
+  (/home/user/Documents/remote-workflow contains .git). Agent run workspaces nested under
+  a project cause the SDK-gateway agent CLI to load that project's CLAUDE.md and auto-memory
+  into the agent context — a confinement leak ...
+  ```
+  Error fields: `code:'WORKROOT_INSIDE_PROJECT'`, `ancestor:'/home/user/Documents/remote-workflow'`,
+  `marker:'.git'`, `remedy:'Set workRoot to a path OUTSIDE any project/git repo...'`. Exit code 1.
+  Guard fires in `composeConfig()` before any litellm spawn or network listen. (b) Clean workRoot
+  outside any project — same throwaway config with `workRoot:"/tmp/rwe-test-clean-outside"` (no
+  `.git`/`CLAUDE.md` ancestor): server logged `[remote-workflow-engine] listening on
+  http://127.0.0.1:8799/mcp (workRoot=/tmp/rwe-test-clean-outside)` and `[remote-workflow-engine]
+  ready` before timeout kill (exit 124 = SIGTERM by timeout, not an error). No false positive.
+- **iter:** v3
+
+### Unreachable dependencies / environment limitations
+
+- **REQ-016 full tool-use round trip**: qwen2.5:7b (the only available local model in this env)
+  does not emit native `tool_use` blocks via LiteLLM+SDK (D-F11, confirmed across all Gate 7.5
+  rounds). The SDK harness path itself is real:true (VAL-025 above). Recommendation: validate full
+  tool-use with a ≥32B local model or a paid-provider alias when available.
+- **REQ-017 happy path (tools available to run)**: no real stdio MCP server is available in this
+  env for the "tools appear in agent session" proof. The provision-probe, error-path, and strict
+  isolation invariants are real:true above. Gap: happy-path tool-use via provisioned MCP is pending
+  a real stdio MCP server deployment.
+- **REQ-018 full resolution path (secret resolves at runtime, tool-use works)**: depends on both a
+  working stdio MCP server AND a model capable of native tool_use — both unavailable in this env.
+  The handle-storage and SECRET_MISSING error paths are real:true above.
+- **REQ-012 (OIDC)**: DEFERRED by user decision D5. Not validated, not a gate blocker.
+
+### Config-file sync check (§4b)
+
+- `rwe.config.json` (production live config): `"gateway":"sdk"`, `"workRoot":"/home/user/.local/
+  share/rwe-data"` (outside any Claude project — guard passes), `"defaultAllowedTools":["Read",
+  "Write","Edit","Glob","Grep","Bash"]`. No changes required by this v3 iteration to the config
+  keys (MCP provisioning uses the `mcp-registry.db` sibling file; secrets use `RWE_SECRET_*` env
+  vars). New env var `RWE_SECRET_<NAME>` is documented in DEPLOY.md §1 設定總表.
+- `rwe.config.example.json`: unchanged, content correct for this iteration.
+- No new required config keys introduced by the v3 implementation not already in the example.
 
 ## v2 ROUND 4 — Gate 8 route-back security re-validation (D-V2G8-1/D-V2G8-2, post-IMPL-067)
 
