@@ -4,6 +4,190 @@ status: passed
 ---
 # 07 Review & Retro — Gate 8
 
+## v5 GATE 8 CLOSING REVIEW (2026-07-19, CURRENT / AUTHORITATIVE)
+
+> This section supersedes "## v4 GATE 8 CLOSING REVIEW (2026-07-19)" below (kept for history). v5
+> adds the `issue_report` GitHub tool (ARCH-023). REQ-027..030 / IMPL-085 / VAL-036..039.
+> Gate 7.5 v5 ROUND 1 PASSED 2026-07-19: issue #1 genuinely created at
+> HsuJavis/remote-workflow-engine via the live engine.
+
+### 1. Traceability (361 items, 3 gaps)
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` — 361 items scanned, 3 gaps
+detected (exit 1). Dashboard regenerated: `dashboard.html`.
+
+V5 adds 14 traceability items (REQ-027..030, ARCH-023, TASK-044, DES-037, IMPL-085, UT-057,
+IT-043, VAL-036..039). All chains are intact. The 3 remaining gaps are identical to v4 — all
+pre-existing and out-of-v5-scope:
+
+| Sev | Type | ID | Description | Classification |
+|---|---|---|---|---|
+| HIGH | 未真實驗證 | REQ-012 | no real:true VAL; mock-only | OIDC deferred; accepted gap D5 |
+| MID | TDD | IMPL-082 | no test item directly cites IMPL-082 | trace-label cleanup; covered in substance (IT-042/VAL-033) |
+| LOW | 未實作 | TASK-018 | no corresponding implementation | OIDC deferred; accepted gap D5 |
+
+Zero drift: all v5 ledger items (ARCH-023 / TASK-044 / DES-037 / IMPL-085 / UT-057 / IT-043 /
+VAL-036..039) carry `iter: v5`. No IMPL/DES/UT with mismatched iter stamps relative to their
+upstream within v5.
+
+### 2. Architecture Consistency — v5 ARCH-023 (lean-tier self-check, QM)
+
+No pre-run panel reports exist for the v5 scope. Per lean-tier rules (QM, single-area, v5 slice),
+the architecture-consistency check is performed here against the v5-touched files listed on
+IMPL-085 in 06-impl-log.md: `src/github/issue-reporter.ts` + the v5-specific portions of
+`src/server.ts`.
+
+**ARCH-023 (GitHub Issue Reporter) — IMPL-085**
+
+_Token ONLY from server-side SecretSource (extends ARCH-016/REQ-018):_
+`IssueReportInput` carries `{title, reproSteps, analysis, logs?, severity?, component?, runId?}` —
+no token field; the caller can never supply one. `IssueReporter.report()` at
+`src/github/issue-reporter.ts:155` resolves the token exclusively via
+`this.cfg.secretSource.resolve('GITHUB_TOKEN')` — the same `SecretSource` interface used by
+ARCH-016. At `src/server.ts:571` the composition-root wires `loadSecretSourceFromEnv()` which
+reads `RWE_SECRET_GITHUB_TOKEN` from the parent-process environment only; the run workspace and
+the untrusted sandbox have no access to this env var. The `ServerConfig.issueReporter` seam
+(line 63) lets tests inject a fake reporter without touching the secret store. Consistent with
+ARCH-023 and the ARCH-016 extension described in the decision rationale.
+
+_Envelope-not-throw typed errors:_
+- `ISSUE_REPORT_INVALID`: returned at lines 150-152 when any of `[title, reproSteps, analysis]`
+  is missing or blank — no GitHub API call is made.
+- `GITHUB_TOKEN_MISSING`: returned at lines 156-158 when the secret resolves to undefined or
+  empty string — no partial/silent no-op.
+- `GITHUB_API_ERROR`: `GithubApiError` (code field `'GITHUB_API_ERROR'`) thrown by the bounded
+  client is caught at lines 176-181 and converted to `{ok:false,error:{code,message}}`. The code
+  is extracted from the error object if present, defaulting to `'GITHUB_API_ERROR'`.
+- At `src/server.ts:470-471` the `case 'issue_report'` branch returns
+  `res.ok ? {result:{issueNumber,url}} : {error:res.error}` — no exception crosses the tool
+  boundary. Consistent with the envelope-not-throw invariant specified in ARCH-023.
+
+_Bounded fetch timeout + retries:_
+`createGithubIssueClient` (lines 88-140) applies an `AbortController` per attempt with
+`setTimeout(() => ctrl.abort(), timeoutMs)` (default 10 000 ms). The retry loop runs
+`for (attempt=0; attempt<=retries; attempt++)` (default retries=1 → 2 attempts max). 4xx
+responses (except 429) are thrown immediately without retry (`if (res.status < 500 && res.status !== 429) throw`),
+preventing pointless retries for a structurally bad request. Timeout and network errors are
+caught and re-surfaced as `GithubApiError` after the retry budget is exhausted. Consistent
+with ARCH-023's bounded-fetch specification.
+
+_Injectable client seam:_
+`GithubIssueClient` interface (lines 30-32) is the abstraction boundary; `IssueReporterConfig.clientImpl?`
+(line 39) lets unit tests inject a fake client that never touches the network;
+`IssueReporterConfig.fetchImpl?` / `timeoutMs?` / `retries?` (lines 42-45) let the real client
+be tuned or have its fetch replaced without changing production wiring. `ServerConfig.issueReporter?`
+(server.ts line 63) is the composition-root seam for integration tests. Consistent with ARCH-023.
+
+**Security observation (NOT a blocker — recorded as backlog):**
+`issue_report` is exposed on the pre-OIDC unauthenticated MCP listener (port 8787). Any
+LAN-allowlisted caller can create GitHub issues in the engine's own repo without authentication
+at the engine layer. Current compensating controls: ufw allowlist restricts access to
+`192.168.0.0/24` + SSH, and the PAT is a fine-grained token scoped to Issues-only on a single
+private repository (`HsuJavis/remote-workflow-engine`). A future OIDC gate (REQ-012, deferred D5)
+or a dedicated per-tool rate-guard / dedup check would tighten this surface. Logged as backlog
+item below (non-blocking; V1 auth-seam gap already covers the unauthenticated-listener concern
+at the feature level).
+
+**v5 architecture-consistency summary:**
+- New HIGH findings: 0
+- New MEDIUM findings: 0
+- New LOW findings: 0 (security observation above is a pre-existing surface inherited from V1,
+  not a new gap introduced by v5)
+- ARCH-023 is implemented exactly as specified; no deviations from the decision rationale found.
+- All prior backlog items (V1, V3 residual, V4, V5, O-2, R-1, R-3, C-2, C-3, S-2, the v3 LOW
+  SessionInitRecord audit-fidelity note, IMPL-082 trace-label) unchanged.
+
+### 3. Validation and Handover
+
+Gate 7.5 v5 ROUND 1 passed (2026-07-19, `08-validation.md` §v5 ROUND 1). VAL-036..039 all real-tier:
+
+- VAL-036 (REQ-027): real — `tools/call issue_report{...}` against the live engine returned
+  `{issueNumber:1, url:"https://github.com/HsuJavis/remote-workflow-engine/issues/1"}`; issue #1
+  genuinely created in the private repo (externally visible on GitHub)
+- VAL-037 (REQ-028): real — live call succeeded only because `RWE_SECRET_GITHUB_TOKEN` is
+  configured server-side; `GITHUB_TOKEN_MISSING` path exercised by IT-043 (real HTTP POST to
+  test server with no env token; 535-test suite green)
+- VAL-038 (REQ-029): real — authenticated GET of issue #1 confirmed labels
+  `["agent-reported","severity:low"]` and all body sections (`## Summary`, `## Reproduction steps`,
+  `## Logs`, `## Analysis / root cause`, `## Environment`, `## Linked run`)
+- VAL-039 (REQ-030): real — live call completed without hang/crash; error-bound paths (422
+  no-retry, network error after retries, timeout → `GITHUB_API_ERROR`) confirmed by UT-057
+  (injected fetch)
+- REQ-012: deferred (D5); no VAL; accepted gap
+
+trace.py reports 0 未真實驗證 for REQ-027..030. REQ-012 HIGH gap is pre-existing, accepted.
+No new config keys, ports, or feature flags introduced by v5 (`RWE_SECRET_GITHUB_TOKEN` follows
+the existing `RWE_SECRET_*` pattern already documented in DEPLOY.md §1 設定總表 as of v3).
+README.md and DEPLOY.md present; no v5-specific updates required (fixed repo compiled in;
+not user-configurable). No superseded commands or duplicated config keys.
+
+### 4. v5 Retro
+
+**What went well:**
+- ARCH-023 (GitHub Issue Reporter) implemented and validated in a single Gate 7.5 pass — no
+  route-back needed.
+- The `GithubIssueClient` interface seam (injectable client) kept the unit tests entirely
+  network-free while leaving the composition root wired to the real bounded client; IT-043
+  threaded the seam through `ServerConfig.issueReporter` for integration coverage.
+- Token isolation is end-to-end by design: `IssueReportInput` carries no token field, so it is
+  structurally impossible for a caller to supply one; the SecretSource indirection ensures the
+  raw PAT never appears in a tool response, a transcript, or a workspace.
+- Real validation was decisive: issue #1 on GitHub is an externally visible artifact that cannot
+  be produced by a stub — a higher quality bar than a logged return value.
+- Body template verified externally (authenticated GET, not inferred from source), confirming
+  the machine-parseable structure survives the round-trip to GitHub's storage.
+- 4xx-not-retried logic is correct and tested: a 422 (invalid label, etc.) does not waste the
+  retry budget on a request that cannot succeed by retrying.
+- Full suite (535) green; tsc clean; all 14 new traceability items connected without introducing
+  new gaps.
+
+**What to change next time:**
+- The `issue_report` tool is exposed on the pre-OIDC unauthenticated listener. Future issue-type
+  tools should either wait for OIDC (REQ-012, D5) or include a lightweight per-tool rate guard
+  at the server layer — filing N issues per second against a PAT is cheap for a LAN caller.
+- The fixed repo (`HsuJavis/remote-workflow-engine`) is compiled into the implementation, not
+  configurable. If the engine is ever redeployed under a different owner/repo, this requires a
+  code change. A `githubRepo` config key in `rwe.config.json` would future-proof this, but the
+  current design matches the ARCH-023 spec ("Fixed target repo") so it is not a deviation.
+- `VAL-039` real error-path probe (e.g. deliberately wrong token → live `GITHUB_API_ERROR`) was
+  intentionally skipped to avoid spurious issue creation. A dedicated test-repo or a mock HTTP
+  intercept at the acceptance level would allow full real error-path coverage without side
+  effects.
+
+**Known tech debt (carried forward, no changes):**
+- IMPL-082 trace-label: IT-042 should cite DES-033 in its `traces:` field (LOW)
+- V1: auth seam absent (MEDIUM) — no HTTP auth on engine endpoints; ufw allowlist mitigates;
+  `issue_report` on this surface adds a GitHub write capability — compensated by PAT scope
+- V3 residual: Bash opt-in bypass (LOW) — workspace confinement covers Read/Write; Bash requires
+  explicit opt-in
+- V3 LOW: SessionInitRecord.resolvedProjectRoot audit-fidelity (stores workspace cwd instead of
+  null on clean path)
+- V4, V5, O-2, R-1, R-3, C-2, C-3, S-2: unchanged from v2/v3 Gate 8 backlog
+- REQ-012 / TASK-018 (OIDC): deferred per D5; no timeline
+- NEW backlog: issue_report rate-guard / dedup on the pre-OIDC surface (LOW — mitigated by PAT
+  scope + ufw; follow-on to OIDC work or a standalone lightweight guard)
+
+### Report
+
+```
+Gaps: high=1 mid=1 low=1 (all 3 recorded as known backlog; none in v5 scope)
+  - high=1: REQ-012 (OIDC, 未真實驗證) — deferred D5, not a blocker
+  - mid=1:  IMPL-082 (TDD trace-label) — covered in substance by IT-042+VAL-033; cleanup item only
+  - low=1:  TASK-018 (OIDC auth middleware, 未實作) — deferred D5, not a blocker
+Drift: none
+Architecture consistent: yes — ARCH-023 fully consistent with IMPL-085;
+  no new findings (HIGH/MEDIUM/LOW); token isolation, envelope-not-throw, bounded fetch,
+  and injectable seam all verified against source; security observation (pre-OIDC listener
+  write-capability) logged as LOW backlog, non-blocking
+Validation: real-tier all-green? yes (VAL-036..039, 4/4 real:true; REQ-012 accepted D5)
+           README+DEPLOY present? yes (no v5-specific updates required)
+Conclusion: v5 slice closes; gates.review.passed stays true;
+  3 residual gaps are pre-existing accepted backlog (OIDC D5 x2 + IMPL-082 trace-label cleanup);
+  1 new LOW backlog item added (issue_report rate-guard on pre-OIDC surface)
+```
+
+---
+
 ## v4 GATE 8 CLOSING REVIEW (2026-07-19, CURRENT / AUTHORITATIVE)
 
 > This section supersedes "## v3 GATE 8 CLOSING REVIEW (2026-07-18)" below (kept for history). v4

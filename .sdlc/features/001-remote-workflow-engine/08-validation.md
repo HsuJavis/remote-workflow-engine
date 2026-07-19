@@ -7,6 +7,13 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
+> **v5 ROUND 1 (2026-07-19) — GATE PASSED.** REQ-027..030 (the v5 slice) all carry ≥1 `real:true`
+> VAL item below (VAL-036..039). All four validated against the live production engine (systemd user
+> service, `127.0.0.1:8787`, `RWE_SECRET_GITHUB_TOKEN` configured as a fine-grained PAT). Issue #1
+> genuinely created at `https://github.com/HsuJavis/remote-workflow-engine/issues/1` — externally
+> visible on GitHub. REQ-012 (OIDC) remains DEFERRED by user decision D5. All prior REQs (001..026)
+> still hold evidence from ROUNDS 1..10 below — not re-litigated this round.
+
 > **v4 ROUND 1 (2026-07-19) — GATE PASSED.** REQ-022..026 (the v4 slice) all carry ≥1 `real:true`
 > VAL item below (VAL-031..035). All five validated against the live production engine (systemd user
 > service, `127.0.0.1:8787`, `gateway:"sdk"` + managed LiteLLM proxy + Ollama `qwen2.5:7b`,
@@ -28,6 +35,137 @@ status: passed
 > HTTP server + real `ClaudeAgentSdkGatewayClient`, 2/2 pass in 8 seconds). REQ-012 (OIDC) remains
 > DEFERRED by user decision D5 — not validated, not a gate blocker. All v1/v2 REQs (001..011/013..015)
 > still hold their prior `real:true` evidence from ROUNDS 1..7 below — not re-litigated this round.
+
+## v5 ROUND 1 (2026-07-19) — v5 slice real-run validation (REQ-027..030)
+
+**Scope**: REQ-027/028/029/030 (the v5 slice — `issue_report` GitHub tool). All probes ran against
+the live production engine (systemd user service, not restarted or modified). `RWE_SECRET_GITHUB_TOKEN`
+is a fine-grained PAT configured as a server-side secret on the running engine.
+
+### Boot (documented steps only — this round's own commands)
+
+```bash
+# Live engine confirmed running (systemd user service):
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+# -> tools array includes issue_report (among the full tool set)
+
+# REQ-027 + REQ-028 + REQ-029 + REQ-030 — real issue creation via the live engine (MCP client call):
+# tools/call issue_report{title:"...", reproSteps:"...", analysis:"...", severity:"low",
+#   component:"...", runId:"gate7.5-v5-validation"}
+# Endpoint: http://127.0.0.1:8787/mcp
+# -> {"result":{"issueNumber":1,"url":"https://github.com/HsuJavis/remote-workflow-engine/issues/1"}}
+
+# REQ-029 — authenticated GET to confirm issue body + labels on GitHub:
+# GET https://api.github.com/repos/HsuJavis/remote-workflow-engine/issues/1
+# -> labels: ["agent-reported","severity:low"]
+# -> body sections present: ## Summary, ## Reproduction steps, ## Logs,
+#    ## Analysis / root cause, ## Environment (engine version 1.0.0 + ISO timestamp),
+#    ## Linked run (runId "gate7.5-v5-validation" linked)
+
+# REQ-028 token-missing path — exercised by integration test IT-043
+# (real HTTP POST to a test server with no RWE_SECRET_GITHUB_TOKEN in env):
+PATH=/home/user/.rwe-litellm-venv/bin:/home/user/.local/node/bin:$PATH \
+  npx vitest run tests/integration/issue-reporter.test.ts
+# -> IT-043 included in 535-test green suite (2026-07-19); GITHUB_TOKEN_MISSING path real:true
+```
+
+No undocumented steps required. The live engine config was read-only; the systemd service was not
+restarted or modified. Issue #1 is the real artifact; no additional filing was performed to avoid
+spurious test issues in the repo.
+
+### VAL-036 — REQ-027: `issue_report` files a structured GitHub issue, returns {issueNumber, url}
+
+- **status:** green
+- **traces:** REQ-027
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `tools/call issue_report{title, reproSteps, analysis, severity:"low", component,
+  runId:"gate7.5-v5-validation"}` against `http://127.0.0.1:8787/mcp` (live engine, systemd user
+  service) returned `{"result":{"issueNumber":1,"url":"https://github.com/HsuJavis/remote-workflow-engine/issues/1"}}`.
+  Issue #1 genuinely created in the private `HsuJavis/remote-workflow-engine` repo — externally
+  visible on GitHub (not a mock return, not a stub). The uniform result envelope (`issueNumber`,
+  `url`) confirmed. Required-field validation: the `ISSUE_REPORT_INVALID` path is exercised by
+  `UT-057` (unit tests, missing/empty required fields → typed error, no API call). No SUT-boundary
+  mock on the live create path.
+- **iter:** v5
+
+### VAL-037 — REQ-028: GitHub token read from server-side secret; token-missing → typed error
+
+- **status:** green
+- **traces:** REQ-028
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** The REQ-027 real call (VAL-036) succeeded ONLY because `RWE_SECRET_GITHUB_TOKEN` is
+  configured as a server-side secret on the live engine (`RWE_SECRET_*` env var, resolved in the
+  parent server process only — never from tool arguments, the VM sandbox, or the run workspace). The
+  token-absent path (`GITHUB_TOKEN_MISSING` error) is exercised by integration test `IT-043`
+  (`tests/integration/issue-reporter.test.ts`): a real HTTP POST to a test server with no
+  `RWE_SECRET_GITHUB_TOKEN` in env → typed `GITHUB_TOKEN_MISSING` error returned, no silent no-op,
+  no literal handle leaked. `IT-043` is part of the 535-test suite confirmed green on 2026-07-19.
+  No SUT-boundary mock on either path.
+- **iter:** v5
+
+### VAL-038 — REQ-029: Structured, agent-consumable issue body + labels confirmed on live issue
+
+- **status:** green
+- **traces:** REQ-029
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Authenticated GET of issue #1 (`GET /repos/HsuJavis/remote-workflow-engine/issues/1`)
+  confirmed: (a) labels `["agent-reported","severity:low"]` present — the fixed `agent-reported`
+  label and the `severity:<level>` dynamic label both applied; (b) body sections all present and
+  machine-parseable: `## Summary`, `## Reproduction steps`, `## Logs`, `## Analysis / root cause`,
+  `## Environment` (engine version `1.0.0` + ISO timestamp stamped), `## Linked run` (runId
+  `"gate7.5-v5-validation"` linked). The fixed template structure confirmed externally on the live
+  GitHub issue — not inferred from source. No SUT-boundary mock.
+- **iter:** v5
+
+### VAL-039 — REQ-030: Bounded, typed-error GitHub API call; real success path confirmed live
+
+- **status:** green
+- **traces:** REQ-030
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** The real VAL-036 call confirms `createGithubIssueClient` executed end-to-end against
+  the live GitHub API (real network, real auth, real 201 response) without hanging or crashing the
+  engine. The error-bound paths (422 non-2xx → `GITHUB_API_ERROR`, no retry; network error after
+  retries → `GITHUB_API_ERROR`; timeout → `GITHUB_API_ERROR`) are covered by `UT-057`
+  (`tests/unit/github-issue-reporter.test.ts`, injected fetch: 422 no-retry confirmed, network
+  error after retries confirmed, malformed response confirmed). The engine process remained stable
+  throughout the live call; no crash or hang observed. No SUT-boundary mock on the live success path.
+- **iter:** v5
+
+### Config-file sync check (§4b) — v5 round
+
+No new config keys, ports, or feature flags were introduced by the v5 implementation (REQ-027..030).
+The `issue_report` tool reads `RWE_SECRET_GITHUB_TOKEN` via the existing REQ-018 secret store
+(`RWE_SECRET_*` env var pattern), already documented in DEPLOY.md §1 設定總表 as of v3. The fixed
+repo (`HsuJavis/remote-workflow-engine`) is compiled into the tool implementation and is not
+user-configurable. No changes to `rwe.config.json`, `rwe.config.example.json`, or DEPLOY.md §1
+required by this iteration.
+
+### Unreachable dependencies / environment limitations — v5
+
+- **REQ-028 workspace-grep check**: the `RWE_SECRET_GITHUB_TOKEN` value is never written to disk;
+  the REQ-018 secret store architecture (VAL-027 evidence: `find /home/user/.local/share/rwe-data
+  -type f | xargs grep -l "secret\|RWE_SECRET" 2>/dev/null` → no output) confirms the pattern
+  holds. A fresh workspace grep was not re-run this round (service not restarted; VAL-027 evidence
+  applies by extension).
+- **REQ-030 real error-path probe**: a live `GITHUB_API_ERROR` probe (e.g. deliberately wrong token
+  or unreachable API) was not triggered to avoid additional spurious API calls. The error-bound is
+  confirmed by `UT-057` (injected fetch, real error-path code exercised — not a SUT-boundary mock;
+  `createGithubIssueClient` itself is the real implementation under test). This is the accepted
+  limitation for this round: real success path confirmed live; real error paths confirmed via
+  injected-fetch unit tests.
+- **REQ-012 (OIDC)**: DEFERRED by user decision D5. Not validated, not a gate blocker.
+
+---
 
 ## v4 ROUND 1 (2026-07-19) — v4 slice real-run validation (REQ-022..026)
 
