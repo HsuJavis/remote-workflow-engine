@@ -120,7 +120,8 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 `workflow_suspend`、`workflow_resume`、`workflow_stop`、`workflow_list`、`workflow_agent_log`、
 `workflow_register`、`workflow_deregister`、`workflow_artifacts`、`workflow_artifact_get`、
 `workspace_purge`、`schedule_create`、`schedule_list`、`schedule_delete`、`schedule_setEnabled`、
-`workflow_trigger`、`asset_push`、`asset_list`、`asset_delete`、`mcp_provision` 共 **22** 個工具。
+`workflow_trigger`、`asset_push`、`asset_list`、`asset_delete`、`mcp_provision`、`issue_report`、
+`issue_get`、`issue_list`、`issue_comments`、`issue_comment` 共 **27** 個工具。
 終端機也會印出：
 ```
 [remote-workflow-engine] listening on http://127.0.0.1:8787/mcp (workRoot=...)

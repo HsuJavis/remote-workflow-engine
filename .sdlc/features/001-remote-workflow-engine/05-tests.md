@@ -3418,3 +3418,16 @@ error).
 - **traces:** ARCH-023
 - **iter:** v5
 - tests/integration/issue-report-http.test.ts (4 cases: `issue_report` advertised in tools/list; a real IssueReporter + fake GithubIssueClient injected via ServerConfig files an issue over `/mcp` → {issueNumber,url}; the default composition-root wiring (no token) returns `GITHUB_TOKEN_MISSING`; invalid input → `ISSUE_REPORT_INVALID`).
+
+## v6 slice — GitHub issue read/reply toolset tests (UT-058, IT-044)
+
+### UT-058 — IssueReporter read/reply ops + dedup + enrichment (REQ-031..036)
+- **status:** green
+- **traces:** DES-038
+- **iter:** v6
+- tests/unit/issue-ops.test.ts (getIssue/listIssues/getComments/postComment over a fake GithubIssueClient: shapes {number,title,state,labels,body,url,commentCount} / summaries / {id,author,body,createdAt} / {commentId,url}; `ISSUE_NOT_FOUND` on unknown number, `ISSUE_COMMENT_INVALID` on empty body, `GITHUB_TOKEN_MISSING` when secret unset, `GITHUB_API_ERROR` on client failure; `issueFingerprint()` + hidden `rwe-fp` marker dedup → comment on open dup with `deduped:true`, new issue when no match; best-effort `runDiagnostics` enrichment of `## Linked run`, unknown runId still files).
+### IT-044 — issue read/reply tools over the real MCP HTTP surface (REQ-031..036)
+- **status:** green
+- **traces:** ARCH-024
+- **iter:** v6
+- tests/integration/issue-ops-http.test.ts (issue_get/issue_list/issue_comments/issue_comment advertised in tools/list and exercised over `/mcp` via an injected IssueReporter+fake client; typed error envelopes for unknown number / empty body / missing token; issue_report `deduped` + runId enrichment path over HTTP).

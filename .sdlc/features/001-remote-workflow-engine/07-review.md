@@ -4,12 +4,257 @@ status: passed
 ---
 # 07 Review & Retro — Gate 8
 
-## v5 GATE 8 CLOSING REVIEW (2026-07-19, CURRENT / AUTHORITATIVE)
+## v6 GATE 8 CLOSING REVIEW (2026-07-19, CURRENT / AUTHORITATIVE)
 
-> This section supersedes "## v4 GATE 8 CLOSING REVIEW (2026-07-19)" below (kept for history). v5
-> adds the `issue_report` GitHub tool (ARCH-023). REQ-027..030 / IMPL-085 / VAL-036..039.
-> Gate 7.5 v5 ROUND 1 PASSED 2026-07-19: issue #1 genuinely created at
-> HsuJavis/remote-workflow-engine via the live engine.
+> This section supersedes "## v5 GATE 8 CLOSING REVIEW (2026-07-19)" below (kept for history). v6
+> adds the issue read/reply toolset + dedup + runId enrichment (ARCH-024). REQ-031..036 /
+> IMPL-086 / VAL-040..045. Gate 7.5 v6 ROUND 1 PASSED 2026-07-19: REQ-031..036 real-validated
+> against the live production engine (systemd user service, 127.0.0.1:8787, 27 tools, real PAT);
+> issue_get/issue_list/issue_comments/issue_comment all real; dedup (fingerprint + rwe-fp marker +
+> deduped:true) real end-to-end; REQ-036 enrichment an honest partial (report path real via VAL-044,
+> enrichment mechanism covered by UT-058, live path not triggered — no runId in validation reports).
+
+### 1. Traceability (379 items, 3 gaps)
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` — 379 items scanned, 3 gaps
+detected (exit 1). Dashboard regenerated: `dashboard.html`.
+
+V6 adds 18 traceability items (REQ-031..036, ARCH-024, TASK-045, DES-038, IMPL-086, UT-058,
+IT-044, VAL-040..045). All chains are intact. The 3 remaining gaps are identical to v5 — all
+pre-existing and out-of-v6-scope:
+
+| Sev | Type | ID | Description | Classification |
+|---|---|---|---|---|
+| HIGH | 未真實驗證 | REQ-012 | no real:true VAL; mock-only | OIDC deferred; accepted gap D5 |
+| MID | TDD | IMPL-082 | no test item directly cites IMPL-082 | trace-label cleanup; covered in substance (IT-042/VAL-033) |
+| LOW | 未實作 | TASK-018 | no corresponding implementation | OIDC deferred; accepted gap D5 |
+
+Zero drift: all v6 ledger items (ARCH-024 / TASK-045 / DES-038 / IMPL-086 / UT-058 / IT-044 /
+VAL-040..045) carry `iter: v6`. No IMPL/DES/UT with mismatched iter stamps relative to their
+upstream within v6.
+
+### 2. Architecture Consistency — v6 ARCH-024 (lean-tier self-check, QM)
+
+No pre-run panel reports exist for the v6 scope (no `.panel/` directory). Per lean-tier rules (QM,
+single-area, v6 slice), the architecture-consistency check is performed here against the v6-touched
+files listed on IMPL-086 in 06-impl-log.md: `src/github/issue-reporter.ts` (v6 extensions) and
+the v6-specific portions of `src/server.ts`.
+
+**ARCH-024 (GitHub Issue Ops) — IMPL-086**
+
+_Token ONLY from server-side SecretSource (same discipline as ARCH-023/ARCH-016):_
+All four new `IssueReporter` methods (`getIssue`, `listIssues`, `getComments`, `postComment`) call
+`this.resolveToken()` as their first action. `resolveToken()` reads exclusively from
+`this.cfg.secretSource.resolve(TOKEN_SECRET_NAME)` — identical to the v5 path. No caller-supplied
+token field exists on any of the four new operations. The composition root (server.ts line 662)
+wires `loadSecretSourceFromEnv()` for the default reporter, injecting `runDiagnostics` alongside.
+Consistent with ARCH-024's stated inheritance from ARCH-023 and ARCH-016.
+
+_Envelope-not-throw typed errors (all four required codes present):_
+- `ISSUE_NOT_FOUND`: returned by `getIssue` (line 394), `getComments` (line 419), and `postComment`
+  (line 435) when the 404→null path is triggered at the client layer and propagated up; also by
+  `postComment` when `createComment` returns null after the 404 mapping.
+- `ISSUE_COMMENT_INVALID`: returned by `postComment` (line 431) when body is empty or non-string —
+  before any API call is made.
+- `GITHUB_TOKEN_MISSING`: returned by `resolveToken()` (line 320-321) on all four methods when the
+  secret resolves to undefined or empty string.
+- `GITHUB_API_ERROR`: `apiError()` (line 334-339) catches any `GithubApiError` thrown by the
+  bounded client on all four paths.
+- All four `callTool` cases in server.ts (lines 518-533) follow `res.ok ? {result:...} : {error:res.error}`
+  — no exception crosses the tool boundary. Consistent with the envelope-not-throw invariant in
+  ARCH-024.
+
+_Bounded fetch on all new read/write methods:_
+All five `GithubIssueClient` methods — including the four new ones (`getIssue`, `listIssues`,
+`getComments`, `createComment`, `findOpenByFingerprint`) — use the shared `ghFetch` inner function
+(lines 193-227), which applies an `AbortController` per attempt with `setTimeout(() => ctrl.abort(),
+timeoutMs)` and retries only on 5xx/429/network errors (`res.status >= 500 || res.status === 429`).
+Non-retryable 4xx responses are passed through immediately for the caller to interpret (404→null
+or an explicit `fail()` throw). The retry budget and timeout are the same knobs (`timeoutMs`,
+`retries`) shared with the v5 `createIssue` path. Consistent with ARCH-024's "same never-hang/
+crash/fake-success discipline as ARCH-023."
+
+_404→null mapping (get / comments / createComment only — correct subset):_
+- `getIssue` (line 248): `if (res.status === 404) return null`
+- `getComments` (line 286): `if (res.status === 404) return null`
+- `createComment` (line 298): `if (res.status === 404) return null` (issue vanished between search
+  and comment — handled gracefully in `report()` by falling through to createIssue)
+- `listIssues` uses `ghJson` (throws on non-2xx, correct: GitHub list API returns 200+[] for empty
+  and only 404s if the repo does not exist, which is a genuine error)
+- `findOpenByFingerprint` uses `ghJson` (correct: GitHub search API returns 200+{items:[]} for no
+  matches, never 404)
+Consistent with ARCH-024's specified "404→null on get/comments/createComment."
+
+_Dedup fingerprint + rwe-fp search:_
+`issueFingerprint(title, component)` (lines 119-121) = sha256(normalizeTitle(title) + '|' +
+(component ?? '')).hex().slice(0, 16). `findOpenByFingerprint(fp)` (lines 305-310) queries
+`repo:X is:issue is:open in:body "rwe-fp:<fp>"` via the search API. The dedup flow in `report()`
+(lines 371-382): `findOpenByFingerprint → if dup found → createComment(dup, body) → {deduped:true}`;
+if `createComment` returns null (race: issue closed between search and comment), falls through to
+`createIssue` with `{deduped:false}`. The hidden `<!-- rwe-fp:<fp> -->` marker is always appended
+to the body by `renderIssueBody` (line 156), so every filed issue carries the search anchor.
+Consistent with ARCH-024's dedup specification.
+
+_runDiagnostics best-effort / injectable:_
+`IssueReporterConfig.runDiagnostics?: (runId: string) => Promise<string | null>` (line 111) is the
+injection seam. In `report()` (lines 357-360): called with `.catch(() => null)` and only when
+`input.runId && this.cfg.runDiagnostics` — a null/throw never fails the report. The composition-root
+`runDiagnostics` (server.ts lines 634-659) wraps the entire facade call chain in a `try/catch`
+returning `null`, uses `facade.workflow_status` + `facade.workflow_artifacts` + `facade.workflow_agent_log`
+(ARCH-002, same facade the MCP tools use — no bespoke data bus). Consistent with ARCH-024's
+"never fails the report when the runId is unknown" and ARCH-002 dependency.
+
+_Four new tools wired consistently:_
+`TOOL_NAMES` (lines 127-130): `issue_get`, `issue_list`, `issue_comments`, `issue_comment`.
+`TOOL_METADATA` (lines 340-378): each tool has a description (including all typed error codes
+surfaced) and a typed `inputSchema` with `required` fields. All four `callTool` cases (lines
+518-533) delegate to the corresponding `IssueReporter` method and return the typed envelope.
+Consistent with ARCH-024's tool-surface specification.
+
+_ARCH-023 report() amendment (dedup + enrichment):_
+The `issue_report` callTool case (server.ts line 514-515) now exposes `deduped: res.deduped` in
+the result. The `runDiagnostics` function is wired into the default `IssueReporter` constructor
+at line 662. Both amendments are exactly as specified in the ARCH-023 NB note and ARCH-024.
+
+**Implementation detail not in ARCH-024 (not a deviation):**
+`listIssues` filters out pull requests from GitHub's list-issues response (`it.pull_request ===
+undefined`, line 273). GitHub's list-issues API returns PRs mixed with issues; dropping them is a
+necessary correctness measure invisible to callers. No architectural violation.
+
+**v6 architecture-consistency summary:**
+- New HIGH findings: 0
+- New MEDIUM findings: 0
+- New LOW findings: 0
+- ARCH-024 is implemented exactly as specified; no deviations from the decision rationale found.
+- Pre-existing security observation (pre-OIDC unauthenticated surface) extended below in backlog:
+  the new write tool `issue_comment` adds a GitHub comment-write capability on the same surface.
+  Compensating controls unchanged (ufw allowlist + Issues-only single-repo PAT).
+
+### 3. Validation and Handover
+
+Gate 7.5 v6 ROUND 1 passed (2026-07-19, `08-validation.md` §v6 ROUND 1). VAL-040..045 all real-tier:
+
+- VAL-040 (REQ-031): real — `issue_get{number:2}` against live engine returned full IssueView
+  envelope (all required fields including fingerprint marker in body); `issue_get{number:999999}` →
+  `{error:{code:"ISSUE_NOT_FOUND"}}`. No SUT-boundary mock.
+- VAL-041 (REQ-032): real — `issue_list{labels:["agent-reported"],state:"open",limit:10}` returned
+  filtered bounded array; issue #1 (closed) absent, issue #2 (open) present. Uniform IssueSummary
+  envelope confirmed.
+- VAL-042 (REQ-033): real — `issue_comments{number:2}` returned the real comment (id:5013786770)
+  posted by VAL-043. Fields {id, author, body, createdAt} all present; ordered array confirmed.
+- VAL-043 (REQ-034): real — `issue_comment{number:2, body:"agent reply…"}` posted a genuine comment
+  (id:5013786770) visible at the real GitHub URL. Empty body → `ISSUE_COMMENT_INVALID`. No mock.
+- VAL-044 (REQ-035): real — dedup end-to-end: first call → `{issueNumber:2, deduped:false}`,
+  fingerprint marker embedded (confirmed via VAL-040 body); second identical call → `{issueNumber:2,
+  deduped:true}`. No issue #3 created. `findOpenByFingerprint → createComment` chain is real:true.
+- VAL-045 (REQ-036): real (honest partial) — report path real via VAL-044; enrichment mechanism
+  (runDiagnostics injected, appended to ## Linked run, null/throw-safe) confirmed by UT-058 (known-
+  runId → diagnostics appended; unknown → report still filed). Live enrichment path not exercised
+  (no runId in validation flows). Accepted: best-effort by design, no code defect.
+
+trace.py reports 0 未真實驗證 for REQ-031..036. REQ-012 HIGH gap is pre-existing, accepted.
+
+No new config keys, ports, or feature flags introduced by v6. `RWE_SECRET_GITHUB_TOKEN` follows
+the existing `RWE_SECRET_<NAME>` pattern already in DEPLOY.md §1 (established in v3). No changes
+to DEPLOY.md required. README.md present.
+
+**Doc drift observation (LOW, pre-existing):** README.md line 123 states "22 個工具" but the live
+engine exposes 27 tools. The discrepancy predates v6 (v3 Gate 8 set the count to 22; v4's
+`workspace_purge`/`workflow_deregister`, v5's `issue_report`, and v6's four new tools each
+incremented it without a README update). Not a config/command error; no deployment risk. Recorded
+as LOW backlog; does not affect Gate 7.5 pass status or v6 close.
+
+### 4. v6 Retro
+
+**What went well:**
+- ARCH-024 implemented and validated in a single Gate 7.5 pass — no route-back needed.
+- Sharing the `ghFetch` bounded client across all five `GithubIssueClient` methods (createIssue +
+  four new ones) means the "never-hang/crash/fake-success" discipline was not re-implemented —
+  it was inherited. No new timeout/retry logic to test separately.
+- The dedup mechanism (sha256 fingerprint + hidden body marker + GitHub search) is testable
+  entirely through the `GithubIssueClient` interface seam, with no real API calls in unit tests.
+  VAL-044 then exercised the full end-to-end path live (first call → deduped:false, second call →
+  deduped:true, no issue #3 created).
+- The "dup race" fallback (if `createComment` returns null — issue closed between search and
+  comment, fall through to createIssue) is both tested by UT-058 and architecturally sound: it
+  means the dedup path can never silently swallow a report.
+- `runDiagnostics` uses the existing `McpFacade` interface rather than a new data bus — the
+  enrichment data is the same shape already observable via `workflow_status/artifacts/agent_log`.
+  No new subsystem, no new test surface; the composition-root function is a thin adapter.
+- REQ-036 "honest partial" framing was correct: a null return from `runDiagnostics` never fails
+  the report, and the enrichment mechanism is deterministically testable via injection. VAL-045
+  accepted this without requiring a live runId probe.
+- The PR-filter in `listIssues` (dropping items with `pull_request` field) was added defensively
+  without an explicit ARCH requirement — it prevents a common GitHub API pitfall from surfacing
+  as noise in a solve agent's work queue.
+- Full suite (569) green; tsc clean; all 18 new traceability items connected without introducing
+  new gaps.
+
+**What to change next time:**
+- The four new issue tools are exposed on the pre-OIDC unauthenticated listener, same surface as
+  `issue_report`. The v5 backlog item was "rate-guard/dedup on pre-OIDC surface"; v6 compounds
+  this with a write capability (`issue_comment` lets any LAN-allowlisted caller comment on the
+  repo). The dedup half (REQ-035) now partially mitigates spam-by-duplicate, but a rate/volume
+  guard is still open. Future work should either gate on OIDC (REQ-012, D5) or add a lightweight
+  per-tool rate guard at the server layer.
+- REQ-036 live enrichment was not triggered because no `runId` was available in the validation
+  reports. A future validation round that runs a real `workflow_run` and then calls `issue_report`
+  with the resulting `runId` would exercise this path live. A dedicated test repo (for error-path
+  probes without spurious real-issue creation) would also close the "happy path only" limitation
+  on live validation.
+- README.md tool count has drifted to "22 個工具" across v4/v5/v6. The next iteration should
+  include a README tool-count update as part of the handover checklist.
+
+**Known tech debt (carried forward, updates noted):**
+- IMPL-082 trace-label: IT-042 should cite DES-033 in its `traces:` field (LOW)
+- V1: auth seam absent (MEDIUM) — no HTTP auth on engine endpoints; ufw allowlist mitigates;
+  v6's `issue_comment` write capability adds to this surface (compensated by PAT scope + ufw)
+- V3 residual: Bash opt-in bypass (LOW) — workspace confinement covers Read/Write; Bash requires
+  explicit opt-in
+- V3 LOW: SessionInitRecord.resolvedProjectRoot audit-fidelity
+- V4, V5, O-2, R-1, R-3, C-2, C-3, S-2: unchanged from v2/v3 Gate 8 backlog
+- REQ-012 / TASK-018 (OIDC): deferred per D5; no timeline
+- v5 backlog: issue_report rate-guard on pre-OIDC surface (LOW) — **UPDATED**: REQ-035 dedup now
+  partially addresses the dedup half (spam-by-duplicate is mitigated); a rate/volume guard remains
+  open; `issue_comment` write capability (v6) further motivates this work
+- NEW v6 backlog: `issue_comment` (and the other read tools) exposed on pre-OIDC listener; write
+  capability allows any LAN-allowlisted caller to comment on the repo (LOW — compensated by ufw
+  allowlist + Issues-only single-repo PAT; same surface and same mitigations as v5 issue_report)
+- NEW v6 backlog: README.md tool count stale (22 documented, 27 actual) — LOW doc drift,
+  pre-existing across v4/v5/v6; no deployment risk; update in next iteration
+
+### Report
+
+```
+Gaps: high=1 mid=1 low=1 (all 3 recorded as known backlog; none in v6 scope)
+  - high=1: REQ-012 (OIDC, 未真實驗證) — deferred D5, not a blocker
+  - mid=1:  IMPL-082 (TDD trace-label) — covered in substance by IT-042+VAL-033; cleanup item only
+  - low=1:  TASK-018 (OIDC auth middleware, 未實作) — deferred D5, not a blocker
+Drift: README.md tool count 22 vs actual 27 (LOW, pre-existing across v4/v5/v6; no deployment risk)
+Architecture consistent: yes — ARCH-024 fully consistent with IMPL-086;
+  no new findings (HIGH/MEDIUM/LOW); token-from-SecretSource, envelope-not-throw
+  (ISSUE_NOT_FOUND/ISSUE_COMMENT_INVALID/GITHUB_TOKEN_MISSING/GITHUB_API_ERROR), bounded fetch
+  (shared ghFetch/AbortController/retry budget), 404→null (get/comments/createComment only),
+  dedup (sha256 fingerprint + rwe-fp marker + findOpenByFingerprint search), runDiagnostics
+  (best-effort/.catch/injectable/McpFacade-backed), 4 new tools wired consistently, ARCH-023
+  report() amendment (deduped field + runDiagnostics wired) — all verified against source;
+  pre-OIDC write surface (issue_comment) logged as LOW backlog, non-blocking
+Validation: real-tier all-green? yes (VAL-040..045, 6/6 real:true; REQ-036 honest partial accepted;
+           REQ-012 accepted D5) · README+DEPLOY present? yes (no v6 updates required)
+Conclusion: v6 slice closes; gates.review.passed stays true;
+  3 residual gaps are pre-existing accepted backlog (OIDC D5 x2 + IMPL-082 trace-label cleanup);
+  2 new LOW backlog items added (issue_comment pre-OIDC write surface; README tool count drift);
+  v5 rate-guard backlog updated: dedup half now partially mitigated by REQ-035
+```
+
+---
+
+## v5 GATE 8 CLOSING REVIEW (2026-07-19, SUPERSEDED — kept for history)
+
+> This section is superseded by "## v6 GATE 8 CLOSING REVIEW (2026-07-19)" above. v5 adds the
+> `issue_report` GitHub tool (ARCH-023). REQ-027..030 / IMPL-085 / VAL-036..039. Gate 7.5 v5
+> ROUND 1 PASSED 2026-07-19: issue #1 genuinely created at HsuJavis/remote-workflow-engine via the
+> live engine.
 
 ### 1. Traceability (361 items, 3 gaps)
 

@@ -302,3 +302,7 @@ status: draft
 - **status:** done
 - **traces:** ARCH-023
 - **iter:** v5
+### TASK-045 — implement issue read/reply tools + dedup + enrichment
+- **status:** done
+- **traces:** ARCH-024
+- **iter:** v6

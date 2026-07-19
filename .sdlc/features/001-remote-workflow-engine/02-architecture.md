@@ -222,3 +222,14 @@ flowchart TB
 - **traces:** REQ-027, REQ-028, REQ-029, REQ-030
 - **iter:** v5
 - Engine-side `issue_report` core (src/github/issue-reporter.ts): an injectable GithubIssueClient (bounded fetch — AbortController timeout + retry budget, 4xx-except-429 not retried — any non-2xx/network/timeout surfaced as a typed `GITHUB_API_ERROR`, never a hang/crash/fake-success). The GitHub token is read from the server-side SecretSource (`RWE_SECRET_GITHUB_TOKEN`), never workspace- or sandbox-reachable and never from tool args (extends ARCH-016's secret store to REQ-028). Fixed, machine-parseable agent-consumable body template + fixed `agent-reported` label (and optional `severity:<x>`) so a downstream solve-flow can query/parse it. Fixed target repo `HsuJavis/remote-workflow-engine`. Wired at server.ts `callTool` (`issue_report` case → `{issueNumber,url}` or typed error envelope) from the composition-root default (loadSecretSourceFromEnv + shared ENGINE_VERSION) or the `ServerConfig.issueReporter` test seam. Depends: ARCH-001 (tool/server surface), ARCH-016 (server-side secret store).
+- **NB (v6):** REQ-035/036 amend this ARCH-023 `report()` path — dedup (fingerprint + hidden body marker + findOpenByFingerprint→createComment) and best-effort runId diagnostics enrichment are folded into `report()`; see ARCH-024.
+
+## v6 slice — GitHub issue read/reply toolset (ARCH-024)
+
+### ARCH-024 — GitHub Issue Ops (read/list/comment toolset + dedup + runId enrichment)
+- **status:** done
+- **traces:** REQ-031, REQ-032, REQ-033, REQ-034, REQ-035, REQ-036
+- **iter:** v6
+- Extends ARCH-023's GithubIssueClient with read/write issue ops (getIssue / listIssues / getComments / createComment / findOpenByFingerprint over a shared bounded-fetch `ghFetch`: 404→null on get/comments/createComment, other non-2xx→`GITHUB_API_ERROR`, retry only on 5xx/429/network — same never-hang/crash/fake-success discipline as ARCH-023). Surfaces four new MCP tools `issue_get` / `issue_list` / `issue_comments` / `issue_comment` (server.ts TOOL_NAMES + TOOL_METADATA + `callTool` cases), each returning a typed envelope (`ISSUE_NOT_FOUND` / `ISSUE_COMMENT_INVALID` / reused `GITHUB_TOKEN_MISSING` / `GITHUB_API_ERROR`).
+- Two upgrades to the ARCH-023 `report()` path: REQ-035 dedup via `issueFingerprint()` (sha256 over title/component) + a hidden `<!-- rwe-fp:… -->` body marker that `findOpenByFingerprint` searches — a matching OPEN issue is commented instead of re-filed (`deduped:true`); REQ-036 best-effort runId enrichment of the `## Linked run` section from an injected `runDiagnostics(runId)` (facade status + artifact list + last-agent transcript tail), which never fails the report when the runId is unknown.
+- Depends: ARCH-023 (GithubIssueClient + IssueReporter it extends), ARCH-001 (tool/server surface), ARCH-002 (McpFacade — supplies the runId enrichment data: workflow_status / artifacts / agent_log).

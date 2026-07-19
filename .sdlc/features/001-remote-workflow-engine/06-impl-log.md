@@ -1739,3 +1739,9 @@ All v1 REQs have unchanged green VALs.
 - **iter:** v5
 - files: src/github/issue-reporter.ts (IssueReporter.report + createGithubIssueClient + renderIssueBody + GithubApiError), src/server.ts (issue_report in TOOL_NAMES/TOOL_SPECS, callTool `issueReporter` param + `case 'issue_report'`, createServer default wiring from loadSecretSourceFromEnv + ServerConfig.issueReporter seam, shared ENGINE_VERSION)
 - green: tests/unit/issue-reporter.test.ts (9) + tests/integration/issue-report-http.test.ts (4); full suite 535 green.
+### IMPL-086 — issue read/reply toolset + dedup + enrichment (REQ-031..036)
+- **status:** done
+- **traces:** TASK-045, DES-038
+- **iter:** v6
+- files: src/github/issue-reporter.ts (GithubIssueClient getIssue/listIssues/getComments/createComment/findOpenByFingerprint over shared `ghFetch`; IssueView/IssueSummary/CommentView/IssueListFilter types; IssueReporter getIssue/listIssues/getComments/postComment; `issueFingerprint()` + hidden `rwe-fp` marker dedup in report(); best-effort `runDiagnostics` enrichment; ISSUE_NOT_FOUND/ISSUE_COMMENT_INVALID codes), src/server.ts (issue_get/issue_list/issue_comments/issue_comment in TOOL_NAMES/TOOL_METADATA + callTool cases; facade-backed runDiagnostics wired into the default IssueReporter; `deduped` on issue_report result)
+- green: tests/unit/issue-ops.test.ts + tests/integration/issue-ops-http.test.ts (+34); full suite 569 green, tsc clean.

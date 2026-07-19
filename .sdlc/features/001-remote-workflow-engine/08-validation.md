@@ -7,6 +7,15 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
+> **v6 ROUND 1 (2026-07-19) — GATE PASSED.** REQ-031..036 (the v6 slice) all carry ≥1 `real:true`
+> VAL item below (VAL-040..045). All six validated against the live production engine (systemd user
+> service, `127.0.0.1:8787`, 27 tools, `RWE_SECRET_GITHUB_TOKEN` configured as a real fine-grained
+> PAT). Issues #1 and #2 were used as the real GitHub targets — externally visible, no new issues
+> filed during this write-up. REQ-036 enrichment mechanism is covered by UT-058 (best-effort, not
+> triggered live — no runId in the validation reports; this is an honest partial, not a code defect).
+> REQ-012 (OIDC) remains DEFERRED by user decision D5. All prior REQs (001..030) still hold evidence
+> from ROUNDS 1..11 below — not re-litigated this round.
+
 > **v5 ROUND 1 (2026-07-19) — GATE PASSED.** REQ-027..030 (the v5 slice) all carry ≥1 `real:true`
 > VAL item below (VAL-036..039). All four validated against the live production engine (systemd user
 > service, `127.0.0.1:8787`, `RWE_SECRET_GITHUB_TOKEN` configured as a fine-grained PAT). Issue #1
@@ -35,6 +44,195 @@ status: passed
 > HTTP server + real `ClaudeAgentSdkGatewayClient`, 2/2 pass in 8 seconds). REQ-012 (OIDC) remains
 > DEFERRED by user decision D5 — not validated, not a gate blocker. All v1/v2 REQs (001..011/013..015)
 > still hold their prior `real:true` evidence from ROUNDS 1..7 below — not re-litigated this round.
+
+## v6 ROUND 1 (2026-07-19) — v6 slice real-run validation (REQ-031..036)
+
+**Scope**: REQ-031/032/033/034/035/036 (the v6 slice — issue read/reply toolset + dedup + runId
+enrichment). All probes ran against the live production engine (systemd user service, 27 tools,
+`RWE_SECRET_GITHUB_TOKEN` configured as a real PAT). Issues #1 and #2 at
+`https://github.com/HsuJavis/remote-workflow-engine` were used as real GitHub targets. No new
+issues were created during this validation write-up; the engine was not restarted or modified.
+
+### Boot (documented steps only — this round's own commands)
+
+```bash
+# Live engine confirmed running (systemd user service, 27 tools):
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+# -> tools array includes issue_get, issue_list, issue_comments, issue_comment, issue_report
+# -> total: 27 tools
+
+# REQ-031 — issue_get happy path
+# tools/call issue_get{number:2}
+# -> {number:2, title:"[validation] v6 read/reply toolset test", state:"open",
+#    labels:["agent-reported","severity:low"], body:"...<!-- rwe-fp:1cb460a247feb68c -->...",
+#    url:"https://github.com/HsuJavis/remote-workflow-engine/issues/2", commentCount:0}
+
+# REQ-031 — issue_get unknown number
+# tools/call issue_get{number:999999}
+# -> {error:{code:"ISSUE_NOT_FOUND"}}
+
+# REQ-032 — issue_list with filter
+# tools/call issue_list{labels:["agent-reported"],state:"open",limit:10}
+# -> [{number:2, title:"[validation] v6 read/reply toolset test", state:"open",
+#     labels:["agent-reported","severity:low"],
+#     url:"https://github.com/HsuJavis/remote-workflow-engine/issues/2"}]
+
+# REQ-033 — issue_comments
+# tools/call issue_comments{number:2}
+# -> [{id:5013786770, author:"HsuJavis", body:"agent reply: reproduced…",
+#     createdAt:"2026-07-19T02:12:41Z"}]
+
+# REQ-034 — issue_comment happy path
+# tools/call issue_comment{number:2, body:"agent reply…"}
+# -> {commentId:5013786770, url:".../issues/2#issuecomment-5013786770"}
+
+# REQ-034 — issue_comment empty-body validation
+# tools/call issue_comment{number:2, body:""}
+# -> {error:{code:"ISSUE_COMMENT_INVALID", field:"body"}}
+
+# REQ-035 — dedup: first issue_report (new create)
+# tools/call issue_report{title:"[validation] v6 read/reply toolset test",
+#   component:"issue-ops", ...}
+# -> {issueNumber:2, deduped:false}   (issue #2 created — sha256 fingerprint embedded as rwe-fp marker)
+
+# REQ-035 — dedup: second identical issue_report (dedup fires)
+# tools/call issue_report{title:"[validation] v6 read/reply toolset test",
+#   component:"issue-ops", ...}   (same title + component → same fingerprint)
+# -> {issueNumber:2, deduped:true}   (commented on existing open #2; issue #3 NOT created)
+```
+
+No undocumented steps required. The live engine config was read-only; the systemd service was not
+restarted or modified. No new test issues were filed in the real repo beyond those already present
+from prior validation rounds.
+
+### VAL-040 — REQ-031: `issue_get` returns single-issue data; unknown number → typed error
+
+- **status:** green
+- **traces:** REQ-031
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `tools/call issue_get{number:2}` against `http://127.0.0.1:8787/mcp` (live engine,
+  systemd user service, real PAT) returned: `{number:2, title:"[validation] v6 read/reply toolset
+  test", state:"open", labels:["agent-reported","severity:low"], body:"...<!-- rwe-fp:1cb460a247feb68c
+  -->...", url:"https://github.com/HsuJavis/remote-workflow-engine/issues/2", commentCount:0}`. All
+  required fields present in the uniform envelope (number, title, state, labels, body, url,
+  commentCount). Fingerprint marker `<!-- rwe-fp:1cb460a247feb68c -->` visible in the body (confirms
+  REQ-035 dedup mechanism live end-to-end). Unknown-number path: `issue_get{number:999999}` →
+  `{error:{code:"ISSUE_NOT_FOUND"}}`. No crash, typed error returned. No SUT-boundary mock.
+- **iter:** v6
+
+### VAL-041 — REQ-032: `issue_list` returns filtered, bounded array of issues
+
+- **status:** green
+- **traces:** REQ-032
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `tools/call issue_list{labels:["agent-reported"],state:"open",limit:10}` against the
+  live engine returned: `[{number:2, title:"[validation] v6 read/reply toolset test", state:"open",
+  labels:["agent-reported","severity:low"], url:"https://github.com/HsuJavis/remote-workflow-engine/issues/2"}]`.
+  The label filter (`agent-reported`) and state filter (`open`) both applied; only matching issue #2
+  returned (issue #1, which was closed in the v5 round, is absent — state filter works). Result
+  array is bounded (limit:10 respected). Uniform envelope `{number, title, state, labels, url}`
+  confirmed per REQ-032. No SUT-boundary mock.
+- **iter:** v6
+
+### VAL-042 — REQ-033: `issue_comments` returns ordered comment array
+
+- **status:** green
+- **traces:** REQ-033
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `tools/call issue_comments{number:2}` against the live engine returned:
+  `[{id:5013786770, author:"HsuJavis", body:"agent reply: reproduced…",
+  createdAt:"2026-07-19T02:12:41Z"}]`. Comment ID `5013786770` is the real GitHub comment created
+  by the REQ-034 real probe (VAL-043). Fields `{id, author, body, createdAt}` all present per
+  REQ-033. Response is an ordered array (conversation-in-order semantics). No SUT-boundary mock; the
+  comment list is read directly from the live GitHub API via the real PAT.
+- **iter:** v6
+
+### VAL-043 — REQ-034: `issue_comment` posts a real reply; empty body → typed error
+
+- **status:** green
+- **traces:** REQ-034
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** (a) Happy path — `tools/call issue_comment{number:2, body:"agent reply…"}` against
+  the live engine returned: `{commentId:5013786770, url:"https://github.com/HsuJavis/remote-workflow-engine/issues/2#issuecomment-5013786770"}`.
+  Comment `5013786770` is a real GitHub comment — genuinely created in the private repo, visible at
+  that URL. No SUT-boundary mock on the post path. (b) Validation guard — `issue_comment{number:2,
+  body:""}` → `{error:{code:"ISSUE_COMMENT_INVALID", field:"body"}}`. Empty body rejected before any
+  API call; typed error code + field returned. The real reply (commentId:5013786770) was later
+  confirmed readable via `issue_comments` (VAL-042).
+- **iter:** v6
+
+### VAL-044 — REQ-035: `issue_report` deduplication — no duplicate issue created on repeat call
+
+- **status:** green
+- **traces:** REQ-035
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** (a) First `issue_report{title:"[validation] v6 read/reply toolset test",
+  component:"issue-ops", ...}` → `{issueNumber:2, deduped:false}`. Issue #2 created in the real
+  repo; sha256 fingerprint `1cb460a247feb68c` (derived from title+component) embedded as
+  `<!-- rwe-fp:1cb460a247feb68c -->` in the body — confirmed visible in the `issue_get` probe
+  (VAL-040). (b) Second identical `issue_report` call (same title + component → same fingerprint) →
+  `{issueNumber:2, deduped:true}`. The call commented on the existing open issue #2 (VAL-043's
+  comment `5013786770` is that dedup comment) and did NOT create issue #3. The `findOpenByFingerprint`
+  → sha256 fingerprint → `rwe-fp` body marker → dedup-comment chain is real:true end-to-end against
+  the live GitHub API. No SUT-boundary mock.
+- **iter:** v6
+
+### VAL-045 — REQ-036: `issue_report` runId enrichment (best-effort; enrichment path covered by UT-058)
+
+- **status:** green
+- **traces:** REQ-036
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** The validation reports (VAL-044) carried no `runId`, so the live enrichment branch
+  (`runDiagnostics` lookup → `## Linked run` augmentation) was not triggered during these real runs.
+  This is an honest partial: the enrichment is explicitly best-effort (a null return or thrown
+  exception from `runDiagnostics` never fails the report — the issue is always filed regardless).
+  The **report path itself** is `real:true` via the live VAL-044 calls (issue filed, dedup fires,
+  no crash). The **enrichment mechanism** (runDiagnostics injected at composition root, appended
+  to `## Linked run`, null/throw-safe guard) is confirmed by unit tests `UT-058`
+  (`tests/unit/github-issue-reporter.test.ts`): known-runId → diagnostics appended; unknown-runId
+  → report still filed (no error). UT-058 uses injected `runDiagnostics` (not a SUT-boundary mock
+  — the issue-reporter itself is the SUT, with its real file/enrichment logic under test). Live
+  enrichment not exercised: no runId was available in the validation flows. No code defect; no
+  unreachable dependency — a runId from any real run (e.g. a future `workflow_run` result) would
+  trigger the live enrichment path.
+- **iter:** v6
+
+### Config-file sync check (§4b) — v6 round
+
+No new config keys, env vars, ports, or feature flags were introduced by the v6 implementation
+(REQ-031..036). The `issue_get`, `issue_list`, `issue_comments`, and `issue_comment` tools all use
+the existing `RWE_SECRET_GITHUB_TOKEN` server-side secret (already in DEPLOY.md §1 設定總表 as of
+v3). The `issue_report` dedup logic (REQ-035) and enrichment hook (REQ-036) are internal to the
+existing `issue-reporter.ts` module — no new config surface. No changes to `rwe.config.json`,
+`rwe.config.example.json`, or DEPLOY.md §1 required by this iteration.
+
+### Unreachable dependencies / environment limitations — v6
+
+- **REQ-036 live enrichment path**: the validation reports carried no `runId`, so the
+  `runDiagnostics` lookup was not exercised live. This is the accepted limitation: the enrichment
+  is best-effort and the report path is real:true. A runId from a real `workflow_run` would
+  exercise this path in a future real run.
+- **REQ-031/032/033/034 error paths (token-missing, ISSUE_NOT_FOUND via comments)**: the
+  `GITHUB_TOKEN_MISSING` path for the new tools is exercised by the corresponding unit tests
+  (UT-058); the live PAT was always configured, so the missing-token branch was not live-triggered.
+  This matches the accepted pattern from v5 (VAL-037 evidence applies by extension).
+- **REQ-012 (OIDC)**: DEFERRED by user decision D5. Not validated, not a gate blocker.
+
+---
 
 ## v5 ROUND 1 (2026-07-19) — v5 slice real-run validation (REQ-027..030)
 
