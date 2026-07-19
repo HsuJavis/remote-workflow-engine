@@ -3405,3 +3405,16 @@ error).
 - **status:** green
 - **traces:** ARCH-020, ARCH-021, ARCH-022
 - tests/integration/v15-v2-workspace-transport.test.ts (seed→recursive artifacts+sha256+.claude-stripped→windowed artifact_get+escape-denied→purge; body-cap 413). Real-run validated on the live engine 2026-07-11 (all 5 REQs green via curl).
+
+## v5 slice — GitHub issue reporting tests (UT-057, IT-043)
+
+### UT-057 — IssueReporter / GithubIssueClient / renderIssueBody (REQ-027..030)
+- **status:** green
+- **traces:** DES-037
+- **iter:** v5
+- tests/unit/issue-reporter.test.ts (9 cases: files an issue → {issueNumber,url}; `ISSUE_REPORT_INVALID{field}` on empty required field w/ no client call; `GITHUB_TOKEN_MISSING` when the secret is unset; agent-consumable body template sections + `agent-reported`/`severity:<x>` labels; bounded client timeout + retry then `GITHUB_API_ERROR`; 4xx not retried).
+### IT-043 — issue_report over the real MCP HTTP surface (REQ-027..030)
+- **status:** green
+- **traces:** ARCH-023
+- **iter:** v5
+- tests/integration/issue-report-http.test.ts (4 cases: `issue_report` advertised in tools/list; a real IssueReporter + fake GithubIssueClient injected via ServerConfig files an issue over `/mcp` → {issueNumber,url}; the default composition-root wiring (no token) returns `GITHUB_TOKEN_MISSING`; invalid input → `ISSUE_REPORT_INVALID`).

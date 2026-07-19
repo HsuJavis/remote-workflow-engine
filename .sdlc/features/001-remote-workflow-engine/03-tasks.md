@@ -298,3 +298,7 @@ status: draft
 ### TASK-043 — workspace_purge + TTL GC (REQ-026)
 - **status:** done
 - **traces:** ARCH-022
+### TASK-044 — implement issue_report tool + IssueReporter/GithubIssueClient (REQ-027..030)
+- **status:** done
+- **traces:** ARCH-023
+- **iter:** v5
