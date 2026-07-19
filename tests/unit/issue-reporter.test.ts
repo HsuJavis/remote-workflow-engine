@@ -9,12 +9,20 @@ const srcWith = (map: Record<string, string>): SecretSource => ({ resolve: (h) =
 const OK_INPUT = { title: 'Boom on resume', reproSteps: '1. run X\n2. resume', analysis: 'cache replay returns stale null' };
 const META = { engineVersion: '1.2.3', nowIso: '2026-07-19T00:00:00Z' };
 
-function fakeClient(): { client: GithubIssueClient; calls: Array<{ title: string; body: string; labels: string[] }> } {
+// v6: the client interface grew read/reply methods; the fake implements them all (defaults keep the
+// v5 create-path behavior — findOpenByFingerprint returns null, so report() creates rather than dedups).
+function fakeClient(over: Partial<GithubIssueClient> = {}): { client: GithubIssueClient; calls: Array<{ title: string; body: string; labels: string[] }> } {
   const calls: Array<{ title: string; body: string; labels: string[] }> = [];
-  return {
-    calls,
-    client: { async createIssue(i) { calls.push(i); return { number: 42, url: 'https://github.com/HsuJavis/remote-workflow-engine/issues/42' }; } },
+  const client: GithubIssueClient = {
+    async createIssue(i) { calls.push(i); return { number: 42, url: 'https://github.com/HsuJavis/remote-workflow-engine/issues/42' }; },
+    async getIssue() { return null; },
+    async listIssues() { return []; },
+    async getComments() { return null; },
+    async createComment() { return { commentId: 100, url: 'https://github.com/HsuJavis/remote-workflow-engine/issues/42#issuecomment-100' }; },
+    async findOpenByFingerprint() { return null; },
+    ...over,
   };
+  return { calls, client };
 }
 
 describe('IssueReporter (REQ-027..030)', () => {
@@ -22,7 +30,7 @@ describe('IssueReporter (REQ-027..030)', () => {
     const { client, calls } = fakeClient();
     const r = new IssueReporter({ secretSource: srcWith({ GITHUB_TOKEN: 't' }), clientImpl: client, engineVersion: '1.2.3', nowIso: () => META.nowIso });
     const res = await r.report({ ...OK_INPUT, severity: 'high' });
-    expect(res).toEqual({ ok: true, issueNumber: 42, url: 'https://github.com/HsuJavis/remote-workflow-engine/issues/42' });
+    expect(res).toEqual({ ok: true, issueNumber: 42, url: 'https://github.com/HsuJavis/remote-workflow-engine/issues/42', deduped: false });
     expect(calls).toHaveLength(1);
     expect(calls[0].title).toBe('Boom on resume');
   });
@@ -97,7 +105,7 @@ describe('IssueReporter (REQ-027..030)', () => {
   });
 
   it('REQ-030: a GithubIssueClient failure → GITHUB_API_ERROR envelope, never a throw', async () => {
-    const client: GithubIssueClient = { async createIssue() { throw Object.assign(new Error('422 Unprocessable'), { code: 'GITHUB_API_ERROR', status: 422 }); } };
+    const { client } = fakeClient({ async createIssue() { throw Object.assign(new Error('422 Unprocessable'), { code: 'GITHUB_API_ERROR', status: 422 }); } });
     const r = new IssueReporter({ secretSource: srcWith({ GITHUB_TOKEN: 't' }), clientImpl: client });
     const res = await r.report(OK_INPUT);
     expect(res.ok).toBe(false);

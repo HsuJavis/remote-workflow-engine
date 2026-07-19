@@ -22,7 +22,14 @@ const srcWith = (m: Record<string, string>): SecretSource => ({ resolve: (h) => 
 describe('issue_report over the real MCP HTTP surface (REQ-027..030)', () => {
   let server: Server; let baseUrl: string;
   const calls: Array<{ title: string; body: string; labels: string[] }> = [];
-  const fakeClient: GithubIssueClient = { async createIssue(i) { calls.push(i); return { number: 7, url: 'https://github.com/HsuJavis/remote-workflow-engine/issues/7' }; } };
+  const fakeClient: GithubIssueClient = {
+    async createIssue(i) { calls.push(i); return { number: 7, url: 'https://github.com/HsuJavis/remote-workflow-engine/issues/7' }; },
+    async getIssue() { return null; },
+    async listIssues() { return []; },
+    async getComments() { return null; },
+    async createComment() { return { commentId: 1, url: 'https://github.com/HsuJavis/remote-workflow-engine/issues/7#issuecomment-1' }; },
+    async findOpenByFingerprint() { return null; },
+  };
 
   beforeAll(async () => {
     const issueReporter = new IssueReporter({ secretSource: srcWith({ GITHUB_TOKEN: 'tkn' }), clientImpl: fakeClient, engineVersion: '9.9.9', nowIso: () => '2026-07-19T00:00:00Z' });
@@ -39,7 +46,7 @@ describe('issue_report over the real MCP HTTP surface (REQ-027..030)', () => {
   it('files an issue and returns {issueNumber, url}; body carries the structured template', async () => {
     const res = await toolCall(baseUrl, 'issue_report', { title: 'X breaks', reproSteps: 'do X', analysis: 'root cause Y', severity: 'high', runId: 'run-1' });
     expect(res.error).toBeUndefined();
-    expect(res.result).toEqual({ issueNumber: 7, url: 'https://github.com/HsuJavis/remote-workflow-engine/issues/7' });
+    expect(res.result).toEqual({ issueNumber: 7, url: 'https://github.com/HsuJavis/remote-workflow-engine/issues/7', deduped: false });
     expect(calls).toHaveLength(1);
     expect(calls[0].labels).toEqual(expect.arrayContaining(['agent-reported', 'severity:high']));
     expect(calls[0].body).toContain('## Reproduction steps');

@@ -21,7 +21,7 @@ import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
 import { AssetSyncService, classifyAsset, type AssetPush, type AssetKind } from './asset-sync.js';
 import { classifyTransport, RealMcpProbe, type McpProbe, type McpServerConfig } from './mcp-probe.js';
 import { McpRegistry, type McpKind } from './mcp-registry.js';
-import { IssueReporter, type IssueReportInput } from './github/issue-reporter.js';
+import { IssueReporter, type IssueReportInput, type IssueListFilter } from './github/issue-reporter.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 
 // Single source for the engine version reported over MCP (serverInfo) and stamped into filed issues.
@@ -123,6 +123,11 @@ const TOOL_NAMES = [
   // v3 (DES-024/TASK-029): admin-write provisioning tool over the MCP Provisioning Registry.
   'mcp_provision',
   'issue_report',
+  // v6 (REQ-031..034): read/reply GitHub-issue primitives for the "report -> agent solves it" flow.
+  'issue_get',
+  'issue_list',
+  'issue_comments',
+  'issue_comment',
 ] as const;
 
 type ToolName = (typeof TOOL_NAMES)[number];
@@ -332,6 +337,45 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
       required: ['title', 'reproSteps', 'analysis'],
     },
   },
+  issue_get: {
+    description: "Reads a single issue from the engine's repo, returning {number, title, state, labels, body, url, commentCount}. Unknown number -> ISSUE_NOT_FOUND; token missing -> GITHUB_TOKEN_MISSING.",
+    inputSchema: {
+      type: 'object',
+      properties: { number: { type: 'number', description: 'The issue number to read.' } },
+      required: ['number'],
+    },
+  },
+  issue_list: {
+    description: "Lists issues from the engine's repo (default state:open), returning a bounded array of {number, title, state, labels, url} so a solve agent can enumerate work. Size-capped (default 30, hard 100).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        labels: { type: 'array', description: 'Filter to issues carrying ALL of these labels (e.g. ["agent-reported"]).' },
+        state: { type: 'string', description: "One of 'open' | 'closed' | 'all' (default 'open')." },
+        since: { type: 'string', description: 'ISO timestamp; only issues updated at/after this.' },
+        limit: { type: 'number', description: 'Max issues to return (default 30, capped at 100).' },
+      },
+    },
+  },
+  issue_comments: {
+    description: "Reads an issue's comment thread in order as {id, author, body, createdAt} (the prior attempts a solve agent needs). Unknown number -> ISSUE_NOT_FOUND; token missing -> GITHUB_TOKEN_MISSING.",
+    inputSchema: {
+      type: 'object',
+      properties: { number: { type: 'number', description: 'The issue number whose comments to read.' } },
+      required: ['number'],
+    },
+  },
+  issue_comment: {
+    description: 'Posts one reply comment to an issue and returns {commentId, url}. Empty body -> ISSUE_COMMENT_INVALID; unknown number -> ISSUE_NOT_FOUND; token missing -> GITHUB_TOKEN_MISSING. Bounded + typed-error like issue_report.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        number: { type: 'number', description: 'The issue number to comment on.' },
+        body: { type: 'string', description: 'The comment body (markdown); must be non-empty.' },
+      },
+      required: ['number', 'body'],
+    },
+  },
 };
 
 // REQ-024 (v1.5, DoS): cap the request body so a large/hostile body can't buffer unbounded and OOM
@@ -466,9 +510,26 @@ async function callTool(
         : { error: { code: outcome.error, message: `MCP probe failed for '${(args as { name?: string }).name ?? ''}'` } };
     }
     case 'issue_report': {
-      // REQ-027..030: envelope-not-throw — validation/token/API failures come back as {error}.
+      // REQ-027..030/035/036: envelope-not-throw — validation/token/API failures come back as {error}.
       const res = await issueReporter.report(args as unknown as IssueReportInput);
-      return res.ok ? { result: { issueNumber: res.issueNumber, url: res.url } } : { error: res.error };
+      return res.ok ? { result: { issueNumber: res.issueNumber, url: res.url, deduped: res.deduped } } : { error: res.error };
+    }
+    // v6 (REQ-031..034): read/reply issue primitives — same envelope-not-throw discipline.
+    case 'issue_get': {
+      const res = await issueReporter.getIssue(Number((args as { number?: unknown }).number));
+      return res.ok ? { result: res.issue } : { error: res.error };
+    }
+    case 'issue_list': {
+      const res = await issueReporter.listIssues(args as unknown as IssueListFilter);
+      return res.ok ? { result: res.issues } : { error: res.error };
+    }
+    case 'issue_comments': {
+      const res = await issueReporter.getComments(Number((args as { number?: unknown }).number));
+      return res.ok ? { result: res.comments } : { error: res.error };
+    }
+    case 'issue_comment': {
+      const res = await issueReporter.postComment(Number((args as { number?: unknown }).number), (args as { body?: unknown }).body as string);
+      return res.ok ? { result: { commentId: res.commentId, url: res.url } } : { error: res.error };
     }
     default: throw new Error(`Unknown tool: ${name}`);
   }
@@ -566,9 +627,39 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   const mcpRegistry = new McpRegistry({ dbPath: join(workRoot, 'mcp-registry.db'), probe: mcpProbe });
   const validator = new SubmissionValidator({ catalog, aliases: config?.aliases, mcpRegistry });
   const facade = new McpFacade({ clock, store, runManager, validator });
+  // v6 (REQ-036): best-effort engine-side diagnostics for a runId, pulled through the SAME facade
+  // the MCP tools use (status + artifact list + failing/last agent transcript tail), formatted as a
+  // short markdown block. Bounded and swallow-all — an unknown/failed run returns null so the
+  // enrichment NEVER fails an issue_report.
+  const runDiagnostics = async (runId: string): Promise<string | null> => {
+    try {
+      const statusEnv = await facade.workflow_status({ runId });
+      if (statusEnv.error || !statusEnv.result) return null;
+      const view = statusEnv.result;
+      const lines: string[] = ['### Engine diagnostics', `- status: ${view.status}`];
+      const artifactsEnv = await facade.workflow_artifacts({ runId });
+      const artifacts = artifactsEnv.result ?? [];
+      lines.push(`- artifacts: ${artifacts.length}`);
+      for (const f of artifacts.slice(0, 20)) lines.push(`  - \`${f.path}\` (${f.size} bytes)`);
+      const agents = view.agents ?? [];
+      const failing = agents.find((a) => a.state === 'failed') ?? agents[agents.length - 1];
+      if (failing) {
+        const logEnv = await facade.workflow_agent_log({ runId, agentId: failing.agentId });
+        const events = Array.isArray(logEnv.result) ? logEnv.result : [];
+        const tail = events.slice(-5).map((e) => `- ${e.kind}: ${JSON.stringify(e.data).slice(0, 200)}`);
+        if (tail.length) {
+          lines.push(`- last agent \`${failing.label ?? failing.agentId}\` (${failing.state}) transcript tail:`);
+          lines.push(...tail);
+        }
+      }
+      return lines.join('\n');
+    } catch {
+      return null; // best-effort — never fail the report on an enrichment error
+    }
+  };
   // v5 (REQ-027..030): the issue_report reporter. Token from the server-side secret store
   // (RWE_SECRET_GITHUB_TOKEN), never workspace-reachable. A test seam replaces it with a fake.
-  const issueReporter = config?.issueReporter ?? new IssueReporter({ secretSource: loadSecretSourceFromEnv(), engineVersion: ENGINE_VERSION });
+  const issueReporter = config?.issueReporter ?? new IssueReporter({ secretSource: loadSecretSourceFromEnv(), engineVersion: ENGINE_VERSION, runDiagnostics });
   // v2 (DES-016/TASK-019): SQLite-persisted schedule store, same workRoot convention as
   // catalog.db/store — survives restart (REQ-014-style persistence extended to schedules).
   const scheduler = new SqliteSchedulerPort({

@@ -335,3 +335,47 @@ flowchart LR
 - **traces:** —
 - **acceptance:** Given the GitHub API is unreachable, times out, is rate-limited, or returns a non-2xx When `issue_report` runs Then the call is bounded by a configured timeout+retry policy and resolves to a typed `GITHUB_API_ERROR` envelope carrying the HTTP status/reason — the tool never hangs and the engine process never crashes; Given a transient failure Then the failure is visible to the caller in the result envelope, never smuggled as a fake success
 - **iter:** v5
+
+## v6 slice — issue read/reply toolset for effective problem-handling (REQ-031..036)
+
+> Added 2026-07-19. The read/write GitHub-issue primitives the "report → agent solves it" flow needs:
+> an agent can find issues, read the conversation, reply with progress/resolution, plus two quality
+> upgrades to issue_report (dedup + runId diagnostics enrichment). Same server-side PAT (Issues:R/W),
+> same GithubIssueClient pattern, fixed repo. The "solve" logic itself is a workflow composing these
+> primitives with workflow_run/rwe-apply — not a single tool.
+
+### REQ-031 — `issue_get` reads a single issue
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given a client calls `issue_get{number}` When invoked Then it returns the issue's `{number, title, state, labels, body, url, commentCount}` from the fixed repo in the uniform envelope; Given the number does not exist Then it returns a typed `ISSUE_NOT_FOUND` error (never a crash); token missing → `GITHUB_TOKEN_MISSING`
+- **iter:** v6
+
+### REQ-032 — `issue_list` finds issues (for the solve-flow to pick up work)
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given a client calls `issue_list{labels?, state?, since?, limit?}` When invoked Then it returns a bounded array of `{number, title, state, labels, url}` matching the filter (default `state:open`, e.g. `labels:["agent-reported"]`), so a solve agent can enumerate work; the result is size-capped (default/hard limit) so a huge repo can't return unbounded; token missing → `GITHUB_TOKEN_MISSING`
+- **iter:** v6
+
+### REQ-033 — `issue_comments` reads an issue's replies
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given a client calls `issue_comments{number}` When invoked Then it returns the issue's comments in order as `{id, author, body, createdAt}` (the conversation/prior attempts a solve agent needs), size-capped; unknown number → `ISSUE_NOT_FOUND`; token missing → `GITHUB_TOKEN_MISSING`
+- **iter:** v6
+
+### REQ-034 — `issue_comment` posts a reply to an issue
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given a client calls `issue_comment{number, body}` (both required) When invoked Then it posts one comment to that issue and returns `{commentId, url}`; empty body → `ISSUE_COMMENT_INVALID`; unknown number → `ISSUE_NOT_FOUND`; token missing → `GITHUB_TOKEN_MISSING`; the call is bounded + typed-error like issue_report (never hangs/crashes)
+- **iter:** v6
+
+### REQ-035 — `issue_report` de-duplicates instead of spamming
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given `issue_report` is called and an OPEN issue with the same de-dup fingerprint (derived from title/component) already exists When invoked Then it does NOT create a duplicate — it posts the new report as a comment on the existing issue and returns `{issueNumber, url, deduped:true}`; Given no matching open issue Then it creates a new one as before (`deduped:false`/absent). Prevents an agent from flooding the repo with duplicates on the pre-OIDC surface
+- **iter:** v6
+
+### REQ-036 — `issue_report` auto-enriches from a runId
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given `issue_report{..., runId}` names a known run When invoked Then the issue body's `## Linked run` section is auto-enriched with that run's engine-side diagnostics (status, the failing/last agent's transcript tail, and the workspace artifact list) pulled from the engine — so the issue is reproducible from real run data, not only the caller's prose; Given the runId is unknown Then the tool still files the issue (the enrichment is best-effort, never fails the report)
+- **iter:** v6
