@@ -21,6 +21,11 @@ import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
 import { AssetSyncService, classifyAsset, type AssetPush, type AssetKind } from './asset-sync.js';
 import { classifyTransport, RealMcpProbe, type McpProbe, type McpServerConfig } from './mcp-probe.js';
 import { McpRegistry, type McpKind } from './mcp-registry.js';
+import { IssueReporter, type IssueReportInput } from './github/issue-reporter.js';
+import { loadSecretSourceFromEnv } from './secret-source.js';
+
+// Single source for the engine version reported over MCP (serverInfo) and stamped into filed issues.
+const ENGINE_VERSION = '1.0.0';
 import { buildDashboardModel } from './dashboard.js';
 import { DASHBOARD_HTML } from './dashboard-page.js';
 import type { RunStore } from './run-store.js';
@@ -53,6 +58,9 @@ export interface ServerConfig {
   // ClaudeAgentSdkGatewayClient session) instead of the aliases-driven LiteLLMGatewayClient built
   // below. No existing caller sets this, so it changes nothing unless explicitly used.
   gateway?: GatewayClient;
+  // v5 (REQ-027..030): injectable IssueReporter for the `issue_report` tool — tests supply a fake
+  // (no real GitHub call); omitted -> a real reporter reading RWE_SECRET_GITHUB_TOKEN from the env.
+  issueReporter?: IssueReporter;
   // TASK-026 (DES-020): the one network dependency in asset_push's mcp-config validation, isolated
   // behind this port. Defaults to a real probe; tests inject a FakeMcpProbe to avoid a flaky
   // network dependency (DES-023 mock policy — real handshake/spawn only exercised at real-tier).
@@ -114,6 +122,7 @@ const TOOL_NAMES = [
   'asset_delete',
   // v3 (DES-024/TASK-029): admin-write provisioning tool over the MCP Provisioning Registry.
   'mcp_provision',
+  'issue_report',
 ] as const;
 
 type ToolName = (typeof TOOL_NAMES)[number];
@@ -307,6 +316,22 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
       required: ['name', 'kind', 'config'],
     },
   },
+  issue_report: {
+    description: 'Files a structured GitHub issue into the engine\'s own repo (HsuJavis/remote-workflow-engine) from an agent-supplied, pre-analyzed problem report — so a problem hit from any connected machine can be reported without host-switching. Returns {issueNumber, url}. The GitHub token comes from the server-side secret store (RWE_SECRET_GITHUB_TOKEN), never the arguments.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Short issue title.' },
+        reproSteps: { type: 'string', description: 'Exact steps to reproduce the problem.' },
+        analysis: { type: 'string', description: 'The already-confirmed analysis / suspected root cause.' },
+        logs: { type: 'string', description: 'Relevant log excerpts (optional).' },
+        severity: { type: 'string', description: 'Severity label, e.g. low|medium|high (optional).' },
+        component: { type: 'string', description: 'Affected component/area (optional).' },
+        runId: { type: 'string', description: 'A related run to link in the issue (optional).' },
+      },
+      required: ['title', 'reproSteps', 'analysis'],
+    },
+  },
 };
 
 // REQ-024 (v1.5, DoS): cap the request body so a large/hostile body can't buffer unbounded and OOM
@@ -379,6 +404,7 @@ async function callTool(
   assetSync: AssetSyncService,
   mcpProbe: McpProbe,
   mcpRegistry: McpRegistry,
+  issueReporter: IssueReporter,
   name: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
@@ -438,6 +464,11 @@ async function callTool(
       return outcome.ok
         ? { result: { ok: true } }
         : { error: { code: outcome.error, message: `MCP probe failed for '${(args as { name?: string }).name ?? ''}'` } };
+    }
+    case 'issue_report': {
+      // REQ-027..030: envelope-not-throw — validation/token/API failures come back as {error}.
+      const res = await issueReporter.report(args as unknown as IssueReportInput);
+      return res.ok ? { result: { issueNumber: res.issueNumber, url: res.url } } : { error: res.error };
     }
     default: throw new Error(`Unknown tool: ${name}`);
   }
@@ -535,6 +566,9 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   const mcpRegistry = new McpRegistry({ dbPath: join(workRoot, 'mcp-registry.db'), probe: mcpProbe });
   const validator = new SubmissionValidator({ catalog, aliases: config?.aliases, mcpRegistry });
   const facade = new McpFacade({ clock, store, runManager, validator });
+  // v5 (REQ-027..030): the issue_report reporter. Token from the server-side secret store
+  // (RWE_SECRET_GITHUB_TOKEN), never workspace-reachable. A test seam replaces it with a fake.
+  const issueReporter = config?.issueReporter ?? new IssueReporter({ secretSource: loadSecretSourceFromEnv(), engineVersion: ENGINE_VERSION });
   // v2 (DES-016/TASK-019): SQLite-persisted schedule store, same workRoot convention as
   // catalog.db/store — survives restart (REQ-014-style persistence extended to schedules).
   const scheduler = new SqliteSchedulerPort({
@@ -635,7 +669,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
             result: {
               protocolVersion: clientProto ?? '2025-06-18',
               capabilities: { tools: {} },
-              serverInfo: { name: 'remote-workflow-engine', version: '1.0.0' },
+              serverInfo: { name: 'remote-workflow-engine', version: ENGINE_VERSION },
             },
           });
           return;
@@ -657,7 +691,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         if (rpc.method === 'tools/call') {
           const name = rpc.params?.name ?? '';
           const args = rpc.params?.arguments ?? {};
-          const result = await callTool(facade, scheduler, assetSync, mcpProbe, mcpRegistry, name, args);
+          const result = await callTool(facade, scheduler, assetSync, mcpProbe, mcpRegistry, issueReporter, name, args);
           sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } });
           return;
         }

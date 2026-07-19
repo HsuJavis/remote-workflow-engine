@@ -304,3 +304,34 @@ flowchart LR
 - **traces:** —
 - **acceptance:** Given a run in a terminal state (completed/failed/stopped) When `workspace_purge{runId}` is called Then its on-disk workspace tree is deleted while its journaled record/transcript is preserved; Given a run that is still active/suspended/queued Then purge is refused with `RUN_NOT_TERMINAL` (never races the sandbox); Given `config.workspaceTtlMs` is set When the GC runs Then it reclaims only TERMINAL workspaces older than the TTL, never an active/suspended/unknown run's workspace
 - **iter:** v4
+
+## v5 slice — GitHub issue reporting tool (REQ-027..030)
+
+> Added 2026-07-19. A new MCP tool `issue_report` so any connected client/agent (from any machine, no
+> host-switching) can file a STRUCTURED, agent-consumable GitHub issue into the engine's own repo —
+> the intake side of a future "report → agent solves it" flow. Explicit-tool-only (no auto-file);
+> fixed repo; GitHub token via the REQ-018 server-side secret store.
+
+### REQ-027 — `issue_report` MCP tool files a structured GitHub issue
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given a client calls `issue_report{title, reproSteps, analysis, logs?, severity?, component?, runId?}` (title, reproSteps, analysis required) When invoked Then the engine creates ONE GitHub issue in the fixed repo `HsuJavis/remote-workflow-engine` and returns `{issueNumber, url}` in the uniform result envelope; Given a required field (title/reproSteps/analysis) is missing or empty When invoked Then it returns a typed `ISSUE_REPORT_INVALID` error (with `field`) and NO issue is created (fail-fast, no partial call)
+- **iter:** v5
+
+### REQ-028 — GitHub token via server-side secret, never workspace-reachable
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given `issue_report` needs a GitHub token When it runs Then the token is read ONLY from the server-side secret store (`RWE_SECRET_GITHUB_TOKEN` env / systemd `LoadCredential`), never from a run workspace, the untrusted VM sandbox, or the tool arguments; Given the token is not configured When `issue_report` is called Then it returns a typed `GITHUB_TOKEN_MISSING` error — never the literal handle, never a silent no-op, never a leak; Given any run workspace/transcript/log When inspected Then the token value never appears (redacted, extends REQ-018)
+- **iter:** v5
+
+### REQ-029 — Structured, agent-consumable issue body + labels for the solve-flow
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given an issue is filed When its body is rendered Then it follows a FIXED, machine-parseable template with labelled sections (`## Summary`, `## Reproduction steps`, `## Logs`, `## Analysis / root cause`, `## Environment` incl. engine version + ISO timestamp, and `## Linked run` when `runId` given) so a downstream issue-solving agent can parse and reproduce it; Given the issue is created Then it carries the fixed label `agent-reported` (and `severity:<level>` when provided) so the solve-flow can query for it
+- **iter:** v5
+
+### REQ-030 — Bounded, typed-error GitHub API call (never hangs or crashes the engine)
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given the GitHub API is unreachable, times out, is rate-limited, or returns a non-2xx When `issue_report` runs Then the call is bounded by a configured timeout+retry policy and resolves to a typed `GITHUB_API_ERROR` envelope carrying the HTTP status/reason — the tool never hangs and the engine process never crashes; Given a transient failure Then the failure is visible to the caller in the result envelope, never smuggled as a fake success
+- **iter:** v5

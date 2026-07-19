@@ -1733,3 +1733,9 @@ All v1 REQs have unchanged green VALs.
 - **status:** done
 - **traces:** DES-036
 - files: src/workspace-gc.ts, src/mcp-facade.ts (workspace_purge), src/server.ts (GC ticker + workspaceTtlMs)
+### IMPL-085 — issue_report tool (REQ-027..030)
+- **status:** done
+- **traces:** TASK-044, DES-037
+- **iter:** v5
+- files: src/github/issue-reporter.ts (IssueReporter.report + createGithubIssueClient + renderIssueBody + GithubApiError), src/server.ts (issue_report in TOOL_NAMES/TOOL_SPECS, callTool `issueReporter` param + `case 'issue_report'`, createServer default wiring from loadSecretSourceFromEnv + ServerConfig.issueReporter seam, shared ENGINE_VERSION)
+- green: tests/unit/issue-reporter.test.ts (9) + tests/integration/issue-report-http.test.ts (4); full suite 535 green.

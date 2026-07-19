@@ -214,3 +214,11 @@ flowchart TB
 - **status:** done
 - **traces:** REQ-026
 - workspace_purge (terminal-only) + reclaimStaleWorkspaces (opt-in config.workspaceTtlMs, deletes TERMINAL+old, never active/suspended/unknown).
+
+## v5 slice — GitHub issue reporting (ARCH-023)
+
+### ARCH-023 — GitHub Issue Reporter
+- **status:** done
+- **traces:** REQ-027, REQ-028, REQ-029, REQ-030
+- **iter:** v5
+- Engine-side `issue_report` core (src/github/issue-reporter.ts): an injectable GithubIssueClient (bounded fetch — AbortController timeout + retry budget, 4xx-except-429 not retried — any non-2xx/network/timeout surfaced as a typed `GITHUB_API_ERROR`, never a hang/crash/fake-success). The GitHub token is read from the server-side SecretSource (`RWE_SECRET_GITHUB_TOKEN`), never workspace- or sandbox-reachable and never from tool args (extends ARCH-016's secret store to REQ-028). Fixed, machine-parseable agent-consumable body template + fixed `agent-reported` label (and optional `severity:<x>`) so a downstream solve-flow can query/parse it. Fixed target repo `HsuJavis/remote-workflow-engine`. Wired at server.ts `callTool` (`issue_report` case → `{issueNumber,url}` or typed error envelope) from the composition-root default (loadSecretSourceFromEnv + shared ENGINE_VERSION) or the `ServerConfig.issueReporter` test seam. Depends: ARCH-001 (tool/server surface), ARCH-016 (server-side secret store).
