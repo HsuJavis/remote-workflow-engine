@@ -46,7 +46,7 @@
 |---|---|---|---|
 | **016** | 非-Anthropic 模型跑完整 harness(tool loop + MCP + skills)經 SDK gateway | `agent("寫檔",{model:"local"})`(Ollama alias),`workflow_agent_log` 應見原生 `tool_use` + 檔真的寫進 workspace;非-Anthropic alias thinking 應 disabled(不 400) | ⚙️ 7B tool-use 能力受限(D-F11);harness 路徑本身已驗 |
 | **017** | MCP 工具 server 端 provision(registry)、按名引用、明確注入 | `mcp_provision{name,kind,config}`(會真 probe);腳本 `agent("x",{mcp:["未provision名"]})` → run failed `MCP_NOT_PROVISIONED`;只有明確引用的 MCP 被注入(strictMcpConfig) | ✅ 錯誤路徑+registry 已真驗;happy-path 需真 stdio MCP server |
-| **018** | Provider/MCP 機密經 server 端 store,workspace 不可達 | 用 `${secret:NAME}` handle;缺 secret → 明確 `SECRET_MISSING`(非洩漏字面、非 hang);grep run workspace 應無任何 secret | ✅ 機制已建;happy-path 收尾中 |
+| **018** | Provider/MCP 機密經 server 端 store,workspace 不可達 | 用 `${secret:NAME}` handle;缺 secret → 明確 `SECRET_MISSING`(非洩漏字面、非 hang);grep run workspace 應無任何 secret | ✅ 真驗(VAL-028:secret 存 handle、缺→SECRET_MISSING、workspace 無洩漏;happy-path 需真 stdio MCP server) |
 | **019** | Hooks 明確不支援(移除上傳的 user hooks) | `asset_push{kind:"hook"}` → `excluded:[{reason:"HOOKS_UNSUPPORTED"}]`,nothing written(關 RCE 向量);引擎自己的 PreToolUse 邊界 hook 不受影響 | ✅ **今天真機驗證** |
 | **020** | SDK gateway 路徑對 hung LLM call 設界(timeout + retries) | alias 指向不可達 provider,`agent()` 在 timeout 內 resolve `null`(run 續跑);失敗記錄在 agent record,非假成功文字。測試:`val-023` | ✅ 真驗(VAL-029) |
 | **021** | 無宿主 project 的 CLAUDE.md / auto-memory 洩漏進 agent context(workRoot 隔離) | 用 `RWE_WORK_ROOT=<repo內含.git的路徑>` 開機 → 應 fail-fast `WORKROOT_INSIDE_PROJECT`(指出違規 ancestor);workRoot 在 project 外則正常開機 | ✅ 真驗(VAL-030,真 boot fail-fast) |
