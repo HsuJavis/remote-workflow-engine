@@ -23,6 +23,7 @@ import { classifyTransport, RealMcpProbe, type McpProbe, type McpServerConfig } 
 import { McpRegistry, type McpKind } from './mcp-registry.js';
 import { IssueReporter, type IssueReportInput, type IssueListFilter } from './github/issue-reporter.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
+import { buildCatalog, filterCatalog, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
 
 // Single source for the engine version reported over MCP (serverInfo) and stamped into filed issues.
 const ENGINE_VERSION = '1.0.0';
@@ -80,6 +81,11 @@ export interface ServerConfig {
   // run workspaces older than this (never active/suspended). Omitted -> no auto-GC (workspaces are
   // kept until an explicit workspace_purge), so no surprise deletion by default.
   workspaceTtlMs?: number;
+  // v7 (REQ-039/040): injectable live-catalog transports for the `models_list` tool — integration
+  // tests supply fake Ollama/OpenRouter fetchers (no real network). Omitted -> real fetch against
+  // the live endpoints. A fully injectable builder (`modelCatalog`) overrides these when set.
+  modelCatalogFetchers?: { ollamaFetch?: typeof fetch; openrouterFetch?: typeof fetch; ollamaBaseUrl?: string };
+  modelCatalog?: () => Promise<ModelEntry[]>;
 }
 
 export interface Server {
@@ -128,6 +134,8 @@ const TOOL_NAMES = [
   'issue_list',
   'issue_comments',
   'issue_comment',
+  // v7 (REQ-039/040): unified, filterable cross-provider model catalog.
+  'models_list',
 ] as const;
 
 type ToolName = (typeof TOOL_NAMES)[number];
@@ -376,6 +384,23 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
       required: ['number', 'body'],
     },
   },
+  models_list: {
+    description: "Returns a unified, normalized cross-provider model catalog (curated aliases + live Ollama /api/tags + live OpenRouter /api/v1/models + a static openai/anthropic table). Each entry is {provider, model, alias?, description, modalities{in,out}, contextWindow, price(in/out|'free'|'unknown'), toolUse(bool|'unknown'), location('local'|'remote')}. Optional filters narrow the (potentially large) result; an unreachable live source degrades gracefully. No API key ever appears in the output.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        provider: { type: 'string', description: "Only this provider (e.g. 'ollama'|'openrouter'|'openai'|'anthropic')." },
+        query: { type: 'string', description: 'Case-insensitive substring match over model id / description / alias.' },
+        modalityIn: { type: 'string', description: "Require this input modality (e.g. 'text'|'image')." },
+        modalityOut: { type: 'string', description: "Require this output modality (e.g. 'text')." },
+        maxPricePerM: { type: 'number', description: 'Max price per 1M tokens (the higher of in/out); free passes, unknown-priced models are excluded.' },
+        minContext: { type: 'number', description: 'Minimum context window in tokens (models with an unknown window are excluded).' },
+        toolUse: { type: 'boolean', description: 'Require confirmed tool-use support (true); models with unknown support are excluded.' },
+        location: { type: 'string', description: "One of 'local' | 'remote'." },
+        limit: { type: 'number', description: 'Max entries to return (default 100, hard cap 500).' },
+      },
+    },
+  },
 };
 
 // REQ-024 (v1.5, DoS): cap the request body so a large/hostile body can't buffer unbounded and OOM
@@ -449,6 +474,7 @@ async function callTool(
   mcpProbe: McpProbe,
   mcpRegistry: McpRegistry,
   issueReporter: IssueReporter,
+  buildModelCatalog: () => Promise<ModelEntry[]>,
   name: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
@@ -530,6 +556,13 @@ async function callTool(
     case 'issue_comment': {
       const res = await issueReporter.postComment(Number((args as { number?: unknown }).number), (args as { body?: unknown }).body as string);
       return res.ok ? { result: { commentId: res.commentId, url: res.url } } : { error: res.error };
+    }
+    // v7 (REQ-039/040): build the federated catalog fresh (so a live source recovering after boot
+    // is reflected), then AND-filter it. Never throws across the tool boundary — an unreachable live
+    // source degrades to fewer entries, and an empty match returns [].
+    case 'models_list': {
+      const entries = await buildModelCatalog();
+      return { result: filterCatalog(entries, args as CatalogFilter) };
     }
     default: throw new Error(`Unknown tool: ${name}`);
   }
@@ -660,6 +693,15 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v5 (REQ-027..030): the issue_report reporter. Token from the server-side secret store
   // (RWE_SECRET_GITHUB_TOKEN), never workspace-reachable. A test seam replaces it with a fake.
   const issueReporter = config?.issueReporter ?? new IssueReporter({ secretSource: loadSecretSourceFromEnv(), engineVersion: ENGINE_VERSION, runDiagnostics });
+  // v7 (REQ-039/040): the `models_list` catalog builder — federates the config's curated aliases +
+  // the injectable live fetchers (default real fetch). Built per call inside callTool so a live
+  // source recovering after boot is reflected. A fully injectable builder wins when provided.
+  const buildModelCatalog = config?.modelCatalog ?? ((): Promise<ModelEntry[]> => buildCatalog({
+    aliases: config?.aliases,
+    ollamaFetch: config?.modelCatalogFetchers?.ollamaFetch,
+    openrouterFetch: config?.modelCatalogFetchers?.openrouterFetch,
+    ollamaBaseUrl: config?.modelCatalogFetchers?.ollamaBaseUrl,
+  }));
   // v2 (DES-016/TASK-019): SQLite-persisted schedule store, same workRoot convention as
   // catalog.db/store — survives restart (REQ-014-style persistence extended to schedules).
   const scheduler = new SqliteSchedulerPort({
@@ -782,7 +824,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         if (rpc.method === 'tools/call') {
           const name = rpc.params?.name ?? '';
           const args = rpc.params?.arguments ?? {};
-          const result = await callTool(facade, scheduler, assetSync, mcpProbe, mcpRegistry, issueReporter, name, args);
+          const result = await callTool(facade, scheduler, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, name, args);
           sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } });
           return;
         }

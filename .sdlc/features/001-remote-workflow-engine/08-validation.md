@@ -7,6 +7,18 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
+> **v7 ROUND 1 (2026-07-24) — GATE PASSED.** REQ-037..040 (the v7 slice) all carry ≥1 `real:true`
+> VAL item below (VAL-046..049). All four validated against the live production engine (systemd user
+> service, `127.0.0.1:8787`, 28 tools, `OPENROUTER_API_KEY` configured as a real key). REQ-037
+> routing decision + non-Anthropic live path + security invariant are `real:true`; Anthropic-direct
+> live auth is an honest partial (unit-covered, no anthropic alias+key on this engine — not a code
+> defect). REQ-038 passthrough confirmed with a real `workflow_run` returning `"PONG"` from
+> `nex-agi/nex-n2-pro` via OpenRouter. REQ-039 federated catalog: 100 models (anthropic:3, openai:3,
+> ollama:3, openrouter:91) from live Ollama + live OpenRouter queries. REQ-040 filter: `{location:
+> "remote", toolUse:true, query:"qwen", limit:5}` → exactly 5 results. REQ-012 (OIDC) remains
+> DEFERRED by user decision D5. All prior REQs (001..036) still hold evidence from ROUNDS 1..11
+> below — not re-litigated this round.
+
 > **v6 ROUND 1 (2026-07-19) — GATE PASSED.** REQ-031..036 (the v6 slice) all carry ≥1 `real:true`
 > VAL item below (VAL-040..045). All six validated against the live production engine (systemd user
 > service, `127.0.0.1:8787`, 27 tools, `RWE_SECRET_GITHUB_TOKEN` configured as a real fine-grained
@@ -44,6 +56,161 @@ status: passed
 > HTTP server + real `ClaudeAgentSdkGatewayClient`, 2/2 pass in 8 seconds). REQ-012 (OIDC) remains
 > DEFERRED by user decision D5 — not validated, not a gate blocker. All v1/v2 REQs (001..011/013..015)
 > still hold their prior `real:true` evidence from ROUNDS 1..7 below — not re-litigated this round.
+
+## v7 ROUND 1 (2026-07-24) — v7 slice real-run validation (REQ-037..040)
+
+**Scope**: REQ-037/038/039/040 (the v7 slice — provider-aware routing, OpenRouter first-class
+provider, `models_list` federated catalog and filtering). All probes ran against the live production
+engine (systemd user service, `127.0.0.1:8787`, 28 tools, `OPENROUTER_API_KEY` configured as a real
+key). The service was pre-restarted by the user to load v7 before this validation round; no restart
+was performed during write-up.
+
+### Boot (documented steps only — this round's own commands)
+
+```bash
+# Live engine confirmed running (systemd user service, 28 tools):
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+# -> tools array length: 28 (includes models_list; up from 27 in v6)
+
+# REQ-039 — models_list federated catalog (no filters)
+# tools/call models_list{}
+# -> 100 entries total
+#    by provider: {anthropic:3, openai:3, ollama:3, openrouter:91}
+#    by location: {remote:97, local:3}
+#    sample entries:
+#      ollama  qwen2.5vl:7b   price:"free"  location:"local"
+#      openrouter  inclusionai/ling-3.0-flash:free  ctx:262144  toolUse:true  location:"remote"
+#      anthropic   claude-opus-4-8  ctx:1000000  price:{in:"$5/1M",out:"$25/1M"}  toolUse:true
+#    live Ollama /api/tags + live OpenRouter /api/v1/models both queried successfully; no key/secret
+#    value appears in any entry.
+
+# REQ-040 — models_list with filters
+# tools/call models_list{location:"remote", toolUse:true, query:"qwen", limit:5}
+# -> exactly 5 entries; all match: location=remote, toolUse=true, model name contains "qwen"
+#    e.g. qwen/qwen3.7-plus  ctx:1000000  toolUse:true  location:"remote"
+
+# REQ-038 — openrouter passthrough (workflow_run)
+# tools/call workflow_run with workflow body: agent('Reply PONG', {model:'openrouter/nex-agi/nex-n2-pro'})
+# -> run completed; result: "PONG"
+#    (full SDK+LiteLLM harness routing to OpenRouter; passthrough id NOT proxy-cloaked — isPassthroughModel)
+#    Note: initially the proxy cloaked passthrough ids as rwe-proxy-openrouter/..., which caused LiteLLM's
+#    openrouter/* wildcard to fail ("no healthy deployments"). Fixed by isPassthroughModel guard;
+#    regression-tested (UT); then real-verified as above.
+
+# REQ-037 — provider-aware routing security invariant (unit-real)
+# tests/unit/claude-agent-sdk-provider-aware-env.test.ts (real test, no SUT-boundary mock)
+# -> ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN appears ONLY in SDK subprocess options.env
+# -> neither key leaks to workspace files or any other env scope
+# -> api-key mode and subscription mode both covered; missing secret → ANTHROPIC_AUTH_MISSING typed error
+# -> non-Anthropic → LiteLLM+dummy-key path: exercised live by every openrouter/ollama run above
+# -> Anthropic-direct live auth: NOT exercised (no anthropic alias + real key on this engine — honest partial)
+```
+
+No undocumented steps required. The live engine config was read-only; the systemd service was not
+restarted or modified during this write-up.
+
+### VAL-046 — REQ-037: provider-aware SDK routing + Anthropic dual-auth security invariant
+
+- **status:** green
+- **traces:** REQ-037
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** (a) Non-Anthropic live path — every `openrouter/` and `ollama/` `agent()` call in
+  this validation round (REQ-038, REQ-039 catalog, prior v3 rounds) routes via LiteLLM with a dummy
+  `ANTHROPIC_API_KEY` and real provider key — confirmed live by REQ-038 `workflow_run` completing
+  with `result:"PONG"` from OpenRouter. (b) Routing decision + security invariant — confirmed by
+  `tests/unit/claude-agent-sdk-provider-aware-env.test.ts` (real unit test, no SUT-boundary mock on
+  the provider selection or env-injection logic; the test constructs a real `ClaudeAgentSdkGatewayClient`
+  and inspects the actual `options.env` it builds): `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`
+  appear ONLY in the SDK subprocess `options.env`, not in workspace files or any other scope; api-key
+  mode and subscription (OAuth) mode both pass; missing secret → typed `ANTHROPIC_AUTH_MISSING` error.
+  (c) Anthropic-direct live auth: honest partial — no anthropic-provider alias + real key is
+  configured on this engine, so the direct-Anthropic HTTP path was not live-exercised. This is not a
+  code defect; the routing decision itself and env-injection security guard are real:true. Any future
+  deployment with an anthropic alias would exercise this branch.
+- **iter:** v7
+
+### VAL-047 — REQ-038: `openrouter` first-class provider + passthrough model routing
+
+- **status:** green
+- **traces:** REQ-038
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `workflow_run` with `agent('Reply PONG', {model:'openrouter/nex-agi/nex-n2-pro'})`
+  (a PASSTHROUGH model id, NOT a pre-listed alias) against `http://127.0.0.1:8787/mcp` (live engine,
+  28 tools, real `OPENROUTER_API_KEY` configured server-side) → run completed; `result:"PONG"`.
+  This exercised the full SDK → LiteLLM → OpenRouter routing chain end-to-end. The passthrough id
+  was NOT proxy-cloaked (`isPassthroughModel` guard): earlier in the Gate-7.5 round-route-back phase
+  the cloaking (`rwe-proxy-openrouter/nex-agi/nex-n2-pro`) caused LiteLLM's `openrouter/*` wildcard
+  to produce "no healthy deployments"; the fix (skip cloaking for passthrough ids) was
+  regression-tested (UT) then real-verified by this run. `openrouter` accepted as a valid provider
+  in alias validation (not rejected as unknown). Coexists with direct-openai provider (separate keys,
+  no `OPENAI_API_BASE` global remap). No SUT-boundary mock.
+- **iter:** v7
+
+### VAL-048 — REQ-039: `models_list` unified, normalized, cross-provider federated catalog
+
+- **status:** green
+- **traces:** REQ-039
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `tools/call models_list{}` against the live engine (28 tools) returned 100 entries:
+  `{anthropic:3, openai:3, ollama:3, openrouter:91}` by provider; `{remote:97, local:3}` by location.
+  Live Ollama `/api/tags` and live OpenRouter `/api/v1/models` were both queried successfully at call
+  time (not cached static data). Sample entries confirming unified shape `{provider, model, alias?,
+  description, modalities, contextWindow, price, toolUse, location}`: (1) Ollama —
+  `{provider:"ollama", model:"qwen2.5vl:7b", price:"free", location:"local"}`. (2) OpenRouter —
+  `{provider:"openrouter", model:"inclusionai/ling-3.0-flash:free", contextWindow:262144,
+  toolUse:true, location:"remote"}`. (3) Anthropic static table —
+  `{provider:"anthropic", model:"claude-opus-4-8", contextWindow:1000000,
+  price:{in:"$5/1M",out:"$25/1M"}, toolUse:true}`. No API key or secret value present in any entry.
+  Provider whose live catalog is unreachable (e.g. OpenRouter network failure) degrades gracefully —
+  curated/static entries still return (confirmed by IT-045 integration test; not re-triggered live
+  to avoid API cost). No SUT-boundary mock.
+- **iter:** v7
+
+### VAL-049 — REQ-040: `models_list` filtering narrows the federated catalog
+
+- **status:** green
+- **traces:** REQ-040
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `tools/call models_list{location:"remote", toolUse:true, query:"qwen", limit:5}`
+  against the live engine → exactly 5 entries returned; all satisfy every filter: `location="remote"`,
+  `toolUse=true`, model name contains `"qwen"`. Example result entry:
+  `{provider:"openrouter", model:"qwen/qwen3.7-plus", contextWindow:1000000, toolUse:true,
+  location:"remote"}`. The `limit:5` cap applied (OpenRouter catalog has 91 entries, 5 returned).
+  Empty-match case (`[]` for unmatched filter) confirmed by unit tests (not re-triggered live to
+  avoid cost). All filter dimensions (`provider`, `query`, `toolUse`, `location`, `limit`) are
+  functional. No SUT-boundary mock.
+- **iter:** v7
+
+### Config-file sync check (§4b) — v7 round
+
+One new config key introduced by v7: `OPENROUTER_API_KEY` (env var / server-side secret for
+OpenRouter routing). This key is consumed by the LiteLLM proxy config generated at startup. The key
+is already added to DEPLOY.md §1 設定總表 (as of this iteration). `rwe.config.example.json` requires
+no new fields (provider routing is controlled by alias `provider` fields, not a top-level config
+key). No other keys, ports, or feature flags were introduced.
+
+### Unreachable dependencies / environment limitations — v7
+
+- **REQ-037 Anthropic-direct live auth**: no anthropic-provider alias with a real
+  `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` is configured on this engine. The direct-Anthropic
+  HTTP path was not live-exercised. This is an honest partial: the routing decision and security
+  invariant are real:true (unit); the live auth exchange would require an Anthropic alias + key.
+  Not a code defect.
+- **REQ-040 empty-match live trigger**: `[]` for an unmatched filter was not triggered live (would
+  waste API quota). Confirmed by unit tests. Not a gate blocker.
+- **REQ-012 (OIDC)**: DEFERRED by user decision D5. Not validated, not a gate blocker.
+
+---
 
 ## v6 ROUND 1 (2026-07-19) — v6 slice real-run validation (REQ-031..036)
 

@@ -306,3 +306,13 @@ status: draft
 - **status:** done
 - **traces:** ARCH-024
 - **iter:** v6
+
+### TASK-046 — provider-native SDK routing + OpenRouter provider/passthrough
+- **status:** done
+- **traces:** ARCH-025
+- **iter:** v7
+
+### TASK-047 — models_list federated model catalog + filtering
+- **status:** done
+- **traces:** ARCH-026
+- **iter:** v7

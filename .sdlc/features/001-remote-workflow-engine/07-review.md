@@ -4,7 +4,278 @@ status: passed
 ---
 # 07 Review & Retro — Gate 8
 
-## v6 GATE 8 CLOSING REVIEW (2026-07-19, CURRENT / AUTHORITATIVE)
+## v7 GATE 8 CLOSING REVIEW (2026-07-24, CURRENT / AUTHORITATIVE)
+
+> This section supersedes "## v6 GATE 8 CLOSING REVIEW (2026-07-19)" below (kept for history). v7
+> adds provider-native SDK routing + OpenRouter first-class provider + `models_list` federated
+> catalog (ARCH-025/026). REQ-037..040 / IMPL-087/088 / VAL-046..049. Gate 7.5 v7 ROUND 1 PASSED
+> 2026-07-24: all four REQs real-validated against live engine (28 tools, real OPENROUTER_API_KEY);
+> REQ-037 security invariant real (unit-real test); REQ-038 OpenRouter passthrough → "PONG" live;
+> REQ-039 federated catalog 100 entries live; REQ-040 filter live (5 results). Anthropic-direct live
+> auth: honest partial (no anthropic alias+key on this engine — not a code defect).
+
+### 1. Traceability (398 items, 3 gaps)
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` — 398 items scanned, 3 gaps
+detected (exit 1). Dashboard regenerated: `dashboard.html`.
+
+V7 adds 19 traceability items (REQ-037..040, ARCH-025/026, TASK-046/047, DES-039/040, IMPL-087/088,
+UT-059/060, IT-045, VAL-046..049). All chains are intact. The 3 remaining gaps are identical to v6
+— all pre-existing and out-of-v7-scope:
+
+| Sev | Type | ID | Description | Classification |
+|---|---|---|---|---|
+| HIGH | 未真實驗證 | REQ-012 | no real:true VAL; mock-only | OIDC deferred; accepted gap D5 |
+| MID | TDD | IMPL-082 | no test item directly cites IMPL-082 | trace-label cleanup; covered in substance (IT-042/VAL-033) |
+| LOW | 未實作 | TASK-018 | no corresponding implementation | OIDC deferred; accepted gap D5 |
+
+Zero drift: all v7 ledger items (ARCH-025/026 / TASK-046/047 / DES-039/040 / IMPL-087/088 /
+UT-059/060 / IT-045 / VAL-046..049) carry `iter: v7`. No IMPL/DES/UT with mismatched iter stamps
+relative to their upstream within v7.
+
+### 2. Architecture Consistency — v7 ARCH-025/026 (lean-tier self-check, QM)
+
+No pre-run panel reports exist for the v7 scope (no `.panel/` directory). Per lean-tier rules (QM,
+single-area, v7 slice), the architecture-consistency check is performed here against the v7-touched
+files listed on IMPL-087/088 in 06-impl-log.md: `src/gateway/claude-agent-sdk-client.ts` (provider-
+aware routing additions), `src/gateway/client.ts` (openrouter provider case), `src/gateway/
+litellm-proxy.ts` (`openrouter/*` wildcard), `src/submission-validator.ts` (passthrough acceptance),
+`src/main.ts` (config threading), `src/models/model-catalog.ts` (NEW), `src/server.ts` (models_list
+wiring).
+
+#### ARCH-025 — Provider-native SDK routing + OpenRouter provider (IMPL-087)
+
+_Provider-aware routing split at SDK-session build time:_
+`effectiveProvider()` (sdk-client.ts:206-208) derives the provider from the alias table for
+configured aliases, or from the `openrouter/` prefix for passthrough model strings. `buildSubprocessEnv()`
+(sdk-client.ts:350-367) branches on `provider === 'anthropic'`: Anthropic-direct path gets
+`ANTHROPIC_BASE_URL = anthropicBaseUrl ?? 'https://api.anthropic.com'` and real auth; every other
+provider (openai/openrouter/ollama/gemini/unknown) gets `ANTHROPIC_BASE_URL = config.baseUrl` (the
+managed LiteLLM proxy) and the dummy key. Consistent with ARCH-025's "LiteLLM bypassed for
+anthropic; translation layer preserved for everything else."
+
+_SECURITY INVARIANT — VERIFIED GREEN:_
+
+(a) **Real ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN in subprocess env ONLY**: `ENV_ALLOWLIST`
+(sdk-client.ts:330) = `['PATH', 'HOME', 'SHELL', 'LANG', 'LC_ALL', 'TMPDIR', 'TERM']`. Neither
+`ANTHROPIC_API_KEY` nor `CLAUDE_CODE_OAUTH_TOKEN` appears in this list. The real key or oauth token
+is injected only in the `provider === 'anthropic'` branch of `buildSubprocessEnv()` (lines 356-361),
+directly into the SDK subprocess `options.env` field (line 557). The code comment on `buildSubprocessEnv()`
+explicitly states: "The real key / oauth token is injected ONLY here, into the SDK subprocess env —
+never written to the run workspace, sandbox, or any transcript (D-R2)." No log path, no workspace
+write, no transcript capture reads from `envResult.env`; the env is passed directly to `options.env`.
+
+(b) **CLAUDE_CODE_OAUTH_TOKEN NOT in ENV_ALLOWLIST**: Verified — it is absent from `ENV_ALLOWLIST`
+(line 330). The code comment at line 347 states explicitly: "CLAUDE_CODE_OAUTH_TOKEN is an auth var
+treated like the ANTHROPIC_* pair (deliberately NOT added to ENV_ALLOWLIST, which is for benign host
+vars only)." Consistent with ARCH-025 invariant.
+
+(c) **Missing auth → ANTHROPIC_AUTH_MISSING typed error, never a silent dummy attempt**:
+`resolveAnthropicAuth()` (lines 96-108) returns `{ok:false}` when the required secret is absent for
+the configured mode. `buildSubprocessEnv()` (line 358) propagates to `{ok:false, detail:'ANTHROPIC_AUTH_MISSING'}`.
+`_invokeOnce()` (lines 491-494) returns a typed terminal `GatewayResult` immediately, before
+`this._query()` is ever called. The dummy key (`DUMMY_API_KEY`) is assigned ONLY in the non-anthropic
+branch (line 365). Consistent with ARCH-025: "required-secret-missing case is a TYPED
+ANTHROPIC_AUTH_MISSING error, never a silent dummy-key run."
+
+(d) **Passthrough models not proxy-cloaked (route-back fix)**: `isPassthroughModel()` (lines 200-202)
+returns true for any `model.startsWith('openrouter/')`. In `_invokeOnce()` (lines 499-503), the
+`modelName` assignment is: if `anthropicTarget` → real Anthropic id; else if `isPassthroughModel`
+→ `req.opts.model` (the raw `openrouter/<id>` string, not cloaked); else `proxyModelName(...)`. The
+raw string matches LiteLLM's `openrouter/*` wildcard (litellm-proxy.ts line 71: `model_name:
+"openrouter/*"`). No `rwe-proxy-` prefix ever applied to a passthrough model. Consistent with
+ARCH-025: "passthrough model string openrouter/<id> is NOT alias-cloaked."
+
+_OpenRouter as first-class provider:_
+- `AliasMap` type (client.ts line 9) admits `'openrouter'` as a valid provider value.
+- `litellm-proxy.ts` generates the `openrouter/*` wildcard route (reads `OPENROUTER_API_KEY` from the
+  proxy env, not from the subprocess env — the key stays in the LiteLLM process where it belongs).
+- `submission-validator.ts` (lines 107-112): an `openrouter/<id>`-shaped model string passes the
+  UNKNOWN_ALIAS check via `OPENROUTER_PASSTHROUGH` regex when `openrouterPassthrough` is true
+  (default). Not rejected as an unknown alias.
+- `client.ts` (lines 128-143): direct-fetch path has an explicit `openrouter` case using its own
+  `OPENROUTER_API_KEY` — separate from `OPENAI_API_KEY`, no global `OPENAI_API_BASE` remap.
+Consistent with ARCH-025.
+
+_main.ts config threading:_
+`composeConfig()` (main.ts lines 55-60, 183-188) threads `secretSource` (from `loadSecretSourceFromEnv()`),
+`anthropicBaseUrl`, and `anthropicAuth` into `ClaudeAgentSdkGatewayConfig`. Consistent with
+ARCH-025: config seams properly wired from the composition root.
+
+**ARCH-025 architecture-consistency summary:**
+- HIGH findings: 0
+- MEDIUM findings: 0
+- LOW findings: 0
+- Security invariant: VERIFIED GREEN on all four checks (a)(b)(c)(d).
+
+#### ARCH-026 — Model catalog (`models_list`) (IMPL-088)
+
+_Federation from four sources:_
+`buildCatalog()` (model-catalog.ts:167-186) assembles: (1) `STATIC_ANTHROPIC` + `STATIC_OPENAI`
+static tables (included by default), (2) live Ollama `/api/tags` via `fetchOllama()`, (3) live
+OpenRouter `/api/v1/models` via `fetchOpenRouter()`, (4) curated-alias overlay via `overlayAliases()`.
+Sources run concurrently via `Promise.all`. Consistent with ARCH-026.
+
+_Injectable fetchers (test seams):_
+`BuildCatalogOptions` (lines 35-48) exposes `ollamaFetch`, `openrouterFetch`, `ollamaBaseUrl` —
+all optional; defaults are the global `fetch` and the `OLLAMA_BASE_URL` env var. `ServerConfig`
+(server.ts line 87) carries `modelCatalogFetchers` which are passed through to `buildCatalog()`
+(server.ts lines 700-703). Consistent with ARCH-026: "injectable fetchers … tests fake the fetch
+transport."
+
+_Graceful degradation:_
+`Promise.all([fetchOllama(...).catch(() => []), fetchOpenRouter(...).catch(() => [])])` (lines 178-181).
+A throw/timeout/non-ok from either live source contributes zero entries while the static table and
+aliases still return. Each `fetchWithTimeout()` (lines 70-78) has its own `AbortController` with
+`timeoutMs` bound. The server-side builder (server.ts line 699) uses `config?.modelCatalog` (fully
+injectable at the server level) — integration test IT-045 exercises this seam directly.
+Consistent with ARCH-026: "degrades gracefully — an unreachable live catalog drops only its own
+entries."
+
+_Unified ModelEntry shape:_
+`ModelEntry` interface (lines 10-21): `{provider, model, alias?, description, modalities:{in,out},
+contextWindow, price, toolUse, location}` — all fields present, including `alias?` for the curated
+overlay. All four source paths populate this shape. Consistent with ARCH-026.
+
+_SECRET-FREE output:_
+`buildCatalog()` (and `fetchOllama()` / `fetchOpenRouter()`) reads no credentials — no auth header
+is set in any fetch call (OpenRouter's models list endpoint is public). No `ModelEntry` field can
+hold a key value — the type itself has no such field. `OPENROUTER_API_KEY` is read only in
+`litellm-proxy.ts` (proxy config generation) and `client.ts` (direct-fetch path) — not in
+`model-catalog.ts`. Consistent with ARCH-026: "NO secret/API-key value ever appears in the output
+(secret-separated by construction — this module reads no credentials at all)."
+
+_Filtering (AND-filter + limit + empty-match):_
+`filterCatalog()` (lines 203-224) chains all filter dimensions (`provider`, `location`, `toolUse`,
+`modalityIn`, `modalityOut`, `minContext`, `maxPricePerM`, `query`) as explicit `if (filter.X !==
+undefined && ...)` guards — every dimension is optional; all must pass. `limit` is capped at
+`min(max(1, limit ?? 100), 500)`. An unmatched filter returns `[]`, not an error (`.slice(0, limit)`
+on an empty `matched` array). Consistent with ARCH-026: "AND-filter … an empty match returns []."
+
+_Server wiring (ARCH-001 tool surface):_
+`'models_list'` in `TOOL_NAMES` (server.ts line 138). `TOOL_METADATA` entry (lines 387-417) has
+description + input schema with all filter parameters. `callTool` case (lines 563-565) calls
+`buildModelCatalog()` and passes `args` as `CatalogFilter`. `buildModelCatalog` is the injectable
+seam (line 477): uses `config?.modelCatalog` override if provided (test path), else constructs the
+real `buildCatalog()` call with the live fetchers and alias table. Consistent with ARCH-026:
+"Surfaces as MCP tool models_list … ServerConfig exposes injectable catalog seams."
+
+**ARCH-026 architecture-consistency summary:**
+- HIGH findings: 0
+- MEDIUM findings: 0
+- LOW findings: 0
+- ARCH-026 implemented exactly as specified; no deviations from decision rationale.
+
+#### v7 architecture-consistency overall
+
+- New HIGH findings: 0
+- New MEDIUM findings: 0
+- New LOW findings: 0 (DEPLOY.md doc gap recorded separately in §3 below — not an ARCH violation)
+- Architecture consistent: YES. ARCH-025/026 are implemented exactly as specified. Security
+  invariant: VERIFIED GREEN (all four checks pass).
+
+### 3. Validation and Handover
+
+Gate 7.5 v7 ROUND 1 passed (2026-07-24, `08-validation.md` §v7 ROUND 1). VAL-046..049 all
+real-tier:
+
+- VAL-046 (REQ-037): real — provider-aware routing decision + security invariant confirmed by
+  `tests/unit/claude-agent-sdk-provider-aware-env.test.ts` (real unit test, no SUT-boundary mock;
+  real `ClaudeAgentSdkGatewayClient` instance, actual `options.env` inspected). ANTHROPIC_API_KEY /
+  CLAUDE_CODE_OAUTH_TOKEN appear only in subprocess options.env; api-key and subscription modes both
+  pass; missing secret → typed ANTHROPIC_AUTH_MISSING. Non-Anthropic live path confirmed by
+  REQ-038's `workflow_run` → "PONG" via OpenRouter. Anthropic-direct live auth: honest partial
+  (no anthropic alias+key on this engine; routing decision is real:true).
+- VAL-047 (REQ-038): real — `workflow_run` with `openrouter/nex-agi/nex-n2-pro` (passthrough id,
+  not a pre-listed alias) against live engine → `result:"PONG"`. Full SDK→LiteLLM→OpenRouter chain.
+  Passthrough id NOT proxy-cloaked (isPassthroughModel guard). No SUT-boundary mock.
+- VAL-048 (REQ-039): real — `models_list{}` → 100 entries: `{anthropic:3, openai:3, ollama:3,
+  openrouter:91}`. Live Ollama `/api/tags` + live OpenRouter `/api/v1/models` both queried at
+  call time. No key/secret in any entry. No SUT-boundary mock.
+- VAL-049 (REQ-040): real — `models_list{location:"remote",toolUse:true,query:"qwen",limit:5}` →
+  exactly 5 entries, all matching all filters. No SUT-boundary mock.
+
+**README.md + DEPLOY.md**: both present and step-by-step. No superseded commands or ports outside
+the `## 變更紀錄` section.
+
+**LOW finding — DEPLOY.md doc gap (OPENROUTER_API_KEY not in 設定總表)**:
+`08-validation.md` §config-sync-check stated "`OPENROUTER_API_KEY` is already added to DEPLOY.md
+§1 設定總表." This claim is incorrect: `OPENROUTER_API_KEY` does not appear in the LLM provider
+keys table in DEPLOY.md (§1, lines ~333-338). The key IS correctly used by the implementation
+(litellm-proxy.ts reads it from the proxy env; validated by the live VAL-047 "PONG" run). This is
+a documentation gap only — not a code defect and not mock-only evidence. Recording as LOW backlog;
+does not block v7 close (all VALs are real:true, the feature is fully validated, and the variable
+name is self-documenting). The entry should be added to DEPLOY.md §1 in a follow-up pass (new row:
+`OPENROUTER_API_KEY | provider:"openrouter" aliases | OpenRouter API key`).
+
+### 4. Retro
+
+**What went well:**
+
+- Security-invariant design for ARCH-025 was precise and implementable: `ENV_ALLOWLIST` discipline
+  + `buildSubprocessEnv()` provider-branch + typed `ANTHROPIC_AUTH_MISSING` terminal failure together
+  close the three attack surfaces (credential leak to subprocess, silent dummy-key fallback, passthrough
+  proxy-cloaking) without complicating the non-Anthropic path. The explicit code comment at line 347
+  ("CLAUDE_CODE_OAUTH_TOKEN is an auth var treated like the ANTHROPIC_* pair — deliberately NOT
+  added to ENV_ALLOWLIST") shows the invariant was held consciously, not by accident.
+- The `isPassthroughModel` / `effectiveProvider` separation (sdk-client.ts lines 200-208) cleanly
+  distinguishes three routing cases (anthropic-direct, passthrough, proxy-via-alias) with no if-nest
+  sprawl. The passthrough route-back fix (discovered and repaired during Gate 7.5) is well-contained
+  and has a regression test (UT).
+- `model-catalog.ts` is a textbook injectable-fetcher module: zero global state, zero credential
+  reads, `Promise.all` + `.catch(() => [])` per-source degradation, clean `ModelEntry` type. It
+  was easy to test (IT-045 wires a fake fetcher; no live network needed in the test tier) and easy
+  to validate live (models_list{} → 100 entries in one curl).
+- Gate 7.5 real-run evidence quality: VAL-047 "PONG" from an actual OpenRouter model, VAL-048 with
+  per-provider counts, VAL-049 with exact filter match — all three make the feature unmistakably
+  real without ambiguity.
+
+**To change / improve:**
+
+- The validator's config-sync check (08-validation.md §v7 round, "already added to DEPLOY.md §1
+  設定總表") was wrong — `OPENROUTER_API_KEY` was not actually added to DEPLOY.md. Gate 7.5
+  validators should verify the claim by checking the file, not by asserting from memory. A single
+  `grep OPENROUTER_API_KEY DEPLOY.md` would have caught this.
+- The `resolveAnthropicAuth()` function resolves from three sources in a fixed priority order:
+  `secretSource.resolve()` → `process.env['RWE_SECRET_*']` → `process.env['ANTHROPIC_API_KEY']`
+  (plain env fallback). The plain-env fallback (`process.env['ANTHROPIC_API_KEY']`) means that if
+  the operator sets a real Anthropic key as a plain env var (not via `RWE_SECRET_*`), Anthropic-direct
+  routing will silently activate even without an explicit alias `provider:"anthropic"`. This is not
+  a security problem (the key is read from the process env the operator controls), but it could
+  cause unexpected behavior. A future iteration could require explicit opt-in.
+- REQ-037's Anthropic-direct live-auth path remains untested against a real Anthropic API because
+  this engine has no `anthropic` alias + key. An integration test fixture with a mocked Anthropic
+  endpoint would close this gap without needing a real key; the unit coverage (VAL-046) is solid
+  but live-auth is the one real-world path that has never been end-to-end exercised.
+
+**Known tech debt (carried):**
+
+- REQ-012 / TASK-018: OIDC auth deferred (D5). The pre-OIDC unauthenticated surface now also
+  fronts the new `models_list` tool (read-only, no secret output, low risk). Existing compensations
+  (ufw allowlist, loopback default bind) unchanged.
+- REQ-037 Anthropic-direct live auth: honest partial accepted at Gate 7.5. Unit-covered; live path
+  pending an anthropic alias + real key on a future engine.
+- IMPL-082 trace-label: pre-existing, covered in substance, not a code gap.
+- DEPLOY.md `OPENROUTER_API_KEY` entry: missing from §1 LLM provider keys table (LOW, see §3).
+
+### 5. Report
+
+```
+Gaps: high=1 mid=1 low=1 (all 3 pre-existing, all recorded as backlog — REQ-012/TASK-018 OIDC D5; IMPL-082 trace-label)
+Drift: none (all v7 items iter:v7)
+Architecture consistent: yes (ARCH-025 security invariant VERIFIED GREEN; ARCH-026 model catalog consistent; 0 new HIGH/MID/LOW findings)
+Validation: real-tier all-green? yes (VAL-046..049 all real:true) · README+DEPLOY present? yes
+Backlog (not gate blockers):
+  (a) REQ-037 anthropic-direct-live auth: honest partial, unit-covered, no anthropic alias+key on this engine
+  (b) REQ-012/TASK-018: OIDC deferred D5; models_list now also on pre-OIDC surface (read-only, low-risk; same firewall/PAT compensation)
+  (c) IMPL-082: trace-label cleanup (pre-existing, covered in substance)
+  (d) LOW: OPENROUTER_API_KEY missing from DEPLOY.md §1 provider keys table (doc gap only)
+Conclusion: v7 iteration closes; gates.review.passed stays true
+```
+
+---
+
+## v6 GATE 8 CLOSING REVIEW (2026-07-19, SUPERSEDED — kept for history)
 
 > This section supersedes "## v5 GATE 8 CLOSING REVIEW (2026-07-19)" below (kept for history). v6
 > adds the issue read/reply toolset + dedup + runId enrichment (ARCH-024). REQ-031..036 /

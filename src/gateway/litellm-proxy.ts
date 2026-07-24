@@ -28,8 +28,10 @@ export interface LiteLLMProxyOptions {
   onSupervisionEvent?: (ev: { kind: 'restart' | 'exhausted'; restarts: number; code: number | null }) => void;
 }
 
-/** LiteLLM's own provider-prefixed model naming, e.g. "ollama/llama3:8b", "anthropic/claude-3-5-sonnet". */
-function toLiteLLMModelName(target: AliasMap[string]): string {
+/** LiteLLM's own provider-prefixed model naming, e.g. "ollama/llama3:8b", "anthropic/claude-3-5-sonnet".
+ *  REQ-038: for an `openrouter` alias this yields `openrouter/<model>`, LiteLLM's NATIVE OpenRouter
+ *  format (OPENROUTER_API_KEY read from the proxy env automatically). */
+export function toLiteLLMModelName(target: AliasMap[string]): string {
   return `${target.provider}/${target.model}`;
 }
 
@@ -60,6 +62,15 @@ export function generateLiteLLMConfig(aliases: AliasMap): string {
     lines.push('    litellm_params:');
     lines.push(`      model: ${JSON.stringify(toLiteLLMModelName(target))}`);
   }
+  // REQ-038 passthrough (SHOULD): a wildcard route so ANY `openrouter/<id>` model string routes
+  // natively through LiteLLM's OpenRouter provider (OPENROUTER_API_KEY read from the proxy's own
+  // env) WITHOUT a pre-listed alias — the model id passes through UNMODIFIED. LiteLLM matches the
+  // `*` against whatever follows the prefix and forwards it verbatim as the OpenRouter model id.
+  // The CLI never rewrites an `openrouter/`-prefixed string (its shorthands are bare
+  // `haiku`/`sonnet`/`opus`), so no proxyModelName cloaking is needed for this passthrough entry.
+  lines.push('  - model_name: "openrouter/*"');
+  lines.push('    litellm_params:');
+  lines.push('      model: "openrouter/*"');
   return lines.join('\n') + '\n';
 }
 

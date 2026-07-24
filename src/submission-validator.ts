@@ -19,7 +19,16 @@ export interface SubmissionValidatorDeps {
   aliases?: AliasMap;
   catalog?: WorkflowCatalog;
   mcpRegistry?: McpNameLookup;
+  /** REQ-038 passthrough: when true (the default — the generated LiteLLM config always carries the
+   *  `openrouter/*` wildcard route), an `openrouter/<id>`-shaped model string is accepted at
+   *  submission WITHOUT a pre-listed alias (it passes through to LiteLLM's native OpenRouter
+   *  provider). Set false to require every openrouter model to be a pre-listed alias. */
+  openrouterPassthrough?: boolean;
 }
+
+/** REQ-038: a passthrough model string of the form `openrouter/<non-empty-id>` — routed natively by
+ *  LiteLLM's `openrouter/*` wildcard, so it needs no pre-listed alias. */
+const OPENROUTER_PASSTHROUGH = /^openrouter\/.+/;
 
 /** Static scan for `{model: '<alias>'}` occurrences in an inline script's `agent()` calls. */
 function extractModelAliases(script: string): string[] {
@@ -50,11 +59,13 @@ export class SubmissionValidator {
   private readonly _aliases: AliasMap;
   private readonly _catalog?: WorkflowCatalog;
   private readonly _mcpRegistry?: McpNameLookup;
+  private readonly _openrouterPassthrough: boolean;
 
   constructor(deps: SubmissionValidatorDeps = {}) {
     this._aliases = deps.aliases ?? DEFAULT_ALIASES;
     this._catalog = deps.catalog;
     this._mcpRegistry = deps.mcpRegistry;
+    this._openrouterPassthrough = deps.openrouterPassthrough ?? true;
   }
 
   async validate(spec: RunSpec): Promise<{ ok: true } | { ok: false; errors: ErrEnvelope[] }> {
@@ -92,11 +103,13 @@ export class SubmissionValidator {
         errors.push({ code: 'PARSE_ERROR', message: err instanceof Error ? err.message : String(err), field: 'script' });
       }
 
-      // ARCH-005 delegate: model-alias resolve.
+      // ARCH-005 delegate: model-alias resolve. REQ-038: an `openrouter/<id>`-shaped passthrough
+      // string is NOT a pre-listed alias yet is still a valid model (LiteLLM's `openrouter/*`
+      // wildcard routes it natively) — so it's accepted here rather than falsely UNKNOWN_ALIAS.
       for (const alias of extractModelAliases(spec.script)) {
-        if (!this._aliases[alias]) {
-          errors.push({ code: 'UNKNOWN_ALIAS', message: `Unknown model alias: ${alias}`, field: 'model' });
-        }
+        if (this._aliases[alias]) continue;
+        if (this._openrouterPassthrough && OPENROUTER_PASSTHROUGH.test(alias)) continue;
+        errors.push({ code: 'UNKNOWN_ALIAS', message: `Unknown model alias: ${alias}`, field: 'model' });
       }
 
       // DES-024 delegate: a referenced-but-unprovisioned MCP name fails fast at submission

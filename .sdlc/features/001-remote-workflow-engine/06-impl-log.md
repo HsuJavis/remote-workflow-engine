@@ -1745,3 +1745,20 @@ All v1 REQs have unchanged green VALs.
 - **iter:** v6
 - files: src/github/issue-reporter.ts (GithubIssueClient getIssue/listIssues/getComments/createComment/findOpenByFingerprint over shared `ghFetch`; IssueView/IssueSummary/CommentView/IssueListFilter types; IssueReporter getIssue/listIssues/getComments/postComment; `issueFingerprint()` + hidden `rwe-fp` marker dedup in report(); best-effort `runDiagnostics` enrichment; ISSUE_NOT_FOUND/ISSUE_COMMENT_INVALID codes), src/server.ts (issue_get/issue_list/issue_comments/issue_comment in TOOL_NAMES/TOOL_METADATA + callTool cases; facade-backed runDiagnostics wired into the default IssueReporter; `deduped` on issue_report result)
 - green: tests/unit/issue-ops.test.ts + tests/integration/issue-ops-http.test.ts (+34); full suite 569 green, tsc clean.
+
+## v7 slice — provider-native routing + OpenRouter + models_list catalog (IMPL-087, IMPL-088)
+
+### IMPL-087 — provider-native SDK routing + openrouter provider/passthrough (REQ-037, REQ-038)
+- **status:** done
+- **traces:** TASK-046, DES-039
+- **iter:** v7
+- files: src/gateway/claude-agent-sdk-client.ts (provider-aware `buildSubprocessEnv`: anthropic → real `ANTHROPIC_BASE_URL` + `resolveAnthropicAuth` [api-key→real ANTHROPIC_API_KEY / subscription→CLAUDE_CODE_OAUTH_TOKEN / missing→typed `ANTHROPIC_AUTH_MISSING`, never dummy]; non-anthropic → LiteLLM proxy + dummy; `isPassthroughModel`/`effectiveProvider` leave `openrouter/<id>` RAW/uncloaked so LiteLLM's `openrouter/*` wildcard matches; auth secrets from injected secretSource written ONLY into the subprocess env), src/gateway/client.ts (`openrouter` in the provider union + direct-fetch `openrouter` case using OPENROUTER_API_KEY), src/gateway/litellm-proxy.ts (generated config gains native wildcard `openrouter/*` route reading OPENROUTER_API_KEY), src/submission-validator.ts (`openrouter/<id>` passthrough not falsely `UNKNOWN_ALIAS`), src/main.ts (threads anthropicBaseUrl/anthropicAuth + secretSource into the SDK gateway).
+- Gate-7.5 route-back fix: the passthrough model was being rwe-proxy-cloaked, which broke the LiteLLM `openrouter/*` wildcard ("no healthy deployments"); fixed by NOT cloaking passthrough models — real-verified live (`openrouter/nex-agi/nex-n2-pro` → "PONG").
+- green: tests/unit/openrouter-provider.test.ts + tests/unit/claude-agent-sdk-provider-aware-env.test.ts; full suite 605 green, tsc clean.
+
+### IMPL-088 — models_list federated model catalog (REQ-039, REQ-040)
+- **status:** done
+- **traces:** TASK-047, DES-040
+- **iter:** v7
+- files: src/models/model-catalog.ts (NEW — `ModelEntry` type + `buildCatalog` federating the static openai/anthropic table + live Ollama `/api/tags` + live OpenRouter `/api/v1/models` [tool support from `supported_parameters`] + curated-alias overlay, injectable fetchers, graceful per-source degradation, secret-free; `filterCatalog` AND-filter + limit), src/server.ts (`models_list` in TOOL_NAMES + TOOL_METADATA/schema with all filter params + callTool case; ServerConfig injectable catalog seams).
+- green: tests/unit/model-catalog.test.ts + tests/integration/models-list-tool.test.ts; full suite 605 green, tsc clean.

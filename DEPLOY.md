@@ -336,6 +336,8 @@
   | `OPENAI_API_KEY` | `provider:"openai"` 別名 | OpenAI Platform 的 API key |
   | `GEMINI_API_KEY` | `provider:"gemini"` 別名 | Google AI Studio 的 API key |
   | `OLLAMA_BASE_URL` | `provider:"ollama"` 別名（本機/內網模型，免金鑰） | 預設 `http://localhost:11434`；本次驗證即用此跑 `qwen2.5:7b` 全程真實測試，`OLLAMA_BASE_URL` 未設也能用；**但見下方已知限制第 1 條：目前無法真的用工具讀寫檔案（模型能力上限，非程式碼缺陷）** |
+  | `OPENROUTER_API_KEY` | `provider:"openrouter"` 別名 + passthrough `agent({model:"openrouter/<id>"})`（v7） | OpenRouter 的 API key（`sk-or-...`）；LiteLLM 以原生 `openrouter/<model>` 路由自動讀取。一把 key 開放整個 OpenRouter 目錄（`models_list` 可查、含 tool-use 標籤） |
+  | `CLAUDE_CODE_OAUTH_TOKEN` | `provider:"anthropic"` **直連**的**訂閱制**認證(v7,`anthropicAuth:"subscription"`) | 用 `claude setup-token`(Pro/Max 帳號)產生;走訂閱額度、無 API 帳單;設定時**不要**同時設 `ANTHROPIC_API_KEY`。API-key 模式則沿用上面 `ANTHROPIC_API_KEY`(v7 起 anthropic 別名走**直連**、bypass LiteLLM,保原生 tool schema) |
 
   **未設定的供應商不會擋住啟動** —— 對應別名的 `agent()` 呼叫只會在真正被呼叫時，走 D-G 電路斷路器
   邏輯解析成 `null`（run 繼續跑，不會掛住），已於 Gate 7.5 對真實不可達端點與缺金鑰兩種情境都實測確認

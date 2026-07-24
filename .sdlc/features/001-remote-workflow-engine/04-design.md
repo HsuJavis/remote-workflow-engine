@@ -1386,3 +1386,24 @@ classDiagram
 - `report()` upgrades: REQ-035 dedup — `issueFingerprint(title, component?): string` (sha256) + a hidden `<!-- rwe-fp:<fp> -->` body marker; a matching OPEN issue from `findOpenByFingerprint`→`createComment` returns `{...,deduped:true}`, else new issue (`deduped:false`). REQ-036 enrichment — when `IssueReporterConfig.runDiagnostics?: (runId)=>Promise<string|null>` is present and `input.runId` is set, its output enriches the `## Linked run` section; best-effort (`.catch(()=>null)`, never fails the report).
 - typed error codes (this slice): `ISSUE_NOT_FOUND`, `ISSUE_COMMENT_INVALID` (+ reused `GITHUB_TOKEN_MISSING` / `GITHUB_API_ERROR`).
 - server.ts: `issue_get` / `issue_list` / `issue_comments` / `issue_comment` in TOOL_NAMES + TOOL_METADATA + `callTool` cases; facade-backed `runDiagnostics` (workflow_status + artifact list + last-agent transcript tail) wired into the default IssueReporter; `issue_report` result carries `deduped`.
+
+### DES-039 — Provider-aware SDK subprocess env + OpenRouter provider/passthrough (src/gateway/claude-agent-sdk-client.ts, src/gateway/client.ts, src/gateway/litellm-proxy.ts, src/submission-validator.ts, src/main.ts)
+- **status:** done
+- **traces:** ARCH-025, TASK-046
+- **iter:** v7
+- `buildSubprocessEnv(...)` is provider-aware: provider `anthropic` → `ANTHROPIC_BASE_URL` = the REAL Anthropic API (LiteLLM bypassed) plus `resolveAnthropicAuth(...)`; any other provider → `ANTHROPIC_BASE_URL` = the managed LiteLLM proxy with the existing dummy key. Auth secrets are read from the injected `secretSource` and written ONLY into the returned SDK-subprocess env.
+- `resolveAnthropicAuth(anthropicAuth, secretSource)`: mode `api-key` → set real `ANTHROPIC_API_KEY` (never the dummy); mode `subscription` → set `CLAUDE_CODE_OAUTH_TOKEN` and DO NOT set `ANTHROPIC_API_KEY`; required secret absent → typed `ANTHROPIC_AUTH_MISSING` (no silent dummy-key fallback).
+- `isPassthroughModel(model)` / `effectiveProvider(alias, model)`: an `openrouter/<id>` passthrough model string is NOT rewritten/alias-cloaked through the rwe proxy — it is passed RAW so LiteLLM's `openrouter/*` wildcard matches; its effective provider is the `openrouter` prefix (so routing/auth pick the LiteLLM path + `OPENROUTER_API_KEY`).
+- `src/gateway/client.ts`: `openrouter` added to the provider union + a direct-fetch `openrouter` case (OpenAI-format request to `openrouter.ai` using `OPENROUTER_API_KEY`).
+- `src/gateway/litellm-proxy.ts`: the generated LiteLLM config gains a native wildcard `openrouter/*` route (reads `OPENROUTER_API_KEY`).
+- `src/submission-validator.ts`: an `openrouter/<id>` passthrough model string is accepted (not falsely flagged `UNKNOWN_ALIAS`).
+- `src/main.ts`: threads `anthropicBaseUrl` / `anthropicAuth` + `secretSource` into the SDK gateway.
+
+### DES-040 — Federated model catalog + `models_list` tool (src/models/model-catalog.ts, src/server.ts)
+- **status:** done
+- **traces:** ARCH-026, TASK-047
+- **iter:** v7
+- `ModelEntry` type — the unified normalized shape `{provider, model, alias?, description, modalities:{in:[…],out:[…]}, contextWindow, price(in/out | "free" | "unknown"), toolUse(bool | "unknown"), location:"local"|"remote"}`.
+- `buildCatalog(deps)` — federates the static openai/anthropic table + live Ollama `/api/tags` (local) + live OpenRouter `/api/v1/models` (remote; maps metadata incl. tool support from `supported_parameters`) + the curated-alias overlay into one `ModelEntry[]`; the live fetchers are injectable; each source degrades gracefully (an unreachable live source drops only its own entries, curated/static still return); output is secret-free (no key value ever surfaces).
+- `filterCatalog(entries, filter)` — AND-filter over `{provider, query, modalityIn, modalityOut, maxPricePerM, minContext, toolUse, location}` + `limit` (sane default/hard cap); empty match → `[]`.
+- `src/server.ts`: `models_list` in TOOL_NAMES + TOOL_METADATA/schema (all filter params) + a `callTool` case delegating to `buildCatalog`→`filterCatalog`; ServerConfig exposes injectable catalog seams (the live fetchers) for tests.

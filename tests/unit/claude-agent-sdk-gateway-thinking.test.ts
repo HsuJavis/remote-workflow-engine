@@ -25,6 +25,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AliasMap } from '../../src/gateway/client.js';
 import type { ClaudeAgentSdkGatewayConfig } from '../../src/gateway/claude-agent-sdk-client.js';
+import { InMemorySecretSource } from '../../src/secret-resolver.js';
 
 const queryMock = vi.fn();
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
@@ -65,9 +66,13 @@ describe('ClaudeAgentSdkGatewayClient thinking policy (UT-020, D-F6)', () => {
   it('preserves the SDK default (thinking left unset) for an Anthropic-mapped alias', async () => {
     queryMock.mockReturnValue(fakeSession());
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
+    // REQ-037: an anthropic-mapped alias now dispatches DIRECT to the real Anthropic API with real
+    // auth (LiteLLM bypassed). Provide a fake api-key secret so the auth-present path reaches query()
+    // and the thinking policy under test (thinking left unset for anthropic) can be asserted.
     const config: ClaudeAgentSdkGatewayConfig & { aliases: AliasMap } = {
       baseUrl: 'http://127.0.0.1:4000',
       aliases: ALIASES,
+      secretSource: new InMemorySecretSource({ ANTHROPIC_API_KEY: 'fake-unit-test-key' }),
     };
     const client = new ClaudeAgentSdkGatewayClient(config);
 

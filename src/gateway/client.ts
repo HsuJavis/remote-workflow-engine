@@ -6,7 +6,7 @@ import type { AgentOpts, TranscriptEvent } from '../types.js';
 import { LiteLLMProxyManager } from './litellm-proxy.js';
 
 export interface AliasMap {
-  [alias: string]: { provider: 'anthropic' | 'openai' | 'gemini' | 'ollama'; model: string };
+  [alias: string]: { provider: 'anthropic' | 'openai' | 'openrouter' | 'gemini' | 'ollama'; model: string };
 }
 
 export type GatewayResult =
@@ -121,6 +121,26 @@ async function callProvider(
         const data = (await res.json()) as any;
         return {
           ok: true, provider: 'openai', model: target.model,
+          tokens: { input: data.usage?.prompt_tokens ?? 0, output: data.usage?.completion_tokens ?? 0 },
+          content: data.choices?.[0]?.message?.content,
+        };
+      }
+      case 'openrouter': {
+        // REQ-038: OpenRouter speaks the OpenAI chat-completions shape; its key is its OWN env var
+        // (OPENROUTER_API_KEY), never the OpenAI one — the two providers coexist with separate keys
+        // and no OPENAI_API_BASE global remap.
+        const apiKey = process.env['OPENROUTER_API_KEY'];
+        if (!apiKey) return { ok: false, provider: 'openrouter', reason: 'terminal' };
+        const res = await fetchImpl('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          signal: controller.signal,
+          headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json', ...correlationHeaders },
+          body: JSON.stringify({ model: target.model, messages: [{ role: 'user', content: req.prompt }] }),
+        });
+        if (!res.ok) return { ok: false, provider: 'openrouter', reason: res.status >= 500 ? 'unreachable' : 'terminal' };
+        const data = (await res.json()) as any;
+        return {
+          ok: true, provider: 'openrouter', model: target.model,
           tokens: { input: data.usage?.prompt_tokens ?? 0, output: data.usage?.completion_tokens ?? 0 },
           content: data.choices?.[0]?.message?.content,
         };
