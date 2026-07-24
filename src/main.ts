@@ -50,6 +50,14 @@ interface FileConfig extends Partial<Omit<ServerConfig, 'gateway'>> {
    *  default); has no effect on the "direct-fetch" path. Omitted -> ClaudeAgentSdkGatewayClient's
    *  own built-in minimal core set applies (never an uncurated full tool surface). */
   defaultAllowedTools?: string[];
+  /** REQ-037: the REAL Anthropic API base the provider-native (LiteLLM-bypassed) path dispatches an
+   *  `anthropic`-provider alias to. Omitted -> `https://api.anthropic.com`. */
+  anthropicBaseUrl?: string;
+  /** REQ-037: Anthropic-direct auth mode — `api-key` (real ANTHROPIC_API_KEY secret) or
+   *  `subscription` (CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`). Omitted -> auto by secret
+   *  presence. The auth material itself is NEVER read from this JSON file — only from the server-side
+   *  secret store (RWE_SECRET_ANTHROPIC_API_KEY / RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN) or plain env. */
+  anthropicAuth?: 'api-key' | 'subscription';
 }
 
 function loadFileConfig(): FileConfig {
@@ -170,8 +178,14 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
       mcpRegistryDbPath: config.workRoot ? join(config.workRoot, 'mcp-registry.db') : undefined,
       // D-V3M-1 (REQ-018): the server-side secret store (RWE_SECRET_* env) that resolves
       // `${secret:NAME}` handles inside a provisioned MCP config — never a real key on any
-      // agent-reachable path (the value lives only in the parent process env).
+      // agent-reachable path (the value lives only in the parent process env). REQ-037: the SAME
+      // store the Anthropic-direct auth material (RWE_SECRET_ANTHROPIC_API_KEY /
+      // RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN) is resolved from — injected ONLY into the SDK subprocess.
       secretSource: loadSecretSourceFromEnv(),
+      // REQ-037: an `anthropic`-provider alias bypasses this managed LiteLLM proxy and dispatches
+      // straight to the real Anthropic API with real auth (no tool-schema translation for Claude).
+      anthropicBaseUrl: fileConfig.anthropicBaseUrl,
+      anthropicAuth: fileConfig.anthropicAuth,
     });
   }
 

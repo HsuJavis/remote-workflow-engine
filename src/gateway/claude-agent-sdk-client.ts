@@ -68,8 +68,43 @@ export interface ClaudeAgentSdkGatewayConfig {
   /** D-V3M-1 (REQ-018): resolves `${secret:NAME}` handles inside a provisioned MCP config from the
    *  server-side secret store (loadSecretSourceFromEnv — `RWE_SECRET_*`). When set, an unresolvable
    *  handle fails the referencing agent() loudly (SECRET_MISSING) rather than passing the literal
-   *  handle through. Omitted -> configs are injected verbatim (no handle substitution attempted). */
+   *  handle through. Omitted -> configs are injected verbatim (no handle substitution attempted).
+   *  REQ-037: also the store the Anthropic-direct auth material (real ANTHROPIC_API_KEY /
+   *  CLAUDE_CODE_OAUTH_TOKEN) is resolved from — by the secret NAMEs `ANTHROPIC_API_KEY` and
+   *  `CLAUDE_CODE_OAUTH_TOKEN` (i.e. `RWE_SECRET_ANTHROPIC_API_KEY` /
+   *  `RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN`), never a run-workspace-reachable path. */
   secretSource?: SecretSource;
+  /** REQ-037: the REAL Anthropic API base for the provider-native (LiteLLM-bypassed) path — an
+   *  alias whose provider is `anthropic` dispatches straight here so no tool-schema translation ever
+   *  touches a Claude model. Defaults to `https://api.anthropic.com`. Non-anthropic providers still
+   *  route via the managed LiteLLM proxy at `baseUrl`. */
+  anthropicBaseUrl?: string;
+  /** REQ-037: which Anthropic auth mode the direct path uses. `api-key` injects a real
+   *  ANTHROPIC_API_KEY; `subscription` injects a CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`)
+   *  and sets NO ANTHROPIC_API_KEY. Omitted -> auto: subscription when an oauth-token secret is
+   *  present, else api-key. The chosen mode's secret being absent is a typed terminal failure
+   *  (ANTHROPIC_AUTH_MISSING), never a silent dummy-key attempt. */
+  anthropicAuth?: 'api-key' | 'subscription';
+}
+
+/** REQ-037: resolves the Anthropic-direct auth material for the chosen mode, reading the injected
+ *  secret store first (name `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`, i.e. the `RWE_SECRET_*`
+ *  store) then the plain host env as a fallback. Auto-selects subscription when an oauth token is
+ *  present and no explicit mode is set. Never returns the dummy key — a missing secret is signalled
+ *  as `{ ok:false }` so the caller can raise a typed terminal failure instead of attempting a call
+ *  with no real credential. */
+function resolveAnthropicAuth(
+  config: ClaudeAgentSdkGatewayConfig,
+): { ok: true; mode: 'api-key'; apiKey: string } | { ok: true; mode: 'subscription'; oauthToken: string } | { ok: false } {
+  const fromSecret = (name: string): string | undefined => config.secretSource?.resolve(name);
+  const apiKey = fromSecret('ANTHROPIC_API_KEY') ?? process.env['RWE_SECRET_ANTHROPIC_API_KEY'] ?? process.env['ANTHROPIC_API_KEY'];
+  const oauthToken =
+    fromSecret('CLAUDE_CODE_OAUTH_TOKEN') ?? process.env['RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN'] ?? process.env['CLAUDE_CODE_OAUTH_TOKEN'];
+  const mode: 'api-key' | 'subscription' = config.anthropicAuth ?? (oauthToken ? 'subscription' : 'api-key');
+  if (mode === 'subscription') {
+    return oauthToken ? { ok: true, mode: 'subscription', oauthToken } : { ok: false };
+  }
+  return apiKey ? { ok: true, mode: 'api-key', apiKey } : { ok: false };
 }
 
 /** D-V3M-1: resolveInjected only ever reads (get/SELECT) — never register() — so the McpRegistry the
@@ -156,6 +191,20 @@ const NON_ANTHROPIC_EXCLUDED_TOOLS = new Set(['Read']);
  *  lookup thinkingFor uses. */
 export function providerOf(aliases: AliasMap | undefined, model: string | undefined): string | undefined {
   return model !== undefined ? aliases?.[model]?.provider : undefined;
+}
+
+/** REQ-038 passthrough: a model already in `openrouter/<id>` form is NOT a configured alias — its
+ *  provider is the prefix and it must NOT be proxy-cloaked (`rwe-proxy-*`). It matches LiteLLM's
+ *  `openrouter/*` wildcard route verbatim; a slashed id is never a bare CLI shorthand, so there is
+ *  no shorthand-expansion risk to cloak against. */
+export function isPassthroughModel(model: string | undefined): model is string {
+  return typeof model === 'string' && model.startsWith('openrouter/');
+}
+
+/** The effective provider for routing/curation: the prefix for a passthrough model, else the alias's
+ *  configured provider. */
+export function effectiveProvider(aliases: AliasMap | undefined, model: string | undefined): string | undefined {
+  return isPassthroughModel(model) ? 'openrouter' : providerOf(aliases, model);
 }
 
 /** A (per-provider tool curation): for a KNOWN non-Anthropic provider, drop the quirky-schema
@@ -280,18 +329,41 @@ const DUMMY_API_KEY = 'sk-local-dev-dummy-not-a-real-key';
 // header comment already promises never happens (D-R2 hermeticity).
 const ENV_ALLOWLIST = ['PATH', 'HOME', 'SHELL', 'LANG', 'LC_ALL', 'TMPDIR', 'TERM'];
 
-/** Builds the spawned CLI subprocess's env from the ALLOWLIST above plus the overridden
- *  ANTHROPIC_* pair — the only two keys this class ever sets to something other than a verbatim
- *  host value. */
-function buildSubprocessEnv(baseUrl: string): Record<string, string> {
+/** REQ-037: the outcome of building the spawned CLI subprocess env — either the ready env, or a
+ *  typed reason the Anthropic-direct auth couldn't be assembled (a missing secret for the chosen
+ *  mode). The caller turns the failure into a `{ ok:false, reason:'terminal', detail }` GatewayResult
+ *  rather than silently attempting a call with the dummy key. */
+type SubprocessEnvResult = { ok: true; env: Record<string, string> } | { ok: false; detail: string };
+
+/** Builds the spawned CLI subprocess's env from the ALLOWLIST above plus the routing/auth vars this
+ *  class sets. PROVIDER-AWARE (REQ-037):
+ *   - `anthropic`: ANTHROPIC_BASE_URL = the REAL Anthropic API (LiteLLM bypassed, no tool-schema
+ *     translation) + real auth per `anthropicAuth` (api-key -> real ANTHROPIC_API_KEY, never the
+ *     dummy; subscription -> CLAUDE_CODE_OAUTH_TOKEN and NO ANTHROPIC_API_KEY). A missing secret for
+ *     the chosen mode -> `{ ok:false, detail:'ANTHROPIC_AUTH_MISSING' }`.
+ *   - everything else (openai/openrouter/ollama/gemini/unknown): unchanged legacy behavior —
+ *     ANTHROPIC_BASE_URL = the managed LiteLLM proxy `config.baseUrl` + the DUMMY key.
+ *  The real key / oauth token is injected ONLY here, into the SDK subprocess env — never written to
+ *  the run workspace, sandbox, or any transcript (D-R2). CLAUDE_CODE_OAUTH_TOKEN is an auth var
+ *  treated like the ANTHROPIC_* pair (deliberately NOT added to ENV_ALLOWLIST, which is for benign
+ *  host vars only). */
+function buildSubprocessEnv(config: ClaudeAgentSdkGatewayConfig, provider: string | undefined): SubprocessEnvResult {
   const env: Record<string, string> = {};
   for (const key of ENV_ALLOWLIST) {
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
   }
-  env['ANTHROPIC_BASE_URL'] = baseUrl;
+  if (provider === 'anthropic') {
+    const auth = resolveAnthropicAuth(config);
+    if (!auth.ok) return { ok: false, detail: 'ANTHROPIC_AUTH_MISSING' };
+    env['ANTHROPIC_BASE_URL'] = config.anthropicBaseUrl ?? 'https://api.anthropic.com';
+    if (auth.mode === 'api-key') env['ANTHROPIC_API_KEY'] = auth.apiKey;
+    else env['CLAUDE_CODE_OAUTH_TOKEN'] = auth.oauthToken; // subscription: no ANTHROPIC_API_KEY at all
+    return { ok: true, env };
+  }
+  env['ANTHROPIC_BASE_URL'] = config.baseUrl;
   env['ANTHROPIC_API_KEY'] = DUMMY_API_KEY;
-  return env;
+  return { ok: true, env };
 }
 
 /** D-G8-2: extracts message/tool_call/tool_result TranscriptEvents from one SDK message's own
@@ -388,7 +460,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // `Read` fails ~2/3 ("invalid pages parameter", the PDF `pages` field), while Bash-based file
     // ops are 3/3. So for a non-Anthropic-mapped alias, drop the offending tools and ensure Bash is
     // present so reads/edits route through the shell. Anthropic (or unknown-provider) is unchanged.
-    const curatedTools = curateToolsForProvider(baseTools, providerOf(this._config.aliases, req.opts.model));
+    const curatedTools = curateToolsForProvider(baseTools, effectiveProvider(this._config.aliases, req.opts.model));
 
     // D-V2V-1 (REQ-009 route-back, binding ORCH ruling): a known run workspace gets its own
     // materialized `.claude/skills|hooks` dir and is loaded via `settingSources:['project']`,
@@ -410,12 +482,33 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     const mergedMcp = { ...assetMcp, ...provisionedMcp };
     const mcpServers = Object.keys(mergedMcp).length > 0 ? mergedMcp : undefined;
 
+    // REQ-037: provider-aware routing. An alias whose provider is `anthropic` dispatches DIRECT to
+    // the real Anthropic API (LiteLLM bypassed) — so its env carries the real auth AND its model
+    // name must be the REAL Anthropic id (`target.model`), not the proxy-cloaked `rwe-proxy-*` name
+    // the LiteLLM path needs. Every other provider keeps the proxy path (dummy key + proxyModelName).
+    const provider = effectiveProvider(this._config.aliases, req.opts.model);
+    const envResult = buildSubprocessEnv(this._config, provider);
+    if (!envResult.ok) {
+      // A missing real key/oauth token for the chosen Anthropic auth mode is a typed terminal
+      // failure — never a silent attempt with the dummy key against the real Anthropic API.
+      return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', detail: envResult.detail };
+    }
+    const anthropicTarget = provider === 'anthropic' && req.opts.model !== undefined ? this._config.aliases?.[req.opts.model] : undefined;
+    // REQ-038: a passthrough `openrouter/<id>` goes on the wire RAW (matches LiteLLM's `openrouter/*`
+    // wildcard); anthropic-direct uses the real id; every other case keeps the `rwe-proxy-*` cloak.
+    const modelName = anthropicTarget
+      ? anthropicTarget.model
+      : isPassthroughModel(req.opts.model)
+        ? req.opts.model
+        : proxyModelName(req.opts.model ?? 'default');
+
     const options: Options = {
       cwd: req.workspace ?? this._config.cwd,
-      // Route via the proxy-facing alias name (see proxyModelName): the CLI would otherwise expand a
-      // bare shorthand like `haiku` to a dated Anthropic id the LiteLLM proxy has no entry for (0-token
-      // `terminal` with "Invalid model name … claude-haiku-…"). An absent model resolves to `default`.
-      model: proxyModelName(req.opts.model ?? 'default'),
+      // REQ-037: an anthropic-direct call names the REAL Anthropic model id (LiteLLM bypassed);
+      // every other provider is routed via the proxy-facing alias name (see proxyModelName) — the
+      // CLI would otherwise expand a bare shorthand like `haiku` to a dated Anthropic id the LiteLLM
+      // proxy has no entry for (0-token `terminal`). An absent model resolves to `default`.
+      model: modelName,
       thinking: thinkingFor(this._config.aliases, req.opts.model),
       // D-V2G8-1(a): 'bypassPermissions' skipped EVERY tool-call decision outright — paired with a
       // curated-but-still-Bash-capable-by-opt-in tool set and no path check, this let any agent()
@@ -458,8 +551,10 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // regardless of whether a bare allowedTools entry already auto-approved it.
       hooks: { PreToolUse: [{ hooks: [makePreToolUseHook(req.workspace ?? this._config.cwd)] }] },
       abortController: controller,
-      // D-G8-5: an explicit allowlist (never the full host process.env — see buildSubprocessEnv).
-      env: buildSubprocessEnv(this._config.baseUrl),
+      // D-G8-5/REQ-037: an explicit allowlist plus the provider-aware routing/auth vars — never the
+      // full host process.env (see buildSubprocessEnv). Resolved above so an auth-missing anthropic
+      // call fails typed BEFORE query() is ever spawned.
+      env: envResult.env,
     };
     const session = this._query({ prompt: req.prompt, options });
     const drain = this._drain(session, req.opts.model);

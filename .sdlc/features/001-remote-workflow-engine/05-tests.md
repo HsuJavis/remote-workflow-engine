@@ -3431,3 +3431,21 @@ error).
 - **traces:** ARCH-024
 - **iter:** v6
 - tests/integration/issue-ops-http.test.ts (issue_get/issue_list/issue_comments/issue_comment advertised in tools/list and exercised over `/mcp` via an injected IssueReporter+fake client; typed error envelopes for unknown number / empty body / missing token; issue_report `deduped` + runId enrichment path over HTTP).
+
+## v7 slice — provider-native routing + OpenRouter + models_list catalog tests (UT-059, UT-060, IT-045)
+
+### UT-059 — provider-aware SDK routing / dual auth / openrouter passthrough (REQ-037, REQ-038)
+- **status:** green
+- **traces:** DES-039
+- **iter:** v7
+- tests/unit/claude-agent-sdk-provider-aware-env.test.ts (`buildSubprocessEnv`: anthropic → real `ANTHROPIC_BASE_URL` + LiteLLM bypassed; api-key mode → real ANTHROPIC_API_KEY not dummy; subscription mode → CLAUDE_CODE_OAUTH_TOKEN and NO ANTHROPIC_API_KEY; missing required secret → typed `ANTHROPIC_AUTH_MISSING`; non-anthropic → LiteLLM proxy + dummy; auth material only in the subprocess env) + tests/unit/openrouter-provider.test.ts (`openrouter` accepted as provider; `openrouter/<id>` passthrough left RAW/uncloaked so the LiteLLM `openrouter/*` wildcard matches; `isPassthroughModel`/`effectiveProvider`; direct-fetch openrouter case with OPENROUTER_API_KEY; passthrough not `UNKNOWN_ALIAS` in submission-validator).
+### UT-060 — federated model catalog build + filter (REQ-039, REQ-040)
+- **status:** green
+- **traces:** DES-040
+- **iter:** v7
+- tests/unit/model-catalog.test.ts (`buildCatalog` federates static openai/anthropic + live Ollama `/api/tags` + live OpenRouter `/api/v1/models` [tool support from `supported_parameters`] + curated overlay into the unified `ModelEntry` shape; injectable fetchers; graceful per-source degradation when a live source is unreachable; secret-free output; `filterCatalog` AND-filter over provider/query/modalityIn/modalityOut/maxPricePerM/minContext/toolUse/location + limit cap; empty match → `[]`).
+### IT-045 — models_list over the real MCP HTTP surface (REQ-039, REQ-040)
+- **status:** green
+- **traces:** ARCH-026
+- **iter:** v7
+- tests/integration/models-list-tool.test.ts (`models_list` advertised in tools/list and exercised over `/mcp` via injected catalog fetchers; returns the unified normalized array; filter params narrow the result and honour `limit`; empty match → `[]`; no secret value in the output).

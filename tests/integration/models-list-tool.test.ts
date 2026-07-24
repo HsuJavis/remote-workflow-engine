@@ -1,0 +1,101 @@
+// IT (REQ-039/040): models_list wired into the real MCP server, with injected fake live fetchers
+// (no real Ollama/OpenRouter network). Exercises tools/list schema, an unfiltered list, a filtered
+// narrow, and a source-down graceful-degradation case. No mock of the SUT boundary — real HTTP.
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from '../../src/server.js';
+import type { Server } from '../../src/server.js';
+import type { AliasMap } from '../../src/gateway/client.js';
+import type { ModelEntry } from '../../src/models/model-catalog.js';
+
+function jsonFetch(body: unknown, ok = true): typeof fetch {
+  return (async () => ({ ok, status: ok ? 200 : 500, json: async () => body })) as unknown as typeof fetch;
+}
+function throwingFetch(): typeof fetch {
+  return (async () => { throw new Error('ollama down'); }) as unknown as typeof fetch;
+}
+
+const OLLAMA_TAGS = { models: [{ name: 'qwen2.5:7b', details: { family: 'qwen2', parameter_size: '7.6B' } }] };
+const OPENROUTER_MODELS = {
+  data: [
+    { id: 'qwen/qwen-2.5-7b-instruct', description: 'Qwen 2.5 7B', context_length: 32768, pricing: { prompt: '0.0000002', completion: '0.0000006' }, architecture: { input_modalities: ['text'], output_modalities: ['text'] }, supported_parameters: ['tools'] },
+    { id: 'big/expensive', description: 'A pricey model', context_length: 200000, pricing: { prompt: '0.000005', completion: '0.000015' }, architecture: { input_modalities: ['text'], output_modalities: ['text'] }, supported_parameters: ['tools'] },
+  ],
+};
+const ALIASES: AliasMap = { opus: { provider: 'anthropic', model: 'claude-opus-4-8' } };
+
+let server: Server;
+let tmpDir: string;
+
+beforeAll(async () => {
+  tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it-models-'));
+  server = await createServer({
+    port: 0, bind: '127.0.0.1', workRoot: tmpDir, aliases: ALIASES,
+    modelCatalogFetchers: { ollamaFetch: jsonFetch(OLLAMA_TAGS), openrouterFetch: jsonFetch(OPENROUTER_MODELS) },
+  });
+});
+afterAll(async () => {
+  await server?.close();
+  rmSync(tmpDir, { recursive: true, force: true });
+});
+
+async function rpc(port: number, method: string, params?: unknown) {
+  const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  });
+  return res.json() as Promise<{ result?: { content?: Array<{ text?: string }>; tools?: Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }> }; error?: unknown }>;
+}
+async function callTool(port: number, name: string, args: unknown): Promise<{ result: ModelEntry[] }> {
+  const body = await rpc(port, 'tools/call', { name, arguments: args });
+  return JSON.parse(body.result?.content?.[0]?.text ?? '{}');
+}
+
+describe('models_list wired into MCP (REQ-039/040)', () => {
+  it('tools/list advertises models_list with real filter properties', async () => {
+    const body = await rpc(server.port, 'tools/list');
+    const tool = body.result?.tools?.find((t) => t.name === 'models_list');
+    expect(tool).toBeDefined();
+    const props = Object.keys(tool?.inputSchema?.properties ?? {});
+    expect(props).toEqual(expect.arrayContaining(['provider', 'query', 'maxPricePerM', 'minContext', 'toolUse', 'location', 'limit']));
+  });
+
+  it('unfiltered list federates static + curated alias + fake Ollama + fake OpenRouter', async () => {
+    const out = await callTool(server.port, 'models_list', {});
+    const models = out.result.map((e) => e.model);
+    expect(models).toContain('qwen2.5:7b'); // ollama
+    expect(models).toContain('qwen/qwen-2.5-7b-instruct'); // openrouter
+    expect(models).toContain('claude-opus-4-8'); // static anthropic
+    expect(out.result.find((e) => e.model === 'claude-opus-4-8')?.alias).toBe('opus'); // curated
+  });
+
+  it('filters narrow the catalog (remote + toolUse + cheap + query)', async () => {
+    const out = await callTool(server.port, 'models_list', { location: 'remote', toolUse: true, maxPricePerM: 1, query: 'qwen' });
+    expect(out.result.map((e) => e.model)).toEqual(['qwen/qwen-2.5-7b-instruct']);
+  });
+
+  it('empty match returns [] (not an error)', async () => {
+    const out = await callTool(server.port, 'models_list', { provider: 'nonexistent-provider' });
+    expect(out.result).toEqual([]);
+  });
+
+  it('a source-down case degrades gracefully — static/curated still return', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-it-models-down-'));
+    const downServer = await createServer({
+      port: 0, bind: '127.0.0.1', workRoot: dir, aliases: ALIASES,
+      modelCatalogFetchers: { ollamaFetch: throwingFetch(), openrouterFetch: throwingFetch() },
+    });
+    try {
+      const out = await callTool(downServer.port, 'models_list', {});
+      const models = out.result.map((e) => e.model);
+      expect(models).not.toContain('qwen2.5:7b');
+      expect(models).toContain('claude-opus-4-8'); // static survives
+      expect(out.result.find((e) => e.model === 'claude-opus-4-8')?.alias).toBe('opus'); // curated survives
+    } finally {
+      await downServer.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

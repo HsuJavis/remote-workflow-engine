@@ -181,21 +181,32 @@ describe('src/main.ts composition-root wiring-completeness (IT-021, D-F10a/b)', 
 
     const workRoot = mkdtempSync(join(tmpdir(), 'rwe-it021b-'));
     const queryImpl = vi.fn(() => fakeSuccessSession());
-    const config = await (composeConfig as (fc: unknown, deps: unknown) => Promise<{ gateway?: GatewayClient }>)(
-      {
-        bind: '127.0.0.1',
-        port: 0,
-        workRoot,
-        aliases: ALIASES,
-        gateway: 'sdk',
-      },
-      {
-        queryImpl,
-        proxyManager: makeFakeProxyManager(),
-      },
-    );
-
-    await config.gateway!.invoke({ prompt: 'hi', opts: { model: 'default' }, runId: 'r1', agentId: 'a1' });
+    // REQ-037: the 'default' alias maps to 'anthropic', which now dispatches DIRECT to the real
+    // Anthropic API with real auth (LiteLLM bypassed) — composeConfig wires the SDK gateway's
+    // secretSource from RWE_SECRET_* env. Provide a fake api-key secret so the auth-present path
+    // reaches query() and the D-F6 thinking policy (thinking unset for anthropic) can be asserted.
+    const priorSecret = process.env['RWE_SECRET_ANTHROPIC_API_KEY'];
+    process.env['RWE_SECRET_ANTHROPIC_API_KEY'] = 'fake-it021b-key';
+    let config: { gateway?: GatewayClient };
+    try {
+      config = await (composeConfig as (fc: unknown, deps: unknown) => Promise<{ gateway?: GatewayClient }>)(
+        {
+          bind: '127.0.0.1',
+          port: 0,
+          workRoot,
+          aliases: ALIASES,
+          gateway: 'sdk',
+        },
+        {
+          queryImpl,
+          proxyManager: makeFakeProxyManager(),
+        },
+      );
+      await config.gateway!.invoke({ prompt: 'hi', opts: { model: 'default' }, runId: 'r1', agentId: 'a1' });
+    } finally {
+      if (priorSecret === undefined) delete process.env['RWE_SECRET_ANTHROPIC_API_KEY'];
+      else process.env['RWE_SECRET_ANTHROPIC_API_KEY'] = priorSecret;
+    }
 
     expect(queryImpl).toHaveBeenCalledTimes(1);
     const [[call]] = queryImpl.mock.calls as unknown as [[{ options?: { thinking?: unknown } }]];
