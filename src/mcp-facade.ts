@@ -23,6 +23,20 @@ function toErrEnvelope(err: unknown): ErrEnvelope {
   return { code: 'INTERNAL_ERROR', message: String(err) };
 }
 
+/** Robustness at the MCP boundary: some MCP clients serialize the untyped `args` object into a JSON
+ *  STRING before it reaches the tool (observed with the Claude Code plugin — the script then read
+ *  `args.inquiry` off a string and silently got `undefined`). If `args` arrives as a string that is
+ *  valid JSON, parse it back into the object the caller intended; a non-JSON string is left as-is
+ *  (a workflow that genuinely wants a string arg still gets it). Non-string values pass through. */
+function normalizeArgs(args: unknown): unknown {
+  if (typeof args !== 'string') return args;
+  try {
+    return JSON.parse(args);
+  } catch {
+    return args;
+  }
+}
+
 function notFound(runId: string): ErrEnvelope {
   return { code: 'RUN_NOT_FOUND', message: `Run not found: ${runId}` };
 }
@@ -66,7 +80,7 @@ export class McpFacade {
       return { runId: '', status: 'failed', error: validation.errors[0] };
     }
     try {
-      const runId = await this.runManager.start({ name: a.name, script: a.script, args: a.args, budget: a.budget ?? null, seed: a.seed });
+      const runId = await this.runManager.start({ name: a.name, script: a.script, args: normalizeArgs(a.args), budget: a.budget ?? null, seed: a.seed });
       const view = await this.store.getRun(runId);
       return { runId, status: view?.status ?? 'queued', result: { runId } };
     } catch (err) {
