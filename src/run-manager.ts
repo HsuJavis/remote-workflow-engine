@@ -50,9 +50,22 @@ export interface RunManagerDeps {
    *  effectively-unbounded local semaphore so direct RunManager construction keeps its exact prior
    *  concurrency behavior; only the real cap is imposed at the composition root. */
   semaphore?: Semaphore;
+  /** v8 Slice 1 (REQ-041): max `workflow()` nesting depth — a registered composite may be a node
+   *  inside another composite up to this many levels (top run = depth 0; first workflow() = depth 1).
+   *  Default 4. Invalid (≤0 / non-integer) is rejected at construction. */
+  maxWorkflowDepth?: number;
+  /** v8 Slice 1 (REQ-043): max total nested workflow() invocations across a run's whole tree
+   *  (bounds fan-out × depth independently of maxWorkflowDepth). Default 256. */
+  maxWorkflowDescendants?: number;
 }
 
 const TERMINAL: RunStatus[] = ['stopped', 'completed', 'failed'];
+
+/** A branchable Error carrying a `.code` (surfaced to the calling script via the sandbox IPC's
+ *  code derivation — see host.ts ipcErrorCode / child-entry). */
+function codedError(code: string, message: string): Error {
+  return Object.assign(new Error(message), { code });
+}
 
 function toErr(err: unknown): { code: string; message: string } {
   if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
@@ -65,6 +78,9 @@ function toErr(err: unknown): { code: string; message: string } {
 interface RunEntry {
   script: string;
   args: unknown;
+  /** Top-level workflow name (undefined for an ad-hoc script run) — seeds the nesting ancestor set
+   *  so a top→…→top cycle is caught (v8 REQ-042). */
+  name?: string;
   status: RunStatus;
   guard: RunGuard;
   abortController: AbortController;
@@ -75,6 +91,13 @@ interface RunEntry {
   scriptVersion: number;
   cachePlan: ResumePlan | null;
   phases: PhaseView[];
+  /** v8 REQ-043: running count of nested workflow() invocations across this run's whole tree. */
+  descendants: number;
+  /** v8 REQ-044: deterministic frame-path → journal callSeq base allocation for nested runs, keeping
+   *  nested callSeq keys unique AND within MAX_SAFE_INTEGER at any depth (replaces the old
+   *  (parentCallSeq+1)*1e6+n multiply scheme, which overflowed past ~depth 2). */
+  nestedFrames: Map<string, number>;
+  nestedFrameSeq: number;
   result?: unknown;
   resultError?: { code: string; message: string };
 }
@@ -89,7 +112,19 @@ export class RunManager {
   private readonly _workRoot: string;
   private readonly _agentTypes: Record<string, AgentTypeDef>;
   private readonly _semaphore: Semaphore;
+  private readonly _maxWorkflowDepth: number;
+  private readonly _maxWorkflowDescendants: number;
   private readonly _runs = new Map<string, RunEntry>();
+
+  /** v8 Slice 1: config values are positive integers — reject bad config loudly at construction
+   *  (the composition root builds RunManager from rwe.config.json, so this IS the config-load check). */
+  private static _positiveInt(value: number | undefined, fallback: number, name: string): number {
+    if (value === undefined) return fallback;
+    if (!Number.isInteger(value) || value < 1) {
+      throw new Error(`${name} must be a positive integer, got ${value}`);
+    }
+    return value;
+  }
 
   constructor(deps: RunManagerDeps = {}) {
     this._clock = deps.clock ?? new SystemClock();
@@ -103,6 +138,8 @@ export class RunManager {
     // D-V3M-2: unbounded local default (1024 ≫ the 1000-agent lifetime cap) preserves the exact
     // prior behavior for every direct RunManager caller; the real DOS cap is injected by createServer.
     this._semaphore = deps.semaphore ?? createSemaphore(1024);
+    this._maxWorkflowDepth = RunManager._positiveInt(deps.maxWorkflowDepth, 4, 'maxWorkflowDepth');
+    this._maxWorkflowDescendants = RunManager._positiveInt(deps.maxWorkflowDescendants, 256, 'maxWorkflowDescendants');
   }
 
   /** D-V3M-2 (REQ-020 D-DOS gauge): a snapshot of the process-global agent-slot semaphore, surfaced
@@ -170,16 +207,20 @@ export class RunManager {
     const entry: RunEntry = {
       script,
       args: spec.args,
+      name: spec.name,
       status: 'queued',
       guard,
       abortController: new AbortController(),
-      sandbox: this._newSandbox(runId, workspace),
+      sandbox: this._newSandbox(runId, workspace, spec.name),
       spawner,
       workspace,
       journal: [],
       scriptVersion,
       cachePlan: null,
       phases: [],
+      descendants: 0,
+      nestedFrames: new Map(),
+      nestedFrameSeq: 0,
     };
     this._runs.set(runId, entry);
     await this._transition(runId, entry, 'running');
@@ -205,7 +246,12 @@ export class RunManager {
     entry.script = newScript;
     entry.scriptVersion += 1;
     entry.abortController = new AbortController();
-    entry.sandbox = this._newSandbox(runId, entry.workspace);
+    entry.sandbox = this._newSandbox(runId, entry.workspace, entry.name);
+    // v8 REQ-044: reset the deterministic nested-frame allocator + descendant counter so a resumed
+    // re-execution re-allocates the SAME frame bases in the same order (replay-stable callSeqs).
+    entry.descendants = 0;
+    entry.nestedFrames = new Map();
+    entry.nestedFrameSeq = 0;
     await this._transition(runId, entry, 'running');
     this._runLive(runId, entry, newScript, cachePlan);
   }
@@ -269,16 +315,20 @@ export class RunManager {
     const entry: RunEntry = {
       script: spec.script ?? '',
       args: spec.args,
+      name: spec.name,
       status: view.status,
       guard,
       abortController: new AbortController(),
-      sandbox: this._newSandbox(runId, workspace),
+      sandbox: this._newSandbox(runId, workspace, spec.name),
       spawner,
       workspace,
       journal: [],
       scriptVersion: Number(view.scriptVersion.replace(/^v/, '')) || 1,
       cachePlan: null,
       phases: [],
+      descendants: 0,
+      nestedFrames: new Map(),
+      nestedFrameSeq: 0,
     };
     this._runs.set(runId, entry);
     return entry;
@@ -290,28 +340,39 @@ export class RunManager {
     await this._store.recordTransition(runId, from, to, this._clock.isoNow());
   }
 
-  private _newSandbox(runId: string, workspace: string): SandboxHost {
+  private _newSandbox(runId: string, workspace: string, topName?: string): SandboxHost {
+    // v8 REQ-042: seed the top-level nesting chain with the run's own workflow name (if any), so a
+    // composite that eventually calls back into itself is caught as a cycle.
+    const topAncestors = new Set<string>(topName ? [topName] : []);
     return new SandboxHost({
       workspaceRoot: workspace,
       onAgentRequest: (prompt, opts, callSeq) => this._handleAgentRequest(runId, prompt, opts, callSeq),
-      onWorkflowRequest: (ref, args, callSeq) => this._handleWorkflowRequest(runId, ref, args, callSeq),
+      onWorkflowRequest: (ref, args, callSeq) => this._handleWorkflowRequest(runId, ref, args, '', callSeq, 1, topAncestors),
       onPhase: (title) => { this._runs.get(runId)?.phases.push({ title }); },
       onBudgetSnapshot: () => this._runs.get(runId)?.guard.budgetView().spent() ?? 0,
     });
   }
 
-  // D-G8-1: a nested workflow()'s own child process has its OWN independent callSeq counter that
-  // restarts at 0 (child-entry.ts's own `nextCallSeq`) — but its agent() calls are journaled into
-  // the SAME parent run's shared journal/ResumeCache as the outer script's own callSeq values, so a
-  // raw pass-through collides callSeq 0 (outer) with callSeq 0 (nested), corrupting both entries
-  // (review finding V3). Namespace the nested child's own callSeq into a distinct numeric range,
-  // keyed off the PARENT's own callSeq for the workflow() call that spawned it (itself unique in
-  // the parent's own callSeq space) — deterministic across an original run and a resume of the same
-  // unmodified script, since the same workflow() call gets the same parent-level callSeq both times.
-  private static readonly NESTED_CALLSEQ_STRIDE = 1_000_000;
+  // v8 REQ-044 (supersedes D-G8-1): a nested workflow()'s own child process has its OWN callSeq
+  // counter starting at 0, but its agent() calls are journaled into the SAME parent run's shared
+  // journal/ResumeCache — so nested callSeq values must be namespaced to never collide. The prior
+  // (parentCallSeq+1)*1e6+n multiply scheme composed MULTIPLICATIVELY per level and overflowed
+  // MAX_SAFE_INTEGER past ~depth 2 (now that N-level nesting is allowed). Instead, each distinct
+  // nested FRAME (a workflow() call site, identified by its deterministic ancestor callSeq path) is
+  // allocated one base = frameSeq * STRIDE, additively; a frame's agent() callSeq = base + local.
+  // frameSeq is allocated on first touch in execution order, which is deterministic (parallel()
+  // invokes thunks in array order) and identical on resume, so the same call gets the same key.
+  // STRIDE bounds calls-per-frame (< STRIDE, enforced by the agent/descendant caps); frameSeq stays
+  // far within MAX_SAFE_INTEGER (9e15/1e6 ≈ 9e9 frames >> the descendant cap).
+  private static readonly NESTED_FRAME_STRIDE = 1_000_000;
 
-  private static _nestedCallSeq(parentCallSeq: number, nestedCallSeq: number): number {
-    return (parentCallSeq + 1) * RunManager.NESTED_CALLSEQ_STRIDE + nestedCallSeq;
+  private _frameBaseFor(entry: RunEntry, pathKey: string): number {
+    let base = entry.nestedFrames.get(pathKey);
+    if (base === undefined) {
+      base = (entry.nestedFrameSeq += 1) * RunManager.NESTED_FRAME_STRIDE;
+      entry.nestedFrames.set(pathKey, base);
+    }
+    return base;
   }
 
   /** Runs one live (or replay-then-live) execution of `script` against the sandbox; settles the
@@ -333,29 +394,60 @@ export class RunManager {
       });
   }
 
-  /** Handles one child workflow(name|{scriptPath}) call: resolves the named script from the
-   *  catalog and runs it inline, one level deep — the nested run's own sandbox is given no
-   *  onWorkflowRequest, so a second-level workflow() call throws NESTING_ERROR automatically
-   *  (DES-005/DES-013). Shares the parent run's RunGuard (budget/concurrency) and workspace. */
-  private async _handleWorkflowRequest(runId: string, ref: unknown, args: unknown, parentCallSeq: number): Promise<unknown> {
+  /** Handles one child workflow(name|{scriptPath}) call: resolves the named script from the catalog
+   *  and runs it inline as a NESTED run (v8 Slice 1 — N levels deep up to maxWorkflowDepth). Shares
+   *  the parent run's RunGuard (one budget for the whole graph) and workspace. The nested sandbox is
+   *  wired with its own onWorkflowRequest so a deeper workflow() recurses here with depth+1 and the
+   *  extended ancestor set — bounded by three fail-closed guards:
+   *    REQ-041 depth   > maxWorkflowDepth        → NESTING_DEPTH_EXCEEDED
+   *    REQ-042 cycle    (target ∈ ancestors)      → NESTING_CYCLE
+   *    REQ-043 descendants > maxWorkflowDescendants → DESCENDANT_CAP_EXCEEDED
+   *  `depth` is the depth of THIS call (top run = 0; first workflow() = 1). `ancestors` is the set of
+   *  workflow names already on the chain (incl. the top run's own name). */
+  private async _handleWorkflowRequest(
+    runId: string,
+    ref: unknown,
+    args: unknown,
+    parentPathKey: string,
+    parentCallSeq: number,
+    depth: number,
+    ancestors: Set<string>,
+  ): Promise<unknown> {
     const entry = this._runs.get(runId);
     if (!entry) throw new Error(`Unknown run: ${runId}`);
     const name = typeof ref === 'string' ? ref : (ref as { scriptPath?: string } | undefined)?.scriptPath;
     if (!name) throw new Error('workflow() requires a registered name or {scriptPath}');
+
+    if (depth > this._maxWorkflowDepth) {
+      throw codedError('NESTING_DEPTH_EXCEEDED', `workflow() nesting depth ${depth} exceeds maxWorkflowDepth=${this._maxWorkflowDepth}`);
+    }
+    if (ancestors.has(name)) {
+      throw codedError('NESTING_CYCLE', `workflow() cycle: '${name}' is already an ancestor in this nesting chain`);
+    }
+    if ((entry.descendants += 1) > this._maxWorkflowDescendants) {
+      throw codedError('DESCENDANT_CAP_EXCEEDED', `workflow() exceeds maxWorkflowDescendants=${this._maxWorkflowDescendants} for this run`);
+    }
+
     const registered = await this._catalog.get(name); // throws CatalogNotFoundError — message names the missing workflow
+    const framePathKey = `${parentPathKey}.${parentCallSeq}`;
+    const frameBase = this._frameBaseFor(entry, framePathKey);
+    const childAncestors = new Set(ancestors).add(name);
 
     const nested = new SandboxHost({
       workspaceRoot: entry.workspace,
-      // D-G8-1: namespace the nested child's own callSeq (see RunManager._nestedCallSeq) so it can
-      // never collide with the parent script's own journal entries in this run's shared journal.
+      // v8 REQ-044: nested agent() callSeqs are namespaced into this frame's base (see _frameBaseFor)
+      // so they never collide with the parent's own or a sibling frame's entries in the shared journal.
       onAgentRequest: (prompt, opts, callSeq) =>
-        this._handleAgentRequest(runId, prompt, opts, RunManager._nestedCallSeq(parentCallSeq, callSeq)),
-      // no onWorkflowRequest — blocks a second level of nesting.
+        this._handleAgentRequest(runId, prompt, opts, frameBase + callSeq),
+      // v8 REQ-041: a deeper workflow() recurses here one level down, carrying this frame's path +
+      // the extended ancestor set — enabling N-level composition (was: no delegate → NESTING_ERROR).
+      onWorkflowRequest: (ref2, args2, callSeq2) =>
+        this._handleWorkflowRequest(runId, ref2, args2, framePathKey, callSeq2, depth + 1, childAncestors),
     });
     const outcome = await nested.run(`${runId}-nested`, registered.script, args, entry.guard.budgetView().total);
     if ('result' in outcome) return outcome.result;
     const err = toErr(outcome.error);
-    throw Object.assign(new Error(err.message), { code: err.code });
+    throw codedError(err.code, err.message);
   }
 
   /** Handles one child agent() call: replay from the resume cache when available, otherwise

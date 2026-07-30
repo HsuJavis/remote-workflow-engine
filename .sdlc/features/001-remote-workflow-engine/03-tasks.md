@@ -316,3 +316,8 @@ status: draft
 - **status:** done
 - **traces:** ARCH-026
 - **iter:** v7
+
+### TASK-048 — N-level workflow() composition: depth/cycle/descendant guards + depth-safe frame-based journal keying + config caps
+- **status:** done
+- **traces:** ARCH-027
+- **iter:** v8

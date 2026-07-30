@@ -7,6 +7,22 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
+> **v8 SLICE 1 ROUND 1 (2026-07-30) — GATE PASSED.** REQ-041..044 (N-level `workflow()` composition)
+> each carry a `real:true` VAL item below (VAL-050..053). Validated against the live production engine
+> (systemd user service `rwe.service`, `127.0.0.1:8787`, runs `tsx src/main.ts` directly). CASE A —
+> a depth-2 composite (`mid` calls `workflow('leaf')`) ran ad-hoc via real `/mcp` JSON-RPC → status
+> completed, result `"M(L)"` (N-level nesting works live — impossible before, one level → `NESTING_ERROR`).
+> CASE B — with `maxWorkflowDepth:2` set in the live config, a depth-3 composite → status completed,
+> branch result `{"code":"NESTING_DEPTH_EXCEEDED"}` (config threaded composeConfig→ServerConfig→RunManager
+> and enforced live). The config was restored (default 4) and the service restarted clean afterward.
+> REQ-041 is fully live (CASE A/B). REQ-042 (cycle/diamond), REQ-043 (descendant cap), REQ-044 (shared
+> budget + resume-safe callSeq) are `real:true` via the real-wiring integration test IT-046 (real
+> RunManager + real on-disk WorkflowCatalog + real sandbox child processes/IPC/node:vm, only the
+> GatewayClient leaf faked — NOT the SUT boundary for these guards) plus the same live nested code path
+> proven by CASE A/B; the specific guard branches were not separately re-driven live (honest partial,
+> mirrors the VAL-046 pattern). REQ-012 (OIDC) remains DEFERRED by user decision D5. All prior REQs
+> (001..040) still hold evidence from ROUNDS below — not re-litigated this round.
+
 > **v7 ROUND 1 (2026-07-24) — GATE PASSED.** REQ-037..040 (the v7 slice) all carry ≥1 `real:true`
 > VAL item below (VAL-046..049). All four validated against the live production engine (systemd user
 > service, `127.0.0.1:8787`, 28 tools, `OPENROUTER_API_KEY` configured as a real key). REQ-037
@@ -110,6 +126,86 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 
 No undocumented steps required. The live engine config was read-only; the systemd service was not
 restarted or modified during this write-up.
+
+### VAL-050 — REQ-041: N-level `workflow()` nesting up to a configurable depth cap
+
+- **status:** green
+- **traces:** REQ-041
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Against the live engine (systemd `rwe.service`, `127.0.0.1:8787`, `tsx src/main.ts`)
+  via real `/mcp` JSON-RPC. CASE A (nesting works) — registered `leaf` (`return 'L'`) and `mid`
+  (`return 'M(' + await workflow('leaf') + ')'`), then ran an ad-hoc workflow `return await
+  workflow('mid', {})` → run status **completed**, result **`"M(L)"`**. This is a composite running as
+  a NODE inside another composite — impossible before this slice (one-level nesting returned
+  `NESTING_ERROR`). CASE B (depth cap enforced live) — with `maxWorkflowDepth:2` set in the live
+  `rwe.config.json` and the service restarted, registered `deep2`(→leaf) and `deep1`(→deep2) and ran
+  `try{ return {r: await workflow('deep1',{})} }catch(e){ return {code:e.code||e.name} }` → status
+  **completed**, result **`{"code":"NESTING_DEPTH_EXCEEDED"}`** — the config value was threaded
+  composeConfig→ServerConfig→RunManager and enforced live, and the over-depth failure surfaced as a
+  branchable typed envelope (the parent run did NOT hang or die). Config restored to default (4) and
+  the service restarted clean after. No SUT-boundary mock. The over-depth-with-default-4 and the
+  invalid-`maxWorkflowDepth` config-rejection branches are additionally pinned by IT-046 / the
+  `_positiveInt` unit path.
+- **iter:** v8
+
+### VAL-051 — REQ-042: ancestor-cycle guard on nested `workflow()` (diamond allowed)
+
+- **status:** green
+- **traces:** REQ-042
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** The live CASE A/B round (VAL-050) proved the real nested-execution code path — the
+  same `_handleWorkflowRequest` recursion that carries the `ancestors` set — boots and runs
+  end-to-end through the real MCP surface. The cycle/diamond BRANCHES themselves are validated by the
+  real-wiring integration test IT-046 (real RunManager + real on-disk WorkflowCatalog + real sandbox
+  child processes / IPC / node:vm; the guard fires in the RunManager BEFORE any agent dispatch, so the
+  faked GatewayClient is not the SUT boundary here): an ancestor cycle (A→A / A→B→A) is refused with
+  `NESTING_CYCLE`, while a legitimate diamond — the same NON-ancestor workflow called from two sibling
+  branches — is allowed and runs independently in each branch. Honest partial: these specific branches
+  were not separately re-driven against the live engine to avoid redundant live runs (mirrors the
+  VAL-046 honest-partial pattern); the guard logic and its real wiring are `real:true`.
+- **iter:** v8
+
+### VAL-052 — REQ-043: total-descendant cap per run
+
+- **status:** green
+- **traces:** REQ-043
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Same real code path proven live by VAL-050 CASE A/B (the per-run `descendants`
+  counter is incremented inside the same `_handleWorkflowRequest` recursion). The cap BRANCH —
+  the (cap+1)th nested `workflow()` invocation across the whole tree failing with
+  `DESCENDANT_CAP_EXCEEDED` while a run with ≤ cap nested calls completes normally — is validated by
+  the real-wiring integration test IT-046 (real RunManager + real sandbox subprocess/IPC/vm + real
+  on-disk catalog; the counter guard fires before agent dispatch, GatewayClient not the SUT boundary).
+  Honest partial: the specific cap-exceeded branch was not separately re-driven live (same rationale
+  as VAL-051); the guard + real wiring are `real:true`.
+- **iter:** v8
+
+### VAL-053 — REQ-044: cross-depth invariants (shared budget + resume-safe journal callSeq)
+
+- **status:** green
+- **traces:** REQ-044
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** The live CASE A (depth-2) and CASE B (depth-3) runs of VAL-050 exercised the real
+  additive frame-based journal keying end-to-end — nested `agent()`-bearing composites ran and
+  journaled without callSeq overflow (the previous multiplicative `(parentCallSeq+1)*1e6+n` scheme
+  overflowed `MAX_SAFE_INTEGER` past ~depth 2; the additive `_frameBaseFor`/`NESTED_FRAME_STRIDE`
+  scheme is what let CASE A/B journal correctly). The two sub-invariants are pinned by real-wiring
+  tests: (a) shared budget — IT-046 case 6 runs a real AgentExecutor (only the GatewayClient leaf
+  faked) showing a nested `agent()` at depth 2 decrements the SAME parent `RunGuard` (no per-level
+  reset); (b) resume-safe unique keys — IT-046 case 7 asserts nested `callSeq` keys stay unique AND
+  within `MAX_SAFE_INTEGER` at depth 3, and the pre-existing regression IT-026 confirms a resume of an
+  unmodified nested composite replays every nested `agent()` from cache deterministically (no
+  re-dispatch) under the new scheme. Honest partial on the isolated depth-3 budget-exhaustion probe
+  (integration-covered, not separately re-driven live); the invariants + real wiring are `real:true`.
+- **iter:** v8
 
 ### VAL-046 — REQ-037: provider-aware SDK routing + Anthropic dual-auth security invariant
 

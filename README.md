@@ -252,6 +252,11 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 持久化、含版本更新後舊 run 仍保留原版本號）都正確；`gateway:"sdk"` 正確把呼叫端指定的模型/別名
 帶入 SDK session；供應商真實錯誤（`is_error:true`）正確解析成 `null`；2 層巢狀 `workflow()` 正確
 被拒絕、1 層正確允許；未知模型別名在送出時就被拒絕（不會跑到一半才失敗）。
+> **v8 Slice 1 更新（2026-07-30）**：上述「2 層巢狀 `workflow()` 被拒絕」已被 N 層 composition 取代
+> ——具名 `workflow()` 現在可巢狀到設定的 `maxWorkflowDepth`（預設 4）層，讓一個已註冊的 composite
+> 能當作另一個 composite 的節點。超過深度→`NESTING_DEPTH_EXCEEDED`、祖先環→`NESTING_CYCLE`、整棵樹
+> 巢狀呼叫數超過 `maxWorkflowDescendants`（預設 256）→`DESCENDANT_CAP_EXCEEDED`（皆為可分支的
+> envelope 錯誤，不崩父 run）；巢狀子工作流共用父 run 的同一份預算/journal。詳見 DEPLOY.md §1b。
 
 ## v3 新功能（Gate 7.5 v3 ROUND 1，2026-07-18 — GATE PASSED）
 

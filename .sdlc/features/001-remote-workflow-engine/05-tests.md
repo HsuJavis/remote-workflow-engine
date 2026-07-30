@@ -3449,3 +3449,12 @@ error).
 - **traces:** ARCH-026
 - **iter:** v7
 - tests/integration/models-list-tool.test.ts (`models_list` advertised in tools/list and exercised over `/mcp` via injected catalog fetchers; returns the unified normalized array; filter params narrow the result and honour `limit`; empty match → `[]`; no secret value in the output).
+
+## v8 slice 1 — N-level workflow() composition tests (IT-046)
+
+### IT-046 — N-level workflow() composition over the real RunManager + sandbox (REQ-041..044)
+- **status:** green
+- **traces:** DES-041, DES-042
+- **iter:** v8
+- tests/integration/nested-workflow-n-level.test.ts — 7 cases, integration tier (real RunManager + real on-disk WorkflowCatalog + real sandbox child processes / IPC / node:vm; structural cases use an echo AgentSpawner override, the budget case uses a real AgentExecutor with ONLY the GatewayClient faked — the same seam as IT-019/IT-026, NOT the SUT boundary for the composition guards which fire before agent dispatch): REQ-041 — (1) a composite runs as a NODE inside another composite up to `maxWorkflowDepth`, (2) an over-depth `workflow()` call fails with `NESTING_DEPTH_EXCEEDED`; REQ-042 — (3) an ancestor cycle is refused with `NESTING_CYCLE`, (4) a diamond (same NON-ancestor workflow called in two sibling branches) is ALLOWED; REQ-043 — (5) total nested `workflow()` invocations past `maxWorkflowDescendants` fail with `DESCENDANT_CAP_EXCEEDED`; REQ-044 — (6) a nested `agent()` at depth 2 shares the parent run's ONE `RunGuard` budget (no per-level reset), (7) nested journal `callSeq` keys stay unique AND within `MAX_SAFE_INTEGER` at depth 3 (pins the additive frame-based keying that replaces the overflowing `(parentCallSeq+1)*1e6+n` scheme).
+- Regression: pre-existing tests/integration/nested-workflow-callseq-resume.test.ts (IT-026) stays green under the new frame-based callSeq scheme — resuming a run containing a nested `workflow()` replays the already-journaled call from cache (no re-dispatch), confirming the additive keying is resume-deterministic.

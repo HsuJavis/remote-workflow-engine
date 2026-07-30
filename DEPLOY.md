@@ -388,6 +388,8 @@
   "gateway": "sdk",
   "agentDefinitionsDir": "./agents",
   "defaultAllowedTools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
+  "maxWorkflowDepth": 4,
+  "maxWorkflowDescendants": 256,
   "aliases": {
     "sonnet":  { "provider": "anthropic", "model": "claude-3-5-sonnet-20241022" },
     "haiku":   { "provider": "anthropic", "model": "claude-3-5-haiku-20241022" },
@@ -419,6 +421,14 @@ frontmatter）時，套用的預設工具清單——縮小送給模型的工具
 不設限。不提供 `aliases` 時，伺服器內建預設值等同上面拿掉 `local` 那份（全指向 anthropic）。
 `agentDefinitionsDir` 省略時 agentType 註冊表為空（每個 `agentType` 都會回報 unknown，不影響不用
 `agentType` 的腳本）。
+`maxWorkflowDepth`（型別 `number`，選填，**v8 新增**）/ `maxWorkflowDescendants`（型別 `number`，
+選填，**v8 新增**）：控制具名 `workflow()` 巢狀組合（N 層 composition）的兩個獨立上限。`maxWorkflowDepth`
+限制單一分支的巢狀深度（頂層 run=0，第一個 `workflow()` 呼叫=1），超過時該次呼叫回傳可分支的
+`NESTING_DEPTH_EXCEEDED` 錯誤（不會讓父 run 卡住或崩潰），省略時預設 **4**；`maxWorkflowDescendants`
+限制整棵樹（fan-out × depth）的巢狀 `workflow()` 呼叫總數，超過回 `DESCENDANT_CAP_EXCEEDED`，省略時
+預設 **256**。兩者皆在啟動載入設定時驗證：值 ≤0 或非整數會被拒絕並回報明確錯誤。（另有一個祖先環
+偵測 `NESTING_CYCLE` 一律啟用、不需設定：`workflow()` 目標若是自己巢狀鏈上的祖先即拒絕，但兩條
+兄弟分支各自呼叫同一個「非祖先」工作流（diamond）是允許的。）
 
 **Gate 7.5 v2 ROUND 2 config-file sync check 補充（本輪新發現的文件漂移，已修正）**：`litellmPort`
 （型別 `number`，選填）在 v2 TASK-027 就已經被 `composeConfig()` 真的接進
@@ -835,3 +845,4 @@ curl -s -D - -o /dev/null -X POST $BASE/v1/chat/completions \
 | 2026-07-04 | v2 | Dashboard（`GET /dashboard`）、asset sync（skill/MCP config 真實接入 agent session）、scheduler、client plugin、systemd unit、REQ-009 D-V2V-1 修復、D-V2G8-1/2 安全修復（bypassPermissions 移除、tool 白名單、key 隔離、workspace boundary realpath 封閉）、LiteLLM port 動態化（D-V3M-4）、孤兒 litellm 優雅關機（TASK-027） | `npm install`；複製 `rwe.config.example.json`→`rwe.config.json`，移除 `defaultAllowedTools:["Read","Write","Bash"]` 的 Bash（舊 example 有此鍵）；systemd unit 加 `PATH` 含 litellm venv bin/ |
 | 2026-07-11 | v3 | workRoot 隔離保護（boot fail-fast WORKROOT_INSIDE_PROJECT）、預設工具面恢復含 Bash（D-V3M-3，fs jail 已存在）、MCP provisioning registry（`mcp_provision` + `${secret:NAME}` handle 機制）、hook 封鎖（HOOKS_UNSUPPORTED）、SDK gateway thinking disabled for non-Anthropic（D-F6）、SDK gateway timeout（val-023 2/2）、REQ-021 | 確認 `workRoot` 在任何 `.git`/`CLAUDE.md` 祖先之外；`export RWE_SECRET_<NAME>=<value>` 注入 secret；`rwe.config.json` 的 `defaultAllowedTools` 改為 `["Read","Write","Edit","Glob","Grep","Bash"]` |
 | 2026-07-18 | v3 | Gate 7.5 v3 ROUND 1 PASSED：REQ-016..021 全部真實驗證（VAL-025..030）；`RWE_SECRET_<NAME>` 加入文件 env var 表；README tool 清單更新為 22 個工具 | 無破壞性變更，無遷移必要 |
+| 2026-07-30 | v8 | Slice 1：具名 `workflow()` 巢狀升級為 N 層 composition（原本只允許 1 層 → `NESTING_ERROR`）；新增設定鍵 `maxWorkflowDepth`（預設 4）/`maxWorkflowDescendants`（預設 256），啟動時驗證 ≤0/非整數；新增守衛 `NESTING_DEPTH_EXCEEDED`/`NESTING_CYCLE`/`DESCENDANT_CAP_EXCEEDED`（皆為 envelope 錯誤，不崩父 run）；巢狀 journal callSeq 改為 additive frame-based keying（修掉舊乘法式 `(parentCallSeq+1)*1e6+n` 在 ~depth 2 之後溢出 `MAX_SAFE_INTEGER` 的問題，resume 重播確定性不變）。Gate 7.5 v8 Slice 1 ROUND 1 PASSED（VAL-050..053） | 無破壞性變更；兩個新鍵皆選填、有預設值，一般部署可省略；巢狀行為向後相容（單層組合結果不變） |

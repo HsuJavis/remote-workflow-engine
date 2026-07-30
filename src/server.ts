@@ -86,6 +86,11 @@ export interface ServerConfig {
   // the live endpoints. A fully injectable builder (`modelCatalog`) overrides these when set.
   modelCatalogFetchers?: { ollamaFetch?: typeof fetch; openrouterFetch?: typeof fetch; ollamaBaseUrl?: string };
   modelCatalog?: () => Promise<ModelEntry[]>;
+  // v8 Slice 1 (REQ-041/043): max `workflow()` nesting depth (default 4) and max total nested
+  // workflow() invocations per run (default 256). Read from rwe.config.json via main.ts FileConfig;
+  // an invalid value is rejected at RunManager construction (i.e. at config load).
+  maxWorkflowDepth?: number;
+  maxWorkflowDescendants?: number;
 }
 
 export interface Server {
@@ -648,7 +653,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // D-V3M-2 (REQ-020 D-DOS): the ONE process-global agent-slot semaphore, shared by reference into
   // the RunManager (rations every SDK-CLI dispatch) and surfaced read-only via GET /api/status.
   const agentSemaphore = createSemaphore(config?.agentSlots ?? 32);
-  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants });
   // v3 (DES-020/TASK-026): defaults to a real network/spawn probe; tests inject a FakeMcpProbe.
   // Constructed here (moved up from its old asset_push-only spot) so the v3 MCP Provisioning
   // Registry below can reuse the SAME injected probe seam (DES-024's "provision-time McpProbe

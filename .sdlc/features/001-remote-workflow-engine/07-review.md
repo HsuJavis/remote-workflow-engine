@@ -4,6 +4,64 @@ status: passed
 ---
 # 07 Review & Retro — Gate 8
 
+## v8 SLICE 1 GATE 8 REVIEW (2026-07-30, CURRENT / AUTHORITATIVE)
+
+> This section supersedes "## v7 GATE 8 CLOSING REVIEW (2026-07-24)" below (kept for history). v8
+> Slice 1 lifts one-level `workflow()` nesting into config-capped N-level composition with cycle +
+> descendant guards and a depth-safe journal keying rework. Ledger items added this slice: REQ-041..044
+> (requirements, pre-written) → ARCH-027 → TASK-048 → DES-041/DES-042 → IMPL-089 → IT-046 (7 cases,
+> +IT-026 regression) → VAL-050..053. Gate 7.5 v8 Slice 1 ROUND 1 PASSED 2026-07-30: REQ-041 fully
+> live (CASE A depth-2 `"M(L)"`; CASE B depth-3 → `NESTING_DEPTH_EXCEEDED` under live `maxWorkflowDepth:2`);
+> REQ-042/043/044 real:true via the real-wiring integration test IT-046 + the same live nested code
+> path (honest partial on the isolated guard/budget probes, mirrors the VAL-046 pattern).
+
+### 1. Traceability
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` regenerated. The v8 chain is
+intact end-to-end: REQ-041..044 → ARCH-027 (traces all four REQs) → TASK-048 → DES-041/042 →
+IMPL-089 (traces TASK-048 + DES-041/042, greens) and IT-046 (traces DES-041/042) + VAL-050..053
+(each traces its REQ, real:true) — so all four REQs are implemented, verified, and real-verified (no
+新 未實作 / 未驗證 / 未真實驗證 gap from this slice). All v8 items carry `iter: v8`; no doc↔code drift
+(IMPL-089 v8 traces DES-041/042 v8, equal iter).
+
+Pre-existing gaps unrelated to this slice are NOT touched: REQ-012 未真實驗證 (OIDC deferred, D5) and
+TASK-018 未實作 (OIDC seam) remain accepted tech debt. NB — a pre-existing scanner collision (the v7
+review's `#### ARCH-025`/`#### ARCH-026` sub-headings match trace.py's `#{2,4}` item regex and, being
+scanned after 02-architecture.md, overwrite the real ARCH-025/026 traces) currently shows REQ-037..040
+as 未實作; this predates v8, is out of this slice's scope, and is left recorded here rather than
+silently patched. This v8 section deliberately avoids ID-shaped sub-headings so it introduces no new
+collision.
+
+### 2. Architecture consistency — ARCH-027 (lean-tier self-check, QM)
+
+Checked against the v8-touched files on IMPL-089: `src/run-manager.ts` (nesting context + 3 guards +
+`_frameBaseFor`/`NESTED_FRAME_STRIDE` + `_positiveInt`), `src/server.ts` + `src/main.ts` (config
+threading), `rwe.config.example.json`. The three guards fire at the `onWorkflowRequest` boundary in
+the ARCH-027-specified order (depth → cycle → descendant), each as a typed envelope error; the nested
+child shares the parent `RunEntry`/`RunGuard` (shared-budget invariant by construction); the additive
+frame keying replaces the overflowing multiplicative scheme. Consistent with ARCH-027 and its
+Depends (ARCH-002 run/journal/budget, ARCH-005 catalog resolution, ARCH-001 config threading). No
+drift found.
+
+### Retro (v8 Slice 1)
+
+- **What changed:** one-level `workflow()` nesting → N-level composition (default depth 4 /
+  descendants 256, both config-validated at load), so a registered composite can be a node inside
+  another — the foundation for composing workflows into a system graph.
+- **Key finding (callSeq overflow):** the v1 multiplicative nested-callSeq keying `(parentCallSeq+1)*1e6+n`
+  overflows `MAX_SAFE_INTEGER` past ~depth 2 and would corrupt resume replay at depth ≥3. Reworked to
+  an additive per-frame base allocation, deterministic across resume (incl. `parallel()` array order);
+  regression-guarded by IT-026 staying green.
+- **No regressions:** full suite 615 pass / 139 files, `npx tsc --noEmit` clean; only the nesting path
+  changed (nested child reuses parent budget/journal — no new run-lifecycle state).
+- **Carry-forward:** the trace.py `#{2,4}` heading-collision (ARCH-025/026 in 07-review.md) is worth a
+  tooling fix (restrict item headings to `###`, or de-dupe by first occurrence) so review prose can
+  cite IDs in sub-headings without breaking upstream chains — deferred, not v8-scope.
+
+Gaps: high=1 mid=5 low=1 — ALL pre-existing and out-of-v8-scope (high=REQ-012 未真實驗證; mid=REQ-037..040
+未實作 [v7 review heading-collision] + IMPL-082 TDD label; low=TASK-018 未實作). 0 new gaps from the v8
+slice. Conclusion: v8 Slice 1 can close; the four REQs are fully traced + real-validated.
+
 ## v7 GATE 8 CLOSING REVIEW (2026-07-24, CURRENT / AUTHORITATIVE)
 
 > This section supersedes "## v6 GATE 8 CLOSING REVIEW (2026-07-19)" below (kept for history). v7

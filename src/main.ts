@@ -126,6 +126,10 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // forwards asset storage's real on-disk location to the SDK gateway below, silently breaking
     // the REQ-009 wiring for every deployment that doesn't set assetRoot explicitly.
     assetRoot: fileConfig.assetRoot ?? (workRoot ? join(workRoot, 'assets') : undefined),
+    // v8 Slice 1 (REQ-041/043): forwarded regardless of gateway choice — RunManager applies its
+    // defaults (4 / 256) when omitted and rejects an invalid value at construction (config load).
+    maxWorkflowDepth: fileConfig.maxWorkflowDepth,
+    maxWorkflowDescendants: fileConfig.maxWorkflowDescendants,
   };
 
   if (gatewayChoice === 'sdk') {
