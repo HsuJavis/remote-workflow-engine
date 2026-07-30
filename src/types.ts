@@ -54,10 +54,24 @@ export interface AgentRecord {
   provider: string;
   model: string;
   tokens: { input: number; output: number };
+  /** v8 Slice 2 (REQ-045): the composite nesting frame this agent ran in — `""` for the top-level
+   *  script's own agents; a nested workflow()'s agents carry a non-root frame whose parent frame is a
+   *  strict prefix (so the dashboard groups + nests agents by frame). Absent for pre-v8 records. */
+  frame?: string;
 }
 
 export interface PhaseView {
   title: string;
+}
+
+/** v8 Slice 2 (REQ-046): one per nested `workflow(name)` call — the composite-linkage boundary the
+ *  dashboard renders as a sub-card. `frame` equals the frame that call's own inner agents carry;
+ *  `parentFrame` is the caller's frame (`""` at the top level); `depth` is 1-based. */
+export interface WorkflowNodeView {
+  frame: string;
+  name: string;
+  parentFrame: string;
+  depth: number;
 }
 
 export interface RunStatusView {
@@ -65,6 +79,8 @@ export interface RunStatusView {
   status: RunStatus;
   phases: PhaseView[];
   agents: AgentRecord[];
+  /** v8 Slice 2 (REQ-046/047): nested workflow() boundary nodes for an in-process run ([] otherwise). */
+  workflowNodes: WorkflowNodeView[];
   scriptVersion: string;
 }
 

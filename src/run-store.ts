@@ -134,7 +134,7 @@ export class InMemoryRunStore implements RunStore {
   async getRun(runId: string): Promise<RunStatusView | null> {
     const run = this._runs.get(runId);
     if (!run) return null;
-    return { runId: run.runId, status: run.status, phases: [], agents: deriveAgentRecords(run.transcripts), scriptVersion: run.scriptVersion };
+    return { runId: run.runId, status: run.status, phases: [], agents: deriveAgentRecords(run.transcripts), workflowNodes: [], scriptVersion: run.scriptVersion };
   }
 
   async listRuns(): Promise<RunSummary[]> {

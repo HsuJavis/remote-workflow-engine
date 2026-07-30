@@ -7,6 +7,24 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
+> **v8 SLICE 2 ROUND 1 (2026-07-30) — GATE PASSED.** REQ-045..047 (call-tree + composite linkage
+> surfaced for the dashboard) each carry a `real:true` VAL item below (VAL-054..056). Validated against
+> the live production engine (systemd user service `rwe.service`, `127.0.0.1:8787`, runs `tsx src/main.ts`).
+> The service was restarted with the Slice-2 code. A model-free composite was registered live —
+> `dagleaf` (`return 'L'`) and `dagmid` (`return 'M(' + await workflow('dagleaf', {}) + ')'`) — then an
+> ad-hoc `return await workflow('dagmid', {})` was run and `workflow_status(runId)` returned (inside the
+> `result` envelope) **`workflowNodes: [{"frame":".0","name":"dagmid","parentFrame":"","depth":1},
+> {"frame":".0.0","name":"dagleaf","parentFrame":".0","depth":2}]`** — composite linkage surfaced LIVE
+> via real MCP with the correct depth/parentFrame hierarchy (`dagleaf.parentFrame ".0" == dagmid.frame`).
+> Test workflows were deregistered afterward; registry clean. REQ-046 (boundary nodes) + REQ-047
+> (reconstructable tree via one `workflow_status`) are fully live (the workflowNodes payload above).
+> REQ-045 (per-agent `frame` tagging) is `real:true` via the real-sandbox integration test IT-047 (real
+> RunManager + real sandbox subprocess/IPC/vm; the frame is stamped in the real read-model, echo gateway
+> is only the model leaf) — a live agent run needs a model provider, so the live check exercised the
+> model-free composite-linkage path; this mirrors the VAL-046/051 honest-partial precedent. REQ-012 (OIDC)
+> remains DEFERRED by user decision D5. All prior REQs (001..044) still hold evidence from the rounds
+> below — not re-litigated this round.
+
 > **v8 SLICE 1 ROUND 1 (2026-07-30) — GATE PASSED.** REQ-041..044 (N-level `workflow()` composition)
 > each carry a `real:true` VAL item below (VAL-050..053). Validated against the live production engine
 > (systemd user service `rwe.service`, `127.0.0.1:8787`, runs `tsx src/main.ts` directly). CASE A —
@@ -205,6 +223,64 @@ restarted or modified during this write-up.
   unmodified nested composite replays every nested `agent()` from cache deterministically (no
   re-dispatch) under the new scheme. Honest partial on the isolated depth-3 budget-exhaustion probe
   (integration-covered, not separately re-driven live); the invariants + real wiring are `real:true`.
+- **iter:** v8
+
+### VAL-054 — REQ-045: every `agent()` record carries the composite frame it ran in
+- **status:** green
+- **traces:** REQ-045
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** REQ-045's per-agent `frame` tagging is validated `real:true` through the real-sandbox
+  integration test IT-047 (`tests/integration/workflow-dag-tree.test.ts`): a real RunManager runs a
+  composite `top(agent T) → mid(agent M) → workflow('leaf'(agent L))` over the REAL sandbox subprocess /
+  IPC / node:vm path — the `frame` is stamped by the real read-model at agent-queue time and carried
+  through the real AgentExecutor sink (only the GatewayClient leaf is an echo gateway, NOT the tagging
+  seam under test). The surfaced view asserts `T.frame === ""` (root), `M.frame` non-empty, and
+  `L.frame` non-empty with `M.frame` a STRICT prefix — so a depth-2 agent's frame strictly extends its
+  depth-1 ancestor, exactly REQ-045's observable. Honest partial (mirrors the VAL-046/051 precedent): a
+  LIVE agent run needs a model provider, so the live 2026-07-30 round exercised the model-free
+  composite-linkage path (VAL-055/056) rather than a live agent; the agent-frame tagging is real-wiring
+  verified via IT-047's real sandbox path, and the SAME frame-path keys that tag agents are the ones
+  proven live in the `workflowNodes` payload of VAL-055/056. No SUT-boundary mock for the tagging.
+- **iter:** v8
+
+### VAL-055 — REQ-046: each nested `workflow()` call recorded as a composite-boundary node
+- **status:** green
+- **traces:** REQ-046
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Validated LIVE against the production engine (systemd `rwe.service`, `127.0.0.1:8787`,
+  `tsx src/main.ts`) restarted with the Slice-2 code, via real `/mcp` JSON-RPC. Registered a model-free
+  composite — `dagleaf` (`return 'L'`) and `dagmid` (`return 'M(' + await workflow('dagleaf', {}) + ')'`)
+  — ran an ad-hoc `return await workflow('dagmid', {})`, then `workflow_status(runId)` returned (inside
+  the `result` envelope) **`workflowNodes: [{"frame":".0","name":"dagmid","parentFrame":"","depth":1},
+  {"frame":".0.0","name":"dagleaf","parentFrame":".0","depth":2}]`**. One entry per nested `workflow()`
+  call, each carrying `{frame,name,parentFrame,depth}`: `dagmid` is a top-level call (`parentFrame:""`,
+  `depth:1`) and `dagleaf` is nested under it (`parentFrame:".0" == dagmid.frame`, `depth:2`) — the exact
+  composite linkage REQ-046 requires, surfaced live via real MCP. The distinct-frames clause (a diamond
+  calling the same workflow twice yields TWO distinct boundary nodes) is additionally pinned by IT-047
+  CASE 2 over the real sandbox. Test workflows deregistered afterward; registry clean. No SUT-boundary mock.
+- **iter:** v8
+
+### VAL-056 — REQ-047: `workflow_status` exposes enough to reconstruct the live call-tree + drill to logs
+- **status:** green
+- **traces:** REQ-047
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** The SAME live 2026-07-30 round (VAL-055) proves REQ-047's single-call reconstruction: one
+  `workflow_status(runId)` on the in-process composite returned the frame-tagged tree in its `result`
+  envelope — the `workflowNodes` array above, from which a client groups agents by `frame` and nests
+  frames by `parentFrame` (`dagleaf.parentFrame ".0" == dagmid.frame`) to rebuild the full call-tree
+  deterministically from a single status call. The node→log drill-down (every agent node's `agentId`
+  resolves to its transcript) is real-wiring verified by IT-047 CASE 1 over the real sandbox
+  (`store.getTranscript(runId, T.agentId)` and `…L.agentId` both non-empty). The `GET /api/runs/:id`
+  path returns the same `RunStatusView` shape (shared read-model). Honest partial (VAL-046/051 pattern):
+  the live check used the model-free composite (a live agent needs a provider), and the frame-tagged
+  `agents` half + the agent-log drill are IT-047 real-sandbox verified; the tree-linkage half is fully
+  live. No SUT-boundary mock.
 - **iter:** v8
 
 ### VAL-046 — REQ-037: provider-aware SDK routing + Anthropic dual-auth security invariant

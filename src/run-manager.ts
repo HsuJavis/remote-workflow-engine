@@ -11,7 +11,7 @@ import { materializeSeed } from './workspace-seed.js';
 import { initGitBaseline } from './workspace-git.js';
 import { listArtifacts, type ArtifactEntry } from './workspace-artifacts.js';
 import { IllegalTransitionError } from './errors.js';
-import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord } from './types.js';
+import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView } from './types.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore } from './run-store.js';
 import type { Clock } from './clock.js';
@@ -98,6 +98,9 @@ interface RunEntry {
    *  (parentCallSeq+1)*1e6+n multiply scheme, which overflowed past ~depth 2). */
   nestedFrames: Map<string, number>;
   nestedFrameSeq: number;
+  /** v8 REQ-046: nested workflow() boundary nodes recorded as the run composes — surfaced by
+   *  workflow_status (via _mergeLive) so the dashboard can render composites as sub-cards. */
+  workflowNodes: WorkflowNodeView[];
   result?: unknown;
   resultError?: { code: string; message: string };
 }
@@ -221,6 +224,7 @@ export class RunManager {
       descendants: 0,
       nestedFrames: new Map(),
       nestedFrameSeq: 0,
+      workflowNodes: [],
     };
     this._runs.set(runId, entry);
     await this._transition(runId, entry, 'running');
@@ -252,6 +256,7 @@ export class RunManager {
     entry.descendants = 0;
     entry.nestedFrames = new Map();
     entry.nestedFrameSeq = 0;
+    entry.workflowNodes = [];
     await this._transition(runId, entry, 'running');
     this._runLive(runId, entry, newScript, cachePlan);
   }
@@ -276,7 +281,7 @@ export class RunManager {
     const entry = this._runs.get(runId);
     if (!entry) return view;
     const agents = entry.spawner instanceof AgentExecutor ? entry.spawner.getAllRecords() : view.agents;
-    return { ...view, phases: entry.phases, agents };
+    return { ...view, phases: entry.phases, agents, workflowNodes: entry.workflowNodes };
   }
 
   /** The script return value for a completed run, or the failure error (DES-001 workflow_result). */
@@ -329,6 +334,7 @@ export class RunManager {
       descendants: 0,
       nestedFrames: new Map(),
       nestedFrameSeq: 0,
+      workflowNodes: [],
     };
     this._runs.set(runId, entry);
     return entry;
@@ -346,7 +352,7 @@ export class RunManager {
     const topAncestors = new Set<string>(topName ? [topName] : []);
     return new SandboxHost({
       workspaceRoot: workspace,
-      onAgentRequest: (prompt, opts, callSeq) => this._handleAgentRequest(runId, prompt, opts, callSeq),
+      onAgentRequest: (prompt, opts, callSeq) => this._handleAgentRequest(runId, prompt, opts, callSeq, ''),
       onWorkflowRequest: (ref, args, callSeq) => this._handleWorkflowRequest(runId, ref, args, '', callSeq, 1, topAncestors),
       onPhase: (title) => { this._runs.get(runId)?.phases.push({ title }); },
       onBudgetSnapshot: () => this._runs.get(runId)?.guard.budgetView().spent() ?? 0,
@@ -432,13 +438,16 @@ export class RunManager {
     const framePathKey = `${parentPathKey}.${parentCallSeq}`;
     const frameBase = this._frameBaseFor(entry, framePathKey);
     const childAncestors = new Set(ancestors).add(name);
+    // v8 REQ-046: record this nested workflow() call as a composite-boundary node (dashboard sub-card).
+    entry.workflowNodes.push({ frame: framePathKey, name, parentFrame: parentPathKey, depth });
 
     const nested = new SandboxHost({
       workspaceRoot: entry.workspace,
       // v8 REQ-044: nested agent() callSeqs are namespaced into this frame's base (see _frameBaseFor)
       // so they never collide with the parent's own or a sibling frame's entries in the shared journal.
+      // v8 REQ-045: the nested agents are tagged with THIS frame's path so the dashboard nests them.
       onAgentRequest: (prompt, opts, callSeq) =>
-        this._handleAgentRequest(runId, prompt, opts, frameBase + callSeq),
+        this._handleAgentRequest(runId, prompt, opts, frameBase + callSeq, framePathKey),
       // v8 REQ-041: a deeper workflow() recurses here one level down, carrying this frame's path +
       // the extended ancestor set — enabling N-level composition (was: no delegate → NESTING_ERROR).
       onWorkflowRequest: (ref2, args2, callSeq2) =>
@@ -452,7 +461,7 @@ export class RunManager {
 
   /** Handles one child agent() call: replay from the resume cache when available, otherwise
    *  enforce budget + concurrency (RunGuard, single authority) and dispatch to the AgentSpawner. */
-  private async _handleAgentRequest(runId: string, prompt: string, opts: unknown, callSeq: number): Promise<unknown> {
+  private async _handleAgentRequest(runId: string, prompt: string, opts: unknown, callSeq: number, framePath = ''): Promise<unknown> {
     const entry = this._runs.get(runId);
     if (!entry) throw new Error(`Unknown run: ${runId}`);
     const key: CallKey = { prompt, opts: (opts ?? {}) as AgentOpts };
@@ -477,7 +486,7 @@ export class RunManager {
       // away, not only once it resolves (round-5 VAL-002/VAL-007's `agents:[]`-while-running gap).
       const agentId = entry.guard.nextAgentId();
       if (entry.spawner instanceof AgentExecutor) {
-        entry.spawner.markQueued(agentId, key.opts.label, key.opts.phase);
+        entry.spawner.markQueued(agentId, key.opts.label, key.opts.phase, framePath);
       }
       const release = await entry.guard.acquireSlot();
       try {

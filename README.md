@@ -151,6 +151,9 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 # workflow_status.agents[0] 會顯示真正用到的 provider/model/tokens；輪詢過程中若還在跑，
 # state 現在會正確顯示 "running"（第六輪 D-F12 修復，見下方確認修復第 1 項）
 ```
+> **composite 呼叫樹（v8 Slice 2）**：對一個用 `workflow()` 組合其他工作流程的 run，`workflow_status`
+> 會額外回傳 `workflowNodes: [{frame,name,parentFrame,depth}]`（每次巢狀 `workflow()` 一個節點）以及每個
+> `agents[].frame`（所在巢狀 frame，頂層 `""`）——用戶端據此重建整棵呼叫樹並下鑽到每個節點的 log。
 > **注意（第六輪 Gate 7.5 對獨立真實 process + 真實 Ollama 重新確認）**：純文字問答（不需要工具）
 > 這樣的呼叫可正常運作、約 15-20 秒內完成，且進行中即可從 `workflow_status` 看到 `"running"`。
 > **但如果你的 prompt 要求 agent 讀檔或寫檔（工具呼叫），目前對本機 7B 級 Ollama 模型完全不會真的

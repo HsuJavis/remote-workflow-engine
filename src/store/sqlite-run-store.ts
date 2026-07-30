@@ -167,7 +167,7 @@ export class SqliteRunStore implements RunStore {
       | { runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string }
       | undefined;
     if (!row) return null;
-    return { runId: row.runId, status: row.status as RunStatus, phases: [], agents: deriveAgentRecords(this._allTranscripts(runId)), scriptVersion: row.scriptVersion };
+    return { runId: row.runId, status: row.status as RunStatus, phases: [], agents: deriveAgentRecords(this._allTranscripts(runId)), workflowNodes: [], scriptVersion: row.scriptVersion };
   }
 
   async listRuns(): Promise<RunSummary[]> {

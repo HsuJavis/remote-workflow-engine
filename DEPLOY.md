@@ -708,6 +708,11 @@ npm run start
 - 狀態位置：`$workRoot/store`（SQLite run 索引 + 具名工作流程註冊表）與
   `$workRoot/workflows/<name>/runs/<runId>/`（每次執行的工作目錄，含 `agent-*.jsonl` transcript
   事件檔）。
+- **composite 呼叫樹可觀測（v8 Slice 2）**：對 in-process（執行中或剛完成）的 composite run，
+  `workflow_status`／`GET /api/runs/:id` 現在會多回傳呼叫樹資料——每個 agent 記錄帶 `frame`（所在
+  巢狀 frame，頂層 `""`），以及 `workflowNodes: [{frame,name,parentFrame,depth}]`（每次巢狀
+  `workflow()` 一個節點）；用戶端據此重建 DAG 並用 `workflow_agent_log(runId, agentId)` 下鑽到每個
+  節點的 log。跨重啟後 `workflowNodes` 回傳 `[]`（樹只存在於行程內記憶體，尚未持久化）。
 
 - **本輪對獨立真實 process 重新確認「真的修復」（D-F12/D-F13，全部確認）**：
   1. **（D-F12）in-flight agent 狀態即時可觀察**：真實 3 個並行 `agent()` 呼叫，`status:"running"`
@@ -846,3 +851,4 @@ curl -s -D - -o /dev/null -X POST $BASE/v1/chat/completions \
 | 2026-07-11 | v3 | workRoot 隔離保護（boot fail-fast WORKROOT_INSIDE_PROJECT）、預設工具面恢復含 Bash（D-V3M-3，fs jail 已存在）、MCP provisioning registry（`mcp_provision` + `${secret:NAME}` handle 機制）、hook 封鎖（HOOKS_UNSUPPORTED）、SDK gateway thinking disabled for non-Anthropic（D-F6）、SDK gateway timeout（val-023 2/2）、REQ-021 | 確認 `workRoot` 在任何 `.git`/`CLAUDE.md` 祖先之外；`export RWE_SECRET_<NAME>=<value>` 注入 secret；`rwe.config.json` 的 `defaultAllowedTools` 改為 `["Read","Write","Edit","Glob","Grep","Bash"]` |
 | 2026-07-18 | v3 | Gate 7.5 v3 ROUND 1 PASSED：REQ-016..021 全部真實驗證（VAL-025..030）；`RWE_SECRET_<NAME>` 加入文件 env var 表；README tool 清單更新為 22 個工具 | 無破壞性變更，無遷移必要 |
 | 2026-07-30 | v8 | Slice 1：具名 `workflow()` 巢狀升級為 N 層 composition（原本只允許 1 層 → `NESTING_ERROR`）；新增設定鍵 `maxWorkflowDepth`（預設 4）/`maxWorkflowDescendants`（預設 256），啟動時驗證 ≤0/非整數；新增守衛 `NESTING_DEPTH_EXCEEDED`/`NESTING_CYCLE`/`DESCENDANT_CAP_EXCEEDED`（皆為 envelope 錯誤，不崩父 run）；巢狀 journal callSeq 改為 additive frame-based keying（修掉舊乘法式 `(parentCallSeq+1)*1e6+n` 在 ~depth 2 之後溢出 `MAX_SAFE_INTEGER` 的問題，resume 重播確定性不變）。Gate 7.5 v8 Slice 1 ROUND 1 PASSED（VAL-050..053） | 無破壞性變更；兩個新鍵皆選填、有預設值，一般部署可省略；巢狀行為向後相容（單層組合結果不變） |
+| 2026-07-30 | v8 | Slice 2（dashboard 資料層第一增量）：`workflow_status`／`GET /api/runs/:id` 現在多回傳 composite 呼叫樹的兩個結構欄位——每個 agent 記錄帶 `frame`（所在的巢狀 frame；頂層 script `""`，巢狀 `workflow()` 內的 agent frame 以其父 frame 為嚴格前綴），以及 `workflowNodes: [{frame,name,parentFrame,depth}]`（每次巢狀 `workflow(name)` 呼叫一個節點）。用戶端只憑這兩者即可重建整棵呼叫樹（依 `frame` 分組 agent、依 `parentFrame` 巢狀 frame），並用既有的 `workflow_agent_log(runId, agentId)` 下鑽到每個節點的 transcript。Gate 7.5 v8 Slice 2 ROUND 1 PASSED（VAL-054..056）。**尚未支援**：跨重啟的樹持久化（重啟後 `workflowNodes` 回傳 `[]`；活動中的樹在行程內記憶體）、parallel-group 標記、phase 持久化/current-step/計時 | 無破壞性變更；`workflowNodes` 為新增欄位、`frame` 為選填欄位，既有用戶端可忽略；無新設定鍵、無遷移動作 |

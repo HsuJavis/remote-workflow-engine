@@ -321,3 +321,8 @@ status: draft
 - **status:** done
 - **traces:** ARCH-027
 - **iter:** v8
+
+### TASK-049 — surface the composite call-tree in the read-model: frame-tag agents + record nested workflow() boundary nodes + expose via workflow_status / GET /api/runs/:id
+- **status:** done
+- **traces:** ARCH-028
+- **iter:** v8

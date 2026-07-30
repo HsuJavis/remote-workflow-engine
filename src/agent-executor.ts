@@ -116,9 +116,9 @@ export class AgentTranscriptSink {
   /** D-F12: records an agentId as queued the moment RunGuard allocates it — BEFORE it has acquired
    *  a concurrency slot or reached the gateway — so workflow_status can observe it immediately
    *  rather than only once capture() resolves it (round-5 VAL-002/VAL-007's `agents:[]` gap). */
-  markQueued(agentId: string, label?: string, phase?: string): void {
+  markQueued(agentId: string, label?: string, phase?: string, frame?: string): void {
     this._records.set(agentId, {
-      agentId, label, phase,
+      agentId, label, phase, frame,
       state: 'queued', provider: '', model: '', tokens: { input: 0, output: 0 },
     });
   }
@@ -132,11 +132,12 @@ export class AgentTranscriptSink {
 
   /** Records the outcome of one agent() call: captures the usage event and feeds RunGuard.addTokens exactly once. */
   async capture(runId: string, req: { agentId: string; label?: string; phase?: string }, result: GatewayResult, ts: string): Promise<void> {
+    const frame = this._records.get(req.agentId)?.frame; // v8 Slice 2: carry the frame set at markQueued
     if (result.ok) {
       const delta = result.tokens.input + result.tokens.output;
       this._guard?.addTokens(delta);
       this._records.set(req.agentId, {
-        agentId: req.agentId, label: req.label, phase: req.phase,
+        agentId: req.agentId, label: req.label, phase: req.phase, frame,
         state: 'done', provider: result.provider, model: result.model, tokens: result.tokens,
       });
       // D-G8-2: forward the real message/tool_call/tool_result stream the gateway captured (when
@@ -148,7 +149,7 @@ export class AgentTranscriptSink {
       await this._emit(runId, req.agentId, { ts, kind: 'usage', data: { tokens: result.tokens, provider: result.provider, model: result.model } });
     } else {
       this._records.set(req.agentId, {
-        agentId: req.agentId, label: req.label, phase: req.phase,
+        agentId: req.agentId, label: req.label, phase: req.phase, frame,
         state: 'failed', provider: result.provider, model: '', tokens: { input: 0, output: 0 },
       });
       // Forward any partial transcript + the CLI error detail captured before a terminal failure,
@@ -271,8 +272,8 @@ export class AgentExecutor implements AgentSpawner {
 
   /** D-F12: RunManager calls this the moment it allocates an agentId (before acquireSlot()
    *  resolves) so the in-flight agent is observable via workflow_status as "queued", not absent. */
-  markQueued(agentId: string, label?: string, phase?: string): void {
-    this._sink.markQueued(agentId, label, phase);
+  markQueued(agentId: string, label?: string, phase?: string, frame?: string): void {
+    this._sink.markQueued(agentId, label, phase, frame);
   }
 
   /** D-F12: RunManager calls this once the agentId's concurrency slot is acquired and it is

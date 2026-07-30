@@ -17,6 +17,7 @@ const STATUS_VIEW: RunStatusView = {
   status: 'completed',
   phases: [{ title: 'fetch' }],
   agents: [],
+  workflowNodes: [],
   scriptVersion: 'v1',
 };
 

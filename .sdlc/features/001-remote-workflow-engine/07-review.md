@@ -4,7 +4,49 @@ status: passed
 ---
 # 07 Review & Retro — Gate 8
 
-## v8 SLICE 1 GATE 8 REVIEW (2026-07-30, CURRENT / AUTHORITATIVE)
+## v8 SLICE 2 GATE 8 REVIEW (2026-07-30, CURRENT / AUTHORITATIVE)
+
+> This section supersedes "## v8 SLICE 1 GATE 8 REVIEW (2026-07-30)" below (kept for history). v8
+> Slice 2 is the first increment of the dashboard DATA layer over Slice 1's N-level composition: it
+> SURFACES the already-computed frame structure so a client can reconstruct a composite run's live
+> call-tree (DAG) and drill from any node to its transcript — a read-model/observability extension,
+> no execution-semantics change. Ledger items added this slice: REQ-045..047 (requirements,
+> pre-written) → ARCH-028 → TASK-049 → DES-043/DES-044 → IMPL-090 → IT-047 (2 cases) → VAL-054..056.
+
+### Retro (v8 Slice 2)
+
+- **What changed:** each `agent()` record now carries the composite `frame` it ran in (root `""`; a
+  nested agent's frame has its parent frame as a strict prefix), each nested `workflow()` call is
+  recorded as a `workflowNodes` boundary node `{frame,name,parentFrame,depth}`, and both are exposed
+  through the existing `workflow_status` / `GET /api/runs/:id` read-model — so the dashboard can render
+  a composite as nested sub-cards and click a node to its log. `mcp-facade.ts` needed no change (it
+  already returns the full `RunStatusView` as `result`).
+- **Key decision:** reuse the ARCH-027 frame-path key as the tree key rather than mint a parallel
+  id-space — so `node.frame == its inner agents' frame` holds by construction (one source of frame
+  identity for both journal namespacing and tree linkage), and the frame is stamped at `markQueued`
+  (not `capture`) so in-flight/queued agents already carry it (REQ-047's "current step = the running
+  node").
+- **Gate 7.5:** PASSED 2026-07-30. REQ-046/047 fully live — a model-free composite (`dagmid` →
+  `workflow('dagleaf')`) run against the live engine returned, via real MCP, `workflowNodes:
+  [{frame:".0",name:"dagmid",parentFrame:"",depth:1},{frame:".0.0",name:"dagleaf",parentFrame:".0",depth:2}]`
+  (correct depth/parentFrame hierarchy, `dagleaf.parentFrame == dagmid.frame`). REQ-045 (agent frame
+  tagging) is `real:true` via the real-sandbox integration test IT-047 (a live agent needs a model
+  provider, so the live check used the model-free linkage path) — honest partial mirroring the
+  VAL-046/051 precedent.
+- **No regressions:** full suite 617 pass / 140 files, `npx tsc --noEmit` clean; only the read-model
+  changed (agents gain a `frame`, a per-run `workflowNodes` list is populated + exposed) — no
+  run-lifecycle / scheduling state added.
+- **Deferred (recorded, not this increment):** parallel-group markers (which sibling nodes ran as one
+  `parallel()` batch); phase persistence + current-step + timing (per-node start/end/duration);
+  static pre-read + `scriptVersion` cache (serve the tree skeleton before the run starts); cross-restart
+  tree persistence (the persisted/derived `getRun()` path defaults `workflowNodes: []` — the live tree
+  lives in the per-process `RunEntry`; a later increment can back it with a persisted node table without
+  changing the shape). These are the natural next Slice-2 increments toward the full dashboard.
+- **Trace note:** all Slice-2 work items use `###` headings and this section deliberately avoids
+  ID-shaped sub-headings, so it introduces no scanner-collision (the trace.py item regex now parses
+  only `###`, per the Slice-1 carry-forward fix).
+
+## v8 SLICE 1 GATE 8 REVIEW (2026-07-30, historical — superseded by the v8 Slice 2 section above)
 
 > This section supersedes "## v7 GATE 8 CLOSING REVIEW (2026-07-24)" below (kept for history). v8
 > Slice 1 lifts one-level `workflow()` nesting into config-capped N-level composition with cycle +
