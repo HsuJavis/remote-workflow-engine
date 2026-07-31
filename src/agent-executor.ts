@@ -125,19 +125,20 @@ export class AgentTranscriptSink {
 
   /** D-F12: flips a queued agentId to running once it has acquired its concurrency slot and is
    *  genuinely dispatched to the gateway — still observable in workflow_status while in flight. */
-  markRunning(agentId: string): void {
+  markRunning(agentId: string, startedAt?: string): void {
     const existing = this._records.get(agentId);
-    this._records.set(agentId, { ...(existing ?? { agentId, provider: '', model: '', tokens: { input: 0, output: 0 } }), agentId, state: 'running' });
+    this._records.set(agentId, { ...(existing ?? { agentId, provider: '', model: '', tokens: { input: 0, output: 0 } }), agentId, state: 'running', startedAt: startedAt ?? existing?.startedAt });
   }
 
   /** Records the outcome of one agent() call: captures the usage event and feeds RunGuard.addTokens exactly once. */
   async capture(runId: string, req: { agentId: string; label?: string; phase?: string }, result: GatewayResult, ts: string): Promise<void> {
-    const frame = this._records.get(req.agentId)?.frame; // v8 Slice 2: carry the frame set at markQueued
+    const prev = this._records.get(req.agentId); // v8 Slice 2/2b: carry frame (markQueued) + startedAt (markRunning)
+    const frame = prev?.frame, startedAt = prev?.startedAt;
     if (result.ok) {
       const delta = result.tokens.input + result.tokens.output;
       this._guard?.addTokens(delta);
       this._records.set(req.agentId, {
-        agentId: req.agentId, label: req.label, phase: req.phase, frame,
+        agentId: req.agentId, label: req.label, phase: req.phase, frame, startedAt, endedAt: ts,
         state: 'done', provider: result.provider, model: result.model, tokens: result.tokens,
       });
       // D-G8-2: forward the real message/tool_call/tool_result stream the gateway captured (when
@@ -149,7 +150,7 @@ export class AgentTranscriptSink {
       await this._emit(runId, req.agentId, { ts, kind: 'usage', data: { tokens: result.tokens, provider: result.provider, model: result.model } });
     } else {
       this._records.set(req.agentId, {
-        agentId: req.agentId, label: req.label, phase: req.phase, frame,
+        agentId: req.agentId, label: req.label, phase: req.phase, frame, startedAt, endedAt: ts,
         state: 'failed', provider: result.provider, model: '', tokens: { input: 0, output: 0 },
       });
       // Forward any partial transcript + the CLI error detail captured before a terminal failure,
@@ -278,8 +279,8 @@ export class AgentExecutor implements AgentSpawner {
 
   /** D-F12: RunManager calls this once the agentId's concurrency slot is acquired and it is
    *  genuinely dispatched to the gateway — observable as "running" until capture() resolves it. */
-  markRunning(agentId: string): void {
-    this._sink.markRunning(agentId);
+  markRunning(agentId: string, startedAt?: string): void {
+    this._sink.markRunning(agentId, startedAt);
   }
 
   /** Exposes the captured AgentRecord for a completed/failed agent (DES-008). */

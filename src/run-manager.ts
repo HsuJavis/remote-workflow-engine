@@ -354,7 +354,7 @@ export class RunManager {
       workspaceRoot: workspace,
       onAgentRequest: (prompt, opts, callSeq) => this._handleAgentRequest(runId, prompt, opts, callSeq, ''),
       onWorkflowRequest: (ref, args, callSeq) => this._handleWorkflowRequest(runId, ref, args, '', callSeq, 1, topAncestors),
-      onPhase: (title) => { this._runs.get(runId)?.phases.push({ title }); },
+      onPhase: (title) => { this._runs.get(runId)?.phases.push({ title, ts: this._clock.isoNow() }); },
       onBudgetSnapshot: () => this._runs.get(runId)?.guard.budgetView().spent() ?? 0,
     });
   }
@@ -491,7 +491,7 @@ export class RunManager {
       const release = await entry.guard.acquireSlot();
       try {
         if (entry.spawner instanceof AgentExecutor) {
-          entry.spawner.markRunning(agentId);
+          entry.spawner.markRunning(agentId, this._clock.isoNow());
         }
         // D-V3M-2 (REQ-020 D-DOS): the actual gateway dispatch (the SDK-CLI subprocess spawn) runs
         // inside the process-global semaphore slot — so `GET /api/status`'s inUse reflects real

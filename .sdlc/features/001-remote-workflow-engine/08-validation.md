@@ -7,6 +7,26 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
+> **v8 SLICE 2b ROUND 1 (2026-07-31) — GATE PASSED.** REQ-050/051 (live execution detail: phase
+> timeline with current step + per-agent timing) each carry a `real:true` VAL item below (VAL-059/060).
+> Validated against the live production engine (systemd user service `rwe.service`, `127.0.0.1:8787`,
+> runs `tsx src/main.ts`), restarted with the Slice-2b code, via `GET /api/runs/:id` + `GET
+> /dashboard/:runId` and a headless browser (Playwright). An ad-hoc composite
+> `phase('draft'); const p = await agent('reply PONG', {label:'pinger', model:'opus'}); phase('done');
+> return p;` was run in-process. `GET /api/runs/:id` returned `phases: [{title:'draft',
+> ts:'2026-07-31T05:05:58.982Z'}, {title:'done', ts:'2026-07-31T05:06:04.309Z'}]` (ordered `ts`) and the
+> agent record `{label:'pinger', state:'done', model:'opus', startedAt:'…58.982Z', endedAt:'…04.307Z'}`
+> (a real ~5.3s opus call, `endedAt ≥ startedAt`). Opening `/dashboard/:runId` (DOM-verified): `#phases`
+> rendered chips `['draft','done']` each with its `ts` as a tooltip; the agent node text was `pinger opus
+> done 7 tok 5325 ms` (per-node duration shown). `cur` was false on both chips because the run had
+> completed (the current-step highlight applies only while `running`). REQ-050 is `real:true` via IT-049
+> (ordered phase `ts` over the real RunManager+sandbox) + the live `phases` timeline above; REQ-051 is
+> `real:true` via IT-049 (`startedAt`/`endedAt`) + UT-062 (derived `durationMs`) + the live `5325 ms`
+> duration on the real opus agent. This closes the "phase persistence + current-step + timing" and
+> "per-node start/end/duration" items deferred from Slice 2/3. Test workflow deregistered afterward;
+> registry clean. REQ-012 (OIDC) remains DEFERRED by user decision D5. All prior REQs (001..049) still
+> hold evidence from the rounds below — not re-litigated this round.
+
 > **v8 SLICE 3 ROUND 1 (2026-07-31) — GATE PASSED.** REQ-048/049 (dashboard UI: cards → live DAG →
 > agent log) each carry a `real:true` VAL item below (VAL-057/058). Validated against the live
 > production engine (systemd user service `rwe.service`, `127.0.0.1:8787`, runs `tsx src/main.ts`),
@@ -344,6 +364,48 @@ restarted or modified during this write-up.
   (`getRun` returns `workflowNodes: []`) — exactly REQ-047's documented cross-restart-out-of-scope. Test
   workflows deregistered afterward; registry clean. No SUT-boundary mock (real browser → real HTTP →
   real engine → real opus agent).
+- **iter:** v8
+
+### VAL-059 — REQ-050: phase timeline with timestamps + current step
+- **status:** green
+- **traces:** REQ-050
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-049 (`tests/integration/run-timing.test.ts`, CASE 1) over the
+  REAL RunManager + real on-disk WorkflowCatalog + real sandbox child-process/IPC/vm (only the
+  `GatewayClient` faked): a script `phase('draft'); await agent('A'); phase('verify'); return a`
+  completes and `view.phases` is `[{title:'draft'},{title:'verify'}]` where every entry has a non-empty
+  string `ts` and `phases[0].ts <= phases[1].ts` (ordered timeline; an `AdvancingClock` makes the
+  ordering deterministic). (2) LIVE — against the production engine (systemd `rwe.service`,
+  `127.0.0.1:8787`, `tsx src/main.ts`) restarted with the Slice-2b code, an ad-hoc
+  `phase('draft'); … agent(opts:{label:'pinger',model:'opus'}); phase('done')` run in-process returned
+  from `GET /api/runs/:id` `phases: [{title:'draft', ts:'2026-07-31T05:05:58.982Z'}, {title:'done',
+  ts:'2026-07-31T05:06:04.309Z'}]` (ordered ISO `ts`), and `/dashboard/:runId` (DOM-verified) rendered
+  `#phases` chips `['draft','done']` each carrying its `ts` as a tooltip; `cur` was false on both because
+  the run had completed (the current-step highlight applies only while `running`) — exactly REQ-050's
+  "last-while-running = current step". No SUT-boundary mock (the live path is the real endpoint + real
+  dashboard over the real run).
+- **iter:** v8
+
+### VAL-060 — REQ-051: per-agent timing (started / ended / duration)
+- **status:** green
+- **traces:** REQ-051
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised three ways. (1) IT-049 (`tests/integration/run-timing.test.ts`, CASE 2) over
+  the REAL RunManager + real sandbox (only `GatewayClient` faked): an `agent('A',{label:'A'})` run
+  settles with a string `startedAt` AND a string `endedAt` where `endedAt >= startedAt` (dispatched →
+  settled). (2) UT-062 (`tests/unit/dashboard-dag-model.test.ts`) pins the derived `durationMs` on the
+  pure `buildDagModel`: a done agent (`startedAt` +2s `endedAt`) yields `durationMs === 2000`, a still-
+  running agent (no `endedAt`) yields `durationMs === undefined`. (3) LIVE — against the production
+  engine (systemd `rwe.service`, restarted with the Slice-2b code) the ad-hoc opus agent 'pinger'
+  returned from `GET /api/runs/:id` `{label:'pinger', state:'done', model:'opus', startedAt:'…58.982Z',
+  endedAt:'…04.307Z'}` (a real ~5.3s opus call, `endedAt ≥ startedAt`), and `/dashboard/:runId`
+  (DOM-verified) rendered the agent node text `pinger opus done 7 tok 5325 ms` — the derived per-node
+  duration shown on the real agent, `durationMs = endedAt − startedAt`. No SUT-boundary mock (real engine
+  → real opus agent → real HTTP read-model → real dashboard DOM).
 - **iter:** v8
 
 ### VAL-046 — REQ-037: provider-aware SDK routing + Anthropic dual-auth security invariant

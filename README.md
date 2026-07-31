@@ -307,6 +307,8 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 > **v8 Slice 3**：首頁現在同時列出已註冊工作流程卡片與 run 卡片；點一張 run 卡片會把它的 composite
 > 呼叫樹渲染成巢狀 DAG（每個子工作流程為一個帶標題群組、agent 節點依 3 態上色並顯示 model，點擊下鑽
 > transcript），資料來自新端點 `GET /api/workflows` 與 `GET /api/runs/:id/dag`（VAL-057/058）。
+> **v8 Slice 2b**：run 詳情頁再加上 phase 時間軸（每個 `phase()` 帶進入時間 `ts`、`running` 時最後
+> 一個標為目前步驟）與每個 agent 節點的耗時（`startedAt`/`endedAt` 導出 `durationMs`，顯示 `<n> ms`）（VAL-059/060）。
 ```bash
 # 直接在瀏覽器打開（或用 curl 看原始 HTML）
 open http://127.0.0.1:8787/dashboard        # macOS；Linux 可用 xdg-open，或直接貼網址到瀏覽器

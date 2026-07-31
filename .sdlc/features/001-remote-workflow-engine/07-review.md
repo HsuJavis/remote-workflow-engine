@@ -4,7 +4,54 @@ status: passed
 ---
 # 07 Review & Retro — Gate 8
 
-## v8 SLICE 3 GATE 8 REVIEW (2026-07-31, CURRENT / AUTHORITATIVE)
+## v8 SLICE 2b GATE 8 REVIEW (2026-07-31, CURRENT / AUTHORITATIVE)
+
+> This section supersedes "## v8 SLICE 3 GATE 8 REVIEW (2026-07-31)" below (kept for history). v8
+> Slice 2b is the LIVE-EXECUTION-DETAIL layer over Slice-2/Slice-3's call-tree read-model + dashboard:
+> it adds the two "what is happening right now" signals the dashboard was missing — a phase timeline
+> (with timestamps + a current-step marker) and per-agent timing (dispatch→settle duration) — a
+> read-model/observability extension, no execution-semantics change.
+> Ledger items added this slice: REQ-050/051 (requirements, pre-written) → ARCH-030 → TASK-051 →
+> DES-047 → IMPL-092 → UT-062 (1 case) + IT-049 (2 cases) → VAL-059/060.
+
+### Retro (v8 Slice 2b)
+
+- **What changed:** `PhaseView.ts` made a REQUIRED field so every `phases[]` entry carries the ISO time
+  its `phase()` was entered (`src/types.ts`, stamped in the sandbox `onPhase` callback via the injectable
+  `Clock`, `src/run-manager.ts:357`); `AgentRecord` gains `startedAt` (stamped at the slot-acquired
+  `markRunning` seam, `src/run-manager.ts:494` → `src/agent-executor.ts:128-130`) + `endedAt` (the
+  `capture()` clock time, carried on both ok+failed branches, `src/agent-executor.ts:135-153`);
+  `buildDagModel` exposes `startedAt`/`endedAt` + a derived non-negative `durationMs`
+  (`undefined` while unfinished, `src/dashboard.ts:54-55`); and the dashboard detail page renders a
+  `#phases` timeline (each phase a chip with its `ts` tooltip, the last chip marked `cur` only while
+  `running`) plus each agent node's `<n> ms` duration (`src/dashboard-page.ts`).
+- **Key decision:** stamp `startedAt` at `markRunning` (slot-acquired / dispatch), NOT at enqueue — so
+  `durationMs` measures real execution, not queue wait, and a queued-not-yet-dispatched agent stays
+  timestamp-less (per REQ-051). Derive `durationMs` in the model (`max(0, endedAt − startedAt)`), don't
+  persist it — one source of truth in the two timestamps, `undefined` for an unfinished agent for free.
+  Use the ONE injectable `Clock` for both the phase `ts` and the agent timing, so an advancing test clock
+  makes the timeline ordering + `endedAt ≥ startedAt` deterministically assertable (IT-049).
+- **Gate 7.5:** PASSED 2026-07-31. Live production engine (systemd `rwe.service`, `127.0.0.1:8787`,
+  `tsx src/main.ts`) restarted with the Slice-2b code; an ad-hoc `phase('draft'); agent 'pinger'(opus);
+  phase('done')` run in-process returned `phases:[{draft,ts},{done,ts}]` (ordered) and an agent record
+  `{startedAt,endedAt}` (~5.3s real opus call, `endedAt ≥ startedAt`) from `GET /api/runs/:id`;
+  `/dashboard/:runId` (DOM-verified) rendered `#phases` chips `['draft','done']` each with its `ts`
+  tooltip and the agent node text `pinger opus done 7 tok 5325 ms`. REQ-050/051 both `real:true`
+  (VAL-059/060).
+- **No regressions:** full suite 625 pass / 142 files, `npx tsc --noEmit` clean; only the read-model
+  presentation changed (two timestamps + a derived duration + timeline/duration rendering) — no
+  run-lifecycle / budget / concurrency state added. `src/mcp-facade.ts` unchanged. The one compile
+  consequence — a `PhaseView` fixture in `tests/unit/dashboard-model.test.ts` gaining `ts` — is the cost
+  of making `ts` required.
+- **Deferred to Slice 2c (recorded, not this increment):** parallel-group markers (which sibling nodes
+  ran as one `parallel()` batch — needs a sandbox-child protocol change to report batch membership);
+  cross-restart phase/tree persistence (after a service restart an out-of-process run's phases/tree are
+  not rehydrated — the live timeline/tree lives in the per-process `RunEntry`); SSE (the page keeps the
+  3-second poll); static pre-read + `scriptVersion` cache (serve the skeleton before the run starts).
+- **Trace note:** all Slice-2b work items use `###` headings and this section deliberately avoids
+  ID-shaped sub-headings, so it introduces no scanner-collision (trace.py parses only `###`).
+
+## v8 SLICE 3 GATE 8 REVIEW (2026-07-31, historical — superseded by the v8 Slice 2b section above)
 
 > This section supersedes "## v8 SLICE 2 GATE 8 REVIEW (2026-07-30)" below (kept for history). v8
 > Slice 3 is the PRESENTATION layer over Slice-2's frame-tagged read-model: it turns the flat

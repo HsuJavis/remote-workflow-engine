@@ -331,3 +331,8 @@ status: draft
 - **status:** done
 - **traces:** ARCH-029
 - **iter:** v8
+
+### TASK-051 — live execution detail: stamp phase timestamps + per-agent started/ended timing, expose durationMs on the dag node, render the phase timeline + current step + per-node duration
+- **status:** done
+- **traces:** ARCH-030
+- **iter:** v8

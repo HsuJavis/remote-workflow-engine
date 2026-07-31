@@ -58,10 +58,18 @@ export interface AgentRecord {
    *  script's own agents; a nested workflow()'s agents carry a non-root frame whose parent frame is a
    *  strict prefix (so the dashboard groups + nests agents by frame). Absent for pre-v8 records. */
   frame?: string;
+  /** v8 Slice 2b (REQ-051): ISO time this agent was dispatched to the gateway (once it acquired its
+   *  concurrency slot). Absent while still queued. */
+  startedAt?: string;
+  /** v8 Slice 2b (REQ-051): ISO time this agent settled (done/failed). Absent while in flight. */
+  endedAt?: string;
 }
 
 export interface PhaseView {
   title: string;
+  /** v8 Slice 2b (REQ-050): ISO time this phase() was entered — the phase timeline; the last entry
+   *  while the run is still `running` is the current step. */
+  ts: string;
 }
 
 /** v8 Slice 2 (REQ-046): one per nested `workflow(name)` call — the composite-linkage boundary the

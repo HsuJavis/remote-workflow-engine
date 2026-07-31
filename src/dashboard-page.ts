@@ -35,6 +35,11 @@ a{color:var(--link);text-decoration:none}
 .node .dot{width:8px;height:8px;border-radius:50%;background:currentColor;flex:none}
 .node .lbl{font-weight:600}.node .mdl{color:var(--muted);font-family:ui-monospace,Consolas,monospace;font-size:11.5px}
 .node .tok{color:var(--muted);font-size:11px;margin-left:auto}
+.node .dur{color:var(--muted);font-size:11px}
+#phases{margin:8px 0 4px}
+.ph-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-right:6px}
+.phase{display:inline-block;padding:2px 9px;margin:2px 5px 2px 0;border-radius:100px;border:1px solid var(--line);font-size:11.5px;color:var(--muted)}
+.phase.cur{border-color:var(--link);color:var(--link);font-weight:600}
 pre{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);padding:12px;border-radius:8px;max-height:340px;overflow:auto;font-size:12px}
 .back{font-size:13px}
 .empty{color:var(--muted);font-size:12.5px}
@@ -52,6 +57,7 @@ pre{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);p
   <section id="detail" style="display:none">
     <p><a class="back" href="/dashboard">&larr; all runs</a></p>
     <h2>Run <span id="detail-runid"></span> <span id="detail-status" class="pill"></span></h2>
+    <div id="phases"></div>
     <div id="tree"></div>
     <h2>Transcript <span id="tr-agent" class="mdl"></span></h2>
     <pre id="transcript">Select an agent node above.</pre>
@@ -95,8 +101,19 @@ function renderAgent(runId, a){
   n.appendChild(el('span','mdl',a.model||'—'));
   n.appendChild(el('span','st-'+a.state,a.state));
   n.appendChild(el('span','tok',(a.tokens||0)+' tok'));
+  if(a.durationMs!=null){ n.appendChild(el('span','dur',a.durationMs+' ms')); }
   n.onclick=function(){ loadTranscript(runId,a.agentId,a.label); };
   return n;
+}
+// v8 Slice 2b: phase timeline — the last chip is the current step while the run is still running.
+function renderPhases(phases, status){
+  var box=document.getElementById('phases'); box.innerHTML='';
+  if(!phases.length) return;
+  box.appendChild(el('span','ph-lbl','steps'));
+  phases.forEach(function(p,i){
+    var cur=(status==='running' && i===phases.length-1);
+    var c=el('span','phase'+(cur?' cur':''), p.title); if(p.ts) c.title=p.ts; box.appendChild(c);
+  });
 }
 // Recursively render a DagNode. Root: agents + children directly. Composite: a labeled group.
 function renderNode(runId, node, container){
@@ -109,8 +126,10 @@ function renderNode(runId, node, container){
 
 async function loadDag(runId){
   document.getElementById('detail-runid').textContent=runId;
-  var runs=await getJSON('/api/runs')||[]; var meta=runs.filter(function(r){return r.runId===runId;})[0];
-  var badge=document.getElementById('detail-status'); if(meta){ badge.textContent=meta.status; badge.className='pill st-'+meta.status; }
+  var view=await getJSON('/api/runs/'+encodeURIComponent(runId));
+  var status=view?view.status:'';
+  var badge=document.getElementById('detail-status'); badge.textContent=status; badge.className='pill st-'+status;
+  renderPhases((view&&view.phases)||[], status);
   var root=await getJSON('/api/runs/'+encodeURIComponent(runId)+'/dag');
   var tree=document.getElementById('tree'); tree.innerHTML='';
   if(!root){ tree.appendChild(el('div','empty','(run not found)')); return; }

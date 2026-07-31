@@ -19,6 +19,10 @@ export interface DagAgentNode {
   state: AgentRecord['state'];
   model: string;
   tokens: number;
+  // v8 Slice 2b (REQ-051): per-agent timing; durationMs is undefined while unfinished.
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
 }
 export interface DagNode {
   kind: 'root' | 'workflow';
@@ -47,7 +51,8 @@ export function buildDagModel(view: RunStatusView): DagNode {
   }
   for (const a of view.agents ?? []) {
     const target = byFrame.get(a.frame ?? '') ?? root;
-    target.agents.push({ agentId: a.agentId, label: a.label, state: a.state, model: a.model, tokens: a.tokens.input + a.tokens.output });
+    const durationMs = a.startedAt && a.endedAt ? Math.max(0, Date.parse(a.endedAt) - Date.parse(a.startedAt)) : undefined;
+    target.agents.push({ agentId: a.agentId, label: a.label, state: a.state, model: a.model, tokens: a.tokens.input + a.tokens.output, startedAt: a.startedAt, endedAt: a.endedAt, durationMs });
   }
   return root;
 }

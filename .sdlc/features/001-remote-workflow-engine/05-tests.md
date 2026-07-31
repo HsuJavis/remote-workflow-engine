@@ -3479,3 +3479,17 @@ error).
 - **traces:** DES-046
 - **iter:** v8
 - tests/integration/dashboard-http.test.ts (+2 cases, extending the file's original IT-033 cases) — integration tier (real HTTP server on a real port, real RunStore/RunManager/WorkflowCatalog; a run is submitted via the real MCP path and polled). CASE A — `GET /api/workflows` after registering `dash-wf-a` returns 200 with the registered catalog array containing that workflow; this case LOCKS the Gate-7.5-caught routing fix (the endpoint returned a router-404 / `-32601` before the top-level dispatch predicate was widened to also match `/api/workflows`, `src/server.ts:797`). CASE B — `GET /api/runs/:id/dag` for a submitted run returns 200 with a `buildDagModel` root DagNode (`kind:"root"`, array `agents`, array `children`), exercising the endpoint → `buildDagModel(view)` path end-to-end over real HTTP.
+
+## v8 slice 2b — live execution detail: phase timeline + per-agent timing tests (UT-062, IT-049)
+
+### UT-062 — `buildDagModel` derives per-agent `durationMs` from the timing timestamps (REQ-051)
+- **status:** green
+- **traces:** DES-047
+- **iter:** v8
+- tests/unit/dashboard-dag-model.test.ts (+1 case, extending the UT-061 cases in the same file) — unit tier (pure function, no I/O/mocks; a `RunStatusView` fixture fed straight into `buildDagModel`). CASE (REQ-051 timing) — a view with a DONE agent carrying `startedAt:'…T00:00:00Z'`+`endedAt:'…T00:00:02Z'` and a still-RUNNING agent carrying only `startedAt:'…T00:00:05Z'` (no `endedAt`) reconstructs to dag nodes where the done agent exposes `startedAt`/`endedAt` verbatim and `durationMs === 2000` (`endedAt − startedAt`), while the unfinished agent exposes its `startedAt` and `durationMs === undefined` — pinning REQ-051's derived-non-negative-duration / undefined-while-unfinished contract on the pure model.
+
+### IT-049 — phase timestamps + per-agent started/ended timing over the real RunManager + sandbox (REQ-050, REQ-051)
+- **status:** green
+- **traces:** DES-047
+- **iter:** v8
+- tests/integration/run-timing.test.ts (NEW, 2 cases) — integration tier (real RunManager + real on-disk WorkflowCatalog + real sandbox child-process/IPC/vm; only the `GatewayClient` is faked with an echo gateway). An `AdvancingClock` whose `isoNow()` ticks +1s per read is injected so the ordering + duration assertions are deterministic (no wall-clock flake). CASE 1 (REQ-050) — a script `phase('draft'); await agent('A'); phase('verify'); return a` completes and its `view.phases` is `[{title:'draft'},{title:'verify'}]` where EVERY entry has a non-empty string `ts` and `phases[0].ts <= phases[1].ts` (ordered timeline / current-step-is-last). CASE 2 (REQ-051) — a script running one `agent('A',{label:'A'})` completes and that agent's record carries a string `startedAt` AND a string `endedAt` with `endedAt >= startedAt` (dispatched→settled timing, both present once settled). Both cases were RED before the timing fields existed (the `ts`/`startedAt`/`endedAt` assertions).

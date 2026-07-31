@@ -722,6 +722,16 @@ npm run start
   載入它的 transcript。頁面以 3 秒輪詢自動更新。跨重啟後該 run 已不在行程內，`/api/runs/:id/dag`
   會攤平（`getRun` 回傳 `workflowNodes: []`）——即 REQ-047 記載的「跨重啟持久化不在範圍」。Gate 7.5
   v8 Slice 3 ROUND 1 PASSED（headless browser 實測，VAL-057/058）。
+- **即時執行細節：phase 時間軸 + 每個 agent 的耗時（v8 Slice 2b）**：`workflow_status`／`GET
+  /api/runs/:id` 現在讓每個 `phases[]` 項目帶 `ts`（進入該 `phase()` 的 ISO 時間，依呼叫順序、`ts`
+  非遞減）；當 run 仍在 `running` 時，最後一個 phase 就是**目前步驟**。每個 agent 記錄多帶
+  `startedAt`（被派工到 gateway、取得並行槽的時間）與 `endedAt`（結束時間，`endedAt ≥ startedAt`）；
+  仍在執行的 agent 只有 `startedAt`，尚未派工的兩者皆無。`GET /api/runs/:id/dag` 的 agent 節點據此
+  導出 `durationMs`（未完成則為 `undefined`）。`/dashboard/<runId>` 詳情頁會渲染 **phase 時間軸**
+  （每個 phase 一個 chip、`ts` 為 tooltip、`running` 時最後一個標為目前步驟）與**每個 agent 節點的
+  耗時**（`<n> ms`）。Gate 7.5 v8 Slice 2b ROUND 1 PASSED（真實 opus agent 實測 `5325 ms`，
+  VAL-059/060）。**尚未支援**：parallel-group 標記、跨重啟的 phase／樹持久化、SSE（維持 3 秒輪詢）、
+  樹的靜態預讀+快取。
 
 - **本輪對獨立真實 process 重新確認「真的修復」（D-F12/D-F13，全部確認）**：
   1. **（D-F12）in-flight agent 狀態即時可觀察**：真實 3 個並行 `agent()` 呼叫，`status:"running"`
@@ -862,3 +872,4 @@ curl -s -D - -o /dev/null -X POST $BASE/v1/chat/completions \
 | 2026-07-30 | v8 | Slice 1：具名 `workflow()` 巢狀升級為 N 層 composition（原本只允許 1 層 → `NESTING_ERROR`）；新增設定鍵 `maxWorkflowDepth`（預設 4）/`maxWorkflowDescendants`（預設 256），啟動時驗證 ≤0/非整數；新增守衛 `NESTING_DEPTH_EXCEEDED`/`NESTING_CYCLE`/`DESCENDANT_CAP_EXCEEDED`（皆為 envelope 錯誤，不崩父 run）；巢狀 journal callSeq 改為 additive frame-based keying（修掉舊乘法式 `(parentCallSeq+1)*1e6+n` 在 ~depth 2 之後溢出 `MAX_SAFE_INTEGER` 的問題，resume 重播確定性不變）。Gate 7.5 v8 Slice 1 ROUND 1 PASSED（VAL-050..053） | 無破壞性變更；兩個新鍵皆選填、有預設值，一般部署可省略；巢狀行為向後相容（單層組合結果不變） |
 | 2026-07-30 | v8 | Slice 2（dashboard 資料層第一增量）：`workflow_status`／`GET /api/runs/:id` 現在多回傳 composite 呼叫樹的兩個結構欄位——每個 agent 記錄帶 `frame`（所在的巢狀 frame；頂層 script `""`，巢狀 `workflow()` 內的 agent frame 以其父 frame 為嚴格前綴），以及 `workflowNodes: [{frame,name,parentFrame,depth}]`（每次巢狀 `workflow(name)` 呼叫一個節點）。用戶端只憑這兩者即可重建整棵呼叫樹（依 `frame` 分組 agent、依 `parentFrame` 巢狀 frame），並用既有的 `workflow_agent_log(runId, agentId)` 下鑽到每個節點的 transcript。Gate 7.5 v8 Slice 2 ROUND 1 PASSED（VAL-054..056）。**尚未支援**：跨重啟的樹持久化（重啟後 `workflowNodes` 回傳 `[]`；活動中的樹在行程內記憶體）、parallel-group 標記、phase 持久化/current-step/計時 | 無破壞性變更；`workflowNodes` 為新增欄位、`frame` 為選填欄位，既有用戶端可忽略；無新設定鍵、無遷移動作 |
 | 2026-07-31 | v8 | Slice 3（儀表板 UI：卡片 → 即時 DAG → agent log）：`GET /dashboard` 首頁列出已註冊工作流程卡片與 run 卡片；新增唯讀端點 `GET /api/workflows`（已註冊工作流程目錄）與 `GET /api/runs/:id/dag`（後端純函式 `buildDagModel` 依 Slice-2 的 `frame`/`workflowNodes` 重建呼叫樹）；重寫自成一體的 SPA（`src/dashboard-page.ts`）——run 詳情頁把 DAG 渲染成巢狀樹（composite 子工作流程為帶標題群組、agent 節點依 3 態上色並顯示 model，點擊下鑽 transcript），3 秒輪詢。修掉一個路由缺口：頂層 router 原本只 match `/api/runs*`，`/api/workflows` 會掉進 `/mcp` handler 回 `-32601`——已把 dispatch 條件擴到也 match `/api/workflows`（Gate 7.5 真跑抓到、IT-048 回歸鎖定）。Gate 7.5 v8 Slice 3 ROUND 1 PASSED（headless browser 實測，VAL-057/058）。**尚未支援**：SSE（維持 3 秒輪詢）、parallel-group 標記、phase 持久化/current-step/計時、樹的靜態預讀+快取、跨重啟樹持久化 | 無破壞性變更；兩個新端點皆唯讀、與 `/mcp` 共用同一 port/server；無新設定鍵、無遷移動作 |
+| 2026-07-31 | v8 | Slice 2b（即時執行細節：phase 時間軸 + 每個 agent 的耗時）：`workflow_status`／`GET /api/runs/:id` 現在讓每個 `phases[]` 項目帶 `ts`（進入 `phase()` 的 ISO 時間，依序、非遞減；`running` 時最後一個為目前步驟），每個 agent 記錄帶 `startedAt`（派工/取得並行槽的時間）與 `endedAt`（結束時間，`endedAt ≥ startedAt`）；`GET /api/runs/:id/dag` 的 agent 節點導出 `durationMs`（未完成為 `undefined`）；`/dashboard/<runId>` 詳情頁渲染 phase 時間軸（chip + `ts` tooltip + 目前步驟標記）與每個 agent 節點的 `<n> ms` 耗時。純讀模型/可觀測性擴充，無執行語意變更（沿用既有 `Clock`/`markRunning`/`capture` seam）。Gate 7.5 v8 Slice 2b ROUND 1 PASSED（真實 opus agent 實測 `5325 ms`，VAL-059/060）。**尚未支援**：parallel-group 標記、跨重啟 phase/樹持久化、SSE、樹的靜態預讀+快取 | 無破壞性變更；`PhaseView.ts`/`AgentRecord.startedAt`/`endedAt` 為新增欄位，既有用戶端可忽略；無新端點、無新設定鍵、無遷移動作 |

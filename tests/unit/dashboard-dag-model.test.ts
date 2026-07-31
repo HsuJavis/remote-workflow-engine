@@ -66,6 +66,24 @@ describe('buildDagModel — call-tree reconstruction (v8 Slice 3, REQ-048)', () 
     expect(count(root)).toBe(2);
   });
 
+  it('REQ-051 exposes per-agent timing + derived durationMs on the dag node', () => {
+    const view: RunStatusView = {
+      runId: 'r5', status: 'completed', phases: [], scriptVersion: 'v1', workflowNodes: [],
+      agents: [
+        { ...agent('t1', 'done-agent', '', 'done', 'm'), startedAt: '2024-01-01T00:00:00.000Z', endedAt: '2024-01-01T00:00:02.000Z' },
+        { ...agent('t2', 'live-agent', '', 'running', 'm'), startedAt: '2024-01-01T00:00:05.000Z' }, // no endedAt
+      ] as RunStatusView['agents'],
+    };
+    const root = buildDagModel(view);
+    const done = root.agents.find((a) => a.label === 'done-agent')!;
+    expect(done.startedAt).toBe('2024-01-01T00:00:00.000Z');
+    expect(done.endedAt).toBe('2024-01-01T00:00:02.000Z');
+    expect(done.durationMs).toBe(2000); // endedAt − startedAt
+    const live = root.agents.find((a) => a.label === 'live-agent')!;
+    expect(live.startedAt).toBe('2024-01-01T00:00:05.000Z');
+    expect(live.durationMs).toBeUndefined(); // unfinished → no duration
+  });
+
   it('is pure + total: an empty run yields a bare root, an unknown-frame agent is not dropped', () => {
     const empty = buildDagModel({ runId: 'r3', status: 'queued', phases: [], scriptVersion: 'v1', agents: [], workflowNodes: [] });
     expect(empty.agents).toEqual([]);
