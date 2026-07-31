@@ -370,6 +370,12 @@ export class RunManager {
     const from = entry.status;
     entry.status = to;
     await this._store.recordTransition(runId, from, to, this._clock.isoNow());
+    // v8 REQ-055: persist a one-shot DAG snapshot at the terminal transition (covers failed/stopped,
+    // not only completed) so a composite run's nested tree/phases/agent-frames survive a restart.
+    if (TERMINAL.includes(to)) {
+      const agents = entry.spawner instanceof AgentExecutor ? entry.spawner.getAllRecords() : [];
+      await this._store.saveSnapshot(runId, { phases: entry.phases, agents, workflowNodes: entry.workflowNodes });
+    }
     // v8 REQ-052: fire onTerminal from the ONE authoritative choke (covers stopped, which the
     // un-.catch'd .then in _runLive never sees) — AFTER the transition is persisted, and NOT awaited,
     // so a slow/throwing listener (e.g. a continuation starting run B) can never wedge A's terminal write.

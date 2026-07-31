@@ -261,8 +261,19 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 > 巢狀呼叫數超過 `maxWorkflowDescendants`（預設 256）→`DESCENDANT_CAP_EXCEEDED`（皆為可分支的
 > envelope 錯誤，不崩父 run）；巢狀子工作流共用父 run 的同一份預算/journal。詳見 DEPLOY.md §1b。
 
-## v8 新功能（Gate 7.5 v8 Slice 4 ROUND 1，2026-08-01 — GATE PASSED）
+## v8 新功能（Gate 7.5 v8 Slice 2c + Defer B ROUND 1，2026-08-01 — GATE PASSED）
 
+- **跨重啟 DAG 持久化（REQ-055）**：一個 composite run（含巢狀 `workflow()`／`phase()`／`agent()`）進入
+  終態時，引擎會把它的 DAG 快照（phases + workflowNodes + 每個 agent 的 `label`/`frame`/`phase`/耗時）
+  一次性寫入持久化，所以**重啟後 `workflow_status`／`/api/runs/:id/dag` 仍能重建同一棵巢狀樹**，儀表板不
+  再攤平已完成的 composite run（以往重啟後樹會攤平）。向後相容：舊 run（無快照）仍以既有方式重建。
+- **外部 ingress 安全（REQ-056/057/058，OIDC 前過渡管控）**：HTTP server 每條路由都套用 **Host/Origin
+  白名單**（外來 Host → 403 防 DNS-rebinding；帶有且非白名單 Origin → 403 防 CSRF；缺 Origin 放行，不打斷
+  程式化 client）。新增 **webhook 入口 `POST /hooks/:id`**——fail-closed 驗證（`HMAC-SHA256(secret, 原始
+  body)` 常數時間比對 → ±300s 時戳 → deliveryId 去重 → 啟動**預先綁定**的工作流程，body 以 `args.event`
+  傳入）。管理工具 `webhook_create`（server 端產生 secret、只回一次）/`webhook_list`（只回 sha256 指紋、
+  永不回 secret）/`webhook_delete`，註冊表持久化跨重啟。⚠️ 公開 `0.0.0.0` bind 且未接 OIDC 時，能連到
+  port 的人皆可呼叫這些工具——白名單是過渡管控、非 OIDC 替代。
 - **完成即串接（on-completion chaining，REQ-053）**：用 `chain_create({afterRunId, run:{workflow,
   args?}})` 註冊「當某個 run 完成時，自動啟動另一個 run」，恰好一次；目標 `failed`／`stopped` 則跳過。
   續接持久化（引擎自有 SQLite side table），跨重啟由 boot reconcile 補觸發，並帶 `rootRunId` 世系；

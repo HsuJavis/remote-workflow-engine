@@ -4,7 +4,86 @@ status: passed
 ---
 # 07 Review & Retro — Gate 8
 
-## v8 SLICE 4 GATE 8 REVIEW (2026-08-01, CURRENT / AUTHORITATIVE)
+## v8 SLICE 2c + DEFER B GATE 8 REVIEW (2026-08-01, CURRENT / AUTHORITATIVE)
+
+> This section supersedes "## v8 SLICE 4 GATE 8 REVIEW (2026-08-01)" below (kept for history). This
+> round lands TWO already-implemented, GREEN, real-validated slices: **Slice 2c — cross-restart DAG
+> persistence** (the one real data-loss the observability slices left open: after a restart an
+> out-of-process composite run's nested DAG/phases/agent-frames FLATTENED) and **Defer B — external-
+> ingress security** (a Host/Origin allowlist + an HMAC-verified webhook ingress + a durable webhook
+> registry — the interim access control before OIDC). No v1-core change in either — one engine-owned
+> side table + one terminal-edge write (2c); one top-of-handler guard + one new route + one durable side
+> table + three MCP tools (Defer B).
+> Ledger items added this round: REQ-055 (2c) + REQ-056/057/058 (Defer B, requirements pre-written) →
+> ARCH-032 + ARCH-033 → TASK-053 + TASK-054 → DES-050 + DES-051 + DES-052 → IMPL-094 + IMPL-095 →
+> IT-052 (2 cases) + UT-063 (7) + IT-053 (5) + IT-054 (8) + IT-055 (1) → VAL-064 + VAL-065/066/067.
+
+### Retro (v8 Slice 2c — cross-restart DAG persistence)
+
+- **What changed:** a new `RunDagSnapshot {phases, agents, workflowNodes}` (`src/run-store.ts:60-65`) +
+  `RunStore.saveSnapshot` port method, captured ONCE at the authoritative terminal `_transition`
+  (`src/run-manager.ts:373-378`, via the in-process AgentExecutor's `getAllRecords()` so the persisted
+  agents carry `label`/`phase`/`frame`/`startedAt`/`endedAt`, not just tokens), overlaid on `getRun`
+  read-back in BOTH stores (`src/run-store.ts:150-158`, `src/store/sqlite-run-store.ts:179-193`) with a
+  `?? deriveAgentRecords(...)` / `?? []` fallback. A migration-free side table
+  `run_snapshots(runId PRIMARY KEY, json TEXT)` (`INSERT OR REPLACE`).
+- **Key decision:** snapshot ONCE at the terminal edge (not incrementally — no torn half-tree, covers
+  failed/stopped via the single choke); overlay-with-fallback keeps it strictly backward-compatible (a
+  pre-change / no-snapshot run reconstructs exactly as today, never worse, never a crash); persist the
+  enriched `getAllRecords()` (not the token-only transcript derivation) so `buildDagModel` regroups by
+  `frame` + shows durations after a restart; a migration-free side table (same "don't touch v1 core"
+  stance as the scheduler/continuation tables).
+- **Gate 7.5:** PASSED 2026-08-01. Live engine restarted mid-run: `phase('top') → workflow('s2c-mid'){
+  phase('p1') → workflow('s2c-leaf') }` — before restart `/api/runs/:id/dag` children `[(s2c-mid,1)]`;
+  after restart STILL `[(s2c-mid,1)]` + `phases ['top']` + `workflowNodes ['s2c-mid','s2c-leaf']` — the
+  DAG did NOT flatten (reversing the Slice-3 documented flattening). REQ-055 `real:true` (VAL-064).
+
+### Retro (v8 Defer B — external-ingress security)
+
+- **What changed:** (a) pure allowlist helpers `isAllowedHost`/`isAllowedOrigin` (`src/net-guard.ts:47-67`)
+  enforced by a TOP-of-handler 403 guard uniform across `/mcp`, `/api/*`, `/dashboard`, `/hooks/*`
+  (`src/server.ts:867-870`), plus a mutable `boundPort` assigned after listen (`:861`, `:986`) so the
+  closure knows the real port. (b) a NEW durable `WebhookRegistry` (`src/webhook-registry.ts`) — SQLite
+  side tables `webhooks` + `webhook_deliveries`, `create`/`list`/`delete`/`deliver`, the fail-closed
+  verify+fire (`createHmac`/`timingSafeEqual` over the RAW body + ±300s window + `INSERT OR IGNORE`
+  dedup + `runManager.start` pre-bound), reached through structural `RunManagerPort`/`CatalogPort` seams.
+  (c) a `POST /hooks/:id` ingress route (`src/server.ts:895-917`) + `webhook_create`/`list`/`delete` MCP
+  tools + config key `webhookDbPath`.
+- **Key decision:** fail-OPEN on an absent Origin, fail-CLOSED on an absent Host (an absent Origin is the
+  normal programmatic case — a fail-closed Origin check would break every non-browser MCP client; an
+  absent Host is anomalous/rebinding-shaped). Store the webhook secret SERVER-SIDE (not a one-way hash)
+  because HMAC verification needs the key — the GitHub/Stripe model; `list` exposes only a sha256
+  fingerprint. Verify ORDER exists+enabled → signature-over-RAW-body → timestamp → delivery-dedup → fire,
+  so authentication precedes any side effect and the fired workflow name is ALWAYS the stored
+  registration (no workflow-selection injection).
+- **Caught + fixed regression:** `webhook_list` is a genuine ZERO-ARG tool (`inputSchema.properties:{}`),
+  which the existing IT-028 (`tests/integration/mcp-tools-list-schema.test.ts`) flags UNLESS allowlisted —
+  added `webhook_list` to that test's `ZERO_ARG_TOOLS` (a one-line update, NOT a new IT id) alongside
+  `chain_list`/`schedule_list`/`asset_list`.
+- **Gate 7.5:** PASSED 2026-08-01. Live engine (33 tools incl. `webhook_*`): allowlist `curl -H 'Host:
+  evil.example.com'` → 403, normal → 200, `-H 'Origin: http://evil.example.com' POST /mcp` → 403; webhook
+  `webhook_create` → `{url, secret}`, a signed `POST /hooks/:id` (openssl HMAC) → 202 `{runId}`, the
+  pre-bound workflow ran → `{got:{deploy:'v9'}}` (body → `args.event`), a replay of the same delivery →
+  200 (no second run), `webhook_list` fingerprint-only. REQ-056/057/058 `real:true` (VAL-065/066/067).
+
+### Combined (both slices)
+
+- **No regressions:** full suite **658 pass / 149 files**, `npx tsc --noEmit` clean. No v1-core change in
+  either slice — RunSpec/RunStore/journal untouched (2c adds an engine-owned migration-free side table +
+  one terminal-edge write; Defer B adds a top-of-handler guard, one route, one durable side table, three
+  tools). The run lifecycle (RunGuard budget, agent semaphore, `_transition` state machine) is otherwise
+  untouched.
+- **Still deferred (recorded, not these increments):** Slice 2c's remaining dashboard items — **Item B =
+  SSE** (the page keeps the 3s poll), **Item C = parallel-group markers** (which siblings ran as one
+  `parallel()` batch — needs a sandbox-child IPC change), **Item D = static pre-read skeleton +
+  `scriptVersion` cache**; and **Defer A = durable in-flight-graph suspend/resume** (persist/rehydrate a
+  mid-execution call-tree across restart — 2c persists a run's DAG only at TERMINAL, not mid-flight). Full
+  OIDC (REQ-012, D5) stays deferred; a public `0.0.0.0` bind without OIDC remains a documented deployment
+  caveat — the Host/Origin allowlist (REQ-056) is the interim control.
+- **Trace note:** all Slice-2c + Defer-B work items use `###` headings and this section deliberately
+  avoids ID-shaped sub-headings, so it introduces no scanner-collision (trace.py parses only `###`).
+
+## v8 SLICE 4 GATE 8 REVIEW (2026-08-01, historical — superseded by the v8 Slice 2c + Defer B section above)
 
 > This section supersedes "## v8 SLICE 2b GATE 8 REVIEW (2026-07-31)" below (kept for history). v8
 > Slice 4 is CROSS-TRIGGER CHAINING + RUN-ADMISSION — the last core v8 trigger mechanism: runs can now

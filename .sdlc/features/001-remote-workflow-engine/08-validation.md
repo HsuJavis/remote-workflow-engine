@@ -7,6 +7,26 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
+> **v8 SLICE 2c + DEFER B ROUND 1 (2026-08-01) — GATE PASSED.** REQ-055 (cross-restart DAG
+> persistence) + REQ-056/057/058 (external-ingress security: Host/Origin allowlist + HMAC webhook
+> ingress + durable webhook registry) each carry a `real:true` VAL item below (VAL-064 / VAL-065/066/067).
+> Validated against the live production engine (systemd user service `rwe.service`, `127.0.0.1:8787`,
+> runs `tsx src/main.ts`), restarted with the Slice-2c + Defer-B code — `tools/list` now serves **33
+> tools including `webhook_create` / `webhook_list` / `webhook_delete`**. Slice 2c: a composite
+> `phase('top') → workflow('s2c-mid'){ phase('p1') → workflow('s2c-leaf') }` was run in-process; before
+> restart `GET /api/runs/:id/dag` showed children `[(s2c-mid,1)]`; the service was RESTARTED and after
+> restart `/api/runs/:id/dag` STILL showed `[(s2c-mid,1)]` and `/api/runs/:id` showed `phases ['top']` +
+> `workflowNodes ['s2c-mid','s2c-leaf']` — the DAG did NOT flatten (reversing the Slice-3 documented
+> flattening). Defer B allowlist: `curl -H 'Host: evil.example.com' /api/runs` → 403; normal loopback
+> → 200; `-H 'Origin: http://evil.example.com' POST /mcp` → 403. Defer B webhook: `webhook_create` →
+> `{url, secret}`; a signed `POST /hooks/:id` (openssl HMAC) → 202 `{runId}`; the pre-bound workflow ran →
+> result `{got:{deploy:'v9'}}` (body → `args.event`); a replay of the same `X-RWE-Delivery` → 200 (no
+> second run); `webhook_list` showed only a fingerprint (never the secret). Test webhooks/workflows
+> deregistered afterward; registry clean. REQ-012 (OIDC) remains DEFERRED by user decision D5 — the
+> Host/Origin allowlist + loopback/LAN bind is the interim control; a public `0.0.0.0` bind without OIDC
+> is a documented caveat. All prior REQs (001..054) still hold evidence from the rounds below — not
+> re-litigated this round.
+
 > **v8 SLICE 4 ROUND 1 (2026-08-01) — GATE PASSED.** REQ-052/053/054 (cross-trigger chaining +
 > run-admission: authoritative onTerminal hook + durable on-completion chaining + maxConcurrentRuns cap)
 > each carry a `real:true` VAL item below (VAL-061/062/063). Validated against the live production engine
@@ -489,6 +509,96 @@ restarted or modified during this write-up.
   construction). Not driven on the live service because that would need sustaining >64 concurrent real
   runs; the gate LOGIC itself is exercised against the real RunManager + real sandbox subprocess
   lifecycle, so the only un-real element is the count threshold, not the SUT boundary.
+- **iter:** v8
+
+### VAL-064 — REQ-055: a terminated run's DAG (phases + workflowNodes + per-agent frame/label/timing) survives a restart
+- **status:** green
+- **traces:** REQ-055
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-052 (`tests/integration/dag-restart-survival.test.ts`, 2 cases)
+  over the REAL RunManager + real on-disk `SqliteRunStore` + real `WorkflowCatalog` + real sandbox
+  child-process/IPC/vm (only the `GatewayClient` faked with an echo gateway; the "restart" is fresh store +
+  manager instances on the SAME data dir with `hydrateAll()` between): a composite
+  `phase('top') → agent(T) → workflow('mid'){ agent(M) → workflow('leaf'){ agent(L) } }` completes; after
+  the restart `buildDagModel` rebuilds the SAME nested tree (`mid` group with `leaf` still nested under it),
+  `phases===['top']`, `workflowNodes` names sort to `['leaf','mid']`, agent labels sort to `['L','M','T']`,
+  and the nested-frame relationship survives (`L.frame.startsWith(M.frame)`) — the DAG did NOT flatten. A
+  backward-compat `return 1;` run reconstructs on a fresh store without crashing. (2) LIVE — against the
+  live production engine (systemd `rwe.service`, `127.0.0.1:8787`, `tsx src/main.ts`) restarted with the
+  Slice-2c code, a composite `phase('top') → workflow('s2c-mid'){ phase('p1') → workflow('s2c-leaf') }`
+  was run in-process; BEFORE restart `GET /api/runs/:id/dag` showed children `[(s2c-mid,1)]`. The service
+  was then RESTARTED (the run is no longer in-process); AFTER restart `GET /api/runs/:id/dag` STILL showed
+  children `[(s2c-mid,1)]` and `GET /api/runs/:id` showed `phases ['top']` + `workflowNodes
+  ['s2c-mid','s2c-leaf']` — the persisted terminal snapshot rebuilt the nested tree across the restart,
+  exactly reversing the Slice-3 documented flattening. Test workflows deregistered afterward; registry
+  clean. No SUT-boundary mock (real engine → real restart → real HTTP read-model). This closes the
+  cross-restart phase/tree persistence item deferred across Slice 2/2b/3.
+- **iter:** v8
+
+### VAL-065 — REQ-056: Host/Origin allowlist (DNS-rebinding + CSRF defense) on the real HTTP server
+- **status:** green
+- **traces:** REQ-056
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) UT-063 (`tests/unit/host-origin-allowlist.test.ts`, 7 cases) pins
+  the allowlist truth table on the pure helpers (loopback + configured-LAN accepted at the server port;
+  foreign Host / wrong port / prefix-bypass / absent Host rejected; absent/empty/`'null'` Origin fail-open;
+  present-but-foreign / malformed Origin rejected). IT-053 (`tests/integration/host-origin-allowlist-http.test.ts`,
+  5 cases) enforces it on a REAL `createServer`: a normal loopback `fetch` (no Origin) → 200, a raw
+  `Host: evil.example.com` → 403, a `POST /mcp` with `Origin: http://evil.example.com` → 403, a loopback
+  Origin → 200 (raw `node:http` used for the Host cases since fetch/undici forbids overriding Host).
+  (2) LIVE — against the live production engine (systemd `rwe.service`, `127.0.0.1:8787`) restarted with the
+  Defer-B code: `curl -H 'Host: evil.example.com' /api/runs` → 403; a normal loopback `curl /api/runs`
+  → 200; `curl -H 'Origin: http://evil.example.com' -X POST /mcp` → 403. The allowlist is uniform across
+  `/mcp`, `/api/*`, `/dashboard`, `/hooks/*` (the guard fronts the whole handler). No SUT-boundary mock
+  (real server → real rejected/accepted requests). This is the interim access control until OIDC
+  (REQ-012, D5).
+- **iter:** v8
+
+### VAL-066 — REQ-057: webhook ingress POST /hooks/:id fires a pre-bound workflow, HMAC-verified
+- **status:** green
+- **traces:** REQ-057
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-054 (`tests/integration/webhook-registry.test.ts`, 8 cases,
+  REAL WebhookRegistry + REAL SQLite + real HMAC; structural RunManagerPort/CatalogPort faked) covers the
+  fail-closed verify+fire contract — a signed fresh delivery fires the PRE-BOUND workflow with the body as
+  `args.event` (202), a bad signature → 401 no run, a stale timestamp (outside ±300s) → 401 no run, a
+  replayed `deliveryId` → 200 idempotent (fired exactly once), unknown id → 404 / disabled → 403 (no run).
+  IT-055 (`tests/integration/webhook-ingress-http.test.ts`, 1 case) drives the actual `POST /hooks/:id`
+  route on a REAL `createServer`: a bad-signature POST → 401, a correctly-signed POST → 202 with a runId,
+  and polling `workflow_result` shows the pre-bound workflow REALLY ran with the body as `args.event`.
+  (2) LIVE — against the live production engine restarted with the Defer-B code (`tools/list` now 33 tools
+  incl. `webhook_*`): `webhook_create` returned `{url, secret}`; a signed `POST /hooks/:id` (openssl-computed
+  `HMAC-SHA256` over the raw body, with `X-RWE-Timestamp`/`X-RWE-Delivery`) → 202 `{runId}`; the pre-bound
+  workflow ran and its result was `{got:{deploy:'v9'}}` (the body arrived as `args.event`); a REPLAY of the
+  same `X-RWE-Delivery` → 200 with no second run. No SUT-boundary mock (real server → real HMAC verify →
+  real spawned run). Test webhooks/workflows deregistered afterward.
+- **iter:** v8
+
+### VAL-067 — REQ-058: webhook management tools (generate-once secret, fingerprint-only listing, durable)
+- **status:** green
+- **traces:** REQ-058
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-054 (`tests/integration/webhook-registry.test.ts`) pins the
+  management contract on the REAL registry + REAL SQLite: `create` returns a secret EXACTLY ONCE and
+  validates the workflow (`WORKFLOW_NOT_FOUND` for an unknown one); `list` shows only a 16-char sha256
+  fingerprint (the secret never appears in the list JSON); and DURABLE — a webhook created on one
+  `WebhookRegistry` instance verifies + fires on a FRESH instance over the same db file (registration +
+  secret persisted across restart, same convention as schedules.db/continuations.db). (2) LIVE — against
+  the live production engine restarted with the Defer-B code: `webhook_create` returned the secret once
+  (part of VAL-066's live run); `webhook_list` showed only a fingerprint and NEVER the secret. The secret
+  is stored server-side (not a one-way hash) because HMAC verification needs the key — the GitHub/Stripe
+  model; a one-way hash cannot verify an HMAC. Bind safety (interim control before OIDC): the admin-write
+  ingress relies on the loopback/LAN bind + the Host/Origin allowlist (REQ-056); a public `0.0.0.0` bind
+  without OIDC remains a documented deployment caveat. Test webhooks deregistered afterward; registry clean.
+  No SUT-boundary mock (real registry → real SQLite → real restart).
 - **iter:** v8
 
 ### VAL-046 — REQ-037: provider-aware SDK routing + Anthropic dual-auth security invariant

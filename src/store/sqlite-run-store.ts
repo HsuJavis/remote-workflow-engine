@@ -5,7 +5,7 @@ import { mkdirSync, appendFileSync, readFileSync, existsSync, readdirSync } from
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Clock } from '../clock.js';
-import type { RunStore } from '../run-store.js';
+import type { RunStore, RunDagSnapshot } from '../run-store.js';
 import { deriveAgentRecords } from '../run-store.js';
 import type {
   RunSpec,
@@ -48,6 +48,15 @@ export class SqliteRunStore implements RunStore {
         from_status TEXT,
         to_status TEXT NOT NULL,
         ts TEXT NOT NULL
+      );
+    `);
+    // v8 Slice 2c (REQ-055): one-shot DAG detail snapshot per run (phases/agents-incl-frame/workflowNodes),
+    // written at the terminal transition so a completed composite run's nested tree survives a restart.
+    // A migration-free side table (mirrors the scheduler/continuation side-table convention).
+    this._db.exec(`
+      CREATE TABLE IF NOT EXISTS run_snapshots (
+        runId TEXT PRIMARY KEY,
+        json TEXT NOT NULL
       );
     `);
   }
@@ -167,7 +176,20 @@ export class SqliteRunStore implements RunStore {
       | { runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string }
       | undefined;
     if (!row) return null;
-    return { runId: row.runId, status: row.status as RunStatus, phases: [], agents: deriveAgentRecords(this._allTranscripts(runId)), workflowNodes: [], scriptVersion: row.scriptVersion };
+    // v8 Slice 2c: a persisted terminal snapshot restores the full DAG (frames/phases/timing) after a
+    // restart; otherwise fall back to deriving bare agent records from transcripts (backward-compatible).
+    const snapRow = this._db.prepare('SELECT json FROM run_snapshots WHERE runId = ?').get(runId) as { json: string } | undefined;
+    const snap = snapRow ? (JSON.parse(snapRow.json) as RunDagSnapshot) : undefined;
+    return {
+      runId: row.runId, status: row.status as RunStatus, scriptVersion: row.scriptVersion,
+      phases: snap?.phases ?? [],
+      agents: snap?.agents ?? deriveAgentRecords(this._allTranscripts(runId)),
+      workflowNodes: snap?.workflowNodes ?? [],
+    };
+  }
+
+  async saveSnapshot(runId: string, snapshot: RunDagSnapshot): Promise<void> {
+    this._db.prepare('INSERT OR REPLACE INTO run_snapshots (runId, json) VALUES (?, ?)').run(runId, JSON.stringify(snapshot));
   }
 
   async listRuns(): Promise<RunSummary[]> {

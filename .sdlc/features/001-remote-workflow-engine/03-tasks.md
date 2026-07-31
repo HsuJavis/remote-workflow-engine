@@ -341,3 +341,13 @@ status: draft
 - **status:** done
 - **traces:** ARCH-031
 - **iter:** v8
+
+### TASK-053 — cross-restart DAG persistence: add a RunDagSnapshot + saveSnapshot to the RunStore port, capture it once at the terminal _transition (phases + workflowNodes + full agent records), overlay it on getRun read-back (both InMemory + Sqlite stores), migration-free run_snapshots side table
+- **status:** done
+- **traces:** ARCH-032
+- **iter:** v8
+
+### TASK-054 — external-ingress security: add Host/Origin allowlist helpers to net-guard + a 403 guard at the top of the HTTP handler, build a durable WebhookRegistry (HMAC verify + timestamp window + delivery dedup + fire pre-bound), add POST /hooks/:id ingress route and webhook_create/list/delete tools
+- **status:** done
+- **traces:** ARCH-033
+- **iter:** v8
