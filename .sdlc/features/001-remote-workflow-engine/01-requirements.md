@@ -410,3 +410,125 @@ flowchart LR
 - **traces:** —
 - **acceptance:** Given `models_list{provider?, query?, modalityIn?, modalityOut?, maxPricePerM?, minContext?, toolUse?, location?, limit?}` When invoked Then only models matching ALL supplied filters are returned, capped by `limit` (with a sane default/hard cap), so a client can narrow OpenRouter's large catalog (e.g. `{location:"remote", toolUse:true, maxPricePerM:1, query:"qwen"}`); an empty match returns `[]` (not an error)
 - **iter:** v7
+
+<!-- ── v8 Slice 1 — N-level workflow() composition (compose registered workflows into a system graph). See docs/v8-trigger-architecture.md §7 Slice 1. ── -->
+
+### REQ-041 — `workflow()` nesting supports N levels up to a configurable depth cap
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given `rwe.config.json` sets `maxWorkflowDepth:N` (default **4** when absent/unset) When a `workflow()` call chain nests to depth ≤ N Then each nested workflow resolves from the catalog, runs, and returns its value to the caller (so a registered composite CAN be a node inside another composite — lifting today's one-level `NESTING_ERROR`); When a `workflow()` call would exceed depth N Then that single call fails with error code `NESTING_DEPTH_EXCEEDED` (envelope-not-crash: the parent run does NOT hang or die, the error is branchable and its message names the depth limit). The top-level run is depth 0; its first `workflow()` call is depth 1. An out-of-range/invalid `maxWorkflowDepth` (≤0 or non-integer) is rejected/clamped at config load with a clear message.
+- **iter:** v8
+
+### REQ-042 — ancestor-cycle guard on nested `workflow()`
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given a live nesting chain whose ancestor workflows are e.g. A→B→C When any `workflow()` targets a name already present in its own ancestor set ({A,B,C}) Then the call fails with `NESTING_CYCLE` (naming the offending workflow) instead of recursing unboundedly — a self-call A→A is refused at the first re-entry. AND a legitimate diamond (two sibling branches each calling the same NON-ancestor workflow D) is allowed: D runs independently in each branch and is not mistaken for a cycle.
+- **iter:** v8
+
+### REQ-043 — total-descendant cap per run
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given a run whose nested `workflow()` invocations across the WHOLE tree (fan-out × depth) reach a configurable total-descendant cap (`maxWorkflowDescendants`, default **256**) When the (cap+1)th nested `workflow()` is attempted Then it fails with `DESCENDANT_CAP_EXCEEDED`; a run with ≤ cap nested calls completes normally. This bounds a wide-and-deep graph independently of the per-branch depth cap (REQ-041), so an accidental fan-out explosion cannot spawn unbounded nested executions.
+- **iter:** v8
+
+### REQ-044 — cross-depth invariants preserved (shared budget + resume-safe journal)
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given a nested chain of depth ≥ 2 where scripts at multiple levels each call `agent()` Then (a) every `agent()` call at any depth decrements the SAME parent run's single `RunGuard` budget — there is NO per-level budget reset, so the aggregate agent count is bounded by the one run budget (observable: a depth-3 script issuing 2 agents/level against a run budget of 5 fails the 6th agent with the budget error, not the 6th-per-level); AND (b) the journal `callSeq` keys assigned to nested `agent()` calls remain globally unique across arbitrary depth within `MAX_SAFE_INTEGER` (the current `(parentCallSeq+1)×1e6+n` multiply scheme overflows past ~depth 2 and MUST be reworked), so replay is not corrupted; a resume of the same unmodified composite script replays every nested `agent()` call from cache deterministically (identical results, no re-dispatch).
+- **iter:** v8
+
+<!-- ── v8 Slice 2 — call-tree + composite linkage (dashboard data layer, first increment). See docs/v8-trigger-architecture.md §6/§7 Slice 2. Deferred to a later increment: parallel() group markers, phase persistence + current-step + timing, static pre-read + scriptVersion cache, cross-restart tree persistence. ── -->
+
+### REQ-045 — each `agent()` node records the composite frame it ran in
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given a run whose script composes registered workflows (`workflow()`), Then every `agent()` record surfaced by `workflow_status` carries a `frame` string identifying the nesting frame it executed in: the top-level script's own agents carry the ROOT frame (the empty string `""`), and an agent inside a nested `workflow()` carries a non-root frame whose parent frame is a strict PREFIX of it (so a depth-2 agent's frame strictly extends its depth-1 ancestor frame). Observable: a composite `top(agent T) → mid(agent M) → leaf(agent L)` yields `T.frame == ""`, `M.frame` non-empty, `L.frame` has `M.frame` as a strict prefix — so agents can be grouped and nested by frame without any other data.
+- **iter:** v8
+
+### REQ-046 — each nested `workflow()` call is recorded as a composite-boundary node
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given the same composite run, Then `workflow_status` exposes a `workflowNodes` array with one entry per nested `workflow(name)` invocation: `{ frame, name, parentFrame, depth }`, where `frame` equals the frame its own inner agents carry (REQ-045), `parentFrame` is the caller's frame (root `""` for a top-level `workflow()` call), and `depth` is 1-based. Observable: the `top→mid→leaf` run yields nodes `{name:"mid", parentFrame:"", depth:1}` and `{name:"leaf", parentFrame:<mid.frame>, depth:2}`; a diamond that calls the same workflow twice yields TWO distinct nodes (distinct `frame`s). This is the composite linkage that lets the dashboard render a composite as multiple sub-cards.
+- **iter:** v8
+
+### REQ-047 — `workflow_status` exposes enough to reconstruct the live call-tree (DAG) + drill to logs
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given a single `workflow_status(runId)` call on an in-process composite run (running or just-completed), Then its result contains BOTH the frame-tagged `agents` (REQ-045) and `workflowNodes` (REQ-046), from which a client reconstructs the full call tree deterministically — group agent nodes by `frame`, nest frames by `parentFrame` — with each agent node's live `state`/`model`/`label`/`phase` already present (so the current step = the running node(s)); AND every agent node's `agentId` resolves to its transcript via `workflow_agent_log(runId, agentId)` (the node→log drill-down). The same shape is returned by `GET /api/runs/:id`. (Cross-restart persistence of the tree is explicitly out of scope for this increment.)
+- **iter:** v8
+
+<!-- ── v8 Slice 3 — dashboard UI (cards → live DAG → agent log). See docs/v8-trigger-architecture.md §6/§7 Slice 3. Reuses the Slice-2 data layer; keeps the 3s poll (SSE deferred). ── -->
+
+### REQ-048 — pure `buildDagModel` reconstructs a run's call tree from its status
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given a `RunStatusView` carrying frame-tagged `agents` + `workflowNodes` (REQ-045/046), `buildDagModel(view)` returns a tree rooted at the top-level frame: the ROOT node holds the agents whose `frame` is `""` and, as `children`, one composite node per top-level `workflowNode` (`parentFrame === ""`); each composite node (keyed by its `frame`) holds the agents whose `frame` matches it and, recursively, the composite nodes whose `parentFrame` equals its frame; each agent leaf carries `{agentId, label, state, model, tokens}` and each composite node carries `{frame, name, depth}`. Observable: for `T(frame "") · mid→agent M(frame ".0") · leaf→agent L(frame ".0.0")` the result is `root{ agents:[T], children:[ mid{name:"mid", agents:[M], children:[ leaf{name:"leaf", agents:[L] } ] } ] }`. Pure (no I/O), never throws, never drops an agent (an agent whose frame has no matching node attaches to root).
+- **iter:** v8
+
+### REQ-049 — dashboard renders cards → live DAG → agent log
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given the dashboard served at `GET /dashboard`, Then its home view lists BOTH registered workflows (from `GET /api/workflows`) and runs (from `GET /api/runs`) as cards; clicking a run card opens that run's DAG (from `GET /api/runs/:id/dag`, backed by REQ-048) rendered as a NESTED tree — each composite sub-workflow is a labeled group containing its own agent nodes and nested groups, each agent node colored by its 3-state (`queued`/`running`/`done`/`failed`) and showing its model; clicking an agent node loads its transcript (`GET /api/runs/:id/agents/:aid`); the page refreshes on a 3-second poll. Observable (real-run, headless browser): after a nested composite run, loading `/dashboard` shows the run as a card; opening it renders the composite groups with their agent nodes carrying state CSS classes; clicking an agent node shows its log text.
+- **iter:** v8
+
+<!-- ── v8 Slice 2b — live execution detail (phase timeline + current step + per-agent timing). See docs/v8-trigger-architecture.md §6/§7. Deferred to Slice 2c: parallel() group markers (needs a sandbox-child protocol change), cross-restart phase/tree persistence, SSE (keeps the 3s poll), static pre-read + scriptVersion cache. ── -->
+
+### REQ-050 — phase timeline with timestamps + current step
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given a run whose script calls `phase(title)` one or more times, Then each entry in `workflow_status.phases` carries the ISO timestamp it was entered (`{title, ts}`), the entries are in call order (non-decreasing `ts`), and — while the run's status is `running` — the LAST entry is the current step. Observable: a script `phase('draft'); …; phase('verify')` yields `phases = [{title:'draft', ts:t0}, {title:'verify', ts:t1}]` with `t0 ≤ t1`; the dashboard renders the phase timeline and visually marks the current (last, while running) phase. Backward-compatible: a run with no `phase()` call yields `phases: []`.
+- **iter:** v8
+
+### REQ-051 — per-agent timing (started / ended / duration)
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given an `agent()` call, Then its record carries `startedAt` (the ISO time it was dispatched to the gateway, i.e. once it acquired its concurrency slot) and, once settled, `endedAt` (with `endedAt ≥ startedAt`); a still-in-flight agent has `startedAt` but no `endedAt`; a queued-but-not-yet-dispatched agent has neither. `buildDagModel`'s agent nodes expose `startedAt`/`endedAt` and a derived non-negative `durationMs` (undefined while unfinished), and the dashboard shows each agent node's duration. Observable: a completed agent node has both timestamps and `durationMs ≥ 0`; the value equals `endedAt − startedAt`.
+- **iter:** v8
+
+<!-- ── v8 Slice 4 — cross-trigger chaining + run-admission (the last core v8 trigger mechanism). See docs/v8-trigger-architecture.md §7 Slice 4. Deferred: external ingress security (Defer B) + durable in-flight-graph suspend/resume (Defer A). ── -->
+
+### REQ-052 — authoritative `onTerminal` hook fires once per terminal transition
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given an injected `onTerminal(runId, status)` listener on the RunManager, Then it is invoked EXACTLY once for each top-level run reaching a terminal status, for ALL THREE terminal statuses — `completed`, `failed`, AND `stopped` — fired from the single authoritative `_transition` (NOT the un-`.catch`ed `.then` in `_runLive`, which never covers `stopped`); a non-terminal transition (`running`/`suspended`) does NOT fire it; a nested `workflow()` execution (which has no store row and never calls `_transition`) does NOT fire it. Firing does not block or corrupt the terminal state write: the listener runs after the transition is persisted, and a throwing listener never wedges the run's terminal transition. Observable: a run that completes fires `onTerminal(id,'completed')` once; a stopped run fires `onTerminal(id,'stopped')` once; a composite parent run with 2 nested `workflow()` calls fires exactly ONE onTerminal (for the parent), not three.
+- **iter:** v8
+
+### REQ-053 — durable on-completion chaining (run A completes → start run B)
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given a client registers a continuation via `chain_create({afterRunId, run:{workflow, args?}})` → `{chainId}`, Then when `afterRunId` reaches terminal `completed`, the engine starts `run.workflow` with `run.args` exactly ONCE and records the spawned `runId` on the continuation (observable via `chain_list`); the spawned run inherits a lineage `rootRunId` (= afterRunId's own root, or afterRunId if it is a root). When `afterRunId` terminates `failed`/`stopped` instead, the continuation is marked SKIPPED and no run is started. The continuation is DURABLE (SQLite, engine-owned side table — no change to RunSpec/RunStore): if the engine restarts after `afterRunId` already terminated, a boot reconcile fires (or skips) any still-pending continuation exactly once by reading the run's persisted terminal status. Firing is IDEMPOTENT — a stop→resume→complete cycle (two terminal transitions) starts B at most once. A `chain_create` whose `afterRunId` is unknown returns a typed error (`CHAIN_TARGET_NOT_FOUND`), never a crash.
+- **iter:** v8
+
+### REQ-054 — run-admission counter bounds concurrent top-level runs
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given `rwe.config.json` sets `maxConcurrentRuns:N` (default **64** when absent; invalid ≤0/non-integer rejected at config load), When a `start()` would make the number of live (non-terminal: `queued`/`running`/`suspended`) top-level runs exceed N, Then `start()` fails with error code `RUN_ADMISSION_LIMIT` BEFORE any durable/expensive work (no `store.createRun`, no workspace mkdir, no seed, no sandbox spawn) — the DoS chokepoint the global agent-semaphore does NOT provide (it caps only `agent()` dispatch, not run count / sandbox forks / workspace materialization). A nested `workflow()` does NOT consume an admission slot (it is not a top-level `start()`). Once a run reaches a terminal status its slot is freed (a later `start()` succeeds). Observable: with `maxConcurrentRuns:1`, a second concurrent top-level `start()` fails `RUN_ADMISSION_LIMIT` while the first is still running, and succeeds once the first completes.
+- **iter:** v8
+
+<!-- ── v8 Slice 2c — cross-restart DAG persistence (fixes the real data-loss: a terminated run's nested DAG/phases flatten after a restart). See docs/v8-trigger-architecture.md §6. Still deferred: SSE (Item B), parallel() group markers (Item C, needs a sandbox-IPC change), static pre-read skeleton + cache (Item D). ── -->
+
+### REQ-055 — a terminated run's DAG (frames, phases, per-agent detail) survives a restart
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given a composite run with nested `workflow()` calls, `phase()` calls, and `agent()` calls reaches a terminal status (`completed`/`failed`/`stopped`), When the engine is restarted (the run is no longer in-process) and `workflow_status(runId)` / `GET /api/runs/:id` are called, Then the reconstructed `RunStatusView` still carries: (a) the `workflowNodes` (composite boundaries) and `phases` (with their `ts`) as they were at terminal — persisted once at the authoritative terminal transition (so failed/stopped are covered, not only completed); and (b) each `agent()` record's `label`, `phase`, `frame`, `startedAt`, `endedAt` (not only the tokens/provider/model that survive today) — enriched onto the persisted per-agent record so `deriveAgentRecords` reconstructs the full node. Consequently `buildDagModel` rebuilds the SAME nested tree after a restart as before it (composite groups intact, agents grouped by frame, durations shown) — the dashboard no longer flattens a completed composite run. Backward-compatible: a run persisted before this change (no snapshot / bare usage events) still reconstructs at least as well as today (phases:[]/workflowNodes:[], agents from tokens) — never worse, never a crash.
+- **iter:** v8
+
+<!-- ── v8 Defer B — external-ingress security (Host/Origin allowlist + webhook ingress). See docs/v8-trigger-architecture.md §7 Defer B. Interim control until OIDC (REQ-012, D5). ── -->
+
+### REQ-056 — Host/Origin allowlist on the HTTP server (DNS-rebinding / CSRF defense)
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given the HTTP server, When a request arrives Then its `Host` header must resolve to an allowlisted authority (loopback `127.0.0.1`/`localhost` at the server port, plus the configured `bind` host:port when bound to a LAN address) — a request with a non-allowlisted `Host` is rejected `403` (defends DNS-rebinding); AND when an `Origin` header is PRESENT it must be in the allowlist, else `403` (defends a drive-by browser page CSRF-POSTing `/mcp`) — but an ABSENT `Origin` is allowed (every programmatic MCP client / test sends no Origin; fail-OPEN on absent Origin so legitimate non-browser callers are never broken). Observable: a normal loopback `fetch` to `/mcp`/`/api/runs` with no Origin still works (200); a request carrying `Host: evil.example.com` → 403; a request carrying `Origin: http://evil.example.com` → 403. The check is uniform across `/mcp`, `/api/*`, `/dashboard`, and any `/hooks/*` route.
+- **iter:** v8
+
+### REQ-057 — webhook ingress `POST /hooks/:id` fires a pre-bound workflow, HMAC-verified
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given a registered webhook (id → {workflow, secretHash}), When `POST /hooks/:id` arrives Then the engine verifies, fail-CLOSED and in this order: (1) the id exists and is enabled (else `404`/`403`, no run started); (2) an `X-RWE-Signature: sha256=<hex>` header equals `HMAC-SHA256(secret, rawBody)` compared in constant time (`timingSafeEqual`) — computed over the RAW body BEFORE any JSON parse — else `401`, no run; (3) an `X-RWE-Timestamp` within ±300s of now (replay window) else `401`; (4) an `X-RWE-Delivery` id not seen before (atomic dedup) — a replayed delivery is accepted idempotently (`200`, no second run). On success the engine starts the webhook's PRE-BOUND workflow via the same `RunManager.start` path (the workflow name comes from the stored registration, NEVER from the request body — no workflow-selection injection), passing the parsed body as `args.event`, and returns `202` with the spawned `{runId}`. Observable: a correctly-signed fresh delivery starts the bound workflow and returns its runId; a bad signature → 401 and no run; a replayed `X-RWE-Delivery` → 200 with no second run.
+- **iter:** v8
+
+### REQ-058 — webhook management tools with generate-once, hashed-at-rest secrets + bind safety
+- **status:** reviewed
+- **traces:** —
+- **acceptance:** Given `webhook_create({workflow, enabled})`, Then the engine verifies the workflow is registered (else typed `WORKFLOW_NOT_FOUND`), generates a random secret server-side, and returns `{webhookId, url, secret}` with the secret shown EXACTLY ONCE. (The secret IS the HMAC key, so verification requires it — it is stored server-side and never returned again, the same model GitHub/Stripe webhooks use; a one-way hash cannot verify an HMAC.) `webhook_list` returns each webhook's `{id, workflow, enabled, secretFingerprint}` (a short sha256 prefix of the secret) and NEVER the secret itself; `webhook_delete({id})` removes it. The registry is durable (SQLite side table, survives restart, same convention as schedules.db/continuations.db). Bind safety (interim control before OIDC): admin-write ingress relies on the loopback/LAN bind + the Host/Origin allowlist (REQ-056) — a public `0.0.0.0` bind without OIDC is a documented deployment caveat. Observable: `webhook_create` returns a secret once; `webhook_list` shows only a fingerprint (never the secret); a webhook created on one process is usable after a restart (its registration + secret persisted).
+- **iter:** v8

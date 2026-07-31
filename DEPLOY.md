@@ -388,6 +388,8 @@
   "gateway": "sdk",
   "agentDefinitionsDir": "./agents",
   "defaultAllowedTools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
+  "maxWorkflowDepth": 4,
+  "maxWorkflowDescendants": 256,
   "aliases": {
     "sonnet":  { "provider": "anthropic", "model": "claude-3-5-sonnet-20241022" },
     "haiku":   { "provider": "anthropic", "model": "claude-3-5-haiku-20241022" },
@@ -419,6 +421,31 @@ frontmatter）時，套用的預設工具清單——縮小送給模型的工具
 不設限。不提供 `aliases` 時，伺服器內建預設值等同上面拿掉 `local` 那份（全指向 anthropic）。
 `agentDefinitionsDir` 省略時 agentType 註冊表為空（每個 `agentType` 都會回報 unknown，不影響不用
 `agentType` 的腳本）。
+`maxWorkflowDepth`（型別 `number`，選填，**v8 新增**）/ `maxWorkflowDescendants`（型別 `number`，
+選填，**v8 新增**）：控制具名 `workflow()` 巢狀組合（N 層 composition）的兩個獨立上限。`maxWorkflowDepth`
+限制單一分支的巢狀深度（頂層 run=0，第一個 `workflow()` 呼叫=1），超過時該次呼叫回傳可分支的
+`NESTING_DEPTH_EXCEEDED` 錯誤（不會讓父 run 卡住或崩潰），省略時預設 **4**；`maxWorkflowDescendants`
+限制整棵樹（fan-out × depth）的巢狀 `workflow()` 呼叫總數，超過回 `DESCENDANT_CAP_EXCEEDED`，省略時
+預設 **256**。兩者皆在啟動載入設定時驗證：值 ≤0 或非整數會被拒絕並回報明確錯誤。（另有一個祖先環
+偵測 `NESTING_CYCLE` 一律啟用、不需設定：`workflow()` 目標若是自己巢狀鏈上的祖先即拒絕，但兩條
+兄弟分支各自呼叫同一個「非祖先」工作流（diamond）是允許的。）
+
+`maxConcurrentRuns`（型別 `number`，選填，**v8 Slice 4 新增**）：頂層 run 的並行上限（run-admission
+counter），省略時預設 **64**，啟動載入時驗證（值 ≤0 或非整數會被拒絕）。當現有「非終態」（`queued`／
+`running`／`suspended`）頂層 run 數已達上限，`start()` 會在**做任何昂貴/持久化動作之前**（不建 run 列、
+不建工作區、不 seed、不 fork sandbox）就以 `RUN_ADMISSION_LIMIT` 拒絕——這是全域 agent semaphore 沒有
+提供的 DoS 阻塞點（semaphore 只限 `agent()` 派工，不限 run 數/sandbox fork/工作區生成）。巢狀
+`workflow()` **不佔用**槽位（不是頂層 `start()`）；run 進入終態即釋放槽位。
+`continuationDbPath`（型別 `string`，選填，**v8 Slice 4 新增**）：on-completion chaining 續接的 SQLite
+檔路徑（引擎自有 side table，與 v1 core 的 RunSpec/RunStore 無關，作法同 `schedulerDbPath`），省略時
+預設 `$workRoot/continuations.db`；一般部署可省略不填。
+
+`webhookDbPath`（型別 `string`，選填，**v8 Defer B 新增**）：webhook 註冊表（`webhooks` +
+`webhook_deliveries` 兩張表）的 SQLite 檔路徑（引擎自有 side table，作法同 `schedulerDbPath`／
+`continuationDbPath`），省略時預設 `$workRoot/webhooks.db`；一般部署可省略不填。此檔存放每個 webhook 的
+`{id, workflow, secret, enabled}`——**secret 是明文儲存**（HMAC 驗簽必須用到金鑰，同 GitHub/Stripe 的
+webhook 模型，單向雜湊無法驗 HMAC），因此此檔的存取權限即等同 webhook 金鑰的機密邊界，請比照
+`schedules.db` 保護；`webhook_list` 只會回傳 secret 的 sha256 前綴指紋，永不回傳 secret 本身。
 
 **Gate 7.5 v2 ROUND 2 config-file sync check 補充（本輪新發現的文件漂移，已修正）**：`litellmPort`
 （型別 `number`，選填）在 v2 TASK-027 就已經被 `composeConfig()` 真的接進
@@ -698,6 +725,74 @@ npm run start
 - 狀態位置：`$workRoot/store`（SQLite run 索引 + 具名工作流程註冊表）與
   `$workRoot/workflows/<name>/runs/<runId>/`（每次執行的工作目錄，含 `agent-*.jsonl` transcript
   事件檔）。
+- **composite 呼叫樹可觀測（v8 Slice 2）**：對 in-process（執行中或剛完成）的 composite run，
+  `workflow_status`／`GET /api/runs/:id` 現在會多回傳呼叫樹資料——每個 agent 記錄帶 `frame`（所在
+  巢狀 frame，頂層 `""`），以及 `workflowNodes: [{frame,name,parentFrame,depth}]`（每次巢狀
+  `workflow()` 一個節點）；用戶端據此重建 DAG 並用 `workflow_agent_log(runId, agentId)` 下鑽到每個
+  節點的 log。跨重啟後 `workflowNodes` 回傳 `[]`（樹只存在於行程內記憶體，尚未持久化）。
+- **儀表板 UI：卡片 → 巢狀 DAG → agent log（v8 Slice 3）**：`GET /dashboard` 首頁現在同時列出
+  **已註冊工作流程卡片**（來自新端點 `GET /api/workflows`）與 **run 卡片**（來自 `GET /api/runs`，
+  每張顯示 `runId` 與 `status · name`）；點一張 run 卡片開啟 `/dashboard/<runId>`，會抓 **新端點
+  `GET /api/runs/:id/dag`**（後端由純函式 `buildDagModel` 依上述 `frame`/`workflowNodes` 重建呼叫樹）
+  並渲染成 **巢狀樹**——每個 composite 子工作流程是一個帶標題（`workflow <name> · depth N`）的群組，
+  內含依 3 態（`queued`/`running`/`done`/`failed`）上色、顯示 model 的 agent 節點；點一個 agent 節點
+  載入它的 transcript。頁面以 3 秒輪詢自動更新。跨重啟後該 run 已不在行程內，`/api/runs/:id/dag`
+  會攤平（`getRun` 回傳 `workflowNodes: []`）——即 REQ-047 記載的「跨重啟持久化不在範圍」。Gate 7.5
+  v8 Slice 3 ROUND 1 PASSED（headless browser 實測，VAL-057/058）。
+- **即時執行細節：phase 時間軸 + 每個 agent 的耗時（v8 Slice 2b）**：`workflow_status`／`GET
+  /api/runs/:id` 現在讓每個 `phases[]` 項目帶 `ts`（進入該 `phase()` 的 ISO 時間，依呼叫順序、`ts`
+  非遞減）；當 run 仍在 `running` 時，最後一個 phase 就是**目前步驟**。每個 agent 記錄多帶
+  `startedAt`（被派工到 gateway、取得並行槽的時間）與 `endedAt`（結束時間，`endedAt ≥ startedAt`）；
+  仍在執行的 agent 只有 `startedAt`，尚未派工的兩者皆無。`GET /api/runs/:id/dag` 的 agent 節點據此
+  導出 `durationMs`（未完成則為 `undefined`）。`/dashboard/<runId>` 詳情頁會渲染 **phase 時間軸**
+  （每個 phase 一個 chip、`ts` 為 tooltip、`running` 時最後一個標為目前步驟）與**每個 agent 節點的
+  耗時**（`<n> ms`）。Gate 7.5 v8 Slice 2b ROUND 1 PASSED（真實 opus agent 實測 `5325 ms`，
+  VAL-059/060）。**尚未支援**：parallel-group 標記、跨重啟的 phase／樹持久化、SSE（維持 3 秒輪詢）、
+  樹的靜態預讀+快取。
+- **跨觸發串接 + run-admission（v8 Slice 4）**：新增兩個 MCP 工具——`chain_create({afterRunId,
+  run:{workflow, args?, budget?}})` 註冊一個**持久化的完成續接**（當 `afterRunId` 進入 `completed` 時，
+  恰好啟動一次 `run.workflow`；`failed`／`stopped` 則標為 `skipped`；`afterRunId` 未知回
+  `CHAIN_TARGET_NOT_FOUND`），回傳 `{chainId}`；`chain_list`（零參數）列出每個續接的 `status`
+  （`pending`／`fired`／`skipped`）、`rootRunId` 世系與已觸發後的 `spawnedRunId`。續接持久化於
+  `continuationDbPath`（見上），跨重啟由 boot reconcile 補觸發（因 `hydrateAll` 會把跨重啟仍 running 的
+  run 標為 failed，開機時目標必為終態）；同一 run 的多次終態轉換（stop→resume→complete）最多只啟動一次
+  下游 run（原子 `WHERE status='pending'` 認領）。並行上限由 `maxConcurrentRuns`（見上）以
+  `RUN_ADMISSION_LIMIT` 把關。Gate 7.5 v8 Slice 4 ROUND 1 PASSED（真實 service 30 tools、真串接執行、
+  in-flight onTerminal 實測，VAL-061/062/063）。**尚未支援**：外部 ingress 安全（Defer B）、跨重啟
+  in-flight 呼叫樹 suspend/resume（Defer A）。
+- **跨重啟 DAG 持久化（v8 Slice 2c）**：以往一個 composite run 一旦行程結束，重啟後 `workflow_status`／
+  `GET /api/runs/:id`／`/api/runs/:id/dag` 會攤平（`phases:[]`／`workflowNodes:[]`、agent 失去 `frame`）。
+  現在引擎在**權威的終態轉換**（單一 `_transition`，涵蓋 `completed`／`failed`／`stopped`）**一次性**寫入一
+  份 DAG 快照（`phases` + `workflowNodes` + 完整 agent 記錄含 `label`／`phase`／`frame`／`startedAt`／
+  `endedAt`）到引擎自有的 `run_snapshots` side table（在 `$workRoot/store/index.db`，migration-free），
+  `getRun` 讀回時 overlay 這份快照——所以重啟後 `buildDagModel` 能重建**同一棵**巢狀樹（composite 群組保留、
+  agent 依 frame 分組、顯示耗時），儀表板不再攤平已完成的 composite run。向後相容：改動前留下的 run（無快照）
+  仍以既有方式重建（phases:[]/workflowNodes:[]、agent 由 token 導出），不會更差、不會崩。Gate 7.5 v8 Slice
+  2c ROUND 1 PASSED（真實 service 重啟後 DAG 不攤平實測，VAL-064）。**尚未支援**：SSE（Item B）、
+  parallel-group 標記（Item C，需 sandbox-IPC 改動）、靜態預讀骨架+快取（Item D）。
+- **外部 ingress 安全：Host/Origin 白名單 + webhook 入口（v8 Defer B，OIDC 前的過渡管控）**：
+  - **Host/Origin 白名單（永遠開啟，不需設定）**：HTTP handler 最頂端對每一條路由（`/mcp`、`/api/*`、
+    `/dashboard`、`/hooks/*`）一致把關。外來 `Host`（DNS-rebinding）→ 403；帶有且非白名單的 `Origin`
+    （瀏覽器 drive-by CSRF）→ 403；**缺少 `Origin` 則放行**（fail-open——所有程式化 MCP client／測試都不
+    送 Origin，若 fail-closed 會打斷所有非瀏覽器呼叫者）。白名單為 loopback（`127.0.0.1`/`localhost`/`::1`）
+    在 server port，加上設定的非 loopback `bind` 主機；是真正的 authority 比對（`127.0.0.1.evil.example.com`
+    這種前綴繞過會被拒）。
+  - **Webhook 入口 `POST /hooks/:id`（fail-closed）**：驗證順序為 id 存在且 enabled → `X-RWE-Signature:
+    sha256=<hex>` 以 `HMAC-SHA256(secret, 原始 body)` 常數時間比對（在 JSON parse 之前，對原始位元組驗）→
+    `X-RWE-Timestamp` 在 ±300 秒內 → `X-RWE-Delivery` 去重（原子 `INSERT OR IGNORE`，重放 → 200 不重跑）→
+    啟動**預先綁定**的工作流程（名稱來自註冊、絕不取自 request body，無 workflow 選擇注入），body 以
+    `args.event` 傳入，回 202 `{runId}`。
+  - **管理工具**：`webhook_create({workflow, enabled?})` 驗證工作流程已註冊（否則 `WORKFLOW_NOT_FOUND`），
+    server 端產生隨機 secret 並**只回傳一次**（`{webhookId, url, secret}`）；`webhook_list`（零參數）只回
+    `{id, workflow, enabled, secretFingerprint}`（sha256 前綴，**永不回 secret**）；`webhook_delete({id})`。
+    註冊表持久化於 `webhookDbPath`（見上），跨重啟可用。
+  - **Bind 安全（OIDC 前的已知注意事項）**：admin-write ingress 目前靠 loopback/LAN bind + 上述 Host/Origin
+    白名單管控。**在公開 `0.0.0.0` bind 且未接 OIDC（REQ-012，D5 延後）的情況下，任何能連到該 port 的人都能
+    呼叫這些工具**——這是已記錄的部署注意事項（見 §2b「沒有身份驗證的已知風險」），白名單是過渡管控、不是
+    OIDC 的替代品。
+  - Gate 7.5 v8 Defer B ROUND 1 PASSED（真實 service 33 tools、`Host: evil` → 403、`Origin: evil` POST
+    /mcp → 403、簽章 `POST /hooks/:id` → 202 且真跑、重放 → 200 不重跑、`webhook_list` 只回指紋，
+    VAL-065/066/067）。
 
 - **本輪對獨立真實 process 重新確認「真的修復」（D-F12/D-F13，全部確認）**：
   1. **（D-F12）in-flight agent 狀態即時可觀察**：真實 3 個並行 `agent()` 呼叫，`status:"running"`
@@ -835,3 +930,10 @@ curl -s -D - -o /dev/null -X POST $BASE/v1/chat/completions \
 | 2026-07-04 | v2 | Dashboard（`GET /dashboard`）、asset sync（skill/MCP config 真實接入 agent session）、scheduler、client plugin、systemd unit、REQ-009 D-V2V-1 修復、D-V2G8-1/2 安全修復（bypassPermissions 移除、tool 白名單、key 隔離、workspace boundary realpath 封閉）、LiteLLM port 動態化（D-V3M-4）、孤兒 litellm 優雅關機（TASK-027） | `npm install`；複製 `rwe.config.example.json`→`rwe.config.json`，移除 `defaultAllowedTools:["Read","Write","Bash"]` 的 Bash（舊 example 有此鍵）；systemd unit 加 `PATH` 含 litellm venv bin/ |
 | 2026-07-11 | v3 | workRoot 隔離保護（boot fail-fast WORKROOT_INSIDE_PROJECT）、預設工具面恢復含 Bash（D-V3M-3，fs jail 已存在）、MCP provisioning registry（`mcp_provision` + `${secret:NAME}` handle 機制）、hook 封鎖（HOOKS_UNSUPPORTED）、SDK gateway thinking disabled for non-Anthropic（D-F6）、SDK gateway timeout（val-023 2/2）、REQ-021 | 確認 `workRoot` 在任何 `.git`/`CLAUDE.md` 祖先之外；`export RWE_SECRET_<NAME>=<value>` 注入 secret；`rwe.config.json` 的 `defaultAllowedTools` 改為 `["Read","Write","Edit","Glob","Grep","Bash"]` |
 | 2026-07-18 | v3 | Gate 7.5 v3 ROUND 1 PASSED：REQ-016..021 全部真實驗證（VAL-025..030）；`RWE_SECRET_<NAME>` 加入文件 env var 表；README tool 清單更新為 22 個工具 | 無破壞性變更，無遷移必要 |
+| 2026-07-30 | v8 | Slice 1：具名 `workflow()` 巢狀升級為 N 層 composition（原本只允許 1 層 → `NESTING_ERROR`）；新增設定鍵 `maxWorkflowDepth`（預設 4）/`maxWorkflowDescendants`（預設 256），啟動時驗證 ≤0/非整數；新增守衛 `NESTING_DEPTH_EXCEEDED`/`NESTING_CYCLE`/`DESCENDANT_CAP_EXCEEDED`（皆為 envelope 錯誤，不崩父 run）；巢狀 journal callSeq 改為 additive frame-based keying（修掉舊乘法式 `(parentCallSeq+1)*1e6+n` 在 ~depth 2 之後溢出 `MAX_SAFE_INTEGER` 的問題，resume 重播確定性不變）。Gate 7.5 v8 Slice 1 ROUND 1 PASSED（VAL-050..053） | 無破壞性變更；兩個新鍵皆選填、有預設值，一般部署可省略；巢狀行為向後相容（單層組合結果不變） |
+| 2026-07-30 | v8 | Slice 2（dashboard 資料層第一增量）：`workflow_status`／`GET /api/runs/:id` 現在多回傳 composite 呼叫樹的兩個結構欄位——每個 agent 記錄帶 `frame`（所在的巢狀 frame；頂層 script `""`，巢狀 `workflow()` 內的 agent frame 以其父 frame 為嚴格前綴），以及 `workflowNodes: [{frame,name,parentFrame,depth}]`（每次巢狀 `workflow(name)` 呼叫一個節點）。用戶端只憑這兩者即可重建整棵呼叫樹（依 `frame` 分組 agent、依 `parentFrame` 巢狀 frame），並用既有的 `workflow_agent_log(runId, agentId)` 下鑽到每個節點的 transcript。Gate 7.5 v8 Slice 2 ROUND 1 PASSED（VAL-054..056）。**尚未支援**：跨重啟的樹持久化（重啟後 `workflowNodes` 回傳 `[]`；活動中的樹在行程內記憶體）、parallel-group 標記、phase 持久化/current-step/計時 | 無破壞性變更；`workflowNodes` 為新增欄位、`frame` 為選填欄位，既有用戶端可忽略；無新設定鍵、無遷移動作 |
+| 2026-07-31 | v8 | Slice 3（儀表板 UI：卡片 → 即時 DAG → agent log）：`GET /dashboard` 首頁列出已註冊工作流程卡片與 run 卡片；新增唯讀端點 `GET /api/workflows`（已註冊工作流程目錄）與 `GET /api/runs/:id/dag`（後端純函式 `buildDagModel` 依 Slice-2 的 `frame`/`workflowNodes` 重建呼叫樹）；重寫自成一體的 SPA（`src/dashboard-page.ts`）——run 詳情頁把 DAG 渲染成巢狀樹（composite 子工作流程為帶標題群組、agent 節點依 3 態上色並顯示 model，點擊下鑽 transcript），3 秒輪詢。修掉一個路由缺口：頂層 router 原本只 match `/api/runs*`，`/api/workflows` 會掉進 `/mcp` handler 回 `-32601`——已把 dispatch 條件擴到也 match `/api/workflows`（Gate 7.5 真跑抓到、IT-048 回歸鎖定）。Gate 7.5 v8 Slice 3 ROUND 1 PASSED（headless browser 實測，VAL-057/058）。**尚未支援**：SSE（維持 3 秒輪詢）、parallel-group 標記、phase 持久化/current-step/計時、樹的靜態預讀+快取、跨重啟樹持久化 | 無破壞性變更；兩個新端點皆唯讀、與 `/mcp` 共用同一 port/server；無新設定鍵、無遷移動作 |
+| 2026-07-31 | v8 | Slice 2b（即時執行細節：phase 時間軸 + 每個 agent 的耗時）：`workflow_status`／`GET /api/runs/:id` 現在讓每個 `phases[]` 項目帶 `ts`（進入 `phase()` 的 ISO 時間，依序、非遞減；`running` 時最後一個為目前步驟），每個 agent 記錄帶 `startedAt`（派工/取得並行槽的時間）與 `endedAt`（結束時間，`endedAt ≥ startedAt`）；`GET /api/runs/:id/dag` 的 agent 節點導出 `durationMs`（未完成為 `undefined`）；`/dashboard/<runId>` 詳情頁渲染 phase 時間軸（chip + `ts` tooltip + 目前步驟標記）與每個 agent 節點的 `<n> ms` 耗時。純讀模型/可觀測性擴充，無執行語意變更（沿用既有 `Clock`/`markRunning`/`capture` seam）。Gate 7.5 v8 Slice 2b ROUND 1 PASSED（真實 opus agent 實測 `5325 ms`，VAL-059/060）。**尚未支援**：parallel-group 標記、跨重啟 phase/樹持久化、SSE、樹的靜態預讀+快取 | 無破壞性變更；`PhaseView.ts`/`AgentRecord.startedAt`/`endedAt` 為新增欄位，既有用戶端可忽略；無新端點、無新設定鍵、無遷移動作 |
+| 2026-08-01 | v8 | Slice 4（跨觸發串接 + run-admission）：新增權威的 `onTerminal(runId,status)` hook（自單一 `_transition` 觸發、fire-and-forget、涵蓋 `stopped`）+ `maxConcurrentRuns` 並行上限（預設 64，啟動驗證，`start()` 於任何持久化動作前以 `RUN_ADMISSION_LIMIT` 把關，巢狀 `workflow()` 不佔槽）；新增引擎自有的持久化續接 side table `ContinuationStore`（SQLite+WAL，作法同 scheduler）+ 兩個 MCP 工具 `chain_create`／`chain_list`（完成即啟動下游 run，恰好一次；failed/stopped→skipped；`CHAIN_TARGET_NOT_FOUND`；跨重啟 boot reconcile；`rootRunId` 世系；stop→resume→complete 只啟動一次）；新設定鍵 `maxConcurrentRuns`（預設 64）/`continuationDbPath`（預設 `$workRoot/continuations.db`）。Gate 7.5 v8 Slice 4 ROUND 1 PASSED（真實 service 30 tools、真串接執行 + in-flight onTerminal 實測，VAL-061/062/063）。**尚未支援**：外部 ingress 安全（Defer B）、跨重啟 in-flight 呼叫樹 suspend/resume（Defer A） | 無破壞性變更；兩個新鍵皆選填、有預設值，一般部署可省略；兩個新工具為附加、既有用戶端可忽略；無遷移動作 |
+| 2026-08-01 | v8 | Slice 2c（跨重啟 DAG 持久化）：引擎在權威的終態 `_transition`（涵蓋 `completed`/`failed`/`stopped`）一次性寫入一份 DAG 快照（`phases` + `workflowNodes` + 完整 agent 記錄含 `label`/`phase`/`frame`/`startedAt`/`endedAt`）到引擎自有的 migration-free side table `run_snapshots`（在 `$workRoot/store/index.db`），`getRun` 讀回時 overlay——修掉「重啟後 composite run 的巢狀 DAG/phases 攤平（`phases:[]`/`workflowNodes:[]`、agent 失去 frame）」的真實資料遺失；`buildDagModel` 重啟後能重建同一棵巢狀樹。向後相容：無快照的舊 run 仍以既有方式重建、不會更差不會崩。Gate 7.5 v8 Slice 2c ROUND 1 PASSED（真實 service 重啟後 DAG 不攤平實測，VAL-064）。**尚未支援**：SSE（Item B）、parallel-group 標記（Item C，需 sandbox-IPC）、靜態預讀+快取（Item D） | 無破壞性變更；無新設定鍵（快照存於既有 `$workRoot/store/index.db` 的新 side table，migration-free）；既有用戶端可忽略；無遷移動作 |
+| 2026-08-01 | v8 | Defer B（外部 ingress 安全，OIDC 前過渡管控）：HTTP handler 最頂端對每條路由（`/mcp`/`/api/*`/`/dashboard`/`/hooks/*`）一致的 **Host/Origin 白名單**（外來 Host → 403 防 DNS-rebinding；帶有且非白名單 Origin → 403 防 CSRF；缺 Origin 放行 = fail-open，不打斷程式化 client）；新增 **webhook 入口 `POST /hooks/:id`**（fail-closed：exists+enabled → HMAC-SHA256 常數時間比對原始 body → ±300s 時戳 → deliveryId 去重 → 啟動預先綁定工作流程，body 以 `args.event` 傳入，回 202）；新增三個 MCP 工具 `webhook_create`（server 端產生 secret 只回一次）/`webhook_list`（只回 sha256 指紋，永不回 secret）/`webhook_delete`；新增引擎自有的持久化 webhook 註冊表 side table（`webhooks` + `webhook_deliveries`）+ 新設定鍵 `webhookDbPath`（預設 `$workRoot/webhooks.db`）。secret 為明文儲存（HMAC 驗簽需金鑰，同 GitHub/Stripe 模型）。Gate 7.5 v8 Defer B ROUND 1 PASSED（真實 service 33 tools、`Host: evil` → 403、`Origin: evil` POST /mcp → 403、簽章 `POST /hooks/:id` → 202 真跑、重放 → 200 不重跑，VAL-065/066/067）。**已知注意事項**：公開 `0.0.0.0` bind 且未接 OIDC（REQ-012，D5 延後）時，能連到 port 的人皆可呼叫這些工具——白名單是過渡管控、非 OIDC 替代 | 無破壞性變更；`webhookDbPath` 選填有預設值、一般部署可省略；三個新工具為附加、既有用戶端可忽略；Host/Origin 白名單永遠開啟且對正常 loopback/LAN 呼叫無影響（缺 Origin fail-open）；無遷移動作 |

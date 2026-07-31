@@ -49,8 +49,11 @@ STATUS_ORDER = ["draft", "reviewed", "done", "blocked"]
 STATUS_LABEL = {"draft": "草稿", "reviewed": "已審", "done": "完成",
                 "blocked": "受阻", "unknown": "未標"}
 
-# 前綴允許字母開頭的英數（如 REQ、E2E），避免漏掉含數字的前綴
-ITEM_RE = re.compile(r"^#{2,4}\s+([A-Z][A-Z0-9]{1,4}-\d+)\s*[—\-–:：]\s*(.+?)\s*$")
+# 前綴允許字母開頭的英數（如 REQ、E2E），避免漏掉含數字的前綴。
+# 工作項一律是 level-3 標題（SKILL §1）；限定 `###`，避免 review/散文中 `####`/`##` 的
+# ID 形狀子標題被誤判為工作項而覆蓋掉真正的定義（例：v7 07-review 的 `#### ARCH-025/026`
+# 覆蓋掉 02-architecture 的真 ARCH-025/026，使 REQ-037..040 出現假「未實作」缺口）。
+ITEM_RE = re.compile(r"^#{3}\s+([A-Z][A-Z0-9]{1,4}-\d+)\s*[—\-–:：]\s*(.+?)\s*$")
 META_RE = re.compile(r"^\s*[-*]\s*\*\*(\w+)\s*[:：]?\s*\*\*\s*[:：]?\s*(.*)$")
 ID_RE   = re.compile(r"[A-Z][A-Z0-9]{1,4}-\d+")
 # 任何標題列（含非工作項標題，如 "## 決策理由" 或不合 ID 規則的 "### IMPL-S01"）。

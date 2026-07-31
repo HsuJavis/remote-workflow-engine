@@ -15,8 +15,9 @@ const RUN_SUMMARY: RunSummary = {
 const STATUS_VIEW: RunStatusView = {
   runId: 'r1',
   status: 'completed',
-  phases: [{ title: 'fetch' }],
+  phases: [{ title: 'fetch', ts: '2020-01-01T00:00:00.000Z' }],
   agents: [],
+  workflowNodes: [],
   scriptVersion: 'v1',
 };
 

@@ -151,6 +151,9 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 # workflow_status.agents[0] 會顯示真正用到的 provider/model/tokens；輪詢過程中若還在跑，
 # state 現在會正確顯示 "running"（第六輪 D-F12 修復，見下方確認修復第 1 項）
 ```
+> **composite 呼叫樹（v8 Slice 2）**：對一個用 `workflow()` 組合其他工作流程的 run，`workflow_status`
+> 會額外回傳 `workflowNodes: [{frame,name,parentFrame,depth}]`（每次巢狀 `workflow()` 一個節點）以及每個
+> `agents[].frame`（所在巢狀 frame，頂層 `""`）——用戶端據此重建整棵呼叫樹並下鑽到每個節點的 log。
 > **注意（第六輪 Gate 7.5 對獨立真實 process + 真實 Ollama 重新確認）**：純文字問答（不需要工具）
 > 這樣的呼叫可正常運作、約 15-20 秒內完成，且進行中即可從 `workflow_status` 看到 `"running"`。
 > **但如果你的 prompt 要求 agent 讀檔或寫檔（工具呼叫），目前對本機 7B 級 Ollama 模型完全不會真的
@@ -252,6 +255,32 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 持久化、含版本更新後舊 run 仍保留原版本號）都正確；`gateway:"sdk"` 正確把呼叫端指定的模型/別名
 帶入 SDK session；供應商真實錯誤（`is_error:true`）正確解析成 `null`；2 層巢狀 `workflow()` 正確
 被拒絕、1 層正確允許；未知模型別名在送出時就被拒絕（不會跑到一半才失敗）。
+> **v8 Slice 1 更新（2026-07-30）**：上述「2 層巢狀 `workflow()` 被拒絕」已被 N 層 composition 取代
+> ——具名 `workflow()` 現在可巢狀到設定的 `maxWorkflowDepth`（預設 4）層，讓一個已註冊的 composite
+> 能當作另一個 composite 的節點。超過深度→`NESTING_DEPTH_EXCEEDED`、祖先環→`NESTING_CYCLE`、整棵樹
+> 巢狀呼叫數超過 `maxWorkflowDescendants`（預設 256）→`DESCENDANT_CAP_EXCEEDED`（皆為可分支的
+> envelope 錯誤，不崩父 run）；巢狀子工作流共用父 run 的同一份預算/journal。詳見 DEPLOY.md §1b。
+
+## v8 新功能（Gate 7.5 v8 Slice 2c + Defer B ROUND 1，2026-08-01 — GATE PASSED）
+
+- **跨重啟 DAG 持久化（REQ-055）**：一個 composite run（含巢狀 `workflow()`／`phase()`／`agent()`）進入
+  終態時，引擎會把它的 DAG 快照（phases + workflowNodes + 每個 agent 的 `label`/`frame`/`phase`/耗時）
+  一次性寫入持久化，所以**重啟後 `workflow_status`／`/api/runs/:id/dag` 仍能重建同一棵巢狀樹**，儀表板不
+  再攤平已完成的 composite run（以往重啟後樹會攤平）。向後相容：舊 run（無快照）仍以既有方式重建。
+- **外部 ingress 安全（REQ-056/057/058，OIDC 前過渡管控）**：HTTP server 每條路由都套用 **Host/Origin
+  白名單**（外來 Host → 403 防 DNS-rebinding；帶有且非白名單 Origin → 403 防 CSRF；缺 Origin 放行，不打斷
+  程式化 client）。新增 **webhook 入口 `POST /hooks/:id`**——fail-closed 驗證（`HMAC-SHA256(secret, 原始
+  body)` 常數時間比對 → ±300s 時戳 → deliveryId 去重 → 啟動**預先綁定**的工作流程，body 以 `args.event`
+  傳入）。管理工具 `webhook_create`（server 端產生 secret、只回一次）/`webhook_list`（只回 sha256 指紋、
+  永不回 secret）/`webhook_delete`，註冊表持久化跨重啟。⚠️ 公開 `0.0.0.0` bind 且未接 OIDC 時，能連到
+  port 的人皆可呼叫這些工具——白名單是過渡管控、非 OIDC 替代。
+- **完成即串接（on-completion chaining，REQ-053）**：用 `chain_create({afterRunId, run:{workflow,
+  args?}})` 註冊「當某個 run 完成時，自動啟動另一個 run」，恰好一次；目標 `failed`／`stopped` 則跳過。
+  續接持久化（引擎自有 SQLite side table），跨重啟由 boot reconcile 補觸發，並帶 `rootRunId` 世系；
+  用 `chain_list`（零參數）查每個續接的狀態與已啟動的 `spawnedRunId`。
+- **並行 run 上限（run-admission，REQ-054）**：設定鍵 `maxConcurrentRuns`（預設 64）限制同時存活的
+  頂層 run 數；超限的 `start()` 在做任何昂貴動作前即以 `RUN_ADMISSION_LIMIT` 拒絕（這是全域 agent
+  semaphore 沒有涵蓋的 DoS 阻塞點）；巢狀 `workflow()` 不佔槽，run 進終態即釋放。
 
 ## v3 新功能（Gate 7.5 v3 ROUND 1，2026-07-18 — GATE PASSED）
 
@@ -296,6 +325,11 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 > `/dashboard/<runId>` 走同一個靜態頁面的 client-side 路由。頁面本身呼叫的是下面同一組唯讀
 > `/api/runs*` JSON API（DES-018）——一份資料模型，兩種傳輸方式（瀏覽器頁面 + 給其他工具消費的
 > JSON）。見 `tests/acceptance/val-018-dashboard-browser-ui.test.ts`（VAL-018）。
+> **v8 Slice 3**：首頁現在同時列出已註冊工作流程卡片與 run 卡片；點一張 run 卡片會把它的 composite
+> 呼叫樹渲染成巢狀 DAG（每個子工作流程為一個帶標題群組、agent 節點依 3 態上色並顯示 model，點擊下鑽
+> transcript），資料來自新端點 `GET /api/workflows` 與 `GET /api/runs/:id/dag`（VAL-057/058）。
+> **v8 Slice 2b**：run 詳情頁再加上 phase 時間軸（每個 `phase()` 帶進入時間 `ts`、`running` 時最後
+> 一個標為目前步驟）與每個 agent 節點的耗時（`startedAt`/`endedAt` 導出 `durationMs`，顯示 `<n> ms`）（VAL-059/060）。
 ```bash
 # 直接在瀏覽器打開（或用 curl 看原始 HTML）
 open http://127.0.0.1:8787/dashboard        # macOS；Linux 可用 xdg-open，或直接貼網址到瀏覽器
@@ -303,6 +337,12 @@ open http://127.0.0.1:8787/dashboard        # macOS；Linux 可用 xdg-open，�
 # 底層唯讀 JSON API（dashboard 頁面自己的 JS 也是呼叫這幾支）：
 # 列出所有 run（含即時狀態）
 curl -s http://127.0.0.1:8787/api/runs
+
+# 列出已註冊工作流程（v8 Slice 3，首頁卡片用）
+curl -s http://127.0.0.1:8787/api/workflows
+
+# 單一 run 的 composite 呼叫樹（DAG，v8 Slice 3；後端 buildDagModel 重建）
+curl -s http://127.0.0.1:8787/api/runs/<runId>/dag
 
 # 點進單一 run（phase/agent tree，重複呼叫即可看到即時更新，不需重新整理任何東西）
 curl -s http://127.0.0.1:8787/api/runs/<runId>

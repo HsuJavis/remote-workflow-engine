@@ -316,3 +316,38 @@ status: draft
 - **status:** done
 - **traces:** ARCH-026
 - **iter:** v7
+
+### TASK-048 — N-level workflow() composition: depth/cycle/descendant guards + depth-safe frame-based journal keying + config caps
+- **status:** done
+- **traces:** ARCH-027
+- **iter:** v8
+
+### TASK-049 — surface the composite call-tree in the read-model: frame-tag agents + record nested workflow() boundary nodes + expose via workflow_status / GET /api/runs/:id
+- **status:** done
+- **traces:** ARCH-028
+- **iter:** v8
+
+### TASK-050 — dashboard UI: pure buildDagModel + /api/{workflows,runs/:id/dag} endpoints + rewritten nested-group SPA (cards → live DAG → agent log)
+- **status:** done
+- **traces:** ARCH-029
+- **iter:** v8
+
+### TASK-051 — live execution detail: stamp phase timestamps + per-agent started/ended timing, expose durationMs on the dag node, render the phase timeline + current step + per-node duration
+- **status:** done
+- **traces:** ARCH-030
+- **iter:** v8
+
+### TASK-052 — cross-trigger chaining + run-admission: fire an authoritative onTerminal from _transition, add a maxConcurrentRuns admission gate to start(), build a durable ContinuationStore (chain_create/chain_list) reconciled at boot, wire it into server composition via a late-bound closure
+- **status:** done
+- **traces:** ARCH-031
+- **iter:** v8
+
+### TASK-053 — cross-restart DAG persistence: add a RunDagSnapshot + saveSnapshot to the RunStore port, capture it once at the terminal _transition (phases + workflowNodes + full agent records), overlay it on getRun read-back (both InMemory + Sqlite stores), migration-free run_snapshots side table
+- **status:** done
+- **traces:** ARCH-032
+- **iter:** v8
+
+### TASK-054 — external-ingress security: add Host/Origin allowlist helpers to net-guard + a 403 guard at the top of the HTTP handler, build a durable WebhookRegistry (HMAC verify + timestamp window + delivery dedup + fire pre-bound), add POST /hooks/:id ingress route and webhook_create/list/delete tools
+- **status:** done
+- **traces:** ARCH-033
+- **iter:** v8

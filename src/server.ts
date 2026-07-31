@@ -17,6 +17,9 @@ import type { GatewayClient } from './gateway/client.js';
 import type { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { loadAgentDefinitions } from './agent-definitions.js';
 import { SqliteSchedulerPort, type Schedule, type NewSchedule } from './scheduler.js';
+import { ContinuationStore } from './continuation-store.js';
+import { WebhookRegistry } from './webhook-registry.js';
+import { isAllowedHost, isAllowedOrigin } from './net-guard.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
 import { AssetSyncService, classifyAsset, type AssetPush, type AssetKind } from './asset-sync.js';
 import { classifyTransport, RealMcpProbe, type McpProbe, type McpServerConfig } from './mcp-probe.js';
@@ -27,7 +30,7 @@ import { buildCatalog, filterCatalog, type ModelEntry, type CatalogFilter } from
 
 // Single source for the engine version reported over MCP (serverInfo) and stamped into filed issues.
 const ENGINE_VERSION = '1.0.0';
-import { buildDashboardModel } from './dashboard.js';
+import { buildDashboardModel, buildDagModel } from './dashboard.js';
 import { DASHBOARD_HTML } from './dashboard-page.js';
 import type { RunStore } from './run-store.js';
 
@@ -86,6 +89,19 @@ export interface ServerConfig {
   // the live endpoints. A fully injectable builder (`modelCatalog`) overrides these when set.
   modelCatalogFetchers?: { ollamaFetch?: typeof fetch; openrouterFetch?: typeof fetch; ollamaBaseUrl?: string };
   modelCatalog?: () => Promise<ModelEntry[]>;
+  // v8 Slice 1 (REQ-041/043): max `workflow()` nesting depth (default 4) and max total nested
+  // workflow() invocations per run (default 256). Read from rwe.config.json via main.ts FileConfig;
+  // an invalid value is rejected at RunManager construction (i.e. at config load).
+  maxWorkflowDepth?: number;
+  maxWorkflowDescendants?: number;
+  // v8 Slice 4 (REQ-054): max live top-level runs (default 64; invalid rejected at RunManager
+  // construction). (REQ-053): override the continuation store's on-disk path (default
+  // join(workRoot,'continuations.db')), same convention as schedulerDbPath.
+  maxConcurrentRuns?: number;
+  continuationDbPath?: string;
+  // v8 Defer B (REQ-057/058): override the webhook registry's on-disk path (default
+  // join(workRoot,'webhooks.db')), same convention as schedulerDbPath/continuationDbPath.
+  webhookDbPath?: string;
 }
 
 export interface Server {
@@ -136,6 +152,13 @@ const TOOL_NAMES = [
   'issue_comment',
   // v7 (REQ-039/040): unified, filterable cross-provider model catalog.
   'models_list',
+  // v8 Slice 4 (REQ-053): durable on-completion chaining — "after run A completes, start run B".
+  'chain_create',
+  'chain_list',
+  // v8 Defer B (REQ-058): external webhook ingress management.
+  'webhook_create',
+  'webhook_list',
+  'webhook_delete',
 ] as const;
 
 type ToolName = (typeof TOOL_NAMES)[number];
@@ -401,6 +424,40 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
       },
     },
   },
+  chain_create: {
+    description: "Registers a durable on-completion chain: when run `afterRunId` COMPLETES, start `run.workflow` with `run.args` exactly once (failed/stopped → skipped). Survives restart. Returns {chainId}; the spawned runId appears in chain_list once fired.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        afterRunId: { type: 'string', description: 'The run to chain after (its completion triggers the new run).' },
+        run: { type: 'object', description: 'The run to start on completion: { workflow: <registered name>, args?, budget? }.' },
+      },
+      required: ['afterRunId', 'run'],
+    },
+  },
+  chain_list: {
+    description: 'Lists every registered continuation with its status (pending|fired|skipped), rootRunId lineage, and spawnedRunId (once fired).',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  webhook_create: {
+    description: "Registers an external webhook that fires a PRE-BOUND registered workflow. Returns {webhookId, url, secret} with the secret shown ONCE. Callers POST to the url with X-RWE-Signature (sha256=HMAC(secret,body)), X-RWE-Timestamp (±300s), X-RWE-Delivery (dedup id); the parsed body arrives as args.event.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflow: { type: 'string', description: 'Name of a registered workflow to fire on each delivery.' },
+        enabled: { type: 'boolean', description: 'Whether the webhook is active (default true).' },
+      },
+      required: ['workflow'],
+    },
+  },
+  webhook_list: {
+    description: 'Lists every webhook with {id, workflow, enabled, secretFingerprint} — never the secret itself.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  webhook_delete: {
+    description: 'Deletes a webhook by id.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'The webhook to delete.' } }, required: ['id'] },
+  },
 };
 
 // REQ-024 (v1.5, DoS): cap the request body so a large/hostile body can't buffer unbounded and OOM
@@ -470,6 +527,9 @@ async function checkMcpConfigTransport(push: AssetPush, probe: McpProbe): Promis
 async function callTool(
   facade: McpFacade,
   scheduler: SqliteSchedulerPort,
+  continuations: ContinuationStore,
+  webhooks: WebhookRegistry,
+  webhookBaseUrl: string,
   assetSync: AssetSyncService,
   mcpProbe: McpProbe,
   mcpRegistry: McpRegistry,
@@ -499,6 +559,21 @@ async function callTool(
     case 'schedule_delete': return scheduler.delete(args['id'] as string);
     case 'schedule_setEnabled': return scheduler.setEnabled(args['id'] as string, args['enabled'] as boolean);
     case 'workflow_trigger': return scheduler.trigger(args['workflow'] as string, args['args']);
+    // v8 Slice 4 (REQ-053): durable on-completion chaining over the ContinuationStore.
+    case 'chain_create': {
+      const r = await continuations.chainCreate(args as unknown as { afterRunId: string; run: { workflow: string; args?: unknown; budget?: number | null } });
+      return r.error ? { error: r.error } : { result: { chainId: r.chainId } };
+    }
+    case 'chain_list': return { result: await continuations.list() };
+    // v8 Defer B (REQ-058): webhook ingress management. webhook_create returns the secret ONCE + the
+    // POST url; webhook_list returns fingerprints only; webhook_delete removes by id.
+    case 'webhook_create': {
+      const r = await webhooks.create(args as unknown as { workflow: string; enabled?: boolean });
+      if ('error' in r) return { error: r.error };
+      return { result: { webhookId: r.webhookId, url: `${webhookBaseUrl}/hooks/${r.webhookId}`, secret: r.secret } };
+    }
+    case 'webhook_list': return { result: webhooks.list() };
+    case 'webhook_delete': return { result: webhooks.delete(args['id'] as string) };
     // v2 (DES-019/TASK-021): asset_push reports a path-safety violation as a tool-result `error`
     // (never a thrown JSON-RPC-level error) — DES-001's own "never throw across the tool boundary".
     case 'asset_push': {
@@ -585,11 +660,26 @@ async function handleDashboardRequest(
   }
   const path = (req.url ?? '').split('?')[0]!;
   const agentMatch = /^\/api\/runs\/([^/]+)\/agents\/([^/]+)$/.exec(path);
+  const dagMatch = /^\/api\/runs\/([^/]+)\/dag$/.exec(path);
   const runMatch = /^\/api\/runs\/([^/]+)$/.exec(path);
   try {
     if (path === '/api/runs') {
       const runs = await store.listRuns();
       sendJson(res, 200, buildDashboardModel(runs).runs);
+      return;
+    }
+    // v8 Slice 3 (REQ-049): registered-workflow cards for the dashboard home.
+    if (path === '/api/workflows') {
+      sendJson(res, 200, await runManager.catalog.list());
+      return;
+    }
+    // v8 Slice 3 (REQ-048/049): the reconstructed call tree (DAG) for one run.
+    if (dagMatch) {
+      const [, runId] = dagMatch as unknown as [string, string];
+      const stored = await store.getRun(runId);
+      if (!stored) { sendJson(res, 404, { error: `Run not found: ${runId}` }); return; }
+      const view = await runManager.status(runId).catch(() => stored);
+      sendJson(res, 200, buildDagModel(view));
       return;
     }
     if (agentMatch) {
@@ -648,7 +738,18 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // D-V3M-2 (REQ-020 D-DOS): the ONE process-global agent-slot semaphore, shared by reference into
   // the RunManager (rations every SDK-CLI dispatch) and surfaced read-only via GET /api/status.
   const agentSemaphore = createSemaphore(config?.agentSlots ?? 32);
-  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore });
+  // v8 Slice 4 (REQ-053): the continuation store subscribes to RunManager.onTerminal. There is a
+  // construction cycle (RunManager needs onTerminal → store; store needs runManager.start) — broken
+  // with a late-bound closure: onTerminal fires via queueMicrotask at runtime, long after both are
+  // assigned, so `continuations` is populated by then.
+  let continuations: ContinuationStore | undefined;
+  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, onTerminal: (runId, status) => { void continuations?.onTerminal(runId, status); } });
+  // v8 Slice 4 (REQ-053): SQLite-persisted on-completion chaining, same workRoot convention as
+  // schedules.db; rearmAtBoot reconciles any continuation whose target terminated while down.
+  continuations = new ContinuationStore({ clock, runManager, store, dbPath: config?.continuationDbPath ?? join(workRoot, 'continuations.db') });
+  void continuations.rearmAtBoot();
+  // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
+  const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
   // v3 (DES-020/TASK-026): defaults to a real network/spawn probe; tests inject a FakeMcpProbe.
   // Constructed here (moved up from its old asset_push-only spot) so the v3 MCP Provisioning
   // Registry below can reuse the SAME injected probe seam (DES-024's "provision-time McpProbe
@@ -755,7 +856,18 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     gcTimer.unref?.();
   }
 
+  // v8 Defer B (REQ-056): the real listening port is known only after listen(); the handler closure
+  // reads it via this mutable, assigned below. 0 until then (no request is served before listen).
+  let boundPort = 0;
   const http = createHttpServer((req, res) => {
+    // v8 Defer B (REQ-056): Host/Origin allowlist — DNS-rebinding + CSRF defense, uniform across every
+    // route (/mcp, /api/*, /dashboard, /hooks/*). A foreign Host (rebinding) or a present-but-foreign
+    // Origin (drive-by browser CSRF) is refused 403; an ABSENT Origin is allowed (programmatic clients
+    // send none — fail-open). This is the interim access control until OIDC (REQ-012, D5).
+    if (!isAllowedHost(req.headers.host, bind, boundPort) || !isAllowedOrigin(req.headers.origin, bind, boundPort)) {
+      sendJson(res, 403, { error: 'Forbidden: Host/Origin not allowlisted' });
+      return;
+    }
     // D-V2V-2 (REQ-008 route-back): a real browser-renderable HTML/JS dashboard page, on the SAME
     // port as /mcp and /api/runs* (one data model, two transports — now genuinely two). SPA-style
     // routing: /dashboard/<runId> serves this exact same static page; its own client JS reads the
@@ -774,9 +886,32 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     }
     // TASK-025 (DES-018): read-only dashboard HTTP API, a distinct transport from /mcp on the
     // SAME port (no separate dashboard listener/port — one server, two transports).
-    if (req.url?.startsWith('/api/runs')) {
+    if (req.url?.startsWith('/api/runs') || req.url?.startsWith('/api/workflows')) {
       handleDashboardRequest(req, res, store, runManager).catch(() => {
         sendJson(res, 200, { degraded: 'internal dashboard error' });
+      });
+      return;
+    }
+    // v8 Defer B (REQ-057): webhook ingress. POST /hooks/:id — verify (HMAC over the RAW body BEFORE
+    // JSON parse, timestamp window, deliveryId dedup) then fire the PRE-BOUND workflow. Slots in before
+    // the /mcp fallthrough; the 413 body cap is inherited from readBody.
+    const hookMatch = req.method === 'POST' ? /^\/hooks\/([^/?]+)/.exec(req.url ?? '') : null;
+    if (hookMatch) {
+      const webhookId = decodeURIComponent(hookMatch[1]!);
+      readBody(req).then(async (raw) => {
+        let parsed: unknown = undefined;
+        try { parsed = raw ? JSON.parse(raw) : undefined; } catch { parsed = raw; } // non-JSON body → pass through as text
+        const out = await webhooks.deliver(webhookId, {
+          signature: req.headers['x-rwe-signature'] as string | undefined,
+          timestamp: req.headers['x-rwe-timestamp'] as string | undefined,
+          deliveryId: req.headers['x-rwe-delivery'] as string | undefined,
+          rawBody: raw, parsedBody: parsed,
+        });
+        if (out.ok) sendJson(res, out.httpStatus, out.replayed ? { replayed: true } : { runId: out.runId });
+        else sendJson(res, out.httpStatus, { error: out.reason });
+      }).catch((err: unknown) => {
+        if (err instanceof BodyTooLargeError) sendJson(res, 413, { error: err.message });
+        else sendJson(res, 500, { error: 'webhook ingress error' });
       });
       return;
     }
@@ -824,7 +959,8 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         if (rpc.method === 'tools/call') {
           const name = rpc.params?.name ?? '';
           const args = rpc.params?.arguments ?? {};
-          const result = await callTool(facade, scheduler, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, name, args);
+          const webhookBaseUrl = `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
+          const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, name, args);
           sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } });
           return;
         }
@@ -847,6 +983,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   });
   const address = http.address();
   const port = typeof address === 'object' && address ? address.port : 0;
+  boundPort = port; // v8 Defer B: now the Host/Origin allowlist knows our real port
   assetSync = new AssetSyncService({
     assetRoot: config?.assetRoot ?? join(workRoot, 'assets'),
     selfBind: { host: bind, port },

@@ -7,6 +7,117 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
+> **v8 SLICE 2c + DEFER B ROUND 1 (2026-08-01) — GATE PASSED.** REQ-055 (cross-restart DAG
+> persistence) + REQ-056/057/058 (external-ingress security: Host/Origin allowlist + HMAC webhook
+> ingress + durable webhook registry) each carry a `real:true` VAL item below (VAL-064 / VAL-065/066/067).
+> Validated against the live production engine (systemd user service `rwe.service`, `127.0.0.1:8787`,
+> runs `tsx src/main.ts`), restarted with the Slice-2c + Defer-B code — `tools/list` now serves **33
+> tools including `webhook_create` / `webhook_list` / `webhook_delete`**. Slice 2c: a composite
+> `phase('top') → workflow('s2c-mid'){ phase('p1') → workflow('s2c-leaf') }` was run in-process; before
+> restart `GET /api/runs/:id/dag` showed children `[(s2c-mid,1)]`; the service was RESTARTED and after
+> restart `/api/runs/:id/dag` STILL showed `[(s2c-mid,1)]` and `/api/runs/:id` showed `phases ['top']` +
+> `workflowNodes ['s2c-mid','s2c-leaf']` — the DAG did NOT flatten (reversing the Slice-3 documented
+> flattening). Defer B allowlist: `curl -H 'Host: evil.example.com' /api/runs` → 403; normal loopback
+> → 200; `-H 'Origin: http://evil.example.com' POST /mcp` → 403. Defer B webhook: `webhook_create` →
+> `{url, secret}`; a signed `POST /hooks/:id` (openssl HMAC) → 202 `{runId}`; the pre-bound workflow ran →
+> result `{got:{deploy:'v9'}}` (body → `args.event`); a replay of the same `X-RWE-Delivery` → 200 (no
+> second run); `webhook_list` showed only a fingerprint (never the secret). Test webhooks/workflows
+> deregistered afterward; registry clean. REQ-012 (OIDC) remains DEFERRED by user decision D5 — the
+> Host/Origin allowlist + loopback/LAN bind is the interim control; a public `0.0.0.0` bind without OIDC
+> is a documented caveat. All prior REQs (001..054) still hold evidence from the rounds below — not
+> re-litigated this round.
+
+> **v8 SLICE 4 ROUND 1 (2026-08-01) — GATE PASSED.** REQ-052/053/054 (cross-trigger chaining +
+> run-admission: authoritative onTerminal hook + durable on-completion chaining + maxConcurrentRuns cap)
+> each carry a `real:true` VAL item below (VAL-061/062/063). Validated against the live production engine
+> (systemd user service `rwe.service`, `127.0.0.1:8787`, runs `tsx src/main.ts`), restarted with the
+> Slice-4 code — `tools/list` now serves **30 tools including `chain_create` + `chain_list`**. Two live
+> chaining runs: (1) LATE-CREATE reconcile — registered `chainB` (`return 'B-ran'`), ran `A`
+> (`return 'A-done'`) to completion, then `chain_create({afterRunId:A, run:{workflow:'chainB'}})`;
+> `chain_list` showed `status:'fired', rootRunId:A, spawnedRunId:<B>` and `workflow_result(B) === "B-ran"`
+> — the chained run really executed. (2) LIVE onTerminal — ran `A2` (an `agent(model:'opus')` call, a few
+> seconds); while A2 was still RUNNING, `chain_create({afterRunId:A2, run:{workflow:'chainC'}})`; when A2
+> completed, `chain_list` showed the C continuation `status:'fired'` with a `spawnedRunId` — proving the
+> real onTerminal hook fired the continuation LIVE (not just the late-create path). REQ-054 admission is
+> covered real-wiring by IT-050 (real RunManager + real sandbox subprocess; only the spawner faked, which
+> is not the SUT boundary for the admission gate) — an HONEST-PARTIAL: the live path needs sustained >64
+> concurrent runs, but the gate itself is exercised against the real run lifecycle. Test workflows
+> deregistered afterward; registry clean. REQ-012 (OIDC) remains DEFERRED by user decision D5. All prior
+> REQs (001..051) still hold evidence from the rounds below — not re-litigated this round.
+
+> **v8 SLICE 2b ROUND 1 (2026-07-31) — GATE PASSED.** REQ-050/051 (live execution detail: phase
+> timeline with current step + per-agent timing) each carry a `real:true` VAL item below (VAL-059/060).
+> Validated against the live production engine (systemd user service `rwe.service`, `127.0.0.1:8787`,
+> runs `tsx src/main.ts`), restarted with the Slice-2b code, via `GET /api/runs/:id` + `GET
+> /dashboard/:runId` and a headless browser (Playwright). An ad-hoc composite
+> `phase('draft'); const p = await agent('reply PONG', {label:'pinger', model:'opus'}); phase('done');
+> return p;` was run in-process. `GET /api/runs/:id` returned `phases: [{title:'draft',
+> ts:'2026-07-31T05:05:58.982Z'}, {title:'done', ts:'2026-07-31T05:06:04.309Z'}]` (ordered `ts`) and the
+> agent record `{label:'pinger', state:'done', model:'opus', startedAt:'…58.982Z', endedAt:'…04.307Z'}`
+> (a real ~5.3s opus call, `endedAt ≥ startedAt`). Opening `/dashboard/:runId` (DOM-verified): `#phases`
+> rendered chips `['draft','done']` each with its `ts` as a tooltip; the agent node text was `pinger opus
+> done 7 tok 5325 ms` (per-node duration shown). `cur` was false on both chips because the run had
+> completed (the current-step highlight applies only while `running`). REQ-050 is `real:true` via IT-049
+> (ordered phase `ts` over the real RunManager+sandbox) + the live `phases` timeline above; REQ-051 is
+> `real:true` via IT-049 (`startedAt`/`endedAt`) + UT-062 (derived `durationMs`) + the live `5325 ms`
+> duration on the real opus agent. This closes the "phase persistence + current-step + timing" and
+> "per-node start/end/duration" items deferred from Slice 2/3. Test workflow deregistered afterward;
+> registry clean. REQ-012 (OIDC) remains DEFERRED by user decision D5. All prior REQs (001..049) still
+> hold evidence from the rounds below — not re-litigated this round.
+
+> **v8 SLICE 3 ROUND 1 (2026-07-31) — GATE PASSED.** REQ-048/049 (dashboard UI: cards → live DAG →
+> agent log) each carry a `real:true` VAL item below (VAL-057/058). Validated against the live
+> production engine (systemd user service `rwe.service`, `127.0.0.1:8787`, runs `tsx src/main.ts`),
+> restarted with the Slice-3 code, via a headless browser (Playwright). `GET /dashboard` home rendered
+> **registered-workflow cards** (sdlc-run, customer-service, dag2leaf, dag2mid, … each with version) +
+> **run cards** (each `runId` + `status · name`, e.g. "completed · customer-service"). A nested composite
+> `dag2mid → dag2leaf → agent 'pinger' (model opus)` was run in-process; opening `/dashboard/<runId>`
+> rendered (verified via DOM eval): `groupHeaders = ["workflow dag2mid · depth 1","workflow dag2leaf ·
+> depth 2"]`, the agent node **nested two groups deep**, node class `node st-done`, text
+> `pinger opus done 7 tok`; **clicking the agent loaded its transcript** (the real opus reply "PONG").
+> `GET /api/runs/:id/dag` returned the full nested tree. The `GET /api/workflows` routing gap (fell
+> through to `/mcp` → `-32601`) was caught during this real run and fixed (regression IT-048). REQ-048
+> (`buildDagModel`) is `real:true` via UT-061 (pure model) + the live `/dag` tree above; REQ-049 (the
+> page) is `real:true` via the Playwright headless evidence. Documented deferral confirmed live: after a
+> service restart the run is no longer in-process, so `/api/runs/:id/dag` flattens (`getRun` returns
+> `workflowNodes: []`) — exactly REQ-047's "cross-restart persistence out of scope". Test workflows
+> deregistered afterward; registry clean. REQ-012 (OIDC) remains DEFERRED by user decision D5. All prior
+> REQs (001..047) still hold evidence from the rounds below — not re-litigated this round.
+
+> **v8 SLICE 2 ROUND 1 (2026-07-30) — GATE PASSED.** REQ-045..047 (call-tree + composite linkage
+> surfaced for the dashboard) each carry a `real:true` VAL item below (VAL-054..056). Validated against
+> the live production engine (systemd user service `rwe.service`, `127.0.0.1:8787`, runs `tsx src/main.ts`).
+> The service was restarted with the Slice-2 code. A model-free composite was registered live —
+> `dagleaf` (`return 'L'`) and `dagmid` (`return 'M(' + await workflow('dagleaf', {}) + ')'`) — then an
+> ad-hoc `return await workflow('dagmid', {})` was run and `workflow_status(runId)` returned (inside the
+> `result` envelope) **`workflowNodes: [{"frame":".0","name":"dagmid","parentFrame":"","depth":1},
+> {"frame":".0.0","name":"dagleaf","parentFrame":".0","depth":2}]`** — composite linkage surfaced LIVE
+> via real MCP with the correct depth/parentFrame hierarchy (`dagleaf.parentFrame ".0" == dagmid.frame`).
+> Test workflows were deregistered afterward; registry clean. REQ-046 (boundary nodes) + REQ-047
+> (reconstructable tree via one `workflow_status`) are fully live (the workflowNodes payload above).
+> REQ-045 (per-agent `frame` tagging) is `real:true` via the real-sandbox integration test IT-047 (real
+> RunManager + real sandbox subprocess/IPC/vm; the frame is stamped in the real read-model, echo gateway
+> is only the model leaf) — a live agent run needs a model provider, so the live check exercised the
+> model-free composite-linkage path; this mirrors the VAL-046/051 honest-partial precedent. REQ-012 (OIDC)
+> remains DEFERRED by user decision D5. All prior REQs (001..044) still hold evidence from the rounds
+> below — not re-litigated this round.
+
+> **v8 SLICE 1 ROUND 1 (2026-07-30) — GATE PASSED.** REQ-041..044 (N-level `workflow()` composition)
+> each carry a `real:true` VAL item below (VAL-050..053). Validated against the live production engine
+> (systemd user service `rwe.service`, `127.0.0.1:8787`, runs `tsx src/main.ts` directly). CASE A —
+> a depth-2 composite (`mid` calls `workflow('leaf')`) ran ad-hoc via real `/mcp` JSON-RPC → status
+> completed, result `"M(L)"` (N-level nesting works live — impossible before, one level → `NESTING_ERROR`).
+> CASE B — with `maxWorkflowDepth:2` set in the live config, a depth-3 composite → status completed,
+> branch result `{"code":"NESTING_DEPTH_EXCEEDED"}` (config threaded composeConfig→ServerConfig→RunManager
+> and enforced live). The config was restored (default 4) and the service restarted clean afterward.
+> REQ-041 is fully live (CASE A/B). REQ-042 (cycle/diamond), REQ-043 (descendant cap), REQ-044 (shared
+> budget + resume-safe callSeq) are `real:true` via the real-wiring integration test IT-046 (real
+> RunManager + real on-disk WorkflowCatalog + real sandbox child processes/IPC/node:vm, only the
+> GatewayClient leaf faked — NOT the SUT boundary for these guards) plus the same live nested code path
+> proven by CASE A/B; the specific guard branches were not separately re-driven live (honest partial,
+> mirrors the VAL-046 pattern). REQ-012 (OIDC) remains DEFERRED by user decision D5. All prior REQs
+> (001..040) still hold evidence from ROUNDS below — not re-litigated this round.
+
 > **v7 ROUND 1 (2026-07-24) — GATE PASSED.** REQ-037..040 (the v7 slice) all carry ≥1 `real:true`
 > VAL item below (VAL-046..049). All four validated against the live production engine (systemd user
 > service, `127.0.0.1:8787`, 28 tools, `OPENROUTER_API_KEY` configured as a real key). REQ-037
@@ -110,6 +221,385 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 
 No undocumented steps required. The live engine config was read-only; the systemd service was not
 restarted or modified during this write-up.
+
+### VAL-050 — REQ-041: N-level `workflow()` nesting up to a configurable depth cap
+
+- **status:** green
+- **traces:** REQ-041
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Against the live engine (systemd `rwe.service`, `127.0.0.1:8787`, `tsx src/main.ts`)
+  via real `/mcp` JSON-RPC. CASE A (nesting works) — registered `leaf` (`return 'L'`) and `mid`
+  (`return 'M(' + await workflow('leaf') + ')'`), then ran an ad-hoc workflow `return await
+  workflow('mid', {})` → run status **completed**, result **`"M(L)"`**. This is a composite running as
+  a NODE inside another composite — impossible before this slice (one-level nesting returned
+  `NESTING_ERROR`). CASE B (depth cap enforced live) — with `maxWorkflowDepth:2` set in the live
+  `rwe.config.json` and the service restarted, registered `deep2`(→leaf) and `deep1`(→deep2) and ran
+  `try{ return {r: await workflow('deep1',{})} }catch(e){ return {code:e.code||e.name} }` → status
+  **completed**, result **`{"code":"NESTING_DEPTH_EXCEEDED"}`** — the config value was threaded
+  composeConfig→ServerConfig→RunManager and enforced live, and the over-depth failure surfaced as a
+  branchable typed envelope (the parent run did NOT hang or die). Config restored to default (4) and
+  the service restarted clean after. No SUT-boundary mock. The over-depth-with-default-4 and the
+  invalid-`maxWorkflowDepth` config-rejection branches are additionally pinned by IT-046 / the
+  `_positiveInt` unit path.
+- **iter:** v8
+
+### VAL-051 — REQ-042: ancestor-cycle guard on nested `workflow()` (diamond allowed)
+
+- **status:** green
+- **traces:** REQ-042
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** The live CASE A/B round (VAL-050) proved the real nested-execution code path — the
+  same `_handleWorkflowRequest` recursion that carries the `ancestors` set — boots and runs
+  end-to-end through the real MCP surface. The cycle/diamond BRANCHES themselves are validated by the
+  real-wiring integration test IT-046 (real RunManager + real on-disk WorkflowCatalog + real sandbox
+  child processes / IPC / node:vm; the guard fires in the RunManager BEFORE any agent dispatch, so the
+  faked GatewayClient is not the SUT boundary here): an ancestor cycle (A→A / A→B→A) is refused with
+  `NESTING_CYCLE`, while a legitimate diamond — the same NON-ancestor workflow called from two sibling
+  branches — is allowed and runs independently in each branch. Honest partial: these specific branches
+  were not separately re-driven against the live engine to avoid redundant live runs (mirrors the
+  VAL-046 honest-partial pattern); the guard logic and its real wiring are `real:true`.
+- **iter:** v8
+
+### VAL-052 — REQ-043: total-descendant cap per run
+
+- **status:** green
+- **traces:** REQ-043
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Same real code path proven live by VAL-050 CASE A/B (the per-run `descendants`
+  counter is incremented inside the same `_handleWorkflowRequest` recursion). The cap BRANCH —
+  the (cap+1)th nested `workflow()` invocation across the whole tree failing with
+  `DESCENDANT_CAP_EXCEEDED` while a run with ≤ cap nested calls completes normally — is validated by
+  the real-wiring integration test IT-046 (real RunManager + real sandbox subprocess/IPC/vm + real
+  on-disk catalog; the counter guard fires before agent dispatch, GatewayClient not the SUT boundary).
+  Honest partial: the specific cap-exceeded branch was not separately re-driven live (same rationale
+  as VAL-051); the guard + real wiring are `real:true`.
+- **iter:** v8
+
+### VAL-053 — REQ-044: cross-depth invariants (shared budget + resume-safe journal callSeq)
+
+- **status:** green
+- **traces:** REQ-044
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** The live CASE A (depth-2) and CASE B (depth-3) runs of VAL-050 exercised the real
+  additive frame-based journal keying end-to-end — nested `agent()`-bearing composites ran and
+  journaled without callSeq overflow (the previous multiplicative `(parentCallSeq+1)*1e6+n` scheme
+  overflowed `MAX_SAFE_INTEGER` past ~depth 2; the additive `_frameBaseFor`/`NESTED_FRAME_STRIDE`
+  scheme is what let CASE A/B journal correctly). The two sub-invariants are pinned by real-wiring
+  tests: (a) shared budget — IT-046 case 6 runs a real AgentExecutor (only the GatewayClient leaf
+  faked) showing a nested `agent()` at depth 2 decrements the SAME parent `RunGuard` (no per-level
+  reset); (b) resume-safe unique keys — IT-046 case 7 asserts nested `callSeq` keys stay unique AND
+  within `MAX_SAFE_INTEGER` at depth 3, and the pre-existing regression IT-026 confirms a resume of an
+  unmodified nested composite replays every nested `agent()` from cache deterministically (no
+  re-dispatch) under the new scheme. Honest partial on the isolated depth-3 budget-exhaustion probe
+  (integration-covered, not separately re-driven live); the invariants + real wiring are `real:true`.
+- **iter:** v8
+
+### VAL-054 — REQ-045: every `agent()` record carries the composite frame it ran in
+- **status:** green
+- **traces:** REQ-045
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** REQ-045's per-agent `frame` tagging is validated `real:true` through the real-sandbox
+  integration test IT-047 (`tests/integration/workflow-dag-tree.test.ts`): a real RunManager runs a
+  composite `top(agent T) → mid(agent M) → workflow('leaf'(agent L))` over the REAL sandbox subprocess /
+  IPC / node:vm path — the `frame` is stamped by the real read-model at agent-queue time and carried
+  through the real AgentExecutor sink (only the GatewayClient leaf is an echo gateway, NOT the tagging
+  seam under test). The surfaced view asserts `T.frame === ""` (root), `M.frame` non-empty, and
+  `L.frame` non-empty with `M.frame` a STRICT prefix — so a depth-2 agent's frame strictly extends its
+  depth-1 ancestor, exactly REQ-045's observable. Honest partial (mirrors the VAL-046/051 precedent): a
+  LIVE agent run needs a model provider, so the live 2026-07-30 round exercised the model-free
+  composite-linkage path (VAL-055/056) rather than a live agent; the agent-frame tagging is real-wiring
+  verified via IT-047's real sandbox path, and the SAME frame-path keys that tag agents are the ones
+  proven live in the `workflowNodes` payload of VAL-055/056. No SUT-boundary mock for the tagging.
+- **iter:** v8
+
+### VAL-055 — REQ-046: each nested `workflow()` call recorded as a composite-boundary node
+- **status:** green
+- **traces:** REQ-046
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Validated LIVE against the production engine (systemd `rwe.service`, `127.0.0.1:8787`,
+  `tsx src/main.ts`) restarted with the Slice-2 code, via real `/mcp` JSON-RPC. Registered a model-free
+  composite — `dagleaf` (`return 'L'`) and `dagmid` (`return 'M(' + await workflow('dagleaf', {}) + ')'`)
+  — ran an ad-hoc `return await workflow('dagmid', {})`, then `workflow_status(runId)` returned (inside
+  the `result` envelope) **`workflowNodes: [{"frame":".0","name":"dagmid","parentFrame":"","depth":1},
+  {"frame":".0.0","name":"dagleaf","parentFrame":".0","depth":2}]`**. One entry per nested `workflow()`
+  call, each carrying `{frame,name,parentFrame,depth}`: `dagmid` is a top-level call (`parentFrame:""`,
+  `depth:1`) and `dagleaf` is nested under it (`parentFrame:".0" == dagmid.frame`, `depth:2`) — the exact
+  composite linkage REQ-046 requires, surfaced live via real MCP. The distinct-frames clause (a diamond
+  calling the same workflow twice yields TWO distinct boundary nodes) is additionally pinned by IT-047
+  CASE 2 over the real sandbox. Test workflows deregistered afterward; registry clean. No SUT-boundary mock.
+- **iter:** v8
+
+### VAL-056 — REQ-047: `workflow_status` exposes enough to reconstruct the live call-tree + drill to logs
+- **status:** green
+- **traces:** REQ-047
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** The SAME live 2026-07-30 round (VAL-055) proves REQ-047's single-call reconstruction: one
+  `workflow_status(runId)` on the in-process composite returned the frame-tagged tree in its `result`
+  envelope — the `workflowNodes` array above, from which a client groups agents by `frame` and nests
+  frames by `parentFrame` (`dagleaf.parentFrame ".0" == dagmid.frame`) to rebuild the full call-tree
+  deterministically from a single status call. The node→log drill-down (every agent node's `agentId`
+  resolves to its transcript) is real-wiring verified by IT-047 CASE 1 over the real sandbox
+  (`store.getTranscript(runId, T.agentId)` and `…L.agentId` both non-empty). The `GET /api/runs/:id`
+  path returns the same `RunStatusView` shape (shared read-model). Honest partial (VAL-046/051 pattern):
+  the live check used the model-free composite (a live agent needs a provider), and the frame-tagged
+  `agents` half + the agent-log drill are IT-047 real-sandbox verified; the tree-linkage half is fully
+  live. No SUT-boundary mock.
+- **iter:** v8
+
+### VAL-057 — REQ-048: pure `buildDagModel` reconstructs a run's call tree from its status
+- **status:** green
+- **traces:** REQ-048
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `buildDagModel(RunStatusView) → DagNode` is exercised two ways. (1) UT-061
+  (`tests/unit/dashboard-dag-model.test.ts`, 3 cases) pins the pure model: a nested `top(T,"") →
+  mid(M,".0") → leaf(L,".0.0")` view reconstructs to `root{agents:[T],children:[mid{agents:[M],
+  children:[leaf{agents:[L]}]}]}` (each agent on its frame's node, flattened `{agentId,state,model}`
+  leaf); a diamond (two top-level `workflowNodes`) yields two root children with no agent dropped; an
+  empty run yields a bare root and an unknown-frame agent falls back to root (never lost) — REQ-048's
+  never-throws / never-drops / root-fallback totality. (2) LIVE — against the production engine
+  (systemd `rwe.service`, `127.0.0.1:8787`, `tsx src/main.ts`) restarted with the Slice-3 code, a nested
+  composite `dag2mid → dag2leaf → agent 'pinger'(opus)` was run in-process and `GET /api/runs/:id/dag`
+  returned the full nested `DagNode` tree — the SAME `buildDagModel` reconstruction served over real
+  HTTP from the live read-model (the agent node nested two composite groups deep, `dag2mid`→`dag2leaf`).
+  No SUT-boundary mock (the model is pure; the live path is the real endpoint over the real read-model).
+- **iter:** v8
+
+### VAL-058 — REQ-049: dashboard renders cards → live DAG → agent log
+- **status:** green
+- **traces:** REQ-049
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Validated LIVE against the production engine (systemd `rwe.service`, `127.0.0.1:8787`,
+  `tsx src/main.ts`) restarted with the Slice-3 code, via a HEADLESS BROWSER (Playwright). `GET
+  /dashboard` home rendered registered-workflow cards (sdlc-run, customer-service, dag2leaf, dag2mid, …
+  each with its version) AND run cards (each `runId` + `status · name`, e.g. "completed ·
+  customer-service"). A nested composite `dag2mid → dag2leaf → agent 'pinger'(model opus)` was run
+  in-process; opening `/dashboard/<runId>` rendered — verified via DOM eval — `groupHeaders =
+  ["workflow dag2mid · depth 1","workflow dag2leaf · depth 2"]`, the agent node NESTED TWO GROUPS DEEP,
+  node class `node st-done`, text `pinger opus done 7 tok` (3-state color + model shown); CLICKING the
+  agent node loaded its transcript (the real opus reply "PONG"). This is the full REQ-049 observable:
+  cards → nested composite groups with 3-state-colored agent nodes showing model → agent-log drill, on
+  the 3-second poll. The `GET /api/workflows` routing gap (fell through to `/mcp` → JSON-RPC `-32601`)
+  was caught during this real run and fixed (`src/server.ts:797`), regression-locked by IT-048. Deferral
+  confirmed live: after a service restart the run is out-of-process, so `/api/runs/:id/dag` flattens
+  (`getRun` returns `workflowNodes: []`) — exactly REQ-047's documented cross-restart-out-of-scope. Test
+  workflows deregistered afterward; registry clean. No SUT-boundary mock (real browser → real HTTP →
+  real engine → real opus agent).
+- **iter:** v8
+
+### VAL-059 — REQ-050: phase timeline with timestamps + current step
+- **status:** green
+- **traces:** REQ-050
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-049 (`tests/integration/run-timing.test.ts`, CASE 1) over the
+  REAL RunManager + real on-disk WorkflowCatalog + real sandbox child-process/IPC/vm (only the
+  `GatewayClient` faked): a script `phase('draft'); await agent('A'); phase('verify'); return a`
+  completes and `view.phases` is `[{title:'draft'},{title:'verify'}]` where every entry has a non-empty
+  string `ts` and `phases[0].ts <= phases[1].ts` (ordered timeline; an `AdvancingClock` makes the
+  ordering deterministic). (2) LIVE — against the production engine (systemd `rwe.service`,
+  `127.0.0.1:8787`, `tsx src/main.ts`) restarted with the Slice-2b code, an ad-hoc
+  `phase('draft'); … agent(opts:{label:'pinger',model:'opus'}); phase('done')` run in-process returned
+  from `GET /api/runs/:id` `phases: [{title:'draft', ts:'2026-07-31T05:05:58.982Z'}, {title:'done',
+  ts:'2026-07-31T05:06:04.309Z'}]` (ordered ISO `ts`), and `/dashboard/:runId` (DOM-verified) rendered
+  `#phases` chips `['draft','done']` each carrying its `ts` as a tooltip; `cur` was false on both because
+  the run had completed (the current-step highlight applies only while `running`) — exactly REQ-050's
+  "last-while-running = current step". No SUT-boundary mock (the live path is the real endpoint + real
+  dashboard over the real run).
+- **iter:** v8
+
+### VAL-060 — REQ-051: per-agent timing (started / ended / duration)
+- **status:** green
+- **traces:** REQ-051
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised three ways. (1) IT-049 (`tests/integration/run-timing.test.ts`, CASE 2) over
+  the REAL RunManager + real sandbox (only `GatewayClient` faked): an `agent('A',{label:'A'})` run
+  settles with a string `startedAt` AND a string `endedAt` where `endedAt >= startedAt` (dispatched →
+  settled). (2) UT-062 (`tests/unit/dashboard-dag-model.test.ts`) pins the derived `durationMs` on the
+  pure `buildDagModel`: a done agent (`startedAt` +2s `endedAt`) yields `durationMs === 2000`, a still-
+  running agent (no `endedAt`) yields `durationMs === undefined`. (3) LIVE — against the production
+  engine (systemd `rwe.service`, restarted with the Slice-2b code) the ad-hoc opus agent 'pinger'
+  returned from `GET /api/runs/:id` `{label:'pinger', state:'done', model:'opus', startedAt:'…58.982Z',
+  endedAt:'…04.307Z'}` (a real ~5.3s opus call, `endedAt ≥ startedAt`), and `/dashboard/:runId`
+  (DOM-verified) rendered the agent node text `pinger opus done 7 tok 5325 ms` — the derived per-node
+  duration shown on the real agent, `durationMs = endedAt − startedAt`. No SUT-boundary mock (real engine
+  → real opus agent → real HTTP read-model → real dashboard DOM).
+- **iter:** v8
+
+### VAL-061 — REQ-052: authoritative onTerminal hook fires once per terminal transition
+- **status:** green
+- **traces:** REQ-052
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-050 (`tests/integration/run-onterminal-admission.test.ts`,
+  CASES 1-3) over the REAL RunManager + real on-disk WorkflowCatalog + real sandbox
+  child-process/IPC/vm (only the spawner faked): an injected `onTerminal(runId,status)` fires EXACTLY
+  once as `{status:'completed'}` for a completed run and NOT for the intermediate non-terminal
+  transitions; fires once as `{status:'stopped'}` for a `stop()`-ed run (proving it rides the
+  authoritative `_transition`, not the `_runLive` `.then` which never covers stop); and a composite
+  parent with 2 nested `workflow()` calls fires EXACTLY ONE onTerminal (nested runs have no store row and
+  never `_transition`). (2) LIVE — against the production engine (systemd `rwe.service`,
+  `127.0.0.1:8787`, `tsx src/main.ts`) restarted with the Slice-4 code, an `A2 = agent(model:'opus')`
+  run was chained while still RUNNING; when A2 reached terminal `completed` its continuation flipped to
+  `status:'fired'` in `chain_list` — the real onTerminal hook fired LIVE on the actual terminal edge
+  (not a late-create reconcile). No SUT-boundary mock on the terminal edge (the hook fires from the real
+  `_transition`).
+- **iter:** v8
+
+### VAL-062 — REQ-053: durable on-completion chaining (run A completes → start run B)
+- **status:** green
+- **traces:** REQ-053
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-051 (`tests/integration/continuation-store.test.ts`, 6 cases)
+  over the REAL `ContinuationStore` + REAL SQLite (`better-sqlite3`; only the structural
+  RunManagerPort/RunStorePort seams faked): a completed target starts run B exactly once and records
+  `spawnedRunId`; a failed/stopped target marks the continuation `skipped` and starts nothing; a
+  stop→(resume)→complete cycle starts B AT MOST once (the atomic `WHERE status='pending'` claim); an
+  unknown `afterRunId` returns `CHAIN_TARGET_NOT_FOUND`; a SECOND `ContinuationStore` instance on the
+  SAME db file fires a still-pending continuation whose target already terminated via `rearmAtBoot()`
+  (cross-restart DURABILITY on real SQLite); and a chain-of-chains (A→B→C) keeps `rootRunId==='A'` on
+  both B and C. (2) LIVE — against the production engine restarted with the Slice-4 code (`tools/list`
+  now 30 tools incl. `chain_create`/`chain_list`): registered `chainB` (`return 'B-ran'`), ran `A`
+  (`return 'A-done'`) to completion, then `chain_create({afterRunId:A, run:{workflow:'chainB'}})`;
+  `chain_list` showed `status:'fired', rootRunId:A, spawnedRunId:<B>` and `workflow_result(B) === "B-ran"`
+  — the chained run REALLY executed end-to-end (register → chain → fire → spawned run produced its
+  result). A live in-flight chain on `A2` (opus) fired on its real completion too (see VAL-061). Test
+  workflows deregistered afterward. No SUT-boundary mock (real engine → real chain_create → real spawned
+  run → real workflow_result).
+- **iter:** v8
+
+### VAL-063 — REQ-054: run-admission counter bounds concurrent top-level runs
+- **status:** green
+- **traces:** REQ-054
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** HONEST-PARTIAL (stated plainly). Exercised by IT-050
+  (`tests/integration/run-onterminal-admission.test.ts`, CASE 4) over the REAL RunManager + real on-disk
+  WorkflowCatalog + real sandbox child-process/IPC/vm — only the spawner is faked, which is NOT the SUT
+  boundary for the admission gate (the gate reads `_liveRunCount()` off the real `_runs` map and fires
+  before any durable work). With `maxConcurrentRuns` set low, a second concurrent top-level `start()`
+  while the first is still live rejects with `{code:'RUN_ADMISSION_LIMIT'}`, and once the first reaches
+  terminal its slot is freed so a later `start()` succeeds — the reject-over-limit / free-on-terminal
+  contract against the real run lifecycle. The gate default (64) is config-validated by the same
+  `_positiveInt` path as `maxWorkflowDepth`/`maxWorkflowDescendants` (rejects ≤0/non-integer at
+  construction). Not driven on the live service because that would need sustaining >64 concurrent real
+  runs; the gate LOGIC itself is exercised against the real RunManager + real sandbox subprocess
+  lifecycle, so the only un-real element is the count threshold, not the SUT boundary.
+- **iter:** v8
+
+### VAL-064 — REQ-055: a terminated run's DAG (phases + workflowNodes + per-agent frame/label/timing) survives a restart
+- **status:** green
+- **traces:** REQ-055
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-052 (`tests/integration/dag-restart-survival.test.ts`, 2 cases)
+  over the REAL RunManager + real on-disk `SqliteRunStore` + real `WorkflowCatalog` + real sandbox
+  child-process/IPC/vm (only the `GatewayClient` faked with an echo gateway; the "restart" is fresh store +
+  manager instances on the SAME data dir with `hydrateAll()` between): a composite
+  `phase('top') → agent(T) → workflow('mid'){ agent(M) → workflow('leaf'){ agent(L) } }` completes; after
+  the restart `buildDagModel` rebuilds the SAME nested tree (`mid` group with `leaf` still nested under it),
+  `phases===['top']`, `workflowNodes` names sort to `['leaf','mid']`, agent labels sort to `['L','M','T']`,
+  and the nested-frame relationship survives (`L.frame.startsWith(M.frame)`) — the DAG did NOT flatten. A
+  backward-compat `return 1;` run reconstructs on a fresh store without crashing. (2) LIVE — against the
+  live production engine (systemd `rwe.service`, `127.0.0.1:8787`, `tsx src/main.ts`) restarted with the
+  Slice-2c code, a composite `phase('top') → workflow('s2c-mid'){ phase('p1') → workflow('s2c-leaf') }`
+  was run in-process; BEFORE restart `GET /api/runs/:id/dag` showed children `[(s2c-mid,1)]`. The service
+  was then RESTARTED (the run is no longer in-process); AFTER restart `GET /api/runs/:id/dag` STILL showed
+  children `[(s2c-mid,1)]` and `GET /api/runs/:id` showed `phases ['top']` + `workflowNodes
+  ['s2c-mid','s2c-leaf']` — the persisted terminal snapshot rebuilt the nested tree across the restart,
+  exactly reversing the Slice-3 documented flattening. Test workflows deregistered afterward; registry
+  clean. No SUT-boundary mock (real engine → real restart → real HTTP read-model). This closes the
+  cross-restart phase/tree persistence item deferred across Slice 2/2b/3.
+- **iter:** v8
+
+### VAL-065 — REQ-056: Host/Origin allowlist (DNS-rebinding + CSRF defense) on the real HTTP server
+- **status:** green
+- **traces:** REQ-056
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) UT-063 (`tests/unit/host-origin-allowlist.test.ts`, 7 cases) pins
+  the allowlist truth table on the pure helpers (loopback + configured-LAN accepted at the server port;
+  foreign Host / wrong port / prefix-bypass / absent Host rejected; absent/empty/`'null'` Origin fail-open;
+  present-but-foreign / malformed Origin rejected). IT-053 (`tests/integration/host-origin-allowlist-http.test.ts`,
+  5 cases) enforces it on a REAL `createServer`: a normal loopback `fetch` (no Origin) → 200, a raw
+  `Host: evil.example.com` → 403, a `POST /mcp` with `Origin: http://evil.example.com` → 403, a loopback
+  Origin → 200 (raw `node:http` used for the Host cases since fetch/undici forbids overriding Host).
+  (2) LIVE — against the live production engine (systemd `rwe.service`, `127.0.0.1:8787`) restarted with the
+  Defer-B code: `curl -H 'Host: evil.example.com' /api/runs` → 403; a normal loopback `curl /api/runs`
+  → 200; `curl -H 'Origin: http://evil.example.com' -X POST /mcp` → 403. The allowlist is uniform across
+  `/mcp`, `/api/*`, `/dashboard`, `/hooks/*` (the guard fronts the whole handler). No SUT-boundary mock
+  (real server → real rejected/accepted requests). This is the interim access control until OIDC
+  (REQ-012, D5).
+- **iter:** v8
+
+### VAL-066 — REQ-057: webhook ingress POST /hooks/:id fires a pre-bound workflow, HMAC-verified
+- **status:** green
+- **traces:** REQ-057
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-054 (`tests/integration/webhook-registry.test.ts`, 8 cases,
+  REAL WebhookRegistry + REAL SQLite + real HMAC; structural RunManagerPort/CatalogPort faked) covers the
+  fail-closed verify+fire contract — a signed fresh delivery fires the PRE-BOUND workflow with the body as
+  `args.event` (202), a bad signature → 401 no run, a stale timestamp (outside ±300s) → 401 no run, a
+  replayed `deliveryId` → 200 idempotent (fired exactly once), unknown id → 404 / disabled → 403 (no run).
+  IT-055 (`tests/integration/webhook-ingress-http.test.ts`, 1 case) drives the actual `POST /hooks/:id`
+  route on a REAL `createServer`: a bad-signature POST → 401, a correctly-signed POST → 202 with a runId,
+  and polling `workflow_result` shows the pre-bound workflow REALLY ran with the body as `args.event`.
+  (2) LIVE — against the live production engine restarted with the Defer-B code (`tools/list` now 33 tools
+  incl. `webhook_*`): `webhook_create` returned `{url, secret}`; a signed `POST /hooks/:id` (openssl-computed
+  `HMAC-SHA256` over the raw body, with `X-RWE-Timestamp`/`X-RWE-Delivery`) → 202 `{runId}`; the pre-bound
+  workflow ran and its result was `{got:{deploy:'v9'}}` (the body arrived as `args.event`); a REPLAY of the
+  same `X-RWE-Delivery` → 200 with no second run. No SUT-boundary mock (real server → real HMAC verify →
+  real spawned run). Test webhooks/workflows deregistered afterward.
+- **iter:** v8
+
+### VAL-067 — REQ-058: webhook management tools (generate-once secret, fingerprint-only listing, durable)
+- **status:** green
+- **traces:** REQ-058
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-054 (`tests/integration/webhook-registry.test.ts`) pins the
+  management contract on the REAL registry + REAL SQLite: `create` returns a secret EXACTLY ONCE and
+  validates the workflow (`WORKFLOW_NOT_FOUND` for an unknown one); `list` shows only a 16-char sha256
+  fingerprint (the secret never appears in the list JSON); and DURABLE — a webhook created on one
+  `WebhookRegistry` instance verifies + fires on a FRESH instance over the same db file (registration +
+  secret persisted across restart, same convention as schedules.db/continuations.db). (2) LIVE — against
+  the live production engine restarted with the Defer-B code: `webhook_create` returned the secret once
+  (part of VAL-066's live run); `webhook_list` showed only a fingerprint and NEVER the secret. The secret
+  is stored server-side (not a one-way hash) because HMAC verification needs the key — the GitHub/Stripe
+  model; a one-way hash cannot verify an HMAC. Bind safety (interim control before OIDC): the admin-write
+  ingress relies on the loopback/LAN bind + the Host/Origin allowlist (REQ-056); a public `0.0.0.0` bind
+  without OIDC remains a documented deployment caveat. Test webhooks deregistered afterward; registry clean.
+  No SUT-boundary mock (real registry → real SQLite → real restart).
+- **iter:** v8
 
 ### VAL-046 — REQ-037: provider-aware SDK routing + Anthropic dual-auth security invariant
 

@@ -3449,3 +3449,95 @@ error).
 - **traces:** ARCH-026
 - **iter:** v7
 - tests/integration/models-list-tool.test.ts (`models_list` advertised in tools/list and exercised over `/mcp` via injected catalog fetchers; returns the unified normalized array; filter params narrow the result and honour `limit`; empty match → `[]`; no secret value in the output).
+
+## v8 slice 1 — N-level workflow() composition tests (IT-046)
+
+### IT-046 — N-level workflow() composition over the real RunManager + sandbox (REQ-041..044)
+- **status:** green
+- **traces:** DES-041, DES-042
+- **iter:** v8
+- tests/integration/nested-workflow-n-level.test.ts — 7 cases, integration tier (real RunManager + real on-disk WorkflowCatalog + real sandbox child processes / IPC / node:vm; structural cases use an echo AgentSpawner override, the budget case uses a real AgentExecutor with ONLY the GatewayClient faked — the same seam as IT-019/IT-026, NOT the SUT boundary for the composition guards which fire before agent dispatch): REQ-041 — (1) a composite runs as a NODE inside another composite up to `maxWorkflowDepth`, (2) an over-depth `workflow()` call fails with `NESTING_DEPTH_EXCEEDED`; REQ-042 — (3) an ancestor cycle is refused with `NESTING_CYCLE`, (4) a diamond (same NON-ancestor workflow called in two sibling branches) is ALLOWED; REQ-043 — (5) total nested `workflow()` invocations past `maxWorkflowDescendants` fail with `DESCENDANT_CAP_EXCEEDED`; REQ-044 — (6) a nested `agent()` at depth 2 shares the parent run's ONE `RunGuard` budget (no per-level reset), (7) nested journal `callSeq` keys stay unique AND within `MAX_SAFE_INTEGER` at depth 3 (pins the additive frame-based keying that replaces the overflowing `(parentCallSeq+1)*1e6+n` scheme).
+- Regression: pre-existing tests/integration/nested-workflow-callseq-resume.test.ts (IT-026) stays green under the new frame-based callSeq scheme — resuming a run containing a nested `workflow()` replays the already-journaled call from cache (no re-dispatch), confirming the additive keying is resume-deterministic.
+
+### IT-047 — call-tree + composite linkage surfaced via the read-model over the real RunManager + sandbox (REQ-045..047)
+- **status:** green
+- **traces:** DES-043, DES-044
+- **iter:** v8
+- tests/integration/workflow-dag-tree.test.ts — 2 cases, integration tier (real RunManager + real on-disk WorkflowCatalog + real sandbox child processes / IPC / node:vm; ONLY the GatewayClient is faked with an echo gateway, so `AgentRecord`s + transcripts are produced through the real AgentExecutor sink — the same seam as IT-019 / IT-046's budget case, NOT the SUT boundary for the frame-tagging / node-recording under test, which run in the RunManager read-model). CASE 1 — a composite `top(agent T) → mid(agent M) → workflow('leaf'(agent L))` run to completion, then one `status()`/read-model view asserts: REQ-045 — `T.frame === ""` (root), `M.frame` non-empty, `L.frame` non-empty with `M.frame` a STRICT prefix (`L.frame.startsWith(M.frame) && L.frame !== M.frame`); REQ-046 — `workflowNodes` has `{name:"mid", parentFrame:"", depth:1}` with `node.frame === M.frame`, and `{name:"leaf", parentFrame:M.frame, depth:2}` with `node.frame === L.frame` (node.frame == its inner agents' frame, by construction); REQ-047 — both `T.agentId` and `L.agentId` resolve to non-empty transcripts via `store.getTranscript(runId, agentId)` (the node→log drill-down). CASE 2 — a diamond (`parallel([() => workflow('d'), () => workflow('d')])`, same workflow twice) yields exactly TWO `workflowNodes` entries named `d` with TWO distinct `frame`s, both `{parentFrame:"", depth:1}` — pinning that repeated invocations get independent boundary nodes (REQ-046's distinct-frames clause).
+- Real-path note: REQ-045's agent `frame` tagging is exercised through the REAL sandbox subprocess/IPC/vm path here (echo gateway is the model leaf, not the tagging seam) — this is the real-wiring evidence VAL-054 leans on for REQ-045 (a live agent run needs a model provider; the model-free composite-linkage path REQ-046/047 was additionally driven live, see VAL-055/056).
+
+## v8 slice 3 — dashboard UI: cards → live DAG → agent log tests (UT-061, IT-048)
+
+### UT-061 — pure `buildDagModel` call-tree reconstruction (REQ-048)
+- **status:** green
+- **traces:** DES-045
+- **iter:** v8
+- tests/unit/dashboard-dag-model.test.ts — 3 cases, unit tier (pure function, no I/O/mocks; a `RunStatusView` fixture of frame-tagged `agents` + `workflowNodes` fed straight into `buildDagModel`). CASE 1 (nested tree) — a `top(agent T, frame "") → mid(agent M, frame ".0") → leaf(agent L, frame ".0.0")` view reconstructs to `root{ agents:[T], children:[ mid{frame:".0",name:"mid",depth:1, agents:[M], children:[ leaf{frame:".0.0",name:"leaf",depth:2, agents:[L], children:[]} ]} ] }`, asserting each agent lands on its frame's node with the flattened `{agentId,state,model}` leaf shape (T.done, M.running, L.queued). CASE 2 (diamond + no-drop) — two top-level `workflowNodes` (frames `.0`/`.1`, both `parentFrame:""`) yield exactly TWO root children, and a recursive count confirms all input agents appear exactly once (none dropped). CASE 3 (pure/total) — an empty run yields a bare root (`agents:[]`, `children:[]`), and an agent whose `frame` (`.99`) matches NO `workflowNode` is attached to root (count == 1, never lost) — pinning REQ-048's never-throws / never-drops / root-fallback totality.
+
+### IT-048 — dashboard endpoints `GET /api/workflows` + `GET /api/runs/:id/dag` over the real HTTP surface (REQ-048, REQ-049)
+- **status:** green
+- **traces:** DES-046
+- **iter:** v8
+- tests/integration/dashboard-http.test.ts (+2 cases, extending the file's original IT-033 cases) — integration tier (real HTTP server on a real port, real RunStore/RunManager/WorkflowCatalog; a run is submitted via the real MCP path and polled). CASE A — `GET /api/workflows` after registering `dash-wf-a` returns 200 with the registered catalog array containing that workflow; this case LOCKS the Gate-7.5-caught routing fix (the endpoint returned a router-404 / `-32601` before the top-level dispatch predicate was widened to also match `/api/workflows`, `src/server.ts:797`). CASE B — `GET /api/runs/:id/dag` for a submitted run returns 200 with a `buildDagModel` root DagNode (`kind:"root"`, array `agents`, array `children`), exercising the endpoint → `buildDagModel(view)` path end-to-end over real HTTP.
+
+## v8 slice 2b — live execution detail: phase timeline + per-agent timing tests (UT-062, IT-049)
+
+### UT-062 — `buildDagModel` derives per-agent `durationMs` from the timing timestamps (REQ-051)
+- **status:** green
+- **traces:** DES-047
+- **iter:** v8
+- tests/unit/dashboard-dag-model.test.ts (+1 case, extending the UT-061 cases in the same file) — unit tier (pure function, no I/O/mocks; a `RunStatusView` fixture fed straight into `buildDagModel`). CASE (REQ-051 timing) — a view with a DONE agent carrying `startedAt:'…T00:00:00Z'`+`endedAt:'…T00:00:02Z'` and a still-RUNNING agent carrying only `startedAt:'…T00:00:05Z'` (no `endedAt`) reconstructs to dag nodes where the done agent exposes `startedAt`/`endedAt` verbatim and `durationMs === 2000` (`endedAt − startedAt`), while the unfinished agent exposes its `startedAt` and `durationMs === undefined` — pinning REQ-051's derived-non-negative-duration / undefined-while-unfinished contract on the pure model.
+
+### IT-049 — phase timestamps + per-agent started/ended timing over the real RunManager + sandbox (REQ-050, REQ-051)
+- **status:** green
+- **traces:** DES-047
+- **iter:** v8
+- tests/integration/run-timing.test.ts (NEW, 2 cases) — integration tier (real RunManager + real on-disk WorkflowCatalog + real sandbox child-process/IPC/vm; only the `GatewayClient` is faked with an echo gateway). An `AdvancingClock` whose `isoNow()` ticks +1s per read is injected so the ordering + duration assertions are deterministic (no wall-clock flake). CASE 1 (REQ-050) — a script `phase('draft'); await agent('A'); phase('verify'); return a` completes and its `view.phases` is `[{title:'draft'},{title:'verify'}]` where EVERY entry has a non-empty string `ts` and `phases[0].ts <= phases[1].ts` (ordered timeline / current-step-is-last). CASE 2 (REQ-051) — a script running one `agent('A',{label:'A'})` completes and that agent's record carries a string `startedAt` AND a string `endedAt` with `endedAt >= startedAt` (dispatched→settled timing, both present once settled). Both cases were RED before the timing fields existed (the `ts`/`startedAt`/`endedAt` assertions).
+
+## v8 slice 4 — cross-trigger chaining + run-admission tests (IT-050, IT-051)
+
+### IT-050 — onTerminal hook fires once per terminal transition + maxConcurrentRuns admission gate over the real RunManager + sandbox (REQ-052, REQ-054)
+- **status:** green
+- **traces:** DES-048
+- **iter:** v8
+- tests/integration/run-onterminal-admission.test.ts (NEW, 4 cases) — integration tier (real RunManager + real on-disk WorkflowCatalog + real sandbox child-process/IPC/vm; only the spawner/`GatewayClient` is faked, which is NOT the SUT boundary for the onTerminal edge or the admission gate — both are exercised against the real run lifecycle). CASE 1 (REQ-052 completed) — an injected `onTerminal(runId,status)` collecting into `events[]` fires EXACTLY once as `{runId, status:'completed'}` for a run that completes, and NOT for the intermediate non-terminal (`running`) transitions (a `setTimeout(30)` lets the fire-and-forget `queueMicrotask` settle before asserting). CASE 2 (REQ-052 stopped) — a blocker workflow is `stop()`-ed and `onTerminal` fires once as `{status:'stopped'}` — proving the hook rides the authoritative `_transition`, not the `_runLive` `.then` (which never covers stop). CASE 3 (REQ-052 composite) — a composite parent making 2 nested `workflow()` calls fires EXACTLY ONE onTerminal (`[{runId, status:'completed'}]`), not three — nested runs have no store row and never `_transition`. CASE 4 (REQ-054) — with `maxConcurrentRuns` set low, a second concurrent top-level `start()` while the first is still live rejects with `{code:'RUN_ADMISSION_LIMIT'}` (asserted via `rejects.toMatchObject`), and once the first reaches terminal its slot is freed so a later `start()` succeeds. All four cases were RED before the `onTerminal`/`_liveRunCount`/admission code existed.
+
+### IT-051 — durable ContinuationStore: fire-once / skip / idempotent / CHAIN_TARGET_NOT_FOUND / boot-reconcile durability / rootRunId lineage (REQ-053)
+- **status:** green
+- **traces:** DES-049
+- **iter:** v8
+- tests/integration/continuation-store.test.ts (NEW, 6 cases) — integration tier over the REAL `ContinuationStore` + REAL SQLite (`better-sqlite3`); the two structural seams (`RunManagerPort.start` / `RunStorePort.getRun`) are faked (a minimal store handing back a preset terminal status per runId; a run-manager recording `started[]` and returning a fixed `spawnedRunId`) — the SUT is the store's persistence + reconcile logic, and SQLite is real, not mocked. CASE 1 (fire-once) — target `A` completes → `onTerminal('A','completed')` starts run `B` exactly once (a second `onTerminal('A','completed')` starts nothing more) and the row records `spawnedRunId`. CASE 2 (skip) — a `failed`/`stopped` target marks the continuation `skipped` and starts no run. CASE 3 (idempotent) — a stop→(resume)→complete cycle (two terminal transitions) starts `B` AT MOST once (the `WHERE status='pending'` claim). CASE 4 (typed error) — `chain_create` for an unknown `afterRunId` returns `{error:{code:'CHAIN_TARGET_NOT_FOUND'}}`, never a crash. CASE 5 (DURABLE) — a boot reconcile: a first `ContinuationStore` instance registers a pending continuation, then a SECOND instance on the SAME db file with a target already terminal calls `rearmAtBoot()` and fires it exactly once (`started === [{name:'B', args:undefined}]`) — cross-restart durability on real SQLite. CASE 6 (rootRunId lineage) — a chain-of-chains (A→B→C) keeps the ORIGINAL root: both `B`'s and `C`'s rows carry `rootRunId==='A'`, `_rootOf` inheriting through the spawning continuation. All six cases were RED before the ContinuationStore existed.
+
+## v8 slice 2c — cross-restart DAG persistence tests (IT-052)
+
+### IT-052 — a terminated run's DAG (phases + workflowNodes + per-agent frame/label) survives a restart + backward-compat no-snapshot run (REQ-055)
+- **status:** green
+- **traces:** DES-050
+- **iter:** v8
+- tests/integration/dag-restart-survival.test.ts (NEW, 2 cases) — integration tier (real `RunManager` + real on-disk `SqliteRunStore` + real `WorkflowCatalog` + real sandbox child-process/IPC/vm; only the `GatewayClient` is faked with an echo gateway, which is NOT the SUT boundary for restart-survival). The "restart" is FRESH `SqliteRunStore` + `RunManager` instances on the SAME data dir (with `hydrateAll()` between), the same pattern as IT-020 (agent-records-restart-survival). CASE 1 (survives) — a composite `phase('top'); agent('do-T',{label:'T'}); workflow('mid'){ agent('do-M',{label:'M'}); workflow('leaf'){ agent('do-L',{label:'L'}) } }` completes; BEFORE restart `buildDagModel` shows the nested tree (mid group, leaf nested under mid) and `phases===['top']`; AFTER restart on a fresh store `after.phases===['top']`, `after.workflowNodes` names sort to `['leaf','mid']`, `buildDagModel(after)` rebuilds the SAME nested tree (`mid` group with `leaf` still nested under it), and the per-agent detail is reconstructed — labels sort to `['L','M','T']` and the nested frame relationship survives (`L.frame.startsWith(M.frame)`) — i.e. the DAG did NOT flatten. CASE 2 (backward-compat) — a trivial `return 1;` run (no agents/phases/composites, so no meaningful snapshot) reconstructs on a fresh store without throwing: `getRun` returns non-null with `phases`/`workflowNodes`/`agents` all arrays. Both were RED before the terminal-transition snapshot + getRun overlay existed (after a restart the tree flattened to phases:[]/workflowNodes:[] and frame-less agents).
+
+## v8 Defer B — external-ingress security tests (UT-063, IT-053, IT-054, IT-055)
+
+### UT-063 — Host/Origin allowlist truth-table: DNS-rebinding + CSRF defense, fail-open on absent Origin (REQ-056)
+- **status:** green
+- **traces:** DES-051
+- **iter:** v8
+- tests/unit/host-origin-allowlist.test.ts (NEW, 7 cases) — unit tier (pure functions `isAllowedHost`/`isAllowedOrigin`, no I/O/mocks). `isAllowedHost` (4 cases): accepts loopback authorities at the server port (`127.0.0.1:8787`/`localhost:8787`/`127.0.0.1`/`localhost`/`[::1]:8787`); rejects a foreign Host (`evil.example.com`, with/without port), a WRONG port (`127.0.0.1:9999`), and a prefix-bypass (`127.0.0.1.evil.example.com:8787`); rejects an ABSENT Host (fail-closed); accepts the configured LAN bind host when bound non-loopback (`192.168.0.10` ok, loopback still ok, a DIFFERENT LAN host rejected). `isAllowedOrigin` (3 cases): ALLOWS an absent/empty/`'null'` Origin (fail-open — programmatic clients send none); allows a loopback Origin at the server port; rejects a drive-by browser Origin (`http://evil.example.com`, `https://…`), a wrong port, and a malformed non-URL Origin. Pins REQ-056's allowlist truth table on the pure helpers.
+
+### IT-053 — Host/Origin allowlist enforced on the real HTTP server: foreign Host / drive-by Origin → 403, normal loopback → 200 (REQ-056)
+- **status:** green
+- **traces:** DES-051
+- **iter:** v8
+- tests/integration/host-origin-allowlist-http.test.ts (NEW, 5 cases) — integration tier over a REAL `createServer` (real `node:http` server on `port:0`, real routing; no SUT-boundary mock). Because Node's `fetch`/undici FORBIDS overriding the `Host` header, the foreign-Host cases use a raw `node:http.request` (which lets us set an arbitrary Host). CASES: a normal loopback `fetch` to `/api/runs` (default Host, no Origin — exactly what every MCP client sends) → 200 (the legitimate path is NOT broken); a raw request with `Host: evil.example.com` → 403 (DNS-rebinding); a raw request with the loopback `Host: 127.0.0.1:<port>` → 200 (sanity for the raw harness); a `POST /mcp` with `Origin: http://evil.example.com` → 403 (drive-by CSRF, enforced even on /mcp); a `POST /mcp` with a loopback `Origin` at the server port → 200. Exercises the top-of-handler guard against the real server.
+
+### IT-054 — WebhookRegistry: create/list-fingerprint/WORKFLOW_NOT_FOUND/signed-fire/bad-sig/stale-ts/replay-dedup/unknown+disabled/durable (REQ-057, REQ-058)
+- **status:** green
+- **traces:** DES-052
+- **iter:** v8
+- tests/integration/webhook-registry.test.ts (NEW, 8 cases) — integration tier over the REAL `WebhookRegistry` + REAL SQLite (`better-sqlite3`); the structural `RunManagerPort`/`CatalogPort` seams are faked (a catalog with a known-workflow set; a run-manager recording `started[]`) — the SUT is the registry's verify + persistence + dedup logic, and SQLite/HMAC are real. An anchored non-advancing `Clock` makes the ±300s window meaningful. CASES: (1) `create` returns a secret ONCE + `list` shows only a 16-char fingerprint (the secret never appears in `JSON.stringify(list)`); (2) `create` for an unknown workflow → `WORKFLOW_NOT_FOUND`; (3) a correctly-signed fresh `deliver` fires the PRE-BOUND workflow with the body as `args.event` → 202 (`started===[{name:'deploy', args:{event:{...}}}]`); (4) a bad signature → 401 and NO run; (5) a stale timestamp (outside ±300s) → 401 and NO run; (6) a replayed `deliveryId` → first 202, second 200 `replayed:true`, fired exactly once; (7) an unknown id → 404, a disabled webhook → 403, both start NO run; (8) DURABLE — a webhook created on one `WebhookRegistry` instance verifies + fires on a FRESH instance over the same db file (registration + secret persisted across restart). All cases were RED before the WebhookRegistry existed.
+
+### IT-055 — webhook ingress POST /hooks/:id on the real server: signed → 202 pre-bound ran with args.event, bad sig → 401 (REQ-057)
+- **status:** green
+- **traces:** DES-052
+- **iter:** v8
+- tests/integration/webhook-ingress-http.test.ts (NEW, 1 case) — integration tier over a REAL `createServer` (real HTTP server, real routing, real `RunManager` + real sandbox; only wall-clock time is real). Registers a target workflow (`return { hooked: args.event }`) and a webhook bound to it via the real MCP `webhook_create` tool (asserting the returned `{url, secret}`), then: a `POST` to the webhook `url` with a BAD signature → 401; a correctly `HMAC-SHA256(secret, rawBody)`-signed POST (with `X-RWE-Timestamp`/`X-RWE-Delivery`) → 202 with a `runId`; polling `workflow_result` shows the PRE-BOUND workflow REALLY ran with the body as `args.event` (`result==={hooked:{ping:'pong'}}`); and `webhook_list` shows only a fingerprint (the secret never appears in the list JSON). End-to-end proof of the ingress route + verify + fire path on the real server.

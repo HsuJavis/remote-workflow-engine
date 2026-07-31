@@ -50,6 +50,18 @@ export interface RunStore {
   /** Reads back the persisted transcript events for one agent (D-V6) — the real read-back path
    *  McpFacade.workflow_agent_log delegates to, never a hard-coded []. */
   getTranscript(runId: string, agentId: string): Promise<TranscriptEvent[]>;
+  /** v8 Slice 2c (REQ-055): persist a one-shot snapshot of the run's DAG detail (phases, full agent
+   *  records incl. frame/label/timing, workflowNodes) at the terminal transition, so a completed
+   *  composite run's nested tree survives a restart (getRun overlays it). Written once from the
+   *  authoritative terminal `_transition` (covers failed/stopped, not only completed). */
+  saveSnapshot(runId: string, snapshot: RunDagSnapshot): Promise<void>;
+}
+
+/** v8 Slice 2c: the persisted DAG detail a getRun overlays after a restart. */
+export interface RunDagSnapshot {
+  phases: RunStatusView['phases'];
+  agents: AgentRecord[];
+  workflowNodes: RunStatusView['workflowNodes'];
 }
 
 interface StoredRun {
@@ -63,6 +75,7 @@ interface StoredRun {
   transitions: StateTransition[];
   result?: unknown;
   hasResult: boolean;
+  snapshot?: RunDagSnapshot; // v8 Slice 2c: DAG detail captured at terminal
 }
 
 /** In-memory fake for unit tests — injected where RunStore is needed. */
@@ -134,7 +147,20 @@ export class InMemoryRunStore implements RunStore {
   async getRun(runId: string): Promise<RunStatusView | null> {
     const run = this._runs.get(runId);
     if (!run) return null;
-    return { runId: run.runId, status: run.status, phases: [], agents: deriveAgentRecords(run.transcripts), scriptVersion: run.scriptVersion };
+    // v8 Slice 2c: a persisted terminal snapshot restores the full DAG (frames/phases/timing);
+    // otherwise fall back to deriving bare agent records from transcripts (backward-compatible).
+    const s = run.snapshot;
+    return {
+      runId: run.runId, status: run.status, scriptVersion: run.scriptVersion,
+      phases: s?.phases ?? [],
+      agents: s?.agents ?? deriveAgentRecords(run.transcripts),
+      workflowNodes: s?.workflowNodes ?? [],
+    };
+  }
+
+  async saveSnapshot(runId: string, snapshot: RunDagSnapshot): Promise<void> {
+    const run = this._runs.get(runId);
+    if (run) run.snapshot = snapshot;
   }
 
   async listRuns(): Promise<RunSummary[]> {

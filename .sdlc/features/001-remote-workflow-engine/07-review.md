@@ -4,6 +4,334 @@ status: passed
 ---
 # 07 Review & Retro — Gate 8
 
+## v8 SLICE 2c + DEFER B GATE 8 REVIEW (2026-08-01, CURRENT / AUTHORITATIVE)
+
+> This section supersedes "## v8 SLICE 4 GATE 8 REVIEW (2026-08-01)" below (kept for history). This
+> round lands TWO already-implemented, GREEN, real-validated slices: **Slice 2c — cross-restart DAG
+> persistence** (the one real data-loss the observability slices left open: after a restart an
+> out-of-process composite run's nested DAG/phases/agent-frames FLATTENED) and **Defer B — external-
+> ingress security** (a Host/Origin allowlist + an HMAC-verified webhook ingress + a durable webhook
+> registry — the interim access control before OIDC). No v1-core change in either — one engine-owned
+> side table + one terminal-edge write (2c); one top-of-handler guard + one new route + one durable side
+> table + three MCP tools (Defer B).
+> Ledger items added this round: REQ-055 (2c) + REQ-056/057/058 (Defer B, requirements pre-written) →
+> ARCH-032 + ARCH-033 → TASK-053 + TASK-054 → DES-050 + DES-051 + DES-052 → IMPL-094 + IMPL-095 →
+> IT-052 (2 cases) + UT-063 (7) + IT-053 (5) + IT-054 (8) + IT-055 (1) → VAL-064 + VAL-065/066/067.
+
+### Retro (v8 Slice 2c — cross-restart DAG persistence)
+
+- **What changed:** a new `RunDagSnapshot {phases, agents, workflowNodes}` (`src/run-store.ts:60-65`) +
+  `RunStore.saveSnapshot` port method, captured ONCE at the authoritative terminal `_transition`
+  (`src/run-manager.ts:373-378`, via the in-process AgentExecutor's `getAllRecords()` so the persisted
+  agents carry `label`/`phase`/`frame`/`startedAt`/`endedAt`, not just tokens), overlaid on `getRun`
+  read-back in BOTH stores (`src/run-store.ts:150-158`, `src/store/sqlite-run-store.ts:179-193`) with a
+  `?? deriveAgentRecords(...)` / `?? []` fallback. A migration-free side table
+  `run_snapshots(runId PRIMARY KEY, json TEXT)` (`INSERT OR REPLACE`).
+- **Key decision:** snapshot ONCE at the terminal edge (not incrementally — no torn half-tree, covers
+  failed/stopped via the single choke); overlay-with-fallback keeps it strictly backward-compatible (a
+  pre-change / no-snapshot run reconstructs exactly as today, never worse, never a crash); persist the
+  enriched `getAllRecords()` (not the token-only transcript derivation) so `buildDagModel` regroups by
+  `frame` + shows durations after a restart; a migration-free side table (same "don't touch v1 core"
+  stance as the scheduler/continuation tables).
+- **Gate 7.5:** PASSED 2026-08-01. Live engine restarted mid-run: `phase('top') → workflow('s2c-mid'){
+  phase('p1') → workflow('s2c-leaf') }` — before restart `/api/runs/:id/dag` children `[(s2c-mid,1)]`;
+  after restart STILL `[(s2c-mid,1)]` + `phases ['top']` + `workflowNodes ['s2c-mid','s2c-leaf']` — the
+  DAG did NOT flatten (reversing the Slice-3 documented flattening). REQ-055 `real:true` (VAL-064).
+
+### Retro (v8 Defer B — external-ingress security)
+
+- **What changed:** (a) pure allowlist helpers `isAllowedHost`/`isAllowedOrigin` (`src/net-guard.ts:47-67`)
+  enforced by a TOP-of-handler 403 guard uniform across `/mcp`, `/api/*`, `/dashboard`, `/hooks/*`
+  (`src/server.ts:867-870`), plus a mutable `boundPort` assigned after listen (`:861`, `:986`) so the
+  closure knows the real port. (b) a NEW durable `WebhookRegistry` (`src/webhook-registry.ts`) — SQLite
+  side tables `webhooks` + `webhook_deliveries`, `create`/`list`/`delete`/`deliver`, the fail-closed
+  verify+fire (`createHmac`/`timingSafeEqual` over the RAW body + ±300s window + `INSERT OR IGNORE`
+  dedup + `runManager.start` pre-bound), reached through structural `RunManagerPort`/`CatalogPort` seams.
+  (c) a `POST /hooks/:id` ingress route (`src/server.ts:895-917`) + `webhook_create`/`list`/`delete` MCP
+  tools + config key `webhookDbPath`.
+- **Key decision:** fail-OPEN on an absent Origin, fail-CLOSED on an absent Host (an absent Origin is the
+  normal programmatic case — a fail-closed Origin check would break every non-browser MCP client; an
+  absent Host is anomalous/rebinding-shaped). Store the webhook secret SERVER-SIDE (not a one-way hash)
+  because HMAC verification needs the key — the GitHub/Stripe model; `list` exposes only a sha256
+  fingerprint. Verify ORDER exists+enabled → signature-over-RAW-body → timestamp → delivery-dedup → fire,
+  so authentication precedes any side effect and the fired workflow name is ALWAYS the stored
+  registration (no workflow-selection injection).
+- **Caught + fixed regression:** `webhook_list` is a genuine ZERO-ARG tool (`inputSchema.properties:{}`),
+  which the existing IT-028 (`tests/integration/mcp-tools-list-schema.test.ts`) flags UNLESS allowlisted —
+  added `webhook_list` to that test's `ZERO_ARG_TOOLS` (a one-line update, NOT a new IT id) alongside
+  `chain_list`/`schedule_list`/`asset_list`.
+- **Gate 7.5:** PASSED 2026-08-01. Live engine (33 tools incl. `webhook_*`): allowlist `curl -H 'Host:
+  evil.example.com'` → 403, normal → 200, `-H 'Origin: http://evil.example.com' POST /mcp` → 403; webhook
+  `webhook_create` → `{url, secret}`, a signed `POST /hooks/:id` (openssl HMAC) → 202 `{runId}`, the
+  pre-bound workflow ran → `{got:{deploy:'v9'}}` (body → `args.event`), a replay of the same delivery →
+  200 (no second run), `webhook_list` fingerprint-only. REQ-056/057/058 `real:true` (VAL-065/066/067).
+
+### Combined (both slices)
+
+- **No regressions:** full suite **658 pass / 149 files**, `npx tsc --noEmit` clean. No v1-core change in
+  either slice — RunSpec/RunStore/journal untouched (2c adds an engine-owned migration-free side table +
+  one terminal-edge write; Defer B adds a top-of-handler guard, one route, one durable side table, three
+  tools). The run lifecycle (RunGuard budget, agent semaphore, `_transition` state machine) is otherwise
+  untouched.
+- **Still deferred (recorded, not these increments):** Slice 2c's remaining dashboard items — **Item B =
+  SSE** (the page keeps the 3s poll), **Item C = parallel-group markers** (which siblings ran as one
+  `parallel()` batch — needs a sandbox-child IPC change), **Item D = static pre-read skeleton +
+  `scriptVersion` cache**; and **Defer A = durable in-flight-graph suspend/resume** (persist/rehydrate a
+  mid-execution call-tree across restart — 2c persists a run's DAG only at TERMINAL, not mid-flight). Full
+  OIDC (REQ-012, D5) stays deferred; a public `0.0.0.0` bind without OIDC remains a documented deployment
+  caveat — the Host/Origin allowlist (REQ-056) is the interim control.
+- **Trace note:** all Slice-2c + Defer-B work items use `###` headings and this section deliberately
+  avoids ID-shaped sub-headings, so it introduces no scanner-collision (trace.py parses only `###`).
+
+## v8 SLICE 4 GATE 8 REVIEW (2026-08-01, historical — superseded by the v8 Slice 2c + Defer B section above)
+
+> This section supersedes "## v8 SLICE 2b GATE 8 REVIEW (2026-07-31)" below (kept for history). v8
+> Slice 4 is CROSS-TRIGGER CHAINING + RUN-ADMISSION — the last core v8 trigger mechanism: runs can now
+> durably trigger runs, and the engine bounds how many top-level runs may be live at once. No v1-core
+> change (RunSpec/RunStore/journal untouched) — one authoritative terminal notification (`onTerminal`),
+> one engine-owned durable side table (continuations), one admission counter.
+> Ledger items added this slice: REQ-052/053/054 (requirements, pre-written) → ARCH-031 → TASK-052 →
+> DES-048 + DES-049 → IMPL-093 → IT-050 (4 cases) + IT-051 (6 cases) → VAL-061/062/063.
+
+### Retro (v8 Slice 4)
+
+- **What changed:** (a) `RunManager` gained an authoritative `onTerminal(runId,status)` hook fired from
+  the ONE `_transition` choke (`src/run-manager.ts:369-380`) via `queueMicrotask`+`try/catch`
+  (fire-and-forget, covers `stopped`) + a `maxConcurrentRuns` admission gate at the top of `start()`
+  (`:204-210`, default 64 via the existing `_positiveInt` validator, counting non-terminal `_runs` with
+  `_liveRunCount()` `:162-164`). (b) a NEW durable `ContinuationStore` (`src/continuation-store.ts`) —
+  SQLite+WAL side table mirroring the scheduler, `chainCreate`/`onTerminal`/`rearmAtBoot`/`list` +
+  atomic `WHERE status='pending'` reconcile + `_rootOf` lineage, reached through structural
+  RunManagerPort/RunStorePort seams (no class import). (c) `chain_create`/`chain_list` MCP tools + a
+  late-bound `let continuations` closure in server composition (`src/server.ts:706-711`) breaking the
+  RunManager↔store construction cycle. Config keys `maxConcurrentRuns`/`continuationDbPath`
+  (`src/main.ts`, `rwe.config.example.json`).
+- **Key decision:** fire `onTerminal` from `_transition` (the single authoritative terminal writer), NOT
+  the `_runLive` `.then` (which never sees `stop()`); fire-and-forget so a continuation's real `start(B)`
+  can never wedge A's terminal write. Admit BEFORE any durable work — the run-count/sandbox-fork DoS
+  chokepoint the global agent-semaphore (which caps only `agent()` dispatch) does not provide; a nested
+  `workflow()` consumes no slot. completed→fire, failed/stopped→skip. Boot-reconcile is COMPLETE because
+  `hydrateAll` marks a cross-restart running run `failed`, so a continuation's target is always terminal
+  on boot — no "stuck pending forever" hole.
+- **Caught + fixed regression:** `chain_list` is a genuine ZERO-ARG tool (`inputSchema.properties:{}`),
+  which the existing IT-028 (`tests/integration/mcp-tools-list-schema.test.ts`) flags as a schema
+  violation UNLESS allowlisted — added `chain_list` to that test's `ZERO_ARG_TOOLS` (a one-line update,
+  NOT a new IT id) alongside `workflow_list`/`schedule_list`/`asset_list`.
+- **Gate 7.5:** PASSED 2026-08-01. Live production engine (systemd `rwe.service`, `127.0.0.1:8787`,
+  `tsx src/main.ts`) restarted with the Slice-4 code; `tools/list` served 30 tools incl.
+  `chain_create`/`chain_list`. LATE-CREATE: `chain_create` after target `A` completed → `chain_list`
+  `status:'fired', rootRunId:A, spawnedRunId:<B>`, `workflow_result(B)==="B-ran"` (chained run really
+  ran). LIVE onTerminal: an in-flight opus `A2` chained mid-run fired its continuation on real
+  completion. REQ-052/053 `real:true`; REQ-054 `real:true` honest-partial via IT-050 (VAL-061/062/063).
+- **No regressions:** full suite 635 pass / 144 files, `npx tsc --noEmit` clean. No v1-core change —
+  RunSpec/RunStore/journal untouched; the ContinuationStore is an engine-owned durable side table (same
+  "don't touch v1 core" stance as the scheduler), and admission + onTerminal are the only run-lifecycle
+  additions (RunGuard budget + agent semaphore untouched).
+- **Deferred (recorded, not this increment):** external ingress security = **Defer B** (authn/z +
+  rate-limit on any public trigger surface); durable in-flight-graph suspend/resume = **Defer A**
+  (persist/rehydrate a mid-execution call-tree across restart); and the Slice-2c dashboard items
+  (parallel-group markers, cross-restart phase/tree persistence, SSE, static pre-read + scriptVersion
+  cache) carried forward from the Slice-2b retro below.
+- **Trace note:** all Slice-4 work items use `###` headings and this section deliberately avoids
+  ID-shaped sub-headings, so it introduces no scanner-collision (trace.py parses only `###`).
+
+## v8 SLICE 2b GATE 8 REVIEW (2026-07-31, historical — superseded by the v8 Slice 4 section above)
+
+> This section supersedes "## v8 SLICE 3 GATE 8 REVIEW (2026-07-31)" below (kept for history). v8
+> Slice 2b is the LIVE-EXECUTION-DETAIL layer over Slice-2/Slice-3's call-tree read-model + dashboard:
+> it adds the two "what is happening right now" signals the dashboard was missing — a phase timeline
+> (with timestamps + a current-step marker) and per-agent timing (dispatch→settle duration) — a
+> read-model/observability extension, no execution-semantics change.
+> Ledger items added this slice: REQ-050/051 (requirements, pre-written) → ARCH-030 → TASK-051 →
+> DES-047 → IMPL-092 → UT-062 (1 case) + IT-049 (2 cases) → VAL-059/060.
+
+### Retro (v8 Slice 2b)
+
+- **What changed:** `PhaseView.ts` made a REQUIRED field so every `phases[]` entry carries the ISO time
+  its `phase()` was entered (`src/types.ts`, stamped in the sandbox `onPhase` callback via the injectable
+  `Clock`, `src/run-manager.ts:357`); `AgentRecord` gains `startedAt` (stamped at the slot-acquired
+  `markRunning` seam, `src/run-manager.ts:494` → `src/agent-executor.ts:128-130`) + `endedAt` (the
+  `capture()` clock time, carried on both ok+failed branches, `src/agent-executor.ts:135-153`);
+  `buildDagModel` exposes `startedAt`/`endedAt` + a derived non-negative `durationMs`
+  (`undefined` while unfinished, `src/dashboard.ts:54-55`); and the dashboard detail page renders a
+  `#phases` timeline (each phase a chip with its `ts` tooltip, the last chip marked `cur` only while
+  `running`) plus each agent node's `<n> ms` duration (`src/dashboard-page.ts`).
+- **Key decision:** stamp `startedAt` at `markRunning` (slot-acquired / dispatch), NOT at enqueue — so
+  `durationMs` measures real execution, not queue wait, and a queued-not-yet-dispatched agent stays
+  timestamp-less (per REQ-051). Derive `durationMs` in the model (`max(0, endedAt − startedAt)`), don't
+  persist it — one source of truth in the two timestamps, `undefined` for an unfinished agent for free.
+  Use the ONE injectable `Clock` for both the phase `ts` and the agent timing, so an advancing test clock
+  makes the timeline ordering + `endedAt ≥ startedAt` deterministically assertable (IT-049).
+- **Gate 7.5:** PASSED 2026-07-31. Live production engine (systemd `rwe.service`, `127.0.0.1:8787`,
+  `tsx src/main.ts`) restarted with the Slice-2b code; an ad-hoc `phase('draft'); agent 'pinger'(opus);
+  phase('done')` run in-process returned `phases:[{draft,ts},{done,ts}]` (ordered) and an agent record
+  `{startedAt,endedAt}` (~5.3s real opus call, `endedAt ≥ startedAt`) from `GET /api/runs/:id`;
+  `/dashboard/:runId` (DOM-verified) rendered `#phases` chips `['draft','done']` each with its `ts`
+  tooltip and the agent node text `pinger opus done 7 tok 5325 ms`. REQ-050/051 both `real:true`
+  (VAL-059/060).
+- **No regressions:** full suite 625 pass / 142 files, `npx tsc --noEmit` clean; only the read-model
+  presentation changed (two timestamps + a derived duration + timeline/duration rendering) — no
+  run-lifecycle / budget / concurrency state added. `src/mcp-facade.ts` unchanged. The one compile
+  consequence — a `PhaseView` fixture in `tests/unit/dashboard-model.test.ts` gaining `ts` — is the cost
+  of making `ts` required.
+- **Deferred to Slice 2c (recorded, not this increment):** parallel-group markers (which sibling nodes
+  ran as one `parallel()` batch — needs a sandbox-child protocol change to report batch membership);
+  cross-restart phase/tree persistence (after a service restart an out-of-process run's phases/tree are
+  not rehydrated — the live timeline/tree lives in the per-process `RunEntry`); SSE (the page keeps the
+  3-second poll); static pre-read + `scriptVersion` cache (serve the skeleton before the run starts).
+- **Trace note:** all Slice-2b work items use `###` headings and this section deliberately avoids
+  ID-shaped sub-headings, so it introduces no scanner-collision (trace.py parses only `###`).
+
+## v8 SLICE 3 GATE 8 REVIEW (2026-07-31, historical — superseded by the v8 Slice 2b section above)
+
+> This section supersedes "## v8 SLICE 2 GATE 8 REVIEW (2026-07-30)" below (kept for history). v8
+> Slice 3 is the PRESENTATION layer over Slice-2's frame-tagged read-model: it turns the flat
+> read-model into a PURE call-tree model and the browser-facing dashboard that renders cards → a nested
+> composite DAG → an agent transcript — a read-model reshaping + a page, no execution-semantics change.
+> Ledger items added this slice: REQ-048/049 (requirements, pre-written) → ARCH-029 → TASK-050 →
+> DES-045/DES-046 → IMPL-091 → UT-061 (3 cases) + IT-048 (2 cases) → VAL-057/058.
+
+### Retro (v8 Slice 3)
+
+- **What changed:** `buildDagModel(RunStatusView) → DagNode` (`src/dashboard.ts`) — a PURE, total
+  reconstruction of a run's call-tree (group agents by `frame`, nest composite frames by `parentFrame`,
+  root-fallback so no agent is dropped) — plus two read-only endpoints on the existing dashboard-API
+  transport (`GET /api/workflows` → the registered catalog for home cards; `GET /api/runs/:id/dag` →
+  `buildDagModel(view)`), and a rewritten self-contained SPA (`src/dashboard-page.ts`) that renders
+  workflow + run cards on `/dashboard`, a recursive nested-group DAG (composite `.grp` groups, 3-state
+  agent nodes showing model) on `/dashboard/:runId`, and an agent transcript drill-down, on a 3-second
+  poll. `buildDagModel` is shared by the endpoint AND the page — one tested model, no browser-side tree
+  logic.
+- **Key decision:** keep one pure `buildDagModel` (unit-tested, UT-061) served whole by `/api/runs/:id/dag`
+  and just walked by the page's `renderNode`, rather than rebuild the tree in client JS — one
+  reconstruction, one test. Make it total (never throws, never drops an agent: orphan parentFrame →
+  root, unknown agent frame → root) so the dashboard degrades to a flatter-but-complete tree, never a
+  500 or a missing agent.
+- **Gate-7.5-caught routing gap:** the top-level request router's dispatch predicate matched only
+  `/api/runs*`, so `GET /api/workflows` fell through to the `/mcp` JSON-RPC handler and returned
+  `-32601` (method-not-found). Caught on the real run at Gate 7.5 and fixed by widening the predicate to
+  also match `/api/workflows` (`src/server.ts:797`) — one shared `handleDashboardRequest` branch, no
+  second handler. Regression-locked by IT-048's `GET /api/workflows` case.
+- **Gate 7.5:** PASSED 2026-07-31. REQ-049 fully live via a headless browser (Playwright) — `/dashboard`
+  rendered workflow + run cards; a nested composite `dag2mid → dag2leaf → agent 'pinger'(opus)` opened
+  at `/dashboard/<runId>` rendered `groupHeaders = ["workflow dag2mid · depth 1","workflow dag2leaf ·
+  depth 2"]`, the agent node nested two groups deep (`node st-done`, `pinger opus done 7 tok`), and
+  clicking it loaded the real opus transcript ("PONG"). REQ-048 (`buildDagModel`) real:true via UT-061 +
+  the live `/dag` tree.
+- **No regressions:** full suite 622 pass / 141 files, `npx tsc --noEmit` clean; only the read-model
+  presentation changed (a pure `buildDagModel` + two read-only endpoints + the page) — no run-lifecycle
+  / scheduling state added. `src/mcp-facade.ts` unchanged.
+- **Deferred (recorded, not this increment):** server-sent events (the page keeps the 3-second poll);
+  parallel-group markers (which sibling nodes ran as one `parallel()` batch); phase persistence +
+  current-step + timing (per-node start/end/duration); static pre-read + `scriptVersion` cache (serve
+  the tree skeleton before the run starts); cross-restart tree persistence (after a service restart an
+  out-of-process run's `/api/runs/:id/dag` flattens because `getRun()` returns `workflowNodes: []` — the
+  live tree lives in the per-process `RunEntry`; a later increment can back it with a persisted node
+  table without changing the shape — exactly REQ-047's documented cross-restart-out-of-scope, confirmed
+  live).
+- **Trace note:** all Slice-3 work items use `###` headings and this section deliberately avoids
+  ID-shaped sub-headings, so it introduces no scanner-collision (trace.py parses only `###`).
+
+## v8 SLICE 2 GATE 8 REVIEW (2026-07-30, historical — superseded by the v8 Slice 3 section above)
+
+> This section supersedes "## v8 SLICE 1 GATE 8 REVIEW (2026-07-30)" below (kept for history). v8
+> Slice 2 is the first increment of the dashboard DATA layer over Slice 1's N-level composition: it
+> SURFACES the already-computed frame structure so a client can reconstruct a composite run's live
+> call-tree (DAG) and drill from any node to its transcript — a read-model/observability extension,
+> no execution-semantics change. Ledger items added this slice: REQ-045..047 (requirements,
+> pre-written) → ARCH-028 → TASK-049 → DES-043/DES-044 → IMPL-090 → IT-047 (2 cases) → VAL-054..056.
+
+### Retro (v8 Slice 2)
+
+- **What changed:** each `agent()` record now carries the composite `frame` it ran in (root `""`; a
+  nested agent's frame has its parent frame as a strict prefix), each nested `workflow()` call is
+  recorded as a `workflowNodes` boundary node `{frame,name,parentFrame,depth}`, and both are exposed
+  through the existing `workflow_status` / `GET /api/runs/:id` read-model — so the dashboard can render
+  a composite as nested sub-cards and click a node to its log. `mcp-facade.ts` needed no change (it
+  already returns the full `RunStatusView` as `result`).
+- **Key decision:** reuse the ARCH-027 frame-path key as the tree key rather than mint a parallel
+  id-space — so `node.frame == its inner agents' frame` holds by construction (one source of frame
+  identity for both journal namespacing and tree linkage), and the frame is stamped at `markQueued`
+  (not `capture`) so in-flight/queued agents already carry it (REQ-047's "current step = the running
+  node").
+- **Gate 7.5:** PASSED 2026-07-30. REQ-046/047 fully live — a model-free composite (`dagmid` →
+  `workflow('dagleaf')`) run against the live engine returned, via real MCP, `workflowNodes:
+  [{frame:".0",name:"dagmid",parentFrame:"",depth:1},{frame:".0.0",name:"dagleaf",parentFrame:".0",depth:2}]`
+  (correct depth/parentFrame hierarchy, `dagleaf.parentFrame == dagmid.frame`). REQ-045 (agent frame
+  tagging) is `real:true` via the real-sandbox integration test IT-047 (a live agent needs a model
+  provider, so the live check used the model-free linkage path) — honest partial mirroring the
+  VAL-046/051 precedent.
+- **No regressions:** full suite 617 pass / 140 files, `npx tsc --noEmit` clean; only the read-model
+  changed (agents gain a `frame`, a per-run `workflowNodes` list is populated + exposed) — no
+  run-lifecycle / scheduling state added.
+- **Deferred (recorded, not this increment):** parallel-group markers (which sibling nodes ran as one
+  `parallel()` batch); phase persistence + current-step + timing (per-node start/end/duration);
+  static pre-read + `scriptVersion` cache (serve the tree skeleton before the run starts); cross-restart
+  tree persistence (the persisted/derived `getRun()` path defaults `workflowNodes: []` — the live tree
+  lives in the per-process `RunEntry`; a later increment can back it with a persisted node table without
+  changing the shape). These are the natural next Slice-2 increments toward the full dashboard.
+- **Trace note:** all Slice-2 work items use `###` headings and this section deliberately avoids
+  ID-shaped sub-headings, so it introduces no scanner-collision (the trace.py item regex now parses
+  only `###`, per the Slice-1 carry-forward fix).
+
+## v8 SLICE 1 GATE 8 REVIEW (2026-07-30, historical — superseded by the v8 Slice 2 section above)
+
+> This section supersedes "## v7 GATE 8 CLOSING REVIEW (2026-07-24)" below (kept for history). v8
+> Slice 1 lifts one-level `workflow()` nesting into config-capped N-level composition with cycle +
+> descendant guards and a depth-safe journal keying rework. Ledger items added this slice: REQ-041..044
+> (requirements, pre-written) → ARCH-027 → TASK-048 → DES-041/DES-042 → IMPL-089 → IT-046 (7 cases,
+> +IT-026 regression) → VAL-050..053. Gate 7.5 v8 Slice 1 ROUND 1 PASSED 2026-07-30: REQ-041 fully
+> live (CASE A depth-2 `"M(L)"`; CASE B depth-3 → `NESTING_DEPTH_EXCEEDED` under live `maxWorkflowDepth:2`);
+> REQ-042/043/044 real:true via the real-wiring integration test IT-046 + the same live nested code
+> path (honest partial on the isolated guard/budget probes, mirrors the VAL-046 pattern).
+
+### 1. Traceability
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` regenerated. The v8 chain is
+intact end-to-end: REQ-041..044 → ARCH-027 (traces all four REQs) → TASK-048 → DES-041/042 →
+IMPL-089 (traces TASK-048 + DES-041/042, greens) and IT-046 (traces DES-041/042) + VAL-050..053
+(each traces its REQ, real:true) — so all four REQs are implemented, verified, and real-verified (no
+新 未實作 / 未驗證 / 未真實驗證 gap from this slice). All v8 items carry `iter: v8`; no doc↔code drift
+(IMPL-089 v8 traces DES-041/042 v8, equal iter).
+
+Pre-existing gaps unrelated to this slice are NOT touched: REQ-012 未真實驗證 (OIDC deferred, D5) and
+TASK-018 未實作 (OIDC seam) remain accepted tech debt. NB — a pre-existing scanner collision (the v7
+review's `#### ARCH-025`/`#### ARCH-026` sub-headings match trace.py's `#{2,4}` item regex and, being
+scanned after 02-architecture.md, overwrite the real ARCH-025/026 traces) currently shows REQ-037..040
+as 未實作; this predates v8, is out of this slice's scope, and is left recorded here rather than
+silently patched. This v8 section deliberately avoids ID-shaped sub-headings so it introduces no new
+collision.
+
+### 2. Architecture consistency — ARCH-027 (lean-tier self-check, QM)
+
+Checked against the v8-touched files on IMPL-089: `src/run-manager.ts` (nesting context + 3 guards +
+`_frameBaseFor`/`NESTED_FRAME_STRIDE` + `_positiveInt`), `src/server.ts` + `src/main.ts` (config
+threading), `rwe.config.example.json`. The three guards fire at the `onWorkflowRequest` boundary in
+the ARCH-027-specified order (depth → cycle → descendant), each as a typed envelope error; the nested
+child shares the parent `RunEntry`/`RunGuard` (shared-budget invariant by construction); the additive
+frame keying replaces the overflowing multiplicative scheme. Consistent with ARCH-027 and its
+Depends (ARCH-002 run/journal/budget, ARCH-005 catalog resolution, ARCH-001 config threading). No
+drift found.
+
+### Retro (v8 Slice 1)
+
+- **What changed:** one-level `workflow()` nesting → N-level composition (default depth 4 /
+  descendants 256, both config-validated at load), so a registered composite can be a node inside
+  another — the foundation for composing workflows into a system graph.
+- **Key finding (callSeq overflow):** the v1 multiplicative nested-callSeq keying `(parentCallSeq+1)*1e6+n`
+  overflows `MAX_SAFE_INTEGER` past ~depth 2 and would corrupt resume replay at depth ≥3. Reworked to
+  an additive per-frame base allocation, deterministic across resume (incl. `parallel()` array order);
+  regression-guarded by IT-026 staying green.
+- **No regressions:** full suite 615 pass / 139 files, `npx tsc --noEmit` clean; only the nesting path
+  changed (nested child reuses parent budget/journal — no new run-lifecycle state).
+- **Carry-forward:** the trace.py `#{2,4}` heading-collision (ARCH-025/026 in 07-review.md) is worth a
+  tooling fix (restrict item headings to `###`, or de-dupe by first occurrence) so review prose can
+  cite IDs in sub-headings without breaking upstream chains — deferred, not v8-scope.
+
+Gaps: high=1 mid=5 low=1 — ALL pre-existing and out-of-v8-scope (high=REQ-012 未真實驗證; mid=REQ-037..040
+未實作 [v7 review heading-collision] + IMPL-082 TDD label; low=TASK-018 未實作). 0 new gaps from the v8
+slice. Conclusion: v8 Slice 1 can close; the four REQs are fully traced + real-validated.
+
 ## v7 GATE 8 CLOSING REVIEW (2026-07-24, CURRENT / AUTHORITATIVE)
 
 > This section supersedes "## v6 GATE 8 CLOSING REVIEW (2026-07-19)" below (kept for history). v7
