@@ -50,6 +50,11 @@ export interface RunStore {
   /** Reads back the persisted transcript events for one agent (D-V6) — the real read-back path
    *  McpFacade.workflow_agent_log delegates to, never a hard-coded []. */
   getTranscript(runId: string, agentId: string): Promise<TranscriptEvent[]>;
+  /** v8 Defer A (REQ-059): reads back the settled-call journal entries for a run (excluding the
+   *  terminal result marker) — lets a run resumed in a fresh process (after a crash/restart) build a
+   *  non-empty ResumeCache and replay its journaled agent()/workflow() calls instead of re-running
+   *  them live. Empty for an unknown run. */
+  getJournal(runId: string): Promise<JournalEntry[]>;
   /** v8 Slice 2c (REQ-055): persist a one-shot snapshot of the run's DAG detail (phases, full agent
    *  records incl. frame/label/timing, workflowNodes) at the terminal transition, so a completed
    *  composite run's nested tree survives a restart (getRun overlays it). Written once from the
@@ -175,6 +180,11 @@ export class InMemoryRunStore implements RunStore {
 
   async hydrateAll(): Promise<RunSummary[]> {
     return this.listRuns();
+  }
+
+  async getJournal(runId: string): Promise<JournalEntry[]> {
+    const run = this._runs.get(runId);
+    return run ? [...run.journal] : [];
   }
 
   async getTranscript(runId: string, agentId: string): Promise<TranscriptEvent[]> {

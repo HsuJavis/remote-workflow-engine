@@ -758,8 +758,8 @@ npm run start
   run 標為 failed，開機時目標必為終態）；同一 run 的多次終態轉換（stop→resume→complete）最多只啟動一次
   下游 run（原子 `WHERE status='pending'` 認領）。並行上限由 `maxConcurrentRuns`（見上）以
   `RUN_ADMISSION_LIMIT` 把關。Gate 7.5 v8 Slice 4 ROUND 1 PASSED（真實 service 30 tools、真串接執行、
-  in-flight onTerminal 實測，VAL-061/062/063）。**尚未支援**：外部 ingress 安全（Defer B）、跨重啟
-  in-flight 呼叫樹 suspend/resume（Defer A）。
+  in-flight onTerminal 實測，VAL-061/062/063）。**尚未支援**：外部 ingress 安全（Defer B，已於下方 Defer B
+  段落補上）、跨重啟 in-flight 呼叫樹 suspend/resume（Defer A，已於下方 Defer A 段落補上）。
 - **跨重啟 DAG 持久化（v8 Slice 2c）**：以往一個 composite run 一旦行程結束，重啟後 `workflow_status`／
   `GET /api/runs/:id`／`/api/runs/:id/dag` 會攤平（`phases:[]`／`workflowNodes:[]`、agent 失去 `frame`）。
   現在引擎在**權威的終態轉換**（單一 `_transition`，涵蓋 `completed`／`failed`／`stopped`）**一次性**寫入一
@@ -793,6 +793,21 @@ npm run start
   - Gate 7.5 v8 Defer B ROUND 1 PASSED（真實 service 33 tools、`Host: evil` → 403、`Origin: evil` POST
     /mcp → 403、簽章 `POST /hooks/:id` → 202 且真跑、重放 → 200 不重跑、`webhook_list` 只回指紋，
     VAL-065/066/067）。
+- **當機可續跑（v8 Defer A，crash durability）**：以往一個 run 在引擎當機／重啟時若還在 `running`，重啟後會被
+  永久標成 `failed`（無法續跑）。現在引擎在開機恢復（`hydrateAll`）時把仍為 `running` 的 run 重新分類為
+  **`interrupted`**（可續跑、非終態，有別於使用者 `suspended`／`stopped`），開機日誌會印
+  `hydrateAll: … N re-classified running→interrupted (resumable)`；`workflow_status` 會回 `interrupted`，
+  之後 `workflow_resume(runId)` 即可續跑。續跑時**已寫入日誌（journal.jsonl）的 `agent()`／`workflow()`
+  呼叫會從持久化日誌重播**（新增 `RunStore.getJournal` 讀回，填入 ResumeCache），gateway 不會為已結算的呼叫
+  重打——只有尚未完成的尾段才真的重跑（與 suspend/resume 相同語意）。run 的工作目錄（name+runId 的決定性
+  函數）在重啟後保留，當機前 agent 產生的檔案狀態仍在。作法為 **Option X**：重用既有的 ResumeCache／日誌重播
+  ＋一個非終態狀態＋日誌讀回，**沒有**新的 sandbox checkpoint／VM snapshot 協定。**已知注意事項**：當機瞬間
+  正在飛行中（已派發但尚未寫入日誌）的那一次呼叫，續跑時無日誌命中 → 會真的重跑（cache MISS）——這與
+  suspend/resume 一直以來的語意相同，非靜默遺失；若該次呼叫有非冪等副作用（例如已寄出的信）可能重複，由
+  工作流程作者負責冪等性。Gate 7.5 v8 Defer A ROUND 1 PASSED（真實 service：跑一個 5 圈 opus loop 的具名
+  工作流程，`kill -9` 引擎於執行中、systemd 重啟後 `workflow_status` 回 `interrupted`、`workflow_resume`
+  續跑至 `completed` 並回傳 5 元素真實 opus 回應陣列，VAL-068/069）。**尚未支援**：SSE、parallel-group 標記
+  （需 sandbox-IPC 改動）、靜態預讀骨架+快取。
 
 - **本輪對獨立真實 process 重新確認「真的修復」（D-F12/D-F13，全部確認）**：
   1. **（D-F12）in-flight agent 狀態即時可觀察**：真實 3 個並行 `agent()` 呼叫，`status:"running"`
@@ -937,3 +952,4 @@ curl -s -D - -o /dev/null -X POST $BASE/v1/chat/completions \
 | 2026-08-01 | v8 | Slice 4（跨觸發串接 + run-admission）：新增權威的 `onTerminal(runId,status)` hook（自單一 `_transition` 觸發、fire-and-forget、涵蓋 `stopped`）+ `maxConcurrentRuns` 並行上限（預設 64，啟動驗證，`start()` 於任何持久化動作前以 `RUN_ADMISSION_LIMIT` 把關，巢狀 `workflow()` 不佔槽）；新增引擎自有的持久化續接 side table `ContinuationStore`（SQLite+WAL，作法同 scheduler）+ 兩個 MCP 工具 `chain_create`／`chain_list`（完成即啟動下游 run，恰好一次；failed/stopped→skipped；`CHAIN_TARGET_NOT_FOUND`；跨重啟 boot reconcile；`rootRunId` 世系；stop→resume→complete 只啟動一次）；新設定鍵 `maxConcurrentRuns`（預設 64）/`continuationDbPath`（預設 `$workRoot/continuations.db`）。Gate 7.5 v8 Slice 4 ROUND 1 PASSED（真實 service 30 tools、真串接執行 + in-flight onTerminal 實測，VAL-061/062/063）。**尚未支援**：外部 ingress 安全（Defer B）、跨重啟 in-flight 呼叫樹 suspend/resume（Defer A） | 無破壞性變更；兩個新鍵皆選填、有預設值，一般部署可省略；兩個新工具為附加、既有用戶端可忽略；無遷移動作 |
 | 2026-08-01 | v8 | Slice 2c（跨重啟 DAG 持久化）：引擎在權威的終態 `_transition`（涵蓋 `completed`/`failed`/`stopped`）一次性寫入一份 DAG 快照（`phases` + `workflowNodes` + 完整 agent 記錄含 `label`/`phase`/`frame`/`startedAt`/`endedAt`）到引擎自有的 migration-free side table `run_snapshots`（在 `$workRoot/store/index.db`），`getRun` 讀回時 overlay——修掉「重啟後 composite run 的巢狀 DAG/phases 攤平（`phases:[]`/`workflowNodes:[]`、agent 失去 frame）」的真實資料遺失；`buildDagModel` 重啟後能重建同一棵巢狀樹。向後相容：無快照的舊 run 仍以既有方式重建、不會更差不會崩。Gate 7.5 v8 Slice 2c ROUND 1 PASSED（真實 service 重啟後 DAG 不攤平實測，VAL-064）。**尚未支援**：SSE（Item B）、parallel-group 標記（Item C，需 sandbox-IPC）、靜態預讀+快取（Item D） | 無破壞性變更；無新設定鍵（快照存於既有 `$workRoot/store/index.db` 的新 side table，migration-free）；既有用戶端可忽略；無遷移動作 |
 | 2026-08-01 | v8 | Defer B（外部 ingress 安全，OIDC 前過渡管控）：HTTP handler 最頂端對每條路由（`/mcp`/`/api/*`/`/dashboard`/`/hooks/*`）一致的 **Host/Origin 白名單**（外來 Host → 403 防 DNS-rebinding；帶有且非白名單 Origin → 403 防 CSRF；缺 Origin 放行 = fail-open，不打斷程式化 client）；新增 **webhook 入口 `POST /hooks/:id`**（fail-closed：exists+enabled → HMAC-SHA256 常數時間比對原始 body → ±300s 時戳 → deliveryId 去重 → 啟動預先綁定工作流程，body 以 `args.event` 傳入，回 202）；新增三個 MCP 工具 `webhook_create`（server 端產生 secret 只回一次）/`webhook_list`（只回 sha256 指紋，永不回 secret）/`webhook_delete`；新增引擎自有的持久化 webhook 註冊表 side table（`webhooks` + `webhook_deliveries`）+ 新設定鍵 `webhookDbPath`（預設 `$workRoot/webhooks.db`）。secret 為明文儲存（HMAC 驗簽需金鑰，同 GitHub/Stripe 模型）。Gate 7.5 v8 Defer B ROUND 1 PASSED（真實 service 33 tools、`Host: evil` → 403、`Origin: evil` POST /mcp → 403、簽章 `POST /hooks/:id` → 202 真跑、重放 → 200 不重跑，VAL-065/066/067）。**已知注意事項**：公開 `0.0.0.0` bind 且未接 OIDC（REQ-012，D5 延後）時，能連到 port 的人皆可呼叫這些工具——白名單是過渡管控、非 OIDC 替代 | 無破壞性變更；`webhookDbPath` 選填有預設值、一般部署可省略；三個新工具為附加、既有用戶端可忽略；Host/Origin 白名單永遠開啟且對正常 loopback/LAN 呼叫無影響（缺 Origin fail-open）；無遷移動作 |
+| 2026-08-01 | v8 | Defer A（當機可續跑，crash durability，Option X）：**一個當機/重啟時仍 `running` 的 run 現在會被重新分類為 `interrupted`（可續跑、非終態）而非永久 `failed`**——開機恢復（`hydrateAll`）改標 `running`→`interrupted`（日誌印 `… N re-classified running→interrupted (resumable)`），`workflow_status` 回 `interrupted`，`workflow_resume(runId)` 即可續跑；`RunStatus` union 新增 `'interrupted'`。新增 `RunStore.getJournal` 讀回 journal.jsonl（丟棄 `{type:'result'}` 標記、對當機截斷的最後一行容錯），`_requireLive` 用它填入 ResumeCache——**續跑時已結算的 `agent()`/`workflow()` 呼叫從持久化日誌重播、gateway 不重打**，只重跑未完成尾段（原本 hard-code `journal:[]` 會全部重跑）。同時修掉一個**既有 bug**：具名工作流程（`start({name})`）的 spec 不存 inline script，`_requireLive` 舊用 `spec.script ?? ''` 會跑空 script 回 `undefined`——改為和 `start()` 一樣從 catalog 重解析 script（影響所有具名工作流程的重啟續跑，非只當機）。Option X：重用既有 ResumeCache/日誌重播，**無**新的 sandbox checkpoint/VM snapshot 協定。Gate 7.5 v8 Defer A ROUND 1 PASSED（真實 service：具名 5 圈 opus loop 工作流程執行中 `kill -9`、systemd 重啟後 `workflow_status` 回 `interrupted`、`workflow_resume` 續跑至 `completed` 回 5 元素真實 opus 陣列，VAL-068/069）。**已知注意事項**：當機瞬間飛行中（已派發未寫日誌）的呼叫續跑時會真的重跑（cache MISS，與 suspend/resume 同語意）；非冪等副作用可能重複，由工作流程作者負責冪等性 | 無破壞性變更；`interrupted` 為 `RunStatus` 新增值、既有用戶端遇到時視為可續跑狀態即可；無新設定鍵、無遷移動作（journal.jsonl 與 SQLite `runs` 表沿用既有格式） |

@@ -86,16 +86,16 @@ describe('SqliteRunStore persistence (ARCH-006)', () => {
     ]);
   });
 
-  it('running runs re-hydrate as failed on restart (not silently left as running)', async () => {
+  it('running runs re-hydrate as interrupted (resumable) on restart, not silently left as running (v8 Defer A REQ-060)', async () => {
     if (!SqliteRunStore) throw new Error('SqliteRunStore: not implemented');
     const store1 = new SqliteRunStore(dir, CLOCK);
     const runId = await store1.createRun({ script: 'return 1;' });
     await store1.recordTransition(runId, 'queued', 'running', CLOCK.isoNow());
 
-    // Simulate crash + restart
+    // Simulate crash + restart: a running run was interrupted by the crash.
     const store2 = new SqliteRunStore(dir, CLOCK);
-    await store2.hydrateAll();  // must re-classify running → failed
+    await store2.hydrateAll();  // v8 Defer A: re-classify running → interrupted (resumable), not the dead 'failed'
     const view = await store2.getRun(runId);
-    expect(view!.status).toBe('failed');
+    expect(view!.status).toBe('interrupted');
   });
 });

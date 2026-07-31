@@ -4,7 +4,82 @@ status: passed
 ---
 # 07 Review & Retro — Gate 8
 
-## v8 SLICE 2c + DEFER B GATE 8 REVIEW (2026-08-01, CURRENT / AUTHORITATIVE)
+## v8 DEFER A GATE 8 REVIEW (2026-08-01, CURRENT / AUTHORITATIVE)
+
+> This section supersedes "## v8 SLICE 2c + DEFER B GATE 8 REVIEW (2026-08-01)" below (kept for history).
+> This round lands ONE already-implemented, GREEN, real-validated slice: **Defer A — crash durability**,
+> the last core v8 trigger-durability gap. A run in-flight when the engine crashes/restarts is now
+> RESUMABLE, not lost. Achieved via **Option X**: reuse the EXISTING ResumeCache/journal-replay (the same
+> machinery suspend/resume relies on) plus a non-terminal `interrupted` status assigned at boot recovery
+> and a persisted-journal READ-BACK — NO new sandbox-checkpoint / VM-snapshot protocol. No v1-core change
+> (RunSpec/RunStore shapes, the journal format, and the terminal state machine untouched) — one new
+> `RunStatus` value, one boot-recovery reclassify, one port read-back method (two impls), one rehydration-
+> path change, one cosmetic CSS rule.
+> Ledger items added this round: REQ-059 + REQ-060 (requirements pre-written, iter v8) → ARCH-034 →
+> TASK-055 → DES-053 → IMPL-096 → IT-056 (4 cases, + a one-line IT-006 assertion update) →
+> VAL-068 + VAL-069.
+
+### Retro (v8 Defer A — crash durability)
+
+- **What changed:** (a) `'interrupted'` added to the `RunStatus` union (`src/types.ts:5`) — a RESUMABLE,
+  NON-terminal boot-recovery status distinct from user `suspended`/`stopped` (NOT in `TERMINAL`
+  `src/run-manager.ts:69`, so it never fires onTerminal and stays resumable). (b) `hydrateAll` reclassifies
+  boot-time `running` rows → `interrupted` (`src/store/sqlite-run-store.ts:222-227`, was force-to-`failed`),
+  logging `… N re-classified running→interrupted (resumable)`. (c) a NEW `RunStore.getJournal(runId)`
+  read-back (`src/run-store.ts:53-57`, `:185-187`; `src/store/sqlite-run-store.ts:113-124`) — reads
+  journal.jsonl, drops the terminal `{type:'result'}` marker, ROBUST to a crash-truncated final line (an
+  unparseable tail is skipped, not thrown — a real SIGKILL can leave a half-written line). (d) `_requireLive`
+  now accepts `interrupted`, populates the rehydrated entry's `journal` from `getJournal` (was hard-coded
+  `journal:[]`), and re-resolves a NAMED workflow's script from the catalog (`src/run-manager.ts:338,
+  347-354, 369`); `resume()` accepts `interrupted` (`:271-273`). (e) a cosmetic `.st-interrupted` dashboard
+  color (`src/dashboard-page.ts:28`).
+- **Key decision:** Option X — reuse ResumeCache + a status gate + journal read-back, NOT a VM/sandbox
+  checkpoint. The journal of settled `agent()`/`workflow()` calls IS the durable checkpoint; re-executing
+  the script against a cache populated from it reconstructs the run's position by replaying settled calls
+  and running only the unfinished tail — no new serialization format, reusing tested machinery. A
+  mid-flight-at-crash call (dispatched but never journaled → cache MISS → live re-run on resume) is the
+  SAME semantics suspend/resume already carries — a documented caveat, not silent loss; and a re-run tail
+  call's non-idempotent side effects (e.g. an already-sent email) may repeat — the workflow author's
+  responsibility, the same boundary suspend/resume has always had.
+- **The real Gate-7.5 value story — a PRE-EXISTING bug found via live crash testing.** A NAMED-workflow run
+  (`start({name})`) stores `spec.script = null` (start() resolves the script from the catalog at launch);
+  `_requireLive` used `spec.script ?? ''`, so ANY restart-resume of a named workflow — not only a crash, but
+  the pre-Defer-A suspended-run restart-resume path too — executed an EMPTY script and returned `undefined`,
+  with only the pre-crash agent journaled. Every unit test missed it because they ALL used inline
+  `start({script})`. Live Gate-7.5 crash testing of a named workflow (`lr4`) exposed it: the resumed run
+  "completed" in ~0.13s with a null result and no re-dispatch. Fixed by re-resolving the script from the
+  catalog in `_requireLive`, mirroring `start()`; after the fix the live resume returned a 5-element array
+  of real opus responses. IT-056's third case is the deliberate regression guard. This is exactly the kind
+  of confinement/rehydration bug the real-run validation gate exists to catch that a mock suite cannot.
+- **Cross-slice interaction (recorded):** `hydrateAll` now yields `interrupted` (non-terminal) for a
+  crashed run instead of `failed` (terminal). The Slice-4 boot-reconcile completeness argument ("every
+  continuation target is terminal on boot, because hydrateAll marks a cross-restart running run failed")
+  therefore shifts: a continuation whose target was running-at-crash now stays pending until that target is
+  RESUMED to a terminal status, rather than being force-skipped at boot as a `failed` target — which is the
+  more correct behavior (the downstream fires iff the resumed run actually completes), not a regression.
+- **Gate 7.5:** PASSED 2026-08-01. Live production engine (systemd `rwe.service`, `127.0.0.1:8787`):
+  registered named workflow `lr4` (5-iteration opus `agent()` loop), ran it, `kill -9` of the engine at
+  ~1 agent done (status `running`); systemd restarted it. Boot log
+  `hydrateAll: … 1 re-classified running→interrupted (resumable)`; `workflow_status` → **`interrupted`**
+  (not `failed`); `workflow_resume` re-executed (~10s, re-dispatching the 4 remaining agents) →
+  **`completed` with a 5-element array of real opus responses** (not `undefined` — the script-re-resolution
+  fix). REQ-059/060 `real:true` (VAL-068/069).
+- **No regressions:** full suite **662 pass / 150 files**, `npx tsc --noEmit` clean. No v1-core change —
+  RunSpec/RunStore shapes, the journal format, the sandbox protocol, and the terminal state machine are
+  untouched; Option X adds one status value + one boot reclassify + one read-back method + one rehydration
+  change + one CSS rule. The one existing test touched is IT-006 (`run-store-persistence.test.ts`), a
+  one-line assertion update (`interrupted` was `failed`) — the behavior REQ-060 deliberately changes, NOT a
+  new IT id.
+- **Still deferred (recorded, not this increment):** **SSE** (the dashboard keeps its 3s poll), **parallel()
+  group markers** (needs a sandbox-child IPC change), the **static pre-read skeleton + `scriptVersion`
+  cache**; and, as accepted caveats of Option X, the **mid-flight-at-crash re-run** (correct-by-design, same
+  as suspend/resume) and **side-effect idempotency** of a re-run tail call. Full OIDC (REQ-012, D5) stays
+  deferred; a public `0.0.0.0` bind without OIDC remains a documented deployment caveat (the Host/Origin
+  allowlist REQ-056 is the interim control).
+- **Trace note:** all Defer-A work items use `###` headings and this section deliberately avoids ID-shaped
+  sub-headings, so it introduces no scanner collision (trace.py parses only `###`).
+
+## v8 SLICE 2c + DEFER B GATE 8 REVIEW (2026-08-01, historical — superseded by the v8 Defer A section above)
 
 > This section supersedes "## v8 SLICE 4 GATE 8 REVIEW (2026-08-01)" below (kept for history). This
 > round lands TWO already-implemented, GREEN, real-validated slices: **Slice 2c — cross-restart DAG

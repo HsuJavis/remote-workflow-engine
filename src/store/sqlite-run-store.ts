@@ -106,6 +106,23 @@ export class SqliteRunStore implements RunStore {
     return this._readTranscriptFile(runId, agentId);
   }
 
+  /** v8 Defer A (REQ-059): reads back the settled-call journal from journal.jsonl, dropping the
+   *  terminal `{type:'result'}` marker recordResult appends (it has no callSeq). Missing file → [].
+   *  Robust to a crash-truncated final line: a real SIGKILL can leave a half-written last line, so an
+   *  unparseable line is skipped (not thrown) — the settled prefix is what ResumeCache replays anyway. */
+  async getJournal(runId: string): Promise<JournalEntry[]> {
+    const file = join(this._runDir(runId), 'journal.jsonl');
+    if (!existsSync(file)) return [];
+    const entries: JournalEntry[] = [];
+    for (const line of readFileSync(file, 'utf8').split('\n')) {
+      if (line.trim().length === 0) continue;
+      let parsed: JournalEntry | { type: 'result' };
+      try { parsed = JSON.parse(line); } catch { continue; } // crash-truncated tail line → skip
+      if (typeof (parsed as JournalEntry).callSeq === 'number') entries.push(parsed as JournalEntry);
+    }
+    return entries;
+  }
+
   private _readTranscriptFile(runId: string, agentId: string): TranscriptEvent[] {
     const file = join(this._runDir(runId), `agent-${agentId}.jsonl`);
     if (!existsSync(file)) return [];
@@ -199,13 +216,15 @@ export class SqliteRunStore implements RunStore {
     return rows.map((r) => this._rowToSummary(r));
   }
 
-  /** Boot recovery: enumerates persisted runs; any 'running' run re-hydrates as 'failed' (crash, not silently running). */
+  /** Boot recovery: enumerates persisted runs; any 'running' run was interrupted by a crash/restart —
+   *  v8 Defer A (REQ-060) re-hydrates it as 'interrupted' (RESUMABLE via workflow_resume, replaying its
+   *  journaled calls), not 'failed'. (Previously forced running→failed with no resume path.) */
   async hydrateAll(): Promise<RunSummary[]> {
     const stale = this._db.prepare("SELECT runId FROM runs WHERE status = 'running'").all() as Array<{ runId: string }>;
-    const reclassify = this._db.prepare("UPDATE runs SET status = 'failed' WHERE runId = ?");
+    const reclassify = this._db.prepare("UPDATE runs SET status = 'interrupted' WHERE runId = ?");
     for (const { runId } of stale) reclassify.run(runId);
     const runs = await this.listRuns();
-    console.log(`[RunStore] hydrateAll: re-hydrated ${runs.length} run(s), ${stale.length} re-classified running→failed`);
+    console.log(`[RunStore] hydrateAll: re-hydrated ${runs.length} run(s), ${stale.length} re-classified running→interrupted (resumable)`);
     return runs;
   }
 }

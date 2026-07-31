@@ -351,3 +351,8 @@ status: draft
 - **status:** done
 - **traces:** ARCH-033
 - **iter:** v8
+
+### TASK-055 — crash durability (Option X): add `interrupted` to the RunStatus union, reclassify boot-time `running`→`interrupted` in hydrateAll, add `RunStore.getJournal` read-back (both stores, crash-truncation-robust), accept `interrupted` in resume()/_requireLive and populate the rehydrated journal from getJournal + re-resolve a named workflow's script from the catalog, add the `.st-interrupted` dashboard color
+- **status:** done
+- **traces:** ARCH-034
+- **iter:** v8

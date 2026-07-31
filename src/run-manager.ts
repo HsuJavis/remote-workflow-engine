@@ -268,7 +268,8 @@ export class RunManager {
 
   async resume(runId: string, script?: string): Promise<void> {
     const entry = await this._requireLive(runId);
-    if (entry.status !== 'suspended' && entry.status !== 'stopped') {
+    // v8 Defer A (REQ-060): `interrupted` (crashed while running) is resumable, like suspended/stopped.
+    if (entry.status !== 'suspended' && entry.status !== 'stopped' && entry.status !== 'interrupted') {
       throw new IllegalTransitionError(entry.status, 'running');
     }
     const newScript = script ?? entry.script;
@@ -334,17 +335,29 @@ export class RunManager {
     if (cached) return cached;
 
     const view = await this._store.getRun(runId);
-    if (!view || (view.status !== 'suspended' && view.status !== 'stopped')) {
+    if (!view || (view.status !== 'suspended' && view.status !== 'stopped' && view.status !== 'interrupted')) {
       throw new IllegalTransitionError('unknown', 'transition');
     }
     const spec = await this._store.getSpec(runId);
     if (!spec) throw new IllegalTransitionError('unknown', 'transition');
+    // v8 Defer A (fix): a NAMED-workflow run stores no inline script on its spec (start() resolves it
+    // from the catalog at launch), so `spec.script` is empty — resume/rehydrate must re-resolve the
+    // script from the catalog the SAME way start() does, or the resumed run executes an empty script
+    // and returns undefined. (Pre-Defer-A, no test covered a named-workflow restart-resume.)
+    let script = spec.script ?? '';
+    if (spec.name && !spec.script) {
+      const registered = await this._catalog.get(spec.name); // throws CatalogNotFoundError — same as start()
+      script = registered.script;
+    }
+    // v8 Defer A (REQ-059): read the persisted journal back so a run resumed in a fresh process
+    // replays its settled agent()/workflow() calls from cache instead of re-running them live.
+    const persistedJournal = await this._store.getJournal(runId);
 
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
     const guard = new RunGuard({ concurrency: this._concurrency, budget: spec.budget ?? null });
     const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, agentTypes: this._agentTypes });
     const entry: RunEntry = {
-      script: spec.script ?? '',
+      script,
       args: spec.args,
       name: spec.name,
       status: view.status,
@@ -353,7 +366,7 @@ export class RunManager {
       sandbox: this._newSandbox(runId, workspace, spec.name),
       spawner,
       workspace,
-      journal: [],
+      journal: persistedJournal,
       scriptVersion: Number(view.scriptVersion.replace(/^v/, '')) || 1,
       cachePlan: null,
       phases: [],

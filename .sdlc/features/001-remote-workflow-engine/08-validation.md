@@ -27,6 +27,25 @@ status: passed
 > is a documented caveat. All prior REQs (001..054) still hold evidence from the rounds below — not
 > re-litigated this round.
 
+> **v8 DEFER A ROUND 1 (2026-08-01) — GATE PASSED.** REQ-059 (persisted journal read-back — resume-after-
+> restart replays instead of re-running) + REQ-060 (a run interrupted by a crash is resumable, not
+> permanently failed) each carry a `real:true` VAL item below (VAL-068 / VAL-069). Achieved via Option X
+> (reuse ResumeCache + a non-terminal `interrupted` status + a `getJournal` read-back — NO new sandbox-
+> checkpoint protocol). Validated LIVE against the production engine (systemd user service `rwe.service`,
+> `127.0.0.1:8787`, `tsx src/main.ts`), restarted with the Defer-A code: registered a named workflow `lr4`
+> (a 5-iteration loop of opus `agent()` calls), ran it, and at ~1 agent done (status `running`) issued a
+> real `kill -9` of the engine process mid-run; systemd restarted it. Boot log showed
+> `hydrateAll: … 1 re-classified running→interrupted (resumable)`; `workflow_status` returned
+> **`interrupted`** (NOT `failed`); `workflow_resume` re-executed the run (~10s, re-dispatching only the 4
+> remaining agents) → **`completed` with a 5-element array of real opus responses** (NOT `undefined` —
+> proving the named-workflow script re-resolution fix; earlier live attempts with the buggy empty-script
+> path returned `undefined`, and the fix was verified live after deploy). Also verified live: a
+> same-process suspend/resume with a second agent in-flight returns the correct `{a,b}` result; the
+> deterministic IT-056 cases prove journal replay (the pre-crash agent served from cache, NOT re-
+> dispatched). A call mid-flight at the instant of the crash (no journal entry → cache MISS → live re-run)
+> is a documented caveat, the same as suspend/resume. No SUT-boundary mock (real service → real kill -9 →
+> real systemd restart → real resume with real opus agents).
+
 > **v8 SLICE 4 ROUND 1 (2026-08-01) — GATE PASSED.** REQ-052/053/054 (cross-trigger chaining +
 > run-admission: authoritative onTerminal hook + durable on-completion chaining + maxConcurrentRuns cap)
 > each carry a `real:true` VAL item below (VAL-061/062/063). Validated against the live production engine
@@ -599,6 +618,53 @@ restarted or modified during this write-up.
   ingress relies on the loopback/LAN bind + the Host/Origin allowlist (REQ-056); a public `0.0.0.0` bind
   without OIDC remains a documented deployment caveat. Test webhooks deregistered afterward; registry clean.
   No SUT-boundary mock (real registry → real SQLite → real restart).
+- **iter:** v8
+
+### VAL-068 — REQ-059: persisted journal read-back — a run resumed in a fresh process replays journaled calls instead of re-running them
+- **status:** green
+- **traces:** REQ-059
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-056 (`tests/integration/crash-resume.test.ts`, 4 cases, REAL
+  RunManager + REAL on-disk SqliteRunStore + REAL sandbox; only GatewayClient faked): a run with a
+  journaled `agent('A')`, its process torn down and re-hydrated on a FRESH store on the same data dir,
+  resumes to completion with the SAME result and the second process's gateway is NEVER invoked for `'A'`
+  (`counts.get('A')` absent — replayed from the persisted journal via the new `getJournal` read-back, not
+  re-dispatched); and `getJournal` returns the settled-call entries (NOT the terminal `{type:'result'}`
+  marker) for a known run, `[]` for an unknown run. "Restart" = fresh RunManager/store on the same dir.
+  (2) LIVE — against the production engine (systemd `rwe.service`, `127.0.0.1:8787`) restarted with the
+  Defer-A code: the resumed `lr4` run (part of VAL-069's live kill -9 flow) re-dispatched ONLY the 4
+  agents that had not yet journaled — the 1 pre-crash agent was served from the persisted journal, not
+  re-run (resume took ~10s for 4 agents, not the full 5). No SUT-boundary mock (real store → real
+  journal.jsonl read-back → real resume). Before this fix `_requireLive` hard-coded `journal:[]` so a
+  resumed-after-restart run re-ran every call live — the cost/duplication bug REQ-059 closes.
+- **iter:** v8
+
+### VAL-069 — REQ-060: a run interrupted by a crash comes back resumable (not permanently failed) and resumes to a correct result
+- **status:** green
+- **traces:** REQ-060
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-056 (`tests/integration/crash-resume.test.ts`): a run left
+  `running` at crash comes back `interrupted` (RESUMABLE, not `failed`) after `hydrateAll` on a fresh
+  store, and `workflow_resume` re-executes it to a correct terminal result; and a NAMED-workflow crashed
+  run resumes to the CORRECT result (a real array/object, NOT `undefined`) because `_requireLive`
+  re-resolves the script from the catalog — the regression guard for the pre-existing empty-script bug.
+  The EXISTING IT-006 (`run-store-persistence.test.ts`) now asserts a running run re-hydrates as
+  `interrupted` (was `failed`). (2) LIVE — against the production engine restarted with the Defer-A code:
+  registered a named workflow `lr4` (a 5-iteration loop of opus `agent()` calls), ran it, and at ~1 agent
+  done (status `running`) issued a real `kill -9` of the engine process mid-run; systemd restarted it.
+  Boot log: `hydrateAll: … 1 re-classified running→interrupted (resumable)`; `workflow_status` returned
+  **`interrupted`** (NOT `failed`); `workflow_resume` re-executed the run (~10s, re-dispatching the 4
+  remaining agents) → **`completed` with a 5-element array of real opus responses** (NOT `undefined` —
+  proving the named-workflow script re-resolution fix; earlier live attempts with the buggy empty-script
+  path returned `undefined`, and the fix was verified live after deploy). The run's on-disk workspace
+  survived the restart. A call mid-flight at the instant of the crash (no journal entry → cache MISS →
+  live re-run) is a documented caveat, the same semantics suspend/resume already carries — not silent
+  loss. No SUT-boundary mock (real service → real kill -9 → real systemd restart → real resume with real
+  opus agents).
 - **iter:** v8
 
 ### VAL-046 — REQ-037: provider-aware SDK routing + Anthropic dual-auth security invariant

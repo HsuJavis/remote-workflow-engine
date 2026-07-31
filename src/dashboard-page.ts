@@ -25,7 +25,7 @@ a{color:var(--link);text-decoration:none}
 .card .t{font-weight:600;font-family:ui-monospace,Consolas,monospace;word-break:break-all}
 .card .s{color:var(--muted);font-size:11.5px;margin-top:4px}
 .pill{display:inline-block;padding:1px 7px;border-radius:100px;font-size:11px;border:1px solid var(--line)}
-.st-queued{color:#d29922}.st-running{color:#4ea1ff}.st-done,.st-completed{color:#3fb950}.st-failed{color:#f85149}.st-stopped,.st-suspended{color:#8b97a6}
+.st-queued{color:#d29922}.st-running{color:#4ea1ff}.st-done,.st-completed{color:#3fb950}.st-failed{color:#f85149}.st-stopped,.st-suspended{color:#8b97a6}.st-interrupted{color:#d29922}
 #tree{margin-top:6px}
 .grp{border-left:2px solid var(--line);margin:6px 0 6px 4px;padding:2px 0 2px 12px}
 .grp-h{font-size:12px;color:var(--muted);margin:4px 0}

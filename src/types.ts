@@ -1,6 +1,8 @@
 // Shared domain types — no implementation, pure TypeScript interfaces.
 
-export type RunStatus = 'queued' | 'running' | 'suspended' | 'stopped' | 'completed' | 'failed';
+// v8 Defer A: `interrupted` = a run that was `running` when the engine crashed/restarted — RESUMABLE
+// (not terminal), distinct from a user `suspended`/`stopped`. hydrateAll assigns it at boot recovery.
+export type RunStatus = 'queued' | 'running' | 'suspended' | 'stopped' | 'completed' | 'failed' | 'interrupted';
 
 /** O-2 (review finding): one recorded state transition — the audit trail ARCH-006 promises
  *  ("one writer of every state transition, timestamp+runId"). `from` is null for the initial
