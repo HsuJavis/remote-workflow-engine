@@ -7,6 +7,25 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
+> **v8 SLICE 3 ROUND 1 (2026-07-31) — GATE PASSED.** REQ-048/049 (dashboard UI: cards → live DAG →
+> agent log) each carry a `real:true` VAL item below (VAL-057/058). Validated against the live
+> production engine (systemd user service `rwe.service`, `127.0.0.1:8787`, runs `tsx src/main.ts`),
+> restarted with the Slice-3 code, via a headless browser (Playwright). `GET /dashboard` home rendered
+> **registered-workflow cards** (sdlc-run, customer-service, dag2leaf, dag2mid, … each with version) +
+> **run cards** (each `runId` + `status · name`, e.g. "completed · customer-service"). A nested composite
+> `dag2mid → dag2leaf → agent 'pinger' (model opus)` was run in-process; opening `/dashboard/<runId>`
+> rendered (verified via DOM eval): `groupHeaders = ["workflow dag2mid · depth 1","workflow dag2leaf ·
+> depth 2"]`, the agent node **nested two groups deep**, node class `node st-done`, text
+> `pinger opus done 7 tok`; **clicking the agent loaded its transcript** (the real opus reply "PONG").
+> `GET /api/runs/:id/dag` returned the full nested tree. The `GET /api/workflows` routing gap (fell
+> through to `/mcp` → `-32601`) was caught during this real run and fixed (regression IT-048). REQ-048
+> (`buildDagModel`) is `real:true` via UT-061 (pure model) + the live `/dag` tree above; REQ-049 (the
+> page) is `real:true` via the Playwright headless evidence. Documented deferral confirmed live: after a
+> service restart the run is no longer in-process, so `/api/runs/:id/dag` flattens (`getRun` returns
+> `workflowNodes: []`) — exactly REQ-047's "cross-restart persistence out of scope". Test workflows
+> deregistered afterward; registry clean. REQ-012 (OIDC) remains DEFERRED by user decision D5. All prior
+> REQs (001..047) still hold evidence from the rounds below — not re-litigated this round.
+
 > **v8 SLICE 2 ROUND 1 (2026-07-30) — GATE PASSED.** REQ-045..047 (call-tree + composite linkage
 > surfaced for the dashboard) each carry a `real:true` VAL item below (VAL-054..056). Validated against
 > the live production engine (systemd user service `rwe.service`, `127.0.0.1:8787`, runs `tsx src/main.ts`).
@@ -281,6 +300,50 @@ restarted or modified during this write-up.
   the live check used the model-free composite (a live agent needs a provider), and the frame-tagged
   `agents` half + the agent-log drill are IT-047 real-sandbox verified; the tree-linkage half is fully
   live. No SUT-boundary mock.
+- **iter:** v8
+
+### VAL-057 — REQ-048: pure `buildDagModel` reconstructs a run's call tree from its status
+- **status:** green
+- **traces:** REQ-048
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `buildDagModel(RunStatusView) → DagNode` is exercised two ways. (1) UT-061
+  (`tests/unit/dashboard-dag-model.test.ts`, 3 cases) pins the pure model: a nested `top(T,"") →
+  mid(M,".0") → leaf(L,".0.0")` view reconstructs to `root{agents:[T],children:[mid{agents:[M],
+  children:[leaf{agents:[L]}]}]}` (each agent on its frame's node, flattened `{agentId,state,model}`
+  leaf); a diamond (two top-level `workflowNodes`) yields two root children with no agent dropped; an
+  empty run yields a bare root and an unknown-frame agent falls back to root (never lost) — REQ-048's
+  never-throws / never-drops / root-fallback totality. (2) LIVE — against the production engine
+  (systemd `rwe.service`, `127.0.0.1:8787`, `tsx src/main.ts`) restarted with the Slice-3 code, a nested
+  composite `dag2mid → dag2leaf → agent 'pinger'(opus)` was run in-process and `GET /api/runs/:id/dag`
+  returned the full nested `DagNode` tree — the SAME `buildDagModel` reconstruction served over real
+  HTTP from the live read-model (the agent node nested two composite groups deep, `dag2mid`→`dag2leaf`).
+  No SUT-boundary mock (the model is pure; the live path is the real endpoint over the real read-model).
+- **iter:** v8
+
+### VAL-058 — REQ-049: dashboard renders cards → live DAG → agent log
+- **status:** green
+- **traces:** REQ-049
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Validated LIVE against the production engine (systemd `rwe.service`, `127.0.0.1:8787`,
+  `tsx src/main.ts`) restarted with the Slice-3 code, via a HEADLESS BROWSER (Playwright). `GET
+  /dashboard` home rendered registered-workflow cards (sdlc-run, customer-service, dag2leaf, dag2mid, …
+  each with its version) AND run cards (each `runId` + `status · name`, e.g. "completed ·
+  customer-service"). A nested composite `dag2mid → dag2leaf → agent 'pinger'(model opus)` was run
+  in-process; opening `/dashboard/<runId>` rendered — verified via DOM eval — `groupHeaders =
+  ["workflow dag2mid · depth 1","workflow dag2leaf · depth 2"]`, the agent node NESTED TWO GROUPS DEEP,
+  node class `node st-done`, text `pinger opus done 7 tok` (3-state color + model shown); CLICKING the
+  agent node loaded its transcript (the real opus reply "PONG"). This is the full REQ-049 observable:
+  cards → nested composite groups with 3-state-colored agent nodes showing model → agent-log drill, on
+  the 3-second poll. The `GET /api/workflows` routing gap (fell through to `/mcp` → JSON-RPC `-32601`)
+  was caught during this real run and fixed (`src/server.ts:797`), regression-locked by IT-048. Deferral
+  confirmed live: after a service restart the run is out-of-process, so `/api/runs/:id/dag` flattens
+  (`getRun` returns `workflowNodes: []`) — exactly REQ-047's documented cross-restart-out-of-scope. Test
+  workflows deregistered afterward; registry clean. No SUT-boundary mock (real browser → real HTTP →
+  real engine → real opus agent).
 - **iter:** v8
 
 ### VAL-046 — REQ-037: provider-aware SDK routing + Anthropic dual-auth security invariant

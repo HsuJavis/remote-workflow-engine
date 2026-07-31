@@ -35,6 +35,13 @@ async function submitRun(script: string): Promise<string> {
   return env.runId ?? '';
 }
 
+async function registerWorkflow(name: string, script: string): Promise<void> {
+  await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'workflow_register', arguments: { name, script } } }),
+  });
+}
+
 describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
   it('GET /api/runs returns 200 with a JSON array', async () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/api/runs`);
@@ -115,5 +122,32 @@ describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
     const body = await res.json() as { error?: string };
     // Dashboard logic returns a JSON body with an error field; router 404 may not
     expect(typeof body.error).toBe('string');
+  });
+
+  // v8 Slice 3 (REQ-049): registered-workflow cards endpoint (routing gap caught at Gate 7.5 real-run).
+  it('GET /api/workflows returns 200 with the registered catalog', async () => {
+    await registerWorkflow('dash-wf-a', 'return 1;');
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/workflows`);
+    expect(res.status).toBe(200); // was router-404 before the top-level /api/workflows dispatch fix
+    const list = await res.json() as Array<{ name: string; version: string }>;
+    expect(Array.isArray(list)).toBe(true);
+    expect(list.some((w) => w.name === 'dash-wf-a')).toBe(true);
+  });
+
+  // v8 Slice 3 (REQ-048/049): the reconstructed DAG endpoint for one run.
+  it('GET /api/runs/:id/dag returns 200 with a root DagNode', async () => {
+    const runId = await submitRun('return {dag:true};');
+    for (let i = 0; i < 25; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/runs/${runId}/dag`);
+      if (res.status === 200) {
+        const root = await res.json() as { kind?: string; agents?: unknown[]; children?: unknown[] };
+        expect(root.kind).toBe('root');
+        expect(Array.isArray(root.agents)).toBe(true);
+        expect(Array.isArray(root.children)).toBe(true);
+        return;
+      }
+    }
+    throw new Error('/api/runs/:id/dag never returned 200');
   });
 });

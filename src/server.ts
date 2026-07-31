@@ -27,7 +27,7 @@ import { buildCatalog, filterCatalog, type ModelEntry, type CatalogFilter } from
 
 // Single source for the engine version reported over MCP (serverInfo) and stamped into filed issues.
 const ENGINE_VERSION = '1.0.0';
-import { buildDashboardModel } from './dashboard.js';
+import { buildDashboardModel, buildDagModel } from './dashboard.js';
 import { DASHBOARD_HTML } from './dashboard-page.js';
 import type { RunStore } from './run-store.js';
 
@@ -590,11 +590,26 @@ async function handleDashboardRequest(
   }
   const path = (req.url ?? '').split('?')[0]!;
   const agentMatch = /^\/api\/runs\/([^/]+)\/agents\/([^/]+)$/.exec(path);
+  const dagMatch = /^\/api\/runs\/([^/]+)\/dag$/.exec(path);
   const runMatch = /^\/api\/runs\/([^/]+)$/.exec(path);
   try {
     if (path === '/api/runs') {
       const runs = await store.listRuns();
       sendJson(res, 200, buildDashboardModel(runs).runs);
+      return;
+    }
+    // v8 Slice 3 (REQ-049): registered-workflow cards for the dashboard home.
+    if (path === '/api/workflows') {
+      sendJson(res, 200, await runManager.catalog.list());
+      return;
+    }
+    // v8 Slice 3 (REQ-048/049): the reconstructed call tree (DAG) for one run.
+    if (dagMatch) {
+      const [, runId] = dagMatch as unknown as [string, string];
+      const stored = await store.getRun(runId);
+      if (!stored) { sendJson(res, 404, { error: `Run not found: ${runId}` }); return; }
+      const view = await runManager.status(runId).catch(() => stored);
+      sendJson(res, 200, buildDagModel(view));
       return;
     }
     if (agentMatch) {
@@ -779,7 +794,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     }
     // TASK-025 (DES-018): read-only dashboard HTTP API, a distinct transport from /mcp on the
     // SAME port (no separate dashboard listener/port — one server, two transports).
-    if (req.url?.startsWith('/api/runs')) {
+    if (req.url?.startsWith('/api/runs') || req.url?.startsWith('/api/workflows')) {
       handleDashboardRequest(req, res, store, runManager).catch(() => {
         sendJson(res, 200, { degraded: 'internal dashboard error' });
       });

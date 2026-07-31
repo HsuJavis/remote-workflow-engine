@@ -3,3 +3,6 @@ node_modules/
 dist/
 rwe.config.json
 data/
+
+# Playwright MCP transient artifacts
+.playwright-mcp/

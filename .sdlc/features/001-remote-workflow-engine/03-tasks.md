@@ -326,3 +326,8 @@ status: draft
 - **status:** done
 - **traces:** ARCH-028
 - **iter:** v8
+
+### TASK-050 — dashboard UI: pure buildDagModel + /api/{workflows,runs/:id/dag} endpoints + rewritten nested-group SPA (cards → live DAG → agent log)
+- **status:** done
+- **traces:** ARCH-029
+- **iter:** v8

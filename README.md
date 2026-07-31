@@ -304,6 +304,9 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 > `/dashboard/<runId>` 走同一個靜態頁面的 client-side 路由。頁面本身呼叫的是下面同一組唯讀
 > `/api/runs*` JSON API（DES-018）——一份資料模型，兩種傳輸方式（瀏覽器頁面 + 給其他工具消費的
 > JSON）。見 `tests/acceptance/val-018-dashboard-browser-ui.test.ts`（VAL-018）。
+> **v8 Slice 3**：首頁現在同時列出已註冊工作流程卡片與 run 卡片；點一張 run 卡片會把它的 composite
+> 呼叫樹渲染成巢狀 DAG（每個子工作流程為一個帶標題群組、agent 節點依 3 態上色並顯示 model，點擊下鑽
+> transcript），資料來自新端點 `GET /api/workflows` 與 `GET /api/runs/:id/dag`（VAL-057/058）。
 ```bash
 # 直接在瀏覽器打開（或用 curl 看原始 HTML）
 open http://127.0.0.1:8787/dashboard        # macOS；Linux 可用 xdg-open，或直接貼網址到瀏覽器
@@ -311,6 +314,12 @@ open http://127.0.0.1:8787/dashboard        # macOS；Linux 可用 xdg-open，�
 # 底層唯讀 JSON API（dashboard 頁面自己的 JS 也是呼叫這幾支）：
 # 列出所有 run（含即時狀態）
 curl -s http://127.0.0.1:8787/api/runs
+
+# 列出已註冊工作流程（v8 Slice 3，首頁卡片用）
+curl -s http://127.0.0.1:8787/api/workflows
+
+# 單一 run 的 composite 呼叫樹（DAG，v8 Slice 3；後端 buildDagModel 重建）
+curl -s http://127.0.0.1:8787/api/runs/<runId>/dag
 
 # 點進單一 run（phase/agent tree，重複呼叫即可看到即時更新，不需重新整理任何東西）
 curl -s http://127.0.0.1:8787/api/runs/<runId>

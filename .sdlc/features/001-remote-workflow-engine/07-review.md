@@ -4,7 +4,57 @@ status: passed
 ---
 # 07 Review & Retro — Gate 8
 
-## v8 SLICE 2 GATE 8 REVIEW (2026-07-30, CURRENT / AUTHORITATIVE)
+## v8 SLICE 3 GATE 8 REVIEW (2026-07-31, CURRENT / AUTHORITATIVE)
+
+> This section supersedes "## v8 SLICE 2 GATE 8 REVIEW (2026-07-30)" below (kept for history). v8
+> Slice 3 is the PRESENTATION layer over Slice-2's frame-tagged read-model: it turns the flat
+> read-model into a PURE call-tree model and the browser-facing dashboard that renders cards → a nested
+> composite DAG → an agent transcript — a read-model reshaping + a page, no execution-semantics change.
+> Ledger items added this slice: REQ-048/049 (requirements, pre-written) → ARCH-029 → TASK-050 →
+> DES-045/DES-046 → IMPL-091 → UT-061 (3 cases) + IT-048 (2 cases) → VAL-057/058.
+
+### Retro (v8 Slice 3)
+
+- **What changed:** `buildDagModel(RunStatusView) → DagNode` (`src/dashboard.ts`) — a PURE, total
+  reconstruction of a run's call-tree (group agents by `frame`, nest composite frames by `parentFrame`,
+  root-fallback so no agent is dropped) — plus two read-only endpoints on the existing dashboard-API
+  transport (`GET /api/workflows` → the registered catalog for home cards; `GET /api/runs/:id/dag` →
+  `buildDagModel(view)`), and a rewritten self-contained SPA (`src/dashboard-page.ts`) that renders
+  workflow + run cards on `/dashboard`, a recursive nested-group DAG (composite `.grp` groups, 3-state
+  agent nodes showing model) on `/dashboard/:runId`, and an agent transcript drill-down, on a 3-second
+  poll. `buildDagModel` is shared by the endpoint AND the page — one tested model, no browser-side tree
+  logic.
+- **Key decision:** keep one pure `buildDagModel` (unit-tested, UT-061) served whole by `/api/runs/:id/dag`
+  and just walked by the page's `renderNode`, rather than rebuild the tree in client JS — one
+  reconstruction, one test. Make it total (never throws, never drops an agent: orphan parentFrame →
+  root, unknown agent frame → root) so the dashboard degrades to a flatter-but-complete tree, never a
+  500 or a missing agent.
+- **Gate-7.5-caught routing gap:** the top-level request router's dispatch predicate matched only
+  `/api/runs*`, so `GET /api/workflows` fell through to the `/mcp` JSON-RPC handler and returned
+  `-32601` (method-not-found). Caught on the real run at Gate 7.5 and fixed by widening the predicate to
+  also match `/api/workflows` (`src/server.ts:797`) — one shared `handleDashboardRequest` branch, no
+  second handler. Regression-locked by IT-048's `GET /api/workflows` case.
+- **Gate 7.5:** PASSED 2026-07-31. REQ-049 fully live via a headless browser (Playwright) — `/dashboard`
+  rendered workflow + run cards; a nested composite `dag2mid → dag2leaf → agent 'pinger'(opus)` opened
+  at `/dashboard/<runId>` rendered `groupHeaders = ["workflow dag2mid · depth 1","workflow dag2leaf ·
+  depth 2"]`, the agent node nested two groups deep (`node st-done`, `pinger opus done 7 tok`), and
+  clicking it loaded the real opus transcript ("PONG"). REQ-048 (`buildDagModel`) real:true via UT-061 +
+  the live `/dag` tree.
+- **No regressions:** full suite 622 pass / 141 files, `npx tsc --noEmit` clean; only the read-model
+  presentation changed (a pure `buildDagModel` + two read-only endpoints + the page) — no run-lifecycle
+  / scheduling state added. `src/mcp-facade.ts` unchanged.
+- **Deferred (recorded, not this increment):** server-sent events (the page keeps the 3-second poll);
+  parallel-group markers (which sibling nodes ran as one `parallel()` batch); phase persistence +
+  current-step + timing (per-node start/end/duration); static pre-read + `scriptVersion` cache (serve
+  the tree skeleton before the run starts); cross-restart tree persistence (after a service restart an
+  out-of-process run's `/api/runs/:id/dag` flattens because `getRun()` returns `workflowNodes: []` — the
+  live tree lives in the per-process `RunEntry`; a later increment can back it with a persisted node
+  table without changing the shape — exactly REQ-047's documented cross-restart-out-of-scope, confirmed
+  live).
+- **Trace note:** all Slice-3 work items use `###` headings and this section deliberately avoids
+  ID-shaped sub-headings, so it introduces no scanner-collision (trace.py parses only `###`).
+
+## v8 SLICE 2 GATE 8 REVIEW (2026-07-30, historical — superseded by the v8 Slice 3 section above)
 
 > This section supersedes "## v8 SLICE 1 GATE 8 REVIEW (2026-07-30)" below (kept for history). v8
 > Slice 2 is the first increment of the dashboard DATA layer over Slice 1's N-level composition: it
