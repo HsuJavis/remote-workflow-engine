@@ -261,6 +261,16 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 > 巢狀呼叫數超過 `maxWorkflowDescendants`（預設 256）→`DESCENDANT_CAP_EXCEEDED`（皆為可分支的
 > envelope 錯誤，不崩父 run）；巢狀子工作流共用父 run 的同一份預算/journal。詳見 DEPLOY.md §1b。
 
+## v8 新功能（Gate 7.5 v8 Slice 4 ROUND 1，2026-08-01 — GATE PASSED）
+
+- **完成即串接（on-completion chaining，REQ-053）**：用 `chain_create({afterRunId, run:{workflow,
+  args?}})` 註冊「當某個 run 完成時，自動啟動另一個 run」，恰好一次；目標 `failed`／`stopped` 則跳過。
+  續接持久化（引擎自有 SQLite side table），跨重啟由 boot reconcile 補觸發，並帶 `rootRunId` 世系；
+  用 `chain_list`（零參數）查每個續接的狀態與已啟動的 `spawnedRunId`。
+- **並行 run 上限（run-admission，REQ-054）**：設定鍵 `maxConcurrentRuns`（預設 64）限制同時存活的
+  頂層 run 數；超限的 `start()` 在做任何昂貴動作前即以 `RUN_ADMISSION_LIMIT` 拒絕（這是全域 agent
+  semaphore 沒有涵蓋的 DoS 阻塞點）；巢狀 `workflow()` 不佔槽，run 進終態即釋放。
+
 ## v3 新功能（Gate 7.5 v3 ROUND 1，2026-07-18 — GATE PASSED）
 
 > REQ-016..021 全部對真實系統驗證通過。

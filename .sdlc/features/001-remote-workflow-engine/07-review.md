@@ -4,7 +4,59 @@ status: passed
 ---
 # 07 Review & Retro — Gate 8
 
-## v8 SLICE 2b GATE 8 REVIEW (2026-07-31, CURRENT / AUTHORITATIVE)
+## v8 SLICE 4 GATE 8 REVIEW (2026-08-01, CURRENT / AUTHORITATIVE)
+
+> This section supersedes "## v8 SLICE 2b GATE 8 REVIEW (2026-07-31)" below (kept for history). v8
+> Slice 4 is CROSS-TRIGGER CHAINING + RUN-ADMISSION — the last core v8 trigger mechanism: runs can now
+> durably trigger runs, and the engine bounds how many top-level runs may be live at once. No v1-core
+> change (RunSpec/RunStore/journal untouched) — one authoritative terminal notification (`onTerminal`),
+> one engine-owned durable side table (continuations), one admission counter.
+> Ledger items added this slice: REQ-052/053/054 (requirements, pre-written) → ARCH-031 → TASK-052 →
+> DES-048 + DES-049 → IMPL-093 → IT-050 (4 cases) + IT-051 (6 cases) → VAL-061/062/063.
+
+### Retro (v8 Slice 4)
+
+- **What changed:** (a) `RunManager` gained an authoritative `onTerminal(runId,status)` hook fired from
+  the ONE `_transition` choke (`src/run-manager.ts:369-380`) via `queueMicrotask`+`try/catch`
+  (fire-and-forget, covers `stopped`) + a `maxConcurrentRuns` admission gate at the top of `start()`
+  (`:204-210`, default 64 via the existing `_positiveInt` validator, counting non-terminal `_runs` with
+  `_liveRunCount()` `:162-164`). (b) a NEW durable `ContinuationStore` (`src/continuation-store.ts`) —
+  SQLite+WAL side table mirroring the scheduler, `chainCreate`/`onTerminal`/`rearmAtBoot`/`list` +
+  atomic `WHERE status='pending'` reconcile + `_rootOf` lineage, reached through structural
+  RunManagerPort/RunStorePort seams (no class import). (c) `chain_create`/`chain_list` MCP tools + a
+  late-bound `let continuations` closure in server composition (`src/server.ts:706-711`) breaking the
+  RunManager↔store construction cycle. Config keys `maxConcurrentRuns`/`continuationDbPath`
+  (`src/main.ts`, `rwe.config.example.json`).
+- **Key decision:** fire `onTerminal` from `_transition` (the single authoritative terminal writer), NOT
+  the `_runLive` `.then` (which never sees `stop()`); fire-and-forget so a continuation's real `start(B)`
+  can never wedge A's terminal write. Admit BEFORE any durable work — the run-count/sandbox-fork DoS
+  chokepoint the global agent-semaphore (which caps only `agent()` dispatch) does not provide; a nested
+  `workflow()` consumes no slot. completed→fire, failed/stopped→skip. Boot-reconcile is COMPLETE because
+  `hydrateAll` marks a cross-restart running run `failed`, so a continuation's target is always terminal
+  on boot — no "stuck pending forever" hole.
+- **Caught + fixed regression:** `chain_list` is a genuine ZERO-ARG tool (`inputSchema.properties:{}`),
+  which the existing IT-028 (`tests/integration/mcp-tools-list-schema.test.ts`) flags as a schema
+  violation UNLESS allowlisted — added `chain_list` to that test's `ZERO_ARG_TOOLS` (a one-line update,
+  NOT a new IT id) alongside `workflow_list`/`schedule_list`/`asset_list`.
+- **Gate 7.5:** PASSED 2026-08-01. Live production engine (systemd `rwe.service`, `127.0.0.1:8787`,
+  `tsx src/main.ts`) restarted with the Slice-4 code; `tools/list` served 30 tools incl.
+  `chain_create`/`chain_list`. LATE-CREATE: `chain_create` after target `A` completed → `chain_list`
+  `status:'fired', rootRunId:A, spawnedRunId:<B>`, `workflow_result(B)==="B-ran"` (chained run really
+  ran). LIVE onTerminal: an in-flight opus `A2` chained mid-run fired its continuation on real
+  completion. REQ-052/053 `real:true`; REQ-054 `real:true` honest-partial via IT-050 (VAL-061/062/063).
+- **No regressions:** full suite 635 pass / 144 files, `npx tsc --noEmit` clean. No v1-core change —
+  RunSpec/RunStore/journal untouched; the ContinuationStore is an engine-owned durable side table (same
+  "don't touch v1 core" stance as the scheduler), and admission + onTerminal are the only run-lifecycle
+  additions (RunGuard budget + agent semaphore untouched).
+- **Deferred (recorded, not this increment):** external ingress security = **Defer B** (authn/z +
+  rate-limit on any public trigger surface); durable in-flight-graph suspend/resume = **Defer A**
+  (persist/rehydrate a mid-execution call-tree across restart); and the Slice-2c dashboard items
+  (parallel-group markers, cross-restart phase/tree persistence, SSE, static pre-read + scriptVersion
+  cache) carried forward from the Slice-2b retro below.
+- **Trace note:** all Slice-4 work items use `###` headings and this section deliberately avoids
+  ID-shaped sub-headings, so it introduces no scanner-collision (trace.py parses only `###`).
+
+## v8 SLICE 2b GATE 8 REVIEW (2026-07-31, historical — superseded by the v8 Slice 4 section above)
 
 > This section supersedes "## v8 SLICE 3 GATE 8 REVIEW (2026-07-31)" below (kept for history). v8
 > Slice 2b is the LIVE-EXECUTION-DETAIL layer over Slice-2/Slice-3's call-tree read-model + dashboard:

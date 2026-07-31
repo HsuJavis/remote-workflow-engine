@@ -57,6 +57,13 @@ export interface RunManagerDeps {
   /** v8 Slice 1 (REQ-043): max total nested workflow() invocations across a run's whole tree
    *  (bounds fan-out × depth independently of maxWorkflowDepth). Default 256. */
   maxWorkflowDescendants?: number;
+  /** v8 Slice 4 (REQ-052): fired once from the authoritative terminal `_transition` for each
+   *  top-level run reaching completed/failed/stopped. Fire-and-forget (a throwing listener never
+   *  wedges the run's terminal write). The continuation store subscribes here (REQ-053). */
+  onTerminal?: (runId: string, status: RunStatus) => void;
+  /** v8 Slice 4 (REQ-054): max live (non-terminal) top-level runs; an over-limit start() is rejected
+   *  with RUN_ADMISSION_LIMIT before any durable work. Default 64. Invalid (≤0/non-integer) rejected. */
+  maxConcurrentRuns?: number;
 }
 
 const TERMINAL: RunStatus[] = ['stopped', 'completed', 'failed'];
@@ -117,6 +124,8 @@ export class RunManager {
   private readonly _semaphore: Semaphore;
   private readonly _maxWorkflowDepth: number;
   private readonly _maxWorkflowDescendants: number;
+  private readonly _onTerminal: ((runId: string, status: RunStatus) => void) | undefined;
+  private readonly _maxConcurrentRuns: number;
   private readonly _runs = new Map<string, RunEntry>();
 
   /** v8 Slice 1: config values are positive integers — reject bad config loudly at construction
@@ -143,6 +152,17 @@ export class RunManager {
     this._semaphore = deps.semaphore ?? createSemaphore(1024);
     this._maxWorkflowDepth = RunManager._positiveInt(deps.maxWorkflowDepth, 4, 'maxWorkflowDepth');
     this._maxWorkflowDescendants = RunManager._positiveInt(deps.maxWorkflowDescendants, 256, 'maxWorkflowDescendants');
+    this._onTerminal = deps.onTerminal;
+    this._maxConcurrentRuns = RunManager._positiveInt(deps.maxConcurrentRuns, 64, 'maxConcurrentRuns');
+  }
+
+  /** v8 Slice 4 (REQ-054): count of live (non-terminal) top-level runs in this process — the
+   *  admission-gate live count (synchronous, drift-free: a resumed run is naturally re-counted by its
+   *  status, no increment/decrement to get wrong). Nested runs are not in _runs, so never counted. */
+  private _liveRunCount(): number {
+    let n = 0;
+    for (const e of this._runs.values()) if (!TERMINAL.includes(e.status)) n++;
+    return n;
   }
 
   /** D-V3M-2 (REQ-020 D-DOS gauge): a snapshot of the process-global agent-slot semaphore, surfaced
@@ -182,6 +202,12 @@ export class RunManager {
   }
 
   async start(spec: RunSpec): Promise<string> {
+    // v8 REQ-054: admission chokepoint — reject BEFORE any durable/expensive work (createRun,
+    // workspace mkdir, seed, sandbox spawn) when the cap is already reached. The global agent
+    // semaphore caps only agent() dispatch, not run count / sandbox forks / workspace materialization.
+    if (this._liveRunCount() >= this._maxConcurrentRuns) {
+      throw codedError('RUN_ADMISSION_LIMIT', `maxConcurrentRuns=${this._maxConcurrentRuns} reached; run rejected`);
+    }
     let script = spec.script ?? '';
     let scriptVersion = 1;
     let resolvedVersion = 'v1'; // catalog version string actually executed (D-V7) — threaded into RunStore.createRun
@@ -344,6 +370,13 @@ export class RunManager {
     const from = entry.status;
     entry.status = to;
     await this._store.recordTransition(runId, from, to, this._clock.isoNow());
+    // v8 REQ-052: fire onTerminal from the ONE authoritative choke (covers stopped, which the
+    // un-.catch'd .then in _runLive never sees) — AFTER the transition is persisted, and NOT awaited,
+    // so a slow/throwing listener (e.g. a continuation starting run B) can never wedge A's terminal write.
+    if (TERMINAL.includes(to) && this._onTerminal) {
+      const fire = this._onTerminal;
+      queueMicrotask(() => { try { fire(runId, to); } catch { /* listener errors never wedge the run */ } });
+    }
   }
 
   private _newSandbox(runId: string, workspace: string, topName?: string): SandboxHost {

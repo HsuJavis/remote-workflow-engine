@@ -430,6 +430,16 @@ frontmatter）時，套用的預設工具清單——縮小送給模型的工具
 偵測 `NESTING_CYCLE` 一律啟用、不需設定：`workflow()` 目標若是自己巢狀鏈上的祖先即拒絕，但兩條
 兄弟分支各自呼叫同一個「非祖先」工作流（diamond）是允許的。）
 
+`maxConcurrentRuns`（型別 `number`，選填，**v8 Slice 4 新增**）：頂層 run 的並行上限（run-admission
+counter），省略時預設 **64**，啟動載入時驗證（值 ≤0 或非整數會被拒絕）。當現有「非終態」（`queued`／
+`running`／`suspended`）頂層 run 數已達上限，`start()` 會在**做任何昂貴/持久化動作之前**（不建 run 列、
+不建工作區、不 seed、不 fork sandbox）就以 `RUN_ADMISSION_LIMIT` 拒絕——這是全域 agent semaphore 沒有
+提供的 DoS 阻塞點（semaphore 只限 `agent()` 派工，不限 run 數/sandbox fork/工作區生成）。巢狀
+`workflow()` **不佔用**槽位（不是頂層 `start()`）；run 進入終態即釋放槽位。
+`continuationDbPath`（型別 `string`，選填，**v8 Slice 4 新增**）：on-completion chaining 續接的 SQLite
+檔路徑（引擎自有 side table，與 v1 core 的 RunSpec/RunStore 無關，作法同 `schedulerDbPath`），省略時
+預設 `$workRoot/continuations.db`；一般部署可省略不填。
+
 **Gate 7.5 v2 ROUND 2 config-file sync check 補充（本輪新發現的文件漂移，已修正）**：`litellmPort`
 （型別 `number`，選填）在 v2 TASK-027 就已經被 `composeConfig()` 真的接進
 `LiteLLMProxyManager(aliases, {port: fileConfig.litellmPort})`（`tests/unit/
@@ -732,6 +742,17 @@ npm run start
   耗時**（`<n> ms`）。Gate 7.5 v8 Slice 2b ROUND 1 PASSED（真實 opus agent 實測 `5325 ms`，
   VAL-059/060）。**尚未支援**：parallel-group 標記、跨重啟的 phase／樹持久化、SSE（維持 3 秒輪詢）、
   樹的靜態預讀+快取。
+- **跨觸發串接 + run-admission（v8 Slice 4）**：新增兩個 MCP 工具——`chain_create({afterRunId,
+  run:{workflow, args?, budget?}})` 註冊一個**持久化的完成續接**（當 `afterRunId` 進入 `completed` 時，
+  恰好啟動一次 `run.workflow`；`failed`／`stopped` 則標為 `skipped`；`afterRunId` 未知回
+  `CHAIN_TARGET_NOT_FOUND`），回傳 `{chainId}`；`chain_list`（零參數）列出每個續接的 `status`
+  （`pending`／`fired`／`skipped`）、`rootRunId` 世系與已觸發後的 `spawnedRunId`。續接持久化於
+  `continuationDbPath`（見上），跨重啟由 boot reconcile 補觸發（因 `hydrateAll` 會把跨重啟仍 running 的
+  run 標為 failed，開機時目標必為終態）；同一 run 的多次終態轉換（stop→resume→complete）最多只啟動一次
+  下游 run（原子 `WHERE status='pending'` 認領）。並行上限由 `maxConcurrentRuns`（見上）以
+  `RUN_ADMISSION_LIMIT` 把關。Gate 7.5 v8 Slice 4 ROUND 1 PASSED（真實 service 30 tools、真串接執行、
+  in-flight onTerminal 實測，VAL-061/062/063）。**尚未支援**：外部 ingress 安全（Defer B）、跨重啟
+  in-flight 呼叫樹 suspend/resume（Defer A）。
 
 - **本輪對獨立真實 process 重新確認「真的修復」（D-F12/D-F13，全部確認）**：
   1. **（D-F12）in-flight agent 狀態即時可觀察**：真實 3 個並行 `agent()` 呼叫，`status:"running"`
@@ -873,3 +894,4 @@ curl -s -D - -o /dev/null -X POST $BASE/v1/chat/completions \
 | 2026-07-30 | v8 | Slice 2（dashboard 資料層第一增量）：`workflow_status`／`GET /api/runs/:id` 現在多回傳 composite 呼叫樹的兩個結構欄位——每個 agent 記錄帶 `frame`（所在的巢狀 frame；頂層 script `""`，巢狀 `workflow()` 內的 agent frame 以其父 frame 為嚴格前綴），以及 `workflowNodes: [{frame,name,parentFrame,depth}]`（每次巢狀 `workflow(name)` 呼叫一個節點）。用戶端只憑這兩者即可重建整棵呼叫樹（依 `frame` 分組 agent、依 `parentFrame` 巢狀 frame），並用既有的 `workflow_agent_log(runId, agentId)` 下鑽到每個節點的 transcript。Gate 7.5 v8 Slice 2 ROUND 1 PASSED（VAL-054..056）。**尚未支援**：跨重啟的樹持久化（重啟後 `workflowNodes` 回傳 `[]`；活動中的樹在行程內記憶體）、parallel-group 標記、phase 持久化/current-step/計時 | 無破壞性變更；`workflowNodes` 為新增欄位、`frame` 為選填欄位，既有用戶端可忽略；無新設定鍵、無遷移動作 |
 | 2026-07-31 | v8 | Slice 3（儀表板 UI：卡片 → 即時 DAG → agent log）：`GET /dashboard` 首頁列出已註冊工作流程卡片與 run 卡片；新增唯讀端點 `GET /api/workflows`（已註冊工作流程目錄）與 `GET /api/runs/:id/dag`（後端純函式 `buildDagModel` 依 Slice-2 的 `frame`/`workflowNodes` 重建呼叫樹）；重寫自成一體的 SPA（`src/dashboard-page.ts`）——run 詳情頁把 DAG 渲染成巢狀樹（composite 子工作流程為帶標題群組、agent 節點依 3 態上色並顯示 model，點擊下鑽 transcript），3 秒輪詢。修掉一個路由缺口：頂層 router 原本只 match `/api/runs*`，`/api/workflows` 會掉進 `/mcp` handler 回 `-32601`——已把 dispatch 條件擴到也 match `/api/workflows`（Gate 7.5 真跑抓到、IT-048 回歸鎖定）。Gate 7.5 v8 Slice 3 ROUND 1 PASSED（headless browser 實測，VAL-057/058）。**尚未支援**：SSE（維持 3 秒輪詢）、parallel-group 標記、phase 持久化/current-step/計時、樹的靜態預讀+快取、跨重啟樹持久化 | 無破壞性變更；兩個新端點皆唯讀、與 `/mcp` 共用同一 port/server；無新設定鍵、無遷移動作 |
 | 2026-07-31 | v8 | Slice 2b（即時執行細節：phase 時間軸 + 每個 agent 的耗時）：`workflow_status`／`GET /api/runs/:id` 現在讓每個 `phases[]` 項目帶 `ts`（進入 `phase()` 的 ISO 時間，依序、非遞減；`running` 時最後一個為目前步驟），每個 agent 記錄帶 `startedAt`（派工/取得並行槽的時間）與 `endedAt`（結束時間，`endedAt ≥ startedAt`）；`GET /api/runs/:id/dag` 的 agent 節點導出 `durationMs`（未完成為 `undefined`）；`/dashboard/<runId>` 詳情頁渲染 phase 時間軸（chip + `ts` tooltip + 目前步驟標記）與每個 agent 節點的 `<n> ms` 耗時。純讀模型/可觀測性擴充，無執行語意變更（沿用既有 `Clock`/`markRunning`/`capture` seam）。Gate 7.5 v8 Slice 2b ROUND 1 PASSED（真實 opus agent 實測 `5325 ms`，VAL-059/060）。**尚未支援**：parallel-group 標記、跨重啟 phase/樹持久化、SSE、樹的靜態預讀+快取 | 無破壞性變更；`PhaseView.ts`/`AgentRecord.startedAt`/`endedAt` 為新增欄位，既有用戶端可忽略；無新端點、無新設定鍵、無遷移動作 |
+| 2026-08-01 | v8 | Slice 4（跨觸發串接 + run-admission）：新增權威的 `onTerminal(runId,status)` hook（自單一 `_transition` 觸發、fire-and-forget、涵蓋 `stopped`）+ `maxConcurrentRuns` 並行上限（預設 64，啟動驗證，`start()` 於任何持久化動作前以 `RUN_ADMISSION_LIMIT` 把關，巢狀 `workflow()` 不佔槽）；新增引擎自有的持久化續接 side table `ContinuationStore`（SQLite+WAL，作法同 scheduler）+ 兩個 MCP 工具 `chain_create`／`chain_list`（完成即啟動下游 run，恰好一次；failed/stopped→skipped；`CHAIN_TARGET_NOT_FOUND`；跨重啟 boot reconcile；`rootRunId` 世系；stop→resume→complete 只啟動一次）；新設定鍵 `maxConcurrentRuns`（預設 64）/`continuationDbPath`（預設 `$workRoot/continuations.db`）。Gate 7.5 v8 Slice 4 ROUND 1 PASSED（真實 service 30 tools、真串接執行 + in-flight onTerminal 實測，VAL-061/062/063）。**尚未支援**：外部 ingress 安全（Defer B）、跨重啟 in-flight 呼叫樹 suspend/resume（Defer A） | 無破壞性變更；兩個新鍵皆選填、有預設值，一般部署可省略；兩個新工具為附加、既有用戶端可忽略；無遷移動作 |

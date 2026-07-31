@@ -7,6 +7,24 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
+> **v8 SLICE 4 ROUND 1 (2026-08-01) — GATE PASSED.** REQ-052/053/054 (cross-trigger chaining +
+> run-admission: authoritative onTerminal hook + durable on-completion chaining + maxConcurrentRuns cap)
+> each carry a `real:true` VAL item below (VAL-061/062/063). Validated against the live production engine
+> (systemd user service `rwe.service`, `127.0.0.1:8787`, runs `tsx src/main.ts`), restarted with the
+> Slice-4 code — `tools/list` now serves **30 tools including `chain_create` + `chain_list`**. Two live
+> chaining runs: (1) LATE-CREATE reconcile — registered `chainB` (`return 'B-ran'`), ran `A`
+> (`return 'A-done'`) to completion, then `chain_create({afterRunId:A, run:{workflow:'chainB'}})`;
+> `chain_list` showed `status:'fired', rootRunId:A, spawnedRunId:<B>` and `workflow_result(B) === "B-ran"`
+> — the chained run really executed. (2) LIVE onTerminal — ran `A2` (an `agent(model:'opus')` call, a few
+> seconds); while A2 was still RUNNING, `chain_create({afterRunId:A2, run:{workflow:'chainC'}})`; when A2
+> completed, `chain_list` showed the C continuation `status:'fired'` with a `spawnedRunId` — proving the
+> real onTerminal hook fired the continuation LIVE (not just the late-create path). REQ-054 admission is
+> covered real-wiring by IT-050 (real RunManager + real sandbox subprocess; only the spawner faked, which
+> is not the SUT boundary for the admission gate) — an HONEST-PARTIAL: the live path needs sustained >64
+> concurrent runs, but the gate itself is exercised against the real run lifecycle. Test workflows
+> deregistered afterward; registry clean. REQ-012 (OIDC) remains DEFERRED by user decision D5. All prior
+> REQs (001..051) still hold evidence from the rounds below — not re-litigated this round.
+
 > **v8 SLICE 2b ROUND 1 (2026-07-31) — GATE PASSED.** REQ-050/051 (live execution detail: phase
 > timeline with current step + per-agent timing) each carry a `real:true` VAL item below (VAL-059/060).
 > Validated against the live production engine (systemd user service `rwe.service`, `127.0.0.1:8787`,
@@ -406,6 +424,71 @@ restarted or modified during this write-up.
   (DOM-verified) rendered the agent node text `pinger opus done 7 tok 5325 ms` — the derived per-node
   duration shown on the real agent, `durationMs = endedAt − startedAt`. No SUT-boundary mock (real engine
   → real opus agent → real HTTP read-model → real dashboard DOM).
+- **iter:** v8
+
+### VAL-061 — REQ-052: authoritative onTerminal hook fires once per terminal transition
+- **status:** green
+- **traces:** REQ-052
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-050 (`tests/integration/run-onterminal-admission.test.ts`,
+  CASES 1-3) over the REAL RunManager + real on-disk WorkflowCatalog + real sandbox
+  child-process/IPC/vm (only the spawner faked): an injected `onTerminal(runId,status)` fires EXACTLY
+  once as `{status:'completed'}` for a completed run and NOT for the intermediate non-terminal
+  transitions; fires once as `{status:'stopped'}` for a `stop()`-ed run (proving it rides the
+  authoritative `_transition`, not the `_runLive` `.then` which never covers stop); and a composite
+  parent with 2 nested `workflow()` calls fires EXACTLY ONE onTerminal (nested runs have no store row and
+  never `_transition`). (2) LIVE — against the production engine (systemd `rwe.service`,
+  `127.0.0.1:8787`, `tsx src/main.ts`) restarted with the Slice-4 code, an `A2 = agent(model:'opus')`
+  run was chained while still RUNNING; when A2 reached terminal `completed` its continuation flipped to
+  `status:'fired'` in `chain_list` — the real onTerminal hook fired LIVE on the actual terminal edge
+  (not a late-create reconcile). No SUT-boundary mock on the terminal edge (the hook fires from the real
+  `_transition`).
+- **iter:** v8
+
+### VAL-062 — REQ-053: durable on-completion chaining (run A completes → start run B)
+- **status:** green
+- **traces:** REQ-053
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-051 (`tests/integration/continuation-store.test.ts`, 6 cases)
+  over the REAL `ContinuationStore` + REAL SQLite (`better-sqlite3`; only the structural
+  RunManagerPort/RunStorePort seams faked): a completed target starts run B exactly once and records
+  `spawnedRunId`; a failed/stopped target marks the continuation `skipped` and starts nothing; a
+  stop→(resume)→complete cycle starts B AT MOST once (the atomic `WHERE status='pending'` claim); an
+  unknown `afterRunId` returns `CHAIN_TARGET_NOT_FOUND`; a SECOND `ContinuationStore` instance on the
+  SAME db file fires a still-pending continuation whose target already terminated via `rearmAtBoot()`
+  (cross-restart DURABILITY on real SQLite); and a chain-of-chains (A→B→C) keeps `rootRunId==='A'` on
+  both B and C. (2) LIVE — against the production engine restarted with the Slice-4 code (`tools/list`
+  now 30 tools incl. `chain_create`/`chain_list`): registered `chainB` (`return 'B-ran'`), ran `A`
+  (`return 'A-done'`) to completion, then `chain_create({afterRunId:A, run:{workflow:'chainB'}})`;
+  `chain_list` showed `status:'fired', rootRunId:A, spawnedRunId:<B>` and `workflow_result(B) === "B-ran"`
+  — the chained run REALLY executed end-to-end (register → chain → fire → spawned run produced its
+  result). A live in-flight chain on `A2` (opus) fired on its real completion too (see VAL-061). Test
+  workflows deregistered afterward. No SUT-boundary mock (real engine → real chain_create → real spawned
+  run → real workflow_result).
+- **iter:** v8
+
+### VAL-063 — REQ-054: run-admission counter bounds concurrent top-level runs
+- **status:** green
+- **traces:** REQ-054
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** HONEST-PARTIAL (stated plainly). Exercised by IT-050
+  (`tests/integration/run-onterminal-admission.test.ts`, CASE 4) over the REAL RunManager + real on-disk
+  WorkflowCatalog + real sandbox child-process/IPC/vm — only the spawner is faked, which is NOT the SUT
+  boundary for the admission gate (the gate reads `_liveRunCount()` off the real `_runs` map and fires
+  before any durable work). With `maxConcurrentRuns` set low, a second concurrent top-level `start()`
+  while the first is still live rejects with `{code:'RUN_ADMISSION_LIMIT'}`, and once the first reaches
+  terminal its slot is freed so a later `start()` succeeds — the reject-over-limit / free-on-terminal
+  contract against the real run lifecycle. The gate default (64) is config-validated by the same
+  `_positiveInt` path as `maxWorkflowDepth`/`maxWorkflowDescendants` (rejects ≤0/non-integer at
+  construction). Not driven on the live service because that would need sustaining >64 concurrent real
+  runs; the gate LOGIC itself is exercised against the real RunManager + real sandbox subprocess
+  lifecycle, so the only un-real element is the count threshold, not the SUT boundary.
 - **iter:** v8
 
 ### VAL-046 — REQ-037: provider-aware SDK routing + Anthropic dual-auth security invariant

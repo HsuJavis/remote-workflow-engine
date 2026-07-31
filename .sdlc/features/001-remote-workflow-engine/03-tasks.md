@@ -336,3 +336,8 @@ status: draft
 - **status:** done
 - **traces:** ARCH-030
 - **iter:** v8
+
+### TASK-052 — cross-trigger chaining + run-admission: fire an authoritative onTerminal from _transition, add a maxConcurrentRuns admission gate to start(), build a durable ContinuationStore (chain_create/chain_list) reconciled at boot, wire it into server composition via a late-bound closure
+- **status:** done
+- **traces:** ARCH-031
+- **iter:** v8

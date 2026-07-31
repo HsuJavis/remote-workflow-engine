@@ -130,6 +130,8 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // defaults (4 / 256) when omitted and rejects an invalid value at construction (config load).
     maxWorkflowDepth: fileConfig.maxWorkflowDepth,
     maxWorkflowDescendants: fileConfig.maxWorkflowDescendants,
+    // v8 Slice 4 (REQ-054): forwarded like the other RunManager caps; RunManager defaults 64 + validates.
+    maxConcurrentRuns: fileConfig.maxConcurrentRuns,
   };
 
   if (gatewayChoice === 'sdk') {

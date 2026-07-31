@@ -6,6 +6,7 @@
   "retries": 1,
   "maxWorkflowDepth": 4,
   "maxWorkflowDescendants": 256,
+  "maxConcurrentRuns": 64,
   "gateway": "sdk",
   "agentDefinitionsDir": "./agents",
   "defaultAllowedTools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],

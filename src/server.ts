@@ -17,6 +17,7 @@ import type { GatewayClient } from './gateway/client.js';
 import type { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { loadAgentDefinitions } from './agent-definitions.js';
 import { SqliteSchedulerPort, type Schedule, type NewSchedule } from './scheduler.js';
+import { ContinuationStore } from './continuation-store.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
 import { AssetSyncService, classifyAsset, type AssetPush, type AssetKind } from './asset-sync.js';
 import { classifyTransport, RealMcpProbe, type McpProbe, type McpServerConfig } from './mcp-probe.js';
@@ -91,6 +92,11 @@ export interface ServerConfig {
   // an invalid value is rejected at RunManager construction (i.e. at config load).
   maxWorkflowDepth?: number;
   maxWorkflowDescendants?: number;
+  // v8 Slice 4 (REQ-054): max live top-level runs (default 64; invalid rejected at RunManager
+  // construction). (REQ-053): override the continuation store's on-disk path (default
+  // join(workRoot,'continuations.db')), same convention as schedulerDbPath.
+  maxConcurrentRuns?: number;
+  continuationDbPath?: string;
 }
 
 export interface Server {
@@ -141,6 +147,9 @@ const TOOL_NAMES = [
   'issue_comment',
   // v7 (REQ-039/040): unified, filterable cross-provider model catalog.
   'models_list',
+  // v8 Slice 4 (REQ-053): durable on-completion chaining — "after run A completes, start run B".
+  'chain_create',
+  'chain_list',
 ] as const;
 
 type ToolName = (typeof TOOL_NAMES)[number];
@@ -406,6 +415,21 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
       },
     },
   },
+  chain_create: {
+    description: "Registers a durable on-completion chain: when run `afterRunId` COMPLETES, start `run.workflow` with `run.args` exactly once (failed/stopped → skipped). Survives restart. Returns {chainId}; the spawned runId appears in chain_list once fired.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        afterRunId: { type: 'string', description: 'The run to chain after (its completion triggers the new run).' },
+        run: { type: 'object', description: 'The run to start on completion: { workflow: <registered name>, args?, budget? }.' },
+      },
+      required: ['afterRunId', 'run'],
+    },
+  },
+  chain_list: {
+    description: 'Lists every registered continuation with its status (pending|fired|skipped), rootRunId lineage, and spawnedRunId (once fired).',
+    inputSchema: { type: 'object', properties: {} },
+  },
 };
 
 // REQ-024 (v1.5, DoS): cap the request body so a large/hostile body can't buffer unbounded and OOM
@@ -475,6 +499,7 @@ async function checkMcpConfigTransport(push: AssetPush, probe: McpProbe): Promis
 async function callTool(
   facade: McpFacade,
   scheduler: SqliteSchedulerPort,
+  continuations: ContinuationStore,
   assetSync: AssetSyncService,
   mcpProbe: McpProbe,
   mcpRegistry: McpRegistry,
@@ -504,6 +529,12 @@ async function callTool(
     case 'schedule_delete': return scheduler.delete(args['id'] as string);
     case 'schedule_setEnabled': return scheduler.setEnabled(args['id'] as string, args['enabled'] as boolean);
     case 'workflow_trigger': return scheduler.trigger(args['workflow'] as string, args['args']);
+    // v8 Slice 4 (REQ-053): durable on-completion chaining over the ContinuationStore.
+    case 'chain_create': {
+      const r = await continuations.chainCreate(args as unknown as { afterRunId: string; run: { workflow: string; args?: unknown; budget?: number | null } });
+      return r.error ? { error: r.error } : { result: { chainId: r.chainId } };
+    }
+    case 'chain_list': return { result: await continuations.list() };
     // v2 (DES-019/TASK-021): asset_push reports a path-safety violation as a tool-result `error`
     // (never a thrown JSON-RPC-level error) — DES-001's own "never throw across the tool boundary".
     case 'asset_push': {
@@ -668,7 +699,16 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // D-V3M-2 (REQ-020 D-DOS): the ONE process-global agent-slot semaphore, shared by reference into
   // the RunManager (rations every SDK-CLI dispatch) and surfaced read-only via GET /api/status.
   const agentSemaphore = createSemaphore(config?.agentSlots ?? 32);
-  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants });
+  // v8 Slice 4 (REQ-053): the continuation store subscribes to RunManager.onTerminal. There is a
+  // construction cycle (RunManager needs onTerminal → store; store needs runManager.start) — broken
+  // with a late-bound closure: onTerminal fires via queueMicrotask at runtime, long after both are
+  // assigned, so `continuations` is populated by then.
+  let continuations: ContinuationStore | undefined;
+  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, onTerminal: (runId, status) => { void continuations?.onTerminal(runId, status); } });
+  // v8 Slice 4 (REQ-053): SQLite-persisted on-completion chaining, same workRoot convention as
+  // schedules.db; rearmAtBoot reconciles any continuation whose target terminated while down.
+  continuations = new ContinuationStore({ clock, runManager, store, dbPath: config?.continuationDbPath ?? join(workRoot, 'continuations.db') });
+  void continuations.rearmAtBoot();
   // v3 (DES-020/TASK-026): defaults to a real network/spawn probe; tests inject a FakeMcpProbe.
   // Constructed here (moved up from its old asset_push-only spot) so the v3 MCP Provisioning
   // Registry below can reuse the SAME injected probe seam (DES-024's "provision-time McpProbe
@@ -844,7 +884,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         if (rpc.method === 'tools/call') {
           const name = rpc.params?.name ?? '';
           const args = rpc.params?.arguments ?? {};
-          const result = await callTool(facade, scheduler, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, name, args);
+          const result = await callTool(facade, scheduler, continuations!, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, name, args);
           sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } });
           return;
         }
