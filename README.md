@@ -51,6 +51,9 @@
 （用到 `phase()`、`log()`、`agent()`、`pipeline()`、`parallel()`、`budget`、具名 `workflow()` 等 API）
 原封不動地跑在一台伺服器上，透過 **MCP Streamable HTTP** 介面遠端送出、追蹤、暫停/續跑/停止，並
 把每個 `agent()` 呼叫真正路由到你設定的 LLM 供應商（Anthropic / OpenAI / Gemini / 本機 Ollama）。
+也支援**高效大型程式庫 seeding**（gzip 壓縮請求體 + 內容定址 blob 儲存庫）：用 `Content-Encoding: gzip`
+壓過線上 body cap，或用 `blob_put`/`seed_plan` + `workflow_run` 的 `seedManifest` 以 sha256 去重、只上傳
+變動的 blob 來組裝工作區（見下方「v10 新功能」）。
 
 ## 前置需求
 - **Node.js 22.6 以上**（實測需求；`20+` 不準確——沙箱子行程與 `tsx` 都用到 Node 22 原生
@@ -260,6 +263,19 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 > 能當作另一個 composite 的節點。超過深度→`NESTING_DEPTH_EXCEEDED`、祖先環→`NESTING_CYCLE`、整棵樹
 > 巢狀呼叫數超過 `maxWorkflowDescendants`（預設 256）→`DESCENDANT_CAP_EXCEEDED`（皆為可分支的
 > envelope 錯誤，不崩父 run）；巢狀子工作流共用父 run 的同一份預算/journal。詳見 DEPLOY.md §1b。
+
+## v10 新功能（Gate 7.5 v10 ROUND 1，2026-08-01 — GATE PASSED）
+
+- **高效大型程式庫 seeding：gzip 請求體 + 內容定址 blob（REQ-063/064/065）**：（切片 1）`/mcp` 請求體現在
+  接受 `Content-Encoding: gzip|deflate`——可壓縮的程式碼 seed/asset payload 得以塞進 8 MiB body cap 之下
+  （解壓有壓縮輸入 + 解壓輸出雙重上限，gzip bomb 不會 OOM；無 `Content-Encoding` 的 body 行為與以往完全
+  相同）；超過上限時回傳**具型別 413** `{code:'BODY_TOO_LARGE', cap, phase, hint}`。（切片 2）新增內容定址
+  blob 儲存庫與兩個 MCP 工具 `blob_put{namespace, sha256, contentB64}`（伺服器 byte-verify、以計算出的 hash
+  存放；claim 不符 → `BLOB_HASH_MISMATCH`）與 `seed_plan{namespace, manifest}` → `{missing:[sha256…]}`
+  （per-namespace）；`workflow_run` 新增 `seedManifest:[{path, sha256, exec?}]` + `seedNamespace`，引擎以 hash
+  從 CAS 讀 bytes、透過與 inline seed **相同**的守衛組裝工作區（`exec?` 套用 `0o755`/`0o644`；僅一般檔案），
+  未上傳的 blob → `MISSING_BLOBS` fail-fast。新增設定鍵 `casDir`（預設 `$workRoot/cas`）。純附加層——inline
+  `{path,contentB64}` seed 與 `asset_push` 不受影響（VAL-072/073/074）。
 
 ## v9 新功能（Gate 7.5 v9 ROUND 1，2026-08-01 — GATE PASSED）
 

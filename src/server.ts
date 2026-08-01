@@ -1,7 +1,11 @@
 // MCP Streamable HTTP server bootstrap (DES-001 / ARCH-001 / TASK-001).
 // Owns transport + tool registration only — no business logic (pure delegation to McpFacade).
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { gunzipSync, inflateSync } from 'node:zlib';
+import { gunzip, inflate } from 'node:zlib';
+import { promisify } from 'node:util';
+
+const gunzipAsync = promisify(gunzip);
+const inflateAsync = promisify(inflate);
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,6 +24,7 @@ import { loadAgentDefinitions } from './agent-definitions.js';
 import { SqliteSchedulerPort, type Schedule, type NewSchedule } from './scheduler.js';
 import { ContinuationStore } from './continuation-store.js';
 import { WebhookRegistry } from './webhook-registry.js';
+import { CasStore } from './cas-store.js';
 import { isAllowedHost, isAllowedOrigin } from './net-guard.js';
 import { parseMeta, parseWorkflowSkeleton } from './workflow-meta.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
@@ -101,6 +106,8 @@ export interface ServerConfig {
   // join(workRoot,'continuations.db')), same convention as schedulerDbPath.
   maxConcurrentRuns?: number;
   continuationDbPath?: string;
+  // v10 Slice 2 (REQ-064): override the content-addressed store dir (default join(workRoot,'cas')).
+  casDir?: string;
   // v8 Defer B (REQ-057/058): override the webhook registry's on-disk path (default
   // join(workRoot,'webhooks.db')), same convention as schedulerDbPath/continuationDbPath.
   webhookDbPath?: string;
@@ -162,6 +169,9 @@ const TOOL_NAMES = [
   'webhook_create',
   'webhook_list',
   'webhook_delete',
+  // v10 Slice 2 (REQ-064): efficient seeding — content-addressed blob upload + plan.
+  'blob_put',
+  'seed_plan',
 ] as const;
 
 type ToolName = (typeof TOOL_NAMES)[number];
@@ -469,6 +479,29 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     description: 'Deletes a webhook by id.',
     inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'The webhook to delete.' } }, required: ['id'] },
   },
+  blob_put: {
+    description: "Uploads one content-addressed blob for efficient workspace seeding. The server verifies the bytes hash to `sha256` (rejects BLOB_HASH_MISMATCH) and records it for `namespace`. Idempotent. Then reference it from a workflow_run `seedManifest` entry `{path, sha256, exec?}`.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        namespace: { type: 'string', description: 'Per-tenant/project scope the blob is credited to (its refset).' },
+        sha256: { type: 'string', description: 'Claimed sha256 of the RAW bytes; the server verifies it.' },
+        contentB64: { type: 'string', description: 'Base64 of the raw file bytes.' },
+      },
+      required: ['namespace', 'sha256', 'contentB64'],
+    },
+  },
+  seed_plan: {
+    description: "Given a manifest `[{path, sha256, exec?}]` and a namespace, returns `{missing:[sha256…]}` — the blobs this namespace must still blob_put before a workflow_run with this seedManifest will assemble. `missing` is per-namespace (never global existence).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        namespace: { type: 'string', description: 'The namespace whose refset determines what is missing.' },
+        manifest: { type: 'array', description: 'Entries { path, sha256, exec? } — regular files only.' },
+      },
+      required: ['namespace', 'manifest'],
+    },
+  },
 };
 
 // REQ-024 (v1.5, DoS): cap the request body so a large/hostile body can't buffer unbounded and OOM
@@ -527,7 +560,9 @@ async function readBodyDecoded(req: IncomingMessage, maxBytes: number = MAX_BODY
   if (enc === '' || enc === 'identity') return raw.toString('utf8');
   try {
     const opts = { maxOutputLength: MAX_DECOMPRESSED_BYTES };
-    const out = enc === 'gzip' ? gunzipSync(raw, opts) : enc === 'deflate' ? inflateSync(raw, opts) : null;
+    // Async zlib runs decompression off the JS thread (libuv pool) so a large blob upload doesn't
+    // block other in-flight requests on the single-threaded event loop.
+    const out = enc === 'gzip' ? await gunzipAsync(raw, opts) : enc === 'deflate' ? await inflateAsync(raw, opts) : null;
     if (out === null) return raw.toString('utf8'); // unknown encoding → treat as raw (best-effort)
     return out.toString('utf8');
   } catch (err) {
@@ -572,6 +607,7 @@ async function callTool(
   continuations: ContinuationStore,
   webhooks: WebhookRegistry,
   webhookBaseUrl: string,
+  cas: CasStore,
   assetSync: AssetSyncService,
   mcpProbe: McpProbe,
   mcpRegistry: McpRegistry,
@@ -617,6 +653,21 @@ async function callTool(
     }
     case 'webhook_list': return { result: webhooks.list() };
     case 'webhook_delete': return { result: webhooks.delete(args['id'] as string) };
+    // v10 Slice 2 (REQ-064): content-addressed blob upload + per-namespace plan.
+    case 'blob_put': {
+      const a = args as { namespace: string; sha256: string; contentB64: string };
+      try {
+        const r = await cas.putBlob(a.namespace, a.sha256, Buffer.from(a.contentB64 ?? '', 'base64'));
+        return { result: { sha256: r.sha256, accepted: r.accepted } };
+      } catch (err) {
+        return { error: { code: (err as { code?: string }).code ?? 'BLOB_ERROR', message: (err as Error).message } };
+      }
+    }
+    case 'seed_plan': {
+      const a = args as { namespace: string; manifest: Array<{ sha256: string }> };
+      const shas = (a.manifest ?? []).map((e) => e.sha256).filter(Boolean);
+      return { result: { missing: await cas.missing(a.namespace, shas) } };
+    }
     // v2 (DES-019/TASK-021): asset_push reports a path-safety violation as a tool-result `error`
     // (never a thrown JSON-RPC-level error) — DES-001's own "never throw across the tool boundary".
     case 'asset_push': {
@@ -796,8 +847,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // construction cycle (RunManager needs onTerminal → store; store needs runManager.start) — broken
   // with a late-bound closure: onTerminal fires via queueMicrotask at runtime, long after both are
   // assigned, so `continuations` is populated by then.
+  // v10 Slice 2 (REQ-064/065): the content-addressed store backing efficient seedManifest assembly.
+  const cas = new CasStore(config?.casDir ?? join(workRoot, 'cas'));
   let continuations: ContinuationStore | undefined;
-  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, onTerminal: (runId, status) => { void continuations?.onTerminal(runId, status); } });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, cas, onTerminal: (runId, status) => { void continuations?.onTerminal(runId, status); } });
   // v8 Slice 4 (REQ-053): SQLite-persisted on-completion chaining, same workRoot convention as
   // schedules.db; rearmAtBoot reconciles any continuation whose target terminated while down.
   continuations = new ContinuationStore({ clock, runManager, store, dbPath: config?.continuationDbPath ?? join(workRoot, 'continuations.db') });
@@ -1014,7 +1067,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           const name = rpc.params?.name ?? '';
           const args = rpc.params?.arguments ?? {};
           const webhookBaseUrl = `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
-          const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, name, args);
+          const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, name, args);
           sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } });
           return;
         }

@@ -4,8 +4,78 @@ status: passed
 ---
 # 07 Review & Retro — Gate 8
 
-## v9 GATE 8 REVIEW (2026-08-01, CURRENT / AUTHORITATIVE)
+## v10 GATE 8 REVIEW (2026-08-01, CURRENT / AUTHORITATIVE)
 
+> This section supersedes "## v9 GATE 8 REVIEW (2026-08-01)" below (kept for history).
+> This round opens a NEW theme — **efficient large-codebase seeding** — landing its first two vertical
+> slices, both already-implemented, GREEN, and real-validated. The accepted architecture is the 4-architect
+> panel debate recorded in `docs/seed-sync-architecture.md`. Slice 1 (REQ-063): accept `Content-Encoding:
+> gzip|deflate` on the `/mcp` body (bounded on BOTH the compressed input AND the decompressed output, so a
+> gzip bomb can't OOM) + turn the opaque raw 413 into a typed, actionable `{code:'BODY_TOO_LARGE', cap, phase,
+> hint}`. Slice 2 (REQ-064/065, the main event): a content-addressed blob store (`CasStore` — immutable blob
+> pool + per-namespace SQLite refset, byte-verify-under-computed-hash, per-namespace `missing`) + assemble a
+> run workspace from a `seedManifest:[{path,sha256,exec?}]` through the SAME `materializeSeed` guardrails,
+> failing fast with `MISSING_BLOBS` before any durable work. Both slices are additive — the inline
+> `{path,contentB64}` seed and `asset_push` are untouched.
+> Ledger items added this round: REQ-063 (Slice 1) + REQ-064/065 (Slice 2) (requirements pre-written, iter
+> v10) → ARCH-036 + ARCH-037 → TASK-057 + TASK-058 → DES-055 + DES-056/057 → IMPL-098 + IMPL-099 → IT-058
+> (Slice 1) + IT-059 + IT-060 (Slice 2) → VAL-072 + VAL-073 + VAL-074.
+
+### Retro (v10 — efficient large-codebase seeding, Slices 1+2)
+
+- **What changed — Slice 1 (compressed body + typed error):** `src/server.ts` — a new decompressed-output cap
+  `MAX_DECOMPRESSED_BYTES` (8× the compressed cap), a typed `BodyTooLargeError{code,cap,phase,hint}`, `readBody`
+  split into a raw capped `readBodyBuffer` + a new `readBodyDecoded` (honors `Content-Encoding: gzip|deflate`
+  with a bounded output so a bomb throws mid-inflate), the `/mcp` handler routed through `readBodyDecoded`, and
+  the typed 413 emitted on both the `/mcp` and webhook catch blocks. The webhook keeps the RAW un-decoded body
+  (its HMAC is over the delivered bytes) — it only gains the typed 413.
+- **What changed — Slice 2 (the CAS substrate):** NEW `src/cas-store.ts` (`CasStore` — fs blob pool
+  `blobs/<sha[0:2]>/<sha>` + SQLite per-namespace refset; byte-verifying `putBlob` that stores under the
+  COMPUTED hash and throws `BLOB_HASH_MISMATCH` on a claim mismatch; per-namespace `missing`/`hasRef`;
+  `readBlob`/`readBlobSync`); `src/workspace-seed.ts` extracted the shared per-path `seedPathVerdict` (reused by
+  `materializeSeed` and the NEW `materializeManifest`, which reads CAS bytes + applies the masked exec bit) +
+  the `ManifestEntry {path,sha256,exec?}` schema (regular files only); `src/run-manager.ts` threads a `cas?`
+  dep, fails fast with `MISSING_BLOBS`/`CAS_UNAVAILABLE` before `createRun`, and assembles from the CAS;
+  `src/types.ts` added `RunSpec.seedManifest`/`seedNamespace`; `src/mcp-facade.ts` forwards them; `src/server.ts`
+  constructs the `CasStore` (`casDir` config), threads `cas` into `callTool`, and adds `blob_put`/`seed_plan`.
+- **Key decisions (see the DES-055/056/057 rationale + `docs/seed-sync-architecture.md`):** TWO caps not one
+  (compressed input + decompressed output — the compressed cap alone can't stop a bomb); the webhook keeps the
+  raw body (HMAC is over delivered bytes, must not auto-decompress); the CAS byte-verifies and stores under the
+  COMPUTED hash with NO exists-skip (closes hash-poisoning + confused-deputy at once); `missing`/`hasRef` are
+  PER-NAMESPACE not global (closes the cross-tenant dedup oracle); ONE shared `seedPathVerdict` so the inline
+  and CAS seed paths can never diverge; the manifest is regular-files-only with `exec?` the sole masked metadata
+  bit and NO symlinks ever (retrofit-avoidance); fail fast on `MISSING_BLOBS` before any durable work.
+- **The `toErrEnvelope` fix — a PRE-EXISTING latent bug fixed this round.** `src/mcp-facade.ts:toErrEnvelope`
+  previously returned `err.name` (`'Error'`) for run-manager `codedError`s, so `RUN_ADMISSION_LIMIT` /
+  `NESTING_*` (and the new `MISSING_BLOBS`) surfaced through `workflow_run` as a useless `'Error'` code — the
+  branchable code was silently swallowed at the tool boundary since v8. It now prefers `.code`, falling back to
+  the Error name only for a genuinely un-coded error. This was mandatory for the CAS upload-then-retry loop (the
+  client keys on `MISSING_BLOBS`) and also un-swallows the pre-existing admission/nesting codes.
+- **No regressions.** Full suite 683 pass / 155 files (up from 671 / 152 — three new integration files:
+  compressed-body, cas-store, seed-manifest-http), `npx tsc --noEmit` clean. The change is additive: the inline
+  `{path,contentB64}` seed and `asset_push` are untouched; the existing `workspace-artifacts-seed.test.ts`
+  (exercising the `materializeSeed`→`seedPathVerdict` refactor) stays green; `workflow_run` gains only additive
+  fields; `blob_put`/`seed_plan` are new tools older clients ignore.
+- **Deferred to later increments (per `docs/seed-sync-architecture.md` §Roadmap):** the raw-streaming
+  `POST /assets/blob/<sha256>` blob endpoint (no base64, no 8 MiB cap — the many-large-files transport), per-tenant
+  quotas + immutable-pool refcount GC, the client `push_workspace.py` helper (git-as-client-cache: memoize
+  `gitOID→sha256` so a re-align is `git status`-fast) + the `rwe seed` CLI, and the optional `seedRef:{repoUrl,sha}`
+  engine-pull behind an egress allowlist (CI/forge/air-gapped). Rejected outright (not deferred): rsync (bypasses
+  `materializeSeed`, second auth root) and git-bundle-as-transport (engine-minted baseline has no common ancestor →
+  zero delta). Deferred UNCHANGED from v8/v9: SSE, RUN-dag parallel-group markers, and full OIDC (REQ-012, D5 — the
+  Host/Origin allowlist + loopback/LAN bind is the interim control the blob route will inherit).
+- **Gate 7.5:** PASSED 2026-08-01. Live production engine (systemd `rwe.service`, `127.0.0.1:8787`) restarted with
+  the v10 code, `tools/list` → 36 tools incl `blob_put`/`seed_plan`. Slice 1: a gzip'd `tools/list` decoded (34
+  tools); an oversized uncompressed body → typed 413 `{code:'BODY_TOO_LARGE', cap:8388608, hint:…}`. Slice 2:
+  uploaded two blobs to namespace `liveproj` (`seed_plan` 2 missing → `[]` after `blob_put`); `workflow_run` with
+  the `seedManifest` completed; `workflow_artifacts` byte-identical sha256; on-disk modes `0755` (`exec:true`) /
+  `0644` (`exec:false`); an un-uploaded blob → `MISSING_BLOBS`. See VAL-072 / VAL-073 / VAL-074. Trace `--check`:
+  the 6 REQ-063/064/065 gaps (untraced requirements) are CLOSED by this round's chain; the remaining 3 gaps are ALL
+  pre-existing (REQ-012 / TASK-018 OIDC-deferred, IMPL-082 TDD-label) — ZERO new gaps introduced.
+
+## v9 GATE 8 REVIEW (2026-08-01)
+
+> This section is superseded by "## v10 GATE 8 REVIEW (2026-08-01)" above (kept for history).
 > This section supersedes "## v8 DEFER A GATE 8 REVIEW (2026-08-01)" below (kept for history).
 > This round lands ONE already-implemented, GREEN, real-validated slice: **v9 — workflow discovery / reuse
 > decision**, a new discovery theme. Before an operator reuses a registered workflow (or authors a new one),

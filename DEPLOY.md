@@ -447,6 +447,13 @@ counter），省略時預設 **64**，啟動載入時驗證（值 ≤0 或非整
 webhook 模型，單向雜湊無法驗 HMAC），因此此檔的存取權限即等同 webhook 金鑰的機密邊界，請比照
 `schedules.db` 保護；`webhook_list` 只會回傳 secret 的 sha256 前綴指紋，永不回傳 secret 本身。
 
+`casDir`（型別 `string`，選填，**v10 新增**）：內容定址 blob 儲存庫（CAS，供高效工作區 seeding 用）的
+目錄路徑。此目錄下有一個不可變 blob pool（`blobs/<sha[0:2]>/<sha>`）與一張 SQLite `refs.db`（per-namespace
+refset，作法同其他引擎自有 side table），省略時預設 `$workRoot/cas`；一般部署可省略不填。`blob_put` 上傳的
+blob 以其**內容的 sha256** 為鍵存放（伺服器 byte-verify、以計算出的 hash 存放、絕不用宣稱的 hash），
+`seed_plan`／`workflow_run` 的 `seedManifest` 僅以 hash 參照——因此此目錄即所有 seed blob 的實體儲存邊界，
+請比照 workspace 保護。`missing`/`hasRef` 為 per-namespace（非全域存在性），跨租戶不共享 dedup。
+
 **Gate 7.5 v2 ROUND 2 config-file sync check 補充（本輪新發現的文件漂移，已修正）**：`litellmPort`
 （型別 `number`，選填）在 v2 TASK-027 就已經被 `composeConfig()` 真的接進
 `LiteLLMProxyManager(aliases, {port: fileConfig.litellmPort})`（`tests/unit/
@@ -817,6 +824,31 @@ npm run start
   `workflow` 呼叫，帶 parallel 群組 id 與子工作流程名稱，loop/conditional 內節點標 `dynamic:true`；掃描不執行
   script、不丟例外）。儀表板工作流程卡片顯示 description、可點擊 → 渲染預測 DAG。Gate 7.5 v9 ROUND 1 PASSED
   （VAL-070/071）。純唯讀、附加層——無破壞性變更、無新設定鍵、無遷移動作（description 隨查即時解析、非儲存欄位）。
+- **高效大型程式庫 seeding：gzip 請求體 + 內容定址 blob（v10）**：兩個切片。（切片 1，REQ-063）`/mcp`
+  請求體現在接受 `Content-Encoding: gzip|deflate`——可壓縮的程式碼 seed/asset payload（約壓 3–5×）得以塞進
+  線上 8 MiB body cap 之下；解壓有**雙重上限**（壓縮輸入 `MAX_BODY_BYTES` 8 MiB + 解壓輸出 8×），gzip bomb
+  會在解壓途中被擋、不會 OOM。body 若無 `Content-Encoding` 行為完全與以往相同。超過任一上限時回傳**具型別的
+  413**：JSON body 帶 `{code:'BODY_TOO_LARGE', cap, phase:'compressed'|'decompressed', hint}`（hint 指明「用
+  gzip 壓縮或拆分 payload」），不再是不透明的原始 413。webhook `POST /hooks/:id` 仍讀**原始** body（HMAC 需
+  對交付位元組驗簽、不可自動解壓），僅同樣改回具型別 413。（切片 2，REQ-064/065）新增內容定址 blob 儲存庫
+  `CasStore` 與兩個 MCP 工具：**`blob_put{namespace, sha256, contentB64}`**（伺服器 byte-verify、以計算出的
+  hash 存放、絕不用宣稱的 hash；claim/upload 不符 → `BLOB_HASH_MISMATCH` 且不存任何東西；immutable、idempotent）
+  與 **`seed_plan{namespace, manifest}`** → `{missing:[sha256…]}`（此 namespace 尚須上傳的 blob；per-namespace、
+  非全域存在性，關閉跨租戶 dedup oracle）。`workflow_run` 新增 **`seedManifest:[{path, sha256, exec?}]`** 與
+  `seedNamespace`——引擎以 hash 從 CAS 讀 bytes、透過與 `materializeSeed` **相同**的 per-path 守衛（`.claude`
+  strip / `.git` reject / realpath-contained）組裝工作區，`exec?` 套用遮罩後的執行位元（`0o755`/`0o644`，
+  setuid/setgid/sticky 不可表達；僅限一般檔案、永不支援 symlink/mode int）；若 `seedManifest` 參照到未上傳的
+  blob，`workflow_run` 在任何持久化動作之前以 **`MISSING_BLOBS`** fail-fast（不建立 run row）。新增設定鍵
+  `casDir`（預設 `$workRoot/cas`）。Gate 7.5 v10 ROUND 1 PASSED（真實 service 36 tools 含 `blob_put`/`seed_plan`：
+  gzip `tools/list` 解碼、超大未壓縮 body → 具型別 413、blob 上傳 + `seed_plan` 2→0 missing + `workflow_run`
+  seedManifest 組裝出 byte-identical 工作區、on-disk 模式 `0755`/`0644`、未上傳 blob → `MISSING_BLOBS`，
+  VAL-072/073/074）。**尚未支援（後續增量，見 `docs/seed-sync-architecture.md` roadmap）**：raw-streaming
+  blob 端點 `POST /assets/blob/<sha256>`（免 base64、免 8 MiB cap）、per-tenant quota + immutable-pool GC、
+  client `push_workspace.py`（git 作為 client 端 stat-cache）+ `rwe seed` CLI、`seedRef` engine-pull。純附加
+  層——無破壞性變更；inline `{path,contentB64}` seed 與 `asset_push` 不受影響；`workflow_run` 新欄位為選填、
+  兩個新工具與 `casDir` 為附加，既有用戶端可忽略。**已知注意事項**：公開 `0.0.0.0` bind 且未接 OIDC（REQ-012，
+  D5 延後）時，能連到 port 的人皆可呼叫 `blob_put`/`seed_plan`——Host/Origin 白名單是過渡管控（未來 raw blob
+  端點沿用同一管控）。
 
 - **本輪對獨立真實 process 重新確認「真的修復」（D-F12/D-F13，全部確認）**：
   1. **（D-F12）in-flight agent 狀態即時可觀察**：真實 3 個並行 `agent()` 呼叫，`status:"running"`
@@ -963,3 +995,5 @@ curl -s -D - -o /dev/null -X POST $BASE/v1/chat/completions \
 | 2026-08-01 | v8 | Defer B（外部 ingress 安全，OIDC 前過渡管控）：HTTP handler 最頂端對每條路由（`/mcp`/`/api/*`/`/dashboard`/`/hooks/*`）一致的 **Host/Origin 白名單**（外來 Host → 403 防 DNS-rebinding；帶有且非白名單 Origin → 403 防 CSRF；缺 Origin 放行 = fail-open，不打斷程式化 client）；新增 **webhook 入口 `POST /hooks/:id`**（fail-closed：exists+enabled → HMAC-SHA256 常數時間比對原始 body → ±300s 時戳 → deliveryId 去重 → 啟動預先綁定工作流程，body 以 `args.event` 傳入，回 202）；新增三個 MCP 工具 `webhook_create`（server 端產生 secret 只回一次）/`webhook_list`（只回 sha256 指紋，永不回 secret）/`webhook_delete`；新增引擎自有的持久化 webhook 註冊表 side table（`webhooks` + `webhook_deliveries`）+ 新設定鍵 `webhookDbPath`（預設 `$workRoot/webhooks.db`）。secret 為明文儲存（HMAC 驗簽需金鑰，同 GitHub/Stripe 模型）。Gate 7.5 v8 Defer B ROUND 1 PASSED（真實 service 33 tools、`Host: evil` → 403、`Origin: evil` POST /mcp → 403、簽章 `POST /hooks/:id` → 202 真跑、重放 → 200 不重跑，VAL-065/066/067）。**已知注意事項**：公開 `0.0.0.0` bind 且未接 OIDC（REQ-012，D5 延後）時，能連到 port 的人皆可呼叫這些工具——白名單是過渡管控、非 OIDC 替代 | 無破壞性變更；`webhookDbPath` 選填有預設值、一般部署可省略；三個新工具為附加、既有用戶端可忽略；Host/Origin 白名單永遠開啟且對正常 loopback/LAN 呼叫無影響（缺 Origin fail-open）；無遷移動作 |
 | 2026-08-01 | v8 | Defer A（當機可續跑，crash durability，Option X）：**一個當機/重啟時仍 `running` 的 run 現在會被重新分類為 `interrupted`（可續跑、非終態）而非永久 `failed`**——開機恢復（`hydrateAll`）改標 `running`→`interrupted`（日誌印 `… N re-classified running→interrupted (resumable)`），`workflow_status` 回 `interrupted`，`workflow_resume(runId)` 即可續跑；`RunStatus` union 新增 `'interrupted'`。新增 `RunStore.getJournal` 讀回 journal.jsonl（丟棄 `{type:'result'}` 標記、對當機截斷的最後一行容錯），`_requireLive` 用它填入 ResumeCache——**續跑時已結算的 `agent()`/`workflow()` 呼叫從持久化日誌重播、gateway 不重打**，只重跑未完成尾段（原本 hard-code `journal:[]` 會全部重跑）。同時修掉一個**既有 bug**：具名工作流程（`start({name})`）的 spec 不存 inline script，`_requireLive` 舊用 `spec.script ?? ''` 會跑空 script 回 `undefined`——改為和 `start()` 一樣從 catalog 重解析 script（影響所有具名工作流程的重啟續跑，非只當機）。Option X：重用既有 ResumeCache/日誌重播，**無**新的 sandbox checkpoint/VM snapshot 協定。Gate 7.5 v8 Defer A ROUND 1 PASSED（真實 service：具名 5 圈 opus loop 工作流程執行中 `kill -9`、systemd 重啟後 `workflow_status` 回 `interrupted`、`workflow_resume` 續跑至 `completed` 回 5 元素真實 opus 陣列，VAL-068/069）。**已知注意事項**：當機瞬間飛行中（已派發未寫日誌）的呼叫續跑時會真的重跑（cache MISS，與 suspend/resume 同語意）；非冪等副作用可能重複，由工作流程作者負責冪等性 | 無破壞性變更；`interrupted` 為 `RunStatus` 新增值、既有用戶端遇到時視為可續跑狀態即可；無新設定鍵、無遷移動作（journal.jsonl 與 SQLite `runs` 表沿用既有格式） |
 | 2026-08-01 | v9 | 工作流程探索 / 重用決策（workflow discovery，REQ-061/062）：在重用一個已註冊工作流程（或決定另寫新的）之前，不必執行、也不必讀 script 即可查其**用途**與**形狀**。（用途，REQ-061）`workflow_list` 現在每筆多回傳 `description`（由工作流程的 `export const meta.description` 隨查即時解析，永遠與現行 script 同步、無需 migration）；新增 MCP 工具 **`workflow_get({name})`**——回傳完整 `{name, version, createdAt, description, phases, script, skeleton}`，未知名稱回 `WORKFLOW_NOT_FOUND`（envelope，不丟例外）；無 meta/無 description 者退化為空字串、非錯誤。（形狀，REQ-062）`workflow_get.skeleton` 與新端點 **`GET /api/workflows/:name/skeleton`** 回傳一份**預測的靜態 DAG 骨架**——純靜態掃描 script 的 `phase()`/`agent()`/`parallel()`/`workflow()` 呼叫，依序列出節點（parallel 群組 id、子工作流程名稱），loop/conditional 內的節點標 `dynamic:true`（best-effort，因真實形狀只在執行期決定）；掃描**從不執行 script、不丟例外**。儀表板工作流程卡片現在顯示 description 且可點擊 → 渲染預測 DAG（parallel group 群組、`×? (dynamic)` 標記、description 作為用途文字）。Gate 7.5 v9 ROUND 1 PASSED（真實 service 重啟：註冊 `disc-demo`、`workflow_list` 回 description、`workflow_get` 回 description+phases+skeleton `[agent(parallel:1), agent(parallel:1), agent, workflow:notify]`、Playwright headless 儀表板卡片點擊 → 預測 DAG，VAL-070/071）。**尚未支援（沿用 v8，未變）**：SSE、RUN dag 的 parallel-group 標記（需 sandbox-IPC；此處是 STATIC 骨架有帶 parallel 群組，但即時執行的 DAG 仍未帶）、OIDC（REQ-012，D5） | 無破壞性變更；`workflow_get` 為新增工具、`GET /api/workflows/:name/skeleton` 為新增唯讀端點、`workflow_list` 的 `description` 為新增欄位（既有用戶端可忽略）；無新設定鍵、無遷移動作（description 隨查即時解析、非儲存欄位） |
+| 2026-08-01 | v10 | 高效大型程式庫 seeding 切片 1（壓縮請求體 + 具型別過大錯誤，REQ-063）：`/mcp` 請求體現在接受 `Content-Encoding: gzip\|deflate`——可壓縮程式碼 seed/asset payload（約壓 3–5×）得以塞進 8 MiB body cap 之下；解壓有**雙重上限**（壓縮輸入 `MAX_BODY_BYTES` 8 MiB + 解壓輸出 `MAX_DECOMPRESSED_BYTES` 8×），gzip bomb 在解壓途中被擋、不會 OOM；無 `Content-Encoding` 的 body 行為與以往完全相同。超過任一上限時回傳**具型別 413**：`{code:'BODY_TOO_LARGE', cap, phase:'compressed'\|'decompressed', hint}`（hint 指明用 gzip 壓縮或拆分）。webhook `POST /hooks/:id` 仍讀**原始** body（HMAC 對交付位元組驗簽、不可自動解壓），僅同樣改回具型別 413。（`readBody` 拆成 raw 的 `readBodyBuffer` + 解碼的 `readBodyDecoded`。）Gate 7.5 v10 ROUND 1 PASSED（真實 service：gzip `tools/list` 解碼 34 tools、超大未壓縮 body → 413 `{code:'BODY_TOO_LARGE', cap:8388608, hint:…}`，VAL-072） | 無破壞性變更；無新設定鍵；只影響 HTTP body 讀取層與兩處 413 catch，無工具 payload 形狀變更；無遷移動作 |
+| 2026-08-01 | v10 | 高效大型程式庫 seeding 切片 2（CAS 基座，REQ-064/065）：新增內容定址 blob 儲存庫 `CasStore`（不可變 blob pool `blobs/<sha[0:2]>/<sha>` + SQLite per-namespace refset）與兩個 MCP 工具 **`blob_put{namespace, sha256, contentB64}`**（byte-verify、以**計算出的** hash 存放絕不用宣稱值 → 關 hash-poisoning + confused-deputy；claim 不符 → `BLOB_HASH_MISMATCH` 不存任何東西；immutable、idempotent）與 **`seed_plan{namespace, manifest}`** → `{missing:[sha256…]}`（per-namespace、非全域存在性 → 關跨租戶 dedup oracle）。`workflow_run` 新增 **`seedManifest:[{path, sha256, exec?}]`** + `seedNamespace`——引擎以 hash 從 CAS 讀 bytes、透過與 `materializeSeed` **相同**的 per-path 守衛（`.claude` strip/`.git` reject/realpath-contained，抽出共用 `seedPathVerdict`）組裝工作區，`exec?` 套用遮罩執行位元（`0o755`/`0o644`；僅一般檔案、永不支援 symlink/mode int）；`seedManifest` 參照到未上傳 blob → 於任何持久化動作前以 **`MISSING_BLOBS`** fail-fast（不建 run row）。順帶修掉一個**既有 bug**：`toErrEnvelope` 舊回 Error name，導致 run-manager 的 coded error（`RUN_ADMISSION_LIMIT`/`NESTING_*`/新的 `MISSING_BLOBS`）透過 `workflow_run` 都變成無用的 `'Error'`——改為優先取 `.code`。新增設定鍵 `casDir`（預設 `$workRoot/cas`）。Gate 7.5 v10 ROUND 1 PASSED（真實 service 36 tools：blob 上傳 namespace `liveproj`、`seed_plan` 2→0 missing、`workflow_run` seedManifest 組裝出 byte-identical 工作區、on-disk 模式 `0755`(`exec:true`)/`0644`(`exec:false`)、未上傳 blob → `MISSING_BLOBS`，VAL-073/074）。**尚未支援（後續增量，見 `docs/seed-sync-architecture.md` roadmap）**：raw-streaming blob 端點 `POST /assets/blob/<sha256>`（免 base64、免 8 MiB cap）、per-tenant quota + immutable-pool GC、client `push_workspace.py`（git 作 client 端 stat-cache）+ `rwe seed` CLI、`seedRef` engine-pull | 無破壞性變更；`casDir` 選填有預設值、一般部署可省略；`workflow_run` 新欄位為選填、兩個新工具為附加，既有用戶端可忽略；inline `{path,contentB64}` seed 與 `asset_push` 不受影響；無遷移動作 |

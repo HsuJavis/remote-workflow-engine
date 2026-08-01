@@ -7,10 +7,11 @@
 import { cpus, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
-import { materializeSeed } from './workspace-seed.js';
+import { materializeSeed, materializeManifest } from './workspace-seed.js';
+import type { CasStore } from './cas-store.js';
 import { initGitBaseline } from './workspace-git.js';
 import { listArtifacts, type ArtifactEntry } from './workspace-artifacts.js';
-import { IllegalTransitionError } from './errors.js';
+import { IllegalTransitionError, codedError } from './errors.js';
 import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView } from './types.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore } from './run-store.js';
@@ -64,15 +65,13 @@ export interface RunManagerDeps {
   /** v8 Slice 4 (REQ-054): max live (non-terminal) top-level runs; an over-limit start() is rejected
    *  with RUN_ADMISSION_LIMIT before any durable work. Default 64. Invalid (≤0/non-integer) rejected. */
   maxConcurrentRuns?: number;
+  /** v10 Slice 2 (REQ-065): the content-addressed store used to assemble a run's workspace from a
+   *  `seedManifest`. Omitted → a seedManifest spec is rejected (no store to read blobs from). */
+  cas?: CasStore;
 }
 
 const TERMINAL: RunStatus[] = ['stopped', 'completed', 'failed'];
 
-/** A branchable Error carrying a `.code` (surfaced to the calling script via the sandbox IPC's
- *  code derivation — see host.ts ipcErrorCode / child-entry). */
-function codedError(code: string, message: string): Error {
-  return Object.assign(new Error(message), { code });
-}
 
 function toErr(err: unknown): { code: string; message: string } {
   if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
@@ -126,6 +125,7 @@ export class RunManager {
   private readonly _maxWorkflowDescendants: number;
   private readonly _onTerminal: ((runId: string, status: RunStatus) => void) | undefined;
   private readonly _maxConcurrentRuns: number;
+  private readonly _cas: CasStore | undefined;
   private readonly _runs = new Map<string, RunEntry>();
 
   /** v8 Slice 1: config values are positive integers — reject bad config loudly at construction
@@ -154,6 +154,7 @@ export class RunManager {
     this._maxWorkflowDescendants = RunManager._positiveInt(deps.maxWorkflowDescendants, 256, 'maxWorkflowDescendants');
     this._onTerminal = deps.onTerminal;
     this._maxConcurrentRuns = RunManager._positiveInt(deps.maxConcurrentRuns, 64, 'maxConcurrentRuns');
+    this._cas = deps.cas;
   }
 
   /** v8 Slice 4 (REQ-054): count of live (non-terminal) top-level runs in this process — the
@@ -208,6 +209,14 @@ export class RunManager {
     if (this._liveRunCount() >= this._maxConcurrentRuns) {
       throw codedError('RUN_ADMISSION_LIMIT', `maxConcurrentRuns=${this._maxConcurrentRuns} reached; run rejected`);
     }
+    // v10 REQ-065: fail fast (before any durable work) if a seedManifest references blobs the client
+    // hasn't uploaded — surface the missing shas so the client blob_put's them and retries.
+    if (spec.seedManifest && spec.seedManifest.length > 0) {
+      if (!this._cas) throw codedError('CAS_UNAVAILABLE', 'seedManifest requires a configured content store');
+      const ns = spec.seedNamespace ?? '_default';
+      const missing = await this._cas.missing(ns, spec.seedManifest.map((e) => e.sha256));
+      if (missing.length > 0) throw codedError('MISSING_BLOBS', `upload ${missing.length} blob(s) first: ${missing.slice(0, 8).join(',')}${missing.length > 8 ? '…' : ''}`);
+    }
     let script = spec.script ?? '';
     let scriptVersion = 1;
     let resolvedVersion = 'v1'; // catalog version string actually executed (D-V7) — threaded into RunStore.createRun
@@ -220,15 +229,21 @@ export class RunManager {
 
     const runId = await this._store.createRun(spec, resolvedVersion);
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
-    // REQ-025 (v2): materialize the client seed tree into the workspace BEFORE any agent starts
-    // (engine-side, so replay/determinism holds) — `.claude` settings/hooks stripped, escapes
-    // rejected (workspace-seed.materializeSeed).
-    if (spec.seed && spec.seed.length > 0) {
+    // REQ-025 (v2) / REQ-065 (v10): materialize a seed into the workspace BEFORE any agent starts
+    // (engine-side, so replay/determinism holds) — from an inline tree (`seed`) or a CAS manifest
+    // (`seedManifest`, blobs verified present above). Both go through the SAME guardrails and the SAME
+    // pre/post steps (mkdir + git baseline), differing only in the materializer — pick it once.
+    const cas = this._cas;
+    const materialize =
+      spec.seed && spec.seed.length > 0 ? (ws: string) => { materializeSeed(ws, spec.seed!); } :
+      spec.seedManifest && spec.seedManifest.length > 0 && cas ? (ws: string) => { materializeManifest(ws, spec.seedManifest!, (sha) => cas.readBlobSync(sha)); } :
+      null;
+    if (materialize) {
       mkdirSync(workspace, { recursive: true });
-      materializeSeed(workspace, spec.seed);
-      // REQ-027 (v2.5): the client cannot seed `.git/` (materializeSeed bars it), so the engine gives
-      // the seeded tree a brownfield git baseline here — the SDLC precheck requires a work tree and
-      // change-control needs a commit to diff against. Best-effort: a null baseSha never fails the run.
+      materialize(workspace);
+      // REQ-027 (v2.5): the client cannot seed `.git/`, so the engine gives the seeded tree a
+      // brownfield git baseline here — the SDLC precheck needs a work tree + a commit to diff against.
+      // Best-effort: a null baseSha never fails the run.
       initGitBaseline(workspace);
     }
     const guard = new RunGuard({ concurrency: this._concurrency, budget: spec.budget ?? null });

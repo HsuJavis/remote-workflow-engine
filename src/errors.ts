@@ -1,5 +1,12 @@
 // Domain error types. Implemented fully — pure value classes, no business logic.
 
+/** A branchable Error carrying a `.code` (surfaced to the calling script via the sandbox IPC's code
+ *  derivation — see host.ts ipcErrorCode / child-entry). One shared factory so run-manager, cas-store,
+ *  and the tools never drift on the coded-error shape. */
+export function codedError(code: string, message: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
 export class NotImplementedError extends Error {
   constructor(name: string) {
     super(`${name}: not implemented`);

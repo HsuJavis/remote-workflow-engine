@@ -9,7 +9,7 @@ import type { RunStore } from './run-store.js';
 import { InMemoryRunStore } from './run-store.js';
 import { RunManager } from './run-manager.js';
 import { SubmissionValidator } from './submission-validator.js';
-import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent } from './types.js';
+import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent, ManifestEntry } from './types.js';
 import { parseMeta, parseWorkflowSkeleton, type SkeletonNode } from './workflow-meta.js';
 
 export interface McpFacadeDeps {
@@ -20,7 +20,12 @@ export interface McpFacadeDeps {
 }
 
 function toErrEnvelope(err: unknown): ErrEnvelope {
-  if (err instanceof Error) return { code: err.name || 'INTERNAL_ERROR', message: err.message };
+  // Every coded error the engine throws is an Error carrying `.code` (errors.ts `codedError` — the
+  // single factory, no bare `throw {…}` in src/), so prefer `.code`, else the Error name.
+  if (err instanceof Error) {
+    const code = (err as { code?: unknown }).code;
+    return { code: typeof code === 'string' && code ? code : err.name || 'INTERNAL_ERROR', message: err.message };
+  }
   return { code: 'INTERNAL_ERROR', message: String(err) };
 }
 
@@ -74,14 +79,14 @@ export class McpFacade {
     this.validator = deps.validator ?? new SubmissionValidator({ catalog: this.runManager.catalog });
   }
 
-  async workflow_run(a: { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[] }): Promise<ResultEnvelope<{ runId: string }>> {
+  async workflow_run(a: { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: ManifestEntry[]; seedNamespace?: string }): Promise<ResultEnvelope<{ runId: string }>> {
     // Fail fast at submission (DES-012/ARCH-008), never mid-run.
     const validation = await this.validator.validate({ name: a.name, script: a.script });
     if (!validation.ok) {
       return { runId: '', status: 'failed', error: validation.errors[0] };
     }
     try {
-      const runId = await this.runManager.start({ name: a.name, script: a.script, args: normalizeArgs(a.args), budget: a.budget ?? null, seed: a.seed });
+      const runId = await this.runManager.start({ name: a.name, script: a.script, args: normalizeArgs(a.args), budget: a.budget ?? null, seed: a.seed, seedManifest: a.seedManifest, seedNamespace: a.seedNamespace });
       const view = await this.store.getRun(runId);
       return { runId, status: view?.status ?? 'queued', result: { runId } };
     } catch (err) {

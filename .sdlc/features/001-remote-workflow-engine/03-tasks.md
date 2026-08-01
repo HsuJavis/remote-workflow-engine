@@ -361,3 +361,15 @@ status: draft
 - **status:** done
 - **traces:** ARCH-035
 - **iter:** v9
+
+## v10 — efficient large-codebase seeding (TASK-057, TASK-058)
+
+### TASK-057 — compressed request bodies + typed too-large error: add `MAX_DECOMPRESSED_BYTES` + a typed `BodyTooLargeError{code,cap,phase,hint}`, split `readBody` into a raw capped `readBodyBuffer` + a new `readBodyDecoded` (honors `Content-Encoding: gzip|deflate` with a bounded decompressed output), route the `/mcp` handler through `readBodyDecoded`, and emit the typed 413 from both the `/mcp` and webhook 413 catch blocks (webhook keeps the RAW un-decoded body for its HMAC)
+- **status:** done
+- **traces:** ARCH-036
+- **iter:** v10
+
+### TASK-058 — the CAS substrate: add `src/cas-store.ts` (`CasStore` — immutable blob pool + per-namespace SQLite refset, byte-verify `putBlob`, per-namespace `missing`/`hasRef`, `readBlob`/`readBlobSync`), extract a shared `seedPathVerdict` + add `materializeManifest` (CAS-bytes assemble + masked exec bit) in `src/workspace-seed.ts`, thread a `cas?` dep into `RunManager` (fail-fast `MISSING_BLOBS`/`CAS_UNAVAILABLE` before `createRun` + assemble from CAS), add `seedManifest`/`seedNamespace` to `RunSpec` + `workflow_run`, fix `toErrEnvelope` to prefer a coded error's `.code`, and construct the `CasStore` + add the `blob_put`/`seed_plan` tools + a `casDir` config in `src/server.ts`
+- **status:** done
+- **traces:** ARCH-037
+- **iter:** v10
