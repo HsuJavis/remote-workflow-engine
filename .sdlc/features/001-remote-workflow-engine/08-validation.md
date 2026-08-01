@@ -7,6 +7,24 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
+> **v10 ROUND 1 (2026-08-01) — GATE PASSED.** The efficient-large-codebase-seeding theme (accepted
+> architecture: `docs/seed-sync-architecture.md`). Slice 1 — REQ-063 (compressed request bodies + a typed,
+> actionable too-large error) → VAL-072. Slice 2 — REQ-064 (content-addressed blob store with byte-verify +
+> per-namespace refs) → VAL-073, and REQ-065 (assemble a run workspace from a CAS `seedManifest`) → VAL-074.
+> All three carry a `real:true` VAL item below. Validated LIVE against the production engine (systemd user
+> service `rwe.service`, `127.0.0.1:8787`, `tsx src/main.ts`), restarted with the v10 code — `tools/list` now
+> serves **36 tools including `blob_put` / `seed_plan`**. Slice 1: a gzip'd `tools/list` (`Content-Encoding:
+> gzip`) DECODED and returned 34 tools; an oversized UNCOMPRESSED body → HTTP 413 with the typed
+> `{code:'BODY_TOO_LARGE', cap:8388608, hint:'compress the body with Content-Encoding: gzip, or split the
+> payload'}`. Slice 2: uploaded two files' blobs to namespace `liveproj` (`seed_plan`: 2 missing → after
+> `blob_put`: `[]`); `workflow_run` with the `seedManifest` completed; `workflow_artifacts` showed both files
+> at their paths with byte-identical sha256; on disk `scripts/build.sh` → mode `0755` (`exec:true`),
+> `src/index.ts` → `0644` (`exec:false`); a `seedManifest` naming an un-uploaded blob → `workflow_run` failed
+> `MISSING_BLOBS`. Full suite 683 pass / 155 files; `npx tsc --noEmit` clean. Test blobs/workflows cleaned up
+> afterward. REQ-012 (OIDC) remains DEFERRED by user decision D5 — the Host/Origin allowlist + loopback/LAN
+> bind is the interim control the future raw-streaming blob route will inherit. All prior REQs (001..062)
+> still hold evidence from the rounds below — not re-litigated this round.
+
 > **v9 ROUND 1 (2026-08-01) — GATE PASSED.** REQ-061 (a registered workflow's purpose is queryable —
 > `workflow_list` description + `workflow_get` full detail + `WORKFLOW_NOT_FOUND`) + REQ-062 (a workflow's
 > DAG is inspectable BEFORE running — a predicted static skeleton via `workflow_get.skeleton` +
@@ -727,6 +745,66 @@ restarted or modified during this write-up.
   never executes the script; loop/conditional nodes are the best-effort `dynamic` prediction. Test workflow
   deregistered afterward. No SUT-boundary mock (real service → real static scan → real dashboard render).
 - **iter:** v9
+
+### VAL-072 — REQ-063: compressed request bodies + a typed, actionable too-large error
+- **status:** green
+- **traces:** REQ-063
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-058 (`tests/integration/compressed-body.test.ts`, 4 cases, over a
+  REAL `createServer` — real `/mcp` HTTP + real `readBodyDecoded` + real `node:zlib`; no SUT-boundary mock on
+  the body-read path): a `Content-Encoding: gzip` `tools/list` body is decoded and processed → 200; an
+  uncompressed over-`MAX_BODY_BYTES` body → typed 413 `{code:'BODY_TOO_LARGE', cap, phase, hint}`; a gzip BOMB
+  (tiny compressed, inflates past `MAX_DECOMPRESSED_BYTES`) → typed 413 (`phase:'decompressed'`) AND the server
+  survives (a following request still 200s — no OOM); a plain body is unchanged. (2) LIVE — against the
+  production engine (systemd `rwe.service`, `127.0.0.1:8787`) restarted with the v10 code: a gzip'd `tools/list`
+  request sent with `Content-Encoding: gzip` was DECODED and returned the tool list (34 tools); an oversized
+  UNCOMPRESSED body → HTTP 413 whose JSON carried `{code:'BODY_TOO_LARGE', cap:8388608, hint:'compress the body
+  with Content-Encoding: gzip, or split the payload'}`. So a large compressible seed/asset payload now fits
+  under the wire cap, a bomb is rejected without OOM, and the error is actionable. No SUT-boundary mock (real
+  service → real HTTP body decode → real zlib).
+- **iter:** v10
+
+### VAL-073 — REQ-064: content-addressed blob store with byte-verify + per-namespace refs
+- **status:** green
+- **traces:** REQ-064
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-059 (`tests/integration/cas-store.test.ts`, 4 cases, over a REAL
+  `CasStore` — real fs blob pool + real SQLite refset; no SUT-boundary mock): `putBlob` stores under the
+  COMPUTED hash and records the ref; a wrong declared sha → `BLOB_HASH_MISMATCH` storing nothing; per-namespace
+  `missing` (a blob namespace A uploaded is still missing for B — no cross-tenant existence oracle); idempotent
+  re-put + durable across a FRESH `CasStore` on the same dir. Plus IT-060's HTTP-tier `seed_plan`/`blob_put`
+  cases. (2) LIVE — against the production engine restarted with the v10 code (`tools/list` → 36 tools incl
+  `blob_put` / `seed_plan`): uploaded two files' blobs to namespace `liveproj` — `seed_plan` first reported 2
+  missing shas, then after `blob_put` of both reported `[]`; a `blob_put` with a mismatched sha returned the
+  typed `BLOB_HASH_MISMATCH` (nothing stored). The `missing` set is computed against `liveproj`'s own refset,
+  never global existence. Test blobs cleaned up afterward. No SUT-boundary mock (real service → real CasStore →
+  real SQLite + fs pool).
+- **iter:** v10
+
+### VAL-074 — REQ-065: assemble a run workspace from a CAS `seedManifest` (efficient seed)
+- **status:** green
+- **traces:** REQ-065
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-060 (`tests/integration/seed-manifest-http.test.ts`, 4 cases, over a
+  REAL `createServer` — real `blob_put`/`seed_plan`/`workflow_run` + real `CasStore` + real `materializeManifest`
+  + real workspace + real `workflow_artifacts` read; no SUT-boundary mock on the seed path): after uploading both
+  files' blobs, `workflow_run({seedManifest, seedNamespace})` completes and `workflow_artifacts` shows both files
+  at their paths with byte-identical sha256; a `seedManifest` naming an un-uploaded blob → `workflow_run` fails
+  FAST with `MISSING_BLOBS` (no run row created). (2) LIVE — against the production engine restarted with the
+  v10 code: uploaded blobs for `scripts/build.sh` (`exec:true`) and `src/index.ts` (`exec:false`) to namespace
+  `liveproj`, then `workflow_run` with the `seedManifest` — the run COMPLETED; `workflow_artifacts` showed both
+  files at their paths with byte-identical sha256; the workspace files' modes ON DISK were `scripts/build.sh` →
+  `0755` and `src/index.ts` → `0644` (the masked exec bit applied correctly); a `seedManifest` naming an
+  un-uploaded blob → `workflow_run` failed `MISSING_BLOBS`. The assemble ran through the SAME `seedPathVerdict`
+  guardrails as the inline seed. Test blobs/workflows cleaned up afterward. No SUT-boundary mock (real service →
+  real CAS assemble → real workspace on disk → real artifacts read).
+- **iter:** v10
 
 ### VAL-046 — REQ-037: provider-aware SDK routing + Anthropic dual-auth security invariant
 

@@ -111,6 +111,19 @@ export interface RunSpec {
    *  the run's agents edit a real project in place. `.claude` settings/hooks are stripped and
    *  escapes rejected by workspace-seed.materializeSeed. */
   seed?: { path: string; contentB64: string }[];
+  /** v10 Slice 2 (REQ-065): efficient seed — a CAS manifest assembled from the content store (blobs
+   *  uploaded beforehand via blob_put) instead of inline base64. Same guardrails as `seed`.
+   *  `seedNamespace` scopes which blobs count as present (per-tenant refset). */
+  seedManifest?: ManifestEntry[];
+  seedNamespace?: string;
+}
+
+/** v10 Slice 2 (REQ-065): a CAS-manifest seed entry — REGULAR FILES ONLY (no mode int, no symlink/type,
+ *  ever — see docs/seed-sync-architecture.md). `exec` carries the sole safe metadata bit. */
+export interface ManifestEntry {
+  path: string;
+  sha256: string;
+  exec?: boolean;
 }
 
 export interface CallKey {
