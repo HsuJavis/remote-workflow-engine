@@ -261,8 +261,15 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 > 巢狀呼叫數超過 `maxWorkflowDescendants`（預設 256）→`DESCENDANT_CAP_EXCEEDED`（皆為可分支的
 > envelope 錯誤，不崩父 run）；巢狀子工作流共用父 run 的同一份預算/journal。詳見 DEPLOY.md §1b。
 
-## v8 新功能（Gate 7.5 v8 Slice 2c + Defer B ROUND 1，2026-08-01 — GATE PASSED）
+## v8 新功能（Gate 7.5 v8 Slice 2c + Defer B + Defer A ROUND 1，2026-08-01 — GATE PASSED）
 
+- **當機可續跑（crash-resumable runs，REQ-059/060）**：一個 run 在引擎當機／重啟時若還在執行
+  （`running`），現在會被重新分類為 **`interrupted`（可續跑）** 而非永久 `failed`——`workflow_status` 回
+  `interrupted`，`workflow_resume(runId)` 即可續跑；**已寫入日誌的 `agent()`／`workflow()` 呼叫會從持久化
+  日誌重播、不重打 gateway**，只重跑未完成尾段（作法 Option X：重用既有 ResumeCache／日誌重播，無新的
+  checkpoint 協定）。當機瞬間飛行中（未寫日誌）的那次呼叫會重跑，與 suspend/resume 同語意（副作用冪等性由
+  工作流程作者負責）。真實驗證：具名 5 圈 opus 工作流程執行中 `kill -9`、重啟後續跑至 `completed`
+  （VAL-068/069）。
 - **跨重啟 DAG 持久化（REQ-055）**：一個 composite run（含巢狀 `workflow()`／`phase()`／`agent()`）進入
   終態時，引擎會把它的 DAG 快照（phases + workflowNodes + 每個 agent 的 `label`/`frame`/`phase`/耗時）
   一次性寫入持久化，所以**重啟後 `workflow_status`／`/api/runs/:id/dag` 仍能重建同一棵巢狀樹**，儀表板不
