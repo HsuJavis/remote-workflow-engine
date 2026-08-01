@@ -20,6 +20,7 @@ import { SqliteSchedulerPort, type Schedule, type NewSchedule } from './schedule
 import { ContinuationStore } from './continuation-store.js';
 import { WebhookRegistry } from './webhook-registry.js';
 import { isAllowedHost, isAllowedOrigin } from './net-guard.js';
+import { parseMeta, parseWorkflowSkeleton } from './workflow-meta.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
 import { AssetSyncService, classifyAsset, type AssetPush, type AssetKind } from './asset-sync.js';
 import { classifyTransport, RealMcpProbe, type McpProbe, type McpServerConfig } from './mcp-probe.js';
@@ -128,6 +129,7 @@ const TOOL_NAMES = [
   'workflow_agent_log',
   'workflow_register',
   'workflow_deregister',
+  'workflow_get',
   'workflow_artifacts',
   // v1.5/v2: byte-fetch a workspace file chunk (REQ-022) + purge a run's workspace (REQ-026).
   'workflow_artifact_get',
@@ -252,6 +254,14 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     inputSchema: {
       type: 'object',
       properties: { name: { type: 'string', description: 'The workflow name to remove from the catalog.' } },
+      required: ['name'],
+    },
+  },
+  workflow_get: {
+    description: "Returns a registered workflow's full detail — {name, version, createdAt, description (its purpose, from meta.description), phases, script, skeleton} — so a client can understand what it does and see its predicted DAG (a static scan of phase/agent/parallel/workflow calls) BEFORE deciding to reuse it or author a new one. Unknown name → WORKFLOW_NOT_FOUND.",
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'The registered workflow to inspect.' } },
       required: ['name'],
     },
   },
@@ -549,6 +559,7 @@ async function callTool(
     case 'workflow_agent_log': return facade.workflow_agent_log(args as { runId: string; agentId: string });
     case 'workflow_register': return facade.workflow_register(args as { name: string; script: string });
     case 'workflow_deregister': return facade.workflow_deregister(args as { name: string });
+    case 'workflow_get': return facade.workflow_get(args as { name: string });
     case 'workflow_artifacts': return facade.workflow_artifacts(args as { runId: string });
     case 'workflow_artifact_get': return facade.workflow_artifact_get(args as { runId: string; path: string; offset?: number; length?: number });
     case 'workspace_purge': return facade.workspace_purge(args as { runId: string });
@@ -661,6 +672,7 @@ async function handleDashboardRequest(
   const path = (req.url ?? '').split('?')[0]!;
   const agentMatch = /^\/api\/runs\/([^/]+)\/agents\/([^/]+)$/.exec(path);
   const dagMatch = /^\/api\/runs\/([^/]+)\/dag$/.exec(path);
+  const skeletonMatch = /^\/api\/workflows\/([^/]+)\/skeleton$/.exec(path);
   const runMatch = /^\/api\/runs\/([^/]+)$/.exec(path);
   try {
     if (path === '/api/runs') {
@@ -671,6 +683,16 @@ async function handleDashboardRequest(
     // v8 Slice 3 (REQ-049): registered-workflow cards for the dashboard home.
     if (path === '/api/workflows') {
       sendJson(res, 200, await runManager.catalog.list());
+      return;
+    }
+    // v9 (REQ-062): a registered workflow's predicted static DAG skeleton (inspect before running).
+    if (skeletonMatch) {
+      const name = decodeURIComponent(skeletonMatch[1]!);
+      try {
+        const full = await runManager.catalog.getFull(name);
+        const meta = parseMeta(full.script);
+        sendJson(res, 200, { name, version: full.version, description: meta.description, phases: meta.phases, skeleton: parseWorkflowSkeleton(full.script) });
+      } catch { sendJson(res, 404, { error: `Workflow not found: ${name}` }); }
       return;
     }
     // v8 Slice 3 (REQ-048/049): the reconstructed call tree (DAG) for one run.

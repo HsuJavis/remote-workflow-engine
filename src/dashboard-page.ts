@@ -75,7 +75,32 @@ async function loadWorkflows(){
   var box=document.getElementById('workflows'); var list=await getJSON('/api/workflows')||[];
   box.innerHTML='';
   if(!list.length){ box.appendChild(el('div','empty','(none registered)')); return; }
-  list.forEach(function(w){ var c=el('div','card'); c.appendChild(el('div','t',w.name)); c.appendChild(el('div','s','version '+w.version)); box.appendChild(c); });
+  list.forEach(function(w){
+    var c=el('div','card'); c.appendChild(el('div','t',w.name));
+    if(w.description) c.appendChild(el('div','s',w.description)); // v9: purpose visible on the card
+    c.appendChild(el('div','s','version '+w.version));
+    c.onclick=function(){ showSkeleton(w.name); }; // v9: click → predicted DAG (inspect before reuse)
+    box.appendChild(c);
+  });
+}
+// v9 (REQ-062): a workflow's predicted static DAG — inspect its shape before deciding to reuse it.
+async function showSkeleton(name){
+  var s=await getJSON('/api/workflows/'+encodeURIComponent(name)+'/skeleton'); if(!s) return;
+  var tree=document.getElementById('tree'); document.getElementById('home').style.display='none'; document.getElementById('detail').style.display='block';
+  document.getElementById('detail-runid').textContent='workflow: '+name;
+  var badge=document.getElementById('detail-status'); badge.textContent='skeleton (predicted)'; badge.className='pill';
+  renderPhases([], ''); document.getElementById('transcript').textContent=s.description||'(no description)';
+  tree.innerHTML='';
+  var curGroup=null, groupBox=null;
+  (s.skeleton||[]).forEach(function(n){
+    if(n.kind==='agent' && n.parallel!=null){
+      if(n.parallel!==curGroup){ curGroup=n.parallel; groupBox=el('div','grp'); groupBox.appendChild(el('div','grp-h','parallel group')); tree.appendChild(groupBox); }
+    } else { curGroup=null; groupBox=null; }
+    var label = n.kind==='phase' ? ('phase: '+(n.title||'')) : n.kind==='workflow' ? ('workflow: '+(n.workflow||'?')) : 'agent';
+    var node=el('div','node'); node.appendChild(el('span','lbl',label));
+    if(n.dynamic) node.appendChild(el('span','mdl','×? (dynamic)'));
+    (groupBox||tree).appendChild(node);
+  });
 }
 async function loadRuns(){
   var box=document.getElementById('runs'); var list=await getJSON('/api/runs')||[];

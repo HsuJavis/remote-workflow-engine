@@ -4,7 +4,58 @@ status: passed
 ---
 # 07 Review & Retro — Gate 8
 
-## v8 DEFER A GATE 8 REVIEW (2026-08-01, CURRENT / AUTHORITATIVE)
+## v9 GATE 8 REVIEW (2026-08-01, CURRENT / AUTHORITATIVE)
+
+> This section supersedes "## v8 DEFER A GATE 8 REVIEW (2026-08-01)" below (kept for history).
+> This round lands ONE already-implemented, GREEN, real-validated slice: **v9 — workflow discovery / reuse
+> decision**, a new discovery theme. Before an operator reuses a registered workflow (or authors a new one),
+> they can now answer "what is it FOR?" and "what SHAPE does it have?" WITHOUT running it or reading its
+> script — a workflow's purpose (`meta.description` + `phases`) is queryable via `workflow_list` +
+> `workflow_get`, and its predicted DAG (a pure static scan) is inspectable via `workflow_get.skeleton` +
+> `GET /api/workflows/:name/skeleton`, drawn on the dashboard card. Purely ADDITIVE read layer — no
+> registration-storage/schema change (description derived on-demand → migration-free + always in-sync), no
+> run-lifecycle/sandbox/journal change, no change to any existing tool's semantics beyond an additive
+> `description` field on `workflow_list`.
+> Ledger items added this round: REQ-061 + REQ-062 (requirements pre-written, iter v9) → ARCH-035 →
+> TASK-056 → DES-054 → IMPL-097 → UT-064 (5 cases) + IT-057 (4 cases) → VAL-070 + VAL-071.
+
+### Retro (v9 — workflow discovery / reuse decision)
+
+- **What changed:** (a) a NEW pure module `src/workflow-meta.ts` — `parseMeta(script) → {description, phases}`
+  (reuses the sandbox `checkMeta` guard to obtain the validated pure-literal meta, then evaluates it in an
+  empty, timeout-bounded VM; degrades to empty, never throws) + `parseWorkflowSkeleton(script) →
+  SkeletonNode[]` (a pure static scan of `phase`/`agent`/`parallel`/`workflow` calls in order — parallel-group
+  ids, sub-workflow names, best-effort `dynamic` markers for loop/conditional bodies; never executes, never
+  throws). (b) `WorkflowCatalog.list()` now returns each `{name, version, createdAt, description}` (description
+  derived on-demand) and a NEW `getFull(name)` returns the full row (throws `CatalogNotFoundError` for
+  unknown). (c) a NEW `workflow_get({name})` MCP tool → full detail + `skeleton`, unknown → typed
+  `WORKFLOW_NOT_FOUND` envelope; `workflow_list` widened with `description`. (d) a NEW dashboard route
+  `GET /api/workflows/:name/skeleton`. (e) the dashboard workflow card shows the description and is clickable →
+  a rendered predicted DAG (parallel-group boxes, `×? (dynamic)` markers, the description as purpose text).
+- **Key decisions (see DES-054 rationale):** on-demand `parseMeta` at read time rather than a stored/migrated
+  `description` column — migration-free and always in-sync with the current script; the skeleton is an
+  explicitly BEST-EFFORT static prediction (loop/conditional shapes resolve only at run time → flagged
+  `dynamic`, never claimed exact) that never runs the script; and the meta VM eval is safe by construction
+  because it evaluates the object text ONLY when the reused `checkMeta` guard reports a pure literal, in an
+  empty prototype-free timeout-bounded context (side-effect-free, bounded, degrades to empty on any failure).
+- **No regressions.** Full suite 671 pass / 152 files, `npx tsc --noEmit` clean. The change is a purely
+  additive read layer: no existing tool's behavior changed beyond the additive `description` field on
+  `workflow_list` (older clients ignore it); `workflow_get` + `/skeleton` are new read-only surfaces. No src
+  code touched outside the discovery path.
+- **Deferred items UNCHANGED from v8 (still open, not addressed this round):** SSE (the dashboard keeps its 3s
+  poll), `parallel()` group markers on the RUN dag (needs a sandbox-child IPC change — note the STATIC
+  skeleton added here DOES carry parallel groups, but the live-run DAG still does not), and full OIDC
+  (REQ-012, D5 — the separate deferred auth track; a public `0.0.0.0` bind without OIDC remains the documented
+  caveat, with the Host/Origin allowlist + loopback/LAN bind as the interim control).
+- **Gate 7.5:** PASSED 2026-08-01. Live production engine (systemd `rwe.service`, `127.0.0.1:8787`) restarted
+  with the v9 code: registered `disc-demo`, confirmed `workflow_list` description, `workflow_get`
+  description + phases + skeleton `[agent(parallel:1), agent(parallel:1), agent, workflow:notify]`, and the
+  Playwright-headless dashboard card → clicked → predicted DAG with the parallel group + workflow node + the
+  description as purpose text. See VAL-070 / VAL-071. Trace `--check`: the 4 REQ-061/062 gaps (untraced
+  requirements) are CLOSED by this round's chain; the remaining 3 gaps are ALL pre-existing (REQ-012 / TASK-018
+  OIDC-deferred, IMPL-082 TDD-label) — ZERO new gaps introduced.
+
+## v8 DEFER A GATE 8 REVIEW (2026-08-01)
 
 > This section supersedes "## v8 SLICE 2c + DEFER B GATE 8 REVIEW (2026-08-01)" below (kept for history).
 > This round lands ONE already-implemented, GREEN, real-validated slice: **Defer A — crash durability**,

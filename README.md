@@ -261,6 +261,18 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 > 巢狀呼叫數超過 `maxWorkflowDescendants`（預設 256）→`DESCENDANT_CAP_EXCEEDED`（皆為可分支的
 > envelope 錯誤，不崩父 run）；巢狀子工作流共用父 run 的同一份預算/journal。詳見 DEPLOY.md §1b。
 
+## v9 新功能（Gate 7.5 v9 ROUND 1，2026-08-01 — GATE PASSED）
+
+- **重用前先看用途 + DAG（workflow discovery，REQ-061/062）**：在重用一個已註冊工作流程（或決定另寫新的）
+  之前，不必執行、也不必讀 script 即可查其**用途**與**形狀**。`workflow_list` 每筆現在多回傳 `description`
+  （由工作流程的 `meta.description` 隨查即時解析、永遠與現行 script 同步）；新增 MCP 工具
+  `workflow_get({name})` 回傳完整 `{name, version, createdAt, description, phases, script, skeleton}`（未知
+  名稱 → `WORKFLOW_NOT_FOUND`）。`workflow_get.skeleton` 與新端點 `GET /api/workflows/:name/skeleton` 回傳一份
+  **預測的靜態 DAG 骨架**——純靜態掃描 `phase`/`agent`/`parallel`/`workflow` 呼叫（帶 parallel 群組與子工作流程
+  名稱，loop/conditional 內節點標 `dynamic`；不執行 script、不丟例外）；儀表板工作流程卡片顯示 description、
+  可點擊 → 渲染預測 DAG。於是「在清單裡看到用途 → 執行前檢視 DAG → 決定重用或另寫」的決策迴路端到端可用
+  （VAL-070/071）。
+
 ## v8 新功能（Gate 7.5 v8 Slice 2c + Defer B + Defer A ROUND 1，2026-08-01 — GATE PASSED）
 
 - **當機可續跑（crash-resumable runs，REQ-059/060）**：一個 run 在引擎當機／重啟時若還在執行
