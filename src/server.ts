@@ -1,6 +1,7 @@
 // MCP Streamable HTTP server bootstrap (DES-001 / ARCH-001 / TASK-001).
 // Owns transport + tool registration only — no business logic (pure delegation to McpFacade).
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { gunzipSync, inflateSync } from 'node:zlib';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -475,15 +476,23 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
 // under this, and the byte-fetch path (workflow_artifact_get) is what carries large payloads OUT.
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
+// v10 Slice 1 (REQ-063): the decompressed-output cap for a gzip/deflate request body — bounds a
+// decompression bomb (tiny compressed → huge output). 8× the compressed cap: real headroom for a
+// compressible code seed, still bounded so a bomb can't OOM the process.
+const MAX_DECOMPRESSED_BYTES = MAX_BODY_BYTES * 8;
+
 class BodyTooLargeError extends Error {
   readonly code = 'BODY_TOO_LARGE' as const;
-  constructor(max: number) {
-    super(`request body exceeds the ${max}-byte cap`);
+  /** v10 Slice 1: which cap was hit + the actionable hint the typed 413 surfaces. */
+  constructor(readonly cap: number, readonly phase: 'compressed' | 'decompressed', readonly hint: string) {
+    super(`request body exceeds the ${cap}-byte ${phase} cap`);
     this.name = 'BodyTooLargeError';
   }
 }
 
-function readBody(req: IncomingMessage, maxBytes: number = MAX_BODY_BYTES): Promise<string> {
+const GZIP_HINT = 'compress the body with Content-Encoding: gzip, or split the payload';
+
+function readBodyBuffer(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     let size = 0;
     let capped = false;
@@ -493,16 +502,39 @@ function readBody(req: IncomingMessage, maxBytes: number = MAX_BODY_BYTES): Prom
       size += chunk.length;
       if (size > maxBytes) {
         capped = true;
-        reject(new BodyTooLargeError(maxBytes)); // caller sends 413; socket keeps draining (discarded)
+        reject(new BodyTooLargeError(maxBytes, 'compressed', GZIP_HINT)); // caller → 413; socket drains
         return;
       }
       chunks.push(chunk);
     });
-    req.on('end', () => {
-      if (!capped) resolve(Buffer.concat(chunks).toString('utf8'));
-    });
+    req.on('end', () => { if (!capped) resolve(Buffer.concat(chunks)); });
     req.on('error', reject);
   });
+}
+
+/** Reads the request body as a utf8 string, capped at maxBytes (RAW bytes). Used where the raw body
+ *  is required (webhook HMAC is over the delivered bytes — must NOT auto-decompress). */
+function readBody(req: IncomingMessage, maxBytes: number = MAX_BODY_BYTES): Promise<string> {
+  return readBodyBuffer(req, maxBytes).then((b) => b.toString('utf8'));
+}
+
+/** v10 Slice 1 (REQ-063): reads the body honoring `Content-Encoding: gzip|deflate` — the compressed
+ *  bytes are capped at maxBytes, then decompressed with a bounded output (MAX_DECOMPRESSED_BYTES) so a
+ *  bomb can't OOM the process. An un-encoded body behaves exactly as `readBody`. */
+async function readBodyDecoded(req: IncomingMessage, maxBytes: number = MAX_BODY_BYTES): Promise<string> {
+  const raw = await readBodyBuffer(req, maxBytes);
+  const enc = String(req.headers['content-encoding'] ?? '').toLowerCase().trim();
+  if (enc === '' || enc === 'identity') return raw.toString('utf8');
+  try {
+    const opts = { maxOutputLength: MAX_DECOMPRESSED_BYTES };
+    const out = enc === 'gzip' ? gunzipSync(raw, opts) : enc === 'deflate' ? inflateSync(raw, opts) : null;
+    if (out === null) return raw.toString('utf8'); // unknown encoding → treat as raw (best-effort)
+    return out.toString('utf8');
+  } catch (err) {
+    // zlib throws RangeError('… maxOutputLength') when the decompressed size exceeds the cap → a bomb.
+    if (err instanceof RangeError) throw new BodyTooLargeError(MAX_DECOMPRESSED_BYTES, 'decompressed', GZIP_HINT);
+    throw err;
+  }
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -932,7 +964,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         if (out.ok) sendJson(res, out.httpStatus, out.replayed ? { replayed: true } : { runId: out.runId });
         else sendJson(res, out.httpStatus, { error: out.reason });
       }).catch((err: unknown) => {
-        if (err instanceof BodyTooLargeError) sendJson(res, 413, { error: err.message });
+        if (err instanceof BodyTooLargeError) sendJson(res, 413, { error: err.message, code: err.code, cap: err.cap, hint: err.hint });
         else sendJson(res, 500, { error: 'webhook ingress error' });
       });
       return;
@@ -941,7 +973,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       sendJson(res, 404, { jsonrpc: '2.0', id: null, error: { code: -32601, message: 'Not found' } });
       return;
     }
-    readBody(req).then(async (raw) => {
+    readBodyDecoded(req).then(async (raw) => {
       let rpc: JsonRpcRequest;
       try {
         rpc = JSON.parse(raw) as JsonRpcRequest;
@@ -991,9 +1023,9 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32000, message: (err as Error).message } });
       }
     }).catch((err: unknown) => {
-      // REQ-024: an over-cap request body rejects readBody -> 413, not a 500/OOM.
+      // REQ-024/063: an over-cap body (compressed or decompressed) → a TYPED, actionable 413.
       if (err instanceof BodyTooLargeError) {
-        sendJson(res, 413, { jsonrpc: '2.0', id: null, error: { code: -32001, message: err.message } });
+        sendJson(res, 413, { jsonrpc: '2.0', id: null, error: { code: err.code, message: err.message, cap: err.cap, phase: err.phase, hint: err.hint } });
         return;
       }
       sendJson(res, 500, { jsonrpc: '2.0', id: null, error: { code: -32603, message: 'Internal error' } });
