@@ -6,3 +6,7 @@ data/
 
 # Playwright MCP transient artifacts
 .playwright-mcp/
+
+# Python bytecode cache (trace.py compiled artifact)
+__pycache__/
+*.pyc

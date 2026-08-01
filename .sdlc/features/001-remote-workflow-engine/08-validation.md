@@ -7,6 +7,23 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
+> **v9 ROUND 1 (2026-08-01) — GATE PASSED.** REQ-061 (a registered workflow's purpose is queryable —
+> `workflow_list` description + `workflow_get` full detail + `WORKFLOW_NOT_FOUND`) + REQ-062 (a workflow's
+> DAG is inspectable BEFORE running — a predicted static skeleton via `workflow_get.skeleton` +
+> `GET /api/workflows/:name/skeleton`, surfaced on the dashboard card) each carry a `real:true` VAL item
+> below (VAL-070 / VAL-071). Validated LIVE against the production engine (systemd user service
+> `rwe.service`, `127.0.0.1:8787`, `tsx src/main.ts`), restarted with the v9 code: registered `disc-demo`
+> (meta.description `"drafts in parallel then verifies"`; body `parallel([agent,agent]) → agent('verify') →
+> workflow('notify')`). `workflow_list` returned it with its `description`; `workflow_get` returned
+> description + `phases ['Draft','Verify']` + skeleton `[agent(parallel:1), agent(parallel:1), agent,
+> workflow:notify]`. Dashboard (Playwright headless): the card showed `"disc-demo · drafts in parallel then
+> verifies · version v1"`; clicking it rendered the predicted DAG — a `parallel group` of 2 agent nodes + an
+> agent + `"workflow: notify"` — with the description as the purpose text. The full reuse-decision loop (see
+> purpose in the list → inspect the DAG before running → decide reuse vs new) works end-to-end. Full suite
+> 671 pass / 152 files; `npx tsc --noEmit` clean. Test workflow deregistered afterward; catalog clean.
+> REQ-012 (OIDC) remains DEFERRED by user decision D5. All prior REQs (001..060) still hold evidence from the
+> rounds below — not re-litigated this round.
+
 > **v8 SLICE 2c + DEFER B ROUND 1 (2026-08-01) — GATE PASSED.** REQ-055 (cross-restart DAG
 > persistence) + REQ-056/057/058 (external-ingress security: Host/Origin allowlist + HMAC webhook
 > ingress + durable webhook registry) each carry a `real:true` VAL item below (VAL-064 / VAL-065/066/067).
@@ -666,6 +683,50 @@ restarted or modified during this write-up.
   loss. No SUT-boundary mock (real service → real kill -9 → real systemd restart → real resume with real
   opus agents).
 - **iter:** v8
+
+### VAL-070 — REQ-061: a registered workflow's purpose is queryable (description + phases + full detail)
+- **status:** green
+- **traces:** REQ-061
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-057 (`tests/integration/workflow-discovery-http.test.ts`, 4
+  cases, over a REAL `createServer` — real MCP-over-HTTP + real on-disk WorkflowCatalog; only the gateway
+  is unused, no SUT-boundary mock on the discovery path): a workflow registered via the real
+  `workflow_register` with `meta.description` + `phases` is surfaced by `workflow_list` carrying its
+  `description`, and by `workflow_get({name})` with full `{description, phases, script}`; an unknown name
+  returns a typed `WORKFLOW_NOT_FOUND` envelope (never a throw). Plus UT-064's `parseMeta` cases (string-
+  aware extraction + graceful degrade). (2) LIVE — against the production engine (systemd `rwe.service`,
+  `127.0.0.1:8787`) restarted with the v9 code: registered `disc-demo` (meta.description `"drafts in
+  parallel then verifies"`; body `parallel([agent,agent]) → agent('verify') → workflow('notify')`).
+  `workflow_list` returned it with `description: "drafts in parallel then verifies"`; `workflow_get`
+  returned that description + `phases ['Draft','Verify']`. A no-meta workflow degrades to an empty
+  description, not an error. Test workflow deregistered afterward; catalog clean. No SUT-boundary mock
+  (real service → real catalog → real `parseMeta` read-back).
+- **iter:** v9
+
+### VAL-071 — REQ-062: a workflow's DAG is inspectable BEFORE running it (predicted static skeleton)
+- **status:** green
+- **traces:** REQ-062
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Exercised two ways. (1) IT-057 (`tests/integration/workflow-discovery-http.test.ts`): over
+  the real server, `workflow_get('cs').skeleton` predicts the DAG of a `parallel([agent,agent]) →
+  agent('verify') → workflow('log-it')` script — 3 agent nodes with the two drafts sharing ONE `parallel`
+  group + a `workflow` node naming `log-it`; and `GET /api/workflows/cs/skeleton` serves `{skeleton[],
+  description}` (200), unknown name → 404. Plus UT-064's `parseWorkflowSkeleton` cases (ordered
+  phase/agent/workflow with sub-workflow name, parallel grouping, `dynamic:true` for loop bodies, never
+  throws on odd input). (2) LIVE — against the production engine restarted with the v9 code: `workflow_get`
+  on `disc-demo` returned `skeleton [agent(parallel:1), agent(parallel:1), agent, workflow:notify]` (the two
+  parallel drafts grouped, the verify agent ungrouped, the sub-workflow node naming `notify`). Dashboard
+  (Playwright headless): the workflow card showed `"disc-demo · drafts in parallel then verifies · version
+  v1"`; CLICKING it rendered the predicted DAG — a `parallel group` box containing 2 agent nodes + an agent
+  + `"workflow: notify"` — with the description as the purpose text. So the full reuse-decision loop (see
+  purpose in the list → inspect the DAG before running → decide reuse vs new) works end-to-end. The scan
+  never executes the script; loop/conditional nodes are the best-effort `dynamic` prediction. Test workflow
+  deregistered afterward. No SUT-boundary mock (real service → real static scan → real dashboard render).
+- **iter:** v9
 
 ### VAL-046 — REQ-037: provider-aware SDK routing + Anthropic dual-auth security invariant
 

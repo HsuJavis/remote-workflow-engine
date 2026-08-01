@@ -356,3 +356,8 @@ status: draft
 - **status:** done
 - **traces:** ARCH-034
 - **iter:** v8
+
+### TASK-056 — workflow discovery: add `src/workflow-meta.ts` (`parseMeta` reusing `checkMeta` + `parseWorkflowSkeleton` static scan), extend WorkflowCatalog (`list()` returns `description`, new `getFull(name)`), add the `workflow_get({name})` MCP tool (full detail + skeleton, `WORKFLOW_NOT_FOUND` for unknown) + widen `workflow_list` with `description`, add `GET /api/workflows/:name/skeleton`, and surface the description + clickable predicted DAG on the dashboard workflow card
+- **status:** done
+- **traces:** ARCH-035
+- **iter:** v9

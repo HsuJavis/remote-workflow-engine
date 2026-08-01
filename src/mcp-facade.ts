@@ -10,6 +10,7 @@ import { InMemoryRunStore } from './run-store.js';
 import { RunManager } from './run-manager.js';
 import { SubmissionValidator } from './submission-validator.js';
 import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent } from './types.js';
+import { parseMeta, parseWorkflowSkeleton, type SkeletonNode } from './workflow-meta.js';
 
 export interface McpFacadeDeps {
   clock?: Clock;
@@ -144,7 +145,7 @@ export class McpFacade {
    *  kind-discriminated array mixing catalog entries (unrun workflows) with run summaries, so
    *  callers can find either a workflow by `.name` or a run by `.runId` in the same list (D-I9). */
   async workflow_list(_a?: Record<string, never>): Promise<ResultEnvelope<Array<
-    ({ kind: 'workflow'; name: string; version: string; createdAt: string }) | (RunSummary & { kind: 'run' })
+    ({ kind: 'workflow'; name: string; version: string; createdAt: string; description: string }) | (RunSummary & { kind: 'run' })
   >>> {
     const workflows = await this.runManager.catalog.list();
     const runs = await this.store.listRuns();
@@ -153,6 +154,27 @@ export class McpFacade {
       ...runs.map((r) => ({ kind: 'run' as const, ...r })),
     ];
     return { runId: '', status: 'completed', result };
+  }
+
+  /** v9 (REQ-061/062): full detail for one registered workflow — its purpose (meta.description +
+   *  phases), the script, and a predicted static DAG skeleton — so a client can understand what a
+   *  workflow does and see its shape BEFORE deciding to reuse it or author a new one. Unknown name →
+   *  typed WORKFLOW_NOT_FOUND envelope (never throws across the tool boundary). */
+  async workflow_get(a: { name: string }): Promise<ResultEnvelope<{
+    name: string; version: string; createdAt: string; description: string;
+    phases: Array<{ title: string }>; script: string; skeleton: SkeletonNode[];
+  }>> {
+    let full: { name: string; script: string; version: string; createdAt: string };
+    try {
+      full = await this.runManager.catalog.getFull(a.name);
+    } catch {
+      return { runId: '', status: 'failed', error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` } };
+    }
+    const meta = parseMeta(full.script);
+    return {
+      runId: '', status: 'completed',
+      result: { name: full.name, version: full.version, createdAt: full.createdAt, description: meta.description, phases: meta.phases, script: full.script, skeleton: parseWorkflowSkeleton(full.script) },
+    };
   }
 
   async workflow_agent_log(a: { runId: string; agentId: string }): Promise<ResultEnvelope<TranscriptEvent[]>> {

@@ -18,6 +18,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { join, resolve, sep, isAbsolute } from 'node:path';
 import { CatalogNotFoundError, WorkspaceEscapeError } from './errors.js';
+import { parseMeta } from './workflow-meta.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
 
@@ -73,12 +74,23 @@ export class WorkflowCatalog {
     return row;
   }
 
-  async list(): Promise<Array<{ name: string; version: string; createdAt: string }>> {
-    return this._db.prepare('SELECT name, version, createdAt FROM workflows').all() as Array<{
-      name: string;
-      version: string;
-      createdAt: string;
+  /** v9 (REQ-061): full detail for one workflow — name/script/version/createdAt — so workflow_get can
+   *  surface its purpose (parsed meta) + static skeleton. Throws CatalogNotFoundError for unknown names. */
+  async getFull(name: string): Promise<{ name: string; script: string; version: string; createdAt: string }> {
+    const row = this._db.prepare('SELECT name, script, version, createdAt FROM workflows WHERE name = ?').get(name) as
+      | { name: string; script: string; version: string; createdAt: string }
+      | undefined;
+    if (!row) throw new CatalogNotFoundError(name);
+    return row;
+  }
+
+  async list(): Promise<Array<{ name: string; version: string; createdAt: string; description: string }>> {
+    // v9 (REQ-061): surface each workflow's purpose (meta.description) so a client can see WHAT each
+    // one does without reading its script — parsed on-demand from the stored script (always in sync).
+    const rows = this._db.prepare('SELECT name, script, version, createdAt FROM workflows').all() as Array<{
+      name: string; script: string; version: string; createdAt: string;
     }>;
+    return rows.map((r) => ({ name: r.name, version: r.version, createdAt: r.createdAt, description: parseMeta(r.script).description }));
   }
 
   workFolder(name: string): string {
