@@ -582,3 +582,88 @@ flowchart LR
 - **traces:** —
 - **acceptance:** Given `workflow_run({..., seedManifest:[{path, sha256, exec?}], seedNamespace})`, When the run starts Then the engine assembles the workspace by reading each entry's bytes from the CAS by sha256 and writing them at `path`, through the SAME guardrails as `materializeSeed` (`.claude` settings/hooks stripped, `.git` internals + `../`/symlink escapes rejected, realpath-contained) — reusing one shared path-verdict so the inline and CAS seed paths can never diverge. The manifest carries REGULAR FILES ONLY: no mode int, no symlink/type field, ever; `exec?:boolean` applies the sole safe metadata bit (`exec?0o755:0o644`, masked — setuid/setgid/sticky unrepresentable). A `seedManifest` referencing a blob the namespace hasn't uploaded fails FAST with `MISSING_BLOBS` (listing the shas) BEFORE any durable work — no run row created — so the client `blob_put`s the missing blobs and retries. Observable: `blob_put` a file's bytes, then `workflow_run` with a `seedManifest` naming it → the run completes and `workflow_artifacts` shows the file at the right path with the byte-identical sha256; a `seedManifest` naming an un-uploaded blob → `workflow_run` fails with `MISSING_BLOBS`; an `exec:true` entry lands as mode 0755, else 0644.
 - **iter:** v10
+
+<!-- ══════════════════════════════════════════════════════════════════════════════════════════════ -->
+<!-- ── v11 — operational loop + n8n-style graph observability dashboard. User-confirmed 2026-08-09.   -->
+<!-- Vertical slices, OPS-LOOP FIRST: Sprint 1 (issue display page + version) → Sprint 2 (tag auto     -->
+<!-- self-update, privilege-separated) → Sprint 3 (n8n graph dashboard, Morandi) → Sprint 4 (home     -->
+<!-- cards + metrics). Decisions: tag update = FULLY AUTOMATIC apply; restart = privilege-separated    -->
+<!-- helper (engine writes a flag, a systemd path-unit does fetch/checkout/build/restart — engine      -->
+<!-- needs no sudo); issue REPORTING stays MCP-tool-only (no dashboard report form), dashboard only     -->
+<!-- DISPLAYS issues. The trigger backends (scheduler-engine/webhook-registry/workflow_trigger), the   -->
+<!-- composition frame model (WorkflowNodeView{frame,parentFrame,depth}), the DAG skeleton (REQ-062),   -->
+<!-- and the issue_report/issue_list/issue_get primitives ALREADY EXIST and are reused, not rebuilt.    -->
+<!-- ══════════════════════════════════════════════════════════════════════════════════════════════ -->
+
+<!-- ── Sprint 1 (ops) — issue observability: the report tool already exists; add the missing version -->
+<!-- field, and a read-only dashboard page that DISPLAYS current/resolved issues. ── -->
+
+### REQ-066 — every filed issue carries a version (repro / version / severity / analysis / log)
+- **status:** draft
+- **traces:** —
+- **acceptance:** Given the existing `issue_report` MCP tool, When it files an issue Then the report ALWAYS carries a `version` alongside the existing `reproSteps` / `severity` (問題等級) / `analysis` / `logs` — the input accepts an optional `version` and, when the caller omits it, the engine fills its OWN running version (from `package.json` version + the applied git tag / `git describe`), so no issue is ever version-less. The filed GitHub issue body renders a labeled Version section. Observable: `issue_report` with `version:"v1.4.0"` → the created issue body contains "Version: v1.4.0"; `issue_report` omitting version → the body contains the engine's own current version string (non-empty); the five fields repro/version/severity/analysis/log are all present in the rendered body.
+- **iter:** v11
+
+### REQ-067 — a dashboard page that DISPLAYS issues (open, per-issue status, resolved)
+- **status:** draft
+- **traces:** —
+- **acceptance:** Given the engine's repo has `agent-reported` issues, When a user opens the dashboard Issues page (a new `GET /api/issues` backing an Issues view), Then it renders — READ-ONLY, display-only, no report form — the current OPEN issues (number, title, severity, status/labels) and the RESOLVED (closed) issues in separate groups, sourced from the EXISTING `issue_list`/`issue_get` primitives; selecting an issue shows its detail (body, labels, comment count, GitHub url). Missing GitHub token degrades gracefully to a "not configured" notice, never a crash/500. Observable: with 2 open + 1 closed agent-reported issue, the Issues page lists 2 under "Open" and 1 under "Resolved", each linking to its GitHub url; with no token configured the page shows the notice and the rest of the dashboard still loads.
+- **iter:** v11
+
+<!-- ── Sprint 2 (ops) — tag-triggered FULLY-AUTOMATIC self-update, privilege-separated (engine writes -->
+<!-- a flag; a systemd path-unit does the git/build/restart). Security-sensitive: HMAC + tag-pattern + -->
+<!-- official-remote-only + safe-fail (never leave the service down). ── -->
+
+### REQ-068 — GitHub tag webhook (HMAC-verified) records an update request on a new version tag
+- **status:** draft
+- **traces:** —
+- **acceptance:** Given a GitHub webhook POST carrying `X-Hub-Signature-256` (HMAC-SHA256 over the RAW body, key = a server-side-stored webhook secret, never a workspace secret), When the event is a new version tag (a `create`/`push` whose ref matches a configured tag pattern, default `v*`), Then the engine verifies the signature in CONSTANT time and records ONE update request naming the tag; an absent/invalid signature → 401 and NOTHING recorded; a non-tag event or a tag not matching the pattern → 200 no-op. Reuses the existing raw-body HMAC path (the webhook-registry pattern). Observable: a correctly-signed `create` for `v1.4.0` → an update request for `v1.4.0` is recorded; the same body with a wrong signature → 401, no request; a signed branch `push` → 200, no request.
+- **iter:** v11
+
+### REQ-069 — privilege-separated updater: engine writes a flag, a systemd unit does the git/build/restart
+- **status:** draft
+- **traces:** —
+- **acceptance:** Given a recorded update request for tag T, When the update proceeds Then the ENGINE process only writes an update-request flag file (containing T) to a watched path and does NOTHING privileged — it never runs `git`, `npm`, or `systemctl` and requires no sudo. A SEPARATE privileged unit shipped with deploy (a systemd `.path` watching the flag + a oneshot `.service`) performs `git fetch --tags` → verify T is an existing tag on the OFFICIAL remote (reject any other ref) → `git checkout <T>` → `npm ci && npm run build` → `systemctl restart rwe`. Observable (unit test of the flag-writer + integration test of the helper script against a throwaway git repo + documented unit files): the engine writing the flag does NOT itself restart or shell out; the helper, given a flag naming a valid tag, checks out exactly that tag and issues the restart; given a flag naming a non-existent/foreign ref, it refuses and changes nothing.
+- **iter:** v11
+
+### REQ-070 — fully-automatic apply, observable applied version, safe-fail (never leave the service down)
+- **status:** draft
+- **traces:** —
+- **acceptance:** Given REQ-068's webhook and REQ-069's updater, When a valid new tag arrives Then the update applies FULLY AUTOMATICALLY with no manual gate, and after restart the engine's reported version (`GET /api/version`, and a field on `/api/status`) equals the new tag. A build/checkout FAILURE is safe: the helper aborts BEFORE `systemctl restart` (or restarts onto the prior good checkout) so a bad tag NEVER leaves the service down — the previous version keeps running — and the failure outcome is recorded. The applied version and the last-update outcome (success/failure + tag + time) are observable on the dashboard. Observable: a valid tag → after the helper runs, `/api/version` returns the new tag; a tag whose `npm run build` fails → the service stays up on the prior version and the dashboard's update panel shows the failed outcome for that tag.
+- **iter:** v11
+
+<!-- ── Sprint 3 (UI) — n8n-style graph dashboard on a Morandi light palette. Triggers as source nodes, -->
+<!-- agents as boxes, composed workflows as colored frames, agent boxes clickable for harness detail. -->
+<!-- Reuses the DAG/skeleton (REQ-062), AgentRecord (model/state/tokens/frame), WorkflowNodeView. ── -->
+
+### REQ-071 — n8n-style graph view: trigger source node → agent boxes → edges, Morandi theme
+- **status:** draft
+- **traces:** —
+- **acceptance:** Given a run (live or finished) or a workflow skeleton, When a user opens its graph view Then the dashboard renders an n8n-style NODE GRAPH on a Morandi light palette (muted, low-saturation neutrals + soft accents): a TRIGGER source node labeled by how the run started — `client` / `webhook` / `schedule` — feeds the workflow; each `agent()` is a node box; edges connect nodes in phase → parallel-group → nesting order; the canvas pans/zooms and the PAGE BODY never scrolls horizontally (wide graph scrolls within its own container). Observable: the customer-service run renders a trigger node → a "Draft" phase with 2 parallel agent boxes → a "Verify" agent box, connected by edges; a schedule-triggered run shows a `schedule` source node, a webhook-triggered run a `webhook` source node.
+- **iter:** v11
+
+### REQ-072 — composed workflows drawn as distinct Morandi-tinted, labeled frames
+- **status:** draft
+- **traces:** —
+- **acceptance:** Given a composed run that calls `workflow('sub')` (producing `WorkflowNodeView` frames), When rendered Then each sub-workflow frame is a distinct softly-tinted background CONTAINER (a Morandi hue assigned per frame, nested by `depth`) grouping EXACTLY that frame's agent boxes, labeled with the sub-workflow's name — so a graph assembled from several workflows shows each as its own colored region (the n8n grouping look the user drew). Observable: a run composing two sub-workflows shows two differently-tinted labeled containers, each wrapping only its own agents; a nested (depth-2) sub-workflow renders as a tinted frame inside its parent's frame; a single-workflow run shows one plain region.
+- **iter:** v11
+
+### REQ-073 — clickable agent box → harness detail (model, prompt, tools, skills, live status)
+- **status:** draft
+- **traces:** —
+- **acceptance:** Given the graph view, When a user clicks an agent box Then a detail panel shows that agent's HARNESS: model name, the prompt it ran, its tool list and skill list (from the resolved harness / `AgentOpts.mcp` + agent definition), and its current status — `running` / `completed` / `idle` (still queued) / `failed` — with token counts; an in-flight agent shows `running` and live-updates on the poll. NO secret/token VALUE is ever shown. Observable: clicking a finished agent shows its model, prompt text, tool/skill lists, and `completed · N tok`; clicking a queued agent shows `idle`; clicking a running agent shows `running` and updates as it settles.
+- **iter:** v11
+
+<!-- ── Sprint 4 (UI) — home cards with a graph preview + reliability metrics. ── -->
+
+### REQ-074 — home cards: running / registered / other, with description + mini graph preview
+- **status:** draft
+- **traces:** —
+- **acceptance:** Given the dashboard home, When it loads Then workflows are shown as cards grouped into RUNNING / REGISTERED / OTHER, each card showing the workflow's description and a MINI GRAPH PREVIEW (its predicted skeleton rendered small, Morandi themed); clicking a card opens its full graph view (REQ-071). Observable: the customer-service card shows its description and a tiny "2-parallel → verify" preview; a workflow with a currently-running run appears under "Running"; a registered-but-idle workflow under "Registered".
+- **iter:** v11
+
+### REQ-075 — each card shows average success rate + average execution time
+- **status:** draft
+- **traces:** —
+- **acceptance:** Given a workflow with past runs, When its card renders Then the card shows AVG SUCCESS RATE (completed ÷ total terminal runs) and AVG EXECUTION TIME (mean wall-clock of terminal runs) for that workflow, computed from the run store over that workflow's runs; a workflow with zero runs shows "—", never a divide-by-zero or NaN. Observable: a workflow with 4 completed + 1 failed terminal runs shows 80% and the mean of those 5 durations; a never-run registered workflow shows "— / —".
+- **iter:** v11

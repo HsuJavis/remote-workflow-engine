@@ -31,12 +31,12 @@ import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
 import { AssetSyncService, classifyAsset, type AssetPush, type AssetKind } from './asset-sync.js';
 import { classifyTransport, RealMcpProbe, type McpProbe, type McpServerConfig } from './mcp-probe.js';
 import { McpRegistry, type McpKind } from './mcp-registry.js';
-import { IssueReporter, type IssueReportInput, type IssueListFilter } from './github/issue-reporter.js';
+import { IssueReporter, resolveEngineVersion, type IssueReportInput, type IssueListFilter } from './github/issue-reporter.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { buildCatalog, filterCatalog, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
 
-// Single source for the engine version reported over MCP (serverInfo) and stamped into filed issues.
-const ENGINE_VERSION = '1.0.0';
+// REQ-066 (v11): engine version from package.json + best-effort git describe, replacing the hardcoded '1.0.0'.
+const ENGINE_VERSION = resolveEngineVersion();
 import { buildDashboardModel, buildDagModel } from './dashboard.js';
 import { DASHBOARD_HTML } from './dashboard-page.js';
 import type { RunStore } from './run-store.js';
@@ -385,6 +385,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
         severity: { type: 'string', description: 'Severity label, e.g. low|medium|high (optional).' },
         component: { type: 'string', description: 'Affected component/area (optional).' },
         runId: { type: 'string', description: 'A related run to link in the issue (optional).' },
+        version: { type: 'string', description: 'Caller-supplied version string to include in the issue body (optional; whitespace-only treated as omitted, falls back to engine version).' },
       },
       required: ['title', 'reproSteps', 'analysis'],
     },
@@ -747,6 +748,7 @@ async function handleDashboardRequest(
   res: ServerResponse,
   store: RunStore,
   runManager: RunManager,
+  issueReporter: IssueReporter,
 ): Promise<void> {
   if (req.method !== 'GET') {
     sendJson(res, 405, { error: 'Dashboard API is read-only: only GET is supported.' });
@@ -757,6 +759,7 @@ async function handleDashboardRequest(
   const dagMatch = /^\/api\/runs\/([^/]+)\/dag$/.exec(path);
   const skeletonMatch = /^\/api\/workflows\/([^/]+)\/skeleton$/.exec(path);
   const runMatch = /^\/api\/runs\/([^/]+)$/.exec(path);
+  const issuesDetailMatch = /^\/api\/issues\/(\d+)$/.exec(path);
   try {
     if (path === '/api/runs') {
       const runs = await store.listRuns();
@@ -776,6 +779,33 @@ async function handleDashboardRequest(
         const meta = parseMeta(full.script);
         sendJson(res, 200, { name, version: full.version, description: meta.description, phases: meta.phases, skeleton: parseWorkflowSkeleton(full.script) });
       } catch { sendJson(res, 404, { error: `Workflow not found: ${name}` }); }
+      return;
+    }
+    // v11 (REQ-067): GET /api/issues — read-only issues dashboard list, partitioned by state.
+    if (path === '/api/issues') {
+      const result = await issueReporter.listIssues({ labels: ['agent-reported'], state: 'all' });
+      if (!result.ok) {
+        sendJson(res, 200, { open: [], resolved: [], degraded: 'GitHub not configured' });
+        return;
+      }
+      const open = result.issues.filter((s) => s.state === 'open');
+      const resolved = result.issues.filter((s) => s.state !== 'open');
+      sendJson(res, 200, { open, resolved });
+      return;
+    }
+    // v11 (REQ-067): GET /api/issues/:number — full IssueView or 404 on not-found; token-missing → 200 degraded.
+    if (issuesDetailMatch) {
+      const number = Number(issuesDetailMatch[1]);
+      const result = await issueReporter.getIssue(number);
+      if (!result.ok) {
+        if (result.error.code === 'ISSUE_NOT_FOUND') {
+          sendJson(res, 404, { error: result.error.message });
+          return;
+        }
+        sendJson(res, 200, { degraded: 'GitHub not configured' });
+        return;
+      }
+      sendJson(res, 200, result.issue);
       return;
     }
     // v8 Slice 3 (REQ-048/049): the reconstructed call tree (DAG) for one run.
@@ -993,8 +1023,9 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     }
     // TASK-025 (DES-018): read-only dashboard HTTP API, a distinct transport from /mcp on the
     // SAME port (no separate dashboard listener/port — one server, two transports).
-    if (req.url?.startsWith('/api/runs') || req.url?.startsWith('/api/workflows')) {
-      handleDashboardRequest(req, res, store, runManager).catch(() => {
+    // v11 (REQ-067): /api/issues* added alongside existing /api/runs* and /api/workflows*.
+    if (req.url?.startsWith('/api/runs') || req.url?.startsWith('/api/workflows') || req.url?.startsWith('/api/issues')) {
+      handleDashboardRequest(req, res, store, runManager, issueReporter).catch(() => {
         sendJson(res, 200, { degraded: 'internal dashboard error' });
       });
       return;

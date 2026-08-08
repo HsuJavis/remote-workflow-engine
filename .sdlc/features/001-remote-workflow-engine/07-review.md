@@ -4,7 +4,114 @@ status: passed
 ---
 # 07 Review & Retro — Gate 8
 
-## v10 GATE 8 REVIEW (2026-08-01, CURRENT / AUTHORITATIVE)
+## v11 GATE 8 FIX-ITERATION REVIEW (2026-08-09, CURRENT / AUTHORITATIVE)
+
+> This section supersedes "## v10 GATE 8 REVIEW (2026-08-01)" below (kept for history).
+> Fix-mode iteration: impact closure on REQ-066 (version autofill) and REQ-067 (read-only Issues dashboard).
+> Scope: IMPL-100 touching three files — `src/github/issue-reporter.ts`, `src/server.ts`,
+> `src/dashboard-page.ts`. No panel spawned (fix scale, self-decided per SDLC fix-mode rules).
+>
+> **Trace --check result (regenerated this review):** 532 items, 20 gaps — ZERO new gaps from v11.
+> REQ-066/067 are fully chained (REQ→ARCH→TASK→DES→IMPL→UT/IT→VAL) with VAL-075/076 real:true.
+> Gap breakdown: 1 HIGH (REQ-012 未真實驗証 — OIDC deferred D5, pre-existing known tech debt) /
+> 17 MID (REQ-068..075 × 2 each = future sprint work, 16; IMPL-082 TDD-label, 1) /
+> 2 LOW (UT-058 drift v6 behind DES-038 v11 — flagged since F1 design stage; TASK-018 OIDC unimplemented).
+> All 20 are pre-existing; none introduced by this iteration.
+
+### Consistency self-check (architecture, v11 scope only)
+
+Checked IMPL-100's three touched files against the Gate 2 ARCH/INV/rationale in 02-architecture.md:
+
+- **ARCH-023 (v11 NB, REQ-066):** `resolveEngineVersion()` export replaces the hardcoded `ENGINE_VERSION`
+  constant; `IssueReportInput.version?` optional caller override; `renderIssueBody` always renders all five
+  Environment fields with `_none_` placeholders; `report()` effective-version rule (`input.version?.trim() ||
+  cfg.engineVersion`). Implementation in `src/github/issue-reporter.ts` matches the ARCH-023 v11 annotation
+  exactly. **No violation.**
+- **ARCH-024 (v11 NB, REQ-067):** read-only `/api/issues` + `/api/issues/:number` endpoints on the
+  existing `handleDashboardRequest` transport (ARCH-011); degrade-to-200 on missing token or API error (never
+  500); `/dashboard/issues` view using ARCH-029's dashboard page. Implementation in `src/server.ts` and
+  `src/dashboard-page.ts` matches the ARCH-024 v11 annotation exactly. **No violation.**
+- **ARCH-001 (MCP tool surface):** optional `version` field added to `issue_report` inputSchema — backward-
+  compatible (optional, existing callers unaffected). **No violation.**
+- **ARCH-011/ARCH-029 (dashboard HTTP + page):** new `/api/issues*` predicate follows the `startsWith`
+  pattern established by `/api/workflows` (the ARCH-029 routing-gap fix pattern, documented in the v8 Slice 3
+  retro). **No violation.**
+- **ARCH-016 (server-side secrets):** `RWE_SECRET_GITHUB_TOKEN` stays in the server-side secret store;
+  the new `/api/issues` routes use the same `issueReporter` instance that already holds the token
+  server-side. **No violation.**
+- **ARCH-033 (Host/Origin allowlist):** the new routes go through the same top-level dispatcher that applies
+  `isAllowedHost`/`isAllowedOrigin` before routing to `handleDashboardRequest`. **No violation.**
+- **DES-013 (null-vs-throw / never 500):** both `/api/issues` routes degrade to HTTP 200 `{degraded:...}`
+  on any `{ok:false}` result — no 500 escapes. **No violation.**
+- **DES-038/KP-12 (XSS invariant):** all remote content in `src/dashboard-page.ts` is rendered via the
+  `el()` helper's `textContent` assignment or direct `.textContent`; `innerHTML=''` is used only to clear
+  containers (empty string, no user content); `link.setAttribute('href', data.url||'#')` is acceptable
+  (GitHub API URLs are always HTTPS; display text is separately `textContent`). **No violation.**
+- **Iter drift check (the fix chain guard):** IMPL-100 at iter v11; DES-037/038 at v11; UT-057/IT-043/
+  IT-044/VAL-075/076 at v11. The one LOW drift flagged (UT-058 v6 vs DES-038 v11) was created at F1
+  (design bump) and pre-dates this implementation; UT-058's existing 9 cases cover the underlying
+  `GithubIssueClient` read ops (unchanged in v11) and the v11 dashboard addition is covered by IT-044.
+  No new drift introduced by IMPL-100.
+
+Architecture consistent: **yes** (no violations found across all lenses checked).
+
+### Validation check (v11)
+
+- **VAL-075 (REQ-066):** real:true, green — GitHub issue #7 filed with caller `version:"v1.4.0-val75"` →
+  body contained `Version: v1.4.0-val75`; issue #8 filed without version → body contained
+  `Version: 0.1.0 (v0.4.0-39-g5832599)` (engine autofill via `resolveEngineVersion()`); all five
+  Environment fields rendered. Both issues closed after evidence capture.
+- **VAL-076 (REQ-067):** real:true, green — `GET /api/issues` → 200 `{open:[2 items],resolved:[2 items]}`;
+  `GET /api/issues/7` → 200 full IssueView; `GET /api/issues/999999` → 404 `{error:...}`; no-token degrade
+  → 200 `{degraded:"GitHub not configured"}`; `/dashboard/issues` → HTML with Open/Resolved groups and
+  `#issue-detail` panel.
+- **08-validation.md:** status: passed (front-matter).
+- **README.md + DEPLOY.md:** current-state confirmed. README fully rewritten at Gate 7.5 v11. DEPLOY.md
+  preamble de-stacked (v3/v6/v7 blockquotes removed), §0 Quickstart added, §1b `RWE_SECRET_GITHUB_TOKEN`
+  documented (single row, no duplication), §7 v11 entry in 変更紀錄. No superseded commands or keys found
+  outside §7 変更紀錄. `設定総表` (§1b env-var table) is deduplicated — `RWE_SECRET_GITHUB_TOKEN` appears
+  exactly once (line 377 of DEPLOY.md).
+- **No config-file changes:** v11 reuses the existing `RWE_SECRET_GITHUB_TOKEN` secret store key.
+- **mock-only / 未真實驗証 for touched REQs:** none — trace shows REQ-066/067 have real:true VAL items.
+
+### Retro (v11 — version autofill + Issues dashboard, fix iteration)
+
+- **What changed (IMPL-100, 3 files):**
+  - `src/github/issue-reporter.ts` — new `resolveEngineVersion(exec?)` export (pkg.version + best-effort
+    `git describe`, injectable for unit tests); `IssueReportInput.version?` optional field; `renderIssueBody`
+    widened to accept both `version` and `engineVersion` (backward-compat) and always renders all five
+    Environment fields with `_none_` placeholders; `report()` reads caller-supplied version with whitespace-
+    only fallback to engine autofill. The hardcoded `ENGINE_VERSION = '1.0.0'` constant in `src/server.ts` is
+    replaced by a call to `resolveEngineVersion()` at module load — `initialize` response now carries the real
+    version string including git-describe.
+  - `src/server.ts` — `issue_report` inputSchema gains optional `version` field; `handleDashboardRequest`
+    grows a 5th `issueReporter` parameter (already wired from the composition root); new `/api/issues` and
+    `/api/issues/:number` route branches; top-level dispatcher predicate widened with `||
+    startsWith('/api/issues')` (the ARCH-029 routing-gap pattern).
+  - `src/dashboard-page.ts` — Issues nav link; `#issues` section with `#issues-open`, `#issues-resolved`,
+    `#issue-detail`; `currentRunId()` special-cases `"issues"` segment; `isIssuesView()` helper; `loadIssues()`
+    / `renderIssueList()` / `loadIssueDetail()` — all remote content via `textContent` (XSS-safe).
+- **Impact closure:** REQ-066 and REQ-067 fully chained and real-validated (VAL-075/076 real:true, Gate 7.5
+  v11 ROUND 1 PASSED 2026-08-09). Issues #7 and #8 filed and verified live against the production engine
+  (`rwe.service`, `127.0.0.1:8787`, `tools/list` → 36 tools). Zero regressions: full suite 697 pass / 156
+  files; `npx tsc --noEmit` clean.
+- **Design-stage decision to note:** the `toErrEnvelope` pre-existing bug (surfaced in v10) had already
+  been fixed, so IMPL-100 inherits correct coded-error surfacing at the tool boundary without additional work.
+  The `resolveEngineVersion()` seam design (injectable `exec`) was chosen specifically to keep the unit
+  tests hermetic (no git subprocess in CI) — the production path calls `execSync('git describe --tags
+  --always')` at module load with a try/catch fallback, ensuring a non-empty version even in a shallow clone.
+- **Residual tech debt (all pre-existing, none introduced here):**
+  - UT-058 (v6) trails DES-038 (v11) — LOW drift, flagged since the F1 design stage. UT-058's 9 original
+    cases cover the underlying `GithubIssueClient` read primitives (unchanged); the v11 Issues dashboard
+    addition is covered by IT-044 at v11. No behavioral gap; cosmetic iter lag only.
+  - IMPL-082: no unit/IT coverage (TDD-label gap, pre-existing since v4).
+  - TASK-018 / REQ-012: OIDC deferred by user decision D5 — unchanged.
+  - REQ-068..075 (future sprint): tag-triggered self-update + enhanced graph dashboard, not yet started.
+- **Gate 7.5:** PASSED 2026-08-09, ROUND 1. Trace `--check`: 532 items, 20 gaps — the REQ-066/067 chain
+  is fully closed (REQ→ARCH→TASK→DES→IMPL→UT/IT→VAL with real:true); remaining 20 gaps are ALL pre-existing.
+  ZERO new gaps introduced by this fix iteration.
+
+## v10 GATE 8 REVIEW (2026-08-01, superseded by v11 above)
 
 > This section supersedes "## v9 GATE 8 REVIEW (2026-08-01)" below (kept for history).
 > This round opens a NEW theme — **efficient large-codebase seeding** — landing its first two vertical

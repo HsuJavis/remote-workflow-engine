@@ -3408,29 +3408,49 @@ error).
 
 ## v5 slice — GitHub issue reporting tests (UT-057, IT-043)
 
-### UT-057 — IssueReporter / GithubIssueClient / renderIssueBody (REQ-027..030)
+### UT-057 — IssueReporter / GithubIssueClient / renderIssueBody (REQ-027..030, REQ-066)
 - **status:** green
 - **traces:** DES-037
-- **iter:** v5
-- tests/unit/issue-reporter.test.ts (9 cases: files an issue → {issueNumber,url}; `ISSUE_REPORT_INVALID{field}` on empty required field w/ no client call; `GITHUB_TOKEN_MISSING` when the secret is unset; agent-consumable body template sections + `agent-reported`/`severity:<x>` labels; bounded client timeout + retry then `GITHUB_API_ERROR`; 4xx not retried).
-### IT-043 — issue_report over the real MCP HTTP surface (REQ-027..030)
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v11
+- tests/unit/issue-reporter.test.ts (v5/v6: 9 cases — files an issue → {issueNumber,url}; `ISSUE_REPORT_INVALID{field}` on empty required field w/ no client call; `GITHUB_TOKEN_MISSING` when the secret is unset; agent-consumable body template sections + `agent-reported`/`severity:<x>` labels; bounded client timeout + retry then `GITHUB_API_ERROR`; 4xx not retried [all GREEN, unchanged]).
+  **v11 (REQ-066):** 9 new cases added — (1) `renderIssueBody` with `meta.version:'v1.4.0'` → body contains `Version: v1.4.0` (new format, capital V); (2) all five Environment fields always present when no severity/component: `- Version:`, `- severity: _none_`, `- component: _none_`, `- reported at:` (placeholder lines); (3) supplied severity/component render correctly (no `_none_`); (4) `IssueReporter.report()` with `input.version:'v1.4.0'` → body contains `Version: v1.4.0` (caller-supplied wins); (5) omitted version falls back to `engineVersion`, body contains `Version: eng-9.9.9` (new format); (6) whitespace-only version treated as omitted (falls back to engineVersion); PLUS tests/unit/issue-resolve-engine-version.test.ts (new file, 3 cases — `resolveEngineVersion(fakeExec)` returns pkg.version + git describe; exec-throws falls back to pkg.version alone, never empty; never returns '' or 'undefined').
+  Red reason: (a) `resolveEngineVersion` is not yet exported (entire new file fails at import: "not a function"); (b) `renderIssueBody` still reads `meta.engineVersion` (old key) → `Version:` line absent; (c) `## Environment` conditionally omits severity/component → `_none_` lines absent; (d) `report()` ignores `input.version` → `Version: v1.4.0` absent from body.
+
+### IT-043 — issue_report over the real MCP HTTP surface (REQ-027..030, REQ-066)
 - **status:** green
 - **traces:** ARCH-023
-- **iter:** v5
-- tests/integration/issue-report-http.test.ts (4 cases: `issue_report` advertised in tools/list; a real IssueReporter + fake GithubIssueClient injected via ServerConfig files an issue over `/mcp` → {issueNumber,url}; the default composition-root wiring (no token) returns `GITHUB_TOKEN_MISSING`; invalid input → `ISSUE_REPORT_INVALID`).
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v11
+- tests/integration/issue-report-http.test.ts (v5: 4 cases — `issue_report` advertised in tools/list; a real IssueReporter + fake GithubIssueClient injected via ServerConfig files an issue over `/mcp` → {issueNumber,url}; the default composition-root wiring (no token) returns `GITHUB_TOKEN_MISSING`; invalid input → `ISSUE_REPORT_INVALID` [all GREEN, unchanged]).
+  **v11 (REQ-066):** 1 new case — `issue_report{version:'v1.4.0',...}` over `/mcp` → captured GithubIssueClient `createIssue` call's body contains `Version: v1.4.0`.
+  Red reason: `report()` does not yet read `input.version`; filed body contains `- engine version: 9.9.9` (old key/format), not `Version: v1.4.0`.
 
 ## v6 slice — GitHub issue read/reply toolset tests (UT-058, IT-044)
 
 ### UT-058 — IssueReporter read/reply ops + dedup + enrichment (REQ-031..036)
 - **status:** green
 - **traces:** DES-038
+- **tier:** unit
+- **real:** false
+- **result:** pass
 - **iter:** v6
-- tests/unit/issue-ops.test.ts (getIssue/listIssues/getComments/postComment over a fake GithubIssueClient: shapes {number,title,state,labels,body,url,commentCount} / summaries / {id,author,body,createdAt} / {commentId,url}; `ISSUE_NOT_FOUND` on unknown number, `ISSUE_COMMENT_INVALID` on empty body, `GITHUB_TOKEN_MISSING` when secret unset, `GITHUB_API_ERROR` on client failure; `issueFingerprint()` + hidden `rwe-fp` marker dedup → comment on open dup with `deduped:true`, new issue when no match; best-effort `runDiagnostics` enrichment of `## Linked run`, unknown runId still files).
-### IT-044 — issue read/reply tools over the real MCP HTTP surface (REQ-031..036)
+- tests/unit/issue-ops.test.ts (getIssue/listIssues/getComments/postComment over a fake GithubIssueClient: shapes {number,title,state,labels,body,url,commentCount} / summaries / {id,author,body,createdAt} / {commentId,url}; `ISSUE_NOT_FOUND` on unknown number, `ISSUE_COMMENT_INVALID` on empty body, `GITHUB_TOKEN_MISSING` when secret unset, `GITHUB_API_ERROR` on client failure; `issueFingerprint()` + hidden `rwe-fp` marker dedup → comment on open dup with `deduped:true`, new issue when no match; best-effort `runDiagnostics` enrichment of `## Linked run`, unknown runId still files). No v11 unit cases added here — verifier noted low-sev drift; IT-044 covers the new HTTP endpoints.
+
+### IT-044 — issue read/reply tools + Issues dashboard API over the real HTTP surface (REQ-031..036, REQ-067)
 - **status:** green
 - **traces:** ARCH-024
-- **iter:** v6
-- tests/integration/issue-ops-http.test.ts (issue_get/issue_list/issue_comments/issue_comment advertised in tools/list and exercised over `/mcp` via an injected IssueReporter+fake client; typed error envelopes for unknown number / empty body / missing token; issue_report `deduped` + runId enrichment path over HTTP).
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v11
+- tests/integration/issue-ops-http.test.ts (v6: issue_get/issue_list/issue_comments/issue_comment advertised in tools/list and exercised over `/mcp` via an injected IssueReporter+fake client; typed error envelopes for unknown number / empty body / missing token; issue_report `deduped` + runId enrichment path over HTTP [all GREEN, unchanged]).
+  **v11 (REQ-067):** 4 new cases in a `GET /api/issues*` describe block (real HTTP server, fake GithubIssueClient with 2 open + 1 closed `agent-reported` issues): (1) `GET /api/issues` → HTTP 200 `{open:[2 entries], resolved:[1 entry]}` partition; (2) `GET /api/issues/10` → HTTP 200 with full `IssueView` (body, commentCount, url); (3) `GET /api/issues/9999` → HTTP 404 with JSON `{error: "...9999..."}` (not the MCP JSON-RPC shape); PLUS 1 case in a degradation describe block: (4) server with no GITHUB_TOKEN → both `GET /api/issues` and `GET /api/issues/1` return HTTP 200 `{degraded:'...', open:[], resolved:[]}` (never 500).
+  Red reason: the router dispatch predicate (server.ts) does not yet match `/api/issues`; requests fall through to `/mcp` → 404 JSON-RPC envelope (`-32601`), not the 200 IssueVM shape; the unknown-number case gets the JSON-RPC `{error: {code,message}}` object instead of a plain `{error: string}`.
 
 ## v7 slice — provider-native routing + OpenRouter + models_list catalog tests (UT-059, UT-060, IT-045)
 

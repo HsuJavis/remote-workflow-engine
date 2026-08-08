@@ -112,3 +112,69 @@ describe('IssueReporter (REQ-027..030)', () => {
     if (!res.ok) { expect(res.error.code).toBe('GITHUB_API_ERROR'); expect(res.error.message).toMatch(/422/); }
   });
 });
+
+// ── v11 (REQ-066, DES-037): renderIssueBody meta.version + always-five Environment lines ──
+
+describe('renderIssueBody v11 — Version: line + all-five Environment fields always present (REQ-066)', () => {
+  it('renders "Version: <v>" in the Environment section (capital V, new format)', () => {
+    // Call with the NEW meta signature {version, nowIso} (esbuild strips types; cast to any).
+    // Current code reads meta.engineVersion (old key) → body has "engine version: undefined".
+    // Assertion fails for the RIGHT reason: the new "Version:" line is absent.
+    const body = renderIssueBody({ ...OK_INPUT }, { version: 'v1.4.0', nowIso: '2026-07-19T00:00:00Z' } as any);
+    expect(body).toContain('Version: v1.4.0');
+  });
+
+  it('always renders all five Environment fields; absent severity/component use _none_ placeholder', () => {
+    // Current code CONDITIONALLY renders severity/component (only when present).
+    // Assertion for "- severity: _none_" fails → RED: placeholder lines not yet rendered.
+    const body = renderIssueBody({ ...OK_INPUT }, { version: 'v1.0.0', nowIso: '2026-07-19T00:00:00Z' } as any);
+    expect(body).toContain('- Version:');
+    expect(body).toContain('- severity: _none_');
+    expect(body).toContain('- component: _none_');
+    expect(body).toContain('- reported at:');
+  });
+
+  it('renders supplied severity and component values (no _none_) when present', () => {
+    const body = renderIssueBody(
+      { ...OK_INPUT, severity: 'critical', component: 'run-manager' },
+      { version: 'v1.0.0', nowIso: '2026-07-19T00:00:00Z' } as any,
+    );
+    expect(body).toContain('- severity: critical');
+    expect(body).toContain('- component: run-manager');
+    expect(body).not.toContain('severity: _none_');
+    expect(body).not.toContain('component: _none_');
+  });
+});
+
+// ── v11 (REQ-066, DES-037): IssueReporter.report() version propagation ──
+
+describe('IssueReporter.report() version propagation (REQ-066)', () => {
+  it('caller-supplied version wins: "Version: v1.4.0" appears in the filed body', async () => {
+    // Current code does not read input.version (the field does not exist on IssueReportInput yet).
+    // Assertion fails → RED: "Version: v1.4.0" is absent from the body.
+    const { client, calls } = fakeClient();
+    const r = new IssueReporter({ secretSource: srcWith({ GITHUB_TOKEN: 't' }), clientImpl: client, engineVersion: 'eng-9.9.9', nowIso: () => '2026-07-19T00:00:00Z' });
+    await r.report({ ...OK_INPUT, version: 'v1.4.0' } as any);
+    expect(calls[0].body).toContain('Version: v1.4.0');
+    // engineVersion must NOT appear when the caller supplied their own version.
+    expect(calls[0].body).not.toContain('eng-9.9.9');
+  });
+
+  it('omitted version falls back to engineVersion; body shows "Version: eng-9.9.9"', async () => {
+    // Current code renders "- engine version: eng-9.9.9" (old format, lowercase "engine version:").
+    // Assertion for "Version: eng-9.9.9" fails → RED: old format doesn't match new "Version:" key.
+    const { client, calls } = fakeClient();
+    const r = new IssueReporter({ secretSource: srcWith({ GITHUB_TOKEN: 't' }), clientImpl: client, engineVersion: 'eng-9.9.9', nowIso: () => '2026-07-19T00:00:00Z' });
+    await r.report({ ...OK_INPUT });
+    expect(calls[0].body).toContain('Version: eng-9.9.9');
+  });
+
+  it('whitespace-only version is treated as omitted; fallback engineVersion appears', async () => {
+    // Same: current code ignores input.version entirely, so whitespace-only isn't special.
+    // Assertion fails → RED (same reason as "omitted" case above).
+    const { client, calls } = fakeClient();
+    const r = new IssueReporter({ secretSource: srcWith({ GITHUB_TOKEN: 't' }), clientImpl: client, engineVersion: 'eng-9.9.9', nowIso: () => '2026-07-19T00:00:00Z' });
+    await r.report({ ...OK_INPUT, version: '   ' } as any);
+    expect(calls[0].body).toContain('Version: eng-9.9.9');
+  });
+});

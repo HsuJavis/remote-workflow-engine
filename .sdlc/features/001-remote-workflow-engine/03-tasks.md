@@ -373,3 +373,15 @@ status: draft
 - **status:** done
 - **traces:** ARCH-037
 - **iter:** v10
+
+## v11 — issue observability: version field + read-only Issues dashboard (TASK-059, TASK-060)
+
+### TASK-059 — every filed issue carries a version: add optional `version` to `IssueReportInput`, add a `resolveEngineVersion()` seam (`package.json` version + best-effort `git describe`, computed once at the composition root to replace the hardcoded `ENGINE_VERSION`), apply the effective-version rule (`input.version?.trim() || cfg.engineVersion`) in `report()`, and make `renderIssueBody` always emit a labelled `Version:` line plus all five report fields (repro/version/severity/analysis/log) with a placeholder when absent
+- **status:** draft
+- **traces:** ARCH-023
+- **iter:** v11
+
+### TASK-060 — read-only Issues dashboard: add `GET /api/issues` (one `issue_list({labels:['agent-reported'],state:'all'})` partitioned into open/resolved, degrading to `{open:[],resolved:[],degraded}` on token-missing/API-error, HTTP 200 never 500) + `GET /api/issues/:number` (issue detail via `getIssue`) to `handleDashboardRequest` (thread the `issueReporter` param in), widen the top-level router predicate at `src/server.ts` to also match `/api/issues`, and add a read-only Issues view to `src/dashboard-page.ts` (Open/Resolved groups linking to GitHub, click-to-detail, `textContent`/`JSON.stringify` only, route disambiguated from `/dashboard/<runId>`)
+- **status:** draft
+- **traces:** ARCH-024
+- **iter:** v11

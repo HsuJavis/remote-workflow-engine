@@ -219,20 +219,22 @@ flowchart TB
 
 ### ARCH-023 — GitHub Issue Reporter
 - **status:** done
-- **traces:** REQ-027, REQ-028, REQ-029, REQ-030
-- **iter:** v5
+- **traces:** REQ-027, REQ-028, REQ-029, REQ-030, REQ-066
+- **iter:** v11
 - Engine-side `issue_report` core (src/github/issue-reporter.ts): an injectable GithubIssueClient (bounded fetch — AbortController timeout + retry budget, 4xx-except-429 not retried — any non-2xx/network/timeout surfaced as a typed `GITHUB_API_ERROR`, never a hang/crash/fake-success). The GitHub token is read from the server-side SecretSource (`RWE_SECRET_GITHUB_TOKEN`), never workspace- or sandbox-reachable and never from tool args (extends ARCH-016's secret store to REQ-028). Fixed, machine-parseable agent-consumable body template + fixed `agent-reported` label (and optional `severity:<x>`) so a downstream solve-flow can query/parse it. Fixed target repo `HsuJavis/remote-workflow-engine`. Wired at server.ts `callTool` (`issue_report` case → `{issueNumber,url}` or typed error envelope) from the composition-root default (loadSecretSourceFromEnv + shared ENGINE_VERSION) or the `ServerConfig.issueReporter` test seam. Depends: ARCH-001 (tool/server surface), ARCH-016 (server-side secret store).
 - **NB (v6):** REQ-035/036 amend this ARCH-023 `report()` path — dedup (fingerprint + hidden body marker + findOpenByFingerprint→createComment) and best-effort runId diagnostics enrichment are folded into `report()`; see ARCH-024.
+- **NB (v11, REQ-066):** every filed issue always carries a version. `IssueReportInput` gains an optional `version`; when the caller omits it the engine fills its OWN running version (a `resolveEngineVersion()` seam = `package.json` version + best-effort `git describe`, computed once at the composition root, replacing the hardcoded `ENGINE_VERSION`). The body renders a labelled `Version:` line, and all five report fields (repro/version/severity/analysis/log) are always rendered (placeholder when absent) so no issue is ever version-less or field-sparse. Folded into the existing `renderIssueBody`/`report()` path; see DES-037.
 
 ## v6 slice — GitHub issue read/reply toolset (ARCH-024)
 
 ### ARCH-024 — GitHub Issue Ops (read/list/comment toolset + dedup + runId enrichment)
 - **status:** done
-- **traces:** REQ-031, REQ-032, REQ-033, REQ-034, REQ-035, REQ-036
-- **iter:** v6
+- **traces:** REQ-031, REQ-032, REQ-033, REQ-034, REQ-035, REQ-036, REQ-067
+- **iter:** v11
 - Extends ARCH-023's GithubIssueClient with read/write issue ops (getIssue / listIssues / getComments / createComment / findOpenByFingerprint over a shared bounded-fetch `ghFetch`: 404→null on get/comments/createComment, other non-2xx→`GITHUB_API_ERROR`, retry only on 5xx/429/network — same never-hang/crash/fake-success discipline as ARCH-023). Surfaces four new MCP tools `issue_get` / `issue_list` / `issue_comments` / `issue_comment` (server.ts TOOL_NAMES + TOOL_METADATA + `callTool` cases), each returning a typed envelope (`ISSUE_NOT_FOUND` / `ISSUE_COMMENT_INVALID` / reused `GITHUB_TOKEN_MISSING` / `GITHUB_API_ERROR`).
 - Two upgrades to the ARCH-023 `report()` path: REQ-035 dedup via `issueFingerprint()` (sha256 over title/component) + a hidden `<!-- rwe-fp:… -->` body marker that `findOpenByFingerprint` searches — a matching OPEN issue is commented instead of re-filed (`deduped:true`); REQ-036 best-effort runId enrichment of the `## Linked run` section from an injected `runDiagnostics(runId)` (facade status + artifact list + last-agent transcript tail), which never fails the report when the runId is unknown.
 - Depends: ARCH-023 (GithubIssueClient + IssueReporter it extends), ARCH-001 (tool/server surface), ARCH-002 (McpFacade — supplies the runId enrichment data: workflow_status / artifacts / agent_log).
+- **NB (v11, REQ-067):** a READ-ONLY dashboard Issues page that DISPLAYS current issues, sourced from the EXISTING `issue_list`/`issue_get` primitives (no new GitHub client work, no report form). Adds two read-only endpoints on the SAME dashboard-API transport (ARCH-011 / DES-018 `handleDashboardRequest`): `GET /api/issues` (open + resolved `agent-reported` groups) and `GET /api/issues/:number` (one issue's detail), plus a new Issues view in the dashboard page. A missing GitHub token degrades to a "not configured" notice (HTTP 200, never a 500/crash) so the rest of the dashboard still loads. Rides the ARCH-029 dashboard page + the ARCH-011 read-only HTTP transport; no run-lifecycle or v1 change. See DES-038.
 
 ## v7 slice — provider-native routing + OpenRouter + models_list catalog (ARCH-025, ARCH-026)
 

@@ -3,59 +3,67 @@
 > 人類導向文件（繁體中文）。由 Gate 7.5 validator 依實際部署步驟撰寫，步驟可重跑。
 > 凡 validator 為了把系統跑起來而做、但 README quickstart 未涵蓋的動作，都記在這裡。
 >
-> ---
-> ## ⭐ v3（2026-07-18，最新 — Gate 7.5 v3 ROUND 1 PASSED — 目前實際部署狀態，凡與下方舊輪敘述衝突者，以本塊為準）
->
-> Gate 7.5 v3 ROUND 1（2026-07-18）：REQ-016..021 全部對真實系統驗證通過（VAL-025..030，見
-> `.sdlc/features/001-remote-workflow-engine/08-validation.md`）。生產引擎為 systemd user service，
-> 綁定 `0.0.0.0:8787`（ufw 白名單 `192.168.0.0/24` + SSH），`workRoot=/home/user/.local/share/rwe-data`，
-> `gateway:"sdk"` + managed LiteLLM proxy + Ollama `qwen2.5:7b`。新能力（v3）：MCP 依名 provisioning
-> （`mcp_provision` 工具）、伺服器端 `${secret:NAME}` handle 機制（`RWE_SECRET_<NAME>` 環境變數）、
-> hook 封鎖（`HOOKS_UNSUPPORTED`）、SDK gateway 逾時保底、workRoot 隔離保護（boot fail-fast）。
->
-> 這一輪把系統實際切到 **`gateway:"sdk"`** 常駐運行，並經真實 Gate 7.5（透過 remote-workflow-plugin
-> 對真實 `qwen2.5:7b` 端對端）驗證。相對於下方 v1/v2 敘述，**四件事已改變**：
->
-> 1. **實際部署走 `gateway:"sdk"`（不是 `direct-fetch`）**。這條路徑才有 agent 工具迴圈 + MCP，
->    所以需要 LiteLLM 代理（見 §1 的 Python 3.11/3.12 setup）。若你只要純工作流程邏輯、不需要
->    `agent()` 真的用工具，`direct-fetch` 仍是可用的免依賴退回選項（見 §2b Ollama-only）。
->    **systemd unit 的 `PATH` 必須含 litellm venv 的 `bin/`**，否則 sdk 開機 `spawn('litellm')`
->    會 `ENOENT` 失敗（範例：`Environment=PATH=/home/<you>/.rwe-litellm-venv/bin:/home/<you>/.local/node/bin:/usr/bin:/bin`）。
->
-> 2. **預設工具面已擴充（D-V3M-3）**：`Read`/`Write` → **`Read`/`Write`/`Edit`/`Glob`/`Grep`/`Bash`**，
->    全部**限制在該次 run 自己的工作目錄**（`cwd`=run workspace + §1c(d) 的 realpath 邊界檢查，
->    每次呼叫都經 `canUseTool` 與 `PreToolUse` 強制）。這**刻意反轉了**舊 v2 §1c(b) 的「預設不含
->    Bash」——當初排除 Bash 是因為那時**還沒有** fs jail；jail 現在存在了（§1c(a)(d)），所以
->    Bash 以「confined 在固定工作目錄下」的形式回到預設。**Web 外連（`WebFetch`/`WebSearch`）與
->    子 agent 生成（`Task`/`Agent`）仍不在預設**（破壞工作目錄封閉性 / 繞過引擎自己的
->    orchestration+DOS 模型）——需要時仍可在某 `agentType` 的 `tools:` 或呼叫端 `opts.allowedTools`
->    明確 opt-in（所有工具都仍可 opt-in 啟用，只是預設集不含它們）。
->
-> 3. **LiteLLM 代理 port 改為動態（D-V3M-4）**：沒有設定 `litellmPort` 時，**綁一個 OS 分配的
->    ephemeral 空閒 port**，不再霸佔寫死的 4000。這根治了「一台主機上多個 litellm（或跑測試時
->    撞到常駐服務）搶 4000」的老問題——實測常駐 sdk 服務現在跑在動態 port（例如 `:34129`），
->    可與完整測試套件並存。明確指定 `litellmPort` 仍有效（會走既有的 stale-owner pre-bind 檢查）。
->
-> 4. **⚠️ `workRoot` 必須在任何 Claude project 之外（D-V3M-5，安全）**：每個 run 的 workspace 是
->    `<workRoot>/workflows/.../runs/<id>/`。若 `workRoot` 巢狀在一個 Claude Code project 內（祖先目錄
->    有 `.git` 或 `CLAUDE.md`），SDK-gateway 的 agent CLI（跑在 `settingSources:['project']` 以載入
->    workspace 自己的 `.claude/skills`）會把 project root 解析到那個祖先、**載入該 project 的
->    `CLAUDE.md` + `~/.claude/projects/<hash>/memory` 進 agent context**——這是**繞過 tool 層工作目錄
->    jail** 的洩漏（session-init 載入，不經 Read 工具呼叫，§1c 的邊界檢查攔不到；實測 qwen agent 曾
->    逐字吐回 operator 的 MEMORY.md）。**修復**：`composeConfig()` 現在啟動時 fail-closed——若 `workRoot`
->    或其任一祖先含 `.git`/`CLAUDE.md`，直接以 `WORKROOT_INSIDE_PROJECT` 拒絕啟動並指出補救。
->    **部署設定**：`workRoot` 請用 repo 外的絕對路徑（無 root 範例 `/home/user/.local/share/rwe-data`；
->    有 root `/var/lib/remote-workflow-engine`）——**不要**用 `./data`（會落在 repo 內、觸發 guard）。
->
-> **v3 也啟用的能力**（sdk 模式下才有；細節見各自章節/`journal.md`）：MCP 依名 provisioning
-> （管理工具 `mcp_provision` 註冊 → workflow 用 `agent(p,{mcp:['name']})` 引用 → 只注入被引用者，
-> `strictMcpConfig` 隔離不變）、伺服器端 secret（config 內 `${secret:NAME}` handle → 由
-> `RWE_SECRET_<NAME>` 環境變數解析，缺失則該次 run 明確 `SECRET_MISSING` 失敗、絕不外洩字面值）、
-> 以及 D-DOS 觀測端點 `GET /api/status`（回 `{agentSemaphore:{total,inUse,queued}}`）。
-> hook 明確不支援（`asset_push` kind:hook 一律拒絕）。
-> ---
->
-> ## ⭐ 情境配方：gateway:sdk + LiteLLM 前置「外部 OpenAI 相容端點」跑完整 sdlc-run（v3，2026-07-12）
+> 目前部署狀態（v11，2026-08-09）：systemd user service `rwe.service`，綁定
+> `0.0.0.0:8787`（ufw 白名單 `192.168.0.0/24` + SSH），`workRoot=/home/user/.local/share/rwe-data`，
+> `gateway:"sdk"` + managed LiteLLM proxy。36 個 MCP 工具，含 Issues 儀表板（`/dashboard/issues`）
+> 與 `issue_report` 版本自動填入。完整驗證證據見
+> `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
+
+
+## §0 Quickstart — 開機序列（可逐字貼上執行）
+
+> 以下指令與 README quickstart 一致，是 v11 validator 實際跑過的步驟，本輪零文件缺口。
+
+```bash
+# 步驟 1：安裝 Node 依賴
+npm install
+# 預期：node_modules/ 建立，無錯誤
+
+# 步驟 2：型別檢查（健檢）
+npm run typecheck
+# 預期：無輸出（clean）
+
+# 步驟 3：建立 LiteLLM Python venv（一次性，gateway:"sdk" 需要）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+uv python install 3.12
+uv venv --python 3.12 ~/.rwe-litellm-venv
+uv pip install --python ~/.rwe-litellm-venv/bin/python "litellm[proxy]"
+# 預期：Successfully installed litellm...
+
+# 步驟 4：複製設定檔並設定 workRoot（必須在任何 .git/CLAUDE.md 祖先之外）
+cp rwe.config.example.json rwe.config.json
+# 設定 workRoot 為 repo 外的絕對路徑，例：/home/<user>/.local/share/rwe-data
+# 設定 aliases 指向你的供應商/模型
+
+# 步驟 5：設定環境變數（見 §1 設定總表）
+export PATH="$HOME/.rwe-litellm-venv/bin:$PATH"   # litellm 必須在 PATH 上
+export ANTHROPIC_API_KEY=sk-ant-...               # 或其他供應商 key
+# export RWE_SECRET_GITHUB_TOKEN=ghp_...          # issue_report/Issues 儀表板需要
+
+# 步驟 6：啟動（開發/測試）
+node node_modules/tsx/dist/cli.mjs src/main.ts
+# 預期：[remote-workflow-engine] listening on http://127.0.0.1:8787/mcp (workRoot=...)
+#        [remote-workflow-engine] ready
+
+# ── 已安裝 systemd user service 時，重啟套用更新：
+# systemctl --user restart rwe.service
+# systemctl --user status rwe.service   → Active: active (running)
+```
+
+```bash
+# 健康確認（服務啟動後）
+curl -s http://localhost:8787/api/status
+# 預期：{"agentSemaphore":{"total":32,"inUse":0,"queued":0}}
+
+curl -s -X POST http://localhost:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | python3 -c \
+  "import json,sys; d=json.load(sys.stdin); print('tools:', len(d['result']['tools']))"
+# 預期：tools: 36
+```
+
+## 情境配方：gateway:sdk + LiteLLM 前置「外部 OpenAI 相容端點」跑完整 sdlc-run
 >
 > 目標：把引擎部署在一台**自架多個開源大模型、對外只暴露一個 OpenAI 相容 `/v1` 端點**的環境上，
 > 讓遠端 agent 走**完整 Claude harness**（工具迴圈 + agentType + MCP），能跑真正的 iso-agile-sdlc
@@ -146,7 +154,7 @@
 > #    回 "ROUTED" 且 agent tokens>0 ⇒ 整條 gateway:sdk→LiteLLM→你的端點 打通。
 > ```
 >
-> ## ⭐ 區網部署 + remote→local 落地（v1，2026-07-11）
+## 區網部署 + remote→local 落地
 >
 > ### A. 綁到區網（LAN）給其他機器用
 > 引擎預設綁 `127.0.0.1`（只本機）。要讓區網其他機器連進來:
@@ -189,112 +197,7 @@
 >   選填 `seed:[{path,contentB64}]`—引擎在 agents 啟動前把整棵 tree materialize 進 workspace(**strip 掉
 >   `.claude/settings*.json`+hooks**,關 RCE),讓 agents 直接編輯真實專案(而非只給 prompt 的 bounded base)。
 >   請求 body 上限 8 MiB(超過回 413,防 OOM)。選填 `workspaceTtlMs` 開啟周期 GC 回收舊 workspace。
-> ---
->
-> **v2 Gate 7.5 ROUND 1（2026-07-04）結果摘要**：REQ-011（本節 §2b）已對真實獨立 process
-> 驗證通過——`scripts/smoke.sh` 真實跑過、真實 pass；`npm install`/`npm ci` 皆真實、乾淨；優雅關閉
-> 時真的會連帶砍掉 `litellm` 子行程（TASK-027，真實 `SIGTERM` 測過，2 秒內兩個 process 都消失，
-> 不留孤兒）；`docker-compose.yml` 已做真實 YAML 語法驗證，但**這次驗證環境沒有安裝 docker，
-> `docker compose up` 未能實際執行**（誠實記錄為環境缺口，非略過）；`deploy/rwe.service` 用
-> `systemd-analyze verify` 驗證時，因為這個驗證環境的 Node 不是裝在系統路徑
-> （`/usr/bin/npm` 不存在，而是使用者層級安裝），**改用實際存在的路徑後 `systemd-analyze verify`
-> 通過（exit 0，無警告）**，確認 unit 檔本身語法/語意正確；`sudo systemctl enable --now` 因這次
-> 驗證環境沒有 sudo 權限（需要互動式密碼）而未能實際執行，同樣誠實記錄為環境缺口。**重要：真正
-> 部署時，`deploy/rwe.service` 裡的 `ExecStart=/usr/bin/npm run start`、`User=rwe`、
-> `WorkingDirectory=/opt/remote-workflow-engine` 都只是預設範本值——請依你實際主機的 Node 安裝
-> 路徑（`which npm`）、選定的服務帳號、部署目錄自行調整，否則 `systemctl` 啟動會失敗。**
-> **同一輪也發現 REQ-009（見 README.md「已知限制」）尚未通過 Gate 7.5**——與部署封裝本身無關，
-> 但如果你的部署計畫依賴「推送 skill/MCP config 給 agent 用」，目前這條路徑還沒打通，請先看
-> README.md 的 v2 已知限制第 1 條。
->
-> **Gate 6 v2 validation-round fixes（2026-07-04，本輪，D-V2V-1/2/3 route-back）**：上一段記錄的
-> 兩個缺口已修復——**(1) D-V2V-1（REQ-009 資產接線）**：`asset_push` 接受的 `mcp-config` 資產現在
-> 會在**每一次** `agent()` 呼叫前重新從磁碟讀取，接進真實 `@anthropic-ai/claude-agent-sdk`
-> session 的 `options.mcpServers`（`strictMcpConfig:true` 維持不變，見
-> `src/gateway/claude-agent-sdk-client.ts` 的 `readMcpConfigAssets()`）；`skill`/`hook` 資產現在
-> 會被**實體化**進該次 run 自己的工作目錄下 `.claude/skills|hooks/<name>/`，且該次呼叫的
-> `options.cwd` 改指到那個 run 工作目錄、`options.settingSources` 變成 `['project']`（宿主機層級
-> 的 `'user'`/`'local'` 來源仍然關閉——D-F11 的隔離保證不變，只是現在多了「這次 run 自己的
-> `.claude/`」這一個範圍內的來源）。這系統自己的 `rwe-*` skill/plugin 從頭到尾都不會被儲存、也
-> 不會被實體化（D4 遞迴防護，不變）。見 `tests/integration/asset-mcp-config-wiring.test.ts`
-> （IT-035）與 `tests/integration/asset-skill-materialization-wiring.test.ts`（IT-036）。
-> **(2) D-V2V-2（REQ-008 瀏覽器儀表板）**：新增 `GET /dashboard`（同一個 port，與 `/mcp`、
-> `/api/runs*` 共用同一個 `http.Server`）——一個自成一體、不需要建置工具的靜態 HTML/JS 頁面：
-> run 清單、點進去看 phase/agent tree（每個 agent 的 state + token usage）、逐字稿檢視，且用
-> `setInterval` 輪詢自動更新（不必手動重新整理）。`/dashboard/<runId>` 走同一個靜態頁面的
-> client-side 路由（頁面自己的 JS 從 `location.pathname` 解析 runId）。頁面本身的 JS 呼叫的是
-> 同一組既有的唯讀 `/api/runs*` JSON API（DES-018）——同一份資料模型，現在真的有兩種傳輸方式。
-> 見 `tests/acceptance/val-018-dashboard-browser-ui.test.ts`（VAL-018）。
->
-> **D-V2V-3（docker/systemd 環境缺口，已被 ORCH 接受，非阻擋項）**：上面第 6~17 行記錄的
-> docker/systemd 缺口維持原狀——這個實作環境本身沒有 docker、也沒有可互動的 sudo 權限，所以
-> `docker-compose.yml`/`deploy/rwe.service` 這兩支只做過語法/語意驗證（`docker compose config`
-> 語法檢查、`systemd-analyze verify`），從未在這個環境裡真正跑起來過；`npm` 路徑部署 +
-> `scripts/smoke.sh` 煙霧測試 + 優雅關閉不留孤兒這三項則是對真實獨立 process 驗證過的。**這是一個
-> 明確記錄的環境缺口，不是待修的程式碼缺陷**——ORCH 已裁定接受，不再視為本輪 gate 的阻擋項；等你
-> 真正部署到有 docker 或有 root 權限的主機時，請自己再跑一次
-> `docker compose up`/`sudo systemctl enable --now rwe` 確認這兩支产物本身沒問題（語法驗證不等於
-> 「真的能啟動」）。
->
-> **Gate 7.5 v2 ROUND 2（2026-07-04，本輪，GATE PASSED）**：上面「Gate 6 v2 validation-round
-> fixes」段落記錄的 2 個修復（D-V2V-1/D-V2V-2）在本輪由 validator **對一個獨立真實 process 重新
-> 驗證**（不是只信任 Gate 6 實作報告）：真的推送一個 mcp-config + skill 資產，送出真實
-> `agent()` 呼叫，直接讀取真正被 spawn 出來的 `claude` CLI 子行程自己在 OS 行程表（`ps aux`）
-> 裡的命令列參數（不是讀原始碼），看到真實
-> `--mcp-config {"mcpServers":{"demo-mcp-v2r2":{...}}} --setting-sources=project
-> --strict-mcp-config`；run 完成後確認推送的 `SKILL.md` 真的被實體化進「那一次 run 自己」的工作
-> 目錄下的 `.claude/skills/`（bytes 完全相符）。遞迴保護（D4）也對本輪自己的真實 instance 重新
-> 驗證：推送本產品自己的 guidance skill（`plugin/skills/rwe-remote-workflow/SKILL.md`）與一個
-> 指向自己 bind/port 的 mcp-config，兩者皆真實被排除、回應中附上原因，且確認未寫入磁碟。
-> `/dashboard` 頁面也重新驗證：真實 `GET /dashboard` 回傳含 `<html>`/`<title>` 與真正 client JS
-> 的 HTML，`GET /dashboard/<runId>` 走 SPA 路由，並示範不必手動重新整理的即時更新（同一個 client
-> 在送出新 run 前後重新輪詢 `/api/runs`，筆數從 1 變 2）。這次驗證環境沒有可用的 headless
-> browser（`npx playwright` 需要額外安裝，這個環境沒有預先準備），所以本輪對 `/dashboard` 的驗證
-> 停在「curl + DOM 內容斷言」層級，不是逐畫素渲染層級——誠實記錄，未升級宣稱。REQ-010/011/015
-> 則依「已通過、不重新覆蓋測試」的收斂原則，只做了煙霧回歸：真實 Claude Code CLI（`claude mcp
-> list`）重新確認、`scripts/smoke.sh` 真實 pass、真實 `SIGTERM` 孤兒回收確認無孤兒程序；
-> docker/sudo 環境缺口（D-V2V-3）維持不變，不再重複驗證。完整證據見
-> `.sdlc/features/001-remote-workflow-engine/08-validation.md` 的「v2 ROUND 2」章節。
->
-> **本文件下方 v1 章節為第七輪 Gate 7.5（Gate 8 收尾修復的範圍化重新驗證）後改寫，原樣保留。**
->
-> **第七輪結果摘要**：本輪任務是針對 Gate 8 review 發現、IMPL-051 修復的 6 項收尾項目
-> （D-G8-1~6）中，前一輪文件明確標記「程式碼/測試層級已修復，尚未經 Gate 7.5 對獨立真實 process
-> 重新驗證」的 3 項，逐一對獨立真實 process 重新驗證：**(1) D-G8-4 零設定逾時保底——CONFIRMED**：
-> 完全不存在 `rwe.config.json` 的零設定啟動下，對一個真實、會無限期不回應的網路端點送出真實
-> `agent()` 呼叫，run 在 5.2 秒內正確回傳 `result:null` 並進入 `completed`，從未卡住；另外直接對
-> 真實（未 mock）`composeConfig()`/`ClaudeAgentSdkGatewayClient` 組合根程式碼確認零設定下解析出的
-> `timeoutMs` 確實是 `15000`（而非 `undefined`），且對一個真的會永久卡住的 session，逾時保底確實在
-> 15014 毫秒真實觸發。**(2) D-G8-2 逐字稿真實訊息事件——CONFIRMED**：真實設定（`local` 別名接
-> 真實本機 Ollama）下的真實 `agent()` 呼叫，`workflow_agent_log` 現在會回傳真實的
-> `"message"` 事件（而非過去只有最終 `"usage"` 摘要）。**(3) D-G8-3 `tools/list` 真實 schema——
-> CONFIRMED**：真實 HTTP `tools/list` 回應對全部 10 個工具都有真實描述與真實
-> `inputSchema.properties`/`required`。其餘 3 項（D-G8-1 巢狀 resume、D-G8-5 環境變數白名單、
-> D-G8-6 預算並行保留）依本輪任務範圍指示由自動化回歸測試涵蓋（皆綠燈）+ 直接讀原始碼確認掛載點，
-> 未本輪獨立重跑真實 process。完整證據見
-> `.sdlc/features/001-remote-workflow-engine/08-validation.md` 的「ROUND 7」章節。
->
-> **Gate 8 收尾修復說明（IMPL-051，本輪已對 3 項核心項目完成獨立真實 process 重新驗證，見上）**：
-> 本輪 review 發現並修復 2 項與本文件直接相關的項目——(1) **D-G8-4 零設定逾時保底**：
-> 零設定（不存在 `rwe.config.json`，`main.ts` 直接用內建預設）情境下，預設 `gateway:"sdk"` 路徑先前
-> 完全沒有 `timeoutMs` 保底值，一個沒有回應的本機供應商會讓整個 run 無限期卡住；現在 `composeConfig()`
-> 補上與 §1b/§5 表格中 `timeoutMs` 同樣的 `15000`（毫秒）保底值，與舊版 `gateway:"direct-fetch"`
-> 路徑早已有的保底行為一致。(2) **D-G8-5 子行程環境變數白名單**：`gateway:"sdk"` 路徑先前把整個
-> `process.env`（含任何未預期存在於本機的 `OPENAI_API_KEY`/`GEMINI_API_KEY`/其他機密）原封不動傳給
-> 產生出的 `claude` CLI 子行程；現在改為明確白名單（`PATH`/`HOME`/`SHELL`/`LANG`/`LC_ALL`/
-> `TMPDIR`/`TERM` + 覆寫過的 `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`），不再傳遞白名單以外的任何
-> 主機環境變數。詳見 §1b 與 §5 的追加說明。
->
-> **本輪（第六輪）結果摘要**：任務是重新驗證第五輪找到的 3 個問題並取得每一條 v1 REQ 驗收子句的
-> 新鮮真實層證據。**2 項確認真的修好**——(a) `workflow_status` 能即時觀察到 in-flight agent 的
-> `"queued"`/`"running"` 狀態（D-F12）；(b) `workflow_suspend` 後 `workflow_resume` 若原呼叫被
-> 中止，現在會真的重新執行、產出真實結果，而非重播快取的 `null`（D-F13）。**1 項的程式碼修復已
-> 確認生效，但正式歸類為「本機小模型能力上限」**——即使已將送給模型的工具清單縮減到最小
-> （`Read`/`Write`/`Bash`，且真的排除了與本產品無關的外掛工具），本機 7B 級 Ollama 模型
-> （`qwen2.5:7b`）透過本產品的 SDK gateway 仍然完全不會真的觸發工具呼叫（D-F11，見 §6 第 1 項）。
-> 本輪也首次以真實 process 重新證實了 2 條先前多輪都停留在「未獨立重跑」的驗收子句：
-> `bind:"0.0.0.0"` 對外監聽、`workflow_stop` + 帶編輯過腳本的 `workflow_resume`（快取前綴重播）。
-> 完整證據見 `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
+
 
 ## 1. 前置條件
 - **Node.js 22.6 以上**（沙箱子行程 `src/sandbox/child-entry.ts` 與啟動用的 `tsx` 都依賴 Node 22
@@ -470,7 +373,8 @@ port 的問題（實測常駐 sdk 服務跑在動態 port，可與完整測試�
 | `RWE_BIND` | `bind` | `127.0.0.1` |
 | `RWE_PORT` | `port` | `8787` |
 | `RWE_WORK_ROOT` | `workRoot`（狀態/journal/工作目錄根） | 設定檔值，否則系統暫存目錄下自動建立 |
-| `RWE_SECRET_<NAME>` | **v3 新增** — 伺服器端 secret store（REQ-018）。provisioned MCP config 裡的 `${secret:NAME}` handle 由這個 env var 解析（`<NAME>` 對應 handle 裡的名稱，大小寫敏感）。引擎啟動時不驗證，只在有 run 引用 MCP 時才解析——缺少則該 run 以 `SECRET_MISSING` 報錯，從不外洩 handle 值或靜默跳過。**絕不放進 `rwe.config.json`（config 只存 handle，不存值）**；建議透過 systemd unit 的 `Environment=` 或 `EnvironmentFile=` 注入，或者 `export RWE_SECRET_MY_TOKEN=<value>` 方式設定。 | 無預設（缺少且 MCP 有引用時 run 報錯） |
+| `RWE_SECRET_<NAME>` | 伺服器端 secret store（REQ-018）。provisioned MCP config 裡的 `${secret:NAME}` handle 由這個 env var 解析（`<NAME>` 對應 handle 裡的名稱，大小寫敏感）。引擎啟動時不驗證，只在有 run 引用 MCP 時才解析——缺少則該 run 以 `SECRET_MISSING` 報錯，從不外洩 handle 值或靜默跳過。**絕不放進 `rwe.config.json`（config 只存 handle，不存值）**；建議透過 systemd unit 的 `Environment=` 或 `EnvironmentFile=` 注入，或者 `export RWE_SECRET_MY_TOKEN=<value>` 方式設定。 | 無預設（缺少且 MCP 有引用時 run 報錯） |
+| `RWE_SECRET_GITHUB_TOKEN` | **issue_report / Issues 儀表板需要**（REQ-027..030, REQ-066, REQ-067）。GitHub Personal Access Token（PAT）或 Fine-grained token，須有目標 repo 的 `issues:write` 權限。引擎讀此鍵為 `RWE_SECRET_GITHUB_TOKEN`（命名遵循 secret store 慣例）。缺少時 `issue_report` 回 `GITHUB_TOKEN_MISSING`；`GET /api/issues` 回 HTTP 200 `{degraded:"GitHub not configured"}`（不 500）。**絕不放進設定檔**；透過 `EnvironmentFile=~/.config/rwe.env` 注入（見 §2b systemd unit 範例）。 | 無預設（缺少時功能降級，非崩潰） |
 
 ## 1c. 安全模型（Security Model，v2 Gate 8 review 收尾修復，D-V2G8-1(a)(b)(c)(d)）
 
@@ -997,3 +901,4 @@ curl -s -D - -o /dev/null -X POST $BASE/v1/chat/completions \
 | 2026-08-01 | v9 | 工作流程探索 / 重用決策（workflow discovery，REQ-061/062）：在重用一個已註冊工作流程（或決定另寫新的）之前，不必執行、也不必讀 script 即可查其**用途**與**形狀**。（用途，REQ-061）`workflow_list` 現在每筆多回傳 `description`（由工作流程的 `export const meta.description` 隨查即時解析，永遠與現行 script 同步、無需 migration）；新增 MCP 工具 **`workflow_get({name})`**——回傳完整 `{name, version, createdAt, description, phases, script, skeleton}`，未知名稱回 `WORKFLOW_NOT_FOUND`（envelope，不丟例外）；無 meta/無 description 者退化為空字串、非錯誤。（形狀，REQ-062）`workflow_get.skeleton` 與新端點 **`GET /api/workflows/:name/skeleton`** 回傳一份**預測的靜態 DAG 骨架**——純靜態掃描 script 的 `phase()`/`agent()`/`parallel()`/`workflow()` 呼叫，依序列出節點（parallel 群組 id、子工作流程名稱），loop/conditional 內的節點標 `dynamic:true`（best-effort，因真實形狀只在執行期決定）；掃描**從不執行 script、不丟例外**。儀表板工作流程卡片現在顯示 description 且可點擊 → 渲染預測 DAG（parallel group 群組、`×? (dynamic)` 標記、description 作為用途文字）。Gate 7.5 v9 ROUND 1 PASSED（真實 service 重啟：註冊 `disc-demo`、`workflow_list` 回 description、`workflow_get` 回 description+phases+skeleton `[agent(parallel:1), agent(parallel:1), agent, workflow:notify]`、Playwright headless 儀表板卡片點擊 → 預測 DAG，VAL-070/071）。**尚未支援（沿用 v8，未變）**：SSE、RUN dag 的 parallel-group 標記（需 sandbox-IPC；此處是 STATIC 骨架有帶 parallel 群組，但即時執行的 DAG 仍未帶）、OIDC（REQ-012，D5） | 無破壞性變更；`workflow_get` 為新增工具、`GET /api/workflows/:name/skeleton` 為新增唯讀端點、`workflow_list` 的 `description` 為新增欄位（既有用戶端可忽略）；無新設定鍵、無遷移動作（description 隨查即時解析、非儲存欄位） |
 | 2026-08-01 | v10 | 高效大型程式庫 seeding 切片 1（壓縮請求體 + 具型別過大錯誤，REQ-063）：`/mcp` 請求體現在接受 `Content-Encoding: gzip\|deflate`——可壓縮程式碼 seed/asset payload（約壓 3–5×）得以塞進 8 MiB body cap 之下；解壓有**雙重上限**（壓縮輸入 `MAX_BODY_BYTES` 8 MiB + 解壓輸出 `MAX_DECOMPRESSED_BYTES` 8×），gzip bomb 在解壓途中被擋、不會 OOM；無 `Content-Encoding` 的 body 行為與以往完全相同。超過任一上限時回傳**具型別 413**：`{code:'BODY_TOO_LARGE', cap, phase:'compressed'\|'decompressed', hint}`（hint 指明用 gzip 壓縮或拆分）。webhook `POST /hooks/:id` 仍讀**原始** body（HMAC 對交付位元組驗簽、不可自動解壓），僅同樣改回具型別 413。（`readBody` 拆成 raw 的 `readBodyBuffer` + 解碼的 `readBodyDecoded`。）Gate 7.5 v10 ROUND 1 PASSED（真實 service：gzip `tools/list` 解碼 34 tools、超大未壓縮 body → 413 `{code:'BODY_TOO_LARGE', cap:8388608, hint:…}`，VAL-072） | 無破壞性變更；無新設定鍵；只影響 HTTP body 讀取層與兩處 413 catch，無工具 payload 形狀變更；無遷移動作 |
 | 2026-08-01 | v10 | 高效大型程式庫 seeding 切片 2（CAS 基座，REQ-064/065）：新增內容定址 blob 儲存庫 `CasStore`（不可變 blob pool `blobs/<sha[0:2]>/<sha>` + SQLite per-namespace refset）與兩個 MCP 工具 **`blob_put{namespace, sha256, contentB64}`**（byte-verify、以**計算出的** hash 存放絕不用宣稱值 → 關 hash-poisoning + confused-deputy；claim 不符 → `BLOB_HASH_MISMATCH` 不存任何東西；immutable、idempotent）與 **`seed_plan{namespace, manifest}`** → `{missing:[sha256…]}`（per-namespace、非全域存在性 → 關跨租戶 dedup oracle）。`workflow_run` 新增 **`seedManifest:[{path, sha256, exec?}]`** + `seedNamespace`——引擎以 hash 從 CAS 讀 bytes、透過與 `materializeSeed` **相同**的 per-path 守衛（`.claude` strip/`.git` reject/realpath-contained，抽出共用 `seedPathVerdict`）組裝工作區，`exec?` 套用遮罩執行位元（`0o755`/`0o644`；僅一般檔案、永不支援 symlink/mode int）；`seedManifest` 參照到未上傳 blob → 於任何持久化動作前以 **`MISSING_BLOBS`** fail-fast（不建 run row）。順帶修掉一個**既有 bug**：`toErrEnvelope` 舊回 Error name，導致 run-manager 的 coded error（`RUN_ADMISSION_LIMIT`/`NESTING_*`/新的 `MISSING_BLOBS`）透過 `workflow_run` 都變成無用的 `'Error'`——改為優先取 `.code`。新增設定鍵 `casDir`（預設 `$workRoot/cas`）。Gate 7.5 v10 ROUND 1 PASSED（真實 service 36 tools：blob 上傳 namespace `liveproj`、`seed_plan` 2→0 missing、`workflow_run` seedManifest 組裝出 byte-identical 工作區、on-disk 模式 `0755`(`exec:true`)/`0644`(`exec:false`)、未上傳 blob → `MISSING_BLOBS`，VAL-073/074）。**尚未支援（後續增量，見 `docs/seed-sync-architecture.md` roadmap）**：raw-streaming blob 端點 `POST /assets/blob/<sha256>`（免 base64、免 8 MiB cap）、per-tenant quota + immutable-pool GC、client `push_workspace.py`（git 作 client 端 stat-cache）+ `rwe seed` CLI、`seedRef` engine-pull | 無破壞性變更；`casDir` 選填有預設值、一般部署可省略；`workflow_run` 新欄位為選填、兩個新工具為附加，既有用戶端可忽略；inline `{path,contentB64}` seed 與 `asset_push` 不受影響；無遷移動作 |
+| 2026-08-09 | v11 | issue 可觀測性（REQ-066/067）：`issue_report` 新增 `version` 欄位（caller 可覆寫；省略時引擎自動填入 `pkg.version + git-describe`，保證非空），Environment 區塊五個欄位（repro/version/severity/analysis/log）一律渲染、缺席欄位填 `_none_` placeholder。新增唯讀 API `GET /api/issues`（`{open:[...],resolved:[...]}` 依 `agent-reported` label + state 分組）、`GET /api/issues/:number`（完整 IssueView）；無 token → HTTP 200 `{degraded}` 而非 500。`GET /dashboard/issues` 新增 Issues 頁面（Open/Resolved 分組 + 點擊顯示 detail，所有遠端內容以 textContent 渲染，XSS 安全）。引擎 `ENGINE_VERSION` 常數改由 `resolveEngineVersion()` 動態計算（`initialize` response 的 `serverInfo.version` 現在回真實版本串，含 git-describe）。Gate 7.5 v11 ROUND 1 PASSED（VAL-075/076，real:true；issues #7/#8 真實 filed + body 驗證，已 close） | 無設定檔變更；`RWE_SECRET_GITHUB_TOKEN` 為既有 secret store 鍵、已在本版 §1b 設定總表補上文件行；無遷移動作 |
