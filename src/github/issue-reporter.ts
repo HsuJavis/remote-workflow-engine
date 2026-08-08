@@ -2,12 +2,35 @@
 // v6 slice (REQ-031..036): extended with the read/reply GitHub-issue primitives the
 // "report -> agent solves it" flow needs (issue_get/list/comments/comment), plus two upgrades to
 // issue_report — de-dup (REQ-035) and runId diagnostics enrichment (REQ-036).
+// v11 slice (REQ-066): version autofill — resolveEngineVersion; renderIssueBody always renders
+// all five Environment fields; IssueReportInput.version (caller-supplied wins).
 // A connected client/agent supplies a pre-analyzed, structured problem report; this files ONE GitHub
 // issue into the engine's own repo with an agent-consumable body — the intake side of a future
 // "report -> agent solves it" flow. Parent-side only: the GitHub token is read from the server-side
 // SecretSource (REQ-018/REQ-028), never from a run workspace or the untrusted sandbox.
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import type { SecretSource } from '../secret-resolver.js';
+
+/** REQ-066: compute the running engine version from package.json + best-effort `git describe`.
+ *  Injectable `exec` seam makes it unit-testable (fake git output; git-absent fallback).
+ *  Fallback chain: pkg.version + " (" + gitDescribe + ")" → pkg.version alone → '0.0.0'. */
+export function resolveEngineVersion(exec?: () => string): string {
+  let pkgVersion: string;
+  try {
+    const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version?: string };
+    pkgVersion = pkg.version?.trim() || '0.0.0';
+  } catch {
+    pkgVersion = '0.0.0';
+  }
+  const gitExec = exec ?? (() => execSync('git describe --tags --always', { encoding: 'utf8' }));
+  try {
+    const gitOut = gitExec();
+    if (gitOut && gitOut.trim()) return `${pkgVersion} (${gitOut.trim()})`;
+  } catch { /* fall through to pkgVersion alone */ }
+  return pkgVersion || '0.0.0';
+}
 
 const DEFAULT_REPO = 'HsuJavis/remote-workflow-engine';
 const GITHUB_API = 'https://api.github.com';
@@ -27,6 +50,9 @@ export interface IssueReportInput {
   severity?: string;
   component?: string;
   runId?: string;
+  /** REQ-066: optional caller-supplied version string; whitespace-only treated as omitted
+   *  (falls back to IssueReporterConfig.engineVersion). */
+  version?: string;
 }
 
 export type IssueReportResult =
@@ -120,11 +146,14 @@ export function issueFingerprint(title: string, component?: string): string {
   return createHash('sha256').update(normalizeTitle(title) + '|' + (component ?? '')).digest('hex').slice(0, 16);
 }
 
-/** REQ-029: the FIXED, machine-parseable template a downstream issue-solving agent can reproduce from. */
+/** REQ-029: the FIXED, machine-parseable template a downstream issue-solving agent can reproduce from.
+ *  REQ-066 (v11): meta accepts `version` (new key) OR `engineVersion` (legacy); always renders all
+ *  five Environment fields, using `_none_` as a placeholder for absent severity/component. */
 export function renderIssueBody(
   input: IssueReportInput,
-  meta: { engineVersion: string; nowIso: string; fp?: string; diagnostics?: string | null },
+  meta: { version?: string; engineVersion?: string; nowIso: string; fp?: string; diagnostics?: string | null },
 ): string {
+  const ver = meta.version ?? meta.engineVersion ?? 'unknown';
   const parts = [
     `## Summary`,
     input.title,
@@ -139,11 +168,11 @@ export function renderIssueBody(
     input.analysis,
     ``,
     `## Environment`,
-    `- engine version: ${meta.engineVersion}`,
+    `- Version: ${ver}`,
+    `- severity: ${input.severity ?? '_none_'}`,
+    `- component: ${input.component ?? '_none_'}`,
     `- reported at: ${meta.nowIso}`,
-    input.severity ? `- severity: ${input.severity}` : undefined,
-    input.component ? `- component: ${input.component}` : undefined,
-  ].filter((l) => l !== undefined) as string[];
+  ];
   if (input.runId) {
     parts.push(``, `## Linked run`, `- runId: ${input.runId}`);
     // REQ-036: append real engine-side diagnostics (status / artifacts / transcript tail) when present.
@@ -358,8 +387,13 @@ export class IssueReporter {
     if (input.runId && this.cfg.runDiagnostics) {
       diagnostics = await this.cfg.runDiagnostics(input.runId).catch(() => null);
     }
+    // REQ-066: caller-supplied version wins; whitespace-only treated as omitted → fall back to engineVersion.
+    const version =
+      typeof input.version === 'string' && input.version.trim()
+        ? input.version
+        : (this.cfg.engineVersion ?? 'unknown');
     const body = renderIssueBody(input, {
-      engineVersion: this.cfg.engineVersion ?? 'unknown',
+      version,
       nowIso: (this.cfg.nowIso ?? (() => new Date().toISOString()))(),
       fp,
       diagnostics,

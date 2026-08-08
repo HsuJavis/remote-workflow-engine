@@ -7,6 +7,17 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
+> **v11 ROUND 1 (2026-08-09) — GATE PASSED.** Issue observability: REQ-066 (every filed issue carries
+> a version — caller-supplied or engine-autofilled via `resolveEngineVersion()`) → VAL-075 (real:true);
+> REQ-067 (read-only Issues dashboard page: `/api/issues` list, `/api/issues/:number` detail, 404 on
+> not-found, degrade gracefully with no token, `/dashboard/issues` page with open/resolved groups +
+> `#issue-detail` panel) → VAL-076 (real:true). Production engine restarted with v11 working-tree
+> (branch `feat/v11-sprint1-issue-observability`, base `5832599`); engine version `0.1.0 (v0.4.0-39-g5832599)`.
+> Two real GitHub issues filed (#7 with caller `v1.4.0-val75`, #8 with engine autofill) then closed after
+> capture. Full suite 697 pass / 156 files; `npx tsc --noEmit` clean. No config-file changes this iteration
+> (REQ-066/067 reuse existing `RWE_SECRET_GITHUB_TOKEN`). All prior REQs (001..065) hold evidence from
+> prior rounds — not re-litigated this round (smoke: 36 tools + `/api/status` HTTP 200 confirmed).
+
 > **v10 ROUND 1 (2026-08-01) — GATE PASSED.** The efficient-large-codebase-seeding theme (accepted
 > architecture: `docs/seed-sync-architecture.md`). Slice 1 — REQ-063 (compressed request bodies + a typed,
 > actionable too-large error) → VAL-072. Slice 2 — REQ-064 (content-addressed blob store with byte-verify +
@@ -805,6 +816,51 @@ restarted or modified during this write-up.
   guardrails as the inline seed. Test blobs/workflows cleaned up afterward. No SUT-boundary mock (real service →
   real CAS assemble → real workspace on disk → real artifacts read).
 - **iter:** v10
+
+### VAL-075 — REQ-066: every filed issue carries a version autofilled from the engine
+
+- **status:** green
+- **traces:** REQ-066
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Live production engine `rwe.service` restarted 2026-08-09 with v11 working-tree
+  (branch `feat/v11-sprint1-issue-observability`, base commit `5832599`). Engine version confirmed
+  as `0.1.0 (v0.4.0-39-g5832599)` via `serverInfo.version` in initialize response (proving
+  `resolveEngineVersion()` is wired and returns a non-empty semver-prefixed string with git-describe
+  suffix). (A) Caller-supplied version wins:
+  `curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"issue_report","arguments":{"title":"[Gate 7.5 v11 VAL-075] version-field validation test","reproSteps":"...","version":"v1.4.0-val75","severity":"low","analysis":"...","logs":"..."}}}'`
+  → `{"result":{"issueNumber":7,"url":"https://github.com/HsuJavis/remote-workflow-engine/issues/7","deduped":false}}`;
+  GitHub API fetch of issue #7 body confirms: `Version: v1.4.0-val75` in Environment section,
+  `severity: low`, `component: _none_` (placeholder for absent field), all five report fields present
+  (reproSteps / version / severity / analysis / logs). (B) Engine autofill when version omitted:
+  `issue_report` without `version` field → issue #8 filed; body contains
+  `Version: 0.1.0 (v0.4.0-39-g5832599)` (engine's own `resolveEngineVersion()` output),
+  `severity: _none_`, `component: _none_`. Both test issues closed after capture. No SUT-boundary
+  mock (real production server → real GitHub API → real issue body fetched and verified).
+- **iter:** v11
+
+### VAL-076 — REQ-067: a dashboard page that displays issues (open and resolved)
+
+- **status:** green
+- **traces:** REQ-067
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Live production engine `rwe.service` running v11 on `127.0.0.1:8787`. (A) API layer:
+  `curl -s http://127.0.0.1:8787/api/issues` → HTTP 200 `{"open":[{"number":8,...},{"number":7,...}],"resolved":[{"number":2,...},{"number":1,...}]}` — partition into open/resolved `agent-reported` issues, each entry has `number/title/state`. `curl -s http://127.0.0.1:8787/api/issues/7` → HTTP 200 full `IssueView` with `number:7, title:"[Gate 7.5 v11 VAL-075]...", state:"open", url:"https://github.com/HsuJavis/remote-workflow-engine/issues/7", body:<content>, commentCount:0, labels:["agent-reported","severity:low"]`. `curl -sv http://127.0.0.1:8787/api/issues/999999` → HTTP 404 `{"error":"Issue not found: #999999"}`. (B) Dashboard page:
+  `curl -s http://127.0.0.1:8787/dashboard/issues` → HTML response contains Issues nav link
+  (`<a href="/dashboard/issues">Issues</a>`), `<section id="issues"...>`, `<div id="issues-open">`,
+  `<div id="issues-resolved">`, `<div id="issue-detail" ... class="issue-detail">`, and
+  `loadIssues()` / `loadIssueDetail()` JS functions that call `GET /api/issues` and
+  `GET /api/issues/:number`; all rendered content uses `textContent` (XSS invariant per DES-038/KP-12).
+  `isIssuesView()` returns true for `/dashboard/issues`, `currentRunId()` returns null for that path
+  (not treated as a run-id). (C) No-token degrade: throwaway server started with `gateway:"direct-fetch"` config, no `RWE_SECRET_GITHUB_TOKEN` env var → `GET /api/issues` → HTTP 200
+  `{"open":[],"resolved":[],"degraded":"GitHub not configured"}`; `GET /api/issues/1` → HTTP 200
+  `{"degraded":"GitHub not configured"}`. Dashboard page still serves (rest of the dashboard loads
+  — confirmed by `/api/status` HTTP 200). No SUT-boundary mock (real production server + real throwaway
+  server → real GitHub API → real HTTP responses observed).
+- **iter:** v11
 
 ### VAL-046 — REQ-037: provider-aware SDK routing + Anthropic dual-auth security invariant
 

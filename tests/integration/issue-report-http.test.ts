@@ -59,6 +59,15 @@ describe('issue_report over the real MCP HTTP surface (REQ-027..030)', () => {
     expect(res.error?.code).toBe('ISSUE_REPORT_INVALID');
     expect(calls.length).toBe(before);
   });
+
+  // v11 (REQ-066): caller-supplied version must appear in the filed body as "Version: v1.4.0".
+  // RED: current report() ignores the version field; body contains the old "engine version:" line.
+  it('v11 (REQ-066): caller-supplied version renders as "Version: v1.4.0" in the filed body', async () => {
+    const before = calls.length;
+    await toolCall(baseUrl, 'issue_report', { title: 'Version test', reproSteps: 'step 1', analysis: 'root A', version: 'v1.4.0' });
+    expect(calls[before]).toBeDefined();
+    expect(calls[before].body).toContain('Version: v1.4.0');
+  });
 });
 
 describe('issue_report default wiring: no token → GITHUB_TOKEN_MISSING (REQ-028)', () => {

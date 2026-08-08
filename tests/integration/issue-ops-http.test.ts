@@ -92,3 +92,98 @@ describe('issue read/reply default wiring: no token → GITHUB_TOKEN_MISSING (RE
     }
   });
 });
+
+// ── v11 (REQ-067, DES-038): GET /api/issues* — read-only Issues dashboard API ──
+// These tests are RED because the router dispatch predicate (server.ts:996) does not yet
+// match /api/issues, so requests fall through to /mcp and get a JSON-RPC -32601 error.
+
+describe('GET /api/issues — Issues dashboard list API (REQ-067)', () => {
+  let server: Server; let baseUrl: string;
+
+  // Fake client: listIssues returns 2 open + 1 closed; getIssue(10) → full IssueView.
+  const OPEN_1 = { number: 10, title: 'Bug A', state: 'open', labels: ['agent-reported', 'severity:high'], url: 'https://x/10' };
+  const OPEN_2 = { number: 11, title: 'Bug B', state: 'open', labels: ['agent-reported'], url: 'https://x/11' };
+  const CLOSED_1 = { number: 12, title: 'Fixed C', state: 'closed', labels: ['agent-reported'], url: 'https://x/12' };
+  const ISSUE_VIEW_10: IssueView = { number: 10, title: 'Bug A', state: 'open', labels: ['agent-reported'], body: 'body text', url: 'https://x/10', commentCount: 3 };
+
+  const dashClient: GithubIssueClient = {
+    async createIssue() { return { number: 1, url: 'https://x/1' }; },
+    async getIssue(n) { return n === 10 ? ISSUE_VIEW_10 : null; },
+    async listIssues(_f) { return [OPEN_1, OPEN_2, CLOSED_1]; },
+    async getComments() { return [] as CommentView[]; },
+    async createComment() { return { commentId: 1, url: 'https://x/1#c1' }; },
+    async findOpenByFingerprint() { return null; },
+  };
+
+  beforeAll(async () => {
+    const issueReporter = new IssueReporter({ secretSource: srcWith({ GITHUB_TOKEN: 'tkn' }), clientImpl: dashClient });
+    server = await createServer({ port: 0, bind: '127.0.0.1', issueReporter });
+    baseUrl = `http://127.0.0.1:${server.port}`;
+  });
+  afterAll(async () => { await server?.close(); });
+
+  it('GET /api/issues → HTTP 200 with {open: [2 items], resolved: [1 item]}', async () => {
+    // RED: /api/issues falls through to /mcp → JSON-RPC -32601; not a 200 with the partition shape.
+    const res = await fetch(`${baseUrl}/api/issues`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { open: unknown[]; resolved: unknown[] };
+    expect(body.open).toHaveLength(2);
+    expect(body.resolved).toHaveLength(1);
+    // Each entry must carry its GitHub url.
+    expect((body.open[0] as any).url).toMatch(/^https:\/\//);
+  });
+
+  it('GET /api/issues/:number → HTTP 200 with the full IssueView (body, labels, commentCount)', async () => {
+    // RED: /api/issues/10 falls through to /mcp; not a 200 with IssueView.
+    const res = await fetch(`${baseUrl}/api/issues/10`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as IssueView;
+    expect(body.number).toBe(10);
+    expect(typeof body.body).toBe('string');
+    expect(typeof body.commentCount).toBe('number');
+    expect(body.url).toMatch(/^https:\/\//);
+  });
+
+  it('GET /api/issues/:number for unknown number → HTTP 404 with an error body', async () => {
+    // RED: once the route is live, /api/issues/9999 should return 404 WITH a JSON error body
+    // ({error: ...}). Right now the route doesn't exist so the catch-all returns 404 with a
+    // plain text/html body, not a JSON object. Assert the JSON shape to stay RED until the real
+    // route is wired: the parse below will throw or the 'error' field will be absent.
+    const res = await fetch(`${baseUrl}/api/issues/9999`);
+    expect(res.status).toBe(404);
+    const body = await res.json() as { error?: string };
+    // The real implementation returns {error: 'Issue not found: 9999'} or similar.
+    // The catch-all 404 returns a plain string or different shape → assertion fails → RED.
+    expect(typeof body.error).toBe('string');
+    expect(body.error).toMatch(/9999/);
+  });
+});
+
+describe('GET /api/issues degradation — no GitHub token → HTTP 200 + degraded notice (REQ-067)', () => {
+  it('both list and detail endpoints return HTTP 200 + degraded notice when token is absent', async () => {
+    // RED: without the /api/issues route, the endpoints fall through to /mcp (wrong status/shape).
+    const saved = process.env.RWE_SECRET_GITHUB_TOKEN;
+    delete process.env.RWE_SECRET_GITHUB_TOKEN;
+    const s = await createServer({ port: 0, bind: '127.0.0.1' }); // real default — no token
+    try {
+      const base = `http://127.0.0.1:${s.port}`;
+
+      const listRes = await fetch(`${base}/api/issues`);
+      expect(listRes.status).toBe(200); // never a 500
+      const listBody = await listRes.json() as { degraded?: string; open: unknown[]; resolved: unknown[] };
+      expect(typeof listBody.degraded).toBe('string');
+      expect(listBody.degraded).toBeTruthy();
+      expect(listBody.open).toEqual([]);
+      expect(listBody.resolved).toEqual([]);
+
+      const detailRes = await fetch(`${base}/api/issues/1`);
+      expect(detailRes.status).toBe(200); // never a 500
+      const detailBody = await detailRes.json() as { degraded?: string };
+      expect(typeof detailBody.degraded).toBe('string');
+      expect(detailBody.degraded).toBeTruthy();
+    } finally {
+      await s.close();
+      if (saved !== undefined) process.env.RWE_SECRET_GITHUB_TOKEN = saved;
+    }
+  });
+});
