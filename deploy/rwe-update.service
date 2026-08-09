@@ -1,0 +1,21 @@
+[Unit]
+Description=remote-workflow-engine self-update oneshot (DES-060, TASK-063)
+# Privileged oneshot triggered by rwe-update.path.  Zero decision logic lives here;
+# all update logic is in deploy/rwe-update.sh (env-seamed for testing and replaceability).
+After=network.target
+
+[Service]
+Type=oneshot
+# Override path/result/lock locations via EnvironmentFile or explicit Environment=.
+# These defaults mirror the path convention documented in DEPLOY.md:
+# engine-user-owned 0700 directory, OUTSIDE every workRoot.
+EnvironmentFile=-/etc/rwe/update.env
+ExecStart=/opt/remote-workflow-engine/deploy/rwe-update.sh
+# Log full output to journald (detail excerpt is also written to RWE_UPDATE_RESULT).
+StandardOutput=journal
+StandardError=journal
+# A non-zero exit does not mean "restart"; let the result file record the failure.
+SuccessExitStatus=0 10 20 30 40
+
+[Install]
+WantedBy=default.target

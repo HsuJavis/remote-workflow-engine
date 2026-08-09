@@ -34,11 +34,14 @@ import { McpRegistry, type McpKind } from './mcp-registry.js';
 import { IssueReporter, resolveEngineVersion, type IssueReportInput, type IssueListFilter } from './github/issue-reporter.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { buildCatalog, filterCatalog, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
+import { assertUpdatePathsOutsideWorkRoot, writeUpdateFlag, SelfUpdateDb, readUpdateResult } from './self-update.js';
+import type { UpdateOutcome } from './update-types.js';
+import { verifyTagWebhook } from './self-update-webhook.js';
 
 // REQ-066 (v11): engine version from package.json + best-effort git describe, replacing the hardcoded '1.0.0'.
 const ENGINE_VERSION = resolveEngineVersion();
 import { buildDashboardModel, buildDagModel } from './dashboard.js';
-import { DASHBOARD_HTML } from './dashboard-page.js';
+import { DASHBOARD_HTML, buildDashboardHtml } from './dashboard-page.js';
 import type { RunStore } from './run-store.js';
 
 export interface ServerConfig {
@@ -111,6 +114,13 @@ export interface ServerConfig {
   // v8 Defer B (REQ-057/058): override the webhook registry's on-disk path (default
   // join(workRoot,'webhooks.db')), same convention as schedulerDbPath/continuationDbPath.
   webhookDbPath?: string;
+  // v11 Sprint 2 (REQ-068/069, TASK-062/DES-059): self-update wiring.
+  // updateFlagPath: path the engine writes the update-trigger flag to (MUST be outside workRoot).
+  // updateResultPath: path the bash helper writes the outcome JSON to (read by the engine at boot/lazily).
+  // selfUpdateDbPath: SQLite DB for delivery dedup + pending outcome row (default join(workRoot,'self-update.db')).
+  updateFlagPath?: string;
+  updateResultPath?: string;
+  selfUpdateDbPath?: string;
 }
 
 export interface Server {
@@ -852,8 +862,52 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // the real store, not the InMemory unit-test fake; a workRoot survives across a server restart.
   const workRoot = config?.workRoot ?? mkdtempSync(join(tmpdir(), 'rwe-'));
   const clock = new SystemClock();
+
+  // v11 Sprint 2 (REQ-068, TASK-062/DES-059): self-update wiring.
+  // Boot guard: flag/result paths must not reside inside the workRoot (RCE-prevention).
+  if (config?.updateFlagPath || config?.updateResultPath) {
+    assertUpdatePathsOutsideWorkRoot([config.updateFlagPath, config.updateResultPath], [workRoot]);
+  }
+  // Resolve the HMAC secret once at startup (RWE_SECRET_GITHUB_WEBHOOK_SECRET).
+  const githubWebhookSecret = loadSecretSourceFromEnv().resolve('GITHUB_WEBHOOK_SECRET');
+  // Dedup DB — created when any self-update path is configured (flag, result, or explicit DB path).
+  // VAL-079: updateResultPath alone (without updateFlagPath) is a valid "observe-only" config.
+  const selfUpdateDb = (config?.updateFlagPath || config?.updateResultPath || config?.selfUpdateDbPath)
+    ? new SelfUpdateDb(config.selfUpdateDbPath ?? join(workRoot, 'self-update.db'), clock)
+    : null;
+  // Anchored tag pattern (rejects injection attempts like "v1.0.0; rm -rf /").
+  const GITHUB_TAG_PATTERN = /^v[0-9][0-9A-Za-z.\-+]*$/;
   const store = new SqliteRunStore(join(workRoot, 'store'), clock);
-  await store.hydrateAll(); // boot recovery: re-classify any stale 'running' rows as 'failed'
+  const hydratedRuns = await store.hydrateAll(); // boot recovery: re-classify stale 'running' as 'interrupted'
+  const interruptedRuns = hydratedRuns.filter((r) => r.status === 'interrupted').length;
+
+  // DES-061 (TASK-064): last-update outcome — ingested at boot (covers applied restart) AND lazily
+  // on /api/status (covers failed: engine not restarted).
+  // DB row is the served authority so that:
+  //  (a) armed-but-no-result-file-yet → DB pending row is visible immediately.
+  //  (b) stale-tag guard: pending row for T_new is NOT clobbered by applied/failed for T_old.
+  let lastUpdateOutcome: UpdateOutcome | null = null;
+  const sameOutcome = (a: UpdateOutcome | null, b: UpdateOutcome | null): boolean =>
+    a === b || (!!a && !!b && a.tag === b.tag && a.status === b.status && a.ts === b.ts && a.detail === b.detail);
+  const ingestUpdateResult = (): void => {
+    const result = config?.updateResultPath ? readUpdateResult(config.updateResultPath) : null;
+    if (!selfUpdateDb) {
+      // No DB: serve file result directly (no pending tracking).
+      if (result) lastUpdateOutcome = result;
+      return;
+    }
+    const current = selfUpdateDb.readOutcome();
+    // Stale-tag guard: don't overwrite a pending row for T_new with an old result for T_old.
+    const stale = !!(result && current?.status === 'pending' && current.tag !== result.tag);
+    // Only write when the value actually changed — this runs on every /api/status poll (~3s), so
+    // an unchanged terminal result must not re-issue an identical INSERT OR REPLACE (WAL) each hit.
+    if (result && !stale && !sameOutcome(result, current)) selfUpdateDb.overwriteOutcome(result);
+    // Serve the freshest row (the just-written result, else the current DB row — captures pending
+    // even before the result file exists). No second SELECT: the value is already in hand.
+    lastUpdateOutcome = (result && !stale ? result : current) ?? lastUpdateOutcome;
+  };
+  ingestUpdateResult(); // boot-time read (covers the "applied" case after a systemctl restart)
+
   const catalog = new WorkflowCatalog(workRoot, clock);
   const gateway =
     config?.gateway ??
@@ -997,6 +1051,45 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // reads it via this mutable, assigned below. 0 until then (no request is served before listen).
   let boundPort = 0;
   const http = createHttpServer((req, res) => {
+    // v11 Sprint 2 (REQ-068, TASK-062/DES-059): GitHub tag webhook — Host-EXEMPT (HMAC is this route's
+    // auth; a forwarded delivery carries a public Host, which the REQ-056 allowlist would refuse).
+    // This branch runs BEFORE the Host/Origin gate and fully owns the path (always returns here).
+    if (req.method === 'POST' && req.url === '/github/webhook') {
+      readBodyBuffer(req, MAX_BODY_BYTES).then((rawBody) => {
+        const verdict = verifyTagWebhook({
+          event: (req.headers['x-github-event'] as string | undefined) ?? '',
+          signatureHeader: req.headers['x-hub-signature-256'] as string | undefined,
+          deliveryId: req.headers['x-github-delivery'] as string | undefined,
+          rawBody,
+        }, {
+          secret: githubWebhookSecret,
+          tagPattern: GITHUB_TAG_PATTERN,
+        });
+        if (!verdict.arm) {
+          sendJson(res, verdict.httpStatus, verdict.code
+            ? { code: verdict.code, reason: verdict.reason }
+            : { reason: verdict.reason });
+          return;
+        }
+        // Armed: verify the feature is configured (flag path must exist).
+        const flagPath = config?.updateFlagPath;
+        if (!flagPath || !selfUpdateDb) {
+          sendJson(res, 503, { code: 'UPDATE_WEBHOOK_UNCONFIGURED', reason: 'flag path not configured' });
+          return;
+        }
+        // DES-059 ordering: dedup → pending-upsert → flag-write → 202.
+        if (selfUpdateDb.isDuplicate(verdict.deliveryId)) {
+          sendJson(res, 200, { replayed: true });
+          return;
+        }
+        selfUpdateDb.upsertPending(verdict.tag);
+        writeUpdateFlag(verdict.tag, flagPath);
+        sendJson(res, 202, { tag: verdict.tag });
+      }).catch(() => {
+        sendJson(res, 500, { error: 'Internal error reading webhook body' });
+      });
+      return;
+    }
     // v8 Defer B (REQ-056): Host/Origin allowlist — DNS-rebinding + CSRF defense, uniform across every
     // route (/mcp, /api/*, /dashboard, /hooks/*). A foreign Host (rebinding) or a present-but-foreign
     // Origin (drive-by browser CSRF) is refused 403; an ABSENT Origin is allowed (programmatic clients
@@ -1010,15 +1103,32 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // routing: /dashboard/<runId> serves this exact same static page; its own client JS reads the
     // runId back out of location.pathname.
     if (req.method === 'GET' && (req.url === '/dashboard' || req.url?.startsWith('/dashboard/'))) {
+      // DES-061 (TASK-064): lazily re-read the update result so the dashboard shows fresh state
+      // even when the engine was NOT restarted after a failed build (the "failed" lazy-read case).
+      ingestUpdateResult();
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(DASHBOARD_HTML);
+      res.end(buildDashboardHtml({ lastUpdate: lastUpdateOutcome, interruptedRuns: interruptedRuns || undefined }));
+      return;
+    }
+    // DES-061 (TASK-064): version endpoint — reuses resolveEngineVersion() result, same value
+    // exposed in the MCP initialize response's serverInfo.version.
+    if (req.method === 'GET' && req.url === '/api/version') {
+      sendJson(res, 200, { version: ENGINE_VERSION });
       return;
     }
     // D-V3M-2 (REQ-020 D-DOS gauge): read-only observability of the process-global agent-slot
-    // semaphore — GET /api/status -> { agentSemaphore: { total, inUse, queued } }. inUse rises with
-    // concurrent SDK-CLI dispatches and returns to baseline (0) once they settle.
+    // semaphore — GET /api/status -> { agentSemaphore, version, lastUpdate?, interruptedRuns? }.
+    // DES-061 (TASK-064): version + last-update outcome + interrupted-run call-to-action added.
     if (req.method === 'GET' && (req.url === '/api/status' || req.url?.startsWith('/api/status?'))) {
-      sendJson(res, 200, { agentSemaphore: runManager.semaphoreGauge() });
+      // Lazily re-read update result so the "failed" case (no restart) is observable.
+      ingestUpdateResult();
+      const statusBody: Record<string, unknown> = {
+        agentSemaphore: runManager.semaphoreGauge(),
+        version: ENGINE_VERSION,
+      };
+      if (lastUpdateOutcome) statusBody['lastUpdate'] = lastUpdateOutcome;
+      if (interruptedRuns > 0) statusBody['interruptedRuns'] = interruptedRuns;
+      sendJson(res, 200, statusBody);
       return;
     }
     // TASK-025 (DES-018): read-only dashboard HTTP API, a distinct transport from /mcp on the
@@ -1141,7 +1251,9 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         // whichever gateway path built one — closes the v1 DEPLOY known-open orphan-subprocess
         // item for the direct-fetch/legacy gateway path too (the 'sdk' path's own proxy is already
         // reaped by main.ts's shutdown handler via composeConfig()'s returned `proxyManager`).
-        .then(() => gateway?.stop?.());
+        .then(() => gateway?.stop?.())
+        // v11 (TASK-062): close the self-update SQLite DB if it was opened.
+        .then(() => { selfUpdateDb?.close(); });
     },
   };
 }

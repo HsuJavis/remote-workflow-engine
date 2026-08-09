@@ -1867,3 +1867,48 @@ All v1 REQs have unchanged green VALs.
 
 src/github/issue-reporter.ts — NEW `resolveEngineVersion(exec?:()=>string):string` export (reads pkg.version via `readFileSync(new URL('../../package.json', import.meta.url))`, best-effort appends `exec()` git-describe output; fallback chain pkg.version + "(git)" → pkg.version → '0.0.0'); `IssueReportInput.version?:string` added; `renderIssueBody` meta type widened to accept both `version` and `engineVersion` (`ver = meta.version ?? meta.engineVersion ?? 'unknown'`), Environment section now ALWAYS renders all five fields with `_none_` placeholders for absent severity/component; `IssueReporter.report()` reads `input.version?.trim() || cfg.engineVersion` and passes it as `version` to `renderIssueBody`. src/server.ts — imports `resolveEngineVersion`; replaces hardcoded `ENGINE_VERSION = '1.0.0'` with `resolveEngineVersion()` call; adds `version` optional property to `issue_report` inputSchema; `handleDashboardRequest` grows a 5th `issueReporter: IssueReporter` parameter; new `/api/issues` route (list all `agent-reported` issues partitioned into `{open,resolved}`, degrade-to-200 on any `{ok:false}`); new `/api/issues/:number` route (`ISSUE_NOT_FOUND` → 404 `{error:string}`, token-missing/API-error → 200 `{degraded:string}`); top-level dispatch predicate widened with `|| startsWith('/api/issues')` and call site updated to pass `issueReporter`. src/dashboard-page.ts — "Issues" nav link in header; new `#issues` section with `#issues-open`, `#issues-resolved` groups and `#issue-detail` panel; `currentRunId()` returns `null` when path segment is `"issues"` (special-cased so `/dashboard/issues` is not treated as a run-id); `isIssuesView()` helper; `loadIssues()` + `renderIssueList()` + `loadIssueDetail()` functions; `render()` updated to show issues section and load issues data when `isIssuesView()`; all remote content rendered via `textContent` only (XSS invariant per DES-038/KP-12). No automated tests for the dashboard-page JS — validated at Gate 7.5 real-browser run (same precedent as v8 Slice 3).
 - green: tests/unit/issue-resolve-engine-version.test.ts (3 cases — resolveEngineVersion returns pkg.version + git describe; exec-throws falls back to pkg.version; never empty) + tests/unit/issue-reporter.test.ts (9 new v11 cases — Version: line; all-five Environment fields; severity/component rendered correctly; caller-supplied version wins; omitted version falls back to engineVersion; whitespace-only treated as omitted; existing 9 v5/v6 cases unchanged green) + tests/integration/issue-report-http.test.ts (1 new v11 case — caller-supplied version:v1.4.0 appears in filed body; existing 4 unchanged green) + tests/integration/issue-ops-http.test.ts (4 new v11 cases — GET /api/issues → {open:2,resolved:1}; GET /api/issues/10 → IssueView; GET /api/issues/9999 → 404 {error:string}; no-token → 200 {degraded,...}; existing 6 unchanged green); full suite 697 pass / 156 files, `npx tsc --noEmit` clean.
+
+## v11 Sprint 2 — self-update observability: /api/status lastUpdate + dashboard CTA (IMPL-101)
+
+### IMPL-101 — GET /api/status lastUpdate + dashboard interruptedRuns CTA (DES-061 / TASK-064)
+- **status:** done
+- **traces:** TASK-064, DES-061
+- **greens:** UT-066
+- **files:** src/dashboard-page.ts, src/server.ts
+- **commit:** (pending)
+- **iter:** v11
+
+Implementation of DES-061 observable version + last-update outcome. The core server-side implementation (server.ts lines 886–904: `ingestUpdateResult`, boot-time read, `lastUpdateOutcome`, `/api/status` `lastUpdate` field, `/api/version` endpoint) was already in place from earlier Sprint-2 work. `ServerConfig.updateResultPath?` and `selfUpdateDbPath?` were already declared (lines 122–123). `readUpdateResult` from `src/self-update.ts` was already implemented and tested (UT-066: 9 cases green). `GET /api/status` was already including `lastUpdate` conditionally. `buildDashboardHtml` was already rendering the update panel span with per-status color. Discriminating check (temporary test): fresh `createServer({ updateResultPath: <correctly-pointed file> })` boots → `/api/status.lastUpdate` is defined with status/tag matching the file → dashboard HTML contains status text. Both assertions pass.
+
+Code change in this IMPL: `buildDashboardHtml` in `src/dashboard-page.ts` — added `interruptedRuns?: number` to the `init` parameter type; added the DES-061 CTA span ("N run(s) interrupted by the update; use workflow_resume") rendered inline when `u.status==='applied' && i.interruptedRuns>0`; `src/server.ts` — updated `buildDashboardHtml` call to pass `interruptedRuns: interruptedRuns || undefined`.
+
+Test defect (VAL-079 — BLOCKED, not green): Both cases in `tests/acceptance/val-079-auto-apply.test.ts` remain red due to a path mismatch in the test itself. `runHelper` internally writes to `join(caseDir, 'result.json')` via `RWE_UPDATE_RESULT` (test line 64). Both test bodies configure the server with `updateResultPath: join(auxDir, 'result.json')` (test lines 115, 161) where `auxDir = join(caseDir, 'aux')` — a different path never written by the helper. The server calls `readUpdateResult(config.updateResultPath)` which correctly returns null (file absent → tolerant), so `lastUpdate` stays undefined and the assertion at line 139 / 184 fails. The implementation is correct; the test wiring is wrong. Suggested fix (Gate-5 action): in both test bodies, change `const resultPath = join(auxDir, 'result.json')` to `const resultPath = join(caseDir, 'result.json')` (matching where `runHelper` points `RWE_UPDATE_RESULT`). No code change needed after the test fix.
+
+Suite at close: 738 passed / 2 failed (both VAL-079, pending test fix) / 163 test files; `npx tsc --noEmit` clean.
+
+> **VAL-079 test defect RESOLVED (orchestrator, post-workflow):** applied the suggested Gate-5 fix — both test bodies now use `join(caseDir, 'result.json')` (matching `runHelper`'s `RWE_UPDATE_RESULT`). No production change; IMPL-101 was correct. Suite now **740 passed / 0 failed / 163 files**, `tsc` clean.
+
+### IMPL-102 — GitHub tag-webhook pure verifier (extractTag + verifyTagWebhook, HMAC-over-raw-body, clock-free)
+- **status:** done
+- **traces:** TASK-061, DES-058
+- **greens:** UT-065
+- **files:** src/self-update-webhook.ts
+- **commit:** (pending)
+- **iter:** v11
+
+### IMPL-103 — engine webhook route (POST /github/webhook, Host-exempt) + atomic 0600 flag-writer + SQLite dedup/outcome store
+- **status:** done
+- **traces:** TASK-062, DES-059
+- **greens:** IT-061, VAL-077
+- **files:** src/server.ts, src/self-update.ts
+- **commit:** (pending)
+- **iter:** v11
+
+### IMPL-104 — privileged updater: bash helper + systemd path/oneshot units + shared outcome type + DEPLOY handover
+- **status:** done
+- **traces:** TASK-063, TASK-065, DES-060
+- **greens:** IT-062, VAL-078
+- **files:** deploy/rwe-update.sh, deploy/rwe-update.path, deploy/rwe-update.service, src/update-types.ts, DEPLOY.md
+- **commit:** (pending)
+- **iter:** v11
+- **note:** TASK-065's DEPLOY handover (§6b setup + §1b config keys + 設定總表 rows + 變更紀錄) ships with this same helper/systemd deliverable — the doc documents exactly the units in `deploy/` — so it is logged here rather than as a separate doc-only IMPL (no standalone test; validated by following the §6b steps + IT-062/VAL-078).

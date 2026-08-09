@@ -3,10 +3,11 @@
 > 人類導向文件（繁體中文）。由 Gate 7.5 validator 依實際部署步驟撰寫，步驟可重跑。
 > 凡 validator 為了把系統跑起來而做、但 README quickstart 未涵蓋的動作，都記在這裡。
 >
-> 目前部署狀態（v11，2026-08-09）：systemd user service `rwe.service`，綁定
+> 目前部署狀態（v11 Sprint 2，2026-08-09）：systemd user service `rwe.service`，綁定
 > `0.0.0.0:8787`（ufw 白名單 `192.168.0.0/24` + SSH），`workRoot=/home/user/.local/share/rwe-data`，
-> `gateway:"sdk"` + managed LiteLLM proxy。36 個 MCP 工具，含 Issues 儀表板（`/dashboard/issues`）
-> 與 `issue_report` 版本自動填入。完整驗證證據見
+> `gateway:"sdk"` + managed LiteLLM proxy。36 個 MCP 工具，含 Issues 儀表板（`/dashboard/issues`）、
+> `issue_report` 版本自動填入、標籤觸發式自動更新（`POST /github/webhook`）。
+> 自動更新設定見 §6b；Gate 7.5 v11 Sprint 2 驗證**已通過**（VAL-077/078/079 綠：真 HMAC webhook、真 git repo 的 helper apply + safe-fail、`/api/status.lastUpdate` boot 攝取）。完整驗證證據見
 > `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
 
 
@@ -54,7 +55,7 @@ node node_modules/tsx/dist/cli.mjs src/main.ts
 ```bash
 # 健康確認（服務啟動後）
 curl -s http://localhost:8787/api/status
-# 預期：{"agentSemaphore":{"total":32,"inUse":0,"queued":0}}
+# 預期：{"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"1.x.x"}
 
 curl -s -X POST http://localhost:8787/mcp \
   -H 'Content-Type: application/json' \
@@ -357,6 +358,22 @@ blob 以其**內容的 sha256** 為鍵存放（伺服器 byte-verify、以計算
 `seed_plan`／`workflow_run` 的 `seedManifest` 僅以 hash 參照——因此此目錄即所有 seed blob 的實體儲存邊界，
 請比照 workspace 保護。`missing`/`hasRef` 為 per-namespace（非全域存在性），跨租戶不共享 dedup。
 
+`updateFlagPath`（型別 `string`，選填，**v11 Sprint 2 新增**）：引擎在收到已驗簽的 GitHub tag webhook 後，
+以**原子方式（temp+rename）寫入的更新旗標檔**路徑（mode 0600）。systemd `.path` 單元監看此檔觸發
+`rwe-update.service`，由特權 bash helper 讀取標籤、checkout、build、重啟。**必須在所有 `workRoot` 之外**
+（引擎啟動時驗證，違反則以 `UPDATE_FLAG_INSIDE_WORKROOT` 拒絕啟動——這是 RCE 防護邊界）。建議路徑：
+`/home/<user>/.local/share/rwe-flags/update.flag`（引擎使用者可寫、權限 0700 的目錄）。省略時
+`/github/webhook` 路由遇到已驗簽且需 arm 的事件回 503，其餘功能不受影響。
+`updateResultPath`（型別 `string`，選填，**v11 Sprint 2 新增**）：特權 bash helper（`deploy/rwe-update.sh`）
+以原子方式寫入更新結果 JSON（`{tag, status:'applied'|'failed'|'skipped', ts, detail?}`）的路徑。引擎在
+啟動時（covers `applied` case：systemd 重啟後 helper 的結果已 flush）與 `GET /api/status` 懶惰讀取時
+（covers `failed` case：引擎沒重啟時仍可觀察到 helper 失敗）讀取此檔，回傳為 `lastUpdate` 欄位。讀取為
+容錯式（absent/malformed/half-written → null，永不 throw，`detail` 上限 4 KB）。同樣**必須在所有
+`workRoot` 之外**。建議路徑：`/home/<user>/.local/share/rwe-flags/update-result.json`。
+`selfUpdateDbPath`（型別 `string`，選填，**v11 Sprint 2 新增**）：自更新的 SQLite DB 路徑（delivery
+去重表 `update_deliveries` + 單列 pending outcome 表 `update_outcome`），省略時預設
+`$workRoot/self-update.db`；一般部署可省略不填。
+
 **Gate 7.5 v2 ROUND 2 config-file sync check 補充（本輪新發現的文件漂移，已修正）**：`litellmPort`
 （型別 `number`，選填）在 v2 TASK-027 就已經被 `composeConfig()` 真的接進
 `LiteLLMProxyManager(aliases, {port: fileConfig.litellmPort})`（`tests/unit/
@@ -375,6 +392,7 @@ port 的問題（實測常駐 sdk 服務跑在動態 port，可與完整測試�
 | `RWE_WORK_ROOT` | `workRoot`（狀態/journal/工作目錄根） | 設定檔值，否則系統暫存目錄下自動建立 |
 | `RWE_SECRET_<NAME>` | 伺服器端 secret store（REQ-018）。provisioned MCP config 裡的 `${secret:NAME}` handle 由這個 env var 解析（`<NAME>` 對應 handle 裡的名稱，大小寫敏感）。引擎啟動時不驗證，只在有 run 引用 MCP 時才解析——缺少則該 run 以 `SECRET_MISSING` 報錯，從不外洩 handle 值或靜默跳過。**絕不放進 `rwe.config.json`（config 只存 handle，不存值）**；建議透過 systemd unit 的 `Environment=` 或 `EnvironmentFile=` 注入，或者 `export RWE_SECRET_MY_TOKEN=<value>` 方式設定。 | 無預設（缺少且 MCP 有引用時 run 報錯） |
 | `RWE_SECRET_GITHUB_TOKEN` | **issue_report / Issues 儀表板需要**（REQ-027..030, REQ-066, REQ-067）。GitHub Personal Access Token（PAT）或 Fine-grained token，須有目標 repo 的 `issues:write` 權限。引擎讀此鍵為 `RWE_SECRET_GITHUB_TOKEN`（命名遵循 secret store 慣例）。缺少時 `issue_report` 回 `GITHUB_TOKEN_MISSING`；`GET /api/issues` 回 HTTP 200 `{degraded:"GitHub not configured"}`（不 500）。**絕不放進設定檔**；透過 `EnvironmentFile=~/.config/rwe.env` 注入（見 §2b systemd unit 範例）。 | 無預設（缺少時功能降級，非崩潰） |
+| `RWE_SECRET_GITHUB_WEBHOOK_SECRET` | **v11 Sprint 2（REQ-068）標籤觸發式自動更新需要**。GitHub webhook 的共享 HMAC 密鑰，對應在 GitHub 介面設定的「Secret」欄位。引擎讀此鍵為 `RWE_SECRET_GITHUB_WEBHOOK_SECRET`（secret store 慣例）。`POST /github/webhook` 路由以此金鑰對**原始 body bytes**（非解碼後）計算 HMAC-SHA256，並與 `X-Hub-Signature-256` 標頭做常數時間比對。缺少時（同時沒有設定 `updateFlagPath`）整條路由回 503 `UPDATE_WEBHOOK_UNCONFIGURED`，不影響其他功能。**絕不放進設定檔**；透過 `EnvironmentFile=~/.config/rwe.env` 注入。 | 無預設（缺少時自動更新功能停用，其餘功能不受影響） |
 
 ## 1c. 安全模型（Security Model，v2 Gate 8 review 收尾修復，D-V2G8-1(a)(b)(c)(d)）
 
@@ -861,6 +879,144 @@ npm run start
   ~~修掉 `litellm` port 4000 碰撞風險~~ **已在 v2 TASK-027 解決**（orphan-reap + `litellmPort`
   設定鍵，見上方第 7/8 項與 §1b），不再是待辦項。
 
+## §6b 標籤觸發式自動更新（v11 Sprint 2，REQ-068/069/070）
+
+> **範圍：僅限 systemd 部署。** Docker Compose 部署需手動更新（`git pull` + `npm ci` + `npm run build` + 重啟容器），不使用本節機制。
+
+### 概覽
+
+特權分離架構：
+
+```
+GitHub → POST /github/webhook → 引擎（UNPRIVILEGED）
+                                     │ HMAC-SHA256 驗簽（原始 body）
+                                     │ delivery-id 去重
+                                     │ upsert pending 結果列
+                                     ↓
+                              updateFlagPath（0600）
+                                     │
+                              deploy/rwe-update.path（PathExists=）
+                                     ↓
+                              deploy/rwe-update.service（PRIVILEGED）
+                              └── deploy/rwe-update.sh
+                                       │ flock + 消費旗標
+                                       │ git fetch --tags（只接 RWE_OFFICIAL_REMOTE）
+                                       │ 解析 tag→SHA（array-args，永不 shell-eval）
+                                       │ git checkout <SHA>
+                                       │ npm ci && npm run build
+                                       │   ↓ 成功
+                                       │ 寫 applied 結果（atomic）→ sync
+                                       │ systemctl restart rwe
+                                       │   ↓ 失敗（safe-fail）
+                                       └─ 寫 failed 結果，中止（不重啟）
+                                          服務繼續在舊版本上執行
+```
+
+### 步驟一：GitHub Webhook 設定
+
+在 GitHub repo 的 **Settings → Webhooks → Add webhook** 頁面：
+
+| 欄位 | 值 |
+|------|----|
+| **Payload URL** | `https://your-domain/github/webhook`（見步驟二反向代理） |
+| **Content type** | **`application/json`**（⚠ HIGH：必須選此項——form-encoded body 雖然 HMAC 驗過，但 JSON parse 會失敗導致 tag 無法提取，等同靜默 no-op；絕對不要用預設的 `application/x-www-form-urlencoded`） |
+| **Secret** | 隨機高熵字串（建議 32+ bytes hex），記下來（稍後設入環境變數） |
+| **Which events would you like to trigger this webhook?** | 選 **Let me select individual events**，勾選：**Branch or tag creation** + **Pushes**（涵蓋 `create` + `push` 兩種事件類型，GitHub 推送 tag 時兩者皆會發送） |
+| **Active** | ✓ |
+
+### 步驟二：反向代理（只轉發 webhook 路由）
+
+引擎綁定 `127.0.0.1`（loopback），外部流量由反向代理轉入。**只轉發 `POST /github/webhook`**，其餘路由不對外曝露：
+
+```nginx
+# nginx 範例
+location = /github/webhook {
+    proxy_pass http://127.0.0.1:8787;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    # 不需改寫 X-Hub-Signature-256（HMAC 對原始 body 驗簽，代理不動 body）
+}
+# 其餘路由不反向代理到 rwe（僅 loopback 直連）
+```
+
+> **Host 白名單豁免**：`POST /github/webhook` 路由在 Host/Origin 白名單**之前**處理（HMAC 是此路由的認證，GitHub 傳入的 Host 是公網域名；白名單是對其他路由的 DNS-rebinding/CSRF 防護）。引擎程式碼確保此路由不受白名單影響。
+
+### 步驟三：旗標與結果路徑（**必須在所有 workRoot 之外**）
+
+建立一個引擎使用者可讀寫的目錄（權限 `0700`，**不在任何 `workRoot` 下**，否則啟動時報 `UPDATE_FLAG_INSIDE_WORKROOT`）：
+
+```bash
+mkdir -p ~/.local/share/rwe-flags
+chmod 0700 ~/.local/share/rwe-flags
+```
+
+### 步驟四：設定環境變數與 rwe.config.json
+
+在 `~/.config/rwe.env`（已被 systemd unit 的 `EnvironmentFile=` 讀入）加入：
+
+```bash
+RWE_SECRET_GITHUB_WEBHOOK_SECRET=<你在 GitHub 設的 Secret>
+```
+
+在 `rwe.config.json` 加入：
+
+```json
+{
+  "updateFlagPath":   "/home/<user>/.local/share/rwe-flags/update.flag",
+  "updateResultPath": "/home/<user>/.local/share/rwe-flags/update-result.json"
+}
+```
+
+（`selfUpdateDbPath` 省略即用預設 `$workRoot/self-update.db`。）
+
+### 步驟五：安裝特權更新 systemd 單元
+
+> 特權 helper（`deploy/rwe-update.sh`）負責 git checkout + build + restart，須以有 `systemctl restart rwe` 權限的使用者執行。對 systemd user service 部署，`rwe-update.service` 作為 user service 即可（user service 可 `systemctl --user restart` 自己的服務）。
+
+```bash
+# 填入實際路徑後安裝
+envsubst < deploy/rwe-update.path > ~/.config/systemd/user/rwe-update.path
+envsubst < deploy/rwe-update.service > ~/.config/systemd/user/rwe-update.service
+systemctl --user daemon-reload
+systemctl --user enable rwe-update.path  # 讓 .path 在登入後自動監看
+
+# 設定 helper 所需的環境變數（寫進 systemd unit 的 Environment 或 EnvironmentFile）
+# 至少需要：
+#   RWE_UPDATE_FLAG   = /home/<user>/.local/share/rwe-flags/update.flag
+#   RWE_UPDATE_RESULT = /home/<user>/.local/share/rwe-flags/update-result.json
+#   RWE_UPDATE_LOCK   = /home/<user>/.local/share/rwe-flags/update.lock
+#   RWE_OFFICIAL_REMOTE = <git remote URL，只接受此來源的 tag>
+```
+
+`deploy/rwe-update.path` 使用 `PathExists=` + `PathChanged=`（**不**用 `PathModified=`，避免
+只修改 metadata 的 rename 不觸發）監看旗標檔出現。`deploy/rwe-update.service` 為 `Type=oneshot`。
+
+### 可觀測性
+
+```bash
+# 觀察最後一次更新的結果
+curl -s http://localhost:8787/api/status | jq .lastUpdate
+# 範例輸出（已 apply）：
+# { "tag": "v1.5.0", "status": "applied", "ts": "2026-08-09T12:34:56Z" }
+# 範例輸出（build 失敗）：
+# { "tag": "v1.5.0", "status": "failed", "ts": "2026-08-09T12:35:10Z", "detail": "npm ci failed ..." }
+
+# 觀察目前版本
+curl -s http://localhost:8787/api/version
+# { "version": "1.5.0" }  (或 git-describe 值)
+
+# 儀表板 /dashboard 標頭區顯示更新面板（pending/applied/failed/skipped + tag）
+```
+
+### 已延後的強化項目（Deferred Hardening）
+
+- **GPG 簽章驗證**：目前只驗 HMAC（GitHub 送來的 body 簽章），不驗 git tag 的 GPG 簽章（tag 可能由任何能推送 tag 的協作者建立）。
+- **`npm ci --ignore-scripts`**：目前 `npm ci` 會執行套件的 `postinstall` 等 scripts，可能在 build 時執行任意程式碼；`--ignore-scripts` 可防此類攻擊（待有需要時加）。
+
+### 單一實例上限（Single-Instance Ceiling）
+
+本機制設計只支援**單一引擎實例**。多實例部署（多個 rwe 綁不同 port 共用同一 git 工作目錄）會造成 helper 在其中一個實例的 `systemctl restart rwe` 時中斷另一個，不在支援範圍內。多實例需求請用多套獨立部署（各自的 git clone + service unit + flag 路徑）。
+
 ## 附錄：辨識端點是 LiteLLM / vLLM / Ollama / 其他（`⭐ 情境配方` §0 引用）
 
 > 對本部署**不影響做法**（一律當 OpenAI 相容端點用 `provider:"openai"` + `OPENAI_API_BASE` 接），
@@ -902,3 +1058,4 @@ curl -s -D - -o /dev/null -X POST $BASE/v1/chat/completions \
 | 2026-08-01 | v10 | 高效大型程式庫 seeding 切片 1（壓縮請求體 + 具型別過大錯誤，REQ-063）：`/mcp` 請求體現在接受 `Content-Encoding: gzip\|deflate`——可壓縮程式碼 seed/asset payload（約壓 3–5×）得以塞進 8 MiB body cap 之下；解壓有**雙重上限**（壓縮輸入 `MAX_BODY_BYTES` 8 MiB + 解壓輸出 `MAX_DECOMPRESSED_BYTES` 8×），gzip bomb 在解壓途中被擋、不會 OOM；無 `Content-Encoding` 的 body 行為與以往完全相同。超過任一上限時回傳**具型別 413**：`{code:'BODY_TOO_LARGE', cap, phase:'compressed'\|'decompressed', hint}`（hint 指明用 gzip 壓縮或拆分）。webhook `POST /hooks/:id` 仍讀**原始** body（HMAC 對交付位元組驗簽、不可自動解壓），僅同樣改回具型別 413。（`readBody` 拆成 raw 的 `readBodyBuffer` + 解碼的 `readBodyDecoded`。）Gate 7.5 v10 ROUND 1 PASSED（真實 service：gzip `tools/list` 解碼 34 tools、超大未壓縮 body → 413 `{code:'BODY_TOO_LARGE', cap:8388608, hint:…}`，VAL-072） | 無破壞性變更；無新設定鍵；只影響 HTTP body 讀取層與兩處 413 catch，無工具 payload 形狀變更；無遷移動作 |
 | 2026-08-01 | v10 | 高效大型程式庫 seeding 切片 2（CAS 基座，REQ-064/065）：新增內容定址 blob 儲存庫 `CasStore`（不可變 blob pool `blobs/<sha[0:2]>/<sha>` + SQLite per-namespace refset）與兩個 MCP 工具 **`blob_put{namespace, sha256, contentB64}`**（byte-verify、以**計算出的** hash 存放絕不用宣稱值 → 關 hash-poisoning + confused-deputy；claim 不符 → `BLOB_HASH_MISMATCH` 不存任何東西；immutable、idempotent）與 **`seed_plan{namespace, manifest}`** → `{missing:[sha256…]}`（per-namespace、非全域存在性 → 關跨租戶 dedup oracle）。`workflow_run` 新增 **`seedManifest:[{path, sha256, exec?}]`** + `seedNamespace`——引擎以 hash 從 CAS 讀 bytes、透過與 `materializeSeed` **相同**的 per-path 守衛（`.claude` strip/`.git` reject/realpath-contained，抽出共用 `seedPathVerdict`）組裝工作區，`exec?` 套用遮罩執行位元（`0o755`/`0o644`；僅一般檔案、永不支援 symlink/mode int）；`seedManifest` 參照到未上傳 blob → 於任何持久化動作前以 **`MISSING_BLOBS`** fail-fast（不建 run row）。順帶修掉一個**既有 bug**：`toErrEnvelope` 舊回 Error name，導致 run-manager 的 coded error（`RUN_ADMISSION_LIMIT`/`NESTING_*`/新的 `MISSING_BLOBS`）透過 `workflow_run` 都變成無用的 `'Error'`——改為優先取 `.code`。新增設定鍵 `casDir`（預設 `$workRoot/cas`）。Gate 7.5 v10 ROUND 1 PASSED（真實 service 36 tools：blob 上傳 namespace `liveproj`、`seed_plan` 2→0 missing、`workflow_run` seedManifest 組裝出 byte-identical 工作區、on-disk 模式 `0755`(`exec:true`)/`0644`(`exec:false`)、未上傳 blob → `MISSING_BLOBS`，VAL-073/074）。**尚未支援（後續增量，見 `docs/seed-sync-architecture.md` roadmap）**：raw-streaming blob 端點 `POST /assets/blob/<sha256>`（免 base64、免 8 MiB cap）、per-tenant quota + immutable-pool GC、client `push_workspace.py`（git 作 client 端 stat-cache）+ `rwe seed` CLI、`seedRef` engine-pull | 無破壞性變更；`casDir` 選填有預設值、一般部署可省略；`workflow_run` 新欄位為選填、兩個新工具為附加，既有用戶端可忽略；inline `{path,contentB64}` seed 與 `asset_push` 不受影響；無遷移動作 |
 | 2026-08-09 | v11 | issue 可觀測性（REQ-066/067）：`issue_report` 新增 `version` 欄位（caller 可覆寫；省略時引擎自動填入 `pkg.version + git-describe`，保證非空），Environment 區塊五個欄位（repro/version/severity/analysis/log）一律渲染、缺席欄位填 `_none_` placeholder。新增唯讀 API `GET /api/issues`（`{open:[...],resolved:[...]}` 依 `agent-reported` label + state 分組）、`GET /api/issues/:number`（完整 IssueView）；無 token → HTTP 200 `{degraded}` 而非 500。`GET /dashboard/issues` 新增 Issues 頁面（Open/Resolved 分組 + 點擊顯示 detail，所有遠端內容以 textContent 渲染，XSS 安全）。引擎 `ENGINE_VERSION` 常數改由 `resolveEngineVersion()` 動態計算（`initialize` response 的 `serverInfo.version` 現在回真實版本串，含 git-describe）。Gate 7.5 v11 ROUND 1 PASSED（VAL-075/076，real:true；issues #7/#8 真實 filed + body 驗證，已 close） | 無設定檔變更；`RWE_SECRET_GITHUB_TOKEN` 為既有 secret store 鍵、已在本版 §1b 設定總表補上文件行；無遷移動作 |
+| 2026-08-09 | v11 Sprint 2 | 標籤觸發式特權分離自動更新（REQ-068/069/070）：新增 `POST /github/webhook` 路由（Host 白名單豁免，HMAC-SHA256 對**原始 body bytes** 驗簽，delivery-id 去重）在收到已驗簽 tag create/push 事件後原子寫入更新旗標（mode 0600）並回 202；無 secret+flagPath → 503 `UPDATE_WEBHOOK_UNCONFIGURED`；新增 `deploy/rwe-update.sh`（特權 bash helper：flock+消費旗標 → git fetch + resolve tag SHA → checkout → npm ci + npm run build，safe-fail 在 **restart 之前**中止，寫 `applied`/`failed` 結果 JSON，exit code 0/10/20/30/40）+ `deploy/rwe-update.path`（PathExists= + PathChanged=）+ `deploy/rwe-update.service`（Type=oneshot）；新增 `GET /api/version` 端點（`{version}`，重用 `resolveEngineVersion()`）；`GET /api/status` 新增 `version`、`lastUpdate?: UpdateOutcome`（boot 時讀取 + `/api/status` 懶惰讀取，stale-tag guard：pending 列只被同 tag 的 result 覆寫）、`interruptedRuns?`；`GET /dashboard` 伺服器端注入更新面板（textContent-only，XSS 安全）；`src/update-types.ts` 為共享合約（`UpdateStatus: pending|applied|failed|skipped` + `UpdateOutcome`）；boot guard `assertUpdatePathsOutsideWorkRoot`（旗標/結果路徑必須在所有 `workRoot` 之外，否則 `UPDATE_FLAG_INSIDE_WORKROOT`）。新設定鍵：`updateFlagPath` / `updateResultPath` / `selfUpdateDbPath`（預設 `$workRoot/self-update.db`）。新環境變數：`RWE_SECRET_GITHUB_WEBHOOK_SECRET`（缺少時功能停用）。**Content-type HIGH：GitHub Webhook 必須設 `application/json`，否則 tag 提取靜默 no-op**。Gate 7.5 v11 Sprint 2 **PASSED**（VAL-077/078/079 real:true）。**活體驗證**(真 tsx 引擎行程 + 真 git,非 mock)：`POST /github/webhook` 真 HMAC → 202 + 0600 旗標、錯簽 401、重播 200、非 tag 200；真 helper checkout 新 tag → **真 `npm run build`(tsc)** → `applied` + `systemctl restart`；build 失敗 → **還原到先前 SHA** + 不 restart + `failed`；從 tag checkout 啟動的引擎 `/api/version` 回該 tag。**兩個活體才抓到並已修的整合缺口**：(1) `composeConfig`(production 入口)未透傳 `updateFlagPath`/`updateResultPath`/`selfUpdateDbPath` → 真實部署 webhook 路由本會永遠 503(built-but-unwired,已加 3 個透傳測試);(2) 本專案無 `build` script(tsx 直跑)→ helper 的 `npm run build` 本必失敗,已加 `"build": "tsc --noEmit"`(型別把關兼 safe-fail 訊號) | 新設定鍵全部選填、有預設值；缺少 secret + flagPath 時整條路由 503 降級，不影響其他功能；`GET /api/status` 新欄位向後相容（既有用戶端可忽略）；需安裝 `deploy/rwe-update.{path,service}` systemd 單元才啟用自動更新（見 §6b）；無遷移動作 |

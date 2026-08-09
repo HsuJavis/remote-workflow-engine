@@ -1,3 +1,43 @@
+// v11 Sprint 2 (DES-061 / TASK-064): dashboard update panel — server-side injects a JSON init
+// block with the last update outcome so the static HTML contains the status text (e.g. "applied",
+// "failed") in a way that plain-fetch CI tests can assert without running the SPA's JS. The panel
+// is rendered client-side (textContent-only, XSS-safe) from the injected window.__RWE_INIT__ var.
+import type { UpdateOutcome } from './update-types.js';
+
+/**
+ * Build the dashboard HTML, optionally injecting a server-side update outcome.
+ * When lastUpdate is provided the init JSON is embedded in a <script> block so:
+ *   - CI tests: `html.toContain('applied')` passes (the JSON contains the status word).
+ *   - Headless browser: the inline script renders the update panel in the header.
+ */
+export function buildDashboardHtml(init?: { lastUpdate?: UpdateOutcome | null; interruptedRuns?: number }): string {
+  if (!init?.lastUpdate) return DASHBOARD_HTML;
+  // Escape `<` to avoid breaking out of the <script> block (KP-12 XSS mandate, DES-061).
+  const initJson = JSON.stringify(init).replace(/</g, '\\u003c');
+  // Inject a minimal update-panel renderer before </body>. All user content via textContent.
+  const panelScript = `<script>
+(function(){
+var i=(${initJson});
+var u=i&&i.lastUpdate;
+if(!u)return;
+var h=document.querySelector('header');
+if(!h)return;
+var p=document.createElement('span');
+p.id='rwe-update-panel';
+p.style.cssText='font-size:12px;margin-left:auto;padding:0 8px';
+var clr={pending:'#d29922',applied:'#3fb950',failed:'#f85149',skipped:'#8b97a6'};
+p.style.color=clr[u.status]||'inherit';
+p.textContent='update '+u.tag+': '+u.status;
+if(u.detail){var d=document.createElement('pre');d.style.cssText='margin:2px 0;font-size:10px';d.textContent=u.detail;p.appendChild(d);}
+// DES-061: call-to-action when applied + interrupted runs (update caused restart mid-run).
+if(u.status==='applied'&&i.interruptedRuns>0){var c=document.createElement('span');c.style.cssText='margin-left:8px;font-size:11px;color:#d29922';c.textContent=i.interruptedRuns+' run(s) interrupted by the update; use workflow_resume';p.appendChild(c);}
+h.appendChild(p);
+})();
+</script>
+</body>`;
+  return DASHBOARD_HTML.replace('</body>', panelScript);
+}
+
 // Static browser dashboard page (DES-018 / REQ-008; v8 Slice 3 REQ-049 upgrade): a self-contained
 // HTML/JS page served at GET /dashboard on the SAME server/port as /mcp and /api/* (server.ts's
 // single createHttpServer handler). One data model, two transports — this page's client JS calls the

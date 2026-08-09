@@ -132,6 +132,13 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     maxWorkflowDescendants: fileConfig.maxWorkflowDescendants,
     // v8 Slice 4 (REQ-054): forwarded like the other RunManager caps; RunManager defaults 64 + validates.
     maxConcurrentRuns: fileConfig.maxConcurrentRuns,
+    // v11 Sprint 2 (REQ-068..070): forwarded so the self-update webhook + result ingestion are reachable
+    // from the PRODUCTION entrypoint (`npm start` / systemd), not only in-process createServer. Without
+    // this the POST /github/webhook route stays 503-unconfigured on a real deploy even when the config
+    // file sets these — the feature would be built-but-unwired (same class as the D-V3M gauge/inject bugs).
+    updateFlagPath: fileConfig.updateFlagPath,
+    updateResultPath: fileConfig.updateResultPath,
+    selfUpdateDbPath: fileConfig.selfUpdateDbPath,
   };
 
   if (gatewayChoice === 'sdk') {
