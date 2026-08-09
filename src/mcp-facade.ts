@@ -9,7 +9,7 @@ import type { RunStore } from './run-store.js';
 import { InMemoryRunStore } from './run-store.js';
 import { RunManager } from './run-manager.js';
 import { SubmissionValidator } from './submission-validator.js';
-import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent, ManifestEntry } from './types.js';
+import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent, HarnessDescriptor, ManifestEntry } from './types.js';
 import { parseMeta, parseWorkflowSkeleton, type SkeletonNode } from './workflow-meta.js';
 
 export interface McpFacadeDeps {
@@ -86,7 +86,7 @@ export class McpFacade {
       return { runId: '', status: 'failed', error: validation.errors[0] };
     }
     try {
-      const runId = await this.runManager.start({ name: a.name, script: a.script, args: normalizeArgs(a.args), budget: a.budget ?? null, seed: a.seed, seedManifest: a.seedManifest, seedNamespace: a.seedNamespace });
+      const runId = await this.runManager.start({ name: a.name, script: a.script, args: normalizeArgs(a.args), budget: a.budget ?? null, seed: a.seed, seedManifest: a.seedManifest, seedNamespace: a.seedNamespace, startedBy: { type: 'client' } });
       const view = await this.store.getRun(runId);
       return { runId, status: view?.status ?? 'queued', result: { runId } };
     } catch (err) {
@@ -182,19 +182,40 @@ export class McpFacade {
     };
   }
 
-  async workflow_agent_log(a: { runId: string; agentId: string }): Promise<ResultEnvelope<TranscriptEvent[]>> {
+  /** DES-067 (TASK-070): shaped agent log — harness descriptor at top level, stripped from events,
+   *  hasMore windowing. The MCP tool enforces a 50-event cap; the HTTP handler passes limit/offset.
+   *  `harness:null` means the agent was never dispatched (no harness event in transcript).
+   *  `result` retained as an alias for `events` for backward compatibility with existing callers. */
+  async workflow_agent_log(a: { runId: string; agentId: string; limit?: number; offset?: number }): Promise<
+    ResultEnvelope<TranscriptEvent[]> & {
+      harness: HarnessDescriptor | null;
+      events: TranscriptEvent[];
+      hasMore: boolean;
+    }
+  > {
     const stored = await this.store.getRun(a.runId);
-    if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
+    if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId), harness: null, events: [], hasMore: false };
     const view = await this.runManager.status(a.runId).catch(() => stored);
     const agent = view.agents.find((ag) => ag.agentId === a.agentId);
     if (!agent) {
-      return { runId: a.runId, status: view.status, error: { code: 'AGENT_NOT_FOUND', message: `Agent not found: ${a.agentId}`, field: 'agentId' } };
+      return { runId: a.runId, status: view.status, error: { code: 'AGENT_NOT_FOUND', message: `Agent not found: ${a.agentId}`, field: 'agentId' }, harness: null, events: [], hasMore: false };
     }
-    // Real read-back (D-V6): the persisted transcript events for this agent, never a
-    // hard-coded [] — RunStore.getTranscript reads agent-<id>.jsonl (or the in-memory
-    // equivalent) that AgentExecutor's AgentTranscriptSink already appends to.
+    // Real read-back (D-V6): the persisted transcript events for this agent.
     const transcript = await this.store.getTranscript(a.runId, a.agentId);
-    return { runId: a.runId, status: view.status, result: transcript };
+    // DES-067: project harness event to top-level field (latest-wins), strip from events window.
+    const harnessEvents = transcript.filter((e) => e.kind === 'harness');
+    const lastHarness = harnessEvents[harnessEvents.length - 1];
+    const harness: HarnessDescriptor | null = lastHarness
+      ? ((lastHarness.data as { descriptor?: HarnessDescriptor }).descriptor ?? null)
+      : null;
+    // Strip harness events; apply limit/offset windowing (MCP cap = 50; cap-exempt: harness is already out).
+    const nonHarness = transcript.filter((e) => e.kind !== 'harness');
+    const cap = a.limit ?? 50;
+    const offset = a.offset ?? 0;
+    const window = nonHarness.slice(offset, offset + cap);
+    const hasMore = offset + cap < nonHarness.length;
+    // `result` = backward-compat alias for `events` (existing callers read result; new callers use events).
+    return { runId: a.runId, status: view.status, harness, events: window, result: window, hasMore };
   }
 
   /** REQ-013/D-V7: lists the relative file names present in a run's on-disk workspace — the

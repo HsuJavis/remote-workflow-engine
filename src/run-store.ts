@@ -6,24 +6,65 @@ import type { RunSpec, RunStatusView, RunSummary, JournalEntry, TranscriptEvent,
 /** Reconstructs the AgentRecord[] a run's getRun() should report (D-F9b) from its persisted
  *  agent-<id>.jsonl transcripts — the single source of truth `getRun` reads from directly,
  *  rather than relying on an in-process AgentExecutor's transient Map (D-V6/AgentTranscriptSink),
- *  so `workflow_status.agents`/`workflow_agent_log` survive a real server restart. One agent's
- *  record is derived from its last `usage` event (the same data AgentTranscriptSink already
- *  captures); an agent with no `usage` event yet (still in flight, or no completion recorded) is
- *  omitted, same as it would be from an in-process Map before its own capture() call resolves.
+ *  so `workflow_status.agents`/`workflow_agent_log` survive a real server restart.
+ *
+ *  DES-066 (TASK-069): run-status-aware harness handling — drop `if(!usage)continue`:
+ *  - usage event → terminal state (done/failed)
+ *  - harness event (no usage) → 'running' on in-process parent, 'queued' on interrupted/suspended
+ *  - neither → agent never dispatched, omit from records
+ *  - Latest-wins dedupe: multiple harness events for same agentId → last one wins.
+ *
+ *  @param parentStatus The current status of the owning run; default 'running' (backward-compatible
+ *    for callers that have not yet been updated to pass the status). Pass the real status at all
+ *    call sites so interrupted runs show 'queued' agents, not 'running'.
  */
-export function deriveAgentRecords(transcripts: Map<string, TranscriptEvent[]>): AgentRecord[] {
+export function deriveAgentRecords(
+  transcripts: Map<string, TranscriptEvent[]>,
+  parentStatus: RunStatus = 'running',
+): AgentRecord[] {
   const records: AgentRecord[] = [];
   for (const [agentId, events] of transcripts) {
-    const usage = [...events].reverse().find((e) => e.kind === 'usage');
-    if (!usage) continue;
-    const data = usage.data as { tokens?: { input: number; output: number }; provider?: string; model?: string; reason?: string };
-    if (data.tokens) {
-      records.push({ agentId, state: 'done', provider: data.provider ?? 'unknown', model: data.model ?? '', tokens: data.tokens });
-    } else {
-      records.push({ agentId, state: 'failed', provider: data.provider ?? 'unknown', model: '', tokens: { input: 0, output: 0 } });
+    const reversed = [...events].reverse();
+    const usage = reversed.find((e) => e.kind === 'usage');
+    if (usage) {
+      // Terminal: usage event wins regardless of harness.
+      const data = usage.data as { tokens?: { input: number; output: number }; provider?: string; model?: string; reason?: string };
+      if (data.tokens) {
+        records.push({ agentId, state: 'done', provider: data.provider ?? 'unknown', model: data.model ?? '', tokens: data.tokens });
+      } else {
+        records.push({ agentId, state: 'failed', provider: data.provider ?? 'unknown', model: '', tokens: { input: 0, output: 0 } });
+      }
+      continue;
     }
+    // No usage yet — check for a harness event (latest-wins).
+    const harness = reversed.find((e) => e.kind === 'harness');
+    if (harness) {
+      const hd = (harness.data as { descriptor?: { model?: string } }).descriptor;
+      const nonTerminalState: AgentRecord['state'] = parentStatus === 'running' ? 'running' : 'queued';
+      records.push({
+        agentId,
+        state: nonTerminalState,
+        provider: 'unknown',
+        model: hd?.model ?? '',
+        tokens: { input: 0, output: 0 },
+      });
+    }
+    // Neither usage nor harness → never dispatched, omit.
   }
   return records;
+}
+
+/** DES-068 (TASK-071): pure fold — sums all `kind:'usage'` token counts in a transcript slice.
+ *  Never throws; missing/absent `tokens` field contributes 0. Used by the resume path to hydrate
+ *  RunGuard.spent without double-counting a snapshot already reflected in the guard. */
+export function sumUsageTokens(events: TranscriptEvent[]): number {
+  let total = 0;
+  for (const ev of events) {
+    if (ev.kind !== 'usage') continue;
+    const tok = (ev.data as { tokens?: { input?: number; output?: number } }).tokens;
+    if (tok) total += (tok.input ?? 0) + (tok.output ?? 0);
+  }
+  return total;
 }
 
 export interface RunStore {
@@ -155,11 +196,15 @@ export class InMemoryRunStore implements RunStore {
     // v8 Slice 2c: a persisted terminal snapshot restores the full DAG (frames/phases/timing);
     // otherwise fall back to deriving bare agent records from transcripts (backward-compatible).
     const s = run.snapshot;
+    const TERMINAL = new Set<RunStatus>(['completed', 'failed', 'stopped']);
+    const terminalTransition = run.transitions.find((t) => TERMINAL.has(t.to));
     return {
       runId: run.runId, status: run.status, scriptVersion: run.scriptVersion,
       phases: s?.phases ?? [],
-      agents: s?.agents ?? deriveAgentRecords(run.transcripts),
+      agents: s?.agents ?? deriveAgentRecords(run.transcripts, run.status),
       workflowNodes: s?.workflowNodes ?? [],
+      startedBy: run.spec.startedBy ?? { type: 'unknown' },
+      terminalAt: terminalTransition?.ts,
     };
   }
 
@@ -175,6 +220,7 @@ export class InMemoryRunStore implements RunStore {
       status: r.status,
       scriptVersion: r.scriptVersion,
       createdAt: r.createdAt,
+      startedBy: r.spec.startedBy ?? { type: 'unknown' },
     }));
   }
 

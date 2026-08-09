@@ -17,7 +17,7 @@ import type { ErrEnvelope } from './types.js';
 
 /** Structural seam — matches RunManager.start() without importing the class (as scheduler/continuation). */
 interface RunManagerPort {
-  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | null }): Promise<string>;
+  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | null; startedBy?: { type: string; id?: string } }): Promise<string>;
 }
 /** Structural seam — matches WorkflowCatalog.get() (workflow-existence check at create time). */
 interface CatalogPort {
@@ -134,7 +134,7 @@ export class WebhookRegistry {
       if (ins.changes === 0) return { ok: true, httpStatus: 200, replayed: true }; // replay → no second run
     }
 
-    const runId = await this._runManager.start({ name: row.workflow, args: { event: req.parsedBody } });
+    const runId = await this._runManager.start({ name: row.workflow, args: { event: req.parsedBody }, startedBy: { type: 'webhook', id } });
     return { ok: true, httpStatus: 202, runId };
   }
 }

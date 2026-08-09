@@ -1,5 +1,11 @@
 // Shared domain types — no implementation, pure TypeScript interfaces.
 
+/** v11 Sprint 3 (TASK-066 / DES-063): who triggered a run — total (never undefined/null/throws). */
+export type StartedBy = {
+  type: 'client' | 'webhook' | 'schedule' | 'chain' | 'unknown';
+  id?: string;
+};
+
 // v8 Defer A: `interrupted` = a run that was `running` when the engine crashed/restarted — RESUMABLE
 // (not terminal), distinct from a user `suspended`/`stopped`. hydrateAll assigns it at boot recovery.
 export type RunStatus = 'queued' | 'running' | 'suspended' | 'stopped' | 'completed' | 'failed' | 'interrupted';
@@ -92,6 +98,11 @@ export interface RunStatusView {
   /** v8 Slice 2 (REQ-046/047): nested workflow() boundary nodes for an in-process run ([] otherwise). */
   workflowNodes: WorkflowNodeView[];
   scriptVersion: string;
+  /** v11 Sprint 3 (TASK-066 / DES-063): who triggered the run; coalesced to {type:'unknown'} for legacy rows. */
+  startedBy?: StartedBy;
+  /** v11 Sprint 3 (TASK-067 / DES-064): ISO timestamp of the first terminal transition (completed/failed/stopped);
+   *  absent while the run is still running, so clients can stop polling once truthy. */
+  terminalAt?: string;
 }
 
 export interface RunSummary {
@@ -100,6 +111,8 @@ export interface RunSummary {
   status: RunStatus;
   scriptVersion: string;
   createdAt: string;
+  /** v11 Sprint 3 (TASK-066 / DES-063): who triggered the run; coalesced from started_by column. */
+  startedBy?: StartedBy;
 }
 
 export interface RunSpec {
@@ -107,6 +120,8 @@ export interface RunSpec {
   script?: string;
   args?: unknown;
   budget?: number | null;
+  /** v11 Sprint 3 (TASK-066 / DES-063): who triggered this run — set at the start() call site. */
+  startedBy?: StartedBy;
   /** REQ-025 (v2): optional seed tree materialized into the run workspace BEFORE agents start, so
    *  the run's agents edit a real project in place. `.claude` settings/hooks are stripped and
    *  escapes rejected by workspace-seed.materializeSeed. */
@@ -147,8 +162,19 @@ export interface JournalEntry {
   aborted?: boolean;
 }
 
+/** DES-066 (TASK-069): the post-curation session surface — names only, never secrets or resolved configs. */
+export interface HarnessDescriptor {
+  model: string;
+  /** 4KB head+tail capped prompt (DES-066: first 2048 + "…[truncated]…" + last 2048). */
+  prompt: string;
+  tools: string[];
+  skills: string[];
+  mcpServers: string[];
+  surfaceType: 'curated' | 'none';
+}
+
 export interface TranscriptEvent {
   ts: string;
-  kind: 'message' | 'tool_call' | 'tool_result' | 'usage';
+  kind: 'message' | 'tool_call' | 'tool_result' | 'usage' | 'harness';
   data: unknown;
 }

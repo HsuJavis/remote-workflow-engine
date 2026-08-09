@@ -412,3 +412,41 @@ status: draft
 - **status:** done
 - **traces:** ARCH-039
 - **iter:** v11
+
+<!-- ── v11 Sprint 3 (REQ-071..073) — n8n-style Morandi graph dashboard: TASK-066..071 / DES-063..069 ── -->
+
+### TASK-066 — trigger provenance `startedBy` on the durable run record: add `startedBy:{type,id?}` to `RunSpec`, set it at the four `RunManager.start()` call sites (MCP facade→`client`, `WebhookRegistry.deliver`→`webhook`+id, `SchedulerEngine`→`schedule`+name, `ContinuationStore.fire`→`chain`+parentRunId), add a **nullable** `started_by` column to the `runs` table (additive migration, no backfill), read-model coalesces absent→`{type:'unknown'}` sentinel, and surface `startedBy` on `RunStatusView`, `RunSummary`, `workflow_status` (MCP) and `GET /api/runs/:id`
+- **status:** done
+- **traces:** ARCH-041
+- **estimate:** M
+- **iter:** v11
+
+### TASK-067 — pure graph model + layout (the master UT seam): add the internal `GraphPayload` envelope on `GET /api/runs/:id/dag`, a `SkeletonNode→LayoutNode` adapter, and a **pure `layoutGraph(nodes, opts?) → { cells:LayoutCell[]; edges:LayoutEdge[]; warnings:string[]; truncated? }`** emitting logical `{id,col,row,laneSpan}` cells (never pixels), the phase→parallel-group→ordered-set skeleton-overlay join (tie-order by `startedAt`/dispatch seq) with an unmatched-live-agent frame-grouping fallback that pushes a `warnings[]` entry, a `maxNodes` cap (default 200, `truncated` in `warnings[]`), and `terminalAt?` on `RunStatusView`
+- **status:** done
+- **traces:** ARCH-042
+- **estimate:** L
+- **iter:** v11
+
+### TASK-068 — Morandi n8n SVG renderer (dumb browser projection): a pure `cellToPixel(cell,boxSize)→Rect` mapper + pure `morandiFrameHue(frame)=palette[stableHash(frame)%len]` (palette as scoped CSS custom properties), hand-rolled inline SVG (`<g>` pan/zoom root, edge layer, node boxes, per-frame depth-nested tinted background containers labeled by sub-workflow name), the `textContent`-only invariant for every run-derived string **including SVG `<text>`**, a client "N more" cap == 200 (shared constant with `maxNodes`), page-body-never-scrolls-horizontally, and `warnings[]` surfaced as an SVG badge
+- **status:** done
+- **traces:** ARCH-043
+- **estimate:** L
+- **iter:** v11
+
+### TASK-069 — harness capture at dispatch (the security core): add `HarnessDescriptor` + `TranscriptEvent.kind:'harness'`, a pure `redactHarness(resolved)→HarnessDescriptor` (names only, `surfaceType:'curated'|'none'`, 4KB head+tail prompt cap with `…[truncated]…` marker), an optional `onHarness?` hook on `GatewayClient.invoke` wired at the SDK post-curation site (`:483`, `surfaceType:'curated'`) AND the direct-fetch site (`surfaceType:'none'`, empty arrays) → eager `appendTranscript`, latest-wins dedupe by agentId, and the **required** run-status-aware `deriveAgentRecords` fix (drop `if(!usage)continue`; harness-without-usage⟹`running` on an in-process parent / `queued` on an `interrupted`/`suspended` parent; `usage`⟹terminal; neither⟹never-dispatched)
+- **status:** done
+- **traces:** ARCH-044
+- **estimate:** L
+- **iter:** v11
+
+### TASK-070 — clickable agent box → harness detail panel + `workflow_agent_log` shaping: project the `kind:'harness'` event to a top-level `harness:HarnessDescriptor|null` field AND strip it from the returned `events` window (sent once, never evicted by the 50-msg cap), add `hasMore:boolean` + optional `?limit&offset` on both the MCP tool and HTTP surfaces, enforce canonical `AgentRecord.state` (`queued|running|done|failed`) on **every** JSON response with render-time-only `idle`/`completed` aliases, render the on-click detail panel (`textContent`-only, on-click fetch not on-poll), and both tiers of the no-secret proof (pure `redactHarness` UT + Gate-7.5 headless DOM assertion)
+- **status:** done
+- **traces:** ARCH-045
+- **estimate:** M
+- **iter:** v11
+
+### TASK-071 — budget re-derivation on crash-resume (separate ticket, must land before Gate 7.5): a **pure fold** over the same journal usage events read by TASK-069's `deriveAgentRecords` that **returns** an accumulated `spentTokens`; the impure **resume path** (not the read-model) hydrates `RunGuard.spent`; plus a snapshot/journal **double-count boundary test** (usage already reflected in a REQ-055 terminal snapshot must not be re-added when journal events replay on resume)
+- **status:** done
+- **traces:** ARCH-044
+- **estimate:** S
+- **iter:** v11

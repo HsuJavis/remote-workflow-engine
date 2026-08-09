@@ -1,9 +1,40 @@
 // AgentExecutor (DES-007 / ARCH-004) + AgentTranscriptSink (DES-008 / TASK-010).
 import Ajv from 'ajv';
-import type { AgentOpts, AgentRecord, TranscriptEvent } from './types.js';
+import type { AgentOpts, AgentRecord, HarnessDescriptor, TranscriptEvent } from './types.js';
 import type { GatewayClient, GatewayResult } from './gateway/client.js';
 import type { RunGuard } from './run-guard.js';
 import type { RunStore } from './run-store.js';
+
+/** DES-066 (TASK-069): pure security transform — strips all resolved values, keeps names only.
+ *  - Prompt 4KB cap: first 2048 + "…[truncated]…" + last 2048 (tail survives, task instructions land there).
+ *  - surfaceType:'none' (direct-fetch) → all arrays empty (no curated surface available).
+ *  - MCP configs: name only, never URL/key/token. */
+export function redactHarness(resolved: {
+  surfaceType: 'curated' | 'none';
+  modelName: string;
+  prompt: string;
+  curatedTools: string[];
+  mergedMcp: Array<{ name: string; [key: string]: unknown }>;
+  skills: string[];
+}): HarnessDescriptor {
+  const PROMPT_CAP = 4096;
+  const HALF = 2048;
+  let prompt = resolved.prompt;
+  if (prompt.length > PROMPT_CAP) {
+    prompt = prompt.slice(0, HALF) + '…[truncated]…' + prompt.slice(prompt.length - HALF);
+  }
+  if (resolved.surfaceType === 'none') {
+    return { model: resolved.modelName, prompt, tools: [], skills: [], mcpServers: [], surfaceType: 'none' };
+  }
+  return {
+    model: resolved.modelName,
+    prompt,
+    tools: resolved.curatedTools,
+    skills: resolved.skills,
+    mcpServers: resolved.mergedMcp.map((m) => m.name),
+    surfaceType: 'curated',
+  };
+}
 
 // D-V4: real JSON-schema validation (never a type-cast passthrough). One shared Ajv instance —
 // schemas are per-call plain objects (JSON Schema draft-07-ish subset), not compiled/cached ahead
@@ -192,12 +223,14 @@ const SCHEMA_RETRY_ATTEMPTS = 3;
 export class AgentExecutor implements AgentSpawner {
   private readonly _gateway: GatewayClient;
   private readonly _sink: AgentTranscriptSink;
+  private readonly _store?: RunStore;
   private readonly _clock: { isoNow(): string };
   private readonly _agentTypes: Record<string, AgentTypeDef>;
 
   constructor(deps: AgentExecutorDeps = {}) {
     this._gateway = deps.gateway ?? NULL_GATEWAY;
     this._sink = new AgentTranscriptSink(deps.guard, deps.store);
+    this._store = deps.store;
     this._clock = deps.clock ?? { isoNow: () => new Date().toISOString() }; // det:allow — transcript timestamp, not a decision
     this._agentTypes = deps.agentTypes ?? {};
   }
@@ -264,7 +297,21 @@ export class AgentExecutor implements AgentSpawner {
   private async _invokeOnce(req: AgentReq, prompt: string, opts: AgentOpts): Promise<GatewayResult | 'aborted'> {
     // D-V2V-1: forward the run's own workspace — only ClaudeAgentSdkGatewayClient consumes it
     // (per-call cwd re-scoping + asset materialization); other gateways ignore the extra field.
-    const invokePromise = this._gateway.invoke({ prompt, opts, runId: req.runId, agentId: req.agentId, signal: req.signal, workspace: req.workspace });
+    // DES-066 (TASK-069): onHarness closure — appends a kind:'harness' transcript event when the
+    // gateway calls it (post-curation, before query). Latest-wins: the loop may call _invokeOnce
+    // multiple times (schema-retry); each overwrites the previous harness entry for this agentId.
+    const store = this._store;
+    const clock = this._clock;
+    const onHarness = async (descriptor: HarnessDescriptor): Promise<void> => {
+      if (store) {
+        await store.appendTranscript(req.runId, req.agentId, {
+          ts: clock.isoNow(),
+          kind: 'harness',
+          data: { agentId: req.agentId, descriptor },
+        });
+      }
+    };
+    const invokePromise = this._gateway.invoke({ prompt, opts, runId: req.runId, agentId: req.agentId, signal: req.signal, workspace: req.workspace, onHarness });
     const aborted = new Promise<'aborted'>((resolve) => {
       req.signal.addEventListener('abort', () => resolve('aborted'), { once: true });
     });

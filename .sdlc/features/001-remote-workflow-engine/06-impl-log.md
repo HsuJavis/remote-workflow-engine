@@ -1912,3 +1912,58 @@ Suite at close: 738 passed / 2 failed (both VAL-079, pending test fix) / 163 tes
 - **commit:** (pending)
 - **iter:** v11
 - **note:** TASK-065's DEPLOY handover (§6b setup + §1b config keys + 設定總表 rows + 變更紀錄) ships with this same helper/systemd deliverable — the doc documents exactly the units in `deploy/` — so it is logged here rather than as a separate doc-only IMPL (no standalone test; validated by following the §6b steps + IT-062/VAL-078).
+
+<!-- ── v11 Sprint 3 (REQ-071/072/073) — n8n-style graph dashboard. Gates 2→5 via full sdlc-run; Gate 6
+     completed by orchestrator recovery after the run stopped mid-parallel-impl (2 genuine incompletes +
+     the harness-emission delivery interface). ── -->
+
+### IMPL-105 — trigger provenance `startedBy` end-to-end (RunSpec → persisted → RunStatusView → HTTP)
+- **status:** done
+- **traces:** TASK-066, DES-063
+- **greens:** UT-067, IT-063
+- **files:** src/types.ts, src/run-manager.ts, src/store/sqlite-run-store.ts, src/mcp-facade.ts, src/server.ts, src/scheduler.ts, src/continuation-store.ts, src/webhook-registry.ts
+- **commit:** (pending)
+- **iter:** v11
+- **note:** IT-063 case 1 was an orchestrator-fixed TEST defect — startedBy is a RunStatusView field so workflow_status carries it at `result.startedBy` (ResultEnvelope<RunStatusView>), not the envelope top level; the RED assertion checked the wrong level. Value genuinely propagates (store persist + _mergeLive spread).
+
+### IMPL-106 — pure graph model + server-side layout (`GraphPayload`/`layoutGraph`) on GET /api/runs/:id/dag
+- **status:** done
+- **traces:** TASK-067, DES-064
+- **greens:** UT-068, IT-064, VAL-080, VAL-081
+- **files:** src/dashboard.ts, src/server.ts
+- **commit:** (pending)
+- **iter:** v11
+- **note:** the /api/runs/:id/dag contract migrated from the v8 DagNode tree (kind:'root') to GraphPayload (kind:'run'|'skeleton'); the old IT-048 (dashboard-http) assertion was updated to the new shape.
+
+### IMPL-107 — Morandi n8n SVG renderer + cell→pixel + `morandiFrameHue`
+- **status:** done
+- **traces:** TASK-068, DES-065
+- **greens:** UT-069
+- **files:** src/dashboard-page.ts
+- **commit:** (pending)
+- **iter:** v11
+
+### IMPL-108 — harness capture at dispatch: `onHarness` hook wired (both gateways) + executor append + redact
+- **status:** done
+- **traces:** TASK-069, DES-066
+- **greens:** UT-070, IT-065
+- **files:** src/types.ts, src/gateway/claude-agent-sdk-client.ts, src/gateway/client.ts, src/agent-executor.ts, src/run-store.ts
+- **commit:** (pending)
+- **iter:** v11
+- **note:** the emission half (onHarness hook injected into GatewayClient.invoke, called post-curation in both the SDK client (surfaceType:'curated') and direct-fetch client (surfaceType:'none'), executor → sink.appendTranscript({kind:'harness'}) with latest-wins dedupe) was implemented in recovery; a CI-tier tests/integration/harness-emission.test.ts (fake gateway invoking onHarness, asserts descriptor NAMES only — no secret/MCP-config value) closes the "delivery interface must not be silently stubbed" gate.
+
+### IMPL-109 — harness detail panel + `workflow_agent_log` {harness, events, hasMore} shaping
+- **status:** done
+- **traces:** TASK-070, DES-067
+- **greens:** IT-066, VAL-082
+- **files:** src/mcp-facade.ts, src/server.ts, src/dashboard-page.ts
+- **commit:** (pending)
+- **iter:** v11
+
+### IMPL-110 — token usage fold (`sumUsageTokens`) + budget-resume hydration
+- **status:** done
+- **traces:** TASK-071, DES-068
+- **greens:** UT-071, IT-067
+- **files:** src/run-store.ts, src/run-guard.ts, src/run-manager.ts
+- **commit:** (pending)
+- **iter:** v11

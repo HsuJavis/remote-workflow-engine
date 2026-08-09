@@ -15,7 +15,7 @@ import type { RunStatus, RunStatusView, ErrEnvelope } from './types.js';
 
 /** Structural seam — matches RunManager.start() without importing the class (same as the scheduler). */
 interface RunManagerPort {
-  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | null }): Promise<string>;
+  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | null; startedBy?: { type: string; id?: string } }): Promise<string>;
 }
 /** Structural seam — the one RunStore read the boot reconcile needs (the target's terminal status). */
 interface RunStorePort {
@@ -149,6 +149,7 @@ export class ContinuationStore {
         name: row.workflow,
         args: row.argsJson != null ? (JSON.parse(row.argsJson) as unknown) : undefined,
         budget: row.budget,
+        startedBy: { type: 'chain', id: row.afterRunId },
       });
       this._db.prepare('UPDATE continuations SET spawnedRunId = ? WHERE id = ?').run(spawnedRunId, chainId);
     } catch (err) {

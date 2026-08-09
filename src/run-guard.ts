@@ -67,6 +67,13 @@ export class RunGuard {
     this._spent += delta;
   }
 
+  /** DES-068 (TASK-071): set the already-spent count on resume — called ONCE by the resume path
+   *  after folding the persisted journal (sumUsageTokens), never by addTokens again for those
+   *  events. Prevents double-counting snapshot tokens already captured before a crash. */
+  setSpent(n: number): void {
+    this._spent = n;
+  }
+
   budgetView(): Budget {
     const total = this.total;
     const spent = () => this._spent;

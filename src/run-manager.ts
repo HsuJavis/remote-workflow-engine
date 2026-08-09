@@ -14,7 +14,7 @@ import { listArtifacts, type ArtifactEntry } from './workspace-artifacts.js';
 import { IllegalTransitionError, codedError } from './errors.js';
 import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView } from './types.js';
 import type { RunStore } from './run-store.js';
-import { InMemoryRunStore } from './run-store.js';
+import { InMemoryRunStore, sumUsageTokens } from './run-store.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
 import { RunGuard } from './run-guard.js';
@@ -370,6 +370,14 @@ export class RunManager {
 
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
     const guard = new RunGuard({ concurrency: this._concurrency, budget: spec.budget ?? null });
+    // DES-068 (TASK-071): hydrate the guard's spent count from the persisted journal transcripts so
+    // the budget cap is correctly enforced on resume. Fold-only (pure); never adds snapshot totals.
+    if (spec.budget !== null && spec.budget !== undefined) {
+      const allEvents = (await Promise.all(
+        view.agents.map((a) => this._store.getTranscript(runId, a.agentId)),
+      )).flat();
+      guard.setSpent(sumUsageTokens(allEvents));
+    }
     const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, agentTypes: this._agentTypes });
     const entry: RunEntry = {
       script,
