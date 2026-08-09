@@ -124,16 +124,21 @@ if ! "$GIT" checkout "$TARGET_SHA" 2>&1; then
 fi
 
 # ── build: npm ci then npm run build ─────────────────────────────────────────
-# Safe-fail: on ANY build failure, abort BEFORE systemctl restart.
-# The running service process stays alive on the old code (prior systemd unit state).
-if ! "$NPM" ci 2>&1; then
-  write_result "failed" "$T" "npm ci failed"
+# Safe-fail: on ANY build failure, revert the working tree to the PRIOR checkout
+# and abort BEFORE systemctl restart. Reverting (not just "abort before restart")
+# means a later restart/reboot boots the last-good code, not the broken new tag —
+# the running process AND every future boot stay on the prior version.
+revert_and_fail() {  # $1 = failure detail
+  "$GIT" checkout "$CURRENT_SHA" > /dev/null 2>&1 || true
+  write_result "failed" "$T" "$1"
   exit 30
+}
+if ! "$NPM" ci 2>&1; then
+  revert_and_fail "npm ci failed"
 fi
 
 if ! "$NPM" run build 2>&1; then
-  write_result "failed" "$T" "npm run build failed"
-  exit 30
+  revert_and_fail "npm run build failed"
 fi
 
 # ── success: write applied result, flush to disk, THEN restart ───────────────

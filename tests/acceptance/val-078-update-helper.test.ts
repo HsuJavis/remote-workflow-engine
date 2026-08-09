@@ -177,4 +177,37 @@ describe('VAL-078 — REQ-069 acceptance: privilege-separated updater', () => {
     // Result file records the failure
     expect(result?.status).toBe('failed');
   }, 30000);
+
+  // Gate-7.5 live-run finding: the previous case flags the SAME tag the clone is already at, so its
+  // checkout is a no-op and "HEAD unchanged" is trivially true. This case exercises the real safe-fail
+  // path — the flag names a genuinely NEW tag, the helper checks it out, then the build fails — and
+  // asserts the working tree is REVERTED to the prior SHA (so a later restart/reboot boots last-good
+  // code, not the broken new tag). Before the revert fix the tree was left at the broken new tag.
+  it('safe-fail on a DIFFERENT tag: build failure reverts the working tree to the prior SHA', async () => {
+    const caseDir = join(rootDir, 'safefail-revert');
+    mkdirSync(caseDir, { recursive: true });
+    const { remoteDir } = initRemote(caseDir, 'v1.0.0');
+    const workDir = cloneWorking(caseDir, remoteDir);
+    const priorSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workDir, encoding: 'utf-8' }).trim();
+    // Publish a NEWER tag on the remote (a second release commit).
+    writeFileSync(join(remoteDir, 'package.json'), JSON.stringify({ name: 'rwe', version: 'v1.1.0' }));
+    execFileSync('git', [...gitId(), 'commit', '-am', 'release v1.1.0'], { cwd: remoteDir });
+    execFileSync('git', [...gitId(), 'tag', 'v1.1.0'], { cwd: remoteDir });
+    const newSha = execFileSync('git', ['rev-list', '-n1', 'v1.1.0'], { cwd: remoteDir, encoding: 'utf-8' }).trim();
+    expect(newSha).not.toBe(priorSha);
+
+    const { exitCode, result, systemctlCalled } = await runHelper({
+      caseDir, remoteDir, workDir,
+      flagContent: 'v1.1.0\n',
+      npmExit: 1,          // build fails after the checkout to v1.1.0
+      recordSystemctl: true,
+    });
+
+    expect(exitCode).toBe(30);
+    expect(systemctlCalled).toBe(false);
+    expect(result?.status).toBe('failed');
+    // The key assertion: reverted to the prior good SHA, NOT left at the broken v1.1.0.
+    const headAfter = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workDir, encoding: 'utf-8' }).trim();
+    expect(headAfter).toBe(priorSha);
+  }, 30000);
 });

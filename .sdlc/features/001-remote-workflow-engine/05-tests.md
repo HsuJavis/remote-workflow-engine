@@ -3655,7 +3655,7 @@ Red reason: `deploy/rwe-update.sh` does not exist → ENOENT on every `execFile`
 - **status:** green
 - **traces:** REQ-068, DES-058, DES-059
 - **tier:** acceptance
-- **real:** false
+- **real:** true
 - **result:** pass
 - **iter:** v11
 
@@ -3666,7 +3666,7 @@ Red reason: `POST /github/webhook` not registered → 404 falls through to `/mcp
 - **status:** green
 - **traces:** REQ-069, DES-060
 - **tier:** acceptance
-- **real:** false
+- **real:** true
 - **result:** pass
 - **iter:** v11
 
@@ -3677,7 +3677,7 @@ Red reason: `deploy/rwe-update.sh` does not exist → ENOENT. All 3 fail.
 - **status:** green
 - **traces:** REQ-070, DES-060, DES-061
 - **tier:** acceptance
-- **real:** false
+- **real:** true
 - **result:** pass
 - **iter:** v11
 
