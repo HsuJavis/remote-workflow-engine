@@ -89,4 +89,23 @@ describe('composeConfig() v2 key wiring (DES-022, standing rule 1)', () => {
     const cfg = await composeConfig({ gateway: 'direct-fetch' }, FAKE_DEPS);
     expect((cfg as Record<string, unknown>)['assetRoot']).toBeUndefined();
   });
+
+  // v11 Sprint 2 (REQ-068..070): composeConfig() must forward the self-update paths, or POST
+  // /github/webhook + result ingestion are unreachable from `npm start`/systemd even with the config
+  // file set — the feature only worked via in-process createServer in tests (built-but-unwired, the
+  // same class as the D-V3M gauge/inject bugs). Found by the Gate-7.5 live run.
+  it('updateFlagPath is forwarded from FileConfig into the returned ServerConfig', async () => {
+    const cfg = await composeConfig({ updateFlagPath: '/var/rwe/update.flag', gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['updateFlagPath']).toBe('/var/rwe/update.flag');
+  });
+
+  it('updateResultPath is forwarded from FileConfig into the returned ServerConfig', async () => {
+    const cfg = await composeConfig({ updateResultPath: '/var/rwe/update.result.json', gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['updateResultPath']).toBe('/var/rwe/update.result.json');
+  });
+
+  it('selfUpdateDbPath is forwarded from FileConfig into the returned ServerConfig', async () => {
+    const cfg = await composeConfig({ selfUpdateDbPath: '/var/rwe/self-update.db', gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['selfUpdateDbPath']).toBe('/var/rwe/self-update.db');
+  });
 });
