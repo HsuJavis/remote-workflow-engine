@@ -13,9 +13,6 @@ export interface BoxSize { cellW: number; cellH: number; gap: number }
 /** Screen-space rectangle returned by cellToPixel. */
 export interface Rect { x: number; y: number; width: number; height: number }
 
-/** Shared cap: both the server maxNodes and the browser "N more" affordance use this constant. */
-export const MAX_GRAPH_NODES = 200;
-
 /** Morandi muted palette — one hue per frame; lives as a CSS-custom-property set so a single
  *  file swap reskins the graph without touching model/topology code. */
 const MORANDI_PALETTE = [
@@ -100,7 +97,9 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Remote Workflow Engine — Dashboard</title>
 <style>
-:root{--bg:#0f1419;--panel:#161c26;--panel2:#1a2029;--line:#2c3440;--ink:#d8e0ea;--muted:#8b97a6;--link:#4ea1ff}
+/* REQ-071: Morandi light theme — muted, low-saturation warm neutrals + soft dusty accents (not the
+   old dark palette; the graph, cards and frame tints all read off these tokens). */
+:root{--bg:#E9E6DF;--panel:#F2EFE8;--panel2:#E2DED4;--line:#CFC9BC;--ink:#4A4842;--muted:#8C877B;--link:#7D93A6}
 body{font-family:-apple-system,Segoe UI,sans-serif;margin:0;background:var(--bg);color:var(--ink)}
 header{padding:16px 24px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:24px}
 h1{font-size:18px;margin:0}h2{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:22px 0 10px}
@@ -112,7 +111,8 @@ a{color:var(--link);text-decoration:none}
 .card .t{font-weight:600;font-family:ui-monospace,Consolas,monospace;word-break:break-all}
 .card .s{color:var(--muted);font-size:11.5px;margin-top:4px}
 .pill{display:inline-block;padding:1px 7px;border-radius:100px;font-size:11px;border:1px solid var(--line)}
-.st-queued{color:#d29922}.st-running{color:#4ea1ff}.st-done,.st-completed{color:#3fb950}.st-failed{color:#f85149}.st-stopped,.st-suspended{color:#8b97a6}.st-interrupted{color:#d29922}
+/* Morandi-muted semantic state colours (low-saturation, legible on the light greige ground). */
+.st-queued{color:#B08A5B}.st-running{color:#6E8199}.st-done,.st-completed{color:#7A9078}.st-failed{color:#B0776E}.st-stopped,.st-suspended{color:#9A948A}.st-interrupted{color:#B08A5B}
 #tree{margin-top:6px}
 .grp{border-left:2px solid var(--line);margin:6px 0 6px 4px;padding:2px 0 2px 12px}
 .grp-h{font-size:12px;color:var(--muted);margin:4px 0}
@@ -294,7 +294,7 @@ function renderGraph(payload, runId){
     var line=document.createElementNS(ns,'line');
     line.setAttribute('x1',String(fr.x+fr.width)); line.setAttribute('y1',String(fr.y+fr.height/2));
     line.setAttribute('x2',String(tr.x)); line.setAttribute('y2',String(tr.y+tr.height/2));
-    line.setAttribute('stroke','#4ea1ff'); line.setAttribute('stroke-width','1.5');
+    line.setAttribute('stroke','#AAB4BC'); line.setAttribute('stroke-width','1.5');
     svgEl.appendChild(line);
   });
   // Node boxes.
@@ -313,13 +313,15 @@ function renderGraph(payload, runId){
     rect.setAttribute('x',String(r.x)); rect.setAttribute('y',String(r.y));
     rect.setAttribute('width',String(r.width)); rect.setAttribute('height',String(r.height));
     rect.setAttribute('rx','7');
-    var fill=c.kind==='trigger'?'#1a2e42':c.kind==='agent'?'#1a2029':'#161c26';
-    rect.setAttribute('fill',fill); rect.setAttribute('stroke','#2c3440');
+    // Morandi light node fills; agents tinted by state so the graph reads at a glance.
+    var sf={queued:'#ECE6DB',running:'#D7E0E6',done:'#DCE5DA',completed:'#DCE5DA',failed:'#ECDBD6',stopped:'#E4E0D7',suspended:'#E4E0D7',interrupted:'#ECE6DB'};
+    var fill=c.kind==='trigger'?'#D6DEE6':c.kind==='agent'?(sf[c.state]||'#F2EFE8'):'#E6E2D9';
+    rect.setAttribute('fill',fill); rect.setAttribute('stroke','#C4BDAE');
     g.appendChild(rect);
     // Label — textContent only (security invariant, DES-065).
     var label=document.createElementNS(ns,'text');
     label.setAttribute('x',String(r.x+8)); label.setAttribute('y',String(r.y+r.height/2+4));
-    label.setAttribute('font-size','11'); label.setAttribute('fill','#d8e0ea');
+    label.setAttribute('font-size','11'); label.setAttribute('fill','#4A4842');
     label.textContent=c.label||c.kind||'';
     g.appendChild(label);
     if(c.kind==='agent' && runId){
@@ -333,7 +335,7 @@ function renderGraph(payload, runId){
   if(warnings.length){
     var warn=document.createElementNS(ns,'text');
     warn.setAttribute('x','4'); warn.setAttribute('y',String(svgH-4));
-    warn.setAttribute('font-size','10'); warn.setAttribute('fill','#d29922');
+    warn.setAttribute('font-size','10'); warn.setAttribute('fill','#B08A5B');
     warn.textContent=warnings.length+' warning(s)';
     svgEl.appendChild(warn);
   }

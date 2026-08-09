@@ -40,7 +40,7 @@ import { verifyTagWebhook } from './self-update-webhook.js';
 
 // REQ-066 (v11): engine version from package.json + best-effort git describe, replacing the hardcoded '1.0.0'.
 const ENGINE_VERSION = resolveEngineVersion();
-import { buildDashboardModel, buildDagModel, layoutGraph } from './dashboard.js';
+import { buildDashboardModel, layoutGraph } from './dashboard.js';
 import { DASHBOARD_HTML, buildDashboardHtml } from './dashboard-page.js';
 import type { RunStore } from './run-store.js';
 

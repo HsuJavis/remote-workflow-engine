@@ -3803,7 +3803,7 @@ Red reason: `sumUsageTokens` not yet exported from `src/run-store.ts` → `is no
 - **status:** green
 - **traces:** REQ-071, DES-069
 - **tier:** acceptance
-- **real:** false
+- **real:** true
 - **result:** pass
 - **iter:** v11
 
@@ -3814,7 +3814,7 @@ Red reason: `GET /api/runs/:id/dag` returns the old `DagNode` (`kind:'root'`); d
 - **status:** green
 - **traces:** REQ-072, DES-069
 - **tier:** acceptance
-- **real:** false
+- **real:** true
 - **result:** pass
 - **iter:** v11
 
@@ -3825,7 +3825,7 @@ Red reason: CI-safe case 3 → `payload.kind` is `'root'` (old DagNode), not `'r
 - **status:** green
 - **traces:** REQ-073, DES-069
 - **tier:** acceptance
-- **real:** false
+- **real:** true
 - **result:** pass
 - **iter:** v11
 
