@@ -182,8 +182,8 @@ export class SqliteRunStore implements RunStore {
     return { value: JSON.parse(row.result) };
   }
 
-  private _rowToSummary(row: { runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null }): RunSummary {
-    return {
+  private _rowToSummary(row: { runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null; terminalAt?: string | null }): RunSummary {
+    const summary: RunSummary = {
       runId: row.runId,
       name: row.name ?? undefined,
       status: row.status as RunStatus,
@@ -191,6 +191,8 @@ export class SqliteRunStore implements RunStore {
       createdAt: row.createdAt,
       startedBy: row.started_by ? (JSON.parse(row.started_by) as RunSummary['startedBy']) : { type: 'unknown' },
     };
+    if (row.terminalAt) summary.terminalAt = row.terminalAt;
+    return summary;
   }
 
   async getRun(runId: string): Promise<RunStatusView | null> {
@@ -221,8 +223,14 @@ export class SqliteRunStore implements RunStore {
   }
 
   async listRuns(): Promise<RunSummary[]> {
-    const rows = this._db.prepare('SELECT * FROM runs').all() as Array<{
-      runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null;
+    const rows = this._db.prepare(`
+      SELECT r.runId, r.name, r.status, r.scriptVersion, r.createdAt, r.started_by,
+             (SELECT MIN(t.ts) FROM transitions t
+              WHERE t.runId = r.runId
+                AND t.to_status IN ('completed', 'failed', 'stopped')) AS terminalAt
+      FROM runs r
+    `).all() as Array<{
+      runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null; terminalAt?: string | null;
     }>;
     return rows.map((r) => this._rowToSummary(r));
   }

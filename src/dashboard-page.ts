@@ -148,10 +148,12 @@ pre{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);p
 </header>
 <main>
   <section id="home">
-    <h2>Registered workflows</h2>
-    <div id="workflows" class="cards"></div>
-    <h2>Runs</h2>
-    <div id="runs" class="cards"></div>
+    <h2>Running</h2>
+    <div id="home-running" class="cards"></div>
+    <h2>Registered</h2>
+    <div id="home-registered" class="cards"></div>
+    <h2>Other</h2>
+    <div id="home-other" class="cards"></div>
   </section>
   <section id="detail" style="display:none">
     <p><a class="back" href="/dashboard">&larr; all runs</a></p>
@@ -187,18 +189,6 @@ window.addEventListener('popstate', render);
 
 async function getJSON(u){ try{ var r=await fetch(u); if(!r.ok) return null; return await r.json(); }catch(e){ return null; } }
 
-async function loadWorkflows(){
-  var box=document.getElementById('workflows'); var list=await getJSON('/api/workflows')||[];
-  box.innerHTML='';
-  if(!list.length){ box.appendChild(el('div','empty','(none registered)')); return; }
-  list.forEach(function(w){
-    var c=el('div','card'); c.appendChild(el('div','t',w.name));
-    if(w.description) c.appendChild(el('div','s',w.description)); // v9: purpose visible on the card
-    c.appendChild(el('div','s','version '+w.version));
-    c.onclick=function(){ showSkeleton(w.name); }; // v9: click → predicted DAG (inspect before reuse)
-    box.appendChild(c);
-  });
-}
 // v9 (REQ-062): a workflow's predicted static DAG — inspect its shape before deciding to reuse it.
 async function showSkeleton(name){
   var s=await getJSON('/api/workflows/'+encodeURIComponent(name)+'/skeleton'); if(!s) return;
@@ -218,16 +208,53 @@ async function showSkeleton(name){
     (groupBox||tree).appendChild(node);
   });
 }
-async function loadRuns(){
-  var box=document.getElementById('runs'); var list=await getJSON('/api/runs')||[];
+// v11 F1 (REQ-074/075, DES-070/071): home view — 3-way grouped cards with metrics + mini skeleton preview.
+function fmtMetric(val,suffix){ return val==null?'—':Math.round(val)+suffix; }
+function renderMiniSkeletonAsync(card,name){
+  getJSON('/api/workflows/'+encodeURIComponent(name)+'/skeleton').then(function(s){
+    if(!s||(s.skeleton||[]).length===0) return;
+    var ns2='http://www.w3.org/2000/svg';
+    var svg=document.createElementNS(ns2,'svg');
+    var W=18,H=12,GAP=3,nodes=(s.skeleton||[]).slice(0,10);
+    svg.setAttribute('width',String(nodes.length*(W+GAP)));
+    svg.setAttribute('height',String(H+4));
+    svg.style.cssText='display:block;margin:6px 0 2px';
+    nodes.forEach(function(n,i){
+      var r=document.createElementNS(ns2,'rect');
+      r.setAttribute('x',String(i*(W+GAP))); r.setAttribute('y','2');
+      r.setAttribute('width',String(W)); r.setAttribute('height',String(H));
+      r.setAttribute('rx','3');
+      var fill=n.kind==='phase'?'#D7E0E6':n.kind==='workflow'?'#E6E2D9':'#DCE5DA';
+      r.setAttribute('fill',fill); r.setAttribute('stroke','#C4BDAE'); r.setAttribute('stroke-width','0.5');
+      svg.appendChild(r);
+    });
+    card.appendChild(svg);
+  });
+}
+function renderHomeGroup(box,cards){
   box.innerHTML='';
-  if(!list.length){ box.appendChild(el('div','empty','(no runs yet)')); return; }
-  list.forEach(function(r){
-    var c=el('div','card'); c.onclick=function(){ go(r.runId); };
-    c.appendChild(el('div','t',r.runId));
-    var s=el('div','s'); s.appendChild(el('span','st-'+r.status,r.status)); s.appendChild(document.createTextNode(' · '+(r.name||'(ad-hoc)'))); c.appendChild(s);
+  if(!cards||!cards.length){ box.appendChild(el('div','empty','(none)')); return; }
+  cards.forEach(function(card){
+    var c=el('div','card');
+    c.appendChild(el('div','t',card.name||'(inline)'));
+    if(card.description) c.appendChild(el('div','s',card.description));
+    var m=card.metrics||{successRate:null,avgDurationMs:null,terminalCount:0};
+    var ms=el('div','s');
+    ms.textContent='sr: '+fmtMetric(m.successRate!=null?Math.round(m.successRate*100):null,'%')+' · avg: '+fmtMetric(m.avgDurationMs,'ms')+' · runs: '+m.terminalCount;
+    c.appendChild(ms);
+    if(card.name) renderMiniSkeletonAsync(c,card.name);
+    if(card.activeRunId){ var aid=card.activeRunId; c.onclick=function(){ go(aid); }; }
+    else if(card.name){ var cname=card.name; c.onclick=function(){ showSkeleton(cname); }; }
+    else if(card.latestRunId){ var lid=card.latestRunId; c.onclick=function(){ go(lid); }; }
     box.appendChild(c);
   });
+}
+async function loadHome(){
+  var home=await getJSON('/api/home');
+  if(!home) home={running:[],registered:[],other:[]};
+  renderHomeGroup(document.getElementById('home-running'),home.running);
+  renderHomeGroup(document.getElementById('home-registered'),home.registered);
+  renderHomeGroup(document.getElementById('home-other'),home.other);
 }
 
 async function loadTranscript(runId, agentId, label){
@@ -415,7 +442,7 @@ async function render(){
   document.getElementById('issues').style.display = issuesView?'block':'none';
   if(issuesView){ await loadIssues(); }
   else if(runId){ await loadDag(runId); }
-  else { await loadWorkflows(); await loadRuns(); }
+  else { await loadHome(); }
 }
 render();
 setInterval(render, 3000);

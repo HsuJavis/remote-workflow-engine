@@ -1967,3 +1967,13 @@ Suite at close: 738 passed / 2 failed (both VAL-079, pending test fix) / 163 tes
 - **files:** src/run-store.ts, src/run-guard.ts, src/run-manager.ts
 - **commit:** (pending)
 - **iter:** v11
+
+### IMPL-111 — home dashboard grouped cards + reliability metrics (`buildHomeView` / `computeWorkflowMetrics` / `GET /api/home` / `RunSummary.terminalAt`)
+- **status:** done
+- **traces:** TASK-072, TASK-073, DES-070, DES-071, DES-072, REQ-074, REQ-075
+- **greens:** UT-072, UT-073, IT-068, VAL-083, VAL-084
+- **files:** src/types.ts, src/run-store.ts, src/store/sqlite-run-store.ts, src/dashboard.ts, src/server.ts, src/dashboard-page.ts
+- **commit:** (pending)
+- **iter:** v11
+
+> **FIX F3 test_defect RESOLVED (Gate 5 FIX F2):** `metricsMap` helper param in `tests/unit/home-view.test.ts:26` typed as `(entries: [string, WorkflowMetrics][] = [])` — was inferred too narrowly as `typeof ZERO_METRICS` in the prior pass. Gate 5 FIX F2 applied the type annotation; no production code change. Re-verified: 838/838 full suite green, `npx tsc --noEmit` clean. Ledger status flipped: UT-073, IT-068, VAL-083, VAL-084 → status:green / result:pass.

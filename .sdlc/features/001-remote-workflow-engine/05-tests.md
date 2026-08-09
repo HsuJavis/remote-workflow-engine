@@ -3831,3 +3831,60 @@ Red reason: CI-safe case 3 → `payload.kind` is `'root'` (old DagNode), not `'r
 
 File: `tests/acceptance/val-082-harness-detail.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real `workflow_agent_log`, real `workflow_status`; LLM-gated for harness content. 3 cases: (1) CI-SAFE: `workflow_agent_log` response carries `hasMore:boolean` field — currently absent from `ResultEnvelope<TranscriptEvent[]>` shape → FAILS; (2) CI-SAFE REGRESSION: `AgentRecord.state` is canonical (`queued|running|done|failed`) — currently satisfied → passes; (3) LLM-GATED: real agent → harness has model/prompt/tools + no secret patterns (`sk-*`, `ghp_*`) + harness kind stripped from events array. Headless-browser click + panel DOM assertion (tier-2 no-secret proof) deferred to Gate 7.5.
 Red reason: case 1 → `workflow_agent_log` returns `{error:{code:'AGENT_NOT_FOUND'}}` (no `hasMore` field) → `'hasMore' in log` is false → fails. Case 3 skips (no provider). 1 fail, 2 pass.
+
+<!-- ── v11 F1 (REQ-074/075) — home dashboard grouped cards + reliability metrics ── -->
+
+### UT-072 — pure `buildHomeView` 3-way grouping (REQ-074)
+- **status:** green
+- **traces:** DES-070
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/unit/home-view.test.ts`. Mock policy (unit): pure fixtures — inject `catalog[]`, `RunSummary[]`, and a `Map<string,WorkflowMetrics>` directly; no I/O. 10 cases: (1) catalog workflow with an active run (`status:'running'`) → RUNNING group, not REGISTERED or OTHER; (2) catalog workflow with only a completed run → REGISTERED; (3) catalog workflow with NO runs at all → REGISTERED; (4) run name absent from catalog → OTHER; (5) inline run (`name:undefined`) → OTHER keyed `'(inline)'`; (6) RUNNING wins over REGISTERED — workflow with both active and terminal runs appears in `running` only; (7) empty catalog + no runs → three empty arrays, never throws; (8) `activeRunId` set on RUNNING card; `latestRunId` present when any run exists; (9) card carries `description` from catalog; (10) metrics from map passed through to card.
+Red reason: `buildHomeView` is not exported from `src/dashboard.ts` → `TypeError: buildHomeView is not a function` at test runtime. All 10 cases fail.
+
+### UT-073 — pure `computeWorkflowMetrics` fold + boundary conditions (REQ-075)
+- **status:** green
+- **traces:** DES-071
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/unit/workflow-metrics.test.ts`. Mock policy (unit): pure fixtures — inject `RunSummary[]` directly; no I/O; fixed ISO anchor strings (`T0='2025-01-01T00:00:00.000Z'` etc.) — hermetic, never compared to real clock. 8 cases: (1) 4 completed + 1 failed → `successRate:0.8`, `terminalCount:5`, finite `avgDurationMs` (≈3000ms from fixture), no NaN; (2) zero terminal runs → `{successRate:null, avgDurationMs:null, terminalCount:0}` never NaN; (3) interrupted/suspended/running/queued excluded from both metrics; (4) terminal run with missing `terminalAt` → counted in successRate, skipped from mean; (5) ALL terminal runs missing `terminalAt` → `avgDurationMs:null`, `successRate` still computes; (6) empty run list → empty map; (7) multiple workflows keyed separately, no cross-contamination; (8) never throws on any valid RunSummary array.
+Red reason: `computeWorkflowMetrics` is not exported from `src/dashboard.ts` → `TypeError: computeWorkflowMetrics is not a function` at test runtime. All 8 cases fail.
+
+### IT-068 — `GET /api/home` over the real server + `terminalAt` in `RunSummary` (REQ-074, REQ-075)
+- **status:** green
+- **traces:** DES-070, DES-071
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/integration/home-api.test.ts`. Mock policy (integration): real `createServer` + real `SqliteRunStore` + real HTTP; no LLM needed (pure-return scripts). 4 cases: (1) `GET /api/home` returns HTTP 200 with `{running:[],registered:[],other:[]}` shape; (2) a registered workflow (no active run) appears under `registered[]`; (3) `RunSummary.terminalAt` is populated by `listRuns()` (surfaced via `GET /api/runs`) for a completed run — DES-071 requires additive `terminalAt?` on `RunSummary` in BOTH stores; (4) `GET /api/home` includes metrics (`successRate`, `avgDurationMs`, `terminalCount`) populated by `computeWorkflowMetrics` after a run completes.
+Red reason: `GET /api/home` is not registered in `server.ts` → falls through to the static-file/404 handler → HTTP 404; `RunSummary.terminalAt` not on the type and not returned by `listRuns()` → case 3 fails with `expected undefined not to be undefined`. All 4 cases fail.
+
+### VAL-083 — REQ-074: `GET /api/home` grouping + card description + WorkflowCard shape (REQ-074)
+- **status:** green
+- **traces:** REQ-074, DES-072
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v11
+
+File: `tests/acceptance/val-083-home-cards.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real `GET /api/home`, real store; no LLM needed for CI-safe cases. 3 CI-safe cases: (1) `GET /api/home` returns HTTP 200 with three-group `HomeView` shape; (2) a registered workflow's card has `name`, `description`, `group`, and `metrics` fields; (3) inline-script run (no name) appears in `other[]` with `group:'other'`. Headless-browser mini-SVG preview + click-to-full-graph deferred to Gate 7.5.
+Red reason: `GET /api/home` not registered → HTTP 404 on all CI-safe cases. All 3 fail.
+
+### VAL-084 — REQ-075: home card shows 80% success rate + finite `avgDurationMs`; zero-run → null (REQ-075)
+- **status:** green
+- **traces:** REQ-075, DES-072
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v11
+
+File: `tests/acceptance/val-084-metrics.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real `GET /api/home`, real store; no LLM needed (pure-return scripts fail/succeed deterministically). 2 CI-safe cases: (1) seed 4 completed + 1 failed runs on a named workflow via the real engine → `GET /api/home` card shows `successRate:0.8`, finite non-NaN `avgDurationMs ≥ 0`, `terminalCount:5`; (2) never-run registered workflow → card metrics `{successRate:null, avgDurationMs:null, terminalCount:0}` (REQ-075 named divide-by-zero / NaN boundary). Headless-browser "80% / 3.2 s" text deferred to Gate 7.5.
+Red reason: `GET /api/home` not registered → HTTP 404. Both cases fail.

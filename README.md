@@ -10,7 +10,7 @@
 原封不動地跑在一台伺服器上，透過 **MCP Streamable HTTP** 介面遠端送出、追蹤、暫停/續跑/停止，並
 把每個 `agent()` 呼叫真正路由到你設定的 LLM 供應商（Anthropic / OpenAI / Gemini / 本機 Ollama）。
 
-**目前功能（v11，2026-08-09）**：
+**目前功能（v11，2026-08-10）**：
 
 - **工作流程執行**：`workflow_run`（含 inline seed + CAS seedManifest）、`workflow_status`、
   `workflow_suspend`/`workflow_resume`/`workflow_stop`、當機可續跑（重啟後 `interrupted` → `workflow_resume`）
@@ -24,9 +24,11 @@
 - **Webhook**：`webhook_create`/`webhook_list`/`webhook_delete`（HMAC-SHA256 驗簽、deliveryId 去重）
 - **高效 seeding**：`blob_put`/`seed_plan`（CAS sha256 去重）；`/mcp` 接受 `Content-Encoding: gzip|deflate`
 - **問題回報**：`issue_report`（版本欄位自動填入，caller 可覆寫；`issue_list`/`issue_get`/`issue_comments`/`issue_comment`）
-- **儀表板**：`GET /dashboard`（run 清單 + DAG + 逐字稿）、`GET /dashboard/issues`（Issues 頁面：
-  Open/Resolved 分組、點擊顯示 detail）、`GET /dashboard/<runId>`（run 詳情）
-- **可觀測性**：`GET /api/status`（agentSemaphore）、`GET /api/issues`、`GET /api/issues/:number`
+- **儀表板**：`GET /dashboard`（首頁：工作流程卡片按 RUNNING/REGISTERED/OTHER 分組，各附描述 + 小型骨架預覽 +
+  可靠性指標）、`GET /dashboard/issues`（Issues 頁面：Open/Resolved 分組、點擊顯示 detail）、
+  `GET /dashboard/<runId>`（run 詳情：DAG + 逐字稿）
+- **可觀測性**：`GET /api/home`（首頁工作流程分組 JSON）、`GET /api/status`（agentSemaphore）、
+  `GET /api/issues`、`GET /api/issues/:number`
 
 共 36 個 MCP 工具。
 
@@ -120,6 +122,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 
 ```bash
 # Dashboard JSON REST API
+curl -s http://127.0.0.1:8787/api/home           # 首頁工作流程分組 {running,registered,other}
 curl -s http://127.0.0.1:8787/api/runs           # 列出所有 run（含即時狀態）
 curl -s http://127.0.0.1:8787/api/runs/<runId>   # run 詳情（phase/agent tree）
 curl -s http://127.0.0.1:8787/api/runs/<runId>/dag   # composite 呼叫樹（DAG）

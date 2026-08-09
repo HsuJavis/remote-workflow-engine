@@ -40,7 +40,7 @@ import { verifyTagWebhook } from './self-update-webhook.js';
 
 // REQ-066 (v11): engine version from package.json + best-effort git describe, replacing the hardcoded '1.0.0'.
 const ENGINE_VERSION = resolveEngineVersion();
-import { buildDashboardModel, layoutGraph } from './dashboard.js';
+import { buildDashboardModel, layoutGraph, buildHomeView, computeWorkflowMetrics } from './dashboard.js';
 import { DASHBOARD_HTML, buildDashboardHtml } from './dashboard-page.js';
 import type { RunStore } from './run-store.js';
 
@@ -772,6 +772,16 @@ async function handleDashboardRequest(
   const runMatch = /^\/api\/runs\/([^/]+)$/.exec(path);
   const issuesDetailMatch = /^\/api\/issues\/(\d+)$/.exec(path);
   try {
+    // v11 F1 (REQ-074/075): home view — 3-way grouped workflow cards with reliability metrics.
+    if (path === '/api/home') {
+      const [catalogEntries, runs] = await Promise.all([
+        runManager.catalog.list(),
+        store.listRuns(),
+      ]);
+      const metrics = computeWorkflowMetrics(runs);
+      sendJson(res, 200, buildHomeView(catalogEntries, runs, metrics));
+      return;
+    }
     if (path === '/api/runs') {
       const runs = await store.listRuns();
       sendJson(res, 200, buildDashboardModel(runs).runs);
@@ -1149,7 +1159,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // TASK-025 (DES-018): read-only dashboard HTTP API, a distinct transport from /mcp on the
     // SAME port (no separate dashboard listener/port — one server, two transports).
     // v11 (REQ-067): /api/issues* added alongside existing /api/runs* and /api/workflows*.
-    if (req.url?.startsWith('/api/runs') || req.url?.startsWith('/api/workflows') || req.url?.startsWith('/api/issues')) {
+    if (req.url?.startsWith('/api/runs') || req.url?.startsWith('/api/workflows') || req.url?.startsWith('/api/issues') || req.url === '/api/home' || req.url?.startsWith('/api/home?')) {
       handleDashboardRequest(req, res, store, runManager, issueReporter, facade).catch(() => {
         sendJson(res, 200, { degraded: 'internal dashboard error' });
       });

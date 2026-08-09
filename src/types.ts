@@ -113,6 +113,9 @@ export interface RunSummary {
   createdAt: string;
   /** v11 Sprint 3 (TASK-066 / DES-063): who triggered the run; coalesced from started_by column. */
   startedBy?: StartedBy;
+  /** v11 F1 (DES-071): ISO timestamp of the first terminal transition (completed/failed/stopped);
+   *  absent for non-terminal or legacy runs where no terminal transition is recorded. */
+  terminalAt?: string;
 }
 
 export interface RunSpec {
