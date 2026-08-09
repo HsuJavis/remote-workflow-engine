@@ -2,7 +2,7 @@
 // Narrow invoke(prompt,opts) over the configured provider; bounded timeout -> retry -> null semantics
 // (D-G): a dead/hung/misconfigured provider resolves { ok:false } rather than hanging or throwing.
 // Sole custody of provider API keys lives here (parent-only, never exposed to the sandboxed script).
-import type { AgentOpts, TranscriptEvent } from '../types.js';
+import type { AgentOpts, HarnessDescriptor, TranscriptEvent } from '../types.js';
 import { LiteLLMProxyManager } from './litellm-proxy.js';
 
 export interface AliasMap {
@@ -36,7 +36,10 @@ export interface GatewayClient {
    *  `workspace` (D-V2V-1): the run's own on-disk workspace (AgentReq.workspace, always set by
    *  AgentExecutor) — only ClaudeAgentSdkGatewayClient consumes it (to re-scope `cwd`/materialize
    *  assets per call); other gateways ignore it, unchanged. */
-  invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string }): Promise<GatewayResult>;
+  /** `onHarness` (DES-066 / TASK-069): optional hook called eagerly at session-build time (post-curation,
+   *  before any query) with the redacted `HarnessDescriptor`. The executor wires this to append a
+   *  `{kind:'harness'}` transcript event so deriveAgentRecords can surface the dispatched agent's model. */
+  invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor) => Promise<void> }): Promise<GatewayResult>;
   /** D-V2I-6: optional lifecycle hook — a gateway that owns a subprocess (e.g.
    *  `LiteLLMGatewayClient`'s managed `LiteLLMProxyManager`) cascades the stop here so
    *  `Server.close()` can reap it regardless of which gateway-selection branch built it. Gateways
@@ -261,10 +264,18 @@ export class LiteLLMGatewayClient implements GatewayClient {
     }
   }
 
-  async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal }): Promise<GatewayResult> {
+  async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; onHarness?: (h: HarnessDescriptor) => Promise<void> }): Promise<GatewayResult> {
     const aliasName = req.opts.model ?? 'default';
     const target = this._config.aliases[aliasName];
     if (!target) return { ok: false, provider: 'unknown', reason: 'terminal' };
+    // DES-066 (TASK-069): emit harness descriptor eagerly at model-resolution time (surfaceType:'none'
+    // — direct-fetch has no curated tool surface). 4KB head+tail cap on prompt.
+    if (req.onHarness) {
+      const p = req.prompt;
+      const PROMPT_CAP = 4096, HALF = 2048;
+      const cappedPrompt = p.length > PROMPT_CAP ? p.slice(0, HALF) + '…[truncated]…' + p.slice(p.length - HALF) : p;
+      await req.onHarness({ model: aliasName, prompt: cappedPrompt, tools: [], skills: [], mcpServers: [], surfaceType: 'none' });
+    }
 
     const fetchImpl = this._config.fetchImpl ?? fetch;
     const attempts = 1 + Math.max(0, this._config.retries);

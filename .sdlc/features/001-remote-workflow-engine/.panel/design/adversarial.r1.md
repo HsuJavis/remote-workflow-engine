@@ -1,106 +1,262 @@
-# Design panel — Adversarial group (r1, independent proposal)
+# Design panel — Adversarial group (r1, independent) · v11 Sprint 3 (REQ-071..073 / ARCH-041..045)
 
-**Slice:** v11 Sprint 2 — tag-triggered, privilege-separated, fully-automatic self-update
-**Scope:** REQ-068..070 → ARCH-038 (unprivileged verifier + flag-writer), ARCH-039 (privileged updater helper + systemd units), ARCH-040 (observable version + last-update outcome).
-**Lenses carried (they trade off — conflicts surfaced explicitly):** (a) Interface-contract, (b) Boundary/error, (c) Testability. **Tie-breaker:** Karpathy simplicity-first.
-
-## Altitude judgement
-tech_stack = Node 22 / TypeScript system; the *product* is both a plain system and an AI-agent system. **This slice is system-altitude infra** (webhook ingress, HMAC, git/systemd, self-update) — it contains no `agent()` semantics. The **only** agent-altitude touchpoint is *confinement*: the engine hosts untrusted agent code, so the update-flag file (which the privileged helper trusts) must be unreachable from any run workspace. I therefore apply the **system altitude** throughout, with a single agent-altitude confinement invariant (flag path outside every `workRoot`, mirroring the ARCH-019 workroot-guard pattern).
-
----
+> Lens: three sub-lenses that trade off — **(a) Interface-contract** (signatures, I/O types, compatibility),
+> **(b) Boundary/error** (failure modes, error codes, boundary completeness), **(c) Testability** (every DES
+> a UT can cover; clock/storage injectable). Tie-breaker = **Karpathy simplicity-first**. Internal conflicts
+> between the three are surfaced explicitly, not smoothed.
+>
+> **Altitude read (from tech_stack + REQs).** This is *both*: the **subject observed is agent-altitude**
+> (each agent's harness — model/prompt/tools/skills/live-state), the **delivery is system-altitude** (HTTP
+> routes, DOM render, payload bounds, an **unauthenticated, reverse-proxy-forwardable** read plane — D5/REQ-070).
+> So I apply consumability+observability at the agent altitude (the harness must be truthful and complete) and
+> the system altitude (bounded payloads, XSS/secret controls on the no-auth listener). Safety class QM.
+>
+> **Scope read.** ARCH itself calls this "90% render over data that already exists + 10% two security-load-bearing
+> data additions." My lens agrees, and it re-prioritizes: the *interface/boundary/test* weight is almost entirely
+> on the **two data additions** (ARCH-041 `startedBy`, ARCH-044 harness capture) and their **restart/secret
+> boundaries** — the SVG pixels are the low-risk part. Proposed DES ids DES-063..DES-068 (synthesizer owns final numbering).
 
 ## Summary
 
-The architecture is sound and the three units are already the right injectable seams; my job at design altitude is to pin the **contracts, the failure taxonomy, and the test seams** so the synthesizer's DES/tasks can't leave a boundary implicit. The self-update path is RCE-by-design, so an *unpinned* boundary is a defect, not a nicety. Five contracts are genuinely under-specified by the ARCH text and must be nailed in design: (1) the **secret-missing fail-closed** behaviour of the webhook route; (2) the **event-shape divergence** of GitHub `create` vs `push` (plus `ping`/tag-delete no-ops); (3) the **flag-file lifecycle contract** (atomic write **and** consume-on-read, because the systemd trigger drops overlapping arms — a race the flock alone does not close); (4) the **result-file schema + write-ordering**, owned in exactly one place so the bash-writer and TS-reader can't drift; (5) the **route-dispatch collision** with the existing `/hooks/:id` registry. The central internal conflict my three lenses expose: **testability wants the updater logic in typed TS; the privilege-separation seam forces it into an out-of-process bash helper.** I resolve for bash-but-seamed (privsep is non-negotiable), tested via a child-process integration harness against a throwaway git repo — never via the systemd unit files, which must stay logic-free.
+The architecture is sound and I do not reopen its converged decisions (journaled `kind:'harness'` over a new
+column; explicit-coordinate SVG over flexbox; server-authoritative recompute over client cache; capture-time
+names-only redaction + two-tier proof). My contribution is **at the DES seam-contract level**, where five
+concrete hazards the ARCH text leaves under-specified will bite implementation and testing:
 
----
+1. **The harness *emission point* fights the deliberately-narrow `GatewayClient.invoke` contract** — and the
+   two obvious fixes (re-derive in the executor / ride settle-time `result.events`) each break a stated
+   invariant. I propose the one seam that satisfies all three lenses.
+2. **`layoutGraph` must emit *logical* coordinates, not device pixels**, or its "pure UT" asserts brittle
+   magic numbers and couples layout constants to topology logic (testability ⟂ the ARCH's literal `{x,y,width,height}`).
+3. **The skeleton-overlay join key `(label+phase)` is not 1:1** — a parallel group is one `SkeletonNode` mapping
+   to *N* live `AgentRecord`s that may share a label; the contract is phase→group→ordered-set, not a unique key.
+4. **The harness is emitted twice** unless ARCH-045 projects it to a top-level field *and strips* `kind:'harness'`
+   from the windowed transcript events (interface cleanliness + the 50-msg cap must never evict it).
+5. **`startedBy` needs a nullable durable column + a *total* read-model fallback** — a closed union (interface
+   purity) collides with pre-existing persisted rows and internal `start()` callers (boundary completeness).
 
-## Key points (design contracts, per lens)
+Everything security-load-bearing (`redactHarness`, the trigger union, the state-alias map, the frame hue) is a
+**pure function with an injected store/clock**, so the whole slice is UT-coverable except the two irreducible
+DOM points, which the mandatory Gate-7.5 headless assertion covers.
 
-### ARCH-038 — unprivileged verifier + flag-writer
+## Key points (per ARCH module, three lenses + Karpathy tie-break)
 
-**(a) Interface-contract.** Split the ARCH's one unit into three DES-level seams so the pure part is a clean UT and the stateful/FS parts are injected:
+### DES-063 — ARCH-041 `startedBy` provenance on the durable run record
+- **Interface-contract.** `startedBy: { type: 'client'|'webhook'|'schedule'|'chain'; id?: string }` — a closed
+  discriminated union. Surface it on `RunSpec`, `RunStatusView`, `RunSummary` (the card list needs it too), the
+  `workflow_status` envelope, and `GET /api/runs/:id`. Set at `RunManager.start()` by each of the four callers
+  (`mcp-facade.ts:89` → `client`; `webhook-registry.ts:137` → `webhook`+id; `scheduler-engine` → `schedule`+name;
+  `continuation-store.ts:148` → `chain`+parentRunId). `id?` is stored opaquely — no source-registry, no drill-down
+  machinery (Karpathy: it is a string, store the string).
+- **Boundary/error.** Two boundary gaps: (i) **pre-existing persisted runs** (the `runs` table predates this
+  column) and (ii) an **internal/test `start()` caller** that passes none. Both mean the field is *absent at read
+  time*. The renderer's trigger-node contract must be **total** — so the read model coalesces absent →
+  an explicit `{ type: 'unknown' }` sentinel (my recommendation over silently coercing to `client`, so a
+  back-filled record is never mislabeled). SQLite column must be **nullable** (additive migration, no backfill
+  job). Persist in the **`runs` table, not the REQ-055 terminal snapshot** (ARCH-041 is right — the source node
+  must render for in-progress runs; the snapshot fires too late).
+- **Testability.** Store port already injectable (`RunStore` fake). One UT per caller asserting the literal it
+  sets; one persistence IT asserting `startedBy` survives a store round-trip/restart. No clock needed.
+- **Internal conflict (a ⟂ b).** Interface-contract wants the union **required** (no `undefined` in the type);
+  Boundary wants it **optional** (legacy rows, internal callers). **Resolved toward boundary-completeness:**
+  nullable column + a total read-model coalesce to a defined sentinel. Under-labeling a real run beats a clean
+  type that throws on a historical row. The `chain` display *label* stays deferred (REQ-071 enumerates only
+  client/webhook/schedule) — but the enum value is **required now** so a chained run cannot crash the node builder.
 
-- **DES — pure verifier** (no I/O, injectable clock):
-  `verifyTagWebhook(input, deps) → TagVerdict`
-  - `input: { event: string /* X-GitHub-Event */, signatureHeader?: string /* X-Hub-Signature-256 */, deliveryId?: string, rawBody: Buffer }`
-  - `deps: { secret: string | undefined, tagPattern: RegExp }`
-  - `type TagVerdict = { arm: true; tag: string; deliveryId?: string } | { arm: false; httpStatus: 200 | 401 | 503; code?: string; reason: string }`
-  - HMAC is computed **over the raw `Buffer`** with `createHmac('sha256', secret).update(rawBody)`, compared to the hex after stripping the `sha256=` prefix in **constant time** (reuse the `timingSafeEqual` helper already proven in `src/webhook-registry.ts:143`). **Never** `rawBody.toString('utf8')` before HMAC, and the route **must** read via `readBodyBuffer` (server.ts:529) — **not** `readBodyDecoded` (server.ts:558): GitHub signs the wire bytes, so the REQ-063 `Content-Encoding` decode path would silently break verification. A raw-`Buffer` assertion is a required regression test.
-- **DES — flag writer seam** (injectable): `writeUpdateFlag(tag: string): void` — atomic `temp + rename`, mode `0600`, at a path resolved **outside every workRoot** (see boundary invariant below). The verifier core calls a supplied `FlagSink` so the unit test asserts *sink-called-with-T* vs *sink-not-called* without touching the FS.
-- **DES — delivery dedup seam**: reuse the `webhook_deliveries`-style table (`INSERT OR IGNORE` on `deliveryId`, engine-owned SQLite side table, `:memory:` in tests). A replayed valid delivery must **not** re-arm.
-- **Route:** a **distinct fixed path** (recommend `POST /github/webhook` — see the collision hazard in risks; do **not** nest under `/hooks/`). Provisioned shared secret `RWE_SECRET_GITHUB_WEBHOOK_SECRET` via `loadSecretSourceFromEnv()` (server-side only; never workspace/sandbox-reachable; never logged; never on the dashboard — extends REQ-018/D-R2). This is the *sender-provided* model, **not** the registry's generate-and-return.
+### DES-064 — ARCH-042 `GraphPayload` + `layoutGraph` (pure model seam)
+- **Interface-contract.** `GraphPayload = { kind:'skeleton'; nodes:SkeletonNode[]; name:string } | { kind:'run';
+  layout:GraphLayout; startedBy }`; one `renderGraph` consumes both. **Keep `GET /api/runs/:id/dag` additive:
+  wrap, don't reshape** — `kind:'run'.layout` should embed today's `DagModel`/`GraphLayout` shape *verbatim* so
+  the only wire change is the envelope, not the tree. This makes the one-consumer breaking change (the dashboard
+  is rewritten this sprint) as small as possible and keeps the seam **internal, not a frozen public contract**
+  (I hold against elevating it — quality's G11). **Node-id stability is a contract invariant I pin here:** every
+  node `id` is a *pure, deterministic function of node identity* (agent → `agentId`; trigger/phase/frame → a
+  stable synthetic key), so pan/zoom state and click-selection survive the 3s re-render. An id that reshuffles
+  per poll silently breaks selection — call it out in the DES.
+- **Boundary/error.** `layoutGraph` is **total — never throws** (pure). Boundary cases the DES must name:
+  empty run (trigger node only, zero agents), a live agent absent from the static skeleton (**never drop it** —
+  fall back to frame-based `buildDagModel` grouping, ARCH-042's added check), an inert skeleton node (predicted,
+  not-yet-run), and the 1000-agent ceiling (node cap handled downstream in ARCH-043, not here). Emit
+  `warnings:string[]` for unattached-frame agents and `terminalAt?` on `RunStatusView` so pollers stop.
+- **Testability.** The **master seam** — pure, no clock/store. Fixtures → assert nodes+edges deterministically;
+  a dedicated UT for the divergence fallback (live agent not in skeleton still renders). This is where the
+  slice's real coverage lives.
+- **Internal conflict (c ⟂ a — sharpest here).** The ARCH literally specifies `nodes:[{id,x,y,width,height,...}]`
+  — **device geometry**. If `layoutGraph` bakes pixels, its "pure UT" asserts `x===140` (brittle; couples the
+  Morandi box-width constant into topology logic; a spacing tweak breaks a topology test). **Resolved (Karpathy +
+  testability win):** `layoutGraph` emits **logical grid cells** `{col, row, laneSpan}` (col by phase→group→depth,
+  row by index within a parallel group); a thin pixel-mapper in ARCH-043 turns cells→pixels. The UT asserts
+  *topology and ordering* (`col===1, row===0`), never pixels. This also means a box-size restyle touches **zero**
+  model tests. I recommend the DES change the ARCH's `x/y/width/height` to `col/row/laneSpan` + a documented
+  cell→pixel mapper; if the panel insists on pixels in the model, the UT must assert *relative* ordering, not
+  absolute values.
+- **Internal conflict (a ⟂ b — the join key).** The skeleton overlay joins static `SkeletonNode`s to live
+  `AgentRecord`s by `label+phase`, but **that key is not unique**: REQ-071's "2 parallel Draft agents" are one
+  `SkeletonNode{kind:'parallel'}` mapping to *two* AgentRecords that may share the label `draft`. The contract is
+  **phase → parallel-group → ordered set of agents** (order by `startedAt`/dispatch), *not* a 1:1 label lookup.
+  The DES must state the join as a group-to-set fold and define the tie-order, else two same-label agents collapse
+  into one box (a live agent silently vanishes — the exact failure ARCH-042's fallback exists to prevent).
 
-**(b) Boundary/error — the failure taxonomy the ARCH leaves implicit:**
+### DES-065 — ARCH-043 Morandi SVG renderer (dumb browser projection)
+- **Interface-contract.** Consumes `GraphLayout` cells + the cell→pixel mapper (DES-064). `morandiFrameHue(frame:
+  string): string = palette[stableHash(frame) % palette.length]` — **pure**, so a frame never flickers hue across
+  the poll. Palette as CSS custom properties on a scoped selector (one-file swap).
+- **Boundary/error.** Node cap + "N more" affordance for the 1000-agent ceiling (**not** virtualization —
+  Karpathy: typical runs are tiny). Page body never scrolls horizontally; a wide graph pans within its own
+  `overflow` container. Empty/degraded payload renders an empty canvas, not a throw.
+- **Testability.** This is the **least unit-testable module** (DOM/SVG). The adversarial move: **push all
+  branching into the pure layout so the renderer is a near-branchless total projection** — mirrors the existing
+  `buildDagModel`/`dashboard-page` split. Any `if node.kind===...` in the renderer is a testability liability;
+  keep node-shape selection data-driven off `node.kind`. `morandiFrameHue` + the cell→pixel mapper are pure UTs;
+  the render itself is Gate-7.5 headless only.
+- **`textContent`-only invariant (b, security-load-bearing).** Every run-derived string — agent label, model id,
+  workflow name, tool/skill names, **and text inside SVG `<text>`** — is set via `textContent`, never `innerHTML`.
+  These strings are attacker-influenceable (workflow author, webhook `args`, agent output) on the **no-auth**
+  plane. This extends REQ-067 verbatim and is an **explicit DES acceptance line**, not hygiene. Karpathy tie-break
+  vs the n8n look: hand-rolled SVG, no vendored graph lib (a lib tempts `innerHTML`).
 
-| Condition | Result | Note |
-|---|---|---|
-| secret unconfigured (`RWE_SECRET_GITHUB_WEBHOOK_SECRET` absent) | **503 `UPDATE_WEBHOOK_UNCONFIGURED`**, no flag | **Fail-closed. Must NEVER 200, never treat unsigned as valid, never write a flag.** The single most important boundary; ARCH text does not pin it. |
-| signature absent / malformed / mismatch | 401, no flag | constant-time compare; malformed header (not `sha256=<64 hex>`) is 401, not 500 |
-| `event: 'ping'` | 200 no-op | GitHub pings on webhook creation — must not error |
-| `create` with `ref_type:'branch'` | 200 no-op | branch create is not a tag |
-| `create` with `ref_type:'tag'`, `ref` = tag name | arm if `ref` matches pattern | extractor path A |
-| `push` with `ref: 'refs/tags/<t>'`, `deleted:false` | arm if `<t>` matches pattern | extractor path B — strip `refs/tags/` |
-| `push` with `deleted:true` (tag deletion) | 200 no-op | same `refs/tags/` ref as a create — must reject by construction, not rely on downstream |
-| `push` with `refs/heads/...` | 200 no-op | branch push |
-| tag present but fails `tagPattern` (`^v[0-9][0-9A-Za-z.\-+]*$`) | 200 no-op | anchored; rejects `v1.0.0; rm -rf /` etc. by class |
-| replayed `X-GitHub-Delivery` | 200, no second flag | dedup |
-| `deliveryId` absent | process anyway (no dedup) | fail-open on dedup is acceptable **because** the helper's idempotent-apply (already-on-T → skip) covers a double-arm; state the reasoning |
+### DES-066 — ARCH-044 harness capture at dispatch (the security core) + `redactHarness`
+- **Interface-contract.** `HarnessDescriptor = { model:string; prompt:string /*4KB cap, "…(truncated)"*/;
+  tools:string[]; skills:string[]; mcpServers:string[] }`; new `TranscriptEvent.kind` value `'harness'` (extend
+  the union at `types.ts:152`); `redactHarness(raw) → HarnessDescriptor` **pure** — names only, never a
+  resolved MCP config, never a provider key, never a resolved `${secret:}` value.
+- **THE emission-point contract problem (a ⟂ b, the headline finding).** REQ-073 wants the **resolved,
+  post-curation** surface, which is computed *inside* `ClaudeAgentSdkGatewayClient` (`curatedTools` at
+  `claude-agent-sdk-client.ts:463`, `mergedMcp` at :482, `modelName` at :499). But ARCH-044 mechanic (2) requires
+  **eager** emission at dispatch (so clicking a *running* agent shows it and a crash preserves it) — which rules
+  out riding the settle-time `result.events` array the sink already drains. Two tempting fixes each break a stated
+  invariant:
+  - **Re-derive the surface in the `AgentExecutor`** (it can call the already-exported pure `curateToolsForProvider`
+    at :214). *Rejected:* `baseTools = allowedTools ?? defaultAllowedTools ?? BUILT_IN_CORE_TOOLS` — the last two
+    live in gateway config the executor doesn't hold, so a re-derivation can show a surface **≠ the one actually
+    used**. An observability panel that lies about the harness is a correctness defect, not a cosmetic one.
+  - **Widen `GatewayClient.invoke` to return the harness in its result.** *Rejected:* that is settle-time, losing
+    the running-agent + crash-safety property.
+  - **Recommended seam:** inject a single **optional async hook** `onHarness?(h: HarnessDescriptor): Promise<void>`
+    into the gateway invoke options; the client calls `onHarness(redactHarness({ model:modelName, prompt:req.prompt,
+    tools:curatedTools, skills, mcp:Object.keys(mergedMcp) }))` **right after :483**, before the SDK `query()`. The
+    executor wires `onHarness` to `sink.appendTranscript(runId, agentId, {kind:'harness', ...})`. `skills` = the
+    materialized `.claude/skills/<name>` dirs `materializeAssets` writes into the run workspace at
+    `claude-agent-sdk-client.ts:471` (the resolved skill surface the session loads via `settingSources:['project']`).
+    This captures the
+    **actual** resolved surface (no drift), emits **eagerly** (running-agent + restart-safe via the append-only
+    journal), keeps `redactHarness` **pure/testable**, and does **not** violate ARCH-005/017's "SDK options never
+    leak through ARCH-004" — a *redacted names-only projection* is exactly the observability data we intend to flow,
+    not raw `Options`. One optional callback is the minimum contract widening that keeps the panel truthful.
+  - **Reconcile with the existing `SessionInitRecord` (ARCH-017/DES-026).** That record already carries
+    allowlist/injectedMcpNames/secretHandleNames/modelId at build time. The DES must **not emit two overlapping
+    records** — either the `kind:'harness'` event *is* the SessionInitRecord-plus-prompt-plus-skills, or
+    `redactHarness` projects from the same resolved values. I flag this as a required reconciliation (Karpathy:
+    one event, not two).
+- **`deriveAgentRecords` obligation (b — required, not optional).** `run-store.ts:18`'s `if (!usage) continue`
+  drops any dispatched-but-unsettled agent on a snapshot-less restart. New total rule: **iterate an agent's
+  events; a `harness` event with no later `usage` → yield a `running` record (it was dispatched), model/label from
+  the harness; a `usage` event overrides → `done`/`failed` as today.** Precise boundary: `harness ⟹ running`,
+  `usage ⟹ terminal`, `neither` (queued, never dispatched, no journal event) ⟹ absent (renders `idle` only while
+  the run is in-process). This closes the current in-flight-agent-loss-on-restart bug as a side effect.
+  **Crash-boundary wrinkle (my own boundary lens flags it):** after a kill-9 the run reclassifies
+  `running → interrupted` (REQ-059/060), yet the raw `harness ⟹ running` rule would still paint its
+  dispatched-but-unsettled agents `running` on a run where nothing runs. The derive rule must be
+  **run-status-aware** — on an `interrupted`/`suspended` parent, a harness-without-usage agent reads `queued`
+  (it re-dispatches on resume), not `running`; only an in-process run shows it `running`. State this so DES-066
+  is airtight and the panel never shows a live spinner on a dead run.
+- **Boundary/error, four mechanics pinned.** (1) capture point = post-curation (`:463..:483`); (2) eager write,
+  not batched; (3) **latest-wins dedupe keyed on agentId** — the bounded schema-retry loop (`SCHEMA_RETRY_ATTEMPTS`)
+  can build a session more than once, so a second `harness` event supersedes the first; (4) a queued agent has no
+  harness event yet → panel shows `idle` (intended). Prompt **4KB-capped** (a DoS/observability bound on the
+  no-auth plane, not just cosmetic). **Accepted VM-sandbox limit:** a script may pass a secret *value* as a prompt
+  string — the harness captures whatever the script passed, at the transcript's trust level; the precise engine
+  invariant is *"the engine never substitutes a `${secret:}` handle into a prompt"* — script-authored plaintext is
+  the author's own boundary. Deferred (both lenses): whether the non-SDK direct-fetch gateway emits its own
+  harness or renders harness-absent (model+status only) — one `onHarness` call site either way.
+- **Testability.** `redactHarness` is the security-load-bearing transform → a **pure UT** (given a build that
+  received a provisioned MCP config carrying a resolved secret, output has the server NAME only, never plaintext).
+  `curateToolsForProvider` is already pure-tested. The one impure line (the `onHarness`→sink append) rides the
+  already-injected `RunStore` + `_clock` seams — ts injectable. A **crash-resume IT** asserts a mid-run harness
+  event replays and yields a `running` record post-restart.
 
-The `create`-vs-`push` **ref-shape divergence** and the `ping`/tag-delete no-ops are a real boundary-completeness gap in the ARCH note ("a `create`/`push` whose ref matches a pattern" hides two different payload shapes). Pin a single `extractTag(event, body) → string | null` helper, unit-tested per row.
+### DES-067/068 — ARCH-045 harness detail panel (consumability + no-secret proof)
+- **Interface-contract.** Extend the existing `workflow_agent_log` response (MCP tool + HTTP) with
+  `harness: HarnessDescriptor | null` — **no new `/harness` route** (grow one surface). **Canonical
+  `AgentRecord.state` stays `queued`/`running`/`done`/`failed`;** the `idle`/`completed` wording REQ-073 shows is a
+  **pure render-time alias** (`queued→"idle"`, `done→"completed"`) so MCP/API callers keep the canonical strings —
+  UT the alias map.
+- **The double-send hazard (a — my finding #4).** The harness is a **transcript event** (`kind:'harness'`) that
+  `getTranscript` already returns; adding a top-level `harness` field would send it **twice**. **Fix:** in the
+  `workflow_agent_log` shaping, **project the `kind:'harness'` event to the top-level `harness` field and filter it
+  out of the returned `events` window** — sent once, and (critical boundary) **never evicted by the 50-message
+  display cap**, since the harness is the first event and a naive cap-last-50 would drop it. State this explicitly.
+- **Boundary/error.** Transcript fetched **on-click only** (never on the 3s poll); display capped at 50 messages;
+  `workflow_agent_log` HTTP gains optional `?limit=N&offset=M` (the REQ-023 windowing precedent) — bounds the
+  browser-OOM / engine-amplification vector on the no-auth plane without SSE. Unknown agentId → the uniform typed
+  error envelope (not a crash). `harness:null` for a queued agent or the non-SDK gateway.
+- **`textContent`-only in the panel too (b, security).** The harness `prompt` is the **most attacker-influenceable
+  field on the whole page**; set it and all names via `textContent`, no `innerHTML` (shared invariant with DES-065).
+- **Two-tier no-secret PROOF (c — both tiers required, distinct reasons).** (1) fast **pure-mapper UT** on
+  `redactHarness` (proves the function); (2) **one Gate-7.5 headless-browser assertion** that the rendered
+  detail-panel DOM contains no secret plaintext (proves the *whole path* — catches a future `innerHTML` regression
+  between payload and pixel that capture-time purity alone cannot). **Testability does not get to skip the real
+  run** — capture-time purity is necessary but not sufficient; the DOM is where a regression lands.
 
-**(c) Testability.** Everything on this unit is a pure/in-memory UT: inject `{secret, tagPattern}`, a fake clock, an in-memory dedup, a `FlagSink` spy. Real-tier: one signed-payload fixture (a captured GitHub `create` body + its valid `X-Hub-Signature-256`) proving the constant-time path accepts a genuine delivery and the raw-`Buffer` HMAC matches.
+## Task-splitting implications for this lens (03-tasks is unwritten — flagging where the split affects testability)
 
-**Agent-altitude confinement invariant (boot fail-fast, reuses the ARCH-019 pattern):** at boot, resolve the update-flag path and assert it is `realpath`-outside **every** configured `workRoot` and (recommended) owned `0700` by the engine user; else refuse to start with a typed `UPDATE_FLAG_INSIDE_WORKROOT`. Rationale: an untrusted agent that can write the flag gets host RCE through the privileged helper. This is the same fail-closed shape as `WorkRootInsideProjectError` and is a one-function pure UT.
-
-### ARCH-039 — privileged updater (systemd path+oneshot + dumb helper)
-
-**(a) Interface-contract — a bash script's "signature" is argv/env/exit-codes/files. Pin all four:**
-
-- **Inputs (env, injectable seams):** `RWE_UPDATE_FLAG` (flag path), `RWE_UPDATE_LOCK` (flock path), `RWE_UPDATE_RESULT` (result path), `RWE_OFFICIAL_REMOTE` (pinned remote name/URL), and a **command-prefix seam** — `GIT`, `NPM`, `SYSTEMCTL` env vars defaulting to the real binaries so integration tests substitute fakes. No decision logic in the `.path`/`.service` units.
-- **Exit codes (distinct, for the result `detail`):** `0` applied · `10` flag/tag validate-fail · `20` remote-resolve-fail (tag not on official remote) · `30` build/checkout-fail (safe-abort before restart) · `40` already-on-T skip.
-- **Flag content contract:** the flag file holds **exactly the validated tag, one line, newline-terminated** — nothing else, nothing shell-interpolatable. The privileged (dumb) side does the *least* parsing; T is re-validated helper-side against the same anchored pattern (defence-in-depth) and only ever passed as an `execFile`/array-arg, **never** `sh -c "... $T"`.
-- **Result file contract:** the helper writes `{ tag, status: 'applied'|'failed'|'skipped', ts, detail }` as JSON, **atomically (temp+rename)** — symmetric with the flag write — so the engine never reads a half-written record.
-
-**Helper sequence (all on untrusted T):** (1) consume the flag (read **then rename/delete it** — see the lifecycle contract in risks); (2) re-validate T against the pattern; (3) `flock` the lock; (4) `git fetch --tags` from the **pinned official remote**, confirm T resolves to an existing tag there, reject any other/rewritten ref; (5) if already on T's SHA → write `skipped`, exit 40; (6) `git checkout <resolved-SHA>` via array-args; (7) `npm ci && npm run build`; (8) on any failure in 4–7 → **abort before `systemctl restart`**, write `failed`, exit — *prior good checkout keeps running*; (9) write `applied` **then** `systemctl restart rwe`.
-
-**(b) Boundary/error.** The **safe-fail branch is the single most important test** (its failure mode is "service left down"): inject a failing `NPM` → assert `SYSTEMCTL` **not** called, working tree still at the prior checkout, result = `failed`. Other boundaries: non-existent/foreign ref → exit 20, nothing changed; `git fetch` network failure → `failed`, service up; the restart on the applied path kills the engine mid-run — acceptable **because** ARCH-034 crash-durability replays in-flight runs from the journal (no new drain machinery), but the design must state the **write-ordering invariant**: `applied` result is flushed to disk **before** `systemctl restart`, so the restarted engine reads it at boot.
-
-**(c) Testability — and the central internal conflict.** Testability wants this logic in typed TS (vitest-UT-able); the **privilege-separation seam forces it out-of-process into bash** (the privileged component must not live in the engine's Node process — that is the whole threat-model point). **I resolve for bash-but-seamed** (privsep non-negotiable): every meaningful step is in the *script*, exercised by a **child-process integration harness** (`execFile` the helper against a `mkdtemp` throwaway git repo, with `GIT/NPM/SYSTEMCTL` pointed at fake shims that record their argv). The `.path`/`.service` unit files carry **zero** logic (declarative units are untestable in CI) and are covered only by the Gate 7.5 real-run smoke check + documented in DEPLOY.
-
-### ARCH-040 — observable version + last-update outcome
-
-**(a) Interface-contract.**
-- Reuse `resolveEngineVersion(exec?)` (issue-reporter.ts:19, injectable `exec`) — after a tag checkout, `git describe --tags` yields T.
-- `GET /api/version → { version }`; `GET /api/status` gains `{ version, lastUpdate?: UpdateOutcome }`.
-- `type UpdateOutcome = { tag: string; status: 'applied'|'failed'|'skipped'; ts: string; detail?: string }` — **this type is the shared cross-process contract with ARCH-039's helper; it must be owned in exactly ONE place** (a single `update-types.ts` the engine imports and the DEPLOY/helper doc references verbatim). If the tasks split "helper-writer" and "engine-reader" without this single home, the JSON schema drifts. (Task-splitting note — see below.)
-- **Single durable row** for the last outcome (engine-owned SQLite side table, the schedules/webhooks/continuations convention). Name its home now — recommend the existing engine DB with a `update_outcome(id INTEGER PRIMARY KEY CHECK(id=1), json TEXT)` single-row table — so the split doesn't improvise two stores.
-
-**(b) Boundary/error.** `readUpdateResult(path) → UpdateOutcome | null` is a **tolerant** parse: absent file → `null` (no update ever ran); malformed/half-written → `null` (never 500). Read points: **at boot** (covers the applied case — the restart makes the engine ingest the flushed result) **and lazily on `/api/status`/dashboard** (covers the failed case — the engine was never restarted, so it picks up `failed` on demand). No watcher daemon, no push channel (Karpathy).
-
-**(c) Testability.** `readUpdateResult` pure UT (absent/valid/malformed). `/api/version` + `/api/status` field via the existing HTTP integration seam. Dashboard update-panel via the established Playwright-headless real-run pattern (as prior dashboard slices). This slice **is** system-altitude self-sustainability (a service updating/healing itself, never leaving itself down); the observability is deliberately scoped to *applied version + last outcome*, not a `/health`/trace-ID/metrics surface (out of scope, per the ARCH rationale — agreed).
-
----
+- **Split the pure model from the impure renderer**, mirroring the existing `buildDagModel`↔`dashboard-page`
+  split: `layoutGraph` (pure UT) and `redactHarness` (pure UT) are their **own tasks**, distinct from the DOM
+  render/panel tasks (Gate-7.5 headless only). This is the single most important split for coverage — it keeps
+  every branch in a UT-able seam and leaves the DOM layer near-branchless.
+- **Split harness *capture* from harness *display*.** The data addition + `deriveAgentRecords` change is
+  **restart-safety-load-bearing** and needs a crash-resume IT; the panel needs only a render test. They must not
+  be one task, or the restart IT gets skipped behind a UI review.
+- **Split `startedBy` durability from its rendering.** The persistence path carries a survives-restart IT; the
+  source-node render is part of the renderer task. Different test tiers → different tasks.
+- **The `onHarness` gateway-hook wiring** (types + executor wire + client call site) should land *with* the
+  capture task, not deferred — it is the seam the whole feature hangs on.
 
 ## Risks
 
-1. **Route-dispatch collision (interface-contract, HIGH).** The existing dispatcher matches `/^\/hooks\/([^/?]+)/` (server.ts:1036) and routes to `WebhookRegistry.deliver`. A path like `/hooks/github` would be captured there and 404 (unknown id) **before** the GitHub verifier ever runs. Use a **distinct prefix** (`/github/webhook`) rather than pin a fragile dispatch order.
-2. **Host/Origin allowlist blocks the real forwarded webhook (boundary, HIGH).** REQ-056 rejects a foreign `Host` with 403 *before* HMAC runs. A forwarded GitHub delivery carries a public Host, so this **one route must be Host-exempted** (HMAC is its auth; Origin stays fail-open-on-absent). Without this the feature literally cannot receive a real delivery. The design must state the exemption explicitly (and DEPLOY documents the reverse-proxy that forwards only this path while the engine stays loopback-bound).
-3. **Flag lifecycle / overlapping-arm race (boundary, MEDIUM-HIGH).** A `flock` alone does **not** close it: a systemd path-unit trigger that fires while the oneshot is already active is **dropped**, so a second tag arriving mid-build is lost at the *systemd* level regardless of flock mode. The pattern that closes both levels: **consume-the-flag** — the helper renames/deletes the flag immediately after reading, and the unit uses **`PathExists=`** so that if a new flag lands during the build, the unit re-fires when the oneshot deactivates (the file exists again). Design must **verify this against systemd path-unit semantics** (atomic-rename-into-place needs `PathExists=`/`PathChanged=`, **not** `PathModified=`, which watches writes-and-close that an atomic rename does not produce on the target). Policy = documented latest-tag-wins.
-4. **Secret-missing fail-open (boundary, HIGH — already folded into ARCH-038 above).** If `verifyTagWebhook` treated an absent secret as "no signature required," any POST would arm an update = unauthenticated RCE. Pinned to **503 `UPDATE_WEBHOOK_UNCONFIGURED`**, no flag, plus its UT.
-5. **Result/flag path misconfiguration → agent-writable = host RCE (boundary, HIGH).** Covered by the boot fail-fast `UPDATE_FLAG_INSIDE_WORKROOT` invariant; call it out as a deploy-doc requirement too (paths under `/var/lib/...`, engine-user-owned, `0700`).
-6. **Residual (accepted per ARCH rationale, restated so design doesn't silently re-litigate):** a malicious tag whose build *succeeds* is not caught by safe-fail (which protects availability, not integrity) — bounded by privsep + official-remote-pin; the only real defence is repo/secret integrity + the deferred GPG signed-tag verify + `npm ci --ignore-scripts`. Single-instance ceiling (self-update is host-local, incompatible with multi-replica) documented, not fixed.
+- **R1 (HIGH) — the panel lies about the harness.** If capture re-derives the surface in the executor instead of
+  reading the gateway's actual `curatedTools`/`mergedMcp`, the displayed tools/MCP set drifts from the set the model
+  actually saw. An observability tool that misreports is worse than none. *Mitigation:* the `onHarness` hook at the
+  real resolution site (DES-066).
+- **R2 (HIGH) — a running agent renders empty / a crashed one loses its harness.** If the harness rides settle-time
+  `result.events` or `deriveAgentRecords` isn't fixed, REQ-073's "clicking a running agent shows `running`" and the
+  restart-safety both fail. *Mitigation:* eager `onHarness` append + the `harness ⟹ running` derive rule (DES-066).
+- **R3 (HIGH) — secret plaintext reaches the DOM on the no-auth plane.** The richest, most sensitive payload the
+  dashboard has ever carried (prompts + resolved harness) on a reverse-proxy-forwardable listener. *Mitigation:*
+  capture-time names-only `redactHarness` **and** the mandatory Gate-7.5 headless DOM assertion (both tiers).
+- **R4 (MED) — a live agent silently vanishes from the graph.** The non-unique `(label+phase)` join collapses two
+  same-label parallel agents into one box. *Mitigation:* phase→group→ordered-set join + the divergence fallback
+  (DES-064).
+- **R5 (MED) — brittle layout tests / restyle breaks topology tests.** Pixel geometry baked into the pure model.
+  *Mitigation:* logical `{col,row,laneSpan}` cells + a cell→pixel mapper (DES-064).
+- **R6 (LOW) — double-sent harness / harness evicted by the 50-msg cap.** *Mitigation:* project-to-top-level +
+  strip-from-events + exempt-from-cap (DES-067/068).
+- **R7 (LOW) — `/api/runs/:id/dag` shape break for an out-of-tree consumer.** Only the (rewritten) dashboard
+  consumes it, so accepted; minimized by wrapping today's tree as `layout` verbatim (DES-064).
 
-## Task-splitting notes (where the split affects my lens)
+## Expected disagreements with the other lens (Quality-dimensions group)
 
-- **Keep the pure verifier (`verifyTagWebhook`/`extractTag`) a separate DES/task from the stateful dedup + FS flag-write.** The pure part is the clean UT surface; mixing FS/SQLite into it forfeits the cheap enumerable test matrix.
-- **The `UpdateOutcome`/result-file schema must be owned in ONE file (`update-types.ts`) referenced by both the engine reader (ARCH-040) and the helper-writer doc (ARCH-039).** If "helper" and "reader" are split into two tasks without this single source, the JSON schema drifts — a cross-process interface silently breaks with no compiler to catch it. Same for the flag content contract (one-line tag) and the single-row DB table name.
-- **The bash helper + systemd units are a distinct deploy-artifact task**, not folded into an engine-TS task; its test is a child-process integration harness (not a vitest UT), so tasks/estimates must reflect a different test tier.
+1. **Public `GraphPayload` contract (quality G11).** Quality will want `GraphPayload` elevated to a
+   frozen/versioned public API with a migration note (replaceability/consumability). **I hold against it** — one
+   in-tree consumer, rewritten this sprint; a frozen contract is speculative flexibility (Karpathy). Concede only
+   that the *type is shared* internally. (Matches the ARCH-042 stance; I expect quality to re-press it.)
+2. **`onHarness` hook vs a richer capture abstraction.** Quality may propose a first-class "harness provider" SPI
+   or folding harness into a broader session-metadata subsystem (self-sustainability). **I hold for one optional
+   callback** — the minimum that keeps the panel truthful; an SPI is the part Karpathy cuts. We likely *converge*
+   on capture-at-dispatch (already converged at ARCH), but may split on the seam's shape.
+3. **Logical cells vs the ARCH's literal pixels.** Quality endorsed the explicit-coordinate SVG at ARCH; it may
+   read my `{col,row,laneSpan}` as under-specifying render fidelity. **I argue it is strictly a testability win with
+   no fidelity loss** (the mapper is deterministic) — expect a short exchange, likely converge.
+4. **Sentinel for absent `startedBy`.** Quality may prefer coalescing absent→`client` (fewer states) for
+   consumability; **I prefer an explicit `unknown` sentinel** so a historical/internal run is never *mislabeled*.
+   This is a genuine interface ⟂ observability tension worth a decision at the design gate.
+5. **Non-SDK-gateway harness.** Quality (self-sustainability) may want the direct-fetch/LiteLLM gateway to emit a
+   harness now for parity; **I defer it** (harness-absent = model+status only) as a non-blocking design-gate
+   leftover — one `onHarness` call site either way, no REQ forces it this slice.
+6. **Where the no-secret proof lives.** I expect *agreement* that both tiers are required; a possible split on
+   whether the headless DOM assertion is "part of Gate 7.5 validation" (my view) vs "an extra UT-tier obligation"
+   (quality may want it earlier). Minor.
 
-## Expected disagreements with the other lens (quality-dimensions group)
-
-1. **Single outcome row vs update *history* (self-sustainability/observability ⟂ my Karpathy simplicity).** Quality will likely want a durable update *audit log* / rollback-history table. I hold the ARCH line: one single-row `UpdateOutcome` — "last outcome" is what REQ-070 asks for; a history DB is speculative until a real requirement. Likely reconciled as: single row now, history a future-REQ candidate (not an ARCH).
-2. **TS helper vs bash helper (their replaceability/consumability ⟂ my testability-under-privsep).** Quality may argue a typed TS helper is more replaceable/observable. I hold bash-but-seamed: the *privilege boundary* is the design's load-bearing security property, and putting the privileged logic back in a Node process (or a second Node process sharing the engine's supply chain) erodes exactly the seam privsep buys. Command-prefix seams give replaceability without crossing the boundary.
-3. **Uniform Host/Origin policy vs my per-route exemption (their self-sustainability/uniformity ⟂ my boundary pragmatism).** Quality prizes a uniform allowlist across every route (REQ-056's stated invariant). I need one HMAC-authenticated exemption or the feature can't function. Reconcile: the exemption is *narrow and HMAC-gated*, documented as such — not a hole in the uniform policy but a second auth root for one route.
-4. **Trace-ID across the four-process boundary (their observability ⟂ scope).** Quality's panel already raised distributed trace-ID / `/health` for the wider system; I expect them to want it threaded through flag→helper→result. I hold it out of REQ-068..070 scope (agreed in the ARCH rationale) — the flag/result files already carry the tag as the correlation key, which is sufficient for this slice.
-5. **`skipped` as a first-class outcome (my boundary-completeness ⟂ possible "applied is enough").** I add `skipped` (already-on-T) as a third status; ARCH-040 named only `applied|failed`. Minor — I expect agreement once the idempotent-apply branch is acknowledged, but flag it so the synthesizer picks the 3-state enum deliberately.
+Net: I expect **broad convergence** (the ARCH already reconciled the r1/r2 conflicts), with live disagreement
+concentrated on (1) the public-contract elevation, (2) the exact capture seam shape, and (4) the `startedBy`
+absent-value sentinel.

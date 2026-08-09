@@ -134,17 +134,18 @@ describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
     expect(list.some((w) => w.name === 'dash-wf-a')).toBe(true);
   });
 
-  // v8 Slice 3 (REQ-048/049): the reconstructed DAG endpoint for one run.
-  it('GET /api/runs/:id/dag returns 200 with a root DagNode', async () => {
+  // v11 Sprint 3 (DES-064 / IT-048 updated): endpoint now returns GraphPayload (kind:'run', flat cells/edges).
+  it('GET /api/runs/:id/dag returns GraphPayload (kind:"run", cells, edges, startedBy)', async () => {
     const runId = await submitRun('return {dag:true};');
     for (let i = 0; i < 25; i++) {
       await new Promise((r) => setTimeout(r, 200));
       const res = await fetch(`http://127.0.0.1:${server.port}/api/runs/${runId}/dag`);
       if (res.status === 200) {
-        const root = await res.json() as { kind?: string; agents?: unknown[]; children?: unknown[] };
-        expect(root.kind).toBe('root');
-        expect(Array.isArray(root.agents)).toBe(true);
-        expect(Array.isArray(root.children)).toBe(true);
+        const payload = await res.json() as { kind?: string; cells?: unknown[]; edges?: unknown[]; startedBy?: unknown };
+        expect(payload.kind).toBe('run');
+        expect(Array.isArray(payload.cells)).toBe(true);
+        expect(Array.isArray(payload.edges)).toBe(true);
+        expect(payload.startedBy).toBeDefined();
         return;
       }
     }

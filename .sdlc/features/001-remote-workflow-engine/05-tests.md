@@ -3494,11 +3494,11 @@ error).
 - **iter:** v8
 - tests/unit/dashboard-dag-model.test.ts — 3 cases, unit tier (pure function, no I/O/mocks; a `RunStatusView` fixture of frame-tagged `agents` + `workflowNodes` fed straight into `buildDagModel`). CASE 1 (nested tree) — a `top(agent T, frame "") → mid(agent M, frame ".0") → leaf(agent L, frame ".0.0")` view reconstructs to `root{ agents:[T], children:[ mid{frame:".0",name:"mid",depth:1, agents:[M], children:[ leaf{frame:".0.0",name:"leaf",depth:2, agents:[L], children:[]} ]} ] }`, asserting each agent lands on its frame's node with the flattened `{agentId,state,model}` leaf shape (T.done, M.running, L.queued). CASE 2 (diamond + no-drop) — two top-level `workflowNodes` (frames `.0`/`.1`, both `parentFrame:""`) yield exactly TWO root children, and a recursive count confirms all input agents appear exactly once (none dropped). CASE 3 (pure/total) — an empty run yields a bare root (`agents:[]`, `children:[]`), and an agent whose `frame` (`.99`) matches NO `workflowNode` is attached to root (count == 1, never lost) — pinning REQ-048's never-throws / never-drops / root-fallback totality.
 
-### IT-048 — dashboard endpoints `GET /api/workflows` + `GET /api/runs/:id/dag` over the real HTTP surface (REQ-048, REQ-049)
+### IT-048 — dashboard endpoints `GET /api/workflows` + `GET /api/runs/:id/dag` over the real HTTP surface (REQ-048, REQ-049; updated v11 Sprint 3)
 - **status:** green
-- **traces:** DES-046
-- **iter:** v8
-- tests/integration/dashboard-http.test.ts (+2 cases, extending the file's original IT-033 cases) — integration tier (real HTTP server on a real port, real RunStore/RunManager/WorkflowCatalog; a run is submitted via the real MCP path and polled). CASE A — `GET /api/workflows` after registering `dash-wf-a` returns 200 with the registered catalog array containing that workflow; this case LOCKS the Gate-7.5-caught routing fix (the endpoint returned a router-404 / `-32601` before the top-level dispatch predicate was widened to also match `/api/workflows`, `src/server.ts:797`). CASE B — `GET /api/runs/:id/dag` for a submitted run returns 200 with a `buildDagModel` root DagNode (`kind:"root"`, array `agents`, array `children`), exercising the endpoint → `buildDagModel(view)` path end-to-end over real HTTP.
+- **traces:** DES-046, DES-064
+- **iter:** v11
+- tests/integration/dashboard-http.test.ts (+2 cases, extending the file's original IT-033 cases). CASE A (unchanged) — `GET /api/workflows` after registering `dash-wf-a` returns 200 with the registered catalog array. CASE B (updated v11 Sprint 3 / DES-064): `GET /api/runs/:id/dag` returns a flat `GraphPayload` with `kind:'run'`, `Array.isArray(cells)`, `Array.isArray(edges)`, and `startedBy` defined — superseding the old v8 `DagNode` (`kind:'root'`, `agents`, `children`) contract. Updated from DagNode assertions to GraphPayload assertions (IMPL-105).
 
 ## v8 slice 2b — live execution detail: phase timeline + per-agent timing tests (UT-062, IT-049)
 
@@ -3683,3 +3683,151 @@ Red reason: `deploy/rwe-update.sh` does not exist → ENOENT. All 3 fail.
 
 File: `tests/acceptance/val-079-auto-apply.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `rwe-update.sh` + real git + real `createServer` + real `/api/status` + real dashboard HTML; only `npm`/`systemctl` shimmed. Note: The "version == tag" assertion (`GET /api/version` === the new tag) is deferred to Gate 7.5 real-run (`real:false`) — this CI-safe test validates outcome ingestion at "boot" (a fresh `createServer` on the same `updateResultPath`) and safe-fail. 2 cases: (1) helper applies valid tag → result file says `applied` → fresh `createServer({updateResultPath})` → `GET /api/status` returns `lastUpdate.status==='applied'`, `lastUpdate.tag==='v1.4.0'`; dashboard HTML contains "applied"; (2) helper with failing NPM → result file says `failed` → fresh server → `GET /api/status` returns `lastUpdate.status==='failed'`; dashboard contains "failed".
 Red reason: `deploy/rwe-update.sh` not existing (ENOENT) → runHelper fails before reaching server assertions. `ServerConfig.updateResultPath` not yet implemented. Both fail.
+
+## v11 Sprint 3 — n8n Morandi graph dashboard (UT-067..071, IT-063..067, VAL-080..082)
+
+### UT-067 — `startedBy` provenance: read-model coalesce + `chain` enum (REQ-071)
+- **status:** green
+- **traces:** DES-063
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/unit/started-by-coalesce.test.ts`. Mock policy (unit): real `InMemoryRunStore` with `FixedClock`; no network. 5 cases: (1) `startedBy:{type:'client'}` on `createRun` → `getRun` returns `startedBy.type === 'client'`; (2) `type:'webhook'` + `id` → both fields surfaced; (3) `type:'chain'` + `id` accepted — required by ARCH-041 to prevent crash on chained runs; (4) ABSENT `startedBy` (legacy row / internal call site) coalesces to `{type:'unknown'}` — total, never undefined or throws; (5) `RunSummary` (listRuns) also carries `startedBy.type`.
+Red reason: `RunSpec` has no `startedBy` field; `RunStatusView` has no `startedBy`; `InMemoryRunStore.getRun/listRuns` return no `startedBy` — all assertions see `undefined` instead of the expected value.
+
+### UT-068 — pure `layoutGraph` topology: phase→group→ordered-set, unmatched-live fallback, maxNodes cap (REQ-071)
+- **status:** green
+- **traces:** DES-064
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/unit/graph-layout.test.ts`. Mock policy (unit): pure function, no I/O. 8 cases: (1) empty run → trigger cell only, 0 edges; (2) two same-label agents in the same parallel group → TWO cells (not collapsed) — key correctness case (ordered-set join, not label+phase lookup); (3) unmatched live agent → frame-grouped cell + `warnings[]` entry, never dropped; (4) unmatched skeleton node → inert cell without agentId; (5) maxNodes cap > 200 → `truncated:true` + warning entry; (6) node ids stable across re-layout (poll survival); (7) cells carry logical `{col,row,laneSpan}` — no pixel `{x,y,width,height}`; (8) pure — never throws on garbage input.
+Red reason: `layoutGraph` is not yet exported from `src/dashboard.ts` → `layoutGraph is not a function` at call time. All 8 fail.
+
+### UT-069 — pure `cellToPixel` + `morandiFrameHue` (REQ-071, REQ-072)
+- **status:** green
+- **traces:** DES-065
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/unit/morandi-renderer.test.ts`. Mock policy (unit): pure functions, no I/O. 8 cases: `cellToPixel` (5) — deterministic; col 0→x=0, col 1→x=cellW+gap; row 0→y=0, row 1→y=cellH+gap; laneSpan=2→height spans 2 lanes; returns {x,y,width,height} all numbers. `morandiFrameHue` (3) — same input → same output (no flicker); output is a non-empty string; both root `""` and sub-frame `".0"` return valid values. NOTE: two different frames MAY hash to the same hue by design — test does NOT assert different-input → different-output.
+Red reason: `cellToPixel` and `morandiFrameHue` are not yet exported from `src/dashboard-page.ts` → `is not a function` at call time. All 8 fail.
+
+### UT-070 — pure `redactHarness`: tier-1 no-secret proof + 4KB cap + surfaceType (REQ-073)
+- **status:** green
+- **traces:** DES-066
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/unit/redact-harness.test.ts`. Mock policy (unit): pure function, no I/O. 5 cases: (1) TIER-1 NO-SECRET PROOF: given a resolved MCP config carrying a secret URL/key, output contains server NAME only — secret value, URL, and key are never in the output JSON (this is the CI-mandatory no-secret unit test from ARCH-045); (2) prompt ≤ 4096 chars → returned verbatim; (3) prompt > 4096 chars → first 2048 + `"…[truncated]…"` + LAST 2048 (tail preserved — task instructions land at the tail); (4) `surfaceType:'none'` (direct-fetch) → tools/skills/mcpServers all `[]`; (5) `surfaceType:'curated'` → field and skills surfaced.
+Red reason: `redactHarness` is not yet exported from `src/agent-executor.ts` → `is not a function` at call time. All 5 fail.
+
+### UT-071 — `sumUsageTokens` pure fold + double-count boundary (REQ-073)
+- **status:** green
+- **traces:** DES-068
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/unit/budget-fold.test.ts`. Mock policy (unit): pure function over fixture `TranscriptEvent[]`, no I/O. 6 cases: (1) empty events → 0; (2) single usage event → input+output tokens; (3) multiple usage events → summed total; (4) non-usage events ignored (message/tool_call/tool_result/harness); (5) pure — same input → same result twice, no side effects; (6) usage with no `tokens` field (failed agent) → contributes 0, never throws.
+Red reason: `sumUsageTokens` is not yet exported from `src/run-store.ts` → `is not a function` at call time. All 6 fail.
+
+### IT-063 — `startedBy` persisted + surfaced on workflow_status / GET /api/runs/:id / RunSummary (REQ-071)
+- **status:** green
+- **traces:** DES-063, ARCH-041
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/integration/started-by-http.test.ts`. Mock policy (integration): real `createServer` + real `SqliteRunStore` + real `McpFacade`; only the gateway is the default (no LLM needed for pure-return scripts). 4 cases: (1) `workflow_run` via MCP facade → `workflow_status` result carries `startedBy:{type:'client'}` — **TEST DEFECT**: test checks `status.startedBy` (top-level envelope) but `workflow_status` returns `ResultEnvelope<RunStatusView>` and `startedBy` is on `RunStatusView` = `status.result.startedBy` per DES-063 ("passed through workflow_status via ARCH-028 pass-through"); fix = change `expect(status.startedBy).toBeDefined()` to `expect((status as any).result?.startedBy).toBeDefined()`; (2) `GET /api/runs/:id` surfaces `startedBy.type` ✓; (3) `GET /api/runs` summary entries include `startedBy` ✓; (4) coalesce ✓.
+Implementation (TASK-066 / IMPL-105) is DONE — `startedBy` is persisted (`sqlite-run-store.ts` `started_by` column) and surfaced on `RunStatusView`/`RunSummary` (coalesced to `{type:'unknown'}`). Cases 2/3/4 verify this end-to-end. Case 1 fails only because the test checks the wrong nesting level.
+
+### IT-064 — GET /api/runs/:id/dag returns `GraphPayload` envelope + `terminalAt` on completed runs (REQ-071)
+- **status:** green
+- **traces:** DES-064, ARCH-042
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/integration/graph-payload-http.test.ts`. Mock policy (integration): real `createServer`, real `SqliteRunStore`, real HTTP; no LLM needed (pure-return scripts). 4 cases: (1) `GET /api/runs/:id/dag` returns `{kind:'run', layout:{cells:[],edges:[]}, startedBy, warnings:[]}` — NOT the old bare `DagNode`; (2) envelope carries `startedBy.type:'client'`; (3) `terminalAt` present and a valid ISO timestamp on a completed run; (4) layout cells carry logical `{col,row,laneSpan}` — no pixel `{x,y}` coords.
+Red reason: the endpoint currently returns `buildDagModel(view)` (a `DagNode`); `payload.kind` is `'root'` (not `'run'`), `payload.layout` is undefined, `startedBy` is absent. All 4 fail.
+
+### IT-065 — run-status-aware `deriveAgentRecords`: harness→running/queued, usage→terminal, latest-wins dedupe (REQ-073)
+- **status:** green
+- **traces:** DES-066, ARCH-044
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/integration/harness-derive-agent-records.test.ts`. Mock policy (integration): calls `deriveAgentRecords` directly with fixture transcript `Map`s; no I/O. 6 cases: (1) harness event + no usage + parent `'running'` → `state:'running'`; (2) harness + no usage + parent `'interrupted'` → `state:'queued'` (will re-dispatch on resume — must not show live spinner); (3) harness + no usage + parent `'suspended'` → `state:'queued'`; (4) harness + usage → `state:'done'` (existing terminal behavior preserved); (5) no events → not in derived records; (6) two harness events for same agentId → latest-wins dedupe, exactly 1 record.
+Note: cases 4 and 5 test EXISTING behavior (preserved regression); cases 1/2/3/6 test the REQUIRED fix (drop `if(!usage) continue`).
+Red reason: current `deriveAgentRecords` has `if (!usage) continue` → agents with only a harness event are dropped → cases 1, 2, 3, 6 fail. `TranscriptEvent.kind:'harness'` not yet in the union. 4 fail, 2 pass (existing behavior cases 4 and 5).
+Existing-test conflicts: `tests/integration/in-flight-agent-state.test.ts` + `agent-records-restart-survival.test.ts` assert running/queued agent states but via `_mergeLive` (in-process AgentTranscriptSink._records), NOT via `deriveAgentRecords` — no conflict at restart path. `tests/unit/run-store.test.ts` does not assert agent state at all.
+
+### IT-066 — `workflow_agent_log` returns `harness` field + stripped from events + `hasMore` + canonical state (REQ-073)
+- **status:** green
+- **traces:** DES-067, ARCH-045
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/integration/agent-log-harness-shape.test.ts`. Mock policy (integration): real `createServer`; no LLM needed (tests shape of the tool response). 5 cases: (1) `workflow_agent_log` returns top-level `harness` field, NOT embedded in the events array; (2) `kind:'harness'` event STRIPPED from returned `events[]` (sent once, never evicted by the 50-msg cap); (3) response has `hasMore:boolean`; (4) `GET /api/runs/:id/agents/:agentId?limit=1` respects limit + `hasMore` present; (5) `AgentRecord.state` in `workflow_status` is canonical (`queued|running|done|failed`), never `idle`/`completed`.
+Note: cases 2 and 5 test EXISTING behavior (regression); cases 1, 3, 4 test the TASK-070 shape change.
+Red reason: `workflow_agent_log` currently returns `ResultEnvelope<TranscriptEvent[]>` — no `harness` field, no `hasMore`, no limit windowing. Cases 1, 3, 4 fail; cases 2 and 5 pass (existing behavior).
+
+### IT-067 — `sumUsageTokens` fold on journal transcripts + double-count boundary (REQ-073)
+- **status:** green
+- **traces:** DES-068, ARCH-044
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/integration/budget-resume-hydration.test.ts`. Mock policy (integration): real `InMemoryRunStore` + real `sumUsageTokens` fold; no LLM. 3 cases: (1) fold of all usage events in a run's transcript returns the correct total (100+50 + 200+80 = 430); (2) DOUBLE-COUNT BOUNDARY: `sumUsageTokens([agentEvent])` = 150 (snapshot count); the correct resume behavior uses fold(journal) OR snapshot, not both (buggy path yields 300); test pins that fold is pure and doesn't double; (3) failed agent (no tokens field) contributes 0, does not throw.
+Red reason: `sumUsageTokens` not yet exported from `src/run-store.ts` → `is not a function` at call time. All 3 fail.
+
+### VAL-080 — REQ-071: real run → `GET /api/runs/:id/dag` returns `GraphPayload` + graph page serves HTML (REQ-071)
+- **status:** green
+- **traces:** REQ-071, DES-069
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v11
+
+File: `tests/acceptance/val-080-graph-view.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real `GET /api/runs/:id/dag`, real dashboard HTML; no LLM for CI-safe cases (pure-return script); LLM-gated for parallel-agent case. 3 cases: (1) CI-SAFE: `GET /api/runs/:id/dag` returns `{kind:'run', layout:{cells:[...],edges:[]}, startedBy:{type:'client'}}` envelope with trigger cell; (2) CI-SAFE: dashboard page for run ID serves HTML with graph/SVG container (not a 404 or bare JSON); (3) LLM-GATED: a workflow with `parallel([agent,agent])→agent('verify')` → dag cells include 3 agent cells + parallel group markers + edges. Headless-browser SVG render + textContent invariant deferred to Gate 7.5.
+Red reason: `GET /api/runs/:id/dag` returns the old `DagNode` (`kind:'root'`); dashboard HTML has no SVG/canvas graph element. CI-safe cases 1 and 2 fail. LLM-gated case 3 skips (no provider → early return). 2 fail, 1 pass (skip).
+
+### VAL-081 — REQ-072: composed run → depth-nested frame cells in dag payload (REQ-072)
+- **status:** green
+- **traces:** REQ-072, DES-069
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v11
+
+File: `tests/acceptance/val-081-composed-frames.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real `GET /api/runs/:id/dag`; LLM-gated for composed agent cases; CI-safe for single-workflow structure. 3 cases: (1) LLM-GATED: composed run `main→sub` → dag cells include frame cells with `name` and `depth:1`; (2) LLM-GATED: depth-2 composition `root→mid→leaf` → cells have both `depth:1` and `depth:2` frames; (3) CI-SAFE: single-workflow run → `payload.kind === 'run'` (validates GraphPayload envelope) + no frame cells. Headless-browser tinted-frame visual assertion deferred to Gate 7.5.
+Red reason: CI-safe case 3 → `payload.kind` is `'root'` (old DagNode), not `'run'` → fails. LLM-gated cases skip (no provider). 1 fail, 2 pass (skip).
+
+### VAL-082 — REQ-073: `workflow_agent_log` has `hasMore` field + harness (model/prompt/tools) for real agent (REQ-073)
+- **status:** green
+- **traces:** REQ-073, DES-069
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v11
+
+File: `tests/acceptance/val-082-harness-detail.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real `workflow_agent_log`, real `workflow_status`; LLM-gated for harness content. 3 cases: (1) CI-SAFE: `workflow_agent_log` response carries `hasMore:boolean` field — currently absent from `ResultEnvelope<TranscriptEvent[]>` shape → FAILS; (2) CI-SAFE REGRESSION: `AgentRecord.state` is canonical (`queued|running|done|failed`) — currently satisfied → passes; (3) LLM-GATED: real agent → harness has model/prompt/tools + no secret patterns (`sk-*`, `ghp_*`) + harness kind stripped from events array. Headless-browser click + panel DOM assertion (tier-2 no-secret proof) deferred to Gate 7.5.
+Red reason: case 1 → `workflow_agent_log` returns `{error:{code:'AGENT_NOT_FOUND'}}` (no `hasMore` field) → `'hasMore' in log` is false → fails. Case 3 skips (no provider). 1 fail, 2 pass.

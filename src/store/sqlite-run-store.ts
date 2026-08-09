@@ -59,6 +59,9 @@ export class SqliteRunStore implements RunStore {
         json TEXT NOT NULL
       );
     `);
+    // v11 Sprint 3 (TASK-066): additive migration — adds started_by column to existing runs tables.
+    // try/catch handles re-runs against an existing DB ("duplicate column name" error → no-op).
+    try { this._db.exec('ALTER TABLE runs ADD COLUMN started_by TEXT'); } catch { /* already exists */ }
   }
 
   private _runDir(runId: string): string {
@@ -69,8 +72,8 @@ export class SqliteRunStore implements RunStore {
     const runId = randomUUID();
     const ts = this._clock.isoNow();
     this._db
-      .prepare('INSERT INTO runs (runId, name, status, scriptVersion, createdAt, script, args, budget) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(runId, spec.name ?? null, 'queued', scriptVersion, ts, spec.script ?? null, JSON.stringify(spec.args ?? null), JSON.stringify(spec.budget ?? null));
+      .prepare('INSERT INTO runs (runId, name, status, scriptVersion, createdAt, script, args, budget, started_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(runId, spec.name ?? null, 'queued', scriptVersion, ts, spec.script ?? null, JSON.stringify(spec.args ?? null), JSON.stringify(spec.budget ?? null), spec.startedBy ? JSON.stringify(spec.startedBy) : null);
     mkdirSync(this._runDir(runId), { recursive: true });
     return runId;
   }
@@ -78,8 +81,8 @@ export class SqliteRunStore implements RunStore {
   /** Rebuilds the original submission (name/script/args/budget) — lets RunManager reconstruct a
    *  live RunEntry for a suspended/stopped run after a process restart (REQ-006). */
   async getSpec(runId: string): Promise<RunSpec | null> {
-    const row = this._db.prepare('SELECT name, script, args, budget FROM runs WHERE runId = ?').get(runId) as
-      | { name: string | null; script: string | null; args: string | null; budget: string | null }
+    const row = this._db.prepare('SELECT name, script, args, budget, started_by FROM runs WHERE runId = ?').get(runId) as
+      | { name: string | null; script: string | null; args: string | null; budget: string | null; started_by: string | null }
       | undefined;
     if (!row) return null;
     return {
@@ -87,6 +90,7 @@ export class SqliteRunStore implements RunStore {
       script: row.script ?? undefined,
       args: row.args ? JSON.parse(row.args) : undefined,
       budget: row.budget ? JSON.parse(row.budget) : null,
+      startedBy: row.started_by ? (JSON.parse(row.started_by) as RunSpec['startedBy']) : undefined,
     };
   }
 
@@ -178,30 +182,37 @@ export class SqliteRunStore implements RunStore {
     return { value: JSON.parse(row.result) };
   }
 
-  private _rowToSummary(row: { runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string }): RunSummary {
+  private _rowToSummary(row: { runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null }): RunSummary {
     return {
       runId: row.runId,
       name: row.name ?? undefined,
       status: row.status as RunStatus,
       scriptVersion: row.scriptVersion,
       createdAt: row.createdAt,
+      startedBy: row.started_by ? (JSON.parse(row.started_by) as RunSummary['startedBy']) : { type: 'unknown' },
     };
   }
 
   async getRun(runId: string): Promise<RunStatusView | null> {
     const row = this._db.prepare('SELECT * FROM runs WHERE runId = ?').get(runId) as
-      | { runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string }
+      | { runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null }
       | undefined;
     if (!row) return null;
     // v8 Slice 2c: a persisted terminal snapshot restores the full DAG (frames/phases/timing) after a
     // restart; otherwise fall back to deriving bare agent records from transcripts (backward-compatible).
     const snapRow = this._db.prepare('SELECT json FROM run_snapshots WHERE runId = ?').get(runId) as { json: string } | undefined;
     const snap = snapRow ? (JSON.parse(snapRow.json) as RunDagSnapshot) : undefined;
+    // v11 Sprint 3 (TASK-067): first terminal transition timestamp for pollers to stop early.
+    const termRow = this._db
+      .prepare("SELECT ts FROM transitions WHERE runId = ? AND to_status IN ('completed', 'failed', 'stopped') ORDER BY seq ASC LIMIT 1")
+      .get(runId) as { ts: string } | undefined;
     return {
       runId: row.runId, status: row.status as RunStatus, scriptVersion: row.scriptVersion,
       phases: snap?.phases ?? [],
-      agents: snap?.agents ?? deriveAgentRecords(this._allTranscripts(runId)),
+      agents: snap?.agents ?? deriveAgentRecords(this._allTranscripts(runId), row.status as RunStatus),
       workflowNodes: snap?.workflowNodes ?? [],
+      startedBy: row.started_by ? (JSON.parse(row.started_by) as RunStatusView['startedBy']) : { type: 'unknown' },
+      terminalAt: termRow?.ts,
     };
   }
 
@@ -211,7 +222,7 @@ export class SqliteRunStore implements RunStore {
 
   async listRuns(): Promise<RunSummary[]> {
     const rows = this._db.prepare('SELECT * FROM runs').all() as Array<{
-      runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string;
+      runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null;
     }>;
     return rows.map((r) => this._rowToSummary(r));
   }

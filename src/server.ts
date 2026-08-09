@@ -40,7 +40,7 @@ import { verifyTagWebhook } from './self-update-webhook.js';
 
 // REQ-066 (v11): engine version from package.json + best-effort git describe, replacing the hardcoded '1.0.0'.
 const ENGINE_VERSION = resolveEngineVersion();
-import { buildDashboardModel, buildDagModel } from './dashboard.js';
+import { buildDashboardModel, layoutGraph } from './dashboard.js';
 import { DASHBOARD_HTML, buildDashboardHtml } from './dashboard-page.js';
 import type { RunStore } from './run-store.js';
 
@@ -759,6 +759,7 @@ async function handleDashboardRequest(
   store: RunStore,
   runManager: RunManager,
   issueReporter: IssueReporter,
+  facade: McpFacade,
 ): Promise<void> {
   if (req.method !== 'GET') {
     sendJson(res, 405, { error: 'Dashboard API is read-only: only GET is supported.' });
@@ -818,26 +819,40 @@ async function handleDashboardRequest(
       sendJson(res, 200, result.issue);
       return;
     }
-    // v8 Slice 3 (REQ-048/049): the reconstructed call tree (DAG) for one run.
+    // v11 Sprint 3 (TASK-067 / DES-064): GraphPayload envelope — kind:'run' + logical layout cells.
     if (dagMatch) {
       const [, runId] = dagMatch as unknown as [string, string];
       const stored = await store.getRun(runId);
       if (!stored) { sendJson(res, 404, { error: `Run not found: ${runId}` }); return; }
       const view = await runManager.status(runId).catch(() => stored);
-      sendJson(res, 200, buildDagModel(view));
+      const spec = await store.getSpec(runId);
+      const skeletonNodes = parseWorkflowSkeleton(spec?.script ?? '');
+      const layout = layoutGraph(skeletonNodes, view.agents, { startedByType: view.startedBy?.type });
+      // DES-064: flat GraphPayload — cells/edges/warnings/truncated at top level (not nested under 'layout').
+      const payload: Record<string, unknown> = {
+        kind: 'run',
+        ...layout,
+        startedBy: view.startedBy ?? { type: 'unknown' },
+      };
+      if (view.terminalAt) payload['terminalAt'] = view.terminalAt;
+      sendJson(res, 200, payload);
       return;
     }
     if (agentMatch) {
       const [, runId, agentId] = agentMatch as unknown as [string, string, string];
-      const stored = await store.getRun(runId);
-      if (!stored) { sendJson(res, 404, { error: `Run not found: ${runId}` }); return; }
-      const view = await runManager.status(runId).catch(() => stored);
-      if (!view.agents.some((a) => a.agentId === agentId)) {
-        sendJson(res, 404, { error: `Agent not found: ${agentId}` });
+      // DES-067 (TASK-070): parse ?limit=N&offset=M for the events window.
+      const qs = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
+      const limitParam = Number(qs.get('limit'));
+      const offsetParam = Number(qs.get('offset'));
+      const limit = limitParam > 0 ? limitParam : undefined;
+      const offset = offsetParam > 0 ? offsetParam : undefined;
+      const shaped = await facade.workflow_agent_log({ runId, agentId, limit, offset });
+      if (shaped.error) {
+        // HTTP: map typed error codes to standard { error: string } 404s (dashboard convention).
+        sendJson(res, 404, { error: shaped.error.message });
         return;
       }
-      const transcript = await store.getTranscript(runId, agentId);
-      sendJson(res, 200, buildDashboardModel([], view, transcript).transcript);
+      sendJson(res, 200, shaped);
       return;
     }
     if (runMatch) {
@@ -970,7 +985,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       const failing = agents.find((a) => a.state === 'failed') ?? agents[agents.length - 1];
       if (failing) {
         const logEnv = await facade.workflow_agent_log({ runId, agentId: failing.agentId });
-        const events = Array.isArray(logEnv.result) ? logEnv.result : [];
+        const events = logEnv.events ?? [];
         const tail = events.slice(-5).map((e) => `- ${e.kind}: ${JSON.stringify(e.data).slice(0, 200)}`);
         if (tail.length) {
           lines.push(`- last agent \`${failing.label ?? failing.agentId}\` (${failing.state}) transcript tail:`);
@@ -1015,7 +1030,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     const due = tick(scheduler.all(), clock.now());
     for (const firing of due) {
       runManager
-        .start({ name: firing.workflow, args: firing.args })
+        .start({ name: firing.workflow, args: firing.args, startedBy: { type: 'schedule', id: firing.workflow } })
         .then((runId) => scheduler.markFired(firing, runId))
         .catch((err: unknown) => {
           // A failed dispatch (e.g. the catalog entry was deleted after the schedule was created)
@@ -1135,7 +1150,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // SAME port (no separate dashboard listener/port — one server, two transports).
     // v11 (REQ-067): /api/issues* added alongside existing /api/runs* and /api/workflows*.
     if (req.url?.startsWith('/api/runs') || req.url?.startsWith('/api/workflows') || req.url?.startsWith('/api/issues')) {
-      handleDashboardRequest(req, res, store, runManager, issueReporter).catch(() => {
+      handleDashboardRequest(req, res, store, runManager, issueReporter, facade).catch(() => {
         sendJson(res, 200, { degraded: 'internal dashboard error' });
       });
       return;

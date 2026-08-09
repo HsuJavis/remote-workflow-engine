@@ -1795,3 +1795,122 @@ classDiagram
 - **Stale-result guard (advisor).** An ingested result overwrites a `pending` row only when tags match — a stale `applied` for T_old must not clobber a fresh `pending` for T_new when the engine restarted for an unrelated reason mid-build.
 - **Deferred, flag-don't-build (both lenses agree — recorded, NOT `needs_clarification`):** GPG `git tag -v` signed-tag verify + `npm ci --ignore-scripts` (documented hardening, not v1 blockers); auto-resume of interrupted runs on boot (`config.autoResumeOnUpdate` is an open question — surface the interrupted-run COUNT now, don't auto-resume: a run stopped mid-flight for review must not silently restart); distributed trace-ID across the four-process boundary (the flag/result files carry the tag as the correlation key). **Budget-on-crash-resume (quality R4)** — re-derive `budget.spent()` from journaled agent usage on `_requireLive` rehydration — belongs to ARCH-034's path, NOT this slice; carried as a real defect candidate in the journal, no speculative ARCH here.
 - **Residual accepted (adversarial R6, per REQ-070 full-auto):** a malicious tag whose build SUCCEEDS is not caught by safe-fail (which protects availability, not integrity) — bounded by privsep + official-remote-pin; the only real defence is repo/secret integrity + the deferred signed-tag verify. Single-instance ceiling (self-update is host-local, incompatible with multi-replica) documented, not fixed.
+
+## v11 Sprint 3 — n8n-style Morandi graph dashboard (DES-063..069; ARCH-041..045)
+
+### DES-063 — trigger provenance `startedBy` on the durable run record (src/types.ts, src/run-manager.ts, src/store/sqlite-run-store.ts)
+- **status:** done
+- **traces:** ARCH-041, TASK-066
+- **signature:** `type StartedBy = { type:'client'|'webhook'|'schedule'|'chain'|'unknown'; id?:string }` (closed discriminated union; `'unknown'` is the legal sentinel for pre-migration/internal-caller rows, never coerced to `client`). Added to `RunSpec`, `RunStatusView`, `RunSummary`; passed through `workflow_status` (via ARCH-028 pass-through) and `GET /api/runs/:id`. Set at `RunManager.start()` by each caller: mcp-facade→`{type:'client'}`; `WebhookRegistry.deliver`→`{type:'webhook',id:<webhookId>}`; scheduler→`{type:'schedule',id:<name>}`; `ContinuationStore.fire`→`{type:'chain',id:<parentRunId>}`. `id` stored opaquely (a string; no source-registry). Persisted in the `runs` table as a **nullable** `started_by` TEXT column (additive migration, no backfill job) — NOT the REQ-055 terminal snapshot (must render for in-progress runs).
+- **boundary-conditions:** absent at read time (legacy row OR internal/test `start()` caller) → read model coalesces to `{type:'unknown'}` (total, never throws, never blank). `chain` enum value is required NOW (a chained run must not crash the source-node builder) even though its display label is derived at render (DES-065). Store round-trip / restart preserves `startedBy` (persistence IT).
+- **iter:** v11
+
+### DES-064 — pure graph model + layout: `GraphPayload` + `LayoutNode` adapter + `layoutGraph` (src/dashboard.ts, src/server.ts)
+- **status:** done
+- **traces:** ARCH-042, TASK-067
+- **signature:** `type GraphPayload = { kind:'skeleton'; cells:LayoutCell[]; edges:LayoutEdge[]; warnings:string[]; name:string } | { kind:'run'; cells:LayoutCell[]; edges:LayoutEdge[]; warnings:string[]; truncated?:boolean; startedBy:StartedBy; terminalAt?:number }`. **Both arms carry logical `cells`** — the skeleton arm is run through the same adapter→`layoutGraph` server-side so the browser renderer is a single branchless projection. `LayoutNode` = a narrow adapter type over `SkeletonNode` (only the fields layoutGraph uses: id, kind, label, phase, group/parallel, depth) built by `toLayoutNodes(SkeletonNode[]):LayoutNode[]`. `layoutGraph(nodes:LayoutNode[], liveAgents:AgentRecord[], opts?:{maxNodes?:number}) → { cells:LayoutCell[]; edges:LayoutEdge[]; warnings:string[]; truncated?:boolean }` is **PURE** (no clock/store/DOM). `LayoutCell = { id:string; col:number; row:number; laneSpan:number; kind; state?:AgentState; label:string; frame?:string; depth?:number }` — **logical grid cells, never device pixels** (col by phase→parallel-group→nesting depth; row by index within a parallel group). `LayoutEdge = { from:string; to:string }`. Exposed additively on `GET /api/runs/:id/dag` (internal seam, not a frozen public contract; JSDoc: "may change without notice"). `terminalAt?` added to `RunStatusView` (ARCH-028 pass-through → `workflow_status`).
+- **boundary-conditions:** **total — never throws.** Node-id is a pure deterministic function of node identity (agent→`agentId`; trigger/phase/frame→a stable synthetic key) so pan/zoom + click-selection survive the 3s re-render — an id must not reshuffle per poll. Skeleton-overlay join is **phase → parallel-group → ordered set of AgentRecords (ordered by `startedAt`/dispatch seq), NOT a 1:1 `label+phase` lookup** (else two same-label parallel agents collapse into one box and a live agent silently vanishes). An unmatched **live** agent (loop/conditional/dynamic label the static scan missed) falls back to frame-based `buildDagModel` grouping and still renders (**never drop a live agent**) AND pushes `warnings:["agent <id> unmatched to skeleton: frame-grouped"]`. An unmatched **skeleton** node renders inert. Empty run → trigger node only. `maxNodes` default **200** (== the client "N more" ceiling, DES-065 — one shared constant) → over-limit sets `truncated:true` and a `warnings[]` entry. `warnings[]` surfaced in BOTH the JSON response and the SVG (DES-065).
+- **iter:** v11
+
+### DES-065 — Morandi n8n SVG renderer + cell→pixel mapper + `morandiFrameHue` (src/dashboard-page.ts)
+- **status:** done
+- **traces:** ARCH-043, TASK-068
+- **signature:** `cellToPixel(cell:LayoutCell, box:BoxSize):Rect` — **pure**, deterministic (the only place logical cells become device geometry; a box-size restyle touches zero model/topology tests). `morandiFrameHue(frame:string):string = palette[stableHash(frame) % palette.length]` — **pure**, so a frame never flickers hue across the poll; the Morandi palette lives in ONE scoped CSS-custom-property set (one-file swap). Hand-rolled inline SVG: a `<g>` root transformed for pan/zoom, an edge layer, node boxes, per-frame depth-nested tinted background containers (one hue per frame via `morandiFrameHue`, labeled with the sub-workflow name, each wrapping exactly its own agents; depth-2 frame nests inside its parent). Shared constant `MAX_GRAPH_NODES = 200` drives both the client "N more" affordance and the server `maxNodes` (DES-064).
+- **boundary-conditions:** **`textContent`-only invariant (security-load-bearing, no-auth plane):** every run-derived string — agent label, model id, workflow name, tool/skill names, AND text inside SVG `<text>` — is set via `textContent`, never `innerHTML` (extends REQ-067 verbatim; hand-rolled SVG, no vendored graph lib). Node-shape selection is data-driven off `node.kind` (keep the renderer near-branchless — branching lives in DES-064's pure layout). Page body never scrolls horizontally (a wide graph pans within its own `overflow` container). Empty/degraded/truncated payload renders an empty-or-partial canvas + a `warnings[]` badge, never a throw. Single-workflow run → one plain region.
+- **iter:** v11
+
+### DES-066 — harness capture at dispatch: `HarnessDescriptor` + pure `redactHarness` + `onHarness` hook + run-status-aware `deriveAgentRecords` (src/types.ts, src/gateway/*.ts, src/agent-executor.ts, src/run-store.ts)
+- **status:** done
+- **traces:** ARCH-044, TASK-069
+- **signature:** `HarnessDescriptor = { model:string; prompt:string /*4KB head+tail cap*/; tools:string[]; skills:string[]; mcpServers:string[]; surfaceType:'curated'|'none' }`. New `TranscriptEvent.kind` value `'harness'` (extend the union in src/types.ts). `redactHarness(resolved) → HarnessDescriptor` is **PURE** — names only, never a resolved MCP config, never a provider key, never a resolved `${secret:}` value. Emission seam = an optional async hook `onHarness?(h:HarnessDescriptor):Promise<void>` injected into `GatewayClient.invoke` options, called **eagerly at session-build (post-curation), before `query()`** — **two call sites, one hook:** the SDK client at `claude-agent-sdk-client.ts:483` projects `{model:modelName, prompt:req.prompt, tools:curatedTools, skills:<materialized .claude/skills dirs>, mcp:Object.keys(mergedMcp), surfaceType:'curated'}`; the direct-fetch/LiteLLM client calls it at its own model-resolution point with `surfaceType:'none'` and `tools/skills/mcpServers=[]`. The executor wires `onHarness` → `sink.appendTranscript(runId, agentId, {kind:'harness', ...})`.
+- **boundary-conditions:** **`harness===null` ⟺ the agent was never dispatched (queued/idle)** — one unambiguous meaning (converged, adversarial.r2 §2.1 folded the r1 defer; direct-fetch now emits). 4KB prompt cap = **first 2KB + last 2KB + `…[truncated]…` marker** (task instructions land at the tail in the context-injection pattern). **Latest-wins dedupe keyed on agentId** (the bounded `SCHEMA_RETRY_ATTEMPTS` loop can build a session more than once → a later harness supersedes). **Required `deriveAgentRecords` change (run-store.ts):** drop `if(!usage)continue`; new **run-status-aware** rule — a `harness` event with no later `usage` ⟹ `running` **only on an in-process parent**, but ⟹ `queued` on an `interrupted`/`suspended` parent (it re-dispatches on resume — never paint a live spinner on a dead run); a `usage` event ⟹ `done`/`failed`; neither ⟹ never-dispatched (absent, renders `idle` while in-process). **H2 single-source decision:** `redactHarness` projects from the gateway's post-curation resolved values (REQ-073 needs the resolved surface, which the pre-gateway `SessionInitRecord.allowlist` cannot authoritatively give); `SessionInitRecord` (DES-026) stays the pre-dispatch security-audit head (secretHandleNames/settingSources/REQ-021 guard) and is NOT re-projected into the panel — exactly ONE record feeds the harness panel, no field resolved twice, no two overlapping harness records. **Accepted VM-sandbox limit:** a script may pass a secret VALUE as a prompt string (captured at the transcript's trust level); the engine invariant is only "never substitutes a `${secret:}` handle into a prompt."
+- **iter:** v11
+
+### DES-067 — harness detail panel + `workflow_agent_log` shaping + two-tier no-secret proof (src/mcp-facade.ts, src/server.ts, src/dashboard-page.ts)
+- **status:** done
+- **traces:** ARCH-045, TASK-070
+- **signature:** extend the existing `workflow_agent_log` response (MCP tool + HTTP) with `harness:HarnessDescriptor|null` and `hasMore:boolean` — **no new `/harness` route**. Shaping layer **projects the `kind:'harness'` event to the top-level `harness` field AND strips it from the returned `events` window** (sent exactly once; never evicted by the 50-message display cap, since it is the first event and a naive cap-last-50 would drop it). Optional `?limit=N&offset=M` on the HTTP path; the MCP tool enforces the same 50-cap and returns `hasMore`. Canonical `AgentRecord.state` stays `queued|running|done|failed`; `idle`/`completed` are **render-time-only** aliases (`queued→"idle"`, `done→"completed"`) — enforced by a serialization-layer UT per response shape (`workflow_status`, `workflow_agent_log`, `GET /api/runs/:id` all carry only canonical values). `chain` source-node label = `"chain via <startedBy.id[0..7]>"` via `textContent`, degrading to `"chain"` when no id.
+- **boundary-conditions:** transcript fetched **on-click only** (never on the 3s poll); display capped at 50 messages. Unknown agentId → the uniform typed error envelope (not a crash). `harness:null` for a never-dispatched agent → panel shows `idle`. **`textContent`-only** in the panel (the `prompt` is the most attacker-influenceable field on the no-auth page — all names + prompt via `textContent`, no `innerHTML`). `mcpServers` JSDoc caveat: "configured-at-dispatch fingerprint, names only (never URLs — URLs may carry tokens), not liveness-checked." **Two-tier no-secret PROOF (both required):** (1) a fast pure-mapper UT on `redactHarness` (a build carrying a resolved-secret MCP config → output has the server NAME only, never plaintext); (2) one Gate-7.5 headless-browser assertion that the rendered detail-panel DOM contains no secret plaintext (catches a future `innerHTML` regression between payload and pixel that capture-time purity alone cannot).
+- **iter:** v11
+
+### DES-068 — budget re-derivation on crash-resume: pure fold + resume-path hydration + double-count boundary (src/run-store.ts, src/run-manager.ts)
+- **status:** done
+- **traces:** ARCH-044, TASK-071
+- **signature:** a **pure fold** over the same journal usage events read by DES-066's `deriveAgentRecords` that **returns** an accumulated `spentTokens:number` (e.g. `sumUsageTokens(events):number`) — the read-model function stays a pure fixture-testable fold with **no side effect** on shared state. The impure **resume path** (`_requireLive`/rehydration, the one existing impure seam) hydrates `RunGuard.spent` from that returned value — the guard mutation does NOT live in the read model.
+- **boundary-conditions:** **double-count boundary test (adversarial add):** usage already reflected in a REQ-055 terminal snapshot must **NOT** be re-added when journal events replay on resume (else a resumed run under-runs its cap). Own IT sharing the same journal read as DES-066. **Must land before Gate 7.5** (closes the named budget-on-crash-resume defect deferred in DES-062's rationale).
+- **iter:** v11
+
+### DES-069 — real-tier validation paths + per-tier mock policy (REQ-071..073)
+- **status:** done
+- **traces:** ARCH-042, ARCH-043, ARCH-044, ARCH-045, TASK-067, TASK-068, TASK-069, TASK-070
+- **REQ-071 real path:** start a real run (real `RunManager` + SQLite store) and a static workflow skeleton → `GET /api/runs/:id/dag` returns a `GraphPayload` with a trigger source node labeled by `startedBy.type`, phase columns, a 2-agent parallel "Draft" group and a "Verify" node connected by edges; a headless-browser (Playwright, the established dashboard pattern) opens the graph and asserts the trigger/parallel/verify nodes + drawn edges render and the page body does not scroll horizontally. Real entrypoint = `GET /api/runs/:id/dag` + the dashboard SPA; real wiring = real store + real `layoutGraph` (never mocked at E2E).
+- **REQ-072 real path:** a real composed run calling `workflow('sub')` → the dag payload carries depth-nested frames; the headless assertion shows two differently-tinted labeled containers each wrapping only its own agents, and a depth-2 frame nested inside its parent.
+- **REQ-073 real path:** click a real agent box → `workflow_agent_log` returns `harness` with model/prompt/tool/skill/mcp names + status; the headless DOM assertion contains the model + prompt + tool/skill/mcp names and **no secret plaintext**; a queued agent shows `idle`, a running agent `running` (live-updates on the poll), a finished agent `completed · N tok`.
+- **Per-tier mock policy:** **unit** mocks freely — pure fixtures for `layoutGraph`, `redactHarness`, `morandiFrameHue`, `cellToPixel`, `deriveAgentRecords`, the budget fold, the canonical-state serializer (isolate logic; inject clock/store where needed). **integration** uses real adjacent components — real SQLite store, real journal, real HTTP handler, the real `onHarness`→sink→`deriveAgentRecords` replay path; mock ONLY the LLM provider network (a fake gateway that still invokes the real `onHarness` hook with faked model output). **E2E/acceptance MUST NOT mock the SUT's own boundaries** — real engine process, real HTTP, real SVG render via headless browser, real store/journal; the agent dispatch uses a real (sandbox/cheap) model or a seeded deterministic agent — `layoutGraph`/`redactHarness`/the sink/the render path are never mocked.
+- **iter:** v11
+
+```mermaid
+classDiagram
+  class GraphModel {
+    <<pure, no clock/store/DOM>>
+    +toLayoutNodes(SkeletonNode[]) LayoutNode[]
+    +layoutGraph(nodes, liveAgents, opts) GraphLayout
+    +join phase-group-orderedSet
+  }
+  class GraphPayload {
+    <<internal seam, not frozen>>
+    +kind skeleton|run
+    +cells LayoutCell[]
+    +edges LayoutEdge[]
+    +warnings string[]
+    +startedBy StartedBy
+    +terminalAt? number
+  }
+  class SvgRenderer {
+    <<browser, textContent-only>>
+    +cellToPixel(cell, box) Rect
+    +morandiFrameHue(frame) string
+    +MAX_GRAPH_NODES 200
+  }
+  class HarnessCapture {
+    +redactHarness(resolved) HarnessDescriptor
+    +onHarness hook (2 call sites)
+    +deriveAgentRecords run-status-aware
+    +sumUsageTokens(events) number
+  }
+  class HarnessDescriptor {
+    +model string
+    +prompt string 4KB head+tail
+    +tools/skills/mcpServers string[]
+    +surfaceType curated|none
+  }
+  class AgentLogShaping {
+    +harness HarnessDescriptor|null
+    +strip kind:harness from events
+    +hasMore boolean
+    +canonical state serializer UT
+  }
+  class RunManager {
+    +start() sets startedBy
+    +resume() hydrates RunGuard.spent
+  }
+  GraphModel --> GraphPayload : builds
+  GraphPayload --> SvgRenderer : rendered by
+  HarnessCapture --> HarnessDescriptor : projects
+  HarnessCapture --> AgentLogShaping : journaled event
+  RunManager --> HarnessCapture : deriveAgentRecords on resume
+  RunManager --> GraphPayload : startedBy
+```
+
+## v11 Sprint 3 decision rationale (n8n graph dashboard — DES-063..069)
+- **Panel:** BOTH rounds ran; r2 WAS triggered (D1 derive-vs-capture, D6 flexbox-vs-SVG materially conflicted). Synthesized from the converged r2 stances (adversarial.r2 + quality-dimensions.r2) with r1 as supporting context. QM `safety_class` → no functional-safety/cybersecurity lenses.
+- **H1 logical cells vs literal pixels — ADOPT CELLS (both lenses converged in r2).** `layoutGraph` emits `{col,row,laneSpan}`; a pure `cellToPixel` mapper in the renderer does geometry. Refines ARCH-042's literal `{x,y,width,height}` while preserving its discriminating constraint (deterministic, browser-free coordinates untestable via `getBoundingClientRect`): the topology UT asserts ordering, never pixels, and a box restyle breaks zero model tests. Not ARCH drift — a testability refinement of the same server-authoritative-coordinate decision.
+- **H2 single harness source — DECIDED (adversarial r1/quality r2 both flagged; synthesizer picks).** `SessionInitRecord` (DES-026) is a real journaled security-audit head built pre-gateway; REQ-073 needs the **post-curation resolved** surface, which that record cannot authoritatively give. So `redactHarness` projects from the gateway's resolved `curatedTools`/`mergedMcp`/`modelName`; `SessionInitRecord` stays for its distinct security purpose and is not re-projected into the panel → one record feeds the panel, no field resolved twice, no two overlapping harness records.
+- **H3 run-status-aware derive rule — ADOPT (both lenses endorsed).** `harness⟹running` only on an in-process parent; on `interrupted`/`suspended` a harness-without-usage agent reads `queued` — never a live spinner on a dead run.
+- **R2 direct-fetch harness — CONVERGED (adversarial.r2 §2.1 folded the r1 defer).** Both call sites emit; `surfaceType:'curated'|'none'` is in `HarnessDescriptor` from the initial type; `harness:null` means "never dispatched" only. Quality r2's "one live disagreement" was written concurrently, not after — treated as converged, not open.
+- **GraphPayload stays an internal seam (adversarial HELD, quality conceded r2).** One in-tree consumer rewritten this sprint; a frozen/versioned public contract is speculative flexibility (Karpathy). Type shared, elevation deferred.
+- **LayoutNode adapter — narrow input type, NO parser-swap layer (converged).** `layoutGraph` consumes only the `SkeletonNode` fields it uses; that narrow structural type IS the seam, coupling documented — no speculative future-proofing framework (Karpathy tie-break).
+- **Budget re-derivation — SEPARATE ticket (adversarial r2 §2.2 reshaped quality R3).** A pure fold **returns** `spentTokens`; the resume path (not the read-model) hydrates the guard — preserves `deriveAgentRecords` purity; plus a snapshot/journal double-count boundary test; gated before Gate 7.5. Closes the defect deferred in DES-062's rationale.
+- **Converged specifics pinned (both lenses):** `maxNodes`==client "N more"==**200** (one constant); head+tail 2KB/2KB + `…[truncated]…`; latest-wins dedupe by agentId; join phase→group→ordered-set (tie-order `startedAt`/dispatch seq); harness projected-to-top-level + stripped-from-events + cap-exempt; `hasMore` on both surfaces; canonical-state serialization UT; `{type:'unknown'}` sentinel; `"chain via <id[0..7]>"` degrading to `"chain"`; node-id stability; `warnings[]` in JSON and SVG; `textContent`-only incl. SVG `<text>`; `mcpServers` names-only JSDoc caveat.
+- **Seam consistency (Exit Gate 5):** the layout/redact/derive/budget functions are **pure and read no time** (run status comes from the injected run record, not a wall clock); the one impure `onHarness`→sink append rides the already-injected `_clock`/`RunStore` seams. Invariant held: **every method that reads time takes the injected clock** — no method in this slice reads the wall clock directly.
+- **Deferred, not `needs_clarification` (both lenses agree):** per-agent MCP liveness probe (`mcpLivenessCheckedAt?` future field); distributed trace-ID; `GET /health`; SSE (poll+`terminalAt?` bounds it). All future-REQ candidates, no speculative ARCH here.

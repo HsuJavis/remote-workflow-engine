@@ -51,7 +51,7 @@ interface CatalogPort {
 }
 /** Structural seam — matches RunManager's own start() signature without importing the class. */
 interface RunManagerPort {
-  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | null }): Promise<string>;
+  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | null; startedBy?: { type: string; id?: string } }): Promise<string>;
 }
 
 export interface SchedulerPortDeps {
@@ -216,7 +216,7 @@ export class SqliteSchedulerPort {
     if (row && row.enabled !== 1) {
       return { error: { code: 'SCHEDULE_DISABLED', message: `Resident schedule for '${workflow}' is disabled` } };
     }
-    const runId = await this._runManager.start({ name: workflow, args });
+    const runId = await this._runManager.start({ name: workflow, args, startedBy: { type: 'schedule', id: workflow } });
     if (row) {
       const ts = this._clock.isoNow();
       this._db.prepare('UPDATE schedules SET lastFire = ?, lastRunId = ? WHERE id = ?').run(ts, runId, row.id);

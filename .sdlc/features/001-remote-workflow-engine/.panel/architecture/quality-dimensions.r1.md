@@ -2,96 +2,153 @@
 lens: quality-dimensions
 round: 1 (independent proposal)
 author: quality-dimensions expert
+scope: v11 Sprint 3 — REQ-071, REQ-072, REQ-073 (n8n-style graph dashboard, Morandi theme)
 date: 2026-08-09
 ---
 
-# Quality-Dimensions Architecture Review — Remote Workflow Engine (v11)
+# Quality-Dimensions Architecture Review — v11 Sprint 3 (REQ-071..073)
 
 ## Project Altitude Classification
 
-This is **both** a conventional distributed system and an AI-agent system.
+This slice is a **system-altitude UI** whose *subject* is **agent-altitude observability**. The
+engine itself is both a conventional distributed system (MCP HTTP server, SQLite/journal persistence,
+scheduled/webhook-triggered jobs, sandboxed child processes) and an AI-agent system (Claude Agent
+SDK, LiteLLM proxy, per-agent harness with tools/skills/MCP injection). For Sprint 3 specifically:
 
-- **System altitude**: the engine is a self-hosted, persistent MCP Streamable HTTP server
-  orchestrating workflow runs, persisting journals, exposing a REST/dashboard surface, managing
-  sandboxed child processes, and running scheduled/webhook-triggered jobs.
-- **Agent altitude**: every `agent()` call spawns a real AI agent (Claude Agent SDK headless
-  session) with tool use, MCP injection, skill loading, and a live LLM backend. The engine itself
-  is the environment those agents run in.
+- **System altitude** applies to the graph-rendering pipeline, the new `startedBy` provenance field,
+  the harness descriptor capture, the HTTP/API shape of the DAG endpoint, and the dashboard server.
+- **Agent altitude** applies to the harness detail panel (REQ-073 — model, prompt, tools, skills of
+  each spawned agent), the live agent state machine (`queued/running/done/failed`), and the no-secret
+  rule on every observable surface.
 
-Both altitudes are active in every run; the four dimensions below apply both faces simultaneously.
+Both altitudes are active and I apply them simultaneously below.
 
 ---
 
 ## Summary
 
-The engine has a strong functional core (v1–v11 validated), but four cross-cutting quality gaps are
-architecturally significant at the design level: (1) no distributed-trace threading across the
-four-process boundary (MCP client → Node engine → SDK subprocess → LiteLLM Python → provider),
-so a slow call is not pinpointable; (2) the agent harness is Anthropic-SDK-locked — LLM backends
-are swappable but the tool-loop runtime is not; (3) the REST HTTP surface has no machine-readable
-contract (no OpenAPI spec), raising integration friction for non-MCP callers and making API
-evolution risky; (4) no proactive health probing for downstream dependencies (LiteLLM subprocess,
-provider endpoints, Ollama), so the engine is only reactive to failures, not preventive.
+Sprint 3 introduces the first *spatial* representation of a workflow run: nodes, edges, colored
+frames, and a clickable detail panel. Four quality concerns are architectural (not implementable as
+afterthoughts):
 
-These are design-level gaps, not implementation bugs; they are the right targets for architecture
-decisions.
+1. **Observability**: two missing data fields — trigger provenance (`startedBy`) and the per-agent
+   harness descriptor (prompt/tools/skills) — are NOT currently on `RunStatusView` or `AgentRecord`.
+   Without capturing them at run-start and dispatch time respectively, the graph will be missing its
+   trigger source node and REQ-073's detail panel will be empty. Capturing them IS an architecture
+   decision (where persisted, what sized-capped, how secret-safe).
+
+2. **Replaceability**: `buildDagModel` (REQ-048) is already pure and renderer-agnostic — a genuine
+   strength to preserve. The gap is a unified `GraphPayload` type bridging the live-run DAG
+   (`buildDagModel`) and the pre-run skeleton (`parseWorkflowSkeleton` REQ-062), so the graph
+   renderer is written once. Morandi palette must be CSS custom properties, not hardcoded hex.
+
+3. **Consumability**: the harness descriptor and trigger source must appear in the MCP/HTTP API
+   surface (not dashboard-HTML-only), so a programmatic caller can inspect an agent's harness
+   configuration — otherwise this is an observability regression for non-browser consumers.
+
+4. **Self-sustainability**: two bounded-load decisions must be made now — the detail panel transcript
+   fetch is on-click-only (never auto-loaded on the 3s poll), and the frame-to-Morandi-color
+   assignment is deterministically hash-based (never random at render time).
+
+The parallel-group marker gap (deferred repeatedly since v8 Slice 2c) intersects REQ-071 ("edges
+connect in parallel-group order") and a concrete recommendation is given: use the static skeleton
+as the graph topology overlay rather than a sandbox-IPC protocol change.
 
 ---
 
 ## (1) Observability
 
-### What exists
+### What exists (and what Sprint 3 builds on)
 
-REQ-007 mandates per-agent records (label / phase / state / model / provider / token usage) plus
-full transcript retrieval via `workflow_agent_log`. REQ-047/049 build a live DAG from these
-records. REQ-050/051 add phase timestamps and per-agent start/end timing. The journal (`journal.jsonl`)
-is the ground truth; SQLite indexes it. The web dashboard (REQ-008/049) gives a browser-facing
-view. This is a solid per-run observability layer.
+- `buildDagModel` (REQ-048/pure) constructs a composite call tree from `agents` (frame-tagged) and
+  `workflowNodes` (composite boundaries) — both in `workflow_status` and `GET /api/runs/:id`.
+- `parseWorkflowSkeleton` (REQ-062) produces a predicted DAG node list (phase/agent/parallel/workflow
+  nodes) from a static script scan.
+- REQ-050/051: phase timestamps and per-agent `startedAt`/`endedAt`/`durationMs`.
+- REQ-055: cross-restart snapshot persists agents/phases/workflowNodes at terminal transition.
+- REQ-073's acceptance test lists "trigger source node labeled by how the run started —
+  `client` / `webhook` / `schedule`" as an observable UI element.
 
-### System gaps
+### System-altitude gaps
 
-- **No distributed trace ID.** A `workflow_run` MCP call crosses four process boundaries:
-  Node.js engine → sandboxed child process (the workflow VM) → Claude Agent SDK subprocess
-  (`@anthropic-ai/claude-agent-sdk` CLI) → managed LiteLLM proxy (Python subprocess) → external
-  provider. Each boundary is a potential latency source. There is no `traceId`/`spanId` threaded
-  through all four to let an operator answer "which hop is slow?" within seconds. Without it,
-  diagnosing a 30-second `agent()` call requires correlating four independent logs manually.
-- **LiteLLM proxy logs are opaque to the engine.** The Python subprocess writes its own logs, but
-  there is no architecture decision on whether those logs are captured into the engine's
-  observability layer (forwarded to the journal or a structured sink) or silently dropped. A
-  provider-side 429 rate-limit or a connection reset would appear to the engine as a `null` result
-  with no visibility into why.
-- **No structured log levels or configurable sinks.** The architecture does not specify how
-  operational log events (engine startup, run lifecycle transitions, SDK subprocess launch/exit,
-  LiteLLM spawn) are structured or routed. Absence of a defined `logger` interface means each
-  implementation team member picks their own, producing inconsistent, hard-to-grep output in
-  production.
-- **No health/liveness endpoint specified.** D7 mandates a web dashboard, but no `GET /health`
-  liveness probe is in scope. A watchdog (systemd, Docker healthcheck, load balancer) needs a
-  machine-readable liveness surface.
+**G1 — Trigger provenance (`startedBy`) is not captured.** The trigger source node in REQ-071
+requires knowing HOW a run was started: a direct MCP `workflow_run` (client), a
+`WebhookRegistry.deliver` (webhook + webhook ID), a `SchedulerEngine` firing (schedule + schedule
+ID), or a `ContinuationStore.fire` (chain + parent run ID). None of these write a `startedBy` field
+onto the run record today. This data exists only in the call path at `RunManager.start()` time.
+Architecture decision required: add `startedBy: { type: 'client'|'webhook'|'schedule'|'chain',
+id?: string }` to `RunSpec` and persist it in the `runs` table (not only the terminal snapshot,
+since the source node must render even for runs that did not reach terminal). The REQ-055
+`run_snapshots` path is insufficient here — it fires at terminal, too late for an in-progress graph.
 
-### Agent gaps
+**G2 — Parallel-group markers on the live run DAG remain absent.** REQ-071's acceptance says "a
+`parallel()` of 2 drafting agents → a Verify agent box, connected by edges." Without live
+parallel-group markers (deferred since v8 Slice 2c, requires a sandbox-IPC protocol change), the
+graph cannot distinguish agents that ran concurrently from agents that ran sequentially. Two
+approaches avoid the IPC change:
+- *Option A — Skeleton overlay*: use `parseWorkflowSkeleton`'s node list as the graph topology
+  (phase/parallel-group/agent structure); populate each node with the matching live agent state by
+  `label+phase` key. This is clean data composition reusing REQ-062's existing output.
+- *Option B — Timing overlap heuristic*: group agents whose `startedAt`/`endedAt` intervals overlap
+  (from REQ-051) as de-facto parallel. This is approximation-only and breaks if concurrency cap
+  serialises agents that the script launched in a `parallel()`.
+**Recommendation: Option A (skeleton overlay)**. The skeleton is already computed and cached per
+workflow registration. The graph renderer treats the skeleton as structural truth and live agent
+records as state annotations. The IPC protocol change stays deferred.
 
-- **SDK subprocess is a black box for mid-flight observation.** The `ClaudeAgentSdkGatewayClient`
-  spawns the SDK CLI and reads its terminal output. There is no defined protocol for forwarding
-  the SDK's internal streaming events (tool-call decisions, partial outputs, token counts) back to
-  the engine's journal in real time. Mid-flight agent state is therefore invisible until the
-  subprocess exits; this is an opacity seam for agents that take minutes to complete.
-- **Per-agent chain-of-thought is not preserved in the architecture.** `workflow_agent_log`
-  returns the "full message/tool-call transcript", but the architecture does not define whether
-  this includes the SDK's internal reasoning/thinking traces. For non-Anthropic models where
-  thinking is explicitly disabled (D-F6 / REQ-016), this is a non-issue; for Anthropic models it
-  is an open question.
+**G3 — No structured log for dashboard-render errors.** If `buildDagModel` receives a malformed
+`RunStatusView` (e.g., an agent with a frame that has no matching `workflowNode`), REQ-048 says
+"never throws, never drops an agent (an agent whose frame has no matching node attaches to root)."
+This silent-absorb is correct for runtime but invisible to operators. The dashboard should expose a
+`warnings` array in the DAG response for unattached agents, so an operator can diagnose a data
+anomaly without reading server logs.
 
-### Key design decisions needed
+### Agent-altitude gaps
 
-1. Define a `TraceContext { traceId, spanId }` propagated through all four process boundaries
-   (inject into SDK subprocess as env var; inject into LiteLLM as a request header).
-2. Capture LiteLLM subprocess stderr into the engine journal at log level `debug` (pipe
-   `STDERR` → a bounded ring buffer → append to the run's journal on completion or timeout).
-3. Specify a `Logger` interface with levels and a configurable sink (default: structured JSON to
-   stdout, optionally a file). Gate: no `console.log` in production paths.
-4. Add `GET /health` returning `{ status:"ok"|"degraded", version, uptime, liveRuns }`.
+**G4 — Harness descriptor is not captured at agent dispatch time.** REQ-073 requires a detail panel
+showing "model name, the prompt it ran, its tool list and skill list (from the resolved harness /
+`AgentOpts.mcp` + agent definition), and its current status." None of these fields (except model and
+state) are currently on `AgentRecord`. They must be captured at the moment
+`ClaudeAgentSdkGatewayClient.runAgent()` builds its SDK session — BEFORE the session completes —
+because the detail panel must show `idle` status for queued-but-not-yet-dispatched agents (which
+have no result yet). Architecture decision: add an optional `harness` sub-object to `AgentRecord`:
+
+```
+harness?: {
+  prompt: string;          // size-capped (see G4a below)
+  tools: string[];         // names only, no configs
+  skills: string[];        // skill dir names
+  mcpServers: string[];    // provisioned MCP server names, NOT configs
+}
+```
+
+Written via a new `RunStore.setAgentHarness(runId, agentId, harness)` call immediately after the
+SDK session is constructed, before `sdk.query()` is awaited.
+
+**G4a — Prompt size cap.** A workflow may embed a large document as an agent prompt (e.g., a seeded
+file's content). Recording the full prompt in `AgentRecord` would bloat the journal and SQLite index
+unboundedly. Architecture decision: cap the stored prompt at **4 KB** (same cap used for the update
+result file in Sprint 2), truncating with a `…(truncated)` suffix. The detail panel displays this
+truncated form; the full prompt is not separately retrievable without re-running the workflow.
+
+**G4b — No-secret rule on harness descriptor.** `mcpServers` MUST store name-strings only (e.g.,
+`"github"`, `"filesystem"`), not the provisioned MCP configs (which may contain secret refs
+`${secret:...}`). `tools` stores tool names (e.g., `"Read"`, `"Bash"`). `skills` stores skill
+directory names. This ensures REQ-073's "NO secret/token VALUE is ever shown" is enforced at
+capture time, not at render time (redaction at render is fragile and bypassed if the API is called
+directly).
+
+### Key design decisions
+
+1. Add `startedBy` to `RunSpec` and the `runs` table; all four callers of `RunManager.start()`
+   pass it (MCP facade, webhook registry, scheduler, continuation store). Surface in `RunStatusView`
+   and `GET /api/runs/:id`.
+2. Choose Option A (skeleton overlay) as the parallel-group strategy for Sprint 3; document the
+   skeleton-as-topology decision in `02-architecture.md` alongside the existing parallel-group-marker
+   deferral note.
+3. Add `harness` to `AgentRecord` with a 4 KB prompt cap and name-only arrays; written at SDK
+   session construction, not at completion.
+4. Add `warnings: string[]` to the DAG API response for unattached-frame agents.
 
 ---
 
@@ -99,57 +156,79 @@ view. This is a solid per-run observability layer.
 
 ### What exists
 
-The architecture defines two `GatewayClient` implementations (`LiteLLMGatewayClient` /
-`ClaudeAgentSdkGatewayClient`) behind a common interface, switchable via `"gateway":"sdk"|"direct-fetch"`
-in config. Model aliases map logical names (e.g. `haiku`, `default`) to provider+model, so
-workflows are decoupled from provider specifics. LiteLLM abstracts provider HTTP APIs for the
-non-Anthropic path. These are the right replaceability seams at the LLM-call level.
+- `buildDagModel` (REQ-048) is **already pure** (no I/O, no state mutation, no throws) and
+  `AgentRecord`-agnostic (takes a `RunStatusView`, returns a `DagModel`). This is a genuine design
+  strength and the architecture must preserve it: the renderer MUST NOT be entangled with data
+  fetching.
+- `ClaudeAgentSdkGatewayClient` / `LiteLLMGatewayClient` are behind the `GatewayClient` interface;
+  swapping the LLM backend is already a config change (`"gateway":"sdk"|"direct-fetch"`).
+- `parseWorkflowSkeleton` (REQ-062) is also pure (no I/O, no throws, static scan only).
 
-### System gaps
+### System-altitude gaps
 
-- **Persistence layer has no interface.** `RunStore` (SQLite + `journal.jsonl`) and
-  `WorkflowCatalog` (SQLite) are concrete implementations with no abstract port/interface.
-  Swapping SQLite for PostgreSQL (for multi-instance deployment) or replacing the journal format
-  would require touching every consumer of those classes. At v11 scale (683 tests, 156 files),
-  this is a non-trivial refactor.
-- **MCP server is hand-rolled without a protocol SDK.** Tech_stack explicitly notes this as
-  "drift" from the Gate 2/3 sketch. If the MCP protocol evolves (new session lifecycle methods,
-  capability negotiation changes), the hand-rolled server must be updated manually with no SDK
-  upgrade path. This is vendor-neutral but protocol-locked.
-- **LiteLLM is a runtime transitive dependency, not an abstract gateway interface.** LiteLLM is
-  a real external Python project; if it is abandoned or breaks its proxy API, the entire
-  non-Anthropic path fails. The `LiteLLMGatewayClient` should have its Python management (spawn,
-  healthcheck, restart) behind a `ProxyManager` interface so it can be replaced by, e.g.,
-  LM Studio or a native Ollama SDK without restructuring the gateway.
+**G5 — Skeleton and live-run DAG produce different shapes; the renderer cannot be shared.** Sprint 3
+needs one graph renderer that handles both the registered-workflow skeleton view (REQ-062, a
+`SkeletonNode[]`) and the live-run graph (REQ-048, a `DagModel` tree). These are currently
+structurally different. Architecture decision: define a `GraphPayload` union type:
 
-### Agent gaps
+```typescript
+type GraphPayload =
+  | { kind: 'skeleton'; nodes: SkeletonNode[]; name: string }
+  | { kind: 'run';      dag: DagModel;         runId: string; startedBy: StartedBy };
+```
 
-- **The agent harness runtime is Anthropic-SDK-locked.** The Claude Agent SDK controls the tool
-  loop, MCP session, skill injection, and agent output. For non-Anthropic models, this is
-  mitigated by routing LLM calls through LiteLLM, but the harness mechanics (how tools are
-  presented, how tool results are incorporated, how `strictMcpConfig` is passed) are SDK-internal
-  behaviors. No interface abstraction exists above `sdk.query()`. Migrating to an OpenAI
-  Assistants harness, LangGraph, or a local harness (e.g., for environments where the SDK CLI
-  is unavailable) would require replacing `ClaudeAgentSdkGatewayClient` wholesale with no
-  interface contract to guide the replacement.
-- **Skill/asset materialization is coupled to the SDK's `.claude/` path conventions.** The
-  workspace `.claude/skills/<name>/` layout is an SDK convention. If the SDK changes its
-  skill-loading path, the materializer breaks silently (skills are present on disk but not loaded
-  by the agent). There is no indirection layer between the abstract "skill" concept and the
-  SDK's specific filesystem expectation.
+Both `GET /api/workflows/:name/skeleton` and `GET /api/runs/:id/dag` return this type (or the
+renderer accepts it). A single `renderGraph(payload: GraphPayload): SVGElement` function handles
+both cases.
 
-### Key design decisions needed
+**G6 — Morandi palette is at risk of being hardcoded.** REQ-072 specifies "Morandi hue assigned per
+frame" and "softly-tinted background container." Without a palette contract, every reviewer of
+dashboard-page.ts will see scattered hex strings. Architecture decision: define the palette as CSS
+custom properties on `:root` (or a `.rwe-graph` scoping class):
 
-1. Define `RunStorePort` and `CatalogPort` TypeScript interfaces; have the SQLite classes
-   implement them. This costs ~1 hour now and avoids a weeks-long refactor at scale-out time.
-2. Define `ProxyManagerPort` (start, healthcheck, stop) wrapping the LiteLLM subprocess
-   lifecycle, so an alternative proxy implementation (e.g., native Ollama client) satisfies
-   the same interface.
-3. Document the SDK coupling explicitly as an accepted architectural risk in `02-architecture.md`,
-   with a migration trigger condition (e.g., "if SDK drops non-Anthropic LiteLLM routing support,
-   switch to a standalone harness implementing AgentHarnessPort").
-4. Pin the `.claude/` skill path to a named constant injected into the materializer, so a
-   path change requires a one-line update, not a grep-and-replace.
+```css
+:root {
+  --graph-frame-hues: 210, 150, 30, 300, 60, 180; /* Morandi H values */
+  --graph-frame-s: 18%;
+  --graph-frame-l-bg: 92%;   /* tint for frame background */
+  --graph-frame-l-border: 60%;
+  --graph-node-running: #a8c4a2;   /* Morandi sage */
+  --graph-node-done: #c2bfb0;      /* Morandi stone */
+  --graph-node-failed: #c4a2a2;    /* Morandi rose */
+  --graph-node-queued: #b0bec5;    /* Morandi blue-grey */
+}
+```
+
+Frame colors are assigned by `frameIndex % hueCount` (derived from the `workflowNodes` order),
+never random. This makes a palette swap a one-file CSS change.
+
+**G7 — No external graph layout library; the constraint must be stated.** The dashboard's strict
+CSP (no external host requests, inline-all-JS) prohibits Cytoscape, D3, or Dagre via CDN. The
+architecture must state: graph layout is handled by one of (a) CSS flexbox/grid (adequate for
+top-down tree DAGs, which is all we have today — no back-edges, no cycles), or (b) inline SVG with
+manually computed positions (simple for trees, avoids a bundled algo). Recommendation: **CSS
+flexbox tree** for Sprint 3 (each composite frame is a flex column; parallel groups are flex rows
+within a phase column). This is far simpler than a generic graph layout algorithm and sufficient for
+the DAG shapes the engine produces. Reserve a proper layout engine (bundled, inlined) as a future
+replacement if the graph shapes become genuinely complex.
+
+### Agent-altitude gaps
+
+**G8 — Harness descriptor shape is not yet an interface.** If the `harness` sub-object on
+`AgentRecord` is defined only in one file, it cannot be replaced (e.g., a future harness that
+captures tool-call round counts). Define it as a `HarnessDescriptor` exported interface from
+`src/types.ts` (or `agent-record.ts`), so both the capture site and the API endpoint share one
+definition.
+
+### Key design decisions
+
+1. Define `GraphPayload` union type consumed by the renderer; both skeleton and run DAG endpoints
+   return it.
+2. Morandi palette as CSS custom properties on a scoped selector; frame-color assignment is
+   `frameIndex % len(hues)`, deterministic.
+3. CSS flexbox tree layout for Sprint 3; no external library; document as the chosen approach in
+   `02-architecture.md`.
+4. Export `HarnessDescriptor` as a named interface; co-locate with `AgentRecord`.
 
 ---
 
@@ -157,137 +236,128 @@ non-Anthropic path. These are the right replaceability seams at the LLM-call lev
 
 ### What exists
 
-The primary integration surface is the MCP Streamable HTTP interface, which is a standard
-protocol — callers integrate via any MCP-compatible client. REQ-005 specifies the tool list
-(`workflow_run`, `workflow_status`, `workflow_result`, etc.). REQ-039/040 add a `models_list` tool
-for model discovery. REQ-062 adds `workflow_get.skeleton` so callers can inspect a workflow's
-shape before running it. The workflow JS DSL (`agent()`, `phase()`, `pipeline()`, `parallel()`) is
-a clean, typed API surface for workflow authors. The client plugin (REQ-010) reduces the
-integration cost for Claude Code users to a single install step.
+- MCP tools `workflow_status` / `workflow_agent_log` expose run state and per-agent transcript.
+- `GET /api/runs/:id/dag` (REQ-047) exposes the `buildDagModel` result over HTTP.
+- `GET /api/workflows/:name/skeleton` (REQ-062) exposes the static skeleton.
+- The client plugin (REQ-010) reduces integration cost to a single install.
+- `models_list` (REQ-039) and `workflow_get` (REQ-061) are discovery surfaces.
 
-### System gaps
+### System-altitude gaps
 
-- **No machine-readable contract for the REST/HTTP surface.** The `/api/*` routes (runs, agents,
-  workflows, issues, version, health) are not covered by an OpenAPI/Swagger specification. A
-  caller building a dashboard or CI integration against the HTTP API must read source code to
-  understand endpoint shapes, error codes, and query parameters. This is a high integration cost
-  for non-MCP consumers.
-- **Async polling model without push.** `workflow_run` returns a `runId` immediately; callers
-  must poll `workflow_status` / `workflow_result` to know when a run completes. SSE is explicitly
-  deferred. For a caller running a blocking workflow (a human operator at a terminal), this means
-  writing their own poll loop. The architecture should define a polling recommendation (backoff
-  interval, max-wait), or designate SSE as a v12 gate-item rather than an indefinitely deferred
-  gap.
-- **Error envelope is informally defined.** Error codes (`WORKFLOW_NOT_FOUND`, `MISSING_BLOBS`,
-  `RUN_ADMISSION_LIMIT`, etc.) are mentioned in individual REQs but there is no single canonical
-  error-code registry in the architecture. Callers cannot enumerate all possible error codes or
-  write exhaustive error handlers without reading requirements one by one.
-- **No versioning strategy for the MCP tool API.** Adding a new required parameter to
-  `workflow_run`, or removing a tool from the list, is a breaking change for connected clients.
-  No version negotiation mechanism or deprecation policy is defined.
+**G9 — Harness detail is dashboard-only; programmatic callers are excluded.** REQ-073 says "a
+detail panel shows that agent's HARNESS." If the `harness` sub-object is accessible only through
+the dashboard HTML, an MCP-connected agent (e.g., a CI workflow that wants to inspect why a
+sub-agent used the wrong tool) cannot read it. The harness descriptor MUST be part of the
+`workflow_agent_log` MCP tool response (or a new `workflow_agent_harness` tool). Minimum: extend
+the `workflow_agent_log` response schema to include the `harness` field alongside the transcript,
+so the existing MCP surface grows, not proliferates.
 
-### Agent gaps
+**G10 — `startedBy` provenance must be in the HTTP/MCP API, not only in the graph HTML.** An
+automation that wants to know "was this run triggered by a webhook or a schedule?" cannot get the
+answer from the dashboard. `workflow_status` response must include `startedBy`; `GET /api/runs/:id`
+must include it. This flows naturally from the G1 decision to persist it in the `runs` table.
 
-- **Agent I/O typing is per-call, not schema-first.** The `schema` option to `agent()` enables
-  JSON Schema validation of agent output, which is the right mechanism. But there is no central
-  schema registry or type library a workflow author can import to use well-known output shapes
-  (e.g., `IssueReport`, `SearchResult`). Every workflow defines its schema inline, making reuse
-  and cross-workflow type checking manual.
-- **No SDK for non-MCP callers to invoke the engine programmatically.** The engine exposes MCP
-  and HTTP, but a Node.js caller who wants to embed the engine (e.g., in a CI pipeline script)
-  must either speak MCP JSON-RPC or call raw HTTP. A thin `RemoteWorkflowClient` TypeScript class
-  wrapping the HTTP API with typed methods would reduce integration cost to a `npm install` + 3
-  lines of code.
+**G11 — No guidance on rendering the graph outside the dashboard.** The `GraphPayload` type (G5)
+should be the schema that `GET /api/runs/:id/dag` returns, so a custom UI can render the same
+graph without reverse-engineering the dashboard's internal DOM structure. The API contract here
+matters: if `GET /api/runs/:id/dag` currently returns the raw `DagModel` type, Sprint 3 should
+migrate it to `GraphPayload` (or ensure `DagModel` IS the agreed contract type and rename it
+`GraphPayload` at the API boundary).
 
-### Key design decisions needed
+**G12 — No polling guidance for live graph updates.** The 3s poll is the mechanism; callers must
+implement it themselves. The `workflow_status` response should include a `terminalAt?: string` field
+so a caller can stop polling once it's set — avoiding perpetual polling on completed runs. This is
+a tiny consumability improvement with no API-shape cost (it's an optional field on an existing
+response).
 
-1. Generate an OpenAPI 3.1 spec from the HTTP routes (use `zod-to-openapi` or a similar tool;
-   the existing Zod schemas on input/output already provide the type information). Publish at
-   `GET /openapi.json`.
-2. Define a canonical error code registry in the architecture document: a flat TypeScript `const`
-   enum of all error codes, their HTTP status mappings, and retry-eligibility.
-3. Define a polling recommendation for `workflow_result`: exponential backoff from 1s to 5s,
-   max wait configurable, or a synchronous block option for short runs.
-4. Adopt a tool-API versioning strategy: a `version` capability in the MCP initialize response,
-   and a backwards-compatible "add optional params only" policy for minor changes.
+### Agent-altitude gaps
+
+**G13 — Agent state label mismatch between API and REQ-073 acceptance test.** REQ-073 uses the
+term `idle` for a queued-but-not-dispatched agent. The existing `AgentRecord.state` enum uses
+`queued`. While the dashboard can rename the display label, the architecture should confirm the
+canonical enum value is `queued` (not `idle`) and that the dashboard maps `queued → "idle"` only at
+render time, so MCP/API callers get the canonical `queued` string and do not depend on the
+display-layer alias.
+
+### Key design decisions
+
+1. Extend `workflow_agent_log` response (MCP tool + HTTP endpoint) to include `harness:
+   HarnessDescriptor | null` alongside the transcript array.
+2. Add `startedBy` to `workflow_status` response and `GET /api/runs/:id`.
+3. Define `GET /api/runs/:id/dag` to return `GraphPayload` as the stable API contract type.
+4. Add `terminalAt?: string` to `RunStatusView` and the MCP status response.
+5. Confirm `AgentRecord.state = 'queued'|'running'|'done'|'failed'`; map to display labels at
+   render time only.
 
 ---
 
 ## (4) Self-Sustainability
 
-### What exists
+### What exists (and what is genuinely strong)
 
-The engine has significant self-sustainability features already:
+- REQ-059/060 crash durability (journal replay on restart) is the dominant self-sustainability
+  feature of the engine and is unaffected by Sprint 3.
+- The 3s dashboard poll is self-limiting (each poll replaces the prior; no queue builds up).
+- `buildDagModel` is already pure and stateless — no memory growth from repeated renders.
+- REQ-026 workspace TTL GC, REQ-054 admission counter, REQ-024/063 body caps are all standing.
 
-- **Run lifecycle resilience**: REQ-059/060 (crash-resume), REQ-052/053 (onTerminal + durable
-  continuation chaining), REQ-054 (admission counter / DoS gate), REQ-026 (workspace TTL GC).
-- **DoS defenses**: REQ-024 (413 body cap), REQ-063 (gzip bomb cap), REQ-056 (Host/Origin
-  allowlist), REQ-057/058 (HMAC-verified webhooks).
-- **Self-update**: REQ-068..070 (GitHub tag webhook → privilege-separated updater → automatic
-  apply with safe-fail), currently v11 draft — the architectural decision to keep the engine
-  unprivileged (writes a flag; systemd unit does the actual git/build/restart) is the right
-  privilege separation.
-- **Execution modes**: cron, one-shot timed, resident user-triggered (REQ-015) reduce the need
-  for human initiation of scheduled operations.
-- **Context isolation**: REQ-021 (fail-fast at boot if workRoot is inside a project) prevents
-  silent memory leaks into agent context — a self-protection invariant at startup.
+The self-sustainability burden of Sprint 3 is **low by design**: the graph dashboard is additive
+UI on top of an already-durable data layer. The two specific concerns are payload bounding and
+color-assignment determinism.
 
-### System gaps
+### System-altitude gaps
 
-- **No proactive health probing for downstream dependencies.** The engine discovers that LiteLLM
-  is down only when an `agent()` call fails (reactive). There is no periodic probe that checks
-  "is LiteLLM alive?" or "is the Ollama endpoint reachable?" before admitting a run that would
-  require them. A run that sits in the queue for 60 seconds before discovering its only provider
-  is down wastes concurrency slots and leaves the user confused.
-- **No circuit-breaker at the provider level.** REQ-004 mandates a "D-G minimal circuit breaker"
-  for provider timeouts. However, the architecture does not specify whether this is a true
-  circuit-breaker (open/half-open/closed states with a failure threshold) or simply a
-  per-call timeout. Without a real circuit-breaker, a provider that is flaking (slow, not fully
-  down) will cause every `agent()` call to wait out its full timeout before resolving to `null`.
-- **Journal/SQLite growth is unbounded.** There is no defined archival policy for old run
-  journals. REQ-026 purges workspaces on TTL, but `journal.jsonl` files and SQLite run records
-  accumulate indefinitely. A long-lived production engine running thousands of workflows per day
-  will eventually exhaust disk or degrade SQLite query performance without an archival strategy.
-- **No memory/disk metric surfacing.** The admission counter (REQ-054) bounds live run count, but
-  there is no feedback loop from disk usage (workspace + journal size) or memory usage back to
-  the engine's admission control. An operator has no in-engine signal that disk is filling up.
+**G14 — Detail panel transcript fetch is unbounded without a design decision.** `workflow_agent_log`
+returns the full agent transcript. A long-running agent with 50 tool-call rounds produces a
+multi-hundred-KB JSON response. If the graph detail panel fetches this on every poll cycle (or on
+click without a size cap), the browser can OOM on large runs and the engine serves unnecessary
+payload. Architecture decision: the detail panel fetches the transcript **once, on click** (not
+on poll); additionally, the dashboard caps the transcript display to the first 50 message entries
+(a "show full log" link opens `workflow_agent_log` directly). The HTTP endpoint for agent transcript
+should accept an optional `?limit=N&offset=M` query param (consistent with the REQ-023 pattern for
+workspace file windows) so a future client can page through large transcripts.
 
-### Agent gaps
+**G15 — N open run tabs × 3s poll = N × (dag request + per-run agent status) requests.** The
+3s poll hits `GET /api/runs/:id/dag` for every open tab. For a developer with 5 run tabs open, this
+is 5 × 20 req/min = 100 req/min to the engine (loopback, so not a network cost, but a CPU/SQLite
+cost). Architecture decision: the poll should call only `workflow_status` (MCP or HTTP, which is
+already lean) and recompute the client-side `buildDagModel` in the browser from the cached
+`GraphPayload` topology. The topology (dag structure) does not change for a completed run; only
+agent states change while running. Store the topology once in the browser on first load; update only
+the state overlays on subsequent polls.
 
-- **No journal compression or memory metabolism for long-running agents.** An `agent()` session
-  running many tool-call rounds produces a large transcript. The journal records all of it
-  indefinitely. There is no periodic compression or selective archival (e.g., "keep the last N
-  tool calls in hot storage, archive the rest"). This means a workflow that runs thousands of
-  agent calls (a long multi-day autonomous pipeline) will bloat the journal until disk runs out.
-- **No tool-liveness probe before agent dispatch.** If a provisioned MCP server (REQ-017) is
-  configured but its process is not running, the agent discovers this only during the tool-call
-  round, deep inside an active SDK session. A pre-flight probe that checks MCP server reachability
-  before creating the SDK session would fail fast with a clear `MCP_UNREACHABLE` error instead of
-  spending tokens on a session that can only fail.
-- **Budget tracking across crash-resume is not architecturally defined.** REQ-059 re-populates
-  the `ResumeCache` from the journal, which covers result replay. But `budget.spent()` accounting
-  after a crash-resume is not explicitly addressed in the requirements or architecture: is the
-  token tally reconstructed from the journaled agent records, or does it start from zero? If from
-  zero, a resumed run can exceed its budget by a full `spent()` amount before the guard fires.
-- **No self-reflection or prompt calibration.** The system cannot detect that a model alias is
-  producing lower-quality results (e.g., schema validation failures are increasing) and adjust
-  routing. This is expected at v11 but should be noted as a self-sustainability ceiling for
-  long-term autonomous operation.
+### Agent-altitude gaps
 
-### Key design decisions needed
+**G16 — Frame-to-Morandi-color mapping must be deterministic across polls.** If the color
+assignment is computed at render time from a non-stable order (e.g., `Object.keys(workflowNodes)`
+iteration order or insertion order from a live in-progress run), the frame colors may change between
+the 3s polls while a run is in progress, creating a disorienting color-flicker effect. Architecture
+decision: assign frame colors based on a deterministic hash of the `frame` string (or the
+`workflowNode.name + depth`), not on iteration order. A simple string hash modulo the palette length
+is sufficient.
 
-1. Define a `DependencyProbe` service (checked at boot and before each run start for required
-   providers): probes LiteLLM proxy health (`GET /health`) and, if configured, Ollama
-   (`GET /api/tags`). Failures surface as `DEPENDENCY_UNAVAILABLE` in admission, not mid-run.
-2. Upgrade the per-provider failure handling to a named circuit-breaker pattern with explicit
-   states (`closed / open / half-open`) and a configurable failure threshold (e.g., 3 timeouts
-   in 60 seconds → open for 120 seconds). Document this explicitly in the architecture.
-3. Define a journal archival policy: runs older than a configurable TTL (default: 30 days) are
-   compacted (token-level detail dropped, result kept) or moved to a cold archive path. Pair with
-   a disk-usage metric exposed on `GET /health`.
-4. Define budget-reconstruction semantics on crash-resume explicitly: `budget.spent()` after
-   resume MUST be re-derived from the sum of token counts in the journaled agent records, not
-   reset to zero. This should be a unit-test fixture in the v11 test suite.
+**G17 — Harness descriptor must not contain prompt content that could embed an unexpanded secret
+handle.** A workflow author could write `agent(\`Here is the API key: \${config.MY_SECRET}\`)`.
+If `config.MY_SECRET` is resolved from the workflow script's own runtime scope (not from the
+REQ-018 secret store), it will appear as a plaintext value in the harness descriptor's `prompt`
+field. Architecture decision: the harness `prompt` field is captured from `AgentOpts.prompt`
+(the string value at the time `agent()` is called inside the sandbox child process), which is
+already inside the VM-restricted execution context. The REAL security boundary is the REQ-018
+server-side secret store (secrets in MCP configs are refs, never substituted into agent prompts by
+the engine). The 4 KB prompt cap (G4a) already limits exposure surface. Document this scope
+boundary explicitly: the harness descriptor captures what the **workflow script** passed as the
+prompt, and secrets injected via the REQ-018 path are never in that string.
+
+### Key design decisions
+
+1. Detail panel fetches transcript on-click only; caps display at 50 messages; `workflow_agent_log`
+   HTTP endpoint gains optional `?limit=N&offset=M` pagination.
+2. Dashboard poll updates agent states only (not the full topology); topology is cached in the
+   browser on first load for a completed or in-progress run.
+3. Frame color assignment: `stableHash(frame) % paletteLength`; pure function, same input → same
+   color always.
+4. Document the harness `prompt` capture scope: script-computed prompt string, bounded, never a
+   REQ-018 secret substitution.
 
 ---
 
@@ -295,42 +365,52 @@ The engine has significant self-sustainability features already:
 
 | # | Dimension | Risk | Severity |
 |---|-----------|------|----------|
-| R1 | Observability | Four-process boundary with no trace ID: a slow `agent()` call is undiagnosable in production | High |
-| R2 | Observability | LiteLLM stderr swallowed by the engine: provider errors appear as opaque `null` results | High |
-| R3 | Replaceability | Claude Agent SDK controls the tool-loop runtime: migrating to any other harness is a full rewrite of `ClaudeAgentSdkGatewayClient` with no interface contract | High |
-| R4 | Replaceability | No `RunStorePort`/`CatalogPort` interface: adding multi-instance or PostgreSQL support requires pervasive refactor | Medium |
-| R5 | Consumability | No OpenAPI spec for `/api/*`: HTTP callers must reverse-engineer the contract from source code | Medium |
-| R6 | Consumability | No MCP tool API versioning: a required-param addition is a silent breaking change for all connected clients | Medium |
-| R7 | Self-sustainability | No proactive dependency probe: a downed LiteLLM/Ollama is discovered mid-run, wasting slots and confusing users | High |
-| R8 | Self-sustainability | Journal growth unbounded: long-lived engine will degrade or exhaust disk without archival | Medium |
-| R9 | Self-sustainability | Budget accounting after crash-resume is architecturally unspecified: possible budget overrun by a full `spent()` amount | High |
-| R10 | Observability | No `GET /health` endpoint: systemd/Docker/load-balancer cannot probe engine liveness | Low |
+| R1 | Observability | `startedBy` not persisted — trigger source node cannot be rendered; added mid-sprint requires a migration on the `runs` table | High |
+| R2 | Observability | Harness descriptor not captured at dispatch time — REQ-073 detail panel is empty for any completed run before the architecture decision lands | High |
+| R3 | Observability | Parallel-group markers absent from live DAG — graph must approximate via skeleton overlay (Option A); if skeleton is missing for inline scripts, parallel groups are invisible | Medium |
+| R4 | Replaceability | Morandi hex values hardcoded — a palette change requires grep-and-replace across dashboard-page.ts | Medium |
+| R5 | Replaceability | `GraphPayload` type not defined — skeleton and live-run renderers diverge, doubling maintenance cost | Medium |
+| R6 | Consumability | Harness detail dashboard-only — CI/automation cannot inspect agent harness config via MCP | Medium |
+| R7 | Consumability | `startedBy` absent from MCP/HTTP API — programmatic callers cannot determine trigger source | Medium |
+| R8 | Self-sustainability | Detail panel auto-fetches transcript on poll — large runs cause browser OOM and amplified engine load | High |
+| R9 | Self-sustainability | Color assignment non-deterministic — frame colors flicker between polls, degrading the UX and breaking the "colored frame = named workflow" mental model | Low |
 
 ---
 
 ## Expected Disagreements with Other Lenses
 
-- **Security lens** will likely prioritize REQ-068/069 (self-update HMAC verification, privilege
-  separation) as a security risk, while this lens sees it primarily as a self-sustainability
-  feature. The privilege-separation design (engine writes a flag, systemd unit acts) is already
-  correct from a self-sustainability standpoint; the security lens may want additional controls
-  on the flag content and the systemd unit's git-remote allowlist.
+**vs adversarial / security lens**: that lens will likely press on REQ-073's "NO secret value shown"
+harder than I do here, asking for explicit scrubbing at render time in addition to capture-time
+boundaries. I agree with defense-in-depth but believe the architecture's strongest control is
+at capture time (G4b, G17): storing name-strings rather than configs means there is nothing to
+scrub. A render-time scrub of `${secret:...}` patterns is cheap to add and I expect it to be
+raised; it is complementary, not contradictory, to this lens's position.
 
-- **Performance / scalability lens** may challenge the single-SQLite persistence design as a
-  scalability bottleneck (especially `journal.jsonl` fan-out under many concurrent runs). This
-  lens agrees SQLite is a risk but frames it as a **replaceability** concern (no `RunStorePort`
-  interface makes swapping it expensive), not just a throughput concern.
+**vs adversarial lens on prompt capture**: the adversarial lens will note that a malicious workflow
+script could pass a secret VALUE (not a handle) as the agent prompt to smuggle it into the harness
+descriptor and then read it via `workflow_agent_log`. This is within scope of the VM sandbox threat
+model: scripts CAN call `agent()` with any string. The 4 KB cap limits exfiltration volume. The
+harness descriptor should be documented as having the same trust level as the agent transcript
+(which already contains the full model output, including any secrets the model chose to echo). This
+is an ACCEPTED limitation of the transparency / isolation tradeoff, not a novel gap.
 
-- **Security lens** and this lens agree on the `workRoot` isolation invariant (REQ-021) but may
-  disagree on whether the fail-fast-at-boot check is sufficient or whether a runtime re-check
-  is needed (this lens: boot check is sufficient for the current single-process model).
+**vs performance / scalability lens**: that lens will likely push back on the 3s poll and advocate
+for SSE. I agree SSE is the right long-term answer and is explicitly deferred; for Sprint 3 the
+poll is adequate. I expect disagreement on G15 (N-tab amplification) — the scalability lens may
+quantify this more aggressively. The architecture decision in G15 (cache topology, poll state only)
+is a good-faith mitigation; if the lens says 3s × N tabs is still too much, that is a gate-2
+decision, not a disagreement on direction.
 
-- **Cost/simplicity lens** may argue that OpenAPI generation and a `RunStorePort` interface add
-  complexity without immediate user value. This lens's counter: the integration cost (R5) is paid
-  by every future MCP-alternative caller, not by the current team; the interface cost (R4) is
-  paid once now or many times later.
+**vs extensibility / plugin lens** (if present): that lens may argue for a richer `AgentHarnessPort`
+that can enumerate tools dynamically. I agree the interface belongs in `02-architecture.md` but
+defer capability-enumeration beyond what the SDK session init already produces (which IS the tool
+list for the curated allowlist path in REQ-016). The harness descriptor is a read-only snapshot,
+not a control surface.
 
-- **Extensibility lens** will likely echo the replaceability concerns here (SDK harness lock-in,
-  SQLite lock-in) and may propose a plugin architecture for GatewayClients. This lens is
-  aligned: a formal `AgentHarnessPort` interface is the right direction; the disagreement is
-  likely in how far to abstract (full plugin vs. two-implementation interface).
+**On the standing deferred items**: distributed trace-ID, `RunStorePort`/`CatalogPort`, OpenAPI
+spec, `/health` endpoint, circuit-breaker, and journal archival were all explicitly deferred at
+Sprint 2 Gate 2 as future-REQ candidates. This lens does NOT re-propose them here. They are noted
+only where they intersect Sprint 3 specifically:
+- Trace-ID: would help diagnose slow graph loads; still deferred.
+- SSE: still deferred; 3s poll + topology-caching (G15) is the mitigation.
+- Budget-on-crash-resume (carried from Sprint 2): unrelated to Sprint 3, still deferred.

@@ -2,25 +2,30 @@
 panel: design
 lens: quality-dimensions
 round: 1
-scope: v11 Sprint 2 — tag-triggered privilege-separated self-update (REQ-068..070 / ARCH-038..040)
+scope: v11 Sprint 3 — n8n-style graph dashboard (REQ-071..073 / ARCH-041..045)
 ---
 
 # Quality-Dimensions Design Review — Round 1
 
 ## Summary
 
-This review applies the four cross-cutting quality dimensions to the **detailed design** of ARCH-038
-(in-engine HMAC verifier + flag-writer), ARCH-039 (out-of-engine privileged helper), and ARCH-040
-(version/outcome observability). The gate-2 architecture is accepted and settled; this review works
-within that boundary.
+This review applies the four cross-cutting quality dimensions to the **detailed design** of
+ARCH-041 (`startedBy` provenance), ARCH-042 (`GraphPayload` + `layoutGraph` + skeleton overlay),
+ARCH-043 (Morandi SVG renderer + pan/zoom), ARCH-044 (`kind:'harness'` transcript event +
+`redactHarness`), and ARCH-045 (harness detail panel + two-tier no-secret proof). Gate-2 for Sprint
+3 is PASSED. Settled decisions — SVG over flexbox (D6), poll over SSE, GraphPayload as internal
+seam, capture-at-dispatch (D1), global semaphore — are confirmed below, not re-litigated.
 
-**Altitude determination.** This slice is **system-altitude** self-sustainability machinery — the
-engine updating itself, not an agent system designing itself. Agent altitude enters at exactly two
-seams: (a) the flag file must live outside any workRoot because an untrusted agent that can write
-it gains host RCE via the privileged helper; (b) in-flight agent runs across the update restart are
-interrupted and must be manually resumed (ARCH-034 / REQ-059-060 — not automatic). The agent-altitude
-reading of each dimension is therefore narrow and noted explicitly where it applies, rather than
-forced across all four.
+**Altitude determination.** This project is definitively both **system-altitude** and
+**agent-altitude**. System altitude: the MCP HTTP server, run manager, SQLite store, journal,
+gateway router, and now the DAG renderer and `layoutGraph` function (ARCH-042/043). Agent altitude:
+the Claude Agent SDK headless sessions spawned per `agent()` call, with LLM backends, tool
+surfaces, skill injection, and MCP name resolution — all of which ARCH-044 captures for the first
+time. Both altitudes are analysed in every dimension below.
+
+**Primary quality concern for this sprint.** ARCH-044's harness capture is only as good as the
+`deriveAgentRecords` fix it mandates. Five of the eight risks below touch this code path directly
+or indirectly. Two design-gate leftovers explicitly handed to this panel are resolved in §1 and §2.
 
 ---
 
@@ -28,301 +33,275 @@ forced across all four.
 
 ### 1. Observability
 
-**Canonical gap: the "armed-but-stuck" state is invisible.**
+**Agent altitude — harness capture closes the largest gap in project history (ARCH-044).**
+For the first time each agent's resolved prompt, curated tool surface, skill list, and MCP server
+names are durable in the journal. This converts the agent layer from a black box (inputs opaque,
+outputs observable) to an almost-white box (inputs now observable, with one named bound on prompt
+size). This is the most significant observability improvement since v1 shipped.
 
-ARCH-038 writes the flag atomically and returns 202. ARCH-040 reads the result file at boot or on
-`/api/status` query. But between flag-write and result-file-write the system is in a state where an
-update has been requested and not yet executed — and nothing surfaces this. If the systemd `.path`
-unit is missing, not enabled, or misfires, or if the helper dies before writing a result file (e.g.
-during `git fetch`), the operator sees: flag file on disk, `/api/status` with no update record, no
-error. Silent pending state is an observability defect.
+**The `deriveAgentRecords` fix is mandatory and load-bearing.**
+ARCH-044 explicitly names this obligation: the current `if (!usage) continue` guard in `run-store.ts`
+drops dispatched-but-unsettled agents on snapshot-less restart. If this fix is not shipped
+atomically with ARCH-044, harness events from in-flight agents are invisible on any crash-resume
+cycle — exactly the scenario where harness visibility matters most. The harness feature is
+incomplete without it.
 
-**Proposed design remedy (minimal):** At flag-write time (ARCH-038, inside the engine), upsert a
-`pending` row in the side table — `{tag: T, status: 'pending', ts: now}` — using the same SQLite
-side-table convention as continuations/webhook-registry. The helper's result-file write, ingested at
-boot or lazily, overwrites this with `applied` or `failed`. The dashboard update panel (ARCH-040)
-reads from the side table, not only the result file, so it always shows the in-progress state.
+**Confirm homed items; add precision where the design leaves gaps.**
 
-This is a single `INSERT OR REPLACE` on an existing pattern, not a new subsystem. The canonical
-test: trigger a valid webhook + kill the helper before it writes a result → `/api/status` shows
-`pending` for that tag, not a silent gap.
+- `terminalAt?` on `RunStatusView` (ARCH-042): confirm this field lives on `RunStatusView` itself
+  (not a separate HTTP DTO). Because ARCH-028 passes `RunStatusView` directly through to the MCP
+  facade, `terminalAt` reaches `workflow_status` callers automatically — no gap. The dashboard
+  polling benefit is homed; the MCP caller benefit is free.
 
-**`detail` field bounding.** The helper may produce verbose npm output. ARCH-040 stores the outcome
-in a SQLite row. Design must specify a cap on the `detail` field (suggest 4 KB, truncate
-head+tail), not unbounded npm stdout. The full log belongs to journald / the helper's own stdout,
-not to the side table.
+- `warnings:string[]` in `GraphPayload` (ARCH-042): confirm warnings appear in **both** the SVG
+  overlay (a small badge or legend) **and** in the `GET /api/runs/:id/dag` JSON response. Displaying
+  in SVG only makes them invisible to non-browser callers; JSON only makes them invisible to
+  operators watching the dashboard.
 
-**401/dedup counts.** Invalid-signature rejections and delivery-dedup hits are currently returned as
-HTTP status codes with no persistent record. For operator security monitoring these are relevant
-signals. They do not need a full audit table — a single in-memory gauge or a counter in the status
-endpoint is sufficient. Flag as a design choice to make explicit (even if the choice is "log only,
-no counter").
+- 4 KB prompt cap (ARCH-044): the cap is correct to bound journal growth. Add precision: truncate
+  **head+tail** (first 2 KB + last 2 KB) rather than head-only, so the tail — where task
+  instructions typically land in a context-injection pattern — is always visible. Mark the
+  truncation boundary explicitly in the captured string (e.g. `"…[truncated]…"`).
 
-**Distributed trace-ID across the four-process boundary.** The engine, LiteLLM proxy, Claude SDK
-CLI subprocess, and now the helper script form a four-process chain. No trace-ID spans the
-engine-to-helper boundary. This gap was acknowledged in the ARCH-040 rationale as an out-of-scope
-deferred item, and this review endorses that deferral. One sentence in DEPLOY ("the self-update
-path does not carry a trace-ID; diagnose failures via journald + the result file") closes the
-documentation gap without opening scope.
+**Design-gate leftover resolved: direct-fetch gateway harness.**
+ARCH-044 notes the direct-fetch gateway path as a non-blocking leftover. Resolution: emit the
+same `kind:'harness'` event on the direct-fetch path with fields truthfully empty
+(`tools:[], skills:[], mcpServers:[]`). Distinguish **harness-absent (null)** from
+**harness-with-empty-surface** so a consumer who receives `harness: { tools:[], ... }` understands
+the agent ran with a genuinely empty tool surface, not that capture was never implemented for that
+path. Harness-absent (null) must not occur for any agent dispatched after ARCH-044 ships — it is
+a regression signal. If the truthfully-empty/absent distinction is ambiguous from array emptiness
+alone, add a discriminant field (e.g. `surfaceType: 'curated' | 'none'`) to make it explicit.
 
-**Agent-altitude seam (informational).** The flag file on disk is the only cross-process signal
-agents cannot tamper with (it lives outside workRoot by construction). This means the observability
-of the flag's existence is an operator-only signal — no agent session will ever report it, which
-is correct. The update panel (ARCH-040) is the agent-consumable surface.
+**Silent degradation in the skeleton overlay is an observability defect.**
+When a live `AgentRecord` cannot be matched to a `SkeletonNode` by `label+phase` key (loop
+iterations, conditional branches, dynamic labels), the fallback to frame-based grouping is the
+correct behaviour — no agent is ever dropped. But the fallback is currently silent: the operator
+sees correct node positions and never learns that structural inference failed. Require the fallback
+to emit a `warnings[]` entry ("agent `<id>` unmatched to skeleton: fell back to frame grouping")
+when a live agent misses the `label+phase` match. This ties to the already-homed `warnings[]`
+field in `GraphPayload` and has zero additional implementation cost. Opaque degradation is this
+dimension's core defect class.
+
+**Deferred items (endorse).** No distributed trace-ID across the four-process chain — endorsed as a
+future-REQ candidate; a `runId`+`agentId` pair is adequate for the single-user single-instance
+deployment context. No `GET /health` liveness endpoint — endorsed as a future-REQ candidate. Both
+have been carried since Sprint 2 with no change in scope.
 
 ---
 
 ### 2. Replaceability
 
-**ARCH-039 is systemd-only; ARCH-014 ships docker-compose too.**
+**Hand-rolled SVG is the correct replaceability call (ARCH-043); confirm the seam.**
+No d3-dag, mermaid, or dagre dependency is introduced. The `layoutGraph` pure function is the
+explicit replacement seam: layout algorithm changes are one-function swaps. Confirmed as settled.
 
-ARCH-014 documents two deployment paths (systemd and docker-compose). ARCH-039 is structurally a
-systemd `.path` + `.service` unit. Docker has no native equivalent of a path-unit trigger. If an
-operator runs the engine via docker-compose, the self-update feature is silently absent.
+**Morandi palette — confirm single source.**
+The `morandiFrameHue(frame)` pure function is deterministic and unit-testable. Confirm that the
+Morandi palette array lives in a single exported constant (or CSS custom property set), not
+scattered as HSL literals through the renderer. A palette swap should be a single-source edit.
+This is a design-stage precision item, not a new requirement.
 
-Design must make one of two choices — both acceptable, neither should be left as a gap:
+**Skeleton-as-topology coupling — name the adapter.**
+The overlay uses `SkeletonNode[]` from `parseWorkflowSkeleton` (REQ-062) as structural truth.
+`layoutGraph` consuming `SkeletonNode` directly creates a coupling: if `parseWorkflowSkeleton`
+evolves its output shape (new node kinds, renamed `kind:'parallel'`), `layoutGraph` breaks
+silently. Introduce a local `LayoutNode` adapter type that `layoutGraph` consumes; the adapter
+function normalises `SkeletonNode` to `LayoutNode`. The adapter is the replacement seam — if the
+skeleton parser is ever swapped, only the adapter changes, not the layout algorithm. Naming the
+seam is a design-stage obligation; the code is small.
 
-- **Option A (systemd-scoped):** Document explicitly in DEPLOY that self-update requires the
-  systemd deployment path. The docker-compose path keeps running but does not self-update. Operators
-  on docker-compose must update manually. This is the simplest option and respects Karpathy.
+**`startedBy` enum — extensibility under persistence (ARCH-041).**
+The `chain` value must be wired in `ContinuationStore.fire`. Adding future trigger types is
+schema-compatible: new string values do not break existing readers of the persisted `runs` row.
+Confirm the display layer handles unknown `startedBy.type` values gracefully (unknown type →
+generic "triggered by" label, never a crash or blank). This is a one-line guard with a
+non-obvious correctness implication.
 
-- **Option B (docker-compatible helper):** The privileged helper is a standalone script (not a
-  systemd unit); the `.path` unit invokes it, but a cron/inotify/entrypoint sidecar can invoke
-  the same script in a docker context. The DEPLOY doc explains both wiring patterns. The helper
-  itself is unchanged. This is compatible with the existing command-prefix/env seam.
+**Design-gate leftover resolved: `chain` display label.**
+REQ-071 enumerates `client`, `webhook`, and `schedule` trigger sources but does not specify the
+`chain` label. Proposal: the source node for a chained run displays "chain via
+`<startedBy.id[0..7]>`" rendered via `textContent`. This is consistent with the `textContent`-only
+invariant (REQ-067, extended to the graph path by ARCH-045), provides parent-run provenance without
+exposing the full run ID in the node label, and survives gracefully when no `startedBy.id` is
+available (label degrades to "chain").
 
-Either option closes the replaceability gap. Leaving it unresolved means the docker path silently
-lacks a feature its DEPLOY doc implies it has.
+**`GraphPayload` stability expectation confirmed.**
+Not a frozen public contract (Gate-2 decision, endorsed as Karpathy-consistent). Document the
+stability expectation inline — "internal type, may change without notice; callers building on
+`GET /api/runs/:id/dag` accept that risk" — to prevent premature contract fossilisation.
 
-**Flag and result paths must be config-injectable.** If `updateFlagPath` and `updateResultPath` are
-hardcoded in the engine and helper, a docker volume-mount or a non-default install path requires
-code changes. Both paths should be `ServerConfig` fields (with documented defaults) so an operator
-can adjust them without a fork. This also satisfies the helper's testability seam: the integration
-test injects a temp-dir flag/result path, not a production one.
-
-**Command-prefix/env seam (already planned in ARCH-039).** The proposed seam for `git`,
-`npm`, and `systemctl` is the replaceability seam for the deployment substrate. Ensure the
-seam is config-injectable (via `env` substitution or a wrapper path) and not only a test-time
-injection. This matters when an operator runs NVM-managed Node or system-managed npm via a different
-path.
-
-**Secret model.** `RWE_SECRET_GITHUB_WEBHOOK_SECRET` via `loadSecretSourceFromEnv` is consistent
-with the existing resolver port. Swapping to a vault backend in a future iteration requires no
-helper-script change. Good.
+**Agent altitude — LLM backend decoupling unchanged by Sprint 3.**
+ProviderProfile config table and `GatewayClient` port are unaltered. Harness capture is
+gateway-agnostic: both SDK and direct-fetch paths emit the same `kind:'harness'` event (with the
+empty-surface resolution above). Confirmed.
 
 ---
 
 ### 3. Consumability
 
-**The GitHub webhook configuration screen is the primary integration surface — design it explicitly.**
+**Extending `workflow_agent_log` (not a new route) is the right call (ARCH-045).**
+`harness: HarnessDescriptor | null` added to the existing transcript response means MCP callers
+receive harness data on a surface they already use. No new endpoint, no new auth, no new client
+code. This is the consumability pattern the architecture has consistently applied and it is correct.
 
-The operator's integration cost is highest at GitHub webhook setup. DEPLOY must specify all of the
-following; missing any one produces a hard-to-diagnose failure:
+**Canonical `state` values must never cross the API boundary as display aliases.**
+Canonical `AgentRecord.state` values are `queued`/`running`/`done`/`failed`. Display aliases
+(`queued → "idle"`, `done → "completed"`) are render-only (ARCH-045, confirmed homed). Confirm:
+the `state` field in **all** JSON API responses — `workflow_status`, `workflow_agent_log`,
+`GET /api/runs/:id` — carries only the canonical value. An MCP caller who reads `state: "done"`
+from `workflow_status` and then encounters `"completed"` in `workflow_agent_log` (or vice versa) has
+a silent mismatch. The alias is a UI decision; a serialisation-layer unit test asserting canonical
+values on every API response shape is the enforcement mechanism.
 
-1. **Content type: `application/json`** (not the GitHub default `application/x-www-form-urlencoded`).
-   If left at default, GitHub delivers a form-encoded body; the HMAC verifies (it is computed over
-   the raw delivered bytes regardless), but the JSON parse after verification fails — or worse,
-   silently produces `args.event = {}`. This is the highest-severity omission: the webhook appears
-   to work (202, no error) but fires the workflow with wrong args.
+**50-message transcript cap and pagination — specify the MCP tool behaviour.**
+`?limit=N&offset=M` is added to the HTTP endpoint (ARCH-045, homed). Specify: the MCP tool
+`workflow_agent_log` also enforces the same cap and includes a `hasMore: boolean` (or equivalent)
+in its response so callers know when to paginate. Without this, a caller who receives 50 messages
+has no way to know whether the run produced exactly 50 or whether there are more. The design is
+currently silent on the tool's cap behaviour — this is the consumability gap.
 
-2. **Which events to subscribe.** The `create` event fires for tag creation; `push` events with a
-   `ref` starting `refs/tags/` also cover some tag scenarios. Design must specify which GitHub
-   event types the engine's handler accepts and the DEPLOY must match.
+**Add a server-side node cap to `GET /api/runs/:id/dag` response.**
+ARCH-043 adds a "N more" cap at the rendering layer. But `layoutGraph` itself is currently
+uncapped: for a run at REQ-002's 1000-agent ceiling, the JSON response can be very large. Add a
+`maxNodes` parameter to `layoutGraph` (with a documented default, e.g. 200) that truncates the
+output and sets a `truncated: true` flag in `warnings[]`. The client-side "N more" rendering cap is
+a second protection, not a substitute. A third-party client polling this endpoint for a large run
+should not receive an arbitrarily large payload from the server.
 
-3. **Secret env var:** `RWE_SECRET_GITHUB_WEBHOOK_SECRET` — name it in DEPLOY with the
-   `loadSecretSourceFromEnv` sourcing instruction (same as `RWE_SECRET_GITHUB_TOKEN`).
-
-4. **Reverse-proxy forwarding.** The engine stays loopback-bound. DEPLOY must give a concrete
-   nginx/caddy snippet forwarding only `POST /hooks/<self-update-id>` (or a dedicated path for the
-   GitHub tag webhook) to `127.0.0.1:8787`. This is the deployment decision the architecture
-   explicitly delegated to the operator.
-
-**Host allowlist interaction with the forwarded webhook.**
-
-ARCH-038 notes: "this route is either allowlisted or exempted, HMAC being its auth." The design
-must close "either." For a GitHub-forwarded request, the `Host` header arriving at the engine is
-the operator's public domain — not `127.0.0.1`. Two concrete options:
-
-- **Exempt the GitHub-webhook path from the Host check** (ARCH-033's `isAllowedHost` skips this
-  route). HMAC verification is the auth on this path — it is strictly stronger than the Host
-  allowlist. This is the recommended option: the allowlist defends against DNS-rebinding browser
-  attacks, not against a server-to-server GitHub POST.
-
-- **Require the reverse proxy to rewrite `Host: 127.0.0.1:8787`** before forwarding. This is
-  operationally fragile (one misconfigured proxy = 403 on every webhook) and forces the operator
-  to understand the guard.
-
-**Pick Option A (exempt) in design; document it in DEPLOY.** The exemption is one `if (path ===
-'/hooks/github-update')` before the allowlist check — not a structural change.
-
-**In-flight runs are interrupted on update restart.** After a self-update restart, in-flight runs
-become `interrupted` (ARCH-034). The only path to resume them is `workflow_resume(runId)` — a
-manual operator action. From a consumer's standpoint, the update panel (ARCH-040) must surface the
-count of interrupted runs at the time of the restart, with a clear call-to-action (e.g. "2 runs
-were interrupted by the update; use `workflow_resume` to restart them"). Without this, an
-operator who just updated the engine has no signal that work was dropped, and no prompt to act.
-
-**`GET /api/version` shape.** The endpoint already exists (ARCH-040). Ensure the response schema
-is documented in DEPLOY (suggest `{version: string, gitTag?: string}`) so callers can parse it
-programmatically, not just display it.
+**`tools` in `HarnessDescriptor` are names only, not schemas.**
+This is correct for the consumability goal (no secret/token exposure, bounded size). Document it
+explicitly: callers who want tool schemas must consult the provisioned MCP registry (ARCH-015,
+`mcp_provision`). The harness surface is a fingerprint ("these tool names were injected at
+session-build"), not a schema catalogue. For `mcpServers`, note that names (not URLs) are surfaced
+— URLs may carry auth tokens; names carry neither. This note belongs in the `HarnessDescriptor`
+type's JSDoc, not only in DEPLOY.
 
 ---
 
 ### 4. Self-sustainability
 
-**This is the central dimension for this slice — the system managing its own lifecycle.**
+**Budget-on-crash-resume — close it at the `deriveAgentRecords` seam.**
+The defect: on crash/resume, `RunGuard.spent` is reconstructed from the journal but `budget.spent()`
+starts at 0 because ARCH-034 does NOT re-derive it from journaled usage events. A resumed run can
+exceed its budget cap silently. ARCH-044 already mandates changing `deriveAgentRecords` to fix the
+`if (!usage) continue` guard. Budget re-derivation is one additional pass over the same usage events
+visited by that fix — same code path, same journal read, same test fixture. Propose this as a
+task-note on the ARCH-044 `deriveAgentRecords` implementation ticket: while iterating usage events
+to build `AgentRecord[]`, also accumulate `spentTokens` and re-hydrate `RunGuard.spent`. This
+closes a named real defect at near-zero incremental cost without opening a new code path.
 
-**The REQ-070 "fully automatic" claim hides a manual step for interrupted runs.**
+**`terminalAt?` bounds polling cost for completed runs.**
+Confirmed. The frontend stops polling once `terminalAt` is set. In-progress runs poll at 3s;
+for a long-running scheduled workflow this is acceptable for the single-user, single-instance model.
+The Gate-2 decision (poll over SSE) is not re-opened. Endorsed.
 
-REQ-070 mandates full-auto apply. ARCH-039 says "in-flight runs resume via REQ-059/060 journal
-replay." ARCH-034 (crash durability) makes interrupted runs resumable — but via `workflow_resume`,
-a manual MCP tool call. A self-update restart is operationally identical to a crash from the
-engine's perspective; the same journal-replay machinery applies. The result is: a fully-automatic
-update that leaves in-flight runs silently parked as `interrupted`.
+**ARCH-044 journal growth is bounded.**
+The `kind:'harness'` event adds at most one capped record per agent (4 KB prompt field). At
+REQ-002's 1000-agent ceiling this adds ≤4 MB to the journal per run — within an acceptable order
+of magnitude for the existing journal-growth trajectory. Confirmed.
 
-Design-level resolution:
+**Tool-liveness — `kind:'harness'` records what was configured, not what was reachable.**
+Provisioned MCP servers are probed at provision time (D-PROBE). The harness event captures names
+injected at session-build. If a provisioned MCP goes offline between provision and dispatch, the
+harness records the configured name and the agent encounters a tool-call error at runtime. Adding a
+per-agent liveness probe at session-build has cost (latency, failure paths). Deferred. Document the
+`mcpServers` field as "configured-at-dispatch, not guaranteed reachable" — a future
+`mcpLivenessCheckedAt?: number` field per entry closes this gap when warranted.
 
-- **Minimum (this slice):** The update outcome row (ARCH-040) must include a count of runs that
-  were in the `running` state when the restart occurred (available from `hydrateAll`'s
-  "reclassified running→interrupted" log). Surface this count in the update panel.
+**CAS GC, journal archival, `GET /health` — deferred, endorsed.**
+None are touched by ARCH-041..045. CAS store and agent transcript journals grow indefinitely;
+`workspace_purge` (REQ-026) does not remove transcript journals by design. Confirm this is
+documented in the purge command's help text so an operator does not assume purge frees all disk.
+`GET /health` remains a future-REQ candidate. All three endorsed as-is.
 
-- **Open design question (NOT a proposal for this slice):** Should `config.autoResumeOnUpdate:
-  boolean` (default false) trigger automatic `workflow_resume` for all interrupted runs immediately
-  after boot? Flag as an open question for the Sprint-2 design iteration. Auto-resume is NOT
-  proposed here — it has non-trivial implications for runs that were intentionally stopped mid-run,
-  and for runs with expensive retried agents. Flagging it is the minimal self-sustainability
-  design note.
-
-**Budget-on-crash-resume gap (real defect candidate, inherited from ARCH-034 + ARCH-040 rationale).**
-
-After a self-update restart, a resumed `interrupted` run's in-memory `RunGuard.spent` is
-reconstructed from the journal. ARCH-034 populates the ResumeCache from the journal but does NOT
-re-derive `budget.spent()` from the journaled agent usage events. This means a resumed run may
-have `budget.spent() = 0` even if pre-crash agents consumed tokens, and subsequent `agent()` calls
-can exceed the budget silently. This was flagged in the ARCH-040 rationale as "one worth carrying
-forward as a real defect candidate."
-
-Detail design for ARCH-038/039/040 does not own this fix — it lives in ARCH-034's
-`_requireLive` path. But the self-update slice is what makes the scenario operationally common
-(every update = a controlled crash). Design should add a task: re-derive `budget.spent()` from
-the `agent-<id>.jsonl` usage events on `_requireLive` rehydration, before flagging runs as
-`interrupted`. This closes the gap at the right seam.
-
-**Flag file consumption after helper reads it.**
-
-If the helper does not rename/remove/zero the flag file after consuming it, the systemd `.path`
-unit may re-trigger on the next filesystem event and fire the helper again. ARCH-039 specifies
-"idempotent apply" (no-op if already on T) which makes repeated triggers safe — but it is wasteful
-(git fetch on every trigger). Design should specify the flag lifecycle: the helper renames the flag
-to `<flagpath>.consumed` or removes it after a successful or failed update, so the `.path` unit
-does not re-arm from a stale flag. The `pending` row (Observability section) handles the case
-where the operator wants to know about in-progress state before the flag is consumed.
-
-**Safe-fail is the highest-priority test in the slice.**
-
-ARCH-039's claim "safe-fail is a TESTED branch" is correct and load-bearing. Design should specify
-the concrete test fixture for the task decomposition:
-
-1. Inject a fake `npm run build` that returns exit code 1.
-2. Assert `systemctl restart` is NOT called.
-3. Assert the checkout directory still contains the prior tag's HEAD.
-4. Assert the result file records `{status: 'failed', tag: T, detail: <truncated>}`.
-5. Assert the engine's update panel shows `failed` for T without interrupting the running engine.
-
-This test must run in CI against a throwaway git repo (not production) — the command-prefix/env
-seam is the instrument.
-
-**flock serialization and latest-tag-wins.**
-
-Close tags (v1.4.0 then v1.4.1) can produce two flag writes in rapid succession. The `.path` unit
-may trigger the helper twice. flock prevents interleaving a checkout/build, but design must specify
-that the helper reads the flag value WITHIN the flock (after acquiring the lock), not before.
-Otherwise latest-tag-wins may silently apply v1.4.0 while v1.4.1's flag is on disk. This is a
-one-line ordering requirement for the helper script but load-bearing for the correctness of
-rapid-tag scenarios.
-
-**Global RunGuard semaphore across restart.**
-
-When the engine restarts (self-update or crash), the in-memory global RunGuard semaphore starts
-fresh. Interrupted runs are NOT holding semaphore slots — they are correctly excluded by the
-`interrupted` status check in the slot-claim logic. This is the expected behavior (and consistent
-with ARCH-034's design), but design should confirm this invariant explicitly as a test case so it
-cannot regress: boot with N interrupted runs → all N are available for `workflow_resume` without
-hitting a spurious `RUN_ADMISSION_LIMIT`.
-
-**Agent-altitude note (informational).**
-
-The agent altitude of self-sustainability — memory metabolism, tool-liveness checks, prompt
-self-calibration — is not applicable to this slice. The engine's agents do not manage the engine
-itself; the engine manages itself through ARCH-038/039/040. The relevant agent-altitude gap
-(journal archival to avoid unbounded disk growth as agent transcripts accumulate) was noted in the
-Gate-2 rationale as out-of-scope; this review endorses that deferral.
+**Agent altitude — one-shot sessions have no cross-session memory to metabolise.**
+Each `agent()` invocation is a fresh headless session; the workflow JS manages inter-agent state
+through return values. Cross-session memory metabolism is a non-issue here. The harness panel
+surfaces the prompt for the first time, which may include accumulated retrieved context injected by
+a prior agent; the 4 KB head+tail cap bounds its journal footprint regardless of how large that
+context grows.
 
 ---
 
 ## Risks
 
-| ID | Risk | Severity | Notes |
-|----|------|----------|-------|
-| R1 | GitHub webhook `content-type` misconfiguration → webhook appears to work but fires with wrong args | HIGH | DEPLOY must be explicit; no runtime check catches this |
-| R2 | "armed-but-stuck" state invisible to operator if helper never runs | HIGH | Pending row at flag-write is the remedy |
-| R3 | In-flight runs interrupted on auto-update with no prompt to resume | MEDIUM | Update panel must surface interrupted-run count |
-| R4 | Budget-on-crash-resume: `spent()` reset to 0 on rehydration | MEDIUM | Inherited from ARCH-034; self-update makes it operationally common |
-| R5 | Helper reads flag before flock → latest-tag-wins fails under rapid tags | MEDIUM | One ordering requirement in the helper script |
-| R6 | Docker-compose path silently lacks self-update, no DEPLOY documentation | LOW | Silence creates false expectations; document scope explicitly |
-| R7 | `detail` field unbounded in SQLite row | LOW | 4 KB cap; full log to journald |
+| ID | Description | Severity | Owner hint |
+|----|-------------|----------|------------|
+| R1 | `deriveAgentRecords` fix (ARCH-044 obligation) not shipped atomically with harness capture → in-flight agents' harness events dropped on crash-resume | HIGH | single implementation ticket; cannot split |
+| R2 | Direct-fetch gateway emits no `kind:'harness'` event → `harness: null` on those agents; consumers misread null as "not yet implemented" rather than "platform has no tool surface" | HIGH | resolve via truthfully-empty harness + `surfaceType` discriminant (see §1) |
+| R3 | Budget-on-crash-resume: `spent()` not re-derived alongside `deriveAgentRecords` fix → resumed run can silently exceed budget cap | MEDIUM | bundle into ARCH-044 implementation ticket |
+| R4 | Server-side DAG node cap absent → `GET /api/runs/:id/dag` returns unbounded JSON for large runs at REQ-002 ceiling | MEDIUM | add `maxNodes` param + `truncated` flag in `warnings[]` |
+| R5 | Canonical `state` value (`done`, `queued`) leaks into rendered display as `completed`/`idle` and eventually into an API response → MCP callers see two state vocabularies | MEDIUM | enforce at serialisation layer; unit test each API response shape |
+| R6 | Skeleton overlay `label+phase` fallback is silent → parallel structure quietly degrades to frame-based grouping with no observable signal | MEDIUM | require `warnings[]` entry on fallback (see §1) |
+| R7 | 4 KB prompt cap is head-only → task instruction at the tail of a context-injection prompt is always truncated | LOW | switch to head+tail (2 KB each) with marked boundary |
+| R8 | `mcpServers` in `HarnessDescriptor` presented without "configured, not guaranteed reachable" caveat → operators assume liveness was checked at dispatch | LOW | annotation in JSDoc + deferred `mcpLivenessCheckedAt` field |
 
 ---
 
-## Task-Splitting Notes (where dimension concerns affect decomposition)
+## Task-Splitting Notes
 
-These are not task proposals — design-synthesis writes tasks. These are dimension-driven constraints
-on how the three ARCH units should be split:
+Dimension-driven constraints on how the five ARCH units should be decomposed. Design-synthesis
+writes the actual tasks; these notes flag what the dimension review requires to be atomic or
+sequenced.
 
-- **ARCH-038** (flag-writer) is independently testable via a fake flag-sink seam. One task. The
-  Host allowlist decision (exempt vs allowlist for this route) should be locked in this task before
-  ARCH-033 integration work begins.
+**ARCH-041 (`startedBy`).** Wire `chain` value in all `ContinuationStore.fire` call sites.
+Persistence in the `runs` table (not snapshot-only) is load-bearing — schema migration must be
+part of the ticket, not deferred. Regression test: all four `startedBy.type` values, plus one
+unknown string value asserting the display-layer graceful fallback.
 
-- **ARCH-039** (helper script) needs its own integration-test harness: a throwaway git repo +
-  fake `npm run build` + fake `systemctl`. The safe-fail branch test must be a first-class test
-  case, not an afterthought. Flag/result-path seams and command-prefix/env seam should be
-  config-injectable — wired in this task, not only test-time.
+**ARCH-042 (`GraphPayload` + `layoutGraph`).** Introduce the `LayoutNode` adapter over `SkeletonNode`
+as a named seam (see §2). `layoutGraph` takes `LayoutNode[]`, not `SkeletonNode[]` directly. Add
+`maxNodes` parameter with documented default. `warnings[]` populated for: skeleton-fallback agents,
+truncated node lists, and any other unmatched live agents. `terminalAt?` confirmed on `RunStatusView`
+(not a separate DTO) so ARCH-028 pass-through covers MCP callers.
 
-- **ARCH-040** (version/outcome surface) has two distinct read points — boot read and lazy read
-  — that should be separate test cases. The pending-row upsert at flag-write (proposed in
-  Observability) belongs to this task's side-table definition. The interrupted-run count in the
-  update outcome belongs here too, cross-referencing ARCH-034's `hydrateAll` count.
+**ARCH-043 (SVG renderer).** `morandiFrameHue` unit test: same frame string → same hue across
+calls; confirm palette defined in one location. "N more" cap: decide and document the ceiling value
+(recommend 200 rendered nodes per viewport; document in ARCH or tasks so it matches the `maxNodes`
+server-side default). Pan/zoom must not break the `textContent`-only invariant for any node label.
 
-- **DEPLOY doc** must be its own task with explicit acceptance criteria: GitHub webhook content-type
-  instruction, secret env var name, reverse-proxy config snippet, Host-allowlist exemption
-  documentation, flag/result path convention, and self-update scope (systemd-only vs docker
-  replaceability choice).
+**ARCH-044 (harness capture).** Single implementation ticket covering atomically: (a) `deriveAgentRecords`
+fix (drop `if (!usage) continue`; yield queued/running record from harness-without-usage event);
+(b) budget re-derivation pass over usage events (R3); (c) `kind:'harness'` event on both SDK and
+direct-fetch paths, with empty-surface vs. absent distinction (R2); (d) 4 KB head+tail cap with
+marked truncation boundary; (e) latest-wins dedupe for bounded retry loop. Unit tests: each of
+(a)–(e) independently verifiable.
 
-- **Budget-on-crash-resume fix** belongs to ARCH-034's rehydration path, not ARCH-038/039/040.
-  Flag as a dependency: the self-update design should reference ARCH-034 for this gap so it is
-  not treated as someone else's problem.
+**ARCH-045 (detail panel).** Two-tier no-secret proof is a first-class acceptance criterion, not
+optional QA. Specify `workflow_agent_log` MCP tool cap behaviour (`hasMore` field or equivalent,
+see §3). Canonical `state` in API responses enforced via serialisation unit test (see §3). `chain`
+display label wired (see §2 design-gate leftover). Headless-browser DOM assertion (tier-2 proof)
+must cover the `textContent`-only invariant for harness-panel content including tool names, skill
+names, and MCP server names.
 
 ---
 
 ## Expected Disagreements with Other Lenses
 
-**Adversarial lens** will likely re-push GPG `git tag -v` signed-tag verification (deferred in
-ARCH-040 rationale). This dimension does not propose building it — the Gate-2 rationale ruled it
-a Karpathy defer. The scope boundary holds: the risk (a malicious tag whose build succeeds) is
-accepted, bounded by repo/secret integrity + the official-remote-pin. I will not re-open this.
+**Adversarial lens on R3 (budget re-derivation).** May read this as scope creep into ARCH-034.
+Pre-empt: the `deriveAgentRecords` change is already mandated by ARCH-044; budget re-derivation is
+one additional pass over the same events in the same function. Cost is bounded; benefit is closure
+of a named real defect that persists across every sprint. If adversarial holds for a separate
+ticket, that is acceptable — but the fix must be gated to land before Gate 7.5.
 
-**Simplicity/Karpathy lens** will read the pending-row suggestion (Observability) as scope creep.
-Counter: it is a single `INSERT OR REPLACE` on an existing side-table pattern — smaller than the
-dedup row in WebhookRegistry — and it closes a load-bearing observability gap (silent pending
-state). Not a new subsystem.
+**Adversarial lens on R4 (server-side node cap).** Will likely agree, possibly frame as a DoS
+concern. This review frames it as a consumability + self-sustainability issue. Alignment on the
+fix is expected; framing disagreement does not affect the task.
 
-**Simplicity lens** may also resist the docker-compose gap documentation (Replaceability) as
-out-of-scope. Counter: failing to document it is not simpler — it creates operator confusion
-when docker-compose users discover self-update silently does nothing. One paragraph in DEPLOY
-is the minimum.
+**Simplicity/Karpathy lens on the `LayoutNode` adapter proposal.** May read the adapter as
+unnecessary abstraction (the skeleton shape is stable). Counter: the adapter is one type alias +
+one mapping function, not a framework. It names the seam explicitly. If simplicity holds, the
+minimum acceptable outcome is that `layoutGraph`'s type signature references `SkeletonNode` and
+the coupling is documented as an acknowledged design-level dependency. The synthesizer must make a
+conscious choice; leaving it implicit is the failure mode.
 
-**Adversarial lens** may propose auto-resume of interrupted runs on boot as a security concern
-(auto-resuming a run that was intentionally stopped mid-flight for security review). This dimension
-explicitly does NOT propose auto-resume — it proposes surfacing the interrupted count and flagging
-auto-resume as an open question. The adversarial concern is valid and reinforces the "flag but don't
-build" stance.
+**Adversarial lens on R2 (direct-fetch harness).** May endorse the truthfully-empty harness
+resolution without disagreement. If adversarial raises the concern that `tools:[]` is misleading
+(direct-fetch path has no tool loop, so `[]` is structurally absent, not curated-empty), the
+tiebreaker is the `surfaceType: 'curated' | 'none'` discriminant field — distinguishes the two
+cases without relying on array emptiness alone.
+
+**Any lens on poll-backoff.** `terminalAt?` already bounds the completed-run polling case. Poll
+over SSE is a settled Gate-2 decision. Poll-backoff is not worth reopening for a single-user tool.
+Not a blocker, not a proposal.

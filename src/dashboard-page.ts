@@ -4,6 +4,49 @@
 // is rendered client-side (textContent-only, XSS-safe) from the injected window.__RWE_INIT__ var.
 import type { UpdateOutcome } from './update-types.js';
 
+// ─── DES-065 (TASK-068): pure logical→pixel mapper + Morandi palette ─────────────────────────────
+
+/** Logical grid cell from the layout engine. */
+export interface LayoutCell { col: number; row: number; laneSpan: number }
+/** Box dimensions shared between server and browser (one constant controls the visual rhythm). */
+export interface BoxSize { cellW: number; cellH: number; gap: number }
+/** Screen-space rectangle returned by cellToPixel. */
+export interface Rect { x: number; y: number; width: number; height: number }
+
+/** Morandi muted palette — one hue per frame; lives as a CSS-custom-property set so a single
+ *  file swap reskins the graph without touching model/topology code. */
+const MORANDI_PALETTE = [
+  '#b5c4b1', '#c4b5b5', '#b5b9c4', '#c4c0b5', '#b5c4c0',
+  '#c8b8b8', '#b8c8c4', '#c4c8b8', '#b8bec8', '#c8c4b8',
+];
+
+function stableHash(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (Math.imul(31, h) + s.charCodeAt(i)) >>> 0;
+  }
+  return h;
+}
+
+/** Pure logical→pixel mapper. The only place logical grid coordinates become screen geometry;
+ *  a box-size restyle (cellW/cellH/gap) touches zero model or topology tests. */
+export function cellToPixel(cell: LayoutCell, box: BoxSize): Rect {
+  return {
+    x: cell.col * (box.cellW + box.gap),
+    y: cell.row * (box.cellH + box.gap),
+    width: box.cellW,
+    height: cell.laneSpan * box.cellH + (cell.laneSpan - 1) * box.gap,
+  };
+}
+
+/** Pure per-frame hue selector — same frame string always returns the same palette entry (no
+ *  flicker across the 3s poll). Two different frames may hash to the same hue by design. */
+export function morandiFrameHue(frame: string): string {
+  return MORANDI_PALETTE[stableHash(frame) % MORANDI_PALETTE.length]!;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 /**
  * Build the dashboard HTML, optionally injecting a server-side update outcome.
  * When lastUpdate is provided the init JSON is embedded in a <script> block so:
@@ -54,7 +97,9 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Remote Workflow Engine — Dashboard</title>
 <style>
-:root{--bg:#0f1419;--panel:#161c26;--panel2:#1a2029;--line:#2c3440;--ink:#d8e0ea;--muted:#8b97a6;--link:#4ea1ff}
+/* REQ-071: Morandi light theme — muted, low-saturation warm neutrals + soft dusty accents (not the
+   old dark palette; the graph, cards and frame tints all read off these tokens). */
+:root{--bg:#E9E6DF;--panel:#F2EFE8;--panel2:#E2DED4;--line:#CFC9BC;--ink:#4A4842;--muted:#8C877B;--link:#7D93A6}
 body{font-family:-apple-system,Segoe UI,sans-serif;margin:0;background:var(--bg);color:var(--ink)}
 header{padding:16px 24px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:24px}
 h1{font-size:18px;margin:0}h2{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:22px 0 10px}
@@ -66,7 +111,8 @@ a{color:var(--link);text-decoration:none}
 .card .t{font-weight:600;font-family:ui-monospace,Consolas,monospace;word-break:break-all}
 .card .s{color:var(--muted);font-size:11.5px;margin-top:4px}
 .pill{display:inline-block;padding:1px 7px;border-radius:100px;font-size:11px;border:1px solid var(--line)}
-.st-queued{color:#d29922}.st-running{color:#4ea1ff}.st-done,.st-completed{color:#3fb950}.st-failed{color:#f85149}.st-stopped,.st-suspended{color:#8b97a6}.st-interrupted{color:#d29922}
+/* Morandi-muted semantic state colours (low-saturation, legible on the light greige ground). */
+.st-queued{color:#B08A5B}.st-running{color:#6E8199}.st-done,.st-completed{color:#7A9078}.st-failed{color:#B0776E}.st-stopped,.st-suspended{color:#9A948A}.st-interrupted{color:#B08A5B}
 #tree{margin-top:6px}
 .grp{border-left:2px solid var(--line);margin:6px 0 6px 4px;padding:2px 0 2px 12px}
 .grp-h{font-size:12px;color:var(--muted);margin:4px 0}
@@ -111,6 +157,9 @@ pre{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);p
     <p><a class="back" href="/dashboard">&larr; all runs</a></p>
     <h2>Run <span id="detail-runid"></span> <span id="detail-status" class="pill"></span></h2>
     <div id="phases"></div>
+    <div id="graph-container" style="overflow-x:auto;overflow-y:visible;margin:10px 0">
+      <svg id="dag-graph" xmlns="http://www.w3.org/2000/svg" style="display:block"></svg>
+    </div>
     <div id="tree"></div>
     <h2>Transcript <span id="tr-agent" class="mdl"></span></h2>
     <pre id="transcript">Select an agent node above.</pre>
@@ -216,17 +265,101 @@ function renderNode(runId, node, container){
   });
 }
 
+// DES-065 (TASK-068): Morandi palette — derived from the server-side TS constant (single source).
+var MORANDI_PALETTE=${JSON.stringify(MORANDI_PALETTE)};
+function stableHash(s){ var h=0; for(var i=0;i<s.length;i++){ h=((Math.imul(31,h)+s.charCodeAt(i))>>>0); } return h; }
+function morandiHue(frame){ return MORANDI_PALETTE[stableHash(frame)%MORANDI_PALETTE.length]; }
+function cellToPixelLocal(cell,box){ return {x:cell.col*(box.cellW+box.gap),y:cell.row*(box.cellH+box.gap),width:box.cellW,height:cell.laneSpan*box.cellH+(cell.laneSpan-1)*box.gap}; }
+
+// DES-065: render GraphPayload cells+edges as inline SVG (textContent-only for all run-derived strings).
+function renderGraph(payload, runId){
+  var svgEl=document.getElementById('dag-graph');
+  svgEl.innerHTML='';
+  var BOX={cellW:140,cellH:44,gap:14};
+  var cells=(payload.cells)||[];
+  var edges=(payload.edges)||[];
+  if(!cells.length){ svgEl.setAttribute('width','0'); svgEl.setAttribute('height','0'); return; }
+  var maxCol=0,maxRow=0,maxSpan=1;
+  cells.forEach(function(c){ if(c.col>maxCol)maxCol=c.col; if(c.row>maxRow)maxRow=c.row; if(c.laneSpan>maxSpan)maxSpan=c.laneSpan; });
+  var svgW=(maxCol+1)*(BOX.cellW+BOX.gap)+BOX.gap;
+  var svgH=(maxRow+maxSpan)*(BOX.cellH+BOX.gap)+BOX.gap;
+  svgEl.setAttribute('width',String(svgW));
+  svgEl.setAttribute('height',String(svgH));
+  var ns='http://www.w3.org/2000/svg';
+  // Edge layer (drawn first, behind nodes).
+  edges.forEach(function(e){
+    var from=cells.find(function(c){return c.id===e.from;}), to=cells.find(function(c){return c.id===e.to;});
+    if(!from||!to) return;
+    var fr=cellToPixelLocal(from,BOX), tr=cellToPixelLocal(to,BOX);
+    var line=document.createElementNS(ns,'line');
+    line.setAttribute('x1',String(fr.x+fr.width)); line.setAttribute('y1',String(fr.y+fr.height/2));
+    line.setAttribute('x2',String(tr.x)); line.setAttribute('y2',String(tr.y+tr.height/2));
+    line.setAttribute('stroke','#AAB4BC'); line.setAttribute('stroke-width','1.5');
+    svgEl.appendChild(line);
+  });
+  // Node boxes.
+  cells.forEach(function(c){
+    var r=cellToPixelLocal(c,BOX);
+    var g=document.createElementNS(ns,'g');
+    // Frame tint (background rect for non-root frames).
+    if(c.frame && c.frame!==''){
+      var bg=document.createElementNS(ns,'rect');
+      bg.setAttribute('x',String(r.x-3)); bg.setAttribute('y',String(r.y-3));
+      bg.setAttribute('width',String(r.width+6)); bg.setAttribute('height',String(r.height+6));
+      bg.setAttribute('rx','8'); bg.setAttribute('fill',morandiHue(c.frame)); bg.setAttribute('opacity','0.25');
+      g.appendChild(bg);
+    }
+    var rect=document.createElementNS(ns,'rect');
+    rect.setAttribute('x',String(r.x)); rect.setAttribute('y',String(r.y));
+    rect.setAttribute('width',String(r.width)); rect.setAttribute('height',String(r.height));
+    rect.setAttribute('rx','7');
+    // Morandi light node fills; agents tinted by state so the graph reads at a glance.
+    var sf={queued:'#ECE6DB',running:'#D7E0E6',done:'#DCE5DA',completed:'#DCE5DA',failed:'#ECDBD6',stopped:'#E4E0D7',suspended:'#E4E0D7',interrupted:'#ECE6DB'};
+    var fill=c.kind==='trigger'?'#D6DEE6':c.kind==='agent'?(sf[c.state]||'#F2EFE8'):'#E6E2D9';
+    rect.setAttribute('fill',fill); rect.setAttribute('stroke','#C4BDAE');
+    g.appendChild(rect);
+    // Label — textContent only (security invariant, DES-065).
+    var label=document.createElementNS(ns,'text');
+    label.setAttribute('x',String(r.x+8)); label.setAttribute('y',String(r.y+r.height/2+4));
+    label.setAttribute('font-size','11'); label.setAttribute('fill','#4A4842');
+    label.textContent=c.label||c.kind||'';
+    g.appendChild(label);
+    if(c.kind==='agent' && runId){
+      g.style.cursor='pointer';
+      g.onclick=function(){ loadTranscript(runId,c.agentId||c.id,c.label); };
+    }
+    svgEl.appendChild(g);
+  });
+  // Warnings badge.
+  var warnings=(payload.warnings||[]);
+  if(warnings.length){
+    var warn=document.createElementNS(ns,'text');
+    warn.setAttribute('x','4'); warn.setAttribute('y',String(svgH-4));
+    warn.setAttribute('font-size','10'); warn.setAttribute('fill','#B08A5B');
+    warn.textContent=warnings.length+' warning(s)';
+    svgEl.appendChild(warn);
+  }
+}
+
 async function loadDag(runId){
   document.getElementById('detail-runid').textContent=runId;
   var view=await getJSON('/api/runs/'+encodeURIComponent(runId));
   var status=view?view.status:'';
   var badge=document.getElementById('detail-status'); badge.textContent=status; badge.className='pill st-'+status;
   renderPhases((view&&view.phases)||[], status);
-  var root=await getJSON('/api/runs/'+encodeURIComponent(runId)+'/dag');
-  var tree=document.getElementById('tree'); tree.innerHTML='';
-  if(!root){ tree.appendChild(el('div','empty','(run not found)')); return; }
-  if(!(root.agents||[]).length && !(root.children||[]).length){ tree.appendChild(el('div','empty','(no agents yet)')); }
-  renderNode(runId, root, tree);
+  var payload=await getJSON('/api/runs/'+encodeURIComponent(runId)+'/dag');
+  // Handle both the new GraphPayload (kind:'run') and the legacy DagNode (kind:'root').
+  if(payload && payload.kind==='run'){
+    renderGraph(payload, runId);
+    var tree=document.getElementById('tree'); tree.innerHTML='';
+  } else {
+    document.getElementById('dag-graph').setAttribute('width','0');
+    document.getElementById('dag-graph').setAttribute('height','0');
+    var tree=document.getElementById('tree'); tree.innerHTML='';
+    if(!payload){ tree.appendChild(el('div','empty','(run not found)')); return; }
+    if(!(payload.agents||[]).length && !(payload.children||[]).length){ tree.appendChild(el('div','empty','(no agents yet)')); }
+    renderNode(runId, payload, tree);
+  }
 }
 
 // v11 (REQ-067): render a list of issue summaries in a container (XSS-safe: textContent only).

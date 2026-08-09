@@ -12,7 +12,8 @@ import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { CanUseTool, HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync, readdirSync, statSync, readFileSync, mkdirSync, copyFileSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
-import type { AgentOpts, TranscriptEvent } from '../types.js';
+import type { AgentOpts, HarnessDescriptor, TranscriptEvent } from '../types.js';
+import { redactHarness } from '../agent-executor.js';
 import type { McpServerConfig, McpProbe } from '../mcp-probe.js';
 import type { AliasMap, GatewayClient, GatewayResult } from './client.js';
 import { isPathContained } from '../path-containment.js';
@@ -147,6 +148,13 @@ function copyDirRecursive(src: string, dest: string): void {
     if (statSync(s).isDirectory()) copyDirRecursive(s, d);
     else copyFileSync(s, d);
   }
+}
+
+/** DES-066: returns the names of stored skill assets (for HarnessDescriptor.skills). */
+function readSkillNames(assetRoot: string): string[] {
+  const dir = join(assetRoot, 'skill');
+  if (!existsSync(dir)) return [];
+  try { return readdirSync(dir).filter((n) => statSync(join(dir, n)).isDirectory()); } catch { return []; }
 }
 
 /** D-V2V-1: materializes every stored skill/hook asset into THIS call's run workspace, under
@@ -426,7 +434,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     return out;
   }
 
-  async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string }): Promise<GatewayResult> {
+  async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor) => Promise<void> }): Promise<GatewayResult> {
     // D-F7: bounded race only when timeoutMs is configured — otherwise unchanged legacy behavior
     // (a single unbounded attempt), same opt-in shape as ClaudeAgentSdkGatewayConfig.timeoutMs itself.
     const attempts = this._config.timeoutMs !== undefined ? 1 + Math.max(0, this._config.retries ?? 0) : 1;
@@ -438,7 +446,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     return last;
   }
 
-  private async _invokeOnce(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string }): Promise<GatewayResult> {
+  private async _invokeOnce(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor) => Promise<void> }): Promise<GatewayResult> {
     const { timeoutMs } = this._config;
     // D-F10(c): the controller must exist BEFORE query() is called and be handed to the SDK's own
     // documented cancellation hook (Options.abortController, sdk.d.ts:1275) — otherwise aborting it
@@ -556,6 +564,19 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // call fails typed BEFORE query() is ever spawned.
       env: envResult.env,
     };
+    // DES-066 (TASK-069): emit harness descriptor eagerly at session-build time (post-curation, before query).
+    if (req.onHarness) {
+      const skills = this._config.assetRoot ? readSkillNames(this._config.assetRoot) : [];
+      const descriptor = redactHarness({
+        surfaceType: 'curated',
+        modelName,
+        prompt: req.prompt,
+        curatedTools,
+        mergedMcp: Object.entries(mergedMcp).map(([name, cfg]) => ({ name, ...(cfg as Record<string, unknown>) })),
+        skills,
+      });
+      await req.onHarness(descriptor);
+    }
     const session = this._query({ prompt: req.prompt, options });
     const drain = this._drain(session, req.opts.model);
 

@@ -654,16 +654,6 @@ flowchart LR
 - **acceptance:** Given the graph view, When a user clicks an agent box Then a detail panel shows that agent's HARNESS: model name, the prompt it ran, its tool list and skill list (from the resolved harness / `AgentOpts.mcp` + agent definition), and its current status — `running` / `completed` / `idle` (still queued) / `failed` — with token counts; an in-flight agent shows `running` and live-updates on the poll. NO secret/token VALUE is ever shown. Observable: clicking a finished agent shows its model, prompt text, tool/skill lists, and `completed · N tok`; clicking a queued agent shows `idle`; clicking a running agent shows `running` and updates as it settles.
 - **iter:** v11
 
-<!-- ── Sprint 4 (UI) — home cards with a graph preview + reliability metrics. ── -->
-
-### REQ-074 — home cards: running / registered / other, with description + mini graph preview
-- **status:** draft
-- **traces:** —
-- **acceptance:** Given the dashboard home, When it loads Then workflows are shown as cards grouped into RUNNING / REGISTERED / OTHER, each card showing the workflow's description and a MINI GRAPH PREVIEW (its predicted skeleton rendered small, Morandi themed); clicking a card opens its full graph view (REQ-071). Observable: the customer-service card shows its description and a tiny "2-parallel → verify" preview; a workflow with a currently-running run appears under "Running"; a registered-but-idle workflow under "Registered".
-- **iter:** v11
-
-### REQ-075 — each card shows average success rate + average execution time
-- **status:** draft
-- **traces:** —
-- **acceptance:** Given a workflow with past runs, When its card renders Then the card shows AVG SUCCESS RATE (completed ÷ total terminal runs) and AVG EXECUTION TIME (mean wall-clock of terminal runs) for that workflow, computed from the run store over that workflow's runs; a workflow with zero runs shows "—", never a divide-by-zero or NaN. Observable: a workflow with 4 completed + 1 failed terminal runs shows 80% and the mean of those 5 durations; a never-run registered workflow shows "— / —".
-- **iter:** v11
+<!-- ── Sprint 4 (UI) REQs — REQ-074/075 (home cards + metrics) STAGED OUT during Sprint 3 so the -->
+<!-- full-flow architecture gate scopes only to Sprint-3 graph-UI REQs (REQ-071..073). Parked in -->
+<!-- scratchpad /tmp/.../v11-sprint4-backlog.md; restored when Sprint 4 starts. ── -->
