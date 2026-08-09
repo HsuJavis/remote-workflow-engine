@@ -3604,3 +3604,82 @@ error).
 - **traces:** DES-057
 - **iter:** v10
 - tests/integration/seed-manifest-http.test.ts (NEW, 4 cases) — integration tier over a REAL `createServer` (real `blob_put`/`seed_plan`/`workflow_run` tools + real `CasStore` + real `materializeManifest` + real workspace + real artifacts read). CASES: (1) REQ-065 — `seed_plan(ns, manifest)` returns the missing shas BEFORE upload and `[]` AFTER `blob_put` of those blobs in the SAME namespace (per-namespace, mirrors IT-059's oracle guard at the HTTP tier); (2) REQ-065 — `blob_put` with a mismatched sha → the typed `BLOB_HASH_MISMATCH` tool error (nothing stored); (3) REQ-065 — after uploading both files' blobs, `workflow_run({seedManifest:[{path,sha256,exec?}], seedNamespace})` completes and `workflow_artifacts` shows both files at their paths with BYTE-IDENTICAL sha256 (the assemble is content-exact); (4) REQ-065 — a `seedManifest` naming an UN-uploaded blob → `workflow_run` fails FAST with `MISSING_BLOBS` (no run row created). All 4 RED before the CAS tools / `seedManifest` / `materializeManifest` existed; the existing `workspace-artifacts-seed.test.ts` (the `materializeSeed`→`seedPathVerdict` refactor) stays green.
+
+## v11 Sprint 2 — self-update: HMAC tag webhook + privilege-separated updater + observability (UT-065, UT-066, IT-061, IT-062, VAL-077, VAL-078, VAL-079)
+
+### UT-065 — pure tag-webhook verifier: `extractTag` + `verifyTagWebhook` → `TagVerdict` (REQ-068)
+- **status:** green
+- **traces:** DES-058
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/unit/self-update-webhook.test.ts`. Mock policy (unit — free to mock): pure functions, no I/O; `FlagSink`/dedup seams not needed here since `extractTag`/`verifyTagWebhook` are clock-free and stateless. 15 cases: `extractTag` (6) — ping→null; create+ref_type:tag→ref; create+ref_type:branch→null; push refs/tags/v3.1.4+deleted:false→v3.1.4; push deleted:true→null; push refs/heads/main→null. `verifyTagWebhook` (9) — no secret→{arm:false,503,UPDATE_WEBHOOK_UNCONFIGURED}; absent sig→401; malformed sig (no sha256= prefix)→401; sha256=+63hex (wrong length)→401 (timingSafeEqual length-safe contract); wrong sig (correct format, wrong value)→401; ping+correct-sig→{arm:false,200,PING}; form-encoded body (JSON-parse-fail)+correct-sig→200 no-op; tag-fails-pattern ("v1.0.0; rm -rf /")→200 no-op; valid signed create v1.2.3→{arm:true,tag:"v1.2.3",deliveryId}.
+Red reason: `src/self-update-webhook.ts` does not exist yet → "Cannot find module" import error at collect time.
+
+### UT-066 — `readUpdateResult` tolerant file reader + `UpdateTypes` schema (REQ-070)
+- **status:** green
+- **traces:** DES-061
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/unit/self-update-reader.test.ts`. Mock policy (unit — free to mock): pure reader against real tmp files (no seam injection needed for this pure function). 9 cases: `readUpdateResult` (7) — absent file→null; malformed JSON→null; empty file→null; unknown status value→null; valid applied outcome→correct fields; valid failed+detail→returned; detail >4KB→capped (not thrown). `UpdateTypes` schema sanity (2) — the four legal `UpdateStatus` values as a compile+runtime check; `UpdateOutcome` with/without detail field.
+Red reason: `src/self-update.ts` and `src/update-types.ts` do not exist yet → "Cannot find module" import error.
+
+### IT-061 — POST /github/webhook engine wiring: HMAC verify + flag-writer + dedup + Host-exempt + boot guard (REQ-068)
+- **status:** green
+- **traces:** DES-059, ARCH-038
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/integration/self-update-webhook-route.test.ts`. Mock policy (integration — real adjacent components; mock only third-party network): real `createServer` on loopback, real SQLite dedup DB, real flag path (outside workRoot), real HMAC via `node:crypto`; the webhook secret is set via `process.env.RWE_SECRET_GITHUB_WEBHOOK_SECRET` (mirrors the server's `loadSecretSourceFromEnv` pattern). 7 cases across 3 describe blocks: (1) unconfigured server (no secret + no flag path) → 503; (2) valid signed create-tag → 202, flag written with `"<tag>\n"`, mode 0600; (3) bad signature → 401, no flag; (4) replayed deliveryId → 200 idempotent, flag unchanged; (5) non-tag event (branch push) → 200 no-op; (6) foreign Host header → 202 (Host-exempt: HMAC is the auth for `/github/webhook`; uses raw `node:http.request` since fetch blocks arbitrary Host override — mirrors IT-053); (7) boot guard: `createServer({updateFlagPath: inside workRoot})` rejects with `UPDATE_FLAG_INSIDE_WORKROOT`.
+Red reason: `POST /github/webhook` is not registered; all requests fall through to 404; `createServer` does not enforce the boot guard (resolves instead of rejects). All 7 fail.
+
+### IT-062 — `rwe-update.sh` child-process integration: valid-tag→checkout+restart; foreign-ref→exit20; failing-npm→exit30 safe-fail; flag-absent→exit0 (REQ-069)
+- **status:** green
+- **traces:** DES-060, ARCH-039
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/integration/rwe-update-helper.test.ts`. Mock policy (integration): real `git` against a throwaway non-bare local repo (non-bare avoids the git-init-bare HEAD/branch mismatch); fake `npm`/`systemctl` shims (executable shell scripts recording argv to a file and exiting with a configured code — the `NPM`/`SYSTEMCTL` env seams in DES-060); `GIT` = real `git`. 4 cases: (1) valid tag in flag → helper exits 0, result `applied`, SYSTEMCTL shim called with `restart`, HEAD at tag SHA, flag consumed; (2) foreign/nonexistent ref → exit 20, no result file, SYSTEMCTL not called; (3) failing NPM shim (exit 1) → exit 30, SYSTEMCTL NOT called (safe-fail: abort before restart), HEAD unchanged at prior SHA, result `failed`; (4) flag absent at trigger → exit 0 clean no-op (not exit 10 or failure, so systemd does not mark the oneshot failed).
+Red reason: `deploy/rwe-update.sh` does not exist → ENOENT on every `execFile` call. All 4 fail.
+
+### VAL-077 — REQ-068: HMAC-verified GitHub tag webhook records an update request (REQ-068)
+- **status:** green
+- **traces:** REQ-068, DES-058, DES-059
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/acceptance/val-077-github-webhook.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real HTTP server, real SQLite dedup DB, real flag path outside workRoot, real HMAC. 3 cases (directly testing REQ-068 acceptance criteria): (1) correctly-signed `create` for v1.4.0 → 202 + flag written with `"v1.4.0\n"` (update request recorded); (2) same body with wrong signature → 401, no flag (nothing recorded); (3) signed branch push → 200 no-op, no flag (only tag events arm an update request).
+Red reason: `POST /github/webhook` not registered → 404 falls through to `/mcp` error handler. All 3 fail.
+
+### VAL-078 — REQ-069: privilege-separated updater checks out the tag and issues the restart (REQ-069)
+- **status:** green
+- **traces:** REQ-069, DES-060
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/acceptance/val-078-update-helper.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `rwe-update.sh` bash helper against a real (non-bare) throwaway git repo; real `git`; `npm`/`systemctl` shimmed as the genuinely-not-runnable external tools. 3 cases (REQ-069 acceptance criteria): (1) helper given a flag naming a valid tag → exits 0, checks out exactly that tag's SHA, SYSTEMCTL restart called (helper does the privileged work, NOT the engine); (2) flag naming non-existent ref → exit 20, working tree unchanged, SYSTEMCTL not called; (3) safe-fail (NPM shim exits 1) → exit 30, SYSTEMCTL NOT called, working tree stays at prior SHA, result `failed`.
+Red reason: `deploy/rwe-update.sh` does not exist → ENOENT. All 3 fail.
+
+### VAL-079 — REQ-070: applied outcome ingested at boot + safe-fail observable via /api/status (REQ-070)
+- **status:** green
+- **traces:** REQ-070, DES-060, DES-061
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v11
+
+File: `tests/acceptance/val-079-auto-apply.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `rwe-update.sh` + real git + real `createServer` + real `/api/status` + real dashboard HTML; only `npm`/`systemctl` shimmed. Note: The "version == tag" assertion (`GET /api/version` === the new tag) is deferred to Gate 7.5 real-run (`real:false`) — this CI-safe test validates outcome ingestion at "boot" (a fresh `createServer` on the same `updateResultPath`) and safe-fail. 2 cases: (1) helper applies valid tag → result file says `applied` → fresh `createServer({updateResultPath})` → `GET /api/status` returns `lastUpdate.status==='applied'`, `lastUpdate.tag==='v1.4.0'`; dashboard HTML contains "applied"; (2) helper with failing NPM → result file says `failed` → fresh server → `GET /api/status` returns `lastUpdate.status==='failed'`; dashboard contains "failed".
+Red reason: `deploy/rwe-update.sh` not existing (ENOENT) → runHelper fails before reaching server assertions. `ServerConfig.updateResultPath` not yet implemented. Both fail.

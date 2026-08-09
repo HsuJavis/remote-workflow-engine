@@ -1,0 +1,14 @@
+[Unit]
+Description=remote-workflow-engine self-update flag watcher (DES-060, TASK-063)
+# Fires rwe-update.service when the update flag file appears or changes.
+# PathExists= fires on initial check + appearance; PathChanged= fires on content change
+# (an atomic rename-into-place triggers PathExists= not PathModified=, which is why
+# PathModified= is intentionally NOT used here — DES-060 note).
+After=network.target
+
+[Path]
+PathExists=%h/rwe-update.flag
+PathChanged=%h/rwe-update.flag
+
+[Install]
+WantedBy=default.target

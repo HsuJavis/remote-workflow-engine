@@ -385,3 +385,30 @@ status: draft
 - **status:** draft
 - **traces:** ARCH-024
 - **iter:** v11
+
+<!-- ── v11 Sprint 2 (REQ-068..070 / ARCH-038..040): tag-triggered, privilege-separated, fully-automatic self-update. TASK-061..065. ── -->
+
+### TASK-061 — pure GitHub tag-webhook verifier (`src/self-update-webhook.ts`): `extractTag(event, body)` (per-event-shape: `ping`→null, `create` ref_type tag→ref, `create` branch→null, `push` `refs/tags/<t>` deleted:false→`<t>`, `push` deleted:true / `refs/heads`→null) + `verifyTagWebhook(input, deps)→TagVerdict` (HMAC-SHA256 over the RAW `Buffer` never `.toString`, constant-time compare after stripping `sha256=`, anchored tag pattern `^v[0-9][0-9A-Za-z.\-+]*$`) — no fs/net/process, clock-free by design (GitHub signs no timestamp). Exhaustive UT over the boundary table.
+- **status:** done
+- **traces:** ARCH-038
+- **iter:** v11
+
+### TASK-062 — engine-side wiring + flag-writer (`src/self-update.ts` + `src/server.ts`): the `POST /github/webhook` route reading via `readBodyBuffer` (RAW, never `readBodyDecoded`) and Host-exempted before the REQ-056 allowlist (HMAC is its auth, Origin stays fail-open); provisioned `RWE_SECRET_GITHUB_WEBHOOK_SECRET` via `loadSecretSourceFromEnv` (server-side only, never logged/dashboard); delivery-id dedup (`update_deliveries` side table, `INSERT OR IGNORE`); on `arm` upsert a `pending` `update_outcome` row then `writeUpdateFlag(tag)` (atomic temp+rename, mode `0600`) and answer 202; the 200/401/503 no-flag responses; a boot guard `assertUpdatePathsOutsideWorkRoot` (realpath-outside every `workRoot`, else `UPDATE_FLAG_INSIDE_WORKROOT`, reusing the ARCH-019 pattern); `ServerConfig.updateFlagPath?`/`updateResultPath?`/`selfUpdateDbPath?`. Feature-off when secret+flag-path both unset (503).
+- **status:** done
+- **traces:** ARCH-038
+- **iter:** v11
+
+### TASK-063 — privileged updater deploy artifacts (`deploy/rwe-update.sh` + `deploy/rwe-update.path` + `deploy/rwe-update.service` + shared `src/update-types.ts`): a dumb bash helper carrying ALL logic behind env seams (`RWE_UPDATE_FLAG`/`RWE_UPDATE_RESULT`/`RWE_UPDATE_LOCK`/`RWE_OFFICIAL_REMOTE`/`GIT`/`NPM`/`SYSTEMCTL`), distinct exit codes (0/10/20/30/40), flag-absent→exit 0 no-op, read-flag-within-flock→consume→re-validate T→`git fetch --tags` official remote→resolve T to an existing tag SHA (reject foreign/nonexistent)→already-on-SHA skip→`git checkout <SHA>` via array-args (never `sh -c`)→`npm ci && npm run build`→ safe-fail abort-BEFORE-restart on any failure→ write `applied` result atomically and FLUSH before `systemctl restart rwe`; logic-free `.path` (`PathExists=`/`PathChanged=`, not `PathModified=`) + `.service` units; `update-types.ts` is the single home of `UpdateStatus`/`UpdateOutcome`. Child-process integration harness (mkdtemp git repo + fake `NPM`/`SYSTEMCTL` shims), safe-fail is a first-class test.
+- **status:** done
+- **traces:** ARCH-039
+- **iter:** v11
+
+### TASK-064 — observable version + last-update outcome (`src/server.ts` + `src/dashboard-page.ts`): `GET /api/version → {version}` (reuse `resolveEngineVersion`/`ENGINE_VERSION`) + `version` and `lastUpdate?: UpdateOutcome` (+ `interruptedRuns?`) fields on `GET /api/status`; single-row `update_outcome(id CHECK(id=1), json)` store; `readUpdateResult(path, readFileImpl?)→UpdateOutcome|null` (tolerant: absent/malformed/half-written→null, never throws, 4 KB `detail` cap head+tail); ingest at boot (applied case) AND lazily on `/api/status` (failed case), with a stale-result guard (a result overwrites a `pending` row only when tags match); dashboard update panel rendering pending/applied/failed/skipped + the interrupted-run call-to-action, `textContent`/`JSON.stringify` only.
+- **status:** done
+- **traces:** ARCH-040
+- **iter:** v11
+
+### TASK-065 — DEPLOY doc for self-update (`DEPLOY.md`): GitHub webhook config (content-type `application/json` — the HIGH-severity omission, event subscription create+push-tags, `RWE_SECRET_GITHUB_WEBHOOK_SECRET` sourcing), reverse-proxy snippet forwarding ONLY `POST /github/webhook` to loopback, the Host-allowlist exemption note, the flag/result/lock path convention (engine-user-owned `0700`, OUTSIDE every workRoot), systemd-only self-update scope (docker-compose updates manually — the documented Option A), and the deferred-hardening + single-instance-ceiling notes.
+- **status:** done
+- **traces:** ARCH-039
+- **iter:** v11

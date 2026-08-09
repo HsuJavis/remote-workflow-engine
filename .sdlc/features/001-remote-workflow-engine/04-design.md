@@ -1679,3 +1679,119 @@ classDiagram
 - **`{path, sha256, exec?}` — regular files only, `exec?` the sole metadata bit, no symlinks EVER (DES-057).** The fidelity-vs-safety resolution: `exec?:boolean` (masked `& 0o755`) lets a runnable script keep `+x` and is categorically safe (it grants no capability the jailed agent lacks; nothing auto-executes; the `.claude`-strip, not the exec bit, is the RCE gate). But NO `mode:int` and NO `symlink`/`type`/`target`, ever — adding `symlinkSync` to the privileged pre-agent assemble would turn every future "tree-walker forgot `isPathContained`" bug from harmless into host-file exfiltration. A seed is a starting tree the agent builds from (install output and submodules are regenerated), not a frozen runnable image — "no symlinks" seeds a working tree, not a crippled one.
 - **Fail fast on `MISSING_BLOBS` BEFORE any durable work — no run row created (DES-057).** The `seedManifest` blob-presence check sits at the top of `start()`, before `createRun`/mkdir/spawn, and throws `MISSING_BLOBS` (listing the shas) or `CAS_UNAVAILABLE`. So a client that references an un-uploaded blob gets an immediate, actionable rejection (upload these, retry) with zero half-built run state to clean up — the same admit-before-durable-work discipline as the run-admission cap. Resumability is free: re-running `seed_plan` after a partial upload returns only the still-missing blobs.
 - **`toErrEnvelope` prefers a coded error's `.code` over the Error name — a PRE-EXISTING latent bug fixed here (DES-057).** Before v10, `toErrEnvelope` returned `err.name` (`'Error'`) for run-manager `codedError`s, so `RUN_ADMISSION_LIMIT` / `NESTING_*` (and now `MISSING_BLOBS`) surfaced through `workflow_run` as a useless `'Error'` code — the branchable code was silently dropped at the tool boundary. The fix reads `.code` first, falling back to the Error name only for a genuinely un-coded error. This is a latent bug that predates the CAS work (it already swallowed the v8 admission/nesting codes) but was surfaced and fixed by this slice because `MISSING_BLOBS` MUST reach the client as a code for the upload-then-retry loop to work.
+
+## v11 Sprint 2 — tag-triggered privilege-separated self-update (DES-058..062; ARCH-038..040)
+
+### DES-058 — pure GitHub tag-webhook verifier: `extractTag` + `verifyTagWebhook` → `TagVerdict` (`src/self-update-webhook.ts`)
+- **status:** done
+- **traces:** ARCH-038, TASK-061
+- **iter:** v11
+- **signature:**
+  - `const TAG_PATTERN = /^v[0-9][0-9A-Za-z.\-+]*$/` (anchored; rejects `v1.0.0; rm -rf /` by class).
+  - `extractTag(event: string, body: unknown): string | null` — `event==='ping'`→null; `'create'` with `body.ref_type==='tag'`→`body.ref` (path A); `'create'` `ref_type==='branch'`→null; `'push'` with `body.ref` `=== 'refs/tags/<t>'` && `body.deleted!==true`→`<t>` after stripping `refs/tags/` (path B); `'push'` `deleted===true` (tag delete) or `refs/heads/…`→null. Returned tag is NOT yet pattern-checked here (caller does).
+  - `type TagVerdict = { arm: true; tag: string; deliveryId?: string } | { arm: false; httpStatus: 200 | 401 | 503; code?: string; reason: string }`
+  - `verifyTagWebhook(input, deps): TagVerdict` where `input: { event: string; signatureHeader?: string; deliveryId?: string; rawBody: Buffer }`, `deps: { secret?: string; tagPattern?: RegExp }`. HMAC = `createHmac('sha256', secret).update(rawBody).digest('hex')` over the **raw `Buffer`** (never `rawBody.toString`), constant-time compared to `signatureHeader` after stripping `^sha256=` (reuse the `timingSafeEqual` helper proven in `src/webhook-registry.ts:147`).
+- **boundary:** secret undefined → `{arm:false,503,'UPDATE_WEBHOOK_UNCONFIGURED'}` (fail-closed, NEVER 200/never treat unsigned as valid) · signature absent/malformed(not `sha256=<64hex>`)/mismatch → `{arm:false,401}` (401 not 500 on malformed) · `event:'ping'` → `{arm:false,200,'PING'}` no-op · `JSON.parse(rawBody)` throws (e.g. form-encoded body) → `{arm:false,200}` no-op (safe — no tag extractable) · `extractTag`→null OR tag fails `tagPattern` → `{arm:false,200}` no-op · else `{arm:true,tag,deliveryId}`. Clock-free by design: GitHub signs no timestamp, so the RWE ±300s window does NOT transfer — dedup is the caller's (DES-059) job.
+
+### DES-059 — engine-side wiring: route + flag-writer + dedup + boot guard (`src/self-update.ts`, `src/server.ts`)
+- **status:** done
+- **traces:** ARCH-038, TASK-062
+- **iter:** v11
+- **signature:**
+  - Route `POST /github/webhook` — a **distinct fixed prefix** (NOT under `/hooks/:id`, which the `server.ts:1036` dispatcher would capture and 404). Reads the body via `readBodyBuffer` (RAW) — never `readBodyDecoded` (GitHub signs wire bytes; the REQ-063 decode path would break HMAC). **Host-exempt**: `if (pathname === '/github/webhook')` skip the REQ-056 `isAllowedHost` allowlist before it runs (HMAC is this route's auth; the forwarded delivery carries a public Host); Origin stays fail-open-on-absent.
+  - `writeUpdateFlag(tag: string): void` (FlagSink seam) — atomic `temp + rename`, mode `0600`, at `cfg.updateFlagPath`. The verifier core calls an injected `FlagSink` so UTs assert sink-called-with-T vs not-called without touching fs.
+  - Dedup: `update_deliveries(deliveryId TEXT PRIMARY KEY, ts TEXT)` (`INSERT OR IGNORE`, engine-owned SQLite, `:memory:` in tests) in `cfg.selfUpdateDbPath` (default `join(workRoot,'self-update.db')` — the DB may live under workRoot; the helper never trusts it). A replayed valid delivery → 200, no second flag. `deliveryId` absent → process anyway (idempotent helper covers a double-arm).
+  - Pending upsert: on `arm`, before the flag write, `INSERT OR REPLACE` the single `update_outcome` row (DES-061) with `{tag, status:'pending', ts: clock.isoNow()}`.
+  - Secret: `RWE_SECRET_GITHUB_WEBHOOK_SECRET` via `loadSecretSourceFromEnv` (`RWE_SECRET_*` prefix, server-side only, never workspace-reachable, never logged, never on the dashboard).
+  - Boot guard `assertUpdatePathsOutsideWorkRoot(paths, workRoots)` — `realpathSync` each configured flag/result path and refuse to start with `UPDATE_FLAG_INSIDE_WORKROOT` if any resolves inside any `workRoot` (RCE-prevention; reuses the ARCH-019 `WorkRootInsideProjectError` fail-fast shape). Guard runs ONLY on a configured path.
+  - Config: `ServerConfig.updateFlagPath?`, `updateResultPath?`, `selfUpdateDbPath?`.
+- **boundary:** **Feature-off by construction** — when BOTH the secret and `updateFlagPath` are unset, the route answers `503 UPDATE_WEBHOOK_UNCONFIGURED` (no invented default path that the engine may lack rights to create, no boot guard on an absent path). Response set is exactly: `202` armed (flag written) · `200` no-op (ping / non-tag / non-matching / dup-delivery / JSON-parse-fail) · `401` bad signature · `503` unconfigured. **Ordering:** dedup-check → pending-upsert → flag-write → 202. **Gate-5 seam consistency:** the ONLY time-reading points on this path are the dedup `INSERT` ts and the pending-upsert ts, both via the injected `Clock`; the verifier itself is clock-free; no method reads the wall clock.
+
+### DES-060 — privileged updater helper + systemd units + shared outcome type (`deploy/rwe-update.sh`, `deploy/rwe-update.{path,service}`, `src/update-types.ts`)
+- **status:** done
+- **traces:** ARCH-039, TASK-063
+- **iter:** v11
+- **signature (a bash script's contract is argv/env/exit-codes/files — all pinned):**
+  - `src/update-types.ts` — the **single home** of the cross-process schema (engine imports it; the helper doc references it verbatim): `type UpdateStatus = 'pending'|'applied'|'failed'|'skipped'`; `interface UpdateOutcome { tag: string; status: UpdateStatus; ts: string; detail?: string }`. If helper-writer and engine-reader are split without this one file, the JSON drifts with no compiler to catch it.
+  - Env seams (injectable): `RWE_UPDATE_FLAG`, `RWE_UPDATE_RESULT`, `RWE_UPDATE_LOCK`, `RWE_OFFICIAL_REMOTE` (pinned remote), and command-prefix `GIT`/`NPM`/`SYSTEMCTL` (default the real binaries; tests substitute fakes; also the operator's replaceability seam for NVM-managed node etc.).
+  - Exit codes (feed the result `detail`): `0` applied · `10` flag/tag validate-fail · `20` remote-resolve-fail (T not an existing tag on the official remote) · `30` build/checkout-fail (safe-abort before restart) · `40` already-on-T skip.
+  - Flag content: **exactly the validated tag, one line, newline-terminated** — nothing shell-interpolatable; helper re-validates T against `TAG_PATTERN` (defence-in-depth) and only ever passes T as an `execFile`/array-arg, never `sh -c "… $T"`.
+  - Result file: `UpdateOutcome` JSON written **atomically (temp+rename)**, `detail` capped ~4 KB (head+tail truncate; full log to journald).
+  - `.path` unit: `PathExists=` + `PathChanged=` (an atomic rename into place does NOT fire `PathModified=`) triggering a oneshot `.service`; both units carry **ZERO** decision logic.
+- **helper sequence (all on untrusted T):** flock `RWE_UPDATE_LOCK`; read the flag **within the lock** (latest-tag-wins); consume it (rename `→ .consumed` / rm, so the `.path` unit doesn't re-arm on a stale flag); re-validate T; `git fetch --tags` from `RWE_OFFICIAL_REMOTE`, resolve T to an existing tag SHA there (else exit 20, nothing changed); if HEAD already at that SHA → write `skipped`, exit 40; `git checkout <SHA>` (array-args); `npm ci && npm run build`; on any failure in fetch/checkout/build → **abort BEFORE `systemctl restart`** (prior good checkout keeps running), write `failed`, exit 30; else write `applied`, **flush to disk, THEN `systemctl restart rwe`**.
+- **boundary:** flag **absent** at trigger (stale/duplicate re-fire after consume) → clean **exit 0 no-op**, distinct from exit 10, so a post-consume re-fire does not mark the oneshot failed in systemd. Safe-fail is the load-bearing first-class test: inject failing `NPM` → assert `SYSTEMCTL` NOT called + working tree still at the prior SHA + result `failed`. Write-ordering invariant: `applied` result flushed before restart, so the restarted engine (ARCH-034 crash-durability replays in-flight runs — no new drain machinery) ingests it at boot.
+
+### DES-061 — observable version + last-update outcome (`src/server.ts`, `src/dashboard-page.ts`)
+- **status:** done
+- **traces:** ARCH-040, TASK-064
+- **iter:** v11
+- **signature:**
+  - `GET /api/version → { version: string }` (reuse the `ENGINE_VERSION` from `resolveEngineVersion(exec?)`, `server.ts:39`; after a tag checkout `git describe --tags` yields T). `GET /api/status` gains `{ version, lastUpdate?: UpdateOutcome, interruptedRuns?: number }`.
+  - Store: single durable row `update_outcome(id INTEGER PRIMARY KEY CHECK(id=1), json TEXT)` in `selfUpdateDbPath` (deliberately NOT an audit/rollback-history DB). Written `pending` by DES-059, overwritten by the ingested result.
+  - `readUpdateResult(path, readFileImpl?): UpdateOutcome | null` — **tolerant**: absent file → null (no update ever ran); malformed / half-written / unknown `status` → null (never throws, never 500); `detail` capped 4 KB.
+  - Read points (no watcher daemon, no push channel): **at boot** (covers the applied case — the restart makes the engine ingest the flushed result) AND **lazily on `/api/status`/dashboard** (covers the failed case — the engine was never restarted). `interruptedRuns` = the ARCH-034 `hydrateAll` running→interrupted reclassify count (engine-side, NOT in the result file).
+  - Dashboard update panel (`dashboard-page.ts`): renders `lastUpdate.{tag,status,ts,detail}` with a per-status color for `pending|applied|failed|skipped`; when `status==='applied'` and `interruptedRuns>0`, a call-to-action ("N runs interrupted by the update; use `workflow_resume`"). `textContent`/`JSON.stringify` only (XSS-safe, per KP-12).
+- **boundary:** absent outcome → panel shows "no update recorded". **Stale-result guard:** an ingested result overwrites a `pending` row ONLY when `result.tag === row.tag`; a stale `applied` for T_old must NOT clobber a fresh `pending` for T_new (engine restarted for an unrelated reason while the helper is mid-build). **Gate-5 seam consistency:** `readUpdateResult` reads no clock; the outcome `ts` is the helper's (out-of-process); the engine-side pending `ts` uses the injected `Clock` (DES-059).
+
+### DES-062 — real-tier validation paths + per-tier mock policy + DEPLOY acceptance (REQ-068..070)
+- **status:** done
+- **traces:** ARCH-038, ARCH-039, ARCH-040, TASK-065
+- **iter:** v11
+- **REQ-068 real path:** a signed GitHub `create` fixture (captured real body + its valid `X-Hub-Signature-256` over the raw bytes) POSTed to a real HTTP server bound to loopback with `RWE_SECRET_GITHUB_WEBHOOK_SECRET` configured → asserts the flag file is written containing exactly the tag + a `pending` row exists; the same body with a wrong signature → 401, no flag, no row. Real entrypoint = the `POST /github/webhook` route; real wiring = real SQLite side table + a tmp flag path outside workRoot.
+- **REQ-069 real path:** a child-process integration harness — `execFile` `deploy/rwe-update.sh` against a `mkdtemp` throwaway git repo with `GIT` real but `NPM`/`SYSTEMCTL` pointed at fake shims recording argv: valid tag → checks out that tag's SHA + calls `systemctl restart`; foreign/nonexistent ref → exit 20, nothing changed; failing `NPM` → exit 30, `SYSTEMCTL` NOT called, tree at prior SHA, result `failed`.
+- **REQ-070 real path:** full flow — arm a valid tag → helper applies → engine restarts → `GET /api/version` returns the new tag AND the dashboard update panel (Playwright-headless real-run, the established dashboard pattern) shows `applied`; a tag whose `npm run build` fails → the service stays up on the prior version and the panel shows `failed` for that tag.
+- **Per-tier mock policy:** **unit** mocks freely — inject `{secret, tagPattern}`, a `FlagSink` spy, an in-memory dedup (isolates the pure verifier + tolerant reader). **integration** uses real adjacent components — real HTTP server, real SQLite, real `git` against a throwaway repo, tmp flag/result paths; mock ONLY `npm`/`systemctl` (genuinely un-runnable in CI, via the command-prefix seam). **E2E/acceptance MUST NOT mock the SUT's own boundaries** — a real signed delivery through the real route, the real helper against a real git repo; external tools go through test shims/sandbox credentials only.
+- **DEPLOY acceptance (TASK-065):** GitHub webhook content-type `application/json` (the HIGH-severity omission — a form-encoded body HMAC-verifies but JSON-parse-fails → no-op, and the operator must set this), event subscription (create + push tags), `RWE_SECRET_GITHUB_WEBHOOK_SECRET` sourcing; a reverse-proxy snippet forwarding ONLY `POST /github/webhook` to `127.0.0.1` with the engine loopback-bound; the Host-allowlist exemption note; the flag/result/lock path convention (engine-user-owned `0700`, OUTSIDE every workRoot); systemd-only self-update scope (docker-compose keeps running but updates manually — Option A); the deferred-hardening (GPG signed-tag verify, `npm ci --ignore-scripts`) and single-instance-ceiling notes.
+
+```mermaid
+classDiagram
+  class SelfUpdateWebhook {
+    <<pure, clock-free>>
+    +extractTag(event, body) string_or_null
+    +verifyTagWebhook(input, deps) TagVerdict
+  }
+  class SelfUpdate {
+    +route POST /github/webhook
+    +writeUpdateFlag(tag) void
+    +dedup update_deliveries
+    +assertUpdatePathsOutsideWorkRoot()
+  }
+  class UpdateOutcomeStore {
+    +update_outcome id CHECK(id=1)
+    +upsertPending(tag)
+    +readUpdateResult(path) UpdateOutcome_or_null
+  }
+  class RweUpdateHelper {
+    <<external deploy artifact, bash>>
+    +flock+consume flag
+    +fetch/verify/checkout/build
+    +safe-fail abort-before-restart
+    +write UpdateOutcome result
+  }
+  class UpdateTypes {
+    <<shared contract>>
+    +UpdateStatus pending|applied|failed|skipped
+    +UpdateOutcome tag,status,ts,detail
+  }
+  SelfUpdate --> SelfUpdateWebhook : verify
+  SelfUpdate --> UpdateOutcomeStore : upsert pending
+  SelfUpdate ..> RweUpdateHelper : flag file (privilege boundary)
+  RweUpdateHelper ..> UpdateOutcomeStore : result file (ingested at boot/lazy)
+  UpdateOutcomeStore --> UpdateTypes
+  RweUpdateHelper --> UpdateTypes
+```
+
+## v11 Sprint 2 decision rationale (self-update — DES-058..062)
+- **Panel:** r1 only (`adversarial.r1.md` opus + `quality-dimensions.r1.md` sonnet); stances **complementary** (quality explicitly endorses the privsep shape adversarial defends) → the conditional Round-2 rebuttal trigger was NOT met, synthesized directly. QM `safety_class` → no functional-safety/cybersecurity lenses.
+- **Route path — distinct `/github/webhook`, NOT `/hooks/:id` (adversarial R1, HIGH).** The `server.ts:1036` dispatcher captures `/hooks/<id>` and 404s an unknown id before the GitHub verifier runs. A distinct prefix avoids a fragile dispatch-order pin. Both lenses converge.
+- **Host-allowlist exemption for this one route (adversarial P2 + quality consumability, HIGH).** A forwarded GitHub delivery carries a public Host; REQ-056 would 403 it before HMAC. Exempt `/github/webhook` (HMAC is strictly stronger than the Host allowlist, which defends browser DNS-rebinding, not a server-to-server POST). Not a hole in the uniform policy — a second, narrow, HMAC-gated auth root, documented in DEPLOY. Both lenses picked "exempt" over "proxy rewrites Host" (fragile).
+- **bash helper, not TS (adversarial testability⟂privsep; RESOLVED bash-but-seamed).** The privilege boundary is the load-bearing security property; putting privileged logic back in a Node process erodes exactly the seam privsep buys. Command-prefix/env seams give replaceability + testability WITHOUT crossing the boundary. Quality endorsed. Every meaningful step lives in the SCRIPT (child-process integration harness), the `.path`/`.service` units carry zero logic.
+- **Single-row outcome + `pending` status, NOT a history table (adversarial simplicity ⟂ quality observability; RECONCILED).** Adversarial held the ARCH line (one `update_outcome` row = "last outcome", REQ-070). Quality's "armed-but-stuck is invisible" gap is closed by the SAME single row taking a `pending` status at flag-write (`INSERT OR REPLACE`) — not a new subsystem, not a history DB. The 4-state enum `pending|applied|failed|skipped` unions quality's `pending` (observability) and adversarial's `skipped` (idempotent already-on-T). History remains a future-REQ candidate.
+- **Feature-off when unconfigured (advisor simplification, fail-closed).** No safe invented default flag path exists (the engine may lack rights to create `/var/lib/...`). Secret+flag-path both unset → the route 503s (self-update disabled); the boot `UPDATE_FLAG_INSIDE_WORKROOT` guard runs only on a configured path. Dissolves the default-path problem rather than solving it.
+- **Flag lifecycle — consume-within-flock + `PathExists=` (adversarial R3 + quality R5, MEDIUM-HIGH).** flock alone does not close the overlapping-arm race (a systemd path trigger firing during the oneshot is dropped). The helper reads the flag WITHIN the lock (latest-tag-wins) and consumes it (rename/rm); the `.path` unit uses `PathExists=` (an atomic rename does not fire `PathModified=`) so a flag landing mid-build re-fires the unit when the oneshot deactivates. Flag-absent re-fire → clean exit 0 (not a systemd failure).
+- **`detail` cap 4 KB (quality R7).** Truncate head+tail; the full log belongs to journald, not the SQLite row.
+- **docker-compose scope — Option A, systemd-only (quality replaceability; Karpathy).** Self-update requires the systemd deployment; docker-compose keeps running but updates manually. Documented explicitly in DEPLOY (silence would create false expectations); Option B (docker sidecar invoking the same script) noted as a future path, not built.
+- **content-type `application/json` (quality R1, HIGH).** A form-encoded body HMAC-verifies (HMAC is over raw bytes regardless) but JSON-parse-fails → design fail-closes to a 200 no-op (no tag extractable), AND DEPLOY must instruct `application/json` so the webhook actually arms.
+- **Stale-result guard (advisor).** An ingested result overwrites a `pending` row only when tags match — a stale `applied` for T_old must not clobber a fresh `pending` for T_new when the engine restarted for an unrelated reason mid-build.
+- **Deferred, flag-don't-build (both lenses agree — recorded, NOT `needs_clarification`):** GPG `git tag -v` signed-tag verify + `npm ci --ignore-scripts` (documented hardening, not v1 blockers); auto-resume of interrupted runs on boot (`config.autoResumeOnUpdate` is an open question — surface the interrupted-run COUNT now, don't auto-resume: a run stopped mid-flight for review must not silently restart); distributed trace-ID across the four-process boundary (the flag/result files carry the tag as the correlation key). **Budget-on-crash-resume (quality R4)** — re-derive `budget.spent()` from journaled agent usage on `_requireLive` rehydration — belongs to ARCH-034's path, NOT this slice; carried as a real defect candidate in the journal, no speculative ARCH here.
+- **Residual accepted (adversarial R6, per REQ-070 full-auto):** a malicious tag whose build SUCCEEDS is not caught by safe-fail (which protects availability, not integrity) — bounded by privsep + official-remote-pin; the only real defence is repo/secret integrity + the deferred signed-tag verify. Single-instance ceiling (self-update is host-local, incompatible with multi-replica) documented, not fixed.
