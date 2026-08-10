@@ -1120,11 +1120,17 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       });
       return;
     }
-    // v8 Defer B (REQ-056): Host/Origin allowlist — DNS-rebinding + CSRF defense, uniform across every
-    // route (/mcp, /api/*, /dashboard, /hooks/*). A foreign Host (rebinding) or a present-but-foreign
-    // Origin (drive-by browser CSRF) is refused 403; an ABSENT Origin is allowed (programmatic clients
-    // send none — fail-open). This is the interim access control until OIDC (REQ-012, D5).
-    if (!isAllowedHost(req.headers.host, bind, boundPort, config?.allowedHosts) || !isAllowedOrigin(req.headers.origin, bind, boundPort, config?.allowedHosts)) {
+    // v8 Defer B (REQ-056): Host/Origin allowlist — DNS-rebinding + CSRF defense. The Host check
+    // (the DNS-rebinding guard) applies to EVERY route. The Origin/CSRF check applies to browser-facing
+    // routes (/dashboard, /api/*, /hooks/*) but is EXEMPTED for the /mcp JSON-RPC endpoint (issue #14):
+    // MCP Streamable-HTTP clients (Claude Code, per spec) send an Origin identifying the client APP
+    // (e.g. `app://claude`, `https://claude.ai`), never a loopback URL, so a uniform Origin floor 403s
+    // the very clients /mcp exists to serve — degrading them into an "auth-required" state. Host is the
+    // real rebind guard for this non-form JSON-RPC route; the CSRF concern (a drive-by browser form POST
+    // from an attacker page) does not apply to a JSON body endpoint. An ABSENT Origin is always allowed.
+    const isMcpRoute = (req.url ?? '').split('?')[0] === '/mcp';
+    const originOk = isMcpRoute || isAllowedOrigin(req.headers.origin, bind, boundPort, config?.allowedHosts);
+    if (!isAllowedHost(req.headers.host, bind, boundPort, config?.allowedHosts) || !originOk) {
       sendJson(res, 403, { error: 'Forbidden: Host/Origin not allowlisted' });
       return;
     }
