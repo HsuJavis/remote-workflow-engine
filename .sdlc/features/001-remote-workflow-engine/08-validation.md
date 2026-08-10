@@ -7,6 +7,21 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
+> **v11 ROUND 2 — FIX-MODE (2026-08-10) — GATE PASSED.** Home dashboard grouped cards (REQ-074) + per-card
+> reliability metrics (REQ-075). Production engine `rwe.service` already running v11 working-tree (`v0.5.0-selftest-7-g41be41e`);
+> restarted 2026-08-10 to load IMPL-111 working-tree changes (`GET /api/home` route + `buildHomeView` / `computeWorkflowMetrics`).
+> (A) REQ-074 → VAL-083 (real:true): `GET /api/home` → HTTP 200 `{running,registered,other}` with `WorkflowCard[]` in each group;
+> RUNNING group: `val-083-running-test` with `activeRunId` (suspended run = active); REGISTERED group: `nest-child` with zero-run
+> null metrics; OTHER group: past test-and-inline runs; `GET /dashboard` HTML confirmed to contain `renderHomeGroup`, `loadHome`,
+> `renderMiniSkeletonAsync`, `fmtMetric`, `home-running/registered/other` divs, and `/api/home` fetch; acceptance tests 3/3 pass.
+> (B) REQ-075 → VAL-084 (real:true): seeded 4 completed + 1 failed runs → `GET /api/home` card shows `successRate:0.8`,
+> `avgDurationMs:135`, `terminalCount:5`; zero-run `nest-child` → `{successRate:null,avgDurationMs:null,terminalCount:0}`;
+> `fmtMetric()` renders null as `'—'` (confirmed in dashboard-page.ts); acceptance tests 2/2 pass. Full suite 838 pass / 182 files;
+> `npx tsc --noEmit` clean. No config-file changes (REQ-074/075 add no new keys).
+> **KNOWN GAP (browser rendering):** Playwright browsers unavailable on ubuntu26.04-x64 — headless browser exercise of
+> mini-SVG card previews + click-through to full-graph view NOT executed; verified via served HTML/JS source inspection only
+> (all required JS functions and DOM element IDs present in `GET /dashboard` response). Unreachable dep recorded in StructuredOutput.
+
 > **v11 ROUND 1 (2026-08-09) — GATE PASSED.** Issue observability: REQ-066 (every filed issue carries
 > a version — caller-supplied or engine-autofilled via `resolveEngineVersion()`) → VAL-075 (real:true);
 > REQ-067 (read-only Issues dashboard page: `/api/issues` list, `/api/issues/:number` detail, 404 on
@@ -860,6 +875,64 @@ restarted or modified during this write-up.
   `{"degraded":"GitHub not configured"}`. Dashboard page still serves (rest of the dashboard loads
   — confirmed by `/api/status` HTTP 200). No SUT-boundary mock (real production server + real throwaway
   server → real GitHub API → real HTTP responses observed).
+- **iter:** v11
+
+### VAL-083 — REQ-074: `GET /api/home` three-group card listing with descriptions (REQ-074)
+
+- **status:** green
+- **traces:** REQ-074
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Live production engine `rwe.service` restarted 2026-08-10 with v11 working-tree
+  (`v0.5.0-selftest-7-g41be41e`, branch `feat/v3-mcp-provisioning-secrets-gauge`) loading IMPL-111
+  changes (`GET /api/home` route + `buildHomeView` / `computeWorkflowMetrics`).
+  (A) Three-group shape: `curl -s http://127.0.0.1:8787/api/home` → HTTP 200 `{"running":[],"registered":[5 items],"other":[12 items]}` —
+  all three group arrays present. Registered cards include `sdlc-run` (with full description text),
+  `rwe-patch-return`, `customer-service`, `nest-child`, `nest-2`. The `other[]` array contains past
+  inline/deregistered runs; all have `group:"other"`.
+  (B) RUNNING group (earlier in this session, before cleanup): registered `val-083-running-test`
+  (`description:"VAL-083 running group test"`), started a run and called `workflow_suspend` → run
+  entered `suspended` status (ACTIVE_STATUSES member). `GET /api/home` → `running:[{"name":"val-083-running-test","description":"VAL-083 running group test","group":"running","metrics":{...},"activeRunId":"91e9cdb2-0f44-41e6-8323-04250d7532e1","latestRunId":"91e9cdb2..."}]`.
+  (C) Zero-run registered card: `nest-child` → `{"successRate":null,"avgDurationMs":null,"terminalCount":0}`.
+  (D) Descriptions: `sdlc-run` card carries its full `meta.description` text; `customer-service`
+  carries "Two OSS models draft customer-support replies in parallel…".
+  (E) Dashboard HTML: `GET /dashboard` → HTML response confirmed to contain all required rendering
+  symbols: `renderHomeGroup`, `loadHome`, `fmtMetric`, `renderMiniSkeletonAsync`, `home-running`,
+  `home-registered`, `home-other`, `/api/home` fetch call — all present. `/api/workflows/customer-service/skeleton`
+  → `{"skeleton":[{"kind":"phase","title":"Draft"},{"kind":"agent","parallel":2},{"kind":"phase","title":"Verify & synthesize"},{"kind":"agent"},...]}` — mini-SVG
+  render path has real skeleton data.
+  **KNOWN GAP (browser rendering):** Playwright browsers unavailable on ubuntu26.04-x64 — headless browser
+  exercise of mini-SVG card previews + click-through to full skeleton/graph view NOT executed. Verified via
+  `GET /dashboard` HTML source inspection (all required functions/DOM IDs present) and live API evidence above.
+  Recorded as explicit unreachable-dep gap.
+  (F) Acceptance tests: `npx vitest run tests/acceptance/val-083-home-cards.test.ts` → 3/3 pass
+  using real `createServer()`, real HTTP, real store (no LLM needed).
+- **iter:** v11
+
+### VAL-084 — REQ-075: per-card avg success rate + avg execution time; zero-run → null (REQ-075)
+
+- **status:** green
+- **traces:** REQ-075
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Live production engine `rwe.service` running v11 (`v0.5.0-selftest-7-g41be41e`).
+  (A) 4 completed + 1 failed terminal runs seeded via `workflow_register` (correct VM-body format —
+  `export const meta = {...}` only; body is direct injected-globals script) + `workflow_run` × 5.
+  `GET /api/home` → card for `val-084-metrics-test`: `{"successRate":0.8,"avgDurationMs":135,"terminalCount":5}`.
+  `0.8 = 4/5` (completed ÷ total terminal); `avgDurationMs:135` is the mean of the 5 terminal runs'
+  `terminalAt - createdAt` durations (finite non-NaN, ≥ 0). No divide-by-zero; no NaN.
+  (B) Zero-run registered workflow `nest-child` → `{"successRate":null,"avgDurationMs":null,"terminalCount":0}`
+  (REQ-075 null boundary satisfied; never `NaN`, never `Infinity`).
+  (C) Dashboard rendering: `fmtMetric(val, suffix)` in dashboard-page.ts returns `'—'` when `val==null`,
+  else `Math.round(val)+suffix`. Metrics line format: `sr: 80% · avg: 135ms · runs: 5` for the seeded
+  card; `sr: — · avg: — · runs: 0` for zero-run workflows.
+  (D) Note on `avgDurationMs:null` for some persistent workflows (e.g. `sdlc-run`, `rwe-patch-return`
+  despite nonzero `terminalCount`): pre-IMPL-111 runs lack `terminalAt` in the store (additive field;
+  DES-071 backward-compat); their `avgDurationMs` computes as `null` by design — no divide-by-zero.
+  (E) Acceptance tests: `npx vitest run tests/acceptance/val-084-metrics.test.ts` → 2/2 pass
+  using real `createServer()`, real HTTP, real store, real engine execution (pure-return scripts).
 - **iter:** v11
 
 ### VAL-046 — REQ-037: provider-aware SDK routing + Anthropic dual-auth security invariant
@@ -3751,3 +3824,12 @@ and D-G8-5's env `ALLOWLIST` are both purely internal defaults/constants with no
 at all — there is no new key for a deployer to set, and nothing to document beyond what DEPLOY.md's
 existing Gate-8 blockquote/§1b/§5/§6 already say (this round's own re-verification just confirms that
 prose is now backed by real evidence, not a doc change). **No config-doc drift found this round.**
+
+### v11 FIX-MODE Round (2026-08-10) config-file sync check
+
+REQ-074 (home dashboard grouped cards) and REQ-075 (per-card avg success rate + avg execution time)
+add no new config keys, secrets, ports, or feature flags. `buildHomeView` and `computeWorkflowMetrics`
+are pure functions reading from in-memory stores; `GET /api/home` is a new route on the existing
+port/bind. `rwe.config.example.json` re-confirmed unchanged and correct as-is (`bind`/`port`/
+`workRoot`/`timeoutMs`/`retries`/`gateway`/`agentDefinitionsDir`/`defaultAllowedTools`/`aliases`).
+**No config-doc drift this round.**

@@ -76,6 +76,134 @@ export function buildDashboardModel(
   return vm;
 }
 
+// ── v11 F1 (TASK-072 / DES-070, TASK-073 / DES-071): home cards + reliability metrics ──
+
+export interface WorkflowMetrics {
+  successRate: number | null;
+  avgDurationMs: number | null;
+  terminalCount: number;
+}
+
+export interface WorkflowCard {
+  name: string;
+  description: string;
+  group: 'running' | 'registered' | 'other';
+  metrics: WorkflowMetrics;
+  activeRunId?: string;
+  latestRunId?: string;
+}
+
+export interface HomeView {
+  running: WorkflowCard[];
+  registered: WorkflowCard[];
+  other: WorkflowCard[];
+}
+
+const ZERO_METRICS: WorkflowMetrics = { successRate: null, avgDurationMs: null, terminalCount: 0 };
+const TERMINAL_STATUSES = new Set<string>(['completed', 'failed', 'stopped']);
+const ACTIVE_STATUSES = new Set<string>(['running', 'queued', 'suspended', 'interrupted']);
+
+/**
+ * PURE: groups RunSummary[] by run.name and folds each group into a WorkflowMetrics.
+ * terminalCount = runs with status ∈ {completed,failed,stopped}.
+ * successRate = completedCount / terminalCount; null if terminalCount === 0.
+ * avgDurationMs = mean(Date.parse(terminalAt) − Date.parse(createdAt)) over terminal runs
+ *   with a parseable terminalAt; null if none are parseable.
+ * Never throws, never emits NaN.
+ */
+export function computeWorkflowMetrics(runs: RunSummary[]): Map<string | undefined, WorkflowMetrics> {
+  const groups = new Map<string | undefined, RunSummary[]>();
+  for (const r of runs) {
+    const key = r.name;
+    const arr = groups.get(key) ?? [];
+    arr.push(r);
+    groups.set(key, arr);
+  }
+  const out = new Map<string | undefined, WorkflowMetrics>();
+  for (const [key, group] of groups) {
+    const terminal = group.filter((r) => TERMINAL_STATUSES.has(r.status));
+    const terminalCount = terminal.length;
+    if (terminalCount === 0) {
+      out.set(key, { ...ZERO_METRICS });
+      continue;
+    }
+    const completedCount = terminal.filter((r) => r.status === 'completed').length;
+    const successRate = completedCount / terminalCount;
+    const durations: number[] = [];
+    for (const r of terminal) {
+      if (!r.terminalAt) continue;
+      const end = Date.parse(r.terminalAt);
+      const start = Date.parse(r.createdAt);
+      if (Number.isFinite(end) && Number.isFinite(start)) {
+        durations.push(Math.max(0, end - start));
+      }
+    }
+    const avgDurationMs = durations.length > 0
+      ? durations.reduce((a, b) => a + b, 0) / durations.length
+      : null;
+    out.set(key, { successRate, avgDurationMs, terminalCount });
+  }
+  return out;
+}
+
+/**
+ * PURE: builds a HomeView from a catalog snapshot, a run list, and a pre-computed metrics map.
+ * RUNNING = catalog workflow with ≥1 active (non-terminal) run.
+ * REGISTERED = catalog workflow with no active run.
+ * OTHER = run name absent from catalog (inline or deregistered).
+ * A workflow appears in exactly ONE group (RUNNING wins). Never throws.
+ */
+export function buildHomeView(
+  catalog: Array<{ name: string; description: string }>,
+  runs: RunSummary[],
+  metrics: Map<string | undefined, WorkflowMetrics>,
+): HomeView {
+  const catalogMap = new Map(catalog.map((c) => [c.name, c.description]));
+  // Gather active and latest run per named workflow
+  const activeRunId = new Map<string, string>();
+  const latestRunId = new Map<string, string>();
+  for (const r of runs) {
+    const name = r.name;
+    if (name === undefined) continue;
+    if (ACTIVE_STATUSES.has(r.status)) activeRunId.set(name, r.runId);
+    latestRunId.set(name, r.runId); // last one wins (list order)
+  }
+  const running: WorkflowCard[] = [];
+  const registered: WorkflowCard[] = [];
+  // Catalog workflows
+  for (const { name, description } of catalog) {
+    const isActive = activeRunId.has(name);
+    const card: WorkflowCard = {
+      name,
+      description,
+      group: isActive ? 'running' : 'registered',
+      metrics: metrics.get(name) ?? { ...ZERO_METRICS },
+      ...(isActive ? { activeRunId: activeRunId.get(name) } : {}),
+      ...(latestRunId.has(name) ? { latestRunId: latestRunId.get(name) } : {}),
+    };
+    if (isActive) running.push(card);
+    else registered.push(card);
+  }
+  // OTHER: runs whose name is absent from catalog (grouped by name or '(inline)')
+  const otherSeen = new Set<string>();
+  const other: WorkflowCard[] = [];
+  for (const r of runs) {
+    const name = r.name;
+    if (name !== undefined && catalogMap.has(name)) continue; // belongs to catalog
+    const key = name ?? '(inline)';
+    if (otherSeen.has(key)) continue;
+    otherSeen.add(key);
+    other.push({
+      name: key,
+      description: '',
+      group: 'other',
+      metrics: metrics.get(name) ?? { ...ZERO_METRICS },
+      ...(latestRunId.has(key) ? { latestRunId: latestRunId.get(key) } : {}),
+    });
+  }
+  return { running, registered, other };
+}
+
 // ── v11 Sprint 3 (TASK-067 / DES-064): pure graph layout ──
 
 /** Logical grid cell — NO pixel coords (no x/y/width/height). Stable id across re-layout calls. */

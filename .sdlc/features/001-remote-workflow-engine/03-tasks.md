@@ -450,3 +450,17 @@ status: draft
 - **traces:** ARCH-044
 - **estimate:** S
 - **iter:** v11
+
+<!-- ── v11 F1 (REQ-074/075) — home dashboard: grouped cards + reliability metrics ── -->
+
+### TASK-072 — home dashboard view: pure `buildHomeView` 3-way grouping (RUNNING/REGISTERED/OTHER) over catalog `list()` + `RunStore.listRuns()`, additive `GET /api/home` returning `HomeView`, and the dashboard home render — each card shows `description` + avg-metrics (from TASK-073) + a MINI non-interactive skeleton preview (reuse `GET /api/workflows/:name/skeleton` → `layoutGraph` → `cellToPixel` at a small box), `textContent`-only for every card/preview string, click → open the full graph view (active run graph if running, else predicted-skeleton graph); OTHER card (no catalog script) → placeholder preview, never a throw
+- **status:** done
+- **traces:** ARCH-046
+- **estimate:** M
+- **iter:** v11
+
+### TASK-073 — per-workflow reliability metrics: a pure `computeWorkflowMetrics(runs) → Map<name, {successRate, avgDurationMs, terminalCount}>` fold grouped by workflow name (terminal set {completed,failed,stopped}; successRate=completed/terminalCount; avgDurationMs=mean(Date.parse(terminalAt)−Date.parse(createdAt)); zero-terminal → both null, never NaN; reads no clock), plus the additive `terminalAt?` field on `RunSummary` populated by `RunStore.listRuns()` in BOTH the InMemory and SQLite stores (from the first terminal transition ts, no migration), wired into `GET /api/home` so cards render the numbers
+- **status:** done
+- **traces:** ARCH-047
+- **estimate:** S
+- **iter:** v11

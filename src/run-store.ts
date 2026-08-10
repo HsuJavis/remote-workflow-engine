@@ -214,14 +214,19 @@ export class InMemoryRunStore implements RunStore {
   }
 
   async listRuns(): Promise<RunSummary[]> {
-    return [...this._runs.values()].map((r) => ({
-      runId: r.runId,
-      name: r.spec.name,
-      status: r.status,
-      scriptVersion: r.scriptVersion,
-      createdAt: r.createdAt,
-      startedBy: r.spec.startedBy ?? { type: 'unknown' },
-    }));
+    const TERMINAL = new Set<RunStatus>(['completed', 'failed', 'stopped']);
+    return [...this._runs.values()].map((r) => {
+      const terminalTransition = r.transitions.find((t) => TERMINAL.has(t.to));
+      return {
+        runId: r.runId,
+        name: r.spec.name,
+        status: r.status,
+        scriptVersion: r.scriptVersion,
+        createdAt: r.createdAt,
+        startedBy: r.spec.startedBy ?? { type: 'unknown' },
+        ...(terminalTransition ? { terminalAt: terminalTransition.ts } : {}),
+      };
+    });
   }
 
   async hydrateAll(): Promise<RunSummary[]> {
