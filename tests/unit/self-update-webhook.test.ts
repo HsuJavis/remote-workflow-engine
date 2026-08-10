@@ -42,6 +42,32 @@ describe('extractTag (DES-058)', () => {
   it('push event with refs/heads/main → null', () => {
     expect(extractTag('push', { ref: 'refs/heads/main', deleted: false })).toBeNull();
   });
+
+  // `release` — the sequential-deploy trigger (self-update binds here, not `create`, so CI gates it).
+  it('release event action:published → returns release.tag_name', () => {
+    expect(extractTag('release', { action: 'published', release: { tag_name: 'v0.7.0' } })).toBe('v0.7.0');
+  });
+
+  it('release action:created (fires alongside published) → null — arm exactly once per release', () => {
+    expect(extractTag('release', { action: 'created', release: { tag_name: 'v0.7.0' } })).toBeNull();
+  });
+
+  it('release action:released (also fires on publish) → null — arm exactly once per release', () => {
+    expect(extractTag('release', { action: 'released', release: { tag_name: 'v0.7.0' } })).toBeNull();
+  });
+
+  it('release action:published but prerelease:true → null — a pre-release never auto-deploys to prod', () => {
+    expect(extractTag('release', { action: 'published', release: { tag_name: 'v0.8.0-rc1', prerelease: true } })).toBeNull();
+  });
+
+  it('release action:published with no release.tag_name → null', () => {
+    expect(extractTag('release', { action: 'published', release: {} })).toBeNull();
+  });
+
+  it('release action:edited/deleted (housekeeping) → null', () => {
+    expect(extractTag('release', { action: 'edited', release: { tag_name: 'v0.7.0' } })).toBeNull();
+    expect(extractTag('release', { action: 'deleted', release: { tag_name: 'v0.7.0' } })).toBeNull();
+  });
 });
 
 // ─── verifyTagWebhook ─────────────────────────────────────────────────────────
@@ -146,5 +172,28 @@ describe('verifyTagWebhook (DES-058)', () => {
     if (!v.arm) return;
     expect(v.tag).toBe('v1.2.3');
     expect(v.deliveryId).toBe(deliveryId);
+  });
+
+  it('valid signed release/published for v0.7.0 → arm:true (the CI-gated deploy trigger)', () => {
+    const rawRelease = makeRaw({ action: 'published', release: { tag_name: 'v0.7.0', prerelease: false } });
+    const v = verifyTagWebhook(
+      { event: 'release', signatureHeader: sig(rawRelease), deliveryId: 'gh-rel-001', rawBody: rawRelease },
+      { secret: SECRET, tagPattern: TAG_PATTERN },
+    );
+    expect(v.arm).toBe(true);
+    if (!v.arm) return;
+    expect(v.tag).toBe('v0.7.0');
+    expect(v.deliveryId).toBe('gh-rel-001');
+  });
+
+  it('valid signed release/published but prerelease → 200 no-op (does not arm)', () => {
+    const rawPre = makeRaw({ action: 'published', release: { tag_name: 'v0.8.0-rc1', prerelease: true } });
+    const v = verifyTagWebhook(
+      { event: 'release', signatureHeader: sig(rawPre), rawBody: rawPre },
+      { secret: SECRET, tagPattern: TAG_PATTERN },
+    );
+    expect(v.arm).toBe(false);
+    if (v.arm) return;
+    expect(v.httpStatus).toBe(200);
   });
 });

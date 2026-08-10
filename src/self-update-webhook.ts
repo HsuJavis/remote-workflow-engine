@@ -57,6 +57,22 @@ export function extractTag(event: string, body: unknown): string | null {
     return null;
   }
 
+  // `release` — the sequential-deploy trigger. The Release-workflow (`.github/workflows/release.yml`)
+  // re-runs typecheck + the full suite on the tagged commit and ONLY publishes a GitHub Release when
+  // green; publishing fires this event. Binding self-update here (instead of the tag `create` event)
+  // makes the pipeline strictly ordered: tag push → CI → green → Release published → self-update —
+  // never CI and self-update in parallel. Publishing one normal release fires several deliveries
+  // (`created`, `published`, `released`); accept ONLY `published` so the updater arms exactly once.
+  // A `prerelease` (e.g. `v0.8.0-rc1`, which passes TAG_PATTERN) is excluded so a pre-release never
+  // auto-deploys to prod — only a full release does.
+  if (event === 'release') {
+    const b = body as { action?: string; release?: { tag_name?: string; prerelease?: boolean } };
+    if (b.action === 'published' && b.release?.prerelease !== true && typeof b.release?.tag_name === 'string') {
+      return b.release.tag_name;
+    }
+    return null;
+  }
+
   return null;
 }
 
