@@ -136,6 +136,8 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // from the PRODUCTION entrypoint (`npm start` / systemd), not only in-process createServer. Without
     // this the POST /github/webhook route stays 503-unconfigured on a real deploy even when the config
     // file sets these — the feature would be built-but-unwired (same class as the D-V3M gauge/inject bugs).
+    // REQ-056 ext: extra Host/Origin authorities (LAN IP / proxy hostname) allowed while bound to 0.0.0.0.
+    allowedHosts: fileConfig.allowedHosts,
     updateFlagPath: fileConfig.updateFlagPath,
     updateResultPath: fileConfig.updateResultPath,
     selfUpdateDbPath: fileConfig.selfUpdateDbPath,

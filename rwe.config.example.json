@@ -1,5 +1,8 @@
 {
   "bind": "127.0.0.1",
+  "allowedHosts": [
+    "192.168.0.125"
+  ],
   "port": 8787,
   "workRoot": "/var/lib/remote-workflow-engine",
   "timeoutMs": 15000,
@@ -9,12 +12,34 @@
   "maxConcurrentRuns": 64,
   "gateway": "sdk",
   "agentDefinitionsDir": "./agents",
-  "defaultAllowedTools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
+  "defaultAllowedTools": [
+    "Read",
+    "Write",
+    "Edit",
+    "Glob",
+    "Grep",
+    "Bash"
+  ],
   "aliases": {
-    "sonnet":  { "provider": "anthropic", "model": "claude-3-5-sonnet-20241022" },
-    "haiku":   { "provider": "anthropic", "model": "claude-3-5-haiku-20241022" },
-    "opus":    { "provider": "anthropic", "model": "claude-opus-4-5" },
-    "default": { "provider": "anthropic", "model": "claude-3-5-sonnet-20241022" },
-    "local":   { "provider": "ollama", "model": "qwen2.5:7b" }
+    "sonnet": {
+      "provider": "anthropic",
+      "model": "claude-3-5-sonnet-20241022"
+    },
+    "haiku": {
+      "provider": "anthropic",
+      "model": "claude-3-5-haiku-20241022"
+    },
+    "opus": {
+      "provider": "anthropic",
+      "model": "claude-opus-4-5"
+    },
+    "default": {
+      "provider": "anthropic",
+      "model": "claude-3-5-sonnet-20241022"
+    },
+    "local": {
+      "provider": "ollama",
+      "model": "qwen2.5:7b"
+    }
   }
 }
