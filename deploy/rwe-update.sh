@@ -141,6 +141,18 @@ if ! "$NPM" run build 2>&1; then
   revert_and_fail "npm run build failed"
 fi
 
+# ── test gate: the full suite must pass before we restart onto this tag. A tag that
+# COMPILES but fails its tests must NEVER restart the live service — so a test failure
+# safe-fails exactly like a build failure (revert to the prior SHA, no restart). This is
+# the deploy-time guard that complements the GitHub Actions CI on master. Set
+# RWE_UPDATE_SKIP_TESTS=1 (service Environment) to opt out if the suite ever needs an env
+# the oneshot lacks.
+if [ "${RWE_UPDATE_SKIP_TESTS:-}" != "1" ]; then
+  if ! "$NPM" test 2>&1; then
+    revert_and_fail "npm test failed"
+  fi
+fi
+
 # ── success: write applied result, flush to disk, THEN restart ───────────────
 # Write-ordering invariant (DES-060): result flushed before restart so the restarted
 # engine can ingest it at boot (ARCH-034 crash-durability, ARCH-040 observability).

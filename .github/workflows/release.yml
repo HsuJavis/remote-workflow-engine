@@ -1,0 +1,26 @@
+name: Release
+# Runs on a version tag push — the same event that triggers the engine's self-update.
+# Independently re-runs typecheck + the full test suite on the tagged commit and, only if
+# green, publishes a GitHub Release. (The engine's own updater has a test gate too, so a
+# red tag safe-fails there and never restarts the service — this workflow is the visible
+# CI signal + release record.)
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: gh release create "${GITHUB_REF_NAME}" --generate-notes --title "${GITHUB_REF_NAME}"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
