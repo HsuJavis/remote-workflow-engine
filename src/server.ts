@@ -47,6 +47,11 @@ import type { RunStore } from './run-store.js';
 export interface ServerConfig {
   bind?: string;   // default '127.0.0.1'
   port?: number;
+  // REQ-056 extension: extra Host/Origin authorities to allow (beyond loopback + bind). Lets a LAN-IP
+  // or reverse-proxy hostname reach the server while bound to 0.0.0.0. Each is an explicit opt-in;
+  // the DNS-rebinding/CSRF floor still rejects any host outside this union. No auth before v3 — only
+  // add hosts on a trusted network.
+  allowedHosts?: string[];
   workRoot?: string;
   // REQ-004: overrides the default (anthropic-only) alias table for both the gateway
   // (routing) and SubmissionValidator (UNKNOWN_ALIAS check at submission time) — composition-root
@@ -1119,7 +1124,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // route (/mcp, /api/*, /dashboard, /hooks/*). A foreign Host (rebinding) or a present-but-foreign
     // Origin (drive-by browser CSRF) is refused 403; an ABSENT Origin is allowed (programmatic clients
     // send none — fail-open). This is the interim access control until OIDC (REQ-012, D5).
-    if (!isAllowedHost(req.headers.host, bind, boundPort) || !isAllowedOrigin(req.headers.origin, bind, boundPort)) {
+    if (!isAllowedHost(req.headers.host, bind, boundPort, config?.allowedHosts) || !isAllowedOrigin(req.headers.origin, bind, boundPort, config?.allowedHosts)) {
       sendJson(res, 403, { error: 'Forbidden: Host/Origin not allowlisted' });
       return;
     }
