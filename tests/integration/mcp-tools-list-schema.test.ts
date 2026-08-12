@@ -105,6 +105,28 @@ describe('MCP tools/list serves real, non-placeholder tool metadata (IT-028, D-G
     expect(props.seedNamespace?.type).toBe('string');
   });
 
+  it("workflow_run's script/budget descriptions carry the DSL authoring contract (issue #24)", async () => {
+    // A schema-only consumer must be able to author a workflow from the tool schema alone. Pin the
+    // load-bearing pieces so the description can't silently drift back to an opaque "Inline JS script".
+    const tools = await fetchTools();
+    const run = tools.find((t) => t.name === 'workflow_run')!;
+    const props = run.inputSchema?.properties as Record<string, { description?: string }>;
+    const script = props.script?.description ?? '';
+    // injected globals + agent() option surface + model-string rule + return + optional-meta + example
+    for (const needle of ['agent(', 'parallel(', 'pipeline(', 'phase(', 'workflow(', 'effort', 'schema', 'models_list', 'return', 'meta']) {
+      expect(script).toContain(needle);
+    }
+    // meta must be documented as OPTIONAL in this engine (a bare agent() script runs) — never "required".
+    expect(script.toLowerCase()).toContain('optional');
+    // budget semantics: shared pool, between-call enforcement.
+    expect(props.budget?.description ?? '').toMatch(/between agent\(\) calls|shared pool|next agent/i);
+    // return-shape honesty: workflow_run returns the envelope, not a bare runId.
+    expect(run.description).toContain('runId, status, result');
+    // register shares the same script contract.
+    const reg = tools.find((t) => t.name === 'workflow_register')!;
+    expect((reg.inputSchema?.properties as Record<string, { description?: string }>).script?.description ?? '').toContain('agent(');
+  });
+
   it("workflow_agent_log's inputSchema documents both required parameters (runId, agentId)", async () => {
     const tools = await fetchTools();
     const agentLog = tools.find((t) => t.name === 'workflow_agent_log');
