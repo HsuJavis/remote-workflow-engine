@@ -209,6 +209,17 @@ export class RunManager {
     if (this._liveRunCount() >= this._maxConcurrentRuns) {
       throw codedError('RUN_ADMISSION_LIMIT', `maxConcurrentRuns=${this._maxConcurrentRuns} reached; run rejected`);
     }
+    // Defense-in-depth (issue #21): the seed params are arrays, but a non-compliant / schema-blind MCP
+    // client can hand a JSON-stringified array through (the crash the schema fix in server.ts prevents
+    // for compliant clients). A bare string has `.length` and passes `&& length > 0`, then `.map(...)`
+    // throws a raw `TypeError: … .map is not a function`. Reject a non-array here with a typed,
+    // actionable error BEFORE any durable work, whatever the client's serialization quirk.
+    if (spec.seed !== undefined && !Array.isArray(spec.seed)) {
+      throw codedError('INVALID_SEED_SPEC', `seed must be an array of {path, contentB64}; got ${typeof spec.seed}`);
+    }
+    if (spec.seedManifest !== undefined && !Array.isArray(spec.seedManifest)) {
+      throw codedError('INVALID_SEED_SPEC', `seedManifest must be an array of {path, sha256, exec?}; got ${typeof spec.seedManifest}`);
+    }
     // v10 REQ-065: fail fast (before any durable work) if a seedManifest references blobs the client
     // hasn't uploaded — surface the missing shas so the client blob_put's them and retries.
     if (spec.seedManifest && spec.seedManifest.length > 0) {

@@ -79,6 +79,20 @@ describe('efficient seeding via CAS manifest (v10 Slice 2, REQ-064/065)', () => 
     expect(seeded.sha256).toBe(h); // assembled from the CAS, byte-identical
   });
 
+  it('issue #21: a stringified seedManifest fails with typed INVALID_SEED_SPEC, not a raw TypeError', async () => {
+    // Reproduces the reported break: a schema-blind MCP client serialized the array to a string, so the
+    // engine received `"[…]"` and `spec.seedManifest.map(...)` threw `TypeError: … .map is not a
+    // function`. The run-manager guard now rejects a non-array seed spec with a typed, actionable error.
+    const run = await call('workflow_run', {
+      script: `return 1;`,
+      seedManifest: JSON.stringify([{ path: 'x.ts', sha256: h }]),
+      seedNamespace: NS,
+    });
+    expect(run.status).toBe('failed');
+    expect(run.error.code).toBe('INVALID_SEED_SPEC');
+    expect(run.error.code).not.toBe('TypeError');
+  });
+
   it('REQ-065 a seedManifest referencing an un-uploaded blob fails fast with MISSING_BLOBS (no run created)', async () => {
     const ghost = sha('never uploaded');
     const run = await call('workflow_run', {

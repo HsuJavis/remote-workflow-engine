@@ -93,6 +93,18 @@ describe('MCP tools/list serves real, non-placeholder tool metadata (IT-028, D-G
     expect(props).toHaveProperty('args');
   });
 
+  it("workflow_run's inputSchema declares the seed params as arrays (issue #21 schema-drift lock)", async () => {
+    // The handler accepts seed/seedManifest/seedNamespace; if the advertised schema omits them, a
+    // schema-validating MCP client stringifies the array and the engine throws
+    // `TypeError: spec.seedManifest.map is not a function`. Pin their presence + array types so the
+    // schema can't silently drift away from the handler again.
+    const tools = await fetchTools();
+    const props = (tools.find((t) => t.name === 'workflow_run')!.inputSchema?.properties ?? {}) as Record<string, { type?: string }>;
+    expect(props.seed?.type).toBe('array');
+    expect(props.seedManifest?.type).toBe('array');
+    expect(props.seedNamespace?.type).toBe('string');
+  });
+
   it("workflow_agent_log's inputSchema documents both required parameters (runId, agentId)", async () => {
     const tools = await fetchTools();
     const agentLog = tools.find((t) => t.name === 'workflow_agent_log');

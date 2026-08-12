@@ -194,6 +194,11 @@ type ToolName = (typeof TOOL_NAMES)[number];
 interface JsonSchemaProp {
   type?: string | string[];
   description?: string;
+  // Array/object shape — lets array params (e.g. workflow_run's seed/seedManifest) advertise their
+  // element schema so a schema-validating MCP client serializes them as arrays, not strings (issue #21).
+  items?: JsonSchemaProp & { properties?: Record<string, JsonSchemaProp>; required?: string[] };
+  properties?: Record<string, JsonSchemaProp>;
+  required?: string[];
 }
 interface ToolInputSchema {
   type: 'object';
@@ -219,6 +224,36 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
         script: { type: 'string', description: 'Inline JavaScript workflow script to run (mutually exclusive with name).' },
         args: { description: 'Arbitrary arguments passed through to the script as `args`.' },
         budget: { type: ['number', 'null'], description: 'Optional token budget ceiling for this run; null/omitted means unbounded.' },
+        // Seed params MUST be declared here with their array/object types — the handler (mcp-facade
+        // workflow_run) accepts them, but an undeclared array param lets a schema-validating MCP
+        // client serialize it to a string in transit, so the engine receives `"[…]"` and
+        // `spec.seedManifest.map(...)` throws `TypeError: … .map is not a function` (issue #21).
+        seed: {
+          type: 'array',
+          description: 'Inline seed tree materialized into the run workspace before agents start.',
+          items: {
+            type: 'object',
+            properties: {
+              path: { type: 'string', description: 'Workspace-relative destination path.' },
+              contentB64: { type: 'string', description: 'Base64-encoded file contents.' },
+            },
+            required: ['path', 'contentB64'],
+          },
+        },
+        seedManifest: {
+          type: 'array',
+          description: 'Content-addressed seed: references blobs uploaded via blob_put (see seedNamespace). Assembled engine-side before agents start.',
+          items: {
+            type: 'object',
+            properties: {
+              path: { type: 'string', description: 'Workspace-relative destination path.' },
+              sha256: { type: 'string', description: 'SHA-256 of the blob (must have been blob_put into seedNamespace).' },
+              exec: { type: 'boolean', description: 'Mark the file executable (0755) instead of 0644.' },
+            },
+            required: ['path', 'sha256'],
+          },
+        },
+        seedNamespace: { type: 'string', description: 'Per-tenant CAS namespace whose blobs seedManifest resolves against (default "_default").' },
       },
     },
   },
@@ -633,7 +668,7 @@ async function callTool(
   args: Record<string, unknown>,
 ): Promise<unknown> {
   switch (name as ToolName) {
-    case 'workflow_run': return facade.workflow_run(args as { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[] });
+    case 'workflow_run': return facade.workflow_run(args as { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: { path: string; sha256: string; exec?: boolean }[]; seedNamespace?: string });
     case 'workflow_status': return facade.workflow_status(args as { runId: string });
     case 'workflow_result': return facade.workflow_result(args as { runId: string });
     case 'workflow_suspend': return facade.workflow_suspend(args as { runId: string });
