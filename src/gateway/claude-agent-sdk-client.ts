@@ -16,6 +16,7 @@ import type { AgentOpts, HarnessDescriptor, TranscriptEvent } from '../types.js'
 import { redactHarness } from '../agent-executor.js';
 import type { McpServerConfig, McpProbe } from '../mcp-probe.js';
 import type { AliasMap, GatewayClient, GatewayResult } from './client.js';
+import { resolveTimeout } from './client.js';
 import { isPathContained } from '../path-containment.js';
 import { McpRegistry } from '../mcp-registry.js';
 import { resolveConfig, type SecretSource } from '../secret-resolver.js';
@@ -435,9 +436,12 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
   }
 
   async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor) => Promise<void> }): Promise<GatewayResult> {
-    // D-F7: bounded race only when timeoutMs is configured — otherwise unchanged legacy behavior
-    // (a single unbounded attempt), same opt-in shape as ClaudeAgentSdkGatewayConfig.timeoutMs itself.
-    const attempts = this._config.timeoutMs !== undefined ? 1 + Math.max(0, this._config.retries ?? 0) : 1;
+    // D-F7: bounded race only when a timeout is in effect — otherwise unchanged legacy behavior (a
+    // single unbounded attempt). issue #24/#22: a per-call AgentOpts.timeoutMs counts as "in effect"
+    // even when the gateway has no configured default, so a config-less gateway still bounds+retries
+    // a call that asked for a timeout. Must resolve the SAME effective value as _invokeOnce below.
+    const effTimeout = resolveTimeout(req.opts.timeoutMs) ?? this._config.timeoutMs;
+    const attempts = effTimeout !== undefined ? 1 + Math.max(0, this._config.retries ?? 0) : 1;
     let last: GatewayResult = { ok: false, provider: 'claude-agent-sdk', reason: 'terminal' };
     for (let i = 0; i < attempts; i++) {
       last = await this._invokeOnce(req);
@@ -447,7 +451,10 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
   }
 
   private async _invokeOnce(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor) => Promise<void> }): Promise<GatewayResult> {
-    const { timeoutMs } = this._config;
+    // issue #24/#22: per-call AgentOpts.timeoutMs overrides the configured default (both directions);
+    // MUST match invoke()'s attempts calc above so a bounded attempt count never pairs with an
+    // unbounded timer (or vice-versa). resolveTimeout rejects a bad value → gateway default applies.
+    const timeoutMs = resolveTimeout(req.opts.timeoutMs) ?? this._config.timeoutMs;
     // D-F10(c): the controller must exist BEFORE query() is called and be handed to the SDK's own
     // documented cancellation hook (Options.abortController, sdk.d.ts:1275) — otherwise aborting it
     // only resolves this class's own local await-race while the real spawned `claude` CLI

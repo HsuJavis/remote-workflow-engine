@@ -44,6 +44,11 @@ export interface AgentOpts {
   schema?: object;
   model?: string;
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** issue #24/#22: per-call total timeout in ms. Overrides the gateway's configured default in BOTH
+   *  directions (a default, not a ceiling — a caller may shorten or lengthen it). On timeout the call
+   *  yields null (after retries), like any gateway failure — it does NOT throw. An invalid value
+   *  (non-positive / non-finite / non-number) is ignored and the gateway default applies. */
+  timeoutMs?: number;
   isolation?: 'worktree';
   agentType?: string;
   /** REQ-017 (D-V3M-1): names of server-side-provisioned MCP servers this agent references
