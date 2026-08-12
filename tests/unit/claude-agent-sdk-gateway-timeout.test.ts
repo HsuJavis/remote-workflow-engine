@@ -67,4 +67,47 @@ describe('ClaudeAgentSdkGatewayClient bounded timeout/retry race (UT-021, D-F7)'
     // retries:1 => 1 initial attempt + 1 retry = exactly 2 session constructions.
     expect(calls).toBe(2);
   }, 10000);
+
+  // issue #24/#22: a per-call AgentOpts.timeoutMs overrides the gateway's configured default.
+  it('opts.timeoutMs shrinks the bound below a large configured default', async () => {
+    const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
+    const config = { baseUrl: 'http://127.0.0.1:1', queryImpl: (() => hungSession()) as never, timeoutMs: 60000, retries: 0 };
+    const client = new ClaudeAgentSdkGatewayClient(config as never);
+    const start = Date.now();
+    const result = await Promise.race([
+      client.invoke({ prompt: 'hi', opts: { timeoutMs: 150 }, runId: 'r', agentId: 'a' }),
+      new Promise((resolve) => setTimeout(() => resolve(TEST_LEVEL_BOUND), 3000)),
+    ]);
+    expect(result).not.toBe(TEST_LEVEL_BOUND);
+    expect((result as { ok: boolean }).ok).toBe(false);
+    expect(Date.now() - start).toBeLessThan(1500); // bounded by opts 150ms, NOT the 60s config
+  }, 10000);
+
+  it('opts.timeoutMs bounds a config-LESS gateway (permutation: no configured default + per-call set)', async () => {
+    const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
+    let calls = 0;
+    // No timeoutMs in config → legacy unbounded path. A per-call opts.timeoutMs must still bound it,
+    // AND invoke()'s attempts calc must agree (1 + retries), or a bounded timer pairs with attempts=1.
+    const config = { baseUrl: 'http://127.0.0.1:1', queryImpl: (() => { calls += 1; return hungSession(); }) as never, retries: 1 };
+    const client = new ClaudeAgentSdkGatewayClient(config as never);
+    const result = await Promise.race([
+      client.invoke({ prompt: 'hi', opts: { timeoutMs: 150 }, runId: 'r', agentId: 'a' }),
+      new Promise((resolve) => setTimeout(() => resolve(TEST_LEVEL_BOUND), 3000)),
+    ]);
+    expect(result).not.toBe(TEST_LEVEL_BOUND); // NOT the unbounded-hang escape hatch
+    expect((result as { ok: boolean }).ok).toBe(false);
+    expect(calls).toBe(2); // per-call timeout enabled the 1+retries attempt count
+  }, 10000);
+
+  it('an invalid opts.timeoutMs falls back to the configured default (never disables the bound)', async () => {
+    const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
+    const config = { baseUrl: 'http://127.0.0.1:1', queryImpl: (() => hungSession()) as never, timeoutMs: 200, retries: 0 };
+    const client = new ClaudeAgentSdkGatewayClient(config as never);
+    const result = await Promise.race([
+      client.invoke({ prompt: 'hi', opts: { timeoutMs: -1 }, runId: 'r', agentId: 'a' }), // invalid → ignored
+      new Promise((resolve) => setTimeout(() => resolve(TEST_LEVEL_BOUND), 3000)),
+    ]);
+    expect(result).not.toBe(TEST_LEVEL_BOUND);
+    expect((result as { ok: boolean }).ok).toBe(false); // still bounded by config 200ms
+  }, 10000);
 });

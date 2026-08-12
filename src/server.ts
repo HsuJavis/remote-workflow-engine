@@ -226,7 +226,7 @@ const SCRIPT_DSL_DOC =
   '`parallel(thunks[])` and `pipeline(items[], ...stages)` — fan-out helpers; ' +
   '`phase(title)` — labels the agents that follow (for workflow_status/dashboard); ' +
   '`workflow(nameOrRef, args?)` — run another registered workflow inline. ' +
-  'agent() opts: {model?, effort?: "low"|"medium"|"high"|"xhigh"|"max", label?, schema? (a JSON Schema — forces structured JSON output), agentType?, mcp?: string[] (names of server-provisioned MCP servers), isolation?: "worktree", phase?}. ' +
+  'agent() opts: {model?, effort?: "low"|"medium"|"high"|"xhigh"|"max", timeoutMs? (per-call total timeout in ms; overrides the gateway default in both directions; on timeout the call yields null after retries — it does NOT throw; effective wall-clock ≈ timeoutMs × (1 + gateway retries, default 1)), label?, schema? (a JSON Schema — forces structured JSON output), agentType?, mcp?: string[] (names of server-provisioned MCP servers), isolation?: "worktree", phase?}. ' +
   'The `model` string is either a curated alias (see models_list entries\' `alias`, e.g. "opus"/"sonnet") or the join `provider + "/" + model` from a models_list entry (e.g. "openrouter/google/gemma-3-27b-it:free"); omitted → the "default" alias. ' +
   'The script\'s `return` value is exactly what workflow_result later yields. ' +
   'Optional: `export const meta = { name, description, phases }` (a pure literal) supplies workflow_list metadata + dashboard phase names — omit it and the script still runs (treated as empty, not an error). ' +

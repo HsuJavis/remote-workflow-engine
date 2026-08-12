@@ -9,6 +9,14 @@ export interface AliasMap {
   [alias: string]: { provider: 'anthropic' | 'openai' | 'openrouter' | 'gemini' | 'ollama'; model: string };
 }
 
+/** issue #24/#22: validate a caller-supplied per-call timeout (AgentOpts.timeoutMs). Only a positive,
+ *  finite number is honored; anything else (0, negative, NaN, a string from an untrusted script) →
+ *  undefined so the caller falls back to the gateway's configured default — a bad value can never
+ *  DISABLE the bound. Shared by both gateway clients so the predicate can't drift. */
+export function resolveTimeout(t: unknown): number | undefined {
+  return typeof t === 'number' && Number.isFinite(t) && t > 0 ? t : undefined;
+}
+
 export type GatewayResult =
   | {
       ok: true; provider: string; model: string; tokens: { input: number; output: number }; content: unknown;
@@ -278,12 +286,14 @@ export class LiteLLMGatewayClient implements GatewayClient {
     }
 
     const fetchImpl = this._config.fetchImpl ?? fetch;
+    // issue #24/#22: a per-call AgentOpts.timeoutMs overrides the configured default (both directions).
+    const effTimeout = resolveTimeout(req.opts.timeoutMs) ?? this._config.timeoutMs;
     const attempts = 1 + Math.max(0, this._config.retries);
     let last: GatewayResult = { ok: false, provider: target.provider, reason: 'terminal' };
     for (let i = 0; i < attempts; i++) {
       last = this._proxy
-        ? await callViaLiteLLMProxy(this._proxy, aliasName, target, req, this._config.timeoutMs, fetchImpl, req.signal)
-        : await callProvider(target, req, this._config.timeoutMs, fetchImpl, req.signal);
+        ? await callViaLiteLLMProxy(this._proxy, aliasName, target, req, effTimeout, fetchImpl, req.signal)
+        : await callProvider(target, req, effTimeout, fetchImpl, req.signal);
       if (last.ok) return last;
     }
     return last;
