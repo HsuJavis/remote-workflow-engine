@@ -39,6 +39,26 @@ describe('AgentTranscriptSink.markHarness surfaces model/provider on the live re
     expect(sink.getAllRecords()).toHaveLength(0);
   });
 
+  it('markActivity bumps lastActivityAt on a running record without clobbering state (#20 progress signal)', () => {
+    const sink = new AgentTranscriptSink();
+    sink.markQueued('agent-h');
+    sink.markRunning('agent-h', '2026-01-01T00:00:00.000Z');
+    expect(sink.getRecord('agent-h')!.lastActivityAt).toBeUndefined(); // no events yet → indistinguishable-until-now
+    sink.markActivity('agent-h', '2026-01-01T00:00:03.000Z');
+    let rec = sink.getRecord('agent-h')!;
+    expect(rec.lastActivityAt).toBe('2026-01-01T00:00:03.000Z'); // progress is now observable
+    expect(rec.state).toBe('running');
+    expect(rec.startedAt).toBe('2026-01-01T00:00:00.000Z');
+    sink.markActivity('agent-h', '2026-01-01T00:00:07.000Z'); // advances with each streamed event
+    expect(sink.getRecord('agent-h')!.lastActivityAt).toBe('2026-01-01T00:00:07.000Z');
+  });
+
+  it('markActivity on an unknown agentId is a no-op', () => {
+    const sink = new AgentTranscriptSink();
+    sink.markActivity('ghost', '2026-01-01T00:00:00.000Z');
+    expect(sink.getRecord('ghost')).toBeUndefined();
+  });
+
   it('a failed/timed-out call preserves the markHarness model (post-mortem: which model failed) — #22', async () => {
     const sink = new AgentTranscriptSink();
     sink.markQueued('agent-x', 'lean:Architecture');
