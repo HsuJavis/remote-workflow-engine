@@ -214,16 +214,34 @@ interface ToolMeta {
 // client must be able to learn from tools/list alone what fields each tool actually takes, not
 // just its own name repeated as `description` and an opaque `{type:'object'}` with no properties
 // (review finding C-1). Mirrors the exact argument shapes callTool()/McpFacade already accept.
+// issue #24: a schema-only consumer (no skill/docs) must be able to author a workflow from the tool
+// schema alone. `script` is plain JS with an injected DSL that has no other schema home, so the
+// contract lives here. Kept accurate to THIS engine: `meta` is OPTIONAL (a bare `await agent(...)`
+// script runs); `log()` is currently a no-op so it is omitted; budget counts input+output tokens.
+const SCRIPT_DSL_DOC =
+  'A workflow script is plain async JavaScript run in a sandboxed VM (top-level await allowed). ' +
+  'Injected globals: `args` (the value you pass as this call\'s args); ' +
+  '`budget` = {total, spent(), remaining()} (the token pool, see the budget param); ' +
+  '`agent(prompt, opts?)` — spawn a sub-agent, returns its final text (or, when opts.schema is set, a validated object); ' +
+  '`parallel(thunks[])` and `pipeline(items[], ...stages)` — fan-out helpers; ' +
+  '`phase(title)` — labels the agents that follow (for workflow_status/dashboard); ' +
+  '`workflow(nameOrRef, args?)` — run another registered workflow inline. ' +
+  'agent() opts: {model?, effort?: "low"|"medium"|"high"|"xhigh"|"max", label?, schema? (a JSON Schema — forces structured JSON output), agentType?, mcp?: string[] (names of server-provisioned MCP servers), isolation?: "worktree", phase?}. ' +
+  'The `model` string is either a curated alias (see models_list entries\' `alias`, e.g. "opus"/"sonnet") or the join `provider + "/" + model` from a models_list entry (e.g. "openrouter/google/gemma-3-27b-it:free"); omitted → the "default" alias. ' +
+  'The script\'s `return` value is exactly what workflow_result later yields. ' +
+  'Optional: `export const meta = { name, description, phases }` (a pure literal) supplies workflow_list metadata + dashboard phase names — omit it and the script still runs (treated as empty, not an error). ' +
+  'Minimal example: `const r = await agent("Summarize: " + args.text, { model: "sonnet" }); return { summary: r };`';
+
 const TOOL_METADATA: Record<ToolName, ToolMeta> = {
   workflow_run: {
-    description: 'Starts a new workflow run from either an inline script or a previously registered workflow name, returning its runId.',
+    description: 'Starts a new workflow run from either an inline script or a previously registered workflow name. Returns the envelope {runId, status, result:{runId}} — the run starts asynchronously; poll workflow_status and read workflow_result for the script\'s return value.',
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Name of a previously registered workflow to run (mutually exclusive with script).' },
-        script: { type: 'string', description: 'Inline JavaScript workflow script to run (mutually exclusive with name).' },
-        args: { description: 'Arbitrary arguments passed through to the script as `args`.' },
-        budget: { type: ['number', 'null'], description: 'Optional token budget ceiling for this run; null/omitted means unbounded.' },
+        script: { type: 'string', description: 'Inline JavaScript workflow script to run (mutually exclusive with name). ' + SCRIPT_DSL_DOC },
+        args: { description: 'Arbitrary arguments passed through to the script as the injected `args` global.' },
+        budget: { type: ['number', 'null'], description: 'Optional token budget (input+output tokens) for the whole run — a shared pool across the script and every agent()/workflow() call. null/omitted = unbounded. Enforced BETWEEN agent() calls, not mid-call: a call that starts under budget always completes; the NEXT agent() call throws once the pool is exhausted. Inside the script, `budget` is a {total, spent(), remaining()} object.' },
         // Seed params MUST be declared here with their array/object types — the handler (mcp-facade
         // workflow_run) accepts them, but an undeclared array param lets a schema-validating MCP
         // client serialize it to a string in transit, so the engine receives `"[…]"` and
@@ -305,7 +323,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'The workflow name to register/update.' },
-        script: { type: 'string', description: 'The workflow script text to save under this name.' },
+        script: { type: 'string', description: 'The workflow script text to save under this name (run later via workflow_run({name})). ' + SCRIPT_DSL_DOC },
       },
       required: ['name', 'script'],
     },
@@ -480,7 +498,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     },
   },
   models_list: {
-    description: "Returns a unified, normalized cross-provider model catalog (curated aliases + live Ollama /api/tags + live OpenRouter /api/v1/models + a static openai/anthropic table). Each entry is {provider, model, alias?, description, modalities{in,out}, contextWindow, price(in/out|'free'|'unknown'), toolUse(bool|'unknown'), location('local'|'remote')}. Optional filters narrow the (potentially large) result; an unreachable live source degrades gracefully. No API key ever appears in the output.",
+    description: "Returns a unified, normalized cross-provider model catalog (curated aliases + live Ollama /api/tags + live OpenRouter /api/v1/models + a static openai/anthropic table). Each entry is {provider, model, alias?, description, modalities{in,out}, contextWindow, price(in/out|'free'|'unknown'), toolUse(bool|'unknown'), location('local'|'remote')}. To use an entry as an agent({model}) value inside a workflow script: pass its `alias` if it has one (e.g. \"opus\"), else join `provider + \"/\" + model` (e.g. \"openrouter/google/gemma-3-27b-it:free\"). Optional filters narrow the (potentially large) result; an unreachable live source degrades gracefully. No API key ever appears in the output.",
     inputSchema: {
       type: 'object',
       properties: {
