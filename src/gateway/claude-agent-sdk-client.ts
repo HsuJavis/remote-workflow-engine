@@ -570,6 +570,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       const descriptor = redactHarness({
         surfaceType: 'curated',
         modelName,
+        provider,
         prompt: req.prompt,
         curatedTools,
         mergedMcp: Object.entries(mergedMcp).map(([name, cfg]) => ({ name, ...(cfg as Record<string, unknown>) })),
