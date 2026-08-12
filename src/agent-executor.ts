@@ -173,15 +173,26 @@ export class AgentTranscriptSink {
     if (existing) this._records.set(agentId, { ...existing, model, provider });
   }
 
+  /** issue #20: stamp lastActivityAt each time the gateway streams a live transcript event, so
+   *  workflow_status shows a progressing agent's clock advancing while a hung one's stays put. Merge —
+   *  never clobber state/model/provider. No-op if no record exists yet (never fabricates one). */
+  markActivity(agentId: string, ts: string): void {
+    const existing = this._records.get(agentId);
+    if (existing) this._records.set(agentId, { ...existing, lastActivityAt: ts });
+  }
+
   /** Records the outcome of one agent() call: captures the usage event and feeds RunGuard.addTokens exactly once. */
   async capture(runId: string, req: { agentId: string; label?: string; phase?: string }, result: GatewayResult, ts: string): Promise<void> {
     const prev = this._records.get(req.agentId); // v8 Slice 2/2b: carry frame (markQueued) + startedAt (markRunning)
     const frame = prev?.frame, startedAt = prev?.startedAt;
+    // #20: carry lastActivityAt into the terminal record too — its absence on a failed/timed-out agent
+    // (never produced an event) vs its presence (got partway) is diagnostic post-mortem.
+    const lastActivityAt = prev?.lastActivityAt;
     if (result.ok) {
       const delta = result.tokens.input + result.tokens.output;
       this._guard?.addTokens(delta);
       this._records.set(req.agentId, {
-        agentId: req.agentId, label: req.label, phase: req.phase, frame, startedAt, endedAt: ts,
+        agentId: req.agentId, label: req.label, phase: req.phase, frame, startedAt, lastActivityAt, endedAt: ts,
         state: 'done', provider: result.provider, model: result.model, tokens: result.tokens,
       });
       // D-G8-2: forward the real message/tool_call/tool_result stream the gateway captured (when
@@ -193,7 +204,7 @@ export class AgentTranscriptSink {
       await this._emit(runId, req.agentId, { ts, kind: 'usage', data: { tokens: result.tokens, provider: result.provider, model: result.model } });
     } else {
       this._records.set(req.agentId, {
-        agentId: req.agentId, label: req.label, phase: req.phase, frame, startedAt, endedAt: ts,
+        agentId: req.agentId, label: req.label, phase: req.phase, frame, startedAt, lastActivityAt, endedAt: ts,
         // #20: preserve the model markHarness stamped on the live record — a failed/timed-out call
         // carries no model of its own, and post-mortem (after the operator stops the run) is exactly
         // when "which model failed" matters most. Don't wipe it back to ''.
@@ -332,7 +343,15 @@ export class AgentExecutor implements AgentSpawner {
         });
       }
     };
-    const invokePromise = this._gateway.invoke({ prompt, opts, runId: req.runId, agentId: req.agentId, signal: req.signal, workspace: req.workspace, onHarness });
+    // #20: stream each live transcript event to the store AND bump the record's lastActivityAt, so
+    // agent_log grows and a progressing agent's clock advances DURING the call — a hung agent (no
+    // events) keeps lastActivityAt at startedAt. Fire-and-forget-ordered: awaited by the gateway per
+    // event, so file appends stay in arrival order. Gateways without a turn stream never call it.
+    const onEvent = async (ev: TranscriptEvent): Promise<void> => {
+      if (store) await store.appendTranscript(req.runId, req.agentId, ev);
+      sink.markActivity(req.agentId, ev.ts);
+    };
+    const invokePromise = this._gateway.invoke({ prompt, opts, runId: req.runId, agentId: req.agentId, signal: req.signal, workspace: req.workspace, onHarness, onEvent });
     const aborted = new Promise<'aborted'>((resolve) => {
       req.signal.addEventListener('abort', () => resolve('aborted'), { once: true });
     });

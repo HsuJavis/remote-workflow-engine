@@ -435,7 +435,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     return out;
   }
 
-  async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor) => Promise<void> }): Promise<GatewayResult> {
+  async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void> }): Promise<GatewayResult> {
     // D-F7: bounded race only when a timeout is in effect — otherwise unchanged legacy behavior (a
     // single unbounded attempt). issue #24/#22: a per-call AgentOpts.timeoutMs counts as "in effect"
     // even when the gateway has no configured default, so a config-less gateway still bounds+retries
@@ -450,7 +450,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     return last;
   }
 
-  private async _invokeOnce(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor) => Promise<void> }): Promise<GatewayResult> {
+  private async _invokeOnce(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void> }): Promise<GatewayResult> {
     // issue #24/#22: per-call AgentOpts.timeoutMs overrides the configured default (both directions);
     // MUST match invoke()'s attempts calc above so a bounded attempt count never pairs with an
     // unbounded timer (or vice-versa). resolveTimeout rejects a bad value → gateway default applies.
@@ -586,9 +586,16 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       await req.onHarness(descriptor);
     }
     const session = this._query({ prompt: req.prompt, options });
-    const drain = this._drain(session, req.opts.model);
+    const drain = this._drain(session, req.opts.model, req.onEvent);
 
-    if (controller === undefined) return drain;
+    // issue #22: name the culprit on any failure that lacks its own detail — so a timeout/unreachable
+    // is diagnosable ("which alias→model?") instead of an opaque reason. modelName is the resolved
+    // wire model; provider is the resolved backend. A success or an already-detailed failure is
+    // returned unchanged.
+    const namedDetail = (reason: string): string => `no response from model "${modelName}" (provider "${provider}") — ${reason}`;
+    const enrich = (r: GatewayResult): GatewayResult => (!r.ok && r.detail === undefined ? { ...r, detail: namedDetail(r.reason) } : r);
+
+    if (controller === undefined) return enrich(await drain);
 
     // D-F7/D-F9a: race the session against a timeoutMs-bounded timer and/or the caller's own
     // (RunManager-owned) AbortSignal — whichever fires first wins, exactly like
@@ -599,8 +606,9 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
 
     try {
       const outcome = await Promise.race([drain, bound]);
-      if (outcome !== 'aborted') return outcome;
-      return { ok: false, provider: 'claude-agent-sdk', reason: timeoutMs !== undefined ? 'timeout' : 'terminal' };
+      if (outcome !== 'aborted') return enrich(outcome);
+      const reason = timeoutMs !== undefined ? 'timeout' : 'terminal';
+      return { ok: false, provider: 'claude-agent-sdk', reason, detail: namedDetail(reason) };
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       req.signal?.removeEventListener('abort', onExternalAbort);
@@ -611,18 +619,26 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
    *  D-G8-2: every intermediate message/tool_call/tool_result turn along the way is captured (in
    *  order) into the returned GatewayResult.events, not just the final result — the real
    *  reasoning/tool-call trace `workflow_agent_log` is built to show. */
-  private async _drain(session: ReturnType<QueryImpl>, model: string | undefined): Promise<GatewayResult> {
+  private async _drain(session: ReturnType<QueryImpl>, model: string | undefined, onEvent?: (ev: TranscriptEvent) => void | Promise<void>): Promise<GatewayResult> {
     const events: TranscriptEvent[] = [];
+    // issue #20: when a live-event sink is provided, STREAM each transcript event as it arrives (so
+    // agent_log grows + lastActivityAt advances mid-call) and DON'T also return them in the result —
+    // capture() would otherwise re-emit the same events at terminal (duplicates). No sink → unchanged
+    // legacy behavior: accumulate and return events for capture() to emit once at the end.
+    const streaming = onEvent !== undefined;
     try {
       for await (const msg of session as AsyncIterable<SDKMessage>) {
         if (msg.type !== 'result') {
-          events.push(...extractEvents(msg, new Date().toISOString())); // det:allow — transcript timestamp, not a decision
+          const evs = extractEvents(msg, new Date().toISOString()); // det:allow — transcript timestamp, not a decision
+          if (streaming) { for (const ev of evs) await onEvent!(ev); }
+          else { events.push(...evs); }
           continue;
         }
         if (msg.subtype !== 'success' || msg.is_error) {
           const m = msg as unknown as { subtype?: string; result?: string; error?: string };
           const detail = [m.subtype, m.result ?? m.error].filter(Boolean).join(': ') || 'error';
-          events.push({ ts: new Date().toISOString(), kind: 'message', data: { type: 'error', detail } }); // det:allow — transcript timestamp
+          const errEv: TranscriptEvent = { ts: new Date().toISOString(), kind: 'message', data: { type: 'error', detail } }; // det:allow — transcript timestamp
+          if (streaming) { await onEvent!(errEv); } else { events.push(errEv); }
           return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', detail, events };
         }
         return {

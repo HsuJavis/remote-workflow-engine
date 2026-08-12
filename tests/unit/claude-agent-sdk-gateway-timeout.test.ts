@@ -66,6 +66,10 @@ describe('ClaudeAgentSdkGatewayClient bounded timeout/retry race (UT-021, D-F7)'
     expect(elapsed).toBeLessThan(1500);
     // retries:1 => 1 initial attempt + 1 retry = exactly 2 session constructions.
     expect(calls).toBe(2);
+    // issue #22: the timeout failure names the culprit (model + provider) instead of a bare reason.
+    const detail = (result as { detail?: string }).detail ?? '';
+    expect(detail).toMatch(/model/i);
+    expect(detail).toMatch(/timeout/i);
   }, 10000);
 
   // issue #24/#22: a per-call AgentOpts.timeoutMs overrides the gateway's configured default.

@@ -47,6 +47,15 @@ function req(opts: AgentOpts = {}) {
   return { prompt: 'ping', opts, runId: 'run-1', agentId: 'agent-1' };
 }
 
+// A session that yields ONE assistant turn (a text message) then the success result — so the real
+// _drain has an intermediate transcript event to stream before the terminal usage.
+function fakeSessionWithTurn(turnText: string, resultText: string) {
+  return (async function* () {
+    yield { type: 'assistant', message: { content: [{ type: 'text', text: turnText }] } };
+    yield { type: 'result', subtype: 'success', result: resultText, usage: { input_tokens: 5, output_tokens: 6 } };
+  })();
+}
+
 describe('ClaudeAgentSdkGatewayClient (UT-018, D-F1)', () => {
   beforeEach(() => {
     queryMock.mockReset();
@@ -82,6 +91,30 @@ describe('ClaudeAgentSdkGatewayClient (UT-018, D-F1)', () => {
     expect(call.options?.env?.['ANTHROPIC_API_KEY']).toBeTruthy();
     // D-R2 hermeticity: never the real host env's credential, even if one happens to be set.
     expect(call.options?.env?.['ANTHROPIC_API_KEY']).not.toBe(process.env['ANTHROPIC_API_KEY']);
+  });
+
+  it('the real _drain streams intermediate turns via onEvent and returns them ONCE (empty result.events) — #20 no-double-emit contract', async () => {
+    const injected = vi.fn().mockReturnValue(fakeSessionWithTurn('reasoning…', 'final answer'));
+    const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
+    const client = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:4000', queryImpl: injected as never });
+    const streamed: Array<{ kind: string }> = [];
+    const result = await client.invoke({ ...req(), onEvent: (ev) => { streamed.push(ev); } });
+
+    expect(result.ok).toBe(true);
+    // The intermediate turn WAS streamed live via onEvent…
+    expect(streamed.some((e) => e.kind === 'message')).toBe(true);
+    // …and is NOT ALSO carried in result.events — otherwise capture() would re-emit it (a duplicate
+    // in the transcript). This is the contract live-event-streaming.test.ts assumes of the real class.
+    if (result.ok) expect(result.events ?? []).toHaveLength(0);
+  });
+
+  it('without onEvent, the real _drain returns intermediate turns in result.events (unchanged legacy path)', async () => {
+    const injected = vi.fn().mockReturnValue(fakeSessionWithTurn('reasoning…', 'final answer'));
+    const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
+    const client = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:4000', queryImpl: injected as never });
+    const result = await client.invoke(req()); // no onEvent → legacy accumulate-and-return
+    expect(result.ok).toBe(true);
+    if (result.ok) expect((result.events ?? []).some((e) => e.kind === 'message')).toBe(true);
   });
 
   it('an injected queryImpl overrides the default (test seam stays injectable)', async () => {

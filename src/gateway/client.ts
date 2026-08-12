@@ -47,7 +47,11 @@ export interface GatewayClient {
   /** `onHarness` (DES-066 / TASK-069): optional hook called eagerly at session-build time (post-curation,
    *  before any query) with the redacted `HarnessDescriptor`. The executor wires this to append a
    *  `{kind:'harness'}` transcript event so deriveAgentRecords can surface the dispatched agent's model. */
-  invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor) => Promise<void> }): Promise<GatewayResult>;
+  invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor) => Promise<void>;
+    /** issue #20: called per live transcript event as the session streams it (before the terminal
+     *  result), so agent_log grows and lastActivityAt advances DURING the call. Gateways with no
+     *  turn-by-turn stream (LiteLLMGatewayClient) never call it — unchanged terminal-only behavior. */
+    onEvent?: (ev: TranscriptEvent) => void | Promise<void> }): Promise<GatewayResult>;
   /** D-V2I-6: optional lifecycle hook — a gateway that owns a subprocess (e.g.
    *  `LiteLLMGatewayClient`'s managed `LiteLLMProxyManager`) cascades the stop here so
    *  `Server.close()` can reap it regardless of which gateway-selection branch built it. Gateways

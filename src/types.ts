@@ -76,6 +76,12 @@ export interface AgentRecord {
   startedAt?: string;
   /** v8 Slice 2b (REQ-051): ISO time this agent settled (done/failed). Absent while in flight. */
   endedAt?: string;
+  /** issue #20: ISO time of the most recent live transcript event (message/tool_call/tool_result)
+   *  the gateway streamed for this still-running agent — bumped per message by the onEvent hook. Lets
+   *  workflow_status distinguish a PROGRESSING agent (lastActivityAt advancing past startedAt) from a
+   *  HUNG one (lastActivityAt stays at startedAt / absent), which tokens-only-at-terminal could not.
+   *  Absent until the first streamed event; the terminal usage event does not bump it. */
+  lastActivityAt?: string;
 }
 
 export interface PhaseView {

@@ -276,7 +276,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     },
   },
   workflow_status: {
-    description: "Returns a run's current lifecycle status (queued/running/suspended/stopped/completed/failed) plus its phases and in-flight/completed agent records.",
+    description: "Returns a run's current lifecycle status (queued/running/suspended/stopped/completed/failed) plus its phases and in-flight/completed agent records. Each agent record carries provider/model (known once the session is built, before the first token), tokens (input+output; populated at terminal — providers report usage only on the final message), startedAt/endedAt, and lastActivityAt (ISO time of the most recent streamed transcript event — advances past startedAt while an agent is genuinely progressing; absent/stale marks a stalled or hung agent). Pair with workflow_agent_log, which grows live as the run streams events.",
     inputSchema: { type: 'object', properties: { runId: { type: 'string', description: 'The run to inspect.' } }, required: ['runId'] },
   },
   workflow_result: {
