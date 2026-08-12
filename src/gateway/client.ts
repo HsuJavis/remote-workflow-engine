@@ -274,7 +274,7 @@ export class LiteLLMGatewayClient implements GatewayClient {
       const p = req.prompt;
       const PROMPT_CAP = 4096, HALF = 2048;
       const cappedPrompt = p.length > PROMPT_CAP ? p.slice(0, HALF) + '…[truncated]…' + p.slice(p.length - HALF) : p;
-      await req.onHarness({ model: aliasName, prompt: cappedPrompt, tools: [], skills: [], mcpServers: [], surfaceType: 'none' });
+      await req.onHarness({ model: aliasName, provider: target.provider, prompt: cappedPrompt, tools: [], skills: [], mcpServers: [], surfaceType: 'none' });
     }
 
     const fetchImpl = this._config.fetchImpl ?? fetch;

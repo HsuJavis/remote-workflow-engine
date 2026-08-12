@@ -27,6 +27,8 @@ function harnessEvent(agentId: string, seq: number = 1): TranscriptEvent {
     data: {
       agentId,
       descriptor: {
+        model: 'rwe-proxy-claude-opus-4-8',
+        provider: 'ollama',
         prompt: 'Do the thing',
         tools: ['bash'],
         skills: [],
@@ -57,6 +59,10 @@ describe('run-status-aware deriveAgentRecords (IT-065, DES-066)', () => {
     const rec = records.find((r) => r.agentId === 'agent-1');
     expect(rec).toBeDefined();
     expect(rec?.state).toBe('running');
+    // #20: a restart-reconstructed running agent surfaces its backend from the harness descriptor,
+    // not a blank model / 'unknown' provider.
+    expect(rec?.model).toBe('rwe-proxy-claude-opus-4-8');
+    expect(rec?.provider).toBe('ollama');
   });
 
   it('harness event + no usage + parent status interrupted → agent state:"queued" (will re-dispatch on resume)', () => {

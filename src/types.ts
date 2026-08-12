@@ -168,6 +168,10 @@ export interface JournalEntry {
 /** DES-066 (TASK-069): the post-curation session surface — names only, never secrets or resolved configs. */
 export interface HarnessDescriptor {
   model: string;
+  /** Resolved provider for `model` (e.g. 'anthropic'/'ollama'/'openai'). Emitted at session-build
+   *  time so workflow_status can show WHICH backend a still-running agent is waiting on — before the
+   *  first token, so a hung/slow backend is diagnosable rather than a blank `provider:""` (issue #20). */
+  provider: string;
   /** 4KB head+tail capped prompt (DES-066: first 2048 + "…[truncated]…" + last 2048). */
   prompt: string;
   tools: string[];

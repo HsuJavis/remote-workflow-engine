@@ -55,6 +55,7 @@ describe('harness emission via onHarness hook (IT-069, DES-066)', () => {
   it('appends a {kind:"harness"} transcript event when the hook is called', async () => {
     const descriptor: HarnessDescriptor = {
       model: 'test-model',
+      provider: 'test-provider',
       prompt: 'hello world',
       tools: ['Read', 'Write'],
       skills: ['my-skill'],
@@ -74,6 +75,7 @@ describe('harness emission via onHarness hook (IT-069, DES-066)', () => {
   it('harness event descriptor carries model, surfaceType, tools, skills, mcpServers NAMES', async () => {
     const descriptor: HarnessDescriptor = {
       model: 'gpt-4o',
+      provider: 'openai',
       prompt: 'short prompt',
       tools: ['Bash', 'Read'],
       skills: ['sdlc-skill'],
@@ -102,6 +104,7 @@ describe('harness emission via onHarness hook (IT-069, DES-066)', () => {
     // Simulate what redactHarness produces: only the server NAME, never the resolved URL/key.
     const descriptor: HarnessDescriptor = {
       model: 'claude-3-5-haiku',
+      provider: 'anthropic',
       prompt: 'safe prompt',
       tools: ['Read'],
       skills: [],
@@ -126,6 +129,7 @@ describe('harness emission via onHarness hook (IT-069, DES-066)', () => {
   it('surfaceType:"none" (direct-fetch path) emits harness with empty arrays', async () => {
     const descriptor: HarnessDescriptor = {
       model: 'ollama/llama3',
+      provider: 'ollama',
       prompt: 'test',
       tools: [],
       skills: [],

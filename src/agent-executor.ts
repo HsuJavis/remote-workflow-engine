@@ -12,6 +12,7 @@ import type { RunStore } from './run-store.js';
 export function redactHarness(resolved: {
   surfaceType: 'curated' | 'none';
   modelName: string;
+  provider?: string;
   prompt: string;
   curatedTools: string[];
   mergedMcp: Array<{ name: string; [key: string]: unknown }>;
@@ -19,15 +20,17 @@ export function redactHarness(resolved: {
 }): HarnessDescriptor {
   const PROMPT_CAP = 4096;
   const HALF = 2048;
+  const provider = resolved.provider ?? '';
   let prompt = resolved.prompt;
   if (prompt.length > PROMPT_CAP) {
     prompt = prompt.slice(0, HALF) + '…[truncated]…' + prompt.slice(prompt.length - HALF);
   }
   if (resolved.surfaceType === 'none') {
-    return { model: resolved.modelName, prompt, tools: [], skills: [], mcpServers: [], surfaceType: 'none' };
+    return { model: resolved.modelName, provider, prompt, tools: [], skills: [], mcpServers: [], surfaceType: 'none' };
   }
   return {
     model: resolved.modelName,
+    provider,
     prompt,
     tools: resolved.curatedTools,
     skills: resolved.skills,
@@ -161,6 +164,15 @@ export class AgentTranscriptSink {
     this._records.set(agentId, { ...(existing ?? { agentId, provider: '', model: '', tokens: { input: 0, output: 0 } }), agentId, state: 'running', startedAt: startedAt ?? existing?.startedAt });
   }
 
+  /** #20: the moment the gateway builds the session (onHarness, BEFORE the first token), stamp WHICH
+   *  model/provider a still-running agent is waiting on — so workflow_status shows the backend instead
+   *  of a blank model:""/provider:"" that makes a hung/slow backend indistinguishable from progress.
+   *  Merge — never clobber state/startedAt/frame from markRunning. No-op if no record exists yet. */
+  markHarness(agentId: string, model: string, provider: string): void {
+    const existing = this._records.get(agentId);
+    if (existing) this._records.set(agentId, { ...existing, model, provider });
+  }
+
   /** Records the outcome of one agent() call: captures the usage event and feeds RunGuard.addTokens exactly once. */
   async capture(runId: string, req: { agentId: string; label?: string; phase?: string }, result: GatewayResult, ts: string): Promise<void> {
     const prev = this._records.get(req.agentId); // v8 Slice 2/2b: carry frame (markQueued) + startedAt (markRunning)
@@ -182,7 +194,10 @@ export class AgentTranscriptSink {
     } else {
       this._records.set(req.agentId, {
         agentId: req.agentId, label: req.label, phase: req.phase, frame, startedAt, endedAt: ts,
-        state: 'failed', provider: result.provider, model: '', tokens: { input: 0, output: 0 },
+        // #20: preserve the model markHarness stamped on the live record — a failed/timed-out call
+        // carries no model of its own, and post-mortem (after the operator stops the run) is exactly
+        // when "which model failed" matters most. Don't wipe it back to ''.
+        state: 'failed', provider: result.provider, model: prev?.model ?? '', tokens: { input: 0, output: 0 },
       });
       // Forward any partial transcript + the CLI error detail captured before a terminal failure,
       // so a 0-token `terminal` is diagnosable (the error subtype/text) instead of opaque.
@@ -302,7 +317,13 @@ export class AgentExecutor implements AgentSpawner {
     // multiple times (schema-retry); each overwrites the previous harness entry for this agentId.
     const store = this._store;
     const clock = this._clock;
+    const sink = this._sink;
     const onHarness = async (descriptor: HarnessDescriptor): Promise<void> => {
+      // #20: surface model/provider on the LIVE agent record the moment the session is built (before
+      // the first token) so workflow_status shows WHICH backend a still-running agent is waiting on,
+      // instead of a blank model:""/provider:"" that makes a hung backend indistinguishable from
+      // progress. The record lives on the transcript sink; markHarness merges (never clobbers state).
+      sink.markHarness(req.agentId, descriptor.model, descriptor.provider);
       if (store) {
         await store.appendTranscript(req.runId, req.agentId, {
           ts: clock.isoNow(),

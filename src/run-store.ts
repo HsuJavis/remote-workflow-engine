@@ -39,12 +39,15 @@ export function deriveAgentRecords(
     // No usage yet — check for a harness event (latest-wins).
     const harness = reversed.find((e) => e.kind === 'harness');
     if (harness) {
-      const hd = (harness.data as { descriptor?: { model?: string } }).descriptor;
+      const hd = (harness.data as { descriptor?: { model?: string; provider?: string } }).descriptor;
       const nonTerminalState: AgentRecord['state'] = parentStatus === 'running' ? 'running' : 'queued';
       records.push({
         agentId,
         state: nonTerminalState,
-        provider: 'unknown',
+        // #20: the harness descriptor now carries provider — surface it (like model) so a restart-
+        // reconstructed running/queued agent shows its backend, not a blank 'unknown'. Pre-#20
+        // transcripts (no descriptor.provider) still fall back to 'unknown'.
+        provider: hd?.provider ?? 'unknown',
         model: hd?.model ?? '',
         tokens: { input: 0, output: 0 },
       });
