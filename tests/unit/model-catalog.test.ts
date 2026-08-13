@@ -117,6 +117,44 @@ describe('buildCatalog federation + mapping (REQ-039)', () => {
   });
 });
 
+describe('issue #28: ref (agent-ready id) + besteffort annotation', () => {
+  const OR_WITH_FREE = {
+    data: [
+      { id: 'google/gemma-3-27b-it:free', description: 'free variant', context_length: 8192, pricing: { prompt: '0', completion: '0' }, architecture: { input_modalities: ['text'], output_modalities: ['text'] }, supported_parameters: ['tools'] },
+      { id: 'anthropic/claude-3.5-sonnet', description: 'paid', context_length: 200000, pricing: { prompt: '0.000003', completion: '0.000015' }, architecture: { input_modalities: ['text'], output_modalities: ['text'] }, supported_parameters: ['tools'] },
+    ],
+  };
+
+  it('an OpenRouter :free entry is besteffort:true with an openrouter/ ref; a paid one is not besteffort', async () => {
+    const entries = await buildCatalog({ ollamaFetch: jsonFetch({ models: [] }), openrouterFetch: jsonFetch(OR_WITH_FREE) });
+    const free = entries.find((e) => e.model === 'google/gemma-3-27b-it:free')!;
+    expect(free.besteffort).toBe(true);
+    expect(free.ref).toBe('openrouter/google/gemma-3-27b-it:free'); // directly usable as agent({model})
+    const paid = entries.find((e) => e.model === 'anthropic/claude-3.5-sonnet')!;
+    expect(paid.besteffort).toBeUndefined(); // absent, not false
+    expect(paid.ref).toBe('openrouter/anthropic/claude-3.5-sonnet');
+  });
+
+  it('a curated alias becomes the ref; a non-aliased static entry has NO ref (needs an alias to resolve)', async () => {
+    const aliases: AliasMap = { opus: { provider: 'anthropic', model: 'claude-opus-4-8' } };
+    const entries = await buildCatalog({ ollamaFetch: jsonFetch({ models: [] }), openrouterFetch: jsonFetch({ data: [] }), aliases });
+    const opus = entries.find((e) => e.provider === 'anthropic' && e.model === 'claude-opus-4-8')!;
+    expect(opus.ref).toBe('opus'); // alias wins
+    const sonnet = entries.find((e) => e.provider === 'anthropic' && e.model === 'claude-sonnet-5')!;
+    expect(sonnet.alias).toBeUndefined();
+    expect(sonnet.ref).toBeUndefined(); // non-aliased anthropic: no hand-joined provider/model ref
+    expect(sonnet.besteffort).toBeUndefined();
+  });
+
+  it('the static Haiku entry uses the real dated API id (so its alias attaches → gets a ref)', async () => {
+    const aliases: AliasMap = { haiku: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' } };
+    const entries = await buildCatalog({ ollamaFetch: jsonFetch({ models: [] }), openrouterFetch: jsonFetch({ data: [] }), aliases });
+    const haiku = entries.find((e) => e.provider === 'anthropic' && e.model === 'claude-haiku-4-5-20251001')!;
+    expect(haiku).toBeDefined();
+    expect(haiku.ref).toBe('haiku');
+  });
+});
+
 describe('filterCatalog (REQ-040)', () => {
   const entries: ModelEntry[] = [
     { provider: 'ollama', model: 'qwen2.5:7b', description: 'qwen local', modalities: { in: ['text'], out: ['text'] }, contextWindow: null, price: 'free', toolUse: 'unknown', location: 'local' },

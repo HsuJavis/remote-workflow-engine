@@ -18,6 +18,15 @@ export interface ModelEntry {
   price: { in: string; out: string } | 'free' | 'unknown';
   toolUse: boolean | 'unknown';
   location: 'local' | 'remote';
+  /** issue #28: the agent-ready model string — pass it straight to `agent({model})`. Present only
+   *  when the entry is directly usable: a curated `alias`, or an openrouter passthrough id
+   *  (`openrouter/<model>`). ABSENT for entries that need a configured alias to resolve (non-aliased
+   *  anthropic/openai/ollama) — so its presence means "callable as-is", not just "listed". */
+  ref?: string;
+  /** issue #28: best-effort tier (OpenRouter `:free` variants). These queue / 429 / cold-start and can
+   *  hang at 0 tokens — `toolUse:true` is a capability claim, NOT a liveness/reliability guarantee.
+   *  Bound them with `agent({timeoutMs})` and null-harden. Absent = a normal (paid/local/static) tier. */
+  besteffort?: boolean;
 }
 
 export interface CatalogFilter {
@@ -57,7 +66,7 @@ const DEFAULT_TIMEOUT_MS = 8000;
 const STATIC_ANTHROPIC: ModelEntry[] = [
   { provider: 'anthropic', model: 'claude-opus-4-8', description: 'Claude Opus 4.8 — most capable Opus-tier model', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 1_000_000, price: { in: '$5/1M', out: '$25/1M' }, toolUse: true, location: 'remote' },
   { provider: 'anthropic', model: 'claude-sonnet-5', description: 'Claude Sonnet 5 — balanced speed/intelligence', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 1_000_000, price: { in: '$3/1M', out: '$15/1M' }, toolUse: true, location: 'remote' },
-  { provider: 'anthropic', model: 'claude-haiku-4-5', description: 'Claude Haiku 4.5 — fastest, most cost-effective', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 200_000, price: { in: '$1/1M', out: '$5/1M' }, toolUse: true, location: 'remote' },
+  { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', description: 'Claude Haiku 4.5 — fastest, most cost-effective', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 200_000, price: { in: '$1/1M', out: '$5/1M' }, toolUse: true, location: 'remote' },
 ];
 
 const STATIC_OPENAI: ModelEntry[] = [
@@ -182,7 +191,20 @@ export async function buildCatalog(opts: BuildCatalogOptions = {}): Promise<Mode
   entries.push(...ollama, ...openrouter);
 
   if (opts.aliases) entries = overlayAliases(entries, opts.aliases);
-  return entries;
+  return annotate(entries);
+}
+
+/** issue #28: derive the two actionability fields AFTER alias overlay (so `alias` is known):
+ *  - `ref` (agent-ready id): the alias if any; else an openrouter passthrough id; else omitted (the
+ *    entry needs a configured alias to resolve — advertising `anthropic/<model>` would not work).
+ *  - `besteffort`: OpenRouter's own `:free` variant marker — an exact suffix check, not a price
+ *    inference (a $0-formatted paid route must not be misflagged). */
+function annotate(entries: ModelEntry[]): ModelEntry[] {
+  return entries.map((e) => {
+    const ref = e.alias ?? (e.provider === 'openrouter' ? `openrouter/${e.model}` : undefined);
+    const besteffort = e.model.endsWith(':free') ? true : undefined;
+    return { ...e, ...(ref !== undefined ? { ref } : {}), ...(besteffort !== undefined ? { besteffort } : {}) };
+  });
 }
 
 /** The representative numeric price-per-million for a filter comparison: 0 for free, null (i.e.
