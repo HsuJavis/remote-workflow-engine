@@ -7,6 +7,30 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
+> **v12 ROUND 1 (2026-08-15) — GATE PASSED.** System resource + process metrics (REQ-076/077) + enriched
+> model catalog (REQ-078) + precise self-describing schemas (REQ-079). Live production engine `rwe.service`
+> restarted 2026-08-15 (`systemctl --user restart rwe.service`) with v12 working-tree (branch
+> `feat/v12-sysinfo-model-catalog`); `[remote-workflow-engine] listening on http://0.0.0.0:8899/mcp` —
+> tools list went 36 → **37 tools** (new `system_info`). Full suite **998/998 pass** / 196 test files;
+> `npx tsc --noEmit` clean.
+> (A) REQ-076 → VAL-085 (real:true): two-call `system_info` sequence confirmed CPU `utilizationPct:3.18%`
+> on second call (first: `awaiting-second-sample`); memory `totalBytes:32513794048` and disk
+> `usedPct:7.51%` cross-checked vs `free -b`/`df -B1`; `GET /api/system` HTTP 200 same shape.
+> (B) REQ-077 → VAL-086 (real:true): `process.self.pid:1018810` confirmed against live `ps aux` output;
+> `system.total:494` matches `ps -e | wc -l`; topN 5 entries sorted cpuPct-desc.
+> (C) REQ-078 → VAL-087 (real:true): `models_list` 100 entries all carry `capability`/`stability`/
+> `costLevel`; ollama entries `costLevel:0` `stability:'variable'`; `claude-opus-4-8` `costLevel:8`
+> `stability:'stable'`; 3 unknown-price entries have `costLevel:null`; 0 monotonicity violations.
+> `GET /api/models` HTTP 200 same shape.
+> (D) REQ-079 → VAL-088 (real:true): `tools/list` `system_info` inputSchema declares `topN` with
+> type/range/default/unit/effect; val-088-schema-drift.test.ts 16/16 pass.
+> Dashboard `System` and `Models` panels confirmed via HTML source inspection (`loadSystem()`/`/api/system`
+> and `loadModels()`/`/api/models` present in `GET /dashboard`; Playwright not installed in project —
+> same evidential precedent as VAL-083/084).
+> **Config sync:** REQ-076..079 add no new config keys or env vars (system_info TTL=1500ms is
+> hardcoded; `topN` is a tool parameter, not a config key). No config-doc drift this round.
+> **Quickstart verification (README §快速開始):** Fresh boot on port 8787 confirmed (`export PATH="$HOME/.rwe-litellm-venv/bin:$PATH"` → `node node_modules/tsx/dist/cli.mjs src/main.ts` → 8787 listening → `tools/list` returned 37 tools, `system_info` and `models_list` present). Port override (8899 via `~/.config/systemd/user/rwe.service.d/override.conf`) documented in DEPLOY.md §0 and §1.
+
 > **v11 ROUND 2 — FIX-MODE (2026-08-10) — GATE PASSED.** Home dashboard grouped cards (REQ-074) + per-card
 > reliability metrics (REQ-075). Production engine `rwe.service` already running v11 working-tree (`v0.5.0-selftest-7-g41be41e`);
 > restarted 2026-08-10 to load IMPL-111 working-tree changes (`GET /api/home` route + `buildHomeView` / `computeWorkflowMetrics`).
@@ -934,6 +958,112 @@ restarted or modified during this write-up.
   (E) Acceptance tests: `npx vitest run tests/acceptance/val-084-metrics.test.ts` → 2/2 pass
   using real `createServer()`, real HTTP, real store, real engine execution (pure-return scripts).
 - **iter:** v11
+
+### VAL-085 — REQ-076: system resource metrics (CPU / memory / disk) via `system_info` tool + `GET /api/system` + dashboard
+
+- **status:** green
+- **traces:** REQ-076
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Live production engine `rwe.service` restarted 2026-08-15 (`systemctl --user restart
+  rwe.service`) with v12 working-tree (branch `feat/v12-sysinfo-model-catalog`); boot log:
+  `[remote-workflow-engine] listening on http://0.0.0.0:8899/mcp (workRoot=/home/user/.local/share/rwe-data)
+  [remote-workflow-engine] ready`. Tools list: 37 tools including `system_info`.
+  Two-call sequence with `topN:5` against `http://127.0.0.1:8899/mcp`:
+  Call 1 (immediately after restart): `{status:"ok","result":{cpu:{cores:16, loadAvg:[0.75,0.78,1.01],
+  utilizationPct:null, utilizationDegraded:{reason:"awaiting-second-sample"}},
+  memory:{totalBytes:32513794048, usedBytes:9558540288, freeBytes:22955253760, usedPct:29.40},
+  disk:{path:"/home/user/.local/share/rwe-data", totalBytes:932269510656, usedBytes:70042251264,
+  freeBytes:862227259392, usedPct:7.51}, process:{self:{pid:1018810,...}}, sampledAt:"2026-08-14T16:44:38.690Z", windowMs:null}}`.
+  Call 2 (after 2 s, TTL=1500 ms): `cpu.utilizationPct:3.18, memory.usedPct:29.44, disk.usedPct:7.51,
+  windowMs:11244` — CPU delta available on second sample, values non-negative and ≤100.
+  Cross-check: `free -b` → `total=32513794048` ✓ (exact match); `df -B1 /home/user/.local/share/rwe-data`
+  → `Used=70042267648 ≈ engine 70042251264` (sub-second timing difference), `Available=862227243008 ≈
+  engine 862227259392` ✓ (within timing). HTTP route: `GET http://127.0.0.1:8899/api/system` →
+  HTTP 200 `{cpu:{..., utilizationPct:2.89}, memory:{usedPct:29.52}, disk:{usedPct:7.51},
+  process:{self:{pid:1018810}}, sampledAt:"2026-08-14T16:45:07.226Z"}` — same JSON shape, updated
+  sampledAt. Dashboard: `GET /dashboard` HTML contains `loadSystem()` function, `'system-panel'` DOM id,
+  and `fetch('/api/system')` call — confirmed via source inspection (Playwright not in project deps;
+  same evidential precedent as VAL-083/084). Acceptance tests: `npx vitest run
+  tests/acceptance/val-085-system-info.test.ts` → **9/9 pass** using real `SystemInfoSampler` +
+  real OS probe (no stub at acceptance tier).
+- **iter:** v12
+
+### VAL-086 — REQ-077: process metrics (engine-self + host Top-N + system-wide stats)
+
+- **status:** green
+- **traces:** REQ-077
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Same live session as VAL-085 (second `system_info` call, 2026-08-15, port 8899).
+  Engine-self: `process.self.pid:1018810` confirmed against live `ps aux` output (PID 1018810 =
+  `node --require tsx/dist/preflight.cjs --import tsx/dist/loader.mjs src/main.ts`); `uptimeSec:39.65`
+  (>0, engine had been running ~39 s); `rssBytes:160927744` (>0); `threads:12` (from `/proc/self/status`
+  Threads field); `fdCount:60` (from `/proc/self/fd` readdir count). Top-N: `topN` array contains 5
+  entries (≤ requested 5), sorted cpuPct-desc with null cpuPct (first call, no prev jiffies) sorted last
+  — entries include `{pid:3675587, name:"claude", cpuPct:null, memBytes:895725568}` and
+  `{pid:3675700, name:"node", cpuPct:null, memBytes:869298176}` as top memBytes entries.
+  System-wide: `system.total:494` — matches `ps -e | wc -l` = 494 lines (494 processes + header
+  counted together by /proc; within ±1 of ps count due to TOCTOU). `system.byState:{S:351, I:130, R:1,
+  Z:12}` — sum 494, states consistent with Linux process states. Acceptance tests: `npx vitest run
+  tests/acceptance/val-086-process-metrics.test.ts` → **8/8 pass** using real OS probe at acceptance
+  tier.
+- **iter:** v12
+
+### VAL-087 — REQ-078: enriched model catalog (capability / stability / costLevel) via `models_list` + `GET /api/models`
+
+- **status:** green
+- **traces:** REQ-078
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Live production engine `rwe.service` running v12 (2026-08-15, port 8899).
+  `tools/call models_list{}` → **100 entries**; sample entry keys: `[provider, model, description,
+  modalities, contextWindow, price, toolUse, location, alias, ref, capability, stability, costLevel]`
+  — enriched fields present on every entry.
+  (A) Ollama entries: `costLevel:0`, `stability:"variable"` (e.g. `qwen2.5:7b costLevel:0
+  stability:variable capability:"qwen25vl 8.3B"`). (B) Anthropic entry `claude-opus-4-8`:
+  `costLevel:8`, `stability:"stable"`, `capability:"Claude Opus 4.8 — most capable Opus-tier model"`.
+  (C) Free-priced entries: 10 entries with `price:"free"` — all have `costLevel:0`. (D) Unknown-price
+  entries: 3 entries (`gpt-4.1`, `gpt-4o`, `gpt-4o-mini`) with `price:"unknown"` → `costLevel:null`
+  (never a guessed number). (E) Monotonicity: 85 priced entries (dict price, non-null costLevel) sorted
+  by `float(price.in or 0) + float(price.out or 0)` ascending — **0 violations** where a dearer model
+  has a lower costLevel than a cheaper one. (F) `modalities.in` present on sample entry: `["text","image"]`.
+  HTTP route: `GET http://127.0.0.1:8899/api/models` → HTTP 200, 100 entries, same shape with
+  `capability`/`stability`/`costLevel` on every entry; Ollama entries `costLevel:0` confirmed via
+  `all(e["costLevel"]==0 for e in ollama_entries)`. Dashboard: `GET /dashboard` HTML contains
+  `loadModels()`, `'models-panel'` DOM id, `fetch('/api/models')` call, and `<thead>` rendering columns
+  `provider|model|capability|stability|costLevel|modalities` — confirmed via source inspection.
+  Acceptance tests: `npx vitest run tests/acceptance/val-087-models-enriched.test.ts` → **9/9 pass**.
+- **iter:** v12
+
+### VAL-088 — REQ-079: `system_info` and `models_list` carry precise, self-describing inputSchema
+
+- **status:** green
+- **traces:** REQ-079
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Live production engine `rwe.service` running v12 (2026-08-15, port 8899).
+  `tools/list` response: `system_info.inputSchema.properties.topN = {"type":"integer",
+  "description":"Integer 1–50, default 5; how many host processes part (b) returns, sorted by cpuPct
+  desc. Out-of-range values CLAMPED to [1,50] (never an error).","default":5,"minimum":1,"maximum":50}`
+  — declares type (integer), allowed range (1–50), default value (5), unit implied (count of
+  processes), effect on output (how many host processes part (b) returns), and clamping behaviour
+  (never an error). `system_info.description` documents output fields and units: "cpu.utilizationPct is
+  the host-aggregate 0–100 value (host-aggregate-0-100); per-process cpuPct is %-of-one-core over the
+  last sampled TTL window, not a lifetime average; null when awaiting a second sample."
+  `models_list.inputSchema.properties`: 9 filter params (`provider`, `query`, `modalityIn`,
+  `modalityOut`, `maxPricePerM`, `minContext`, `toolUse`, `location`, `limit`) — each with `type` +
+  `description` naming allowed values/options and what they affect (e.g. `toolUse: {type:"boolean",
+  description:"Require confirmed tool-use support (true); models with unknown support are excluded."}`).
+  Schema drift-lock: `npx vitest run tests/acceptance/val-088-schema-drift.test.ts` →
+  **16/16 pass** — pins that every documented param appears in the live `tools/list` response and is
+  self-documenting with type + description. Full regression: `npx vitest run` → **998/998 pass** /
+  196 test files; `npx tsc --noEmit` clean.
+- **iter:** v12
 
 ### VAL-046 — REQ-037: provider-aware SDK routing + Anthropic dual-auth security invariant
 
@@ -3833,3 +3963,15 @@ are pure functions reading from in-memory stores; `GET /api/home` is a new route
 port/bind. `rwe.config.example.json` re-confirmed unchanged and correct as-is (`bind`/`port`/
 `workRoot`/`timeoutMs`/`retries`/`gateway`/`agentDefinitionsDir`/`defaultAllowedTools`/`aliases`).
 **No config-doc drift this round.**
+
+### v12 Round 1 (2026-08-15) config-file sync check
+
+REQ-076 (`system_info` CPU/mem/disk/process) and REQ-077 (process metrics) and REQ-078 (enriched
+`models_list`) and REQ-079 (precise schemas) add **no new config keys, secrets, ports, or feature
+flags**. Specifically: the `SystemInfoSampler` TTL (1500 ms) is hardcoded in the constructor default
+parameter (not a config key); the `system_info` tool's `topN` parameter is a per-call tool input
+schema parameter, not a server config key; the enriched catalog fields (`capability`/`stability`/
+`costLevel`) are computed post-`buildCatalog` as a pure transform layer with no new config surface;
+the schema drift-lock is a test-only concern with no config surface. `rwe.config.example.json`
+re-confirmed unchanged and correct as-is. `GET /api/system` and `GET /api/models` are new HTTP routes
+on the existing bind/port — no new port or env var. **No config-doc drift this round.**

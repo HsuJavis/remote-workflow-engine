@@ -207,9 +207,47 @@ function annotate(entries: ModelEntry[]): ModelEntry[] {
   });
 }
 
+// ──────────────────────────────────────────────────────────────────────────────────────────────────
+// v12 (REQ-078): enriched models_list — capability / stability / costLevel (DES-075)
+// ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Stability tier for a model entry. Extension point: to add a level, add the literal here,
+ *  update `classifyStability`, and extend the drift-lock (DES-075). */
+export type Stability = 'stable' | 'variable' | 'best-effort';
+
+/** A ModelEntry enriched with the three additive capability/cost fields (DES-075).
+ *  All fields are computed at call time from the base entry; never persisted. */
+export interface EnrichedModelEntry extends ModelEntry {
+  /** Short capability description (max 200 chars, truncated with '…' if longer; never null). */
+  capability: string;
+  /** Reliability/SLA tier: stable = paid/curated; variable = local Ollama; best-effort = free-tier. */
+  stability: Stability;
+  /** Cost tier 0–10 (integer|null). 0 = free/local; 10 = top-dearest (clamped). null = unknown price,
+   *  do NOT infer cheapness. Scale: 0=free/local … 10=dearest. */
+  costLevel: number | null;
+}
+
+/** Ascending price bands ($/1M) for mapping a scalar price to an integer cost level 0–10.
+ *  Monotonicity holds by construction: each band boundary is strictly increasing.
+ *  Last reviewed: 2026-08-14. Unlisted models fall back to their band by scalar price. */
+const COST_LEVEL_BANDS: number[] = [
+  0,      // level 0: free
+  0.1,    // level 1: very cheap  (<$0.1/1M)
+  0.5,    // level 2             (<$0.5/1M)
+  1.5,    // level 3             (<$1.5/1M)
+  3.0,    // level 4             (<$3/1M)
+  5.0,    // level 5             (<$5/1M)
+  10.0,   // level 6             (<$10/1M)
+  20.0,   // level 7             (<$20/1M)
+  40.0,   // level 8             (<$40/1M)
+  80.0,   // level 9             (<$80/1M)
+          // level 10: everything above (clamped)
+];
+
 /** The representative numeric price-per-million for a filter comparison: 0 for free, null (i.e.
- *  can't confirm -> excluded when maxPricePerM is set) for unknown, else the higher of in/out. */
-function maxPricePerMOf(price: ModelEntry['price']): number | null {
+ *  can't confirm -> excluded when maxPricePerM is set) for unknown, else the higher of in/out.
+ *  Promoted to export for DES-075 monotonicity property test (ARCH-050 D-v12-C). */
+export function maxPricePerMOf(price: ModelEntry['price']): number | null {
   if (price === 'free') return 0;
   if (price === 'unknown') return null;
   const parse = (s: string): number | null => {
@@ -218,6 +256,44 @@ function maxPricePerMOf(price: ModelEntry['price']): number | null {
   };
   const vals = [parse(price.in), parse(price.out)].filter((v): v is number => v !== null);
   return vals.length ? Math.max(...vals) : null;
+}
+
+/** Classify the reliability/SLA tier of a model entry (DES-075).
+ *  Order: besteffort/free-tier first → local Ollama → else stable. */
+export function classifyStability(e: ModelEntry): Stability {
+  if (e.besteffort === true || e.model.endsWith(':free')) return 'best-effort';
+  if (e.location === 'local') return 'variable';
+  return 'stable';
+}
+
+/** Compute the 0–10 integer cost tier for a model entry (DES-075).
+ *  'free' → 0; 'unknown' → null (never guessed); above the top band → clamp 10.
+ *  Uses COST_LEVEL_BANDS with maxPricePerMOf as the single comparable scalar (ARCH-050 D-v12-C). */
+export function computeCostLevel(e: ModelEntry): number | null {
+  const price = maxPricePerMOf(e.price);
+  if (price === null) return null;
+  if (price === 0) return 0;
+  // Find the first band boundary the scalar exceeds
+  for (let i = 1; i < COST_LEVEL_BANDS.length; i++) {
+    if (price < COST_LEVEL_BANDS[i]!) return i;
+  }
+  return 10; // clamped
+}
+
+/** Enrich a ModelEntry with capability/stability/costLevel (DES-075, ARCH-050).
+ *  Pure — no I/O, no side effects. Called after filterCatalog (insertion point DES-075). */
+export function enrichModelEntry(e: ModelEntry): EnrichedModelEntry {
+  // capability: truncate at 200 chars (199 + '…'); empty/null → fallback "${provider} model"
+  let capability = e.description?.trim() ?? '';
+  if (!capability) capability = `${e.provider} model`;
+  if (capability.length > 200) capability = capability.slice(0, 199) + '…';
+
+  return {
+    ...e,
+    capability,
+    stability: classifyStability(e),
+    costLevel: computeCostLevel(e),
+  };
 }
 
 /** AND-filters the catalog and caps by limit (default 100, hard cap 500). An empty match returns []

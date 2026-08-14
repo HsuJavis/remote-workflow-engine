@@ -3,6 +3,7 @@
 // "failed") in a way that plain-fetch CI tests can assert without running the SPA's JS. The panel
 // is rendered client-side (textContent-only, XSS-safe) from the injected window.__RWE_INIT__ var.
 import type { UpdateOutcome } from './update-types.js';
+import { UTIL_PCT_CONVENTION } from './system-info.js';
 
 // ─── DES-065 (TASK-068): pure logical→pixel mapper + Morandi palette ─────────────────────────────
 
@@ -138,6 +139,10 @@ pre{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);p
 .issue-detail{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:10px;font-size:13px}
 .issue-detail pre{max-height:200px}
 .degraded{color:var(--muted);font-size:12.5px;font-style:italic}
+.sys-table,.models-table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}
+.sys-table td,.models-table td,.models-table th{padding:4px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+.sys-table td:first-child{color:var(--muted);font-size:11px;width:140px}
+.models-table th{text-align:left;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
 </style>
 </head>
 <body>
@@ -154,6 +159,10 @@ pre{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);p
     <div id="home-registered" class="cards"></div>
     <h2>Other</h2>
     <div id="home-other" class="cards"></div>
+    <h2>System</h2>
+    <div id="system-panel"></div>
+    <h2>Models</h2>
+    <div id="models-panel"></div>
   </section>
   <section id="detail" style="display:none">
     <p><a class="back" href="/dashboard">&larr; all runs</a></p>
@@ -249,12 +258,59 @@ function renderHomeGroup(box,cards){
     box.appendChild(c);
   });
 }
+// DES-073: System panel — renders GET /api/system via the 3s poll, textContent-only (KP-12).
+function fmtBytes(b){ if(b>=1e9)return (b/1e9).toFixed(1)+' GB'; if(b>=1e6)return (b/1e6).toFixed(1)+' MB'; if(b>=1e3)return (b/1e3).toFixed(1)+' KB'; return b+' B'; }
+async function loadSystem(){
+  var box=document.getElementById('system-panel'); if(!box) return;
+  var data=await getJSON('/api/system'); if(!data){ box.textContent='(unavailable)'; return; }
+  var t=document.createElement('table'); t.className='sys-table';
+  function sysRow(k,v){ var tr=document.createElement('tr'); var td1=document.createElement('td'); td1.textContent=k; var td2=document.createElement('td'); td2.textContent=String(v!=null?v:'—'); tr.appendChild(td1); tr.appendChild(td2); return tr; }
+  t.appendChild(sysRow('cpu cores',data.cpu.cores));
+  t.appendChild(sysRow('load avg 1m/5m/15m',data.cpu.loadAvg.map(function(v){return v.toFixed(2);}).join(' / ')));
+  var utilStr=data.cpu.utilizationPct!=null ? data.cpu.utilizationPct.toFixed(1)+'%' : ('— ('+((data.cpu.utilizationDegraded&&data.cpu.utilizationDegraded.reason)||'degraded')+')');
+  t.appendChild(sysRow('cpu util ('+UTIL_PCT_CONVENTION+')',utilStr));
+  if(data.memory&&!('reason' in data.memory)){ t.appendChild(sysRow('memory',fmtBytes(data.memory.usedBytes)+' / '+fmtBytes(data.memory.totalBytes)+' ('+data.memory.usedPct.toFixed(1)+'%)')); }
+  else { t.appendChild(sysRow('memory','— ('+((data.memory&&data.memory.reason)||'degraded')+')')); }
+  if(data.disk&&!('reason' in data.disk)){ t.appendChild(sysRow('disk '+data.disk.path,fmtBytes(data.disk.usedBytes)+' / '+fmtBytes(data.disk.totalBytes)+' ('+data.disk.usedPct.toFixed(1)+'%)')); }
+  else { t.appendChild(sysRow('disk','— ('+((data.disk&&data.disk.reason)||'degraded')+')')); }
+  t.appendChild(sysRow('sampled at',data.sampledAt));
+  box.innerHTML=''; box.appendChild(t);
+}
+// DES-076: Models section — columns provider|model|capability|stability|costLevel|modalities (KP-12).
+async function loadModels(){
+  var box=document.getElementById('models-panel'); if(!box) return;
+  var entries=await getJSON('/api/models');
+  if(!entries||!Array.isArray(entries)){ box.textContent='(unavailable)'; return; }
+  box.innerHTML='';
+  if(!entries.length){ box.appendChild(el('div','empty','(no models)')); return; }
+  var t=document.createElement('table'); t.className='models-table';
+  var thead=document.createElement('thead'); var hrow=document.createElement('tr');
+  ['provider','model','capability','stability','costLevel','modalities'].forEach(function(h){ var th=document.createElement('th'); th.textContent=h; hrow.appendChild(th); });
+  thead.appendChild(hrow); t.appendChild(thead);
+  var tbody=document.createElement('tbody');
+  entries.forEach(function(e){
+    var tr=document.createElement('tr');
+    function td(v){ var c=document.createElement('td'); c.textContent=v!=null?String(v):'—'; return c; }
+    tr.appendChild(td(e.provider));
+    tr.appendChild(td(e.model));
+    tr.appendChild(td(e.capability));
+    tr.appendChild(td(e.stability));
+    tr.appendChild(td(e.costLevel!=null?String(e.costLevel):'—'));
+    var ins=(e.modalities&&e.modalities.in?e.modalities.in.join(','):'?');
+    var outs=(e.modalities&&e.modalities.out?e.modalities.out.join(','):'?');
+    tr.appendChild(td(ins+' → '+outs));
+    tbody.appendChild(tr);
+  });
+  t.appendChild(tbody); box.appendChild(t);
+}
 async function loadHome(){
   var home=await getJSON('/api/home');
   if(!home) home={running:[],registered:[],other:[]};
   renderHomeGroup(document.getElementById('home-running'),home.running);
   renderHomeGroup(document.getElementById('home-registered'),home.registered);
   renderHomeGroup(document.getElementById('home-other'),home.other);
+  await loadSystem();
+  await loadModels();
 }
 
 async function loadTranscript(runId, agentId, label){
@@ -292,8 +348,9 @@ function renderNode(runId, node, container){
   });
 }
 
-// DES-065 (TASK-068): Morandi palette — derived from the server-side TS constant (single source).
+// DES-065 (TASK-068): Morandi palette + DES-073 util convention — derived from server-side TS constants.
 var MORANDI_PALETTE=${JSON.stringify(MORANDI_PALETTE)};
+var UTIL_PCT_CONVENTION=${JSON.stringify(UTIL_PCT_CONVENTION)};
 function stableHash(s){ var h=0; for(var i=0;i<s.length;i++){ h=((Math.imul(31,h)+s.charCodeAt(i))>>>0); } return h; }
 function morandiHue(frame){ return MORANDI_PALETTE[stableHash(frame)%MORANDI_PALETTE.length]; }
 function cellToPixelLocal(cell,box){ return {x:cell.col*(box.cellW+box.gap),y:cell.row*(box.cellH+box.gap),width:box.cellW,height:cell.laneSpan*box.cellH+(cell.laneSpan-1)*box.gap}; }

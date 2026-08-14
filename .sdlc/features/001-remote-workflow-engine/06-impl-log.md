@@ -1977,3 +1977,32 @@ Suite at close: 738 passed / 2 failed (both VAL-079, pending test fix) / 163 tes
 - **iter:** v11
 
 > **FIX F3 test_defect RESOLVED (Gate 5 FIX F2):** `metricsMap` helper param in `tests/unit/home-view.test.ts:26` typed as `(entries: [string, WorkflowMetrics][] = [])` — was inferred too narrowly as `typeof ZERO_METRICS` in the prior pass. Gate 5 FIX F2 applied the type annotation; no production code change. Re-verified: 838/838 full suite green, `npx tsc --noEmit` clean. Ledger status flipped: UT-073, IT-068, VAL-083, VAL-084 → status:green / result:pass.
+
+<!-- ── v12 (REQ-076..079) — system_info metrics · enriched models_list · precise schemas + drift-lock ── -->
+
+### IMPL-112 — SystemProbe port + lazy-TTL SystemInfoSampler + pure buildSystemInfo shaper + GET /api/system + system_info MCP tool + dashboard System panel
+- **status:** done
+- **traces:** TASK-074, DES-073, DES-074
+- **greens:** UT-074, UT-075, UT-076, UT-077, IT-069, IT-070
+- **files:** src/system-info.ts, src/server.ts, src/dashboard-page.ts
+- **commit:** (pending)
+- **iter:** v12
+- **note:** TASK-074 fuses ARCH-048 (host shaper + sampler) and ARCH-049 (process metrics on the same probe). `src/system-info.ts` contains the `SystemProbe` interface, real `NodeSystemProbe` impl, `StubSystemProbe`, `SystemInfoSampler` (lazy-TTL, clock-injected), and pure `buildSystemInfo`/`buildProcessInfo` shapers. One shared `SystemInfoSampler` instance (via `ServerConfig.systemInfo?`) feeds both the `system_info` MCP tool and the additive `GET /api/system` HTTP route; dashboard System panel renders via the existing 3 s poll. Real probe: `os.*` + `statfs(workRoot)` + bounded `/proc` pass under `Promise.race(~150ms)`; never shells out; `comm`-only process names, no `/proc/<pid>/cmdline`.
+
+### IMPL-113 — enriched models_list: classifyStability + computeCostLevel + enrichModelEntry + GET /api/models + models_list tool enrichment + dashboard Models section
+- **status:** done
+- **traces:** TASK-075, DES-075, DES-076
+- **greens:** UT-078, UT-079, UT-080, UT-081, IT-071
+- **files:** src/models/model-catalog.ts, src/server.ts, src/dashboard-page.ts
+- **commit:** (pending)
+- **iter:** v12
+- **note:** Pure helpers `classifyStability` / `computeCostLevel` / `enrichModelEntry` added to `src/models/model-catalog.ts`. Enrich runs AFTER `filterCatalog` (cheaper, order-safe). `capability` capped at 200 chars; `costLevel` integer|null over `COST_LEVEL_BANDS` on the existing `maxPricePerMOf` scalar (`free→0`, `unknown→null`, monotonic by construction). Additive `GET /api/models` route in `src/server.ts` shares the same `buildCatalog→filterCatalog→map(enrichModelEntry)` pipeline as the `models_list` tool. Dashboard Models section (`textContent`-only, columns provider/model/capability/stability/costLevel/modalities) populates via the existing 3 s poll.
+
+### IMPL-114 — DES-077 schemas verified + drift-lock test comment added (zero code delta; schemas landed with TASK-074/075 server.ts registration)
+- **status:** done
+- **traces:** TASK-076, DES-077
+- **greens:** IT-072, VAL-088
+- **files:** src/server.ts, tests/integration/schema-drift.test.ts
+- **commit:** (pending)
+- **iter:** v12
+- **note:** Zero production code delta — `system_info` and `models_list` TOOL_DEFS schemas (topN integer/default 5/range 1-50/clamp/effect/null-section; models_list capability/stability enum/costLevel 0-10+null-unknown) were already in place when IMPL-112/113 landed their server.ts registrations. `tests/integration/schema-drift.test.ts` carries the DES-077 drift-lock contract comment ("Run before every push that touches TOOL_DEFS") and asserts STRUCTURED FACTS (name/default/range-or-enum/unit-keyword/effect + "null" keyword for null-section caveat) against the served `tools/list` — not a golden-string snapshot. IT-072 and VAL-088 both run (not skipped) and pass.
