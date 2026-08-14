@@ -667,3 +667,27 @@ flowchart LR
 - **traces:** —
 - **acceptance:** Given a workflow with past runs, When its card renders Then the card shows AVG SUCCESS RATE (completed ÷ total terminal runs) and AVG EXECUTION TIME (mean wall-clock of terminal runs) for that workflow, computed from the run store over that workflow's runs; a workflow with zero runs shows "—", never a divide-by-zero or NaN. Observable: a workflow with 4 completed + 1 failed terminal runs shows 80% and the mean of those 5 durations; a never-run registered workflow shows "— / —".
 - **iter:** v11
+
+### REQ-076 — system resource metrics (CPU / memory / disk) via a read-only MCP tool + dashboard
+- **status:** draft
+- **traces:** —
+- **acceptance:** Given the running engine on a host, When a client calls a new read-only MCP tool `system_info` (and When a user opens the dashboard), Then the engine reports current HOST metrics: CPU (load averages + core count + a sampled utilization %), MEMORY (total / used / free bytes + used %), and DISK (for the engine's working-disk: total / used / free bytes + used %). Values are sampled at call time from the OS (never fabricated); an unavailable metric on a given platform degrades to null with a reason, never throws. Observable: `system_info` returns `{cpu:{cores,loadAvg,utilizationPct}, memory:{totalBytes,usedBytes,freeBytes,usedPct}, disk:{path,totalBytes,usedBytes,freeBytes,usedPct}, ...}` with plausible non-negative numbers that track `free`/`df` on the same host; the dashboard shows a System panel with these figures; no secret or full-host path listing is disclosed beyond these aggregate metrics.
+- **iter:** v12
+
+### REQ-077 — process metrics: the engine process + host Top-N processes + system-wide process stats
+- **status:** draft
+- **traces:** REQ-076
+- **acceptance:** Given `system_info` (and the dashboard System panel), When called Then it ALSO reports PROCESS information in three parts: (a) the ENGINE's own process — pid, uptime seconds, resident memory (rss) bytes, cpu %, and thread/handle count; (b) host TOP-N processes by resource use — an ordered list of `{pid, name, cpuPct, memBytes}` (N bounded + documented, default 5); (c) system-wide process STATS — total process count and a breakdown by state (running / sleeping / etc.) where the platform exposes it. Observable: the engine process entry's pid matches the live rwe service pid and rss tracks `ps`/`/proc`; the top-N list is ≤ N and ordered by the stated key; total process count is a positive integer close to `ps -e | wc -l`; a platform that can't enumerate processes degrades that part to an empty list / null with a reason, never throws.
+- **iter:** v12
+
+### REQ-078 — enriched model catalog: capability, stability, in/out modalities, cost level 0–10
+- **status:** draft
+- **traces:** REQ-039
+- **acceptance:** Given `models_list`, When it returns each model entry Then the entry ALSO carries: a `capability` description (what the model is good at — curated for well-known models, derived from the source description for live ones), a `stability` rating (a small ordered enum, e.g. `stable | variable | best-effort`, derived from tier — curated/paid provider = stable, OpenRouter `:free`/besteffort = best-effort), its supported `modalities.in` / `modalities.out` (already present — surfaced explicitly), and a `costLevel` INTEGER 0–10 where 0 = free (local Ollama + OpenRouter `:free`) and 10 = the most expensive tier, banded from the model's price (a model with `price:'unknown'` gets `costLevel:null`, never a guessed number). Observable: an Ollama/`:free` model has `costLevel:0` and `stability:'best-effort'` (free) or `'variable'`; a top Anthropic model has a high `costLevel` and `stability:'stable'`; `costLevel` is monotonic with price across the catalog (a dearer model never has a lower level than a cheaper one); the dashboard model list shows these columns per model.
+- **iter:** v12
+
+### REQ-079 — every new / changed MCP tool schema precisely self-describes params, options, and effects
+- **status:** draft
+- **traces:** REQ-076, REQ-078
+- **acceptance:** Given a schema-only consumer (no external docs), When it reads the served `tools/list` inputSchema for `system_info` (and the updated `models_list`), Then each parameter is documented with its purpose, its allowed VALUES/OPTIONS, its default, its UNIT where numeric, and WHAT IT AFFECTS in the output (e.g. `system_info`'s `topN` param: integer, default 5, 1–50, controls how many host processes part (b) returns; a `sections`/filter param, if present, lists its allowed values and which output blocks each toggles). The output shape (fields + units) is described in the tool description. Observable: `tools/list` for `system_info` declares every parameter with type + allowed range/enum + default + unit + effect; a drift-lock test pins that the description names each param and its effect; no parameter is an opaque undocumented knob.
+- **iter:** v12
