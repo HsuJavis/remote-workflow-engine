@@ -3,18 +3,22 @@
 > 人類導向文件（繁體中文）。由 Gate 7.5 validator 依實際部署步驟撰寫，步驟可重跑。
 > 凡 validator 為了把系統跑起來而做、但 README quickstart 未涵蓋的動作，都記在這裡。
 >
-> 目前部署狀態（v11 FIX-MODE，2026-08-10）：systemd user service `rwe.service`，綁定
-> `0.0.0.0:8787`（ufw 白名單 `192.168.0.0/24` + SSH），`workRoot=/home/user/.local/share/rwe-data`，
-> `gateway:"sdk"` + managed LiteLLM proxy。36 個 MCP 工具，含首頁工作流程卡片（`GET /api/home`，
-> RUNNING/REGISTERED/OTHER 三組 + 平均成功率/平均執行時間）、Issues 儀表板（`/dashboard/issues`）、
-> `issue_report` 版本自動填入、標籤觸發式自動更新（`POST /github/webhook`）。
-> 自動更新設定見 §6b；Gate 7.5 v11 FIX-MODE 驗證**已通過**（VAL-083/084 綠：真實 `/api/home` + 接受測試 5/5）。完整驗證證據見
+> 目前部署狀態（v12，2026-08-15）：systemd user service `rwe.service`，綁定
+> `0.0.0.0:8899`（本機 override.conf 將 port 覆寫為 8899；預設安裝用 8787，見 §1 設定總表 `RWE_PORT`；
+> ufw 白名單 `192.168.0.0/24` + SSH），`workRoot=/home/user/.local/share/rwe-data`，
+> `gateway:"sdk"` + managed LiteLLM proxy。**37 個** MCP 工具（v12 新增 `system_info`），含首頁工作流程
+> 卡片（`GET /api/home`，RUNNING/REGISTERED/OTHER 三組 + 平均成功率/平均執行時間）、Issues 儀表板
+> （`/dashboard/issues`）、`issue_report` 版本自動填入、標籤觸發式自動更新（`POST /github/webhook`）、
+> **System 面板**（`GET /api/system`：CPU 利用率 / 記憶體 / 磁碟 / 引擎行程 / Top-N 行程）、
+> **Models 面板**（`GET /api/models`：跨供應商統一目錄，含 capability / stability / costLevel 0–10）。
+> 自動更新設定見 §6b；Gate 7.5 v12 驗證**已通過**（VAL-085/086/087/088 綠：真實 `system_info` +
+> `models_list` enrichment + schema drift-lock + 接受測試 42/42）。完整驗證證據見
 > `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
 
 
 ## §0 Quickstart — 開機序列（可逐字貼上執行）
 
-> 以下指令與 README quickstart 一致，是 v11 validator 實際跑過的步驟，本輪零文件缺口。
+> 以下指令與 README quickstart 一致，是 v12 validator 實際跑過的步驟，本輪零文件缺口。
 
 ```bash
 # 步驟 1：安裝 Node 依賴
@@ -62,7 +66,17 @@ curl -s -X POST http://localhost:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | python3 -c \
   "import json,sys; d=json.load(sys.stdin); print('tools:', len(d['result']['tools']))"
-# 預期：tools: 36
+# 預期：tools: 37
+
+# v12 新增：主機系統資源快照（第一次呼叫 utilizationPct=null；第二次有值）
+curl -s http://localhost:8787/api/system | python3 -c \
+  "import json,sys; d=json.load(sys.stdin); print('cpu cores:', d['cpu']['cores'], '/ mem usedPct:', round(d['memory']['usedPct'],1))"
+# 預期：cpu cores: N / mem usedPct: X.X
+
+# v12 新增：統一模型目錄
+curl -s http://localhost:8787/api/models | python3 -c \
+  "import json,sys; d=json.load(sys.stdin); print('models:', len(d), '/ first:', d[0]['provider']+'/'+d[0]['model'])"
+# 預期：models: N / first: ollama/...（或 anthropic/...，依 aliases）
 ```
 
 ## 情境配方：gateway:sdk + LiteLLM 前置「外部 OpenAI 相容端點」跑完整 sdlc-run
@@ -1067,3 +1081,4 @@ curl -s -D - -o /dev/null -X POST $BASE/v1/chat/completions \
 | 2026-08-13 | v11 | **caller-settable per-call timeout**(#20/#22/#24 共同訴求):`agent(prompt, {timeoutMs})` 新增每次呼叫的總逾時,覆寫 gateway 設定的預設值(**雙向**——可縮短或延長,設定值是預設非上限);逾時後該呼叫回 **null**(經 retries 後,不 throw);wall-clock ≈ `timeoutMs × (1+retries)`。實作:`AgentOpts.timeoutMs?`;共用 `resolveTimeout()`(只認正有限數,壞值→退回設定預設,絕不 DISABLE bound);兩個 gateway(SDK + LiteLLM)都取 `resolveTimeout(opts.timeoutMs) ?? config.timeoutMs`——SDK 的 `invoke()` attempts 計算與 `_invokeOnce()` timer 解析**同一** effective 值(修掉「config-less gateway + 每呼叫 timeout → 有界 timer 卻配 attempts=1」的排列);`SCRIPT_DSL_DOC` 記載 timeoutMs + 其 null 失敗語意 + retry 交互。**未做(#22 後續)**:first-token deadline << 總逾時、對 local timeout 不浪費 retry、run-level 預設。 | 無破壞性變更;`AgentOpts.timeoutMs` 為新增選填欄位、穿過 sandbox 邊界(同 `mcp`);省略 = 沿用 gateway 設定預設(行為不變);無新設定鍵、無遷移動作 |
 | 2026-08-13 | v11 | **mid-run 可觀測性 slice-2 + 逾時點名元凶**(#20/#22 收尾):**#20** SDK gateway 現在**逐訊息串流** transcript event(新 `onEvent` hook,穿過 `_drain`)——`workflow_agent_log` 邊跑邊長,且 agent record 新增 **`lastActivityAt`**(每個串流 event 更新;進行中的 agent 其時鐘會超過 startedAt、掛住的則停在 startedAt/缺席)→ 終於能區分「進行中 vs 掛住」。串流時 result 不再帶 events(避免 `capture()` 終態重複 emit);`capture()` 把 lastActivityAt 帶進終態 record(診斷失敗前最後活動)。**tokens 仍 0/0 到終態**——SDK/provider 只在最終 result 才報 usage(provider 限制,非本引擎可改)。**#22** gateway 失敗(timeout/unreachable/terminal)現在帶 named `detail`:`no response from model "<wire-model>" (provider "<provider>") — <reason>`,點名元凶。`workflow_status` description 補記 lastActivityAt/tokens 語意。**行為變更(刻意)**:(a) retry 的各次嘗試 events 現在都會寫進 transcript(以前非最終嘗試的 events 被丟)——診斷更全;(b) workflow_stop/suspend 後,被 race 掉的 drain 可能仍補寫幾個 event 到 transcript(有界、良性)。**未做(#22 後續、明列不做)**:run-start alias probe(script 執行期才選 model、無「run 起始」的 alias 集可探)、first-token deadline、local timeout 不重試。 | 無破壞性變更;`AgentRecord.lastActivityAt`/失敗 `detail` 為新增欄位、既有用戶端可忽略;LiteLLM gateway 無 turn stream 故不串流(維持終態);無新設定鍵、無遷移動作 |
 | 2026-08-13 | v11 | **#28** models_list 準確度/可操作性:catalog 把免費 model 標 `toolUse:true` 卻無可用性訊號,免費 OpenRouter tier 會 queue/429/冷啟動掛在 0 token。修(純資料標註 + description 誠實化,無 live 探測):`ModelEntry` 新增 **`ref`**(agent-ready model 字串——有 alias 給 alias、openrouter 給 `openrouter/<model>` passthrough、其餘無法直接解析者省略,所以「有 ref = 可直接餵 agent({model})」)與 **`besteffort`**(OpenRouter `:free` 後綴精確標記,非 price 推斷);修 static Haiku 條目為真 API id `claude-haiku-4-5-20251001`(讓 alias attach → 取得 ref);models_list description 誠實化:此為 capability metadata 非 live-reachability 保證,`toolUse:true` 只表宣稱支援工具、不保證此刻會回或會遵循指令,`besteffort` 要用 `agent({timeoutMs})` 綁 + null-harden。**未做(明列不做)**:live 可用性探測(可用性是瞬時、探測有 race;掛住由 #27 timeout 穩健處理)、自然語言 `recommendFor` 推薦模式(獨立大功能;免費 model 品質/suitability 非 catalog 可導出)。 | 無破壞性變更;`ref`/`besteffort` 為選填新欄位、既有用戶端可忽略;static Haiku model id 由 `claude-haiku-4-5`→`claude-haiku-4-5-20251001`(顯示變更、更正為真 API id);無新設定鍵、無遷移動作 |
+| 2026-08-15 | v12 | 系統資源 + 行程指標（REQ-076/077）+ 豐富模型目錄（REQ-078）+ 精確自描述 schema（REQ-079）：新增 MCP 工具 **`system_info`**（`topN:int 1–50 預設 5`；回傳 `{cpu:{cores,loadAvg,utilizationPct},memory:{totalBytes,usedBytes,freeBytes,usedPct},disk:{path,...,usedPct},process:{self:{pid,uptimeSec,rssBytes,cpuPct,threads,fdCount},topN:[{pid,name,cpuPct,memBytes}],system:{total,byState}},sampledAt,windowMs}`；CPU 利用率需兩次呼叫取 delta，第一次回 `utilizationPct:null+awaiting-second-sample`；任何 OS 探測失敗降級到 `null+reason` 而非 throw）；`SystemInfoSampler` 懶惰快取（TTL 1500ms，單例同時服務 tool 與 HTTP route）；`RealSystemProbe` 讀 `/proc/self/status`/`/proc/<pid>/stat`/`/proc/<pid>/comm`/`os.cpus()`/`os.totalmem()`/`statfs`；新增 HTTP 路由 `GET /api/system`（同一快取）；儀表板首頁新增 **System 面板**（`loadSystem()`，3s poll）。`models_list` 每筆新增三個豐富欄位：**`capability`**（≤200 字描述；空/null 退化為 `"<provider> model"`）、**`stability`**（`stable|variable|best-effort`：paid/curated=stable、local Ollama=variable、OpenRouter `:free`=best-effort）、**`costLevel`**（整數 0–10：0=free/local、10=最貴；`price:"unknown"` 必為 `null`，不猜）；`GET /api/models` 新 HTTP 端點（現有 `buildCatalog` 的包裝，JSON 陣列）；儀表板首頁新增 **Models 面板**（`loadModels()`，含 capability/stability/costLevel/modalities 欄位）。`system_info` inputSchema 精確自描述（`topN` 帶 type/range/default/unit/effect 與 clamping 行為）；`models_list` inputSchema 9 個篩選參數各帶 type+description。工具總數 36 → **37**。Gate 7.5 v12 ROUND 1 PASSED（VAL-085/086/087/088 real:true；acceptance 42/42；回歸 998/998） | 無新設定鍵（`system_info` TTL 硬碼 1500ms；`topN` 為工具參數非設定鍵）；無新環境變數；`GET /api/system` 與 `GET /api/models` 為新增唯讀 HTTP 端點，共用既有 port/bind；`models_list` 三個新欄位為選填附加欄位，既有用戶端可忽略；無遷移動作 |

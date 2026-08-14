@@ -10,7 +10,7 @@
 原封不動地跑在一台伺服器上，透過 **MCP Streamable HTTP** 介面遠端送出、追蹤、暫停/續跑/停止，並
 把每個 `agent()` 呼叫真正路由到你設定的 LLM 供應商（Anthropic / OpenAI / Gemini / 本機 Ollama）。
 
-**目前功能（v11，2026-08-10）**：
+**目前功能（v12，2026-08-15）**：
 
 - **工作流程執行**：`workflow_run`（含 inline seed + CAS seedManifest）、`workflow_status`、
   `workflow_suspend`/`workflow_resume`/`workflow_stop`、當機可續跑（重啟後 `interrupted` → `workflow_resume`）
@@ -24,13 +24,16 @@
 - **Webhook**：`webhook_create`/`webhook_list`/`webhook_delete`（HMAC-SHA256 驗簽、deliveryId 去重）
 - **高效 seeding**：`blob_put`/`seed_plan`（CAS sha256 去重）；`/mcp` 接受 `Content-Encoding: gzip|deflate`
 - **問題回報**：`issue_report`（版本欄位自動填入，caller 可覆寫；`issue_list`/`issue_get`/`issue_comments`/`issue_comment`）
+- **系統監控**：`system_info`（CPU 負載 + 核心數 + 利用率 %、記憶體 total/used/free、磁碟、引擎行程 + 主機 Top-N 行程 + 系統行程統計，`GET /api/system`）
+- **模型目錄**：`models_list`（跨供應商統一目錄，含 `capability`/`stability`/`costLevel 0–10`/`modalities`/`ref` 等豐富欄位，支援多維篩選，`GET /api/models`）
 - **儀表板**：`GET /dashboard`（首頁：工作流程卡片按 RUNNING/REGISTERED/OTHER 分組，各附描述 + 小型骨架預覽 +
-  可靠性指標）、`GET /dashboard/issues`（Issues 頁面：Open/Resolved 分組、點擊顯示 detail）、
+  可靠性指標；System 面板：即時主機資源；Models 面板：模型目錄）、`GET /dashboard/issues`（Issues 頁面：Open/Resolved 分組、點擊顯示 detail）、
   `GET /dashboard/<runId>`（run 詳情：DAG + 逐字稿）
 - **可觀測性**：`GET /api/home`（首頁工作流程分組 JSON）、`GET /api/status`（agentSemaphore）、
+  `GET /api/system`（主機 + 行程快照）、`GET /api/models`（統一模型目錄）、
   `GET /api/issues`、`GET /api/issues/:number`
 
-共 36 個 MCP 工具。
+共 **37 個** MCP 工具。
 
 ## 前置需求
 
@@ -42,7 +45,7 @@
 
 ## 快速開始 Quickstart
 
-以下指令是 validator 實際跑過、能把系統帶起來的步驟（本輪零文件缺口）。
+以下指令是 v12 validator 實際跑過、能把系統帶起來的步驟（本輪零文件缺口）。
 
 ```bash
 # 1. 安裝 Node 依賴
@@ -99,10 +102,23 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"workflow_status","arguments":{"runId":"<上面的 runId>"}}}'
 # -> status:"completed"  result:"PONG"  agents[0].provider/model/tokens
 
-# 查詢 36 個 MCP 工具（含 schema）
+# 查詢 37 個 MCP 工具（含 schema）
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+
+# 查詢主機系統資源（CPU / 記憶體 / 磁碟 / 引擎行程 / Top-N 行程）
+curl -s http://127.0.0.1:8787/api/system
+# -> {cpu:{cores,loadAvg,utilizationPct}, memory:{totalBytes,...,usedPct}, disk:{path,...}, process:{self,topN,system}, sampledAt}
+
+# 查詢統一模型目錄（含 capability / stability / costLevel 0–10）
+curl -s http://127.0.0.1:8787/api/models
+# -> [{provider,model,capability,stability,costLevel,modalities,ref,...},...]
+
+# 透過 MCP 查詢模型目錄（支援多維篩選）
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"models_list","arguments":{"location":"remote","toolUse":true,"maxPricePerM":1}}}'
 
 # 儀表板（瀏覽器直接開）
 open http://127.0.0.1:8787/dashboard           # run 清單 + DAG

@@ -33,7 +33,8 @@ import { classifyTransport, RealMcpProbe, type McpProbe, type McpServerConfig } 
 import { McpRegistry, type McpKind } from './mcp-registry.js';
 import { IssueReporter, resolveEngineVersion, type IssueReportInput, type IssueListFilter } from './github/issue-reporter.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
-import { buildCatalog, filterCatalog, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
+import { buildCatalog, filterCatalog, enrichModelEntry, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
+import { SystemInfoSampler, RealSystemProbe, UTIL_PCT_CONVENTION } from './system-info.js';
 import { assertUpdatePathsOutsideWorkRoot, writeUpdateFlag, SelfUpdateDb, readUpdateResult } from './self-update.js';
 import type { UpdateOutcome } from './update-types.js';
 import { verifyTagWebhook } from './self-update-webhook.js';
@@ -126,6 +127,10 @@ export interface ServerConfig {
   updateFlagPath?: string;
   updateResultPath?: string;
   selfUpdateDbPath?: string;
+  // v12 (REQ-076/077, DES-073): injectable SystemInfoSampler (default: RealSystemProbe-backed).
+  // Tests inject a StubProbe-based sampler (no real OS probe). ONE instance feeds both the
+  // system_info MCP tool and GET /api/system (DES-073 "sample once").
+  systemInfo?: SystemInfoSampler;
 }
 
 export interface Server {
@@ -187,6 +192,8 @@ const TOOL_NAMES = [
   // v10 Slice 2 (REQ-064): efficient seeding — content-addressed blob upload + plan.
   'blob_put',
   'seed_plan',
+  // v12 (REQ-076/077, DES-073/074): host system + process observability.
+  'system_info',
 ] as const;
 
 type ToolName = (typeof TOOL_NAMES)[number];
@@ -194,6 +201,11 @@ type ToolName = (typeof TOOL_NAMES)[number];
 interface JsonSchemaProp {
   type?: string | string[];
   description?: string;
+  // JSON Schema numeric range / default — used by system_info topN (DES-077).
+  default?: unknown;
+  minimum?: number;
+  maximum?: number;
+  enum?: unknown[];
   // Array/object shape — lets array params (e.g. workflow_run's seed/seedManifest) advertise their
   // element schema so a schema-validating MCP client serializes them as arrays, not strings (issue #21).
   items?: JsonSchemaProp & { properties?: Record<string, JsonSchemaProp>; required?: string[] };
@@ -498,7 +510,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     },
   },
   models_list: {
-    description: "Returns a unified, normalized cross-provider model catalog (curated aliases + live Ollama /api/tags + live OpenRouter /api/v1/models + a static openai/anthropic table). Each entry is {provider, model, alias?, ref?, besteffort?, description, modalities{in,out}, contextWindow, price(in/out|'free'|'unknown'), toolUse(bool|'unknown'), location('local'|'remote')}. `ref`, WHEN PRESENT, is directly usable as an agent({model}) value (a curated alias, or an \"openrouter/<model>\" passthrough id); an entry with NO `ref` needs a configured alias to resolve — do not hand-join \"provider/model\" for anthropic/openai. This is CAPABILITY metadata, NOT a live-reachability guarantee: toolUse:true means the model declares tool support, not that it will respond now or follow a given instruction. besteffort:true marks OpenRouter \":free\" tiers, which queue/429/cold-start and can hang at 0 tokens — bound every call with agent({timeoutMs}) and null-harden the result. Optional filters narrow the (potentially large) result; an unreachable live source degrades gracefully. No API key ever appears in the output.",
+    description: "Returns a unified, normalized cross-provider model catalog (curated aliases + live Ollama /api/tags + live OpenRouter /api/v1/models + a static openai/anthropic table). Each entry includes: {provider, model, alias?, ref?, besteffort?, description, modalities{in,out}, contextWindow, price(in/out|'free'|'unknown'), toolUse(bool|'unknown'), location('local'|'remote')} PLUS enriched fields: capability (capability string ≤200 chars; never null), stability ('stable'|'variable'|'best-effort': stable=paid/curated, variable=local Ollama, best-effort=OpenRouter free tier), costLevel (integer 0–10: 0=free/local … 10=dearest; null=price unknown — do NOT infer cheapness from null), modalities forwarded. `ref`, WHEN PRESENT, is directly usable as an agent({model}) value (a curated alias, or an \"openrouter/<model>\" passthrough id); an entry with NO `ref` needs a configured alias to resolve — do not hand-join \"provider/model\" for anthropic/openai. This is CAPABILITY metadata, NOT a live-reachability guarantee: toolUse:true means the model declares tool support, not that it will respond now or follow a given instruction. besteffort:true marks OpenRouter \":free\" tiers, which queue/429/cold-start and can hang at 0 tokens — bound every call with agent({timeoutMs}) and null-harden the result. Optional filters narrow the (potentially large) result; an unreachable live source degrades gracefully. No API key ever appears in the output.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -569,6 +581,31 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
         manifest: { type: 'array', description: 'Entries { path, sha256, exec? } — regular files only.' },
       },
       required: ['namespace', 'manifest'],
+    },
+  },
+  // v12 (REQ-076/077, DES-073/074/077): host system + process metrics
+  system_info: {
+    description:
+      'Returns a host system + process snapshot for capacity planning and scheduling decisions. ' +
+      'Call before scheduling compute-intensive work to check host headroom. ' +
+      'cpu.utilizationPct is the host-aggregate 0–100 value (' + UTIL_PCT_CONVENTION + '); ' +
+      'per-process cpuPct is %-of-one-core over the last sampled TTL window, not a lifetime average; ' +
+      'null when awaiting a second sample. ' +
+      'Any section (cpu.utilizationPct, memory, disk) may be null with a reason when the OS probe fails; ' +
+      'handle null per section independently.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        topN: {
+          type: 'integer',
+          description:
+            'Integer 1–50, default 5; how many host processes part (b) returns, sorted by cpuPct desc. ' +
+            'Out-of-range values CLAMPED to [1,50] (never an error).',
+          default: 5,
+          minimum: 1,
+          maximum: 50,
+        },
+      },
     },
   },
 };
@@ -682,6 +719,7 @@ async function callTool(
   mcpRegistry: McpRegistry,
   issueReporter: IssueReporter,
   buildModelCatalog: () => Promise<ModelEntry[]>,
+  systemInfo: SystemInfoSampler,
   name: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
@@ -796,11 +834,21 @@ async function callTool(
       return res.ok ? { result: { commentId: res.commentId, url: res.url } } : { error: res.error };
     }
     // v7 (REQ-039/040): build the federated catalog fresh (so a live source recovering after boot
-    // is reflected), then AND-filter it. Never throws across the tool boundary — an unreachable live
-    // source degrades to fewer entries, and an empty match returns [].
+    // is reflected), then AND-filter + enrich it. Never throws across the tool boundary — an
+    // unreachable live source degrades to fewer entries, and an empty match returns [].
     case 'models_list': {
       const entries = await buildModelCatalog();
-      return { result: filterCatalog(entries, args as CatalogFilter) };
+      return { result: filterCatalog(entries, args as CatalogFilter).map(enrichModelEntry) };
+    }
+    // v12 (REQ-076/077, DES-073/074): host + process system info.
+    case 'system_info': {
+      const topN = args['topN'] !== undefined ? Math.floor(Number(args['topN'])) : 5;
+      try {
+        const view = await systemInfo.get({ topN });
+        return { status: 'ok', result: view };
+      } catch (err) {
+        return { status: 'error', error: { code: 'PROBE_ERROR', message: String(err) } };
+      }
     }
     default: throw new Error(`Unknown tool: ${name}`);
   }
@@ -818,6 +866,8 @@ async function handleDashboardRequest(
   runManager: RunManager,
   issueReporter: IssueReporter,
   facade: McpFacade,
+  systemInfo: SystemInfoSampler,
+  buildModelCatalog: () => Promise<ModelEntry[]>,
 ): Promise<void> {
   if (req.method !== 'GET') {
     sendJson(res, 405, { error: 'Dashboard API is read-only: only GET is supported.' });
@@ -838,6 +888,18 @@ async function handleDashboardRequest(
       ]);
       const metrics = computeWorkflowMetrics(runs);
       sendJson(res, 200, buildHomeView(catalogEntries, runs, metrics));
+      return;
+    }
+    // v12 (REQ-076/077, DES-073): host system info — bare SystemInfoView (no MCP envelope wrapper).
+    if (path === '/api/system') {
+      const view = await systemInfo.get({ topN: 5 });
+      sendJson(res, 200, view);
+      return;
+    }
+    // v12 (REQ-078, DES-075/076): enriched model list — returns EnrichedModelEntry[] directly.
+    if (path === '/api/models') {
+      const entries = await buildModelCatalog();
+      sendJson(res, 200, filterCatalog(entries).map(enrichModelEntry));
       return;
     }
     if (path === '/api/runs') {
@@ -1077,6 +1139,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     openrouterFetch: config?.modelCatalogFetchers?.openrouterFetch,
     ollamaBaseUrl: config?.modelCatalogFetchers?.ollamaBaseUrl,
   }));
+  // v12 (REQ-076/077, DES-073): ONE SystemInfoSampler instance shared between the system_info tool
+  // and GET /api/system (DES-073 "sample once"). Tests inject a StubProbe-backed sampler via
+  // config.systemInfo; production defaults to a RealSystemProbe.
+  const systemInfoSampler = config?.systemInfo ?? new SystemInfoSampler(new RealSystemProbe(workRoot), clock, 1500);
   // v2 (DES-016/TASK-019): SQLite-persisted schedule store, same workRoot convention as
   // catalog.db/store — survives restart (REQ-014-style persistence extended to schedules).
   const scheduler = new SqliteSchedulerPort({
@@ -1223,8 +1289,16 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // TASK-025 (DES-018): read-only dashboard HTTP API, a distinct transport from /mcp on the
     // SAME port (no separate dashboard listener/port — one server, two transports).
     // v11 (REQ-067): /api/issues* added alongside existing /api/runs* and /api/workflows*.
-    if (req.url?.startsWith('/api/runs') || req.url?.startsWith('/api/workflows') || req.url?.startsWith('/api/issues') || req.url === '/api/home' || req.url?.startsWith('/api/home?')) {
-      handleDashboardRequest(req, res, store, runManager, issueReporter, facade).catch(() => {
+    // v12 (REQ-076/077/078): /api/system and /api/models added.
+    if (
+      req.url?.startsWith('/api/runs') ||
+      req.url?.startsWith('/api/workflows') ||
+      req.url?.startsWith('/api/issues') ||
+      req.url === '/api/home' || req.url?.startsWith('/api/home?') ||
+      req.url?.startsWith('/api/system') ||
+      req.url?.startsWith('/api/models')
+    ) {
+      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, buildModelCatalog).catch(() => {
         sendJson(res, 200, { degraded: 'internal dashboard error' });
       });
       return;
@@ -1297,7 +1371,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           const name = rpc.params?.name ?? '';
           const args = rpc.params?.arguments ?? {};
           const webhookBaseUrl = `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
-          const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, name, args);
+          const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, systemInfoSampler, name, args);
           sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } });
           return;
         }

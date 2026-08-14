@@ -464,3 +464,23 @@ status: draft
 - **traces:** ARCH-047
 - **estimate:** S
 - **iter:** v11
+
+<!-- ── v12 (REQ-076..079) — system_info host+process metrics · enriched models_list · precise self-describing schemas ── -->
+
+### TASK-074 — `system_info` host + process metrics via one injectable `SystemProbe` (048+049 fused): the untestable OS-boundary port (returns raw counters only), a stateful lazy-TTL `SystemInfoSampler` taking `{probe, clock}` (triggers a fresh sample unless a within-TTL snapshot exists; caches full raw + previous snapshot + previous per-pid jiffies keyed by pid, wholesale-replaced each sample), and a pure `buildSystemInfo` shaper holding ALL delta math + per-section degrade-to-null-never-throw; wired as `ServerConfig.systemInfo?` feeding BOTH the `system_info` MCP tool case and the additive `GET /api/system` route from one shared sample, plus the dashboard System panel (`textContent`-only) and the DEPLOY recon-surface note coupled to REQ-005. Real probe reads in-process cheap APIs only (`os.*` + `fs.promises.statfs(workRoot)` + a bounded async `/proc` pass under `Promise.race(~150ms)`), NEVER shells out and NEVER opens `/proc/<pid>/cmdline` (process `name` = `comm`, argv structurally absent from the record type).
+- **status:** draft
+- **traces:** ARCH-048, ARCH-049
+- **estimate:** L
+- **iter:** v12
+
+### TASK-075 — enriched `models_list`: pure `enrichModelEntry(ModelEntry) → EnrichedModelEntry` applied AFTER `filterCatalog` (exported pure helpers `classifyStability` / `computeCostLevel` / promoted `maxPricePerMOf`; `capability` curated-table ∪ source description capped 200, never null; `costLevel` integer|null over `COST_LEVEL_BANDS` named table on the existing `maxPricePerMOf` scalar; `modalities` surfaced explicitly), fields additive/optional/computed-at-call-time-never-persisted; PLUS the additive `GET /api/models` route returning `EnrichedModelEntry[]` in the uniform envelope (same builder as the tool) and a `textContent`-only dashboard Models section (columns provider/model/capability/stability/costLevel/modalities) — closes REQ-078's dashboard-observable gap.
+- **status:** draft
+- **traces:** ARCH-050
+- **estimate:** M
+- **iter:** v12
+
+### TASK-076 — precise self-describing schemas + one structured drift-lock test: extend the declarative `TOOL_DEFS` object literals so `system_info` (exactly one param `topN` integer/default 5/range 1–50/clamped/effect-named; `cpuPct` window semantics; null-section + call-motivation prose) and the enriched `models_list` (`capability`/`stability` enum/`costLevel` 0–10 + null-means-unknown) fully self-describe; add `test/schema-drift.test.ts` asserting STRUCTURED FACTS (name/default/range-or-enum/unit-keyword/effect + a "null" keyword for the null-section caveat) over the served `tools/list` for both tools — not a golden-string snapshot.
+- **status:** draft
+- **traces:** ARCH-051
+- **estimate:** S
+- **iter:** v12

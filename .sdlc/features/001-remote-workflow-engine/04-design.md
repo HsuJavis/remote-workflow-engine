@@ -1945,3 +1945,124 @@ classDiagram
 - **Adversarial group:** *interface-contract* — `HomeView`/`WorkflowCard`/`WorkflowMetrics` are narrow additive types on one new `GET /api/home`, no existing tool/route semantics change; *boundary/error* — every named failure pinned in DES-070/071 boundary-conditions (zero-terminal null, legacy missing `terminalAt`, no-catalog-script placeholder, single-group membership, empty catalog); *testability* — both cores are pure folds over an injected run list (fixture-testable, no clock/store), the render path reuses the two-tier `textContent`/headless-DOM proof pattern. Simplicity tie-break (Karpathy): REUSE `/skeleton` + `layoutGraph` + `cellToPixel` for the mini preview and `listRuns` for metrics — zero new layout/render code, one new endpoint, one additive field.
 - **Quality dimensions (conventional system):** *observability* — metrics + grouping are recomputed server-side per poll and rendered as plain numbers (no hidden state); *replaceability* — pure folds decoupled from store/DOM, swappable behind their signatures; *consumability* — one additive JSON endpoint (`GET /api/home`), existing skeleton endpoint reused; *self-sustainability* — total functions that degrade to `"— / —"` / placeholder / empty groups rather than throw on any missing/legacy data.
 - **Seam consistency (Exit Gate 5):** `buildHomeView` and `computeWorkflowMetrics` are pure and **read no wall clock** (duration derives from persisted `terminalAt`/`createdAt` only) — no injected-clock asymmetry introduced; the existing `RunStore` clock seam is untouched.
+
+<!-- ── v12 (REQ-076..079) — system_info metrics · enriched models_list · precise schemas + drift-lock ── -->
+
+### DES-073 — `SystemProbe` port + lazy-TTL `SystemInfoSampler` + pure `buildSystemInfo` host shaper (src/system-probe.ts, src/system-info.ts, src/types.ts, src/server.ts, src/dashboard-page.ts)
+- **status:** draft
+- **traces:** ARCH-048, TASK-074
+- **signature:** Three pieces on the testability seam. **(1) Port** (`src/system-probe.ts`, the untestable OS boundary, raw counters only, no shaping): `interface RawHostSnapshot { cpu:{perCore:Array<{idleMs:number;totalMs:number}>}|null; loadAvg:[number,number,number]; cores:number; mem:{totalBytes:number;freeBytes:number}|null; disk:{path:string;blockSize:number;blocks:number;bfree:number;bavail:number}|null }`; `interface SystemProbe { sampleHost():Promise<RawHostSnapshot>; sampleProcesses(deadlineMs:number):Promise<RawProcSnapshot> /* DES-074 */ }`. Real impl = `os.cpus()/loadavg()/totalmem()/freemem()` + `fs.promises.statfs(workRoot)`, no shell-out; `StubSystemProbe` implements the same interface with per-field fault injection. **(2)** `class SystemInfoSampler { constructor(private probe:SystemProbe, private clock:Clock, private ttlMs=1500){} get(opts:{topN?:number}):Promise<SystemInfoView> }` — `get()` triggers `probe.sampleHost()` unless the cached snapshot is younger than `ttlMs`; caches full raw + previous snapshot. **(3) Pure** `buildSystemInfo(cur:RawHostSnapshot, prev:RawHostSnapshot|null, ctx:{sampledAt:string;windowMs:number|null}, opts:{topN:number}, procShape) → SystemInfoView` — all delta math + degrade logic, no I/O. Output (additive `types.ts`): `type Reason = 'awaiting-second-sample'|'sample-window-too-short'|'timeout'|'unsupported-platform'|'probe-error'`; `interface Degraded { reason:Reason; detail?:string }`; `interface SystemInfoView { cpu:{cores:number;loadAvg:[number,number,number];utilizationPct:number|null;utilizationDegraded?:Degraded}; memory:{totalBytes:number;usedBytes:number;freeBytes:number;usedPct:number}|Degraded; disk:{path:string;totalBytes:number;usedBytes:number;freeBytes:number;usedPct:number}|Degraded; process:ProcessInfoView; sampledAt:string; windowMs:number|null }`. Named constant `UTIL_PCT_CONVENTION = 'host-aggregate-0-100'` is the single source of truth the shaper, the schema description (DES-077), and the drift-lock all read. Wire seam: `ServerConfig.systemInfo?:SystemInfoSampler` (mirrors `modelCatalog`/`issueReporter`); ONE sampler instance feeds the `system_info` MCP tool case AND `GET /api/system` — sample once. The tool case returns the uniform `{status, result?, error?}` envelope. Dashboard System panel renders the view `textContent`-only via the 3 s poll on `GET /api/system`.
+- **boundary-conditions:** **Clock seam (Exit Gate 5) — every method that reads time takes the injected `clock`:** the TTL-freshness check, `sampledAt` (`clock.now()` ISO), and `windowMs` (delta span) ALL derive from `clock`; the ONLY timer outside the seam is the `~150ms Promise.race` inside the real probe's `sampleProcesses` (OS boundary — the stub simulates timeout by returning `procsDegraded`, no real wait). **host `utilizationPct` = aggregate 0–100 clamped** (`usedTotal/totalDelta`, `CLK_TCK=100` hardcoded with comment). First call, no prior snapshot → `utilizationPct:null` + `{reason:'awaiting-second-sample'}`, `windowMs:null`, `sampledAt` = call time. `totalDelta===0` (same jiffy) → `null` + `{reason:'sample-window-too-short'}` (the divide-by-zero). Counter-wrap / negative delta → clamp `[0,100]`, never negative. `memory.usedPct` from `os.freemem` = MemFree not MemAvailable (disclosed in schema, no `/proc/meminfo` reader). `disk.usedPct = used/(used+bavail)` (df convention), `used=(blocks-bfree)*blockSize`, `free=bavail*blockSize`; single mount `statfs(workRoot)` only, never enumerates filesystems. Any probe field `null` → that block degrades independently; the tool NEVER throws. Concurrent within-TTL calls may each sample (no single-flight — bounded + idempotent). **DEPLOY deliverable:** DEPLOY names `system_info` as a host-reconnaissance surface coupled to the standing "never expose publicly until auth lands" invariant (REQ-005); interim control = loopback-bind + Host/Origin net-guard (ARCH-009/033). `system_info` tool description carries a call-motivation hint and the null-section contract (DES-077).
+- **iter:** v12
+
+### DES-074 — process metrics on the same probe: engine-self + host Top-N (comm-only) + system-wide stats (src/system-probe.ts, src/system-info.ts)
+- **status:** draft
+- **traces:** ARCH-049, TASK-074
+- **signature:** Extends the port: `interface RawProcSnapshot { self:{threads:number|null; fdCount:number|null}; procs:Array<{pid:number; comm:string; utimeJiffies:number; stimeJiffies:number; state:string; rssBytes:number}>|null; procsDegraded?:Degraded }`; `SystemProbe.sampleProcesses(deadlineMs:number):Promise<RawProcSnapshot>`. Engine-self observables from the Node runtime (`process.pid`/`process.uptime()`/`process.cpuUsage()`/`process.memoryUsage().rss`) + `/proc/self/status` Threads + `/proc/self/fd` count for threads/fdCount only (smaller Linux surface, self-consistent with the delta window — refinement of ARCH-049's `/proc/self/stat`, flagged in rationale). Parts (b)+(c) from ONE bounded async pass: `readdir('/proc')` → numeric pids → per-pid `stat`+`comm`, `Promise.race([enumerate(), timeout(~150ms)])`. Output `ProcessInfoView` (nested on `SystemInfoView.process`): `{ self:{pid:number;uptimeSec:number;rssBytes:number;cpuPct:number|null;threads:number|null;fdCount:number|null}; topN:Array<{pid:number;name:string;cpuPct:number|null;memBytes:number}>; system:{total:number;byState:Record<string,number>}|Degraded }`. Per-process `cpuPct` = `%-of-one-core` (may exceed 100 summed) over `windowMs` from the sampler's per-pid prev-jiffies cache; the shaper applies `topN` (cache stores the FULL list — a `topN:50` call cannot poison a concurrent `topN:5` read).
+- **boundary-conditions:** **`name` = `/proc/<pid>/comm` ONLY — argv structurally absent:** the record type has no `cmd`/`argv`/`cmdline` field and the real impl never opens `/proc/<pid>/cmdline` (capture-time redaction-by-construction, the HIGH control both lenses ratify); UT asserts the shape has no argv-shaped field. **TOCTOU:** pid gone between `readdir` and `stat`/`comm` → skip it (ENOENT swallowed per-pid), never throw. **Timeout** → `procs=null`, `procsDegraded={reason:'timeout'}` → `topN` degrades to `[]`, `system` to `{reason:'timeout'}`; self-part still returns. **Non-Linux / no `/proc`** → `{reason:'unsupported-platform'}`, no macOS/Windows probe built. **Newborn pid** (absent from prev) → `cpuPct:null` (no delta). **Top-N sort** = `cpuPct` desc, `memBytes` tiebreak; `null` cpuPct sorts last (ordered as `-1`) — deterministic. **Per-pid cache wholesale-replaced each sample** (never accumulated) → O(live pids) bounded (~<2 MB at 50k pids, comment); system stats = total pid count + state-char breakdown (field 3 of `/proc/<pid>/stat`) from the same pass.
+- **iter:** v12
+
+### DES-075 — enriched `models_list`: pure `enrichModelEntry` post-`filterCatalog` layer (src/model-catalog.ts, src/server.ts)
+- **status:** draft
+- **traces:** ARCH-050, TASK-075
+- **signature:** `type Stability = 'stable'|'variable'|'best-effort'`; `interface EnrichedModelEntry extends ModelEntry { capability:string; stability:Stability; costLevel:number|null }` (`modalities` already on `ModelEntry` — surfaced, no new field). Exported pure helpers (all UT-able): `enrichModelEntry(e:ModelEntry):EnrichedModelEntry`; `classifyStability(e:ModelEntry):Stability` (paid/curated → `stable`, `location:'local'` Ollama → `variable`, OpenRouter `:free`/besteffort → `best-effort`); `computeCostLevel(e:ModelEntry):number|null` over `COST_LEVEL_BANDS` (named ascending band table) on the scalar from **promoted-to-exported** `maxPricePerMOf(price):number|null` — `'free'→0`, `'unknown'→null` (never guessed), above top band → clamp `10`, typed `integer|null`. **Insertion point:** `filterCatalog` reads only base `ModelEntry` fields (confirmed `model-catalog.ts:225`), so enrich AFTER filter — `server.ts:803` → `filterCatalog(entries, args).map(enrichModelEntry)` (cheaper, order-safe). Fields additive/optional/non-breaking (absent from any `required` array), computed at call time, never persisted (no SQLite column/migration).
+- **boundary-conditions:** `capability`: `len>200` → `slice(0,199)+'…'` (total 200); `≤200` verbatim; empty/null source → `"${provider} model"` (NEVER null); rendered `textContent`-only (source strings may embed HTML). `costLevel` description states scale (`0=free/local … 10=dearest`) AND null contract (`null = price unknown, do NOT infer cheapness`). Monotonicity holds by construction; the property test sorts by the SAME `maxPricePerMOf` scalar and asserts `costLevel` non-decreasing (a test against out-price would red spuriously when in/out prices cross). `stability` enum carries a JSDoc extension-point note ("to add a level: add the literal here, update `classifyStability`, extend the drift-lock"). Curated capability table carries a `// Last reviewed: <date>. Unlisted models fall back to source description.` comment. Future-filter coupling: if a filter ever keys on `costLevel`, enrich/filter order must flip — not built now (Karpathy), recorded as a constraint.
+- **iter:** v12
+
+### DES-076 — `GET /api/models` route + dashboard Models section (src/server.ts, src/dashboard-page.ts)  ← closes REQ-078 dashboard-observable gap
+- **status:** draft
+- **traces:** ARCH-050, TASK-075
+- **signature:** Additive `GET /api/models` inside `handleDashboardRequest` returns `EnrichedModelEntry[]` in the uniform `{status, result?, error?}` envelope, using the SAME `buildCatalog`→`filterCatalog`→`map(enrichModelEntry)` builder as the `models_list` tool (top-level router predicate widened to match `/api/models`). Dashboard page gains a Models section rendering columns `provider | model | capability | stability | costLevel | modalities`, all `textContent`-only, populated by the existing 3 s poll.
+- **boundary-conditions:** Empty catalog → empty section, never throws. `costLevel:null` renders as `"—"` (not `0`). `capability` already capped by DES-075. No new enrichment logic here — pure consumption of DES-075; ARCH-050 named `enrichModelEntry` + the tool but NO route, and there is no `/api/models` / Models section today (adversarial + quality R1, both HIGH) — without this the REQ-078 dashboard clause is unverifiable.
+- **iter:** v12
+
+### DES-077 — precise self-describing `TOOL_DEFS` schemas + one structured drift-lock test (src/server.ts, test/schema-drift.test.ts)
+- **status:** draft
+- **traces:** ARCH-051, TASK-076
+- **signature:** Extend the declarative `TOOL_DEFS` object literals (pattern near `server.ts:214`, no framework). **`system_info` inputSchema = exactly one param `topN`**: `{type:'integer', default:5, minimum:1, maximum:50}`, description states unit + effect + clamp ("integer 1–50, default 5; how many host processes part (b) returns; out-of-range CLAMPED to [1,50]"). `sortBy` + `sections` rejected (D-v12-B). `cpuPct` semantics in-schema ("% of one core over the last sampled TTL window, not a lifetime average; null when awaiting a second sample"); host `utilizationPct` per `UTIL_PCT_CONVENTION` (host-aggregate 0–100). `system_info` description ALSO carries: a call-motivation hint ("call before scheduling compute-intensive work to check host headroom") + the null-section contract ("any section may be null with a reason when the OS probe fails; handle null per section independently"). `models_list` description gains the enriched output shape (`capability`, `stability` enum values, `costLevel` 0–10 + null-when-unknown). **Drift-lock** (`test/schema-drift.test.ts`) reads the **served `tools/list`** (in-process handler call = the surface REQ-079 pins) and asserts STRUCTURED FACTS per param: name present, `default` present, `enum`/range present where applicable, a unit keyword (`bytes`/`percent`/`seconds`) in the description, the effect named, and the `system_info` description contains a `"null"` keyword (null-section caveat proxy) — NOT a golden-string snapshot.
+- **boundary-conditions:** `topN` = CLAMP not reject (documented in schema = contract-honest); non-integer → `Math.floor` then clamp. Drift-lock is the ONLY drift signal (test-time, not runtime) — a comment in the test file states "run before every push that touches `TOOL_DEFS`". This DES creates NO `UT-*`/`IT-*` items — the verifier owns those.
+- **iter:** v12
+
+### DES-078 — real-tier validation paths + per-tier mock policy (REQ-076, REQ-077, REQ-078, REQ-079)
+- **status:** draft
+- **traces:** ARCH-048, ARCH-049, ARCH-050, ARCH-051, TASK-074, TASK-075, TASK-076
+- **REQ-076 real path:** live Linux rwe engine (real `SystemInfoSampler` + real `SystemProbe`, no stub) → call the real `system_info` MCP tool AND `GET /api/system`; assert `cpu.cores`/`loadAvg` present, `memory`/`disk` non-negative bytes that track `free`/`df` on the same host (used+free ≈ total), `sampledAt` recent, and the dashboard System panel renders the figures (headless DOM). Real entrypoint = `system_info` tool + `GET /api/system` + dashboard SPA; real wiring = real OS probe (never mocked at E2E).
+- **REQ-077 real path:** same live engine → assert the engine-self entry `pid` == the live rwe service pid and `rssBytes` tracks `/proc/self`; `topN` list length ≤ N and ordered by `cpuPct` desc; system-wide total count is a positive integer close to `ps -e | wc -l`; assert NO process record carries an argv/cmdline field. Real entrypoint = `system_info` tool; real wiring = real `/proc` pass.
+- **REQ-078 real path:** live engine with a real catalog fetch → `models_list` returns entries each carrying `capability`/`stability`/`costLevel`/`modalities`; an Ollama/`:free` model has `costLevel:0`, a top paid model a high `costLevel`+`stability:'stable'`; `costLevel` monotonic with price across the catalog; `GET /api/models` + dashboard Models section show the columns (headless DOM). Real entrypoint = `models_list` + `GET /api/models` + dashboard; real wiring = real `buildCatalog`+`enrichModelEntry` (never mocked at E2E).
+- **REQ-079 real path:** read the **served `tools/list`** from the running engine (not TOOL_DEFS in-process only) → assert `system_info` + `models_list` each declare every param with type + range/enum + default + unit + effect, and the drift-lock passes against that served surface.
+- **Per-tier mock policy:** **unit** mocks freely — `StubSystemProbe` (per-field fault injection: null cpu/mem/disk, timeout, unsupported-platform, awaiting-second-sample, same-jiffy) + `FixedClock` drive every `buildSystemInfo`/sampler degrade+delta path; pure fixtures for `classifyStability`/`computeCostLevel`/`enrichModelEntry`/the monotonicity property test; the drift-lock is a pure served-schema assertion. **integration** uses real adjacent components — the real HTTP `GET /api/system`+`/api/models` handlers over the real sampler/catalog builder; only the OS `SystemProbe` may be a stub if the CI host is non-Linux. **E2E/acceptance MUST NOT mock the SUT's own boundaries** — real engine process, real OS probe on a real Linux host, real `/proc`, real catalog fetch, real HTTP + headless-browser dashboard; `SystemInfoSampler`/`buildSystemInfo`/`enrichModelEntry`/the served `tools/list` are never mocked.
+- **iter:** v12
+
+```mermaid
+classDiagram
+  class SystemProbe {
+    <<port, untestable OS boundary, raw counters only>>
+    +sampleHost() RawHostSnapshot
+    +sampleProcesses(deadlineMs) RawProcSnapshot
+  }
+  class StubSystemProbe {
+    <<test double, per-field fault injection>>
+  }
+  class SystemInfoSampler {
+    <<lazy-TTL cache; caches full raw + prev snapshot + per-pid prev-jiffies>>
+    +get(opts) SystemInfoView
+  }
+  class buildSystemInfo {
+    <<pure shaper, no I/O; all delta + degrade math>>
+    +UTIL_PCT_CONVENTION host-aggregate-0-100
+    +Reason closed enum + detail
+  }
+  class SystemInfoView {
+    +cpu utilizationPct|Degraded
+    +memory|Degraded
+    +disk|Degraded
+    +process ProcessInfoView
+    +sampledAt/windowMs
+  }
+  class Clock
+  class Server {
+    +ServerConfig.systemInfo? SystemInfoSampler
+    +system_info tool case
+    +GET /api/system
+    +GET /api/models
+  }
+  class ModelCatalog {
+    +buildCatalog / filterCatalog
+    +maxPricePerMOf (promoted export)
+  }
+  class enrichModelEntry {
+    <<pure, post-filterCatalog>>
+    +classifyStability(e) Stability
+    +computeCostLevel(e) integer|null
+    +COST_LEVEL_BANDS
+  }
+  class EnrichedModelEntry {
+    +capability string
+    +stability Stability
+    +costLevel number|null
+    +modalities
+  }
+  class SchemaDriftLock {
+    <<structured facts over served tools/list>>
+  }
+  StubSystemProbe ..|> SystemProbe
+  SystemInfoSampler --> SystemProbe : samples
+  SystemInfoSampler --> Clock : injected
+  SystemInfoSampler --> buildSystemInfo : shapes via
+  buildSystemInfo --> SystemInfoView : returns
+  Server --> SystemInfoSampler : one instance feeds tool + HTTP
+  Server --> enrichModelEntry : maps catalog
+  ModelCatalog --> enrichModelEntry : filtered entries
+  enrichModelEntry --> EnrichedModelEntry : produces
+  SchemaDriftLock --> Server : asserts served tools/list
+```
+
+### Decision rationale — v12 (ARCH-048..051, REQ-076..079: `system_info` metrics + enriched `models_list` + precise schemas)
+- **Panel provenance / synthesize-only:** synthesized from `.panel/design/adversarial.r1.md` (opus, three trade-off lenses) + `quality-dimensions.r1.md` (sonnet, four cross-cutting lenses), BOTH freshly rewritten 2026-08-14 for v12 and explicitly superseding the v11-Sprint-3 residue at this path. The `*.r2.md` files at this path are v11-Sprint-3 residue (dated 2026-08-09) — NOT inputs. Per the synthesize-only dispatch I did NOT re-spawn a panel; **r2 not run** because the two r1 stances are complementary (both want the injectable `SystemProbe`, the pure shaper, enrich-after-`buildCatalog`, the structured drift-lock, comm-not-cmdline, `statfs(workRoot)`, `sampledAt`/`windowMs`, and both independently flag the same HIGH `GET /api/models` gap). QM `safety_class` → no functional-safety / cybersecurity lenses.
+- **Altitude:** system↔agent seam — data is system-altitude observability (host CPU/mem/disk, process facts, catalog), but the consumption contract is agent-altitude (REQ-079's schema-only LLM consumer; REQ-078's fields exist for agent model-selection). Both altitudes applied.
+- **Task split:** ARCH-048+049 FUSED into TASK-074 (shared port/sampler/shaper; splitting creates a broken intermediate where the port exists but the sampler can't instantiate — both lenses ratify). ARCH-050 = TASK-075, independent/parallelizable, and it ABSORBS `GET /api/models` + the dashboard Models section (DES-076) since REQ-078's dashboard clause is otherwise unverifiable. ARCH-051 = TASK-076, LAST (depends on both schemas existing).
+- **cpu conventions pinned (quality R2 precondition):** host `utilizationPct` = aggregate 0–100 clamped; per-process `cpuPct` = %-of-one-core (may exceed 100 summed). Single source of truth = named constant `UTIL_PCT_CONVENTION` read by shaper + schema description + drift-lock, so all three assert the same keyword.
+- **Resolved conflicts (who conceded):** (1) `topN` out-of-range — interface-contract wanted a typed `SYSTEM_INFO_INVALID` error; testability+Karpathy won CLAMP documented in schema (a documented clamp is contract-honest, no new error surface for a read-only knob) — contract lens conceded, dissent recorded (revisit if a caller must KNOW it was clamped). (2) degrade `reason` — closed `Reason` enum + optional free-text `detail` (mirrors shipped `FailureEnvelope{kind,providerDetail}`); enum wins agent-branchability cheaply, `detail` keeps the probe-error escape hatch — simplicity "a string is enough" conceded to the enum. (3) enrich order — enrich-AFTER-filter (cheaper, safe because filters read only base fields), the coupling recorded as a future-filter constraint; uniform-pipeline conceded. (4) concurrent within-TTL sampling — allow the double sample (bounded 150 ms, idempotent), no single-flight — boundary lens conceded to Karpathy.
+- **Refinement flagged:** engine-self rss/cpu/uptime/pid from the Node runtime (`process.*`) rather than `/proc/self/stat`; `/proc/self` used only for threads+fdCount (smaller Linux surface, self-consistent with the delta window).
+- **Named deferred gaps (quality's condition: named, not silently dropped — each a future-REQ candidate, none built for v12 per Karpathy):** (a) no cross-correlation of system metrics with run performance (min hook = `systemInfo` snapshot in the run journal start-event); (b) `GET /health` liveness endpoint still absent; (c) `capability` free text limits programmatic routing — future `tags:string[]` parallel to `modalities`; (d) no feedback loop from `system_info` to `RunGuard` concurrency (adaptive concurrency under host pressure) — `system_info` is the prerequisite telemetry. Security recon deferral (per-tool disable/public-bind suppression) ratified with the loopback invariant as the interim control; the DEPLOY recon-note IS an in-scope deliverable (DES-073).
+- **Seam consistency (Exit Gate 5):** DES-073 states every method that reads time takes the injected `clock` (TTL check, `sampledAt`, `windowMs`); the only timer outside the seam is the `~150ms Promise.race` inside the real probe's `sampleProcesses` (OS boundary; the stub simulates timeout via `procsDegraded`, no real wait) — no injected-clock asymmetry.

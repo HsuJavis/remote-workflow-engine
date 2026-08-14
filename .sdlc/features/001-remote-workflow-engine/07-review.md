@@ -4,7 +4,219 @@ status: passed
 ---
 # 07 Review & Retro — Gate 8
 
-## v11 GATE 8 FIX-ITERATION REVIEW (2026-08-09, CURRENT / AUTHORITATIVE)
+## v12 GATE 8 REVIEW (2026-08-15, CURRENT / AUTHORITATIVE)
+
+> This section supersedes "## v11 GATE 8 FIX-ITERATION REVIEW (2026-08-09)" below (kept for history).
+> This round lands four already-implemented, GREEN, real-validated items: **v12 — system metrics +
+> models enrichment**: REQ-076 (`system_info` CPU/mem/disk), REQ-077 (process metrics via `system_info`),
+> REQ-078 (`models_list` enrichment with provider/context/pricing), REQ-079 (drift-locked input/output
+> schemas). All are additive tool surface additions; no v1-core or run-lifecycle change.
+> Ledger chain: REQ-076..079 → ARCH/TASK/DES chain → IMPL-101..102 (iter v12) → VAL-085/086/087/088.
+>
+> **Gate 7.5 v12 ROUND 1 PASSED 2026-08-15.** VAL-085..088 all `real:true`. 998/998 regression pass.
+> 37 tools. `npx tsc --noEmit` clean.
+>
+> **Panel architects pre-ran (not re-spawned):** adversarial group + quality-dimensions group reports
+> were in `.panel/review/`. This section consolidates them; `.panel/` is removed at end of Gate 8.
+
+### Traceability consistency (v12)
+
+Trace `--check` result (regenerated 2026-08-15): **642 items, 6 gaps — ZERO new gaps from v12.**
+REQ-076..079 are fully chained (REQ→ARCH→TASK→DES→IMPL→UT/VAL) with VAL-085..088 `real:true`.
+Gap breakdown:
+
+| ID | Severity | Type | Note |
+|----|----------|------|------|
+| REQ-012 | HIGH / 嚴重 | 未真實驗證 | OIDC deferred by user decision D5; pre-existing known tech debt; not a Gate 7.5 send-back |
+| IMPL-082 | MED | TDD label gap | Pre-existing since v4 |
+| UT-058 | LOW | iter drift v6 behind DES-038 v11 | Pre-existing since F1; underlying ops covered; cosmetic lag only |
+| UT-064 | LOW | iter drift v9 behind DES-054 v11 | Pre-existing since v9 |
+| IT-057 | LOW | iter drift v9 behind DES-054 v11 | Pre-existing since v9 |
+| TASK-018 | LOW | no implementation | OIDC task, deferred D5 |
+
+All 6 are pre-existing; none introduced by v12. Every remaining gap is recorded here as known tech debt (Exit Gate 1 satisfied).
+
+### Architecture consistency (v12 panel consolidation)
+
+Two expert groups pre-ran against the v12 implementation. Both independently concluded NOT consistent.
+Their findings are consolidated here; `.panel/review/` files removed at end of this gate.
+
+**Expert scope:** adversarial group (security + scalability + testability) and quality-dimensions group
+(observability + replaceability + consumability + self-sustainability). Both read `02-architecture.md`
+(ARCH/INV/rationale), `06-impl-log.md`, and the files listed on each IMPL `files:` for the v12 iter block.
+
+**Verdict: NOT consistent. 6 violations (2 HIGH, 3 MED, 1 LOW) and 1 superseded item.**
+
+#### H-1 [HIGH] D-BIND fail-closed bind guard unimplemented (co-signed by both groups)
+
+Decision D-BIND requires the engine to refuse any bind that would expose a no-auth server to a
+non-loopback/non-LAN address. `src/net-guard.ts` exports `isLoopback()` but it is never imported by
+`src/server.ts` or `src/main.ts` for bind refusal. Verified: `grep -rn insecureNoAuth src/` returns
+zero hits; `isLoopback` absent from `src/server.ts` and `src/main.ts`. `src/main.ts:97` and
+`src/server.ts:1005` pass the bind address through with no guard. The `insecureNoAuth` config key does
+not exist anywhere in src/. `DEPLOY.md` preamble documents the live deployment at `0.0.0.0:8899` — the
+exact configuration D-BIND was designed to block fail-closed.
+
+**Evidence:** `src/net-guard.ts:14` (exports `isLoopback`, not wired to bind path);
+`src/server.ts:28` (imports `isAllowedHost, isAllowedOrigin` only — no bind guard);
+`src/main.ts:97` (bind passed through unguarded).
+
+**Severity:** HIGH. Unenforced on an RCE + secret surface with a live `0.0.0.0` deployment.
+**Action required:** Gate 6 fix (a one-`if` guard at the bind site).
+
+#### H-2 [HIGH] ARCH-017/019 session-options-builder + per-session confinement re-walk absent (quality group R-1)
+
+ARCH-017 designates `src/session-options-builder.ts:buildSessionOptions()` as the master test seam for
+session-level SDK option assembly. ARCH-019 part-2 requires a per-session workroot re-walk (DES-031),
+enforcing confinement at each session, not only at boot. `buildSessionOptions()` has zero production
+importers — the gateway `claude-agent-sdk-client.ts:520-573` builds SDK options inline via `thinkingFor()`
+and `curateToolsForProvider()`, bypassing the seam entirely. `src/workroot-guard.ts:findProjectMarkerAncestor()`
+is imported only by session-options-builder, which is itself never called in production. The boot guard at
+`src/main.ts:94` runs once; DES-031 per-session re-walk is never executed. The confinement invariant
+(work-root re-verified per session) is not enforced at runtime.
+
+**Evidence:** `src/session-options-builder.ts` (zero production importers);
+`claude-agent-sdk-client.ts:520-573` (inline SDK option build, no seam call);
+`src/workroot-guard.ts:findProjectMarkerAncestor()` (reachable only through the orphaned builder);
+`src/main.ts:94` (single boot guard only).
+
+**Severity:** HIGH. Confinement invariant unenforced at runtime; ARCH-017 test-seam trust not realized.
+**Action required:** Gate 2 adjudication — wire the seam or formally supersede ARCH-017/019, following
+the ARCH-044 precedent for explicitly signed supersession decisions.
+
+#### M-1 [MED] D-PROC/D-KILL / FailureEnvelope / cli-lifecycle + timeout-race cluster orphaned (both groups)
+
+Three related built-but-unwired modules: (a) `src/cli-lifecycle.ts:RealCliLifecycle` — zero production
+importers; no SIGKILL escalation after grace window, no explicit temp-dir cleanup tied to session
+lifecycle. (b) `src/timeout-race.ts:raceWithTimeout()` — zero production importers; `run-manager.ts:585`
+uses `withSlot(() => spawner.run({signal}))` directly, bypassing the D-PROC timeout-race seam.
+(c) `src/timeout-race.ts:FailureEnvelope` — zero production callers; `agent-executor.ts:218` emits a
+different `{kind:'usage', data:{reason,provider,detail}}` taxonomy without `attempts` or `elapsedMs`;
+the retry counter at `claude-agent-sdk-client.ts:291-302` exists but is never surfaced via FailureEnvelope.
+Gateway uses `abortController.abort()` only; D-KILL SIGTERM→SIGKILL escalation sequence not connected.
+
+**Evidence:** `src/cli-lifecycle.ts` (zero production importers);
+`src/timeout-race.ts` (zero production importers/callers);
+`run-manager.ts:585` (withSlot direct, no raceWithTimeout);
+`agent-executor.ts:218` (different taxonomy, no FailureEnvelope);
+`claude-agent-sdk-client.ts:291-302` (retry counter, not surfaced).
+
+**Severity:** MED. Process-group kill guarantee and failure taxonomy incomplete; no active data-loss but
+degrades correctness under timeout/kill scenarios.
+**Action required:** Gate 2 adjudication — wire or formally supersede D-PROC/D-KILL (following ARCH-044 precedent).
+
+#### M-2 [MED] D-REDACT `redact()` orphaned (adversarial V5)
+
+Decision D-REDACT requires capture-time secret scrubbing before any transcript event is stored or emitted.
+`src/secret-resolver.ts:88 redact()` is imported by nothing in src/. The transcript capture path at
+`claude-agent-sdk-client.ts:589` stores raw events with no `redact()` applied. Secret values resolved
+from `RWE_SECRET_*` env vars can appear verbatim in stored transcripts.
+
+**Evidence:** `src/secret-resolver.ts:88` (redact() exported, zero production importers);
+`claude-agent-sdk-client.ts:589` (raw event capture, no redact call).
+
+**Severity:** MED. Secret leakage into transcripts on an RCE surface.
+**Action required:** Gate 6 fix (wire redact() at the transcript capture site).
+
+#### M-3 [MED] ARCH-015 MCP_NOT_PROVISIONED silent for named workflows (adversarial V6)
+
+ARCH-015 mandates a typed `MCP_NOT_PROVISIONED` error when an agent call references an MCP server name
+not in the provisioning list. `claude-agent-sdk-client.ts:421` silently maps an unprovisioned MCP name
+to `{}` (empty allowedTools), swallowing the error. The `if (spec.script)` gate at
+`submission-validator.ts:100` skips named-workflow runs from submission-time scan entirely, so an
+unprovisioned name is never caught before dispatch for named workflows.
+
+**Evidence:** `claude-agent-sdk-client.ts:421` (maps unprovisioned name to `{}`);
+`submission-validator.ts:100` (named-workflow bypass).
+
+**Severity:** MED. Silent failure degrades operator debuggability.
+**Action required:** Gate 6 fix.
+
+#### L-1 [LOW] McpRegistry wall-clock (adversarial V7)
+
+`src/mcp-registry.ts:61` uses `new Date().toISOString()` directly instead of the injected `Clock`,
+violating the C3 clock/RNG seam. Does not affect production correctness but breaks hermetic test seam.
+
+**Evidence:** `src/mcp-registry.ts:61`.
+
+**Severity:** LOW. One-line fix, opportunistic.
+
+#### Not-a-violation: SessionInitRecord superseded by ARCH-044
+
+Adversarial flagged `SessionInitRecord` (defined at `session-options-builder.ts:23-37`) as never emitted.
+Quality's response: ARCH-044 (signed later) explicitly superseded it, replacing it with `HarnessDescriptor`
+emitted via `redactHarness()`, which IS wired end-to-end. **Later-signed ARCH-044 wins** — not a violation.
+Residual: `thinkingMode` absent from `HarnessDescriptor`, so it is not auditable in the harness log.
+ARCH-044 deliberately narrowed scope. Recorded as: superseded-with-residual, intentional per ARCH-044,
+LOW observability debt.
+
+#### Not-a-violations confirmed by both groups
+
+D-DOS semaphore correctly wired; host-ambient MCP isolation (VAL-003) holds; ARCH-018 asset classifier
+correct; D-SEC two-layer secret containment wired at composition root; `withSlot()` semaphore gates DOS;
+ARCH-033 Host/Origin allowlist correctly enforced.
+
+#### Architecture consistency conclusion
+
+Architecture consistent: **no**. 2 HIGH + 3 MED + 1 LOW violations, all in the v3 built-but-unwired
+control set. The v12 REQ-076..079 ARCH chain is fully satisfied (no panel finding touches v12 scope).
+
+**Overall conclusion: send back to Gate 6** for D-BIND, D-REDACT, and ARCH-015 (fixable, concrete).
+**Gate 2 adjudication recommended** for ARCH-017/019 and D-PROC/D-KILL (wire vs formally supersede,
+following the ARCH-044 precedent).
+
+### Validation & handover check (v12)
+
+- **VAL-085 (REQ-076):** `real:true`, green — live `system_info` returned CPU/mem/disk metrics.
+- **VAL-086 (REQ-077):** `real:true`, green — `system_info` process metrics (pid, uptime, heap, rss).
+- **VAL-087 (REQ-078):** `real:true`, green — `models_list` enriched with provider/context/pricing.
+- **VAL-088 (REQ-079):** `real:true`, green — schema drift-lock confirmed.
+- **`08-validation.md`:** status: passed. Gate 7.5 v12 ROUND 1 PASSED 2026-08-15.
+- **No mock-only/unverified gaps for v12 chain:** trace reports 0 未驗證需求, 0 僅mock驗證 for REQ-076..079.
+- **REQ-012:** 1 未真實驗證 (OIDC, D5 deferral). User-deferred; not a Gate 7.5 send-back. Known tech debt.
+- **998/998 regression pass.** 37 tools. `npx tsc --noEmit` clean.
+- **`README.md`:** present, current-state (v12, 2026-08-15). Step-by-step quickstart (6 numbered steps).
+  All 37 tools documented. No stale commands or superseded content.
+- **`DEPLOY.md`:** present, current-state. §0 step-by-step quickstart (逐字可貼上執行). §7 変更紀錄
+  includes v12 entry (2026-08-15). No new config keys in v12. No stale current-state docs.
+- **DEPLOY.md doc-debt (LOW, does not change conclusion):** §1b lines 276-290 carry a historical v2/pre-v3
+  `defaultAllowedTools` blockquote with an inline "(v3 更新, 2026-07-11): 上述 v2 敘述已被 D-V3M-3 取代"
+  supersession note — append-with-inline-marker rather than clean supersede-not-append. Config keys also
+  appear in §6 scenario-recipe JSON examples. Risk is low (current truth stated inline; quickstart
+  real-validated this round). Fold cleanup into the Gate 6 round-trip.
+- **Validation verdict:** Gate 7.5 real-tier all-green for v12 REQ-076..079. README + DEPLOY present.
+  No mock-only/unverified REQ for touched items. REQ-012 gap user-deferred and recorded.
+
+### Retro (v12 — system metrics + models enrichment)
+
+- **What changed:** `system_info` MCP tool — CPU usage (user/system/idle %), memory (total/used/free,
+  usedPercent), disk (each mount point: size/used/available/usedPercent), all in SI-prefixed units;
+  process metrics (pid, uptimeSeconds, heapUsedMB, heapTotalMB, rssMB). `models_list` enriched with
+  provider, contextWindow, maxOutput, and pricing fields. Input/output schemas drift-locked by
+  schema-registry test (REQ-079). Additive only — no v1-core, no run-lifecycle, no config change.
+- **Impact closure:** REQ-076..079 fully chained. 998/998 regression. Gate 7.5 v12 ROUND 1 PASSED
+  2026-08-15. ZERO new trace gaps introduced.
+- **Panel architecture findings are pre-existing, none introduced by v12:** The 6 violations are all in
+  the v3 built-but-unwired control set (session-options-builder, cli-lifecycle, timeout-race, net-guard
+  bind guard, redact, ARCH-015 named-workflow path). The panel's v12-era line numbers confirm current-tree
+  findings. Zero violations touch the REQ-076..079 chain.
+- **Root cause of built-but-unwired pattern:** ARCH decisions (Gate 2) created module contracts; Gate 6
+  created the modules; but the gateway composition (`claude-agent-sdk-client.ts`, `main.ts`) was never
+  updated to call them. Future Gate 6 exit criteria should include a production-caller check (zero
+  importers on a wired ARCH decision = open finding).
+- **Known tech debt (all pre-existing, all recorded):**
+  - [HIGH] D-BIND bind guard unimplemented — Gate 6 fix required before any `0.0.0.0` deployment.
+  - [HIGH] ARCH-017/019 session-options-builder + per-session re-walk absent — Gate 2 adjudication.
+  - [MED] D-PROC/D-KILL / FailureEnvelope / cli-lifecycle + timeout-race orphaned — Gate 2 adjudication.
+  - [MED] D-REDACT `redact()` orphaned — Gate 6 fix.
+  - [MED] ARCH-015 MCP_NOT_PROVISIONED silent for named workflows — Gate 6 fix.
+  - [LOW] McpRegistry wall-clock — one-line fix, opportunistic.
+  - [LOW] SessionInitRecord superseded by ARCH-044 (thinkingMode not auditable, intentional).
+  - [LOW] DEPLOY.md doc-debt (historical blockquote append-with-marker; §6 scenario JSON config keys).
+  - Trace gaps: REQ-012/TASK-018 (OIDC, D5), IMPL-082 (TDD-label), UT-058/UT-064/IT-057 (iter drift).
+- **Gate 7.5:** PASSED 2026-08-15. VAL-085..088 `real:true` (live engine, 37 tools, 998/998 regression).
+
+## v11 GATE 8 FIX-ITERATION REVIEW (2026-08-09, superseded by v12 above)
 
 > This section supersedes "## v10 GATE 8 REVIEW (2026-08-01)" below (kept for history).
 > Fix-mode iteration: impact closure on REQ-066 (version autofill) and REQ-067 (read-only Issues dashboard).

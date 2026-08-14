@@ -6,7 +6,8 @@ status: green
 
 > Gate 5 test-first RED → Gate 7 regression GREEN.
 > Files: `tests/unit/`, `tests/integration/`, `tests/e2e/`, `tests/acceptance/`.
-> Run: `npm test` (vitest).  Gate 7 v2g8 result (2026-07-04): 354 pass / 2 fail (IT-015
+> Run: `npm test` (vitest).  Gate 7 v12 result (2026-08-15): 998 pass / 0 fail / 196 files / 998 tests.
+> Gate 7 v2g8 result (2026-07-04): 354 pass / 2 fail (IT-015
 > env-specific test_defect + IT-024 documented ~1/6 race flake) / 96 files / 356 tests.
 > Gate 7 v2 result (historical, pre-v2g8): 332 pass / 1 fail (IT-015 only) / 89 files / 333 tests.
 > Gate 7 v1 result (historical): 161 pass / 0 fail / 35 files.
@@ -3888,3 +3889,163 @@ Red reason: `GET /api/home` not registered → HTTP 404 on all CI-safe cases. Al
 
 File: `tests/acceptance/val-084-metrics.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real `GET /api/home`, real store; no LLM needed (pure-return scripts fail/succeed deterministically). 2 CI-safe cases: (1) seed 4 completed + 1 failed runs on a named workflow via the real engine → `GET /api/home` card shows `successRate:0.8`, finite non-NaN `avgDurationMs ≥ 0`, `terminalCount:5`; (2) never-run registered workflow → card metrics `{successRate:null, avgDurationMs:null, terminalCount:0}` (REQ-075 named divide-by-zero / NaN boundary). Headless-browser "80% / 3.2 s" text deferred to Gate 7.5.
 Red reason: `GET /api/home` not registered → HTTP 404. Both cases fail.
+
+### UT-074 — pure `buildSystemInfo` host shaper: CPU delta, first-call null, same-jiffy clamp, disk usedPct df-convention (DES-073)
+- **status:** green
+- **traces:** DES-073, ARCH-048, TASK-074
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v12
+
+File: `tests/unit/system-info-shaper.test.ts`. Mock policy (unit): pure `RawHostSnapshot` fixtures — no I/O, no clock (shaper takes already-sampled raw structs). 10 cases: CPU delta 50% utilization; first call no-prev → null + awaiting-second-sample; same-jiffy totalDelta=0 → null + sample-window-too-short; counter-wrap negative used-delta → clamp [0,100]; disk df-convention (used=(blocks-bfree)*blockSize, free=bavail*blockSize, usedPct=used/(used+bavail)); memory usedBytes=total-free; sampledAt/windowMs from ctx; cpu.cores+loadAvg verbatim; all-null snapshot degrade per-section independently; never-throw. Red reason: `src/system-info.ts` does not exist → "Cannot find module" at collect time.
+
+### UT-075 — `buildSystemInfo` degrade paths: null cpu/mem/disk fields → independent per-section Degraded, never throws (DES-073)
+- **status:** green
+- **traces:** DES-073, ARCH-048, TASK-074
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v12
+
+File: `tests/unit/system-info-shaper.test.ts` (same file as UT-074). 5 cases: null cpu → only cpu degrades, others present; null mem → memory Degraded; null disk → disk Degraded; all null → all degrade independently; completely empty snapshot → no throw. Red reason: same as UT-074 (module absent).
+
+### UT-076 — `SystemInfoSampler` lazy-TTL cache + clock seam (DES-073)
+- **status:** green
+- **traces:** DES-073, ARCH-048, TASK-074
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v12
+
+File: `tests/unit/system-info-sampler.test.ts`. Mock policy (unit): local `AdvancingClock` helper (derives all time from fixed anchor `new Date('2024-01-01T00:00:00.000Z')` — no wall-clock comparisons; hermetic) + `StubProbe` (call-counted). 7 cases: first call triggers probe; within-TTL repeat reuses cache (probe count=1); after-TTL triggers re-sample (count=2); sampledAt = clock.isoNow() at sampling time; windowMs = clock delta between samples (not wall time); first call returns windowMs null + utilizationPct null (awaiting-second-sample); within-TTL third call uses cached second result. Red reason: module absent.
+
+### UT-077 — process metrics shaper: engine-self shape, top-N sort (cpuPct desc / memBytes tiebreak / null last), NO cmd/argv/cmdline, topN clamp, timeout degrade (DES-074)
+- **status:** green
+- **traces:** DES-074, ARCH-049, TASK-074
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v12
+
+File: `tests/unit/system-info-proc-shaper.test.ts`. Mock policy (unit): pure `ProcessInfoView` fixtures — no I/O. 12 cases: self has pid/uptimeSec/rssBytes/cpuPct/threads/fdCount; self has NO cmd/argv/cmdline (HIGH control, asserts key absence); topN sorted cpuPct desc then memBytes tiebreak; null cpuPct sorts last; topN entries have NO cmd/argv/cmdline; topN=5 caps to ≤5; topN=999 clamped to ≤50 (clamp-not-reject DES-077); topN=0 clamped → ≤1 entry; procsDegraded timeout → topN=[] + system Degraded + self still returns. Red reason: module absent.
+
+### UT-078 — `classifyStability` pure function: paid/curated→stable, local→variable, :free/besteffort→best-effort (DES-075)
+- **status:** green
+- **traces:** DES-075, ARCH-050, TASK-075
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v12
+
+File: `tests/unit/model-catalog-enrich.test.ts`. Mock policy (unit): pure `ModelEntry` fixtures — no I/O. 6 cases: anthropic remote → stable; openai remote → stable; local ollama → variable; openrouter :free + besteffort → best-effort; openrouter besteffort flag → best-effort; openrouter paid no-flag → stable. Red reason: `classifyStability` not exported from `src/models/model-catalog.ts` → TypeError: not a function at runtime.
+
+### UT-079 — `computeCostLevel` pure function: free→0, unknown→null, price bands monotonic, integer 0–10 (DES-075)
+- **status:** green
+- **traces:** DES-075, ARCH-050, TASK-075
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v12
+
+File: `tests/unit/model-catalog-enrich.test.ts`. 7 cases: 'free' → 0; 'unknown' → null; local ollama free → 0; cheap < expensive; costLevel is integer; in range 0–10; very expensive → clamp 10. Red reason: same as UT-078.
+
+### UT-080 — `enrichModelEntry` composition: all new fields present, capability capped at 200, empty fallback, originals preserved (DES-075)
+- **status:** green
+- **traces:** DES-075, ARCH-050, TASK-075
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v12
+
+File: `tests/unit/model-catalog-enrich.test.ts`. 7 cases: capability/stability/costLevel present; capability ≤200 chars; truncated capability ends with '…'; empty description → non-empty fallback, never null; modalities.in/out forwarded; original ModelEntry fields preserved; no cmd/argv/cmdline added. Red reason: `enrichModelEntry` not exported → TypeError.
+
+### UT-081 — `costLevel` monotonicity property test w.r.t. `maxPricePerMOf` scalar (DES-075)
+- **status:** green
+- **traces:** DES-075, ARCH-050, TASK-075
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v12
+
+File: `tests/unit/model-catalog-enrich.test.ts`. 3 cases: costLevel non-decreasing when entries sorted by maxPricePerMOf ascending (7-entry fixture from free to $30/1M); cheaper < dearer; free/local → 0 is minimum. Property test pinned w.r.t. the SAME scalar (maxPricePerMOf, ARCH-050 D-v12-C) — not out-price — to avoid spurious failures when in/out prices cross. Red reason: `computeCostLevel` + `maxPricePerMOf` not exported → TypeError.
+
+### IT-069 — `system_info` MCP tool over real server: SystemInfoView shape, degrade contract, topN clamp-not-reject (DES-073, DES-074)
+- **status:** green
+- **traces:** DES-073, DES-074, ARCH-048, ARCH-049, TASK-074
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v12
+
+File: `tests/integration/system-info-http.test.ts`. Mock policy (integration): real `createServer` + real HTTP; `SystemProbe` is a `StubProbe` (deterministic degrade cases) injected via `ServerConfig.systemInfo` seam — no real OS probe; consistent with DES-078 "stub permitted on non-Linux CI". 6 cases: tools/list includes system_info; result envelope has cpu/memory/disk/process/sampledAt; topN=999 clamped to ≤50, no error; topN=0, no error; memory block shape (totalBytes, usedBytes, freeBytes); no process record carries cmd/argv/cmdline. Red reason: `src/system-info.ts` absent → module load fail AND system_info absent from TOOL_NAMES → -32601.
+
+### IT-070 — `GET /api/system` over real server: same SystemInfoView shape, sampledAt from injected clock (DES-073)
+- **status:** green
+- **traces:** DES-073, ARCH-048, TASK-074
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v12
+
+File: `tests/integration/system-info-http.test.ts` (same file as IT-069). 2 cases: GET /api/system returns 200 with cpu/memory/disk/process/sampledAt; GET /api/system and system_info tool share the same sampler instance (deterministic sampledAt from FixedClock). Red reason: module absent AND GET /api/system route not registered → 404.
+
+### IT-071 — `GET /api/models` over real server: returns `EnrichedModelEntry[]` with capability/stability/costLevel (DES-075, DES-076)
+- **status:** green
+- **traces:** DES-075, DES-076, ARCH-050, TASK-075
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v12
+
+File: `tests/integration/models-api-http.test.ts`. Mock policy (integration): real `createServer` + real HTTP; catalog sources replaced with injected fake Ollama/OpenRouter fetchers (same pattern as IT from models-list-tool.test.ts); no SUT mock — real enrichModelEntry applied server-side. 8 cases: returns 200; response is array; each entry has capability/stability/costLevel/modalities; Ollama model has costLevel:0 + stability:variable; :free has costLevel:0 + stability:best-effort; paid model has costLevel>0 + stability:stable; capability ≤200 chars; empty catalog → [] no error. Red reason: enrichModelEntry not in model-catalog.ts + GET /api/models route absent → 404.
+
+### IT-072 — schema drift-lock: served `tools/list` for `system_info` + `models_list` declares structured facts (type/range/default/unit/effect) (DES-077)
+- **status:** green
+- **traces:** DES-077, ARCH-051, TASK-076
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v12
+
+File: `tests/integration/schema-drift.test.ts`. Mock policy (integration): real `createServer` + real HTTP tools/list round trip — reads the SERVED surface (not TOOL_DEFS directly). 15 cases (11 red, 4 trivially pass on pre-existing content): system_info present; topN is the ONLY param; topN type:integer, default:5, minimum:1, maximum:50; topN description names effect; clamp mentioned; system_info description has "null" keyword; description mentions cpu semantics; models_list description has stability/costLevel keywords; costLevel scale (0=free) + null contract. 4 trivially-passing cases (on pre-existing text): models_list present, "capability" in description, "0...free" regex match, null contract regex match — acceptable, do not gate the new REQ. Red reason: system_info absent from TOOL_NAMES + models_list description missing stability/costLevel keywords.
+
+### VAL-085 — REQ-076: `system_info` MCP tool + `GET /api/system` report host CPU/memory/disk with plausible non-negative values; any unavailable metric degrades to null+reason (REQ-076)
+- **status:** green
+- **traces:** REQ-076, DES-073, DES-078
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v12
+
+File: `tests/acceptance/val-085-system-info.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real `SystemProbe` (no stub), real OS probe on the live host, real HTTP. 9 CI-safe cases: status ok; cpu.cores positive integer from real OS; loadAvg 3-element non-negative array; utilizationPct number|null (null first call → awaiting-second-sample); memory non-negative bytes add up within tolerance; disk non-empty path + non-negative bytes; GET /api/system returns 200 with same shape; repeated calls don't throw; no cmd/argv/cmdline on any process record. Headless-browser dashboard System panel deferred to Gate 7.5. Red reason: `src/system-info.ts` absent AND system_info tool + GET /api/system route not registered.
+
+### VAL-086 — REQ-077: process metrics — engine self pid matches live process, top-N cpuPct ordered, NO argv field on any record (REQ-077)
+- **status:** green
+- **traces:** REQ-077, DES-074, DES-078
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v12
+
+File: `tests/acceptance/val-086-process-metrics.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real `/proc` pass, no stub. 8 cases: self.pid == process.pid (live engine); self.uptimeSec ≥ 0; self.rssBytes tracks process.memoryUsage().rss within tolerance; self has NO cmd/argv/cmdline (live response — HIGH control); topN ≤5, each entry has pid/name(≤15chars)/cpuPct/memBytes; topN entries have NO cmd/argv/cmdline; topN ordered cpuPct desc, null last; system.total positive integer (or Degraded on non-Linux). Red reason: system_info tool not registered → -32601 call failure.
+
+### VAL-087 — REQ-078: `models_list` + `GET /api/models` return enriched entries; costLevel monotonic with price; Ollama/`:free` → costLevel:0 (REQ-078)
+- **status:** green
+- **traces:** REQ-078, DES-075, DES-076, DES-078
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v12
+
+File: `tests/acceptance/val-087-models-enriched.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real HTTP; enrichModelEntry/classifyStability/computeCostLevel NOT mocked; injected fake Ollama/OpenRouter fetchers for deterministic catalog (enables CI assertions without live network). 12 cases split 9+3: models_list each entry has capability/stability/costLevel/modalities; Ollama → costLevel:0+variable; :free → costLevel:0+best-effort; claude-3-5-sonnet → costLevel>0+stable; monotonic; capability ≤200 non-null; GET /api/models returns 200 + array; entries match models_list enrichment; each entry has capability/stability/costLevel. Red reason: enrichModelEntry not in model-catalog.ts → TypeError; GET /api/models route absent → 404.
+
+### VAL-088 — REQ-079: served `tools/list` drift-lock — schema-only consumer can call system_info and models_list from schema alone (REQ-079)
+- **status:** green
+- **traces:** REQ-079, DES-077, DES-078
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v12
+
+File: `tests/acceptance/val-088-schema-drift.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real served `tools/list` HTTP round trip. 15 cases (11 red, 4 trivially pass): system_info in tools/list; topN only param; topN type/default/minimum/maximum; topN description names effect + mentions clamp; system_info description has "null" + units + cpu semantics; models_list description has capability/stability/costLevel keywords; costLevel scale + null contract. 4 trivially pass on pre-existing content (same as IT-072 — acceptable). Red reason: system_info absent AND models_list description missing stability/costLevel explicit keywords.
