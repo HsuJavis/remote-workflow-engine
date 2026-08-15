@@ -7,6 +7,15 @@ status: green
 > Gate 5 test-first RED → Gate 7 regression GREEN.
 > Files: `tests/unit/`, `tests/integration/`, `tests/e2e/`, `tests/acceptance/`.
 > Run: `npm test` (vitest).  Gate 7 v12 result (2026-08-15): 998 pass / 0 fail / 196 files / 998 tests.
+> Gate 5 v13 RED confirmation (2026-08-15): 30 fail / 1000 pass / 203 files (7 new files).
+>   UT-082 (seedref-egress.test.ts): Cannot find module '../../src/seedref-egress.js' — correct, module unimplemented.
+>   UT-083 (seedref-mutual-exclusion.test.ts): 11/11 fail — start() resolves instead of rejecting with SEED_SOURCE_CONFLICT / SEEDREF_DISABLED / etc., seedRef not handled.
+>   UT-084 (seedref-git-invocation.test.ts): Cannot find module '../../src/seedref-fetcher.js' — correct.
+>   UT-085 (seedref-run-manager.test.ts): 5/5 fail — fetchCalled=false (RunManager ignores seedFetcher dep), view.seedRef undefined.
+>   IT-073 (seedref-git-integration.test.ts): Cannot find module '../../src/seedref-fetcher.js' — correct.
+>   IT-074 (seedref-schema-drift.test.ts): 7/9 fail — workflow_run TOOL_DEFS has no seedRef property.
+>   VAL-089 (val-089-seedref-pull.test.ts): 7/7 fail — SEEDREF_DISABLED/EGRESS_DENIED/CONFLICT not returned, seedRef field absent.
+>   Pre-existing: 998/998 still pass — no regression.
 > Gate 7 v2g8 result (2026-07-04): 354 pass / 2 fail (IT-015
 > env-specific test_defect + IT-024 documented ~1/6 race flake) / 96 files / 356 tests.
 > Gate 7 v2 result (historical, pre-v2g8): 332 pass / 1 fail (IT-015 only) / 89 files / 333 tests.
@@ -4049,3 +4058,75 @@ File: `tests/acceptance/val-087-models-enriched.test.ts`. Mock policy (acceptanc
 - **iter:** v12
 
 File: `tests/acceptance/val-088-schema-drift.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real served `tools/list` HTTP round trip. 15 cases (11 red, 4 trivially pass): system_info in tools/list; topN only param; topN type/default/minimum/maximum; topN description names effect + mentions clamp; system_info description has "null" + units + cpu semantics; models_list description has capability/stability/costLevel keywords; costLevel scale + null contract. 4 trivially pass on pre-existing content (same as IT-072 — acceptable). Red reason: system_info absent AND models_list description missing stability/costLevel explicit keywords.
+
+## v13 — engine-pull seedRef (UT-082..085, IT-073..074, VAL-089)
+
+### UT-082 — `isEgressAllowed` SSRF-matrix + `normalizeSeedRefAllowlist` config-load validator (DES-079)
+- **status:** green
+- **traces:** DES-079, ARCH-052, TASK-077
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v13
+
+File: `tests/unit/seedref-egress.test.ts`. Mock policy (unit): pure functions, zero network, no clock. 16 cases: empty allowlist → SEEDREF_DISABLED; 169.254.169.254 / localhost / file:// / ssh:// / git:// → SEEDREF_EGRESS_DENIED; userinfo (user:pass@host) → DENIED; URL parse failure → DENIED; trailing-/ over-match guard (HsuJavisEvil ≠ HsuJavis); non-matching host → DENIED; happy path https allowlisted → ok:true + URL object; multi-entry allowlist; normalizeSeedRefAllowlist appends trailing /, rejects non-https, rejects unparseable, handles empty, preserves order. Red reason: `src/seedref-egress.ts` does not exist → "Cannot find module" at collect time.
+
+### UT-083 — seed-source mutual-exclusion + pre-createRun precedence: SEED_SOURCE_CONFLICT → SEEDREF_DISABLED → INVALID_SEED_SPEC → SEEDREF_EGRESS_DENIED → CAS_UNAVAILABLE (DES-080)
+- **status:** green
+- **traces:** DES-080, ARCH-052, TASK-077
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v13
+
+File: `tests/unit/seedref-mutual-exclusion.test.ts`. Mock policy (unit): real RunManager, no gateway/spawner (throws before sandbox). 11 cases: seed+seedRef → SEED_SOURCE_CONFLICT; seedManifest+seedRef → SEED_SOURCE_CONFLICT; no allowlist → SEEDREF_DISABLED; SEEDREF_DISABLED before INVALID_SEED_SPEC (no allowlist + bad sha); bad sha 'main' → INVALID_SEED_SPEC; short sha → INVALID_SEED_SPEC; empty repoUrl → INVALID_SEED_SPEC; SSRF URL → SEEDREF_EGRESS_DENIED; file:// → SEEDREF_EGRESS_DENIED; valid seedRef but no cas → CAS_UNAVAILABLE; no run created for SEED_SOURCE_CONFLICT. Red reason: RunManager has no seedRef handling → start() resolves (returns runId) instead of rejecting → all rejects.toMatchObject assertions fail.
+
+### UT-084 — pure `buildGitInvocation`: hardened env flags + no ambient env spread + safe args (DES-081, DES-082)
+- **status:** green
+- **traces:** DES-081, DES-082, ARCH-053, TASK-077, TASK-078
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v13
+
+File: `tests/unit/seedref-git-invocation.test.ts`. Mock policy (unit): pure function, no I/O, no network, no clock. 11 cases — env flags: GIT_CONFIG_NOSYSTEM=1; GIT_ALLOW_PROTOCOL=https; GIT_TERMINAL_PROMPT=0; HOME isolated (not process.env.HOME); GIT_CONFIG_GLOBAL isolated; ambient env NOT inherited (no process.env spread + sentinel check). args: --depth 1; http.followRedirects=false; submodule.recurse=false; sha in args; repoUrl in args; args is string[]. Red reason: `src/seedref-fetcher.ts` does not exist → "Cannot find module" at collect time.
+
+### UT-085 — RunManager fake-`SeedRefFetcher` wiring: fetch called, seedRef.resolvedSha visible, typed failures, dropped[], latencyMs from injected Clock (DES-083)
+- **status:** green
+- **traces:** DES-083, ARCH-053, TASK-077, TASK-078
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v13
+
+File: `tests/unit/seedref-run-manager.test.ts`. Mock policy (unit — DES-085 explicit): real RunManager + real InMemoryRunStore + real CasStore; fake SeedRefFetcher (inline interface, no network); FixedClock for deterministic latencyMs. 5 cases: (i) success → fetchCalled=true + seedRef.resolvedSha on RunStatusView; (ii) fetcher throws SEEDREF_FETCH_FAILED → run status failed + error.code; (iii) fetcher throws SEEDREF_SHA_MISMATCH → typed fail; (iv) dropped[] from fetcher result → surfaced on seedRef.dropped; (v) latencyMs under FixedClock is non-negative number. Pinned sha: 60ee8954e19fe5eaf2cf498202475c3c6fc9b8a4 (HsuJavis/remote-workflow-plugin master, 2026-08-15). Red reason: RunManager has no `seedFetcher` injection slot → fake not called → fetchCalled=false; RunStatusView has no seedRef field → all seedRef.* assertions fail.
+
+### IT-073 — real `HardenedSeedRefFetcher` + real `CasStore` against a pinned public sha: SEEDREF_TOO_LARGE + real pull (DES-082, ARCH-053)
+- **status:** green
+- **traces:** DES-082, ARCH-053, TASK-078
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v13
+
+File: `tests/integration/seedref-git-integration.test.ts`. Mock policy (integration — DES-085): real `HardenedSeedRefFetcher` + real `CasStore` + real git subprocess; NOT a file:// local repo (GIT_ALLOW_PROTOCOL=https forbids it); online cases gated behind `RWE_SKIP_ONLINE_TESTS` env. 3 cases: SEEDREF_TOO_LARGE (maxTotalBytes=1 → pre-download size rejection, no full clone needed); real pull → resolvedSha=PINNED_SHA + bytesTransferred>0 + entries length>0 + each entry has path+sha256 + CAS readable + no .git/ entries + dropped is array; sha-verify placeholder. Pinned repo/sha: https://github.com/HsuJavis/remote-workflow-plugin @ 60ee8954e19fe5eaf2cf498202475c3c6fc9b8a4 (captured 2026-08-15). Red reason: `src/seedref-fetcher.ts` does not exist → "Cannot find module" at collect time.
+
+### IT-074 — `workflow_run` TOOL_DEFS `seedRef` schema drift-lock: repoUrl+sha present, description keywords (DES-084)
+- **status:** green
+- **traces:** DES-084, ARCH-052, TASK-079
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v13
+
+File: `tests/integration/seedref-schema-drift.test.ts`. Mock policy (integration): real `createServer` + real HTTP `tools/list` round trip; no SUT-boundary mocks (same pattern as IT-072). 9 cases (7 red, 2 trivially pass): workflow_run in tools/list (trivially passes); seedRef property present; type=object; repoUrl string property; sha string property; NOT in required (trivially passes — it's not there); description contains "SEEDREF_DISABLED"; description contains "seedRefAllowlist"; description contains "mutually exclusive". Red reason: `workflow_run` TOOL_DEFS has no `seedRef` property → property absent → 7 assertions fail.
+
+### VAL-089 — REQ-080: engine-pull seedRef — no allowlist → SEEDREF_DISABLED; SSRF → SEEDREF_EGRESS_DENIED; seed+seedRef → SEED_SOURCE_CONFLICT; branch ref → INVALID_SEED_SPEC; real pull → workspace assembled (REQ-080)
+- **status:** green
+- **traces:** REQ-080, DES-079, DES-080, DES-081, DES-082, DES-083, DES-084, DES-085
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v13
+
+File: `tests/acceptance/val-089-seedref-pull.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real HTTP; real `SeedRefFetcher`, `CasStore`, `isEgressAllowed` (not mocked); real-pull case skip-gated `RWE_SKIP_ONLINE_TESTS`. 7 cases: no allowlist → SEEDREF_DISABLED; http://169.254.169.254/ → SEEDREF_EGRESS_DENIED; file:// → SEEDREF_EGRESS_DENIED; seed+seedRef → SEED_SOURCE_CONFLICT; seedManifest+seedRef → SEED_SOURCE_CONFLICT; sha:'main' → INVALID_SEED_SPEC; real pull (skip offline) → completed + seedRef.resolvedSha=PINNED_SHA + artifacts≥1 + no .git/. Pinned repo/sha: https://github.com/HsuJavis/remote-workflow-plugin @ 60ee8954e19fe5eaf2cf498202475c3c6fc9b8a4 (2026-08-15). Red reason: seedRef not handled → SEEDREF_DISABLED / EGRESS_DENIED / CONFLICT not returned; seedRef field absent from RunStatusView → all assertions fail.

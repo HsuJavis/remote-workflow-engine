@@ -468,19 +468,42 @@ status: draft
 <!-- ── v12 (REQ-076..079) — system_info host+process metrics · enriched models_list · precise self-describing schemas ── -->
 
 ### TASK-074 — `system_info` host + process metrics via one injectable `SystemProbe` (048+049 fused): the untestable OS-boundary port (returns raw counters only), a stateful lazy-TTL `SystemInfoSampler` taking `{probe, clock}` (triggers a fresh sample unless a within-TTL snapshot exists; caches full raw + previous snapshot + previous per-pid jiffies keyed by pid, wholesale-replaced each sample), and a pure `buildSystemInfo` shaper holding ALL delta math + per-section degrade-to-null-never-throw; wired as `ServerConfig.systemInfo?` feeding BOTH the `system_info` MCP tool case and the additive `GET /api/system` route from one shared sample, plus the dashboard System panel (`textContent`-only) and the DEPLOY recon-surface note coupled to REQ-005. Real probe reads in-process cheap APIs only (`os.*` + `fs.promises.statfs(workRoot)` + a bounded async `/proc` pass under `Promise.race(~150ms)`), NEVER shells out and NEVER opens `/proc/<pid>/cmdline` (process `name` = `comm`, argv structurally absent from the record type).
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-048, ARCH-049
 - **estimate:** L
 - **iter:** v12
 
 ### TASK-075 — enriched `models_list`: pure `enrichModelEntry(ModelEntry) → EnrichedModelEntry` applied AFTER `filterCatalog` (exported pure helpers `classifyStability` / `computeCostLevel` / promoted `maxPricePerMOf`; `capability` curated-table ∪ source description capped 200, never null; `costLevel` integer|null over `COST_LEVEL_BANDS` named table on the existing `maxPricePerMOf` scalar; `modalities` surfaced explicitly), fields additive/optional/computed-at-call-time-never-persisted; PLUS the additive `GET /api/models` route returning `EnrichedModelEntry[]` in the uniform envelope (same builder as the tool) and a `textContent`-only dashboard Models section (columns provider/model/capability/stability/costLevel/modalities) — closes REQ-078's dashboard-observable gap.
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-050
 - **estimate:** M
 - **iter:** v12
 
 ### TASK-076 — precise self-describing schemas + one structured drift-lock test: extend the declarative `TOOL_DEFS` object literals so `system_info` (exactly one param `topN` integer/default 5/range 1–50/clamped/effect-named; `cpuPct` window semantics; null-section + call-motivation prose) and the enriched `models_list` (`capability`/`stability` enum/`costLevel` 0–10 + null-means-unknown) fully self-describe; add `test/schema-drift.test.ts` asserting STRUCTURED FACTS (name/default/range-or-enum/unit-keyword/effect + a "null" keyword for the null-section caveat) over the served `tools/list` for both tools — not a golden-string snapshot.
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-051
 - **estimate:** S
 - **iter:** v12
+
+## v13 — REQ-080 engine-pull `seedRef:{repoUrl,sha}` behind a fail-closed egress allowlist (ARCH-052, ARCH-053)
+
+### TASK-077 — pure egress gate + seed-source mutual-exclusion + config-load allowlist/byte/timeout validation + injectable `SeedRefFetcher` interface (ARCH-052, reject-before-network, zero-I/O)
+- **status:** done
+- **traces:** ARCH-052
+- **estimate:** M
+- **iter:** v13
+- Pure `isEgressAllowed(repoUrl, allowlist) → EgressVerdict` (`src/seedref-egress.ts`) + `normalizeSeedRefAllowlist(raw)` config-load normalizer/validator; the `seedRef`-branch of the submission validator (mutual-exclusion → `SEED_SOURCE_CONFLICT`, sha/url shape → `INVALID_SEED_SPEC`, `CAS_UNAVAILABLE`, `SEEDREF_DISABLED`) with the pinned precedence; `RunSpec.seedRef?` + `SeedRefRequest`/`SeedRefResult`/`SeedRefFetcher` type declarations (no impl); config keys `seedRefAllowlist`/`seedRefTimeoutMs`/`seedRefMaxTotalBytes`/`seedRefMaxFileBytes` validated at load. Entire SSRF matrix lands here as deterministic UTs — zero network, zero clock. Design: DES-079, DES-080, DES-081.
+
+### TASK-078 — `SeedRefFetcher` hardened-git impl + `buildGitInvocation` + sha-verify + CAS-assemble wiring + fetch-outcome observability (ARCH-053, post-`createRun`, one skippable network IT)
+- **status:** done
+- **traces:** ARCH-053
+- **estimate:** L
+- **iter:** v13
+- Real `SeedRefFetcher` (`src/seedref-fetcher.ts`): pure `buildGitInvocation(req)` (hardened env/args, UNIT-asserted), killable git child (`--depth 1`) + temp-dir cleanup on every exit path, `ls-tree -l` byte-cap enforcement BEFORE blob read, symlink/gitlink drop → `dropped[]`, two-step sha-verify, `putBlob`-callback streaming into CAS → `ManifestEntry[]`. RunManager post-`createRun` step: `await fetch` → fall into the EXISTING `materializeManifest` + `initGitBaseline` tail; stamp `RunStatusView.seedRef` (resolvedSha/bytes/latencyMs/fetchedAt + failCode/failDetail + dropped) via the injected `Clock`; typed `SEEDREF_TOO_LARGE`/`SEEDREF_SHA_MISMATCH`/`SEEDREF_FETCH_FAILED` (thrown/`resultError`). One skippable IT pulls a pinned public repo. Design: DES-081, DES-082, DES-083.
+
+### TASK-079 — `workflow_run` TOOL_DEFS `seedRef` schema + actionable error-hint payloads + `schema-drift.test.ts` extension (ARCH-052, consumability)
+- **status:** done
+- **traces:** ARCH-052
+- **estimate:** S
+- **iter:** v13
+- Extend the declarative `TOOL_DEFS` `workflow_run` entry with the `seedRef:{repoUrl,sha}` object schema (mutual-exclusion + `seedRefAllowlist`-required + pre-run/post-run error-split prose naming `SEEDREF_DISABLED`); attach the `SEEDREF_DISABLED` config-key hint + `SEEDREF_EGRESS_DENIED` `attempted:{scheme,host}` (never enumerate the allowlist) to the coded errors; extend `test/schema-drift.test.ts` with structured-fact assertions for the new param. Design: DES-084.
