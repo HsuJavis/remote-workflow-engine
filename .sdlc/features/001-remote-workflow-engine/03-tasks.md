@@ -484,3 +484,26 @@ status: draft
 - **traces:** ARCH-051
 - **estimate:** S
 - **iter:** v12
+
+## v13 — REQ-080 engine-pull `seedRef:{repoUrl,sha}` behind a fail-closed egress allowlist (ARCH-052, ARCH-053)
+
+### TASK-077 — pure egress gate + seed-source mutual-exclusion + config-load allowlist/byte/timeout validation + injectable `SeedRefFetcher` interface (ARCH-052, reject-before-network, zero-I/O)
+- **status:** done
+- **traces:** ARCH-052
+- **estimate:** M
+- **iter:** v13
+- Pure `isEgressAllowed(repoUrl, allowlist) → EgressVerdict` (`src/seedref-egress.ts`) + `normalizeSeedRefAllowlist(raw)` config-load normalizer/validator; the `seedRef`-branch of the submission validator (mutual-exclusion → `SEED_SOURCE_CONFLICT`, sha/url shape → `INVALID_SEED_SPEC`, `CAS_UNAVAILABLE`, `SEEDREF_DISABLED`) with the pinned precedence; `RunSpec.seedRef?` + `SeedRefRequest`/`SeedRefResult`/`SeedRefFetcher` type declarations (no impl); config keys `seedRefAllowlist`/`seedRefTimeoutMs`/`seedRefMaxTotalBytes`/`seedRefMaxFileBytes` validated at load. Entire SSRF matrix lands here as deterministic UTs — zero network, zero clock. Design: DES-079, DES-080, DES-081.
+
+### TASK-078 — `SeedRefFetcher` hardened-git impl + `buildGitInvocation` + sha-verify + CAS-assemble wiring + fetch-outcome observability (ARCH-053, post-`createRun`, one skippable network IT)
+- **status:** done
+- **traces:** ARCH-053
+- **estimate:** L
+- **iter:** v13
+- Real `SeedRefFetcher` (`src/seedref-fetcher.ts`): pure `buildGitInvocation(req)` (hardened env/args, UNIT-asserted), killable git child (`--depth 1`) + temp-dir cleanup on every exit path, `ls-tree -l` byte-cap enforcement BEFORE blob read, symlink/gitlink drop → `dropped[]`, two-step sha-verify, `putBlob`-callback streaming into CAS → `ManifestEntry[]`. RunManager post-`createRun` step: `await fetch` → fall into the EXISTING `materializeManifest` + `initGitBaseline` tail; stamp `RunStatusView.seedRef` (resolvedSha/bytes/latencyMs/fetchedAt + failCode/failDetail + dropped) via the injected `Clock`; typed `SEEDREF_TOO_LARGE`/`SEEDREF_SHA_MISMATCH`/`SEEDREF_FETCH_FAILED` (thrown/`resultError`). One skippable IT pulls a pinned public repo. Design: DES-081, DES-082, DES-083.
+
+### TASK-079 — `workflow_run` TOOL_DEFS `seedRef` schema + actionable error-hint payloads + `schema-drift.test.ts` extension (ARCH-052, consumability)
+- **status:** done
+- **traces:** ARCH-052
+- **estimate:** S
+- **iter:** v13
+- Extend the declarative `TOOL_DEFS` `workflow_run` entry with the `seedRef:{repoUrl,sha}` object schema (mutual-exclusion + `seedRefAllowlist`-required + pre-run/post-run error-split prose naming `SEEDREF_DISABLED`); attach the `SEEDREF_DISABLED` config-key hint + `SEEDREF_EGRESS_DENIED` `attempted:{scheme,host}` (never enumerate the allowlist) to the coded errors; extend `test/schema-drift.test.ts` with structured-fact assertions for the new param. Design: DES-084.

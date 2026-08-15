@@ -12,6 +12,15 @@ import type { CasStore } from './cas-store.js';
 import { initGitBaseline } from './workspace-git.js';
 import { listArtifacts, type ArtifactEntry } from './workspace-artifacts.js';
 import { IllegalTransitionError, codedError } from './errors.js';
+import { isEgressAllowed, normalizeSeedRefAllowlist } from './seedref-egress.js';
+import type { SeedRefFetcher } from './seedref-fetcher.js';
+import { HardenedSeedRefFetcher } from './seedref-fetcher.js';
+
+// v13 REQ-080 (DES-082/083): seedRef fetch bounds. Named constants (the DES-listed config knobs default
+// here; overridable later without an API break like maxConcurrentRuns). Match UT-084's BASE_REQ values.
+const SEEDREF_TIMEOUT_MS = 30_000;
+const SEEDREF_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
+const SEEDREF_MAX_FILE_BYTES = 10 * 1024 * 1024;
 import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView } from './types.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore, sumUsageTokens } from './run-store.js';
@@ -68,6 +77,12 @@ export interface RunManagerDeps {
   /** v10 Slice 2 (REQ-065): the content-addressed store used to assemble a run's workspace from a
    *  `seedManifest`. Omitted → a seedManifest spec is rejected (no store to read blobs from). */
   cas?: CasStore;
+  /** v13 (REQ-080 / DES-080, TASK-077): https-only prefix allowlist for engine-pull seedRef.
+   *  Absent/empty → SEEDREF_DISABLED (fail-closed). Normalized at construction via normalizeSeedRefAllowlist. */
+  seedRefAllowlist?: string[];
+  /** v13 (REQ-080 / DES-083, TASK-078): injectable SeedRefFetcher for the hardened-git impl.
+   *  Omitted in TASK-077 (no-op); wired in TASK-078. */
+  seedFetcher?: SeedRefFetcher;
 }
 
 const TERMINAL: RunStatus[] = ['stopped', 'completed', 'failed'];
@@ -109,6 +124,8 @@ interface RunEntry {
   workflowNodes: WorkflowNodeView[];
   result?: unknown;
   resultError?: { code: string; message: string };
+  /** v13 (REQ-080, DES-083): observable seedRef outcome overlaid onto RunStatusView by _mergeLive. */
+  seedRef?: RunStatusView['seedRef'];
 }
 
 export class RunManager {
@@ -126,6 +143,10 @@ export class RunManager {
   private readonly _onTerminal: ((runId: string, status: RunStatus) => void) | undefined;
   private readonly _maxConcurrentRuns: number;
   private readonly _cas: CasStore | undefined;
+  /** v13 (REQ-080, TASK-077): normalized allowlist for seedRef egress gate; [] = disabled. */
+  private readonly _seedRefAllowlist: string[];
+  /** v13 (REQ-080, TASK-078): injected SeedRefFetcher; undefined until TASK-078 wires it. */
+  private readonly _seedFetcher: SeedRefFetcher;
   private readonly _runs = new Map<string, RunEntry>();
 
   /** v8 Slice 1: config values are positive integers — reject bad config loudly at construction
@@ -155,6 +176,9 @@ export class RunManager {
     this._onTerminal = deps.onTerminal;
     this._maxConcurrentRuns = RunManager._positiveInt(deps.maxConcurrentRuns, 64, 'maxConcurrentRuns');
     this._cas = deps.cas;
+    // v13 (REQ-080, TASK-077): normalize allowlist at construction (config-load check); default [] = disabled.
+    this._seedRefAllowlist = deps.seedRefAllowlist ? normalizeSeedRefAllowlist(deps.seedRefAllowlist) : [];
+    this._seedFetcher = deps.seedFetcher ?? new HardenedSeedRefFetcher();
   }
 
   /** v8 Slice 4 (REQ-054): count of live (non-terminal) top-level runs in this process — the
@@ -220,6 +244,33 @@ export class RunManager {
     if (spec.seedManifest !== undefined && !Array.isArray(spec.seedManifest)) {
       throw codedError('INVALID_SEED_SPEC', `seedManifest must be an array of {path, sha256, exec?}; got ${typeof spec.seedManifest}`);
     }
+    // v13 REQ-080 (DES-080, TASK-077): seedRef pre-createRun validation — pinned precedence:
+    //   SEED_SOURCE_CONFLICT → SEEDREF_DISABLED → INVALID_SEED_SPEC → SEEDREF_EGRESS_DENIED → CAS_UNAVAILABLE
+    // Must sit BEFORE the seedManifest CAS block below (seedManifest+seedRef → CONFLICT, not CAS_UNAVAILABLE).
+    if (spec.seedRef !== undefined) {
+      const hasSeed = Array.isArray(spec.seed) && spec.seed.length > 0;
+      const hasManifest = Array.isArray(spec.seedManifest) && spec.seedManifest.length > 0;
+      if (hasSeed || hasManifest) {
+        throw codedError('SEED_SOURCE_CONFLICT', 'seedRef is mutually exclusive with seed and seedManifest');
+      }
+      if (this._seedRefAllowlist.length === 0) {
+        throw codedError('SEEDREF_DISABLED', 'seedRef requires seedRefAllowlist in engine config (add seedRefAllowlist:[…] to rwe.config.json)');
+      }
+      const { repoUrl, sha } = spec.seedRef;
+      if (!repoUrl || typeof repoUrl !== 'string') {
+        throw codedError('INVALID_SEED_SPEC', 'seedRef.repoUrl must be a non-empty string');
+      }
+      if (!/^[0-9a-f]{40}$/.test(sha) && !/^[0-9a-f]{64}$/.test(sha)) {
+        throw codedError('INVALID_SEED_SPEC', 'seedRef.sha must be a full 40-hex or 64-hex commit sha (branch refs and short shas are rejected)');
+      }
+      const verdict = isEgressAllowed(repoUrl, this._seedRefAllowlist);
+      if (!verdict.ok) {
+        throw codedError(verdict.code, verdict.reason);
+      }
+      if (!this._cas) {
+        throw codedError('CAS_UNAVAILABLE', 'seedRef requires a configured content store (cas); like seedManifest, it assembles via materializeManifest');
+      }
+    }
     // v10 REQ-065: fail fast (before any durable work) if a seedManifest references blobs the client
     // hasn't uploaded — surface the missing shas so the client blob_put's them and retries.
     if (spec.seedManifest && spec.seedManifest.length > 0) {
@@ -240,6 +291,31 @@ export class RunManager {
 
     const runId = await this._store.createRun(spec, resolvedVersion);
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
+    // v13 REQ-080 (DES-083, TASK-078): engine-pull seedRef — fetch the tree AFTER createRun, feed the
+    // fetched entries into the EXISTING seedManifest materialize branch below (guard-parity is structural:
+    // regular files only, .git never materialized). Timing/dropped/failure surface on RunStatusView.seedRef;
+    // a fetch failure fails the run via the same resultError channel as any other run failure.
+    let seedRefView: RunEntry['seedRef'];
+    let seedRefFail: { code: string; message: string } | undefined;
+    if (spec.seedRef !== undefined) {
+      const ns = spec.seedNamespace ?? '_default';
+      const t0 = this._clock.now();
+      try {
+        const r = await this._seedFetcher.fetch(
+          { repoUrl: spec.seedRef.repoUrl, sha: spec.seedRef.sha, timeoutMs: SEEDREF_TIMEOUT_MS, maxTotalBytes: SEEDREF_MAX_TOTAL_BYTES, maxFileBytes: SEEDREF_MAX_FILE_BYTES },
+          async (sha, bytes) => { await this._cas!.putBlob(ns, sha, bytes); },
+        );
+        spec.seedManifest = r.entries; // fall into the existing materializeManifest branch below
+        spec.seedNamespace = ns;
+        seedRefView = { resolvedSha: r.resolvedSha, bytes: r.bytesTransferred, latencyMs: Math.max(0, this._clock.now() - t0), fetchedAt: this._clock.isoNow(), dropped: r.dropped };
+      } catch (err) {
+        const code = (err as { code?: string }).code ?? 'SEEDREF_FETCH_FAILED';
+        const message = String((err as { message?: string }).message ?? err).slice(0, 200);
+        seedRefFail = { code, message };
+        const failCode = (code === 'SEEDREF_SHA_MISMATCH' || code === 'SEEDREF_TOO_LARGE') ? code : 'SEEDREF_FETCH_FAILED';
+        seedRefView = { resolvedSha: spec.seedRef.sha, bytes: 0, latencyMs: Math.max(0, this._clock.now() - t0), fetchedAt: this._clock.isoNow(), dropped: [], failCode, failDetail: message };
+      }
+    }
     // REQ-025 (v2) / REQ-065 (v10): materialize a seed into the workspace BEFORE any agent starts
     // (engine-side, so replay/determinism holds) — from an inline tree (`seed`) or a CAS manifest
     // (`seedManifest`, blobs verified present above). Both go through the SAME guardrails and the SAME
@@ -279,6 +355,14 @@ export class RunManager {
       workflowNodes: [],
     };
     this._runs.set(runId, entry);
+    entry.seedRef = seedRefView; // v13: overlaid onto RunStatusView by _mergeLive (present on success AND failure)
+    if (seedRefFail) {
+      // v13 REQ-080: a seedRef fetch failure fails the run typed (never starts the script against an
+      // empty/partial tree) via the same resultError channel every other run failure uses.
+      entry.resultError = seedRefFail;
+      await this._transition(runId, entry, 'failed');
+      return runId;
+    }
     await this._transition(runId, entry, 'running');
     this._runLive(runId, entry, entry.script, null);
     return runId;
@@ -334,7 +418,7 @@ export class RunManager {
     const entry = this._runs.get(runId);
     if (!entry) return view;
     const agents = entry.spawner instanceof AgentExecutor ? entry.spawner.getAllRecords() : view.agents;
-    return { ...view, phases: entry.phases, agents, workflowNodes: entry.workflowNodes };
+    return { ...view, phases: entry.phases, agents, workflowNodes: entry.workflowNodes, ...(entry.seedRef !== undefined ? { seedRef: entry.seedRef } : {}) };
   }
 
   /** The script return value for a completed run, or the failure error (DES-001 workflow_result). */

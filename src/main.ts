@@ -132,6 +132,9 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     maxWorkflowDescendants: fileConfig.maxWorkflowDescendants,
     // v8 Slice 4 (REQ-054): forwarded like the other RunManager caps; RunManager defaults 64 + validates.
     maxConcurrentRuns: fileConfig.maxConcurrentRuns,
+    // v13 (REQ-080): forward the seedRef egress allowlist so rwe.config.json can enable engine-pull;
+    // absent → RunManager keeps it fail-closed (SEEDREF_DISABLED). Same convention as maxConcurrentRuns.
+    seedRefAllowlist: fileConfig.seedRefAllowlist,
     // v11 Sprint 2 (REQ-068..070): forwarded so the self-update webhook + result ingestion are reachable
     // from the PRODUCTION entrypoint (`npm start` / systemd), not only in-process createServer. Without
     // this the POST /github/webhook route stays 503-unconfigured on a real deploy even when the config

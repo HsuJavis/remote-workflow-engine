@@ -114,6 +114,10 @@ export interface ServerConfig {
   // construction). (REQ-053): override the continuation store's on-disk path (default
   // join(workRoot,'continuations.db')), same convention as schedulerDbPath.
   maxConcurrentRuns?: number;
+  // v13 (REQ-080): https-only prefix allowlist for engine-pull seedRef. Absent/empty → seedRef is
+  // fail-closed OFF (SEEDREF_DISABLED). Threaded FileConfig → ServerConfig → RunManager, same
+  // convention as maxConcurrentRuns; RunManager normalizes + validates at construction.
+  seedRefAllowlist?: string[];
   continuationDbPath?: string;
   // v10 Slice 2 (REQ-064): override the content-addressed store dir (default join(workRoot,'cas')).
   casDir?: string;
@@ -284,6 +288,15 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
           },
         },
         seedNamespace: { type: 'string', description: 'Per-tenant CAS namespace whose blobs seedManifest resolves against (default "_default").' },
+        seedRef: {
+          type: 'object',
+          description: 'v13 engine-pull seed (REQ-080): the engine fetches {repoUrl, sha} itself, for CI/forge/air-gapped callers that hold code the client cannot push. Mutually exclusive with seed/seedManifest (→ SEED_SOURCE_CONFLICT). Requires an operator egress allowlist in engine config, else SEEDREF_DISABLED (hint: add seedRefAllowlist:[…]); a repoUrl off the allowlist (or an SSRF-shaped target: internal IP / localhost / metadata endpoint / non-https) → SEEDREF_EGRESS_DENIED before any network call. Pre-run errors return on this call; a post-run fetch failure (SEEDREF_FETCH_FAILED / SEEDREF_SHA_MISMATCH / SEEDREF_TOO_LARGE) fails the run and shows on workflow_status.seedRef.',
+          properties: {
+            repoUrl: { type: 'string', description: 'https repo URL; its prefix must match an entry in the engine\'s seedRefAllowlist.' },
+            sha: { type: 'string', description: 'Full 40-hex (or 64-hex) commit sha to fetch — branch refs and short shas are rejected (INVALID_SEED_SPEC).' },
+          },
+          required: ['repoUrl', 'sha'],
+        },
       },
     },
   },
@@ -724,7 +737,7 @@ async function callTool(
   args: Record<string, unknown>,
 ): Promise<unknown> {
   switch (name as ToolName) {
-    case 'workflow_run': return facade.workflow_run(args as { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: { path: string; sha256: string; exec?: boolean }[]; seedNamespace?: string });
+    case 'workflow_run': return facade.workflow_run(args as { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: { path: string; sha256: string; exec?: boolean }[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string } });
     case 'workflow_status': return facade.workflow_status(args as { runId: string });
     case 'workflow_result': return facade.workflow_result(args as { runId: string });
     case 'workflow_suspend': return facade.workflow_suspend(args as { runId: string });
@@ -1079,7 +1092,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v10 Slice 2 (REQ-064/065): the content-addressed store backing efficient seedManifest assembly.
   const cas = new CasStore(config?.casDir ?? join(workRoot, 'cas'));
   let continuations: ContinuationStore | undefined;
-  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, cas, onTerminal: (runId, status) => { void continuations?.onTerminal(runId, status); } });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, onTerminal: (runId, status) => { void continuations?.onTerminal(runId, status); } });
   // v8 Slice 4 (REQ-053): SQLite-persisted on-completion chaining, same workRoot convention as
   // schedules.db; rearmAtBoot reconciles any continuation whose target terminated while down.
   continuations = new ContinuationStore({ clock, runManager, store, dbPath: config?.continuationDbPath ?? join(workRoot, 'continuations.db') });

@@ -114,6 +114,18 @@ export interface RunStatusView {
   /** v11 Sprint 3 (TASK-067 / DES-064): ISO timestamp of the first terminal transition (completed/failed/stopped);
    *  absent while the run is still running, so clients can stop polling once truthy. */
   terminalAt?: string;
+  /** v13 (REQ-080 / DES-083): engine-pull seedRef outcome — the resolved sha, bytes, latency, when it
+   *  was fetched, any dropped symlink/gitlink paths, and (on failure) the typed failCode/failDetail.
+   *  Absent unless the run used a seedRef. */
+  seedRef?: {
+    resolvedSha: string;
+    bytes: number;
+    latencyMs: number;
+    fetchedAt: string;
+    dropped: string[];
+    failCode?: 'SEEDREF_FETCH_FAILED' | 'SEEDREF_SHA_MISMATCH' | 'SEEDREF_TOO_LARGE';
+    failDetail?: string;
+  };
 }
 
 export interface RunSummary {
@@ -145,6 +157,10 @@ export interface RunSpec {
    *  `seedNamespace` scopes which blobs count as present (per-tenant refset). */
   seedManifest?: ManifestEntry[];
   seedNamespace?: string;
+  /** v13 (REQ-080 / DES-080, TASK-077): engine-pull seed — fetch a pinned commit from an allowlisted
+   *  remote, verify sha, assemble into CAS, then materialize via the existing materializeManifest branch.
+   *  Mutually exclusive with `seed` and `seedManifest`. Requires seedRefAllowlist in engine config. */
+  seedRef?: { repoUrl: string; sha: string };
 }
 
 /** v10 Slice 2 (REQ-065): a CAS-manifest seed entry — REGULAR FILES ONLY (no mode int, no symlink/type,

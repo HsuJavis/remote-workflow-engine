@@ -2066,3 +2066,96 @@ classDiagram
 - **Refinement flagged:** engine-self rss/cpu/uptime/pid from the Node runtime (`process.*`) rather than `/proc/self/stat`; `/proc/self` used only for threads+fdCount (smaller Linux surface, self-consistent with the delta window).
 - **Named deferred gaps (quality's condition: named, not silently dropped — each a future-REQ candidate, none built for v12 per Karpathy):** (a) no cross-correlation of system metrics with run performance (min hook = `systemInfo` snapshot in the run journal start-event); (b) `GET /health` liveness endpoint still absent; (c) `capability` free text limits programmatic routing — future `tags:string[]` parallel to `modalities`; (d) no feedback loop from `system_info` to `RunGuard` concurrency (adaptive concurrency under host pressure) — `system_info` is the prerequisite telemetry. Security recon deferral (per-tool disable/public-bind suppression) ratified with the loopback invariant as the interim control; the DEPLOY recon-note IS an in-scope deliverable (DES-073).
 - **Seam consistency (Exit Gate 5):** DES-073 states every method that reads time takes the injected `clock` (TTL check, `sampledAt`, `windowMs`); the only timer outside the seam is the `~150ms Promise.race` inside the real probe's `sampleProcesses` (OS boundary; the stub simulates timeout via `procsDegraded`, no real wait) — no injected-clock asymmetry.
+
+---
+
+## v13 — REQ-080 engine-pull `seedRef` (ARCH-052, ARCH-053)
+
+### DES-079 — pure egress gate `isEgressAllowed` + `normalizeSeedRefAllowlist` (src/seedref-egress.ts)
+- **status:** draft
+- **traces:** ARCH-052, TASK-077
+- **signature:**
+  ```ts
+  export type EgressVerdict =
+    | { ok: true; url: URL }
+    | { ok: false; code: 'SEEDREF_DISABLED' | 'SEEDREF_EGRESS_DENIED'; reason: string };
+  export function isEgressAllowed(repoUrl: string, allowlist: readonly string[]): EgressVerdict;
+  export function normalizeSeedRefAllowlist(raw: unknown): string[]; // config-load; throws codedError('SEEDREF_ALLOWLIST_INVALID', <entry-named>)
+  ```
+- **matching:** deny-by-default. Absent/empty allowlist → `SEEDREF_DISABLED`. Else `new URL(repoUrl)`; verdict is `SEEDREF_EGRESS_DENIED` on ANY of: non-`https:` scheme (`file:`/`ext:`/`ssh:`/`git:`/`http:`), non-empty `username`/`password` (userinfo), `URL` parse throw, or no prefix match. Match = `url.origin + url.pathname` starts-with a normalized entry (origin+path with an ENFORCED trailing `/`). `normalizeSeedRefAllowlist` appends the trailing `/` and rejects any non-`https`/unparseable entry (reject, do not clamp); `isEgressAllowed` re-appends the trailing `/` idempotently so it is TOTAL on any `string[]` (loader-free UTs). NOT a reuse of `net-guard.ts` (that is the HTTP server-bind/host-header plane, not URL egress).
+- **boundary UT table (each REQ-080 example = one row, zero network):** `http://169.254.169.254/`, `http://localhost/`, private-range IP, `file://x`, `ssh://`, `git://`, `http://…` → `SEEDREF_EGRESS_DENIED`; `https://user:pass@github.com/HsuJavis/x` → DENIED (userinfo); `https://github.com/HsuJavisEvil/x` vs allow `https://github.com/HsuJavis/` → DENIED (trailing-`/` over-match guard); `[]`/absent allowlist → `SEEDREF_DISABLED`; `https://github.com/HsuJavis/foo` → `ok`. No private-IP connect-ban by design (D-v13-B: air-gapped internal forge is a legitimate allowlisted target).
+- **iter:** v13
+
+### DES-080 — seed-source mutual-exclusion + sha/url shape + pre-`createRun` precedence (submission validator / run-manager fail-fast tier)
+- **status:** draft
+- **traces:** ARCH-052, TASK-077
+- **signature:** in the pure spec-validation module: `seedSourceCount(spec) = count of {seed, seedManifest, seedRef} that are a non-empty presence` (`seed:[]`/`seedManifest:[]` are inert, matching the existing branch-picker). Errors raised via the existing `codedError(code, msg)` throw convention (NOT a return-union) in the pre-`createRun` tier next to `INVALID_SEED_SPEC`/`MISSING_BLOBS`.
+- **codes (pre-`createRun`, no run created):** `SEED_SOURCE_CONFLICT` (>1 source); `SEEDREF_DISABLED` (seedRef given, allowlist absent/empty); `INVALID_SEED_SPEC` (`sha` not full 40- or 64-hex — a branch/short-sha/ref is rejected here to protect the K3 provenance anchor; `repoUrl` empty/non-string); `SEEDREF_EGRESS_DENIED` (fails `isEgressAllowed`); `CAS_UNAVAILABLE` (seedRef needs a configured `CasStore`, exactly like seedManifest at run-manager.ts:226 — `putBlob` target).
+- **precedence (pinned, deterministic — same malformed request always yields the same code):** `SEED_SOURCE_CONFLICT` → `SEEDREF_DISABLED` → `INVALID_SEED_SPEC` (sha/url shape) → `SEEDREF_EGRESS_DENIED` → `CAS_UNAVAILABLE`. Precedence is its own UT row-per-transition.
+- **boundary:** "creates no run before any network" is its OWN assertion — for each pre-run code, the injected fake fetcher's `fetch` is NEVER invoked AND `store.createRun` is NEVER invoked.
+- **iter:** v13
+
+### DES-081 — `SeedRefFetcher` port + request/result types + pure `buildGitInvocation` (src/seedref-fetcher.ts, src/types.ts)
+- **status:** draft
+- **traces:** ARCH-053, TASK-077, TASK-078
+- **signature:**
+  ```ts
+  // types.ts — additive
+  export interface RunSpec { /* … */ seedRef?: { repoUrl: string; sha: string }; }
+  // seedref-fetcher.ts
+  export interface SeedRefRequest { repoUrl: string; sha: string; timeoutMs: number; maxTotalBytes: number; maxFileBytes: number; }
+  export interface SeedRefResult { resolvedSha: string; bytesTransferred: number; entries: ManifestEntry[]; dropped: string[]; }
+  export interface SeedRefFetcher {
+    fetch(req: SeedRefRequest, putBlob: (sha: string, bytes: Buffer) => Promise<void>): Promise<SeedRefResult>;
+  }
+  export function buildGitInvocation(req: SeedRefRequest): { args: string[]; env: Record<string, string> }; // pure, UNIT-asserted
+  ```
+- **contract:** interface DECLARED in TASK-077 (no I/O) so the RunManager test fake and the real impl share one compile-time contract; impl in TASK-078. `entries: ManifestEntry[]` is load-bearing — it feeds the EXISTING `materializeManifest` branch (D-v13-A); this is why the port returns entries, NOT a `{ok,resolvedSha,bytes}` outcome union. `putBlob` is `Promise`-returning and MUST be `await`ed (CasStore.putBlob is async; a later `readBlobSync` in materialize must not race a pending write). Fetcher takes NO clock dep — `latencyMs`/`fetchedAt` are stamped by RunManager (DES-083). Future `authToken?` rides the `SeedRefRequest` bag with no breaking change (D-v13-F).
+- **iter:** v13
+
+### DES-082 — hardened-git impl: `buildGitInvocation` + killable child + byte caps + two-step sha-verify + CAS stream (src/seedref-fetcher.ts)
+- **status:** draft
+- **traces:** ARCH-053, TASK-078
+- **signature/flow:** (1) `buildGitInvocation` → env `{ GIT_CONFIG_NOSYSTEM:'1', HOME:<isolated tmp>, GIT_CONFIG_GLOBAL:<isolated tmp>, GIT_ALLOW_PROTOCOL:'https', GIT_TERMINAL_PROMPT:'0' }` (NO `...process.env` spread) + args incl `-c http.followRedirects=false -c submodule.recurse=false --depth 1`; a table UT asserts each flag present AND ambient env NOT inherited. (2) spawn git into a fresh temp dir; wrap in a `Promise.race` against a `setTimeout(timeoutMs)` that calls `child.kill('SIGTERM')` then SIGKILL — the ONLY timer in the fetcher; temp-dir removed on EVERY exit path (success/fail/timeout). (3) `git ls-tree -l -r <sha>`: sum sizes → if total > `maxTotalBytes` or any file > `maxFileBytes` → throw `SEEDREF_TOO_LARGE` BEFORE reading a blob; skip `120000`(symlink)/`160000`(gitlink) modes into `dropped[]`. (4) two-step verify (quality S-A1) inside the hardened env: `git rev-parse HEAD` == requested `sha` AND `git cat-file -t <sha>` == `commit`; any deviation → `SEEDREF_SHA_MISMATCH`. (5) for each surviving blob → `putBlob(sha256, bytes)` (CasStore stores under computed hash → poisoning-safe) → push `{path, sha256, exec?}` into `entries`. git-absent/unreachable/timeout/non-2xx all FOLD into `SEEDREF_FETCH_FAILED` + `reason` (mirrors `GITHUB_API_ERROR`; do NOT mint `SEEDREF_TIMEOUT`).
+- **boundary:** distinct codes earn their keep only when remediation+test-tier differ — `SEEDREF_TOO_LARGE` (deterministic pre-download size check, "shrink the repo") and `SEEDREF_SHA_MISMATCH` (provenance) stay distinct; everything else folds. `execFileSync` is FORBIDDEN (uninterruptible → `timeoutMs` cosmetic, leaks temp dir + burns an admission slot).
+- **iter:** v13
+
+### DES-083 — RunManager post-`createRun` wiring + `RunStatusView.seedRef` observability (src/run-manager.ts, src/types.ts)
+- **status:** draft
+- **traces:** ARCH-053, TASK-078
+- **signature:**
+  ```ts
+  // types.ts — additive on RunStatusView
+  seedRef?: { resolvedSha: string; bytes: number; latencyMs: number; fetchedAt: string; // ISO
+              dropped: string[]; failCode?: 'SEEDREF_FETCH_FAILED' | 'SEEDREF_SHA_MISMATCH' | 'SEEDREF_TOO_LARGE'; failDetail?: string; };
+  ```
+- **flow:** in `start()` AFTER `createRun` and BEFORE the `materialize` branch-pick (run-manager.ts ~L244): when `spec.seedRef` present, `const t0 = clock.now(); const r = await fetcher.fetch({repoUrl,sha,timeoutMs,maxTotalBytes,maxFileBytes}, (sha,b)=>cas.putBlob(ns,sha,b));` then set `spec.seedManifest = r.entries` (or bind entries directly) so it FALLS INTO the existing `materializeManifest(ws, entries, readBlobSync)` + `mkdir` + `initGitBaseline` tail unchanged (entries are regular files only; `.git` never materialized — guard-parity is structural). Stamp `seedRef` view via injected `Clock` (`latencyMs = clock.now()-t0`, `fetchedAt = clock.iso()`); merge `r.dropped` onto `seedRef.dropped` (SeedResult from materialize is discarded today — DES does NOT invent a new channel; `dropped`/failure ride the new `seedRef` field). On fetch throw → record `seedRef.failCode/failDetail` (truncate `failDetail` ≤200 chars, never a secret) + set run `failed` via existing `entry.resultError {code,message}` (same in-memory durability as every other run failure — deliberate Karpathy parity, no new column). `workflow_run` still returns `runId` immediately (REQ-005): the fetch is in the async run body, not the tool call.
+- **testability:** RunManager UTs inject a fake `SeedRefFetcher` (network-free): (i) entries → assembles via seedManifest branch, artifacts match; (ii) throws `SEEDREF_FETCH_FAILED` → status failed, workspace NOT started against empty tree; (iii) throws `SEEDREF_SHA_MISMATCH` → typed fail; (iv) returns `dropped` → surfaced on `seedRef`. `latencyMs` deterministic under the fake `Clock`.
+- **seam (Exit Gate 5):** every time read on the seedRef path takes the injected `Clock` — `t0`, `latencyMs`, `fetchedAt` all via `clock`; NO RunManager or fetcher method reads wall-clock time; the sole timer is the child-kill `setTimeout` inside the fetcher (OS-boundary, simulated in UTs by a fake that resolves/rejects without real wait).
+- **iter:** v13
+
+### DES-084 — `workflow_run` TOOL_DEFS `seedRef` schema + error hints + drift-lock (src/server.ts, src/mcp-facade.ts, test/schema-drift.test.ts)
+- **status:** draft
+- **traces:** ARCH-052, TASK-079
+- **signature:** add to `TOOL_DEFS.workflow_run.properties`: `seedRef:{ type:'object', description:<mutual-exclusion + requires seedRefAllowlist (SEEDREF_DISABLED) + pre-run/post-run error split prose>, properties:{ repoUrl:{type:'string'}, sha:{type:'string'} }, required:['repoUrl','sha'] }`. Plumbing hop (implementer greps here): thread `seedRef?` through `mcp-facade.workflow_run` (src/mcp-facade.ts:82) → `runManager.start` and the `server.ts:727` `workflow_run` case arg-cast. Error payloads: `SEEDREF_DISABLED` carries `hint:"add seedRefAllowlist:[…] to engine config"`; `SEEDREF_EGRESS_DENIED` carries `attempted:{scheme,host}` (NEVER the full URL, NEVER the allowlist contents — D-REDACT non-disclosure).
+- **drift-lock assertions (structured facts, not golden string):** `seedRef` param present; `.properties.repoUrl` + `.properties.sha` present; description contains `"SEEDREF_DISABLED"`, `"seedRefAllowlist"`, `"mutually exclusive"`.
+- **iter:** v13
+
+### DES-085 — real-tier validation path + per-tier mock policy (REQ-080)
+- **status:** draft
+- **traces:** REQ-080, TASK-077, TASK-078, TASK-079
+- **signature:** real-tier path = a real `workflow_run({seedRef:{repoUrl:"https://github.com/HsuJavis/<tiny>", sha:<fixed 40-hex>}})` against an engine configured with `seedRefAllowlist:["https://github.com/HsuJavis/"]`; the run materializes the tree and a script Reads one file back / `workflow_artifacts` lists them; `repoUrl:"http://169.254.169.254/"` → `SEEDREF_EGRESS_DENIED` with zero outbound connection; no allowlist → `SEEDREF_DISABLED`. Real entrypoint = the MCP `workflow_run` tool; real wiring = real `CasStore` + real git subprocess.
+- **per-tier mock policy:** UNIT — mock freely (fake `SeedRefFetcher`, in-table allowlist); the whole SSRF matrix + precedence + `buildGitInvocation` flags are pure UTs, no network/clock. INTEGRATION — real `CasStore` + real git against a PINNED PUBLIC repo at a fixed sha, SKIPPED when offline (mirrors the real-tier LLM VAL skip-without-key); NOT a `file://` local repo (the `GIT_ALLOW_PROTOCOL=https` + https-only gate forbids it — a local-file IT would not exercise the real path). E2E/acceptance — MUST NOT mock the engine's own boundaries (gate, fetcher, CAS, git); the pinned public pull is the real network touch. The "creates no run before network" property is asserted at unit tier (fetcher + `createRun` never invoked).
+- **iter:** v13
+
+### Decision rationale — v13 (DES-079..085, REQ-080 engine-pull seedRef)
+- **Panel provenance / r2 NOT run:** synthesized from `.panel/design/adversarial.r1.md` (opus — interface-contract / boundary-error / testability, Karpathy tie-break) + `quality-dimensions.r1.md` (sonnet — observability / replaceability / consumability / self-sustainability). QM `safety_class` → no functional-safety/cybersecurity lenses (correct for developer tooling). The two r1 stances are COMPLEMENTARY (adversarial supplies the decomposition + security shape; quality names the observable surface + config knobs), so r2 was not triggered. Task split follows both lenses' shared seam: pure-before-network (TASK-077) vs network-after-`createRun` (TASK-078), + a small consumability/schema task (TASK-079).
+- **Fetcher interface — adversarial's shape wins, quality CONCEDES.** Quality's `SeedFetchOutcome = {ok,resolvedSha,bytes}` union has no `entries: ManifestEntry[]`, so it cannot drive the existing `materializeManifest` branch — the whole point of D-v13-A. Adopted adversarial's `fetch(req, putBlob) → SeedRefResult{entries,dropped,…}` (DES-081). Quality's forward-compat concern (future `authToken`) is already satisfied — `SeedRefRequest` is an object bag, so the field adds without a break.
+- **Error channel — throw `codedError` / `resultError`, NOT a return-union.** Matches the shipped run-manager convention (pre-`createRun` throws `codedError`; post-`createRun` failure via `entry.resultError {code,message}`). Adversarial's fake-throws UTs assume it; quality's typed-verdict union was for the pure gate only (kept there as `EgressVerdict`).
+- **Observability O-S1 (`RunStatusView.seedRef`) adopted (NOT scope creep).** ARCH-053 already committed "records on the run's observable record"; quality named the MCP-visible surface (a caller polling `workflow_status` cannot read an engine log). Adversarial's minimal three fields (resolvedSha/bytes/latency) + failCode ride ON this field (DES-083). CONCEDED to quality on the surface, held adversarial's field minimalism. `dropped[]` also rides here because the current materialize lambdas DISCARD `SeedResult` (run-manager.ts:250) — no existing `rejected` channel to merge into; carrying it on `seedRef` avoids inventing a parallel reporting path (Karpathy). Deferred quality O-S3 `seedSource` field (quality itself marked it low-priority; `seedRef` presence already implies the source).
+- **sha-verify — quality S-A1 two-step adopted** (`rev-parse HEAD`==sha AND `cat-file -t`==`commit`), closing the shallow-clone alternative-object-type confused-deputy path, while keeping ARCH-053's latitude on fetch strategy (do not assume `allowAnySHA1InWant`).
+- **Config knobs named at design time (D-v13-E class foot-gun, D-F5 precedent):** `seedRefTimeoutMs` (default 30_000, min 5_000), `seedRefMaxTotalBytes`, `seedRefMaxFileBytes`, `seedRefAllowlist` — all validated at config-load (same convention as `maxConcurrentRuns`/`maxWorkflowDepth`), rejected with actionable entry-named messages. Left to impl = the same late-fix trap both lenses flagged.
+- **`CAS_UNAVAILABLE` in the precedence (gap NEITHER panel closed):** `putBlob` targets `CasStore`, so seedRef requires a configured CAS exactly like seedManifest — added as the last pre-`createRun` precedence slot (DES-080) with its own UT row.
+- **Reuse checked (Karpathy surgical):** `src/net-guard.ts` NOT reused — it is the HTTP server-bind/host-header/loopback plane, a different concern from URL egress prefix matching; `src/timeout-race.ts` (`raceWithTimeout`) is agent/semaphore-oriented (provider-call racing, no child kill), so the fetcher's kill-on-timeout is a local `setTimeout`+`child.kill` (DES-082) rather than a forced reuse.
+- **Carried D-v13 decisions (from Gate 2, unchanged):** D-v13-B no blanket private-IP connect-ban (air-gapped internal forge is a legit allowlisted target); D-v13-C DNS-rebind = accepted residual, connect-IP-pin not built; D-v13-D no fetch worker pool (REQ-054 admission counter already bounds concurrency; S-S3 slot-holding residual documented for operator sizing); D-v13-F secrets/private-repo deferred. Quality's cross-cutting gaps (trace-ID, RunStorePort, circuit-breaker, `GET /health`, journal archival) remain pre-existing deferred future-REQ candidates — NOT seeded by a single seed-source feature.
+- **Seam consistency (Exit Gate 5):** every time read on the seedRef path takes the injected `Clock` (`t0`/`latencyMs`/`fetchedAt`, DES-083); no RunManager or fetcher method reads wall-clock time; the sole timer is the fetcher's child-kill `setTimeout` (OS boundary, faked in UTs). seedRef falls into the identical mkdir → materialize → `initGitBaseline` tail as seed/seedManifest — no asymmetric second assembly path.
