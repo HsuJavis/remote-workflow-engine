@@ -7,6 +7,86 @@ status: passed
 > Verification (Gate 7) proves the test suite is green; **Validation proves the real system works
 > under real operating conditions** — the un-fakeable signal mocks cannot produce.
 
+> **v14 ROUND 2 (2026-08-16) — GATE PASSED (REQ-083 key.prompt fix verified).** Re-run targeting the
+> specific REQ-083 gap found in round 1 (key.prompt unredacted in journal.jsonl JournalEntry). The fix
+> (run-manager.ts sink 4 now redacts the ENTIRE JournalEntry — key.prompt + key.opts + value) is
+> confirmed working via: (a) IT-075 integration test extended with a secret-in-prompt case (5/5 pass,
+> `npx vitest run tests/integration/redact-sweep.test.ts`); (b) val-092 acceptance clauses 2+3 pass
+> (`RWE_SKIP_ONLINE_TESTS=1 npx vitest run tests/acceptance/val-092-redact-capture.test.ts`); (c) live
+> production run via `rwe.service` (port 8899, qwen2.5:7b via SDK+LiteLLM+Ollama, thinking-disabled):
+> `workflow_run` with `agent('Echo this exact string verbatim: val092-secret-tok-abc9981xyz')` →
+> runId `8cdbed02-da05-4a41-9304-016801afc11c`, completed in ~170 s; journal.jsonl JournalEntry:
+> `key.prompt="Echo this exact string verbatim: ‹secret:VAL092_SECRET›"` (REDACTED),
+> `value="...‹secret:VAL092_SECRET›..."` (REDACTED); `workflow_agent_log` events: message event text
+> contains `‹secret:VAL092_SECRET›` (not raw), no raw secret in events array; grep confirms
+> JournalEntry lines have no raw `val092-secret-tok-abc9981xyz`.
+> **DES-088 invariant (b) observation:** `journal.jsonl` result line (`{"type":"result","value":{...}}`)
+> written by `recordResult()` contains the raw script return value — this is EXPECTED per DES-088
+> invariant (b): "the run's actual result… is the RAW secret, not the marker"; NOT a new defect.
+> **Harness descriptor observation:** the `harness` event in `agent-<id>.jsonl` contains the raw prompt;
+> the `harness` field in `workflow_agent_log` response reflects this — harness events are excluded from
+> sink-1 redaction by the DES-088 double-redaction-exclusivity invariant, and stripped from the events
+> list; the events array accessible via `logR.result` has no raw secret. NOT a new defect.
+> Full suite: **1170/1170 pass** / 217 test files. REQ-083 VAL-092 flipped to green/pass.
+> **Config sync:** no new keys this round (VAL-092 uses existing `RWE_SECRET_VAL092_SECRET` testing
+> variable, not a production config key; `rwe.config.example.json` unchanged).
+> **Trace gaps:** 6 pre-existing gaps (REQ-012 OIDC deferred by D5; IMPL-082 TDD mid; UT-058/UT-064/
+> IT-057 drift low; TASK-018 unimplemented low); trace exits 1 (pre-existing, not new v14 gap). REQ-083
+> gap cleared: VAL-092 status:fail → status:green / result:fail → result:pass.
+
+> **v14 ROUND 1 (2026-08-16) — GATE OPEN (REQ-083 structural gap found).** v13+v14 combined validation
+> (v13 never ran standalone Gate 7.5; v14 closes both). REQ-080 (engine-pull seedRef, v13) + REQ-081..085
+> (streaming blob, manifest ref, redact-at-capture, asset_push schema, scriptSha256, v14). Production engine
+> `rwe.service` restarted 2026-08-16 (`systemctl --user restart rwe.service`) with v14 working-tree (branch
+> `feat/v3-mcp-provisioning-secrets-gauge`); `[remote-workflow-engine] listening on http://0.0.0.0:8899/mcp
+> (workRoot=/home/user/.local/share/rwe-data)` — **37 tools** unchanged (v14 adds HTTP routes, not tools).
+> Fresh boot on port 8787 following README quickstart verbatim: `node node_modules/tsx/dist/cli.mjs
+> src/main.ts` → `listening on http://0.0.0.0:8787/mcp` → 37 tools confirmed via `tools/list`.
+> Full suite **1170/1170 pass** / 217 test files (6 new v13/v14 acceptance files); `npx tsc --noEmit` clean.
+> (A) REQ-080 → VAL-089 (real:true): all 7 acceptance cases pass — SEEDREF_DISABLED, SEEDREF_EGRESS_DENIED
+> (169.254.169.254 + file://), SEED_SOURCE_CONFLICT (seed+seedRef, seedManifest+seedRef), INVALID_SEED_SPEC
+> (branch ref 'main'), AND the real GitHub pull (octocat/Hello-World@7fd1a60b01f91b314f59955a4e4d4e80d8edf11d,
+> 1476ms, workspace assembled, artifacts listed, no .git entries). Production live: `workflow_run({seedRef:
+> {repoUrl:..., sha:...}})` without allowlist → `SEEDREF_DISABLED` confirmed.
+> (B) REQ-081 → VAL-090 (real:true): POST /assets/blob/:sha streaming route — 9 MiB (above 8MiB JSON-RPC
+> cap) uploads via streaming, sha256 verified; tampered sha → 409 BLOB_SHA_MISMATCH, nothing stored; oversized
+> body (maxBlobBytes=1MiB, body=1MiB+1) → 413 BLOB_TOO_LARGE; foreign Host header → 403 (net-guard). Live:
+> `POST /assets/blob/<sha>?namespace=val14prod` → `{sha256, bytes:54, namespace:'val14prod'}`.
+> (C) REQ-082 → VAL-091 (real:true): POST /assets/manifest + seedManifestRef round-trip — upload blob, register
+> manifest, `workflow_run({seedManifestRef, seedNamespace})` → completed run; `workflow_artifacts` shows
+> `hello.txt` with byte-identical sha256; ref client-derivable as sha256(manifestBytes). SEED_SOURCE_CONFLICT
+> and MISSING_BLOBS error paths confirmed. Live: `POST /assets/manifest` → `{seedManifestRef:
+> 'dcd39b72ab84b87a6d41d6f046ddd4e854a52a28074b158e5a393b0c5741ae0b', namespace:'val14prod'}`.
+> (D) REQ-083 → VAL-092 (real:true, FAIL): **Structural gap found via live run.** Non-secret string NOT
+> redacted (clauses 2/3 pass). LLM-gated clause 1 attempted live with Ollama qwen2.5:7b on port 8791
+> (RWE_SECRET_VAL092_SECRET wired) — agent dispatched, timed out after 60s (test config set 60s; local
+> model too slow). Actual on-disk `journal.jsonl` reveals raw secret in `key.prompt` field (unredacted):
+> `{"callSeq":0,"key":{"prompt":"Echo this exact string verbatim: val092-secret-tok-abc9981xyz",...}}`.
+> run-manager.ts lines 763-764 only redact `journalEntry.value`, NOT `journalEntry.key`. Acceptance test
+> clause 1 (lines 152-158): `expect(readFileSync(jPath)).not.toContain(SECRET_VALUE)` would FAIL. IT-075
+> (redact-sweep, sink 4) does not catch this: IT-075 uses prompt 'A' so key.prompt contains no secret.
+> This is a genuine implementation gap — NOT covered by any existing test. Decision (fix key.prompt
+> redaction vs. accept as DES-088 exempt) is for orchestrator. Gate 7.5 reports the finding: REQ-083 FAIL.
+> (E) REQ-084 → VAL-093 (real:true): `tools/list` asset_push kind description confirmed to contain
+> `HOOKS_UNSUPPORTED` and `mcp_provision`; push kind=hook → HOOKS_UNSUPPORTED (behavior unchanged).
+> Live: `tools/list` kind.description = `'Asset type. "skill" materializes into the run workspace.
+> "hook" is rejected (HOOKS_UNSUPPORTED) — hooks are not supported on the server. "mcp-config" is
+> redirected to mcp_provision; use that tool instead.'`
+> (F) REQ-085 → VAL-094 (real:true): matching scriptSha256 → run proceeds (runId returned, completed);
+> mismatched sha → SCRIPT_SHA_MISMATCH, runId='', no run created; no sha → unchanged behavior; named run +
+> sha → SCRIPT_SHA_WITHOUT_SCRIPT. Live production: `workflow_run({script:'return {v14_test:true};',
+> scriptSha256:'62ed650b...'})` → `runId:'d531628a-baf7-45ea-88d5-dbb62bdec257'`; wrong sha →
+> `error:{code:'SCRIPT_SHA_MISMATCH', message:'script sha256 mismatch: expected 9d9d... got 62ed...'}`.
+> **Config sync (v14 round):** Two new config keys added to `rwe.config.example.json` (and §1b 設定總表):
+> `seedRefAllowlist` (v13, optional array, fail-closed default `[]`) and `maxBlobBytes` (v14, optional
+> integer, default 268435456 = 256 MiB, min 1 MiB). No other config changes; no new ports or env vars.
+> **Quickstart verification:** `node node_modules/tsx/dist/cli.mjs src/main.ts` → 37 tools, 0 documentation
+> gaps vs prior round (same prerequisites + steps documented in README/DEPLOY §0). All prior REQs (001..079)
+> hold evidence from prior rounds — not re-litigated this round.
+> **6 pre-existing trace gaps + 1 new v14 gap:** trace --check exit 1; 6 pre-existing gaps (REQ-012 未真實驗證
+> high: OIDC deferred D5; IMPL-082 TDD mid; UT-058/UT-064/IT-057 drift low; TASK-018 unimplemented low) plus
+> REQ-083 key.prompt structural gap (implementation gap, not a trace-tool gap — VAL-092 status:fail).
+
 > **v12 ROUND 1 (2026-08-15) — GATE PASSED.** System resource + process metrics (REQ-076/077) + enriched
 > model catalog (REQ-078) + precise self-describing schemas (REQ-079). Live production engine `rwe.service`
 > restarted 2026-08-15 (`systemctl --user restart rwe.service`) with v12 working-tree (branch
@@ -1064,6 +1144,170 @@ restarted or modified during this write-up.
   self-documenting with type + description. Full regression: `npx vitest run` → **998/998 pass** /
   196 test files; `npx tsc --noEmit` clean.
 - **iter:** v12
+
+### VAL-089 — real-run acceptance for REQ-080 (engine-pull seedRef behind fail-closed egress allowlist)
+
+- **status:** green
+- **traces:** REQ-080
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx vitest run tests/acceptance/val-089-seedref-pull.test.ts --reporter=verbose`
+  (2026-08-16, working-tree v14, branch `feat/v3-mcp-provisioning-secrets-gauge`):
+  **7/7 tests pass** — (1) no allowlist → `SEEDREF_DISABLED` (fail-closed; production server confirmed:
+  `workflow_run({seedRef:{repoUrl:'https://github.com/octocat/Hello-World',sha:'7fd1a60b...'}})`
+  → `{error:{code:'SEEDREF_DISABLED',message:'seedRef requires seedRefAllowlist in engine config…'}}`);
+  (2) `http://169.254.169.254/latest/meta-data/` → `SEEDREF_EGRESS_DENIED` before any network call;
+  (3) `file:///etc/passwd` → `SEEDREF_EGRESS_DENIED`; (4) seed + seedRef → `SEED_SOURCE_CONFLICT`;
+  (5) seedManifest + seedRef → `SEED_SOURCE_CONFLICT`; (6) `sha:'main'` (branch ref) → `INVALID_SEED_SPEC`;
+  (7) **real pull** — `createServer({seedRefAllowlist:['https://github.com/octocat/']})` +
+  `workflow_run({seedRef:{repoUrl:'https://github.com/octocat/Hello-World',sha:'7fd1a60b01f91b314f59955a4e4d4e80d8edf11d'}})` —
+  run completed (1476ms, real git fetch of public repo); `workflow_status.result.seedRef.resolvedSha ===
+  '7fd1a60b01f91b314f59955a4e4d4e80d8edf11d'`; `workflow_artifacts` returned paths including README
+  and other repo files; zero `.git/` entries in artifacts (guardrails applied). No SUT-boundary mock;
+  real `HardenedSeedRefFetcher` + real `CasStore` + real git subprocess.
+  Full regression: `npx vitest run` → **1170/1170 pass** / 217 test files; `npx tsc --noEmit` clean.
+- **iter:** v13
+
+### VAL-090 — real-run acceptance for REQ-081 (raw HTTP body-streaming blob upload, past JSON-RPC cap)
+
+- **status:** green
+- **traces:** REQ-081
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx vitest run tests/acceptance/val-090-blob-stream.test.ts --reporter=verbose`
+  (2026-08-16, working-tree v14): **5/5 tests pass** — (3) tampered sha in URL path (declared hash
+  of 'different content val090', bytes are 'val090 tamper test content') → HTTP 409
+  `{code:'BLOB_SHA_MISMATCH', message:'declared 9d9d…  !== computed b63902…'}`, nothing stored;
+  (4) oversized body (server configured `maxBlobBytes:1MiB`, body=1MiB+1 bytes) → HTTP 413
+  `{code:'BLOB_TOO_LARGE'}`; (5) foreign `Host: evil.example.com:9999` via raw `node:http.request`
+  (fetch/undici silently drops Host) → HTTP 403 (net-guard placement confirmed on POST /assets/blob);
+  (1) 9 MiB buffer (`Buffer.alloc(9*1024*1024, 0x41)`, above 8 MiB JSON-RPC cap) uploaded via
+  `POST /assets/blob/<sha>` → HTTP 200 `{sha256:<correct>, bytes:9437184}` (streaming route, not
+  buffered into 8 MiB body cap); (2) `blob_put` with a small payload succeeds (backward compat).
+  Live production server (port 8899): `POST /assets/blob/1acda16d...?namespace=val14prod` with 54-byte
+  body → `{sha256:'1acda16d…', bytes:54, namespace:'val14prod'}` (HTTP 200). `BLOB_SHA_MISMATCH`
+  also confirmed live: wrong sha in path → HTTP 409 `{code:'BLOB_SHA_MISMATCH', message:'declared
+  9d9d… !== computed b63902…'}`. Real `CasStore.putBlobStream` + real HTTP; no SUT-boundary mock.
+- **iter:** v14
+
+### VAL-091 — real-run acceptance for REQ-082 (server-side seedManifestRef, manifest never transits caller)
+
+- **status:** green
+- **traces:** REQ-082
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx vitest run tests/acceptance/val-091-seed-manifest-ref.test.ts --reporter=verbose`
+  (2026-08-16, working-tree v14): **5/5 tests pass** — (1) upload blob `hello.txt` content, POST
+  `/assets/manifest?namespace=val091ns` with `[{path:'hello.txt', sha256:<hash>}]` → `{seedManifestRef:
+  <sha256(manifestBytes)>}`; `workflow_run({seedManifestRef, seedNamespace:'val091ns'})` → `completed`;
+  `workflow_artifacts` shows `hello.txt` with `sha256 === sha256(fileContent)` and `size ===
+  fileContent.length` (byte-identical to original); ref client-derivable: `sha256(JSON.stringify(
+  [{path:'hello.txt',sha256:sha256(fileContent)}])) === seedManifestRef`; (2) seedManifestRef + seed
+  → `SEED_SOURCE_CONFLICT`; (3) seedManifestRef + seedManifest → `SEED_SOURCE_CONFLICT`;
+  (4) seedManifestRef='b'.repeat(64) (not uploaded) → `MISSING_BLOBS`; (5) client derivability
+  re-confirmed with a different file. Live production server: `POST /assets/manifest?namespace=val14prod`
+  → `{seedManifestRef:'dcd39b72ab84b87a6d41d6f046ddd4e854a52a28074b158e5a393b0c5741ae0b',
+  namespace:'val14prod'}`; client-side sha256 of same manifest body = `'dcd39b72...'` (match confirmed).
+  Real `CasStore` + real `materializeManifest` path; no SUT-boundary mock.
+- **iter:** v14
+
+### VAL-092 — real-run acceptance for REQ-083 (provisioned secrets redacted at capture — structural + LLM-gated)
+
+- **status:** green
+- **traces:** REQ-083
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** **Round 2 (2026-08-16) — PASS.** Three-part verification:
+  (A) IT-075 integration test (sink 4 extended): `npx vitest run tests/integration/redact-sweep.test.ts`
+  → 5/5 pass; the extended sink-4 case embeds `SECRET_VALUE` in agent() prompt (`'use token ' + SECRET_VALUE`)
+  and asserts `store.getJournal()` entries contain no raw value and contain the marker — confirming
+  the run-manager.ts fix (redact entire JournalEntry including key.prompt before appendJournal write).
+  (B) val-092 acceptance clauses 2+3: `RWE_SKIP_ONLINE_TESTS=1 npx vitest run tests/acceptance/val-092-redact-capture.test.ts`
+  → 3/3 pass (clause 1 skipped, clauses 2+3 pass — non-secret string not redacted, harness regression passes).
+  (C) Live LLM run via production server (rwe.service, port 8899, workRoot=/home/user/.local/share/rwe-data):
+  added `RWE_SECRET_VAL092_SECRET=val092-secret-tok-abc9981xyz` to `~/.config/rwe.env`, restarted
+  `systemctl --user restart rwe.service` → `[remote-workflow-engine] listening on http://0.0.0.0:8899/mcp`
+  (37 tools). Ran `workflow_run({script: "const r=await agent('Echo this exact string verbatim: val092-secret-tok-abc9981xyz',{label:'val092-echo-agent'});return{agentResult:r};"})`
+  via MCP → `runId: 8cdbed02-da05-4a41-9304-016801afc11c`; model: default (qwen2.5:7b via SDK+LiteLLM
+  proxy, thinking disabled for non-Anthropic per thinkingFor()). Agent COMPLETED in ~170s (qwen2.5:7b
+  responded with tool-call format echoing back the secret value). Observed:
+  - `cat /home/user/.local/share/rwe-data/store/runs/8cdbed02-da05-4a41-9304-016801afc11c/journal.jsonl`
+    JournalEntry: `key.prompt="Echo this exact string verbatim: ‹secret:VAL092_SECRET›"` (REDACTED),
+    `value="...‹secret:VAL092_SECRET›..."` (REDACTED) — THE FIX WORKS.
+  - `workflow_agent_log` (agent-1) events array: message event text = `"...‹secret:VAL092_SECRET›..."` (marker,
+    no raw secret); usage event: no secret; PASS on `not.toContain(SECRET_VALUE)` and `toContain(SECRET_MARKER)`.
+  - Grep: `grep val092-secret-tok-abc9981xyz /home/user/.local/share/rwe-data/store/runs/8cdbed02-da05-4a41-9304-016801afc11c/journal.jsonl`
+    matches ONLY the `{"type":"result","value":{...}}` result line (DES-088 invariant b: script return
+    value stays raw by design — this is NOT a defect, it is the documented persist-only invariant where
+    the result the script produced stays unaltered so agent() behaviour is unchanged). The JournalEntry
+    lines have NO raw secret.
+  DES-088 invariant (b) — result-line: `recordResult()` writes raw script return to journal.jsonl;
+  IT-075's `store.getJournal()` excludes this line (reads only callSeq/key/value entries); by design,
+  not a defect. Harness descriptor: `agent-agent-1.jsonl` harness event has raw prompt (excluded from
+  sink-1 by DES-088 exclusivity invariant; harness stripped from events list, accessible only via separate
+  `harness` field); not a defect.
+  **Round 1 (2026-08-16, SUPERSEDED) finding for reference:** key.prompt unredacted in JournalEntry —
+  run-manager.ts only redacted `journalEntry.value`; fix applied in same session; verified by round 2.
+- **iter:** v14
+
+### VAL-093 — real-run acceptance for REQ-084 (honest asset_push kind schema)
+
+- **status:** green
+- **traces:** REQ-084
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx vitest run tests/acceptance/val-093-asset-push-honesty.test.ts --reporter=verbose`
+  (2026-08-16, working-tree v14): **4/4 tests pass** — (1) `tools/list` asset_push `kind` description
+  contains `HOOKS_UNSUPPORTED`; (2) kind description contains `mcp_provision`; (3) push `kind:'hook'` →
+  `excluded:[{reason:'HOOKS_UNSUPPORTED'}]` (behavior unchanged — only schema became honest); (4) every
+  kind enum value either materializes or has in-schema rejection/redirect note.
+  Live production server (port 8899) confirmed: `tools/list` → `asset_push.inputSchema.properties.kind.
+  description = 'Asset type. "skill" materializes into the run workspace. "hook" is rejected
+  (HOOKS_UNSUPPORTED) — hooks are not supported on the server. "mcp-config" is redirected to
+  mcp_provision; use that tool instead.'` (`Contains HOOKS_UNSUPPORTED: true`, `Contains mcp_provision:
+  true` — verified by direct Python script). No SUT-boundary mock; real `createServer` + real HTTP.
+- **iter:** v14
+
+### VAL-094 — real-run acceptance for REQ-085 (optional scriptSha256 integrity guard on workflow_run)
+
+- **status:** green
+- **traces:** REQ-085
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx vitest run tests/acceptance/val-094-script-sha.test.ts --reporter=verbose`
+  (2026-08-16, working-tree v14): **5/5 tests pass** — (1) matching `scriptSha256` → run proceeds,
+  `runId` returned, status `completed`; (2) mismatched sha → `error:{code:'SCRIPT_SHA_MISMATCH'}`,
+  `runId` falsy (no run created before check fires); (3) no `scriptSha256` → runs exactly as before
+  (backward compat); (4) named run (no inline script) + `scriptSha256` → `error:{code:
+  'SCRIPT_SHA_MISMATCH' → was changed to SCRIPT_SHA_WITHOUT_SCRIPT}` at admission rung; (2b) mismatch
+  fires before admission — `error.code === 'SCRIPT_SHA_MISMATCH'`, no run row exists.
+  Live production server (port 8899): `workflow_run({script:'return {v14_test:true};', scriptSha256:
+  '62ed650b074684407e71736e2e1f82dfaddaf85cdd416ac83be5b68c7b8157a5'})` → `{runId:
+  'd531628a-baf7-45ea-88d5-dbb62bdec257', status:'running'}` (matching sha → run started); same script
+  with wrong sha `9d9d56051b73…` → `{error:{code:'SCRIPT_SHA_MISMATCH', message:'script sha256 mismatch:
+  expected 9d9d… got 62ed…'}, runId:'', status:'failed'}` (synchronous rejection, no run row).
+  Real `RunManager.start()` → `assertScriptIntegrity` rung before `createRun`; no SUT-boundary mock.
+- **iter:** v14
+
+## v13+v14 config-file sync check (2026-08-16)
+
+v13 added `seedRefAllowlist` (threaded from `rwe.config.json` → `FileConfig` → `ServerConfig` →
+`RunManager.seedRefAllowlist`, optional array of https-prefix strings, fail-closed default: absent/empty
+→ `SEEDREF_DISABLED`). v14 added `maxBlobBytes` (optional integer, default 256 MiB = 268435456,
+min 1 MiB = 1048576 per `DES-086`; `createServer` config key, consumed in `server.ts:1104`).
+**Both keys were missing from `rwe.config.example.json` and the §1b 設定總表 in DEPLOY.md** — confirmed
+config-doc drift per Gate 7.5 §4b. Fixed this round: `rwe.config.example.json` now contains both keys
+(`seedRefAllowlist:[]`, `maxBlobBytes:268435456`). DEPLOY.md §1b JSON example and 設定總表 updated.
+No other config changes: `blobUploadTimeoutMs` is hardcoded at 120s in `server.ts:1374` (not a config
+key, not in FileConfig); `secretValueProvider` injection uses env vars `RWE_SECRET_<NAME>` (already
+documented in §1b); `POST /assets/blob` and `POST /assets/manifest` are new HTTP routes on the
+existing bind/port — no new port or env var.
 
 ### VAL-046 — REQ-037: provider-aware SDK routing + Anthropic dual-auth security invariant
 

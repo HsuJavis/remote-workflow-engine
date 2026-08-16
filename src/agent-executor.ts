@@ -4,6 +4,8 @@ import type { AgentOpts, AgentRecord, HarnessDescriptor, TranscriptEvent } from 
 import type { GatewayClient, GatewayResult } from './gateway/client.js';
 import type { RunGuard } from './run-guard.js';
 import type { RunStore } from './run-store.js';
+import { redact } from './secret-resolver.js';
+import type { SecretValueProvider } from './secret-resolver.js';
 
 /** DES-066 (TASK-069): pure security transform — strips all resolved values, keeps names only.
  *  - Prompt 4KB cap: first 2048 + "…[truncated]…" + last 2048 (tail survives, task instructions land there).
@@ -141,10 +143,18 @@ export class AgentTranscriptSink {
   constructor(
     private readonly _guard?: RunGuard,
     private readonly _store?: RunStore,
+    private readonly _secretValueProvider?: SecretValueProvider,
   ) {}
 
   private async _emit(runId: string, agentId: string, ev: TranscriptEvent): Promise<void> {
-    if (this._store) await this._store.appendTranscript(runId, agentId, ev);
+    if (this._store) {
+      // DES-088 (TASK-082): redact on persist write, not in-memory. kind:'harness' is handled by
+      // redactHarness (double-redaction exclusivity invariant — never both on the same event).
+      const stored = this._secretValueProvider && ev.kind !== 'harness'
+        ? redact(ev, this._secretValueProvider.entries()) as TranscriptEvent
+        : ev;
+      await this._store.appendTranscript(runId, agentId, stored);
+    }
   }
 
   /** D-F12: records an agentId as queued the moment RunGuard allocates it — BEFORE it has acquired
@@ -235,6 +245,8 @@ export interface AgentExecutorDeps {
   clock?: { isoNow(): string };
   /** Server-side agent-type registry (D-V5): known opts.agentType values apply their systemPrompt. */
   agentTypes?: Record<string, AgentTypeDef>;
+  /** DES-088 (TASK-082): inject to enable redact-at-capture on all transcript persist sinks. */
+  secretValueProvider?: SecretValueProvider;
 }
 
 /** Bounded retry budget for schema-mismatched agent() responses (D-V4) — never an infinite loop. */
@@ -252,10 +264,12 @@ export class AgentExecutor implements AgentSpawner {
   private readonly _store?: RunStore;
   private readonly _clock: { isoNow(): string };
   private readonly _agentTypes: Record<string, AgentTypeDef>;
+  private readonly _secretValueProvider?: SecretValueProvider;
 
   constructor(deps: AgentExecutorDeps = {}) {
     this._gateway = deps.gateway ?? NULL_GATEWAY;
-    this._sink = new AgentTranscriptSink(deps.guard, deps.store);
+    this._secretValueProvider = deps.secretValueProvider;
+    this._sink = new AgentTranscriptSink(deps.guard, deps.store, deps.secretValueProvider);
     this._store = deps.store;
     this._clock = deps.clock ?? { isoNow: () => new Date().toISOString() }; // det:allow — transcript timestamp, not a decision
     this._agentTypes = deps.agentTypes ?? {};
@@ -329,6 +343,7 @@ export class AgentExecutor implements AgentSpawner {
     const store = this._store;
     const clock = this._clock;
     const sink = this._sink;
+    const secretValueProvider = this._secretValueProvider;
     const onHarness = async (descriptor: HarnessDescriptor): Promise<void> => {
       // #20: surface model/provider on the LIVE agent record the moment the session is built (before
       // the first token) so workflow_status shows WHICH backend a still-running agent is waiting on,
@@ -347,8 +362,15 @@ export class AgentExecutor implements AgentSpawner {
     // agent_log grows and a progressing agent's clock advances DURING the call — a hung agent (no
     // events) keeps lastActivityAt at startedAt. Fire-and-forget-ordered: awaited by the gateway per
     // event, so file appends stay in arrival order. Gateways without a turn stream never call it.
+    // DES-088 (TASK-082): redact on persist write (sink 1 — live stream events). kind!=='harness'
+    // guard preserves double-redaction exclusivity (onHarness path above uses redactHarness).
     const onEvent = async (ev: TranscriptEvent): Promise<void> => {
-      if (store) await store.appendTranscript(req.runId, req.agentId, ev);
+      if (store) {
+        const stored = secretValueProvider && ev.kind !== 'harness'
+          ? redact(ev, secretValueProvider.entries()) as TranscriptEvent
+          : ev;
+        await store.appendTranscript(req.runId, req.agentId, stored);
+      }
       sink.markActivity(req.agentId, ev.ts);
     };
     const invokePromise = this._gateway.invoke({ prompt, opts, runId: req.runId, agentId: req.agentId, signal: req.signal, workspace: req.workspace, onHarness, onEvent });

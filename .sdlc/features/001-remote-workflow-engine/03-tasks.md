@@ -507,3 +507,38 @@ status: draft
 - **estimate:** S
 - **iter:** v13
 - Extend the declarative `TOOL_DEFS` `workflow_run` entry with the `seedRef:{repoUrl,sha}` object schema (mutual-exclusion + `seedRefAllowlist`-required + pre-run/post-run error-split prose naming `SEEDREF_DISABLED`); attach the `SEEDREF_DISABLED` config-key hint + `SEEDREF_EGRESS_DENIED` `attempted:{scheme,host}` (never enumerate the allowlist) to the coded errors; extend `test/schema-drift.test.ts` with structured-fact assertions for the new param. Design: DES-084.
+
+### TASK-080 — streaming raw-body blob ingest: `CasStore.putBlobStream` seam + pure `isValidSha256Hex`/`isValidNamespace` + `POST /assets/blob/:sha` route BEHIND the net-guard (ARCH-054, the one genuine new I/O path)
+- **status:** draft
+- **traces:** ARCH-054
+- **estimate:** L
+- **iter:** v14
+- New `CasStore.putBlobStream(namespace, declaredSha, body: Readable, opts) → {sha256, bytes}` (`src/cas-store.ts`): temp-file sink + incremental sha256, mid-stream abort at `opts.maxBytes` → `BLOB_TOO_LARGE`, idle/read timeout (reset-on-chunk) via `opts.readTimeoutMs` + injectable `opts.timer` → `BLOB_UPLOAD_TIMEOUT`, verify computed==declared → `BLOB_SHA_MISMATCH` (unlink, store nothing), atomic rename → `blobs/<sha[0:2]>/<sha>`, THEN record namespace ref; `finally`-unlink on EVERY exit; no-exists-shortcut (fully consume+verify even if blob present). Exported pure `isValidSha256Hex`/`isValidNamespace` run BEFORE any fd. Thin `server.ts` handler registered AFTER the `isAllowedHost`/`isAllowedOrigin` gate (NOT like `/github/webhook`), reads UNDECODED bytes, 200 → `{sha256,bytes,namespace}` + one INFO line. Config `maxBlobBytes` (default 256 MiB, min 1 MiB) + `blobUploadTimeoutMs` (default 120 s, min 10 s) validated at load. `blob_put` description cross-references `POST /assets/blob/`. Net-guard 403-on-foreign-Host IT rides THIS task (route placement is the guard). Design: DES-086.
+
+### TASK-081 — server-side seed manifest ref = a CAS blob: `POST /assets/manifest` + `seedManifestRef` run-load path + 4-way `SEED_SOURCE_CONFLICT` ladder extension + `RunStatusView.seedManifestRef` (ARCH-055, sequence after TASK-080)
+- **status:** draft
+- **traces:** ARCH-055
+- **estimate:** M
+- **iter:** v14
+- `POST /assets/manifest?namespace=<ns>` (raw-body, behind the net-guard): parse manifest bytes → `INVALID_SEED_SPEC` on unparseable, validate every referenced blob present → `MISSING_BLOBS` (naming absent shas), store the manifest bytes as an ordinary CAS blob, return `{seedManifestRef, namespace}` (`seedManifestRef = sha256(manifestBytes)`). `RunSpec.seedManifestRef?` load path: on `workflow_run({seedManifestRef, seedNamespace})`, load the blob, parse (→ `INVALID_SEED_SPEC`), re-validate referenced blobs (`MISSING_BLOBS` stays the security boundary), assemble via the EXISTING `materializeManifest` (verbatim, inline+ref cannot diverge). Extend the top ladder rung to 4-way exclusion (`seed`/`seedManifest`/`seedRef`/`seedManifestRef` >1 → `SEED_SOURCE_CONFLICT`). Add `RunStatusView.seedManifestRef?: string`. `workflow_run`/`seed_plan` descriptions cross-reference `/assets/manifest` + name `SEED_SOURCE_CONFLICT`; drift-locked. Depends on TASK-080 (blobs must upload first). Design: DES-087.
+
+### TASK-082 — redact-at-capture wiring: `SecretValueProvider` port + `redact({name,value}[])` extension + EVERY transcript persist sink + journal `value` sink through `redact()`, on the persist write only (ARCH-056, the load-bearing security REQ — ONE task, sweep IT is definition-of-done)
+- **status:** draft
+- **traces:** ARCH-056
+- **estimate:** L
+- **iter:** v14
+- Extend `redact(event, secrets: {name,value}[])` (marker `‹secret:${name}›`, value-exact substring, `src/secret-resolver.ts`); new `SecretValueProvider.entries(): ReadonlyArray<{name,value}>` port reading the server-side secret source (`loadSecretSourceFromEnv`), injected into `RunManager` and passed to the capture chokepoint AND the `appendJournal` site — the sandbox never receives values. Route through `redact()` on the persist write for EVERY sink: (1) per-agent transcript store (`workflow_agent_log`), (2) terminal snapshot BEFORE `saveSnapshot` (run-manager.ts:508), (3) SDK-gateway `kind:'message'|'tool_call'|'tool_result'|'usage'` capture, (4) `JournalEntry.value` at the `appendJournal` build site (run-manager.ts:680). Invariants (each a named test): redact ONLY on `kind!=='harness'` and `redactHarness` ONLY on harness (mutually exclusive, no double-redaction); live in-memory `messages` array UNTOUCHED (persist-only); the completeness SWEEP IT (grep every on-disk artifact + `workflow_agent_log` for the raw secret) is the definition-of-done; negative control (same-shape different-value NOT redacted); journal replay-divergence unit. `workflow_agent_log` description gains the `‹secret:NAME›` asymmetry sentence; `workflow_run` description + authoring guidance state the hermeticity contract. Design: DES-088.
+
+### TASK-083 — honest `asset_push` `kind` schema + drift-lock (ARCH-057, static only, no behavior change)
+- **status:** draft
+- **traces:** ARCH-057
+- **estimate:** S
+- **iter:** v14
+- Rewrite the `asset_push` `kind` description (server.ts:435) so both non-materializing values self-describe IN-BAND: `hook` → rejected `HOOKS_UNSUPPORTED`; `mcp-config` → use `mcp_provision`. Keep the enum values (dropping breaks the redirect caller); behavior unchanged (pushing `hook` still returns typed `HOOKS_UNSUPPORTED`). Extend `tests/integration/schema-drift.test.ts` to assert BOTH `"HOOKS_UNSUPPORTED"` and `"mcp_provision"` appear in the `kind` field description. Design: DES-089.
+
+### TASK-084 — pure `assertScriptIntegrity` + `SCRIPT_SHA_MISMATCH` rung + `scriptSha256` schema/drift-lock (ARCH-058, one rung in the existing pre-`createRun` ladder)
+- **status:** draft
+- **traces:** ARCH-058
+- **estimate:** S
+- **iter:** v14
+- Pure `assertScriptIntegrity(script, sha?)`: `sha` present and `sha256(utf8Bytes(script)) !== sha` → throw `codedError('SCRIPT_SHA_MISMATCH', …)`; absent → no-op (64-char lowercase hex). New top rung in the `workflow_run` pre-`createRun` ladder (before the admission counter at run-manager.ts:230, no durable work either way): `scriptSha256` with a NAMED run (no inline `script`) → typed `SCRIPT_SHA_WITHOUT_SCRIPT` (clear reject, never silent). `TOOL_DEFS.workflow_run` gains `scriptSha256` param (description names `UTF-8` bytes + `SCRIPT_SHA_MISMATCH` + default-absent=no-check); drift-locked in `tests/integration/schema-drift.test.ts`. Reject any store/registry/signing framing. Design: DES-090.

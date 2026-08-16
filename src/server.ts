@@ -1,6 +1,7 @@
 // MCP Streamable HTTP server bootstrap (DES-001 / ARCH-001 / TASK-001).
 // Owns transport + tool registration only — no business logic (pure delegation to McpFacade).
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createHash } from 'node:crypto';
 import { gunzip, inflate } from 'node:zlib';
 import { promisify } from 'node:util';
 
@@ -24,7 +25,8 @@ import { loadAgentDefinitions } from './agent-definitions.js';
 import { SqliteSchedulerPort, type Schedule, type NewSchedule } from './scheduler.js';
 import { ContinuationStore } from './continuation-store.js';
 import { WebhookRegistry } from './webhook-registry.js';
-import { CasStore } from './cas-store.js';
+import { CasStore, isValidSha256Hex, isValidNamespace } from './cas-store.js';
+import type { SecretValueProvider } from './secret-resolver.js';
 import { isAllowedHost, isAllowedOrigin } from './net-guard.js';
 import { parseMeta, parseWorkflowSkeleton } from './workflow-meta.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
@@ -121,6 +123,9 @@ export interface ServerConfig {
   continuationDbPath?: string;
   // v10 Slice 2 (REQ-064): override the content-addressed store dir (default join(workRoot,'cas')).
   casDir?: string;
+  // v14 (REQ-081, DES-086): max raw body size for POST /assets/blob/:sha (default 256 MiB, min 1 MiB).
+  // Distinct from the 8 MiB MCP JSON-RPC body cap — the streaming route is the only path for large blobs.
+  maxBlobBytes?: number;
   // v8 Defer B (REQ-057/058): override the webhook registry's on-disk path (default
   // join(workRoot,'webhooks.db')), same convention as schedulerDbPath/continuationDbPath.
   webhookDbPath?: string;
@@ -287,7 +292,9 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
             required: ['path', 'sha256'],
           },
         },
-        seedNamespace: { type: 'string', description: 'Per-tenant CAS namespace whose blobs seedManifest resolves against (default "_default").' },
+        seedNamespace: { type: 'string', description: 'Per-tenant CAS namespace whose blobs seedManifest/seedManifestRef resolves against (default "_default").' },
+        seedManifestRef: { type: 'string', description: 'v14 server-side manifest ref (REQ-082): the sha256 of a manifest blob registered via POST /assets/manifest. The engine loads and re-validates the manifest at run-time (security boundary). Mutually exclusive with seed/seedManifest/seedRef (→ SEED_SOURCE_CONFLICT). Use blob_put + POST /assets/manifest to register the manifest, then pass the returned seedManifestRef here.' },
+        scriptSha256: { type: 'string', description: 'Optional integrity guard. 64-char lowercase hex sha256 of the script\'s UTF-8 bytes. If present and mismatched, returns SCRIPT_SHA_MISMATCH and creates no run. Omit to skip.' },
         seedRef: {
           type: 'object',
           description: 'v13 engine-pull seed (REQ-080): the engine fetches {repoUrl, sha} itself, for CI/forge/air-gapped callers that hold code the client cannot push. Mutually exclusive with seed/seedManifest (→ SEED_SOURCE_CONFLICT). Requires an operator egress allowlist in engine config, else SEEDREF_DISABLED (hint: add seedRefAllowlist:[…]); a repoUrl off the allowlist (or an SSRF-shaped target: internal IP / localhost / metadata endpoint / non-https) → SEEDREF_EGRESS_DENIED before any network call. Pre-run errors return on this call; a post-run fetch failure (SEEDREF_FETCH_FAILED / SEEDREF_SHA_MISMATCH / SEEDREF_TOO_LARGE) fails the run and shows on workflow_status.seedRef.',
@@ -432,7 +439,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     inputSchema: {
       type: 'object',
       properties: {
-        kind: { type: 'string', description: "One of 'skill' | 'hook' | 'mcp-config'." },
+        kind: { type: 'string', description: "Asset type. \"skill\" materializes into the run workspace. \"hook\" is rejected (HOOKS_UNSUPPORTED) — hooks are not supported on the server. \"mcp-config\" is redirected to mcp_provision; use that tool instead." },
         name: { type: 'string', description: 'Asset name.' },
         files: { type: 'array', description: 'Array of { path, contentB64 } entries; every path must stay inside the asset dir.' },
       },
@@ -574,7 +581,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'The webhook to delete.' } }, required: ['id'] },
   },
   blob_put: {
-    description: "Uploads one content-addressed blob for efficient workspace seeding. The server verifies the bytes hash to `sha256` (rejects BLOB_HASH_MISMATCH) and records it for `namespace`. Idempotent. Then reference it from a workflow_run `seedManifest` entry `{path, sha256, exec?}`.",
+    description: "Uploads one content-addressed blob for efficient workspace seeding. The server verifies the bytes hash to `sha256` (rejects BLOB_HASH_MISMATCH) and records it for `namespace`. Idempotent. Then reference it from a workflow_run `seedManifest` entry `{path, sha256, exec?}`. For blobs larger than 8 MiB (the JSON-RPC body cap) use POST /assets/blob/:sha?namespace=<ns> (raw HTTP, no base64; error: BLOB_SHA_MISMATCH on hash mismatch).",
     inputSchema: {
       type: 'object',
       properties: {
@@ -586,7 +593,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     },
   },
   seed_plan: {
-    description: "Given a manifest `[{path, sha256, exec?}]` and a namespace, returns `{missing:[sha256…]}` — the blobs this namespace must still blob_put before a workflow_run with this seedManifest will assemble. `missing` is per-namespace (never global existence).",
+    description: "Given a manifest `[{path, sha256, exec?}]` and a namespace, returns `{missing:[sha256…]}` — the blobs this namespace must still blob_put (or POST /assets/manifest) before a workflow_run with this seedManifest will assemble. `missing` is per-namespace (never global existence).",
     inputSchema: {
       type: 'object',
       properties: {
@@ -737,7 +744,7 @@ async function callTool(
   args: Record<string, unknown>,
 ): Promise<unknown> {
   switch (name as ToolName) {
-    case 'workflow_run': return facade.workflow_run(args as { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: { path: string; sha256: string; exec?: boolean }[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string } });
+    case 'workflow_run': return facade.workflow_run(args as { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: { path: string; sha256: string; exec?: boolean }[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string }; seedManifestRef?: string; scriptSha256?: string });
     case 'workflow_status': return facade.workflow_status(args as { runId: string });
     case 'workflow_result': return facade.workflow_result(args as { runId: string });
     case 'workflow_suspend': return facade.workflow_suspend(args as { runId: string });
@@ -1091,8 +1098,21 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // assigned, so `continuations` is populated by then.
   // v10 Slice 2 (REQ-064/065): the content-addressed store backing efficient seedManifest assembly.
   const cas = new CasStore(config?.casDir ?? join(workRoot, 'cas'));
+  // v14 (REQ-081, DES-086): max raw bytes for POST /assets/blob/:sha (default 256 MiB, min 1 MiB).
+  const MIN_BLOB_BYTES = 1024 * 1024; // 1 MiB minimum per DES-086
+  const DEFAULT_BLOB_BYTES = 256 * 1024 * 1024; // 256 MiB default per DES-086
+  const blobMaxBytes = config?.maxBlobBytes !== undefined
+    ? Math.max(MIN_BLOB_BYTES, config.maxBlobBytes)
+    : DEFAULT_BLOB_BYTES;
+  // v14 (REQ-083, DES-088): SecretValueProvider from env for redact-at-capture wiring.
+  const secretSource = loadSecretSourceFromEnv();
+  const secretValueProvider: SecretValueProvider = {
+    entries(): ReadonlyArray<{ name: string; value: string }> {
+      return secretSource.names().map((n) => ({ name: n, value: secretSource.resolve(n) ?? '' })).filter((s) => s.value.length > 0);
+    },
+  };
   let continuations: ContinuationStore | undefined;
-  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, onTerminal: (runId, status) => { void continuations?.onTerminal(runId, status); } });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, onTerminal: (runId, status) => { void continuations?.onTerminal(runId, status); } });
   // v8 Slice 4 (REQ-053): SQLite-persisted on-completion chaining, same workRoot convention as
   // schedules.db; rearmAtBoot reconciles any continuation whose target terminated while down.
   continuations = new ContinuationStore({ clock, runManager, store, dbPath: config?.continuationDbPath ?? join(workRoot, 'continuations.db') });
@@ -1336,6 +1356,65 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       }).catch((err: unknown) => {
         if (err instanceof BodyTooLargeError) sendJson(res, 413, { error: err.message, code: err.code, cap: err.cap, hint: err.hint });
         else sendJson(res, 500, { error: 'webhook ingress error' });
+      });
+      return;
+    }
+    // DES-086 (TASK-080, REQ-081): streaming blob ingest — POST /assets/blob/:sha?namespace=<ns>.
+    // Registered AFTER the net-guard (DES-086 BE placement). Reads the request body UNDECODED
+    // (BE-3: does not reuse readBodyDecoded; gzip body simply mismatches → BLOB_SHA_MISMATCH).
+    const blobMatch = req.method === 'POST' ? /^\/assets\/blob\/([^/?]+)/.exec(req.url ?? '') : null;
+    if (blobMatch) {
+      const sha = decodeURIComponent(blobMatch[1]!);
+      const ns = new URL(req.url ?? '/', `http://x`).searchParams.get('namespace') ?? '';
+      if (!isValidSha256Hex(sha) || !isValidNamespace(ns)) {
+        sendJson(res, 400, { code: 'INVALID_BLOB_REQUEST', message: 'invalid sha256 hex or namespace' });
+        return;
+      }
+      const maxBytes = blobMaxBytes;
+      cas.putBlobStream(ns, sha, req, { maxBytes, readTimeoutMs: 120_000 }).then((r) => {
+        sendJson(res, 200, { sha256: r.sha256, bytes: r.bytes, namespace: ns });
+      }).catch((err: unknown) => {
+        const code = (err as { code?: string }).code ?? 'BLOB_ERROR';
+        const msg = (err as { message?: string }).message ?? String(err);
+        if (code === 'BLOB_TOO_LARGE') { sendJson(res, 413, { code, message: msg }); return; }
+        if (code === 'BLOB_UPLOAD_TIMEOUT') { sendJson(res, 408, { code, message: msg }); return; }
+        if (code === 'BLOB_SHA_MISMATCH') { sendJson(res, 409, { code, message: msg }); return; }
+        sendJson(res, 500, { code, message: msg });
+      });
+      return;
+    }
+    // DES-087 (TASK-081, REQ-082): manifest register — POST /assets/manifest?namespace=<ns>.
+    // Registered AFTER the net-guard (DES-087: same placement as the blob route).
+    // Parses raw bytes as JSON manifest, validates referenced blobs present, stores manifest as CAS blob.
+    if (req.method === 'POST' && req.url?.startsWith('/assets/manifest')) {
+      const ns = new URL(req.url, `http://x`).searchParams.get('namespace') ?? '';
+      if (!cas || !isValidNamespace(ns)) {
+        sendJson(res, 400, { code: 'INVALID_BLOB_REQUEST', message: 'CAS not configured or invalid namespace' });
+        return;
+      }
+      readBodyBuffer(req, blobMaxBytes).then(async (rawBytes) => {
+        let parsed: unknown;
+        try { parsed = JSON.parse(rawBytes.toString('utf8')); } catch {
+          sendJson(res, 400, { code: 'INVALID_SEED_SPEC', message: 'manifest body is not valid JSON' });
+          return;
+        }
+        if (!Array.isArray(parsed)) {
+          sendJson(res, 400, { code: 'INVALID_SEED_SPEC', message: 'manifest must be a JSON array of {path, sha256, exec?}' });
+          return;
+        }
+        // Validate referenced blobs are present in the namespace.
+        const referencedShas = (parsed as Array<{ sha256?: unknown }>).map((e) => String(e.sha256 ?? ''));
+        const missing = await cas.missing(ns, referencedShas);
+        if (missing.length > 0) {
+          sendJson(res, 409, { code: 'MISSING_BLOBS', missing, message: `${missing.length} blob(s) not found in namespace ${ns}` });
+          return;
+        }
+        // Store the manifest as a CAS blob (seedManifestRef = sha256(rawBytes) — client-derivable).
+        const { sha256: manifestRef } = await cas.putBlob(ns, createHash('sha256').update(rawBytes).digest('hex'), rawBytes);
+        sendJson(res, 200, { seedManifestRef: manifestRef, namespace: ns });
+      }).catch((err: unknown) => {
+        if (err instanceof BodyTooLargeError) { sendJson(res, 413, { error: err.message, code: err.code }); return; }
+        sendJson(res, 500, { error: 'manifest register error' });
       });
       return;
     }

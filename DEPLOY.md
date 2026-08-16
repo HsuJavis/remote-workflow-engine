@@ -3,22 +3,21 @@
 > 人類導向文件（繁體中文）。由 Gate 7.5 validator 依實際部署步驟撰寫，步驟可重跑。
 > 凡 validator 為了把系統跑起來而做、但 README quickstart 未涵蓋的動作，都記在這裡。
 >
-> 目前部署狀態（v12，2026-08-15）：systemd user service `rwe.service`，綁定
+> 目前部署狀態（v14，2026-08-16）：systemd user service `rwe.service`，綁定
 > `0.0.0.0:8899`（本機 override.conf 將 port 覆寫為 8899；預設安裝用 8787，見 §1 設定總表 `RWE_PORT`；
 > ufw 白名單 `192.168.0.0/24` + SSH），`workRoot=/home/user/.local/share/rwe-data`，
-> `gateway:"sdk"` + managed LiteLLM proxy。**37 個** MCP 工具（v12 新增 `system_info`），含首頁工作流程
-> 卡片（`GET /api/home`，RUNNING/REGISTERED/OTHER 三組 + 平均成功率/平均執行時間）、Issues 儀表板
-> （`/dashboard/issues`）、`issue_report` 版本自動填入、標籤觸發式自動更新（`POST /github/webhook`）、
-> **System 面板**（`GET /api/system`：CPU 利用率 / 記憶體 / 磁碟 / 引擎行程 / Top-N 行程）、
-> **Models 面板**（`GET /api/models`：跨供應商統一目錄，含 capability / stability / costLevel 0–10）。
-> 自動更新設定見 §6b；Gate 7.5 v12 驗證**已通過**（VAL-085/086/087/088 綠：真實 `system_info` +
-> `models_list` enrichment + schema drift-lock + 接受測試 42/42）。完整驗證證據見
-> `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
+> `gateway:"sdk"` + managed LiteLLM proxy。**37 個** MCP 工具，含 engine-pull `seedRef`（設定鍵
+> `seedRefAllowlist`，見 §1b）、streaming blob upload（`POST /assets/blob/:sha`）、server-side
+> manifest ref（`POST /assets/manifest`）、redact-at-capture（`‹secret:NAME›` marker；JournalEntry
+> key.prompt + value 均在 persist-write 前抹除，見 REQ-083 / DES-088）、`asset_push` schema honesty、
+> `scriptSha256` integrity guard（設定鍵 `maxBlobBytes`，見 §1b）。Gate 7.5 v14 **PASSED**（ROUND 2）：
+> VAL-089..094 全部 real:true pass；trace 704 items / 6 pre-existing gaps（REQ-012 OIDC deferred D5）。
+> 完整驗證證據見 `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
 
 
 ## §0 Quickstart — 開機序列（可逐字貼上執行）
 
-> 以下指令與 README quickstart 一致，是 v12 validator 實際跑過的步驟，本輪零文件缺口。
+> 以下指令與 README quickstart 一致，是 v14 validator 實際跑過的步驟，本輪零文件缺口。
 
 ```bash
 # 步驟 1：安裝 Node 依賴
@@ -68,12 +67,12 @@ curl -s -X POST http://localhost:8787/mcp \
   "import json,sys; d=json.load(sys.stdin); print('tools:', len(d['result']['tools']))"
 # 預期：tools: 37
 
-# v12 新增：主機系統資源快照（第一次呼叫 utilizationPct=null；第二次有值）
+# 主機系統資源快照（第一次呼叫 utilizationPct=null；第二次有值）
 curl -s http://localhost:8787/api/system | python3 -c \
   "import json,sys; d=json.load(sys.stdin); print('cpu cores:', d['cpu']['cores'], '/ mem usedPct:', round(d['memory']['usedPct'],1))"
 # 預期：cpu cores: N / mem usedPct: X.X
 
-# v12 新增：統一模型目錄
+# 統一模型目錄
 curl -s http://localhost:8787/api/models | python3 -c \
   "import json,sys; d=json.load(sys.stdin); print('models:', len(d), '/ first:', d[0]['provider']+'/'+d[0]['model'])"
 # 預期：models: N / first: ollama/...（或 anthropic/...，依 aliases）
@@ -291,7 +290,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 
 | 設定檔 | 用途 | 本次是否異動 | 需補的鍵/值 |
 |--------|------|--------------|-------------|
-| `rwe.config.json`（不進版控；由 `.example` 複製而來，本身**不含機密**） | 伺服器啟動設定：`bind`、`port`、`workRoot`、`timeoutMs`、`retries`、`gateway`（`"sdk"｜"direct-fetch"`，見下）、`agentDefinitionsDir`（`agents/*.md` 定義目錄，見下）、`defaultAllowedTools`（見下）、`aliases`（模型別名 → provider/model 對照表）、**v2 新增選填鍵**：`schedulerDbPath`（排程 SQLite 檔路徑，省略預設 `$workRoot/schedules.db`）、`assetRoot`（`asset_push` 資產儲存根目錄，省略預設 `$workRoot/assets`）、`litellmPort`（見下方 Gate 7.5 v2 ROUND 2 補充——**現在可以設定**，用來避開多實例的 4000 port 碰撞） | 是（本輪 Gate 7.5 v2 ROUND 2 補充說明，見下） | 見下方「設定檔內容」；金鑰一律用環境變數，絕不寫進此檔 |
+| `rwe.config.json`（不進版控；由 `.example` 複製而來，本身**不含機密**） | 伺服器啟動設定：`bind`、`port`、`workRoot`、`timeoutMs`、`retries`、`gateway`（`"sdk"｜"direct-fetch"`，見下）、`agentDefinitionsDir`（`agents/*.md` 定義目錄，見下）、`defaultAllowedTools`（見下）、`aliases`（模型別名 → provider/model 對照表）、選填鍵：`schedulerDbPath`（排程 SQLite 檔路徑，省略預設 `$workRoot/schedules.db`）、`assetRoot`（`asset_push` 資產儲存根目錄，省略預設 `$workRoot/assets`）、`litellmPort`（**可以設定**，用來避開多實例的 4000 port 碰撞） | 是（本輪 Gate 7.5 v2 ROUND 2 補充說明，見下） | 見下方「設定檔內容」；金鑰一律用環境變數，絕不寫進此檔 |
 | `rwe.config.example.json`（**已進版控**） | 上述設定檔的範本，含一組可運作的預設別名表 + 建議的 `gateway` 值 | 否（本輪確認內容仍正確，`defaultAllowedTools` 已存在） | — |
 | `agents/`（**已進版控**，範例目錄） | D-F2 agentType composition-root loader 的範例輸入：`researcher.md`/`writer.md`（`name`/`model`/`tools` frontmatter + 內文即 systemPrompt） | 否（本輪確認仍正確可用，見 08-validation.md VAL-003 的 agentType 解析 repro） | 依需求增刪 `*.md` 檔案；`model:` 的值須對應 `aliases` 表裡的一個別名名稱 |
 | `package.json` | npm scripts | 否 | — |
@@ -306,6 +305,8 @@ curl -s http://localhost:8787/api/models | python3 -c \
   "retries": 1,
   "gateway": "sdk",
   "agentDefinitionsDir": "./agents",
+  "seedRefAllowlist": [],
+  "maxBlobBytes": 268435456,
   "defaultAllowedTools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
   "maxWorkflowDepth": 4,
   "maxWorkflowDescendants": 256,
@@ -349,24 +350,37 @@ frontmatter）時，套用的預設工具清單——縮小送給模型的工具
 偵測 `NESTING_CYCLE` 一律啟用、不需設定：`workflow()` 目標若是自己巢狀鏈上的祖先即拒絕，但兩條
 兄弟分支各自呼叫同一個「非祖先」工作流（diamond）是允許的。）
 
-`maxConcurrentRuns`（型別 `number`，選填，**v8 Slice 4 新增**）：頂層 run 的並行上限（run-admission
+`seedRefAllowlist`（型別 `string[]`，選填）：engine-pull seedRef 功能（`workflow_run({seedRef:
+{repoUrl,sha}})` 讓引擎自己去 clone git repo 某個 sha 做 workspace seed）的 egress 白名單。**fail-closed
+預設**：省略或空陣列時任何 seedRef 回 `SEEDREF_DISABLED`（功能完全關閉）；需要啟用時在此列出被允許的
+`https://` URL 前綴（例：`["https://github.com/your-org/"]`）；repoUrl 非 https 或不命中任何前綴（含
+`169.254.169.254`、`localhost`、私有 IP、`file://`）→ `SEEDREF_EGRESS_DENIED`（網路呼叫前拒絕，SSRF 安全）。
+Hardened git 子行程（隔離 env、`--depth 1`、`http.followRedirects=false`、ls-tree byte cap、sha 兩步驗證）。
+
+`maxBlobBytes`（型別 `number`，選填）：`POST /assets/blob/:sha`（streaming raw-body blob
+upload，用於上傳大於 8 MiB JSON-RPC body cap 的檔案）的最大 body 大小，單位 bytes。省略時預設
+**268435456**（256 MiB）；最小值 **1048576**（1 MiB，若設定值低於此則被夾到 1 MiB）。超過此限→ HTTP 413
+`BLOB_TOO_LARGE`；blob upload 的 idle timeout 固定 120s（非可設定鍵）。注意：`blob_put` MCP tool 仍受
+8 MiB JSON-RPC cap 限制（與此鍵無關）；此鍵只影響 raw-body 路由。
+
+`maxConcurrentRuns`（型別 `number`，選填）：頂層 run 的並行上限（run-admission
 counter），省略時預設 **64**，啟動載入時驗證（值 ≤0 或非整數會被拒絕）。當現有「非終態」（`queued`／
 `running`／`suspended`）頂層 run 數已達上限，`start()` 會在**做任何昂貴/持久化動作之前**（不建 run 列、
 不建工作區、不 seed、不 fork sandbox）就以 `RUN_ADMISSION_LIMIT` 拒絕——這是全域 agent semaphore 沒有
 提供的 DoS 阻塞點（semaphore 只限 `agent()` 派工，不限 run 數/sandbox fork/工作區生成）。巢狀
 `workflow()` **不佔用**槽位（不是頂層 `start()`）；run 進入終態即釋放槽位。
-`continuationDbPath`（型別 `string`，選填，**v8 Slice 4 新增**）：on-completion chaining 續接的 SQLite
+`continuationDbPath`（型別 `string`，選填）：on-completion chaining 續接的 SQLite
 檔路徑（引擎自有 side table，與 v1 core 的 RunSpec/RunStore 無關，作法同 `schedulerDbPath`），省略時
 預設 `$workRoot/continuations.db`；一般部署可省略不填。
 
-`webhookDbPath`（型別 `string`，選填，**v8 Defer B 新增**）：webhook 註冊表（`webhooks` +
+`webhookDbPath`（型別 `string`，選填）：webhook 註冊表（`webhooks` +
 `webhook_deliveries` 兩張表）的 SQLite 檔路徑（引擎自有 side table，作法同 `schedulerDbPath`／
 `continuationDbPath`），省略時預設 `$workRoot/webhooks.db`；一般部署可省略不填。此檔存放每個 webhook 的
 `{id, workflow, secret, enabled}`——**secret 是明文儲存**（HMAC 驗簽必須用到金鑰，同 GitHub/Stripe 的
 webhook 模型，單向雜湊無法驗 HMAC），因此此檔的存取權限即等同 webhook 金鑰的機密邊界，請比照
 `schedules.db` 保護；`webhook_list` 只會回傳 secret 的 sha256 前綴指紋，永不回傳 secret 本身。
 
-`casDir`（型別 `string`，選填，**v10 新增**）：內容定址 blob 儲存庫（CAS，供高效工作區 seeding 用）的
+`casDir`（型別 `string`，選填）：內容定址 blob 儲存庫（CAS，供高效工作區 seeding 用）的
 目錄路徑。此目錄下有一個不可變 blob pool（`blobs/<sha[0:2]>/<sha>`）與一張 SQLite `refs.db`（per-namespace
 refset，作法同其他引擎自有 side table），省略時預設 `$workRoot/cas`；一般部署可省略不填。`blob_put` 上傳的
 blob 以其**內容的 sha256** 為鍵存放（伺服器 byte-verify、以計算出的 hash 存放、絕不用宣稱的 hash），
@@ -517,7 +531,7 @@ RWE_CONFIG_PATH=./rwe.config.json RWE_WORK_ROOT=/var/lib/remote-workflow-engine 
 
 ## 2b. 容器化 / systemd 常駐化 / 上線前煙霧測試（v2, REQ-011, DES-022, TASK-023）
 
-> 本節記錄 v2 新增的三個部署封裝產物：`docker-compose.yml`、`deploy/rwe.service`（systemd
+> 本節說明三個部署封裝產物：`docker-compose.yml`、`deploy/rwe.service`（systemd
 > unit）、`scripts/smoke.sh`（非互動式、以結束碼判斷成敗的煙霧測試）。**本機與遠端主機的部署
 > 步驟完全相同**——沒有「本機才有的捷徑」。
 
@@ -1083,3 +1097,4 @@ curl -s -D - -o /dev/null -X POST $BASE/v1/chat/completions \
 | 2026-08-15 | v13 | **engine-pull `seedRef`**（REQ-080）：`workflow_run({seedRef:{repoUrl,sha}, seedNamespace?})` 讓**引擎自己**去抓 git repo 的指定 sha（供 CI/forge/air-gapped：client 不是持碼者），走與 `seed`/`seedManifest` **同一套** CAS 安全守衛。**SSRF/egress 安全姿態**：新設定鍵 `seedRefAllowlist:[https 前綴…]`——**fail-closed 預設 OFF**（沒設 → `SEEDREF_DISABLED`）；repoUrl 前綴須命中 allowlist,否則(或內網/`169.254.169.254`/`localhost`/`file://`/非 https)→ `SEEDREF_EGRESS_DENIED`（網路呼叫前）。hardened git 子行程：`GIT_CONFIG_NOSYSTEM`/隔離 `HOME`+`GIT_CONFIG_GLOBAL`/`GIT_ALLOW_PROTOCOL=https`/`GIT_TERMINAL_PROMPT=0`/**不繼承 ambient env**、`-c http.followRedirects=false -c submodule.recurse=false --depth 1`、killable child(SIGTERM→SIGKILL 逾時)、ls-tree byte caps(`SEEDREF_TOO_LARGE`)、symlink/gitlink 丟棄、兩步 sha-verify(`SEEDREF_SHA_MISMATCH`)、temp 每條路徑清理。`seedRef` 與 `seed`/`seedManifest` 互斥(`SEED_SOURCE_CONFLICT`)。`workflow_status.result.seedRef` 觀測(resolvedSha/bytes/latencyMs/dropped/failCode)。走完整 iso-agile-sdlc；Gate 6 實作因 implementer chunk 反覆 API-stall 由 orchestrator 手動補完(IMPL-116)並修 2 test_defect(pinned repo 私有→octocat 公開、VAL-089 讀取層)。 | 需部署後在 `rwe.config.json` 設 `seedRefAllowlist` 才啟用（否則 seedRef 全回 `SEEDREF_DISABLED`，其他功能不受影響）；`seedRef` 為 workflow_run 新選填參數、既有用戶端可忽略;無遷移動作 |
 | 2026-08-13 | v11 | **#28** models_list 準確度/可操作性:catalog 把免費 model 標 `toolUse:true` 卻無可用性訊號,免費 OpenRouter tier 會 queue/429/冷啟動掛在 0 token。修(純資料標註 + description 誠實化,無 live 探測):`ModelEntry` 新增 **`ref`**(agent-ready model 字串——有 alias 給 alias、openrouter 給 `openrouter/<model>` passthrough、其餘無法直接解析者省略,所以「有 ref = 可直接餵 agent({model})」)與 **`besteffort`**(OpenRouter `:free` 後綴精確標記,非 price 推斷);修 static Haiku 條目為真 API id `claude-haiku-4-5-20251001`(讓 alias attach → 取得 ref);models_list description 誠實化:此為 capability metadata 非 live-reachability 保證,`toolUse:true` 只表宣稱支援工具、不保證此刻會回或會遵循指令,`besteffort` 要用 `agent({timeoutMs})` 綁 + null-harden。**未做(明列不做)**:live 可用性探測(可用性是瞬時、探測有 race;掛住由 #27 timeout 穩健處理)、自然語言 `recommendFor` 推薦模式(獨立大功能;免費 model 品質/suitability 非 catalog 可導出)。 | 無破壞性變更;`ref`/`besteffort` 為選填新欄位、既有用戶端可忽略;static Haiku model id 由 `claude-haiku-4-5`→`claude-haiku-4-5-20251001`(顯示變更、更正為真 API id);無新設定鍵、無遷移動作 |
 | 2026-08-15 | v12 | 系統資源 + 行程指標（REQ-076/077）+ 豐富模型目錄（REQ-078）+ 精確自描述 schema（REQ-079）：新增 MCP 工具 **`system_info`**（`topN:int 1–50 預設 5`；回傳 `{cpu:{cores,loadAvg,utilizationPct},memory:{totalBytes,usedBytes,freeBytes,usedPct},disk:{path,...,usedPct},process:{self:{pid,uptimeSec,rssBytes,cpuPct,threads,fdCount},topN:[{pid,name,cpuPct,memBytes}],system:{total,byState}},sampledAt,windowMs}`；CPU 利用率需兩次呼叫取 delta，第一次回 `utilizationPct:null+awaiting-second-sample`；任何 OS 探測失敗降級到 `null+reason` 而非 throw）；`SystemInfoSampler` 懶惰快取（TTL 1500ms，單例同時服務 tool 與 HTTP route）；`RealSystemProbe` 讀 `/proc/self/status`/`/proc/<pid>/stat`/`/proc/<pid>/comm`/`os.cpus()`/`os.totalmem()`/`statfs`；新增 HTTP 路由 `GET /api/system`（同一快取）；儀表板首頁新增 **System 面板**（`loadSystem()`，3s poll）。`models_list` 每筆新增三個豐富欄位：**`capability`**（≤200 字描述；空/null 退化為 `"<provider> model"`）、**`stability`**（`stable|variable|best-effort`：paid/curated=stable、local Ollama=variable、OpenRouter `:free`=best-effort）、**`costLevel`**（整數 0–10：0=free/local、10=最貴；`price:"unknown"` 必為 `null`，不猜）；`GET /api/models` 新 HTTP 端點（現有 `buildCatalog` 的包裝，JSON 陣列）；儀表板首頁新增 **Models 面板**（`loadModels()`，含 capability/stability/costLevel/modalities 欄位）。`system_info` inputSchema 精確自描述（`topN` 帶 type/range/default/unit/effect 與 clamping 行為）；`models_list` inputSchema 9 個篩選參數各帶 type+description。工具總數 36 → **37**。Gate 7.5 v12 ROUND 1 PASSED（VAL-085/086/087/088 real:true；acceptance 42/42；回歸 998/998） | 無新設定鍵（`system_info` TTL 硬碼 1500ms；`topN` 為工具參數非設定鍵）；無新環境變數；`GET /api/system` 與 `GET /api/models` 為新增唯讀 HTTP 端點，共用既有 port/bind；`models_list` 三個新欄位為選填附加欄位，既有用戶端可忽略；無遷移動作 |
+| 2026-08-16 | v14 | **streaming blob + manifest ref + redact-at-capture（REQ-083 fix: 完整 JournalEntry 含 key.prompt 均抹除）+ schema honesty + scriptSha256**（REQ-081..085）+ v13 **engine-pull seedRef**（REQ-080）Gate 7.5 ROUND 2 PASSED: `POST /assets/blob/:sha`（streaming raw-body blob upload，bypass 8MiB JSON-RPC cap；`BLOB_SHA_MISMATCH` → 409，`BLOB_TOO_LARGE` → 413，net-guard → 403）；`POST /assets/manifest`（manifest-as-CAS-blob, `seedManifestRef=sha256(manifestBytes)`；`MISSING_BLOBS`；`SEED_SOURCE_CONFLICT`）；**redact-at-capture**（`redact({name,value}[])` wired into all 4 persist sinks；sink-4 REQ-083 fix: 整個 JournalEntry—含 `key.prompt`—在寫入 `journal.jsonl` 前先抹除；`‹secret:NAME›` marker；live Ollama run (runId 8cdbed02, qwen2.5:7b): key.prompt 已抹除至 `‹secret:VAL092_SECRET›`；workflow_agent_log message event marker 確認）；`asset_push` kind 描述納入 `HOOKS_UNSUPPORTED`/`mcp_provision`（IT-077 drift-lock）；`scriptSha256` integrity guard (`SCRIPT_SHA_MISMATCH`/`SCRIPT_SHA_WITHOUT_SCRIPT`)。新設定鍵：`seedRefAllowlist`（v13）、`maxBlobBytes`（v14）補入 `rwe.config.example.json` + §1b。VAL-089..094 全部 real:true pass；1170/1170；trace 6 pre-existing gaps。 | 新增兩個選填設定鍵（`seedRefAllowlist`/`maxBlobBytes`）；既有部署不設則沿用預設行為（seedRef 全 `SEEDREF_DISABLED`，blob cap 256MiB）；新增兩條 HTTP 路由（`POST /assets/blob/:sha`/`POST /assets/manifest`）沿用既有 port/bind；無工具總數變化（37 不變）；既有 MCP 用戶端可忽略新選填欄位；無遷移動作 |
