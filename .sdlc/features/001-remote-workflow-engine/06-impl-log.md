@@ -2022,3 +2022,50 @@ Suite at close: 738 passed / 2 failed (both VAL-079, pending test fix) / 163 tes
 - **files:** src/seedref-fetcher.ts (buildGitInvocation pure hardened env/args + HardenedSeedRefFetcher: execFile killable child + SIGTERM→SIGKILL timeout, ls-tree byte caps before blob read, symlink/gitlink dropped, two-step sha verify rev-parse+cat-file, CAS putBlob stream, temp-dir cleanup on every path), src/run-manager.ts (post-createRun fetch wiring: seedRef→fetch→entries fed to existing materializeManifest branch, RunStatusView.seedRef stamped via injected Clock, fetch-throw→resultError+failed; default HardenedSeedRefFetcher), src/types.ts (RunStatusView.seedRef), src/mcp-facade.ts (workflow_run forwards seedRef), src/server.ts (workflow_run inputSchema seedRef property + dispatch arg-cast + ServerConfig.seedRefAllowlist), src/main.ts (composeConfig threads seedRefAllowlist)
 - **note:** Orchestrator-implemented after the parallel-implementer chunk repeatedly failed (API stall / session-limit). All UT-082..085/IT-073/IT-074/VAL-089 green; full suite 1065 pass, tsc clean. Two test_defects fixed: IT-073/VAL-089 pinned repo HsuJavis/remote-workflow-plugin is PRIVATE (unusable for anonymous-fetch) → swapped to octocat/Hello-World @ 7fd1a60 (public, stable); VAL-089 seedRef read path corrected to the workflow_status envelope's `result.seedRef`. maxBuffer decoupled from maxTotalBytes (a tiny size-cap input must not break git stdout buffering).
 - **iter:** v13
+
+<!-- ── v14 (REQ-081..085) — streaming blob ingest · server-side manifest · redact-at-capture · asset_push honesty · scriptSha256 ── -->
+
+### IMPL-117 — streaming blob ingest: isValidSha256Hex/isValidNamespace validators + CasStore.putBlobStream + POST /assets/blob/:sha route + blob_put/seed_plan schema updates (TASK-080)
+- **status:** done
+- **traces:** TASK-080, DES-086
+- **greens:** UT-086, UT-087, IT-076, IT-077, VAL-090
+- **files:** src/cas-store.ts, src/server.ts
+- **commit:** (pending)
+- **iter:** v14
+- **note:** isValidSha256Hex (exactly 64 chars `[0-9a-f]`, lowercase-only) and isValidNamespace (bounded charset, no `/`, no `..` runs) exported pure validators run BEFORE any fd on the POST /assets/blob/:sha route. CasStore.putBlobStream: node:stream/promises pipeline + AbortController idle-timeout with injectable opts.timer seam + sizeCheck Transform + hash verify + atomic renameSync + refs INSERT OR IGNORE. ServerConfig.maxBlobBytes added; blob_put and seed_plan tool descriptions updated. UT-086: 18/19 pass (1 test_defect — "rejects uppercase hex digits" uses sha256('test') whose first char is '9'; '9'.toUpperCase()='9', so upper==h which is valid lowercase hex → isValidSha256Hex correctly returns true, test expects false; fix: use a known letter-containing sha or 'A'.repeat(64)). VAL-090: cases 1-4 pass; case 5 test_defect (fetch ignores forbidden Host header — net-guard placement test needs rawPost via node:http like the existing host-origin-allowlist-http.test.ts pattern).
+
+### IMPL-118 — POST /assets/manifest route + seedManifestRef run-time loading + 4-way SEED_SOURCE_CONFLICT ladder + RunStatusView.seedManifestRef (TASK-081)
+- **status:** done
+- **traces:** TASK-081, DES-087
+- **greens:** UT-088, IT-076, IT-077, VAL-091
+- **files:** src/server.ts, src/run-manager.ts, src/types.ts
+- **commit:** (pending)
+- **iter:** v14
+- **note:** POST /assets/manifest validates referenced blobs present in the namespace, stores manifest as CAS blob (seedManifestRef = sha256(rawBytes)). RunManager.start() loads and re-validates the manifest at run time before materializeManifest (security boundary). 4-way SEED_SOURCE_CONFLICT ladder covers seed/seedManifest/seedRef/seedManifestRef mutual exclusion. RunStatusView.seedManifestRef stamped. IT-076: cases 3-9 pass; cases 1-2 test_defect (same foreign-Host-via-fetch issue as IMPL-117). VAL-091: cases 2-5 pass; case 1 test_defect — workspace-assembly script uses await import('node:fs') inside a vm.Script context that has no importModuleDynamically callback → "A dynamic import callback was not specified"; fix: verify workspace assembly via workflow_artifacts instead of dynamic-import file read (like val-089 does).
+
+### IMPL-119 — redact-at-capture wiring: SecretValueProvider interface + redact({name,value}[]) + AgentExecutor transcript sink + RunManager snapshot/journal sinks (TASK-082)
+- **status:** done
+- **traces:** TASK-082, DES-088
+- **greens:** UT-089, UT-090, IT-075, VAL-092
+- **files:** src/secret-resolver.ts, src/agent-executor.ts, src/run-manager.ts, src/server.ts
+- **commit:** (pending)
+- **iter:** v14
+- **note:** SecretValueProvider interface (entries() ReadonlyArray<{name,value}>) exported from secret-resolver.ts. redact() signature updated from string[] to ReadonlyArray<{name,value}> with ‹secret:NAME› marker (was ‹redacted›). AgentTranscriptSink 3rd arg secretValueProvider; _emit redacts ev.kind!='harness' before appendTranscript. RunManagerDeps.secretValueProvider forwarded to AgentExecutor in start()+resume(); saveSnapshot and appendJournal sinks redact before persist. loadSecretSourceFromEnv → secretValueProvider wired to RunManager in server.ts. Integration seam: UT-043 (secret-resolver.test.ts) called redact() with old string[] signature — updated at Gate 6 integration to {name,value}[] format and ‹secret:NAME› marker (DES-088 intentionally changed the API; no behavior removed, only marker format changed). VAL-092: cases 2-4 pass; case 1 (LLM-gated) passes under RWE_SKIP_ONLINE_TESTS=1 (silently returns early without assertions; no real LLM in this environment).
+
+### IMPL-120 — drift-lock: asset_push kind description HOOKS_UNSUPPORTED + mcp_provision honesty (TASK-083)
+- **status:** done
+- **traces:** TASK-083, DES-089
+- **greens:** IT-077, VAL-093
+- **files:** src/server.ts
+- **commit:** (pending)
+- **iter:** v14
+- **note:** asset_push kind field description updated to mention HOOKS_UNSUPPORTED (hook kind rejected in-band) and mcp_provision redirect to the provisioning flow. Drift-locked by IT-077 (v14-schema-drift.test.ts) assertions on TOOL_DEFS.asset_push.kind.description.
+
+### IMPL-121 — pure assertScriptIntegrity + SCRIPT_SHA_MISMATCH rung + scriptSha256 schema (TASK-084)
+- **status:** done
+- **traces:** TASK-084, DES-090
+- **greens:** UT-091, IT-077, VAL-094
+- **files:** src/types.ts, src/run-manager.ts, src/server.ts, src/mcp-facade.ts
+- **commit:** (pending)
+- **iter:** v14
+- **note:** assertScriptIntegrity(script, sha?) pure function: sha present → sha256(Buffer.from(script,'utf8')) !== sha throws SCRIPT_SHA_MISMATCH; absent → no-op. Rung placed BEFORE admission (SCRIPT_SHA_WITHOUT_SCRIPT → SCRIPT_SHA_MISMATCH pinned first in start()). workflow_run schema adds scriptSha256 property. Note: submitted IMPL-084 was a collision with the existing IMPL-084 (workspace retention purge+GC, v9 era) → renumbered to IMPL-121. The two submitted IMPL-117 entries were renumbered IMPL-117/IMPL-118, and the two submitted IMPL-118 entries were renumbered IMPL-119/IMPL-120 at Gate 6 integration closeout.

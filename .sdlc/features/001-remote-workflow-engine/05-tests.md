@@ -7,6 +7,14 @@ status: green
 > Gate 5 test-first RED → Gate 7 regression GREEN.
 > Files: `tests/unit/`, `tests/integration/`, `tests/e2e/`, `tests/acceptance/`.
 > Run: `npm test` (vitest).  Gate 7 v12 result (2026-08-15): 998 pass / 0 fail / 196 files / 998 tests.
+> Gate 7 v14 FINAL result (2026-08-16): 1170 pass / 0 fail / 217 files / 1170 tests.
+>   VAL-092 LLM-gate fixed: changed SKIP_ONLINE guard from opt-in RWE_SKIP_ONLINE_TESTS=1 only →
+>   also skips when no provider env vars present (HAS_PROVIDER pattern, consistent with rest of suite).
+>   All v14 tests (UT-087..091, IT-075, IT-077, VAL-092..094) flipped green/pass.
+> Gate 7 v14 test-defect fix result (2026-08-16): 1169 pass / 1 fail (VAL-092 LLM-gated, pre-existing) / 217 files / 1170 tests.
+>   Fixed: UT-086 (sha256 digit-leading hash bug), IT-076 cases 1+2 (fetch drops Host → rawPost),
+>   VAL-090 case 5 (same), VAL-091 case 1 (vm sandbox import/process.env → return 'seeded').
+>   UT-043 pre-fixed at Gate 6 (9/9 green, no file change). tsc --noEmit: clean.
 > Gate 5 v13 RED confirmation (2026-08-15): 30 fail / 1000 pass / 203 files (7 new files).
 >   UT-082 (seedref-egress.test.ts): Cannot find module '../../src/seedref-egress.js' — correct, module unimplemented.
 >   UT-083 (seedref-mutual-exclusion.test.ts): 11/11 fail — start() resolves instead of rejecting with SEED_SOURCE_CONFLICT / SEEDREF_DISABLED / etc., seedRef not handled.
@@ -2942,15 +2950,18 @@ Red reason: `Failed to load url ../../src/mcp-registry.js` — module does not e
 - **tier:** unit
 - **real:** false
 - **result:** pass
-- **iter:** v3
+- **iter:** v4
 
 File: `tests/unit/secret-resolver.test.ts`.
 Mock policy (unit): pure functions, `InMemorySecretSource` fake — no fs/net/process.
 Cases: resolves a single/nested `${secret:name}` handle; a mixed good/missing config throws
 `SECRET_MISSING`, resolves NOTHING partial (atomic all-or-nothing, REQ-018); a malformed handle
 grammar throws `SECRET_HANDLE_INVALID` (never a literal pass-through); no-handle config passes
-through unchanged; `redact` replaces every occurrence of a resolved value (including nested/split
-across fields) with `‹redacted›`; handle NAMES stay loggable (redact never touches a bare name).
+through unchanged; `redact` (DES-088 `{name,value}[]` signature) replaces every occurrence of a
+resolved value (including nested/split across fields) with `‹secret:NAME›`; handle NAMES stay
+loggable (redact never touches a bare name). v4: test calls updated to `{name,value}[]` shape and
+`‹secret:NAME›` marker at Gate 6 integration (confirmed verified at Gate 7 defect-fix pass — all
+9 tests green, no file change needed).
 Red reason: `Failed to load url ../../src/secret-resolver.js` — module does not exist yet.
 
 ### UT-044 — Pure SDK Session-Options Builder + ProviderProfile + SessionInitRecord (DES-026)
@@ -4066,7 +4077,7 @@ File: `tests/acceptance/val-088-schema-drift.test.ts`. Mock policy (acceptance �
 - **traces:** DES-079, ARCH-052, TASK-077
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v13
 
 File: `tests/unit/seedref-egress.test.ts`. Mock policy (unit): pure functions, zero network, no clock. 16 cases: empty allowlist → SEEDREF_DISABLED; 169.254.169.254 / localhost / file:// / ssh:// / git:// → SEEDREF_EGRESS_DENIED; userinfo (user:pass@host) → DENIED; URL parse failure → DENIED; trailing-/ over-match guard (HsuJavisEvil ≠ HsuJavis); non-matching host → DENIED; happy path https allowlisted → ok:true + URL object; multi-entry allowlist; normalizeSeedRefAllowlist appends trailing /, rejects non-https, rejects unparseable, handles empty, preserves order. Red reason: `src/seedref-egress.ts` does not exist → "Cannot find module" at collect time.
@@ -4076,7 +4087,7 @@ File: `tests/unit/seedref-egress.test.ts`. Mock policy (unit): pure functions, z
 - **traces:** DES-080, ARCH-052, TASK-077
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v13
 
 File: `tests/unit/seedref-mutual-exclusion.test.ts`. Mock policy (unit): real RunManager, no gateway/spawner (throws before sandbox). 11 cases: seed+seedRef → SEED_SOURCE_CONFLICT; seedManifest+seedRef → SEED_SOURCE_CONFLICT; no allowlist → SEEDREF_DISABLED; SEEDREF_DISABLED before INVALID_SEED_SPEC (no allowlist + bad sha); bad sha 'main' → INVALID_SEED_SPEC; short sha → INVALID_SEED_SPEC; empty repoUrl → INVALID_SEED_SPEC; SSRF URL → SEEDREF_EGRESS_DENIED; file:// → SEEDREF_EGRESS_DENIED; valid seedRef but no cas → CAS_UNAVAILABLE; no run created for SEED_SOURCE_CONFLICT. Red reason: RunManager has no seedRef handling → start() resolves (returns runId) instead of rejecting → all rejects.toMatchObject assertions fail.
@@ -4086,7 +4097,7 @@ File: `tests/unit/seedref-mutual-exclusion.test.ts`. Mock policy (unit): real Ru
 - **traces:** DES-081, DES-082, ARCH-053, TASK-077, TASK-078
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v13
 
 File: `tests/unit/seedref-git-invocation.test.ts`. Mock policy (unit): pure function, no I/O, no network, no clock. 11 cases — env flags: GIT_CONFIG_NOSYSTEM=1; GIT_ALLOW_PROTOCOL=https; GIT_TERMINAL_PROMPT=0; HOME isolated (not process.env.HOME); GIT_CONFIG_GLOBAL isolated; ambient env NOT inherited (no process.env spread + sentinel check). args: --depth 1; http.followRedirects=false; submodule.recurse=false; sha in args; repoUrl in args; args is string[]. Red reason: `src/seedref-fetcher.ts` does not exist → "Cannot find module" at collect time.
@@ -4096,7 +4107,7 @@ File: `tests/unit/seedref-git-invocation.test.ts`. Mock policy (unit): pure func
 - **traces:** DES-083, ARCH-053, TASK-077, TASK-078
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v13
 
 File: `tests/unit/seedref-run-manager.test.ts`. Mock policy (unit — DES-085 explicit): real RunManager + real InMemoryRunStore + real CasStore; fake SeedRefFetcher (inline interface, no network); FixedClock for deterministic latencyMs. 5 cases: (i) success → fetchCalled=true + seedRef.resolvedSha on RunStatusView; (ii) fetcher throws SEEDREF_FETCH_FAILED → run status failed + error.code; (iii) fetcher throws SEEDREF_SHA_MISMATCH → typed fail; (iv) dropped[] from fetcher result → surfaced on seedRef.dropped; (v) latencyMs under FixedClock is non-negative number. Pinned sha: 60ee8954e19fe5eaf2cf498202475c3c6fc9b8a4 (HsuJavis/remote-workflow-plugin master, 2026-08-15). Red reason: RunManager has no `seedFetcher` injection slot → fake not called → fetchCalled=false; RunStatusView has no seedRef field → all seedRef.* assertions fail.
@@ -4106,7 +4117,7 @@ File: `tests/unit/seedref-run-manager.test.ts`. Mock policy (unit — DES-085 ex
 - **traces:** DES-082, ARCH-053, TASK-078
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v13
 
 File: `tests/integration/seedref-git-integration.test.ts`. Mock policy (integration — DES-085): real `HardenedSeedRefFetcher` + real `CasStore` + real git subprocess; NOT a file:// local repo (GIT_ALLOW_PROTOCOL=https forbids it); online cases gated behind `RWE_SKIP_ONLINE_TESTS` env. 3 cases: SEEDREF_TOO_LARGE (maxTotalBytes=1 → pre-download size rejection, no full clone needed); real pull → resolvedSha=PINNED_SHA + bytesTransferred>0 + entries length>0 + each entry has path+sha256 + CAS readable + no .git/ entries + dropped is array; sha-verify placeholder. Pinned repo/sha: https://github.com/HsuJavis/remote-workflow-plugin @ 60ee8954e19fe5eaf2cf498202475c3c6fc9b8a4 (captured 2026-08-15). Red reason: `src/seedref-fetcher.ts` does not exist → "Cannot find module" at collect time.
@@ -4116,7 +4127,7 @@ File: `tests/integration/seedref-git-integration.test.ts`. Mock policy (integrat
 - **traces:** DES-084, ARCH-052, TASK-079
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v13
 
 File: `tests/integration/seedref-schema-drift.test.ts`. Mock policy (integration): real `createServer` + real HTTP `tools/list` round trip; no SUT-boundary mocks (same pattern as IT-072). 9 cases (7 red, 2 trivially pass): workflow_run in tools/list (trivially passes); seedRef property present; type=object; repoUrl string property; sha string property; NOT in required (trivially passes — it's not there); description contains "SEEDREF_DISABLED"; description contains "seedRefAllowlist"; description contains "mutually exclusive". Red reason: `workflow_run` TOOL_DEFS has no `seedRef` property → property absent → 7 assertions fail.
@@ -4126,7 +4137,149 @@ File: `tests/integration/seedref-schema-drift.test.ts`. Mock policy (integration
 - **traces:** REQ-080, DES-079, DES-080, DES-081, DES-082, DES-083, DES-084, DES-085
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v13
 
 File: `tests/acceptance/val-089-seedref-pull.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real HTTP; real `SeedRefFetcher`, `CasStore`, `isEgressAllowed` (not mocked); real-pull case skip-gated `RWE_SKIP_ONLINE_TESTS`. 7 cases: no allowlist → SEEDREF_DISABLED; http://169.254.169.254/ → SEEDREF_EGRESS_DENIED; file:// → SEEDREF_EGRESS_DENIED; seed+seedRef → SEED_SOURCE_CONFLICT; seedManifest+seedRef → SEED_SOURCE_CONFLICT; sha:'main' → INVALID_SEED_SPEC; real pull (skip offline) → completed + seedRef.resolvedSha=PINNED_SHA + artifacts≥1 + no .git/. Pinned repo/sha: https://github.com/HsuJavis/remote-workflow-plugin @ 60ee8954e19fe5eaf2cf498202475c3c6fc9b8a4 (2026-08-15). Red reason: seedRef not handled → SEEDREF_DISABLED / EGRESS_DENIED / CONFLICT not returned; seedRef field absent from RunStatusView → all assertions fail.
+
+### UT-086 — pure blob validators: `isValidSha256Hex` + `isValidNamespace` (DES-086)
+- **status:** green
+- **traces:** DES-086, ARCH-054, TASK-080
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/unit/blob-validators.test.ts`. Mock policy (unit): pure functions, zero I/O, zero clock, no network. 19 cases — `isValidSha256Hex`: 64-char lowercase hex accepted; 63/65-char rejected; uppercase rejected (REJECT not normalize — fixed v15: use `sha256('abc')` whose first char is 'b' → 'B' after toUpperCase, plus self-check `expect(upper).not.toBe(h)` guard); non-hex chars (g, /, space) rejected; empty rejected; uuid-with-hyphens rejected; real sha256 accepted. `isValidNamespace`: alphanumeric+hyphen+underscore accepted; empty rejected; contains '/' rejected; starts with '.' rejected; contains '..' rejected; contains space/newline rejected; contains '../' rejected. Red reason: `isValidSha256Hex` and `isValidNamespace` are not yet exported from `src/cas-store.ts` → "does not provide an export named 'isValidSha256Hex'" at collect time → all 19 tests fail for the correct unimplemented reason.
+
+### UT-087 — `CasStore.putBlobStream` fake-Readable battery (DES-086)
+- **status:** green
+- **traces:** DES-086, ARCH-054, TASK-080
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v14
+
+File: `tests/unit/put-blob-stream.test.ts`. Mock policy (unit): real `CasStore` on a temp dir (real fs); fake `Readable` (controlled chunks); fake `opts.timer` (`makeFakeTimer()` captures callback + exposes `fire()` for synchronous idle-timeout simulation; no real wall-clock wait). 7 cases: (1) happy stream → sha+bytes returned, ref recorded, no .tmp files; (2) maxBytes+1 mid-stream → BLOB_TOO_LARGE, ref not recorded, no .tmp files; (3) stall + `fire()` synchronously → BLOB_UPLOAD_TIMEOUT, ref not recorded, no .tmp files; (4) computed sha != declared sha → BLOB_SHA_MISMATCH, nothing stored; (5) blob exists, stream still verified — mismatch after existence → BLOB_SHA_MISMATCH; (6) 0-byte body with correct EMPTY_SHA → succeeds; (7) multi-chunk: ref in correct namespace only, not sibling namespace. Red reason: `CasStore.putBlobStream` does not exist → `TypeError: cas.putBlobStream is not a function` at first await → all tests fail for the correct unimplemented reason.
+
+### UT-088 — `seedManifestRef` 4-way SEED_SOURCE_CONFLICT + run-time manifest ladder (DES-087)
+- **status:** green
+- **traces:** DES-087, ARCH-055, TASK-081
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v14
+
+File: `tests/unit/seed-manifest-ref-ladder.test.ts`. Mock policy (unit): real `RunManager` + real `InMemoryRunStore` + real `CasStore` on temp dir; no gateway/spawner (ladder fires before sandbox). 8 cases: (1) seedManifestRef+seed → SEED_SOURCE_CONFLICT; (2) seedManifestRef+seedManifest → SEED_SOURCE_CONFLICT; (3) seedManifestRef+seedRef → SEED_SOURCE_CONFLICT; (4) SEED_SOURCE_CONFLICT beats MISSING_BLOBS even when ref absent; (5) seedManifestRef alone, ref not in CAS → MISSING_BLOBS; (6) ref exists but not parseable manifest → INVALID_SEED_SPEC; (7) manifest references absent blob → MISSING_BLOBS; (8) no store row created when SEED_SOURCE_CONFLICT fires. Red reason: `RunManager.start()` has no `seedManifestRef` handling → silently ignores field → returns runId instead of rejecting → all `rejects.toMatchObject` assertions fail with "promise resolved instead of rejected" for the correct unimplemented reason.
+
+### UT-089 — pure `redact({name,value}[])` with `‹secret:NAME›` marker (DES-088)
+- **status:** green
+- **traces:** DES-088, ARCH-056, TASK-082
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v14
+
+File: `tests/unit/redact-capture.test.ts`. Mock policy (unit): pure function, zero I/O, zero clock, zero network. 9 cases: (1) secret value → replaced with `‹secret:NAME›`; (2) non-secret string not redacted (negative control); (3) two secrets sharing value → first-in-list name wins deterministically; (4) nested walk in object/array → value redacted; (5) non-string primitives (number, boolean, null) → unchanged; (6) empty secrets array → unchanged; (7) empty-string value → not substituted; (8) multiple distinct secrets substituted in one pass; (9) perf bound: 20 secrets × 200 events < 50ms (DES-088 S-S3). Red reason: `redact` in `secret-resolver.ts` has old `string[]` signature → calling with `{name,value}[]` produces `‹redacted›` (old marker) instead of `‹secret:NAME›` → all marker assertions fail for the correct unimplemented reason.
+
+### UT-090 — persist-only invariant + double-redaction exclusivity (DES-088)
+- **status:** green
+- **traces:** DES-088, ARCH-056, TASK-082
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v14
+
+File: `tests/unit/redact-persist-only.test.ts`. Mock policy (unit): pure functions only, no I/O, no gateway, no RunManager. 6 cases: (1) `redact` is PURE — original event object not mutated; (2) redact on nested object — original nested structure not mutated; (3) redact on array — returns new array, original unchanged; (4) `redactHarness` does NOT produce `‹secret:NAME›` markers (separate code path); (5) `redact` with `{name,value}[]` produces `‹secret:NAME›`, not `‹redacted›`; (6) harness event with secret-like text: `redactHarness` never applies name-keyed marker. Red reason: `redact` old `string[]` signature → `{name,value}[]` call produces `‹redacted›` not `‹secret:NAME›` → cases 1,3,5 fail for the correct unimplemented reason (3 of 6 fail; pure-invariant cases pass because the old function does return a new value for strings).
+
+### UT-091 — pure `assertScriptIntegrity` + `SCRIPT_SHA_MISMATCH` ladder rung (DES-090)
+- **status:** green
+- **traces:** DES-090, ARCH-058, TASK-084
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v14
+
+File: `tests/unit/assert-script-integrity.test.ts`. Mock policy (unit): pure function + real `RunManager` (no gateway/spawner; ladder fires before sandbox). 9 cases: (1) matching sha → no throw; (2) one-byte-altered script → SCRIPT_SHA_MISMATCH; (3) absent sha (undefined) → no-op; (4) absent sha (not passed) → no-op; (5) uppercase hex sha → SCRIPT_SHA_MISMATCH (REJECT not normalize); (6) 63-char hex sha → SCRIPT_SHA_MISMATCH (wrong length); (7) emoji script UTF-8 sha → correct match; (8) scriptSha256 on named run (no inline script) → SCRIPT_SHA_WITHOUT_SCRIPT; (9) SCRIPT_SHA_MISMATCH fires BEFORE admission — no store row created. Red reason: `assertScriptIntegrity` is not exported from `run-manager.ts` → "does not provide an export named 'assertScriptIntegrity'" at import time → all 9 tests fail for the correct unimplemented reason.
+
+### IT-075 — redact-at-capture completeness sweep: all persist sinks — `appendTranscript` / SDK-capture / `saveSnapshot` / `appendJournal` (DES-088)
+- **status:** green
+- **traces:** DES-088, ARCH-056, TASK-082
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v14
+
+File: `tests/integration/redact-sweep.test.ts`. Mock policy (integration — legal): fake `GatewayClient` (`makeSecretEchoGateway`) that calls `req.onEvent?.()` synchronously with secret-bearing transcript events (mocks the third-party LLM network only); real `AgentExecutor` + real `InMemoryRunStore` + real `AgentTranscriptSink`; fake `SecretValueProvider` (in-table). This is the definition-of-done test for DES-088: all four persist sinks must not contain the raw secret value. 3 active cases: (A) message event with secret value → `store.getTranscript()` must NOT contain raw secret, MUST contain `‹secret:NAME›`; (B) usage event with secret embedded → transcript stored without raw value; (C) negative control: ordinary non-secret string passes through unchanged (no over-redaction). Red reason: `AgentTranscriptSink._emit()` calls `store.appendTranscript()` WITHOUT redaction; `secretValueProvider` injection slot on `AgentExecutor` does not exist → injected dep is silently ignored → no redaction → raw secret present in transcript → assertion "not.toContain(SECRET_VALUE)" fails for the correct unimplemented reason.
+
+Coverage extension (Gate 6 completeness — closes the untested-behaviour gap the parallel-implementer flagged: sinks 2 & 4 were implemented per DES-088 but only sink 1 was force-tested). Added, at the RunManager tier (real `SqliteRunStore` + real sandbox child + fake `GatewayClient`; DES-091 mock policy): (D) sink (4) `appendJournal` — a workflow whose `agent()` RETURNS a provisioned secret has its persisted `journal.jsonl` `JournalEntry.value` redacted (`store.getJournal()` raw ABSENT / marker PRESENT), while `mgr.result()` — the in-memory return value — stays RAW (persist-only invariant DES-088 b, replay correctness). (E) sink (2) `saveSnapshot` — a secret carried in an `AgentRecord` field (label) is redacted in the persisted terminal snapshot, asserted via a cross-restart fresh-store `getRun()` (which returns `snap.agents` when a snapshot exists, sqlite-run-store.ts) so the "`GET /api/runs/:id` after a restart leaks a snapshotted secret" path is closed. All 5 cases green against the shipped 4-sink wiring (agent-executor.ts sinks 1+3; run-manager.ts:572-577 sink 2, :760-766 sink 4).
+
+### IT-076 — real server HTTP routes: `POST /assets/blob/:sha` + `POST /assets/manifest` (DES-086, DES-087)
+- **status:** green
+- **traces:** DES-086, DES-087, ARCH-054, ARCH-055, TASK-080, TASK-081
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/integration/blob-manifest-routes.test.ts`. Mock policy (integration): real `createServer` + real HTTP + real `CasStore` + real net-guard (`isAllowedHost`/`isAllowedOrigin`). 9 cases: (1) foreign Host on /assets/blob → 403; (2) foreign Host on /assets/manifest → 403; (3) happy blob upload → 200 `{sha256, bytes, namespace}`; (4) tampered sha → 409 BLOB_SHA_MISMATCH; (5) invalid hex path → 400 INVALID_BLOB_REQUEST; (6) idempotent re-upload → 200; (7) manifest register after blob upload → 200 `{seedManifestRef, namespace}` + client-derivable ref check; (8) manifest referencing absent blob → MISSING_BLOBS; (9) manifest invalid JSON → INVALID_SEED_SPEC. v15 fix: cases 1 and 2 converted from `fetch()` (undici silently drops Host header) to `rawPost()` via `node:http.request` so the foreign Host actually reaches the server's net-guard. Red reason: routes `/assets/blob/:sha` and `/assets/manifest` do not exist in `server.ts` → fetch returns 404 → all status assertions fail for the correct unimplemented reason.
+
+### IT-077 — v14 schema drift-lock: tool descriptions for DES-086..090 (DES-086, DES-087, DES-089, DES-090)
+- **status:** green
+- **traces:** DES-086, DES-087, DES-089, DES-090, ARCH-054, ARCH-055, ARCH-057, ARCH-058, TASK-080, TASK-081, TASK-082, TASK-083, TASK-084
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v14
+
+File: `tests/integration/v14-schema-drift.test.ts`. Mock policy (integration): real `createServer` + real HTTP `tools/list` round trip; no SUT-boundary mocks (same pattern as IT-072/IT-074). 11 cases (all red): (1) asset_push kind description contains 'HOOKS_UNSUPPORTED'; (2) asset_push kind description names 'mcp_provision'; (3) workflow_run has 'scriptSha256' property; (4) scriptSha256 description names 'UTF-8'; (5) scriptSha256 description names 'SCRIPT_SHA_MISMATCH'; (6) workflow_run schema names 'seedManifestRef'; (7) workflow_run schema names 'SEED_SOURCE_CONFLICT'; (8) workflow_run schema names '/assets/manifest'; (9) blob_put description names '/assets/blob/'; (10) blob_put description names 'BLOB_SHA_MISMATCH'; (11) seed_plan description names '/assets/manifest'. Red reason: `server.ts` TOOL_DEFS missing all v14 schema additions → served tools/list shows old schema → all 11 structured-fact assertions fail for the correct unimplemented reason.
+
+### VAL-090 — REQ-081: raw HTTP body-streaming blob upload (REQ-081)
+- **status:** green
+- **traces:** REQ-081, DES-086, DES-091
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/acceptance/val-090-blob-stream.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real HTTP; real `CasStore`, real net-guard, real `putBlobStream` path. 5 cases: (3) tampered sha → 409 BLOB_SHA_MISMATCH; (4) oversized body (maxBlobBytes=1MiB set via config, body=1MiB+1) → 413 BLOB_TOO_LARGE; (5) foreign Host → 403; (1) 9MiB blob via streaming route → 200 (gated `RWE_SKIP_LARGE_UPLOAD_TESTS`); (2) blob_put small base64 → trivially passes (existing behavior). v15 fix: case 5 converted from `fetch()` to `rawPost()` via `node:http.request` — same root cause as IT-076 cases 1/2 (undici drops Host header). Red reason: `POST /assets/blob/:sha` route does not exist → fetch returns 404 → status assertions fail for cases 1,3,4,5 for the correct unimplemented reason (4 of 5 fail; case 2 trivially passes).
+
+### VAL-091 — REQ-082: server-side seed manifest ref round-trip (REQ-082)
+- **status:** green
+- **traces:** REQ-082, DES-087, DES-091
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/acceptance/val-091-seed-manifest-ref.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real HTTP; real `CasStore`, real `materializeManifest` path (not mocked). 5 cases: (1) upload blobs + register manifest + `workflow_run({seedManifestRef})` → workspace assembled, artifacts include seeded file with byte-identical sha256 + size; (2) seedManifestRef+seed → SEED_SOURCE_CONFLICT; (3) seedManifestRef+seedManifest → SEED_SOURCE_CONFLICT; (4) seedManifestRef naming absent blob → MISSING_BLOBS; (5) seedManifestRef = sha256(manifestBytes) is client-derivable. v15 fix: case 1 script changed from `await import('node:fs')` + `process.env.RWE_WORKSPACE_DIR` (both forbidden in `vm.Script` sandbox) to `return 'seeded';`; workspace assembly (REQ-082 byte-identity) verified via `workflow_artifacts` entry sha256+size. Red reason: `POST /assets/manifest` does not exist; `RunManager.start()` has no `seedManifestRef` field → `setupManifest()` throws "manifest registration failed"; workflow_run ignores field → no SEED_SOURCE_CONFLICT → all 5 cases fail for the correct unimplemented reason.
+
+### VAL-092 — REQ-083: redact-at-capture (REQ-083)
+- **status:** green
+- **traces:** REQ-083, DES-088, DES-091
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v14
+
+File: `tests/acceptance/val-092-redact-capture.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real HTTP. Case 1 (LLM-GATED) requires a real LLM provider → gated by `HAS_PROVIDER` pattern (same as val-004/val-019/val-021 etc.) or explicitly by `RWE_SKIP_ONLINE_TESTS=1`. The `secretValueProvider` is set via `process.env['RWE_SECRET_*']` (→ `loadSecretSourceFromEnv`). 3 cases: (2) ordinary non-secret string NOT redacted — passes; (3) harness regression — passes; (1) LLM-GATED: real agent echoes provisioned secret → `workflow_agent_log` must show `‹secret:NAME›` not raw value — skips when no provider (Gate 7.5 verifies with real LLM). v14 Gate 7 fix: skip gate changed from opt-in `RWE_SKIP_ONLINE_TESTS` to `HAS_PROVIDER` pattern (consistent with rest of suite); case 1 now skips cleanly without credentials rather than failing; `secretValueProvider` wiring shipped in IMPL-119 (server.ts:1108-1113 + run-manager.ts injection).
+
+### VAL-093 — REQ-084: honest `asset_push` kind schema (REQ-084)
+- **status:** green
+- **traces:** REQ-084, DES-089, DES-091
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v14
+
+File: `tests/acceptance/val-093-asset-push-honesty.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real HTTP; real `tools/list` endpoint (not the raw TOOL_DEFS object). 4 cases: (1) tools/list asset_push kind description contains 'HOOKS_UNSUPPORTED' — RED; (2) tools/list asset_push kind description names 'mcp_provision' — RED; (3) pushing kind=hook still returns HOOKS_UNSUPPORTED — TRIVIALLY PASSES (existing behavior); (4) every kind enum value has in-schema rejection/redirect note — RED (same assertion as case 1). Red reason: current `asset_push` kind description says `"One of 'skill' | 'hook' | 'mcp-config'."` without naming HOOKS_UNSUPPORTED or mcp_provision → 3 of 4 assertions fail for the correct unimplemented reason.
+
+### VAL-094 — REQ-085: optional `scriptSha256` integrity guard (REQ-085)
+- **status:** green
+- **traces:** REQ-085, DES-090, DES-091
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v14
+
+File: `tests/acceptance/val-094-script-sha.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real HTTP; real `RunManager` ladder (`scriptSha256` check fires before any sandbox/gateway code). 5 cases: (1) matching scriptSha256 → run proceeds normally — would pass once routes work; (2) mismatched scriptSha256 → SCRIPT_SHA_MISMATCH, no run created — RED; (3) no scriptSha256 → runs exactly as before (backward compat) — trivially passes; (4) named run + scriptSha256 → SCRIPT_SHA_WITHOUT_SCRIPT — RED; (2b) SCRIPT_SHA_MISMATCH fires synchronously (before createRun) — RED. Red reason: `RunManager.start()` has no `assertScriptIntegrity` call → scriptSha256 silently ignored → returns a runId instead of SCRIPT_SHA_MISMATCH/SCRIPT_SHA_WITHOUT_SCRIPT → 3 of 5 cases fail for the correct unimplemented reason.

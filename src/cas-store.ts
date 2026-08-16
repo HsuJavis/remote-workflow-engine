@@ -6,10 +6,27 @@
 //   • `missing`/`hasRef` are PER-NAMESPACE, never global existence → no cross-tenant dedup oracle
 //   • immutable pool (a written blob is never mutated) → concurrent assemble reads are safe
 import Database from 'better-sqlite3';
-import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, createWriteStream } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { type Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { codedError } from './errors.js';
+
+/** Pure path-traversal gate (DES-086): exactly 64 lowercase hex chars — REJECT not normalize. Runs
+ *  BEFORE any fd opens on the POST /assets/blob/:sha route; must be exported for the route handler. */
+export function isValidSha256Hex(s: string): boolean {
+  return /^[0-9a-f]{64}$/.test(s);
+}
+
+/** Pure namespace gate (DES-086): non-empty, bounded charset ([A-Za-z0-9._-]), no leading '.',
+ *  no '..' run (path-traversal defense). Runs BEFORE any fd opens; must be exported for the route handler. */
+export function isValidNamespace(ns: string): boolean {
+  if (!ns || !/^[A-Za-z0-9._-]+$/.test(ns)) return false;
+  if (ns.startsWith('.')) return false;
+  if (/\.\./.test(ns)) return false;
+  return true;
+}
 
 function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -95,5 +112,90 @@ export class CasStore {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw err;
     }
+  }
+
+  /** DES-086 (TASK-080): streaming blob ingest seam. Reads the raw request body (Readable) into a
+   *  temp file, hash-verifies against `declaredSha`, then atomic-renames under the COMPUTED hash.
+   *  opts.timer is the ONLY clock injection point (CasStore has no wall-clock); defaults to the
+   *  global setTimeout/clearTimeout for the production path.
+   *  Error taxonomy (HTTP status pinned by route handler):
+   *    BLOB_TOO_LARGE (413): bytes > maxBytes before stream end.
+   *    BLOB_UPLOAD_TIMEOUT (408): idle timer fires (no data chunk for readTimeoutMs).
+   *    BLOB_SHA_MISMATCH (409): computed hash != declaredSha at end.
+   *  BE-2: no-exists shortcut — fully consume + verify even when blob already exists (possession proof).
+   *  BE-4: 0-byte body with correct sha256(empty) succeeds (maxBytes is an upper bound, not lower). */
+  async putBlobStream(
+    namespace: string,
+    declaredSha: string,
+    body: Readable,
+    opts: {
+      maxBytes: number;
+      readTimeoutMs: number;
+      timer?: {
+        set(fn: () => void, ms: number): ReturnType<typeof setTimeout>;
+        clear(t: ReturnType<typeof setTimeout>): void;
+      };
+    },
+  ): Promise<{ sha256: string; bytes: number }> {
+    const timerImpl = opts.timer ?? { set: (fn, ms) => setTimeout(fn, ms), clear: clearTimeout };
+    const tmpPath = join(this._blobDir, `${randomUUID()}.tmp`);
+    mkdirSync(this._blobDir, { recursive: true });
+
+    let bytes = 0;
+    let timerHandle: ReturnType<typeof setTimeout> | undefined;
+    const ac = new AbortController();
+    const hash = createHash('sha256');
+
+    const resetTimer = (): void => {
+      if (timerHandle !== undefined) timerImpl.clear(timerHandle);
+      timerHandle = timerImpl.set(() => {
+        ac.abort(codedError('BLOB_UPLOAD_TIMEOUT', `blob upload idle timeout after ${opts.readTimeoutMs}ms`));
+      }, opts.readTimeoutMs);
+    };
+
+    const sizeCheck = new Transform({
+      transform(chunk: Buffer, _enc, cb) {
+        resetTimer(); // reset idle timer on each chunk
+        bytes += chunk.length;
+        if (bytes > opts.maxBytes) {
+          cb(codedError('BLOB_TOO_LARGE', `blob exceeds maxBlobBytes=${opts.maxBytes}`));
+          return;
+        }
+        hash.update(chunk);
+        cb(null, chunk);
+      },
+    });
+
+    resetTimer(); // arm BEFORE any await (synchronous — fake timer fires after one microtask tick)
+
+    const fd = createWriteStream(tmpPath);
+
+    try {
+      await pipeline(body, sizeCheck, fd, { signal: ac.signal });
+    } catch (err) {
+      if (timerHandle !== undefined) { timerImpl.clear(timerHandle); timerHandle = undefined; }
+      try { unlinkSync(tmpPath); } catch { /* already gone or never written */ }
+      // Timeout: pipeline was aborted; throw the coded abort reason instead of a bare AbortError
+      if (ac.signal.aborted) throw (ac.signal.reason ?? err) as Error;
+      throw err;
+    }
+
+    if (timerHandle !== undefined) { timerImpl.clear(timerHandle); timerHandle = undefined; }
+
+    const computed = hash.digest('hex');
+    if (computed !== declaredSha) {
+      try { unlinkSync(tmpPath); } catch { /* already gone */ }
+      throw codedError('BLOB_SHA_MISMATCH', `declared ${declaredSha} !== computed ${computed}`);
+    }
+
+    // BE-2: atomic rename regardless of whether the blob already exists — a repeat upload verifies
+    // possession again (no shortcut that skips verification). renameSync over an existing file is
+    // atomic on POSIX; on Windows it would fail but the engine targets Linux.
+    const blobPath = this._blobPath(computed);
+    mkdirSync(dirname(blobPath), { recursive: true });
+    renameSync(tmpPath, blobPath);
+
+    this._db.prepare('INSERT OR IGNORE INTO refs (namespace, sha) VALUES (?, ?)').run(namespace, computed);
+    return { sha256: computed, bytes };
   }
 }

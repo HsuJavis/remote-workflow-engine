@@ -4,7 +4,276 @@ status: passed
 ---
 # 07 Review & Retro — Gate 8
 
-## v12 GATE 8 REVIEW (2026-08-15, CURRENT / AUTHORITATIVE)
+## v14 GATE 8 REVIEW (2026-08-16, CURRENT / AUTHORITATIVE)
+
+> This section supersedes "## v12 GATE 8 REVIEW (2026-08-15)" below (kept for history).
+> This round closes the v13 + v14 chain together (v13 never ran a standalone Gate 8): **v13 —
+> engine-pull seedRef** (REQ-080); **v14 — streaming blob + manifest ref + redact-at-capture +
+> schema honesty + scriptSha256** (REQ-081..085). Gate 7.5 ran two rounds: ROUND 1 found the
+> REQ-083 key.prompt structural gap (JournalEntry.key.prompt not redacted); ROUND 2 confirmed the
+> fix (live Ollama run 8cdbed02, qwen2.5:7b). All six pre-existing trace gaps remain — none
+> introduced or closed by this round (REQ-083 gap was a Gate 7.5 implementation finding, not a
+> trace-tool gap; VAL-092 flipped to green/pass after fix).
+>
+> **Panel architects pre-ran (not re-spawned):** adversarial group + quality-dimensions group
+> reports are in `.panel/review/`. This section consolidates them; `.panel/` is removed at end of Gate 8.
+
+### Traceability consistency (v14)
+
+Trace `--check` result (regenerated 2026-08-16): **704 items, 6 gaps — ZERO new gaps from v13/v14.**
+The v13/v14 chain (REQ-080..085) is fully closed: REQ→ARCH→TASK→DES→IMPL→UT/IT/VAL with
+VAL-089..094 all `real:true`. Gap breakdown (all pre-existing; first recorded in v12 Gate 8):
+
+| ID | Severity | Type | Note |
+|----|----------|------|------|
+| REQ-012 | HIGH | 未真實驗證 | OIDC deferred by user decision D5; pre-existing known tech debt; not a Gate 7.5 send-back |
+| IMPL-082 | MID | TDD label gap | Pre-existing since v4 |
+| UT-058 | LOW | iter drift v6 behind DES-038 v11 | Pre-existing since F1; underlying ops covered; cosmetic lag only |
+| UT-064 | LOW | iter drift v9 behind DES-054 v11 | Pre-existing since v9 |
+| IT-057 | LOW | iter drift v9 behind DES-054 v11 | Pre-existing since v9 |
+| TASK-018 | LOW | no implementation | OIDC task, deferred D5 |
+
+All 6 are pre-existing; none introduced by v13/v14. Every remaining gap is recorded here as known tech debt (Exit Gate 1 satisfied).
+
+Iter drift check on the v14 chain: IMPL-117..121 at iter v14; DES-086..091 at iter v14; VAL-089..094 at iter v14; ARCH-054..058 at iter v14. No new drift introduced.
+
+### Architecture consistency (v14 panel consolidation)
+
+Two expert groups pre-ran against the v14 codebase (both read `02-architecture.md` ARCH/INV/rationale,
+`06-impl-log.md`, and the files on each IMPL `files:` for the v3 scope — IMPL-068..080 + surrounding
+wiring — which is the standing v3 built-but-unwired control set the panels track; v14-scope IMPL-117..121
+is grounded below separately). Their findings are consolidated here.
+
+**Verdict: NOT consistent. 3 HIGH + 1 MED + 3 LOW violations.**
+
+**Changes since v12 panel:**
+- FIXED: M-2 D-REDACT `redact()` orphaned — IMPL-119 (v14) wired `redact({name,value}[])` into all four
+  persist sinks (AgentExecutor transcript, RunManager snapshot, RunManager journal entry including
+  `key.prompt` fix from Round 2). Quality's wired-positive inventory confirms the sinks at
+  `agent-executor.ts:154`, `run-manager.ts:575`, `run-manager.ts:771`, and IMPL-119's full coverage.
+  **Not a violation in v14.**
+- FIXED: M-3 ARCH-015 MCP_NOT_PROVISIONED silent for named workflows — Adversarial's consistent-list
+  confirms `claude-agent-sdk-client.ts:416-436` now produces the typed `MCP_NOT_PROVISIONED` result.
+  **Not a violation in v14.**
+- NEW: O-1 LiteLLMGatewayClient transcript opaque (quality O-1, MED) — carries forward from v14 panel.
+- NEW: V4 ARCH-018 hooks-drop live branch in `materializeAssets` (adversarial V4, LOW) — carries forward.
+
+#### ARCH-044 reconciliation — SessionInitRecord vs HarnessDescriptor
+
+Both new panels flag `SessionInitRecord` as never emitted (adversarial V2 at MED, quality O-2 at HIGH).
+The v12 Gate 8 review ruled this a "not-a-violation" under ARCH-044 (signed later, supersedes ARCH-017's
+`SessionInitRecord` contract). ARCH-044 is confirmed in `02-architecture.md:463-490`: `HarnessDescriptor`
+with `redactHarness` is the designated replacement, wired end-to-end, and the adversarial panel's
+own consistent-list confirms `harness` events are emitted at `claude-agent-sdk-client.ts:575-587`.
+
+**Ruling (stable from v12):** `SessionInitRecord` absence = superseded-intentional per ARCH-044.
+`HarnessDescriptor` is the production audit record. **Not a standalone violation.**
+
+However, the panels' cluster around the builder contains three legitimate violations *distinct* from
+SessionInitRecord that ARCH-044 does NOT supersede:
+
+#### H-1 [HIGH] D-BIND fail-closed bind guard unimplemented (adversarial V3; quality S-2)
+
+Decision D-BIND (amends ARCH-009) requires a fail-closed guard refusing `bind != 127.0.0.1` unless
+`insecureNoAuth:true` is set. `src/net-guard.ts:14` exports `isLoopback()` but it is never imported by
+`src/server.ts` or `src/main.ts` for bind refusal. `grep -rn insecureNoAuth src/` → zero hits.
+`src/main.ts:97` and `src/server.ts:1025` pass the bind address through with no guard.
+DEPLOY.md preamble documents the live deployment at `0.0.0.0:8899` — the exact configuration D-BIND
+exists to block. Compensating control: ufw allowlist `192.168.0.0/24 + SSH` documented in DEPLOY.md.
+That control is outside the engine; D-BIND requires an in-engine guard.
+
+**Evidence:** `src/net-guard.ts:14`; `src/server.ts:28` (no isLoopback import); `src/main.ts:97`.
+**Severity:** HIGH. RCE + secret surface exposed with a live `0.0.0.0` deployment.
+**Action:** Gate 6 fix — one `if (!isLoopback(bind) && !config.insecureNoAuth) throw` at bind site.
+
+#### H-2 [HIGH] D-PROFILE dual thinking policy + dead DES-031 per-session re-walk (adversarial V2; quality R-1)
+
+ARCH-017 designates `buildSessionOptions()` (`src/session-options-builder.ts`) as the master v3 test
+seam, consolidating thinking policy, curated allowlist, and MCP injection for all providers. D-PROFILE
+requires `ProviderProfile` (from this module) as the single source of truth for thinking-disabled policy.
+
+Two concrete violations:
+1. **Dual thinking policy:** production (`claude-agent-sdk-client.ts:325-328`) keys off inline
+   `thinkingFor(aliases, model)` using a local `aliases?.[model]?.provider === 'anthropic'` check;
+   `buildSessionOptions` keys off `ProviderProfile.supportsExtendedThinking`. The two tables can
+   diverge silently. Adding a new provider requires changing two independent code paths.
+2. **Dead DES-031 per-session re-walk:** `findProjectMarkerAncestor(cwd, workRoot)` (ARCH-019 intra-run
+   confinement re-check) lives only inside `buildSessionOptions`, which has zero production callers.
+   Only the boot-time `assertWorkRootIsolated` (`main.ts:94`) runs. If an agent writes a `.git`/`CLAUDE.md`
+   marker into its workspace during a run, the per-session re-walk that would refuse the next session
+   call is never invoked.
+
+**Note:** `buildSessionOptions` has zero production importers (confirmed by adversarial V2 + quality R-1
+both grepping `src/`; impl-log IMPL-078 note also acknowledges "not-yet-wired (TASK-032)").
+
+**Evidence:** `src/session-options-builder.ts` (zero production importers); `claude-agent-sdk-client.ts:325-328`; `src/main.ts:94` (single boot guard only).
+**Severity:** HIGH. Confinement invariant unenforced per-session; D-PROFILE single-source broken.
+**Action:** Gate 2 adjudication — wire the seam or formally supersede ARCH-017/D-PROFILE/DES-031
+following the ARCH-044 precedent (signed supersession with explicit rationale). TASK-032 is the standing open task.
+
+#### H-3 [HIGH] D-KILL/D-PROC: cli-lifecycle + timeout-race orphaned; no engine-owned process-group kill (adversarial V1; quality S-1)
+
+ARCH-017 (D-KILL) requires the outer `Promise.race` to physically kill the CLI subprocess on timeout
+(not merely abandon the promise via `abortController.abort()`), freeing the semaphore slot exactly once.
+D-PROC requires SIGTERM→SIGKILL escalation on a detached process group to reap stdio-MCP grandchildren.
+
+Both `src/cli-lifecycle.ts` (`RealCliLifecycle.killGroup`) and `src/timeout-race.ts` (`raceWithTimeout`)
+have zero production callers. The real timeout path at `claude-agent-sdk-client.ts:462-463,603-616`
+delegates cancellation entirely to `abortController.abort()`. Whether the SDK's `claude` CLI child and
+its stdio-MCP grandchildren are reaped is the SDK's own policy — the engine performs no `kill(-pid)`.
+Under the scheduled fan-out use case (D-DOS), this is the single-node exhaustion surface D-KILL/D-DOS were
+raised to close (adversarial V1 notes semaphore slot IS freed via `withSlot` `finally`, which is a partial
+mitigation — the slot is freed when the SDK promise settles, not when the subprocess exits).
+
+**Evidence:** `src/cli-lifecycle.ts` (zero production importers); `src/timeout-race.ts` (zero production importers); `claude-agent-sdk-client.ts:462-463`; `run-manager.ts:585` (`withSlot` direct, no `raceWithTimeout`).
+**Severity:** HIGH. Orphaned MCP grandchildren + token burn on timeout; no SIGKILL escalation.
+**Action:** Gate 2 adjudication — wire or formally supersede D-KILL/D-PROC following ARCH-044 precedent.
+
+#### M-1 [MED] LiteLLMGatewayClient transcript opaque (quality O-1)
+
+ARCH-004 requires a single capture path that taps the SDK message/event stream into `agent-<id>.jsonl`.
+`LiteLLMGatewayClient` (`src/gateway/client.ts:53`) never calls `onEvent`; runs dispatched via the
+direct-fetch path produce only a terminal usage event. Tool-call traces, message text, and reasoning
+steps are absent from those transcripts. `workflow_agent_log` for such runs returns a single opaque record.
+
+**Evidence:** `src/gateway/client.ts:53` (comment confirms `onEvent` is never called for LiteLLM path).
+**Severity:** MED. Observability gap on the non-Anthropic gateway path; no data loss.
+**Action:** Gate 6 fix — stream per-event records through `onEvent` in the LiteLLM path.
+
+#### L-1 [LOW] McpRegistry wall-clock (pre-existing; persists from v12)
+
+`src/mcp-registry.ts:61` uses `new Date().toISOString()` directly instead of the injected `Clock`,
+violating the C3 clock/RNG seam. Confirmed present in v14 tree (verified by direct read). Neither v14
+panel re-flagged it, but the code path is unchanged. Does not affect production correctness; breaks
+hermetic test seam.
+
+**Evidence:** `src/mcp-registry.ts:61`.
+**Severity:** LOW. One-line fix, opportunistic.
+
+#### L-2 [LOW] ARCH-018 hooks-drop live branch in `materializeAssets` (adversarial V4)
+
+ARCH-018 requires hook-kind assets rejected "by construction" — the materializer must not have a hook
+arm at all. `claude-agent-sdk-client.ts:166-176` `materializeAssets` iterates `[['skill','skills'],
+['hook','hooks']]` and would `copyDirRecursive` hook assets into `<workspace>/.claude/hooks/` on every
+`agent()` call. The branch is dead today (classifyAsset and seedManifest strip hooks before disk), but
+the structural ban ARCH-018 requires is not present in the materializer itself.
+
+**Evidence:** `src/gateway/claude-agent-sdk-client.ts:166-176`.
+**Severity:** LOW. Defense-in-depth gap; no open RCE today.
+**Action:** Delete the `'hook'` arm from `materializeAssets` loop.
+
+#### L-3 [LOW residual] SessionInitRecord — superseded by ARCH-044; thinkingMode absent from HarnessDescriptor
+
+Per ARCH-044 ruling above, SessionInitRecord absence is not a violation. Residual observability debt:
+`HarnessDescriptor` carries `prompt/tools/skills/mcpServers` but not `thinkingMode`, `secretHandleNames`,
+or `settingSources`. This narrowing was deliberate (ARCH-044 scope). Recorded as LOW observability debt,
+intentional per ARCH-044.
+
+#### v14-chain architecture consistency (ARCH-054..058 / IMPL-117..121)
+
+No panel finding touches the v14 ARCH-054..058 chain. Independent check against Gate 2 decisions:
+- ARCH-054 streaming blob (IMPL-117): `isValidSha256Hex`/`isValidNamespace` guards wired before any fd;
+  `putBlobStream` seam injectable; net-guard 403 on foreign Host; no-exists-shortcut invariant preserved.
+  Consistent with ARCH-054.
+- ARCH-055 manifest ref (IMPL-118): manifest stored as CAS blob; `seedManifestRef = sha256(bytes)`;
+  4-way SEED_SOURCE_CONFLICT ladder; re-validation at run-time. Consistent with ARCH-055.
+- ARCH-056 redact-at-capture (IMPL-119): `SecretValueProvider` port; `redact({name,value}[])` wired at
+  all 4 sinks including JournalEntry (key.prompt + value). Quality's wired-positive inventory confirms.
+  Consistent with ARCH-056. **M-2 from v12 CLOSED.**
+- ARCH-057 schema honesty (IMPL-120): `asset_push` kind description includes HOOKS_UNSUPPORTED/mcp_provision;
+  IT-077 drift-lock. Consistent with ARCH-057. **ARCH-015 named-workflow finding from v12 CLOSED** (adversarial
+  confirms `claude-agent-sdk-client.ts:416-436` correctly resolves MCP_NOT_PROVISIONED).
+- ARCH-058 scriptSha256 (IMPL-121): pure `assertScriptIntegrity` placed before admission; SCRIPT_SHA_MISMATCH
+  / SCRIPT_SHA_WITHOUT_SCRIPT typed errors. Consistent with ARCH-058.
+
+**Architecture consistency conclusion: no.** 3 HIGH + 1 MED + 3 LOW violations, all in the v3
+built-but-unwired control set. No panel finding touches the v14 ARCH-054..058 chain (fully consistent).
+**Gate 2 adjudication required** for H-2 (ARCH-017/D-PROFILE/DES-031) and H-3 (D-KILL/D-PROC).
+**Gate 6 fix required** for H-1 (D-BIND) and M-1 (LiteLLM transcript).
+Per the operator's standing decision (memory: arch-debt-unwired-security-modules — a separate security
+hardening iteration), these violations do not block v14 iteration closure; they are carried as recorded
+known tech debt.
+
+### Validation & handover check (v14)
+
+- **VAL-089 (REQ-080):** `real:true`, green — seedRef live GitHub pull + 4 SSRF denial cases confirmed.
+- **VAL-090 (REQ-081):** `real:true`, green — POST /assets/blob/:sha streaming; sha mismatch 409;
+  oversized 413; foreign Host 403; live production blob uploaded.
+- **VAL-091 (REQ-082):** `real:true`, green — POST /assets/manifest + seedManifestRef round-trip;
+  MISSING_BLOBS + SEED_SOURCE_CONFLICT confirmed; live production manifest registered.
+- **VAL-092 (REQ-083):** `real:true`, green (ROUND 2) — live Ollama run (runId 8cdbed02, qwen2.5:7b,
+  SDK+LiteLLM); journal.jsonl JournalEntry key.prompt redacted to `‹secret:VAL092_SECRET›`; events
+  array clean; IT-075 extended (5/5 pass); val-092 clauses 2+3 pass under RWE_SKIP_ONLINE_TESTS=1.
+- **VAL-093 (REQ-084):** `real:true`, green — `tools/list` asset_push kind description confirmed with
+  HOOKS_UNSUPPORTED + mcp_provision text; push kind=hook → HOOKS_UNSUPPORTED.
+- **VAL-094 (REQ-085):** `real:true`, green — matching scriptSha256 → run proceeds; mismatch →
+  SCRIPT_SHA_MISMATCH; no sha → unchanged behavior; named + sha → SCRIPT_SHA_WITHOUT_SCRIPT.
+- **REQ-012:** 1 未真實驗証 HIGH (OIDC, D5 deferral, user-accepted). Not a Gate 7.5 send-back; known
+  tech debt per user decision D5. TASK-018 and its gate gap remain as LOW unimplemented.
+- **1170/1170 pass.** 217 test files. `npx tsc --noEmit` clean.
+- **`08-validation.md`:** present, front-matter `status: passed`, v14 ROUND 2 evidence recorded.
+- **`README.md`:** present at repo root (layout.readme). Current-state (v14, 2026-08-16). Step-by-step
+  quickstart (6 numbered steps). All 37 tools documented. No stale commands or superseded content.
+- **`DEPLOY.md`:** present at repo root (layout.deploy). Current-state (v14, 2026-08-16). §0 step-by-step
+  quickstart (verbatim copy-paste). §7 変更紀錄 includes v13 (2026-08-15) and v14 (2026-08-16) entries.
+  New config keys `seedRefAllowlist` and `maxBlobBytes` documented in §1b with full descriptions + defaults;
+  also present in `rwe.config.example.json` JSON block. No superseded commands or keys outside §7.
+- **Config key deduplication:** `設定総表` (§1b) is the single canonical source. `seedRefAllowlist` and
+  `maxBlobBytes` appear in the §1b JSON example + description blocks only (§7 変更紀錄 references them by
+  name in the change entry, which is correct). No duplication.
+- **Doc-debt (LOW, does not change conclusion, pre-existing from v12):** §1b lines 287-289 still carry
+  the historical v2 blockquote with an inline "(v3 更新, 2026-07-11): 上述 v2 敘述已被 D-V3M-3 取代"
+  supersession note — append-with-inline-marker rather than clean supersede-not-append. Current truth is
+  stated inline; quickstart real-validated this round. §6 scenario-recipe JSON blocks also contain config
+  key examples. Risk remains low (same as v12 assessment). Carry forward as LOW doc-debt; fold cleanup
+  into the next Gate 6 round-trip.
+- **Validation verdict:** Gate 7.5 v14 ROUND 2 real-tier all-green for REQ-080..085. README + DEPLOY
+  present, step-by-step, current-state. 設定総表 deduplicated. No mock-only/unverified REQ for touched
+  items. REQ-012 gap user-deferred and recorded.
+
+### Retro (v13+v14 — engine-pull seedRef + streaming blob + redact-at-capture + schema honesty + scriptSha256)
+
+- **What changed — v13 (REQ-080 / IMPL-116):** `workflow_run({seedRef:{repoUrl,sha},seedNamespace?})`
+  allows the engine to pull a git repository at a specific sha for workspace seeding. SSRF-safe: fail-closed
+  `seedRefAllowlist:[]` default (any seedRef → `SEEDREF_DISABLED`); repoUrl prefix must match allowlist or
+  → `SEEDREF_EGRESS_DENIED` before any network call. Hardened git child (isolated env, `--depth 1`,
+  `http.followRedirects=false`, ls-tree byte caps, two-step sha verify, symlink/gitlink discard).
+  `workflow_status.result.seedRef` stamps resolvedSha/bytes/latencyMs/dropped/failCode. Gate 6 integrator
+  fix: implementer chunk stalled on API; orchestrator completed IMPL-116 + two test_defects (pinned private
+  repo → octocat public, VAL-089 workspace assembly).
+- **What changed — v14 (REQ-081..085 / IMPL-117..121):**
+  - IMPL-117 streaming blob: `POST /assets/blob/:sha` raw-body route bypasses the 8 MiB JSON-RPC cap.
+    Pure `isValidSha256Hex`/`isValidNamespace` validators before any fd; `putBlobStream` seam with temp-file
+    + incremental sha256 + mid-stream abort + atomic rename + no-exists-shortcut invariant.
+  - IMPL-118 manifest ref: `POST /assets/manifest` stores manifest as CAS blob; `seedManifestRef =
+    sha256(rawBytes)` client-derivable; 4-way SEED_SOURCE_CONFLICT ladder; run-time re-validation.
+  - IMPL-119 redact-at-capture: `SecretValueProvider` port + `redact({name,value}[])` wired into all 4
+    persist sinks. The Round 1 Gap (key.prompt unredacted in JournalEntry) was caught via live run, fixed
+    by extending sink 4 to redact the entire JournalEntry (key.prompt + key.opts + value), re-verified
+    in Round 2 via live Ollama run. This closes the pre-existing v12 M-2 D-REDACT violation.
+  - IMPL-120 schema honesty: `asset_push` kind description explicitly documents HOOKS_UNSUPPORTED and
+    mcp_provision redirect; IT-077 drift-lock. Closes the pre-existing v12 M-3 ARCH-015 finding.
+  - IMPL-121 scriptSha256: pure `assertScriptIntegrity(script, sha?)` before admission; typed
+    SCRIPT_SHA_MISMATCH / SCRIPT_SHA_WITHOUT_SCRIPT errors.
+- **Gate 7.5 real-run value story:** the Round 1 Gap (REQ-083 key.prompt unredacted) was a genuine
+  implementation defect caught ONLY by real-run evidence — the on-disk `journal.jsonl` revealed raw secret
+  in `key.prompt` after a live Ollama run, which no unit or integration test caught (IT-075's test prompt
+  'A' contained no secret). This is the exact class of defect Gate 7.5 exists to catch.
+- **Impact closure:** REQ-080..085 fully chained (REQ→ARCH→TASK→DES→IMPL→UT/IT/VAL with real:true).
+  1170/1170 regression pass. Gate 7.5 v14 ROUND 2 PASSED 2026-08-16. ZERO new trace gaps introduced.
+- **Known tech debt (all pre-existing unless noted, all recorded):**
+  - [HIGH] H-1 D-BIND bind guard unimplemented — Gate 6 fix required; ufw is the current compensating control.
+  - [HIGH] H-2 ARCH-017/D-PROFILE/DES-031 builder cluster unwired — Gate 2 adjudication (wire or supersede).
+  - [HIGH] H-3 D-KILL/D-PROC cli-lifecycle + timeout-race orphaned — Gate 2 adjudication.
+  - [MED] M-1 LiteLLMGatewayClient transcript opaque — Gate 6 fix (stream onEvent in LiteLLM path).
+  - [LOW] L-1 McpRegistry wall-clock — one-line fix, opportunistic.
+  - [LOW] L-2 ARCH-018 hooks-drop live branch in materializeAssets — delete the hook arm.
+  - [LOW] L-3 SessionInitRecord superseded (ARCH-044); thinkingMode not in HarnessDescriptor, intentional.
+  - [LOW] DEPLOY.md §1b historical v2 blockquote + §6 scenario JSON config key instances — doc cosmetics.
+  - Trace gaps: REQ-012/TASK-018 (OIDC, D5), IMPL-082 (TDD-label), UT-058/UT-064/IT-057 (iter drift).
+- **Gate 7.5:** PASSED 2026-08-16 (ROUND 2). VAL-089..094 `real:true`. 1170/1170 regression.
+
+## v12 GATE 8 REVIEW (2026-08-15, superseded by v14 above)
 
 > This section supersedes "## v11 GATE 8 FIX-ITERATION REVIEW (2026-08-09)" below (kept for history).
 > This round lands four already-implemented, GREEN, real-validated items: **v12 — system metrics +

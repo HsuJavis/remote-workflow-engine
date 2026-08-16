@@ -4,6 +4,7 @@
 // observable elsewhere (DES-003 signature). Owns one RunGuard + one SandboxHost per run so caps
 // and in-flight processes never leak across runs; suspend/stop actually abort in-flight agent()
 // calls (AbortSignal) and kill the sandbox child, not just flip the status flag.
+import { createHash } from 'node:crypto';
 import { cpus, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
@@ -21,7 +22,7 @@ import { HardenedSeedRefFetcher } from './seedref-fetcher.js';
 const SEEDREF_TIMEOUT_MS = 30_000;
 const SEEDREF_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 const SEEDREF_MAX_FILE_BYTES = 10 * 1024 * 1024;
-import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView } from './types.js';
+import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry } from './types.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore, sumUsageTokens } from './run-store.js';
 import type { Clock } from './clock.js';
@@ -31,6 +32,8 @@ import { createSemaphore, type Semaphore, type SemaphoreGauge } from './agent-se
 import { SandboxHost } from './sandbox/host.js';
 import type { AgentSpawner, AgentTypeDef } from './agent-executor.js';
 import { AgentExecutor } from './agent-executor.js';
+import { redact } from './secret-resolver.js';
+import type { SecretValueProvider } from './secret-resolver.js';
 import { ResumeCache, MISS, type ResumePlan } from './resume-cache.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
 import type { GatewayClient, GatewayConfig } from './gateway/client.js';
@@ -83,6 +86,9 @@ export interface RunManagerDeps {
   /** v13 (REQ-080 / DES-083, TASK-078): injectable SeedRefFetcher for the hardened-git impl.
    *  Omitted in TASK-077 (no-op); wired in TASK-078. */
   seedFetcher?: SeedRefFetcher;
+  /** v14 (REQ-083, DES-088, TASK-082): inject to enable redact-at-capture on all transcript/
+   *  snapshot/journal persist sinks. Omitted → no redaction (legacy/test callers unchanged). */
+  secretValueProvider?: SecretValueProvider;
 }
 
 const TERMINAL: RunStatus[] = ['stopped', 'completed', 'failed'];
@@ -94,6 +100,15 @@ function toErr(err: unknown): { code: string; message: string } {
   }
   if (err instanceof Error) return { code: err.name || 'SCRIPT_ERROR', message: err.message };
   return { code: 'SCRIPT_ERROR', message: String(err) };
+}
+
+/** v14 (REQ-085 / DES-090, TASK-084): pure script integrity guard.
+ *  `sha` present: computes sha256(Buffer.from(script,'utf8')).hex and compares — ANY mismatch
+ *  (wrong hash, uppercase, wrong length) → SCRIPT_SHA_MISMATCH. `sha` absent → no-op. */
+export function assertScriptIntegrity(script: string, sha?: string): void {
+  if (sha === undefined) return;
+  const computed = createHash('sha256').update(script, 'utf8').digest('hex');
+  if (computed !== sha) throw codedError('SCRIPT_SHA_MISMATCH', `script sha256 mismatch: expected ${sha}, got ${computed}`);
 }
 
 interface RunEntry {
@@ -126,6 +141,8 @@ interface RunEntry {
   resultError?: { code: string; message: string };
   /** v13 (REQ-080, DES-083): observable seedRef outcome overlaid onto RunStatusView by _mergeLive. */
   seedRef?: RunStatusView['seedRef'];
+  /** v14 (REQ-082, DES-087): the seedManifestRef sha used, overlaid onto RunStatusView by _mergeLive. */
+  seedManifestRef?: string;
 }
 
 export class RunManager {
@@ -147,6 +164,8 @@ export class RunManager {
   private readonly _seedRefAllowlist: string[];
   /** v13 (REQ-080, TASK-078): injected SeedRefFetcher; undefined until TASK-078 wires it. */
   private readonly _seedFetcher: SeedRefFetcher;
+  /** v14 (REQ-083, DES-088, TASK-082): redact-at-capture for snapshot/journal sinks. */
+  private readonly _secretValueProvider: SecretValueProvider | undefined;
   private readonly _runs = new Map<string, RunEntry>();
 
   /** v8 Slice 1: config values are positive integers — reject bad config loudly at construction
@@ -179,6 +198,7 @@ export class RunManager {
     // v13 (REQ-080, TASK-077): normalize allowlist at construction (config-load check); default [] = disabled.
     this._seedRefAllowlist = deps.seedRefAllowlist ? normalizeSeedRefAllowlist(deps.seedRefAllowlist) : [];
     this._seedFetcher = deps.seedFetcher ?? new HardenedSeedRefFetcher();
+    this._secretValueProvider = deps.secretValueProvider;
   }
 
   /** v8 Slice 4 (REQ-054): count of live (non-terminal) top-level runs in this process — the
@@ -227,6 +247,12 @@ export class RunManager {
   }
 
   async start(spec: RunSpec): Promise<string> {
+    // v14 (REQ-085 / DES-090, TASK-084): top rung — pure request-shape check before any durable work.
+    //   Pinned first: SCRIPT_SHA_WITHOUT_SCRIPT → SCRIPT_SHA_MISMATCH → (admission) → …
+    if (spec.scriptSha256 !== undefined) {
+      if (!spec.script) throw codedError('SCRIPT_SHA_WITHOUT_SCRIPT', 'scriptSha256 supplied but no inline script; omit scriptSha256 for named workflow runs');
+      assertScriptIntegrity(spec.script, spec.scriptSha256);
+    }
     // v8 REQ-054: admission chokepoint — reject BEFORE any durable/expensive work (createRun,
     // workspace mkdir, seed, sandbox spawn) when the cap is already reached. The global agent
     // semaphore caps only agent() dispatch, not run count / sandbox forks / workspace materialization.
@@ -244,15 +270,22 @@ export class RunManager {
     if (spec.seedManifest !== undefined && !Array.isArray(spec.seedManifest)) {
       throw codedError('INVALID_SEED_SPEC', `seedManifest must be an array of {path, sha256, exec?}; got ${typeof spec.seedManifest}`);
     }
-    // v13 REQ-080 (DES-080, TASK-077): seedRef pre-createRun validation — pinned precedence:
-    //   SEED_SOURCE_CONFLICT → SEEDREF_DISABLED → INVALID_SEED_SPEC → SEEDREF_EGRESS_DENIED → CAS_UNAVAILABLE
-    // Must sit BEFORE the seedManifest CAS block below (seedManifest+seedRef → CONFLICT, not CAS_UNAVAILABLE).
-    if (spec.seedRef !== undefined) {
+    // v14 REQ-082 (DES-087): 4-way mutual-exclusion — {seed, seedManifest, seedRef, seedManifestRef}:
+    //   >1 of these present → SEED_SOURCE_CONFLICT (highest precedence; fires before any CAS lookup).
+    {
       const hasSeed = Array.isArray(spec.seed) && spec.seed.length > 0;
       const hasManifest = Array.isArray(spec.seedManifest) && spec.seedManifest.length > 0;
-      if (hasSeed || hasManifest) {
-        throw codedError('SEED_SOURCE_CONFLICT', 'seedRef is mutually exclusive with seed and seedManifest');
+      const hasSeedRef = spec.seedRef !== undefined;
+      const hasSeedManifestRef = spec.seedManifestRef !== undefined;
+      const count = [hasSeed, hasManifest, hasSeedRef, hasSeedManifestRef].filter(Boolean).length;
+      if (count > 1) {
+        throw codedError('SEED_SOURCE_CONFLICT', 'seed, seedManifest, seedRef, and seedManifestRef are mutually exclusive; specify exactly one');
       }
+    }
+    // v13 REQ-080 (DES-080, TASK-077): seedRef pre-createRun validation — pinned precedence:
+    //   SEEDREF_DISABLED → INVALID_SEED_SPEC → SEEDREF_EGRESS_DENIED → CAS_UNAVAILABLE
+    // (SEED_SOURCE_CONFLICT is now the 4-way check above.)
+    if (spec.seedRef !== undefined) {
       if (this._seedRefAllowlist.length === 0) {
         throw codedError('SEEDREF_DISABLED', 'seedRef requires seedRefAllowlist in engine config (add seedRefAllowlist:[…] to rwe.config.json)');
       }
@@ -270,6 +303,36 @@ export class RunManager {
       if (!this._cas) {
         throw codedError('CAS_UNAVAILABLE', 'seedRef requires a configured content store (cas); like seedManifest, it assembles via materializeManifest');
       }
+    }
+    // v14 REQ-082 (DES-087): seedManifestRef pre-createRun validation — pinned precedence after
+    //   SEED_SOURCE_CONFLICT (handled above): CAS_UNAVAILABLE → MISSING_BLOBS → INVALID_SEED_SPEC.
+    //   Loads the manifest blob from CAS, parses it, re-validates referenced blobs, then assigns
+    //   spec.seedManifest so the EXISTING materializeManifest branch runs unchanged (inline+ref parity).
+    if (spec.seedManifestRef !== undefined) {
+      if (!this._cas) throw codedError('CAS_UNAVAILABLE', 'seedManifestRef requires a configured content store');
+      const ns = spec.seedNamespace ?? '_default';
+      // Check the manifest blob is present in the namespace (security boundary: namespace-scoped check).
+      const manifestMissing = await this._cas.missing(ns, [spec.seedManifestRef]);
+      if (manifestMissing.length > 0) {
+        throw codedError('MISSING_BLOBS', `manifest blob ${spec.seedManifestRef} not found in namespace ${ns}; register via POST /assets/manifest`);
+      }
+      // Read from the namespace-agnostic blob pool (presence already confirmed above).
+      const manifestBuf = await this._cas.readBlob(spec.seedManifestRef);
+      if (!manifestBuf) throw codedError('MISSING_BLOBS', `manifest blob ${spec.seedManifestRef} missing from blob pool`);
+      let parsedManifest: unknown;
+      try { parsedManifest = JSON.parse(manifestBuf.toString('utf8')); } catch {
+        throw codedError('INVALID_SEED_SPEC', `seedManifestRef blob is not valid JSON; register via POST /assets/manifest`);
+      }
+      if (!Array.isArray(parsedManifest)) {
+        throw codedError('INVALID_SEED_SPEC', `seedManifestRef blob must be a JSON array of {path, sha256, exec?}`);
+      }
+      // Re-validate all referenced blobs are present in the namespace (security boundary per DES-087).
+      const referencedShas = (parsedManifest as Array<{ sha256?: unknown }>).map((e) => String(e.sha256 ?? ''));
+      const missing = await this._cas.missing(ns, referencedShas);
+      if (missing.length > 0) throw codedError('MISSING_BLOBS', `${missing.length} blob(s) missing for seedManifestRef: ${missing.slice(0, 8).join(',')}${missing.length > 8 ? '…' : ''}`);
+      // Fall into the existing materializeManifest branch.
+      spec.seedManifest = parsedManifest as ManifestEntry[];
+      spec.seedNamespace = ns;
     }
     // v10 REQ-065: fail fast (before any durable work) if a seedManifest references blobs the client
     // hasn't uploaded — surface the missing shas so the client blob_put's them and retries.
@@ -334,7 +397,7 @@ export class RunManager {
       initGitBaseline(workspace);
     }
     const guard = new RunGuard({ concurrency: this._concurrency, budget: spec.budget ?? null });
-    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, agentTypes: this._agentTypes });
+    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, agentTypes: this._agentTypes, secretValueProvider: this._secretValueProvider });
     const entry: RunEntry = {
       script,
       args: spec.args,
@@ -356,6 +419,7 @@ export class RunManager {
     };
     this._runs.set(runId, entry);
     entry.seedRef = seedRefView; // v13: overlaid onto RunStatusView by _mergeLive (present on success AND failure)
+    if (spec.seedManifestRef !== undefined) entry.seedManifestRef = spec.seedManifestRef; // v14: DES-087
     if (seedRefFail) {
       // v13 REQ-080: a seedRef fetch failure fails the run typed (never starts the script against an
       // empty/partial tree) via the same resultError channel every other run failure uses.
@@ -418,7 +482,7 @@ export class RunManager {
     const entry = this._runs.get(runId);
     if (!entry) return view;
     const agents = entry.spawner instanceof AgentExecutor ? entry.spawner.getAllRecords() : view.agents;
-    return { ...view, phases: entry.phases, agents, workflowNodes: entry.workflowNodes, ...(entry.seedRef !== undefined ? { seedRef: entry.seedRef } : {}) };
+    return { ...view, phases: entry.phases, agents, workflowNodes: entry.workflowNodes, ...(entry.seedRef !== undefined ? { seedRef: entry.seedRef } : {}), ...(entry.seedManifestRef !== undefined ? { seedManifestRef: entry.seedManifestRef } : {}) };
   }
 
   /** The script return value for a completed run, or the failure error (DES-001 workflow_result). */
@@ -473,7 +537,7 @@ export class RunManager {
       )).flat();
       guard.setSpent(sumUsageTokens(allEvents));
     }
-    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, agentTypes: this._agentTypes });
+    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, agentTypes: this._agentTypes, secretValueProvider: this._secretValueProvider });
     const entry: RunEntry = {
       script,
       args: spec.args,
@@ -504,7 +568,12 @@ export class RunManager {
     // v8 REQ-055: persist a one-shot DAG snapshot at the terminal transition (covers failed/stopped,
     // not only completed) so a composite run's nested tree/phases/agent-frames survive a restart.
     if (TERMINAL.includes(to)) {
-      const agents = entry.spawner instanceof AgentExecutor ? entry.spawner.getAllRecords() : [];
+      let agents = entry.spawner instanceof AgentExecutor ? entry.spawner.getAllRecords() : [];
+      // DES-088 (TASK-082) sink (2): redact agents array BEFORE saveSnapshot (persist write only).
+      if (this._secretValueProvider) {
+        const secrets = this._secretValueProvider.entries();
+        agents = redact(agents, secrets) as typeof agents;
+      }
       await this._store.saveSnapshot(runId, { phases: entry.phases, agents, workflowNodes: entry.workflowNodes });
     }
     // v8 REQ-052: fire onTerminal from the ONE authoritative choke (covers stopped, which the
@@ -688,7 +757,20 @@ export class RunManager {
           aborted: outcome.kind === 'null' && outcome.aborted === true,
         };
         entry.journal.push(journalEntry);
-        await this._store.appendJournal(runId, journalEntry);
+        // DES-088 (TASK-082) sink (4): redact the ENTIRE JournalEntry (key.prompt + key.opts + value)
+        // at the persist-write site only. The live in-memory journal (entry.journal, the replay cache)
+        // keeps the raw key+value so same-process suspend/resume matches exactly; only the durable
+        // journal.jsonl is redacted. Accepted caveat — invariant (c) EXTENDED to call params: if a
+        // provisioned secret rides a prompt/opts (e.g. a prior agent's MCP result echoed into a later
+        // prompt), a HARD-CRASH resume reads the redacted key from disk, MISSes that call's key
+        // (sameKey compares prompt+opts, resume-cache.ts:14) and re-runs it + the tail LIVE — correct
+        // values, just recomputed. Strictly more graceful than a redacted VALUE (which feeds a marker
+        // back as data). (Future option, not built: persist a keyHash of the raw key so replay matches
+        // without the raw prompt — see DES-088 Decision rationale.)
+        const journalToStore = this._secretValueProvider
+          ? (redact(journalEntry, this._secretValueProvider.entries()) as JournalEntry)
+          : journalEntry;
+        await this._store.appendJournal(runId, journalToStore);
         return value;
       } finally {
         release();

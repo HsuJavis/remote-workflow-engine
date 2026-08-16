@@ -82,15 +82,23 @@ export function resolveConfig(config: unknown, source: SecretSource): unknown {
   return substituteHandles(config, source);
 }
 
-/** PURE — capture-time redaction: replaces every occurrence of any resolved secret value
- *  (including split across nested fields) with the redaction marker. Handle NAMES are never
- *  touched — only resolved values are passed in here. */
-export function redact(event: unknown, secretValues: string[]): unknown {
-  const values = secretValues.filter((v) => v.length > 0);
+/** DES-088 (TASK-082): SecretValueProvider port — injected into RunManager/AgentExecutor; never
+ *  into the sandbox. ReadonlyArray is load-bearing: the capture path must not mutate entries. */
+export interface SecretValueProvider {
+  entries(): ReadonlyArray<{ name: string; value: string }>;
+}
+
+/** PURE — capture-time redaction (DES-088): replaces every occurrence of each secret value
+ *  (value-exact, substring match) with the name-keyed marker `‹secret:NAME›`. Empty-value secrets
+ *  are skipped (split('') would corrupt the string). In-order replacement: when two secrets share a
+ *  value, the first-in-list name wins (deterministic). Does NOT mutate the input event. */
+export function redact(event: unknown, secrets: ReadonlyArray<{ name: string; value: string }>): unknown {
+  const valid = secrets.filter((s) => s.value.length > 0);
+  if (valid.length === 0) return event;
   function walk(value: unknown): unknown {
     if (typeof value === 'string') {
       let out = value;
-      for (const v of values) out = out.split(v).join('‹redacted›');
+      for (const { name, value: v } of valid) out = out.split(v).join(`‹secret:${name}›`);
       return out;
     }
     if (Array.isArray(value)) return value.map(walk);

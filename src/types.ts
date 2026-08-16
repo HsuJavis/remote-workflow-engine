@@ -126,6 +126,9 @@ export interface RunStatusView {
     failCode?: 'SEEDREF_FETCH_FAILED' | 'SEEDREF_SHA_MISMATCH' | 'SEEDREF_TOO_LARGE';
     failDetail?: string;
   };
+  /** v14 (REQ-082 / DES-087): sha256 of the manifest blob used for this run's seed (client-derivable).
+   *  Absent unless the run used a seedManifestRef. */
+  seedManifestRef?: string;
 }
 
 export interface RunSummary {
@@ -159,8 +162,15 @@ export interface RunSpec {
   seedNamespace?: string;
   /** v13 (REQ-080 / DES-080, TASK-077): engine-pull seed — fetch a pinned commit from an allowlisted
    *  remote, verify sha, assemble into CAS, then materialize via the existing materializeManifest branch.
-   *  Mutually exclusive with `seed` and `seedManifest`. Requires seedRefAllowlist in engine config. */
+   *  Mutually exclusive with `seed`, `seedManifest`, and `seedManifestRef`. Requires seedRefAllowlist in engine config. */
   seedRef?: { repoUrl: string; sha: string };
+  /** v14 (REQ-082 / DES-087): server-side manifest ref — the sha256 of a manifest blob registered via
+   *  POST /assets/manifest. Mutually exclusive with `seed`, `seedManifest`, and `seedRef`. */
+  seedManifestRef?: string;
+  /** v14 (REQ-085 / DES-090): optional integrity guard — 64-char lowercase hex sha256 of the inline
+   *  script's UTF-8 bytes. If present and mismatched → SCRIPT_SHA_MISMATCH, no run created.
+   *  Supply with a named run (no inline script) → SCRIPT_SHA_WITHOUT_SCRIPT. */
+  scriptSha256?: string;
 }
 
 /** v10 Slice 2 (REQ-065): a CAS-manifest seed entry — REGULAR FILES ONLY (no mode int, no symlink/type,

@@ -12,6 +12,8 @@
   "maxConcurrentRuns": 64,
   "gateway": "sdk",
   "agentDefinitionsDir": "./agents",
+  "seedRefAllowlist": [],
+  "maxBlobBytes": 268435456,
   "defaultAllowedTools": [
     "Read",
     "Write",

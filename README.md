@@ -10,19 +10,23 @@
 原封不動地跑在一台伺服器上，透過 **MCP Streamable HTTP** 介面遠端送出、追蹤、暫停/續跑/停止，並
 把每個 `agent()` 呼叫真正路由到你設定的 LLM 供應商（Anthropic / OpenAI / Gemini / 本機 Ollama）。
 
-**目前功能（v12，2026-08-15）**：
+**目前功能（v14，2026-08-16）**：
 
-- **工作流程執行**：`workflow_run`（含 inline seed + CAS seedManifest）、`workflow_status`、
-  `workflow_suspend`/`workflow_resume`/`workflow_stop`、當機可續跑（重啟後 `interrupted` → `workflow_resume`）
+- **工作流程執行**：`workflow_run`（含 inline seed + CAS seedManifest + `seedManifestRef` + `scriptSha256`
+  完整性守衛）、`workflow_status`、`workflow_suspend`/`workflow_resume`/`workflow_stop`、
+  當機可續跑（重啟後 `interrupted` → `workflow_resume`）
 - **已知工作流程探索**：`workflow_register`/`workflow_list`/`workflow_get`/`workflow_deregister`、
   預測靜態 DAG 骨架（`workflow_get.skeleton`）
 - **串接**：`chain_create`/`chain_list`（完成即啟動下游 run，恰好一次）
 - **排程**：`schedule_create`/`schedule_list`/`schedule_delete`/`schedule_setEnabled`（cron/once/resident）
   + `workflow_trigger`
-- **資產同步**：`asset_push`/`asset_list`/`asset_delete`（skill/MCP config；hook 明確不支援）
+- **資產同步**：`asset_push`/`asset_list`/`asset_delete`（skill/MCP config；hook 明確不支援，schema 自述 `HOOKS_UNSUPPORTED`）
 - **MCP provisioning**：`mcp_provision`（伺服器端依名 MCP server 註冊，secret handle `${secret:NAME}`）
 - **Webhook**：`webhook_create`/`webhook_list`/`webhook_delete`（HMAC-SHA256 驗簽、deliveryId 去重）
-- **高效 seeding**：`blob_put`/`seed_plan`（CAS sha256 去重）；`/mcp` 接受 `Content-Encoding: gzip|deflate`
+- **高效 seeding**：`blob_put`/`seed_plan`（CAS sha256 去重）；`/mcp` 接受 `Content-Encoding: gzip|deflate`；
+  `POST /assets/blob/:sha`（streaming raw-body 大檔案上傳，bypass 8MiB JSON-RPC cap）；
+  `POST /assets/manifest`（manifest-as-CAS-blob，`seedManifestRef = sha256(bytes)`，可由用戶端自行推導）；
+  engine-pull `seedRef:{repoUrl,sha}`（`HardenedSeedRefFetcher`，SSRF-safe egress allowlist，`seedRefAllowlist:[]` 省略則 `SEEDREF_DISABLED`）
 - **問題回報**：`issue_report`（版本欄位自動填入，caller 可覆寫；`issue_list`/`issue_get`/`issue_comments`/`issue_comment`）
 - **系統監控**：`system_info`（CPU 負載 + 核心數 + 利用率 %、記憶體 total/used/free、磁碟、引擎行程 + 主機 Top-N 行程 + 系統行程統計，`GET /api/system`）
 - **模型目錄**：`models_list`（跨供應商統一目錄，含 `capability`/`stability`/`costLevel 0–10`/`modalities`/`ref` 等豐富欄位，支援多維篩選，`GET /api/models`）
@@ -45,7 +49,7 @@
 
 ## 快速開始 Quickstart
 
-以下指令是 v12 validator 實際跑過、能把系統帶起來的步驟（本輪零文件缺口）。
+以下指令是 v14 validator 實際跑過、能把系統帶起來的步驟（本輪零文件缺口）。
 
 ```bash
 # 1. 安裝 Node 依賴
@@ -172,6 +176,9 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 5. **Host/Origin 白名單**：外來 Host → 403 防 DNS-rebinding；非白名單 Origin POST → 403 防 CSRF。
 6. **Webhook HMAC**：常數時間比對 `X-Hub-Signature-256`；deliveryId 去重；±300s 時戳窗口。
 7. **伺服器端 secret**：config 內 `${secret:NAME}` → 由 `RWE_SECRET_<NAME>` 解析；缺失 → `SECRET_MISSING`；字面值永不外洩。
+8. **Redact-at-capture**：`SecretValueProvider.entries()` 拿到所有 provisioned secret 的明文；每次寫入逐字稿/快照/日誌/SDK-capture 前，均先呼叫 `redact({name,value}[])` 把值替換為 `‹secret:NAME›` marker（4 個 sink：appendTranscript/saveSnapshot/appendJournal（整個 JournalEntry 含 key.prompt）/SDK-capture；DES-088 invariant b：工作流程的最終回傳值（script `return` 的內容）維持原始值，不做 redact）。
+9. **scriptSha256 完整性守衛**：`workflow_run` 可選填 `scriptSha256`（十六進位 sha256）；提供時引擎在 `createRun` 前用 `assertScriptIntegrity` 比對，雜湊不符 → `SCRIPT_SHA_MISMATCH`（403）；命名 workflow + sha 無意義 → `SCRIPT_SHA_WITHOUT_SCRIPT`（400）。
+10. **SSRF-safe seedRef**：`seedRef:{repoUrl,sha}` 由 `HardenedSeedRefFetcher` 拉取；URL 必須匹配 `seedRefAllowlist`，否則 `SEEDREF_EGRESS_DENIED`；省略 allowlist 則全部 `SEEDREF_DISABLED`（fail-closed）；hardened git subprocess，不轉 shell。
 
 ## 已知限制
 

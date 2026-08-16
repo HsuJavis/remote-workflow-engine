@@ -42,23 +42,26 @@ describe('resolveConfig — pure, atomic all-or-nothing (DES-025, REQ-018)', () 
   });
 });
 
-describe('redact — capture-time choke point (DES-025, REQ-018)', () => {
+// DES-088 (TASK-082): redact signature updated from string[] to ReadonlyArray<{name,value}> —
+// the UT-043 calls below were updated at Gate 6 integration to use the new {name,value} shape.
+// The old marker '‹redacted›' is replaced by '‹secret:NAME›' per DES-088. resolveConfig is unchanged.
+describe('redact — capture-time choke point (DES-025/DES-088, REQ-018)', () => {
   it('replaces every occurrence of a resolved secret value with the redaction marker', () => {
     const event = { text: 'the token is sh-real-value-123 in this line' };
-    const out = redact(event, ['sh-real-value-123']);
+    const out = redact(event, [{ name: 'REDACTED', value: 'sh-real-value-123' }]);
     expect(JSON.stringify(out)).not.toContain('sh-real-value-123');
-    expect(JSON.stringify(out)).toContain('‹redacted›');
+    expect(JSON.stringify(out)).toContain('‹secret:REDACTED›');
   });
 
   it('redacts a secret value appearing anywhere in a nested structure', () => {
     const event = { a: { b: ['prefix-shhh-secret-suffix'] } };
-    const out = redact(event, ['shhh-secret']) as { a: { b: string[] } };
+    const out = redact(event, [{ name: 'SECRET', value: 'shhh-secret' }]) as { a: { b: string[] } };
     expect(out.a.b[0]).not.toContain('shhh-secret');
   });
 
   it('handle NAMES stay loggable — redact does not touch a bare handle-name string', () => {
     const event = { handleName: 'foo', text: 'value-of-foo-is-secretvalue' };
-    const out = redact(event, ['secretvalue']) as { handleName: string; text: string };
+    const out = redact(event, [{ name: 'SECRET', value: 'secretvalue' }]) as { handleName: string; text: string };
     expect(out.handleName).toBe('foo');
     expect(out.text).not.toContain('secretvalue');
   });
@@ -66,7 +69,7 @@ describe('redact — capture-time choke point (DES-025, REQ-018)', () => {
   it('property invariant: no byte of the resolved value survives redact even split across fields', () => {
     const secretValue = 'super-secret-token-value';
     const event = { one: `A${secretValue}B`, two: `C${secretValue}D`, three: 'unrelated' };
-    const out = redact(event, [secretValue]);
+    const out = redact(event, [{ name: 'SECRET', value: secretValue }]);
     expect(JSON.stringify(out)).not.toContain(secretValue);
   });
 });

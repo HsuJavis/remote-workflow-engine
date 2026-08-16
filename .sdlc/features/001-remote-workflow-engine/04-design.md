@@ -2159,3 +2159,120 @@ classDiagram
 - **Reuse checked (Karpathy surgical):** `src/net-guard.ts` NOT reused — it is the HTTP server-bind/host-header/loopback plane, a different concern from URL egress prefix matching; `src/timeout-race.ts` (`raceWithTimeout`) is agent/semaphore-oriented (provider-call racing, no child kill), so the fetcher's kill-on-timeout is a local `setTimeout`+`child.kill` (DES-082) rather than a forced reuse.
 - **Carried D-v13 decisions (from Gate 2, unchanged):** D-v13-B no blanket private-IP connect-ban (air-gapped internal forge is a legit allowlisted target); D-v13-C DNS-rebind = accepted residual, connect-IP-pin not built; D-v13-D no fetch worker pool (REQ-054 admission counter already bounds concurrency; S-S3 slot-holding residual documented for operator sizing); D-v13-F secrets/private-repo deferred. Quality's cross-cutting gaps (trace-ID, RunStorePort, circuit-breaker, `GET /health`, journal archival) remain pre-existing deferred future-REQ candidates — NOT seeded by a single seed-source feature.
 - **Seam consistency (Exit Gate 5):** every time read on the seedRef path takes the injected `Clock` (`t0`/`latencyMs`/`fetchedAt`, DES-083); no RunManager or fetcher method reads wall-clock time; the sole timer is the fetcher's child-kill `setTimeout` (OS boundary, faked in UTs). seedRef falls into the identical mkdir → materialize → `initGitBaseline` tail as seed/seedManifest — no asymmetric second assembly path.
+
+### DES-086 — streaming blob ingest: `CasStore.putBlobStream` seam + pure validators + error taxonomy + net-guarded route (src/cas-store.ts, src/server.ts)
+- **status:** draft
+- **traces:** ARCH-054, TASK-080
+- **signature:** `putBlobStream(namespace: string, declaredSha: string, body: Readable, opts: { maxBytes: number; readTimeoutMs: number; timer?: { set(fn:()=>void, ms:number): T; clear(t: T): void } }): Promise<{ sha256: string; bytes: number }>` (mirrors shipped `putBlob`'s `{sha256,…}`, drops the never-load-bearing `accepted:true`). `opts.timer` defaults to global `setTimeout/clearTimeout` — the ONLY injection seam for the idle timer (CasStore has no clock; localized to this method, Karpathy). Pure exports: `isValidSha256Hex(s): boolean` (exactly 64 chars `[0-9a-f]`, lowercase-only, REJECT not normalize) and `isValidNamespace(ns): boolean` (bounded charset, no `/`, no `.`-runs, non-empty) — both run BEFORE any fd.
+- **flow:** validators → open per-request temp file → pipe `body`, hash incrementally, `bytes+=chunk.length`; on each chunk RESET the idle timer (`readTimeoutMs`). `bytes > maxBytes` mid-stream → abort+unlink → `BLOB_TOO_LARGE`; idle timer fires → abort+unlink → `BLOB_UPLOAD_TIMEOUT`; on end `computed !== declaredSha` → unlink → `BLOB_SHA_MISMATCH` (store NOTHING); else atomic rename → `blobs/<sha[0:2]>/<sha>`, THEN record namespace ref. `finally`-unlink covers every exit. `server.ts` handler = thin glue (parse `:sha`+`?namespace`, run the two validators, call `putBlobStream`, map throw→envelope), registered AFTER the net-guard (server.ts:1265), reads UNDECODED bytes (does NOT reuse `readBodyDecoded`).
+- **boundary/error (HTTP status pinned):** bad hex/namespace → `400 INVALID_BLOB_REQUEST`; over-cap → `413 BLOB_TOO_LARGE`; idle timeout → `408 BLOB_UPLOAD_TIMEOUT`; mismatch → `409 BLOB_SHA_MISMATCH`. BE-2 no-exists-shortcut: fully consume+verify even when `blobs/<sha>` already exists (store under COMPUTED hash — possession proof, REQ-064 poisoning). BE-3 raw route does NOT decode Content-Encoding (a gzipped body simply mismatches → `BLOB_SHA_MISMATCH`; the sha is over stored bytes). BE-4 0-byte blob with correct empty-sha SUCCEEDS (`maxBytes` is an upper bound). Twin recorded: keep shipped `putBlob`'s `BLOB_HASH_MISMATCH`, emit `BLOB_SHA_MISMATCH` on the new route (REQ-081 text) — do NOT rename the shipped code (breaks pinned `blob_put` callers).
+- **config (named at design time):** `maxBlobBytes` default `268435456` (256 MiB), min `1048576`; `blobUploadTimeoutMs` default `120000`, min `10000` → feeds `opts.readTimeoutMs`. Validated at config-load with the `maxConcurrentRuns` convention, actionable entry-named messages.
+- **testability / seam (Exit Gate 5):** fake `Readable` battery drives the unit — good stream stored+ref recorded; `maxBytes+1` → `BLOB_TOO_LARGE`+temp unlinked; stalling stream + fake `opts.timer` fired synchronously → `BLOB_UPLOAD_TIMEOUT`+temp unlinked; bytes≠declared → `BLOB_SHA_MISMATCH`+temp unlinked; exists-hit still verifies. Every time read on this path is the injected `opts.timer`; NO method reads wall-clock. Net-guard 403-on-foreign-Host IT on `/assets/blob` + placement drift assertion.
+- **drift-lock:** `blob_put` description contains `"/assets/blob/"` and `"BLOB_SHA_MISMATCH"`.
+- **iter:** v14
+
+### DES-087 — manifest-as-CAS-blob: `POST /assets/manifest` + `seedManifestRef` run-load + 4-way exclusion ladder + `RunStatusView.seedManifestRef` (src/server.ts, src/run-manager.ts, src/types.ts)
+- **status:** draft
+- **traces:** ARCH-055, TASK-081
+- **signature:** `POST /assets/manifest?namespace=<ns>` (raw-body, net-guarded) → `{ seedManifestRef: string; namespace: string }` where `seedManifestRef = sha256(manifestBytes)`. `RunSpec.seedManifestRef?: string` (types.ts, beside `seedManifest`/`seedNamespace` at :158); `RunStatusView.seedManifestRef?: string` (types.ts:104, parity with `seedRef` at :120 — the ref actually used).
+- **flow:** register endpoint: parse manifest bytes → on failure `INVALID_SEED_SPEC`; validate every `{path,sha256}` blob present in `<ns>` → `MISSING_BLOBS` (naming absent shas); `putBlob(ns, sha256(bytes), bytes)` storing the manifest AS a blob; return the ref. Run path (run-manager, in the seed-source pick): load blob by `seedManifestRef` under `seedNamespace` → absent → `MISSING_BLOBS`; parse → fail → `INVALID_SEED_SPEC`; re-validate referenced blobs → `MISSING_BLOBS`; bind `spec.seedManifest = parsed.entries` so it FALLS INTO the existing `materializeManifest(workspace, entries, readBlob)` tail unchanged (inline+ref cannot diverge). Stamp `RunStatusView.seedManifestRef`.
+- **boundary/error:** register-time `MISSING_BLOBS` is UX; the run-time pre-`createRun` `MISSING_BLOBS` re-validation stays the SECURITY boundary (a caller can mint a manifest-shaped blob via plain `blob_put` and skip the endpoint). TOCTOU non-issue (blobs immutable, never deleted); documented contract: any future per-namespace quota/GC MUST exempt blobs referenced by a stored manifest. Parse-failure reuses `INVALID_SEED_SPEC` (no new `MANIFEST_PARSE_ERROR` — a manifest IS a seed spec; drift-locked).
+- **4-way ladder (literal, pinned):** at the existing top rung, `>1 of {seed, seedManifest, seedRef, seedManifestRef}` → `SEED_SOURCE_CONFLICT` (extends run-manager.ts:254, does NOT invent a parallel path). One ordered-precedence UT extended: `seedManifestRef`+`seed` → CONFLICT (not MISSING_BLOBS); ref naming a missing blob → MISSING_BLOBS; unparseable manifest blob → INVALID_SEED_SPEC.
+- **consumability:** `seedManifestRef` is client-derivable (`sha256(manifestBytes)`) → a caller can verify the register response. `workflow_run` description enumerates all four seed sources + names `SEED_SOURCE_CONFLICT` + `/assets/manifest`; `seed_plan` description names `POST /assets/manifest` as the next step.
+- **drift-lock:** `workflow_run` description contains `"seedManifestRef"`, `"SEED_SOURCE_CONFLICT"`, `"/assets/manifest"`; `seed_plan` description contains `"/assets/manifest"`.
+- **iter:** v14
+
+### DES-088 — redact-at-capture wiring: `SecretValueProvider` port + `redact({name,value}[])` + exhaustive persist-sink enumeration (src/secret-resolver.ts, src/run-manager.ts, src/gateway)
+- **status:** draft
+- **traces:** ARCH-056, TASK-082
+- **signature:** `redact(event: unknown, secrets: ReadonlyArray<{ name: string; value: string }>): unknown` (extends the shipped `redact(event, secretValues: string[])` at secret-resolver.ts:88 — ZERO production callers today, so blast radius = its own unit tests, not a caller migration); marker `‹secret:${name}›`, value-exact substring (NO pattern/entropy matcher — that would break the negative control). New port `interface SecretValueProvider { entries(): ReadonlyArray<{ name: string; value: string }>; }` (`ReadonlyArray` load-bearing — capture path must not mutate). Real impl enumerates the same `RWE_SECRET_*` source behind `loadSecretSourceFromEnv`; injected into `RunManager`, never into the sandbox.
+- **sinks (exhaustive — completeness IS the REQ):** route each through `redact()` on the persist write: (1) per-agent transcript store read by `workflow_agent_log`; (2) terminal snapshot — `redact()` over the `AgentRecord[]` BEFORE `saveSnapshot` (run-manager.ts:508), never the raw in-process records (else a cross-restart `GET /api/runs/:id` leak); (3) SDK-gateway `kind:'message'|'tool_call'|'tool_result'|'usage'` capture; (4) the ENTIRE `JournalEntry` (key.prompt + key.opts + value) at the `appendJournal` build site — a REPLAY source. NOTE (Gate-7.5 live-Ollama finding): redacting only `.value` leaked a secret-bearing `key.prompt` on disk (a prior agent's provisioned value can reach a later agent's prompt via the persist-only raw in-memory return); `redact()` runs over the whole entry so no raw secret hits `journal.jsonl`.
+- **invariants (each a named test):** (a) double-redaction exclusivity — `redact({name,value})` runs ONLY on `kind!=='harness'`, `redactHarness` (agent-executor.ts:12, ARCH-044) runs ONLY on `kind==='harness'`; neither runs on the other's output (else marker corruption). (b) persist-only — the live in-memory `messages` array the SDK replays into its next turn is UNTOUCHED; unit asserts in-memory holds the raw value while the persisted copy holds the marker (silent-wrong-agent-behavior guard). (c) journal replay-divergence — a resumed run receives `‹secret:NAME›` where an `agent()`/`workflow()` return contained a provisioned value (accepted-by-design under the hermeticity contract: no provisioned secret may be returned from an `agent()`/`workflow()` schema; documented in `workflow_run` + authoring guidance). EXTENDED to call params (Gate-7.5 ruling): the persisted `key.prompt`/`key.opts` are redacted too, so if a provisioned secret rides a call KEY, a HARD-CRASH resume MISSes that call (sameKey compares raw prompt+opts, resume-cache.ts:14, against the redacted on-disk key) and re-runs it + the tail LIVE — correct values, just recomputed; strictly more graceful than the redacted-VALUE divergence above (which feeds a marker back as data). Same-process suspend/resume is unaffected (the in-memory `entry.journal` keeps the raw key). Future option, not built: persist a `keyHash` of the raw key so replay matches without the raw prompt on disk.
+- **completeness sweep IT (definition-of-done):** provision a fake secret; run a workflow whose agent echoes the value into a message AND round-trips it through a return; assert the raw bytes are ABSENT from every on-disk artifact (per-agent transcript, terminal snapshot, `journal.jsonl`) AND from `workflow_agent_log` output; negative control — a same-shape different-value string is NOT redacted. Perf bound (S-S3): `redact()` over ≤20 secrets × ≤1000 events; a loose timing guard (<50 ms for 20×200) catches quadratic drift.
+- **consumability:** `workflow_agent_log` description gains: "Secret values are replaced with `‹secret:NAME›` markers in persisted transcripts (agents received real values at runtime; only the stored transcript is redacted)."
+- **iter:** v14
+
+### DES-089 — honest `asset_push` `kind` schema + drift-lock (src/server.ts, tests/integration/schema-drift.test.ts)
+- **status:** draft
+- **traces:** ARCH-057, TASK-083
+- **signature:** rewrite `TOOL_DEFS.asset_push.properties.kind.description` (server.ts:435): `'Asset type. "skill" materializes into the run workspace. "hook" is rejected (HOOKS_UNSUPPORTED) — hooks are not supported on the server. "mcp-config" is redirected to mcp_provision; use that tool instead.'` Keep `enum: ['skill','hook','mcp-config']` (dropping breaks the redirect caller). Behavior UNCHANGED (classifier `classifyAsset` untouched; pushing `hook` still returns typed `HOOKS_UNSUPPORTED`).
+- **drift-lock:** the `asset_push` `kind` field description contains BOTH `"HOOKS_UNSUPPORTED"` and `"mcp_provision"` (asserted over served `tools/list`, structured-fact not golden-string).
+- **iter:** v14
+
+### DES-090 — pure `assertScriptIntegrity` + `SCRIPT_SHA_MISMATCH` ladder rung + `scriptSha256` schema (src/run-manager.ts, src/server.ts, tests/integration/schema-drift.test.ts)
+- **status:** draft
+- **traces:** ARCH-058, TASK-084
+- **signature:** `assertScriptIntegrity(script: string, sha?: string): void` — `sha` present and `sha256(Buffer.from(script,'utf8')) !== sha` → `throw codedError('SCRIPT_SHA_MISMATCH', …)`; absent → no-op. `sha` is 64-char lowercase hex. One pure function, unit-tested directly (matching + one-byte-altered + absent + upper/short-hex reject).
+- **ladder position (pinned):** NEW top rung in the `workflow_run` pre-`createRun` ladder, evaluated BEFORE the admission counter (run-manager.ts:230) — a pure request-shape check that costs nothing and should report a mistyped script regardless of load. `scriptSha256` supplied with a NAMED run (no inline `script`) → typed `SCRIPT_SHA_WITHOUT_SCRIPT` (clear reject, never a silent pass — the REQ-084 honesty principle). Full pre-`createRun` order: `SCRIPT_SHA_WITHOUT_SCRIPT`/`SCRIPT_SHA_MISMATCH` → admission (`RUN_ADMISSION_LIMIT`) → `SEED_SOURCE_CONFLICT`(4-way) → `SEEDREF_DISABLED` → `INVALID_SEED_SPEC`(incl. unparseable manifest) → `SEEDREF_EGRESS_DENIED` → `CAS_UNAVAILABLE` → `MISSING_BLOBS`(incl. absent manifest blob).
+- **schema/drift-lock:** `TOOL_DEFS.workflow_run.properties.scriptSha256` = `{type:'string', description:'Optional integrity guard. 64-char lowercase hex sha256 of the script'"'"'s UTF-8 bytes. If present and mismatched, returns SCRIPT_SHA_MISMATCH and creates no run. Omit to skip.'}`; drift assertion: description contains `"UTF-8"` and `"SCRIPT_SHA_MISMATCH"`.
+- **iter:** v14
+
+### DES-091 — real-tier validation path + per-tier mock policy (REQ-081..085)
+- **status:** draft
+- **traces:** REQ-081, REQ-082, REQ-083, REQ-084, REQ-085, TASK-080, TASK-081, TASK-082, TASK-083, TASK-084
+- **real-tier path per REQ (real entrypoint + real wiring):**
+  - REQ-081 (`POST /assets/blob/:sha`): a real >8 MiB blob (e.g. 20 MiB) uploads via the raw route against a running engine (real `CasStore`, real fs) and reads back byte-identical (assembled into a run / `workflow_artifacts`); the SAME blob via `blob_put` base64 → `413 BODY_TOO_LARGE`; a tampered sha → `BLOB_SHA_MISMATCH`, nothing written; oversized body → `BLOB_TOO_LARGE`; foreign `Host` → 403.
+  - REQ-082 (`seedManifestRef`): a real multi-file tree uploads its blobs, registers via `POST /assets/manifest`, then `workflow_run({seedManifestRef, seedNamespace})` (params a few dozen bytes) produces a workspace byte-identical to the inline-`seedManifest` path; a ref naming a missing blob → `MISSING_BLOBS`.
+  - REQ-083 (redact-at-capture): a REAL agent run (LLM-gated skip when no key, the ledger convention) whose agent echoes a provisioned secret → the raw value is absent from `workflow_agent_log` AND every on-disk artifact; a same-shape non-secret is not redacted.
+  - REQ-084 (`asset_push` honesty): real `tools/list` shows the `kind` description naming `HOOKS_UNSUPPORTED`/`mcp_provision`; pushing `hook` still returns typed `HOOKS_UNSUPPORTED`.
+  - REQ-085 (`scriptSha256`): real `workflow_run` with a matching sha runs; one byte altered → `SCRIPT_SHA_MISMATCH`, no run; omitted → runs as before.
+- **per-tier mock policy:** UNIT — mock freely (fake `Readable`, fake `opts.timer`, fake `SecretValueProvider`/`SeedRefFetcher`, in-table secrets); all validators, error taxonomy, redact invariants, ladder precedence, `assertScriptIntegrity` are pure/clock-free UTs. INTEGRATION — real adjacent components (real `CasStore` + real fs + real HTTP server + real net-guard); mock only third-party network you cannot run (LLM provider → gated skip). E2E/ACCEPTANCE — MUST NOT mock the engine's own boundaries (route/net-guard/`putBlobStream`/CAS/`redact` chokepoint/ladder); the >8 MiB upload, the manifest round-trip, and the real-agent secret-echo are the real touches; REQ-083's agent run is LLM-gated-skip.
+- **iter:** v14
+
+## Class diagram — v14 (ARCH-054..058: blob transport + manifest ref + capture redaction)
+```mermaid
+classDiagram
+    class CasStore {
+        +putBlob(ns, declaredSha, bytes) BlobResult
+        +putBlobStream(ns, declaredSha, body, opts) BlobStreamResult
+        +hasRef(ns, sha) bool
+    }
+    class BlobValidators {
+        <<pure>>
+        +isValidSha256Hex(s) bool
+        +isValidNamespace(ns) bool
+    }
+    class Server {
+        +POST /assets/blob/:sha  (after net-guard)
+        +POST /assets/manifest   (after net-guard)
+        +TOOL_DEFS.asset_push.kind
+        +TOOL_DEFS.workflow_run.scriptSha256 / seedManifestRef
+    }
+    class RunManager {
+        +assertScriptIntegrity(script, sha?)
+        +pre-createRun ladder (4-way SEED_SOURCE_CONFLICT)
+        +stamp RunStatusView.seedManifestRef
+        -secretValues: SecretValueProvider
+    }
+    class SecretValueProvider {
+        <<interface>>
+        +entries() ReadonlyArray~NameValue~
+    }
+    class redact {
+        <<pure>>
+        +redact(event, secrets NameValue[]) unknown
+    }
+    class SecretSource {
+        <<interface>>
+    }
+    Server --> BlobValidators : gate before fd
+    Server --> CasStore : putBlobStream / manifest blob
+    Server --> RunManager : workflow_run
+    RunManager --> SecretValueProvider : inject
+    RunManager --> redact : persist-write sinks only
+    SecretValueProvider ..> SecretSource : reads RWE_SECRET_*
+    RunManager --> CasStore : materializeManifest(seedManifestRef)
+```
+
+### Decision rationale — v14 (DES-086..091, REQ-081..085: remote-seeding transport + capture-redaction + schema honesty)
+- **Panel provenance / r2 NOT run:** synthesized from `.panel/design/adversarial.r1.md` (opus — interface-contract / boundary-error / testability, Karpathy tie-break) + `quality-dimensions.r1.md` (sonnet — observability / replaceability / consumability / self-sustainability). Stances are COMPLEMENTARY — none of adversarial's six predicted disagreements materialized in quality's r1 (both concede D-v14-A manifest-as-blob, D-v14-C persist-only, D-v14-D name-keyed marker; quality did NOT re-push pattern/entropy redaction or a ManifestStore port) — so r2 was not triggered. QM `safety_class` → no functional-safety / cybersecurity lenses (correct for developer tooling).
+- **Task shape — 5 tasks 1:1 with ARCH** (matches the architecture's own "5 ARCH for 5 REQ, one-to-one"; both lenses allow it). ARCH-056 is deliberately ONE task (DES-088) — the completeness sweep IT is its definition-of-done and cannot be written until all four sinks are wired in one place; splitting sinks across tasks is the exact divergence failure mode (a green transcript-sink task while the journal sink still leaks). ARCH-054→055 ordered (a manifest references uploaded blobs). Did not fuse ARCH-057+058 (adversarial floated it) — they touch different subsystems (asset_push schema vs run-manager ladder) and clean 1:1 traces beat a marginal harness-sharing saving.
+- **Error-code twin (BLOB_SHA_MISMATCH vs shipped BLOB_HASH_MISMATCH) — intentional, recorded.** The new route emits `BLOB_SHA_MISMATCH` (REQ-081 text); the shipped `putBlob` keeps `BLOB_HASH_MISMATCH` (pinned by `blob_put` tests/callers). Two codes for one invariant is mild debt; a rename that breaks a shipped tested path is worse (Karpathy). Drift-note so a future maintainer does not "unify" them.
+- **Manifest parse-failure = `INVALID_SEED_SPEC`, NOT a new `MANIFEST_PARSE_ERROR`** (adversarial BE-5b; the architecture left it "INVALID_SEED_SPEC / MANIFEST_PARSE_ERROR"). A manifest is a seed spec; the existing rung already owns "malformed seed spec." Fewest codes; drift-locked either way. Register-time `MISSING_BLOBS` is UX, run-time re-validation stays the security boundary (BE-6).
+- **Idle-timer seam — injected (adversarial TE-1 over Karpathy "no new seam").** `BLOB_UPLOAD_TIMEOUT` needs a wall-clock and the repo's Exit-Gate-5 rule is "clock seam hermetic"; the stall case is exactly what must be deterministic. Since `CasStore` has no existing clock (constructor(dir) only), the seam is a localized optional `opts.timer` defaulting to the real timer — the minimal injection, not a constructor-level dependency. A second recorded real-timer exception was the weaker option.
+- **`scriptSha256` rung BEFORE admission (adversarial BE-10).** A pure request-shape check that costs nothing durable should report a mistyped script regardless of current load; this reclassifies a bad-script-under-load result from `RUN_ADMISSION_LIMIT` to the more specific `SCRIPT_SHA_MISMATCH` (an improvement). `scriptSha256` on a NAMED run (no inline script) → typed `SCRIPT_SHA_WITHOUT_SCRIPT`, never silent-ignore (the REQ-084 schema-honesty principle applied to REQ-085).
+- **Sink completeness = runtime sweep IT (adversarial conflict #3, quality R2/R3/R9/R10).** A compile-time single-chokepoint guarantee is stronger but would force refactoring unrelated write paths; at v14 sink counts (four, enumerable) the greps-every-artifact sweep IT is sufficient and is DES-088's definition-of-done. The named unit invariants (double-redaction exclusivity O-S2, persist-only S-A2, redact-before-saveSnapshot O-A2, replay-divergence S-A1) close the silent failure modes the sweep alone would not localize.
+- **Config defaults named at design time (quality S-S1/S-S2; D-v13-E / D-F5 late-fix precedent):** `maxBlobBytes` 256 MiB (min 1 MiB), `blobUploadTimeoutMs` 120 s (min 10 s), validated at config-load. Leaving them to impl is the exact deferred-timeout trap the ledger already burned through twice.
+- **`redact` blast radius is a test-only migration (adversarial IC-5, verified):** `redact()` has ZERO production callers today (grep over `src/` — `redactHarness` is a separate unchanged function), which is precisely the audit finding ("exists but not wired") and is why the `string[]`→`{name,value}[]` signature+marker change is cheap.
+- **Karpathy check:** complexity budget spent only on ARCH-054 (true streaming) and ARCH-056 (sink completeness); ARCH-055 collapses to a CAS blob (no store/port/GC), ARCH-057 is a static schema edit, ARCH-058 is a ~10-line pure guard + one rung. Every heavier option (ManifestStore port, pattern/entropy redaction, script-signing subsystem, chunked/resumable upload, separate `asset-server.ts`) rejected as speculative. The dominant risks are all bypass risks (a route skipping the net-guard, a sink skipping `redact()`, a stream skipping verification) made impossible-by-construction via positional/enumerable design, not new machinery.
+- **Seam consistency (Exit Gate 5):** on the blob path every time read is the injected `opts.timer`, no method reads wall-clock; on the redact path there is no clock (value-exact substitution is clock-free); the seedManifestRef path reuses the v13 `Clock`-seamed `RunStatusView` stamping unchanged. No asymmetric second assembly path — `seedManifestRef` falls into the identical `materializeManifest` tail as inline `seedManifest`.
