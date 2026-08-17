@@ -208,6 +208,8 @@ export class InMemoryRunStore implements RunStore {
       workflowNodes: s?.workflowNodes ?? [],
       startedBy: run.spec.startedBy ?? { type: 'unknown' },
       terminalAt: terminalTransition?.ts,
+      // v15 (DES-096): omit when absent (conditional spread mirrors terminalAt pattern).
+      ...(run.spec.principal ? { principal: run.spec.principal } : {}),
     };
   }
 

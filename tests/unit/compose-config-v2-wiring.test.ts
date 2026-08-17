@@ -108,4 +108,19 @@ describe('composeConfig() v2 key wiring (DES-022, standing rule 1)', () => {
     const cfg = await composeConfig({ selfUpdateDbPath: '/var/rwe/self-update.db', gateway: 'direct-fetch' }, FAKE_DEPS);
     expect((cfg as Record<string, unknown>)['selfUpdateDbPath']).toBe('/var/rwe/self-update.db');
   });
+
+  // v15 (REQ-012/086..089): auth block forwarding — without `auth: fileConfig.auth` in
+  // composeConfig(), `auth.enabled:true` in rwe.config.json is parsed by loadFileConfig() but
+  // silently dropped at the composition root, leaving the auth subsystem built-but-unwired.
+  // Found and fixed during Gate 7.5 v15: pre-fix curl 404/200; post-fix 200/401 w/ WWW-Authenticate.
+  it('auth block is forwarded from FileConfig into the returned ServerConfig (REQ-012 composition root)', async () => {
+    const auth = { enabled: true, googleClientId: 'test-id', googleClientSecret: 'test-secret' };
+    const cfg = await composeConfig({ auth, gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['auth']).toEqual(auth);
+  });
+
+  it('auth:undefined is forwarded when FileConfig omits the auth block (backward-compat)', async () => {
+    const cfg = await composeConfig({ gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['auth']).toBeUndefined();
+  });
 });

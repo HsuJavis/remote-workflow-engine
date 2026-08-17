@@ -509,36 +509,73 @@ status: draft
 - Extend the declarative `TOOL_DEFS` `workflow_run` entry with the `seedRef:{repoUrl,sha}` object schema (mutual-exclusion + `seedRefAllowlist`-required + pre-run/post-run error-split prose naming `SEEDREF_DISABLED`); attach the `SEEDREF_DISABLED` config-key hint + `SEEDREF_EGRESS_DENIED` `attempted:{scheme,host}` (never enumerate the allowlist) to the coded errors; extend `test/schema-drift.test.ts` with structured-fact assertions for the new param. Design: DES-084.
 
 ### TASK-080 — streaming raw-body blob ingest: `CasStore.putBlobStream` seam + pure `isValidSha256Hex`/`isValidNamespace` + `POST /assets/blob/:sha` route BEHIND the net-guard (ARCH-054, the one genuine new I/O path)
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-054
 - **estimate:** L
 - **iter:** v14
 - New `CasStore.putBlobStream(namespace, declaredSha, body: Readable, opts) → {sha256, bytes}` (`src/cas-store.ts`): temp-file sink + incremental sha256, mid-stream abort at `opts.maxBytes` → `BLOB_TOO_LARGE`, idle/read timeout (reset-on-chunk) via `opts.readTimeoutMs` + injectable `opts.timer` → `BLOB_UPLOAD_TIMEOUT`, verify computed==declared → `BLOB_SHA_MISMATCH` (unlink, store nothing), atomic rename → `blobs/<sha[0:2]>/<sha>`, THEN record namespace ref; `finally`-unlink on EVERY exit; no-exists-shortcut (fully consume+verify even if blob present). Exported pure `isValidSha256Hex`/`isValidNamespace` run BEFORE any fd. Thin `server.ts` handler registered AFTER the `isAllowedHost`/`isAllowedOrigin` gate (NOT like `/github/webhook`), reads UNDECODED bytes, 200 → `{sha256,bytes,namespace}` + one INFO line. Config `maxBlobBytes` (default 256 MiB, min 1 MiB) + `blobUploadTimeoutMs` (default 120 s, min 10 s) validated at load. `blob_put` description cross-references `POST /assets/blob/`. Net-guard 403-on-foreign-Host IT rides THIS task (route placement is the guard). Design: DES-086.
 
 ### TASK-081 — server-side seed manifest ref = a CAS blob: `POST /assets/manifest` + `seedManifestRef` run-load path + 4-way `SEED_SOURCE_CONFLICT` ladder extension + `RunStatusView.seedManifestRef` (ARCH-055, sequence after TASK-080)
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-055
 - **estimate:** M
 - **iter:** v14
 - `POST /assets/manifest?namespace=<ns>` (raw-body, behind the net-guard): parse manifest bytes → `INVALID_SEED_SPEC` on unparseable, validate every referenced blob present → `MISSING_BLOBS` (naming absent shas), store the manifest bytes as an ordinary CAS blob, return `{seedManifestRef, namespace}` (`seedManifestRef = sha256(manifestBytes)`). `RunSpec.seedManifestRef?` load path: on `workflow_run({seedManifestRef, seedNamespace})`, load the blob, parse (→ `INVALID_SEED_SPEC`), re-validate referenced blobs (`MISSING_BLOBS` stays the security boundary), assemble via the EXISTING `materializeManifest` (verbatim, inline+ref cannot diverge). Extend the top ladder rung to 4-way exclusion (`seed`/`seedManifest`/`seedRef`/`seedManifestRef` >1 → `SEED_SOURCE_CONFLICT`). Add `RunStatusView.seedManifestRef?: string`. `workflow_run`/`seed_plan` descriptions cross-reference `/assets/manifest` + name `SEED_SOURCE_CONFLICT`; drift-locked. Depends on TASK-080 (blobs must upload first). Design: DES-087.
 
 ### TASK-082 — redact-at-capture wiring: `SecretValueProvider` port + `redact({name,value}[])` extension + EVERY transcript persist sink + journal `value` sink through `redact()`, on the persist write only (ARCH-056, the load-bearing security REQ — ONE task, sweep IT is definition-of-done)
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-056
 - **estimate:** L
 - **iter:** v14
 - Extend `redact(event, secrets: {name,value}[])` (marker `‹secret:${name}›`, value-exact substring, `src/secret-resolver.ts`); new `SecretValueProvider.entries(): ReadonlyArray<{name,value}>` port reading the server-side secret source (`loadSecretSourceFromEnv`), injected into `RunManager` and passed to the capture chokepoint AND the `appendJournal` site — the sandbox never receives values. Route through `redact()` on the persist write for EVERY sink: (1) per-agent transcript store (`workflow_agent_log`), (2) terminal snapshot BEFORE `saveSnapshot` (run-manager.ts:508), (3) SDK-gateway `kind:'message'|'tool_call'|'tool_result'|'usage'` capture, (4) `JournalEntry.value` at the `appendJournal` build site (run-manager.ts:680). Invariants (each a named test): redact ONLY on `kind!=='harness'` and `redactHarness` ONLY on harness (mutually exclusive, no double-redaction); live in-memory `messages` array UNTOUCHED (persist-only); the completeness SWEEP IT (grep every on-disk artifact + `workflow_agent_log` for the raw secret) is the definition-of-done; negative control (same-shape different-value NOT redacted); journal replay-divergence unit. `workflow_agent_log` description gains the `‹secret:NAME›` asymmetry sentence; `workflow_run` description + authoring guidance state the hermeticity contract. Design: DES-088.
 
 ### TASK-083 — honest `asset_push` `kind` schema + drift-lock (ARCH-057, static only, no behavior change)
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-057
 - **estimate:** S
 - **iter:** v14
 - Rewrite the `asset_push` `kind` description (server.ts:435) so both non-materializing values self-describe IN-BAND: `hook` → rejected `HOOKS_UNSUPPORTED`; `mcp-config` → use `mcp_provision`. Keep the enum values (dropping breaks the redirect caller); behavior unchanged (pushing `hook` still returns typed `HOOKS_UNSUPPORTED`). Extend `tests/integration/schema-drift.test.ts` to assert BOTH `"HOOKS_UNSUPPORTED"` and `"mcp_provision"` appear in the `kind` field description. Design: DES-089.
 
 ### TASK-084 — pure `assertScriptIntegrity` + `SCRIPT_SHA_MISMATCH` rung + `scriptSha256` schema/drift-lock (ARCH-058, one rung in the existing pre-`createRun` ladder)
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-058
 - **estimate:** S
 - **iter:** v14
 - Pure `assertScriptIntegrity(script, sha?)`: `sha` present and `sha256(utf8Bytes(script)) !== sha` → throw `codedError('SCRIPT_SHA_MISMATCH', …)`; absent → no-op (64-char lowercase hex). New top rung in the `workflow_run` pre-`createRun` ladder (before the admission counter at run-manager.ts:230, no durable work either way): `scriptSha256` with a NAMED run (no inline `script`) → typed `SCRIPT_SHA_WITHOUT_SCRIPT` (clear reject, never silent). `TOOL_DEFS.workflow_run` gains `scriptSha256` param (description names `UTF-8` bytes + `SCRIPT_SHA_MISMATCH` + default-absent=no-check); drift-locked in `tests/integration/schema-drift.test.ts`. Reject any store/registry/signing framing. Design: DES-090.
+
+## v15 Slice B — per-caller identity (OAuth2/Google), workflow ownership, harness-param binding, fail-closed bind (REQ-012 + REQ-086..089 → ARCH-059..063)
+
+### TASK-085 — auth pure/injectable core under `src/auth/`: `oauth-metadata.ts` builders + `token-store.ts` (constructor-injected clock+CSPRNG, 3 SQLite tables) + `google-verifier.ts` (injected JWKS+clock+base) — UT-only, NO server wiring (ARCH-059, RED→GREEN before any route)
+- **status:** done
+- **traces:** ARCH-059
+- **estimate:** M
+- **iter:** v15
+- Three files, all pure or injectable so every security-critical branch is a zero-network UT (adversarial A1, task-split note): `oauth-metadata.ts` — pure `buildProtectedResourceMetadata(cfg)` / `buildAuthServerMetadata(cfg)` (PKCE `code_challenge_methods_supported:["S256"]`) / `wwwAuthenticateHeader(cfg)`; `token-store.ts` — opaque **sha256-at-rest** bearer + single-use ≤60s auth-code + single-use oauth_state, `issue/verifyByHash/mintAuthCode/consumeAuthCode/putState/consumeState/gcExpired`, **constructor-injected `clock` + `csprng`** (Exit-Gate-5 seam — every time/random read goes through the injected port, no `Date.now()`/`randomBytes` in the module); `google-verifier.ts` — `verifyIdToken(idToken, deps)` gating `iss`/`aud`/`exp`(injected `now`)/JWKS-signature/`nonce` + **`email_verified===true` BEFORE adopting `email`**. Design: DES-092, DES-093, DES-094.
+
+### TASK-086 — auth route wiring: `auth-service.ts` (`startAuthorize`/`handleGoogleCallback`/`tokenExchange`/`resolvePrincipal`) + 4 `server.ts` routes (`/.well-known/*`, `/authorize`, `/oauth/google/callback`, `/token`) + running-server discovery integration (ARCH-059, sequence AFTER TASK-085)
+- **status:** done
+- **traces:** ARCH-059
+- **estimate:** M
+- **iter:** v15
+- Thin orchestration over the TASK-085 core; `resolvePrincipal(req)` returns a **discriminated union `{principal}` | `{status:401, wwwAuthenticate}`** (does NOT throw — the caller is type-forced to emit 401-before-side-effect). RFC-8252 loopback redirect for the Claude-Code "跳出瀏覽器網址" login; Google `client_id`/`client_secret`+pepper from the REQ-018 secret store only, never client-visible. Impl notes (quality r2): `gcExpired()` wrapped try/catch→log+continue (reuses the workspace-TTL GC cadence, never throws into the scheduler); one DEBUG `auth.resolve: {outcome: expired|unknown|malformed|ok}` internal log (no token value, no wire change). Design: DES-095.
+
+### TASK-087 — per-caller principal resolved once at the HTTP edge, threaded as an explicit param, attributed on the control-plane row, kept OFF every sandbox-reachable path (ARCH-060, sequence AFTER TASK-086; hermeticity sweep IT is definition-of-done)
+- **status:** done
+- **traces:** ARCH-060
+- **estimate:** M
+- **iter:** v15
+- Wire `resolvePrincipal` at the edge of the protected surfaces — `/mcp` (headers-only, BEFORE `readBodyDecoded`, gating `initialize`/`tools/list`/`ping` too) + `POST /assets/blob/:sha` (before `putBlobStream` consumes `req`) + `POST /assets/manifest` (before body read) — 401+`WWW-Authenticate` before any side effect. Append one nullable `principal: string | null` to `callTool`/facade **mutation+attribution** methods (`workflow_run`, `workflow_register`, `workflow_deregister`) and the two asset handlers; **do NOT** thread it into `workflow_get`/`workflow_list`/`workflow_status` (reads open by absence-of-parameter). Record principal on the control-plane run record (`principal:<email>`, surfaced via existing `workflow_status`) + CAS namespace first-writer (record-only, no enforcement); **NEVER** into child-process env or run workspace [D-AUTH-4]. **DoD:** the paired hermeticity sweep IT (I-2) — one fixture, two assertions: `principal:<email>` PRESENT on `workflow_status` AND ABSENT from sandbox child env + run workspace. Design: DES-096.
+
+### TASK-088 — D-BIND fail-closed net-guard extension: pure `isLoopbackPeer(remoteAddress, headers)` + protected-surface refuse when auth-enabled + non-loopback peer + no valid bearer; loopback exempt (ARCH-063, extends the existing `net-guard.ts` chokepoint — no new module)
+- **status:** done
+- **traces:** ARCH-063
+- **estimate:** S
+- **iter:** v15
+- New **pure sibling** `isLoopbackPeer(remoteAddress, headers)` (NOT a change to the existing `isLoopback(bind)` — different fail-closed semantics) with its own exhaustive UT suite [D-AUTH-3, the sharpest predicate]: `127/8`→exempt, `::1`→exempt, **`::ffff:127.0.0.1`(IPv4-mapped)→exempt** (empirically the dual-stack `::` bind form — missing it breaks the self-update rescue path), `undefined`→NOT exempt, **any forwarded/tunnel client-IP header (`x-forwarded-for`/`cf-connecting-ip`/`forwarded`/`x-real-ip`) present ⇒ NEVER exempt** regardless of socket peer, keys on the **raw socket `remoteAddress` ONLY**. Auth-disabled ⇒ guard dormant (pre-v15 open-LAN preserved); `POST /github/webhook` unaffected (own HMAC). Design: DES-097.
+
+### TASK-089 — catalog ownership + harness-defaults on ONE `workflows` row: `owner` column + idempotent boot backfill + `NOT_WORKFLOW_OWNER` gate; `defaults` column + register-time validation depth + pure per-param `resolveHarnessParams` merge (ARCH-061 + ARCH-062 merged — same primary key, same owner gate, same migration path)
+- **status:** done
+- **traces:** ARCH-061, ARCH-062
+- **estimate:** L
+- **iter:** v15
+- `ALTER TABLE workflows ADD COLUMN owner TEXT` + `ADD COLUMN defaults TEXT`. `register(name, script, defaults, principal)` records owner on first registration and **gates only MUTATION** (register-overwrite/`deregister`) → typed `NOT_WORKFLOW_OWNER` with definition unchanged; `run`/`get`/`list` ungated. `null` principal ⇒ ungated mutation (auth-disabled = byte-for-byte pre-v15). Idempotent boot backfill `UPDATE workflows SET owner='hsuhungjung@gmail.com' WHERE owner IS NULL` (once/boot, self-limiting; one boot log line `auth.migrate: N workflows backfilled`); auth-disabled ⇒ store NULL owner (not a sentinel) [D-AUTH-6]. **Named validation-depth assertions [D-AUTH-5, must not be simplified away]:** shape + model-alias resolvable (ARCH-005 table) + every `tool` in the curated static allowlist → typed `HARNESS_DEFAULTS_INVALID` + **stores nothing** (no partial write); **`skills` deferred to run time** (mutable per-run assets). Pure `resolveHarnessParams(registered, overrides)` = per-param merge (per-run value wins for that key only). Single exported `HarnessDefaults` type consumed by register-validation + `workflow_get` output + run-time merge (no schema drift). `TOOL_DEFS.workflow_register` gains optional `defaults` (backward-compat: absent ⇒ pre-v15 shape); `workflow_get` output gains `owner`+`defaults`; drift-locked in `tests/integration/schema-drift.test.ts`. Design: DES-098, DES-099.

@@ -4219,3 +4219,162 @@ schema parameter, not a server config key; the enriched catalog fields (`capabil
 the schema drift-lock is a test-only concern with no config surface. `rwe.config.example.json`
 re-confirmed unchanged and correct as-is. `GET /api/system` and `GET /api/models` are new HTTP routes
 on the existing bind/port — no new port or env var. **No config-doc drift this round.**
+
+---
+
+## v15 Gate 7.5 (2026-08-18) — REQ-012, REQ-086..089 (OAuth AS + per-caller principal + ownership + harness-defaults + D-BIND fail-closed)
+
+### Composition-root gap found and fixed this round (IMPL fix, not a doc-only fix)
+
+**Finding (pre-fix, empirically confirmed):** `composeConfig()` in `src/main.ts` builds `ServerConfig`
+key-by-key and never forwarded `fileConfig.auth`. Even with `auth:{enabled:true,...}` in
+`rwe.config.json`, the auth block was silently dropped — `server.ts` keys every auth route
+registration (`.well-known/oauth-protected-resource`, `/authorize`, `/oauth/google/callback`, `/token`)
+and the D-BIND enforcement (`resolvePrincipal` gate) entirely off `config?.auth?.enabled`. Result:
+
+- `node tsx src/main.ts` with `auth.enabled:true` in config: `GET /.well-known/oauth-protected-resource` → **HTTP 404**, `POST /mcp` without bearer → **HTTP 200** (open).
+- VAL-095..099 all passed in tests because they call `createServer()` in-process with auth injected — exactly the seam-wired-in-tests-but-not-in-production pattern (retro L-002 / Gate 7.5 §2 "Seam production-wiring").
+
+**Fix applied (1 line, `src/main.ts`):** added `auth: fileConfig.auth` to the `config` object in
+`composeConfig()`, exactly following the established pattern for every other forwarded key
+(`allowedHosts`, `updateFlagPath`, `seedRefAllowlist`, etc.; the comments in `composeConfig` already
+name this as the recurring bug class). `tsc --noEmit` clean; 1316/1316 tests still pass.
+
+**Re-confirmed after fix:** `node tsx src/main.ts` with `auth.enabled:true`:
+- `GET /.well-known/oauth-protected-resource` → **HTTP 200** `{"resource":"http://127.0.0.1:18989","authorization_servers":["http://127.0.0.1:18989"]}`
+- `POST /mcp` without bearer → **HTTP 401** `WWW-Authenticate: Bearer resource_metadata="http://127.0.0.1:18989/.well-known/oauth-protected-resource"` ✓
+
+### Boot — documented steps (auth-disabled path, production config)
+
+```bash
+# Per README §快速開始:
+# 0. PATH (needed for gateway:sdk LiteLLM subprocess)
+export PATH="$HOME/.rwe-litellm-venv/bin:$PATH"
+# 1. start (auth disabled — no auth block in rwe.config.json = backward-compat open mode)
+node node_modules/tsx/dist/cli.mjs src/main.ts
+# -> [RunStore] hydrateAll: re-hydrated 157 run(s), 0 re-classified running→interrupted
+# -> [remote-workflow-engine] listening on http://0.0.0.0:8787/mcp (workRoot=/home/user/.local/share/rwe-data)
+# -> [remote-workflow-engine] ready
+```
+
+tools/list: **37 tools** (unchanged). inline `workflow_run{script:'return {answer:42}'}` → `{runId:'71393b5a-...', status:'completed', result:{answer:42}}`.
+
+### Regression check (full suite)
+
+```
+npx vitest run   →   Test Files  233 passed (233) / Tests  1316 passed (1316)
+```
+
+### VAL items
+
+### VAL-095 — real-run acceptance for REQ-012 (engine-as-own-AS OAuth discovery via MCP SDK + PKCE flow + auth-disabled backward-compat)
+
+- **status:** green
+- **traces:** REQ-012, DES-095, DES-100, TASK-085, TASK-086
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx vitest run tests/acceptance/val-095-oauth-discovery.test.ts --reporter=verbose`
+  (2026-08-18, working-tree v15, after composition-root fix): **5/5 tests pass**.
+  (1) `discoverOAuthProtectedResourceMetadata(serverUrl)` via real MCP SDK → `{resource, authorization_servers:["http://…"]}` — real HTTP 200, real PRM JSON;
+  (2) SDK discovery chain: PRM → `authorization_servers[0]` → `discoverAuthorizationServerMetadata` → metadata contains `code_challenge_methods_supported:["S256"]`, `authorization_endpoint`, `token_endpoint`;
+  (3+4) full PKCE auth_code flow: `GET discovered-authorization_endpoint?code_challenge=…&code_challenge_method=S256` → engine 302 → fake Google `/authorize` → engine `/oauth/google/callback?code=…` → `POST discovered-token_endpoint?code=…&code_verifier=…` → engine opaque bearer → `POST /mcp` with bearer → **HTTP 200** (authenticated);
+  (5) `POST /mcp` without bearer → HTTP 401 + `extractWWWAuthenticateParams(res).resourceMetadataUrl` defined (points at `/.well-known/oauth-protected-resource`);
+  (6) auth disabled (second server, no auth config) → `POST /mcp` without bearer → **NOT 401** (backward-compat open mode).
+  Google doubled via minimal local RS256 HTTP server (test-only fake IdP, injected `jwksFetch`) — real Google interactive consent flow is headless-unreachable (noted as unreachable-dep below). Real server routes, real MCP SDK calls; no SUT-boundary mock.
+- **iter:** v15
+
+### VAL-096 — real-run acceptance for REQ-086 (per-caller principal on protected surfaces; attributed on run record + CAS namespace)
+
+- **status:** green
+- **traces:** REQ-086, DES-096, DES-100, TASK-087
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx vitest run tests/acceptance/val-096-per-caller-principal.test.ts --reporter=verbose`
+  (2026-08-18, working-tree v15): **5/5 tests pass**.
+  (1) `POST /mcp` without bearer → HTTP 401 with `WWW-Authenticate` header (no side-effect);
+  (2) `POST /assets/blob/<sha>` without bearer → HTTP 401 (no blob stored);
+  (3) `POST /assets/manifest` without bearer → HTTP 401 (no manifest stored);
+  (4) bearer-authed `workflow_run` → `workflow_status` response carries `principal:'alice@example.com'` (email from Google id_token → engine bearer → resolvePrincipal → run attribution);
+  (5) bearer-authed blob upload → CAS namespace first-writer equals the principal email (server derives from bearer, caller never supplies the namespace value directly).
+  Bearer obtained via the SUT's own `/token` route (real engine token exchange, not DB row insertion). Google doubled (same fake RS256 IdP as VAL-095). Real HTTP; no SUT-boundary mock.
+- **iter:** v15
+
+### VAL-097 — real-run acceptance for REQ-087 (workflow ownership gate; run/read open; idempotent boot backfill)
+
+- **status:** green
+- **traces:** REQ-087, DES-098, DES-100, TASK-089
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx vitest run tests/acceptance/val-097-workflow-ownership.test.ts --reporter=verbose`
+  (2026-08-18, working-tree v15): **8/8 tests pass**.
+  (1) alice registers `test-wf` → owned by `alice@example.com`;
+  (2) bob tries to overwrite → `error:{code:'NOT_WORKFLOW_OWNER'}`;
+  (3) stored definition unchanged after bob's rejected overwrite;
+  (4) bob tries to deregister → `error:{code:'NOT_WORKFLOW_OWNER'}`;
+  (5) workflow still present;
+  (6) bob CAN run alice's workflow (run is not gated on ownership, only mutation is);
+  (7) alice can deregister her own workflow (succeeds);
+  (8) boot backfill: server starts with a pre-inserted NULL-owner workflow row → `auth.migrate: 1 workflows backfilled to owner=hsuhungjung@gmail.com` logged on boot → `workflow_list` shows the backfilled owner.
+  Bearer obtained via engine's own `/token` route with fake Google stub. Real HTTP; no SUT-boundary mock.
+- **iter:** v15
+
+### VAL-098 — real-run acceptance for REQ-088 (harness defaults bound at registration, queryable, per-param merged at run time)
+
+- **status:** green
+- **traces:** REQ-088, DES-099, DES-100, TASK-089
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx vitest run tests/acceptance/val-098-harness-defaults.test.ts --reporter=verbose`
+  (2026-08-18, working-tree v15): **6/6 tests pass**.
+  (1) `workflow_register{name:'wf-hd-1', script:…, defaults:{model:'test-alias', timeoutMs:99000}}` → succeeds; `workflow_get{name:'wf-hd-1'}` returns `defaults:{model:'test-alias',timeoutMs:99000}`;
+  (2) `workflow_register{…, defaults:{model:'unknown-alias'}}` → `error:{code:'HARNESS_DEFAULTS_INVALID', field:'model'}`;
+  (3) `workflow_register{…, defaults:{tools:['NotACoreTool']}}` → `error:{code:'HARNESS_DEFAULTS_INVALID', field:'tools'}`;
+  (4) `workflow_register{…, defaults:{skills:['nonexistent-skill']}}` → succeeds (skills deferred to run time, not validated at registration);
+  (5) `workflow_run{name:'wf-hd-1'}` (no override) → run proceeds without HARNESS error (registered defaults applied);
+  (6) `workflow_run{name:'wf-hd-1', model:'test-alias-2'}` (model overridden) → run proceeds; registered `timeoutMs:99000` preserved (per-param merge).
+  No auth needed for this test (auth-disabled server path). Injected alias table with `test-alias`/`test-alias-2`. Real HTTP to real createServer(); no SUT-boundary mock.
+- **iter:** v15
+
+### VAL-099 — real-run acceptance for REQ-089 (D-BIND fail-closed: LAN IP → 401, loopback exempt, webhook unaffected, auth-disabled dormant)
+
+- **status:** green
+- **traces:** REQ-089, DES-097, DES-100, TASK-088
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx vitest run tests/acceptance/val-099-bind-fail-closed.test.ts --reporter=verbose`
+  (2026-08-18, working-tree v15): **4/4 tests pass**.
+  Server bound to `0.0.0.0` with `allowedHosts:[LAN_IP]` and auth enabled.
+  (1) `POST /mcp` via `127.0.0.1` (loopback) → **NOT 401** (D-BIND loopback exemption: `isLoopbackPeer` returns true, auth gate does not fire);
+  (2) `POST /mcp` via real LAN IP (genuine non-loopback TCP peer) → **HTTP 401** (D-BIND: non-loopback without bearer → 401 before any MCP processing);
+  (3) `POST /github/webhook` via LAN IP with valid HMAC-SHA256 signature → **NOT 401** (D-BIND does not gate webhook route, HMAC guard fires instead);
+  (4) auth disabled (`config.auth` absent) + LAN IP → **NOT 401** (guard dormant; pre-v15 open-LAN behavior preserved).
+  Real server on `0.0.0.0`; real HTTP via own LAN IP (genuine non-loopback socket peer). No SUT-boundary mock.
+- **iter:** v15
+
+## v15 Gate 7.5 — unreachable dependencies
+
+**Real Google OAuth consent flow** (REQ-012 acceptance clause: "redirects user's browser to Google consent screen, on consent Google redirects back to `/oauth/google/callback`"): requires
+(a) real `googleClientId`/`googleClientSecret` registered in Google Cloud Console,
+(b) a real Google account performing interactive browser consent,
+(c) HTTPS callback URL reachable by Google (the engine's `/oauth/google/callback`).
+All three are absent in this headless validation environment. The ENGINE-SIDE parts of the OAuth flow (PRM/AS metadata, `/authorize` → 302 targeting accounts.google.com URL, PKCE state management, id_token verification, bearer issuance, `resolvePrincipal`) are FULLY validated via the fake RS256 IdP (VAL-095 cases 1–5). The only genuinely unreachable piece is the Google-network round-trip (their consent UI + the callback from Google's servers). Classified as **unreachable-dep**, not a code gap.
+
+## v15 Gate 7.5 — config-file sync check (§4b)
+
+v15 (REQ-012/086..089) adds the **`auth`** block to `rwe.config.json`. This block is opt-in
+(`enabled:false`/omitted = pre-v15 open behavior is preserved). Three new config keys:
+
+| carrier | purpose | type/default | required | iter |
+|---|---|---|---|---|
+| `rwe.config.json` → `auth.enabled` | OAuth 2.0 auth toggle | `boolean / false` | No | v15 |
+| `rwe.config.json` → `auth.googleClientId` | Google OAuth 2.0 client ID (from Google Cloud Console) | `string / —` | If `auth.enabled:true` | v15 |
+| `rwe.config.json` → `auth.googleClientSecret` | Google OAuth 2.0 client secret | `string / —` | If `auth.enabled:true` | v15 |
+
+**`rwe.config.example.json` updated this round** to include a commented-out `auth` block showing the three keys. The `auth.googleClientSecret` goes in the JSON config file (same security level as the operator-managed `rwe.config.json`; it is NOT accessible from within the VM sandbox which only sees the run workspace — per DES-093/REQ-018 the secret is never forwarded to agent subprocesses or workspace-reachable paths).
+
+**Also confirmed:** the existing 15 keys in `rwe.config.example.json` (`bind`/`port`/`workRoot`/`timeoutMs`/`retries`/`maxWorkflowDepth`/`maxWorkflowDescendants`/`maxConcurrentRuns`/`gateway`/`agentDefinitionsDir`/`seedRefAllowlist`/`maxBlobBytes`/`defaultAllowedTools`/`aliases`/`allowedHosts`) are all still correct and still read by the code. No dead rows; no missing rows for non-`auth` keys. **No other config-doc drift this round.**

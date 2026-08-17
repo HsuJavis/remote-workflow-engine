@@ -4,6 +4,8 @@
 // real IP-literal check (127.0.0.0/8 + ::1), not a textual prefix/DNS lookup — a bare hostname
 // like 'localhost' is rejected fail-closed rather than resolved.
 
+import type { IncomingHttpHeaders } from 'node:http';
+
 const IPV4_LOOPBACK = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 
 function isValidOctet(s: string): boolean {
@@ -68,4 +70,47 @@ export function isAllowedOrigin(originHeader: string | undefined, bind: string, 
   const { host, port: op } = splitHostPort(authority);
   if (!allowedHostSet(bind, extraHosts).has(host)) return false;
   return op === undefined || op === String(port);
+}
+
+// v15 (DES-097, ARCH-063, TASK-088): per-request loopback peer exemption for the D-BIND auth gate.
+// DISTINCT from isLoopback(bind) — this checks the raw socket peer, not the bind address.
+// Fail-closed: any forwarded/tunnel client-IP header present → NEVER exempt (D-AUTH-3 closes the
+// cloudflared-on-loopback hole where a public tunnel proxy arrives with a loopback socket peer).
+// Keys on the raw socket `remoteAddress` ONLY — never trusts headers to determine true identity.
+
+const TUNNEL_HEADERS = ['x-forwarded-for', 'cf-connecting-ip', 'forwarded', 'x-real-ip'] as const;
+
+function isLoopbackAddr(addr: string): boolean {
+  if (addr === '::1') return true;
+  const m = IPV4_LOOPBACK.exec(addr);
+  if (m) return m.slice(1).every(isValidOctet);
+  // IPv4-mapped loopback: ::ffff:127.x.x.x (dotted form) or ::ffff:7f00:xxxx (hex-pair form).
+  // Missing this case spuriously 401s the self-update rescue path on dual-stack :: bind.
+  const lower = addr.toLowerCase();
+  if (lower.startsWith('::ffff:')) {
+    const rest = lower.slice(7);
+    const dm = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(rest);
+    if (dm) return dm.slice(1).every(isValidOctet);
+    // Hex-pair form: e.g. "7f00:0001" — two colon-separated hex groups where high byte of first is 0x7f (127).
+    const parts = rest.split(':');
+    if (parts.length === 2) {
+      const hi = parseInt(parts[0]!, 16);
+      return !isNaN(hi) && (hi >>> 8) === 0x7f;
+    }
+  }
+  return false;
+}
+
+/**
+ * True when the raw socket peer is a loopback address AND no tunnel/forwarded client-IP header
+ * is present. Fail-closed: undefined/empty address → false. Distinct from isLoopback(bind).
+ * (DES-097, D-AUTH-3)
+ */
+export function isLoopbackPeer(remoteAddress: string | undefined, headers: IncomingHttpHeaders): boolean {
+  // Any tunnel/forwarded header → NEVER exempt (closes cloudflared-on-loopback hole)
+  for (const h of TUNNEL_HEADERS) {
+    if (headers[h] !== undefined) return false;
+  }
+  if (!remoteAddress) return false;
+  return isLoopbackAddr(remoteAddress);
 }

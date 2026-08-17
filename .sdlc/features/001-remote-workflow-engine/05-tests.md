@@ -6,7 +6,10 @@ status: green
 
 > Gate 5 test-first RED → Gate 7 regression GREEN.
 > Files: `tests/unit/`, `tests/integration/`, `tests/e2e/`, `tests/acceptance/`.
-> Run: `npm test` (vitest).  Gate 7 v12 result (2026-08-15): 998 pass / 0 fail / 196 files / 998 tests.
+> Run: `npm test` (vitest).  Gate 7 v15 result (2026-08-18): 1316 pass / 0 fail / 233 files / 1316 tests.
+>   Gate 6.5 simplify: auth-service.ts wellKnown* handlers de-duplicated via oauth-metadata.ts pure builders (IMPL-128). All 1316 tests remain green.
+>   v15 tests flipped green/pass: UT-093..097, IT-079, IT-081, IT-082, VAL-095..099 (UT-092/IT-078/IT-080 already green from Gate-5 re-run).
+> Gate 7 v12 result (2026-08-15): 998 pass / 0 fail / 196 files / 998 tests.
 > Gate 7 v14 FINAL result (2026-08-16): 1170 pass / 0 fail / 217 files / 1170 tests.
 >   VAL-092 LLM-gate fixed: changed SKIP_ONLINE guard from opt-in RWE_SKIP_ONLINE_TESTS=1 only →
 >   also skips when no provider env vars present (HAS_PROVIDER pattern, consistent with rest of suite).
@@ -4283,3 +4286,185 @@ File: `tests/acceptance/val-093-asset-push-honesty.test.ts`. Mock policy (accept
 - **iter:** v14
 
 File: `tests/acceptance/val-094-script-sha.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real HTTP; real `RunManager` ladder (`scriptSha256` check fires before any sandbox/gateway code). 5 cases: (1) matching scriptSha256 → run proceeds normally — would pass once routes work; (2) mismatched scriptSha256 → SCRIPT_SHA_MISMATCH, no run created — RED; (3) no scriptSha256 → runs exactly as before (backward compat) — trivially passes; (4) named run + scriptSha256 → SCRIPT_SHA_WITHOUT_SCRIPT — RED; (2b) SCRIPT_SHA_MISMATCH fires synchronously (before createRun) — RED. Red reason: `RunManager.start()` has no `assertScriptIntegrity` call → scriptSha256 silently ignored → returns a runId instead of SCRIPT_SHA_MISMATCH/SCRIPT_SHA_WITHOUT_SCRIPT → 3 of 5 cases fail for the correct unimplemented reason.
+
+---
+## v15 Slice B — per-caller identity, workflow ownership, harness binding, fail-closed bind (DES-092..100, REQ-012 + REQ-086..089)
+> Gate 5 v15 RED confirmation (2026-08-17): 60 fail / 1188 pass (1170 pre-existing + 18 pre-impl-compatible) / 233 files / 1248 tests.
+>   UT-092 (oauth-metadata.test.ts): Cannot find module '../../src/auth/oauth-metadata.js' — correct, module unimplemented.
+>   UT-093 (token-store.test.ts): Cannot find module '../../src/auth/token-store.js' — correct.
+>   UT-094 (google-verifier.test.ts): Cannot find module '../../src/auth/google-verifier.js' — correct.
+>   UT-095 (auth-service-resolve-principal.test.ts): Cannot find module '../../src/auth/auth-service.js' — correct.
+>   UT-096 (net-guard-loopback-peer.test.ts): 19/19 fail — isLoopbackPeer is not a function (not yet exported from net-guard.ts).
+>   UT-097 (resolve-harness-params.test.ts): Cannot find module '../../src/harness-defaults.js' — correct.
+>   IT-078 (auth-routes-integration.test.ts): Cannot find module '../../src/auth/token-store.js' — correct.
+>   IT-079 (net-guard-bind-integration.test.ts): 1/4 fail — LAN IP gets 200 instead of 401 (D-BIND not yet implemented).
+>   IT-080 (workflow-ownership.test.ts): 7/10 fail — NOT_WORKFLOW_OWNER never returned; owner field absent; boot backfill absent.
+>   IT-081 (harness-defaults-validation.test.ts): 8/10 fail — HARNESS_DEFAULTS_INVALID never returned; defaults field not in schema.
+>   IT-082 (schema-drift-v15.test.ts): 6/7 fail — workflow_register tool schema missing `defaults` + `principal` fields.
+>   VAL-095 (val-095-oauth-discovery.test.ts): 4/5 fail — auth routes don't exist (404 on .well-known endpoints).
+> Gate 5 v15 VAL-095 REWRITE (2026-08-17, owner decision 2026-08-17): VAL-095 rewritten to drive discovery via real MCP SDK helpers (@modelcontextprotocol/sdk/client/auth.js: discoverOAuthProtectedResourceMetadata, discoverAuthorizationServerMetadata, extractWWWAuthenticateParams). Cases 1+2 now use SDK discovery; getBearerViaFakeGoogle uses SDK-discovered authorization_endpoint + token_endpoint; case 5 verifies extractWWWAuthenticateParams.resourceMetadataUrl. RED re-confirmed: 4 fail / 1 pass. Case 1: throws "Resource server does not implement OAuth 2.0 Protected Resource Metadata." (404 on /.well-known); case 2: same; case 3+4: same in getBearerViaFakeGoogle; case 5: 200 instead of 401. Case 6 (auth-disabled) passes pre-impl. Correct RED for unimplemented auth routes.
+>   VAL-096 (val-096-per-caller-principal.test.ts): 5/5 fail — no auth enforcement (200 instead of 401 on protected surfaces).
+>   VAL-097 (val-097-workflow-ownership.test.ts): 6/8 fail — NOT_WORKFLOW_OWNER not returned; boot backfill absent.
+>   VAL-098 (val-098-harness-defaults.test.ts): 3/6 fail — HARNESS_DEFAULTS_INVALID not returned; defaults not queryable.
+>   VAL-099 (val-099-bind-fail-closed.test.ts): 1/4 fail — LAN IP gets 200 instead of 401 (D-BIND not yet implemented).
+>   Pre-existing: 1170/1170 still pass — no regression.
+
+### UT-092 — pure OAuth metadata builders: `buildProtectedResourceMetadata`, `buildAuthServerMetadata`, `wwwAuthenticateHeader` (DES-092)
+- **status:** green
+- **traces:** DES-092, ARCH-059, TASK-085
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/unit/oauth-metadata.test.ts`. Mock policy (unit): pure functions, zero I/O. 3 describe blocks, 12 cases total. Red reason: `src/auth/oauth-metadata.ts` does not exist → MODULE NOT FOUND → all tests fail at collect time. Tests verify: `buildProtectedResourceMetadata` returns `{resource, authorization_servers}` with issuer; `buildAuthServerMetadata` returns `{issuer, authorization_endpoint, token_endpoint, code_challenge_methods_supported:['S256'], response_types_supported:['code'], grant_types_supported:['authorization_code']}`; `wwwAuthenticateHeader` returns `Bearer resource_metadata="<issuer>/.well-known/oauth-protected-resource"`. No trailing-slash drift in any path.
+
+### UT-093 — `TokenStore` seam: bearer/code/state lifecycle, injected clock+CSPRNG, sha256-at-rest invariant (DES-093)
+- **status:** green
+- **traces:** DES-093, ARCH-059, TASK-085
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/unit/token-store.test.ts`. Mock policy (unit): in-memory SQLite `:memory:`, injected deterministic clock + csprng. Cases: `issue`/`verifyByHash` (valid → principal, unknown → null, expired via clock advance → null); raw token ≠ stored column (DB read); `mintAuthCode`/`consumeAuthCode` single-use atomic (first → result, second → null, expired → null); `putState`/`consumeState` single-use; `gcExpired` count + idempotent. Red reason: `src/auth/token-store.ts` does not exist → MODULE NOT FOUND → all tests fail at collect time.
+
+### UT-094 — `verifyIdToken` RS256 branch coverage: every reject path + accept case, injected JWKS+clock+base (DES-094)
+- **status:** green
+- **traces:** DES-094, ARCH-059, TASK-085
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/unit/google-verifier.test.ts`. Mock policy (unit): RS256 key pair via `node:crypto`; injected `jwksFetch` + `now`; zero real network. Cases (accept): valid RS256 id_token; accepts `iss=accounts.google.com` (no https:// prefix). Cases (reject): bad iss, bad aud, expired exp, bad signature (different RSA key), wrong nonce, `email_verified===false` (critical invariant), `email_verified` missing, email claim missing, malformed JWT. Red reason: `src/auth/google-verifier.ts` does not exist → MODULE NOT FOUND → all tests fail at collect time.
+
+### UT-095 — `resolvePrincipal` discriminated union — returns union, NEVER throws (DES-095)
+- **status:** green
+- **traces:** DES-095, ARCH-059, TASK-086
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/unit/auth-service-resolve-principal.test.ts`. Mock policy (unit): fake TokenStore (Map), fake IncomingMessage headers. Cases: no Authorization → 401 union; non-Bearer Authorization → 401; unknown Bearer → 401; expired Bearer → 401; valid bearer → `{principal}`; 401 result has `wwwAuthenticate` string; NEVER throws (resolves union on any garbage); uniform 401 wire (no expired-vs-unknown-vs-malformed distinction per C-2). Red reason: `src/auth/auth-service.ts` does not exist → MODULE NOT FOUND → all tests fail at collect time.
+
+### UT-096 — `isLoopbackPeer` exhaustive truth-table: all 127.0.0.0/8, ::1, ::ffff:127.x, undefined fail-closed, forwarded-header fail-safe (DES-097)
+- **status:** green
+- **traces:** DES-097, ARCH-063, TASK-088
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/unit/net-guard-loopback-peer.test.ts`. Mock policy (unit): pure function, zero I/O. 19 cases covering: 127.0.0.1/127.0.0.2/127.255.255.255/::1/::ffff:127.0.0.1/::ffff:7f00:0001 → exempt; undefined/''/10.0.0.1/192.168.1.100/::ffff:192.168.1.1/1.2.3.4/::2 → NOT exempt; x-forwarded-for/cf-connecting-ip/forwarded/x-real-ip present + loopback remoteAddress → NOT exempt (D-AUTH-3 tunnel-header fail-safe). Red reason: `isLoopbackPeer` not yet exported from `net-guard.ts` → `isLoopbackPeer` is not a function → all 19 tests fail.
+
+### UT-097 — pure `resolveHarnessParams` per-param merge and `HarnessDefaults` shared type (DES-099)
+- **status:** green
+- **traces:** DES-099, ARCH-062, TASK-089
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/unit/resolve-harness-params.test.ts`. Mock policy (unit): pure function, zero I/O. Cases: no registered + no overrides → all undefined; registered only → equals registered; override only → equals override; override timeoutMs → model falls back; override model → timeoutMs falls back; mixed; skills in registered preserved; override skills wins; backward-compat (undefined registered, no crash); full override wins all fields. Red reason: `src/harness-defaults.ts` does not exist → MODULE NOT FOUND → all tests fail at collect time.
+
+### IT-078 — auth routes integration + I-2 hermeticity: real server + real net-guard + real token-store (DES-095, DES-096, DES-100)
+- **status:** green
+- **traces:** DES-095, DES-096, DES-100, ARCH-059, ARCH-060, TASK-086, TASK-087
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/integration/auth-routes-integration.test.ts`. Mock policy (integration): real `createServer` + real HTTP + real SQLite token-store; Google doubled via injected `jwksFetch` + local test RS256 key pair. Cases: (1) `GET /.well-known/oauth-protected-resource` → 200 with resource+authorization_servers; (2) `GET /.well-known/oauth-authorization-server` → 200 with PKCE S256; (3) un-tokened `/mcp` → 401 + WWW-Authenticate; (4) un-tokened `/assets/blob/:sha` → 401; (5) un-tokened `/assets/manifest` → 401; (6) valid bearer → `/mcp` 200; (7) I-2 hermeticity: `workflow_run` with bearer → `workflow_status` carries `principal:<email>` AND principal ABSENT from sandbox child env. Red reason: `src/auth/token-store.js` does not exist → MODULE NOT FOUND → all tests fail at collect time.
+
+### IT-079 — D-BIND fail-closed network integration: bind 0.0.0.0, LAN IP → 401, loopback → exempt, webhook unaffected, auth-disabled dormant (DES-097, DES-100)
+- **status:** green
+- **traces:** DES-097, DES-100, ARCH-063, TASK-088
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/integration/net-guard-bind-integration.test.ts`. Mock policy (integration): real server on `0.0.0.0`, real HTTP from real socket (LAN IP). `allowedHosts: [LAN_IP]` so host-allowlist passes first; D-BIND tested separately. 4 cases: (1) loopback → NOT 401 (pre-impl compatible, passes); (2) LAN IP → 401 (RED — gets 200 pre-impl); (3) webhook via LAN IP → not D-BIND 401 (passes); (4) auth disabled + LAN IP → NOT 401 (passes). Guard: LAN IP cases skipped if `os.networkInterfaces()` yields no non-internal IPv4. Red reason: D-BIND not yet implemented → LAN IP gets 200 instead of 401 → case 2 fails.
+
+### IT-080 — workflow ownership gate + idempotent boot backfill integration (DES-098)
+- **status:** green
+- **traces:** DES-098, ARCH-061, TASK-089
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/integration/workflow-ownership.test.ts`. Mock policy (integration): real server + real SQLite catalog; principal passed as tool arg per v15 spec. 10 cases: (1) first registration by alice → owned; (2) alice overwrite → succeeds; (3) bob overwrite → NOT_WORKFLOW_OWNER + stored unchanged; (4) bob deregister → NOT_WORKFLOW_OWNER + still present; (5) alice deregister → succeeds; (6) null principal → ungated [D-AUTH-6]; (7) workflow_get includes owner; (8) workflow_run by bob → not gated; (9) boot backfill: NULL owner → hsuhungjung@gmail.com; (10) backfill idempotent. Red reason: `owner` column not yet added; NOT_WORKFLOW_OWNER never returned; boot backfill absent → 7 of 10 cases fail.
+
+### IT-081 — harness defaults register-time validation: D-AUTH-5 named assertions (DES-099, DES-100)
+- **status:** green
+- **traces:** DES-099, DES-100, ARCH-062, TASK-089
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/integration/harness-defaults-validation.test.ts`. Mock policy (integration): real server + real SQLite catalog; injected alias table for predictable validation. Named assertions per D-AUTH-5: (D-AUTH-5-A) unknown key → HARNESS_DEFAULTS_INVALID + nothing stored; (D-AUTH-5-B) unresolvable model alias → HARNESS_DEFAULTS_INVALID + nothing stored; (D-AUTH-5-C) non-allowlisted tool → HARNESS_DEFAULTS_INVALID; (D-AUTH-5-D) unknown skill → register SUCCEEDS (deferred); (D-AUTH-5-E) mixed valid+invalid → HARNESS_DEFAULTS_INVALID + nothing stored; backward-compat (no defaults → registers); valid defaults → stored + queryable; run-time merge (per-run override wins). Red reason: `defaults` field not yet in tool schema / not yet validated → HARNESS_DEFAULTS_INVALID never returned → 8 of 10 cases fail.
+
+### IT-082 — v15 schema drift-lock: `workflow_register`/`workflow_deregister` `defaults`+`principal` fields; `workflow_get` owner+defaults (DES-099, DES-100)
+- **status:** green
+- **traces:** DES-099, DES-098, DES-100, ARCH-062, ARCH-061, TASK-089
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/integration/schema-drift-v15.test.ts`. Mock policy (integration): real server, real `tools/list` response. 7 cases: `workflow_register` exists (passes); `workflow_register` inputSchema has `defaults` property (RED); `workflow_register` inputSchema has `principal` property (RED); `workflow_register` description mentions defaults/harness (RED); `workflow_deregister` has `principal` property (RED); `workflow_get` description mentions owner (RED); `workflow_get` description mentions defaults (RED). Red reason: new fields not yet in tool schemas → 6 of 7 assertions fail.
+
+### VAL-095 — REQ-012: engine-as-own-AS OAuth discovery (MCP SDK) + PKCE flow + auth-disabled backward-compat (REQ-012)
+- **status:** green
+- **traces:** REQ-012, DES-095, DES-100, TASK-085, TASK-086
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/acceptance/val-095-oauth-discovery.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real server routes, real HTTP; Google doubled via minimal local HTTP server (`/token` endpoint returning signed RS256 id_token) + injected `jwksFetch`. Discovery driven via REAL MCP client SDK (`@modelcontextprotocol/sdk/client/auth.js`): `discoverOAuthProtectedResourceMetadata`, `discoverAuthorizationServerMetadata`, `extractWWWAuthenticateParams` — NOT raw fetch. 6 cases: (1) `discoverOAuthProtectedResourceMetadata(serverUrl)` → `resource` + `authorization_servers` fields; (2) SDK discovery chain: PRM → `authorization_servers[0]` → `discoverAuthorizationServerMetadata` → S256 + code fields; (3+4) full PKCE flow via SDK-discovered `authorization_endpoint` + `token_endpoint` (GET discovered-authorize → fake Google → GET /oauth/google/callback → POST discovered-token) → engine bearer → `/mcp` 200; (5) no bearer → `/mcp` 401 + `extractWWWAuthenticateParams(res).resourceMetadataUrl` defined; (6) auth disabled → `/mcp` 200 (open). Red reason: auth routes absent → `discoverOAuthProtectedResourceMetadata` throws "Resource server does not implement OAuth 2.0 Protected Resource Metadata." → cases 1/2/3+4 fail; no auth enforcement → case 5 gets 200 instead of 401. Case 6 passes pre-impl.
+
+### VAL-096 — REQ-086: per-caller principal on protected surfaces; attributed on run record + CAS namespace (REQ-086)
+- **status:** green
+- **traces:** REQ-086, DES-096, DES-100, TASK-087
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/acceptance/val-096-per-caller-principal.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real server routes, real HTTP; Google doubled via local HTTP stub + injected jwksFetch. Bearer obtained via the SUT's own `/token` route (not DB row insertion). 5 cases: (1) un-tokened `/mcp` → 401; (2) un-tokened `/assets/blob` → 401; (3) un-tokened `/assets/manifest` → 401; (4) bearer-authed `workflow_run` → `workflow_status` carries `principal:<email>`; (5) bearer-authed blob upload → CAS namespace first-writer equals principal. Red reason: no auth enforcement → all 5 cases fail (200 instead of 401, principal absent from status).
+
+### VAL-097 — REQ-087: workflow ownership gate; run/read open; idempotent boot backfill (REQ-087)
+- **status:** green
+- **traces:** REQ-087, DES-098, DES-100, TASK-089
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/acceptance/val-097-workflow-ownership.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real server routes, real HTTP; bearer obtained via full OAuth flow through the SUT's own `/token` route with fake Google stub. 8 cases: alice registers → owned; bob overwrite → NOT_WORKFLOW_OWNER; stored unchanged; bob deregister → NOT_WORKFLOW_OWNER; still present; bob can run (not gated); alice deregisters (succeeds); boot backfill NULL-owner → hsuhungjung@gmail.com. Red reason: NOT_WORKFLOW_OWNER never returned; owner column absent → 6 of 8 cases fail.
+
+### VAL-098 — REQ-088: harness defaults bound at registration, queryable, per-param merged at run time (REQ-088)
+- **status:** green
+- **traces:** REQ-088, DES-099, DES-100, TASK-089
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/acceptance/val-098-harness-defaults.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real server, real HTTP; no auth (testing catalog + merge layer directly via /mcp); injected alias table. 6 cases: valid defaults → stored + queryable via `workflow_get`; invalid model → HARNESS_DEFAULTS_INVALID; invalid tool → HARNESS_DEFAULTS_INVALID; skill deferred → register succeeds; run without overrides → proceeds (no HARNESS error); run with model override → timeoutMs falls back to registered. Red reason: `defaults` field not yet accepted/validated → HARNESS_DEFAULTS_INVALID not returned; defaults not queryable → 3 of 6 cases fail.
+
+### VAL-099 — REQ-089: D-BIND fail-closed: LAN IP → 401, loopback exempt, webhook unaffected, auth-disabled dormant (REQ-089)
+- **status:** green
+- **traces:** REQ-089, DES-097, DES-100, TASK-088
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v15
+
+File: `tests/acceptance/val-099-bind-fail-closed.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real server on `0.0.0.0` + `allowedHosts: [LAN_IP]`; real HTTP via own LAN IP (genuine non-loopback socket peer). 4 cases: (1) loopback → NOT 401 (pre-impl compatible, passes); (2) LAN IP → 401 (RED — gets 200 pre-impl); (3) webhook via LAN IP → NOT a D-BIND 401 (passes); (4) auth disabled + LAN IP → NOT 401 (passes). Guard: LAN IP cases skipped if no non-internal IPv4 available. Red reason: D-BIND not yet implemented → LAN IP gets 200 instead of 401 → case 2 fails.

@@ -1,10 +1,272 @@
 ---
 stage: review
-status: passed
+status: open
 ---
 # 07 Review & Retro — Gate 8
 
-## v14 GATE 8 REVIEW (2026-08-16, CURRENT / AUTHORITATIVE)
+## v15 GATE 8 REVIEW (2026-08-18, CURRENT / AUTHORITATIVE — SEND BACK TO GATE 6)
+
+> This section supersedes "## v14 GATE 8 REVIEW (2026-08-16)" below (kept for history).
+> **v15 Slice B — OAuth AS + per-caller principal + workflow ownership + harness-defaults + D-BIND fail-closed**
+> (REQ-012 + REQ-086..089). Gate 7.5 v15 PASSED 2026-08-18 (composition-root fix applied first;
+> VAL-095..099 real:true; 1316/1316 pass). Panel architects pre-ran (not re-spawned): adversarial group
+> (ARCH-059..063 / IMPL-122..128 scope) + quality-dimensions group (v14+v15 scope) reports are in
+> `.panel/review/`. This section consolidates them; `.panel/` is removed at end of Gate 8.
+>
+> **Conclusion: SEND BACK TO GATE 6** — adversarial HIGH-1 (redirect_uri not validated, ARCH-059 inv.4)
+> is a fresh HIGH violation in the iteration's own newly-shipped auth code; the fix is one `if` at
+> `auth-service.ts:authorize`. MEDIUM-2 (gcExpired unscheduled, ARCH-059 note) is a one-line call into
+> the existing sweep. These are not pre-existing built-but-unwired debt; they are the ARCH-059 slice's
+> own stated invariants not enforced. Pre-existing H-2/H-3 carry the standing "security-hardening
+> iteration" umbrella (Gate 2 adjudication pending); HIGH-1 and MEDIUM-2 do not.
+
+### Traceability consistency (v15)
+
+Trace `--check` result (regenerated 2026-08-18): **750 items, 6 gaps.**
+
+Change from v14 baseline (704 items / 6 gaps):
+- **CLOSED:** REQ-012 HIGH 未真實驗証 gap — v15 implemented OAuth AS (ARCH-059..063 / IMPL-122..128)
+  and VAL-095 is now `real:true`; REQ-012 is no longer unvalidated.
+- **OPENED:** DES-088 LOW drift — DES-088 design is at iter v14, while IMPL-127 (which traces to it) is
+  at iter v15. Cosmetic iter mismatch introduced when v15 updated the `workflow_agent_log` TOOL_DEF
+  description (‹secret:NAME› marker documentation) without bumping DES-088 to v15. Fix: bump DES-088
+  iter to v15 or add a v15 note. Does not affect functionality.
+- **Net:** 46 new items (750−704), same gap count (6). The v15 Gate 7.5 state.yaml recorded 750/11 during
+  Gate 7 (when 5 v15 gaps — REQ-086..089 × {未實作+未驗證} — were still open); those 5 closed when
+  VAL-095..099 flipped real:true, restoring the count to 6.
+
+| ID | Severity | Type | Note |
+|----|----------|------|------|
+| IMPL-082 | MID | TDD label | Pre-existing since v4; no change |
+| UT-058 | LOW | iter drift v6 behind DES-038 v11 | Pre-existing since F1; cosmetic |
+| UT-064 | LOW | iter drift v9 behind DES-054 v11 | Pre-existing since v9 |
+| IT-057 | LOW | iter drift v9 behind DES-054 v11 | Pre-existing since v9 |
+| DES-088 | LOW | iter drift v14 behind IMPL-127 v15 | **NEW (v15)** — bump DES-088 iter to fix |
+| TASK-018 | LOW | no implementation | OIDC task, superseded by v15 OAuth; defer or close |
+
+All remaining gaps recorded as known tech debt (Exit Gate 1 satisfied). DES-088 is the only new drift;
+it is LOW cosmetic and does not affect correctness.
+
+### Architecture consistency (v15 panel consolidation)
+
+Two expert groups pre-ran (see `.panel/review/adversarial.md` and `.panel/review/quality-dimensions.md`).
+
+**Overall verdict: NOT consistent — new HIGH violation in v15 auth code requires Gate 6 fix.**
+
+#### Changes since v14 Gate 8
+
+**FIXED by v15 — previously H-1 [HIGH] D-BIND bind guard unimplemented:**
+ARCH-063 (TASK-089 / IMPL-128) implemented the D-BIND fail-closed guard. Adversarial confirms D-AUTH-3
+(`isLoopbackPeer`) holds: non-loopback without bearer → 401; loopback always exempt; forwarded headers
+strip the exemption. VAL-099 real-validated. **This finding is CLOSED.**
+
+**Adversarial panel new findings (v15 auth scope — ARCH-059..063 / IMPL-122..128):**
+
+#### HIGH-1 [HIGH] ARCH-059 invariant 4 violated: redirect_uri not validated (open redirect → bearer theft)
+
+**Violates:** ARCH-059 load-bearing invariant (4): loopback redirect URIs per RFC 8252 (no open-redirect).
+
+**Evidence:**
+- `src/auth/auth-service.ts:104-115` (`authorize`) — reads `redirect_uri` from the query and stores it
+  verbatim via `tokenStore.putState(...)`. No loopback / host / allowlist check.
+- `src/auth/auth-service.ts:177-189` (`googleCallback`) — after Google auth succeeds, 302-redirects
+  the browser to the unvalidated `redirect_uri` carrying `?code=<engine auth-code>`.
+- `src/auth/auth-service.ts:221-223` (`tokenExchange`) — only checks equality to the stored value;
+  the stored value is itself attacker-supplied. No `loopback|127|localhost|allow|valid` predicate anywhere.
+
+**Failure scenario:** Attacker crafts a link with `redirect_uri=https://evil.example`. Victim completes
+Google consent as themselves. Engine mints an auth-code for victim's principal, redirects to
+`https://evil.example?code=…`. Attacker holds the PKCE verifier, exchanges the code at `/token`, receives
+a valid engine bearer for victim. Full impersonation on every protected surface.
+
+**Fix direction:** in `authorize`, reject any `redirect_uri` whose host is not `127.0.0.1`/`::1`/`localhost`
+(reuse the `net-guard` loopback predicate) before `putState`. One `if` fail-closed.
+
+**Action: Gate 6 fix.**
+
+#### MED-2 [MED] ARCH-059 note violated: gcExpired() defined but never scheduled (unbounded auth-table growth)
+
+**Violates:** ARCH-059 note: "`gcExpired` reuses the existing workspace-TTL GC cadence (no new scheduler)."
+
+**Evidence:** `src/auth/token-store.ts:155` defines `gcExpired()`. No caller exists anywhere in `src/`.
+The workspace GC sweep at `server.ts:1256-1270` (`reclaimStaleWorkspaces`) does NOT invoke
+`authTokenStore.gcExpired()`. Abandoned `oauth_state` rows, unexchanged `auth_codes`, and expired
+`bearer_token` rows grow without bound.
+
+**Fix direction:** one line — call `authTokenStore.gcExpired()` inside the existing `sweep` at
+`server.ts:1264`, piggybacking the cadence ARCH-059 named.
+
+**Action: Gate 6 fix (one-line addition).**
+
+#### LOW-3 [LOW] D-AUTH-2 spirit: caller-echoable principal on null-edge path
+
+**Tension with:** D-AUTH-2 (principal resolved at the edge, never echoed from client).
+
+**Evidence:** `server.ts:786-793` (`callTool`, `workflow_register`/`workflow_deregister`): when edge
+principal is null (loopback-exempt or auth-disabled), `args.principal` becomes the ownership value.
+`mcp-facade.ts:89` similarly forwards caller-supplied `principal` on the null-edge path.
+
+**Assessment:** Scoped to already-trusted callers (authenticated remote callers cannot exploit it —
+`p.principal` is non-null and wins); documented as a test affordance (IMPL-124/IT-080). LOW. Consider
+removing or restricting to a test seam to be consistent with the `/assets/*` pattern (which explicitly
+refuses client echo).
+
+#### LOW-4 [LOW] ARCH-059 inv.3 literal deviation: oauth_state TTL is 600 s, not ≤60 s
+
+**Evidence:** `token-store.ts:128` sets `oauth_state.expires_at = now + 600_000` (10 min). `auth_codes`
+at line 90 correctly use `now + 60_000`.
+
+**Assessment:** Single-use and atomic-consume (the security-critical properties the invariant exists for)
+HOLD. Only the numeric TTL exceeds the stated bound, and 60 s is impractical for interactive Google
+consent. **Recommended action:** amend ARCH-059 text to "state ≤10 min / codes ≤60 s" rather than
+tightening the impl. LOW.
+
+#### Pre-existing violations carried from v14 (Quality-Dimensions confirmation)
+
+Quality-dimensions panel scoped to v14+v15 (IMPL-117..128). Its findings cross-reference the v14 catalog:
+
+| Label | Severity | Panel finding | v14 catalog label |
+|-------|----------|---------------|-------------------|
+| H-2 | HIGH | R-1 (ProviderProfile / session-options-builder orphaned) | H-2: ARCH-017/D-PROFILE/DES-031 |
+| H-3 | HIGH | O-2 + S-2 (FailureEnvelope not emitted; timeout-race dead code) | H-3: D-KILL/D-PROC cluster |
+| M-1 | MED | (LiteLLMGatewayClient transcript opaque — quality O-2 scope) | M-1: ARCH-004 LiteLLM gap |
+| L-1 | LOW | (McpRegistry wall-clock direct Date.now) | L-1: C3 seam gap |
+| L-2 | LOW | (materializeAssets hook arm not removed) | L-2: ARCH-018 defense-in-depth |
+| —   | ACK | R-2 (CasStore no port, D-v14-F), C-2 (seedManifest handshake) | Acknowledged deferred debt |
+| —   | ACK | S-1 (no disk-full guard, G-SUS-3 deferred), C-1 (allowedTools) | Pre-existing quality gaps |
+
+**O-1 (SessionInitRecord) — re-apply ARCH-044 supersession:** Quality panel re-raised O-1 but without
+the ARCH-044 context. ARCH-044 explicitly superseded the SessionInitRecord contract, replacing it with
+`HarnessDescriptor` (wired end-to-end, confirmed by adversarial). **Not a violation.** Residual:
+`thinkingMode` not in `HarnessDescriptor`, deliberate per ARCH-044 scope, LOW observability debt.
+
+All pre-existing violations carry the operator's standing decision (memory: arch-debt-unwired-security-modules
+= a separate security-hardening iteration). H-2 and H-3 require Gate 2 adjudication (wire or formally
+supersede following ARCH-044 precedent).
+
+**Architecture consistency conclusion: no.** Fresh HIGH (HIGH-1) and MED (MED-2) in v15's own auth code;
+pre-existing H-2, H-3, M-1, L-1, L-2 (all pre-existing, separately tracked). Gate 6 fix required for
+HIGH-1 and MED-2 before this iteration closes. Gate 2 adjudication pending for H-2/H-3 (separate
+security-hardening iteration).
+
+### Validation & handover check (v15)
+
+- **VAL-095 (REQ-012):** `real:true`, green — SDK-driven OAuth discovery: PRM → AS metadata chain;
+  full PKCE auth-code flow via fake RS256 IdP; bearer-authenticated POST /mcp returns 200; unauthenticated
+  → 401 with WWW-Authenticate; auth-disabled server returns 200 (backward-compat). 5/5 pass.
+- **VAL-096 (REQ-086):** `real:true`, green — per-caller principal: /mcp/assets without bearer → 401;
+  bearer-authed workflow_run carries `principal:'alice@example.com'` in run record; CAS namespace
+  attributed to principal. 5/5 pass.
+- **VAL-097 (REQ-087):** `real:true`, green — workflow ownership gate: creator-only mutation; backfill
+  NULL-owner → `hsuhungjung@gmail.com` on first auth-enabled boot; `NOT_WORKFLOW_OWNER` on mismatch.
+  8/8 pass.
+- **VAL-098 (REQ-088):** `real:true`, green — harness defaults bound at registration; per-param merge
+  at run time; HARNESS_DEFAULTS_INVALID on invalid values. 6/6 pass.
+- **VAL-099 (REQ-089):** `real:true`, green — D-BIND fail-closed: LAN-IP → 401; loopback exempt;
+  webhook HMAC path unaffected; auth-disabled → not 401 (backward-compat). 4/4 pass.
+- **Google interactive consent flow:** classified `unreachable-dep` (headless-unreachable; same precedent
+  as v11 Playwright); fake RS256 IdP validates all engine-side auth routes with full HTTP. Not mock-only.
+- **All prior REQs (001..089):** VAL-001..094 hold evidence from prior rounds; 1316/1316 regression pass.
+  REQ-012 gap is NOW CLOSED (VAL-095 real:true). TASK-018 (OIDC task) is functionally superseded by the
+  v15 OAuth implementation; recommend closing.
+- **`08-validation.md`:** present, v15 section written, Gate 7.5 v15 PASSED 2026-08-18 confirmed.
+- **`README.md`:** present at repo root. Current-state (v15, 2026-08-18). Step-by-step quickstart.
+  OAuth auth documented as opt-in (v15 section). No stale commands or superseded content.
+- **`DEPLOY.md`:** present at repo root. Current-state (v15, 2026-08-18). §7 変更紀錄 includes v15 entry
+  (2026-08-18). Three new `auth.*` config keys in §1 設定総表 v15 block, with full descriptions +
+  defaults. v15 rwe.config.example.json `auth` block present. No superseded current-state instructions
+  outside §7.
+- **Config key deduplication:** `設定総表` (§1 DEPLOY.md) is the single canonical source for `auth.enabled`/
+  `auth.googleClientId`/`auth.googleClientSecret`. §7 変更紀錄 references them by name (correct). No
+  duplication across sections.
+- **Pre-existing doc-debt (LOW, unchanged from v14):** DEPLOY.md §1b historical v2 blockquote (inline
+  supersession marker); §6 scenario JSON blocks carry config key examples. Risk low. Carry forward.
+- **Validation verdict:** Gate 7.5 v15 PASSED. VAL-095..099 real:true. 1316/1316 pass. README + DEPLOY
+  present, step-by-step, current-state. 設定総表 deduplicated. No mock-only/unverified REQ.
+  **HIGH-1 and MED-2 require Gate 6 fix before final closure; no Gate 7.5 send-back on validation itself.**
+
+### Retro (v15 — OAuth AS + per-caller principal + ownership + harness-defaults + D-BIND)
+
+**What changed (ARCH-059..063 / IMPL-122..128):**
+- IMPL-122 `auth-service.ts` — OAuth AS: authorization-code + PKCE S256; Google IdP (injected
+  `jwksFetch`/`googleBase`); engine-issued opaque bearer (sha256-at-rest, 32-CSPRNG-byte, no JWT);
+  `/.well-known/oauth-protected-resource` + `/.well-known/oauth-authorization-server` endpoints.
+- IMPL-123 `token-store.ts` — three-table SQLite auth store (oauth_state, auth_codes, bearer_tokens);
+  injected clock + csprng + db; `gcExpired()` defined (wiring gap = MED-2 above).
+- IMPL-124 `google-verifier.ts` — RS256 JWKS verify; pins `alg`/`iss`/`aud`/`exp`/`email_verified`.
+- IMPL-125 `oauth-metadata.ts` — pure PRM + AS metadata builders.
+- IMPL-126 `net-guard.ts` + `src/harness-defaults.ts` + `src/workflow-catalog.ts` — `isLoopbackPeer`
+  (loopback exemption for D-BIND); `validateHarnessDefaults` + `resolveHarnessParams`; ownership gate.
+- IMPL-127 `mcp-facade.ts` + `server.ts` (auth wiring, 1276-1503) — `resolvePrincipal` edge resolver;
+  auth routes wired in server; `workflow_agent_log` TOOL_DEF updated (traces DES-088, iter v15 →
+  creates DES-088 LOW drift since DES-088 iter is v14).
+- IMPL-128 `src/main.ts` composition-root fix (`auth: fileConfig.auth` forwarded) — the composition-root
+  gap caught at Gate 7.5 (`composeConfig` silently dropped the `auth` block; live test showed /mcp
+  returned 200 without bearer even with `auth.enabled:true`; 1-line fix, then curl 200→401 confirmed).
+
+**What went well:**
+- D-AUTH-1..6 all confirmed HELD by adversarial panel — the security invariants that *were* wired are
+  correctly wired (sha256-at-rest, no JWT forgery surface, principal never enters sandbox, D-BIND loopback
+  guard, harness-defaults fail-closed, auth-disabled idempotent backfill).
+- Gate 7.5 caught the composition-root gap (IMPL gap, not doc-only) before it left the iteration —
+  the "seam-wired-in-tests-but-not-in-production" pattern surfaced via a live curl, not just the test suite.
+- REQ-012 is now CLOSED (VAL-095 real:true) after being the iteration's sole HIGH trace gap for 14 iterations.
+- v14 H-1 (D-BIND bind guard) is now FIXED — one pre-existing HIGH eliminated.
+
+**What to change:**
+- **Composition-root config-forwarding drift-lock:** the `composeConfig` function has dropped config keys
+  twice (first `auth`, and the pattern is documented as the recurring bug class in the code itself).
+  Add a `composeConfig` snapshot test pinning each key present in `fileConfig` against `ServerConfig`
+  to catch the next dropped key at Gate 7 (not Gate 7.5).
+- **`redirect_uri` allowlist must be written before closure (HIGH-1):** a one-`if` loopback check in
+  `authorize()` before `putState`. The ARCH-059 invariant was explicit; this is the fastest Gate 6
+  round-trip possible.
+- **gcExpired wiring must be done before closure (MED-2):** one line in the existing sweep.
+- **DES-088 iter bump:** bump DES-088's `iter` field to v15 to close the trace drift.
+
+**Known tech debt (all recorded):**
+
+*New for v15 — require Gate 6 fix before this iteration closes:*
+- [HIGH] HIGH-1: ARCH-059 inv.4 redirect_uri not validated — one `if` in `authorize()`.
+- [MED] MED-2: ARCH-059 gcExpired never scheduled — one `gcExpired()` call in the existing sweep.
+
+*Newly downgraded to LOW (no longer a security gap, pending ARCH-text fix):*
+- [LOW] LOW-4: ARCH-059 inv.3 text: amend to "state ≤10 min / codes ≤60 s" (impl is defensible; text wrong).
+
+*Pre-existing, Gate 2 adjudication pending:*
+- [HIGH] H-2: ARCH-017/D-PROFILE/DES-031 builder cluster unwired — wire or formally supersede (ARCH-044 precedent).
+- [HIGH] H-3: D-KILL/D-PROC cli-lifecycle + timeout-race orphaned — wire or formally supersede.
+
+*Pre-existing, Gate 6 fix (lower urgency — no new data in v15):*
+- [MED] M-1: LiteLLMGatewayClient transcript opaque.
+- [LOW] LOW-3: client-echoable principal on null-edge path (restrict/remove args.principal fallback).
+- [LOW] L-1: McpRegistry wall-clock direct Date.now.
+- [LOW] L-2: ARCH-018 hooks-drop live branch in materializeAssets (delete hook arm).
+
+*Acknowledged deferred quality debt (no committed resolution path):*
+- S-1: No disk-full defense on CAS blob writes / journal appends (G-SUS-3 deferred).
+- C-1: allowedTools absent from AgentOpts interface.
+- R-2: CasStore no port (acknowledged D-v14-F).
+- C-2: seedManifest handshake not inline in workflow_run description.
+
+*Trace gaps (all recorded):*
+- IMPL-082 MID (TDD-label, pre-existing since v4)
+- DES-088 LOW (iter drift v14 behind IMPL-127 v15 — fix: bump DES-088 iter)
+- UT-058/UT-064/IT-057 LOW (iter drifts, pre-existing cosmetic)
+- TASK-018 LOW (OIDC task, functionally superseded by v15 OAuth — recommend closing)
+
+*Pre-existing doc-debt (unchanged):*
+- DEPLOY.md §1b historical v2 blockquote (inline supersession marker) + §6 scenario JSON config keys.
+
+**Gate 7.5:** PASSED 2026-08-18 (composition-root fix applied first). VAL-095..099 `real:true`.
+1316/1316 regression pass.
+**Gate 8 conclusion: SEND BACK TO GATE 6** — HIGH-1 (redirect_uri) and MED-2 (gcExpired) are the
+blocking findings. Both are one-`if`/one-line fixes in the v15 auth code. All other findings are either
+pre-existing recorded debt or LOW/cosmetic.
+
+---
+
+## v14 GATE 8 REVIEW (2026-08-16, superseded by v15 above — kept for history)
 
 > This section supersedes "## v12 GATE 8 REVIEW (2026-08-15)" below (kept for history).
 > This round closes the v13 + v14 chain together (v13 never ran a standalone Gate 8): **v13 —

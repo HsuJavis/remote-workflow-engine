@@ -253,7 +253,9 @@ flowchart LR
   - Given a completed flow When the client presents the engine-issued bearer on `/mcp` Then requests are accepted and every downstream action is attributed to that email principal (observable in the run/audit record); Given the token is expired or unknown Then requests are rejected 401 and the client can re-run the flow
   - Given the engine config carries the Google `client_id`/`client_secret` (server-side secret store only, per REQ-018) and NO end-user ever sees them When the flow runs Then those credentials never appear in any client-visible response, transcript, or workspace-reachable path
   - Given auth is DISABLED in config Then behavior matches the pre-v15 surface (backward compatible; the engine still boots and serves an unauthenticated LAN as before — auth is opt-in by config, then enforced by REQ-089)
-- **iter:** v15
+  - **(v16 Gate-8 fix, ARCH-059 invariant 4 — open-redirect → bearer theft)** Given a client calls `/authorize` with a `redirect_uri` that is NOT a loopback URI (`http://127.0.0.1:<port>` / `http://localhost:<port>` / `http://[::1]:<port>`, per RFC 8252) Then `/authorize` rejects it with a 400 (`invalid_request`) BEFORE storing any state and BEFORE redirecting to Google — so a mint-and-deliver of the engine auth-code to an attacker-controlled URL is impossible; Given a loopback `redirect_uri` Then the flow proceeds as before. Observable: `/authorize?redirect_uri=https://evil.example/cb` → 400 with no `oauth_state` row written; `/authorize?redirect_uri=http://127.0.0.1:5599/cb` → 302 to Google as normal.
+  - **(v16 Gate-8 fix, ARCH-059 note — unbounded auth-table growth)** Given the running engine's periodic maintenance sweep fires Then it garbage-collects expired `oauth_state`, unexchanged `auth_codes`, and expired `bearer_tokens` (the existing `TokenStore.gcExpired()` is invoked from the same sweep that reclaims stale workspaces), so the auth tables do not grow without bound. Observable: after inserting an already-expired state/code/bearer row and triggering the sweep, those rows are gone; a live (unexpired) bearer is retained.
+- **iter:** v16
 
 ---
 

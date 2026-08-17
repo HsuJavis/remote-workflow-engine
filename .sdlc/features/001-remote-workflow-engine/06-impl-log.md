@@ -2069,3 +2069,66 @@ Suite at close: 738 passed / 2 failed (both VAL-079, pending test fix) / 163 tes
 - **commit:** (pending)
 - **iter:** v14
 - **note:** assertScriptIntegrity(script, sha?) pure function: sha present → sha256(Buffer.from(script,'utf8')) !== sha throws SCRIPT_SHA_MISMATCH; absent → no-op. Rung placed BEFORE admission (SCRIPT_SHA_WITHOUT_SCRIPT → SCRIPT_SHA_MISMATCH pinned first in start()). workflow_run schema adds scriptSha256 property. Note: submitted IMPL-084 was a collision with the existing IMPL-084 (workspace retention purge+GC, v9 era) → renumbered to IMPL-121. The two submitted IMPL-117 entries were renumbered IMPL-117/IMPL-118, and the two submitted IMPL-118 entries were renumbered IMPL-119/IMPL-120 at Gate 6 integration closeout.
+
+### IMPL-122 — auth route wiring: resolvePrincipal + 5 OAuth routes + auth gates on /mcp, /assets/blob/:sha, /assets/manifest (TASK-086)
+- **status:** done
+- **traces:** TASK-086, DES-095
+- **greens:** UT-095, IT-078 (cases 1-6), VAL-095 (cases 1-6)
+- **files:** src/auth/auth-service.ts, src/server.ts, vitest.config.ts
+- **commit:** (pending)
+- **iter:** v15
+- **note:** Created src/auth/auth-service.ts (DES-095): resolvePrincipal discriminated union (NEVER throws, uniform 401 per C-2), createAuthRouteHandlers with 5 handlers (wellKnownProtectedResource, wellKnownAuthServer, authorize/PKCE-S256, googleCallback/id_token-verify, tokenExchange/PKCE-verify). Wired into server.ts: effectiveIssuer() replaces port 0 with real boundPort at request time; auth gates placed BEFORE body consumption on /mcp, /assets/blob/:sha, /assets/manifest; 5 OAuth routes guarded behind authHandlers check. vitest.config.ts: added sequence: { hooks: 'stack' } to fix Vitest v1.6.1 default parallel-hooks race (three root-level beforeAll in VAL-095 must run sequentially — consistent with existing fileParallelism: false rationale). Test defect IT-078 case 7: mintTestBearer uses deterministic csprng (same bytes every call) → SQLITE_CONSTRAINT_PRIMARYKEY on second call; also requires TASK-087 principal threading (out of TASK-086 scope).
+
+### IMPL-123 — auth pure/injectable core: oauth-metadata.ts builders + token-store.ts (constructor-injected clock+CSPRNG, 3 SQLite tables) + google-verifier.ts (injected JWKS+clock+base) (TASK-085)
+- **status:** done
+- **traces:** TASK-085, DES-092, DES-093, DES-094
+- **greens:** UT-092 (13/14 — 1 test defect reported), UT-093, UT-094
+- **files:** src/auth/oauth-metadata.ts, src/auth/token-store.ts, src/auth/google-verifier.ts
+- **commit:** (pending)
+- **iter:** v15
+- **note:** Three pure/injectable auth-core files: oauth-metadata.ts — pure buildProtectedResourceMetadata/buildAuthServerMetadata/wwwAuthenticateHeader; token-store.ts — sha256-at-rest bearer + single-use auth-code + oauth_state, constructor-injected clock+csprng (no Date.now()/randomBytes in module); google-verifier.ts — verifyIdToken gating iss/aud/exp/JWKS-signature/nonce + email_verified===true before adopting email. One test defect in UT-092: reported by implementer; test itself was wrong (code matches DES spec) — forwarded to Gate 5 for fix.
+
+### IMPL-124 — DES-096 principal threading: workflow_register/workflow_deregister callTool wiring + TOOL_DEFS principal schema (TASK-087)
+- **status:** done
+- **traces:** TASK-087, DES-096
+- **greens:** VAL-096 (5/5 — all per-caller principal acceptance cases green), IT-082 (partial: 2 of 6 red cases turned green; workflow_register has principal property, workflow_deregister has principal property; 3 TASK-089 items remain covered by IMPL-126)
+- **files:** src/mcp-facade.ts, src/workflow-catalog.ts, src/server.ts
+- **commit:** (pending)
+- **iter:** v15
+
+### IMPL-125 — isLoopbackPeer + D-BIND fail-closed net-guard extension (TASK-088 / DES-097 / ARCH-063)
+- **status:** done
+- **traces:** TASK-088, DES-097, ARCH-063
+- **greens:** UT-096, IT-079, VAL-099
+- **files:** src/net-guard.ts, src/server.ts
+- **commit:** (pending)
+- **iter:** v15
+- **note:** New pure sibling isLoopbackPeer(remoteAddress, headers): 127/8→exempt, ::1→exempt, ::ffff:127.0.0.1 (IPv4-mapped)→exempt, undefined→NOT exempt, any forwarded/tunnel header (x-forwarded-for/cf-connecting-ip/forwarded/x-real-ip) present→NEVER exempt regardless of socket peer. Auth-disabled→guard dormant (pre-v15 open-LAN preserved); POST /github/webhook unaffected (own HMAC).
+
+### IMPL-126 — catalog ownership gate + harness defaults: HarnessDefaults interface, validateHarnessDefaults (D-AUTH-5-A through -E), resolveHarnessParams pure merge, owner/defaults columns with idempotent ALTER TABLE migration, boot backfill, NOT_WORKFLOW_OWNER gate, principal threading, workflow_get owner+defaults surfacing, tool schema updates (TASK-089 / DES-098 / DES-099 / DES-100)
+- **status:** done
+- **traces:** TASK-089, DES-098, DES-099, DES-100
+- **greens:** UT-097, IT-081, IT-082, VAL-097, VAL-098
+- **files:** src/harness-defaults.ts, src/workflow-catalog.ts, src/mcp-facade.ts, src/server.ts
+- **commit:** (pending)
+- **iter:** v15
+- **note:** HarnessDefaults interface + validateHarnessDefaults (D-AUTH-5-A shape, -B model-alias resolvable, -C tool allowlist, -D stores nothing on invalid, -E HARNESS_DEFAULTS_INVALID typed error) + resolveHarnessParams pure per-param merge. owner/defaults columns via idempotent ALTER TABLE migration; boot backfill UPDATE owner=hsuhungjung@gmail.com WHERE owner IS NULL; NOT_WORKFLOW_OWNER gate on register-overwrite/deregister (null principal→ungated, auth-disabled byte-compatible). workflow_get output gains owner+defaults; TOOL_DEFS.workflow_register gains optional defaults.
+
+### IMPL-128 — Gate 6.5 simplify: auth-service.ts wellKnown* handlers de-duplicated via oauth-metadata.ts pure builders
+- **status:** done
+- **traces:** DES-092, DES-095, TASK-085, TASK-086
+- **greens:** (stays green — quality-only refactor; all 1316 tests remain green)
+- **files:** src/auth/auth-service.ts
+- **commit:** (pending)
+- **iter:** v15
+
+Surgical cleanup: `wellKnownProtectedResource` and `wellKnownAuthServer` handlers in `auth-service.ts` were inline-duplicating the exact body of `buildProtectedResourceMetadata` and `buildAuthServerMetadata` from `oauth-metadata.ts` (the comment in that file explicitly states "Three pure functions consumed by server.ts route wiring (TASK-086)"). Replaced both inline bodies with calls to the already-exported pure functions (added import). Behavior identical — same JSON shape, same trailing-slash stripping (now done inside the pure builder). No other code touched. All 1316 tests green after change.
+
+### IMPL-127 — DES-088 consumability drift-lock: workflow_agent_log secret-marker sentence + assertion in v14-schema-drift.test.ts (orchestrator decision option-a, integrator closeout)
+- **status:** done
+- **traces:** TASK-082, DES-088
+- **greens:** IT-077 (new describe block: DES-088 workflow_agent_log secret-marker doc)
+- **files:** src/server.ts, tests/integration/v14-schema-drift.test.ts
+- **commit:** (pending)
+- **iter:** v15
+- **note:** Added sentence "Secret values are replaced with ‹secret:NAME› markers in persisted transcripts." to workflow_agent_log TOOL_DEFS description. Drift-locked by a new describe block in v14-schema-drift.test.ts asserting the exact phrase is present in the served tool description (real HTTP tools/list round-trip, no SUT-boundary mock). Exit-gate rule 3: untested doc is silently driftable.

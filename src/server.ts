@@ -1,7 +1,7 @@
 // MCP Streamable HTTP server bootstrap (DES-001 / ARCH-001 / TASK-001).
 // Owns transport + tool registration only — no business logic (pure delegation to McpFacade).
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { gunzip, inflate } from 'node:zlib';
 import { promisify } from 'node:util';
 
@@ -27,7 +27,7 @@ import { ContinuationStore } from './continuation-store.js';
 import { WebhookRegistry } from './webhook-registry.js';
 import { CasStore, isValidSha256Hex, isValidNamespace } from './cas-store.js';
 import type { SecretValueProvider } from './secret-resolver.js';
-import { isAllowedHost, isAllowedOrigin } from './net-guard.js';
+import { isAllowedHost, isAllowedOrigin, isLoopback, isLoopbackPeer } from './net-guard.js';
 import { parseMeta, parseWorkflowSkeleton } from './workflow-meta.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
 import { AssetSyncService, classifyAsset, type AssetPush, type AssetKind } from './asset-sync.js';
@@ -40,6 +40,10 @@ import { SystemInfoSampler, RealSystemProbe, UTIL_PCT_CONVENTION } from './syste
 import { assertUpdatePathsOutsideWorkRoot, writeUpdateFlag, SelfUpdateDb, readUpdateResult } from './self-update.js';
 import type { UpdateOutcome } from './update-types.js';
 import { verifyTagWebhook } from './self-update-webhook.js';
+import Database from 'better-sqlite3';
+import { TokenStore } from './auth/token-store.js';
+import { createAuthRouteHandlers, resolvePrincipal, type AuthConfig } from './auth/auth-service.js';
+import { wwwAuthenticateHeader } from './auth/oauth-metadata.js';
 
 // REQ-066 (v11): engine version from package.json + best-effort git describe, replacing the hardcoded '1.0.0'.
 const ENGINE_VERSION = resolveEngineVersion();
@@ -140,6 +144,10 @@ export interface ServerConfig {
   // Tests inject a StubProbe-based sampler (no real OS probe). ONE instance feeds both the
   // system_info MCP tool and GET /api/system (DES-073 "sample once").
   systemInfo?: SystemInfoSampler;
+  // v15 (REQ-012/086, DES-095, TASK-086): per-caller auth AS. When absent/disabled, pre-v15
+  // open behavior is preserved byte-for-byte (no auth gates added). Google is a legitimately-doubled
+  // external dep via injected googleBase+jwksFetch (same contract as the integration tests).
+  auth?: AuthConfig;
 }
 
 export interface Server {
@@ -339,7 +347,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     inputSchema: { type: 'object', properties: {} },
   },
   workflow_agent_log: {
-    description: "Returns one agent() call's captured transcript events (message/tool_call/tool_result/usage, in order) for a given run.",
+    description: "Returns one agent() call's captured transcript events (message/tool_call/tool_result/usage, in order) for a given run. Secret values are replaced with ‹secret:NAME› markers in persisted transcripts.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -350,26 +358,44 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     },
   },
   workflow_register: {
-    description: 'Registers (or updates) a named workflow script in the catalog, so it can later be run by name via workflow_run({name}).',
+    description: 'Registers (or updates) a named workflow script in the catalog, so it can later be run by name via workflow_run({name}). Ownership: the first caller to register a name becomes its owner; only the owner may overwrite or deregister it (non-owner → NOT_WORKFLOW_OWNER). Optional harness defaults bind model/tools/timeoutMs at registration.',
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'The workflow name to register/update.' },
         script: { type: 'string', description: 'The workflow script text to save under this name (run later via workflow_run({name})). ' + SCRIPT_DSL_DOC },
+        // v15 (DES-096, TASK-087): optional caller principal for ownership attribution.
+        principal: { type: 'string', description: 'Caller identity (email) for ownership attribution. When auth is enabled this is resolved from the bearer; when absent, the server uses null (auth-disabled or loopback path).' },
+        // v15 (DES-099, TASK-089): optional harness defaults bound at registration time.
+        defaults: {
+          type: 'object',
+          description: 'Optional harness defaults bound at registration (DES-099): {model?, tools?, skills?, timeoutMs?, prompt?}. Validated at register time: model must be a resolvable alias, tools must be in the curated allowlist, skills are deferred to run time. Invalid → HARNESS_DEFAULTS_INVALID, nothing stored.',
+          properties: {
+            model: { type: 'string', description: 'Default model alias for agents in this workflow.' },
+            tools: { type: 'array', items: { type: 'string' }, description: 'Default curated tool allowlist for agents.' },
+            skills: { type: 'array', items: { type: 'string' }, description: 'Default skill names (existence deferred to run time).' },
+            timeoutMs: { type: 'number', description: 'Default per-agent timeout in milliseconds.' },
+            prompt: { type: 'string', description: 'Default system prompt prefix for agents.' },
+          },
+        },
       },
       required: ['name', 'script'],
     },
   },
   workflow_deregister: {
-    description: 'Removes a registered workflow from the catalog by name (returns removed:false if it was not registered). Prior runs are unaffected.',
+    description: 'Removes a registered workflow from the catalog by name (returns removed:false if it was not registered). Only the owner may deregister an owned workflow (non-owner → NOT_WORKFLOW_OWNER). Prior runs are unaffected.',
     inputSchema: {
       type: 'object',
-      properties: { name: { type: 'string', description: 'The workflow name to remove from the catalog.' } },
+      properties: {
+        name: { type: 'string', description: 'The workflow name to remove from the catalog.' },
+        // v15 (DES-096, TASK-087): optional caller principal for ownership gate.
+        principal: { type: 'string', description: 'Caller identity (email) for ownership gate. When auth is enabled this is resolved from the bearer; when absent, the server uses null (auth-disabled or loopback path).' },
+      },
       required: ['name'],
     },
   },
   workflow_get: {
-    description: "Returns a registered workflow's full detail — {name, version, createdAt, description (its purpose, from meta.description), phases, script, skeleton} — so a client can understand what it does and see its predicted DAG (a static scan of phase/agent/parallel/workflow calls) BEFORE deciding to reuse it or author a new one. Unknown name → WORKFLOW_NOT_FOUND.",
+    description: "Returns a registered workflow's full detail — {name, version, createdAt, description (its purpose, from meta.description), phases, script, skeleton, owner (registration principal), defaults (harness defaults bound at registration)} — so a client can understand what it does, inspect its owner, query its registered harness defaults, and see its predicted DAG (a static scan of phase/agent/parallel/workflow calls) BEFORE deciding to reuse it or author a new one. Unknown name → WORKFLOW_NOT_FOUND.",
     inputSchema: {
       type: 'object',
       properties: { name: { type: 'string', description: 'The registered workflow to inspect.' } },
@@ -742,9 +768,10 @@ async function callTool(
   systemInfo: SystemInfoSampler,
   name: string,
   args: Record<string, unknown>,
+  principal: string | null = null,
 ): Promise<unknown> {
   switch (name as ToolName) {
-    case 'workflow_run': return facade.workflow_run(args as { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: { path: string; sha256: string; exec?: boolean }[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string }; seedManifestRef?: string; scriptSha256?: string });
+    case 'workflow_run': return facade.workflow_run(args as { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: { path: string; sha256: string; exec?: boolean }[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string }; seedManifestRef?: string; scriptSha256?: string }, principal);
     case 'workflow_status': return facade.workflow_status(args as { runId: string });
     case 'workflow_result': return facade.workflow_result(args as { runId: string });
     case 'workflow_suspend': return facade.workflow_suspend(args as { runId: string });
@@ -752,8 +779,19 @@ async function callTool(
     case 'workflow_stop': return facade.workflow_stop(args as { runId: string });
     case 'workflow_list': return facade.workflow_list();
     case 'workflow_agent_log': return facade.workflow_agent_log(args as { runId: string; agentId: string });
-    case 'workflow_register': return facade.workflow_register(args as { name: string; script: string });
-    case 'workflow_deregister': return facade.workflow_deregister(args as { name: string });
+    // v15 (DES-096, TASK-087): thread principal to mutation methods for ownership attribution.
+    // Effective principal: auth-resolved wins; if null (loopback/auth-disabled), fall back to
+    // args.principal if the caller supplies one (IT-080 pattern for catalog-layer integration tests).
+    case 'workflow_register': {
+      const { principal: argPrincipal, ...regArgs } = args as { name: string; script: string; principal?: string | null; defaults?: Record<string, unknown> };
+      const effectivePrincipal = principal ?? (typeof argPrincipal === 'string' ? argPrincipal : null);
+      return facade.workflow_register(regArgs, effectivePrincipal);
+    }
+    case 'workflow_deregister': {
+      const { principal: argPrincipal, ...deregArgs } = args as { name: string; principal?: string | null };
+      const effectivePrincipal = principal ?? (typeof argPrincipal === 'string' ? argPrincipal : null);
+      return facade.workflow_deregister(deregArgs, effectivePrincipal);
+    }
     case 'workflow_get': return facade.workflow_get(args as { name: string });
     case 'workflow_artifacts': return facade.workflow_artifacts(args as { runId: string });
     case 'workflow_artifact_get': return facade.workflow_artifact_get(args as { runId: string; path: string; offset?: number; length?: number });
@@ -1073,7 +1111,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   };
   ingestUpdateResult(); // boot-time read (covers the "applied" case after a systemctl restart)
 
-  const catalog = new WorkflowCatalog(workRoot, clock);
+  // v15 (DES-098, DES-099, TASK-089): boot backfill + alias-aware validation
+  const catalog = new WorkflowCatalog(workRoot, clock, {
+    backfillOwner: config?.auth?.enabled ? true : undefined,
+    aliasNames: config?.aliases ? new Set(Object.keys(config.aliases)) : undefined,
+  });
   const gateway =
     config?.gateway ??
     (config?.aliases
@@ -1229,6 +1271,19 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     gcTimer.unref?.();
   }
 
+  // v15 (REQ-012/086, DES-095, TASK-086): auth AS — token-store + route handlers.
+  // When auth disabled/absent, pre-v15 open behavior is preserved byte-for-byte.
+  const authCfg = config?.auth?.enabled ? config.auth : undefined;
+  const authTokenStore = authCfg
+    ? new TokenStore(new Database(join(workRoot, 'auth-tokens.db')), {
+        clock: () => clock.now(),
+        csprng: (n: number) => randomBytes(n),
+      })
+    : undefined;
+  const authHandlers = authCfg && authTokenStore
+    ? createAuthRouteHandlers(authCfg, authTokenStore)
+    : undefined;
+
   // v8 Defer B (REQ-056): the real listening port is known only after listen(); the handler closure
   // reads it via this mutable, assigned below. 0 until then (no request is served before listen).
   let boundPort = 0;
@@ -1285,6 +1340,166 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     if (!isAllowedHost(req.headers.host, bind, boundPort, config?.allowedHosts) || !originOk) {
       sendJson(res, 403, { error: 'Forbidden: Host/Origin not allowlisted' });
       return;
+    }
+    // v15 (DES-097, TASK-088): D-BIND loopback-peer exemption. When the server is bound to a
+    // non-loopback address (0.0.0.0 or a LAN IP) AND auth is enabled, loopback socket peers
+    // (127/8, ::1, ::ffff:127.x) are exempt from the auth gate — preserving the local-admin /
+    // self-update rescue path. Loopback-bound servers are excluded (no non-loopback peers possible).
+    // Tunnel/forwarded headers → NEVER exempt (D-AUTH-3 cloudflared-on-loopback hole).
+    const dbindExempt = isLoopbackPeer(req.socket?.remoteAddress, req.headers) && !isLoopback(bind);
+    // v15 (DES-095, TASK-086): OAuth AS routes — public (no bearer required), only when auth enabled.
+    // effectiveIssuer replaces port 0 with the real bound port (issuer placeholder at startup).
+    if (authHandlers) {
+      const effectiveIssuer = (): string => {
+        const raw = authCfg?.issuer ?? `http://${bind}:${boundPort}`;
+        try {
+          const u = new URL(raw);
+          if (u.port === '0') u.port = String(boundPort);
+          return u.toString().replace(/\/$/, '');
+        } catch {
+          return raw.replace(/\/$/, '');
+        }
+      };
+      const wwwChallenge = (): string => wwwAuthenticateHeader({ issuer: effectiveIssuer() });
+      const send401 = (): void => {
+        const wwa = wwwChallenge();
+        res.writeHead(401, { 'WWW-Authenticate': wwa, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+      };
+      if (req.method === 'GET' && req.url === '/.well-known/oauth-protected-resource') {
+        authHandlers.wellKnownProtectedResource(res, effectiveIssuer());
+        return;
+      }
+      if (req.method === 'GET' && req.url === '/.well-known/oauth-authorization-server') {
+        authHandlers.wellKnownAuthServer(res, effectiveIssuer());
+        return;
+      }
+      if (req.method === 'GET' && (req.url === '/authorize' || req.url?.startsWith('/authorize?'))) {
+        authHandlers.authorize(req, res, effectiveIssuer());
+        return;
+      }
+      if (req.method === 'GET' && req.url?.startsWith('/oauth/google/callback')) {
+        authHandlers.googleCallback(req, res, effectiveIssuer()).catch(() => {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'OAuth callback error' }));
+        });
+        return;
+      }
+      if (req.method === 'POST' && (req.url === '/token' || req.url?.startsWith('/token?'))) {
+        authHandlers.tokenExchange(req, res).catch(() => {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'token exchange error' }));
+        });
+        return;
+      }
+      // Auth gate for blob upload (DES-096: resolve-once before putBlobStream consumes req)
+      const blobMatchAuth = req.method === 'POST' ? /^\/assets\/blob\/([^/?]+)/.exec(req.url ?? '') : null;
+      if (!dbindExempt && blobMatchAuth) {
+        void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then((p) => {
+          if ('status' in p) { send401(); return; }
+          const sha = decodeURIComponent(blobMatchAuth[1]!);
+          // DES-096: principal is the namespace for authenticated uploads (server-derived, not echoed from client).
+          const ns = p.principal;
+          if (!isValidSha256Hex(sha)) {
+            sendJson(res, 400, { code: 'INVALID_BLOB_REQUEST', message: 'invalid sha256 hex' });
+            return;
+          }
+          cas.putBlobStream(ns, sha, req, { maxBytes: blobMaxBytes, readTimeoutMs: 120_000 }).then((r) => {
+            sendJson(res, 200, { sha256: r.sha256, bytes: r.bytes, namespace: ns });
+          }).catch((err: unknown) => {
+            const code = (err as { code?: string }).code ?? 'BLOB_ERROR';
+            const msg = (err as { message?: string }).message ?? String(err);
+            if (code === 'BLOB_TOO_LARGE') { sendJson(res, 413, { code, message: msg }); return; }
+            if (code === 'BLOB_UPLOAD_TIMEOUT') { sendJson(res, 408, { code, message: msg }); return; }
+            if (code === 'BLOB_SHA_MISMATCH') { sendJson(res, 409, { code, message: msg }); return; }
+            sendJson(res, 500, { code, message: msg });
+          });
+        });
+        return;
+      }
+      // Auth gate for manifest upload (DES-096: resolve-once before body read)
+      if (!dbindExempt && req.method === 'POST' && req.url?.startsWith('/assets/manifest')) {
+        void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then(async (p) => {
+          if ('status' in p) { send401(); return; }
+          // DES-096: principal is the namespace for authenticated manifest uploads (server-derived).
+          const ns = p.principal;
+          if (!cas) {
+            sendJson(res, 400, { code: 'INVALID_BLOB_REQUEST', message: 'CAS not configured' });
+            return;
+          }
+          const rawBytes = await readBodyBuffer(req, blobMaxBytes).catch((err: unknown) => {
+            if (err instanceof BodyTooLargeError) sendJson(res, 413, { error: err.message, code: err.code });
+            else sendJson(res, 500, { error: 'manifest register error' });
+            return null;
+          });
+          if (rawBytes === null) return;
+          let parsed: unknown;
+          try { parsed = JSON.parse(rawBytes.toString('utf8')); } catch {
+            sendJson(res, 400, { code: 'INVALID_SEED_SPEC', message: 'manifest body is not valid JSON' });
+            return;
+          }
+          if (!Array.isArray(parsed)) {
+            sendJson(res, 400, { code: 'INVALID_SEED_SPEC', message: 'manifest must be a JSON array of {path, sha256, exec?}' });
+            return;
+          }
+          const referencedShas = (parsed as Array<{ sha256?: unknown }>).map((e) => String(e.sha256 ?? ''));
+          const missing = await cas.missing(ns, referencedShas);
+          if (missing.length > 0) {
+            sendJson(res, 409, { code: 'MISSING_BLOBS', missing, message: `${missing.length} blob(s) not found in namespace ${ns}` });
+            return;
+          }
+          const { sha256: manifestRef } = await cas.putBlob(ns, createHash('sha256').update(rawBytes).digest('hex'), rawBytes);
+          sendJson(res, 200, { seedManifestRef: manifestRef, namespace: ns });
+        }).catch(() => { sendJson(res, 500, { error: 'manifest auth error' }); });
+        return;
+      }
+      // Auth gate for /mcp (DES-096: headers-only before readBodyDecoded)
+      if (!dbindExempt && req.method === 'POST' && req.url?.startsWith('/mcp')) {
+        void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then((p) => {
+          if ('status' in p) { send401(); return; }
+          return readBodyDecoded(req).then(async (raw) => {
+            let rpc: JsonRpcRequest;
+            try {
+              rpc = JSON.parse(raw) as JsonRpcRequest;
+            } catch {
+              sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } });
+              return;
+            }
+            try {
+              if (rpc.method === 'initialize') {
+                const clientProto = (rpc.params as { protocolVersion?: string } | undefined)?.protocolVersion;
+                sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { protocolVersion: clientProto ?? '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'remote-workflow-engine', version: ENGINE_VERSION } } });
+                return;
+              }
+              if (rpc.method === 'notifications/initialized' || rpc.method?.startsWith('notifications/')) {
+                res.writeHead(202).end(); return;
+              }
+              if (rpc.method === 'ping') { sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: {} }); return; }
+              if (rpc.method === 'tools/list') {
+                const tools = TOOL_NAMES.map((name) => ({ name, ...TOOL_METADATA[name] }));
+                sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { tools } }); return;
+              }
+              if (rpc.method === 'tools/call') {
+                const name = rpc.params?.name ?? '';
+                const args = rpc.params?.arguments ?? {};
+                const webhookBaseUrl = `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
+                const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, systemInfoSampler, name, args, p.principal);
+                sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } }); return;
+              }
+              sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32601, message: `Method not found: ${rpc.method}` } });
+            } catch (err) {
+              sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32000, message: (err as Error).message } });
+            }
+          }).catch((err: unknown) => {
+            if (err instanceof BodyTooLargeError) {
+              sendJson(res, 413, { jsonrpc: '2.0', id: null, error: { code: err.code, message: err.message, cap: err.cap, phase: err.phase, hint: err.hint } });
+              return;
+            }
+            sendJson(res, 500, { jsonrpc: '2.0', id: null, error: { code: -32603, message: 'Internal error' } });
+          });
+        }).catch(() => { sendJson(res, 500, { jsonrpc: '2.0', id: null, error: { code: -32603, message: 'Internal error' } }); });
+        return;
+      }
     }
     // D-V2V-2 (REQ-008 route-back): a real browser-renderable HTML/JS dashboard page, on the SAME
     // port as /mcp and /api/runs* (one data model, two transports — now genuinely two). SPA-style

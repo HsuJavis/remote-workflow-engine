@@ -43,5 +43,10 @@
       "provider": "ollama",
       "model": "qwen2.5:7b"
     }
+  },
+  "auth": {
+    "enabled": false,
+    "googleClientId": "<your Google Cloud Console OAuth 2.0 client ID>",
+    "googleClientSecret": "<your Google OAuth 2.0 client secret>"
   }
 }

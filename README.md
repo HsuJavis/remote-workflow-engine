@@ -10,7 +10,7 @@
 原封不動地跑在一台伺服器上，透過 **MCP Streamable HTTP** 介面遠端送出、追蹤、暫停/續跑/停止，並
 把每個 `agent()` 呼叫真正路由到你設定的 LLM 供應商（Anthropic / OpenAI / Gemini / 本機 Ollama）。
 
-**目前功能（v14，2026-08-16）**：
+**目前功能（v15，2026-08-18）**：
 
 - **工作流程執行**：`workflow_run`（含 inline seed + CAS seedManifest + `seedManifestRef` + `scriptSha256`
   完整性守衛）、`workflow_status`、`workflow_suspend`/`workflow_resume`/`workflow_stop`、
@@ -36,6 +36,11 @@
 - **可觀測性**：`GET /api/home`（首頁工作流程分組 JSON）、`GET /api/status`（agentSemaphore）、
   `GET /api/system`（主機 + 行程快照）、`GET /api/models`（統一模型目錄）、
   `GET /api/issues`、`GET /api/issues/:number`
+- **OAuth 2.0 身份認證（v15，opt-in）**：引擎自身即授權伺服器，以 Google 為 IdP；MCP client
+  走 authorization-code + PKCE + loopback-redirect 流程取得引擎 opaque bearer；D-BIND fail-closed（非
+  loopback 來源若無有效 bearer → 401）；工作流程擁有權（`NOT_WORKFLOW_OWNER`）；per-run principal
+  attribution；`workflow_register` 綁定 harness defaults（`HARNESS_DEFAULTS_INVALID`）。
+  啟用方式：在 `rwe.config.json` 加入 `auth:{enabled:true,...}` 區塊（見 `rwe.config.example.json` / DEPLOY.md §1 設定總表）。
 
 共 **37 個** MCP 工具。
 
@@ -49,7 +54,7 @@
 
 ## 快速開始 Quickstart
 
-以下指令是 v14 validator 實際跑過、能把系統帶起來的步驟（本輪零文件缺口）。
+以下指令是 v15 validator 實際跑過、能把系統帶起來的步驟（本輪零文件缺口）。
 
 ```bash
 # 1. 安裝 Node 依賴
@@ -183,7 +188,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 ## 已知限制
 
 - **本機 7B 小模型工具呼叫**：`qwen2.5:7b` 透過 SDK gateway 不會真的觸發 tool_use，只生成看起來像工具結果的文字。建議使用 32B 以上本機模型或付費供應商（Anthropic/OpenAI/Gemini）。
-- **OIDC 尚未實作**（REQ-012，已接受延後 D5）：公開 bind 時依賴 Host/Origin 白名單 + LAN 網段管控作為過渡管控，而非正式 token auth。
+- **OAuth 2.0 auth 為 opt-in**：`auth.enabled:false`（預設／省略）= 保持 v14 前無 auth 開放行為；啟用後需要 Google Cloud Console client_id/secret，且引擎需有 HTTPS 公開 callback URL（`/oauth/google/callback`，讓 Google 能回呼）。
 - **docker/sudo 部署未驗證**：環境沒有 docker 也沒有 sudo，docker-compose 與 root systemd 路徑未跑過（僅語法驗證）；npm path 路徑 + systemd user service 已對真實 process 驗證。
 - **`workflow_status.agents[]` 暫停後 state 不自動更新**：被 suspend/stop 的 agent 記錄永遠停在 `"running"`；續跑後會多出一筆新紀錄，純屬顯示瑕疵。
 

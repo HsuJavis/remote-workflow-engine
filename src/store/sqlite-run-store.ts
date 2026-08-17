@@ -62,6 +62,8 @@ export class SqliteRunStore implements RunStore {
     // v11 Sprint 3 (TASK-066): additive migration — adds started_by column to existing runs tables.
     // try/catch handles re-runs against an existing DB ("duplicate column name" error → no-op).
     try { this._db.exec('ALTER TABLE runs ADD COLUMN started_by TEXT'); } catch { /* already exists */ }
+    // v15 (REQ-086 / DES-096): additive migration — principal column on the run record.
+    try { this._db.exec('ALTER TABLE runs ADD COLUMN principal TEXT'); } catch { /* already exists */ }
   }
 
   private _runDir(runId: string): string {
@@ -72,8 +74,8 @@ export class SqliteRunStore implements RunStore {
     const runId = randomUUID();
     const ts = this._clock.isoNow();
     this._db
-      .prepare('INSERT INTO runs (runId, name, status, scriptVersion, createdAt, script, args, budget, started_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(runId, spec.name ?? null, 'queued', scriptVersion, ts, spec.script ?? null, JSON.stringify(spec.args ?? null), JSON.stringify(spec.budget ?? null), spec.startedBy ? JSON.stringify(spec.startedBy) : null);
+      .prepare('INSERT INTO runs (runId, name, status, scriptVersion, createdAt, script, args, budget, started_by, principal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(runId, spec.name ?? null, 'queued', scriptVersion, ts, spec.script ?? null, JSON.stringify(spec.args ?? null), JSON.stringify(spec.budget ?? null), spec.startedBy ? JSON.stringify(spec.startedBy) : null, spec.principal ?? null);
     mkdirSync(this._runDir(runId), { recursive: true });
     return runId;
   }
@@ -197,7 +199,7 @@ export class SqliteRunStore implements RunStore {
 
   async getRun(runId: string): Promise<RunStatusView | null> {
     const row = this._db.prepare('SELECT * FROM runs WHERE runId = ?').get(runId) as
-      | { runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null }
+      | { runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null; principal?: string | null }
       | undefined;
     if (!row) return null;
     // v8 Slice 2c: a persisted terminal snapshot restores the full DAG (frames/phases/timing) after a
@@ -215,6 +217,8 @@ export class SqliteRunStore implements RunStore {
       workflowNodes: snap?.workflowNodes ?? [],
       startedBy: row.started_by ? (JSON.parse(row.started_by) as RunStatusView['startedBy']) : { type: 'unknown' },
       terminalAt: termRow?.ts,
+      // v15 (DES-096): omit when absent (conditional spread mirrors terminalAt pattern).
+      ...(row.principal ? { principal: row.principal } : {}),
     };
   }
 

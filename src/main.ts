@@ -144,6 +144,12 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     updateFlagPath: fileConfig.updateFlagPath,
     updateResultPath: fileConfig.updateResultPath,
     selfUpdateDbPath: fileConfig.selfUpdateDbPath,
+    // v15 REQ-012/086/087/089: forward auth config so auth routes + enforcement engage on `npm start`
+    // (same composition-root wiring pattern as allowedHosts / updateFlagPath above; without this,
+    // `auth.enabled:true` in rwe.config.json is parsed by loadFileConfig() but silently dropped
+    // here — server.ts keys every auth route registration and D-BIND enforcement off config?.auth?.enabled,
+    // so the whole auth subsystem is built-but-unwired at the production entrypoint).
+    auth: fileConfig.auth,
   };
 
   if (gatewayChoice === 'sdk') {

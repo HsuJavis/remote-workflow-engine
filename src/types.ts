@@ -30,6 +30,9 @@ export interface ResultEnvelope<T = unknown> {
   status: RunStatus;
   result?: T;
   error?: ErrEnvelope;
+  /** v15 (REQ-086 / DES-096): set only on workflow_status responses when auth is enabled and the
+   *  run has an attributed principal. Absent (not null) when auth disabled or no attribution. */
+  principal?: string;
 }
 
 export interface Budget {
@@ -129,6 +132,9 @@ export interface RunStatusView {
   /** v14 (REQ-082 / DES-087): sha256 of the manifest blob used for this run's seed (client-derivable).
    *  Absent unless the run used a seedManifestRef. */
   seedManifestRef?: string;
+  /** v15 (REQ-086 / DES-096): authenticated caller identity attributed at submission time.
+   *  Absent when auth is disabled or the caller is a token-free loopback peer. */
+  principal?: string;
 }
 
 export interface RunSummary {
@@ -171,6 +177,9 @@ export interface RunSpec {
    *  script's UTF-8 bytes. If present and mismatched → SCRIPT_SHA_MISMATCH, no run created.
    *  Supply with a named run (no inline script) → SCRIPT_SHA_WITHOUT_SCRIPT. */
   scriptSha256?: string;
+  /** v15 (REQ-086 / DES-096): authenticated caller identity — attributed on the run record.
+   *  null iff auth disabled or token-free loopback caller. NEVER forwarded to sandbox env. */
+  principal?: string | null;
 }
 
 /** v10 Slice 2 (REQ-065): a CAS-manifest seed entry — REGULAR FILES ONLY (no mode int, no symlink/type,
