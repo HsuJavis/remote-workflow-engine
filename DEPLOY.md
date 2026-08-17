@@ -3,21 +3,23 @@
 > 人類導向文件（繁體中文）。由 Gate 7.5 validator 依實際部署步驟撰寫，步驟可重跑。
 > 凡 validator 為了把系統跑起來而做、但 README quickstart 未涵蓋的動作，都記在這裡。
 >
-> 目前部署狀態（v14，2026-08-16）：systemd user service `rwe.service`，綁定
+> 目前部署狀態（v16，2026-08-18）：systemd user service `rwe.service`，綁定
 > `0.0.0.0:8899`（本機 override.conf 將 port 覆寫為 8899；預設安裝用 8787，見 §1 設定總表 `RWE_PORT`；
 > ufw 白名單 `192.168.0.0/24` + SSH），`workRoot=/home/user/.local/share/rwe-data`，
-> `gateway:"sdk"` + managed LiteLLM proxy。**37 個** MCP 工具，含 engine-pull `seedRef`（設定鍵
-> `seedRefAllowlist`，見 §1b）、streaming blob upload（`POST /assets/blob/:sha`）、server-side
-> manifest ref（`POST /assets/manifest`）、redact-at-capture（`‹secret:NAME›` marker；JournalEntry
-> key.prompt + value 均在 persist-write 前抹除，見 REQ-083 / DES-088）、`asset_push` schema honesty、
-> `scriptSha256` integrity guard（設定鍵 `maxBlobBytes`，見 §1b）。Gate 7.5 v14 **PASSED**（ROUND 2）：
-> VAL-089..094 全部 real:true pass；trace 704 items / 6 pre-existing gaps（REQ-012 OIDC deferred D5）。
+> `gateway:"sdk"` + managed LiteLLM proxy。**37 個** MCP 工具，v15 新增 OAuth 2.0 身份認證（opt-in，
+> 設定鍵 `auth.enabled`/`auth.googleClientId`/`auth.googleClientSecret`，見 §1 設定總表）、工作流程
+> 擁有權（`NOT_WORKFLOW_OWNER`）、per-run principal attribution、harness defaults binding
+> （`HARNESS_DEFAULTS_INVALID`）、D-BIND fail-closed（非 loopback 來源若無有效 bearer → 401）。
+> **v16 安全修補**：`/authorize` 現在在寫入 oauth_state 前驗證 `redirect_uri` 必須為 loopback URI（RFC 8252）；
+> 過期 auth 表列由 GC sweep 自動清除（`gcExpired()` 已接入 sweep）；`composeConfig()` 補上
+> `workspaceTtlMs` 轉發，確保 GC 間隔實際反映設定值。
+> Gate 7.5 v16 **PASSED**：VAL-095 real:true pass（v16 新增條款）；1328/1328 tests；IT-078 17/17；IT-079 4/4；cross-process GC confirmed；trace 751 items / 6 gaps（6 pre-existing）。
 > 完整驗證證據見 `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
 
 
 ## §0 Quickstart — 開機序列（可逐字貼上執行）
 
-> 以下指令與 README quickstart 一致，是 v14 validator 實際跑過的步驟，本輪零文件缺口。
+> 以下指令與 README quickstart 一致，是 v16 validator 實際跑過的步驟，本輪零文件缺口。
 
 ```bash
 # 步驟 1：安裝 Node 依賴
@@ -177,7 +179,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 >    `Environment=RWE_BIND=<你的 LAN IP>`（unit env 覆蓋 config），例:
 >    `Environment=RWE_BIND=192.168.0.125`，然後 `systemctl --user daemon-reload && systemctl --user restart rwe.service`。
 >    確認: `ss -ltnp | grep :8787` 應顯示 `192.168.0.125:8787`（不是 `127.0.0.1`）。
-> 2. **防火牆白名單（必做）**——引擎 **v3 前無任何 auth**,綁上區網 = 任何能連到 `/mcp` 的裝置都能
+> 2. **防火牆白名單（必做）**——`auth.enabled:false`（預設）時引擎無訪問控制，綁上區網 = 任何能連到 `/mcp` 的裝置都能
 >    送 workflow，讓 Bash agent 在**這台主機上執行任意程式碼**、`asset_push` 任意寫檔。用 OS 防火牆
 >    把 8787 限制到你信任的來源:
 >    ```bash
@@ -189,7 +191,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > 3. **DHCP 注意**: LAN IP 若是 DHCP 動態配發,重開機可能改變 → bind 會失效。請在路由器做 **DHCP
 >    保留 / 靜態 IP**,或改綁一個固定的 LAN IP。
 > 4. 仍建議: 跨機器的更安全選項是**維持 `127.0.0.1` + SSH 通道**
->    （`ssh -L 8787:127.0.0.1:8787 user@<host>`）——零網路曝露,適合單人/跨網段。多租戶要等 v3 auth。
+>    （`ssh -L 8787:127.0.0.1:8787 user@<host>`）——零網路曝露,適合單人/跨網段。多租戶/token auth 見 §1 的 v15 `auth` 區塊。
 >
 > ### B. 讓遠端 run 的程式碼變更「落地」到你本地(rwe-apply v1)
 > 引擎的 agent 被 **jail 在 server 端 per-run workspace**,碰不到 client 機器（設計如此）。要把
@@ -369,6 +371,12 @@ counter），省略時預設 **64**，啟動載入時驗證（值 ≤0 或非整
 不建工作區、不 seed、不 fork sandbox）就以 `RUN_ADMISSION_LIMIT` 拒絕——這是全域 agent semaphore 沒有
 提供的 DoS 阻塞點（semaphore 只限 `agent()` 派工，不限 run 數/sandbox fork/工作區生成）。巢狀
 `workflow()` **不佔用**槽位（不是頂層 `start()`）；run 進入終態即釋放槽位。
+
+`workspaceTtlMs`（型別 `number`，選填）：Workspace GC 間隔（毫秒）。設定後引擎啟動一個
+`setInterval` sweep，定期回收閒置超過此值的舊 workspace 目錄（REQ-026）；同一個 sweep 也會呼叫
+`gcExpired()` 清除過期 auth 列（`bearer_tokens`/`auth_codes`/`oauth_state`）。`0` 或省略 = workspace
+reclaim 停用；auth 啟用但未設此鍵時，sweep 每小時跑一次（auth-table GC 仍執行）。詳見 §1 設定總表
+`workspaceTtlMs` 行。
 `continuationDbPath`（型別 `string`，選填）：on-completion chaining 續接的 SQLite
 檔路徑（引擎自有 side table，與 v1 core 的 RunSpec/RunStore 無關，作法同 `schedulerDbPath`），省略時
 預設 `$workRoot/continuations.db`；一般部署可省略不填。
@@ -422,6 +430,34 @@ port 的問題（實測常駐 sdk 服務跑在動態 port，可與完整測試�
 | `RWE_SECRET_<NAME>` | 伺服器端 secret store（REQ-018）。provisioned MCP config 裡的 `${secret:NAME}` handle 由這個 env var 解析（`<NAME>` 對應 handle 裡的名稱，大小寫敏感）。引擎啟動時不驗證，只在有 run 引用 MCP 時才解析——缺少則該 run 以 `SECRET_MISSING` 報錯，從不外洩 handle 值或靜默跳過。**絕不放進 `rwe.config.json`（config 只存 handle，不存值）**；建議透過 systemd unit 的 `Environment=` 或 `EnvironmentFile=` 注入，或者 `export RWE_SECRET_MY_TOKEN=<value>` 方式設定。 | 無預設（缺少且 MCP 有引用時 run 報錯） |
 | `RWE_SECRET_GITHUB_TOKEN` | **issue_report / Issues 儀表板需要**（REQ-027..030, REQ-066, REQ-067）。GitHub Personal Access Token（PAT）或 Fine-grained token，須有目標 repo 的 `issues:write` 權限。引擎讀此鍵為 `RWE_SECRET_GITHUB_TOKEN`（命名遵循 secret store 慣例）。缺少時 `issue_report` 回 `GITHUB_TOKEN_MISSING`；`GET /api/issues` 回 HTTP 200 `{degraded:"GitHub not configured"}`（不 500）。**絕不放進設定檔**；透過 `EnvironmentFile=~/.config/rwe.env` 注入（見 §2b systemd unit 範例）。 | 無預設（缺少時功能降級，非崩潰） |
 | `RWE_SECRET_GITHUB_WEBHOOK_SECRET` | **v11 Sprint 2（REQ-068）標籤觸發式自動更新需要**。GitHub webhook 的共享 HMAC 密鑰，對應在 GitHub 介面設定的「Secret」欄位。引擎讀此鍵為 `RWE_SECRET_GITHUB_WEBHOOK_SECRET`（secret store 慣例）。`POST /github/webhook` 路由以此金鑰對**原始 body bytes**（非解碼後）計算 HMAC-SHA256，並與 `X-Hub-Signature-256` 標頭做常數時間比對。缺少時（同時沒有設定 `updateFlagPath`）整條路由回 503 `UPDATE_WEBHOOK_UNCONFIGURED`，不影響其他功能。**絕不放進設定檔**；透過 `EnvironmentFile=~/.config/rwe.env` 注入。 | 無預設（缺少時自動更新功能停用，其餘功能不受影響） |
+
+**v16 新增：`workspaceTtlMs` 設定鍵（`rwe.config.json`，選填）**
+
+| carrier | purpose | type/default | required | iter |
+|---|---|---|---|---|
+| `rwe.config.json` → `workspaceTtlMs` | Workspace GC 間隔（ms）：引擎啟動一個 `setInterval` sweep 定期回收閒置超過此值的舊 workspace 目錄（REQ-026）；**同時決定 auth-table GC sweep（`gcExpired()`）的間隔**（auth 啟用時也在同一個 sweep tick 清除過期 `bearer_tokens`/`auth_codes`/`oauth_state` 列）。`0` 或省略 = workspace reclaim 關閉；若只啟用 auth 而不設 workspaceTtlMs，sweep 每小時跑一次（auth-table GC 仍然執行）。 | `number` / `0`（停用）| 否 | v16 |
+
+**v15 新增：OAuth 2.0 設定鍵（`auth` 區塊，`rwe.config.json`，opt-in）**
+
+| carrier | purpose | type/default | required | iter |
+|---|---|---|---|---|
+| `rwe.config.json` → `auth.enabled` | OAuth 2.0 toggle：`false`（省略 auth 區塊或 enabled:false）= 保持 v14 前無 auth 開放行為 | `boolean` / `false` | 否 | v15 |
+| `rwe.config.json` → `auth.googleClientId` | Google Cloud Console 的 OAuth 2.0 client ID（不含密鑰，僅識別碼）；用於引擎 `/authorize` 重導向 Google 同意畫面、以及 id_token aud 驗證 | `string` / — | 當 `auth.enabled:true` | v15 |
+| `rwe.config.json` → `auth.googleClientSecret` | Google OAuth 2.0 client secret；用於 `/oauth/google/callback` 的 code exchange；操作者管理的敏感值，不透傳給 VM sandbox 或 agent 子行程 | `string` / — | 當 `auth.enabled:true` | v15 |
+
+`auth.enabled:true` 時的部署前提：
+1. `bind` 改成 `0.0.0.0`（或公開 IP），並在 `allowedHosts` 列出你的 LAN IP／主機名稱。
+2. 引擎需有 HTTPS 公開 callback URL（`https://<your-host>/oauth/google/callback`），因為 Google 要求 callback URI 為 HTTPS（cloudflared tunnel 可提供）。在 Google Cloud Console 的「Authorized redirect URIs」填入此 callback URL。
+3. D-BIND fail-closed：`auth.enabled:true` + 非 loopback 來源沒有有效 bearer → 401。loopback（127.0.0.1/::1）永遠豁免（本機開發用）。
+
+範例 `auth` 區塊（`rwe.config.json`）：
+```json
+"auth": {
+  "enabled": true,
+  "googleClientId": "123456789-abc.apps.googleusercontent.com",
+  "googleClientSecret": "GOCSPX-…"
+}
+```
 
 ## 1c. 安全模型（Security Model，v2 Gate 8 review 收尾修復，D-V2G8-1(a)(b)(c)(d)）
 
@@ -606,13 +642,12 @@ scripts/smoke.sh
 `workflow_result` 至完成 → 關閉伺服器。不需要任何 LLM 供應商金鑰或 LiteLLM/Python，只驗證
 `workflow_run`/`workflow_status`/`workflow_result` 這條核心路徑本身能不能跑完。
 
-### 沒有身份驗證的已知風險（v2 no-auth caveat，D5/C4）
+### 無訪問控制時的已知風險（`auth.enabled:false`，D5/C4）
 
 **`asset_push` 目前會把任意內容真實寫入伺服器端磁碟**（`$workRoot/assets/<kind>/<name>/...`，
-已對真實 process 驗證）。v2 完全沒有 authentication/authorization（v3 才會補上 OIDC
-resource-server，見 ARCH 決策 D5/C4）——任何能連到 `/mcp` 這個 HTTP 端點的人都能呼叫
-`asset_push`。**在 v3 補上真正的身份驗證之前，遠端部署只能透過 SSH 通道（例如
-`ssh -L 8787:127.0.0.1:8787 user@host`）或 VPN 存取這台伺服器，絕對不要把 `asset_push` 所在的
+已對真實 process 驗證）。`auth.enabled:false`（預設）時無身份驗證——任何能連到 `/mcp` 這個
+HTTP 端點的人都能呼叫 `asset_push`。**啟用 auth（見 §1 `auth` 區塊）或透過 SSH 通道（例如
+`ssh -L 8787:127.0.0.1:8787 user@host`）/VPN 存取這台伺服器，絕對不要把 `asset_push` 所在的
 port 直接暴露在公開網路上。**
 
 > **Gate 7.5 v2 ROUND 1 更正（本輪發現的文件與現實落差）**：本節先前的文字說推送的 skill/hook
@@ -744,10 +779,9 @@ npm run start
     server 端產生隨機 secret 並**只回傳一次**（`{webhookId, url, secret}`）；`webhook_list`（零參數）只回
     `{id, workflow, enabled, secretFingerprint}`（sha256 前綴，**永不回 secret**）；`webhook_delete({id})`。
     註冊表持久化於 `webhookDbPath`（見上），跨重啟可用。
-  - **Bind 安全（OIDC 前的已知注意事項）**：admin-write ingress 目前靠 loopback/LAN bind + 上述 Host/Origin
-    白名單管控。**在公開 `0.0.0.0` bind 且未接 OIDC（REQ-012，D5 延後）的情況下，任何能連到該 port 的人都能
-    呼叫這些工具**——這是已記錄的部署注意事項（見 §2b「沒有身份驗證的已知風險」），白名單是過渡管控、不是
-    OIDC 的替代品。
+  - **Bind 安全**：admin-write ingress 目前靠 loopback/LAN bind + 上述 Host/Origin 白名單管控，或開啟 v15 OAuth
+    2.0 auth（見 §1 `auth` 區塊）。**`auth.enabled:false`（預設）且公開 `0.0.0.0` bind 的情況下，任何能連到
+    該 port 的人都能呼叫這些工具**——白名單是無 auth 時的過渡管控；要多租戶存取管制請啟用 auth。
   - Gate 7.5 v8 Defer B ROUND 1 PASSED（真實 service 33 tools、`Host: evil` → 403、`Origin: evil` POST
     /mcp → 403、簽章 `POST /hooks/:id` → 202 且真跑、重放 → 200 不重跑、`webhook_list` 只回指紋，
     VAL-065/066/067）。
@@ -797,9 +831,9 @@ npm run start
   blob 端點 `POST /assets/blob/<sha256>`（免 base64、免 8 MiB cap）、per-tenant quota + immutable-pool GC、
   client `push_workspace.py`（git 作為 client 端 stat-cache）+ `rwe seed` CLI、`seedRef` engine-pull。純附加
   層——無破壞性變更；inline `{path,contentB64}` seed 與 `asset_push` 不受影響；`workflow_run` 新欄位為選填、
-  兩個新工具與 `casDir` 為附加，既有用戶端可忽略。**已知注意事項**：公開 `0.0.0.0` bind 且未接 OIDC（REQ-012，
-  D5 延後）時，能連到 port 的人皆可呼叫 `blob_put`/`seed_plan`——Host/Origin 白名單是過渡管控（未來 raw blob
-  端點沿用同一管控）。
+  兩個新工具與 `casDir` 為附加，既有用戶端可忽略。**已知注意事項**：`auth.enabled:false`（預設）且公開
+  `0.0.0.0` bind 時，能連到 port 的人皆可呼叫 `blob_put`/`seed_plan`——Host/Origin 白名單是無 auth 的過渡
+  管控；要存取管制請啟用 auth（見 §1 `auth` 區塊）。
 
 - **本輪對獨立真實 process 重新確認「真的修復」（D-F12/D-F13，全部確認）**：
   1. **（D-F12）in-flight agent 狀態即時可觀察**：真實 3 個並行 `agent()` 呼叫，`status:"running"`
@@ -1098,3 +1132,5 @@ curl -s -D - -o /dev/null -X POST $BASE/v1/chat/completions \
 | 2026-08-13 | v11 | **#28** models_list 準確度/可操作性:catalog 把免費 model 標 `toolUse:true` 卻無可用性訊號,免費 OpenRouter tier 會 queue/429/冷啟動掛在 0 token。修(純資料標註 + description 誠實化,無 live 探測):`ModelEntry` 新增 **`ref`**(agent-ready model 字串——有 alias 給 alias、openrouter 給 `openrouter/<model>` passthrough、其餘無法直接解析者省略,所以「有 ref = 可直接餵 agent({model})」)與 **`besteffort`**(OpenRouter `:free` 後綴精確標記,非 price 推斷);修 static Haiku 條目為真 API id `claude-haiku-4-5-20251001`(讓 alias attach → 取得 ref);models_list description 誠實化:此為 capability metadata 非 live-reachability 保證,`toolUse:true` 只表宣稱支援工具、不保證此刻會回或會遵循指令,`besteffort` 要用 `agent({timeoutMs})` 綁 + null-harden。**未做(明列不做)**:live 可用性探測(可用性是瞬時、探測有 race;掛住由 #27 timeout 穩健處理)、自然語言 `recommendFor` 推薦模式(獨立大功能;免費 model 品質/suitability 非 catalog 可導出)。 | 無破壞性變更;`ref`/`besteffort` 為選填新欄位、既有用戶端可忽略;static Haiku model id 由 `claude-haiku-4-5`→`claude-haiku-4-5-20251001`(顯示變更、更正為真 API id);無新設定鍵、無遷移動作 |
 | 2026-08-15 | v12 | 系統資源 + 行程指標（REQ-076/077）+ 豐富模型目錄（REQ-078）+ 精確自描述 schema（REQ-079）：新增 MCP 工具 **`system_info`**（`topN:int 1–50 預設 5`；回傳 `{cpu:{cores,loadAvg,utilizationPct},memory:{totalBytes,usedBytes,freeBytes,usedPct},disk:{path,...,usedPct},process:{self:{pid,uptimeSec,rssBytes,cpuPct,threads,fdCount},topN:[{pid,name,cpuPct,memBytes}],system:{total,byState}},sampledAt,windowMs}`；CPU 利用率需兩次呼叫取 delta，第一次回 `utilizationPct:null+awaiting-second-sample`；任何 OS 探測失敗降級到 `null+reason` 而非 throw）；`SystemInfoSampler` 懶惰快取（TTL 1500ms，單例同時服務 tool 與 HTTP route）；`RealSystemProbe` 讀 `/proc/self/status`/`/proc/<pid>/stat`/`/proc/<pid>/comm`/`os.cpus()`/`os.totalmem()`/`statfs`；新增 HTTP 路由 `GET /api/system`（同一快取）；儀表板首頁新增 **System 面板**（`loadSystem()`，3s poll）。`models_list` 每筆新增三個豐富欄位：**`capability`**（≤200 字描述；空/null 退化為 `"<provider> model"`）、**`stability`**（`stable|variable|best-effort`：paid/curated=stable、local Ollama=variable、OpenRouter `:free`=best-effort）、**`costLevel`**（整數 0–10：0=free/local、10=最貴；`price:"unknown"` 必為 `null`，不猜）；`GET /api/models` 新 HTTP 端點（現有 `buildCatalog` 的包裝，JSON 陣列）；儀表板首頁新增 **Models 面板**（`loadModels()`，含 capability/stability/costLevel/modalities 欄位）。`system_info` inputSchema 精確自描述（`topN` 帶 type/range/default/unit/effect 與 clamping 行為）；`models_list` inputSchema 9 個篩選參數各帶 type+description。工具總數 36 → **37**。Gate 7.5 v12 ROUND 1 PASSED（VAL-085/086/087/088 real:true；acceptance 42/42；回歸 998/998） | 無新設定鍵（`system_info` TTL 硬碼 1500ms；`topN` 為工具參數非設定鍵）；無新環境變數；`GET /api/system` 與 `GET /api/models` 為新增唯讀 HTTP 端點，共用既有 port/bind；`models_list` 三個新欄位為選填附加欄位，既有用戶端可忽略；無遷移動作 |
 | 2026-08-16 | v14 | **streaming blob + manifest ref + redact-at-capture（REQ-083 fix: 完整 JournalEntry 含 key.prompt 均抹除）+ schema honesty + scriptSha256**（REQ-081..085）+ v13 **engine-pull seedRef**（REQ-080）Gate 7.5 ROUND 2 PASSED: `POST /assets/blob/:sha`（streaming raw-body blob upload，bypass 8MiB JSON-RPC cap；`BLOB_SHA_MISMATCH` → 409，`BLOB_TOO_LARGE` → 413，net-guard → 403）；`POST /assets/manifest`（manifest-as-CAS-blob, `seedManifestRef=sha256(manifestBytes)`；`MISSING_BLOBS`；`SEED_SOURCE_CONFLICT`）；**redact-at-capture**（`redact({name,value}[])` wired into all 4 persist sinks；sink-4 REQ-083 fix: 整個 JournalEntry—含 `key.prompt`—在寫入 `journal.jsonl` 前先抹除；`‹secret:NAME›` marker；live Ollama run (runId 8cdbed02, qwen2.5:7b): key.prompt 已抹除至 `‹secret:VAL092_SECRET›`；workflow_agent_log message event marker 確認）；`asset_push` kind 描述納入 `HOOKS_UNSUPPORTED`/`mcp_provision`（IT-077 drift-lock）；`scriptSha256` integrity guard (`SCRIPT_SHA_MISMATCH`/`SCRIPT_SHA_WITHOUT_SCRIPT`)。新設定鍵：`seedRefAllowlist`（v13）、`maxBlobBytes`（v14）補入 `rwe.config.example.json` + §1b。VAL-089..094 全部 real:true pass；1170/1170；trace 6 pre-existing gaps。 | 新增兩個選填設定鍵（`seedRefAllowlist`/`maxBlobBytes`）；既有部署不設則沿用預設行為（seedRef 全 `SEEDREF_DISABLED`，blob cap 256MiB）；新增兩條 HTTP 路由（`POST /assets/blob/:sha`/`POST /assets/manifest`）沿用既有 port/bind；無工具總數變化（37 不變）；既有 MCP 用戶端可忽略新選填欄位；無遷移動作 |
+| 2026-08-18 | v15 | **OAuth 2.0（opt-in）+ 工作流程擁有權 + per-run principal + harness defaults + D-BIND fail-closed**（REQ-012 + REQ-086..089）Gate 7.5 PASSED: 引擎自身即 AS，以 Google 為 IdP；MCP SDK 可自動發現 `/.well-known/oauth-protected-resource` + `/.well-known/oauth-authorization-server`（PRM→AS metadata chain）；authorization-code + PKCE S256 + loopback-redirect；引擎發行自有 opaque bearer（sha256-at-rest SQLite）；D-BIND fail-closed（非 loopback 無 bearer → 401）；workflow 擁有權（creator-only 可 register/deregister；`NOT_WORKFLOW_OWNER`；boot backfill NULL-owner → hsuhungjung@gmail.com）；`workflow_run` principal attribution；`workflow_register` harness defaults binding（`HARNESS_DEFAULTS_INVALID`）。**組合根修正**：`composeConfig`（src/main.ts）新增 `auth: fileConfig.auth` 透傳（同 allowedHosts/updateFlagPath 模式；缺此行導致 auth 設定在 npm start 時靜默被丟棄 — 實測 curl 404→200，修後 curl 200→401 確認）。新設定鍵：`auth.enabled`/`auth.googleClientId`/`auth.googleClientSecret`（見 §1 設定總表 v15 區塊）。`rwe.config.example.json` 補入 `auth` 範例區塊。VAL-095..099 全部 real:true pass；1316/1316；trace 750 items / 11 gaps。 | 新增 3 個選填設定鍵（`auth.*`）全部 opt-in；`auth.enabled:false`（省略）= pre-v15 無 auth 開放行為，不影響既有部署；需 Google Cloud Console OAuth 2.0 client + HTTPS callback URL 才能啟用 auth；啟用後 `workflow_register` 需提供 bearer（非 loopback），owner 訂定為第一個 registrar；既有無 owner 的 workflow 在首次 auth-enabled 開機時自動 backfill owner=hsuhungjung@gmail.com；無工具總數變化（37 不變）；無遷移動作（auth-disabled 舊部署不受影響） |
+| 2026-08-18 | v16 | **安全修補：loopback-only redirect_uri + gcExpired GC sweep + composeConfig workspaceTtlMs forwarding fix**（REQ-012 ARCH-059 fix）Gate 7.5 PASSED: HIGH-1（ARCH-059 inv.4）：`/authorize` 在寫入 `oauth_state` 前以 `isLoopbackRedirectUri()` 驗證 `redirect_uri` 必須為 `http://127.0.0.1/localhost/[::1]:<port>` 之一（RFC 8252），非 loopback → 立即 400 `invalid_request` 且不寫任何 state row；MED-2（ARCH-059 note）：`gcExpired()` 接入 server.ts GC sweep（當 auth 啟用時），定期清除三張 auth 表。**追加 composition-root fix（Gate 7.5 live test 發現）**：`composeConfig()` 未轉發 `workspaceTtlMs` → `_gcTtl` 在 production 永遠為 0 → sweep 每小時才跑一次（非設定的短間隔）；已補 `workspaceTtlMs: fileConfig.workspaceTtlMs,` 一行，cross-process GC 跑 2s 後確認 3 筆過期 oauth_state row 消失。**無新設定鍵**（reuse `workspaceTtlMs` / `auth.enabled`）。IT-078 17/17；1328/1328；trace 751 items / 6 pre-existing gaps。 | 無破壞性變更；無新設定鍵；auth-disabled 部署不受影響；既有 auth-enabled 部署若 `workspaceTtlMs` 有設定，GC 間隔現在正確反映該值（而非每小時一次）；無遷移動作 |

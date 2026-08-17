@@ -244,13 +244,18 @@ flowchart LR
   - Given a bounded failure Then the provider/timeout failure is visible in that agent's run record, never smuggled as fake success text
 - **iter:** v3
 
-### REQ-012 — OAuth 2.0 via generic OIDC resource server (deferred by user decision D5)
+### REQ-012 — OAuth 2.0: engine is its own authorization server, federating to Google as IdP (un-deferred, v15 Slice B)
 - **status:** draft
 - **traces:** —
 - **acceptance:**
-  - Given auth is enabled with an OIDC issuer URL (works with Keycloak in dev; enterprise SSO / Entra ID in prod) When an MCP client presents no/invalid token Then requests are rejected per the MCP authorization spec (401 + resource metadata), and a client completing the OAuth 2.0 flow (PKCE) gains access
-  - Given auth is disabled in config Then behavior matches v1 (backward compatible)
-- **iter:** v3
+  - Given auth is enabled and an MCP client (Claude Code) connects to `/mcp` without a valid bearer token When it makes any MCP request Then the engine rejects it per the **MCP authorization spec** — HTTP 401 with a `WWW-Authenticate` pointing at the engine's protected-resource metadata (`/.well-known/oauth-protected-resource`), which in turn names the engine's own authorization-server metadata (`/.well-known/oauth-authorization-server` exposing `authorization_endpoint`, `token_endpoint`, PKCE `code_challenge_methods_supported=["S256"]`) — so a schema/spec-only MCP client can discover the flow with zero custom code
+  - Given the client runs the discovered **authorization-code + PKCE + loopback-redirect** flow (the "跳出瀏覽器網址" Claude-Code login) When it hits the engine's `/authorize` Then the engine (acting as its OWN authorization server, because Google does not support dynamic client registration) redirects the user's browser to **Google**'s consent screen; on consent Google redirects back to the engine's fixed server-side callback (`/oauth/google/callback`, an HTTPS URI reachable via the existing cloudflared tunnel), the engine verifies the Google `id_token` (issuer/audience/signature/expiry) and takes the verified **`email` claim as the principal**, then completes the MCP `/token` exchange issuing the engine's OWN opaque bearer token (persisted in SQLite with an expiry), NOT the Google token
+  - Given a completed flow When the client presents the engine-issued bearer on `/mcp` Then requests are accepted and every downstream action is attributed to that email principal (observable in the run/audit record); Given the token is expired or unknown Then requests are rejected 401 and the client can re-run the flow
+  - Given the engine config carries the Google `client_id`/`client_secret` (server-side secret store only, per REQ-018) and NO end-user ever sees them When the flow runs Then those credentials never appear in any client-visible response, transcript, or workspace-reachable path
+  - Given auth is DISABLED in config Then behavior matches the pre-v15 surface (backward compatible; the engine still boots and serves an unauthenticated LAN as before — auth is opt-in by config, then enforced by REQ-089)
+  - **(v16 Gate-8 fix, ARCH-059 invariant 4 — open-redirect → bearer theft)** Given a client calls `/authorize` with a `redirect_uri` that is NOT a loopback URI (`http://127.0.0.1:<port>` / `http://localhost:<port>` / `http://[::1]:<port>`, per RFC 8252) Then `/authorize` rejects it with a 400 (`invalid_request`) BEFORE storing any state and BEFORE redirecting to Google — so a mint-and-deliver of the engine auth-code to an attacker-controlled URL is impossible; Given a loopback `redirect_uri` Then the flow proceeds as before. Observable: `/authorize?redirect_uri=https://evil.example/cb` → 400 with no `oauth_state` row written; `/authorize?redirect_uri=http://127.0.0.1:5599/cb` → 302 to Google as normal.
+  - **(v16 Gate-8 fix, ARCH-059 note — unbounded auth-table growth)** Given the running engine's periodic maintenance sweep fires Then it garbage-collects expired `oauth_state`, unexchanged `auth_codes`, and expired `bearer_tokens` (the existing `TokenStore.gcExpired()` is invoked from the same sweep that reclaims stale workspaces), so the auth tables do not grow without bound. Observable: after inserting an already-expired state/code/bearer row and triggering the sweep, those rows are gone; a live (unexpired) bearer is retained.
+- **iter:** v16
 
 ---
 
@@ -727,3 +732,41 @@ flowchart LR
 - **traces:** REQ-081
 - **acceptance:** Given `workflow_run({script, scriptSha256})`, When `scriptSha256` is supplied AND equals the sha256 of the `script` bytes, Then the run proceeds normally. When `scriptSha256` is supplied but does NOT equal the sha256 of `script`, Then the engine rejects with a typed `SCRIPT_SHA_MISMATCH` and creates no run (a transcription slip in a large inline script cannot silently change gate behavior and burn budget). When `scriptSha256` is absent, Then behavior is unchanged (optional / additive; existing callers unaffected). Observable: a `workflow_run` with a matching `scriptSha256` runs; the same call with one byte of the script altered → `SCRIPT_SHA_MISMATCH`, no run; omitting `scriptSha256` runs exactly as before.
 - **iter:** v14
+
+---
+
+## Iteration v15 — Slice B: per-caller identity (OAuth2/Google), workflow ownership, harness-param binding, fail-closed bind
+
+> v15 goal (user 2026-08-16): give the remote-first engine a **per-caller principal** so the three
+> standing design intents can finally hold — ② upload tools authenticate the caller, ③④ a registered
+> workflow carries its default harness params and can be edited only by its creator. Auth mechanism
+> is **REQ-012** (engine-as-its-own-AS federating to Google/Gmail, MCP authorization spec; user
+> 2026-08-16: "用 oauth2 參考 claude code 的 login … 使用 gmail 登入"). This slice un-defers D5.
+> **Rollout decisions (user 2026-08-16):** auth surface = `/mcp` + the raw `/assets/blob` + `/assets/manifest`
+> upload endpoints (dashboard + `/api/*` stay trusted-network for now); existing owner-less workflows are
+> migrated to owner `hsuhungjung@gmail.com` (others read-only); D-BIND is **fail-closed with a loopback
+> (127.0.0.1) exemption** so the local admin / self-update rescue path survives the cutover.
+
+### REQ-086 — protected surfaces require a per-caller principal; every action is attributed to it
+- **status:** draft
+- **traces:** REQ-012
+- **acceptance:** Given auth is enabled, When a caller hits a **protected surface** — the `/mcp` control plane OR the raw upload endpoints `POST /assets/blob/:sha` and `POST /assets/manifest` — with no bearer / an expired / an unknown token, Then the request is rejected **401** before any side effect (no run created, no blob written, no manifest stored) with a `WWW-Authenticate` per REQ-012; Given a valid engine-issued bearer (principal = verified Google email), Then the request proceeds AND the resolved principal is recorded on the resulting artifact — a run's record carries the email that started it, an uploaded blob/manifest namespace carries the email that pushed it — observable via the existing status/list surfaces (e.g. `workflow_status`/run record shows `principal:<email>`). Given auth is disabled, Then no principal is required and behavior matches the pre-v15 surface (the enforcement switch is REQ-089). Non-goals (explicit): `/api/*` health/status and the read-only dashboard remain unauthenticated in this slice (documented trusted-network caveat, unchanged from Slice A).
+- **iter:** v15
+
+### REQ-087 — workflow ownership: only the creating principal can edit/deregister; others may run/read
+- **status:** draft
+- **traces:** REQ-012, REQ-086
+- **acceptance:** Given auth is enabled and principal A calls `workflow_register({name, …})` for a NEW name, When it succeeds Then the stored workflow records `owner: A`; Given principal B (B ≠ A) later calls `workflow_register` overwriting that name, or `workflow_deregister` on it, Then the engine rejects with a typed `NOT_WORKFLOW_OWNER` and the stored definition is unchanged; Given principal A (the owner) does the same edit/deregister Then it succeeds and bumps the stored definition. Given ANY authenticated principal calls `workflow_run` / `workflow_get` / `workflow_list` on a workflow they do not own Then it is allowed (ownership gates *mutation*, not execution or read) — observable: B can run A's workflow and read its result, but cannot change or delete it. **Migration:** Given the pre-v15 registry holds workflows with no `owner`, When v15 first boots with auth enabled Then every existing owner-less workflow is assigned `owner: hsuhungjung@gmail.com` (others therefore read/run-only) — observable: after upgrade, a `workflow_get` on a pre-existing workflow shows `owner: hsuhungjung@gmail.com`, and a different principal's edit of it returns `NOT_WORKFLOW_OWNER`.
+- **iter:** v15
+
+### REQ-088 — registered workflows bind their default harness params at registration (not buried in script text)
+- **status:** draft
+- **traces:** REQ-012, REQ-087
+- **acceptance:** Given `workflow_register({name, script, defaults})` where `defaults` is a first-class object of default harness params — at minimum `{model, tools, skills, timeoutMs, prompt}` (the model string / curated tool + skill allowlist / run timeout / a default prompt) — When registered by the owner Then those defaults are stored ALONGSIDE the script (queryable via `workflow_get`, not parsed out of the script body); Given a later `workflow_run({name})` that does NOT override them Then the run executes with the registered defaults applied (observable: the run's effective harness params equal the registered `defaults`); Given a `workflow_run({name, …overrides})` that DOES supply a param Then the per-run value wins for that param only, the rest fall back to the registered defaults (observable: overriding just `timeoutMs` keeps the registered `model`). Given a `defaults` object with an unknown/ill-typed key or a `model`/tool not resolvable by the engine Then `workflow_register` rejects with a typed validation error and stores nothing (fail-closed registration, no silent drop). Backward-compat: Given `workflow_register` is called WITHOUT `defaults` (pre-v15 shape) Then it still registers (defaults absent ⇒ run-time params must be supplied per-run exactly as before).
+- **iter:** v15
+
+### REQ-089 — D-BIND fail-closed: non-loopback callers without a valid principal are refused; loopback exempt
+- **status:** draft
+- **traces:** REQ-012, REQ-086
+- **acceptance:** Given auth is enabled and the engine is bound to a non-loopback address (`0.0.0.0` / the LAN IP / via the cloudflared tunnel), When a request to a **protected surface** (REQ-086) arrives from a **non-loopback** peer without a valid engine bearer Then it is refused **fail-closed** (401, no side effect) — closing the current state where a `0.0.0.0` bind serves every LAN/tunnel caller with zero auth; Given the SAME request arrives from **loopback (`127.0.0.1`/`::1`)** Then it is exempt (the local admin, curl smoke-tests, and the tag-triggered self-update rescue path keep working without a token); Given the `POST /github/webhook` path (HMAC-verified, REQ-…webhook) Then it is unaffected by this guard (its own HMAC remains the control, so releases still self-update). Observable: from another host, an un-tokened `/mcp` or `/assets/blob` call gets 401; the identical call over `127.0.0.1` on the engine host succeeds; a valid HMAC webhook POST from the tunnel still triggers self-update. Given auth is DISABLED in config Then the guard is dormant and the pre-v15 open-LAN behavior is preserved (opt-in security switch).
+- **iter:** v15

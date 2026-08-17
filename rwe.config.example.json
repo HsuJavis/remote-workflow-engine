@@ -10,6 +10,7 @@
   "maxWorkflowDepth": 4,
   "maxWorkflowDescendants": 256,
   "maxConcurrentRuns": 64,
+  "workspaceTtlMs": 0,
   "gateway": "sdk",
   "agentDefinitionsDir": "./agents",
   "seedRefAllowlist": [],
@@ -43,5 +44,10 @@
       "provider": "ollama",
       "model": "qwen2.5:7b"
     }
+  },
+  "auth": {
+    "enabled": false,
+    "googleClientId": "<your Google Cloud Console OAuth 2.0 client ID>",
+    "googleClientSecret": "<your Google OAuth 2.0 client secret>"
   }
 }

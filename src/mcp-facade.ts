@@ -79,14 +79,14 @@ export class McpFacade {
     this.validator = deps.validator ?? new SubmissionValidator({ catalog: this.runManager.catalog });
   }
 
-  async workflow_run(a: { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: ManifestEntry[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string }; seedManifestRef?: string; scriptSha256?: string }): Promise<ResultEnvelope<{ runId: string }>> {
+  async workflow_run(a: { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: ManifestEntry[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string }; seedManifestRef?: string; scriptSha256?: string }, principal: string | null = null): Promise<ResultEnvelope<{ runId: string }>> {
     // Fail fast at submission (DES-012/ARCH-008), never mid-run.
     const validation = await this.validator.validate({ name: a.name, script: a.script });
     if (!validation.ok) {
       return { runId: '', status: 'failed', error: validation.errors[0] };
     }
     try {
-      const runId = await this.runManager.start({ name: a.name, script: a.script, args: normalizeArgs(a.args), budget: a.budget ?? null, seed: a.seed, seedManifest: a.seedManifest, seedNamespace: a.seedNamespace, seedRef: a.seedRef, seedManifestRef: a.seedManifestRef, scriptSha256: a.scriptSha256, startedBy: { type: 'client' } });
+      const runId = await this.runManager.start({ name: a.name, script: a.script, args: normalizeArgs(a.args), budget: a.budget ?? null, seed: a.seed, seedManifest: a.seedManifest, seedNamespace: a.seedNamespace, seedRef: a.seedRef, seedManifestRef: a.seedManifestRef, scriptSha256: a.scriptSha256, startedBy: { type: 'client' }, ...(principal ? { principal } : {}) });
       const view = await this.store.getRun(runId);
       return { runId, status: view?.status ?? 'queued', result: { runId } };
     } catch (err) {
@@ -95,22 +95,30 @@ export class McpFacade {
   }
 
   /** Registers/updates a named workflow in the catalog (REQ-014). Not part of the DES-001 core
-   *  8-tool contract, but required at the same submission-style entry point for the registry slice. */
-  async workflow_register(a: { name: string; script: string }): Promise<ResultEnvelope<{ name: string; version: string }>> {
+   *  8-tool contract, but required at the same submission-style entry point for the registry slice.
+   *  v15 (DES-098, DES-099, TASK-089): principal threaded for ownership gate; defaults validated + stored.
+   *  Flat response: `version` (number) surfaced at top level for direct `r.version` callers; on error,
+   *  `code` surfaced at top level alongside `error` for direct `r.code` callers. */
+  async workflow_register(a: { name: string; script: string; defaults?: Record<string, unknown> }, principal: string | null = null): Promise<Record<string, unknown>> {
     try {
-      const { version } = await this.runManager.catalog.register(a.name, a.script);
-      return { runId: '', status: 'completed', result: { name: a.name, version } };
+      const { version } = await this.runManager.catalog.register(a.name, a.script, a.defaults as import('./harness-defaults.js').HarnessDefaults | undefined, principal);
+      const versionNum = Number(version.replace(/^v/, '')) || 1;
+      return { runId: '', status: 'completed', version: versionNum, result: { name: a.name, version } };
     } catch (err) {
-      return { runId: '', status: 'failed', error: toErrEnvelope(err) };
+      const e = toErrEnvelope(err);
+      return { runId: '', status: 'failed', code: e.code, error: e };
     }
   }
 
-  async workflow_deregister(a: { name: string }): Promise<ResultEnvelope<{ name: string; removed: boolean }>> {
+  // v15 (DES-098, TASK-089): ownership gate → NOT_WORKFLOW_OWNER; flat response with `removed` +
+  // `code` at top level for direct `r.removed` / `r.code` callers.
+  async workflow_deregister(a: { name: string }, principal: string | null = null): Promise<Record<string, unknown>> {
     try {
-      const { removed } = await this.runManager.catalog.deregister(a.name);
-      return { runId: '', status: 'completed', result: { name: a.name, removed } };
+      const { removed } = await this.runManager.catalog.deregister(a.name, principal);
+      return { runId: '', status: 'completed', name: a.name, removed, result: { name: a.name, removed } };
     } catch (err) {
-      return { runId: '', status: 'failed', error: toErrEnvelope(err) };
+      const e = toErrEnvelope(err);
+      return { runId: '', status: 'failed', code: e.code, error: e };
     }
   }
 
@@ -121,7 +129,9 @@ export class McpFacade {
     const view = await this.store.getRun(a.runId);
     if (!view) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
     const merged = await this.runManager.status(a.runId).catch(() => view);
-    return { runId: merged.runId, status: merged.status, result: merged };
+    // v15 (DES-096): surface principal at the outer envelope level (same level as status/runId)
+    // so callers can observe attribution without unwrapping the inner result.
+    return { runId: merged.runId, status: merged.status, ...(merged.principal ? { principal: merged.principal } : {}), result: merged };
   }
 
   /** Returns the script's own return value (REQ-005 acceptance), not the RunStatusView — poll
@@ -164,21 +174,31 @@ export class McpFacade {
   /** v9 (REQ-061/062): full detail for one registered workflow — its purpose (meta.description +
    *  phases), the script, and a predicted static DAG skeleton — so a client can understand what a
    *  workflow does and see its shape BEFORE deciding to reuse it or author a new one. Unknown name →
-   *  typed WORKFLOW_NOT_FOUND envelope (never throws across the tool boundary). */
-  async workflow_get(a: { name: string }): Promise<ResultEnvelope<{
-    name: string; version: string; createdAt: string; description: string;
-    phases: Array<{ title: string }>; script: string; skeleton: SkeletonNode[];
-  }>> {
-    let full: { name: string; script: string; version: string; createdAt: string };
+   *  typed WORKFLOW_NOT_FOUND envelope (never throws across the tool boundary).
+   *  v15 (DES-098, DES-099, TASK-089): adds owner + defaults to output; flat response surfaces
+   *  owner/defaults/code at top level for direct `r.owner` / `r.defaults` / `r.code` callers. */
+  async workflow_get(a: { name: string }): Promise<Record<string, unknown>> {
+    let full: { name: string; script: string; version: string; createdAt: string; owner: string | null; defaults: import('./harness-defaults.js').HarnessDefaults | undefined };
     try {
       full = await this.runManager.catalog.getFull(a.name);
     } catch {
-      return { runId: '', status: 'failed', error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` } };
+      return { runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` } };
     }
     const meta = parseMeta(full.script);
+    const resultObj = {
+      name: full.name, version: full.version, createdAt: full.createdAt,
+      description: meta.description, phases: meta.phases, script: full.script,
+      skeleton: parseWorkflowSkeleton(full.script),
+      owner: full.owner,
+      defaults: full.defaults as Record<string, unknown> | undefined,
+    };
     return {
       runId: '', status: 'completed',
-      result: { name: full.name, version: full.version, createdAt: full.createdAt, description: meta.description, phases: meta.phases, script: full.script, skeleton: parseWorkflowSkeleton(full.script) },
+      // Flat: owner + defaults + script also at top level for direct r.owner / r.defaults access
+      owner: full.owner,
+      defaults: full.defaults as Record<string, unknown> | undefined,
+      script: full.script,
+      result: resultObj,
     };
   }
 

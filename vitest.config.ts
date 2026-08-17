@@ -11,5 +11,9 @@ export default defineConfig({
     // that occasionally pushes real subprocess round-trips (e.g. suspend) past their
     // poll windows — an intermittent-timeout flake, not a logic defect (VAL-006/E2E-002).
     fileParallelism: false,
+    // Run beforeAll/afterAll hooks sequentially (stack order) so that hooks which
+    // start real HTTP servers (fake Google, engine) are fully ready before dependent
+    // hooks consume their ports. Vitest v1.6.1 default is "parallel" which races them.
+    sequence: { hooks: 'stack' },
   },
 });

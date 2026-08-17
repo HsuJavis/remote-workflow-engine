@@ -2276,3 +2276,146 @@ classDiagram
 - **`redact` blast radius is a test-only migration (adversarial IC-5, verified):** `redact()` has ZERO production callers today (grep over `src/` — `redactHarness` is a separate unchanged function), which is precisely the audit finding ("exists but not wired") and is why the `string[]`→`{name,value}[]` signature+marker change is cheap.
 - **Karpathy check:** complexity budget spent only on ARCH-054 (true streaming) and ARCH-056 (sink completeness); ARCH-055 collapses to a CAS blob (no store/port/GC), ARCH-057 is a static schema edit, ARCH-058 is a ~10-line pure guard + one rung. Every heavier option (ManifestStore port, pattern/entropy redaction, script-signing subsystem, chunked/resumable upload, separate `asset-server.ts`) rejected as speculative. The dominant risks are all bypass risks (a route skipping the net-guard, a sink skipping `redact()`, a stream skipping verification) made impossible-by-construction via positional/enumerable design, not new machinery.
 - **Seam consistency (Exit Gate 5):** on the blob path every time read is the injected `opts.timer`, no method reads wall-clock; on the redact path there is no clock (value-exact substitution is clock-free); the seedManifestRef path reuses the v13 `Clock`-seamed `RunStatusView` stamping unchanged. No asymmetric second assembly path — `seedManifestRef` falls into the identical `materializeManifest` tail as inline `seedManifest`.
+
+## v15 Slice B — per-caller identity (OAuth2/Google), workflow ownership, harness binding, fail-closed bind (DES-092..100, REQ-012 + REQ-086..089 → ARCH-059..063)
+
+### DES-092 — `src/auth/oauth-metadata.ts` — PURE metadata + challenge builders (no I/O)
+- **status:** draft
+- **traces:** ARCH-059, TASK-085
+- **signature:** `buildProtectedResourceMetadata(cfg): {resource, authorization_servers: string[]}` · `buildAuthServerMetadata(cfg): {issuer, authorization_endpoint, token_endpoint, code_challenge_methods_supported:["S256"], response_types_supported:["code"], grant_types_supported:["authorization_code"]}` · `wwwAuthenticateHeader(cfg): string` returns the exact `Bearer resource_metadata="<issuer>/.well-known/oauth-protected-resource"` challenge.
+- **boundary-conditions:** all three are pure functions of `cfg` (unit-testable, no fetch/clock). The `resource_metadata` param name + challenge form MUST be verified against the current MCP authorization spec **at wiring time** — one call-site (R4). No trailing-slash drift between `issuer` and the `.well-known` paths.
+- **iter:** v15
+
+### DES-093 — `src/auth/token-store.ts` — opaque sha256-at-rest bearer + single-use code/state, constructor-injected clock+CSPRNG
+- **status:** draft
+- **traces:** ARCH-059, TASK-085, TASK-090
+- **signature:** `new TokenStore(db, {clock: () => number, csprng: (n) => Buffer})`. `issue(principal, ttlMs): {token, expiresAt}` — returns the RAW opaque token ONCE, persists only `sha256(token)` (never a JWT). `verifyByHash(rawToken): string | null` — one indexed lookup → principal or null (expired/unknown → null). `mintAuthCode(principal, codeChallenge, redirectUri): string` / `consumeAuthCode(rawCode): {principal, codeChallenge, redirectUri} | null` — single-use, ≤60s TTL, **atomic consume** (DELETE-RETURNING/txn). `putState({state, nonce, codeChallenge, redirectUri})` / `consumeState(state): {...} | null` — same single-use contract. `gcExpired(): number`.
+- **boundary-conditions:** 3 tables `bearer_tokens(token_hash PK, principal, issued_at, expires_at)`, `auth_codes(code_hash PK, …, expires_at)`, `oauth_state(state PK, …, expires_at)`. **Seam (Exit Gate 5):** EVERY method that reads time reads `this.clock()`; EVERY token/code/state value comes from `this.csprng()` — no `Date.now()`/`crypto.randomBytes` in the module (so a fixed clock makes expiry/GC deterministic and no method reads the wall clock behind the seam). Concurrent double-`consumeAuthCode` → at most one non-null (atomic). Raw token/code/state MUST never equal any stored column (assert in UT). `gcExpired` reuses the workspace-TTL GC cadence; caller wraps it try/catch→log+continue (never throws into the scheduler — quality r2 note). **v16 MED-2 — contract pinned (now actually invoked, see DES-095 wiring):** `gcExpired(): number` deletes every row with `expires_at <= this.clock()` across ALL three tables (`bearer_tokens`, `auth_codes`, `oauth_state`), returns the total deleted count, RETAINS rows with `expires_at > this.clock()` (a live bearer survives), and is idempotent (a second call with no newly-expired rows returns 0). Time read only via `this.clock()` (seam) so a fixed clock makes the sweep deterministic.
+- **iter:** v16
+
+### DES-094 — `src/auth/google-verifier.ts` — id_token verify, injected JWKS+clock+base (zero network in UT)
+- **status:** draft
+- **traces:** ARCH-059, TASK-085
+- **signature:** `verifyIdToken(idToken, deps: {clientId, jwksFetch: JwksPort, now: () => number, googleBase: string, expectedNonce}): {email} | throws AuthError` · `type JwksPort = (googleBase) => Promise<Jwk[]>` (cached one layer above so the verifier stays cache-free).
+- **boundary-conditions:** verify order — `iss ∈ {accounts.google.com, https://accounts.google.com}`, `aud === clientId`, `exp` fresh via injected `now`, signature via injected `jwksFetch`, `nonce === expectedNonce`, and **`email_verified === true` BEFORE adopting `email`** (the difference between authenticated and authenticated-as-whoever-you-typed). Every reject branch (bad iss/aud/exp/sig/nonce, `email_verified:false`, missing claim) → typed `AuthError`, UT'd with injected deps. Injected `now` = the only time read (seam).
+- **iter:** v15
+
+### DES-095 — `src/auth/auth-service.ts` + 4 `server.ts` routes — orchestration + `resolvePrincipal` discriminated union
+- **status:** draft
+- **traces:** ARCH-059, TASK-086, TASK-090
+- **signature:** `startAuthorize(req): 302` (→ Google consent, stores state+nonce+PKCE) · `handleGoogleCallback({state, code}): 302` (verify id_token → mint engine auth-code) · `tokenExchange({code, codeVerifier}): {access_token, token_type:"Bearer", expires_in}` (verify PKCE S256 → issue engine bearer) · `resolvePrincipal(req): {principal: string} | {status: 401, wwwAuthenticate: string}` — **returns a union, does NOT throw**. **v16 (HIGH-1):** new exported PURE `isLoopbackRedirectUri(uri: string): boolean` (lives in auth-service.ts, NOT merged with net-guard's `isLoopbackPeer` — that is socket-peer semantics, this is redirect-URL semantics, DES-097's "do not merge" note applies). Routes: `GET /.well-known/oauth-protected-resource`, `GET /.well-known/oauth-authorization-server`, `GET /authorize`, `GET /oauth/google/callback`, `POST /token`.
+- **boundary-conditions:** PKCE `S256` verify at `/token`; missing Google `client_id`/`secret` → typed config error, never client-visible. Uniform 401 body — NO expired-vs-unknown-vs-malformed distinction on the wire [D-REDACT / C-2]; the distinction lives ONLY in an internal DEBUG log `auth.resolve: {outcome}` (no token value). Bearer TTL weeks-scale, no refresh; revocation = row-delete. Every reachable secret (bearer, Google id_token, client_secret, pepper) stays off every sandbox-reachable path.
+- **v16 HIGH-1 (open-redirect):** `authorize()` calls `isLoopbackRedirectUri(redirectUri)` **BEFORE `tokenStore.putState(...)` and BEFORE building the Google redirect** — a `false` result (or missing/empty `redirect_uri`) → `400 {error:"invalid_request"}` with **no `oauth_state` row written** (observable: `/authorize?redirect_uri=https://evil.example/cb` → 400, 0 state rows; `?redirect_uri=http://127.0.0.1:5599/cb` → 302 to Google as before). `isLoopbackRedirectUri` boundary UTs: `http://127.0.0.1:<any>/cb`→true, `http://localhost:<any>/cb`→true, **`http://[::1]:<any>/cb`→true (named UT — verifies WHATWG `URL.hostname` serializes IPv6 WITH brackets `[::1]`, an implementer footgun)**, `https://127.0.0.1/cb`→false (REQ names `http:` only — do NOT generalize to `127/8` or https), `https://evil.example/cb`→false, `` (empty/missing)→false, unparseable garbage→false (parse in a try/catch, throw⇒false). Post-validation the stored `redirectUri` is always an absolute loopback URL, so the relative-URI branch at the callback redirect (auth-service.ts ~line 185) becomes unreachable — **flag only, do NOT remove** (surgical; not this fix's concern).
+- **v16 MED-2 (unbounded auth-table growth):** `tokenStore.gcExpired()` is invoked from the REQ-026 periodic maintenance sweep in `server.ts` (the `sweep()` at ~line 1259), wrapped `try/catch`→log+continue so it never throws into the scheduler. **Decision (self-decided, F1):** the sweep interval is now created when **`workspaceTtlMs>0` OR auth is enabled** (was: only `workspaceTtlMs>0`) — inside a tick, workspace reclaim runs iff a TTL is set and `gcExpired()` runs iff auth is wired — so the auth-enabled / no-workspace-TTL config still bounds its tables (fully closes MED-2, not just the literal Gate-8 one-liner). Same hourly cadence cap; `gcTimer.unref()` preserved; auth-disabled ⇒ unchanged behavior (no `gcExpired`, sweep created only if a TTL is set).
+- **iter:** v16
+
+### DES-096 — per-caller principal: resolve-once-at-edge, explicit-param threading, control-plane attribution, sandbox hermeticity (ARCH-060)
+- **status:** draft
+- **traces:** ARCH-060, TASK-087
+- **signature:** append one nullable `principal: string | null` to `callTool(...args, principal)` and the **mutation+attribution** facade methods `workflow_run(a, principal)` / `workflow_register(a, principal)` / `workflow_deregister(a, principal)`, plus `cas.putBlobStream(ns, sha, req, opts, principal)` / `cas.putBlob(ns, sha, bytes, principal)` / manifest-register. `workflow_get`/`workflow_list`/`workflow_status` take **no** principal param (reads open by absence-of-parameter). `principal` is `null` iff auth disabled OR a token-free loopback caller.
+- **boundary-conditions:** `resolvePrincipal` runs per surface BEFORE any side effect — `/mcp` headers-only before `readBodyDecoded` (gates `initialize`/`tools/list`/`ping`), `POST /assets/blob/:sha` before `putBlobStream` consumes `req`, `POST /assets/manifest` before body read. `workflow_run` principal is **attribution only, NOT a gate** (any principal may run any workflow — REQ-086); the run record carries `principal:<email>` (surfaced via existing `workflow_status`), CAS namespace records first-writer (record-only, no enforcement — content-addressed blobs can't be forged). Principal is **NEVER** written to child-process env or run workspace [D-AUTH-4]. No `CallContext` refactor this slice (append the param — smallest diff). **DoD = the paired hermeticity IT (I-2):** one run, assert `principal:<email>` PRESENT on `workflow_status` AND ABSENT from sandbox child env + run workspace (mirrors v14 redact sweep).
+- **iter:** v15
+
+### DES-097 — `isLoopbackPeer` + D-BIND fail-closed net-guard extension (ARCH-063)
+- **status:** draft
+- **traces:** ARCH-063, TASK-088
+- **signature:** new PURE sibling in `net-guard.ts`: `isLoopbackPeer(remoteAddress: string | undefined, headers: IncomingHttpHeaders): boolean` (distinct from the existing `isLoopback(bind)` — different fail-closed semantics; do not merge). Guard: when auth-enabled + non-loopback bind, a protected-surface request from a non-loopback peer without a valid bearer → 401 fail-closed; loopback peer exempt.
+- **boundary-conditions:** exhaustive UT cases — `127.0.0.0/8`→exempt, `::1`→exempt, **`::ffff:127.0.0.1`(IPv4-mapped)→exempt** (dual-stack `::` bind form; missing it spuriously 401s the local-admin/self-update rescue path — availability break, must-fix), `undefined`→NOT exempt (fail-closed), **ANY forwarded/tunnel client-IP header (`x-forwarded-for`/`cf-connecting-ip`/`forwarded`/`x-real-ip`) present ⇒ NEVER exempt** (closes the cloudflared-on-loopback hole that would exempt the whole internet). Keys on the **raw socket `remoteAddress` ONLY**, never a header. Auth-disabled ⇒ dormant; `POST /github/webhook` unaffected (own HMAC).
+- **iter:** v15
+
+### DES-098 — workflow ownership: owner column, mutation-only gate, idempotent boot backfill (ARCH-061)
+- **status:** draft
+- **traces:** ARCH-061, TASK-089
+- **signature:** `WorkflowCatalog.register(name, script, defaults, principal): {version} | throws NOT_WORKFLOW_OWNER | throws HARNESS_DEFAULTS_INVALID` · `deregister(name, principal): {removed} | throws NOT_WORKFLOW_OWNER`. `ALTER TABLE workflows ADD COLUMN owner TEXT`. `workflow_get` output gains `owner`.
+- **boundary-conditions:** owner recorded on FIRST registration; mutation (register-overwrite/deregister) by a non-owner → `NOT_WORKFLOW_OWNER`, stored definition unchanged; `run`/`get`/`list` NOT gated (B can run/read A's workflow, not change it). **`null` principal ⇒ ungated mutation even on an owned row** (one rule at the gate, no auth-flag plumbed into the catalog — keeps auth-disabled byte-for-byte pre-v15). Boot backfill `UPDATE workflows SET owner='hsuhungjung@gmail.com' WHERE owner IS NULL` runs once/boot, self-limiting (idempotent under re-run); auth-disabled ⇒ store NULL owner not a sentinel [D-AUTH-6]. Decided behavior (not a bug): a token-free loopback registration (NULL owner) is re-owned at the next boot. One boot log line `auth.migrate: N workflows backfilled to owner=<email>` (0-change when N=0).
+- **iter:** v15
+
+### DES-099 — harness defaults bound at registration: shared type, fail-closed validation, pure per-param merge (ARCH-062)
+- **status:** draft
+- **traces:** ARCH-062, TASK-089
+- **signature:** single exported `interface HarnessDefaults { model?: string; tools?: string[]; skills?: string[]; timeoutMs?: number; prompt?: string }` consumed by all three consumers (register validation + `workflow_get` output + run-time merge — prevents schema drift). `resolveHarnessParams(registered: HarnessDefaults | undefined, overrides: Partial<HarnessDefaults>): EffectiveParams` — **PURE, per-param merge** (per-run value wins for that key only, unset keys fall back). `ALTER TABLE workflows ADD COLUMN defaults TEXT`; `TOOL_DEFS.workflow_register` gains OPTIONAL `defaults`.
+- **boundary-conditions:** **register-time validation depth [D-AUTH-5, named assertions — do not simplify]:** shape + **model-alias resolvable** against the ARCH-005 table + **every `tool` name in the curated static allowlist** → on any unknown/ill-typed key or unresolvable model/tool → typed `HARNESS_DEFAULTS_INVALID` and **store NOTHING** (no partial write). **`skills` existence DEFERRED to run time** (mutable per-run uploaded assets; register-time coupling manufactures stale false-failures — the REQ says *tool*, not *skill*; a registered skill absent at run → typed run-time error). Backward-compat: `defaults` absent ⇒ registers exactly as pre-v15; the `tools/call` arg-cast at server.ts:747 widens for `workflow_register`/`workflow_deregister`; drift-locked in `tests/integration/schema-drift.test.ts`.
+- **iter:** v15
+
+### DES-100 — real-tier validation path + per-tier mock policy (REQ-012 + REQ-086..089)
+- **status:** draft
+- **traces:** REQ-012, REQ-086, REQ-087, REQ-088, REQ-089, TASK-085, TASK-086, TASK-087, TASK-088, TASK-089
+- **real-tier path per REQ (real entrypoint + real wiring):**
+  - REQ-012 / REQ-086 → running-server integration of the 4 OAuth routes + protected surfaces, driven by a **real MCP client library** for the discovery handshake (proves zero-custom-code discovery, not asserted); Google is a **genuine external dependency, legitimately doubled** via injected `googleBase`+`jwksFetch` (there is NO real external model call in this slice). Un-tokened hit to every protected route → real 401; valid engine bearer → 200 + `principal:<email>` on the run record. A bearer-authed `POST /assets/blob/:sha` / `POST /assets/manifest` → assert the CAS namespace **first-writer record equals the principal** via a direct store read (integration-tier store read, not an E2E SUT-boundary mock — closes REQ-086's "namespace carries the email that pushed it" clause). Paired with the I-2 hermeticity sweep (DES-096 DoD).
+  - REQ-089 → **no second host needed:** bind `0.0.0.0`, connect to the machine's own **LAN IP** → genuine non-loopback `remoteAddress` → real 401; the identical call to `127.0.0.1` → real 200; a valid-HMAC webhook POST still self-updates.
+  - REQ-087 → catalog owner-gate + idempotent boot-backfill integration (`:memory:`/real SQLite): owner mutation succeeds, non-owner → `NOT_WORKFLOW_OWNER`, backfill idempotent, `null`-principal ungated.
+  - REQ-088 → pure `resolveHarnessParams` merge UT + register-validation integration (I-5 named assertions: model-alias-resolvable reject, unknown-tool reject, skills-deferred-to-run, no-partial-write on invalid).
+  - Carried-forward regression (I-3, NOT a new DES/TASK) → **Gate 7.5 Validation** assertion: hung-provider slot-free within `timeoutMs+margin`, second run admits — tagged to REQ-083 (Slice B ships zero gateway code for a DES to bind to).
+- **per-tier mock policy:** UNIT — mock freely (injected `clock`/`csprng`/`jwksFetch`/`now`, fake catalog, principal literals); all metadata builders, bearer-parse, `verifyIdToken` branches, `isLoopbackPeer`, `resolveHarnessParams`, owner-gate are pure/injectable UTs. INTEGRATION — real adjacent components (real server routes, real net-guard, real SQLite catalog + token-store); mock ONLY the genuine third-party network you cannot run (Google JWKS/consent → injected `googleBase`+`jwksFetch`). E2E/ACCEPTANCE — MUST NOT mock the SUT's own boundaries (the 4 OAuth routes, `resolvePrincipal`, the net-guard, the catalog, the CAS attribution write); Google stays a legitimately-doubled external dep via the injected base; the `0.0.0.0`+LAN-IP 401/200 is a real socket touch.
+- **note (I-4, optional boundary):** `Cache-Control: no-store` on `/api/*` responses that carry `principal` is a defensible one-liner on the response writer (keeps PII out of shared/proxy caches given the cloudflared tunnel) — NOT a DES. `X-Frame-Options` explicitly **not adopted** (non-responsive: framing a JSON document does not let a cross-origin page read its body). The residual `/api/*`+dashboard PII exposure stays a recorded REQ-086 non-goal.
+- **iter:** v15
+
+## Class diagram — v15 Slice B (ARCH-059..063: auth AS + edge principal + ownership/harness binding + fail-closed bind)
+```mermaid
+classDiagram
+    class OAuthMetadata {
+        <<pure>>
+        +buildProtectedResourceMetadata(cfg)
+        +buildAuthServerMetadata(cfg) S256
+        +wwwAuthenticateHeader(cfg) string
+    }
+    class TokenStore {
+        -clock: () number
+        -csprng: (n) Buffer
+        +issue(principal, ttlMs) token+expiresAt
+        +verifyByHash(rawToken) principal|null
+        +mintAuthCode / consumeAuthCode  single-use atomic
+        +putState / consumeState
+        +gcExpired() number
+    }
+    class GoogleVerifier {
+        <<injected JWKS+clock+base>>
+        +verifyIdToken(idToken, deps) email
+    }
+    class AuthService {
+        +startAuthorize / handleGoogleCallback / tokenExchange
+        +resolvePrincipal(req) principal|401  // union, no throw
+    }
+    class Server {
+        +GET /.well-known/oauth-protected-resource
+        +GET /.well-known/oauth-authorization-server
+        +GET /authorize / /oauth/google/callback
+        +POST /token
+        +callTool(...args, principal)
+    }
+    class NetGuard {
+        <<pure>>
+        +isLoopback(bind) bool
+        +isLoopbackPeer(remoteAddress, headers) bool
+    }
+    class WorkflowCatalog {
+        +owner TEXT  +defaults TEXT
+        +register(name, script, defaults, principal) version
+        +deregister(name, principal) removed
+        +backfill owner IS NULL  idempotent
+    }
+    class HarnessDefaults {
+        <<shared type>>
+        +resolveHarnessParams(registered, overrides) EffectiveParams
+    }
+    Server --> AuthService : resolvePrincipal at edge (before side-effect)
+    Server --> NetGuard : isLoopbackPeer (fail-closed)
+    AuthService --> OAuthMetadata : builders
+    AuthService --> TokenStore : issue/verify/consume
+    AuthService --> GoogleVerifier : verifyIdToken (email_verified===true)
+    Server --> WorkflowCatalog : register/deregister(principal) owner-gated
+    WorkflowCatalog --> HarnessDefaults : validate + store + merge
+```
+
+### Decision rationale — v15 Slice B (DES-092..100, REQ-012 + REQ-086..089: engine-as-own-AS + per-caller principal + ownership + harness binding + fail-closed bind)
+- **Panel provenance / converged r2:** synthesized from `.panel/design/adversarial.r1/r2.md` (opus — interface-contract / boundary-error / testability, Karpathy tie-break) + `quality-dimensions.r1/r2.md` (sonnet — observability / replaceability / consumability / self-sustainability). Both r2 confirm **convergence, not a fork**: quality self-deferred every heavyweight surface (SSE, `/metrics`, `/healthz`, refresh tokens, RunStore-swap port, harness SPI) under the same Karpathy discipline the adversarial lens applied. QM `safety_class` → no functional-safety / cybersecurity lenses. D-AUTH-1..6 adopted wholesale from the architecture.
+- **RD-1 (slot-free hung-provider check) — quality conceded placement; recorded in DES-100 as a Gate-7.5 regression tagged REQ-083, NOT a new TASK/DES.** Slice B touches zero gateway/`Promise.race` code (shipped v14 IMPL-117..121); a DES needs code to attach to. The threat-model point (auth opens more submission paths to a hung provider) is honored by the carried-forward assertion, not a manufactured design artifact.
+- **RD-2 (ARCH-061+062 granularity) — held as ONE merged task (TASK-089); quality seconded.** Same `workflows` primary key, same owner gate, same migration boot path — splitting is two tasks over one row. Quality's real ask (D-AUTH-5 validation depth not simplified away) is honored as **named DoD assertions inside the merged task**, which is a test-naming requirement, not a task-boundary one.
+- **RD-3 (`/api/*` PII headers) — `Cache-Control: no-store` narrow-conceded as an optional one-line boundary note (DES-100), `X-Frame-Options` declined as non-responsive** (framing a JSON body doesn't leak it). Adversarial rebutted, quality's underlying concern (the PII residual) stays a recorded REQ-086 non-goal either way. Both lenses agree the real control (auth on `/api/*`) is out of slice.
+- **A2⟂A4 reconciliation (synthesizer call): `workflow_run` DOES take `principal` (attribution), `workflow_get/list/status` do NOT.** Adversarial A4's literal "don't thread principal into read/run methods" was overruled where it collided with REQ-086's acceptance (the run record must carry the starting principal) and ARCH-060's own signature list. Correct cut: mutation+attribution methods take the param (register/deregister gate on it, run only records it); pure reads take none so "reads are open" is true by absence-of-parameter, not a runtime `if`. Getting A4's wording literally would fail REQ-086 attribution at validation.
+- **C-1 append-one-param over CallContext (adversarial, quality flagged CallContext as named tech-debt).** Appending a nullable `principal` to the 14-arg `callTool` is the smallest diff that satisfies D-AUTH-2 explicitness and contains the security-review blast radius; the context-object refactor is deferred alongside the MCP-SDK migration (G-REP-1).
+- **C-2 uniform 401 on the wire + internal DEBUG log (both lenses).** Distinguishing expired/unknown/malformed in the 401 body is info-disclosure on the unauthenticated listener; the operator's debuggability need is met by an internal-only `auth.resolve: {outcome}` log (no token value) — additive, no wire change (DES-095).
+- **Quality r2 implementation notes folded into existing DES (no new items):** boot backfill log → DES-098; `gcExpired` try/catch + auth.resolve DEBUG log → DES-093/095; single-export `HarnessDefaults` → DES-099; I-2 paired presence+absence hermeticity IT → DES-096 DoD (referenced by DES-100).
+- **v16 Gate-8 fix (F1), self-decided (no panel — small QM iteration in the ARCH-059 closure):** two shipped-code defects from the v15 Gate-8 review. **HIGH-1 (open-redirect → bearer theft):** v15's `/authorize` stored state and redirected to Google without validating `redirect_uri`, so an attacker could have the engine mint-and-deliver its auth-code to an attacker URL. Fix = enforce ARCH-059 invariant 4 with a pure `isLoopbackRedirectUri` gate BEFORE `putState` (DES-095). Kept in auth-service.ts, NOT merged with net-guard's `isLoopbackPeer` (socket-peer vs redirect-URL semantics — DES-097's do-not-merge note); did NOT generalize the host set beyond the REQ's exact `http:`+{127.0.0.1,localhost,[::1]} (Karpathy: no speculative `127/8`/https breadth). **MED-2 (unbounded auth tables):** v15 built `TokenStore.gcExpired()` but never called it. Fix = invoke it from the REQ-026 sweep (DES-093/095). **One decision I made and own:** the v15 sweep only existed when `workspaceTtlMs>0`, which would leave MED-2 half-fixed in the auth-enabled/no-TTL config; I widened the interval-creation condition to `workspaceTtlMs>0 OR auth enabled` (one condition change, stays in server.ts, no closure expansion) so the intent "tables do not grow without bound" holds in every auth-enabled config. The literal Gate-8 one-liner (wire only inside the existing TTL block) was rejected as an incomplete fix.
+- **Karpathy check:** complexity budget spent only on ARCH-059 (the one genuine new subsystem — a minimal AS in four small pure/injectable files). ARCH-060 = a threaded parameter (not machinery), ARCH-061 = one column + idempotent backfill, ARCH-062 = one column + register validation reusing the existing alias table + tool allowlist, ARCH-063 = an extension of the existing `net-guard.ts` chokepoint (no new module). Every heavier option (JWT for statelessness, DCR/scopes/refresh, namespace-ownership enforcement, a separate auth-server file, a `CallContext` refactor, a RunStore port for the new columns, an OpenAPI file for self-describing `.well-known` docs) rejected as speculative. Auth is opt-in by config; disabled ⇒ byte-for-byte pre-v15 (every existing test runs unchanged). The dominant risks are all bypass/impersonation (a protected route skipping `resolvePrincipal`, the cloudflared-on-loopback exemption hole, a missing `email_verified` gate, a principal leaking into the sandbox) — made impossible-by-construction (single edge chokepoint, raw-socket keying, load-bearing verifier gate, control-plane-only attribution), not by adding machinery.
+- **Seam consistency (Exit Gate 5):** in `token-store.ts` EVERY method that reads time reads the constructor-injected `clock()` and EVERY token/code/state value comes from the injected `csprng()` — there is no `Date.now()`/`crypto.randomBytes` anywhere in the module, so `issue`/`verifyByHash`/`consumeAuthCode`/`consumeState`/`gcExpired` are all deterministic under a fixed clock (no asymmetric method reading the wall clock behind the seam). `google-verifier.ts` reads time only through the injected `now`. `isLoopbackPeer` is clock-free and keys purely on the raw socket address. No method touching these concerns was left on the wall clock.

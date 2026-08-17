@@ -142,3 +142,13 @@ describe('DES-086 — blob_put / seed_plan cross-references to raw endpoints (AR
     expect(desc).toContain('/assets/manifest');
   });
 });
+
+describe('DES-088 — workflow_agent_log secret-marker doc (ARCH-056, TASK-082)', () => {
+  // DRIFT-LOCK: workflow_agent_log description MUST contain the exact ‹secret:NAME› asymmetry
+  // sentence per DES-088 consumability (orchestrator decision, option-a: add+test).
+  // Exit-gate rule 3: untested doc is silently driftable; this assertion pins the exact phrase.
+  it('workflow_agent_log description contains the secret-marker asymmetry sentence', () => {
+    const desc = toolsMap['workflow_agent_log']?.description ?? '';
+    expect(desc).toContain('Secret values are replaced with ‹secret:NAME› markers in persisted transcripts.');
+  });
+});
