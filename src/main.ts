@@ -150,6 +150,12 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // here — server.ts keys every auth route registration and D-BIND enforcement off config?.auth?.enabled,
     // so the whole auth subsystem is built-but-unwired at the production entrypoint).
     auth: fileConfig.auth,
+    // v16 IMPL-122 / MED-2 (REQ-012): forward workspaceTtlMs so the GC sweep uses the
+    // configured interval when `npm start` is used. Without this, fileConfig.workspaceTtlMs
+    // is silently dropped here — server.ts defaults _gcTtl to 0, so the sweep timer fires
+    // hourly instead of at workspaceTtlMs (the auth-table GC clause still runs, but
+    // workspace reclaim is also broken). Same class as the v15 auth-forwarding fix.
+    workspaceTtlMs: fileConfig.workspaceTtlMs,
   };
 
   if (gatewayChoice === 'sdk') {

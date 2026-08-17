@@ -36,6 +36,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, generateKeyPairSync, createSign, randomBytes } from 'node:crypto';
 import type { KeyObject } from 'node:crypto';
+import http from 'node:http';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { TokenStore } from '../../src/auth/token-store.js';
@@ -251,4 +252,200 @@ describe('I-2 hermeticity (DES-096 DoD, IT-078)', () => {
     });
     expect(foundInWorkspace, 'principal must not appear in any run workspace file').toBe(false);
   }, 20_000);
+});
+
+// ── v16 HIGH-1: /authorize redirect_uri validation (DES-095 v16, ARCH-059 inv.4) ─────────────
+//
+// RED reason: authorize() calls tokenStore.putState() with NO redirect_uri validation.
+// isLoopbackRedirectUri() does not exist yet → non-loopback URIs get a state row + 302 to Google
+// instead of a 400 with no state row.
+//
+// NOTE: /authorize returns 302 when it succeeds (redirect to Google). We use node:http directly
+// so redirects are NOT followed — only the server's immediate response status is observed.
+
+/** GET via node:http without following redirects. */
+function rawHttpGet(url: string): Promise<{ status: number; location: string | undefined }> {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, (res) => {
+      res.resume(); // drain body
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, location: res.headers.location }));
+    });
+    req.on('error', reject);
+  });
+}
+
+/** Count rows in a SQLite table via a fresh DB handle (closed immediately after). */
+function countRows(dbPath: string, table: string): number {
+  const db = new Database(dbPath);
+  const n = (db.prepare(`SELECT COUNT(*) as n FROM ${table}`).get() as { n: number }).n;
+  db.close();
+  return n;
+}
+
+describe('HIGH-1: /authorize redirect_uri validation — cases 8–9 (DES-095 v16, IT-078)', () => {
+  // Helper: build /authorize URL with the given redirect_uri.
+  // code_challenge_method=S256 is required; dummy code_challenge value is fine here.
+  function authorizeUrl(redirectUri: string): string {
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id: 'it078-client-id',
+      redirect_uri: redirectUri,
+      code_challenge: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      code_challenge_method: 'S256',
+    });
+    return `http://127.0.0.1:${server.port}/authorize?${params}`;
+  }
+
+  // Case 8a (RED): non-loopback https redirect_uri → 400 invalid_request
+  // Pre-fix: returns 302; Post-fix: returns 400
+  it('case 8a: non-loopback https redirect_uri → 400 invalid_request (RED pre-fix)', async () => {
+    const { status } = await rawHttpGet(authorizeUrl('https://evil.example/cb'));
+    expect(status).toBe(400);
+  });
+
+  // Case 8b (RED): non-loopback redirect_uri → NO oauth_state row written
+  // Pre-fix: row IS written; Post-fix: no row
+  it('case 8b: non-loopback redirect_uri → no oauth_state row written (RED pre-fix)', async () => {
+    const dbPath = join(tmpDir, 'auth-tokens.db');
+    const before = countRows(dbPath, 'oauth_state');
+    await rawHttpGet(authorizeUrl('https://attacker.example/steal'));
+    const after = countRows(dbPath, 'oauth_state');
+    expect(after).toBe(before); // no new state row for a rejected request
+  });
+
+  // Case 8c (RED): https://127.0.0.1 (https scheme, not http) → 400 (REQ: http: only, per RFC 8252)
+  // Pre-fix: returns 302; Post-fix: 400
+  it('case 8c: https://127.0.0.1/cb (https scheme) → 400 (http: only per RFC 8252, RED pre-fix)', async () => {
+    const { status } = await rawHttpGet(authorizeUrl('https://127.0.0.1/cb'));
+    expect(status).toBe(400);
+  });
+
+  // Case 8d (RED): unparseable garbage → 400 (try/catch → false in isLoopbackRedirectUri)
+  // Pre-fix: returns 302; Post-fix: 400
+  it('case 8d: unparseable redirect_uri garbage → 400 (RED pre-fix)', async () => {
+    const { status } = await rawHttpGet(authorizeUrl('not-a-uri-at-all'));
+    expect(status).toBe(400);
+  });
+
+  // Case 8e (RED): empty redirect_uri → 400 (missing/empty → false in isLoopbackRedirectUri)
+  // Pre-fix: returns 302; Post-fix: 400
+  it('case 8e: empty redirect_uri → 400 (RED pre-fix)', async () => {
+    const { status } = await rawHttpGet(authorizeUrl(''));
+    expect(status).toBe(400);
+  });
+
+  // Case 8f (RED): missing redirect_uri param entirely → 400
+  // Pre-fix: redirectUri = '' (missing) → 302; Post-fix: 400
+  it('case 8f: missing redirect_uri param → 400 (RED pre-fix)', async () => {
+    const url = `http://127.0.0.1:${server.port}/authorize?response_type=code&client_id=it078-client-id&code_challenge=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&code_challenge_method=S256`;
+    const { status } = await rawHttpGet(url);
+    expect(status).toBe(400);
+  });
+
+  // Case 9a (guard — GREEN pre and post fix): loopback 127.0.0.1 redirect_uri → 302 (allowed)
+  it('case 9a: loopback 127.0.0.1 redirect_uri → NOT 400 (regression guard)', async () => {
+    const { status } = await rawHttpGet(authorizeUrl('http://127.0.0.1:5599/cb'));
+    expect(status).not.toBe(400);
+    expect(status).toBe(302);
+  });
+
+  // Case 9b (guard): localhost redirect_uri → 302 (allowed)
+  it('case 9b: loopback localhost redirect_uri → NOT 400 (regression guard)', async () => {
+    const { status } = await rawHttpGet(authorizeUrl('http://localhost:5599/cb'));
+    expect(status).not.toBe(400);
+  });
+
+  // Case 9c (guard — named test for URL.hostname bracket footgun per DES-095 v16):
+  // http://[::1]:<port>/cb → isLoopbackRedirectUri must return true (WHATWG URL.hostname
+  // serializes IPv6 with brackets: new URL('http://[::1]:1/').hostname === '[::1]').
+  // Green pre-fix (no validation; post-fix: implementation must not special-case this wrong).
+  it('case 9c: IPv6 loopback http://[::1]:<port>/cb → NOT 400 (regression guard, DES-095 v16 named)', async () => {
+    const { status } = await rawHttpGet(authorizeUrl('http://[::1]:5599/cb'));
+    expect(status).not.toBe(400);
+  });
+});
+
+// ── v16 MED-2: gcExpired() wired to sweep (DES-093 v16, DES-095 v16) ────────────────────────
+//
+// RED reason: server.ts sweep only calls reclaimStaleWorkspaces(), never tokenStore.gcExpired().
+// Expired bearer/auth-code/state rows accumulate without bound.
+//
+// Observable: insert an expired oauth_state row + a live bearer row before the sweep fires,
+// then wait for the sweep; assert the expired row is gone and the live bearer is retained.
+// Pre-fix: expired row survives (gcExpired not called) → test FAILS (RED).
+//
+// NOTE on MED-2 widened sweep-creation condition (DES-095 v16 — sweep created when
+// auth-enabled OR workspaceTtlMs>0, not only workspaceTtlMs>0):
+// The auth-only / no-TTL case would fire the sweep hourly with no test-injectable cadence seam —
+// not IT-testable by waiting. It is NOT asserted here. Gate 6 reviewer must confirm the widened
+// condition in server.ts (the `if (config?.workspaceTtlMs ... || authCfg)` branch) and
+// Gate 7 regression must verify no auth-enabled configs skip the sweep.
+
+let serverSweep: Server;
+let tmpDirSweep: string;
+
+beforeAll(async () => {
+  tmpDirSweep = mkdtempSync(join(tmpdir(), 'rwe-it078-sweep-'));
+  serverSweep = await createServer({
+    port: 0,
+    bind: '127.0.0.1',
+    workRoot: tmpDirSweep,
+    workspaceTtlMs: 100, // very short → sweep fires every 100ms, GC authTable side-effect observable
+    auth: {
+      enabled: true,
+      issuer: 'http://127.0.0.1:0',
+      googleClientId: 'sweep-client-id',
+      googleClientSecret: 'sweep-client-secret',
+      jwksFetch: fakeJwksFetch,
+    },
+  } as never);
+});
+
+afterAll(async () => {
+  await serverSweep?.close();
+  rmSync(tmpDirSweep, { recursive: true, force: true });
+});
+
+describe('MED-2: gcExpired() wired to sweep — case 10 (DES-093 v16, DES-095 v16, IT-078)', () => {
+  it('case 10: expired auth rows GC-ed by sweep; live bearer retained (RED pre-fix)', async () => {
+    const dbPath = join(tmpDirSweep, 'auth-tokens.db');
+    const now = Date.now();
+
+    // Insert already-expired oauth_state row (expires 5s in the past)
+    const expiredState = 'med2-expired-state-' + randomBytes(4).toString('hex');
+    const db = new Database(dbPath);
+    db.prepare(
+      'INSERT INTO oauth_state (state, nonce, code_challenge, redirect_uri, expires_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(expiredState, 'nonce1', 'chal1', 'http://127.0.0.1:1/cb', now - 5_000);
+
+    // Insert live bearer row (expires 7 days from now — must NOT be GC'd)
+    const liveBearerRaw = 'med2-live-bearer-' + randomBytes(8).toString('hex');
+    const liveBearerHash = createHash('sha256').update(liveBearerRaw).digest('hex');
+    db.prepare(
+      'INSERT INTO bearer_tokens (token_hash, principal, issued_at, expires_at) VALUES (?, ?, ?, ?)'
+    ).run(liveBearerHash, 'med2-user@example.com', now, now + 7 * 24 * 3600_000);
+    db.close();
+
+    // Poll until the expired row disappears or deadline (3 s).
+    // Pre-fix: row survives indefinitely → loop exhausts → fail.
+    // Post-fix: gcExpired() called by sweep within ~100ms → row deleted → loop exits early.
+    const deadline = Date.now() + 3_000;
+    let expiredRowGone = false;
+    while (Date.now() < deadline) {
+      const db2 = new Database(dbPath);
+      const row = db2.prepare('SELECT state FROM oauth_state WHERE state = ?').get(expiredState);
+      db2.close();
+      if (row === undefined) { expiredRowGone = true; break; }
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    // Assert expired row is gone (GC'd)
+    expect(expiredRowGone, 'expired oauth_state row must be deleted by gcExpired() within 3 s').toBe(true);
+
+    // Assert live bearer is retained
+    const db3 = new Database(dbPath);
+    const liveRow = db3.prepare('SELECT principal FROM bearer_tokens WHERE token_hash = ?').get(liveBearerHash) as { principal: string } | undefined;
+    db3.close();
+    expect(liveRow?.principal, 'live bearer must be retained (not deleted by GC)').toBe('med2-user@example.com');
+  }, 10_000);
 });

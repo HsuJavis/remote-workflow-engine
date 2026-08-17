@@ -4222,6 +4222,52 @@ on the existing bind/port — no new port or env var. **No config-doc drift this
 
 ---
 
+## v16 Gate 7.5 (2026-08-18) — REQ-012 fix: loopback-only redirect_uri (HIGH-1) + gcExpired GC sweep (MED-2) + composeConfig workspaceTtlMs forwarding fix
+
+**FIX-MODE SCOPE:** ARCH-059 inv.4 (open-redirect → bearer theft) + ARCH-059 note (unbounded auth-table growth). Two new acceptance clauses appended to REQ-012. IMPL-122 bumped v16. Gate 7 (regression) already passed (1328/1328). This Gate 7.5 validates the v16-changed behavior and re-affirms pre-existing real-tier evidence stands.
+
+**ADDITIONAL IMPL FIX discovered at Gate 7.5 live test:** `workspaceTtlMs` was not forwarded in `composeConfig()` (src/main.ts) — same class as the v15 `auth:` forwarding fix. Without this, `_gcTtl` was 0 in the production entrypoint, causing sweep to fire hourly instead of at the configured short interval. Fixed by adding `workspaceTtlMs: fileConfig.workspaceTtlMs,` to the composeConfig config object. Build clean; 1328/1328 pass unchanged.
+
+### Boot — documented steps (v16)
+
+```bash
+# Per README §快速開始 (unchanged — no doc gap this round):
+export PATH="$HOME/.rwe-litellm-venv/bin:$PATH"
+# Production auth-disabled boot (backward-compat, unchanged):
+node node_modules/tsx/dist/cli.mjs src/main.ts
+# -> [RunStore] hydrateAll: re-hydrated 158 run(s), 0 re-classified running→interrupted
+# -> [remote-workflow-engine] listening on http://0.0.0.0:8787/mcp (workRoot=/home/user/.local/share/rwe-data)
+# -> [remote-workflow-engine] ready
+# Auth-enabled test boot (for HIGH-1/MED-2 clause validation):
+# RWE_CONFIG_PATH=/tmp/rwe-v16-val2-config.json node node_modules/tsx/dist/cli.mjs src/main.ts
+# -> [RunStore] hydrateAll: re-hydrated 0 run(s)
+# -> [remote-workflow-engine] listening on http://127.0.0.1:19192/mcp
+# -> [remote-workflow-engine] ready
+```
+
+Note: `RWE_CONFIG_PATH` (not `RWE_CONFIG`) is the correct env var per `src/main.ts` line 64. DEPLOY.md §5 already documents this correctly. For a litellm-free validation boot (needed in this env where litellm is not in PATH), add `"gateway":"direct-fetch","useLiteLLMProxy":false` to the config; alternatively follow README's `export PATH="$HOME/.rwe-litellm-venv/bin:$PATH"` to put litellm on PATH.
+
+### Full suite (regression re-affirmation, post-composeConfig-fix)
+
+```
+npm test   →   Test Files  233 passed (233) / Tests  1328 passed (1328)
+```
+
+Confirmed post-fix (after adding `workspaceTtlMs: fileConfig.workspaceTtlMs` to composeConfig). Build also clean: `npm run build` (tsc --noEmit) passes.
+
+IT-078 specifically: `npm test -- "auth-routes-integration"` → **17/17 pass** (7 new v16 cases + 10 pre-existing).
+IT-079 specifically: `npm test -- "val-079"` → **2/2 pass** (VAL-079 REQ-070 acceptance, unchanged from v15; net-guard-bind IT-079 covered in full suite).
+
+### Config-file sync check (§4b)
+
+v16 adds `workspaceTtlMs` as a **newly functional key** (it existed in `ServerConfig` / `FileConfig` but was silently dropped in `composeConfig()` before v16; the v16 fix makes it actually take effect). Added:
+- A formal table row in DEPLOY.md §1b (carrier/purpose/type/required/iter format)
+- `"workspaceTtlMs": 0` entry in `rwe.config.example.json`
+
+The `isLoopbackRedirectUri()` function is a pure code check with no config surface. Auth keys (`auth.enabled`/`auth.googleClientId`/`auth.googleClientSecret`) were already in §1 設定總表 from v15. **Config round-trip complete: every key the code reads has a §1 row, every §1 row maps to a code-read key.**
+
+---
+
 ## v15 Gate 7.5 (2026-08-18) — REQ-012, REQ-086..089 (OAuth AS + per-caller principal + ownership + harness-defaults + D-BIND fail-closed)
 
 ### Composition-root gap found and fixed this round (IMPL fix, not a doc-only fix)
@@ -4267,14 +4313,15 @@ npx vitest run   →   Test Files  233 passed (233) / Tests  1316 passed (1316)
 
 ### VAL items
 
-### VAL-095 — real-run acceptance for REQ-012 (engine-as-own-AS OAuth discovery via MCP SDK + PKCE flow + auth-disabled backward-compat)
+### VAL-095 — real-run acceptance for REQ-012 (engine-as-own-AS OAuth discovery via MCP SDK + PKCE flow + auth-disabled backward-compat; v16: loopback-only redirect_uri + gcExpired GC)
 
 - **status:** green
-- **traces:** REQ-012, DES-095, DES-100, TASK-085, TASK-086
+- **traces:** REQ-012, DES-095, DES-093, DES-100, TASK-085, TASK-086, TASK-090, ARCH-059
 - **tier:** acceptance
 - **real:** true
 - **result:** pass
-- **evidence:** `npx vitest run tests/acceptance/val-095-oauth-discovery.test.ts --reporter=verbose`
+- **evidence:**
+  **(v15 clauses — unchanged, carry-forward)** `npx vitest run tests/acceptance/val-095-oauth-discovery.test.ts --reporter=verbose`
   (2026-08-18, working-tree v15, after composition-root fix): **5/5 tests pass**.
   (1) `discoverOAuthProtectedResourceMetadata(serverUrl)` via real MCP SDK → `{resource, authorization_servers:["http://…"]}` — real HTTP 200, real PRM JSON;
   (2) SDK discovery chain: PRM → `authorization_servers[0]` → `discoverAuthorizationServerMetadata` → metadata contains `code_challenge_methods_supported:["S256"]`, `authorization_endpoint`, `token_endpoint`;
@@ -4282,7 +4329,35 @@ npx vitest run   →   Test Files  233 passed (233) / Tests  1316 passed (1316)
   (5) `POST /mcp` without bearer → HTTP 401 + `extractWWWAuthenticateParams(res).resourceMetadataUrl` defined (points at `/.well-known/oauth-protected-resource`);
   (6) auth disabled (second server, no auth config) → `POST /mcp` without bearer → **NOT 401** (backward-compat open mode).
   Google doubled via minimal local RS256 HTTP server (test-only fake IdP, injected `jwksFetch`) — real Google interactive consent flow is headless-unreachable (noted as unreachable-dep below). Real server routes, real MCP SDK calls; no SUT-boundary mock.
-- **iter:** v15
+
+  **(v16 HIGH-1 clause — loopback-only redirect_uri, ARCH-059 inv.4 fix)** Live-server real-run (2026-08-18, `RWE_CONFIG_PATH=/tmp/rwe-v16-val-config.json node node_modules/tsx/dist/cli.mjs src/main.ts` → auth-enabled server on 127.0.0.1:19191, workRoot=/tmp/rwe-v16-val-workroot, 1328/1328 tests already confirmed):
+  ```
+  # Non-loopback redirect_uri variants → 400
+  curl -o /dev/null -w "%{http_code}" "http://127.0.0.1:19191/authorize?...&redirect_uri=https%3A%2F%2Fevil.example%2Fcb&..."
+  # → 400
+  curl -o /dev/null -w "%{http_code}" "http://127.0.0.1:19191/authorize?...&redirect_uri=https%3A%2F%2F127.0.0.1%2Fcb&..."
+  # → 400 (https scheme)
+  curl -o /dev/null -w "%{http_code}" "http://127.0.0.1:19191/authorize?...&redirect_uri=not-a-uri-at-all&..."
+  # → 400 (garbage)
+  curl -o /dev/null -w "%{http_code}" "http://127.0.0.1:19191/authorize?...&redirect_uri=&..."
+  # → 400 (empty)
+  curl -o /dev/null -w "%{http_code}" "http://127.0.0.1:19191/authorize?...&code_challenge=..."
+  # → 400 (missing redirect_uri param)
+  # Loopback variants → 302 (allowed)
+  curl -o /dev/null -w "%{http_code}" "http://127.0.0.1:19191/authorize?...&redirect_uri=http%3A%2F%2F127.0.0.1%3A5599%2Fcb&..."
+  # → 302
+  curl -o /dev/null -w "%{http_code}" "http://127.0.0.1:19191/authorize?...&redirect_uri=http%3A%2F%2Flocalhost%3A5599%2Fcb&..."
+  # → 302
+  curl -o /dev/null -w "%{http_code}" "http://127.0.0.1:19191/authorize?...&redirect_uri=http%3A%2F%2F%5B%3A%3A1%5D%3A5599%2Fcb&..."
+  # → 302 (IPv6 loopback)
+  ```
+  **Also confirmed (case 8b):** `oauth_state` row count before rejected request = 3, after = 3 (no row written for non-loopback redirect_uri). Verified via `node -e "require('better-sqlite3')('/tmp/.../auth-tokens.db').prepare('SELECT COUNT(*) as n FROM oauth_state').get().n"` before and after.
+  All 8 live-server curl results match expected values. IT-078 cases 8a–9c also confirm the same at integration tier (17/17 pass: `npx vitest run tests/integration/auth-routes-integration.test.ts`). Real `createServer()` + real SQLite + real HTTP; no SUT-boundary mock.
+
+  **(v16 MED-2 clause — gcExpired wired to sweep, ARCH-059 note fix)** `npx vitest run tests/integration/auth-routes-integration.test.ts --reporter=verbose` (2026-08-18): IT-078 **case 10 passes** — server created with `workspaceTtlMs:100`, an already-expired `oauth_state` row (5s in the past) inserted directly into the server's DB via fresh better-sqlite3 handle, swept within 3s; `SELECT state FROM oauth_state WHERE state = ?` returns `undefined` (row gone); a LIVE bearer inserted simultaneously is retained. All three auth tables (bearer_tokens, auth_codes, oauth_state) covered by gcExpired() in token-store.ts lines 155–162 (DELETE WHERE expires_at <= ?), called from server.ts sweep at lines 1277–1280 (inside `setInterval(sweep, _intervalMs)` started when auth-enabled). Real `createServer()` + real SQLite (in-process); no SUT-boundary mock.
+  **IMPL-122 composition-root fix (discovered at Gate 7.5 live test):** `workspaceTtlMs` was missing from `composeConfig()` in `src/main.ts` — silently dropped, so `_gcTtl` was always 0 in production, causing the sweep to fire hourly (not at the configured short interval). Same class as the v15 `auth:` forwarding fix. Added `workspaceTtlMs: fileConfig.workspaceTtlMs,` in the `composeConfig()` config object (src/main.ts, after auth: line). `npm run build` clean; full suite: `npm test` → **233 files / 1328 tests pass**; IT-078 17/17 unchanged.
+  **Cross-process live confirmation (post-fix):** Server started on 127.0.0.1:19192 with `workspaceTtlMs:500` + `auth.enabled:true` + `gateway:direct-fetch` via `RWE_CONFIG_PATH=/tmp/rwe-v16-val2-config.json npm start`. 3 expired `oauth_state` rows (`expires_at = now()-2000`) inserted via external better-sqlite3 process into `workRoot/auth-tokens.db`. After 2s wait: `SELECT COUNT(*) ... WHERE state LIKE 'gc-xp-test-%'` = **0** (rows gone — server's 500ms sweep fired). With `workspaceTtlMs` forwarded, `_intervalMs = min(500, hourly) = 500ms`. Real cross-process GC confirmed; IT-078 case 10 and this cross-process run are both real:true evidence for MED-2.
+- **iter:** v16
 
 ### VAL-096 — real-run acceptance for REQ-086 (per-caller principal on protected surfaces; attributed on run record + CAS namespace)
 

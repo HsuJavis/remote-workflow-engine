@@ -1252,24 +1252,8 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     }
   });
 
-  // REQ-026 (v2): opt-in periodic run-workspace GC (only when a retention TTL is configured).
+  // gcTimer declared here; sweep block follows after authTokenStore init (MED-2 v16: gcExpired wired).
   let gcTimer: ReturnType<typeof setInterval> | undefined;
-  if (config?.workspaceTtlMs && config.workspaceTtlMs > 0) {
-    const ttl = config.workspaceTtlMs;
-    const sweep = (): void => {
-      store
-        .listRuns()
-        .then((runs) => {
-          const statusByRun = new Map(runs.map((r) => [r.runId, r.status]));
-          reclaimStaleWorkspaces(workRoot, ttl, (id) => statusByRun.get(id) ?? null, Date.now()); // det:allow — GC sweep, not a workflow decision
-        })
-        .catch(() => {
-          /* a sweep error must never crash the server — retry next interval */
-        });
-    };
-    gcTimer = setInterval(sweep, Math.min(ttl, 60 * 60 * 1000)); // sweep at most hourly
-    gcTimer.unref?.();
-  }
 
   // v15 (REQ-012/086, DES-095, TASK-086): auth AS — token-store + route handlers.
   // When auth disabled/absent, pre-v15 open behavior is preserved byte-for-byte.
@@ -1283,6 +1267,36 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   const authHandlers = authCfg && authTokenStore
     ? createAuthRouteHandlers(authCfg, authTokenStore)
     : undefined;
+
+  // REQ-026 (v2, v16): periodic maintenance sweep — workspace GC (when TTL set) + auth-table GC
+  // (when auth enabled, MED-2 v16). Created when workspaceTtlMs>0 OR auth enabled; capped hourly.
+  const _gcTtl = config?.workspaceTtlMs ?? 0;
+  if (_gcTtl > 0 || authCfg) {
+    const sweep = (): void => {
+      // MED-2 (v16): prune expired auth rows — runs iff auth wired, never throws into scheduler
+      if (authTokenStore) {
+        try { authTokenStore.gcExpired(); } catch (e) {
+          // eslint-disable-next-line no-console
+          console.error('[remote-workflow-engine] gcExpired error (non-fatal):', e);
+        }
+      }
+      // Workspace reclaim — only when a TTL is configured
+      if (_gcTtl > 0) {
+        store
+          .listRuns()
+          .then((runs) => {
+            const statusByRun = new Map(runs.map((r) => [r.runId, r.status]));
+            reclaimStaleWorkspaces(workRoot, _gcTtl, (id) => statusByRun.get(id) ?? null, Date.now()); // det:allow — GC sweep, not a workflow decision
+          })
+          .catch(() => {
+            /* a sweep error must never crash the server — retry next interval */
+          });
+      }
+    };
+    const _intervalMs = _gcTtl > 0 ? Math.min(_gcTtl, 60 * 60 * 1000) : 60 * 60 * 1000;
+    gcTimer = setInterval(sweep, _intervalMs); // sweep at most hourly
+    gcTimer.unref?.();
+  }
 
   // v8 Defer B (REQ-056): the real listening port is known only after listen(); the handler closure
   // reads it via this mutable, assigned below. 0 until then (no request is served before listen).

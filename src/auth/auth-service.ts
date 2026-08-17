@@ -20,6 +20,25 @@ export interface AuthConfig {
   jwksFetch?: JwksPort;
 }
 
+/**
+ * Returns true iff uri is a loopback-only http: URI per RFC 8252 §8.3.
+ * Accepts http: scheme + hostname ∈ {127.0.0.1, localhost, [::1]}, any port/path.
+ * Empty/missing/unparseable/non-http → false (parse in try/catch → false).
+ * NOTE: WHATWG URL.hostname serializes IPv6 WITH brackets: new URL('http://[::1]:1/').hostname === '[::1]'.
+ * Not merged with net-guard's isLoopbackPeer (socket-peer vs redirect-URL semantics — DES-097).
+ */
+export function isLoopbackRedirectUri(uri: string): boolean {
+  if (!uri) return false;
+  try {
+    const u = new URL(uri);
+    if (u.protocol !== 'http:') return false;
+    const h = u.hostname;
+    return h === '127.0.0.1' || h === 'localhost' || h === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
 export type PrincipalResult =
   | { principal: string }
   | { status: 401; wwwAuthenticate: string };
@@ -108,6 +127,12 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
       const codeChallengeMethod = url.searchParams.get('code_challenge_method') ?? '';
       if (codeChallengeMethod !== 'S256') {
         localSendJson(res, 400, { error: 'invalid_request', error_description: 'only code_challenge_method=S256 supported' });
+        return;
+      }
+      // HIGH-1 (ARCH-059 inv.4, DES-095 v16): validate redirect_uri is loopback-only BEFORE
+      // writing any state row — non-loopback/missing/unparseable → 400, no oauth_state row written.
+      if (!isLoopbackRedirectUri(redirectUri)) {
+        localSendJson(res, 400, { error: 'invalid_request', error_description: 'redirect_uri must be a loopback http: URI (RFC 8252)' });
         return;
       }
       const state = randomBytes(16).toString('hex');

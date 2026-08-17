@@ -1,10 +1,149 @@
 ---
 stage: review
-status: open
+status: closed
 ---
 # 07 Review & Retro — Gate 8
 
-## v15 GATE 8 REVIEW (2026-08-18, CURRENT / AUTHORITATIVE — SEND BACK TO GATE 6)
+## v16 GATE 8 REVIEW (2026-08-18, CURRENT / AUTHORITATIVE — ITERATION CAN CLOSE)
+
+> This section supersedes "## v15 GATE 8 REVIEW (2026-08-18)" below (kept for history).
+> **v16 fix-mode iteration — ARCH-059 inv.4 open-redirect (HIGH-1) + gcExpired unscheduled (MED-2) + composeConfig workspaceTtlMs forwarding fix.**
+> Both v15 Gate-8 blocking violations are fixed and verified real-tier. No new gaps, no new drift, no new arch violations.
+
+### Traceability consistency (v16)
+
+Trace `--check` result (regenerated 2026-08-18): **751 items, 6 gaps.**
+
+Change from v15 baseline (750 items / 6 gaps):
+
+- **1 new item:** TASK-090 added (traces ARCH-059, closes the TASK-090 未實作 gap introduced at Gate 3+4 v16).
+- **3 iter-drift gaps resolved:** UT-093, UT-095 bumped to v16 (matching DES-093/DES-095 v16 bump), plus one more drift resolved at Gate 7.5 — trace went from 751/9 (Gate 7) to 751/6 (Gate 7.5).
+- **No new gaps opened by v16.**
+
+| ID | Severity | Type | Note |
+|----|----------|------|------|
+| IMPL-082 | MID | TDD label drift | Pre-existing since v4; no change |
+| UT-058 | LOW | iter drift v6 behind DES-038 v11 | Pre-existing since F1; cosmetic |
+| UT-064 | LOW | iter drift v9 behind DES-054 v11 | Pre-existing since v9 |
+| IT-057 | LOW | iter drift v9 behind DES-054 v11 | Pre-existing since v9 |
+| DES-088 | LOW | iter drift v14 behind IMPL-127 v15 | Opened at v15; cosmetic; DES-088 iter unchanged by v16 |
+| TASK-018 | LOW | no implementation | OIDC task; functionally superseded by v15+v16 OAuth implementation |
+
+Dashboard confirms: 0 severe gaps, 0 未驗證 requirements, 0 mock-only validations. All 6 remaining gaps are recorded as known tech debt (Exit Gate 1 satisfied).
+
+### Architecture consistency (v16 self-check — lean QM fix, no panel)
+
+Fix scope: `src/auth/auth-service.ts`, `src/server.ts`, `src/main.ts`, `vitest.config.ts`. Checked against ARCH-059 (the only ARCH touched by v16).
+
+**HIGH-1 fix — ARCH-059 inv.4 (loopback-only redirect_uri):**
+
+Architecture text: "`/authorize` validates the `redirect_uri` is an RFC 8252 loopback URI … BEFORE storing any `oauth_state` and BEFORE redirecting to Google — a non-loopback / missing / unparseable `redirect_uri` is refused 400 `invalid_request` with no state row written."
+
+Implementation (`src/auth/auth-service.ts:30-40, 132-140`): `isLoopbackRedirectUri(uri)` — `http:` scheme, hostname ∈ {`127.0.0.1`, `localhost`, `[::1]`}, any port, try/catch→false. Called at `authorize()` BEFORE `tokenStore.putState()` and BEFORE building the Google redirect. Non-loopback → `400 {error:"invalid_request"}`, no state row. Handles WHATWG IPv6 bracket serialization (`[::1]`) correctly per named UT. `https://127.0.0.1` correctly rejected (`http:` scheme required). **Matches ARCH-059 inv.4 exactly.** Confirmed by live curl (8 cases) and IT-078 cases 8a-9c (VAL-095 v16).
+
+**MED-2 fix — ARCH-059 note (gcExpired in sweep):**
+
+Architecture text: "`gcExpired` is called each tick of the REQ-026 periodic maintenance sweep (try/catch→log+continue, never throws into the scheduler); to guarantee bounded auth tables even in the auth-enabled / no-workspace-TTL config, the sweep interval is created when `workspaceTtlMs>0` OR auth is enabled."
+
+Implementation (`src/server.ts:1273-1296`): `const _gcTtl = config?.workspaceTtlMs ?? 0; if (_gcTtl > 0 || authCfg) { … authTokenStore?.gcExpired() … }` — sweep created under the OR condition; `gcExpired()` called first in each tick with its own try/catch; `reclaimStaleWorkspaces` runs only when `_gcTtl>0`; interval = `Math.min(ttl, hourly)` when TTL set, `hourly` otherwise. **Matches ARCH-059 note exactly.** Confirmed by IT-078 case 10 (real SQLite) and cross-process live confirmation (3 expired rows deleted within 2 s at 500 ms interval).
+
+**composeConfig workspaceTtlMs forwarding (`src/main.ts:153-158`):**
+
+No dedicated ARCH item; this is the composition-root wiring fix preventing `_gcTtl=0` in production. Follows the identical forwarding pattern as the v15 `auth:` forwarding fix. Correct.
+
+**vitest.config.ts `sequence: { hooks: 'stack' }`:**
+
+Test tooling only; no ARCH item.
+
+**Verdict for v16-touched code: architecture CONSISTENT.**
+
+Pre-existing violations (UNCHANGED from v15 review — not re-litigated here, all previously recorded):
+
+| Label | Severity | Finding | Status |
+|-------|----------|---------|--------|
+| H-2 | HIGH | ARCH-017/D-PROFILE/DES-031 session-options-builder orphaned | Gate 2 adjudication pending (security-hardening iter) |
+| H-3 | HIGH | D-KILL/D-PROC cli-lifecycle + timeout-race dead code | Gate 2 adjudication pending |
+| M-1 | MED | LiteLLMGatewayClient transcript opaque | Pre-existing, separately tracked |
+| L-1 | LOW | McpRegistry wall-clock direct Date.now | Pre-existing |
+| L-2 | LOW | materializeAssets hook arm not removed | Pre-existing |
+| LOW-3 | LOW | client-echoable principal on null-edge path | Pre-existing; restrict to test seam when convenient |
+| LOW-4 | LOW | ARCH-059 inv.3 text: state TTL 600 s vs. "≤60 s" | Recommend text amendment to "state ≤10 min / codes ≤60 s" |
+
+These all carry the operator's standing decision (memory: arch-debt-unwired-security-modules = separate security-hardening iteration). HIGH-1 and MED-2 from v15 are CLOSED by this fix.
+
+**Architecture consistency overall: v16-scoped changes are consistent with ARCH-059. Pre-existing H-2/H-3 remain outstanding on their own adjudication track.**
+
+### Validation & handover check (v16)
+
+- **VAL-095 (REQ-012, v16):** `real:true`, green, iter v16. 8 live-server curl tests (HIGH-1: evil.example/https-scheme/garbage/empty/missing → 400, no state row; loopback 127.0.0.1/localhost/[::1] → 302). IT-078 17/17 (7 v16 new + 10 pre-existing). IT-079 4/4 (regression). Cross-process GC: 3 expired oauth_state rows deleted within 2 s at 500 ms interval (MED-2 confirmed real).
+- **composeConfig fix (same VAL-095 session):** `workspaceTtlMs: fileConfig.workspaceTtlMs` forwarded; `_gcTtl` now non-zero in production when configured. 1328/1328 pass unchanged after fix.
+- **All prior REQs (001..089):** VAL-001..094 hold evidence from prior rounds; 1328/1328 regression pass.
+- **No mock-only/unverified REQ for any touched item.**
+- **`08-validation.md`:** present, v16 section written (lines 4225–4360), Gate 7.5 v16 PASSED 2026-08-18 confirmed.
+- **`README.md`:** present. Current-state v16 (2026-08-18). Quickstart reflects v16 behavior. No stale commands.
+- **`DEPLOY.md`:** present. Current-state v16. §7 変更紀錄 has v16 entry (2026-08-18). `workspaceTtlMs` key in §1 設定総表 (single canonical source; no duplicate). No superseded instructions outside §7.
+- **Config key deduplication:** `workspaceTtlMs` documented in §1 設定総表; referenced by name in §7. No duplication.
+- **Validation verdict: Gate 7.5 v16 PASSED. VAL-095 v16 real:true. 1328/1328 pass. README + DEPLOY present, current-state. No mock-only/unverified REQ.**
+
+### Retro (v16 — ARCH-059 inv.4 + gcExpired + composeConfig workspaceTtlMs fix)
+
+**What changed (IMPL-122 v16, TASK-090):**
+
+- `src/auth/auth-service.ts`: added `isLoopbackRedirectUri(uri): boolean` (pure export, lines 24-40). Called in `authorize()` BEFORE `tokenStore.putState()` — non-loopback/missing/unparseable `redirect_uri` → 400, no state row. Handles WHATWG IPv6 bracket serialization. Relative-URI fallback in `googleCallback` is now unreachable; flagged in code comment but intentionally not removed per DES-095 v16 (surgical fix).
+- `src/server.ts`: REQ-026 sweep block moved after `authTokenStore` init (necessary for the condition change); interval-creation condition widened to `(_gcTtl > 0 || authCfg)`; `authTokenStore?.gcExpired()` called first in each tick (own try/catch, never throws into scheduler); `reclaimStaleWorkspaces` only when `_gcTtl > 0`. Auth-only/no-TTL config now bounds auth tables hourly.
+- `src/main.ts`: `workspaceTtlMs: fileConfig.workspaceTtlMs` added to `composeConfig()` (lines 153-158). Prevents `_gcTtl=0` in production, ensuring GC runs at the configured interval rather than hourly.
+- `vitest.config.ts`: `sequence: { hooks: 'stack' }` — fixes Vitest v1.6.1 parallel-hooks race (test tooling only, no production impact).
+
+**What went well:**
+
+- Gate 7.5 live test caught the `workspaceTtlMs` composition-root gap before the iteration closed — the same safety-net that caught the `auth:` forwarding gap in v15. Real validation found a real production bug.
+- The fix is minimal: 3 files, 2 behavioral changes, zero ARCH expansion (the OR-condition widening of the sweep interval is the boldest change, and ARCH-059 named it).
+- IT-078 test-first coverage (7 new RED cases at Gate 5, all GREEN at Gate 7) gave precise pass/fail feedback for the fix — the cases 8a-9c provided both failure modes and regression guards in a single test file.
+
+**What to change:**
+
+- **composeConfig snapshot test is now 2-for-2 overdue.** The same bug class (a config key silently dropped from `composeConfig()`) has occurred in consecutive iterations (`auth:` in v15, `workspaceTtlMs` in v16), and the v15 retro already named the fix: a snapshot test pinning every key present in `fileConfig` against `ServerConfig`. This MUST be built before the next config-adding iteration, not after. File as LOW tech debt targeted at the next gate-5 pass for any config-adding iteration.
+- **LOW-4 ARCH-059 text fix (state TTL):** amend "≤60 s" to "state ≤10 min / codes ≤60 s" to match the 600 s implementation. No code change required.
+- **TASK-018** (OIDC task, functionally superseded): close or annotate as superseded in 03-tasks.md to remove the 未實作 trace gap.
+
+**Impact closure:**
+
+- HIGH-1 (ARCH-059 inv.4 open-redirect → bearer theft): CLOSED. `isLoopbackRedirectUri()` enforced before `putState`. Attack surface: attacker-supplied `redirect_uri` can no longer receive an engine auth-code.
+- MED-2 (ARCH-059 gcExpired unscheduled → unbounded auth tables): CLOSED. `gcExpired()` wired into REQ-026 sweep; sweep created for auth-enabled configs. Auth table rows now expire and are reclaimed.
+- composeConfig workspaceTtlMs forwarding: CLOSED. Production `_gcTtl` now reflects the configured value; GC fires at the configured interval, not hourly.
+
+**Known tech debt (all recorded, unchanged from v15 except as noted):**
+
+*Closed by v16:*
+- [HIGH] HIGH-1: ARCH-059 inv.4 redirect_uri not validated — CLOSED
+- [MED] MED-2: ARCH-059 gcExpired never scheduled — CLOSED
+
+*Carry forward — Gate 2 adjudication pending:*
+- [HIGH] H-2: ARCH-017/D-PROFILE/DES-031 builder cluster unwired
+- [HIGH] H-3: D-KILL/D-PROC cli-lifecycle + timeout-race orphaned
+
+*Carry forward — lower urgency:*
+- [MED] M-1: LiteLLMGatewayClient transcript opaque
+- [LOW] LOW-3: client-echoable principal on null-edge path
+- [LOW] LOW-4: ARCH-059 inv.3 text: amend state TTL bound
+- [LOW] L-1: McpRegistry wall-clock direct Date.now
+- [LOW] L-2: ARCH-018 hooks-drop live branch in materializeAssets
+
+*Newly identified action items:*
+- [LOW] composeConfig snapshot test — 2-for-2 same bug class; must be built before next config-adding iteration.
+
+*Trace gaps (all recorded):*
+- IMPL-082 MID (TDD-label, pre-existing since v4)
+- DES-088 LOW (iter drift v14 behind IMPL-127 v15 — fix: bump DES-088 iter)
+- UT-058/UT-064/IT-057 LOW (iter drifts, pre-existing cosmetic)
+- TASK-018 LOW (OIDC task, functionally superseded by v15+v16 — recommend close/annotate)
+
+*Pre-existing doc-debt (unchanged):*
+- DEPLOY.md §1b historical v2 blockquote + §6 scenario JSON config keys.
+
+---
+
+## v15 GATE 8 REVIEW (2026-08-18, superseded by v16 above — kept for history)
 
 > This section supersedes "## v14 GATE 8 REVIEW (2026-08-16)" below (kept for history).
 > **v15 Slice B — OAuth AS + per-caller principal + workflow ownership + harness-defaults + D-BIND fail-closed**

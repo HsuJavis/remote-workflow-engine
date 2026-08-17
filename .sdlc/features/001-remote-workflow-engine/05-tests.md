@@ -9,6 +9,8 @@ status: green
 > Run: `npm test` (vitest).  Gate 7 v15 result (2026-08-18): 1316 pass / 0 fail / 233 files / 1316 tests.
 >   Gate 6.5 simplify: auth-service.ts wellKnown* handlers de-duplicated via oauth-metadata.ts pure builders (IMPL-128). All 1316 tests remain green.
 >   v15 tests flipped green/pass: UT-093..097, IT-079, IT-081, IT-082, VAL-095..099 (UT-092/IT-078/IT-080 already green from Gate-5 re-run).
+>   v16 test-defect fix (2026-08-18): compose-config-v2-wiring.test.ts auth fixture missing issuer field
+>   (AuthConfig.issuer required, added in v15) — added issuer:'http://127.0.0.1:0'; tsc --noEmit clean; 11/11 pass.
 > Gate 7 v12 result (2026-08-15): 998 pass / 0 fail / 196 files / 998 tests.
 > Gate 7 v14 FINAL result (2026-08-16): 1170 pass / 0 fail / 217 files / 1170 tests.
 >   VAL-092 LLM-gate fixed: changed SKIP_ONLINE guard from opt-in RWE_SKIP_ONLINE_TESTS=1 only →
@@ -4321,13 +4323,13 @@ File: `tests/unit/oauth-metadata.test.ts`. Mock policy (unit): pure functions, z
 
 ### UT-093 — `TokenStore` seam: bearer/code/state lifecycle, injected clock+CSPRNG, sha256-at-rest invariant (DES-093)
 - **status:** green
-- **traces:** DES-093, ARCH-059, TASK-085
+- **traces:** DES-093, ARCH-059, TASK-085, TASK-090
 - **tier:** unit
 - **real:** false
 - **result:** pass
-- **iter:** v15
+- **iter:** v16
 
-File: `tests/unit/token-store.test.ts`. Mock policy (unit): in-memory SQLite `:memory:`, injected deterministic clock + csprng. Cases: `issue`/`verifyByHash` (valid → principal, unknown → null, expired via clock advance → null); raw token ≠ stored column (DB read); `mintAuthCode`/`consumeAuthCode` single-use atomic (first → result, second → null, expired → null); `putState`/`consumeState` single-use; `gcExpired` count + idempotent. Red reason: `src/auth/token-store.ts` does not exist → MODULE NOT FOUND → all tests fail at collect time.
+File: `tests/unit/token-store.test.ts`. Mock policy (unit): in-memory SQLite `:memory:`, injected deterministic clock + csprng. Cases: `issue`/`verifyByHash` (valid → principal, unknown → null, expired via clock advance → null); raw token ≠ stored column (DB read); `mintAuthCode`/`consumeAuthCode` single-use atomic (first → result, second → null, expired → null); `putState`/`consumeState` single-use; `gcExpired` count + idempotent. Red reason: `src/auth/token-store.ts` does not exist → MODULE NOT FOUND → all tests fail at collect time. **v16 note:** DES-093 updated to include gcExpired wired into the sweep. UT-093 tests the gcExpired() method directly (unit tier); the sweep-wiring is tested at integration tier by IT-078 case 10 (MED-2). No new unit-level cases needed — gcExpired() API unchanged.
 
 ### UT-094 — `verifyIdToken` RS256 branch coverage: every reject path + accept case, injected JWKS+clock+base (DES-094)
 - **status:** green
@@ -4341,13 +4343,13 @@ File: `tests/unit/google-verifier.test.ts`. Mock policy (unit): RS256 key pair v
 
 ### UT-095 — `resolvePrincipal` discriminated union — returns union, NEVER throws (DES-095)
 - **status:** green
-- **traces:** DES-095, ARCH-059, TASK-086
+- **traces:** DES-095, ARCH-059, TASK-086, TASK-090
 - **tier:** unit
 - **real:** false
 - **result:** pass
-- **iter:** v15
+- **iter:** v16
 
-File: `tests/unit/auth-service-resolve-principal.test.ts`. Mock policy (unit): fake TokenStore (Map), fake IncomingMessage headers. Cases: no Authorization → 401 union; non-Bearer Authorization → 401; unknown Bearer → 401; expired Bearer → 401; valid bearer → `{principal}`; 401 result has `wwwAuthenticate` string; NEVER throws (resolves union on any garbage); uniform 401 wire (no expired-vs-unknown-vs-malformed distinction per C-2). Red reason: `src/auth/auth-service.ts` does not exist → MODULE NOT FOUND → all tests fail at collect time.
+File: `tests/unit/auth-service-resolve-principal.test.ts`. Mock policy (unit): fake TokenStore (Map), fake IncomingMessage headers. Cases: no Authorization → 401 union; non-Bearer Authorization → 401; unknown Bearer → 401; expired Bearer → 401; valid bearer → `{principal}`; 401 result has `wwwAuthenticate` string; NEVER throws (resolves union on any garbage); uniform 401 wire (no expired-vs-unknown-vs-malformed distinction per C-2). Red reason: `src/auth/auth-service.ts` does not exist → MODULE NOT FOUND → all tests fail at collect time. **v16 note:** DES-095 updated to add `isLoopbackRedirectUri()` (new pure function in auth-service.ts per ARCH-059 inv.4). `isLoopbackRedirectUri` is a pure function not related to `resolvePrincipal`; UT-095 remains a correct unit test for the `resolvePrincipal` discriminated union. `isLoopbackRedirectUri` truth-table coverage is in IT-078 cases 8a–9c at integration tier (all 17 pass). No new unit-level cases added (covered at IT tier).
 
 ### UT-096 — `isLoopbackPeer` exhaustive truth-table: all 127.0.0.0/8, ::1, ::ffff:127.x, undefined fail-closed, forwarded-header fail-safe (DES-097)
 - **status:** green
@@ -4371,13 +4373,13 @@ File: `tests/unit/resolve-harness-params.test.ts`. Mock policy (unit): pure func
 
 ### IT-078 — auth routes integration + I-2 hermeticity: real server + real net-guard + real token-store (DES-095, DES-096, DES-100)
 - **status:** green
-- **traces:** DES-095, DES-096, DES-100, ARCH-059, ARCH-060, TASK-086, TASK-087
+- **traces:** DES-093, DES-095, DES-096, DES-100, ARCH-059, ARCH-060, TASK-086, TASK-087, TASK-090
 - **tier:** integration
 - **real:** false
 - **result:** pass
-- **iter:** v15
+- **iter:** v16
 
-File: `tests/integration/auth-routes-integration.test.ts`. Mock policy (integration): real `createServer` + real HTTP + real SQLite token-store; Google doubled via injected `jwksFetch` + local test RS256 key pair. Cases: (1) `GET /.well-known/oauth-protected-resource` → 200 with resource+authorization_servers; (2) `GET /.well-known/oauth-authorization-server` → 200 with PKCE S256; (3) un-tokened `/mcp` → 401 + WWW-Authenticate; (4) un-tokened `/assets/blob/:sha` → 401; (5) un-tokened `/assets/manifest` → 401; (6) valid bearer → `/mcp` 200; (7) I-2 hermeticity: `workflow_run` with bearer → `workflow_status` carries `principal:<email>` AND principal ABSENT from sandbox child env. Red reason: `src/auth/token-store.js` does not exist → MODULE NOT FOUND → all tests fail at collect time.
+File: `tests/integration/auth-routes-integration.test.ts`. Mock policy (integration): real `createServer` + real HTTP + real SQLite token-store; Google doubled via injected `jwksFetch` + local test RS256 key pair. v15 cases (7 pre-existing, all GREEN): (1) `GET /.well-known/oauth-protected-resource` → 200; (2) `GET /.well-known/oauth-authorization-server` → 200 PKCE S256; (3) un-tokened `/mcp` → 401 + WWW-Authenticate; (4) un-tokened `/assets/blob/:sha` → 401; (5) un-tokened `/assets/manifest` → 401; (6) valid bearer → `/mcp` 200; (7) I-2 hermeticity: `workflow_run` bearer → `workflow_status` carries `principal:<email>` AND principal ABSENT from run workspace. v16 HIGH-1 cases (cases 8a–8f, 6 new tests, all RED): (8a) `GET /authorize?redirect_uri=https://evil.example/cb` → 400 `invalid_request` (pre-fix: 302); (8b) non-loopback redirect_uri → NO `oauth_state` row written (pre-fix: row IS written); (8c) `https://127.0.0.1/cb` (https scheme) → 400 (pre-fix: 302); (8d) unparseable `redirect_uri` → 400 (pre-fix: 302); (8e) empty `redirect_uri=` → 400 (pre-fix: 302); (8f) missing `redirect_uri` param → 400 (pre-fix: 302). v16 regression guards (cases 9a–9c, 3 new tests, all GREEN): (9a) `http://127.0.0.1:5599/cb` → 302 (loopback allowed); (9b) `http://localhost:5599/cb` → 302; (9c) `http://[::1]:5599/cb` → 302 (named guard: WHATWG `URL.hostname` brackets footgun, DES-095 v16). v16 MED-2 case (case 10, 1 new test, RED): expired `oauth_state` row NOT deleted by sweep within 3 s (pre-fix: sweep calls only `reclaimStaleWorkspaces`, never `gcExpired`); live bearer retained (GREEN). **v16 red confirmation: 7 fail / 10 pass (17 total, vitest run 2026-08-18)** — 7 failures are all for the correct pre-fix reasons (302-not-400 on non-loopback redirect_uris, state row written on rejected request, expired auth rows not GC'd). Note: MED-2 widened sweep-creation condition (`workspaceTtlMs>0 OR auth-enabled`) is NOT asserted here (hourly sweep cadence with no injectable seam in the auth-only / no-TTL config); Gate 6 reviewer must confirm the widened condition in `server.ts` and Gate 7 regression must verify no auth-enabled configs skip the sweep.
 
 ### IT-079 — D-BIND fail-closed network integration: bind 0.0.0.0, LAN IP → 401, loopback → exempt, webhook unaffected, auth-disabled dormant (DES-097, DES-100)
 - **status:** green
@@ -4385,9 +4387,9 @@ File: `tests/integration/auth-routes-integration.test.ts`. Mock policy (integrat
 - **tier:** integration
 - **real:** false
 - **result:** pass
-- **iter:** v15
+- **iter:** v16
 
-File: `tests/integration/net-guard-bind-integration.test.ts`. Mock policy (integration): real server on `0.0.0.0`, real HTTP from real socket (LAN IP). `allowedHosts: [LAN_IP]` so host-allowlist passes first; D-BIND tested separately. 4 cases: (1) loopback → NOT 401 (pre-impl compatible, passes); (2) LAN IP → 401 (RED — gets 200 pre-impl); (3) webhook via LAN IP → not D-BIND 401 (passes); (4) auth disabled + LAN IP → NOT 401 (passes). Guard: LAN IP cases skipped if `os.networkInterfaces()` yields no non-internal IPv4. Red reason: D-BIND not yet implemented → LAN IP gets 200 instead of 401 → case 2 fails.
+File: `tests/integration/net-guard-bind-integration.test.ts`. Mock policy (integration): real server on `0.0.0.0`, real HTTP from real socket (LAN IP). `allowedHosts: [LAN_IP]` so host-allowlist passes first; D-BIND tested separately. 4 cases: (1) loopback → NOT 401 (exempt regardless of auth); (2) LAN IP → 401 (fail-closed); (3) webhook via LAN IP with valid HMAC → not 401 (own HMAC control, unaffected); (4) auth disabled + LAN IP → NOT 401 (guard dormant). Guard: LAN IP cases skipped if `os.networkInterfaces()` yields no non-internal IPv4. v16 reviewed — fix touches `/authorize` redirect_uri validation (DES-095) and server.ts sweep gcExpired wiring (DES-093/095) only; D-BIND cases are unchanged and remain green as regression guard.
 
 ### IT-080 — workflow ownership gate + idempotent boot backfill integration (DES-098)
 - **status:** green
