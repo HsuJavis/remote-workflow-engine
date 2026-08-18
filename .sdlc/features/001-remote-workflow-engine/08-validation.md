@@ -4313,51 +4313,69 @@ npx vitest run   →   Test Files  233 passed (233) / Tests  1316 passed (1316)
 
 ### VAL items
 
-### VAL-095 — real-run acceptance for REQ-012 (engine-as-own-AS OAuth discovery via MCP SDK + PKCE flow + auth-disabled backward-compat; v16: loopback-only redirect_uri + gcExpired GC)
+### VAL-095 — real-run acceptance for REQ-012 (engine-as-own-AS OAuth discovery via MCP SDK + PKCE flow + auth-disabled backward-compat; v16: loopback-only redirect_uri + gcExpired GC; v17: RFC 7591 DCR)
 
 - **status:** green
-- **traces:** REQ-012, DES-095, DES-093, DES-100, TASK-085, TASK-086, TASK-090, ARCH-059
+- **traces:** REQ-012, DES-092, DES-093, DES-095, DES-100, TASK-085, TASK-086, TASK-090, TASK-091, ARCH-059
 - **tier:** acceptance
 - **real:** true
 - **result:** pass
 - **evidence:**
-  **(v15 clauses — unchanged, carry-forward)** `npx vitest run tests/acceptance/val-095-oauth-discovery.test.ts --reporter=verbose`
-  (2026-08-18, working-tree v15, after composition-root fix): **5/5 tests pass**.
-  (1) `discoverOAuthProtectedResourceMetadata(serverUrl)` via real MCP SDK → `{resource, authorization_servers:["http://…"]}` — real HTTP 200, real PRM JSON;
-  (2) SDK discovery chain: PRM → `authorization_servers[0]` → `discoverAuthorizationServerMetadata` → metadata contains `code_challenge_methods_supported:["S256"]`, `authorization_endpoint`, `token_endpoint`;
-  (3+4) full PKCE auth_code flow: `GET discovered-authorization_endpoint?code_challenge=…&code_challenge_method=S256` → engine 302 → fake Google `/authorize` → engine `/oauth/google/callback?code=…` → `POST discovered-token_endpoint?code=…&code_verifier=…` → engine opaque bearer → `POST /mcp` with bearer → **HTTP 200** (authenticated);
-  (5) `POST /mcp` without bearer → HTTP 401 + `extractWWWAuthenticateParams(res).resourceMetadataUrl` defined (points at `/.well-known/oauth-protected-resource`);
-  (6) auth disabled (second server, no auth config) → `POST /mcp` without bearer → **NOT 401** (backward-compat open mode).
-  Google doubled via minimal local RS256 HTTP server (test-only fake IdP, injected `jwksFetch`) — real Google interactive consent flow is headless-unreachable (noted as unreachable-dep below). Real server routes, real MCP SDK calls; no SUT-boundary mock.
+  **(v15 clauses — carry-forward)** `npx vitest run tests/acceptance/val-095-oauth-discovery.test.ts --reporter=verbose`
+  (2026-08-18, working-tree v15, after composition-root fix): cases 1–6 pass (SDK discovery, PKCE flow, 401 without bearer, backward-compat open mode). Details in v15 evidence below.
 
-  **(v16 HIGH-1 clause — loopback-only redirect_uri, ARCH-059 inv.4 fix)** Live-server real-run (2026-08-18, `RWE_CONFIG_PATH=/tmp/rwe-v16-val-config.json node node_modules/tsx/dist/cli.mjs src/main.ts` → auth-enabled server on 127.0.0.1:19191, workRoot=/tmp/rwe-v16-val-workroot, 1328/1328 tests already confirmed):
-  ```
-  # Non-loopback redirect_uri variants → 400
-  curl -o /dev/null -w "%{http_code}" "http://127.0.0.1:19191/authorize?...&redirect_uri=https%3A%2F%2Fevil.example%2Fcb&..."
-  # → 400
-  curl -o /dev/null -w "%{http_code}" "http://127.0.0.1:19191/authorize?...&redirect_uri=https%3A%2F%2F127.0.0.1%2Fcb&..."
-  # → 400 (https scheme)
-  curl -o /dev/null -w "%{http_code}" "http://127.0.0.1:19191/authorize?...&redirect_uri=not-a-uri-at-all&..."
-  # → 400 (garbage)
-  curl -o /dev/null -w "%{http_code}" "http://127.0.0.1:19191/authorize?...&redirect_uri=&..."
-  # → 400 (empty)
-  curl -o /dev/null -w "%{http_code}" "http://127.0.0.1:19191/authorize?...&code_challenge=..."
-  # → 400 (missing redirect_uri param)
-  # Loopback variants → 302 (allowed)
-  curl -o /dev/null -w "%{http_code}" "http://127.0.0.1:19191/authorize?...&redirect_uri=http%3A%2F%2F127.0.0.1%3A5599%2Fcb&..."
-  # → 302
-  curl -o /dev/null -w "%{http_code}" "http://127.0.0.1:19191/authorize?...&redirect_uri=http%3A%2F%2Flocalhost%3A5599%2Fcb&..."
-  # → 302
-  curl -o /dev/null -w "%{http_code}" "http://127.0.0.1:19191/authorize?...&redirect_uri=http%3A%2F%2F%5B%3A%3A1%5D%3A5599%2Fcb&..."
-  # → 302 (IPv6 loopback)
-  ```
-  **Also confirmed (case 8b):** `oauth_state` row count before rejected request = 3, after = 3 (no row written for non-loopback redirect_uri). Verified via `node -e "require('better-sqlite3')('/tmp/.../auth-tokens.db').prepare('SELECT COUNT(*) as n FROM oauth_state').get().n"` before and after.
-  All 8 live-server curl results match expected values. IT-078 cases 8a–9c also confirm the same at integration tier (17/17 pass: `npx vitest run tests/integration/auth-routes-integration.test.ts`). Real `createServer()` + real SQLite + real HTTP; no SUT-boundary mock.
+  **(v16 HIGH-1 clause — loopback-only redirect_uri, ARCH-059 inv.4 fix; carry-forward)** Live server on 127.0.0.1:19191 (2026-08-18): 8 curl cases confirm non-loopback → 400, loopback → 302, no `oauth_state` row written on rejection. IT-078 cases 8a–9c, 10 (17/17). Details in v16 evidence below.
 
-  **(v16 MED-2 clause — gcExpired wired to sweep, ARCH-059 note fix)** `npx vitest run tests/integration/auth-routes-integration.test.ts --reporter=verbose` (2026-08-18): IT-078 **case 10 passes** — server created with `workspaceTtlMs:100`, an already-expired `oauth_state` row (5s in the past) inserted directly into the server's DB via fresh better-sqlite3 handle, swept within 3s; `SELECT state FROM oauth_state WHERE state = ?` returns `undefined` (row gone); a LIVE bearer inserted simultaneously is retained. All three auth tables (bearer_tokens, auth_codes, oauth_state) covered by gcExpired() in token-store.ts lines 155–162 (DELETE WHERE expires_at <= ?), called from server.ts sweep at lines 1277–1280 (inside `setInterval(sweep, _intervalMs)` started when auth-enabled). Real `createServer()` + real SQLite (in-process); no SUT-boundary mock.
-  **IMPL-122 composition-root fix (discovered at Gate 7.5 live test):** `workspaceTtlMs` was missing from `composeConfig()` in `src/main.ts` — silently dropped, so `_gcTtl` was always 0 in production, causing the sweep to fire hourly (not at the configured short interval). Same class as the v15 `auth:` forwarding fix. Added `workspaceTtlMs: fileConfig.workspaceTtlMs,` in the `composeConfig()` config object (src/main.ts, after auth: line). `npm run build` clean; full suite: `npm test` → **233 files / 1328 tests pass**; IT-078 17/17 unchanged.
-  **Cross-process live confirmation (post-fix):** Server started on 127.0.0.1:19192 with `workspaceTtlMs:500` + `auth.enabled:true` + `gateway:direct-fetch` via `RWE_CONFIG_PATH=/tmp/rwe-v16-val2-config.json npm start`. 3 expired `oauth_state` rows (`expires_at = now()-2000`) inserted via external better-sqlite3 process into `workRoot/auth-tokens.db`. After 2s wait: `SELECT COUNT(*) ... WHERE state LIKE 'gc-xp-test-%'` = **0** (rows gone — server's 500ms sweep fired). With `workspaceTtlMs` forwarded, `_intervalMs = min(500, hourly) = 500ms`. Real cross-process GC confirmed; IT-078 case 10 and this cross-process run are both real:true evidence for MED-2.
-- **iter:** v16
+  **(v17 RFC 7591 DCR clause — new for this round)** `npx vitest run tests/acceptance/val-095-oauth-discovery.test.ts --reporter=verbose` (2026-08-18, working-tree v17): **9/9 tests pass** (5 carry-forward v15 + 4 new DCR cases 7a–7d). New cases:
+  - (7a) `discoverAuthorizationServerMetadata` result includes `registration_endpoint: "http://127.0.0.1:<port>/register"` — confirms AS metadata advertises DCR, exactly what eliminates the "Incompatible auth server" connect failure;
+  - (7b) SDK `registerClient(asUrl, {metadata:asMeta, clientMetadata:{redirect_uris:["http://127.0.0.1:<port>/oauth/google/callback"], token_endpoint_auth_method:"none", grant_types:["authorization_code"], response_types:["code"]}})` → `{client_id:"<hex>", client_id_issued_at:<seconds epoch>, redirect_uris:[…]}` — no `client_secret` (public PKCE client); `client_id_issued_at` in seconds range (> 1e9, < 1e10 per RFC 7591);
+  - (7c) SDK `registerClient()` with `redirect_uris:["https://evil.example.com/callback"]` → SDK throws (server returns HTTP 400 `{"error":"invalid_redirect_uri"}`) — loopback enforcement extends to registration;
+  - (7d) full DCR end-to-end: `registerClient()` with registered `redirect_uri=http://127.0.0.1:9988/oauth/google/callback`; `startAuthorization()` with DCR-issued `client_id` + actual callback URI (`http://127.0.0.1:<engine-port>/oauth/google/callback`, different port from registered 9988); `/authorize` → 302 (port-ignored binding, RFC 8252 §7.3); fake Google callback → engine auth-code; `POST /token` → engine bearer; `POST /mcp` with bearer → HTTP 200. Full register→authorize→token end-to-end via SDK-issued client_id, zero custom code.
+  Real `createServer()` + real MCP SDK (`registerClient`, `startAuthorization`, `discoverOAuthProtectedResourceMetadata`, `discoverAuthorizationServerMetadata`) + real HTTP + real SQLite; Google doubled via local RS256 HTTP stub + injected `jwksFetch`.
+
+  **(v17 live-server DCR curl validation)** Server booted from documented steps: `RWE_CONFIG_PATH=/tmp/rwe-v17-val-config.json node node_modules/tsx/dist/cli.mjs src/main.ts` → `listening on http://127.0.0.1:19193/mcp` (auth-enabled, `gateway:direct-fetch`, `workRoot=/tmp/rwe-v17-val-workroot`):
+  ```
+  # case 7a: registration_endpoint in AS metadata
+  curl -s http://127.0.0.1:19193/.well-known/oauth-authorization-server | python3 -c "import json,sys; d=json.load(sys.stdin); print('registration_endpoint:', d.get('registration_endpoint'))"
+  # → registration_endpoint: http://127.0.0.1:19193/register
+
+  # case 7b: POST /register loopback → 201 + client_id (no client_secret)
+  curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST http://127.0.0.1:19193/register \
+    -H "Content-Type: application/json" \
+    -d '{"redirect_uris":["http://127.0.0.1:5599/callback"],"token_endpoint_auth_method":"none","grant_types":["authorization_code"],"response_types":["code"]}'
+  # → HTTP 201; body: {"client_id":"1e73f0ccccee28c4d0433542ce3f7a20c3c25b98d86590f46930c430ea94d3fd","client_id_issued_at":1787013893,"redirect_uris":["http://127.0.0.1:5599/callback"],"grant_types":["authorization_code"],"response_types":["code"],"token_endpoint_auth_method":"none"}
+
+  # case 7c: POST /register non-loopback → 400 invalid_redirect_uri
+  curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST http://127.0.0.1:19193/register \
+    -H "Content-Type: application/json" \
+    -d '{"redirect_uris":["https://evil.example.com/cb"],"token_endpoint_auth_method":"none"}'
+  # → {"error":"invalid_redirect_uri"} HTTP 400
+
+  # case 7d: /authorize with DCR client_id + different port → 302 (port-ignored binding)
+  # (registered client_id=3caae0bfc0b2ae3068dc84e53288d2fce2585483fbd84ffe2a5b66bdf2f9b8f8 with redirect_uri port 9999)
+  curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:19193/authorize?response_type=code&client_id=3caae0bfc0b2ae3068dc84e53288d2fce2585483fbd84ffe2a5b66bdf2f9b8f8&redirect_uri=http%3A%2F%2F127.0.0.1%3A8888%2Fcallback&code_challenge=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&code_challenge_method=S256"
+  # → 302 (port 8888 ≠ registered 9999 but scheme+host+path match → port-ignored allowed)
+  ```
+
+  **(v17 restart survival)** Registered `client_id=d7c5f5e1b7ecc1518b4941d66c24837610d0452a67767fc585c2f93cf0b4e73d` (redirect_uri port 9999) on boot-1, killed server (SIGTERM), re-booted same workRoot/SQLite:
+  ```
+  # /authorize after restart with persisted client_id + different port → 302
+  curl ... /authorize?client_id=d7c5f5e1b7ecc1518b4941d66c24837610d0452a67767fc585c2f93cf0b4e73d&redirect_uri=http://127.0.0.1:8888/restart-path
+  # → HTTP 302 (client persisted in registered_clients SQLite table; port-ignored binding intact)
+
+  # /authorize after restart with same client_id but different pathname → 400
+  curl ... /authorize?client_id=d7c5f5e1b7ecc1518b4941d66c24837610d0452a67767fc585c2f93cf0b4e73d&redirect_uri=http://127.0.0.1:8888/different-path
+  # → HTTP 400 (path mismatch; registered /restart-path ≠ /different-path; binding enforced)
+  ```
+  Registered client persists across restart. Binding correctly differentiates port (ignored) from path (enforced). Satisfies REQ-012 v17 clause: "the registered client is persisted (survives restart)".
+
+  **(full suite)** `npm test` (2026-08-18, working-tree v17): **233 files / 1342 tests pass** (1338 pre-existing + 4 new acceptance cases 7a–7d added by this round). IT-078: **27/27 pass** (17 pre-existing + 10 new DCR cases 11–18). No SUT-boundary mock.
+
+  **(seam production-wiring check, retro L-002)** `/register` route is inside the `if(authHandlers)` block at `server.ts:1409` (same block as `/authorize`, `/token`, `/oauth/google/callback`); `authHandlers` is constructed from `authTokenStore` (a real `TokenStore` with real SQLite) at `server.ts:1267`; forwarded via `main.ts:152`; `registerClient()`/`getClient()` in `token-store.ts` operate on the real `registered_clients` SQLite table. The seam (injected fake Google + `jwksFetch`) is for Google IdP only; the engine-side registration/persist/lookup path is fully wired in production.
+
+  **(v15 evidence — carry-forward)** 5/5 tests pass: SDK discovery (cases 1–2), full PKCE flow (cases 3+4), 401 without bearer (case 5), open mode (case 6). Google doubled via local RS256 HTTP server + injected `jwksFetch`. Composition-root fix: `auth: fileConfig.auth` in `composeConfig()` (src/main.ts).
+  **(v16 evidence — carry-forward)** HIGH-1 loopback-only (live curl: evil.example→400, https-scheme→400, garbage→400, empty→400, missing→400, 127.0.0.1→302, localhost→302, [::1]→302; no `oauth_state` row written on rejection). MED-2 gcExpired wired to sweep (IT-078 case 10; cross-process GC confirmed; `workspaceTtlMs` forwarded in composeConfig). IT-078 17/17; 1328/1328.
+- **iter:** v17
 
 ### VAL-096 — real-run acceptance for REQ-086 (per-caller principal on protected surfaces; attributed on run record + CAS namespace)
 
@@ -4453,3 +4471,15 @@ v15 (REQ-012/086..089) adds the **`auth`** block to `rwe.config.json`. This bloc
 **`rwe.config.example.json` updated this round** to include a commented-out `auth` block showing the three keys. The `auth.googleClientSecret` goes in the JSON config file (same security level as the operator-managed `rwe.config.json`; it is NOT accessible from within the VM sandbox which only sees the run workspace — per DES-093/REQ-018 the secret is never forwarded to agent subprocesses or workspace-reachable paths).
 
 **Also confirmed:** the existing 15 keys in `rwe.config.example.json` (`bind`/`port`/`workRoot`/`timeoutMs`/`retries`/`maxWorkflowDepth`/`maxWorkflowDescendants`/`maxConcurrentRuns`/`gateway`/`agentDefinitionsDir`/`seedRefAllowlist`/`maxBlobBytes`/`defaultAllowedTools`/`aliases`/`allowedHosts`) are all still correct and still read by the code. No dead rows; no missing rows for non-`auth` keys. **No other config-doc drift this round.**
+
+## v17 Gate 7.5 — unreachable dependencies (carry-forward + v17 note)
+
+**Real Google OAuth consent flow (carry-forward from v15/v16):** requires (a) real `googleClientId`/`googleClientSecret` registered in Google Cloud Console, (b) a real Google account performing interactive browser consent, (c) HTTPS callback URL reachable by Google. All three are absent in this headless validation environment. The ENGINE-SIDE parts of the OAuth flow are FULLY validated via the fake RS256 IdP (VAL-095). Classified as **unreachable-dep**, not a code gap.
+
+**Real Claude Code DCR browser flow (v17 note):** The original failure was "Incompatible auth server: does not support dynamic client registration" from a real Claude Code MCP client. That specific failure is now closed: the `registration_endpoint` is present in AS metadata and `POST /register` works (proven by VAL-095 cases 7a–7d + live curl). The truly interactive piece — a real Claude Code CLI performing the full browser-consent flow using its DCR-obtained `client_id` — remains headless-unreachable (requires a real Google account + browser UI). The SDK-function-level proof (cases 7b/7d) exercises the same code path the Claude Code SDK uses, satisfying the REQ-012 v17 observable.
+
+## v17 Gate 7.5 — config-file sync check (§4b)
+
+v17 (RFC 7591 DCR fix) adds **no new config keys**. DCR registration is a public endpoint (no authentication required, no new secrets); `registered_clients` is a new SQLite table managed automatically. The existing `auth` block in `rwe.config.json` is unchanged (same three keys: `enabled`, `googleClientId`, `googleClientSecret`). `rwe.config.example.json` already reflects all keys correctly from v15 — no changes needed this round.
+
+**Cross-check (both directions):** all keys the code reads (`bind`, `port`, `workRoot`, `timeoutMs`, `retries`, `maxWorkflowDepth`, `maxWorkflowDescendants`, `maxConcurrentRuns`, `workspaceTtlMs`, `gateway`, `agentDefinitionsDir`, `seedRefAllowlist`, `maxBlobBytes`, `defaultAllowedTools`, `aliases`, `allowedHosts`, `auth.enabled`, `auth.googleClientId`, `auth.googleClientSecret`) have a row in DEPLOY.md §1 設定總表, and no rows in that table reference keys the current code no longer reads. **No config drift this round.**

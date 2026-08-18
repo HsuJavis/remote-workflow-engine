@@ -1406,6 +1406,13 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         });
         return;
       }
+      if (req.method === 'POST' && (req.url === '/register' || req.url?.startsWith('/register?'))) {
+        authHandlers.register(req, res).catch(() => {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'registration error' }));
+        });
+        return;
+      }
       // Auth gate for blob upload (DES-096: resolve-once before putBlobStream consumes req)
       const blobMatchAuth = req.method === 'POST' ? /^\/assets\/blob\/([^/?]+)/.exec(req.url ?? '') : null;
       if (!dbindExempt && blobMatchAuth) {

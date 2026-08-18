@@ -56,6 +56,12 @@ export class TokenStore {
         redirect_uri TEXT NOT NULL,
         expires_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS registered_clients (
+        client_id TEXT PRIMARY KEY,
+        redirect_uris TEXT NOT NULL,
+        client_id_issued_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
     `);
   }
 
@@ -151,13 +157,37 @@ export class TokenStore {
     return { nonce: row.nonce, codeChallenge: row.code_challenge, redirectUri: row.redirect_uri };
   }
 
-  /** Delete expired rows from all three tables; returns total row count deleted. */
+  /** Mint a new RFC 7591 client_id; persists redirect_uris and returns the issued-at timestamp in seconds. */
+  registerClient(params: { redirectUris: string[]; ttlMs: number }): { clientId: string; clientIdIssuedAt: number } {
+    const clientId = genRandom(this._csprng);
+    const nowMs = this._clock();
+    const clientIdIssuedAt = Math.floor(nowMs / 1000);
+    const expiresAt = nowMs + params.ttlMs;
+    this._db.prepare(
+      'INSERT INTO registered_clients (client_id, redirect_uris, client_id_issued_at, expires_at) VALUES (?, ?, ?, ?)'
+    ).run(clientId, JSON.stringify(params.redirectUris), clientIdIssuedAt, expiresAt);
+    return { clientId, clientIdIssuedAt };
+  }
+
+  /** Look up a registered client by id; returns its redirect_uris or null if unknown/expired. */
+  getClient(clientId: string): { redirectUris: string[] } | null {
+    const now = this._clock();
+    const row = this._db.prepare(
+      'SELECT redirect_uris, expires_at FROM registered_clients WHERE client_id = ?'
+    ).get(clientId) as { redirect_uris: string; expires_at: number } | undefined;
+    if (!row) return null;
+    if (row.expires_at <= now) return null;
+    return { redirectUris: JSON.parse(row.redirect_uris) as string[] };
+  }
+
+  /** Delete expired rows from all four tables; returns total row count deleted. */
   gcExpired(): number {
     const now = this._clock();
     let n = 0;
     n += this._db.prepare('DELETE FROM bearer_tokens WHERE expires_at <= ?').run(now).changes;
     n += this._db.prepare('DELETE FROM auth_codes WHERE expires_at <= ?').run(now).changes;
     n += this._db.prepare('DELETE FROM oauth_state WHERE expires_at <= ?').run(now).changes;
+    n += this._db.prepare('DELETE FROM registered_clients WHERE expires_at <= ?').run(now).changes;
     return n;
   }
 }

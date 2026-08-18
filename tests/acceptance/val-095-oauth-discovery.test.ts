@@ -44,6 +44,7 @@ import {
   discoverOAuthProtectedResourceMetadata,
   discoverAuthorizationServerMetadata,
   extractWWWAuthenticateParams,
+  registerClient,
 } from '@modelcontextprotocol/sdk/client/auth.js';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
@@ -282,5 +283,155 @@ describe('REQ-012: auth disabled → pre-v15 open behavior (VAL-095)', () => {
     });
     expect(res.status).not.toBe(401);
     expect(res.status).toBe(200);
+  });
+});
+
+// ── v17 RFC 7591 DCR cases (new clauses in REQ-012 iter v17) ─────────────────
+//
+// These cases prove that an MCP client with NO pre-registered client_id can
+// self-register via the SDK's `registerClient()` and then complete the full
+// authorization-code+PKCE flow — closing the observed "Incompatible auth server:
+// does not support dynamic client registration" failure.
+//
+// Cases:
+//   7a. AS metadata → registration_endpoint present (closes the original connect failure)
+//   7b. SDK registerClient() → 201 + client_id + no client_secret (public PKCE client)
+//   7c. SDK registerClient() with non-loopback redirect_uri → SDK throws (server 400)
+//   7d. Full DCR register→startAuthorization→token flow via SDK, using DCR-issued client_id
+//       + port-ignored binding: registered on arbitrary port, /authorize with different port → 302
+
+describe('REQ-012 v17 DCR: registration_endpoint + SDK registerClient() + full DCR flow (VAL-095)', () => {
+  it('case 7a: AS metadata advertises registration_endpoint', async () => {
+    const prm = await discoverOAuthProtectedResourceMetadata(`http://127.0.0.1:${server.port}`);
+    const asMeta = await discoverAuthorizationServerMetadata(prm.authorization_servers![0]);
+    expect(asMeta).toBeDefined();
+    expect(typeof asMeta!.registration_endpoint).toBe('string');
+    expect(asMeta!.registration_endpoint).toMatch(/\/register$/);
+  });
+
+  it('case 7b: SDK registerClient() → 201 + client_id, no client_secret (public PKCE client)', async () => {
+    const base = `http://127.0.0.1:${server.port}`;
+    const prm = await discoverOAuthProtectedResourceMetadata(base);
+    const asMeta = await discoverAuthorizationServerMetadata(prm.authorization_servers![0]);
+    const result = await registerClient(prm.authorization_servers![0], {
+      metadata: asMeta!,
+      clientMetadata: {
+        redirect_uris: [`${base}/oauth/google/callback`],
+        token_endpoint_auth_method: 'none',
+        grant_types: ['authorization_code'],
+        response_types: ['code'],
+        client_name: 'val095-dcr-client',
+      },
+    });
+    expect(typeof result.client_id).toBe('string');
+    expect(result.client_id.length).toBeGreaterThan(0);
+    expect((result as { client_secret?: unknown }).client_secret).toBeUndefined();
+    // client_id_issued_at in seconds (RFC 7591)
+    expect(result.client_id_issued_at).toBeGreaterThan(1e9);
+    expect(result.client_id_issued_at).toBeLessThan(1e10);
+  });
+
+  it('case 7c: SDK registerClient() with non-loopback redirect_uri → SDK throws (server 400 invalid_redirect_uri)', async () => {
+    const base = `http://127.0.0.1:${server.port}`;
+    const prm = await discoverOAuthProtectedResourceMetadata(base);
+    const asMeta = await discoverAuthorizationServerMetadata(prm.authorization_servers![0]);
+    await expect(
+      registerClient(prm.authorization_servers![0], {
+        metadata: asMeta!,
+        clientMetadata: {
+          redirect_uris: ['https://evil.example.com/callback'],
+          token_endpoint_auth_method: 'none',
+          grant_types: ['authorization_code'],
+          response_types: ['code'],
+        },
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('case 7d: full DCR register→startAuthorization→token via SDK-issued client_id + port-ignored binding', async () => {
+    const base = `http://127.0.0.1:${server.port}`;
+    const prm = await discoverOAuthProtectedResourceMetadata(base);
+    const asMeta = await discoverAuthorizationServerMetadata(prm.authorization_servers![0]);
+    const asUrl = prm.authorization_servers![0];
+
+    // Register with an arbitrary port — port-ignored binding will still allow
+    // /authorize with the actual server port (RFC 8252 §7.3).
+    const registeredRedirectUri = 'http://127.0.0.1:9988/oauth/google/callback';
+    const result = await registerClient(asUrl, {
+      metadata: asMeta!,
+      clientMetadata: {
+        redirect_uris: [registeredRedirectUri],
+        token_endpoint_auth_method: 'none',
+        grant_types: ['authorization_code'],
+        response_types: ['code'],
+        client_name: 'val095-dcr-e2e-client',
+      },
+    });
+    const dcrClientId = result.client_id;
+
+    // startAuthorization with the DCR-issued client_id and the ENGINE callback URL.
+    // The port differs from what was registered (9988 vs actual server port),
+    // but scheme+host+path match → port-ignored binding allows it.
+    const actualCallbackUri = new URL(`${base}/oauth/google/callback`);
+    const { authorizationUrl, codeVerifier } = await (async () => {
+      // Use SDK helper to build the authorize URL.
+      return import('@modelcontextprotocol/sdk/client/auth.js').then(m =>
+        m.startAuthorization(asUrl, {
+          metadata: asMeta!,
+          clientInformation: { client_id: dcrClientId },
+          redirectUrl: actualCallbackUri,
+        }),
+      );
+    })();
+
+    // GET /authorize → must 302 (not 400) — port-ignored binding passed
+    const authRes = await fetch(authorizationUrl, { redirect: 'manual' });
+    expect(authRes.status, 'DCR client_id + port-ignored redirect_uri must give 302').toBe(302);
+
+    // Extract state + nonce from redirect to fake Google
+    const authLocation = authRes.headers.get('location') ?? '';
+    const authRedirectUrl = new URL(authLocation);
+    const state = authRedirectUrl.searchParams.get('state') ?? '';
+    const nonce = authRedirectUrl.searchParams.get('nonce') ?? '';
+    lastExpectedNonce = nonce;
+
+    // Simulate Google callback → engine issues auth-code
+    const cbRes = await fetch(`${base}/oauth/google/callback?` + new URLSearchParams({
+      state,
+      code: 'fake-dcr-google-code',
+    }), { redirect: 'manual' });
+    expect(cbRes.status, 'Google callback must 302 with engine auth-code').toBe(302);
+
+    const cbLocation = cbRes.headers.get('location') ?? '';
+    const cbUrl = new URL(cbLocation);
+    const engineCode = cbUrl.searchParams.get('code') ?? '';
+    expect(engineCode.length, 'engine auth-code must be non-empty').toBeGreaterThan(0);
+
+    // Exchange auth-code for engine bearer using SDK-discovered token_endpoint
+    const tokenRes = await fetch(asMeta!.token_endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: engineCode,
+        code_verifier: codeVerifier,
+        redirect_uri: actualCallbackUri.toString(),
+      }),
+    });
+    expect(tokenRes.status, 'token exchange must succeed 200').toBe(200);
+    const tokenBody = await tokenRes.json() as { access_token?: string; token_type?: string };
+    expect(tokenBody.token_type).toBe('Bearer');
+    expect(typeof tokenBody.access_token).toBe('string');
+
+    // Bearer from DCR flow must grant access to /mcp
+    const mcpRes = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${tokenBody.access_token}`,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'val095-dcr', version: '1' } } }),
+    });
+    expect(mcpRes.status, 'DCR-obtained bearer must grant /mcp access').toBe(200);
   });
 });

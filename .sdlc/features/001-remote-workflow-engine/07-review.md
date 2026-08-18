@@ -4,7 +4,148 @@ status: closed
 ---
 # 07 Review & Retro — Gate 8
 
-## v16 GATE 8 REVIEW (2026-08-18, CURRENT / AUTHORITATIVE — ITERATION CAN CLOSE)
+## v17 GATE 8 REVIEW (2026-08-18, CURRENT / AUTHORITATIVE — ITERATION CAN CLOSE)
+
+> This section supersedes "## v16 GATE 8 REVIEW (2026-08-18)" below (kept for history).
+> **v17 fix-mode iteration — RFC 7591 Dynamic Client Registration (REQ-012 v17 DCR fix).**
+> Impact closure: REQ-012, ARCH-059 "explicitly reject DCR" stance reversed, DES-092/093/095, IMPL-122, IT-078, TASK-091 — iter v17.
+> No new gaps, no new broken chains, no arch violations for v17-scoped changes.
+
+### Traceability consistency (v17)
+
+Trace `--check` result (regenerated 2026-08-18): **752 items, 9 gaps.**
+
+Change from v16 baseline (751 items / 6 gaps):
+
+- **1 new item:** TASK-091 added (traces ARCH-059, DES-092, IMPL-122).
+- **3 new low iter-drift gaps (TDD wavefront):** UT-092/UT-093/UT-095 paired-UT items sat behind DES/IMPL bumped to v17; 2 of the 5 TDD-wavefront drifts from Gate 5–7 were resolved at Gate 7.5 (VAL-095 bumped to v17 in the validation pass; IT-078 bumped at Gate 7). Remaining 3 are cosmetic — no production code gap.
+- **No new broken links, no new orphans, 0 未驗證, 0 未真實驗證, 0 high-severity gaps introduced by v17.**
+
+| ID | Severity | Type | Note |
+|----|----------|------|------|
+| IMPL-082 | MID | TDD label drift | Pre-existing since v4; no change |
+| UT-058 | LOW | iter drift v6 behind DES-038 v11 | Pre-existing since F1; cosmetic |
+| UT-064 | LOW | iter drift v9 behind DES-054 v11 | Pre-existing since v9 |
+| IT-057 | LOW | iter drift v9 behind DES-054 v11 | Pre-existing since v9 |
+| DES-088 | LOW | iter drift v14 behind IMPL-127 v15 | Pre-existing from v15 open; DES-088 iter unchanged by v17 |
+| TASK-018 | LOW | no implementation | OIDC task; functionally superseded by v15+v17 OAuth implementation |
+| UT-092 | LOW | iter drift behind DES-093 v17 | New TDD-wavefront drift; cosmetic |
+| UT-093 | LOW | iter drift behind DES-093 v17 | New TDD-wavefront drift; cosmetic |
+| UT-095 | LOW | iter v16 behind IMPL-122 v17 | New TDD-wavefront drift; resolvePrincipal unchanged in v17 — cosmetic |
+
+Dashboard confirms: 0 severe gaps, 0 未驗證 requirements, 0 mock-only validations. All 9 remaining gaps are recorded as known tech debt (Exit Gate 1 satisfied).
+
+### Architecture consistency (v17 self-check — lean QM fix, no panel)
+
+Fix scope: `src/auth/oauth-metadata.ts`, `src/auth/token-store.ts`, `src/auth/auth-service.ts`, `src/server.ts`, `vitest.config.ts`. Checked against ARCH-059 v17 (the only ARCH decision touched by v17).
+
+**ARCH-059 v17 reversal — DCR implemented:**
+
+Architecture text (ARCH-059 v17): "advertise `registration_endpoint` in `/.well-known/oauth-authorization-server`; implement a public `POST /register` that issues a public PKCE `client_id` (no `client_secret`), clamping requested metadata; enforce RFC 8252 loopback rule on every `redirect_uri` at registration; persist to a GC'd `registered_clients` table; `/authorize` applies port-agnostic binding (scheme+host+path, port ignored per RFC 8252 §7.3) for registered clients; unregistered/absent `client_id` falls through to loopback-only path (backward compatible)."
+
+Implementation checks:
+
+1. **`registration_endpoint` in AS metadata** (`src/auth/oauth-metadata.ts:41`): `registration_endpoint: \`${b}/register\`` added to `buildAuthServerMetadata` return. **Matches.**
+2. **`POST /register` public endpoint** (`src/server.ts:1409`): route inside `if (authHandlers)` block at line 1409 after `/token`, no bearer check, calls `authHandlers.register(req, res)`. **Matches ARCH-059 "public endpoint, no bearer."**
+3. **Loopback enforcement at registration** (`src/auth/auth-service.ts:304-308`): `redirect_uris` must all pass `isLoopbackRedirectUri`; non-loopback/empty → 400 `invalid_redirect_uri`. **Matches ARCH-059 inv.4 extension to registration.**
+4. **Metadata clamping** (`src/auth/auth-service.ts:311-325`): response always `grant_types:["authorization_code"]`, `response_types:["code"]`, `token_endpoint_auth_method:"none"`, no `client_secret` issued. **Matches "public PKCE client_id" and "clamping not rejecting."**
+5. **`registered_clients` table + GC** (`src/auth/token-store.ts:59-80, 161-192`): 4th table with `client_id PK`, `redirect_uris TEXT`, `client_id_issued_at`, `expires_at`; `registerClient` uses `this._csprng()` + `this._clock()` (seam-consistent, no raw `randomBytes`/`Date.now`); `gcExpired` extended to delete expired `registered_clients` rows. **Matches DES-093 v17 seam-consistency requirement.**
+6. **Port-agnostic binding in `/authorize`** (`src/auth/auth-service.ts:138-156`): `tokenStore.getClient(clientId)` looked up; if registered, compares `req_u.protocol === reg_u.protocol && req_u.hostname === reg_u.hostname && req_u.pathname === reg_u.pathname` (port NOT compared); mismatch → 400 before `putState`. **Matches RFC 8252 §7.3 port-ignored binding.**
+7. **Backward compatibility** (`src/auth/auth-service.ts:157-162`): absent/unregistered `client_id` → existing `isLoopbackRedirectUri` check (loopback-only path unchanged). **Matches "backward compatible, keeps pre-DCR callers green."**
+8. **No new config keys:** `POST /register` is a public endpoint with no secrets; `registered_clients` table auto-managed. Config file unchanged from v16. **Confirmed by Gate 7.5 config-sync check.**
+9. **D-AUTH-1 (opaque bearer, no JWT):** DCR adds only a `client_id` (not a bearer token). No JWT introduced. **Consistent.**
+10. **ARCH-063 interaction:** `/register` is inside `if (authHandlers)` (auth-enabled guard), but public (no bearer). The net-guard's `isAllowedHost`/`isAllowedOrigin` still covers this route (all routes go through the top-of-handler guard before the `authHandlers` dispatch). **Consistent — "public" means no bearer, not exempted from net-guard.**
+
+**Verdict for v17-touched code: architecture CONSISTENT with ARCH-059 v17.**
+
+Pre-existing violations (UNCHANGED from v16 review — not re-litigated here):
+
+| Label | Severity | Finding | Status |
+|-------|----------|---------|--------|
+| H-2 | HIGH | ARCH-017/D-PROFILE/DES-031 session-options-builder orphaned | Gate 2 adjudication pending (security-hardening iter) |
+| H-3 | HIGH | D-KILL/D-PROC cli-lifecycle + timeout-race dead code | Gate 2 adjudication pending |
+| M-1 | MED | LiteLLMGatewayClient transcript opaque | Pre-existing, separately tracked |
+| L-1 | LOW | McpRegistry wall-clock direct Date.now | Pre-existing |
+| L-2 | LOW | materializeAssets hook arm not removed | Pre-existing |
+| LOW-3 | LOW | client-echoable principal on null-edge path | Pre-existing; restrict to test seam when convenient |
+| LOW-4 | LOW | ARCH-059 inv.3 text: state TTL 600 s vs. "≤60 s" | Recommend text amendment to "state ≤10 min / codes ≤60 s" |
+
+**Architecture consistency overall: v17-scoped changes are consistent with ARCH-059 v17. Pre-existing H-2/H-3 remain outstanding on their own adjudication track. No new violations.**
+
+### Validation & handover check (v17)
+
+- **VAL-095 (REQ-012, v17):** `real:true`, green, iter v17. 9/9 acceptance cases pass (5 carry-forward + 4 new DCR cases 7a–7d). Case 7a: `registration_endpoint` present in AS metadata. Case 7b: `registerClient()` SDK call → 201 + `client_id`, no `client_secret`. Case 7c: non-loopback `redirect_uris` → SDK throws (server 400 `invalid_redirect_uri`). Case 7d: full DCR end-to-end (registerClient → authorize port-ignored binding → token → MCP 200).
+- **Live curl evidence (Gate 7.5):** POST /register → 201 + `client_id`; `registration_endpoint` present in `/.well-known/oauth-authorization-server`; non-loopback `redirect_uri` → 400; port-ignored `/authorize` → 302; restart survival confirmed (`registered_clients` persists across SIGTERM + restart).
+- **IT-078 27/27:** 17 pre-existing + 10 new DCR integration cases, all green, real SQLite + real HTTP.
+- **Full suite:** 1342/1342 pass (233 files; 1338 pre-existing zero regression + 4 new acceptance cases 7a–7d).
+- **No mock-only/unverified REQ for any v17-touched item.**
+- **`08-validation.md`:** present, v17 section written (Gate 7.5 v17 PASSED 2026-08-18 confirmed).
+- **`README.md`:** present. Current-state v17 (2026-08-18). Quick-start reflects DCR behavior. No stale commands.
+- **`DEPLOY.md`:** present. Current-state v17. §7 変更紀錄 has v17 entry (2026-08-18). No new config keys → §1 設定総表 unchanged. No superseded instructions outside §7.
+- **Config key deduplication:** v17 adds no new config keys. §1 設定総表 remains deduplicated and authoritative.
+- **Unreachable dep (carry-forward + v17 note):** real Google OAuth browser consent flow requires interactive browser + real Google account; headless-unreachable (classified `unreachable-dep`, not a code gap). Real Claude Code DCR browser flow: original "Incompatible auth server" failure is now closed (proven by VAL-095 cases 7a–7d); the interactive browser-consent step remains headless-unreachable but the SDK-function-level proof (case 7d) exercises the same code path.
+- **Validation verdict: Gate 7.5 v17 PASSED. VAL-095 v17 real:true. 1342/1342 pass. README + DEPLOY present, current-state. No mock-only/unverified REQ.**
+
+### Retro (v17 — RFC 7591 DCR fix for REQ-012 real-connect failure)
+
+**What changed (IMPL-122 v17, TASK-091):**
+
+- `src/auth/oauth-metadata.ts`: added `registration_endpoint: \`${b}/register\`` to `buildAuthServerMetadata` return (DES-092 v17).
+- `src/auth/token-store.ts`: added 4th table `registered_clients(client_id PK, redirect_uris TEXT, client_id_issued_at, expires_at)`; `registerClient({redirectUris, ttlMs})` using injected clock+CSPRNG (seam-consistent, no `Date.now`/`randomBytes` in module); `getClient(clientId)` returning `null` for expired entries; `gcExpired()` extended to sweep all 4 auth tables (DES-093 v17).
+- `src/auth/auth-service.ts`: added `register(req, res)` handler to `AuthRouteHandlers` interface + implementation (JSON body parse; loopback enforcement on all `redirect_uris`; metadata clamping; 201 no `client_secret`); updated `authorize()` to perform port-agnostic binding (scheme+hostname+pathname match, port ignored per RFC 8252 §7.3) for registered clients, with graceful fallback to loopback-only path for unregistered/absent `client_id` (DES-095 v17).
+- `src/server.ts`: added `POST /register` dispatch inside `if (authHandlers)` block after `/token` at line 1409.
+
+**What went well:**
+
+- The three key design decisions (port-agnostic binding, clamp-not-reject, weeks-scale bounding with GC) were taken at Gate 3+4 and all held through implementation unchanged — no mid-stream pivots. The pre-advisor review before the decisions crystallized saved a potential 400-loop at Gate 7.5 (exact-match port binding would have broken the live-connect case).
+- Determinism-by-construction: `registerClient` obeys the injected-seam rule identically to the 3 pre-existing `registerToken`/`storeAuthCode`/`putState` methods — no special handling needed, and the GC determinism property fell out for free.
+- The "clamp-not-reject" stance on metadata (e.g., MCP SDK requesting `refresh_token` grant type) meant zero breakage from client diversity; the 201 response always carries the correct supported-subset regardless of what the client sent.
+- IT-078 added 10 new cases RED-first at Gate 5, all flipped GREEN at Gate 6 with zero changes to pre-existing 17 cases — the test-before-impl chain guard worked exactly as intended for a surgical fix.
+
+**What to change:**
+
+- **composeConfig snapshot test is 2-for-2 overdue** (named at v16 retro; carry-forward). A snapshot pinning every `fileConfig` key against `ServerConfig` would catch the two silent-drop bugs from v15+v16 before Gate 7.5. This MUST be built before the next config-adding iteration.
+- **TASK-018** (OIDC task): functionally superseded by v15+v17 implementation; close or annotate as superseded in 03-tasks.md to remove the persistent LOW trace gap.
+- **LOW-4 ARCH-059 text (state TTL):** amend "≤60 s" to "state ≤10 min / codes ≤60 s" to match the 600 s implementation. No code change required.
+
+**Impact closure:**
+
+- **Real-connect failure ("Incompatible auth server: does not support dynamic client registration"):** CLOSED. `registration_endpoint` advertised in AS metadata; `POST /register` issues public PKCE `client_id`; a spec-only MCP client (Claude Code / `@modelcontextprotocol/sdk`) with no pre-registered `client_id` can now complete the OAuth flow. SDK-function-level proof in VAL-095 cases 7b/7d.
+- **REQ-012 DCR acceptance clause:** CLOSED. VAL-095 v17 real:true, 9/9, including live curl and restart survival.
+- **ARCH-059 "explicitly reject DCR" stance:** REVERSED in place (v17 amendment). The prior stance was wrong for a spec-only MCP client; the architecture now correctly implements DCR as the real-connect path.
+
+**Known tech debt (all recorded, unchanged from v16 except as noted):**
+
+*Newly closed by v17:*
+- [N/A] ARCH-059 "reject DCR" stance — REVERSED/CLOSED (was never a bug record, was the prior arch decision)
+
+*Carry forward — Gate 2 adjudication pending:*
+- [HIGH] H-2: ARCH-017/D-PROFILE/DES-031 builder cluster unwired
+- [HIGH] H-3: D-KILL/D-PROC cli-lifecycle + timeout-race orphaned
+
+*Carry forward — lower urgency:*
+- [MED] M-1: LiteLLMGatewayClient transcript opaque
+- [LOW] LOW-3: client-echoable principal on null-edge path
+- [LOW] LOW-4: ARCH-059 inv.3 text: amend state TTL bound
+- [LOW] L-1: McpRegistry wall-clock direct Date.now
+- [LOW] L-2: ARCH-018 hooks-drop live branch in materializeAssets
+
+*Action items (carry-forward from v16 + no new):*
+- [LOW] composeConfig snapshot test — 3 iterations now, same bug class; must be built before next config-adding iteration.
+
+*Trace gaps (all recorded):*
+- IMPL-082 MID (TDD-label, pre-existing since v4)
+- DES-088 LOW (iter drift v14 behind IMPL-127 v15 — fix: bump DES-088 iter)
+- UT-058/UT-064/IT-057 LOW (iter drifts, pre-existing cosmetic)
+- TASK-018 LOW (OIDC task, functionally superseded by v15+v17 — recommend close/annotate)
+- UT-092/UT-093/UT-095 LOW (TDD-wavefront drift from v17; cosmetic — resolvePrincipal / token-store methods unchanged)
+
+*Pre-existing doc-debt (unchanged):*
+- DEPLOY.md §1b historical v2 blockquote + §6 scenario JSON config keys.
+
+---
+
+## v16 GATE 8 REVIEW (2026-08-18, superseded by v17 above — kept for history)
 
 > This section supersedes "## v15 GATE 8 REVIEW (2026-08-18)" below (kept for history).
 > **v16 fix-mode iteration — ARCH-059 inv.4 open-redirect (HIGH-1) + gcExpired unscheduled (MED-2) + composeConfig workspaceTtlMs forwarding fix.**

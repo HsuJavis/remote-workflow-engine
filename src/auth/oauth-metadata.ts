@@ -28,6 +28,7 @@ export function buildAuthServerMetadata(cfg: AuthCfg): {
   issuer: string;
   authorization_endpoint: string;
   token_endpoint: string;
+  registration_endpoint: string;
   code_challenge_methods_supported: string[];
   response_types_supported: string[];
   grant_types_supported: string[];
@@ -37,6 +38,7 @@ export function buildAuthServerMetadata(cfg: AuthCfg): {
     issuer: cfg.issuer,
     authorization_endpoint: `${b}/authorize`,
     token_endpoint: `${b}/token`,
+    registration_endpoint: `${b}/register`,
     code_challenge_methods_supported: ['S256'],
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code'],
