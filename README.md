@@ -10,7 +10,7 @@
 原封不動地跑在一台伺服器上，透過 **MCP Streamable HTTP** 介面遠端送出、追蹤、暫停/續跑/停止，並
 把每個 `agent()` 呼叫真正路由到你設定的 LLM 供應商（Anthropic / OpenAI / Gemini / 本機 Ollama）。
 
-**目前功能（v16，2026-08-18）**：
+**目前功能（v17，2026-08-18）**：
 
 - **工作流程執行**：`workflow_run`（含 inline seed + CAS seedManifest + `seedManifestRef` + `scriptSha256`
   完整性守衛）、`workflow_status`、`workflow_suspend`/`workflow_resume`/`workflow_stop`、
@@ -36,11 +36,13 @@
 - **可觀測性**：`GET /api/home`（首頁工作流程分組 JSON）、`GET /api/status`（agentSemaphore）、
   `GET /api/system`（主機 + 行程快照）、`GET /api/models`（統一模型目錄）、
   `GET /api/issues`、`GET /api/issues/:number`
-- **OAuth 2.0 身份認證（v15+，opt-in）**：引擎自身即授權伺服器，以 Google 為 IdP；MCP client
-  走 authorization-code + PKCE + loopback-redirect 流程取得引擎 opaque bearer；`/authorize`
-  在寫入 state 前驗證 `redirect_uri` 必須為 loopback URI（RFC 8252，v16 安全修補）；
+- **OAuth 2.0 身份認證（v15+，opt-in）**：引擎自身即授權伺服器，以 Google 為 IdP；支援
+  **RFC 7591 Dynamic Client Registration**（`POST /register`），讓 Claude Code 等 MCP 用戶端
+  可零設定自行取得 `client_id`（v17，解決「Incompatible auth server: does not support dynamic client registration」）；
+  MCP client 走 authorization-code + PKCE + loopback-redirect 流程取得引擎 opaque bearer；`/authorize`
+  在寫入 state 前驗證 `redirect_uri` 必須為 loopback URI（RFC 8252），含 registration 時一致強制；
   D-BIND fail-closed（非 loopback 來源若無有效 bearer → 401）；過期 auth 表列由 GC sweep 自動清除
-  （v16；GC 間隔正確反映設定 `workspaceTtlMs`，v16 composition-root fix）；
+  （`workspaceTtlMs` 正確從 composeConfig 傳遞）；
   工作流程擁有權（`NOT_WORKFLOW_OWNER`）；per-run principal attribution；`workflow_register` 綁定
   harness defaults（`HARNESS_DEFAULTS_INVALID`）。
   啟用方式：在 `rwe.config.json` 加入 `auth:{enabled:true,...}` 區塊（見 `rwe.config.example.json` / DEPLOY.md §1 設定總表）。
@@ -57,7 +59,7 @@
 
 ## 快速開始 Quickstart
 
-以下指令是 v16 validator 實際跑過、能把系統帶起來的步驟（本輪零文件缺口）。
+以下指令是 v17 validator 實際跑過、能把系統帶起來的步驟（本輪零文件缺口）。
 
 ```bash
 # 1. 安裝 Node 依賴

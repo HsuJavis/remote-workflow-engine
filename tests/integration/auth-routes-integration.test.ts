@@ -118,6 +118,7 @@ async function mintTestBearer(email: string): Promise<string> {
 function mcpUrl() { return `http://127.0.0.1:${server.port}/mcp`; }
 function blobUrl(sha: string) { return `http://127.0.0.1:${server.port}/assets/blob/${sha}`; }
 function manifestUrl() { return `http://127.0.0.1:${server.port}/assets/manifest`; }
+function registerUrl() { return `http://127.0.0.1:${server.port}/register`; }
 
 // ── 1. Well-known endpoints ────────────────────────────────────────────────────
 
@@ -406,7 +407,7 @@ afterAll(async () => {
   rmSync(tmpDirSweep, { recursive: true, force: true });
 });
 
-describe('MED-2: gcExpired() wired to sweep — case 10 (DES-093 v16, DES-095 v16, IT-078)', () => {
+describe('MED-2: gcExpired() wired to sweep — case 10 + case 18 (DES-093 v16/v17, DES-095 v16, IT-078)', () => {
   it('case 10: expired auth rows GC-ed by sweep; live bearer retained (RED pre-fix)', async () => {
     const dbPath = join(tmpDirSweep, 'auth-tokens.db');
     const now = Date.now();
@@ -448,4 +449,234 @@ describe('MED-2: gcExpired() wired to sweep — case 10 (DES-093 v16, DES-095 v1
     db3.close();
     expect(liveRow?.principal, 'live bearer must be retained (not deleted by GC)').toBe('med2-user@example.com');
   }, 10_000);
+
+  // Case 18 (RED — v17 DCR): expired registered_clients row GC-ed by sweep; live row retained.
+  // Pre-fix: registered_clients table does not exist → INSERT throws 'no such table' → test fails
+  //   for the right reason (DES-093 v17 4th table not yet implemented).
+  // Post-fix: table created by _init(), gcExpired() sweeps it → expired row gone within 3 s.
+  it('case 18: expired registered_clients row GC-ed by sweep; live registration retained (DES-093 v17 4th table)', async () => {
+    const dbPath = join(tmpDirSweep, 'auth-tokens.db');
+    const now = Date.now();
+
+    const expiredClientId = 'gc-expired-client-' + randomBytes(4).toString('hex');
+    const liveClientId = 'gc-live-client-' + randomBytes(4).toString('hex');
+
+    const db = new Database(dbPath);
+    // Pre-fix: 'no such table: registered_clients' → test throws → RED for right reason
+    db.prepare(
+      'INSERT INTO registered_clients (client_id, redirect_uris, client_id_issued_at, expires_at) VALUES (?, ?, ?, ?)'
+    ).run(expiredClientId, JSON.stringify(['http://127.0.0.1:1/cb']), Math.floor(now / 1000), now - 5_000);
+    db.prepare(
+      'INSERT INTO registered_clients (client_id, redirect_uris, client_id_issued_at, expires_at) VALUES (?, ?, ?, ?)'
+    ).run(liveClientId, JSON.stringify(['http://127.0.0.1:2/cb']), Math.floor(now / 1000), now + 30 * 24 * 3600_000);
+    db.close();
+
+    // Poll until expired row disappears or deadline (3 s)
+    const deadline = Date.now() + 3_000;
+    let expiredRowGone = false;
+    while (Date.now() < deadline) {
+      const db2 = new Database(dbPath);
+      const row = db2.prepare('SELECT client_id FROM registered_clients WHERE client_id = ?').get(expiredClientId);
+      db2.close();
+      if (row === undefined) { expiredRowGone = true; break; }
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    expect(expiredRowGone, 'expired registered_clients row must be deleted by gcExpired() within 3 s').toBe(true);
+
+    const db3 = new Database(dbPath);
+    const liveRow = db3.prepare('SELECT client_id FROM registered_clients WHERE client_id = ?').get(liveClientId) as { client_id: string } | undefined;
+    db3.close();
+    expect(liveRow?.client_id, 'live registration must be retained (not deleted by GC)').toBe(liveClientId);
+  }, 10_000);
+});
+
+// ── v17 RFC 7591 DCR: registration_endpoint in AS metadata ──────────────────
+//
+// RED reason: buildAuthServerMetadata does not return registration_endpoint yet (DES-092 v17).
+// Pre-fix: field absent → typeof undefined !== 'string' → assertion fails.
+
+describe('v17 DCR: registration_endpoint in AS metadata (DES-092 v17, IT-078)', () => {
+  it('case 11: GET /.well-known/oauth-authorization-server → registration_endpoint present', async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/.well-known/oauth-authorization-server`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { registration_endpoint?: string };
+    // Pre-fix: registration_endpoint absent → fail; Post-fix: exactly `${issuer}/register`
+    expect(typeof body.registration_endpoint).toBe('string');
+    expect(body.registration_endpoint).toBe(`http://127.0.0.1:${server.port}/register`);
+  });
+});
+
+// ── v17 RFC 7591 DCR: POST /register handler (DES-095 v17, DES-093 v17) ────
+//
+// RED reason: POST /register route does not exist yet → server returns 404 (or 405) →
+//   expect(res.status).toBe(201) fails for all happy-path cases, and expect(res.status).toBe(400)
+//   fails for validation cases (404 ≠ 400), all for the right reason: route unimplemented.
+//
+// Mock policy: same real server + real SQLite as the rest of IT-078; no auth header required
+//   (public endpoint per DES-095 v17 — a spec-only client registers before it has any token).
+
+/** Build a /authorize URL with an explicit client_id and redirect_uri. */
+function authorizeWithClientUrl(redirectUri: string, clientId: string): string {
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    code_challenge: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    code_challenge_method: 'S256',
+  });
+  return `http://127.0.0.1:${server.port}/authorize?${params}`;
+}
+
+describe('v17 DCR: POST /register happy path + validation (DES-095 v17, DES-093 v17, IT-078)', () => {
+  // Case 12: happy path — public endpoint, loopback redirect_uri → 201, clamped fields, no client_secret
+  it('case 12: POST /register with loopback redirect_uri → 201, no auth required, no client_secret', async () => {
+    const res = await fetch(registerUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ redirect_uris: ['http://127.0.0.1:33333/cb'] }),
+    });
+    // Pre-fix: 404 (route absent); Post-fix: 201
+    expect(res.status).toBe(201);
+    const body = await res.json() as {
+      client_id?: string;
+      client_id_issued_at?: number;
+      redirect_uris?: string[];
+      grant_types?: string[];
+      response_types?: string[];
+      token_endpoint_auth_method?: string;
+      client_secret?: unknown;
+    };
+    expect(typeof body.client_id).toBe('string');
+    // client_id_issued_at MUST be in seconds (RFC 7591) — DES-093 seam (ms vs s trap)
+    expect(body.client_id_issued_at).toBeGreaterThan(1e9);
+    expect(body.client_id_issued_at).toBeLessThan(1e10);
+    expect(body.redirect_uris).toEqual(['http://127.0.0.1:33333/cb']);
+    expect(body.grant_types).toEqual(['authorization_code']);
+    expect(body.response_types).toEqual(['code']);
+    expect(body.token_endpoint_auth_method).toBe('none');
+    // MUST NOT include client_secret (public PKCE client — DES-095 v17)
+    expect(body).not.toHaveProperty('client_secret');
+  });
+
+  // Case 13: clamp-don't-reject richer metadata (Decision B — what un-breaks live connect)
+  // MCP SDK requests refresh_token in grant_types; rejecting would re-break live connect.
+  it('case 13: POST /register with refresh_token grant_type → 201 with clamped grant_types (Decision B)', async () => {
+    const res = await fetch(registerUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        redirect_uris: ['http://127.0.0.1:33334/cb'],
+        grant_types: ['authorization_code', 'refresh_token'],
+        token_endpoint_auth_method: 'client_secret_basic',
+      }),
+    });
+    // Pre-fix: 404; Post-fix: 201 (NOT 400)
+    expect(res.status).toBe(201);
+    const body = await res.json() as { grant_types?: string[] };
+    expect(body.grant_types).toEqual(['authorization_code']); // clamped, not echoed
+  });
+
+  // Case 14a: non-loopback redirect_uri → 400 invalid_redirect_uri
+  it('case 14a: POST /register non-loopback redirect_uri → 400 invalid_redirect_uri', async () => {
+    const res = await fetch(registerUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ redirect_uris: ['https://evil.example/cb'] }),
+    });
+    // Pre-fix: 404 ≠ 400 → fail; Post-fix: 400
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error?: string };
+    expect(body.error).toBe('invalid_redirect_uri');
+  });
+
+  // Case 14b: empty redirect_uris array → 400 invalid_redirect_uri
+  it('case 14b: POST /register empty redirect_uris array → 400 invalid_redirect_uri', async () => {
+    const res = await fetch(registerUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ redirect_uris: [] }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error?: string };
+    expect(body.error).toBe('invalid_redirect_uri');
+  });
+
+  // Case 14c: unparseable JSON body → 400 invalid_client_metadata
+  it('case 14c: POST /register unparseable JSON body → 400 invalid_client_metadata', async () => {
+    const res = await fetch(registerUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not valid json',
+    });
+    // Pre-fix: 404 ≠ 400 → fail; Post-fix: 400
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error?: string };
+    expect(body.error).toBe('invalid_client_metadata');
+  });
+
+  // Case 15: persistence observable — registered_clients row exists after 201
+  it('case 15: POST /register → registered_clients row persisted (DES-093 v17 4th table)', async () => {
+    const res = await fetch(registerUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ redirect_uris: ['http://127.0.0.1:33335/cb'] }),
+    });
+    // Pre-fix: 404 → fails here before DB check
+    expect(res.status).toBe(201);
+    const { client_id } = await res.json() as { client_id: string };
+    // Check DB directly (IT-tier: sub-component access allowed)
+    // Pre-fix (if route existed but table missing): throws 'no such table: registered_clients'
+    const dbPath = join(tmpDir, 'auth-tokens.db');
+    const db = new Database(dbPath);
+    const row = db.prepare('SELECT client_id FROM registered_clients WHERE client_id = ?').get(client_id) as { client_id: string } | undefined;
+    db.close();
+    expect(row?.client_id).toBe(client_id);
+  });
+});
+
+// ── v17 DCR: /authorize registered-client binding (DES-095 v17) ─────────────
+//
+// RED reason: /register route absent → regRes.status ≠ 201 → test aborts before /authorize call.
+// Post-fix behavioral contract (verified once /register exists):
+//   case 16: same scheme+host+path but DIFFERENT port → 302 (RFC 8252 §7.3 port-ignored)
+//   case 17: same scheme+host but DIFFERENT pathname → 400 invalid_request + no oauth_state row
+
+describe('v17 DCR: /authorize registered-client binding (DES-095 v17, IT-078)', () => {
+  it('case 16: /authorize with registered client_id + different port → 302 (RFC 8252 §7.3 port-ignored)', async () => {
+    // Register client with port 33333
+    const regRes = await fetch(registerUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ redirect_uris: ['http://127.0.0.1:33333/cb'] }),
+    });
+    // Pre-fix: 404 → fail here; Post-fix: continue
+    expect(regRes.status).toBe(201);
+    const { client_id } = await regRes.json() as { client_id: string };
+
+    // /authorize with same scheme+host+path but DIFFERENT port 44444
+    // Port-ignored per RFC 8252 §7.3 → must be 302 (allowed), not 400
+    const { status } = await rawHttpGet(authorizeWithClientUrl('http://127.0.0.1:44444/cb', client_id));
+    expect(status).toBe(302);
+  });
+
+  it('case 17: /authorize with registered client_id + mismatched pathname → 400 invalid_request, no state row', async () => {
+    // Register client with path /cb
+    const regRes = await fetch(registerUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ redirect_uris: ['http://127.0.0.1:33336/cb'] }),
+    });
+    // Pre-fix: 404 → fail here; Post-fix: continue
+    expect(regRes.status).toBe(201);
+    const { client_id } = await regRes.json() as { client_id: string };
+
+    // /authorize with same host but DIFFERENT pathname /other → must be 400 (binding mismatch)
+    const dbPath = join(tmpDir, 'auth-tokens.db');
+    const before = countRows(dbPath, 'oauth_state');
+    const { status } = await rawHttpGet(authorizeWithClientUrl('http://127.0.0.1:33336/other', client_id));
+    const after = countRows(dbPath, 'oauth_state');
+    expect(status).toBe(400);
+    expect(after).toBe(before); // no state row written for rejected request
+  });
 });

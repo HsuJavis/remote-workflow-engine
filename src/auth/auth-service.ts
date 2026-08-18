@@ -100,6 +100,8 @@ export interface AuthRouteHandlers {
   googleCallback(req: IncomingMessage, res: ServerResponse, effectiveIssuer: string): Promise<void>;
   /** POST /token (application/x-www-form-urlencoded) */
   tokenExchange(req: IncomingMessage, res: ServerResponse): Promise<void>;
+  /** POST /register (RFC 7591 DCR — public endpoint, no auth required) */
+  register(req: IncomingMessage, res: ServerResponse): Promise<void>;
 }
 
 /** Create handlers for the 5 OAuth routes (DES-095). All side effects go through the injected TokenStore. */
@@ -123,17 +125,42 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
     authorize(req, res, effectiveIssuer) {
       const url = new URL(req.url ?? '/', 'http://x');
       const redirectUri = url.searchParams.get('redirect_uri') ?? '';
+      const clientId = url.searchParams.get('client_id') ?? '';
       const codeChallenge = url.searchParams.get('code_challenge') ?? '';
       const codeChallengeMethod = url.searchParams.get('code_challenge_method') ?? '';
       if (codeChallengeMethod !== 'S256') {
         localSendJson(res, 400, { error: 'invalid_request', error_description: 'only code_challenge_method=S256 supported' });
         return;
       }
-      // HIGH-1 (ARCH-059 inv.4, DES-095 v16): validate redirect_uri is loopback-only BEFORE
-      // writing any state row — non-loopback/missing/unparseable → 400, no oauth_state row written.
-      if (!isLoopbackRedirectUri(redirectUri)) {
-        localSendJson(res, 400, { error: 'invalid_request', error_description: 'redirect_uri must be a loopback http: URI (RFC 8252)' });
-        return;
+      // v17 (RFC 7591 DCR): if client_id is a registered DCR client, apply port-ignored binding.
+      // RFC 8252 §7.3: scheme + hostname + pathname must match a registered uri (port ignored).
+      // Unknown/absent client_id falls through to the existing loopback-only check below.
+      const registered = clientId ? tokenStore.getClient(clientId) : null;
+      if (registered) {
+        let bindingMatch = false;
+        try {
+          const req_u = new URL(redirectUri);
+          for (const regUri of registered.redirectUris) {
+            const reg_u = new URL(regUri);
+            if (req_u.protocol === reg_u.protocol &&
+                req_u.hostname === reg_u.hostname &&
+                req_u.pathname === reg_u.pathname) {
+              bindingMatch = true;
+              break;
+            }
+          }
+        } catch { /* parse failure → no match */ }
+        if (!bindingMatch) {
+          localSendJson(res, 400, { error: 'invalid_request', error_description: 'redirect_uri does not match registered uri (port-ignored binding)' });
+          return;
+        }
+      } else {
+        // HIGH-1 (ARCH-059 inv.4, DES-095 v16): validate redirect_uri is loopback-only BEFORE
+        // writing any state row — non-loopback/missing/unparseable → 400, no oauth_state row written.
+        if (!isLoopbackRedirectUri(redirectUri)) {
+          localSendJson(res, 400, { error: 'invalid_request', error_description: 'redirect_uri must be a loopback http: URI (RFC 8252)' });
+          return;
+        }
       }
       const state = randomBytes(16).toString('hex');
       const nonce = randomBytes(16).toString('hex');
@@ -255,6 +282,47 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
         access_token: token,
         token_type: 'Bearer',
         expires_in: expiresIn,
+      });
+    },
+
+    async register(req, res) {
+      // RFC 7591 DCR — public endpoint, no auth required (DES-095 v17).
+      // Parse JSON body; parse failure → 400 invalid_client_metadata.
+      let body: Record<string, unknown>;
+      try {
+        const raw = await new Promise<string>((resolve, reject) => {
+          let s = '';
+          req.on('data', (c: Buffer) => { s += c.toString(); });
+          req.on('end', () => resolve(s));
+          req.on('error', reject);
+        });
+        body = JSON.parse(raw) as Record<string, unknown>;
+      } catch {
+        localSendJson(res, 400, { error: 'invalid_client_metadata' });
+        return;
+      }
+      // Validate redirect_uris: required, non-empty array, all loopback.
+      const redirectUris = body['redirect_uris'];
+      if (!Array.isArray(redirectUris) || redirectUris.length === 0 ||
+          !redirectUris.every((u) => isLoopbackRedirectUri(String(u)))) {
+        localSendJson(res, 400, { error: 'invalid_redirect_uri' });
+        return;
+      }
+      // Clamp metadata (Decision B): accept any grant_types/token_endpoint_auth_method but respond
+      // with our fixed public-PKCE values regardless (no client_secret issued).
+      // TTL: 30 days (weeks-scale per DES-093 v17 bounding contract).
+      const ttlMs = 30 * 24 * 3600_000;
+      const { clientId, clientIdIssuedAt } = tokenStore.registerClient({
+        redirectUris: redirectUris.map(String),
+        ttlMs,
+      });
+      localSendJson(res, 201, {
+        client_id: clientId,
+        client_id_issued_at: clientIdIssuedAt,
+        redirect_uris: redirectUris.map(String),
+        grant_types: ['authorization_code'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none',
       });
     },
   };
