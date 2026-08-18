@@ -47,7 +47,7 @@ function makeTestJwk(key: KeyObject, kid: string): Jwk {
 
 const REAL_JWK = makeTestJwk(publicKey, KID);
 
-function fakeJwksFetch(_googleBase: string): Promise<Jwk[]> {
+function fakeJwksFetch(_jwksUri: string): Promise<Jwk[]> {
   return Promise.resolve([REAL_JWK]);
 }
 
@@ -72,7 +72,8 @@ const VALID_DEPS = {
   clientId: 'test-client-id',
   jwksFetch: fakeJwksFetch,
   now: () => NOW_S * 1000, // injected now in ms
-  googleBase: 'https://accounts.google.com',
+  // v18: renamed from googleBase; value is the actual production JWKS URL
+  jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
   expectedNonce: 'test-nonce',
 };
 
@@ -140,5 +141,56 @@ describe('verifyIdToken — reject (DES-094)', () => {
 
   it('throws AuthError for a malformed JWT (not 3 segments)', async () => {
     await expect(verifyIdToken('not.a.valid.jwt.at.all', VALID_DEPS)).rejects.toThrow();
+  });
+});
+
+// ── v18 spy: verifyIdToken must pass deps.jwksUri (not deps.googleBase) ───────
+//
+// RED reason: pre-impl the call site is deps.jwksFetch(deps.googleBase); since
+// VALID_DEPS no longer has googleBase, deps.googleBase === undefined → capturedUri
+// captured by the spy is undefined, not the injected jwksUri → assertion fails.
+// DES-094 v18 rename: after fix the call becomes deps.jwksFetch(deps.jwksUri).
+
+describe('verifyIdToken — jwksUri seam (DES-094 v18)', () => {
+  it('passes deps.jwksUri to jwksFetch (not deps.googleBase/undefined)', async () => {
+    let capturedUri: string | undefined;
+    const spyFetch = (uri: string): Promise<Jwk[]> => {
+      capturedUri = uri;
+      return fakeJwksFetch(uri);
+    };
+    const token = makeValidToken();
+    const injectedUri = 'https://spy-injected.example.com/certs';
+    await verifyIdToken(token, { ...VALID_DEPS, jwksUri: injectedUri, jwksFetch: spyFetch });
+    // Pre-impl: impl calls deps.jwksFetch(deps.googleBase) = spyFetch(undefined) → capturedUri = undefined
+    // Post-impl: impl calls deps.jwksFetch(deps.jwksUri) = spyFetch(injectedUri) → capturedUri = injectedUri
+    expect(capturedUri).toBe(injectedUri);
+  });
+});
+
+// ── v18 static pin: GOOGLE_TOKEN_URL and GOOGLE_JWKS_URL must be the CORRECT hosts ──
+//
+// RED reason: auth-service.ts does not yet export GOOGLE_TOKEN_URL / GOOGLE_JWKS_URL /
+// GOOGLE_AUTHORIZE_URL → dynamic import gives undefined → assertions fail.
+// DES-095 v18: this is the ONLY test tier that catches the fake-double-collapses-hosts
+// class (every fake-Google IT/acceptance test serves all paths off one host; a unit
+// static-pin of the production constants is the sole guard against the conflation).
+
+describe('Google OAuth production URL constants — static pin (DES-095 v18)', () => {
+  it('GOOGLE_AUTHORIZE_URL is accounts.google.com/o/oauth2/v2/auth', async () => {
+    const m = await import('../../src/auth/auth-service.js');
+    const { GOOGLE_AUTHORIZE_URL } = m as { GOOGLE_AUTHORIZE_URL?: string };
+    expect(GOOGLE_AUTHORIZE_URL).toBe('https://accounts.google.com/o/oauth2/v2/auth');
+  });
+
+  it('GOOGLE_TOKEN_URL is oauth2.googleapis.com/token (NOT accounts.google.com/token)', async () => {
+    const m = await import('../../src/auth/auth-service.js');
+    const { GOOGLE_TOKEN_URL } = m as { GOOGLE_TOKEN_URL?: string };
+    expect(GOOGLE_TOKEN_URL).toBe('https://oauth2.googleapis.com/token');
+  });
+
+  it('GOOGLE_JWKS_URL is www.googleapis.com/oauth2/v3/certs (NOT accounts.google.com/...)', async () => {
+    const m = await import('../../src/auth/auth-service.js');
+    const { GOOGLE_JWKS_URL } = m as { GOOGLE_JWKS_URL?: string };
+    expect(GOOGLE_JWKS_URL).toBe('https://www.googleapis.com/oauth2/v3/certs');
   });
 });

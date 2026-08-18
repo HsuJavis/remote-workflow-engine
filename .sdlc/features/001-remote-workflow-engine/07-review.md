@@ -4,9 +4,152 @@ status: closed
 ---
 # 07 Review & Retro — Gate 8
 
-## v17 GATE 8 REVIEW (2026-08-18, CURRENT / AUTHORITATIVE — ITERATION CAN CLOSE)
+## v18 GATE 8 REVIEW (2026-08-18, CURRENT / AUTHORITATIVE — ITERATION CAN CLOSE)
 
-> This section supersedes "## v16 GATE 8 REVIEW (2026-08-18)" below (kept for history).
+> This section supersedes "## v17 GATE 8 REVIEW (2026-08-18)" below (kept for history).
+> **v18 fix-mode iteration — Google OAuth 3-endpoint real-consent fix (REQ-012 v18, ARCH-059 v18).**
+> Impact closure: REQ-012, ARCH-059, DES-094, DES-095, IMPL-122, IT-078, TASK-092 — iter v18.
+> No new high/severe gaps, no new broken chains, no arch violations for v18-scoped changes.
+
+### Traceability consistency (v18)
+
+Trace `--check` result (regenerated 2026-08-18): **753 items, 11 gaps.**
+
+Change from v17 baseline (752 items / 9 gaps):
+
+- **1 new item:** TASK-092 added (traces ARCH-059, DES-094/095, IMPL-122).
+- **2 new LOW iter-drift gaps (TDD wavefront):** DES-092 (v17) and DES-093 (v17) both lag behind IMPL-122 (v18). These design items were not bumped because the v18 URL-injection fix is outside their metadata/token-store scope; IMPL-122 was bumped as the single impl item covering the whole auth subsystem. Cosmetic — no production code gap.
+- **UT-095 drift widened:** was "v16 behind DES-095 v17," now "v16 behind DES-095 v18" — same gap item, severity unchanged (LOW). `resolvePrincipal` is unchanged in v18.
+- **No new broken links, no new orphans, 0 未驗證, 0 未真實驗證, 0 high-severity gaps introduced by v18.**
+
+| ID | Severity | Type | Note |
+|----|----------|------|------|
+| IMPL-082 | MID | TDD label drift | Pre-existing since v4; no change |
+| UT-058 | LOW | iter drift v6 behind DES-038 v11 | Pre-existing since F1; cosmetic |
+| UT-064 | LOW | iter drift v9 behind DES-054 v11 | Pre-existing since v9 |
+| IT-057 | LOW | iter drift v9 behind DES-054 v11 | Pre-existing since v9 |
+| UT-092 | LOW | iter drift v15 behind DES-092 v17 | Pre-existing from v17 |
+| UT-093 | LOW | iter drift v16 behind DES-093 v17 | Pre-existing from v17 |
+| UT-095 | LOW | iter v16 behind DES-095 v18 | Widened (same gap, DES-095 bumped v18; resolvePrincipal unchanged in v18 — cosmetic) |
+| DES-092 | LOW | iter drift v17 behind IMPL-122 v18 | New TDD-wavefront drift; DES-092 scope (metadata) unchanged by v18 — cosmetic |
+| DES-093 | LOW | iter drift v17 behind IMPL-122 v18 | New TDD-wavefront drift; DES-093 scope (token-store) unchanged by v18 — cosmetic |
+| DES-088 | LOW | iter drift v14 behind IMPL-127 v15 | Pre-existing from v15 |
+| TASK-018 | LOW | no implementation | OIDC task; functionally superseded by v15+v17+v18 OAuth implementation |
+
+Dashboard confirms: 0 severe gaps, 0 未驗證 requirements, 0 mock-only validations. All 11 remaining gaps are recorded as known tech debt (Exit Gate 1 satisfied).
+
+### Architecture consistency (v18 self-check — lean QM fix, no panel)
+
+Fix scope: `src/auth/auth-service.ts`, `src/auth/google-verifier.ts`, `src/server.ts`, `vitest.config.ts`. Checked against ARCH-059 v18 (the only ARCH decision touched by v18).
+
+**ARCH-059 v18 — Google 3-endpoint URL injection:**
+
+Architecture text (ARCH-059 v18 excerpt): "three separately-injectable URL fields (`googleAuthorizeUrl`/`googleTokenUrl`/`googleJwksUrl`), each defaulting to its correct production host via an exported named constant; a static UT regression guard pins the two previously-wrong production defaults (token + JWKS); the `google-verifier.ts` deps drop the misnamed `googleBase` for a full `jwksUri` (host-agnostic). No new module, no new route, no config-schema change (the three URLs are test-injectable overrides with production defaults; production config is unchanged)."
+
+Implementation checks:
+
+1. **Exported named constants** (`src/auth/auth-service.ts:9-13`): `GOOGLE_AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth'`, `GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'`, `GOOGLE_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs'` — three distinct production hosts, each an exported named constant. **Matches.**
+2. **Separately-injectable fields** (`src/auth/auth-service.ts:28-32`): `AuthConfig.googleAuthorizeUrl?`, `googleTokenUrl?`, `googleJwksUrl?` with 3-way priority resolution (new field > `googleBase`-derived backward-compat fallback > production constant). **Matches injectable override semantics.**
+3. **google-verifier.ts rename** (`src/auth/google-verifier.ts:8,16,76`): `JwksPort` type parameter `googleBase→jwksUri`; deps field `jwksUri: string`; call `deps.jwksFetch(deps.jwksUri)`. **Matches "drops misnamed googleBase for full jwksUri (host-agnostic)."**
+4. **Static UT regression guard** (UT-094 via `vitest.config.ts`, pinning `GOOGLE_TOKEN_URL`/`GOOGLE_JWKS_URL` constants against wrong defaults). Per DES-095 per-tier policy, unit is the only tier that can catch the fake-double-collapses-hosts class. **Matches.**
+5. **No new module, no new route:** `src/server.ts:149` comment updated (terminology only); no route additions. **Matches.**
+
+**Documented deviation (design-level, not arch violation):** DES-095 v18 states `googleBase` is dropped. The implementation retains `googleBase` as `/** @deprecated */` with backward-compat fallback resolution (`src/auth/auth-service.ts:25-26, 124-130`). Documented in IMPL-122 v18 note: VAL-096/097 (v15 fixtures outside F3 closure scope) reference `googleBase`; removal deferred to fixture migration. No production behavior change (fallback only activates when all three new fields are absent AND `googleBase` is explicitly set, which production config never does).
+
+**LOW-5 text-amendment recommendation (new):** ARCH-059 v18 prose says "no config-schema change." The `AuthConfig` TypeScript interface gained 3 new optional fields (`googleAuthorizeUrl?`, `googleTokenUrl?`, `googleJwksUrl?`) and 1 deprecated field (`googleBase?`), with 4 new rows in DEPLOY.md §1 設定総表. The implementation intent is correct ("production config unchanged" — existing configs work without modification). Recommend amending ARCH-059 v18 text to "no breaking config change (3 new optional test-injectable fields + 1 deprecated)". No code gap; LOW doc-debt identical treatment to LOW-4.
+
+**Verdict for v18-touched code: architecture CONSISTENT with ARCH-059 v18.**
+
+Pre-existing violations (UNCHANGED from v17 review — not re-litigated here), plus LOW-5:
+
+| Label | Severity | Finding | Status |
+|-------|----------|---------|--------|
+| H-2 | HIGH | ARCH-017/D-PROFILE/DES-031 session-options-builder orphaned | Gate 2 adjudication pending (security-hardening iter) |
+| H-3 | HIGH | D-KILL/D-PROC cli-lifecycle + timeout-race dead code | Gate 2 adjudication pending |
+| M-1 | MED | LiteLLMGatewayClient transcript opaque | Pre-existing, separately tracked |
+| L-1 | LOW | McpRegistry wall-clock direct Date.now | Pre-existing |
+| L-2 | LOW | materializeAssets hook arm not removed | Pre-existing |
+| LOW-3 | LOW | client-echoable principal on null-edge path | Pre-existing; restrict to test seam when convenient |
+| LOW-4 | LOW | ARCH-059 inv.3 text: state TTL 600 s vs. "≤60 s" | Recommend text amendment to "state ≤10 min / codes ≤60 s" |
+| LOW-5 | LOW | ARCH-059 v18 text: "no config-schema change" vs. 3 new optional AuthConfig fields + 1 deprecated | Recommend text amendment to "no breaking config change (3 new optional test-injectable fields + 1 deprecated)" |
+
+**Architecture consistency overall: v18-scoped changes are consistent with ARCH-059 v18. Pre-existing H-2/H-3 remain outstanding on their own adjudication track. One new LOW-5 text-amendment recommended. No new violations.**
+
+### Validation & handover check (v18)
+
+- **VAL-095 (REQ-012, v18):** `real:true`, green, iter v18 (in `08-validation.md`, which is authoritative; `05-tests.md` carries `real:false` automated entry — trace reports 0 未真實驗證, consistent with the established pattern). 9/9 acceptance cases pass: case 3 — `/oauth/google/callback` token exchange hits injected `googleTokenUrl` (distinct host from dead `googleBase`); case 4 — JWKS fetch hits injected `googleJwksUrl`; 7 pre-existing cases green.
+- **Live evidence (Gate 7.5):** IT-078 29/29 — case 19: `/authorize` Location origin = `googleAuthorizeUrl`; case 20: callback exchanges code at `googleTokenUrl` on distinct port. UT-094 15/15 static-pin guard passes. Real Google hosts confirmed: `GET https://www.googleapis.com/oauth2/v3/certs → 200 + 4 RSA keys`; `POST https://oauth2.googleapis.com/token bogus → invalid_client` (not 404); `/authorize → Location: https://accounts.google.com/o/oauth2/v2/auth?...`. Composition-root wiring confirmed (scratch config `googleAuthorizeUrl:127.0.0.1:59099`).
+- **Full suite:** 1348/1348 pass (233 files; zero regression against 1342/1342 pre-v18 baseline).
+- **No mock-only/unverified REQ for any v18-touched item.**
+- **`08-validation.md`:** present, v18 Gate 7.5 PASSED section written (2026-08-18).
+- **`README.md`:** present. Current-state v18. Three-endpoint separation documented. No stale commands.
+- **`DEPLOY.md`:** present. Current-state v18. §1 設定総表 has 4 new rows (`auth.googleAuthorizeUrl`, `auth.googleTokenUrl`, `auth.googleJwksUrl`, `auth.googleBase` [deprecated]). §変更紀錄 has v18 entry. No superseded instructions outside §変更紀錄. Config keys deduplicated.
+- **Unreachable dep (carry-forward):** interactive browser Google consent flow — headless-unreachable (pre-existing, classified `unreachable-dep`, no code gap).
+- **Validation verdict: Gate 7.5 v18 PASSED. VAL-095 v18 real:true. 1348/1348 pass. README + DEPLOY present, current-state. No mock-only/unverified REQ.**
+
+### Retro (v18 — Google OAuth 3-endpoint real-consent fix)
+
+**What changed (IMPL-122 v18, TASK-092):**
+
+- `src/auth/auth-service.ts`: exported `GOOGLE_AUTHORIZE_URL`/`GOOGLE_TOKEN_URL`/`GOOGLE_JWKS_URL` named constants (3 correct production hosts); added `AuthConfig.googleAuthorizeUrl?`/`googleTokenUrl?`/`googleJwksUrl?` optional fields with `/** @deprecated */ googleBase?` retained for backward compat; `createAuthRouteHandlers` resolves each URL via 3-way priority (explicit field > `googleBase`-derived fallback > production constant); passes `jwksUri: googleJwksUrl` to `verifyIdToken` deps.
+- `src/auth/google-verifier.ts`: renamed `VerifyIdTokenDeps.googleBase` → `jwksUri`; `JwksPort` parameter `googleBase→jwksUri`; call site `deps.jwksFetch(deps.jwksUri)`.
+- `src/server.ts`: line 149 comment updated to new field names.
+- `vitest.config.ts`: static UT regression guard pinning `GOOGLE_TOKEN_URL` and `GOOGLE_JWKS_URL` constants to their correct production values.
+
+**What went well:**
+
+- The per-tier testing policy in DES-095 v18 (unit = only tier that can detect fake-double-collapses-hosts) was precise and decisive: once the right tests existed, the root cause was immediately visible and non-ambiguous.
+- 3-way priority resolution (new-field > deprecated-fallback > production-constant) kept backward compatibility for existing fixtures (VAL-096/097) without any fixture migration in v18 scope, keeping the closure tight.
+- Gate 7.5 live confirmation of all three production Google hosts in one pass gave high confidence the root cause was fully resolved.
+
+**What to change:**
+
+- **composeConfig snapshot test is now 4-for-4 overdue** (named at v16, carried through v17 and v18). v18 added 3 new optional config fields; none silently dropped, but the absence of a snapshot test means this class is caught only by live integration, not unit regression. MUST build before next config-adding iteration.
+- **TASK-018** (OIDC task): functionally superseded by v15+v17+v18; recommend close/annotate in 03-tasks.md to remove the persistent LOW trace gap.
+- **LOW-4** (ARCH-059 inv.3 state TTL text): amend "≤60 s" to "state ≤10 min / codes ≤60 s" (carry-forward from v17, no code change).
+- **LOW-5** (ARCH-059 v18 text): amend "no config-schema change" to "no breaking config change (3 new optional test-injectable fields + 1 deprecated)".
+- **TASK-091/TASK-092 `status: draft`** despite being shipped: cosmetic ledger residual; flip authorized by orchestrator at next iteration.
+
+**Impact closure:**
+
+- **Real consent 502 at `/oauth/google/callback`:** CLOSED. Root cause: `googleBase=accounts.google.com` used for all three Google OAuth operations; token exchange and JWKS fetch hit non-existent endpoints. Fix: three separately-injectable URLs each defaulting to the correct production host. VAL-095 v18 cases 3+4 confirm correct routing; Gate 7.5 real-Google host confirmation.
+- **ARCH-059 v18 (Google endpoint topology documented):** CLOSED. Architecture accurately reflects the three-host topology; static UT regression guard prevents future conflation.
+
+**Known tech debt (all recorded, updated from v17):**
+
+*Carry forward — Gate 2 adjudication pending:*
+- [HIGH] H-2: ARCH-017/D-PROFILE/DES-031 builder cluster unwired
+- [HIGH] H-3: D-KILL/D-PROC cli-lifecycle + timeout-race orphaned
+
+*Carry forward — lower urgency:*
+- [MED] M-1: LiteLLMGatewayClient transcript opaque
+- [LOW] LOW-3: client-echoable principal on null-edge path
+- [LOW] LOW-4: ARCH-059 inv.3 text — amend state TTL bound
+- [LOW] LOW-5: ARCH-059 v18 text — amend "no config-schema change" (new this review)
+- [LOW] L-1: McpRegistry wall-clock direct Date.now
+- [LOW] L-2: ARCH-018 hooks-drop live branch in materializeAssets
+
+*Action items (carry-forward):*
+- [LOW] composeConfig snapshot test — 4 iterations, same bug class; MUST build before next config-adding iteration.
+
+*Trace gaps (all recorded):*
+- IMPL-082 MID (TDD-label, pre-existing since v4)
+- DES-088 LOW (iter drift v14 behind IMPL-127 v15)
+- DES-092 LOW (iter drift v17 behind IMPL-122 v18 — cosmetic; DES-092 metadata scope unchanged)
+- DES-093 LOW (iter drift v17 behind IMPL-122 v18 — cosmetic; DES-093 token-store scope unchanged)
+- UT-058/UT-064/IT-057 LOW (iter drifts, pre-existing cosmetic)
+- TASK-018 LOW (OIDC task, functionally superseded — recommend close/annotate)
+- UT-092/UT-093 LOW (TDD-wavefront drift from v17; cosmetic)
+- UT-095 LOW (TDD-wavefront drift, widened to v18; resolvePrincipal unchanged — cosmetic)
+
+*Pre-existing doc-debt (unchanged):*
+- DEPLOY.md §1b historical v2 blockquote + §6 scenario JSON config keys.
+
+---
+
+## v17 GATE 8 REVIEW (2026-08-18, superseded by v18 above — kept for history)
+
+> This section supersedes "## v16 GATE 8 REVIEW (2026-08-18)" below (kept for history). Superseded by "## v18 GATE 8 REVIEW (2026-08-18)" above.
 > **v17 fix-mode iteration — RFC 7591 Dynamic Client Registration (REQ-012 v17 DCR fix).**
 > Impact closure: REQ-012, ARCH-059 "explicitly reject DCR" stance reversed, DES-092/093/095, IMPL-122, IT-078, TASK-091 — iter v17.
 > No new gaps, no new broken chains, no arch violations for v17-scoped changes.

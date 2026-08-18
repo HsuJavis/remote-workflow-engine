@@ -146,7 +146,7 @@ export interface ServerConfig {
   systemInfo?: SystemInfoSampler;
   // v15 (REQ-012/086, DES-095, TASK-086): per-caller auth AS. When absent/disabled, pre-v15
   // open behavior is preserved byte-for-byte (no auth gates added). Google is a legitimately-doubled
-  // external dep via injected googleBase+jwksFetch (same contract as the integration tests).
+  // external dep via injected googleAuthorizeUrl/googleTokenUrl/googleJwksUrl+jwksFetch (same contract as the integration tests). DES-095 v18.
   auth?: AuthConfig;
 }
 

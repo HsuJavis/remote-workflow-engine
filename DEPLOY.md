@@ -3,7 +3,7 @@
 > 人類導向文件（繁體中文）。由 Gate 7.5 validator 依實際部署步驟撰寫，步驟可重跑。
 > 凡 validator 為了把系統跑起來而做、但 README quickstart 未涵蓋的動作，都記在這裡。
 >
-> 目前部署狀態（v17，2026-08-18）：systemd user service `rwe.service`，綁定
+> 目前部署狀態（v18，2026-08-18）：systemd user service `rwe.service`，綁定
 > `0.0.0.0:8899`（本機 override.conf 將 port 覆寫為 8899；預設安裝用 8787，見 §1 設定總表 `RWE_PORT`；
 > ufw 白名單 `192.168.0.0/24` + SSH），`workRoot=/home/user/.local/share/rwe-data`，
 > `gateway:"sdk"` + managed LiteLLM proxy。**37 個** MCP 工具，v15 新增 OAuth 2.0 身份認證（opt-in，
@@ -17,14 +17,18 @@
 > 自行取得 `client_id`（closes「Incompatible auth server: does not support dynamic client registration」）；
 > 已註冊的 `client_id` 存入 `registered_clients` SQLite 表，重啟後持續有效；`/authorize` 已接受
 > RFC 7591 用戶端並以 RFC 8252 §7.3 port-ignored binding 驗證 `redirect_uri`。
-> Gate 7.5 v17 **PASSED**：VAL-095 real:true pass（v17 DCR 新增條款）；1342/1342 tests；IT-078 27/27；
-> 4 新接受測試 + 重啟存活確認；trace 752 items / 9 gaps（0 未真實驗證，0 未驗證，所有為 pre-existing low drift）。
+> **v18 Google OAuth 三端點分離**：`accounts.google.com`（authorize）、`oauth2.googleapis.com`（token）、
+> `www.googleapis.com`（JWKS）三個 Google 主機分別以 `GOOGLE_AUTHORIZE_URL`/`GOOGLE_TOKEN_URL`/`GOOGLE_JWKS_URL`
+> 常數獨立可注入；`auth.googleBase`（單一主機 fallback）標示為 deprecated，向後相容（舊設定仍可用）。
+> Gate 7.5 v18 **PASSED**：VAL-095 real:true pass（v18 新增 3 端點分離條款）；1348/1348 tests；IT-078 29/29
+>（+2 新案例 case 19/20）；UT-094 15/15；composition-root wiring 確認（scratch config 驗證）；
+> 生產服務重啟確認（`/authorize` → `accounts.google.com/o/oauth2/v2/auth`）；trace 753 items；0 未真實驗證，0 未驗證。
 > 完整驗證證據見 `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
 
 
 ## §0 Quickstart — 開機序列（可逐字貼上執行）
 
-> 以下指令與 README quickstart 一致，是 v17 validator 實際跑過的步驟，本輪零文件缺口。
+> 以下指令與 README quickstart 一致，是 v18 validator 實際跑過的步驟，本輪零文件缺口。
 
 ```bash
 # 步驟 1：安裝 Node 依賴
@@ -449,6 +453,10 @@ port 的問題（實測常駐 sdk 服務跑在動態 port，可與完整測試�
 | `rwe.config.json` → `auth.enabled` | OAuth 2.0 toggle：`false`（省略 auth 區塊或 enabled:false）= 保持 v14 前無 auth 開放行為 | `boolean` / `false` | 否 | v15 |
 | `rwe.config.json` → `auth.googleClientId` | Google Cloud Console 的 OAuth 2.0 client ID（不含密鑰，僅識別碼）；用於引擎 `/authorize` 重導向 Google 同意畫面、以及 id_token aud 驗證 | `string` / — | 當 `auth.enabled:true` | v15 |
 | `rwe.config.json` → `auth.googleClientSecret` | Google OAuth 2.0 client secret；用於 `/oauth/google/callback` 的 code exchange；操作者管理的敏感值，不透傳給 VM sandbox 或 agent 子行程 | `string` / — | 當 `auth.enabled:true` | v15 |
+| `rwe.config.json` → `auth.googleAuthorizeUrl` | Google OAuth 2.0 authorization endpoint override；預設為 `GOOGLE_AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth'`；一般部署不需設定（預設即正確 Google URL）；僅需覆寫以進行整合測試或指向非 Google IdP | `string` / `'https://accounts.google.com/o/oauth2/v2/auth'` | 否 | v18 |
+| `rwe.config.json` → `auth.googleTokenUrl` | Google OAuth 2.0 token endpoint override；預設為 `GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'`；一般部署不需設定 | `string` / `'https://oauth2.googleapis.com/token'` | 否 | v18 |
+| `rwe.config.json` → `auth.googleJwksUrl` | Google JWKS endpoint override；預設為 `GOOGLE_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs'`；一般部署不需設定 | `string` / `'https://www.googleapis.com/oauth2/v3/certs'` | 否 | v18 |
+| `rwe.config.json` → `auth.googleBase` | **deprecated** — 向後相容 fallback；若設定則自此派生三端點 URL；勿用於新部署，改用三個獨立 URL 欄位（`googleAuthorizeUrl`/`googleTokenUrl`/`googleJwksUrl`） | `string` / — | 否（deprecated） | v18 |
 
 `auth.enabled:true` 時的部署前提：
 1. `bind` 改成 `0.0.0.0`（或公開 IP），並在 `allowedHosts` 列出你的 LAN IP／主機名稱。
@@ -1140,3 +1148,4 @@ curl -s -D - -o /dev/null -X POST $BASE/v1/chat/completions \
 | 2026-08-18 | v15 | **OAuth 2.0（opt-in）+ 工作流程擁有權 + per-run principal + harness defaults + D-BIND fail-closed**（REQ-012 + REQ-086..089）Gate 7.5 PASSED: 引擎自身即 AS，以 Google 為 IdP；MCP SDK 可自動發現 `/.well-known/oauth-protected-resource` + `/.well-known/oauth-authorization-server`（PRM→AS metadata chain）；authorization-code + PKCE S256 + loopback-redirect；引擎發行自有 opaque bearer（sha256-at-rest SQLite）；D-BIND fail-closed（非 loopback 無 bearer → 401）；workflow 擁有權（creator-only 可 register/deregister；`NOT_WORKFLOW_OWNER`；boot backfill NULL-owner → hsuhungjung@gmail.com）；`workflow_run` principal attribution；`workflow_register` harness defaults binding（`HARNESS_DEFAULTS_INVALID`）。**組合根修正**：`composeConfig`（src/main.ts）新增 `auth: fileConfig.auth` 透傳（同 allowedHosts/updateFlagPath 模式；缺此行導致 auth 設定在 npm start 時靜默被丟棄 — 實測 curl 404→200，修後 curl 200→401 確認）。新設定鍵：`auth.enabled`/`auth.googleClientId`/`auth.googleClientSecret`（見 §1 設定總表 v15 區塊）。`rwe.config.example.json` 補入 `auth` 範例區塊。VAL-095..099 全部 real:true pass；1316/1316；trace 750 items / 11 gaps。 | 新增 3 個選填設定鍵（`auth.*`）全部 opt-in；`auth.enabled:false`（省略）= pre-v15 無 auth 開放行為，不影響既有部署；需 Google Cloud Console OAuth 2.0 client + HTTPS callback URL 才能啟用 auth；啟用後 `workflow_register` 需提供 bearer（非 loopback），owner 訂定為第一個 registrar；既有無 owner 的 workflow 在首次 auth-enabled 開機時自動 backfill owner=hsuhungjung@gmail.com；無工具總數變化（37 不變）；無遷移動作（auth-disabled 舊部署不受影響） |
 | 2026-08-18 | v16 | **安全修補：loopback-only redirect_uri + gcExpired GC sweep + composeConfig workspaceTtlMs forwarding fix**（REQ-012 ARCH-059 fix）Gate 7.5 PASSED: HIGH-1（ARCH-059 inv.4）：`/authorize` 在寫入 `oauth_state` 前以 `isLoopbackRedirectUri()` 驗證 `redirect_uri` 必須為 `http://127.0.0.1/localhost/[::1]:<port>` 之一（RFC 8252），非 loopback → 立即 400 `invalid_request` 且不寫任何 state row；MED-2（ARCH-059 note）：`gcExpired()` 接入 server.ts GC sweep（當 auth 啟用時），定期清除三張 auth 表。composition-root fix：`composeConfig()` 補 `workspaceTtlMs` 轉發；cross-process GC 確認 3 筆過期 oauth_state row 消失。無新設定鍵。IT-078 17/17；1328/1328；trace 751 items / 6 pre-existing gaps。 | 無破壞性變更；無新設定鍵；auth-disabled 部署不受影響；既有 auth-enabled 部署若 `workspaceTtlMs` 有設定，GC 間隔現在正確反映該值；無遷移動作 |
 | 2026-08-18 | v17 | **RFC 7591 Dynamic Client Registration**（REQ-012 v17 DCR fix）Gate 7.5 PASSED: AS metadata 新增 `registration_endpoint`；`POST /register` 實作 RFC 7591 DCR（201 + `client_id`、無 `client_secret`；非 loopback `redirect_uris` → 400 `invalid_redirect_uri`；`grant_types` clamp 不拒絕）；`registered_clients` SQLite 第 4 張 auth 表（存活重啟；GC sweep 清除過期項）；`/authorize` 接受已註冊 `client_id` 並以 RFC 8252 §7.3 port-ignored binding 驗證 `redirect_uri`；SDK `registerClient()` + `startAuthorization()` 端對端確認（4 新接受測試）；重啟存活確認（boot-1 register → kill → boot-2 client_id 有效）。解決了 Claude Code 連接失敗「Incompatible auth server: does not support dynamic client registration」。無新設定鍵（DCR 為公開端點，無需新 secret；registered_clients table 自動管理）。IT-078 27/27；1342/1342；trace 752 items / 9 gaps（全部 pre-existing low drift）。 | 無破壞性變更；無新設定鍵；既有 auth-enabled 部署自動獲得 DCR 支援（auth.enabled:true 時 /register 路由生效）；auth-disabled 部署不受影響；無遷移動作 |
+| 2026-08-18 | v18 | **Google OAuth 三端點分離**（REQ-012 v18 real-consent fix）Gate 7.5 PASSED: `GOOGLE_AUTHORIZE_URL`（`accounts.google.com/o/oauth2/v2/auth`）、`GOOGLE_TOKEN_URL`（`oauth2.googleapis.com/token`）、`GOOGLE_JWKS_URL`（`www.googleapis.com/oauth2/v3/certs`）三常數獨立匯出；`AuthConfig` 新增 `googleAuthorizeUrl?`/`googleTokenUrl?`/`googleJwksUrl?` 三可注入欄位，向後相容 deprecated `googleBase` fallback；`google-verifier.ts` `jwksUri` 參數重命名（DES-094，純改名無行為變更）；composition-root 配置傳遞確認（scratch config 驗證 `googleAuthorizeUrl` 正確流過 composeConfig → AuthService）；生產服務重啟確認（`/authorize` → `https://accounts.google.com/o/oauth2/v2/auth?...`；三 Google 主機皆確認存活）。IT-078 29/29（+2 新案例 case 19/20）；UT-094 15/15；VAL-095 9/9；1348/1348；tsc clean；trace 753 items（0 未真實驗證，0 未驗證）。新設定鍵：`auth.googleAuthorizeUrl`/`auth.googleTokenUrl`/`auth.googleJwksUrl`（三者皆選填，預設為正確 Google URL）；deprecated：`auth.googleBase`（向後相容，仍可用）。 | 無破壞性變更；三個新欄位全部 optional、預設為正確 Google URL；`auth.googleBase` deprecated 但仍相容（舊設定不受影響）；既有 `auth.enabled/googleClientId/googleClientSecret` 設定不變；無新工具、無新 port；無強制遷移動作 |

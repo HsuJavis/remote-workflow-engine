@@ -1,8 +1,16 @@
 // DES-095 (ARCH-059, TASK-086): OAuth route handlers + `resolvePrincipal` discriminated union.
 // startAuthorize → 302 to Google; handleGoogleCallback → verify id_token → mint auth-code;
 // tokenExchange → verify PKCE S256 → issue engine bearer; resolvePrincipal → union, NEVER throws.
+// DES-094/095 v18: 3 distinct Google endpoint URLs (accounts vs oauth2 vs www subdomains).
 
 import { createHash, randomBytes } from 'node:crypto';
+
+/** Google's OAuth 2.0 authorization endpoint (accounts.google.com). DES-095 v18. */
+export const GOOGLE_AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
+/** Google's token endpoint (oauth2.googleapis.com). DES-095 v18. */
+export const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+/** Google's JWKS endpoint (www.googleapis.com). DES-094 v18. */
+export const GOOGLE_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { TokenStore } from './token-store.js';
 import { verifyIdToken, type JwksPort } from './google-verifier.js';
@@ -14,8 +22,14 @@ export interface AuthConfig {
   issuer: string;
   googleClientId: string;
   googleClientSecret: string;
-  /** Override for Google's base URL — used in tests to point at a fake Google server. */
+  /** @deprecated Use googleAuthorizeUrl/googleTokenUrl/googleJwksUrl. Kept for backward-compat. */
   googleBase?: string;
+  /** Override for Google's authorization endpoint (full URL). DES-095 v18. */
+  googleAuthorizeUrl?: string;
+  /** Override for Google's token endpoint (full URL). DES-095 v18. */
+  googleTokenUrl?: string;
+  /** Override for Google's JWKS endpoint (full URL). DES-094 v18. */
+  googleJwksUrl?: string;
   /** Injectable JWKS fetcher — overrides the default network fetch (tests inject a fake). */
   jwksFetch?: JwksPort;
 }
@@ -106,9 +120,16 @@ export interface AuthRouteHandlers {
 
 /** Create handlers for the 5 OAuth routes (DES-095). All side effects go through the injected TokenStore. */
 export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore): AuthRouteHandlers {
-  const googleBase = cfg.googleBase ?? 'https://accounts.google.com';
-  const jwksFetch: JwksPort = cfg.jwksFetch ?? (async (base: string) => {
-    const r = await fetch(`${base}/oauth2/v3/certs`);
+  // DES-094/095 v18: 3 distinct Google endpoint URLs.
+  // Priority: specific field > googleBase-derived fallback (backward compat) > production constant.
+  const googleAuthorizeUrl = cfg.googleAuthorizeUrl
+    ?? (cfg.googleBase ? `${cfg.googleBase}/o/oauth2/v2/auth` : GOOGLE_AUTHORIZE_URL);
+  const googleTokenUrl = cfg.googleTokenUrl
+    ?? (cfg.googleBase ? `${cfg.googleBase}/token` : GOOGLE_TOKEN_URL);
+  const googleJwksUrl = cfg.googleJwksUrl
+    ?? (cfg.googleBase ? `${cfg.googleBase}/oauth2/v3/certs` : GOOGLE_JWKS_URL);
+  const jwksFetch: JwksPort = cfg.jwksFetch ?? (async (jwksUri: string) => {
+    const r = await fetch(jwksUri);
     const j = await r.json() as { keys?: Record<string, unknown>[] };
     return j.keys ?? [];
   });
@@ -167,7 +188,7 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
       tokenStore.putState({ state, nonce, codeChallenge, redirectUri });
       // Redirect to Google's authorization endpoint with state + nonce
       const b = effectiveIssuer.replace(/\/$/, '');
-      const gUrl = new URL(`${googleBase}/o/oauth2/v2/auth`);
+      const gUrl = new URL(googleAuthorizeUrl);
       gUrl.searchParams.set('response_type', 'code');
       gUrl.searchParams.set('client_id', cfg.googleClientId);
       gUrl.searchParams.set('redirect_uri', `${b}/oauth/google/callback`);
@@ -192,7 +213,7 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
       // Exchange Google code for id_token
       let idToken: string;
       try {
-        const tokenRes = await fetch(`${googleBase}/token`, {
+        const tokenRes = await fetch(googleTokenUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: new URLSearchParams({
@@ -217,7 +238,7 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
           clientId: cfg.googleClientId,
           jwksFetch,
           now: () => Date.now(),
-          googleBase,
+          jwksUri: googleJwksUrl,
           expectedNonce: nonce,
         });
         email = verified.email;

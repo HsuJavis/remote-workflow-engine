@@ -4313,10 +4313,10 @@ npx vitest run   →   Test Files  233 passed (233) / Tests  1316 passed (1316)
 
 ### VAL items
 
-### VAL-095 — real-run acceptance for REQ-012 (engine-as-own-AS OAuth discovery via MCP SDK + PKCE flow + auth-disabled backward-compat; v16: loopback-only redirect_uri + gcExpired GC; v17: RFC 7591 DCR)
+### VAL-095 — real-run acceptance for REQ-012 (engine-as-own-AS OAuth discovery via MCP SDK + PKCE flow + auth-disabled backward-compat; v16: loopback-only redirect_uri + gcExpired GC; v17: RFC 7591 DCR; v18: 3 distinct Google OAuth endpoints)
 
 - **status:** green
-- **traces:** REQ-012, DES-092, DES-093, DES-095, DES-100, TASK-085, TASK-086, TASK-090, TASK-091, ARCH-059
+- **traces:** REQ-012, DES-092, DES-093, DES-094, DES-095, DES-100, TASK-085, TASK-086, TASK-090, TASK-091, TASK-092, ARCH-059
 - **tier:** acceptance
 - **real:** true
 - **result:** pass
@@ -4375,7 +4375,25 @@ npx vitest run   →   Test Files  233 passed (233) / Tests  1316 passed (1316)
 
   **(v15 evidence — carry-forward)** 5/5 tests pass: SDK discovery (cases 1–2), full PKCE flow (cases 3+4), 401 without bearer (case 5), open mode (case 6). Google doubled via local RS256 HTTP server + injected `jwksFetch`. Composition-root fix: `auth: fileConfig.auth` in `composeConfig()` (src/main.ts).
   **(v16 evidence — carry-forward)** HIGH-1 loopback-only (live curl: evil.example→400, https-scheme→400, garbage→400, empty→400, missing→400, 127.0.0.1→302, localhost→302, [::1]→302; no `oauth_state` row written on rejection). MED-2 gcExpired wired to sweep (IT-078 case 10; cross-process GC confirmed; `workspaceTtlMs` forwarded in composeConfig). IT-078 17/17; 1328/1328.
-- **iter:** v17
+
+  **(v18 distinct Google OAuth endpoints — new for this round)**
+
+  **(IT-078 cases 19+20, DES-095 v18)** `npm test -- "auth-routes-integration"` (2026-08-18, working-tree v18): **29/29 pass** (27 pre-existing + 2 new):
+  - (case 19) `/authorize` → 302 `Location` origin = injected `googleAuthorizeUrl` (`http://127.0.0.1:59099`), NOT `googleBase` fallback (`http://127.0.0.1:59990`, dead port for hermetic pre-impl failure);
+  - (case 20) `/oauth/google/callback` exchanges code at injected `googleTokenUrl` (distinct port from `googleAuthorizeUrl`); fake token server → signed id_token → 302 (pre-impl: engine uses dead `googleBase:59990` → `ECONNREFUSED` → 502).
+
+  **(UT-094 google-verifier, DES-094)** `npm test -- "google-verifier"` (2026-08-18, working-tree v18): **15/15 pass** (`jwksUri` rename from `JwksPort` arg — no behavior change; static pins for the three constants: `GOOGLE_AUTHORIZE_URL='https://accounts.google.com/o/oauth2/v2/auth'`, `GOOGLE_TOKEN_URL='https://oauth2.googleapis.com/token'`, `GOOGLE_JWKS_URL='https://www.googleapis.com/oauth2/v3/certs'` confirmed correct by 4 new cases).
+
+  **(VAL-095 acceptance)** `npm test -- "val-095"` (2026-08-18, working-tree v18): **9/9 pass** (all existing cases green; harness updated to `googleAuthorizeUrl`/`googleTokenUrl`/`googleJwksUrl` + dead `googleBase:59990` for hermetic pre-impl failure; `jwksFetch: (_jwksUri: string) => ...` param rename per DES-094).
+
+  **(full suite)** `npm test` (2026-08-18, working-tree v18): **233 files / 1348 tests pass** (1342 pre-existing + 4 new UT-094 cases + 2 new IT-078 cases 19–20). No SUT-boundary mock. `npx tsc --noEmit` clean.
+
+  **(composition-root wiring, retro L-002)** Scratch config `RWE_CONFIG_PATH=/tmp/rwe-v18-val-config.json` with `auth.googleAuthorizeUrl:"http://127.0.0.1:59099/o/oauth2/v2/auth"`, `auth.googleTokenUrl`, `auth.googleJwksUrl` explicitly set → `node node_modules/tsx/dist/cli.mjs src/main.ts` → `listening on http://127.0.0.1:19194/mcp` → `curl GET /authorize` → `302 Location: http://127.0.0.1:59099/o/oauth2/v2/auth?...` (NOT the default `accounts.google.com`). Proves `fileConfig.auth.googleAuthorizeUrl` flows through `composeConfig()` → `AuthService` correctly; the v15-class composition-root bug does NOT recur for the three new URL fields.
+
+  **(real Google host verification)** Production service (2026-08-18, port 8899, v18 code, `systemctl --user restart rwe.service`): `GET /authorize` → `302 Location: https://accounts.google.com/o/oauth2/v2/auth?client_id=549639529318-...` (`GOOGLE_AUTHORIZE_URL` confirmed live). Token: `POST https://oauth2.googleapis.com/token` (bogus code) → `{"error":"invalid_client"}` (Google-served 400, not 404 — endpoint exists at `GOOGLE_TOKEN_URL`). JWKS: `GET https://www.googleapis.com/oauth2/v3/certs` → HTTP 200, 4 RSA keys (`GOOGLE_JWKS_URL` confirmed live). All three distinct real Google hosts confirmed serving the expected paths.
+
+  **(production service)** `systemctl --user restart rwe.service` (2026-08-18): 37 tools; `GET /.well-known/oauth-authorization-server` → `authorization_endpoint: https://remoteworkflow-engine.nicecream.work/authorize`, `token_endpoint: https://remoteworkflow-engine.nicecream.work/token`, `registration_endpoint: https://remoteworkflow-engine.nicecream.work/register`; smoke run `workflow_run({script:'return {v18_smoke:true}'})` → `status:completed`.
+- **iter:** v18
 
 ### VAL-096 — real-run acceptance for REQ-086 (per-caller principal on protected surfaces; attributed on run record + CAS namespace)
 
@@ -4483,3 +4501,24 @@ v15 (REQ-012/086..089) adds the **`auth`** block to `rwe.config.json`. This bloc
 v17 (RFC 7591 DCR fix) adds **no new config keys**. DCR registration is a public endpoint (no authentication required, no new secrets); `registered_clients` is a new SQLite table managed automatically. The existing `auth` block in `rwe.config.json` is unchanged (same three keys: `enabled`, `googleClientId`, `googleClientSecret`). `rwe.config.example.json` already reflects all keys correctly from v15 — no changes needed this round.
 
 **Cross-check (both directions):** all keys the code reads (`bind`, `port`, `workRoot`, `timeoutMs`, `retries`, `maxWorkflowDepth`, `maxWorkflowDescendants`, `maxConcurrentRuns`, `workspaceTtlMs`, `gateway`, `agentDefinitionsDir`, `seedRefAllowlist`, `maxBlobBytes`, `defaultAllowedTools`, `aliases`, `allowedHosts`, `auth.enabled`, `auth.googleClientId`, `auth.googleClientSecret`) have a row in DEPLOY.md §1 設定總表, and no rows in that table reference keys the current code no longer reads. **No config drift this round.**
+
+## v18 Gate 7.5 — unreachable dependencies (carry-forward + v18 note)
+
+**Real Google OAuth consent flow (carry-forward from v15/v16/v17; partially narrowed in v18):** requires (b) a real Google account performing interactive browser consent — the only still-absent piece. Items (a) real `googleClientId`/`googleClientSecret` (present in production config) and (c) HTTPS callback reachable by Google (confirmed via production deployment at `remoteworkflow-engine.nicecream.work`) are no longer unreachable. All three distinct real Google OAuth hosts are confirmed live: `accounts.google.com` (authorize — production `/authorize` → `302 Location: https://accounts.google.com/o/oauth2/v2/auth?...`), `oauth2.googleapis.com` (token — POST bogus code → `{"error":"invalid_client"}` from Google, not 404), `www.googleapis.com` (JWKS — GET → HTTP 200, 4 RSA keys). The ENGINE-SIDE flow is FULLY validated (VAL-095 9/9 + composition-root wiring confirmed). **Remaining unreachable:** interactive browser consent with a real Google account.
+
+**Real Claude Code DCR browser flow (carry-forward from v17):** `registration_endpoint` present + `POST /register` works (proven by VAL-095 cases 7a–7d + v17 live curl). The truly interactive piece — a real Claude Code CLI performing the full browser-consent flow — remains headless-unreachable (requires a real Google account + browser UI).
+
+## v18 Gate 7.5 — config-file sync check (§4b)
+
+v18 (3 distinct Google OAuth endpoints) adds **three new optional config keys** and **deprecates one** in `AuthConfig` (`src/auth/auth-service.ts:9–13, 25–32, 125–130`):
+
+| carrier | purpose | type/default | required | iter |
+|---|---|---|---|---|
+| `rwe.config.json` → `auth.googleAuthorizeUrl` | Google OAuth 2.0 authorization endpoint override；預設為 `GOOGLE_AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth'`；僅需覆寫以作整合測試或非 Google IdP | `string` / `'https://accounts.google.com/o/oauth2/v2/auth'` | 否 | v18 |
+| `rwe.config.json` → `auth.googleTokenUrl` | Google OAuth 2.0 token endpoint override；預設為 `GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'` | `string` / `'https://oauth2.googleapis.com/token'` | 否 | v18 |
+| `rwe.config.json` → `auth.googleJwksUrl` | Google JWKS endpoint override；預設為 `GOOGLE_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs'` | `string` / `'https://www.googleapis.com/oauth2/v3/certs'` | 否 | v18 |
+| `rwe.config.json` → `auth.googleBase` | **deprecated** — 向後相容 fallback；若設定則自此派生三端點 URL；勿用於新部署，改用三個獨立 URL 欄位 | `string` / — | 否（deprecated） | v18 |
+
+**`rwe.config.example.json`: NO changes** — the three new keys default to the correct production Google endpoints; typical deployments never need to override them. The deprecated `auth.googleBase` was never added to the example. JSON cannot carry deprecation comments. `rwe.config.example.json` remains correct and unchanged from v17.
+
+**Cross-check (both directions):** all keys the code reads (`bind`, `port`, `workRoot`, `timeoutMs`, `retries`, `maxWorkflowDepth`, `maxWorkflowDescendants`, `maxConcurrentRuns`, `workspaceTtlMs`, `gateway`, `agentDefinitionsDir`, `seedRefAllowlist`, `maxBlobBytes`, `defaultAllowedTools`, `aliases`, `allowedHosts`, `auth.enabled`, `auth.googleClientId`, `auth.googleClientSecret`, `auth.googleAuthorizeUrl`, `auth.googleTokenUrl`, `auth.googleJwksUrl`, `auth.googleBase`) have a row in DEPLOY.md §1 設定總表, and no rows in that table reference keys the current code no longer reads. **Config round-trip complete (v18).**
