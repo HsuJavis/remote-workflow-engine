@@ -142,8 +142,15 @@ beforeAll(async () => {
       issuer: `http://127.0.0.1:0`,  // placeholder; real issuer built after boot
       googleClientId: TEST_CLIENT_ID,
       googleClientSecret: 'val095-client-secret',
-      googleBase: `http://127.0.0.1:${fakeGooglePort}`,
-      jwksFetch: (_base: string) => Promise.resolve([TEST_JWK]),
+      // v18 rename (DES-095 v18): googleBase → three distinct URL fields.
+      // Post-impl the engine reads these instead of googleBase.
+      googleAuthorizeUrl: `http://127.0.0.1:${fakeGooglePort}`,
+      googleTokenUrl: `http://127.0.0.1:${fakeGooglePort}/token`,
+      googleJwksUrl: `http://127.0.0.1:${fakeGooglePort}/certs`,
+      // Legacy fallback — pre-impl code reads googleBase; point it at a dead port so the
+      // pre-impl token exchange fails hermetically (ECONNREFUSED, not a real Google call).
+      googleBase: 'http://127.0.0.1:59990',
+      jwksFetch: (_jwksUri: string) => Promise.resolve([TEST_JWK]),
     },
   } as never);
 });

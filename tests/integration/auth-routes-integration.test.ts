@@ -680,3 +680,152 @@ describe('v17 DCR: /authorize registered-client binding (DES-095 v17, IT-078)', 
     expect(after).toBe(before); // no state row written for rejected request
   });
 });
+
+// ── v18: DISTINCT Google OAuth URL fields — cases 19-20 (DES-095 v18) ────────
+//
+// RED reason: pre-impl `createAuthRouteHandlers` reads cfg.googleBase (fallback:
+// 'https://accounts.google.com'). It ignores cfg.googleAuthorizeUrl / cfg.googleTokenUrl.
+//
+// Case 19 (hermetic): /authorize with the v18 config → 302 Location origin must
+//   equal the injected googleAuthorizeUrl origin.
+//   Pre-impl: Location origin = googleBase fallback ('http://127.0.0.1:59990') ≠ '59099' → FAIL.
+//   Post-impl: Location origin = googleAuthorizeUrl ('http://127.0.0.1:59099') → PASS.
+//
+// Case 20 (full repro): authorize → parse state+nonce from Location →
+//   GET /oauth/google/callback → engine exchanges code at injected googleTokenUrl
+//   (fake server on a DISTINCT port).
+//   Pre-impl: engine uses googleBase ('http://127.0.0.1:59990', dead) → ECONNREFUSED → 502.
+//   Post-impl: engine uses googleTokenUrl (live fake token server) → signed id_token → 302.
+//
+// Mock policy: serverV18 has jwksFetch injected (same fakeJwksFetch); googleBase set to a
+//   dead loopback port (59990) for hermetic pre-impl failure (no real Google calls).
+//   googleAuthorizeUrl and googleTokenUrl use DISTINCT loopback ports (59099 vs dynamic).
+
+let fakeV18TokenNonce = '';
+let fakeV18TokenServer: import('node:http').Server;
+let fakeV18TokenPort: number;
+let serverV18: Server;
+let tmpDirV18: string;
+
+beforeAll(async () => {
+  // Start the fake Google token server for case 20 on a random port.
+  // Distinct from googleAuthorizeUrl (port 59099) — satisfying the "two origins" contract.
+  await new Promise<void>((resolve, reject) => {
+    fakeV18TokenServer = http.createServer((req, res) => {
+      if (req.method === 'POST' && req.url === '/token') {
+        let body = '';
+        req.on('data', (c: Buffer) => { body += c.toString(); });
+        req.on('end', () => {
+          const nowS = Math.floor(Date.now() / 1000);
+          const idToken = signRS256({
+            iss: 'https://accounts.google.com',
+            aud: 'it078v18-client-id',
+            exp: nowS + 300,
+            iat: nowS - 5,
+            sub: 'case20-uid',
+            email: 'case20@example.com',
+            email_verified: true,
+            nonce: fakeV18TokenNonce,
+          });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            id_token: idToken,
+            access_token: 'fake-access-v18',
+            token_type: 'Bearer',
+          }));
+        });
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    fakeV18TokenServer.listen(0, '127.0.0.1', () => {
+      fakeV18TokenPort = (fakeV18TokenServer.address() as { port: number }).port;
+      resolve();
+    });
+    fakeV18TokenServer.once('error', reject);
+  });
+
+  tmpDirV18 = mkdtempSync(join(tmpdir(), 'rwe-it078v18-'));
+  serverV18 = await createServer({
+    port: 0,
+    bind: '127.0.0.1',
+    workRoot: tmpDirV18,
+    auth: {
+      enabled: true,
+      issuer: 'http://127.0.0.1:0',
+      googleClientId: 'it078v18-client-id',
+      googleClientSecret: 'it078v18-secret',
+      // v18 new fields (DES-095 v18) — ignored by pre-impl code:
+      googleAuthorizeUrl: 'http://127.0.0.1:59099',           // case 19 assertion target
+      googleTokenUrl: `http://127.0.0.1:${fakeV18TokenPort}/token`, // case 20 token exchange
+      googleJwksUrl: 'http://127.0.0.1:59099/certs',          // not used (jwksFetch injected)
+      // Legacy fallback — pre-impl uses this; 59990 is a dead port → hermetic ECONNREFUSED:
+      googleBase: 'http://127.0.0.1:59990',
+      jwksFetch: fakeJwksFetch,
+    },
+  } as never);
+});
+
+afterAll(async () => {
+  await serverV18?.close();
+  await new Promise<void>((r) => fakeV18TokenServer?.close(() => r()));
+  rmSync(tmpDirV18, { recursive: true, force: true });
+});
+
+describe('v18: /authorize uses injected googleAuthorizeUrl — case 19 (DES-095 v18, IT-078)', () => {
+  it('case 19: /authorize → 302 Location origin equals injected googleAuthorizeUrl (not googleBase fallback)', async () => {
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id: 'it078v18-client-id',
+      redirect_uri: 'http://127.0.0.1:19999/cb',
+      code_challenge: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      code_challenge_method: 'S256',
+    });
+    const { status, location } = await rawHttpGet(
+      `http://127.0.0.1:${serverV18.port}/authorize?${params}`
+    );
+    expect(status).toBe(302);
+    expect(location).toBeDefined();
+    const locUrl = new URL(location!);
+    // Pre-impl: origin = 'http://127.0.0.1:59990' (googleBase fallback) → FAIL
+    // Post-impl: origin = 'http://127.0.0.1:59099' (googleAuthorizeUrl) → PASS
+    expect(locUrl.origin).toBe('http://127.0.0.1:59099');
+  });
+});
+
+describe('v18: /oauth/google/callback uses injected googleTokenUrl — case 20 (DES-095 v18, IT-078)', () => {
+  it('case 20: full callback flow → engine exchanges code at googleTokenUrl (distinct port from googleAuthorizeUrl)', async () => {
+    // Step 1: GET /authorize — parse state + nonce from the 302 Location
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id: 'it078v18-client-id',
+      redirect_uri: 'http://127.0.0.1:19999/cb',
+      code_challenge: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      code_challenge_method: 'S256',
+    });
+    const authResp = await rawHttpGet(
+      `http://127.0.0.1:${serverV18.port}/authorize?${params}`
+    );
+    expect(authResp.status).toBe(302);
+    const locUrl = new URL(authResp.location!);
+    const state = locUrl.searchParams.get('state') ?? '';
+    const nonce = locUrl.searchParams.get('nonce') ?? '';
+    expect(state.length).toBeGreaterThan(0);
+    expect(nonce.length).toBeGreaterThan(0);
+    fakeV18TokenNonce = nonce; // so fake token server echoes the correct nonce
+
+    // Step 2: GET /oauth/google/callback — engine exchanges code at googleTokenUrl
+    const cbResp = await rawHttpGet(
+      `http://127.0.0.1:${serverV18.port}/oauth/google/callback?` +
+        new URLSearchParams({ state, code: 'fake-case20-google-code' })
+    );
+    // Pre-impl: engine uses googleBase fallback ('http://127.0.0.1:59990', dead)
+    //   → fetch throws ECONNREFUSED → 502 google_token_error → FAIL
+    // Post-impl: engine uses googleTokenUrl → fake token server → signed id_token
+    //   → verifyIdToken → mintAuthCode → 302 to redirectUri?code=ENGINE_CODE → PASS
+    expect(cbResp.status).toBe(302);
+    const cbUrl = new URL(cbResp.location!);
+    expect((cbUrl.searchParams.get('code') ?? '').length).toBeGreaterThan(0);
+  }, 15_000);
+});

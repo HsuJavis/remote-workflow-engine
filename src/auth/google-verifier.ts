@@ -5,14 +5,15 @@ import { createPublicKey, createVerify } from 'node:crypto';
 import type { JsonWebKey } from 'node:crypto';
 
 export type Jwk = Record<string, unknown>;
-export type JwksPort = (googleBase: string) => Promise<Jwk[]>;
+export type JwksPort = (jwksUri: string) => Promise<Jwk[]>;
 
 export interface VerifyIdTokenDeps {
   clientId: string;
   jwksFetch: JwksPort;
   /** Returns current time in milliseconds (the only time read — seam). */
   now: () => number;
-  googleBase: string;
+  /** Full JWKS URL (e.g. https://www.googleapis.com/oauth2/v3/certs). DES-094 v18 rename. */
+  jwksUri: string;
   expectedNonce: string;
 }
 
@@ -72,7 +73,7 @@ export async function verifyIdToken(
     throw new AuthError(`unsupported alg: ${String(header['alg'])}`);
   }
   const kid = header['kid'];
-  const jwks = await deps.jwksFetch(deps.googleBase);
+  const jwks = await deps.jwksFetch(deps.jwksUri);
   const jwk = jwks.find((k) => !kid || k['kid'] === kid);
   if (!jwk) throw new AuthError(`no matching JWK for kid=${String(kid)}`);
 

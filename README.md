@@ -10,7 +10,7 @@
 原封不動地跑在一台伺服器上，透過 **MCP Streamable HTTP** 介面遠端送出、追蹤、暫停/續跑/停止，並
 把每個 `agent()` 呼叫真正路由到你設定的 LLM 供應商（Anthropic / OpenAI / Gemini / 本機 Ollama）。
 
-**目前功能（v17，2026-08-18）**：
+**目前功能（v18，2026-08-18）**：
 
 - **工作流程執行**：`workflow_run`（含 inline seed + CAS seedManifest + `seedManifestRef` + `scriptSha256`
   完整性守衛）、`workflow_status`、`workflow_suspend`/`workflow_resume`/`workflow_stop`、
@@ -59,7 +59,7 @@
 
 ## 快速開始 Quickstart
 
-以下指令是 v17 validator 實際跑過、能把系統帶起來的步驟（本輪零文件缺口）。
+以下指令是 v18 validator 實際跑過、能把系統帶起來的步驟（本輪零文件缺口）。
 
 ```bash
 # 1. 安裝 Node 依賴
