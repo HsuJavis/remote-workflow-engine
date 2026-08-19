@@ -4,7 +4,145 @@ status: closed
 ---
 # 07 Review & Retro — Gate 8
 
-## v19 GATE 8 REVIEW (2026-08-19, CURRENT / AUTHORITATIVE — ITERATION CAN CLOSE)
+## v20 GATE 8 REVIEW (2026-08-19, CURRENT / AUTHORITATIVE — ITERATION CAN CLOSE)
+
+> This section supersedes "## v19 GATE 8 REVIEW (2026-08-19)" below (kept for history).
+> **v20 fix-mode iteration — refresh tokens + callback success page (REQ-012 v20, ARCH-059 v20).**
+> Impact closure: REQ-012, ARCH-059, DES-092, DES-093, DES-095, IMPL-122, IT-078, TASK-094, TASK-095 — iter v20.
+> No new high/severe gaps, no new broken chains, no arch violations for v20-scoped changes.
+
+### Traceability consistency (v20)
+
+Trace `--check` result (regenerated 2026-08-19): **756 items, 9 gaps.**
+
+Change from v19 baseline (754 items / 12 gaps):
+
+- **2 new items:** TASK-094 and TASK-095 added (both trace ARCH-059, DES-092/093/095, IMPL-122). Both status:done — no 未實作 gap.
+- **3 gaps CLOSED:** UT-092 (now at v20, matching DES-092 v20), UT-093 (now at v20, matching DES-093 v20), DES-092 (now at v20, matching IMPL-122 v20). All three were bumped as part of the v20 test/design updates.
+- **3 gaps widened (cosmetic — same gap, wider numeric delta):** UT-094 (v18 behind DES-095 v20, was v18 behind DES-095 v19), UT-095 (v16 behind DES-095 v20, was v16 behind DES-095 v19), DES-094 (v18 behind IMPL-122 v20, was v18 behind IMPL-122 v19). google-verifier.ts scope unchanged in v20 — same precedent as prior iterations.
+- **Touched-chain iter alignment is clean:** all items in the v20 impact closure (REQ-012, ARCH-059, DES-092, DES-093, DES-095, IMPL-122, IT-078, VAL-095, TASK-094, TASK-095) are at v20 — the chain guard for a fix iteration passes.
+- **No new broken links, no new orphans, 0 未驗證, 0 未真實驗證, 0 severe gaps introduced by v20.**
+
+Net: +2 items (TASK-094, TASK-095), -3 gaps (UT-092, UT-093, DES-092 closed). 754→756 items, 12→9 gaps. ✓
+
+| ID | Severity | Type | Note |
+|----|----------|------|------|
+| IMPL-082 | MID | TDD label drift | Pre-existing since v4; no change |
+| UT-058 | LOW | iter drift v6 behind DES-038 v11 | Pre-existing since F1; cosmetic |
+| UT-064 | LOW | iter drift v9 behind DES-054 v11 | Pre-existing since v9 |
+| IT-057 | LOW | iter drift v9 behind DES-054 v11 | Pre-existing since v9 |
+| UT-094 | LOW | iter drift v18 behind DES-095 v20 | Widened (same gap; DES-095 bumped v19→v20; google-verifier.ts scope unchanged in v20 — cosmetic) |
+| UT-095 | LOW | iter drift v16 behind DES-095 v20 | Widened (same gap; DES-095 bumped v18→v20; resolvePrincipal unchanged in v20 — cosmetic) |
+| DES-094 | LOW | iter drift v18 behind IMPL-122 v20 | Widened (same gap; IMPL-122 bumped v19→v20; google-verifier.ts scope unchanged in v20 — cosmetic) |
+| DES-088 | LOW | iter drift v14 behind IMPL-127 v15 | Pre-existing from v15 |
+| TASK-018 | LOW | no implementation | OIDC task; functionally superseded by v15+v17+v18+v19+v20 OAuth implementation |
+
+Dashboard confirms: 0 severe gaps, 0 未驗證 requirements, 0 mock-only validations. All 9 remaining gaps are recorded as known tech debt (Exit Gate 1 satisfied).
+
+### Architecture consistency (v20 self-check — lean QM fix, no panel)
+
+Fix scope: `src/auth/oauth-metadata.ts`, `src/auth/token-store.ts`, `src/auth/auth-service.ts`, `src/auth/google-verifier.ts` (file listed but no v20 changes), `src/server.ts` (dispatch unchanged — refresh_token rides existing `/token` handler at line 1403), `vitest.config.ts` (test config only). Checked against ARCH-059 v20 (the only ARCH decision touched by v20).
+
+**ARCH-059 v20 — refresh tokens + callback success page:**
+
+Architecture text (ARCH-059 v20 excerpt, v20 clause): adds refresh-token support WITHOUT a new module/route/seam; scope captured at `/authorize`, persisted separately from the Google leg (which stays hard-coded `openid email`); `offline_access` in granted scope (space-split membership, not substring) → refresh_token issued alongside access_token; `grant_type=refresh_token` branch on EXISTING `/token` route, single-use atomic consume, RFC 9700 rotation; refresh token uses same opaque sha256-at-rest/injected-clock+CSPRNG discipline as bearer (D-AUTH-1); gcExpired reaps 5th table; `/register` grant-type clamp widens to include `refresh_token`; `/oauth/google/callback` returns 200 HTML success page (id="callback-url" + meta-refresh) instead of 302.
+
+Implementation checks:
+
+1. **D-AUTH-1 — opaque sha256-at-rest, no JWT for refresh token** (`src/auth/token-store.ts:183-213`): `issueRefresh` calls `genRandom(this._csprng)` + stores `sha256hex(token)` as `token_hash`. `consumeRefresh` looks up by `sha256hex(rawToken)`. Identical pattern to bearer token. No JWT. **Matches.**
+2. **Seam-consistency — no Date.now() or randomBytes() in token-store.ts** (`src/auth/token-store.ts:183-213`): `issueRefresh` uses `this._clock()` for both `now` and `expiresAt`. `consumeRefresh` uses `this._clock()` for the expiry check. `genRandom` uses `this._csprng`. No direct `Date.now()` or `randomBytes()` calls anywhere in the file. **Matches.**
+3. **Scope threading — client scope separate from Google leg** (`src/auth/auth-service.ts:193-194, 201`): client scope captured as `const scope = url.searchParams.get('scope')` and passed to `putState({..., scope})`; the Google redirect hard-codes `gUrl.searchParams.set('scope', 'openid email')`. The client scope is NEVER forwarded to Google. **Matches.**
+4. **offline_access check — space-split membership, not substring** (`src/auth/auth-service.ts:353`): `scope.split(' ').includes('offline_access')`. **Matches.**
+5. **Single-use atomic consume (RFC 9700) + rotation** (`src/auth/token-store.ts:195-213`): `consumeRefresh` wraps SELECT + DELETE in a `this._db.transaction()`, deleting the row on first read (single-use). `tokenExchange` refresh branch issues a NEW `issueRefresh(row.principal, row.scope, row.clientId, REFRESH_TTL_MS)` on each use — RFC 9700 rotation. `400 invalid_grant` on null/expired result. **Matches.**
+6. **client_id binding** (`src/auth/auth-service.ts:298-301`): `if (row.clientId !== null && row.clientId !== clientId) → invalid_grant`. Enforced when stored; skipped when null. Consistent with public-client public-PKCE model. **Matches.**
+7. **gcExpired sweeps 5th table** (`src/auth/token-store.ts:247`): `n += this._db.prepare('DELETE FROM refresh_tokens WHERE expires_at <= ?').run(now).changes`. **Matches.**
+8. **grant_types clamp widens to include refresh_token** (`src/auth/auth-service.ts:395`): `/register` response body: `grant_types: ['authorization_code', 'refresh_token']`. **Matches.**
+9. **200 HTML callback page (v20b), no new route** (`src/auth/auth-service.ts:270-275`): `res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })`. HTML has `id="callback-url"` element with raw URL, `<meta http-equiv="refresh">` with HTML-escaped URL, copy button, JS redirect. No new route in server.ts — `tokenExchange` is the same handler dispatch at `server.ts:1403`. **Matches.**
+10. **AS metadata 4 new fields** (`src/auth/oauth-metadata.ts:47-51`): `grant_types_supported: ['authorization_code', 'refresh_token']`, `scopes_supported: ['openid', 'email', 'offline_access']`, `token_endpoint_auth_methods_supported: ['none']`, `authorization_response_iss_parameter_supported: true`. **Matches.**
+11. **Idempotent additive migrations** (`src/auth/token-store.ts:80-81`): `try { ALTER TABLE auth_codes ADD COLUMN scope TEXT } catch`, `try { ALTER TABLE oauth_state ADD COLUMN scope TEXT } catch`. `refresh_tokens` table uses `CREATE TABLE IF NOT EXISTS` in the main `_init()` exec. **Matches.**
+12. **v19 LOW-6 carry-forward** (`src/auth/auth-service.ts:191`): `const clientState = url.searchParams.get('state')` and new `const scope = url.searchParams.get('scope')` at line 193 — BOTH return `''` for param-present-but-empty; `?? null` in `putState` does not convert `''`. Both `if (clientState)` and `scope.split(' ').includes('offline_access')` guard correctly for `''` (falsy echo, no offline_access). LOW-6 text nit and its sibling scope nit remain cosmetic and carry forward.
+
+**Verdict for v20-touched code: architecture CONSISTENT with ARCH-059 v20.**
+
+Pre-existing violations (UNCHANGED from v19 review — not re-litigated here):
+
+| Label | Severity | Finding | Status |
+|-------|----------|---------|--------|
+| H-2 | HIGH | ARCH-017/D-PROFILE/DES-031 session-options-builder orphaned | Gate 2 adjudication pending (security-hardening iter) |
+| H-3 | HIGH | D-KILL/D-PROC cli-lifecycle + timeout-race dead code | Gate 2 adjudication pending |
+| M-1 | MED | LiteLLMGatewayClient transcript opaque | Pre-existing, separately tracked |
+| L-1 | LOW | McpRegistry wall-clock direct Date.now | Pre-existing |
+| L-2 | LOW | materializeAssets hook arm not removed | Pre-existing |
+| LOW-3 | LOW | client-echoable principal on null-edge path | Pre-existing; restrict to test seam when convenient |
+| LOW-4 | LOW | ARCH-059 inv.3 text: state TTL 600 s vs. "≤60 s" | Carry-forward; amend to "state ≤10 min / codes ≤60 s" |
+| LOW-5 | LOW | ARCH-059 v18 text: "no config-schema change" vs. 3 new optional AuthConfig fields | Carry-forward; amend to "no breaking config change" |
+| LOW-6 | LOW | DES-093/DES-095 v19/v20 text: param-present-but-empty stores `''` not null; if/split guards correctly | Carry-forward from v19; scope param inherits same nit; add `\|\| null` coercion or amend text |
+
+**Architecture consistency overall: v20-scoped changes are consistent with ARCH-059 v20. Pre-existing H-2/H-3 remain on their own adjudication track. No new violations.**
+
+### Validation & handover check (v20)
+
+- **VAL-095 (REQ-012, v20):** `real:true`, green, iter v20 (08-validation.md authoritative; trace reports 0 未真實驗證). 9/9 acceptance cases pass; 8 live curl checks (AS metadata v20 fields, 200 HTML callback, offline_access→refresh_token, RFC 9700 rotation, single-use invalidation→400, no offline_access→no refresh_token, refreshed bearer /mcp 200 37 tools, across-expiry 37 tools via SQLite ms-integer backdate).
+- **IT-078:** 37/37 (including cases 23-28: v20 refresh token rotation, single-use, across-expiry). VAL-096 5/5, VAL-097 8/8 (F3 updated to v20b 200-HTML extraction).
+- **Full suite:** 1369/1369 pass (233 files; zero regression against 1350/1350 pre-v20 baseline).
+- **Production service (Gate 7.5 smoke):** `systemctl --user restart rwe.service` → 5 auth tables (bearer_tokens, auth_codes, oauth_state, registered_clients, refresh_tokens), scope cols in oauth_state+auth_codes confirmed, 37 tools, /authorize → accounts.google.com. Idempotent ALTER migrations confirmed.
+- **No mock-only/unverified REQ for any v20-touched item.**
+- **`08-validation.md`:** present, v20 Gate 7.5 PASSED section written (2026-08-19).
+- **`README.md`:** present. Current-state v20. No stale commands.
+- **`DEPLOY.md`:** present. Current-state v20. No new config keys in v20 (`REFRESH_TTL_MS` is a code constant, not an operator config key). §1 設定総表 unchanged — no new rows, no key duplication. §7 変更紀錄 has v20 entry (2026-08-19, Gate 7.5 PASSED detail). No superseded instructions outside §7 変更紀錄. Config keys deduplicated.
+- **Unreachable deps (carry-forward):** interactive browser Google consent flow and real Claude Code across-expiry SDK loop — engine-side portions fully validated; client-interactive pieces remain headless-unreachable, same classification as v15-v19.
+- **Validation verdict: Gate 7.5 v20 PASSED. VAL-095 v20 real:true. 1369/1369 pass. README + DEPLOY present, current-state. No mock-only/unverified REQ.**
+
+### Retro (v20 — refresh tokens + callback success page)
+
+**What changed (IMPL-122 v20, TASK-094/095):**
+
+- `src/auth/oauth-metadata.ts`: `buildAuthServerMetadata` gains 4 fields: `grant_types_supported`, `scopes_supported`, `token_endpoint_auth_methods_supported`, `authorization_response_iss_parameter_supported`.
+- `src/auth/token-store.ts`: `auth_codes` and `oauth_state` gain `scope TEXT` column (CREATE TABLE + idempotent ALTER); 5th table `refresh_tokens` (token_hash PK, principal, scope, client_id, issued_at, expires_at); `mintAuthCode` gains optional `scope?:string|null`; `consumeAuthCode` returns `scope:string|null`; `putState` gains `scope?:string|null`; `consumeState` returns `scope:string|null`; `issueRefresh` + `consumeRefresh` added (sha256-at-rest, seam-consistent); `gcExpired` sweeps 5th table.
+- `src/auth/auth-service.ts`: `REFRESH_TTL_MS=90d` exported; `authorize()` captures `scope` and threads to `putState`; `googleCallback()` threads `scope` to `mintAuthCode` and returns 200 HTML page (id="callback-url" + meta-refresh/JS redirect) instead of 302; `tokenExchange()` adds `grant_type=refresh_token` branch (single-use consume, RFC 9700 rotation) and ALWAYS echoes `scope`+`expires_in`, conditionally issues `refresh_token` iff `offline_access`; `register()` widens grant_types clamp to include `refresh_token`.
+- `vitest.config.ts`: minor test-config adjustment (test timeout/sequencing; no arch impact).
+- Documented deviation: `mintAuthCode` scope param implemented as optional (`scope?:string|null`) rather than required per DES-095 v20a, because the UT-093 gcExpired fixture calls `mintAuthCode` with 3 args; threading correctness verified instead by UT-093 scope-threading cases + IT-078 cases 24-28.
+
+**What went well:**
+
+- The v19 client_state plumbing (nullable column + optional putState param + consumeState return extension) provided an exact template for the v20 scope threading. Zero novel design decisions needed.
+- ARCH-059's D-AUTH-1 discipline (opaque sha256-at-rest, injected clock+CSPRNG) extended cleanly to `issueRefresh`/`consumeRefresh` — the pattern is isomorphic to `issue`/`verifyByHash` for bearer and `mintAuthCode`/`consumeAuthCode` for codes.
+- The three-iteration arc of test defects (F2 VAL-096/VAL-097 broken by v20b 200-HTML change → F3 Gate 5 fix → F3 Gate 6 clean green) was caught immediately by the CI suite; the v20b spec change was the right decision (browsers and headless use cases both served) and the blast radius was limited to two acceptance tests.
+- IT-078's end-to-end integration tier (real SQLite + real HTTP + fake RS256 Google IdP) absorbed all 6 new v20 refresh-token cases (23-28) cleanly; no new test infrastructure needed.
+
+**What to change:**
+
+- **`|| null` coercion in authorize()** for both `clientState` and `scope` captures: `url.searchParams.get(...)` returns `''` for a param present-but-empty; `?? null` in `putState` doesn't convert `''`. The guards (`if (clientState)`, `scope.split(' ').includes('offline_access')`) handle `''` correctly for behavior, but the stored value differs from the DES text. One-liner at the capture site (`const clientState = url.searchParams.get('state') || null`, same for `scope`). LOW-6 carry-forward.
+- **composeConfig snapshot test** (overdue since v16): v20 adds no new config keys, but the pattern continues. Must build before next config-adding iteration.
+- **TASK-018** (OIDC task): superseded by v15+v17+v18+v19+v20 auth; recommend close/annotate in 03-tasks.md.
+- **LOW-4** (ARCH-059 inv.3 state TTL text): carry-forward from v17.
+- **LOW-5** (ARCH-059 v18 text): carry-forward from v18.
+
+**Impact closure:**
+
+- **"Missing refresh tokens force browser re-auth on every access-token expiry":** CLOSED. Root cause: v15–v19 "no scopes/no refresh" stance was correct for the original design but wrong for real MCP clients — Claude Code auto-appends `offline_access` when advertised, and a missing `refresh_token` forced a browser re-auth on each weekly expiry. Fix: full end-to-end refresh token support (AS metadata advertisement → scope capture → refresh_token issuance iff offline_access → RFC 9700 rotation → single-use enforcement). Engine-side across-expiry proof in Gate 7.5 CHECK 8.
+- **"Bare 302 callback URL inaccessible in headless/no-browser flows":** CLOSED. Root cause: the /oauth/google/callback 302 redirect sent the authorization code to the loopback redirect_uri, but in a headless environment nothing is listening on that local port. Fix: 200 HTML success page with `id="callback-url"` (copy-paste for headless) + meta-refresh/JS redirect (auto-catch for same-machine listener).
+- **REQ-012 v20 real-client connect (refresh tokens + callback success page clause):** CLOSED.
+- **ARCH-059 v20 (refresh token architecture documented):** CLOSED.
+
+**Known tech debt (all recorded, updated from v19):**
+
+*Carry forward — Gate 2 adjudication pending:*
+- [HIGH] H-2: ARCH-017/D-PROFILE/DES-031 builder cluster unwired
+- [HIGH] H-3: D-KILL/D-PROC cli-lifecycle + timeout-race orphaned
+
+*Carry forward — lower urgency:*
+- [MED] M-1: LiteLLMGatewayClient transcript opaque
+- [LOW] LOW-3: client-echoable principal on null-edge path
+- [LOW] LOW-4: ARCH-059 inv.3 text — amend state TTL bound
+- [LOW] LOW-5: ARCH-059 v18 text — amend "no config-schema change"
+- [LOW] LOW-6: DES-093/DES-095 v19/v20 text — param-present-but-empty stores `''` not null; add `|| null` coercion or amend text
+- [LOW] L-1: McpRegistry wall-clock direct Date.now
+- [LOW] L-2: materializeAssets hook arm not removed
+
+---
+
+## v19 GATE 8 REVIEW (2026-08-19, SUPERSEDED by v20 above — kept for history)
 
 > This section supersedes "## v18 GATE 8 REVIEW (2026-08-18)" below (kept for history).
 > **v19 fix-mode iteration — OAuth2 client state round-trip + RFC 9207 iss (REQ-012 v19, ARCH-059 v19).**

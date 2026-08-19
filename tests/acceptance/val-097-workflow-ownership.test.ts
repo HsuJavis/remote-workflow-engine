@@ -96,7 +96,9 @@ async function getBearerFor(email: string): Promise<string> {
   currentNonce = aLoc.searchParams.get('nonce') ?? '';
   const state = aLoc.searchParams.get('state') ?? '';
   const cb = await fetch(`${base}/oauth/google/callback?state=${state}&code=fake097`, { redirect: 'manual' });
-  const cbLoc = new URL(cb.headers.get('location') ?? 'http://x');
+  const cbHtml = await cb.text();
+  const m = cbHtml.match(/id="callback-url"[^>]*>([^<]+)</);
+  const cbLoc = new URL(m ? m[1].trim() : 'http://x');
   const engineCode = cbLoc.searchParams.get('code') ?? '';
   const tok = await fetch(`${base}/token`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'authorization_code', code: engineCode, code_verifier: cv, redirect_uri: rUri }) });
   const tb = await tok.json() as { access_token?: string };

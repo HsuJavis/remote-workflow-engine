@@ -11,6 +11,8 @@ export const GOOGLE_AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/aut
 export const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 /** Google's JWKS endpoint (www.googleapis.com). DES-094 v18. */
 export const GOOGLE_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs';
+/** Sliding-window refresh-token TTL (~90 days). DES-095 v20. */
+export const REFRESH_TTL_MS = 90 * 24 * 3600_000;
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { TokenStore } from './token-store.js';
 import { verifyIdToken, type JwksPort } from './google-verifier.js';
@@ -187,7 +189,9 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
       const nonce = randomBytes(16).toString('hex');
       // v19 (DES-095): capture the CLIENT's state (RFC 6749 §4.1.2) to echo at final redirect.
       const clientState = url.searchParams.get('state');
-      tokenStore.putState({ state, nonce, codeChallenge, redirectUri, clientState });
+      // v20a (DES-095): capture the CLIENT's requested scope to thread through to /token.
+      const scope = url.searchParams.get('scope');
+      tokenStore.putState({ state, nonce, codeChallenge, redirectUri, clientState, scope });
       // Redirect to Google's authorization endpoint with state + nonce
       const b = effectiveIssuer.replace(/\/$/, '');
       const gUrl = new URL(googleAuthorizeUrl);
@@ -210,7 +214,7 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
         localSendJson(res, 400, { error: 'invalid_state' });
         return;
       }
-      const { nonce, codeChallenge, redirectUri, clientState } = stateData;
+      const { nonce, codeChallenge, redirectUri, clientState, scope } = stateData;
       const b = effectiveIssuer.replace(/\/$/, '');
       // Exchange Google code for id_token
       let idToken: string;
@@ -248,23 +252,27 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
         localSendJson(res, 401, { error: 'invalid_id_token' });
         return;
       }
-      // Mint engine auth-code and redirect to client's redirect_uri
-      const authCode = tokenStore.mintAuthCode(email, codeChallenge, redirectUri);
-      // Build the redirect Location (redirectUri may be relative or absolute)
-      let location: string;
+      // v20a: thread client-requested scope through to auth-code (for /token to issue refresh_token).
+      const authCode = tokenStore.mintAuthCode(email, codeChallenge, redirectUri, scope);
+      // Build the client callback URL
+      let callbackUrl: string;
       try {
         const u = new URL(redirectUri);
         u.searchParams.set('code', authCode);
         // v19 (DES-095): echo client state (RFC 6749 §4.1.2) + RFC 9207 iss at final redirect.
         if (clientState) u.searchParams.set('state', clientState);
         u.searchParams.set('iss', effectiveIssuer);
-        location = u.toString();
+        callbackUrl = u.toString();
       } catch {
         const sep = redirectUri.includes('?') ? '&' : '?';
-        location = `${redirectUri}${sep}code=${encodeURIComponent(authCode)}`;
+        callbackUrl = `${redirectUri}${sep}code=${encodeURIComponent(authCode)}`;
       }
-      res.writeHead(302, { 'Location': location });
-      res.end();
+      // v20b (DES-095): return 200 HTML success page instead of 302 redirect.
+      // Page auto-forwards via meta-refresh; also shows a copyable URL for headless use.
+      const metaUrl = callbackUrl.replace(/&/g, '&amp;');
+      const html = `<!DOCTYPE html><html lang="en"><head>\n<meta charset="utf-8">\n<meta http-equiv="refresh" content="0;url=${metaUrl}">\n<title>Authorization Complete</title>\n</head><body>\n<p>Authorization complete. Redirecting&#8230;</p>\n<p id="callback-url">${callbackUrl}</p>\n<button onclick="navigator.clipboard&&navigator.clipboard.writeText(document.getElementById('callback-url').textContent)">Copy URL</button>\n<script>try{window.location.replace(document.getElementById('callback-url').textContent)}catch(e){}</script>\n</body></html>`;
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
     },
 
     async tokenExchange(req, res) {
@@ -276,6 +284,35 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
         return;
       }
       const grantType = params.get('grant_type') ?? '';
+
+      // v20a (DES-095): grant_type=refresh_token branch (no PKCE, rotating single-use).
+      if (grantType === 'refresh_token') {
+        const refreshToken = params.get('refresh_token') ?? '';
+        const clientId = params.get('client_id') ?? null;
+        const row = tokenStore.consumeRefresh(refreshToken);
+        if (!row) {
+          localSendJson(res, 400, { error: 'invalid_grant' });
+          return;
+        }
+        // Decision C: client_id binding — enforce if stored, skip if null.
+        if (row.clientId !== null && row.clientId !== clientId) {
+          localSendJson(res, 400, { error: 'invalid_grant' });
+          return;
+        }
+        const bearerTtlMs = 7 * 24 * 3600_000;
+        const { token: newBearer, expiresAt } = tokenStore.issue(row.principal, bearerTtlMs);
+        const expiresIn = Math.floor((expiresAt - Date.now()) / 1000);
+        const { token: newRefresh } = tokenStore.issueRefresh(row.principal, row.scope, row.clientId, REFRESH_TTL_MS);
+        localSendJson(res, 200, {
+          access_token: newBearer,
+          token_type: 'Bearer',
+          expires_in: expiresIn,
+          scope: row.scope ?? '',
+          refresh_token: newRefresh,
+        });
+        return;
+      }
+
       if (grantType !== 'authorization_code') {
         localSendJson(res, 400, { error: 'unsupported_grant_type' });
         return;
@@ -283,6 +320,7 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
       const code = params.get('code') ?? '';
       const codeVerifier = params.get('code_verifier') ?? '';
       const redirectUri = params.get('redirect_uri') ?? '';
+      const clientId = params.get('client_id') ?? null;
       // Consume auth code (single-use, atomic — TokenStore.consumeAuthCode)
       const codeData = tokenStore.consumeAuthCode(code);
       if (!codeData) {
@@ -301,14 +339,22 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
         return;
       }
       // Issue bearer token (weeks-scale TTL per DES-095)
-      const ttlMs = 7 * 24 * 3600_000; // 1 week
-      const { token, expiresAt } = tokenStore.issue(codeData.principal, ttlMs);
+      const bearerTtlMs = 7 * 24 * 3600_000; // 1 week
+      const { token, expiresAt } = tokenStore.issue(codeData.principal, bearerTtlMs);
       const expiresIn = Math.floor((expiresAt - Date.now()) / 1000);
-      localSendJson(res, 200, {
+      // v20a: scope ALWAYS echoed (stored null → ''); refresh_token issued iff offline_access granted.
+      const scope = codeData.scope ?? '';
+      const responseBody: Record<string, unknown> = {
         access_token: token,
         token_type: 'Bearer',
         expires_in: expiresIn,
-      });
+        scope,
+      };
+      if (scope.split(' ').includes('offline_access')) {
+        const { token: refreshToken } = tokenStore.issueRefresh(codeData.principal, codeData.scope, clientId, REFRESH_TTL_MS);
+        responseBody.refresh_token = refreshToken;
+      }
+      localSendJson(res, 200, responseBody);
     },
 
     async register(req, res) {
@@ -346,7 +392,7 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
         client_id: clientId,
         client_id_issued_at: clientIdIssuedAt,
         redirect_uris: redirectUris.map(String),
-        grant_types: ['authorization_code'],
+        grant_types: ['authorization_code', 'refresh_token'],
         response_types: ['code'],
         token_endpoint_auth_method: 'none',
       });

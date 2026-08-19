@@ -275,6 +275,31 @@ function rawHttpGet(url: string): Promise<{ status: number; location: string | u
   });
 }
 
+/** GET via node:http without following redirects — reads full body (for v20b HTML callback page). */
+function rawHttpGetFull(url: string): Promise<{ status: number; location: string | undefined; contentType: string | undefined; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => { body += chunk; });
+      const ct = Array.isArray(res.headers['content-type']) ? res.headers['content-type'][0] : res.headers['content-type'];
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, location: res.headers.location, contentType: ct, body }));
+    });
+    req.on('error', reject);
+  });
+}
+
+/**
+ * Parse the raw redirect URL from the v20b callback success page.
+ * The element with id="callback-url" contains the RAW un-escaped URL (DES-095 v20b).
+ * Pre-impl: the callback returns a 302 with no HTML body → this throws.
+ */
+function extractCallbackUrlFromPage(html: string): URL {
+  const match = html.match(/id="callback-url"[^>]*>([^<]+)</);
+  if (!match) throw new Error(`id="callback-url" element not found in callback HTML. First 200 chars: ${html.slice(0, 200)}`);
+  return new URL(match[1].trim());
+}
+
 /** Count rows in a SQLite table via a fresh DB handle (closed immediately after). */
 function countRows(dbPath: string, table: string): number {
   const db = new Database(dbPath);
@@ -552,7 +577,9 @@ describe('v17 DCR: POST /register happy path + validation (DES-095 v17, DES-093 
     expect(body.client_id_issued_at).toBeGreaterThan(1e9);
     expect(body.client_id_issued_at).toBeLessThan(1e10);
     expect(body.redirect_uris).toEqual(['http://127.0.0.1:33333/cb']);
-    expect(body.grant_types).toEqual(['authorization_code']);
+    // v20: grant_types clamp widened to include refresh_token (DES-095 v20 Decision B + v20a)
+    // Pre-impl: ['authorization_code'] → toEqual(['authorization_code','refresh_token']) FAILS
+    expect(body.grant_types).toEqual(['authorization_code', 'refresh_token']);
     expect(body.response_types).toEqual(['code']);
     expect(body.token_endpoint_auth_method).toBe('none');
     // MUST NOT include client_secret (public PKCE client — DES-095 v17)
@@ -574,7 +601,9 @@ describe('v17 DCR: POST /register happy path + validation (DES-095 v17, DES-093 
     // Pre-fix: 404; Post-fix: 201 (NOT 400)
     expect(res.status).toBe(201);
     const body = await res.json() as { grant_types?: string[] };
-    expect(body.grant_types).toEqual(['authorization_code']); // clamped, not echoed
+    // v20: clamp now includes refresh_token (DES-095 v20 Decision B widened)
+    // Pre-impl: ['authorization_code'] → toEqual(['authorization_code','refresh_token']) FAILS
+    expect(body.grant_types).toEqual(['authorization_code', 'refresh_token']);
   });
 
   // Case 14a: non-loopback redirect_uri → 400 invalid_redirect_uri
@@ -816,16 +845,15 @@ describe('v18: /oauth/google/callback uses injected googleTokenUrl — case 20 (
     fakeV18TokenNonce = nonce; // so fake token server echoes the correct nonce
 
     // Step 2: GET /oauth/google/callback — engine exchanges code at googleTokenUrl
-    const cbResp = await rawHttpGet(
+    // v20b: callback now returns 200 HTML (not 302); parse engine code from id="callback-url"
+    const cbResp = await rawHttpGetFull(
       `http://127.0.0.1:${serverV18.port}/oauth/google/callback?` +
         new URLSearchParams({ state, code: 'fake-case20-google-code' })
     );
-    // Pre-impl: engine uses googleBase fallback ('http://127.0.0.1:59990', dead)
-    //   → fetch throws ECONNREFUSED → 502 google_token_error → FAIL
-    // Post-impl: engine uses googleTokenUrl → fake token server → signed id_token
-    //   → verifyIdToken → mintAuthCode → 302 to redirectUri?code=ENGINE_CODE → PASS
-    expect(cbResp.status).toBe(302);
-    const cbUrl = new URL(cbResp.location!);
+    // Pre-impl (v19): engine returns 302 → status 302 ≠ 200 → FAIL (right RED reason: v20b not impl)
+    // Post-v20b: engine returns 200 HTML with id="callback-url"
+    expect(cbResp.status).toBe(200);
+    const cbUrl = extractCallbackUrlFromPage(cbResp.body);
     expect((cbUrl.searchParams.get('code') ?? '').length).toBeGreaterThan(0);
   }, 15_000);
 });
@@ -867,7 +895,10 @@ describe('v19: client state round-trip + RFC 9207 iss — cases 21-22 (DES-093/0
    * Run the full /authorize → /oauth/google/callback flow using serverV18.
    * Returns { engineState, clientLocation }.
    *   engineState: the engine's own Google-leg state (oauth_state PK).
-   *   clientLocation: the final client redirect URL (302 Location from /oauth/google/callback).
+   *   clientLocation: the final client callback URL (v20b: parsed from 200 HTML id="callback-url").
+   *
+   * v20b: callback returns 200 HTML (not 302); `clientLocation` is parsed from the page.
+   * Pre-impl: callback returns 302 → expect(status).toBe(200) FAILS (right RED reason).
    */
   async function runFlow(opts: { clientState?: string; redirectPort?: number } = {}): Promise<{
     engineState: string;
@@ -889,12 +920,14 @@ describe('v19: client state round-trip + RFC 9207 iss — cases 21-22 (DES-093/0
     const nonce = googleLocUrl.searchParams.get('nonce') ?? '';
     expect(engineState.length).toBeGreaterThan(0);
     fakeV18TokenNonce = nonce; // set before callback so fake token server echoes correct nonce
-    const cbResp = await rawHttpGet(
+    // v20b: callback returns 200 HTML with id="callback-url" (was 302)
+    const cbResp = await rawHttpGetFull(
       `http://127.0.0.1:${serverV18.port}/oauth/google/callback?` +
         new URLSearchParams({ state: engineState, code: 'fake-case21-google-code' })
     );
-    expect(cbResp.status).toBe(302);
-    return { engineState, clientLocation: new URL(cbResp.location!) };
+    // Pre-impl: status 302 → FAIL (right RED reason: v20b not implemented)
+    expect(cbResp.status).toBe(200);
+    return { engineState, clientLocation: extractCallbackUrlFromPage(cbResp.body) };
   }
 
   it('case 21: /authorize with client state → final redirect has state=CLIENT_STATE_ABC123 AND iss=metadata.issuer', async () => {
@@ -916,4 +949,248 @@ describe('v19: client state round-trip + RFC 9207 iss — cases 21-22 (DES-093/0
     // Pre-impl: iss absent → null ≠ expectedIssuer → FAIL (right reason)
     expect(clientLocation.searchParams.get('iss')).toBe(expectedIssuer);
   }, 15_000);
+});
+
+// ── v20: refresh tokens + callback success page — cases 23-28 (DES-092/093/095 v20, IT-078) ──
+//
+// RED reasons:
+//   Cases 23-28 all call runV20CallbackFlow which expects status 200 (HTML) from the callback.
+//   Pre-impl (v19 code): callback returns 302 → expect(status).toBe(200) FAILS.
+//   This is the right RED reason for v20b (callback page not yet implemented).
+//
+//   Additionally, cases 24-28 assert refresh-token grant behavior (v20a):
+//   - POST /token does not return scope or refresh_token yet → FAIL
+//   - grant_type=refresh_token is unsupported_grant_type pre-impl → FAIL
+//
+// Mock policy: reuse serverV18 (real createServer + real SQLite TokenStore + real fake Google).
+//   No SUT boundary mocking.
+//
+// PKCE pair for v20 integration tests (computed at test-load time, deterministic):
+const V20_CODE_VERIFIER = 'it078v20-integration-pkce-code-verifier';
+const V20_CODE_CHALLENGE = createHash('sha256').update(V20_CODE_VERIFIER).digest('base64url');
+
+/**
+ * Run /authorize + /oauth/google/callback for v20 using serverV18 fixture.
+ * v20b: callback returns 200 HTML; parse engine-auth-code from id="callback-url".
+ * Pre-impl: callback returns 302 → expect(status).toBe(200) throws/fails.
+ * opts.scope is forwarded to /authorize; opts.redirectPort defaults to 19990.
+ */
+async function runV20CallbackFlow(opts: { scope?: string; redirectPort?: number } = {}): Promise<URL> {
+  const port = opts.redirectPort ?? 19990;
+  const p = new URLSearchParams({
+    response_type: 'code',
+    client_id: 'it078v18-client-id',
+    redirect_uri: `http://127.0.0.1:${port}/cb`,
+    code_challenge: V20_CODE_CHALLENGE,
+    code_challenge_method: 'S256',
+  });
+  if (opts.scope) p.set('scope', opts.scope);
+  const authResp = await rawHttpGet(`http://127.0.0.1:${serverV18.port}/authorize?${p}`);
+  expect(authResp.status).toBe(302);
+  const googleLocUrl = new URL(authResp.location!);
+  const engineState = googleLocUrl.searchParams.get('state') ?? '';
+  const nonce = googleLocUrl.searchParams.get('nonce') ?? '';
+  fakeV18TokenNonce = nonce;
+  const cbResp = await rawHttpGetFull(
+    `http://127.0.0.1:${serverV18.port}/oauth/google/callback?` +
+      new URLSearchParams({ state: engineState, code: `fake-v20-code-p${port}` })
+  );
+  // Pre-impl: 302 → expect 200 FAILS (right RED reason: v20b not implemented)
+  expect(cbResp.status).toBe(200);
+  return extractCallbackUrlFromPage(cbResp.body);
+}
+
+describe('v20b: callback success page contract — case 23 (DES-095 v20b, IT-078)', () => {
+  it('case 23: /oauth/google/callback → 200 HTML; id="callback-url" raw; meta has &amp; (v20b)', async () => {
+    // Use a distinct port for each case to avoid oauth_state PK conflicts
+    const port = 19989;
+    const p = new URLSearchParams({
+      response_type: 'code',
+      client_id: 'it078v18-client-id',
+      redirect_uri: `http://127.0.0.1:${port}/cb`,
+      code_challenge: V20_CODE_CHALLENGE,
+      code_challenge_method: 'S256',
+      state: 'v20b-page-contract-state',  // adds a &state= param to the callback URL
+    });
+    const authResp = await rawHttpGet(`http://127.0.0.1:${serverV18.port}/authorize?${p}`);
+    expect(authResp.status).toBe(302);
+    const engineState = new URL(authResp.location!).searchParams.get('state') ?? '';
+    const nonce = new URL(authResp.location!).searchParams.get('nonce') ?? '';
+    fakeV18TokenNonce = nonce;
+    const cbResp = await rawHttpGetFull(
+      `http://127.0.0.1:${serverV18.port}/oauth/google/callback?` +
+        new URLSearchParams({ state: engineState, code: 'fake-case23-code' })
+    );
+    // Pre-impl: status 302 → FAIL (right RED reason: v20b callback page not implemented)
+    expect(cbResp.status).toBe(200);
+    // Pre-impl: content-type not text/html → FAIL
+    expect(cbResp.contentType).toMatch(/text\/html/);
+    // Pre-impl: no id="callback-url" element → FAIL
+    expect(cbResp.body).toContain('id="callback-url"');
+    // The callback URL has multiple query params (&code=…&state=…&iss=…), so
+    // the meta-refresh attribute must HTML-escape & as &amp; (attribute context).
+    // The id="callback-url" text must be the RAW un-escaped URL (DES-095 v20b).
+    const callbackUrl = extractCallbackUrlFromPage(cbResp.body);
+    expect(callbackUrl.searchParams.get('code')).not.toBeNull();
+    // meta-refresh: url= must contain &amp; because the URL has multi-param &-joins
+    const metaMatch = cbResp.body.match(/content="[^"]*0;url=([^"]+)"/i);
+    expect(metaMatch).not.toBeNull();
+    expect(metaMatch![1]).toContain('&amp;');
+    // Raw text anchor must NOT contain &amp; (it's the un-escaped URL for copy/paste)
+    expect(callbackUrl.href).not.toContain('&amp;');
+  }, 15_000);
+});
+
+describe('v20a: refresh tokens — cases 24-28 (DES-093/DES-095 v20a, IT-078)', () => {
+  it('case 24: /authorize with offline_access scope → /token returns refresh_token + scope + expires_in', async () => {
+    const callbackUrl = await runV20CallbackFlow({ scope: 'openid email offline_access', redirectPort: 19988 });
+    const engineCode = callbackUrl.searchParams.get('code') ?? '';
+    expect(engineCode.length).toBeGreaterThan(0);
+
+    const tokenResp = await fetch(`http://127.0.0.1:${serverV18.port}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: engineCode,
+        code_verifier: V20_CODE_VERIFIER,
+        redirect_uri: 'http://127.0.0.1:19988/cb',
+      }),
+    });
+    expect(tokenResp.status).toBe(200);
+    const body = await tokenResp.json() as { access_token?: string; token_type?: string; expires_in?: number; scope?: string; refresh_token?: string };
+    expect(body.token_type).toBe('Bearer');
+    expect(typeof body.access_token).toBe('string');
+    // Pre-impl: expires_in present (v15 shipped it); no assertion fails here
+    expect(typeof body.expires_in).toBe('number');
+    // Pre-impl: scope key absent → FAIL
+    expect(body).toHaveProperty('scope');
+    expect(body.scope).toBe('openid email offline_access');
+    // Pre-impl: refresh_token absent → FAIL (v20a not implemented)
+    expect(body).toHaveProperty('refresh_token');
+    expect(typeof body.refresh_token).toBe('string');
+    expect((body.refresh_token ?? '').length).toBeGreaterThan(0);
+  }, 20_000);
+
+  it('case 25: grant_type=refresh_token → rotated access_token + DIFFERENT refresh_token (v20a)', async () => {
+    // Get a refresh token via the authorization_code flow first
+    const callbackUrl = await runV20CallbackFlow({ scope: 'openid email offline_access', redirectPort: 19987 });
+    const engineCode = callbackUrl.searchParams.get('code') ?? '';
+    const firstTokenResp = await fetch(`http://127.0.0.1:${serverV18.port}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: engineCode,
+        code_verifier: V20_CODE_VERIFIER,
+        redirect_uri: 'http://127.0.0.1:19987/cb',
+      }),
+    });
+    // Pre-impl: runV20CallbackFlow throws/fails at status 200 assertion → this never runs → RED
+    expect(firstTokenResp.status).toBe(200);
+    const firstBody = await firstTokenResp.json() as { refresh_token?: string };
+    const firstRefreshToken = firstBody.refresh_token ?? '';
+
+    // Use the refresh token (rotation)
+    const refreshResp = await fetch(`http://127.0.0.1:${serverV18.port}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: firstRefreshToken,
+      }),
+    });
+    // Pre-impl: grant_type=refresh_token → unsupported_grant_type → 400 → FAIL
+    expect(refreshResp.status).toBe(200);
+    const refreshBody = await refreshResp.json() as { access_token?: string; refresh_token?: string; expires_in?: number; scope?: string; token_type?: string };
+    expect(refreshBody.token_type).toBe('Bearer');
+    expect(typeof refreshBody.access_token).toBe('string');
+    expect(typeof refreshBody.expires_in).toBe('number');
+    expect(refreshBody).toHaveProperty('scope');
+    // Rotation: new refresh token must differ from the consumed one
+    expect(refreshBody).toHaveProperty('refresh_token');
+    expect(refreshBody.refresh_token).not.toBe(firstRefreshToken);
+  }, 25_000);
+
+  it('case 26: replay consumed refresh_token → 400 invalid_grant (single-use) (v20a)', async () => {
+    const callbackUrl = await runV20CallbackFlow({ scope: 'openid email offline_access', redirectPort: 19986 });
+    const engineCode = callbackUrl.searchParams.get('code') ?? '';
+    const firstTokenResp = await fetch(`http://127.0.0.1:${serverV18.port}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: engineCode,
+        code_verifier: V20_CODE_VERIFIER,
+        redirect_uri: 'http://127.0.0.1:19986/cb',
+      }),
+    });
+    expect(firstTokenResp.status).toBe(200);
+    const { refresh_token: rt } = await firstTokenResp.json() as { refresh_token?: string };
+    expect(typeof rt).toBe('string');
+
+    // First use — consumes the refresh token
+    await fetch(`http://127.0.0.1:${serverV18.port}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: rt ?? '' }),
+    });
+
+    // Replay the consumed token → invalid_grant
+    const replayResp = await fetch(`http://127.0.0.1:${serverV18.port}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: rt ?? '' }),
+    });
+    // Pre-impl: grant_type=refresh_token → unsupported_grant_type → 400; but error differs → FAIL
+    expect(replayResp.status).toBe(400);
+    const errBody = await replayResp.json() as { error?: string };
+    expect(errBody.error).toBe('invalid_grant');
+  }, 25_000);
+
+  it('case 27: /authorize WITHOUT offline_access → NO refresh_token; scope="" echoed; expires_in present (v20a)', async () => {
+    const callbackUrl = await runV20CallbackFlow({ scope: undefined, redirectPort: 19985 });
+    const engineCode = callbackUrl.searchParams.get('code') ?? '';
+    const tokenResp = await fetch(`http://127.0.0.1:${serverV18.port}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: engineCode,
+        code_verifier: V20_CODE_VERIFIER,
+        redirect_uri: 'http://127.0.0.1:19985/cb',
+      }),
+    });
+    expect(tokenResp.status).toBe(200);
+    const body = await tokenResp.json() as { access_token?: string; expires_in?: number; scope?: string; refresh_token?: string };
+    expect(typeof body.access_token).toBe('string');
+    expect(typeof body.expires_in).toBe('number');
+    // Pre-impl: scope key absent → FAIL
+    expect(body).toHaveProperty('scope');
+    expect(body.scope).toBe('');  // no scope requested → empty string echoed (DES-095 v20a)
+    // No offline_access → no refresh_token key (MUST be absent, not just empty)
+    expect(body).not.toHaveProperty('refresh_token');
+  }, 20_000);
+
+  it('case 28: scope split-membership — offline_accessx ≠ offline_access → NO refresh_token (v20a)', async () => {
+    // Guards against substring match (e.g. 'offline_access'.includes('offline_access') is true
+    // but 'offline_accessx'.split(' ').includes('offline_access') is false — DES-095 v20a Decision)
+    const callbackUrl = await runV20CallbackFlow({ scope: 'openid offline_accessx', redirectPort: 19984 });
+    const engineCode = callbackUrl.searchParams.get('code') ?? '';
+    const tokenResp = await fetch(`http://127.0.0.1:${serverV18.port}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: engineCode,
+        code_verifier: V20_CODE_VERIFIER,
+        redirect_uri: 'http://127.0.0.1:19984/cb',
+      }),
+    });
+    expect(tokenResp.status).toBe(200);
+    const body = await tokenResp.json() as { scope?: string; refresh_token?: string };
+    // offline_accessx is NOT offline_access → no refresh_token
+    expect(body).not.toHaveProperty('refresh_token');
+    expect(body.scope).toBe('openid offline_accessx');
+  }, 20_000);
 });

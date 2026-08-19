@@ -4313,10 +4313,10 @@ npx vitest run   →   Test Files  233 passed (233) / Tests  1316 passed (1316)
 
 ### VAL items
 
-### VAL-095 — real-run acceptance for REQ-012 (engine-as-own-AS OAuth discovery via MCP SDK + PKCE flow + auth-disabled backward-compat; v16: loopback-only redirect_uri + gcExpired GC; v17: RFC 7591 DCR; v18: 3 distinct Google OAuth endpoints; v19: client-state round-trip + RFC 9207 iss)
+### VAL-095 — real-run acceptance for REQ-012 (engine-as-own-AS OAuth discovery via MCP SDK + PKCE flow + auth-disabled backward-compat; v16: loopback-only redirect_uri + gcExpired GC; v17: RFC 7591 DCR; v18: 3 distinct Google OAuth endpoints; v19: client-state round-trip + RFC 9207 iss; v20: refresh tokens + callback success page)
 
 - **status:** green
-- **traces:** REQ-012, DES-092, DES-093, DES-094, DES-095, DES-100, TASK-085, TASK-086, TASK-090, TASK-091, TASK-092, TASK-093, ARCH-059
+- **traces:** REQ-012, DES-092, DES-093, DES-094, DES-095, DES-100, TASK-085, TASK-086, TASK-090, TASK-091, TASK-092, TASK-093, TASK-094, TASK-095, ARCH-059
 - **tier:** acceptance
 - **real:** true
 - **result:** pass
@@ -4471,7 +4471,135 @@ npx vitest run   →   Test Files  233 passed (233) / Tests  1316 passed (1316)
   ```
   Production workflow_run → workflow_status=completed on v19 service: PASS.
 
-- **iter:** v19
+  **(v20 refresh tokens + callback success page — new for this round)**
+
+  Boot command per DEPLOY.md §0:
+  ```
+  RWE_CONFIG_PATH=/tmp/.../rwe-v20-val-config.json node node_modules/tsx/dist/cli.mjs src/main.ts
+  # → [remote-workflow-engine] listening on http://127.0.0.1:19200/mcp (workRoot=/tmp/rwe-v20-workroot)
+  # → [remote-workflow-engine] ready
+  ```
+  Scratch config: `auth.enabled:true`, `auth.googleClientId:"v20val-client-id"`, `auth.googleAuthorizeUrl:"http://127.0.0.1:59200/o/oauth2/v2/auth"`, `auth.googleTokenUrl:"http://127.0.0.1:59200/token"`, `auth.googleJwksUrl:"http://127.0.0.1:59200/oauth2/v3/certs"` (§1 設定總表 keys, no undocumented keys). Fake Google RS256 server on port 59200 served `/oauth2/v3/certs` JWKS + nonce capture. `gateway:direct-fetch` (no LiteLLM subprocess for auth-only validation). Full test suite: **1369/1369 pass (233 files)** (`npm test`, 2026-08-19).
+
+  **CHECK 1 — AS metadata v20 fields:**
+  ```
+  curl -sf http://127.0.0.1:19200/.well-known/oauth-authorization-server
+  # → {
+  #   "grant_types_supported": ["authorization_code", "refresh_token"],
+  #   "scopes_supported": ["openid", "email", "offline_access"],
+  #   "token_endpoint_auth_methods_supported": ["none"],
+  #   "authorization_response_iss_parameter_supported": true,
+  #   ... (existing fields carry-forward)
+  # }
+  ```
+  PASS: all 4 v20 AS metadata fields present and correct (REQ-012 v20 clause: metadata observables).
+
+  **CHECK 2 — callback success page (200 HTML with id=callback-url):**
+  POST /register → 201 + client_id; GET /authorize → 302 to fake Google (nonce captured); curl to fake Google authorize URL (captures nonce); GET /oauth/google/callback?state=ENGINE_STATE&code=fake-code → **200 HTML** (not 302). Verified:
+  - `id="callback-url"` element present in HTML body
+  - element text = `http://127.0.0.1:9901/callback?code=<engine-code>` (raw `&`-delimited URL, no `&amp;` escaping — copy-paste ready)
+  - `<meta http-equiv="refresh" content="0;url=<HTML-escaped-URL>">` present (meta-refresh uses `&amp;`, correct HTML escaping)
+  PASS: 200 HTML, id=callback-url has raw URL, meta-refresh HTML-escaped (REQ-012 v20b clause: success page UX).
+
+  **CHECK 3 — offline_access flow → refresh_token issued:**
+  ```
+  # GET /authorize?...&scope=openid%20email%20offline_access → 302 to fake Google
+  # GET /oauth/google/callback?state=...&code=... → 200 HTML, id=callback-url code extracted
+  # POST /token grant_type=authorization_code ...
+  # → {"access_token":"...","token_type":"Bearer","expires_in":604800,"scope":"openid email offline_access","refresh_token":"5518f4f4f1b796cb..."}
+  ```
+  PASS: `{access_token, token_type:"Bearer", expires_in:604800, scope:"openid email offline_access", refresh_token}` all present (REQ-012 v20 clause: `expires_in` always present, `scope` echoed, `refresh_token` iff `offline_access`).
+
+  **CHECK 4 — grant_type=refresh_token → rotated access_token + DIFFERENT refresh_token:**
+  ```
+  # POST /token grant_type=refresh_token&refresh_token=5518f4f4f1b796cb...&client_id=...
+  # → {"access_token":"...","token_type":"Bearer","expires_in":...,"scope":"openid email offline_access","refresh_token":"07396f7695fe..."}
+  # old refresh prefix: 5518f4f4f1b7... ≠ new refresh prefix: 07396f7695fe...
+  ```
+  PASS: `{access_token, token_type, expires_in, refresh_token, scope}` all present; `refresh_token` differs from consumed token (rotation — RFC 9700).
+
+  **CHECK 5 — replay consumed refresh_token → 400 invalid_grant:**
+  ```
+  # POST /token grant_type=refresh_token&refresh_token=<same-consumed-token>&client_id=...
+  # → HTTP 400 {"error":"invalid_grant"}
+  ```
+  PASS: consumed refresh_token single-use enforcement (REQ-012 v20 clause: re-using consumed token → `invalid_grant`).
+
+  **CHECK 6 — flow WITHOUT offline_access → NO refresh_token key:**
+  ```
+  # GET /authorize?...&scope=openid%20email (no offline_access)
+  # POST /token → {"access_token":"...","token_type":"Bearer","expires_in":...,"scope":"openid email"}
+  # Keys: ['access_token', 'token_type', 'expires_in', 'scope'] — NO refresh_token key
+  ```
+  PASS: `refresh_token` key absent (not just empty) when `offline_access` not requested (REQ-012 v20 clause: no offline_access → no refresh_token).
+
+  **CHECK 7 — refreshed bearer → /mcp 200:**
+  ```
+  # POST /mcp Authorization: Bearer <new_access_from_refresh>
+  # → HTTP 200 {"result":{"tools":[...]}}
+  ```
+  PASS: bearer obtained via `grant_type=refresh_token` grants `/mcp` access (new access_token is valid).
+
+  **CHECK 8 — across-expiry simulation (engine-side):**
+  ```
+  # Python: UPDATE bearer_tokens SET expires_at = <past_ms> WHERE token_hash = ACCESS3_HASH
+  # → Rows expired: 1
+  # POST /mcp Authorization: Bearer <expired_bearer> → HTTP 401
+  # POST /token grant_type=refresh_token&refresh_token=<NEW_REFRESH>&client_id=... → HTTP 200 new access_token
+  # POST /mcp Authorization: Bearer <new_bearer_from_second_rotation> → HTTP 200, tools returned: 37
+  ```
+  PASS: expired bearer → 401; refresh grant → new bearer → /mcp 200 with 37 tools. Engine-side proof that a client stays connected across access-token expiry without browser re-auth (REQ-012 v20 clause: "a real `@modelcontextprotocol/sdk`/Claude-Code client stays connected across an access-token expiry without a new browser sign-in" — engine-side portion validated; the real Claude Code across-expiry loop joins unreachable-deps carry-forward as before).
+
+  **(v20 test suite confirmation)**
+  ```
+  npm test -- "auth-routes-integration"   # → 37/37 pass (IT-078 incl cases 23-28 v20 refresh token rotation)
+  npm test -- "val-095"                   # → 9/9 pass (all carry-forward cases; v20b callback 200 HTML pattern)
+  npm test -- "val-096"                   # → 5/5 pass
+  npm test -- "val-097"                   # → 8/8 pass
+  npm test                                # → 1369/1369 pass (233 files)
+  ```
+  No SUT-boundary mock (real HTTP, real SQLite, fake Google doubled for Google-network leg only — same policy as v15/v16/v17/v18/v19).
+
+  **(v20 production service — migration + smoke, 2026-08-19)**
+  ```
+  systemctl --user restart rwe.service
+  # Active: active (running)
+  ```
+  PRAGMA migration verification:
+  - `refresh_tokens` table present (5th auth table, new in v20a): CONFIRMED
+  - `auth_codes.scope` column present (new in v20a, idempotent ALTER): CONFIRMED  
+  - `oauth_state.scope` column present (new in v20a, idempotent ALTER): CONFIRMED
+  - `oauth_state.client_state` column still present (v19, carry-forward): CONFIRMED
+  All 5 tables: `['auth_codes', 'bearer_tokens', 'oauth_state', 'refresh_tokens', 'registered_clients']`
+
+  ```
+  curl -X POST http://localhost:8899/mcp ... tools/list → 37 tools
+  curl http://localhost:8899/.well-known/oauth-authorization-server
+  # → grant_types_supported: ['authorization_code', 'refresh_token']
+  # → scopes_supported: ['openid', 'email', 'offline_access']
+  curl http://localhost:8899/authorize → 302 https://accounts.google.com/o/oauth2/v2/auth?... (PASS)
+  /mcp tools/list → 37 tools (PASS)
+  ```
+  Production workflow_run → workflow_status=completed on v20 service: PASS (runId `49b54d57-3340-4c9e-9196-5e057581fc14`).
+
+- **iter:** v20
+
+## v20 Gate 7.5 — unreachable dependencies (carry-forward + v20 note)
+
+**Real Google OAuth consent flow (carry-forward from v15/v16/v17/v18/v19):** requires (b) a real Google account performing interactive browser consent — the only still-absent piece. Items (a) real `googleClientId`/`googleClientSecret` (present in production config) and (c) HTTPS callback reachable by Google (confirmed via production deployment at `remoteworkflow-engine.nicecream.work`) are available. All three distinct real Google OAuth hosts confirmed in v18 and still in service. The ENGINE-SIDE v20 behavior (refresh token issuance, rotation, single-use enforcement, callback success page, across-expiry flow) is FULLY validated via the fake RS256 IdP (IT-078 cases 23-28 + live curl checks 1-8 above). **Remaining unreachable:** interactive browser consent with a real Google account — classified unreachable-dep (same as prior rounds).
+
+**Real Claude Code across-expiry loop (v20 scope note):** The REQ-012 v20 observable "a real `@modelcontextprotocol/sdk`/Claude-Code client stays connected across an access-token expiry without a new browser sign-in" requires a real Claude Code session running against the production server with real Google auth. The ENGINE-SIDE proof (Check 8 above: expired bearer → 401 → refresh grant → new bearer → /mcp 200 with 37 tools) is fully validated. The truly interactive piece — a real Claude Code SDK session transparently using `grant_type=refresh_token` on expiry — remains headless-unreachable. Classified unreachable-dep.
+
+## v20 Gate 7.5 — config-file sync check (§4b)
+
+v20 (refresh tokens + callback success page) adds **no new config keys**. The changes are:
+- **`REFRESH_TTL_MS`** (90 days): a code constant in `src/auth/auth-service.ts`, not operator-configurable (exported for tests, not read from config/env).
+- **New SQLite tables** (`refresh_tokens`) and **new columns** (`oauth_state.scope`, `auth_codes.scope`): internal DB schema, not operator-facing config keys.
+- All migrations are idempotent ALTERs that run on boot without manual intervention (confirmed via PRAGMA check on production DB above).
+
+The `auth` block in `rwe.config.json` is unchanged from v19 (same keys: `enabled`, `googleClientId`, `googleClientSecret`, `googleAuthorizeUrl`, `googleTokenUrl`, `googleJwksUrl`, `googleBase`). `rwe.config.example.json` requires no changes.
+
+**Config round-trip (both directions):** same key set as v19 — no rows added, no rows deleted. **Config round-trip complete (v20, unchanged from v19).**
 
 ### VAL-096 — real-run acceptance for REQ-086 (per-caller principal on protected surfaces; attributed on run record + CAS namespace)
 

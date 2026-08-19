@@ -82,9 +82,28 @@ describe('buildAuthServerMetadata (DES-092)', () => {
     expect(m.response_types_supported).toEqual(['code']);
   });
 
-  it('grant_types_supported is exactly ["authorization_code"]', () => {
+  // v20 (DES-092 v20): grant_types_supported gains refresh_token
+  // Pre-impl: ['authorization_code'] → toEqual(['authorization_code','refresh_token']) FAILS
+  it('grant_types_supported is exactly ["authorization_code","refresh_token"] (v20)', () => {
     const m = buildAuthServerMetadata(CFG);
-    expect(m.grant_types_supported).toEqual(['authorization_code']);
+    expect(m.grant_types_supported).toEqual(['authorization_code', 'refresh_token']);
+  });
+
+  // v20 (DES-092 v20): new fields required by MCP offline_access / RFC 8414
+  // Pre-impl: field absent → undefined → assertion FAILS
+  it('scopes_supported is exactly ["openid","email","offline_access"] (v20)', () => {
+    const m = buildAuthServerMetadata(CFG) as Record<string, unknown>;
+    expect(m['scopes_supported']).toEqual(['openid', 'email', 'offline_access']);
+  });
+
+  it('token_endpoint_auth_methods_supported is exactly ["none"] (v20)', () => {
+    const m = buildAuthServerMetadata(CFG) as Record<string, unknown>;
+    expect(m['token_endpoint_auth_methods_supported']).toEqual(['none']);
+  });
+
+  it('authorization_response_iss_parameter_supported is true (v20)', () => {
+    const m = buildAuthServerMetadata(CFG) as Record<string, unknown>;
+    expect(m['authorization_response_iss_parameter_supported']).toBe(true);
   });
 
   it('endpoints derive from issuer (no trailing slash before path segments)', () => {
