@@ -54,7 +54,8 @@ export class TokenStore {
         nonce TEXT NOT NULL,
         code_challenge TEXT NOT NULL,
         redirect_uri TEXT NOT NULL,
-        expires_at INTEGER NOT NULL
+        expires_at INTEGER NOT NULL,
+        client_state TEXT
       );
       CREATE TABLE IF NOT EXISTS registered_clients (
         client_id TEXT PRIMARY KEY,
@@ -63,6 +64,8 @@ export class TokenStore {
         expires_at INTEGER NOT NULL
       );
     `);
+    // v19 idempotent migration: add client_state column to existing oauth_state tables.
+    try { this._db.exec('ALTER TABLE oauth_state ADD COLUMN client_state TEXT'); } catch { /* already exists */ }
   }
 
   /** Issue a new opaque bearer token.  Returns the RAW token (show once) + expiry timestamp. */
@@ -127,26 +130,29 @@ export class TokenStore {
     nonce: string;
     codeChallenge: string;
     redirectUri: string;
+    /** The CLIENT's OAuth2 state (RFC 6749 §4.1.2) — distinct from `state` (the engine-leg CSRF token). v19. */
+    clientState?: string | null;
   }): void {
     const now = this._clock();
     this._db.prepare(
-      'INSERT OR REPLACE INTO oauth_state (state, nonce, code_challenge, redirect_uri, expires_at) VALUES (?, ?, ?, ?, ?)'
-    ).run(params.state, params.nonce, params.codeChallenge, params.redirectUri, now + 600_000);
+      'INSERT OR REPLACE INTO oauth_state (state, nonce, code_challenge, redirect_uri, expires_at, client_state) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(params.state, params.nonce, params.codeChallenge, params.redirectUri, now + 600_000, params.clientState ?? null);
   }
 
   /** Consume a state blob (single-use).  Returns payload or null. */
   consumeState(
     state: string
-  ): { nonce: string; codeChallenge: string; redirectUri: string } | null {
+  ): { nonce: string; codeChallenge: string; redirectUri: string; clientState: string | null } | null {
     const now = this._clock();
     const row = this._db.transaction(() => {
       const r = this._db.prepare(
-        'SELECT nonce, code_challenge, redirect_uri, expires_at FROM oauth_state WHERE state = ?'
+        'SELECT nonce, code_challenge, redirect_uri, expires_at, client_state FROM oauth_state WHERE state = ?'
       ).get(state) as {
         nonce: string;
         code_challenge: string;
         redirect_uri: string;
         expires_at: number;
+        client_state: string | null;
       } | undefined;
       if (!r) return undefined;
       this._db.prepare('DELETE FROM oauth_state WHERE state = ?').run(state);
@@ -154,7 +160,7 @@ export class TokenStore {
     })();
     if (!row) return null;
     if (row.expires_at <= now) return null;
-    return { nonce: row.nonce, codeChallenge: row.code_challenge, redirectUri: row.redirect_uri };
+    return { nonce: row.nonce, codeChallenge: row.code_challenge, redirectUri: row.redirect_uri, clientState: row.client_state };
   }
 
   /** Mint a new RFC 7591 client_id; persists redirect_uris and returns the issued-at timestamp in seconds. */

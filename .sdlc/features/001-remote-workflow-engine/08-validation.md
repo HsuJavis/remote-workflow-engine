@@ -4313,10 +4313,10 @@ npx vitest run   →   Test Files  233 passed (233) / Tests  1316 passed (1316)
 
 ### VAL items
 
-### VAL-095 — real-run acceptance for REQ-012 (engine-as-own-AS OAuth discovery via MCP SDK + PKCE flow + auth-disabled backward-compat; v16: loopback-only redirect_uri + gcExpired GC; v17: RFC 7591 DCR; v18: 3 distinct Google OAuth endpoints)
+### VAL-095 — real-run acceptance for REQ-012 (engine-as-own-AS OAuth discovery via MCP SDK + PKCE flow + auth-disabled backward-compat; v16: loopback-only redirect_uri + gcExpired GC; v17: RFC 7591 DCR; v18: 3 distinct Google OAuth endpoints; v19: client-state round-trip + RFC 9207 iss)
 
 - **status:** green
-- **traces:** REQ-012, DES-092, DES-093, DES-094, DES-095, DES-100, TASK-085, TASK-086, TASK-090, TASK-091, TASK-092, ARCH-059
+- **traces:** REQ-012, DES-092, DES-093, DES-094, DES-095, DES-100, TASK-085, TASK-086, TASK-090, TASK-091, TASK-092, TASK-093, ARCH-059
 - **tier:** acceptance
 - **real:** true
 - **result:** pass
@@ -4393,7 +4393,85 @@ npx vitest run   →   Test Files  233 passed (233) / Tests  1316 passed (1316)
   **(real Google host verification)** Production service (2026-08-18, port 8899, v18 code, `systemctl --user restart rwe.service`): `GET /authorize` → `302 Location: https://accounts.google.com/o/oauth2/v2/auth?client_id=549639529318-...` (`GOOGLE_AUTHORIZE_URL` confirmed live). Token: `POST https://oauth2.googleapis.com/token` (bogus code) → `{"error":"invalid_client"}` (Google-served 400, not 404 — endpoint exists at `GOOGLE_TOKEN_URL`). JWKS: `GET https://www.googleapis.com/oauth2/v3/certs` → HTTP 200, 4 RSA keys (`GOOGLE_JWKS_URL` confirmed live). All three distinct real Google hosts confirmed serving the expected paths.
 
   **(production service)** `systemctl --user restart rwe.service` (2026-08-18): 37 tools; `GET /.well-known/oauth-authorization-server` → `authorization_endpoint: https://remoteworkflow-engine.nicecream.work/authorize`, `token_endpoint: https://remoteworkflow-engine.nicecream.work/token`, `registration_endpoint: https://remoteworkflow-engine.nicecream.work/register`; smoke run `workflow_run({script:'return {v18_smoke:true}'})` → `status:completed`.
-- **iter:** v18
+
+  **(v19 client-state round-trip + RFC 9207 iss — new for this round)**
+
+  **(IT-078 cases 21+22, DES-093/095 v19)** `npm test -- "auth-routes-integration"` (2026-08-19, working-tree v19): **31/31 pass** (29 pre-existing + 2 new):
+  - (case 21) `/authorize?...&state=CLIENT_STATE_ABC123` drives the full flow (authorize→fake-google-callback→token-exchange); final `/oauth/google/callback` 302 `Location` carries `state=CLIENT_STATE_ABC123` (exact echo) AND `iss=<engineIssuer>` (RFC 9207); regression guard: engine-leg state (oauth_state PK) ≠ `CLIENT_STATE_ABC123` (structurally separate columns);
+  - (case 22) same flow with no `state` param → final redirect has NO `state` param AND has `iss=<engineIssuer>` (no spurious echo, mandatory iss always present).
+  Tests use the same real `createServer()` + real SQLite as the rest of IT-078; `serverV18` fixture (auth-enabled, fake RS256 IdP injected via `googleTokenUrl`/`googleJwksUrl`/`jwksFetch`). No SUT-boundary mock.
+
+  **(val-095 acceptance)** `npm test -- "val-095"` (2026-08-19, working-tree v19): **9/9 pass** (all 9 existing cases carry-forward green; no new val-095 cases added in v19 — the client-state behavior is covered by IT-078 cases 21–22 above and the live curl below).
+
+  **(full suite)** `npm test` (2026-08-19, working-tree v19): **233 files / 1350 tests pass** (1348 pre-existing + 2 new IT-078 cases 21–22). No SUT-boundary mock. `npx tsc --noEmit` clean.
+
+  **(live server — boot from documented steps, v19 client-state round-trip)** Boot command per DEPLOY.md §0:
+  ```
+  RWE_CONFIG_PATH=/tmp/.../rwe-v19-val-config.json node node_modules/tsx/dist/cli.mjs src/main.ts
+  # → [remote-workflow-engine] listening on http://127.0.0.1:19195/mcp (workRoot=.../rwe-v19-workroot)
+  # → [remote-workflow-engine] ready
+  ```
+  Scratch config: `auth.enabled:true`, `auth.googleClientId:"val19-fake-client-id"`, `auth.googleAuthorizeUrl:"http://127.0.0.1:59195/o/oauth2/v2/auth"`, `auth.googleTokenUrl:"http://127.0.0.1:59195/token"`, `auth.googleJwksUrl:"http://127.0.0.1:59195/oauth2/v3/certs"` (§1 設定總表 keys, no undocumented keys). Fake Google RS256 server on port 59195 served `/oauth2/v3/certs` JWKS + `/o/oauth2/v2/auth` (nonce capture) + `/token` (signed id_token).
+
+  **Case 21 — client state round-trip (2026-08-19):**
+  ```
+  # Step A: POST /register → 201 + client_id
+  curl -X POST http://127.0.0.1:19195/register -H 'Content-Type: application/json' \
+    -d '{"redirect_uris":["http://127.0.0.1:9900/callback"],...}'
+  # → {"client_id":"8933a0c3dcb4f3818618394c5eac94aa36d6787bdabe659276b99aab498ad754",...}  HTTP 201
+
+  # Step B: GET /authorize with state=CLIENT_STATE_ABC123_V19VAL → 302 to fake Google
+  curl -sI "http://127.0.0.1:19195/authorize?...&state=CLIENT_STATE_ABC123_V19VAL"
+  # → 302 Location: http://127.0.0.1:59195/o/oauth2/v2/auth?...&state=4ed4b57a3e7e3f31ae0ff87acbfec794&nonce=0b277bd6d12074fdb2c67b88311a61ab
+  # Note: engine state (4ed4b57a...) ≠ CLIENT_STATE (structurally separate)
+
+  # Step C: GET /oauth/google/callback?state=<engine_state>&code=fake → engine calls fake /token → 302 to client
+  curl -sI "http://127.0.0.1:19195/oauth/google/callback?state=4ed4b57a3e7e3f31ae0ff87acbfec794&code=fake-google-code-v19case21"
+  # → 302 Location: http://127.0.0.1:9900/callback?code=c324ceca...&state=CLIENT_STATE_ABC123_V19VAL&iss=http%3A%2F%2F127.0.0.1%3A19195
+  ```
+  Result: `state=CLIENT_STATE_ABC123_V19VAL` (exact echo — PASS); `iss=http://127.0.0.1:19195` (RFC 9207 — PASS).
+
+  **Case 22 — no client state → no echo, iss always present (2026-08-19):**
+  ```
+  # GET /authorize without state param → 302 to fake Google
+  # GET /oauth/google/callback?state=<engine_state>&code=...
+  # → 302 Location: http://127.0.0.1:9900/callback?code=20caec79...&iss=http%3A%2F%2F127.0.0.1%3A19195
+  # Note: NO state= param in final redirect
+  ```
+  Result: no `state` param (PASS); `iss=http://127.0.0.1:19195` (PASS).
+
+  **Full token exchange + authenticated MCP (2026-08-19):**
+  ```
+  # POST /token (proper PKCE verifier for a fresh flow)
+  # → {"access_token":"1e9a50882e9e420b3b...","token_type":"Bearer","expires_in":604799}
+  # POST /mcp with Authorization: Bearer 1e9a50882e9e420b3b...
+  # → {"result":{"tools":[...37 tools...],...}}
+  ```
+  Full register→authorize→callback→token→bearer→authenticated-MCP end-to-end: PASS (37 tools returned under a valid bearer obtained via the v19 client-state-aware flow).
+
+  **(v19 production service — migration + smoke, 2026-08-19)**
+  ```
+  systemctl --user restart rwe.service
+  # Active: active (running)
+  curl -X POST http://localhost:8899/mcp ... tools/list → 37 tools
+  curl http://localhost:8899/.well-known/oauth-authorization-server
+  # → registration_endpoint: https://remoteworkflow-engine.nicecream.work/register
+  # → authorization_endpoint: https://remoteworkflow-engine.nicecream.work/authorize
+  ```
+  **v19 idempotent migration verified:** production `auth-tokens.db` `oauth_state` table now has `client_state` column (confirmed via `PRAGMA table_info(oauth_state)` → `state, nonce, code_challenge, redirect_uri, expires_at, client_state`). The idempotent `ALTER TABLE oauth_state ADD COLUMN client_state TEXT` in `TokenStore` constructor ran on boot without error (pre-existing DB with no `client_state` column accepted the migration). Production `/authorize` still redirects to `https://accounts.google.com/o/oauth2/v2/auth?...` (v18 Google-host evidence carries forward).
+
+  **v19 production workflow smoke:** using correct MCP tools/call envelope:
+  ```
+  POST http://localhost:8899/mcp
+  {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_run","arguments":{"script":"return {v19_smoke:true}"}}}
+  # → {"runId":"186d23a2-9337-4155-a978-5aa7aa76721f","status":"running",...}
+  POST http://localhost:8899/mcp
+  {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"workflow_status","arguments":{"runId":"186d23a2-9337-4155-a978-5aa7aa76721f"}}}
+  # → {"runId":"186d23a2-9337-4155-a978-5aa7aa76721f","status":"completed",...,"terminalAt":"2026-08-19T08:39:42.170Z"}
+  ```
+  Production workflow_run → workflow_status=completed on v19 service: PASS.
+
+- **iter:** v19
 
 ### VAL-096 — real-run acceptance for REQ-086 (per-caller principal on protected surfaces; attributed on run record + CAS namespace)
 
@@ -4522,3 +4600,15 @@ v18 (3 distinct Google OAuth endpoints) adds **three new optional config keys** 
 **`rwe.config.example.json`: NO changes** — the three new keys default to the correct production Google endpoints; typical deployments never need to override them. The deprecated `auth.googleBase` was never added to the example. JSON cannot carry deprecation comments. `rwe.config.example.json` remains correct and unchanged from v17.
 
 **Cross-check (both directions):** all keys the code reads (`bind`, `port`, `workRoot`, `timeoutMs`, `retries`, `maxWorkflowDepth`, `maxWorkflowDescendants`, `maxConcurrentRuns`, `workspaceTtlMs`, `gateway`, `agentDefinitionsDir`, `seedRefAllowlist`, `maxBlobBytes`, `defaultAllowedTools`, `aliases`, `allowedHosts`, `auth.enabled`, `auth.googleClientId`, `auth.googleClientSecret`, `auth.googleAuthorizeUrl`, `auth.googleTokenUrl`, `auth.googleJwksUrl`, `auth.googleBase`) have a row in DEPLOY.md §1 設定總表, and no rows in that table reference keys the current code no longer reads. **Config round-trip complete (v18).**
+
+## v19 Gate 7.5 — unreachable dependencies (carry-forward + v19 note)
+
+**Real Google OAuth consent flow (carry-forward from v15/v16/v17/v18):** requires (b) a real Google account performing interactive browser consent — the only still-absent piece. Items (a) real `googleClientId`/`googleClientSecret` (present in production config) and (c) HTTPS callback reachable by Google (confirmed via production deployment at `remoteworkflow-engine.nicecream.work`) are available. All three distinct real Google OAuth hosts confirmed live in v18 and still in service (production `/authorize` → `https://accounts.google.com/o/oauth2/v2/auth?...` confirmed in this round). **The ENGINE-SIDE v19 behavior** (client-state echo + iss) is FULLY validated via the fake RS256 IdP (IT-078 cases 21–22 + live curl two-case loop + full token exchange). **Remaining unreachable:** interactive browser consent with a real Google account carrying a `state` param through the full Google consent UI — the engine-side capture/echo is proven, only Google's UI round-trip is absent (classified unreachable-dep, same as prior rounds).
+
+**"OAuth state mismatch" connect failure (v19 closed engine-side):** The specific failure ("OAuth state mismatch - possible CSRF attack" from Claude Code's MCP OAuth) is now closed engine-side: the engine captures client `state`, persists it in `oauth_state.client_state`, and echoes it at the final client redirect. The truly interactive piece — a real Claude Code CLI driving the full browser-consent flow with Google — remains headless-unreachable (requires a real Google account + browser UI). Classified unreachable-dep (same as DCR browser flow from v17).
+
+## v19 Gate 7.5 — config-file sync check (§4b)
+
+v19 (client-state round-trip) adds **no new config keys**. The change is entirely internal to the `oauth_state` SQLite schema (new nullable column `client_state`) and the `/authorize` → `/oauth/google/callback` flow logic. The `auth` block in `rwe.config.json` is unchanged from v18 (same keys: `enabled`, `googleClientId`, `googleClientSecret`, `googleAuthorizeUrl`, `googleTokenUrl`, `googleJwksUrl`, `googleBase`). `rwe.config.example.json` requires no changes.
+
+**Config round-trip (both directions):** same key set as v18 — no rows added, no rows deleted. The `oauth_state.client_state` column is an internal DB migration detail, not an operator-facing config key. **Config round-trip complete (v19, unchanged from v18).**

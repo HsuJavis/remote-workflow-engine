@@ -10,7 +10,7 @@
 原封不動地跑在一台伺服器上，透過 **MCP Streamable HTTP** 介面遠端送出、追蹤、暫停/續跑/停止，並
 把每個 `agent()` 呼叫真正路由到你設定的 LLM 供應商（Anthropic / OpenAI / Gemini / 本機 Ollama）。
 
-**目前功能（v18，2026-08-18）**：
+**目前功能（v19，2026-08-19）**：
 
 - **工作流程執行**：`workflow_run`（含 inline seed + CAS seedManifest + `seedManifestRef` + `scriptSha256`
   完整性守衛）、`workflow_status`、`workflow_suspend`/`workflow_resume`/`workflow_stop`、
@@ -41,6 +41,9 @@
   可零設定自行取得 `client_id`（v17，解決「Incompatible auth server: does not support dynamic client registration」）；
   MCP client 走 authorization-code + PKCE + loopback-redirect 流程取得引擎 opaque bearer；`/authorize`
   在寫入 state 前驗證 `redirect_uri` 必須為 loopback URI（RFC 8252），含 registration 時一致強制；
+  **OAuth2 `state` round-trip（v19，RFC 6749 §4.1.2）**：客戶端 `state` 參數由 `/authorize` 擷取、
+  持久化至 `oauth_state.client_state`，並於最終 client redirect 回傳 `&state=<clientState>&iss=<issuer>`
+  （RFC 9207），解決「OAuth state mismatch - possible CSRF attack」連線失敗；
   D-BIND fail-closed（非 loopback 來源若無有效 bearer → 401）；過期 auth 表列由 GC sweep 自動清除
   （`workspaceTtlMs` 正確從 composeConfig 傳遞）；
   工作流程擁有權（`NOT_WORKFLOW_OWNER`）；per-run principal attribution；`workflow_register` 綁定
@@ -59,7 +62,7 @@
 
 ## 快速開始 Quickstart
 
-以下指令是 v18 validator 實際跑過、能把系統帶起來的步驟（本輪零文件缺口）。
+以下指令是 v19 validator 實際跑過、能把系統帶起來的步驟（本輪零文件缺口）。
 
 ```bash
 # 1. 安裝 Node 依賴

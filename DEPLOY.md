@@ -3,7 +3,7 @@
 > 人類導向文件（繁體中文）。由 Gate 7.5 validator 依實際部署步驟撰寫，步驟可重跑。
 > 凡 validator 為了把系統跑起來而做、但 README quickstart 未涵蓋的動作，都記在這裡。
 >
-> 目前部署狀態（v18，2026-08-18）：systemd user service `rwe.service`，綁定
+> 目前部署狀態（v19，2026-08-19）：systemd user service `rwe.service`，綁定
 > `0.0.0.0:8899`（本機 override.conf 將 port 覆寫為 8899；預設安裝用 8787，見 §1 設定總表 `RWE_PORT`；
 > ufw 白名單 `192.168.0.0/24` + SSH），`workRoot=/home/user/.local/share/rwe-data`，
 > `gateway:"sdk"` + managed LiteLLM proxy。**37 個** MCP 工具，v15 新增 OAuth 2.0 身份認證（opt-in，
@@ -20,15 +20,20 @@
 > **v18 Google OAuth 三端點分離**：`accounts.google.com`（authorize）、`oauth2.googleapis.com`（token）、
 > `www.googleapis.com`（JWKS）三個 Google 主機分別以 `GOOGLE_AUTHORIZE_URL`/`GOOGLE_TOKEN_URL`/`GOOGLE_JWKS_URL`
 > 常數獨立可注入；`auth.googleBase`（單一主機 fallback）標示為 deprecated，向後相容（舊設定仍可用）。
-> Gate 7.5 v18 **PASSED**：VAL-095 real:true pass（v18 新增 3 端點分離條款）；1348/1348 tests；IT-078 29/29
->（+2 新案例 case 19/20）；UT-094 15/15；composition-root wiring 確認（scratch config 驗證）；
-> 生產服務重啟確認（`/authorize` → `accounts.google.com/o/oauth2/v2/auth`）；trace 753 items；0 未真實驗證，0 未驗證。
+> **v19 client-state round-trip**：`/authorize` 接收客戶端 OAuth2 `state` 參數，持久化至 `oauth_state.client_state`
+> 欄位（idempotent ALTER 遷移），並在最終 client redirect 回傳 `&state=<clientState>&iss=<issuer>`（RFC 6749
+> §4.1.2 + RFC 9207），closes「OAuth state mismatch - possible CSRF attack」連線失敗；`state` 不提供時不回傳
+> 多餘參數（負面測試通過）；自動遷移無須手動操作。
+> Gate 7.5 v19 **PASSED**：VAL-095 real:true pass（v19 新增 client-state round-trip + iss 條款）；1350/1350 tests；
+> IT-078 31/31（+2 新案例 case 21/22）；val-095 9/9；live curl 雙案例（state=CLIENT_STATE_ABC123_V19VAL 回傳完整
+> 並含 iss；無 state 時不回傳多餘參數且含 iss）；完整 register→authorize→callback→token→bearer→MCP 端到端通過；
+> 生產服務重啟確認（37 tools，oauth_state.client_state 欄位存在）；trace 754/12（0 嚴重缺口，0 未驗證，0 僅mock）。
 > 完整驗證證據見 `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
 
 
 ## §0 Quickstart — 開機序列（可逐字貼上執行）
 
-> 以下指令與 README quickstart 一致，是 v18 validator 實際跑過的步驟，本輪零文件缺口。
+> 以下指令與 README quickstart 一致，是 v19 validator 實際跑過的步驟，本輪零文件缺口。
 
 ```bash
 # 步驟 1：安裝 Node 依賴
@@ -1149,3 +1154,4 @@ curl -s -D - -o /dev/null -X POST $BASE/v1/chat/completions \
 | 2026-08-18 | v16 | **安全修補：loopback-only redirect_uri + gcExpired GC sweep + composeConfig workspaceTtlMs forwarding fix**（REQ-012 ARCH-059 fix）Gate 7.5 PASSED: HIGH-1（ARCH-059 inv.4）：`/authorize` 在寫入 `oauth_state` 前以 `isLoopbackRedirectUri()` 驗證 `redirect_uri` 必須為 `http://127.0.0.1/localhost/[::1]:<port>` 之一（RFC 8252），非 loopback → 立即 400 `invalid_request` 且不寫任何 state row；MED-2（ARCH-059 note）：`gcExpired()` 接入 server.ts GC sweep（當 auth 啟用時），定期清除三張 auth 表。composition-root fix：`composeConfig()` 補 `workspaceTtlMs` 轉發；cross-process GC 確認 3 筆過期 oauth_state row 消失。無新設定鍵。IT-078 17/17；1328/1328；trace 751 items / 6 pre-existing gaps。 | 無破壞性變更；無新設定鍵；auth-disabled 部署不受影響；既有 auth-enabled 部署若 `workspaceTtlMs` 有設定，GC 間隔現在正確反映該值；無遷移動作 |
 | 2026-08-18 | v17 | **RFC 7591 Dynamic Client Registration**（REQ-012 v17 DCR fix）Gate 7.5 PASSED: AS metadata 新增 `registration_endpoint`；`POST /register` 實作 RFC 7591 DCR（201 + `client_id`、無 `client_secret`；非 loopback `redirect_uris` → 400 `invalid_redirect_uri`；`grant_types` clamp 不拒絕）；`registered_clients` SQLite 第 4 張 auth 表（存活重啟；GC sweep 清除過期項）；`/authorize` 接受已註冊 `client_id` 並以 RFC 8252 §7.3 port-ignored binding 驗證 `redirect_uri`；SDK `registerClient()` + `startAuthorization()` 端對端確認（4 新接受測試）；重啟存活確認（boot-1 register → kill → boot-2 client_id 有效）。解決了 Claude Code 連接失敗「Incompatible auth server: does not support dynamic client registration」。無新設定鍵（DCR 為公開端點，無需新 secret；registered_clients table 自動管理）。IT-078 27/27；1342/1342；trace 752 items / 9 gaps（全部 pre-existing low drift）。 | 無破壞性變更；無新設定鍵；既有 auth-enabled 部署自動獲得 DCR 支援（auth.enabled:true 時 /register 路由生效）；auth-disabled 部署不受影響；無遷移動作 |
 | 2026-08-18 | v18 | **Google OAuth 三端點分離**（REQ-012 v18 real-consent fix）Gate 7.5 PASSED: `GOOGLE_AUTHORIZE_URL`（`accounts.google.com/o/oauth2/v2/auth`）、`GOOGLE_TOKEN_URL`（`oauth2.googleapis.com/token`）、`GOOGLE_JWKS_URL`（`www.googleapis.com/oauth2/v3/certs`）三常數獨立匯出；`AuthConfig` 新增 `googleAuthorizeUrl?`/`googleTokenUrl?`/`googleJwksUrl?` 三可注入欄位，向後相容 deprecated `googleBase` fallback；`google-verifier.ts` `jwksUri` 參數重命名（DES-094，純改名無行為變更）；composition-root 配置傳遞確認（scratch config 驗證 `googleAuthorizeUrl` 正確流過 composeConfig → AuthService）；生產服務重啟確認（`/authorize` → `https://accounts.google.com/o/oauth2/v2/auth?...`；三 Google 主機皆確認存活）。IT-078 29/29（+2 新案例 case 19/20）；UT-094 15/15；VAL-095 9/9；1348/1348；tsc clean；trace 753 items（0 未真實驗證，0 未驗證）。新設定鍵：`auth.googleAuthorizeUrl`/`auth.googleTokenUrl`/`auth.googleJwksUrl`（三者皆選填，預設為正確 Google URL）；deprecated：`auth.googleBase`（向後相容，仍可用）。 | 無破壞性變更；三個新欄位全部 optional、預設為正確 Google URL；`auth.googleBase` deprecated 但仍相容（舊設定不受影響）；既有 `auth.enabled/googleClientId/googleClientSecret` 設定不變；無新工具、無新 port；無強制遷移動作 |
+| 2026-08-19 | v19 | **OAuth 2.0 client-state round-trip + RFC 9207 iss**（REQ-012 v19 client-state fix）Gate 7.5 PASSED: `/authorize` 新增 `state` 參數擷取（RFC 6749 §4.1.2）；`oauth_state` 新增 nullable `client_state` 欄位（idempotent ALTER 自動遷移）；`/oauth/google/callback` 在最終 client redirect 附加 `&state=<clientState>&iss=<effectiveIssuer>`（若有 state）；engine Google-leg state（CSRF nonce）與 client state 結構分離（不同欄位）；`state` 不提供時不回傳多餘參數（負面測試 case 22 通過）。closes「OAuth state mismatch - possible CSRF attack」連線失敗。IT-078 31/31（+2 新案例 case 21/22）；VAL-095 9/9；1350/1350；tsc clean；live curl 雙案例（register→authorize→callback 完整端到端含 token exchange + bearer + MCP 37-tool 回傳）；生產服務重啟確認（`oauth_state.client_state` 欄位存在；37 tools；`/authorize` → `accounts.google.com`）；trace 754/12（0 嚴重缺口，0 未驗證，0 僅mock）。 | 無破壞性變更；無新設定鍵；**自動遷移**：TokenStore 建構子在首次啟動時執行 `ALTER TABLE oauth_state ADD COLUMN client_state TEXT`（idempotent，已有欄位時靜默略過）；無須手動操作；既有 `registered_clients`/`bearer_tokens`/`auth_codes` 表不受影響；無新工具、無新 port |
