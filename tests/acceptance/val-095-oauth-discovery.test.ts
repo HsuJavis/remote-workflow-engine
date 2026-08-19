@@ -176,6 +176,18 @@ afterAll(async () => {
   rmSync(tmpDir2, { recursive: true, force: true });
 });
 
+// ── v20b: parse redirect URL from the 200 HTML callback success page ──────────
+
+/**
+ * Parse the raw redirect URL from the v20b callback success page element with id="callback-url".
+ * Pre-impl: the callback returns 302 with no HTML body → throws (no id="callback-url").
+ */
+function extractCallbackUrlFromHtmlPage(html: string): URL {
+  const match = html.match(/id="callback-url"[^>]*>([^<]+)</);
+  if (!match) throw new Error(`id="callback-url" element not found in callback HTML. First 200: ${html.slice(0, 200)}`);
+  return new URL(match[1].trim());
+}
+
 // ── helper: drive the full 4-route OAuth flow using SDK-discovered authorization_endpoint ──────
 
 async function getBearerViaFakeGoogle(): Promise<string> {
@@ -208,14 +220,17 @@ async function getBearerViaFakeGoogle(): Promise<string> {
   // Step 2: Simulate Google calling back our engine with a code
   const fakeGoogleCode = 'fake-google-code-val095';
 
-  // Step 3: GET /oauth/google/callback?state=<state>&code=<fake-google-code>
+  // Step 3: GET /oauth/google/callback — v20b: returns 200 HTML (not 302)
+  // Parse the engine code from id="callback-url" in the success page.
+  // Pre-impl: cbRes.status = 302 → text() is empty → extractCallbackUrlFromHtmlPage throws → FAIL
   const cbRes = await fetch(`${base}/oauth/google/callback?` + new URLSearchParams({
     state,
     code: fakeGoogleCode,
   }), { redirect: 'manual' });
-  expect(cbRes.status).toBe(302);
-  const cbLocation = cbRes.headers.get('location') ?? '';
-  const cbUrl = new URL(cbLocation);
+  // Pre-impl: status 302 → FAIL (right RED reason: v20b not implemented)
+  expect(cbRes.status).toBe(200);
+  const cbHtml = await cbRes.text();
+  const cbUrl = extractCallbackUrlFromHtmlPage(cbHtml);
   const engineCode = cbUrl.searchParams.get('code') ?? '';
   expect(engineCode.length).toBeGreaterThan(0);
 
@@ -403,14 +418,16 @@ describe('REQ-012 v17 DCR: registration_endpoint + SDK registerClient() + full D
     lastExpectedNonce = nonce;
 
     // Simulate Google callback → engine issues auth-code
+    // v20b: callback returns 200 HTML with id="callback-url" (not 302)
+    // Pre-impl: status 302 → FAIL (right RED reason: v20b not implemented)
     const cbRes = await fetch(`${base}/oauth/google/callback?` + new URLSearchParams({
       state,
       code: 'fake-dcr-google-code',
     }), { redirect: 'manual' });
-    expect(cbRes.status, 'Google callback must 302 with engine auth-code').toBe(302);
+    expect(cbRes.status, 'Google callback must return 200 HTML (v20b)').toBe(200);
 
-    const cbLocation = cbRes.headers.get('location') ?? '';
-    const cbUrl = new URL(cbLocation);
+    const cbHtml = await cbRes.text();
+    const cbUrl = extractCallbackUrlFromHtmlPage(cbHtml);
     const engineCode = cbUrl.searchParams.get('code') ?? '';
     expect(engineCode.length, 'engine auth-code must be non-empty').toBeGreaterThan(0);
 

@@ -106,19 +106,32 @@ describe('TokenStore.issue + verifyByHash (DES-093)', () => {
 // ── mintAuthCode / consumeAuthCode ───────────────────────────────────────────
 
 describe('TokenStore.mintAuthCode + consumeAuthCode (DES-093)', () => {
-  it('consumeAuthCode returns {principal, codeChallenge, redirectUri} on first call', () => {
+  // v20: mintAuthCode gains a required 4th param `scope: string | null`
+  // (null = no offline_access requested). Passing null leaves scope field absent pre-impl.
+  it('consumeAuthCode returns {principal, codeChallenge, redirectUri, scope} on first call (v20 scope)', () => {
     const { store } = makeStore(BASE_MS);
-    const code = store.mintAuthCode('alice@example.com', 'challenge-abc', 'http://localhost:3000/cb');
+    const code = store.mintAuthCode('alice@example.com', 'challenge-abc', 'http://localhost:3000/cb', null);
     const result = store.consumeAuthCode(code);
     expect(result).not.toBeNull();
     expect(result?.principal).toBe('alice@example.com');
     expect(result?.codeChallenge).toBe('challenge-abc');
     expect(result?.redirectUri).toBe('http://localhost:3000/cb');
+    // v20: scope column in auth_codes — pre-impl: field absent → undefined ≠ null → FAIL
+    expect(result?.scope).toBeNull();
+  });
+
+  it('consumeAuthCode with scope threads scope through (v20)', () => {
+    const { store } = makeStore(BASE_MS);
+    const code = store.mintAuthCode('alice@example.com', 'challenge-abc', 'http://localhost:3000/cb', 'openid email offline_access');
+    const result = store.consumeAuthCode(code);
+    expect(result).not.toBeNull();
+    // v20: scope round-trips — pre-impl: scope absent → FAIL
+    expect(result?.scope).toBe('openid email offline_access');
   });
 
   it('consumeAuthCode returns null on second call (single-use atomic)', () => {
     const { store } = makeStore(BASE_MS);
-    const code = store.mintAuthCode('alice@example.com', 'challenge-abc', 'http://localhost:3000/cb');
+    const code = store.mintAuthCode('alice@example.com', 'challenge-abc', 'http://localhost:3000/cb', null);
     store.consumeAuthCode(code); // first consume
     expect(store.consumeAuthCode(code)).toBeNull(); // second → null
   });
@@ -130,17 +143,108 @@ describe('TokenStore.mintAuthCode + consumeAuthCode (DES-093)', () => {
 
   it('consumeAuthCode returns null after ≤60s TTL (clock advance)', () => {
     const { store, setNow } = makeStore(BASE_MS);
-    const code = store.mintAuthCode('alice@example.com', 'challenge-abc', 'http://localhost:3000/cb');
+    const code = store.mintAuthCode('alice@example.com', 'challenge-abc', 'http://localhost:3000/cb', null);
     setNow(BASE_MS + 61_000); // 61 seconds later — past ≤60s TTL
     expect(store.consumeAuthCode(code)).toBeNull();
   });
 
   it('raw code NEVER equals stored code_hash column (seam invariant)', () => {
     const { store, db } = makeStore(BASE_MS);
-    const code = store.mintAuthCode('alice@example.com', 'challenge-abc', 'http://localhost/cb');
+    const code = store.mintAuthCode('alice@example.com', 'challenge-abc', 'http://localhost/cb', null);
     const row = db.prepare('SELECT code_hash FROM auth_codes LIMIT 1').get() as { code_hash: string };
     expect(row).not.toBeNull();
     expect(row.code_hash).not.toBe(code);
+  });
+});
+
+// ── putState / consumeState scope threading (v20) ────────────────────────────
+
+describe('TokenStore.putState + consumeState scope threading (DES-093 v20)', () => {
+  it('consumeState returns scope:null when putState called without scope (v20)', () => {
+    const { store } = makeStore(BASE_MS);
+    store.putState({ state: 'st1', nonce: 'n', codeChallenge: 'c', redirectUri: 'http://localhost/cb' });
+    const r = store.consumeState('st1');
+    expect(r).not.toBeNull();
+    // v20: oauth_state gains nullable scope column — pre-impl: field absent → undefined ≠ null → FAIL
+    expect(r?.scope).toBeNull();
+  });
+
+  it('consumeState returns scope verbatim when putState called with scope (v20)', () => {
+    const { store } = makeStore(BASE_MS);
+    store.putState({ state: 'st2', nonce: 'n', codeChallenge: 'c', redirectUri: 'http://localhost/cb', scope: 'openid email offline_access' });
+    const r = store.consumeState('st2');
+    expect(r).not.toBeNull();
+    // v20: scope round-trips — pre-impl: scope absent → FAIL
+    expect(r?.scope).toBe('openid email offline_access');
+  });
+});
+
+// ── issueRefresh / consumeRefresh (DES-093 v20) ──────────────────────────────
+//
+// Pre-impl: issueRefresh/consumeRefresh do not exist → calling them throws
+//   "is not a function" → FAIL for the right reason.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyStore = any;
+
+describe('TokenStore.issueRefresh + consumeRefresh (DES-093 v20)', () => {
+  const REFRESH_TTL = 90 * 24 * 3600_000; // ~90 days
+
+  it('issueRefresh returns a raw token and a future expiresAt (v20)', () => {
+    const { store } = makeStore(BASE_MS);
+    // Pre-impl: issueRefresh is not a function → TypeError → FAIL
+    const { token, expiresAt } = (store as AnyStore).issueRefresh('alice@example.com', 'openid email offline_access', null, REFRESH_TTL);
+    expect(typeof token).toBe('string');
+    expect(token.length).toBeGreaterThan(0);
+    expect(expiresAt).toBeGreaterThan(BASE_MS);
+  });
+
+  it('consumeRefresh returns {principal, scope, clientId} on first call (v20)', () => {
+    const { store } = makeStore(BASE_MS);
+    const { token } = (store as AnyStore).issueRefresh('alice@example.com', 'openid email offline_access', null, REFRESH_TTL);
+    const result = (store as AnyStore).consumeRefresh(token);
+    expect(result).not.toBeNull();
+    expect(result?.principal).toBe('alice@example.com');
+    expect(result?.scope).toBe('openid email offline_access');
+    expect(result?.clientId).toBeNull();
+  });
+
+  it('consumeRefresh returns null on second call (single-use atomic) (v20)', () => {
+    const { store } = makeStore(BASE_MS);
+    const { token } = (store as AnyStore).issueRefresh('alice@example.com', null, null, REFRESH_TTL);
+    (store as AnyStore).consumeRefresh(token); // first consume
+    expect((store as AnyStore).consumeRefresh(token)).toBeNull(); // second → null
+  });
+
+  it('consumeRefresh returns null for unknown token (v20)', () => {
+    const { store } = makeStore(BASE_MS);
+    expect((store as AnyStore).consumeRefresh('unknown-refresh-token')).toBeNull();
+  });
+
+  it('consumeRefresh returns null after TTL expires (clock advance) (v20)', () => {
+    const { store, setNow } = makeStore(BASE_MS);
+    const { token } = (store as AnyStore).issueRefresh('alice@example.com', null, null, REFRESH_TTL);
+    setNow(BASE_MS + REFRESH_TTL + 1);
+    expect((store as AnyStore).consumeRefresh(token)).toBeNull();
+  });
+
+  it('raw refresh token NEVER equals stored hash (sha256-at-rest seam invariant) (v20)', () => {
+    const { store, db } = makeStore(BASE_MS);
+    const { token } = (store as AnyStore).issueRefresh('alice@example.com', null, null, REFRESH_TTL);
+    // Pre-impl: table does not exist → SqliteError "no such table: refresh_tokens" → FAIL
+    const row = db.prepare('SELECT token_hash FROM refresh_tokens LIMIT 1').get() as { token_hash: string };
+    expect(row).not.toBeNull();
+    expect(row.token_hash).not.toBe(token);
+  });
+
+  it('gcExpired covers refresh_tokens table (v20 5th table)', () => {
+    const { store, setNow } = makeStore(BASE_MS);
+    (store as AnyStore).issueRefresh('alice@example.com', null, null, HOUR_MS);
+    // advance past TTL
+    setNow(BASE_MS + HOUR_MS + 1);
+    // Pre-impl: refresh_tokens table absent → SqliteError → FAIL
+    // Post-impl: expired refresh token is deleted → count ≥ 1
+    const deleted = store.gcExpired();
+    expect(deleted).toBeGreaterThan(0);
   });
 });
 

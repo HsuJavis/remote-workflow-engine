@@ -111,7 +111,9 @@ async function getBearer(): Promise<string> {
   const state = aLoc.searchParams.get('state') ?? '';
 
   const cb = await fetch(`${base}/oauth/google/callback?state=${state}&code=fakeGoogleCode096`, { redirect: 'manual' });
-  const cbLoc = new URL(cb.headers.get('location') ?? 'http://x');
+  const cbHtml = await cb.text();
+  const m = cbHtml.match(/id="callback-url"[^>]*>([^<]+)</);
+  const cbLoc = new URL(m ? m[1].trim() : 'http://x');
   const engineCode = cbLoc.searchParams.get('code') ?? '';
 
   const tok = await fetch(`${base}/token`, {

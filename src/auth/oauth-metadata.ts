@@ -32,6 +32,9 @@ export function buildAuthServerMetadata(cfg: AuthCfg): {
   code_challenge_methods_supported: string[];
   response_types_supported: string[];
   grant_types_supported: string[];
+  scopes_supported: string[];
+  token_endpoint_auth_methods_supported: string[];
+  authorization_response_iss_parameter_supported: boolean;
 } {
   const b = base(cfg.issuer);
   return {
@@ -41,7 +44,10 @@ export function buildAuthServerMetadata(cfg: AuthCfg): {
     registration_endpoint: `${b}/register`,
     code_challenge_methods_supported: ['S256'],
     response_types_supported: ['code'],
-    grant_types_supported: ['authorization_code'],
+    grant_types_supported: ['authorization_code', 'refresh_token'],
+    scopes_supported: ['openid', 'email', 'offline_access'],
+    token_endpoint_auth_methods_supported: ['none'],
+    authorization_response_iss_parameter_supported: true,
   };
 }
 

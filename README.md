@@ -10,7 +10,7 @@
 原封不動地跑在一台伺服器上，透過 **MCP Streamable HTTP** 介面遠端送出、追蹤、暫停/續跑/停止，並
 把每個 `agent()` 呼叫真正路由到你設定的 LLM 供應商（Anthropic / OpenAI / Gemini / 本機 Ollama）。
 
-**目前功能（v19，2026-08-19）**：
+**目前功能（v20，2026-08-19）**：
 
 - **工作流程執行**：`workflow_run`（含 inline seed + CAS seedManifest + `seedManifestRef` + `scriptSha256`
   完整性守衛）、`workflow_status`、`workflow_suspend`/`workflow_resume`/`workflow_stop`、
@@ -44,6 +44,12 @@
   **OAuth2 `state` round-trip（v19，RFC 6749 §4.1.2）**：客戶端 `state` 參數由 `/authorize` 擷取、
   持久化至 `oauth_state.client_state`，並於最終 client redirect 回傳 `&state=<clientState>&iss=<issuer>`
   （RFC 9207），解決「OAuth state mismatch - possible CSRF attack」連線失敗；
+  **refresh tokens（v20，RFC 6749 §6 / OAuth 2.1 / MCP offline_access）**：AS metadata 廣告
+  `scopes_supported:["openid","email","offline_access"]` + `grant_types_supported:["authorization_code","refresh_token"]`；
+  `offline_access` 流程核發 `refresh_token`（~90 天 TTL、sha256-at-rest）；`grant_type=refresh_token`
+  輪換 token（RFC 9700 rotation，單次使用）；用戶端不需重新走瀏覽器登入即可在 access_token 到期後續用。
+  **callback success page（v20 UX）**：`/oauth/google/callback` 改為 200 HTML（含 `id="callback-url"` 可複製 URL
+  + meta-refresh/JS 自動轉跳），無論有無 loopback listener 都可操作。
   D-BIND fail-closed（非 loopback 來源若無有效 bearer → 401）；過期 auth 表列由 GC sweep 自動清除
   （`workspaceTtlMs` 正確從 composeConfig 傳遞）；
   工作流程擁有權（`NOT_WORKFLOW_OWNER`）；per-run principal attribution；`workflow_register` 綁定

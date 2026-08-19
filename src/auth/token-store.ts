@@ -47,7 +47,8 @@ export class TokenStore {
         principal TEXT NOT NULL,
         code_challenge TEXT NOT NULL,
         redirect_uri TEXT NOT NULL,
-        expires_at INTEGER NOT NULL
+        expires_at INTEGER NOT NULL,
+        scope TEXT
       );
       CREATE TABLE IF NOT EXISTS oauth_state (
         state TEXT PRIMARY KEY,
@@ -55,7 +56,8 @@ export class TokenStore {
         code_challenge TEXT NOT NULL,
         redirect_uri TEXT NOT NULL,
         expires_at INTEGER NOT NULL,
-        client_state TEXT
+        client_state TEXT,
+        scope TEXT
       );
       CREATE TABLE IF NOT EXISTS registered_clients (
         client_id TEXT PRIMARY KEY,
@@ -63,9 +65,20 @@ export class TokenStore {
         client_id_issued_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS refresh_tokens (
+        token_hash TEXT PRIMARY KEY,
+        principal TEXT NOT NULL,
+        scope TEXT,
+        client_id TEXT,
+        issued_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
     `);
     // v19 idempotent migration: add client_state column to existing oauth_state tables.
     try { this._db.exec('ALTER TABLE oauth_state ADD COLUMN client_state TEXT'); } catch { /* already exists */ }
+    // v20 idempotent migrations: add scope column to auth_codes and oauth_state.
+    try { this._db.exec('ALTER TABLE auth_codes ADD COLUMN scope TEXT'); } catch { /* already exists */ }
+    try { this._db.exec('ALTER TABLE oauth_state ADD COLUMN scope TEXT'); } catch { /* already exists */ }
   }
 
   /** Issue a new opaque bearer token.  Returns the RAW token (show once) + expiry timestamp. */
@@ -91,29 +104,30 @@ export class TokenStore {
   }
 
   /** Mint a single-use auth code (≤60 s TTL).  Returns the RAW code. */
-  mintAuthCode(principal: string, codeChallenge: string, redirectUri: string): string {
+  mintAuthCode(principal: string, codeChallenge: string, redirectUri: string, scope?: string | null): string {
     const code = genRandom(this._csprng);
     const now = this._clock();
     this._db.prepare(
-      'INSERT INTO auth_codes (code_hash, principal, code_challenge, redirect_uri, expires_at) VALUES (?, ?, ?, ?, ?)'
-    ).run(sha256hex(code), principal, codeChallenge, redirectUri, now + 60_000);
+      'INSERT INTO auth_codes (code_hash, principal, code_challenge, redirect_uri, expires_at, scope) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(sha256hex(code), principal, codeChallenge, redirectUri, now + 60_000, scope ?? null);
     return code;
   }
 
   /** Consume an auth code atomically (DELETE-then-check).  Returns payload or null. */
   consumeAuthCode(
     rawCode: string
-  ): { principal: string; codeChallenge: string; redirectUri: string } | null {
+  ): { principal: string; codeChallenge: string; redirectUri: string; scope: string | null } | null {
     const now = this._clock();
     const codeHash = sha256hex(rawCode);
     const row = this._db.transaction(() => {
       const r = this._db.prepare(
-        'SELECT principal, code_challenge, redirect_uri, expires_at FROM auth_codes WHERE code_hash = ?'
+        'SELECT principal, code_challenge, redirect_uri, expires_at, scope FROM auth_codes WHERE code_hash = ?'
       ).get(codeHash) as {
         principal: string;
         code_challenge: string;
         redirect_uri: string;
         expires_at: number;
+        scope: string | null;
       } | undefined;
       if (!r) return undefined;
       this._db.prepare('DELETE FROM auth_codes WHERE code_hash = ?').run(codeHash);
@@ -121,7 +135,7 @@ export class TokenStore {
     })();
     if (!row) return null;
     if (row.expires_at <= now) return null;
-    return { principal: row.principal, codeChallenge: row.code_challenge, redirectUri: row.redirect_uri };
+    return { principal: row.principal, codeChallenge: row.code_challenge, redirectUri: row.redirect_uri, scope: row.scope };
   }
 
   /** Store a PKCE state blob (10-minute TTL).  State is the raw PKCE `state` param. */
@@ -132,27 +146,30 @@ export class TokenStore {
     redirectUri: string;
     /** The CLIENT's OAuth2 state (RFC 6749 §4.1.2) — distinct from `state` (the engine-leg CSRF token). v19. */
     clientState?: string | null;
+    /** The CLIENT's requested OAuth2 scope string (verbatim). v20. */
+    scope?: string | null;
   }): void {
     const now = this._clock();
     this._db.prepare(
-      'INSERT OR REPLACE INTO oauth_state (state, nonce, code_challenge, redirect_uri, expires_at, client_state) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(params.state, params.nonce, params.codeChallenge, params.redirectUri, now + 600_000, params.clientState ?? null);
+      'INSERT OR REPLACE INTO oauth_state (state, nonce, code_challenge, redirect_uri, expires_at, client_state, scope) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(params.state, params.nonce, params.codeChallenge, params.redirectUri, now + 600_000, params.clientState ?? null, params.scope ?? null);
   }
 
   /** Consume a state blob (single-use).  Returns payload or null. */
   consumeState(
     state: string
-  ): { nonce: string; codeChallenge: string; redirectUri: string; clientState: string | null } | null {
+  ): { nonce: string; codeChallenge: string; redirectUri: string; clientState: string | null; scope: string | null } | null {
     const now = this._clock();
     const row = this._db.transaction(() => {
       const r = this._db.prepare(
-        'SELECT nonce, code_challenge, redirect_uri, expires_at, client_state FROM oauth_state WHERE state = ?'
+        'SELECT nonce, code_challenge, redirect_uri, expires_at, client_state, scope FROM oauth_state WHERE state = ?'
       ).get(state) as {
         nonce: string;
         code_challenge: string;
         redirect_uri: string;
         expires_at: number;
         client_state: string | null;
+        scope: string | null;
       } | undefined;
       if (!r) return undefined;
       this._db.prepare('DELETE FROM oauth_state WHERE state = ?').run(state);
@@ -160,7 +177,40 @@ export class TokenStore {
     })();
     if (!row) return null;
     if (row.expires_at <= now) return null;
-    return { nonce: row.nonce, codeChallenge: row.code_challenge, redirectUri: row.redirect_uri, clientState: row.client_state };
+    return { nonce: row.nonce, codeChallenge: row.code_challenge, redirectUri: row.redirect_uri, clientState: row.client_state, scope: row.scope };
+  }
+
+  /** Issue a new opaque refresh token (~90d TTL).  Returns the RAW token (show once) + expiry timestamp. */
+  issueRefresh(principal: string, scope: string | null, clientId: string | null, ttlMs: number): { token: string; expiresAt: number } {
+    const token = genRandom(this._csprng);
+    const now = this._clock();
+    const expiresAt = now + ttlMs;
+    this._db.prepare(
+      'INSERT INTO refresh_tokens (token_hash, principal, scope, client_id, issued_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(sha256hex(token), principal, scope, clientId, now, expiresAt);
+    return { token, expiresAt };
+  }
+
+  /** Consume a refresh token atomically (single-use).  Returns payload or null (expired/unknown/already-consumed). */
+  consumeRefresh(rawToken: string): { principal: string; scope: string | null; clientId: string | null } | null {
+    const now = this._clock();
+    const tokenHash = sha256hex(rawToken);
+    const row = this._db.transaction(() => {
+      const r = this._db.prepare(
+        'SELECT principal, scope, client_id, expires_at FROM refresh_tokens WHERE token_hash = ?'
+      ).get(tokenHash) as {
+        principal: string;
+        scope: string | null;
+        client_id: string | null;
+        expires_at: number;
+      } | undefined;
+      if (!r) return undefined;
+      this._db.prepare('DELETE FROM refresh_tokens WHERE token_hash = ?').run(tokenHash);
+      return r;
+    })();
+    if (!row) return null;
+    if (row.expires_at <= now) return null;
+    return { principal: row.principal, scope: row.scope, clientId: row.client_id };
   }
 
   /** Mint a new RFC 7591 client_id; persists redirect_uris and returns the issued-at timestamp in seconds. */
@@ -186,7 +236,7 @@ export class TokenStore {
     return { redirectUris: JSON.parse(row.redirect_uris) as string[] };
   }
 
-  /** Delete expired rows from all four tables; returns total row count deleted. */
+  /** Delete expired rows from all five tables; returns total row count deleted. */
   gcExpired(): number {
     const now = this._clock();
     let n = 0;
@@ -194,6 +244,7 @@ export class TokenStore {
     n += this._db.prepare('DELETE FROM auth_codes WHERE expires_at <= ?').run(now).changes;
     n += this._db.prepare('DELETE FROM oauth_state WHERE expires_at <= ?').run(now).changes;
     n += this._db.prepare('DELETE FROM registered_clients WHERE expires_at <= ?').run(now).changes;
+    n += this._db.prepare('DELETE FROM refresh_tokens WHERE expires_at <= ?').run(now).changes;
     return n;
   }
 }
