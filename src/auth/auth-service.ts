@@ -185,7 +185,9 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
       }
       const state = randomBytes(16).toString('hex');
       const nonce = randomBytes(16).toString('hex');
-      tokenStore.putState({ state, nonce, codeChallenge, redirectUri });
+      // v19 (DES-095): capture the CLIENT's state (RFC 6749 §4.1.2) to echo at final redirect.
+      const clientState = url.searchParams.get('state');
+      tokenStore.putState({ state, nonce, codeChallenge, redirectUri, clientState });
       // Redirect to Google's authorization endpoint with state + nonce
       const b = effectiveIssuer.replace(/\/$/, '');
       const gUrl = new URL(googleAuthorizeUrl);
@@ -208,7 +210,7 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
         localSendJson(res, 400, { error: 'invalid_state' });
         return;
       }
-      const { nonce, codeChallenge, redirectUri } = stateData;
+      const { nonce, codeChallenge, redirectUri, clientState } = stateData;
       const b = effectiveIssuer.replace(/\/$/, '');
       // Exchange Google code for id_token
       let idToken: string;
@@ -253,6 +255,9 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
       try {
         const u = new URL(redirectUri);
         u.searchParams.set('code', authCode);
+        // v19 (DES-095): echo client state (RFC 6749 §4.1.2) + RFC 9207 iss at final redirect.
+        if (clientState) u.searchParams.set('state', clientState);
+        u.searchParams.set('iss', effectiveIssuer);
         location = u.toString();
       } catch {
         const sep = redirectUri.includes('?') ? '&' : '?';

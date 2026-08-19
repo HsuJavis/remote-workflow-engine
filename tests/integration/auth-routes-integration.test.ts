@@ -829,3 +829,91 @@ describe('v18: /oauth/google/callback uses injected googleTokenUrl — case 20 (
     expect((cbUrl.searchParams.get('code') ?? '').length).toBeGreaterThan(0);
   }, 15_000);
 });
+
+// ── v19: client state round-trip + RFC 9207 iss — cases 21-22 (DES-093/095 v19) ─────────────
+//
+// RED reason:
+//   Case 21: engine does NOT capture the client's 'state' from /authorize — authorize() never
+//     passes clientState to tokenStore.putState, and googleCallback() never echoes it.
+//     Final client Location is missing 'state' → searchParams.get('state') is null
+//     → assertion toBe('CLIENT_STATE_ABC123') FAILS.
+//     'iss' is also absent → searchParams.get('iss') is null → assertion FAILS.
+//   Case 22: 'state' absent is correct pre-fix (no state to echo), but 'iss' is missing
+//     from the final client Location → searchParams.get('iss') is null → assertion FAILS.
+//
+// Mock policy: reuse serverV18 (real createServer + real SQLite TokenStore + real fake
+//   Google token server). No SUT boundary mocking.
+//
+// Cases:
+//   21: /authorize?...&state=CLIENT_STATE_ABC123 → authorize→callback→
+//       final client Location has state=CLIENT_STATE_ABC123 (byte-exact) AND
+//       iss=metadata.issuer (Decision B: RAW effectiveIssuer; byte-equals the AS metadata issuer).
+//       Regression guard: engine-leg state (Google Location) ≠ clientState (structurally separate).
+//   22: /authorize?... (no state param) → final client Location has NO 'state' param
+//       AND has iss=metadata.issuer. (State-absent half green pre-fix; iss-absent half goes red.)
+
+describe('v19: client state round-trip + RFC 9207 iss — cases 21-22 (DES-093/095 v19, IT-078)', () => {
+  let expectedIssuer: string;
+
+  beforeAll(async () => {
+    // GET AS metadata to learn the raw effectiveIssuer (must byte-equal the 'iss' param).
+    const metaRes = await fetch(`http://127.0.0.1:${serverV18.port}/.well-known/oauth-authorization-server`);
+    const meta = await metaRes.json() as { issuer?: string };
+    expectedIssuer = meta.issuer ?? '';
+    expect(expectedIssuer.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * Run the full /authorize → /oauth/google/callback flow using serverV18.
+   * Returns { engineState, clientLocation }.
+   *   engineState: the engine's own Google-leg state (oauth_state PK).
+   *   clientLocation: the final client redirect URL (302 Location from /oauth/google/callback).
+   */
+  async function runFlow(opts: { clientState?: string; redirectPort?: number } = {}): Promise<{
+    engineState: string;
+    clientLocation: URL;
+  }> {
+    const port = opts.redirectPort ?? 19998;
+    const p = new URLSearchParams({
+      response_type: 'code',
+      client_id: 'it078v18-client-id',
+      redirect_uri: `http://127.0.0.1:${port}/cb`,
+      code_challenge: 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
+      code_challenge_method: 'S256',
+    });
+    if (opts.clientState !== undefined) p.set('state', opts.clientState);
+    const authResp = await rawHttpGet(`http://127.0.0.1:${serverV18.port}/authorize?${p}`);
+    expect(authResp.status).toBe(302);
+    const googleLocUrl = new URL(authResp.location!);
+    const engineState = googleLocUrl.searchParams.get('state') ?? '';
+    const nonce = googleLocUrl.searchParams.get('nonce') ?? '';
+    expect(engineState.length).toBeGreaterThan(0);
+    fakeV18TokenNonce = nonce; // set before callback so fake token server echoes correct nonce
+    const cbResp = await rawHttpGet(
+      `http://127.0.0.1:${serverV18.port}/oauth/google/callback?` +
+        new URLSearchParams({ state: engineState, code: 'fake-case21-google-code' })
+    );
+    expect(cbResp.status).toBe(302);
+    return { engineState, clientLocation: new URL(cbResp.location!) };
+  }
+
+  it('case 21: /authorize with client state → final redirect has state=CLIENT_STATE_ABC123 AND iss=metadata.issuer', async () => {
+    const clientState = 'CLIENT_STATE_ABC123';
+    const { engineState, clientLocation } = await runFlow({ clientState, redirectPort: 19998 });
+    // Pre-impl: state absent → null ≠ 'CLIENT_STATE_ABC123' → FAIL (right reason)
+    expect(clientLocation.searchParams.get('state')).toBe(clientState);
+    // Pre-impl: iss absent → null ≠ expectedIssuer → FAIL (right reason)
+    expect(clientLocation.searchParams.get('iss')).toBe(expectedIssuer);
+    // Regression guard: engine-leg state (oauth_state PK) must differ from client state
+    // (they are structurally separate; client state is stored in client_state column, not state PK)
+    expect(engineState).not.toBe(clientState);
+  }, 15_000);
+
+  it('case 22: /authorize without client state → final redirect has NO state param AND has iss=metadata.issuer', async () => {
+    const { clientLocation } = await runFlow({ redirectPort: 19997 });
+    // Pre-impl: state absent = correct pre-fix (no echo), passes pre-fix
+    expect(clientLocation.searchParams.has('state')).toBe(false);
+    // Pre-impl: iss absent → null ≠ expectedIssuer → FAIL (right reason)
+    expect(clientLocation.searchParams.get('iss')).toBe(expectedIssuer);
+  }, 15_000);
+});

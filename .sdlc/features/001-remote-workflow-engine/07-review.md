@@ -4,7 +4,144 @@ status: closed
 ---
 # 07 Review & Retro — Gate 8
 
-## v18 GATE 8 REVIEW (2026-08-18, CURRENT / AUTHORITATIVE — ITERATION CAN CLOSE)
+## v19 GATE 8 REVIEW (2026-08-19, CURRENT / AUTHORITATIVE — ITERATION CAN CLOSE)
+
+> This section supersedes "## v18 GATE 8 REVIEW (2026-08-18)" below (kept for history).
+> **v19 fix-mode iteration — OAuth2 client state round-trip + RFC 9207 iss (REQ-012 v19, ARCH-059 v19).**
+> Impact closure: REQ-012, ARCH-059, DES-093, DES-095, IMPL-122, IT-078, TASK-093 — iter v19.
+> No new high/severe gaps, no new broken chains, no arch violations for v19-scoped changes.
+
+### Traceability consistency (v19)
+
+Trace `--check` result (regenerated 2026-08-19): **754 items, 12 gaps.**
+
+Change from v18 baseline (753 items / 11 gaps):
+
+- **1 new item:** TASK-093 added (traces ARCH-059, DES-093, DES-095, IMPL-122). status:done — no 未實作 gap.
+- **1 gap closed:** DES-093 iter bumped to v19 (matches IMPL-122 v19) — prior drift gap DES-093 v17 behind IMPL-122 v18 is resolved.
+- **2 new LOW wavefront-drift gaps (TDD wavefront on untouched-scope items):** UT-094 (v18 behind DES-095 v19 — `google-verifier.ts` scope unchanged in v19; cosmetic) and DES-094 (v18 behind IMPL-122 v19 — `google-verifier.ts` scope unchanged in v19; cosmetic). Same precedent as the DES-092/DES-093 wavefront gaps introduced in v18.
+- **Existing drift gaps widened (same gap, cosmetic):** UT-093 (v16 behind DES-093 now v19), UT-095 (v16 behind DES-095 now v19), DES-092 (v17 behind IMPL-122 now v19). Severity unchanged (LOW).
+- **Touched-chain iter alignment is clean:** all items in the v19 impact closure (REQ-012, ARCH-059, DES-093, DES-095, IMPL-122, IT-078, VAL-095, TASK-093) are at v19 — the chain guard for a fix iteration passes.
+- **No new broken links, no new orphans, 0 未驗證, 0 未真實驗證, 0 severe gaps introduced by v19.**
+
+Net: -1 (DES-093 drift closed) + 2 (UT-094, DES-094 wavefront) = +1. 11 → 12. ✓
+
+| ID | Severity | Type | Note |
+|----|----------|------|------|
+| IMPL-082 | MID | TDD label drift | Pre-existing since v4; no change |
+| UT-058 | LOW | iter drift v6 behind DES-038 v11 | Pre-existing since F1; cosmetic |
+| UT-064 | LOW | iter drift v9 behind DES-054 v11 | Pre-existing since v9 |
+| IT-057 | LOW | iter drift v9 behind DES-054 v11 | Pre-existing since v9 |
+| UT-092 | LOW | iter drift v15 behind DES-092 v17 | Pre-existing from v17 |
+| UT-093 | LOW | iter drift v16 behind DES-093 v19 | Widened (same gap; DES-093 bumped v17→v19; UT-093 scope unchanged) |
+| UT-094 | LOW | iter drift v18 behind DES-095 v19 | New TDD-wavefront drift; DES-095 bumped v18→v19; google-verifier.ts scope unchanged in v19 — cosmetic |
+| UT-095 | LOW | iter drift v16 behind DES-095 v19 | Widened (same gap; DES-095 bumped v18→v19; resolvePrincipal unchanged) |
+| DES-092 | LOW | iter drift v17 behind IMPL-122 v19 | Widened (same gap; IMPL-122 bumped v18→v19; oauth-metadata.ts scope unchanged) |
+| DES-094 | LOW | iter drift v18 behind IMPL-122 v19 | New TDD-wavefront drift; google-verifier.ts scope unchanged in v19 — cosmetic |
+| DES-088 | LOW | iter drift v14 behind IMPL-127 v15 | Pre-existing from v15 |
+| TASK-018 | LOW | no implementation | OIDC task; functionally superseded by v15+v17+v18+v19 OAuth implementation |
+
+Dashboard confirms: 0 severe gaps, 0 未驗證 requirements, 0 mock-only validations. All 12 remaining gaps are recorded as known tech debt (Exit Gate 1 satisfied).
+
+### Architecture consistency (v19 self-check — lean QM fix, no panel)
+
+Fix scope: `src/auth/token-store.ts`, `src/auth/auth-service.ts`. Checked against ARCH-059 v19 (the only ARCH decision touched by v19).
+
+**ARCH-059 v19 — client OAuth2 state round-trip + RFC 9207 iss:**
+
+Architecture text (ARCH-059 v19 excerpt): "The two `state` values are architecturally SEPARATE and must never be conflated: the engine-leg `state` stays the `oauth_state` PK; the client's `state` is captured at `/authorize`, persisted across the Google round-trip in a new nullable `oauth_state.client_state` column, and returned only at the final client redirect (`…/callback?code=<engineCode>&state=<clientState>&iss=<issuer>`). The engine also adds the RFC 9207 `iss` parameter (its issuer, byte-equal to the advertised AS metadata `issuer`) on that final client redirect. An omitted/empty client `state` echoes none. No new module, no new route, no config-schema change (one nullable column via idempotent additive migration; the client value is client-supplied so no new clock/CSPRNG seam)."
+
+Implementation checks:
+
+1. **Structural separation of state values** (`src/auth/token-store.ts:55-58`): `oauth_state` table has `state TEXT PRIMARY KEY` (engine-leg CSRF) and a separate `client_state TEXT` (nullable). DES-093 comment (line 133): "The CLIENT's OAuth2 state (RFC 6749 §4.1.2) — distinct from `state` (the engine-leg CSRF token). v19." **Matches.**
+2. **Captured at /authorize, persisted across Google round-trip** (`src/auth/auth-service.ts:189-190`): `const clientState = url.searchParams.get('state')` captured after binding/loopback checks; passed to `tokenStore.putState({ ..., clientState })`. **Matches.**
+3. **Echoed only at final client redirect** (`src/auth/auth-service.ts:259-260`): in `googleCallback()`, absolute-URL (try) branch: `if (clientState) u.searchParams.set('state', clientState)` + unconditional `u.searchParams.set('iss', effectiveIssuer)`. `iss` uses raw `effectiveIssuer` (not slash-stripped `b`) per Decision B — byte-equal to AS metadata `issuer` as emitted by `oauth-metadata.ts:38`. **Matches.**
+4. **No spurious echo when omitted** (`if (clientState)` guard is falsy for null): IT-078 case 22 validates omitted state → no `state=` in callback Location. **Matches.**
+5. **No new module, no new route**: no additions to `server.ts` handler list. **Matches.**
+6. **No new clock/CSPRNG seam** (`src/auth/token-store.ts:138-139`): `client_state` stored verbatim from client-supplied value; no `this.clock()` or `this.csprng()` call added. DES-093 v19 note confirms seam-consistency. **Matches.**
+7. **Idempotent additive migration** (`src/auth/token-store.ts:67-68`): `try { this._db.exec('ALTER TABLE oauth_state ADD COLUMN client_state TEXT'); } catch { /* already exists */ }` — same pattern as `sqlite-run-store.ts:64`. Production service confirmed: `PRAGMA table_info(oauth_state)` shows `client_state` column present after restart. **Matches.**
+
+**LOW-6 (new, text nit):** DES-093 v19 boundary-conditions states `clientState` for `state=` (empty value) is "stored as null." The implementation uses `url.searchParams.get('state')` which returns `''` for `state=`; `?? null` does not convert `''` (non-nullish), so `''` is stored as `''` not `null`. Observable contract is still correct — `if (clientState)` is falsy for `''` so no spurious echo, and `iss` is always present — and IT-078 case 22 covers *omitted* state (no `state=` param, not `state=`). No production impact (no caller sends `state=` without a value). Recommend either a `|| null` coercion in authorize() or a DES-093 text amendment to "null when param absent, empty string when param present-but-empty — both treated as falsy-echo by the if guard." One-liner future cleanup.
+
+**Verdict for v19-touched code: architecture CONSISTENT with ARCH-059 v19.**
+
+Pre-existing violations (UNCHANGED from v18 review — not re-litigated here), plus LOW-6:
+
+| Label | Severity | Finding | Status |
+|-------|----------|---------|--------|
+| H-2 | HIGH | ARCH-017/D-PROFILE/DES-031 session-options-builder orphaned | Gate 2 adjudication pending (security-hardening iter) |
+| H-3 | HIGH | D-KILL/D-PROC cli-lifecycle + timeout-race dead code | Gate 2 adjudication pending |
+| M-1 | MED | LiteLLMGatewayClient transcript opaque | Pre-existing, separately tracked |
+| L-1 | LOW | McpRegistry wall-clock direct Date.now | Pre-existing |
+| L-2 | LOW | materializeAssets hook arm not removed | Pre-existing |
+| LOW-3 | LOW | client-echoable principal on null-edge path | Pre-existing; restrict to test seam when convenient |
+| LOW-4 | LOW | ARCH-059 inv.3 text: state TTL 600 s vs. "≤60 s" | Carry-forward; amend to "state ≤10 min / codes ≤60 s" |
+| LOW-5 | LOW | ARCH-059 v18 text: "no config-schema change" vs. 3 new optional AuthConfig fields | Carry-forward; amend to "no breaking config change" |
+| LOW-6 | LOW | DES-093 v19 text: "both stored as null" — `state=` stores `''` not null; `if (clientState)` guards correctly | New this review; add `|| null` coercion or amend DES-093 text |
+
+**Architecture consistency overall: v19-scoped changes are consistent with ARCH-059 v19. Pre-existing H-2/H-3 remain outstanding on their own adjudication track. One new LOW-6 text nit. No new violations.**
+
+### Validation & handover check (v19)
+
+- **VAL-095 (REQ-012, v19):** `real:true`, green, iter v19 (08-validation.md authoritative; trace reports 0 未真實驗證). 9/9 acceptance cases pass (all pre-existing carry-forward green; v19 client-state behavior validated by IT-078 cases 21–22 and live curl below).
+- **Live evidence (Gate 7.5):** IT-078 31/31 (29 pre-existing + 2 new v19 cases). Case 21: `/authorize?...&state=CLIENT_STATE_ABC123_V19VAL` → fake Google → `/oauth/google/callback` → final client redirect carries `state=CLIENT_STATE_ABC123_V19VAL` byte-exact + `iss=http://127.0.0.1:19195` (PASS). Case 22: no state param → no `state=` in client redirect + `iss` present (PASS). Full token exchange: POST /token (PKCE) → bearer; authenticated `/mcp` returns 37 tools.
+- **Full suite:** 1350/1350 pass (233 files; +2 new IT-078 cases; zero regression against 1348/1348 pre-v19 baseline).
+- **Production service (Gate 7.5 smoke):** `systemctl --user restart rwe.service` → `oauth_state.client_state` column present (idempotent migration confirmed); 37 tools; `/authorize` → `accounts.google.com` (v18 Google-host evidence carries forward).
+- **No mock-only/unverified REQ for any v19-touched item.**
+- **`08-validation.md`:** present, v19 Gate 7.5 PASSED section written (2026-08-19).
+- **`README.md`:** present. Current-state v19. OAuth2 client-state round-trip documented in feature list. No stale commands.
+- **`DEPLOY.md`:** present. Current-state v19. No new config keys in v19 (`無新設定鍵`). §1 設定總表 unchanged — no new rows, no key duplication. §7 変更紀錄 has v19 entry ("無破壞性變更；無新設定鍵；自動遷移…"). No superseded instructions outside §7 変更紀錄. Config keys deduplicated.
+- **Unreachable dep (carry-forward):** interactive browser Google consent flow — headless-unreachable; same pre-existing `unreachable-dep` classification.
+- **Validation verdict: Gate 7.5 v19 PASSED. VAL-095 v19 real:true. 1350/1350 pass. README + DEPLOY present, current-state. No mock-only/unverified REQ.**
+
+### Retro (v19 — OAuth2 client state round-trip + RFC 9207 iss)
+
+**What changed (IMPL-122 v19, TASK-093):**
+
+- `src/auth/token-store.ts`: `oauth_state` CREATE TABLE gains `client_state TEXT` (nullable); idempotent `ALTER TABLE … ADD COLUMN client_state TEXT` migration (try/catch pattern per `sqlite-run-store.ts:64`); `putState()` params extended with `clientState?: string | null` (optional, `?? null` guard against undefined bind); INSERT bind extended; `consumeState()` SELECT extended with `client_state`; return type gains `clientState: string | null`.
+- `src/auth/auth-service.ts`: `authorize()` captures `const clientState = url.searchParams.get('state')` after binding/loopback checks, passes to `putState()`; `googleCallback()` destructures `clientState` from `consumeState`; in the absolute-URL (try) branch: `if (clientState) u.searchParams.set('state', clientState)` + unconditional `u.searchParams.set('iss', effectiveIssuer)` (raw, not slash-stripped). Catch branch (relative-URI fallback, unreachable post-v16) NOT touched.
+- No `server.ts` changes — handler signatures unchanged.
+
+**What went well:**
+
+- Root cause was immediately actionable: the ARCH-059 description of the `oauth_state` table already had "engine-leg state" language; adding `client_state` as a second distinct column was the obvious Karpathy-minimal fix.
+- The architectural decision to keep the engine-leg state and client state structurally separate (different columns, never conflated) meant no control-flow refactor — two surgical edits only.
+- DES-093 v19 note on seam-consistency ("client_state is CLIENT-supplied — no new clock/CSPRNG read") let the TDD wavefront analysis at Gate 3+4 be trivially quick.
+- IT-078 case structure (real SQLite + real HTTP server + fake Google server) made the client-state round-trip an easy end-to-end integration test to add.
+
+**What to change:**
+
+- **`|| null` coercion in authorize()**: `url.searchParams.get('state')` returns `''` for `state=`; the `?? null` guard in putState only catches `undefined`. A `|| null` coercion at the capture site (`const clientState = url.searchParams.get('state') || null`) would make the stored value consistently null for both absent and empty, matching DES-093 v19 text and removing the LOW-6 nit. One-liner, safe to do at any time.
+- **composeConfig snapshot test is now 5-for-5 overdue** (named at v16, carried through v17/v18/v19). v19 adds no new config keys, but the pattern continues. MUST build before next config-adding iteration.
+- **TASK-018** (OIDC task): functionally superseded by v15+v17+v18+v19; recommend close/annotate in 03-tasks.md to remove the persistent LOW trace gap.
+- **LOW-4** (ARCH-059 inv.3 state TTL text): carry-forward from v17.
+- **LOW-5** (ARCH-059 v18 text "no config-schema change"): carry-forward from v18.
+- **LOW-6** (new this review): DES-093 "both stored as null" text vs `''` stored for empty-string; add `|| null` coercion or amend DES-093 text.
+
+**Impact closure:**
+
+- **"OAuth state mismatch - possible CSRF attack" connect failure:** CLOSED. Root cause: engine handled only its own Google-leg state; never echoed the client's state back to the client redirect_uri (RFC 6749 §4.1.2). Fix: capture client state at /authorize, persist in `oauth_state.client_state`, echo at final client redirect with RFC 9207 `iss`. IT-078 cases 21–22 confirm round-trip; live curl two-case validation; production service restart confirmed idempotent migration.
+- **REQ-012 v19 real-client connect (client-state clause):** CLOSED.
+- **ARCH-059 v19 (client-state structural separation documented):** CLOSED. Architecture accurately reflects the two structurally separate state values; no new seam, no new module.
+
+**Known tech debt (all recorded, updated from v18):**
+
+*Carry forward — Gate 2 adjudication pending:*
+- [HIGH] H-2: ARCH-017/D-PROFILE/DES-031 builder cluster unwired
+- [HIGH] H-3: D-KILL/D-PROC cli-lifecycle + timeout-race orphaned
+
+*Carry forward — lower urgency:*
+- [MED] M-1: LiteLLMGatewayClient transcript opaque
+- [LOW] LOW-3: client-echoable principal on null-edge path
+- [LOW] LOW-4: ARCH-059 inv.3 text — amend state TTL bound
+- [LOW] LOW-5: ARCH-059 v18 text — amend "no config-schema change"
+- [LOW] LOW-6: DES-093 v19 text — `state=` empty stores `''` not null; add `|| null` coercion or amend text (new this review)
+- [LOW] L-1: McpRegistry wall-clock direct Date.now
+- [LOW] L-2: materializeAssets hook arm not removed
+
+---
+
+## v18 GATE 8 REVIEW (2026-08-18, SUPERSEDED by v19 above — kept for history)
 
 > This section supersedes "## v17 GATE 8 REVIEW (2026-08-18)" below (kept for history).
 > **v18 fix-mode iteration — Google OAuth 3-endpoint real-consent fix (REQ-012 v18, ARCH-059 v18).**
