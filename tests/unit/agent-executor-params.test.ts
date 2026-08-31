@@ -59,13 +59,18 @@ describe('AgentExecutor + RunParams — required dispatch wiring (UT-100, DES-10
       provenance: { model: 'default', effort: 'engine', timeoutMs: 'engine', appendPrompt: 'engine' },
     };
 
+    // InMemoryRunStore.appendTranscript drops events for a run it has never seen (run-store.ts:192),
+    // so the run must exist before dispatch or the transcript reads back empty. createRun mints its
+    // own id, so use the returned one rather than a literal.
+    const runId = await store.createRun({ script: 'return 1;' } as Parameters<typeof store.createRun>[0]);
+
     await executor.run({
-      runId: 'r-2', agentId: 'a-2', prompt: 'hi', opts: {},
+      runId, agentId: 'a-2', prompt: 'hi', opts: {},
       workspace: '/tmp/ws', signal: new AbortController().signal,
       runParams,
     } as Parameters<typeof executor.run>[0]);
 
-    const events = await store.getTranscript('r-2', 'a-2');
+    const events = await store.getTranscript(runId, 'a-2');
     const harnessEvent = events.find((e) => e.kind === 'harness') as { data?: { descriptor?: HarnessDescriptor & { provenance?: Record<string, string> } } } | undefined;
     expect(harnessEvent?.data?.descriptor?.provenance?.['model']).toBe('default');
   });
