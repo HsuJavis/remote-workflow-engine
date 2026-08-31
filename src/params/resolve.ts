@@ -19,10 +19,14 @@ export interface RunParams {
   effort?: Effort;
   timeoutMs?: number;
   appendPrompt?: string;
-  // author-only trio (REQ-092 close; UserOverrides cannot spell them)
+  // author-only pair (REQ-092 close; UserOverrides cannot spell them). `skills` is NOT a
+  // RunParams field (B-3): skills are server-side assets, every stored skill is materialized
+  // into every run workspace regardless of workflow, and HarnessDescriptor.skills is derived
+  // from the filesystem (readSkillNames(assetRoot)) — unrelated to this snapshot. REQ-092's
+  // lock on `skills` is satisfied because a caller naming it in overrides gets PARAM_LOCKED
+  // (contract.ts), not because this type carries it.
   prompt?: string;
   tools?: string[];
-  skills?: string[];
   provenance: Record<'model' | 'effort' | 'timeoutMs' | 'appendPrompt', 'override' | 'default' | 'engine'>;
 }
 
@@ -37,7 +41,6 @@ export function defaultRunParams(defaults: HarnessDefaults | undefined): RunPara
     timeoutMs: defaults?.timeoutMs,
     prompt: defaults?.prompt,
     tools: defaults?.tools,
-    skills: defaults?.skills,
     provenance: {
       model: defaults?.model !== undefined ? 'default' : 'engine',
       effort: 'engine', // HarnessDefaults carries no author-side effort
@@ -113,7 +116,6 @@ export function resolveCallParams(
     appendPrompt,
     prompt: runParams.prompt,
     tools: runParams.tools,
-    skills: runParams.skills,
     provenance: { model: modelRung, effort: effortRung, timeoutMs: timeoutMsRung, appendPrompt: appendPromptRung },
   };
 }

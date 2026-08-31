@@ -22,6 +22,12 @@ import { parseMeta, parseMetaParams } from './workflow-meta.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
 import { validateHarnessDefaults, type HarnessDefaults } from './harness-defaults.js';
+// v21 Gate 6 adjudication (A-1): type-only import — erases at compile, no runtime edge, and this
+// file is not one the sandbox child loads, so the .js->.ts child-import hazard does not apply.
+// Bars a VALUE import only (which would drag the validator into a module the catalog stays
+// independent of); typing get()/getFull()'s `params` as ParamContract|undefined instead of
+// `unknown` is the point of the adjudication; list() carries the same typing.
+import type { ParamContract } from './params/contract.js';
 
 // DES-098: hardcoded operator email for boot backfill of NULL-owner rows
 const BOOT_BACKFILL_EMAIL = 'hsuhungjung@gmail.com';
@@ -185,7 +191,7 @@ export class WorkflowCatalog {
    *  value as-stored — canonicalization of a NULL/undefined contract belongs to the consumer, not
    *  to this read (no `src/params/contract.ts` import here). */
   async get(name: string): Promise<{
-    script: string; version: string; defaults: HarnessDefaults | undefined; params: unknown;
+    script: string; version: string; defaults: HarnessDefaults | undefined; params: ParamContract | undefined;
   }> {
     const row = this._db
       .prepare('SELECT script, version, defaults, params FROM workflows WHERE name = ?')
@@ -197,7 +203,7 @@ export class WorkflowCatalog {
       script: row.script,
       version: row.version,
       defaults: row.defaults ? JSON.parse(row.defaults) as HarnessDefaults : undefined,
-      params: row.params ? JSON.parse(row.params) : undefined,
+      params: row.params ? JSON.parse(row.params) as ParamContract : undefined,
     };
   }
 
@@ -208,7 +214,7 @@ export class WorkflowCatalog {
    *  Throws CatalogNotFoundError for unknown names. */
   async getFull(name: string): Promise<{
     name: string; script: string; version: string; createdAt: string;
-    owner: string | null; defaults: HarnessDefaults | undefined; params: unknown;
+    owner: string | null; defaults: HarnessDefaults | undefined; params: ParamContract | undefined;
   }> {
     const entry = await this.get(name); // throws CatalogNotFoundError when absent
     const row = this._db
@@ -217,7 +223,7 @@ export class WorkflowCatalog {
     return { name, ...entry, createdAt: row.createdAt, owner: row.owner };
   }
 
-  async list(): Promise<Array<{ name: string; version: string; createdAt: string; description: string; params: unknown }>> {
+  async list(): Promise<Array<{ name: string; version: string; createdAt: string; description: string; params: ParamContract | undefined }>> {
     // v9 (REQ-061): surface each workflow's purpose (meta.description) so a client can see WHAT each
     // one does without reading its script — parsed on-demand from the stored script (always in sync).
     // v21 (DES-103, TASK-099): `params` is read from the COLUMN, never a script re-parse.
@@ -227,7 +233,7 @@ export class WorkflowCatalog {
     return rows.map((r) => ({
       name: r.name, version: r.version, createdAt: r.createdAt,
       description: parseMeta(r.script).description,
-      params: r.params ? JSON.parse(r.params) : undefined,
+      params: r.params ? JSON.parse(r.params) as ParamContract : undefined,
     }));
   }
 

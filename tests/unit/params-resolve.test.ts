@@ -58,14 +58,14 @@ describe('mergeRunParams() — admission-time fold of overrides over registered 
     expect(rp.provenance.timeoutMs).toBe('default');
   });
 
-  it('folds all 7 registered keys — the author-only trio (prompt/tools/skills) rides the snapshot too (REQ-092 close)', () => {
+  it('folds all 6 registered keys — the author-only pair (prompt/tools) rides the snapshot too (REQ-092 close); skills is NOT a RunParams field (B-3 — skills are global server-side assets, unrelated to this snapshot)', () => {
     const rp = mergeRunParams(DEFAULTS, {});
     expect(rp.prompt).toBe('author prompt');
     expect(rp.tools).toEqual(['Read']);
-    expect(rp.skills).toEqual(['s1']);
+    expect((rp as unknown as { skills?: unknown }).skills).toBeUndefined();
   });
 
-  it('a locked key can never appear via UserOverrides (ADR-001: closed type, ts-enforced) — the trio is untouched by overrides regardless', () => {
+  it('a locked key can never appear via UserOverrides (ADR-001: closed type, ts-enforced) — the author-only pair is untouched by overrides regardless', () => {
     const rp = mergeRunParams(DEFAULTS, {} as UserOverrides);
     expect(rp.prompt).toBe('author prompt'); // never comes from overrides — no such field exists on UserOverrides
   });
