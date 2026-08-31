@@ -2877,3 +2877,40 @@ TASK-104's `files:` line names `tests/unit/harness-defaults.test.ts`, which neve
 name — a stale pointer to the deleted `tests/unit/resolve-harness-params.test.ts`, whose replacement is
 UT-099 / `tests/unit/params-resolve.test.ts`. The integrator corrects the task card's file list;
 same class as the A-9 doc drift in 05-tests.md.
+
+---
+
+## Orchestrator adjudication #3 — v21 Gate 6 third send-back (2026-09-01)
+
+The DES-clause sweep worked: this round produced **two** items instead of nine, and neither blocks.
+Both are settled here so no further Gate 5 pass is needed — the remaining work is pure GREEN
+implementation of the three outstanding red cases.
+
+### C-1 (item 1) — the args-side enum cap is IN scope; the implementer adds its one test in the same pass
+DES-101's structural-bound clause reads unqualified over knobs **and** args, and the sibling
+`> 32 declared knobs+args` count bound already applies to both, so extending the per-spec
+`enum ≤ 32 members` cap to args specs is the correct reading, not scope creep. **Pre-authorized, exactly
+as B-3 was:** the implementer adds the single covering case — an args spec carrying a 33-member enum
+rejects with `PARAM_CONTRACT_INVALID` and `param: 'args.<key>'` — **in the same pass as the
+implementation**. This is an adjudicated one-line test addition, so the exit-gate rule about not
+shipping untested behavior is satisfied by writing it, not by reporting it back.
+
+### C-2 (item 2) — TASK-103 is verified-green, not missing
+`src/github/issue-reporter.ts`, `src/mcp-facade.ts` and `src/server.ts` for the workflow-bound problem
+reports (REQ-095) were already complete and green at checkpoint `fb0a36f` and were untouched by the
+addendum. **The integrator should expect no diff for TASK-103** and must not treat its absence from this
+pass's changes as an unimplemented task.
+
+### Remaining work at this point (nothing else is open)
+Three red cases to turn green, all previously adjudicated:
+1. per-spec `enum ≤ 32 members` cap in `parseParamContract`, knobs and args alike (C-1, B-1);
+2. `> 64`-byte supplied-value truncation with `suppliedTruncated: true` in the **rejection detail
+   payload** — note this is the error-echo truncation from DES-101's rejection table and is unrelated to
+   B-2's dropped `promptTruncated`/`appendPromptBytes`, which concerned the appendPrompt itself and stay
+   dropped (REQ-094 rejects an oversize append, never truncates it);
+3. UT-100's harness-descriptor per-key provenance (`provenance.model` undefined), which is TASK-101's
+   `src/agent-executor.ts` decoration site, carried since adjudication A-8.
+
+Plus the still-outstanding implementation items already adjudicated and not yet landed: the
+`spec.default` cross-validation vocabulary (A-2), removal of the dead `RunParams.skills` field with its
+assertion amended in the same pass (B-3), and the doc corrections (A-9, B-7, B-8).
