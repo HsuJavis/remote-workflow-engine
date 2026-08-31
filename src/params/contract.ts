@@ -68,7 +68,7 @@ const OPENROUTER_PASSTHROUGH = /^openrouter\/.+/;
 /** D-AUTH-5-B precedent (`harness-defaults.ts:70`): the alias check only applies when the server
  *  has a configured, non-empty alias table — an unconfigured/default-alias server must not reject
  *  every model string. An `openrouter/<id>` passthrough is always accepted regardless. */
-function isKnownAlias(alias: string, aliasNames: Set<string>): boolean {
+export function isKnownAlias(alias: string, aliasNames: Set<string>): boolean {
   if (aliasNames.size === 0) return true;
   if (OPENROUTER_PASSTHROUGH.test(alias)) return true;
   return aliasNames.has(alias);

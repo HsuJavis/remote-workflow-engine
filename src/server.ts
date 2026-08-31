@@ -19,6 +19,7 @@ import { SqliteRunStore } from './store/sqlite-run-store.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
 import { SystemClock } from './clock.js';
 import { LiteLLMGatewayClient, type AliasMap } from './gateway/client.js';
+import { DEFAULT_ALIASES } from './default-aliases.js';
 import type { GatewayClient } from './gateway/client.js';
 import type { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { loadAgentDefinitions } from './agent-definitions.js';
@@ -1186,9 +1187,13 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     maxEffort: config?.maxEffort ?? 'high',
   };
   let continuations: ContinuationStore | undefined;
-  // v21 Gate 8 send-back (review §4 B1): same aliasNames Set the catalog already builds above
-  // (line ~1141) — the admission-time UNKNOWN_ALIAS check needs the identical configured table.
-  const aliasNames = config?.aliases ? new Set(Object.keys(config.aliases)) : undefined;
+  // v21 Gate 8 RE-REVIEW (review §R2 (c), R-G3 MED): unlike the catalog's aliasNames (line ~1141,
+  // registration-time enum check, deliberately empty=accept-all per D-AUTH-5-B), the admission-time
+  // UNKNOWN_ALIAS check must mirror what DISPATCH actually resolves against — and on the documented
+  // default/unconfigured deployment dispatch resolves via DEFAULT_ALIASES (run-manager.ts's
+  // DEFAULT_GATEWAY_CONFIG), never "accept everything". Feeding an empty Set here left the B1/B2
+  // admission control inert on exactly the deployment shape most installs use.
+  const aliasNames = new Set(Object.keys(config?.aliases ?? DEFAULT_ALIASES));
   const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames, onTerminal: (runId, status) => { void continuations?.onTerminal(runId, status); } });
   // v8 Slice 4 (REQ-053): SQLite-persisted on-completion chaining, same workRoot convention as
   // schedules.db; rearmAtBoot reconciles any continuation whose target terminated while down.

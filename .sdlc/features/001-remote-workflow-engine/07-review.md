@@ -1,10 +1,65 @@
 ---
 stage: review
-status: closed
+status: send-back
 ---
 # 07 Review & Retro — Gate 8
 
-## v21 GATE 8 REVIEW (2026-09-01, CURRENT / AUTHORITATIVE — SEND BACK to tests+impl)
+## v21 GATE 8 RE-REVIEW (2026-09-01, CURRENT / AUTHORITATIVE — STILL SEND BACK to tests+impl)
+
+> **Second Gate 8 pass — after the send-back closeout (IMPL-139, commits `5ff0bf2`, `e6077e0`).**
+> The first v21 pass (section below) routed B1..B5 to Gates 5+6; the impl gate re-ran and reported
+> B1..B5 closed. The two architecture-consistency experts were then **re-dispatched** and re-ran on
+> the closeout scope (`.panel/review/adversarial.md`, `quality-dimensions.md`, both dated this pass).
+> **Verdict: STILL NOT closeable — `send_back: ["tests","impl"]`, `arch_consistent: false`.**
+> Three of the five items (B3/B4/B5) closed cleanly and are verified on disk. **But B1 closed only
+> its narrowest half, and the B2 fix introduced a NEW HIGH security regression.** Because this is the
+> post-auto-re-run re-review and it is still blocking, per the Gate 8 contract this hands back to the
+> orchestrator with the pinned scope below.
+
+### R1. What the re-run closed cleanly (verified on disk, not from the log)
+
+| item | claim | reviewer verification |
+|---|---|---|
+| B3 | `redact()` at the `kind:'harness'` decoration site before `appendTranscript` | ✅ `agent-executor.ts:415-422`; both gateways emit the descriptor only via `onHarness` (no `kind:'harness'` producer reaches `onEvent`) |
+| B4 | one `isKnownAlias` predicate, passthrough-aware + empty-table-skipping, at both rungs | ✅ `contract.ts:71-75`, used at registration (`:175`) and admission (`:284`); parity with `harness-defaults.ts:70` |
+| B5 | four stale ARCH lines amended | ✅ nesting bound dropped, `composePrompt` 4-arg named, `promptTruncated`/`appendPromptBytes` dropped, ARCH-070 note restated |
+
+### R2. Blocking findings from THIS re-review (both experts verdict NOT consistent)
+
+Every load-bearing claim re-verified on disk by the reviewer before routing.
+
+| # | Sev | Finding (expert id) | Reviewer-verified evidence |
+|---|-----|---------------------|----------------------------|
+| **R-G1** | **HIGH (security regression, NEW this closeout)** | The B2 fix turns the redaction marker into a **secret-dereference primitive** (adversarial G1). `unredactBestEffort` blind-expands any `‹secret:NAME›` to the live secret value on resume and cannot tell an engine-written marker from caller-typed text. | `run-manager.ts:128-144` (blind `split/join` over the whole snapshot), reached by every rehydrated resume at `:644-646`; `appendPrompt` is arbitrary caller text screened only for byte length (`contract.ts:261-271`, no char screen), lands verbatim in `RunParams` (`resolve.ts:61`) and is dispatched into the prompt (`agent-executor.ts:342`). Attack: `overrides.appendPrompt="…‹secret:RWE_SECRET_GITHUB_TOKEN›"` → suspend → resume → the real credential is composed into the dispatched prompt; the harness re-redaction at `:415` then hides the trace (B3 masks the B2 defect). Inverts ARCH-056's one-way `redact()` choke-point premise (02-architecture.md:627-640). **Minimum fix: delete `unredactBestEffort`, keep the `:550` typed refusal** — net deletion, closes G1/G4/G5 together. |
+| **R-G2** | **HIGH** | B1 checks only caller-supplied `overrides.model`, never the **effective** post-merge model — the "stale registered defaults" hole S-1 was adopted to close is **still open** (adversarial G2 ≡ the original B1 intent). | `contract.ts:241` loops over `Object.entries(obj)` = caller-supplied keys only; a named run with no `overrides.model` never reaches the `:284` check, and even when supplied it is gated on `spec.enum === undefined`. `run-manager.ts:437` validates before `mergeRunParams` (`:443-445`), so the merged `defaults.model` is never re-examined. 02-architecture.md:974 + interface table :959 pin **effective** (post-merge). Blast radius is *larger* than the override case B1 fixed — a stale default hits every submission. Fix: assert the alias on `effectiveParams.model` after merge, before `createRun`. |
+| R-G3 | MED | The admission check is fed an **empty** alias table on the documented default deployment while dispatch uses `DEFAULT_ALIASES` (adversarial G3). | `server.ts:1191` `config?.aliases ? … : undefined` → `run-manager.ts:266` `?? new Set()` → `contract.ts:72` `size===0 ⇒ return true` (accept all), yet dispatch resolves against `DEFAULT_ALIASES` (`run-manager.ts:48,242`); `main.ts:36-38` documents omitting `aliases` as normal. The B1 control is inert exactly where most installs sit. Same line duplicates the Set expression already built at `server.ts:1141` (F6's fourth instance). Fix: feed `config?.aliases ?? DEFAULT_ALIASES`, hoist the one Set. |
+| R-G4 | MED | A rotated secret makes resume dispatch **different bytes** than admission — silent substitution, the exact thing the restored invariant forbids (adversarial G4). | `run-manager.ts:644-646` restores from the **current** SecretValueProvider; D-1 records this very deployment has an expiring token. Subsumed by R-G1's deletion. |
+| R-G5 | MED | `‹secret:…›` marker grammar now duplicated into `run-manager.ts`, breaking `secret-resolver.ts`'s single-owner boundary (adversarial G5). | literal in three spellings: `secret-resolver.ts:101` (writer), `run-manager.ts:132` (inverter), `:550` (residue guard). No shared constant. Closed by R-G1's deletion + one exported prefix constant. |
+| R-G6 | MED | A new security-relevant mechanism + a new caller-visible error code shipped with **zero** architecture record (adversarial G6). | `grep` over the ledger: `PARAM_SECRET_UNAVAILABLE` = 0 hits in 02/04/05-docs though thrown at `run-manager.ts:551`; `unredact` absent from v21 ARCH/DES; interface-table `workflow_resume` row (:960) and ARCH-066 inv-5 (:743) describe only the write direction. B5 amended retracted design but missed the NEW mechanism. |
+
+**Also blocking-adjacent LOW (batch with the above re-run):** R-G7 ARCH-064 api line still declares pre-B1 error set (02-architecture.md:724 omits `UNKNOWN_ALIAS`; code `contract.ts:47`); R-G8 ARCH-056 sink enumeration still asserts the B3-disproved "harness already redacted" premise (:633); R-G9 truncate-before-redact can leave partial secret material in the persisted descriptor (`agent-executor.ts:26-32` cuts before `:415` redacts — redact-first fixes it); R-G10 the two `kind!=='harness'` redaction-skip guards survive with their justification deleted (`agent-executor.ts:159,436` — delete both for strictly-less-code). Quality lens adds three LOW doc-drift only (QD-OBS-1 process-view `appendPromptBytes`; QD-CONS-1 `workflow_agent_log` description omits the v21 `harness` output additions; QD-CONS-2 ARCH-064 note names phantom `parseUserOverrides`) — **the quality lens confirms every code-level invariant it checked holds; its 3 findings are doc-level.**
+
+**Re-run scope (pinned):** Gate 5 first — RED tests for (a) the **adversarial** resume case (`appendPrompt` containing a marker literal → resume must NOT produce the secret value), (b) effective post-merge model refused with **zero durable work** on an unresolvable default (negative assertion per ADR-008 no-telemetry), (c) default-deployment alias table non-empty. Gate 6 then GREEN + the deletion (`unredactBestEffort`) + R-G3 wiring + R-G6/G7/G8 doc amendments + R-G9/G10 line-order/deletion cleanups + full regression. The adversarial minimum path (steps 1/2/4) is a **net reduction in source lines** — the tie-break's own signal that the remaining gap is machinery that should not have been added.
+
+### R3. Consolidated verdict for THIS re-review
+
+- **`arch_consistent: false`** — both experts independently NOT-consistent; adversarial 10 findings (2 HIGH, 4 MED, 4 LOW), quality 3 LOW doc-drift.
+- Traceability, dashboard, module boundaries, and Gate 7.5 real-tier evidence status are **unchanged from the first pass below** (re-verified this pass: `sh .sdlc/trace` → 816 items / 9 gaps, all pre-existing; `dashboard_check` → 1 mid crow's-foot FALSE POSITIVE + 1 low version-skew; `solid_check` → PASS 7 modules / 0 mid / 10 low unclaimed-file debt; `rtm.md` 95/95 REQ real-verified; DEPLOY.md 一鍵部署 `./deploy.sh --background` verified-run, history-free 設定總表). **None of these block; the block is architecture consistency (R-G1 HIGH security regression + R-G2 HIGH half-closed).**
+- `.panel/` **retained** (send_back non-empty — the re-run gates and the next re-review need it). `gates.review.passed` stays **false**.
+
+### R4. Report (v21 Gate 8 RE-REVIEW, 2026-09-01 — CURRENT / AUTHORITATIVE)
+
+```
+Gaps: high=2 mid=4 low=7  (architecture-consistency findings) · trace: high=0 mid=1 low=8 all pre-existing/recorded
+Drift: none inside the v21 closure; NEW security regression R-G1 introduced by the B2 closeout; doc-drift R-G6..G8 + QD; 7 pre-existing cross-iteration iter-drift pairs recorded
+Architecture consistent: NO — R-G1 HIGH (B2 fix = secret-dereference primitive on resume), R-G2 HIGH (B1 half-closed, stale-default hole open), R-G3..G6 MED, R-G7..G10 + QD LOW
+Validation: real-tier all-green? YES (REQ-090..095 real:true, deploy.sh boot-from-docs) · README+DEPLOY present? YES (current-state, history-free, 一鍵部署 verified-run)
+Conclusion: SEND BACK — re-run Gate 5 (tests) + Gate 6 (impl); scope pinned in R2. Post-auto-re-run still-blocking → hand back to orchestrator. gates.review.passed stays FALSE; .panel/ retained.
+```
+
+---
+
+## v21 GATE 8 REVIEW (2026-09-01, FIRST PASS — superseded by the RE-REVIEW above; kept for history — SEND BACK to tests+impl)
 
 > **v21 — tunable-parameter contract, author/user separation part 1 (REQ-090..095 → ARCH-064..070 +
 > ADR-001..008 → DES-101..108 → TASK-096..104 → IMPL-129..138 → VAL-100..105).**

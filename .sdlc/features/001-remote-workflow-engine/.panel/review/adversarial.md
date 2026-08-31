@@ -1,437 +1,399 @@
-# Gate 8 review — Adversarial architecture group (security ⟂ scalability/perf ⟂ testability, Karpathy tie-break)
+# Gate 8 re-review — Adversarial architecture group (security ⟂ scalability/perf ⟂ testability, Karpathy tie-break)
 
 - **iteration:** v21 (tunable-parameter contract, REQ-090..095 → ARCH-064..070 + ADR-001..008)
-- **compared:** `02-architecture.md` (ARCH-064..070, ADR-001..008, v21 interface table, decision rationale)
-  vs `06-impl-log.md` IMPL-129..138 and the files those entries name.
-- **scope discipline:** only the `files:` of IMPL-129..138 plus three module-boundary neighbours they
+- **pass:** **RE-REVIEW after the Gate 8 send-back closeout (IMPL-139).** The prior pass on this file
+  covered IMPL-129..138 at `59d1614` and filed F1..F10; `07-review.md` §4 routed F1/F2/F3/QD-3/F8 as
+  blocking B1..B5 and dispositioned F4..F10/QD-4 as recorded debt.
+- **compared:** `02-architecture.md` (ARCH-064..070, ADR-001..008, ARCH-056, the v21 interface table,
+  the v21 decision rationale) vs `06-impl-log.md` IMPL-129..**139** and the files those entries name.
+- **scope discipline:** the `files:` of IMPL-129..139 only, plus three module-boundary neighbours they
   directly reference (`src/secret-resolver.ts` `redact()`, `src/submission-validator.ts`,
-  `src/store/sqlite-run-store.ts`). No full-tree scan.
+  `src/default-aliases.ts`). The *new* code surface is exactly two commits — `git diff
+  59d1614..HEAD -- src/ tests/` (`5ff0bf2`, `e6077e0`; `59d1614` was docs-only) — read in full. No
+  full-tree scan.
 - **adjudications honoured as design, not drift:** A-1..A-9, B-1..B-8, C-1..C-2, D-1..D-3
-  (04-design.md:2724-2948). Nothing settled there is re-litigated below; where the *code* follows an
-  adjudication but `02-architecture.md` was never amended, it is filed as doc-drift (F8), not as a
-  code violation.
-- **verdict:** **NOT consistent — 10 findings** (1 HIGH, 4 MEDIUM, 5 LOW).
-
-**Headline.** The load-bearing v21 invariants hold and hold well: the closed `UserOverrides` type
-(ADR-001), the admission rung sitting between `catalog.get` and `createRun` (ARCH-066), `CallKey`
-byte-identical (ADR-002 — verified by `git diff master...HEAD -- src/run-manager.ts`, zero `CallKey`
-hunks), the pinned resume snapshot, `thinkingFor` still the sole writer of `options.thinking`
-(ARCH-069), the ceilings forwarded through `composeConfig()` (ARCH-066 inv-6 — the fifth instance of
-that bug class genuinely closed), `additionalProperties:false` on the `overrides` schema, and
-fail-closed registration. What did **not** hold is the *periphery* of those invariants: one adopted
-decision produced no code at all (F1), and three of the invariants are true on the primary path but
-false on a secondary path the ARCH text never enumerated — resume (F2), the harness transcript sink
-(F3), nested `workflow()` frames (F4). All four are the same shape: **the invariant was implemented
-where the design diagram drew it, and not where the system actually flows.**
+  (`04-design.md`:2724-2948) and the §4 non-blocking debt table. Nothing settled there is
+  re-litigated; carried-forward debt is listed at the end and is **not** counted as a violation.
+- **verdict:** **NOT consistent — 10 findings (2 HIGH, 4 MEDIUM, 4 LOW).**
 
 ---
 
-## F1 — HIGH — the effective-model alias check at submission was adopted and never implemented; `validateUserOverrides`'s `aliasNames` is a dead parameter
+## Headline
 
-**Violates:** `02-architecture.md:974` (*"Quality S-1 … adopted in reduced form … the effective
-(post-merge) model is checked at submission with the existing alias rule … reuses the existing
-`UNKNOWN_ALIAS` code … it stays — but as one call, not a subsystem"*), the v21 interface table
-`02-architecture.md:959` (*"existing `UNKNOWN_ALIAS` for an unresolvable effective model — all
-**before** any durable work"*), and ARCH-064's declared api `02-architecture.md:724`
-(`validateUserOverrides(contract, raw, aliasNames, ceilings)`).
+**Three of the five send-back items closed cleanly. One (B1) closed only its narrowest half. One
+(B2) closed the reported symptom by introducing a worse primitive than the one it removed.**
 
-**Evidence:**
-- `src/params/contract.ts:217-267` — `validateUserOverrides` takes `aliasNames: Set<string>` and
-  **never reads it**. The only alias use in the module is `parseParamContract`
-  (`contract.ts:159-165`), i.e. registration.
-- `src/run-manager.ts:399` — `validateUserOverrides(contract, overrides, new Set(), this._ceilings)`:
-  the call site hardcodes an empty set, which is only harmless *because* the parameter is dead.
-- `src/submission-validator.ts:109-113` — the existing `UNKNOWN_ALIAS` rule scans
-  `extractModelAliases(spec.script)` only; a named run carries no inline script, so neither the
-  registered default nor the user override is ever alias-checked. This is exactly the hole
-  `02-architecture.md:974` cites as its evidence for keeping the check.
-- `src/gateway/client.ts:323` — the unresolvable alias surfaces at dispatch as
-  `{ok:false, provider:'unknown', reason:'terminal'}` → `agent()` resolves `null`.
+Verified closed on disk, not from the log:
 
-**Failure scenario.** `workflow_run({name:'nightly', overrides:{model:'gpt-5-turbo'}})` on any
-workflow whose contract has no `model` enum (the canonical contract — i.e. every pre-v21 workflow and
-every script with no `params` block) is **admitted**: a run row is written, a workspace is created, a
-sandbox child is forked, a global concurrency slot and an agent-semaphore slot are taken, and then
-every single `agent()` call returns `null`. The caller gets a run that fails opaquely instead of a
-typed refusal before any durable work.
-
-**Lens argument, with the conflict surfaced.**
-- *Security:* fail-closed, no escalation — this is a robustness/DoS-adjacent defect, not a breach.
-  The security lens alone would rate it LOW.
-- *Scalability:* this is where it earns HIGH. v21 hands every authenticated principal a two-field
-  JSON knob that reliably consumes a run row, a workspace directory, a sandbox process and a slot
-  out of the D-DOS global semaphore, for a request that can never succeed. ADR-005 explicitly
-  accepted cost amplification *within the ceilings*; it did not accept unbounded admission of runs
-  that are dead on arrival, and `02-architecture.md:959`'s "before any durable work" is precisely the
-  clause that was supposed to cover it.
-- *Testability:* worst of the three. A parameter that is threaded, typed, documented in the ARCH api
-  line, and never read is **the exact inert-wiring class this whole iteration exists to kill**
-  (ADR-001's "a denylist … is one forgotten line away", ARCH-068's "omission must be a `tsc` error,
-  not a silent no-op"). It even reproduces the `resolveHarnessParams` shape that IMPL-137 deleted for
-  being a zero-caller function that looked wired.
-- *Karpathy tie-break:* the fix is one call, as the rationale itself says — reuse
-  `submission-validator`'s alias predicate (including the `openrouter/<id>` passthrough carve-out) on
-  the post-merge effective model at `run-manager.ts:399`, and either use or delete the `aliasNames`
-  parameter. Deleting a dead parameter is *also* an acceptable minimal outcome, but then
-  `02-architecture.md:959,974` must be amended to record that the check was dropped — silently
-  keeping the signature is the one option that is wrong under all three lenses.
-
----
-
-## F2 — MEDIUM — a resumed run dispatches the **redacted** snapshot: replay divergence
-
-**Violates:** ARCH-066 load-bearing invariant (5), `02-architecture.md:743`: *"the **dispatched** copy
-is never redacted (DES-088 persist-only redaction / replay-divergence invariant)"*.
-
-**Evidence:**
-- `src/run-manager.ts:411-413` — `persistedParams = redact(effectiveParams, …)`; the live `RunEntry`
-  correctly keeps the unredacted `effectiveParams` (`run-manager.ts:479`). Correct on the start path.
-- `src/run-manager.ts:595` — on resume/rehydrate:
-  `const effectiveParams = (await this._store.getEffectiveParams(runId)) ?? defaultRunParams(...)`.
-  `getEffectiveParams` reads the persisted column (`src/store/sqlite-run-store.ts:89-92`,
-  `src/run-store.ts:163`) — i.e. the **redacted** copy.
-- `src/run-manager.ts:626` — that value becomes `entry.effectiveParams`, which
-  `run-manager.ts:817` hands to every dispatch as `runParams`, and
-  `src/agent-executor.ts:339` composes into the outbound prompt.
-- `src/secret-resolver.ts:95-112` — `redact()` is a destructive substring replacement
-  (`‹secret:NAME›`); there is no inverse.
-
-**Failure scenario (scoped precisely).** A run is submitted with `overrides.appendPrompt` (or is
-registered with a `defaults.prompt`/`defaults.model`) containing any configured secret value as a
-substring. Before the restart, agents receive the real text. **After a process restart** — the
-`_requireLive` rehydrate path at `run-manager.ts:572-627`, i.e. `workflow_resume` on a `suspended`/
-`stopped`/`interrupted` run in a fresh process, and the REQ-059/060 boot re-hydration — the resumed
-tail dispatches `‹secret:NAME›` in place of that text. Same run, same journal, silently different
-model input. The same applies to `model`: an alias containing a secret substring resumes as an
-unresolvable alias. *Same-process* resume is unaffected: `_requireLive` returns the cached entry
-first (`run-manager.ts:570`) and nothing ever evicts it (`grep -n "_runs.delete" src/run-manager.ts`
-→ no matches), so the live unredacted snapshot is reused. The divergence is therefore
-restart-conditional, which is what holds this at MEDIUM rather than HIGH — but the restart path is
-exactly the one REQ-059/060 added durability for.
-
-**Lens argument.** *Security* is the lens that produced the redaction and it is satisfied on both
-paths (nothing leaks). The damage is on the *correctness/observability* side that DES-088 named
-explicitly as an invariant: the whole point of "persist-only redaction" is that the redaction must not
-become an input. *Testability:* IT-075's sink-completeness sweep tests the write direction only; there
-is no read-back test asserting that what resume dispatches equals what admission dispatched. The
-minimal Karpathy-consistent fix is a single read-side decision — persist redacted **and** keep the
-dispatchable copy out of band, or (cheaper, and the shape the codebase already uses for journals)
-accept that resume cannot reconstruct redacted text and refuse/annotate rather than silently
-substitute. Either way the current state is the one option ARCH-066 inv-5 forbids.
-
----
-
-## F3 — MEDIUM — the v21 `appendPrompt` reaches a **second** persist sink (the `kind:'harness'` transcript event) with no secret redaction
-
-**Violates:** ARCH-066 invariant (5) (*"the snapshot write is a NEW persist sink — it carries caller
-text (`appendPrompt`) and MUST be routed through the ARCH-056 `redact()`-on-persist path and added to
-the REQ-083 sink-completeness sweep"*, `02-architecture.md:743`) and adjudication B-4
-(04-design.md:2850-2857, *"the non-negotiable item of the batch"*).
-
-**Evidence:**
-- `src/agent-executor.ts:339` — `composePrompt(def?.systemPrompt, req.runParams.prompt, req.prompt,
-  req.runParams.appendPrompt)`: from v21 on, the composed prompt contains the user's `appendPrompt`
-  **and** the author's `defaults.prompt`.
-- That composed prompt is what both gateways put on the descriptor:
-  `src/gateway/client.ts:331-337` and `src/gateway/claude-agent-sdk-client.ts:585-593`
-  (`redactHarness({... prompt: req.prompt ...})`).
-- `src/agent-executor.ts:17-45` — `redactHarness()` performs a **4096-char head/tail truncation
-  only**. It does no secret-value redaction; its name asserts a property it does not provide.
-- `src/agent-executor.ts:390-412` — the decoration site persists the descriptor via
-  `store.appendTranscript(...)` with **no** `redact()` call, and `agent-executor.ts:419-424`
-  deliberately excludes `kind === 'harness'` from the live-event redaction on the grounds of
-  "double-redaction exclusivity (onHarness path above uses `redactHarness`)" — an exclusivity that is
-  only sound if `redactHarness` redacted secrets, which it does not.
-
-**Failure scenario.** `overrides:{appendPrompt:"use token sk-…"}` → the snapshot column is redacted
-(inv-5 satisfied), but the identical text is written verbatim into `agent-<id>.jsonl` as the harness
-descriptor's `prompt`, and served to any authenticated principal through `workflow_agent_log` and the
-dashboard.
-
-**Lens argument, including the internal conflict.** *Security* rates this the most consequential
-finding in the set: REQ-083's sweep exists so that a *new* content source into a persist sink is
-enumerated, and v21 added one (`appendPrompt`) to a sink it did not re-examine. *Karpathy pushes back
-hard* — the pre-existing script prompt has always been persisted this way, so one could call this
-"not a v21 regression, out of scope". I reject that reading on the evidence: B-4 was adjudicated
-precisely on the argument that *this specific text can carry secrets*, and the argument does not stop
-being true one function call downstream. *Testability* settles the tie: the cheapest fix is to make
-the `kind !== 'harness'` carve-out unnecessary by running `redact()` over the decorated descriptor at
-the one decoration site (`agent-executor.ts:404-410`), which is one line and makes IT-075's sweep
-extendable to sink 6. Rating MEDIUM rather than HIGH only because exposure requires a configured
-`SecretValueProvider` and a secret substring, and the audience is already-authenticated principals
-(the ADR-008 residual).
-
----
-
-## F4 — MEDIUM — nested `workflow()` frames run under the **parent's** snapshot: the callee author's `defaults` and declared `params` contract are never read
-
-**Violates:** ADR-001/D12's author/user split (author configuration is enforced engine-side, per
-workflow), ARCH-067's "the contract is stored on the version row … registration is the enforcement
-point", and ADR-005's "ceilings/contract bound the user-override rung". ARCH-066/ARCH-068 are
-**silent** on nesting, and no adjudication covers it — this is a genuine decomposition gap, not
-adjudicated design.
-
-**Evidence:**
-- `src/run-manager.ts:744` — `_startNestedWorkflow` calls `this._catalog.get(name)` and consumes
-  **only** `registered.script`. `registered.defaults` and `registered.params` are discarded (contrast
-  `run-manager.ts:384-389` on the start path, which reads both).
-- `src/run-manager.ts:809-817` — every nested agent dispatch passes `runParams: entry.effectiveParams`,
-  the parent run's snapshot (IMPL-134 states this intent explicitly: *"shared by reference across
-  every frame of a run including nested `workflow()` frames"*).
-- `src/agent-executor.ts:316` (`resolveCallParams`), `:328-333` (`eff.tools` → `allowedTools`),
-  `:339` (`req.runParams.prompt` → composed prompt).
-
-**Three distinct failure scenarios.**
-1. **Author config of the callee is silently ignored.** Workflow `B` is registered with
-   `defaults.prompt`/`defaults.tools`; when `B` is invoked via `workflow('B')` from `A`, none of it
-   applies. Pre-v21 this was invisible (`resolveHarnessParams` had zero callers, so registered
-   defaults reached nobody); v21 wires defaults into dispatch and therefore *creates* the asymmetry —
-   `B` run directly honours its defaults, `B` run nested does not.
-2. **Tool-surface substitution across an ownership boundary.** `A.defaults.tools` becomes the
-   `allowedTools` of `B`'s agents (`agent-executor.ts:330-333`). Since v15 gave workflows owners
-   (`NOT_WORKFLOW_OWNER`), one owner's harness configuration now silently governs another owner's
-   agents. If `A.defaults.tools` is wider than what `B`'s author granted, that is a widening.
-3. **The callee's declared contract is bypassed.** `B` may declare
-   `params.knobs.effort.enum:['low']` or a `model` enum; the user's `overrides` were validated only
-   against `A`'s contract at admission, so a `workflow('B')` frame executes `B`'s agents at knob
-   values `B`'s author explicitly refused. `ARCH-067`'s enforcement point does not exist on this path.
-
-**Lens argument.** *Security* wants per-frame re-resolution against the callee's row. *Scalability
-and Karpathy push back*: re-resolving per frame means a catalog read and a merge per nested call, and
-a per-frame snapshot breaks ADR-002's "one run-immutable snapshot" clean story. *Testability*
-breaks the tie toward the cheap option: the minimum that closes scenarios 1 and 3 without a new
-subsystem is to validate the parent's `UserOverrides` against the **callee's** contract at
-`_startNestedWorkflow` (the row is already being read at `run-manager.ts:744`) and to fold the
-callee's own `defaults.prompt`/`defaults.tools` for that frame — the same two functions
-(`validateUserOverrides` + `mergeRunParams`), no new module. Whatever is chosen, the decision belongs
-in the ARCH text: today's behaviour is undocumented and untested at the nesting boundary.
-
----
-
-## F5 — MEDIUM — two `mapEffort` implementations; ARCH-065's "the ONLY effort translator" lives in a module with zero production callers
-
-**Violates:** ARCH-065 api/note (`02-architecture.md:733-734`): `mapEffort` is declared as part of
-`src/params/resolve.ts` and *"`mapEffort` is the ONLY effort translator"*; the v21 development view
-(`02-architecture.md:883`) draws `GC --> R` (gateway clients depend on `resolve.ts`). Not covered by
-any adjudication — A-7 (04-design.md:2782-2788) adjudicated the *identity mapping* and the *wire
-mechanics*, not the module the mapper lives in.
-
-**Evidence:**
-- `src/params/resolve.ts:144-157` — `ProviderEffortProfile` + `mapEffort` (the richer
-  `{param, values: Record<Effort, unknown>}` table shape the ARCH api declares).
-- `grep -rn "params/resolve" src/` — the only importers are `agent-executor.ts:9`,
-  `run-manager.ts:43`, `run-store.ts:7`, `sqlite-run-store.ts:10`, and **none of them imports
-  `mapEffort`**. Zero production callers; its only exercise is `tests/unit/params-resolve.test.ts`.
-- The wired mapper is a different function with a different profile shape:
-  `src/gateway/client.ts:27-49` (`EffortProfile {param}`, `EFFORT_PROFILES`, `profileFor`,
-  `mapEffort`), imported by `src/gateway/claude-agent-sdk-client.ts:19` and called at
-  `client.ts:327` / `claude-agent-sdk-client.ts:509`.
-- IMPL-138 records exactly this as *"Observation, not acted on"* — so the state is known and
-  deliberate, but no ARCH/adjudication sanctions it.
-
-**Lens argument, conflict explicit.** *Security:* untouched — the wired copy correctly preserves
-"recorded ≡ applied by object identity" (`client.ts:327,336,338`; `sdk-client.ts:509,581,596`), which
-was the property REQ-093 actually needed. *Testability:* this is a false-coverage trap of the first
-order — `params-resolve.test.ts` green-lights a `mapEffort` that ships to nobody, so the suite reports
-coverage of a translator the product does not use, while the shipped translator's value semantics
-(identity pass-through, no value table) are covered only by `gateway-effort.test.ts`. A future
-maintainer reading ARCH-065 will edit the wrong file. *Karpathy:* two implementations of one concept,
-one of them dead, is strictly more code than the design called for — and IMPL-138's own precedent
-argument ("`session-options-builder.ts` is also fenced with zero importers") does not transfer:
-that module is a *tracked debt item with an ADR (ADR-006) fencing it*, whereas this duplicate has no
-ADR and directly contradicts an ARCH sentence containing the word "ONLY". Minimum fix: delete
-`resolve.ts:144-157` and its unit block (the wired one wins on evidence), or amend ARCH-065 + the
-development-view arrow to state that the mapper lives in `src/gateway/client.ts`. Do not leave both.
-
----
-
-## F6 — LOW — the engine ceiling defaults are triplicated, so the advertised bound and the enforced bound can drift
-
-**Violates:** ARCH-064's stated reason for existing (`02-architecture.md:725`: *"ONE pure,
-dependency-free module is the single place that knows the contract vocabulary … so the locked-key list
-and the bound-checking rules cannot drift into three copies"*) and the spirit of adjudication A-3
-(04-design.md:2749-2758, "one test pinning that the advertised bound and the enforced bound are the
-same number").
-
-**Evidence:** three independent definitions of the same three numbers —
-`src/run-manager.ts:105` (`DEFAULT_CEILINGS`, admission/enforced),
-`src/mcp-facade.ts:20` (`DEFAULT_CEILINGS`, `workflow_get`/`workflow_list` advertised),
-`src/server.ts:1184-1186` (inline literals at the composition root).
-The `Ceilings` **type** lives in `src/params/contract.ts:39-43` — the module ARCH-064 designates as
-the owner of the vocabulary — but the values do not.
-
-**Lens argument.** *Testability/self-sustainability* only; no security or scalability impact today
-because the three copies currently agree and `server.ts` overrides both at the composition root.
-Karpathy would normally shrug at three literals — but the *specific* property A-3 asked to be pinned
-is "advertised == enforced", and it is currently guaranteed by copy-paste rather than by
-construction. One exported `DEFAULT_CEILINGS` in `contract.ts` consumed by all three is strictly less
-code than what is there now, so simplicity and testability agree for once.
-
----
-
-## F7 — LOW — `workflowLabel()` is non-injective, so `issue_list({workflow})` can return another workflow's reports
-
-**Violates:** ARCH-070 note (3) (`02-architecture.md:779`: *"`issue_list({workflow})` tolerates an
-unregistered name **symmetrically** with `issue_report` so report-then-list round-trips"*) — the
-symmetry assumes a 1:1 name↔label mapping that the implementation does not provide.
-
-**Evidence:**
-- `src/github/issue-reporter.ts:169-170` —
-  `` `workflow:${name.replace(/[^A-Za-z0-9:_./-]/g,'-')}`.slice(0,50) `` : a lossy character
-  substitution followed by a hard truncation.
-- `src/github/issue-reporter.ts:158-160` — `issueFingerprint` hashes the **raw** `workflow` name.
-- `:438` (report labels) and `:479` (list filter) both key on the sanitized label.
-
-**Failure scenario.** Workflows named `team a/report` and `team-a-report`, or any two names sharing
-their first ~40 characters after the `workflow:` prefix, collapse to one GitHub label. Dedup still
-separates them (fingerprint uses the raw name → two issues, correctly), but
-`issue_list({workflow:'team a/report'})` returns **both**, exposing the other workflow's `repro` /
-`analysis` / `log` body text — author- and principal-attributable content — to a caller who named a
-different workflow.
-
-**Lens argument.** *Security:* a small cross-tenant read amplification on an already
-authenticated-only surface; LOW, not more. *Karpathy:* A-5 was right that inventing a
-registration-name predicate is scope creep, and I am **not** asking for one — the fix is to make the
-label injective for the cases that matter (e.g. append a short hash of the raw name when
-sanitize/truncate changed it), or to record the collision as an accepted residual in ARCH-070. The
-current text claims a symmetry the code does not have, which is the part that must not stand.
-
----
-
-## F8 — LOW — `02-architecture.md` was never amended for four adjudicated departures (doc drift, code is correct)
-
-The code follows the adjudications; the architecture document still describes the pre-adjudication
-design. Filed so Gate 8's trace chain is not left pointing at retracted text.
-
-| stale ARCH text | adjudication | shipped reality |
+| item | claim | verified |
 |---|---|---|
-| `02-architecture.md:760` + interface table `:961` — `HarnessDescriptor` gains `appendPromptBytes?, promptTruncated: boolean` | **B-2** (04-design.md:2826-2831) drops both | `src/types.ts` / `agent-executor.ts:394-400` carry `effort/effortApplied/timeoutMs/provenance` only |
-| `02-architecture.md:725` inv-5 — bounds the author literal by *"byte size + nesting depth"* | **B-1** (04-design.md:2819-2824) drops the depth bound | `src/workflow-meta.ts:43,57` byte bound only |
-| `02-architecture.md:779` note (1) — the name *"IS charset/length-validated with the same rule workflow registration already enforces"* | **A-5** (04-design.md:2766-2773): no such rule exists; label-scoped sanitize only | `src/github/issue-reporter.ts:163-170` |
-| `02-architecture.md:733` api — `composePrompt(systemPrompt, scriptPrompt, appendPrompt?)` (3 args) and `ProviderEffortProfile {param, values}` | 4-segment composition is DES-102/IMPL-131 design; **A-7** adjudicated the identity mapping | `src/params/resolve.ts:131-142` (4 args) and `src/gateway/client.ts:27-49` (`{param}`, identity) |
+| B3 | `redact()` at the `kind:'harness'` decoration site before `appendTranscript` | ✅ `agent-executor.ts:415-422`; both gateways emit only via `onHarness` (`client.ts:330-338`, `claude-agent-sdk-client.ts:583-596`) — no `kind:'harness'` producer reaches `onEvent`/`_emit` |
+| B4 | one `isKnownAlias` predicate, passthrough-aware + empty-table-skipping, used at **both** rungs | ✅ `contract.ts:71-75`, used at `:175` (registration) and `:284` (admission); parity with `harness-defaults.ts:70` restored |
+| B5 | four stale ARCH lines amended | ✅ nesting-depth bound dropped (`:725`), `composePrompt` 4-arg + wired `mapEffort` named (`:733-734`), `promptTruncated`/`appendPromptBytes` dropped (`:759`,`:761`,`:961`), ARCH-070 note (1) restated (`:779`) — plus DES-104's admission-order line |
+| B1 | effective post-merge model alias-checked at submission | ⚠️ **half** — see G2/G3 |
+| B2 | resume no longer dispatches the redacted snapshot | ⚠️ **regressed** — see G1/G4/G5/G6 |
 
-**Lens argument.** Pure *self-sustainability/testability*: the next iteration's implementer reads
-`02-architecture.md` first (that is what this gate compares against), and four of its api lines now
-describe code that does not exist. Cost to fix is four edits; the alternative — a second reviewer
-re-deriving the adjudication chain from 04-design.md's tail — is the archaeology this ledger's
-provenance discipline exists to prevent.
+Re-affirmed unchanged since `59d1614` (verified by diff, not re-derived): `CallKey` byte-identical
+(ADR-002 — zero `CallKey` hunks in the delta), the run-immutable snapshot written once at
+`createRun` and never re-persisted (`saveSnapshot` at `run-manager.ts:696` carries
+phases/agents/workflowNodes only), the admission rung's insertion point with no existing rung moved,
+`additionalProperties:false` on `overrides`, ceilings refuse-never-clamp, `composeConfig()`
+forwarding of all three ceiling keys, required `runParams` as the `tsc` lever, `thinkingFor` as sole
+writer of `options.thinking`, ADR-006's fence (zero `session-options-builder` importers).
 
----
-
-## F9 — LOW — `parseParamContract` does not normalize a `ParamSpec`: unknown/nested author fields are stored and served verbatim, contradicting B-1's stated rationale
-
-**Violates:** ADR-004 (`02-architecture.md:800-803`, *"evaluate once at registration and persist
-**normalized** JSON"*) and the factual premise of adjudication **B-1** (04-design.md:2822-2824:
-*"`ParamSpec` is a flat shape, `parseParamContract` reads only known scalar/array fields, and any
-nested key a caller invents is inert (never read, **never served**)"*).
-
-**Evidence:** `src/params/contract.ts:166` (`knobs[key] = spec;`) and `:174`
-(`const args = { ...argsIn };`) copy the author's spec objects **wholesale**, including any field
-`ParamSpec` does not declare and any nesting under it. That object is `JSON.stringify`'d into the
-`params` column (`src/workflow-catalog.ts:121,168`) and served on every `workflow_get` /
-`workflow_list` through `readParams` → `effectiveBounds` (`src/mcp-facade.ts:24-25`, `:196`, `:217`),
-which likewise spreads specs (`contract.ts:92,98,110`) without stripping.
-
-**Lens argument.** *Security/scalability:* impact is genuinely small and bounded — the pre-eval
-4096-byte source cap (`src/workflow-meta.ts:43,57`) limits what an author can smuggle in, and the
-author is a trusted, owned-row principal. So B-1's *conclusion* (drop the depth bound) survives.
-*Testability/honesty:* the *reason* recorded for dropping it is false in the shipped code, and a
-future reader will rely on "never served" when it is served. Either strip specs to the declared
-`ParamSpec` fields during parse (three lines, and it makes ADR-004's word "normalized" true), or
-correct B-1's rationale to "bounded by the 4096-byte source cap" — which is the argument that
-actually holds.
+**The through-line of this pass.** The prior review's retro named the defect class exactly: *"the
+invariant was implemented where the diagram drew it, and not where the system actually flows."*
+IMPL-139 repeated it one level up. B2's fix restores ARCH-066 inv-5 **where the review's sentence
+pointed** (the resume dispatch site) by inverting a transform ARCH-056 designed to be one-way —
+and the inverse is reachable from caller-controlled text. B1's fix implements **the literal words of
+the finding's evidence line** (`overrides.model`) rather than the words of the decision it was filed
+against (*"the **effective** (post-merge) model"*, `02-architecture.md:974`).
 
 ---
 
-## F10 — LOW — the effort dial is identity-mapped with no value-set validation on the un-ceilinged (author/script) rung
+## G1 — HIGH — the B2 fix turns the redaction marker into a secret-dereference primitive: attacker-supplied `‹secret:NAME›` in `appendPrompt` is expanded to the real secret value on resume
 
-**Violates:** nothing outright — ARCH-069 (`02-architecture.md:770`) says *"a provider profile entry
-maps the ordinal to that backend's parameter"* and ARCH-065's api declares a
-`values: Record<Effort, unknown>` table; A-7 adjudicated identity mapping for `anthropic`
-specifically. Recorded as a **residual risk on the rung ADR-005 deliberately left unbounded**, not as
-a code defect.
+**Violates:** ARCH-056 (`02-architecture.md:627-640`) — *"Name-keyed marker `‹secret:NAME›` … substitute
+the registered **handle NAME** (**non-sensitive server-side metadata**) … carries **no offline
+dictionary-attack oracle** (nothing in the transcript derives from the secret value)"* — and its
+`redact()`-as-a-one-way-capture-choke-point premise. Also ARCH-066 inv-5 (`:743`), which sanctions
+redaction on the persist path and says nothing about an inverse.
 
-**Evidence:** `src/gateway/client.ts:32-33` (`anthropic: { param: 'effort' }`), `:46-49` (identity
-pass-through of the engine's own 5-level vocabulary), `:126` (`effortBodyFields` spread into the
-request body on both LiteLLM branches, `:156` and `:293`), `src/gateway/claude-agent-sdk-client.ts:581`
-(written onto the built `Options`). The only per-call check is shape-only:
-`src/agent-executor.ts:293` (`isEffort`). `src/server.ts:154` records the engine's own posture —
-*"maxEffort 'high' (so xhigh/max are refused …)"* — but per ADR-005 that ceiling binds **user
-overrides only**, so a script's `agent({effort:'max'})` reaches the wire unbounded.
+**Evidence:**
+- `src/run-manager.ts:119-142` — `unredactBestEffort(value, secrets)` walks the snapshot and, for
+  every string, does `out.split('‹secret:' + name + '›').join(secretValue)`. It is the exact inverse
+  of `secret-resolver.ts:95-113`, and it **cannot distinguish a marker this engine wrote from a
+  marker a caller typed** — both are the same 20-odd bytes of plain text.
+- `src/run-manager.ts:644-646` — every rehydrated run (`_requireLive`, i.e. every resume in a fresh
+  process) is passed through it.
+- `src/params/contract.ts:261-271` — `appendPrompt` is arbitrary caller text, screened only for byte
+  length (default 1024). No character screening exists, by design [ADR-007: *"no content screening"*].
+- `src/params/resolve.ts:61` → `run-manager.ts:443-445` — `appendPrompt` lands verbatim in
+  `RunParams`, i.e. inside the object `unredactBestEffort` walks.
+- `src/agent-executor.ts:342` — `composePrompt(..., req.runParams.appendPrompt)` puts the restored
+  text into the dispatched prompt.
 
-**Lens argument.** *Security:* none. *Scalability/cost:* the author rung is trusted by design, so the
-cost exposure is accepted. The concern is the **D-F6 regression class** ARCH-069 was written to avoid:
-if the backend's accepted value set differs from the engine's five-level vocabulary, an author-side
-`xhigh`/`max` produces a provider 4xx on every call — the same shape as the shipped
-unconditional-extended-thinking defect, on the one rung no ceiling filters. I could not verify the
-provider's accepted set from inside this review, so this is flagged structurally, not asserted as a
-live bug; the value table ARCH-065 originally specified is exactly the mechanism that would make it
-unrepresentable. *Karpathy:* do **not** build the table speculatively — one cheap alternative is to
-let the `EffortProfile` carry the provider's accepted set and record `{applied:false, reason}` (the
-honest no-op path that already exists at `client.ts:48`) for values outside it.
+**Attack (authenticated principal, no ownership required — REQ-087 leaves execution open):**
+1. `workflow_run({name, overrides:{appendPrompt:"echo this: ‹secret:RWE_SECRET_GITHUB_TOKEN›"}})`.
+   Secret **names** are non-sensitive by ARCH-056's own explicit claim, and the engine publishes them
+   in every other transcript it serves — so the attacker does not need to guess.
+2. `workflow_suspend(runId)`; wait for any process restart (the self-update track restarts on every
+   release; a crash reclassifies to `interrupted`, which is equally resumable).
+3. `workflow_resume(runId)` → `_requireLive` rehydrates, `unredactBestEffort` substitutes the **live
+   secret value** into `appendPrompt`, and the composed prompt carrying a real server credential is
+   dispatched to the model backend.
+4. The persisted harness descriptor is re-redacted at `agent-executor.ts:415` — so the exfiltration
+   leaves **no trace** in `workflow_agent_log`. The B3 fix hides the evidence of the B2 defect.
+
+At admission the identical run dispatches the literal marker text (start() never restores). So
+resume is not "restoring what admission dispatched" — it is dispatching something admission never
+did, in the attacker's favour.
+
+**Three lenses.**
+- *Security:* the fix converts a deliberately inert audit token into a capability. ARCH-056 spent a
+  whole design paragraph choosing a name-keyed marker precisely so the marker would carry no
+  information derived from the value; `unredactBestEffort` makes the marker strictly more powerful
+  than a value-derived hash would have been.
+- *Scalability/perf:* neutral — O(keys × secrets) split/join per rehydrate, the same shape ARCH-056
+  already accepted for events; `JSON.stringify(entry.effectiveParams)` on every `resume()`
+  (`:550`) is negligible at v21 volumes. This lens has no objection and no defence to offer.
+- *Testability:* the added IT (`tests/integration/params-admission.test.ts` B2 block) pins the
+  **benign** direction (`appendPrompt` = a real secret value → restored). The adversarial direction
+  (`appendPrompt` = a marker literal) is untested, and the test as written would pass either way.
+  A single test case is the whole gap.
+
+**Internal conflict, argued.** Security says *refuse*; operability says a run whose `appendPrompt`
+legitimately contained a secret value becomes unresumable. Operability loses on evidence: the case
+requires a caller to have pasted a *server-side* secret into a *user* override, which the engine
+already treats as misuse (ARCH-056's hermeticity contract makes exactly this a documented
+non-obligation for the journal sink), and the failure mode is a loud typed `PARAM_SECRET_UNAVAILABLE`
+— which the code already implements at `:550`.
+
+**Karpathy tie-break — delete, don't add.** `07-review.md` §4 B2 offered two sanctioned branches
+("byte-identical **or** refuses typed"); the implementer built both and shipped the dangerous one as
+the primary. Deleting `unredactBestEffort` (24 lines) and letting the `:550` guard stand is *strictly
+less code*, closes G1 and G4 together, needs no new mechanism, and the existing B2 test already
+accepts that branch (`if (refusal !== undefined) …`). The minimum architecture that solves the
+problem is the refusal alone.
 
 ---
 
-## What was checked and found CONSISTENT (recorded so the next reviewer does not re-derive it)
+## G2 — HIGH — B1 checks only the caller-supplied `overrides.model`, never the **effective** post-merge model; the "stale registered defaults" hole the decision was adopted to close is still open
 
-- **ADR-001** — `UserOverrides` closed (`contract.ts:32-37`); `validateUserOverrides` rejects locked
-  keys `PARAM_LOCKED` (`:228-235`) and unknown keys `PARAM_UNKNOWN` (`:236-243`) rather than ignoring
-  them; the MCP schema is allowlisted at the other end with `additionalProperties:false` and exactly
-  the four properties (`server.ts:326-338`). A locked key is unrepresentable end to end.
-- **ARCH-066 insertion point** — the rung sits between `catalog.get` (`run-manager.ts:384`) and
-  `createRun` (`:415`)/`runWorkspace` (`:416`); every pre-existing rung (scriptSha, admission limit,
-  seed shape, seed source) is above it and unmoved. Rejection leaves no run row, no workspace, no
-  sandbox.
-- **ADR-002** — `CallKey` construction untouched (`run-manager.ts:774`; `git diff master...HEAD --
-  src/run-manager.ts` shows no `CallKey` hunk); resume reads the pinned snapshot and does **not**
-  re-resolve from the current catalog row (`:595`), with the legacy-NULL fallback (mechanically
-  correct — see F2 for the redaction consequence).
-- **ARCH-066 inv-6** — all three ceiling keys forwarded in `composeConfig()` (`main.ts:162-164`) and
-  one `ceilings` object passed to **both** consumers (`server.ts:1183-1189` RunManager, `:1206`
-  McpFacade). The fifth instance of the recurring wiring bug class is genuinely closed; the same
-  commit also closed four older instances (`maxBlobBytes`/`webhookDbPath`/`casDir`/
-  `continuationDbPath`).
-- **Ceilings refuse, never clamp** — `contract.ts:249-256` (appendPrompt bytes, reported by size and
-  never by content), `:90-99` (`boundTimeoutMs`/`boundEffort` computed at read time from live config,
-  so a lowered ceiling applies with no re-register), `:189-212`.
-- **ARCH-067** — idempotent `ALTER TABLE workflows ADD COLUMN params` (`workflow-catalog.ts:86-88`);
-  parse + A-2 cross-validation before **any** DB write, nothing stored on rejection (`:115-142`);
-  `ON CONFLICT … params = excluded.params` closes the stale-contract trap (`:160-168`); read surfaces
-  never serve null/unbounded (`mcp-facade.ts:24-25`).
-- **ARCH-064 inv-5 (pre-eval bound)** — `workflow-meta.ts:57` checks the byte size of the matched
-  literal *before* `runInNewContext` (`:67`), one eval site, registration only.
-- **ARCH-068** — `AgentReq.runParams` is required with no default (`agent-executor.ts:120`), built at
-  exactly one production site (`run-manager.ts:817`), so omission is a `tsc` error; provenance is
-  emitted by the function that computes each value (`resolve.ts:74-119`), never inferred by
-  comparison; one decoration site (`agent-executor.ts:390-412`) that never overwrites
-  `descriptor.model`/`provider`; the invalid-per-call-`effort` guard **records then throws**
-  (`:293-301`), so it cannot degrade to a silent `null` through `parallel()`'s swallow.
-- **ARCH-069 top risk avoided** — `thinkingFor` remains the sole writer of `options.thinking`
-  (`claude-agent-sdk-client.ts:325,532`); the mapped object travels by identity to both the wire and
-  `onHarness` (`client.ts:327→336,338`; `sdk-client.ts:509→581,596`); `effortBodyFields` is applied on
-  **both** LiteLLM branches (`client.ts:156` direct fetch, `:293` proxy). ADR-006's fence holds:
-  `grep -rn session-options-builder src/` yields only a comment reference (`resolve.ts:145`), zero
-  importers.
-- **ARCH-070** — the workflow label enters the dedup fingerprint (`issue-reporter.ts:158-160,416`),
-  absent-`workflow` output stays byte-identical to pre-v21, no existence check (per A-5).
-- **IMPL-138's simplify claim** — verified: no `descriptor.effortApplied` pre-write remains in
-  `claude-agent-sdk-client.ts`; the `LiteLLMGatewayClient` spread at `client.ts:336` is genuinely
-  live and correctly left alone.
+**Violates:** `02-architecture.md:974` — *"**Quality S-1 (stale registered defaults) adopted in reduced
+form.** … the **effective** (post-merge) model is checked at submission with the existing alias rule
+… the evidence (`submission-validator.ts:106-112` only scans inline `spec.script`, so **a named run
+never checks the registered default**) shows a real hole, so it stays"* — and the v21 interface table
+`:959` (*"existing `UNKNOWN_ALIAS` for an unresolvable **effective** model — all **before** any
+durable work"*).
 
-## Karpathy tie-break summary
+**Evidence:**
+- `src/params/contract.ts:241` — the check lives inside `for (const [key, val] of
+  Object.entries(obj))`, a loop over the keys the **caller supplied**. A submission with no
+  `overrides.model` never reaches `:284` at all.
+- `src/params/contract.ts:284` — and even when supplied, the check is gated on
+  `spec.enum === undefined`. An author who declared a `model` enum disables the submission-time
+  check entirely; the comment justifies this by pointing at `checkValueAgainstSpec`, which compares
+  against the **stored** enum — the very list that goes stale when the alias table changes.
+- `src/run-manager.ts:437` runs `validateUserOverrides` **before** `mergeRunParams` at `:443-445`;
+  `src/params/resolve.ts:58` shows the effective model is `overrides.model ?? defaults.model`. The
+  post-merge value is computed two lines later and never re-examined.
+- Registration-time cover does not close it: `harness-defaults.ts` validates `defaults.model` against
+  the alias table *as it was at registration*. Staleness — the entire subject of S-1 — is by
+  definition a later divergence.
 
-Nothing in v21 is over-built. The slice is what it claimed: two pure modules, one column, one
-snapshot field, one rung, one required argument, three config keys, one label. Every finding above is
-either **under-built** (F1, F2, F3, F4 — an invariant that holds on the drawn path and not on a real
-one) or **duplicated** (F5, F6, F9 — two of a thing the design said there would be one of). The
-recommended fixes total roughly: one call, one read-side decision, one line, one merge at the nesting
-boundary, three deletions and four doc edits. No new module, port, table or subsystem is warranted by
-any of them — and F1's fix is literally the "one call, not a subsystem" the architecture rationale
-already promised.
+**Consequence (unchanged from the F1/B1 filing):** a named run whose registered default no longer
+resolves is admitted, burns a run row + workspace mkdir + sandbox fork + a global semaphore slot
+(`ARCH-066`'s "before any durable work" defeated), and every `agent()` returns an opaque `null` at
+`gateway/client.ts`. The blast radius is *larger* than the override case B1 fixed, because a stale
+default hits **every** submission of that workflow from **every** caller, not one deliberate call.
 
-## Suggested disposition
+**Fix shape (one line, same rung, no new mechanism):** move/duplicate the alias assertion onto
+`effectiveParams.model` after `mergeRunParams` and before `createRun`. Karpathy-clean: the rung, the
+predicate, the error code and the test harness all already exist.
 
-- **Must fix before merge:** F1 (an adopted decision that produced no code, plus a dead parameter that
-  reproduces the very bug class of the iteration).
-- **Fix or explicitly accept with a recorded residual:** F2, F3, F4, F5.
-- **Doc/cleanup, safe to batch:** F6, F7, F8, F9, F10.
+---
+
+## G3 — MEDIUM — the admission check is fed an **empty** alias table on the documented default deployment, while the rule it claims to "reuse" falls back to `DEFAULT_ALIASES`
+
+**Violates:** `02-architecture.md:974` — *"**reuses the existing `UNKNOWN_ALIAS` code**"*. It does not
+behave like the existing rule.
+
+**Evidence:**
+- `src/server.ts:1191` — `const aliasNames = config?.aliases ? new Set(Object.keys(config.aliases)) : undefined;`
+- `src/run-manager.ts:266` — `this._aliasNames = deps.aliasNames ?? new Set();`
+- `src/params/contract.ts:72` — `if (aliasNames.size === 0) return true;` → **every** model string
+  is accepted.
+- The rule being "reused": `src/submission-validator.ts:65` — `this._aliases = deps.aliases ?? DEFAULT_ALIASES;`
+- The table actually used at dispatch: `src/run-manager.ts:48,242` —
+  `DEFAULT_GATEWAY_CONFIG = { aliases: DEFAULT_ALIASES, … }`, used whenever `config.aliases` is absent.
+- `src/main.ts:36-38` documents omitting `aliases` as the normal shape: *"the same anthropic-only
+  default the rest of the system falls back to"*; `main.ts:180` likewise uses `aliases ?? DEFAULT_ALIASES`.
+
+So on a stock deployment the engine **knows** the alias table it will dispatch against
+(`DEFAULT_ALIASES`) and deliberately hands the new check an empty one, making the entire B1 control
+inert exactly where most installs sit. D-AUTH-5-B's "empty table ⇒ skip" is a sound rule for a table
+that is *genuinely unknown*; here it is known and one `?? DEFAULT_ALIASES` away.
+
+**Cross-lens conflict, argued.** Scalability/perf has no stake (one `Set.has`). Testability mildly
+prefers the injected-`undefined` shape (tests construct servers without an alias table — and indeed
+the new B4 test at `harness-defaults-validation.test.ts` depends on the skip). Security says an
+enforcement point that is off by default is not an enforcement point. Resolution: they do not
+actually conflict — feeding `DEFAULT_ALIASES` keeps the predicate's empty-table branch for genuine
+injection-free unit construction, and the B4 test's `whatever-alias` case is a *registration* case
+that would then need a real alias name, which is the honest assertion anyway.
+
+**Also here (drift shape, same line):** `server.ts:1141` and `server.ts:1191` compute the identical
+`config?.aliases ? new Set(Object.keys(config.aliases)) : undefined` expression twice, ten lines
+apart, with a comment at `:1189` claiming to use "the same aliasNames Set the catalog already builds
+above". It builds a second one. This is F6's triplication pattern acquiring a fourth instance in the
+fix filed to close a drift finding.
+
+---
+
+## G4 — MEDIUM — a rotated secret makes resume dispatch **different bytes** than admission did: silent substitution, the precise thing the restored invariant forbids
+
+**Violates:** the invariant `07-review.md` §4 B2 states as the target — *"resume dispatches
+byte-identical params to what admission dispatched, or refuses typed; **never silent
+substitution**"* — and ARCH-066 inv-5 as amended in spirit by that send-back.
+
+**Evidence:** `src/run-manager.ts:644-646` restores from `this._secretValueProvider.entries()`, i.e.
+the **current** environment (`server.ts:1174-1179`, `loadSecretSourceFromEnv`). The marker names the
+secret, not the value. A secret rotated between admission and resume — the normal operational
+lifecycle, and `07-review.md` D-1 records that this very deployment has an expired
+`RWE_SECRET_GITHUB_TOKEN` awaiting rotation — resolves to a **different** value. The `:550` guard
+does not fire (the marker resolved), so the run resumes with silently altered parameters. This is
+the same defect class ADR-005 calls *"the exact class v21 repairs"* (silent alteration), reintroduced
+inside v21's own fix.
+
+**Subsumed by G1's fix:** deleting the restore and keeping the typed refusal closes G1 and G4 with
+one deletion. No separate work item.
+
+---
+
+## G5 — MEDIUM — the `‹secret:…›` marker grammar is now duplicated into `run-manager.ts`, breaking the module boundary that made `secret-resolver.ts` its single owner
+
+**Violates:** ARCH-016 / ARCH-056's *"one chokepoint"* module split (`secret-resolver.ts` is the pure
+owner of the redaction vocabulary; `RunManager` receives a `SecretValueProvider` and *"does not read
+the secret source directly"*), and ARCH-066's own module scope (`module: src/run-manager.ts`).
+
+**Evidence:** the literal now exists in three places, none of them shared:
+- `src/secret-resolver.ts:101` — `‹secret:${name}›` (the only *writer*)
+- `src/run-manager.ts:132` — `` `‹secret:${name}›` `` (the new reader/inverter)
+- `src/run-manager.ts:550` — `'‹secret:'` (the resume residue guard, a third spelling of the same grammar)
+
+**Failure mode (silent, both directions):** change the marker in `secret-resolver.ts` — a plausible
+future edit, since ARCH-056 itself contemplates later stages ("PII scrubbing … slot in after") — and
+(a) the restore silently no-ops, so resume starts dispatching markers again, and (b) the `:550`
+guard silently stops firing, so nothing catches it. No test pins the grammar across the boundary;
+`grep` across `src/` + `tests/` finds no shared constant.
+
+**Testability lens vs simplicity lens, argued.** Testability wants an exported constant (or a
+`unredact()` beside `redact()`) so the pair can be property-tested as inverses in one pure module.
+Simplicity notes that the cleanest resolution is not to export anything: **delete the inverse** (G1),
+and the duplication problem disappears with it — the `:550` guard then needs one exported prefix
+constant, which is a strict reduction from three literals to one. Both lenses land on the same
+deletion.
+
+---
+
+## G6 — MEDIUM — a new security-relevant mechanism and a new error code shipped with **zero** architecture record
+
+**Violates:** the ledger's own living-document discipline, the precedent B5 was raised to enforce,
+and `07-review.md` §7 retro item (3) — *"invariant wording like ARCH-066 inv-5 needs its **read-back**
+direction enumerated, not just the write direction"* — which this closeout was the moment to close.
+
+**Evidence:** `grep -c` over the ledger:
+- `PARAM_SECRET_UNAVAILABLE` → **0** hits in `02-architecture.md`, **0** in `04-design.md`, **0** in
+  `05-tests.md`. It is thrown at `run-manager.ts:551` and is a caller-visible typed error.
+- `unredact` → **0** hits in the v21 sections of either doc (the only `02-architecture.md` hit is
+  ARCH-056's v14 journal-sink sentence; the two `04-design.md` hits are DES-104's *"never persisted
+  raw"* lines, which describe the opposite direction).
+- The v21 interface table's `workflow_resume` row (`:960`) still reads *"typed refusal on changed
+  overrides"* only — the new refusal condition is absent from the errors column.
+- ARCH-066 inv-5 (`:743`) still describes only the write direction. The mechanism that *reverses* it
+  lives in the module ARCH-066 owns, undeclared.
+
+B5 amended five ARCH lines for retracted design and missed the one place a *new* mechanism was being
+added. From the testability lens this is the load-bearing part: an undocumented inverse of a security
+transform is the thing a future reviewer will not know to look for — G1 exists because nobody had to
+write down what `unredactBestEffort` is.
+
+---
+
+## G7 — LOW — ARCH-064's `api:` line still declares the pre-B1 error set
+
+**Violates:** `02-architecture.md:724` — `validateUserOverrides(contract, raw: unknown, aliasNames,
+ceilings): Ok<UserOverrides> | Err<PARAM_LOCKED|PARAM_OUT_OF_RANGE|PARAM_UNKNOWN>`.
+
+**Evidence:** `src/params/contract.ts:47` — the `Err` union is now
+`PARAM_LOCKED | PARAM_OUT_OF_RANGE | PARAM_UNKNOWN | PARAM_CONTRACT_INVALID | UNKNOWN_ALIAS`, and
+`:285-290` returns `UNKNOWN_ALIAS` from `validateUserOverrides` itself. The interface table at `:959`
+*does* name `UNKNOWN_ALIAS`; the ARCH item's own api line does not.
+
+Exactly the drift class B5 was filed to close, in the ARCH item B1 changed. Mechanical.
+
+---
+
+## G8 — LOW — ARCH-056's sink enumeration still asserts the premise B3 disproved
+
+**Violates:** internal consistency between ARCH-056 and the v21 code it now governs.
+
+**Evidence:** `02-architecture.md:633` still reads *"`kind:'harness'` is **already redacted**
+(`redactHarness`, ARCH-044) — **leave it as a separate, unchanged stage**"*. IMPL-139's own note
+states the opposite and the code agrees: `redactHarness` (`agent-executor.ts:17-45`) truncates and
+redacts nothing, and `agent-executor.ts:415` now runs a real `redact()` on that sink. B5's amendment
+list was scoped to ARCH-064/065/068/070 and never reached the ARCH item that carries the original
+false sentence — so the enumeration that *defines* sink completeness still tells the next
+implementer to leave sink (6) alone.
+
+---
+
+## G9 — LOW — truncate-before-redact leaves partial secret material in the persisted harness descriptor
+
+**Violates:** ARCH-066 inv-5 sink-completeness (`:743`) — residually, not wholesale.
+
+**Evidence:** `src/agent-executor.ts:26-32` (`redactHarness`, called **upstream** by each gateway to
+build the descriptor) cuts the prompt to `slice(0,2048) + '…[truncated]…' + slice(-2048)`. The new
+`redact()` at `:415` runs **after**, on the already-cut string, and matches by value-exact substring
+(`secret-resolver.ts:101`). A secret value straddling either cut is split into two fragments, neither
+of which equals the secret, so **both fragments persist** in the served transcript. Prompts over
+4096 chars are routine once `defaults.prompt` + script prompt + framed `appendPrompt` compose
+(`resolve.ts:131-142`).
+
+**Fix shape:** redact first, truncate second (redaction shortens or lengthens the string but never
+reintroduces the value), or run `redact()` on `resolved.prompt` inside `redactHarness`. Either is a
+line-order change.
+
+---
+
+## G10 — LOW — the `kind !== 'harness'` redaction-skip guards survive with their justification deleted
+
+**Violates:** the Karpathy minimum-architecture tie-break, and leaves an unenforced-convention bypass
+where ARCH-056 promised *"impossible-by-construction rather than … machinery to detect them
+afterwards"* (`:668`).
+
+**Evidence:** `src/agent-executor.ts:159` and `:436` still read `ev.kind !== 'harness'` to *skip*
+redaction. The rewritten comments (`:156-160`, `:429-433`) now concede the truth — `redactHarness`
+"only truncates the prompt; it never redacts secret values" — and rest the guard's safety on a
+convention: *"no gateway routes a harness descriptor through this sink"*. That is verified today
+(`client.ts:330`, `claude-agent-sdk-client.ts:583`) and enforced by nothing: no type prevents a
+third gateway, or a future streaming path, from emitting `kind:'harness'` through `onEvent`.
+
+`redact()` is idempotent by construction — the marker `‹secret:NAME›` contains no secret value, so a
+second pass is a no-op — which means DES-088 invariant (a) *"one redaction pass per event"* buys
+nothing at these two sites. **Deleting both guards** (redact unconditionally) removes two conditions,
+one convention, two paragraphs of comment explaining why the convention holds, and makes the bypass
+unrepresentable. Strictly less code for strictly more safety; this is the tie-break's textbook case.
+Filed LOW because no live bug exists today — the honesty repair IMPL-139 made was correct as far as
+it went.
+
+---
+
+## Checked and clean (spot-verified this pass, not carried on trust)
+
+- **B3 sink closure is real and complete for the enumerated producers.** Both gateway `invoke()`
+  implementations construct the descriptor and call `req.onHarness(...)` only; `_invokeOnce`'s
+  `onHarness` closure is the single decoration+persist site; `sink.markHarness` (`:408`) carries
+  model/provider only.
+- **B4 vocabulary parity.** `isKnownAlias` is the single predicate; the `openrouter/<id>` carve-out
+  matches `submission-validator.ts`'s REQ-038 precedent; empty-table skip matches
+  `harness-defaults.ts:70`. Registration on a default-alias server no longer fail-closes.
+- **ADR-002 intact.** No `CallKey` hunk in the delta; `effectiveParams` is written exactly once
+  (`createRun`, `sqlite-run-store.ts:82-83`) and never updated; `saveSnapshot` does not touch it, so
+  the G1 in-memory restore never reaches a persist sink. Verified specifically because a fix that
+  unredacts in memory is one careless write away from re-opening B3.
+- **`workflow_status` / `GET /api/runs/:id` do not surface `effectiveParams`** — the restored
+  unredacted snapshot has no HTTP read path (checked: `grep effectiveParams src/` shows no
+  `RunStatusView` field). The unauthenticated `/api/*` surface is not a G1 amplifier.
+- **`composeConfig()` forwards `aliases`** (`main.ts:88,100`) — the composeConfig bug class is not
+  the cause of G3; the empty-Set default is a deliberate choice, which is why it is filed as a
+  decision deviation rather than a wiring miss.
+- **Scalability/perf:** nothing in the delta changes state storage, concurrency or failure-counting
+  semantics. `unredactBestEffort` is O(fields × secrets) once per rehydrate and
+  `JSON.stringify(effectiveParams)` once per `resume()` — both negligible, and the deployment view's
+  single-process assumption (`:917`) is unchanged. This lens files **zero** findings this pass and
+  contributes only the observation under G3 below.
+- **Cross-lens observation worth recording:** ADR-008 declined rejection telemetry, so G2/G3's
+  inertness is **operationally undetectable** — a check that never fires and a check that fires
+  correctly are indistinguishable from outside the process. That was an acceptable residual when the
+  check was believed wired; it is what let B1 ship half-closed twice. Not re-litigating ADR-008
+  (Karpathy: no metrics subsystem for two codes), but the Gate 7.5 assertion for G2's fix must be a
+  *negative* one (an unresolvable effective model is refused with zero durable work), not a positive
+  smoke test.
+
+## Carried forward from the prior pass — recorded debt, NOT counted as violations
+
+Dispositioned in `07-review.md` §4's non-blocking table; re-verified as unchanged at `HEAD`:
+**F4** (nested `workflow()` frames run under the parent's snapshot — deferred to v22 by design, must
+enter the v22 Gate 1/2 intake); **F5/QD-2** (`resolve.ts:150` `mapEffort` still has zero production
+callers — `grep` confirms both gateways import `client.ts`'s; the ARCH sentence was correctly
+amended by B5, so the doc no longer lies, the code duplicate remains); **F6** (`DEFAULT_CEILINGS`
+triplicated at `run-manager.ts:110` / `mcp-facade.ts:20` / `server.ts:1183-1187` — see G3 for the
+fourth instance of the pattern); **F7** (`workflowLabel()` non-injective); **F9** (`ParamSpec` not
+normalized at parse); **F10** (author/script effort rung unvalidated); **QD-4** (`gateway →
+agent-executor` reverse edge for `redactHarness`).
+
+---
+
+## Verdict
+
+**NOT consistent — 10 violations (2 HIGH, 4 MEDIUM, 4 LOW).**
+
+**Minimum path to consistent, in dependency order:**
+1. **Delete `unredactBestEffort`** (`run-manager.ts:119-142` + `:644-646`); keep the `:550` typed
+   refusal, hoisting the marker prefix to an exported constant in `secret-resolver.ts`. Closes G1,
+   G4, G5 with a net deletion. Add the one adversarial test case (`appendPrompt` containing a marker
+   literal → resume must not produce the secret value).
+2. **Check the effective post-merge model** at the same rung, after `mergeRunParams`, before
+   `createRun`, ungated by `spec.enum`; feed the check `config?.aliases ?? DEFAULT_ALIASES` and hoist
+   `server.ts`'s duplicated Set expression. Closes G2, G3.
+3. **Amend the docs the fixes changed the meaning of**: ARCH-066 inv-5's read-back direction +
+   the new refusal in the interface table (G6), ARCH-064's api error set (G7), ARCH-056's sink-(6)
+   sentence (G8).
+4. **Two line-order/deletion cleanups**: redact-before-truncate (G9), drop the two
+   `kind !== 'harness'` skips (G10).
+
+Steps 1, 2 and 4 together are a **net reduction** in source lines. That is the tie-break's own
+signal that this iteration's remaining gap is not missing machinery — it is machinery that should
+not have been added.

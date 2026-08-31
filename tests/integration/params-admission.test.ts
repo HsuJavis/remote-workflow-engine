@@ -311,4 +311,160 @@ describe('B2: resume dispatches the byte-identical admission snapshot, never the
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30000);
+
+  // v21 Gate 8 RE-REVIEW (2026-09-01, review §R2 (a) ≡ adversarial R-G1, HIGH — a NEW security
+  // regression introduced by the B2 fix above): `unredactBestEffort` (run-manager.ts:128-144) blind-
+  // expands ANY `‹secret:NAME›`-shaped substring back to the live secret value on resume — it cannot
+  // tell an engine-written marker (produced by `redact()` at persist time, only ever for a substring
+  // that WAS the live secret value) from a caller who simply typed the marker's own spelling as plain
+  // text. Since the caller's literal text never contains the live secret VALUE, `redact()` at
+  // admission is a no-op on it (nothing to substitute) — the persisted snapshot keeps the caller's
+  // literal marker spelling byte-for-byte. On resume, that literal is expanded anyway: an attacker who
+  // never possessed the secret, only guessed its `‹secret:NAME›` marker grammar (public, three
+  // spellings across the source per R-G5), gets the real credential composed into a SUCCESSFUL
+  // resumed dispatch. Genuinely RED today: `resumedCall.appendPrompt` ends up byte-identical to
+  // `SECRET_VALUE`, not to what the caller actually supplied.
+  it('R-G1 adversarial: a caller-typed marker LITERAL (never the real secret) must not be expanded into the live secret value on resume', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-it083-rg1-'));
+    try {
+      const store = new SqliteRunStore(join(dir, 'store'), clock);
+      const captured: RunParams[] = [];
+      const spawner: AgentSpawner = {
+        run: async (req): Promise<AgentOutcome> => {
+          captured.push(req.runParams);
+          return { kind: 'text', value: 'ok' };
+        },
+      };
+      const mgr1 = new RunManager({ store, clock, workRoot: dir, spawner, secretValueProvider } as any);
+      const MARKER_LITERAL = `‹secret:${SECRET_NAME}›`;
+      const runId = await mgr1.start({ script: `return await agent('base prompt');` }, { appendPrompt: MARKER_LITERAL });
+      await mgr1.suspend(runId);
+
+      // redact() at admission only replaces occurrences of the LIVE secret VALUE — the caller's
+      // literal marker spelling contains no such substring, so the persisted snapshot is untouched.
+      const persisted = await store.getEffectiveParams(runId);
+      expect(JSON.stringify(persisted)).toContain(MARKER_LITERAL);
+
+      const mgr2 = new RunManager({ store, clock, workRoot: dir, spawner, secretValueProvider } as any);
+      let refusal: { code?: string } | undefined;
+      try {
+        await mgr2.resume(runId);
+      } catch (err) {
+        refusal = err as { code?: string };
+      }
+      if (refusal !== undefined) {
+        expect(refusal.code).toBeDefined(); // sanctioned branch 2: a typed refusal, never a bare crash
+      } else {
+        expect(await pollStatus(mgr2, runId, 'completed')).toBe('completed');
+        const resumedCall = captured[captured.length - 1]!;
+        // sanctioned branch 1: byte-identical to what the CALLER supplied at admission — the
+        // attacker's own literal text, never dereferenced into the live secret value.
+        expect(resumedCall.appendPrompt).not.toBe(SECRET_VALUE);
+        expect(resumedCall.appendPrompt).toBe(MARKER_LITERAL);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
+});
+
+// v21 Gate 8 RE-REVIEW (2026-09-01, review §R2 (b) ≡ adversarial R-G2, HIGH): B1 (above) only checks
+// a CALLER-SUPPLIED `overrides.model`; it never re-examines the EFFECTIVE post-merge model, so a
+// registered `defaults.model` that was valid at registration time but has since fallen out of the
+// server's configured alias table (a config change between restarts — D-1 records this exact
+// deployment has an expiring/rotating token, the same class of drift) is silently admitted on EVERY
+// submission that supplies no `overrides.model` at all. Blast radius is larger than B1's: B1 only
+// guards a caller-supplied override, this guards the default every un-overridden run actually uses.
+// Two servers share the SAME on-disk catalog (workRoot) to model "config changed since this workflow
+// was registered" without needing to fabricate a raw DB row.
+describe('R-G2: the EFFECTIVE post-merge model (not just overrides.model) is alias-checked before any durable work (review §R2 (b))', () => {
+  async function callOn(srv: Server, name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const res = await fetch(`http://127.0.0.1:${srv.port}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
+    return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+  }
+
+  it('a workflow registered with defaults.model valid against an OLD alias table -> UNKNOWN_ALIAS on a server whose CURRENT table no longer has it, with NO overrides supplied at all', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-it083-rg2-'));
+    try {
+      const oldAliases = {
+        a: { provider: 'anthropic' as const, model: 'claude-3-5-sonnet-20241022' },
+        b: { provider: 'anthropic' as const, model: 'claude-3-5-haiku-20241022' },
+      };
+      const server1 = await createServer({ port: 0, bind: '127.0.0.1', workRoot: dir, aliases: oldAliases });
+      await callOn(server1, 'workflow_register', { name: 'it083-rg2-stale-default', script: 'return await agent("hi");', defaults: { model: 'b' } });
+      await server1.close();
+
+      // "config change between restarts": same catalog on disk, a NEW server whose alias table no
+      // longer includes 'b' — exactly the "stale registered defaults" scenario S-1/R-G2 name.
+      const server2 = await createServer({ port: 0, bind: '127.0.0.1', workRoot: dir, aliases: { a: oldAliases.a } });
+      const before = (await callOn(server2, 'workflow_list', {}) as { result?: unknown[] }).result?.length ?? 0;
+
+      const r = await callOn(server2, 'workflow_run', { name: 'it083-rg2-stale-default' }); // no overrides at all
+      expect(r.code ?? (r.error as { code?: string } | undefined)?.code).toBe('UNKNOWN_ALIAS');
+
+      const after = (await callOn(server2, 'workflow_list', {}) as { result?: unknown[] }).result?.length ?? 0;
+      expect(after).toBe(before); // no run row appended (ADR-008 no-telemetry: rejection burns no durable state)
+      await server2.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// v21 Gate 8 RE-REVIEW (2026-09-01, review §R2 (c) ≡ adversarial R-G3, MED): the admission-time
+// alias table is fed `config?.aliases ? new Set(...) : undefined` (server.ts:1191) -> RunManager
+// defaults an undefined table to an EMPTY Set (`?? new Set()`) -> `isKnownAlias` treats size-0 as
+// "accept everything" (D-AUTH-5-B, correct for the registration-time enum check it was designed for)
+// — but DISPATCH on the exact same unconfigured deployment resolves against the real, non-empty
+// `DEFAULT_ALIASES` table (run-manager.ts:48/242 via DEFAULT_GATEWAY_CONFIG), not an empty one. The
+// admission control is inert exactly where most installs sit (main.ts documents omitting `aliases`
+// as normal). A bogus model string sails through admission and only fails (or silently resolves to
+// null) at dispatch.
+describe('R-G3: default-deployment (unconfigured) alias table admits only real aliases, not everything (review §R2 (c))', () => {
+  let defaultServer: Server;
+  let defaultTmp: string;
+
+  beforeAll(async () => {
+    defaultTmp = mkdtempSync(join(tmpdir(), 'rwe-it083-rg3-'));
+    defaultServer = await createServer({ port: 0, bind: '127.0.0.1', workRoot: defaultTmp }); // no `aliases` key
+  });
+
+  afterAll(async () => {
+    await defaultServer?.close();
+    rmSync(defaultTmp, { recursive: true, force: true });
+  });
+
+  async function defaultCall(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const res = await fetch(`http://127.0.0.1:${defaultServer.port}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
+    return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+  }
+
+  it('overrides.model naming an alias absent from DEFAULT_ALIASES -> UNKNOWN_ALIAS, no run row created', async () => {
+    await defaultCall('workflow_register', { name: 'it083-rg3-bogus', script: 'return await agent("hi");' });
+    const before = (await defaultCall('workflow_list', {}) as { result?: unknown[] }).result?.length ?? 0;
+
+    const r = await defaultCall('workflow_run', { name: 'it083-rg3-bogus', overrides: { model: 'not-a-real-alias-xyz' } });
+    expect(r.code ?? (r.error as { code?: string } | undefined)?.code).toBe('UNKNOWN_ALIAS');
+
+    const after = (await defaultCall('workflow_list', {}) as { result?: unknown[] }).result?.length ?? 0;
+    expect(after).toBe(before);
+  });
+
+  // Regression pin (GREEN today AND after the fix — accepted before the fix because admission
+  // accepts everything, accepted after because 'sonnet' is a genuine DEFAULT_ALIASES member).
+  it('regression pin: overrides.model = "sonnet" (a real DEFAULT_ALIASES member) is never rejected as UNKNOWN_ALIAS', async () => {
+    await defaultCall('workflow_register', { name: 'it083-rg3-known-default', script: 'return await agent("hi");' });
+    const r = await defaultCall('workflow_run', { name: 'it083-rg3-known-default', overrides: { model: 'sonnet' } });
+    expect(r.code ?? (r.error as { code?: string } | undefined)?.code).not.toBe('UNKNOWN_ALIAS');
+  });
 });

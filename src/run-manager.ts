@@ -39,7 +39,7 @@ import { WorkflowCatalog } from './workflow-catalog.js';
 import type { GatewayClient, GatewayConfig } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
-import { validateUserOverrides, validateDeclaredArgs, canonicalContract, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
+import { validateUserOverrides, validateDeclaredArgs, canonicalContract, isKnownAlias, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
 import { defaultRunParams, mergeRunParams, type RunParams } from './params/resolve.js';
 import type { HarnessDefaults } from './harness-defaults.js';
 
@@ -114,33 +114,6 @@ const DEFAULT_CEILINGS: Ceilings = { maxTimeoutMs: 600_000, maxAppendPromptBytes
  *  any caller that wants it, ignored by ones (like McpFacade.toErrEnvelope) that don't. */
 function paramCodedError(err: ParamErr): Error {
   return Object.assign(codedError(err.code, err.message), { detail: err.detail });
-}
-
-/** v21 Gate 8 send-back (review §4 B2, ARCH-066 inv-5): `redact()` is a destructive one-way
- *  substitution (secret value -> `‹secret:NAME›`), applied only to the PERSISTED admission
- *  snapshot (never the live in-memory RunEntry — see the `persistedParams` split in start()). A
- *  resumed run rehydrated from a fresh process (no in-memory entry survives a restart) has only
- *  the persisted copy to read back, so it must restore it before dispatch or refuse — never
- *  silently dispatch the marker text. The marker names the secret it stands for, so the CURRENT
- *  SecretValueProvider (same env-sourced convention used at capture) can restore it in place;
- *  any marker whose name is no longer resolvable is left as-is, and `resume()` below refuses
- *  typed rather than dispatch a residual marker. */
-function unredactBestEffort(value: unknown, secrets: ReadonlyArray<{ name: string; value: string }>): unknown {
-  function walk(v: unknown): unknown {
-    if (typeof v === 'string') {
-      let out = v;
-      for (const { name, value: sv } of secrets) out = out.split(`‹secret:${name}›`).join(sv);
-      return out;
-    }
-    if (Array.isArray(v)) return v.map(walk);
-    if (v && typeof v === 'object') {
-      const out: Record<string, unknown> = {};
-      for (const [k, vv] of Object.entries(v as Record<string, unknown>)) out[k] = walk(vv);
-      return out;
-    }
-    return v;
-  }
-  return walk(value);
 }
 
 
@@ -443,6 +416,19 @@ export class RunManager {
     const effectiveParams: RunParams = overrides === undefined
       ? defaultRunParams(registeredDefaults)
       : mergeRunParams(registeredDefaults, overridesResult.value);
+    // v21 Gate 8 RE-REVIEW (review §R2 (b), R-G2 HIGH): validateUserOverrides only re-checks a
+    // CALLER-SUPPLIED overrides.model; a registered defaults.model that was valid at registration
+    // but has since fallen out of the configured alias table (a config change between restarts)
+    // was never re-examined — every un-overridden submission using it was silently admitted. Same
+    // UNKNOWN_ALIAS code, same "before any durable work" placement as the override-rung check.
+    if (effectiveParams.model !== undefined && !isKnownAlias(effectiveParams.model, this._aliasNames)) {
+      throw paramCodedError({
+        ok: false,
+        code: 'UNKNOWN_ALIAS',
+        message: `model is not a known alias: ${effectiveParams.model}`,
+        detail: { param: 'model', supplied: effectiveParams.model, allowed: { enum: [...this._aliasNames] } },
+      });
+    }
     // DES-088/ARCH-056 (REQ-083 sink-completeness sweep): this is a NEW persist sink — redact
     // BEFORE the durable write, same convention as the journal/snapshot sinks below. The live
     // RunEntry (below) keeps the unredacted value (dispatch never sees a redaction marker).
@@ -545,10 +531,12 @@ export class RunManager {
     if (entry.status !== 'suspended' && entry.status !== 'stopped' && entry.status !== 'interrupted') {
       throw new IllegalTransitionError(entry.status, 'running');
     }
-    // v21 Gate 8 send-back (review §4 B2, ARCH-066 inv-5): _requireLive's best-effort restore
-    // leaves any marker whose secret is no longer resolvable in place — never dispatch it.
+    // v21 Gate 8 RE-REVIEW (review §R2 (a), R-G1 HIGH): `_requireLive` never restores a redaction
+    // marker (see comment there) — any rehydrated snapshot that still carries one is refused typed,
+    // never dispatched, so a resumed run is always either byte-identical to admission or a typed
+    // refusal, never a silent secret-marker substitution.
     if (JSON.stringify(entry.effectiveParams).includes('‹secret:')) {
-      throw codedError('PARAM_SECRET_UNAVAILABLE', `Run ${runId}'s admission-time parameters cannot be restored unredacted for resume (a secret used at admission is no longer resolvable)`);
+      throw codedError('PARAM_SECRET_UNAVAILABLE', `Run ${runId}'s admission-time parameters carry a redaction marker that resume never restores (ARCH-066 inv-5 forbids dispatching it)`);
     }
     const newScript = script ?? entry.script;
     const cachePlan = ResumeCache.build(entry.journal, newScript);
@@ -635,15 +623,14 @@ export class RunManager {
     // v21 (ARCH-066, DES-104): resume reads the PINNED admission snapshot, never re-resolving from
     // the current catalog row — a legacy pre-v21 run (effective_params NULL) falls back to
     // defaultRunParams(registered.defaults), today's behaviour, never a crash.
-    const rawEffectiveParams = (await this._store.getEffectiveParams(runId)) ?? defaultRunParams(registeredDefaults);
-    // v21 Gate 8 send-back (review §4 B2, ARCH-066 inv-5): the persisted copy is redact-at-capture
-    // (persist-only, see start()) — restore before it becomes a dispatchable RunEntry. resume()
-    // below refuses typed if a marker survives (secret no longer resolvable); other callers of
-    // _requireLive (suspend/stop) never dispatch effectiveParams, so a best-effort restore here is
-    // harmless for them.
-    const effectiveParams = this._secretValueProvider
-      ? (unredactBestEffort(rawEffectiveParams, this._secretValueProvider.entries()) as RunParams)
-      : rawEffectiveParams;
+    // v21 Gate 8 RE-REVIEW (review §R2 (a), R-G1 HIGH — supersedes the deleted `unredactBestEffort`):
+    // the persisted copy is redact-at-capture (persist-only, see start()) and is NEVER restored —
+    // blindly expanding any `‹secret:NAME›`-shaped substring back to the live secret value made the
+    // marker grammar itself a secret-dereference primitive (an attacker who only guessed the public
+    // marker spelling, never possessed the secret, got it substituted into a dispatched prompt on
+    // resume). If a marker survives in the snapshot, `resume()` below refuses typed instead —
+    // "byte-identical to admission, or a typed refusal" never "silently dispatch the marker".
+    const effectiveParams = (await this._store.getEffectiveParams(runId)) ?? defaultRunParams(registeredDefaults);
 
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
     const guard = new RunGuard({ concurrency: this._concurrency, budget: spec.budget ?? null });
