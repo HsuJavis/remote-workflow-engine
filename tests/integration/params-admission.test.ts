@@ -16,8 +16,11 @@ import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { RunManager } from '../../src/run-manager.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
+import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
 import { FixedClock } from '../../src/clock.js';
 import type { GatewayClient, GatewayResult } from '../../src/gateway/client.js';
+import type { AgentSpawner, AgentOutcome } from '../../src/agent-executor.js';
+import type { RunParams } from '../../src/params/resolve.js';
 
 let server: Server;
 let tmpDir: string;
@@ -98,6 +101,34 @@ describe('Admission rung: overrides validated BEFORE any durable work (IT-083, D
     await callTool('workflow_suspend', { runId: run.runId });
     const resumed = await callTool('workflow_resume', { runId: run.runId, overrides: { timeoutMs: 5000 } } as unknown as Record<string, unknown>);
     expect(resumed.error ?? resumed.code).toBeDefined();
+  });
+
+  // v21 Gate 8 send-back re-run (2026-09-01, review §4 B1 ≡ adversarial F1 ≡ quality QD-1): the
+  // adopted Gate 2 decision (effective post-merge model alias-checked at submission via the
+  // existing UNKNOWN_ALIAS rule, BEFORE any durable work) never reached code — `run-manager.ts`
+  // hardcodes `new Set()` for `validateUserOverrides`'s `aliasNames` argument, so an override
+  // naming a model absent from this server's configured `{sonnet, default}` table is silently
+  // admitted today (burns a run row + workspace + sandbox + semaphore slot for an alias that will
+  // resolve to `null` on every `agent()` call). Same zero-durable-work assertion shape as the
+  // PARAM_LOCKED case above.
+  it('B1: overrides.model naming an alias not in the configured table → UNKNOWN_ALIAS, no run row created', async () => {
+    await callTool('workflow_register', { name: 'it083-unknown-alias', script: 'return await agent("hi");' });
+    const before = (await callTool('workflow_list', {}) as { result?: unknown[] }).result?.length ?? 0;
+
+    const r = await callTool('workflow_run', { name: 'it083-unknown-alias', overrides: { model: 'not-a-real-alias' } });
+    expect(r.code ?? (r.error as { code?: string } | undefined)?.code).toBe('UNKNOWN_ALIAS');
+
+    const after = (await callTool('workflow_list', {}) as { result?: unknown[] }).result?.length ?? 0;
+    expect(after).toBe(before); // no run row appended
+  });
+
+  // Passthrough carve-out pin (GREEN on write today only because NO admission-time alias check
+  // exists yet — the case above proves that; kept as the regression guard for once B1 lands, same
+  // precedent as the A-3/A-7 green pins elsewhere in this file).
+  it('B1 passthrough: overrides.model = openrouter/<id> is never rejected as UNKNOWN_ALIAS', async () => {
+    await callTool('workflow_register', { name: 'it083-openrouter-passthrough', script: 'return await agent("hi");' });
+    const r = await callTool('workflow_run', { name: 'it083-openrouter-passthrough', overrides: { model: 'openrouter/some-vendor/some-model' } });
+    expect(r.code ?? (r.error as { code?: string } | undefined)?.code).not.toBe('UNKNOWN_ALIAS');
   });
 
 });
@@ -204,4 +235,80 @@ describe('Advertised bound == enforced bound (DES-104, REQ-091, v21 Gate 5 re-ru
     });
     expect(atBound.code).not.toBe('PARAM_OUT_OF_RANGE');
   });
+});
+
+// v21 Gate 8 send-back re-run (2026-09-01, review §4 B2 ≡ adversarial F2): resume/rehydrate reads
+// the PERSISTED (redacted) `effectiveParams` column (`run-manager.ts:595` `getEffectiveParams` ->
+// `:626` `entry.effectiveParams` -> `:817` dispatched as `req.runParams`) — violates ARCH-066
+// invariant (5) "the dispatched copy is never redacted". `redact()` is destructive (no inverse), so
+// a resumed run silently dispatches the `‹secret:NAME›` marker in place of whatever secret-shaped
+// text rode a user override, instead of the byte-identical value admission itself dispatched.
+//
+// Uses a `spawner` override (captures `req.runParams` directly, bypassing gateway/prompt-composition
+// entirely — the most direct observation point for what actually reaches dispatch) + a REAL
+// SqliteRunStore shared across TWO separate RunManager instances (mgr2 has an empty in-process
+// `_runs` cache for this runId, exactly like a post-restart process — the same mechanism
+// `_requireLive`'s own doc comment names: "e.g. after a server restart").
+describe('B2: resume dispatches the byte-identical admission snapshot, never the persisted-redacted copy (ARCH-066 inv-5, review §4 B2)', () => {
+  const clock = new FixedClock(new Date('2024-01-01T00:00:00.000Z'));
+  const SECRET_NAME = 'IT083_B2_TOKEN';
+  const SECRET_VALUE = 'it083-b2-secret-tok-abc987xyz';
+  const secretValueProvider = { entries: () => [{ name: SECRET_NAME, value: SECRET_VALUE }] };
+
+  async function pollStatus(mgr: RunManager, runId: string, want: string, tries = 100): Promise<string> {
+    let v = await mgr.status(runId);
+    for (let i = 0; i < tries && v.status !== want; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      v = await mgr.status(runId);
+    }
+    return v.status;
+  }
+
+  it('a resumed run (rehydrated in a FRESH RunManager instance) never silently dispatches the redaction marker — either byte-identical to admission, or a typed refusal', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-it083-b2-'));
+    try {
+      const store = new SqliteRunStore(join(dir, 'store'), clock);
+      const captured: RunParams[] = [];
+      const spawner: AgentSpawner = {
+        run: async (req): Promise<AgentOutcome> => {
+          captured.push(req.runParams);
+          return { kind: 'text', value: 'ok' };
+        },
+      };
+      const mgr1 = new RunManager({ store, clock, workRoot: dir, spawner, secretValueProvider } as any);
+      const runId = await mgr1.start({ script: `return await agent('base prompt');` }, { appendPrompt: SECRET_VALUE });
+      await mgr1.suspend(runId); // entry.status is 'running' immediately after start() (same
+      // guarantee IT-083's own "workflow_resume rejects..." test above relies on — suspend races
+      // the real sandbox spawn, not the JS-level spawner override, and reliably wins).
+
+      // The persisted admission-time snapshot IS redacted (correct, DES-088 sink 5).
+      const persisted = await store.getEffectiveParams(runId);
+      expect(JSON.stringify(persisted)).toContain(`‹secret:${SECRET_NAME}›`);
+
+      // "Restart": a fresh RunManager instance, same store, no in-process cache for this runId.
+      const mgr2 = new RunManager({ store, clock, workRoot: dir, spawner, secretValueProvider } as any);
+      // review §4 (b): the invariant to restore is "resume dispatches byte-identical params to what
+      // admission dispatched, OR refuses typed; never silent substitution" — mechanism choice
+      // belongs to Gate 6, so this test accepts EITHER sanctioned outcome and only fails the
+      // violation both branches rule out: a successful resume that silently dispatches the marker.
+      let refusal: { code?: string } | undefined;
+      try {
+        await mgr2.resume(runId);
+      } catch (err) {
+        refusal = err as { code?: string };
+      }
+      if (refusal !== undefined) {
+        expect(refusal.code).toBeDefined(); // sanctioned branch 2: a typed refusal, never a bare crash
+      } else {
+        expect(await pollStatus(mgr2, runId, 'completed')).toBe('completed');
+        const resumedCall = captured[captured.length - 1]!;
+        // sanctioned branch 1: byte-identical to what admission itself dispatched — never the
+        // persist-only redaction marker silently substituted in.
+        expect(resumedCall.appendPrompt).not.toContain(`‹secret:${SECRET_NAME}›`);
+        expect(resumedCall.appendPrompt).toBe(SECRET_VALUE);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
 });

@@ -60,6 +60,20 @@ const MAX_ENUM_MEMBERS = 32;
  *  any string value over this many bytes is truncated with `suppliedTruncated:true`. */
 const MAX_SUPPLIED_BYTES = 64;
 
+/** REQ-038 precedent (`submission-validator.ts`): an `openrouter/<id>`-shaped model string is a
+ *  valid passthrough model though never a pre-listed alias — LiteLLM routes it natively via its
+ *  `openrouter/*` wildcard, so it needs no entry in `aliasNames`. */
+const OPENROUTER_PASSTHROUGH = /^openrouter\/.+/;
+
+/** D-AUTH-5-B precedent (`harness-defaults.ts:70`): the alias check only applies when the server
+ *  has a configured, non-empty alias table — an unconfigured/default-alias server must not reject
+ *  every model string. An `openrouter/<id>` passthrough is always accepted regardless. */
+function isKnownAlias(alias: string, aliasNames: Set<string>): boolean {
+  if (aliasNames.size === 0) return true;
+  if (OPENROUTER_PASSTHROUGH.test(alias)) return true;
+  return aliasNames.has(alias);
+}
+
 function truncatedSupplied(value: unknown): { supplied: unknown; suppliedTruncated?: true } {
   if (typeof value === 'string' && Buffer.byteLength(value, 'utf8') > MAX_SUPPLIED_BYTES) {
     let truncated = value;
@@ -158,7 +172,7 @@ export function parseParamContract(
     // submission only the effective model is re-checked via the existing UNKNOWN_ALIAS rule.
     if (key === 'model' && spec.enum !== undefined) {
       for (const entry of spec.enum) {
-        if (!aliasNames.has(entry as string)) {
+        if (!isKnownAlias(entry as string, aliasNames)) {
           return invalid(key, `model enum entry not a known alias: ${String(entry)}`);
         }
       }
@@ -259,6 +273,18 @@ export function validateUserOverrides(
     const spec = eff.knobs[key]!;
     const result = checkValueAgainstSpec(key, val, spec);
     if (!result.ok) return result;
+
+    // D-AUTH-5-B / UNKNOWN_ALIAS precedent, applied at submission for the case the author left
+    // `model` unconstrained (no enum — the REQ-090 canonical/backward-compat default): a spec with
+    // its own `enum` already screens this via checkValueAgainstSpec above.
+    if (key === 'model' && typeof val === 'string' && spec.enum === undefined && !isKnownAlias(val, aliasNames)) {
+      return {
+        ok: false,
+        code: 'PARAM_OUT_OF_RANGE',
+        message: `model is not a known alias: ${val}`,
+        detail: { param: 'model', ...truncatedSupplied(val), allowed: { enum: [...aliasNames] } },
+      };
+    }
 
     value[key] = val;
   }

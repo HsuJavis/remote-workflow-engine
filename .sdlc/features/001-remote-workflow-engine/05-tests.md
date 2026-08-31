@@ -4274,6 +4274,26 @@ File: `tests/integration/redact-sweep.test.ts`. Mock policy (integration — leg
 
 Coverage extension (Gate 6 completeness — closes the untested-behaviour gap the parallel-implementer flagged: sinks 2 & 4 were implemented per DES-088 but only sink 1 was force-tested). Added, at the RunManager tier (real `SqliteRunStore` + real sandbox child + fake `GatewayClient`; DES-091 mock policy): (D) sink (4) `appendJournal` — a workflow whose `agent()` RETURNS a provisioned secret has its persisted `journal.jsonl` `JournalEntry.value` redacted (`store.getJournal()` raw ABSENT / marker PRESENT), while `mgr.result()` — the in-memory return value — stays RAW (persist-only invariant DES-088 b, replay correctness). (E) sink (2) `saveSnapshot` — a secret carried in an `AgentRecord` field (label) is redacted in the persisted terminal snapshot, asserted via a cross-restart fresh-store `getRun()` (which returns `snap.agents` when a snapshot exists, sqlite-run-store.ts) so the "`GET /api/runs/:id` after a restart leaks a snapshotted secret" path is closed. All 5 cases green against the shipped 4-sink wiring (agent-executor.ts sinks 1+3; run-manager.ts:572-577 sink 2, :760-766 sink 4).
 
+**v21 (DES-104) addition — sink (5) effectiveParams snapshot:** 1 case in a new `sink (5):
+effectiveParams snapshot` describe block — a secret riding a user-supplied `appendPrompt` override
+is redacted in the persisted admission-time `effectiveParams` snapshot. GREEN on first write
+(`run-manager.ts:411-413` already routes this sink through `redact()`); kept as the sweep-completeness
+regression pin (this sink didn't exist before v21).
+
+**v21 Gate 8 send-back re-run (2026-09-01, review 07-review.md §4 B3 ≡ adversarial F3, "the
+non-negotiable item of the batch"):** 1 new case, new `sink (6): kind:'harness' transcript
+descriptor` describe block — same fake-gateway convention as sink (1)/(2)/(3) but the fake calls
+`req.onHarness(descriptor)` (not `req.onEvent()`); a secret riding the harness descriptor's
+`prompt` field (the composed [agentType systemPrompt]+[defaults.prompt]+[script prompt]+[framed
+appendPrompt], REQ-094) must be redacted in the persisted `kind:'harness'` transcript entry. Red
+reason: `onHarness` (agent-executor.ts:390-412) persists the gateway-emitted `HarnessDescriptor` via
+`store.appendTranscript()` with NO `redact()` call — `redactHarness` (agent-executor.ts:17-45) only
+TRUNCATES the prompt (4KB cap), it never touches secret VALUES; `onEvent`'s `kind!=='harness'` guard
+(line 422) excludes this sink from ITS redaction call on a "double-redaction exclusivity" premise
+that doesn't hold (onHarness never redacts either) — so the raw secret reaches the persisted
+transcript. Confirmed via direct re-run: 1/7 fail for exactly this reason (full file: 7 tests, 1
+failed / 6 passed).
+
 ### IT-076 — real server HTTP routes: `POST /assets/blob/:sha` + `POST /assets/manifest` (DES-086, DES-087)
 - **status:** green
 - **traces:** DES-086, DES-087, ARCH-054, ARCH-055, TASK-080, TASK-081
@@ -4489,6 +4509,8 @@ guard extends; left untouched.)
 
 **v21 Gate 5 re-run (A-2 / 04-design.md "Orchestrator adjudication — v21 Gate 6 send-back", 2026-08-31):** a new `meta.params default cross-validation` describe block, 3 cases — (a) a declared `params.<knob>.default` that DISAGREES with `defaults.<knob>` → typed rejection, nothing stored; (b) a declared default violating that knob's own declared enum → typed rejection, nothing stored; (c) a declared default with NO corresponding `defaults.<knob>` → accepted, normalized into the stored `defaults` column (so the served default is always derived from the column, never a second inert copy). Red reason: `spec.default` is read NOWHERE in `src/params/contract.ts` today — registration neither cross-checks a declared default against `defaults` nor normalizes an unpaired one; cases (a)/(b) register successfully when a typed rejection is expected, case (c) reads back `defaults.timeoutMs:undefined` when `5000` is expected. Confirmed via direct re-run: 3/3 fail for exactly this reason (full file: 21 tests, 3 failed / 18 passed).
 
+**v21 Gate 8 send-back re-run (2026-09-01, review 07-review.md §4 B4 ≡ quality QD-3):** a new `meta.params model-enum vs a default-alias (unconfigured) server` describe block, own `beforeAll`/own server with NO `aliases` config at all (every other block in this file injects a known 4-alias table) — 1 case: a declared `params.knobs.model.enum` registers successfully on a default-alias server, matching the skip-when-empty convention `validateHarnessDefaults` (harness-defaults.ts:70) already applies to `defaults.model`. Red reason: `server.ts:1141` forwards `aliasNames:undefined` when unconfigured; `workflow-catalog.ts:117` does `this._aliasNames ?? new Set()`; `parseParamContract`'s model-enum check (`contract.ts:159-165`) does an unconditional `aliasNames.has(entry)` against that empty Set, so `PARAM_CONTRACT_INVALID` fires for every entry — the two register-time model checks disagree on the same server. Confirmed via direct re-run: 1/1 fail for exactly this reason (full file: 19 tests, 1 failed / 18 passed).
+
 ### IT-082 — v15 schema drift-lock: `workflow_register`/`workflow_deregister` `defaults`+`principal` fields; `workflow_get` owner+defaults (DES-099, DES-100)
 - **status:** green
 - **traces:** DES-099, DES-098, DES-100, ARCH-062, ARCH-061, TASK-089
@@ -4587,6 +4609,25 @@ minimum" branch (`contract.ts:197-204`) had no covering case — the existing ro
 against `min:0, max:5`) only exercises the sibling "above the maximum" branch. 1 new case: `retries: -1`
 → `PARAM_OUT_OF_RANGE`, `detail.param:'args.retries'`, `detail.allowed:{min:0,max:5}`. Closes the
 coverage-gate finding for this function (7/36 → 36/36 statements).
+
+**v21 Gate 8 send-back re-run (2026-09-01, review 07-review.md §4 B1 ≡ adversarial F1 ≡ quality QD-1,
+and B4 ≡ quality QD-3, same seam):** 4 new cases. **B1** (2 cases, appended to the
+`validateUserOverrides()` describe block): (1) `overrides.model` naming an alias absent from
+`aliasNames`, validated against the CANONICAL (no author-enum) contract — `checkValueAgainstSpec`
+only ever consults `spec.enum`, so a knob with no author-declared enum (the REQ-090 backward-compat
+default) has no alias check at all today; (2) `openrouter/<id>` passthrough carve-out (GREEN on
+write — no check exists yet to fail this one — kept as the regression pin, same precedent as
+UT-101's effort-absent pin). Red reason: `aliasNames` is accepted as a `validateUserOverrides`
+parameter but the function body never reads it — the only reference anywhere in `contract.ts` is
+`parseParamContract`'s REGISTRATION-time author-enum check, a different rung; case (1) gets
+`ok:true` when `ok:false` is expected. **B4** (2 cases, new `parseParamContract() model-enum vs
+aliasNames` describe block): (1) an EMPTY `aliasNames` Set skips the model-enum check entirely
+(matches `validateHarnessDefaults`'s empty-table skip, harness-defaults.ts:70); (2) `openrouter/<id>`
+passthrough accepted in a declared model enum even when not literally in `aliasNames`. Red reason:
+`contract.ts:159-165` does `aliasNames.has(entry)` unconditionally whenever `spec.enum` is declared —
+no empty-table skip, no passthrough carve-out — both cases get `PARAM_CONTRACT_INVALID` when `ok:true`
+is expected. Confirmed via direct re-run: 3/4 fail for exactly this reason (1 GREEN pin), full file
+34 tests, 3 failed / 31 passed.
 
 ### UT-099 — pure `src/params/resolve.ts`: two-moment merge, per-key provenance, five-segment `composePrompt`, `mapEffort` (DES-102)
 - **status:** green
@@ -4687,6 +4728,37 @@ under the ARCH-051 precedent's naming — the schema assertion is folded into th
 inventing a new file, per DES-103's ARCH-051 drift-lock discipline.)
 
 **v21 Gate 5 re-run (A-3 / 04-design.md "Orchestrator adjudication — v21 Gate 6 send-back", 2026-08-31):** a new `Advertised bound == enforced bound` describe block, 1 case — a NULL-`params` workflow row, registered against a server configured with a LOWERED `maxTimeoutMs:5000`, advertises that same lowered bound via `workflow_get.params.knobs.timeoutMs.max` with no re-registration, and admission enforces the identical number (`overrides.timeoutMs` at the advertised bound is accepted, one above it → `PARAM_OUT_OF_RANGE`) — pinning that the advertised and enforced bounds can never drift apart. **Result: GREEN on first write, not red** — confirmed via direct re-run (`npx vitest run tests/integration/params-admission.test.ts`, 6/6 pass). This matches DES-104's own text: the ceiling-forwarding wiring (`composeConfig()` → both `RunManager` and `McpFacade` from the SAME object) already landed in the checkpointed implementation pass; only the behavioral test was missing. Kept as a deliberate green regression guard (same precedent as UT-020/UT-057's compat pins), not force-reddened.
+
+**v21 Gate 8 send-back re-run (2026-09-01, review 07-review.md §4 B1 ≡ adversarial F1 ≡ quality QD-1,
+and B2 ≡ adversarial F2):** 3 new cases. **B1** (2 cases, appended to the admission-rung describe
+block, same server/aliases fixture): (1) `overrides.model` naming an alias not in the configured
+`{sonnet, default}` table → expected `UNKNOWN_ALIAS`, with the same zero-durable-work assertion
+shape as the existing PARAM_LOCKED case (`workflow_list` count unchanged — no run row created); (2)
+`openrouter/<id>` passthrough is never rejected as `UNKNOWN_ALIAS` (GREEN on write — no admission
+alias check exists yet to fail this one — kept as the regression pin). Red reason: `run-manager.ts`
+hardcodes `new Set()` for `validateUserOverrides`'s `aliasNames` argument (never the server's
+configured alias table) — case (1) gets `undefined`/no rejection at all where `UNKNOWN_ALIAS` is
+expected, so the run row IS created (burns a run row + workspace + sandbox + semaphore slot for an
+alias that resolves to `null` on every `agent()` call). **B2** (1 case, new `B2: resume dispatches
+the byte-identical admission snapshot` describe block): a `spawner` override captures
+`req.runParams` directly (the most direct observation point for what reaches dispatch); TWO
+separate `RunManager` instances share ONE real `SqliteRunStore` (mgr2 has no in-process `_runs`
+cache for the run, exactly like a post-restart process). A secret rides `overrides.appendPrompt`; the
+run is suspended (via mgr1) then resumed (via mgr2, forcing `_requireLive`'s rehydrate path). Per
+review §4(b) the invariant is "byte-identical to admission OR a typed refusal — mechanism choice
+belongs to Gate 6", so the assertion accepts EITHER sanctioned outcome (a thrown `resume()` with a
+`.code`, or a completed dispatch whose `appendPrompt` is byte-identical to the original secret) and
+fails only the violation both branches rule out. Red reason: `_requireLive` (run-manager.ts:595)
+reads `store.getEffectiveParams()` — the PERSIST-ONLY REDACTED column (correct for storage, DES-088
+sink 5) — and assigns it straight to `entry.effectiveParams` (:626), which then dispatches (:817) as
+`req.runParams`; `redact()` has no inverse, so `resume()` SUCCEEDS (no typed refusal) and the
+resumed call's `appendPrompt` carries the `‹secret:NAME›` marker instead of the original secret
+text — satisfying neither sanctioned branch. Assertion `resumedCall.appendPrompt.not.toContain('‹secret:...›')`
+fails (marker present). Confirmed via direct re-run: 2/10 fail for
+exactly this reason (full file: 10 tests, 2 failed / 8 passed; 1 pre-existing sandboxed-environment
+`spawn litellm ENOENT` background-process warning unrelated to these assertions, present on the
+pre-change baseline too — no `litellm` binary in this sandbox, a known environment limitation, not a
+v21 defect).
 
 ### VAL-100 — REQ-090: a workflow declares its tunable-parameter contract, discoverable without reading the script (REQ-090)
 - **status:** green

@@ -36,6 +36,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentExecutor } from '../../src/agent-executor.js';
+import type { HarnessDescriptor } from '../../src/types.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { RunManager } from '../../src/run-manager.js';
 import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
@@ -267,4 +268,53 @@ describe('redact-at-capture completeness sweep — sink (5): effectiveParams sna
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30000);
+});
+
+// v21 Gate 8 send-back re-run (2026-09-01, review §4 B3 ≡ adversarial F3, "the non-negotiable item
+// of the batch"): the `kind:'harness'` transcript sink (agent-executor.ts:406-412, `onHarness`)
+// persists the gateway-emitted `HarnessDescriptor` (which carries `prompt` — the composed
+// [agentType systemPrompt]+[defaults.prompt]+[script prompt]+[framed appendPrompt], REQ-094) with
+// NO `redact()` call at all — `redactHarness` (agent-executor.ts:17-45) only TRUNCATES the prompt
+// (4KB cap), it never touches secret VALUES. `onEvent`'s `kind!=='harness'` guard excludes this
+// sink from redaction on a "double-redaction exclusivity" premise the review found false (onHarness
+// never redacts either) — so a secret riding a user-supplied `appendPrompt` reaches the persisted
+// harness transcript entry raw. Extends this sweep with sink (6), same fake-gateway convention as
+// sink (1)/(2)/(3) above but calling `req.onHarness()` instead of `req.onEvent()`.
+describe('redact-at-capture completeness sweep — sink (6): kind:\'harness\' transcript descriptor (DES-088 inv-5 sink-completeness, review §4 B3)', () => {
+  it('a secret riding the harness descriptor.prompt is redacted in the persisted kind:\'harness\' transcript entry', async () => {
+    const store = new InMemoryRunStore(clock);
+    const runId = await store.createRun({ script: 'return 1;' }, 'v1');
+
+    const descriptor: HarnessDescriptor = {
+      model: 'fake-model',
+      provider: 'fake',
+      prompt: `use token ${SECRET_VALUE}`,
+      tools: [],
+      skills: [],
+      mcpServers: [],
+      surfaceType: 'none',
+    };
+    const gateway: GatewayClient = {
+      async invoke(req): Promise<GatewayResult> {
+        await req.onHarness?.(descriptor);
+        return { ok: true, provider: 'fake', model: 'fake-model', tokens: { input: 1, output: 1 }, content: 'ok' };
+      },
+    };
+    const executor = new AgentExecutor({ gateway, store, clock, secretValueProvider: secretProvider } as any);
+
+    const agentId = 'agent-006';
+    await executor.run({
+      runId, agentId, prompt: 'echo the token', opts: {}, workspace: '/tmp',
+      signal: new AbortController().signal,
+      runParams: defaultRunParams(undefined),
+    });
+
+    const transcript = await store.getTranscript(runId, agentId);
+    const harnessEntries = transcript.filter((e) => e.kind === 'harness');
+    expect(harnessEntries.length).toBeGreaterThan(0);
+    const json = JSON.stringify(harnessEntries);
+
+    expect(json).not.toContain(SECRET_VALUE);
+    expect(json).toContain(SECRET_MARKER);
+  });
 });

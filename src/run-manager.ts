@@ -96,6 +96,11 @@ export interface RunManagerDeps {
    *  (ADR-005) — refuse, never clamp. Per-key fail-closed defaults when a key is absent from config
    *  (composeConfig() forwards these three from rwe.config.json; see src/main.ts). */
   ceilings?: Partial<Ceilings>;
+  /** v21 Gate 8 send-back (review §4 B1, adopted S-1): the configured model-alias table's key set,
+   *  same convention as WorkflowCatalog's `aliasNames` (server.ts:1141) — validateUserOverrides'
+   *  admission-time UNKNOWN_ALIAS check against it. Omitted/empty = D-AUTH-5-B (no configured
+   *  aliases means every alias passes; the gateway itself is the fail point). */
+  aliasNames?: Set<string>;
 }
 
 const TERMINAL: RunStatus[] = ['stopped', 'completed', 'failed'];
@@ -109,6 +114,33 @@ const DEFAULT_CEILINGS: Ceilings = { maxTimeoutMs: 600_000, maxAppendPromptBytes
  *  any caller that wants it, ignored by ones (like McpFacade.toErrEnvelope) that don't. */
 function paramCodedError(err: ParamErr): Error {
   return Object.assign(codedError(err.code, err.message), { detail: err.detail });
+}
+
+/** v21 Gate 8 send-back (review §4 B2, ARCH-066 inv-5): `redact()` is a destructive one-way
+ *  substitution (secret value -> `‹secret:NAME›`), applied only to the PERSISTED admission
+ *  snapshot (never the live in-memory RunEntry — see the `persistedParams` split in start()). A
+ *  resumed run rehydrated from a fresh process (no in-memory entry survives a restart) has only
+ *  the persisted copy to read back, so it must restore it before dispatch or refuse — never
+ *  silently dispatch the marker text. The marker names the secret it stands for, so the CURRENT
+ *  SecretValueProvider (same env-sourced convention used at capture) can restore it in place;
+ *  any marker whose name is no longer resolvable is left as-is, and `resume()` below refuses
+ *  typed rather than dispatch a residual marker. */
+function unredactBestEffort(value: unknown, secrets: ReadonlyArray<{ name: string; value: string }>): unknown {
+  function walk(v: unknown): unknown {
+    if (typeof v === 'string') {
+      let out = v;
+      for (const { name, value: sv } of secrets) out = out.split(`‹secret:${name}›`).join(sv);
+      return out;
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [k, vv] of Object.entries(v as Record<string, unknown>)) out[k] = walk(vv);
+      return out;
+    }
+    return v;
+  }
+  return walk(value);
 }
 
 
@@ -189,6 +221,8 @@ export class RunManager {
   private readonly _secretValueProvider: SecretValueProvider | undefined;
   /** v21 (ARCH-066, DES-104, TASK-100): engine ceilings bounding the USER-override rung. */
   private readonly _ceilings: Ceilings;
+  /** v21 Gate 8 send-back (review §4 B1): configured alias-name set for admission-time UNKNOWN_ALIAS. */
+  private readonly _aliasNames: Set<string>;
   private readonly _runs = new Map<string, RunEntry>();
 
   /** v8 Slice 1: config values are positive integers — reject bad config loudly at construction
@@ -228,6 +262,10 @@ export class RunManager {
       maxAppendPromptBytes: deps.ceilings?.maxAppendPromptBytes ?? DEFAULT_CEILINGS.maxAppendPromptBytes,
       maxEffort: deps.ceilings?.maxEffort ?? DEFAULT_CEILINGS.maxEffort,
     };
+    // v21 Gate 8 send-back (review §4 B1): mirrors WorkflowCatalog's aliasNames convention
+    // (server.ts) — undefined/omitted -> empty Set (D-AUTH-5-B: no configured aliases means the
+    // check is a no-op, same as before this fix, never a false-positive UNKNOWN_ALIAS).
+    this._aliasNames = deps.aliasNames ?? new Set();
   }
 
   /** v8 Slice 4 (REQ-054): count of live (non-terminal) top-level runs in this process — the
@@ -396,7 +434,7 @@ export class RunManager {
     // contract) is bound by the canonical 4-knob contract, same as a registered script with no
     // `params` block (DES-101). Order pinned: overrides -> declared args -> merge.
     const contract = registeredContract ?? canonicalContract();
-    const overridesResult = validateUserOverrides(contract, overrides, new Set(), this._ceilings);
+    const overridesResult = validateUserOverrides(contract, overrides, this._aliasNames, this._ceilings);
     if (!overridesResult.ok) throw paramCodedError(overridesResult);
     const argsResult = validateDeclaredArgs(contract, spec.args);
     if (!argsResult.ok) throw paramCodedError(argsResult);
@@ -507,6 +545,11 @@ export class RunManager {
     if (entry.status !== 'suspended' && entry.status !== 'stopped' && entry.status !== 'interrupted') {
       throw new IllegalTransitionError(entry.status, 'running');
     }
+    // v21 Gate 8 send-back (review §4 B2, ARCH-066 inv-5): _requireLive's best-effort restore
+    // leaves any marker whose secret is no longer resolvable in place — never dispatch it.
+    if (JSON.stringify(entry.effectiveParams).includes('‹secret:')) {
+      throw codedError('PARAM_SECRET_UNAVAILABLE', `Run ${runId}'s admission-time parameters cannot be restored unredacted for resume (a secret used at admission is no longer resolvable)`);
+    }
     const newScript = script ?? entry.script;
     const cachePlan = ResumeCache.build(entry.journal, newScript);
     entry.script = newScript;
@@ -592,7 +635,15 @@ export class RunManager {
     // v21 (ARCH-066, DES-104): resume reads the PINNED admission snapshot, never re-resolving from
     // the current catalog row — a legacy pre-v21 run (effective_params NULL) falls back to
     // defaultRunParams(registered.defaults), today's behaviour, never a crash.
-    const effectiveParams = (await this._store.getEffectiveParams(runId)) ?? defaultRunParams(registeredDefaults);
+    const rawEffectiveParams = (await this._store.getEffectiveParams(runId)) ?? defaultRunParams(registeredDefaults);
+    // v21 Gate 8 send-back (review §4 B2, ARCH-066 inv-5): the persisted copy is redact-at-capture
+    // (persist-only, see start()) — restore before it becomes a dispatchable RunEntry. resume()
+    // below refuses typed if a marker survives (secret no longer resolvable); other callers of
+    // _requireLive (suspend/stop) never dispatch effectiveParams, so a best-effort restore here is
+    // harmless for them.
+    const effectiveParams = this._secretValueProvider
+      ? (unredactBestEffort(rawEffectiveParams, this._secretValueProvider.entries()) as RunParams)
+      : rawEffectiveParams;
 
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
     const guard = new RunGuard({ concurrency: this._concurrency, budget: spec.budget ?? null });

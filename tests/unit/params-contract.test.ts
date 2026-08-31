@@ -287,4 +287,46 @@ describe('validateUserOverrides() — the 8-row rejection table (DES-101)', () =
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value).toEqual({});
   });
+
+  // v21 Gate 8 send-back re-run (2026-09-01, review 07-review.md §4 B1 ≡ adversarial F1 ≡ quality
+  // QD-1): the adopted Gate 2 decision ("effective post-merge model alias-checked at submission via
+  // the existing UNKNOWN_ALIAS rule, before any durable work") never reached code — `aliasNames` is
+  // accepted as a parameter but the function body never reads it (only reference anywhere is
+  // `parseParamContract`'s REGISTRATION-time author-enum check, a different rung). This is checked
+  // here against the CANONICAL (no-author-enum) contract specifically, because `checkValueAgainstSpec`
+  // only ever consults `spec.enum` — a knob with no author-declared enum (the REQ-090 backward-compat
+  // default) currently has NO alias check at all, enum or not.
+  it('B1: overrides.model naming an alias absent from aliasNames → rejected even with the canonical (no author-enum) contract', () => {
+    const r = validateUserOverrides(canonicalContract(), { model: 'not-a-real-alias' }, ALIASES, CEILINGS);
+    expect(r.ok).toBe(false);
+  });
+
+  // Passthrough carve-out (B1's fix shape names it explicitly): an `openrouter/<id>` string is a
+  // valid model though never a pre-listed alias (submission-validator.ts's existing UNKNOWN_ALIAS
+  // rule already grants this carve-out at the script-literal rung). GREEN on write today only
+  // because NO check exists yet (the case above proves that) — kept as the regression pin for once
+  // B1 lands, same precedent as UT-101's "effort-absent" green pin.
+  it('B1 passthrough: overrides.model = openrouter/<id> is never rejected as an unknown alias', () => {
+    const r = validateUserOverrides(canonicalContract(), { model: 'openrouter/some-vendor/some-model' }, ALIASES, CEILINGS);
+    expect(r.ok).toBe(true);
+  });
+});
+
+// v21 Gate 8 send-back re-run (2026-09-01, review §4 B4 ≡ quality QD-3, same seam as B1): a
+// default-alias server (no `aliases` configured, or an empty table) must skip the model-enum-vs-
+// aliasNames check at REGISTRATION the same way `validateHarnessDefaults` (harness-defaults.ts:70)
+// already does — "only when the alias table is configured AND non-empty". `parseParamContract`
+// unconditionally does `aliasNames.has(entry)`, so on an empty Set every enum entry is rejected;
+// `workflow-catalog.ts:117` feeds exactly `new Set()` when unconfigured (`this._aliasNames ?? new
+// Set()`) — this is a genuine registration-time rejection today for every default-alias server.
+describe('parseParamContract() model-enum vs aliasNames — empty-table skip + openrouter carve-out (DES-101, B4)', () => {
+  it('an EMPTY aliasNames table (unconfigured server) skips the model-enum alias check entirely', () => {
+    const r = parseParamContract({ knobs: { model: { type: 'enum', enum: ['whatever-alias'] } } }, new Set());
+    expect(r.ok).toBe(true);
+  });
+
+  it('openrouter/<id> passthrough is accepted in a declared model enum even when NOT literally in aliasNames', () => {
+    const r = parseParamContract({ knobs: { model: { type: 'enum', enum: ['openrouter/some-vendor/some-model'] } } }, ALIASES);
+    expect(r.ok).toBe(true);
+  });
 });

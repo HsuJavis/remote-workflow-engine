@@ -1186,7 +1186,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     maxEffort: config?.maxEffort ?? 'high',
   };
   let continuations: ContinuationStore | undefined;
-  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, onTerminal: (runId, status) => { void continuations?.onTerminal(runId, status); } });
+  // v21 Gate 8 send-back (review §4 B1): same aliasNames Set the catalog already builds above
+  // (line ~1141) — the admission-time UNKNOWN_ALIAS check needs the identical configured table.
+  const aliasNames = config?.aliases ? new Set(Object.keys(config.aliases)) : undefined;
+  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames, onTerminal: (runId, status) => { void continuations?.onTerminal(runId, status); } });
   // v8 Slice 4 (REQ-053): SQLite-persisted on-completion chaining, same workRoot convention as
   // schedules.db; rearmAtBoot reconciles any continuation whose target terminated while down.
   continuations = new ContinuationStore({ clock, runManager, store, dbPath: config?.continuationDbPath ?? join(workRoot, 'continuations.db') });

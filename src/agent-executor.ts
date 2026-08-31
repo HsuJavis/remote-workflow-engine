@@ -404,10 +404,18 @@ export class AgentExecutor implements AgentSpawner {
       // progress. The record lives on the transcript sink; markHarness merges (never clobbers state).
       sink.markHarness(req.agentId, decorated.model, decorated.provider);
       if (store) {
+        // v21 Gate 8 send-back (review §4 B3, ARCH-066 inv-5 sink-completeness): redactHarness
+        // (called upstream by the gateway to build `descriptor`) truncates the prompt but never
+        // redacts secret values — the "double-redaction exclusivity" premise onEvent's
+        // kind!=='harness' guard relied on is false for this sink. Redact at persist write, same
+        // convention as every other sink (DES-088/TASK-082).
+        const data = secretValueProvider
+          ? (redact({ agentId: req.agentId, descriptor: decorated }, secretValueProvider.entries()) as { agentId: string; descriptor: HarnessDescriptor })
+          : { agentId: req.agentId, descriptor: decorated };
         await store.appendTranscript(req.runId, req.agentId, {
           ts: clock.isoNow(),
           kind: 'harness',
-          data: { agentId: req.agentId, descriptor: decorated },
+          data,
         });
       }
     };

@@ -243,6 +243,51 @@ describe('meta.params contract — registration, discoverability, ceilings (REQ-
   });
 });
 
+// v21 Gate 8 send-back re-run (2026-09-01, review §4 B4 ≡ quality QD-3, same seam as B1):
+// `server.ts:1141` passes `aliasNames: undefined` when `config.aliases` is unconfigured;
+// `workflow-catalog.ts:117` then does `this._aliasNames ?? new Set()` — an EMPTY Set — and
+// `parseParamContract`'s model-enum check does an unconditional `aliasNames.has(entry)`, so on a
+// default-alias server EVERY declared model-enum entry is rejected at registration. This
+// contradicts `validateHarnessDefaults` (harness-defaults.ts:70), which deliberately SKIPS the same
+// check when the alias table is empty/unconfigured (D-AUTH-5-B) — the two register-time checks
+// disagree on the exact same server. Uses its OWN server (no `aliases` config at all), unlike every
+// other describe block in this file (which injects a known 4-alias table).
+describe('meta.params model-enum vs a default-alias (unconfigured) server — registration vocabulary parity (DES-101, B4)', () => {
+  let defaultServer: Server;
+  let defaultTmp: string;
+
+  beforeAll(async () => {
+    defaultTmp = mkdtempSync(join(tmpdir(), 'rwe-it081-b4-'));
+    defaultServer = await createServer({ port: 0, bind: '127.0.0.1', workRoot: defaultTmp }); // no `aliases` key
+  });
+
+  afterAll(async () => {
+    await defaultServer?.close();
+    rmSync(defaultTmp, { recursive: true, force: true });
+  });
+
+  async function defaultCall(name: string, args: Record<string, unknown>) {
+    const res = await fetch(`http://127.0.0.1:${defaultServer.port}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
+    return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+  }
+
+  it('a declared model-enum registers on a default-alias (no aliases configured) server, same as validateHarnessDefaults already allows for defaults.model', async () => {
+    const script = `export const meta = { params: { knobs: { model: { type: 'enum', enum: ['whatever-alias'] } } } };\nreturn 1;`;
+    const r = await defaultCall('workflow_register', { name: 'it081-b4-default-server-enum', script });
+    expect(r.error).toBeUndefined();
+    expect(r.code).not.toBe('PARAM_CONTRACT_INVALID');
+
+    const got = await defaultCall('workflow_get', { name: 'it081-b4-default-server-enum' });
+    const params = (got as { params?: { knobs?: Record<string, { enum?: string[] }> } }).params;
+    expect(params?.knobs?.['model']?.enum).toEqual(['whatever-alias']);
+  });
+});
+
 // v21 Gate 5 re-run (2026-08-31, A-2 / 04-design.md "Orchestrator adjudication — v21 Gate 6
 // send-back"): cross-validated defaults. `spec.default` is read NOWHERE in src/params/contract.ts
 // today, so the whole `default` vocabulary is inert end-to-end — registration neither cross-checks
