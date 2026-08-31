@@ -2914,3 +2914,35 @@ Three red cases to turn green, all previously adjudicated:
 Plus the still-outstanding implementation items already adjudicated and not yet landed: the
 `spec.default` cross-validation vocabulary (A-2), removal of the dead `RunParams.skills` field with its
 assertion amended in the same pass (B-3), and the doc corrections (A-9, B-7, B-8).
+
+---
+
+## Orchestrator adjudication #4 — v21 Gate 7.5 hand-back (2026-09-01)
+
+Gate 7 and Gate 7.5 both PASSED; the validator handed back three items before Gate 8. None blocks the
+review gate, and all three are recorded here so Gate 8 reads them as known state rather than findings.
+
+### D-1 — the production GitHub token is expired; NOT rotated by this iteration
+`RWE_SECRET_GITHUB_TOKEN` in `~/.config/rwe.env` returns 401 against api.github.com. The validator did
+the right thing: rather than mocking the dependency to get a green, it substituted `gh auth token` and
+reached the **real** GitHub API, so VAL-105's real-tier evidence stands on a genuine call.
+
+**Deliberately not fixed here.** Rotating a credential in the production config is an
+outward-facing, hard-to-reverse action on the operator's own account, and it is unrelated to v21's
+scope — the parameter contract does not touch auth. It is surfaced to the operator as an action item.
+Until rotated, the engine's own `issue_report`/`issue_list` tools will 401 in production even though
+v21's REQ-095 code path is correct and validated.
+
+### D-2 — production still serves v20; no restart onto v21
+`feat/v21-param-contract` is unmerged, so `rwe.service` on port 8899 still runs v20. This matches every
+prior iteration's branch scope: deployment happens after Gate 8 closes and the branch merges, not
+during validation. Gate 8 should not read "production not on v21" as an incomplete iteration.
+
+### D-3 — the role contract's `trace --rtm` flag does not exist in this repo's `trace.py`
+The reviewer/validator contract calls `sh .sdlc/trace <dir> --rtm <path>`, but this project's shipped
+`trace.py` rejects it at argparse. This is a **plugin-version vs project-version mismatch**, not a v21
+regression — no iteration in this ledger's 21-iteration history has ever produced an `rtm.md`. The
+validator generated `rtm.md` via `trace.py`'s own module functions instead of patching the flag into
+this project's copy, which is the right call: silently teaching the local tool a flag the plugin
+assumes would hide the mismatch instead of recording it. **Reconcile upstream in the plugin**, not
+here. Gate 8 may use the generated `rtm.md` as-is.
