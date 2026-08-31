@@ -410,15 +410,23 @@ provider unreachable → ok:false (not throws); invoke tags request with runId/a
 
 ### UT-010 — RunStore port: create / append / transition / query
 - **status:** green
-- **traces:** DES-010
+- **traces:** DES-010, DES-104, TASK-100
 - **tier:** unit
 - **real:** false
 - **result:** pass
-- **iter:** v1
+- **iter:** v21
 
 File: `tests/unit/run-store.test.ts`.
 Cases: createRun returns string runId; getRun returns queued; getRun returns null for unknown;
 appendJournal stored; recordTransition updates status; listRuns returns all; hydrateAll empty on fresh store.
+
+**Gate 6.5+7 coverage-gate extension (verifier, 2026-09-01):** `getEffectiveParams` (v21, DES-104) had
+zero covering cases — the production caller (`run-manager.ts:595`, cold-resume in `_requireLive`) is
+only reached when a run isn't already in the live `_runs` map, and no existing test constructs a
+second `RunManager` sharing the same `InMemoryRunStore` to hit that path. 3 new cases added directly
+against the store: `getEffectiveParams` returns the snapshot passed as `createRun`'s third argument;
+returns `null` when `createRun` was called with no `effectiveParams` (legacy/adhoc); returns `null` for
+an unknown runId. Closes the coverage-gate finding for `src/run-store.ts:163-165` (0/3 → 3/3 statements).
 
 ### UT-011 — WorkflowCatalog: registry, workspace rooting, path-escape rejection
 - **status:** green
@@ -880,11 +888,11 @@ throwing script returns error result (host stays up); abort resolves promptly; f
 Red reason: SandboxHost.run() throws NotImplementedError.
 
 ### IT-004 — AgentExecutor wires GatewayClient and TranscriptSink
-- **status:** red
+- **status:** green
 - **traces:** ARCH-004, ARCH-068, DES-105, TASK-101
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 Gate 6.5 fix (verifier): all 3 sub-tests built `gw`/`guard`/`store` fakes but called `new
@@ -1031,11 +1039,11 @@ for every run regardless of which version actually executed — confirmed at Gat
 (`08-validation.md` VAL-014).
 
 ### IT-012 — WorkflowCatalog registrations persist in the on-disk SQLite DB across instances
-- **status:** red
+- **status:** green
 - **traces:** ARCH-007, ARCH-067, DES-103, TASK-096
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/integration/catalog-persistence.test.ts`.
@@ -2287,11 +2295,11 @@ Cases: `plugin/` directory exists at repo root; `plugin/.mcp.json` is valid JSON
 Red reason: `expected false to be true` — `plugin/` directory does not exist yet.
 
 ### UT-033 — composeConfig() forwards all v2 config keys (DES-022, composition-root wiring)
-- **status:** red
+- **status:** green
 - **traces:** DES-016, DES-017, DES-019, DES-020, DES-022, ARCH-010, ARCH-012, DES-104, ARCH-066, TASK-100
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/unit/compose-config-v2-wiring.test.ts`.
@@ -3466,11 +3474,11 @@ error).
 ## v5 slice — GitHub issue reporting tests (UT-057, IT-043)
 
 ### UT-057 — IssueReporter / GithubIssueClient / renderIssueBody (REQ-027..030, REQ-066, REQ-095)
-- **status:** red
+- **status:** green
 - **traces:** DES-037, DES-107, ARCH-070, TASK-103
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 - tests/unit/issue-reporter.test.ts (v5/v6: 9 cases — files an issue → {issueNumber,url}; `ISSUE_REPORT_INVALID{field}` on empty required field w/ no client call; `GITHUB_TOKEN_MISSING` when the secret is unset; agent-consumable body template sections + `agent-reported`/`severity:<x>` labels; bounded client timeout + retry then `GITHUB_API_ERROR`; 4xx not retried [all GREEN, unchanged]).
   **v11 (REQ-066):** 9 new cases added — (1) `renderIssueBody` with `meta.version:'v1.4.0'` → body contains `Version: v1.4.0` (new format, capital V); (2) all five Environment fields always present when no severity/component: `- Version:`, `- severity: _none_`, `- component: _none_`, `- reported at:` (placeholder lines); (3) supplied severity/component render correctly (no `_none_`); (4) `IssueReporter.report()` with `input.version:'v1.4.0'` → body contains `Version: v1.4.0` (caller-supplied wins); (5) omitted version falls back to `engineVersion`, body contains `Version: eng-9.9.9` (new format); (6) whitespace-only version treated as omitted (falls back to engineVersion); PLUS tests/unit/issue-resolve-engine-version.test.ts (new file, 3 cases — `resolveEngineVersion(fakeExec)` returns pkg.version + git describe; exec-throws falls back to pkg.version alone, never empty; never returns '' or 'undefined').
@@ -3479,11 +3487,11 @@ error).
   **v21 Gate 5 re-run (A-5 / 04-design.md "Orchestrator adjudication — v21 Gate 6 send-back", 2026-08-31) addition** — DES-107 amended (v21 introduces no general registration-name predicate): 2 new cases in an `IssueReporter workflow label sanitize` describe block — (1) characters GitHub rejects in a label (e.g. spaces, `!`) are replaced with `-`; the untruncated `name@version` still appears in the body; (2) a workflow name that would push the label past GitHub's 50-character cap is truncated in the LABEL only (9-char `workflow:` prefix + 41 surviving name characters), the untruncated `name@version` still appears in the body. Red reason: `report()` still uses the raw `workflow:${input.workflow}` string verbatim — no sanitize/truncate exists. Confirmed via direct re-run: case 1 gets the unsanitized `workflow:my workflow!` label (assertion for `workflow:my-workflow-` fails); case 2 gets an untruncated 69-character label (assertion for the 50-char cap fails). 2/2 fail for exactly this reason.
 
 ### IT-043 — issue_report over the real MCP HTTP surface (REQ-027..030, REQ-066, REQ-095)
-- **status:** red
+- **status:** green
 - **traces:** ARCH-023, DES-107, ARCH-070, TASK-103
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 - tests/integration/issue-report-http.test.ts (v5: 4 cases — `issue_report` advertised in tools/list; a real IssueReporter + fake GithubIssueClient injected via ServerConfig files an issue over `/mcp` → {issueNumber,url}; the default composition-root wiring (no token) returns `GITHUB_TOKEN_MISSING`; invalid input → `ISSUE_REPORT_INVALID` [all GREEN, unchanged]).
   **v11 (REQ-066):** 1 new case — `issue_report{version:'v1.4.0',...}` over `/mcp` → captured GithubIssueClient `createIssue` call's body contains `Version: v1.4.0`.
@@ -3837,11 +3845,11 @@ Red reason: current `deriveAgentRecords` has `if (!usage) continue` → agents w
 Existing-test conflicts: `tests/integration/in-flight-agent-state.test.ts` + `agent-records-restart-survival.test.ts` assert running/queued agent states but via `_mergeLive` (in-process AgentTranscriptSink._records), NOT via `deriveAgentRecords` — no conflict at restart path. `tests/unit/run-store.test.ts` does not assert agent state at all.
 
 ### IT-066 — `workflow_agent_log` returns `harness` field + stripped from events + `hasMore` + canonical state (REQ-073)
-- **status:** red
+- **status:** green
 - **traces:** DES-067, ARCH-045, ARCH-068, DES-105, TASK-101
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/integration/agent-log-harness-shape.test.ts`. Mock policy (integration): real `createServer`; no LLM needed (tests shape of the tool response). 5 cases: (1) `workflow_agent_log` returns top-level `harness` field, NOT embedded in the events array; (2) `kind:'harness'` event STRIPPED from returned `events[]` (sent once, never evicted by the 50-msg cap); (3) response has `hasMore:boolean`; (4) `GET /api/runs/:id/agents/:agentId?limit=1` respects limit + `hasMore` present; (5) `AgentRecord.state` in `workflow_status` is canonical (`queued|running|done|failed`), never `idle`/`completed`.
@@ -4453,11 +4461,11 @@ File: `tests/integration/net-guard-bind-integration.test.ts`. Mock policy (integ
 File: `tests/integration/workflow-ownership.test.ts`. Mock policy (integration): real server + real SQLite catalog; principal passed as tool arg per v15 spec. 10 cases: (1) first registration by alice → owned; (2) alice overwrite → succeeds; (3) bob overwrite → NOT_WORKFLOW_OWNER + stored unchanged; (4) bob deregister → NOT_WORKFLOW_OWNER + still present; (5) alice deregister → succeeds; (6) null principal → ungated [D-AUTH-6]; (7) workflow_get includes owner; (8) workflow_run by bob → not gated; (9) boot backfill: NULL owner → hsuhungjung@gmail.com; (10) backfill idempotent. Red reason: `owner` column not yet added; NOT_WORKFLOW_OWNER never returned; boot backfill absent → 7 of 10 cases fail.
 
 ### IT-081 — harness defaults register-time validation: D-AUTH-5 named assertions (DES-099, DES-100)
-- **status:** red
+- **status:** green
 - **traces:** DES-099, DES-100, ARCH-062, TASK-089, ARCH-067, DES-103, TASK-099
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/integration/harness-defaults-validation.test.ts`. Mock policy (integration): real server + real SQLite catalog; injected alias table for predictable validation. Named assertions per D-AUTH-5: (D-AUTH-5-A) unknown key → HARNESS_DEFAULTS_INVALID + nothing stored; (D-AUTH-5-B) unresolvable model alias → HARNESS_DEFAULTS_INVALID + nothing stored; (D-AUTH-5-C) non-allowlisted tool → HARNESS_DEFAULTS_INVALID; (D-AUTH-5-D) unknown skill → register SUCCEEDS (deferred); (D-AUTH-5-E) mixed valid+invalid → HARNESS_DEFAULTS_INVALID + nothing stored; backward-compat (no defaults → registers); valid defaults → stored + queryable; run-time merge (per-run override wins). Red reason: `defaults` field not yet in tool schema / not yet validated → HARNESS_DEFAULTS_INVALID never returned → 8 of 10 cases fail.
@@ -4544,11 +4552,11 @@ File: `tests/acceptance/val-099-bind-fail-closed.test.ts`. Mock policy (acceptan
 ## v21 slice — tunable-parameter contract, author/user separation part 1 (REQ-090..095)
 
 ### UT-098 — pure `src/params/contract.ts`: locked/tunable vocabulary, `parseParamContract`, `validateUserOverrides`, the total rejection table (DES-101)
-- **status:** red
+- **status:** green
 - **traces:** DES-101, ARCH-064, TASK-097
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/unit/params-contract.test.ts`. Mock policy (unit): pure module, zero I/O/VM/clock/randomness.
@@ -4564,16 +4572,28 @@ wrong type, row 4 outside author enum, row 5 above engine ceiling (allowed = eff
 `appendPrompt` over cap (never echoes the text), row 7 declared `args.<field>` violation, undeclared
 `args` keys pass through; `maxEffort` ceiling refuses `xhigh`/`max` by default; a fully valid
 overrides object round-trips exactly; no overrides → `{}` (REQ-091 pre-v21 identity).
-Red reason: `src/params/contract.ts` does not exist yet → `Cannot find module
+Red reason (historical): `src/params/contract.ts` does not exist yet → `Cannot find module
 '../../src/params/contract.js'` at collect time — MODULE NOT FOUND, confirmed via `npx vitest run`
 (same precedent as UT-097/`resolve-harness-params.test.ts` before `src/harness-defaults.ts` existed).
 
+**Gate 6.5+7 regression (verifier, 2026-09-01):** green, 30/30 in `params-contract.test.ts`. Includes
+the C-1 args-side enum-cap case (`args.region` with a 33-member enum → `PARAM_CONTRACT_INVALID`,
+`detail.param:'args.region'`), added in the same integrator-closeout commit (`5daf914`) that reported
+it missing in `06-impl-log.md` IMPL-130 — see that entry's "Coverage gap CLOSED" addendum. Both loops
+of the enum cap (knobs and args) are now covered; no outstanding gap for this item.
+
+**Gate 6.5+7 coverage-gate extension (verifier, 2026-09-01):** `checkValueAgainstSpec`'s "below the
+minimum" branch (`contract.ts:197-204`) had no covering case — the existing row-7 case (`retries: 99`
+against `min:0, max:5`) only exercises the sibling "above the maximum" branch. 1 new case: `retries: -1`
+→ `PARAM_OUT_OF_RANGE`, `detail.param:'args.retries'`, `detail.allowed:{min:0,max:5}`. Closes the
+coverage-gate finding for this function (7/36 → 36/36 statements).
+
 ### UT-099 — pure `src/params/resolve.ts`: two-moment merge, per-key provenance, five-segment `composePrompt`, `mapEffort` (DES-102)
-- **status:** red
+- **status:** green
 - **traces:** DES-102, ARCH-065, TASK-098, TASK-104
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/unit/params-resolve.test.ts`. Mock policy (unit): pure module, zero I/O.
@@ -4594,11 +4614,11 @@ Red reason: `src/params/resolve.ts` does not exist yet → MODULE NOT FOUND at c
 via `npx vitest run`.
 
 ### UT-100 — dispatch wiring: `AgentExecutor` consumes `runParams`, decorates the harness descriptor with provenance, composes the 5-segment prompt, records-then-throws on out-of-contract per-call knobs (DES-105)
-- **status:** red
+- **status:** green
 - **traces:** DES-105, ARCH-068, TASK-101
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/unit/agent-executor-params.test.ts`. Mock policy (unit): fake `GatewayClient` (no
@@ -4618,11 +4638,11 @@ records nor throws (the call proceeds to a normal `{kind:'text',...}` result). A
 confirmed via `npx vitest run`.
 
 ### UT-101 — effort on the wire: `mapEffort` consumed by `LiteLLMGatewayClient`; `thinkingFor` stays the sole writer of `options.thinking` (DES-106)
-- **status:** red
+- **status:** green
 - **traces:** DES-106, ARCH-069, TASK-102
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/unit/gateway-effort.test.ts`. Mock policy (unit): `fetchImpl` spy intercepts the
@@ -4643,11 +4663,11 @@ pinning that `thinkingFor()` stays the SOLE writer of `options.thinking` — see
 **v21 Gate 5 re-run (A-7 / 04-design.md "Orchestrator adjudication — v21 Gate 6 send-back", 2026-08-31):** a new `LiteLLM-proxy branch` describe block, 2 cases (`mapEffort` is called once per `invoke()` and the SAME `applied` object already flows to BOTH `callProvider`/direct-fetch and `callViaLiteLLMProxy`; only the direct-fetch branch had a red test before this re-run) — (1) the mapped effort value (`body.effort:'max'`) reaches the outbound `/v1/messages` request on the proxy branch; (2) a provider with no reasoning dial on the proxy branch: `onHarness` records `effortApplied:{applied:false,...}` and no `effort` key reaches the outbound proxy body. Uses the same fake-`LiteLLMProxyManager` pattern as `tests/integration/gateway-provider-down.test.ts` (IT-005) — the proxy's own health-check spawn/fetch faked so `proxy.start()` resolves instantly, `GatewayConfig.fetchImpl` captures the real outbound call. **Result: GREEN on first write, not red** — confirmed via direct re-run (`npx vitest run tests/unit/gateway-effort.test.ts`, 5/5 pass). Matches the adjudication's own framing ("the proxy path needs its own unit test", not new implementation) — `effortBodyFields(applied)` is already spread into both `callProvider` (client.ts:155) and `callViaLiteLLMProxy` (client.ts:292) bodies from the single upstream `mapEffort` call (client.ts:326). Kept as a deliberate green regression guard (same precedent as A-3/IT-083 above), not force-reddened.
 
 ### IT-083 — admission rung + run-immutable `effectiveParams` snapshot + resume + engine ceilings, inserted between `catalog.get()` and `createRun()`/`runWorkspace()` (DES-104)
-- **status:** red
+- **status:** green
 - **traces:** DES-104, ARCH-066, TASK-100, DES-103
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/integration/params-admission.test.ts`. Mock policy (integration, DES-108): real
@@ -4669,11 +4689,11 @@ inventing a new file, per DES-103's ARCH-051 drift-lock discipline.)
 **v21 Gate 5 re-run (A-3 / 04-design.md "Orchestrator adjudication — v21 Gate 6 send-back", 2026-08-31):** a new `Advertised bound == enforced bound` describe block, 1 case — a NULL-`params` workflow row, registered against a server configured with a LOWERED `maxTimeoutMs:5000`, advertises that same lowered bound via `workflow_get.params.knobs.timeoutMs.max` with no re-registration, and admission enforces the identical number (`overrides.timeoutMs` at the advertised bound is accepted, one above it → `PARAM_OUT_OF_RANGE`) — pinning that the advertised and enforced bounds can never drift apart. **Result: GREEN on first write, not red** — confirmed via direct re-run (`npx vitest run tests/integration/params-admission.test.ts`, 6/6 pass). This matches DES-104's own text: the ceiling-forwarding wiring (`composeConfig()` → both `RunManager` and `McpFacade` from the SAME object) already landed in the checkpointed implementation pass; only the behavioral test was missing. Kept as a deliberate green regression guard (same precedent as UT-020/UT-057's compat pins), not force-reddened.
 
 ### VAL-100 — REQ-090: a workflow declares its tunable-parameter contract, discoverable without reading the script (REQ-090)
-- **status:** red
+- **status:** green
 - **traces:** REQ-090
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/acceptance/val-100-param-contract.test.ts`. Mock policy (acceptance, DES-108): real
@@ -4687,11 +4707,11 @@ Red reason: `meta.params` is not parsed/stored/validated anywhere today — ever
 against the current engine, confirmed via `npx vitest run`.
 
 ### VAL-101 — REQ-091: per-run overrides validated against the contract; locked configuration is unreachable from the caller (REQ-091)
-- **status:** red
+- **status:** green
 - **traces:** REQ-091
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/acceptance/val-101-override-validation.test.ts`. Mock policy (acceptance, DES-108): real
@@ -4704,11 +4724,11 @@ Red reason: no admission-rung validation exists today — all override/args-vali
 fail, confirmed via `npx vitest run`.
 
 ### VAL-102 — REQ-092: registered harness defaults actually take effect at run time (repairs the REQ-088 wiring gap) (REQ-092)
-- **status:** red
+- **status:** green
 - **traces:** REQ-092
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/acceptance/val-102-registered-defaults-effect.test.ts`. Mock policy (acceptance,
@@ -4724,11 +4744,11 @@ Red reason: `resolveHarnessParams` has zero `src/` callers (the REQ-088 wiring g
 descriptor at all. Both cases fail, confirmed via `npx vitest run`.
 
 ### VAL-103 — REQ-093: `effort` is a real end-to-end parameter, not a documented no-op (REQ-093)
-- **status:** red
+- **status:** green
 - **traces:** REQ-093
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/acceptance/val-103-effort-real.test.ts`. Mock policy (acceptance, DES-108):
@@ -4745,11 +4765,11 @@ evidence-plan pre-commitment (VAL-003 precedent: deciding the split now costs a 
 7.5 it costs a round).
 
 ### VAL-104 — REQ-094: a user-supplied `appendPrompt` attaches at a fixed position after everything the author controls (REQ-094)
-- **status:** red
+- **status:** green
 - **traces:** REQ-094
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/acceptance/val-104-append-prompt.test.ts`. Mock policy (acceptance, DES-108): real
@@ -4763,11 +4783,11 @@ composed prompt never includes `appendPrompt` at all (script prompt sent bare, `
 Both cases fail, confirmed via `npx vitest run`.
 
 ### VAL-105 — REQ-095: problem reports are bound to a specific workflow and filterable by it (REQ-095)
-- **status:** red
+- **status:** green
 - **traces:** REQ-095
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/acceptance/val-105-workflow-bound-issues.test.ts`. Mock policy (acceptance, DES-108):

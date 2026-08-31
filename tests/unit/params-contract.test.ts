@@ -252,6 +252,19 @@ describe('validateUserOverrides() — the 8-row rejection table (DES-101)', () =
     }
   });
 
+  // Gate 6.5+7 (verifier, 2026-09-01): checkValueAgainstSpec's "below the minimum" branch had no
+  // covering case — row 7's existing 99-above-max case exercises the sibling "above the maximum"
+  // branch only. retries.min is 0, so a negative value is the below-minimum counterpart.
+  it('declared args field BELOW its spec minimum → PARAM_OUT_OF_RANGE, param prefixed "args."', () => {
+    const r = validateDeclaredArgs(CONTRACT, { retries: -1 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('PARAM_OUT_OF_RANGE');
+      expect(r.detail['param']).toBe('args.retries');
+      expect(r.detail['allowed']).toEqual({ min: 0, max: 5 });
+    }
+  });
+
   it('undeclared args keys pass through unchanged (backward compat)', () => {
     const r = validateDeclaredArgs(CONTRACT, { retries: 2, somethingElse: 'whatever' });
     expect(r.ok).toBe(true);

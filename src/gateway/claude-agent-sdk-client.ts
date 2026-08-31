@@ -591,7 +591,8 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         mergedMcp: Object.entries(mergedMcp).map(([name, cfg]) => ({ name, ...(cfg as Record<string, unknown>) })),
         skills,
       });
-      if (applied !== undefined) descriptor.effortApplied = applied;
+      // `applied` travels to the caller as onHarness's own second argument (the single source of
+      // truth downstream decoration reads) — no separate write onto `descriptor` needed here.
       await req.onHarness(descriptor, applied);
     }
     const session = this._query({ prompt: req.prompt, options });

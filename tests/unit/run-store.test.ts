@@ -77,4 +77,28 @@ describe('InMemoryRunStore', () => {
     expect(Array.isArray(runs)).toBe(true);
     expect(runs.length).toBe(0);
   });
+
+  // v21 (DES-104, TASK-100): getEffectiveParams reads back the run-immutable admission snapshot
+  // createRun's third argument persisted — RunManager's own cold-resume path (run-manager.ts:595)
+  // is the production caller, but no test exercised InMemoryRunStore's own copy directly.
+  it('getEffectiveParams returns the effectiveParams snapshot passed to createRun', async () => {
+    const store = new InMemoryRunStore(CLOCK);
+    const snapshot = {
+      appendPrompt: 'x',
+      provenance: { model: 'engine' as const, effort: 'engine' as const, timeoutMs: 'engine' as const, appendPrompt: 'override' as const },
+    };
+    const runId = await store.createRun({ script: 'return 1;' }, 'v1', snapshot);
+    expect(await store.getEffectiveParams(runId)).toEqual(snapshot);
+  });
+
+  it('getEffectiveParams returns null when createRun was called with no effectiveParams (legacy/adhoc)', async () => {
+    const store = new InMemoryRunStore(CLOCK);
+    const runId = await store.createRun({ script: 'return 1;' });
+    expect(await store.getEffectiveParams(runId)).toBeNull();
+  });
+
+  it('getEffectiveParams returns null for an unknown runId', async () => {
+    const store = new InMemoryRunStore(CLOCK);
+    expect(await store.getEffectiveParams('no-such-run')).toBeNull();
+  });
 });
