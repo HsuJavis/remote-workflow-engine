@@ -104,4 +104,33 @@ describe('ClaudeAgentSdkGatewayClient thinking policy (UT-020, D-F6)', () => {
     const [[call]] = queryMock.mock.calls as [[{ options?: { thinking?: unknown } }]];
     expect(call.options?.thinking).toEqual({ type: 'disabled' });
   });
+
+  // v21 Gate 5 addendum (B-6, DES-106, TASK-102): the direct-fetch LiteLLMGatewayClient branch has
+  // its own mapEffort coverage (tests/unit/gateway-effort.test.ts) but the SDK client's own call
+  // site (claude-agent-sdk-client.ts:509/581, `(options as ...)[applied.param] = applied.value`)
+  // had no covering test — DES-106/TASK-102's "parameterized over BOTH GatewayClient impls" DoD
+  // was half-met. Mirrors the direct-fetch case: an Anthropic alias at effort:'low' vs effort:'max'
+  // produces two captured Options objects differing at the mapped effort key.
+  it('an Anthropic-mapped alias dispatched at different effort levels produces Options objects that differ at the mapped effort key (B-6, DES-106)', async () => {
+    queryMock.mockReturnValue(fakeSession());
+    const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
+    const config: ClaudeAgentSdkGatewayConfig & { aliases: AliasMap } = {
+      baseUrl: 'http://127.0.0.1:4000',
+      aliases: ALIASES,
+      secretSource: new InMemorySecretSource({ ANTHROPIC_API_KEY: 'fake-unit-test-key' }),
+    };
+
+    const clientLow = new ClaudeAgentSdkGatewayClient(config);
+    await clientLow.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'low' }, runId: 'r1', agentId: 'a1' });
+    const [[lowCall]] = queryMock.mock.calls as [[{ options?: Record<string, unknown> }]];
+
+    queryMock.mockReset();
+    queryMock.mockReturnValue(fakeSession());
+    const clientMax = new ClaudeAgentSdkGatewayClient(config);
+    await clientMax.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'max' }, runId: 'r1', agentId: 'a1' });
+    const [[maxCall]] = queryMock.mock.calls as [[{ options?: Record<string, unknown> }]];
+
+    expect(lowCall.options?.['effort']).toBeDefined();
+    expect(lowCall.options?.['effort']).not.toEqual(maxCall.options?.['effort']);
+  });
 });

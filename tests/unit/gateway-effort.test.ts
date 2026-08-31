@@ -133,3 +133,30 @@ describe('LiteLLMGatewayClient effort-on-the-wire — LiteLLM-proxy branch (UT-1
     expect(parsed['effort']).toBeUndefined();
   });
 });
+
+// v21 Gate 5 addendum Part 2 (DES-106 boundary condition — clause-coverage sweep, ADR-006): "
+// session-options-builder.ts stays unwired, guarded by a standing zero-`src/`-importer assertion
+// that retires when the security-hardening track wires the module deliberately." No such standing
+// assertion existed anywhere in the suite — a structural (filesystem) check, not a behavioral one.
+describe('session-options-builder.ts stays FENCED — zero src/ importers (ADR-006, DES-106)', () => {
+  it('no file under src/ (other than the module itself) imports session-options-builder', async () => {
+    const { readdirSync, readFileSync, statSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const srcDir = join(import.meta.dirname, '../../src');
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const name of readdirSync(dir)) {
+        const p = join(dir, name);
+        if (statSync(p).isDirectory()) { walk(p); continue; }
+        if (!name.endsWith('.ts') || name === 'session-options-builder.ts') continue;
+        // Only an actual import/require site counts — a comment MENTIONING the filename (e.g. a
+        // citation like "session-options-builder.ts:18, ADR-006") is not a wiring violation.
+        if (/from ['"].*session-options-builder(\.js)?['"]|require\(['"].*session-options-builder/.test(readFileSync(p, 'utf8'))) {
+          offenders.push(p);
+        }
+      }
+    };
+    walk(srcDir);
+    expect(offenders).toEqual([]);
+  });
+});

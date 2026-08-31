@@ -107,6 +107,19 @@ describe('parseParamContract() — registration-time parse of meta.params (DES-1
     expect(r.ok).toBe(false);
   });
 
+  // v21 Gate 5 addendum Part 2 (DES-101 rejection table row 8 — clause-coverage sweep): row 8 names
+  // FOUR conditions (locked key, unknown knob, malformed, over bounds); locked-key/malformed/over-32
+  // were each already covered above, but no case exercised "unknown knob" — a knob name that is
+  // neither locked nor a recognized tunable key.
+  it('row 8: an unrecognized knob name at registration → PARAM_CONTRACT_INVALID, nothing returned', () => {
+    const r = parseParamContract({ knobs: { bogusKnob: { type: 'string' } } }, ALIASES);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+      expect(r.detail['param']).toBe('bogusKnob');
+    }
+  });
+
   it('undefined metaParams (no params block at all) parses to the canonical contract', () => {
     const r = parseParamContract(undefined, ALIASES);
     expect(r.ok).toBe(true);
@@ -118,6 +131,17 @@ describe('parseParamContract() — registration-time parse of meta.params (DES-1
     for (let i = 0; i < 40; i++) knobs[`k${i}`] = { type: 'string' };
     const r = parseParamContract({ knobs }, ALIASES);
     expect(r.ok).toBe(false);
+  });
+
+  // v21 Gate 5 addendum (B-1, DES-101, REQ-090): the sibling `enum ≤ 32 members` structural bound —
+  // distinct from the >32-knobs+args bound above. An unbounded enum is served on every
+  // `workflow_get`, so the cap is load-bearing (the `nesting depth ≤ 4` bound was DROPPED in the
+  // same adjudication and gets no test — ParamSpec is flat, nothing reads nested keys).
+  it('structural bound: a declared enum with more than 32 members → PARAM_CONTRACT_INVALID, nothing stored', () => {
+    const enumValues = Array.from({ length: 33 }, (_, i) => `v${i}`);
+    const r = parseParamContract({ knobs: { effort: { type: 'enum', enum: enumValues } } }, ALIASES);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('PARAM_CONTRACT_INVALID');
   });
 });
 
@@ -164,6 +188,23 @@ describe('validateUserOverrides() — the 8-row rejection table (DES-101)', () =
       expect(r.code).toBe('PARAM_OUT_OF_RANGE');
       expect(r.detail['supplied']).toBe('opus');
       expect(r.detail['allowed']).toEqual({ enum: ['sonnet', 'haiku'] });
+    }
+  });
+
+  // v21 Gate 5 addendum Part 2 (DES-101 boundary condition — clause-coverage sweep): "Free text is
+  // reported by size, never by content ... Any string value over 64 bytes is truncated with
+  // suppliedTruncated:true." Row 6's own appendPrompt-over-cap case never echoes the value at all;
+  // this is the separate, more general rule for OTHER rejected string values (e.g. an out-of-enum
+  // `model` string) that end up in an error detail's `supplied` field — long values must not bloat
+  // logged error envelopes.
+  it('a rejected string value over 64 bytes is truncated in the error detail, with suppliedTruncated:true', () => {
+    const longValue = 'x'.repeat(200);
+    const r = validateUserOverrides(CONTRACT, { model: longValue }, ALIASES, CEILINGS);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('PARAM_OUT_OF_RANGE');
+      expect(Buffer.byteLength(r.detail['supplied'] as string, 'utf8')).toBeLessThanOrEqual(64);
+      expect(r.detail['suppliedTruncated']).toBe(true);
     }
   });
 

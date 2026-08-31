@@ -14,6 +14,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { RunManager } from '../../src/run-manager.js';
+import { InMemoryRunStore } from '../../src/run-store.js';
+import { FixedClock } from '../../src/clock.js';
+import type { GatewayClient, GatewayResult } from '../../src/gateway/client.js';
 
 let server: Server;
 let tmpDir: string;
@@ -96,6 +100,51 @@ describe('Admission rung: overrides validated BEFORE any durable work (IT-083, D
     expect(resumed.error ?? resumed.code).toBeDefined();
   });
 
+});
+
+// v21 Gate 5 addendum Part 2 (DES-104 boundary condition — clause-coverage sweep, ADR-002): "Nothing
+// v21 resolves enters CallKey (run-manager.ts:706 [now :774] stays byte-identical) — pinned by a
+// test asserting an overridden run's CallKeys are byte-identical to a non-overridden run's. This one
+// cheap test guards both the zero-cache-invalidation promise and the F-2 blast-radius bound."
+// Uses RunManager directly with an ad-hoc script (no WorkflowCatalog needed — `start()` only
+// touches the catalog when `spec.name && !spec.script`) + a fake GatewayClient, so the journal
+// write is fast and network-free.
+describe('CallKey never carries v21-resolved params (ADR-002, DES-104)', () => {
+  const clock = new FixedClock(new Date('2024-01-01T00:00:00.000Z'));
+  const OK: GatewayResult = { ok: true, provider: 'fake', model: 'fake-model', tokens: { input: 1, output: 1 }, content: 'ok' };
+  const gateway: GatewayClient = { invoke: async () => OK };
+
+  async function pollDone(mgr: RunManager, runId: string): Promise<void> {
+    for (let i = 0; i < 100; i++) {
+      const v = await mgr.status(runId);
+      if (v.status === 'completed' || v.status === 'failed') return;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
+  it('a run with overrides.appendPrompt and a plain run journal byte-identical CallKeys for the same agent() call', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-callkey-'));
+    try {
+      const store = new InMemoryRunStore(clock);
+      const mgr = new RunManager({ store, clock, workRoot: dir, gateway } as any);
+
+      const plainRunId = await mgr.start({ script: `return await agent('same prompt');` });
+      const overrideRunId = await mgr.start({ script: `return await agent('same prompt');` }, { appendPrompt: 'EXTRA USER TEXT' });
+      await pollDone(mgr, plainRunId);
+      await pollDone(mgr, overrideRunId);
+
+      const plainJournal = await store.getJournal(plainRunId);
+      const overrideJournal = await store.getJournal(overrideRunId);
+      expect(plainJournal.length).toBe(1);
+      expect(overrideJournal.length).toBe(1);
+      // The composed (framed) appendPrompt reaches the OUTBOUND prompt (DES-105) but must never
+      // enter the journaled CallKey — the cache-replay identity stays exactly what the script wrote.
+      expect(overrideJournal[0]!.key).toEqual(plainJournal[0]!.key);
+      expect(overrideJournal[0]!.key.prompt).toBe('same prompt');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // v21 Gate 5 re-run (2026-08-31, A-3 / 04-design.md "Orchestrator adjudication — v21 Gate 6

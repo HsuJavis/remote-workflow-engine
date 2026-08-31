@@ -4885,3 +4885,191 @@ Implementation and documentation instructions carried by adjudication #2: removi
 `RunParams.skills` field and amending any assertion that pins it (B-3, pre-authorized — this is design
 conformance, not test-weakening), IMPL ownership of the `redactHarness` swap (B-7), and TASK-104's stale
 `files:` reference in 03-tasks.md (B-8).
+
+---
+
+## Gate 5 addendum — CLOSED (2026-08-31, verifier)
+
+**Part 1 (5 enumerated tests) — status against baseline (1/1463, the pre-existing UT-100/A-8 red):**
+
+1. **Enum-member cap** → `tests/unit/params-contract.test.ts` ("structural bound: a declared enum with
+   more than 32 members"). **GENUINELY RED** — `MAX_DECLARED` in `src/params/contract.ts` bounds only
+   `Object.keys(knobs).length + Object.keys(args).length`; no per-spec `enum.length` check exists.
+   Confirmed via `npx vitest run` (`expected true to be false`).
+2. **redact() covers the effectiveParams snapshot** → `tests/integration/redact-sweep.test.ts`, new
+   describe block "sink (5): effectiveParams snapshot". **GREEN on first write** — `run-manager.ts:411-413`
+   already calls `redact(effectiveParams, ...)` before `createRun`; only the sweep case was missing.
+   Kept as a deliberate regression pin (same precedent as A-3/A-7 in the prior re-run).
+3. **workspace_purge preserves effectiveParams** → one assertion added to the existing purge test in
+   `tests/integration/v15-v2-workspace-transport.test.ts`. **GREEN on first write** — `workspace_purge`
+   (`mcp-facade.ts`) only ever `rmSync`s the workspace directory; the run row (and its `effective_params`
+   column) is untouched by construction.
+4. **Genuine pre-v21 migration fixture** → `tests/integration/catalog-persistence.test.ts`, new case
+   writing a raw `catalog.db` (base 4 columns + `owner`/`defaults`, no `params` column) directly via
+   `better-sqlite3`, then constructing `WorkflowCatalog` on top of it. **GREEN on first write** — the
+   idempotent `ALTER TABLE ... ADD COLUMN params` migration + `get()`'s `row.params ? JSON.parse(...) :
+   undefined` already handle this shape correctly; IT-012's other pre-v21 case (registers through v21
+   code) genuinely could not exercise the migration path itself, so this is new coverage, not a
+   duplicate.
+5. **SDK-side effort mapping** → `tests/unit/claude-agent-sdk-gateway-thinking.test.ts`, new case "an
+   Anthropic-mapped alias dispatched at different effort levels...". **GREEN on first write** —
+   `claude-agent-sdk-client.ts:509/581` already computes `mapEffort(...)` and writes
+   `(options)[applied.param] = applied.value`; only the covering test was missing (mirrors UT-101's
+   direct-fetch case, per DES-106/TASK-102's "parameterized over both impls" DoD).
+
+**Result: 1 genuinely red (item 1) + 4 green regression pins (items 2-5)** — consistent with the
+addendum's own framing that most of round 2's gaps are missing TESTS for already-shipped behavior, not
+missing implementation (same shape as A-3/A-7 in the prior re-run).
+
+**Part 2 (DES-101..108 clause-coverage sweep) — 6 additional GAP rows found and closed with new tests:**
+
+1. **DES-101 row 8, "unknown knob"** → `params-contract.test.ts`, "row 8: an unrecognized knob name at
+   registration...". **GREEN on first write** — `parseParamContract`'s `else if (!TUNABLE_KEYS.includes
+   (key))` branch already existed; only the case was untested.
+2. **DES-101, "any string value over 64 bytes is truncated with `suppliedTruncated:true`"** →
+   `params-contract.test.ts`, "a rejected string value over 64 bytes is truncated...". **GENUINELY RED**
+   — no truncation logic exists anywhere in `checkValueAgainstSpec`; `detail.supplied` echoes the full
+   value untruncated and `suppliedTruncated` is never set. Confirmed via `npx vitest run` (`expected 200
+   to be less than or equal to 64`).
+3. **DES-102, "`defaults.tools` sits directly BELOW agentType... per-call allowedTools > agentType tools
+   > defaults.tools"** → `tests/unit/agent-executor-params.test.ts`, 2 new cases (defaults.tools reaches
+   `opts.allowedTools`; caller-supplied `allowedTools` still wins). **GREEN on first write** —
+   `agent-executor.ts`'s `else if (eff.tools !== undefined && callerAllowedTools === undefined)` branch
+   already implements the ladder; only dispatch-level coverage was missing (UT-099 only covered the
+   snapshot fold, not the resolution ladder).
+4. **DES-104, ADR-002 "nothing v21 resolves enters CallKey... pinned by a test asserting an overridden
+   run's CallKeys are byte-identical to a non-overridden run's"** → `tests/integration/params-admission.
+   test.ts`, new describe block "CallKey never carries v21-resolved params". **GREEN on first write** —
+   `_handleAgentRequest`'s `const key: CallKey = { prompt, opts: (opts ?? {}) as AgentOpts }` (run-
+   manager.ts) is built from the raw script-supplied `prompt`/`opts`, upstream of `resolveCallParams`/
+   `composePrompt`; confirmed via a real journaled-key comparison between an overridden and a plain run.
+5. **DES-106, "session-options-builder.ts stays unwired, guarded by a standing zero-`src/`-importer
+   assertion"** → `tests/unit/gateway-effort.test.ts`, new describe block "session-options-builder.ts
+   stays FENCED". **GREEN on first write** (no `src/` file imports it — a filesystem-level structural
+   check, not a behavioral one; a citation in a `resolve.ts` comment is correctly excluded by the
+   import/require-only regex).
+6. (Already delivered as Part 1 item 1.)
+
+**Clause → coverage table (DES-101..108, every boundary-condition bullet):**
+
+**DES-101** (`src/params/contract.ts`)
+| Clause | Test | Status |
+|---|---|---|
+| `LOCKED_KEYS`/`TUNABLE_KEYS`/`EFFORT_RANK`/`isEffort` vocabulary | UT-098 | covered |
+| `canonicalContract()` shape (4 knobs, no bounds, no args) | UT-098 | covered |
+| `effectiveBounds()` = min(author, ceiling), read-time | UT-098 | covered |
+| row 1 `PARAM_LOCKED` | UT-098 | covered |
+| row 2 `PARAM_UNKNOWN` | UT-098 | covered |
+| row 3 wrong type | UT-098 | covered |
+| row 4 outside author enum | UT-098 | covered |
+| row 5 above engine ceiling (effective bound in `allowed`) | UT-098 | covered |
+| row 6 `appendPrompt` over cap, never echoed | UT-098 | covered |
+| row 7 declared `args` violation | UT-098 | covered |
+| undeclared `args` keys pass through | UT-098 | covered |
+| row 8: locked key at registration | UT-098 | covered |
+| row 8: **unknown knob at registration** | UT-098 (new) | **was GAP, closed (green)** |
+| row 8: malformed (not an object) | UT-098 | covered |
+| row 8: > 32 declared knobs+args | UT-098 | covered |
+| row 8: **enum > 32 members** | UT-098 (new, B-1 item 1) | **was GAP, closed (RED — genuine, unimplemented)** |
+| nesting depth ≤ 4 | — | **DROPPED (B-1)** — no row, no test, by adjudication |
+| `undefined` metaParams → canonical contract | UT-098 | covered |
+| `allowed` is machine-shaped (`{enum}`/`{min,max}`, never prose) | UT-098 (rows 4/5 assert shape) | covered |
+| **free text reported by size; any `supplied` string > 64 bytes truncated with `suppliedTruncated:true`** | UT-098 (new) | **was GAP, closed (RED — genuine, unimplemented)** |
+| `maxEffort` ceiling via `EFFORT_RANK` | UT-098 | covered |
+| model enum validated against `aliasNames` at registration only | UT-098 | covered |
+| model re-checked via `UNKNOWN_ALIAS` at submission | pre-existing (out of v21 scope) | not swept — pre-v21 behavior, referenced descriptively |
+| Pure (no I/O/clock/VM) | unit-tier module, no mocks used | covered (structural) |
+
+**DES-102** (`src/params/resolve.ts`)
+| Clause | Test | Status |
+|---|---|---|
+| `defaultRunParams` — sole no-overrides producer, provenance | UT-099 | covered |
+| `mergeRunParams` fold, provenance per key | UT-099 | covered |
+| folds all 7 registered keys (incl. author-only trio) | UT-099 | covered |
+| two rungs holding the same value still distinguished by provenance | UT-099 | covered |
+| `appendPrompt` has no author-side default | UT-099 | covered |
+| `resolveCallParams` 5-rung model ladder | UT-099 | covered |
+| `resolveCallParams` 3-rung effort/timeoutMs ladder | UT-099 | covered |
+| **`defaults.tools` ladder at DISPATCH (agentType > defaults.tools > nothing)** | UT-100 (new) | **was GAP, closed (green)** |
+| `composePrompt` byte-identity pin | UT-099 | covered |
+| `composePrompt` five-segment order pin | UT-099 | covered |
+| `appendPrompt` frame constants, absent → no frame | UT-099 | covered |
+| `mapEffort` tri-state (applied/not-applied/absent), low≠max | UT-099 | covered |
+| Pure | unit-tier module | covered (structural) |
+
+**DES-103** (`WorkflowCatalog`)
+| Clause | Test | Status |
+|---|---|---|
+| ON CONFLICT includes `params` (stale-contract trap) | IT-081 (re-register changed params) | covered |
+| ON CONFLICT: `owner` still unchanged (negative pin) | — | not swept — pre-existing pre-v21 UPSERT behavior, not new v21 surface |
+| Registration fail-closed, nothing stored on `PARAM_CONTRACT_INVALID` | IT-081 | covered |
+| Pre-eval 4 KB source-size guard (`workflow-meta.ts`) | IT-081 (oversized meta.params) | covered |
+| Default cross-validation (a) disagree / (b) own-bounds violation / (c) accept-normalize | IT-081 (A-2) | covered |
+| Read surfaces never serve null (NULL row ceiling-bounded) | IT-083 (A-3) | covered |
+| `list()` reads `params` from the column, never re-parses | VAL-100 | covered |
+| `workflow_run.overrides` inputSchema drift-lock | IT-083 | covered |
+| `workflow_get.params` description generated from types | VAL-100 / IT-081 (functional output assertions) | covered (no separate static-schema test — low marginal value) |
+| Inherited debt: `list()` re-parses `meta.description` | — | not swept — documented pre-existing debt, v22/D15 owner |
+
+**DES-104** (admission rung + snapshot)
+| Clause | Test | Status |
+|---|---|---|
+| Insertion point pinned (between `catalog.get()` and `createRun()`) | IT-083 (before-any-durable-work assertions) | covered |
+| Validation order: overrides → declared args → merge | IT-083 (passing-case assertions) | covered (implicit — not independently order-tested, low value) |
+| Named observable 1: `listRuns()` count unchanged | IT-083 | covered |
+| Named observable 2: no workspace directory on disk | IT-083 | covered |
+| Named observable 3: zero sandbox spawns | — | **GAP, not written** — no spawner-spy assertion exists; covered by implication (code cannot reach spawn without passing the already-asserted no-run-row/no-workspace-dir checkpoints first) |
+| Ceilings bound the USER-override rung only, refuse never clamp, fail-closed defaults | UT-098 + IT-083 (A-3) | covered |
+| **Snapshot is a NEW persist sink, routed through `redact()` + sweep IT** | IT-075 sink (5) (new) | **was GAP, closed (green)** |
+| `overrides` never persisted raw / never on `RunSpec` | — | not swept — structurally guaranteed (`start(spec, overrides)` keeps them as separate parameters; `overrides` is never copied onto `spec`), no dedicated negative assertion |
+| Resume (a): mere presence of `overrides` on `workflow_resume` → typed error | IT-083 | covered |
+| Resume (b): reads the pinned snapshot; legacy NULL → `defaultRunParams` fallback | — | **GAP, not written** — needs a pre-v21 run-row fixture (no `effective_params` column value); deferred, same class as the DES-103 migration fixture but for `runs` not `workflows` |
+| **`CallKey` byte-identical regardless of overrides (ADR-002)** | params-admission.test.ts (new) | **was GAP, closed (green)** |
+| `defaultRunParams` is the ONLY no-overrides producer across the 4 non-`workflow_run` triggers | — | not swept — covered by construction (webhook/scheduler/chain/server all call the SAME `start()`, which is what IT-083 already exercises) |
+| Non-`workflow_run` triggers now enforced by admission (behaviour change) | — | not swept — covered by construction, same single code path as above |
+| 3 ceiling config keys forwarded in `composeConfig()` + wiring test | `compose-config-v2-wiring.test.ts` | covered |
+| **`effectiveParams` rides the run row; `workspace_purge` preserves it** | v15-v2-workspace-transport.test.ts (new) | **was GAP, closed (green)** |
+
+**DES-105** (dispatch wiring)
+| Clause | Test | Status |
+|---|---|---|
+| `tsc` lever on `AgentReq` (required `runParams`) | compile-time (`tsc` clean, part of the exit gate) | covered (structural) |
+| One decoration site (`onHarness` merges new fields before `appendTranscript`) | UT-100 | covered (provenance case is the pre-existing A-8 red, TASK-101's to fix — tracked separately, not a sweep gap) |
+| `redactHarness()` single-implementation swap | — | not swept — A-4, IMPL-owned (not test scope) |
+| `effortApplied` tri-state | UT-101 / SDK test | covered |
+| `promptTruncated`/`appendPromptBytes` | — | **DROPPED (B-2)** — no row, no test, by adjudication |
+| Params run-scoped incl. nested `workflow()` frames | — | not swept — covered by construction (`run-manager.ts:817`: `entry.spawner`/`entry.effectiveParams` are shared by reference across every frame of a run, including nested ones; same code path UT-100/agent-log-harness-shape.test.ts already exercise at the flat level) |
+| Script-supplied invalid `effort`: record then throw | UT-100 | covered |
+| Composition downstream of `CallKey` construction | params-admission.test.ts (new CallKey test) | covered |
+| `appendPrompt` charged to the run budget under N-way `parallel()` | — | **GAP, not written** — requires a multi-agent budget-accounting harness; deferred (existing pre-v21 REQ-002 budget mechanism operates on whatever text is actually dispatched, so this is very likely already true by construction, but not independently pinned) |
+
+**DES-106** (effort on the wire)
+| Clause | Test | Status |
+|---|---|---|
+| `mapEffort` called once per `invoke()`, same object to `onHarness` + `options` | UT-101 | covered |
+| `thinkingFor` stays sole writer, 2-arg (A-6) | UT-020 | covered |
+| Non-Anthropic alias + `effort:'max'` → `options.thinking` byte-identical (regression pin) | UT-020 | covered |
+| Per-client wire assertion, parameterized over both impls | UT-101 (LiteLLM) + UT-020 (SDK, new this pass, B-6) | covered |
+| Effort-absent byte-identical to pre-v21 on both clients | UT-101 (LiteLLM) + UT-020 "preserves SDK default" (SDK) | covered |
+| **`session-options-builder.ts` stays unwired — standing zero-importer assertion** | gateway-effort.test.ts (new) | **was GAP, closed (green)** |
+
+**DES-107** (workflow-bound issue reports)
+| Clause | Test | Status |
+|---|---|---|
+| `workflow` charset/length-validated via label-scoped sanitize (A-5 amendment) | UT-057/issue-reporter.test.ts | covered |
+| Fingerprint includes `workflow`; compat pin when absent | issue-reporter.test.ts | covered |
+| Two workflows, same title → two different fingerprints | issue-reporter.test.ts | covered |
+| A just-deregistered workflow remains reportable | issue-reporter.test.ts | covered |
+| `issue_list({workflow})` tolerates an unregistered name symmetrically | — | not swept — covered by construction (`workflow` folds into the label filter with no existence check, same mechanism already verified for `issue_report`; network-gated cases are VAL-105) |
+
+**DES-108** (real-tier validation path + mock policy)
+| Clause | Test | Status |
+|---|---|---|
+| Per-REQ real-tier evidence plan (REQ-090..095) | VAL-100..105 | covered (acceptance tier; network/LLM-gated clauses deferred to Gate 7.5 per DES-108's own plan) |
+| Per-tier mock policy (unit free / integration real-adjacent / E2E no SUT-boundary mock) | applied throughout UT-098/099/100/101, IT-081/083/075, VAL-100..105 | covered (methodology, not a single test) |
+| Standing tripwire: per-key `provenance` self-diagnoses the next wiring miss | UT-099/UT-100/agent-log-harness-shape.test.ts (IT-066 v21) | covered |
+
+**Full-suite re-run after Part 1 + Part 2:** genuinely new red = enum-cap (Part 1 item 1) +
+`suppliedTruncated` (Part 2 item 2) = 2 new red, joining the 1 pre-existing UT-100/A-8 red = 3 red
+total; all other new/extended cases green on first write; 0 unrelated regressions. See the verifier's
+gate report for the exact pass/fail counts from the final full-suite run.

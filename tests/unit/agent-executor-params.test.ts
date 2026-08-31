@@ -70,6 +70,45 @@ describe('AgentExecutor + RunParams — required dispatch wiring (UT-100, DES-10
     expect(harnessEvent?.data?.descriptor?.provenance?.['model']).toBe('default');
   });
 
+  // v21 Gate 5 addendum Part 2 (DES-102 boundary condition — clause-coverage sweep): "defaults.tools
+  // sits directly BELOW agentType in the tool surface: per-call allowedTools > agentType tools >
+  // defaults.tools." mergeRunParams folding `tools` into the snapshot is covered by UT-099, but the
+  // dispatch-time LADDER (registered defaults.tools reaching opts.allowedTools when neither the
+  // caller nor an agentType supplied one) was never exercised end to end.
+  it('registered defaults.tools reaches the outbound opts.allowedTools when neither the caller nor an agentType set one', async () => {
+    const gw: GatewayClient = { invoke: vi.fn().mockResolvedValue(OK_RESULT) };
+    const executor = new AgentExecutor({ gateway: gw });
+    const runParams: RunParams = {
+      tools: ['Read', 'Grep'],
+      provenance: { model: 'engine', effort: 'engine', timeoutMs: 'engine', appendPrompt: 'engine' },
+    };
+
+    await executor.run({
+      runId: 'r-tools-1', agentId: 'a-tools-1', prompt: 'hi', opts: {},
+      workspace: '/tmp/ws', signal: new AbortController().signal,
+      runParams,
+    } as Parameters<typeof executor.run>[0]);
+
+    expect(gw.invoke).toHaveBeenCalledWith(expect.objectContaining({ opts: expect.objectContaining({ allowedTools: ['Read', 'Grep'] }) }));
+  });
+
+  it('a caller-supplied opts.allowedTools wins over registered defaults.tools', async () => {
+    const gw: GatewayClient = { invoke: vi.fn().mockResolvedValue(OK_RESULT) };
+    const executor = new AgentExecutor({ gateway: gw });
+    const runParams: RunParams = {
+      tools: ['Read', 'Grep'],
+      provenance: { model: 'engine', effort: 'engine', timeoutMs: 'engine', appendPrompt: 'engine' },
+    };
+
+    await executor.run({
+      runId: 'r-tools-2', agentId: 'a-tools-2', prompt: 'hi', opts: { allowedTools: ['Bash'] },
+      workspace: '/tmp/ws', signal: new AbortController().signal,
+      runParams,
+    } as Parameters<typeof executor.run>[0]);
+
+    expect(gw.invoke).toHaveBeenCalledWith(expect.objectContaining({ opts: expect.objectContaining({ allowedTools: ['Bash'] }) }));
+  });
+
   it('appendPrompt (run override) is composed into the outbound prompt, after the script prompt', async () => {
     const gw: GatewayClient = { invoke: vi.fn().mockResolvedValue(OK_RESULT) };
     const executor = new AgentExecutor({ gateway: gw });

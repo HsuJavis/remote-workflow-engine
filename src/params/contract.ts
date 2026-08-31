@@ -52,6 +52,23 @@ export type Err = {
 /** Total declared knobs+args over this bound → PARAM_CONTRACT_INVALID (DES-101 boundary conditions). */
 const MAX_DECLARED = 32;
 
+/** A declared enum with more than this many members → PARAM_CONTRACT_INVALID (DES-101 boundary
+ *  conditions: "enum ≤ 32 members" — an unbounded enum is served on every `workflow_get`). */
+const MAX_ENUM_MEMBERS = 32;
+
+/** Free text in an error detail is reported by size, never in full (DES-101 boundary conditions):
+ *  any string value over this many bytes is truncated with `suppliedTruncated:true`. */
+const MAX_SUPPLIED_BYTES = 64;
+
+function truncatedSupplied(value: unknown): { supplied: unknown; suppliedTruncated?: true } {
+  if (typeof value === 'string' && Buffer.byteLength(value, 'utf8') > MAX_SUPPLIED_BYTES) {
+    let truncated = value;
+    while (Buffer.byteLength(truncated, 'utf8') > MAX_SUPPLIED_BYTES) truncated = truncated.slice(0, -1);
+    return { supplied: truncated, suppliedTruncated: true };
+  }
+  return { supplied: value };
+}
+
 export function isEffort(v: unknown): v is Effort {
   return typeof v === 'string' && Object.prototype.hasOwnProperty.call(EFFORT_RANK, v);
 }
@@ -134,6 +151,9 @@ export function parseParamContract(
     if (!(TUNABLE_KEYS as readonly string[]).includes(key)) {
       return invalid(key, 'unknown knob');
     }
+    if (spec.enum !== undefined && spec.enum.length > MAX_ENUM_MEMBERS) {
+      return invalid(key, `enum has more than ${MAX_ENUM_MEMBERS} members`);
+    }
     // model enum entries validated against aliasNames at REGISTRATION only (DES-101 note); at
     // submission only the effective model is re-checked via the existing UNKNOWN_ALIAS rule.
     if (key === 'model' && spec.enum !== undefined) {
@@ -146,6 +166,11 @@ export function parseParamContract(
     knobs[key] = spec;
   }
 
+  for (const [key, spec] of Object.entries(argsIn)) {
+    if (spec.enum !== undefined && spec.enum.length > MAX_ENUM_MEMBERS) {
+      return invalid(`args.${key}`, `enum has more than ${MAX_ENUM_MEMBERS} members`);
+    }
+  }
   const args: Record<string, ParamSpec> = { ...argsIn };
 
   return { ok: true, value: { knobs, args } };
@@ -166,7 +191,7 @@ function checkValueAgainstSpec(param: string, value: unknown, spec: ParamSpec): 
       ok: false,
       code: 'PARAM_OUT_OF_RANGE',
       message: `${param} is not in the allowed set`,
-      detail: { param, supplied: value, allowed: { enum: spec.enum } },
+      detail: { param, ...truncatedSupplied(value), allowed: { enum: spec.enum } },
     };
   }
   if (spec.min !== undefined && (value as number) < spec.min) {
@@ -174,7 +199,7 @@ function checkValueAgainstSpec(param: string, value: unknown, spec: ParamSpec): 
       ok: false,
       code: 'PARAM_OUT_OF_RANGE',
       message: `${param} is below the minimum`,
-      detail: { param, supplied: value, allowed: { min: spec.min, max: spec.max } },
+      detail: { param, ...truncatedSupplied(value), allowed: { min: spec.min, max: spec.max } },
     };
   }
   if (spec.max !== undefined && (value as number) > spec.max) {
@@ -182,7 +207,7 @@ function checkValueAgainstSpec(param: string, value: unknown, spec: ParamSpec): 
       ok: false,
       code: 'PARAM_OUT_OF_RANGE',
       message: `${param} is above the maximum`,
-      detail: { param, supplied: value, allowed: { min: spec.min, max: spec.max } },
+      detail: { param, ...truncatedSupplied(value), allowed: { min: spec.min, max: spec.max } },
     };
   }
   return { ok: true };

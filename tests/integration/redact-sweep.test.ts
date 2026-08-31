@@ -241,3 +241,30 @@ describe('redact-at-capture completeness sweep — sink (2): saveSnapshot (DES-0
     }
   }, 30000);
 });
+
+// v21 Gate 5 addendum (B-4, DES-104, REQ-083, HIGHEST-VALUE item of the addendum): the run's
+// admission-time effectiveParams snapshot is a NEW persist sink (run-manager.ts:411-413 already
+// calls redact() on it before createRun) — but this sweep was never extended with a case for it.
+// A secret value riding a user-supplied `appendPrompt` override must be redacted in the persisted
+// snapshot exactly as it is in the other 4 sinks; the sweep is what catches a sink shipping without
+// this coverage, per REQ-083's own purpose.
+describe('redact-at-capture completeness sweep — sink (5): effectiveParams snapshot (DES-104, IT-075)', () => {
+  it('a secret value in a user-supplied appendPrompt override is redacted in the persisted effectiveParams snapshot', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-it075-params-'));
+    try {
+      const store = new SqliteRunStore(join(dir, 'store'), clock);
+      const gateway = makeContentGateway('ok');
+      const mgr = new RunManager({ store, clock, workRoot: dir, gateway, secretValueProvider: secretProvider } as any);
+      const appendPrompt = `use token ${SECRET_VALUE}`;
+      const runId = await mgr.start({ script: 'return 1;' }, { appendPrompt });
+      expect(await pollStatus(mgr, runId, 'completed')).toBe('completed');
+
+      const persisted = await store.getEffectiveParams(runId);
+      const json = JSON.stringify(persisted);
+      expect(json).not.toContain(SECRET_VALUE);
+      expect(json).toContain(SECRET_MARKER);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
+});
