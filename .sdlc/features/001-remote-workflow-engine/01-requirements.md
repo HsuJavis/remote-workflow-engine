@@ -9,6 +9,51 @@ status: reviewed
 > LLM backends (Anthropic / OpenAI / Gemini / local LLM), full lifecycle control
 > (suspend / resume / stop), and per-agent observability.
 
+## Clarification log
+
+Gate 1 for the original v1 scope was interviewed over 2 AskUserQuestion rounds (decisions D1–D11).
+Each later iteration appends its own round here.
+
+### Round v21 — 2026-08-31 (author/user separation)
+
+**User's opening statement of the problem** (verbatim intent): workflows are written by an author but
+used by others; because nothing separates the two roles, "換這個需求但是 workflow 要用一樣的就要改
+workflow js,變成會一直改". Users should be able to feed back problems and tune non-script variables
+(model / timeout / effort / append prompt) but must not edit the workflow JS; authors need authoring
+rules that force data/logic separation; system prompt, workdir, skills and MCP tools must never be
+user-modifiable. Secondary asks: a read-only MCP surface that explains all this; a workflow diagram a
+human can actually follow (agent-drawn ASCII, rounded-box agents, trigger method, fan-out/fan-in,
+conditional branch/loop); model selection driven by per-model data; and — user's own open questions —
+"是不是註冊的 workflow 要有 beta/release 的機制? 然後回報問題可以針對哪個 workflow 去報?"
+
+**Grounding pass before answering** (read-only survey of the engine, recorded because it changed the
+scope): four facts decided the shape of the requirements — (a) `resolveHarnessParams` has zero callers
+in `src/`, so REQ-088's registered defaults never reach a run; (b) `effort` is advertised in the MCP
+DSL contract but nothing reads it; (c) the catalog stores one row per name, so version history does not
+exist and beta/release is a schema change, not a field; (d) the four "must be locked" items are already
+unreachable from the caller — the real hole is `workflow_run({script})` plus `workflow_get` returning
+the full script to anyone, which lets a user copy-edit-and-run around the whole intent.
+
+| Q | Question put to the user | User's answer |
+|---|---|---|
+| Q1 | Who counts as the author, and does closing the ad-hoc inline-script path (currently a main usage route, a real behavioural break) get sign-off? | **Close inline script entirely — every run goes through a registered workflow.** |
+| Q2 | Given the system prompt is locked, where exactly does a user's `appendPrompt` attach? | **Fixed position: after the system prompt and after skill/MCP.** |
+| Q3 | Should `workflow_get` mask the script from non-owners? | **Yes, mask it. And remove the skeleton entirely — an agent should analyse the workflow and draw the line diagram; the user only needs to know the shape of the workflow.** |
+| Q4 | Priority — this bundle displaces the previously agreed ordering (issue-goal → v11 sysinfo → v10 seed-sync Slice 3/4). | User asked for a proposed ordering, then **approved the v21 → v22 → v23 roadmap** and set the goal "走到 v23 完成、E2E 驗證都 OK、Playwright 開 dashboard 正常". |
+
+**Backlog reconciliation done in the same round** (so "what is left" is honest): v11 system info,
+model-catalog enrichment, v10 seed-sync Slice 3 and Slice 4, `redact()` wiring and the D-BIND bind
+guard are all already delivered; the only open GitHub issue is **#32**, which is exactly the
+agent-drawn diagram feature and is therefore folded into v23. Not scheduled: the security-hardening
+iteration for three still-unwired modules (`session-options-builder`, `cli-lifecycle`, `timeout-race`,
+re-verified 2026-08-31 as having zero importers in `src/`).
+
+**Resulting scope split:** v21 = REQ-090..095 (this document); v22 = version history + beta/release
+channels + closing inline script + masking `workflow_get`, which must ship together because banning
+inline script without channels would leave an author's only iteration path overwriting the exact
+version users are running; v23 = `workflow_describe` + agent-rendered ASCII diagram + skeleton removal,
+closing issue #32.
+
 ## Context & confirmed decisions (Gate 1 clarification outcomes)
 
 | # | Decision | User's choice |
