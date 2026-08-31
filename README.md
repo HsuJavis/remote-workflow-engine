@@ -10,11 +10,17 @@
 原封不動地跑在一台伺服器上，透過 **MCP Streamable HTTP** 介面遠端送出、追蹤、暫停/續跑/停止，並
 把每個 `agent()` 呼叫真正路由到你設定的 LLM 供應商（Anthropic / OpenAI / Gemini / 本機 Ollama）。
 
-**目前功能（v20，2026-08-19）**：
+**目前功能**：
 
 - **工作流程執行**：`workflow_run`（含 inline seed + CAS seedManifest + `seedManifestRef` + `scriptSha256`
-  完整性守衛）、`workflow_status`、`workflow_suspend`/`workflow_resume`/`workflow_stop`、
+  完整性守衛 + 可調參數 `overrides`，見下）、`workflow_status`、`workflow_suspend`/`workflow_resume`/`workflow_stop`、
   當機可續跑（重啟後 `interrupted` → `workflow_resume`）
+- **可調參數契約（tunable-parameter contract）**：工作流程腳本可在 `export const meta = { params: { knobs: {...}, args: {...} } }`
+  宣告每個旋鈕的型別/預設值/允許範圍——`workflow_get`/`workflow_list` 不必讀腳本本文即可查出這份契約；
+  呼叫端用 `workflow_run({overrides:{model?,effort?,timeoutMs?,appendPrompt?}})` 在契約範圍內覆寫、
+  超出範圍即在送出當下被拒（`PARAM_OUT_OF_RANGE`/`PARAM_LOCKED`），從不留下半途而廢的 run；
+  `prompt`/`tools`/`skills`/`mcp`/`workdir` 五個鍵永遠鎖定、呼叫端無法觸及。優先序：
+  每次 `agent()` 呼叫自帶的選項 > 該次 run 的 `overrides` > 註冊時的 `defaults` > 引擎預設別名。
 - **已知工作流程探索**：`workflow_register`/`workflow_list`/`workflow_get`/`workflow_deregister`、
   預測靜態 DAG 骨架（`workflow_get.skeleton`）
 - **串接**：`chain_create`/`chain_list`（完成即啟動下游 run，恰好一次）
@@ -54,7 +60,7 @@
   （`workspaceTtlMs` 正確從 composeConfig 傳遞）；
   工作流程擁有權（`NOT_WORKFLOW_OWNER`）；per-run principal attribution；`workflow_register` 綁定
   harness defaults（`HARNESS_DEFAULTS_INVALID`）。
-  啟用方式：在 `rwe.config.json` 加入 `auth:{enabled:true,...}` 區塊（見 `rwe.config.example.json` / DEPLOY.md §1 設定總表）。
+  啟用方式：在 `rwe.config.json` 加入 `auth:{enabled:true,...}` 區塊（見 `rwe.config.example.json` / DEPLOY.md §1b 設定總表）。
 
 共 **37 個** MCP 工具。
 
@@ -68,42 +74,22 @@
 
 ## 快速開始 Quickstart
 
-以下指令是 v19 validator 實際跑過、能把系統帶起來的步驟（本輪零文件缺口）。
+**一個乾淨的 checkout，一條指令：**
 
 ```bash
-# 1. 安裝 Node 依賴
-npm install
+./deploy.sh --background
+```
 
-# 2. 型別檢查（健檢，非啟動必需）
-npm run typecheck
+這會安裝依賴、建立設定檔、啟動服務、跑健康檢查——全部自動完成。無法自動化的步驟（例如缺
+`uv`）會停下來並印出明確的下一步指示。停止服務：`kill $(cat .rwe.pid)`。
 
-# 3. 準備 LiteLLM 子行程需要的 Python 3.12（一次性設定；agent() 會用到）
-curl -LsSf https://astral.sh/uv/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
-uv python install 3.12
-uv venv --python 3.12 ~/.rwe-litellm-venv
-uv pip install --python ~/.rwe-litellm-venv/bin/python "litellm[proxy]"
-export PATH="$HOME/.rwe-litellm-venv/bin:$PATH"   # 每次啟動伺服器前都要在 PATH 上（見 DEPLOY.md）
+需要客製設定（模型別名、供應商 key）或想逐步手動操作時，展開版步驟與完整設定鍵說明見
+`DEPLOY.md` §0 / §1b。最少需要的環境變數：
 
-# 4. 設定模型別名 / 供應商
-cp rwe.config.example.json rwe.config.json
-# 用編輯器打開 rwe.config.json，調整 aliases / bind / port / workRoot / gateway
-# 預設 "gateway":"sdk"（@anthropic-ai/claude-agent-sdk headless session）
-# workRoot 必須在任何 .git/CLAUDE.md 祖先之外（見 DEPLOY.md §0 步驟 4）
-
-# API key 一律用環境變數，不放進設定檔
-export ANTHROPIC_API_KEY=sk-ant-...     # 若要用 anthropic 別名
-# export OPENAI_API_KEY=...            # 若要用 openai 別名
-# export RWE_SECRET_GITHUB_TOKEN=...   # 若要用 issue_report/Issues 儀表板
-
-# 5. 啟動
-node node_modules/tsx/dist/cli.mjs src/main.ts
-# 或用 npm：npm run start
-# -> [remote-workflow-engine] listening on http://127.0.0.1:8787/mcp (workRoot=...)
-# -> [remote-workflow-engine] ready
-
-# ── 已部署為 systemd user service 時，重啟以套用程式碼更新：
-# systemctl --user restart rwe.service
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...     # 若要用 anthropic 別名（或 OPENAI_API_KEY / GEMINI_API_KEY / 本機 Ollama 免金鑰）
+# export RWE_SECRET_GITHUB_TOKEN=...    # 若要用 issue_report/Issues 儀表板
+./deploy.sh --background
 ```
 
 ## 使用範例
@@ -124,6 +110,20 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"workflow_status","arguments":{"runId":"<上面的 runId>"}}}'
 # -> status:"completed"  result:"PONG"  agents[0].provider/model/tokens
+
+# 註冊一個宣告可調參數契約的工作流程，並在執行時覆寫（v21）
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_register","arguments":{"name":"greet","script":"export const meta = { params: { knobs: { model: { type: \"enum\", enum: [\"local\"] } } } };\nreturn await agent(\"hi\");","defaults":{"model":"local"}}}}'
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_run","arguments":{"name":"greet","overrides":{"effort":"high","appendPrompt":"回覆請用中文"}}}}'
+# -> effort 超出宣告範圍或 appendPrompt 過長會在送出當下被拒（PARAM_OUT_OF_RANGE），從不留下半途而廢的 run
+# 用 workflow_get 查看契約（不必讀腳本本文）：
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_get","arguments":{"name":"greet"}}}'
+# -> params.knobs.model.enum = ["local"]
 
 # 查詢 37 個 MCP 工具（含 schema）
 curl -s -X POST http://127.0.0.1:8787/mcp \
@@ -202,7 +202,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 ## 已知限制
 
 - **本機 7B 小模型工具呼叫**：`qwen2.5:7b` 透過 SDK gateway 不會真的觸發 tool_use，只生成看起來像工具結果的文字。建議使用 32B 以上本機模型或付費供應商（Anthropic/OpenAI/Gemini）。
-- **OAuth 2.0 auth 為 opt-in**：`auth.enabled:false`（預設／省略）= 保持 v14 前無 auth 開放行為；啟用後需要 Google Cloud Console client_id/secret，且引擎需有 HTTPS 公開 callback URL（`/oauth/google/callback`，讓 Google 能回呼）。
+- **OAuth 2.0 auth 為 opt-in**：`auth.enabled:false`（預設／省略）= 無 auth 開放行為（任何連得到 `/mcp` 的人皆可呼叫）；啟用後需要 Google Cloud Console client_id/secret，且引擎需有 HTTPS 公開 callback URL（`/oauth/google/callback`，讓 Google 能回呼）。
 - **docker/sudo 部署未驗證**：環境沒有 docker 也沒有 sudo，docker-compose 與 root systemd 路徑未跑過（僅語法驗證）；npm path 路徑 + systemd user service 已對真實 process 驗證。
 - **`workflow_status.agents[]` 暫停後 state 不自動更新**：被 suspend/stop 的 agent 記錄永遠停在 `"running"`；續跑後會多出一筆新紀錄，純屬顯示瑕疵。
 

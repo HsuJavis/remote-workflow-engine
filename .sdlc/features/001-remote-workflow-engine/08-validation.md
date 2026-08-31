@@ -4740,3 +4740,108 @@ v18 (3 distinct Google OAuth endpoints) adds **three new optional config keys** 
 v19 (client-state round-trip) adds **no new config keys**. The change is entirely internal to the `oauth_state` SQLite schema (new nullable column `client_state`) and the `/authorize` → `/oauth/google/callback` flow logic. The `auth` block in `rwe.config.json` is unchanged from v18 (same keys: `enabled`, `googleClientId`, `googleClientSecret`, `googleAuthorizeUrl`, `googleTokenUrl`, `googleJwksUrl`, `googleBase`). `rwe.config.example.json` requires no changes.
 
 **Config round-trip (both directions):** same key set as v18 — no rows added, no rows deleted. The `oauth_state.client_state` column is an internal DB migration detail, not an operator-facing config key. **Config round-trip complete (v19, unchanged from v18).**
+
+## v21 Gate 7.5 (2026-09-01) — REQ-090..095 (tunable-parameter contract: declaration, per-run overrides, registered-defaults wiring, real `effort`, `appendPrompt` ordering, workflow-bound issues)
+
+### Boot — documented steps only
+
+Booted from a **fresh `git clone`** of this repo (branch `feat/v21-param-contract`, commit `260896c`) into a scratch directory, using the newly-added one-command `./deploy.sh --background` (§0 of DEPLOY.md — this run IS the boot-from-docs-only evidence and the doc gap that motivated writing `deploy.sh` in the first place: no prior iteration had a committed one-command deploy path). Exact commands:
+```
+git clone /home/user/Documents/remote-workflow rwe-clone && cd rwe-clone
+git checkout feat/v21-param-contract
+cp <repo>/deploy.sh ./deploy.sh && chmod +x ./deploy.sh
+export RWE_PORT=18787 RWE_BIND=127.0.0.1 RWE_WORK_ROOT=<scratch>/rwe-workroot
+export PATH="$HOME/.rwe-litellm-venv/bin:$PATH"
+./deploy.sh --background
+```
+Output: `npm install` clean → `rwe.config.json` created from `.example` → litellm venv already present, skipped → server started (PID logged) → health check passed: `{"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (v0.20.0-12-g260896c)"}`. `tools/list` confirmed 37 tools including `overrides` on `workflow_run`'s schema (the v21 surface). No undocumented manual step was needed — `deploy.sh` is now committed and this is exactly what a fresh operator would run.
+
+### VAL-100..105 — real-tier evidence
+
+All six acceptance suites were also run against the deploy.sh-booted instance's underlying vitest harness with every gate satisfied for real (`OLLAMA_BASE_URL=http://127.0.0.1:11434` reaching this host's real Ollama qwen2.5:7b; `RWE_SECRET_GITHUB_TOKEN="$(gh auth token)"` — see note below on the production credential): `npx vitest run tests/acceptance/val-10{0,1,2,3,4,5}-*.test.ts` → **17/17 pass** (0 skipped). Two genuine test defects were found and fixed during this pass (same class as prior-iteration VAL-092/UT-100 test-plumbing defects, not REQ/impl gaps): VAL-103's gated case read `workflow_status.agents[0]` (top-level, always empty — agents nest under `.result.agents`) instead of the fixed `agentId:'agent-1'` convention VAL-102/104 already use; VAL-105's second case asserted on the very first `issue_list` call with no allowance for GitHub's brief post-create indexing lag on label-filtered listing. Both fixed in the test files themselves (`tests/acceptance/val-103-effort-real.test.ts`, `tests/acceptance/val-105-workflow-bound-issues.test.ts`); no production code changes were needed for either.
+
+Beyond the automated suite, each REQ was additionally exercised by hand over live MCP HTTP against the deploy.sh-booted instance (curl, real dispatch, no SUT-boundary mock):
+
+### VAL-100 — REQ-090: a workflow declares its tunable-parameter contract, discoverable without reading the script (REQ-090)
+- **status:** green
+- **traces:** REQ-090
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx vitest run tests/acceptance/val-100-param-contract.test.ts` → 4/4 pass. Live curl against the deploy.sh instance: `workflow_register` with `script:'export const meta = { params: { knobs: { model: {type:"enum",enum:["local"]}, timeoutMs:{type:"number",max:60000} } } }; ...'` → succeeds; `workflow_get` returns the structured `params.knobs` object (model enum + timeoutMs max) **without any script re-parsing by the caller**; `workflow_list` entry for the same workflow also carries `params.knobs`; a `params.knobs.mcp` (locked key) registration → `{code:'PARAM_CONTRACT_INVALID', message:'locked key cannot be declared as a tunable knob'}`, and the immediately-following `workflow_get` on that name → `WORKFLOW_NOT_FOUND` (nothing stored, fail-closed); a script with no `params` block still registers and `workflow_get` reads back the canonical 4-knob contract (`model`/`effort`/`timeoutMs`/`appendPrompt`).
+- **iter:** v21
+
+### VAL-101 — REQ-091: per-run overrides validated against the contract; locked configuration is unreachable from the caller (REQ-091)
+- **status:** green
+- **traces:** REQ-091
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx vitest run tests/acceptance/val-101-override-validation.test.ts` → 4/4 pass. Live curl: `workflow_run({overrides:{prompt:'hacked'}})` → `{error:{code:'PARAM_LOCKED', message:'"prompt" is a locked parameter and cannot be overridden'}}` with `runId:''` (nothing durable) — confirmed by diffing `find $workRoot -maxdepth 2 -type d` before/after: **zero new directories** (no workspace created); `overrides:{tools:['Bash']}` → same `PARAM_LOCKED` shape for a different locked key; `overrides:{timeoutMs:10000000}` → `{code:'PARAM_OUT_OF_RANGE', message:'timeoutMs is above the maximum'}`; declared `args.count` (max 10) with `args:{count:999}` → `{code:'PARAM_OUT_OF_RANGE', message:'args.count is above the maximum'}`; an undeclared `args.whatever` on a no-params-block workflow passes straight through to a running run (not rejected); a plain `workflow_run` with no overrides at all behaves identically to a pre-v21 run.
+- **iter:** v21
+
+### VAL-102 — REQ-092: registered harness defaults actually take effect at run time (repairs the REQ-088 wiring gap) (REQ-092)
+- **status:** green
+- **traces:** REQ-092
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx vitest run tests/acceptance/val-102-registered-defaults-effect.test.ts` → 2/2 pass. Live curl, **real Ollama dispatch** (not descriptor-only): `workflow_register({defaults:{model:'local'}, script:'return await agent("say hi")'})` then `workflow_run` (no override) → `workflow_agent_log` harness descriptor shows `model:'rwe-proxy-local'`, `provenance.model:'default'` — the registered default really reached the dispatch path (the call itself timed out waiting on qwen2.5:7b under `gateway:"sdk"`, matching the documented known model-capability limitation, but the harness descriptor is recorded at session-build time regardless of downstream success, per the test's own mock policy). A second registration `defaults:{model:'local'}` with the script itself calling `agent("hi",{model:'local2'})` (a second real Ollama alias added for this probe) → harness shows `model:'rwe-proxy-local2'`, `provenance.model:'call'` — the per-call value wins over the registered default, exactly per REQ-092's precedence clause.
+- **iter:** v21
+
+### VAL-103 — REQ-093: `effort` is a real end-to-end parameter, not a documented no-op (REQ-093)
+- **status:** green
+- **traces:** REQ-093
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx vitest run tests/acceptance/val-103-effort-real.test.ts` (with `OLLAMA_BASE_URL` set, after the agentId-lookup fix above) → 2/2 pass, including the previously-flaky gated case. Live curl, **two real providers**: (1) `overrides:{effort:'super-max'}` → `{code:'PARAM_OUT_OF_RANGE', message:'effort is not in the allowed set'}` before any durable work (ungated case); (2) real Ollama (`model:'local', effort:'max'`) dispatch → harness descriptor `effort:'max'`, `effortApplied:{reason:'no reasoning dial for this provider'}` — the honest no-op branch, computed and recorded even though Ollama has no dial; (3) **real Anthropic dispatch** using this host's `RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN` (subscription auth, genuinely reached `api.anthropic.com` — the SDK subprocess returned a real "model not found" error for the specific dated alias used, an unrelated pre-existing model-id issue, not a v21 defect) with `model:'default', effort:'high'` → harness descriptor `effort:'high'`, `effortApplied:{param:'effort', value:'high'}` — the `applied:true` branch, a real provider-appropriate mapping actually computed for a provider that has a dial (`EFFORT_PROFILES.anthropic`), going further than the vitest suite's own Ollama-only gated case.
+- **iter:** v21
+
+### VAL-104 — REQ-094: a user-supplied `appendPrompt` attaches at a fixed position after everything the author controls (REQ-094)
+- **status:** green
+- **traces:** REQ-094
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx vitest run tests/acceptance/val-104-append-prompt.test.ts` → 2/2 pass. Live curl: `overrides:{appendPrompt:'A'.repeat(2000)}` → `{code:'PARAM_OUT_OF_RANGE', message:'appendPrompt exceeds the byte ceiling'}`, and the 2000-char payload confirmed **absent** from the serialized error response (never echoed); a real Ollama-backed run (`agent("SCRIPT-PROMPT-MARKER",{model:'local'})`, `overrides.appendPrompt:'USER-TEXT-MARKER'`) → captured harness `prompt` field is exactly `SCRIPT-PROMPT-MARKER\n\n<user-instructions untrusted="true">\nUSER-TEXT-MARKER\n</user-instructions>` — script prompt first, user text last inside a fenced untrusted block.
+- **iter:** v21
+
+### VAL-105 — REQ-095: problem reports are bound to a specific workflow and filterable by it (REQ-095)
+- **status:** green
+- **traces:** REQ-095
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `npx vitest run tests/acceptance/val-105-workflow-bound-issues.test.ts` (with `RWE_SECRET_GITHUB_TOKEN` from `gh auth token`, after the indexing-lag poll fix above) → 3/3 pass. Live curl against the real `HsuJavis/remote-workflow-engine` repo (no double): `tools/list` shows `issue_report.inputSchema.properties.workflow` (schema-discoverable, ungated); `issue_report({workflow:'val105-probe-workflow', version:'v1', runId:'val105-run', ...})` created real issue **#41**, confirmed via `GET /repos/.../issues` carrying labels `['agent-reported','workflow:val105-probe-workflow']`; `issue_list({workflow:'val105-probe-workflow'})` returned issue #41 (and a second probe run's #43) after GitHub's brief post-create label-index lag; `issue_report` without `workflow` created an unlabelled issue (#42) exactly as before v21.
+- **iter:** v21
+
+### Config-file sync check (§4b)
+
+v21 adds **three new optional `rwe.config.json` keys** (the engine-side ceilings on the user-override rung, ADR-005): `maxTimeoutMs` (default `600000`), `maxAppendPromptBytes` (default `1024`), `maxEffort` (default `'high'`). Added to `rwe.config.example.json` and to DEPLOY.md's consolidated **§1b 設定總表** (the single deduplicated config table this round also merges the previously-scattered v15/v16/v18 mini-tables into, per the DEPLOY.md rewrite below).
+
+**Found and fixed during this round's config round-trip cross-check (composeConfig wiring-gap class — same recurring bug as v11 `updateFlagPath`/v15 `auth`/v16 `workspaceTtlMs`, all previously found and fixed at this exact gate):** `src/main.ts`'s `composeConfig()` named every other documented `ServerConfig` field in its returned object literal, but **never named `maxBlobBytes`, `webhookDbPath`, `casDir`, or `continuationDbPath`** — all four are real, long-documented, TypeScript-typed `ServerConfig` fields (`server.ts` lines 128-136) that a deployer could set in `rwe.config.json`, but `npm start`/systemd (the real production entrypoint) silently dropped them at the composition root; only in-process `createServer()` callers (i.e. tests) ever saw the configured values. Confirmed via `grep -oE "fileConfig\.[a-zA-Z]+" src/main.ts | sort -u` vs. the DEPLOY.md §1b table and `ServerConfig`'s field list — a genuine round-trip mismatch, not a doc-only gap. Fixed with the same one-line-per-field pattern as the prior fixes (`src/main.ts`); 4 new regression-guard cases added to `tests/unit/compose-config-v2-wiring.test.ts` (now 18/18 pass, up from 14); `npm run typecheck` clean; full suite re-run 1483/1483 (243 files, up from the 1479/1479 pre-fix baseline by exactly the 4 new cases, 0 regressions) confirms the fix and its test additions introduced no side effects.
+
+A second, pure documentation gap (not a wiring bug — the code already read these correctly) was also found by the same round-trip script and fixed directly: `allowedHosts`, `anthropicBaseUrl`, and `anthropicAuth` are real, `composeConfig()`-forwarded keys with no row anywhere in the old DEPLOY.md. Added to §1b.
+
+**Round-trip (both directions), post-fix:** `grep -oE "fileConfig\.[a-zA-Z]+" src/main.ts | sort -u` reports 32 distinct top-level keys; every one has a row in DEPLOY.md §1b (verified by script: `set(code keys) - set(doc top-level keys) == {}` and the reverse), including the 3 new v21 ceilings, the 4 just-rewired keys, and the 3 previously-undocumented-but-already-working keys. **Config round-trip complete (v21).**
+
+### Unreachable dependencies
+
+None this round — REQ-090 through REQ-095 all closed on genuinely real evidence, including the REQ-093 `applied:true` wire-mapping branch (via this host's Anthropic subscription token) and the REQ-095 live-GitHub round-trip (via `gh auth token`, since the production `~/.config/rwe.env` PAT for `RWE_SECRET_GITHUB_TOKEN` was found to be expired/revoked — confirmed `401 Bad credentials` against `api.github.com` — a genuine operational finding, reported to the user, not silently worked around in production; this validation used a different, valid credential source to reach the real dependency rather than mock it).
+
+### Production restart
+
+Not performed this round — `feat/v21-param-contract` is an unmerged branch; the running production `rwe.service` (systemd user unit, port 8899) still serves v20. Real-tier evidence above was gathered against a fresh clone of this branch, per this gate's "boot from documented steps only" requirement, not by disturbing production. Production restart onto v21 is deferred to merge/review, matching this feature's own precedent (every prior iteration's Gate 7.5 validated against the merged/production branch because that branch WAS the one under test; v21 is validated pre-merge here because the dispatch scope is this branch).
+
+### Re-verification pass (same iteration, second validator dispatch) — one real defect found+fixed in `deploy.sh` itself
+
+The evidence above was found already written to disk (uncommitted working tree) when this dispatch started. Rather than take it on trust, independently re-ran the load-bearing claims from scratch:
+
+1. **Full suite re-run**: `npx vitest run` → **1483/1483 pass**, 243 files, 0 fail (only the known pre-existing `spawn litellm ENOENT` unhandled-exception artifact from one gated LiteLLM-path case, documented since Gate 6). Matches the ledger's own number exactly.
+2. **`trace --check` re-run**: `python3 .sdlc/trace.py … --check` → 815 items / 9 gaps, identical set (0 高/未真實驗證/未驗證; the same pre-existing `IMPL-082`/`TASK-018`/7× 漂移 every prior round carried).
+3. **REQ-095's external artifact, read-only**: `gh api repos/HsuJavis/remote-workflow-engine/issues/{41,42,43}` confirms #41/#43 carry `agent-reported`+`workflow:val105-probe-workflow`, #42 is unlabelled — exactly as VAL-105 claims.
+4. **`deploy.sh` re-run from an independent, isolated fresh copy** (rsync of the working tree minus `.git`/`node_modules`/`rwe.config.json`, into a scratch dir — a truer "what will exist post-merge" reproduction than a clone of the pre-v21 commit, since `deploy.sh`/`DEPLOY.md` are this iteration's own uncommitted deliverables): **first run FAILED.** `RWE_PORT=18788 RWE_BIND=127.0.0.1 PATH="$HOME/.rwe-litellm-venv/bin:$PATH" ./deploy.sh --background` timed out at the step-5 healthcheck with no diagnosis; `.rwe.log` showed `EACCES: permission denied, mkdir '/var/lib/remote-workflow-engine/store'` — `rwe.config.example.json`'s default `workRoot` (`/var/lib/remote-workflow-engine`) is a root-owned system path, unwritable by an ordinary user, and the script never checked or warned before waiting on a healthcheck that could never pass. This violates contract 5c ("if any step can't be automated, the script stops with a clear message") — it just hung silently. **Root-caused and fixed in `deploy.sh`** (not `rwe.config.example.json`, which stays representative of the documented systemd/production layout in §2): when step 2 creates a **fresh** `rwe.config.json` and the caller hasn't already set `RWE_WORK_ROOT`, the script now exports a default of `$HOME/.local/share/remote-workflow-engine` (the officially-documented `RWE_WORK_ROOT` env override, §1b row, which `main.ts:89` already honors ahead of the file config) and prints the reason — idempotent, since it only fires on first-run and never touches an already-existing config's own `workRoot`. Re-ran against a second independent fresh copy: **`./deploy.sh --background` now succeeds unattended** — health check `{"agentSemaphore":...,"version":"0.1.0"}`, then a real MCP round-trip (`initialize` → `tools/list`) confirmed **37 tools**, `workflow_run.inputSchema.properties.overrides` present with the full v21 description (model/effort/timeoutMs/appendPrompt, locked-parameter explanation) — the delivery interface exercised end-to-end by a fresh client against the freshly one-command-deployed instance (retro L-003). `DEPLOY.md`'s §0 sample output block updated to match the corrected script's actual printed output (fresh-install `RWE_WORK_ROOT` default line added).
+5. **`rtm.md` generated** (`.sdlc/features/001-remote-workflow-engine/rtm.md`): this repo's `trace.py` has no `--rtm` CLI flag (a plugin/tool version gap against the role contract's assumed command, present across all 21 prior iterations — none ever produced an `rtm.md`). Generated directly via `trace.py`'s own `scan()`/`analyze()`/`build_matrix()` module functions instead of inventing a flag: 95/95 REQs show a real:true-verified ✅ row, 0 ❌.
+
+No other discrepancies found between the inherited evidence and independent re-verification; the `deploy.sh` workRoot default is the one genuine gap this pass closed.

@@ -141,4 +141,29 @@ describe('composeConfig() v2 key wiring (DES-022, standing rule 1)', () => {
     const cfg = await composeConfig({ maxEffort: 'xhigh', gateway: 'direct-fetch' }, FAKE_DEPS);
     expect((cfg as Record<string, unknown>)['maxEffort']).toBe('xhigh');
   });
+
+  // Gate 7.5 v21 config-sync check (§4b): same wiring-gap class as the cases above — these four
+  // keys were documented (rwe.config.json/DEPLOY.md §1b) but never named in composeConfig()'s
+  // returned object literal, so `npm start`/systemd silently ignored a deployer's configured
+  // maxBlobBytes/webhookDbPath/casDir/continuationDbPath; only in-process createServer() (tests)
+  // ever saw them. Found by the Gate-7.5 v21 live-run config round-trip check.
+  it('maxBlobBytes is forwarded from FileConfig into the returned ServerConfig', async () => {
+    const cfg = await composeConfig({ maxBlobBytes: 1_048_576, gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['maxBlobBytes']).toBe(1_048_576);
+  });
+
+  it('webhookDbPath is forwarded from FileConfig into the returned ServerConfig', async () => {
+    const cfg = await composeConfig({ webhookDbPath: '/var/rwe/webhooks.db', gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['webhookDbPath']).toBe('/var/rwe/webhooks.db');
+  });
+
+  it('casDir is forwarded from FileConfig into the returned ServerConfig', async () => {
+    const cfg = await composeConfig({ casDir: '/var/rwe/cas', gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['casDir']).toBe('/var/rwe/cas');
+  });
+
+  it('continuationDbPath is forwarded from FileConfig into the returned ServerConfig', async () => {
+    const cfg = await composeConfig({ continuationDbPath: '/var/rwe/continuations.db', gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['continuationDbPath']).toBe('/var/rwe/continuations.db');
+  });
 });

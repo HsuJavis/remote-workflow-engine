@@ -61,9 +61,11 @@ describe('REQ-093: effort is real end-to-end, not a documented no-op (VAL-103)',
     }
     expect(status.status).toBe('completed');
 
-    const s = await callTool('workflow_status', { runId }) as { agents?: Array<{ agentId: string }> };
-    const agentId = s.agents?.[0]?.agentId;
-    const log = await callTool('workflow_agent_log', { runId, agentId: agentId! }) as { harness?: { effortApplied?: unknown } };
+    // A script with exactly one top-level agent() call always gets agentId 'agent-1' — same fixed
+    // naming convention VAL-102/VAL-104 rely on. `workflow_status` nests agents under `.result.agents`,
+    // not top-level `.agents` — polling/reading top-level `.agents` never resolves (test defect fixed
+    // at Gate 7.5 v21: the prior version read `s.agents?.[0]?.agentId`, always undefined).
+    const log = await callTool('workflow_agent_log', { runId, agentId: 'agent-1' }) as { harness?: { effortApplied?: unknown } };
     expect(log.harness?.effortApplied).toBeDefined();
   }, 25_000);
 });

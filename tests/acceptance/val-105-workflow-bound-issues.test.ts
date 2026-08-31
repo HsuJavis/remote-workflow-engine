@@ -46,9 +46,18 @@ describe('REQ-095: problem reports bound to a workflow, filterable by it (VAL-10
     expect(res.error).toBeUndefined();
     expect(typeof res.result?.issueNumber).toBe('number');
 
-    const listed = await toolCall('issue_list', { workflow: 'val105-probe-workflow' });
-    expect(listed.error).toBeUndefined();
-    expect((listed.result ?? []).some((i: { number: number }) => i.number === res.result.issueNumber)).toBe(true);
+    // GitHub's label-filtered issues listing has a brief (sub-few-second) indexing lag after
+    // creation — a bare immediate list call is flaky (test defect fixed at Gate 7.5 v21, same
+    // class as VAL-103's agentId lookup). Poll instead of asserting on the very first read.
+    const deadline = Date.now() + 15_000;
+    let found = false;
+    while (Date.now() < deadline && !found) {
+      const listed = await toolCall('issue_list', { workflow: 'val105-probe-workflow' });
+      expect(listed.error).toBeUndefined();
+      found = (listed.result ?? []).some((i: { number: number }) => i.number === res.result.issueNumber);
+      if (!found) await new Promise((r) => setTimeout(r, 1000));
+    }
+    expect(found).toBe(true);
   }, 30_000);
 
   it('issue_report WITHOUT workflow behaves exactly as today (unlabelled) [requires RWE_SECRET_GITHUB_TOKEN]', async () => {

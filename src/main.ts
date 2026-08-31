@@ -162,6 +162,16 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     maxTimeoutMs: fileConfig.maxTimeoutMs,
     maxAppendPromptBytes: fileConfig.maxAppendPromptBytes,
     maxEffort: fileConfig.maxEffort,
+    // Gate 7.5 v21 config-sync check (§4b): same composeConfig wiring-gap class as the four fields
+    // above — these four were documented in rwe.config.json/DEPLOY.md but never named in this
+    // object literal, so `npm start`/systemd (the real production entrypoint) silently ignored
+    // them; server.ts's own defaults (join(workRoot,'cas'|'webhooks.db'|'continuations.db'),
+    // 256 MiB) applied instead even when a deployer set them. Only in-process `createServer()`
+    // callers (tests) ever saw the configured values.
+    maxBlobBytes: fileConfig.maxBlobBytes,
+    webhookDbPath: fileConfig.webhookDbPath,
+    casDir: fileConfig.casDir,
+    continuationDbPath: fileConfig.continuationDbPath,
   };
 
   if (gatewayChoice === 'sdk') {
