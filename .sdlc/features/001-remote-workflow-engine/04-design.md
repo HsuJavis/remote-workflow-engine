@@ -2946,3 +2946,75 @@ validator generated `rtm.md` via `trace.py`'s own module functions instead of pa
 this project's copy, which is the right call: silently teaching the local tool a flag the plugin
 assumes would hide the mismatch instead of recording it. **Reconcile upstream in the plugin**, not
 here. Gate 8 may use the generated `rtm.md` as-is.
+
+---
+
+## Orchestrator adjudication #5 — v21 Gate 8 re-review #3 (2026-09-01)
+
+Four findings, all novel and all real. **P-A1's API claim is independently confirmed against the
+authoritative Claude API reference** — the implementer must not re-litigate it.
+
+### E-1 (P-A1, HIGH) — the effort placement is wrong; the profile must carry a PATH, not a name
+
+**Confirmed:** the Messages API contract is `output_config: {effort: "low"|"medium"|"high"|"xhigh"|"max"}`
+— **inside `output_config`, never top-level**, GA, no beta header, default `high`. An unrecognized
+top-level parameter is rejected `400 invalid_request_error`. So every effort-bearing anthropic call on
+the REST path fails outright while the descriptor records `effortApplied:{param:'effort'}` — a false
+claim of success, which is precisely what REQ-093's "never a silent claim of success" clause exists to
+forbid.
+
+**Root cause to fix, not just the symptom:** `EFFORT_PROFILES.anthropic` encodes a *field name* where
+the two consumers need a *placement*. The SDK client sets `Options.effort`, a real field on the Agent
+SDK's own options object — that path is correct and must not change. The REST body needs a nested
+path. A profile entry that says only `param:'effort'` cannot express that difference, so ARCH-069's
+object-identity defence guarantees "the record matches the intent" while saying nothing about whether
+the field exists at that transport. Give the profile a placement (e.g. a path such as
+`['output_config','effort']` for the REST body, distinct from the SDK's flat option) so the two
+consumers stop sharing a representation that only one of them can honour.
+
+**Both LiteLLM branches are in scope** — direct-fetch and proxy share the same Anthropic-Messages-shaped
+body, and only the direct-fetch path has UT coverage today.
+
+**The test must assert the emitted shape against the documented contract.** P-A1 survived four tiers
+because every tier's oracle was the code itself: UT-101 asserts only that low and max produce *different*
+bytes, UT-020 that the value lands on `Options`. Two runs that are both wrong differ just as reliably as
+two that are right. The new case must pin that the anthropic REST body carries `output_config.effort`
+and carries no top-level `effort`.
+
+### E-2 (P-A2, MED) — one alias predicate, two tables: finish R-G3's fix at the other end
+
+Registration gets `config?.aliases ? … : undefined` → `?? new Set()` → the empty-table no-op rule, while
+admission gets `config?.aliases ?? DEFAULT_ALIASES`. On a default deployment `workflow_register` accepts
+a `model.enum` entry, `workflow_get` advertises it as allowed, and **every** run of it is then refused
+`UNKNOWN_ALIAS` — advertised bound ≠ enforced bound, discovered only at run time. ARCH-064 says one
+predicate shared by both rungs; make both rungs receive the same table. One wiring line.
+
+### E-3 (P-A3, MED) — a declared default that no rung can apply must be REJECTED, not silently stored
+
+`workflow-catalog.ts`'s normalization loop injects every knob's default into `effectiveDefaults`,
+including `effort` and `appendPrompt`; `HarnessDefaults`' `KNOWN_KEYS` is `{model,tools,skills,timeoutMs,
+prompt}`, and `defaultRunParams` reads only `model/timeoutMs/prompt/tools`. So the declared default is
+inert, the descriptor reports "never requested", **and** the engine's own served `defaults` object fails
+`HARNESS_DEFAULTS_INVALID` if re-registered — the discover→edit→re-register round-trip is broken.
+
+**Adjudicated fix: reject at registration.** A `params.knobs.<key>.default` for a knob whose value no
+rung can apply is a typed rejection with nothing stored. Widening the snapshot's author side to carry
+`effort`/`appendPrompt` defaults is the larger change and is **out of v21 scope** — v21's job is that the
+contract cannot lie, not that every knob gains an author-side default. Silently persisting into a type
+that cannot represent it is the one option that is definitely wrong. Whichever way, the served `defaults`
+must round-trip: re-registering what `workflow_get` served must succeed.
+
+### E-4 (P-A4, MED) — order the register-time checks so the alias rule actually fires
+
+`validateHarnessDefaults` runs on the caller-supplied `defaults` only, then the normalization loop injects
+`model:<spec.default>` afterwards, and `parseParamContract` alias-checks `spec.enum` entries but never
+`spec.default`. A non-alias `model.default` therefore registers cleanly and every named run is refused at
+admission — R-G2 is the backstop that keeps this MED rather than HIGH, but the register-time control that
+should make it impossible-by-construction never fires. Either alias-check `spec.default` in
+`parseParamContract` alongside the enum entries, or normalize before validating so the injected value is
+covered. Do not rely on the admission backstop.
+
+### Standing instruction for this pass
+The oracle problem in E-1 is the lesson of this whole iteration: **a test whose expected value is derived
+from the code under test cannot fail when the code is wrong.** Where a clause names an external contract
+(a transport's documented request shape, a provider's API), assert against that contract literally.
