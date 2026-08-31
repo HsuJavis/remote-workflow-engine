@@ -10,10 +10,29 @@ import { resolveCallParams, composePrompt, type RunParams, type EffectiveCallPar
 import { isEffort } from './params/contract.js';
 import { codedError } from './errors.js';
 
-/** DES-066 (TASK-069): pure security transform — strips all resolved values, keeps names only.
- *  - Prompt 4KB cap: first 2048 + "…[truncated]…" + last 2048 (tail survives, task instructions land there).
+const PROMPT_CAP = 4096;
+const PROMPT_CAP_HALF = 2048;
+
+/** DES-066 (TASK-069): the descriptor's 4KB prompt bound — first 2048 + "…[truncated]…" + last 2048
+ *  (tail survives, task instructions land there).
+ *
+ *  v21 Gate 8 re-review (review §R2, R-G9): this used to run inside `redactHarness`, i.e. BEFORE the
+ *  persist-site `redact()`. That ordering is unsafe — a secret value straddling either seam is cut in
+ *  half, and `redact()` is a value-EXACT substring match, so neither fragment matches and partial
+ *  credential bytes land in the persisted descriptor. The cap is a SIZE bound, not a security
+ *  control, so it is now applied last, at the one persist site, after redaction (`_invokeOnce`
+ *  below). Cutting a `‹secret:NAME›` marker in half is harmless; cutting a live secret is not. */
+export function capPrompt(prompt: string): string {
+  return prompt.length > PROMPT_CAP
+    ? prompt.slice(0, PROMPT_CAP_HALF) + '…[truncated]…' + prompt.slice(prompt.length - PROMPT_CAP_HALF)
+    : prompt;
+}
+
+/** DES-066 (TASK-069): pure STRUCTURAL transform — strips all resolved values, keeps names only.
+ *  Redacts no secret VALUES and emits no `‹secret:NAME›` markers; that is the persist site's job.
  *  - surfaceType:'none' (direct-fetch) → all arrays empty (no curated surface available).
- *  - MCP configs: name only, never URL/key/token. */
+ *  - MCP configs: name only, never URL/key/token.
+ *  - prompt passes through UNCUT — see `capPrompt` (R-G9: cap after redact, never before). */
 export function redactHarness(resolved: {
   surfaceType: 'curated' | 'none';
   modelName: string;
@@ -23,13 +42,8 @@ export function redactHarness(resolved: {
   mergedMcp: Array<{ name: string; [key: string]: unknown }>;
   skills: string[];
 }): HarnessDescriptor {
-  const PROMPT_CAP = 4096;
-  const HALF = 2048;
   const provider = resolved.provider ?? '';
-  let prompt = resolved.prompt;
-  if (prompt.length > PROMPT_CAP) {
-    prompt = prompt.slice(0, HALF) + '…[truncated]…' + prompt.slice(prompt.length - HALF);
-  }
+  const prompt = resolved.prompt;
   if (resolved.surfaceType === 'none') {
     return { model: resolved.modelName, provider, prompt, tools: [], skills: [], mcpServers: [], surfaceType: 'none' };
   }
@@ -156,12 +170,14 @@ export class AgentTranscriptSink {
 
   private async _emit(runId: string, agentId: string, ev: TranscriptEvent): Promise<void> {
     if (this._store) {
-      // DES-088 (TASK-082): redact on persist write, not in-memory. The kind!=='harness' guard is
-      // DES-088 invariant (a) "one redaction pass per event": no gateway routes a harness
-      // descriptor through this sink — they call `onHarness` (_invokeOnce below), which runs
-      // `redact()` at its own persist site (v21 review §4 B3). `redactHarness` only truncates the
-      // prompt; it never redacts secret values and is not what keeps that sink safe.
-      const stored = this._secretValueProvider && ev.kind !== 'harness'
+      // DES-088 (TASK-082): redact on persist write, not in-memory — for EVERY event kind.
+      // v21 Gate 8 re-review (review §R2, R-G10): the former `ev.kind !== 'harness'` carve-out is
+      // gone. It could not double-redact anything (a harness descriptor persists through
+      // `onHarness` in _invokeOnce below, which runs its own single `redact()`, and no gateway
+      // routes one through this sink), so it only skipped redaction on a path that should never
+      // carry an unredacted secret. Redacting unconditionally keeps DES-088 invariant (a) — one
+      // redaction pass per persisted event — and fails safe if a future gateway ever emits one here.
+      const stored = this._secretValueProvider
         ? redact(ev, this._secretValueProvider.entries()) as TranscriptEvent
         : ev;
       await this._store.appendTranscript(runId, agentId, stored);
@@ -407,14 +423,20 @@ export class AgentExecutor implements AgentSpawner {
       // progress. The record lives on the transcript sink; markHarness merges (never clobbers state).
       sink.markHarness(req.agentId, decorated.model, decorated.provider);
       if (store) {
-        // v21 Gate 8 send-back (review §4 B3, ARCH-066 inv-5 sink-completeness): redactHarness
-        // (called upstream by the gateway to build `descriptor`) truncates the prompt but never
-        // redacts secret values — the "double-redaction exclusivity" premise onEvent's
-        // kind!=='harness' guard relied on is false for this sink. Redact at persist write, same
-        // convention as every other sink (DES-088/TASK-082).
-        const data = secretValueProvider
-          ? (redact({ agentId: req.agentId, descriptor: decorated }, secretValueProvider.entries()) as { agentId: string; descriptor: HarnessDescriptor })
-          : { agentId: req.agentId, descriptor: decorated };
+        // v21 Gate 8 send-back (review §4 B3, ARCH-066 inv-5 sink-completeness): `redactHarness`
+        // (called upstream by the gateway to build `descriptor`) is a STRUCTURAL strip only — it
+        // redacts no secret values. So this sink redacts at persist write, same convention as every
+        // other sink (DES-088/TASK-082).
+        // v21 Gate 8 re-review (review §R2, R-G9): REDACT FIRST, cap SECOND. The cap used to run
+        // upstream inside `redactHarness`, which could cut a secret in half at a 2048-char seam and
+        // defeat `redact()`'s value-exact match, persisting partial credential bytes. `capPrompt` is
+        // applied unconditionally — a deployment with no SecretValueProvider must still get a
+        // size-bounded descriptor, since the cap is a size bound and not a security control.
+        const base = { agentId: req.agentId, descriptor: decorated };
+        const redacted = secretValueProvider
+          ? (redact(base, secretValueProvider.entries()) as { agentId: string; descriptor: HarnessDescriptor })
+          : base;
+        const data = { ...redacted, descriptor: { ...redacted.descriptor, prompt: capPrompt(redacted.descriptor.prompt) } };
         await store.appendTranscript(req.runId, req.agentId, {
           ts: clock.isoNow(),
           kind: 'harness',
@@ -426,14 +448,14 @@ export class AgentExecutor implements AgentSpawner {
     // agent_log grows and a progressing agent's clock advances DURING the call — a hung agent (no
     // events) keeps lastActivityAt at startedAt. Fire-and-forget-ordered: awaited by the gateway per
     // event, so file appends stay in arrival order. Gateways without a turn stream never call it.
-    // DES-088 (TASK-082): redact on persist write (sink 1 — live stream events). The
-    // kind!=='harness' guard is DES-088 invariant (a) "one redaction pass per event": harness
-    // descriptors never arrive here — they come through `onHarness` above, which runs `redact()`
-    // itself (v21 review §4 B3). It is NOT `redactHarness` that makes that sink safe: redactHarness
-    // only truncates the prompt.
+    // DES-088 (TASK-082): redact on persist write (sink 1 — live stream events), every event kind.
+    // v21 Gate 8 re-review (review §R2, R-G10): the former `ev.kind !== 'harness'` carve-out is gone
+    // for the same reason as in `AgentTranscriptSink._emit` above — harness descriptors persist
+    // through `onHarness`, which runs its own single `redact()`, so unconditional redaction here
+    // cannot double-redact and fails safe if a gateway ever streams one through this sink.
     const onEvent = async (ev: TranscriptEvent): Promise<void> => {
       if (store) {
-        const stored = secretValueProvider && ev.kind !== 'harness'
+        const stored = secretValueProvider
           ? redact(ev, secretValueProvider.entries()) as TranscriptEvent
           : ev;
         await store.appendTranscript(req.runId, req.agentId, stored);

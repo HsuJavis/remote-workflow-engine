@@ -274,12 +274,19 @@ describe('redact-at-capture completeness sweep — sink (5): effectiveParams sna
 // of the batch"): the `kind:'harness'` transcript sink (agent-executor.ts:406-412, `onHarness`)
 // persists the gateway-emitted `HarnessDescriptor` (which carries `prompt` — the composed
 // [agentType systemPrompt]+[defaults.prompt]+[script prompt]+[framed appendPrompt], REQ-094) with
-// NO `redact()` call at all — `redactHarness` (agent-executor.ts:17-45) only TRUNCATES the prompt
-// (4KB cap), it never touches secret VALUES. `onEvent`'s `kind!=='harness'` guard excludes this
-// sink from redaction on a "double-redaction exclusivity" premise the review found false (onHarness
-// never redacts either) — so a secret riding a user-supplied `appendPrompt` reaches the persisted
-// harness transcript entry raw. Extends this sweep with sink (6), same fake-gateway convention as
-// sink (1)/(2)/(3) above but calling `req.onHarness()` instead of `req.onEvent()`.
+// NO `redact()` call at all — `redactHarness` never touches secret VALUES. `onEvent`'s
+// `kind!=='harness'` guard excluded this sink from redaction on a "double-redaction exclusivity"
+// premise the review found false (onHarness never redacted either) — so a secret riding a
+// user-supplied `appendPrompt` reached the persisted harness transcript entry raw. Extends this
+// sweep with sink (6), same fake-gateway convention as sink (1)/(2)/(3) above but calling
+// `req.onHarness()` instead of `req.onEvent()`.
+//
+// STATE AS OF THE §R2 RE-REVIEW CLOSEOUT (the paragraph above is the RED-time rationale, kept):
+// `onHarness` now redacts, and the two `kind!=='harness'` guards are DELETED (R-G10) — redaction is
+// no longer kind-gated at any sink. `redactHarness` is a purely STRUCTURAL strip and no longer
+// truncates: the 4KB cap is the exported `capPrompt`, applied at this persist site AFTER `redact()`
+// (R-G9), because capping first could split a secret across the 2048-char seam and defeat
+// `redact()`'s value-exact match. This test is unchanged and still green.
 describe('redact-at-capture completeness sweep — sink (6): kind:\'harness\' transcript descriptor (DES-088 inv-5 sink-completeness, review §4 B3)', () => {
   it('a secret riding the harness descriptor.prompt is redacted in the persisted kind:\'harness\' transcript entry', async () => {
     const store = new InMemoryRunStore(clock);

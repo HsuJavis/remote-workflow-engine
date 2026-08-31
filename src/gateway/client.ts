@@ -326,7 +326,9 @@ export class LiteLLMGatewayClient implements GatewayClient {
     // resolvable here. The SAME object travels to onHarness AND (below) onto the outbound request.
     const applied = mapEffort(profileFor(target.provider), req.opts.effort);
     // DES-066 (TASK-069): emit harness descriptor eagerly at model-resolution time (surfaceType:'none'
-    // — direct-fetch has no curated tool surface). 4KB head+tail cap on prompt.
+    // — direct-fetch has no curated tool surface). The prompt rides UNCUT: the 4KB head+tail cap is
+    // applied at the persist site after `redact()` (review §R2 R-G9 — capping first can split a
+    // secret across the seam and defeat the value-exact match).
     if (req.onHarness) {
       const descriptor: HarnessDescriptor = {
         ...redactHarness({
