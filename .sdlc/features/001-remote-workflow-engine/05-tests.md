@@ -4827,3 +4827,61 @@ label sanitize exists, see UT-057's own entry above); item 4 (A-7) → `tests/un
 doc-drift fixed in UT-097's own entry above. Full-suite re-run: 5 new red (A-2 ×3 + A-5 ×2) + 3 new green
 regression pins (A-3 ×1 + A-7 ×2) + the pre-existing UT-100 (A-8) red carried over unchanged + 0
 unrelated regressions vs the pre-re-run 1/1455 baseline.
+
+---
+
+## Gate 5 addendum — v21 Gate 6 second send-back (2026-08-31)
+
+Round 1's send-back fixed four gaps; round 2 produced nine more of the **same class** — designed
+behavior with no covering test, found one item at a time because Gate 5 tests per REQ while the
+implementer exit-gate rule fires per DES clause. This addendum therefore adds the enumerated tests
+**plus a scoped sweep** to exhaust the class in one pass. Binding design amendments are in
+`04-design.md` → "Orchestrator adjudication #2"; **read them first** — three clauses were dropped there
+and must NOT be tested into existence.
+
+### Part 1 — five enumerated red tests
+
+1. **Enum-member cap (B-1, DES-101, REQ-090).** A declared `enum` with more than 32 members is a typed
+   registration rejection with nothing stored. (The sibling `nesting depth ≤ 4` bound was **dropped** in
+   B-1 — do not add a test for it.)
+2. **redact() sweep covers the effectiveParams snapshot (B-4, DES-104, REQ-083).** Extend
+   `tests/integration/redact-sweep.test.ts` (IT-075) with the sink for the run's effectiveParams
+   snapshot: a secret value appearing in a user-supplied `appendPrompt` must be redacted in the
+   persisted snapshot exactly as it is in the other four sinks. **This is the highest-value item in the
+   addendum** — the snapshot is a new persist sink carrying user text, and REQ-083 exists precisely to
+   stop a sink being added without sweep coverage.
+3. **workspace_purge preserves effectiveParams (B-4, DES-104, REQ-091).** One assertion in the existing
+   purge test (`tests/integration/v15-v2-workspace-transport.test.ts`): purging a terminal run's
+   workspace leaves the run row's effectiveParams intact, exactly as it leaves the transcript.
+4. **Genuine pre-v21 migration fixture (B-5, TASK-096, REQ-090).** Write a catalog row the way the
+   pre-v21 schema did (no params column / NULL), then assert the migration opens it and `get(name)`
+   returns `params: undefined` — the DoD's literal shape. The existing IT-012 case registers through v21
+   code and cannot exercise the migration path.
+5. **SDK-side effort mapping (B-6, DES-106, REQ-093).** One case in
+   `tests/unit/claude-agent-sdk-gateway-thinking.test.ts`: an Anthropic alias dispatched at
+   `effort:'low'` vs `effort:'max'` produces two captured `Options` objects that differ at the mapped
+   effort key, mirroring the direct-fetch case in `gateway-effort.test.ts`.
+
+### Part 2 — scoped DES-clause coverage sweep
+
+**Scope is exactly DES-101..108 and nothing else.** Do not sweep earlier DES entries, REQs, or ARCH
+items.
+
+1. Walk every normative clause of DES-101..108 (including the boundary-condition prose, not just the
+   signatures) and produce a **clause → coverage table** with one row per clause: clause id/quote, the
+   test that covers it, or `GAP`. **Write the table into this document** so Gate 8 can audit what was
+   examined rather than trusting a claim of completeness.
+2. Add red tests **only for `GAP` rows**.
+3. A clause that appears wrong, obsolete, or contradicted by an adjudication is **reported, never
+   tested into existence** — adjudications A-1..A-9 and B-1..B-8 override the original DES text, and the
+   three clauses dropped in B-1 (nesting depth), B-2 (`promptTruncated` / `appendPromptBytes`) and B-3
+   (`RunParams.skills`) are already settled: they get no rows and no tests.
+4. Extend existing test files in place wherever one already covers the neighbouring behavior; create a
+   new file only when no existing file is a natural home. Do not regenerate or rewrite passing suites.
+
+### Not test scope
+
+Implementation and documentation instructions carried by adjudication #2: removing the dead
+`RunParams.skills` field and amending any assertion that pins it (B-3, pre-authorized — this is design
+conformance, not test-weakening), IMPL ownership of the `redactHarness` swap (B-7), and TASK-104's stale
+`files:` reference in 03-tasks.md (B-8).

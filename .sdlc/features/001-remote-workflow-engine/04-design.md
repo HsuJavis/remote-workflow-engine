@@ -2803,3 +2803,77 @@ Gate 5 re-runs **to extend in place with exactly the red tests enumerated in A-2
 Existing test suites are not to be regenerated or rewritten; the 4 new UT / 1 new IT / 6 new VAL items and
 the 8 extended-in-place items from the first Gate 5 pass stay as they are. Everything else in this section
 is an implementation or documentation instruction, not new test scope.
+
+---
+
+## Orchestrator adjudication #2 — v21 Gate 6 second send-back (2026-08-31)
+
+Round 2 of the same class: every one of the 9 new clarifications is a **DES-clause coverage gap** —
+Gate 5 wrote tests per REQ, while the implementer exit-gate rule fires per DES clause, so implementers
+keep finding designed-but-untested behavior one item at a time. The Gate 5 addendum (see 05-tests.md)
+therefore adds a **scoped clause-coverage sweep** to exhaust the class in one pass instead of a third
+round trip. **The amendments below override the original DES text wherever they conflict, and they are
+written BEFORE the sweep scope deliberately: the sweeper must not add red tests for clauses dropped
+here.**
+
+### B-1 (item 1) — DES-101 amendment: keep the enum cap, DROP the nesting-depth bound
+`≤ 32 declared knobs+args` stays (implemented). `enum ≤ 32 members` stays and gets a red test — an
+unbounded enum is served on every `workflow_get`, so the cap is load-bearing. **`nesting depth ≤ 4` is
+dropped**: `ParamSpec` is a flat shape, `parseParamContract` reads only known scalar/array fields, and
+any nested key a caller invents is inert (never read, never served). A depth bound on a structure with
+no depth is not a guard, it is dead code. Do not resurrect it.
+
+### B-2 (item 5) — DES-105 amendment: DROP `promptTruncated` and `appendPromptBytes`
+Both fields are removed from the `HarnessDescriptor` design. They contradict the adjudicated
+requirement: **REQ-094 refuses an oversize `appendPrompt` at submission with a typed error "rather than
+silently truncated"**, so a truncation-record field describes a state v21 cannot enter. Observability at
+the rejection already exists — `PARAM_OUT_OF_RANGE`'s detail payload carries `suppliedBytes`/`maxBytes`
+(`src/params/contract.ts:229`). Gate 8 must read this as adjudicated design, not a missed field.
+
+### B-3 (item 6) — `RunParams.skills` is a dead field and is REMOVED; skills stay locked and global
+`resolveCallParams` computes `eff.skills` and nothing downstream ever reads it. Per-workflow skill
+*selection* does not exist in this engine at all: skills are server-side assets and **every** stored
+skill is materialized into every run workspace, with `HarnessDescriptor.skills` derived from the
+filesystem (`readSkillNames(assetRoot)`), unrelated to `RunParams`. v21 does not introduce per-workflow
+skill selection — that belongs with the v23 read-surface work, if ever.
+
+**REQ-092 is still satisfied, and this is the satisfaction claim of record:** REQ-092 requires that the
+locked keys "are applied from the registration only and can never be reached by a caller". For `skills`
+the observable is that a caller naming it gets `PARAM_LOCKED`, which holds; global materialization is
+unchanged from pre-v21 behavior and is not a v21 regression.
+
+**Pre-authorization (so this does not bounce a third time):** removing the field is an *adjudicated
+design change*. If a currently-green assertion (e.g. in UT-099 / `params-resolve.test.ts`) asserts the
+presence or value of `RunParams.skills`, the implementer **amends that assertion in the same pass**.
+That is design conformance, not test-weakening, and the exit-gate rule does not apply to it.
+
+### B-4 (items 3 & 4) — DES-104's two persist-sink clauses are IN scope and need their tests
+`redact()` **is** called on the effectiveParams snapshot (`src/run-manager.ts:411-413`), but
+`tests/integration/redact-sweep.test.ts` (IT-075, the REQ-083 sink-completeness sweep) was never
+extended with a case for it. **This is the non-negotiable item of the batch**: the snapshot carries the
+user's `appendPrompt` text, which can carry secrets, and a sink-completeness sweep that silently omits a
+new sink is exactly the failure REQ-083 exists to prevent. Likewise DES-104's adjacent clause —
+`effectiveParams` rides the run row so `workspace_purge` preserves it — has no assertion today. Both get
+tests in the addendum.
+
+### B-5 (item 2) — TASK-096's migration DoD needs a genuine pre-v21 fixture
+IT-012's case of the same name registers through already-v21 code, so it exercises
+`parseMetaParams` writing a canonical contract and only asserts `'params' in entry`. That is weaker than
+the DoD's literal `params: undefined`. The addendum adds a fixture that writes a row **as the pre-v21
+schema did** (no params column / NULL) and asserts the migration + `get()` shape against it. The migration
+path is the one thing a synthetic v21-authored row cannot exercise.
+
+### B-6 (item 7) — the SDK side of the effort contract test is missing
+`claude-agent-sdk-client.ts:581` already writes the mapped effort onto the built `Options`; only the
+covering test is absent, so DES-106/TASK-102's "parameterized over BOTH GatewayClient impls" DoD is
+half-met. The addendum adds the SDK case mirroring the direct-fetch one.
+
+### B-7 (item 8) — IMPL ownership of the `redactHarness` swap
+The `src/gateway/client.ts` `redactHarness` swap (adjudication A-4) is claimed by **TASK-102's** IMPL
+entry, since it lives in a TASK-102 file. The integrator records it there so it is not left untraced.
+
+### B-8 (item 9) — stale file reference in 03-tasks.md
+TASK-104's `files:` line names `tests/unit/harness-defaults.test.ts`, which never existed under that
+name — a stale pointer to the deleted `tests/unit/resolve-harness-params.test.ts`, whose replacement is
+UT-099 / `tests/unit/params-resolve.test.ts`. The integrator corrects the task card's file list;
+same class as the A-9 doc drift in 05-tests.md.
