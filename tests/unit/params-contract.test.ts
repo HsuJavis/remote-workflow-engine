@@ -143,6 +143,19 @@ describe('parseParamContract() — registration-time parse of meta.params (DES-1
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('PARAM_CONTRACT_INVALID');
   });
+
+  // v21 adjudication C-1: DES-101's structural bounds read unqualified over knobs AND args, and the
+  // sibling >32-knobs+args count bound already spans both, so the enum cap applies to args specs too.
+  // The branch shipped at contract.ts:169-173 without this case; C-1 pre-authorized writing it.
+  it('structural bound: an ARGS spec with a >32-member enum → PARAM_CONTRACT_INVALID naming args.<key>', () => {
+    const enumValues = Array.from({ length: 33 }, (_, i) => `v${i}`);
+    const r = parseParamContract({ args: { region: { type: 'enum', enum: enumValues } } }, ALIASES);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+      expect(r.detail['param']).toBe('args.region');
+    }
+  });
 });
 
 describe('validateUserOverrides() — the 8-row rejection table (DES-101)', () => {

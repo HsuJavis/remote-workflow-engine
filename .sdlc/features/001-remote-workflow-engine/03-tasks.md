@@ -718,9 +718,10 @@ status: draft
 ### TASK-104 — cleanup: delete `resolveHarnessParams` once `mergeRunParams` owns the author-side path
 - **status:** draft
 - **traces:** ARCH-065
-- **files:** src/harness-defaults.ts, tests/unit/harness-defaults.test.ts
+- **files:** src/harness-defaults.ts, tests/unit/params-resolve.test.ts
 - **des:** DES-102
 - **dod:** `rg -n "resolveHarnessParams" src/ | wc -l` returns 0 and `npx vitest run` is green.
 - **estimate:** S
 - **iter:** v21
+- **`files:` corrected at the v21 Gate 6 integrator closeout (2026-09-01, adjudication B-8):** this line named `tests/unit/harness-defaults.test.ts`, a file that never existed under that name — a stale pointer to the deleted `tests/unit/resolve-harness-params.test.ts`. The real files this task touched are `src/harness-defaults.ts` (where `resolveHarnessParams` was removed) and the deleted `tests/unit/resolve-harness-params.test.ts`, whose coverage is now carried by `tests/unit/params-resolve.test.ts` (UT-099) — that replacement is what the `files:` line names, since a deleted path is not a partitionable file. See IMPL-137.
 - Runs LAST (after TASK-098 + TASK-101). Leaving a `Partial<HarnessDefaults>`-shaped merge function (three of whose five keys are D12-locked) next to the new closed-type one is a standing invitation for a future implementer to "finally wire the one that was never wired" — reintroducing exactly the ADR-001 escalation. Deleting the shape is cheaper than documenting why not to use it.
