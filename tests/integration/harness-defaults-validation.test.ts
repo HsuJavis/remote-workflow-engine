@@ -242,3 +242,43 @@ describe('meta.params contract — registration, discoverability, ceilings (REQ-
     expect(check.code).toBe('WORKFLOW_NOT_FOUND');
   });
 });
+
+// v21 Gate 5 re-run (2026-08-31, A-2 / 04-design.md "Orchestrator adjudication — v21 Gate 6
+// send-back"): cross-validated defaults. `spec.default` is read NOWHERE in src/params/contract.ts
+// today, so the whole `default` vocabulary is inert end-to-end — registration neither cross-checks
+// a declared default against `defaults.<knob>` nor normalizes an unpaired declared default into the
+// stored `defaults` column. Genuine v21 red (not yet implemented).
+describe('meta.params default cross-validation (DES-103, REQ-090, v21 Gate 5 re-run A-2)', () => {
+  it('(a) a declared default that DISAGREES with defaults.<knob> -> typed rejection, nothing stored', async () => {
+    const script = `export const meta = { params: { knobs: { timeoutMs: { type: 'number', default: 5000 } } } };\nreturn 1;`;
+    const r = await callTool('workflow_register', {
+      name: 'it081-a2-default-mismatch', script, defaults: { timeoutMs: 6000 },
+    });
+    expect(r.error).toBeDefined();
+
+    const check = await callTool('workflow_get', { name: 'it081-a2-default-mismatch' });
+    expect(check.code).toBe('WORKFLOW_NOT_FOUND');
+  });
+
+  it('(b) a declared default violating that knob\'s OWN declared enum -> typed rejection, nothing stored', async () => {
+    // effort's declared enum is ['low','medium']; the declared default 'max' is outside it.
+    const script = `export const meta = { params: { knobs: { effort: { type: 'enum', enum: ['low','medium'], default: 'max' } } } };\nreturn 1;`;
+    const r = await callTool('workflow_register', { name: 'it081-a2-default-out-of-range', script });
+    expect(r.error).toBeDefined();
+
+    const check = await callTool('workflow_get', { name: 'it081-a2-default-out-of-range' });
+    expect(check.code).toBe('WORKFLOW_NOT_FOUND');
+  });
+
+  it('(c) a declared default with NO corresponding defaults.<knob> -> accepted, normalized into the stored defaults column', async () => {
+    const script = `export const meta = { params: { knobs: { timeoutMs: { type: 'number', default: 5000 } } } };\nreturn 1;`;
+    const r = await callTool('workflow_register', { name: 'it081-a2-default-normalize', script });
+    expect(r.error).toBeUndefined();
+
+    const got = await callTool('workflow_get', { name: 'it081-a2-default-normalize' });
+    const defaults = (got as { defaults?: { timeoutMs?: number } }).defaults;
+    // The served default must be DERIVED from the defaults column (so the two can never diverge) —
+    // not merely echoed back from params.knobs.timeoutMs.default.
+    expect(defaults?.timeoutMs).toBe(5000);
+  });
+});

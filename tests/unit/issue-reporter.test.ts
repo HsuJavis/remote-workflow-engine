@@ -223,3 +223,33 @@ describe('IssueReporter workflow-bound reports (REQ-095, DES-107)', () => {
     expect(calls[0].labels).toContain('workflow:never-registered-or-already-gone');
   });
 });
+
+// v21 Gate 5 re-run (2026-08-31, A-5 / 04-design.md "Orchestrator adjudication — v21 Gate 6
+// send-back"): DES-107 amended — v21 introduces no general registration-name predicate, so the
+// `workflow:<name>` GitHub label is produced by a LABEL-SCOPED sanitize only: characters GitHub
+// rejects in a label are replaced, the label is truncated to GitHub's 50-character cap, and the
+// untruncated `name@version` still appears in the issue BODY. No such sanitize exists today —
+// `report()` still uses the raw `workflow:${input.workflow}` string verbatim. This test pins the
+// sanitize this iteration ships: characters outside [A-Za-z0-9:_./-] -> '-', label truncated to 50
+// chars total (including the 9-char "workflow:" prefix, so 41 name characters survive untruncated).
+// Genuine v21 red (not yet implemented).
+describe('IssueReporter workflow label sanitize (REQ-095, DES-107, v21 Gate 5 re-run A-5)', () => {
+  it('characters GitHub rejects in a label are replaced with "-"; the untruncated name@version still appears in the body', async () => {
+    const { client, calls } = fakeClient();
+    const r = new IssueReporter({ secretSource: srcWith({ GITHUB_TOKEN: 't' }), clientImpl: client, engineVersion: '1.2.3', nowIso: () => META.nowIso });
+    await r.report({ ...OK_INPUT, workflow: 'my workflow!', version: 'v1' } as any);
+    expect(calls[0].labels).toContain('workflow:my-workflow-');
+    expect(calls[0].body).toContain('my workflow!@v1');
+  });
+
+  it('a workflow name that would push the label past the 50-character cap is truncated in the LABEL only; the untruncated name@version still appears in the body', async () => {
+    const longName = 'a'.repeat(60);
+    const { client, calls } = fakeClient();
+    const r = new IssueReporter({ secretSource: srcWith({ GITHUB_TOKEN: 't' }), clientImpl: client, engineVersion: '1.2.3', nowIso: () => META.nowIso });
+    await r.report({ ...OK_INPUT, workflow: longName, version: 'v2' } as any);
+    const label = calls[0].labels.find((l) => l.startsWith('workflow:'));
+    expect(label).toBe(`workflow:${'a'.repeat(41)}`); // 9-char prefix + 41 chars = 50
+    expect(label?.length).toBe(50);
+    expect(calls[0].body).toContain(`${longName}@v2`); // untruncated name@version, in the body
+  });
+});

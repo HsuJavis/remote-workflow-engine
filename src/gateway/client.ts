@@ -4,6 +4,7 @@
 // Sole custody of provider API keys lives here (parent-only, never exposed to the sandboxed script).
 import type { AgentOpts, HarnessDescriptor, TranscriptEvent } from '../types.js';
 import { LiteLLMProxyManager } from './litellm-proxy.js';
+import { redactHarness } from '../agent-executor.js';
 
 export interface AliasMap {
   [alias: string]: { provider: 'anthropic' | 'openai' | 'openrouter' | 'gemini' | 'ollama'; model: string };
@@ -327,11 +328,11 @@ export class LiteLLMGatewayClient implements GatewayClient {
     // DES-066 (TASK-069): emit harness descriptor eagerly at model-resolution time (surfaceType:'none'
     // — direct-fetch has no curated tool surface). 4KB head+tail cap on prompt.
     if (req.onHarness) {
-      const p = req.prompt;
-      const PROMPT_CAP = 4096, HALF = 2048;
-      const cappedPrompt = p.length > PROMPT_CAP ? p.slice(0, HALF) + '…[truncated]…' + p.slice(p.length - HALF) : p;
       const descriptor: HarnessDescriptor = {
-        model: aliasName, provider: target.provider, prompt: cappedPrompt, tools: [], skills: [], mcpServers: [], surfaceType: 'none',
+        ...redactHarness({
+          surfaceType: 'none', modelName: aliasName, provider: target.provider, prompt: req.prompt,
+          curatedTools: [], mergedMcp: [], skills: [],
+        }),
         ...(applied !== undefined ? { effortApplied: applied } : {}),
       };
       await req.onHarness(descriptor, applied);

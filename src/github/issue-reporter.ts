@@ -160,6 +160,16 @@ export function issueFingerprint(title: string, component?: string, workflow?: s
   return createHash('sha256').update(workflow ? `${base}|${workflow}` : base).digest('hex').slice(0, 16);
 }
 
+/** v21 Gate 5 re-run (A-5, DES-107 amendment): v21 introduces no general registration-name
+ *  predicate (workflow_register performs no charset check, and a just-deregistered workflow must
+ *  remain reportable) — so the `workflow:<name>` GitHub label is produced by a LABEL-SCOPED
+ *  sanitize only: characters GitHub rejects in a label become '-', and the whole label is
+ *  truncated to GitHub's 50-character cap. The untruncated `name@version` is recorded separately
+ *  in the issue body (renderIssueBody), never here. */
+function workflowLabel(name: string): string {
+  return `workflow:${name.replace(/[^A-Za-z0-9:_./-]/g, '-')}`.slice(0, 50);
+}
+
 /** REQ-029: the FIXED, machine-parseable template a downstream issue-solving agent can reproduce from.
  *  REQ-066 (v11): meta accepts `version` (new key) OR `engineVersion` (legacy); always renders all
  *  five Environment fields, using `_none_` as a placeholder for absent severity/component. */
@@ -425,7 +435,7 @@ export class IssueReporter {
     const labels = [
       REPORTED_LABEL,
       ...(input.severity ? [`severity:${input.severity}`] : []),
-      ...(input.workflow ? [`workflow:${input.workflow}`] : []),
+      ...(input.workflow ? [workflowLabel(input.workflow)] : []),
     ];
     const client = this.resolveClient(tok.token);
 
@@ -466,7 +476,7 @@ export class IssueReporter {
     const tok = this.resolveToken();
     if (!tok.ok) return tok;
     const f = filter ?? {};
-    const labels = f.workflow ? [...(f.labels ?? []), `workflow:${f.workflow}`] : f.labels;
+    const labels = f.workflow ? [...(f.labels ?? []), workflowLabel(f.workflow)] : f.labels;
     try {
       const issues = await this.resolveClient(tok.token).listIssues({ ...f, labels });
       return { ok: true, issues };

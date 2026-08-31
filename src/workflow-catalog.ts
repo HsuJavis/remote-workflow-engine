@@ -26,6 +26,18 @@ import { validateHarnessDefaults, type HarnessDefaults } from './harness-default
 // DES-098: hardcoded operator email for boot backfill of NULL-owner rows
 const BOOT_BACKFILL_EMAIL = 'hsuhungjung@gmail.com';
 
+// v21 Gate 5 re-run (A-2, DES-103): does a declared `params.knobs.<key>.default` violate that
+// same knob's own declared type/enum/min/max? Self-contained (no contract.ts import — TASK-099
+// stays out of TASK-097's file) since this only ever checks one already-parsed spec's own default.
+function violatesOwnSpec(value: unknown, spec: { type: string; enum?: unknown[]; min?: number; max?: number }): boolean {
+  const expectedType = spec.type === 'number' ? 'number' : 'string';
+  if (typeof value !== expectedType) return true;
+  if (spec.enum !== undefined && !spec.enum.includes(value)) return true;
+  if (spec.min !== undefined && (value as number) < spec.min) return true;
+  if (spec.max !== undefined && (value as number) > spec.max) return true;
+  return false;
+}
+
 export interface WorkflowCatalogOpts {
   /** When set and auth is enabled, backfill NULL-owner rows to this email at construction time. */
   backfillOwner?: boolean;
@@ -102,6 +114,27 @@ export class WorkflowCatalog {
     }
     const paramsJson = JSON.stringify(paramsResult.value);
 
+    // v21 Gate 5 re-run (A-2, DES-103): cross-validate each declared knob default — against its
+    // own spec, then against defaults.<knob> — before any DB write. A disagreement or an
+    // out-of-own-bounds default is a typed rejection with nothing stored (same D-AUTH-5-E
+    // fail-closed precedent as HARNESS_DEFAULTS_INVALID above). A declared default with no
+    // corresponding defaults.<knob> is accept-and-normalize: written into the stored defaults so
+    // the served default is always DERIVED from the defaults column, never a second source.
+    const effectiveDefaults: Record<string, unknown> = defaults ? { ...defaults } : {};
+    for (const [key, spec] of Object.entries(paramsResult.value.knobs)) {
+      if (spec.default === undefined) continue;
+      if (violatesOwnSpec(spec.default, spec)) {
+        throw codedError('PARAM_CONTRACT_INVALID', `params.knobs.${key}.default violates its own declared bounds`);
+      }
+      if (key in effectiveDefaults) {
+        if (effectiveDefaults[key] !== spec.default) {
+          throw codedError('PARAM_CONTRACT_INVALID', `params.knobs.${key}.default disagrees with defaults.${key}`);
+        }
+      } else {
+        effectiveDefaults[key] = spec.default;
+      }
+    }
+
     const existing = this._db.prepare('SELECT version, owner FROM workflows WHERE name = ?').get(name) as
       | { version: string; owner: string | null }
       | undefined;
@@ -115,7 +148,7 @@ export class WorkflowCatalog {
     const version = `v${nextNum}`;
     // Set owner on first registration; preserve existing owner on overwrite
     const owner = existing?.owner ?? principal;
-    const defaultsJson = defaults !== undefined ? JSON.stringify(defaults) : null;
+    const defaultsJson = Object.keys(effectiveDefaults).length > 0 ? JSON.stringify(effectiveDefaults) : null;
     this._db
       .prepare(`
         INSERT INTO workflows (name, script, version, createdAt, owner, defaults, params) VALUES (?, ?, ?, ?, ?, ?, ?)

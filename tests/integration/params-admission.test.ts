@@ -97,3 +97,62 @@ describe('Admission rung: overrides validated BEFORE any durable work (IT-083, D
   });
 
 });
+
+// v21 Gate 5 re-run (2026-08-31, A-3 / 04-design.md "Orchestrator adjudication — v21 Gate 6
+// send-back"): the ceiling wiring itself already reaches both RunManager (admission) and McpFacade
+// (read surface) from the SAME composeConfig()-forwarded object — what has no test yet is the
+// BEHAVIOR: a NULL-params workflow row must advertise the lowered ceiling via workflow_get with no
+// re-registration, and admission must enforce that SAME number (not the compiled-in 600_000
+// default). One test pinning advertised == enforced, deriving the boundary from the advertised
+// value itself rather than hardcoding it twice.
+describe('Advertised bound == enforced bound (DES-104, REQ-091, v21 Gate 5 re-run A-3)', () => {
+  let loweredServer: Server;
+  let loweredTmp: string;
+
+  beforeAll(async () => {
+    loweredTmp = mkdtempSync(join(tmpdir(), 'rwe-it083-a3-'));
+    loweredServer = await createServer({
+      port: 0,
+      bind: '127.0.0.1',
+      workRoot: loweredTmp,
+      maxTimeoutMs: 5000, // lowered from the 600_000 compiled-in default
+      aliases: {
+        sonnet: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
+        default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await loweredServer?.close();
+    rmSync(loweredTmp, { recursive: true, force: true });
+  });
+
+  async function loweredCall(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const res = await fetch(`http://127.0.0.1:${loweredServer.port}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
+    return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+  }
+
+  it('a NULL-params workflow row advertises the lowered maxTimeoutMs ceiling via workflow_get, and admission enforces the SAME number', async () => {
+    await loweredCall('workflow_register', { name: 'it083-a3-ceiling', script: 'return await agent("hi");' });
+
+    const got = await loweredCall('workflow_get', { name: 'it083-a3-ceiling' });
+    const advertisedMax = (got as { params?: { knobs?: { timeoutMs?: { max?: number } } } }).params?.knobs?.['timeoutMs']?.max;
+    expect(advertisedMax).toBe(5000); // the LOWERED ceiling, not the 600_000 compiled-in default
+
+    const tooHigh = await loweredCall('workflow_run', {
+      name: 'it083-a3-ceiling', overrides: { timeoutMs: (advertisedMax as number) + 1 },
+    });
+    expect(tooHigh.code ?? (tooHigh.error as { code?: string } | undefined)?.code).toBe('PARAM_OUT_OF_RANGE');
+
+    const atBound = await loweredCall('workflow_run', {
+      name: 'it083-a3-ceiling', overrides: { timeoutMs: advertisedMax },
+    });
+    expect(atBound.code).not.toBe('PARAM_OUT_OF_RANGE');
+  });
+});
