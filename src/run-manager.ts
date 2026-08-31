@@ -39,6 +39,9 @@ import { WorkflowCatalog } from './workflow-catalog.js';
 import type { GatewayClient, GatewayConfig } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
+import { validateUserOverrides, validateDeclaredArgs, canonicalContract, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
+import { defaultRunParams, mergeRunParams, type RunParams } from './params/resolve.js';
+import type { HarnessDefaults } from './harness-defaults.js';
 
 // Default gateway config (REQ-004) for the gateway RunManager builds when no GatewayClient is
 // injected — routes through the single-source DEFAULT_ALIASES table (src/default-aliases.ts).
@@ -89,9 +92,24 @@ export interface RunManagerDeps {
   /** v14 (REQ-083, DES-088, TASK-082): inject to enable redact-at-capture on all transcript/
    *  snapshot/journal persist sinks. Omitted → no redaction (legacy/test callers unchanged). */
   secretValueProvider?: SecretValueProvider;
+  /** v21 (ARCH-066 inv-6, DES-104, TASK-100): engine ceilings bounding the USER-override rung
+   *  (ADR-005) — refuse, never clamp. Per-key fail-closed defaults when a key is absent from config
+   *  (composeConfig() forwards these three from rwe.config.json; see src/main.ts). */
+  ceilings?: Partial<Ceilings>;
 }
 
 const TERMINAL: RunStatus[] = ['stopped', 'completed', 'failed'];
+
+// v21 (ARCH-066 inv-6, DES-104): fail-closed defaults for the three engine ceilings, applied
+// per-key so a config supplying only one still gets sane bounds on the other two.
+const DEFAULT_CEILINGS: Ceilings = { maxTimeoutMs: 600_000, maxAppendPromptBytes: 1024, maxEffort: 'high' };
+
+/** v21 (DES-101): wraps a params/contract.ts rejection into the codebase's one Error factory,
+ *  carrying the machine-shaped `detail` object as an extra (non-ErrEnvelope) property — read by
+ *  any caller that wants it, ignored by ones (like McpFacade.toErrEnvelope) that don't. */
+function paramCodedError(err: ParamErr): Error {
+  return Object.assign(codedError(err.code, err.message), { detail: err.detail });
+}
 
 
 function toErr(err: unknown): { code: string; message: string } {
@@ -143,6 +161,9 @@ interface RunEntry {
   seedRef?: RunStatusView['seedRef'];
   /** v14 (REQ-082, DES-087): the seedManifestRef sha used, overlaid onto RunStatusView by _mergeLive. */
   seedManifestRef?: string;
+  /** v21 (ARCH-066, DES-104, TASK-100): the run-immutable admission-time parameter snapshot —
+   *  computed once in start() (or rehydrated in _requireLive() on resume), never re-resolved. */
+  effectiveParams: RunParams;
 }
 
 export class RunManager {
@@ -166,6 +187,8 @@ export class RunManager {
   private readonly _seedFetcher: SeedRefFetcher;
   /** v14 (REQ-083, DES-088, TASK-082): redact-at-capture for snapshot/journal sinks. */
   private readonly _secretValueProvider: SecretValueProvider | undefined;
+  /** v21 (ARCH-066, DES-104, TASK-100): engine ceilings bounding the USER-override rung. */
+  private readonly _ceilings: Ceilings;
   private readonly _runs = new Map<string, RunEntry>();
 
   /** v8 Slice 1: config values are positive integers — reject bad config loudly at construction
@@ -199,6 +222,12 @@ export class RunManager {
     this._seedRefAllowlist = deps.seedRefAllowlist ? normalizeSeedRefAllowlist(deps.seedRefAllowlist) : [];
     this._seedFetcher = deps.seedFetcher ?? new HardenedSeedRefFetcher();
     this._secretValueProvider = deps.secretValueProvider;
+    // v21 (ARCH-066 inv-6): per-key fail-closed default, not "whole block present or defaults".
+    this._ceilings = {
+      maxTimeoutMs: deps.ceilings?.maxTimeoutMs ?? DEFAULT_CEILINGS.maxTimeoutMs,
+      maxAppendPromptBytes: deps.ceilings?.maxAppendPromptBytes ?? DEFAULT_CEILINGS.maxAppendPromptBytes,
+      maxEffort: deps.ceilings?.maxEffort ?? DEFAULT_CEILINGS.maxEffort,
+    };
   }
 
   /** v8 Slice 4 (REQ-054): count of live (non-terminal) top-level runs in this process — the
@@ -246,7 +275,11 @@ export class RunManager {
     }
   }
 
-  async start(spec: RunSpec): Promise<string> {
+  /** `overrides` (v21, ARCH-066, DES-104) is an ARGUMENT, never a RunSpec field — persisting it on
+   *  RunSpec (read back wholesale by getSpec() on resume) would be a second unredacted sink plus a
+   *  standing temptation to re-merge on resume. The redacted `effectiveParams` snapshot (below) is
+   *  the single durable representation. */
+  async start(spec: RunSpec, overrides?: unknown): Promise<string> {
     // v14 (REQ-085 / DES-090, TASK-084): top rung — pure request-shape check before any durable work.
     //   Pinned first: SCRIPT_SHA_WITHOUT_SCRIPT → SCRIPT_SHA_MISMATCH → (admission) → …
     if (spec.scriptSha256 !== undefined) {
@@ -345,14 +378,41 @@ export class RunManager {
     let script = spec.script ?? '';
     let scriptVersion = 1;
     let resolvedVersion = 'v1'; // catalog version string actually executed (D-V7) — threaded into RunStore.createRun
+    let registeredContract: ParamContract | undefined;
+    let registeredDefaults: HarnessDefaults | undefined;
     if (spec.name && !spec.script) {
       const registered = await this._catalog.get(spec.name); // throws CatalogNotFoundError — caught by SubmissionValidator pre-run
       script = registered.script;
       resolvedVersion = registered.version;
       scriptVersion = Number(registered.version.replace(/^v/, '')) || 1;
+      registeredContract = registered.params as ParamContract | undefined;
+      registeredDefaults = registered.defaults;
     }
 
-    const runId = await this._store.createRun(spec, resolvedVersion);
+    // v21 (ARCH-066 inv-6, DES-104, TASK-100): admission rung — ONE task by decree (validate +
+    // snapshot + config wiring together, so this bug class doesn't ship a fifth time). Validates
+    // `overrides`/declared `args` against the workflow's tunable-parameter contract BEFORE any
+    // durable work (createRun/runWorkspace/sandbox spawn) — an ad-hoc inline script (no registered
+    // contract) is bound by the canonical 4-knob contract, same as a registered script with no
+    // `params` block (DES-101). Order pinned: overrides -> declared args -> merge.
+    const contract = registeredContract ?? canonicalContract();
+    const overridesResult = validateUserOverrides(contract, overrides, new Set(), this._ceilings);
+    if (!overridesResult.ok) throw paramCodedError(overridesResult);
+    const argsResult = validateDeclaredArgs(contract, spec.args);
+    if (!argsResult.ok) throw paramCodedError(argsResult);
+    // defaultRunParams is the ONLY no-overrides producer (DES-104) — the callers that never supply
+    // `overrides` (schedule/webhook/chain triggers) must not each reach for `overrides ?? {}`.
+    const effectiveParams: RunParams = overrides === undefined
+      ? defaultRunParams(registeredDefaults)
+      : mergeRunParams(registeredDefaults, overridesResult.value);
+    // DES-088/ARCH-056 (REQ-083 sink-completeness sweep): this is a NEW persist sink — redact
+    // BEFORE the durable write, same convention as the journal/snapshot sinks below. The live
+    // RunEntry (below) keeps the unredacted value (dispatch never sees a redaction marker).
+    const persistedParams = this._secretValueProvider
+      ? (redact(effectiveParams, this._secretValueProvider.entries()) as RunParams)
+      : effectiveParams;
+
+    const runId = await this._store.createRun(spec, resolvedVersion, persistedParams);
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
     // v13 REQ-080 (DES-083, TASK-078): engine-pull seedRef — fetch the tree AFTER createRun, feed the
     // fetched entries into the EXISTING seedManifest materialize branch below (guard-parity is structural:
@@ -416,6 +476,7 @@ export class RunManager {
       nestedFrames: new Map(),
       nestedFrameSeq: 0,
       workflowNodes: [],
+      effectiveParams,
     };
     this._runs.set(runId, entry);
     entry.seedRef = seedRefView; // v13: overlaid onto RunStatusView by _mergeLive (present on success AND failure)
@@ -519,13 +580,19 @@ export class RunManager {
     // script from the catalog the SAME way start() does, or the resumed run executes an empty script
     // and returns undefined. (Pre-Defer-A, no test covered a named-workflow restart-resume.)
     let script = spec.script ?? '';
+    let registeredDefaults: HarnessDefaults | undefined;
     if (spec.name && !spec.script) {
       const registered = await this._catalog.get(spec.name); // throws CatalogNotFoundError — same as start()
       script = registered.script;
+      registeredDefaults = registered.defaults;
     }
     // v8 Defer A (REQ-059): read the persisted journal back so a run resumed in a fresh process
     // replays its settled agent()/workflow() calls from cache instead of re-running them live.
     const persistedJournal = await this._store.getJournal(runId);
+    // v21 (ARCH-066, DES-104): resume reads the PINNED admission snapshot, never re-resolving from
+    // the current catalog row — a legacy pre-v21 run (effective_params NULL) falls back to
+    // defaultRunParams(registered.defaults), today's behaviour, never a crash.
+    const effectiveParams = (await this._store.getEffectiveParams(runId)) ?? defaultRunParams(registeredDefaults);
 
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
     const guard = new RunGuard({ concurrency: this._concurrency, budget: spec.budget ?? null });
@@ -556,6 +623,7 @@ export class RunManager {
       nestedFrames: new Map(),
       nestedFrameSeq: 0,
       workflowNodes: [],
+      effectiveParams,
     };
     this._runs.set(runId, entry);
     return entry;
@@ -743,6 +811,10 @@ export class RunManager {
             opts: key.opts,
             workspace: entry.workspace,
             signal: entry.abortController.signal,
+            // v21 (ARCH-068, DES-105, TASK-101): the run-immutable admission-time snapshot — one
+            // per run (incl. nested workflow() frames, which share the parent's entry), never
+            // re-resolved per call.
+            runParams: entry.effectiveParams,
           }),
         );
         const value = outcome.kind === 'null' ? null : outcome.value;

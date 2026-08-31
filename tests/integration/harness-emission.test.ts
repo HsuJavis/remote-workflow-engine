@@ -16,6 +16,7 @@ import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
 import type { GatewayClient, GatewayResult } from '../../src/gateway/client.js';
 import type { HarnessDescriptor } from '../../src/types.js';
+import { defaultRunParams } from '../../src/params/resolve.js';
 
 // A fixed clock for deterministic timestamps.
 const clock = new FixedClock(new Date('2026-01-01T00:00:00.000Z'));
@@ -64,7 +65,7 @@ describe('harness emission via onHarness hook (IT-069, DES-066)', () => {
     };
     const executor = new AgentExecutor({ gateway: makeFakeGateway(descriptor), store, clock });
     const signal = new AbortController().signal;
-    await executor.run({ runId, agentId, prompt: 'hello', opts: {}, signal, workspace: '' });
+    await executor.run({ runId, agentId, prompt: 'hello', opts: {}, signal, workspace: '', runParams: defaultRunParams(undefined) });
 
     const events = await store.getTranscript(runId, agentId);
     const harnessEvent = events.find((e) => e.kind === 'harness');
@@ -84,7 +85,7 @@ describe('harness emission via onHarness hook (IT-069, DES-066)', () => {
     };
     const executor = new AgentExecutor({ gateway: makeFakeGateway(descriptor), store, clock });
     const signal = new AbortController().signal;
-    await executor.run({ runId, agentId, prompt: 'prompt', opts: {}, signal, workspace: '' });
+    await executor.run({ runId, agentId, prompt: 'prompt', opts: {}, signal, workspace: '', runParams: defaultRunParams(undefined) });
 
     const events = await store.getTranscript(runId, agentId);
     const harnessEvent = events.find((e) => e.kind === 'harness');
@@ -113,7 +114,7 @@ describe('harness emission via onHarness hook (IT-069, DES-066)', () => {
     };
     const executor = new AgentExecutor({ gateway: makeFakeGateway(descriptor), store, clock });
     const signal = new AbortController().signal;
-    await executor.run({ runId, agentId, prompt: 'prompt', opts: {}, signal, workspace: '' });
+    await executor.run({ runId, agentId, prompt: 'prompt', opts: {}, signal, workspace: '', runParams: defaultRunParams(undefined) });
 
     const events = await store.getTranscript(runId, agentId);
     const harnessEvent = events.find((e) => e.kind === 'harness');
@@ -138,7 +139,7 @@ describe('harness emission via onHarness hook (IT-069, DES-066)', () => {
     };
     const executor = new AgentExecutor({ gateway: makeFakeGateway(descriptor), store, clock });
     const signal = new AbortController().signal;
-    await executor.run({ runId, agentId, prompt: 'prompt', opts: {}, signal, workspace: '' });
+    await executor.run({ runId, agentId, prompt: 'prompt', opts: {}, signal, workspace: '', runParams: defaultRunParams(undefined) });
 
     const events = await store.getTranscript(runId, agentId);
     const harnessEvent = events.find((e) => e.kind === 'harness');

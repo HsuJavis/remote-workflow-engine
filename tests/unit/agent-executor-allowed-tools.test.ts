@@ -27,6 +27,7 @@ import { describe, it, expect } from 'vitest';
 import { AgentExecutor, type AgentTypeDef } from '../../src/agent-executor.js';
 import type { GatewayClient, GatewayResult } from '../../src/gateway/client.js';
 import type { AgentOpts } from '../../src/types.js';
+import { defaultRunParams } from '../../src/params/resolve.js';
 
 function okResult(): GatewayResult {
   return { ok: true, provider: 'fake', model: 'm', tokens: { input: 1, output: 1 }, content: 'ok' };
@@ -55,6 +56,7 @@ describe('AgentExecutor threads a resolved agentType\'s tools into opts.allowedT
       opts: { agentType: 'researcher' },
       workspace: '/tmp/ut-025-ws',
       signal: new AbortController().signal,
+      runParams: defaultRunParams(undefined),
     });
 
     // Forcing red: today's src never applies a resolved definition's tools to opts.allowedTools.
@@ -83,6 +85,7 @@ describe('AgentExecutor threads a resolved agentType\'s tools into opts.allowedT
       opts: { agentType: 'researcher', allowedTools: ['Bash'] } as AgentOpts & { allowedTools: string[] },
       workspace: '/tmp/ut-025-ws',
       signal: new AbortController().signal,
+      runParams: defaultRunParams(undefined),
     });
 
     // NOT a forcing red, confirmed by running this case in isolation — documented transparently
@@ -114,6 +117,7 @@ describe('AgentExecutor threads a resolved agentType\'s tools into opts.allowedT
       opts: { agentType: 'plain' },
       workspace: '/tmp/ut-025-ws',
       signal: new AbortController().signal,
+      runParams: defaultRunParams(undefined),
     });
 
     // Sanity: this one is NOT expected to be red for the tools-threading reason — a definition

@@ -180,3 +180,65 @@ describe('Harness defaults register-time validation — D-AUTH-5 named assertion
     expect(runResult.code).not.toBe('HARNESS_DEFAULTS_INVALID');
   });
 });
+
+// v21 (ARCH-067, DES-103, TASK-099): meta.params contract declaration + discoverability (REQ-090),
+// the ON CONFLICT stale-contract trap, ceiling-bounded read surfaces, pre-eval source-size guard.
+//
+// Red reason: `catalog.register()`/`meta.params` parsing does not exist yet — a `params` block is
+// silently ignored (no PARAM_CONTRACT_INVALID ever returned, workflow_get never returns `.params`).
+describe('meta.params contract — registration, discoverability, ceilings (REQ-090, IT-081 v21)', () => {
+  it('a script whose meta.params constrains model to an enum registers and is queryable via workflow_get', async () => {
+    const script = `export const meta = { description: 'x', params: { knobs: { model: { type: 'enum', enum: ['sonnet','haiku'] } } } };\nreturn 1;`;
+    const r = await callTool('workflow_register', { name: 'it081-params-model-enum', script });
+    expect(r.code).not.toBe('HARNESS_DEFAULTS_INVALID');
+    expect(r.error).toBeUndefined();
+
+    const got = await callTool('workflow_get', { name: 'it081-params-model-enum' });
+    const params = (got as { params?: { knobs?: Record<string, { enum?: string[] }> } }).params;
+    expect(params?.knobs?.['model']?.enum).toEqual(['sonnet', 'haiku']);
+  });
+
+  it('a meta.params block naming a LOCKED key (tools) → registration rejected, nothing stored', async () => {
+    const script = `export const meta = { description: 'x', params: { knobs: { tools: { type: 'string' } } } };\nreturn 1;`;
+    const r = await callTool('workflow_register', { name: 'it081-params-locked-key', script });
+    expect(r.error).toBeDefined();
+
+    const check = await callTool('workflow_get', { name: 'it081-params-locked-key' });
+    expect(check.code).toBe('WORKFLOW_NOT_FOUND');
+  });
+
+  it('a script with NO params block reads back workflow_get.params as the canonical 4-knob contract, ceiling-bounded (never null/unbounded)', async () => {
+    await callTool('workflow_register', { name: 'it081-no-params-block', script: 'return 1;' });
+    const got = await callTool('workflow_get', { name: 'it081-no-params-block' });
+    const params = (got as { params?: { knobs?: Record<string, unknown> } }).params;
+    expect(params).toBeDefined();
+    expect(Object.keys(params?.knobs ?? {}).sort()).toEqual(['appendPrompt', 'effort', 'model', 'timeoutMs'].sort());
+  });
+
+  // ON CONFLICT trap (DES-103): the existing UPSERT updates script/version/createdAt/defaults and
+  // deliberately omits owner — copying that pattern without adding `params` leaves a STALE contract
+  // on re-register (silent, no error). Pinned: re-register with a CHANGED params block must show
+  // the NEW contract, not the old one.
+  it('re-registering with a CHANGED params block updates the stored contract (ON CONFLICT trap)', async () => {
+    const v1 = `export const meta = { params: { knobs: { model: { type: 'enum', enum: ['sonnet'] } } } };\nreturn 1;`;
+    await callTool('workflow_register', { name: 'it081-params-reregister', script: v1 });
+    const v2 = `export const meta = { params: { knobs: { model: { type: 'enum', enum: ['sonnet','opus'] } } } };\nreturn 2;`;
+    await callTool('workflow_register', { name: 'it081-params-reregister', script: v2 });
+
+    const got = await callTool('workflow_get', { name: 'it081-params-reregister' });
+    const params = (got as { params?: { knobs?: Record<string, { enum?: string[] }> } }).params;
+    expect(params?.knobs?.['model']?.enum).toEqual(['sonnet', 'opus']);
+  });
+
+  // Pre-eval source-size guard (DES-103/DES-101): measured on the matched meta LITERAL TEXT before
+  // runInNewContext — an oversized params block is rejected at registration, never silently truncated.
+  it('an oversized meta.params block (> 4KB literal text) is rejected at registration, nothing stored', async () => {
+    const hugeEnum = Array.from({ length: 400 }, (_, i) => `"alias-${i}-${'x'.repeat(6)}"`).join(',');
+    const script = `export const meta = { params: { knobs: { model: { type: 'enum', enum: [${hugeEnum}] } } } };\nreturn 1;`;
+    const r = await callTool('workflow_register', { name: 'it081-params-oversized', script });
+    expect(r.error).toBeDefined();
+
+    const check = await callTool('workflow_get', { name: 'it081-params-oversized' });
+    expect(check.code).toBe('WORKFLOW_NOT_FOUND');
+  });
+});

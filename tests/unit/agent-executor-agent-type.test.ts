@@ -16,6 +16,7 @@ import { AgentExecutor } from '../../src/agent-executor.js';
 import type { AgentExecutorDeps } from '../../src/agent-executor.js';
 import type { GatewayClient, GatewayResult } from '../../src/gateway/client.js';
 import type { AgentOpts } from '../../src/types.js';
+import { defaultRunParams } from '../../src/params/resolve.js';
 
 function req(opts: AgentOpts = {}) {
   return {
@@ -25,6 +26,7 @@ function req(opts: AgentOpts = {}) {
     opts,
     workspace: '/tmp/ws',
     signal: new AbortController().signal,
+    runParams: defaultRunParams(undefined),
   };
 }
 

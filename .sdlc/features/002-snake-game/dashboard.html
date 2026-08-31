@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ISO-Agile SDLC 儀表板</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+:root{--bg:#0f1419;--panel:#1a2029;--line:#2c3440;--fg:#d8e0ea;--mut:#8a98a8;--ac:#4ea1ff;--ok:#3fb950;--warn:#d29922;--bad:#f85149;}
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;background:var(--bg);color:var(--fg);line-height:1.5}
+header{padding:20px 28px;border-bottom:1px solid var(--line);display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+h1{font-size:19px;margin:0}.sub{color:var(--mut);font-size:13px}
+nav{display:flex;gap:4px;padding:0 20px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+nav button{background:none;border:none;color:var(--mut);padding:13px 16px;cursor:pointer;font-size:14px;border-bottom:2px solid transparent}
+nav button:hover{color:var(--fg)}nav button.on{color:var(--ac);border-bottom-color:var(--ac)}
+main{padding:24px 28px;max-width:1280px}.tab{display:none}.tab.on{display:block}
+.cards{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 20px;min-width:130px}
+.card .num{font-size:30px;font-weight:700}.card .lbl{color:var(--mut);font-size:13px;margin-top:2px}
+.card.ok .num{color:var(--ok)}.card.warn .num{color:var(--warn)}.card.bad .num{color:var(--bad)}
+table{width:100%;border-collapse:collapse;margin:10px 0 26px;font-size:13.5px}
+th,td{text-align:left;padding:8px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mut);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.4px}
+tr:hover td{background:#ffffff06}.mono{font-family:ui-monospace,Menlo,monospace}.small{font-size:12.5px;color:var(--mut)}
+h3{margin:26px 0 6px;font-size:15px}.count{color:var(--mut);font-size:12px;font-weight:400;background:var(--line);padding:1px 8px;border-radius:10px}
+.pill{padding:2px 9px;border-radius:10px;font-size:12px}.s-done{background:#1c3a24;color:#5fd97a}.s-reviewed{background:#1c2f44;color:#6db3ff}
+.s-draft{background:#33291a;color:#e0b25f}.s-blocked{background:#3a1d1d;color:#ff8a80}.s-unknown{background:#2a2f38;color:#9aa}
+.ok-cell{background:#13301c40}.bad-cell{background:#3a1d1d50;color:var(--bad);text-align:center;font-size:16px}
+.sev{padding:2px 9px;border-radius:8px;font-size:12px;font-weight:600}.sev-high{background:#3a1d1d;color:#ff7b72}.sev-mid{background:#33291a;color:#e0b25f}.sev-low{background:#23303a;color:#7fb8d8}
+.all-good{color:var(--ok);font-size:16px;padding:30px;text-align:center;background:var(--panel);border-radius:10px}
+.mermaid{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;overflow:auto}
+.legend{color:var(--mut);font-size:12.5px;margin:6px 0 14px}
+.src{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--mut);background:var(--line);padding:1px 6px;border-radius:6px;margin-left:6px}
+a.src-link{color:inherit;text-decoration:none}a.src-link:hover{color:var(--ac);text-decoration:underline}a.src-link:hover .src{color:var(--ac)}
+.reqbtn{display:block;width:100%;text-align:left;background:var(--panel);border:1px solid var(--line);color:var(--fg);padding:9px 12px;margin:5px 0;border-radius:8px;cursor:pointer;font-size:13.5px}
+.reqbtn:hover{border-color:var(--ac);color:var(--ac)}
+.diagram-card{margin:0 0 22px}.dcap{font-size:13.5px;margin:0 0 4px;font-weight:600}
+#drilldetail{margin-top:18px}
+.tlslider{width:100%;margin:6px 0 4px;accent-color:var(--ac)}
+.tlmeta{color:var(--mut);font-size:12.5px;margin-bottom:14px}
+.tlcounts{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 16px}
+.tlcounts .c{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px;font-weight:600}
+.tlcols{display:flex;gap:16px;flex-wrap:wrap}.tlcol{flex:1;min-width:240px}.tlcol h4{margin:6px 0;font-size:14px}
+.diffitem{font-size:13px;padding:5px 9px;margin:4px 0;border-radius:6px;border:1px solid var(--line)}
+.di-add{background:#13301c55}.di-mod{background:#33291a55}.di-del{background:#3a1d1d55}
+.dia-change{margin:16px 0;border:1px solid var(--line);border-radius:10px;padding:12px;background:var(--panel)}
+.dia-ba{display:flex;gap:14px;flex-wrap:wrap}.dia-ba>div{flex:1;min-width:280px}
+</style></head><body>
+<header><h1>🔁 ISO-Agile SDLC 儀表板</h1><span class="sub">/home/user/Documents/remote-workflow/.sdlc/features/002-snake-game · 產生於 2026-08-31 17:16</span></header>
+<nav>
+<button class="on" data-t="ov">概覽</button><button data-t="docs">文件</button>
+<button data-t="mx">追溯矩陣</button><button data-t="trace">溯源</button><button data-t="dia">圖表</button>
+<button data-t="tl">迭代差異</button><button data-t="gr">追溯圖</button><button data-t="gp">缺口</button>
+</nav>
+<main>
+<section id="ov" class="tab on"><div class="cards"><div class="card "><div class="num">3</div><div class="lbl">工作項總數</div></div><div class="card "><div class="num">3</div><div class="lbl">需求數</div></div><div class="card ok"><div class="num">0</div><div class="lbl">完成</div></div><div class="card warn"><div class="num">6</div><div class="lbl">缺口</div></div><div class="card ok"><div class="num">0</div><div class="lbl">嚴重缺口</div></div><div class="card warn"><div class="num">3</div><div class="lbl">未驗證需求</div></div><div class="card ok"><div class="num">0</div><div class="lbl">僅 mock 驗證</div></div></div>
+<p class="legend">概覽匯總所有階段產出與追溯健康度。切到各分頁查看細節；「缺口」頁列出所有斷鏈、孤兒、未驗證/未實作的需求。</p></section>
+<section id="docs" class="tab"><p class="legend">依階段分門別類列出所有工作項與其狀態、追溯關係。</p><h3>需求 <span class="count">3</span></h3><table><thead><tr><th>ID</th><th>標題</th><th>狀態</th><th>追溯</th><th>來源(SoT)</th></tr></thead><tbody><tr><td class="mono">REQ-001</td><td>snake moves and is controlled by the player</td><td><span class="pill s-reviewed">已審</span></td><td class="mono small">—</td><td class="small mono"><a class="src-link" href="01-requirements.md">01-requirements.md:3</a></td></tr><tr><td class="mono">REQ-002</td><td>eating food grows the snake and scores</td><td><span class="pill s-reviewed">已審</span></td><td class="mono small">—</td><td class="small mono"><a class="src-link" href="01-requirements.md">01-requirements.md:9</a></td></tr><tr><td class="mono">REQ-003</td><td>collision ends the game</td><td><span class="pill s-reviewed">已審</span></td><td class="mono small">—</td><td class="small mono"><a class="src-link" href="01-requirements.md">01-requirements.md:15</a></td></tr></tbody></table></section>
+<section id="mx" class="tab"><p class="legend">追溯矩陣：每列一個需求，欄位顯示哪些下游產出回應了它。❌ 代表該階段沒有任何產出對應此需求（缺口）。</p><table><thead><tr><th>需求</th><th>標題</th><th>架構 ARCH</th><th>設計 DES</th><th>任務 TASK</th><th>實作 IMPL</th><th>驗證 UT/IT/E2E/VAL</th></tr></thead><tbody><tr><td class="mono">REQ-001</td><td class="small">snake moves and is controlled by the player</td><td class="bad-cell">❌</td><td class="bad-cell">❌</td><td class="bad-cell">❌</td><td class="bad-cell">❌</td><td class="bad-cell">❌</td></tr><tr><td class="mono">REQ-002</td><td class="small">eating food grows the snake and scores</td><td class="bad-cell">❌</td><td class="bad-cell">❌</td><td class="bad-cell">❌</td><td class="bad-cell">❌</td><td class="bad-cell">❌</td></tr><tr><td class="mono">REQ-003</td><td class="small">collision ends the game</td><td class="bad-cell">❌</td><td class="bad-cell">❌</td><td class="bad-cell">❌</td><td class="bad-cell">❌</td><td class="bad-cell">❌</td></tr></tbody></table></section>
+<section id="trace" class="tab"><p class="legend">點一個需求看它的完整溯源（→架構→設計→任務→程式碼→測試）。每一項都標來源 <span class="src">檔:行</span> 可回 md 驗證真實性。</p>
+<div id="reqlist"></div><div id="drilldetail"></div></section>
+<section id="dia" class="tab"><p class="legend">各階段內嵌的 UML/流程圖（文字描述為主、圖為輔），每張標來源 <span class="src">檔:行</span>。需求→用例/需求圖、架構→容器圖、設計→類別圖、行為→循序/活動圖、部署→部署圖。</p><p class="legend">各階段文件尚未內嵌 ```mermaid 圖。在 0X.md 用對應型別加入即可在此渲染：需求→requirementDiagram、架構→C4Container/flowchart、設計→classDiagram、行為→sequenceDiagram/flowchart、部署→C4Deployment。</p></section>
+<section id="tl" class="tab"><p class="legend">迭代差異：拖動下方的時間軸，看每一次迭代（git 提交 → 工作目錄）相對前一次的變化——需求/架構/任務/設計/測試/實作的<b style="color:var(--ok)">新增</b>·<b style="color:var(--warn)">修改</b>·<b style="color:var(--bad)">刪除</b>，以及流程圖/各種圖的差異（含前後對照）。</p>
+<div id="tlbar"></div><div id="tlbody"></div></section>
+<section id="gr" class="tab"><p class="legend">追溯圖：箭頭代表「下游產出 → 它所回應的上游」。紅框＝斷鏈。可滾動縮放。</p>
+<div class="mermaid">graph LR
+  subgraph requirements["需求"]
+    REQ_001["REQ-001<br/>snake moves and is"]
+    REQ_002["REQ-002<br/>eating food grows "]
+    REQ_003["REQ-003<br/>collision ends the"]
+  end</div></section>
+<section id="gp" class="tab"><p class="legend">一致性檢查結果。嚴重缺口（斷鏈、孤兒）應優先處理。</p><table><thead><tr><th>嚴重度</th><th>類型</th><th>項目</th><th>說明</th></tr></thead><tbody><tr><td><span class="sev sev-mid">中</span></td><td>未實作</td><td class="mono">REQ-001</td><td>REQ-001 沒有任何實作 (IMPL) 追溯到它</td></tr><tr><td><span class="sev sev-mid">中</span></td><td>未驗證</td><td class="mono">REQ-001</td><td>REQ-001 沒有任何測試 (UT/IT/VAL) 追溯到它</td></tr><tr><td><span class="sev sev-mid">中</span></td><td>未實作</td><td class="mono">REQ-002</td><td>REQ-002 沒有任何實作 (IMPL) 追溯到它</td></tr><tr><td><span class="sev sev-mid">中</span></td><td>未驗證</td><td class="mono">REQ-002</td><td>REQ-002 沒有任何測試 (UT/IT/VAL) 追溯到它</td></tr><tr><td><span class="sev sev-mid">中</span></td><td>未實作</td><td class="mono">REQ-003</td><td>REQ-003 沒有任何實作 (IMPL) 追溯到它</td></tr><tr><td><span class="sev sev-mid">中</span></td><td>未驗證</td><td class="mono">REQ-003</td><td>REQ-003 沒有任何測試 (UT/IT/VAL) 追溯到它</td></tr></tbody></table></section>
+</main>
+<script>
+const D={"items": {"REQ-001": {"id": "REQ-001", "title": "snake moves and is controlled by the player", "stage": "requirements", "stage_label": "需求", "kind": "spec", "status": "reviewed", "traces": [], "iter": "v1", "greens": [], "files": "", "result": "", "tier": "", "real": "", "asil": "", "file": "01-requirements.md", "line": 3}, "REQ-002": {"id": "REQ-002", "title": "eating food grows the snake and scores", "stage": "requirements", "stage_label": "需求", "kind": "spec", "status": "reviewed", "traces": [], "iter": "v1", "greens": [], "files": "", "result": "", "tier": "", "real": "", "asil": "", "file": "01-requirements.md", "line": 9}, "REQ-003": {"id": "REQ-003", "title": "collision ends the game", "stage": "requirements", "stage_label": "需求", "kind": "spec", "status": "reviewed", "traces": [], "iter": "v1", "greens": [], "files": "", "result": "", "tier": "", "real": "", "asil": "", "file": "01-requirements.md", "line": 15}}, "gaps": [{"type": "未實作", "id": "REQ-001", "msg": "REQ-001 沒有任何實作 (IMPL) 追溯到它", "sev": "mid"}, {"type": "未驗證", "id": "REQ-001", "msg": "REQ-001 沒有任何測試 (UT/IT/VAL) 追溯到它", "sev": "mid"}, {"type": "未實作", "id": "REQ-002", "msg": "REQ-002 沒有任何實作 (IMPL) 追溯到它", "sev": "mid"}, {"type": "未驗證", "id": "REQ-002", "msg": "REQ-002 沒有任何測試 (UT/IT/VAL) 追溯到它", "sev": "mid"}, {"type": "未實作", "id": "REQ-003", "msg": "REQ-003 沒有任何實作 (IMPL) 追溯到它", "sev": "mid"}, {"type": "未驗證", "id": "REQ-003", "msg": "REQ-003 沒有任何測試 (UT/IT/VAL) 追溯到它", "sev": "mid"}], "matrix": [{"req": "REQ-001", "title": "snake moves and is controlled by the player", "cells": {"architecture": [], "design": [], "tasks": [], "impl": [], "verification": []}}, {"req": "REQ-002", "title": "eating food grows the snake and scores", "cells": {"architecture": [], "design": [], "tasks": [], "impl": [], "verification": []}}, {"req": "REQ-003", "title": "collision ends the game", "cells": {"architecture": [], "design": [], "tasks": [], "impl": [], "verification": []}}], "mermaid": "graph LR\n  subgraph requirements[\"需求\"]\n    REQ_001[\"REQ-001<br/>snake moves and is\"]\n    REQ_002[\"REQ-002<br/>eating food grows \"]\n    REQ_003[\"REQ-003<br/>collision ends the\"]\n  end", "diagrams": [], "drill": {"REQ-001": {"id": "REQ-001", "title": "snake moves and is controlled by the player", "src": "01-requirements.md:3", "file": "01-requirements.md", "groups": {}}, "REQ-002": {"id": "REQ-002", "title": "eating food grows the snake and scores", "src": "01-requirements.md:9", "file": "01-requirements.md", "groups": {}}, "REQ-003": {"id": "REQ-003", "title": "collision ends the game", "src": "01-requirements.md:15", "file": "01-requirements.md", "groups": {}}}, "timeline": null, "stages": {"需求": ["REQ-001", "REQ-002", "REQ-003"]}, "verified": [], "implemented": []};
+mermaid.initialize({startOnLoad:false,theme:'dark',securityLevel:'loose'});
+// 逐張用 mermaid.render() 產生 svg 再注入,且只在分頁可見時渲染。
+// 不用 startOnLoad/mermaid.run:隱藏(display:none)分頁裡的圖量不到尺寸,dagre 佈局會算出
+// translate(NaN)、渲染成空白或「Syntax error」炸彈(實為渲染期失敗,非語法錯)。
+async function renderTab(id){
+ const tab=document.getElementById(id); if(!tab) return;
+ const nodes=[...tab.querySelectorAll('.mermaid:not([data-processed])')];
+ for(let k=0;k<nodes.length;k++){
+  const el=nodes[k]; el.setAttribute('data-processed','true');
+  const src=el.textContent.trim();
+  try{ const {svg}=await mermaid.render('mmd_'+id+'_'+k,src); el.innerHTML=svg; }
+  catch(e){ el.innerHTML='<pre style="color:#f88;white-space:pre-wrap">圖渲染失敗：'+(e&&e.message||e)+'</pre>'; }
+ }
+}
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
+ document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));
+ document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));
+ b.classList.add('on');
+ const id=b.dataset.t;
+ document.getElementById(id).classList.add('on');
+ renderTab(id);
+ if(id==='tl'&&window.__tlOpen)window.__tlOpen();
+});
+// 溯源 drill-down（文字/表格/圖示，每項標 SoT 檔:行）
+const ICON={requirements:'📋',architecture:'🏛️',design:'📐',tasks:'🔧',impl:'💻',verification:'✅',discovery:'🔎'};
+const SLBL={requirements:'需求',architecture:'架構',design:'設計',tasks:'任務',impl:'實作',verification:'驗證',discovery:'探索'};
+const DORDER=['architecture','design','tasks','impl','verification'];
+function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function showDrill(rid){
+ const r=D.drill[rid];const d=document.getElementById('drilldetail');if(!r){d.innerHTML='';return;}
+ let h=`<h3>📋 ${esc(r.id)} — ${esc(r.title)} <a class="src-link" href="${esc(r.file)}"><span class="src">${esc(r.src)}</span></a></h3>`;
+ h+='<table><thead><tr><th>階段</th><th>ID</th><th>標題</th><th>狀態/結果</th><th>程式碼 / 來源(SoT)</th></tr></thead><tbody>';
+ let any=false;
+ DORDER.forEach(sk=>(r.groups[sk]||[]).forEach(it=>{any=true;
+  const files=it.files?esc(it.files)+' · ':'';const sr=it.result?esc(it.result):esc(it.status||'');
+  h+=`<tr><td>${ICON[sk]||'•'} ${SLBL[sk]||sk}</td><td class="mono">${esc(it.id)}</td><td>${esc(it.title)}</td><td class="small">${sr}</td><td class="small mono">${files}<a class="src-link" href="${esc(it.file)}">${esc(it.src)}</a></td></tr>`;
+ }));
+ h+='</tbody></table>';if(!any)h+='<p class="legend">此需求尚無下游產出（未實作/未驗證）。</p>';
+ d.innerHTML=h;
+}
+(function(){const rl=document.getElementById('reqlist');if(!rl)return;
+ const reqs=Object.values(D.drill||{});
+ rl.innerHTML=reqs.length?reqs.map(r=>`<button class="reqbtn" data-r="${esc(r.id)}">📋 ${esc(r.id)} — ${esc(r.title)}</button>`).join(''):'<p class="legend">尚無需求項。</p>';
+ rl.querySelectorAll('.reqbtn').forEach(b=>b.onclick=()=>showDrill(b.dataset.r));
+})();
+// 迭代差異 scrubber：拖動時間軸看每次迭代(git 提交→工作目錄)相對前一次的 add/mod/del + 圖差異
+(function(){
+ const tl=D.timeline, bar=document.getElementById('tlbar'), body=document.getElementById('tlbody');
+ if(!bar) return;
+ if(!tl||!tl.length){ bar.innerHTML='<p class="legend">需要 git 歷史才能比較迭代差異（此 workspace 尚非 git repo，或 ledger 文件尚無提交歷史）。在 repo 根 <span class="mono">git init</span> 並提交各階段文件後，重跑 trace 即可在此拖動比較。</p>'; return; }
+ bar.innerHTML='<input type="range" class="tlslider" min="0" max="'+(tl.length-1)+'" value="'+(tl.length-1)+'" id="tlrange"><div class="tlmeta" id="tlmeta"></div>';
+ const rng=document.getElementById('tlrange'), meta=document.getElementById('tlmeta');
+ const byStage=arr=>{const m={};arr.forEach(x=>{(m[x.stage_label]=m[x.stage_label]||[]).push(x)});return m;};
+ function col(title,cls,arr,render){let h='<div class="tlcol"><h4>'+title+' ('+arr.length+')</h4>';
+  if(!arr.length){h+='<p class="legend">—</p>';}else{const m=byStage(arr);
+   Object.keys(m).sort().forEach(sl=>{h+='<div class="small" style="margin-top:8px">'+esc(sl)+'</div>';
+    m[sl].forEach(x=>h+='<div class="diffitem '+cls+'">'+render(x)+'</div>');});}
+  return h+'</div>';}
+ async function renderDia(c){const ns=[...c.querySelectorAll('.mermaid:not([data-processed])')];
+  for(let k=0;k<ns.length;k++){const el=ns[k];el.setAttribute('data-processed','true');const src=el.textContent.trim();
+   if(!src){el.innerHTML='<span class="legend">（無此圖）</span>';continue;}
+   try{const {svg}=await mermaid.render('tld_'+k+'_'+Math.floor(performance.now()),src);el.innerHTML=svg;}
+   catch(e){el.innerHTML='<pre style="color:#f88;white-space:pre-wrap">'+esc(src)+'</pre>';}}}
+ function show(i){const s=tl[i],d=s.diff;
+  meta.innerHTML='第 '+(i+1)+'/'+tl.length+' 個快照 · <span class="mono">'+esc(s.rev)+'</span> · '+esc(s.date)+' · '+esc(s.msg);
+  let h='<div class="tlcounts"><span class="c" style="color:var(--ok)">＋新增 '+d.counts.added+'</span><span class="c" style="color:var(--warn)">～修改 '+d.counts.modified+'</span><span class="c" style="color:var(--bad)">－刪除 '+d.counts.deleted+'</span><span class="c">⬚ 圖變更 '+d.counts.diagrams+'</span></div>';
+  if(!(d.counts.added||d.counts.modified||d.counts.deleted||d.counts.diagrams)){body.innerHTML=h+'<p class="legend">此快照與前一個相比沒有差異。</p>';return;}
+  h+='<div class="tlcols">';
+  h+=col('新增','di-add',d.added,x=>'<span class="mono">'+esc(x.id)+'</span> '+esc(x.title));
+  h+=col('修改','di-mod',d.modified,x=>'<span class="mono">'+esc(x.id)+'</span> '+esc(x.title)+'<div class="small">'+x.changed.map(f=>esc(f)+': '+esc(JSON.stringify(x.from[f]))+' → '+esc(JSON.stringify(x.to[f]))).join('；')+'</div>');
+  h+=col('刪除','di-del',d.deleted,x=>'<span class="mono">'+esc(x.id)+'</span> '+esc(x.title));
+  h+='</div>';
+  if(d.diagrams.length){h+='<h3>圖的差異（前 → 後）</h3>';d.diagrams.forEach(g=>{
+   const lbl=g.kind==='added'?'新增':g.kind==='removed'?'刪除':'修改',pc=g.kind==='added'?'s-done':g.kind==='removed'?'s-blocked':'s-draft';
+   h+='<div class="dia-change"><div class="dcap">'+esc(g.stage_label)+' · '+esc(g.key)+' <span class="pill '+pc+'">'+lbl+'</span></div>'+
+      '<div class="dia-ba"><div><div class="small">之前</div><div class="mermaid">'+esc(g.from)+'</div></div>'+
+      '<div><div class="small">之後</div><div class="mermaid">'+esc(g.to)+'</div></div></div></div>';});}
+  body.innerHTML=h; if(document.getElementById('tl').classList.contains('on')) renderDia(body);
+ }
+ window.__tlOpen=()=>renderDia(body);   // 切到此分頁時才渲染圖(隱藏時 mermaid 量不到尺寸)
+ rng.oninput=()=>show(+rng.value); show(tl.length-1);
+})();
+renderTab((document.querySelector('.tab.on')||{}).id||'ov'); // 初始可見分頁若含圖也渲染
+</script>
+</body></html>

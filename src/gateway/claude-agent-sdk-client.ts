@@ -15,8 +15,8 @@ import { join, isAbsolute } from 'node:path';
 import type { AgentOpts, HarnessDescriptor, TranscriptEvent } from '../types.js';
 import { redactHarness } from '../agent-executor.js';
 import type { McpServerConfig, McpProbe } from '../mcp-probe.js';
-import type { AliasMap, GatewayClient, GatewayResult } from './client.js';
-import { resolveTimeout } from './client.js';
+import type { AliasMap, EffortApplied, GatewayClient, GatewayResult } from './client.js';
+import { resolveTimeout, mapEffort, profileFor } from './client.js';
 import { isPathContained } from '../path-containment.js';
 import { McpRegistry } from '../mcp-registry.js';
 import { resolveConfig, type SecretSource } from '../secret-resolver.js';
@@ -435,7 +435,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     return out;
   }
 
-  async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void> }): Promise<GatewayResult> {
+  async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void> }): Promise<GatewayResult> {
     // D-F7: bounded race only when a timeout is in effect — otherwise unchanged legacy behavior (a
     // single unbounded attempt). issue #24/#22: a per-call AgentOpts.timeoutMs counts as "in effect"
     // even when the gateway has no configured default, so a config-less gateway still bounds+retries
@@ -450,7 +450,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     return last;
   }
 
-  private async _invokeOnce(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void> }): Promise<GatewayResult> {
+  private async _invokeOnce(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void> }): Promise<GatewayResult> {
     // issue #24/#22: per-call AgentOpts.timeoutMs overrides the configured default (both directions);
     // MUST match invoke()'s attempts calc above so a bounded attempt count never pairs with an
     // unbounded timer (or vice-versa). resolveTimeout rejects a bad value → gateway default applies.
@@ -502,6 +502,11 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // name must be the REAL Anthropic id (`target.model`), not the proxy-cloaked `rwe-proxy-*` name
     // the LiteLLM path needs. Every other provider keeps the proxy path (dummy key + proxyModelName).
     const provider = effectiveProvider(this._config.aliases, req.opts.model);
+    // DES-106/ARCH-069 (TASK-102): computed ONCE per invoke, inside the gateway (the provider is
+    // only resolvable here) — the SAME object travels to onHarness AND (below) onto `options`.
+    // `thinkingFor` below stays the SOLE writer of `options.thinking`; this writes a different wire
+    // field (`options.effort`, only for the profile-named param) and never touches `options.thinking`.
+    const applied: EffortApplied | undefined = mapEffort(profileFor(provider), req.opts.effort);
     const envResult = buildSubprocessEnv(this._config, provider);
     if (!envResult.ok) {
       // A missing real key/oauth token for the chosen Anthropic auth mode is a typed terminal
@@ -571,6 +576,9 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // call fails typed BEFORE query() is ever spawned.
       env: envResult.env,
     };
+    // DES-106 (TASK-102): the mapped effort directive on the wire — a distinct `Options` field from
+    // `options.thinking` above, one cast to keep the `Options` object literal itself clean.
+    if (applied?.applied) (options as unknown as Record<string, unknown>)[applied.param] = applied.value;
     // DES-066 (TASK-069): emit harness descriptor eagerly at session-build time (post-curation, before query).
     if (req.onHarness) {
       const skills = this._config.assetRoot ? readSkillNames(this._config.assetRoot) : [];
@@ -583,7 +591,8 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         mergedMcp: Object.entries(mergedMcp).map(([name, cfg]) => ({ name, ...(cfg as Record<string, unknown>) })),
         skills,
       });
-      await req.onHarness(descriptor);
+      if (applied !== undefined) descriptor.effortApplied = applied;
+      await req.onHarness(descriptor, applied);
     }
     const session = this._query({ prompt: req.prompt, options });
     const drain = this._drain(session, req.opts.model, req.onEvent);

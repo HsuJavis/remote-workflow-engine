@@ -68,6 +68,33 @@ describe('issue_report over the real MCP HTTP surface (REQ-027..030)', () => {
     expect(calls[before]).toBeDefined();
     expect(calls[before].body).toContain('Version: v1.4.0');
   });
+
+  // v21 (ARCH-070, DES-107, TASK-103, REQ-095): workflow-bound problem reports over the real MCP
+  // HTTP surface. Red reason: today's issue_report ignores `workflow` entirely — no `workflow:<name>`
+  // label is ever added, no `name@version` appears in the body.
+  it('v21 (REQ-095): issue_report({workflow,version}) labels the issue "workflow:<name>" and the body carries name@version', async () => {
+    const before = calls.length;
+    const res = await toolCall(baseUrl, 'issue_report', {
+      title: 'Bug in my-flow', reproSteps: 'run it', analysis: 'root cause', runId: 'run-9',
+      workflow: 'my-flow', version: 'v2',
+    });
+    expect(res.error).toBeUndefined();
+    expect(calls[before]).toBeDefined();
+    expect(calls[before].labels).toContain('workflow:my-flow');
+    expect(calls[before].body).toContain('my-flow@v2');
+  });
+
+  it('v21 (REQ-095): two workflows reporting the same title each get their OWN issue (label enters the dedup fingerprint)', async () => {
+    const before = calls.length;
+    await toolCall(baseUrl, 'issue_report', { title: 'Shared title', reproSteps: 's', analysis: 'a', workflow: 'workflow-a' });
+    await toolCall(baseUrl, 'issue_report', { title: 'Shared title', reproSteps: 's', analysis: 'a', workflow: 'workflow-b' });
+    // Two DISTINCT createIssue calls (not one create + one dedup comment) — the fake client's
+    // findOpenByFingerprint always returns null, so this only fails if the second call is somehow
+    // routed to a comment path instead — but the real assertion is the CALL COUNT below.
+    expect(calls.length).toBe(before + 2);
+    expect(calls[before].labels).toContain('workflow:workflow-a');
+    expect(calls[before + 1].labels).toContain('workflow:workflow-b');
+  });
 });
 
 describe('issue_report default wiring: no token → GITHUB_TOKEN_MISSING (REQ-028)', () => {

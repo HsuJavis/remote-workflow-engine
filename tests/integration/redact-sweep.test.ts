@@ -42,6 +42,7 @@ import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
 import { FixedClock } from '../../src/clock.js';
 import type { GatewayClient, GatewayResult } from '../../src/gateway/client.js';
 import type { TranscriptEvent } from '../../src/types.js';
+import { defaultRunParams } from '../../src/params/resolve.js';
 
 const SECRET_NAME = 'IT075_TOKEN';
 const SECRET_VALUE = 'it075-secret-tok-zyx321abc';
@@ -105,6 +106,7 @@ describe('redact-at-capture completeness sweep — sink (1): appendTranscript (D
       opts: {},
       workspace: '/tmp',
       signal: new AbortController().signal,
+      runParams: defaultRunParams(undefined),
     });
 
     const transcript = await store.getTranscript(runId, agentId);
@@ -129,6 +131,7 @@ describe('redact-at-capture completeness sweep — sink (1): appendTranscript (D
     await executor.run({
       runId, agentId: 'agent-002', prompt: 'test', opts: {}, workspace: '/tmp',
       signal: new AbortController().signal,
+      runParams: defaultRunParams(undefined),
     });
 
     const transcript = await store.getTranscript(runId, 'agent-002');
@@ -147,6 +150,7 @@ describe('redact-at-capture completeness sweep — sink (1): appendTranscript (D
     await executor.run({
       runId, agentId: 'agent-003', prompt: 'ordinary', opts: {}, workspace: '/tmp',
       signal: new AbortController().signal,
+      runParams: defaultRunParams(undefined),
     });
 
     const transcript = await store.getTranscript(runId, 'agent-003');

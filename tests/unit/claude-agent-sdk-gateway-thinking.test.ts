@@ -82,4 +82,26 @@ describe('ClaudeAgentSdkGatewayClient thinking policy (UT-020, D-F6)', () => {
     const [[call]] = queryMock.mock.calls as [[{ options?: { thinking?: unknown } }]];
     expect(call.options?.thinking).toBeUndefined();
   });
+
+  // v21 (DES-106, ARCH-069, TASK-102) regression pin: `thinkingFor()` remains the SOLE writer of
+  // options.thinking. An effort mapper introduced elsewhere must NOT re-open the D-F6 defect
+  // (unconditional extended thinking -> real SDK+Ollama 400 after ~4min, Gate 7.5 round 3) by
+  // assigning `options.thinking` from a second site for a non-Anthropic alias. This case already
+  // passes today by omission (opts.effort is a documented no-op) — deliberately labeled a green
+  // regression guard, same precedent as UT-016's "unknown agentType still fails fast" sub-case.
+  it('a non-Anthropic alias at effort:"max" leaves options.thinking byte-identical to today ({type:"disabled"})', async () => {
+    queryMock.mockReturnValue(fakeSession());
+    const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
+    const config: ClaudeAgentSdkGatewayConfig & { aliases: AliasMap } = {
+      baseUrl: 'http://127.0.0.1:4000',
+      aliases: ALIASES,
+    };
+    const client = new ClaudeAgentSdkGatewayClient(config);
+
+    await client.invoke({ prompt: 'hi', opts: { model: 'local', effort: 'max' }, runId: 'r1', agentId: 'a1' });
+
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    const [[call]] = queryMock.mock.calls as [[{ options?: { thinking?: unknown } }]];
+    expect(call.options?.thinking).toEqual({ type: 'disabled' });
+  });
 });

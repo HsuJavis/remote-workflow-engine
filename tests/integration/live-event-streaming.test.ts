@@ -13,6 +13,7 @@ import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
 import type { GatewayClient, GatewayResult } from '../../src/gateway/client.js';
 import type { TranscriptEvent } from '../../src/types.js';
+import { defaultRunParams } from '../../src/params/resolve.js';
 
 const clock = new FixedClock(new Date('2026-02-02T00:00:00.000Z'));
 
@@ -45,7 +46,7 @@ describe('live transcript-event streaming (#20)', () => {
     const executor = new AgentExecutor({ gateway: makeStreamingGateway(), store, clock });
     executor.markQueued(agentId);
     executor.markRunning(agentId, '2026-02-02T00:00:00.000Z');
-    await executor.run({ runId, agentId, prompt: 'go', opts: {}, signal: new AbortController().signal, workspace: '' });
+    await executor.run({ runId, agentId, prompt: 'go', opts: {}, signal: new AbortController().signal, workspace: '', runParams: defaultRunParams(undefined) });
 
     const events = await store.getTranscript(runId, agentId);
     const messages = events.filter((e) => e.kind === 'message' && (e.data as { type?: string }).type === 'text');
@@ -60,7 +61,7 @@ describe('live transcript-event streaming (#20)', () => {
     const executor = new AgentExecutor({ gateway: makeStreamingGateway(), store, clock });
     executor.markQueued(agentId);
     executor.markRunning(agentId, '2026-02-02T00:00:00.000Z');
-    await executor.run({ runId, agentId, prompt: 'go', opts: {}, signal: new AbortController().signal, workspace: '' });
+    await executor.run({ runId, agentId, prompt: 'go', opts: {}, signal: new AbortController().signal, workspace: '', runParams: defaultRunParams(undefined) });
 
     const rec = executor.getAllRecords().find((r) => r.agentId === agentId)!;
     // lastActivityAt reflects the most recent streamed event (00:00:02), strictly after startedAt.
@@ -73,7 +74,7 @@ describe('live transcript-event streaming (#20)', () => {
     const executor = new AgentExecutor({ gateway: silent, store, clock });
     executor.markQueued(agentId);
     executor.markRunning(agentId, '2026-02-02T00:00:00.000Z');
-    await executor.run({ runId, agentId, prompt: 'go', opts: {}, signal: new AbortController().signal, workspace: '' });
+    await executor.run({ runId, agentId, prompt: 'go', opts: {}, signal: new AbortController().signal, workspace: '', runParams: defaultRunParams(undefined) });
     const rec = executor.getAllRecords().find((r) => r.agentId === agentId)!;
     expect(rec.lastActivityAt).toBeUndefined(); // no progress signal — this is what a hung agent looks like
   });

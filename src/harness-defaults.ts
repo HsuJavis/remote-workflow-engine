@@ -1,6 +1,8 @@
-// HarnessDefaults — shared type, pure per-param merge, and register-time validation.
-// DES-099 (ARCH-062, TASK-089): single exported interface consumed by register validation,
-// workflow_get output, and run-time merge (prevents schema drift).
+// HarnessDefaults — shared type and register-time validation.
+// DES-099 (ARCH-062, TASK-089): single exported interface consumed by register validation and
+// workflow_get output (prevents schema drift). The run-time merge lives in src/params/resolve.ts
+// (mergeRunParams/defaultRunParams, DES-102) — this file's own author-side merge helper was
+// retired once that path subsumed it (TASK-104).
 
 /** Shared harness configuration that can be bound at workflow registration time. */
 export interface HarnessDefaults {
@@ -83,19 +85,4 @@ export function validateHarnessDefaults(
   // D-AUTH-5-D: skills deferred to run time — no check here
 
   return { ok: true };
-}
-
-/** Pure per-param merge: override value wins for each key; absent override keys fall back to
- *  the registered default. No spread (to avoid forcing explicit undefined to win). */
-export function resolveHarnessParams(
-  registered: HarnessDefaults | undefined,
-  overrides: Partial<HarnessDefaults>,
-): HarnessDefaults {
-  return {
-    model: overrides.model !== undefined ? overrides.model : registered?.model,
-    tools: overrides.tools !== undefined ? overrides.tools : registered?.tools,
-    skills: overrides.skills !== undefined ? overrides.skills : registered?.skills,
-    timeoutMs: overrides.timeoutMs !== undefined ? overrides.timeoutMs : registered?.timeoutMs,
-    prompt: overrides.prompt !== undefined ? overrides.prompt : registered?.prompt,
-  };
 }

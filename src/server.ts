@@ -44,6 +44,7 @@ import Database from 'better-sqlite3';
 import { TokenStore } from './auth/token-store.js';
 import { createAuthRouteHandlers, resolvePrincipal, type AuthConfig } from './auth/auth-service.js';
 import { wwwAuthenticateHeader } from './auth/oauth-metadata.js';
+import type { Ceilings, Effort } from './params/contract.js';
 
 // REQ-066 (v11): engine version from package.json + best-effort git describe, replacing the hardcoded '1.0.0'.
 const ENGINE_VERSION = resolveEngineVersion();
@@ -148,6 +149,13 @@ export interface ServerConfig {
   // open behavior is preserved byte-for-byte (no auth gates added). Google is a legitimately-doubled
   // external dep via injected googleAuthorizeUrl/googleTokenUrl/googleJwksUrl+jwksFetch (same contract as the integration tests). DES-095 v18.
   auth?: AuthConfig;
+  // v21 (ARCH-066 inv-6, DES-104, TASK-100): engine ceilings bounding the USER-override rung
+  // (ADR-005) — refuse, never clamp. Each defaults fail-closed (RunManager/McpFacade) when absent:
+  // maxTimeoutMs 600_000ms, maxAppendPromptBytes 1024, maxEffort 'high' (so xhigh/max are refused
+  // by default — see DEPLOY §1).
+  maxTimeoutMs?: number;
+  maxAppendPromptBytes?: number;
+  maxEffort?: Effort;
 }
 
 export interface Server {
@@ -228,6 +236,9 @@ interface JsonSchemaProp {
   items?: JsonSchemaProp & { properties?: Record<string, JsonSchemaProp>; required?: string[] };
   properties?: Record<string, JsonSchemaProp>;
   required?: string[];
+  // v21 (DES-104, ARCH-064 inv-2): the workflow_run `overrides` object is closed — a locked key
+  // (or any other unrecognized field) must not silently pass a schema-validating MCP client through.
+  additionalProperties?: boolean;
 }
 interface ToolInputSchema {
   type: 'object';
@@ -312,6 +323,17 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
           },
           required: ['repoUrl', 'sha'],
         },
+        overrides: {
+          type: 'object',
+          description: 'v21 per-run tunable-parameter overrides (REQ-091): exactly model/effort/timeoutMs/appendPrompt — locked parameters (prompt/tools/skills/mcp/workdir/cwd) are unrepresentable here (naming one -> PARAM_LOCKED). Bound by BOTH the workflow\'s own declared contract (see workflow_get.params) and the engine\'s ceilings, whichever is narrower; out-of-range -> PARAM_OUT_OF_RANGE. Never accepted by workflow_resume — a resumed run always reuses its pinned admission-time snapshot.',
+          properties: {
+            model: { type: 'string', description: 'Overrides the registered/default model alias for every agent() call in this run.' },
+            effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], description: 'Overrides the reasoning effort for every agent() call in this run (bounded by the engine\'s maxEffort ceiling).' },
+            timeoutMs: { type: 'number', description: 'Overrides the per-call timeout for every agent() call in this run (bounded by the engine\'s maxTimeoutMs ceiling).' },
+            appendPrompt: { type: 'string', description: 'Untrusted user text appended, in a fenced <user-instructions> block, after the script prompt for every agent() call in this run (bounded by the engine\'s maxAppendPromptBytes ceiling).' },
+          },
+          additionalProperties: false,
+        },
       },
     },
   },
@@ -395,7 +417,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     },
   },
   workflow_get: {
-    description: "Returns a registered workflow's full detail — {name, version, createdAt, description (its purpose, from meta.description), phases, script, skeleton, owner (registration principal), defaults (harness defaults bound at registration)} — so a client can understand what it does, inspect its owner, query its registered harness defaults, and see its predicted DAG (a static scan of phase/agent/parallel/workflow calls) BEFORE deciding to reuse it or author a new one. Unknown name → WORKFLOW_NOT_FOUND.",
+    description: "Returns a registered workflow's full detail — {name, version, createdAt, description (its purpose, from meta.description), phases, script, skeleton, owner (registration principal), defaults (harness defaults bound at registration), params (the tunable-parameter contract declared via meta.params — always present, ceiling-bounded; a script with no params block reads back the canonical 4-knob contract)} — so a client can understand what it does, inspect its owner, query its registered harness defaults and tunable-parameter contract, and see its predicted DAG (a static scan of phase/agent/parallel/workflow calls) BEFORE deciding to reuse it or author a new one. Unknown name → WORKFLOW_NOT_FOUND.",
     inputSchema: {
       type: 'object',
       properties: { name: { type: 'string', description: 'The registered workflow to inspect.' } },
@@ -511,7 +533,8 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
         severity: { type: 'string', description: 'Severity label, e.g. low|medium|high (optional).' },
         component: { type: 'string', description: 'Affected component/area (optional).' },
         runId: { type: 'string', description: 'A related run to link in the issue (optional).' },
-        version: { type: 'string', description: 'Caller-supplied version string to include in the issue body (optional; whitespace-only treated as omitted, falls back to engine version).' },
+        version: { type: 'string', description: 'Caller-supplied version string to include in the issue body (optional; whitespace-only treated as omitted, falls back to engine version). When `workflow` is also set, this doubles as that workflow\'s own version for the `name@version` reference.' },
+        workflow: { type: 'string', description: 'Binds this report to a specific registered workflow name (optional): adds a `workflow:<name>` label and, with `version`, a `name@version` reference in the body. Never existence-checked.' },
       },
       required: ['title', 'reproSteps', 'analysis'],
     },
@@ -533,6 +556,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
         state: { type: 'string', description: "One of 'open' | 'closed' | 'all' (default 'open')." },
         since: { type: 'string', description: 'ISO timestamp; only issues updated at/after this.' },
         limit: { type: 'number', description: 'Max issues to return (default 30, capped at 100).' },
+        workflow: { type: 'string', description: 'Filter to issues bound to this workflow name (folds into the label filter as `workflow:<name>`, optional).' },
       },
     },
   },
@@ -771,7 +795,7 @@ async function callTool(
   principal: string | null = null,
 ): Promise<unknown> {
   switch (name as ToolName) {
-    case 'workflow_run': return facade.workflow_run(args as { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: { path: string; sha256: string; exec?: boolean }[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string }; seedManifestRef?: string; scriptSha256?: string }, principal);
+    case 'workflow_run': return facade.workflow_run(args as { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: { path: string; sha256: string; exec?: boolean }[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string }; seedManifestRef?: string; scriptSha256?: string; overrides?: unknown }, principal);
     case 'workflow_status': return facade.workflow_status(args as { runId: string });
     case 'workflow_result': return facade.workflow_result(args as { runId: string });
     case 'workflow_suspend': return facade.workflow_suspend(args as { runId: string });
@@ -1153,8 +1177,16 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       return secretSource.names().map((n) => ({ name: n, value: secretSource.resolve(n) ?? '' })).filter((s) => s.value.length > 0);
     },
   };
+  // v21 (ARCH-066 inv-6, DES-104, TASK-100): forwarded to BOTH RunManager (admission — refuses)
+  // and McpFacade (workflow_get/list read-time effective bounds) so a lowered ceiling is honored
+  // consistently everywhere, not just at the rung that happens to enforce it.
+  const ceilings: Ceilings = {
+    maxTimeoutMs: config?.maxTimeoutMs ?? 600_000,
+    maxAppendPromptBytes: config?.maxAppendPromptBytes ?? 1024,
+    maxEffort: config?.maxEffort ?? 'high',
+  };
   let continuations: ContinuationStore | undefined;
-  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, onTerminal: (runId, status) => { void continuations?.onTerminal(runId, status); } });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, onTerminal: (runId, status) => { void continuations?.onTerminal(runId, status); } });
   // v8 Slice 4 (REQ-053): SQLite-persisted on-completion chaining, same workRoot convention as
   // schedules.db; rearmAtBoot reconciles any continuation whose target terminated while down.
   continuations = new ContinuationStore({ clock, runManager, store, dbPath: config?.continuationDbPath ?? join(workRoot, 'continuations.db') });
@@ -1171,7 +1203,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // below (fail-fast on an unprovisioned `mcp` name) and by the mcp_provision admin tool.
   const mcpRegistry = new McpRegistry({ dbPath: join(workRoot, 'mcp-registry.db'), probe: mcpProbe });
   const validator = new SubmissionValidator({ catalog, aliases: config?.aliases, mcpRegistry });
-  const facade = new McpFacade({ clock, store, runManager, validator });
+  const facade = new McpFacade({ clock, store, runManager, validator, ceilings });
   // v6 (REQ-036): best-effort engine-side diagnostics for a runId, pulled through the SAME facade
   // the MCP tools use (status + artifact list + failing/last agent transcript tail), formatted as a
   // short markdown block. Bounded and swallow-all — an unknown/failed run returns null so the

@@ -6,6 +6,9 @@ import type { RunGuard } from './run-guard.js';
 import type { RunStore } from './run-store.js';
 import { redact } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
+import { resolveCallParams, composePrompt, type RunParams, type EffectiveCallParams } from './params/resolve.js';
+import { isEffort } from './params/contract.js';
+import { codedError } from './errors.js';
 
 /** DES-066 (TASK-069): pure security transform — strips all resolved values, keeps names only.
  *  - Prompt 4KB cap: first 2048 + "…[truncated]…" + last 2048 (tail survives, task instructions land there).
@@ -110,6 +113,11 @@ export interface AgentReq {
   opts: AgentOpts;
   workspace: string;
   signal: AbortSignal;
+  /** v21 (ARCH-068, DES-105, TASK-101): the run-immutable admission-time parameter snapshot —
+   *  REQUIRED, no default, no `?`. The tsc lever lives here (built at exactly one production site,
+   *  run-manager.ts:_handleAgentRequest) rather than on the constructor, which is a loose bag
+   *  constructed at ~30 test call sites that have nothing to do with where params semantically live. */
+  runParams: RunParams;
 }
 
 export type AgentOutcome =
@@ -278,26 +286,57 @@ export class AgentExecutor implements AgentSpawner {
   async run(req: AgentReq): Promise<AgentOutcome> {
     if (req.signal.aborted) return { kind: 'null', aborted: true };
 
+    // v21 (ARCH-068, DES-105, TASK-101): a script-supplied per-call knob outside the contract
+    // (today: an invalid `effort`) must be RECORDED then THROWN, pre-dispatch — never a silent
+    // null via parallel()'s swallow-into-null (sandbox/guards.ts). Validation and record live in
+    // the same function, so whoever validates records — no _spawnerOverride carve-out needed.
+    if (req.opts.effort !== undefined && !isEffort(req.opts.effort)) {
+      const detail = `PARAM_OUT_OF_RANGE: effort '${String(req.opts.effort)}' is not a recognized effort level`;
+      await this._sink.capture(
+        req.runId,
+        { agentId: req.agentId, label: req.opts.label, phase: req.opts.phase },
+        { ok: false, provider: '', reason: 'terminal', detail },
+        this._clock.isoNow(),
+      );
+      throw codedError('PARAM_OUT_OF_RANGE', detail);
+    }
+
     // D-V5/D-F2: resolve agentType against the server-side registry before any gateway dispatch —
     // a known type's systemPrompt is applied to the outbound prompt (and its `model`, when given,
     // routes the call the same way an explicit opts.model would, unless the caller already set
     // one); an unknown type is a reported error (rejects), never a silent no-op and never a hang.
-    let effectivePrompt = req.prompt;
-    let effectiveOpts: AgentOpts & { allowedTools?: string[] } = req.opts;
+    let def: AgentTypeDef | undefined;
     if (req.opts.agentType !== undefined) {
-      const def = this._agentTypes[req.opts.agentType];
+      def = this._agentTypes[req.opts.agentType];
       if (!def) throw new Error(`Unknown agentType: ${req.opts.agentType}`);
-      effectivePrompt = `${def.systemPrompt}\n\n${req.prompt}`;
-      if (def.model !== undefined && req.opts.model === undefined) {
-        effectiveOpts = { ...effectiveOpts, model: def.model };
-      }
-      // D-F11: the agentType definition's own `tools` frontmatter field is authoritative for the
-      // outbound opts.allowedTools — but only when the caller didn't already set one of their own
-      // (an explicit per-call opts.allowedTools always wins, same precedence rule `model` follows).
-      if (def.tools !== undefined && (req.opts as AgentOpts & { allowedTools?: string[] }).allowedTools === undefined) {
-        effectiveOpts = { ...effectiveOpts, allowedTools: def.tools };
-      }
     }
+
+    // v21 (DES-102/DES-105): one resolution pass — per-call opts > agentType > run snapshot
+    // (override/default) > engine, with per-key provenance for the harness descriptor.
+    const eff: EffectiveCallParams = resolveCallParams(req.opts, def, req.runParams, {});
+
+    let effectiveOpts: AgentOpts & { allowedTools?: string[] } = {
+      ...req.opts,
+      model: eff.model,
+      effort: eff.effort,
+      timeoutMs: eff.timeoutMs,
+    };
+    const callerAllowedTools = (req.opts as AgentOpts & { allowedTools?: string[] }).allowedTools;
+    // D-F11: the agentType definition's own `tools` frontmatter field is authoritative for the
+    // outbound opts.allowedTools — but only when the caller didn't already set one of their own
+    // (an explicit per-call opts.allowedTools always wins, same precedence rule `model` follows).
+    if (def?.tools !== undefined && callerAllowedTools === undefined) {
+      effectiveOpts = { ...effectiveOpts, allowedTools: def.tools };
+    } else if (eff.tools !== undefined && callerAllowedTools === undefined) {
+      // v21 (DES-102 note): defaults.tools sits directly BELOW agentType in the tool surface —
+      // per-call allowedTools > agentType tools > defaults.tools.
+      effectiveOpts = { ...effectiveOpts, allowedTools: eff.tools };
+    }
+
+    // v21 (REQ-094, DES-102): five-segment composition — [agentType systemPrompt] +
+    // [defaults.prompt] + [script prompt] + [framed appendPrompt]. Byte-identical to the prior
+    // `${systemPrompt}\n\n${prompt}` / bare `prompt` when defaults.prompt/appendPrompt are absent.
+    const effectivePrompt = composePrompt(def?.systemPrompt, req.runParams.prompt, req.prompt, req.runParams.appendPrompt);
 
     // D-V4: schema present → real JSON-schema validation with bounded retry-on-mismatch
     // (never a type-cast passthrough). No schema → single attempt, final text.
@@ -318,7 +357,7 @@ export class AgentExecutor implements AgentSpawner {
         attempt === 0
           ? schemaPrompt
           : `${schemaPrompt}\n\n(Your previous reply did not parse as JSON matching the schema above. Reply with ONLY the JSON value — nothing else.)`;
-      const outcome = await this._invokeOnce(req, prompt, effectiveOpts);
+      const outcome = await this._invokeOnce(req, prompt, effectiveOpts, eff);
       if (outcome === 'aborted') return { kind: 'null', aborted: true };
       const result = outcome;
 
@@ -334,7 +373,7 @@ export class AgentExecutor implements AgentSpawner {
     return { kind: 'null' };
   }
 
-  private async _invokeOnce(req: AgentReq, prompt: string, opts: AgentOpts): Promise<GatewayResult | 'aborted'> {
+  private async _invokeOnce(req: AgentReq, prompt: string, opts: AgentOpts, eff: EffectiveCallParams): Promise<GatewayResult | 'aborted'> {
     // D-V2V-1: forward the run's own workspace — only ClaudeAgentSdkGatewayClient consumes it
     // (per-call cwd re-scoping + asset materialization); other gateways ignore the extra field.
     // DES-066 (TASK-069): onHarness closure — appends a kind:'harness' transcript event when the
@@ -344,17 +383,31 @@ export class AgentExecutor implements AgentSpawner {
     const clock = this._clock;
     const sink = this._sink;
     const secretValueProvider = this._secretValueProvider;
-    const onHarness = async (descriptor: HarnessDescriptor): Promise<void> => {
+    // v21 (ARCH-068, DES-105, TASK-101): the ONE descriptor-decoration site — merges the resolved
+    // per-key provenance (+ effort/timeoutMs, + effortApplied when the gateway supplies it, DES-106)
+    // onto the gateway-emitted descriptor before persisting. Never overwrites descriptor.model/
+    // provider (the gateway's own resolution is the record of what was actually dispatched).
+    const onHarness = async (
+      descriptor: HarnessDescriptor,
+      applied?: { applied: true; param: string; value: unknown } | { applied: false; reason: string },
+    ): Promise<void> => {
+      const decorated: HarnessDescriptor = {
+        ...descriptor,
+        effort: eff.effort,
+        timeoutMs: eff.timeoutMs,
+        provenance: eff.provenance,
+        ...(applied !== undefined ? { effortApplied: applied.applied ? { param: applied.param, value: applied.value } : { reason: applied.reason } } : {}),
+      };
       // #20: surface model/provider on the LIVE agent record the moment the session is built (before
       // the first token) so workflow_status shows WHICH backend a still-running agent is waiting on,
       // instead of a blank model:""/provider:"" that makes a hung backend indistinguishable from
       // progress. The record lives on the transcript sink; markHarness merges (never clobbers state).
-      sink.markHarness(req.agentId, descriptor.model, descriptor.provider);
+      sink.markHarness(req.agentId, decorated.model, decorated.provider);
       if (store) {
         await store.appendTranscript(req.runId, req.agentId, {
           ts: clock.isoNow(),
           kind: 'harness',
-          data: { agentId: req.agentId, descriptor },
+          data: { agentId: req.agentId, descriptor: decorated },
         });
       }
     };

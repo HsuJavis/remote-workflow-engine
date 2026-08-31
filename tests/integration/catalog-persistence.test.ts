@@ -44,4 +44,25 @@ describe('WorkflowCatalog SQLite persistence (IT-012, D-V2)', () => {
     const names = (await cat2.list()).map((e) => e.name);
     expect(names).toContain('persist-list');
   });
+
+  // v21 (ARCH-067, DES-103, TASK-096): get() widened to return {script, version, defaults, params}
+  // — today get() only SELECTs script+version (see workflow-catalog.ts:136-142), so `defaults` is
+  // undefined even for a row registered WITH defaults (only getFull() sees it). This is the
+  // trivially-green-trap-avoiding assertion: NOT "params is undefined on a fresh row" (vacuously
+  // true today) but "defaults survives get(), not just getFull()".
+  it('get() (not just getFull()) returns the registered `defaults`, matching ARCH-066\'s "one row-read, no second query"', async () => {
+    const cat = new WorkflowCatalog(dir, CLOCK);
+    await cat.register('it012-defaults', 'return 1;', { model: 'sonnet' });
+    const entry = await cat.get('it012-defaults');
+    expect((entry as { defaults?: unknown }).defaults).toEqual({ model: 'sonnet' });
+  });
+
+  it('a pre-v21 row (registered with no meta.params) reads back get().params as the canonical contract shape, not a raw undefined key omission', async () => {
+    const cat = new WorkflowCatalog(dir, CLOCK);
+    await cat.register('it012-no-params', 'return 1;');
+    const entry = await cat.get('it012-no-params');
+    // Today `get()`'s return type has no `params` key at all; once TASK-096/099 land this must be
+    // an explicit key (even if its value is `undefined`) so getFull()'s delegation stays 1 row-shape.
+    expect('params' in entry).toBe(true);
+  });
 });

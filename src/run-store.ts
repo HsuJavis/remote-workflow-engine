@@ -2,6 +2,9 @@
 import { randomUUID } from 'node:crypto';
 import type { Clock } from './clock.js';
 import type { RunSpec, RunStatusView, RunSummary, JournalEntry, TranscriptEvent, RunStatus, AgentRecord, StateTransition } from './types.js';
+// v21 (ARCH-066, DES-104, TASK-100): the run-immutable admission snapshot type — a type-only import,
+// so this does not create a real runtime cycle with params/resolve.ts's own type-only agent-executor.js import.
+import type { RunParams } from './params/resolve.js';
 
 /** Reconstructs the AgentRecord[] a run's getRun() should report (D-F9b) from its persisted
  *  agent-<id>.jsonl transcripts — the single source of truth `getRun` reads from directly,
@@ -72,8 +75,14 @@ export function sumUsageTokens(events: TranscriptEvent[]): number {
 
 export interface RunStore {
   /** `scriptVersion` (D-V7) is the resolved catalog version ("v2", ...) actually executed for this
-   *  run; defaults to 'v1' when omitted (inline/adhoc scripts, or callers not yet passing it). */
-  createRun(spec: RunSpec, scriptVersion?: string): Promise<string>;
+   *  run; defaults to 'v1' when omitted (inline/adhoc scripts, or callers not yet passing it).
+   *  `effectiveParams` (v21, DES-104): the run-immutable admission-time snapshot RunManager computed
+   *  from the registered defaults + validated overrides — persisted once, never re-resolved. */
+  createRun(spec: RunSpec, scriptVersion?: string, effectiveParams?: RunParams): Promise<string>;
+  /** v21 (DES-104): reads back the pinned admission snapshot for resume — `null` for a pre-v21 run
+   *  row (never persisted one) or an unknown runId; the caller (RunManager) applies the legacy
+   *  `defaultRunParams(registered.defaults)` fallback, never a crash. */
+  getEffectiveParams(runId: string): Promise<RunParams | null>;
   appendJournal(runId: string, entry: JournalEntry): Promise<void>;
   appendTranscript(runId: string, agentId: string, ev: TranscriptEvent): Promise<void>;
   recordTransition(runId: string, from: RunStatus | null, to: RunStatus, ts: string): Promise<void>;
@@ -125,6 +134,7 @@ interface StoredRun {
   result?: unknown;
   hasResult: boolean;
   snapshot?: RunDagSnapshot; // v8 Slice 2c: DAG detail captured at terminal
+  effectiveParams?: RunParams; // v21 (DES-104): run-immutable admission snapshot
 }
 
 /** In-memory fake for unit tests — injected where RunStore is needed. */
@@ -133,7 +143,7 @@ export class InMemoryRunStore implements RunStore {
 
   constructor(private readonly _clock: Clock) {}
 
-  async createRun(spec: RunSpec, scriptVersion = 'v1'): Promise<string> {
+  async createRun(spec: RunSpec, scriptVersion = 'v1', effectiveParams?: RunParams): Promise<string> {
     const runId = randomUUID();
     this._runs.set(runId, {
       runId,
@@ -145,8 +155,13 @@ export class InMemoryRunStore implements RunStore {
       transcripts: new Map(),
       transitions: [],
       hasResult: false,
+      effectiveParams,
     });
     return runId;
+  }
+
+  async getEffectiveParams(runId: string): Promise<RunParams | null> {
+    return this._runs.get(runId)?.effectiveParams ?? null;
   }
 
   async getSpec(runId: string): Promise<RunSpec | null> {

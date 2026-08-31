@@ -605,11 +605,11 @@ fail, both for the exact assertion above (`expected undefined to be 'haiku-alias
 
 ### UT-020 — ClaudeAgentSdkGatewayClient: thinking policy is alias-aware (D-F6)
 - **status:** green
-- **traces:** DES-009, REQ-004
+- **traces:** DES-009, REQ-004, DES-106, TASK-102
 - **tier:** unit
 - **real:** false
 - **result:** pass
-- **iter:** v1
+- **iter:** v21
 
 File: `tests/unit/claude-agent-sdk-gateway-thinking.test.ts`.
 **D-F6 (binding):** the SDK gateway sets `options.thinking` per the alias mapping — DISABLED by
@@ -632,6 +632,13 @@ Anthropic-alias case's expectation ("stays unset") holds trivially by omission, 
 deliberate alias-aware decision — documented transparently as an intentional regression guard (must
 stay green once D-F6's alias logic is wired), same precedent as IT-016's "unknown agentType still
 fails fast" sub-case.
+
+v21 (DES-106, ARCH-069, TASK-102) addition: case (3) — a non-Anthropic alias at `effort:'max'`
+leaves `options.thinking` byte-identical to today (`{type:'disabled'}`). A deliberate GREEN
+regression guard (passes today by omission, same status as case 2) protecting the ADR that
+`thinkingFor()` stays the SOLE writer of `options.thinking` once an effort mapper is wired
+elsewhere (DES-106) — a second assignment site for a non-Anthropic alias would re-open the D-F6
+defect (unconditional extended thinking → real SDK+Ollama 400 after ~4min, Gate 7.5 round 3).
 
 ### UT-021 — ClaudeAgentSdkGatewayClient: bounded timeout/retry race (D-F7)
 - **status:** green
@@ -873,12 +880,12 @@ throwing script returns error result (host stays up); abort resolves promptly; f
 Red reason: SandboxHost.run() throws NotImplementedError.
 
 ### IT-004 — AgentExecutor wires GatewayClient and TranscriptSink
-- **status:** green
-- **traces:** ARCH-004
+- **status:** red
+- **traces:** ARCH-004, ARCH-068, DES-105, TASK-101
 - **tier:** integration
 - **real:** false
-- **result:** pass
-- **iter:** v1
+- **result:** fail
+- **iter:** v21
 
 Gate 6.5 fix (verifier): all 3 sub-tests built `gw`/`guard`/`store` fakes but called `new
 AgentExecutor()` with a stale `// real impl injects gw/guard/store` comment — no such implicit
@@ -889,6 +896,12 @@ File: `tests/integration/agent-executor-wiring.test.ts`.
 Cases: gateway.invoke receives prompt+runId+agentId; token delta added to RunGuard exactly once;
 transcript appended to RunStore after completion.
 Red reason: AgentExecutor.run() throws NotImplementedError.
+
+v21 (ARCH-068, DES-105, TASK-101) addition: 1 new case — a run's `req.runParams.model` (the
+resolved registered-default snapshot, provenance:'default') reaches `gateway.invoke`'s
+`opts.model` when the per-call `opts.model` is unset (REQ-092 wiring repair). Red reason: `AgentReq`
+has no `runParams` field consumed anywhere in `agent-executor.ts` today — `gw.invoke` is called with
+`opts:{}`, not `opts:{model:'registered-default-model'}`. 3 pre-existing cases stay green.
 
 ### IT-005 — GatewayClient provider-down circuit breaker (D-G)
 - **status:** green
@@ -1018,12 +1031,12 @@ for every run regardless of which version actually executed — confirmed at Gat
 (`08-validation.md` VAL-014).
 
 ### IT-012 — WorkflowCatalog registrations persist in the on-disk SQLite DB across instances
-- **status:** green
-- **traces:** ARCH-007
+- **status:** red
+- **traces:** ARCH-007, ARCH-067, DES-103, TASK-096
 - **tier:** integration
 - **real:** false
-- **result:** pass
-- **iter:** v1
+- **result:** fail
+- **iter:** v21
 
 File: `tests/integration/catalog-persistence.test.ts`.
 Mirrors IT-006's (`run-store-persistence.test.ts`) "new instance simulates restart, same on-disk
@@ -1035,6 +1048,16 @@ registrations in a private in-memory `Map` only.
 
 2026-07-03 route-back round 3 (verifier): confirmed GREEN — `WorkflowCatalog` is now SQLite-backed
 (`catalog.db` under `workRoot`, D-V2). Re-ran standalone: 2/2 pass — not modified here.
+
+v21 (ARCH-067, DES-103, TASK-096) addition: 2 new cases — (1) `get()` (not just `getFull()`) returns
+the registered `defaults` — trivially-green-trap avoided: NOT "params is undefined on a fresh row"
+(vacuously true today) but "`defaults` survives `get()`", matching ARCH-066's "the row the run path
+already reads carries the contract and defaults, no second query"; (2) a pre-v21 row (registered
+with no `meta.params`) reads back `get().params` as an explicit key (even if its value is
+`undefined`), not an absent key — pinning that `getFull()` delegates to `get()` (one row-read shape).
+Red reason: `get()` today only `SELECT`s `script, version` (`workflow-catalog.ts:136-142`) — case 1
+fails (`expected undefined to deeply equal {model:'sonnet'}`); case 2 fails (`'params' in entry` is
+`false`, the return type has no such key at all). 2 pre-existing cases stay green.
 
 ### IT-013 — server.ts default GatewayClient construction routes through the LiteLLM proxy path (D-R1)
 - **status:** green
@@ -2264,12 +2287,12 @@ Cases: `plugin/` directory exists at repo root; `plugin/.mcp.json` is valid JSON
 Red reason: `expected false to be true` — `plugin/` directory does not exist yet.
 
 ### UT-033 — composeConfig() forwards all v2 config keys (DES-022, composition-root wiring)
-- **status:** green
-- **traces:** DES-016, DES-017, DES-019, DES-020, DES-022, ARCH-010, ARCH-012
+- **status:** red
+- **traces:** DES-016, DES-017, DES-019, DES-020, DES-022, ARCH-010, ARCH-012, DES-104, ARCH-066, TASK-100
 - **tier:** unit
 - **real:** false
-- **result:** pass
-- **iter:** v2
+- **result:** fail
+- **iter:** v21
 
 File: `tests/unit/compose-config-v2-wiring.test.ts`.
 Mocks `node:child_process` and neuters `process.exit` to prevent boot side-effects (same pattern as
@@ -2307,6 +2330,14 @@ file. Also confirmed: `schedulerDbPath`/`assetRoot` are now forwarded by `compos
 `src/main.ts` (lines 111-112) — the implementation caught up since this item was last written red;
 re-run `npx vitest run tests/unit/compose-config-v2-wiring.test.ts` = 3/3 green. Item flipped to
 `green`/`pass`.
+
+v21 (ARCH-066 inv-6, DES-104, TASK-100) addition: 3 new cases — `maxTimeoutMs`/`maxAppendPromptBytes`/
+`maxEffort` (the three engine ceilings bounding the USER-override rung, ADR-005) must appear in the
+returned `ServerConfig`, not undefined. Red reason: `composeConfig()` does not forward any of the
+three keys yet — same wiring-gap class as v11 `updateFlagPath` / v15 `auth` / v16 `workspaceTtlMs`
+(now `resolveHarnessParams`'s ceilings); all 3 new cases fail (`expected undefined to be 900000` /
+`2048` / `'xhigh'`), confirmed via `npx vitest run`. Item flipped back to `red`/`fail` (11 pre-existing
+cases stay green; 3 new v21 cases red).
 
 ### UT-034 — LiteLLMProxyManager hardening: pre-bind port ownership check + process-group cascade-kill (TASK-027, D-V2I-5)
 - **status:** green
@@ -3434,27 +3465,29 @@ error).
 
 ## v5 slice — GitHub issue reporting tests (UT-057, IT-043)
 
-### UT-057 — IssueReporter / GithubIssueClient / renderIssueBody (REQ-027..030, REQ-066)
-- **status:** green
-- **traces:** DES-037
+### UT-057 — IssueReporter / GithubIssueClient / renderIssueBody (REQ-027..030, REQ-066, REQ-095)
+- **status:** red
+- **traces:** DES-037, DES-107, ARCH-070, TASK-103
 - **tier:** unit
 - **real:** false
-- **result:** pass
-- **iter:** v11
+- **result:** fail
+- **iter:** v21
 - tests/unit/issue-reporter.test.ts (v5/v6: 9 cases — files an issue → {issueNumber,url}; `ISSUE_REPORT_INVALID{field}` on empty required field w/ no client call; `GITHUB_TOKEN_MISSING` when the secret is unset; agent-consumable body template sections + `agent-reported`/`severity:<x>` labels; bounded client timeout + retry then `GITHUB_API_ERROR`; 4xx not retried [all GREEN, unchanged]).
   **v11 (REQ-066):** 9 new cases added — (1) `renderIssueBody` with `meta.version:'v1.4.0'` → body contains `Version: v1.4.0` (new format, capital V); (2) all five Environment fields always present when no severity/component: `- Version:`, `- severity: _none_`, `- component: _none_`, `- reported at:` (placeholder lines); (3) supplied severity/component render correctly (no `_none_`); (4) `IssueReporter.report()` with `input.version:'v1.4.0'` → body contains `Version: v1.4.0` (caller-supplied wins); (5) omitted version falls back to `engineVersion`, body contains `Version: eng-9.9.9` (new format); (6) whitespace-only version treated as omitted (falls back to engineVersion); PLUS tests/unit/issue-resolve-engine-version.test.ts (new file, 3 cases — `resolveEngineVersion(fakeExec)` returns pkg.version + git describe; exec-throws falls back to pkg.version alone, never empty; never returns '' or 'undefined').
   Red reason: (a) `resolveEngineVersion` is not yet exported (entire new file fails at import: "not a function"); (b) `renderIssueBody` still reads `meta.engineVersion` (old key) → `Version:` line absent; (c) `## Environment` conditionally omits severity/component → `_none_` lines absent; (d) `report()` ignores `input.version` → `Version: v1.4.0` absent from body.
+  **v21 (REQ-095, DES-107) addition** — 5 new cases in a `IssueReporter workflow-bound reports` describe block: (1) `report({workflow:'my-flow',version:'v3',runId:'run-77'})` → labels contain `workflow:my-flow`, body contains `my-flow@v3` and `run-77`; (2) `workflow` absent → no `workflow:*` label (unchanged engine-level report); (3) COMPAT PIN (green, not a self-comparison — golden hash `d4b948425d03851b` = `sha256(normalizeTitle('Some Bug')+'|'+'auth')` computed independently of the function under test) — `issueFingerprint('Some Bug','auth')` byte-identical to the pre-v21 2-arg formula; (4) two workflows reporting the SAME title → DIFFERENT fingerprints (so two issues, not a dedup collapse); (5) a never-registered/deregistered workflow name is still reportable (no existence check). Red reason: `IssueReportInput`/`report()` ignore `workflow` entirely today — no `workflow:*` label is ever added and `issueFingerprint()` (2-arg only) never mixes a workflow name in, so cases 1/4/5 fail (`expected [] to include 'workflow:...'` / `expected same fingerprint not to be same`); case 3 is a genuine green regression guard (golden-hash, not self-comparison).
 
-### IT-043 — issue_report over the real MCP HTTP surface (REQ-027..030, REQ-066)
-- **status:** green
-- **traces:** ARCH-023
+### IT-043 — issue_report over the real MCP HTTP surface (REQ-027..030, REQ-066, REQ-095)
+- **status:** red
+- **traces:** ARCH-023, DES-107, ARCH-070, TASK-103
 - **tier:** integration
 - **real:** false
-- **result:** pass
-- **iter:** v11
+- **result:** fail
+- **iter:** v21
 - tests/integration/issue-report-http.test.ts (v5: 4 cases — `issue_report` advertised in tools/list; a real IssueReporter + fake GithubIssueClient injected via ServerConfig files an issue over `/mcp` → {issueNumber,url}; the default composition-root wiring (no token) returns `GITHUB_TOKEN_MISSING`; invalid input → `ISSUE_REPORT_INVALID` [all GREEN, unchanged]).
   **v11 (REQ-066):** 1 new case — `issue_report{version:'v1.4.0',...}` over `/mcp` → captured GithubIssueClient `createIssue` call's body contains `Version: v1.4.0`.
   Red reason: `report()` does not yet read `input.version`; filed body contains `- engine version: 9.9.9` (old key/format), not `Version: v1.4.0`.
+  **v21 (REQ-095, DES-107) addition:** 2 new cases over the real `/mcp` HTTP surface — (1) `issue_report({workflow:'my-flow',version:'v2',...})` → captured `createIssue` call's labels contain `workflow:my-flow`, body contains `my-flow@v2`; (2) two workflows (`workflow-a`/`workflow-b`) reporting the SAME title each produce their OWN `createIssue` call (2 calls, not 1 create + 1 dedup comment), each carrying its own `workflow:*` label. Red reason: same as UT-057 v21 — `workflow` is completely ignored by `report()` today, so both new label assertions fail.
 
 ## v6 slice — GitHub issue read/reply toolset tests (UT-058, IT-044)
 
@@ -3803,16 +3836,29 @@ Red reason: current `deriveAgentRecords` has `if (!usage) continue` → agents w
 Existing-test conflicts: `tests/integration/in-flight-agent-state.test.ts` + `agent-records-restart-survival.test.ts` assert running/queued agent states but via `_mergeLive` (in-process AgentTranscriptSink._records), NOT via `deriveAgentRecords` — no conflict at restart path. `tests/unit/run-store.test.ts` does not assert agent state at all.
 
 ### IT-066 — `workflow_agent_log` returns `harness` field + stripped from events + `hasMore` + canonical state (REQ-073)
-- **status:** green
-- **traces:** DES-067, ARCH-045
+- **status:** red
+- **traces:** DES-067, ARCH-045, ARCH-068, DES-105, TASK-101
 - **tier:** integration
 - **real:** false
-- **result:** pass
-- **iter:** v11
+- **result:** fail
+- **iter:** v21
 
 File: `tests/integration/agent-log-harness-shape.test.ts`. Mock policy (integration): real `createServer`; no LLM needed (tests shape of the tool response). 5 cases: (1) `workflow_agent_log` returns top-level `harness` field, NOT embedded in the events array; (2) `kind:'harness'` event STRIPPED from returned `events[]` (sent once, never evicted by the 50-msg cap); (3) response has `hasMore:boolean`; (4) `GET /api/runs/:id/agents/:agentId?limit=1` respects limit + `hasMore` present; (5) `AgentRecord.state` in `workflow_status` is canonical (`queued|running|done|failed`), never `idle`/`completed`.
 Note: cases 2 and 5 test EXISTING behavior (regression); cases 1, 3, 4 test the TASK-070 shape change.
 Red reason: `workflow_agent_log` currently returns `ResultEnvelope<TranscriptEvent[]>` — no `harness` field, no `hasMore`, no limit windowing. Cases 1, 3, 4 fail; cases 2 and 5 pass (existing behavior).
+
+v21 (ARCH-068, DES-105, TASK-101) addition: a new `workflow_agent_log harness provenance` describe
+block with its OWN dedicated server (`useLiteLLMProxy:false` + an `ollama` alias — the shared
+`server` above has no aliases at all, so its gateway is the `NULL_GATEWAY` stub that never calls
+`onHarness`; reaching `onHarness` needs an aliased gateway, and `useLiteLLMProxy:false` avoids
+spawning the litellm subprocess). 1 case: the harness descriptor returned by `workflow_agent_log`
+carries a `provenance` record with one of `call|agentType|override|default|engine` per tunable key
+(`model`/`effort`/`timeoutMs`/`appendPrompt`) — the self-diagnosing tripwire for the next wiring
+miss. Red reason: `HarnessDescriptor` carries no `provenance` field at all today.
+Test-authoring note: agent IDs are polled via the fixed `'agent-1'` convention (a single top-level
+`agent()` call always gets that ID) rather than reading `workflow_status`'s `.agents` field
+directly — `workflow_status` nests `agents` under `.result.agents`, not top-level; the original
+`runAndGetAgentId` helper above works around this the same way (`?? 'agent-1'` fallback).
 
 ### IT-067 — `sumUsageTokens` fold on journal transcripts + double-count boundary (REQ-073)
 - **status:** green
@@ -4402,14 +4448,31 @@ File: `tests/integration/net-guard-bind-integration.test.ts`. Mock policy (integ
 File: `tests/integration/workflow-ownership.test.ts`. Mock policy (integration): real server + real SQLite catalog; principal passed as tool arg per v15 spec. 10 cases: (1) first registration by alice → owned; (2) alice overwrite → succeeds; (3) bob overwrite → NOT_WORKFLOW_OWNER + stored unchanged; (4) bob deregister → NOT_WORKFLOW_OWNER + still present; (5) alice deregister → succeeds; (6) null principal → ungated [D-AUTH-6]; (7) workflow_get includes owner; (8) workflow_run by bob → not gated; (9) boot backfill: NULL owner → hsuhungjung@gmail.com; (10) backfill idempotent. Red reason: `owner` column not yet added; NOT_WORKFLOW_OWNER never returned; boot backfill absent → 7 of 10 cases fail.
 
 ### IT-081 — harness defaults register-time validation: D-AUTH-5 named assertions (DES-099, DES-100)
-- **status:** green
-- **traces:** DES-099, DES-100, ARCH-062, TASK-089
+- **status:** red
+- **traces:** DES-099, DES-100, ARCH-062, TASK-089, ARCH-067, DES-103, TASK-099
 - **tier:** integration
 - **real:** false
-- **result:** pass
-- **iter:** v15
+- **result:** fail
+- **iter:** v21
 
 File: `tests/integration/harness-defaults-validation.test.ts`. Mock policy (integration): real server + real SQLite catalog; injected alias table for predictable validation. Named assertions per D-AUTH-5: (D-AUTH-5-A) unknown key → HARNESS_DEFAULTS_INVALID + nothing stored; (D-AUTH-5-B) unresolvable model alias → HARNESS_DEFAULTS_INVALID + nothing stored; (D-AUTH-5-C) non-allowlisted tool → HARNESS_DEFAULTS_INVALID; (D-AUTH-5-D) unknown skill → register SUCCEEDS (deferred); (D-AUTH-5-E) mixed valid+invalid → HARNESS_DEFAULTS_INVALID + nothing stored; backward-compat (no defaults → registers); valid defaults → stored + queryable; run-time merge (per-run override wins). Red reason: `defaults` field not yet in tool schema / not yet validated → HARNESS_DEFAULTS_INVALID never returned → 8 of 10 cases fail.
+
+v21 (ARCH-067, DES-103, TASK-099) addition: a new `meta.params contract` describe block, 5 cases —
+(1) a script whose `meta.params` constrains `model` to an enum registers and `workflow_get.params`
+returns the structured contract; (2) a `params` block naming a LOCKED key (`tools`) → registration
+rejected, nothing stored; (3) a script with NO `params` block reads back `workflow_get.params` as the
+canonical 4-knob contract (never null); (4) the ON CONFLICT trap (DES-103) — re-registering with a
+CHANGED `params` block must show the NEW contract (the existing `UPSERT` updates
+script/version/createdAt/defaults and deliberately omits `owner`; copying that pattern without
+adding `params` leaves a stale contract silently); (5) an oversized `meta.params` block (>4KB
+literal text, the pre-eval source-size guard) is rejected at registration. Red reason:
+`catalog.register()` does not parse/store/validate `meta.params` at all today — a `params` block is
+silently ignored (no rejection ever returned, `workflow_get` never returns `.params`); all 5 cases
+fail. (Deviation from the TASK-099 file list: the pre-eval 4KB source-size guard is exercised here
+via `workflow_register`/`workflow_get`, not as a standalone `tests/unit/meta-literal.test.ts` case —
+the guard is only observable through registration behavior, and `meta-literal.test.ts` tests a
+different function [`evaluateScript`/`checkMeta.pureLiteral`] than the read path [`parseMeta`] the
+guard extends; left untouched.)
 
 ### IT-082 — v15 schema drift-lock: `workflow_register`/`workflow_deregister` `defaults`+`principal` fields; `workflow_get` owner+defaults (DES-099, DES-100)
 - **status:** green
@@ -4470,3 +4533,277 @@ File: `tests/acceptance/val-098-harness-defaults.test.ts`. Mock policy (acceptan
 - **iter:** v15
 
 File: `tests/acceptance/val-099-bind-fail-closed.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real server on `0.0.0.0` + `allowedHosts: [LAN_IP]`; real HTTP via own LAN IP (genuine non-loopback socket peer). 4 cases: (1) loopback → NOT 401 (pre-impl compatible, passes); (2) LAN IP → 401 (RED — gets 200 pre-impl); (3) webhook via LAN IP → NOT a D-BIND 401 (passes); (4) auth disabled + LAN IP → NOT 401 (passes). Guard: LAN IP cases skipped if no non-internal IPv4 available. Red reason: D-BIND not yet implemented → LAN IP gets 200 instead of 401 → case 2 fails.
+
+## v21 slice — tunable-parameter contract, author/user separation part 1 (REQ-090..095)
+
+### UT-098 — pure `src/params/contract.ts`: locked/tunable vocabulary, `parseParamContract`, `validateUserOverrides`, the total rejection table (DES-101)
+- **status:** red
+- **traces:** DES-101, ARCH-064, TASK-097
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v21
+
+File: `tests/unit/params-contract.test.ts`. Mock policy (unit): pure module, zero I/O/VM/clock/randomness.
+Cases: `LOCKED_KEYS`/`TUNABLE_KEYS`/`EFFORT_RANK` vocabulary + `isEffort`; `canonicalContract()` shape
+(4 knobs, no author bounds, no declared args); `effectiveBounds()` = min(author, ceiling) computed at
+read time (NULL/canonical contract bounded by ceilings, not unbounded; author bound tighter than
+ceiling wins; a lowered ceiling takes effect on a stored contract with no re-register);
+`parseParamContract()` (registration): locked key → `PARAM_CONTRACT_INVALID`; enum entries not in
+`aliasNames` → invalid; malformed input → invalid; `undefined` metaParams → canonical contract;
+structural bound (>32 knobs+args) → invalid; the DES-101 8-row rejection table via
+`validateUserOverrides`/`validateDeclaredArgs` — row 1 `PARAM_LOCKED`, row 2 `PARAM_UNKNOWN`, row 3
+wrong type, row 4 outside author enum, row 5 above engine ceiling (allowed = effective bound), row 6
+`appendPrompt` over cap (never echoes the text), row 7 declared `args.<field>` violation, undeclared
+`args` keys pass through; `maxEffort` ceiling refuses `xhigh`/`max` by default; a fully valid
+overrides object round-trips exactly; no overrides → `{}` (REQ-091 pre-v21 identity).
+Red reason: `src/params/contract.ts` does not exist yet → `Cannot find module
+'../../src/params/contract.js'` at collect time — MODULE NOT FOUND, confirmed via `npx vitest run`
+(same precedent as UT-097/`resolve-harness-params.test.ts` before `src/harness-defaults.ts` existed).
+
+### UT-099 — pure `src/params/resolve.ts`: two-moment merge, per-key provenance, five-segment `composePrompt`, `mapEffort` (DES-102)
+- **status:** red
+- **traces:** DES-102, ARCH-065, TASK-098, TASK-104
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v21
+
+File: `tests/unit/params-resolve.test.ts`. Mock policy (unit): pure module, zero I/O.
+Cases: `defaultRunParams()` (the ONLY no-overrides producer) — provenance `'engine'` with no
+registered defaults, `'default'` with them; `mergeRunParams()` — no overrides → default wins, override
+wins for supplied keys (untouched keys stay `'default'`), folds all 7 registered keys (the
+author-only trio prompt/tools/skills rides the snapshot too, REQ-092 close), two rungs holding the
+SAME value are still distinguished by provenance (not inferred by comparison), `appendPrompt` has no
+author-side default (`'override'` or absent); `resolveCallParams()` — 5-rung ladder for `model`
+(call > agentType > override/default snapshot > engine default), 3-rung ladder for `effort`/`timeoutMs`
+(no agentType rung); `composePrompt()` — BYTE-IDENTITY PIN (no appendPrompt/author prompt ≡ today's
+`${systemPrompt}\n\n${prompt}` / bare prompt) as a SEPARATE test from the FIVE-SEGMENT ORDER PIN
+([agentType systemPrompt]+[defaults.prompt]+[script prompt]+[framed appendPrompt]); appendPrompt
+wrapped in the fixed `<user-instructions untrusted="true">` frame, frame absent when appendPrompt is
+absent; `mapEffort()` tri-state — applied `{param,value}`, not-applied-with-reason (explicit no-dial
+profile), absent (never requested, distinguishable from dropped), low≠max on the same profile.
+Red reason: `src/params/resolve.ts` does not exist yet → MODULE NOT FOUND at collect time, confirmed
+via `npx vitest run`.
+
+### UT-100 — dispatch wiring: `AgentExecutor` consumes `runParams`, decorates the harness descriptor with provenance, composes the 5-segment prompt, records-then-throws on out-of-contract per-call knobs (DES-105)
+- **status:** red
+- **traces:** DES-105, ARCH-068, TASK-101
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v21
+
+File: `tests/unit/agent-executor-params.test.ts`. Mock policy (unit): fake `GatewayClient` (no
+network); fake `RunStore` captures `appendTranscript` calls (a fake gateway that itself calls
+`req.onHarness(descriptor)` mimics a real gateway's session-build step without a network call).
+Cases: registered default model reaches `gateway.invoke`'s `opts.model` when the per-call opts set
+none; the persisted harness event's descriptor carries per-key `provenance`; `appendPrompt` (run
+override) is composed into the outbound prompt after the script prompt; a script-supplied per-call
+`effort` outside the 5 canonical levels records a terminal-failure transcript entry via the existing
+`_sink.capture` failure path THEN throws `PARAM_OUT_OF_RANGE` — the gateway is never dispatched for a
+call that fails pre-dispatch validation (DES-105: "record, then throw", never a silent null via
+`parallel()`'s exception-swallowing).
+Red reason: `AgentReq` has no `runParams` field consumed anywhere in `agent-executor.ts` today — the
+gateway receives `opts:{}` regardless of `runParams.model`; the persisted descriptor never carries
+`provenance`; `appendPrompt` never reaches the composed prompt; an invalid per-call `effort` neither
+records nor throws (the call proceeds to a normal `{kind:'text',...}` result). All 4 cases fail,
+confirmed via `npx vitest run`.
+
+### UT-101 — effort on the wire: `mapEffort` consumed by `LiteLLMGatewayClient`; `thinkingFor` stays the sole writer of `options.thinking` (DES-106)
+- **status:** red
+- **traces:** DES-106, ARCH-069, TASK-102
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v21
+
+File: `tests/unit/gateway-effort.test.ts`. Mock policy (unit): `fetchImpl` spy intercepts the
+outbound HTTP call — no network, no live creds (`ANTHROPIC_API_KEY` faked, same pattern as
+UT-009/`gateway-client.test.ts`). Cases: a provider with a reasoning dial (`anthropic`) — `low` vs
+`max` produce different outbound request bodies; effort-absent request composition is byte-identical
+to `effort:undefined` (pre-v21 regression pin); a provider with NO reasoning dial (`ollama`) — the
+harness descriptor records `effortApplied:{applied:false,reason}`, no 400, no crash (ARCH-069: a
+no-dial provider degrades honestly rather than failing).
+Red reason: `LiteLLMGatewayClient.invoke()`/`callProvider()` never reads `req.opts.effort` anywhere
+today — a `low` and a `max` request produce a byte-identical body (case 1 fails: `not.toEqual`
+finds them equal); `effortApplied` is never set on the descriptor (case 3 fails: `undefined` vs
+`objectContaining({applied:false})`). Case 2 (byte-identical when absent) passes today, a deliberate
+green regression guard. Confirmed via `npx vitest run`.
+Companion regression pin: UT-020 (`claude-agent-sdk-gateway-thinking.test.ts`) gains a v21 case
+pinning that `thinkingFor()` stays the SOLE writer of `options.thinking` — see UT-020 above.
+
+### IT-083 — admission rung + run-immutable `effectiveParams` snapshot + resume + engine ceilings, inserted between `catalog.get()` and `createRun()`/`runWorkspace()` (DES-104)
+- **status:** red
+- **traces:** DES-104, ARCH-066, TASK-100
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v21
+
+File: `tests/integration/params-admission.test.ts`. Mock policy (integration, DES-108): real
+`RunManager`, real SQLite catalog/run-store, real sandbox; no network/LLM needed (rejections happen
+before any agent() call). Cases: `overrides:{prompt}` → `PARAM_LOCKED`, no run row appended to
+`workflow_list`; `overrides:{timeoutMs:10_000_000}` (above the engine ceiling) → `PARAM_OUT_OF_RANGE`,
+no workspace directory created on disk; `workflow_run`'s `overrides` inputSchema declares
+`additionalProperties:false` and exactly the 4 tunable properties (drift-lock, ARCH-064 inv-2); a
+valid override (`appendPrompt`) succeeds and is observable (not merely echoed); `workflow_resume`
+rejects the mere PRESENCE of an `overrides` field, full stop.
+Red reason: `RunManager.start()` does not validate `overrides` against any contract today —
+`overrides` is silently ignored (never destructured by `mcp-facade.workflow_run`), so a locked-key or
+out-of-range override neither rejects nor is reachable; the `workflow_run` tool schema has no
+`overrides` property at all; `workflow_resume` accepts (and ignores) any extra field. All 5 cases
+fail, confirmed via `npx vitest run`. (No standalone `workflow_run.overrides` drift-lock file exists
+under the ARCH-051 precedent's naming — the schema assertion is folded into this IT rather than
+inventing a new file, per DES-103's ARCH-051 drift-lock discipline.)
+
+### VAL-100 — REQ-090: a workflow declares its tunable-parameter contract, discoverable without reading the script (REQ-090)
+- **status:** red
+- **traces:** REQ-090
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v21
+
+File: `tests/acceptance/val-100-param-contract.test.ts`. Mock policy (acceptance, DES-108): real
+`createServer` composition root, real MCP HTTP; no LLM dispatch needed (registration + discovery
+only), no `HAS_PROVIDER` gate. Cases: a `params` block constraining `model` to an enum + `timeoutMs`
+to a ceiling registers; `workflow_get` returns the structured contract; `workflow_list` also surfaces
+the declared contract per entry without reading the script body; a `params` block naming a LOCKED
+key (`mcp`) is rejected, nothing stored; a script with no `params` block still registers (backward
+compatible) and reads back the canonical 4-knob contract.
+Red reason: `meta.params` is not parsed/stored/validated anywhere today — every assertion fails
+against the current engine, confirmed via `npx vitest run`.
+
+### VAL-101 — REQ-091: per-run overrides validated against the contract; locked configuration is unreachable from the caller (REQ-091)
+- **status:** red
+- **traces:** REQ-091
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v21
+
+File: `tests/acceptance/val-101-override-validation.test.ts`. Mock policy (acceptance, DES-108): real
+composition root; no LLM dispatch required (admission-rung rejection happens before any agent()
+call). Cases: `overrides:{prompt}` → `PARAM_LOCKED`, no run row in `workflow_list`, no workspace dir
+on disk; `overrides:{timeoutMs:10_000_000}` → `PARAM_OUT_OF_RANGE`, no durable work; declared `args`
+type/range-checked (undeclared `args` keys pass through unchanged, backward compat); no overrides at
+all behaves identically to a pre-v21 run.
+Red reason: no admission-rung validation exists today — all override/args-validation assertions
+fail, confirmed via `npx vitest run`.
+
+### VAL-102 — REQ-092: registered harness defaults actually take effect at run time (repairs the REQ-088 wiring gap) (REQ-092)
+- **status:** red
+- **traces:** REQ-092
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v21
+
+File: `tests/acceptance/val-102-registered-defaults-effect.test.ts`. Mock policy (acceptance,
+DES-108): real server; `useLiteLLMProxy:false` + an `ollama` alias so `onHarness` fires at
+session-build time without spawning the litellm subprocess or needing a live backend (same
+observability precedent as IT-066 — the descriptor is emitted regardless of whether the outbound
+call ultimately succeeds). Cases: a call with no per-call `model` dispatches with the registered
+default (`alias-b`), observable as `harness.model` + `provenance.model:'default'` — not silently
+ignored; the script itself calling `agent({model:...})` wins over the registered default, observable
+as `provenance.model:'call'`.
+Red reason: `resolveHarnessParams` has zero `src/` callers (the REQ-088 wiring gap this REQ repairs)
+— the dispatched model never reflects the registered default and `provenance` does not exist on the
+descriptor at all. Both cases fail, confirmed via `npx vitest run`.
+
+### VAL-103 — REQ-093: `effort` is a real end-to-end parameter, not a documented no-op (REQ-093)
+- **status:** red
+- **traces:** REQ-093
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v21
+
+File: `tests/acceptance/val-103-effort-real.test.ts`. Mock policy (acceptance, DES-108):
+**evidence plan pre-committed per DES-108** — Ollama has no reasoning dial, so the wire assertion is
+not observable on the default local stack. 1 case is UNGATED (no live backend needed — submission-time
+validation): an out-of-enum `effort` override → `PARAM_OUT_OF_RANGE` before any durable work. 1 case
+is gated behind `HAS_PROVIDER` (`OLLAMA_BASE_URL`): a real Ollama-backed run at `effort:'max'`
+completes with `effortApplied` recorded on the live harness descriptor (no 400, honest no-op) — skips
+cleanly (passes trivially) when no provider is configured, same precedent as VAL-019/VAL-021.
+Red reason: the ungated case fails today (`overrides.effort` is not validated against the 5-level
+enum at all — no `PARAM_OUT_OF_RANGE`, confirmed via `npx vitest run`); the gated case is unverified
+in this environment (no `OLLAMA_BASE_URL`) and deferred to Gate 7.5 real-run, per DES-108's own
+evidence-plan pre-commitment (VAL-003 precedent: deciding the split now costs a paragraph, at Gate
+7.5 it costs a round).
+
+### VAL-104 — REQ-094: a user-supplied `appendPrompt` attaches at a fixed position after everything the author controls (REQ-094)
+- **status:** red
+- **traces:** REQ-094
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v21
+
+File: `tests/acceptance/val-104-append-prompt.test.ts`. Mock policy (acceptance, DES-108): real
+server; `useLiteLLMProxy:false` + an `ollama` alias so `onHarness` fires with the fully-composed
+prompt without a live backend. Cases: an over-cap `appendPrompt` (2000 bytes) is refused at
+submission with byte counts, the text NEVER echoed in the error; the captured transcript prompt shows
+the framed `appendPrompt` AFTER the author's own prompt segments (script prompt marker precedes the
+user-text marker).
+Red reason: `overrides.appendPrompt` has no byte-cap validation today (no `PARAM_OUT_OF_RANGE`); the
+composed prompt never includes `appendPrompt` at all (script prompt sent bare, `indexOf` returns -1).
+Both cases fail, confirmed via `npx vitest run`.
+
+### VAL-105 — REQ-095: problem reports are bound to a specific workflow and filterable by it (REQ-095)
+- **status:** red
+- **traces:** REQ-095
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v21
+
+File: `tests/acceptance/val-105-workflow-bound-issues.test.ts`. Mock policy (acceptance, DES-108):
+E2E/acceptance must not mock the SUT's own boundaries — GitHub uses a real repo with a real token,
+never a double. 1 case is UNGATED (no network needed): the `issue_report` tool schema declares a
+`workflow` parameter (self-describing, ARCH-051 discipline) — a schema-only consumer can discover it
+without a live GitHub call. 2 cases are gated behind `HAS_TOKEN` (`RWE_SECRET_GITHUB_TOKEN`):
+`issue_report({workflow,version,runId})` creates an issue labelled `workflow:<name>` with
+`name@version`+`runId` in the body, and `issue_list({workflow})` returns it; `issue_report` without
+`workflow` behaves exactly as today (unlabelled).
+Red reason: the ungated case fails today — `issue_report`'s `inputSchema.properties` has no
+`workflow` key at all, confirmed via `npx vitest run`. The 2 token-gated cases are unverified in this
+environment (no `RWE_SECRET_GITHUB_TOKEN`) and deferred to Gate 7.5 real-run, per DES-108's real-tier
+mock policy (GitHub via a real repo + real token, never a double).
+
+---
+
+## Gate 5 re-run scope — v21 Gate 6 send-back (2026-08-31)
+
+The first Gate 5 pass left four behaviors with no red test, so the parallel implementers correctly
+refused to implement them. This re-run **extends in place** with exactly the tests below and rewrites
+nothing: the 4 UT / 1 IT / 6 VAL items and the 8 extended-in-place items from the first pass stand as
+they are. Full rationale and the binding design amendments are in `04-design.md` →
+"Orchestrator adjudication — v21 Gate 6 send-back".
+
+1. **Cross-validated defaults (04-design A-2, DES-103, REQ-090).** `spec.default` is currently read
+   nowhere in `src/params/contract.ts`, so the declared-default vocabulary is inert end to end. Add red
+   tests covering registration where `defaults` and `params` appear together: (a) a `params.<knob>.default`
+   disagreeing with `defaults.<knob>` → typed rejection with nothing stored; (b) a `params.<knob>.default`
+   violating that knob's own declared enum/range → typed rejection with nothing stored; (c) a declared
+   default with no matching `defaults.<knob>` → accepted and normalized into the stored `defaults`, so the
+   served default is always derived from the `defaults` column.
+2. **Advertised bound == enforced bound (04-design A-3, DES-104, REQ-091).** The ceiling wiring itself is
+   already in place and guarded; what is missing is behavior. Add a red test where a workflow row with
+   NULL `params` plus a **lowered** configured `maxTimeoutMs` makes `workflow_get` advertise the lowered
+   bound without re-registration, and admission rejects at that same number — one test pinning that the
+   advertised and enforced bounds are the same value.
+3. **Workflow label sanitize (04-design A-5, DES-107, REQ-095).** v21 introduces no general
+   registration-name predicate. Add a red test for the label-scoped transform only: characters GitHub
+   rejects in a label are replaced, the label is truncated to GitHub's 50-character cap, and the
+   untruncated `name@version` still appears in the issue body. Cover one name needing truncation and one
+   needing character replacement.
+4. **mapEffort on the LiteLLM-proxy path (04-design A-7, DES-106, REQ-093).** Only the direct-fetch branch
+   is covered today. Add a unit test asserting the mapped effort value reaches the outbound request on the
+   **proxy** branch, plus one asserting the honest `applied:false` no-op for a provider with no profile
+   entry (REQ-093 requires the non-application to be recorded, never silently claimed as applied).
+
+Not test scope (implementation / documentation instructions carried by the same adjudication): the
+`redactHarness()` swap (A-4), UT-100's provenance failure belonging to TASK-101 (A-8), and the UT-097
+entry in this document still pointing at the deleted `tests/unit/resolve-harness-params.test.ts` (A-9).

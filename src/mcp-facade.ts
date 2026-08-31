@@ -11,12 +11,28 @@ import { RunManager } from './run-manager.js';
 import { SubmissionValidator } from './submission-validator.js';
 import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent, HarnessDescriptor, ManifestEntry } from './types.js';
 import { parseMeta, parseWorkflowSkeleton, type SkeletonNode } from './workflow-meta.js';
+import { canonicalContract, effectiveBounds, type ParamContract, type Ceilings } from './params/contract.js';
+
+// v21 (DES-103/DES-104): fail-closed defaults for the engine ceilings that bound the read surfaces
+// (workflow_get/list) at read time — TASK-100 wires the live values from ServerConfig via
+// McpFacadeDeps.ceilings (server.ts); these apply only when a caller omits it (e.g. direct
+// RunManager-less test construction), same convention as run-manager.ts's own DEFAULT_CEILINGS.
+const DEFAULT_CEILINGS: Ceilings = { maxTimeoutMs: 600_000, maxAppendPromptBytes: 1024, maxEffort: 'high' };
+
+/** Read surfaces never serve null/unbounded (DES-103): a missing contract reads back as the
+ *  canonical 4-knob contract, and every contract is bounded by the engine ceilings at read time. */
+function readParams(stored: unknown, ceilings: Ceilings): ParamContract {
+  return effectiveBounds((stored as ParamContract | undefined) ?? canonicalContract(), ceilings);
+}
 
 export interface McpFacadeDeps {
   clock?: Clock;
   store?: RunStore;
   runManager?: RunManager;
   validator?: SubmissionValidator;
+  /** v21 (ARCH-066, DES-104, TASK-100): engine ceilings bounding workflow_get/list's read-time
+   *  effective bounds — forwarded from ServerConfig (see server.ts's createServer). */
+  ceilings?: Ceilings;
 }
 
 function toErrEnvelope(err: unknown): ErrEnvelope {
@@ -68,6 +84,7 @@ export class McpFacade {
   private readonly store: RunStore;
   private readonly runManager: RunManager;
   private readonly validator: SubmissionValidator;
+  private readonly ceilings: Ceilings;
 
   constructor(deps: McpFacadeDeps = {}) {
     const clock = deps.clock ?? new SystemClock();
@@ -77,16 +94,19 @@ export class McpFacade {
     this.store = deps.store ?? new InMemoryRunStore(clock);
     this.runManager = deps.runManager ?? new RunManager({ store: this.store, clock });
     this.validator = deps.validator ?? new SubmissionValidator({ catalog: this.runManager.catalog });
+    this.ceilings = deps.ceilings ?? DEFAULT_CEILINGS;
   }
 
-  async workflow_run(a: { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: ManifestEntry[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string }; seedManifestRef?: string; scriptSha256?: string }, principal: string | null = null): Promise<ResultEnvelope<{ runId: string }>> {
+  async workflow_run(a: { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: ManifestEntry[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string }; seedManifestRef?: string; scriptSha256?: string; overrides?: unknown }, principal: string | null = null): Promise<ResultEnvelope<{ runId: string }>> {
     // Fail fast at submission (DES-012/ARCH-008), never mid-run.
     const validation = await this.validator.validate({ name: a.name, script: a.script });
     if (!validation.ok) {
       return { runId: '', status: 'failed', error: validation.errors[0] };
     }
     try {
-      const runId = await this.runManager.start({ name: a.name, script: a.script, args: normalizeArgs(a.args), budget: a.budget ?? null, seed: a.seed, seedManifest: a.seedManifest, seedNamespace: a.seedNamespace, seedRef: a.seedRef, seedManifestRef: a.seedManifestRef, scriptSha256: a.scriptSha256, startedBy: { type: 'client' }, ...(principal ? { principal } : {}) });
+      // v21 (ARCH-066, DES-104, TASK-100): `overrides` travels as start()'s own argument, never as
+      // a RunSpec field (RunSpec is persisted+read-back wholesale by getSpec() on resume).
+      const runId = await this.runManager.start({ name: a.name, script: a.script, args: normalizeArgs(a.args), budget: a.budget ?? null, seed: a.seed, seedManifest: a.seedManifest, seedNamespace: a.seedNamespace, seedRef: a.seedRef, seedManifestRef: a.seedManifestRef, scriptSha256: a.scriptSha256, startedBy: { type: 'client' }, ...(principal ? { principal } : {}) }, a.overrides);
       const view = await this.store.getRun(runId);
       return { runId, status: view?.status ?? 'queued', result: { runId } };
     } catch (err) {
@@ -149,6 +169,12 @@ export class McpFacade {
   }
 
   async workflow_resume(a: { runId: string; script?: string }): Promise<ResultEnvelope> {
+    // v21 (ARCH-066, DES-104, TASK-100): the mere PRESENCE of an `overrides` field is a typed
+    // rejection, full stop — no absent-vs-{}-vs-equal semantics to get subtly wrong. A resumed run
+    // always re-dispatches from its pinned admission-time snapshot, never a second merge.
+    if (Object.prototype.hasOwnProperty.call(a, 'overrides')) {
+      return { runId: a.runId, status: 'failed', error: { code: 'RESUME_OVERRIDES_NOT_ALLOWED', message: 'workflow_resume does not accept overrides; the pinned admission-time snapshot is reused. Start a new run to apply different overrides.' } };
+    }
     return lifecycle(this.store, a.runId, () => this.runManager.resume(a.runId, a.script));
   }
 
@@ -160,12 +186,14 @@ export class McpFacade {
    *  kind-discriminated array mixing catalog entries (unrun workflows) with run summaries, so
    *  callers can find either a workflow by `.name` or a run by `.runId` in the same list (D-I9). */
   async workflow_list(_a?: Record<string, never>): Promise<ResultEnvelope<Array<
-    ({ kind: 'workflow'; name: string; version: string; createdAt: string; description: string }) | (RunSummary & { kind: 'run' })
+    ({ kind: 'workflow'; name: string; version: string; createdAt: string; description: string; params: ParamContract }) | (RunSummary & { kind: 'run' })
   >>> {
     const workflows = await this.runManager.catalog.list();
     const runs = await this.store.listRuns();
+    // v21 (DES-103, TASK-099): params surfaced per entry, ceiling-bounded, from the column only
+    // (catalog.list() never re-parses the script for it).
     const result = [
-      ...workflows.map((w) => ({ kind: 'workflow' as const, ...w })),
+      ...workflows.map((w) => ({ kind: 'workflow' as const, ...w, params: readParams(w.params, this.ceilings) })),
       ...runs.map((r) => ({ kind: 'run' as const, ...r })),
     ];
     return { runId: '', status: 'completed', result };
@@ -178,24 +206,28 @@ export class McpFacade {
    *  v15 (DES-098, DES-099, TASK-089): adds owner + defaults to output; flat response surfaces
    *  owner/defaults/code at top level for direct `r.owner` / `r.defaults` / `r.code` callers. */
   async workflow_get(a: { name: string }): Promise<Record<string, unknown>> {
-    let full: { name: string; script: string; version: string; createdAt: string; owner: string | null; defaults: import('./harness-defaults.js').HarnessDefaults | undefined };
+    let full: { name: string; script: string; version: string; createdAt: string; owner: string | null; defaults: import('./harness-defaults.js').HarnessDefaults | undefined; params: unknown };
     try {
       full = await this.runManager.catalog.getFull(a.name);
     } catch {
       return { runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` } };
     }
     const meta = parseMeta(full.script);
+    // v21 (DES-103, TASK-099): ceiling-bounded contract — never null/unbounded (REQ-090..093).
+    const params = readParams(full.params, this.ceilings);
     const resultObj = {
       name: full.name, version: full.version, createdAt: full.createdAt,
       description: meta.description, phases: meta.phases, script: full.script,
       skeleton: parseWorkflowSkeleton(full.script),
       owner: full.owner,
       defaults: full.defaults as Record<string, unknown> | undefined,
+      params,
     };
     return {
       runId: '', status: 'completed',
-      // Flat: owner + defaults + script also at top level for direct r.owner / r.defaults access
+      // Flat: owner + defaults + params + script also at top level for direct r.owner / r.defaults / r.params access
       owner: full.owner,
+      params,
       defaults: full.defaults as Record<string, unknown> | undefined,
       script: full.script,
       result: resultObj,

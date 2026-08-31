@@ -123,4 +123,22 @@ describe('composeConfig() v2 key wiring (DES-022, standing rule 1)', () => {
     const cfg = await composeConfig({ gateway: 'direct-fetch' }, FAKE_DEPS);
     expect((cfg as Record<string, unknown>)['auth']).toBeUndefined();
   });
+
+  // v21 (ARCH-066 inv-6, DES-104, TASK-100): the three engine ceilings on the USER-override rung
+  // (ADR-005). Red reason: composeConfig() does not forward these keys today — same wiring-gap
+  // class as v11 updateFlagPath / v15 auth / v16 workspaceTtlMs (now `resolveHarnessParams`'s ceilings).
+  it('maxTimeoutMs is forwarded from FileConfig into the returned ServerConfig', async () => {
+    const cfg = await composeConfig({ maxTimeoutMs: 900_000, gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['maxTimeoutMs']).toBe(900_000);
+  });
+
+  it('maxAppendPromptBytes is forwarded from FileConfig into the returned ServerConfig', async () => {
+    const cfg = await composeConfig({ maxAppendPromptBytes: 2048, gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['maxAppendPromptBytes']).toBe(2048);
+  });
+
+  it('maxEffort is forwarded from FileConfig into the returned ServerConfig', async () => {
+    const cfg = await composeConfig({ maxEffort: 'xhigh', gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['maxEffort']).toBe('xhigh');
+  });
 });

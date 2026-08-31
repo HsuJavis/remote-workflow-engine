@@ -18,7 +18,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { join, resolve, sep, isAbsolute } from 'node:path';
 import { CatalogNotFoundError, WorkspaceEscapeError, codedError } from './errors.js';
-import { parseMeta } from './workflow-meta.js';
+import { parseMeta, parseMetaParams } from './workflow-meta.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
 import { validateHarnessDefaults, type HarnessDefaults } from './harness-defaults.js';
@@ -64,6 +64,10 @@ export class WorkflowCatalog {
     if (!existingCols.includes('defaults')) {
       this._db.exec('ALTER TABLE workflows ADD COLUMN defaults TEXT');
     }
+    // v21 (DES-103, TASK-096): idempotent migration for the tunable-parameter contract column.
+    if (!existingCols.includes('params')) {
+      this._db.exec('ALTER TABLE workflows ADD COLUMN params TEXT');
+    }
     // DES-098: idempotent boot backfill — NULL-owner rows → operator email; once/boot, self-limiting
     if (opts?.backfillOwner) {
       const n = this._db
@@ -90,6 +94,14 @@ export class WorkflowCatalog {
       }
     }
 
+    // v21 (DES-103, DES-101, ARCH-067, TASK-099): parse+validate meta.params before any DB
+    // operation — fail-closed, nothing stored (same precedent as HARNESS_DEFAULTS_INVALID above).
+    const paramsResult = parseMetaParams(script, this._aliasNames ?? new Set());
+    if (!paramsResult.ok) {
+      throw codedError(paramsResult.code, paramsResult.message);
+    }
+    const paramsJson = JSON.stringify(paramsResult.value);
+
     const existing = this._db.prepare('SELECT version, owner FROM workflows WHERE name = ?').get(name) as
       | { version: string; owner: string | null }
       | undefined;
@@ -106,14 +118,15 @@ export class WorkflowCatalog {
     const defaultsJson = defaults !== undefined ? JSON.stringify(defaults) : null;
     this._db
       .prepare(`
-        INSERT INTO workflows (name, script, version, createdAt, owner, defaults) VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO workflows (name, script, version, createdAt, owner, defaults, params) VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(name) DO UPDATE SET
           script = excluded.script,
           version = excluded.version,
           createdAt = excluded.createdAt,
-          defaults = excluded.defaults
+          defaults = excluded.defaults,
+          params = excluded.params
       `)
-      .run(name, script, version, this._clock.isoNow(), owner, defaultsJson);
+      .run(name, script, version, this._clock.isoNow(), owner, defaultsJson, paramsJson);
     return { version };
   }
 
@@ -133,44 +146,56 @@ export class WorkflowCatalog {
     return { removed: info.changes > 0 };
   }
 
-  async get(name: string): Promise<{ script: string; version: string }> {
-    const row = this._db.prepare('SELECT script, version FROM workflows WHERE name = ?').get(name) as
-      | { script: string; version: string }
-      | undefined;
-    if (!row) throw new CatalogNotFoundError(name);
-    return row;
-  }
-
-  /** v9 (REQ-061): full detail for one workflow — name/script/version/createdAt/owner/defaults.
-   *  v15 (DES-098, DES-099, TASK-089): includes owner + defaults columns.
-   *  Throws CatalogNotFoundError for unknown names. */
-  async getFull(name: string): Promise<{
-    name: string; script: string; version: string; createdAt: string;
-    owner: string | null; defaults: HarnessDefaults | undefined;
+  /** v21 (DES-103, TASK-096): widened to carry `defaults` and the raw stored `params` contract
+   *  alongside script/version, so the run path (start/resume) reads the contract it needs in this
+   *  ONE query instead of a second `getFull()` round-trip. `params` is returned as the parsed JSON
+   *  value as-stored — canonicalization of a NULL/undefined contract belongs to the consumer, not
+   *  to this read (no `src/params/contract.ts` import here). */
+  async get(name: string): Promise<{
+    script: string; version: string; defaults: HarnessDefaults | undefined; params: unknown;
   }> {
     const row = this._db
-      .prepare('SELECT name, script, version, createdAt, owner, defaults FROM workflows WHERE name = ?')
+      .prepare('SELECT script, version, defaults, params FROM workflows WHERE name = ?')
       .get(name) as
-      | { name: string; script: string; version: string; createdAt: string; owner: string | null; defaults: string | null }
+      | { script: string; version: string; defaults: string | null; params: string | null }
       | undefined;
     if (!row) throw new CatalogNotFoundError(name);
     return {
-      name: row.name,
       script: row.script,
       version: row.version,
-      createdAt: row.createdAt,
-      owner: row.owner,
       defaults: row.defaults ? JSON.parse(row.defaults) as HarnessDefaults : undefined,
+      params: row.params ? JSON.parse(row.params) : undefined,
     };
   }
 
-  async list(): Promise<Array<{ name: string; version: string; createdAt: string; description: string }>> {
+  /** v9 (REQ-061): full detail for one workflow — name/script/version/createdAt/owner/defaults/params.
+   *  v15 (DES-098, DES-099, TASK-089): includes owner + defaults columns.
+   *  v21 (DES-103, TASK-096): delegates to get() + a small owner/createdAt lookup so script/defaults/
+   *  params parsing lives in exactly one place (one row-read shape, not two).
+   *  Throws CatalogNotFoundError for unknown names. */
+  async getFull(name: string): Promise<{
+    name: string; script: string; version: string; createdAt: string;
+    owner: string | null; defaults: HarnessDefaults | undefined; params: unknown;
+  }> {
+    const entry = await this.get(name); // throws CatalogNotFoundError when absent
+    const row = this._db
+      .prepare('SELECT createdAt, owner FROM workflows WHERE name = ?')
+      .get(name) as { createdAt: string; owner: string | null };
+    return { name, ...entry, createdAt: row.createdAt, owner: row.owner };
+  }
+
+  async list(): Promise<Array<{ name: string; version: string; createdAt: string; description: string; params: unknown }>> {
     // v9 (REQ-061): surface each workflow's purpose (meta.description) so a client can see WHAT each
     // one does without reading its script — parsed on-demand from the stored script (always in sync).
-    const rows = this._db.prepare('SELECT name, script, version, createdAt FROM workflows').all() as Array<{
-      name: string; script: string; version: string; createdAt: string;
+    // v21 (DES-103, TASK-099): `params` is read from the COLUMN, never a script re-parse.
+    const rows = this._db.prepare('SELECT name, script, version, createdAt, params FROM workflows').all() as Array<{
+      name: string; script: string; version: string; createdAt: string; params: string | null;
     }>;
-    return rows.map((r) => ({ name: r.name, version: r.version, createdAt: r.createdAt, description: parseMeta(r.script).description }));
+    return rows.map((r) => ({
+      name: r.name, version: r.version, createdAt: r.createdAt,
+      description: parseMeta(r.script).description,
+      params: r.params ? JSON.parse(r.params) : undefined,
+    }));
   }
 
   workFolder(name: string): string {
