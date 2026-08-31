@@ -156,8 +156,11 @@ export class AgentTranscriptSink {
 
   private async _emit(runId: string, agentId: string, ev: TranscriptEvent): Promise<void> {
     if (this._store) {
-      // DES-088 (TASK-082): redact on persist write, not in-memory. kind:'harness' is handled by
-      // redactHarness (double-redaction exclusivity invariant — never both on the same event).
+      // DES-088 (TASK-082): redact on persist write, not in-memory. The kind!=='harness' guard is
+      // DES-088 invariant (a) "one redaction pass per event": no gateway routes a harness
+      // descriptor through this sink — they call `onHarness` (_invokeOnce below), which runs
+      // `redact()` at its own persist site (v21 review §4 B3). `redactHarness` only truncates the
+      // prompt; it never redacts secret values and is not what keeps that sink safe.
       const stored = this._secretValueProvider && ev.kind !== 'harness'
         ? redact(ev, this._secretValueProvider.entries()) as TranscriptEvent
         : ev;
@@ -423,8 +426,11 @@ export class AgentExecutor implements AgentSpawner {
     // agent_log grows and a progressing agent's clock advances DURING the call — a hung agent (no
     // events) keeps lastActivityAt at startedAt. Fire-and-forget-ordered: awaited by the gateway per
     // event, so file appends stay in arrival order. Gateways without a turn stream never call it.
-    // DES-088 (TASK-082): redact on persist write (sink 1 — live stream events). kind!=='harness'
-    // guard preserves double-redaction exclusivity (onHarness path above uses redactHarness).
+    // DES-088 (TASK-082): redact on persist write (sink 1 — live stream events). The
+    // kind!=='harness' guard is DES-088 invariant (a) "one redaction pass per event": harness
+    // descriptors never arrive here — they come through `onHarness` above, which runs `redact()`
+    // itself (v21 review §4 B3). It is NOT `redactHarness` that makes that sink safe: redactHarness
+    // only truncates the prompt.
     const onEvent = async (ev: TranscriptEvent): Promise<void> => {
       if (store) {
         const stored = secretValueProvider && ev.kind !== 'harness'

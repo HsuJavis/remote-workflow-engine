@@ -44,7 +44,7 @@ export interface Ceilings {
 
 export type Err = {
   ok: false;
-  code: 'PARAM_LOCKED' | 'PARAM_OUT_OF_RANGE' | 'PARAM_UNKNOWN' | 'PARAM_CONTRACT_INVALID';
+  code: 'PARAM_LOCKED' | 'PARAM_OUT_OF_RANGE' | 'PARAM_UNKNOWN' | 'PARAM_CONTRACT_INVALID' | 'UNKNOWN_ALIAS';
   message: string;
   detail: Record<string, unknown>;
 };
@@ -277,10 +277,14 @@ export function validateUserOverrides(
     // D-AUTH-5-B / UNKNOWN_ALIAS precedent, applied at submission for the case the author left
     // `model` unconstrained (no enum — the REQ-090 canonical/backward-compat default): a spec with
     // its own `enum` already screens this via checkValueAgainstSpec above.
+    // The code is the PRE-EXISTING `UNKNOWN_ALIAS` (ARCH-064's interface table; the same code
+    // `submission-validator.ts:112` already returns for this same condition at the script-literal
+    // rung), NOT `PARAM_OUT_OF_RANGE` — an unresolvable alias is a different rejection from "outside
+    // the author's declared bounds", and one condition must not answer under two codes.
     if (key === 'model' && typeof val === 'string' && spec.enum === undefined && !isKnownAlias(val, aliasNames)) {
       return {
         ok: false,
-        code: 'PARAM_OUT_OF_RANGE',
+        code: 'UNKNOWN_ALIAS',
         message: `model is not a known alias: ${val}`,
         detail: { param: 'model', ...truncatedSupplied(val), allowed: { enum: [...aliasNames] } },
       };
