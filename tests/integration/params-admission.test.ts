@@ -468,3 +468,115 @@ describe('R-G3: default-deployment (unconfigured) alias table admits only real a
     expect(r.code ?? (r.error as { code?: string } | undefined)?.code).not.toBe('UNKNOWN_ALIAS');
   });
 });
+
+// v21 GATE 8 RE-REVIEW #3 re-run (2026-09-01, review §P2 P-A2 ≡ adversarial A2 ≡ quality QD-4,
+// re-run scope (b)): the OTHER end of R-G3's seam. `server.ts:1142` hands the CATALOG
+// `config?.aliases ? new Set(...) : undefined` -> `workflow-catalog.ts` defaults an undefined table
+// to an EMPTY Set -> `isKnownAlias` treats size-0 as "accept everything" — but `server.ts:1196`
+// (fixed by R-G3) hands the RunManager `config?.aliases ?? DEFAULT_ALIASES`, always non-empty on the
+// default/unconfigured deployment. Registration and admission are fed DIFFERENT tables: a
+// `model.enum` entry absent from `DEFAULT_ALIASES` registers fine (catalog's empty table accepts
+// anything) and only fails `UNKNOWN_ALIAS` at run time (run-manager.ts:424) — "register succeeds,
+// every run fails", discovered only after the fact. Structural pin: registration and admission must
+// be fed the SAME table on BOTH the default and a configured deployment.
+describe('P-A2: registration is fed the SAME alias table admission enforces — both ends of the seam (review §P2 (b))', () => {
+  let defaultServer: Server;
+  let defaultTmp: string;
+
+  beforeAll(async () => {
+    defaultTmp = mkdtempSync(join(tmpdir(), 'rwe-it083-pa2-'));
+    defaultServer = await createServer({ port: 0, bind: '127.0.0.1', workRoot: defaultTmp }); // no `aliases` key
+  });
+
+  afterAll(async () => {
+    await defaultServer?.close();
+    rmSync(defaultTmp, { recursive: true, force: true });
+  });
+
+  async function defaultCall(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const res = await fetch(`http://127.0.0.1:${defaultServer.port}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
+    return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+  }
+
+  it('on the default (unconfigured) deployment: a model.enum entry absent from DEFAULT_ALIASES is rejected AT REGISTRATION — never "register succeeds, every run fails"', async () => {
+    const script = `export const meta = { params: { knobs: { model: { type: 'enum', enum: ['not-a-real-alias-xyz'] } } } };\nreturn 1;`;
+    const r = await defaultCall('workflow_register', { name: 'it083-pa2-bogus-enum', script });
+    expect(r.error).toBeDefined();
+
+    const got = await defaultCall('workflow_get', { name: 'it083-pa2-bogus-enum' });
+    expect(got.code).toBe('WORKFLOW_NOT_FOUND'); // fail-closed: nothing stored
+  });
+
+  // Regression pin: a real DEFAULT_ALIASES member must keep registering fine on the default deployment.
+  it('regression pin: on the default (unconfigured) deployment, a model.enum entry that IS a real DEFAULT_ALIASES member registers fine', async () => {
+    const script = `export const meta = { params: { knobs: { model: { type: 'enum', enum: ['sonnet'] } } } };\nreturn 1;`;
+    const r = await defaultCall('workflow_register', { name: 'it083-pa2-known-enum', script });
+    expect(r.error).toBeUndefined();
+  });
+
+  // Regression pin: on a CONFIGURED-alias deployment (the outer `server`/`callTool` fixture, aliases
+  // {sonnet, default}), parity ALREADY holds — the catalog's aliasNames is the same non-empty table
+  // admission uses, so a bogus enum entry is already rejected at registration. Only the
+  // default/unconfigured end of the seam is broken (the case above).
+  it('regression pin: on a CONFIGURED-alias deployment, a model.enum entry NOT in the configured table is already rejected at registration', async () => {
+    const script = `export const meta = { params: { knobs: { model: { type: 'enum', enum: ['not-a-real-alias-xyz'] } } } };\nreturn 1;`;
+    const r = await callTool('workflow_register', { name: 'it083-pa2-configured-bogus-enum', script });
+    expect(r.error).toBeDefined();
+  });
+});
+
+// v21 GATE 8 RE-REVIEW #3 re-run (2026-09-01, review §P2 P-A3 ≡ adversarial A3, re-run scope (c) —
+// dispatch-inertness half): `workflow-catalog.ts:130-142`'s effectiveDefaults loop injects EVERY
+// declared knob default (including `effort`/`appendPrompt`) into the stored `defaults` column, but
+// `defaultRunParams` (`src/params/resolve.ts:38-51`) only ever reads `model/timeoutMs/prompt/tools`
+// off that same column — a declared `effort`/`appendPrompt` default is validated, stored, served on
+// workflow_get, and then read NOWHERE at dispatch. Observed at the most direct point (same
+// `AgentSpawner` pattern as the B2 describe block above): `req.runParams` is the RunParams admission
+// actually produced, bypassing gateway/prompt composition entirely.
+describe('P-A3: a declared effort default takes effect at dispatch, or is refused at registration — never silently inert (review §P2 (c))', () => {
+  const clock = new FixedClock(new Date('2024-01-01T00:00:00.000Z'));
+
+  it('a workflow registered with an effort.default and NO overrides dispatches with runParams.effort === the declared default (not undefined/engine)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-it083-pa3-'));
+    try {
+      const { WorkflowCatalog } = await import('../../src/workflow-catalog.js');
+      const store = new SqliteRunStore(join(dir, 'store'), clock);
+      const catalog = new WorkflowCatalog(join(dir, 'catalog'), clock);
+      const script = `export const meta = { params: { knobs: { effort: { type: 'enum', enum: ['low','max'], default: 'max' } } } };\nreturn await agent('hi');`;
+      await catalog.register('it083-pa3-effort-default', script, undefined, null);
+
+      const captured: RunParams[] = [];
+      const spawner: AgentSpawner = {
+        run: async (req): Promise<AgentOutcome> => {
+          captured.push(req.runParams);
+          return { kind: 'text', value: 'ok' };
+        },
+      };
+      const mgr = new RunManager({ store, clock, workRoot: dir, catalog, spawner } as any);
+      const runId = await mgr.start({ name: 'it083-pa3-effort-default' }); // no overrides at all
+
+      // The real sandbox child process must actually reach the script's `agent()` call before the
+      // injected spawner is invoked — poll for the terminal status (same pattern as the B2 describe
+      // block above) instead of asserting immediately after start() returns.
+      let status = (await mgr.status(runId)).status;
+      for (let i = 0; i < 100 && status !== 'completed' && status !== 'failed'; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+        status = (await mgr.status(runId)).status;
+      }
+      expect(status).toBe('completed');
+
+      expect(captured).toHaveLength(1);
+      // Red reason: today `defaultRunParams` never reads defaults.effort — this is `undefined` with
+      // provenance 'engine', not the declared 'max' with provenance 'default'.
+      expect(captured[0]!.effort).toBe('max');
+      expect(captured[0]!.provenance.effort).toBe('default');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

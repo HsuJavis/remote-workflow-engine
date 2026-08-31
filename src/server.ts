@@ -1139,7 +1139,12 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v15 (DES-098, DES-099, TASK-089): boot backfill + alias-aware validation
   const catalog = new WorkflowCatalog(workRoot, clock, {
     backfillOwner: config?.auth?.enabled ? true : undefined,
-    aliasNames: config?.aliases ? new Set(Object.keys(config.aliases)) : undefined,
+    // v21 Gate 8 re-review #3 (P-A2): mirror the run manager's own fallback (line ~1196,
+    // R-G3) — an unconfigured deployment must feed the SAME non-empty DEFAULT_ALIASES table to
+    // BOTH registration and admission, or a model.enum/default absent from DEFAULT_ALIASES
+    // registers fine here and is refused only later at every run ("register succeeds, every run
+    // fails", discovered only after the fact).
+    aliasNames: new Set(Object.keys(config?.aliases ?? DEFAULT_ALIASES)),
   });
   const gateway =
     config?.gateway ??

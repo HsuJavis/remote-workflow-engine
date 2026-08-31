@@ -4,7 +4,148 @@ status: send-back
 ---
 # 07 Review & Retro — Gate 8
 
-## v21 GATE 8 RE-REVIEW (2026-09-01, CURRENT / AUTHORITATIVE — STILL SEND BACK to tests+impl)
+## v21 GATE 8 RE-REVIEW #3 (2026-09-01, CURRENT / AUTHORITATIVE — SEND BACK to tests+impl)
+
+> **Third Gate 8 pass — after the §R2 closeout (IMPL-140, commits `f8bb366`, `50a2a36`).**
+> Both architecture experts were re-dispatched on the post-IMPL-140 state
+> (`.panel/review/adversarial.md` pass 3, `quality-dimensions.md` — both dated this pass).
+> **All ten §R2 findings R-G1..R-G10 are genuinely closed in code** — confirmed by both experts AND
+> independently spot-verified by this reviewer (§P1). The redaction/resume/CallKey core is now sound.
+> **Verdict: still NOT closeable — `send_back: ["tests","impl"]`, `arch_consistent: false`.** The
+> block is a set of NEW findings (not regressions of any R-G fix, so the auto-re-run-ONCE budget has
+> not been spent on them): one HIGH wire-contract falsity in the original v21 ARCH-069 wiring that
+> every test tier is structurally blind to, plus three MED instances of the registration↔admission
+> seam — the same "fix complete at one end of the seam only" pattern that produced R-G3.
+
+### P1. §R2 closure verification (independent, on disk at `50a2a36` — not carried on the experts' word)
+
+| item | reviewer verification |
+|---|---|
+| R-G1 | `grep -rn unredactBestEffort src/` → 1 hit, a comment (`run-manager.ts:628` explaining why it was deleted); refusal-only resume via `PARAM_SECRET_UNAVAILABLE` at `run-manager.ts:538-539`, scan covers the whole rehydrated snapshot |
+| R-G2 | effective **post-merge** model checked at `run-manager.ts:424-431` (after `mergeRunParams`, before `createRun`) — un-overridden stale registered defaults covered, rationale comment in place |
+| R-G3 (admission end) | `server.ts:1196` feeds `config?.aliases ?? DEFAULT_ALIASES` with the mirror-dispatch rationale comment |
+| R-G9 | `agent-executor.ts:430-439`: `redact()` FIRST, `capPrompt` applied unconditionally SECOND — no partial-credential window |
+| R-G10 | `grep -n "!== 'harness'"` → only explanatory comments (`:174`, `:452`); both redaction-skip carve-outs deleted |
+| R-G4..G8 | closed by subsumption/doc amendment — confirmed via the experts' per-line checks (adversarial "Checked and clean" section, quality §1-4 conformant lists) |
+
+`npx tsc --noEmit` → clean (run by this reviewer). Suite 1499/1499 green is **inherited from
+IMPL-140's record at `50a2a36`** (vitest exit 1 = the pre-existing spawn-litellm-ENOENT background
+artifact, verified at the stashed baseline per state.yaml) — acceptable here because the mandated
+Gate 5+6 re-run below re-establishes the full suite anyway.
+
+### P2. Blocking findings from THIS re-review (consolidated from both pass-3 experts; every load-bearing claim re-verified on disk)
+
+| # | Sev | Finding (expert id) | Reviewer-verified evidence + corrections |
+|---|-----|---------------------|------------------------------------------|
+| **P-A1** | **HIGH** | **`EFFORT_PROFILES.anthropic.param='effort'` is spread TOP-LEVEL into the Anthropic Messages request body on the REST path, where the real API contract is `output_config:{effort:…}` — every effort-bearing anthropic call on that path fails `400 → terminal` while the descriptor records `effortApplied:{param:'effort',value:…}`, a false claim of success** (adversarial A1). Violates ARCH-069, ARCH-068's tri-state honesty, DES-106, and REQ-093's own acceptance clause ("**provider-appropriate** mapping", "never a silent claim of success"). | `client.ts:32` (profile), `:126` (`effortBodyFields` spread), `:156` (direct `api.anthropic.com/v1/messages` body), `:293` (LiteLLM-proxy branch, same spread); `claude-agent-sdk-client.ts:581` sets `Options.effort` — a REAL SDK field, so the SDK path is correct. API contract verified this pass against the authoritative Claude API reference: effort is GA **inside `output_config`, not top-level**; an unknown top-level param → `400 invalid_request_error`. The profile encodes a *name* where the two consumers need a *placement*; ARCH-069's object-identity defence guarantees record≡intent, not that the field is real at each transport. **Reviewer correction to the expert's exposure claim:** `main.ts` default gateway is **`sdk`** (correct path) — the broken REST body lives on the documented `gateway:"direct-fetch"` opt-out (both its direct-anthropic and its own LiteLLM-proxy branch), NOT the default deployment; the expert's "any authenticated principal can deny every anthropic call on a default deployment" framing requires that opt-out config. Still HIGH: supported documented configuration, false-success observability defect (the exact class REQ-093 exists to kill), and **structurally invisible to every test tier that ran** (UT-101 asserts only bytes-differ against an injected fetchImpl; UT-020 asserts the value lands on `Options`; no test compares emitted shape to the transport's documented contract). |
+| **P-A2** | MED | **Registration and admission are fed DIFFERENT alias tables — R-G3's defect at the other end of the same seam** (adversarial A2 ≡ quality QD-4, independent convergence). Violates ARCH-064 ("the ONE alias predicate … shared by the registration-time and admission-time rungs") + ARCH-067 fail-closed registration. | `server.ts:1142` hands the catalog `config?.aliases ? … : undefined` → `workflow-catalog.ts:117` `?? new Set()` → `contract.ts:72` empty-table rule = **no-op**, while `server.ts:1196` hands the run manager `config?.aliases ?? DEFAULT_ALIASES` (R-G3). On the documented default deployment: `workflow_register` accepts a `model.enum` entry (`workflow_get` then advertises it as an allowed value) that **every** subsequent run refuses `UNKNOWN_ALIAS` at `run-manager.ts:424` — advertised bound ≠ enforced bound, register-succeeds-every-run-fails, discovered only at run time. One wiring line. |
+| **P-A3** | MED | **A declared `knobs.effort.default`/`knobs.appendPrompt.default` is validated, normalized into the stored `defaults` column, and then never read — the declared default is inert and the descriptor reports "never requested"; the engine-produced `defaults` object also breaks the discover→edit→re-register round-trip** (adversarial A3). Violates ARCH-067/A-2(c) ("the served default is always DERIVED from one source and the two cannot diverge"), ARCH-068 tri-state, REQ-090 — the silent-no-op class v21 exists to repair, reintroduced through the normalization path. | `workflow-catalog.ts:130-142` loop injects EVERY knob's default into `effectiveDefaults` (incl. `effort`/`appendPrompt`); `harness-defaults.ts` `KNOWN_KEYS` = `{model,tools,skills,timeoutMs,prompt}` only → re-registering the engine's own served `defaults` fails `HARNESS_DEFAULTS_INVALID: Unknown harness defaults key: "effort"`; `resolve.ts:38-51` `defaultRunParams` reads only `model/timeoutMs/prompt/tools` (comments admit "no author-side effort/appendPrompt exists"). Fix shape is the impl gate's choice (reject a default no rung can apply, or widen the snapshot's author side) — silently persisting into a type that cannot represent it is the one wrong option. |
+| **P-A4** | MED | **A declared `knobs.model.default` bypasses D-AUTH-5-B alias validation, because knob-default normalization runs AFTER `validateHarnessDefaults`** (adversarial A4). Violates ARCH-067 fail-closed / ARCH-062. | `workflow-catalog.ts:108-113` validates the caller-supplied `defaults` only; the `:130-142` loop injects `model:<spec.default>` afterwards; `contract.ts` `parseParamContract` alias-checks `spec.enum` entries but never `spec.default`. On a configured-alias deployment a non-alias `model.default` registers successfully and every named run is refused at admission (R-G2 backstop — why MED not HIGH): the register-time control that should make it impossible-by-construction never fires. |
+
+**Batched into the same re-run (blocking-adjacent, per the B5/R-G6..G10 precedent — same files, strictly-less-code or doc-only):**
+P-A5 (MED, adversarial A5) — the value/bounds checker now exists twice (`contract.ts:193-228`
+`checkValueAgainstSpec` vs `workflow-catalog.ts:38-45` `violatesOwnSpec`, the latter's own comment
+citing a task-file boundary as the reason), against ARCH-064's "cannot drift into three copies";
+consolidate to one exported predicate with an explicit `{ceilings?}` parameter while the impl gate
+is in these exact files. P-A6 (LOW, adversarial A6) — the `‹secret:` marker grammar is duplicated
+into `run-manager.ts:538` as a **fail-open detector** (a future marker-format change in
+`secret-resolver.ts:101` silently disables the `PARAM_SECRET_UNAVAILABLE` guard); export a
+`hasSecretMarker()` from `secret-resolver.ts` so the two move together. Doc amendments (LOW,
+adversarial A7/A8 ≡ quality QD-1/2/3, all confirmed still open at HEAD): (i) ARCH-066 inv-2 gains
+its legacy-NULL-snapshot exception clause (`run-manager.ts:615-633` re-resolves pre-v21 rows from
+the current catalog row — IMPL-133's deliberate fallback, undocumented in the invariant);
+(ii) 02-architecture.md:913 process view drops `appendPromptBytes` (B-2); (iii) `server.ts:373`
+`workflow_agent_log` description documents the served `harness` object's v21 fields
+(`effort`/`effortApplied`/`timeoutMs`/`provenance`) per ARCH-051; (iv) ARCH-064 note + S-2 rename
+phantom `parseUserOverrides` → `validateUserOverrides`.
+
+**Re-run scope (pinned; the workflow auto re-runs each listed gate ONCE).** Gate 5 first — RED
+tests that kill the CLASS, not just the instance: (a) **transport-contract shape pins** for the
+effort mapping — the REST body places effort at `output_config.effort` (the documented Messages API
+placement) and the SDK path sets `Options.effort`, each asserted against that transport's documented
+contract, NOT against "differs from the other run" (the assertion style that let P-A1 through every
+tier); plus the descriptor stays honest on both paths. (b) **table-parity**: registration and
+admission are fed the SAME alias table on the default AND configured deployments (structural pin at
+the wiring, the shape R-G3 taught us); registered-then-unrunnable is unrepresentable. (c) declared
+knob defaults: a declared default either takes effect at dispatch (observable in
+provenance/descriptor) or is refused at registration — never inert; and the discover→edit→
+re-register round-trip succeeds on engine-produced `defaults`. (d) a non-alias `knobs.model.default`
+is refused at registration on a configured-alias deployment. Gate 6 then GREEN + the P-A5/P-A6
+consolidation + the four doc amendments + full regression.
+**OUT of scope for the re-run (so re-review #4 does not re-litigate):** A9 (invalid `maxEffort`
+config value silently empties the effort enum — recorded debt below), the F4 nested-frame contract
+(deferred to v22 by design, unchanged), F5/QD-2 dead `mapEffort` copy in `resolve.ts` (recorded
+debt, though note adversarial's observation that its richer `ProviderEffortProfile` shape is the
+closer starting point for P-A1's placement-aware profile), all pre-existing trace/solid debt.
+
+### P3. Non-blocking — recorded tech debt (NEW this pass; adds to the §4 table)
+
+| Finding | Sev | Disposition |
+|---|---|---|
+| A9 — `maxEffort:"highest"` (any invalid value) in `rwe.config.json` silently yields `EFFORT_RANK[…]=undefined` → effective enum `[]` → every `overrides.effort` refused engine-wide, no startup error (`main.ts:164`, `server.ts:1187`, `contract.ts:109-113`; `isEffort` exists in the same module, unused at the config boundary) | LOW | Debt: validate at the boundary the value enters (fail fast or documented-default + log line). Not clamping — ADR-005 stays intact for caller values; this is an operator value. |
+| VAL-103 applied-branch residual: the anthropic `applied:true` mapping's real-tier evidence never confirmed backend **acceptance** (the live Anthropic SDK dispatch died on an unrelated model-not-found; Ollama has no dial; the REST path has zero real coverage) | — | Same accepted-gap class as D-V3 (no paid-provider key in this environment). NOT a mock-only REQ — VAL-103 ran 17/17 with 0 skips against real Ollama + a real `api.anthropic.com` dispatch. After the P-A1 fix lands, strengthen at the next Gate 7.5 touch when a dial-bearing provider is reachable. |
+| Both P2 experts' reports carry two factual errors this review corrects: "default deployment selects LiteLLM gateway" (default is `sdk`) and "VAL-103's HAS_PROVIDER case skipped" (it ran, 0 skips) | — | Recorded so the re-run implementer works from the corrected exposure model, not the expert prose. |
+
+### P4. Traceability / dashboard / module-boundary / validation / special files (this pass)
+
+- **Trace** (`sh .sdlc/trace … --check`): **817 items / 11 gaps** — 0 high, 1 mid (IMPL-082 TDD,
+  pre-v5), 10 low (9 iter-drift incl. the 2 NEW declared false-positive pairs DES-088/DES-066 ←
+  IMPL-140, amended in-doc per state.yaml "iter records origin, not last-touched"; + TASK-018).
+  0 broken links, 0 orphans, **0 未驗證, 0 未真實驗證**. All 11 recorded (Exit Gate 1 by recording).
+  `rtm.md`: 95/95 REQ real-verified.
+- **Dashboard QA** (`dashboard_check`, plugin 2.1.3 run from cache — repo `trace.py` predates
+  `--tool`, known version-skew debt): 0 high / 1 mid / 1 low, both same as pass 1. The mid
+  (02-architecture.md:929 "unbalanced `{`") **independently re-verified FALSE POSITIVE this pass**:
+  all 5 mermaid blocks balance once erDiagram crow's-foot tokens (`||--o{`) are stripped — checker
+  limitation, filed upstream. The low = missing offline-fallback, same skew debt. **Degraded mode:**
+  no playwright/browser tools in this session — link targets + mermaid verified by tool only,
+  in-browser SVG render not re-spot-checked.
+- **Module boundaries** (`solid_check`): **PASS — 7 modules, 0 mid**, 10 low pre-existing
+  未認領檔案 (recorded debt, unchanged).
+- **Validation & handover:** unchanged since Gate 7.5 (`git log 637b86e..HEAD -- README.md DEPLOY.md`
+  → last touch `507aff7`, the 7.5 commit). Re-spot-checked: DEPLOY.md leads with §0 一鍵部署
+  `./deploy.sh --background` (actually ran at 7.5, output reproduced), history-free banner honored,
+  single §1b 設定總表 (README defers to it, no duplication), config round-trip 32/32 keys verified at
+  7.5. Checked, clean. 08-validation.md present with per-VAL evidence.
+- **Special files:** CLAUDE.md unchanged since commit `952438b` (pre-pass-1) — the pass-1
+  claude-md-improver review (≈72/B, non-blocking suggestions as debt) stands; no SKILL.md/AGENTS.md
+  touched; no re-review needed this pass.
+- `.panel/` **retained** (send_back non-empty). `gates.review.passed` stays **false**.
+
+### P5. Retro (pass 3)
+
+- **What went well:** the R-G1..R-G10 closeout was verified genuinely complete by two independent
+  experts + reviewer spot-checks — the send-back loop converges on what it pins; the redact/resume
+  core that produced two rounds of HIGHs is now clean.
+- **To change:** (1) every test asserting an outbound-wire property must be pinned against the
+  transport's **documented external contract**, never against "differs from the sibling run" or
+  "lands on the object" — P-A1 passed four tiers because every tier's oracle was the code under
+  test; (2) a seam fix (R-G3) must ship with a parity assertion across BOTH ends of the seam, or the
+  other end surfaces one review later (P-A2/A3/A4 are all the registration end of admission-side
+  fixes); (3) expert reports are inputs, not verdicts — two material factual errors (default
+  gateway, VAL skip claim) were caught only by on-disk re-verification.
+
+### P6. Report (v21 Gate 8 RE-REVIEW #3, 2026-09-01 — CURRENT / AUTHORITATIVE)
+
+```
+Gaps: high=1 mid=4 low=~9 (architecture-consistency findings: P-A1 HIGH; P-A2/A3/A4 + P-A5 MED; P-A6..A9 + QD-1..3 LOW)
+      trace: high=0 mid=1 low=10, all pre-existing/declared+recorded
+Drift: none inside the v21 closure (R-G1..G10 all verified closed); 2 new declared iter-drift false
+       positives (DES-088/DES-066←IMPL-140) recorded; 4 doc-amendment LOWs batched into the re-run
+Architecture consistent: NO — P-A1 HIGH (effort spread top-level into the Messages body on the
+  direct-fetch path where the contract is output_config.effort, descriptor records false success;
+  test pyramid structurally blind), P-A2/A3/A4 MED (registration↔admission seam: split alias
+  tables, inert declared defaults + broken round-trip, unvalidated model default)
+Validation: real-tier all-green? YES (95/95 REQ real-verified; VAL-103 applied-branch acceptance
+  residual recorded as D-V3-class accepted gap) · README+DEPLOY present? YES (current-state,
+  history-free, 一鍵部署 verified-run)
+Conclusion: SEND BACK — re-run Gate 5 (tests) + Gate 6 (impl) once, scope pinned in P2; then
+  re-review. gates.review.passed stays FALSE; .panel/ retained.
+```
+
+---
+
+## v21 GATE 8 RE-REVIEW #2 (2026-09-01, SUPERSEDED by RE-REVIEW #3 above — kept for history; was SEND BACK to tests+impl)
 
 > **Second Gate 8 pass — after the send-back closeout (IMPL-139, commits `5ff0bf2`, `e6077e0`).**
 > The first v21 pass (section below) routed B1..B5 to Gates 5+6; the impl gate re-ran and reported

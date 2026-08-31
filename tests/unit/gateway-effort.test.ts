@@ -134,6 +134,59 @@ describe('LiteLLMGatewayClient effort-on-the-wire — LiteLLM-proxy branch (UT-1
   });
 });
 
+// v21 GATE 8 RE-REVIEW #3 re-run (2026-09-01, review 07-review.md §P2 P-A1, re-run scope (a)):
+// transport-CONTRACT shape pin. Every prior effort test in this file asserts "the body changed" or
+// "the value landed on the object under test" — never against the Anthropic Messages API's own
+// documented contract. `effortBodyFields()` (client.ts:126) spreads `{effort:<value>}` TOP-LEVEL
+// into the outbound JSON body on both the direct-fetch anthropic branch (client.ts:156) and the
+// LiteLLM-proxy branch (client.ts:293) — the real, documented placement is nested:
+// `output_config:{effort:<value>}`. An unknown top-level param is a real `400 invalid_request_error`
+// on the live API while the harness descriptor already recorded `effortApplied:{applied:true,...}`
+// (a false claim of success — the exact class REQ-093 exists to kill).
+// Red reason: today's body has `body.effort === 'max'` and no `output_config` key at all — asserting
+// the DOCUMENTED shape (`body.output_config.effort`) fails, and asserting the top-level key is ABSENT
+// also fails (it's present). Genuine v21 Gate 8 re-review red.
+describe('effort transport-contract shape pin — REST body must nest under output_config, never top-level (P-A1, v21 Gate 8 re-review re-run)', () => {
+  const ORIGINAL_KEY = process.env['ANTHROPIC_API_KEY'];
+  beforeEach(() => { process.env['ANTHROPIC_API_KEY'] = 'fake-unit-test-key'; });
+  afterEach(() => {
+    if (ORIGINAL_KEY === undefined) delete process.env['ANTHROPIC_API_KEY'];
+    else process.env['ANTHROPIC_API_KEY'] = ORIGINAL_KEY;
+  });
+
+  it('direct-fetch anthropic branch: effort lands at body.output_config.effort, never at the top-level body.effort', async () => {
+    const { fetchImpl, bodies } = spyFetch();
+    let captured: { effortApplied?: unknown } | undefined;
+    const onHarness = async (h: unknown): Promise<void> => { captured = h as { effortApplied?: unknown }; };
+    const gw = new LiteLLMGatewayClient({ aliases: ALIASES, timeoutMs: 5000, retries: 0, fetchImpl });
+
+    const result = await gw.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'max' }, runId: 'r1', agentId: 'a1', onHarness });
+
+    const body = JSON.parse(bodies[0]!) as { effort?: unknown; output_config?: { effort?: unknown } };
+    expect(body.effort).toBeUndefined(); // must NOT be top-level (a real 400 on the live API)
+    expect(body.output_config?.effort).toBe('max'); // the documented Messages API placement
+    // Descriptor honesty: applied:true must correspond to a value that genuinely reached the wire
+    // at the CORRECT documented location — not merely "some field changed somewhere".
+    expect(result.ok).toBe(true);
+    expect(captured?.effortApplied).toEqual(expect.objectContaining({ applied: true }));
+  });
+
+  it('LiteLLM-proxy branch: effort lands at body.output_config.effort, never at the top-level body.effort', async () => {
+    const { fetchImpl, bodies } = spyFetch();
+    const gw = new LiteLLMGatewayClient({
+      aliases: ALIASES, timeoutMs: 5000, retries: 0,
+      useLiteLLMProxy: true, proxyManager: makeFakeProxyManager(),
+      fetchImpl,
+    });
+
+    await gw.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'max' }, runId: 'r1', agentId: 'a1' });
+
+    const body = JSON.parse(bodies[0]!) as { effort?: unknown; output_config?: { effort?: unknown } };
+    expect(body.effort).toBeUndefined();
+    expect(body.output_config?.effort).toBe('max');
+  });
+});
+
 // v21 Gate 5 addendum Part 2 (DES-106 boundary condition — clause-coverage sweep, ADR-006): "
 // session-options-builder.ts stays unwired, guarded by a standing zero-`src/`-importer assertion
 // that retires when the security-hardening track wires the module deliberately." No such standing

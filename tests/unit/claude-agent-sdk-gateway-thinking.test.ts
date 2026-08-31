@@ -133,4 +133,27 @@ describe('ClaudeAgentSdkGatewayClient thinking policy (UT-020, D-F6)', () => {
     expect(lowCall.options?.['effort']).toBeDefined();
     expect(lowCall.options?.['effort']).not.toEqual(maxCall.options?.['effort']);
   });
+
+  // v21 GATE 8 RE-REVIEW #3 re-run (review 07-review.md §P2 P-A1, re-run scope (a) — SDK side):
+  // transport-CONTRACT shape pin, asserted against the documented contract (a real `Options.effort`
+  // top-level SDK field per `claude-agent-sdk-client.ts:581`), never against "differs from the
+  // sibling call" (the B-6 case above's assertion style — the exact style the review found let
+  // P-A1 through every test tier on the REST side). Companion to the REST-side shape pin in
+  // `tests/unit/gateway-effort.test.ts`. Result: GREEN on write — the SDK path's placement was
+  // already correct (unlike the REST path); kept as a deliberate regression pin, not force-reddened.
+  it('an Anthropic-mapped alias at effort:"max" sets the documented top-level Options.effort field to the requested value (P-A1 SDK-side contract pin)', async () => {
+    queryMock.mockReturnValue(fakeSession());
+    const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
+    const config: ClaudeAgentSdkGatewayConfig & { aliases: AliasMap } = {
+      baseUrl: 'http://127.0.0.1:4000',
+      aliases: ALIASES,
+      secretSource: new InMemorySecretSource({ ANTHROPIC_API_KEY: 'fake-unit-test-key' }),
+    };
+    const client = new ClaudeAgentSdkGatewayClient(config);
+
+    await client.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'max' }, runId: 'r1', agentId: 'a1' });
+
+    const [[call]] = queryMock.mock.calls as [[{ options?: Record<string, unknown> }]];
+    expect(call.options?.['effort']).toBe('max');
+  });
 });

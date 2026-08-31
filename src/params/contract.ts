@@ -177,6 +177,13 @@ export function parseParamContract(
         }
       }
     }
+    // v21 Gate 8 re-review #3 (P-A4): a declared `model.default` is the SAME registration-time
+    // alias check as an enum entry above — without it, knob-default normalization
+    // (workflow-catalog.ts's effectiveDefaults loop) would inject an unvalidated model string into
+    // the stored `defaults`, making the register-time control that should catch it never fire.
+    if (key === 'model' && typeof spec.default === 'string' && !isKnownAlias(spec.default, aliasNames)) {
+      return invalid(key, `model default not a known alias: ${String(spec.default)}`);
+    }
     knobs[key] = spec;
   }
 

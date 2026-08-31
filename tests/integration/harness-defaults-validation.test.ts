@@ -326,4 +326,55 @@ describe('meta.params default cross-validation (DES-103, REQ-090, v21 Gate 5 re-
     // not merely echoed back from params.knobs.timeoutMs.default.
     expect(defaults?.timeoutMs).toBe(5000);
   });
+
+  // v21 GATE 8 RE-REVIEW #3 re-run (2026-09-01, review §P2 P-A3 ≡ adversarial A3, re-run scope (c)
+  // — registration/round-trip half; the dispatch-inertness half lives in
+  // `tests/integration/params-admission.test.ts`'s own P-A3 describe block): `effort`/`appendPrompt`
+  // are NOT in `harness-defaults.ts`'s `KNOWN_KEYS` (`{model,tools,skills,timeoutMs,prompt}`), yet
+  // the effectiveDefaults loop (workflow-catalog.ts:130-142) stores them in the SAME `defaults`
+  // column and `workflow_get` serves them back verbatim — a real author/UI performing the
+  // documented discover -> edit -> re-register workflow on the engine's OWN served `defaults`
+  // hits `HARNESS_DEFAULTS_INVALID: Unknown harness defaults key: "effort"`.
+  it('(e) discover -> edit -> re-register round-trip succeeds on the engine\'s OWN served defaults, including an author-declared effort default (P-A3, review §P2 (c))', async () => {
+    const script = `export const meta = { params: { knobs: { effort: { type: 'enum', enum: ['low','max'], default: 'max' } } } };\nreturn 1;`;
+    const first = await callTool('workflow_register', { name: 'it081-pa3-roundtrip', script });
+    expect(first.error).toBeUndefined();
+
+    const got = await callTool('workflow_get', { name: 'it081-pa3-roundtrip' });
+    const servedDefaults = (got as { defaults?: Record<string, unknown> }).defaults;
+    expect(servedDefaults?.['effort']).toBe('max'); // sanity: the normalized default IS served
+
+    // Re-register using the engine's OWN served `defaults` verbatim — the exact discover -> edit ->
+    // save round-trip a real author/UI performs. Must succeed, never HARNESS_DEFAULTS_INVALID.
+    const second = await callTool('workflow_register', { name: 'it081-pa3-roundtrip', script, defaults: servedDefaults });
+    expect(second.error).toBeUndefined();
+    expect((second as { code?: string }).code).not.toBe('HARNESS_DEFAULTS_INVALID');
+  });
+});
+
+// v21 GATE 8 RE-REVIEW #3 re-run (2026-09-01, review §P2 P-A4 ≡ adversarial A4, re-run scope (d)):
+// a declared `knobs.model.default` bypasses D-AUTH-5-B alias validation because knob-default
+// normalization (workflow-catalog.ts:130-142) runs AFTER `validateHarnessDefaults` — the CALLER's
+// own `defaults` argument is alias-checked, but a `model.default` with NO corresponding
+// `defaults.model` (declared only via `params.knobs.model.default`, no `enum`) is injected into
+// `effectiveDefaults` afterward with no alias check at all. On a configured-alias deployment, a
+// non-alias `model.default` registers successfully and every named run of it is refused only later
+// (run-manager.ts:424's post-merge R-G2 backstop) — the register-time control that should make this
+// impossible-by-construction never fires.
+describe('meta.params model.default bypasses D-AUTH-5-B alias validation (DES-101, P-A4, review §P2 (d))', () => {
+  it('a model.default naming an alias absent from a CONFIGURED alias table is rejected AT REGISTRATION, not admitted then refused only at run time', async () => {
+    const script = `export const meta = { params: { knobs: { model: { type: 'string', default: 'not-a-real-alias-xyz' } } } };\nreturn 1;`;
+    const r = await callTool('workflow_register', { name: 'it081-pa4-bad-model-default', script });
+    expect(r.error).toBeDefined();
+
+    const got = await callTool('workflow_get', { name: 'it081-pa4-bad-model-default' });
+    expect(got.code).toBe('WORKFLOW_NOT_FOUND'); // fail-closed: nothing stored
+  });
+
+  // Regression pin: a model.default naming a REAL configured alias must keep registering fine.
+  it('regression pin: a model.default naming a real configured alias registers fine', async () => {
+    const script = `export const meta = { params: { knobs: { model: { type: 'string', default: 'sonnet' } } } };\nreturn 1;`;
+    const r = await callTool('workflow_register', { name: 'it081-pa4-good-model-default', script });
+    expect(r.error).toBeUndefined();
+  });
 });
