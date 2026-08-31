@@ -24,6 +24,11 @@ status: reviewed
 | D9 | Tech stack (orchestrator default) | Node.js / TypeScript server (natural fit: workflow scripts are JS; Claude Agent SDK has a first-class TS SDK). Persistence: filesystem journal (`journal.jsonl` per run) + SQLite index. |
 | D10 | Work folders | Every registered workflow gets its **own persistent work folder**; every run executes in a run-scoped workspace under it (agents' file I/O roots there). |
 | D11 | Execution modes | Beyond run-once-now: **cron-scheduled**, **one-shot at a time**, and **resident (deployed, user-triggered on demand)** workflows. |
+| D12 (v21, user 2026-08-31) | Author / user role split | The engine distinguishes a workflow's **author** (its `owner` principal from REQ-087 — no new role concept) from its **users**. Users may tune only a declared set of knobs: **model / effort / timeoutMs / appendPrompt** plus the author-declared `args`. Permanently **locked** to the author: the system prompt, `skills`, `tools`, provisioned `mcp` servers, and the work directory. Enforcement is engine-side validation at run submission, not convention. |
+| D13 (v21, user 2026-08-31) | appendPrompt attachment point | A user-supplied `appendPrompt` is attached at a **fixed position: after the agentType system prompt and after the skill / MCP surface**, i.e. appended to the outbound prompt composition — never replacing or preceding the locked system prompt. |
+| D14 (v22, user 2026-08-31) | Inline script is closed | `workflow_run({script})` and `workflow_resume({script})` are **removed as caller-supplied entry points**; every run goes through a registered name. Consequence recorded at Gate 1: the submission-time static checks (parse / model-alias / MCP-provisioned) currently gated on `spec.script` must move to registration time or they become dead code. |
+| D15 (v22, user 2026-08-31) | Version history + beta/release channels | The catalog keeps **version history** (a name may have many versions); `beta` and `release` are channel pointers to specific versions. `channel` is a **run-time parameter defaulting to `release`**; no per-user channel opt-in state. `workflow_get` **masks the script for non-owners**. |
+| D16 (v23, user 2026-08-31) | Diagram by agent; skeleton removed | The regex `parseWorkflowSkeleton` is **removed** (all three consumers). A configuration-separated **analyzer agent** reads the script + params declaration and renders an **ASCII line diagram** (rounded-box agents, trigger method, fan-out/fan-in, conditional branch/loop), stored per version and served read-only. Accepted consequence: the live run DAG then shows only agents that actually spawned, with no predicted cells. Closes GitHub issue #32. |
 
 > **Compatibility baseline**: the full as-is capability survey of Claude's dynamic Workflow tool lives in
 > [`dynamic-workflow-compat-spec.md`](dynamic-workflow-compat-spec.md) (same folder) — §1–§5 are the 100%-compat
@@ -775,3 +780,64 @@ flowchart LR
 - **traces:** REQ-012, REQ-086
 - **acceptance:** Given auth is enabled and the engine is bound to a non-loopback address (`0.0.0.0` / the LAN IP / via the cloudflared tunnel), When a request to a **protected surface** (REQ-086) arrives from a **non-loopback** peer without a valid engine bearer Then it is refused **fail-closed** (401, no side effect) — closing the current state where a `0.0.0.0` bind serves every LAN/tunnel caller with zero auth; Given the SAME request arrives from **loopback (`127.0.0.1`/`::1`)** Then it is exempt (the local admin, curl smoke-tests, and the tag-triggered self-update rescue path keep working without a token); Given the `POST /github/webhook` path (HMAC-verified, REQ-…webhook) Then it is unaffected by this guard (its own HMAC remains the control, so releases still self-update). Observable: from another host, an un-tokened `/mcp` or `/assets/blob` call gets 401; the identical call over `127.0.0.1` on the engine host succeeds; a valid HMAC webhook POST from the tunnel still triggers self-update. Given auth is DISABLED in config Then the guard is dormant and the pre-v15 open-LAN behavior is preserved (opt-in security switch).
 - **iter:** v15
+
+---
+
+## Iteration v21 — Author/user separation, part 1: the tunable-parameter contract
+
+> **v21 goal (user 2026-08-31)**: today a workflow author and a workflow user are the same role, so
+> when a user needs a variation the only lever is *editing the workflow JS* — the engine has no notion
+> of "this knob is yours to turn, that one is mine". v21 introduces the **parameter contract**: an
+> author declares which knobs a user may tune, the engine enforces it at run submission, and the
+> locked configuration (system prompt / skills / tools / MCP / workdir) becomes structurally
+> unreachable from the caller. See decisions **D12–D13**.
+>
+> **Two live defects are repaired in the same iteration** (both found 2026-08-31 while scoping this
+> work, both pre-existing, both making the v15 REQ-088 promise hollow):
+> 1. `resolveHarnessParams()` (`src/harness-defaults.ts:90`) has **zero callers in `src/`** — registered
+>    `defaults` are stored, validated, and returned by `workflow_get`, but the run path only ever calls
+>    `catalog.get()` (script+version), so they never affect execution. REQ-088's "the run executes with
+>    the registered defaults applied" has never actually held. Same wiring bug class as the v11
+>    `updateFlagPath`, v15 `auth`, and v16 `workspaceTtlMs` composition-root misses.
+> 2. `AgentOpts.effort` (`src/types.ts:49`) is advertised in the MCP DSL contract
+>    (`src/server.ts:258`) and `ProviderProfile.effortMapping` exists, but **no code reads either** —
+>    it is a documented knob that does nothing.
+>
+> v22 (channels + closing inline script) and v23 (read-only describe surface + agent-rendered ASCII
+> diagram, closing issue #32) build on this contract; the ordering constraint is recorded in D14/D15.
+
+### REQ-090 — a workflow declares its tunable-parameter contract, discoverable without reading the script
+- **status:** draft
+- **traces:** REQ-014, REQ-088
+- **acceptance:** Given a workflow script whose `export const meta` carries a **`params` block** — a pure literal declaring, per tunable knob, its name, type, default, and an allowed enum/range — When the owner registers it Then the declaration is validated and stored alongside the script; Given `workflow_get` / `workflow_list` Then the declared contract (each knob's name/type/default/bounds) is returned as structured data so a caller learns what it may tune **without reading the script body**; Given the four engine-global harness knobs (`model`, `effort`, `timeoutMs`, `appendPrompt`) Then they are tunable by default and a `params` declaration may further **constrain** them (e.g. `model` restricted to an enum of aliases, `timeoutMs` to a ceiling) but may not unlock anything outside them; Given a `params` block that attempts to declare any **locked** key — `prompt`, `tools`, `skills`, `mcp`, `workdir`/`cwd` (D12) — Then registration is rejected with a typed error and **nothing is stored** (fail-closed, no partial write); Given a script with **no** `params` block Then it still registers unchanged (backward compatible) and is treated as declaring the four global knobs with no extra constraints.
+- **iter:** v21
+
+### REQ-091 — per-run overrides are validated against the contract; locked configuration is unreachable from the caller
+- **status:** draft
+- **traces:** REQ-090, REQ-088, REQ-087
+- **acceptance:** Given `workflow_run({name, overrides:{model?, effort?, timeoutMs?, appendPrompt?}, args})` whose values satisfy the registered contract, When the run starts Then the effective harness params are the registered defaults merged per-parameter with the overrides (override wins for the keys it supplies, the rest fall back) — observable in the run's harness descriptor via `workflow_agent_log`, not merely echoed back; Given an `overrides` object naming any **locked** key (`prompt`, `tools`, `skills`, `mcp`, `workdir`/`cwd`) Then the submission is refused with typed **`PARAM_LOCKED`** **before any durable work** (no run row, no workspace directory, no sandbox fork); Given an override outside the declared contract — a model absent from the declared enum, a `timeoutMs` above the declared ceiling, an unknown `effort` level — Then refused with typed **`PARAM_OUT_OF_RANGE`**, likewise before durable work; Given declared `args` fields Then they are type/range-checked the same way, while **undeclared** `args` keys pass through unchanged (backward compatible with every existing workflow); Given no `overrides` at all Then behavior is identical to a pre-v21 run of the same workflow.
+- **iter:** v21
+
+### REQ-092 — registered harness defaults actually take effect at run time (repairs the REQ-088 wiring gap)
+- **status:** draft
+- **traces:** REQ-088, REQ-091
+- **acceptance:** Given a workflow registered with `defaults:{model:'M', timeoutMs:T}` and a `workflow_run({name})` supplying no overrides, When a script `agent()` call that specifies **no** `model`/`timeoutMs` of its own dispatches, Then it really dispatches with `M` and `T` — observable in the agent's harness descriptor (`workflow_agent_log(...).harness`) and in the model actually billed/routed, **not** merely in `workflow_get`'s echo of the stored row; Given the same run where the **script itself** passes `agent({model:'S'})` Then the per-call value wins (the author's explicit per-step choice is more specific than a registration-time default); Given the full precedence chain Then it resolves as **per-call `agent()` opts › per-run `overrides` › registered `defaults` › engine default alias**, and a test pins each rung; Given `defaults.skills` / `defaults.tools` / `defaults.prompt` (the locked keys) Then they are applied from the **registration** only and can never be reached by a caller (D12) — closing the current state where they are inert metadata.
+- **iter:** v21
+
+### REQ-093 — `effort` is a real end-to-end parameter, not a documented no-op
+- **status:** draft
+- **traces:** REQ-091, REQ-092
+- **acceptance:** Given `agent({effort:'high'})` in a script, or a per-run `overrides.effort`, When the agent dispatches Then the effort level is **actually conveyed to the model backend** through a provider-appropriate mapping and the applied mapping is recorded in the harness descriptor (observable: two runs of the same prompt at `low` vs `max` show the different mapped value on the outbound request, not just in the echo); Given a provider with no equivalent control Then the effort **degrades to a no-op without failing the run** and the descriptor explicitly records that it was not applied (honest observability, never a silent claim of success); Given an `effort` value outside `low|medium|high|xhigh|max` Then it is refused at submission with a typed error; Given no `effort` anywhere Then request composition is byte-identical to pre-v21 (no regression for existing workflows).
+- **iter:** v21
+
+### REQ-094 — a user-supplied `appendPrompt` attaches at a fixed position after everything the author controls
+- **status:** draft
+- **traces:** REQ-091, REQ-090
+- **acceptance:** Given a run whose effective params include `appendPrompt:"…"`, When any `agent()` in that run dispatches Then the outbound prompt is composed as **[agentType system prompt] + [script prompt] + [appendPrompt]** with the appended text **last** — never before or in place of the system prompt — and the skill / MCP surface (which is option-level, not prompt-string-level) is likewise unaffected in composition order (D13); observable in the captured transcript prompt; Given no `appendPrompt` Then the composed prompt is byte-identical to pre-v21; Given an `appendPrompt` whose text asks the agent to change its tools, skills, MCP servers, or working directory Then it has no such effect — those remain enforced structurally by REQ-091, so the append is only ever additional instruction text; Given an `appendPrompt` exceeding a documented size cap Then it is refused at submission with a typed error rather than silently truncated.
+- **iter:** v21
+
+### REQ-095 — problem reports are bound to a specific workflow and filterable by it
+- **status:** draft
+- **traces:** REQ-090
+- **acceptance:** Given `issue_report({workflow, version, runId, …})` Then the created GitHub issue carries a **`workflow:<name>` label** and its body records `name@version` plus the `runId` that reproduced it, so the workflow's author can see which of their workflows is being reported against; Given `issue_list({workflow:'x'})` Then only issues labelled `workflow:x` are returned; Given `issue_report` called **without** a `workflow` (an engine-level bug report) Then it behaves exactly as it does today, unlabelled by workflow; Given a `workflow` name that is not registered Then the report is still filed (a user must be able to report against a workflow that was just deregistered) but records the name as-supplied without asserting it exists.
+- **iter:** v21
