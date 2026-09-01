@@ -3106,3 +3106,39 @@ The widen-encoding tests stand as the target and need no rewrite. Add:
   value.
 
 ---
+
+---
+
+## Orchestrator adjudication #7 — F-1 completion assignment + the ceiling hole (2026-09-01)
+
+F-1 has now deadlocked on file partitions twice: its three halves live in `resolve.ts` (TASK-098),
+`harness-defaults.ts` (TASK-104) and `workflow-catalog.ts` (TASK-099), and each implementer correctly
+refused to reach across. **Assigned to the integrator closeout**, which has cross-task scope by
+definition. Remaining work, all previously adjudicated:
+
+1. `KNOWN_KEYS` gains `effort` / `appendPrompt`; `validateHarnessDefaults` gains their shape checks.
+2. The adjudication-#5 unappliable-knob rejection at `workflow-catalog.ts:135` is removed; the
+   `violatesOwnSpec` self-consistency check at `:132` **stays**.
+3. `Ceilings` is threaded into `register()` so an author `effort` default above `maxEffort`, or an
+   `appendPrompt` default over `maxAppendPromptBytes`, is bounded like any other declared value.
+4. Once (1) lands, the local `AuthorDefaults` intersection type and cast in `resolve.ts` become
+   redundant — remove them; the implementer left a comment saying so.
+
+### G-1 — the ceiling hole the widening opened is REAL and in scope; its test is pre-authorized
+
+The implementer found it and correctly declined to code it without a red test: a caller-supplied
+`defaults: {effort: 'max'}` (or an over-byte `appendPrompt`) passed to `workflow_register` with **no
+`params.knobs` block at all** bypasses the ceiling check entirely, because that check only runs inside
+the loop over *declared* knobs. `validateHarnessDefaults` cannot close it either — it validates shape
+and enum membership and has no access to the ceilings.
+
+This is the **advertised-bound ≠ enforced-bound class again** (P-A2, R-G3), arriving through the door
+the widening just opened, so it ships in v21 rather than as debt. **Pre-authorized, as C-1 and B-3 were:
+the integrator writes the red case and the fix in the same pass** — a registration whose raw `defaults`
+carry an out-of-ceiling `effort` or `appendPrompt`, with no params block, is refused; the ceiling is the
+same number admission enforces.
+
+### G-2 — the surviving `adjudication #5` reference in `workflow-catalog.ts`
+One citation remains after the rejection branch is removed. Keep it **only** if it reads as a historical
+note recording a superseded decision; if it still describes live behavior, it is stale and goes. A
+comment citing a superseded adjudication as though it were current is the same defect class as R-G10.
