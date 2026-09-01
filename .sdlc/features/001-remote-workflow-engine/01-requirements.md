@@ -793,6 +793,16 @@ flowchart LR
 - **iter:** v14
 
 ### REQ-085 — optional `scriptSha256` integrity guard on `workflow_run({script})`
+- **[SUPERSEDED v22, owner-confirmed 2026-09-02]** This requirement guards the integrity of a script
+  supplied **on the wire**. **REQ-098 closes that door entirely**, so the guarded input can no longer
+  exist: `scriptSha256` is unreachable by construction, not merely unused. Removed in v22 (adjudication
+  K-4; `RunSpec.script` itself is retained solely for pre-v22 persisted read-back on resume). The
+  integrity concern it addressed does not disappear — it **moves to registration**, where `REQ-099`'s
+  parse / alias / MCP checks now run, and where `REQ-096`'s version pin means a run executes exactly the
+  stored bytes of the version it names. Its two test files (`assert-script-integrity.test.ts`,
+  `val-094-script-sha.test.ts`) therefore test a surface that no longer exists and are retired with it,
+  not migrated — migrating them would fabricate coverage for an input the engine cannot accept.
+
 - **status:** draft
 - **traces:** REQ-081
 - **acceptance:** Given `workflow_run({script, scriptSha256})`, When `scriptSha256` is supplied AND equals the sha256 of the `script` bytes, Then the run proceeds normally. When `scriptSha256` is supplied but does NOT equal the sha256 of `script`, Then the engine rejects with a typed `SCRIPT_SHA_MISMATCH` and creates no run (a transcription slip in a large inline script cannot silently change gate behavior and burn budget). When `scriptSha256` is absent, Then behavior is unchanged (optional / additive; existing callers unaffected). Observable: a `workflow_run` with a matching `scriptSha256` runs; the same call with one byte of the script altered → `SCRIPT_SHA_MISMATCH`, no run; omitting `scriptSha256` runs exactly as before.

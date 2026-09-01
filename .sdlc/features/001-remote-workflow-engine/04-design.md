@@ -3702,3 +3702,53 @@ closeout — v21 lost two whole closeouts to unpinned leftovers:
 - `JournalEntry.resolvedWorkflowVersion` for nested `workflow()` resolution — **in scope**, same route.
 - The `entry.scriptVersion` resume-generation re-seed semantics — **deferred**, recorded debt: current
   behaviour was observed consistent, and no requirement asks for a change.
+
+---
+
+## Orchestrator adjudication (v22) #2 — what the helper's survey forced (2026-09-02)
+
+The helper pass measured **four** fixture shapes rather than the three I assumed, and surfaced five
+things the sweep must not decide for itself. Each gets a ruling here, before ~89 files move.
+
+### L-1 — REQ-085 (`scriptSha256`) is SUPERSEDED, and its two tests are retired, not migrated
+REQ-085 guards the integrity of a script supplied **on the wire**. REQ-098 closes that door, so the
+guarded input cannot exist — the requirement is unreachable by construction, not merely unused. The
+concern it addressed moves to registration (REQ-099's checks) and to REQ-096's version pin, which
+guarantees a run executes exactly the stored bytes of the version it names. `assert-script-integrity` and
+`val-094-script-sha` test a surface that no longer exists: **retire them with the requirement.** Sweeping
+them would fabricate coverage for an input the engine cannot accept. Recorded on REQ-085 itself.
+
+### L-2 — the K-4 resume branch must keep a test; do not let the sweep delete its only coverage
+`crash-resume` and `suspend-resume-replay` start inline-script runs and then suspend/resume. They are
+mechanically sweepable — and if all of them move, the persisted-spec resume read-back branch that K-4
+**retained `RunSpec.script` for** has zero coverage, permanently, because no test can reach it through
+`start()` again. **Keep one test that seeds a script-bearing spec directly** (the store-level pattern in
+`run-store-persistence.test.ts` already does this and is green) and exercises resume through it. A
+retained field with no test is a field the next iteration deletes as dead.
+
+### L-3 — `channels` and `params.knobs` ARE non-owner-visible; update the oracle, do not weaken it
+`workflow-view.test.ts`'s `EXPECTED_NON_OWNER_KEYS` fails on `channels.beta`, `channels.release`,
+`params.knobs`. **REQ-100 settles this and the code is right:** the non-owner response must return "name,
+version, channel, purpose, declared parameter contract (REQ-090), owner, and how to report a problem".
+Channel and the declared contract are named in the requirement — a user must be able to see what they may
+tune and which version they are getting. Update the expected-key set to match REQ-100. This is the one
+case where changing the assertion is correct, and it is correct **because the requirement says so**, not
+because the code does.
+
+### L-4 — ownership tests must carry their own principal through the sweep
+`workflow-ownership` and `val-097` inject identity as a tool argument. The helper defaults to
+`principal: null`, which **skips the publish ownership gate** — sweeping them naively turns
+`NOT_WORKFLOW_OWNER` oracles into silent passes. Thread each test's own principal. A test that still
+passes after its subject stopped being enforced is worse than a failing one.
+
+### L-5 — the stale-subject files are implementation work, not sweep work
+`submission-validator`, `openrouter-provider`, `default-aliases-single-source`,
+`submission-entry-point`, `mcp-tools-list-schema`, `v14-schema-drift`: their subject **moved** to
+`src/script-checks.ts` (ADR-013) or was removed from the advertised schema. They need rewriting against
+the new site by the implementation gate. Excluded from the sweep and listed for the impl route.
+
+### L-6 — a real defect the helper found, fixed at the right layer
+`scriptversion-fidelity.test.ts` asserts `'v1'` and gets `'v9'`: it uses a fixed name against the
+**shared** `os.tmpdir()` catalog that persists across suite runs, so versions accumulate. The fix is a
+private `workRoot` per test, not a helper change. **Generalised for the sweep: any test asserting a
+literal version, or a catalog list or count, needs its own `workRoot`.**
