@@ -1,274 +1,324 @@
 # Architecture panel — Adversarial group, round 1 (independent proposal)
 
 - **Feature**: 001-remote-workflow-engine
-- **Iteration**: v21 — author/user separation part 1, the tunable-parameter contract (REQ-090..095)
-- **Lenses carried (three, in tension)**: (a) Security — authn/authz correctness, secret protection, attack surface; (b) Scalability/performance — state storage, horizontal scaling, concurrency & consistency; (c) Testability — module boundaries, injectable deps, cheap unit/integration tests.
+- **Iteration**: v22 — author/user separation part 2: version history, release channels, closing inline script (REQ-096..100)
+- **Lenses carried (three, in tension)**: (a) Security — authn/authz correctness, secret/asset protection, attack surface; (b) Scalability/performance — state storage, horizontal scaling, concurrency & consistency; (c) Testability — module boundaries, injectable deps, cheap unit/integration tests.
 - **Tie-breaker discipline**: Karpathy simplicity-first — the minimum architecture that closes the requirement, nothing speculative.
-- **Safety class**: QM (state.yaml) → no safety lenses applied.
+- **Safety class**: QM (state.yaml) → no safety work products.
 
 ---
 
 ## 0. Altitude judgment (done first, per task)
 
-**Verdict: BOTH altitudes are live, and the *agent* altitude dominates this slice.**
+**Verdict: BOTH altitudes are live. For v22 the *system* altitude dominates, with one agent-altitude concern that must not be dropped.**
 
-Evidence from `tech_stack` + requirements:
+From `tech_stack` + REQ-096..100:
 
-- The engine is a conventional **system** in its transport/persistence/lifecycle layer: hand-rolled JSON-RPC-over-HTTP (`src/server.ts`), better-sqlite3 RunStore + WorkflowCatalog, filesystem journal, child-process + `node:vm` sandbox, systemd/docker deploy. REQ-091's "before any durable work", REQ-090's storage/discoverability, and REQ-095's issue plumbing are **system-altitude** concerns.
-- But the artifact v21 actually governs is an **agent harness**: which model is dispatched, at what effort, with which tool/skill surface, and what text lands in the outbound prompt (REQ-092/093/094). The thing being made replaceable/observable/consumable is *an agent's configuration*, and the new caller-controlled input (`appendPrompt`) is **instruction text fed to a model**, not data fed to a function. So the agent-altitude readings apply and dominate:
-  - *Observability (agent)*: "the run used model M" is not enough — the reviewable unit is the **effective harness descriptor** (model, effort + whether the mapping actually applied, timeout, tool/skill surface, prompt composition order, and the **provenance rung** each value came from). REQ-092/093 already say "observable in the harness descriptor, **not** merely echoed back" — that is an agent-altitude acceptance criterion and I treat it as the load-bearing one.
-  - *Consumability (agent)*: the contract must be legible to a **non-human consumer** (an MCP client agent choosing knobs) without reading the script — REQ-090's whole point.
-  - *Replaceability (agent)*: effort mapping must be per-provider and degrade honestly, because providers are swapped by config (REQ-004/016/037).
-  - *Self-sustainability*: v21's two repaired defects are both **inert-config** bugs (`resolveHarnessParams` zero callers; `effort` a documented no-op). The architecture must make inertness structurally impossible, not test-detectable.
+- v22's five requirements are, without exception, about **storage schema, identity-gated reads, and where a validation runs**: a catalog keyed by `(name, version)` instead of `name`, two channel pointers, a removed tool parameter, a moved validator, a masked response. That is conventional-system architecture — SQLite (`better-sqlite3`), a hand-rolled JSON-RPC-over-HTTP surface (`src/server.ts`), an idempotent boot migration. **No model, prompt, tool surface, or dispatch behaviour changes.** So the *system* readings of the four quality dimensions apply and dominate.
+- The **agent altitude still binds in one place, and it is the place most likely to be forgotten**: the artifact being versioned, channelled and masked is *a script that configures agents* — its `meta.params` contract, its `defaults.appendPrompt` (prompt text), its `model` aliases, its `mcp` names. Two consequences I carry through §2/§3:
+  - *Consumability (agent)*: the primary consumer of `workflow_get` is **an MCP client agent** choosing whether/how to run a workflow. Masking the script must not leave that agent unable to decide — REQ-100 exists precisely because "purpose + declared parameter contract" must be enough for a non-human reader. A mask that returns a hole is a consumability regression at the agent altitude even when it is correct at the security altitude.
+  - *Replaceability (agent)*: REQ-099 moves **model-alias** and **MCP-provisioned** checks from run-time to registration-time. Those are checks against a *mutable environment* (aliases come from config, MCP servers from the registry). Freezing an environment check at registration is safe for parse errors and unsafe for environment-coupled ones — §3.4 argues this and takes a position.
 
-**What this altitude call rules OUT (honesty, not evasion):** my lens template names brute force, JWT forgery, timing attacks, and concurrency of failure counting. v21 introduces **no credential comparison, no token issuance, no failure counter, and no new authenticated endpoint** — that surface is REQ-012/086/089 (v15–v20, shipped and reviewed). Manufacturing threats there would be speculative work and I decline it. v21's real security surface is different and is enumerated in §2.
+**What this altitude call rules OUT (honesty, not evasion).** My lens template names brute force, JWT forgery, timing attacks, and concurrency of failure counting. **v22 introduces no credential comparison, no token issuance, no failure counter, and no new authenticated endpoint.** That surface is REQ-012/086/089 (v15–v20, shipped and reviewed); the OAuth/token machinery in `src/auth/*` is untouched by REQ-096..100. Manufacturing threats there would be speculative and I decline it. v22's real security surface is **authorization on a read** (REQ-100) and **removal of an execution primitive** (REQ-098), and that is what §2 attacks.
 
 ---
 
 ## 1. Summary
 
-v21 is, structurally, one idea: **a run's effective harness parameters become a first-class, resolved-once, immutable value object, computed at admission from three ranked sources and carried on the run** — instead of being (as today) partly inert registry metadata, partly script-literal opts, and partly nothing at all.
+v22 is one structural idea plus one deletion:
 
-My proposal is deliberately small: **five pure functions, one non-optional wiring seam, one new catalog column, zero new tables, zero new endpoints, zero new services.**
+**Structural idea** — the catalog stops being a mutable key–value map and becomes an **append-only version table with two movable pointers**. Registration writes an immutable row; publication moves a pointer; a run resolves *pointer → version* once, at admission, and pins it.
+
+**Deletion** — `script` leaves the wire surface of `workflow_run`/`workflow_resume`, which means the engine's *only* remaining ingress for executable text is `workflow_register`. That is what makes REQ-099 (moving the static checks) not optional bookkeeping but a **correctness precondition**: today every static check sits behind `if (spec.script)` (`src/submission-validator.ts:92`), so the moment inline script is closed, **100% of runs skip 100% of submission validation.**
 
 ```
-  registration time                    submission time                 dispatch time
-  ────────────────                     ───────────────                 ─────────────
-  parseParamContract(script)  ──►  validateOverrides(contract, raw)  ──►  resolveEffective(...)
-        │  (pure)                          │  (pure)                          │  (pure)
-        ▼                                  ▼                                  ▼
-  workflows.paramsJson             PARAM_LOCKED /                    EffectiveParams snapshot
-  (normalized, stored once)        PARAM_OUT_OF_RANGE                 pinned on the run record
-                                   (before ANY durable work)                  │
-                                                                              ├─► composePrompt()  (pure)
-                                                                              └─► mapEffort()      (pure)
-                                                                                       │
-                                                                                       ▼
-                                                                            harness descriptor
-                                                                        (the single observation point)
+   REGISTER (the only ingress for script text)        PUBLISH (pointer move)          RUN (resolve once, pin)
+   ─────────────────────────────────────────         ──────────────────────          ───────────────────────
+   ownership gate (name-level, existing)              ownership gate (same)           channel|version → version
+        │                                                   │                                  │
+   SubmissionValidator.validateScript(script) ◄── MOVED     │                          catalog.getVersion(name, v)
+        │  PARSE_ERROR / UNKNOWN_ALIAS / MCP_NOT_PROVISIONED│                                  │
+   contract + defaults + ceiling checks (existing)          │                          run record pins (name, version)
+        │                                                   ▼                                  │
+        ▼                                    workflows.release_version / .beta_version         ▼
+   INSERT workflow_versions(name, version, …)  ← immutable                             every later read of this run,
+   (NOT published to any channel — REQ-097)                                            and RESUME, uses the PIN
 ```
 
-### The load-bearing decision — **D-P21-1: effective params are resolved once, at admission, and are run-immutable**
+**Cost of my proposal: one new table, two new columns on the existing table, one new MCP tool (`workflow_publish`, required by REQ-097) plus three new parameters (`channel`/`version` on `workflow_run`, `version` on `workflow_get`), one moved function call, one masking projection at one choke point, one `db.transaction()` wrapper. Zero new HTTP endpoints, zero new services, zero new background jobs, zero caches.**
 
-Consequences, all of which fall out for free and each of which fixes a distinct problem in one of my three lenses:
+### The load-bearing decision — **D-P22-1: a run pins `(name, version)` at admission, and every later read of that run — status, resume, DAG — resolves through the pin, never through a channel or a name**
 
-1. **Consistency (scalability lens)** — the contract is read from the **same catalog version row the run pins** (REQ-014 already pins version per run). A concurrent owner `workflow_register` between validation and dispatch cannot change what this run enforces. **No lock, no transaction, no coordination** — the fix is snapshotting, not synchronization.
-2. **Resume determinism (scalability + correctness)** — `resume-cache.ts:13` `sameKey()` compares `a.prompt === b.prompt && JSON.stringify(a.opts) === JSON.stringify(b.opts)`, and `run-manager.ts:706` builds `CallKey` from the **raw script-literal** prompt/opts. If REQ-092's wiring fills `opts.model` or REQ-094's `appendPrompt` **upstream** of that line, every already-journaled call's key changes on upgrade → cache MISS → and because `ResumeCache` poisons forward ("once any callSeq misses, every later call misses"), the **entire tail of every suspended run re-dispatches live** after the v21 deploy. Real money, silently. Because params are run-immutable, they need **not** enter the key at all: same run ⇒ same params ⇒ `CallKey` stays at script altitude ⇒ **zero invalidation on upgrade**. The price is one explicit rule: `workflow_resume` must **not** accept new overrides (typed error if supplied and different). That rule is one `if`, and it is the whole cost of the property.
-3. **Security** — the persisted snapshot is the audit record: who (principal, REQ-086) ran what workflow@version with which knobs and which appended text.
-4. **Testability** — resolution becomes a pure function over a stored row, so the four-rung precedence table (REQ-092) is a table-driven unit test with no I/O, and the snapshot is a single assertable artifact.
+This is not a nicety. It fixes a **live consistency defect that exists today**:
+
+> `src/run-manager.ts:632-636` — on `rehydrate`/`resume`, a run whose `spec.script` is empty (which is *every* run started by name; the resolved script is deliberately never written back into the spec) re-reads `await this._catalog.get(spec.name)` and gets **whatever is registered now**. Register a new version while a run is suspended, resume it, and the run continues executing **a different script than it started**. Today that is a narrow window because registration overwrites in place and nobody notices; under v22, with version history and a `beta` channel that authors are *encouraged* to churn, it becomes the normal case.
+
+So: version history is not only REQ-096's feature request, it is the **only available fix** for resume determinism. I want this framed that way in the architecture doc, because it changes the priority of the pin from "nice observability" to "correctness invariant", and it gives the pin a test with real failure semantics (§4).
 
 ---
 
-## 2. Key points
+## 1b. Key points
 
-### 2.1 Security lens
+1. **D-P22-1 — a run pins `(name, version)` at admission; status, resume and DAG all resolve through the pin, never through a name or a channel.** Not a feature: it is the only available fix for a *live* defect where resume re-resolves the catalog and can continue a different script than the run started (`run-manager.ts:632-636`). §1, §3.6, §4.4, R6.
+2. **D-P22-4 — the boot migration must publish each migrated workflow's current version to `release`.** REQ-096's migration says nothing about channels; REQ-097 refuses an unpublished channel rather than falling back. Composed, they silently break every existing `workflow_run({name})`, schedule, chain and webhook at next fire. One line in the migration; highest-value point in this proposal. §3.2, R1.
+3. **D-P22-2 — the masking principal is a *required* parameter (`ReadContext`), not an optional one defaulting to `null`.** `server.ts:823`/`:808` thread no principal today; an optional parameter reproduces this project's `composeConfig` wiring bug class (correct implementation, unwired call site, all unit tests green, zero protection). Required parameter ⇒ an unwired call site is a compile error. §2.1, R2.
+4. **D-P22-3 — the mask keys off `authEnabled`, not off `principal == null`.** `null` principal has two causes: auth genuinely off (REQ-100's intended case) and the D-BIND loopback-peer exemption on an auth-*enabled*, publicly-bound server. Fail closed on the second. This deviates from REQ-100's parenthetical to honour its intent and must be escalated as a decision. §2.3, §5(e), R9.
+5. **One choke point, allowlist projection.** `projectWorkflowForRead(full, viewerIsOwner)` *constructs* every script-derived response — `workflow_get`, `workflow_list`, `/api/workflows*`, the skeleton route, the dashboard. Script appears twice today (top level + `result.script`), and `skeleton`/`phases` are script-derived and absent from REQ-100's allowlist. Enforcement by construction, not by five remembered deletions. Identity for the decision comes from the auth layer only — `args.principal` (`server.ts:815`) is barred from this path. §2.2, §2.4, R4, R10.
+6. **REQ-099 is a correctness precondition, not bookkeeping**, and it needs a *structural* guard: after the move, `SubmissionValidator` contains **zero** `if (spec.script)` branches. Today every static check sits behind that condition (`submission-validator.ts:92`), so closing inline script without the move deletes 100% of submission validation. §4.5, R3.
+7. **Schema: append-only `workflow_versions(name, version, …)` + two nullable pointer columns on `workflows`** — not a channels table (REQ-097 closes the enum and bars per-user channel state). Register/publish wrapped in one `db.transaction()`, because the new `(name, version)` PK turns today's silent cross-process lost update into a raw `SQLITE_CONSTRAINT`. §3.1, §3.3, §5(d), R7.
+8. **Take two debts while this file is open, as the requirements invite:** S-1 (per-name version ceiling — v22 turns catalog growth from O(names) into O(registrations), unbounded) and P6-2's registration half (reuse the *dispatch* predicate; do not write a second checker — the F-2 lesson). §3.4, §4.6, R8.
+9. **Explicitly rejected alternatives**, recorded so they are not re-invented at Gate 5: persisting the resolved script into `RunSpec` to fix the DAG (a new unmasked sink that defeats REQ-100 from another endpoint, §3.6); GC/pruning of old versions (dangling pins behind an auditable record, §5(c)); any lock table or version-allocation service (§3.3); deleting the `_adhoc` defaults rather than leaving them inert (§2.6).
 
-**S-1 (blocking) — `resolveHarnessParams()`'s current signature is a privilege-escalation trap. Do not wire it as-is.**
-`src/harness-defaults.ts:90`:
-```ts
-export function resolveHarnessParams(registered: HarnessDefaults | undefined,
-                                     overrides: Partial<HarnessDefaults>): HarnessDefaults
-```
-`HarnessDefaults` = `{model, tools, skills, timeoutMs, prompt}`. The override side can therefore supply **`tools`, `skills`, and `prompt`** — exactly three of the five keys D12 declares permanently locked to the author. REQ-092 instructs an implementer to "wire the zero-caller function into the run path". Wiring it verbatim with caller-supplied overrides hands every authenticated principal the author's tool surface and system prompt. This is not a hypothetical: it is the shortest path from the requirement text to code.
+---
 
-**Fix — split the type, don't guard the call.** The author side and the user side are *different sets that merely overlap*:
+## 2. Security lens
 
-| key | author (registration) | user (per-run) | note |
-|---|---|---|---|
-| `model` | ✔ default | ✔ tunable (constrainable) | shared |
-| `timeoutMs` | ✔ default | ✔ tunable (constrainable) | shared |
-| `tools` | ✔ | ✘ **locked** | D12 |
-| `skills` | ✔ | ✘ **locked** | D12 |
-| `prompt` (system) | ✔ | ✘ **locked** | D12 |
-| `mcp`, `workdir`/`cwd` | ✔ (provisioned) | ✘ **locked** | D12 |
-| `effort` | (not today) | ✔ tunable | REQ-093 |
-| `appendPrompt` | ✘ | ✔ tunable | REQ-094 |
+### 2.1 The masking wiring seam is the highest-probability defect in v22 (this project's known bug class)
 
-So: `HarnessDefaults` (author, 5 keys, unchanged) and a **new closed type `UserOverrides = {model?, effort?, timeoutMs?, appendPrompt?}`** — nothing else is *representable*. `resolveEffective(defaults, userOverrides, perCallOpts)` takes the two distinct types. A locked key cannot be smuggled because **there is no field to put it in**; the `PARAM_LOCKED` error becomes a courtesy message at the parse boundary, not the security control. Enforcement is by construction (D12's own words: "engine-side validation at run submission, not convention").
-
-**S-2 — the boundary must be allowlist-shaped at *both* ends, and it must be one boundary.**
-Denylisting locked keys rots: the next iteration adds a harness knob and it is silently user-tunable by default. Instead: (i) the MCP `workflow_run` inputSchema declares `overrides` with `additionalProperties: false` and exactly four properties (this also makes the contract self-describing to a schema-only consumer, satisfying the REQ-079 discipline for free); (ii) a single total parser `parseUserOverrides(unknown) -> Ok<UserOverrides> | Err<PARAM_LOCKED|PARAM_OUT_OF_RANGE|PARAM_UNKNOWN>` is the **only** way caller data becomes a `UserOverrides`. Every other path constructs it from the registry. One boundary, one test target.
-
-**S-3 — `appendPrompt` is a prompt-injection surface, and no amount of validation removes it. Bound it, frame it, attribute it.**
-REQ-094 correctly guarantees the *structural* things (tools/skills/mcp/workdir) stay locked. But D13's chosen position — **last, after everything the author controls** — is also the position with the greatest instruction-following weight in most models. A user cannot change the tool list; a user *can* ask the agent to use the tools the author already granted in ways the author did not intend (read the seeded workspace and dump it into the return value, call `issue_report`, hit a provisioned MCP). This is a real residual risk of the requirement as specified and I record it rather than pretend it away.
-
-Minimum sufficient controls (no classifier, no sanitizer — those are theatre here):
-1. **Hard byte cap**, config-driven, validated at submission (REQ-094 already demands a documented cap and a typed refusal — name it `maxAppendPromptBytes`, default 4 KiB).
-2. **Fixed delimiter frame**, so the author's prompt can reference it and the model can be told its trust level, e.g. `\n\n<user-instructions untrusted="true">\n…\n</user-instructions>`. Frame text is part of the composition contract and pinned by a drift-lock test.
-3. **Attribution**: the appended text is persisted on the run snapshot beside `principal` — an abuse is reconstructable, which is the control that actually deters at this altitude.
-4. **No structural reach**: already guaranteed by S-1/S-2.
-
-**S-4 — REQ-093 `effort` + REQ-087's open execution = a new user-reachable cost-amplification vector.**
-REQ-087 deliberately gates *mutation*, not execution: any authenticated principal may run any workflow. v21 then hands that principal `model` and `effort` as tunable-by-default knobs (REQ-090), and REQ-093 makes `effort` **actually reach the backend**. `effort:'max'` + the most expensive alias, on someone else's workflow, on the owner's billing. Today this is impossible because effort is inert and overrides don't exist; after v21 it is a two-field JSON call.
-
-- **Non-negotiable, cheap**: engine-global ceilings that always apply — `maxTimeoutMs`, `maxAppendPromptBytes`, and `maxEffort` (an ordinal clamp over `low<medium<high<xhigh<max`). Fail-closed defaults; a declared author ceiling may only be *tighter*, never looser.
-- **Open for adjudication (OPEN-1)**: should `model`/`effort` be *closed*-by-default (pinned to the registered default unless the author declares them tunable)? Security says yes. REQ-090's explicit backward-compat clause ("no `params` block ⇒ the four global knobs, no extra constraints") says no. My Karpathy call: **follow the requirement** (open-by-default) + ship the global ceilings + attribute cost to the principal — the ceilings close the unbounded part of the hole for one config block, and flipping the default is a requirement change that must go back to Gate 1, not be smuggled in at Gate 2. Recorded as residual risk R-4.
-
-**S-5 — `overrides.model` must still pass the existing alias-resolvability check.**
-Even when the contract declares no enum, an override model has to resolve against the configured alias table (REQ-004's "missing mapping reported at submission, not mid-run"). One line inside `validateUserOverrides`, reusing the same `aliasNames` set `validateHarnessDefaults` already takes — no new vocabulary.
-
-**S-6 — the `params` block widens an existing VM-eval surface; bound it and evaluate it exactly once.**
-`workflow-meta.ts:parseMeta` already does `runInNewContext('(' + objectText + ')', emptyCtx, {timeout: 50})` on the `checkMeta`-validated pure literal. A `params` block is a *larger, nested, author-supplied* literal in that same object. Controls: reuse the **same** `pureLiteral` gate (no new parser), add a size + nesting-depth bound before eval, and — critically — **evaluate at registration only**, persisting the normalized contract as JSON on the catalog row. The run path must never re-parse a script to learn the contract. Security (one eval site), performance (§2.2), and v22 (§2.4) all want the same thing.
-
-**S-7 — REQ-095 label/query injection.** `workflow:<name>` becomes a GitHub label and an `issue_list` label query, from a caller-supplied name that REQ-095 explicitly does **not** existence-check. Cheapest correct fix: apply the **same name-charset/length rule workflow registration already enforces, minus the existence check** — reuse, no new validation vocabulary. Also note the interaction with REQ-035's dedup fingerprint: the fingerprint derivation must include the workflow label, or two different workflows' reports collapse onto one issue.
-
-**S-8 — persisted snapshot vs REQ-083 redaction.** See conflict C-3.
-
-### 2.2 Scalability / performance lens
-
-**P-1 — zero new state. One column, one snapshot field.**
-- Contract → a `paramsJson` column on the existing workflows/version row. The run path already calls `catalog.get()`; the contract rides that **same row read**. No second query, no second index, no cache, no script re-parse per submission.
-- Effective params → a field on the existing run record / journal snapshot (the REQ-055 terminal-snapshot machinery already persists per-run structure). No table.
-- v21 therefore adds **no shared mutable state**, which is why the "concurrency & consistency of failure counting" item on my lens card has no v21 answer: there is no counter. The only concurrency question is the register-vs-submit race, and D-P21-1 answers it by version-pinned snapshot rather than by locking.
-
-**P-2 — admission-ladder placement is a DoS-ordering decision, not a style question.**
-REQ-091 demands refusal "before any durable work (no run row, no workspace directory, no sandbox fork)". The existing pre-`createRun` ladder is already pinned by DES-090 (scriptSha rung before admission). The param rung's correct slot:
+`src/server.ts:823` today:
 
 ```
-auth/principal (REQ-086/089)          — cheapest, most certain, no I/O
-  → run-admission counter (REQ-054)   — in-memory counter
-    → catalog.get(name@version)       — the ONE row read (also gives us the contract)
-      → parseUserOverrides + contract check   ← v21 rung: PURE, no I/O, no allocation of consequence
-        → seed / scriptSha rungs (DES-090)
-          → createRun / mkdir / fork  — first durable work
+case 'workflow_get': return facade.workflow_get(args as { name: string });
 ```
-Rationale: the v21 rung costs a JSON parse of a stored object and a handful of comparisons, so it belongs *after* the free in-memory checks and *before* anything that touches the filesystem, but it must not be pushed later "for convenience" — a submission that will be rejected must never mkdir.
 
-**P-3 — the CallKey/ResumeCache hazard (see D-P21-1 ¶2).** This is the single highest-cost mistake available in v21 and it is invisible to unit tests. Architectural rule, stated as an invariant for Gate 3/4 to carry: **nothing resolved by v21 may enter `CallKey`.** `run-manager.ts:706` stays byte-identical; resolution happens **downstream**, in the agent-executor, at the same point where `agentType.systemPrompt` is already prepended (`agent-executor.ts` ~line 290) — reading from the run-immutable snapshot. That placement is what makes D-P21-1 hold mechanically rather than by discipline.
+**No principal is threaded.** Same for `workflow_list` (`server.ts:808`). Compare `workflow_register`/`workflow_deregister` (`server.ts:813-822`), which *do* thread it. REQ-100 is therefore not "add a mask to the facade" — it is "**add an authorization input to two read paths that currently have none**", and this project has a named, twice-realised bug class for exactly this shape (`composeConfig` wiring: a new config block implemented correctly and never forwarded, silently inert; v11 `updateFlagPath`, v15 auth). A masking implementation that is perfect inside `McpFacade` and unwired at `server.ts:823` **passes every facade unit test and protects nothing.**
 
-**P-4 — prompt composition interacts with the existing `PROMPT_CAP` truncation.** `agent-executor.ts:26-28` truncates as `head + '…[truncated]…' + tail`. An appended block sits in the tail and survives; the **author's** prompt middle is what gets eaten. So a large `appendPrompt` can silently displace author instruction. Two requirements fall out: (i) `maxAppendPromptBytes` must be small relative to `PROMPT_CAP`; (ii) a test must pin the head/tail behaviour with an append present, and the harness descriptor must record that truncation occurred (honest observability, same principle REQ-093 applies to effort).
+**Architectural requirement (D-P22-2): the mask is applied at the facade, and the principal reaching it is a *required* parameter, not an optional one with a `null` default.** `workflow_get(a, principal)` with `principal: string | null = null` reproduces the failure — an unwired call site compiles and defaults to "no principal". Make the signature `workflow_get(a: {name: string}, ctx: ReadContext)` where `ReadContext` is a required argument. Then the unwired call site is a **compile error**, not a silent hole. This is the cheapest possible structural fix and it costs one type.
 
-**P-5 — horizontal scaling: unchanged and out of scope.** The engine is single-process with SQLite and a per-run child process; v21 adds no cross-process coordination, so it neither helps nor hurts a future multi-node story. I am **not** proposing a params service, a config cache, or an abstraction seam for a future distributed registry. Karpathy: that is speculative.
+### 2.2 The `args.principal` fallback must be barred from the masking path
 
-### 2.3 Testability lens
+`src/server.ts:814-815` (register/deregister):
 
-**T-1 — five pure functions and one wiring seam.** Everything v21 needs to *decide* is pure and unit-testable with no I/O, no clock, no randomness:
+```
+const { principal: argPrincipal, ...regArgs } = args as { …; principal?: string | null };
+const effectivePrincipal = principal ?? (typeof argPrincipal === 'string' ? argPrincipal : null);
+```
 
-| function | when | signature (shape) | tests |
-|---|---|---|---|
-| `parseParamContract(script)` | registration | `→ Ok<ParamContract> \| Err` | locked-key rejection, no-block backward compat, size/depth bounds |
-| `validateUserOverrides(contract, raw, aliasNames)` | submission | `→ Ok<UserOverrides> \| Err<PARAM_LOCKED\|PARAM_OUT_OF_RANGE>` | table-driven, one row per rejection reason |
-| `resolveEffective(defaults, overrides, perCallOpts, agentTypeDef, engineDefaults)` | dispatch | `→ EffectiveParams` | **the precedence table** (T-3) |
-| `composePrompt(systemPrompt, scriptPrompt, appendPrompt)` | dispatch | `→ string` | order, frame, byte-identity when append absent |
-| `mapEffort(providerProfile, effort)` | dispatch | `→ {applied: boolean, value?: unknown}` | per-provider, honest no-op |
+A caller-supplied `principal` in the tool arguments is honoured whenever the auth-resolved principal is null. The comment names it as an "IT-080 pattern for catalog-layer integration tests" — i.e. **a test convenience on a production code path**. For *ownership attribution* it is defensible (the auth-disabled deployment is single-operator). For a **confidentiality decision** it is not: it is a self-asserted identity, and REQ-100's whole content is "non-owner does not see the script".
 
-**T-2 — the wiring is the risk, and pure tests cannot catch it. Make omission a *type* error.**
-This is the fourth instance of a documented bug class in this repo: v11 `updateFlagPath`, v15 `auth`, v16 `workspaceTtlMs` all shipped as inert config because a composition-root forwarding line was missing, and REQ-092 exists because `resolveHarnessParams` has zero callers. Guards, in order of strength:
-1. **Non-optional constructor argument.** The run/dispatch path takes `EffectiveParams` (or a `HarnessResolution` port) as a **required** parameter. An implementer who forgets it gets a `tsc` failure, not a silently-inert feature. Do **not** add an optional field with a fallback default — that reproduces the bug class exactly.
-2. **composeConfig forwarding test.** Any new config key (`maxAppendPromptBytes`, `maxTimeoutMs`, `maxEffort`) must be added to `compose-config-v2-wiring.test.ts` **as part of this ARCH's definition of done**, not left to the implementer. The historical failure is always the same line: the key exists in the file schema, is read into `fileConfig`, and is never forwarded in `composeConfig()`.
-3. **One observation point** (T-4) so Gate 7.5 can assert reality rather than an echo.
+**Requirement: the identity used for masking comes from the auth layer only (`resolvePrincipal`), never from `args`.** If integration tests need an owner identity, they get it by minting a real token through `TokenStore` (the injectable seam already exists) — that is the correct test-double boundary and it costs one helper.
 
-**T-3 — the precedence table has a missing rung; pin all five.**
-REQ-092 names four rungs (per-call `agent()` opts › per-run overrides › registered defaults › engine alias). The code has a fifth the requirement is silent about: `agent-executor.ts:291` fills `model` from the **agentType definition's frontmatter** when `opts.model` is undefined. Where does that sit relative to a *user's* run-level override? A naive wiring lets a user's `overrides.model` beat the author's per-step agentType choice — which contradicts D12's spirit, since the agentType definition is author configuration. Proposed table (**and flagged for synthesizer adjudication as OPEN-3**), rationale *the author's more specific choice wins over a user's blanket one*:
+Note the sharper form of this: if masking reused `effectivePrincipal`, then in an auth-disabled deployment a non-owner could pass `{name, principal: "<owner-email>"}`. Owner emails are **not secret** — `workflow_get` returns `owner` to everyone by REQ-100's own text. The mask would be bypassable by reading its own response.
 
-| rung | source | who controls it |
+### 2.3 "No principal" is overloaded — and the D-BIND exemption makes it dangerous
+
+REQ-100: *"Given auth is disabled (no principal) Then behaviour matches the pre-v22 surface."* But `null` principal arises from **two distinct causes**:
+
+1. Auth genuinely disabled in config (the intended case — a local single-operator deployment).
+2. **Auth enabled, but this request took the D-BIND loopback-peer exemption** (`src/server.ts:~1418`, `dbindExempt`): when the server is bound non-loopback *and auth is enabled*, loopback socket peers skip the auth gate. That exists to preserve the local-admin/self-update rescue path.
+
+Under a naive `principal === null → full script` rule, **any process on the host (or anything that can present as a loopback peer) reads every workflow's script on an authenticated, publicly-bound server.** That is precisely the deployment REQ-100 is written for.
+
+**Requirement (D-P22-3, fail-closed): the mask keys off `authEnabled`, not off `principal == null`.**
+
+| authEnabled | principal | script |
 |---|---|---|
-| 1 (highest) | per-call `agent({model, effort, timeoutMs})` in the script | author |
-| 2 | `agentType` definition frontmatter (`model`, `tools`) | author |
-| 3 | per-run `overrides` | **user** |
-| 4 | registered `defaults` | author |
-| 5 (lowest) | engine default alias / config default | operator |
+| false | null | returned (pre-v22 surface, REQ-100 clause 3) |
+| true | null (D-BIND exempt) | **masked** |
+| true | owner | returned |
+| true | non-owner | masked |
 
-The same table must be applied to `timeoutMs`, whose per-call semantics are already documented as overriding the gateway default *in both directions* (`server.ts:258`) — so "override" here means "replaces", not "lowers", and the global ceiling from S-4 clamps the result *after* resolution.
+The rescue path is unharmed: self-update and local admin need `workflow_run`/status/`/api/status`, not script text. I want this recorded as a **named decision**, because it is the one place where a literal reading of the requirement's parenthetical ("no principal") and its intent diverge.
 
-**T-4 — extend the harness descriptor; add no new observability plumbing.**
-`agent-executor.ts:~16-40` already builds `{model, provider, prompt, tools, skills, mcpServers, surfaceType}` and it is already served through `workflow_agent_log`. Extend it with `{effort, effortApplied: boolean, effortMappedValue?, timeoutMs, appendPromptBytes, promptTruncated: boolean, source: {model: 'per-call'|'agentType'|'override'|'default'|'engine', timeoutMs: …, effort: …}}`.
+### 2.4 Masking must be an allowlist *projection at one choke point*, not field deletion
 
-One change, three lenses satisfied: **security** gets the audit record, **scalability** gets it without a new store or endpoint, **testability** gets the exact assertion point REQ-091/092/093 already demand ("observable in the harness descriptor … not merely echoed back"). The provenance `source` map is what turns "did the wiring happen?" from a code-review question into an integration assertion.
+Three concrete traps, all visible in today's code:
 
-**T-5 — scope fence: do NOT wire `session-options-builder.ts` in v21.**
-It carries `effortMapping?: Record<string, unknown>` (line 18) and will look like the natural home for REQ-093. It is one of the three modules recorded as **built-but-unwired architecture debt** (with `cli-lifecycle`, `timeout-race`), explicitly parked on a separate security-hardening iteration and re-verified 2026-08-31 as having zero importers in `src/`. Wiring it here drags an unreviewed module into the run path under cover of a params iteration. Keep `mapEffort` a small pure function consumed by the two gateway clients; leave the debt on its own track.
+1. **`script` is returned twice.** `src/mcp-facade.ts:208+` puts it at the top level *and* inside `result`. A `delete resp.script` fix leaves `result.script`. This is v21's rule-1 failure mode verbatim ("`not.toContain(whole)` passes when a fragment leaks").
+2. **`skeleton` and `phases` are script-derived.** `parseWorkflowSkeleton(full.script)` is a static scan of every `phase`/`agent`/`parallel`/`workflow` call — effectively a decompiled outline, including the shape of the agent graph. REQ-100's non-owner allowlist is *name, version, channel, purpose, params contract, owner, how-to-report* — **`skeleton` and `phases` are not on it.** Someone will add them back "for usability". See §5(a): this is a real conflict, and my position is that they stay out by default.
+3. **`/api/workflows/:name/skeleton`** (`src/server.ts:~1003`) serves the same derived structure over a route with **no identity plumbing at all** — `handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, buildModelCatalog)` has no principal parameter in its signature.
 
-### 2.4 Forward-compatibility with v22/v23 that costs nothing now
+**Requirement: one function, `projectWorkflowForRead(full, viewerIsOwner): WorkflowView`, that *constructs* the response from an explicit field list.** On the non-owner branch it must emit a **positive withheld marker** — REQ-100's final clause: *"a masked response says the script is withheld rather than pretending the workflow has none."* Concretely, `scriptWithheld: true` (a distinct key, so the response never carries a `script` field of a second shape that a client's type-narrowing would misread as content). Note the interaction with §4.2's allowlist oracle: the marker key **must be in `EXPECTED_NON_OWNER_KEYS`**, or the golden-allowlist test would enforce exactly the silent-hole behaviour the requirement forbids. Every surface — `workflow_get`, `workflow_list`, `/api/workflows`, `/api/workflows/:name/skeleton`, the dashboard page — returns a value produced by that function. Then "the mask cannot be side-stepped by asking a different endpoint" (REQ-100's own clause) is enforced by **construction**, not by five remembered deletions, and adding a field to the catalog cannot silently widen disclosure.
 
-D15 masks the script from non-owners; D16 removes the skeleton parser and stores an agent-rendered diagram per version. Both mean **the script text stops being the discovery surface**. If the contract is normalized and stored on the version row at registration (S-6/P-1), REQ-090's discoverability keeps working after masking with zero rework. If instead the contract is derived from script text on read, v22 breaks it. This is not speculative generality — it is choosing the storage location that the already-approved next iteration requires. One decision, made now, for free.
+### 2.5 Simplicity call on the HTTP/dashboard surface
 
----
+The dashboard has **no identity plumbing whatsoever** and adding it is a real project (session identity for a browser, not a bearer). The minimum architecture that closes REQ-100 is: **`/api/workflows*` and the dashboard serve the masked (non-owner) projection unconditionally.** No new auth plumbing, one call to the same projection function, and the requirement's "masked consistently" clause is satisfied at the strongest setting. The cost is that an owner browsing the dashboard cannot read their own script there — they use `workflow_get`. I name that as a conflict in §5, I do not hide it.
 
-## 3. Risks
+### 2.6 REQ-098's ban must be **schema-level**, and rehydrate must not become a bypass
 
-| id | risk | severity | mitigation |
-|---|---|---|---|
-| **R-1** | **Inert-wiring regression (4th instance of the class).** REQ-092's fix ships as another optional-with-default field and is silently never applied. | **HIGH** | Non-optional constructor arg (T-2.1) + composeConfig wiring test as ARCH DoD (T-2.2) + provenance in the harness descriptor asserted at Gate 7.5 real-tier (T-4). Do not accept a Gate 6 green that only proves `workflow_get` echoes the row. |
-| **R-2** | **Privilege escalation via `resolveHarnessParams`'s override side** (`tools`/`skills`/`prompt` mergeable from caller data). | **HIGH** | Split types (S-1); `UserOverrides` has no field for a locked key. Regression test: a `workflow_run` whose `overrides` carries `tools` → `PARAM_LOCKED`, and the dispatched surface is byte-identical to the registered one. |
-| **R-3** | **Mass resume-cache invalidation on deploy.** v21 folds resolved model/appendPrompt into `CallKey` upstream of `run-manager.ts:706`; every suspended run re-dispatches its whole tail (forward-poisoning miss rule). Costs real money, visible only in production. | **HIGH** | D-P21-1 + P-3: params are run-immutable, resolution happens downstream of key construction, `workflow_resume` refuses changed overrides. Test: a run journaled pre-change resumes with zero gateway invocations. |
-| **R-4** | **Cost amplification** — non-owner principal runs any workflow at `effort:'max'` on the dearest alias, billed to the owner (REQ-087 opens execution to all). | **MED** | Global fail-closed ceilings (`maxEffort`, `maxTimeoutMs`); principal attribution on the run snapshot. Residual accepted per OPEN-1; escalate to Gate 1 if the operator considers it unacceptable. |
-| **R-5** | **Prompt injection via `appendPrompt`** steering the author's granted tool surface. Cannot be eliminated by design; D13 fixes it in the strongest instruction position. | **MED** | Cap + untrusted-framing delimiter + persisted attribution (S-3). Documented as an accepted residual of D13, not a defect. |
-| **R-6** | **Dishonest effort reporting** — `effortApplied:true` derived from a static provider table rather than from the request actually built, producing a false success claim (the exact failure mode REQ-093 forbids). | **MED** | `mapEffort` returns `{applied, value}` and the **same** returned value must be the one placed on the outbound request; the descriptor reads that return, never a parallel lookup. One integration test per provider family, incl. a provider with no equivalent control. |
-| **R-7** | **Contract-parse widening / VM eval on a bigger literal** (DoS via a huge or deeply nested `params` block at registration). | **LOW-MED** | Reuse `checkMeta` pureLiteral gate; size + depth bound before `runInNewContext`; existing 50 ms timeout retained; evaluate once at registration only (S-6). |
-| **R-8** | **`workflow:<name>` label injection / dedup collision** in REQ-095. | **LOW** | Reuse the registration name-charset rule minus existence check; include the workflow label in the REQ-035 dedup fingerprint (S-7). |
-| **R-9** | **appendPrompt × PROMPT_CAP truncation silently displaces author instruction.** | **LOW** | Cap sized well below `PROMPT_CAP`; `promptTruncated` flag in the descriptor; pinned head/tail test (P-4). |
-| **R-10** | **Snapshot persists caller text that may contain a pasted secret.** | **LOW** | Route the persisted copy through the REQ-083 redact-at-capture path; see C-3 for why the dispatched copy must not be redacted. |
+- REQ-098 requires `script` **removed from the input schema** (`src/server.ts:278` `workflow_run`, `:354` `workflow_resume`), not merely rejected — a schema-reading client must never learn it exists. But schema removal alone is not enforcement: `/mcp` accepts arbitrary JSON bodies, so a hand-rolled request can still carry `script`. **Both are needed**: removed from the advertised schema *and* a typed refusal in the facade if present. Assert both, separately.
+- `src/run-manager.ts:562` (`entry.script = newScript`) is the resume replacement-script path. Removing the parameter closes it at the wire; the internal capability should go too, or it is a latent re-entry.
+- **Do not close rehydrate.** A run suspended *before* the upgrade has a persisted `spec.script`. Refusing it at resume would strand it. Rule: **the ban is on ingress (the wire), never on rehydration of already-persisted state.** That distinction should be explicit in the architecture text, because "remove `spec.script` support" is the obvious over-correction.
+- `_adhoc` (`run-manager.ts:268`, `:450`, `:654` — three `spec.name ?? '_adhoc'` sites): once no new run can be nameless, these become dead defaults. REQ-098 permits "retired or left inert". **Simplicity pick: leave them inert.** Deleting them means touching three workspace-rooting call sites and re-proving `path-containment`/`workroot-guard` behaviour for zero user-visible gain.
 
 ---
 
-## 4. Internal conflicts between my own three lenses (surfaced explicitly, as the lens demands)
+## 3. Scalability / performance / consistency lens
 
-**C-1 — Security vs Simplicity/backward-compat: closed-by-default knobs.**
-Security wants `model`/`effort` pinned to the registered default unless the author opts them open (fail-closed, and it kills R-4 outright). REQ-090 explicitly states the opposite (four global knobs tunable by default; a `params` block may only *constrain*), and flipping it silently breaks every already-registered workflow's user experience and contradicts a Gate-1 decision.
-**My resolution**: obey the requirement, ship the global ceilings (which remove the *unbounded* part of the risk at the cost of one config block), attribute cost to the principal, and record the residual. Escalated as **OPEN-1** — a default flip is a requirements change, not an architecture liberty.
+### 3.1 Schema (concrete, so it can be argued with)
 
-**C-2 — Security vs Testability: "before any durable work" is a negative assertion.**
-The security property in REQ-091 is *absence* of side effects (no run row, no directory, no fork) — the hardest kind of thing to test, and the kind that silently rots as the ladder grows.
-**My resolution**: make the ladder itself **data**. A pure `admit(spec, contract, state) -> Verdict` returns the ordered verdict, so rung ordering is unit-testable as a table without a filesystem; then exactly **one** integration test asserts the negative (submit a `PARAM_LOCKED` call, assert zero run rows and zero new workspace dirs). The cost: `admit` must receive the admission counter and catalog row as arguments rather than reaching for them, which makes the call site slightly more verbose. Accepted — verbosity at one call site buys a testable security invariant.
+```sql
+-- existing table, repurposed as the per-NAME record: identity + pointers
+workflows(
+  name TEXT PRIMARY KEY,
+  owner TEXT,
+  createdAt TEXT NOT NULL,
+  release_version TEXT,      -- NULL = never published
+  beta_version TEXT          -- NULL = never published
+)
 
-**C-3 — Scalability/consistency vs Security: the snapshot persists caller text.**
-D-P21-1's snapshot (which is what buys consistency, resume determinism, and auditability) means `appendPrompt` — arbitrary user text — is written to durable storage. If a user pastes a credential, it lands in the run record. But REQ-094 also demands the *composed* prompt be byte-identical to pre-v21 when no append is present, and redacting the **dispatched** bytes would change what the model sees and break replay.
-**My resolution**: redact the **persisted** copy only, never the dispatched one — which is precisely the invariant DES-088 already pins (*persist-only redaction / double-redaction exclusivity / replay-divergence*). So this conflict is already adjudicated in the codebase's favour; v21 must route the snapshot through the existing sink rather than adding a fifth persist path that bypasses it. **Explicit instruction for Gate 3/4**: the run-snapshot write is a *new persist sink* and must be added to REQ-083's four-sink completeness sweep, or v21 silently opens a hole in a shipped control.
+-- new: immutable per-registration rows
+workflow_versions(
+  name TEXT NOT NULL,
+  version TEXT NOT NULL,
+  script TEXT NOT NULL,
+  defaults TEXT,             -- JSON, as today
+  params TEXT,               -- JSON, as today
+  createdAt TEXT NOT NULL,
+  PRIMARY KEY (name, version)
+)
+```
 
-**C-4 — Testability vs Security: provenance in the descriptor leaks author configuration.**
-T-4's `source` map plus the full `tools`/`skills` lists is exactly what makes the wiring assertable — and it is served through `workflow_agent_log` to whoever ran the workflow, including a **non-owner**. v22 (D15) will mask the script from non-owners; a descriptor that lists the author's tool/skill names and registered model hands back a good part of what the mask hides.
-**My resolution**: not mine to decide alone, because it is really a v22 masking-policy question. Cheap options: (a) full descriptor to the owner, and to a non-owner show effective `model`/`effort`/`timeoutMs` + **counts** (`tools: 6`) instead of names; (b) accept exposure now and fold it into v22's masking decision. I lean (a) — it costs one branch and one test, and it keeps v22 from having to retrofit — but I flag it as **OPEN-2** rather than pre-empting the v22 Gate-1 decision.
+**Channels as two nullable columns, not a `channels` table.** REQ-097 closes the enum to exactly `beta|release`, and states outright that "no per-user channel assignment or opt-in state exists". A channels table is speculative generality for a two-valued closed enum; two columns make "a channel that has never been published" a `NULL` check rather than a missing-row join, and make the pointer move a single-row `UPDATE` inside the same transaction as everything else. If a third channel ever lands, `ALTER TABLE ADD COLUMN` is the same migration this codebase already performs idempotently four times over (`workflow-catalog.ts:86-98`).
+
+**Owner lives on `workflows`, not on `workflow_versions`.** Ownership is per *name* (that is what `NOT_WORKFLOW_OWNER` already means at `workflow-catalog.ts:201`), and duplicating it per version invents a "who owns v3 vs v4" question nothing asks.
+
+### 3.2 The migration is where v22 breaks production, and REQ-096 does not cover it
+
+REQ-096's migration clause preserves "every existing registration as its current version with its existing owner". REQ-097 says **a run with no channel resolves `release`, and a never-published channel is a typed refusal, not a fallback to newest**. Those two clauses, composed, are a **fleet-wide outage**:
+
+> Every pre-v22 workflow migrates with `release_version = NULL`. Every existing `workflow_run({name})` then fails with the typed channel error. And it is not only interactive calls — `schedule_create`, `chain_create`, and `webhook_create` all bind a registered **name** and fire through the same run path (`server.ts:~1291`, "same run path" invariant). **Every scheduled job, every chained run, and every inbound webhook silently starts erroring at its next fire, with no user action having occurred.**
+
+**Requirement (D-P22-4): the boot migration publishes each migrated workflow's current version to `release` (and only to `release`).** Post-migration registrations follow REQ-097 unchanged — registered ≠ published. This is one line in the migration and it is, in my judgment, **the single highest-value point in this proposal**: it costs nothing, and without it v22 is a breaking upgrade for every deployment that has ever registered a workflow.
+
+Restart-safety follows the existing pattern: idempotent, guarded, self-limiting — exactly the shape of the `backfillOwner` boot pass at `workflow-catalog.ts:100-107`.
+
+### 3.3 Concurrency: the version-number race becomes a *crash* under the new PK — state it precisely
+
+Today, `register` does a read-then-write:
+
+```
+const existing = db.prepare('SELECT version, owner FROM workflows WHERE name = ?').get(name)   // :195
+const nextNum  = (existing ? Number(existing.version.replace(/^v/,'')) || 0 : 0) + 1            // :205
+… INSERT … ON CONFLICT(name) DO UPDATE …                                                       // :211
+```
+
+Being precise so this is not rebutted: **`better-sqlite3` is synchronous and there is no `await` between the SELECT and the INSERT**, so within a single Node process this sequence is not interleaved — the in-process exposure is nil. The real exposure is **cross-process on one `workRoot`**: a self-update window with old and new engines briefly overlapping, or an operator running a second instance. Today that race is a silent lost update (`ON CONFLICT DO UPDATE` absorbs it). **Under `PRIMARY KEY (name, version)` the same race becomes a raw `SQLITE_CONSTRAINT` surfacing as an untyped 500.**
+
+**Fix, and it is small: wrap SELECT-max-version + INSERT (+ any pointer move) in one `db.transaction()`.** `better-sqlite3` gives this synchronously with no new dependency. Retention of `IMMEDIATE` semantics matters only if a second writer exists; the transaction is correct either way. **I explicitly reject** any proposal for a lock table, an advisory lock, or a version-allocation service: WAL + one transaction is the whole answer at this system's scale (single-node, one process, human-rate registrations).
+
+### 3.4 Storage growth: REQ-096 makes S-1 (the missing registration ceiling) materially worse
+
+Today, N registrations of one name = **one row**. After v22, N registrations = **N rows, each holding a full script**. The catalog goes from O(names) to O(registrations), unbounded, with no pruning and no ceiling — and the v21 review already carries **S-1** ("a ceilings-less `WorkflowCatalog` enforces no registration ceiling") as open debt, with the "would need a third copy" rationale already dead per P6-5's shared export. The requirements text itself flags S-1 as cheap to take while this code is open. **Take it now, in this iteration**: a per-name version-count ceiling with a typed refusal, sourced from the same `Ceilings` object already threaded into the catalog (`WorkflowCatalogOpts.ceilings`, `workflow-catalog.ts:57`). No new config plumbing, no new object.
+
+On **pruning**: I want a ceiling, not a garbage collector. Automatic deletion of old versions collides head-on with REQ-096's "both versions remain retrievable" and with D-P22-1's pinned-run auditability — a pruned version makes a completed run's pin dangling and its DAG unreconstructible. A ceiling refuses *at the front door*, where the author can see and react; a GC deletes silently *behind* an auditable pin. See §5(c).
+
+Also note the ceiling must count **versions**, not bytes, or it becomes a second byte-cap semantics next to `maxAppendPromptBytes` for no reason.
+
+### 3.5 Read-path cost is not a concern, and I will say so rather than invent one
+
+`workflow_list` currently does `SELECT … FROM workflows` (all rows) and `catalog.list()` per `/api/home` poll. With version history, list must return "available versions and which version each channel points at" (REQ-096). The naive implementation is a second `SELECT name, version FROM workflow_versions` and a group-by in JS — two queries, indexed by the PK, at human-rate row counts on a local SQLite file. **That is fine. No cache, no materialized column, no denormalized `versions` JSON blob.** Adding one would be exactly the speculative complexity the tie-breaker forbids, and a denormalized copy is a second source of truth that will drift.
+
+### 3.6 The DAG route is already broken and v22 makes it universal — with a tempting wrong fix
+
+`src/server.ts:1044-1046`:
+
+```
+const spec = await store.getSpec(runId);
+const skeletonNodes = parseWorkflowSkeleton(spec?.script ?? '');
+```
+
+`spec.script` is empty for **every run started by name** (the resolved script is never written back — `run-manager.ts:385-392`). So `/api/runs/:id/dag` already renders an empty graph for named runs; after REQ-098, that is **100% of runs**, i.e. the DAG panel of the dashboard goes permanently blank.
+
+- **Correct fix**: derive the skeleton from the run's **pinned `(name, version)`** via the catalog, subject to the same masking policy as every other script-derived surface (§2.4). The pin from D-P22-1 makes this exact and stable even after re-registration.
+- **The fix to explicitly bar**: persisting the resolved script into the stored `RunSpec`. It is the one-line fix, and it creates a **new unmasked script sink** in the run store — read back wholesale by `getSpec()` — immediately defeating REQ-100 through a different endpoint, and duplicating script bytes per run (storage growth ×runs, not ×versions). I want this recorded as a rejected alternative so it does not get re-invented at Gate 5.
+
+### 3.7 Horizontal scaling: out of scope, and honestly so
+
+The engine is single-node by construction (local SQLite at `workRoot`, in-process semaphore, child-process sandbox, filesystem workspaces). v22 adds no shared state that changes this. The only multi-process reality is the **self-update overlap window**, which §3.3's transaction covers. I decline to design for a multi-instance deployment that does not exist.
 
 ---
 
-## 5. Open items for the synthesizer / round 2
+## 4. Testability lens
 
-- **OPEN-1** — closed-vs-open default for `model`/`effort` when no `params` block is declared (C-1). Requirements change if closed; my proposal is open + ceilings.
-- **OPEN-2** — descriptor exposure of author configuration to a non-owner caller (C-4), coupled to v22's D15 masking.
-- **OPEN-3** — the fifth precedence rung: `agentType` definition frontmatter vs per-run user override (T-3). REQ-092 is silent; code (`agent-executor.ts:291`) currently has it beat only an absent `opts.model`. I propose author-agentType **above** user override.
+### 4.1 Module boundaries I am asking for
+
+| Unit | Purity | Why it earns its boundary |
+|---|---|---|
+| `resolveChannel(row, {channel?, version?}) → {version} \| TypedError` | pure | REQ-097's full truth table (explicit version wins > channel > release default > NULL ⇒ typed error, never fallback-to-newest) as a table-driven test with zero I/O |
+| `projectWorkflowForRead(full, viewerIsOwner) → WorkflowView` | pure | REQ-100's masked shape asserted as a **literal golden object**, both branches |
+| `SubmissionValidator.validateScript(script)` | already pure-ish, injectable deps | REQ-099: the moved checks are tested once, at their new home, and the old `if (spec.script)` block is *deleted*, not left dormant |
+| `catalog.register` / `.publish` | I/O, one transaction | the ownership gate + the ceiling + the atomicity test |
+| boot migration | I/O, idempotent | run twice, assert identical state; assert `release_version` populated (§3.2) |
+
+`ReadContext` (§2.1) is the injectable identity seam; `Clock` and `Ceilings` are already injected (`WorkflowCatalogOpts`).
+
+### 4.2 v22's two external contracts, and how each fails v21's rule 1
+
+The requirements name the rule: *"a test whose oracle is the code under test cannot fail when the code is wrong."* v22 has exactly two external contracts, and both have an obvious self-referential test that must be refused:
+
+- **Channel resolution.** Bad oracle: "`workflow_run({name})` and `workflow_run({name, channel:'release'})` produce the *same* version" — passes when both resolve wrongly. Good oracle: register v1, publish v1→release, register v2 (unpublished), then assert `workflow_run({name})` **executes v1** and its run record pins `v1` — the literal expected value, not a comparison between two code paths.
+- **Masked `workflow_get`.** Bad oracle: `expect(resp).not.toContain(scriptText)` — passes while `result.script`, `skeleton`, or `phases` leak (v21's exact fragment-leak defect). Good oracle: **`expect(Object.keys(deepFlatten(resp)).sort()).toEqual(EXPECTED_NON_OWNER_KEYS)`** — a literal allowlist over the whole response tree, so any *new* field is a test failure until someone consciously classifies it. `EXPECTED_NON_OWNER_KEYS` **includes `scriptWithheld`** (§2.4) — the allowlist is two-sided: it fails on a leaked field *and* on a missing withheld marker, so REQ-100's "says it is withheld" clause is pinned by the same assertion rather than by a comment.
+
+### 4.3 The masking test must run over the real transport
+
+A facade-level unit test with an injected principal **cannot detect** the `server.ts:823` unwired-dispatch hole (§2.1) — that is the entire lesson of the `composeConfig` bug class, where the guard that finally caught it was `compose-config-v2-wiring.test.ts`. **Requirement: at least one integration test drives an authenticated non-owner through `/mcp` (real HTTP, real bearer, real `resolvePrincipal`) and asserts the masked shape.** Anything cheaper re-runs a defect this project has already paid for twice.
+
+Corollary tests, each cheap: (i) `principal` supplied in `args` does **not** unmask (§2.2); (ii) auth-enabled + D-BIND loopback peer gets the **masked** view (§2.3); (iii) `/api/workflows/:name/skeleton` is masked (§2.5).
+
+### 4.4 Resume determinism gets a test with real failure semantics
+
+Start a run from `foo@v1`, suspend it, register `foo@v2`, resume, assert the run continued **v1**. Today (`run-manager.ts:634-636`) that test **fails** — which is the point: it converts §1's argument into a red test before any code moves.
+
+### 4.5 REQ-099's negative assertion needs a structural, not a behavioural, guard
+
+REQ-099 demands "no code path performs these checks only for inline scripts". A behavioural test ("a run by name is covered") is necessary but weak against re-introduction. Add the structural guard the requirement's shape invites: after the move, **`SubmissionValidator` has no `if (spec.script)` branch at all** — grep-able, and cheap to assert in a lint-style test. Same discipline as v21's F-2 single-implementation lesson.
+
+### 4.6 Take P6-2's registration half while this file is open
+
+`defaults.appendPrompt` carrying a forged frame delimiter is refused at dispatch but not at registration. v22 rewrites `register`'s validation block anyway. **Reuse the dispatch-time predicate** — do not write a second checker. That is the F-2 lesson (`workflow-catalog.ts:36-46` already delegates `violatesOwnSpec` to the shared `checkValueAgainstSpec` for exactly this reason), and a second copy is the drift class that has bitten this iteration twice.
 
 ---
 
-## 6. Expected disagreements with the other lens groups
+## 5. Named internal conflicts between my three lenses
 
-My counterpart in this panel is the **quality-dimensions** lens (per the v14/v15 precedent in `state.yaml`, where it proposed streaming, metrics, `/healthz`, a RunStore port, and an OpenAPI surface — all consciously excluded as out-of-slice). I predict the same shape of disagreement and pre-commit my positions so round 2 is cheap:
+These are the tensions I am *not* resolving silently. Each has my ruling and its cost.
 
-**D-1 — "Model the contract as a general parameter registry / a schema-driven knob system."**
-Expected argument: a `ParamDescriptor` abstraction with pluggable validators and a registry, so future knobs are declarative and the engine gains a uniform parameter subsystem.
-**My position — decline (Karpathy).** v21 has exactly **four** user-tunable knobs, fixed by D12, and a small author-declared `args` shape. A closed four-field type is *more* secure than a registry (S-1: locked keys become unrepresentable, whereas a registry makes lockedness a runtime property of registry entries — i.e. a denylist again) and it is trivially testable. If a fifth knob arrives, adding a field to a four-field type is an afternoon. **Concession available**: I will accept a shared `ParamSpec` *value type* for the declared-`args` checks (which genuinely are open-ended, since authors declare arbitrary arg shapes) as long as the four **harness** knobs stay a closed type. That is the natural seam and I expect it is where we converge.
+**(a) `skeleton`/`phases` for non-owners — security vs. agent-altitude consumability.**
+Security: the skeleton is a decompiled outline of the agent graph and is absent from REQ-100's allowlist ⇒ mask it. Consumability (agent altitude, §0): an MCP client agent uses `phases`/`skeleton` to decide whether a workflow fits and to render progress; a hole degrades the very consumer REQ-100 was written to serve.
+**My ruling: masked by default; `description` + `params` + `version`/`channel` are the non-owner contract.** REQ-090's whole premise is that the declared parameter contract is sufficient for a user. If the panel disagrees, the disagreement should be resolved by *adding a declared field to `meta`* (author-controlled, author-consented disclosure) rather than by leaking a derived one. **Cost: dashboard DAG for a non-owner's workflow is empty.** I accept it; I do not pretend it away.
 
-**D-2 — "Serve the contract as JSON Schema in `tools/list` / add an OpenAPI or a dedicated discovery endpoint."**
-Expected argument: consumability — a schema-only client should discover the contract the standard way (REQ-079 lineage).
-**My position — partially agree, and I have already conceded the cheap half.** S-2 puts `overrides` in the `workflow_run` inputSchema with `additionalProperties:false` and documented bounds; that is the schema-only-consumer story for the *engine-global* knobs, and it costs nothing. But the *per-workflow* contract is per-row data, not a static tool schema, so it belongs in `workflow_get`/`workflow_list` structured output (which REQ-090 already specifies) — **not** a new endpoint and **not** a dynamically-generated per-workflow tool schema. I will resist any new route: v21 should add zero endpoints.
+**(b) Where REQ-099's environment checks run — security re-check vs. one-site simplicity.**
+`PARSE_ERROR` is a property of the text and is correctly frozen at registration. `UNKNOWN_ALIAS` and `MCP_NOT_PROVISIONED` are properties of a **mutable environment**: an MCP server can be deprovisioned, an alias removed from config, *after* a workflow validates cleanly. Security/robustness says re-check at admission; simplicity (and REQ-099's own last clause — "does not retroactively refuse… but the condition is surfaced") says check once, surface drift.
+**My ruling: registration-only enforcement, plus drift *surfaced* at run start (typed observable, not a refusal).** One enforcement site, honest observability, no second gate to drift. **Cost: a run can still fail mid-flight on a deprovisioned MCP server** — but it fails at the `agent()` call with a real error, which is the pre-existing behaviour and not a regression. I expect the quality-dimensions lens to push for a hard admission re-check; I think that re-creates the two-sites-that-disagree problem REQ-099 exists to delete.
 
-**D-3 — "Surface the contract and the effective params on the dashboard."**
-Expected argument: observability — REQ-071/073's agent-detail panel already shows model/prompt/tools, so v21's params belong there.
-**My position — agree on direction, decline for this slice, and note a *security* objection the quality lens will not have considered.** The dashboard and `/api/*` are **unauthenticated** (explicit REQ-086 non-goal, trusted-network caveat). Rendering the harness descriptor there publishes author configuration and user-supplied `appendPrompt` text to anyone who can reach the port — strictly worse than C-4's authenticated case. If the dashboard is in scope at all, it must show the same reduced view OPEN-2 lands on. My preference: out of scope for v21; revisit with v23's read-only describe surface, which is the natural home.
+**(c) Version retention — scalability vs. auditability/retrievability.**
+Scalability wants pruning of old versions (unbounded script rows, §3.4). REQ-096 requires old versions stay retrievable, and D-P22-1's pins make a pruned version a dangling reference on a completed run.
+**My ruling: bound the front door (per-name version ceiling, S-1), never GC behind an auditable pin.** **Cost: a prolific author eventually hits a refusal** — which is visible, actionable, and vastly preferable to a silently unreconstructible run history.
 
-**D-4 — "Introduce a port/adapter seam for harness resolution (replaceability)."**
-Expected argument: `HarnessResolutionPort` with an injected implementation, consistent with the RunStore-port style proposal from v14/v15.
-**My position — accept, but for the *testability/wiring* reason, not the replaceability one**, and only in its minimal form: a **required constructor argument** carrying already-resolved `EffectiveParams` (or one function). Not an interface with multiple implementations, not a DI container, no alternate strategy. I expect agreement here; the disagreement will be about size, and I will argue the non-optional-argument version is what actually kills R-1, whereas an interface with a default implementation *reintroduces* the bug class (a default implementation is exactly how `resolveHarnessParams` came to have zero callers while looking wired).
+**(d) Channel storage — two columns vs. a channels table.**
+Scalability/extensibility instinct says a table. Simplicity says REQ-097 closed the enum to two values *and explicitly barred per-user channel state*.
+**My ruling: two nullable columns.** `ALTER TABLE ADD COLUMN` is this codebase's proven, idempotent migration idiom (four precedents in `workflow-catalog.ts`). **Cost: a hypothetical third channel needs a migration** — which it would need anyway.
 
-**D-5 — "Add metrics / structured events for parameter rejections."**
-Expected argument: self-sustainability — count `PARAM_LOCKED`/`PARAM_OUT_OF_RANGE` to see misuse.
-**My position — decline.** No metrics subsystem exists; v21 must not introduce one for two error codes. The typed error already reaches the caller and the run record already carries the principal. If misuse analysis is later wanted, the journal has the data. **Speculative** by the tie-breaker.
-
-**D-6 — Where I expect the quality lens to be *right* and me to concede.**
-(i) `params` naming/shape consistency with the existing `meta` block — I have no strong view and will take theirs. (ii) Degradation semantics for a workflow registered before v21 (no `params`, no `defaults`): they will likely push a more explicit "unconstrained" representation rather than `undefined` sprinkled through the resolver; that is a genuine improvement to `resolveEffective`'s testability and I will adopt it. (iii) If they propose surfacing `effortApplied:false` to the *caller* rather than only in the descriptor, I agree — REQ-093's honesty requirement is better served by both.
+**(e) The D-BIND fail-closed call (§2.3) — security vs. a literal reading of REQ-100.**
+The requirement says "auth disabled (no principal) ⇒ pre-v22 surface". Read literally against the code, `null` principal also covers the loopback-exempt path on an auth-*enabled*, publicly-bound server. **My ruling: key the mask on `authEnabled`, not on `principal == null`.** This deviates from the requirement's parenthetical to honour its intent and **must be escalated as a decision, not absorbed as an implementation detail.**
 
 ---
 
-## 7. Minimal architecture, restated (the Karpathy check)
+## 6. Risks
 
-Everything above reduces to this delta. If a proposal at Gate 3/4 is larger than this list, it is carrying speculation:
+| # | Risk | Lens | Likelihood | Impact | Mitigation |
+|---|---|---|---|---|---|
+| R1 | **Migration leaves `release_version` NULL** ⇒ every existing named run, schedule, chain and webhook starts failing at next fire (§3.2) | Scalability/ops | **High** if unspecified | **Fleet-wide silent outage** | D-P22-4: migration publishes current version → `release`; explicit test asserts a pre-v22 row runs after upgrade with no user action |
+| R2 | **Masking implemented but unwired** at `server.ts:823` / `:808` — the project's known `composeConfig` bug class; passes all facade unit tests | Security/testability | **High** | REQ-100 delivers zero protection while reported green | Required `ReadContext` parameter (compile error, not silent null) + a real-transport authenticated non-owner integration test (§4.3) |
+| R3 | **REQ-099 move incomplete** ⇒ closing inline script deletes all submission validation; a broken script registers fine and fails deep in a run | Security/correctness | Medium | Loss of fail-fast; bad scripts reach the sandbox | Structural guard: zero `if (spec.script)` branches remain in `SubmissionValidator` (§4.5); registration-time tests for all three codes |
+| R4 | **Script leaks through a non-`workflow_get` surface** — `result.script`, `skeleton`, `/api/workflows/:name/skeleton`, dashboard, or a newly added field | Security | Medium-High | REQ-100 bypassed by asking a different endpoint (a case the requirement names) | Single `projectWorkflowForRead` choke point; literal-allowlist key assertion so new fields fail closed (§2.4, §4.2) |
+| R5 | **DAG panel goes permanently blank** post-REQ-098; the obvious fix (persist resolved script into `RunSpec`) creates a new unmasked sink | Security ∩ observability | Medium | Silent observability loss, or a self-inflicted REQ-100 bypass | Derive DAG from the pinned `(name, version)` via catalog + same mask; record "persist script into spec" as a **rejected** alternative (§3.6) |
+| R6 | **Resume executes a different version than the run started** (`run-manager.ts:634-636`) — pre-existing, amplified by channel churn | Correctness/consistency | Medium (rises with `beta` usage) | A run's behaviour changes mid-flight; unreproducible outcomes | D-P22-1: resume resolves through the pin; RED test written first (§4.4) |
+| R7 | **`(name, version)` PK turns a cross-process register race into a raw `SQLITE_CONSTRAINT`** untyped 500 (self-update overlap) | Scalability/robustness | Low | Untyped failure during upgrade | One `db.transaction()` around read-max-version + insert + pointer move (§3.3) |
+| R8 | **Unbounded catalog growth** — O(registrations) scripts, S-1 still open | Scalability | Medium (slow) | Disk/backup growth; slow list | Per-name version ceiling from the existing `Ceilings` object; typed refusal (§3.4) |
+| R9 | **Auth-disabled deployments get a mask they did not ask for**, or auth-enabled loopback callers silently lose access they relied on | Security ∩ operability | Low-Medium | Rescue/ops friction | §2.3's explicit table, documented in DEPLOY.md; owner reads via `workflow_get` with a bearer |
+| R10 | **`args.principal` reused for the confidentiality decision** ⇒ mask trivially bypassed by self-asserting the (publicly readable) owner email | Security | Medium (it is the path of least resistance) | REQ-100 defeated by its own response | Bar `args.principal` from the read path; tests mint real tokens (§2.2) |
+| R11 | **Pre-v22 suspended inline run stranded** by an over-broad ban | Correctness | Low-Medium | Un-resumable runs, data loss | Ban at ingress only; rehydrate keeps tolerating persisted `spec.script` (§2.6) |
 
-1. One new column: `workflows.paramsJson` (normalized contract, written at registration).
-2. One new closed type `UserOverrides` + one new value type `EffectiveParams`; `HarnessDefaults` unchanged.
-3. Five pure functions (`parseParamContract`, `validateUserOverrides`, `resolveEffective`, `composePrompt`, `mapEffort`).
-4. One admission rung, placed after `catalog.get()` and before any filesystem work.
-5. One snapshot field on the run record (run-immutable effective params + principal), routed through the existing REQ-083 redaction sink.
-6. One **required** constructor argument on the dispatch path (kills the inert-wiring class).
-7. Descriptor extension at the single existing observation point (`agent-executor` harness descriptor → `workflow_agent_log`).
-8. Three config keys with fail-closed defaults (`maxTimeoutMs`, `maxAppendPromptBytes`, `maxEffort`) — **each one added to `compose-config-v2-wiring.test.ts` in the same change**.
-9. Zero new tables, zero new endpoints, zero new services, zero new abstractions, and **no wiring of `session-options-builder.ts`**.
+---
+
+## 7. Expected disagreements with the other lens (quality-dimensions)
+
+1. **Skeleton/phases for non-owners.** I expect a strong consumability push to keep `skeleton` and `phases` unmasked ("a user must be able to see what it does"). I hold the mask, and offer the constructive alternative: author-declared `meta` fields, so disclosure is *consented*, not derived. This is the sharpest expected conflict.
+2. **Masked-always dashboard (§2.5).** I expect resistance — "the owner should see their own script in the UI". My answer is that adding browser-session identity is a whole subsystem and REQ-100 does not ask for it; the masked-always dashboard is the honest minimum. I would accept "dashboard shows nothing script-derived at all" as a compromise; I would not accept "dashboard is exempt".
+3. **Admission re-check of alias/MCP (§5b).** I expect them to want a run-time re-validation for robustness. I argue one enforcement site + surfaced drift, per REQ-099's own final clause.
+4. **Observability surface breadth.** I expect them to want version/channel/pin/drift threaded into `workflow_status`, the run record, the journal, the dashboard, and `/api/home`. I agree on **the run's pinned `(name, version)`** (it is D-P22-1's own audit artifact and REQ-096 requires it) and will resist a per-surface expansion beyond that as scope creep — every additional field is another surface the §2.4 projection must classify.
+5. **Migration UX.** They will likely propose richer migration reporting/backfill affordances; I want the migration to do exactly two things (preserve rows, publish `release`) and be idempotent. R1 is about *correctness*, not reporting.
+6. **Channels table vs. columns.** Likely framed as replaceability/extensibility. I hold two columns on REQ-097's explicit closure of the enum and its explicit bar on per-user channel state.
+7. **Where we will agree, and should say so early to save round 2:** the pin (D-P22-1), the migration publishing `release` (D-P22-4), the single projection choke point, and moving the static checks to registration. Round 2 should spend its time on (1), (2) and (3), not re-litigating these.

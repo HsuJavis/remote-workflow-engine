@@ -1,209 +1,275 @@
 # Architecture panel — Quality-dimensions lens, round 1 (independent proposal)
 
-**Scope**: v21 slice, REQ-090..095 (parameter contract: declaration, validation, wiring repair,
-effort end-to-end, appendPrompt composition, workflow-bound issue reports). Deliberately
-slice-scoped: whole-system gaps (metrics endpoint, streaming, healthz, OpenAPI) were adjudicated
-out-of-slice in v15 and are NOT re-raised here.
+**Scope**: v22 slice, REQ-096..100 (catalog version history + run-pinned versions; beta/release
+channel pointers; closing inline script; moving submission-time static checks to registration;
+masking `workflow_get` for non-owners). Plus the two debt items the Round-v22 note explicitly
+invites into this slice (S-1 registration ceiling; P6-2's registration half).
 
-**System-vs-agent determination (required first)**: this project is **both**. The engine itself is a
-conventional system (hand-rolled JSON-RPC-over-HTTP server, SQLite RunStore/Catalog, sandbox child
-processes, LiteLLM gateway) — the *system* altitude applies to the contract validator, error
-taxonomy, and catalog. But v21's subject matter — `model`, `effort`, `timeoutMs`, `appendPrompt`,
-harness descriptors, per-agent transcripts — is configuration OF spawned Claude-Agent-SDK agents, so
-the *agent* altitude applies with equal force: prompt composition order, provider mapping of effort,
-and the inspectability of what each agent actually dispatched with. Each dimension below states
-which altitude carries the point.
+**System-vs-agent determination (required first)**: this project is **both**, but the balance is
+**flipped from v21 — the *system* altitude dominates v22**. The slice's subject matter is catalog
+schema, channel pointers, MCP tool-surface shape, and read-boundary masking — conventional
+system/API work on the hand-rolled JSON-RPC-over-HTTP server + SQLite catalog. The *agent* altitude
+stays live in two places and is applied only there: (a) observability — the run record must carry
+version/channel **provenance** so what an agent actually executed with is inspectable, exactly like
+v21's harness descriptor; (b) consumability — the callers of this surface are themselves MCP agents
+that learn the API **from the tool schema alone** (D-G8-3), so schema and error text are the UX.
+The LLM-backend-replaceability question (GPT↔Claude↔local) is untouched by this slice — already
+settled by the alias/gateway architecture — and is not re-litigated here.
 
 ## Summary
 
-v21 is, at its core, an **observability-debt repayment iteration wearing a feature's clothes**: both
-live defects being repaired (resolveHarnessParams zero callers; `effort` advertised-but-unread) are
-instances of the *silent no-op* class — the engine claimed a behavior, echoed it back on query
-surfaces, and never applied it, and nothing in the run record could reveal the lie. The architecture
-must therefore not merely wire the two gaps but design the seam that makes this bug class
-**structurally self-revealing**: the harness descriptor should record *per-key provenance* (which
-precedence rung supplied each effective value), the contract must live in **one pure, reusable
-validation module** (v22 channels and v23 `workflow_describe` both consume it), errors must be
-**self-describing** (carry the violated bound so a caller self-corrects in one round-trip), and
-registration-time validation must be paired with a **submission-time liveness recheck** (a stored
-default can go stale when provider config changes). All four dimensions converge on the same
-architectural object: a first-class, engine-owned **EffectiveHarnessParams resolution step** with
-one entry point, one precedence algorithm, and one observable output.
+v22's five requirements are all **read/resolve-boundary work on the catalog**, and the dominant
+architectural danger is this codebase's own signature failure class: **stored-but-never-wired**
+(`resolveHarnessParams` zero callers, v11 `updateFlagPath`, v15 `auth`, v16 `workspaceTtlMs` — the
+composeConfig wiring bug class). The v22 instance is concrete and predictable: the catalog grows
+`(name, version)` rows and channel-pointer columns, while the run path keeps calling
+`catalog.get(name)` (today's single-row read, `workflow-catalog.ts:246-259`) and silently runs "the
+newest script" — making REQ-096/097 inert metadata that every echo surface happily displays. All
+four dimensions below converge on the same architectural objects: **one channel-resolution
+function** used by every script-entry path and **recorded at admission into the run record** (the
+pointer is mutable, so post-hoc reconstruction is impossible); **one masking projection at the
+catalog read boundary** (four read surfaces must agree or REQ-100 is side-steppable); a
+**registration-vs-admission split of the static checks** into intrinsic (parse — registration-only)
+vs environmental (alias/MCP — recheck at admission, because they go stale); and an **explicit
+retention decision** for the engine's first unbounded-by-design store. Secondary but real: closing
+inline script (REQ-098) deletes the author's inner dev loop (and REQ-006's edited-script resume)
+without naming a replacement — the sanctioned loop must be designed, not left to emerge.
 
-## (1) Observability — transparency of internal state
+---
 
-*Altitude: primarily agent (what did the spawned agent actually run with?), with a system-altitude
-point on rejected submissions.*
+## 1. Observability — transparency of internal state (folds in traceability)
 
-**O-1. Per-key provenance in the harness descriptor (the load-bearing proposal).**
-REQ-092 pins a four-rung precedence chain: per-call `agent()` opts › per-run `overrides` ›
-registered `defaults` › engine default alias. The repaired wiring bug is the **fourth** occurrence
-of the composition-root silent-no-op class (v11 `updateFlagPath`, v15 `auth`, v16 `workspaceTtlMs`,
-now `resolveHarnessParams` at `src/harness-defaults.ts:90` with zero `src/` callers). The existing
-guard (`compose-config-v2-wiring.test.ts`) catches config forwarding; nothing catches *precedence
-resolution* silently short-circuiting a rung. Proposal: the `HarnessDescriptor` already journaled
-per agent (`agent-executor.ts:347`, surfaced top-level by `mcp-facade.ts:205`) gains a
-`provenance: Record<key, 'call'|'override'|'default'|'engine'>` field written by the resolution
-step itself. Then REQ-092's acceptance ("observable in the harness descriptor … not merely in
-`workflow_get`'s echo") is checkable per-key at Gate 7.5, and a future fifth wiring miss surfaces
-as `provenance.model:'engine'` where a test expects `'default'` — the defect class becomes
-observable instead of dormant. Cost: one small object per agent record; no new surface.
+*System altitude primary; agent altitude in the run-record provenance points.*
 
-**O-2. `effort` must be honest in both directions.** REQ-093 already demands the descriptor record
-the *applied mapping* and explicitly record non-application on providers with no equivalent. Endorse
-and sharpen: the descriptor field should be tri-state (`applied: {param, value}` | `notApplied:
-{reason}` | absent-because-not-requested), never a boolean — "effort was silently dropped" and
-"effort was never asked for" must be distinguishable in the transcript, or we rebuild the same
-documented-no-op we are repairing.
+- **OBS-1 (admission-time provenance, the non-negotiable).** Channel pointers are mutable state:
+  after `workflow_publish` moves `release` from v3 to v5, nothing in the world can reconstruct which
+  version a past run resolved — unless it was recorded when it happened. The run record must pin, at
+  admission: `{name, requestedVersion? | requestedChannel?, resolvedVersion, resolvedAt}`. REQ-096's
+  acceptance already demands the pinned version; this lens adds: record the *request shape* too
+  (explicit version vs channel vs default-release), because "user asked for beta and got v4" and
+  "user asked for nothing and release pointed at v4" are different diagnoses for the same bad run.
+  This must cover **every** entry path: `workflow_run`, `workflow_trigger`, scheduler-fired
+  (`scheduler-engine.ts`), webhook-fired (`webhook-registry.ts`), chain-fired, and the **nested
+  `workflow('name')` call inside a running script** (REQ-014) — one cron schedule legitimately
+  produces runs of *different* versions over time, and only per-run pinning makes that followable.
+- **OBS-2 (publish is an event, not a mutation).** `workflow_publish` moving a pointer is exactly
+  the kind of state change that explains a cluster of failed runs three days later. It needs an
+  audit trail: who (principal, per REQ-086 attribution), when, channel, from-version → to-version —
+  a small append-only table or journal entries, surfaced in `workflow_get`/dashboard as "channel
+  history". Without it, "all my users broke at 14:02" is undiagnosable in seconds, which is this
+  dimension's stated bar. Cheap now (one INSERT next to the pointer UPDATE), unreconstructable later.
+- **OBS-3 (the REQ-099 staleness seam must be designed, not implied).** REQ-099 says a pre-v22
+  workflow that would now fail the checks is "surfaced (observable, not silently swallowed)" — but
+  no seam is named. Propose: a `validation` field on the catalog row, recomputed opportunistically
+  (on read / on admission), returned by `workflow_get`/`workflow_list` (e.g.
+  `validation:{ok:false, errors:[{code:'MCP_NOT_PROVISIONED', name:'…'}]}`) and copied into the run
+  record when such a workflow is run anyway. A log line is not a seam; the author must be able to
+  *query* which of their workflows went stale. Note this seam is **general, not migration-era-only**
+  — see SUS-3.
+- **OBS-4 (masking must be an honest, distinguishable state).** REQ-100 already requires "says the
+  script is withheld rather than pretending the workflow has none" — architecturally this means the
+  masked projection carries an explicit marker (e.g. `scriptWithheld: true`), never `script: ""` or
+  an absent key that a client can't distinguish from an empty workflow. Same marker on all four read
+  surfaces (see REP-2).
+- **OBS-5 (oracle-independent contract pins — Rule 1 of the Round-v22 note applied).** The two
+  external contracts this slice creates — channel-resolution semantics (explicit version › channel ›
+  default release; unpublished channel → typed refusal, never fallback-to-newest) and the masked
+  `workflow_get` response shape — must be pinned by **literal fixture assertions** (expected JSON
+  written out by hand), not by comparing the code's output to the code's own helper. v21 paid for
+  this lesson four times; v22's two contracts are named in the requirements doc itself.
 
-**O-3. Rejected submissions currently vanish by design — decide, don't drift.** REQ-091 requires
-`PARAM_LOCKED`/`PARAM_OUT_OF_RANGE` **before any durable work** (no run row, no workspace). Correct
-for resource hygiene, but it means an author cannot see that users are repeatedly tripping over the
-contract (exactly the feedback loop v21 exists to serve, and REQ-086 gives us a principal to
-attribute). Proposal: a bounded, in-memory (or ring-buffer journal) rejection counter per
-{workflow, errorCode}, exposed on the existing status surface — NOT a durable run row. If the panel
-deems even this out-of-slice, the gap must be recorded as an accepted residual, not left implicit.
+## 2. Replaceability — decoupling & pluggability
 
-**O-4. appendPrompt observability rides the transcript.** REQ-094's "observable in the captured
-transcript prompt" is sufficient — the composed prompt already lands in the per-agent transcript
-(`workflow_agent_log`). No new mechanism needed; the descriptor should simply carry
-`appendPromptBytes` (length, not content) so a size-cap dispute is diagnosable without replaying the
-transcript.
+*System altitude. The LLM-gateway pluggability story is out of this slice's blast radius.*
 
-## (2) Replaceability — decoupling & pluggability
+- **REP-1 (one ChannelResolver, injected everywhere a script enters a run).** A single pure module
+  — `resolveWorkflowVersion(catalog, name, {version?, channel?}) → {script, version, defaults,
+  params} | typed error` — consumed by `workflow_run`, `workflow_trigger`, scheduler, webhook,
+  chain, nested `workflow()` resolution, and resume's re-read path (resume: explicit-version mode
+  only — it re-reads the version pinned at admission, never a channel, per CON-3). This is the structural guard
+  against the stored-but-never-wired class (OBS-1's failure mode): if resolution logic lives in one
+  place, the "run path still calls the old `catalog.get(name)`" bug becomes a compile-visible
+  missed-call-site rather than five independent chances to forget. The guard test is REQ-096's own
+  acceptance asserted **at the seam** (run record pins the resolved version after a newer
+  registration lands) — the only assertion shape that Gate 7.5 history shows actually catches this
+  class. The old single-row `get(name)` should be **deleted**, not kept alongside — a surviving
+  legacy read path is exactly how the wiring class recurs.
+- **REP-2 (one masking projection at the catalog read boundary).** REQ-100 demands consistency
+  across `workflow_get`, `workflow_list`, `/api/workflows*`, and the dashboard. Per-endpoint
+  masking WILL drift (the dashboard renders from its own store reads). Propose two projection types
+  at the catalog boundary — `WorkflowOwnerView` (has `script`) and `WorkflowPublicView`
+  (**no script field in the type at all** — unrepresentable, the same pattern v21 used for the
+  closed `overrides` object) — with a single `projectFor(principal, row)` function. Every read
+  surface consumes projections, never rows. Masking then cannot be side-stepped by asking a
+  different endpoint, because no endpoint ever holds an unmasked row for a non-owner.
+- **REP-3 (the static checks move as one module, not as a copy).** The `if (spec.script)` block in
+  `submission-validator.ts:92` (parse/checkMeta, alias extraction, MCP-name extraction) becomes a
+  `validateScriptEntry(script)` module invoked wherever a script enters the engine: registration
+  now (REQ-099), and v23's analyzer agent later (it will read scripts too). Forking a second copy
+  for registration while the submission validator keeps its own would recreate the divergence this
+  slice exists to close. REQ-099's "no code path performs these checks only for inline scripts"
+  should be pinned by asserting the *module* has exactly the intended call sites.
+- **REP-4 (migration as a discrete, replayable step).** The `(name)` → `(name, version)` PK change
+  plus channel-pointer backfill should be a self-contained, idempotent migration unit (REQ-096's
+  acceptance already demands idempotent/restart-safe) — keyed and ordered like the existing store
+  migrations, so a future schema change (v23 stores per-version diagrams — already known!) composes
+  on top rather than re-touching this one. Design the version table so v23's per-version diagram
+  column/table attaches without another PK migration.
 
-*Altitude: agent for R-1 (LLM-backend decoupling is the whole point of effort mapping); system for
-R-2/R-3.*
+## 3. Consumability — ease of use & low integration cost
 
-**R-1. Effort mapping belongs in the provider profile seam, never in the executor.**
-`ProviderProfile.effortMapping` already exists (`src/session-options-builder.ts:18`) and is unread —
-the correct fix is to make *that* seam real, not to branch on provider names in `agent-executor.ts`.
-Anthropic-mapped aliases get their native control; OpenAI/Gemini/Ollama get their profile's mapping
-or an explicit no-op entry. Adding a provider with a new effort dial must be **config (a profile
-entry), not code** — this is the agent-altitude replaceability invariant (GPT↔Claude↔local model is
-a config change) applied to a single knob, and it is what keeps REQ-093's "provider-appropriate
-mapping" from ossifying into a switch statement.
+*Agent altitude strong here: the consumers are MCP agents that learn the surface from
+`tools/list` schema + typed errors alone (D-G8-3). The schema IS the product.*
 
-**R-2. One pure contract module with three consumers.** The params-contract validator (parse
-`meta.params`, reject locked keys, merge precedence, range-check overrides and declared `args`) must
-be a pure, dependency-free module — not logic braided into `server.ts` dispatch or
-`submission-validator.ts` ad hoc. Known future consumers: v21 run submission, v22 registration-time
-static checks (D14 moves them there when inline script closes), v23 `workflow_describe`. Design the
-seam once: `contract.ts` exporting `parseParamsBlock`, `validateOverrides`,
-`resolveEffectiveParams` — the last being the ONLY place the four-rung precedence lives, so REQ-092's
-per-rung test pins one function.
+- **CON-1 (schema-level closure, not runtime-level).** REQ-098 is explicit: `script` is *removed
+  from the input schema* of `workflow_run`/`workflow_resume` so a schema-reading client never
+  learns it existed — mirroring v21's "locked keys are unrepresentable" pattern. A runtime refusal
+  with the parameter still advertised would be a consumability defect (the schema would teach a
+  path that always fails). The refusal for callers who try anyway must carry the migration recipe
+  in the error text (`register → run({name})`), per REQ-098's own acceptance.
+- **CON-2 (the new surface's error taxonomy is part of the contract).** `workflow_publish` (new
+  tool: name/version/channel, owner-gated via existing `NOT_WORKFLOW_OWNER`), plus typed
+  `CHANNEL_UNPUBLISHED` (names the channel), `UNKNOWN_VERSION`, `INVALID_CHANNEL`. Each error
+  self-describing enough that an agent self-corrects in one round-trip (the v21 standard: carry the
+  violated bound / the valid set). `workflow_list` grows `versions[]` + per-channel pointers —
+  document the shape in the tool description since MCP has no output schema.
+- **CON-3 (name the inner-loop regression and design its replacement — the slice's biggest UX
+  hole).** Closing inline script kills two things: the ad-hoc dev loop (today a main usage route,
+  acknowledged at Gate 1 Q1) and **REQ-006's edited-script resume** ("resume with an edited script
+  re-runs from the first changed agent() call"). Nothing in REQ-096..100 replaces them. The
+  sanctioned author loop must be stated as architecture, not left to emerge: **register (draft
+  version, on no channel — safe by REQ-097's "registration ≠ publication") → run
+  `{name, version}` → iterate**, i.e. two MCP calls per iteration. To keep that loop tight:
+  `workflow_register` must return the assigned version (it already returns `{version}`) so an agent
+  chains register→run without a `workflow_get` in between; and edited-script resume becomes
+  "register new version → `workflow_resume({runId})` semantics against the new version" — a design
+  decision the panel must make explicitly (does resume re-resolve, or stay pinned? This lens says:
+  **stays pinned to the admitted version by default**, consistent with v21's "resume reuses its
+  pinned admission-time snapshot", with the cached-prefix-rerun path taking an explicit
+  `{version}`). Also update REQ-006's text or record the supersession — a requirement contradicting
+  the shipped schema is a traceability defect.
+- **CON-4 (the no-principal matrix, written once).** Auth-disabled single-operator is the compat
+  floor (REQ-100: behaves pre-v22). But versioning/channels still function without auth. Spell out
+  the matrix — auth off: register/publish/get-with-script all allowed, masking dormant; auth on:
+  ownership gates publish + unmasked get — in one table in the architecture doc and the plugin
+  guidance skill, so the client-side agent doesn't have to discover it by probing errors.
+- **CON-5 (version identifiers stay engine-assigned).** Keep the current monotonic
+  `v<n>` assignment (`workflow-catalog.ts:205`) rather than author-chosen strings: sortable,
+  collision-free, and an agent can reason "higher = newer" without a semver parser. Author-visible
+  labels can come later if ever needed.
 
-**R-3. Locked-key list is data, not scattered literals.** `prompt|tools|skills|mcp|workdir|cwd`
-(D12) will be checked at registration (REQ-090), at submission (REQ-091), and described read-only
-(v23). One exported const, three consumers — otherwise v22/v23 drift is guaranteed.
+## 4. Self-sustainability — closed-loop autonomy & lifecycle management
 
-## (3) Consumability — ease of use & low integration cost
+*System altitude primary; SUS-3 is the agent-flavored liveness point.*
 
-*Altitude: both — the MCP tool surface is consumed by agents (Claude Code) as much as by humans.*
+- **SUS-1 (the first unbounded-by-design store — force the retention decision).** Every prior
+  store got a metabolism: workspaces have TTL GC + purge (REQ-026), auth tables have `gcExpired()`
+  in the maintenance sweep (REQ-012 v16). Version history has **no natural expiry, grows on every
+  draft registration** (and the new dev loop of CON-3 *accelerates* registration), and run-pinned
+  versions cannot be GC'd naively (a journal references the version it ran, REQ-014/096). The panel
+  must decide out loud: (a) accepted-unbounded (defensible for a self-hosted single-team engine —
+  scripts are text), or (b) a sweep rule such as "prune versions that are: not channel-pointed, not
+  the newest, not referenced by any retained run, older than TTL", riding the existing maintenance
+  sweep. This lens recommends **(a) now with the schema shaped so (b) bolts on** (the run→version
+  reference must be queryable, which OBS-1 already requires) — but silence is not an option;
+  undecided-unbounded is how disks fill at 3am.
+- **SUS-2 (take the two invited debt items — both are self-protection).** **S-1**: the
+  ceilings-less `WorkflowCatalog` enforces no registration ceiling, and v22 makes that strictly
+  worse — every draft is a *new row*, so a single misbehaving author-agent loop can grow the
+  catalog without bound (REQ-024's 413 caps one body, not row count). Add per-name version-count
+  and script-size ceilings at registration (typed error, fail-closed). **P6-2 registration half**:
+  an author-declared `defaults.appendPrompt` carrying a forged frame delimiter must be refused at
+  registration, not just at dispatch — registration is now the *only* script entrance, so the gate
+  belongs there.
+- **SUS-3 (environmental checks go stale — split intrinsic from environmental validation).**
+  REQ-099 moves parse/alias/MCP checks to registration. But only **parse is intrinsic** to the
+  script; alias resolution and MCP-provisioned are **environmental** and rot after registration (an
+  operator deprovisions an MCP, remaps an alias — the tool-liveness problem, agent-altitude
+  self-sustainability). Architecture: registration runs all checks fail-closed (REQ-099); admission
+  **re-computes the cheap environmental checks** against the resolved version, always; what happens
+  with the result is a policy split the panel must pin. For **pre-v22 registrations** REQ-099's
+  grandfathering clause is explicit and binding: the run proceeds and the condition is recorded on
+  the run record + OBS-3's `validation` seam (surfaced, never swallowed). For **post-v22
+  registrations that go stale later**, REQ-099 is silent — fail fast with the registration-time
+  typed error (this lens's preference: the author was already told the contract) vs warn-and-run
+  (symmetry with grandfathering) is an open decision; either way the OBS-3 seam surfaces staleness
+  on read for *all* workflows, so one detection mechanism serves both policies.
+- **SUS-4 (migration self-healing = the acceptance text, verified for real).** Idempotent,
+  restart-safe, no-loss migration is already REQ-096 acceptance — this lens adds only: the engine
+  should detect a *partially applied* migration on boot and either complete or fail fast with a
+  named error, never boot half-migrated (the workroot-guard fail-fast precedent, REQ-021). And it
+  must be exercised at Gate 7.5 against a **real pre-v22 SQLite file**, not a fixture built by the
+  new code — the oracle-independence rule again.
+- **SUS-5 (no silent fallback, ever).** REQ-097's "unpublished channel → typed refusal, never
+  silently the newest script" is the load-bearing self-sustainability clause: every fallback path
+  in this design must be a typed, observable refusal. A scheduler-fired run hitting an unpublished
+  channel must record the refusal where the schedule's owner can see it (schedule status/dashboard),
+  not vanish — a cron that silently stops producing runs is the "silent/opaque failure" this lens
+  exists to outlaw.
 
-**C-1. REQ-090 IS the consumability requirement — return the contract as typed, structured data.**
-The declared contract on `workflow_get`/`workflow_list` should be a stable JSON shape
-(`{name, type, default, enum?|min?|max?, unit?}` per knob, plus the always-present four global
-knobs) — effectively a mini JSON-Schema the *calling agent* can validate against locally before
-submitting. This is the agent-altitude "invoke reasoning like a function" goal: an orchestrating
-agent reads the contract and composes a valid `workflow_run` with zero trial-and-error.
+---
 
-**C-2. Self-describing rejections (one-round-trip repair).** `PARAM_OUT_OF_RANGE` must carry
-`{param, supplied, allowed}` (the violated enum/range inline) and `PARAM_LOCKED` must carry
-`{param, tunable:[...]}` — so a caller (human or agent) repairs the call from the error alone
-instead of a second `workflow_get`. This matches the engine's established typed-error envelope
-practice (REQ-027/030) and the shipped #24 self-description pattern. An error that only
-names the code is a consumability defect for agent callers, who otherwise burn a tool-call round
-trip per knob.
+## Key points (condensed)
 
-**C-3. Backward-compat defaults are load-bearing.** REQ-090 no-`params`-block ⇒ four global knobs;
-REQ-091 no-`overrides` ⇒ byte-identical pre-v21 behavior; REQ-093 no-`effort` ⇒ byte-identical
-composition. Endorse strongly: existing callers pay **zero** migration cost, which is the correct
-consumability posture for a surface Claude Code agents already script against. The architecture
-should add one drift-lock: the MCP tool descriptions (`server.ts:361/398`) must be regenerated from
-the same contract-module types (the #24 self-description pattern), not hand-edited — advertised-but-
-unread `effort` was exactly a docs/behavior split.
-
-**C-4. REQ-095 closes the feedback loop cheaply.** `workflow:<name>` label + `name@version` in body
-reuses the existing GithubIssueClient envelope — right-sized; the only consumability note is that
-`issue_list({workflow})` filtering should tolerate the not-registered-name case symmetrically with
-`issue_report` (report-then-list on a just-deregistered name must round-trip).
-
-## (4) Self-sustainability — closed-loop autonomy & lifecycle
-
-*Altitude: system for S-1/S-2; agent for S-3. Thinnest dimension for this slice — noted honestly;
-no invented autoscaling asks.*
-
-**S-1. Registration-time validation goes stale; submission needs a liveness recheck.** REQ-088/090
-validate `model` aliases and tool allowlists at *registration*, but provider config (alias map,
-LiteLLM backends) changes over the workflow's lifetime — a registered default can reference an
-alias that no longer resolves. Without a recheck, the failure moves mid-run (agent → null after
-gateway timeout) instead of failing typed at submission. Proposal: `resolveEffectiveParams` re-
-validates the *effective* (post-merge) params against *current* engine config at submission and
-refuses with the existing typed taxonomy (`PARAM_OUT_OF_RANGE` or a distinct `DEFAULT_STALE`) —
-this is the tool-liveness-check idea applied to stored configuration, and it keeps long-lived
-registered workflows self-consistent without human sweeps.
-
-**S-2. Graceful degradation already in the REQs — endorse, don't duplicate.** REQ-093's
-effort-degrades-to-no-op-with-honest-record and REQ-094's size-cap-refusal-not-truncation are the
-slice's degradation surface, correctly specified. The one addition: the appendPrompt cap must be a
-named config key (documented in DEPLOY §1 like every other bound), not a code literal — bounds that
-operators can't see or tune are the seed of the next silent-behavior surprise.
-
-**S-3. Context-budget note (agent altitude).** appendPrompt attaches to *every* `agent()` dispatch
-in the run (REQ-094 "any agent() in that run"). For a 100-agent fan-out, one user knob multiplies
-into N× prompt tokens against the run's REQ-002 budget. No new mechanism needed — budget accounting
-already meters it — but the architecture should state explicitly that appendPrompt tokens are
-charged to the run budget like any prompt tokens (closing a possible "free rider" ambiguity), and
-the size cap default should be chosen with fan-out multiplication in mind, not single-agent
-intuition.
-
-## Key points (ranked)
-
-1. **O-1/R-2 jointly**: one pure `resolveEffectiveParams` seam owning the four-rung precedence,
-   emitting per-key provenance into the existing HarnessDescriptor — repairs REQ-092 in a way that
-   makes the recurring silent-no-op wiring class self-revealing rather than re-fixable.
-2. **R-1**: effort mapping realized through the existing `ProviderProfile.effortMapping` seam —
-   new provider = config entry, never executor code.
-3. **C-1/C-2**: contract returned as typed structured data; rejections carry the violated
-   bound/lock inline (one-round-trip repair for agent callers).
-4. **S-1**: submission-time recheck of merged params against current engine config (stale
-   registered defaults fail typed, not mid-run).
-5. **R-3/C-3**: locked-key list and MCP tool descriptions derived from the single contract module
-   (drift-lock; the `effort` no-op was a docs/behavior split).
-6. **O-3**: decide explicitly on rejected-submission visibility (bounded counter or recorded
-   residual gap) — don't let it drift.
+1. One **ChannelResolver** for all seven script-entry paths; delete the legacy `get(name)` read —
+   the stored-but-never-wired class is this repo's #1 recurring defect and v22 is shaped exactly
+   like its past instances (REP-1).
+2. **Provenance at admission**: run record pins requested-shape + resolved version; publish gets an
+   audit trail. Mutable pointers make post-hoc reconstruction impossible (OBS-1/2).
+3. **One masking projection** at the catalog boundary, script-field-unrepresentable for non-owners;
+   all four read surfaces consume projections (REP-2, OBS-4).
+4. **Intrinsic vs environmental check split**: parse at registration only; alias/MCP re-checked at
+   admission + surfaced via a queryable `validation` seam covering both grandfathered and gone-stale
+   workflows (SUS-3, OBS-3).
+5. **Name the author inner loop**: register-draft → run-by-version; resume stays pinned; REQ-006's
+   edited-script clause must be formally superseded (CON-3).
+6. **Retention decided out loud** + S-1 ceilings + P6-2 registration gate (SUS-1/2).
+7. Both external contracts (channel resolution, masked shape) pinned by **literal fixtures** —
+   Rule 1 from v21's post-mortem (OBS-5).
 
 ## Risks
 
-- **R-risk-1 (highest)**: REQ-092's precedence chain is implemented as scattered `??` fallbacks in
-  the executor rather than one function — untestable per-rung, and the fifth wiring miss of this
-  class lands unobserved. Mitigation: key point 1.
-- **R-risk-2**: effort mapping hard-codes provider branches; the next provider needs a code change
-  and the agent-altitude replaceability goal quietly dies for this knob.
-- **R-risk-3**: `PARAM_*` errors ship as bare codes; agent callers need an extra round-trip per
-  violation, and v23's describe surface reinvents the bound-reporting the error should have carried.
-- **R-risk-4**: registration-valid/submission-stale defaults surface as mid-run `agent()→null`
-  (looks like a provider outage, is actually config drift) — a misdiagnosis trap for operators.
-- **R-risk-5**: "before any durable work" is read as "leave no trace anywhere", and the author-
-  feedback loop v21 exists for loses its only telemetry about contract friction.
-- **R-risk-6**: appendPrompt cap chosen for one agent, blows up run token budgets under fan-out
-  (S-3); or cap lives as a code literal invisible to operators (S-2).
+- **R1 (high likelihood, high impact)**: version/channel columns land but a run path keeps reading
+  "newest" — the wiring class. Mitigation: REP-1's single resolver + seam test + Gate 7.5 real run
+  that registers twice and asserts the pinned version.
+- **R2**: masking implemented per-endpoint; dashboard or `/api/workflows*` leaks script to
+  non-owners, silently voiding REQ-100. Mitigation: REP-2 projection types.
+- **R3**: fire-time channel resolution means a `workflow_publish` silently changes what a cron/
+  webhook runs next — correct per REQ-097, but without OBS-1/OBS-2 it is an undiagnosable surprise
+  (and a hijack-shaped one; see disagreements).
+- **R4**: author inner-loop friction (two calls + version churn) pushes authors to point `beta` at
+  every draft, eroding channel semantics; or users report against drafts. Mitigation: CON-3's
+  sanctioned loop documented in the plugin skill + tool descriptions.
+- **R5**: unbounded catalog growth / registration DoS now that drafts accumulate rows (SUS-1/S-1).
+- **R6**: migration drops owner/defaults/params while re-keying, or half-applies on a crash —
+  guarded only if verified against a real pre-v22 database (SUS-4).
+- **R7**: moving MCP/alias checks to registration creates a bootstrap ordering constraint
+  (provision MCP before registering workflows that use it) and a staleness window after
+  registration; without SUS-3's admission recheck the engine trades one silent-failure mode for
+  another.
 
 ## Expected disagreements with other lenses
 
-- **appendPrompt as injection surface**: an adversarial lens will likely want more than REQ-094's
-  "structurally enforced elsewhere" — e.g. content screening or author opt-out of appendPrompt
-  entirely. My position: structural enforcement (locked keys unreachable at the options level) is
-  the correct control; screening instruction *text* is both unenforceable and a consumability tax.
-  Possible cheap concession: per-workflow `params` may declare `appendPrompt:{enabled:false}` as a
-  *constraint* (REQ-090 already allows constraining the four globals).
-- **Per-key provenance (O-1) called over-engineering**: I expect a "just fix the wiring" objection.
-  Counter: this is the fourth instance of the class; the marginal cost is one small journaled
-  object, and it converts a recurring Gate-8 archaeology exercise into a Gate-7.5 assertion.
-- **Rejection telemetry (O-3) called scope creep**: acceptable outcome is an explicitly recorded
-  residual gap; unacceptable is silence.
-- **S-1 recheck called redundant** with existing submission validation: the distinction is *what*
-  is validated (the post-merge effective params against *current* config, not the stored row
-  against config-at-registration); if another lens shows submission validation already re-resolves
-  aliases at run time, S-1 collapses to a test, not a design change — happy to concede to evidence.
+- **Adversarial/simplicity (Karpathy tie-breaker)** will likely YAGNI: the publish audit trail
+  (OBS-2), the retention/sweep design (SUS-1), the admission-time environmental recheck (SUS-3),
+  and possibly the shared-resolver insistence ("just call the catalog in each place"). I hold the
+  line on REP-1 (four documented recurrences of the wiring class outweigh abstraction cost — and it
+  is *less* code than five inline resolutions), on OBS-1 (unreconstructable later), and on OBS-2
+  (one INSERT); I will concede elaborate retention *implementation* if the decision is recorded as
+  accepted-unbounded with the schema kept GC-ready.
+- **Security** will likely push the opposite direction on R3: fire-time channel resolution lets a
+  compromised/careless owner's publish instantly retarget every standing schedule — they may want
+  schedules to **pin a version at creation** rather than resolve `release` at fire time. That is a
+  genuine product trade-off (auto-upgrade-by-publish is arguably the *feature*); the panel must pin
+  fire-time vs creation-time explicitly rather than let it fall out of implementation. My lens is
+  satisfied by either **provided** OBS-1 provenance + OBS-2 audit trail exist.
+- **Security on masking scope**: may argue masking should apply even with auth disabled (defense in
+  depth). REQ-100's acceptance explicitly keeps auth-disabled = pre-v22 (single-operator floor); I
+  side with the requirement — a no-principal deployment has no "non-owner" to mask against.
+- **Scalability** may raise per-version full-script row storage and propose content-addressed dedup
+  via the existing `cas-store`. Defensible, but this lens rates it premature for text-sized scripts
+  when SUS-1's ceilings exist; keep the schema's script column swappable for a CAS ref later
+  (replaceability satisfied by a column, not a subsystem).
+- **Testability** will welcome the pure resolver/projection modules but may resist SUS-3's
+  admission recheck as run-path latency; the recheck is two SQLite/registry lookups already paid on
+  the inline path pre-v22 — cost is unchanged, only relocated.

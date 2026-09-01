@@ -161,7 +161,17 @@ flowchart LR
 - **acceptance:**
   - Given a running workflow When `workflow_suspend(runId)` is called Then in-flight agents are stopped, state persists, and status becomes `suspended`; When `workflow_resume(runId)` is called Then completed `agent()` calls replay from the journal cache instantly and only unfinished calls run live, producing the same final result as an uninterrupted run
   - Given a suspended or completed run When the server process is restarted Then `workflow_status(runId)` still returns the run's state and a suspended run can still be resumed (journal + store survive restarts)
-  - Given `workflow_stop(runId)` Then the run terminates, its sandbox process exits, status becomes `stopped`, and a subsequent `workflow_resume` with an edited script re-runs only from the first changed `agent()` call (cached-prefix resume semantics)
+  - Given `workflow_stop(runId)` Then the run terminates, its sandbox process exits, and status becomes `stopped`.
+    **[SUPERSEDED v22, owner-confirmed 2026-09-01]** The remainder of this clause — "a subsequent `workflow_resume` with an
+    edited script re-runs only from the first changed `agent()` call (cached-prefix resume semantics)" — is superseded by
+    **REQ-098** (inline script is closed; `workflow_resume` no longer accepts a replacement script) together with
+    **REQ-096** (a run pins the version it executed). Decided in **ADR-010**. The cached-prefix machinery itself is
+    unaffected and still governs a bare `workflow_resume(runId)`; what is withdrawn is the *edited-script* entry point.
+    **Sanctioned replacement:** register a new version, then run by version. A `workflow_resume({runId, version})`
+    re-point was considered and rejected — no v22 REQ asks for it, and it collides with v21's ADR-002 run-immutable
+    `effectiveParams` snapshot; restoring an edited-script loop would be a future requirements decision, not an
+    architecture one. No test pinned the withdrawn clause (every suite calls `resume(runId)` bare), so nothing green
+    was weakened to make this true.
 - **iter:** v1
 
 ### REQ-007 — Per-agent observability via MCP tools
