@@ -429,6 +429,20 @@ export class RunManager {
         detail: { param: 'model', supplied: effectiveParams.model, allowed: { enum: [...this._aliasNames] } },
       });
     }
+    // v21 Gate 8 RE-REVIEW #6 (P6-2, review §T5/§T6): mirrors R-G2 one field over — F2
+    // (validateUserOverrides in contract.ts) only frame-checks a CALLER-SUPPLIED
+    // overrides.appendPrompt; a registered defaults.appendPrompt origin reaches this point
+    // unchecked on every no-overrides submission. Re-check the EFFECTIVE post-merge value before
+    // any durable work, same shared FRAME_CLOSE_FORGERY constant, reported by size only (DES-101
+    // row 6 discipline: never echo caller/author text).
+    if (typeof effectiveParams.appendPrompt === 'string' && FRAME_CLOSE_FORGERY.test(effectiveParams.appendPrompt)) {
+      throw paramCodedError({
+        ok: false,
+        code: 'PARAM_OUT_OF_RANGE',
+        message: 'appendPrompt cannot contain the user-instructions frame close delimiter',
+        detail: { param: 'appendPrompt', suppliedBytes: Buffer.byteLength(effectiveParams.appendPrompt, 'utf8') },
+      });
+    }
     // DES-088/ARCH-056 (REQ-083 sink-completeness sweep): this is a NEW persist sink — redact
     // BEFORE the durable write, same convention as the journal/snapshot sinks below. The live
     // RunEntry (below) keeps the unredacted value (dispatch never sees a redaction marker).

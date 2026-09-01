@@ -71,8 +71,12 @@ const OPENROUTER_PASSTHROUGH = /^openrouter\/.+/;
  *  cycle. Matches the tighter `<` + `/user-instructions` shape (not the exact closing tag text) so
  *  a variant like `</user-instructions >` cannot slip a literal-string check; a non-owner
  *  submitter embedding this in `appendPrompt` would otherwise close the untrusted frame early and
- *  attribute trailing text to the workflow author (cross-principal attribution forgery). */
-export const FRAME_CLOSE_FORGERY = /<\/user-instructions/;
+ *  attribute trailing text to the workflow author (cross-principal attribution forgery).
+ *  [AMENDED v21 Gate 8 RE-REVIEW #6, P6-1]: widened to `i` (case) + tolerate whitespace around the
+ *  `/` — the exact-literal form let `</USER-INSTRUCTIONS>`/`</ user-instructions>`-shaped variants
+ *  close the untrusted frame unrefused. Pattern stays linear (no nested quantifiers) so the A2
+ *  quadratic-cost fix stays intact. */
+export const FRAME_CLOSE_FORGERY = /<\s*\/\s*user-instructions/i;
 
 /** D-AUTH-5-B precedent (`harness-defaults.ts:70`): the alias check only applies when the server
  *  has a configured, non-empty alias table — an unconfigured/default-alias server must not reject
@@ -175,6 +179,14 @@ function validateSpecShape(param: string, spec: ParamSpec): Err | null {
   if (spec.max !== undefined && typeof spec.max !== 'number') {
     return invalid(param, 'max must be a number');
   }
+  // v21 Gate 8 RE-REVIEW #6 (P6-4): `type:'enum'` specs are string-only by construction
+  // (checkValueAgainstSpec's expectedType ternary sends 'enum'->'string' before membership ever
+  // runs), so a non-string member (mixed or fully numeric) registers an unusable knob that admits
+  // no value at all. Reject the declaration outright, same precedent as the enum-vs-min/max check
+  // below.
+  if (spec.enum !== undefined && !spec.enum.every((e) => typeof e === 'string')) {
+    return invalid(param, 'enum members must be strings');
+  }
   // v21 Gate 8 RE-REVIEW #5 (F4, residual edge of A4): a `type:'enum'` spec is bounded by its own
   // membership (checkValueAgainstSpec's `enum.includes(value)`) — the numeric min/max branch never
   // applies to it (NaN-inert), so a declared min/max on an enum spec was advertised on
@@ -248,6 +260,13 @@ export function parseParamContract(
   for (const [key, spec] of Object.entries(argsIn)) {
     const shapeErr = validateSpecShape(`args.${key}`, spec);
     if (shapeErr) return shapeErr;
+    // v21 Gate 8 RE-REVIEW #6 (P6-3): a declared args.<k>.default is parsed and served on
+    // workflow_get, but neither defaultRunParams/mergeRunParams nor validateDeclaredArgs ever read
+    // or apply a per-arg default (only the 4 knobs get a `defaults` rung) — so it is silent
+    // `undefined` to the script, advertised but never enforced. Reject the declaration outright.
+    if (spec.default !== undefined) {
+      return invalid(`args.${key}`, 'args spec cannot declare a default (never applied)');
+    }
     if (spec.enum !== undefined && spec.enum.length > MAX_ENUM_MEMBERS) {
       return invalid(`args.${key}`, `enum has more than ${MAX_ENUM_MEMBERS} members`);
     }
