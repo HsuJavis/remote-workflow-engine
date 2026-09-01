@@ -3142,3 +3142,52 @@ same number admission enforces.
 One citation remains after the rejection branch is removed. Keep it **only** if it reads as a historical
 note recording a superseded decision; if it still describes live behavior, it is stale and goes. A
 comment citing a superseded adjudication as though it were current is the same defect class as R-G10.
+
+---
+
+## Orchestrator adjudication #8 — v21 Gate 8 re-review #4 (2026-09-01)
+
+Two HIGH findings, both reviewer-verified in source and one reproduced with measurements, both in
+code **v21 itself added**. They are real and they ship fixed.
+
+### H-1 (A1) — the read path must be made TOTAL; "no deployed DB is poisoned" is NOT an acceptable answer
+`parseParamContract` validates the locked-key set, unknown keys, `enum.length` and model aliases — but
+never that `type` is one of the literals, that `enum` is an array, or that `min`/`max` are numbers. So
+`enum:'abc'` registers (`'abc'.length === 3` passes the only guard that looks at `enum`), and
+`boundEffort` then throws `TypeError: authorEnum.filter is not a function` on **every**
+`workflow_get`/`workflow_list` thereafter. One poisoned registration durably bricks workflow discovery
+engine-wide, and auth is off by default.
+
+**Both halves ship:**
+1. The parser shape guard — `type` ∈ literals, `enum` is an array, `min`/`max` are numbers; typed
+   rejection, nothing stored, same `invalid(param, reason)` shape as every other rejection.
+2. **The read path is made total over a malformed stored contract** — canonical fallback or typed
+   error, never a `TypeError`. Adjudicated: **do the work, do not take the "verify no deployed row is
+   poisoned" escape.** A live deployment exists, the check would be true only for today, and the whole
+   point of a total function is that it does not depend on what happens to be in the database. A read
+   path that trusts stored data because someone once looked is the same bet as a comment claiming a
+   guarantee the code does not provide — this iteration has now rejected that bet three times.
+
+### H-2 (A2) — the truncation mitigation introduced a denial of service
+`truncatedSupplied` trims one character per iteration, re-measuring and re-copying each time: O(n²),
+reproduced on this host at 611 ms @ 100k chars and 2396 ms @ 200k, a clean 4× per doubling. An 8 MiB
+`overrides.model` — bounded only by `MAX_BODY_BYTES` — blocks the single-threaded event loop for roughly
+**70 minutes from one request**, upstream of `createRun`, `maxConcurrentRuns` and the budget rung, and
+leaves no journal trace. One O(n) `slice` fixes it: a `Buffer.byteLength` guard and a single
+`subarray(0, 64)`.
+
+Worth naming plainly: this function exists **only** to bound the echo of an oversized supplied value in
+a rejection payload. The mitigation for one resource problem created a worse one. Take the reviewer's
+pinned test shape — echo ≤ 64 bytes **and** a wall-clock ceiling on a ~1 MB input — rather than a
+timing-only assertion; the 100–1000× separation is what makes that assertion robust instead of flaky.
+
+### H-3 — the Gate 5 semantics choice on A4 stands
+String `min`/`max` are a **byte-length bound**, not a parse-time rejection. One semantics, pinned, and
+the advertised `appendPrompt` bound must equal `maxAppendPromptBytes` (A5) — the advertised-equals-
+enforced rule this iteration has now had to state four times.
+
+### H-4 — scope discipline for this pass
+The review pinned the send-back scope explicitly (§Q7) precisely because unpinned scope is how F-3/F-4
+dangled through two closeouts. Land the doc batch **in the same pass** as the code, not as a follow-up:
+A3, A6..A12, O-1..O-3, C-2 (=F-3), R-2, and A7's correction of IMPL-141's false "F-4 not done" claim
+(the P-A6 dedup had in fact landed earlier in 244f9f0). S-1 stays recorded debt.
