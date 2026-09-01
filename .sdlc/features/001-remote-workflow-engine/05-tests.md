@@ -4541,6 +4541,30 @@ run tests/integration/harness-defaults-validation.test.ts`): **29 total, 1 faile
 exactly the genuinely-red case, 0 unrelated regressions vs the pre-round 27/27 baseline. `npx tsc
 --noEmit` clean.
 
+**v21 Gate 8 closeout (integrator, 2026-09-01, review §S7 F1 half 2 — measurement pin, no new IDs;
+folded into IT-081):** 3 new cases, new `a declared knob default is refused under its OWN origin
+code, not the caller-defaults one` describe block, on this file's shared `beforeAll` server. These
+are **green on write and deliberately so** — they are not a RED for unimplemented behaviour, they
+pin the result of the Item-1 measurement that retired §S7's F1 half 2 (see IMPL-146), so the
+retired prescription cannot be silently re-applied on a later pass. Cases: (1) a params-origin
+`effort` default of `'ultra'` declared under `type:'string'` (so it passes `violatesOwnSpec` and
+reaches `effectiveDefaults` — precisely the value class `validateHarnessDefaults` would catch and
+never sees) is refused at registration with `workflow_get` → `WORKFLOW_NOT_FOUND`; (2) that refusal
+carries the **author** origin code `PARAM_CONTRACT_INVALID` naming `params.knobs.effort.default`,
+and does **not** carry `HARNESS_DEFAULTS_INVALID` or the string `defaults.effort`; (3) the same
+value supplied as a caller `defaults.effort` carries the **caller** origin code
+`HARNESS_DEFAULTS_INVALID` naming `defaults.effort`, nothing stored. **Oracle:** the two code
+literals are the two documented rejection families (DES-099's D-AUTH-5 vs DES-101's contract
+parse) and the origin-keying rule is stated both in `workflow-catalog.ts:175-180` and as an
+explicit constraint in review §S7 ("preserving the origin-keyed rejection codes") — asserted
+against that rule, not against whatever `register()` happens to emit. Case (2) is the one with
+teeth: applying §S7's prescribed reorder was measured to flip it to
+`HARNESS_DEFAULTS_INVALID: defaults.effort …` — naming a `defaults` field the script author never
+wrote — **with the full suite still green**, because nothing pinned it. Direct re-run
+(`npx vitest run tests/integration/harness-defaults-validation.test.ts`): **32 total, 32 passed**
+(29 → 32; the prior round's genuine red is green after IMPL-145's F1 half 1). `npx tsc --noEmit`
+clean.
+
 ### IT-082 — v15 schema drift-lock: `workflow_register`/`workflow_deregister` `defaults`+`principal` fields; `workflow_get` owner+defaults (DES-099, DES-100)
 - **status:** green
 - **traces:** DES-099, DES-098, DES-100, ARCH-062, ARCH-061, TASK-089
@@ -4550,6 +4574,17 @@ exactly the genuinely-red case, 0 unrelated regressions vs the pre-round 27/27 b
 - **iter:** v15
 
 File: `tests/integration/schema-drift-v15.test.ts`. Mock policy (integration): real server, real `tools/list` response. 7 cases: `workflow_register` exists (passes); `workflow_register` inputSchema has `defaults` property (RED); `workflow_register` inputSchema has `principal` property (RED); `workflow_register` description mentions defaults/harness (RED); `workflow_deregister` has `principal` property (RED); `workflow_get` description mentions owner (RED); `workflow_get` description mentions defaults (RED). Red reason: new fields not yet in tool schemas → 6 of 7 assertions fail.
+
+**v21 Gate 8 RE-REVIEW #5 closeout (2026-09-01, review §S7 C-3; landed in commit `2e58d86`, recorded
+here retroactively — see IMPL-145):** 1 new case, `workflow_register inputSchema 'defaults'
+advertises all 7 HarnessDefaults keys`. The schema advertised 5 keys while the engine accepted and
+applied 7 (`effort`/`appendPrompt`, widened by adjudication #6's F-1) — the docs/behaviour split
+ARCH-067's own note forbids minting. **Oracle:** the expected list is the 7 key names written out
+literally (`appendPrompt, effort, model, prompt, skills, timeoutMs, tools`) and compared sorted
+against the served `tools/list` schema — the external contract is `HarnessDefaults`/`KNOWN_KEYS`
+(`harness-defaults.ts:15-23,39`), NOT the schema object under test, so the case fails if either side
+moves alone. Green after the same commit's `server.ts` schema widening; the file is 8 cases, all
+passing.
 
 ### VAL-095 — REQ-012: engine-as-own-AS OAuth discovery (MCP SDK) + PKCE flow + auth-disabled backward-compat + v16 loopback/GC + v17 DCR + v18 distinct Google URL hosts + v20 refresh tokens + callback page (REQ-012)
 - **status:** green

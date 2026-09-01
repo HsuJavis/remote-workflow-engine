@@ -564,3 +564,72 @@ describe('meta.params.model.default vs top-level defaults.model — the SAME ali
     expect(r.code).not.toBe('HARNESS_DEFAULTS_INVALID');
   });
 });
+
+// v21 Gate 8 closeout (2026-09-01, integrator): §S7's F1 prescription had a SECOND half — delete
+// the early `validateHarnessDefaults(defaults)` call and re-run it unconditionally over
+// `effectiveDefaults` after the knob-default normalization loop. Measured at HEAD with half 1
+// (`isKnownAlias` in `harness-defaults.ts`) already in the tree, the reorder closes NO hole in the
+// production composition and BREAKS the origin-keyed rejection convention §S7 itself says to
+// preserve (`workflow-catalog.ts:175-180`). This block pins the measurement so the reorder cannot
+// be re-applied silently on a future pass — the reason two implementers reached opposite answers
+// was that neither conclusion was pinned by a test.
+//
+// The two facts pinned, and why each is the real contract rather than an echo of the code:
+//   1. NO HOLE. `effectiveDefaults` ⊇ `defaults` by construction: the normalization loop only ever
+//      writes a key ABSENT from `defaults` (`if (key in effectiveDefaults)` throws on disagreement
+//      instead of overwriting), so every caller-supplied key is exactly what the early call already
+//      validated. The only values `validateHarnessDefaults` never sees are params-origin knob
+//      defaults — and `parseParamContract` confines those to TUNABLE_KEYS ⊂ KNOWN_KEYS, so
+//      D-AUTH-5-A can never fire on them, while type/membership is covered by the ceiling loop
+//      (`effectiveBounds(canonicalContract(), ceilings)` carries the canonical per-knob type and
+//      the effort enum) and the model alias by `contract.ts`'s own `model.default` check.
+//   2. ORIGIN-KEYED CODES. The convention is stated in `workflow-catalog.ts:175-180` and restated
+//      as a constraint in review §S7 ("preserving the origin-keyed rejection codes"): a value the
+//      CALLER supplied in `defaults` answers under the D-AUTH-5 family's HARNESS_DEFAULTS_INVALID
+//      naming `defaults.<k>`; a value the AUTHOR declared in the script answers under
+//      PARAM_CONTRACT_INVALID naming `params.knobs.<k>.default`. The rejection must name back an
+//      input the caller actually sent. Applying the reorder was measured to flip every
+//      params-origin rejection below to HARNESS_DEFAULTS_INVALID / "defaults.effort …" — telling a
+//      script author about a `defaults` field they never wrote — with the full suite still green,
+//      because nothing pinned it. Now something does.
+describe('a declared knob default is refused under its OWN origin code, not the caller-defaults one (v21 Gate 8 closeout — §S7 F1 half 2 superseded by measurement)', () => {
+  // Asserted literally against the two documented rejection codes, not against whatever
+  // register() happens to emit: DES-099's D-AUTH-5 family vs DES-101's contract-parse family.
+  const CALLER_ORIGIN_CODE = 'HARNESS_DEFAULTS_INVALID';
+  const AUTHOR_ORIGIN_CODE = 'PARAM_CONTRACT_INVALID';
+  const codeOf = (r: Record<string, unknown>): string | undefined =>
+    (r.code as string | undefined) ?? (r.error as { code?: string } | undefined)?.code;
+
+  // `'ultra'` is not a member of EFFORT_RANK at any ceiling, and the spec's own `type:'string'`
+  // declaration admits it — so it reaches `effectiveDefaults` having passed `violatesOwnSpec`.
+  // This is precisely the value class `validateHarnessDefaults` would catch and never sees.
+  const JUNK_EFFORT_SCRIPT =
+    `export const meta = { params: { knobs: { effort: { type: 'string', default: 'ultra' } } } };\nreturn 1;`;
+
+  it('a params-origin effort default outside the effort enum is refused at registration, nothing stored (no hole for half 2 to close)', async () => {
+    const r = await callTool('workflow_register', { name: 'it081-f1h2-effort-junk', script: JUNK_EFFORT_SCRIPT });
+    expect(r.error).toBeDefined();
+
+    const got = await callTool('workflow_get', { name: 'it081-f1h2-effort-junk' });
+    expect(got.code).toBe('WORKFLOW_NOT_FOUND'); // fail-closed: nothing stored
+  });
+
+  it('...and it answers under the AUTHOR origin code naming params.knobs.effort.default, never the caller-defaults code', async () => {
+    const r = await callTool('workflow_register', { name: 'it081-f1h2-effort-junk-code', script: JUNK_EFFORT_SCRIPT });
+    expect(codeOf(r)).toBe(AUTHOR_ORIGIN_CODE);
+    expect(codeOf(r)).not.toBe(CALLER_ORIGIN_CODE);
+    expect(JSON.stringify(r)).toContain('params.knobs.effort.default');
+    expect(JSON.stringify(r)).not.toContain('defaults.effort');
+  });
+
+  it('the SAME junk supplied as a caller `defaults.effort` answers under the CALLER origin code — the two doors stay distinguishable', async () => {
+    const r = await callTool('workflow_register', {
+      name: 'it081-f1h2-effort-junk-caller', script: SCRIPT, defaults: { effort: 'ultra' },
+    });
+    expect(codeOf(r)).toBe(CALLER_ORIGIN_CODE);
+    expect(JSON.stringify(r)).toContain('defaults.effort');
+
+    const got = await callTool('workflow_get', { name: 'it081-f1h2-effort-junk-caller' });
+    expect(got.code).toBe('WORKFLOW_NOT_FOUND'); // fail-closed: nothing stored
+  });
+});
