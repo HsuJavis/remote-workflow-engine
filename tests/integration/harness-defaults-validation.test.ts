@@ -535,3 +535,32 @@ describe('caller-supplied `defaults` are bounded by the engine ceilings even wit
     expect(r.error).toBeUndefined();
   });
 });
+
+// v21 Gate 8 RE-REVIEW #5 (F1, MED, review §S7 (a) — "the red case must construct the
+// post-normalization object"): the SAME `openrouter/<id>` passthrough string gets OPPOSITE answers
+// depending on which door it registers through. Door 1 — a script-declared `params.knobs.model.
+// default` — is validated by `contract.ts`'s `isKnownAlias` (has the `openrouter/*` passthrough
+// carve-out) and already accepts it (regression pin below). Door 2 — a caller-supplied top-level
+// `defaults.model` field — is validated by `harness-defaults.ts`'s own hand-rolled strict
+// `aliasNames.has()` check (D-AUTH-5-B, NO passthrough carve-out) and rejects the identical string
+// today. Both doors register a "declared default for model" against the SAME non-empty, configured
+// alias table this file's `beforeAll` sets up — they must agree.
+describe('meta.params.model.default vs top-level defaults.model — the SAME alias predicate on both doors (v21 Gate 8 RE-REVIEW #5, F1)', () => {
+  const OPENROUTER_MODEL = 'openrouter/anthropic/claude-3.5-sonnet';
+
+  it('regression pin: the openrouter passthrough string as a DECLARED KNOB default (params.knobs.model.default) already registers fine', async () => {
+    const script = `export const meta = { params: { knobs: { model: { type: 'string', default: '${OPENROUTER_MODEL}' } } } };\nreturn 1;`;
+    const r = await callTool('workflow_register', { name: 'it081-f1-openrouter-knob-default', script });
+    expect(r.error).toBeUndefined();
+  });
+
+  it('the SAME openrouter passthrough string as a caller-supplied top-level defaults.model must give the SAME answer (today: HARNESS_DEFAULTS_INVALID — no passthrough carve-out on this door)', async () => {
+    const r = await callTool('workflow_register', {
+      name: 'it081-f1-openrouter-defaults-field',
+      script: SCRIPT,
+      defaults: { model: OPENROUTER_MODEL },
+    });
+    expect(r.error).toBeUndefined();
+    expect(r.code).not.toBe('HARNESS_DEFAULTS_INVALID');
+  });
+});
