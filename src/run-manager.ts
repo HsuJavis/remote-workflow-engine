@@ -32,7 +32,7 @@ import { createSemaphore, type Semaphore, type SemaphoreGauge } from './agent-se
 import { SandboxHost } from './sandbox/host.js';
 import type { AgentSpawner, AgentTypeDef } from './agent-executor.js';
 import { AgentExecutor } from './agent-executor.js';
-import { redact } from './secret-resolver.js';
+import { redact, hasSecretMarker } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
 import { ResumeCache, MISS, type ResumePlan } from './resume-cache.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
@@ -535,7 +535,7 @@ export class RunManager {
     // marker (see comment there) — any rehydrated snapshot that still carries one is refused typed,
     // never dispatched, so a resumed run is always either byte-identical to admission or a typed
     // refusal, never a silent secret-marker substitution.
-    if (JSON.stringify(entry.effectiveParams).includes('‹secret:')) {
+    if (hasSecretMarker(entry.effectiveParams)) {
       throw codedError('PARAM_SECRET_UNAVAILABLE', `Run ${runId}'s admission-time parameters carry a redaction marker that resume never restores (ARCH-066 inv-5 forbids dispatching it)`);
     }
     const newScript = script ?? entry.script;

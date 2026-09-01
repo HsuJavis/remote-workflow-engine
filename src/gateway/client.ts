@@ -19,18 +19,27 @@ export function resolveTimeout(t: unknown): number | undefined {
 }
 
 /** DES-106/ARCH-069 (TASK-102): the tri-state record of whether/how a requested `effort` directive
- *  reached the wire — `applied:true` names the outbound request field + value; `applied:false`
- *  degrades the run without failing it and records why (e.g. no reasoning dial for this provider). */
-export type EffortApplied = { applied: true; param: string; value: unknown } | { applied: false; reason: string };
+ *  reached the wire — `applied:true` names the outbound placement + value; `applied:false`
+ *  degrades the run without failing it and records why (e.g. no reasoning dial for this provider).
+ *  `param` is the flat Agent SDK Options field; `restPath` is the (possibly nested) REST-body path —
+ *  the two wire shapes place the same reasoning-effort concept differently (E-1/P-A1: the Anthropic
+ *  Messages API nests it at `output_config.effort`, never top-level, while the Agent SDK's own
+ *  `Options` object takes it as a flat field), so one flat name cannot describe both placements. */
+export type EffortApplied =
+  | { applied: true; param: string; restPath: string[]; value: unknown }
+  | { applied: false; reason: string };
 
 /** A provider's reasoning-effort dial, if it has one. Config, not code (ARCH-069): a new provider
  *  with an equivalent control is one more table row, not a new branch in either gateway client. */
 export interface EffortProfile {
+  /** Flat field name on the Agent SDK's own `Options` object. */
   param: string;
+  /** REST-body path (outer-to-inner) where the value nests, e.g. `['output_config','effort']`. */
+  restPath: string[];
 }
 
 const EFFORT_PROFILES: Partial<Record<AliasMap[string]['provider'], EffortProfile>> = {
-  anthropic: { param: 'effort' },
+  anthropic: { param: 'effort', restPath: ['output_config', 'effort'] },
 };
 
 /** `profileFor(provider)` — the provider-profile lookup DES-106 names explicitly. Accepts a plain
@@ -46,7 +55,7 @@ export function profileFor(provider: string | undefined): EffortProfile | undefi
 export function mapEffort(profile: EffortProfile | undefined, effort: AgentOpts['effort']): EffortApplied | undefined {
   if (effort === undefined) return undefined;
   if (!profile) return { applied: false, reason: 'no reasoning dial for this provider' };
-  return { applied: true, param: profile.param, value: effort };
+  return { applied: true, param: profile.param, restPath: profile.restPath, value: effort };
 }
 
 export type GatewayResult =
@@ -121,10 +130,12 @@ export interface GatewayConfig {
 type ProviderTarget = AliasMap[string];
 type AttemptFailure = { ok: false; provider: string; reason: 'timeout' | 'unreachable' | 'terminal' };
 
-/** DES-106: the wire-level fields an applied effort directive contributes to an outbound request
- *  body — a no-op `{}` when no dial applies (untargeted provider) or no effort was requested. */
+/** DES-106/P-A1: the wire-level fields an applied effort directive contributes to an outbound
+ *  Anthropic-Messages-shaped request body — nested per `applied.restPath` (the documented contract
+ *  is `output_config:{effort:…}`, never a top-level `effort` field) — a no-op `{}` when no dial
+ *  applies (untargeted provider) or no effort was requested. */
 function effortBodyFields(applied: EffortApplied | undefined): Record<string, unknown> {
-  return applied?.applied ? { [applied.param]: applied.value } : {};
+  return applied?.applied ? applied.restPath.reduceRight<unknown>((acc, key) => ({ [key]: acc }), applied.value) as Record<string, unknown> : {};
 }
 
 /** Real provider call — one impl per provider, all sharing the same bounded-timeout contract. */

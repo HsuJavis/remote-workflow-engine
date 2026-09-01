@@ -132,6 +132,16 @@ export class WorkflowCatalog {
       if (violatesOwnSpec(spec.default, spec)) {
         throw codedError('PARAM_CONTRACT_INVALID', `params.knobs.${key}.default violates its own declared bounds`);
       }
+      // v21 Gate 8 re-review #3 adjudication #5 (E-3, 04-design.md "Orchestrator adjudication #5"):
+      // a declared default for a knob NO RUNG can apply — `effort`/`appendPrompt` are not
+      // HarnessDefaults keys, so defaultRunParams (src/params/resolve.ts) never reads them off this
+      // column — must be REJECTED at registration, not silently stored into a type that cannot
+      // represent it (that broke the discover->edit->re-register round-trip: the engine's own served
+      // `defaults` then failed HARNESS_DEFAULTS_INVALID on re-register). `model`/`timeoutMs` are the
+      // only TUNABLE_KEYS a rung can apply via HarnessDefaults, so only those may be normalized here.
+      if (key !== 'model' && key !== 'timeoutMs') {
+        throw codedError('PARAM_CONTRACT_INVALID', `params.knobs.${key}.default cannot be applied: no defaults.${key} exists`);
+      }
       if (key in effectiveDefaults) {
         if (effectiveDefaults[key] !== spec.default) {
           throw codedError('PARAM_CONTRACT_INVALID', `params.knobs.${key}.default disagrees with defaults.${key}`);

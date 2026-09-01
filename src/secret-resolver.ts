@@ -88,6 +88,12 @@ export interface SecretValueProvider {
   entries(): ReadonlyArray<{ name: string; value: string }>;
 }
 
+/** The redaction marker's own prefix (P-A6/07-review.md §P2): exported so a caller checking
+ *  whether a value still carries an unresolved marker (e.g. run-manager.ts's resume-time
+ *  `PARAM_SECRET_UNAVAILABLE` guard) shares this grammar with `redact()` instead of re-typing the
+ *  glyph — a future marker-format change here must not silently disable that guard. */
+const MARKER_PREFIX = '‹secret:';
+
 /** PURE — capture-time redaction (DES-088): replaces every occurrence of each secret value
  *  (value-exact, substring match) with the name-keyed marker `‹secret:NAME›`. Empty-value secrets
  *  are skipped (split('') would corrupt the string). In-order replacement: when two secrets share a
@@ -98,7 +104,7 @@ export function redact(event: unknown, secrets: ReadonlyArray<{ name: string; va
   function walk(value: unknown): unknown {
     if (typeof value === 'string') {
       let out = value;
-      for (const { name, value: v } of valid) out = out.split(v).join(`‹secret:${name}›`);
+      for (const { name, value: v } of valid) out = out.split(v).join(`${MARKER_PREFIX}${name}›`);
       return out;
     }
     if (Array.isArray(value)) return value.map(walk);
@@ -110,4 +116,11 @@ export function redact(event: unknown, secrets: ReadonlyArray<{ name: string; va
     return value;
   }
   return walk(event);
+}
+
+/** PURE — does `value` (any JSON-shaped value, checked via its string form) still carry an
+ *  unresolved `redact()` marker? P-A6: the single predicate a caller should use instead of
+ *  re-typing the `‹secret:` glyph, so the two can never drift apart. */
+export function hasSecretMarker(value: unknown): boolean {
+  return JSON.stringify(value).includes(MARKER_PREFIX);
 }
