@@ -39,7 +39,7 @@ import { WorkflowCatalog } from './workflow-catalog.js';
 import type { GatewayClient, GatewayConfig } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
-import { validateUserOverrides, validateDeclaredArgs, canonicalContract, isKnownAlias, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
+import { validateUserOverrides, validateDeclaredArgs, canonicalContract, isKnownAlias, FRAME_CLOSE_FORGERY, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
 import { defaultRunParams, mergeRunParams, type RunParams } from './params/resolve.js';
 import type { HarnessDefaults } from './harness-defaults.js';
 
@@ -542,10 +542,9 @@ export class RunManager {
     // refuses this shape AT ADMISSION, but a row admitted before that guard existed could already
     // carry it in the persisted snapshot — resume must not silently re-dispatch a forged frame-close
     // delimiter any more than it silently re-dispatches an unrestorable secret marker (same "refuse,
-    // never dispatch" discipline as the check above). Mirrors contract.ts's FRAME_CLOSE_FORGERY
-    // pattern inline rather than importing it (that constant is module-private, not exported) — the
-    // tighter `<` + `/user-instructions` shape catches variants like `</user-instructions >` too.
-    if (typeof entry.effectiveParams.appendPrompt === 'string' && /<\/user-instructions/.test(entry.effectiveParams.appendPrompt)) {
+    // never dispatch" discipline as the check above). Shares contract.ts's exported FRAME_CLOSE_FORGERY
+    // pattern so the two refusal sites can never drift onto different shapes.
+    if (typeof entry.effectiveParams.appendPrompt === 'string' && FRAME_CLOSE_FORGERY.test(entry.effectiveParams.appendPrompt)) {
       throw codedError('PARAM_OUT_OF_RANGE', `Run ${runId}'s admission-time appendPrompt carries the user-instructions frame close delimiter and cannot be resumed`);
     }
     const newScript = script ?? entry.script;

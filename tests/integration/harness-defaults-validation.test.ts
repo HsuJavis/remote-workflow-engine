@@ -130,6 +130,52 @@ describe('Harness defaults register-time validation — D-AUTH-5 named assertion
     expect(check.code).toBe('WORKFLOW_NOT_FOUND');
   });
 
+  // v21 Gate 6.5+7 coverage-gate extension (adjudication #6 F-1 widen, 35e6994): the `effort`/
+  // `appendPrompt` shape guards added alongside `HarnessDefaults`'s two new keys had no covering
+  // case for the top-level `defaults.appendPrompt` door specifically (as opposed to the
+  // `meta.params.knobs.appendPrompt.default` door IMPL-146's probe already covers) — a non-string
+  // value must be refused here too, not just accepted and crash later at dispatch.
+  it('v21 F-1: defaults.appendPrompt must be a string → HARNESS_DEFAULTS_INVALID, nothing stored', async () => {
+    const r = await callTool('workflow_register', {
+      name: 'it081-append-not-string',
+      script: SCRIPT,
+      defaults: { appendPrompt: 7 },  // number, not a string
+    });
+    expect(r.code).toBe('HARNESS_DEFAULTS_INVALID');
+    const check = await callTool('workflow_get', { name: 'it081-append-not-string' });
+    expect(check.code).toBe('WORKFLOW_NOT_FOUND');
+  });
+
+  // v21 Gate 6.5+7 coverage-gate extension: `validateHarnessDefaults` (v15, `harness-defaults.ts`)
+  // is a function this round's diff (`2e58d86`'s `isKnownAlias` swap) modified, so the whole-function
+  // 95% bar applies — its other pre-existing shape guards (model/timeoutMs/prompt/tools/skills) had
+  // never had a covering case either (a pre-v21 gap, never caught because this file was never in a
+  // prior round's diff). One case per guard, same shape-rejection pattern as the appendPrompt case above.
+  it('defaults.model must be a string → HARNESS_DEFAULTS_INVALID', async () => {
+    const r = await callTool('workflow_register', { name: 'it081-model-not-string', script: SCRIPT, defaults: { model: 7 } });
+    expect(r.code).toBe('HARNESS_DEFAULTS_INVALID');
+  });
+
+  it('defaults.timeoutMs must be a number → HARNESS_DEFAULTS_INVALID', async () => {
+    const r = await callTool('workflow_register', { name: 'it081-timeout-not-number', script: SCRIPT, defaults: { timeoutMs: 'soon' } });
+    expect(r.code).toBe('HARNESS_DEFAULTS_INVALID');
+  });
+
+  it('defaults.prompt must be a string → HARNESS_DEFAULTS_INVALID', async () => {
+    const r = await callTool('workflow_register', { name: 'it081-prompt-not-string', script: SCRIPT, defaults: { prompt: 7 } });
+    expect(r.code).toBe('HARNESS_DEFAULTS_INVALID');
+  });
+
+  it('defaults.tools must be an array → HARNESS_DEFAULTS_INVALID', async () => {
+    const r = await callTool('workflow_register', { name: 'it081-tools-not-array', script: SCRIPT, defaults: { tools: 'Read' } });
+    expect(r.code).toBe('HARNESS_DEFAULTS_INVALID');
+  });
+
+  it('defaults.skills must be an array → HARNESS_DEFAULTS_INVALID', async () => {
+    const r = await callTool('workflow_register', { name: 'it081-skills-not-array', script: SCRIPT, defaults: { skills: 'my-skill' } });
+    expect(r.code).toBe('HARNESS_DEFAULTS_INVALID');
+  });
+
   // Backward-compat: defaults absent (pre-v15 shape) registers normally
   it('backward-compat: defaults absent (pre-v15) → registers exactly as before', async () => {
     const r = await callTool('workflow_register', {

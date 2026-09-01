@@ -4484,11 +4484,11 @@ File: `tests/integration/net-guard-bind-integration.test.ts`. Mock policy (integ
 File: `tests/integration/workflow-ownership.test.ts`. Mock policy (integration): real server + real SQLite catalog; principal passed as tool arg per v15 spec. 10 cases: (1) first registration by alice → owned; (2) alice overwrite → succeeds; (3) bob overwrite → NOT_WORKFLOW_OWNER + stored unchanged; (4) bob deregister → NOT_WORKFLOW_OWNER + still present; (5) alice deregister → succeeds; (6) null principal → ungated [D-AUTH-6]; (7) workflow_get includes owner; (8) workflow_run by bob → not gated; (9) boot backfill: NULL owner → hsuhungjung@gmail.com; (10) backfill idempotent. Red reason: `owner` column not yet added; NOT_WORKFLOW_OWNER never returned; boot backfill absent → 7 of 10 cases fail.
 
 ### IT-081 — harness defaults register-time validation: D-AUTH-5 named assertions (DES-099, DES-100)
-- **status:** red
+- **status:** green
 - **traces:** DES-099, DES-100, ARCH-062, TASK-089, ARCH-067, DES-103, TASK-099
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/integration/harness-defaults-validation.test.ts`. Mock policy (integration): real server + real SQLite catalog; injected alias table for predictable validation. Named assertions per D-AUTH-5: (D-AUTH-5-A) unknown key → HARNESS_DEFAULTS_INVALID + nothing stored; (D-AUTH-5-B) unresolvable model alias → HARNESS_DEFAULTS_INVALID + nothing stored; (D-AUTH-5-C) non-allowlisted tool → HARNESS_DEFAULTS_INVALID; (D-AUTH-5-D) unknown skill → register SUCCEEDS (deferred); (D-AUTH-5-E) mixed valid+invalid → HARNESS_DEFAULTS_INVALID + nothing stored; backward-compat (no defaults → registers); valid defaults → stored + queryable; run-time merge (per-run override wins). Red reason: `defaults` field not yet in tool schema / not yet validated → HARNESS_DEFAULTS_INVALID never returned → 8 of 10 cases fail.
@@ -4564,6 +4564,21 @@ wrote — **with the full suite still green**, because nothing pinned it. Direct
 (`npx vitest run tests/integration/harness-defaults-validation.test.ts`): **32 total, 32 passed**
 (29 → 32; the prior round's genuine red is green after IMPL-145's F1 half 1). `npx tsc --noEmit`
 clean.
+
+**v21 GATE 6.5+7 coverage-gate extension (verifier, 2026-09-01, re-run after GATE 6 CLOSEOUT #6):**
+`validateHarnessDefaults` (`harness-defaults.ts`, v15) is a function this round's diff (`2e58d86`'s
+`isKnownAlias` swap) modified, so the whole-function 95% bar applies, not just the touched lines.
+Measured at **88.78%** (10 of ~57 statement lines missed) — every one of its shape-guard `return`
+branches (`model`/`timeoutMs`/`prompt`/`tools`/`skills`/`appendPrompt` must-be-X rejections) had
+**zero** covering case; a pre-v21 gap never caught because this file had never previously been in a
+Gate 6.5+7 round's diff (only `contract.ts` was touched in prior rounds). **6 new cases** (extending
+this block, no new ID): `defaults.appendPrompt`/`model`/`prompt` non-string, `defaults.timeoutMs`
+non-number, `defaults.tools`/`skills` non-array — each asserts `HARNESS_DEFAULTS_INVALID`, same
+shape-rejection pattern as the existing D-AUTH-5 cases above. All green on write (the guards were
+already correct, only untested). `npx vitest run tests/integration/harness-defaults-validation.test.ts`:
+**38/38 pass** (was 32). Re-measured: `validateHarnessDefaults` **100%** (stmts/branch/funcs/lines).
+Full suite `npx vitest run` → **1565 passed / 0 failed (243 files)**. `npx tsc --noEmit` clean.
+Overall `src/` line coverage **95.31%** (up from 95.18%; ≥ the 90% whole-tree bar).
 
 ### IT-082 — v15 schema drift-lock: `workflow_register`/`workflow_deregister` `defaults`+`principal` fields; `workflow_get` owner+defaults (DES-099, DES-100)
 - **status:** green
@@ -4786,6 +4801,81 @@ IT-083, see that entry) and F2's drift-lock extension (lives in `tests/unit/para
 UT-099, see that entry) and F1 (both-doors parity — lives in
 `tests/integration/harness-defaults-validation.test.ts` IT-081, see that entry).
 
+**v21 GATE 6.5+7 (verifier, 2026-09-01, re-run after GATE 6 CLOSEOUT #6):** the code closing this
+block's red cases landed on `HEAD` via `2e58d86` (reconciled as IMPL-145, integrator closeout) —
+metadata here was never flipped from the Gate-5 RED snapshot above. Re-ran directly:
+`npx vitest run tests/unit/params-contract.test.ts` → **62/62 pass**; full suite `npx vitest run` →
+**1559 passed / 0 failed (243 files)**, then **1565 passed / 0 failed** after the coverage-gate
+extension below. `status`/`result` above corrected to `green`/`pass` (this pass); same correction
+applied to IT-081 and IT-083 below, whose red-snapshot metadata was equally stale. **0. Simplify:**
+`run-manager.ts`'s resume-side guard (F2 durable half) had re-typed `contract.ts`'s
+`FRAME_CLOSE_FORGERY` pattern inline, specifically because the constant was module-private — a
+genuine, avoidable duplication (unlike the deliberate `resolve.ts` mirror, which exists to dodge a
+real import cycle; `run-manager.ts` already imports several names from `contract.ts`). Exported the
+constant and had `run-manager.ts` import/reuse it; quality-only, no behavior change (see IMPL-145's
+addendum in `06-impl-log.md`). **1b. Coverage:** the lines this round's diff actually touched (the
+`FRAME_CLOSE_FORGERY` check in `validateUserOverrides`, the `type:'enum'` min/max rejection in
+`validateSpecShape`, the `isKnownAlias` swap in `harness-defaults.ts`, the resume-side guard in
+`run-manager.ts`) sit inside `contract.ts` (100% whole-file) and `run-manager.ts`'s untouched
+uncovered ranges (`596-598,649-653`, pre-existing and unrelated, confirmed by direct line-range
+comparison against `git show --stat 2e58d86`) — but `harness-defaults.ts`'s `validateHarnessDefaults`
+is a function this round's diff **modified** (the `isKnownAlias` swap), so the standing precedent's
+whole-function bar applies to it, not just the touched lines. Measured first at **88.78%**: every
+shape-guard `return` branch (`model`/`timeoutMs`/`prompt`/`tools`/`skills`/`appendPrompt` must-be-X)
+had zero covering case, a pre-v21 gap never caught because this file had never previously been in a
+Gate 6.5+7 round's diff. **Wrote 6 new cases** (see the coverage-gate extension note on the IT-081
+block below) — re-measured `validateHarnessDefaults` **100%**. Overall `src/` line coverage
+**95.31%** (≥ the 90% whole-tree bar; up from the prior round's 94.80%). Per-function bar enforced
+against this round's added/modified code only, per the standing precedent from the first coverage
+pass; the pre-existing debt list (81 functions, plus `src/sandbox/child-entry.ts`'s 0%-instrumented
+child-process entry point) is unchanged and not re-audited this pass. **2. No remaining red** (full
+suite 0 failed; the 2 `spawn litellm ENOENT` unhandled background errors are the same documented
+pre-existing environment artifact since IMPL-140, `which litellm` → not found in this sandbox). **3.
+`sh .sdlc/trace --check`:** 823 items / 14 gaps — identical set to IMPL-146's disclosure (0 severe,
+0 未驗證, 0 未真實驗證, 0 orphan/broken-link; confirmed against `dashboard.html`'s 缺口 tab, all 14
+match the declared 1 MID + 12 LOW pre-existing/disclosed-drift + 1 LOW TDD set, 0 new classes — the
+6 new coverage-gate cases extend an existing block, no new work-item IDs). **3b. `solid_check`:** 0
+high / 0 mid / 10 low, byte-identical to the pre-existing baseline. **4. `determinism_check`:** pass
+(no un-allowed wall-clock/randomness reads; both the F1/F2/F4 changes and the 6 new coverage cases
+are pure regex/type/string logic, no seam touched). **5. TZ-travel** (`TZ='Pacific/Kiritimati'`, no
+`libfaketime` on this host): **1565/1565 pass**, 0 time bombs flipped red. **6. Seam wiring:** no
+new seam this round — the F1/F2/F4 changes and the coverage-gate extension are pure validation logic
+(regex/type/enum checks), no clock/network/randomness/DI registry involved; `server.ts`'s single
+`ceilings` object still feeds both `RunManager` and `McpFacade` unchanged. **7. Real-dependency
+smoke:** F2's durable-half case
+(`IT-083`) already exercises a real `RunManager` + real `SqliteRunStore` across two independent
+manager instances sharing one on-disk store (post-restart-rehydrate shape) — the SUT boundary is not
+mocked; no new external integration (LLM/network) was introduced by this round's diff, so no
+additional smoke target exists beyond the already-real IT-083/IT-081 coverage. `gates.verification.passed=true`; `current_stage` verification→validation.
+
+**v21 GATE 5 RE-RUN #7 (verifier, test-first RED, 2026-09-01, review §T6 send-back scope — P6-1
+BLOCKING + P6-3/P6-4 riders taken as fixes, not recorded decisions):** 7 new cases, extended in
+place, no new IDs. **P6-1** (new `validateUserOverrides() — FRAME_CLOSE_FORGERY must catch
+case/whitespace variants...` describe block, 4 cases, all genuinely red): `FRAME_CLOSE_FORGERY`
+(`contract.ts:75`) is `/<\/user-instructions/` — no `i` flag, no whitespace tolerance — so
+`</USER-INSTRUCTIONS>`, `</User-Instructions>`, `</ user-instructions>` and `< /user-instructions>`
+all sail through today as ordinary text (`r.ok===true`) when `PARAM_OUT_OF_RANGE` is expected; the
+control's own comment claims the variant class cannot slip and 4 of 4 tested variants do. **P6-3**
+(new `parseParamContract() — a \`default\` on an \`args\` spec is rejected...` describe block, 2
+cases, 1 red / 1 green pin): a declared `args.<k>.default` registers as-is today (`ok:true`) —
+`validateSpecShape` has no check for it; the no-default regression pin passes both before and
+after. **P6-4** (new `parseParamContract() — a non-string enum member is rejected...` describe
+block, 3 cases, 2 red / 1 green pin): a mixed string/number enum and a fully-numeric enum (the
+motivating "fail-closed brick" case — `checkValueAgainstSpec`'s `expectedType` ternary sends
+`enum`→`'string'` unconditionally, so a numeric enum would register but admit no value at all) both
+register as-is today; the all-string-enum regression pin passes both before and after. Confirmed
+via direct re-run (`npx vitest run tests/unit/params-contract.test.ts`): **71 total, 7 failed / 64
+passed** — exactly the 7 genuinely-red cases, 0 unrelated regressions vs the pre-round 62/62
+baseline (62 + this round's 9 new cases [4 P6-1 + 2 P6-3 + 3 P6-4] = 71; 7 of the 9 are genuinely
+red, 2 are green regression pins). `npx tsc --noEmit`
+clean. Hermetic: no clock/date literals in any new case (pure module, zero I/O/VM/clock). **Not in
+this pass's P6-2 scope** (lives in `tests/integration/params-admission.test.ts` IT-083, see that
+entry) **and not P6-5/QD-CONS-3** (no dedicated Gate-5 test per 07-review.md §T6 — impl/doc-only).
+P6-3/P6-4 each carry a verified-decision escape hatch (07-review.md §T6): if Gate 6 takes the
+recorded-decision route instead of the `validateSpecShape` rejection, these cases are adjusted by
+adjudication, not silently — same precedent as the F2-durable-half case's alternative-encoding note
+above.
+
 ### UT-099 — pure `src/params/resolve.ts`: two-moment merge, per-key provenance, five-segment `composePrompt`, `mapEffort` (DES-102)
 - **status:** green
 - **traces:** DES-102, ARCH-065, TASK-098, TASK-104
@@ -4832,6 +4922,21 @@ invariant (same "kept as a deliberate green regression guard" precedent as UT-02
 pins). Confirmed via direct re-run (`npx vitest run tests/unit/params-resolve.test.ts`): 27/27 pass.
 `npx tsc --noEmit` clean. F2's other two halves (admission refusal + the durable resume-side
 refusal) are genuinely red in UT-098 and IT-083 respectively — see those entries.
+
+**v21 GATE 5 RE-RUN #7 (verifier, test-first RED, 2026-09-01, review §T6 send-back scope, QD-REP-1):**
+1 new case, new `mapEffort (this file) stays FENCED — zero src/ importers outside resolve.ts itself`
+describe block — a structural (filesystem) fence mirroring `gateway-effort.test.ts`'s ADR-006
+zero-importer pin for `session-options-builder.ts`, but scoped to the specific `{ mapEffort }` named
+import from `params/resolve.js` (resolve.ts exports many other names — `defaultRunParams`,
+`mergeRunParams`, `RunParams`, `composePrompt`, `resolveCallParams` — that ARE legitimately imported
+by `run-manager.ts`/`agent-executor.ts`/the store layer; only `mapEffort` itself must stay
+unimported, since this copy has no `restPath` and adopting it in `src/` would regress P-A1's REST
+transport-contract fix). **Result: GREEN on write, not red** — confirmed by direct grep before
+writing the test (`src/gateway/client.ts:55` defines its OWN, unrelated, real `mapEffort`; no `src/`
+file imports the one this file tests). Pins the current, already-true state rather than encoding a
+defect (same "kept as a deliberate green regression guard" precedent as the composePrompt FRAME
+INTEGRITY PIN above). Confirmed via direct re-run (`npx vitest run tests/unit/params-resolve.test.ts`):
+**28/28 pass** (was 27). `npx tsc --noEmit` clean.
 
 ### UT-100 — dispatch wiring: `AgentExecutor` consumes `runParams`, decorates the harness descriptor with provenance, composes the 5-segment prompt, records-then-throws on out-of-contract per-call knobs (DES-105)
 - **status:** green
@@ -4976,6 +5081,37 @@ Full suite (`npx vitest run`, 2026-09-01, all 3 touched files this round —
 total, 6 failed / 1549 passed** (243 files) — exactly the 6 genuinely-new-red cases this round (UT-098
 F2 cases 1-2 + F4 both cases, IT-081 F1 door-2 case, IT-083 this F2-durable case), 0 unrelated
 regressions vs the pre-round 1546/1546 baseline. `npx tsc --noEmit` clean across the whole tree.
+
+**v21 GATE 5 RE-RUN #7 (verifier, test-first RED, 2026-09-01, review §T6 send-back scope — P6-1
+resume-side pin + P6-2 taken as a fix):** 3 new cases, extended in place, no new IDs. **P6-1** (1
+case appended to the existing `F2 durable half` describe block): a resume-time row carrying a
+CASE-VARIANT close-delimiter (`</USER-INSTRUCTIONS>`) must also be refused — genuinely red today,
+same case-sensitive `FRAME_CLOSE_FORGERY` constant the admission-side variants share (one case
+suffices per 07-review.md §T6: "shared constant" means the P6-1 fix closes both sites at once, no
+need to re-litigate all 4 variants a second time here). **P6-2** (new `P6-2: the EFFECTIVE
+post-merge appendPrompt...` describe block, 2 cases, 1 red / 1 green pin): a workflow registered
+with `defaults.appendPrompt` carrying the forged delimiter, run with `workflow_run` supplying NO
+overrides at all, must be refused `PARAM_OUT_OF_RANGE` before any durable work (no run row
+appended) — genuinely red today: `run-manager.ts:416-431`'s post-merge admission mirror only
+re-asserts `isKnownAlias` on `effectiveParams.model` (the R-G2 precedent), nothing equivalent exists
+for `.appendPrompt`, so this author-origin delimiter dispatches successfully (`r.runId` a string,
+not a rejection code). The benign-default regression pin (no delimiter) passes both before and
+after. Confirmed via direct re-run (`npx vitest run tests/integration/params-admission.test.ts`):
+**22 total, 2 failed / 20 passed** — exactly the 2 genuinely-red cases (P6-1 resume variant, P6-2
+red case), 0 unrelated regressions vs the pre-round 19/19 baseline (2 unhandled `spawn litellm
+ENOENT` background-process errors, same documented pre-existing environment artifact since
+IMPL-140, unrelated to this round's 2 new files). `npx tsc --noEmit` clean. Hermetic:
+`FixedClock` anchor only, no absolute-date-vs-real-clock comparisons. Full suite (`npx vitest run`,
+2026-09-01, all 3 touched files this round — `params-contract.test.ts`/`params-resolve.test.ts`/
+`params-admission.test.ts`): **1578 total, 9 failed / 1569 passed** (243 files) — exactly this
+round's 9 genuinely-new-red cases (UT-098's 7 + IT-083's 2), 0 unrelated regressions vs the
+pre-round 1565/1565 baseline (2 pre-existing `spawn litellm ENOENT` unhandled background-process
+errors, same documented artifact since IMPL-140). `npx tsc --noEmit` clean across the whole tree.
+**Not in this pass's scope** (per 07-review.md §T6): P6-5 (ceiling-triple duplication — no
+dedicated Gate-5 test, impl/doc-only) and QD-CONS-3 (doc batch only, no test). P6-2 carries a
+verified-decision escape hatch (MED, 07-review.md §T6): if Gate 6 takes the recorded-decision route
+instead of the 3-line `run-manager.ts` mirror, this case is adjusted by adjudication, not silently
+— same precedent as the F2-durable-half case's alternative-encoding note above.
 
 ### VAL-100 — REQ-090: a workflow declares its tunable-parameter contract, discoverable without reading the script (REQ-090)
 - **status:** green

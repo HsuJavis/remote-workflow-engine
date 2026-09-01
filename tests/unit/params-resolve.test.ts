@@ -253,3 +253,38 @@ describe('mapEffort() — pure, provider-keyed, tri-state (DES-102, ARCH-069)', 
     expect(low).not.toEqual(max);
   });
 });
+
+// v21 Gate 8 RE-REVIEW #6 (QD-REP-1, LOW, review §T5/§T6): this file's `mapEffort` (above) is a
+// declared "unsafe to adopt" duplicate of `gateway/client.ts`'s `mapEffort` (this copy's
+// `{applied:true,param,value}` return shape has no `restPath` — adopting it in `src/` would
+// regress P-A1's REST transport-contract fix). The parallel fence for `session-options-builder.ts`
+// (ADR-006) has a standing zero-importer structural pin (`gateway-effort.test.ts`); this one never
+// did. Result: GREEN on write — it pins the current, already-true state, not a defect.
+describe('mapEffort (this file) stays FENCED — zero src/ importers outside resolve.ts itself (QD-REP-1, R-1 debt)', () => {
+  it('no file under src/ (other than params/resolve.ts) imports the { mapEffort } binding from params/resolve.js', async () => {
+    const { readdirSync, readFileSync, statSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const srcDir = join(import.meta.dirname, '../../src');
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const name of readdirSync(dir)) {
+        const p = join(dir, name);
+        if (statSync(p).isDirectory()) { walk(p); continue; }
+        if (!name.endsWith('.ts') || p.endsWith('params/resolve.ts')) continue;
+        const src = readFileSync(p, 'utf8');
+        // Only an actual import of `mapEffort` FROM resolve.js counts — a different local
+        // `mapEffort` (e.g. gateway/client.ts's own, real, restPath-bearing one) is not an offender.
+        // Two forms checked (matchAll, not a single .exec, so a SECOND import statement in the same
+        // file can't hide behind a first, innocuous one): a named `{ mapEffort }` import, and a
+        // namespace `import * as x` import followed by an `x.mapEffort(...)` call.
+        const namedImports = [...src.matchAll(/import\s*\{([^}]*)\}\s*from\s*['"][^'"]*params\/resolve(?:\.js)?['"]/g)];
+        const namedOffender = namedImports.some((m) => /\bmapEffort\b/.test(m[1]!));
+        const namespaceImport = /import\s*\*\s*as\s+(\w+)\s+from\s*['"][^'"]*params\/resolve(?:\.js)?['"]/.exec(src);
+        const namespaceOffender = namespaceImport !== null && new RegExp(`\\b${namespaceImport[1]}\\.mapEffort\\b`).test(src);
+        if (namedOffender || namespaceOffender) offenders.push(p);
+      }
+    };
+    walk(srcDir);
+    expect(offenders).toEqual([]);
+  });
+});

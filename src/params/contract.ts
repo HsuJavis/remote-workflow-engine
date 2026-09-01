@@ -72,7 +72,7 @@ const OPENROUTER_PASSTHROUGH = /^openrouter\/.+/;
  *  a variant like `</user-instructions >` cannot slip a literal-string check; a non-owner
  *  submitter embedding this in `appendPrompt` would otherwise close the untrusted frame early and
  *  attribute trailing text to the workflow author (cross-principal attribution forgery). */
-const FRAME_CLOSE_FORGERY = /<\/user-instructions/;
+export const FRAME_CLOSE_FORGERY = /<\/user-instructions/;
 
 /** D-AUTH-5-B precedent (`harness-defaults.ts:70`): the alias check only applies when the server
  *  has a configured, non-empty alias table — an unconfigured/default-alias server must not reject
