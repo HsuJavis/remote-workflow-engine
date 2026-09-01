@@ -3752,3 +3752,81 @@ the new site by the implementation gate. Excluded from the sweep and listed for 
 **shared** `os.tmpdir()` catalog that persists across suite runs, so versions accumulate. The fix is a
 private `workRoot` per test, not a helper change. **Generalised for the sweep: any test asserting a
 literal version, or a catalog list or count, needs its own `workRoot`.**
+
+---
+
+## Orchestrator adjudication (v22) #3 — the 13 files the sweep correctly refused (2026-09-02)
+
+The fixture sweep took the suite from **94 failing files / 244 tests** to **13 / 27**. Every remaining
+failure is substantive, and every one was *reported rather than swept green* — which is the outcome the
+dispatch asked for. Six classes, each ruled here.
+
+### M-1 — PRODUCT DEFECT: REQ-099's staleness is surfaced only to non-owners
+`workflow_get`'s non-owner branch builds a view carrying `validation: {ok, errors}`. The **owner /
+auth-disabled** branch returns a result object with **no `validation` field at all**. REQ-099 requires a
+pre-v22 workflow that would now fail its checks to have that condition "surfaced (observable, not
+silently swallowed) so the author can fix and re-register" — and on a default **auth-disabled** server,
+which is the common local deployment, it never is. The person the field exists for is the author, and
+the author is exactly who cannot see it. **Fix in `src/`:** the owner branch carries `validation` too.
+`val-109`'s assertion stands as written; it was right and the code was wrong.
+
+### M-2 — the moved-check trio: widen the oracle, because the requirement moved the check
+`params-admission` (P6-2 forged default), `mcp-provision-wiring` and `val-020` (`MCP_NOT_PROVISIONED`)
+all fail the same way: their fixture deliberately creates a bad workflow, and **REQ-099 moved that check
+to registration**, so the workflow they need can no longer exist. Each test's own comment already
+sanctions two surfaces for its oracle; registration is the third, and it is the one the requirement
+names. **Widen each oracle to accept the registration surface** — this is not a weakening, it is the
+test following the requirement. Where a run-level case remains meaningful (a row registered *before* the
+check moved), reach it by seeding, not by trying to register bad input.
+
+### M-3 — `val-006`: retire the clause I already superseded at Gate 2
+This is REQ-006's edited-script-resume clause, **already superseded on 2026-09-01** (see
+01-requirements.md). The sweep agent did not know that and correctly left the call raw rather than
+rewriting it into a plain resume, which would have silently re-scoped the test. Retire the case, citing
+the supersession. The sanctioned replacement path — register a new version, run by version — is already
+covered by the version-pin tests; do not duplicate it here.
+
+### M-4 — `val-083`: `other[]` is now reachable only through a deregistered workflow
+Post-v22 every run carries a catalog name, so the dashboard's "unknown workflow" bucket cannot be
+reached with a nameless run. The bucket still means something — a run whose workflow was **deregistered**
+— so **rewrite the case to deregister**, do not retire it. Routing it through the helper as-is would move
+the card to `registered[]` and invert the assertion, which is why the sweep stopped.
+
+### M-5 — `workflow-ownership`: the read surface moved; update the paths, and fix case 3 properly
+DES-115 moved the non-owner response body under `result` and REQ-100 withholds `script`, so `r.owner` is
+now `r.result.owner` and `r.script` is absent by design. Update those read paths. **Case 3 ("the stored
+definition is unchanged") cannot be verified through a masked read at any path** — give it a real owner
+bearer or assert at the store level. Do not settle for checking that *something* came back.
+
+### M-6 — the six stale-subject files are implementation work, and the subject still exists
+`submission-validator`, `openrouter-provider`, `default-aliases-single-source`,
+`submission-entry-point`, `mcp-tools-list-schema`, `v14-schema-drift`. Their checks did not disappear —
+they **moved** to `src/script-checks.ts` at registration (ADR-013), and `script`/`scriptSha256` left the
+advertised schema. **Rewrite them against the new site.** Deleting them would drop live coverage of
+PARSE_ERROR / UNKNOWN_ALIAS / MCP_NOT_PROVISIONED, which REQ-099 exists to preserve; the schema
+drift-locks likewise still have a job — they should now pin the *absence* of `script`/`scriptSha256`.
+
+### Ratifications (all approved; recorded so a later pass does not "fix" them back)
+- **`workflow-view.test.ts`'s oracle**: `EXPECTED_NON_OWNER_KEYS` lives in `src/`, so asserting the module
+  against its own constant was a Rule-1 violation the file's own header claimed to avoid. Replacing it
+  with a REQ-100-derived literal in the test, and demoting the src constant to a drift cross-check, is
+  **more** correct than the ruling I wrote. Approved.
+- **Raw register + explicit publish** where the register response itself carries assertions
+  (`harness-defaults-validation`, `workflow-masking-http`, `workflow-ownership` 1–2, `val-097` 1,
+  `val-098` 1): folding these into the helper would have converted a literal REQ-087/REQ-088 oracle into
+  "the helper didn't throw". Assertion preservation beats recipe centralisation. Approved.
+- **Off-list repairs** in `cron-schedule-lifecycle` (every scheduled firing was dying on
+  `CHANNEL_UNPUBLISHED` while the bookkeeping assertions stayed green) and
+  `mcp-provision-secret-tooluse-journey` (a latent Gate 7.5 break invisible to a bare test run).
+  Approved — both are assertion-preserving repairs of real breakage the measured list could not see.
+- **`val-097` `r.owner` → `r.result.owner`**, **`val-100`'s seeded rows moved to the v22 two-table
+  shape**, and **`val-110`'s masked-skeleton case made non-vacuous**. Approved.
+- **`crash-resume`'s new seeded-spec resume test** — this discharges L-2. Approved, and it must not be
+  deleted without replacing the coverage.
+
+### Recorded, not fixed this pass
+`suspend-resume-replay` case 2 is **vacuous before and after migration** — the run completes before
+`stop`, so `stop` and `resume` both refuse on terminal status and the poll passes on an
+already-completed run. Its replay oracle is genuinely carried by `crash-resume`'s REQ-059 case. Debt,
+named: either make the run long enough that `stop` lands mid-flight, or retire it. `resident-trigger`'s
+surviving early-return guard is the same class.
