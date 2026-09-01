@@ -128,4 +128,36 @@ describe('REQ-090 real-tier: a malformed/poisoned params contract must not durab
     const list = JSON.parse(listBody.result?.content?.[0]?.text ?? '{}') as { result?: Array<{ name?: string }> };
     expect(list.result?.map((e) => e.name)).toContain('val100-poison-sibling');
   });
+
+  // The sibling of the poisoned-`enum` case above, travelling the `max` path instead of the `enum`
+  // path. Its failure mode is quieter and worse than a crash: a non-number stored `max` puts NaN
+  // into the bound (`Math.min("abc", 600000)` === NaN), and every comparison involving NaN is
+  // false — so the admission check `value > max` silently passes and the knob becomes unbounded,
+  // a ceiling BYPASS, while `workflow_get` advertises `null` for the same bound. Seeded the same
+  // way as the case above (written straight to the catalog column, the only way this shape could
+  // have reached storage before the registration guard existed).
+  it('a poisoned row whose `timeoutMs.max`/`appendPrompt.max` are not numbers reads back as the ENGINE CEILING, never null/NaN (a NaN bound is a silent ceiling bypass)', async () => {
+    const raw = new Database(join(tmpDir, 'catalog.db'));
+    const poisonedParams = JSON.stringify({
+      knobs: {
+        model: { type: 'string' },
+        effort: { type: 'enum' },
+        timeoutMs: { type: 'number', max: 'abc' }, // non-number max — the poison shape
+        appendPrompt: { type: 'string', max: 'xyz' },
+      },
+      args: {},
+    });
+    raw.prepare(
+      'INSERT INTO workflows (name, script, version, createdAt, owner, defaults, params) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run('val100-poisoned-max', 'return 1;', 'v1', new Date().toISOString(), null, null, poisonedParams);
+    raw.close();
+
+    const getBody = await callToolRaw('workflow_get', { name: 'val100-poisoned-max' });
+    expect(getBody.error).toBeUndefined();
+    const got = JSON.parse(getBody.result?.content?.[0]?.text ?? '{}') as
+      { params?: { knobs?: Record<string, { max?: unknown }> } };
+    // createServer's defaults for this test server: maxTimeoutMs 600_000, maxAppendPromptBytes 1024.
+    expect(got.params?.knobs?.['timeoutMs']?.max).toBe(600_000);
+    expect(got.params?.knobs?.['appendPrompt']?.max).toBe(1024);
+  });
 });

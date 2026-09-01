@@ -668,11 +668,12 @@ status: draft
 ### TASK-099 — registration stores the normalized contract: pre-eval source bound, cross-validated defaults, `ON CONFLICT … params = excluded.params`, ceiling-bounded read surfaces
 - **status:** draft
 - **traces:** ARCH-067
-- **files:** src/workflow-catalog.ts, src/sandbox/workflow-meta.ts, src/mcp-facade.ts, src/server.ts, tests/unit/meta-literal.test.ts, tests/integration/harness-defaults-validation.test.ts
+- **files:** src/workflow-catalog.ts, src/workflow-meta.ts, src/mcp-facade.ts, src/server.ts, tests/unit/meta-literal.test.ts, tests/integration/harness-defaults-validation.test.ts
 - **des:** DES-103, DES-101
 - **dod:** `npx vitest run tests/integration/harness-defaults-validation.test.ts tests/unit/meta-literal.test.ts` green — register→re-register with a **changed** `params` block ⇒ `workflow_get` returns the NEW contract (and `owner` still unchanged); a `params` block naming a locked key stores nothing; a NULL-`params` row + a lowered `maxTimeoutMs` config ⇒ `workflow_get` reflects the lowered bound without a re-register.
 - **estimate:** M
 - **iter:** v21
+- **`files:` corrected (2026-09-01, same stale-pointer class as TASK-104's correction below):** this line named `src/sandbox/workflow-meta.ts`, a path that has never existed — `src/sandbox/` holds only `child-entry.ts`, `guards.ts` and `host.ts`. The real module carrying this task's pre-eval `meta.params` source bound is `src/workflow-meta.ts` (imported as `./workflow-meta.js` by `src/mcp-facade.ts`); the `files:` line now names it, so the partitioner and any impact analysis resolve to a file that exists.
 - Depends on TASK-096 + TASK-097. **The `ON CONFLICT` clause is the trap:** `workflow-catalog.ts:110–114` updates script/version/createdAt/defaults and *deliberately omits* `owner`; an implementer adding `params` by pattern-copy leaves a stale contract on re-register — silent, no error, and exactly the drift class v21 exists to close. Also: `list()` reads `params` from the column (never a script re-parse — v22/D15 masks the script); `workflow_get`/`workflow_list` serve `min(author bound, engine ceiling)` computed at read time; MCP tool descriptions/inputSchema generated from the ARCH-064 types under the existing ARCH-051 drift-lock (the `effort` no-op being repaired here WAS a docs/behaviour split — the fix must not mint a new one). The `meta.description` re-parse in `list()` stays as-is: inherited debt, v22 owner.
 
 ### TASK-100 — admission rung + run-immutable snapshot + resume, with the three config keys and their `composeConfig()` wiring rows IN THIS TASK

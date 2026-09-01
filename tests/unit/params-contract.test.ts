@@ -454,4 +454,153 @@ describe('checkValueAgainstSpec() — rejection cost must not scale quadraticall
     }
     expect(elapsedMs).toBeLessThan(1000);
   }, 90_000);
+
+  // v21 Gate 8 RE-REVIEW #4 follow-up pin (A2, second half): the O(n) rewrite replaced the
+  // per-character trim loop with ONE 64-byte buffer slice, so the cut point is now a raw BYTE
+  // offset that can land inside a multi-byte UTF-8 sequence. Two properties are pinned per case:
+  // the echo stays valid text (no U+FFFD substitute char, and it is a genuine PREFIX of the
+  // supplied value — a broken tail would decode to a replacement char instead), and it stays
+  // within the 64-byte cap the rejection envelope relies on (a substitute char is 3 bytes and
+  // would push a naive 64-byte cut to 66, overshooting the cap the A2 fix exists to hold).
+  // Nothing in the suite exercised this: every prior truncation case used ASCII, where byte and
+  // character offsets coincide and the backoff can never fire.
+  const SPEC = { type: 'string', enum: ['sonnet'] } as const;
+  function echoOf(value: string): { supplied: string; truncated: unknown } {
+    const r = checkValueAgainstSpec('model', value, { ...SPEC, enum: [...SPEC.enum] });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('unreachable: the value is outside the declared enum');
+    return { supplied: String(r.detail['supplied']), truncated: r.detail['suppliedTruncated'] };
+  }
+
+  it('a cut landing mid-emoji backs off to the character boundary: valid UTF-8, a prefix of the input, <= 64 bytes (never a 66-byte replacement-char overshoot)', () => {
+    // 62 ASCII bytes then two 4-byte emoji: byte 64 is the 3rd byte of the first emoji.
+    const value = 'x'.repeat(62) + '\u{1F600}\u{1F600}';
+    const { supplied, truncated } = echoOf(value);
+    expect(truncated).toBe(true);
+    expect(supplied).not.toContain('�');
+    expect(supplied).toBe(value.slice(0, supplied.length));
+    expect(Buffer.byteLength(supplied, 'utf8')).toBe(62);
+  });
+
+  it('a cut landing mid-CJK-character backs off to the character boundary (3-byte sequences: 64 is not a multiple of 3)', () => {
+    // 21 x 3 bytes = 63; byte 64 is the 2nd byte of the 22nd character.
+    const value = '記'.repeat(30);
+    const { supplied } = echoOf(value);
+    expect(supplied).not.toContain('�');
+    expect(supplied).toBe(value.slice(0, supplied.length));
+    expect(Buffer.byteLength(supplied, 'utf8')).toBe(63);
+    expect([...supplied].length).toBe(21);
+  });
+
+  it('a cut landing exactly ON a character boundary keeps the full 64 bytes (the backoff must not over-trim)', () => {
+    // 17 four-byte emoji = 68 bytes; byte 64 is the LEAD byte of the 17th, so nothing backs off.
+    const value = '\u{1F600}'.repeat(17);
+    const { supplied } = echoOf(value);
+    expect(supplied).not.toContain('�');
+    expect(supplied).toBe(value.slice(0, supplied.length));
+    expect(Buffer.byteLength(supplied, 'utf8')).toBe(64);
+  });
+});
+
+// v21 Gate 8 RE-REVIEW #4 follow-up pin (DES-101 row 6 x A4/A5): row 6's invariant is that an
+// appendPrompt rejection NEVER echoes the supplied text — it is caller-supplied free text that can
+// carry secrets, so the rejection carries size facts only. A4 (string min/max are a byte-length
+// bound) and A5 (the advertised appendPrompt bound equals maxAppendPromptBytes) together made an
+// AUTHOR-declared appendPrompt bound tighter than the engine ceiling a live, enforced path — a path
+// that reaches `checkValueAgainstSpec`, whose generic branches DO echo a truncated `supplied`. The
+// existing row-6 case only covers the raw-ceiling direction; these pin the author-declared bound in
+// both directions, and assert the ABSENCE of a `supplied` field rather than only the absence of the
+// whole string (a 64-byte fragment of a secret is still a leak, which `not.toContain(big)` misses).
+describe('validateUserOverrides() — an appendPrompt rejection reports SIZE only, even against an AUTHOR-declared bound (DES-101 row 6)', () => {
+  const AUTHOR_BOUNDED: ParamContract = {
+    knobs: { ...canonicalContract().knobs, appendPrompt: { type: 'string', min: 8, max: 100 } },
+    args: {},
+  };
+
+  it('over an author-declared max tighter than the ceiling → {suppliedBytes, maxBytes} only; no `supplied`, no fragment of the text', () => {
+    const secret = 'SECRET\u{1F511}' + 'x'.repeat(200); // 210 bytes: over the author max (100), under the ceiling (1024)
+    const r = validateUserOverrides(AUTHOR_BOUNDED, { appendPrompt: secret }, ALIASES, CEILINGS);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('PARAM_OUT_OF_RANGE');
+      expect(r.detail['param']).toBe('appendPrompt');
+      expect(r.detail['maxBytes']).toBe(100); // the AUTHOR bound fired, not the 1024 ceiling
+      expect(r.detail['suppliedBytes']).toBe(Buffer.byteLength(secret, 'utf8'));
+      expect('supplied' in r.detail).toBe(false);
+      expect(JSON.stringify(r.detail)).not.toContain('SECRET');
+    }
+  });
+
+  it('under an author-declared min → {suppliedBytes, minBytes} only; no `supplied`, no fragment of the text', () => {
+    const secret = 'SEKR3T'; // 6 bytes, below the author min of 8
+    const r = validateUserOverrides(AUTHOR_BOUNDED, { appendPrompt: secret }, ALIASES, CEILINGS);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('PARAM_OUT_OF_RANGE');
+      expect(r.detail['param']).toBe('appendPrompt');
+      expect(r.detail['minBytes']).toBe(8);
+      expect(r.detail['suppliedBytes']).toBe(6);
+      expect('supplied' in r.detail).toBe(false);
+      expect(JSON.stringify(r.detail)).not.toContain('SEKR3T');
+    }
+  });
+
+  // The sibling author-declared constraint on the SAME key: `appendPrompt` is a tunable knob and
+  // `validateSpecShape` accepts any array `enum`, so an author can declare one — and that value is
+  // then checked by `checkValueAgainstSpec`'s enum branch, which echoes `truncatedSupplied(value)`.
+  // Row 6 says NEVER, not "never via the min/max branches": the rejection must stay size-only
+  // whichever author-declared constraint the caller's text violated.
+  it('outside an author-declared enum → still size-only; the caller text is never echoed under any constraint (row 6 is unconditional)', () => {
+    const enumBounded: ParamContract = {
+      knobs: { ...canonicalContract().knobs, appendPrompt: { type: 'string', enum: ['be terse', 'be verbose'] } },
+      args: {},
+    };
+    const secret = 'SECRET\u{1F511} api-key hunter2';
+    const r = validateUserOverrides(enumBounded, { appendPrompt: secret }, ALIASES, CEILINGS);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('PARAM_OUT_OF_RANGE');
+      expect(r.detail['param']).toBe('appendPrompt');
+      expect('supplied' in r.detail).toBe(false);
+      expect(r.detail['suppliedBytes']).toBe(Buffer.byteLength(secret, 'utf8'));
+      expect(JSON.stringify(r.detail)).not.toContain('SECRET');
+      expect(JSON.stringify(r.detail)).not.toContain('hunter2');
+      // the author's own presets are not caller text — they stay advertised, so the constraint
+      // remains discoverable from the rejection (advertised == enforced).
+      expect(r.detail['allowed']).toEqual({ enum: ['be terse', 'be verbose'] });
+    }
+  });
+});
+
+// v21 Gate 8 RE-REVIEW #4 follow-up pin (A1 half 2, `max` path): the unit-level sibling of the
+// poisoned-`enum` pins above, travelling `boundMax` instead of `boundEffort`. A legacy/poisoned row
+// carrying a NON-NUMBER `max` must fall back to the engine ceiling. The failure this guards is not
+// a crash: `Math.min("abc", 600000)` is `NaN`, and EVERY comparison against NaN is false, so the
+// admission check `bound > max` silently passes — an unbounded knob, i.e. a ceiling BYPASS, while
+// `workflow_get` simultaneously advertises `null`.
+describe('effectiveBounds() — a poisoned non-number `max` falls back to the ceiling, never NaN (v21 Gate 8 RE-REVIEW #4, A1 half 2)', () => {
+  const poisoned: ParamContract = {
+    knobs: {
+      ...canonicalContract().knobs,
+      timeoutMs: { type: 'number', max: 'abc' as unknown as number },
+      appendPrompt: { type: 'string', max: 'xyz' as unknown as number },
+    },
+    args: {},
+  };
+
+  it('a stored `timeoutMs.max` that is not a number reads back as the engine ceiling, not NaN', () => {
+    const eff = effectiveBounds(poisoned, CEILINGS);
+    expect(eff.knobs.timeoutMs?.max).toBe(CEILINGS.maxTimeoutMs);
+  });
+
+  it('the same for `appendPrompt.max` (the A5 ceiling path)', () => {
+    const eff = effectiveBounds(poisoned, CEILINGS);
+    expect(eff.knobs.appendPrompt?.max).toBe(CEILINGS.maxAppendPromptBytes);
+  });
+
+  it('admission still REFUSES a value above the ceiling for the poisoned knob (a NaN bound would silently admit it)', () => {
+    const r = validateUserOverrides(poisoned, { timeoutMs: CEILINGS.maxTimeoutMs + 1 }, ALIASES, CEILINGS);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('PARAM_OUT_OF_RANGE');
+  });
 });

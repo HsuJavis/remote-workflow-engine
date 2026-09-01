@@ -348,7 +348,23 @@ export function validateUserOverrides(
     // truncated `supplied`) never fire a second time for this key.
     const specForCheck = key === 'appendPrompt' ? { ...spec, min: undefined, max: undefined } : spec;
     const result = checkValueAgainstSpec(key, val, specForCheck);
-    if (!result.ok) return result;
+    // DES-101 row 6 is UNCONDITIONAL: an appendPrompt rejection reports size, never content —
+    // whichever constraint the text violated. Stripping min/max above only covers the two branches
+    // this function re-implements; an author may also declare an `enum` on `appendPrompt` (it is a
+    // tunable knob and `validateSpecShape` accepts any array enum), and that branch echoes a
+    // 64-byte `truncatedSupplied` — a fragment of caller-supplied free text, which is exactly the
+    // leak row 6 exists to forbid. Sanitize the rejection here rather than stripping `enum` from
+    // `specForCheck`: dropping the constraint would leave a bound that is advertised but not
+    // enforced (this iteration's P-A2 failure class). The author's own `allowed` presets are not
+    // caller text and stay, so the rejection remains actionable.
+    if (!result.ok) {
+      if (key !== 'appendPrompt') return result;
+      const safe: Record<string, unknown> = { ...result.detail };
+      delete safe['supplied'];
+      delete safe['suppliedTruncated'];
+      if (typeof val === 'string') safe['suppliedBytes'] = Buffer.byteLength(val, 'utf8');
+      return { ...result, detail: safe };
+    }
 
     // D-AUTH-5-B / UNKNOWN_ALIAS precedent, applied at submission for the case the author left
     // `model` unconstrained (no enum — the REQ-090 canonical/backward-compat default): a spec with
