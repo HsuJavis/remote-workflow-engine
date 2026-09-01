@@ -301,14 +301,24 @@ describe('meta.params default cross-validation (DES-103, REQ-090, v21 Gate 5 re-
   // column and `workflow_get` serves them back verbatim — a real author/UI performing the
   // documented discover -> edit -> re-register workflow on the engine's OWN served `defaults`
   // hits `HARNESS_DEFAULTS_INVALID: Unknown harness defaults key: "effort"`.
+  //
+  // Value note (2026-09-01 integrator closeout, adjudication #7): this case was authored with
+  // `enum: ['low','max'], default: 'max'` and run against the shared `beforeAll` server, whose
+  // `maxEffort` is the compiled-in default `'high'` — so once adjudication #6's ceiling wiring
+  // landed, `'max'` could never round-trip HERE, and the case failed for a reason it does not
+  // exist to test. The ceiling behaviour is pinned by its own dedicated pair below, on a server
+  // configured `maxEffort:'low'` ("above the ceiling is rejected" / "at or below registers fine").
+  // Only the literals changed — `'high'` is the highest effort this server's declared ceiling
+  // admits, so every assertion below keeps its original strength and still exercises exactly the
+  // P-A3 defect (an author `effort` default through KNOWN_KEYS, normalized, served, re-registered).
   it('(e) discover -> edit -> re-register round-trip succeeds on the engine\'s OWN served defaults, including an author-declared effort default (P-A3, review §P2 (c))', async () => {
-    const script = `export const meta = { params: { knobs: { effort: { type: 'enum', enum: ['low','max'], default: 'max' } } } };\nreturn 1;`;
+    const script = `export const meta = { params: { knobs: { effort: { type: 'enum', enum: ['low','high'], default: 'high' } } } };\nreturn 1;`;
     const first = await callTool('workflow_register', { name: 'it081-pa3-roundtrip', script });
     expect(first.error).toBeUndefined();
 
     const got = await callTool('workflow_get', { name: 'it081-pa3-roundtrip' });
     const servedDefaults = (got as { defaults?: Record<string, unknown> }).defaults;
-    expect(servedDefaults?.['effort']).toBe('max'); // sanity: the normalized default IS served
+    expect(servedDefaults?.['effort']).toBe('high'); // sanity: the normalized default IS served
 
     // Re-register using the engine's OWN served `defaults` verbatim — the exact discover -> edit ->
     // save round-trip a real author/UI performs. Must succeed, never HARNESS_DEFAULTS_INVALID.
@@ -407,5 +417,121 @@ describe('meta.params declared default vs the ENGINE ceiling (not just its own s
       await lowCeilingServer.close();
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+// v21 orchestrator adjudication #7 G-1 (2026-09-01, 04-design.md "Orchestrator adjudication #7"):
+// THE CEILING HOLE THE F-1 WIDENING OPENED. The registration-time ceiling check runs only inside the
+// loop over *declared* knobs (`params.knobs.<key>.default`), so a CALLER-supplied
+// `defaults: { effort: 'max' }` — or an over-byte `defaults.appendPrompt` — passed to
+// `workflow_register` with NO `params.knobs` block at all bypasses it entirely.
+// `validateHarnessDefaults` cannot close it either: it validates shape and enum membership and has
+// no access to the ceilings. Admission never re-checks it (`validateUserOverrides` loops over the
+// CALLER's `overrides`, never over the registered `defaults`), so the value is enforced nowhere and
+// the run dispatches above the engine's own ceiling — the advertised-bound ≠ enforced-bound class
+// for the third time this iteration (P-A2, R-G3).
+//
+// Oracle: the ceilings are the ones this test's own `createServer({ maxEffort, maxAppendPromptBytes })`
+// config declares — the external contract — never a value read back out of the code under test. Each
+// case pins BOTH ends against that same configured number *behaviourally*: the identical value is
+// refused at registration AND at admission, and the value AT the bound is accepted at both. (The
+// bound cannot be compared field-by-field across the two rungs: `toErrEnvelope` (mcp-facade.ts:38)
+// serializes only `{code, message}`, so the `detail.maxBytes` admission reports never crosses the
+// MCP boundary. Refusing/accepting at the same boundary value is the strongest pin this surface
+// supports, and it is what "advertised bound == enforced bound" actually means to a caller.)
+describe('caller-supplied `defaults` are bounded by the engine ceilings even with NO params block — G-1 (2026-09-01 adjudication #7)', () => {
+  let g1Server: Server;
+  let g1Tmp: string;
+  // The configured ceilings — this test's contract, asserted literally at both rungs below.
+  const MAX_EFFORT = 'low';
+  const MAX_APPEND_BYTES = 64;
+  const NO_PARAMS_SCRIPT = 'return await agent("hi");'; // deliberately NO `meta.params` block
+
+  beforeAll(async () => {
+    g1Tmp = mkdtempSync(join(tmpdir(), 'rwe-it081-g1-'));
+    g1Server = await createServer({
+      port: 0,
+      bind: '127.0.0.1',
+      workRoot: g1Tmp,
+      maxEffort: MAX_EFFORT,
+      maxAppendPromptBytes: MAX_APPEND_BYTES,
+      aliases: {
+        sonnet: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
+        default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await g1Server?.close();
+    rmSync(g1Tmp, { recursive: true, force: true });
+  });
+
+  async function g1Call(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const res = await fetch(`http://127.0.0.1:${g1Server.port}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
+    return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+  }
+
+  it('a caller-supplied defaults.effort above maxEffort, with no params block, is refused at registration — the SAME ceiling admission enforces', async () => {
+    const r = await g1Call('workflow_register', {
+      name: 'it081-g1-effort-over', script: NO_PARAMS_SCRIPT, defaults: { effort: 'max' },
+    });
+    expect(r.error).toBeDefined();
+
+    const got = await g1Call('workflow_get', { name: 'it081-g1-effort-over' });
+    expect(got.code).toBe('WORKFLOW_NOT_FOUND'); // fail-closed: nothing stored
+
+    // The other end of the same bound: the identical value is refused at the admission rung, and
+    // the value AT the configured ceiling is accepted there — the same boundary, both rungs.
+    await g1Call('workflow_register', { name: 'it081-g1-admission-pin', script: 'return 1;' });
+    const over = await g1Call('workflow_run', { name: 'it081-g1-admission-pin', overrides: { effort: 'max' } });
+    expect(over.code ?? (over.error as { code?: string } | undefined)?.code).toBe('PARAM_OUT_OF_RANGE');
+    const atBound = await g1Call('workflow_run', { name: 'it081-g1-admission-pin', overrides: { effort: MAX_EFFORT } });
+    expect(atBound.code).not.toBe('PARAM_OUT_OF_RANGE');
+  });
+
+  it('a caller-supplied defaults.effort AT the ceiling still registers fine (isolates the ceiling from a blanket rejection)', async () => {
+    const r = await g1Call('workflow_register', {
+      name: 'it081-g1-effort-ok', script: NO_PARAMS_SCRIPT, defaults: { effort: MAX_EFFORT },
+    });
+    expect(r.error).toBeUndefined();
+
+    const got = await g1Call('workflow_get', { name: 'it081-g1-effort-ok' });
+    expect((got as { defaults?: Record<string, unknown> }).defaults?.['effort']).toBe(MAX_EFFORT);
+  });
+
+  it('a caller-supplied defaults.appendPrompt over maxAppendPromptBytes, with no params block, is refused at registration against the SAME byte bound admission reports', async () => {
+    const overByOne = 'x'.repeat(MAX_APPEND_BYTES + 1); // ASCII: 1 char == 1 byte
+    const r = await g1Call('workflow_register', {
+      name: 'it081-g1-append-over', script: NO_PARAMS_SCRIPT, defaults: { appendPrompt: overByOne },
+    });
+    expect(r.error).toBeDefined();
+
+    const got = await g1Call('workflow_get', { name: 'it081-g1-append-over' });
+    expect(got.code).toBe('WORKFLOW_NOT_FOUND'); // fail-closed: nothing stored
+
+    // Admission enforces the same byte bound registration just refused against: over-by-one is
+    // refused there too, and exactly-at-the-bound is accepted at both rungs.
+    await g1Call('workflow_register', { name: 'it081-g1-append-admission-pin', script: 'return 1;' });
+    const over = await g1Call('workflow_run', {
+      name: 'it081-g1-append-admission-pin', overrides: { appendPrompt: overByOne },
+    });
+    expect(over.code ?? (over.error as { code?: string } | undefined)?.code).toBe('PARAM_OUT_OF_RANGE');
+    const atBound = await g1Call('workflow_run', {
+      name: 'it081-g1-append-admission-pin', overrides: { appendPrompt: 'x'.repeat(MAX_APPEND_BYTES) },
+    });
+    expect(atBound.code).not.toBe('PARAM_OUT_OF_RANGE');
+  });
+
+  it('a caller-supplied defaults.appendPrompt AT the byte ceiling still registers fine', async () => {
+    const r = await g1Call('workflow_register', {
+      name: 'it081-g1-append-ok', script: NO_PARAMS_SCRIPT, defaults: { appendPrompt: 'x'.repeat(MAX_APPEND_BYTES) },
+    });
+    expect(r.error).toBeUndefined();
   });
 });

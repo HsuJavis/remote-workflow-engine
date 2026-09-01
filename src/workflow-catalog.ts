@@ -33,7 +33,7 @@ import type { ParamContract, Ceilings } from './params/contract.js';
 // type-only import above; a second hand-rolled bounds checker here is exactly the drift class
 // that has bitten this iteration twice (P-A2, R-G10). No sandbox-child hazard: this file is
 // server-side (loads better-sqlite3) and contract.ts is already value-imported by run-manager.ts.
-import { checkValueAgainstSpec, effectiveBounds } from './params/contract.js';
+import { canonicalContract, checkValueAgainstSpec, effectiveBounds } from './params/contract.js';
 
 // DES-098: hardcoded operator email for boot backfill of NULL-owner rows
 const BOOT_BACKFILL_EMAIL = 'hsuhungjung@gmail.com';
@@ -51,9 +51,11 @@ export interface WorkflowCatalogOpts {
   backfillOwner?: boolean;
   /** Set of valid model alias names for register-time validation (D-AUTH-5-B). */
   aliasNames?: Set<string>;
-  /** v21 adjudication #6 (F-1 ceiling interaction): engine ceilings, so a declared knob default
-   *  above the configured ceiling (e.g. `effort` above `maxEffort`) is refused at registration
-   *  exactly like any other declared value, instead of registering above a bound admission enforces. */
+  /** v21 adjudication #6 (F-1 ceiling interaction) + #7 (G-1): engine ceilings, so ANY value that
+   *  reaches the stored `defaults` column above the configured ceiling (e.g. `effort` above
+   *  `maxEffort`) is refused at registration — a declared `params.knobs.<knob>.default` and a
+   *  caller-supplied `defaults.<knob>` alike, instead of registering above a bound admission
+   *  enforces. Must be the SAME object forwarded to RunManager/McpFacade (server.ts). */
   ceilings?: Ceilings;
 }
 
@@ -135,27 +137,10 @@ export class WorkflowCatalog {
     // corresponding defaults.<knob> is accept-and-normalize: written into the stored defaults so
     // the served default is always DERIVED from the defaults column, never a second source.
     const effectiveDefaults: Record<string, unknown> = defaults ? { ...defaults } : {};
-    // v21 adjudication #6 (F-1 ceiling interaction): the engine's own ceilings bound a declared
-    // knob default exactly like any other declared value — computed once per registration from
-    // live config (effectiveBounds is a READ-time narrowing, same function the read surfaces use).
-    const ceilingKnobs = this._ceilings ? effectiveBounds(paramsResult.value, this._ceilings).knobs : undefined;
     for (const [key, spec] of Object.entries(paramsResult.value.knobs)) {
       if (spec.default === undefined) continue;
       if (violatesOwnSpec(spec.default, spec)) {
         throw codedError('PARAM_CONTRACT_INVALID', `params.knobs.${key}.default violates its own declared bounds`);
-      }
-      const ceilingSpec = ceilingKnobs?.[key];
-      if (ceilingSpec && violatesOwnSpec(spec.default, ceilingSpec)) {
-        throw codedError('PARAM_CONTRACT_INVALID', `params.knobs.${key}.default exceeds the engine's configured ceiling`);
-      }
-      // appendPrompt's ceiling is a byte cap, not a spec-shaped bound (DES-101 row 6) — checked by
-      // size only, never echoing the declared text (same "report by size, never by content" rule
-      // contract.ts's validateUserOverrides applies to a caller-supplied appendPrompt).
-      if (this._ceilings && key === 'appendPrompt' && typeof spec.default === 'string') {
-        const bytes = Buffer.byteLength(spec.default, 'utf8');
-        if (bytes > this._ceilings.maxAppendPromptBytes) {
-          throw codedError('PARAM_CONTRACT_INVALID', `params.knobs.appendPrompt.default exceeds the engine's configured byte ceiling (${bytes} > ${this._ceilings.maxAppendPromptBytes} bytes)`);
-        }
       }
       // v21 adjudication #6 (F-1): adjudication #5's E-3 ("reject a default for a knob no rung can
       // apply") is SUPERSEDED — REQ-090's own acceptance text permits a declared default on every
@@ -169,6 +154,42 @@ export class WorkflowCatalog {
         }
       } else {
         effectiveDefaults[key] = spec.default;
+      }
+    }
+
+    // v21 adjudication #6 (F-1 ceiling interaction) + #7 (G-1): ONE ceiling pass over the FINAL
+    // stored defaults — the values that actually reach the `defaults` column, whether they arrived
+    // as a caller-supplied `defaults.<knob>` or were normalized out of a declared
+    // `params.knobs.<knob>.default` above. Running it inside the declared-knob loop (its former
+    // home) left G-1's hole: that loop only ever visits knobs the AUTHOR declared a default for, so
+    // `defaults: {effort:'max'}` with no `params` block at all was ceiling-checked nowhere —
+    // `validateHarnessDefaults` has no ceilings, and admission re-checks only the caller's
+    // `overrides`, never the registered defaults. Bounds come from the canonical contract narrowed
+    // by live config, i.e. the CEILING alone (the author's own bounds are already enforced above),
+    // via the same `effectiveBounds`/`checkValueAgainstSpec` pair the read and admission rungs use —
+    // so registration can never refuse against a different number than admission enforces.
+    const ceilingKnobs = this._ceilings ? effectiveBounds(canonicalContract(), this._ceilings).knobs : undefined;
+    for (const [key, value] of Object.entries(effectiveDefaults)) {
+      const ceilingSpec = ceilingKnobs?.[key];
+      if (ceilingSpec === undefined) continue; // not a ceiling-bounded knob (tools/skills/prompt)
+      // The rejection code follows the value's ORIGIN, so the caller sees the input they supplied
+      // named back: a caller `defaults` key answers under the D-AUTH-5 family's
+      // HARNESS_DEFAULTS_INVALID, a declared knob default under PARAM_CONTRACT_INVALID.
+      const fromCaller = defaults !== undefined && key in defaults;
+      const code = fromCaller ? 'HARNESS_DEFAULTS_INVALID' : 'PARAM_CONTRACT_INVALID';
+      const label = fromCaller ? `defaults.${key}` : `params.knobs.${key}.default`;
+      // appendPrompt's ceiling is a byte cap, not a spec-shaped bound (DES-101 row 6) — checked by
+      // size only, never echoing the text (same "report by size, never by content" rule
+      // contract.ts's validateUserOverrides applies to a caller-supplied appendPrompt).
+      if (key === 'appendPrompt' && typeof value === 'string') {
+        const bytes = Buffer.byteLength(value, 'utf8');
+        if (bytes > this._ceilings!.maxAppendPromptBytes) {
+          throw codedError(code, `${label} exceeds the engine's configured byte ceiling (${bytes} > ${this._ceilings!.maxAppendPromptBytes} bytes)`);
+        }
+        continue;
+      }
+      if (violatesOwnSpec(value, ceilingSpec)) {
+        throw codedError(code, `${label} exceeds the engine's configured ceiling`);
       }
     }
 
