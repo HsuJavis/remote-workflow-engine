@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia, runScriptVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -60,7 +61,7 @@ async function pollDone(runId: string, maxMs = 8000): Promise<void> {
 describe('VAL-080: graph view returns GraphPayload (REQ-071)', () => {
   it('GET /api/runs/:id/dag returns kind:"run" envelope with cells, edges, and startedBy (CI-safe)', async () => {
     // A no-agent workflow: trigger node + return.
-    const sub = await callTool('workflow_run', { script: 'return "val080";' }) as { runId?: string };
+    const sub = await runScriptVia(callTool, 'return "val080";') as { runId?: string };
     const runId = sub?.runId!;
     await pollDone(runId);
 
@@ -85,7 +86,7 @@ describe('VAL-080: graph view returns GraphPayload (REQ-071)', () => {
   });
 
   it('dashboard page for run ID serves HTML (not 404) — graph container exists in page body', async () => {
-    const sub = await callTool('workflow_run', { script: 'return "html-check";' }) as { runId?: string };
+    const sub = await runScriptVia(callTool, 'return "html-check";') as { runId?: string };
     const runId = sub?.runId!;
     await pollDone(runId);
 
@@ -103,9 +104,7 @@ describe('VAL-080: graph view returns GraphPayload (REQ-071)', () => {
     // This case requires a real LLM to dispatch agents, producing agent cells + edges in the graph.
     // Skipped in CI; the headless-browser assertion (trigger → Draft parallel → Verify) is at Gate 7.5.
     if (!HAS_PROVIDER) return;
-    await callTool('workflow_register', {
-      name: 'val080-cs',
-      script: `export const meta = {
+    await registerPublishedVia(callTool, 'val080-cs', `export const meta = {
         name: 'val080-cs',
         phases: [{ title: 'Draft' }, { title: 'Verify' }],
       };
@@ -113,8 +112,7 @@ describe('VAL-080: graph view returns GraphPayload (REQ-071)', () => {
         () => agent('draft 1'),
         () => agent('draft 2'),
       ]);
-      return await agent('verify');`,
-    });
+      return await agent('verify');`);
     const sub = await callTool('workflow_run', { name: 'val080-cs' }) as { runId?: string };
     const runId = sub?.runId!;
     await pollDone(runId, 60_000);

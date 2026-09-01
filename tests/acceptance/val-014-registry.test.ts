@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia, runScriptVia } from '../helpers/workflow-fixtures.js';
 
 describe('VAL-014: named workflow registry (REQ-014)', () => {
   let server: Server;
@@ -47,18 +48,18 @@ describe('VAL-014: named workflow registry (REQ-014)', () => {
   });
 
   it('workflow_run by name executes the registered script', async () => {
-    await callTool('workflow_register', { name: 'val014-run', script: `return args.x * 3;` });
+    await registerPublishedVia(callTool, 'val014-run', `return args.x * 3;`);
     const r = await runAndWait('val014-run', { x: 7 });
     expect(r.status).toBe('completed');
     expect(r.result).toBe(21);
   }, 15000);
 
   it('workflow(name) inside a script invokes the registered child inline', async () => {
-    await callTool('workflow_register', { name: 'child-inline', script: `return args.n + 100;` });
+    // v22: nested `workflow('child-inline')` resolves on `release`, so the child must be published.
+    await registerPublishedVia(callTool, 'child-inline', `return args.n + 100;`);
     const r = await runAndWait('', undefined).catch(() => null);  // placeholder
 
-    const run = await callTool('workflow_run', {
-      script: `return workflow('child-inline', {n: args.base});`,
+    const run = await runScriptVia(callTool, `return workflow('child-inline', {n: args.base});`, {
       args: { base: 5 },
     });
     const runId = run.runId as string;
@@ -76,8 +77,7 @@ describe('VAL-014: named workflow registry (REQ-014)', () => {
   }, 20000);
 
   it('workflow(unknownName) throws a catchable error naming the missing workflow', async () => {
-    const run = await callTool('workflow_run', {
-      script: `
+    const run = await runScriptVia(callTool, `
         try {
           return await workflow('definitely-does-not-exist-xyz', {});
         } catch(e) {
@@ -86,8 +86,7 @@ describe('VAL-014: named workflow registry (REQ-014)', () => {
           // REQ-014's "naming the missing workflow" lives in .message.
           return 'caught: ' + e.message + ' code=' + (e.name || e.code);
         }
-      `,
-    });
+      `);
     const runId = run.runId as string;
     for (let i = 0; i < 30; i++) {
       const s = await callTool('workflow_status', { runId });
@@ -105,11 +104,12 @@ describe('VAL-014: named workflow registry (REQ-014)', () => {
   }, 20000);
 
   it('updating a registered workflow: new runs use new script version', async () => {
-    await callTool('workflow_register', { name: 'val014-ver', script: `return 'version-one';` });
+    await registerPublishedVia(callTool, 'val014-ver', `return 'version-one';`);
     const run1 = await runAndWait('val014-ver');
     expect(run1.result).toBe('version-one');
 
-    await callTool('workflow_register', { name: 'val014-ver', script: `return 'version-two';` });
+    // v22: publishing v2 to `release` is what makes the NEW version the one a bare run-by-name gets.
+    await registerPublishedVia(callTool, 'val014-ver', `return 'version-two';`);
     const run2 = await runAndWait('val014-ver');
     expect(run2.result).toBe('version-two');
   }, 30000);

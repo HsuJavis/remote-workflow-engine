@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -48,7 +49,7 @@ async function pollDone(runId: string, maxMs = 8000): Promise<void> {
 
 describe('GET /api/runs/:id/dag — GraphPayload envelope (IT-064, DES-064)', () => {
   it('returns kind:"run" envelope with a layout containing cells and edges', async () => {
-    const sub = await callTool('workflow_run', { script: 'return "ok";' }) as { runId?: string };
+    const sub = await runScriptVia(callTool, 'return "ok";') as { runId?: string };
     const runId = sub?.runId!;
     await pollDone(runId);
 
@@ -70,7 +71,7 @@ describe('GET /api/runs/:id/dag — GraphPayload envelope (IT-064, DES-064)', ()
   });
 
   it('payload carries startedBy from the run record', async () => {
-    const sub = await callTool('workflow_run', { script: 'return 1;' }) as { runId?: string };
+    const sub = await runScriptVia(callTool, 'return 1;') as { runId?: string };
     const runId = sub?.runId!;
     await pollDone(runId);
 
@@ -81,7 +82,7 @@ describe('GET /api/runs/:id/dag — GraphPayload envelope (IT-064, DES-064)', ()
   });
 
   it('terminalAt is present on a completed run', async () => {
-    const sub = await callTool('workflow_run', { script: 'return "done";' }) as { runId?: string };
+    const sub = await runScriptVia(callTool, 'return "done";') as { runId?: string };
     const runId = sub?.runId!;
     await pollDone(runId);
 
@@ -94,7 +95,7 @@ describe('GET /api/runs/:id/dag — GraphPayload envelope (IT-064, DES-064)', ()
   });
 
   it('layout cells carry logical grid coords (col, row, laneSpan) — no raw pixels', async () => {
-    const sub = await callTool('workflow_run', { script: 'return "ok";' }) as { runId?: string };
+    const sub = await runScriptVia(callTool, 'return "ok";') as { runId?: string };
     const runId = sub?.runId!;
     await pollDone(runId);
 

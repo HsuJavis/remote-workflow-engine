@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 describe('VAL-006: suspend / resume / stop lifecycle (REQ-006)', () => {
   let server: Server;
@@ -60,7 +61,7 @@ describe('VAL-006: suspend / resume / stop lifecycle (REQ-006)', () => {
   }
 
   it('suspend transitions run to suspended; resume brings it back to running', async () => {
-    const run = await callTool('workflow_run', { script: `return agent('slow-query');` });
+    const run = await runScriptVia(callTool, `return agent('slow-query');`);
     const runId = run.runId as string;
     await waitUntilRunning(runId);
     await callTool('workflow_suspend', { runId });
@@ -73,7 +74,7 @@ describe('VAL-006: suspend / resume / stop lifecycle (REQ-006)', () => {
   }, 45000);
 
   it('stop terminates run; workflow_result with edited script re-runs from first changed agent()', async () => {
-    const run = await callTool('workflow_run', { script: `return agent('original');` });
+    const run = await runScriptVia(callTool, `return agent('original');`);
     const runId = run.runId as string;
 
     await waitUntilRunning(runId);
@@ -81,14 +82,18 @@ describe('VAL-006: suspend / resume / stop lifecycle (REQ-006)', () => {
     const stopped = await pollStatus(runId, 'stopped');
     expect(stopped.status).toBe('stopped');
 
-    // Resume with an edited script — re-runs only from the first changed call
+    // Resume with an edited script — re-runs only from the first changed call.
+    // NOT MIGRATED (reported to the orchestrator): v22 (REQ-098, mcp-facade.workflow_resume) refuses
+    // `script` on resume with INLINE_SCRIPT_CLOSED, so this REQ-006 clause tests a capability the
+    // engine no longer has. Left raw on purpose — the helper cannot express it, and rewriting it to
+    // a plain resume would silently re-scope what this test asserts.
     await callTool('workflow_resume', { runId, script: `return agent('changed prompt');` });
     const final = await pollStatus(runId, ['completed', 'failed']);
     expect(['completed', 'failed']).toContain(final.status);
   }, 45000);
 
   it('workflow_status returns state after server restart (journal + store survive restart)', async () => {
-    const run = await callTool('workflow_run', { script: `return 1;` });
+    const run = await runScriptVia(callTool, `return 1;`);
     const runId = run.runId as string;
     await pollStatus(runId, 'completed');
 

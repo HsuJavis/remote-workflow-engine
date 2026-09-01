@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const HAS_PROVIDER = !!(process.env['ANTHROPIC_API_KEY'] || process.env['OLLAMA_BASE_URL']);
 
@@ -28,7 +29,7 @@ describe('VAL-007: per-agent observability (REQ-007)', () => {
   }
 
   async function runAndWait(script: string) {
-    const run = await callTool('workflow_run', { script });
+    const run = await runScriptVia(callTool, script);
     const runId = run.runId as string;
     for (let i = 0; i < 90; i++) {
       const s = await callTool('workflow_status', { runId });
@@ -77,15 +78,18 @@ describe('VAL-007: per-agent observability (REQ-007)', () => {
     // This test does not require a real LLM — phases are tracked without agent calls
     const localServer = await createServer({ port: 0 });
     const localBase = `http://127.0.0.1:${localServer.port}`;
+    // v22: same `${localBase}/mcp` POST + parse this test already does inline, hoisted so the shared
+    // fixture helper can drive register→publish→run against this test's own local server.
+    const localCall = async (tool: string, args: unknown) => {
+      const res = await fetch(`${localBase}/mcp`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: tool, arguments: args } }),
+      });
+      const body = await res.json() as { result?: { content: Array<{ text: string }> } };
+      return JSON.parse(body.result!.content[0].text);
+    };
     try {
-      const run = await (async () => {
-        const res = await fetch(`${localBase}/mcp`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_run', arguments: { script: `phase('alpha'); phase('beta'); return 'done';` } } }),
-        });
-        const body = await res.json() as { result?: { content: Array<{ text: string }> } };
-        return JSON.parse(body.result!.content[0].text);
-      })();
+      const run = await runScriptVia(localCall, `phase('alpha'); phase('beta'); return 'done';`);
       const runId = run.runId as string;
       for (let i = 0; i < 30; i++) {
         const res = await fetch(`${localBase}/mcp`, {

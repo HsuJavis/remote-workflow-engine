@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FixedClock } from '../../src/clock.js';
 import { RunManager } from '../../src/run-manager.js';
+import { registerPublished, startScript } from '../helpers/workflow-fixtures.js';
 import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
 import { WorkflowCatalog } from '../../src/workflow-catalog.js';
 import { buildDagModel } from '../../src/dashboard.js';
@@ -42,11 +43,11 @@ describe("a terminated run's DAG survives a restart (v8 Slice 2c, REQ-055)", () 
       // --- before restart ---
       const store1 = new SqliteRunStore(join(dir, 'store'), CLOCK);
       const catalog1 = new WorkflowCatalog(join(dir, 'wf'), CLOCK);
-      await catalog1.register('leaf', `const l = await agent('do-L', { label: 'L' }); return l;`);
-      await catalog1.register('mid', `const m = await agent('do-M', { label: 'M' }); const x = await workflow('leaf', {}); return { m, x };`);
+      await registerPublished(catalog1, 'leaf', `const l = await agent('do-L', { label: 'L' }); return l;`);
+      await registerPublished(catalog1, 'mid', `const m = await agent('do-M', { label: 'M' }); const x = await workflow('leaf', {}); return { m, x };`);
       const mgr1 = new RunManager({ store: store1, clock: CLOCK, workRoot: dir, catalog: catalog1, gateway, maxWorkflowDepth: 3 });
 
-      const runId = await mgr1.start({ script: `phase('top'); const t = await agent('do-T', { label: 'T' }); const w = await workflow('mid', {}); return { t, w };` });
+      const runId = await startScript(mgr1, `phase('top'); const t = await agent('do-T', { label: 'T' }); const w = await workflow('mid', {}); return { t, w };`);
       const before = await settled(mgr1, runId);
       expect(before.status).toBe('completed');
       // In-process the DAG is rich (Slice 2/2b): frames + phases present.
@@ -89,7 +90,7 @@ describe("a terminated run's DAG survives a restart (v8 Slice 2c, REQ-055)", () 
     try {
       const store = new SqliteRunStore(join(dir, 'store'), CLOCK);
       const mgr = new RunManager({ store, clock: CLOCK, workRoot: dir, gateway });
-      const runId = await mgr.start({ script: `return 1;` }); // no agents, no phases, no composites
+      const runId = await startScript(mgr, `return 1;`); // no agents, no phases, no composites
       const v = await settled(mgr, runId);
       expect(v.status).toBe('completed');
       // A fresh store on the same dir: getRun must not throw and returns arrays (possibly empty).

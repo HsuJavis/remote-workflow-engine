@@ -22,6 +22,7 @@ import { FixedClock } from '../../src/clock.js';
 import type { GatewayClient, GatewayResult } from '../../src/gateway/client.js';
 import type { AgentSpawner, AgentOutcome } from '../../src/agent-executor.js';
 import type { RunParams } from '../../src/params/resolve.js';
+import { registerPublished, registerPublishedVia, startScript } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -56,7 +57,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Re
 
 describe('Admission rung: overrides validated BEFORE any durable work (IT-083, DES-104, REQ-091)', () => {
   it('overrides naming a LOCKED key (prompt) → PARAM_LOCKED, no run row created', async () => {
-    await callTool('workflow_register', { name: 'it083-locked', script: 'return await agent("hi");' });
+    await registerPublishedVia(callTool, 'it083-locked', 'return await agent("hi");');
     const before = (await callTool('workflow_list', {}) as { result?: unknown[] }).result?.length ?? 0;
 
     const r = await callTool('workflow_run', { name: 'it083-locked', overrides: { prompt: 'hijacked system prompt' } });
@@ -67,7 +68,7 @@ describe('Admission rung: overrides validated BEFORE any durable work (IT-083, D
   });
 
   it('an out-of-range override (timeoutMs above the engine ceiling) → PARAM_OUT_OF_RANGE, no workspace directory on disk', async () => {
-    await callTool('workflow_register', { name: 'it083-ceiling', script: 'return await agent("hi");' });
+    await registerPublishedVia(callTool, 'it083-ceiling', 'return await agent("hi");');
     const r = await callTool('workflow_run', { name: 'it083-ceiling', overrides: { timeoutMs: 10_000_000 } });
     expect(r.code ?? (r.error as { code?: string } | undefined)?.code).toBe('PARAM_OUT_OF_RANGE');
 
@@ -89,7 +90,7 @@ describe('Admission rung: overrides validated BEFORE any durable work (IT-083, D
   });
 
   it('a run with a valid override succeeds and effectiveParams reflects the override (observable, not merely echoed)', async () => {
-    await callTool('workflow_register', { name: 'it083-valid-override', script: 'return await agent("hi");', defaults: { model: 'sonnet' } });
+    await registerPublishedVia(callTool, 'it083-valid-override', 'return await agent("hi");', { defaults: { model: 'sonnet' } });
     const r = await callTool('workflow_run', { name: 'it083-valid-override', overrides: { appendPrompt: 'extra instructions' } });
     expect(r.code).not.toBe('PARAM_LOCKED');
     expect(r.code).not.toBe('PARAM_OUT_OF_RANGE');
@@ -97,7 +98,7 @@ describe('Admission rung: overrides validated BEFORE any durable work (IT-083, D
   });
 
   it('workflow_resume rejects the mere PRESENCE of an overrides field, full stop', async () => {
-    await callTool('workflow_register', { name: 'it083-resume-reject', script: 'return await agent("hi");' });
+    await registerPublishedVia(callTool, 'it083-resume-reject', 'return await agent("hi");');
     const run = await callTool('workflow_run', { name: 'it083-resume-reject' });
     await callTool('workflow_suspend', { runId: run.runId });
     const resumed = await callTool('workflow_resume', { runId: run.runId, overrides: { timeoutMs: 5000 } } as unknown as Record<string, unknown>);
@@ -113,7 +114,7 @@ describe('Admission rung: overrides validated BEFORE any durable work (IT-083, D
   // resolve to `null` on every `agent()` call). Same zero-durable-work assertion shape as the
   // PARAM_LOCKED case above.
   it('B1: overrides.model naming an alias not in the configured table → UNKNOWN_ALIAS, no run row created', async () => {
-    await callTool('workflow_register', { name: 'it083-unknown-alias', script: 'return await agent("hi");' });
+    await registerPublishedVia(callTool, 'it083-unknown-alias', 'return await agent("hi");');
     const before = (await callTool('workflow_list', {}) as { result?: unknown[] }).result?.length ?? 0;
 
     const r = await callTool('workflow_run', { name: 'it083-unknown-alias', overrides: { model: 'not-a-real-alias' } });
@@ -127,7 +128,7 @@ describe('Admission rung: overrides validated BEFORE any durable work (IT-083, D
   // exists yet — the case above proves that; kept as the regression guard for once B1 lands, same
   // precedent as the A-3/A-7 green pins elsewhere in this file).
   it('B1 passthrough: overrides.model = openrouter/<id> is never rejected as UNKNOWN_ALIAS', async () => {
-    await callTool('workflow_register', { name: 'it083-openrouter-passthrough', script: 'return await agent("hi");' });
+    await registerPublishedVia(callTool, 'it083-openrouter-passthrough', 'return await agent("hi");');
     const r = await callTool('workflow_run', { name: 'it083-openrouter-passthrough', overrides: { model: 'openrouter/some-vendor/some-model' } });
     expect(r.code ?? (r.error as { code?: string } | undefined)?.code).not.toBe('UNKNOWN_ALIAS');
   });
@@ -160,8 +161,8 @@ describe('CallKey never carries v21-resolved params (ADR-002, DES-104)', () => {
       const store = new InMemoryRunStore(clock);
       const mgr = new RunManager({ store, clock, workRoot: dir, gateway } as any);
 
-      const plainRunId = await mgr.start({ script: `return await agent('same prompt');` });
-      const overrideRunId = await mgr.start({ script: `return await agent('same prompt');` }, { appendPrompt: 'EXTRA USER TEXT' });
+      const plainRunId = await startScript(mgr, `return await agent('same prompt');`);
+      const overrideRunId = await startScript(mgr, `return await agent('same prompt');`, {}, { appendPrompt: 'EXTRA USER TEXT' });
       await pollDone(mgr, plainRunId);
       await pollDone(mgr, overrideRunId);
 
@@ -220,7 +221,7 @@ describe('Advertised bound == enforced bound (DES-104, REQ-091, v21 Gate 5 re-ru
   }
 
   it('a NULL-params workflow row advertises the lowered maxTimeoutMs ceiling via workflow_get, and admission enforces the SAME number', async () => {
-    await loweredCall('workflow_register', { name: 'it083-a3-ceiling', script: 'return await agent("hi");' });
+    await registerPublishedVia(loweredCall, 'it083-a3-ceiling', 'return await agent("hi");');
 
     const got = await loweredCall('workflow_get', { name: 'it083-a3-ceiling' });
     const advertisedMax = (got as { params?: { knobs?: { timeoutMs?: { max?: number } } } }).params?.knobs?.['timeoutMs']?.max;
@@ -277,7 +278,7 @@ describe('B2: resume dispatches the byte-identical admission snapshot, never the
         },
       };
       const mgr1 = new RunManager({ store, clock, workRoot: dir, spawner, secretValueProvider } as any);
-      const runId = await mgr1.start({ script: `return await agent('base prompt');` }, { appendPrompt: SECRET_VALUE });
+      const runId = await startScript(mgr1, `return await agent('base prompt');`, {}, { appendPrompt: SECRET_VALUE });
       await mgr1.suspend(runId); // entry.status is 'running' immediately after start() (same
       // guarantee IT-083's own "workflow_resume rejects..." test above relies on — suspend races
       // the real sandbox spawn, not the JS-level spawner override, and reliably wins).
@@ -338,7 +339,7 @@ describe('B2: resume dispatches the byte-identical admission snapshot, never the
       };
       const mgr1 = new RunManager({ store, clock, workRoot: dir, spawner, secretValueProvider } as any);
       const MARKER_LITERAL = `‹secret:${SECRET_NAME}›`;
-      const runId = await mgr1.start({ script: `return await agent('base prompt');` }, { appendPrompt: MARKER_LITERAL });
+      const runId = await startScript(mgr1, `return await agent('base prompt');`, {}, { appendPrompt: MARKER_LITERAL });
       await mgr1.suspend(runId);
 
       // redact() at admission only replaces occurrences of the LIVE secret VALUE — the caller's
@@ -393,7 +394,7 @@ describe('F2 durable half: a pre-fix-admitted run whose persisted effectiveParam
       };
       const mgr1 = new RunManager({ store, clock, workRoot: dir, spawner } as any);
       // Admitted with ordinary, non-forging text — this run is legitimate at admission time.
-      const runId = await mgr1.start({ script: `return await agent('base prompt');` }, { appendPrompt: 'benign instructions' });
+      const runId = await startScript(mgr1, `return await agent('base prompt');`, {}, { appendPrompt: 'benign instructions' });
       await mgr1.suspend(runId);
 
       // Simulate a PRE-FIX row: direct-write the forged close-delimiter into the persisted
@@ -434,7 +435,7 @@ describe('F2 durable half: a pre-fix-admitted run whose persisted effectiveParam
         },
       };
       const mgr1 = new RunManager({ store, clock, workRoot: dir, spawner } as any);
-      const runId = await mgr1.start({ script: `return await agent('base prompt');` }, { appendPrompt: 'benign instructions' });
+      const runId = await startScript(mgr1, `return await agent('base prompt');`, {}, { appendPrompt: 'benign instructions' });
       await mgr1.suspend(runId);
 
       const raw = new Database(join(dir, 'store', 'index.db'));
@@ -466,6 +467,13 @@ describe('F2 durable half: a pre-fix-admitted run whose persisted effectiveParam
 // constant contract.ts/run-manager.ts already import.
 describe('P6-2: the EFFECTIVE post-merge appendPrompt (an author-declared default, not just a caller override) is frame-checked before any durable work (review §T5/§T6)', () => {
   it('a workflow registered with defaults.appendPrompt carrying the forged close-delimiter -> refused at admission with NO overrides supplied at all (today: dispatched as-is)', async () => {
+    // NOT swept (v22 L-5 class, reported to the orchestrator): this fixture's `defaults.appendPrompt`
+    // is INTENTIONALLY forged, and ADR-013 moved that check to registration — `workflow_register`
+    // now refuses it PARAM_CONTRACT_INVALID, so the workflow this case needs at the ADMISSION rung
+    // can no longer be created at all (the register+publish helper would throw here). The
+    // registration half already has its own green oracle in
+    // `tests/integration/registration-enforcement.test.ts`; this admission-rung case needs
+    // rewriting against the new site by the implementation gate, not a fixture swap.
     await callTool('workflow_register', {
       name: 'it083-p6-2-forged-default',
       script: 'return await agent("hi");',
@@ -481,9 +489,7 @@ describe('P6-2: the EFFECTIVE post-merge appendPrompt (an author-declared defaul
   });
 
   it('regression pin: a registered defaults.appendPrompt with no forged delimiter still dispatches fine', async () => {
-    await callTool('workflow_register', {
-      name: 'it083-p6-2-benign-default',
-      script: 'return await agent("hi");',
+    await registerPublishedVia(callTool, 'it083-p6-2-benign-default', 'return await agent("hi");', {
       defaults: { appendPrompt: 'be terse and to the point' },
     });
     const r = await callTool('workflow_run', { name: 'it083-p6-2-benign-default' });
@@ -520,7 +526,7 @@ describe('R-G2: the EFFECTIVE post-merge model (not just overrides.model) is ali
         b: { provider: 'anthropic' as const, model: 'claude-3-5-haiku-20241022' },
       };
       const server1 = await createServer({ port: 0, bind: '127.0.0.1', workRoot: dir, aliases: oldAliases });
-      await callOn(server1, 'workflow_register', { name: 'it083-rg2-stale-default', script: 'return await agent("hi");', defaults: { model: 'b' } });
+      await registerPublishedVia((tool, args) => callOn(server1, tool, args), 'it083-rg2-stale-default', 'return await agent("hi");', { defaults: { model: 'b' } });
       await server1.close();
 
       // "config change between restarts": same catalog on disk, a NEW server whose alias table no
@@ -574,7 +580,7 @@ describe('R-G3: default-deployment (unconfigured) alias table admits only real a
   }
 
   it('overrides.model naming an alias absent from DEFAULT_ALIASES -> UNKNOWN_ALIAS, no run row created', async () => {
-    await defaultCall('workflow_register', { name: 'it083-rg3-bogus', script: 'return await agent("hi");' });
+    await registerPublishedVia(defaultCall, 'it083-rg3-bogus', 'return await agent("hi");');
     const before = (await defaultCall('workflow_list', {}) as { result?: unknown[] }).result?.length ?? 0;
 
     const r = await defaultCall('workflow_run', { name: 'it083-rg3-bogus', overrides: { model: 'not-a-real-alias-xyz' } });
@@ -587,7 +593,7 @@ describe('R-G3: default-deployment (unconfigured) alias table admits only real a
   // Regression pin (GREEN today AND after the fix — accepted before the fix because admission
   // accepts everything, accepted after because 'sonnet' is a genuine DEFAULT_ALIASES member).
   it('regression pin: overrides.model = "sonnet" (a real DEFAULT_ALIASES member) is never rejected as UNKNOWN_ALIAS', async () => {
-    await defaultCall('workflow_register', { name: 'it083-rg3-known-default', script: 'return await agent("hi");' });
+    await registerPublishedVia(defaultCall, 'it083-rg3-known-default', 'return await agent("hi");');
     const r = await defaultCall('workflow_run', { name: 'it083-rg3-known-default', overrides: { model: 'sonnet' } });
     expect(r.code ?? (r.error as { code?: string } | undefined)?.code).not.toBe('UNKNOWN_ALIAS');
   });
@@ -672,7 +678,7 @@ describe('P-A3: a declared effort default takes effect at dispatch, or is refuse
       const store = new SqliteRunStore(join(dir, 'store'), clock);
       const catalog = new WorkflowCatalog(join(dir, 'catalog'), clock);
       const script = `export const meta = { params: { knobs: { effort: { type: 'enum', enum: ['low','max'], default: 'max' } } } };\nreturn await agent('hi');`;
-      await catalog.register('it083-pa3-effort-default', script, undefined, null);
+      await registerPublished(catalog, 'it083-pa3-effort-default', script);
 
       const captured: RunParams[] = [];
       const spawner: AgentSpawner = {

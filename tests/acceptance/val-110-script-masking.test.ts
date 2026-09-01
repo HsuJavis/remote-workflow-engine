@@ -15,6 +15,7 @@ import Database from 'better-sqlite3';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { TokenStore } from '../../src/auth/token-store.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 let authServer: Server;
 let openServer: Server;
@@ -47,6 +48,12 @@ async function mintBearer(workRoot: string, email: string): Promise<string> {
   db.close();
   return token;
 }
+// v22: binds this file's own 4-arg toolCall into the 2-arg shape the shared fixture helper drives.
+// The bearer is threaded so register AND publish run as the SAME principal — the publish ownership
+// gate stays live (adjudication #2 L-4) instead of being skipped by a null principal.
+const callerFor = (server: Server, bearer?: string) =>
+  (name: string, args: Record<string, unknown>) => toolCall(server, name, args, bearer);
+
 async function toolCall(server: Server, name: string, args: Record<string, unknown>, bearer?: string): Promise<Record<string, unknown>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
@@ -61,7 +68,9 @@ async function toolCall(server: Server, name: string, args: Record<string, unkno
 describe('REQ-100: two real principals over /mcp (VAL-110)', () => {
   it('owner reads the script; a non-owner bearer gets exactly the masked non-owner key set', async () => {
     const ownerToken = await mintBearer(authTmpDir, 'val110-owner@example.com');
-    await toolCall(authServer, 'workflow_register', { name: 'val110-flow', script: `return 'val110-secret';` }, ownerToken);
+    // v22 (DES-110): `workflow_get({name})` resolves the RELEASE channel, so an unpublished draft
+    // reads back CHANNEL_UNPUBLISHED rather than the owner/non-owner projections under test.
+    await registerPublishedVia(callerFor(authServer, ownerToken), 'val110-flow', `return 'val110-secret';`);
 
     const owned = await toolCall(authServer, 'workflow_get', { name: 'val110-flow' }, ownerToken);
     expect((owned['result'] as { script?: string } | undefined)?.script).toBe(`return 'val110-secret';`);
@@ -77,7 +86,7 @@ describe('REQ-100: two real principals over /mcp (VAL-110)', () => {
 describe('REQ-100: /api/workflows and the skeleton route are masked while auth is enabled, no exceptions (VAL-110)', () => {
   it('/api/workflows/:name/skeleton omits skeleton/phases entirely while auth is on', async () => {
     const ownerToken = await mintBearer(authTmpDir, 'val110-owner2@example.com');
-    await toolCall(authServer, 'workflow_register', { name: 'val110-api', script: `phase('secret-phase'); return 1;` }, ownerToken);
+    await registerPublishedVia(callerFor(authServer, ownerToken), 'val110-api', `phase('secret-phase'); return 1;`);
 
     const res = await fetch(`http://127.0.0.1:${authServer.port}/api/workflows/val110-api/skeleton`);
     const body = await res.json() as Record<string, unknown>;
@@ -95,7 +104,7 @@ describe('REQ-100: /api/workflows and the skeleton route are masked while auth i
 
 describe('REQ-100: auth OFF → pre-v22 surface, byte-for-byte (VAL-110)', () => {
   it('/api/workflows/:name/skeleton returns the real skeleton/phases when auth is disabled', async () => {
-    await toolCall(openServer, 'workflow_register', { name: 'val110-open-api', script: `phase('open-phase'); return 1;` });
+    await registerPublishedVia(callerFor(openServer), 'val110-open-api', `phase('open-phase'); return 1;`);
     const res = await fetch(`http://127.0.0.1:${openServer.port}/api/workflows/val110-open-api/skeleton`);
     const body = await res.json() as Record<string, unknown>;
     expect(body['phases']).toBeDefined();

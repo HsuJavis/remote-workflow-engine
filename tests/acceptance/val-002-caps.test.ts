@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia, runScriptVia } from '../helpers/workflow-fixtures.js';
 
 describe('VAL-002: nesting, concurrency caps, budget accounting (REQ-002)', () => {
   let server: Server;
@@ -25,7 +26,7 @@ describe('VAL-002: nesting, concurrency caps, budget accounting (REQ-002)', () =
   }
 
   async function runAndWait(script: string, opts?: { budget?: number }) {
-    const run = await callTool('workflow_run', { script, budget: opts?.budget });
+    const run = await runScriptVia(callTool, script, { budget: opts?.budget });
     const runId = run.runId as string;
     for (let i = 0; i < 60; i++) {
       const s = await callTool('workflow_status', { runId });
@@ -39,7 +40,9 @@ describe('VAL-002: nesting, concurrency caps, budget accounting (REQ-002)', () =
   }
 
   it('second-level workflow() nesting throws inside the script (caught by the script)', async () => {
-    await callTool('workflow_register', { name: 'child-wf', script: `return 'child';` });
+    // v22: a nested `workflow('child-wf')` resolves the child on `release`, so the child must be
+    // PUBLISHED, not merely registered (a bare register leaves it on no channel → CHANNEL_UNPUBLISHED).
+    await registerPublishedVia(callTool, 'child-wf', `return 'child';`);
     // Outer script calls workflow('child-wf') — that's level 1, allowed.
     // Inside child-wf we'd try another workflow() — that would be level 2, forbidden.
     // We test the throw by having the outer script catch it:

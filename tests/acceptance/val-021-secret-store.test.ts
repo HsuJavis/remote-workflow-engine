@@ -22,6 +22,7 @@ import { FakeMcpProbe } from '../../src/mcp-probe.js';
 import type { AliasMap } from '../../src/gateway/client.js';
 // Value import — module-not-found when absent (guarantees this file is RED at collection).
 import { resolveConfig, InMemorySecretSource } from '../../src/secret-resolver.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const HAS_PROVIDER = !!process.env['OLLAMA_BASE_URL'];
 const REAL_SECRET_VALUE = 'val021-real-secret-value-xyz';
@@ -85,7 +86,7 @@ describe('VAL-021: REQ-018 — a missing secret handle is a clear error, never a
       name: 'val021-missing-secret-mcp', kind: 'http',
       config: { url: 'https://example.com/mcp', headers: { Authorization: 'Bearer ${secret:val021-never-set}' } },
     });
-    const run = await mcpCall('workflow_run', { script: `return agent('go', { mcp: ['val021-missing-secret-mcp'] });` });
+    const run = await runScriptVia(mcpCall, `return agent('go', { mcp: ['val021-missing-secret-mcp'] });`);
     const runId = run['runId'] as string;
     for (let i = 0; i < 20; i++) {
       const s = await mcpCall('workflow_status', { runId });
@@ -124,7 +125,7 @@ describe('VAL-021: REQ-018 — a real resolved secret works end to end with no b
       name: 'val021-real-secret-mcp', kind: 'http',
       config: { url: 'https://example.com/mcp', headers: { Authorization: 'Bearer ${secret:VAL021}' } },
     });
-    const run = await mcpCall('workflow_run', { script: `return agent('go', { mcp: ['val021-real-secret-mcp'] });` });
+    const run = await runScriptVia(mcpCall, `return agent('go', { mcp: ['val021-real-secret-mcp'] });`);
     const runId = run['runId'] as string;
     for (let i = 0; i < 60; i++) {
       const s = await mcpCall('workflow_status', { runId });

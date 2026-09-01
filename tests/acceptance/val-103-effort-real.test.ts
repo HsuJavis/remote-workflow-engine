@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 const HAS_PROVIDER = !!process.env['OLLAMA_BASE_URL'];
 
@@ -41,14 +42,14 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Re
 describe('REQ-093: effort is real end-to-end, not a documented no-op (VAL-103)', () => {
   // UNGATED — requires no live backend at all (submission-time validation, admission rung).
   it('an out-of-enum effort override (outside low|medium|high|xhigh|max) is refused at submission, before any durable work', async () => {
-    await callTool('workflow_register', { name: 'val103-bad-effort', script: 'return 1;' });
+    await registerPublishedVia(callTool, 'val103-bad-effort', 'return 1;');
     const r = await callTool('workflow_run', { name: 'val103-bad-effort', overrides: { effort: 'super-max' } });
     expect(r.code ?? (r.error as { code?: string } | undefined)?.code).toBe('PARAM_OUT_OF_RANGE');
   });
 
   it('a real Ollama-backed run at effort:"max" completes with effortApplied recorded (no 400, honest no-op) [requires OLLAMA_BASE_URL]', async () => {
     if (!HAS_PROVIDER) return;
-    await callTool('workflow_register', { name: 'val103-real-effort', script: 'return await agent("say hi", {effort:"max"});' });
+    await registerPublishedVia(callTool, 'val103-real-effort', 'return await agent("say hi", {effort:"max"});');
     const run = await callTool('workflow_run', { name: 'val103-real-effort' });
     const runId = run.runId as string;
 
@@ -106,7 +107,7 @@ describe('REQ-093: effort is real end-to-end, not a documented no-op (VAL-103)',
 
   it('a workflow registered with defaults.effort:"high" and NO override/no per-call effort dispatches with the declared default, provenance "default" [requires OLLAMA_BASE_URL]', async () => {
     if (!HAS_PROVIDER) return;
-    await callTool('workflow_register', { name: 'val103-registered-effort-default', script: 'return await agent("say hi");', defaults: { effort: 'high' } });
+    await registerPublishedVia(callTool, 'val103-registered-effort-default', 'return await agent("say hi");', { defaults: { effort: 'high' } });
     const run = await callTool('workflow_run', { name: 'val103-registered-effort-default' });
     const runId = run.runId as string;
 

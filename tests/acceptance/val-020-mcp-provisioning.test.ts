@@ -46,6 +46,13 @@ describe('VAL-020: REQ-017 — provisioned once, later run references it by name
   });
 
   it('a workflow referencing an unprovisioned MCP name gets a clear MCP_NOT_PROVISIONED error (never a silent no-op) — no live model needed, fails before any provider dial', async () => {
+    // NOT MIGRATED (reported to the orchestrator). This fixture's script INTENTIONALLY names an
+    // unprovisioned MCP, which is exactly what v22's REQ-099 `validateScriptEntry` now refuses at
+    // `workflow_register` — so the shared helper throws inside its own register step (observed:
+    // `registerPublishedVia: workflow_register(...) did not return a version (MCP_NOT_PROVISIONED)`)
+    // and this call site cannot use it. The MCP_NOT_PROVISIONED oracle now has a THIRD possible
+    // surface (registration) that the test's own comment below does not sanction, so widening the
+    // matched surface is an orchestrator call, not a sweep call. Left raw on purpose.
     const run = await mcpCall('workflow_run', { script: `return agent('use it', { mcp: ['val020-never-provisioned'] });` });
     const runId = run['runId'] as string;
     let finalStatus: Record<string, unknown> | undefined;

@@ -106,6 +106,11 @@ describe('VAL-083: GET /api/home — grouping + description (REQ-074)', () => {
   });
 
   it('inline-script run (no name) appears in other[] (CI-safe)', async () => {
+    // NOT MIGRATED (reported to the orchestrator): this case's SUBJECT is a nameless run landing in
+    // other[]. dashboard.ts's other[] is "runs whose name is absent from the catalog", keyed
+    // '(inline)' when the run has no name at all — and v22 (REQ-098) means every run now has a name
+    // that IS in the catalog. Routing it through the fixture helper would give the run a registered
+    // name, moving the card to registered[] and inverting the assertion. Left raw on purpose.
     // Run an inline script — it has no registered workflow name
     const sub = await callTool('workflow_run', { script: 'return "inline-for-val083";' }) as { runId?: string };
     await pollDone(sub?.runId!);

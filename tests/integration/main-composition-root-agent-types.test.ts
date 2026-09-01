@@ -36,6 +36,7 @@ import { join } from 'node:path';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 import type { AliasMap } from '../../src/gateway/client.js';
 import type { Server, ServerConfig } from '../../src/server.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 // Same import-safety harness as main-composition-root.test.ts (IT-021) — see that file's top-of-file
 // note for why this exists (src/main.ts has no import-guard yet, so evaluating the module for real
@@ -153,7 +154,7 @@ describe('src/main.ts composition-root: agentDefinitionsDir end-to-end (IT-022, 
       server = await createServer(config);
       const baseUrl = `http://127.0.0.1:${server.port}`;
 
-      const run = await mcpCall(baseUrl, 'workflow_run', { script: `return agent('respond', { agentType: 'helper' });` });
+      const run = await runScriptVia((tool, args) => mcpCall(baseUrl, tool, args), `return agent('respond', { agentType: 'helper' });`);
       const status = await pollUntilSettled(baseUrl, run.runId as string);
 
       // Forcing red (once the export exists but agentDefinitionsDir still isn't forwarded): the run

@@ -21,12 +21,23 @@
 //   Principal passed as a JSON arg to the MCP tool (workflow_register gains `principal` field
 //   per DES-098). No LLM/gateway needed (workflow_run uses script-only).
 
+// v22 sweep note (adjudication #2, L-4): the register/deregister/publish half of this file was
+// migrated WITH each case's own principal threaded (`workflow_publish` is ownership-gated, so a null
+// principal there would turn the NOT_WORKFLOW_OWNER oracles into silent passes). Cases 3, 7, 9 and 10
+// are NOT swept and are reported to the orchestrator instead: they read the owner/script back through
+// `workflow_get`'s flat top-level fields, and v22 (REQ-100 / DES-115 / ADR-012) moved that surface.
+// This server runs auth ENABLED with the D-BIND loopback exemption, so `ctx.principal` is null on
+// every read and ADR-012 explicitly bars the `args.principal` unmask path — the response is therefore
+// the MASKED public view (`{result:{owner, scriptWithheld:true, …}}`, no flat `owner`, no `script` at
+// all). Those four cases need a new read mechanism (a real bearer, or a store-level assertion), which
+// changes what they assert and is an implementation-gate decision, not a fixture swap.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -77,6 +88,11 @@ describe('Workflow ownership gate (DES-098, IT-080)', () => {
     });
     expect(r.error).toBeUndefined();
     expect(typeof r.version).toBe('number');
+    // v22: registration is not publication. Published BY ALICE — `workflow_publish` is itself
+    // ownership-gated, so the principal that registered has to be the one that publishes; a null
+    // principal here would skip the gate and quietly hollow out the NOT_WORKFLOW_OWNER oracles below.
+    const pub = await callTool('workflow_publish', { name: OWNER_WORKFLOW, version: `v${r.version}`, channel: 'release', principal: ALICE });
+    expect(pub.code).not.toBe('NOT_WORKFLOW_OWNER');
   });
 
   it('case 7: workflow_get includes owner field', async () => {
@@ -93,6 +109,9 @@ describe('Workflow ownership gate (DES-098, IT-080)', () => {
     });
     expect(r.error).toBeUndefined();
     expect(r.code).not.toBe('NOT_WORKFLOW_OWNER');
+    // Alice's own new version onto `release`, so the reads below see her latest — the pre-v22
+    // "newest registration wins" semantics case 3's "stored definition unchanged" oracle assumes.
+    await callTool('workflow_publish', { name: OWNER_WORKFLOW, version: `v${r.version}`, channel: 'release', principal: ALICE });
   });
 
   it('case 3: register-overwrite by bob (non-owner) → NOT_WORKFLOW_OWNER + stored unchanged', async () => {
@@ -151,7 +170,7 @@ describe('Boot backfill: NULL owner → hsuhungjung@gmail.com (DES-098, IT-080)'
   it('case 9: a pre-v15 row (NULL owner) is backfilled to the configured email on boot', async () => {
     // Register without principal (simulates a pre-v15 registration)
     const wf = 'pre-v15-workflow-it080';
-    await callTool('workflow_register', { name: wf, script: SCRIPT /* no principal → NULL owner */ });
+    await registerPublishedVia(callTool, wf, SCRIPT /* no principal → NULL owner */);
 
     // Simulate a new boot (create a new server instance with the same workRoot)
     // The boot backfill runs once at startup: UPDATE workflows SET owner='hsuhungjung@gmail.com' WHERE owner IS NULL
@@ -183,7 +202,7 @@ describe('Boot backfill: NULL owner → hsuhungjung@gmail.com (DES-098, IT-080)'
   it('case 10: boot backfill is idempotent (already-owned rows not re-owned)', async () => {
     // Register with alice as owner
     const wf = 'alice-owned-it080';
-    await callTool('workflow_register', { name: wf, script: SCRIPT, principal: ALICE });
+    await registerPublishedVia(callTool, wf, SCRIPT, { principal: ALICE });
 
     // Second boot
     const server3 = await createServer({

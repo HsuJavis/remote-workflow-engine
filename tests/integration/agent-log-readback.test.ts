@@ -15,6 +15,7 @@ import { RunManager } from '../../src/run-manager.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
+import { facadeCaller, runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const CLOCK = new FixedClock(new Date('2024-01-01T00:00:00Z'));
 
@@ -38,7 +39,7 @@ describe('workflow_agent_log real transcript read-back (IT-009, D-V6)', () => {
     const runManager = new RunManager({ store, clock: CLOCK, gateway });
     const facade = new McpFacade({ clock: CLOCK, store, runManager });
 
-    const run = await facade.workflow_run({ script: `return agent('ping');` });
+    const run = await runScriptVia(facadeCaller(facade), `return agent('ping');`);
     const runId = run.result!.runId;
     const status = await pollUntilSettled(facade, runId);
     expect(status.status).toBe('completed');

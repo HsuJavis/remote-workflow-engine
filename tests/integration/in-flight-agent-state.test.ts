@@ -24,6 +24,7 @@
 import { describe, it, expect } from 'vitest';
 import { RunManager } from '../../src/run-manager.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
+import { startScript } from '../helpers/workflow-fixtures.js';
 import type { AgentRecord } from '../../src/types.js';
 
 async function pollUntilSettled(mgr: RunManager, runId: string, maxIters = 60) {
@@ -81,14 +82,12 @@ describe('in-flight AgentRecord state observable via workflow_status (IT-024, D-
     // concurrency:1 so B is genuinely blocked waiting for A's slot to free — the "queued" case.
     const mgr = new RunManager({ gateway, concurrency: 1 });
 
-    const runId = await mgr.start({
-      script: `
+    const runId = await startScript(mgr, `
         return await parallel([
           async () => agent('call-A', { label: 'A' }),
           async () => agent('call-B', { label: 'B' }),
         ]);
-      `,
-    });
+      `);
 
     // Deterministic: wait for A to have actually reached the gateway (slot acquired, in flight)
     // before asserting — avoids a race against the real child process's own startup time.

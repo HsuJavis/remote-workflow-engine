@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -57,7 +58,7 @@ const SOLE_AGENT_ID = 'agent-1';
 
 describe('REQ-092: registered defaults take effect at run time, observable in the harness descriptor (VAL-102)', () => {
   it('a call with NO per-call model dispatches with the registered default (alias-b), not silently ignored', async () => {
-    await callTool('workflow_register', { name: 'val102-defaults', script: 'return await agent("hi");', defaults: { model: 'alias-b' } });
+    await registerPublishedVia(callTool, 'val102-defaults', 'return await agent("hi");', { defaults: { model: 'alias-b' } });
     const run = await callTool('workflow_run', { name: 'val102-defaults' });
     const runId = run.runId as string;
 
@@ -67,7 +68,7 @@ describe('REQ-092: registered defaults take effect at run time, observable in th
   });
 
   it('the script itself calling agent({model:...}) wins over the registered default (per-call more specific)', async () => {
-    await callTool('workflow_register', { name: 'val102-percall-wins', script: `return await agent("hi", {model:'default'});`, defaults: { model: 'alias-b' } });
+    await registerPublishedVia(callTool, 'val102-percall-wins', `return await agent("hi", {model:'default'});`, { defaults: { model: 'alias-b' } });
     const run = await callTool('workflow_run', { name: 'val102-percall-wins' });
     const runId = run.runId as string;
 

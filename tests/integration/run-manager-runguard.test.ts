@@ -1,6 +1,7 @@
 // IT-002: RunManager + RunGuard — concurrency cap enforced end-to-end (ARCH-002)
 import { describe, it, expect, vi } from 'vitest';
 import { RunManager } from '../../src/run-manager.js';
+import { startScript } from '../helpers/workflow-fixtures.js';
 import type { AgentSpawner } from '../../src/agent-executor.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
 
@@ -31,13 +32,13 @@ describe('RunManager + RunGuard integration (ARCH-002)', () => {
     };
     const mgr = new RunManager({ spawner, concurrency: 2 });
 
-    const runId = await mgr.start({ script: `
+    const runId = await startScript(mgr, `
       return parallel([
         async () => agent('a'),
         async () => agent('b'),
         async () => agent('c'),
       ]);
-    ` });
+    `);
 
     const view = await pollUntilSettled(mgr, runId);
     expect(view.status).toBe('completed');
@@ -55,8 +56,7 @@ describe('RunManager + RunGuard integration (ARCH-002)', () => {
     };
     const mgr = new RunManager({ gateway });
 
-    const runId = await mgr.start({
-      script: `
+    const runId = await startScript(mgr, `
         try {
           const r1 = await agent('first');
           const r2 = await agent('second');
@@ -64,7 +64,7 @@ describe('RunManager + RunGuard integration (ARCH-002)', () => {
         } catch (e) {
           return { ok: false, code: e.code };
         }
-      `,
+      `, {
       budget: 40,
     });
 
@@ -79,12 +79,11 @@ describe('RunManager + RunGuard integration (ARCH-002)', () => {
 
   it('budget exceeded mid-run: subsequent agent() calls throw, earlier ones already ran', async () => {
     const mgr = new RunManager();
-    const runId = await mgr.start({
-      script: `
+    const runId = await startScript(mgr, `
         const r1 = await agent('first');
         const r2 = await agent('second');  // should throw BudgetExceededError
         return {r1, r2};
-      `,
+      `, {
       budget: 1, // token budget so low the second call will exceed it
     });
 
@@ -100,7 +99,7 @@ describe('RunManager + RunGuard integration (ARCH-002)', () => {
 
   it('state machine: start → running; stop → stopped; resume → running again', async () => {
     const mgr = new RunManager();
-    const runId = await mgr.start({ script: 'return agent("hello");' });
+    const runId = await startScript(mgr, 'return agent("hello");');
     const runningView = await mgr.status(runId);
     expect(['running', 'queued']).toContain(runningView.status);
 

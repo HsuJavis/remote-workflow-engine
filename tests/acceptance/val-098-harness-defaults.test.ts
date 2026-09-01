@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -77,6 +78,12 @@ describe('REQ-088: harness defaults bound at registration (VAL-098)', () => {
     expect(r.error).toBeUndefined();
     expect(r.code).not.toBe('HARNESS_DEFAULTS_INVALID');
 
+    // v22 (REQ-097/DES-110): `workflow_get({name})` with no version selector resolves the RELEASE
+    // channel, so a registered-but-unpublished draft reads back CHANNEL_UNPUBLISHED (not its
+    // defaults/params). Register AND publish so the read-back below sees the stored row.
+    const pub = await callTool('workflow_publish', { name: 'val098-defaults', version: (r['result'] as { version?: string }).version!, channel: 'release' });
+    expect(pub['status']).toBe('completed');
+
     const got = await callTool('workflow_get', { name: 'val098-defaults' });
     const def = (got as { defaults?: Record<string, unknown> }).defaults;
     expect(def?.model).toBe('sonnet');
@@ -117,9 +124,8 @@ describe('REQ-088: harness defaults bound at registration (VAL-098)', () => {
 
   it('workflow_run with no override → registered defaults are used (run proceeds, no HARNESS error)', async () => {
     // Register with defaults
-    await callTool('workflow_register', {
-      name: 'val098-run-no-override',
-      script: 'return "used defaults";',
+    // v22: run-by-name resolves `release`, so the registered version must also be published.
+    await registerPublishedVia(callTool, 'val098-run-no-override', 'return "used defaults";', {
       defaults: { model: 'sonnet', timeoutMs: 30_000 },
     });
     // Run without overrides
@@ -131,9 +137,7 @@ describe('REQ-088: harness defaults bound at registration (VAL-098)', () => {
   }, 20_000);
 
   it('workflow_run with model override → model overridden, registered timeoutMs preserved', async () => {
-    await callTool('workflow_register', {
-      name: 'val098-run-partial-override',
-      script: 'return "partial";',
+    await registerPublishedVia(callTool, 'val098-run-partial-override', 'return "partial";', {
       defaults: { model: 'sonnet', timeoutMs: 60_000 },
     });
     // Run with only model override; timeoutMs should fall back to 60_000 registered value

@@ -3,6 +3,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { runScriptVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
 
 // A minimal workflow JS that returns args.x + 1, using no agent() (pure deterministic path).
 const SIMPLE_SCRIPT = `return args.x + 1;`;
@@ -31,14 +32,19 @@ describe('E2E: full workflow run lifecycle (REQ-001, REQ-005, REQ-007)', () => {
     return JSON.parse(text);
   }
 
+  // v22 (adjudication #1 K-1/K-2): this file's `mcpCall` is JSON-RPC-shaped (method + params), while
+  // the shared fixture helper speaks the tool-shaped `(tool, args)` ToolCaller every acceptance/e2e
+  // file hand-rolls. One adapter, so the register→publish→run recipe stays in the helper.
+  const callTool: ToolCaller = (name, args) => mcpCall('tools/call', { name, arguments: args });
+
   it('workflow_run returns a runId immediately', async () => {
-    const result = await mcpCall('tools/call', { name: 'workflow_run', arguments: { script: SIMPLE_SCRIPT, args: { x: 5 } } });
+    const result = await runScriptVia(callTool, SIMPLE_SCRIPT, { args: { x: 5 } });
     expect(result.runId).toBeTruthy();
     expect(typeof result.runId).toBe('string');
   });
 
   it('workflow_result eventually returns the script return value', async () => {
-    const runResult = await mcpCall('tools/call', { name: 'workflow_run', arguments: { script: SIMPLE_SCRIPT, args: { x: 10 } } });
+    const runResult = await runScriptVia(callTool, SIMPLE_SCRIPT, { args: { x: 10 } });
     const runId = runResult.runId;
 
     // Poll until completed
@@ -56,7 +62,7 @@ describe('E2E: full workflow run lifecycle (REQ-001, REQ-005, REQ-007)', () => {
   }, 30000);
 
   it('workflow_status shows phase list', async () => {
-    const runResult = await mcpCall('tools/call', { name: 'workflow_run', arguments: { script: `phase('step-1'); return 42;`, args: {} } });
+    const runResult = await runScriptVia(callTool, `phase('step-1'); return 42;`, { args: {} });
     const runId = runResult.runId;
 
     // Wait a moment for it to start
@@ -67,7 +73,7 @@ describe('E2E: full workflow run lifecycle (REQ-001, REQ-005, REQ-007)', () => {
   }, 15000);
 
   it('workflow_list includes the submitted run', async () => {
-    const runResult = await mcpCall('tools/call', { name: 'workflow_run', arguments: { script: 'return "listed";', args: {} } });
+    const runResult = await runScriptVia(callTool, 'return "listed";', { args: {} });
     const runId = runResult.runId;
 
     const list = (await mcpCall('tools/call', { name: 'workflow_list', arguments: {} })).result;

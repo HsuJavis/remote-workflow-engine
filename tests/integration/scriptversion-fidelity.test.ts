@@ -13,13 +13,23 @@
 // so there is no "second, distinct v2 row" to publish) — MODULE-level red on `catalog.publish is
 // not a function`, and even once stubbed, `run-manager.ts:391/635` resolve via the deleted
 // `catalog.get()`'s "newest row" semantics, not a literal 'v1'/'v2' pin.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { McpFacade } from '../../src/mcp-facade.js';
 import { RunManager } from '../../src/run-manager.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
 
 const CLOCK = new FixedClock(new Date('2024-01-01T00:00:00Z'));
+
+// v22 (adjudication #2, L-6): this case asserts LITERAL 'v1'/'v2'. `new RunManager()` with no
+// `workRoot` defaults its catalog to a SQLite file under `os.tmpdir()` that is SHARED by every test
+// file and SURVIVES across suite runs, so a fixed workflow name accumulates versions there (observed:
+// 'v9', 'v11'). A private workRoot per test is what makes a literal-version oracle meaningful.
+let workRoot: string;
+afterEach(() => { rmSync(workRoot, { recursive: true, force: true }); });
 
 async function pollUntilSettled(facade: McpFacade, runId: string) {
   let s = await facade.workflow_status({ runId });
@@ -32,8 +42,9 @@ async function pollUntilSettled(facade: McpFacade, runId: string) {
 
 describe('scriptVersion fidelity across a workflow update (IT-011, D-V7, v22 rewrite)', () => {
   it('two runs after two published versions report literal "v1"/"v2" — not merely "different"', async () => {
+    workRoot = mkdtempSync(join(tmpdir(), 'rwe-it011-'));
     const store = new InMemoryRunStore(CLOCK);
-    const runManager = new RunManager({ store, clock: CLOCK });
+    const runManager = new RunManager({ store, clock: CLOCK, workRoot });
     const facade = new McpFacade({ clock: CLOCK, store, runManager });
 
     const { version: v1 } = await runManager.catalog.register('sv-fidelity', `return 'version-one';`);

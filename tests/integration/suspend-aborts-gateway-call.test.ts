@@ -22,6 +22,7 @@
 // by reading agent-executor.ts) — so receivedSignal below is always undefined today.
 import { describe, it, expect } from 'vitest';
 import { RunManager } from '../../src/run-manager.js';
+import { startScript } from '../helpers/workflow-fixtures.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
 
 describe('workflow_suspend aborts an in-flight gateway call (IT-019, D-F9a)', () => {
@@ -51,7 +52,7 @@ describe('workflow_suspend aborts an in-flight gateway call (IT-019, D-F9a)', ()
     };
     const mgr = new RunManager({ gateway });
 
-    const runId = await mgr.start({ script: `return await agent('slow-call');` });
+    const runId = await startScript(mgr, `return await agent('slow-call');`);
 
     // Deterministic: wait for the agent() call to have actually reached the gateway (not merely for
     // status==='running', which flips before the sandbox child even boots) before suspending — avoids

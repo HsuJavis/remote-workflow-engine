@@ -19,6 +19,7 @@ import { composeConfig } from '../../src/main.js';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 import { FakeMcpProbe } from '../../src/mcp-probe.js';
 import type { AliasMap } from '../../src/gateway/client.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const ALIASES: AliasMap = {
   default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
@@ -94,8 +95,7 @@ describe('provisioned MCP by-name injection reaches options.mcpServers with secr
     expect(prov.error).toBeUndefined();
 
     // A workflow whose agent explicitly references that MCP by name.
-    const run = await mcpCall('workflow_run', {
-      script: "return agent('use the provisioned search tool', { mcp: ['demo-search'], model: 'local' });",
+    const run = await runScriptVia(mcpCall, "return agent('use the provisioned search tool', { mcp: ['demo-search'], model: 'local' });", {
     });
     const runId = run.runId as string;
     let done = false;

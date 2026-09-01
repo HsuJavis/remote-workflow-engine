@@ -47,33 +47,66 @@ const FULL: WorkflowOwnerView = {
   script: 'return "the actual script bytes";',
 };
 
+/** The non-owner key set REQUIREMENT-side, transcribed from REQ-100's acceptance rather than read
+ *  back out of the module under test (v22 Rule 1 — and v22 adjudication #2 L-3, which settles that
+ *  `channels` and the declared `params` contract ARE non-owner-visible):
+ *    "the response omits the script body while still returning everything a user legitimately needs —
+ *     name, version, channel, purpose, declared parameter contract (REQ-090), owner, and how to report
+ *     a problem against it (REQ-095) … a masked response says the script is withheld".
+ *  Mapping, one entry per clause: name→`name`, version→`version`, channel→`channels` (+ this
+ *  fixture's own `release`/`beta` pointers), purpose→`description`, parameter contract→`params`
+ *  (+ its `knobs` sub-object — the contract IS the knobs, so a `params` that flattened to nothing
+ *  would satisfy the letter and not the clause), owner→`owner`, report-a-problem→`reportProblem`,
+ *  withheld-not-absent→`scriptWithheld`. `validation.ok` is REQ-099's "staleness visible on every
+ *  read" (its `errors` detail is owner-only — the next case pins that). */
+const REQ_100_NON_OWNER_KEYS = [
+  'channels', 'channels.beta', 'channels.release',
+  'description',
+  'name',
+  'owner',
+  'params', 'params.knobs',
+  'reportProblem',
+  'scriptWithheld',
+  'validation', 'validation.ok',
+  'version',
+];
+
 describe('projectWorkflowForRead — non-owner branch (DES-115, UT-104, v22 Rule 1)', () => {
-  it('the flattened key set is EXACTLY EXPECTED_NON_OWNER_KEYS — a new leaked field OR a missing scriptWithheld both fail', () => {
+  it('the flattened key set is EXACTLY what REQ-100 says a non-owner gets — a new leaked field OR a missing scriptWithheld both fail', () => {
     const resp = projectWorkflowForRead(FULL, false);
-    expect(Object.keys(deepFlatten(resp)).sort()).toEqual([...EXPECTED_NON_OWNER_KEYS].sort());
+    expect(Object.keys(deepFlatten(resp)).sort()).toEqual([...REQ_100_NON_OWNER_KEYS].sort());
+  });
+
+  it('the module\'s advertised EXPECTED_NON_OWNER_KEYS still names exactly the top-level keys it emits', () => {
+    // The src-side constant is the advertised contract; it lists top-level names plus the one nested
+    // leaf it cares about (`validation.ok`). Pinning it against the response's OWN top-level keys
+    // keeps the advertised list from drifting away from the projection beside it.
+    const resp = projectWorkflowForRead(FULL, false);
+    const advertisedTopLevel = [...EXPECTED_NON_OWNER_KEYS].filter((k) => !k.includes('.'));
+    expect(Object.keys(resp).sort()).toEqual(advertisedTopLevel.sort());
   });
 
   it('validation.errors is ABSENT for a non-owner (owner-only detail); validation.ok is present', () => {
-    const resp = projectWorkflowForRead(FULL, false) as Record<string, unknown>;
+    const resp = projectWorkflowForRead(FULL, false) as unknown as Record<string, unknown>;
     const validation = resp['validation'] as Record<string, unknown>;
     expect(validation).toEqual({ ok: false });
     expect('errors' in validation).toBe(false);
   });
 
   it('scriptWithheld:true is a DISTINCT key — the response never carries a `script` key of any shape', () => {
-    const resp = projectWorkflowForRead(FULL, false) as Record<string, unknown>;
+    const resp = projectWorkflowForRead(FULL, false) as unknown as Record<string, unknown>;
     expect(resp['scriptWithheld']).toBe(true);
     expect('script' in resp).toBe(false);
   });
 
   it('phases/skeleton are script-derived and are NOT on the non-owner allowlist', () => {
-    const resp = projectWorkflowForRead(FULL, false) as Record<string, unknown>;
+    const resp = projectWorkflowForRead(FULL, false) as unknown as Record<string, unknown>;
     expect('phases' in resp).toBe(false);
     expect('skeleton' in resp).toBe(false);
   });
 
   it('owner/reportProblem/params ARE on the non-owner allowlist (REQ-100 legitimate-need clauses)', () => {
-    const resp = projectWorkflowForRead(FULL, false) as Record<string, unknown>;
+    const resp = projectWorkflowForRead(FULL, false) as unknown as Record<string, unknown>;
     expect(resp['owner']).toBe('owner@example.com');
     expect(resp['reportProblem']).toBeTruthy();
     expect(resp['params']).toBeDefined();
@@ -82,7 +115,7 @@ describe('projectWorkflowForRead — non-owner branch (DES-115, UT-104, v22 Rule
 
 describe('projectWorkflowForRead — owner branch (DES-115, UT-104)', () => {
   it('the owner gets the script back byte-identically, plus validation.errors', () => {
-    const resp = projectWorkflowForRead(FULL, true) as Record<string, unknown>;
+    const resp = projectWorkflowForRead(FULL, true) as unknown as Record<string, unknown>;
     expect(resp['script']).toBe(FULL.script);
     expect((resp['validation'] as Record<string, unknown>)['errors']).toEqual(FULL.validation.errors);
   });

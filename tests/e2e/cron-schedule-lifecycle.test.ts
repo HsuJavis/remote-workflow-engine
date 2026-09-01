@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -39,9 +40,13 @@ async function mcpCall(name: string, args: Record<string, unknown> = {}) {
 
 // Registers a named workflow in the catalog (D-V2I-3) — the ONLY way a schedule/trigger target
 // becomes resolvable; a bare `workflow_run({name, script})` never persists to the catalog.
+// v22 (adjudication #1 K-1): and registration alone is no longer enough — a freshly registered
+// version is on NO channel, so every scheduled firing failed to start with
+// `CHANNEL_UNPUBLISHED: release` while these schedule-bookkeeping assertions stayed green. Register
+// AND publish, via the shared helper (which throws on either half failing, preserving the old
+// `expect(r.error).toBeUndefined()` oracle).
 async function registerWorkflow(name: string, script: string) {
-  const r = await mcpCall('workflow_register', { name, script });
-  expect(r['error']).toBeUndefined();
+  await registerPublishedVia(mcpCall, name, script);
 }
 
 describe('Cron schedule fires a run (REQ-015, E2E-004)', () => {

@@ -63,6 +63,15 @@ describe('mcp_provision end to end (REQ-017): provision once, later run referenc
   });
 
   it('a workflow referencing an UNPROVISIONED MCP name gets a clear MCP_NOT_PROVISIONED error, not a silent no-op', async () => {
+    // NOT MIGRATED (reported to the orchestrator). This fixture's script INTENTIONALLY names an
+    // unprovisioned MCP, which is exactly what v22's REQ-099 `validateScriptEntry` now refuses at
+    // `workflow_register` (ADR-013) — so the shared helper throws inside its own register step
+    // (observed: `registerPublishedVia: workflow_register(...) did not return a version
+    // (MCP_NOT_PROVISIONED: Unprovisioned MCP name: never-provisioned)`) and this call site cannot
+    // use it. The oracle below sanctions exactly two surfaces (submission, or a later run-level
+    // error); registration is a THIRD, and widening the matched surface is an orchestrator call, not
+    // a sweep call. The registration half already has its own green oracle in
+    // `tests/integration/registration-enforcement.test.ts:48`. Left raw on purpose.
     const run = await callTool('workflow_run', { script: `return agent('use tool', { mcp: ['never-provisioned'] });` }) as { runId?: string };
     const runId = run.runId ?? '';
     let finalStatus: unknown;

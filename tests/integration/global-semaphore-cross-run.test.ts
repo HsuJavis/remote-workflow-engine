@@ -8,6 +8,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { RunManager } from '../../src/run-manager.js';
 import { createSemaphore } from '../../src/agent-semaphore.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
+import { startScript } from '../helpers/workflow-fixtures.js';
 
 async function pollUntilSettled(mgr: RunManager, runId: string) {
   let view = await mgr.status(runId);
@@ -49,8 +50,8 @@ describe('global agent semaphore bounds concurrency ACROSS runs (V2 / D-DOS)', (
       await parallel(thunks);
       return 'done';
     `;
-    const runA = await mgr.start({ script, budget: null });
-    const runB = await mgr.start({ script, budget: null });
+    const runA = await startScript(mgr, script, { budget: null });
+    const runB = await startScript(mgr, script, { budget: null });
 
     const [va, vb] = await Promise.all([pollUntilSettled(mgr, runA), pollUntilSettled(mgr, runB)]);
     expect(va.status).toBe('completed');

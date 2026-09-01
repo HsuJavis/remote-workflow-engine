@@ -13,6 +13,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RunManager } from '../../src/run-manager.js';
+import { registerPublished, startScript } from '../helpers/workflow-fixtures.js';
 import { WorkflowCatalog } from '../../src/workflow-catalog.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
@@ -42,7 +43,7 @@ describe('onTerminal hook + admission counter (v8 Slice 4, REQ-052/054)', () => 
       store: new InMemoryRunStore(CLOCK), clock: CLOCK, catalog: new WorkflowCatalog(workRoot, CLOCK),
       spawner: echo, onTerminal: (runId, status) => { events.push({ runId, status }); },
     });
-    const runId = await mgr.start({ script: `return 1;` });
+    const runId = await startScript(mgr, `return 1;`);
     await settled(mgr, runId);
     await new Promise((r) => setTimeout(r, 30)); // let the fire-and-forget onTerminal settle
     expect(events).toEqual([{ runId, status: 'completed' }]); // once, terminal only (not 'running')
@@ -55,7 +56,7 @@ describe('onTerminal hook + admission counter (v8 Slice 4, REQ-052/054)', () => 
       store: new InMemoryRunStore(CLOCK), clock: CLOCK, catalog: new WorkflowCatalog(workRoot, CLOCK),
       spawner: blocker, onTerminal: (runId, status) => { events.push({ runId, status }); },
     });
-    const runId = await mgr.start({ script: `const a = await agent('A'); return a;` });
+    const runId = await startScript(mgr, `const a = await agent('A'); return a;`);
     for (let i = 0; i < 50 && (await mgr.status(runId)).status !== 'running'; i++) await new Promise((r) => setTimeout(r, 20));
     await mgr.stop(runId);
     await new Promise((r) => setTimeout(r, 30));
@@ -65,12 +66,12 @@ describe('onTerminal hook + admission counter (v8 Slice 4, REQ-052/054)', () => 
   it('REQ-052 a composite parent fires exactly ONE onTerminal, not one per nested workflow()', async () => {
     const events: Array<{ runId: string; status: RunStatus }> = [];
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    await catalog.register('leaf', `return 'L';`);
+    await registerPublished(catalog, 'leaf', `return 'L';`);
     const mgr = new RunManager({
       store: new InMemoryRunStore(CLOCK), clock: CLOCK, catalog, spawner: echo, maxWorkflowDepth: 2,
       onTerminal: (runId, status) => { events.push({ runId, status }); },
     });
-    const runId = await mgr.start({ script: `await workflow('leaf', {}); await workflow('leaf', {}); return 'done';` });
+    const runId = await startScript(mgr, `await workflow('leaf', {}); await workflow('leaf', {}); return 'done';`);
     await settled(mgr, runId);
     await new Promise((r) => setTimeout(r, 30));
     expect(events).toEqual([{ runId, status: 'completed' }]); // exactly one — nested runs never _transition
@@ -82,16 +83,16 @@ describe('onTerminal hook + admission counter (v8 Slice 4, REQ-052/054)', () => 
       store: new InMemoryRunStore(CLOCK), clock: CLOCK, catalog: new WorkflowCatalog(workRoot, CLOCK),
       spawner: blocker, maxConcurrentRuns: 1,
     });
-    const first = await mgr.start({ script: `const a = await agent('A'); return a;` }); // occupies the 1 slot
+    const first = await startScript(mgr, `const a = await agent('A'); return a;`); // occupies the 1 slot
     for (let i = 0; i < 50 && (await mgr.status(first)).status !== 'running'; i++) await new Promise((r) => setTimeout(r, 20));
 
     // Second concurrent start must be rejected before any durable work.
-    await expect(mgr.start({ script: `return 2;` })).rejects.toMatchObject({ code: 'RUN_ADMISSION_LIMIT' });
+    await expect(startScript(mgr, `return 2;`)).rejects.toMatchObject({ code: 'RUN_ADMISSION_LIMIT' });
 
     // Free the slot; a subsequent start now succeeds.
     await mgr.stop(first);
     await new Promise((r) => setTimeout(r, 20));
-    const third = await mgr.start({ script: `return 3;` });
+    const third = await startScript(mgr, `return 3;`);
     expect(typeof third).toBe('string');
   }, 20000);
 });

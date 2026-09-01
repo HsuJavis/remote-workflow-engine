@@ -18,6 +18,7 @@ import Database from 'better-sqlite3';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { TokenStore } from '../../src/auth/token-store.js';
+import { registerPublishedVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
 
 let authServer: Server;
 let openServer: Server;
@@ -57,6 +58,12 @@ async function mintBearer(workRoot: string, port: number, email: string): Promis
   return token;
 }
 
+/** A ToolCaller bound to one server + one bearer — the identity that registers a workflow must be
+ *  the identity that publishes it (v22 gates `workflow_publish` on ownership). */
+function callerFor(server: Server, bearer?: string): ToolCaller {
+  return (name, args) => toolCall(server, name, args as Record<string, unknown>, bearer);
+}
+
 async function toolCall(server: Server, name: string, args: Record<string, unknown>, bearer?: string): Promise<Record<string, unknown>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
@@ -73,6 +80,8 @@ describe('REQ-100: workflow_get masks the script for non-owners (auth-enabled, I
     const ownerToken = await mintBearer(authTmpDir, authServer.port, 'it089-owner@example.com');
     const reg = await toolCall(authServer, 'workflow_register', { name: 'it089-owned', script: `return 'secret-script-body';` }, ownerToken);
     expect(reg['error']).toBeUndefined();
+    // v22: registration is not publication — `workflow_get({name})` resolves the `release` channel.
+    await toolCall(authServer, 'workflow_publish', { name: 'it089-owned', version: `v${reg['version']}`, channel: 'release' }, ownerToken);
 
     const got = await toolCall(authServer, 'workflow_get', { name: 'it089-owned' }, ownerToken);
     expect((got['result'] as { script?: string } | undefined)?.script).toBe(`return 'secret-script-body';`);
@@ -80,7 +89,7 @@ describe('REQ-100: workflow_get masks the script for non-owners (auth-enabled, I
 
   it('a NON-OWNER bearer gets a masked response with NO script anywhere in it (top-level or nested)', async () => {
     const ownerToken = await mintBearer(authTmpDir, authServer.port, 'it089-owner2@example.com');
-    await toolCall(authServer, 'workflow_register', { name: 'it089-owned2', script: `return 'never-leak-me';` }, ownerToken);
+    await registerPublishedVia(callerFor(authServer, ownerToken), 'it089-owned2', `return 'never-leak-me';`);
 
     const otherToken = await mintBearer(authTmpDir, authServer.port, 'it089-stranger@example.com');
     const got = await toolCall(authServer, 'workflow_get', { name: 'it089-owned2' }, otherToken);
@@ -93,7 +102,7 @@ describe('REQ-100: workflow_get masks the script for non-owners (auth-enabled, I
 
   it('supplying {principal:"<owner-email>"} in the arguments does NOT unmask (args.principal barred, ADR-012)', async () => {
     const ownerToken = await mintBearer(authTmpDir, authServer.port, 'it089-owner3@example.com');
-    await toolCall(authServer, 'workflow_register', { name: 'it089-owned3', script: `return 'still-hidden';` }, ownerToken);
+    await registerPublishedVia(callerFor(authServer, ownerToken), 'it089-owned3', `return 'still-hidden';`);
 
     const otherToken = await mintBearer(authTmpDir, authServer.port, 'it089-stranger2@example.com');
     const got = await toolCall(authServer, 'workflow_get', { name: 'it089-owned3', principal: 'it089-owner3@example.com' }, otherToken);
@@ -102,7 +111,7 @@ describe('REQ-100: workflow_get masks the script for non-owners (auth-enabled, I
 
   it('workflow_list also serves masked (public) views while auth is on, for every entry', async () => {
     const ownerToken = await mintBearer(authTmpDir, authServer.port, 'it089-owner4@example.com');
-    await toolCall(authServer, 'workflow_register', { name: 'it089-listed', script: `return 'list-secret';` }, ownerToken);
+    await registerPublishedVia(callerFor(authServer, ownerToken), 'it089-listed', `return 'list-secret';`);
 
     const otherToken = await mintBearer(authTmpDir, authServer.port, 'it089-stranger3@example.com');
     const listed = await toolCall(authServer, 'workflow_list', {}, otherToken);
@@ -132,6 +141,7 @@ describe('REQ-100: auth disabled ⇒ pre-v22 surface, byte-for-byte (IT-089)', (
   it('with auth OFF, workflow_get returns the full script to anyone (no bearer needed)', async () => {
     const reg = await toolCall(openServer, 'workflow_register', { name: 'it089-open', script: `return 'open-script';` });
     expect(reg['error']).toBeUndefined();
+    await toolCall(openServer, 'workflow_publish', { name: 'it089-open', version: `v${reg['version']}`, channel: 'release' });
     const got = await toolCall(openServer, 'workflow_get', { name: 'it089-open' });
     expect((got['result'] as { script?: string } | undefined)?.script).toBe(`return 'open-script';`);
   });

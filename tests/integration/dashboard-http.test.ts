@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { runScriptVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -21,17 +22,18 @@ afterAll(async () => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-async function submitRun(script: string): Promise<string> {
+const callTool: ToolCaller = async (name, args) => {
   const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0', id: 1, method: 'tools/call',
-      params: { name: 'workflow_run', arguments: { script } },
-    }),
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
   });
   const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
-  const env = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { runId?: string };
+  return JSON.parse(body.result?.content?.[0]?.text ?? '{}');
+};
+
+async function submitRun(script: string): Promise<string> {
+  const env = await runScriptVia(callTool, script) as { runId?: string };
   return env.runId ?? '';
 }
 

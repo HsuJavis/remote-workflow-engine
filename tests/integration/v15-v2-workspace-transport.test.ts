@@ -11,6 +11,7 @@ import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
 import { FixedClock } from '../../src/clock.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let base: string;
@@ -40,8 +41,7 @@ const b64 = (s: string) => Buffer.from(s).toString('base64');
 describe('v1.5+v2 workspace transport (REQ-022..026)', () => {
   it('seed → recursive artifacts (+sha256, .claude stripped) → windowed artifact_get (escape denied) → purge', async () => {
     const content = 'hello from seed\n';
-    const run = await tool('workflow_run', {
-      script: "return 'ok';",
+    const run = await runScriptVia(tool, "return 'ok';", {
       seed: [
         { path: 'seeded.txt', contentB64: b64(content) },
         { path: 'src/app.py', contentB64: b64('print(1)\n') },
