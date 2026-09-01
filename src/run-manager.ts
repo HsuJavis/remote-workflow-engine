@@ -32,13 +32,16 @@ import { createSemaphore, type Semaphore, type SemaphoreGauge } from './agent-se
 import { SandboxHost } from './sandbox/host.js';
 import type { AgentSpawner, AgentTypeDef } from './agent-executor.js';
 import { AgentExecutor } from './agent-executor.js';
-import { redact } from './secret-resolver.js';
+import { redact, hasSecretMarker } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
 import { ResumeCache, MISS, type ResumePlan } from './resume-cache.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
 import type { GatewayClient, GatewayConfig } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
+import { validateUserOverrides, validateDeclaredArgs, canonicalContract, isKnownAlias, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
+import { defaultRunParams, mergeRunParams, type RunParams } from './params/resolve.js';
+import type { HarnessDefaults } from './harness-defaults.js';
 
 // Default gateway config (REQ-004) for the gateway RunManager builds when no GatewayClient is
 // injected — routes through the single-source DEFAULT_ALIASES table (src/default-aliases.ts).
@@ -89,9 +92,25 @@ export interface RunManagerDeps {
   /** v14 (REQ-083, DES-088, TASK-082): inject to enable redact-at-capture on all transcript/
    *  snapshot/journal persist sinks. Omitted → no redaction (legacy/test callers unchanged). */
   secretValueProvider?: SecretValueProvider;
+  /** v21 (ARCH-066 inv-6, DES-104, TASK-100): engine ceilings bounding the USER-override rung
+   *  (ADR-005) — refuse, never clamp. Per-key fail-closed defaults when a key is absent from config
+   *  (composeConfig() forwards these three from rwe.config.json; see src/main.ts). */
+  ceilings?: Partial<Ceilings>;
+  /** v21 Gate 8 send-back (review §4 B1, adopted S-1): the configured model-alias table's key set,
+   *  same convention as WorkflowCatalog's `aliasNames` (server.ts:1141) — validateUserOverrides'
+   *  admission-time UNKNOWN_ALIAS check against it. Omitted/empty = D-AUTH-5-B (no configured
+   *  aliases means every alias passes; the gateway itself is the fail point). */
+  aliasNames?: Set<string>;
 }
 
 const TERMINAL: RunStatus[] = ['stopped', 'completed', 'failed'];
+
+/** v21 (DES-101): wraps a params/contract.ts rejection into the codebase's one Error factory,
+ *  carrying the machine-shaped `detail` object as an extra (non-ErrEnvelope) property — read by
+ *  any caller that wants it, ignored by ones (like McpFacade.toErrEnvelope) that don't. */
+function paramCodedError(err: ParamErr): Error {
+  return Object.assign(codedError(err.code, err.message), { detail: err.detail });
+}
 
 
 function toErr(err: unknown): { code: string; message: string } {
@@ -143,6 +162,9 @@ interface RunEntry {
   seedRef?: RunStatusView['seedRef'];
   /** v14 (REQ-082, DES-087): the seedManifestRef sha used, overlaid onto RunStatusView by _mergeLive. */
   seedManifestRef?: string;
+  /** v21 (ARCH-066, DES-104, TASK-100): the run-immutable admission-time parameter snapshot —
+   *  computed once in start() (or rehydrated in _requireLive() on resume), never re-resolved. */
+  effectiveParams: RunParams;
 }
 
 export class RunManager {
@@ -166,6 +188,10 @@ export class RunManager {
   private readonly _seedFetcher: SeedRefFetcher;
   /** v14 (REQ-083, DES-088, TASK-082): redact-at-capture for snapshot/journal sinks. */
   private readonly _secretValueProvider: SecretValueProvider | undefined;
+  /** v21 (ARCH-066, DES-104, TASK-100): engine ceilings bounding the USER-override rung. */
+  private readonly _ceilings: Ceilings;
+  /** v21 Gate 8 send-back (review §4 B1): configured alias-name set for admission-time UNKNOWN_ALIAS. */
+  private readonly _aliasNames: Set<string>;
   private readonly _runs = new Map<string, RunEntry>();
 
   /** v8 Slice 1: config values are positive integers — reject bad config loudly at construction
@@ -199,6 +225,16 @@ export class RunManager {
     this._seedRefAllowlist = deps.seedRefAllowlist ? normalizeSeedRefAllowlist(deps.seedRefAllowlist) : [];
     this._seedFetcher = deps.seedFetcher ?? new HardenedSeedRefFetcher();
     this._secretValueProvider = deps.secretValueProvider;
+    // v21 (ARCH-066 inv-6): per-key fail-closed default, not "whole block present or defaults".
+    this._ceilings = {
+      maxTimeoutMs: deps.ceilings?.maxTimeoutMs ?? DEFAULT_CEILINGS.maxTimeoutMs,
+      maxAppendPromptBytes: deps.ceilings?.maxAppendPromptBytes ?? DEFAULT_CEILINGS.maxAppendPromptBytes,
+      maxEffort: deps.ceilings?.maxEffort ?? DEFAULT_CEILINGS.maxEffort,
+    };
+    // v21 Gate 8 send-back (review §4 B1): mirrors WorkflowCatalog's aliasNames convention
+    // (server.ts) — undefined/omitted -> empty Set (D-AUTH-5-B: no configured aliases means the
+    // check is a no-op, same as before this fix, never a false-positive UNKNOWN_ALIAS).
+    this._aliasNames = deps.aliasNames ?? new Set();
   }
 
   /** v8 Slice 4 (REQ-054): count of live (non-terminal) top-level runs in this process — the
@@ -246,7 +282,11 @@ export class RunManager {
     }
   }
 
-  async start(spec: RunSpec): Promise<string> {
+  /** `overrides` (v21, ARCH-066, DES-104) is an ARGUMENT, never a RunSpec field — persisting it on
+   *  RunSpec (read back wholesale by getSpec() on resume) would be a second unredacted sink plus a
+   *  standing temptation to re-merge on resume. The redacted `effectiveParams` snapshot (below) is
+   *  the single durable representation. */
+  async start(spec: RunSpec, overrides?: unknown): Promise<string> {
     // v14 (REQ-085 / DES-090, TASK-084): top rung — pure request-shape check before any durable work.
     //   Pinned first: SCRIPT_SHA_WITHOUT_SCRIPT → SCRIPT_SHA_MISMATCH → (admission) → …
     if (spec.scriptSha256 !== undefined) {
@@ -345,14 +385,68 @@ export class RunManager {
     let script = spec.script ?? '';
     let scriptVersion = 1;
     let resolvedVersion = 'v1'; // catalog version string actually executed (D-V7) — threaded into RunStore.createRun
+    let registeredContract: ParamContract | undefined;
+    let registeredDefaults: HarnessDefaults | undefined;
     if (spec.name && !spec.script) {
       const registered = await this._catalog.get(spec.name); // throws CatalogNotFoundError — caught by SubmissionValidator pre-run
       script = registered.script;
       resolvedVersion = registered.version;
       scriptVersion = Number(registered.version.replace(/^v/, '')) || 1;
+      registeredContract = registered.params as ParamContract | undefined;
+      registeredDefaults = registered.defaults;
     }
 
-    const runId = await this._store.createRun(spec, resolvedVersion);
+    // v21 (ARCH-066 inv-6, DES-104, TASK-100): admission rung — ONE task by decree (validate +
+    // snapshot + config wiring together, so this bug class doesn't ship a fifth time). Validates
+    // `overrides`/declared `args` against the workflow's tunable-parameter contract BEFORE any
+    // durable work (createRun/runWorkspace/sandbox spawn) — an ad-hoc inline script (no registered
+    // contract) is bound by the canonical 4-knob contract, same as a registered script with no
+    // `params` block (DES-101). Order pinned: overrides -> declared args -> merge.
+    const contract = registeredContract ?? canonicalContract();
+    const overridesResult = validateUserOverrides(contract, overrides, this._aliasNames, this._ceilings);
+    if (!overridesResult.ok) throw paramCodedError(overridesResult);
+    const argsResult = validateDeclaredArgs(contract, spec.args);
+    if (!argsResult.ok) throw paramCodedError(argsResult);
+    // defaultRunParams is the ONLY no-overrides producer (DES-104) — the callers that never supply
+    // `overrides` (schedule/webhook/chain triggers) must not each reach for `overrides ?? {}`.
+    const effectiveParams: RunParams = overrides === undefined
+      ? defaultRunParams(registeredDefaults)
+      : mergeRunParams(registeredDefaults, overridesResult.value);
+    // v21 Gate 8 RE-REVIEW (review §R2 (b), R-G2 HIGH): validateUserOverrides only re-checks a
+    // CALLER-SUPPLIED overrides.model; a registered defaults.model that was valid at registration
+    // but has since fallen out of the configured alias table (a config change between restarts)
+    // was never re-examined — every un-overridden submission using it was silently admitted. Same
+    // UNKNOWN_ALIAS code, same "before any durable work" placement as the override-rung check.
+    if (effectiveParams.model !== undefined && !isKnownAlias(effectiveParams.model, this._aliasNames)) {
+      throw paramCodedError({
+        ok: false,
+        code: 'UNKNOWN_ALIAS',
+        message: `model is not a known alias: ${effectiveParams.model}`,
+        detail: { param: 'model', supplied: effectiveParams.model, allowed: { enum: [...this._aliasNames] } },
+      });
+    }
+    // v21 Gate 8 RE-REVIEW #6 (P6-2, review §T5/§T6): mirrors R-G2 one field over — F2
+    // (validateUserOverrides in contract.ts) only frame-checks a CALLER-SUPPLIED
+    // overrides.appendPrompt; a registered defaults.appendPrompt origin reaches this point
+    // unchecked on every no-overrides submission. Re-check the EFFECTIVE post-merge value before
+    // any durable work, same shared FRAME_CLOSE_FORGERY constant, reported by size only (DES-101
+    // row 6 discipline: never echo caller/author text).
+    if (typeof effectiveParams.appendPrompt === 'string' && FRAME_CLOSE_FORGERY.test(effectiveParams.appendPrompt)) {
+      throw paramCodedError({
+        ok: false,
+        code: 'PARAM_OUT_OF_RANGE',
+        message: 'appendPrompt cannot contain the user-instructions frame close delimiter',
+        detail: { param: 'appendPrompt', suppliedBytes: Buffer.byteLength(effectiveParams.appendPrompt, 'utf8') },
+      });
+    }
+    // DES-088/ARCH-056 (REQ-083 sink-completeness sweep): this is a NEW persist sink — redact
+    // BEFORE the durable write, same convention as the journal/snapshot sinks below. The live
+    // RunEntry (below) keeps the unredacted value (dispatch never sees a redaction marker).
+    const persistedParams = this._secretValueProvider
+      ? (redact(effectiveParams, this._secretValueProvider.entries()) as RunParams)
+      : effectiveParams;
+
+    const runId = await this._store.createRun(spec, resolvedVersion, persistedParams);
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
     // v13 REQ-080 (DES-083, TASK-078): engine-pull seedRef — fetch the tree AFTER createRun, feed the
     // fetched entries into the EXISTING seedManifest materialize branch below (guard-parity is structural:
@@ -416,6 +510,7 @@ export class RunManager {
       nestedFrames: new Map(),
       nestedFrameSeq: 0,
       workflowNodes: [],
+      effectiveParams,
     };
     this._runs.set(runId, entry);
     entry.seedRef = seedRefView; // v13: overlaid onto RunStatusView by _mergeLive (present on success AND failure)
@@ -445,6 +540,22 @@ export class RunManager {
     // v8 Defer A (REQ-060): `interrupted` (crashed while running) is resumable, like suspended/stopped.
     if (entry.status !== 'suspended' && entry.status !== 'stopped' && entry.status !== 'interrupted') {
       throw new IllegalTransitionError(entry.status, 'running');
+    }
+    // v21 Gate 8 RE-REVIEW (review §R2 (a), R-G1 HIGH): `_requireLive` never restores a redaction
+    // marker (see comment there) — any rehydrated snapshot that still carries one is refused typed,
+    // never dispatched, so a resumed run is always either byte-identical to admission or a typed
+    // refusal, never a silent secret-marker substitution.
+    if (hasSecretMarker(entry.effectiveParams)) {
+      throw codedError('PARAM_SECRET_UNAVAILABLE', `Run ${runId}'s admission-time parameters carry a redaction marker that resume never restores (ARCH-066 inv-5 forbids dispatching it)`);
+    }
+    // v21 Gate 8 RE-REVIEW #5 (review §S7 F2, durable half): `validateUserOverrides` (contract.ts)
+    // refuses this shape AT ADMISSION, but a row admitted before that guard existed could already
+    // carry it in the persisted snapshot — resume must not silently re-dispatch a forged frame-close
+    // delimiter any more than it silently re-dispatches an unrestorable secret marker (same "refuse,
+    // never dispatch" discipline as the check above). Shares contract.ts's exported FRAME_CLOSE_FORGERY
+    // pattern so the two refusal sites can never drift onto different shapes.
+    if (typeof entry.effectiveParams.appendPrompt === 'string' && FRAME_CLOSE_FORGERY.test(entry.effectiveParams.appendPrompt)) {
+      throw codedError('PARAM_OUT_OF_RANGE', `Run ${runId}'s admission-time appendPrompt carries the user-instructions frame close delimiter and cannot be resumed`);
     }
     const newScript = script ?? entry.script;
     const cachePlan = ResumeCache.build(entry.journal, newScript);
@@ -519,13 +630,26 @@ export class RunManager {
     // script from the catalog the SAME way start() does, or the resumed run executes an empty script
     // and returns undefined. (Pre-Defer-A, no test covered a named-workflow restart-resume.)
     let script = spec.script ?? '';
+    let registeredDefaults: HarnessDefaults | undefined;
     if (spec.name && !spec.script) {
       const registered = await this._catalog.get(spec.name); // throws CatalogNotFoundError — same as start()
       script = registered.script;
+      registeredDefaults = registered.defaults;
     }
     // v8 Defer A (REQ-059): read the persisted journal back so a run resumed in a fresh process
     // replays its settled agent()/workflow() calls from cache instead of re-running them live.
     const persistedJournal = await this._store.getJournal(runId);
+    // v21 (ARCH-066, DES-104): resume reads the PINNED admission snapshot, never re-resolving from
+    // the current catalog row — a legacy pre-v21 run (effective_params NULL) falls back to
+    // defaultRunParams(registered.defaults), today's behaviour, never a crash.
+    // v21 Gate 8 RE-REVIEW (review §R2 (a), R-G1 HIGH — supersedes the deleted `unredactBestEffort`):
+    // the persisted copy is redact-at-capture (persist-only, see start()) and is NEVER restored —
+    // blindly expanding any `‹secret:NAME›`-shaped substring back to the live secret value made the
+    // marker grammar itself a secret-dereference primitive (an attacker who only guessed the public
+    // marker spelling, never possessed the secret, got it substituted into a dispatched prompt on
+    // resume). If a marker survives in the snapshot, `resume()` below refuses typed instead —
+    // "byte-identical to admission, or a typed refusal" never "silently dispatch the marker".
+    const effectiveParams = (await this._store.getEffectiveParams(runId)) ?? defaultRunParams(registeredDefaults);
 
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
     const guard = new RunGuard({ concurrency: this._concurrency, budget: spec.budget ?? null });
@@ -556,6 +680,7 @@ export class RunManager {
       nestedFrames: new Map(),
       nestedFrameSeq: 0,
       workflowNodes: [],
+      effectiveParams,
     };
     this._runs.set(runId, entry);
     return entry;
@@ -743,6 +868,10 @@ export class RunManager {
             opts: key.opts,
             workspace: entry.workspace,
             signal: entry.abortController.signal,
+            // v21 (ARCH-068, DES-105, TASK-101): the run-immutable admission-time snapshot — one
+            // per run (incl. nested workflow() frames, which share the parent's entry), never
+            // re-resolved per call.
+            runParams: entry.effectiveParams,
           }),
         );
         const value = outcome.kind === 'null' ? null : outcome.value;

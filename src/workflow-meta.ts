@@ -3,6 +3,7 @@
 // register), the workflow_get MCP tool, and the dashboard's workflow-card drill-in.
 import { runInNewContext } from 'node:vm';
 import { checkMeta } from './sandbox/guards.js';
+import { parseParamContract, type ParamContract, type Err as ParamContractErr } from './params/contract.js';
 
 export interface WorkflowMeta {
   description: string;
@@ -34,6 +35,41 @@ export function parseMeta(script: string): WorkflowMeta {
         .filter((p): p is { title: string } => p !== null)
     : [];
   return { description, phases };
+}
+
+/** DES-103 (TASK-099): the pre-eval source-size bound (4 KB) for the `meta` literal — measured on
+ *  the matched literal TEXT, before `runInNewContext`. Separate from contract.ts's post-eval
+ *  structural bounds (DES-101), which only ever see a value that already survived evaluation. */
+export const MAX_META_LITERAL_BYTES = 4096;
+
+/** Extracts + validates `meta.params` at registration time (DES-103, ARCH-067). No meta / an
+ *  impure meta (rejected elsewhere via INVALID_META) / no declared `params` field all mean
+ *  "no contract" — `parseParamContract(undefined, …)` already resolves that to the canonical
+ *  4-knob contract (REQ-090 backward compat; the resolver never branches on "contract missing"). */
+export function parseMetaParams(
+  script: string,
+  aliasNames: Set<string>,
+): { ok: true; value: ParamContract } | ParamContractErr {
+  const m = checkMeta(script);
+  if (!m.found || !m.pureLiteral || m.objectText === undefined) {
+    return parseParamContract(undefined, aliasNames);
+  }
+  if (Buffer.byteLength(m.objectText, 'utf8') > MAX_META_LITERAL_BYTES) {
+    return {
+      ok: false,
+      code: 'PARAM_CONTRACT_INVALID',
+      message: `meta literal exceeds the ${MAX_META_LITERAL_BYTES}-byte source-size bound`,
+      detail: { param: 'meta', reason: 'source too large' },
+    };
+  }
+  let obj: unknown;
+  try {
+    obj = runInNewContext(`(${m.objectText})`, Object.create(null) as object, { timeout: 50 });
+  } catch {
+    return parseParamContract(undefined, aliasNames);
+  }
+  const rawParams = obj && typeof obj === 'object' ? (obj as { params?: unknown }).params : undefined;
+  return parseParamContract(rawParams, aliasNames);
 }
 
 export type SkeletonKind = 'phase' | 'agent' | 'workflow';

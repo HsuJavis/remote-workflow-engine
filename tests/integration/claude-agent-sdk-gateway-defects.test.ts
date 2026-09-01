@@ -29,6 +29,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
 import { AgentExecutor } from '../../src/agent-executor.js';
+import { defaultRunParams } from '../../src/params/resolve.js';
 
 const STUB_PORT_A = 38220;
 const STUB_PORT_B = 38221;
@@ -162,6 +163,7 @@ describe('ClaudeAgentSdkGatewayClient — D-F5 route-back defects, real CLI + lo
         opts: { model: 'haiku-alias' },
         workspace: '/tmp/it-017-b-ws',
         signal: new AbortController().signal,
+        runParams: defaultRunParams(undefined),
       });
 
       const reached = await waitForRequest(errorStub.requests);

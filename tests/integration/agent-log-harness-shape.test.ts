@@ -132,3 +132,57 @@ describe('workflow_agent_log harness shape (IT-066, DES-067)', () => {
     }
   });
 });
+
+// v21 (ARCH-068, DES-105, TASK-101): the harness descriptor gains per-key provenance — the
+// self-diagnosing tripwire for the next wiring miss (a knob that silently falls through shows up
+// as provenance.<key>:'engine' where a rung was expected).
+//
+// Separate server: the shared `server` above is built with NO aliases, so its gateway is the
+// NULL_GATEWAY stub (never calls onHarness at all — `harness` stays permanently null regardless of
+// v21). Reaching onHarness needs an aliased gateway; `useLiteLLMProxy:false` + the 'ollama' provider
+// reaches onHarness (called unconditionally before the outbound fetch) without spawning the litellm
+// subprocess or needing any live backend/API key.
+describe('workflow_agent_log harness provenance (IT-066 v21, DES-105)', () => {
+  let provServer: Server;
+  let provTmpDir: string;
+
+  beforeAll(async () => {
+    provTmpDir = mkdtempSync(join(tmpdir(), 'rwe-it066-prov-'));
+    provServer = await createServer({
+      port: 0, bind: '127.0.0.1', workRoot: provTmpDir,
+      aliases: { default: { provider: 'ollama', model: 'qwen2.5:7b' } },
+      useLiteLLMProxy: false,
+    });
+  });
+  afterAll(async () => { await provServer?.close(); rmSync(provTmpDir, { recursive: true, force: true }); });
+
+  async function provCallTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+    const res = await fetch(`http://127.0.0.1:${provServer.port}/mcp`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
+    return JSON.parse(body.result?.content?.[0]?.text ?? 'null');
+  }
+
+  it('harness descriptor carries per-key provenance (model/effort/timeoutMs/appendPrompt)', async () => {
+    const sub = await provCallTool('workflow_run', { script: 'return await agent("say hi");' }) as { runId?: string };
+    const runId = sub.runId!;
+    // A script with exactly one top-level agent() call always gets agentId 'agent-1' (workflow_status
+    // nests agents under `.result.agents`, not top-level — same fixed convention runAndGetAgentId
+    // above relies on). onHarness fires at session-build time — poll briefly for it, don't wait for
+    // full completion (the outbound fetch to a non-existent local Ollama will itself fail/timeout).
+    const agentId = 'agent-1';
+
+    let harness: { provenance?: Record<string, string> } | undefined;
+    for (let i = 0; i < 60 && !harness; i++) {
+      const log = await provCallTool('workflow_agent_log', { runId, agentId }) as { harness?: { provenance?: Record<string, string> } };
+      harness = log.harness ?? undefined;
+      if (!harness) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(harness?.provenance).toBeDefined();
+    for (const key of ['model', 'effort', 'timeoutMs', 'appendPrompt']) {
+      expect(['call', 'agentType', 'override', 'default', 'engine']).toContain(harness?.provenance?.[key]);
+    }
+  }, 10_000);
+});

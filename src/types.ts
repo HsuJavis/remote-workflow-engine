@@ -224,6 +224,19 @@ export interface HarnessDescriptor {
   skills: string[];
   mcpServers: string[];
   surfaceType: 'curated' | 'none';
+  /** v21 (ARCH-068, DES-105, TASK-101): the resolved per-call effort directive, when any rung set one. */
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** v21 (DES-106, TASK-102): tri-state record of whether/how `effort` reached the wire — applied
+   *  (with the provider param+value) / not-applied (with a reason, e.g. no dial for this provider) /
+   *  absent when no effort was ever requested. Recorded ≡ applied by object identity (no re-lookup). */
+  effortApplied?: { param: string; value: unknown } | { reason: string };
+  /** v21 (ARCH-068, DES-105, TASK-101): the resolved per-call timeout, when any rung set one. */
+  timeoutMs?: number;
+  /** v21 (ARCH-068, DES-105, TASK-101): per-key precedence rung each resolved value came from —
+   *  the self-diagnosing tripwire for a wiring miss (a knob silently falling through shows up as
+   *  'engine' where a rung was expected). Optional: historical records and gateway-emitted
+   *  descriptors (before the executor's single decoration site runs) lack it. */
+  provenance?: Record<'model' | 'effort' | 'timeoutMs' | 'appendPrompt', 'call' | 'agentType' | 'override' | 'default' | 'engine'>;
 }
 
 export interface TranscriptEvent {

@@ -82,4 +82,78 @@ describe('ClaudeAgentSdkGatewayClient thinking policy (UT-020, D-F6)', () => {
     const [[call]] = queryMock.mock.calls as [[{ options?: { thinking?: unknown } }]];
     expect(call.options?.thinking).toBeUndefined();
   });
+
+  // v21 (DES-106, ARCH-069, TASK-102) regression pin: `thinkingFor()` remains the SOLE writer of
+  // options.thinking. An effort mapper introduced elsewhere must NOT re-open the D-F6 defect
+  // (unconditional extended thinking -> real SDK+Ollama 400 after ~4min, Gate 7.5 round 3) by
+  // assigning `options.thinking` from a second site for a non-Anthropic alias. This case already
+  // passes today by omission (opts.effort is a documented no-op) — deliberately labeled a green
+  // regression guard, same precedent as UT-016's "unknown agentType still fails fast" sub-case.
+  it('a non-Anthropic alias at effort:"max" leaves options.thinking byte-identical to today ({type:"disabled"})', async () => {
+    queryMock.mockReturnValue(fakeSession());
+    const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
+    const config: ClaudeAgentSdkGatewayConfig & { aliases: AliasMap } = {
+      baseUrl: 'http://127.0.0.1:4000',
+      aliases: ALIASES,
+    };
+    const client = new ClaudeAgentSdkGatewayClient(config);
+
+    await client.invoke({ prompt: 'hi', opts: { model: 'local', effort: 'max' }, runId: 'r1', agentId: 'a1' });
+
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    const [[call]] = queryMock.mock.calls as [[{ options?: { thinking?: unknown } }]];
+    expect(call.options?.thinking).toEqual({ type: 'disabled' });
+  });
+
+  // v21 Gate 5 addendum (B-6, DES-106, TASK-102): the direct-fetch LiteLLMGatewayClient branch has
+  // its own mapEffort coverage (tests/unit/gateway-effort.test.ts) but the SDK client's own call
+  // site (claude-agent-sdk-client.ts:509/581, `(options as ...)[applied.param] = applied.value`)
+  // had no covering test — DES-106/TASK-102's "parameterized over BOTH GatewayClient impls" DoD
+  // was half-met. Mirrors the direct-fetch case: an Anthropic alias at effort:'low' vs effort:'max'
+  // produces two captured Options objects differing at the mapped effort key.
+  it('an Anthropic-mapped alias dispatched at different effort levels produces Options objects that differ at the mapped effort key (B-6, DES-106)', async () => {
+    queryMock.mockReturnValue(fakeSession());
+    const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
+    const config: ClaudeAgentSdkGatewayConfig & { aliases: AliasMap } = {
+      baseUrl: 'http://127.0.0.1:4000',
+      aliases: ALIASES,
+      secretSource: new InMemorySecretSource({ ANTHROPIC_API_KEY: 'fake-unit-test-key' }),
+    };
+
+    const clientLow = new ClaudeAgentSdkGatewayClient(config);
+    await clientLow.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'low' }, runId: 'r1', agentId: 'a1' });
+    const [[lowCall]] = queryMock.mock.calls as [[{ options?: Record<string, unknown> }]];
+
+    queryMock.mockReset();
+    queryMock.mockReturnValue(fakeSession());
+    const clientMax = new ClaudeAgentSdkGatewayClient(config);
+    await clientMax.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'max' }, runId: 'r1', agentId: 'a1' });
+    const [[maxCall]] = queryMock.mock.calls as [[{ options?: Record<string, unknown> }]];
+
+    expect(lowCall.options?.['effort']).toBeDefined();
+    expect(lowCall.options?.['effort']).not.toEqual(maxCall.options?.['effort']);
+  });
+
+  // v21 GATE 8 RE-REVIEW #3 re-run (review 07-review.md §P2 P-A1, re-run scope (a) — SDK side):
+  // transport-CONTRACT shape pin, asserted against the documented contract (a real `Options.effort`
+  // top-level SDK field per `claude-agent-sdk-client.ts:581`), never against "differs from the
+  // sibling call" (the B-6 case above's assertion style — the exact style the review found let
+  // P-A1 through every test tier on the REST side). Companion to the REST-side shape pin in
+  // `tests/unit/gateway-effort.test.ts`. Result: GREEN on write — the SDK path's placement was
+  // already correct (unlike the REST path); kept as a deliberate regression pin, not force-reddened.
+  it('an Anthropic-mapped alias at effort:"max" sets the documented top-level Options.effort field to the requested value (P-A1 SDK-side contract pin)', async () => {
+    queryMock.mockReturnValue(fakeSession());
+    const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
+    const config: ClaudeAgentSdkGatewayConfig & { aliases: AliasMap } = {
+      baseUrl: 'http://127.0.0.1:4000',
+      aliases: ALIASES,
+      secretSource: new InMemorySecretSource({ ANTHROPIC_API_KEY: 'fake-unit-test-key' }),
+    };
+    const client = new ClaudeAgentSdkGatewayClient(config);
+
+    await client.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'max' }, runId: 'r1', agentId: 'a1' });
+
+    const [[call]] = queryMock.mock.calls as [[{ options?: Record<string, unknown> }]];
+    expect(call.options?.['effort']).toBe('max');
+  });
 });

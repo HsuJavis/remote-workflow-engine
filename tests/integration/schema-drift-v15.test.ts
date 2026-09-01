@@ -64,6 +64,17 @@ describe('v15 schema drift-lock — workflow_register (DES-099, IT-082)', () => 
     // The description should reference defaults/harness binding per DES-099
     expect(desc.toLowerCase()).toMatch(/default|harness/);
   });
+
+  // v21 Gate 8 RE-REVIEW #5 (C-3): the schema advertised only 5 of the 7 keys the engine actually
+  // accepts/applies (`effort`/`appendPrompt` widened by adjudication #6's F-1) — a docs/behaviour
+  // split ARCH-067's own note forbids. Pin the full property list so it cannot silently lag again.
+  it('workflow_register inputSchema `defaults` advertises all 7 HarnessDefaults keys (v21 F-1 widening, C-3)', () => {
+    const schema = toolsMap['workflow_register']?.inputSchema;
+    const props = (schema?.properties?.['defaults'] as { properties?: Record<string, unknown> } | undefined)?.properties;
+    expect(Object.keys(props ?? {}).sort()).toEqual(
+      ['appendPrompt', 'effort', 'model', 'prompt', 'skills', 'timeoutMs', 'tools'].sort(),
+    );
+  });
 });
 
 describe('v15 schema drift-lock — workflow_deregister (DES-099, IT-082)', () => {

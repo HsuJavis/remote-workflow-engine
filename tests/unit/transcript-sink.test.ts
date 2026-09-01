@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { AgentExecutor } from '../../src/agent-executor.js';
 import { RunGuard } from '../../src/run-guard.js';
 import type { GatewayClient, GatewayResult } from '../../src/gateway/client.js';
+import { defaultRunParams } from '../../src/params/resolve.js';
 
 function fakeGateway(result: GatewayResult): GatewayClient {
   return { invoke: vi.fn().mockResolvedValue(result) };
@@ -29,6 +30,7 @@ describe('AgentTranscriptSink + token accounting', () => {
       opts: {},
       workspace: '/tmp/ws',
       signal: new AbortController().signal,
+      runParams: defaultRunParams(undefined),
     });
 
     // addTokens should be called with the combined token delta
@@ -54,6 +56,7 @@ describe('AgentTranscriptSink + token accounting', () => {
       opts: { model: 'haiku' },
       workspace: '/tmp/ws',
       signal: new AbortController().signal,
+      runParams: defaultRunParams(undefined),
     });
 
     // After the run, the executor should have recorded the real provider/model

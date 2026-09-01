@@ -51,8 +51,15 @@ export interface IssueReportInput {
   component?: string;
   runId?: string;
   /** REQ-066: optional caller-supplied version string; whitespace-only treated as omitted
-   *  (falls back to IssueReporterConfig.engineVersion). */
+   *  (falls back to IssueReporterConfig.engineVersion). v21 (REQ-095, DES-107): when `workflow` is
+   *  also set, this same value doubles as the workflow's own version for the `name@version` binding
+   *  rendered alongside `runId` — no separate field, matching the DES-107 tool signature verbatim. */
   version?: string;
+  /** v21 (REQ-095, DES-107): binds this report to a specific registered workflow — adds a
+   *  `workflow:<name>` label (enters the ARCH-024 dedup fingerprint, ARCH-070) and, when `version`
+   *  is also set, a `name@version` reference alongside `runId` in the body. Never existence-checked
+   *  against the catalog — a just-deregistered workflow must remain reportable. */
+  workflow?: string;
 }
 
 export type IssueReportResult =
@@ -99,6 +106,9 @@ export interface IssueListFilter {
   state?: string;
   since?: string;
   limit?: number;
+  /** v21 (REQ-095, DES-107): label-filtered by `workflow:<name>` — symmetric with issue_report's
+   *  own label, never existence-checked against the catalog. */
+  workflow?: string;
 }
 
 export type IssueGetResult = { ok: true; issue: IssueView } | { ok: false; error: IssueError };
@@ -142,8 +152,31 @@ export interface IssueReporterConfig {
 function normalizeTitle(title: string): string {
   return title.trim().toLowerCase().replace(/\s+/g, ' ');
 }
-export function issueFingerprint(title: string, component?: string): string {
-  return createHash('sha256').update(normalizeTitle(title) + '|' + (component ?? '')).digest('hex').slice(0, 16);
+/** v21 (REQ-095, DES-107): `workflow` extends the fingerprint (when present) so two workflows
+ *  reporting the same title never collapse onto one dedup'd issue. COMPAT PIN: with `workflow`
+ *  absent, byte-identical to the pre-v21 formula (REQ-095's "behaves exactly as today"). */
+export function issueFingerprint(title: string, component?: string, workflow?: string): string {
+  const base = normalizeTitle(title) + '|' + (component ?? '');
+  return createHash('sha256').update(workflow ? `${base}|${workflow}` : base).digest('hex').slice(0, 16);
+}
+
+/** v21 Gate 5 re-run (A-5, DES-107 amendment): v21 introduces no general registration-name
+ *  predicate (workflow_register performs no charset check, and a just-deregistered workflow must
+ *  remain reportable) — so the `workflow:<name>` GitHub label is produced by a LABEL-SCOPED
+ *  sanitize only: characters GitHub rejects in a label become '-', and the whole label is
+ *  truncated to GitHub's 50-character cap. The untruncated `name@version` is recorded separately
+ *  in the issue body (renderIssueBody), never here.
+ *
+ *  v21 Gate 8 RE-REVIEW #5 (F5, LOW, decided+recorded — not fixed in code): two workflow names
+ *  differing only after char 50 truncate to the same label, so `issue_list({workflow})` (a
+ *  label-filter fold-in) can return one workflow's issues under the other's filter. Declined the
+ *  hash-suffix route: no Gate 5 red test exercises it, and this contract forbids shipping untested
+ *  behavior. The dedup fingerprint (`issueFingerprint`, above) uses the raw untruncated `name` and
+ *  is unaffected — only `issue_list` filtering can collide. Documented on the `issue_list` tool
+ *  description (`server.ts`) instead; revisit with a hash-suffixed label if a real collision is
+ *  reported. */
+function workflowLabel(name: string): string {
+  return `workflow:${name.replace(/[^A-Za-z0-9:_./-]/g, '-')}`.slice(0, 50);
 }
 
 /** REQ-029: the FIXED, machine-parseable template a downstream issue-solving agent can reproduce from.
@@ -173,11 +206,19 @@ export function renderIssueBody(
     `- component: ${input.component ?? '_none_'}`,
     `- reported at: ${meta.nowIso}`,
   ];
-  if (input.runId) {
-    parts.push(``, `## Linked run`, `- runId: ${input.runId}`);
-    // REQ-036: append real engine-side diagnostics (status / artifacts / transcript tail) when present.
-    if (meta.diagnostics && meta.diagnostics.trim()) {
-      parts.push(``, meta.diagnostics.trim());
+  if (input.workflow || input.runId) {
+    parts.push(``, `## Linked run`);
+    // v21 (REQ-095, DES-107): `name@version` when both are set, else the bare name.
+    if (input.workflow) {
+      const ref = input.version && input.version.trim() ? `${input.workflow}@${input.version}` : input.workflow;
+      parts.push(`- workflow: ${ref}`);
+    }
+    if (input.runId) {
+      parts.push(`- runId: ${input.runId}`);
+      // REQ-036: append real engine-side diagnostics (status / artifacts / transcript tail) when present.
+      if (meta.diagnostics && meta.diagnostics.trim()) {
+        parts.push(``, meta.diagnostics.trim());
+      }
     }
   }
   parts.push(``, `---`, `_Filed by the remote-workflow-engine \`issue_report\` tool (agent-reported)._`);
@@ -381,7 +422,7 @@ export class IssueReporter {
     if (!tok.ok) return tok;
 
     const repo = this.cfg.repo ?? DEFAULT_REPO;
-    const fp = issueFingerprint(input.title, input.component);
+    const fp = issueFingerprint(input.title, input.component, input.workflow);
     // REQ-036: best-effort enrichment — a null/throw NEVER fails the report.
     let diagnostics: string | null = null;
     if (input.runId && this.cfg.runDiagnostics) {
@@ -399,7 +440,12 @@ export class IssueReporter {
       diagnostics,
     });
     // REQ-029: fixed intake label + optional severity label so the solve-flow can query these.
-    const labels = [REPORTED_LABEL, ...(input.severity ? [`severity:${input.severity}`] : [])];
+    // v21 (REQ-095, DES-107): + optional workflow:<name> label, never existence-checked.
+    const labels = [
+      REPORTED_LABEL,
+      ...(input.severity ? [`severity:${input.severity}`] : []),
+      ...(input.workflow ? [workflowLabel(input.workflow)] : []),
+    ];
     const client = this.resolveClient(tok.token);
 
     try {
@@ -432,12 +478,16 @@ export class IssueReporter {
     }
   }
 
-  /** REQ-032: enumerate issues (bounded) for the solve-flow to pick up work. */
+  /** REQ-032: enumerate issues (bounded) for the solve-flow to pick up work. v21 (REQ-095,
+   *  DES-107): `workflow` folds into the label filter — symmetric with issue_report's own label,
+   *  never existence-checked against the catalog (report-then-list round-trips regardless). */
   async listIssues(filter: IssueListFilter): Promise<IssueListResult> {
     const tok = this.resolveToken();
     if (!tok.ok) return tok;
+    const f = filter ?? {};
+    const labels = f.workflow ? [...(f.labels ?? []), workflowLabel(f.workflow)] : f.labels;
     try {
-      const issues = await this.resolveClient(tok.token).listIssues(filter ?? {});
+      const issues = await this.resolveClient(tok.token).listIssues({ ...f, labels });
       return { ok: true, issues };
     } catch (err) {
       return this.apiError(err);

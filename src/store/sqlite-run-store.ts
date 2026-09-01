@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import type { Clock } from '../clock.js';
 import type { RunStore, RunDagSnapshot } from '../run-store.js';
 import { deriveAgentRecords } from '../run-store.js';
+import type { RunParams } from '../params/resolve.js';
 import type {
   RunSpec,
   RunStatusView,
@@ -64,20 +65,31 @@ export class SqliteRunStore implements RunStore {
     try { this._db.exec('ALTER TABLE runs ADD COLUMN started_by TEXT'); } catch { /* already exists */ }
     // v15 (REQ-086 / DES-096): additive migration — principal column on the run record.
     try { this._db.exec('ALTER TABLE runs ADD COLUMN principal TEXT'); } catch { /* already exists */ }
+    // v21 (ARCH-066, DES-104, TASK-100): additive migration — the run-immutable admission-time
+    // parameter snapshot (RunParams). A pre-v21 row reads back NULL; RunManager applies the legacy
+    // defaultRunParams(registered.defaults) fallback on resume, never a crash.
+    try { this._db.exec('ALTER TABLE runs ADD COLUMN effective_params TEXT'); } catch { /* already exists */ }
   }
 
   private _runDir(runId: string): string {
     return join(this._dir, 'runs', runId);
   }
 
-  async createRun(spec: RunSpec, scriptVersion = 'v1'): Promise<string> {
+  async createRun(spec: RunSpec, scriptVersion = 'v1', effectiveParams?: RunParams): Promise<string> {
     const runId = randomUUID();
     const ts = this._clock.isoNow();
     this._db
-      .prepare('INSERT INTO runs (runId, name, status, scriptVersion, createdAt, script, args, budget, started_by, principal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(runId, spec.name ?? null, 'queued', scriptVersion, ts, spec.script ?? null, JSON.stringify(spec.args ?? null), JSON.stringify(spec.budget ?? null), spec.startedBy ? JSON.stringify(spec.startedBy) : null, spec.principal ?? null);
+      .prepare('INSERT INTO runs (runId, name, status, scriptVersion, createdAt, script, args, budget, started_by, principal, effective_params) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(runId, spec.name ?? null, 'queued', scriptVersion, ts, spec.script ?? null, JSON.stringify(spec.args ?? null), JSON.stringify(spec.budget ?? null), spec.startedBy ? JSON.stringify(spec.startedBy) : null, spec.principal ?? null, effectiveParams ? JSON.stringify(effectiveParams) : null);
     mkdirSync(this._runDir(runId), { recursive: true });
     return runId;
+  }
+
+  /** v21 (DES-104): reads back the pinned admission-time snapshot; NULL for a pre-v21 row. */
+  async getEffectiveParams(runId: string): Promise<RunParams | null> {
+    const row = this._db.prepare('SELECT effective_params FROM runs WHERE runId = ?').get(runId) as { effective_params: string | null } | undefined;
+    if (!row || row.effective_params === null) return null;
+    return JSON.parse(row.effective_params) as RunParams;
   }
 
   /** Rebuilds the original submission (name/script/args/budget) — lets RunManager reconstruct a

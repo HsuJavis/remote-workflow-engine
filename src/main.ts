@@ -156,6 +156,22 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // hourly instead of at workspaceTtlMs (the auth-table GC clause still runs, but
     // workspace reclaim is also broken). Same class as the v15 auth-forwarding fix.
     workspaceTtlMs: fileConfig.workspaceTtlMs,
+    // v21 (ARCH-066 inv-6, DES-104, TASK-100): forwarded regardless of gateway choice — RunManager/
+    // McpFacade apply their own fail-closed defaults (600_000ms / 1024 bytes / 'high') when omitted.
+    // Same wiring-gap class as v11 updateFlagPath / v15 auth / v16 workspaceTtlMs.
+    maxTimeoutMs: fileConfig.maxTimeoutMs,
+    maxAppendPromptBytes: fileConfig.maxAppendPromptBytes,
+    maxEffort: fileConfig.maxEffort,
+    // Gate 7.5 v21 config-sync check (§4b): same composeConfig wiring-gap class as the four fields
+    // above — these four were documented in rwe.config.json/DEPLOY.md but never named in this
+    // object literal, so `npm start`/systemd (the real production entrypoint) silently ignored
+    // them; server.ts's own defaults (join(workRoot,'cas'|'webhooks.db'|'continuations.db'),
+    // 256 MiB) applied instead even when a deployer set them. Only in-process `createServer()`
+    // callers (tests) ever saw the configured values.
+    maxBlobBytes: fileConfig.maxBlobBytes,
+    webhookDbPath: fileConfig.webhookDbPath,
+    casDir: fileConfig.casDir,
+    continuationDbPath: fileConfig.continuationDbPath,
   };
 
   if (gatewayChoice === 'sdk') {

@@ -36,12 +36,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentExecutor } from '../../src/agent-executor.js';
+import type { HarnessDescriptor } from '../../src/types.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { RunManager } from '../../src/run-manager.js';
 import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
 import { FixedClock } from '../../src/clock.js';
 import type { GatewayClient, GatewayResult } from '../../src/gateway/client.js';
 import type { TranscriptEvent } from '../../src/types.js';
+import { defaultRunParams } from '../../src/params/resolve.js';
 
 const SECRET_NAME = 'IT075_TOKEN';
 const SECRET_VALUE = 'it075-secret-tok-zyx321abc';
@@ -105,6 +107,7 @@ describe('redact-at-capture completeness sweep — sink (1): appendTranscript (D
       opts: {},
       workspace: '/tmp',
       signal: new AbortController().signal,
+      runParams: defaultRunParams(undefined),
     });
 
     const transcript = await store.getTranscript(runId, agentId);
@@ -129,6 +132,7 @@ describe('redact-at-capture completeness sweep — sink (1): appendTranscript (D
     await executor.run({
       runId, agentId: 'agent-002', prompt: 'test', opts: {}, workspace: '/tmp',
       signal: new AbortController().signal,
+      runParams: defaultRunParams(undefined),
     });
 
     const transcript = await store.getTranscript(runId, 'agent-002');
@@ -147,6 +151,7 @@ describe('redact-at-capture completeness sweep — sink (1): appendTranscript (D
     await executor.run({
       runId, agentId: 'agent-003', prompt: 'ordinary', opts: {}, workspace: '/tmp',
       signal: new AbortController().signal,
+      runParams: defaultRunParams(undefined),
     });
 
     const transcript = await store.getTranscript(runId, 'agent-003');
@@ -236,4 +241,87 @@ describe('redact-at-capture completeness sweep — sink (2): saveSnapshot (DES-0
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30000);
+});
+
+// v21 Gate 5 addendum (B-4, DES-104, REQ-083, HIGHEST-VALUE item of the addendum): the run's
+// admission-time effectiveParams snapshot is a NEW persist sink (run-manager.ts:411-413 already
+// calls redact() on it before createRun) — but this sweep was never extended with a case for it.
+// A secret value riding a user-supplied `appendPrompt` override must be redacted in the persisted
+// snapshot exactly as it is in the other 4 sinks; the sweep is what catches a sink shipping without
+// this coverage, per REQ-083's own purpose.
+describe('redact-at-capture completeness sweep — sink (5): effectiveParams snapshot (DES-104, IT-075)', () => {
+  it('a secret value in a user-supplied appendPrompt override is redacted in the persisted effectiveParams snapshot', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-it075-params-'));
+    try {
+      const store = new SqliteRunStore(join(dir, 'store'), clock);
+      const gateway = makeContentGateway('ok');
+      const mgr = new RunManager({ store, clock, workRoot: dir, gateway, secretValueProvider: secretProvider } as any);
+      const appendPrompt = `use token ${SECRET_VALUE}`;
+      const runId = await mgr.start({ script: 'return 1;' }, { appendPrompt });
+      expect(await pollStatus(mgr, runId, 'completed')).toBe('completed');
+
+      const persisted = await store.getEffectiveParams(runId);
+      const json = JSON.stringify(persisted);
+      expect(json).not.toContain(SECRET_VALUE);
+      expect(json).toContain(SECRET_MARKER);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
+});
+
+// v21 Gate 8 send-back re-run (2026-09-01, review §4 B3 ≡ adversarial F3, "the non-negotiable item
+// of the batch"): the `kind:'harness'` transcript sink (agent-executor.ts:406-412, `onHarness`)
+// persists the gateway-emitted `HarnessDescriptor` (which carries `prompt` — the composed
+// [agentType systemPrompt]+[defaults.prompt]+[script prompt]+[framed appendPrompt], REQ-094) with
+// NO `redact()` call at all — `redactHarness` never touches secret VALUES. `onEvent`'s
+// `kind!=='harness'` guard excluded this sink from redaction on a "double-redaction exclusivity"
+// premise the review found false (onHarness never redacted either) — so a secret riding a
+// user-supplied `appendPrompt` reached the persisted harness transcript entry raw. Extends this
+// sweep with sink (6), same fake-gateway convention as sink (1)/(2)/(3) above but calling
+// `req.onHarness()` instead of `req.onEvent()`.
+//
+// STATE AS OF THE §R2 RE-REVIEW CLOSEOUT (the paragraph above is the RED-time rationale, kept):
+// `onHarness` now redacts, and the two `kind!=='harness'` guards are DELETED (R-G10) — redaction is
+// no longer kind-gated at any sink. `redactHarness` is a purely STRUCTURAL strip and no longer
+// truncates: the 4KB cap is the exported `capPrompt`, applied at this persist site AFTER `redact()`
+// (R-G9), because capping first could split a secret across the 2048-char seam and defeat
+// `redact()`'s value-exact match. This test is unchanged and still green.
+describe('redact-at-capture completeness sweep — sink (6): kind:\'harness\' transcript descriptor (DES-088 inv-5 sink-completeness, review §4 B3)', () => {
+  it('a secret riding the harness descriptor.prompt is redacted in the persisted kind:\'harness\' transcript entry', async () => {
+    const store = new InMemoryRunStore(clock);
+    const runId = await store.createRun({ script: 'return 1;' }, 'v1');
+
+    const descriptor: HarnessDescriptor = {
+      model: 'fake-model',
+      provider: 'fake',
+      prompt: `use token ${SECRET_VALUE}`,
+      tools: [],
+      skills: [],
+      mcpServers: [],
+      surfaceType: 'none',
+    };
+    const gateway: GatewayClient = {
+      async invoke(req): Promise<GatewayResult> {
+        await req.onHarness?.(descriptor);
+        return { ok: true, provider: 'fake', model: 'fake-model', tokens: { input: 1, output: 1 }, content: 'ok' };
+      },
+    };
+    const executor = new AgentExecutor({ gateway, store, clock, secretValueProvider: secretProvider } as any);
+
+    const agentId = 'agent-006';
+    await executor.run({
+      runId, agentId, prompt: 'echo the token', opts: {}, workspace: '/tmp',
+      signal: new AbortController().signal,
+      runParams: defaultRunParams(undefined),
+    });
+
+    const transcript = await store.getTranscript(runId, agentId);
+    const harnessEntries = transcript.filter((e) => e.kind === 'harness');
+    expect(harnessEntries.length).toBeGreaterThan(0);
+    const json = JSON.stringify(harnessEntries);
+
+    expect(json).not.toContain(SECRET_VALUE);
+    expect(json).toContain(SECRET_MARKER);
+  });
 });

@@ -6,11 +6,33 @@ import type { RunGuard } from './run-guard.js';
 import type { RunStore } from './run-store.js';
 import { redact } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
+import { resolveCallParams, composePrompt, type RunParams, type EffectiveCallParams } from './params/resolve.js';
+import { isEffort } from './params/contract.js';
+import { codedError } from './errors.js';
 
-/** DES-066 (TASK-069): pure security transform — strips all resolved values, keeps names only.
- *  - Prompt 4KB cap: first 2048 + "…[truncated]…" + last 2048 (tail survives, task instructions land there).
+const PROMPT_CAP = 4096;
+const PROMPT_CAP_HALF = 2048;
+
+/** DES-066 (TASK-069): the descriptor's 4KB prompt bound — first 2048 + "…[truncated]…" + last 2048
+ *  (tail survives, task instructions land there).
+ *
+ *  v21 Gate 8 re-review (review §R2, R-G9): this used to run inside `redactHarness`, i.e. BEFORE the
+ *  persist-site `redact()`. That ordering is unsafe — a secret value straddling either seam is cut in
+ *  half, and `redact()` is a value-EXACT substring match, so neither fragment matches and partial
+ *  credential bytes land in the persisted descriptor. The cap is a SIZE bound, not a security
+ *  control, so it is now applied last, at the one persist site, after redaction (`_invokeOnce`
+ *  below). Cutting a `‹secret:NAME›` marker in half is harmless; cutting a live secret is not. */
+export function capPrompt(prompt: string): string {
+  return prompt.length > PROMPT_CAP
+    ? prompt.slice(0, PROMPT_CAP_HALF) + '…[truncated]…' + prompt.slice(prompt.length - PROMPT_CAP_HALF)
+    : prompt;
+}
+
+/** DES-066 (TASK-069): pure STRUCTURAL transform — strips all resolved values, keeps names only.
+ *  Redacts no secret VALUES and emits no `‹secret:NAME›` markers; that is the persist site's job.
  *  - surfaceType:'none' (direct-fetch) → all arrays empty (no curated surface available).
- *  - MCP configs: name only, never URL/key/token. */
+ *  - MCP configs: name only, never URL/key/token.
+ *  - prompt passes through UNCUT — see `capPrompt` (R-G9: cap after redact, never before). */
 export function redactHarness(resolved: {
   surfaceType: 'curated' | 'none';
   modelName: string;
@@ -20,13 +42,8 @@ export function redactHarness(resolved: {
   mergedMcp: Array<{ name: string; [key: string]: unknown }>;
   skills: string[];
 }): HarnessDescriptor {
-  const PROMPT_CAP = 4096;
-  const HALF = 2048;
   const provider = resolved.provider ?? '';
-  let prompt = resolved.prompt;
-  if (prompt.length > PROMPT_CAP) {
-    prompt = prompt.slice(0, HALF) + '…[truncated]…' + prompt.slice(prompt.length - HALF);
-  }
+  const prompt = resolved.prompt;
   if (resolved.surfaceType === 'none') {
     return { model: resolved.modelName, provider, prompt, tools: [], skills: [], mcpServers: [], surfaceType: 'none' };
   }
@@ -110,6 +127,11 @@ export interface AgentReq {
   opts: AgentOpts;
   workspace: string;
   signal: AbortSignal;
+  /** v21 (ARCH-068, DES-105, TASK-101): the run-immutable admission-time parameter snapshot —
+   *  REQUIRED, no default, no `?`. The tsc lever lives here (built at exactly one production site,
+   *  run-manager.ts:_handleAgentRequest) rather than on the constructor, which is a loose bag
+   *  constructed at ~30 test call sites that have nothing to do with where params semantically live. */
+  runParams: RunParams;
 }
 
 export type AgentOutcome =
@@ -148,9 +170,14 @@ export class AgentTranscriptSink {
 
   private async _emit(runId: string, agentId: string, ev: TranscriptEvent): Promise<void> {
     if (this._store) {
-      // DES-088 (TASK-082): redact on persist write, not in-memory. kind:'harness' is handled by
-      // redactHarness (double-redaction exclusivity invariant — never both on the same event).
-      const stored = this._secretValueProvider && ev.kind !== 'harness'
+      // DES-088 (TASK-082): redact on persist write, not in-memory — for EVERY event kind.
+      // v21 Gate 8 re-review (review §R2, R-G10): the former `ev.kind !== 'harness'` carve-out is
+      // gone. It could not double-redact anything (a harness descriptor persists through
+      // `onHarness` in _invokeOnce below, which runs its own single `redact()`, and no gateway
+      // routes one through this sink), so it only skipped redaction on a path that should never
+      // carry an unredacted secret. Redacting unconditionally keeps DES-088 invariant (a) — one
+      // redaction pass per persisted event — and fails safe if a future gateway ever emits one here.
+      const stored = this._secretValueProvider
         ? redact(ev, this._secretValueProvider.entries()) as TranscriptEvent
         : ev;
       await this._store.appendTranscript(runId, agentId, stored);
@@ -278,26 +305,57 @@ export class AgentExecutor implements AgentSpawner {
   async run(req: AgentReq): Promise<AgentOutcome> {
     if (req.signal.aborted) return { kind: 'null', aborted: true };
 
+    // v21 (ARCH-068, DES-105, TASK-101): a script-supplied per-call knob outside the contract
+    // (today: an invalid `effort`) must be RECORDED then THROWN, pre-dispatch — never a silent
+    // null via parallel()'s swallow-into-null (sandbox/guards.ts). Validation and record live in
+    // the same function, so whoever validates records — no _spawnerOverride carve-out needed.
+    if (req.opts.effort !== undefined && !isEffort(req.opts.effort)) {
+      const detail = `PARAM_OUT_OF_RANGE: effort '${String(req.opts.effort)}' is not a recognized effort level`;
+      await this._sink.capture(
+        req.runId,
+        { agentId: req.agentId, label: req.opts.label, phase: req.opts.phase },
+        { ok: false, provider: '', reason: 'terminal', detail },
+        this._clock.isoNow(),
+      );
+      throw codedError('PARAM_OUT_OF_RANGE', detail);
+    }
+
     // D-V5/D-F2: resolve agentType against the server-side registry before any gateway dispatch —
     // a known type's systemPrompt is applied to the outbound prompt (and its `model`, when given,
     // routes the call the same way an explicit opts.model would, unless the caller already set
     // one); an unknown type is a reported error (rejects), never a silent no-op and never a hang.
-    let effectivePrompt = req.prompt;
-    let effectiveOpts: AgentOpts & { allowedTools?: string[] } = req.opts;
+    let def: AgentTypeDef | undefined;
     if (req.opts.agentType !== undefined) {
-      const def = this._agentTypes[req.opts.agentType];
+      def = this._agentTypes[req.opts.agentType];
       if (!def) throw new Error(`Unknown agentType: ${req.opts.agentType}`);
-      effectivePrompt = `${def.systemPrompt}\n\n${req.prompt}`;
-      if (def.model !== undefined && req.opts.model === undefined) {
-        effectiveOpts = { ...effectiveOpts, model: def.model };
-      }
-      // D-F11: the agentType definition's own `tools` frontmatter field is authoritative for the
-      // outbound opts.allowedTools — but only when the caller didn't already set one of their own
-      // (an explicit per-call opts.allowedTools always wins, same precedence rule `model` follows).
-      if (def.tools !== undefined && (req.opts as AgentOpts & { allowedTools?: string[] }).allowedTools === undefined) {
-        effectiveOpts = { ...effectiveOpts, allowedTools: def.tools };
-      }
     }
+
+    // v21 (DES-102/DES-105): one resolution pass — per-call opts > agentType > run snapshot
+    // (override/default) > engine, with per-key provenance for the harness descriptor.
+    const eff: EffectiveCallParams = resolveCallParams(req.opts, def, req.runParams, {});
+
+    let effectiveOpts: AgentOpts & { allowedTools?: string[] } = {
+      ...req.opts,
+      model: eff.model,
+      effort: eff.effort,
+      timeoutMs: eff.timeoutMs,
+    };
+    const callerAllowedTools = (req.opts as AgentOpts & { allowedTools?: string[] }).allowedTools;
+    // D-F11: the agentType definition's own `tools` frontmatter field is authoritative for the
+    // outbound opts.allowedTools — but only when the caller didn't already set one of their own
+    // (an explicit per-call opts.allowedTools always wins, same precedence rule `model` follows).
+    if (def?.tools !== undefined && callerAllowedTools === undefined) {
+      effectiveOpts = { ...effectiveOpts, allowedTools: def.tools };
+    } else if (eff.tools !== undefined && callerAllowedTools === undefined) {
+      // v21 (DES-102 note): defaults.tools sits directly BELOW agentType in the tool surface —
+      // per-call allowedTools > agentType tools > defaults.tools.
+      effectiveOpts = { ...effectiveOpts, allowedTools: eff.tools };
+    }
+
+    // v21 (REQ-094, DES-102): five-segment composition — [agentType systemPrompt] +
+    // [defaults.prompt] + [script prompt] + [framed appendPrompt]. Byte-identical to the prior
+    // `${systemPrompt}\n\n${prompt}` / bare `prompt` when defaults.prompt/appendPrompt are absent.
+    const effectivePrompt = composePrompt(def?.systemPrompt, req.runParams.prompt, req.prompt, req.runParams.appendPrompt);
 
     // D-V4: schema present → real JSON-schema validation with bounded retry-on-mismatch
     // (never a type-cast passthrough). No schema → single attempt, final text.
@@ -318,7 +376,7 @@ export class AgentExecutor implements AgentSpawner {
         attempt === 0
           ? schemaPrompt
           : `${schemaPrompt}\n\n(Your previous reply did not parse as JSON matching the schema above. Reply with ONLY the JSON value — nothing else.)`;
-      const outcome = await this._invokeOnce(req, prompt, effectiveOpts);
+      const outcome = await this._invokeOnce(req, prompt, effectiveOpts, eff);
       if (outcome === 'aborted') return { kind: 'null', aborted: true };
       const result = outcome;
 
@@ -334,7 +392,7 @@ export class AgentExecutor implements AgentSpawner {
     return { kind: 'null' };
   }
 
-  private async _invokeOnce(req: AgentReq, prompt: string, opts: AgentOpts): Promise<GatewayResult | 'aborted'> {
+  private async _invokeOnce(req: AgentReq, prompt: string, opts: AgentOpts, eff: EffectiveCallParams): Promise<GatewayResult | 'aborted'> {
     // D-V2V-1: forward the run's own workspace — only ClaudeAgentSdkGatewayClient consumes it
     // (per-call cwd re-scoping + asset materialization); other gateways ignore the extra field.
     // DES-066 (TASK-069): onHarness closure — appends a kind:'harness' transcript event when the
@@ -344,17 +402,45 @@ export class AgentExecutor implements AgentSpawner {
     const clock = this._clock;
     const sink = this._sink;
     const secretValueProvider = this._secretValueProvider;
-    const onHarness = async (descriptor: HarnessDescriptor): Promise<void> => {
+    // v21 (ARCH-068, DES-105, TASK-101): the ONE descriptor-decoration site — merges the resolved
+    // per-key provenance (+ effort/timeoutMs, + effortApplied when the gateway supplies it, DES-106)
+    // onto the gateway-emitted descriptor before persisting. Never overwrites descriptor.model/
+    // provider (the gateway's own resolution is the record of what was actually dispatched).
+    const onHarness = async (
+      descriptor: HarnessDescriptor,
+      applied?: { applied: true; param: string; value: unknown } | { applied: false; reason: string },
+    ): Promise<void> => {
+      const decorated: HarnessDescriptor = {
+        ...descriptor,
+        effort: eff.effort,
+        timeoutMs: eff.timeoutMs,
+        provenance: eff.provenance,
+        ...(applied !== undefined ? { effortApplied: applied.applied ? { param: applied.param, value: applied.value } : { reason: applied.reason } } : {}),
+      };
       // #20: surface model/provider on the LIVE agent record the moment the session is built (before
       // the first token) so workflow_status shows WHICH backend a still-running agent is waiting on,
       // instead of a blank model:""/provider:"" that makes a hung backend indistinguishable from
       // progress. The record lives on the transcript sink; markHarness merges (never clobbers state).
-      sink.markHarness(req.agentId, descriptor.model, descriptor.provider);
+      sink.markHarness(req.agentId, decorated.model, decorated.provider);
       if (store) {
+        // v21 Gate 8 send-back (review §4 B3, ARCH-066 inv-5 sink-completeness): `redactHarness`
+        // (called upstream by the gateway to build `descriptor`) is a STRUCTURAL strip only — it
+        // redacts no secret values. So this sink redacts at persist write, same convention as every
+        // other sink (DES-088/TASK-082).
+        // v21 Gate 8 re-review (review §R2, R-G9): REDACT FIRST, cap SECOND. The cap used to run
+        // upstream inside `redactHarness`, which could cut a secret in half at a 2048-char seam and
+        // defeat `redact()`'s value-exact match, persisting partial credential bytes. `capPrompt` is
+        // applied unconditionally — a deployment with no SecretValueProvider must still get a
+        // size-bounded descriptor, since the cap is a size bound and not a security control.
+        const base = { agentId: req.agentId, descriptor: decorated };
+        const redacted = secretValueProvider
+          ? (redact(base, secretValueProvider.entries()) as { agentId: string; descriptor: HarnessDescriptor })
+          : base;
+        const data = { ...redacted, descriptor: { ...redacted.descriptor, prompt: capPrompt(redacted.descriptor.prompt) } };
         await store.appendTranscript(req.runId, req.agentId, {
           ts: clock.isoNow(),
           kind: 'harness',
-          data: { agentId: req.agentId, descriptor },
+          data,
         });
       }
     };
@@ -362,11 +448,14 @@ export class AgentExecutor implements AgentSpawner {
     // agent_log grows and a progressing agent's clock advances DURING the call — a hung agent (no
     // events) keeps lastActivityAt at startedAt. Fire-and-forget-ordered: awaited by the gateway per
     // event, so file appends stay in arrival order. Gateways without a turn stream never call it.
-    // DES-088 (TASK-082): redact on persist write (sink 1 — live stream events). kind!=='harness'
-    // guard preserves double-redaction exclusivity (onHarness path above uses redactHarness).
+    // DES-088 (TASK-082): redact on persist write (sink 1 — live stream events), every event kind.
+    // v21 Gate 8 re-review (review §R2, R-G10): the former `ev.kind !== 'harness'` carve-out is gone
+    // for the same reason as in `AgentTranscriptSink._emit` above — harness descriptors persist
+    // through `onHarness`, which runs its own single `redact()`, so unconditional redaction here
+    // cannot double-redact and fails safe if a gateway ever streams one through this sink.
     const onEvent = async (ev: TranscriptEvent): Promise<void> => {
       if (store) {
-        const stored = secretValueProvider && ev.kind !== 'harness'
+        const stored = secretValueProvider
           ? redact(ev, secretValueProvider.entries()) as TranscriptEvent
           : ev;
         await store.appendTranscript(req.runId, req.agentId, stored);

@@ -19,6 +19,7 @@ import { SqliteRunStore } from './store/sqlite-run-store.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
 import { SystemClock } from './clock.js';
 import { LiteLLMGatewayClient, type AliasMap } from './gateway/client.js';
+import { DEFAULT_ALIASES } from './default-aliases.js';
 import type { GatewayClient } from './gateway/client.js';
 import type { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { loadAgentDefinitions } from './agent-definitions.js';
@@ -44,6 +45,7 @@ import Database from 'better-sqlite3';
 import { TokenStore } from './auth/token-store.js';
 import { createAuthRouteHandlers, resolvePrincipal, type AuthConfig } from './auth/auth-service.js';
 import { wwwAuthenticateHeader } from './auth/oauth-metadata.js';
+import { DEFAULT_CEILINGS, type Ceilings, type Effort } from './params/contract.js';
 
 // REQ-066 (v11): engine version from package.json + best-effort git describe, replacing the hardcoded '1.0.0'.
 const ENGINE_VERSION = resolveEngineVersion();
@@ -148,6 +150,14 @@ export interface ServerConfig {
   // open behavior is preserved byte-for-byte (no auth gates added). Google is a legitimately-doubled
   // external dep via injected googleAuthorizeUrl/googleTokenUrl/googleJwksUrl+jwksFetch (same contract as the integration tests). DES-095 v18.
   auth?: AuthConfig;
+  // v21 (ARCH-066 inv-6, DES-104, TASK-100): engine ceilings bounding the caller-override rung at
+  // admission AND, since adjudication #7's G-1 fix, the values stored into a workflow's `defaults`
+  // column at registration (ADR-005 — script per-call agent() opts stay unbounded) — refuse, never
+  // clamp. Each key falls back independently to contract.ts's shared DEFAULT_CEILINGS when absent,
+  // so the defaults are stated in exactly one place — see DEPLOY §1b for the values.
+  maxTimeoutMs?: number;
+  maxAppendPromptBytes?: number;
+  maxEffort?: Effort;
 }
 
 export interface Server {
@@ -228,6 +238,9 @@ interface JsonSchemaProp {
   items?: JsonSchemaProp & { properties?: Record<string, JsonSchemaProp>; required?: string[] };
   properties?: Record<string, JsonSchemaProp>;
   required?: string[];
+  // v21 (DES-104, ARCH-064 inv-2): the workflow_run `overrides` object is closed — a locked key
+  // (or any other unrecognized field) must not silently pass a schema-validating MCP client through.
+  additionalProperties?: boolean;
 }
 interface ToolInputSchema {
   type: 'object';
@@ -312,6 +325,17 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
           },
           required: ['repoUrl', 'sha'],
         },
+        overrides: {
+          type: 'object',
+          description: 'v21 per-run tunable-parameter overrides (REQ-091): exactly model/effort/timeoutMs/appendPrompt — locked parameters (prompt/tools/skills/mcp/workdir/cwd) are unrepresentable here (naming one -> PARAM_LOCKED). Bound by BOTH the workflow\'s own declared contract (see workflow_get.params) and the engine\'s ceilings, whichever is narrower; out-of-range -> PARAM_OUT_OF_RANGE. Never accepted by workflow_resume — a resumed run always reuses its pinned admission-time snapshot.',
+          properties: {
+            model: { type: 'string', description: 'Overrides the registered/default model alias for every agent() call in this run.' },
+            effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], description: 'Overrides the reasoning effort for every agent() call in this run (bounded by the engine\'s maxEffort ceiling).' },
+            timeoutMs: { type: 'number', description: 'Overrides the per-call timeout for every agent() call in this run (bounded by the engine\'s maxTimeoutMs ceiling).' },
+            appendPrompt: { type: 'string', description: 'Untrusted user text appended, in a fenced <user-instructions> block, after the script prompt for every agent() call in this run (bounded by the engine\'s maxAppendPromptBytes ceiling).' },
+          },
+          additionalProperties: false,
+        },
       },
     },
   },
@@ -347,7 +371,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     inputSchema: { type: 'object', properties: {} },
   },
   workflow_agent_log: {
-    description: "Returns one agent() call's captured transcript events (message/tool_call/tool_result/usage, in order) for a given run. Secret values are replaced with ‹secret:NAME› markers in persisted transcripts.",
+    description: "Returns one agent() call's captured transcript events (message/tool_call/tool_result/usage, in order) for a given run. Secret values are replaced with ‹secret:NAME› markers in persisted transcripts. The result's top-level `harness` object (null until the agent is dispatched) also carries the resolved tunable-parameter values for that call: `effort` (the resolved reasoning-effort directive, when any rung set one), `effortApplied` (whether/how it reached the wire: `{param,value}` applied, `{reason}` not applied, or absent when never requested), `timeoutMs` (the resolved per-call timeout), and `provenance` (per-key precedence rung — 'call'/'agentType'/'override'/'default'/'engine' — each resolved value came from).",
     inputSchema: {
       type: 'object',
       properties: {
@@ -369,13 +393,15 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
         // v15 (DES-099, TASK-089): optional harness defaults bound at registration time.
         defaults: {
           type: 'object',
-          description: 'Optional harness defaults bound at registration (DES-099): {model?, tools?, skills?, timeoutMs?, prompt?}. Validated at register time: model must be a resolvable alias, tools must be in the curated allowlist, skills are deferred to run time. Invalid → HARNESS_DEFAULTS_INVALID, nothing stored.',
+          description: 'Optional harness defaults bound at registration (DES-099, widened v21 adjudication #6 F-1): {model?, tools?, skills?, timeoutMs?, prompt?, effort?, appendPrompt?}. Validated at register time: model must be a resolvable alias, tools must be in the curated allowlist, skills are deferred to run time, effort/timeoutMs/appendPrompt above the engine\'s configured ceilings are refused. Invalid → HARNESS_DEFAULTS_INVALID, nothing stored.',
           properties: {
             model: { type: 'string', description: 'Default model alias for agents in this workflow.' },
             tools: { type: 'array', items: { type: 'string' }, description: 'Default curated tool allowlist for agents.' },
             skills: { type: 'array', items: { type: 'string' }, description: 'Default skill names (existence deferred to run time).' },
             timeoutMs: { type: 'number', description: 'Default per-agent timeout in milliseconds.' },
             prompt: { type: 'string', description: 'Default system prompt prefix for agents.' },
+            effort: { type: 'string', description: "Default reasoning effort ('low'|'medium'|'high'|'xhigh'|'max'), bounded by the engine's maxEffort ceiling." },
+            appendPrompt: { type: 'string', description: "Default text appended to every agent's prompt, bounded by the engine's maxAppendPromptBytes ceiling." },
           },
         },
       },
@@ -395,7 +421,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     },
   },
   workflow_get: {
-    description: "Returns a registered workflow's full detail — {name, version, createdAt, description (its purpose, from meta.description), phases, script, skeleton, owner (registration principal), defaults (harness defaults bound at registration)} — so a client can understand what it does, inspect its owner, query its registered harness defaults, and see its predicted DAG (a static scan of phase/agent/parallel/workflow calls) BEFORE deciding to reuse it or author a new one. Unknown name → WORKFLOW_NOT_FOUND.",
+    description: "Returns a registered workflow's full detail — {name, version, createdAt, description (its purpose, from meta.description), phases, script, skeleton, owner (registration principal), defaults (harness defaults bound at registration), params (the tunable-parameter contract declared via meta.params — always present, ceiling-bounded; a script with no params block reads back the canonical 4-knob contract)} — so a client can understand what it does, inspect its owner, query its registered harness defaults and tunable-parameter contract, and see its predicted DAG (a static scan of phase/agent/parallel/workflow calls) BEFORE deciding to reuse it or author a new one. Unknown name → WORKFLOW_NOT_FOUND.",
     inputSchema: {
       type: 'object',
       properties: { name: { type: 'string', description: 'The registered workflow to inspect.' } },
@@ -511,7 +537,8 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
         severity: { type: 'string', description: 'Severity label, e.g. low|medium|high (optional).' },
         component: { type: 'string', description: 'Affected component/area (optional).' },
         runId: { type: 'string', description: 'A related run to link in the issue (optional).' },
-        version: { type: 'string', description: 'Caller-supplied version string to include in the issue body (optional; whitespace-only treated as omitted, falls back to engine version).' },
+        version: { type: 'string', description: 'Caller-supplied version string to include in the issue body (optional; whitespace-only treated as omitted, falls back to engine version). When `workflow` is also set, this doubles as that workflow\'s own version for the `name@version` reference.' },
+        workflow: { type: 'string', description: 'Binds this report to a specific registered workflow name (optional): adds a `workflow:<name>` label and, with `version`, a `name@version` reference in the body. Never existence-checked.' },
       },
       required: ['title', 'reproSteps', 'analysis'],
     },
@@ -533,6 +560,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
         state: { type: 'string', description: "One of 'open' | 'closed' | 'all' (default 'open')." },
         since: { type: 'string', description: 'ISO timestamp; only issues updated at/after this.' },
         limit: { type: 'number', description: 'Max issues to return (default 30, capped at 100).' },
+        workflow: { type: 'string', description: 'Filter to issues bound to this workflow name (folds into the label filter as `workflow:<name>`, optional). The label truncates at 50 chars, so two long names agreeing on their first 50 chars can collide in this filter (recorded, low-severity; unaffected: issue de-duplication uses the untruncated name).' },
       },
     },
   },
@@ -771,7 +799,7 @@ async function callTool(
   principal: string | null = null,
 ): Promise<unknown> {
   switch (name as ToolName) {
-    case 'workflow_run': return facade.workflow_run(args as { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: { path: string; sha256: string; exec?: boolean }[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string }; seedManifestRef?: string; scriptSha256?: string }, principal);
+    case 'workflow_run': return facade.workflow_run(args as { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: { path: string; sha256: string; exec?: boolean }[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string }; seedManifestRef?: string; scriptSha256?: string; overrides?: unknown }, principal);
     case 'workflow_status': return facade.workflow_status(args as { runId: string });
     case 'workflow_result': return facade.workflow_result(args as { runId: string });
     case 'workflow_suspend': return facade.workflow_suspend(args as { runId: string });
@@ -1111,10 +1139,27 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   };
   ingestUpdateResult(); // boot-time read (covers the "applied" case after a systemctl restart)
 
+  // v21 adjudication #6 (F-1 ceiling interaction): computed BEFORE the catalog so a declared knob
+  // default can be bounded at registration too, not just at admission/read (moved up from its
+  // former spot below — same object, forwarded to the catalog AND to RunManager/McpFacade).
+  // v21 Gate 8 RE-REVIEW #6 (P6-5): the per-key fallback reads contract.ts's shared
+  // DEFAULT_CEILINGS. This composition root used to re-type the three numbers, so a change at
+  // run-manager.ts/mcp-facade.ts would have left PRODUCTION on the old values with a green suite.
+  const ceilings: Ceilings = {
+    maxTimeoutMs: config?.maxTimeoutMs ?? DEFAULT_CEILINGS.maxTimeoutMs,
+    maxAppendPromptBytes: config?.maxAppendPromptBytes ?? DEFAULT_CEILINGS.maxAppendPromptBytes,
+    maxEffort: config?.maxEffort ?? DEFAULT_CEILINGS.maxEffort,
+  };
   // v15 (DES-098, DES-099, TASK-089): boot backfill + alias-aware validation
   const catalog = new WorkflowCatalog(workRoot, clock, {
     backfillOwner: config?.auth?.enabled ? true : undefined,
-    aliasNames: config?.aliases ? new Set(Object.keys(config.aliases)) : undefined,
+    // v21 Gate 8 re-review #3 (P-A2): mirror the run manager's own fallback (line ~1196,
+    // R-G3) — an unconfigured deployment must feed the SAME non-empty DEFAULT_ALIASES table to
+    // BOTH registration and admission, or a model.enum/default absent from DEFAULT_ALIASES
+    // registers fine here and is refused only later at every run ("register succeeds, every run
+    // fails", discovered only after the fact).
+    aliasNames: new Set(Object.keys(config?.aliases ?? DEFAULT_ALIASES)),
+    ceilings,
   });
   const gateway =
     config?.gateway ??
@@ -1153,8 +1198,19 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       return secretSource.names().map((n) => ({ name: n, value: secretSource.resolve(n) ?? '' })).filter((s) => s.value.length > 0);
     },
   };
+  // `ceilings` (ARCH-066 inv-6, DES-104, TASK-100) is defined above, before `catalog`, and forwarded
+  // to BOTH RunManager (admission — refuses) and McpFacade (workflow_get/list read-time effective
+  // bounds) so a lowered ceiling is honored consistently everywhere, not just at the rung that
+  // happens to enforce it — now including the catalog's own registration-time check (F-1).
   let continuations: ContinuationStore | undefined;
-  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, onTerminal: (runId, status) => { void continuations?.onTerminal(runId, status); } });
+  // v21 Gate 8 RE-REVIEW (review §R2 (c), R-G3 MED): unlike the catalog's aliasNames (line ~1141,
+  // registration-time enum check, deliberately empty=accept-all per D-AUTH-5-B), the admission-time
+  // UNKNOWN_ALIAS check must mirror what DISPATCH actually resolves against — and on the documented
+  // default/unconfigured deployment dispatch resolves via DEFAULT_ALIASES (run-manager.ts's
+  // DEFAULT_GATEWAY_CONFIG), never "accept everything". Feeding an empty Set here left the B1/B2
+  // admission control inert on exactly the deployment shape most installs use.
+  const aliasNames = new Set(Object.keys(config?.aliases ?? DEFAULT_ALIASES));
+  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames, onTerminal: (runId, status) => { void continuations?.onTerminal(runId, status); } });
   // v8 Slice 4 (REQ-053): SQLite-persisted on-completion chaining, same workRoot convention as
   // schedules.db; rearmAtBoot reconciles any continuation whose target terminated while down.
   continuations = new ContinuationStore({ clock, runManager, store, dbPath: config?.continuationDbPath ?? join(workRoot, 'continuations.db') });
@@ -1171,7 +1227,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // below (fail-fast on an unprovisioned `mcp` name) and by the mcp_provision admin tool.
   const mcpRegistry = new McpRegistry({ dbPath: join(workRoot, 'mcp-registry.db'), probe: mcpProbe });
   const validator = new SubmissionValidator({ catalog, aliases: config?.aliases, mcpRegistry });
-  const facade = new McpFacade({ clock, store, runManager, validator });
+  const facade = new McpFacade({ clock, store, runManager, validator, ceilings });
   // v6 (REQ-036): best-effort engine-side diagnostics for a runId, pulled through the SAME facade
   // the MCP tools use (status + artifact list + failing/last agent transcript tail), formatted as a
   // short markdown block. Bounded and swallow-all — an unknown/failed run returns null so the

@@ -1,10 +1,1022 @@
 ---
 stage: review
-status: closed
+status: send-back
 ---
 # 07 Review & Retro — Gate 8
 
-## v20 GATE 8 REVIEW (2026-08-19, CURRENT / AUTHORITATIVE — ITERATION CAN CLOSE)
+## v21 GATE 8 RE-REVIEW #6 (2026-09-01, CURRENT / AUTHORITATIVE — SEND BACK to tests+impl)
+
+> **Sixth Gate 8 pass — after the §S7 send-back was closed end to end** (Gate 5 RED `976249c`,
+> Gate 6 closeout #6 `2e58d86` + doc closeout `9eae708` + adjudication #9 `c0e6cec`, Gate 6.5+7
+> working-tree dedup + coverage cases, Gate 7.5 ROUND 4 against a fresh `deploy.sh` boot at
+> `g9eae708`). Both architecture experts were re-dispatched on the post-closeout tree
+> (`.panel/review/adversarial.md` pass 6, `quality-dimensions.md` — both dated this pass;
+> consolidated only, none re-spawned, per dispatch). **Every §S7 item is genuinely closed or
+> honestly decided at HEAD** — verified independently in source by this reviewer (§T1), including
+> the measurement-retired F1 half 2 (pinned by 3 IT-081 cases, not merely argued).
+> **Verdict: still NOT closeable — `send_back: ["tests","impl"]`, `arch_consistent: false`.**
+> §S5's terminating rule applied honestly: "pass 6 closes with recorded debt **unless a
+> boundary-crossing finding remains**" — one remains. **P6-1**: `FRAME_CLOSE_FORGERY`
+> (`contract.ts:75`) is case-sensitive and whitespace-intolerant, so `</USER-INSTRUCTIONS>`,
+> `</User-Instructions>`, `</ user-instructions>` and `< /user-instructions>` all pass the caller
+> (cross-principal) rung — the exact actor/rung/mechanism F2 was BLOCKED for in pass 5, one
+> variant class over. Pass 5's evidentiary standard decides the call: F2 was blocked without
+> demanding proof the LLM consumer honours an exact-match close; demanding that proof now for the
+> case/space variants would be a stricter standard for the identical mechanism. And no
+> model-behaviour speculation is even needed: the control's own shipped comment
+> (`contract.ts:68-74`) claims the variant class "cannot slip a literal-string check", and four of
+> six variants slip — the implementation fails its own documented goal. Closing over it would ship
+> the asymmetry pass 7 would have to re-file ("blocked for exact-match, shipped
+> case-insensitive"). Fix is ONE LINE (widen the one shared, already-imported constant). Everything
+> else this pass found is non-blocking and rides or is recorded (§T5).
+> **Terminating rule for pass 7 (tightened): P6-1 is the ONLY item this batch may block on. Every
+> rider carries a verified-decision escape hatch. Pass 7 closes with recorded debt unless a NEW
+> boundary-crossing finding introduced by this batch itself remains.**
+
+### T1. §S7 closure verification (independent, on disk at `9eae708` + declared working tree)
+
+| §S7 item | reviewer verification |
+|---|---|
+| F2 admission half | `contract.ts:344-356` — `FRAME_CLOSE_FORGERY.test(val)` before the size bounds, refusal not escaping, detail `{param, suppliedBytes}` only (DES-101 row 6) — read in source |
+| F2 durable half | `run-manager.ts:~547` resume-side check via the **imported** constant (the Gate 6.5+7 dedup exported it from `contract.ts:75`; working-tree diff read line-by-line — quality-only, no behavior change) |
+| F1 half 1 (predicate swap) | `harness-defaults.ts:89-93` now calls `contract.ts`'s exported `isKnownAlias` (empty-table skip + `openrouter/<id>` passthrough inherited); hand-rolled `aliasNames.has()` gone — read in source |
+| F1 half 2 (gate reorder) | **Correctly RETIRED by measurement** (IMPL-146): production composition already refuses all 6 probe shapes; the reorder changed zero decisions and broke §S7's own origin-keyed-code constraint; pinned by 3 new IT-081 cases so it cannot be silently re-applied. The reviewer accepts the retirement — the counterfactual was measured, not argued, and the residual (ceilings-less catalog) is S-1 verbatim, explicitly on §S7's NOT-in-scope list |
+| F4 | `contract.ts:183-185` rejects `min`/`max` on a `type:'enum'` spec, typed, nothing stored — read in source; Gate 7.5 ROUND 4 probed it live |
+| F5 | Decided-and-recorded: collision documented at `issue-reporter.ts:169-177` + the `issue_list.workflow` tool description; fingerprint uses the raw name — per adversarial's closure table |
+| Doc batch (F3, S-2, C-3) | F3: ARCH-066 residual + `04-design.md` rewritten to the wider true statement ("introduced by v21", parent-author rungs, child row never read), verified at the v20 tip; S-2: ADR-005 + inv-4 now state both rungs, asymmetry measured-then-declared-intended, boot-sweep v22 candidate; C-3: `server.ts:395-403` advertises all 7 defaults keys + ceiling refusal, drift-locked in `schema-drift-v15.test.ts`; the DES-098→DES-099 misattribution recorded rather than silently retargeted |
+| §S7 ledger honesty | IMPL-145 (one commit = one entry for `2e58d86`, fifth race instance recorded) + IMPL-146 (measurement record); gap-set growth 11→14 disclosed, not smoothed |
+
+### T2. Traceability consistency
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: **823 items / 14 gaps — the
+exact set Gate 6 closeout #6 disclosed** (reviewer re-derived the list from trace.py's own
+analyzer, not from the dashboard):
+
+- 12 × 漂移 LOW: UT-058→DES-038, UT-064→DES-054, IT-057→DES-054, UT-094→DES-095, UT-095→DES-095,
+  DES-094→IMPL-122, DES-088→IMPL-127, DES-088→IMPL-140, DES-066→IMPL-140, **DES-099→IMPL-145,
+  DES-099→IMPL-146, DES-100→IMPL-146** (the last three are this round's declared false-positive
+  pairs — v15 design items traced by v21 IMPL entries; `iter:` records origin, not last touch,
+  same class as the DES-088/DES-066 pairs)
+- 1 × 未實作 LOW: TASK-018 (pre-existing, recorded debt since v14)
+- 1 × TDD MID: IMPL-082 no test coverage (pre-existing, recorded debt since v14)
+
+0 高嚴重度, 0 未驗證, 0 未真實驗證, 0 orphan/broken-link. All 14 remain recorded known tech debt
+(record renewed; the +3 growth was the honest choice over the two dishonest ways to hold 11).
+Item delta since #5: 821→823 = IMPL-145/IMPL-146, exactly the closeout's ledger entries. Docs and
+code at the same iteration for the v21 scope; no unrecorded drift beyond §T5's QD-CONS-3.
+
+### T3. Dashboard QA + module boundaries
+
+- Regenerated via `sh .sdlc/trace` — 823 items, dashboard.html rewritten. **Degraded modes,
+  unchanged from #4/#5, recorded per contract:** (a) repo `trace.py` predates the `--tool`
+  dispatcher → `dashboard_check`/`solid_check` run from the plugin cache (2.1.3 scripts); (b) no
+  playwright browser tools in this session — lexical + structural checks only.
+- `dashboard_check.py`: 0 high / 1 mid / 1 low — **both known and previously adjudicated**: the
+  MID is the recorded checker false positive (mermaid `erDiagram` crow's-foot `||--o{`
+  cardinality at `02-architecture.md:933` — re-confirmed by direct read this pass: all attribute
+  `{…}` blocks balance; valid mermaid), the LOW is the missing offline fallback (repo trace.py
+  older than plugin — housekeeping debt, unchanged). SoT links + all other mermaid blocks clean.
+- `solid_check.py`: **PASS** — 7 modules, 0 high / 0 mid / 10 LOW 未認領檔案, byte-identical to
+  the #4/#5 baseline (recorded arch-doc debt, not v21-caused).
+
+### T4. Validation & handover
+
+- **Real-tier: all green.** trace: 0 未驗證, 0 未真實驗證; `rtm.md` 95/95 REQs ✅ real:true
+  (reviewer-grepped: 96 ✅ = 95 rows + legend, 1 ❌ = legend only).
+- `08-validation.md` carries **ROUND 4** (post-`2e58d86`, boot version cross-checked `g9eae708`):
+  REQ-090/091/092/094's behavior deltas (F2 admission refusal incl. the space-variant probe, F1
+  alias-predicate swap both directions, F4 enum min/max rejection) re-proved live over MCP HTTP
+  against a fresh `deploy.sh --background` one-command boot; REQ-093/095 stand on Round 1/2
+  evidence per honest src-diff scoping (their paths untouched — reasoning verified sound). The F2
+  durable half correctly cited to the real-SqliteRunStore IT rather than a live re-probe (the
+  front door now refuses the shape; seeding is the only way in — VAL-100 precedent).
+- **Reviewer's own re-runs this pass:** `npx tsc --noEmit` clean; full `npx vitest run` —
+  **1565/1565 pass, 243 files, 2 pre-existing spawn-litellm-ENOENT background errors, 0 test
+  failures** — identical to the Gate 6.5+7 / Gate 7.5 ROUND 4 stamps.
+- README.md + DEPLOY.md: last touch `507aff7` (Gate 7.5); spot-re-read — current-state,
+  history-free, 淺白繁中, ASCII diagram, §0 leads with `./deploy.sh --background`, the exact
+  command ROUND 4 ran; 設定總表 §1b single-source, no new config keys this round. **One stale
+  clause found** (QD-CONS-3's second surface): the `maxTimeoutMs` row's "不影響作者 `defaults`"
+  has been false since G-1 — routed through the Gate 6 doc batch (one clause, not a broken
+  command; H-4 precedent, same as S-2/C-3), NOT a Gate 7.5 send-back.
+- **Checked, otherwise clean.**
+
+### T4b. Special-file review
+
+`git diff 0abba3a..HEAD --name-only` + working tree ∩ {CLAUDE.md, AGENTS.md, *SKILL.md} = **∅**
+(this round touched 5 src files, 5 test files, ledger docs only). CLAUDE.md unchanged since the
+#4 claude-md-improver audit (pass, 2 LOW) — verdict carried.
+
+### T5. Architecture consistency (consolidated from the 2 pre-run expert reports)
+
+**Sources:** `.panel/review/adversarial.md` (security+scalability+testability, pass 6, evidence
+by *executed probes*, tree `9eae708`+WT) and `.panel/review/quality-dimensions.md`
+(observability/replaceability/consumability/self-sustainability, scope verified against
+`git diff 637b86e..HEAD --stat -- src/`). QM ⇒ no safety lenses, correct. The reports are
+complementary: quality confirms every load-bearing v21 invariant it owns is implemented as
+decided (2 LOW, both guard-rail/doc class, zero behavior deviations); adversarial verifies §S7's
+closure row-by-row and files 2 MED / 3 LOW against the newly-landed control itself. This
+reviewer independently re-verified every load-bearing anchor in source before accepting
+(`contract.ts:75/183-185/265/343-356/422-430`, `run-manager.ts:409-437/~547`,
+`harness-defaults.ts:75-93`, `server.ts:1144-1147`, `mcp-facade.ts:20`, `run-manager.ts:110`,
+`02-architecture.md:967`, DEPLOY.md `maxTimeoutMs` row).
+
+**Consolidated findings (deduplicated):**
+
+| # | sev | finding (evidence, reviewer-verified) | route |
+|---|---|---|---|
+| **P6-1** | **MED — BLOCKING** | `FRAME_CLOSE_FORGERY = /<\/user-instructions/` (`contract.ts:75`): no `i` flag, no whitespace tolerance between `<`/`/`/name — `</USER-INSTRUCTIONS>`, `</User-Instructions>`, `</ user-instructions>`, `< /user-instructions>` all pass the **caller** rung. The control's own comment (`:68-74`) claims the variant class cannot slip; 4 of 6 variants slip. Same actor/rung/mechanism as pass-5's blocking F2 — cross-principal attribution forgery on ADR-007's structural control. Violates ADR-007(c)/ARCH-065 + the comment's own claim. | **BLOCKING → tests+impl.** Fix = widen the ONE shared constant to `/<\s*\/\s*user-instructions/i` — nothing else (both refusal sites inherit by import after the dedup). **Pattern must stay linear** (no nested quantifiers — a careless widening is how an A2 regression returns). NOT semantic screening — ADR-007's rejection of that stands; the honest residual (prose that *suggests* a boundary) is unreachable-by-construction and recorded, not pretended away. |
+| P6-2 | MED | F2's control covers 1 of 3 origins of `appendPrompt`: caller override ✅ (`contract.ts:349`), author `defaults.appendPrompt` ❌ (`harness-defaults.ts:80-82` type-only; no frame check at registration), post-merge admission ❌ (`run-manager.ts:416-431` re-asserts `isKnownAlias` on `effectiveParams.model` per R-G2 but nothing on `.appendPrompt`) — while resume ✅ refuses the same bytes (`:~547`). So an author-origin delimiter is **dispatched with a forged frame on every normal run and refused only at resume** — start/resume disagree on identical bytes (ARCH-066 inv-2's two-door agreement; verbatim R-G2 one field over). IMPL-145 declared only the availability half. NOT boundary-crossing (author-scoped; author already owns the un-framed `defaults.prompt` rung; the one cross-principal edge sits inside the declared F3 residual). | **Rides** in the P6-1 batch: 3-line R-G2 mirror beside `run-manager.ts:424` over `effectiveParams.appendPrompt`, same imported constant, same typed code — also deletes the start/resume asymmetry. **Escape hatch:** a recorded verified decision (+ the IMPL-145 sentence amended to name the dispatch half, not only the resume half) closes it as debt. |
+| P6-3 | LOW | Declared `args.<k>.default` is parsed, stored, served on `workflow_get` — and never applied to any run, never checked against its own spec (`validateDeclaredArgs` `contract.ts:422-430` `continue`s on absent key; catalog own-spec loop covers knobs only). Advertised≠enforced, 6th instance; silent `undefined` to the script. | Rides (F4's own precedent, same file): reject `default` on an args spec in `validateSpecShape`, typed, nothing stored. Escape hatch: verified decision + doc. |
+| P6-4 | LOW | `type:'enum'` specs are string-only by construction (`contract.ts:265` `expectedType` ternary sends enum→'string' before membership runs): a registrable numeric enum (`enum:[1,2,3]`) admits **no value at all** — fail-closed brick, misleading error (`expectedType:"string"`). | Rides: reject non-string enum members in `validateSpecShape` (parse-time, F4 precedent). Escape hatch: verified decision + doc. |
+| P6-5 | LOW | The fail-closed ceiling default triple exists at **three** independent literal sites, not the two S-1 records: `run-manager.ts:110`, `mcp-facade.ts:20`, and `server.ts:1144-1147` — the production composition root re-types the numbers, importing neither constant. Values identical today; a future change at the "natural" site leaves production on the old number with green tests. | Rides: export one `DEFAULT_CEILINGS` from `contract.ts` (net-negative), OR amend the S-1 residual to name three sites with `server.ts:1145` as the production one. |
+| QD-REP-1 | LOW | The declared "unsafe to adopt" fence on `resolve.ts`'s `mapEffort` copy (`:154-164`, no `restPath`) has no structural pin — unlike the parallel ADR-006 fence (`gateway-effort.test.ts:198-213` zero-importer assertion). A future `src/` importer regresses P-A1 with nothing red. | Rides: one `it()` zero-importer pin mirroring the ADR-006 one (until the pre-authorized deletion lands with the next DES-102/DES-106 touch). |
+| QD-CONS-3 | LOW | `02-architecture.md:967` (v21 interface table, the surface an integrating caller reads first) still says the three ceilings are "user-override ceilings only", and `DEPLOY.md`'s `maxTimeoutMs` row says "不影響作者 `defaults`" — both false since G-1 bounds registered defaults too. Verbatim the class S-2 warned about, surviving on two more surfaces. | Rides in the Gate 6 doc batch: one-line amendment to each (both rungs + ADR-005's per-call-opts exclusion). |
+
+Also verified-not-refiled (declared residuals confirmed as declared, counted 0): R-1 `mapEffort`
+twin (debt stands; QD-REP-1 is about its missing *fence*, filed once); S-1 ceilings-less catalog
+(re-measured by IMPL-146, rationale stands); self-inflicted resume refusal (declared; the
+dispatch half is P6-2); the wider internal `EffortApplied` shape (production never persists it —
+noted so pass 7 does not re-open); `UNKNOWN_ALIAS` echoing alias names (not secrets); caller
+`args` in the author-trusted segment (pre-v21, outside ADR-007's stated scope); registration
+read-modify-write (pre-v21, out of scope). Adversarial's scalability sweep: no findings; the F2
+check is linear-time, A2 class not re-introduced.
+
+**arch_consistent = false.** Blocking violation: P6-1 (with P6-2..P6-5, QD-REP-1, QD-CONS-3
+riding). Zero behavior-level deviations found by the quality lens; every §S7 closure verified.
+
+### T6. Send-back scope pin (pass 7 terminating rule above; unpinned scope is how this hit 6 passes)
+
+- **Gate 5 (tests) — RED first:**
+  - P6-1: extend the existing forgery block in `params-contract.test.ts` with the 4 slipping
+    variants (red pre-fix); one green pin on the resume side is enough (shared constant).
+  - P6-2 (if the mirror is taken): red case constructing the author-origin path — register
+    `defaults.appendPrompt` carrying the delimiter, `workflow_run` with NO overrides → refused at
+    admission before durable work.
+  - P6-3/P6-4 (if taken): red cases — `args` spec with `default` refused; non-string enum member
+    refused (and the numeric-enum brick pinned as the motivating case).
+  - QD-REP-1: one green zero-importer `it()` (no red needed — it pins current truth).
+- **Gate 6 (impl) — GREEN + doc batch in the same pass (H-4 precedent):**
+  - P6-1: widen the constant — one line, linear pattern, nothing else moves.
+  - P6-2 mirror (3 lines) OR the recorded verified decision + IMPL-145 sentence amendment.
+  - P6-3/P6-4 `validateSpecShape` rejections OR recorded verified decisions.
+  - P6-5: shared `DEFAULT_CEILINGS` export OR corrected S-1 residual (3 sites, `server.ts:1145`
+    named as production).
+  - Doc batch: QD-CONS-3 (`02-architecture.md:967` + DEPLOY.md `maxTimeoutMs` row).
+- **Standing flag for validation (via flag, NOT via send_back — #4/#5 convention):** this batch
+  lands behavior-affecting `src/` after Gate 7.5 ROUND 4's evidence; ROUND 5 must re-confirm the
+  touched REQ paths (REQ-091/094 at minimum — the forgery refusal is on their path) before pass 7
+  closes.
+- **NOT in scope:** anything in §T1's closure table; R-1/S-1 rationales; the 14 trace gaps;
+  solid_check's 10 unclaimed files; trace.py version sync; state.yaml strict-YAML defect.
+
+### T7. Retro (v21, sixth pass) + report
+
+- **What went well:** the terminating discriminator worked — pass 6 produced 0 HIGH and exactly
+  one blocking candidate, and the adversarial expert stated its uncertainty honestly instead of
+  resolving it in its own favour; F1 half 2's retirement-by-measurement is the strongest closure
+  evidence this iteration has produced; the gap-set growth was disclosed rather than smoothed.
+- **To change:** (1) when a fix ships a *pattern* (regex/delimiter/marker), the RED tests must
+  enumerate the variant class the rationale comment claims — the comment made a claim no test
+  checked; (2) a control over a field must be asserted total over every *origin* of the field at
+  the point the origins merge (R-G2 was this lesson for `model`; P6-2 is the same lesson for
+  `appendPrompt` — one checklist line at the post-merge rung would have caught both); (3) the
+  composition root should import shared defaults, never re-type them.
+- **Known tech debt (all recorded):** the 14 trace gaps (12 drift LOW incl. 5 declared
+  false-positive pairs, TASK-018 LOW, IMPL-082 MID); R-1 mapEffort twin (deletion instruction
+  standing); S-1 ceilings residual (count to be corrected to 3 sites per P6-5's route); any
+  P6-2..P6-4 rider closed by verified decision; solid_check's 10 unclaimed files; repo trace.py
+  older than plugin (no `--tool`, no mermaid offline fallback); erDiagram checker false positive;
+  state.yaml strict-YAML defect; pre-v21 registration read-modify-write wart.
+
+```
+Gaps: high=0 mid=3 (P6-1, P6-2 new; IMPL-082 pre-existing TDD)
+      low=22 (P6-3, P6-4, P6-5, QD-REP-1, QD-CONS-3 new + R-1, S-1 carried + 13 trace-recorded
+      + 1 dashboard-fallback + 1 checker-false-positive) — all remaining recorded
+Drift: none unrecorded — 12 trace iter-drift LOW (5 declared false positives) + QD-CONS-3's two
+       stale ceiling-scope surfaces (02-architecture.md:967, DEPLOY.md), routed to the doc batch
+Architecture consistent: NO — P6-1 (frame-close variant class slips the caller rung — same
+       boundary-crossing mechanism pass 5 blocked F2 for; BLOCKING, one-line fix) + P6-2 (control
+       total over 1 of 3 origins, start/resume disagree; author-scoped, rides) + P6-3/4/5,
+       QD-REP-1, QD-CONS-3 LOW riders
+Validation: real-tier all-green? YES (95/95 real:true; ROUND 4 fresh one-command boot at
+       g9eae708; reviewer re-ran the suite: 1565/1565, tsc clean) · README+DEPLOY present? YES
+       (current-state, history-free, 繁中, 一鍵部署 verified-run; one stale clause routed to the
+       doc batch)
+Dashboard: renders per lexical checks; 1 recorded checker false positive; degraded modes noted
+Module boundaries: solid_check PASS (0 high/0 mid/10 pre-existing LOW)
+Conclusion: SEND BACK to Gate 5 (tests) + Gate 6 (impl) — scope pinned in T6, P6-1 the only
+       blocking item, every rider carries an escape hatch. Validation re-confirms via the
+       standing flag (ROUND 5). Pass 7 closes with recorded debt unless a NEW boundary-crossing
+       finding introduced by this batch remains. .panel/ retained for the re-run.
+```
+
+## v21 GATE 8 RE-REVIEW #5 (2026-09-01, SUPERSEDED by RE-REVIEW #6 above — kept for history; was SEND BACK to tests+impl)
+
+> **Fifth Gate 8 pass — after the §Q7 send-back was closed end to end** (Gate 5 re-run #4 commit
+> `92667d7`, Gate 6 closeout #5 `43042d3`+`c5b3509`, the out-of-band leak fix `997626d` reconciled
+> as IMPL-144, Gate 6.5+7 `631ccbb`, Gate 7.5 ROUND 3 `0abba3a`). Both architecture experts were
+> re-dispatched on the post-closeout tree (`.panel/review/adversarial.md` pass 5,
+> `quality-dimensions.md` — both dated this pass; consolidated only, none re-spawned, per dispatch).
+> **Every §Q7 item is genuinely closed in code and doc** — A1 both halves, A2, A4, A5, A6, and the
+> full 11-item doc batch were re-verified at HEAD `0abba3a` by both experts AND spot-verified
+> independently by this reviewer (§S1). Gate 7.5 ROUND 3 re-proved the touched REQ paths at the
+> real tier against a fresh one-command boot.
+> **Verdict: still NOT closeable — `send_back: ["tests","impl"]`, `arch_consistent: false`.** The
+> block is ONE MED finding, **F2** — v21's own `<user-instructions untrusted="true">` frame (ADR-007's
+> entire structural mechanism) is forgeable by the very text it frames — plus **F1** riding in the
+> same batch (safe-direction alias-predicate split + gate-ordering hole, net-negative-lines fix).
+> The discriminator applied (and the terminating rule for pass 6): a finding blocks only if it lets
+> an actor cross a boundary the architecture claims is enforced. F2 does (cross-principal
+> attribution forgery on the one control ADR-007 relies on, in v21-new code); F1 does not on its own
+> (divergence direction is safe, no escalation) and rides only because the gates re-run anyway.
+> Everything else this pass found is doc-layer or recorded debt. **If pass 6 returns only
+> non-boundary-crossing findings, the iteration closes with recorded debt.**
+
+### S1. §Q7 closure verification (independent, on disk at `0abba3a`)
+
+| §Q7 item | reviewer verification |
+|---|---|
+| A1 half 1 (parser shape guard) | `contract.ts:156-170` `validateSpecShape` (type∈literals / enum array / min/max numbers), called at `:207` (knobs) and `:232` (args) — read in source |
+| A1 half 2 (read path total over poisoned row) | `boundEffort` `contract.ts:125-129` (`Array.isArray` guard → `ALL_EFFORTS` fallback), `boundMax` `:117-120` (non-number `max` → `Infinity`) — no TypeError path survives; H-1's "verify no deployed row" escape correctly declined in favour of totality |
+| A2 (O(n) truncation) | `truncatedSupplied` `contract.ts:80-93` — single `Buffer.from` + `subarray(0,64)` + UTF-8 continuation back-off; the O(n²) loop is gone |
+| A4 (string min/max byte-length semantics) | `contract.ts:269` byte-length branch for `type:'string'` (via quality's re-verification + adversarial's F4 delta read) |
+| A5 (third ceiling advertised) | `server.ts:334` names `maxAppendPromptBytes` in the tool schema (reviewer grep hit); `boundMax` shared by timeoutMs and appendPrompt in `effectiveBounds` `contract.ts:138-141` — read in source |
+| A6 (effortApplied honesty) | doc route chosen and recorded: ARCH-068/069 both define `applied:true` = "sent on the wire, not verified-honoured", mirrored (both experts verified) |
+| Doc batch (A3, A7..A12, O-3, C-2, R-2) | quality's closure table verified each at its anchor (02-architecture/04-design/05-tests/06-impl-log); adversarial's "Checked and clean" concurs; spot-read of ARCH-064 inv (2) rewrite confirms |
+| IMPL-144 / `997626d` (post-Round-2 leak fix) | reconciled in 06-impl-log (Gate 6.5+7); sanitized rejection at `contract.ts:360-367` read in source (`supplied`/`suppliedTruncated` deleted, `suppliedBytes` substituted, author `allowed` presets kept); Gate 7.5 ROUND 3 re-proved REQ-090/091 live |
+
+### S2. Traceability consistency
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: **821 items / 11 gaps — the
+identical set carried since IMPL-140** (extracted from the regenerated dashboard gap list):
+
+- 9 × 漂移 LOW: UT-058→DES-038, UT-064→DES-054, IT-057→DES-054, UT-094→DES-095, UT-095→DES-095,
+  DES-094→IMPL-122, DES-088→IMPL-127, DES-088→IMPL-140, DES-066→IMPL-140 (the last two are the
+  declared false-positive pairs — `iter:` records origin, not last-touched)
+- 1 × 未實作 LOW: TASK-018 (pre-existing, recorded debt since v14)
+- 1 × TDD MID: IMPL-082 no test coverage (pre-existing, recorded debt since v14)
+
+0 高嚴重度, 0 未驗證, 0 未真實驗證, 0 orphan/broken-link. All 11 remain recorded known tech debt
+(record renewed). Item delta since #4: 818→821 = IMPL-142/143/144, exactly the ledger entries the
+closeout and verifier passes added — **the A7 ledger-honesty gap from #4 is closed** (the
+`secret-resolver.ts` change and the out-of-band `997626d` commit are both traced now). Docs and
+code are at the same iteration for the v21 scope; no unrecorded drift found this pass.
+
+### S3. Dashboard QA
+
+- Regenerated via `sh .sdlc/trace` (repo copy) — 821 items scanned, dashboard.html rewritten.
+  **Degraded modes, same as #4, recorded per contract:** (a) repo `trace.py` predates the `--tool`
+  dispatcher → `dashboard_check`/`solid_check` run from the plugin cache
+  (`iso-agile-sdlc/2.1.3/skills/iso-agile-sdlc/scripts/`); (b) no playwright browser tools in this
+  session — lexical + structural checks only, no in-browser render/tab/SoT-click pass.
+- `dashboard_check.py`: 0 high / 1 mid / 1 low — **both known and previously adjudicated**:
+  - MID "02-architecture.md:931 括號不平衡" = the **recorded checker false positive** from #4
+    (mermaid `erDiagram` crow's-foot `||--o{` cardinality; all attribute `{…}` blocks balance —
+    re-confirmed by direct read of the block this pass). Not a defect; stays recorded so the next
+    pass does not re-file it.
+  - LOW: no mermaid offline fallback (repo trace.py older than plugin) — recorded housekeeping debt,
+    unchanged.
+- SoT links / all other mermaid blocks: clean per the checker.
+
+### S4. Module-boundary check (SOLID)
+
+`solid_check.py`: **PASS** — 7 modules, 0 mid; the same 10 pre-existing LOW 未認領檔案 warnings
+(`harness-defaults.ts`, `self-update.ts`, `agent-semaphore.ts`, `mcp-probe.ts`, `net-guard.ts`,
+`workflow-meta.ts`, `workspace-artifacts.ts`, `webhook-registry.ts`, `continuation-store.ts`,
+`main.ts`) — recorded arch-doc debt, not v21-caused. #4's R-2 (undeclared gateway→executor dep) is
+**closed**: ARCH-069 `deps:` now names ARCH-068 (verified by quality at `02-architecture.md:768`).
+
+### S5. Architecture consistency (consolidated from the 2 pre-run expert reports)
+
+**Sources:** `.panel/review/adversarial.md` (security+scalability+testability, pass 5, tree
+`0abba3a`) and `.panel/review/quality-dimensions.md` (observability/replaceability/consumability/
+self-sustainability, post-IMPL-142/143/144). QM ⇒ no safety lenses, correct.
+
+**The reports are complementary this pass, not contradictory** (unlike #4): quality confirms every
+code-level invariant of ARCH-064..070/ADR-001..008 holds at HEAD and files 4 LOW (2 carried debt,
+2 new doc-layer); adversarial confirms the same anchors ("Checked and clean" table, 20+ rows) and
+files 3 MED / 2 LOW on seams the A-batch never examined. This reviewer independently verified the
+two load-bearing MEDs in source before accepting them (F1 both doors read directly; F2's three
+evidence anchors read directly + `grep 'user-instructions'` = 3 hits, all constants/description).
+
+**Consolidated findings (deduplicated):**
+
+| # | sev | finding (evidence) | route |
+|---|---|---|---|
+| **F2** | **MED — BLOCKING** | The `<user-instructions untrusted="true">` frame is forgeable by its payload: `composePrompt` (`resolve.ts:146-148`) concatenates with no scan; `validateUserOverrides`' appendPrompt branch checks bytes only (`contract.ts:326-345`); the drift-lock (`params-resolve.test.ts:193-200`) pins the wrapping, not the invariant. A non-owner submitter's `appendPrompt` containing `</user-instructions>` closes the untrusted block and attributes trailing text to the author — cross-principal attribution forgery on ADR-007's chosen structural control; the accepted residual's "bounded **and attributed**" claim fails on the attribution half. Violates ADR-007(c)/ARCH-065. Reviewer-verified in source. **Durable half (reviewer-added, mirroring A1's pattern):** a run admitted pre-fix carries the forged text in its persisted `effectiveParams`; resume reads the pinned snapshot back with only the secret-marker refusal (`run-manager.ts:538-539`, `:633`) — it would re-dispatch the forgery. | **BLOCKING → tests+impl.** Fix = one rejection row (refusal at admission, **not** escaping — escaping breaks ARCH-066 inv-2 resume byte-identity and inv-4 "refuse, never silently alter"; adversarial argued this and it is pinned). Plus the durable half: resume-side delimiter check OR a recorded verified decision that no persisted run carries the delimiter (a live deployment exists). |
+| F1 | MED | Two alias predicates + D-AUTH-5 gate not total over the stored column: `harness-defaults.ts:85-88` hand-rolls strict `aliasNames.has()` (no `openrouter/<id>` passthrough) vs `isKnownAlias` (`contract.ts:71-75`); and `validateHarnessDefaults` runs at `workflow-catalog.ts:119` BEFORE the normalization loop (`:139-158`) writes declared knob defaults into `effectiveDefaults` — the normalized half never passes it. One value, two doors, opposite answers (`defaults.model:'openrouter/…'` refused; same string as `params.knobs.model.default` accepted via `contract.ts:225-227` — both doors read by this reviewer). Direction is SAFE (permissive predicate matches dispatch; admission re-checks post-merge, `run-manager.ts:424`): no escalation — violates ARCH-064's "the ONE alias predicate" api claim, 4th instance of the credit-a-control-that-doesn't-run class. | Rides in the F2 batch (does not independently block): predicate swap (`isKnownAlias` in harness-defaults) + move the `validateHarnessDefaults` call after the normalization loop over `effectiveDefaults` — net-negative lines, **preserving the origin-keyed rejection codes** (`workflow-catalog.ts:175-180` convention). |
+| F3 | MED | The nesting residual record is doubly wrong: `04-design.md:2711` says "inherited not introduced" and names only caller *overrides* — but pre-v21 `resolveHarnessParams` had zero callers, so parent-author `defaults.tools`/`prompt` governing a CHILD workflow's agents (`resolve.ts:43-58,124-125`; `run-manager.ts:782,852-855`; `agent-executor.ts:349-358` — child's own defaults/params columns never read) is **introduced by v21** and moves *author* rungs. Bounded today (tool allowlist; scripts are readable anyway); becomes live when v22/D15 masking lands. | Doc-only, folded into the impl re-run's doc batch: amend `04-design.md:2711` + the ARCH-066/ADR-002 residual line to the wider true statement; re-file the v22 candidate against it. No code (adversarial's own Karpathy ruling, adopted). |
+| F4 | LOW | `min`/`max` on a `type:'enum'` spec are NaN-inert (`contract.ts:269` numeric branch; `validateSpecShape` accepts them) — advertised≠enforced, residual edge of A4. | Fold into the impl batch (same file, ~3 lines): reject `min`/`max` on enum specs in `validateSpecShape` (the cheaper option — an enum's membership IS its bound). |
+| F5 | LOW | `workflowLabel` 50-char truncation (`issue-reporter.ts:169-170`) can collide two workflows in `issue_list` filtering (dedup fingerprint uses the raw name and is safe). | Fold into the impl batch: hash-suffix the truncated label or document the collision on the tool description — decide and record, don't leave unrouted. |
+| C-3 | LOW | `workflow_register` tool schema advertises 5 defaults keys; engine accepts/applies 7 (`server.ts:395-402` vs `harness-defaults.ts:39,77-82`); G-1 ceiling refusal undocumented; no drift-lock pins the property list; DES-098 still declares the 5-key shape + deleted `resolveHarnessParams` (`04-design.md:2341,2352,2404`). The docs/behavior split class ARCH-067's own note forbids minting. | Fold into the impl doc batch: schema properties + description + drift-lock pin (`schema-drift-v15.test.ts`) + DES-098 amendment. |
+| S-2 | LOW | ADR-005 (`02-architecture.md:809`) + ARCH-066 inv-4 (`:743`) still say ceilings bound "the USER override rung only" — false since G-1 applied them to registered defaults at registration time. An architect reading ADR-005 today re-opens G-1's hole at the next composition site. The lowered-ceiling-vs-stored-defaults asymmetry should be declared intended (or not) in the same paragraph. | Fold into the doc batch: one-paragraph amendment to ADR-005 + inv-4. |
+| R-1 | LOW | Wrong `mapEffort` twin still ships (`resolve.ts:151-164`, no `restPath`; zero production callers; 5 UT cases pin it). | Stays recorded debt (upgraded wording landed in the A12 batch); deletion lands with the next touch of DES-102/DES-106 + re-pointing the UT cases. |
+| S-1 | LOW | `DEFAULT_CEILINGS` duplicated (`run-manager.ts:110`, `mcp-facade.ts:20`); catalog without `opts.ceilings` enforces no registration ceiling. Production composition root always passes the shared object. | Stays recorded debt (IMPL-141/143 rationale stands, re-affirmed by both experts). |
+
+Also verified-not-filed by adversarial and accepted by this reviewer: the pre-v21 registration
+read-modify-write concurrency wart (out of scope, recorded); `UNKNOWN_ALIAS` echoing alias names
+(not secrets); the impure-`meta` canonicalization path (inert — `checkMetaLiteral` fails such
+scripts at run time); self-inflicted resume refusal on a typed `‹secret:` (caller-scoped,
+fail-closed); IC4's ceilings-vs-inline-script argument (ADR-005 ruling stands).
+
+**arch_consistent = false.** Blocking violation: F2 (with F1 riding in the batch). F3 is a MED
+record-honesty defect (doc-only). The LOW set is doc-layer drift + declared debt.
+
+### S6. Validation & handover
+
+- **Real-tier: all green.** trace: 0 未驗證, 0 未真實驗證. `rtm.md`: **95/95 REQs ✅ real:true**
+  (reviewer-grepped: the only ❌/✅ outside rows are the legend line).
+- `08-validation.md` v21 section now carries ROUND 3 (commit `631ccbb`): scope correctly narrowed
+  by `git diff 90b5d30..HEAD -- src/` (only `contract.ts` moved post-Round-2), REQ-090/091
+  re-confirmed live over MCP HTTP against a fresh `deploy.sh --background` boot (version string
+  cross-checked against `git rev-parse`), including a byte-for-byte wire-response inspection for
+  the 997626d leak class plus the honest `toErrEnvelope()` pre-fix-observability note. ROUND 1/2
+  stamps stand for the untouched REQ paths — reasoning verified sound.
+- **README.md + DEPLOY.md: unchanged since #4's clean check** (`git log` — last touch `507aff7`,
+  the Gate 7.5 pass); spot-re-read confirms current-state, history-free header, 淺白繁中, ASCII
+  diagram, §0 一鍵部署 `./deploy.sh --background` leading — the exact command Gate 7.5 ROUND 3 ran
+  again this round. 設定總表 §1b single-source; no new config keys this round (contract.ts only).
+- **Checked, clean.**
+
+### S6b. Special-file review (files touched this iteration)
+
+`git diff 016e95c..HEAD --name-only` (this round) ∩ {CLAUDE.md, AGENTS.md, *SKILL.md} = **∅** —
+this round touched only ledger docs, `src/params/contract.ts`, and 3 test files. CLAUDE.md (new in
+v21, reviewed via claude-md-improver audit at #4: pass, 2 LOW notes) is unchanged since — verdict
+carried, no re-review needed.
+
+### S7. Send-back scope pin (the auto re-run runs each gate ONCE; unpinned scope is how items dangle)
+
+- **Gate 5 (tests) — RED first:**
+  - F2: (a) admission refuses an `appendPrompt` containing the close-delimiter (`</user-instructions>`
+    — or tighter, `<` + `/user-instructions`) with `PARAM_OUT_OF_RANGE`, reported by position/size,
+    **never by content** (DES-101 row 6 discipline); (b) extend the drift-lock at
+    `params-resolve.test.ts:193-200` to pin frame **integrity** (the invariant), not just the
+    wrapping (the spelling); (c) the durable half: a pre-fix-admitted run whose persisted
+    `effectiveParams` carry the delimiter must be refused at resume (or the alternative below).
+  - F1: the red case must construct the **post-normalization** object (register via
+    `params.knobs.model.default` with an `openrouter/<id>` string AND via `defaults.model` with the
+    same string — pin that both doors give the SAME answer); both halves are unit-test-invisible in
+    isolation, which is why the hole survived 4 passes.
+  - F4: `validateSpecShape` rejects `min`/`max` on a `type:'enum'` spec (typed, nothing stored).
+- **Gate 6 (impl) — GREEN + doc batch in the same pass:**
+  - F2: one rejection row in `validateUserOverrides` — **refusal, not escaping** (escaping breaks
+    ARCH-066 inv-2 resume byte-identity + inv-4 refuse-never-alter; pinned so the fix is not
+    "improved" into the wrong shape). Durable half: resume-side delimiter check next to the
+    existing `hasSecretMarker` guard, OR a recorded verified decision that no persisted run in the
+    live deployment carries the delimiter.
+  - F1: `harness-defaults.ts:86` → `isKnownAlias`; move the `validateHarnessDefaults` call after
+    the normalization loop, over `effectiveDefaults`, **preserving the origin-keyed rejection
+    codes** (`workflow-catalog.ts:175-180`). Net-negative lines.
+  - F4 code fold-in; F5 decided (hash-suffix or documented collision) and recorded.
+  - **Doc batch (same pass, not a follow-up — H-4 precedent):** F3 (`04-design.md:2711` +
+    ARCH-066/ADR-002 residual rewrite, re-file the v22 candidate), S-2 (ADR-005 + inv-4 G-1
+    amendment incl. the lowered-ceiling asymmetry statement), C-3 (`workflow_register` schema
+    properties + description + drift-lock pin + DES-098 amendment).
+- **NOT in scope:** anything in §S1's closure table; R-1/S-1 (recorded debt with standing
+  rationales); the 11 trace gaps; solid_check's 10 unclaimed files; trace.py version sync;
+  state.yaml strict-YAML defect (housekeeping debt, unchanged from #4).
+
+### S8. Retro (v21, fifth pass)
+
+- **What went well:** the send-back machinery genuinely converged — 2 HIGH → 0 HIGH across one
+  re-run cycle; every one of the 30+ accumulated findings from passes 1–4 is verifiably closed at
+  HEAD; the out-of-band commit class (`997626d`) was caught by the verifier's flag and re-validated
+  at the real tier instead of riding a stale stamp; ledger honesty (A7) was actually repaired.
+- **To change:** (1) v21 shipped a *structural* control (the frame) with a drift-lock that pinned
+  its spelling but not its meaning — when a control IS a delimiter/fence/marker, the RED test must
+  include the forgery case from day one; (2) validation gates that run before all their inputs
+  exist (F1's ordering) are invisible to per-half unit tests — integration cases must construct
+  the post-normalization object; (3) five passes is the cost of unpinned early scope — the
+  boundary-crossing discriminator + terminating rule (§preamble) is now explicit so pass 6 cannot
+  re-open indefinitely.
+- **Known tech debt (all recorded):** the 11 trace gaps (9 drift LOW incl. 2 declared
+  false-positive pairs, TASK-018 LOW, IMPL-082 MID); R-1 mapEffort twin (deletion instruction
+  standing); S-1 ceilings-copy residual; solid_check's 10 unclaimed files; repo trace.py older
+  than plugin (no `--tool`, no mermaid offline fallback); state.yaml strict-YAML defect;
+  pre-v21 registration read-modify-write concurrency wart; erDiagram checker false positive
+  (recorded to prevent re-filing).
+
+### S9. Report
+
+```
+Gaps: high=0 mid=4 (F1, F2, F3 new; IMPL-082 pre-existing TDD)
+      low=17 (F4, F5, C-3, S-2 new + R-1, S-1 carried + 10 trace-recorded + 1 dashboard-fallback;
+      state.yaml strict-YAML counted under housekeeping) — all remaining recorded
+Drift: none unrecorded — the 9 trace iter-drift LOW (2 declared false positives) + the S5 LOW doc
+       batch (ADR-005/DES-098/design-residual text lagging adjudicated code); A7 ledger-honesty
+       from #4 verified CLOSED (IMPL-142/143/144 traced)
+Architecture consistent: NO — F2 (ADR-007's frame forgeable by its payload — cross-principal
+       attribution forgery, v21-new code, BLOCKING) + F1 (ARCH-064 one-predicate claim split,
+       safe direction, rides) + F3 (residual record mis-scoped, doc-only) + F4/F5/C-3/S-2 LOW
+Validation: real-tier all-green? YES (95/95 real:true, ROUND 3 fresh one-command boot) ·
+       README+DEPLOY present? YES (current-state, history-free, 繁中, 一鍵部署 verified-run)
+Dashboard: renders per lexical checks; 1 recorded checker false positive (erDiagram crow's-foot);
+       no-playwright + plugin-script degraded modes noted
+Module boundaries: solid_check PASS (10 pre-existing LOW unclaimed; #4's R-2 closed)
+Conclusion: SEND BACK to Gate 5 (tests) + Gate 6 (impl) — scope pinned in S7. Not closeable over
+       F2 (F1/F4/F5 + doc batch ride the same re-run). Terminating rule declared: pass 6 closes
+       with recorded debt unless a boundary-crossing finding remains. .panel/ retained for the
+       re-run.
+```
+
+## v21 GATE 8 RE-REVIEW #4 (2026-09-01, SUPERSEDED by RE-REVIEW #5 above — kept for history; was SEND BACK to tests+impl)
+
+> **Fourth Gate 8 pass — after the IMPL-141 closeout (commits `90b5d30`, `1f13b61`, `016e95c`) and
+> Gate 7.5 ROUND 2 (real-tier re-validation of G-1/P-A3 against a fresh `deploy.sh --background`
+> boot).** Both architecture experts were re-dispatched on the post-IMPL-141 state
+> (`.panel/review/adversarial.md` pass 4, `quality-dimensions.md` — both dated this pass).
+> **Every prior send-back item is genuinely closed in code**: R-G1..R-G10, P-A1..P-A4, F-1/F-2,
+> G-1/G-2 and P-A6 were all re-verified at HEAD by the adversarial expert's "Checked and clean"
+> table AND spot-verified independently by this reviewer (§Q1). The v21 wiring — ceilings threaded
+> from ONE shared object, one bounds predicate at all rungs, refusal-only resume, redact-then-cap,
+> correct `output_config.effort` wire shape against both vendored SDKs — is sound.
+> **Verdict: still NOT closeable — `send_back: ["tests","impl"]`, `arch_consistent: false`.** The
+> block is TWO NEW HIGH findings in `src/params/contract.ts` — the parser's own input validation
+> (A1) and the cost of its rejection path (A2). Neither is a regression of any prior fix (the
+> auto-re-run-ONCE budget has not been spent on them); they are the *inverse* of the class the three
+> send-backs closed: not "an advertised bound enforced nowhere" but "an accepted input that is
+> unsurvivable downstream". Both were **independently reproduced by this reviewer on this tree**,
+> not taken on the expert's word.
+
+### Q1. Prior-send-back closure verification (independent, on disk at `016e95c`)
+
+| item | reviewer verification |
+|---|---|
+| P-A1 (wire shape) | `gateway/client.ts:42` `restPath:['output_config','effort']`; adversarial cross-checked against the **vendored** `@anthropic-ai/sdk` `OutputConfig` type (`messages.d.ts:853-863`) — genuinely closed |
+| P-A2/R-G3 (one alias table) | `server.ts:1155`/`:1206` both read `config?.aliases ?? DEFAULT_ALIASES` |
+| P-A3 (defaults reach dispatch) | Gate 7.5 ROUND 2 live evidence: registered `defaults.effort:'high'`, no override → `workflow_agent_log` harness `effort:'high'`, `provenance.effort:'default'`, real Ollama run completed (08-validation.md v21 ROUND 2) |
+| P-A4 (model.default alias-checked at registration) | `contract.ts:184-186` |
+| F-1/G-1 (ceiling over FINAL effectiveDefaults) | `workflow-catalog.ts:171-193`, one pass keyed by knob, shares `checkValueAgainstSpec`; real-tier ceiling-bypass refusal case green (VAL evidence, `HARNESS_DEFAULTS_INVALID`) |
+| F-2 (one bounds predicate) | `checkValueAgainstSpec` exported (`contract.ts:204`), catalog's `violatesOwnSpec` delegates |
+| G-2 | both surviving adjudication-#5 citations read as historical SUPERSEDED notes — verified by adversarial, spot-read by reviewer |
+| P-A6 (marker grammar dedup) | `hasSecretMarker` exported from `secret-resolver.ts:124`, imported at `run-manager.ts:35` — **closed in code**, but see A7: the ledger says otherwise |
+
+### Q2. Traceability consistency
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: **818 items / 11 gaps — the
+identical set carried since IMPL-140**, byte-matched against the extracted dashboard gap list:
+
+- 9 × 漂移 LOW: UT-058→DES-038, UT-064→DES-054, IT-057→DES-054, UT-094→DES-095, UT-095→DES-095,
+  DES-094→IMPL-122, DES-088→IMPL-127, DES-088→IMPL-140, DES-066→IMPL-140 (the last two are the
+  **declared false-positive pairs** — `iter:` records origin, not last-touched; amended notes exist
+  on both DES items)
+- 1 × 未實作 LOW: TASK-018 (pre-existing, recorded debt since v14)
+- 1 × TDD MID: IMPL-082 no test coverage (pre-existing, recorded debt since v14)
+
+0 高嚴重度, 0 未驗證, 0 未真實驗證, 0 orphan/broken-link. **All 11 remain recorded known tech
+debt** (this section renews the record). One NEW ledger-honesty gap found outside trace.py's view:
+**A7** — `src/secret-resolver.ts` changed in v21 (`git diff 637b86e..HEAD` = +14/−1: `MARKER_PREFIX`,
+`hasSecretMarker()`) but appears on **no v21 IMPL `files:` line**, and IMPL-141's "Not done,
+declared" paragraph still routes F-4/P-A6 as outstanding although the code closed it (Q1 last row).
+Doc↔code drift in the impl log itself → folded into the send-back's doc batch (§Q7).
+
+### Q3. Dashboard QA
+
+- Regenerated via `sh .sdlc/trace` (repo copy). **Degraded modes, recorded per contract:** (a) this
+  repo's `trace.py` predates the `--tool` dispatcher, so `dashboard_check`/`solid_check` were run
+  from the plugin cache (`iso-agile-sdlc/2.1.3/skills/iso-agile-sdlc/scripts/`); (b) no playwright
+  browser tools in this session — no in-browser render/tab/SoT-click pass; lexical + structural
+  checks only.
+- `dashboard_check.py`: 0 high / 1 mid / 1 low.
+  - **MID — determined a checker FALSE POSITIVE, verified, not a defect:** "02-architecture.md:929
+    (v21 data architecture) 括號不平衡". The block is a mermaid `erDiagram`; the "unbalanced"
+    character is the `{` in the crow's-foot cardinality `WORKFLOWS ||--o{ RUNS : "…"` — **valid
+    mermaid erDiagram syntax**; the checker is a lexical bracket counter that does not know the
+    notation. All identifier/attribute `{…}` blocks in the diagram balance. Recorded here so the
+    next reviewer's re-run of the same checker does not re-file it as unaddressed.
+  - LOW — `dashboard.html` has no mermaid offline fallback because the repo's `trace.py` is older
+    than the plugin's. **Recorded debt:** sync the repo's `.sdlc/trace.py` with the plugin copy in a
+    future housekeeping pass (also retires degraded mode (a)).
+- SoT links / other mermaid blocks: clean per the checker.
+
+### Q4. Module-boundary check (SOLID)
+
+`solid_check.py`: **PASS** — 7 modules, all cross-module deps as declared on the ARCH `module:`/
+`deps:` lines; 0 mid. 10 LOW "未認領檔案" warnings (`harness-defaults.ts`, `self-update.ts`,
+`agent-semaphore.ts`, `mcp-probe.ts`, `net-guard.ts`, `workflow-meta.ts`, `workspace-artifacts.ts`,
+`webhook-registry.ts`, `continuation-store.ts`, `main.ts` unclaimed by any ARCH module) —
+pre-existing arch-doc drift, recorded debt (not v21-caused). One boundary finding the checker's
+granularity misses, from the quality expert (**R-2, NEW, LOW**): both gateway impls value-import
+`redactHarness` from the executor module (`gateway/client.ts:7` added in v21 by adjudication A-4;
+`claude-agent-sdk-client.ts:16` pre-existing) — ARCH-069's `deps:` names only ARCH-065/ARCH-005 and
+the container diagram's direction is K4→K5. Route: one-line `deps:` amendment on ARCH-069 (or
+relocate `redactHarness`/`capPrompt` to a neutral module) — folded into the doc batch (§Q7).
+
+### Q5. Architecture consistency (consolidated from the 2 pre-run expert reports)
+
+**Sources:** `.panel/review/adversarial.md` (security+scalability+testability, pass 4) and
+`.panel/review/quality-dimensions.md` (observability/replaceability/consumability/self-sustainability).
+QM ⇒ no safety lenses, correct.
+
+**The two reports disagree and the disagreement was adjudicated on primary evidence, not averaged.**
+Quality's §3 "verified consistent" claims — "allowlist-at-both-ends holds", "advertised bound ==
+enforced bound by the shared predicate" — are **contradicted by adversarial's reproductions**, and
+this reviewer's own reads sided with adversarial each time: no schema validator exists on the tool
+dispatch path (A3 — `inputSchema` is declarative metadata; grep confirms the only ajv is the
+agent-*output* schema), `min`/`max` on a `type:'string'` knob are NaN-inert (A4 — `contract.ts:222,
+230` compare `(value as number)`), and `effectiveBounds` narrows only `timeoutMs`/`effort` so the
+third ceiling is never advertised (A5 — `contract.ts:117-127`). Quality verified that text/pointers
+exist; adversarial verified what executes. Where they agree (the entire Q1 closure table, purity of
+`params/*`, ONE decoration site, refusal-only resume) the agreement is genuine and independently
+anchored.
+
+**Consolidated findings (deduplicated across both reports):**
+
+| # | sev | finding (evidence) | route |
+|---|---|---|---|
+| **A1** | **HIGH** | `parseParamContract` never checks `ParamSpec.type` ∈ literals / `enum` is an array / `min`/`max` are numbers (`contract.ts:161-197`; only locked-key, unknown-key, `enum.length`, model-alias checks exist). `enum:'abc'` on `effort` **registers** ('abc'.length=3 ≤ 32 passes the only guard); `boundEffort` (`contract.ts:110-112`) then throws `TypeError: authorEnum.filter is not a function` on **every** `workflow_get`/`workflow_list` — one poisoned registration by any authenticated principal (or the LAN, auth off by default) is a **durable, engine-wide denial of workflow discovery**, and turns admission into an untyped 500. Violates ARCH-067 fail-closed ("nothing is stored") + ARCH-064's typed-taxonomy invariant. Reviewer-verified in source. | **BLOCKING → tests+impl.** Fix has TWO halves: (1) parser shape guard (~6 lines, `invalid(param,reason)`); (2) **the durable-poison half** — a row poisoned pre-fix still bricks the read path; the re-run must either make `readParams`/`effectiveBounds` total over a malformed stored contract (canonical fallback or typed error, never TypeError) or record an explicit verified decision that no deployed DB carries a poisoned row (a live deployment EXISTS — this is not vacuous). |
+| **A2** | **HIGH** | `truncatedSupplied`'s loop trims ONE char per iteration, re-measuring/re-copying each time (`contract.ts:77-84`) — O(n²). **Reviewer-reproduced on this host: 611 ms @ 100k chars, 2396 ms @ 200k, clean 4× per doubling** → an 8 MiB `overrides.model` (bounded only by `MAX_BODY_BYTES`, `server.ts:687`) blocks the single-threaded event loop ≈70 min from ONE request, upstream of `createRun`/`maxConcurrentRuns`/budget, leaving no journal trace. Violates ARCH-066's zero-durable-cost rung property + ADR-005's cost-bounding purpose. | **BLOCKING → tests+impl.** One O(n) `slice` (`Buffer.byteLength` guard + single `subarray(0,64)`). **Red-test shape (pin, to avoid a Gate 5 stall on "testing a complexity bug"):** assert supplied-echo ≤ 64 bytes AND a generous wall-clock ceiling (< 1 s) on a ~1 MB out-of-enum `model` — current code takes ≫60 s, fixed code takes ms; the 100–1000× separation makes the timing assertion robust, not flaky. |
+| A3 | MED | ARCH-064 inv (2) "allowlist at both ends" + S-2 credit `additionalProperties:false` as a control; nothing evaluates `inputSchema` server-side (`server.ts:799` casts and forwards). Behaviourally fail-closed today (`validateUserOverrides` is total); the defect is the doc claiming a control that does not run. | Doc fix (adversarial's own adjudicated call, dissent recorded): amend ARCH-064 inv (2)/S-2 — the closed type + parser are the control, the schema is client-facing documentation. Fold into impl re-run doc batch. |
+| A4 | MED | `min`/`max` on a `type:'string'` knob are inert (NaN comparisons, `contract.ts:222,230`); author's declared `max` is served on `workflow_get` and enforced nowhere — advertised≠enforced, 4th instance; ADR-007's stated fallback mechanism silently does nothing. Adversarial reproduced (`'x'.repeat(40)` vs `max:10` → ok:true). | **Fold into the A1 fix batch** (same module, same shape guard): length semantics for string `min`/`max` in `checkValueAgainstSpec`, or reject `min`/`max` on string specs at parse. |
+| A5 | MED | `maxAppendPromptBytes` enforced at admission but never advertised — `effectiveBounds` narrows only 2 of 3 ceilings; the shipped tool description (`server.ts:334`) even names the ceiling. Fail-closed, consumability defect. | Fold into the A4/A1 batch: add the byte bound to the `appendPrompt` spec in `effectiveBounds`, same-predicate discipline. |
+| A6 | MED | `effortApplied:true` keyed per-**provider** (`EFFORT_PROFILES`, `gateway/client.ts:41-43,55-59` — reviewer-verified) while effort support is per-**model** (vendored `claude-agent-sdk/sdk.d.ts:174-178,1198-1202`: per-model `supportsEffort`, silent downgrade). A run on an effort-less anthropic model records "applied" — the dishonest-observability mode ARCH-068's tri-state exists to prevent; weakens REQ-093's low-vs-max assertion shape. | Doc-or-code, expert-sanctioned either way: amend ARCH-069/068 to define `effortApplied:true` = "sent, not honoured" (cheap), or consult the SDK's post-downgrade report (better). Impl re-run decides; record the choice. |
+| A7 | LOW | `secret-resolver.ts` v21 change untraced in 06-impl-log; IMPL-141 falsely declares F-4/P-A6 "not done" (it IS done in code — Q1). | Ledger fix in impl re-run: IMPL entry naming the file + correct the IMPL-141 paragraph. |
+| A8/O-1 | LOW | 02-architecture.md:913 sequence diagram still emits `appendPromptBytes` (dropped by adjudication B-2). | Doc batch. |
+| A9/C-1 | LOW | ARCH-064 note 1 + S-2 name phantom `parseUserOverrides` (grep src/ → 0; real name `validateUserOverrides`). Reviewer-verified. | Doc batch (the F-4 "ARCH-064 rename"). |
+| A10/O-2 | LOW | `:975` decision rationale + `:761` note still describe the pre-R-G9 cap site/fields (`redactHarness` cap, `promptTruncated`+`appendPromptBytes`); auditor following ARCH-068 to the redact→cap ordering is pointed at the wrong site. | Doc batch. |
+| A11 | LOW | DES-105 body still declares `appendPromptBytes?`/`promptTruncated?` — only the appended B-2 adjudication retracts them; neither exists in `types.ts`. | Doc batch. |
+| A12/R-1 | LOW | ARCH-065/069 api lines describe the pre-P-A1 flat `{param,value}` shape; AND the zero-caller duplicate `mapEffort` in `params/resolve.ts:151-164` has **no `restPath`** — the declared F5/QD-2 debt has diverged from "duplicate" to "wrong" (a future caller picking it emits the exact top-level-`effort` HIGH pass 3 filed). | Doc batch + upgrade the debt entry's wording; deleting the dead duplicate is the cheaper true fix — impl re-run's call. |
+| O-3 | LOW | 05-tests.md UT-020 note claims "6/6"; file holds 5 cases (quality re-ran: 5/5). | Doc batch. |
+| C-2 | LOW | DES-102 prose still says skills-carrying trio / "seven registered keys" vs shipped six-key shape (adjudication B-3) — the routed F-3. | Doc batch (F-3). |
+| R-2 | LOW | Undeclared gateway→executor `redactHarness` dep (see Q4). | Doc batch (ARCH-069 `deps:` line) or relocation. |
+| S-1 | LOW | `DEFAULT_CEILINGS` duplicated (`run-manager.ts:110`, `mcp-facade.ts:20`); catalog without `opts.ceilings` enforces no registration ceiling. Declared residual with recorded rationale (IMPL-141); production composition root always passes the shared object — adversarial re-verified. | Stays recorded debt, rationale stands. |
+
+**arch_consistent = false.** Violations that block: A1, A2 (both ARCH-invariant violations verified
+in source and reproduced). A3..A6 are MED honesty-of-control defects (doc-or-cheap-code); the LOW
+set is doc-layer drift, 7 of it already routed by IMPL-141's own F-3/F-4 and still open.
+
+### Q6. Validation & handover
+
+- **Real-tier: all green.** trace: 0 未驗證, 0 未真實驗證. `rtm.md` (regenerated at Gate 7.5 R2 via
+  trace.py's own scan/build_matrix): **95/95 REQs ✅ real:true**, 0 ❌ (reviewer-grepped: no ❌ rows).
+- `08-validation.md` exists with the v21 ROUND 2 section: fresh `deploy.sh --background` boot
+  (version string cross-checked against the clone's `git rev-parse` — the stale-zombie-port gotcha
+  honestly recorded), G-1 refusal + P-A3 default-reaches-dispatch live over MCP HTTP against local
+  Ollama, suite 1519/1519, tsc clean.
+- **README.md + DEPLOY.md present, current-state, 淺白繁中, ASCII 系統圖在 DEPLOY §0.**
+  DEPLOY.md **leads with the 一鍵部署** (`./deploy.sh --background`, §0) **that Gate 7.5 actually
+  ran**, with the real captured output. History-free by construction (header declares it; spot-greps
+  for changelog/version-diff narrative → none; the 設定總表 `iter` column is per-key provenance
+  metadata, not superseded instructions — same format every closed review accepted). **設定總表 §1b
+  is declared and verified the single place config keys are documented** (other mentions are
+  references); v21's 3 ceiling keys present (rows at DEPLOY.md:349-351); Gate 7.5 re-confirmed
+  32↔32 both directions.
+- **Checked, clean.**
+
+### Q6b. Special-file review (files touched this iteration)
+
+`git diff 637b86e..HEAD --name-only` ∩ {CLAUDE.md, AGENTS.md, *SKILL.md} = **CLAUDE.md (new file,
+22 lines)**. Reviewed via the claude-md-improver skill in **audit-only mode** (reviewer discipline:
+no edits to work under review). Verdict: **pass, LOW notes only.**
+
+- Accuracy: correct (`git show <sha>:<path>` reads without writing; `git checkout <sha> -- <path>`
+  does overwrite AND stage — verified semantics). Currency: reflects a real 2026-08-31 incident;
+  actionable, imperative, no stale instructions. The trace-baseline rule matches how this repo's
+  trace.py actually works (reads working tree).
+- LOW note 1: the incident narrative (7 lines) is longer than CLAUDE.md norms — 2–3 lines would
+  carry the rule; the severity context arguably earns its keep. Non-blocking.
+- LOW note 2: file is rule-only (no build/test/architecture context). Acceptable here: README/
+  DEPLOY/.sdlc carry that for humans and agents alike; not a Gate 8 finding.
+
+### Q7. Send-back scope pin (§P2-style — the auto re-run runs each gate ONCE; unpinned scope is how F-3/F-4 dangled through two closeouts)
+
+- **Gate 5 (tests) — RED first:** A1 (registration of each malformed-spec shape refused typed +
+  nothing stored; read path total over a pre-poisoned stored row — seed the column directly);
+  A2 (echo ≤64 bytes + <1 s wall-clock on ~1 MB out-of-enum `model`; see the pinned test shape in
+  Q5 — do NOT write a bare timing-only assertion); A4 (string `min`/`max` enforced or rejected —
+  pick ONE semantics and pin it); A5 (advertised `appendPrompt` bound == `maxAppendPromptBytes`).
+- **Gate 6 (impl) — GREEN + doc batch in the same pass:** A1 both halves, A2 one-line O(n) fix,
+  A4/A5 same-module fold-ins; A6 decision (doc or SDK-truth) recorded; the deduplicated doc batch =
+  A3, A8/O-1, A9/C-1, A10/O-2, A11, A12/R-1 (incl. debt-entry upgrade or duplicate deletion), O-3,
+  C-2 (=F-3), R-2 (ARCH-069 deps line), A7 (IMPL entry for secret-resolver.ts + correct IMPL-141's
+  false "F-4 not done"). S-1 stays debt.
+- NOT in scope: anything green in Q1; the 11 recorded trace gaps; the solid_check unclaimed-file
+  list; trace.py version sync (housekeeping debt).
+
+### Q8. Retro (v21, fourth pass)
+
+- **What went well:** the send-back machinery converged — all 24 accumulated findings across three
+  passes (R-G1..10, P-A1..A4+P-A6, F-1/F-2, G-1/G-2) are verifiably closed in code, most re-proved
+  at the REAL tier against a fresh one-command boot; the two-expert split (adversarial reproduces,
+  quality traces) caught each other's blind spots — quality's "verified consistent" on A3/A4/A5
+  was falsified by adversarial's reproductions, exactly what the two-lens design is for.
+- **To change:** (1) every send-back so far attacked the *enforcement* seams; nobody until pass 4
+  asked "is the parser's own input survivable downstream?" — add a standing "fail-open parser"
+  lens item: any accepted input must be provably consumable by every downstream reader.
+  (2) Rejection-path COST is part of the contract: a validator that is fail-closed but O(n²) is
+  still a hole; cheap micro-benchmark on new hot validators at Gate 7. (3) Ledger honesty drifted
+  under out-of-band commits (35e6994 landed work with no IMPL entry; IMPL-141 declares done work
+  not-done) — the "no commit without an IMPL entry" rule needs to survive racing workflows.
+- **Known tech debt (all recorded):** the 11 trace gaps (9 drift LOW incl. 2 declared
+  false-positive pairs, TASK-018 LOW, IMPL-082 MID); S-1 ceilings-copy residual; solid_check's 10
+  unclaimed files; repo trace.py older than plugin (no --tool, no mermaid offline fallback);
+  A6's provider-vs-model honesty note if the doc route is chosen; **NEW LOW (found this pass,
+  pre-existing)**: `state.yaml` is not strict-valid YAML — an old gate note (line 73, the
+  validation entry, col ~8978: `version:"v1.4.0-val75"` unescaped inner quotes inside a
+  double-quoted flow scalar) breaks `yaml.safe_load`; the workflow tooling reads it leniently so
+  nothing is broken today, but any strict-YAML consumer of the resume file will fail — housekeeping
+  fix (escape or re-quote that one note) alongside the trace.py sync.
+
+### Q9. Report
+
+```
+Gaps: high=2 (A1, A2 — NEW, blocking) mid=5 (A3..A6 new; IMPL-082 pre-existing TDD)
+      low=22 (10 expert/deduped + 10 trace-recorded + 1 dashboard-fallback + 1 state.yaml
+      strict-YAML defect, pre-existing) — all remaining recorded
+Drift: doc-layer only — 9 trace iter-drift LOW (2 declared false positives) + the Q5 LOW doc batch
+       (arch/design/test text lagging adjudicated code) + A7 impl-log honesty; no unrecorded drift
+Architecture consistent: NO — A1 (ARCH-067 fail-closed violated, durable engine-wide discovery DoS),
+       A2 (ARCH-066/ADR-005 rejection-cost violated, single-request event-loop DoS ~70 min),
+       A3..A6 MED honesty-of-control
+Validation: real-tier all-green? YES (95/95 real:true, fresh one-command boot) · README+DEPLOY? YES
+       (current-state, history-free, 繁中, 一鍵部署 verified-run)
+Dashboard: renders per lexical checks; 1 checker false positive (erDiagram crow's-foot) recorded;
+       no-playwright + plugin-script degraded modes noted
+Module boundaries: solid_check PASS (10 pre-existing LOW unclaimed + R-2 deps-line amendment)
+Conclusion: SEND BACK to Gate 5 (tests) + Gate 6 (impl) — scope pinned in Q7. Not closeable over
+       A1/A2. .panel/ retained for the re-run.
+```
+
+## v21 GATE 8 RE-REVIEW #3 (2026-09-01, SUPERSEDED by RE-REVIEW #4 above — kept for history; was SEND BACK to tests+impl)
+
+> **Third Gate 8 pass — after the §R2 closeout (IMPL-140, commits `f8bb366`, `50a2a36`).**
+> Both architecture experts were re-dispatched on the post-IMPL-140 state
+> (`.panel/review/adversarial.md` pass 3, `quality-dimensions.md` — both dated this pass).
+> **All ten §R2 findings R-G1..R-G10 are genuinely closed in code** — confirmed by both experts AND
+> independently spot-verified by this reviewer (§P1). The redaction/resume/CallKey core is now sound.
+> **Verdict: still NOT closeable — `send_back: ["tests","impl"]`, `arch_consistent: false`.** The
+> block is a set of NEW findings (not regressions of any R-G fix, so the auto-re-run-ONCE budget has
+> not been spent on them): one HIGH wire-contract falsity in the original v21 ARCH-069 wiring that
+> every test tier is structurally blind to, plus three MED instances of the registration↔admission
+> seam — the same "fix complete at one end of the seam only" pattern that produced R-G3.
+
+### P1. §R2 closure verification (independent, on disk at `50a2a36` — not carried on the experts' word)
+
+| item | reviewer verification |
+|---|---|
+| R-G1 | `grep -rn unredactBestEffort src/` → 1 hit, a comment (`run-manager.ts:628` explaining why it was deleted); refusal-only resume via `PARAM_SECRET_UNAVAILABLE` at `run-manager.ts:538-539`, scan covers the whole rehydrated snapshot |
+| R-G2 | effective **post-merge** model checked at `run-manager.ts:424-431` (after `mergeRunParams`, before `createRun`) — un-overridden stale registered defaults covered, rationale comment in place |
+| R-G3 (admission end) | `server.ts:1196` feeds `config?.aliases ?? DEFAULT_ALIASES` with the mirror-dispatch rationale comment |
+| R-G9 | `agent-executor.ts:430-439`: `redact()` FIRST, `capPrompt` applied unconditionally SECOND — no partial-credential window |
+| R-G10 | `grep -n "!== 'harness'"` → only explanatory comments (`:174`, `:452`); both redaction-skip carve-outs deleted |
+| R-G4..G8 | closed by subsumption/doc amendment — confirmed via the experts' per-line checks (adversarial "Checked and clean" section, quality §1-4 conformant lists) |
+
+`npx tsc --noEmit` → clean (run by this reviewer). Suite 1499/1499 green is **inherited from
+IMPL-140's record at `50a2a36`** (vitest exit 1 = the pre-existing spawn-litellm-ENOENT background
+artifact, verified at the stashed baseline per state.yaml) — acceptable here because the mandated
+Gate 5+6 re-run below re-establishes the full suite anyway.
+
+### P2. Blocking findings from THIS re-review (consolidated from both pass-3 experts; every load-bearing claim re-verified on disk)
+
+| # | Sev | Finding (expert id) | Reviewer-verified evidence + corrections |
+|---|-----|---------------------|------------------------------------------|
+| **P-A1** | **HIGH** | **`EFFORT_PROFILES.anthropic.param='effort'` is spread TOP-LEVEL into the Anthropic Messages request body on the REST path, where the real API contract is `output_config:{effort:…}` — every effort-bearing anthropic call on that path fails `400 → terminal` while the descriptor records `effortApplied:{param:'effort',value:…}`, a false claim of success** (adversarial A1). Violates ARCH-069, ARCH-068's tri-state honesty, DES-106, and REQ-093's own acceptance clause ("**provider-appropriate** mapping", "never a silent claim of success"). | `client.ts:32` (profile), `:126` (`effortBodyFields` spread), `:156` (direct `api.anthropic.com/v1/messages` body), `:293` (LiteLLM-proxy branch, same spread); `claude-agent-sdk-client.ts:581` sets `Options.effort` — a REAL SDK field, so the SDK path is correct. API contract verified this pass against the authoritative Claude API reference: effort is GA **inside `output_config`, not top-level**; an unknown top-level param → `400 invalid_request_error`. The profile encodes a *name* where the two consumers need a *placement*; ARCH-069's object-identity defence guarantees record≡intent, not that the field is real at each transport. **Reviewer correction to the expert's exposure claim:** `main.ts` default gateway is **`sdk`** (correct path) — the broken REST body lives on the documented `gateway:"direct-fetch"` opt-out (both its direct-anthropic and its own LiteLLM-proxy branch), NOT the default deployment; the expert's "any authenticated principal can deny every anthropic call on a default deployment" framing requires that opt-out config. Still HIGH: supported documented configuration, false-success observability defect (the exact class REQ-093 exists to kill), and **structurally invisible to every test tier that ran** (UT-101 asserts only bytes-differ against an injected fetchImpl; UT-020 asserts the value lands on `Options`; no test compares emitted shape to the transport's documented contract). |
+| **P-A2** | MED | **Registration and admission are fed DIFFERENT alias tables — R-G3's defect at the other end of the same seam** (adversarial A2 ≡ quality QD-4, independent convergence). Violates ARCH-064 ("the ONE alias predicate … shared by the registration-time and admission-time rungs") + ARCH-067 fail-closed registration. | `server.ts:1142` hands the catalog `config?.aliases ? … : undefined` → `workflow-catalog.ts:117` `?? new Set()` → `contract.ts:72` empty-table rule = **no-op**, while `server.ts:1196` hands the run manager `config?.aliases ?? DEFAULT_ALIASES` (R-G3). On the documented default deployment: `workflow_register` accepts a `model.enum` entry (`workflow_get` then advertises it as an allowed value) that **every** subsequent run refuses `UNKNOWN_ALIAS` at `run-manager.ts:424` — advertised bound ≠ enforced bound, register-succeeds-every-run-fails, discovered only at run time. One wiring line. |
+| **P-A3** | MED | **A declared `knobs.effort.default`/`knobs.appendPrompt.default` is validated, normalized into the stored `defaults` column, and then never read — the declared default is inert and the descriptor reports "never requested"; the engine-produced `defaults` object also breaks the discover→edit→re-register round-trip** (adversarial A3). Violates ARCH-067/A-2(c) ("the served default is always DERIVED from one source and the two cannot diverge"), ARCH-068 tri-state, REQ-090 — the silent-no-op class v21 exists to repair, reintroduced through the normalization path. | `workflow-catalog.ts:130-142` loop injects EVERY knob's default into `effectiveDefaults` (incl. `effort`/`appendPrompt`); `harness-defaults.ts` `KNOWN_KEYS` = `{model,tools,skills,timeoutMs,prompt}` only → re-registering the engine's own served `defaults` fails `HARNESS_DEFAULTS_INVALID: Unknown harness defaults key: "effort"`; `resolve.ts:38-51` `defaultRunParams` reads only `model/timeoutMs/prompt/tools` (comments admit "no author-side effort/appendPrompt exists"). Fix shape is the impl gate's choice (reject a default no rung can apply, or widen the snapshot's author side) — silently persisting into a type that cannot represent it is the one wrong option. |
+| **P-A4** | MED | **A declared `knobs.model.default` bypasses D-AUTH-5-B alias validation, because knob-default normalization runs AFTER `validateHarnessDefaults`** (adversarial A4). Violates ARCH-067 fail-closed / ARCH-062. | `workflow-catalog.ts:108-113` validates the caller-supplied `defaults` only; the `:130-142` loop injects `model:<spec.default>` afterwards; `contract.ts` `parseParamContract` alias-checks `spec.enum` entries but never `spec.default`. On a configured-alias deployment a non-alias `model.default` registers successfully and every named run is refused at admission (R-G2 backstop — why MED not HIGH): the register-time control that should make it impossible-by-construction never fires. |
+
+**Batched into the same re-run (blocking-adjacent, per the B5/R-G6..G10 precedent — same files, strictly-less-code or doc-only):**
+P-A5 (MED, adversarial A5) — the value/bounds checker now exists twice (`contract.ts:193-228`
+`checkValueAgainstSpec` vs `workflow-catalog.ts:38-45` `violatesOwnSpec`, the latter's own comment
+citing a task-file boundary as the reason), against ARCH-064's "cannot drift into three copies";
+consolidate to one exported predicate with an explicit `{ceilings?}` parameter while the impl gate
+is in these exact files. P-A6 (LOW, adversarial A6) — the `‹secret:` marker grammar is duplicated
+into `run-manager.ts:538` as a **fail-open detector** (a future marker-format change in
+`secret-resolver.ts:101` silently disables the `PARAM_SECRET_UNAVAILABLE` guard); export a
+`hasSecretMarker()` from `secret-resolver.ts` so the two move together. Doc amendments (LOW,
+adversarial A7/A8 ≡ quality QD-1/2/3, all confirmed still open at HEAD): (i) ARCH-066 inv-2 gains
+its legacy-NULL-snapshot exception clause (`run-manager.ts:615-633` re-resolves pre-v21 rows from
+the current catalog row — IMPL-133's deliberate fallback, undocumented in the invariant);
+(ii) 02-architecture.md:913 process view drops `appendPromptBytes` (B-2); (iii) `server.ts:373`
+`workflow_agent_log` description documents the served `harness` object's v21 fields
+(`effort`/`effortApplied`/`timeoutMs`/`provenance`) per ARCH-051; (iv) ARCH-064 note + S-2 rename
+phantom `parseUserOverrides` → `validateUserOverrides`.
+
+**Re-run scope (pinned; the workflow auto re-runs each listed gate ONCE).** Gate 5 first — RED
+tests that kill the CLASS, not just the instance: (a) **transport-contract shape pins** for the
+effort mapping — the REST body places effort at `output_config.effort` (the documented Messages API
+placement) and the SDK path sets `Options.effort`, each asserted against that transport's documented
+contract, NOT against "differs from the other run" (the assertion style that let P-A1 through every
+tier); plus the descriptor stays honest on both paths. (b) **table-parity**: registration and
+admission are fed the SAME alias table on the default AND configured deployments (structural pin at
+the wiring, the shape R-G3 taught us); registered-then-unrunnable is unrepresentable. (c) declared
+knob defaults: a declared default either takes effect at dispatch (observable in
+provenance/descriptor) or is refused at registration — never inert; and the discover→edit→
+re-register round-trip succeeds on engine-produced `defaults`. (d) a non-alias `knobs.model.default`
+is refused at registration on a configured-alias deployment. Gate 6 then GREEN + the P-A5/P-A6
+consolidation + the four doc amendments + full regression.
+**OUT of scope for the re-run (so re-review #4 does not re-litigate):** A9 (invalid `maxEffort`
+config value silently empties the effort enum — recorded debt below), the F4 nested-frame contract
+(deferred to v22 by design, unchanged), F5/QD-2 dead `mapEffort` copy in `resolve.ts` (recorded
+debt, though note adversarial's observation that its richer `ProviderEffortProfile` shape is the
+closer starting point for P-A1's placement-aware profile), all pre-existing trace/solid debt.
+
+### P3. Non-blocking — recorded tech debt (NEW this pass; adds to the §4 table)
+
+| Finding | Sev | Disposition |
+|---|---|---|
+| A9 — `maxEffort:"highest"` (any invalid value) in `rwe.config.json` silently yields `EFFORT_RANK[…]=undefined` → effective enum `[]` → every `overrides.effort` refused engine-wide, no startup error (`main.ts:164`, `server.ts:1187`, `contract.ts:109-113`; `isEffort` exists in the same module, unused at the config boundary) | LOW | Debt: validate at the boundary the value enters (fail fast or documented-default + log line). Not clamping — ADR-005 stays intact for caller values; this is an operator value. |
+| VAL-103 applied-branch residual: the anthropic `applied:true` mapping's real-tier evidence never confirmed backend **acceptance** (the live Anthropic SDK dispatch died on an unrelated model-not-found; Ollama has no dial; the REST path has zero real coverage) | — | Same accepted-gap class as D-V3 (no paid-provider key in this environment). NOT a mock-only REQ — VAL-103 ran 17/17 with 0 skips against real Ollama + a real `api.anthropic.com` dispatch. After the P-A1 fix lands, strengthen at the next Gate 7.5 touch when a dial-bearing provider is reachable. |
+| Both P2 experts' reports carry two factual errors this review corrects: "default deployment selects LiteLLM gateway" (default is `sdk`) and "VAL-103's HAS_PROVIDER case skipped" (it ran, 0 skips) | — | Recorded so the re-run implementer works from the corrected exposure model, not the expert prose. |
+
+### P4. Traceability / dashboard / module-boundary / validation / special files (this pass)
+
+- **Trace** (`sh .sdlc/trace … --check`): **817 items / 11 gaps** — 0 high, 1 mid (IMPL-082 TDD,
+  pre-v5), 10 low (9 iter-drift incl. the 2 NEW declared false-positive pairs DES-088/DES-066 ←
+  IMPL-140, amended in-doc per state.yaml "iter records origin, not last-touched"; + TASK-018).
+  0 broken links, 0 orphans, **0 未驗證, 0 未真實驗證**. All 11 recorded (Exit Gate 1 by recording).
+  `rtm.md`: 95/95 REQ real-verified.
+- **Dashboard QA** (`dashboard_check`, plugin 2.1.3 run from cache — repo `trace.py` predates
+  `--tool`, known version-skew debt): 0 high / 1 mid / 1 low, both same as pass 1. The mid
+  (02-architecture.md:929 "unbalanced `{`") **independently re-verified FALSE POSITIVE this pass**:
+  all 5 mermaid blocks balance once erDiagram crow's-foot tokens (`||--o{`) are stripped — checker
+  limitation, filed upstream. The low = missing offline-fallback, same skew debt. **Degraded mode:**
+  no playwright/browser tools in this session — link targets + mermaid verified by tool only,
+  in-browser SVG render not re-spot-checked.
+- **Module boundaries** (`solid_check`): **PASS — 7 modules, 0 mid**, 10 low pre-existing
+  未認領檔案 (recorded debt, unchanged).
+- **Validation & handover:** unchanged since Gate 7.5 (`git log 637b86e..HEAD -- README.md DEPLOY.md`
+  → last touch `507aff7`, the 7.5 commit). Re-spot-checked: DEPLOY.md leads with §0 一鍵部署
+  `./deploy.sh --background` (actually ran at 7.5, output reproduced), history-free banner honored,
+  single §1b 設定總表 (README defers to it, no duplication), config round-trip 32/32 keys verified at
+  7.5. Checked, clean. 08-validation.md present with per-VAL evidence.
+- **Special files:** CLAUDE.md unchanged since commit `952438b` (pre-pass-1) — the pass-1
+  claude-md-improver review (≈72/B, non-blocking suggestions as debt) stands; no SKILL.md/AGENTS.md
+  touched; no re-review needed this pass.
+- `.panel/` **retained** (send_back non-empty). `gates.review.passed` stays **false**.
+
+### P5. Retro (pass 3)
+
+- **What went well:** the R-G1..R-G10 closeout was verified genuinely complete by two independent
+  experts + reviewer spot-checks — the send-back loop converges on what it pins; the redact/resume
+  core that produced two rounds of HIGHs is now clean.
+- **To change:** (1) every test asserting an outbound-wire property must be pinned against the
+  transport's **documented external contract**, never against "differs from the sibling run" or
+  "lands on the object" — P-A1 passed four tiers because every tier's oracle was the code under
+  test; (2) a seam fix (R-G3) must ship with a parity assertion across BOTH ends of the seam, or the
+  other end surfaces one review later (P-A2/A3/A4 are all the registration end of admission-side
+  fixes); (3) expert reports are inputs, not verdicts — two material factual errors (default
+  gateway, VAL skip claim) were caught only by on-disk re-verification.
+
+### P6. Report (v21 Gate 8 RE-REVIEW #3, 2026-09-01 — CURRENT / AUTHORITATIVE)
+
+```
+Gaps: high=1 mid=4 low=~9 (architecture-consistency findings: P-A1 HIGH; P-A2/A3/A4 + P-A5 MED; P-A6..A9 + QD-1..3 LOW)
+      trace: high=0 mid=1 low=10, all pre-existing/declared+recorded
+Drift: none inside the v21 closure (R-G1..G10 all verified closed); 2 new declared iter-drift false
+       positives (DES-088/DES-066←IMPL-140) recorded; 4 doc-amendment LOWs batched into the re-run
+Architecture consistent: NO — P-A1 HIGH (effort spread top-level into the Messages body on the
+  direct-fetch path where the contract is output_config.effort, descriptor records false success;
+  test pyramid structurally blind), P-A2/A3/A4 MED (registration↔admission seam: split alias
+  tables, inert declared defaults + broken round-trip, unvalidated model default)
+Validation: real-tier all-green? YES (95/95 REQ real-verified; VAL-103 applied-branch acceptance
+  residual recorded as D-V3-class accepted gap) · README+DEPLOY present? YES (current-state,
+  history-free, 一鍵部署 verified-run)
+Conclusion: SEND BACK — re-run Gate 5 (tests) + Gate 6 (impl) once, scope pinned in P2; then
+  re-review. gates.review.passed stays FALSE; .panel/ retained.
+```
+
+---
+
+## v21 GATE 8 RE-REVIEW #2 (2026-09-01, SUPERSEDED by RE-REVIEW #3 above — kept for history; was SEND BACK to tests+impl)
+
+> **Second Gate 8 pass — after the send-back closeout (IMPL-139, commits `5ff0bf2`, `e6077e0`).**
+> The first v21 pass (section below) routed B1..B5 to Gates 5+6; the impl gate re-ran and reported
+> B1..B5 closed. The two architecture-consistency experts were then **re-dispatched** and re-ran on
+> the closeout scope (`.panel/review/adversarial.md`, `quality-dimensions.md`, both dated this pass).
+> **Verdict: STILL NOT closeable — `send_back: ["tests","impl"]`, `arch_consistent: false`.**
+> Three of the five items (B3/B4/B5) closed cleanly and are verified on disk. **But B1 closed only
+> its narrowest half, and the B2 fix introduced a NEW HIGH security regression.** Because this is the
+> post-auto-re-run re-review and it is still blocking, per the Gate 8 contract this hands back to the
+> orchestrator with the pinned scope below.
+
+### R1. What the re-run closed cleanly (verified on disk, not from the log)
+
+| item | claim | reviewer verification |
+|---|---|---|
+| B3 | `redact()` at the `kind:'harness'` decoration site before `appendTranscript` | ✅ `agent-executor.ts:415-422`; both gateways emit the descriptor only via `onHarness` (no `kind:'harness'` producer reaches `onEvent`) |
+| B4 | one `isKnownAlias` predicate, passthrough-aware + empty-table-skipping, at both rungs | ✅ `contract.ts:71-75`, used at registration (`:175`) and admission (`:284`); parity with `harness-defaults.ts:70` |
+| B5 | four stale ARCH lines amended | ✅ nesting bound dropped, `composePrompt` 4-arg named, `promptTruncated`/`appendPromptBytes` dropped, ARCH-070 note restated |
+
+### R2. Blocking findings from THIS re-review (both experts verdict NOT consistent)
+
+Every load-bearing claim re-verified on disk by the reviewer before routing.
+
+| # | Sev | Finding (expert id) | Reviewer-verified evidence |
+|---|-----|---------------------|----------------------------|
+| **R-G1** | **HIGH (security regression, NEW this closeout)** | The B2 fix turns the redaction marker into a **secret-dereference primitive** (adversarial G1). `unredactBestEffort` blind-expands any `‹secret:NAME›` to the live secret value on resume and cannot tell an engine-written marker from caller-typed text. | `run-manager.ts:128-144` (blind `split/join` over the whole snapshot), reached by every rehydrated resume at `:644-646`; `appendPrompt` is arbitrary caller text screened only for byte length (`contract.ts:261-271`, no char screen), lands verbatim in `RunParams` (`resolve.ts:61`) and is dispatched into the prompt (`agent-executor.ts:342`). Attack: `overrides.appendPrompt="…‹secret:RWE_SECRET_GITHUB_TOKEN›"` → suspend → resume → the real credential is composed into the dispatched prompt; the harness re-redaction at `:415` then hides the trace (B3 masks the B2 defect). Inverts ARCH-056's one-way `redact()` choke-point premise (02-architecture.md:627-640). **Minimum fix: delete `unredactBestEffort`, keep the `:550` typed refusal** — net deletion, closes G1/G4/G5 together. |
+| **R-G2** | **HIGH** | B1 checks only caller-supplied `overrides.model`, never the **effective** post-merge model — the "stale registered defaults" hole S-1 was adopted to close is **still open** (adversarial G2 ≡ the original B1 intent). | `contract.ts:241` loops over `Object.entries(obj)` = caller-supplied keys only; a named run with no `overrides.model` never reaches the `:284` check, and even when supplied it is gated on `spec.enum === undefined`. `run-manager.ts:437` validates before `mergeRunParams` (`:443-445`), so the merged `defaults.model` is never re-examined. 02-architecture.md:974 + interface table :959 pin **effective** (post-merge). Blast radius is *larger* than the override case B1 fixed — a stale default hits every submission. Fix: assert the alias on `effectiveParams.model` after merge, before `createRun`. |
+| R-G3 | MED | The admission check is fed an **empty** alias table on the documented default deployment while dispatch uses `DEFAULT_ALIASES` (adversarial G3). | `server.ts:1191` `config?.aliases ? … : undefined` → `run-manager.ts:266` `?? new Set()` → `contract.ts:72` `size===0 ⇒ return true` (accept all), yet dispatch resolves against `DEFAULT_ALIASES` (`run-manager.ts:48,242`); `main.ts:36-38` documents omitting `aliases` as normal. The B1 control is inert exactly where most installs sit. Same line duplicates the Set expression already built at `server.ts:1141` (F6's fourth instance). Fix: feed `config?.aliases ?? DEFAULT_ALIASES`, hoist the one Set. |
+| R-G4 | MED | A rotated secret makes resume dispatch **different bytes** than admission — silent substitution, the exact thing the restored invariant forbids (adversarial G4). | `run-manager.ts:644-646` restores from the **current** SecretValueProvider; D-1 records this very deployment has an expiring token. Subsumed by R-G1's deletion. |
+| R-G5 | MED | `‹secret:…›` marker grammar now duplicated into `run-manager.ts`, breaking `secret-resolver.ts`'s single-owner boundary (adversarial G5). | literal in three spellings: `secret-resolver.ts:101` (writer), `run-manager.ts:132` (inverter), `:550` (residue guard). No shared constant. Closed by R-G1's deletion + one exported prefix constant. |
+| R-G6 | MED | A new security-relevant mechanism + a new caller-visible error code shipped with **zero** architecture record (adversarial G6). | `grep` over the ledger: `PARAM_SECRET_UNAVAILABLE` = 0 hits in 02/04/05-docs though thrown at `run-manager.ts:551`; `unredact` absent from v21 ARCH/DES; interface-table `workflow_resume` row (:960) and ARCH-066 inv-5 (:743) describe only the write direction. B5 amended retracted design but missed the NEW mechanism. |
+
+**Also blocking-adjacent LOW (batch with the above re-run):** R-G7 ARCH-064 api line still declares pre-B1 error set (02-architecture.md:724 omits `UNKNOWN_ALIAS`; code `contract.ts:47`); R-G8 ARCH-056 sink enumeration still asserts the B3-disproved "harness already redacted" premise (:633); R-G9 truncate-before-redact can leave partial secret material in the persisted descriptor (`agent-executor.ts:26-32` cuts before `:415` redacts — redact-first fixes it); R-G10 the two `kind!=='harness'` redaction-skip guards survive with their justification deleted (`agent-executor.ts:159,436` — delete both for strictly-less-code). Quality lens adds three LOW doc-drift only (QD-OBS-1 process-view `appendPromptBytes`; QD-CONS-1 `workflow_agent_log` description omits the v21 `harness` output additions; QD-CONS-2 ARCH-064 note names phantom `parseUserOverrides`) — **the quality lens confirms every code-level invariant it checked holds; its 3 findings are doc-level.**
+
+**Re-run scope (pinned):** Gate 5 first — RED tests for (a) the **adversarial** resume case (`appendPrompt` containing a marker literal → resume must NOT produce the secret value), (b) effective post-merge model refused with **zero durable work** on an unresolvable default (negative assertion per ADR-008 no-telemetry), (c) default-deployment alias table non-empty. Gate 6 then GREEN + the deletion (`unredactBestEffort`) + R-G3 wiring + R-G6/G7/G8 doc amendments + R-G9/G10 line-order/deletion cleanups + full regression. The adversarial minimum path (steps 1/2/4) is a **net reduction in source lines** — the tie-break's own signal that the remaining gap is machinery that should not have been added.
+
+### R3. Consolidated verdict for THIS re-review
+
+- **`arch_consistent: false`** — both experts independently NOT-consistent; adversarial 10 findings (2 HIGH, 4 MED, 4 LOW), quality 3 LOW doc-drift.
+- Traceability, dashboard, module boundaries, and Gate 7.5 real-tier evidence status are **unchanged from the first pass below** (re-verified this pass: `sh .sdlc/trace` → 816 items / 9 gaps, all pre-existing; `dashboard_check` → 1 mid crow's-foot FALSE POSITIVE + 1 low version-skew; `solid_check` → PASS 7 modules / 0 mid / 10 low unclaimed-file debt; `rtm.md` 95/95 REQ real-verified; DEPLOY.md 一鍵部署 `./deploy.sh --background` verified-run, history-free 設定總表). **None of these block; the block is architecture consistency (R-G1 HIGH security regression + R-G2 HIGH half-closed).**
+- `.panel/` **retained** (send_back non-empty — the re-run gates and the next re-review need it). `gates.review.passed` stays **false**.
+
+### R4. Report (v21 Gate 8 RE-REVIEW, 2026-09-01 — CURRENT / AUTHORITATIVE)
+
+```
+Gaps: high=2 mid=4 low=7  (architecture-consistency findings) · trace: high=0 mid=1 low=8 all pre-existing/recorded
+Drift: none inside the v21 closure; NEW security regression R-G1 introduced by the B2 closeout; doc-drift R-G6..G8 + QD; 7 pre-existing cross-iteration iter-drift pairs recorded
+Architecture consistent: NO — R-G1 HIGH (B2 fix = secret-dereference primitive on resume), R-G2 HIGH (B1 half-closed, stale-default hole open), R-G3..G6 MED, R-G7..G10 + QD LOW
+Validation: real-tier all-green? YES (REQ-090..095 real:true, deploy.sh boot-from-docs) · README+DEPLOY present? YES (current-state, history-free, 一鍵部署 verified-run)
+Conclusion: SEND BACK — re-run Gate 5 (tests) + Gate 6 (impl); scope pinned in R2. Post-auto-re-run still-blocking → hand back to orchestrator. gates.review.passed stays FALSE; .panel/ retained.
+```
+
+---
+
+## v21 GATE 8 REVIEW (2026-09-01, FIRST PASS — superseded by the RE-REVIEW above; kept for history — SEND BACK to tests+impl)
+
+> **v21 — tunable-parameter contract, author/user separation part 1 (REQ-090..095 → ARCH-064..070 +
+> ADR-001..008 → DES-101..108 → TASK-096..104 → IMPL-129..138 → VAL-100..105).**
+> **Verdict: NOT closeable this pass — `send_back: ["tests","impl"]`.** One HIGH architecture-consistency
+> violation (both panel experts independently, reviewer-verified on disk): an adopted Gate 2 decision
+> produced no code and left a dead parameter plus an in-code comment claiming a check that does not
+> exist — the exact silent-wiring class this iteration exists to kill. Two MEDIUM violations of the
+> *named* ARCH-066 invariant (5) ride in the same re-run. Everything else is recorded tech debt.
+> Traceability, dashboard, module boundaries, Gate 7.5 real-tier evidence, and the handover manuals
+> are otherwise clean.
+
+### 1. Traceability consistency (`sh .sdlc/trace`, regenerated 2026-09-01)
+
+**815 items / 9 gaps** (v20 close-out baseline: 756/9; +59 items are the v21 chain itself).
+`--check` gap list, all **pre-existing** (none introduced or widened by v21):
+
+| ID | Severity | Type | Disposition |
+|----|----------|------|-------------|
+| IMPL-082 | MID | TDD label drift (no test link) | Pre-existing since v4 — known debt |
+| UT-058 / UT-064 / IT-057 | LOW ×3 | iter drift v6/v9 behind DES-038/DES-054 v11 | Pre-existing — known debt |
+| UT-094 / UT-095 | LOW ×2 | iter drift v18/v16 behind DES-095 v20 | Pre-existing — known debt |
+| DES-094 | LOW | iter drift v18 behind IMPL-122 v20 | Pre-existing — known debt |
+| DES-088 | LOW | iter drift v14 behind IMPL-127 v15 | Pre-existing — known debt |
+| TASK-018 | LOW | no implementation (OIDC task) | Functionally superseded by v15..v20 OAuth — known debt |
+
+- **Touched-chain iter alignment is clean:** every drift pair above is pre-v21; the whole v21 chain
+  (REQ-090..095 → ARCH-064..070 → DES-101..108 → TASK-096..104 → IMPL-129..138 → UT/IT/VAL) sits at
+  iter v21 — no doc↔code drift inside this iteration's closure.
+- **0 broken links, 0 orphans, 0 未驗證, 0 未真實驗證 (mock-only).** Gap counts: high=0, mid=1, low=8.
+- `rtm.md` (validator-generated, see adjudication D-3): 95/95 REQs ✅ real-verified, 0 ❌.
+
+### 2. Dashboard QA (`dashboard_check`, plugin 2.1.3 tooling)
+
+- The repo-local `.sdlc/trace.py` predates the plugin's `--tool` dispatcher; `dashboard_check.py` /
+  `solid_check.py` were run from the plugin cache directly (same plugin/project version-skew class as
+  adjudication **D-3**'s missing `--rtm` flag — reconcile upstream, recorded as debt).
+- `dashboard_check` result: 0 high / 1 mid / 1 low.
+  - **[mid] — verified FALSE POSITIVE**: the flagged mermaid block (02-architecture.md:929, v21 data
+    architecture) is an `erDiagram`; the "unbalanced `{`" is the crow's-foot relationship token
+    `||--o{` — standard, valid mermaid. Reviewer re-ran the balance check with crow's-foot tokens
+    stripped: **all 5 mermaid blocks in 02-architecture.md balance**. Doc unchanged; checker
+    limitation filed upstream (plugin scripts), not against this ledger.
+  - **[low]** dashboard.html lacks the mermaid offline fallback the 2.1.3 `trace.py` emits — same
+    version-skew debt as above (sync `.sdlc/trace.py` from the plugin next iteration).
+- **Degraded mode noted:** no playwright/browser tools in this session — SoT link targets and mermaid
+  lexical checks verified by tool; in-browser SVG render spot-check not performed.
+- SoT file:line link targets: `dashboard_check` reports 0 dead links (the mid/low above are its only
+  findings).
+
+### 3. Module-boundary check (`solid_check`)
+
+- **PASS: 7 declared modules (ARCH-064..070), 0 high / 0 mid; 10 low** `未認領檔案` (pre-existing
+  files with no ARCH `module:` declaration at all — `main.ts`, `net-guard.ts`, `self-update.ts`,
+  `harness-defaults.ts`, `agent-semaphore.ts`, `mcp-probe.ts`, `workflow-meta.ts`,
+  `workspace-artifacts.ts`, `webhook-registry.ts`, `continuation-store.ts`); out of this pass's
+  scope, recorded as debt (claim them in a future architecture pass).
+- **Tool-vs-panel discrepancy recorded honestly (QD-4):** `src/gateway/client.ts:7` value-imports
+  `redactHarness` from `../agent-executor.js` — new in v21, and ARCH-069's `deps:` does not name
+  ARCH-068's module. `solid_check` nevertheless reported clean, most likely treating ARCH-068's
+  declared dep on ARCH-069 as covering the pair. The edge is real and undeclared → recorded as LOW
+  debt (move `redactHarness` to a neutral module or declare the dep); not chasing the tool's
+  internals here.
+
+### 4. Architecture consistency (consolidated from `.panel/review/adversarial.md` + `quality-dimensions.md`)
+
+Both experts ran on the v21 scope only (IMPL-129..138 `files:` + module-boundary neighbours) against
+ARCH-064..070/ADR-001..008 and the A-*/B-*/C-* adjudications. Both independently verdict **NOT
+consistent**. Every load-bearing claim below was **re-verified on disk by this reviewer** before
+routing. Adjudication #4 (04-design.md:2920) covers none of these — they are fresh findings.
+
+**Consolidated verdict: NOT consistent — `arch_consistent: false`.**
+
+#### BLOCKING (→ re-run Gates 5+6, tests-first; one batch)
+
+| # | Sev | Finding (expert ids) | Verified evidence |
+|---|-----|----------------------|-------------------|
+| B1 | **HIGH** | **Adopted S-1 decision never implemented; dead `aliasNames` param; lying comment** (adversarial F1 ≡ quality QD-1 — independent convergence). 02-architecture.md:974 + interface table :959 adopt "effective post-merge model alias-checked at submission, existing `UNKNOWN_ALIAS` rule, before any durable work"; DES-101 boundary clause (04-design.md:2549) specifies it. | `contract.ts:220` declares `aliasNames`, body never reads it (only use is `parseParamContract`:161); `run-manager.ts:399` hardcodes `new Set()`; `contract.ts:157-158` comment claims a submission-time re-check that exists nowhere (`grep UNKNOWN_ALIAS src/` → submission-validator.ts only, which scans inline `spec.script` — named runs never checked); unresolvable `overrides.model`/registered default admits the run, burns run row+workspace+sandbox+semaphore slots, every `agent()` → opaque `null` (gateway/client.ts:324). Fifth instance of the silent-wiring class v21 was built to end. |
+| B2 | MED | **Resume dispatches the REDACTED snapshot — violates ARCH-066 invariant (5)** ("the dispatched copy is never redacted", :743) (adversarial F2). | Start path redacts persist-only (`run-manager.ts:411-413`, live entry keeps unredacted :479 — correct). Restart/rehydrate path: `:595` reads the persisted (redacted) column via `getEffectiveParams`, `:626` makes it `entry.effectiveParams`, `:817` dispatches it; `redact()` is destructive (`secret-resolver.ts`), no inverse. Restart-conditional silent input substitution — the invariant to restore: **resume dispatches byte-identical params to what admission dispatched, or refuses typed; never silent substitution.** Mechanism choice belongs to the impl gate. |
+| B3 | MED | **v21 `appendPrompt` reaches the `kind:'harness'` transcript sink with NO secret redaction — violates ARCH-066 inv (5) sink-completeness + adjudication B-4** ("the non-negotiable item of the batch") (adversarial F3). | `agent-executor.ts:339` composes user `appendPrompt` + author `defaults.prompt` into the prompt; both gateways put it on the descriptor; `redactHarness` (agent-executor.ts:17-45) truncates only, zero secret redaction; the decoration site persists via `appendTranscript` with no `redact()` (:404-410) and `onEvent` **explicitly excludes** `kind==='harness'` from redaction (:419-424) on a "double-redaction exclusivity" premise that is false. One-line fix shape (run `redact()` at the decoration site); extend IT-075's sweep to sink 6. |
+| B4 | MED | **Divergent author-side model vocabulary in one `register()` call** (quality QD-3; same seam as B1). | `server.ts:1141` passes `undefined` when `aliases` unconfigured; `workflow-catalog.ts:117` then fail-closes `params.knobs.model.enum` against `new Set()` (every enum entry rejected on a default-alias server) while three lines up `validateHarnessDefaults` (harness-defaults.ts:70) deliberately skips the same check when the set is empty (D-AUTH-5-B); `contract.ts:159-165` also lacks the `openrouter/<id>` passthrough carve-out that submission-validator.ts:106-113 and `models_list` guidance grant. Fix: one DEFAULT_ALIASES-aware + passthrough-aware predicate threaded into both — the same predicate B1 requires. |
+| B5 | LOW (mechanical, batch with above) | **Four stale ARCH lines describing retracted pre-adjudication design** (adversarial F8 ≡ quality QD-5) + ARCH-065's now-false "ONLY effort translator" sentence. | Amend in the re-run (adjudicated content, Gate 6.5+7's editing of ARCH `deps:` lines is precedent): (i) :760/:961 drop `promptTruncated`/`appendPromptBytes` per B-2; (ii) :725 drop the nesting-depth bound per B-1; (iii) :779 note (1) restate per A-5 (label-scoped sanitize, no registration-rule reuse); (iv) :733 `composePrompt` is 4-arg with the author segment; and amend ARCH-065/:734 + the dev-view arrow to name `src/gateway/client.ts` as the wired effort mapper (the F5 code duplicate itself stays debt, below). Also append the effective-model alias check to DES-104's admission order line (04-design.md:2621) so design and code agree after B1 lands. |
+
+**Re-run scope (workflow auto re-runs each listed gate ONCE):** Gate 5 first — RED tests for (a)
+admission-time `UNKNOWN_ALIAS` on the effective post-merge model incl. passthrough carve-out and
+zero-durable-work assertion, (b) resume/rehydrate read-back equality (or typed refusal) vs admission
+dispatch, (c) harness-sink secret-redaction sweep case (sink 6), (d) registration model-enum
+vocabulary parity with `validateHarnessDefaults` + passthrough. Gate 6 then makes them GREEN + the B5
+doc amendments + full regression (this ledger's impl exit bar). Either use or delete the dead
+`aliasNames` parameter — silently keeping the signature is the one wrong option.
+
+#### NON-BLOCKING — recorded tech debt (accepted with reasons; not fixed this pass)
+
+| Finding | Sev | Disposition |
+|---|---|---|
+| F4 — nested `workflow()` frames run under the parent's snapshot; callee's `defaults`/`params` contract never read (`run-manager.ts:744` consumes only `registered.script`; three scenarios incl. cross-owner tool-surface substitution) | MED | **Deferred to v22 by design**: v21 is explicitly "author/user separation part 1"; the nesting boundary needs an un-adjudicated design decision (per-frame re-resolution vs one-snapshot story), not a patch. Must be a REQ/ARCH item in part 2. Recorded here + flagged for the v22 Gate 1/2 intake. |
+| F5/QD-2 — two `mapEffort` implementations; `resolve.ts:144-157` copy has zero production callers while ARCH-065 says "ONLY" | MED | Debt: delete the dead copy (re-point UT-099) next touch of DES-102/106; the ARCH sentence is amended in B5 so the doc stops lying meanwhile. IMPL-138 already records the observation. |
+| F6 — `DEFAULT_CEILINGS` triplicated (run-manager.ts:105, mcp-facade.ts:20, server.ts:1184-1186); advertised==enforced held by copy-paste | LOW | Debt: single exported `DEFAULT_CEILINGS` in `contract.ts` (strictly less code); A-3's pin test when touched. |
+| F7 — `workflowLabel()` non-injective (sanitize+50-char truncate), `issue_list({workflow})` can return another workflow's reports | LOW | Debt/accepted residual: authenticated-only surface, dedup fingerprint unaffected (raw-name hash); fix shape = short hash suffix when sanitize changed the name, or amend ARCH-070's symmetry note. |
+| F9 — `parseParamContract` stores/serves author spec objects wholesale (unknown/nested fields not stripped), contradicting ADR-004's "normalized" and B-1's "never served" premise | LOW | Debt: 3-line strip-to-declared-fields at parse, or correct B-1's rationale to "bounded by the 4 KB source cap" (which is the argument that holds). |
+| F10 — effort identity-mapped with no value-set validation on the un-ceilinged author/script rung (D-F6-shaped 4xx risk if a backend rejects `xhigh`/`max`) | LOW | Structural residual, not an asserted live bug; cheap option when touched: `EffortProfile` carries accepted set → honest `{applied:false, reason}`. |
+| QD-4 — undeclared reverse edge `gateway → agent-executor` (redactHarness value import, client.ts:7) | LOW | Debt: relocate `redactHarness` to a neutral module or declare the dep (see §3; B3's fix may relocate it anyway). |
+| solid_check 10 low unclaimed files | LOW | Debt: assign `module:` owners in a future architecture pass. |
+| `.sdlc/trace.py` version skew vs plugin 2.1.3 (no `--tool`/`--rtm`, no mermaid offline fallback in dashboard.html) | LOW | Debt: sync the ledger's trace.py from the plugin; `dashboard_check`'s crow's-foot false positive filed upstream against the plugin. |
+| Adjudication D-1: production `RWE_SECRET_GITHUB_TOKEN` expired (401) | — | Operator action item (rotate); not a v21 defect; VAL-105 evidence stands on a real `gh auth token` call. |
+| Adjudication D-2: production serves v20 until this branch merges | — | Normal branch-scope; not an incomplete iteration. |
+
+**Consistent areas (checked, clean — consolidated from both experts, spot-verified):** ADR-001 closed
+`UserOverrides` + `additionalProperties:false` at both ends (locked key unrepresentable end-to-end);
+ARCH-066 admission-rung insertion point with zero durable work on rejection and no existing rung
+moved; ADR-002 `CallKey` byte-untouched + pinned-snapshot resume (no catalog re-resolution) + legacy
+NULL fallback; ARCH-066 inv-6 `composeConfig()` forwarding of all three ceiling keys with the
+wiring-guard test rows (fifth instance of the composeConfig bug class genuinely closed, plus four
+older instances); ceilings refuse-never-clamp with read-time `effectiveBounds`; ARCH-067 idempotent
+migration + fail-closed registration + `ON CONFLICT` params refresh; ARCH-064 inv-5 pre-eval 4 KB
+bound; ARCH-068 required `runParams` (tsc lever), one decoration site, provenance emitted by the
+computing function, record-then-throw pre-dispatch guard; ARCH-069 `thinkingFor` sole writer of
+`options.thinking`, effort object travels by identity, ADR-006 fence intact (zero
+`session-options-builder` importers); ARCH-070 fingerprint extension + byte-identical absent-case;
+IMPL-138's dead-line deletion claim.
+
+### 5. Validation & handover (Gate 7.5)
+
+- **Mock hard-rule satisfied:** trace reports **0 未驗證 / 0 未真實驗證**; REQ-090..095 all carry
+  `real:true` greens (VAL-100..105, 17/17 acceptance cases) against a **deploy.sh-booted fresh
+  `git clone`** with real Ollama (qwen2.5:7b) and the real GitHub API (issues #41/#42/#43
+  independently re-confirmed via `gh api` by the second validator dispatch). 08-validation.md
+  evidence present and specific. The blocking findings above do not invalidate any REQ clause's
+  evidence — they are architecture-decision deviations beside the REQ surface.
+- **DEPLOY.md** — leads with §0 一鍵部署 `./deploy.sh --background`, which Gate 7.5 **actually ran**
+  (08-validation.md:4748-4757, including the health-check output reproduced in the manual);
+  淺顯繁中, current-state framing declared and honored (history relegated to the ledger), ASCII
+  system diagram, single deduplicated §1b 設定總表 (the three v21 ceiling keys documented there and
+  only there; the one `deprecated` row documents a still-honored live fallback = current state, not
+  history). Checked, clean.
+- **README.md** — 繁中 quickstart + v21 override/contract usage examples + 37-tool surface + security
+  model; config keys deferred to DEPLOY §1b (no duplication). Checked, clean.
+- No superseded ports/keys/commands found in either manual (changelog-scan clean).
+
+### 6. Special-file review (files touched this iteration)
+
+- **CLAUDE.md (NEW this branch)** — reviewed via the claude-md-improver skill (audit-only; reviewer
+  writes nothing outside review files). Score ≈72/100 (B): one high-value, accurate, imperative
+  gotcha (never `git checkout <sha> -- <path>` to read history; `git show`/stash instead) with
+  copy-paste-safe alternatives — exactly the non-obvious-pattern content that earns its place, and it
+  guards the incident class that destroyed this very ledger's working tree on 2026-08-31.
+  Non-blocking suggestions (debt): add build/test commands (`npx vitest run`, `tsc --noEmit`,
+  `sh .sdlc/trace`) and compress the incident narrative to ~2 lines (history lives in the ledger).
+  No SKILL.md / AGENTS.md touched.
+
+### 7. Retro (v21)
+
+- **What went well:** the pure-module + required-argument + provenance architecture made most of the
+  silent-failure class unrepresentable, and the panel could *prove* the clean areas quickly; Gate 7.5
+  produced the repo's first committed one-command deploy and boot-from-docs evidence; the two-expert
+  independent convergence on the same HIGH (F1≡QD-1) is the review layout working as designed;
+  adjudication discipline (A/B/C/D series) meant zero re-litigation at Gate 8.
+- **To change:** (1) an "adopted in reduced form" rationale line must land as a TASK — S-1's check was
+  adopted in prose, decomposed into a DES boundary *clause*, and never became a task card, which is
+  how it produced no code while everything traced green; (2) a comment asserting a cross-module
+  behavior ("re-checked at submission") should be written only where the behavior lives; (3) invariant
+  wording like ARCH-066 inv-5 needs its *read-back* direction enumerated, not just the write
+  direction — both B2 and B3 are "invariant implemented where the diagram drew it, not where the
+  system flows"; (4) sync the ledger's trace.py with the plugin per release to stop the D-3/§2 skew
+  class.
+- **Known tech debt:** the non-blocking table above + the 9 pre-existing trace gaps (§1) — all
+  explicitly recorded (Exit Gate 1 satisfied by recording).
+
+### Report (v21 Gate 8, 2026-09-01 — CURRENT / AUTHORITATIVE)
+
+```
+Gaps: high=0 mid=1 low=8 (all pre-existing, all recorded — plus dashboard_check 1 mid FALSE POSITIVE / 1 low version-skew, recorded)
+Drift: none inside the v21 closure; 7 pre-existing cross-iteration iter-drift pairs (v6..v20), recorded
+Architecture consistent: NO — B1 HIGH (adopted S-1 alias check unimplemented + dead param + false comment),
+  B2/B3 MED (ARCH-066 inv-5 violated on resume read-back and the harness sink), B4 MED (divergent alias
+  vocabulary); B5 doc amendments; F4..F10/QD-4 recorded debt
+Validation: real-tier all-green? YES (REQ-090..095 real:true, deploy.sh boot-from-docs) · README+DEPLOY present? YES (current-state, history-free, 一鍵部署 verified-run)
+Conclusion: SEND BACK — re-run Gate 5 (tests) + Gate 6 (impl) once, scope pinned in §4; then re-review.
+  gates.review.passed stays FALSE; .panel/ retained for the re-run.
+```
+
+## v20 GATE 8 REVIEW (2026-08-19, SUPERSEDED by v21 above — kept for history)
 
 > This section supersedes "## v19 GATE 8 REVIEW (2026-08-19)" below (kept for history).
 > **v20 fix-mode iteration — refresh tokens + callback success page (REQ-012 v20, ARCH-059 v20).**
@@ -3706,3 +4718,51 @@ Architecture consistent: yes for all previously-HIGH findings — 0 remaining un
 Validation: real-tier all-green? yes (Gate 7.5 round 6 CONVERGENCE RULE + round 7 scoped real-process re-confirmation of the 3 most operationally-critical D-G8 fixes) · README+DEPLOY present? yes, step-by-step, updated in round 7
 Conclusion: iteration can close. All 4 HIGH + 2 MEDIUM binding Gate-8 fixes (D-G8-1..6) confirmed resolved at the code/test tier and re-confirmed via Gate 7.5 round-7 real-process evidence for the 3 highest-risk ones (S-1 zero-config hang, O-1 transcript black-box, C-1 tools/list placeholders). 7 remaining MEDIUM/LOW architecture-consistency findings correctly recorded as v1.1 backlog, not silently dropped. gates.review.passed=true.
 ```
+
+---
+
+## GATE 8 — v21 CLOSED BY OWNER DECISION (2026-09-01)
+
+**Decision, and who made it.** After Gate 8 re-review #6, the owner was shown every open finding with
+what each actually allows, who can trigger it, and the cost to fix, and chose: **land P6-1 and its five
+riders, do not run a seventh review pass, close v21, and carry the remainder as named debt into v22.**
+This closure is that decision, not a reviewer's `arch_consistent=true`. Recording it as an owner call
+rather than a passing gate is the honest form.
+
+**State at close** (commit `2c08719`): suite **1582/1582**, `tsc` clean, coverage **95.31%**, trace
+**824 items / 14 gaps — 0 severe, 0 unverified REQs, 0 mock-only**, rtm **95/95 real:true**. Gate 7.5
+ROUND 5 booted from the docs alone and confirmed every REQ live, including the P6-1 variants and P6-2's
+enforcement point.
+
+### What v21 delivered
+REQ-090..095: a declared parameter contract an author writes and the engine enforces; per-run overrides
+validated against it with `PARAM_LOCKED` / `PARAM_OUT_OF_RANGE` refused before any durable work; the
+repair of two pre-existing defects that made REQ-088's promise hollow (`resolveHarnessParams` had zero
+callers; `effort` was a documented no-op); `appendPrompt` fixed after the author-controlled segment; and
+problem reports bound to a workflow and version.
+
+### Debt carried into v22 — named, not assumed
+
+| item | what it is | why it was left |
+|---|---|---|
+| **P6-2 (partial)** | An author-declared `defaults.appendPrompt` carrying a forged frame delimiter is **not** refused at registration. It **is** refused at dispatch admission (verified live, ROUND 5), so no forged frame reaches a model. | Author-scoped, and the enforcing rung holds. Closing the registration door is a v22 one-liner. |
+| **S-1** | A `WorkflowCatalog` built with no `ceilings` enforces no registration ceiling. Production always passes the shared object. | Its recorded rationale is now **stale**: it cited "would need a third copy of `DEFAULT_CEILINGS`", and P6-5's shared export dissolved that. Cheap in v22. |
+| **`deploy.sh` re-run trap** | `rwe.config.json` stores the template's raw `workRoot`; `deploy.sh` exports a writable default only for the invocation that creates the config. Stopping the service and re-running in a fresh shell hits `EACCES`. | Pre-existing; the fresh-checkout quickstart is always a first invocation, and touching that file would have invalidated the boot-from-docs evidence. |
+| **DEPLOY.md rows** | `maxAppendPromptBytes` / `maxEffort` name only the `overrides.*` rung. Incomplete since G-1, but they assert no falsehood. | Doc completeness, not a false claim. |
+| **`state.yaml` line 73** | Not strict-YAML-parseable (an unescaped quote in a v20-era note). `trace.py` does not strict-parse, which is why 21 iterations never noticed. | Pre-existing; anything that `yaml.safe_load`s this file will choke. |
+| **14 trace gaps** | 1 MID (IMPL-082, TDD label), 1 LOW (TASK-018 unimplemented), 12 LOW iter-drift — including 3 minted by IMPL-145/146 tracing v15 designs honestly. | All disclosed. The alternatives to holding the count down were dropping real relationships or falsifying an `iter:` origin. |
+| **81-function coverage debt** | Pre-existing functions below the per-function bar, first measured this iteration. Whole-tree coverage is 95.31%. | Recorded with a Decision-rationale at first measurement; never re-litigated per pass. |
+| **Three unwired modules** | `session-options-builder`, `cli-lifecycle`, `timeout-race` still have zero importers in `src/`. | Not a v21 concern; belongs to the security-hardening iteration. |
+| **`trace --rtm`** | The role contract calls a flag this project's `trace.py` does not have — a plugin/project version mismatch. `rtm.md` is generated via the module functions instead. | Reconcile upstream in the plugin, not by teaching the local tool a flag it never had. |
+
+### The lesson worth carrying forward
+Six review passes found, in order: a dead alias parameter; a secret-marker dereference; an `effort`
+parameter sent at the wrong level of the request body while the descriptor claimed success; a poisoned
+registration that could brick workflow discovery; a quadratic truncation that could block the event loop
+for an hour; a forgeable trust frame; and that frame's fix missing four of six variants.
+
+**Four of those survived earlier test tiers for the same reason: the test's oracle was the code under
+test.** "Low and max produce different bytes" passes when both are wrong. "The wrapping is applied" passes
+when the wrapping is forgeable. `not.toContain(wholeString)` passes when a fragment leaks. A comment
+asserting a guarantee is not a control. **Where a clause names an external contract or a security
+property, assert against that property — never derive the expectation from the implementation.**

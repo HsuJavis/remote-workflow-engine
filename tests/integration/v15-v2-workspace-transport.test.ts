@@ -9,6 +9,8 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
+import { FixedClock } from '../../src/clock.js';
 
 let server: Server;
 let base: string;
@@ -70,6 +72,13 @@ describe('v1.5+v2 workspace transport (REQ-022..026)', () => {
     const purge = await tool('workspace_purge', { runId });
     expect(purge.result.purged).toBe(true);
     expect((await tool('workflow_artifacts', { runId })).result).toEqual([]);
+
+    // v21 Gate 5 addendum (B-4, DES-104, REQ-091): effectiveParams rides the run row, so
+    // workspace_purge (filesystem-only, mcp-facade.ts's workspace_purge) preserves it exactly as
+    // it preserves the transcript/journal — no new retention policy, one assertion.
+    const readStore = new SqliteRunStore(join(workRoot, 'store'), new FixedClock(new Date('2026-01-01T00:00:00.000Z')));
+    const paramsAfterPurge = await readStore.getEffectiveParams(runId);
+    expect(paramsAfterPurge).not.toBeNull();
   });
 
   it('REQ-024: an over-cap request body is rejected with 413, not buffered/OOMed', async () => {

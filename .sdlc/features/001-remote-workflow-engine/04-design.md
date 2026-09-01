@@ -1823,8 +1823,8 @@ classDiagram
 ### DES-066 — harness capture at dispatch: `HarnessDescriptor` + pure `redactHarness` + `onHarness` hook + run-status-aware `deriveAgentRecords` (src/types.ts, src/gateway/*.ts, src/agent-executor.ts, src/run-store.ts)
 - **status:** done
 - **traces:** ARCH-044, TASK-069
-- **signature:** `HarnessDescriptor = { model:string; prompt:string /*4KB head+tail cap*/; tools:string[]; skills:string[]; mcpServers:string[]; surfaceType:'curated'|'none' }`. New `TranscriptEvent.kind` value `'harness'` (extend the union in src/types.ts). `redactHarness(resolved) → HarnessDescriptor` is **PURE** — names only, never a resolved MCP config, never a provider key, never a resolved `${secret:}` value. Emission seam = an optional async hook `onHarness?(h:HarnessDescriptor):Promise<void>` injected into `GatewayClient.invoke` options, called **eagerly at session-build (post-curation), before `query()`** — **two call sites, one hook:** the SDK client at `claude-agent-sdk-client.ts:483` projects `{model:modelName, prompt:req.prompt, tools:curatedTools, skills:<materialized .claude/skills dirs>, mcp:Object.keys(mergedMcp), surfaceType:'curated'}`; the direct-fetch/LiteLLM client calls it at its own model-resolution point with `surfaceType:'none'` and `tools/skills/mcpServers=[]`. The executor wires `onHarness` → `sink.appendTranscript(runId, agentId, {kind:'harness', ...})`.
-- **boundary-conditions:** **`harness===null` ⟺ the agent was never dispatched (queued/idle)** — one unambiguous meaning (converged, adversarial.r2 §2.1 folded the r1 defer; direct-fetch now emits). 4KB prompt cap = **first 2KB + last 2KB + `…[truncated]…` marker** (task instructions land at the tail in the context-injection pattern). **Latest-wins dedupe keyed on agentId** (the bounded `SCHEMA_RETRY_ATTEMPTS` loop can build a session more than once → a later harness supersedes). **Required `deriveAgentRecords` change (run-store.ts):** drop `if(!usage)continue`; new **run-status-aware** rule — a `harness` event with no later `usage` ⟹ `running` **only on an in-process parent**, but ⟹ `queued` on an `interrupted`/`suspended` parent (it re-dispatches on resume — never paint a live spinner on a dead run); a `usage` event ⟹ `done`/`failed`; neither ⟹ never-dispatched (absent, renders `idle` while in-process). **H2 single-source decision:** `redactHarness` projects from the gateway's post-curation resolved values (REQ-073 needs the resolved surface, which the pre-gateway `SessionInitRecord.allowlist` cannot authoritatively give); `SessionInitRecord` (DES-026) stays the pre-dispatch security-audit head (secretHandleNames/settingSources/REQ-021 guard) and is NOT re-projected into the panel — exactly ONE record feeds the harness panel, no field resolved twice, no two overlapping harness records. **Accepted VM-sandbox limit:** a script may pass a secret VALUE as a prompt string (captured at the transcript's trust level); the engine invariant is only "never substitutes a `${secret:}` handle into a prompt."
+- **signature:** `HarnessDescriptor = { model:string; prompt:string /*4KB head+tail cap, applied at the persist site AFTER redact() — see boundary-conditions, R-G9*/; tools:string[]; skills:string[]; mcpServers:string[]; surfaceType:'curated'|'none' }`. New `TranscriptEvent.kind` value `'harness'` (extend the union in src/types.ts). `redactHarness(resolved) → HarnessDescriptor` is **PURE** — names only, never a resolved MCP config, never a provider key, never a resolved `${secret:}` value. Emission seam = an optional async hook `onHarness?(h:HarnessDescriptor):Promise<void>` injected into `GatewayClient.invoke` options, called **eagerly at session-build (post-curation), before `query()`** — **two call sites, one hook:** the SDK client at `claude-agent-sdk-client.ts:483` projects `{model:modelName, prompt:req.prompt, tools:curatedTools, skills:<materialized .claude/skills dirs>, mcp:Object.keys(mergedMcp), surfaceType:'curated'}`; the direct-fetch/LiteLLM client calls it at its own model-resolution point with `surfaceType:'none'` and `tools/skills/mcpServers=[]`. The executor wires `onHarness` → `sink.appendTranscript(runId, agentId, {kind:'harness', ...})`.
+- **boundary-conditions:** **`harness===null` ⟺ the agent was never dispatched (queued/idle)** — one unambiguous meaning (converged, adversarial.r2 §2.1 folded the r1 defer; direct-fetch now emits). 4KB prompt cap = **first 2KB + last 2KB + `…[truncated]…` marker** (task instructions land at the tail in the context-injection pattern). **AMENDED v21 Gate 8 re-review (review §R2 R-G9): the cap no longer lives in `redactHarness`** — it is the exported `capPrompt`, applied at the single persist site (`agent-executor.ts` `onHarness`) **after** `redact()`. Cap semantics are unchanged; only the ordering is, because capping upstream could cut a secret value across the 2048-char seam and `redact()` is a value-exact substring match, so neither fragment matched and partial credential bytes reached disk. `redactHarness` is consequently a **structural** transform only (names-only stripping, prompt passed through uncut) and the descriptor's `prompt` is bounded on the write, not on the build. **Latest-wins dedupe keyed on agentId** (the bounded `SCHEMA_RETRY_ATTEMPTS` loop can build a session more than once → a later harness supersedes). **Required `deriveAgentRecords` change (run-store.ts):** drop `if(!usage)continue`; new **run-status-aware** rule — a `harness` event with no later `usage` ⟹ `running` **only on an in-process parent**, but ⟹ `queued` on an `interrupted`/`suspended` parent (it re-dispatches on resume — never paint a live spinner on a dead run); a `usage` event ⟹ `done`/`failed`; neither ⟹ never-dispatched (absent, renders `idle` while in-process). **H2 single-source decision:** `redactHarness` projects from the gateway's post-curation resolved values (REQ-073 needs the resolved surface, which the pre-gateway `SessionInitRecord.allowlist` cannot authoritatively give); `SessionInitRecord` (DES-026) stays the pre-dispatch security-audit head (secretHandleNames/settingSources/REQ-021 guard) and is NOT re-projected into the panel — exactly ONE record feeds the harness panel, no field resolved twice, no two overlapping harness records. **Accepted VM-sandbox limit:** a script may pass a secret VALUE as a prompt string (captured at the transcript's trust level); the engine invariant is only "never substitutes a `${secret:}` handle into a prompt."
 - **iter:** v11
 
 ### DES-067 — harness detail panel + `workflow_agent_log` shaping + two-tier no-secret proof (src/mcp-facade.ts, src/server.ts, src/dashboard-page.ts)
@@ -2186,8 +2186,8 @@ classDiagram
 - **status:** draft
 - **traces:** ARCH-056, TASK-082
 - **signature:** `redact(event: unknown, secrets: ReadonlyArray<{ name: string; value: string }>): unknown` (extends the shipped `redact(event, secretValues: string[])` at secret-resolver.ts:88 — ZERO production callers today, so blast radius = its own unit tests, not a caller migration); marker `‹secret:${name}›`, value-exact substring (NO pattern/entropy matcher — that would break the negative control). New port `interface SecretValueProvider { entries(): ReadonlyArray<{ name: string; value: string }>; }` (`ReadonlyArray` load-bearing — capture path must not mutate). Real impl enumerates the same `RWE_SECRET_*` source behind `loadSecretSourceFromEnv`; injected into `RunManager`, never into the sandbox.
-- **sinks (exhaustive — completeness IS the REQ):** route each through `redact()` on the persist write: (1) per-agent transcript store read by `workflow_agent_log`; (2) terminal snapshot — `redact()` over the `AgentRecord[]` BEFORE `saveSnapshot` (run-manager.ts:508), never the raw in-process records (else a cross-restart `GET /api/runs/:id` leak); (3) SDK-gateway `kind:'message'|'tool_call'|'tool_result'|'usage'` capture; (4) the ENTIRE `JournalEntry` (key.prompt + key.opts + value) at the `appendJournal` build site — a REPLAY source. NOTE (Gate-7.5 live-Ollama finding): redacting only `.value` leaked a secret-bearing `key.prompt` on disk (a prior agent's provisioned value can reach a later agent's prompt via the persist-only raw in-memory return); `redact()` runs over the whole entry so no raw secret hits `journal.jsonl`.
-- **invariants (each a named test):** (a) double-redaction exclusivity — `redact({name,value})` runs ONLY on `kind!=='harness'`, `redactHarness` (agent-executor.ts:12, ARCH-044) runs ONLY on `kind==='harness'`; neither runs on the other's output (else marker corruption). (b) persist-only — the live in-memory `messages` array the SDK replays into its next turn is UNTOUCHED; unit asserts in-memory holds the raw value while the persisted copy holds the marker (silent-wrong-agent-behavior guard). (c) journal replay-divergence — a resumed run receives `‹secret:NAME›` where an `agent()`/`workflow()` return contained a provisioned value (accepted-by-design under the hermeticity contract: no provisioned secret may be returned from an `agent()`/`workflow()` schema; documented in `workflow_run` + authoring guidance). EXTENDED to call params (Gate-7.5 ruling): the persisted `key.prompt`/`key.opts` are redacted too, so if a provisioned secret rides a call KEY, a HARD-CRASH resume MISSes that call (sameKey compares raw prompt+opts, resume-cache.ts:14, against the redacted on-disk key) and re-runs it + the tail LIVE — correct values, just recomputed; strictly more graceful than the redacted-VALUE divergence above (which feeds a marker back as data). Same-process suspend/resume is unaffected (the in-memory `entry.journal` keeps the raw key). Future option, not built: persist a `keyHash` of the raw key so replay matches without the raw prompt on disk.
+- **sinks (exhaustive — completeness IS the REQ):** route each through `redact()` on the persist write: (1) per-agent transcript store read by `workflow_agent_log`; (2) terminal snapshot — `redact()` over the `AgentRecord[]` BEFORE `saveSnapshot` (run-manager.ts:508), never the raw in-process records (else a cross-restart `GET /api/runs/:id` leak); (3) SDK-gateway `kind:'message'|'tool_call'|'tool_result'|'usage'` capture; **(3b) the `kind:'harness'` descriptor (`agent-executor.ts` `onHarness`) — ADDED v21 Gate 8, review §4 B3: it carries `descriptor.prompt`, i.e. the composed prompt including v21's caller-supplied `appendPrompt`, and `redactHarness` never redacted a value; `redact()` runs here, and `capPrompt` runs after it (R-G9)**; (4) the ENTIRE `JournalEntry` (key.prompt + key.opts + value) at the `appendJournal` build site — a REPLAY source. NOTE (Gate-7.5 live-Ollama finding): redacting only `.value` leaked a secret-bearing `key.prompt` on disk (a prior agent's provisioned value can reach a later agent's prompt via the persist-only raw in-memory return); `redact()` runs over the whole entry so no raw secret hits `journal.jsonl`.
+- **invariants (each a named test):** (a) **one redaction pass per persisted event** — **AMENDED v21 Gate 8 (review §4 B3 + §R2 R-G8/R-G10; the original wording, "double-redaction exclusivity: `redact({name,value})` runs ONLY on `kind!=='harness'`, `redactHarness` runs ONLY on `kind==='harness'`, neither on the other's output", rested on a FALSE premise and left the harness sink unredacted).** `redactHarness` is a **structural** transform, not a redactor: it strips MCP configs to names and emits no `‹secret:NAME›` marker, so it never made the harness sink safe and the two paths were never alternatives. The true invariant is positional, not kind-based: **every persist site runs `redact()` exactly once, on every event kind, immediately before the write.** The `kind!=='harness'` carve-outs in `AgentTranscriptSink._emit` and `onEvent` are **DELETED** (R-G10) — they could not have prevented a double pass (a harness descriptor persists through `onHarness`, a different site with its own single `redact()`) and only skipped redaction on a path that must not carry a raw secret. "Marker corruption" is not a risk this ordering creates: `redactHarness` produces no markers, and `redact()` is idempotent against its own output. Companion ordering rule (R-G9): where a sink also **bounds** what it writes, the bound runs **after** `redact()` — the harness prompt's 4KB cap moved out of `redactHarness` into `capPrompt` at the persist site, because capping first can split a secret across the seam and defeat the value-exact match. (b) persist-only — the live in-memory `messages` array the SDK replays into its next turn is UNTOUCHED; unit asserts in-memory holds the raw value while the persisted copy holds the marker (silent-wrong-agent-behavior guard). (c) journal replay-divergence — a resumed run receives `‹secret:NAME›` where an `agent()`/`workflow()` return contained a provisioned value (accepted-by-design under the hermeticity contract: no provisioned secret may be returned from an `agent()`/`workflow()` schema; documented in `workflow_run` + authoring guidance). EXTENDED to call params (Gate-7.5 ruling): the persisted `key.prompt`/`key.opts` are redacted too, so if a provisioned secret rides a call KEY, a HARD-CRASH resume MISSes that call (sameKey compares raw prompt+opts, resume-cache.ts:14, against the redacted on-disk key) and re-runs it + the tail LIVE — correct values, just recomputed; strictly more graceful than the redacted-VALUE divergence above (which feeds a marker back as data). Same-process suspend/resume is unaffected (the in-memory `entry.journal` keeps the raw key). Future option, not built: persist a `keyHash` of the raw key so replay matches without the raw prompt on disk.
 - **completeness sweep IT (definition-of-done):** provision a fake secret; run a workflow whose agent echoes the value into a message AND round-trips it through a return; assert the raw bytes are ABSENT from every on-disk artifact (per-agent transcript, terminal snapshot, `journal.jsonl`) AND from `workflow_agent_log` output; negative control — a same-shape different-value string is NOT redacted. Perf bound (S-S3): `redact()` over ≤20 secrets × ≤1000 events; a loose timing guard (<50 ms for 20×200) catches quadratic drift.
 - **consumability:** `workflow_agent_log` description gains: "Secret values are replaced with `‹secret:NAME›` markers in persisted transcripts (agents received real values at runtime; only the stored transcript is redacted)."
 - **iter:** v14
@@ -2339,7 +2339,9 @@ classDiagram
 - **status:** draft
 - **traces:** ARCH-062, TASK-089
 - **signature:** single exported `interface HarnessDefaults { model?: string; tools?: string[]; skills?: string[]; timeoutMs?: number; prompt?: string }` consumed by all three consumers (register validation + `workflow_get` output + run-time merge — prevents schema drift). `resolveHarnessParams(registered: HarnessDefaults | undefined, overrides: Partial<HarnessDefaults>): EffectiveParams` — **PURE, per-param merge** (per-run value wins for that key only, unset keys fall back). `ALTER TABLE workflows ADD COLUMN defaults TEXT`; `TOOL_DEFS.workflow_register` gains OPTIONAL `defaults`.
+  **[AMENDED v21 Gate 8 RE-REVIEW #5, C-3 — this signature line described neither the shipped type nor a function that still exists; the code is the truth and the DES is corrected to it]:** (a) the interface is **7 keys, not 5** — `effort?: Effort` and `appendPrompt?: string` were added by v21 adjudication #6's F-1 widening (`harness-defaults.ts`, `KNOWN_KEYS` + shape validation), because they are two of REQ-090's four tunable knobs (D12) and must be author-declarable like `model`/`timeoutMs`; (b) `resolveHarnessParams` **no longer exists** — TASK-104/IMPL-137 deleted it once `src/params/resolve.ts`'s `mergeRunParams`/`defaultRunParams` (DES-102) owned the author-side path; the merge above is now read as describing `mergeRunParams`; (c) the `workflow_register` **MCP schema now advertises all 7 keys with per-key `description`s and the ceiling-refusal behaviour on the `defaults` description** (`server.ts` `TOOL_METADATA.workflow_register`), closing the 5-vs-7 docs/behaviour split ARCH-067's own note forbids minting, and a drift-lock in `tests/integration/schema-drift-v15.test.ts` now pins the advertised property list against the same 7 names so it cannot silently lag again.
 - **boundary-conditions:** **register-time validation depth [D-AUTH-5, named assertions — do not simplify]:** shape + **model-alias resolvable** against the ARCH-005 table + **every `tool` name in the curated static allowlist** → on any unknown/ill-typed key or unresolvable model/tool → typed `HARNESS_DEFAULTS_INVALID` and **store NOTHING** (no partial write). **`skills` existence DEFERRED to run time** (mutable per-run uploaded assets; register-time coupling manufactures stale false-failures — the REQ says *tool*, not *skill*; a registered skill absent at run → typed run-time error). Backward-compat: `defaults` absent ⇒ registers exactly as pre-v15; the `tools/call` arg-cast at server.ts:747 widens for `workflow_register`/`workflow_deregister`; drift-locked in `tests/integration/schema-drift.test.ts`.
+  **[AMENDED v21 Gate 8 RE-REVIEW #5, C-3 — two register-time refusals the shipped engine performs that this line never documented]:** (d) **engine ceilings refuse at registration** — since adjudication #7's G-1, every value that reaches the stored `defaults` column is checked against `effectiveBounds(canonicalContract(), ceilings)`, so `defaults:{effort:'max'}` under `maxEffort:'high'`, or a `timeoutMs`/`appendPrompt` over its ceiling, is refused with nothing stored [ADR-005 as amended by S-2]. The rejection code follows the value's **ORIGIN** (`workflow-catalog.ts:175-180`) so the caller sees back an input they actually sent: a caller-supplied `defaults.<knob>` answers `HARNESS_DEFAULTS_INVALID` naming `defaults.<knob>`; a `params.knobs.<knob>.default` normalized into the same column answers `PARAM_CONTRACT_INVALID` naming `params.knobs.<knob>.default`. That origin-keying is now test-pinned (`tests/integration/harness-defaults-validation.test.ts`). (e) **the model-alias predicate is `contract.ts`'s exported `isKnownAlias`, not a local `aliasNames.has()`** [F1 half 1] — one predicate, so the same model string gets the same answer through the top-level `defaults.model` door and the `params.knobs.model.default` door, including the `openrouter/<id>` passthrough carve-out (REQ-038 precedent) and the empty-alias-table skip.
 - **iter:** v15
 
 ### DES-100 — real-tier validation path + per-tier mock policy (REQ-012 + REQ-086..089)
@@ -2349,7 +2351,7 @@ classDiagram
   - REQ-012 / REQ-086 → running-server integration of the 4 OAuth routes + protected surfaces, driven by a **real MCP client library** for the discovery handshake (proves zero-custom-code discovery, not asserted); Google is a **genuine external dependency, legitimately doubled** via injected `googleBase`+`jwksFetch` (there is NO real external model call in this slice). Un-tokened hit to every protected route → real 401; valid engine bearer → 200 + `principal:<email>` on the run record. A bearer-authed `POST /assets/blob/:sha` / `POST /assets/manifest` → assert the CAS namespace **first-writer record equals the principal** via a direct store read (integration-tier store read, not an E2E SUT-boundary mock — closes REQ-086's "namespace carries the email that pushed it" clause). Paired with the I-2 hermeticity sweep (DES-096 DoD).
   - REQ-089 → **no second host needed:** bind `0.0.0.0`, connect to the machine's own **LAN IP** → genuine non-loopback `remoteAddress` → real 401; the identical call to `127.0.0.1` → real 200; a valid-HMAC webhook POST still self-updates.
   - REQ-087 → catalog owner-gate + idempotent boot-backfill integration (`:memory:`/real SQLite): owner mutation succeeds, non-owner → `NOT_WORKFLOW_OWNER`, backfill idempotent, `null`-principal ungated.
-  - REQ-088 → pure `resolveHarnessParams` merge UT + register-validation integration (I-5 named assertions: model-alias-resolvable reject, unknown-tool reject, skills-deferred-to-run, no-partial-write on invalid).
+  - REQ-088 → pure `resolveHarnessParams` merge UT + register-validation integration (I-5 named assertions: model-alias-resolvable reject, unknown-tool reject, skills-deferred-to-run, no-partial-write on invalid). **[AMENDED v21 Gate 8 RE-REVIEW #5, C-3]:** `resolveHarnessParams` was deleted by TASK-104/IMPL-137; the merge half of this path is now `mergeRunParams`/`defaultRunParams` in `src/params/resolve.ts` (UT-099), and the register-validation half additionally covers the G-1 registration ceiling and the origin-keyed rejection codes (IT-081). The same substitution applies to the `per-tier mock policy` line below, which names the deleted function in its UNIT list.
   - Carried-forward regression (I-3, NOT a new DES/TASK) → **Gate 7.5 Validation** assertion: hung-provider slot-free within `timeoutMs+margin`, second run admits — tagged to REQ-083 (Slice B ships zero gateway code for a DES to bind to).
 - **per-tier mock policy:** UNIT — mock freely (injected `clock`/`csprng`/`jwksFetch`/`now`, fake catalog, principal literals); all metadata builders, bearer-parse, `verifyIdToken` branches, `isLoopbackPeer`, `resolveHarnessParams`, owner-gate are pure/injectable UTs. INTEGRATION — real adjacent components (real server routes, real net-guard, real SQLite catalog + token-store); mock ONLY the genuine third-party network you cannot run (Google JWKS/consent → injected `googleBase`+`jwksFetch`). E2E/ACCEPTANCE — MUST NOT mock the SUT's own boundaries (the 4 OAuth routes, `resolvePrincipal`, the net-guard, the catalog, the CAS attribution write); Google stays a legitimately-doubled external dep via the injected base; the `0.0.0.0`+LAN-IP 401/200 is a real socket touch.
 - **note (I-4, optional boundary):** `Cache-Control: no-store` on `/api/*` responses that carry `principal` is a defensible one-liner on the response writer (keeps PII out of shared/proxy caches given the cloudflared tunnel) — NOT a DES. `X-Frame-Options` explicitly **not adopted** (non-responsive: framing a JSON document does not let a cross-origin page read its body). The residual `/api/*`+dashboard PII exposure stays a recorded REQ-086 non-goal.
@@ -2401,7 +2403,9 @@ classDiagram
     }
     class HarnessDefaults {
         <<shared type>>
-        +resolveHarnessParams(registered, overrides) EffectiveParams
+        +validateHarnessDefaults(defaults, aliasNames) ok or message
+        +7 keys since v21 F-1 model tools skills timeoutMs prompt effort appendPrompt
+        +merge moved to params/resolve mergeRunParams in v21 TASK-104
     }
     Server --> AuthService : resolvePrincipal at edge (before side-effect)
     Server --> NetGuard : isLoopbackPeer (fail-closed)
@@ -2454,3 +2458,809 @@ classDiagram
 - **Seam consistency (Exit Gate 5):** every method that reads time in `token-store.ts` still reads `this.clock()`; `issueRefresh` mints the token via `this.csprng()` and computes expiry via `this.clock()+ttlMs` — it adopts the SAME clock+CSPRNG seams as `issue`, no asymmetry. `scope` is client-supplied/stored-verbatim (no new time/random read, like v19 client_state). `gcExpired` reaps the 5th table via the same `this.clock()` read. No method touching time or randomness bypasses the injected ports.
 - **In-closure confirmation (no escalation):** new table + two nullable columns + a `/token` grant branch + a clamp widening + a rendering change — all inside `oauth-metadata.ts`/`token-store.ts`/`auth-service.ts` and the existing 5 routes. No new module, no new route, no new seam, no config-schema change (`REFRESH_TTL_MS` is a source constant). Auth-disabled ⇒ byte-for-byte pre-v15 (no auth handlers wired ⇒ none of this executes). Stays within REQ-012/ARCH-059/DES-092/093/095/IMPL-122/IT-078 — no re-decomposition.
 - **Real-tier validation path:** REQ-012 v20 clause → a real `@modelcontextprotocol/sdk`/Claude-Code client staying connected across an access-token expiry with NO new browser sign-in, driven end-to-end against the live engine over the cloudflared tunnel (VAL-095 extension at Gate 7.5); integration tier (IT-078 v20, real server + real SQLite token-store, Google doubled via injected JWKS) proves the offline_access→refresh_token issuance + rotation + `invalid_grant`-on-reuse + always-present `expires_in`/`scope` + the 200-HTML callback page's parseable anchor, without third-party network. Mock policy unchanged: unit mocks freely; integration uses the real server + real store, doubling only Google's network; E2E/acceptance mocks none of the SUT's own boundaries.
+
+---
+
+## v21 — tunable-parameter contract (REQ-090..095 → ARCH-064..070 → TASK-096..104)
+
+```mermaid
+classDiagram
+    class ParamContract~contract.ts~ {
+        +LOCKED_KEYS / TUNABLE_KEYS / EFFORT_RANK
+        +parseParamContract(metaParams, aliasNames) Ok|Err
+        +canonicalContract() ParamContract
+        +effectiveBounds(contract, ceilings) ParamContract
+        +validateUserOverrides(contract, raw, aliasNames, ceilings) Ok~UserOverrides~|Err
+        +validateDeclaredArgs(contract, args) Ok|Err
+    }
+    class Resolve~resolve.ts~ {
+        +defaultRunParams(defaults) RunParams
+        +mergeRunParams(defaults, overrides) RunParams
+        +resolveCallParams(opts, agentTypeDef, runParams, engineDefaults) EffectiveCallParams
+        +composePrompt(system, authorPrompt, scriptPrompt, appendPrompt) string
+        +mapEffort(profile, effort) Applied|NoOp|undefined
+    }
+    class WorkflowCatalog {
+        +get(name) ~script,version,defaults,params~
+        +register(name, script, defaults, principal, params)
+        +list() rows with params
+    }
+    class RunManager {
+        +start(spec, overrides?) runId
+        +resume(runId) void
+        -_handleAgentRequest() builds AgentReq~runParams~
+    }
+    class AgentExecutor {
+        +run(req: AgentReq) AgentOutcome
+        -onHarness(descriptor, applied?) void
+    }
+    class GatewayClient {
+        <<interface>>
+        +invoke(req) GatewayResult
+    }
+    ParamContract <.. Resolve : types only
+    ParamContract <.. WorkflowCatalog : parse at register
+    ParamContract <.. RunManager : validate at admission
+    Resolve <.. RunManager : mergeRunParams
+    Resolve <.. AgentExecutor : resolveCallParams / composePrompt
+    Resolve <.. GatewayClient : mapEffort (both impls)
+    WorkflowCatalog <.. RunManager : get() row (defaults + params)
+    RunManager --> AgentExecutor : AgentReq.runParams (required)
+    AgentExecutor --> GatewayClient : invoke + onHarness
+```
+
+### DES-101 — `src/params/contract.ts`: contract vocabulary, parser, override validator, total rejection table
+- **status:** draft
+- **traces:** ARCH-064, TASK-097, TASK-099
+- **signature:**
+  ```ts
+  export const LOCKED_KEYS = ['prompt','tools','skills','mcp','workdir','cwd'] as const;
+  export const TUNABLE_KEYS = ['model','effort','timeoutMs','appendPrompt'] as const;
+  export const EFFORT_RANK: Record<Effort, number> = { low:0, medium:1, high:2, xhigh:3, max:4 };
+  export interface ParamSpec { type:'string'|'number'|'enum'; default?: unknown; enum?: unknown[]; min?: number; max?: number; unit?: string; description?: string }
+  export interface ParamContract { knobs: Record<string, ParamSpec>; args: Record<string, ParamSpec> }
+  export interface UserOverrides { model?: string; effort?: Effort; timeoutMs?: number; appendPrompt?: string }   // closed: a locked key is UNREPRESENTABLE (ADR-001)
+  export interface Ceilings { maxTimeoutMs: number; maxAppendPromptBytes: number; maxEffort: Effort }
+  export type Err = { ok:false; code:'PARAM_LOCKED'|'PARAM_OUT_OF_RANGE'|'PARAM_UNKNOWN'|'PARAM_CONTRACT_INVALID'; message:string; detail: Record<string,unknown> };
+  export function parseParamContract(metaParams: unknown, aliasNames: Set<string>): { ok:true; value: ParamContract } | Err;
+  export function canonicalContract(): ParamContract;                                   // 4 knobs, no author bounds, no args
+  export function effectiveBounds(c: ParamContract, ceilings: Ceilings): ParamContract;  // min(author, ceiling), READ-TIME
+  export function validateUserOverrides(c: ParamContract, raw: unknown, aliasNames: Set<string>, ceilings: Ceilings): { ok:true; value: UserOverrides } | Err;
+  export function validateDeclaredArgs(c: ParamContract, args: unknown): { ok:true } | Err;
+  export function isEffort(v: unknown): v is Effort;
+  ```
+- **rejection table (total — one unit case per row; `validateUserOverrides` unless noted):**
+  | # | Condition | code | detail |
+  |---|---|---|---|
+  | 1 | `overrides` names a D12-locked key | `PARAM_LOCKED` | `{param, tunable:['model','effort','timeoutMs','appendPrompt']}` |
+  | 2 | `overrides` names an unrecognized key | `PARAM_UNKNOWN` | `{param, tunable:[…]}` |
+  | 3 | wrong type (`timeoutMs:"fast"`) | `PARAM_OUT_OF_RANGE` | `{param, suppliedType, expectedType}` |
+  | 4 | outside the author-declared enum/range | `PARAM_OUT_OF_RANGE` | `{param, supplied, allowed}` |
+  | 5 | above the engine ceiling | `PARAM_OUT_OF_RANGE` | `{param, supplied, allowed}` — `allowed` is the **effective** bound |
+  | 6 | `appendPrompt` over `maxAppendPromptBytes` | `PARAM_OUT_OF_RANGE` | `{param:'appendPrompt', suppliedBytes, maxBytes}` — **never echoes the text** |
+  | 7 | declared `args` field violates its spec (`validateDeclaredArgs`) | `PARAM_OUT_OF_RANGE` | `{param:'args.<field>', supplied, allowed}` |
+  | 8 | *registration* (`parseParamContract`): locked key, unknown knob, malformed, or over bounds | `PARAM_CONTRACT_INVALID` | `{param, reason}` — nothing stored |
+- **boundary conditions:**
+  - `allowed` is machine-shaped: `{enum:[…]}` or `{min?,max?}` — never prose (an agent caller repairs its call from the error alone, no second `workflow_get`).
+  - **Free text is reported by size, never by content** (`appendPrompt`): error envelopes are logged. Any string value over 64 bytes is truncated with `suppliedTruncated:true`.
+  - `canonicalContract()` is what a script with **no** `params` block means — the resolver never branches on "contract missing".
+  - `effectiveBounds` is computed at **read time** from live config; the stored column keeps the author's raw declaration, so lowering a ceiling takes effect without a re-register.
+  - `maxEffort` comparison uses `EFFORT_RANK` (the single ordering table, also used by `isEffort` call sites); `allowed.enum` lists the permitted levels so a caller retries correctly on the first bounce.
+  - Post-eval structural bounds (here): ≤ 32 declared knobs+args, enum ≤ 32 members, nesting depth ≤ 4. The **pre-eval source-size bound (4 KB) is NOT here** — it lives in `workflow-meta.ts` (DES-103) because `metaParams: unknown` only exists after evaluation.
+  - Declared `args` are checked only for fields the contract declares; **undeclared `args` keys pass through unchanged** (backward compat).
+  - `model` enum entries are validated against `aliasNames` **at registration only**; at submission only the effective model is re-checked via the existing `UNKNOWN_ALIAS` rule — so remapping an alias to another provider invalidates no stored contract.
+  - Pure: no I/O, no clock, no randomness, no VM.
+- **iter:** v21
+
+### DES-102 — `src/params/resolve.ts`: two-moment merge, per-key provenance, five-segment composition, effort mapping
+- **status:** draft
+- **traces:** ARCH-065, TASK-098, TASK-104
+- **signature:**
+  ```ts
+  export type Rung = 'call'|'agentType'|'override'|'default'|'engine';
+  export interface RunParams {                       // ADMISSION snapshot — run-immutable
+    model?: string; effort?: Effort; timeoutMs?: number; appendPrompt?: string;   // user-tunable four
+    prompt?: string; tools?: string[];                     // author-only PAIR (REQ-092 close; UserOverrides cannot spell them) — `skills` deliberately absent, adjudication B-3
+    provenance: Record<'model'|'effort'|'timeoutMs'|'appendPrompt', 'override'|'default'|'engine'>;
+  }
+  export interface EffectiveCallParams extends Omit<RunParams,'provenance'> { provenance: Record<'model'|'effort'|'timeoutMs'|'appendPrompt', Rung> }
+  export function defaultRunParams(defaults: HarnessDefaults | undefined): RunParams;                  // the ONLY no-overrides producer
+  export function mergeRunParams(defaults: HarnessDefaults | undefined, overrides: UserOverrides): RunParams;
+  export function resolveCallParams(opts: AgentOpts, agentTypeDef: AgentTypeDef | undefined, runParams: RunParams, engineDefaults: { model?: string }): EffectiveCallParams;
+  export function composePrompt(systemPrompt: string|undefined, authorPrompt: string|undefined, scriptPrompt: string, appendPrompt?: string): string;
+  export const USER_INSTRUCTIONS_OPEN = '\n\n<user-instructions untrusted="true">\n';
+  export const USER_INSTRUCTIONS_CLOSE = '\n</user-instructions>';
+  export type ProviderEffortProfile = { param: string; values: Record<Effort, unknown> } | { noop: true; reason: string };
+  export function mapEffort(profile: ProviderEffortProfile | undefined, effort?: Effort): { applied:true; param:string; value:unknown } | { applied:false; reason:string } | undefined;
+  ```
+- **boundary conditions:**
+  - **Five precedence rungs** (ADR-003), resolved in ONE pass that emits `{value, rung}` per key — provenance is never inferred by comparing values afterwards (two rungs holding `sonnet` would make the inference lie, and that is exactly the case a wiring-miss test must distinguish): per-call `agent()` opts › agentType frontmatter › per-run `overrides` › registered `defaults` › engine default.
+  - `mergeRunParams` folds **six** registered keys into the snapshot — the four tunable knobs (`model`, `effort`, `timeoutMs`, `appendPrompt`) plus the author-only **pair** (`prompt`, `tools`). `defaults.tools` sits directly BELOW agentType in the tool surface: per-call `allowedTools` › agentType `tools` › `defaults.tools`. **[AMENDED v21 Gate 8 RE-REVIEW #4, C-2 (= adjudication #6's F-3) — synced to `resolve.ts`, which is the truth]:** this bullet and the `RunParams` signature above said "all seven … + the author-only trio (prompt/tools/skills)". Two things changed under the design and the prose lagged both. **(a) `skills` is not a `RunParams` field at all (adjudication B-3):** skills are server-side assets — every stored skill is materialized into every run workspace regardless of workflow, and `HarnessDescriptor.skills` is derived from the filesystem (`readSkillNames(assetRoot)`), so a per-run snapshot field would be a value nothing reads. REQ-092's lock on `skills` is satisfied by `contract.ts` returning `PARAM_LOCKED` to any caller who names it in `overrides`, **not** by this type carrying it — the requirement is met at the boundary that actually refuses. **(b) all four tunable knobs are defaultable (adjudication #6's F-1):** `defaultRunParams` reads `effort` and `appendPrompt` off `HarnessDefaults` with `'default'` rung provenance, exactly as it always did for `model` and `timeoutMs`, so the fold is uniform across the four rather than covering two of them.
+  - **`composePrompt` order (five segments, pinned by its own test):** `[agentType systemPrompt] + [defaults.prompt] + [script prompt] + [framed appendPrompt]` — and the engine's protocol scaffolding (`=== OUTPUT FORMAT (REQUIRED) ===` + the retry nudge, `agent-executor.ts:312/320`) is appended **after** those four by the executor, as a non-author non-user fifth segment. REQ-094's "last" therefore constrains the last **content** segment; it is already literally false today for schema calls, and moving the schema block ahead of the user text would re-open the D-V4 OpenAI JSON-conformance defect.
+  - **Byte-identity pin (separate test, scoped narrowly):** `composePrompt(system, undefined, prompt, undefined)` byte-equals today's `${systemPrompt}\n\n${prompt}` / bare `prompt`. The five-segment order pin is a *different* test — one must not be allowed to restate the other.
+  - `appendPrompt` is wrapped in the fixed frame (both constants exported and drift-locked); the **byte cap applies to the raw user text before framing** and is enforced at submission (DES-101 row 6), never by truncation here.
+  - `mapEffort` is pure and provider-keyed; it returns `undefined` when no effort was requested (tri-state: applied / not-applied-with-reason / never-asked). A provider with no dial gets an explicit `{noop:true, reason}` profile entry — adding a provider is a config row, not executor code. `ProviderEffortProfile` is a NEW type in `src/params/`, deliberately distinct from the fenced `ProviderProfile.effortMapping` (`session-options-builder.ts:18`, ADR-006).
+  - Pure throughout. **`mapEffort` — read the A12/R-1 debt note before touching this** [AMENDED v21 Gate 8 RE-REVIEW #4]: the copy declared above lives in `resolve.ts` and has **zero production callers**. What the gateways actually import is the *other* implementation, in `src/gateway/client.ts` (DES-106), whose applied-shape is `{param, restPath, value}` — this copy has no `restPath`, so it is not merely a duplicate but the pre-P-A1 **wrong** shape: a future caller adopting it would emit `effort` at the top level of the REST body, the exact HIGH defect P-A1 fixed. Deletion is the standing fix and is blocked only on re-pointing the 5 cases in `tests/unit/params-resolve.test.ts` that still exercise it; until then, treat this signature as a record of dead code, not as an interface to build on. See ARCH-065's note.
+- **iter:** v21
+
+### DES-103 — `WorkflowCatalog`: widened row read, `params` column, registration validation, ceiling-bounded read surfaces
+- **status:** draft
+- **traces:** ARCH-067, TASK-096, TASK-099
+- **signature:**
+  ```ts
+  // src/workflow-catalog.ts
+  get(name: string): Promise<{ script: string; version: string; defaults: HarnessDefaults | undefined; params: ParamContract | undefined }>;
+  getFull(name): Promise<…>;                    // delegates to get() + owner — one row-read shape, not two
+  register(name, script, defaults, principal): Promise<{ version: string }>;   // parses+validates meta.params internally
+  list(): Promise<Array<{ name; version; createdAt; description; params: ParamContract | undefined }>>;
+  // migration (idempotent, workflow-catalog.ts:58–67 pattern):
+  try { db.exec('ALTER TABLE workflows ADD COLUMN params TEXT'); } catch { /* already exists */ }
+  ```
+- **boundary conditions:**
+  - **`ON CONFLICT(name) DO UPDATE SET … params = excluded.params`** — the existing clause updates script/version/createdAt/defaults and *deliberately omits* `owner`; copying that pattern without adding `params` leaves a **stale contract on re-register**, silently. Pinned by: re-register with a changed `params` ⇒ `workflow_get` returns the new contract; and a negative test that `owner` still does not change.
+  - Registration is **fail-closed, nothing stored** on any `PARAM_CONTRACT_INVALID` (no partial write), reusing the ARCH-062/D-AUTH-5-E precedent.
+  - **Pre-eval source-size guard (4 KB) lives in `src/sandbox/workflow-meta.ts`** — measured on the matched `meta` literal *text*, before `runInNewContext(…,{timeout:50})`; the post-eval structural guard is DES-101's. Two guards, two homes, two tests.
+  - **Default cross-validation (one source of truth):** `params.<knob>.default` that disagrees with `defaults.<knob>`, or a `defaults.<knob>` violating the knob's own declared enum/range ⇒ typed rejection, nothing stored. A `params.<knob>.default` declared with **no** corresponding `defaults.<knob>` is **accept-and-normalize** (written into the stored defaults as if declared there) — REQ-090 documents `default` in the params vocabulary, so rejecting the documented spelling would be a consumability lie. After storage the served `default` is **derived from the `defaults` column**, so the two can never diverge.
+  - **Read surfaces never serve null:** a NULL `params` row reads back as `effectiveBounds(canonicalContract(), ceilings)` — four knobs **bounded by the engine ceilings**, not "unbounded" (advertising `effort:'max'`/unbounded `timeoutMs` while admission refuses them is the same docs/behaviour split REQ-093 repairs). `list()` reads `params` from the **column**, never a script re-parse. Test: NULL-`params` row + lowered ceiling config ⇒ `workflow_get` reflects the lower bound with no re-register.
+  - `workflow_run.overrides` inputSchema (`additionalProperties:false`, exactly the four properties, `effort` enum inline) and the `workflow_get.params` description are **generated from the DES-101 types** under the existing ARCH-051 drift-lock test.
+  - Inherited debt, NOT fixed here: `list()` still re-parses `meta.description` from the stored script (`workflow-catalog.ts:167–175`) — v22/D15 script masking breaks it the same way it would have broken a script-derived contract; recorded with a v22 owner.
+- **iter:** v21
+
+### DES-104 — admission rung, run-immutable `effectiveParams` snapshot, resume, engine ceilings + config wiring
+- **status:** draft
+- **traces:** ARCH-066, TASK-100
+- **signature:**
+  ```ts
+  // src/run-manager.ts — overrides are an ARGUMENT, never a RunSpec field
+  start(spec: RunSpec, overrides?: unknown): Promise<string>;
+  // src/run-store.ts (interface) + both impls (InMemoryRunStore, store/sqlite-run-store.ts)
+  createRun(spec: RunSpec, scriptVersion?: string, effectiveParams?: RunParams): Promise<string>;
+  getEffectiveParams(runId: string): Promise<RunParams | null>;
+  // sqlite migration (sqlite-run-store.ts:64 pattern):
+  try { db.exec('ALTER TABLE runs ADD COLUMN effective_params TEXT'); } catch { /* already exists */ }
+  // ServerConfig / FileConfig / composeConfig(): maxTimeoutMs?: number; maxAppendPromptBytes?: number; maxEffort?: Effort
+  ```
+- **boundary conditions:**
+  - **Insertion point is pinned and surgical:** between `this._catalog.get(spec.name)` (`run-manager.ts:349`, now carrying defaults+params) and `this._store.createRun(...)` (`:355`) / `runWorkspace(...)` (`:356`). No existing rung of the scriptSha → admission-limit → seed-shape → seed-source ladder moves.
+  - Validation order at admission: `validateUserOverrides(contract, overrides, aliasNames, ceilings)` — which includes the **effective-model alias check** (an `overrides.model` that resolves to no configured alias is refused with the pre-existing **`UNKNOWN_ALIAS`** code, with the `openrouter/<id>` passthrough and the empty/unconfigured-table skip carved out per D-AUTH-5-B; `aliasNames` is threaded from `server.ts`'s configured table into `RunManager`) → `validateDeclaredArgs(contract, spec.args)` → `mergeRunParams`. Any `Err` throws `codedError(code, message)` with the DES-101 detail attached, **before any durable work**.
+  - **Named observables for the one integration test** (ADR-008 permits exactly one; "the call threw" is satisfied by a rejection *after* `createRun`, so the assertions must be named): (1) `store.listRuns()` count unchanged; (2) **no directory on the filesystem** under `catalog.workFolder(name)/runs/` (`runWorkspace()` only computes+memoizes a path — the mkdir is downstream, so assert the FS, not the call); (3) zero sandbox spawns (spawner spy).
+  - **Ceilings bound the USER-override rung only** (ADR-005) and **refuse, never clamp**. Defaults, fail-closed when a key is absent: `maxTimeoutMs: 600_000`, `maxAppendPromptBytes: 1024`, `maxEffort: 'high'` (so `xhigh`/`max` are refused by default config — DEPLOY §1 must say so).
+  - **The snapshot is a NEW persist sink**: routed through the ARCH-056 `redact()`-on-persist path AND added to the REQ-083 sink-completeness sweep IT **in this same task** — splitting "persist" from "redact+sweep" is how a sink ships unredacted. The **dispatched** copy is never redacted (DES-088 persist-only invariant).
+  - **`overrides` is never persisted raw and never on `RunSpec`** — `RunSpec` is persisted wholesale by `createRun` and read back by `getSpec()` on resume; putting overrides there creates a second unredacted sink plus a standing temptation to re-merge on resume. The redacted snapshot is the single durable representation.
+  - **Resume has three halves:** (a) the presence of an `overrides` field on `workflow_resume` is a typed error, full stop (no absent-vs-`{}`-vs-equal semantics to get subtly wrong); (b) it reads the **pinned snapshot** (`getEffectiveParams`) instead of re-resolving from the current catalog row; (c) **the read-back is refusal-only** [AMENDED v21 Gate 8 re-review, review §R2 R-G1/R-G6]. The snapshot is redacted on persist and `redact()` has no inverse, so a value that was a live secret reads back as `‹secret:NAME›`. `resume()` (`run-manager.ts:539`) **refuses** with typed **`PARAM_SECRET_UNAVAILABLE`** when any marker survives in the rehydrated `effectiveParams`; it never reconstructs the value. Rejected and DELETED: the `unredactBestEffort` restore path the first send-back closeout shipped — `appendPrompt` is caller-supplied free text, so no inverter can tell an engine-written marker from a caller who typed the public marker grammar, which made the grammar itself a secret-dereference primitive; a rotated secret would also make resume dispatch different bytes than admission. The rule is: **byte-identical to admission, or a typed refusal.** **Legacy fallback:** a pre-v21 run row has `effective_params = NULL` ⇒ resume with `defaultRunParams(registered.defaults)` (today's behaviour), never a crash; plus a suspended-pre-v21-journal replay fixture that resumes with **zero cache misses**.
+  - **Nothing v21 resolves enters `CallKey`** (`run-manager.ts:706` stays byte-identical, ADR-002) — pinned by a test asserting an overridden run's `CallKey`s are byte-identical to a non-overridden run's. This one cheap test guards both the zero-cache-invalidation promise and the F-2 blast-radius bound.
+  - **`defaultRunParams` is the ONLY no-overrides producer** — the four `start()` callers that never supply overrides (`webhook-registry.ts:137`, `scheduler.ts:219`, `server.ts:1242`, `continuation-store.ts:148`) must not each reach for `?? {}`. Chained runs start from **their own** workflow's defaults and never inherit run A's snapshot (one test).
+  - **Behaviour change, intended:** four of five `start()` callers bypass `SubmissionValidator`, so admission placement is the only one covering all triggers — declared-`args` validation now refuses a contract-violating **webhook/schedule/chained** run at trigger time instead of failing inside the script. One test + a DEPLOY note.
+  - The three config keys are forwarded in `composeConfig()` (`src/main.ts:86`) **and** get their rows in `tests/unit/compose-config-v2-wiring.test.ts` in this same change (ARCH-066 inv-6 — four prior misses of this class).
+  - `effectiveParams` rides the run row, so `workspace_purge` preserves it exactly as it preserves the transcript — one assertion in the existing purge test, no new retention policy.
+- **iter:** v21
+
+### DES-105 — dispatch wiring: required `AgentReq.runParams`, one descriptor-decoration site, observable pre-dispatch rejection
+- **status:** draft
+- **traces:** ARCH-068, TASK-101
+- **signature:**
+  ```ts
+  // src/agent-executor.ts:106
+  interface AgentReq { runId; agentId; prompt; opts; workspace; signal; runParams: RunParams }   // REQUIRED — no default, no `?`
+  // src/agent-executor.ts
+  const eff = resolveCallParams(req.opts, agentTypeDef, req.runParams, { model: engineDefaultModel });
+  const onHarness = async (descriptor: HarnessDescriptor, applied?: EffortApplied) => { /* single decoration site */ };
+  // src/types.ts — all new descriptor fields OPTIONAL on the persisted DTO
+  interface HarnessDescriptor { …; effort?: Effort; effortApplied?: { param:string; value:unknown } | { reason:string };
+    timeoutMs?: number;              // appendPromptBytes / promptTruncated: DROPPED, adjudication B-2
+    provenance?: Record<'model'|'effort'|'timeoutMs'|'appendPrompt', Rung> }
+  ```
+- **boundary conditions:**
+  - **The `tsc` lever is on `AgentReq`, not the constructor.** `AgentExecutorDeps = {}` is an all-optional bag with ~30 `new AgentExecutor({…})` sites across 12 test files and the executor instance is not where params live; `AgentReq` is built at exactly ONE production site (`run-manager.ts:_handleAgentRequest`, ~`:740`), so a required field there gives the same compile-time guarantee — **and `_spawnerOverride` carries it automatically** instead of bypassing the lever.
+  - **One decoration site.** The `onHarness` closure (`agent-executor.ts:347`) — which already owns persistence and knows the resolved params — merges the new fields before `appendTranscript`. It receives `EffectiveCallParams`, never the pre-resolution inputs. Gateways keep emitting today's descriptor shape; `gateway/client.ts:289`'s inline literal (with its duplicated `PROMPT_CAP=4096/HALF=2048`) stops carrying its own cap so the truncation has ONE implementation. **[AMENDED v21 Gate 8 RE-REVIEW #4, A10/O-2 — declared beyond A11's literal line, because this sentence is the same stale claim one line over and shipping it knowingly false is the defect class this batch exists to close]:** the single implementation is **not** `redactHarness()`. R-G9 moved the cap out of `redactHarness` into the exported `capPrompt` (`agent-executor.ts`), applied unconditionally at the `onHarness` persist site **after** `redact()`; `redactHarness` became a purely structural transform that passes the prompt through uncut, because capping first split secrets across the 2048-byte seam and `redact()` is a value-exact match. The ONE-implementation property is preserved — the owner changed. `provenance` is knowledge the gateway does not have — hence optional on the wire type, and historical records lack these fields anyway.
+  - `effortApplied` is **tri-state**: `{param,value}` applied / `{reason}` not applied / **absent** = never requested. "Silently dropped" and "never asked for" must stay distinguishable.
+  - **`promptTruncated` and `appendPromptBytes` are DROPPED — this body must no longer be read as declaring them** [AMENDED v21 Gate 8 RE-REVIEW #4, A11; the retraction was previously only in the appended B-2 adjudication, so the item's own signature and boundary text still specified two fields that exist in neither `types.ts` nor anywhere in `src/`]. Adjudication B-2's reasoning stands: REQ-094 refuses an oversize `appendPrompt` **at submission** rather than silently truncating it, so a truncation-record field describes a state v21 cannot enter; the rejection's own `suppliedBytes`/`maxBytes` detail is the observable. What survives of the original clause is the property, not the fields: the 4096-byte cap truncates the **recorded descriptor** and never the outbound prompt, and post-R-G9 it is the exported `capPrompt` applied at the single `onHarness` persist site **after** `redact()` — pinned head/tail cases in UT-070.
+  - **Params are run-scoped, including nested `workflow()` frames.** `_handleWorkflowRequest` (`run-manager.ts:652–700`) shares the parent's `runId`, guard, workspace and journal and wires the nested sandbox's `onAgentRequest` to **the parent run's `_handleAgentRequest`** — so one snapshot applies to the whole frame tree with zero threading, which is also literally what REQ-094's "any `agent()` in that run" says. One integration test pins it: a nested run with an `appendPrompt` shows it on a **child** agent's descriptor with `provenance.appendPrompt:'override'`, charged to the same run budget. **Scope note [ADDED v21 Gate 8 RE-REVIEW #5, F3]:** "run-scoped" is not limited to the four caller-tunable knobs — the snapshot also carries the PARENT author's `defaults.prompt`/`defaults.tools`, and the child row's own `defaults`/`params` columns are never read, so a parent author's tool allowlist and prompt segment govern the child's agents too. That residual is stated in full in the adjudication section's "Nesting → run-scoped params" entry below; it is introduced by v21 (pre-v21 `resolveHarnessParams` had zero `src/` callers, so `defaults.tools`/`prompt` were inert), not inherited.
+  - **Script-supplied invalid `effort` (or any per-call knob outside the contract): record, then throw.** `parallel()` swallows every exception into `null` (`sandbox/guards.ts:143–148`), so a bare throw inside a 10-way `parallel()` returns ten values with one silent null and nothing in the journal. Therefore, pre-dispatch in `AgentExecutor.run()`: `await this._sink.capture(runId, {agentId, label, phase}, { ok:false, provider:'', reason:'terminal', detail:'PARAM_OUT_OF_RANGE: …' }, ts)` — the **existing** terminal-failure record path, no new event shape, no `kind:'harness'` event and **no `effortApplied`** (a call that never reached the wire must not appear in the channel REQ-093 uses to distinguish wire from echo) — then `throw codedError('PARAM_OUT_OF_RANGE', …)`, which the script may catch (matching the `Unknown agentType` precedent at `:289`). Because validation and record live in the same function, whoever validates records — no `_spawnerOverride` carve-out needed. Side effect: the record also resolves the pre-existing dangling `markRunning` state for this case.
+  - Composition happens **downstream of `CallKey`** construction (`run-manager.ts:706`), at the same seam `agentType.systemPrompt` is already prepended — an implementer who composes `appendPrompt` into the prompt before the key breaks ADR-002 and the F-2 bound simultaneously and silently.
+  - `appendPrompt` tokens are charged to the run's REQ-002 budget like any prompt tokens (test: N-way `parallel()` with an `appendPrompt` shows budget spend scaling with N — no free rider under fan-out).
+- **iter:** v21
+
+### DES-106 — effort on the wire: one shared `mapEffort`, two import sites, `thinkingFor` stays sole writer
+- **status:** draft
+- **traces:** ARCH-069, TASK-102
+- **signature:**
+  ```ts
+  // both impls: gateway/client.ts (LiteLLM/direct-fetch) and gateway/claude-agent-sdk-client.ts
+  const applied = mapEffort(profileFor(target.provider), req.opts.effort);   // called ONCE per invoke, inside the gateway
+  await req.onHarness?.(descriptor, applied);                                // the SAME object travels back up
+  // claude-agent-sdk-client.ts — sole writer, effort as an INPUT:
+  thinkingFor(aliases, model, effortDirective?)  →  options.thinking
+  ```
+- **boundary conditions:**
+  - The provider is only resolvable **inside** the gateway (`gateway/client.ts:281` alias map; the SDK client's own alias→model/provider resolution at `:527`), so the mapping cannot run executor-side. One pure implementation, two import sites, and the applied object returns via `onHarness(descriptor, applied?)` — **recorded ≡ applied by object identity**, never a re-lookup. No `resolveTarget` interface method is invented.
+  - **`thinkingFor()` (`claude-agent-sdk-client.ts:325`, wired at `:527`) remains the SOLE writer of `options.thinking` and takes the effort directive as an input.** It exists because unconditional extended thinking made every real SDK+local-Ollama call fail with a 400 after ~4 minutes (Gate 7.5 round 3). A second assignment site re-opens that shipped defect on the DEFAULT path. Non-Anthropic aliases get the explicit `{applied:false, reason:'thinking disabled for non-Anthropic alias (D-F6)'}` no-op entry. **Regression pin:** non-Anthropic alias + `effort:'max'` ⇒ `options.thinking` byte-identical to today.
+  - Per-client wire assertion, one shared contract test parameterized over both impls (a third client inherits it): LiteLLM — spy `fetchImpl` captures the body, `low` vs `max` differ at `body[param]`; SDK — captured `Options` differ for an Anthropic alias at two effort levels. Both UT-tier, no network.
+  - Effort-absent request composition is **byte-identical to pre-v21 on both clients** (pinned).
+  - `session-options-builder.ts` stays unwired (ADR-006), guarded by a standing zero-`src/`-importer assertion that retires when the security-hardening track wires the module deliberately.
+- **iter:** v21
+
+### DES-107 — workflow-bound problem reports
+- **status:** draft
+- **traces:** ARCH-070, TASK-103
+- **signature:**
+  ```ts
+  issue_report({ workflow?: string; version?: string; runId?: string; … })  // → label `workflow:<name>`, body carries `name@version` + runId
+  issue_list({ workflow?: string; … })                                       // → label-filtered query
+  export function issueFingerprint(title: string, component?: string, workflow?: string): string;
+  ```
+- **boundary conditions:**
+  - `workflow` is **charset/length-validated with the registration-name predicate minus the existence check** — reuse the exported function, never transcribe the regex (the name becomes both a GitHub label and a label query). A just-deregistered workflow must remain reportable.
+  - The workflow enters the ARCH-024 dedup fingerprint, or two workflows' same-titled reports collapse onto one issue. **Compat pin:** with `workflow` **absent**, `issueFingerprint` output is byte-identical to pre-v21 (`normalizeTitle(title)+'|'+(component??'')`) — that is REQ-095's "behaves exactly as it does today". One-time consequence, accepted: open pre-v21 workflow-bound reports re-duplicate once.
+  - `issue_list({workflow})` tolerates an unregistered name symmetrically with `issue_report`, so report-then-list round-trips.
+- **iter:** v21
+
+### DES-108 — real-tier validation path + per-tier mock policy (REQ-090..095)
+- **status:** draft
+- **traces:** REQ-090, REQ-091, REQ-092, REQ-093, REQ-094, REQ-095, TASK-096, TASK-097, TASK-098, TASK-099, TASK-100, TASK-101, TASK-102, TASK-103
+- **real entrypoint:** the running engine (`npm start` → `src/main.ts` composition root) driven over MCP by a real client; agents dispatch through the DEFAULT `sdk` gateway to the managed LiteLLM proxy → local Ollama.
+- **real-tier path per REQ:**
+  - **REQ-090** → `workflow_register` a script whose `meta.params` constrains `model` to an alias enum and `timeoutMs` to a ceiling; `workflow_get`/`workflow_list` return the structured contract with **effective** bounds; a `params` block naming `tools` is refused and `workflow_get` shows nothing was stored.
+  - **REQ-091** → `workflow_run({name, overrides:{prompt:…}})` → `PARAM_LOCKED`; `overrides:{timeoutMs: 10_000_000}` → `PARAM_OUT_OF_RANGE`; in both cases a real `GET /api/runs` shows **no new run** and the real workspace directory does not exist on disk.
+  - **REQ-092** → register with `defaults:{model:'<alias-B>'}`, run with no overrides, then read `workflow_agent_log(runId, agentId).harness` from the live engine: `model` is alias-B, `provenance.model:'default'`, and `ps aux` shows the spawned CLI subprocess's own `--model` flag carrying alias-B (the same real evidence shape that settled D-F5 at Gate 7.5 round 3).
+  - **REQ-093** → **evidence plan pre-committed here** (Ollama has no reasoning dial, so the wire assertion is not observable on the default local stack; deciding this now costs a paragraph, at Gate 7.5 it costs a round — VAL-003 precedent): real-tier green = (a) a real Ollama-backed run at `effort:'max'` completes with `effortApplied:{reason:…}` in the live descriptor **and no 400**, plus (b) the mapped-value assertion at the injected seams (`fetchImpl` body / `queryImpl` `Options`) at UT tier for both clients. A paid provider with sandbox credentials may substitute for (b) but is not required.
+  - **REQ-094** → a real run with `overrides.appendPrompt` → the captured transcript prompt shows the framed user text after the author's segments; an over-cap `appendPrompt` is refused at submission with byte counts and **no text echoed**.
+  - **REQ-095** → a real `issue_report({workflow:'x', …})` against the configured GitHub repo creates an issue labelled `workflow:x` with `name@version` + runId in the body; `issue_list({workflow:'x'})` returns it; a second report from workflow `y` with the same title creates a **second** issue.
+- **per-tier mock policy:** **unit** — mock freely (the whole DES-101/102 surface is pure and needs none). **integration** — real `RunManager`, real SQLite catalog/run-store, real sandbox; double only third-party network (GitHub via `clientImpl`/`fetchImpl`, the model backend via `queryImpl`/`fetchImpl`). **E2E/acceptance/Gate 7.5** — **no mocking of the SUT's own boundaries**: real server process, real SQLite files, real sandbox forks, real LiteLLM+Ollama; GitHub uses a real repo with a real token (sandbox credentials), never a double.
+- **standing tripwire:** per-key `provenance` is the self-diagnosing mechanism for the next wiring miss — a knob that silently falls through shows up as `provenance.<key>:'engine'` where the Gate 7.5 assertion expects `'default'`. Assert one rung per key at Gate 7.5, armed from day one.
+- **iter:** v21
+
+### Decision rationale — v21 (synthesized from `.panel/design/{adversarial,quality-dimensions}.r{1,2}.md`; QM ⇒ no safety lenses)
+- **Panel convergence.** Round 2 was near-total convergence: the `thinkingFor` collision (adv B-6 ≡ qual O-4/F-1), provenance-from-the-resolver (T-6 ≡ O-1), same-task config wiring (T-D ≡ S-3), the fingerprint compat pin (T-7 ≡ constraint 5) were found independently by both groups; quality conceded I-1/I-3/I-4/I-6/B-1a/B-2/B-3/B-5/B-7/B-9/B-10/T-1..T-8 after re-verifying the four load-bearing citations at source, and adversarial conceded O-5/C-1/S-2/S-6/F-2 and adopted R-1. Only two items reached me undecided; both are decided below, plus one pair I had to take whole.
+- **Nesting → run-scoped params, all four knobs (reverses adversarial r1 I-2 and quality r2's endorsement of it).** I re-verified the primary source myself: `_handleWorkflowRequest` (`run-manager.ts:652–700`) shares the parent's `runId`/guard/workspace/journal and wires the nested sandbox's `onAgentRequest` to `this._handleAgentRequest(runId, …)` — **the parent run's own handler**. There is no per-frame param path, so "contain the knobs" is not a restriction, it is *new machinery* for a hole (child `defaults` inert) that predates v21. Karpathy rejects it; REQ-094's literal "any `agent()` in that run" endorses run-scoping. Quality's split stance was written before this finding existed and its visibility rider is preserved (child descriptors carry `provenance.appendPrompt:'override'`, DES-105). **Residual [AMENDED v21 Gate 8 RE-REVIEW #5, F3 — the original sentence read "**Residual, inherited not introduced:** a caller's overrides, validated against the *parent's* contract, reach agent calls inside a child workflow whose author declared different bounds", and it was wrong on BOTH halves. Corrected against the code, which is the truth; this is a record-honesty fix, no code changes]:** the residual is **wider** than the caller's overrides and it **is introduced by v21**, not inherited.
+  **Wider — it moves AUTHOR rungs, not just the caller's four knobs.** The run-immutable snapshot governs every frame in the tree, and the snapshot carries the PARENT author's `defaults.prompt` and `defaults.tools` alongside the caller-tunable knobs (`defaultRunParams`, `resolve.ts:43-58`, whose `prompt`/`tools` ride straight through `resolveCallParams` at `:124-125`). Nested frames share the parent's `RunEntry` and therefore its `entry.effectiveParams` (`run-manager.ts:782` builds the child `SandboxHost` on the parent entry; the dispatch at `:852-855` passes that same snapshot), and the CHILD row's own `defaults`/`params` columns are **never read** — `_handleWorkflowRequest` takes `registered.script` off the child's row and nothing else. `agent-executor.ts:349-358` then applies the parent author's `defaults.tools` as the child agent's `allowedTools` and the parent's `defaults.prompt` as a prompt segment. So a parent author configures a child author's agents.
+  **Introduced — verified at the v20 tip, not assumed.** Pre-v21 the author-side merge `resolveHarnessParams` had **zero `src/` callers**: `git grep -n resolveHarnessParams 637b86e -- src tests` returns its own definition in `harness-defaults.ts` plus UT-097 only. A registered `defaults.tools`/`defaults.prompt` was therefore inert at every rung before this iteration; v21's `defaultRunParams` wiring is what made it live, and the same wiring is what carries it across a workflow boundary. The original "a hole (child `defaults` inert) that predates v21" reasoning is still correct about *why run-scoping was the right call* — it is only the residual's scope and provenance that were mis-stated.
+  **Bounded today, live at v22/D15:** the parent's `tools` can only name entries of the curated `HARNESS_TOOL_ALLOWLIST` (`harness-defaults.ts`, D-AUTH-5-C), and workflow scripts are readable by any authenticated principal anyway, so nothing is currently reachable that was not already reachable. It becomes a real cross-author exposure the moment v22/D15's non-owner masking lands.
+  **v22 candidate, re-filed against the true statement:** "per-frame contract resolution for composed runs — inside a child frame, resolve the CHILD row's own `defaults`/`params`, for the author rungs (`prompt`/`tools`) as well as the caller's four knobs." The existing nesting integration test pins the run-scoped semantics (a child agent's descriptor carries the parent's `appendPrompt` with `provenance.appendPrompt:'override'`), which is what keeps this choice visible; it does not pin the residual.
+- **Script-supplied bad param → record, THEN throw (adopts adversarial P-1 over quality O-6's "no harness event", in the cheaper form).** `parallel()` swallows every exception into `null` (`guards.ts:143–148`), so the throw both lenses agreed on becomes an untyped null with nothing in the journal — the exact silent-failure class this iteration exists to close, recreated by the design meant to close it. I placed the record **inside `AgentExecutor.run()` via the existing `_sink.capture` failure path** rather than at adversarial's run-manager site: it needs no new record shape, writes no `kind:'harness'` event and no `effortApplied` (honoring quality's O-6 intent and adversarial's shaping constraint), and it *dissolves* the `_spawnerOverride` carve-out instead of patching it — whoever validates, records. `Unknown agentType` (`agent-executor.ts:289`) keeps the identical hole: pre-existing, out of scope, recorded.
+- **B-3 and `PARAM_OUT_OF_RANGE.source` are one pair — taken whole.** Adopted B-3 (`workflow_get` serves `min(author, ceiling)` computed at read time; a NULL `params` row is **ceiling-bounded**, not unbounded), therefore quality's `source` field is **withdrawn** per its own conditional: once the served bound is the enforced bound, the caller's repair action is identical whichever side imposed it. Do not re-add `source` without also dropping B-3.
+- **B-2 with quality's rider.** The knob default is **derived** from the `defaults` column (values that cannot diverge need no reconciliation story); a divergent *pair* is a typed rejection, but `params.<knob>.default` declared **alone** is accept-and-normalize — rejecting REQ-090's own documented spelling would be a consumability lie.
+- **F-2 (the snapshot is the first sink that is both redacted-on-persist and read back for execution) — accept-and-pin, and refusal is *wrong*, not merely dearer.** Adversarial raised then killed the tempting third option (refuse at admission any `appendPrompt` whose `redact()` output differs from its input): accept-vs-refuse is a **1-bit secret-value oracle** — under open-by-default (ADR-005) a non-owner could binary-search server secret values by observing which submissions are refused. Masking on persist leaks nothing; refusing leaks a bit per submission. Blast radius is also smaller than stated: resume replays *settled* calls from the journal cache, so only post-resume calls can diverge, and `appendPrompt` is the only free-text override — one documenting test, one invariant row. The `redact()` short-secret substring collision is pre-existing across every sink (DES-088) and belongs to the secret-hardening track.
+- **Required-ness placed where omission is a bug, not where it is merely shape** (adv I-3/T-1 ∩ qual O-5): `tsc` lever on `AgentReq` (one production construction site, and `_spawnerOverride` inherits it), optional fields on the persisted `HarnessDescriptor` DTO (two emit sites, historical records lack them). One lever placed precisely beats three placed broadly.
+- **Two objects, two sites, one direction of flow** (resolving qual O-1 "single construction site" against adv I-4 "provider is only resolvable in the gateway"): `EffectiveCallParams` is built once upstream in `resolveCallParams`; `effortApplied` is the wire translation computed by the shared pure `mapEffort` inside the gateway and handed back via `onHarness(descriptor, applied?)`. Recorded ≡ applied by object identity at every handoff; no `resolveTarget` seam invented (Karpathy).
+- **Deviations from ARCH prose, each preserving its invariant:** `catalog.get()` widened rather than pointing `start()` at `getFull()` (ARCH-066's "no second query" is otherwise unimplementable); ARCH-064 inv-5's single bound split into a pre-eval source guard (`workflow-meta.ts`) + a post-eval structural guard (`contract.ts`), because `parseParamContract(metaParams: unknown)` by signature only sees post-evaluation values; `composePrompt` gains a `defaults.prompt` segment (ARCH's 3-arg signature → 4), because REQ-092's locked-trio clause had **no ARCH home** and would otherwise ship still-inert; REQ-094's "last" is scoped to the last **content** segment, since `agent-executor.ts:312/320` already appends protocol scaffolding after everything and moving the schema block would re-open the D-V4 OpenAI conformance defect. ARCH-064's `parseUserOverrides`/`validateUserOverrides` naming is normalized to the single exported `validateUserOverrides`.
+- **Held from Gate 2, not re-litigated:** ADR-005 cost amplification within ceilings; ADR-007 `appendPrompt` instruction-position injection (screening is unenforceable theatre); ADR-008 no rejection-metrics subsystem and no non-owner descriptor masking before v22/D15 — `provenance` reveals *that* an override was supplied, which is the same exposure class as the already-served knob values.
+- **Seam consistency (Exit Gate 5).** Time: no v21 code path reads the wall clock — `contract.ts`/`resolve.ts` are pure, and every new persist site (`createRun` snapshot, the `_sink.capture` rejection record, `appendTranscript` decoration) uses the already-injected `this._clock.isoNow()` that its neighbours use; no method acquires a second time source. Storage: the snapshot is read and written only through the `RunStore` interface (both `InMemoryRunStore` and `SqliteRunStore` implement `getEffectiveParams`), never via a direct `db` handle. Randomness: none introduced. Config: all three ceilings arrive via `composeConfig()` and are read from `ServerConfig` only — no `process.env` read is added.
+
+---
+
+## Orchestrator adjudication — v21 Gate 6 send-back (2026-08-31)
+
+The parallel implementers raised 9 clarifications and, per the implementer exit-gate rule, declined to
+implement behavior no red test covers. These are the binding answers. Amendments below are made **in
+place in spirit**: where an earlier DES text conflicts with an answer here, THIS section wins and Gate 8
+must treat it as the adjudicated design, not as implementation drift.
+
+### A-1 (item 1) — `workflow_get`/`getFull` params typing: use a TYPE-ONLY import
+`WorkflowCatalog.get()/getFull()` return `params: ParamContract | undefined` per DES-103's literal
+signature, obtained with `import type { ParamContract } from '../params/contract.js'`. TASK-096's DoD
+phrase "no contract.ts import" bars a **value** import (which would drag the validator into a module the
+catalog must stay independent of); a type-only import erases at compile, adds no runtime edge, and this
+file is not one the sandbox child loads, so the known `.js→.ts` child-import hazard does not apply.
+**TASK-099's implementer continues this convention** — the implementer asked explicitly.
+
+### A-2 (item 2) — cross-validated defaults ARE in scope; Gate 5 must add the red tests first
+DES-103's three cross-validation behaviors stand and must ship in v21. Confirmed by inspection:
+`spec.default` is read **nowhere** in `src/params/contract.ts`, so the whole `default` vocabulary is
+inert end-to-end today. This is not deferrable — REQ-090's acceptance names the default as part of the
+declared contract, so leaving it inert fails REQ-090 at Gate 7.5 regardless. Gate 5 adds red tests for:
+(a) a `params.<knob>.default` that disagrees with `defaults.<knob>` → typed rejection, **nothing stored**;
+(b) a `params.<knob>.default` violating that knob's own declared enum/range → typed rejection, nothing stored;
+(c) a declared default with no corresponding `defaults.<knob>` → accept and normalize into the stored
+`defaults`, so the served default is always derived from the `defaults` column and the two cannot diverge.
+
+### A-3 (item 3) — ceilings: the wiring already landed; what is missing is the read-surface test
+Verified at adjudication time: `composeConfig()` forwards all three ceiling keys (`src/main.ts:162-164`),
+and `src/server.ts` passes the SAME `ceilings` object to **both** `RunManager` (admission, `:1189`) and
+`McpFacade` (read surface, `:1206`); `tests/unit/compose-config-v2-wiring.test.ts` already carries ceiling
+rows. The recurring composeConfig bug class is therefore **already avoided here** — no rewiring needed.
+What remains for Gate 5 is the behavioral test the implementer correctly said was untestable before
+TASK-100 existed and is testable now: a workflow row with NULL `params` plus a **lowered** configured
+`maxTimeoutMs` must make `workflow_get` advertise the lowered bound with no re-registration, and the same
+lowered ceiling must be what admission enforces — one test pinning that the advertised bound and the
+enforced bound are the same number.
+
+### A-4 (item 4) — DES-105 amendment: the `redactHarness()` swap moves to the resumed pass
+Deferring it to avoid a same-hunk collision with TASK-102 was the right call. Now that TASK-102 has
+landed, the swap at the `gateway/client.ts` `redactHarness()` site is part of the **resumed** impl pass,
+not a Gate 8 follow-up. Zero behavior change; if it turns out to have any, it is a defect, not a design
+choice.
+
+### A-5 (item 5) — DES-107 amendment: sanitize for the label only, do not invent a name predicate
+No general "registration-name charset/length predicate" exists in `src/` and v21 does **not** introduce
+one — `workflow_register` performs no charset check today and REQ-095 explicitly requires a report to be
+filed against a name as-supplied (a user must be able to report against a just-deregistered workflow).
+The `workflow:<name>` GitHub label is therefore produced by a **label-scoped sanitize**: a documented
+transform to characters GitHub accepts in a label, truncated to GitHub's **50-character** label cap, with
+the untruncated `name@version` always recorded in the issue **body**. Gate 5 adds a red test pinning the
+transform (including a name that needs truncation and one that needs character replacement).
+
+### A-6 (item 6) — DES-106 amendment: `thinkingFor` STAYS at 2 arguments
+DES-106's 3-arg signature is amended to the 2-arg form as implemented. No test exercises a third
+parameter, no v21 behavior depends on it, `options.thinking` remains governed solely by the existing
+alias-provider check, and `mapEffort` is what writes the SDK's own effort field. Threading an unused
+parameter would be dead code the simplify stage would strip. **Gate 8 must read this as adjudicated
+design, not a missed signature change.**
+
+### A-7 (item 7) — mapEffort wire mechanics accepted; the proxy path needs its own unit test
+The design choice stands: identity-mapped `param:'effort'` for the `anthropic` provider profile, spread
+into the request body for both LiteLLM branches and set on the built `Options` object for the SDK client;
+every other provider has no profile entry and is an explicit no-op with `applied:false`. Because REQ-093's
+acceptance demands the mapped value be observable on the outbound request, Gate 5 adds a unit test for the
+**LiteLLM-proxy** branch (only the direct-fetch branch is covered today) and one asserting the honest
+`applied:false` no-op for a provider with no profile entry.
+
+### A-8 (item 8) — routing: UT-100's provenance failure belongs to TASK-101
+`tests/unit/agent-executor-params.test.ts` → "the harness descriptor persisted to the transcript carries
+per-key provenance" (UT-100, DES-105) fails with `provenance.model` undefined. That is
+`src/agent-executor.ts` descriptor decoration — **TASK-101's** surface, not TASK-104's. The resumed impl
+pass owns turning it green.
+
+### A-9 (item 9) — doc drift for the integrator
+`05-tests.md` still describes UT-097 as `tests/unit/resolve-harness-params.test.ts` exercising
+`resolveHarnessParams`; both were deleted by TASK-104. The integrator/verifier updates the UT-097 entry to
+its replacement (`mergeRunParams` coverage) rather than leaving a pointer to a file that no longer exists.
+
+### Scope discipline for the resumed run
+Gate 5 re-runs **to extend in place with exactly the red tests enumerated in A-2, A-3, A-5 and A-7**.
+Existing test suites are not to be regenerated or rewritten; the 4 new UT / 1 new IT / 6 new VAL items and
+the 8 extended-in-place items from the first Gate 5 pass stay as they are. Everything else in this section
+is an implementation or documentation instruction, not new test scope.
+
+---
+
+## Orchestrator adjudication #2 — v21 Gate 6 second send-back (2026-08-31)
+
+Round 2 of the same class: every one of the 9 new clarifications is a **DES-clause coverage gap** —
+Gate 5 wrote tests per REQ, while the implementer exit-gate rule fires per DES clause, so implementers
+keep finding designed-but-untested behavior one item at a time. The Gate 5 addendum (see 05-tests.md)
+therefore adds a **scoped clause-coverage sweep** to exhaust the class in one pass instead of a third
+round trip. **The amendments below override the original DES text wherever they conflict, and they are
+written BEFORE the sweep scope deliberately: the sweeper must not add red tests for clauses dropped
+here.**
+
+### B-1 (item 1) — DES-101 amendment: keep the enum cap, DROP the nesting-depth bound
+`≤ 32 declared knobs+args` stays (implemented). `enum ≤ 32 members` stays and gets a red test — an
+unbounded enum is served on every `workflow_get`, so the cap is load-bearing. **`nesting depth ≤ 4` is
+dropped**: `ParamSpec` is a flat shape, `parseParamContract` reads only known scalar/array fields, and
+any nested key a caller invents is inert (never read, never served). A depth bound on a structure with
+no depth is not a guard, it is dead code. Do not resurrect it.
+
+### B-2 (item 5) — DES-105 amendment: DROP `promptTruncated` and `appendPromptBytes`
+Both fields are removed from the `HarnessDescriptor` design. They contradict the adjudicated
+requirement: **REQ-094 refuses an oversize `appendPrompt` at submission with a typed error "rather than
+silently truncated"**, so a truncation-record field describes a state v21 cannot enter. Observability at
+the rejection already exists — `PARAM_OUT_OF_RANGE`'s detail payload carries `suppliedBytes`/`maxBytes`
+(`src/params/contract.ts:229`). Gate 8 must read this as adjudicated design, not a missed field.
+
+### B-3 (item 6) — `RunParams.skills` is a dead field and is REMOVED; skills stay locked and global
+`resolveCallParams` computes `eff.skills` and nothing downstream ever reads it. Per-workflow skill
+*selection* does not exist in this engine at all: skills are server-side assets and **every** stored
+skill is materialized into every run workspace, with `HarnessDescriptor.skills` derived from the
+filesystem (`readSkillNames(assetRoot)`), unrelated to `RunParams`. v21 does not introduce per-workflow
+skill selection — that belongs with the v23 read-surface work, if ever.
+
+**REQ-092 is still satisfied, and this is the satisfaction claim of record:** REQ-092 requires that the
+locked keys "are applied from the registration only and can never be reached by a caller". For `skills`
+the observable is that a caller naming it gets `PARAM_LOCKED`, which holds; global materialization is
+unchanged from pre-v21 behavior and is not a v21 regression.
+
+**Pre-authorization (so this does not bounce a third time):** removing the field is an *adjudicated
+design change*. If a currently-green assertion (e.g. in UT-099 / `params-resolve.test.ts`) asserts the
+presence or value of `RunParams.skills`, the implementer **amends that assertion in the same pass**.
+That is design conformance, not test-weakening, and the exit-gate rule does not apply to it.
+
+### B-4 (items 3 & 4) — DES-104's two persist-sink clauses are IN scope and need their tests
+`redact()` **is** called on the effectiveParams snapshot (`src/run-manager.ts:411-413`), but
+`tests/integration/redact-sweep.test.ts` (IT-075, the REQ-083 sink-completeness sweep) was never
+extended with a case for it. **This is the non-negotiable item of the batch**: the snapshot carries the
+user's `appendPrompt` text, which can carry secrets, and a sink-completeness sweep that silently omits a
+new sink is exactly the failure REQ-083 exists to prevent. Likewise DES-104's adjacent clause —
+`effectiveParams` rides the run row so `workspace_purge` preserves it — has no assertion today. Both get
+tests in the addendum.
+
+### B-5 (item 2) — TASK-096's migration DoD needs a genuine pre-v21 fixture
+IT-012's case of the same name registers through already-v21 code, so it exercises
+`parseMetaParams` writing a canonical contract and only asserts `'params' in entry`. That is weaker than
+the DoD's literal `params: undefined`. The addendum adds a fixture that writes a row **as the pre-v21
+schema did** (no params column / NULL) and asserts the migration + `get()` shape against it. The migration
+path is the one thing a synthetic v21-authored row cannot exercise.
+
+### B-6 (item 7) — the SDK side of the effort contract test is missing
+`claude-agent-sdk-client.ts:581` already writes the mapped effort onto the built `Options`; only the
+covering test is absent, so DES-106/TASK-102's "parameterized over BOTH GatewayClient impls" DoD is
+half-met. The addendum adds the SDK case mirroring the direct-fetch one.
+
+### B-7 (item 8) — IMPL ownership of the `redactHarness` swap
+The `src/gateway/client.ts` `redactHarness` swap (adjudication A-4) is claimed by **TASK-102's** IMPL
+entry, since it lives in a TASK-102 file. The integrator records it there so it is not left untraced.
+
+### B-8 (item 9) — stale file reference in 03-tasks.md
+TASK-104's `files:` line names `tests/unit/harness-defaults.test.ts`, which never existed under that
+name — a stale pointer to the deleted `tests/unit/resolve-harness-params.test.ts`, whose replacement is
+UT-099 / `tests/unit/params-resolve.test.ts`. The integrator corrects the task card's file list;
+same class as the A-9 doc drift in 05-tests.md.
+
+---
+
+## Orchestrator adjudication #3 — v21 Gate 6 third send-back (2026-09-01)
+
+The DES-clause sweep worked: this round produced **two** items instead of nine, and neither blocks.
+Both are settled here so no further Gate 5 pass is needed — the remaining work is pure GREEN
+implementation of the three outstanding red cases.
+
+### C-1 (item 1) — the args-side enum cap is IN scope; the implementer adds its one test in the same pass
+DES-101's structural-bound clause reads unqualified over knobs **and** args, and the sibling
+`> 32 declared knobs+args` count bound already applies to both, so extending the per-spec
+`enum ≤ 32 members` cap to args specs is the correct reading, not scope creep. **Pre-authorized, exactly
+as B-3 was:** the implementer adds the single covering case — an args spec carrying a 33-member enum
+rejects with `PARAM_CONTRACT_INVALID` and `param: 'args.<key>'` — **in the same pass as the
+implementation**. This is an adjudicated one-line test addition, so the exit-gate rule about not
+shipping untested behavior is satisfied by writing it, not by reporting it back.
+
+### C-2 (item 2) — TASK-103 is verified-green, not missing
+`src/github/issue-reporter.ts`, `src/mcp-facade.ts` and `src/server.ts` for the workflow-bound problem
+reports (REQ-095) were already complete and green at checkpoint `fb0a36f` and were untouched by the
+addendum. **The integrator should expect no diff for TASK-103** and must not treat its absence from this
+pass's changes as an unimplemented task.
+
+### Remaining work at this point (nothing else is open)
+Three red cases to turn green, all previously adjudicated:
+1. per-spec `enum ≤ 32 members` cap in `parseParamContract`, knobs and args alike (C-1, B-1);
+2. `> 64`-byte supplied-value truncation with `suppliedTruncated: true` in the **rejection detail
+   payload** — note this is the error-echo truncation from DES-101's rejection table and is unrelated to
+   B-2's dropped `promptTruncated`/`appendPromptBytes`, which concerned the appendPrompt itself and stay
+   dropped (REQ-094 rejects an oversize append, never truncates it);
+3. UT-100's harness-descriptor per-key provenance (`provenance.model` undefined), which is TASK-101's
+   `src/agent-executor.ts` decoration site, carried since adjudication A-8.
+
+Plus the still-outstanding implementation items already adjudicated and not yet landed: the
+`spec.default` cross-validation vocabulary (A-2), removal of the dead `RunParams.skills` field with its
+assertion amended in the same pass (B-3), and the doc corrections (A-9, B-7, B-8).
+
+---
+
+## Orchestrator adjudication #4 — v21 Gate 7.5 hand-back (2026-09-01)
+
+Gate 7 and Gate 7.5 both PASSED; the validator handed back three items before Gate 8. None blocks the
+review gate, and all three are recorded here so Gate 8 reads them as known state rather than findings.
+
+### D-1 — the production GitHub token is expired; NOT rotated by this iteration
+`RWE_SECRET_GITHUB_TOKEN` in `~/.config/rwe.env` returns 401 against api.github.com. The validator did
+the right thing: rather than mocking the dependency to get a green, it substituted `gh auth token` and
+reached the **real** GitHub API, so VAL-105's real-tier evidence stands on a genuine call.
+
+**Deliberately not fixed here.** Rotating a credential in the production config is an
+outward-facing, hard-to-reverse action on the operator's own account, and it is unrelated to v21's
+scope — the parameter contract does not touch auth. It is surfaced to the operator as an action item.
+Until rotated, the engine's own `issue_report`/`issue_list` tools will 401 in production even though
+v21's REQ-095 code path is correct and validated.
+
+### D-2 — production still serves v20; no restart onto v21
+`feat/v21-param-contract` is unmerged, so `rwe.service` on port 8899 still runs v20. This matches every
+prior iteration's branch scope: deployment happens after Gate 8 closes and the branch merges, not
+during validation. Gate 8 should not read "production not on v21" as an incomplete iteration.
+
+### D-3 — the role contract's `trace --rtm` flag does not exist in this repo's `trace.py`
+The reviewer/validator contract calls `sh .sdlc/trace <dir> --rtm <path>`, but this project's shipped
+`trace.py` rejects it at argparse. This is a **plugin-version vs project-version mismatch**, not a v21
+regression — no iteration in this ledger's 21-iteration history has ever produced an `rtm.md`. The
+validator generated `rtm.md` via `trace.py`'s own module functions instead of patching the flag into
+this project's copy, which is the right call: silently teaching the local tool a flag the plugin
+assumes would hide the mismatch instead of recording it. **Reconcile upstream in the plugin**, not
+here. Gate 8 may use the generated `rtm.md` as-is.
+
+---
+
+## Orchestrator adjudication #5 — v21 Gate 8 re-review #3 (2026-09-01)
+
+Four findings, all novel and all real. **P-A1's API claim is independently confirmed against the
+authoritative Claude API reference** — the implementer must not re-litigate it.
+
+### E-1 (P-A1, HIGH) — the effort placement is wrong; the profile must carry a PATH, not a name
+
+**Confirmed:** the Messages API contract is `output_config: {effort: "low"|"medium"|"high"|"xhigh"|"max"}`
+— **inside `output_config`, never top-level**, GA, no beta header, default `high`. An unrecognized
+top-level parameter is rejected `400 invalid_request_error`. So every effort-bearing anthropic call on
+the REST path fails outright while the descriptor records `effortApplied:{param:'effort'}` — a false
+claim of success, which is precisely what REQ-093's "never a silent claim of success" clause exists to
+forbid.
+
+**Root cause to fix, not just the symptom:** `EFFORT_PROFILES.anthropic` encodes a *field name* where
+the two consumers need a *placement*. The SDK client sets `Options.effort`, a real field on the Agent
+SDK's own options object — that path is correct and must not change. The REST body needs a nested
+path. A profile entry that says only `param:'effort'` cannot express that difference, so ARCH-069's
+object-identity defence guarantees "the record matches the intent" while saying nothing about whether
+the field exists at that transport. Give the profile a placement (e.g. a path such as
+`['output_config','effort']` for the REST body, distinct from the SDK's flat option) so the two
+consumers stop sharing a representation that only one of them can honour.
+
+**Both LiteLLM branches are in scope** — direct-fetch and proxy share the same Anthropic-Messages-shaped
+body, and only the direct-fetch path has UT coverage today.
+
+**The test must assert the emitted shape against the documented contract.** P-A1 survived four tiers
+because every tier's oracle was the code itself: UT-101 asserts only that low and max produce *different*
+bytes, UT-020 that the value lands on `Options`. Two runs that are both wrong differ just as reliably as
+two that are right. The new case must pin that the anthropic REST body carries `output_config.effort`
+and carries no top-level `effort`.
+
+### E-2 (P-A2, MED) — one alias predicate, two tables: finish R-G3's fix at the other end
+
+Registration gets `config?.aliases ? … : undefined` → `?? new Set()` → the empty-table no-op rule, while
+admission gets `config?.aliases ?? DEFAULT_ALIASES`. On a default deployment `workflow_register` accepts
+a `model.enum` entry, `workflow_get` advertises it as allowed, and **every** run of it is then refused
+`UNKNOWN_ALIAS` — advertised bound ≠ enforced bound, discovered only at run time. ARCH-064 says one
+predicate shared by both rungs; make both rungs receive the same table. One wiring line.
+
+### E-3 (P-A3, MED) — a declared default that no rung can apply must be REJECTED, not silently stored
+
+`workflow-catalog.ts`'s normalization loop injects every knob's default into `effectiveDefaults`,
+including `effort` and `appendPrompt`; `HarnessDefaults`' `KNOWN_KEYS` is `{model,tools,skills,timeoutMs,
+prompt}`, and `defaultRunParams` reads only `model/timeoutMs/prompt/tools`. So the declared default is
+inert, the descriptor reports "never requested", **and** the engine's own served `defaults` object fails
+`HARNESS_DEFAULTS_INVALID` if re-registered — the discover→edit→re-register round-trip is broken.
+
+**Adjudicated fix: reject at registration.** A `params.knobs.<key>.default` for a knob whose value no
+rung can apply is a typed rejection with nothing stored. Widening the snapshot's author side to carry
+`effort`/`appendPrompt` defaults is the larger change and is **out of v21 scope** — v21's job is that the
+contract cannot lie, not that every knob gains an author-side default. Silently persisting into a type
+that cannot represent it is the one option that is definitely wrong. Whichever way, the served `defaults`
+must round-trip: re-registering what `workflow_get` served must succeed.
+
+### E-4 (P-A4, MED) — order the register-time checks so the alias rule actually fires
+
+`validateHarnessDefaults` runs on the caller-supplied `defaults` only, then the normalization loop injects
+`model:<spec.default>` afterwards, and `parseParamContract` alias-checks `spec.enum` entries but never
+`spec.default`. A non-alias `model.default` therefore registers cleanly and every named run is refused at
+admission — R-G2 is the backstop that keeps this MED rather than HIGH, but the register-time control that
+should make it impossible-by-construction never fires. Either alias-check `spec.default` in
+`parseParamContract` alongside the enum entries, or normalize before validating so the injected value is
+covered. Do not rely on the admission backstop.
+
+### Standing instruction for this pass
+The oracle problem in E-1 is the lesson of this whole iteration: **a test whose expected value is derived
+from the code under test cannot fail when the code is wrong.** Where a clause names an external contract
+(a transport's documented request shape, a provider's API), assert against that contract literally.
+
+
+---
+
+## Orchestrator adjudication #6 — E-3 REVERSED; dedup approved (2026-09-01)
+
+### F-1 — **Adjudication #5's E-3 is SUPERSEDED. The Gate 5 tests were right; my adjudication was wrong.**
+
+E-3 chose "reject a declared default for a knob no rung can apply, widening is out of v21 scope". That
+contradicts **REQ-090's own acceptance text**, which I wrote at Gate 1: the params block declares, *per
+tunable knob*, "its name, type, default, and an allowed enum/range" — and `effort` and `appendPrompt`
+are two of the four tunable knobs (D12). Rejecting their defaults makes the engine refuse a declaration
+the requirement explicitly permits, and hollows out the declared-default vocabulary for half the knob
+set. **A requirement outranks an adjudication.** REQ-092's precedence chain already names "registered
+defaults" as a rung; widening simply lets those two knobs participate in a rung the requirement has
+defined all along, and REQ-088's "at minimum `{model, tools, skills, timeoutMs, prompt}`" wording
+permits the set to grow.
+
+Root cause of the conflict, recorded so Gate 8 does not read it as drift: adjudication #5 was committed
+**one minute after** the in-flight Gate 5 re-run wrote tests for the opposite shape — two workflows were
+running against the same tree. The tests encode the correct resolution; the code at
+`src/workflow-catalog.ts:132-135` that cites adjudication #5 by name implements the wrong one.
+
+**Adopted fix — widen, don't reject:**
+- `HarnessDefaults`' `KNOWN_KEYS` gains `effort` and `appendPrompt`; `validateHarnessDefaults` gains
+  their shape checks.
+- `defaultRunParams` reads both, with `'default'` rung provenance, so the descriptor stops reporting
+  "never requested" for an author-declared default.
+- The engine ceilings still bound them: an author `effort` default above `maxEffort`, or an
+  `appendPrompt` default over `maxAppendPromptBytes`, behaves exactly like any other out-of-bounds
+  declared value — no special case.
+- The **round-trip must go green**: re-registering the `defaults` object that `workflow_get` served
+  succeeds.
+
+**Precise scope of the removal — two branches sit next to each other, only one goes:**
+- `violatesOwnSpec(spec.default, spec)` at `workflow-catalog.ts:132` — a declared default that violates
+  its **own** declared enum/range → typed rejection, nothing stored. This is adjudication **A-2(b)** and
+  **STAYS**.
+- The unappliable-knob rejection added by adjudication #5 at `:135` → **REMOVED**, along with its
+  comment citing #5.
+
+### F-2 (P-A5) — dedup approved; TASK-096's "no contract.ts import" note is narrowed
+
+`checkValueAgainstSpec` (contract.ts, unexported) and `violatesOwnSpec` (workflow-catalog.ts) are two
+hand-rolled bounds checkers over the same `ParamSpec` shape. **They will drift, and the drift is exactly
+the class that has bitten this iteration twice** — an advertised bound disagreeing with an enforced one
+(P-A2), and a comment claiming a guarantee the code does not provide (R-G10). One predicate, shared.
+
+The DoD note this reverses ("no contract.ts import — TASK-099 stays out of TASK-097's file") was
+protecting a boundary the catalog **already crosses in substance**: it throws `PARAM_CONTRACT_INVALID`
+itself, so it is already doing validation, and it already carries a type-only import from contract.ts
+(`workflow-catalog.ts:30`, the A-1 convention). What the note actually barred was dragging the validator
+in as a value dependency; that cost is now justified by the correctness gain, and adjudication A-1's
+type-only rule is **not** weakened for any other file.
+
+**No runtime hazard:** the known sandbox-child `.js→.ts` value-import limitation does not apply —
+`workflow-catalog.ts` is server-side (it loads `better-sqlite3`, which the child cannot require), and
+`contract.ts` is already value-imported by `run-manager.ts`.
+
+**Constraint:** the dedup must not change any pinned error shape — `detail.param` naming and the
+`suppliedTruncated` echo stay byte-identical. Extract the shared core predicate rather than forcing the
+catalog through the full `Err` machinery if that reads cleaner.
+
+### F-3 — DES-102 doc sync (was flagged as non-blocking drift; fold it in here)
+DES-102 still says `RunParams` carries the "author-only trio (prompt/tools/skills)" and that
+`mergeRunParams` folds "all seven registered keys". The shipped shape omits `skills` per adjudication
+B-3 (six keys), and F-1 now makes all four tunable knobs defaultable. Update the prose to the real
+shape; do not leave the design doc specifying a snapshot the code deliberately does not build.
+
+### F-4 — ownership of the batched leftovers, so nothing drops at re-review #4
+These belong to the **integrator closeout**, not to any single TASK's file partition — the implementers
+were right to leave them rather than reach across:
+- **P-A6** — secret-marker grammar duplicated between `src/secret-resolver.ts` and `run-manager.ts:538`.
+- **Doc batch** — `server.ts:373`'s `workflow_agent_log` description must document DES-105's v21
+  descriptor fields (`effort` / `effortApplied` / `timeoutMs` / `provenance`); the ARCH-064 rename and
+  the three remaining 02-architecture.md amendments; and 05-tests.md's UT-020 entry says "6/6 pass"
+  where the file holds 5 cases — a miscount in the note, not a missing test.
+
+### F-5 — Gate 5 additions this pass (the relaunch starts at `tests`, not `impl`)
+The widen-encoding tests stand as the target and need no rewrite. Add:
+- `defaultRunParams` reads an author-declared `effort` / `appendPrompt` default with `'default'` rung
+  provenance;
+- the UT-099 provenance-matrix gaps the implementer flagged — no `overrides.effort` merge case, no
+  `opts.timeoutMs` call-rung case — now that the `'default'` rung for `effort` becomes reachable;
+- an author `effort` default above the configured `maxEffort` ceiling is bounded like any other declared
+  value.
+
+---
+
+---
+
+## Orchestrator adjudication #7 — F-1 completion assignment + the ceiling hole (2026-09-01)
+
+F-1 has now deadlocked on file partitions twice: its three halves live in `resolve.ts` (TASK-098),
+`harness-defaults.ts` (TASK-104) and `workflow-catalog.ts` (TASK-099), and each implementer correctly
+refused to reach across. **Assigned to the integrator closeout**, which has cross-task scope by
+definition. Remaining work, all previously adjudicated:
+
+1. `KNOWN_KEYS` gains `effort` / `appendPrompt`; `validateHarnessDefaults` gains their shape checks.
+2. The adjudication-#5 unappliable-knob rejection at `workflow-catalog.ts:135` is removed; the
+   `violatesOwnSpec` self-consistency check at `:132` **stays**.
+3. `Ceilings` is threaded into `register()` so an author `effort` default above `maxEffort`, or an
+   `appendPrompt` default over `maxAppendPromptBytes`, is bounded like any other declared value.
+4. Once (1) lands, the local `AuthorDefaults` intersection type and cast in `resolve.ts` become
+   redundant — remove them; the implementer left a comment saying so.
+
+### G-1 — the ceiling hole the widening opened is REAL and in scope; its test is pre-authorized
+
+The implementer found it and correctly declined to code it without a red test: a caller-supplied
+`defaults: {effort: 'max'}` (or an over-byte `appendPrompt`) passed to `workflow_register` with **no
+`params.knobs` block at all** bypasses the ceiling check entirely, because that check only runs inside
+the loop over *declared* knobs. `validateHarnessDefaults` cannot close it either — it validates shape
+and enum membership and has no access to the ceilings.
+
+This is the **advertised-bound ≠ enforced-bound class again** (P-A2, R-G3), arriving through the door
+the widening just opened, so it ships in v21 rather than as debt. **Pre-authorized, as C-1 and B-3 were:
+the integrator writes the red case and the fix in the same pass** — a registration whose raw `defaults`
+carry an out-of-ceiling `effort` or `appendPrompt`, with no params block, is refused; the ceiling is the
+same number admission enforces.
+
+### G-2 — the surviving `adjudication #5` reference in `workflow-catalog.ts`
+One citation remains after the rejection branch is removed. Keep it **only** if it reads as a historical
+note recording a superseded decision; if it still describes live behavior, it is stale and goes. A
+comment citing a superseded adjudication as though it were current is the same defect class as R-G10.
+
+---
+
+## Orchestrator adjudication #8 — v21 Gate 8 re-review #4 (2026-09-01)
+
+Two HIGH findings, both reviewer-verified in source and one reproduced with measurements, both in
+code **v21 itself added**. They are real and they ship fixed.
+
+### H-1 (A1) — the read path must be made TOTAL; "no deployed DB is poisoned" is NOT an acceptable answer
+`parseParamContract` validates the locked-key set, unknown keys, `enum.length` and model aliases — but
+never that `type` is one of the literals, that `enum` is an array, or that `min`/`max` are numbers. So
+`enum:'abc'` registers (`'abc'.length === 3` passes the only guard that looks at `enum`), and
+`boundEffort` then throws `TypeError: authorEnum.filter is not a function` on **every**
+`workflow_get`/`workflow_list` thereafter. One poisoned registration durably bricks workflow discovery
+engine-wide, and auth is off by default.
+
+**Both halves ship:**
+1. The parser shape guard — `type` ∈ literals, `enum` is an array, `min`/`max` are numbers; typed
+   rejection, nothing stored, same `invalid(param, reason)` shape as every other rejection.
+2. **The read path is made total over a malformed stored contract** — canonical fallback or typed
+   error, never a `TypeError`. Adjudicated: **do the work, do not take the "verify no deployed row is
+   poisoned" escape.** A live deployment exists, the check would be true only for today, and the whole
+   point of a total function is that it does not depend on what happens to be in the database. A read
+   path that trusts stored data because someone once looked is the same bet as a comment claiming a
+   guarantee the code does not provide — this iteration has now rejected that bet three times.
+
+### H-2 (A2) — the truncation mitigation introduced a denial of service
+`truncatedSupplied` trims one character per iteration, re-measuring and re-copying each time: O(n²),
+reproduced on this host at 611 ms @ 100k chars and 2396 ms @ 200k, a clean 4× per doubling. An 8 MiB
+`overrides.model` — bounded only by `MAX_BODY_BYTES` — blocks the single-threaded event loop for roughly
+**70 minutes from one request**, upstream of `createRun`, `maxConcurrentRuns` and the budget rung, and
+leaves no journal trace. One O(n) `slice` fixes it: a `Buffer.byteLength` guard and a single
+`subarray(0, 64)`.
+
+Worth naming plainly: this function exists **only** to bound the echo of an oversized supplied value in
+a rejection payload. The mitigation for one resource problem created a worse one. Take the reviewer's
+pinned test shape — echo ≤ 64 bytes **and** a wall-clock ceiling on a ~1 MB input — rather than a
+timing-only assertion; the 100–1000× separation is what makes that assertion robust instead of flaky.
+
+### H-3 — the Gate 5 semantics choice on A4 stands
+String `min`/`max` are a **byte-length bound**, not a parse-time rejection. One semantics, pinned, and
+the advertised `appendPrompt` bound must equal `maxAppendPromptBytes` (A5) — the advertised-equals-
+enforced rule this iteration has now had to state four times.
+
+### H-4 — scope discipline for this pass
+The review pinned the send-back scope explicitly (§Q7) precisely because unpinned scope is how F-3/F-4
+dangled through two closeouts. Land the doc batch **in the same pass** as the code, not as a follow-up:
+A3, A6..A12, O-1..O-3, C-2 (=F-3), R-2, and A7's correction of IMPL-141's false "F-4 not done" claim
+(the P-A6 dedup had in fact landed earlier in 244f9f0). S-1 stays recorded debt.
+
+---
+
+## Orchestrator adjudication #9 — v21 Gate 8 re-review #5 (2026-09-01)
+
+### I-1 (F2, MED but correctly BLOCKING) — the trust frame must not be forgeable by its own payload
+
+ADR-007 chose a **structural** control: user-supplied `appendPrompt` is wrapped in
+`<user-instructions untrusted="true">` so the model can tell author instruction from user text. The
+control is defeated by the text it wraps — `composePrompt` concatenates with no scan, and the
+`appendPrompt` branch checks byte length only. A submitter who is **not** the workflow's owner can put
+a closing `</user-instructions>` in their append, end the untrusted block early, and have everything
+after it read as the author's own instruction. That is cross-principal attribution forgery against the
+exact boundary this iteration exists to create: D12/D13 say a user may append text, never that a user
+may speak as the author.
+
+The accepted residual claimed the append was "bounded **and attributed**". The bound half held; the
+attribution half never did.
+
+**Adopted fix: refuse at admission, fail-closed** — an `appendPrompt` containing the frame's closing
+delimiter is rejected with a typed error, in `validateUserOverrides`, the same rung every other override
+constraint is enforced at. Not escaping, not silent stripping: a caller who sends a forged delimiter
+gets told, and nothing about the composition changes for the honest case. `composePrompt` stays
+byte-identical for every input that is accepted — pin that, because a composition change would
+invalidate REQ-094's real-tier ordering evidence.
+
+**Note the oracle failure, because it is the fourth of this class in v21:** the drift-lock at
+`params-resolve.test.ts:193-200` pinned *that the wrapping is applied*, not *that the wrapping holds*.
+A test that asserts the shape of a control rather than the property the control exists to provide will
+pass while the control is defeated — exactly how the `effort` placement bug survived four tiers. When a
+clause names a security property, assert the property.
+
+### I-2 (F1, F4) — ride along in the same pass
+F1's both-doors parity and F4's enum `min`/`max` rejection are in the pinned scope and land together
+with I-1; their reds are already written.
+
+---
+
+## Orchestrator adjudication #10 — v21 Gate 8 re-review #6 (2026-09-01)
+
+### J-1 (P6-1, BLOCKING) — the fix I approved one round ago was half a fix
+
+Adjudication #9 accepted a refusal on the frame's closing delimiter. The shipped constant is
+`/<\/user-instructions/` — **no `i` flag, no whitespace tolerance**. `</USER-INSTRUCTIONS>`,
+`</User-Instructions>`, `</ user-instructions>` and `< /user-instructions>` all pass the caller rung:
+**four of six variants slip**, so the cross-principal attribution forgery I said was closed is still
+open by any submitter who presses shift.
+
+And the control's own comment claims the variant class cannot slip. That is the **fifth** instance this
+iteration of a comment asserting a guarantee the code does not provide — this time inside the fix that
+was supposed to end the previous instance. The lesson is not about regexes: **an assertion written in a
+comment is not a control, and reviewing a fix means testing the property, not reading the claim.**
+
+**Fix: widen the one shared constant to `/<\s*\/\s*user-instructions/i`.** Nothing else — both refusal
+sites inherit it by import after the dedup. Keep the pattern **linear**: no nested quantifiers. A
+careless widening here is exactly how an A2-class quadratic blowup would return, and the whole point of
+this rung is that it costs nothing before admission.
+
+Not semantic screening, and not a broader sanitizer: ADR-007's chosen control is a structural frame, and
+the rung's job is to refuse a literal forgery of that frame — no more.
+
+### J-2 — the riders take the fix route, not the recorded-decision escape
+P6-2/P6-3/P6-4 are each a one-to-three-line change on an existing precedent, and QD-REP-1 is a green
+fence. Land them; a "recorded decision" is for a trade-off, not for work small enough that writing the
+justification costs more than the change.

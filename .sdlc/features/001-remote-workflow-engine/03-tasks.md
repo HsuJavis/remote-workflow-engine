@@ -625,3 +625,104 @@ status: draft
 - **estimate:** S
 - **iter:** v20
 - Closes the user-requested UX improvement: on a machine WITHOUT a loopback listener (headless `--no-browser` paste flow) the current bare 302 shows a "can't connect" browser error. One edit inside the ARCH-059 closure. `src/auth/auth-service.ts` (DES-095): `handleGoogleCallback()`, in the absolute-URL (try) branch that builds the client redirect `location` (the v19 touchpoint), responds `200` `text/html; charset=utf-8` with a minimal page instead of `302 Location:` — the page shows the full `redirect_uri?code=…&state=…&iss=…` URL with a one-click copy control (raw URL as copyable text) AND auto-forwards via `<meta http-equiv="refresh" content="0;url=<escaped>">` + a JS `location.replace` fallback (a same-machine loopback listener still auto-catches). Attribute-context HTML-escaping (`&`→`&amp;`) because the URL carries multiple query params; the raw URL ALSO appears in an `id="callback-url"` element as a stable extraction anchor for the IT. The catch branch (relative-URI fallback) is NOT touched (flag-don't-remove, unreachable post-v16). Design: DES-095. Right-side (verifier): UT — status 200, `text/html; charset=utf-8`, page carries the URL with code/state/iss and an attribute-escaped `&amp;` in the meta tag; IT-078 v20 — the v19 `state`/`iss` assertions move from scraping the 302 `Location` to parsing `id="callback-url"` (sanctioned fallout, TASK-092 pattern), status assertion 302→200; VAL-095's automated SDK+fake-IdP harness (which simulated the browser by following the 302) now parses `id="callback-url"`/the meta URL from the 200 page and GETs the loopback URL itself (sanctioned harness fallout — an SDK harness does not execute meta/JS) while the REAL interactive-browser path is genuinely unchanged (browser executes the meta/JS redirect so the loopback listener still auto-completes).
+
+---
+
+## v21 — Author/user separation part 1: the tunable-parameter contract (REQ-090..095 → ARCH-064..070, ADR-001..008)
+
+> Dependency edges (the partitioner batches on `files:`): TASK-096 → {TASK-099, TASK-100};
+> TASK-097 → TASK-098 → {TASK-099, TASK-100, TASK-101, TASK-102}; TASK-100 → TASK-101;
+> TASK-101 ∥ TASK-102 (they meet only at `onHarness`); TASK-103 independent;
+> TASK-104 last (delete `resolveHarnessParams` only after TASK-098+101 subsume its author-side path).
+
+### TASK-096 — catalog row widening: `params TEXT` column + `get()` returns `{script, version, defaults, params}` (lands FIRST, alone)
+- **status:** draft
+- **traces:** ARCH-067
+- **files:** src/workflow-catalog.ts, tests/integration/catalog-persistence.test.ts
+- **des:** DES-103
+- **dod:** `npx vitest run tests/integration/catalog-persistence.test.ts` green — a pre-v21 `catalog.db` opens, migrates, and `get(name)` returns `{script, version, defaults, params: undefined}` for a row registered before v21.
+- **estimate:** S
+- **iter:** v21
+- Zero-dependency schema+read change that every later task compiles against. Today `get()` is `SELECT script, version` (`workflow-catalog.ts:136`) while `defaults` is only reachable via `getFull()`, so ARCH-066's "the row the run path already reads carries the contract and defaults" is not implementable and `start()`/`resume()` would each need a second query. Widen `get()` (option (a), not "point start() at getFull()" — `getFull()` additionally returns `owner`, which the run path has no business carrying, and two row-read shapes is where `defaults`-vs-`params` drift starts); `getFull()` then delegates to `get()` + owner. Includes the idempotent `ALTER TABLE workflows ADD COLUMN params TEXT` migration (reuse the `workflow-catalog.ts:58–67` PRAGMA/try-catch pattern verbatim). **No contract.ts import** — `get()` returns the stored JSON parsed as `ParamContract | undefined`; canonicalization of `undefined` belongs to the consumers (TASK-099/100).
+
+### TASK-097 — pure `src/params/contract.ts`: locked/tunable vocabulary, `parseParamContract`, `validateUserOverrides`, the total rejection table
+- **status:** draft
+- **traces:** ARCH-064
+- **files:** src/params/contract.ts, tests/unit/params-contract.test.ts
+- **des:** DES-101
+- **dod:** `npx vitest run tests/unit/params-contract.test.ts` green — the 8-row condition→code→payload table of DES-101 is a table-driven test with one case per row, plus the canonical-contract and `EFFORT_RANK` cases.
+- **estimate:** M
+- **iter:** v21
+- The single place that knows the contract vocabulary (registration, submission and v23's describe surface all consume it, so the locked-key list cannot drift into three copies). Pure: no I/O, no clock, no VM — the post-eval structural bounds live here, the pre-eval source-size bound lives in `workflow-meta.ts` (TASK-099), because `parseParamContract(metaParams: unknown, …)` by its own signature only sees a value that already survived evaluation. Test-first in the strictest sense; this task carries the majority of the slice's coverage.
+
+### TASK-098 — pure `src/params/resolve.ts`: two-moment merge, per-key provenance, five-segment `composePrompt`, `mapEffort`
+- **status:** draft
+- **traces:** ARCH-065
+- **files:** src/params/resolve.ts, tests/unit/params-resolve.test.ts
+- **des:** DES-102
+- **dod:** `npx vitest run tests/unit/params-resolve.test.ts` green — 5 rungs × 4 keys provenance table (20 cases), the `composePrompt(system, undefined, prompt, undefined)` byte-identity pin, the separate five-segment order pin, and `mapEffort` applied/no-op/absent tri-state.
+- **estimate:** M
+- **iter:** v21
+- Depends on TASK-097's types only. Provenance is emitted by the function that computes the value (one pass, `{value, rung}` per key) — a second function inferring provenance by comparing values lies whenever two rungs hold the same value (registered default and engine default both `sonnet`), which is exactly the case a wiring-miss test must distinguish. `mapEffort` is pure and provider-keyed; it is *called* inside the gateways (TASK-102), never here.
+
+### TASK-099 — registration stores the normalized contract: pre-eval source bound, cross-validated defaults, `ON CONFLICT … params = excluded.params`, ceiling-bounded read surfaces
+- **status:** draft
+- **traces:** ARCH-067
+- **files:** src/workflow-catalog.ts, src/workflow-meta.ts, src/mcp-facade.ts, src/server.ts, tests/unit/meta-literal.test.ts, tests/integration/harness-defaults-validation.test.ts
+- **des:** DES-103, DES-101
+- **dod:** `npx vitest run tests/integration/harness-defaults-validation.test.ts tests/unit/meta-literal.test.ts` green — register→re-register with a **changed** `params` block ⇒ `workflow_get` returns the NEW contract (and `owner` still unchanged); a `params` block naming a locked key stores nothing; a NULL-`params` row + a lowered `maxTimeoutMs` config ⇒ `workflow_get` reflects the lowered bound without a re-register.
+- **estimate:** M
+- **iter:** v21
+- **`files:` corrected (2026-09-01, same stale-pointer class as TASK-104's correction below):** this line named `src/sandbox/workflow-meta.ts`, a path that has never existed — `src/sandbox/` holds only `child-entry.ts`, `guards.ts` and `host.ts`. The real module carrying this task's pre-eval `meta.params` source bound is `src/workflow-meta.ts` (imported as `./workflow-meta.js` by `src/mcp-facade.ts`); the `files:` line now names it, so the partitioner and any impact analysis resolve to a file that exists.
+- Depends on TASK-096 + TASK-097. **The `ON CONFLICT` clause is the trap:** `workflow-catalog.ts:110–114` updates script/version/createdAt/defaults and *deliberately omits* `owner`; an implementer adding `params` by pattern-copy leaves a stale contract on re-register — silent, no error, and exactly the drift class v21 exists to close. Also: `list()` reads `params` from the column (never a script re-parse — v22/D15 masks the script); `workflow_get`/`workflow_list` serve `min(author bound, engine ceiling)` computed at read time; MCP tool descriptions/inputSchema generated from the ARCH-064 types under the existing ARCH-051 drift-lock (the `effort` no-op being repaired here WAS a docs/behaviour split — the fix must not mint a new one). The `meta.description` re-parse in `list()` stays as-is: inherited debt, v22 owner.
+
+### TASK-100 — admission rung + run-immutable snapshot + resume, with the three config keys and their `composeConfig()` wiring rows IN THIS TASK
+- **status:** draft
+- **traces:** ARCH-066
+- **files:** src/run-manager.ts, src/run-store.ts, src/store/sqlite-run-store.ts, src/mcp-facade.ts, src/server.ts, src/main.ts, tests/unit/compose-config-v2-wiring.test.ts, tests/integration/params-admission.test.ts
+- **des:** DES-104
+- **dod:** `npx vitest run tests/integration/params-admission.test.ts tests/unit/compose-config-v2-wiring.test.ts` green — a `PARAM_LOCKED` submission leaves `store.listRuns()` count unchanged, creates no directory under `catalog.workFolder(name)/runs/`, and spawns zero sandboxes; and the three new keys appear in the wiring test.
+- **estimate:** L
+- **iter:** v21
+- Depends on TASK-096 + TASK-098. **One task by decree** (ARCH-066 inv-6): admission rung + snapshot persist + `redact()` routing + REQ-083 sweep row + config-key forwarding + the `compose-config-v2-wiring.test.ts` rows. A separate "config plumbing" task is how a **fifth** instance of that bug class ships (v11 `updateFlagPath`, v15 `auth`, v16 `workspaceTtlMs`, now `resolveHarnessParams`). Carries the MCP surface too: `workflow_run` gains `overrides` (inputSchema `additionalProperties:false`, exactly four properties) threaded to `start(spec, overrides?)` — **`overrides` never hangs off `RunSpec`** (a second persist sink carrying caller text that the REQ-083 sweep would miss, plus a standing temptation to re-merge on resume); `workflow_resume` rejects the *presence* of an `overrides` field outright. Includes the legacy NULL-`effectiveParams` resume fallback — no ARCH clause owns it and it breaks every in-flight suspended run on deploy day if omitted.
+
+### TASK-101 — dispatch wiring: required `runParams` on `AgentReq`, single-site descriptor decoration, five-segment prompt, observable pre-dispatch rejection
+- **status:** draft
+- **traces:** ARCH-068
+- **files:** src/agent-executor.ts, src/run-manager.ts, src/types.ts, src/gateway/client.ts, tests/unit/agent-executor-params.test.ts, tests/integration/agent-executor-wiring.test.ts, tests/integration/agent-log-harness-shape.test.ts
+- **des:** DES-105
+- **dod:** `npx vitest run tests/integration/agent-executor-wiring.test.ts tests/unit/agent-executor-params.test.ts` green — a run registered with `defaults:{model:'M'}` and no overrides dispatches with `M` and the descriptor reports `provenance.model:'default'`; the overridden run's `CallKey`s are byte-identical to the non-overridden run's.
+- **estimate:** L
+- **iter:** v21
+- Depends on TASK-098 + TASK-100. **The `tsc` lever goes on `AgentReq`, not the constructor:** `AgentExecutorDeps = {}` is an all-optional bag constructed at ~30 sites across 12 test files, and the executor instance is not where params semantically live; `AgentReq` is built at exactly ONE production site (`run-manager.ts:_handleAgentRequest`), which also means `_spawnerOverride` carries the field automatically instead of bypassing the lever. Also folds the REQ-092 locked trio (`defaults.prompt/tools/skills`) into the snapshot and the composition — that clause has no ARCH-064..070 home today and would otherwise ship still-inert, repeating the exact class this iteration exists to close.
+
+### TASK-102 — effort on the wire: one shared `mapEffort` imported by both gateway clients, `thinkingFor` stays sole writer
+- **status:** draft
+- **traces:** ARCH-069
+- **files:** src/gateway/client.ts, src/gateway/claude-agent-sdk-client.ts, tests/unit/gateway-effort.test.ts, tests/unit/claude-agent-sdk-gateway-thinking.test.ts
+- **des:** DES-106
+- **dod:** `npx vitest run tests/unit/gateway-effort.test.ts tests/unit/claude-agent-sdk-gateway-thinking.test.ts` green — the same contract test parameterized over BOTH `GatewayClient` impls (`low` vs `max` differ at `body[param]` / on `Options`), plus the regression pin: a non-Anthropic alias at `effort:'max'` leaves `options.thinking` byte-identical to today.
+- **estimate:** M
+- **iter:** v21
+- Depends on TASK-098. **Top risk in the slice:** `thinkingFor()` (`claude-agent-sdk-client.ts:325`, wired at `:527`) is the SOLE writer of `options.thinking` and exists *because* unconditional extended thinking made every real SDK+local-Ollama call fail with a 400 after ~4 minutes (Gate 7.5 round 3). An effort mapper that assigns `options.thinking` from a second site re-opens that shipped defect on the default path. Mapping runs **inside** the gateway (the provider is only resolvable there — `gateway/client.ts:281`) and the applied object travels back up via `onHarness(descriptor, applied?)`; no `resolveTarget` interface method is invented.
+
+### TASK-103 — workflow-bound problem reports: `workflow:<name>` label, `name@version` + runId in the body, label-filtered `issue_list`, fingerprint extension
+- **status:** draft
+- **traces:** ARCH-070
+- **files:** src/github/issue-reporter.ts, src/mcp-facade.ts, src/server.ts, tests/unit/issue-reporter.test.ts, tests/integration/issue-report-http.test.ts
+- **des:** DES-107
+- **dod:** `npx vitest run tests/unit/issue-reporter.test.ts tests/integration/issue-report-http.test.ts` green — two workflows reporting the same title produce two issues (not one comment), and with `workflow` ABSENT `issueFingerprint()` is byte-identical to its pre-v21 output.
+- **estimate:** S
+- **iter:** v21
+- Independent of every other v21 task. Reuses the registration-name charset/length predicate minus the existence check (transcription of the regex is drift); a just-deregistered workflow must still be reportable, so the name is never existence-checked.
+
+### TASK-104 — cleanup: delete `resolveHarnessParams` once `mergeRunParams` owns the author-side path
+- **status:** draft
+- **traces:** ARCH-065
+- **files:** src/harness-defaults.ts, tests/unit/params-resolve.test.ts
+- **des:** DES-102
+- **dod:** `rg -n "resolveHarnessParams" src/ | wc -l` returns 0 and `npx vitest run` is green.
+- **estimate:** S
+- **iter:** v21
+- **`files:` corrected at the v21 Gate 6 integrator closeout (2026-09-01, adjudication B-8):** this line named `tests/unit/harness-defaults.test.ts`, a file that never existed under that name — a stale pointer to the deleted `tests/unit/resolve-harness-params.test.ts`. The real files this task touched are `src/harness-defaults.ts` (where `resolveHarnessParams` was removed) and the deleted `tests/unit/resolve-harness-params.test.ts`, whose coverage is now carried by `tests/unit/params-resolve.test.ts` (UT-099) — that replacement is what the `files:` line names, since a deleted path is not a partitionable file. See IMPL-137.
+- Runs LAST (after TASK-098 + TASK-101). Leaving a `Partial<HarnessDefaults>`-shaped merge function (three of whose five keys are D12-locked) next to the new closed-type one is a standing invitation for a future implementer to "finally wire the one that was never wired" — reintroducing exactly the ADR-001 escalation. Deleting the shape is cheaper than documenting why not to use it.

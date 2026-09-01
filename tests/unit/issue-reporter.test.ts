@@ -178,3 +178,78 @@ describe('IssueReporter.report() version propagation (REQ-066)', () => {
     expect(calls[0].body).toContain('Version: eng-9.9.9');
   });
 });
+
+// UT-057 v21 extension (DES-107, ARCH-070, TASK-103, REQ-095): workflow-bound problem reports.
+// Red reason: IssueReportInput has no `workflow` field consumed anywhere in report() today — no
+// `workflow:<name>` label is ever added and issueFingerprint() never mixes it in. Genuine v21 red.
+import { issueFingerprint } from '../../src/github/issue-reporter.js';
+
+describe('IssueReporter workflow-bound reports (REQ-095, DES-107)', () => {
+  it('issue_report({workflow}) labels the created issue "workflow:<name>" and the body carries name@version + runId', async () => {
+    const { client, calls } = fakeClient();
+    const r = new IssueReporter({ secretSource: srcWith({ GITHUB_TOKEN: 't' }), clientImpl: client, engineVersion: '1.2.3', nowIso: () => META.nowIso });
+    await r.report({ ...OK_INPUT, workflow: 'my-flow', version: 'v3', runId: 'run-77' } as any);
+    expect(calls[0].labels).toContain('workflow:my-flow');
+    expect(calls[0].body).toContain('my-flow@v3');
+    expect(calls[0].body).toContain('run-77');
+  });
+
+  it('omitting workflow behaves exactly as today: no workflow:* label added, unlabelled engine-level report', async () => {
+    const { client, calls } = fakeClient();
+    const r = new IssueReporter({ secretSource: srcWith({ GITHUB_TOKEN: 't' }), clientImpl: client, engineVersion: '1.2.3', nowIso: () => META.nowIso });
+    await r.report({ ...OK_INPUT });
+    expect(calls[0].labels.some((l) => l.startsWith('workflow:'))).toBe(false);
+  });
+
+  it('COMPAT PIN: with workflow absent, issueFingerprint(title, component) is byte-identical to the pre-v21 formula (golden hash, not a self-comparison)', () => {
+    // Golden value = sha256(normalizeTitle('Some Bug') + '|' + 'auth').hex.slice(0,16), the EXACT
+    // pre-v21 formula (createHash('sha256').update(normalizeTitle(title)+'|'+(component??'')))
+    // — computed independently of the function under test so a formula change that happens to
+    // agree with itself (self-comparison) cannot pass vacuously.
+    expect(issueFingerprint('Some Bug', 'auth')).toBe('d4b948425d03851b');
+  });
+
+  it('two workflows reporting the SAME title produce two DIFFERENT fingerprints (so they file two issues, not one dedup)', () => {
+    const fpA = issueFingerprint('Same title', undefined, 'workflow-a');
+    const fpB = issueFingerprint('Same title', undefined, 'workflow-b');
+    expect(fpA).not.toBe(fpB);
+  });
+
+  it('a just-deregistered workflow name is still reportable — issue_report never existence-checks `workflow`', async () => {
+    const { client, calls } = fakeClient();
+    const r = new IssueReporter({ secretSource: srcWith({ GITHUB_TOKEN: 't' }), clientImpl: client, engineVersion: '1.2.3', nowIso: () => META.nowIso });
+    const res = await r.report({ ...OK_INPUT, workflow: 'never-registered-or-already-gone' } as any);
+    expect(res.ok).toBe(true);
+    expect(calls[0].labels).toContain('workflow:never-registered-or-already-gone');
+  });
+});
+
+// v21 Gate 5 re-run (2026-08-31, A-5 / 04-design.md "Orchestrator adjudication — v21 Gate 6
+// send-back"): DES-107 amended — v21 introduces no general registration-name predicate, so the
+// `workflow:<name>` GitHub label is produced by a LABEL-SCOPED sanitize only: characters GitHub
+// rejects in a label are replaced, the label is truncated to GitHub's 50-character cap, and the
+// untruncated `name@version` still appears in the issue BODY. No such sanitize exists today —
+// `report()` still uses the raw `workflow:${input.workflow}` string verbatim. This test pins the
+// sanitize this iteration ships: characters outside [A-Za-z0-9:_./-] -> '-', label truncated to 50
+// chars total (including the 9-char "workflow:" prefix, so 41 name characters survive untruncated).
+// Genuine v21 red (not yet implemented).
+describe('IssueReporter workflow label sanitize (REQ-095, DES-107, v21 Gate 5 re-run A-5)', () => {
+  it('characters GitHub rejects in a label are replaced with "-"; the untruncated name@version still appears in the body', async () => {
+    const { client, calls } = fakeClient();
+    const r = new IssueReporter({ secretSource: srcWith({ GITHUB_TOKEN: 't' }), clientImpl: client, engineVersion: '1.2.3', nowIso: () => META.nowIso });
+    await r.report({ ...OK_INPUT, workflow: 'my workflow!', version: 'v1' } as any);
+    expect(calls[0].labels).toContain('workflow:my-workflow-');
+    expect(calls[0].body).toContain('my workflow!@v1');
+  });
+
+  it('a workflow name that would push the label past the 50-character cap is truncated in the LABEL only; the untruncated name@version still appears in the body', async () => {
+    const longName = 'a'.repeat(60);
+    const { client, calls } = fakeClient();
+    const r = new IssueReporter({ secretSource: srcWith({ GITHUB_TOKEN: 't' }), clientImpl: client, engineVersion: '1.2.3', nowIso: () => META.nowIso });
+    await r.report({ ...OK_INPUT, workflow: longName, version: 'v2' } as any);
+    const label = calls[0].labels.find((l) => l.startsWith('workflow:'));
+    expect(label).toBe(`workflow:${'a'.repeat(41)}`); // 9-char prefix + 41 chars = 50
+    expect(label?.length).toBe(50);
+    expect(calls[0].body).toContain(`${longName}@v2`); // untruncated name@version, in the body
+  });
+});

@@ -4,6 +4,7 @@
 // Sole custody of provider API keys lives here (parent-only, never exposed to the sandboxed script).
 import type { AgentOpts, HarnessDescriptor, TranscriptEvent } from '../types.js';
 import { LiteLLMProxyManager } from './litellm-proxy.js';
+import { redactHarness } from '../agent-executor.js';
 
 export interface AliasMap {
   [alias: string]: { provider: 'anthropic' | 'openai' | 'openrouter' | 'gemini' | 'ollama'; model: string };
@@ -15,6 +16,46 @@ export interface AliasMap {
  *  DISABLE the bound. Shared by both gateway clients so the predicate can't drift. */
 export function resolveTimeout(t: unknown): number | undefined {
   return typeof t === 'number' && Number.isFinite(t) && t > 0 ? t : undefined;
+}
+
+/** DES-106/ARCH-069 (TASK-102): the tri-state record of whether/how a requested `effort` directive
+ *  reached the wire — `applied:true` names the outbound placement + value; `applied:false`
+ *  degrades the run without failing it and records why (e.g. no reasoning dial for this provider).
+ *  `param` is the flat Agent SDK Options field; `restPath` is the (possibly nested) REST-body path —
+ *  the two wire shapes place the same reasoning-effort concept differently (E-1/P-A1: the Anthropic
+ *  Messages API nests it at `output_config.effort`, never top-level, while the Agent SDK's own
+ *  `Options` object takes it as a flat field), so one flat name cannot describe both placements. */
+export type EffortApplied =
+  | { applied: true; param: string; restPath: string[]; value: unknown }
+  | { applied: false; reason: string };
+
+/** A provider's reasoning-effort dial, if it has one. Config, not code (ARCH-069): a new provider
+ *  with an equivalent control is one more table row, not a new branch in either gateway client. */
+export interface EffortProfile {
+  /** Flat field name on the Agent SDK's own `Options` object. */
+  param: string;
+  /** REST-body path (outer-to-inner) where the value nests, e.g. `['output_config','effort']`. */
+  restPath: string[];
+}
+
+const EFFORT_PROFILES: Partial<Record<AliasMap[string]['provider'], EffortProfile>> = {
+  anthropic: { param: 'effort', restPath: ['output_config', 'effort'] },
+};
+
+/** `profileFor(provider)` — the provider-profile lookup DES-106 names explicitly. Accepts a plain
+ *  string (both gateway clients resolve `provider` before it's re-narrowed to the `AliasMap` union)
+ *  — an unrecognized/absent provider is simply "no dial", never a type-narrowing chore for callers. */
+export function profileFor(provider: string | undefined): EffortProfile | undefined {
+  return provider !== undefined ? EFFORT_PROFILES[provider as AliasMap[string]['provider']] : undefined;
+}
+
+/** DES-106: one shared pure mapper, called ONCE per invoke inside each gateway. Absent (`undefined`)
+ *  when no effort was ever requested — effort-absent request composition must stay byte-identical to
+ *  pre-v21 on both clients (pinned by UT-101). */
+export function mapEffort(profile: EffortProfile | undefined, effort: AgentOpts['effort']): EffortApplied | undefined {
+  if (effort === undefined) return undefined;
+  if (!profile) return { applied: false, reason: 'no reasoning dial for this provider' };
+  return { applied: true, param: profile.param, restPath: profile.restPath, value: effort };
 }
 
 export type GatewayResult =
@@ -46,8 +87,10 @@ export interface GatewayClient {
    *  assets per call); other gateways ignore it, unchanged. */
   /** `onHarness` (DES-066 / TASK-069): optional hook called eagerly at session-build time (post-curation,
    *  before any query) with the redacted `HarnessDescriptor`. The executor wires this to append a
-   *  `{kind:'harness'}` transcript event so deriveAgentRecords can surface the dispatched agent's model. */
-  invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor) => Promise<void>;
+   *  `{kind:'harness'}` transcript event so deriveAgentRecords can surface the dispatched agent's model.
+   *  `applied` (DES-106 / TASK-102): the same `EffortApplied` object `mapEffort` computed, when any
+   *  effort directive was requested — recorded ≡ applied by object identity, never a re-lookup. */
+  invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>;
     /** issue #20: called per live transcript event as the session streams it (before the terminal
      *  result), so agent_log grows and lastActivityAt advances DURING the call. Gateways with no
      *  turn-by-turn stream (LiteLLMGatewayClient) never call it — unchanged terminal-only behavior. */
@@ -87,6 +130,14 @@ export interface GatewayConfig {
 type ProviderTarget = AliasMap[string];
 type AttemptFailure = { ok: false; provider: string; reason: 'timeout' | 'unreachable' | 'terminal' };
 
+/** DES-106/P-A1: the wire-level fields an applied effort directive contributes to an outbound
+ *  Anthropic-Messages-shaped request body — nested per `applied.restPath` (the documented contract
+ *  is `output_config:{effort:…}`, never a top-level `effort` field) — a no-op `{}` when no dial
+ *  applies (untargeted provider) or no effort was requested. */
+function effortBodyFields(applied: EffortApplied | undefined): Record<string, unknown> {
+  return applied?.applied ? applied.restPath.reduceRight<unknown>((acc, key) => ({ [key]: acc }), applied.value) as Record<string, unknown> : {};
+}
+
 /** Real provider call — one impl per provider, all sharing the same bounded-timeout contract. */
 async function callProvider(
   target: ProviderTarget,
@@ -94,6 +145,7 @@ async function callProvider(
   timeoutMs: number,
   fetchImpl: typeof fetch,
   signal?: AbortSignal,
+  applied?: EffortApplied,
 ): Promise<GatewayResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -112,7 +164,7 @@ async function callProvider(
           method: 'POST',
           signal: controller.signal,
           headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json', ...correlationHeaders },
-          body: JSON.stringify({ model: target.model, max_tokens: 1024, messages: [{ role: 'user', content: req.prompt }] }),
+          body: JSON.stringify({ model: target.model, max_tokens: 1024, messages: [{ role: 'user', content: req.prompt }], ...effortBodyFields(applied) }),
         });
         if (!res.ok) return { ok: false, provider: 'anthropic', reason: res.status >= 500 ? 'unreachable' : 'terminal' };
         const data = (await res.json()) as any;
@@ -227,6 +279,7 @@ async function callViaLiteLLMProxy(
   timeoutMs: number,
   fetchImpl: typeof fetch,
   signal?: AbortSignal,
+  applied?: EffortApplied,
 ): Promise<GatewayResult> {
   let baseUrl: string;
   try {
@@ -248,7 +301,7 @@ async function callViaLiteLLMProxy(
         'x-api-key': 'litellm-proxy', 'anthropic-version': '2023-06-01', 'content-type': 'application/json',
         'x-run-id': req.runId, 'x-agent-id': req.agentId,
       },
-      body: JSON.stringify({ model: aliasName, max_tokens: 1024, messages: [{ role: 'user', content: req.prompt }] }),
+      body: JSON.stringify({ model: aliasName, max_tokens: 1024, messages: [{ role: 'user', content: req.prompt }], ...effortBodyFields(applied) }),
     });
     if (!res.ok) return { ok: false, provider: target.provider, reason: res.status >= 500 ? 'unreachable' : 'terminal' };
     const data = (await res.json()) as any;
@@ -276,17 +329,26 @@ export class LiteLLMGatewayClient implements GatewayClient {
     }
   }
 
-  async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; onHarness?: (h: HarnessDescriptor) => Promise<void> }): Promise<GatewayResult> {
+  async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void> }): Promise<GatewayResult> {
     const aliasName = req.opts.model ?? 'default';
     const target = this._config.aliases[aliasName];
     if (!target) return { ok: false, provider: 'unknown', reason: 'terminal' };
+    // DES-106 (TASK-102): computed ONCE per invoke, inside the gateway — the provider is only
+    // resolvable here. The SAME object travels to onHarness AND (below) onto the outbound request.
+    const applied = mapEffort(profileFor(target.provider), req.opts.effort);
     // DES-066 (TASK-069): emit harness descriptor eagerly at model-resolution time (surfaceType:'none'
-    // — direct-fetch has no curated tool surface). 4KB head+tail cap on prompt.
+    // — direct-fetch has no curated tool surface). The prompt rides UNCUT: the 4KB head+tail cap is
+    // applied at the persist site after `redact()` (review §R2 R-G9 — capping first can split a
+    // secret across the seam and defeat the value-exact match).
     if (req.onHarness) {
-      const p = req.prompt;
-      const PROMPT_CAP = 4096, HALF = 2048;
-      const cappedPrompt = p.length > PROMPT_CAP ? p.slice(0, HALF) + '…[truncated]…' + p.slice(p.length - HALF) : p;
-      await req.onHarness({ model: aliasName, provider: target.provider, prompt: cappedPrompt, tools: [], skills: [], mcpServers: [], surfaceType: 'none' });
+      const descriptor: HarnessDescriptor = {
+        ...redactHarness({
+          surfaceType: 'none', modelName: aliasName, provider: target.provider, prompt: req.prompt,
+          curatedTools: [], mergedMcp: [], skills: [],
+        }),
+        ...(applied !== undefined ? { effortApplied: applied } : {}),
+      };
+      await req.onHarness(descriptor, applied);
     }
 
     const fetchImpl = this._config.fetchImpl ?? fetch;
@@ -296,8 +358,8 @@ export class LiteLLMGatewayClient implements GatewayClient {
     let last: GatewayResult = { ok: false, provider: target.provider, reason: 'terminal' };
     for (let i = 0; i < attempts; i++) {
       last = this._proxy
-        ? await callViaLiteLLMProxy(this._proxy, aliasName, target, req, effTimeout, fetchImpl, req.signal)
-        : await callProvider(target, req, effTimeout, fetchImpl, req.signal);
+        ? await callViaLiteLLMProxy(this._proxy, aliasName, target, req, effTimeout, fetchImpl, req.signal, applied)
+        : await callProvider(target, req, effTimeout, fetchImpl, req.signal, applied);
       if (last.ok) return last;
     }
     return last;

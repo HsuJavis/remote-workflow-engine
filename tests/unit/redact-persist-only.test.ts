@@ -1,7 +1,15 @@
-// UT-090 (DES-088, ARCH-056, TASK-082): persist-only invariants + double-redaction exclusivity.
+// UT-090 (DES-088, ARCH-056, TASK-082): persist-only invariants + the redaction-pass invariant.
 // Tests the DES-088 named invariants:
-//   (a) double-redaction exclusivity: `redact({name,value}[])` runs ONLY on non-harness events;
-//       `redactHarness` runs ONLY on kind==='harness' events; neither runs on the other's output.
+//   (a) AMENDED v21 Gate 8 (review §4 B3 + §R2 R-G8/R-G10). As first written this said "double-
+//       redaction exclusivity: `redact({name,value}[])` runs ONLY on non-harness events;
+//       `redactHarness` runs ONLY on kind==='harness' events". That was FALSE and left the harness
+//       sink unredacted: `redactHarness` is a STRUCTURAL strip (names only) that emits no
+//       `‹secret:NAME›` marker, so the two were never alternatives. The invariant is now positional
+//       — "one redaction pass per persisted event": every persist site runs `redact()` exactly once,
+//       on every kind, and the `kind!=='harness'` carve-outs in `AgentTranscriptSink._emit` /
+//       `onEvent` are DELETED. Cases (4) and (6) below assert the part that stays true — that
+//       `redactHarness` produces no marker — which is precisely WHY the harness sink needs its own
+//       `redact()`. No case here asserted the deleted guards, so all 6 stayed green through R-G10.
 //   (b) persist-only: `redact` is a PURE function — it returns a new object and never mutates
 //       the input `event`, so the live in-memory messages array is untouched.
 //   (c) marker correctness: the `‹secret:NAME›` marker replaces the exact secret value,
@@ -9,8 +17,9 @@
 //
 // Cases:
 //   1. Pure: `redact(event, secrets)` returns a new object; the original is unchanged (no mutation)
-//   2. Exclusivity: `redact` on a kind==='harness' event (DES-088 says it ONLY runs on non-harness) →
-//      the test checks we have a convention-based boundary (not calling redact on harness events)
+//   2. `redactHarness` emits no `‹secret:NAME›` marker — the separate-marker boundary. (Was worded
+//      as "DES-088 says redact ONLY runs on non-harness"; see the invariant (a) amendment above —
+//      redaction is no longer kind-gated anywhere.)
 //   3. `redactHarness` output does NOT contain `‹secret:NAME›` markers (separate path, separate marker)
 //   4. A non-harness event after `redact` contains `‹secret:NAME›`; the same object before does not
 //
@@ -58,7 +67,7 @@ describe('redact persist-only invariant (DES-088 invariant b)', () => {
   });
 });
 
-describe('double-redaction exclusivity (DES-088 invariant a)', () => {
+describe('one redaction pass per persisted event — separate markers (DES-088 invariant a, as amended by review §R2 R-G10)', () => {
   it('redactHarness does NOT produce ‹secret:NAME› markers (separate code path)', () => {
     // redactHarness handles kind:'harness' events; it uses its own existing redaction
     const resolved = {

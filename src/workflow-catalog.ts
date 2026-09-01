@@ -18,19 +18,45 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { join, resolve, sep, isAbsolute } from 'node:path';
 import { CatalogNotFoundError, WorkspaceEscapeError, codedError } from './errors.js';
-import { parseMeta } from './workflow-meta.js';
+import { parseMeta, parseMetaParams } from './workflow-meta.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
 import { validateHarnessDefaults, type HarnessDefaults } from './harness-defaults.js';
+// v21 Gate 6 adjudication (A-1): type-only import — erases at compile, no runtime edge, and this
+// file is not one the sandbox child loads, so the .js->.ts child-import hazard does not apply.
+// Bars a VALUE import only (which would drag the validator into a module the catalog stays
+// independent of); typing get()/getFull()'s `params` as ParamContract|undefined instead of
+// `unknown` is the point of the adjudication; list() carries the same typing.
+import type { ParamContract, Ceilings } from './params/contract.js';
+// v21 adjudication #6 (F-2): value import sanctioned for THIS file only — the catalog already
+// throws PARAM_CONTRACT_INVALID itself (already doing validation) and already carries the A-1
+// type-only import above; a second hand-rolled bounds checker here is exactly the drift class
+// that has bitten this iteration twice (P-A2, R-G10). No sandbox-child hazard: this file is
+// server-side (loads better-sqlite3) and contract.ts is already value-imported by run-manager.ts.
+import { canonicalContract, checkValueAgainstSpec, effectiveBounds } from './params/contract.js';
 
 // DES-098: hardcoded operator email for boot backfill of NULL-owner rows
 const BOOT_BACKFILL_EMAIL = 'hsuhungjung@gmail.com';
+
+// v21 Gate 5 re-run (A-2, DES-103): does a declared `params.knobs.<key>.default` violate a given
+// spec's type/enum/min/max (either the knob's OWN declared bounds, or a ceiling-narrowed one)?
+// v21 adjudication #6 (F-2): was a hand-rolled duplicate of contract.ts's bounds predicate;
+// now delegates to the shared `checkValueAgainstSpec` (see import above).
+function violatesOwnSpec(value: unknown, spec: Parameters<typeof checkValueAgainstSpec>[2]): boolean {
+  return !checkValueAgainstSpec('', value, spec).ok;
+}
 
 export interface WorkflowCatalogOpts {
   /** When set and auth is enabled, backfill NULL-owner rows to this email at construction time. */
   backfillOwner?: boolean;
   /** Set of valid model alias names for register-time validation (D-AUTH-5-B). */
   aliasNames?: Set<string>;
+  /** v21 adjudication #6 (F-1 ceiling interaction) + #7 (G-1): engine ceilings, so ANY value that
+   *  reaches the stored `defaults` column above the configured ceiling (e.g. `effort` above
+   *  `maxEffort`) is refused at registration — a declared `params.knobs.<knob>.default` and a
+   *  caller-supplied `defaults.<knob>` alike, instead of registering above a bound admission
+   *  enforces. Must be the SAME object forwarded to RunManager/McpFacade (server.ts). */
+  ceilings?: Ceilings;
 }
 
 export class WorkflowCatalog {
@@ -39,11 +65,13 @@ export class WorkflowCatalog {
   private readonly _clock: Clock;
   private readonly _workRoot: string;
   private readonly _aliasNames?: Set<string>;
+  private readonly _ceilings?: Ceilings;
 
   constructor(workRoot: string, clock?: Clock, opts?: WorkflowCatalogOpts) {
     this._workRoot = workRoot;
     this._clock = clock ?? new SystemClock();
     this._aliasNames = opts?.aliasNames;
+    this._ceilings = opts?.ceilings;
     mkdirSync(workRoot, { recursive: true });
     this._db = new Database(join(workRoot, 'catalog.db'));
     this._db.pragma('journal_mode = WAL');
@@ -63,6 +91,10 @@ export class WorkflowCatalog {
     }
     if (!existingCols.includes('defaults')) {
       this._db.exec('ALTER TABLE workflows ADD COLUMN defaults TEXT');
+    }
+    // v21 (DES-103, TASK-096): idempotent migration for the tunable-parameter contract column.
+    if (!existingCols.includes('params')) {
+      this._db.exec('ALTER TABLE workflows ADD COLUMN params TEXT');
     }
     // DES-098: idempotent boot backfill — NULL-owner rows → operator email; once/boot, self-limiting
     if (opts?.backfillOwner) {
@@ -90,6 +122,77 @@ export class WorkflowCatalog {
       }
     }
 
+    // v21 (DES-103, DES-101, ARCH-067, TASK-099): parse+validate meta.params before any DB
+    // operation — fail-closed, nothing stored (same precedent as HARNESS_DEFAULTS_INVALID above).
+    const paramsResult = parseMetaParams(script, this._aliasNames ?? new Set());
+    if (!paramsResult.ok) {
+      throw codedError(paramsResult.code, paramsResult.message);
+    }
+    const paramsJson = JSON.stringify(paramsResult.value);
+
+    // v21 Gate 5 re-run (A-2, DES-103): cross-validate each declared knob default — against its
+    // own spec, then against defaults.<knob> — before any DB write. A disagreement or an
+    // out-of-own-bounds default is a typed rejection with nothing stored (same D-AUTH-5-E
+    // fail-closed precedent as HARNESS_DEFAULTS_INVALID above). A declared default with no
+    // corresponding defaults.<knob> is accept-and-normalize: written into the stored defaults so
+    // the served default is always DERIVED from the defaults column, never a second source.
+    const effectiveDefaults: Record<string, unknown> = defaults ? { ...defaults } : {};
+    for (const [key, spec] of Object.entries(paramsResult.value.knobs)) {
+      if (spec.default === undefined) continue;
+      if (violatesOwnSpec(spec.default, spec)) {
+        throw codedError('PARAM_CONTRACT_INVALID', `params.knobs.${key}.default violates its own declared bounds`);
+      }
+      // v21 adjudication #6 (F-1): adjudication #5's E-3 ("reject a default for a knob no rung can
+      // apply") is SUPERSEDED — REQ-090's own acceptance text permits a declared default on every
+      // tunable knob, `effort`/`appendPrompt` included (D12). Widen, don't reject: every declared
+      // knob default is normalized into the stored `defaults`/`effectiveDefaults` here; the two
+      // author-only knobs becoming readable by a rung (`defaultRunParams`, KNOWN_KEYS) is TASK-098/104's
+      // side of this fix, not this file's.
+      if (key in effectiveDefaults) {
+        if (effectiveDefaults[key] !== spec.default) {
+          throw codedError('PARAM_CONTRACT_INVALID', `params.knobs.${key}.default disagrees with defaults.${key}`);
+        }
+      } else {
+        effectiveDefaults[key] = spec.default;
+      }
+    }
+
+    // v21 adjudication #6 (F-1 ceiling interaction) + #7 (G-1): ONE ceiling pass over the FINAL
+    // stored defaults — the values that actually reach the `defaults` column, whether they arrived
+    // as a caller-supplied `defaults.<knob>` or were normalized out of a declared
+    // `params.knobs.<knob>.default` above. Running it inside the declared-knob loop (its former
+    // home) left G-1's hole: that loop only ever visits knobs the AUTHOR declared a default for, so
+    // `defaults: {effort:'max'}` with no `params` block at all was ceiling-checked nowhere —
+    // `validateHarnessDefaults` has no ceilings, and admission re-checks only the caller's
+    // `overrides`, never the registered defaults. Bounds come from the canonical contract narrowed
+    // by live config, i.e. the CEILING alone (the author's own bounds are already enforced above),
+    // via the same `effectiveBounds`/`checkValueAgainstSpec` pair the read and admission rungs use —
+    // so registration can never refuse against a different number than admission enforces.
+    const ceilingKnobs = this._ceilings ? effectiveBounds(canonicalContract(), this._ceilings).knobs : undefined;
+    for (const [key, value] of Object.entries(effectiveDefaults)) {
+      const ceilingSpec = ceilingKnobs?.[key];
+      if (ceilingSpec === undefined) continue; // not a ceiling-bounded knob (tools/skills/prompt)
+      // The rejection code follows the value's ORIGIN, so the caller sees the input they supplied
+      // named back: a caller `defaults` key answers under the D-AUTH-5 family's
+      // HARNESS_DEFAULTS_INVALID, a declared knob default under PARAM_CONTRACT_INVALID.
+      const fromCaller = defaults !== undefined && key in defaults;
+      const code = fromCaller ? 'HARNESS_DEFAULTS_INVALID' : 'PARAM_CONTRACT_INVALID';
+      const label = fromCaller ? `defaults.${key}` : `params.knobs.${key}.default`;
+      // appendPrompt's ceiling is a byte cap, not a spec-shaped bound (DES-101 row 6) — checked by
+      // size only, never echoing the text (same "report by size, never by content" rule
+      // contract.ts's validateUserOverrides applies to a caller-supplied appendPrompt).
+      if (key === 'appendPrompt' && typeof value === 'string') {
+        const bytes = Buffer.byteLength(value, 'utf8');
+        if (bytes > this._ceilings!.maxAppendPromptBytes) {
+          throw codedError(code, `${label} exceeds the engine's configured byte ceiling (${bytes} > ${this._ceilings!.maxAppendPromptBytes} bytes)`);
+        }
+        continue;
+      }
+      if (violatesOwnSpec(value, ceilingSpec)) {
+        throw codedError(code, `${label} exceeds the engine's configured ceiling`);
+      }
+    }
+
     const existing = this._db.prepare('SELECT version, owner FROM workflows WHERE name = ?').get(name) as
       | { version: string; owner: string | null }
       | undefined;
@@ -103,17 +206,18 @@ export class WorkflowCatalog {
     const version = `v${nextNum}`;
     // Set owner on first registration; preserve existing owner on overwrite
     const owner = existing?.owner ?? principal;
-    const defaultsJson = defaults !== undefined ? JSON.stringify(defaults) : null;
+    const defaultsJson = Object.keys(effectiveDefaults).length > 0 ? JSON.stringify(effectiveDefaults) : null;
     this._db
       .prepare(`
-        INSERT INTO workflows (name, script, version, createdAt, owner, defaults) VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO workflows (name, script, version, createdAt, owner, defaults, params) VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(name) DO UPDATE SET
           script = excluded.script,
           version = excluded.version,
           createdAt = excluded.createdAt,
-          defaults = excluded.defaults
+          defaults = excluded.defaults,
+          params = excluded.params
       `)
-      .run(name, script, version, this._clock.isoNow(), owner, defaultsJson);
+      .run(name, script, version, this._clock.isoNow(), owner, defaultsJson, paramsJson);
     return { version };
   }
 
@@ -133,44 +237,56 @@ export class WorkflowCatalog {
     return { removed: info.changes > 0 };
   }
 
-  async get(name: string): Promise<{ script: string; version: string }> {
-    const row = this._db.prepare('SELECT script, version FROM workflows WHERE name = ?').get(name) as
-      | { script: string; version: string }
-      | undefined;
-    if (!row) throw new CatalogNotFoundError(name);
-    return row;
-  }
-
-  /** v9 (REQ-061): full detail for one workflow — name/script/version/createdAt/owner/defaults.
-   *  v15 (DES-098, DES-099, TASK-089): includes owner + defaults columns.
-   *  Throws CatalogNotFoundError for unknown names. */
-  async getFull(name: string): Promise<{
-    name: string; script: string; version: string; createdAt: string;
-    owner: string | null; defaults: HarnessDefaults | undefined;
+  /** v21 (DES-103, TASK-096): widened to carry `defaults` and the raw stored `params` contract
+   *  alongside script/version, so the run path (start/resume) reads the contract it needs in this
+   *  ONE query instead of a second `getFull()` round-trip. `params` is returned as the parsed JSON
+   *  value as-stored — canonicalization of a NULL/undefined contract belongs to the consumer, not
+   *  to this read (no `src/params/contract.ts` import here). */
+  async get(name: string): Promise<{
+    script: string; version: string; defaults: HarnessDefaults | undefined; params: ParamContract | undefined;
   }> {
     const row = this._db
-      .prepare('SELECT name, script, version, createdAt, owner, defaults FROM workflows WHERE name = ?')
+      .prepare('SELECT script, version, defaults, params FROM workflows WHERE name = ?')
       .get(name) as
-      | { name: string; script: string; version: string; createdAt: string; owner: string | null; defaults: string | null }
+      | { script: string; version: string; defaults: string | null; params: string | null }
       | undefined;
     if (!row) throw new CatalogNotFoundError(name);
     return {
-      name: row.name,
       script: row.script,
       version: row.version,
-      createdAt: row.createdAt,
-      owner: row.owner,
       defaults: row.defaults ? JSON.parse(row.defaults) as HarnessDefaults : undefined,
+      params: row.params ? JSON.parse(row.params) as ParamContract : undefined,
     };
   }
 
-  async list(): Promise<Array<{ name: string; version: string; createdAt: string; description: string }>> {
+  /** v9 (REQ-061): full detail for one workflow — name/script/version/createdAt/owner/defaults/params.
+   *  v15 (DES-098, DES-099, TASK-089): includes owner + defaults columns.
+   *  v21 (DES-103, TASK-096): delegates to get() + a small owner/createdAt lookup so script/defaults/
+   *  params parsing lives in exactly one place (one row-read shape, not two).
+   *  Throws CatalogNotFoundError for unknown names. */
+  async getFull(name: string): Promise<{
+    name: string; script: string; version: string; createdAt: string;
+    owner: string | null; defaults: HarnessDefaults | undefined; params: ParamContract | undefined;
+  }> {
+    const entry = await this.get(name); // throws CatalogNotFoundError when absent
+    const row = this._db
+      .prepare('SELECT createdAt, owner FROM workflows WHERE name = ?')
+      .get(name) as { createdAt: string; owner: string | null };
+    return { name, ...entry, createdAt: row.createdAt, owner: row.owner };
+  }
+
+  async list(): Promise<Array<{ name: string; version: string; createdAt: string; description: string; params: ParamContract | undefined }>> {
     // v9 (REQ-061): surface each workflow's purpose (meta.description) so a client can see WHAT each
     // one does without reading its script — parsed on-demand from the stored script (always in sync).
-    const rows = this._db.prepare('SELECT name, script, version, createdAt FROM workflows').all() as Array<{
-      name: string; script: string; version: string; createdAt: string;
+    // v21 (DES-103, TASK-099): `params` is read from the COLUMN, never a script re-parse.
+    const rows = this._db.prepare('SELECT name, script, version, createdAt, params FROM workflows').all() as Array<{
+      name: string; script: string; version: string; createdAt: string; params: string | null;
     }>;
-    return rows.map((r) => ({ name: r.name, version: r.version, createdAt: r.createdAt, description: parseMeta(r.script).description }));
+    return rows.map((r) => ({
+      name: r.name, version: r.version, createdAt: r.createdAt,
+      description: parseMeta(r.script).description,
+      params: r.params ? JSON.parse(r.params) as ParamContract : undefined,
+    }));
   }
 
   workFolder(name: string): string {
