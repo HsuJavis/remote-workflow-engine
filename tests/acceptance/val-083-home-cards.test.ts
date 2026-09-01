@@ -6,7 +6,8 @@
 // CI-safe assertions (this test, real:false):
 //   - GET /api/home returns HTTP 200 with the three-group HomeView shape
 //   - a registered workflow's card carries its description and a metrics object
-//   - an inline-script run (no name) produces a card in other[] (grouped as '(inline)' or similar)
+//   - a run whose workflow was DEREGISTERED produces a card in other[] (v22, adjudication #3 M-4:
+//     was "an inline-script run (no name)" until REQ-098 closed that entry point)
 //   - card objects have the required WorkflowCard fields (name, description, group, metrics)
 //
 // Headless-browser mini-SVG preview and full-graph click (deferred to Gate 7.5 real-run):
@@ -22,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -105,21 +107,28 @@ describe('VAL-083: GET /api/home — grouping + description (REQ-074)', () => {
     expect('terminalCount' in (card?.metrics ?? {})).toBe(true);
   });
 
-  it('inline-script run (no name) appears in other[] (CI-safe)', async () => {
-    // NOT MIGRATED (reported to the orchestrator): this case's SUBJECT is a nameless run landing in
-    // other[]. dashboard.ts's other[] is "runs whose name is absent from the catalog", keyed
-    // '(inline)' when the run has no name at all — and v22 (REQ-098) means every run now has a name
-    // that IS in the catalog. Routing it through the fixture helper would give the run a registered
-    // name, moving the card to registered[] and inverting the assertion. Left raw on purpose.
-    // Run an inline script — it has no registered workflow name
-    const sub = await callTool('workflow_run', { script: 'return "inline-for-val083";' }) as { runId?: string };
+  it("a DEREGISTERED workflow's run appears in other[] (CI-safe)", async () => {
+    // v22 adjudication #3 (M-4): this case's subject used to be a nameless inline-script run. v22
+    // (REQ-098) closed inline script, so every run now carries a catalog name and that entry point
+    // into other[] is unreachable — but the BUCKET still means something. dashboard.ts's other[] is
+    // "runs whose name is absent from the catalog" (buildHomeView's own comment: "inline or
+    // deregistered"), and deregistration is now the only way in: run a registered workflow to
+    // completion, then deregister it, and its run's card must fall out of registered[] into
+    // other[]. Rewritten to that subject rather than retired.
+    const wfName = 'val083-dereg';
+    await registerPublishedVia(callTool, wfName, 'return "deregistered-for-val083";');
+    const sub = await callTool('workflow_run', { name: wfName }) as { runId?: string };
     await pollDone(sub?.runId!);
+
+    const dereg = await callTool('workflow_deregister', { name: wfName }) as { removed?: boolean; result?: { removed?: boolean } };
+    expect(dereg.removed ?? dereg.result?.removed).toBe(true);
 
     const res = await fetch(`http://127.0.0.1:${server.port}/api/home`);
     const view = await res.json() as HomeView;
-    // Inline runs should appear in other[], not running/registered
-    // The card name is either undefined-stringified or '(inline)' per DES-070
-    expect(view.other.length).toBeGreaterThan(0);
+    // The card is keyed by the run's own name (not '(inline)') and must now be in other[] alone.
+    expect(view.other.map((c) => c.name)).toContain(wfName);
+    expect(view.registered.map((c) => c.name)).not.toContain(wfName);
+    expect(view.running.map((c) => c.name)).not.toContain(wfName);
     // All other[] cards must have group:'other'
     for (const c of view.other) {
       expect(c.group).toBe('other');

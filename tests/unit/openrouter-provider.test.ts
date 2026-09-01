@@ -1,13 +1,14 @@
 // REQ-038: `openrouter` first-class provider — direct-fetch routing (OpenAI-shaped POST to
 // openrouter.ai with Bearer OPENROUTER_API_KEY), LiteLLM native `openrouter/<model>` config +
-// `openrouter/*` passthrough wildcard, per-provider tool curation, and submission-validator
-// passthrough acceptance. Unit tier (D-I6): a fake fetch transport — never a live network call.
+// `openrouter/*` passthrough wildcard, per-provider tool curation, and registration-time
+// passthrough acceptance (v22: that check moved out of submission-validator — see the M-6 note
+// below). Unit tier (D-I6): a fake fetch transport — never a live network call.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { LiteLLMGatewayClient } from '../../src/gateway/client.js';
 import type { GatewayConfig } from '../../src/gateway/client.js';
 import { generateLiteLLMConfig, toLiteLLMModelName } from '../../src/gateway/litellm-proxy.js';
 import { curateToolsForProvider } from '../../src/gateway/claude-agent-sdk-client.js';
-import { SubmissionValidator } from '../../src/submission-validator.js';
+import { validateScriptEntry } from '../../src/script-checks.js';
 
 const ALIASES: GatewayConfig['aliases'] = {
   or: { provider: 'openrouter', model: 'qwen/qwen-2.5-7b-instruct' },
@@ -90,23 +91,31 @@ describe('openrouter per-provider tool curation (REQ-038)', () => {
   });
 });
 
-describe('submission-validator openrouter passthrough (REQ-038)', () => {
-  it('accepts an openrouter/<id> model string with no pre-listed alias (passthrough on by default)', async () => {
-    const v = new SubmissionValidator({ aliases: ALIASES });
-    const res = await v.validate({ script: `return agent('x', { model: 'openrouter/meta-llama/llama-3.1-8b-instruct' });` });
+// v22 adjudication #3 (M-6): the alias check these three cases exercise MOVED out of
+// SubmissionValidator into `src/script-checks.ts`, enforced at `WorkflowCatalog.register()`
+// (ADR-013, REQ-099) — `SubmissionValidatorDeps.aliases`/`openrouterPassthrough` no longer exist.
+// The REQ-038 passthrough behaviour they pin is unchanged, so the cases are re-sited onto
+// `validateScriptEntry`, whose `openrouterPassthrough` port is the same switch the validator's was.
+describe('openrouter passthrough at the registration-time script check (REQ-038)', () => {
+  const ports = (openrouterPassthrough: boolean) => ({
+    aliases: new Set(Object.keys(ALIASES)),
+    openrouterPassthrough,
+    mcpLookup: () => true,
+  });
+
+  it('accepts an openrouter/<id> model string with no pre-listed alias (passthrough on by default)', () => {
+    const res = validateScriptEntry(`return agent('x', { model: 'openrouter/meta-llama/llama-3.1-8b-instruct' });`, ports(true));
     expect(res.ok).toBe(true);
   });
 
-  it('still rejects a genuinely unknown alias as UNKNOWN_ALIAS', async () => {
-    const v = new SubmissionValidator({ aliases: ALIASES });
-    const res = await v.validate({ script: `return agent('x', { model: 'totally-unknown' });` });
+  it('still rejects a genuinely unknown alias as UNKNOWN_ALIAS', () => {
+    const res = validateScriptEntry(`return agent('x', { model: 'totally-unknown' });`, ports(true));
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.errors.some((e) => e.code === 'UNKNOWN_ALIAS')).toBe(true);
   });
 
-  it('with passthrough disabled, an openrouter/<id> string is UNKNOWN_ALIAS unless pre-listed', async () => {
-    const v = new SubmissionValidator({ aliases: ALIASES, openrouterPassthrough: false });
-    const res = await v.validate({ script: `return agent('x', { model: 'openrouter/meta-llama/llama-3.1-8b-instruct' });` });
+  it('with passthrough disabled, an openrouter/<id> string is UNKNOWN_ALIAS unless pre-listed', () => {
+    const res = validateScriptEntry(`return agent('x', { model: 'openrouter/meta-llama/llama-3.1-8b-instruct' });`, ports(false));
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.errors.some((e) => e.code === 'UNKNOWN_ALIAS')).toBe(true);
   });

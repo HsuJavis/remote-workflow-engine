@@ -23,18 +23,24 @@
 
 // v22 sweep note (adjudication #2, L-4): the register/deregister/publish half of this file was
 // migrated WITH each case's own principal threaded (`workflow_publish` is ownership-gated, so a null
-// principal there would turn the NOT_WORKFLOW_OWNER oracles into silent passes). Cases 3, 7, 9 and 10
-// are NOT swept and are reported to the orchestrator instead: they read the owner/script back through
-// `workflow_get`'s flat top-level fields, and v22 (REQ-100 / DES-115 / ADR-012) moved that surface.
-// This server runs auth ENABLED with the D-BIND loopback exemption, so `ctx.principal` is null on
-// every read and ADR-012 explicitly bars the `args.principal` unmask path — the response is therefore
-// the MASKED public view (`{result:{owner, scriptWithheld:true, …}}`, no flat `owner`, no `script` at
-// all). Those four cases need a new read mechanism (a real bearer, or a store-level assertion), which
-// changes what they assert and is an implementation-gate decision, not a fixture swap.
+// principal there would turn the NOT_WORKFLOW_OWNER oracles into silent passes).
+//
+// v22 adjudication #3 (M-5) — the read half, settled: this server runs auth ENABLED with the D-BIND
+// loopback exemption, so `ctx.principal` is null on every read and ADR-012 explicitly bars the
+// `args.principal` unmask path. Every `workflow_get` here therefore returns the MASKED public view
+// (DES-115: the allowlist projection IS the whole response, under `result`; REQ-100 withholds
+// `script` entirely, replacing it with `scriptWithheld:true`).
+//   - cases 7, 9, 10 only ever needed `owner`, which REQ-100 keeps in the public view: the read path
+//     moves from the (now gone) flat `r.owner` to `r.result.owner`. Same oracle, correct path.
+//   - case 3's oracle ("the stored definition is unchanged") is unreachable through ANY masked read
+//     path — `script` is absent by design, so an assertion phrased over the response could only ever
+//     degrade into "something came back". It is asserted at the STORE instead (catalog.db directly),
+//     which is where "unchanged" actually means something.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
@@ -98,7 +104,9 @@ describe('Workflow ownership gate (DES-098, IT-080)', () => {
   it('case 7: workflow_get includes owner field', async () => {
     const r = await callTool('workflow_get', { name: OWNER_WORKFLOW });
     expect(r.error).toBeUndefined();
-    expect((r as { owner?: string }).owner).toBe(ALICE);
+    // v22 (DES-115): the projection under `result` IS the response; `owner` stays on the public
+    // allowlist (REQ-100 names it), only its path changed.
+    expect((r.result as { owner?: string })?.owner).toBe(ALICE);
   });
 
   it('case 2: register-overwrite by alice (same owner) → succeeds', async () => {
@@ -122,9 +130,24 @@ describe('Workflow ownership gate (DES-098, IT-080)', () => {
     });
     expect(r.code).toBe('NOT_WORKFLOW_OWNER');
 
-    // Stored definition must be unchanged
-    const current = await callTool('workflow_get', { name: OWNER_WORKFLOW });
-    expect((current as { script?: string }).script).not.toContain('hijacked');
+    // Stored definition must be unchanged — asserted at the STORE (see the M-5 note in the header):
+    // the masked read withholds `script` by design, so the catalog's own rows are the only place
+    // "unchanged" is observable. Bob's script must be in NO version row, and the version `release`
+    // points at must still be exactly the one alice published in case 2.
+    const db = new Database(join(tmpDir, 'catalog.db'));
+    try {
+      const rows = db.prepare('SELECT version, script FROM workflow_versions WHERE name = ?')
+        .all(OWNER_WORKFLOW) as Array<{ version: string; script: string }>;
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) expect(row.script).not.toContain('hijacked');
+
+      const head = db.prepare('SELECT release_version FROM workflows WHERE name = ?')
+        .get(OWNER_WORKFLOW) as { release_version: string | null };
+      const published = rows.find((row) => row.version === head.release_version);
+      expect(published?.script).toBe(SCRIPT + ' // v2'); // alice's case-2 version, untouched
+    } finally {
+      db.close();
+    }
   });
 
   it('case 4: deregister by bob (non-owner) → NOT_WORKFLOW_OWNER; workflow still present', async () => {
@@ -193,7 +216,8 @@ describe('Boot backfill: NULL owner → hsuhungjung@gmail.com (DES-098, IT-080)'
       };
 
       const wfGet = await callTool2('workflow_get', { name: wf });
-      expect((wfGet as { owner?: string }).owner).toBe('hsuhungjung@gmail.com');
+      // v22 (DES-115, M-5): masked read — `owner` moved under `result`.
+      expect((wfGet.result as { owner?: string })?.owner).toBe('hsuhungjung@gmail.com');
     } finally {
       await server2.close();
     }
@@ -225,7 +249,8 @@ describe('Boot backfill: NULL owner → hsuhungjung@gmail.com (DES-098, IT-080)'
 
       const wfGet = await callTool3('workflow_get', { name: wf });
       // Already-owned row must NOT be re-owned to hsuhungjung@gmail.com
-      expect((wfGet as { owner?: string }).owner).toBe(ALICE);
+      // v22 (DES-115, M-5): masked read — `owner` moved under `result`.
+      expect((wfGet.result as { owner?: string })?.owner).toBe(ALICE);
     } finally {
       await server3.close();
     }

@@ -285,10 +285,16 @@ export class McpFacade {
     // unmask path) — only the server-resolved `ctx.principal`.
     const viewerIsOwner = ctx.authEnabled ? (ctx.principal !== null && ctx.principal === full.owner) : true;
 
+    // REQ-099: re-validated against the CURRENT alias/MCP config, never the registration-time
+    // result, so staleness (an alias removed after registration) is visible on every read.
+    // v22 adjudication #3 (M-1): computed for BOTH branches. It used to run only inside the
+    // non-owner branch, so on a default auth-disabled server — where every reader takes the owner
+    // branch — REQ-099's "surfaced, not silently swallowed, so the author can fix and re-register"
+    // was observable to everyone EXCEPT the author it exists for.
+    const check = this.runManager.catalog.validateCurrent(full.script);
+    const validation = check.ok ? { ok: true, errors: [] } : { ok: false, errors: check.errors };
+
     if (!viewerIsOwner) {
-      // REQ-099: re-validated against the CURRENT alias/MCP config, never the registration-time
-      // result, so staleness (an alias removed after registration) is visible on every read.
-      const check = this.runManager.catalog.validateCurrent(full.script);
       const ownerView: WorkflowOwnerView = {
         name: full.name, version: full.version,
         // v22 (DES-115): workflow-view.ts's `channels` is typed `Record<string,string>` while the
@@ -303,7 +309,7 @@ export class McpFacade {
         reportProblem: full.owner === null
           ? `this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: "${full.name}"})`
           : `issue_report({workflow: "${full.name}"})`,
-        validation: check.ok ? { ok: true, errors: [] } : { ok: false, errors: check.errors },
+        validation,
         script: full.script,
       };
       // v22 (DES-115): the allowlist projection is the ENTIRE response — no flat top-level copies
@@ -311,7 +317,12 @@ export class McpFacade {
       return { runId: '', status: 'completed', result: projectWorkflowForRead(ownerView, false) };
     }
 
-    // Owner (or auth disabled): the pre-v22 surface, byte-for-byte (REQ-100 clause 3).
+    // Owner (or auth disabled): the pre-v22 surface (REQ-100 clause 3), plus exactly ONE added
+    // field — `result.validation` (v22 adjudication #3, M-1). REQ-099 requires the staleness of a
+    // workflow that would now fail its registration checks to be observable to the AUTHOR, who is
+    // this branch's reader on every auth-disabled deployment; a non-owner already got it. Full
+    // `{ok, errors}` here (the non-owner projection narrows it to `{ok}`) because the author is the
+    // one who has to act on the errors and re-register.
     const resultObj = {
       name: full.name, version: full.version, createdAt: full.createdAt,
       description: meta.description, phases: meta.phases, script: full.script,
@@ -319,6 +330,7 @@ export class McpFacade {
       owner: full.owner,
       defaults: full.defaults as Record<string, unknown> | undefined,
       params,
+      validation,
     };
     return {
       runId: '', status: 'completed',

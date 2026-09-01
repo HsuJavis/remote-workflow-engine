@@ -73,7 +73,15 @@ describe('VAL-006: suspend / resume / stop lifecycle (REQ-006)', () => {
     expect(['running', 'completed', 'failed']).toContain(resumed.status);
   }, 45000);
 
-  it('stop terminates run; workflow_result with edited script re-runs from first changed agent()', async () => {
+  // v22 adjudication #3 (M-3): this case used to continue into a `workflow_resume({runId, script})`
+  // that asserted "an edited script re-runs from the first changed agent() call". That clause of
+  // REQ-006 is RETIRED, not migrated: 01-requirements.md's `[SUPERSEDED v22, owner-confirmed
+  // 2026-09-01]` block on REQ-006 withdraws the edited-script entry point (REQ-098 closes inline
+  // script on resume; REQ-096 pins the version a run executed; decided in ADR-010). The sanctioned
+  // replacement — register a new version, then run by version — is already covered by the
+  // version-pin tests, so it is deliberately NOT re-covered here. What survives is REQ-006's own
+  // still-live `workflow_stop` clause, kept intact below.
+  it('stop terminates the run and its status becomes stopped', async () => {
     const run = await runScriptVia(callTool, `return agent('original');`);
     const runId = run.runId as string;
 
@@ -81,15 +89,6 @@ describe('VAL-006: suspend / resume / stop lifecycle (REQ-006)', () => {
     await callTool('workflow_stop', { runId });
     const stopped = await pollStatus(runId, 'stopped');
     expect(stopped.status).toBe('stopped');
-
-    // Resume with an edited script — re-runs only from the first changed call.
-    // NOT MIGRATED (reported to the orchestrator): v22 (REQ-098, mcp-facade.workflow_resume) refuses
-    // `script` on resume with INLINE_SCRIPT_CLOSED, so this REQ-006 clause tests a capability the
-    // engine no longer has. Left raw on purpose — the helper cannot express it, and rewriting it to
-    // a plain resume would silently re-scope what this test asserts.
-    await callTool('workflow_resume', { runId, script: `return agent('changed prompt');` });
-    const final = await pollStatus(runId, ['completed', 'failed']);
-    expect(['completed', 'failed']).toContain(final.status);
   }, 45000);
 
   it('workflow_status returns state after server restart (journal + store survive restart)', async () => {

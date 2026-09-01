@@ -3,7 +3,9 @@
 // tools/list (not the raw TOOL_DEFS object) — the same pattern as IT-072 / seedref-schema-drift.
 //
 // DES-089: asset_push kind description must name HOOKS_UNSUPPORTED and mcp_provision.
-// DES-090: workflow_run must have a scriptSha256 property; description names UTF-8 and SCRIPT_SHA_MISMATCH.
+// DES-090: workflow_run must NOT advertise scriptSha256 (nor script) — v22 adjudication #3 (M-6):
+//          REQ-085 is SUPERSEDED and REQ-098 closed inline script, so this lock inverted from
+//          presence to absence rather than being retired.
 // DES-087: workflow_run description or property description names seedManifestRef, SEED_SOURCE_CONFLICT,
 //           /assets/manifest (cross-reference to the dark REST endpoint).
 // DES-086: blob_put description names /assets/blob/ and BLOB_SHA_MISMATCH (the streaming alternative).
@@ -12,9 +14,9 @@
 // Cases (all RED before implementation):
 //   1. asset_push kind description contains 'HOOKS_UNSUPPORTED'
 //   2. asset_push kind description contains 'mcp_provision'
-//   3. workflow_run has scriptSha256 property in inputSchema.properties
-//   4. workflow_run scriptSha256 description contains 'UTF-8'
-//   5. workflow_run scriptSha256 description contains 'SCRIPT_SHA_MISMATCH'
+//   3. workflow_run has NO scriptSha256 property in inputSchema.properties  [inverted, v22 M-6]
+//   4. workflow_run has NO script property in inputSchema.properties        [inverted, v22 M-6]
+//   5. no workflow_run property description still advertises 'SCRIPT_SHA_MISMATCH' [inverted, v22 M-6]
 //   6. workflow_run has seedManifestRef in description OR in properties
 //   7. workflow_run description (or seedManifestRef property description) names 'SEED_SOURCE_CONFLICT'
 //   8. workflow_run description (or seedManifestRef property description) names '/assets/manifest'
@@ -79,20 +81,29 @@ describe('DES-089 — asset_push kind schema honesty (ARCH-057)', () => {
   });
 });
 
-describe('DES-090 — workflow_run scriptSha256 schema (ARCH-058)', () => {
-  it('workflow_run has scriptSha256 property in inputSchema', () => {
+// v22 adjudication #3 (M-6): this block used to pin the PRESENCE of `scriptSha256` and its
+// description. REQ-085 is `[SUPERSEDED v22, owner-confirmed 2026-09-02]` — REQ-098 closed the
+// on-the-wire script the sha guarded, so the parameter is unreachable by construction and was
+// removed (adjudication #1 K-4). The drift-lock is not retired with it: it INVERTS. A schema-reading
+// client must not learn that `script`/`scriptSha256` exist, so their absence is what is pinned now
+// (the same property IT-087 locks for v22; kept here too because this file is the v14 schema's own
+// lock and a re-added field must fail both).
+describe('DES-090 / REQ-085 SUPERSEDED — workflow_run no longer advertises scriptSha256 (ARCH-058, v22 ADR-010/K-4)', () => {
+  it('workflow_run has NO scriptSha256 property in inputSchema', () => {
     const props = toolsMap['workflow_run']?.inputSchema?.properties ?? {};
-    expect(Object.keys(props)).toContain('scriptSha256');
+    expect(Object.keys(props)).not.toContain('scriptSha256');
   });
 
-  it('scriptSha256 property description names UTF-8 (byte encoding)', () => {
-    const desc = toolsMap['workflow_run']?.inputSchema?.properties?.['scriptSha256']?.description ?? '';
-    expect(desc).toContain('UTF-8');
+  it('workflow_run has NO script property in inputSchema (REQ-098: inline script is closed)', () => {
+    const props = toolsMap['workflow_run']?.inputSchema?.properties ?? {};
+    expect(Object.keys(props)).not.toContain('script');
   });
 
-  it('scriptSha256 property description names SCRIPT_SHA_MISMATCH (the error code)', () => {
-    const desc = toolsMap['workflow_run']?.inputSchema?.properties?.['scriptSha256']?.description ?? '';
-    expect(desc).toContain('SCRIPT_SHA_MISMATCH');
+  it('no other advertised workflow_run parameter re-introduces SCRIPT_SHA_MISMATCH as a live contract', () => {
+    const propDescs = Object.values(toolsMap['workflow_run']?.inputSchema?.properties ?? {})
+      .map((p) => p.description ?? '')
+      .join(' ');
+    expect(propDescs).not.toContain('SCRIPT_SHA_MISMATCH');
   });
 });
 
