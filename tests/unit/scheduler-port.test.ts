@@ -12,13 +12,11 @@ function makeFakeRunManager() {
   return { start: vi.fn().mockResolvedValue('run-abc') };
 }
 
-// Minimal fake WorkflowCatalog: get(name) resolves (workflow exists).
+// Minimal fake WorkflowCatalog: exists(name) resolves true/false (v22, DES-111 — CatalogPort shrank
+// to the existence-only shape scheduler.ts actually needs).
 function makeFakeCatalog(names: string[] = ['my-workflow']) {
   return {
-    get: vi.fn().mockImplementation(async (n: string) => {
-      if (!names.includes(n)) throw Object.assign(new Error(`Not found: ${n}`), { name: 'CatalogNotFoundError' });
-      return { script: '// stub', version: 'v1' };
-    }),
+    exists: vi.fn().mockImplementation(async (n: string) => names.includes(n)),
   };
 }
 

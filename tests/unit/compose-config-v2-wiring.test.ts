@@ -166,4 +166,14 @@ describe('composeConfig() v2 key wiring (DES-022, standing rule 1)', () => {
     const cfg = await composeConfig({ continuationDbPath: '/var/rwe/continuations.db', gateway: 'direct-fetch' }, FAKE_DEPS);
     expect((cfg as Record<string, unknown>)['continuationDbPath']).toBe('/var/rwe/continuations.db');
   });
+
+  // v22 (ARCH-071, ADR-014, TASK-107): the per-name version ceiling — same `composeConfig` wiring
+  // class as every case above (v11 updateFlagPath / v15 auth / v16 workspaceTtlMs / v21
+  // resolveHarnessParams' ceilings). `maxWorkflowVersions` goes into the EXISTING
+  // `WorkflowCatalogOpts.ceilings` object (workflow-catalog.ts:57) — no new plumbing — so this case
+  // also stands as this task's compose-config-v2-wiring.test.ts row (TASK-107 dod).
+  it('maxWorkflowVersions is forwarded from FileConfig into the returned ServerConfig (v22)', async () => {
+    const cfg = await composeConfig({ maxWorkflowVersions: 25, gateway: 'direct-fetch' }, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['maxWorkflowVersions']).toBe(25);
+  });
 });

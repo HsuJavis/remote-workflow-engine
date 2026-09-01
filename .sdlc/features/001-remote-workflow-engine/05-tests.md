@@ -1023,22 +1023,31 @@ tool or status field exposes a run's workspace file listing today, see `08-valid
 calling it throws `TypeError: facade.workflow_artifacts is not a function`.
 
 ### IT-011 — scriptVersion fidelity: a run after a workflow update records the version it actually executed
-- **status:** green
-- **traces:** ARCH-006
+- **status:** red
+- **traces:** ARCH-006, ARCH-072, DES-113, TASK-108
 - **tier:** integration
 - **real:** false
-- **result:** pass
+- **result:** fail
 - **iter:** v1
 
 File: `tests/integration/scriptversion-fidelity.test.ts`.
 Real McpFacade + real RunManager + real WorkflowCatalog + real InMemoryRunStore; no network.
-Case: register v1 → run → register v2 (same name) → run again → the second run's recorded
+Case (pre-v22): register v1 → run → register v2 (same name) → run again → the second run's recorded
 `scriptVersion` genuinely differs from the first's (not always `"v1"`).
-Red reason: `RunManager.start()` (`src/run-manager.ts`) correctly resolves `scriptVersion` from the
-catalog (`registered.version`) but never threads it into `this._store.createRun(spec)` —
-`RunStore.createRun` (both `InMemoryRunStore` and `SqliteRunStore`) hardcodes `scriptVersion: 'v1'`
-for every run regardless of which version actually executed — confirmed at Gate 7.5 real-run
-(`08-validation.md` VAL-014).
+Red reason (pre-v22, now historical): `RunManager.start()` (`src/run-manager.ts`) correctly resolves
+`scriptVersion` from the catalog (`registered.version`) but never threads it into
+`this._store.createRun(spec)` — `RunStore.createRun` (both `InMemoryRunStore` and `SqliteRunStore`)
+hardcodes `scriptVersion: 'v1'` for every run regardless of which version actually executed —
+confirmed at Gate 7.5 real-run (`08-validation.md` VAL-014). Long since fixed and green.
+
+**v22 rewrite, extended in place, no new ID** (DES-113, ARCH-072, TASK-108; `iter` stays `v1` —
+records origin, not last touch, the DES-088/DES-066/DES-099/DES-100 precedent): v22 Rule 1
+(01-requirements.md Round v22) — the ORIGINAL case (`expect(v2).not.toBe(v1)`) is a relative oracle
+that passes when both are wrong. Rewritten to literal `'v1'`/`'v2'` assertions plus a third clause
+(after a THIRD version is registered+published, run 1 still reports literal `'v1'`). v22 also
+requires an explicit `publish` to `release` — a bare `register()` no longer makes a version runnable
+by name (REQ-097). Red reason: `WorkflowCatalog.publish` does not exist yet → confirmed red
+(`npx vitest run` — `TypeError: runManager.catalog.publish is not a function`).
 
 ### IT-012 — WorkflowCatalog registrations persist in the on-disk SQLite DB across instances
 - **status:** green
@@ -5602,3 +5611,301 @@ a green suite stops meaning anything.
 The code changes F-1 names (remove the adjudication-#5 rejection at `workflow-catalog.ts:135` while
 **keeping** the `violatesOwnSpec` self-consistency check at `:132`; widen `KNOWN_KEYS` and
 `validateHarnessDefaults`), the F-2 predicate dedup, and the F-3/F-4 doc and integrator items.
+
+---
+
+## Gate 5 — v22 (2026-09-01, verifier, test-first RED)
+
+Author/user separation part 2: version history, `beta`/`release` channels, closing inline script,
+moving submission validation to registration, masking `workflow_get` for non-owners (REQ-096..100,
+ARCH-071..076, ADR-009..014, TASK-105..112, DES-109..119). Per-tier mock policy per DES-119: unit
+pure/mocked; integration real WorkflowCatalog/RunManager/SqliteRunStore + real SQLite, no LLM;
+acceptance real `createServer` + real HTTP + real bearer (TokenStore), no SUT-boundary mock, marker
+scripts with no `agent()` call so nothing gates on LLM availability.
+
+**v22 Rule 1 applied throughout** (01-requirements.md Round v22): channel resolution and the masked
+`workflow_get` response shape are both asserted against the literal contract (exact codes, exact key
+sets), never a relative/shape-only oracle.
+
+### New (11 new work items, no new module before Gate 6)
+
+### UT-102 — pure `src/script-checks.ts`: `validateScriptEntry` + the shared frame-delimiter predicate
+- **status:** red
+- **traces:** DES-112, ARCH-074, TASK-106
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/unit/script-checks.test.ts`. Mock policy (unit): pure module, ports are plain
+values/functions, zero I/O. Cases: PARSE_ERROR / UNKNOWN_ALIAS / MCP_NOT_PROVISIONED (one each),
+openrouter/<id> passthrough accepted unchanged, a clean script accepted, ALL errors returned in one
+call, `mcpLookup` invoked as `(name)=>boolean` never handed the registry object, `violatesFrameDelimiter`
+re-exports (never re-implements) `params/contract.ts`'s `FRAME_CLOSE_FORGERY`, and a structural guard
+(reads every `src/**/*.ts`) that exactly one frame-delimiter regex literal exists under `src/`.
+Red reason: `src/script-checks.ts` does not exist → MODULE NOT FOUND at collect time.
+
+### UT-103 — `resolveVersionRequest`: the total, pure resolution truth table
+- **status:** red
+- **traces:** DES-110, ARCH-071, TASK-105
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/unit/resolve-version-request.test.ts`. Mock policy (unit): pure function, `known` is a
+plain `ReadonlySet<string>`, no DB. One case per DES-110 truth-table row (7 rows) + the 4 declared
+collision cases (unknown-version+invalid-channel, known-version+invalid-channel,
+known-version+unpublished-channel, unknown-version+valid-channel). Red reason:
+`resolveVersionRequest` is not exported from `src/workflow-catalog.js` today → `TypeError:
+resolveVersionRequest is not a function` (confirmed via `npx vitest run`, 9/9 red).
+
+### UT-104 — pure `src/workflow-view.ts`: `projectWorkflowForRead`, `EXPECTED_NON_OWNER_KEYS`
+- **status:** red
+- **traces:** DES-115, ARCH-075, TASK-110
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/unit/workflow-view.test.ts`. Mock policy (unit): pure, no I/O/auth/clock. The two-sided
+`deepFlatten` oracle DES-115 mandates (`Object.keys(deepFlatten(resp)).sort()` against the module's
+own exported `EXPECTED_NON_OWNER_KEYS` — never hardcoded locally, so Gate 6's implementation is the
+single source of truth for the literal key set); `validation.errors` absent for non-owner /
+`validation.ok` present; `scriptWithheld:true` a distinct key with no `script` key of any shape;
+`phases`/`skeleton` masked; owner branch returns the script byte-identically plus `validation.errors`.
+`expect(resp).not.toContain(scriptText)` deliberately NOT used (v22 Rule 1 / v21 fragment-leak
+precedent). Red reason: `src/workflow-view.ts` does not exist → MODULE NOT FOUND.
+
+### UT-105 — `Scheduler.markFailed`: the driver's `.catch()` gets a writer
+- **status:** red
+- **traces:** DES-118, ARCH-072, TASK-112
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/unit/scheduler-failed-dispatch.test.ts`. Mock policy (unit): injected clock (a local
+mutable `Clock` — this repo's `FixedClock` is immutable) + a fake ticker driving the SAME
+`tick()`/`start()`/`.catch()` shape as the real driver loop (server.ts:1294-1309), never booting an
+HTTP server. Two cases across THREE fake-clock ticks each (a single-tick test would pass today and
+prove nothing — DES-118's own words): a failing `once` schedule attempts `start()` exactly once, is
+auto-disabled, records `lastError`; a failing `cron` schedule attempts `start()` exactly once,
+`nextFire` advances past `now`, `enabled` stays true, `lastError` recorded. Red reason:
+`SqliteSchedulerPort.markFailed` does not exist (only `markFired` does) → `TypeError: port.markFailed
+is not a function` (confirmed, 2/2 red).
+
+### IT-084 — versioned catalog: schema, boot migration, `resolve`/`resolveDetail`/`publish`/`listVersions`
+- **status:** red
+- **traces:** ARCH-071, DES-109, DES-110, DES-111, TASK-105
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/integration/catalog-versions.test.ts`. Mock policy (integration): real `WorkflowCatalog`
++ real SQLite file under a tmp workRoot, no `Database` injection seam, no network. Migration fixture
+is HAND-WRITTEN legacy SQL (DES-109's binding rule — never produced by the catalog under test):
+every row migrates into `workflow_versions`, `release_version` set (ADR-011), legacy columns
+DROPPED, idempotent second boot logs "0 migrated", a migrated pre-v22 workflow still runs by name
+(no fleet-wide outage). Version history: two registrations of one name both retrievable, registration
+≠ publication, `publish` moves the channel pointer + `NOT_WORKFLOW_OWNER` for a non-owner,
+`listVersions` ascending. Per-name version ceiling (S-1 debt closed): the (N+1)th registration is
+refused `VERSION_CEILING_EXCEEDED`, nothing stored. Structural guard: `rg
+"catalog\.get\(|\.getFull\("` over `src/` finds zero hits (TASK-105's own DoD). Red reason: no
+`workflow_versions` table, no `resolve`/`resolveDetail`/`publish`/`listVersions`/`exists`/ceiling
+today, and 6 live call sites still call the doomed `get()`/`getFull()` — confirmed 10/10 red on the
+behavioural cases + the structural case (6 hits: mcp-facade.ts, run-manager.ts, scheduler.ts,
+server.ts, submission-validator.ts, webhook-registry.ts).
+
+### IT-085 — registration ENFORCES: `validateScriptEntry` first, the version ceiling second
+- **status:** red
+- **traces:** ARCH-071, ARCH-074, DES-111, DES-112, DES-117, TASK-107
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/integration/registration-enforcement.test.ts`. Mock policy (integration): real
+`WorkflowCatalog` with injected `aliasNames`/`mcpLookup` ports, real SQLite, no network. PARSE_ERROR /
+UNKNOWN_ALIAS / MCP_NOT_PROVISIONED each refused at registration with the SAME code submission used
+to produce, nothing stored; a clean script registers fine; an author-declared
+`defaults.appendPrompt` carrying the forged frame delimiter is refused at REGISTRATION (P6-2's
+registration half, S-1 sibling debt closed); `VERSION_CEILING_EXCEEDED` naming both remedies. Also
+extends `tests/unit/compose-config-v2-wiring.test.ts` (UT-033, in place, no new ID) with
+`maxWorkflowVersions` forwarding — TASK-107's own DoD. Red reason: `register()` runs only the v21
+harness-defaults/param-contract checks today, never `validateScriptEntry` (which doesn't exist), and
+has no version ceiling — confirmed 6/6 red (5 in this file + UT-033's new case).
+
+### IT-086 — resume determinism: a suspended run continues its PINNED version, never "whatever is registered now"
+- **status:** red
+- **traces:** ARCH-072, DES-112, DES-113, DES-117, TASK-108
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/integration/run-version-pin.test.ts`. Mock policy (integration): real RunManager + real
+WorkflowCatalog + real SqliteRunStore; only GatewayClient (third-party network) faked, per this
+repo's crash-resume.test.ts / resume-rerun-aborted-call.test.ts block-then-resolve precedent. THE
+FLAGSHIP CASE: start v1 (blocked mid-`agent()`-call) → suspend → register+publish v2 (a completely
+different script) → resume → the result is v1's, never v2's — the real bug Gate 7.5 v1 found
+(`run-manager.ts:632-636` re-reads `catalog.get(spec.name)` on resume), now a durable regression test
+because version history + a churned `beta` channel makes the window the NORMAL case, not narrow.
+`workflow_status` keeps reporting the literal pinned version after a THIRD version is registered
+(v22 Rule 1). `RunManager.start({script})` is refused `INLINE_SCRIPT_CLOSED` even off the wire
+(REQ-098 ingress ban, at the RunManager chokepoint every trigger path funnels through). Legacy-cohort
+fallback (DES-113): a hand-seeded run whose pin is absent from `workflow_versions` resumes through
+`release` and records `legacySubstitution:{pinned,resolved}`, never crashes. Red reason:
+`catalog.publish` does not exist (3/4 cases) and `RunManager.start` still accepts inline `script`
+unconditionally (1/4) — confirmed 4/4 red.
+
+### IT-087 — schema drift-lock v22: `script`/`scriptSha256` removed, `workflow_publish`, `version`/`channel`
+- **status:** red
+- **traces:** ARCH-073, DES-114, DES-117, TASK-109
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/integration/schema-drift-v22.test.ts`. Mock policy (integration): real server, real
+`tools/list` response, no LLM. `workflow_run` advertises neither `script` nor `scriptSha256`, gains
+`version`(string)/`channel`(enum `beta|release`) each with a non-empty description (schema
+descriptions are prose → presence-only per DES-114's split); `workflow_resume` loses `script`, keeps
+`required:['runId']`; new tool `workflow_publish` requires `{name,version,channel}`, `channel` the
+closed enum; `workflow_get` gains optional `version`. Red reason: today's schema still advertises
+`script`/`scriptSha256`, no `version`/`channel`/`workflow_publish` exist — confirmed 8/8 red.
+
+### IT-088 — inline script closed at RUNTIME, not just the advertised schema
+- **status:** red
+- **traces:** ARCH-073, DES-114, DES-117, TASK-109
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/integration/inline-script-closed.test.ts`. Mock policy (integration): real server, real
+hand-rolled `/mcp` JSON body (schema removal alone is not a refusal — `/mcp` accepts arbitrary JSON),
+no LLM. A hand-rolled `workflow_run({script})` is refused `INLINE_SCRIPT_CLOSED` with the two-call
+migration recipe (`workflow_register` then `workflow_run({name})`) in the message; a hand-rolled
+`workflow_resume({runId,script})` likewise; plain `workflow_resume({runId})` is NEVER refused
+`INLINE_SCRIPT_CLOSED`; the sanctioned migration (register → publish to release → run by name) is
+unaffected. Red reason: `script` is accepted (and actually runs) on both tools today — confirmed 3/4
+red (the plain-resume negative is a legitimate green pin, unaffected either way).
+
+### IT-089 — masked reads over the REAL transport: required `ReadContext`, `args.principal` barred
+- **status:** red
+- **traces:** ARCH-073, ARCH-076, DES-115, DES-116, TASK-111
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/integration/workflow-masking-http.test.ts`. Mock policy (integration): real
+`createServer` + real HTTP + real `TokenStore`-minted bearer — a facade-level unit test with an
+injected principal cannot see the `server.ts:823` hole (this task's own DoD is the transport test,
+not a follow-up). Owner reads the full script via `/mcp`; a non-owner bearer gets a masked response
+with no `script` anywhere (top level or nested) and `scriptWithheld:true`; supplying
+`{principal:'<owner-email>'}` in the arguments does NOT unmask (ADR-012, `args.principal` barred);
+`workflow_list` masks every entry; a NULL-owner row (hand-seeded, v22 schema) is masked from everyone,
+fail-closed. Red reason: `server.ts:808`/`:823` thread no principal today — every principal gets the
+full script regardless of ownership/auth — confirmed 6/6 red (2 pre-existing-schema SQL errors on the
+NULL-owner case, correct red for "the v22 schema doesn't exist yet").
+
+### VAL-106 — REQ-096: the catalog keeps version history; a run pins the exact version it executed
+- **status:** red
+- **traces:** REQ-096
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/acceptance/val-106-version-history.test.ts`. Real entrypoint: `createServer` (the same
+composition root `npm start`/`node src/main.js` calls), real MCP HTTP, real on-disk catalog.db/
+runs.db. Boots on a hand-written pre-v22 catalog.db (DES-119's own path); the migrated legacy
+workflow still runs by name (green today — legitimate regression guard, since the hand-written
+fixture is byte-identical to today's live schema); `workflow_get({name,version:'v1'})` returns the
+first script after a second registration; a run pins its version, still reported literally after a
+third registration; `workflow_list` shows `versions[]`+`channels{}`. Red reason: version history does
+not exist — confirmed 3/5 genuinely red (2 green pins: the pre-v22-boot smoke case, and the
+scriptVersion-survives-a-later-registration case, both already true of today's engine).
+
+### VAL-107 — REQ-097: `beta`/`release` channels; a run resolves a channel to a version, defaulting to release
+- **status:** red
+- **traces:** REQ-097
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/acceptance/val-107-release-channels.test.ts`. Real `createServer` + real MCP HTTP, no
+LLM (marker scripts). A fresh registration is on no channel; `publish` moves the named pointer;
+non-owner refused `NOT_WORKFLOW_OWNER`; `workflow_run({name})` with no selector runs `release`;
+`{channel:'beta'}` runs beta; an explicit `version` wins over any channel; an unpublished channel is
+refused `CHANNEL_UNPUBLISHED` naming the channel. Red reason: `workflow_publish` does not exist and
+`workflow_run`/`workflow_get` accept no `version`/`channel` selector — confirmed 3/3 red.
+
+### VAL-108 — REQ-098: inline script is closed; every run goes through a registered workflow
+- **status:** red
+- **traces:** REQ-098
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/acceptance/val-108-inline-script-closed.test.ts`. Real `createServer` + real MCP HTTP.
+A hand-rolled `workflow_run({script})` over the real transport is refused `INLINE_SCRIPT_CLOSED`;
+`tools/list` advertises neither `script`/`scriptSha256` on `workflow_run` nor `script` on
+`workflow_resume`; a plain script-less `workflow_resume({runId})` is never mistaken for the ban. Red
+reason: confirmed 2/3 red (the plain-resume negative is a legitimate green pin).
+
+### VAL-109 — REQ-099: the submission-time static checks move to registration, closing inline loses no validation
+- **status:** red
+- **traces:** REQ-099
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/acceptance/val-109-registration-checks.test.ts`. Real `createServer` + real MCP HTTP,
+real configured alias table. PARSE_ERROR/UNKNOWN_ALIAS refused at `workflow_register` with the SAME
+code submission produced, nothing stored; a run by name is covered (green today — no path skips
+validation for an already-clean registration); a workflow hand-seeded (v22 schema) with an alias this
+server was never configured with still RUNS (not retroactively refused) while `workflow_get`'s
+`validation.ok` is `false` (surfaced, not silently swallowed). Red reason: confirmed 3/4 red (1
+legitimate green pin — a clean registration already runs fine today).
+
+### VAL-110 — REQ-100: `workflow_get` masks the script for non-owners
+- **status:** red
+- **traces:** REQ-100
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/acceptance/val-110-script-masking.test.ts`. Real `createServer`, real HTTP, real
+`TokenStore` bearer, real `/api/*` routes. Owner reads the script via `/mcp`; a non-owner bearer gets
+`scriptWithheld:true` with no script text anywhere; `/api/workflows/:name/skeleton` omits
+`skeleton`/`phases` entirely while auth is on (and DOES carry them with auth off — the pre-v22
+surface, REQ-100 clause 3); `/api/workflows` never carries `script` (green pin — already true
+pre-v22). Red reason: confirmed 3/5 red (2 legitimate green pins: `/api/workflows` never had a
+`script` field, and the auth-off skeleton route is the unchanged pre-v22 surface).
+
+### Extended in place (no new ID)
+
+**UT-033** (`tests/unit/compose-config-v2-wiring.test.ts`) gains one v22 case —
+`maxWorkflowVersions` forwarding (TASK-107's own DoD, same wiring-gap class as the 15 cases before
+it). `status`/`result` flipped to `red`/`fail` for this pass (the new case is genuinely red; the 15
+pre-existing cases stay green); `traces` gains ARCH-071, DES-111, TASK-107; `iter` stays `v21`
+(origin, not last touch).
+
+### Full-suite confirmation (2026-09-01)
+`npx vitest run`: **1654 total, 60 failed / 1594 passed (258 files)** — exactly this pass's 60
+genuinely-red cases (17 files: the 11 new files above + UT-033/IT-011 extended in place), **0
+unrelated regressions** against the v21-close baseline of 1582/1582 (1594 = 1582 + 12 new green
+pins; 2 pre-existing spawn-litellm-ENOENT background artifacts, documented since IMPL-140,
+unaffected). `npx tsc --noEmit`: every new error is exactly the expected unimplemented-v22-surface
+shape (missing exports/modules/properties on `WorkflowCatalog`/`SqliteSchedulerPort`, a config key
+not yet on `FileConfig`) — 0 errors outside the 17 touched files. Hermetic: every new case with a
+clock uses `FixedClock`/a local mutable fake anchored to a fixed instant; no absolute-date-vs-
+real-clock comparisons.

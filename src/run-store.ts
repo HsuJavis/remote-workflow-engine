@@ -113,6 +113,10 @@ export interface RunStore {
    *  composite run's nested tree survives a restart (getRun overlays it). Written once from the
    *  authoritative terminal `_transition` (covers failed/stopped, not only completed). */
   saveSnapshot(runId: string, snapshot: RunDagSnapshot): Promise<void>;
+  /** v22 (DES-113, TASK-108): durably records the legacy-cohort fallback outcome (never rewrites
+   *  the pin itself) so it survives a restart and workflow_status/getRun can surface it. No-op for
+   *  an unknown runId. */
+  recordLegacySubstitution(runId: string, sub: { pinned: string; resolved: string }): Promise<void>;
 }
 
 /** v8 Slice 2c: the persisted DAG detail a getRun overlays after a restart. */
@@ -135,6 +139,7 @@ interface StoredRun {
   hasResult: boolean;
   snapshot?: RunDagSnapshot; // v8 Slice 2c: DAG detail captured at terminal
   effectiveParams?: RunParams; // v21 (DES-104): run-immutable admission snapshot
+  legacySubstitution?: { pinned: string; resolved: string }; // v22 (DES-113)
 }
 
 /** In-memory fake for unit tests — injected where RunStore is needed. */
@@ -225,12 +230,19 @@ export class InMemoryRunStore implements RunStore {
       terminalAt: terminalTransition?.ts,
       // v15 (DES-096): omit when absent (conditional spread mirrors terminalAt pattern).
       ...(run.spec.principal ? { principal: run.spec.principal } : {}),
+      // v22 (DES-113): omit when absent, same conditional-spread convention.
+      ...(run.legacySubstitution ? { legacySubstitution: run.legacySubstitution } : {}),
     };
   }
 
   async saveSnapshot(runId: string, snapshot: RunDagSnapshot): Promise<void> {
     const run = this._runs.get(runId);
     if (run) run.snapshot = snapshot;
+  }
+
+  async recordLegacySubstitution(runId: string, sub: { pinned: string; resolved: string }): Promise<void> {
+    const run = this._runs.get(runId);
+    if (run) run.legacySubstitution = sub;
   }
 
   async listRuns(): Promise<RunSummary[]> {

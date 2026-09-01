@@ -3264,3 +3264,378 @@ the rung's job is to refuse a literal forgery of that frame — no more.
 P6-2/P6-3/P6-4 are each a one-to-three-line change on an existing precedent, and QD-REP-1 is a green
 fence. Land them; a "recorded decision" is for a trade-off, not for work small enough that writing the
 justification costs more than the change.
+
+---
+
+## v22 — version history, channels, closing inline script (DES-109..119)
+
+```mermaid
+classDiagram
+    class WorkflowCatalog {
+        +register(name, script, defaults, principal) Promise~{version}~
+        +publish(name, version, channel, principal) Promise~{channel,version,from}~
+        +resolve(name, sel) Promise~VersionEntry~
+        +resolveDetail(name, sel) Promise~WorkflowDetail~
+        +exists(name) Promise~boolean~
+        +listVersions(name) Promise~string[]~
+        +list() Promise~WorkflowRow[]~
+        +deregister(name, principal) Promise~{removed}~
+    }
+    class resolveVersionRequest { <<pure fn>> }
+    class validateScriptEntry { <<pure fn + ports>> }
+    class projectWorkflowForRead { <<pure fn>> }
+    class RunManager {
+        +start(spec) pins scriptVersion
+        +resume(runId) resolves through the pin
+    }
+    class McpFacade {
+        +workflow_get(a, ctx ReadContext)
+        +workflow_list(a, ctx ReadContext)
+        +workflow_publish(a)
+    }
+    class Scheduler { +markFired() +markFailed() }
+    WorkflowCatalog ..> resolveVersionRequest : truth table
+    WorkflowCatalog ..> validateScriptEntry : ENFORCE at register
+    RunManager ..> WorkflowCatalog : resolve(name, sel) once
+    RunManager ..> validateScriptEntry : OBSERVE at admission
+    McpFacade ..> WorkflowCatalog : resolveDetail
+    McpFacade ..> projectWorkflowForRead : shape
+    Scheduler ..> RunManager : start() / markFailed on reject
+```
+
+### DES-109 — `workflow_versions` schema + the transactional idempotent boot migration
+- **status:** draft
+- **traces:** ARCH-071, ADR-009, ADR-011, TASK-105
+- **signature:**
+  ```sql
+  CREATE TABLE IF NOT EXISTS workflow_versions (
+    name TEXT NOT NULL, version TEXT NOT NULL,
+    script TEXT NOT NULL, defaults TEXT, params TEXT, createdAt TEXT NOT NULL,
+    PRIMARY KEY (name, version));                      -- rows are IMMUTABLE; no UPDATE path exists
+  ALTER TABLE workflows ADD COLUMN release_version TEXT;  -- idempotent, workflow-catalog.ts:86-98 idiom
+  ALTER TABLE workflows ADD COLUMN beta_version TEXT;
+  ```
+  ```ts
+  // ONE db.transaction(), run at construction after the existing backfillOwner pass:
+  //   INSERT OR IGNORE INTO workflow_versions SELECT name, version, script, defaults, params, createdAt FROM workflows;
+  //   UPDATE workflows SET release_version = version WHERE release_version IS NULL;
+  //   ALTER TABLE workflows DROP COLUMN script|version|defaults|params;   -- guarded by PRAGMA table_info
+  ```
+- **boundary conditions:**
+  - **Atomic**: one `db.transaction()` — a half-applied migration is unrepresentable, not detected. Idempotent: `INSERT OR IGNORE` + a pointer write only when NULL + a `PRAGMA table_info(workflows)` guard before each DROP.
+  - **`release` IS published for every migrated row** (ADR-011) — omitting it makes every pre-v22 `workflow_run({name})`, schedule, chain and webhook start failing at its next fire with no user action.
+  - The four legacy columns are **DROPPED** (SQLite 3.53.2 in this repo supports `DROP COLUMN`). Left in place they become the stale second source of truth this slice exists to delete, and `tsc` cannot see a string SQL read.
+  - `workflow_versions.createdAt` is written with `this._clock.isoNow()`, never `new Date()` — version ordering must be assertable under a fake clock.
+  - Boot log contract: `catalog.migrate: N workflows → workflow_versions, release published`; a **second boot logs `0 migrated`** (not silence) — that is the idempotence oracle.
+  - Ordering vs the owner backfill is free: `owner` stays on `workflows` and is **not** copied per version.
+  - **Test fixture rule (binding on Gate 5):** the pre-v22 DB is built with hand-written `CREATE TABLE workflows (name TEXT PRIMARY KEY, script TEXT NOT NULL, version TEXT NOT NULL, createdAt TEXT NOT NULL)` + the three legacy `ALTER TABLE`s + direct `INSERT`s, written into a tmp `workRoot`. **Never** by instantiating the new `WorkflowCatalog` — a fixture built by the code under test cannot detect a migration that is wrong in the same direction. No `Database` injection seam is added.
+- **iter:** v22
+
+### DES-110 — `resolveVersionRequest`: the total, pure resolution truth table
+- **status:** draft
+- **traces:** ARCH-071, TASK-105
+- **signature:**
+  ```ts
+  export type Channel = 'beta' | 'release';
+  export interface Channels { release: string | null; beta: string | null }
+  export interface VersionSelector { version?: string; channel?: Channel }
+  export type ResolveErrorCode = 'INVALID_CHANNEL'|'UNKNOWN_VERSION'|'CHANNEL_UNPUBLISHED'|'DANGLING_CHANNEL';
+  export function resolveVersionRequest(sel: VersionSelector, ch: Channels, known: ReadonlySet<string>):
+    | { ok: true; version: string; requested: RequestShape }
+    | { ok: false; code: ResolveErrorCode; channel?: Channel; version?: string };
+  export type RequestShape = { kind:'version'; version:string } | { kind:'channel'; channel:Channel } | { kind:'default-release' };
+  ```
+- **truth table (first match wins, in this order — one unit case per row, no DB):**
+  | # | guard | result |
+  |---|---|---|
+  | 1 | `sel.channel` present and not in `{beta,release}` | `INVALID_CHANNEL(channel)` |
+  | 2 | `sel.version` present and in `known` | `{version}` — explicit wins over any channel (REQ-097 "regardless of any channel") |
+  | 3 | `sel.version` present, not in `known` | `UNKNOWN_VERSION(version)` |
+  | 4 | `sel.channel` present, `ch[channel] === null` | `CHANNEL_UNPUBLISHED(channel)` — **never** a fallback to newest |
+  | 5 | `sel.channel` present, pointer set but not in `known` | `DANGLING_CHANNEL` — **unreachable invariant**, asserted structurally, not a documented outcome |
+  | 6 | no selector, `ch.release === null` | `CHANNEL_UNPUBLISHED('release')` |
+  | 7 | no selector, `ch.release` set | `{version: ch.release}` |
+- **boundary conditions:**
+  - **Declared precedence is part of the contract** (rows 1–4 collide otherwise). Four collision cases are separate unit rows: unknown version + invalid channel ⇒ `INVALID_CHANNEL`; known version + invalid channel ⇒ `INVALID_CHANNEL`; known version + unpublished channel ⇒ the version; unknown version + valid channel ⇒ `UNKNOWN_VERSION`.
+  - `version` + `channel` together is **not** an error; the discarded argument is paid for with visibility — `requested` is echoed on the run record and in `workflow_run`'s result.
+  - `known` is a `ReadonlySet<string>`, never a DB handle — that is what keeps `UNKNOWN_VERSION` decidable inside the pure function instead of split across two layers.
+  - Name exists with zero version rows ⇒ the caller maps to `WORKFLOW_NOT_FOUND` **before** consulting this function.
+  - Exported pure function in `workflow-catalog.ts`; **not** a separate module (one caller).
+- **iter:** v22
+
+### DES-111 — the complete `WorkflowCatalog` surface (no legacy accessor survives)
+- **status:** draft
+- **traces:** ARCH-071, ADR-014, TASK-105, TASK-107
+- **signature:**
+  ```ts
+  export interface VersionEntry { script: string; version: string; defaults?: HarnessDefaults; params?: ParamContract }
+  export interface WorkflowDetail extends VersionEntry {           // REPLACES getFull()
+    name: string; createdAt: string; owner: string | null; channels: Channels; versions: string[]; // ascending
+  }
+  class WorkflowCatalog {
+    register(name, script, defaults?, principal?): Promise<{ version: string }>;   // signature unchanged; INSERT only
+    publish(name, version, channel: Channel, principal: string | null): Promise<{ channel: Channel; version: string; from: string | null }>;
+    resolve(name: string, sel: VersionSelector): Promise<VersionEntry>;      // the ONE execution read
+    resolveDetail(name: string, sel: VersionSelector): Promise<WorkflowDetail>;  // the ONE read read
+    exists(name: string): Promise<boolean>;                                 // never throws
+    listVersions(name: string): Promise<string[]>;
+    list(): Promise<Array<{ name; version; createdAt; description; params; versions: string[]; channels: Channels }>>;
+    deregister(name: string, principal: string | null): Promise<{ removed: boolean }>;  // name-granular ONLY
+  }
+  ```
+- **boundary conditions:**
+  - **`get()` and `getFull()` are deleted.** `getFull` is *renamed* to `resolveDetail` with a selector — a no-selector detail read is the "newest row" semantics REQ-096 deletes, and the rename makes every call site a compile error (the only mechanism that has ever worked against this repo's unwired-module class).
+  - **`exists()` returns `boolean` and never throws** — four call sites today implement existence as `try { await catalog.get(x) } catch {}`; a throwing accessor reproduces the pattern one layer down.
+  - **`resolve()` does not return `owner`** — an authorization input stays off the execution read.
+  - `register` **never** `ON CONFLICT DO UPDATE`: a new `(name, version)` row, version = `v<max+1>` over that name's rows, **published to no channel** (registration ≠ publication, REQ-097).
+  - `register` and `publish` each run inside `db.transaction(fn).immediate()` (plain `db.transaction` is *deferred*: two processes can both read `max(version)` before either writes). Residual `SQLITE_BUSY` / `SQLITE_CONSTRAINT_PRIMARYKEY` maps to typed `REGISTRATION_CONFLICT` ("retry"), never an untyped 500. Set `busy_timeout` if unset. The race itself is **not in-process-testable** — the test asserts the transaction mode; the residual is recorded.
+  - Registration order: `validateScriptEntry` **first**, `maxWorkflowVersions` ceiling **second**, both before any write; the first error is thrown (existing `codedError` convention) with remaining codes in `detail`.
+  - `maxWorkflowVersions` comes from the **existing** `WorkflowCatalogOpts.ceilings` object; it counts **versions, not bytes**, and it is a front door, not a GC.
+  - `deregister` stays **name-granular** (removes the row, both pointers and all version rows). No per-version delete in v22 — see rationale D2. Pins on completed runs may then name an unresolvable `name@version`; that degrades exactly like a purged workspace (string survives, DAG falls back to live agent nodes) and is test-pinned, not prose.
+  - `publish` emits one structured log line `{name, channel, fromVersion, toVersion, principal, at}` — **fields asserted by a test**; unasserted logging is the same class as an unwired module. No audit table.
+  - **Clock seam, whole-module (no partial adoption):** every method of this class that reads time takes the **existing injected clock** (`workflow-catalog.ts:70-72`) — `register`'s row `createdAt`, the migration's copied/derived timestamps, and the publish log line's `at`. No `new Date()` anywhere in the module; a method that reads the wall clock directly is untestable under a fixed time and plants a time bomb.
+- **iter:** v22
+
+### DES-112 — `src/script-checks.ts`: `validateScriptEntry`, ports pinned
+- **status:** draft
+- **traces:** ARCH-074, ADR-013, TASK-106, TASK-107, TASK-108
+- **signature:**
+  ```ts
+  export interface ScriptCheckPorts { aliases: ReadonlySet<string>; openrouterPassthrough: boolean; mcpLookup: (name: string) => boolean }
+  export type ScriptCheckCode = 'PARSE_ERROR' | 'UNKNOWN_ALIAS' | 'MCP_NOT_PROVISIONED';
+  export interface ScriptCheckError { code: ScriptCheckCode; message: string; detail: Record<string, unknown> }
+  export function validateScriptEntry(script: string, ports: ScriptCheckPorts): { ok: true } | { ok: false; errors: ScriptCheckError[] };
+  export { FRAME_CLOSE_FORGERY } from './params/contract.js';   // re-export, never a second regex
+  export function violatesFrameDelimiter(appendPrompt: string | undefined): boolean;
+  ```
+- **boundary conditions:**
+  - The three checks are lifted **verbatim** from `submission-validator.ts:92-124`'s `if (spec.script)` block — same codes, so no caller learns a new vocabulary. `openrouter/<id>` passthrough is accepted unchanged.
+  - **`mcpLookup` is `(name) => boolean`, not the registry object** — a predicate cannot silently grow a dependency on the MCP registry class.
+  - Returns **all** errors in one call (an author fixing three things should not need three round trips); the caller throws the first and carries the rest in `detail`.
+  - **Disposition split (ADR-013):** registration **ENFORCES** fail-closed (any error ⇒ typed refusal, nothing stored); admission **OBSERVES** — `start()` recomputes only `UNKNOWN_ALIAS` + `MCP_NOT_PROVISIONED` (the two *environmental* checks) against the resolved version and records the outcome on the run record, never refusing. `PARSE_ERROR` is intrinsic to the text and is frozen at registration. `workflow_list` is **excluded** from recompute (3 s dashboard poll × per-row script parse).
+  - Pure with injected ports: no I/O, no clock, no registry import.
+  - Structural guard: after the move `submission-validator.ts` contains **zero** `if (spec.script)` branches, and `SubmissionValidatorDeps` shrinks to `{ catalog }` — deleting `aliases`/`mcpRegistry`/`openrouterPassthrough` turns "re-add the alias check here too" into a `tsc` error.
+- **iter:** v22
+
+### DES-113 — the run pin: one resolution moment, three `scriptVersion` meanings separated, resume + legacy cohort
+- **status:** draft
+- **traces:** ARCH-072, ADR-010, TASK-108
+- **signature:**
+  ```ts
+  // RunStore (both impls) — scriptVersion becomes REQUIRED; both `= 'v1'` defaults DELETED (1 positional call site):
+  createRun(spec: RunSpec, scriptVersion: string, effectiveParams?: RunParams,
+            admission?: { requested: RequestShape; validation: ValidationObservation }): Promise<RunView>;
+  export interface ValidationObservation { ok: boolean; errors?: ScriptCheckError[]; legacySubstitution?: { pinned: string; resolved: string } }
+  // RunManager
+  start(spec: RunSpec & { version?: string; channel?: Channel })   // spec.script present ⇒ INLINE_SCRIPT_CLOSED
+  resume(runId)   // catalog.resolve(name, { version: view.scriptVersion })
+  // JournalEntry gains a DISTINCT field:
+  resolvedWorkflowVersion?: string;   // nested workflow() resolution — NEVER JournalEntry.scriptVersion
+  ```
+- **boundary conditions:**
+  - **One resolution moment per run**: every trigger (client, `workflow_trigger`, scheduler, webhook, chain) funnels through `start()`, so pinning at `run-manager.ts:391` covers all of them. `scheduler.ts`/`webhook-registry.ts` keep an `exists()`-shaped front-door check; `Scheduler.create()` additionally requires the name to resolve on `release`.
+  - Channel resolution is **fire-time**, not creation-time (publish once, every trigger upgrades); the pin + recorded `requested` is what makes "which version did this cron run" answerable afterwards.
+  - **Three `scriptVersion` meanings, kept apart:** `runs.scriptVersion: string` is the durable pin (write-once, never updated); `RunEntry.scriptVersion: number` is the in-memory resume-generation counter and is **re-seeded from `1`**, no longer from the catalog version (`:394`/`:676`) — `ResumeCache` does not read it, so this is observational-only; nested `workflow()` writes `resolvedWorkflowVersion`, never the journal's `scriptVersion` stamp.
+  - **Legacy-cohort fallback (option b).** Discriminator: the `workflows` name row exists **∧** the run's pin is absent from `workflow_versions` ⇒ resolve `release`, **record** `legacySubstitution:{pinned, resolved}` on the run's validation observation, and log it. Rewriting the pin is refused — the pin is the authoritative answer to "which version actually ran", and overwriting it manufactures a false one. Named residual: deregister-then-re-register of the same name restarts the lineage at `v1`, so a post-v22 run can be classified legacy; that reproduces exactly today's re-resolve-through-the-name semantics, only recorded instead of silent. **Interlock:** this fallback's soundness depends on the absence of per-version delete; if that ever lands, revisit both in the same change.
+  - **The inline ban is on INGRESS ONLY.** A run suspended *before* the upgrade has a persisted `spec.script` and must still resume — refusing at rehydrate strands it. `entry.script = newScript` (`:562`) is deleted with the parameter.
+  - `effectiveParams` stays run-immutable (v21 ADR-002); nothing re-merges a newer version's defaults into a live run. No `workflow_resume({runId, version})`.
+  - `_adhoc` is left **inert**, not deleted (deleting the three `spec.name ?? '_adhoc'` defaults means re-proving path-containment at three workspace-rooting sites for zero user-visible gain).
+  - **On the wire (an unread field is this repo's signature defect):** `workflow_status` and `/api/runs/:id` carry `{version (the pin), requested, validation:{ok}, legacySubstitution?}`, asserted by literal key assertions — not "the record has it". `validation.errors` is **never** served on `workflow_status` (run reads are not principal-gated; see DES-116). `workflow_run` returns `{runId, version, requested}` — the only way a caller sees which of `version`/`channel` won without a second call.
+  - `runs.requested`/`runs.validation` are added with the run store's own idempotent idiom (`try { ALTER TABLE runs ADD COLUMN … } catch {}`, `sqlite-run-store.ts:65-71`) — a *different* file from the catalog's.
+  - Existing IT-011 (`tests/integration/scriptversion-fidelity.test.ts:40-49`) asserts `v2 !== v1` — a relative oracle that passes when both are wrong. It is rewritten to literal `'v1'`/`'v2'`, plus "after a third version is registered, run 1 still reports `'v1'`".
+  - Resume determinism is proven **by execution**: v1's script returns marker `A`, v2's returns `B`; after suspend → register+publish v2 → resume, the result is `A`. Asserting the pin string tests the label, not the behaviour.
+  - `createRun` keeps positional parameters; the options-object refactor (33 call sites) is recorded debt, deliberately not v22 work.
+- **iter:** v22
+
+### DES-114 — the wire surface: schemas, `workflow_publish`, `ReadContext` threading, DAG from the pin
+- **status:** draft
+- **traces:** ARCH-073, TASK-109
+- **signature:**
+  ```ts
+  // server.ts inputSchemas
+  workflow_run:    { name, args?, overrides?, version?: string, channel?: 'beta'|'release' }   // script, scriptSha256 REMOVED
+  workflow_resume: { runId, ... }                                                              // script REMOVED
+  workflow_publish:{ name: string, version: string, channel: 'beta'|'release' }                 // NEW tool, owner-gated
+  workflow_get:    { name: string, version?: string }
+  // facade dispatch at server.ts:808 / :823
+  export interface ReadContext { authEnabled: boolean; principal: string | null }   // REQUIRED, no default
+  ```
+- **boundary conditions:**
+  - Closure is **schema-level AND runtime-level, asserted separately**: `/mcp` accepts arbitrary JSON, so a hand-rolled body carrying `script` must be refused `INLINE_SCRIPT_CLOSED` whose message carries the two-call recipe (`workflow_register` then `workflow_run({name})`).
+  - `scriptSha256` leaves with `script` — schema, facade signature (`mcp-facade.ts:100`), `RunSpec` (`types.ts:179`) and the `run-manager.ts:292-294` `SCRIPT_SHA_WITHOUT_SCRIPT` branch. It is **not** re-offered on `workflow_register` (no requirement buys it).
+  - `ReadContext` is built from the already-resolved edge principal. **`args.principal` is BARRED from this path** — the `server.ts:814-815` fallback honours a caller-supplied principal, which is self-asserted identity; since `owner` is in the non-owner allowlist, reusing it would let a non-owner unmask by echoing the owner email it just read. Integration tests mint a real token through the injectable `TokenStore`.
+  - `/api/workflows`, `/api/workflows/:name/skeleton` and `/api/runs/:id/dag` have **no** identity plumbing and serve the non-owner projection **unconditionally while auth is enabled**, the pre-v22 surface while it is disabled. Accepted cost, recorded: an owner cannot read their own script in the dashboard on an auth-enabled deployment (mitigation: the masked panel shows the exact `workflow_get` invocation that would return it), and the dashboard DAG loses its predicted-skeleton overlay (live agent nodes still render).
+  - The DAG route derives its skeleton from the run's pinned `(name, version)`, not `spec?.script` (empty for every named run today).
+  - **Drift-lock assertion strength is split by kind:** error messages are a recovery contract → asserted **literally** against DES-117's templates; schema **descriptions** are prose → asserted for **presence** (every new optional parameter has a non-empty description). A literal test on prose punishes improving documentation and gets deleted.
+  - `version?`/`channel?` descriptions state the precedence: `version` wins; `channel` defaults to `release`; registration ≠ publication.
+  - Structural drift-lock rows: `workflow_run` advertises neither `script` nor `scriptSha256`; `workflow_resume` no `script`; `workflow_publish` present with the `beta|release` enum.
+- **iter:** v22
+
+### DES-115 — `projectWorkflowForRead`: one pure allowlist projection, constructed not deleted
+- **status:** draft
+- **traces:** ARCH-075, TASK-110
+- **signature:**
+  ```ts
+  export interface ValidationPublic { ok: boolean }
+  export interface ValidationFull extends ValidationPublic { errors: ScriptCheckError[] }
+  export interface WorkflowOwnerView { name; version; channels; versions; description?; phases?; skeleton?; params?; owner; createdAt; reportProblem; validation: ValidationFull; script: string }
+  export interface WorkflowPublicView { name; version; channels; description?; params?; owner; reportProblem; validation: ValidationPublic; scriptWithheld: true }  // no `script` key in the TYPE
+  export function projectWorkflowForRead(full: WorkflowOwnerView, viewerIsOwner: boolean): WorkflowOwnerView | WorkflowPublicView;
+  export const EXPECTED_NON_OWNER_KEYS = ['channels','description','name','owner','params','reportProblem',
+    'scriptWithheld','validation','validation.ok','version'] as const;
+  ```
+- **boundary conditions:**
+  - The non-owner branch is **constructed from an explicit field list**, never a `delete` on a full row — `script` is returned **twice** by `workflow_get` today (top level and inside `result`, `mcp-facade.ts:220/232`), so a delete-based fix leaks `result.script` (v21's fragment-leak defect verbatim). Adding a catalog field later cannot silently widen disclosure.
+  - `skeleton` and `phases` are **script-derived** (a decompiled outline of the agent graph) and are **not** on the allowlist — masked by default, including on `/api/workflows/:name/skeleton`.
+  - `scriptWithheld: true` is a **distinct key**, so the response never carries a `script` of a second shape a client's type-narrowing could misread; it says the script is withheld rather than pretending there is none.
+  - **`validation` is on the non-owner allowlist as `{ok}` only; `errors[]` is owner-only.** This is a **deliberate amendment to ARCH-075's "and nothing else"**, made here in the design text so the key-set oracle is final before Gate 5 (rationale D1).
+  - **Test oracle (half the requirement):** `expect(Object.keys(deepFlatten(resp)).sort()).toEqual(EXPECTED_NON_OWNER_KEYS)` — two-sided, so a *new* leaked field fails AND a missing `scriptWithheld` fails. It must **flatten**: a nested `errors[]` inside an otherwise-correct `validation` key is invisible to a top-level `Object.keys()`. `expect(resp).not.toContain(scriptText)` is **refused** as an oracle (it passes while `result.script` leaks).
+  - Pure: no I/O, no auth, no clock.
+- **iter:** v22
+
+### DES-116 — facade masking policy: required `ReadContext`, owner from the catalog row
+- **status:** draft
+- **traces:** ARCH-076, ADR-012, TASK-111
+- **signature:**
+  ```ts
+  workflow_get(a: { name: string; version?: string }, ctx: ReadContext): Promise<WorkflowOwnerView | WorkflowPublicView>;
+  workflow_list(a: unknown, ctx: ReadContext): Promise<WorkflowPublicView[]>;
+  const viewerIsOwner = ctx.authEnabled ? (ctx.principal !== null && ctx.principal === row.owner) : true;
+  ```
+- **boundary conditions:**
+  - `ctx` is **required with no default** — an optional `principal = null` reproduces this project's `composeConfig` wiring bug class verbatim (correct implementation, unwired call site, every unit test green, zero protection). A required argument makes an unwired call site a `tsc` error.
+  - Masking keys on **`authEnabled`, never on `principal == null`** (ADR-012): a null principal has two causes — auth genuinely off, and the D-BIND loopback-peer exemption on an auth-enabled non-loopback-bound server. `{auth off → script; auth on + null → masked; auth on + owner → script; auth on + non-owner → masked}`.
+  - **A NULL-`owner` row is masked from everyone under auth** — intended (fail-closed), explicitly tested, and its `scriptWithheld` reason distinguishes "you are not the owner" from "this workflow has no recorded owner; run the boot backfill". One string, and it is the difference between a bug report and a fix.
+  - `workflow_get({name})` with no version resolves through the **same** DES-110 truth table as a run, so an unpublished draft returns `CHANNEL_UNPUBLISHED` and the author reads it with `{name, version}` — the version `workflow_register` already returned (the sanctioned author loop stays two calls).
+  - `workflow_list` returns public views for **every** row; its per-row `description`/`params` come from stored columns, never a script parse.
+  - Auth disabled ⇒ byte-for-byte the pre-v22 surface (REQ-100 clause 3, the single-operator floor).
+  - The policy is testable without HTTP (constructed `ReadContext`) and the shape without auth (DES-115) — but the **masking test must run over the real transport**: one integration test drives an authenticated non-owner through `/mcp` with a real bearer, including the negative that supplying `{principal:'<owner-email>'}` does not unmask. A facade-level unit test with an injected principal cannot detect the `server.ts:823` hole.
+- **iter:** v22
+
+### DES-117 — the closed error table: code → surface → trigger → message template
+- **status:** draft
+- **traces:** ARCH-071, ARCH-072, ARCH-073, ARCH-074, TASK-105, TASK-107, TASK-108, TASK-109
+- **signature:** every row is a typed `codedError(code, message, detail)`; messages are asserted **literally** against these templates (v22 Rule 1: assert the contract, not that "an error is thrown").
+  | code | surface | trigger | message template |
+  |---|---|---|---|
+  | `PARSE_ERROR` / `UNKNOWN_ALIAS` / `MCP_NOT_PROVISIONED` | `workflow_register` | `validateScriptEntry` fails | unchanged from the submission-time wording — **nothing stored** |
+  | `PARAM_CONTRACT_INVALID` (incl. frame-delimiter forgery) | `workflow_register` | v21 contract parse / P6-2 registration half | unchanged |
+  | `VERSION_CEILING_EXCEEDED` | `workflow_register` | `listVersions(name).length >= maxWorkflowVersions` | names **both** remedies: operator raises `maxWorkflowVersions`; owner `workflow_deregister({name})` **with its stated consequences** |
+  | `REGISTRATION_CONFLICT` | `workflow_register` / `workflow_publish` | residual `SQLITE_BUSY`/`SQLITE_CONSTRAINT_PRIMARYKEY` | "concurrent registration for `<name>`; retry" |
+  | `NOT_WORKFLOW_OWNER` | `publish` / `register` / `deregister` | principal ≠ `row.owner` | unchanged |
+  | `INVALID_CHANNEL` | run / get / publish | channel token ∉ `{beta,release}` | names the closed enum `beta|release` |
+  | `UNKNOWN_VERSION` | run / get / publish | version ∉ `known` | lists the known versions |
+  | `CHANNEL_UNPUBLISHED` | run / get / `schedule_create` | pointer is NULL | names the channel, lists available `versions[]`, states that publication is required; **never** names a "newest"/"latest"/recommended version. In `schedule_create` context: "publish `<name>@<version>` to `release` first" |
+  | `WORKFLOW_NOT_FOUND` | facade | name row absent (or zero version rows) | unchanged |
+  | `INLINE_SCRIPT_CLOSED` | `workflow_run` / `workflow_resume` | `script` present in a hand-rolled body | carries the migration recipe: `workflow_register` then `workflow_run({name})` |
+  | `MISSING_NAME` (**renamed** from `MISSING_SCRIPT`) | submission | neither `name` nor a resolvable workflow | names only `name`; the old code/message named a parameter that no longer exists and would teach an agent to retry with `script` |
+  | `DANGLING_CHANNEL` | internal | pointer → missing version | **unreachable invariant** (no per-version delete); asserted structurally, better than a silent `undefined` script |
+- **boundary conditions:**
+  - Error **detail** may list `versions[]` and `channels{}` — both are already on the everyone-visible `workflow_list` allowlist, so this widens nothing.
+  - CONS-2 recovery sequence is asserted end-to-end: `workflow_list` → `workflow_get({name})` errors → `workflow_get({name, version-from-the-error})` succeeds; and the message is asserted to contain **no** "newest"/"latest" token (an engine that hands an agent an ordered list and says "try one" would delegate the very fallback REQ-097 forbids — acceptable only because it is visible and caller-chosen).
+  - `UNKNOWN_WORKFLOW` (validator) / `WORKFLOW_NOT_FOUND` (facade) / `CatalogNotFoundError` (catalog) are three pre-existing names for one condition. **Not unified in v22** (pure churn on a slice whose risk profile is silent failure) — the mapping is pinned here so Gate 5/6 does not add a fourth.
+- **iter:** v22
+
+### DES-118 — `Scheduler.markFailed`: the driver's `.catch()` gets a writer
+- **status:** draft
+- **traces:** ARCH-072, TASK-112
+- **signature:**
+  ```ts
+  markFailed(firing: Firing, code: string): Promise<void>;   // exactly what markFired does minus runId:
+                                                             // recompute nextFire for `cron`, auto-disable `once`,
+                                                             // set lastError: { code, at }
+  ALTER TABLE schedules ADD COLUMN lastError TEXT;           // idempotent try/catch idiom, nullable
+  ```
+- **boundary conditions:**
+  - `server.ts:1294-1309`: the `.catch()` calls `markFailed`. Today it writes nothing while `markFired` is the sole writer that advances a schedule after a firing, and the ticker is 500 ms — so a failed dispatch re-fires at 2 Hz forever and `schedule_list` shows silence rather than failure, directly under a comment claiming the opposite. **Correct that comment in the same change.**
+  - `lastError` and the advancing `lastFire` land on `schedule_list`, which the dashboard already reads — a 3 am refusal is visible at 9 am with no metrics wiring, no new journal entry type, no new read surface. Writing a terminal `refused` run record was considered and rejected (it needs a `RunSpec` for a run that never existed and pollutes run history with non-runs).
+  - `at` comes from the injected clock, never `new Date()`.
+  - **Test is a fake-clock unit across three ticks**: `start()` attempted exactly once, `nextFire` advanced (or `once` disabled), `lastError.code` set. A single-tick test passes today and proves nothing — the defect is only visible on tick 2.
+- **iter:** v22
+
+### DES-119 — real-tier validation path + per-tier mock policy (REQ-096..100)
+- **status:** draft
+- **traces:** REQ-096, REQ-097, REQ-098, REQ-099, REQ-100, TASK-105, TASK-108, TASK-109, TASK-111
+- **signature:** real entrypoint = `node src/main.js` (the product entrypoint; `composeConfig()` → `createServer()` → real `/mcp` over HTTP), real deps = the real `catalog.db` / `runs.db` under the configured `workRoot`, the real `TokenStore`-minted bearer, the real MCP registry and alias config.
+  | REQ | real-tier path the validator runs |
+  |---|---|
+  | REQ-096 | Boot on a **pre-v22** `catalog.db`; `workflow_register` the same name twice; `workflow_get({name, version:'v1'})` returns the first script; start a run, register a third version, `workflow_status` still reports the version that ran; `workflow_list` shows `versions[]` + `channels{}`. |
+  | REQ-097 | `workflow_publish({name, version, channel:'beta'})` as the owner (and refused `NOT_WORKFLOW_OWNER` as a non-owner); `workflow_run({name})` runs the `release` version; `{channel:'beta'}` runs beta; `{version:'v7'}` overrides both; an unpublished channel is refused naming the channel; a freshly registered version is on no channel. |
+  | REQ-098 | A hand-rolled `/mcp` POST carrying `script` is refused `INLINE_SCRIPT_CLOSED` with the recipe; `tools/list` advertises no `script`/`scriptSha256`; `workflow_resume({runId})` still works. |
+  | REQ-099 | `workflow_register` with an unparseable script / an unknown alias / an unprovisioned MCP name is refused with the same code the engine used at submission and nothing is stored; a workflow registered before the alias was removed still **runs**, and its staleness is visible via `workflow_get`'s `validation`. |
+  | REQ-100 | Two real principals: the owner reads the script through `/mcp` with a bearer; a **non-owner** bearer gets exactly `EXPECTED_NON_OWNER_KEYS`; `/api/workflows` and the skeleton route are masked while auth is on; with auth off the pre-v22 surface returns. |
+- **per-tier mock policy:**
+  - **unit** — mock freely (isolate logic). DES-110/112/115 are pure; DES-118 uses the injected clock and a fake ticker.
+  - **integration** — real adjacent components: a real SQLite file under a tmp `workRoot` (no `Database` injection seam), the real `WorkflowCatalog`, the real `RunStore`; only third-party network (the LLM provider) may be mocked. **Migration fixtures are hand-written legacy SQL** (DES-109), never produced by the new code.
+  - **E2E / acceptance** — **must not mock the SUT's own boundaries**: real `node src/main.js`, real HTTP `/mcp`, real bearer from the real `TokenStore`, real DB files. Provider calls use a real local model (Ollama) or a workflow whose scripts return literal markers without an `agent()` call, so version/pin/masking assertions never depend on LLM availability.
+- **iter:** v22
+
+---
+
+## Decision rationale — v22
+
+The lens panel (`.panel/design/{adversarial,quality-dimensions}.{r1,r2}.md`) converged on almost
+everything; ADR-009..014 stand as decided and are not re-litigated here. Four calls needed a synthesizer
+decision, and the r2 files **crossed each other** on one of them.
+
+**D1 — non-owner `validation` is `{ok}`, not `{ok, errors[]}`.** Quality's r1 lead finding correctly
+identified a real contradiction between ARCH-074 (`workflow_get` returns `validation:{ok, errors[]}`) and
+ARCH-075's "and nothing else" enumeration; adversarial conceded the seam outright ("the one item I would
+call a Gate-4 blocker"). On the *shape* quality wanted the full `errors[]`; adversarial's r2 reduced it to
+`{ok}` on new primary-source evidence quality never saw (N-2: `workflow_status` is **not** principal-gated,
+`server.ts:803`, so serving `errors[]` there side-steps the mask REQ-100's own no-side-stepping clause
+forbids) plus the architecture's own skeleton-masking precedent — `errors[].code/message` name the aliases
+and MCP servers the script references, i.e. a partial decompiled outline of the same agent graph the
+skeleton is masked for. **Reduced shape taken.** Quality's stated cost is recorded: a user choosing between
+`beta` and `release` learns *that* beta is unhealthy, not *why* — `{ok:false}` plus REQ-095's
+`reportProblem` (already on the allowlist) is the sanctioned next step. `EXPECTED_NON_OWNER_KEYS` is
+amended here **deliberately** (DES-115), not discovered red at Gate 5. `workflow_status` carries
+`validation:{ok}` unconditionally — one rule, no auth branch on a run-read path.
+
+**D2 — no per-version deregister in v22.** The two r2 files swapped positions: adversarial **withdrew**
+its own r1 §2B.4 (`workflow_deregister({name, version?})`) while quality was simultaneously **retracting**
+its r1 deferral to adopt it. Adversarial's withdrawal is the load-bearing argument and it is its own
+boundary analysis turned against itself: a per-version delete is what makes two of the three conflated
+states *representable in the first place* (a name row with zero versions; a channel pointer aimed at a
+deleted version), and it falsifies the "closed cohort" premise that D4's legacy fallback rests on. Quality's
+`VERSION_IN_USE` rider exists only to patch the hazard the feature itself opens — a guard whose sole
+purpose is to make its own feature safe loses the simplicity tie-break. **Both lenses held "defer" at some
+point in the debate; final position is defer.** The wedge is mitigated by DES-117's
+`VERSION_CEILING_EXCEEDED` message naming both remedies, and `maxWorkflowVersions` is operator config, so
+it is raisable wherever author and operator are the same person. Consequences taken with it:
+`DANGLING_CHANNEL` becomes an unreachable invariant asserted structurally rather than a documented outcome,
+and the truth table gets *smaller*. **Interlock for a future iteration:** if per-version delete ever lands,
+it must revisit `VERSION_IN_USE` **and** D4's fallback in the same change.
+
+**D3 — the scheduler hot loop is fixed in v22, reopening a recorded ARCH decline.** Adversarial's r2 N-1
+is verified primary source: `server.ts:1294-1309`'s `.catch()` writes nothing, `markFired` is the only
+writer that advances a schedule after a firing, and the ticker is 500 ms — so a failed dispatch re-fires at
+**2 Hz forever**, with `schedule_list` showing silence, under a code comment asserting the opposite. The
+architecture declined a `lastError` column on the rationale that `Scheduler.create`'s front-door check
+covers it; a front door cannot cover a name deregistered *after* creation, so the decline's stated
+rationale is falsified. Both finals converged that fire-time failures must land observably (quality's OBS-2
+restated as "the default unless rebutted"; adversarial conceded the requirement and reduced the mechanism),
+and adversarial's reduced mechanism also happens to be the cheaper one: one nullable column, one method,
+one `.catch()` line — versus quality's journal-entry + metrics-wiring proposal, which would write a second
+symptom twice a second without stopping the loop. Adversarial's comment-fix-and-defer option was its
+grudging fallback, not anyone's position, and is not taken. Scoped to TASK-112, traced to ARCH-072 (which
+owns the trigger→`start()` funnel and the `Scheduler.create` upgrade).
+
+**D4 — legacy named-run pins take the recorded fallback (option b), not the strict refusal.** Both lenses
+converged. A run started at `v2`, suspended, whose workflow was re-registered to `v3` before the upgrade
+carries a pin whose bytes `ON CONFLICT DO UPDATE` already destroyed; resolving strictly through the pin
+would make it permanently unresumable where today it resumes. Migration-time pin rewriting (option c) was
+rejected jointly — it *manufactures* a false answer to the exact question REQ-096 makes the pin
+authoritative for. The substitution is recorded on the run and surfaced on `workflow_status` as version
+strings only (`legacySubstitution:{pinned, resolved}`), which are already on the everyone-visible REQ-096
+allowlist, so it satisfies quality's OBS-1 "on the wire, not just in the record" rider without reopening D1.
+
+**Uncontested panel items carried into the DES rather than re-argued** (both lenses agreed; recorded so
+Gate 5 does not re-derive them): `getFull` renamed to `resolveDetail` and the legacy columns DROPPED with a
+`PRAGMA table_info` absence assertion; `scriptSha256` leaves the wire with `script`; `.immediate()`
+transactions + `REGISTRATION_CONFLICT`; `resolvedWorkflowVersion` as a distinct journal field with the
+resume counter reseeded from 1; `MISSING_SCRIPT` → `MISSING_NAME`; `SubmissionValidatorDeps` shrunk to
+`{catalog}`; NULL-owner rows masked from everyone under auth with distinct remediation text; `createRun`'s
+`scriptVersion` made required (one measured positional call site) while the options-object refactor stays
+debt (33 sites); no `Database` injection seam (a hand-written legacy file in a tmp `workRoot` is simpler
+*and* a stronger test — the rare case where simpler is also more testable).

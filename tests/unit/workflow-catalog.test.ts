@@ -8,35 +8,37 @@ import { join } from 'node:path';
 const WORK_ROOT = join(tmpdir(), 'rwe-test-catalog');
 
 describe('WorkflowCatalog', () => {
-  it('register creates an entry retrievable by get()', async () => {
+  // v22 (DES-111): get()/getFull() are deleted — resolve()/resolveDetail() take a selector.
+  // An explicit {version} selector always resolves regardless of channel/publish state.
+  it('register creates an entry retrievable by resolve({version})', async () => {
     const cat = new WorkflowCatalog(WORK_ROOT);
     const { version } = await cat.register('my-flow', 'return 1;');
     expect(typeof version).toBe('string');
-    const entry = await cat.get('my-flow');
+    const entry = await cat.resolve('my-flow', { version });
     expect(entry.script).toBe('return 1;');
     expect(entry.version).toBe(version);
   });
 
-  it('updating a registered workflow bumps the version', async () => {
+  it('registering the same name twice bumps the version and keeps BOTH retrievable (v22, REQ-096)', async () => {
     const cat = new WorkflowCatalog(WORK_ROOT);
     const { version: v1 } = await cat.register('bump-flow', 'return 1;');
     const { version: v2 } = await cat.register('bump-flow', 'return 2;');
     expect(v2).not.toBe(v1);
-    const entry = await cat.get('bump-flow');
-    expect(entry.script).toBe('return 2;');
+    expect((await cat.resolve('bump-flow', { version: v2 })).script).toBe('return 2;');
+    expect((await cat.resolve('bump-flow', { version: v1 })).script).toBe('return 1;');
   });
 
-  it('get() on unknown name throws CatalogNotFoundError', async () => {
+  it('resolve() on unknown name throws CatalogNotFoundError', async () => {
     const cat = new WorkflowCatalog(WORK_ROOT);
-    await expect(cat.get('no-such-workflow')).rejects.toThrow(CatalogNotFoundError);
+    await expect(cat.resolve('no-such-workflow', {})).rejects.toThrow(CatalogNotFoundError);
   });
 
-  it('deregister removes a registered workflow (gone from get() and list())', async () => {
+  it('deregister removes a registered workflow (gone from resolve() and list())', async () => {
     const cat = new WorkflowCatalog(WORK_ROOT);
-    await cat.register('temp-flow', 'return 1;');
+    const { version } = await cat.register('temp-flow', 'return 1;');
     const { removed } = await cat.deregister('temp-flow');
     expect(removed).toBe(true);
-    await expect(cat.get('temp-flow')).rejects.toThrow(CatalogNotFoundError);
+    await expect(cat.resolve('temp-flow', { version })).rejects.toThrow(CatalogNotFoundError);
     expect((await cat.list()).map((e) => e.name)).not.toContain('temp-flow');
   });
 

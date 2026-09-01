@@ -1,66 +1,93 @@
 # Design panel — Adversarial group (interface-contract / boundary-error / testability), round 1
 
-**Feature:** 001-remote-workflow-engine · **Iteration:** v21 (REQ-090..095 → ARCH-064..070, ADR-001..008)
+**Feature:** 001-remote-workflow-engine · **Iteration:** v22 (REQ-096..100 → ARCH-071..076, ADR-009..014)
 **Stage:** Gate 3+4 (Tasks + Detailed Design), debate round 1 — independent proposal
 **Lenses carried:** (a) interface-contract, (b) boundary/error, (c) testability. Tie-breaker: Karpathy
-simplicity-first (minimum design that solves the problem; no flexibility the requirement did not buy).
-**Inputs read:** `01-requirements.md` (v21 slice, lines 831–888), `02-architecture.md` (v21 slice, lines
-710–978), `state.yaml` `tech_stack` (lines 11–51). `03-tasks.md` for v21 does not exist yet — a dedicated
-task-splitting section is included where my lenses constrain the split.
+simplicity-first (the minimum design that solves the problem; no flexibility the requirement did not buy).
+**Inputs read:** `01-requirements.md` v22 slice (lines 903–977), `02-architecture.md` v22 slice (lines
+986–1352), `state.yaml` `tech_stack` (lines 11–51). **A v22 `03-tasks.md` does not exist** (the file on
+disk is v21, last id `TASK-104`; last design id `DES-108`) — §3 states where my lenses constrain the split.
+**Primary source verified in this session** (every line number below was read, not recalled):
+`src/workflow-catalog.ts`, `src/submission-validator.ts`, `src/mcp-facade.ts`, `src/run-manager.ts`,
+`src/run-store.ts`, `src/store/sqlite-run-store.ts`, `src/server.ts`, `src/scheduler.ts`,
+`src/webhook-registry.ts`, `src/params/contract.ts`, `tests/integration/scriptversion-fidelity.test.ts`.
 
 ---
 
 ## 0. Altitude determination (system vs agent) — done FIRST, per the panel brief
 
-From `tech_stack` + the v21 requirements this project is **both**, and the two altitudes land on different
-parts of this slice. I apply both, explicitly labelled, and do not force either where it is irrelevant.
+**This project is both, and v22 is system-dominant.** From `tech_stack`: Node 22.6+/TypeScript strict/ESM,
+`better-sqlite3`, vitest, a hand-rolled JSON-RPC-over-HTTP server — and the *product* is an engine that
+runs LLM agents. v22's substance (a table, two pointer columns, a migration, an authorization input on two
+read paths, a validation that moves) is ordinary systems design and is judged at the **system altitude**.
 
-- **System altitude (the engine itself).** Node 22.6+/TypeScript/SQLite/vitest; a hand-rolled JSON-RPC
-  HTTP server, a run store, a catalog, a sandbox. Everything in ARCH-066/067 (admission ladder, a new
-  column, a persisted snapshot, migrations, resume) is ordinary systems design and is judged as such:
-  transactional fail-closed writes, no partial state, deterministic replay, injectable clock/storage.
-- **Agent altitude (the consumers).** Every v21 surface is consumed by *agents*: `workflow_run`'s
-  `overrides` arrives from an MCP client, `workflow_get`'s contract exists so a caller **learns what it
-  may tune without reading the script**, and the error payloads exist so the caller **repairs its own
-  call without a second round-trip** (ARCH-064 inv-3). That makes consumability and self-describing
-  errors first-class *functional* requirements here, not documentation polish — and it is why my
-  boundary lens spends its budget on a **total condition→code→payload table** rather than on more codes.
-- **Where the two collide** — the `appendPrompt` frame (ADR-007) is an agent-altitude construct
-  (instruction-provenance for a model reader) implemented with system-altitude guarantees (byte cap,
-  fixed delimiters, drift-lock test). I treat the frame text as a *contract artifact*: it is
-  API surface for a model, so it is version-pinned by test exactly like a schema.
+The **agent altitude binds in exactly two places**, and I apply it only there:
 
-Not applied: agent-altitude "self-sustainability" (self-healing/retry policy) — v21 adds no autonomous
-loop; and system-altitude "replaceability" beyond the provider-profile entry ARCH-069 already names.
+1. **The tool schema and the error text ARE the documentation.** An MCP client agent learns the surface
+   from `tools/list` and learns recovery from the error string. That is why REQ-098's schema-level removal
+   is not cosmetic, why `INLINE_SCRIPT_CLOSED` must carry the two-call recipe, and why (§2A.6) an error
+   *code* that still names a removed concept is a defect, not a naming preference.
+2. **The masked view must still let a non-owner agent decide and act.** REQ-100's allowlist is a
+   consumability contract for an agent that can no longer read the script: it must still be able to pick
+   the workflow (`description`, `params`), call it (`params`, `channels`), and report a problem
+   (`reportProblem`, REQ-095). Masking that leaves an agent unable to act would satisfy the letter and
+   break the product.
+
+Everything else in v22 — the pin, the migration, the transaction, the ceiling — I judge as a plain system.
+I do not force the agent altitude onto the schema/migration work; the architecture made the same call and
+I agree with it.
 
 ---
 
 ## 1. Summary
 
-The v21 architecture is unusually good: the dominant failure modes are *silent* ones (inert wiring, a
-smuggled locked key, a dishonest `effortApplied`, a poisoned resume cache, an unredacted sink) and
-ARCH-064..070 makes each impossible-by-construction rather than detectable-afterwards. I have **no
-architectural objection** and propose **no new modules, no new endpoints, no new abstractions**.
+The v22 architecture is unusually complete: ADR-009..014 are decided, sourced, and I contest none of them.
+Restating them at Gate 4 would add nothing. **My proposal is the layer underneath — exact TypeScript
+signatures, a closed error table, and test oracles — plus seven boundary conditions the architecture did
+not legislate.** Ranked by what they cost if discovered at Gate 6/7.5 instead of now:
 
-What I do have is **eleven places where the architecture's prose does not survive contact with the
-primary source**, and each one is a coin-flip an implementer would otherwise resolve silently. Four of
-them are, on my reading, defects-in-waiting rather than under-specification:
+1. **A pre-v22 suspended named run is stranded by the pin (HIGH, correctness regression).** The migration
+   copies each name's **current** row only — and it can copy no other, because `ON CONFLICT DO UPDATE`
+   (`workflow-catalog.ts:210-220`) already destroyed the older scripts. A run started at `v2`, suspended,
+   whose workflow was then re-registered to `v3`, carries pin `scriptVersion='v2'` on its run row. After
+   v22, `resume` resolves *through the pin* (ARCH-072) → `UNKNOWN_VERSION` → the run is unresumable, where
+   today it resumes (on `v3`). ARCH-072 invariant 3 protects only the *inline* legacy cohort (a persisted
+   `spec.script`); this cohort has an empty `spec.script` by construction (`run-manager.ts:385-392`).
+   **Needs an explicit, narrow legacy fallback (§2B.1) — the one place I argue for a fallback the
+   interface-contract lens hates (§5.ii).**
+2. **`workflow_run`'s `scriptSha256` parameter becomes permanently unsatisfiable** and no ARCH mentions it:
+   `run-manager.ts:292-294` throws `SCRIPT_SHA_WITHOUT_SCRIPT` whenever it is supplied without an inline
+   script, which after REQ-098 is *always*. It must leave the schema with `script` (§2A.7).
+3. **`getFull()` is the surviving-legacy-accessor hole.** ARCH-071 deletes `get(name)` and is silent on
+   `getFull(name)` (`workflow-catalog.ts:267-276`), which today delegates to `get()` **and** issues its own
+   `SELECT createdAt, owner FROM workflows`. Its SQL is a *string*: if the script/params columns move and
+   `getFull` is left half-converted, `tsc` says nothing and the failure is a runtime read of a column that
+   no longer exists — or worse, a legacy column left in place becomes the stale second source of truth the
+   whole slice exists to delete. I pin the complete catalog API and a `PRAGMA table_info` assertion (§2A.1,
+   §2B.2).
+4. **`SubmissionValidator`'s dependencies must shrink, not just its body.** Once the `if (spec.script)`
+   block moves out (`submission-validator.ts:92-124`), `aliases`, `mcpRegistry` and `openrouterPassthrough`
+   have **no remaining reader** in that class. Deleting them from `SubmissionValidatorDeps` turns "still
+   wired in `main.ts`" into a `tsc` error and makes re-adding a second alias checker there a visible act.
+   Leaving them is how a second enforcement site grows back (§2A.4).
+5. **The version ceiling can permanently wedge an author** with no escape short of destroying the workflow
+   (ADR-014 gives `deregister` name-granularity only). One optional parameter on an existing tool fixes it
+   (§2B.4).
+6. **The nested-`workflow()` journal stamp will be conflated with the resume-generation counter.**
+   `JournalEntry.scriptVersion` (`types.ts:203`) is written as `` `v${entry.scriptVersion}` ``
+   (`run-manager.ts:883`) from the in-memory counter — which is itself *seeded from the catalog version*
+   (`:394`) and incremented per resume (`:563`). ARCH-072 says nested `workflow()` "records the resolved
+   version on the journal entry". If that lands in the same field, both meanings are destroyed. Pin a
+   distinct field name and decouple the counter (§2A.5).
+7. **`db.transaction()` alone does not serialize the cross-process case** ARCH-071 invariant 5 invokes it
+   for. `better-sqlite3`'s default transaction is *deferred*: two processes can both run the
+   `SELECT max(version)` before either writes. `.immediate()` plus a typed mapping for the residual
+   `SQLITE_BUSY`/`SQLITE_CONSTRAINT` is the actual fix (§2B.3).
 
-1. **`WorkflowCatalog.get()` returns `{script, version}` only** (`workflow-catalog.ts:136`) — ARCH-066's
-   "the row the run path already reads carries the contract and defaults" is **not true today**, and the
-   *nested* `workflow()` path uses the same narrow `get()`, so REQ-092 silently fails under composition.
-2. **`options.thinking` already has a sole writer** (`claude-agent-sdk-client.ts:527` → `thinkingFor()`
-   at `:325`), added to fix the shipped Gate-7.5 "Ollama 400 after ~4 min" defect. An `effort` mapper
-   that writes `thinking` from a second site can re-open that exact defect on the default path.
-3. **REQ-094's "appendPrompt last" is already false** for schema calls: `agent-executor.ts:312/320`
-   appends an `=== OUTPUT FORMAT (REQUIRED) ===` block and a retry nudge *after* the composed prompt.
-4. **`register`'s `ON CONFLICT DO UPDATE` does not update every column** (`workflow-catalog.ts:110–114`
-   updates script/version/createdAt/defaults and deliberately **not** `owner`). An implementer adding a
-   `params` column and copying that clause leaves a **stale contract on re-register** — silent, and
-   exactly the drift class v21 exists to close.
-
-Everything else below is refinement that *preserves* the ARCH invariants rather than contradicting them;
-each deviation is labelled as such, with the invariant it preserves, because Gate 2 has passed.
+Two testability findings sit alongside these: **IT-011's oracle is relative** ("the second run's recorded
+`scriptVersion` must differ from the first's", `tests/integration/scriptversion-fidelity.test.ts:40-49`) —
+the precise anti-pattern v22 Rule 1 names, and it is the *existing* guard for the field v22 turns into the
+pin; and **the migration fixture must be hand-written legacy SQL**, never a DB built by the new code.
 
 ---
 
@@ -68,369 +95,459 @@ each deviation is labelled as such, with the invariant it preserves, because Gat
 
 ### 2A. Interface-contract lens
 
-**I-1 (blocking) — `catalog.get()` must be widened, and it is the design's first landing.**
-Primary source: `get()` = `SELECT script, version` (`workflow-catalog.ts:136–142`); `getFull()`
-(`:145–166`) is the only reader of `defaults`. ARCH-066 pins the insertion point at `run-manager.ts:349`
-(`this._catalog.get(spec.name)`) and asserts "no second query". As written that is unimplementable.
-Callers of the narrow `get()`: `run-manager.ts:349` (start), `run-manager.ts:523` (resume rehydrate),
-`run-manager.ts:~688` (**nested `workflow()`**), `submission-validator.ts:83` (existence probe).
-Options: (a) widen `get()` to `{script, version, defaults?, params?}`; (b) point `start()` at `getFull()`.
-**Proposal: (a).** Every call site destructures, so widening is source-compatible; `getFull()` additionally
-returns `owner`, which the run path has no business carrying, and duplicating the row read in two shapes is
-how the `defaults`-vs-`params` drift starts. `getFull()` then delegates to `get()` + owner.
-*DES must state this; it is not implementer discretion, because option (b) is the tempting shortcut and it
-leaves the nested path unfixed.*
+#### 2A.1 — DES-109/110/111: the complete `WorkflowCatalog` surface, so no legacy accessor survives
 
-**I-2 (blocking) — composition (`workflow()` nesting) semantics are unspecified, and split in two.**
-Nothing in ARCH-064..070 mentions nesting; `run-manager.ts:~688` resolves the child through the same
-narrow `get()` and runs it via a nested manager. Two different questions hide here:
-- **Harness knobs (`model`/`effort`/`timeoutMs`): do NOT propagate.** The parent's `overrides` were
-  validated against the **parent's** contract; letting them reach a child whose contract may constrain or
-  differently bound the same knob bypasses the *child author's* contract — a REQ-091 hole with the same
-  shape ADR-001 closes at the caller boundary. The child resolves from **its own** registered defaults.
-  This is also the fix for the real, present bug: the nested path drops `defaults` entirely today.
-- **`appendPrompt`: genuinely ambiguous — flagged for the synthesizer, not decided by me.** REQ-094 says
-  "**any** `agent()` in that run", and nested agents *are* in the run's frame tree (REQ-045/046), which
-  reads as propagate. The contract-integrity argument reads as don't. Both are defensible; what is not
-  defensible is silence. **Recommendation if forced: propagate `appendPrompt` (it is additive instruction
-  text, structurally powerless per ADR-007) and do not propagate the three knobs** — with one integration
-  test per direction, and the provenance rung recorded as `'override'` in the child so the propagation is
-  *visible* rather than inferred.
+The deletion of `get()` is only load-bearing if the *whole* read surface is restated. I propose exactly
+these members and no others (Karpathy: `getVersion()` beside `resolve()` is refused; a separate resolver
+module is refused — the truth table is an exported function in the file that owns it):
 
-**I-3 — new `HarnessDescriptor` fields: optional on the DTO, decorated at ONE site.**
-*(Refinement preserving ARCH-068's intent: required-ness moves to where `tsc` actually bites.)*
-The descriptor is constructed at **two** sites with different shapes: an inline object literal in
-`gateway/client.ts:289` (with its own duplicated `PROMPT_CAP=4096/HALF=2048` constants) and via
-`redactHarness()` in `claude-agent-sdk-client.ts:577`. Worse, `provenance` is knowledge the **gateway does
-not have**. Making `promptTruncated: boolean` required (ARCH-068's `api` line) breaks the inline literal
-plus ~8 test fixtures for zero safety gain — a DTO field is not the tsc lever that catches inert wiring.
-**Proposal:** (i) gateways keep emitting today's descriptor; (ii) `agent-executor.ts:347`'s `onHarness`
-closure — the single place that already owns persistence and already knows the resolved params — merges
-`{effort, effortApplied, timeoutMs, appendPromptBytes, promptTruncated, provenance}` before the
-`appendTranscript` write; (iii) `gateway/client.ts:289` is switched to call `redactHarness()` so the
-4096/2048 cap has one implementation. Result: one decoration site, both gateways covered, **no `GatewayClient` signature churn beyond
-I-4's optional second `onHarness` argument**, and the new fields are optional on the wire type (many historical
-records lack them anyway). ARCH-068's real lever (I-4/T-1) is untouched.
+```ts
+export type Channel = 'beta' | 'release';
+export interface Channels { release: string | null; beta: string | null }
+export interface VersionEntry {          // what execution needs
+  script: string; version: string;
+  defaults: HarnessDefaults | undefined; params: ParamContract | undefined;
+}
+export interface WorkflowDetail extends VersionEntry {   // what a read needs — REPLACES getFull()
+  name: string; createdAt: string; owner: string | null;
+  channels: Channels; versions: string[];                // ascending, engine-assigned v<n>
+}
+export interface VersionSelector { version?: string; channel?: Channel }
 
-**I-4 — `mapEffort` cannot run in the executor: the provider is only resolvable inside the gateway.**
-*(Refinement preserving ARCH-065's no-parallel-lookup invariant.)*
-`ProviderEffortProfile` is keyed by provider; provider is resolved from the gateway's own alias map —
-`gateway/client.ts:281` (`this._config.aliases[aliasName]`) and the SDK client's own alias→model/provider
-resolution feeding `thinkingFor(this._config.aliases, req.opts.model)` at `:527`. So ARCH-065's "the same
-returned object is both placed on the outbound request and recorded in the descriptor" cannot be satisfied
-by an executor-side call. Options: (a) add `resolveTarget(alias)` to `GatewayClient` and map in the
-executor; (b) **one shared pure `mapEffort` imported by both gateways, called once per invoke, and the
-same object handed back to the executor** via a second `onHarness` argument
-(`onHarness(descriptor, applied?)`). **Proposal: (b)** — it preserves the invariant that actually matters
-(the recorded value *is* the applied value, never a re-lookup) with one translator implementation and two
-import sites, and it avoids inventing a `resolveTarget` seam (a new interface method with two
-implementations, which the Karpathy tie-break rejects). (a) loses because it exports alias-resolution
-across a boundary purely to relocate a pure function call.
+class WorkflowCatalog {
+  register(name, script, defaults?, principal?): Promise<{ version: string }>;   // signature UNCHANGED
+  publish(name: string, version: string, channel: Channel, principal: string | null):
+      Promise<{ channel: Channel; version: string; from: string | null }>;
+  resolve(name: string, sel: VersionSelector): Promise<VersionEntry>;            // the ONE exec read
+  resolveDetail(name: string, sel: VersionSelector): Promise<WorkflowDetail>;    // the ONE read read
+  exists(name: string): Promise<boolean>;                                        // never throws
+  listVersions(name: string): Promise<string[]>;
+  list(): Promise<Array<{ name; version; createdAt; description; params; versions: string[]; channels: Channels }>>;
+  deregister(name: string, principal: string | null, version?: string): Promise<{ removed: boolean }>;  // §2B.4
+}
 
-**I-5 — where a bad *script-supplied* `effort` surfaces is undefined.** ARCH-069 says such a call "rejects
-typed", but `agent()` today has two distinct failure channels: **throw** (`Unknown agentType`,
-`agent-executor.ts:289`) and **resolve-null** (any gateway failure). **Proposal: throw a coded
-`PARAM_OUT_OF_RANGE`** from the executor before dispatch, matching the `agentType` precedent (an author
-mistake is a run failure, not a null the script silently branches on), and pin it. Note the pleasant
-consequence: because this is pre-dispatch and `CallKey` is built upstream at `run-manager.ts:706` from the
-raw opts, ADR-002 is untouched.
+// module-level, pure, no I/O, no `this` — deliberately NOT a class member and NOT a separate module:
+export function resolveVersionRequest(
+  sel: VersionSelector, ch: Channels, known: ReadonlySet<string>,
+): { ok: true; version: string } | { ok: false; code: ResolveErrorCode; channel?: Channel; version?: string };
+```
 
-**I-6 — do not hang `overrides` off `RunSpec`.**
-*(Refinement preserving ARCH-066 inv-5's single-sink discipline.)*
-`RunSpec` is persisted wholesale by `createRun(spec)` (`run-store.ts:136`) and read back by `getSpec()`
-(`:152`) on resume. Putting `overrides` on `RunSpec` creates (i) a **second persist sink carrying caller
-`appendPrompt` text** that ARCH-066 inv-5 does not name and the REQ-083 sweep would miss, and (ii) a
-standing temptation on the resume path to re-merge from `spec.overrides` — the precise thing ADR-002
-forbids. **Proposal: `RunManager.start(spec, overrides?)` as a separate argument**, consumed at admission,
-never persisted raw; the `effectiveParams` snapshot is the single durable representation. One shape, one
-sink, one thing to redact.
+Four contract points that are not stylistic:
 
-**I-7 (small) — `workflow_list` mixes sources.** `list()` re-parses `meta.description` from the stored
-script per row (`workflow-catalog.ts:167–175`) while v21's contract comes from a column. Not a v21 defect,
-but v22/D15's script masking breaks the description the same way it would have broken a script-derived
-contract (ADR-004's own argument). One line in DES: `list()` reads `params` from the column; the
-description re-parse is recorded as inherited debt with a v22 owner.
+- **`getFull` is *renamed*, not kept.** `resolveDetail` takes a selector; `getFull(name)` did not, and a
+  no-selector detail read is exactly the "newest row" semantics ARCH-071 deletes. Renaming makes every one
+  of its call sites a compile error, which is the only mechanism this repo has that actually works (four
+  documented recurrences of the unwired-module class).
+- **`exists()` returns `boolean` and never throws.** Today four of the six call sites
+  (`submission-validator.ts:83`, `scheduler.ts:147-149` and `:207-210`, `webhook-registry.ts:87-90`)
+  implement existence as `try { await catalog.get(x) } catch {}`. Converting them to a throwing accessor
+  reproduces the same pattern one layer down.
+- **`resolve()` returns `VersionEntry` and *not* `owner`.** Owner is an authorization input; keeping it off
+  the execution read means a future confidentiality decision cannot accidentally be made from the execution
+  path's data.
+- **`resolveVersionRequest` takes `known: ReadonlySet<string>`, not a DB handle.** That is what makes
+  `UNKNOWN_VERSION` decidable inside the pure function instead of splitting the truth table across two
+  layers (§2C.1). The catalog reads the version list once and hands it in.
 
-### 2B. Boundary/error lens
+#### 2A.2 — DES-110: the resolution truth table, stated as a total function with explicit precedence
 
-**B-1 — publish a TOTAL condition→code→payload table; keep the three codes.** Three codes
-(`PARAM_LOCKED` / `PARAM_OUT_OF_RANGE` / `PARAM_UNKNOWN`) against at least eight distinct conditions.
-The codes are the API (agent altitude), so the *mapping* must be total and table-driven, and it is the
-single highest-value artifact of this design step:
+The rows only form a *function* if the order in which they are tried is part of the contract. Stating that
+order is a real sharpening, not bookkeeping: `{version:'v9' (unknown), channel:'nightly'}` matches both the
+unknown-version row and the invalid-channel row, and REQ-097's clause "`channel` supplied as anything other
+than `beta|release` ⇒ a typed validation error" carries **no** version-set exception. ARCH-071 inv-2 has the
+same latent ambiguity. **Ruling: validate the channel token first** — an invalid channel is a malformed
+*input*, and reporting a resolution outcome for a request that was never well-formed is how a caller learns
+the wrong lesson.
 
-| # | Condition (submission unless noted) | Code | Payload |
-|---|---|---|---|
-| 1 | `overrides` names a D12-locked key | `PARAM_LOCKED` | `{param, tunable:[…]}` |
-| 2 | `overrides` names an unrecognized key | `PARAM_UNKNOWN` | `{param, tunable:[…]}` |
-| 3 | wrong type (`timeoutMs:"fast"`) | `PARAM_OUT_OF_RANGE` | `{param, suppliedType, expectedType}` |
-| 4 | outside author-declared enum/range | `PARAM_OUT_OF_RANGE` | `{param, supplied, allowed}` |
-| 5 | above engine ceiling | `PARAM_OUT_OF_RANGE` | `{param, supplied, allowed}` (effective bound, B-3) |
-| 6 | `appendPrompt` over `maxAppendPromptBytes` | `PARAM_OUT_OF_RANGE` | `{param:'appendPrompt', suppliedBytes, maxBytes}` — **never echoes the text** (B-1a) |
-| 7 | declared `args` field violates its spec | `PARAM_OUT_OF_RANGE` | `{param:'args.<field>', supplied, allowed}` |
-| 8 | *registration:* `params` block names a locked key, an **unknown knob** (`params:{temperature:…}`, REQ-090 "may not unlock anything outside them"), or is malformed/oversized | typed registration error, nothing stored | `{param, reason}` |
+Precedence: **(1)** channel token validity → **(2)** explicit `version` → **(3)** named channel pointer →
+**(4)** `release` default. Evaluated in that order, the seven outcome rows are disjoint and total:
 
-**B-1a (own finding, not in ARCH):** `PARAM_OUT_OF_RANGE.supplied` must never carry unbounded caller text.
-`appendPrompt` can be 1 KB and error envelopes are logged; report **bytes, never content**. Same rule for
-any string knob whose value exceeds a small threshold (truncate with an explicit `suppliedTruncated:true`).
+| # | guard (first match wins, in this order) | result |
+|---|---|---|
+| 1 | `sel.channel` present and not in `{beta, release}` | `INVALID_CHANNEL(channel)` |
+| 2 | `sel.version` present and in `known` | `{version}` — explicit wins over any channel (REQ-097, "regardless of any channel") |
+| 3 | `sel.version` present and not in `known` | `UNKNOWN_VERSION(version)` |
+| 4 | `sel.channel` present, `ch[channel] === null` | `CHANNEL_UNPUBLISHED(channel)` — **never "newest"** |
+| 5 | `sel.channel` present, pointer set but not in `known` | `DANGLING_CHANNEL(channel, version)` — see §2B.6 |
+| 6 | no selector, `ch.release === null` | `CHANNEL_UNPUBLISHED('release')` |
+| 7 | no selector, `ch.release` set | `{version: ch.release}` (row 5's dangling guard applies here too) |
 
-**B-2 — one source of truth for a knob's default value.** REQ-090 explicitly puts `default` in the params
-declaration ("name, type, default, and an allowed enum/range"), and the registered `defaults` block
-(`HarnessDefaults`, `harness-defaults.ts:6`) already carries a value for the same knob. Two author-side
-sources of one value is a contradiction hole with no stated winner. **Proposal (fail-closed, per
-ARCH-067):** at registration, cross-validate — `params.<knob>.default` that disagrees with
-`defaults.<knob>`, or a `defaults.<knob>` that violates the knob's own declared enum/range, is a typed
-rejection with nothing stored; and the normalized contract's `default` is **derived from the `defaults`
-column** so the two can never diverge after storage. Preserves REQ-090's vocabulary, removes the ambiguity.
+Seven disjoint outcomes, one pure function, zero I/O. `version`+`channel` together is **not** an error
+(REQ-097's own words), but silently discarding a supplied argument is a contract smell at the agent
+altitude — mitigated, not by an error, but by echoing `requested` back (§2A.3) so the caller can *see*
+which input won.
 
-**B-3 — the discoverable bound must be the *effective* bound.** Author declares `timeoutMs ≤ 900_000`;
-engine ceiling is `600_000` (ARCH-066). `workflow_get` advertising 900 000 while submission refuses it is
-a discoverability lie — the exact docs/behaviour split REQ-093 exists to repair. **Proposal:**
-`workflow_get` returns `min(author bound, engine ceiling)` **computed at read time** (ceilings are config
-and can change; storing the min would stale-cache it), with the stored column keeping the author's raw
-declaration. One line, closes the lie.
+#### 2A.3 — DES-112: `createRun`'s growth, and returning the resolved version
 
-**B-4 — `maxEffort` needs a total order, defined once.** `'high'` as a default ceiling over
-`low|medium|high|xhigh|max` (`types.ts:49`) is only meaningful with a rank table. Put `EFFORT_RANK` in
-`src/params/contract.ts` next to `isEffort()`, use it for both the ceiling comparison and any author
-range, and list the permitted values in the error's `allowed` (agent altitude: the caller must be able to
-retry correctly on the first bounce). DEPLOY §1 must document that `max`/`xhigh` are **refused by default
-config** — otherwise the first user report is "the docs advertise `max` and the engine says no".
+`RunStore.createRun(spec, scriptVersion?, effectiveParams?)` (`run-store.ts:76-81`) gains `requested` and
+`validation` (ARCH's ER model). Five positional parameters, three optional, is a signature a caller can
+mis-order silently. The clean answer is an options object — and it is **33 call sites** across `src/` and
+`tests/` (grepped this session). **Position (Karpathy tie-break): additive fourth parameter
+`admission?: { requested: RequestShape; validation: ValidationObservation }`, and the options-object
+refactor is explicitly NOT v22 work.** A v22 whose dominant risk is silent-failure should not spend its
+review budget on 33 mechanical edits. Record the debt with the reason.
 
-**B-5 — `workflow_resume` accepts no `overrides` field at all.** ARCH-066 inv-2 says resume "refuses new
-or changed overrides", which requires an equality semantics over the closed type (absent vs `{}` vs
-byte-identical values) — three cases to specify and test for zero user value. **Proposal (Karpathy):**
-presence of the field on resume is a typed error, full stop; the pinned snapshot is the only source. Same
-guarantee, nothing to get subtly wrong.
+`RequestShape = {kind:'version', version} | {kind:'channel', channel} | {kind:'default-release'}` — a
+discriminated union, not a free string, so `workflow_status` can render it without parsing.
 
-**B-6 (top risk) — `effort` on the SDK path must not re-open the shipped Ollama defect.** `thinkingFor()`
-(`claude-agent-sdk-client.ts:325`, wired at `:527`) is the **sole writer** of `options.thinking` and was
-added precisely because unconditional extended thinking made every local-Ollama default-path call fail
-after ~4 minutes (`state.yaml` tech_stack, Gate 7.5 round 3). If Anthropic's effort profile maps to a
-thinking budget, the design **must** state that `thinkingFor` remains the sole writer and **takes the
-effort directive as an input** — never a second assignment to `options.thinking`. Non-Anthropic profiles
-get the explicit `{applied:false, reason}` no-op entry (which is also the honest answer for Ollama).
-Regression test: alias→non-Anthropic + `effort:'max'` ⇒ `options.thinking` byte-identical to today.
+Two riders:
+- **`runs` needs the same idempotent `ALTER TABLE` idiom** the run store already uses
+  (`sqlite-run-store.ts:65-71`, `try { ALTER TABLE runs ADD COLUMN … } catch {}`) for `requested` and
+  `validation`. ARCH names the catalog's idiom; the run store's is a *different file* and is easy to miss.
+- **`workflow_run` should return the resolved version** in its result envelope
+  (`{runId, version, requested}` — `mcp-facade.ts:100-113` returns `{runId}` today). One field. It is the
+  agent-altitude affordance that makes the pin usable without a second `workflow_status` call, and it is
+  the only way a caller sees which of `version`/`channel` won.
 
-**B-7 (top risk) — REQ-094's "last" is already contradicted by the engine's own scaffolding.**
-`agent-executor.ts:312` composes `${effectivePrompt}\n\n=== OUTPUT FORMAT (REQUIRED) ===…` and `:320`
-appends a retry nudge — both **after** everything `composePrompt` produces. So for any schema-bearing
-`agent()` call, user `appendPrompt` is *not* the final text. Two honest resolutions: (i) declare that
-REQ-094's ordering constrains the three **content** segments (system / script / user) and that engine
-**protocol scaffolding** is appended after them as a fourth, non-author, non-user segment — pinned by a
-test that asserts the full four-segment order; or (ii) move the schema block ahead of the user text (I
-oppose: it demonstrably degrades JSON conformance on the OpenAI path, per the D-V4 hardening comment at
-`:305–311`). **Proposal: (i)**, stated in DES and in the REQ-094 acceptance note, because leaving it
-implicit means Gate 7.5 either finds a "violation" that is really a mis-specification, or misses it.
+#### 2A.4 — DES-115: `SubmissionValidator` survives, but its dependency object must shrink
 
-**B-8 — non-MCP triggers now go through the contract, and that has a visible consequence.** Confirming
-ARCH-066's placement (run-manager, not `SubmissionValidator`) and stating the reason ARCH left implicit:
-**four of five `start()` callers bypass `SubmissionValidator` entirely** — `webhook-registry.ts:137`,
-`scheduler.ts:219`, `server.ts:1242`, `continuation-store.ts:148`; only `mcp-facade.ts:89` is validated.
-Admission is therefore the only placement that covers all triggers. **Consequence to design deliberately:**
-declared-`args` validation (REQ-091) now applies to webhook/schedule/chained runs, so a webhook payload
-that violates the args contract **refuses the run at trigger time** rather than failing inside the script.
-That is the right behaviour (fail-closed, attributable) but it is a behaviour change for existing
-webhooks and needs exactly one test plus a DEPLOY note.
+After the move, `validate()` holds one check: name existence (`submission-validator.ts:74-90`). **Keep the
+class** — it is still the fail-fast choke point and deleting it churns the facade and the composition root
+for zero user-visible gain. But `SubmissionValidatorDeps` (`:18-27`) must lose `aliases`, `mcpRegistry` and
+`openrouterPassthrough`, leaving `{ catalog }`. Those three fields are read *only* inside the block that
+moves. Keeping them is not neutral: it leaves `main.ts` wiring a checker's inputs to a checker that no
+longer checks, which is a standing invitation to "just re-add the alias check here too" — the second
+enforcement site ADR-013 exists to prevent. Deleting them makes that a `tsc` error.
 
-**B-9 — one factory for `RunParams`; no call site constructs it.** With four callers that never supply
-overrides, an implementer facing a required param will reach for `?? {}` at the call site — resurrecting
-the inert-default bug class ARCH-068 is built to kill. **Proposal:** `start()` is the *only* producer,
-via a single `defaultRunParams(registeredDefaults)` helper for the no-overrides path; `continuation-store`
-chained runs explicitly start with the child workflow's own defaults and **never** inherit run A's
-snapshot (one test — a chained run must not silently inherit a user's `appendPrompt`).
+The `openrouterPassthrough` flag moves with the checks into `validateScriptEntry`'s injected ports.
 
-**B-10 — registration bounds need numbers, or there is nothing to test.** ARCH-064 inv-5 says "byte size +
-nesting depth" without values. **Proposal:** `params` source ≤ 4 KB, ≤ 32 declared knobs+args, enum ≤ 32
-members, nesting depth ≤ 4. Any number is better than none; these are chosen to be obviously generous.
+#### 2A.5 — DES-113: two same-named `scriptVersion` fields are actually **three** meanings
 
-### 2C. Testability lens
+ARCH-072 warns about two. Verified in primary source, there are three uses and they are already entangled:
 
-**T-1 — the tsc lever belongs on `AgentReq`, not on the constructor.**
-*(Refinement resolving ARCH-068's own "constructor/dispatch" ambiguity toward dispatch.)*
-`AgentExecutorDeps = {}` is an all-optional deps bag (`agent-executor.ts:269`) and `new AgentExecutor({…})`
-appears at 30 sites across 12 files in `tests/unit` and `tests/integration`. A required *constructor* field breaks
-them all and buys nothing: the executor instance is not where params semantically live. `AgentReq` is
-built at exactly **one** production site (`run-manager.ts:_handleAgentRequest`) and explicitly in tests —
-a required field there gives an identical compile-time guarantee with a fraction of the blast radius.
-**Critically:** `_spawnerOverride` (the `AgentSpawner` test seam, `run-manager.ts:400/540`) must carry the
-same required field, or the lever is bypassed in exactly the tests that would otherwise catch a
-regression. Call that out as a DES line — it is a one-word omission away from being useless.
+| where | type | meaning |
+|---|---|---|
+| `runs.scriptVersion` (`run-store.ts:76-81`) | `string` | the durable catalog version — **the pin**, write-once |
+| `RunEntry.scriptVersion` (`run-manager.ts:146`) | `number` | in-memory resume-generation counter, `+= 1` at `:563` — but **seeded from the catalog version** at `:394` and re-seeded from the pin at `:676` |
+| `JournalEntry.scriptVersion` (`types.ts:203`) | `string` | `` `v${entry.scriptVersion}` `` stamped at `:883` — i.e. neither the catalog version nor a clean generation number after the first resume |
 
-**T-2 — "before any durable work" needs named observables or the test passes vacuously.** ADR-008 allows
-exactly one integration test; fine, but DES must name its three assertions, because "the call threw" is
-satisfied by a rejection that happens *after* `createRun`:
-1. `store.listRuns()` count unchanged (fake/in-memory store),
-2. no directory created under `catalog.workFolder(name)/runs/` (tmp `workRoot`; note `runWorkspace()` at
-   `workflow-catalog.ts:180` only computes a path and memoizes it — the mkdir is downstream, so this
-   assertion must target the filesystem, not the call),
-3. zero sandbox spawns (spawner spy).
-Anything less does not test the property REQ-091 actually promises.
+**Two design rulings:**
+1. ARCH-072's "nested `workflow()` records the resolved version on the journal entry" must use a **new,
+   distinctly named field** — `resolvedWorkflowVersion?: string` — never `JournalEntry.scriptVersion`.
+2. **Decouple the counter**: seed `RunEntry.scriptVersion` from `1`, not from
+   `Number(registered.version.replace(/^v/,''))` (`:394`/`:676`). The durable pin now carries the catalog
+   version, so the counter's only remaining job is generation counting. `ResumeCache` does not read the
+   field (grepped: no `scriptVersion` in `src/resume-cache.ts`), so this is observational-only and safe —
+   and leaving it coupled means every `beta`-churn re-numbers a live run's journal stamps.
 
-**T-3 — effort "on the wire" is testable today at both gateways; say so, and flag the Gate-7.5 gap now.**
-Seams already exist: `GatewayConfig.fetchImpl` (direct/LiteLLM path → assert the mapped param in the
-request body) and `queryImpl` (SDK path → assert the mapped value on `Options`). Both are UT/IT-tier, no
-network. **But** REQ-093's real-tier evidence is a problem worth raising at Gate 3, not at Gate 7.5:
-Ollama (the local provider used in all Gate 7.5 rounds) has **no reasoning dial**, so the only real-tier
-observation available on the default local stack is the honest **no-op-with-reason** branch. Given this
-project's history of gates stalling on local-model capability (VAL-003 tool-use, still open in the v1.1
-backlog), the validation plan should pre-commit: real-tier green for REQ-093 = the no-op branch on Ollama
-**plus** the mapped-value assertion at the injected-seam tier, or a paid provider with sandbox credentials.
-Deciding this now costs a paragraph; deciding it at Gate 7.5 costs a round.
+#### 2A.6 — the closed error table (every code an agent can see after v22)
 
-**T-4 (top risk) — ARCH-064 inv-5 is unimplementable as written; split the guard in two.** It says
-`parseParamContract` "bounds the author literal (byte size + nesting depth) **BEFORE** it reaches the
-existing `runInNewContext` pure-literal gate" — but its own signature takes `metaParams: unknown`, i.e. a
-value that only exists **after** evaluation. `parseMeta()` (`workflow-meta.ts:16–22`) is the evaluator
-(`runInNewContext(…, {timeout:50})`). **Proposal:** two guards, two homes, two tests —
-(i) a **pre-eval source-size** guard in `workflow-meta.ts` (bytes of the matched `meta` literal text),
-(ii) a **post-eval structural** guard (depth / key-count / enum-length) in the pure
-`parseParamContract`. This also keeps `parseParamContract` genuinely pure (no VM, no clock), which is what
-makes the whole rejection taxonomy a table-driven unit test.
+| surface | codes |
+|---|---|
+| `workflow_register` | `PARSE_ERROR`, `UNKNOWN_ALIAS`, `MCP_NOT_PROVISIONED`, `PARAM_CONTRACT_INVALID` (incl. the frame-delimiter refusal), `HARNESS_DEFAULTS_INVALID`, `VERSION_CEILING_EXCEEDED`, `NOT_WORKFLOW_OWNER` — **nothing stored on any** |
+| `workflow_publish` | `NOT_WORKFLOW_OWNER`, `WORKFLOW_NOT_FOUND`, `UNKNOWN_VERSION`, `INVALID_CHANNEL` |
+| `workflow_run` | `INLINE_SCRIPT_CLOSED`, `MISSING_NAME` (**renamed**, see below), `UNKNOWN_WORKFLOW`, `CHANNEL_UNPUBLISHED`, `UNKNOWN_VERSION`, `INVALID_CHANNEL`, `DANGLING_CHANNEL` + all v21 admission codes unchanged |
+| `workflow_resume` | `INLINE_SCRIPT_CLOSED`, `RESUME_OVERRIDES_NOT_ALLOWED` (`mcp-facade.ts:171-176`, unchanged), `PARAM_SECRET_UNAVAILABLE`, `LEGACY_PIN_UNRESOLVABLE` only if §2B.1 is decided the strict way |
+| `workflow_get` | `WORKFLOW_NOT_FOUND`, `UNKNOWN_VERSION`, `CHANNEL_UNPUBLISHED` |
+| `schedule_create` / `webhook_create` / `chain_create` | `WORKFLOW_NOT_FOUND`, `CHANNEL_UNPUBLISHED` |
 
-**T-5 (top risk) — the `ON CONFLICT` clause is a silent-staleness trap.** `workflow-catalog.ts:110–114`
-updates `script, version, createdAt, defaults` and **deliberately omits `owner`**. An implementer adding
-`params` by pattern-matching that block will omit `params = excluded.params`, so **re-registering a
-workflow with a changed contract keeps the old contract** — no error, no cache miss, and the run path
-happily enforces a contract the author no longer wrote. Pinned test: register → re-register with a
-different `params` block → `workflow_get` returns the **new** contract; plus a negative test that `owner`
-still does not change. Also: the migration follows the established idempotent PRAGMA pattern
-(`workflow-catalog.ts:58–67`) — reuse it verbatim, and add a test that opening a pre-v21 `catalog.db`
-yields `params = NULL` reading back as the canonical unconstrained contract (ARCH-064 inv-4).
+Two dispositions the architecture left open:
 
-**T-6 — provenance can only be honest if it is emitted by the function that computes the value.**
-`resolveCallParams` must return `{value, rung}` per key from a single pass; a second function that infers
-provenance by comparing values can lie whenever two rungs hold the same value (e.g. registered default and
-engine default are both `sonnet`) — and that is precisely the case a wiring-miss test needs to distinguish
-(`provenance.model:'engine'` where `'default'` was expected). 5 rungs × 4 keys = 20 table-driven unit
-cases; 1–2 integration cases suffice on top.
+- **`MISSING_SCRIPT` → `MISSING_NAME`.** Today it fires when neither `name` nor `script` is present, with
+  the message "Submission requires either a registered workflow \"name\" or an inline \"script\""
+  (`submission-validator.ts:74-77`). After REQ-098 both the code and the message name a parameter that no
+  longer exists in the schema. At the agent altitude that is worse than cosmetic: an agent that reads
+  `MISSING_SCRIPT` will hallucinate a `script` parameter and retry with it. Rename the code and the
+  message; the ARCH-051 drift-lock test already pins the vocabulary, so this costs one line there.
+- **`UNKNOWN_WORKFLOW` (validator) vs `WORKFLOW_NOT_FOUND` (facade) vs `CatalogNotFoundError` (catalog)** —
+  three names for one condition, all pre-existing. **Do not unify in v22** (pure churn on a slice with a
+  silent-failure risk profile), but pin the mapping in the design table so Gate 5/6 does not add a fourth.
 
-**T-7 — the dedup fingerprint change (ARCH-070 inv-2) has a one-time blast radius.** The fingerprint is
-over (normalized title + component) (`github/issue-reporter.ts:140`). Adding `workflow` changes it for
-every workflow-bound report, so open pre-v21 issues stop matching once and re-duplicate. Acceptable, but
-pin the boundary: **with `workflow` absent, the fingerprint must be byte-identical to pre-v21** — that is
-the compatibility promise REQ-095's "behaves exactly as it does today" makes, and it is a two-line test.
+#### 2A.7 — `scriptSha256` leaves the wire with `script`
 
-**T-8 — the missing REQ acceptance clause: the locked trio has no ARCH home.** REQ-092's final clause —
-"`defaults.skills` / `defaults.tools` / `defaults.prompt` … are applied from the **registration** … closing
-the current state where they are inert metadata" — is **not placed by any of ARCH-064..070**:
-`composePrompt(systemPrompt, scriptPrompt, appendPrompt)` has no slot for `defaults.prompt`; provenance
-covers only `model|effort|timeoutMs|appendPrompt`; the tool-surface rung is unstated (today
-`agent-executor.ts:297–299` gives per-call `allowedTools` › agentType `tools` (D-F11) — where does
-`defaults.tools` sit? my proposal: directly below agentType); and `defaults.skills` was explicitly deferred
-by D-AUTH-5-D "to run time", which is *now*. **Proposal:** `mergeRunParams` folds **all five** registered
-keys into the snapshot (three author-only, never user-reachable — which is trivially safe precisely
-because `UserOverrides` cannot represent them, ADR-001), `composePrompt` gains the `defaults.prompt`
-segment with a pinned position, and the descriptor's `tools`/`skills` already-existing fields carry their
-own provenance. This also reshapes the "delete `resolveHarnessParams`" cleanup below: the locked trio
-still needs an **author-side** application path, so `mergeRunParams` must subsume it *before* the old
-function is deleted.
+`workflow_run` advertises `scriptSha256` (`server.ts:318`) and `run-manager.ts:292-294` refuses it whenever
+there is no inline script (`SCRIPT_SHA_WITHOUT_SCRIPT`). After REQ-098 there is never an inline script, so
+the parameter is **permanently unsatisfiable**: every use of an advertised parameter returns an error. It
+must be removed from the `workflow_run` schema, from the facade signature (`mcp-facade.ts:100`), from
+`RunSpec` (`types.ts:179`) and the `:292-294` branch deleted, in the *same* task as `script` — and the
+absence joins the drift-lock. Re-offering it on `workflow_register` is a **new** surface no requirement
+buys; refused.
 
 ---
 
-## 3. Task-splitting implications (`03-tasks.md` does not exist yet)
+### 2B. Boundary/error lens
 
-- **T-A `catalog.get()` widening lands FIRST, alone.** It is the only change with cross-cutting compile
-  impact (4 call sites incl. the nested path), and every later task assumes it. A tiny task, but sequencing
-  it first is what stops I-1 from being "fixed" by the `getFull()` shortcut inside a bigger task.
-- **T-B pure modules** (`src/params/contract.ts`, `src/params/resolve.ts`) + the full rejection table
-  (B-1) + `EFFORT_RANK` (B-4) + the post-eval structural guard (T-4ii). All UT, no I/O. This task carries
-  the majority of the coverage and should be test-first in the strictest sense.
-- **T-C catalog column + registration** (migration, `ON CONFLICT` incl. `params`, cross-validation B-2,
-  pre-eval source guard T-4i, `workflow_get`/`workflow_list` surfacing with effective bounds B-3).
-- **T-D admission rung + snapshot + resume** (ceilings, `start(spec, overrides)` per I-6, redaction sink,
-  `defaultRunParams` factory B-9, resume-refuses-overrides B-5) — **and the three `composeConfig()` keys
-  plus their line in `tests/unit/compose-config-v2-wiring.test.ts` must be in THIS task**, never a
-  "config plumbing" task of its own. A separate config task is how a fifth instance of that bug class gets
-  deferred (v11 `updateFlagPath`, v15 `auth`, v16 `workspaceTtlMs`, now `resolveHarnessParams`).
-- **T-E dispatch wiring + descriptor decoration** (required field on `AgentReq` **and** `_spawnerOverride`
-  per T-1; `onHarness` decoration per I-3; `composePrompt` incl. `defaults.prompt` per T-8; the
-  four-segment prompt-order pin per B-7).
-- **T-F gateway effort** (shared `mapEffort`, two call sites, `onHarness(descriptor, applied)` per I-4,
-  `thinkingFor` sole-writer regression test per B-6).
-- **T-G issue binding** (label, body lines, fingerprint incl. the absent-workflow byte-identity test T-7).
-- **Explicit cleanup task, not a footnote: retire `resolveHarnessParams`** (`harness-defaults.ts:90`,
-  zero `src/` callers) once T-8's author-side path exists. Leaving a `Partial<HarnessDefaults>`-shaped
-  merge function sitting next to the new closed-type one is an open invitation for a future implementer to
-  "finally wire the one that was never wired" — reintroducing exactly the ADR-001 escalation. Deleting the
-  shape is cheaper than documenting why not to use it.
-- **Dependency edges that matter:** T-A → {T-C, T-D}; T-B → {T-C, T-D, T-E, T-F}; T-D → T-E; T-E ∥ T-F
-  (they meet only at `onHarness`); T-G independent.
+#### 2B.1 — HIGH: the dangling pin on a pre-v22 suspended named run
+
+**Mechanism (verified, not hypothesised).** `start()` writes the pin from the catalog version at launch
+(`run-manager.ts:385-394` → `createRun(spec, resolvedVersion)`), and named runs store an *empty*
+`spec.script` (`:385-392`). Registration overwrites in place today (`workflow-catalog.ts:210-220`), so the
+script the run started from **no longer exists anywhere** once the author re-registers. The migration can
+only copy the current row. Therefore: a run suspended at pin `v2` on a workflow now at `v3` has a pin with
+no version row. ARCH-072 makes `resume` read *through* the pin. Result: `UNKNOWN_VERSION`, permanently
+unresumable — a regression, since today `:632-636` re-resolves and the run continues (on `v3`).
+
+Population is small, closed, and identifiable: runs in `suspended`/`queued`/`running` at upgrade time whose
+pin is not in `workflow_versions`. It can never grow after the migration.
+
+**Options.** (a) Strict — refuse with a typed `LEGACY_PIN_UNRESOLVABLE` naming the missing version.
+(b) Narrow legacy fallback — pin miss ⇒ resolve `release`, **record the substitution** on the run's
+`validation` observation and log it; applies only when the pin is absent from `workflow_versions`.
+(c) Migration-time repair — stamp legacy runs' pins to the migrated version during the ADR-011 transaction.
+
+**Position: (b), with (c) rejected for a specific reason** — (c) rewrites the pin, and the pin is the
+field REQ-096 makes authoritative for "which version actually ran"; overwriting it would *manufacture* a
+false answer, which is worse than an honest substitution recorded at resume. (a) is the interface-contract
+lens's answer and I acknowledge the tension (§5.ii): it strands work an operator already paid for, in
+exchange for purity about a cohort whose true version is unrecoverable either way. (b) preserves exactly
+today's semantics for exactly today's runs, is unreachable for any post-v22 run (their pins always exist),
+and is observable rather than silent.
+
+**Test (RED, must exist):** a hand-built legacy `catalog.db` + `runs.db` with a suspended run pinned to a
+version absent from the versions table; assert it resumes and that the run's `validation` records the
+substitution.
+
+#### 2B.2 — the legacy `workflows.script`/`version`/`defaults`/`params` columns
+
+ARCH's data view says these columns "move". SQL is a string; `tsc` cannot enforce a move. Two failure
+shapes: a half-converted read (`getFull`'s own `SELECT`, `workflow-catalog.ts:272-274`) that fails at
+runtime, or — much worse — the columns left in place and still written by an overlooked path, becoming the
+stale second source of truth the slice exists to delete.
+
+`better-sqlite3` in this repo bundles **SQLite 3.53.2** (verified by executing
+`select sqlite_version()` this session), so `ALTER TABLE … DROP COLUMN` (3.35+) is available. **Position:
+drop `script`, `version`, `defaults`, `params` from `workflows` inside the ADR-011 migration transaction,
+guarded by the same "column present?" `PRAGMA table_info` read the file already performs
+(`workflow-catalog.ts:86-98`) so it stays idempotent.** Assert it: a migration test that reads
+`PRAGMA table_info(workflows)` and requires the four names to be **absent**. That assertion, not a review,
+is what makes "moved" true.
+
+#### 2B.3 — `db.transaction()` is deferred; the cross-process case needs `immediate`
+
+ARCH-071 invariant 5 is right that the cross-process window is the real one (self-update overlap, a second
+operator instance) and right to reject a lock service. But `better-sqlite3`'s plain `db.transaction(fn)`
+begins a **deferred** transaction: two processes can both execute `SELECT max(version)` before either
+takes a write lock, and the loser gets a raw `SQLITE_BUSY` (or, once both try to insert the same
+`(name, version)`, `SQLITE_CONSTRAINT`) surfaced as an untyped 500 — precisely the outcome ARCH says the
+transaction prevents.
+
+**Position:** use `.immediate()` for `register` and `publish`, and map the residual
+`SQLITE_BUSY`/`SQLITE_CONSTRAINT_PRIMARYKEY` to a typed `REGISTRATION_CONFLICT` ("retry"). Two lines, no
+new machinery, and it converts an untyped 500 into an actionable code. Also set a `busy_timeout` pragma if
+one is not already configured. Testability caveat in §2C.5 — this is the one v22 behaviour I concede is
+not unit-testable.
+
+#### 2B.4 — the version ceiling can wedge an author permanently
+
+ADR-014 refuses at the front door with `VERSION_CEILING_EXCEEDED` and adds no GC — correct. But
+`deregister` is name-granular (`workflow-catalog.ts:227-238`) and ARCH-071 extends it to remove *all*
+version rows. So an author who hits the ceiling has exactly one escape: destroy the workflow, its channel
+pointers, and the resolvability of every completed run's pin. The sanctioned author loop
+(register-draft → run) is the very thing that fills the ceiling, so this is a wedge reachable by using the
+feature as designed.
+
+**Position: one optional parameter on the existing tool** — `workflow_deregister({name, version?})`,
+owner-gated, refusing to delete a **channel-pointed** version (`CHANNEL_POINTED_VERSION`) and refusing to
+delete the **last remaining** version (use name-granular deregister for that). No new tool, no GC, no
+tombstones, no sweep. The `VERSION_CEILING_EXCEEDED` message names this escape — at the agent altitude the
+error text is the runbook. This is the smallest thing that keeps the ceiling from being a trap.
+
+#### 2B.5 — a NULL-owner row is masked from everyone once auth is on
+
+`viewerIsOwner = ctx.authEnabled ? (principal !== null && principal === row.owner) : true` (ARCH-076)
+evaluates false when `row.owner` is `NULL` — a pre-v15 row on a deployment where the boot backfill is off
+(`opts.backfillOwner`, `workflow-catalog.ts:100-107`). Consequence: *nobody*, including the human who
+registered it, can read that script through any surface. That is the correct fail-closed direction, but it
+is a boundary condition the architecture never names, and an operator will read it as a bug. **Pin it as
+intended behaviour, test it explicitly, and have the masked response's `scriptWithheld` reason distinguish
+"you are not the owner" from "this workflow has no recorded owner; run the boot backfill".** Same shape,
+different remediation text — one extra string, and it is the difference between a bug report and a fix.
+
+#### 2B.6 — three states the truth table must not conflate
+
+- **`name` exists, zero version rows.** Unrepresentable if `deregister` is name-granular; §2B.4's
+  per-version delete makes it representable, which is exactly why that delete must refuse the last version.
+  Belt-and-braces: `resolve` maps it to `WORKFLOW_NOT_FOUND`, never `CHANNEL_UNPUBLISHED`.
+- **A channel pointer set to a version that no longer exists.** Reachable only via §2B.4; the pointer must
+  be cleared in the same transaction as any per-version delete, and `DANGLING_CHANNEL` exists as the
+  never-should-happen code rather than a silent `undefined` script.
+- **Migration ordering vs the owner backfill.** Verified non-issue: owner stays on `workflows` and is not
+  copied into `workflow_versions`, so the two boot passes are order-independent. Stated so Gate 5 does not
+  invent an ordering constraint — and so nobody "helpfully" copies `owner` per version (ARCH-071 rules
+  ownership is per-name; a per-version owner column would invent a question nothing asks).
+
+#### 2B.7 — validation vs ceiling ordering at registration
+
+Both run before any write. **Order: `validateScriptEntry` first, ceiling second.** The script errors are
+properties of the author's own text and are actionable offline; the ceiling is an environmental refusal
+whose remedy is a different call. An author with a broken script *and* a full ceiling should be told about
+the script first. `register` throws the **first** error (matching the existing `codedError` convention at
+`workflow-catalog.ts:121/129/143`) and carries the remaining codes in the error `detail` so a caller fixing
+three things does not need three round trips.
+
+---
+
+### 2C. Testability lens
+
+**Claim: every proposed DES is unit-coverable, and the two that are not are named as such.**
+
+| DES | tier | seam |
+|---|---|---|
+| DES-110 `resolveVersionRequest` | pure UT, table-driven, **no DB** | none needed — pure function |
+| DES-114 `validateScriptEntry` | pure UT | injected `{aliases, openrouterPassthrough, mcpLookup}` ports |
+| DES-116 `projectWorkflowForRead` | pure UT | none |
+| DES-117 facade policy (`viewerIsOwner`) | UT | constructed `ReadContext`, no HTTP |
+| DES-109/111 schema + migration + ceiling | hermetic integration (real file DB in a tmp `workRoot`) | **no new seam** — see below |
+| DES-112/113 pin, resume, nested, DAG | integration | existing `InMemoryRunStore`, injected `Clock`, `_spawnerOverride` |
+| DES-118 wire surface + masking | real-transport integration | existing injectable `TokenStore` |
+| §2B.3 cross-process race | **not testable in-process** | assert transaction mode; residual recorded |
+
+Six oracles I insist on, each written to survive v22 Rule 1 ("a test whose oracle is the code under test
+cannot fail when the code is wrong"):
+
+1. **The truth table is tested as a table**, all seven outcome rows of §2A.2 as literal
+   `[input, channels, known] → expected` tuples, **plus the four precedence collisions** that only a
+   declared order resolves (unknown version + invalid channel ⇒ `INVALID_CHANNEL`; known version + invalid
+   channel ⇒ `INVALID_CHANNEL`; known version + unpublished channel ⇒ the version; unknown version +
+   valid channel ⇒ `UNKNOWN_VERSION`). Not "resolves to something sensible".
+2. **The legacy fixture is hand-written SQL.** The migration/S-2 tests build the pre-v22 `catalog.db` with
+   raw `CREATE TABLE workflows (name TEXT PRIMARY KEY, script TEXT NOT NULL, version TEXT NOT NULL,
+   createdAt TEXT NOT NULL)` + the three `ALTER TABLE`s (`workflow-catalog.ts:78-98`) and direct
+   `INSERT`s — **never** by instantiating the new `WorkflowCatalog`. A fixture built by the code under test
+   cannot detect a migration that is wrong in the same direction. This is also why I **refuse a
+   `Database`-injection seam** on the catalog (Karpathy + §5.iii): writing the file into a tmp `workRoot`
+   is both simpler and a strictly better test.
+3. **IT-011 is upgraded from relative to literal.** `tests/integration/scriptversion-fidelity.test.ts:40-49`
+   currently asserts `v2 !== v1`. That passes if both are wrong, and it is the existing guard on the field
+   v22 promotes to the pin. Rewrite: run 1 pins **`'v1'`**, run 2 pins **`'v2'`**, and after registering a
+   third version, run 1's status **still reports `'v1'`** (REQ-096's own clause).
+4. **Resume determinism is proven by execution, not by metadata.** The RED test registers `v1` whose script
+   returns a literal marker, suspends, registers+publishes `v2` returning a *different* literal, resumes,
+   and asserts the **v1 marker** is the result. Asserting "the pin still says v1" tests the label; asserting
+   the marker tests the behaviour REQ-096 bought.
+5. **Masking is asserted two-sided and over the real transport.**
+   `expect(Object.keys(deepFlatten(resp)).sort()).toEqual(EXPECTED_NON_OWNER_KEYS)` — so a *new* leaked
+   field fails **and** a missing `scriptWithheld` fails. `not.toContain(scriptText)` is refused as an
+   oracle (it passes while `result.script` leaks — and `script` genuinely appears **twice** in
+   `workflow_get`'s response today, at the top level and inside `result`, `mcp-facade.ts` ~:220/:232). One
+   test drives an authenticated **non-owner** through `/mcp` with a real bearer minted via `TokenStore`,
+   including the negative: supplying `{principal: '<owner-email>'}` in the arguments does **not** unmask
+   (the `args.principal` fallback at `server.ts:813-822` is barred from this path).
+6. **Structural (grep-style) assertions where behaviour cannot reach.** Zero `if (spec.script)` in
+   `submission-validator.ts`; zero `catalog.get(` / `getFull(` in `src/`; `PRAGMA table_info(workflows)`
+   lacks the four moved columns; `tools/list` advertises neither `script` nor `scriptSha256` on
+   `workflow_run`, nor `script` on `workflow_resume`, and does advertise `workflow_publish` with the
+   `beta|release` enum. These are cheap and they are the only tests that fail when a *future* change
+   re-opens the hole.
+
+**Clock/storage injection status (checked, not assumed).** The clock is already injected
+(`workflow-catalog.ts:70-72`); the new `workflow_versions.createdAt` must use `this._clock.isoNow()`, never
+`new Date()` — otherwise version ordering becomes untestable under a fake clock. Storage is *not* injected
+and should stay that way (oracle 2). `RunStore` is already an interface with an in-memory fake
+(`run-store.ts:76+`), so the pin is UT-reachable without SQLite.
+
+---
+
+## 3. Task-splitting implications (a v22 `03-tasks.md` does not exist yet)
+
+Numbering continues from `TASK-104`. My lenses constrain the split in four places; everything else the
+synthesizer may split as it likes.
+
+**Three groupings that MUST be single tasks** — splitting them re-creates this repo's signature failure:
+
+- **T1 (`TASK-105`): the versioned catalog *and* every converted call site, in one commit.** `get()`'s
+  deletion + `resolve`/`resolveDetail`/`exists` + the six known call sites (`run-manager.ts:391`, `:635`,
+  `:801`; `scheduler.ts:147` and `:207`; `webhook-registry.ts:87`; plus `submission-validator.ts:83`). Split
+  across tasks, the intermediate state either does not compile or — worse — keeps a legacy accessor alive
+  for one review cycle, which is how it survives.
+- **T4 (`TASK-108`): the required `ReadContext` *and* every call site *and* the transport test.** The whole
+  value of a required parameter is that an unwired call site is a `tsc` error; a task that adds the
+  parameter with a default "to unblock the next task" deletes the entire protection.
+- **T7 (`TASK-111`): `maxWorkflowVersions` + `composeConfig()` forwarding + the
+  `tests/unit/compose-config-v2-wiring.test.ts` row, in one task.** This is the repo's twice-realised
+  wiring bug class (v11 `updateFlagPath`, v15 `auth`); the architecture already decrees it, and the task
+  split is where it actually gets enforced or lost.
+- **T2 (`TASK-106`): `script` + `scriptSha256` + `SCRIPT_SHA_WITHOUT_SCRIPT` + the drift-lock rows,
+  together.** Removing one and leaving the other ships an advertised parameter that can only error.
+
+**One ordering constraint:** the migration (T1) must land before the pin work (T3) can have a green test —
+the resume-determinism RED test needs two retrievable versions to exist at all.
+
+**One task that must be first, not last:** the **legacy-cohort test fixture** (§2C.2). Written after the
+implementation, it will be built with the new code and prove nothing.
+
+**One task I would refuse:** a "refactor `createRun` to an options object" task (§2A.3). 33 call sites of
+mechanical churn inside a slice whose entire risk profile is silent failure — the review attention it
+consumes is worth more spent on the masking and migration tests.
 
 ---
 
 ## 4. Risks (ordered by confirmed severity)
 
-| # | Risk | Evidence | Mitigation |
-|---|---|---|---|
-| R-1 | **Effort mapping re-opens the shipped Ollama/`think:true` defect** on the default SDK+local path | `claude-agent-sdk-client.ts:325/527`; `state.yaml` Gate 7.5 round 3 | `thinkingFor` stays sole writer of `options.thinking`, takes the effort directive as input; non-Anthropic ⇒ explicit no-op; regression test pins byte-identical `thinking` for a non-Anthropic alias at `effort:'max'` (B-6) |
-| R-2 | **REQ-094 "last" is unachievable as literally worded** for schema calls; Gate 7.5 finds either a phantom violation or nothing | `agent-executor.ts:312, 320` | Declare the four-segment order (system / script / user / engine-protocol) in DES + REQ-094 note; pin with a test (B-7) |
-| R-3 | **Pre-eval vs post-eval bound is unimplementable as written**; implementer silently drops one half | ARCH-064 inv-5 vs its own `metaParams: unknown` signature; `workflow-meta.ts:16–22` | Split into a source-size guard in `workflow-meta` and a structural guard in the pure parser (T-4) |
-| R-4 | **Stale contract on re-register**, silent | `workflow-catalog.ts:110–114` omits `owner` by design; `params` would be omitted by pattern-copy | `params = excluded.params` + a re-register test (T-5) |
-| R-5 | **REQ-092 still fails under composition**; nested runs get neither defaults nor contract | `run-manager.ts:~688` uses the narrow `get()` | I-1 widening + explicit nesting semantics + one test per direction (I-2) |
-| R-6 | **REQ-092's locked-trio clause is unplaced** — ships as "still inert metadata" and Gate 8 finds it | no ARCH-064..070 slot for `defaults.prompt/tools/skills` | `mergeRunParams` folds all five keys; `composePrompt` gains the author-prompt segment (T-8) |
-| R-7 | **Second unredacted sink** for caller `appendPrompt` via the persisted `RunSpec` | `run-store.ts:136/152`; ARCH-066 inv-5 names only the snapshot | `start(spec, overrides)`; never persist raw overrides (I-6) |
-| R-8 | **REQ-093 has no real-tier evidence path** on the local stack; Gate 7.5 stalls a round | Ollama has no reasoning dial; VAL-003 precedent in the v1.1 backlog | Pre-commit the evidence plan at Gate 3/4: no-op branch real-tier + mapped-value at the injected seam (T-3) |
-| R-9 | **Required-field churn** breaks ~28 executor constructions (30 mentions across 12 test files) for no safety gain, or the lever is bypassed via `_spawnerOverride` | `agent-executor.ts:269`; `run-manager.ts:400/540` | Required field on `AgentReq` and on the spawner seam; optional on the DTO (T-1, I-3) |
-| R-10 | **Caller text echoed into error envelopes/logs** | ARCH-064 inv-3 payload `{supplied}` × 1 KB `appendPrompt` | Bytes not content; truncate with an explicit flag (B-1a) |
-| R-11 | Behaviour change for existing webhooks/schedules once declared-args validation applies at admission | 4 of 5 `start()` callers bypass `SubmissionValidator` | Intended and fail-closed; one test + DEPLOY note (B-8) |
-
-**Accepted, not mitigated (agreeing with ADR-005/007/008):** cost amplification within ceilings by a
-non-owner principal; prompt-injection influence over the author's granted tool surface via `appendPrompt`;
-no rejection telemetry; no non-owner descriptor masking before v22.
+| # | risk | severity | evidence | mitigation |
+|---|---|---|---|---|
+| R1 | pre-v22 suspended named runs stranded by an unresolvable pin | **HIGH** — silent regression, discovered only by an upgrading operator | `run-manager.ts:385-394`, `:632-636`; `workflow-catalog.ts:210-220` | §2B.1 option (b) + a legacy-fixture RED test |
+| R2 | `getFull`/legacy columns leave a second source of truth or a runtime SQL failure | **HIGH** — `tsc` cannot see it | `workflow-catalog.ts:267-276` | rename to `resolveDetail`; DROP COLUMN + `PRAGMA` assertion (§2B.2) |
+| R3 | masking implemented but unwired on one surface | **HIGH** — the repo's own recurring class | `server.ts:801-825` (no principal on `workflow_get`/`workflow_list`), `:1002-1007` skeleton, `:1039-1046` dag | required `ReadContext` in ONE task + real-transport two-sided oracle |
+| R4 | `scriptSha256` becomes an advertised, always-failing parameter | MED | `server.ts:318`, `run-manager.ts:292-294` | remove with `script` (§2A.7) |
+| R5 | cross-process registration collides → untyped 500 | MED | deferred-transaction semantics; ARCH-071 inv-5's own scenario | `.immediate()` + typed `REGISTRATION_CONFLICT` (§2B.3) |
+| R6 | version ceiling wedges an author | MED | ADR-014 + name-granular `deregister` (`workflow-catalog.ts:227-238`) | optional `version` on the existing deregister (§2B.4) |
+| R7 | journal `scriptVersion` conflated with the resolved catalog version | MED | `types.ts:203`, `run-manager.ts:394/563/676/883` | distinct field + decouple the counter (§2A.5) |
+| R8 | the validation move loses a check silently | MED | every check behind `if (spec.script)`, `submission-validator.ts:92-124` | shrink the deps object (§2A.4) + zero-`if (spec.script)` structural test |
+| R9 | `MISSING_SCRIPT` teaches an agent to retry with a removed parameter | LOW-MED (agent altitude) | `submission-validator.ts:74-77` | rename to `MISSING_NAME` (§2A.6) |
+| R10 | NULL-owner rows unreadable by anyone under auth | LOW, correct-but-surprising | `workflow-catalog.ts:100-107` + ARCH-076's predicate | pin as intended + distinct remediation text (§2B.5) |
 
 ---
 
 ## 5. Internal conflicts between my own three lenses (surfaced, not hidden)
 
-1. **Interface honesty vs. testability blast radius (I-3/T-1 vs ARCH-068).** The boundary lens wants
-   required fields everywhere (omission = compile error); testability counts ~28 constructions across 12 files and ~2 gateway
-   sites broken for fields that a DTO cannot enforce anyway. **Resolution:** put required-ness where
-   omission is a *bug* (the dispatch argument, plus the spawner seam) and optionality where it is merely
-   *shape* (the persisted descriptor). Karpathy tie-break: one lever, placed precisely, beats three.
-2. **Self-describing errors vs. not echoing caller text (B-1 vs B-1a).** The agent-altitude consumability
-   argument wants `{supplied}` in every payload so the caller self-repairs; the boundary/security argument
-   refuses to copy 1 KB of unscreened user text into envelopes and logs. **Resolution:** echo `supplied`
-   only for small, enum-like values; report *bytes* for free-text knobs. Consumability barely suffers —
-   "your appendPrompt was 4096 bytes, max 1024" is fully actionable.
-3. **Injectable observables vs. exactly-one integration test (T-2 vs ADR-008).** I agree with ADR-008's
-   refusal to refactor the pinned `admit()` ladder, but a single integration test only proves the property
-   if its assertions are named in advance. **Resolution:** keep one test; specify its three assertions in
-   DES. This is the one place I ask the synthesizer to add *words*, not code.
-4. **One translator (ARCH-065) vs. provider knowledge lives in the gateway (I-4).** Purity says map once,
-   upstream; the primary source says provider is only resolvable downstream. **Resolution:** one pure
-   implementation, two import sites, and the *applied object* travels back up — the invariant that matters
-   (recorded ≡ applied) is preserved without a new interface method.
-5. **REQ-094's literal "any agent() in that run" vs. child-contract integrity (I-2).** I could not resolve
-   this from the requirement text and I decline to resolve it unilaterally: it is a **user-visible product
-   decision** about whether a user's instruction follows a workflow into workflows it composes. Flagged for
-   the synthesizer with both readings and my conditional recommendation.
+1. **Interface-contract vs boundary — "never a silent fallback" vs the stranded legacy run (§2B.1).**
+   `CHANNEL_UNPUBLISHED` exists precisely because REQ-097 forbids falling back to "newest". My §2B.1(b)
+   proposes a fallback. **Resolution: they govern disjoint populations.** The prohibition is about a
+   *request* the caller made (a named channel, a named version) — there, refusal is right. The legacy pin
+   is not a request; it is a record of a version whose bytes no longer exist, in a cohort that is closed
+   and cannot grow. And the fallback is *recorded on the run*, so it is not silent. If the panel disagrees,
+   the strict option (a) is a one-line change — but it must be a decision, not an omission.
+2. **Interface-contract vs boundary — `version` + `channel` supplied together.** Contract says silently
+   discarding a supplied argument is a defect; REQ-097 says version wins, no error. **Resolution:** obey
+   the requirement, and pay the contract debt with the `requested` echo + returning the resolved version
+   from `workflow_run` (§2A.3) — visibility instead of an error.
+3. **Testability vs Karpathy — a `Database` injection seam on the catalog.** Testability's reflex is a seam
+   for the migration test. **Resolution: refused.** Writing a legacy `catalog.db` into a tmp `workRoot` is
+   fewer moving parts *and* a strictly stronger test (it exercises the real driver against a real legacy
+   file). This is the rare case where the simpler design is also the more testable one.
+4. **Interface-contract vs testability — `createRun`'s five positional parameters (§2A.3).** The clean
+   signature is an options object; the honest cost is 33 call sites of churn in a slice whose failures are
+   all silent. **Resolution (Karpathy tie-break): additive fourth parameter now, refactor recorded as
+   debt.** I state this as a conflict rather than a preference because the contract lens genuinely loses
+   here.
+5. **Boundary vs Karpathy — the per-version deregister (§2B.4).** New surface in a slice that boasts "one
+   new tool". **Resolution: one *optional parameter* on an existing tool, not a second tool.** The
+   alternative is a documented trap, and a trap is not simplicity.
 
 ---
 
-## 6. Expected disagreements with the other lenses
+## 6. Expected disagreements with the other lens (quality-dimensions)
 
-- **Quality-dimensions (observability/consumability) will want more surfaces than I will grant.** Its
-  architecture-round pattern (O-1/O-3) was rejection telemetry and richer exposure. I hold ADR-008: three
-  error codes do not justify a metrics subsystem, and `/api/*` remains unauthenticated so dashboard
-  surfacing of params publishes author config. Expect friction on whether "no telemetry" is a *gap* or a
-  *recorded residual* — I say residual, already adjudicated at Gate 2.
-- **On the contract's expressiveness.** I expect a push for `ParamSpec.description`, richer `unit`
-  vocabulary, maybe a per-knob `examples` — consumability arguments at the agent altitude. I will accept
-  `description` (pure documentation, zero behaviour, it genuinely helps an agent caller) and reject
-  anything that *branches* at run time. And I expect a counter-push on my B-2: quality may want
-  `params.<knob>.default` to be authoritative for discoverability; I want it derived so it cannot diverge.
-- **On my I-3/T-1 softening.** A lens that prizes hard structural enforcement will read "optional DTO
-  fields" as backsliding from ARCH-068. My defence is empirical, not aesthetic: `HarnessDescriptor` is a
-  persisted record shape with historical instances that already lack these fields; a required field there
-  buys a compile error at two gateway sites, not at the wiring site that has actually failed four times.
-- **On I-4.** A replaceability-minded lens may prefer a `ProviderProfile`/`resolveTarget` seam so effort
-  mapping is "properly" abstracted. I argue that is a new interface with two implementations invented to
-  relocate a pure function call — the Karpathy tie-break rejects it; the config-entry replaceability
-  ARCH-069 promised is fully delivered by the profile data alone.
-- **On I-2 (`appendPrompt` propagation).** I expect the other lenses to have an opinion on the *user's*
-  expectation ("I asked this run to answer in Spanish and the nested step didn't") which points to
-  propagate, versus my contract-integrity instinct which points to contain. I have deliberately not
-  pre-committed; this is the item most worth arguing in round 2.
-- **Where I expect agreement:** the `catalog.get()` widening (I-1), the `ON CONFLICT` trap (T-5), the
-  `thinkingFor` collision (B-6), and the unplaced REQ-092 locked-trio clause (T-8) are primary-source
-  facts, not judgement calls. If any lens disputes them, it should do so with a file and a line number.
+1. **Publish audit trail (their OBS-2).** They will re-open it. I hold with ADR-009's decline — but I
+   **concede half**: a structured INFO log nobody asserts is not observability. If the log line is the
+   answer, a test must pin its fields (`name`, `channel`, `from→to`, `principal`). Unasserted logging is
+   the same class as an unwired module.
+2. **`validation` on `workflow_list` (their "recompute opportunistically on read").** I hold with the
+   exclusion: a 3s dashboard poll × a per-row script parse is a real cost on a surface nobody debugs from,
+   and `workflow_get` already answers the question.
+3. **Dashboard identity / "the owner can't read their own script in the dashboard".** They will call this a
+   consumability regression. I hold fail-closed (ADR-012) and offer the zero-cost mitigation: the masked
+   dashboard panel shows the exact `workflow_get` invocation that would return the script to its owner. A
+   dead end becomes a signpost without adding browser-session identity.
+4. **Retention/GC.** They will want a sweep; I want the ceiling **plus** the §2B.4 escape hatch. I expect
+   them to prefer the sweep precisely because it avoids the wedge — my counter is that automatic deletion
+   collides with REQ-096's "both versions remain retrievable" and can orphan a completed run's pin, while
+   an owner-initiated per-version delete cannot happen by surprise.
+5. **`resolveVersionRequest` as an injected module (their replaceability instinct).** I hold: an exported
+   pure function in the file that owns it. A separate module for a function with one caller is abstraction
+   for code used once — and it is equally testable either way, which removes their strongest argument.
+6. **`workflow_resume({runId, version})` (their CON-3).** Already declined in ADR-010 and I agree; it
+   collides with v21's run-immutable `effectiveParams`. If they re-open it, my answer is §2B.1: the legacy
+   cohort is what they are actually reaching for, and it has a narrower fix.
+7. **`Scheduler.create` requiring the name to resolve on `release`.** I predict they contest it: an author
+   cannot schedule a beta-only workflow, and the refusal arrives at creation for a condition (an unpublished
+   release) the author may be about to fix. I keep the refusal — a schedule that can never fire is worse —
+   but the error must say "publish `<name>@<version>` to `release` first". No `schedule_create({channel})`.
+8. **Author-chosen version strings / semver (their CON-5).** Refused; engine-assigned `v<n>` is sortable,
+   collision-free and parser-free, and author-chosen strings would make `resolveVersionRequest`'s
+   `UNKNOWN_VERSION` cell ambiguous with a channel name.
+9. **Where I expect to *agree* and want it on record:** deleting `get(name)` outright (their REP-1 — they
+   were right and the adversarial instinct to keep a `getVersion` beside it was wrong); and a type in which
+   `script` is unrepresentable for the non-owner branch (their REP-2), which is exactly ARCH-075's
+   `WorkflowPublicView`.

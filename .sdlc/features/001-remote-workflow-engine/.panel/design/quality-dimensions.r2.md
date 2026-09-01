@@ -1,172 +1,209 @@
-# Design panel r2 — quality-dimensions lens (observability / replaceability / consumability / self-sustainability)
+# Design panel r2 — Quality-dimensions lens (v22: REQ-096..100, ARCH-071..076, ADR-009..014)
 
-- **stage:** Design (Gate 3+4) — round 2, convergence
-- **inputs read:** `adversarial.r1.md` (full), my `quality-dimensions.r1.md`. Only two r1s exist in the panel dir.
-- **verification note:** the four adversarial citations my concessions rest on were re-checked against
-  source before this round, not taken on faith: `workflow-catalog.ts` `get()` = `SELECT script, version`
-  only; the `ON CONFLICT(name) DO UPDATE` clause updates `script/version/createdAt/defaults` and omits
-  `owner` by design; `agent-executor.ts` appends the `=== OUTPUT FORMAT (REQUIRED) ===` block and the
-  retry nudge *after* the composed prompt; `gateway/client.ts` resolves `this._config.aliases[aliasName]`
-  inside `invoke()` and emits the descriptor from an inline literal with its own `PROMPT_CAP=4096/HALF=2048`
-  constants. All four check out. Adversarial's primary-source findings are facts; I treat them as such.
+lens: quality-dimensions (observability / replaceability / consumability / self-sustainability)
+round: 2 (convergence — responses to adversarial.r1, final position, remaining disagreements)
+inputs read: `adversarial.r1.md` (full), my `quality-dimensions.r1.md`. Only two r1s exist in the panel dir.
+note: this file **replaces a stale v21-round `quality-dimensions.r2.md`** that was left on disk from the
+previous iteration (its header said REQ-090..095); do not read git history of this path as a v22 flip-flop.
 
 ## 0. Headline disposition
 
-Adversarial r1 and my r1 agree on far more than either predicted: the `thinkingFor` collision (their B-6 =
-my O-4/F-1), provenance-emitted-by-the-resolver (their T-6 = my O-1/S-7), script-supplied-effort as a
-catchable pre-dispatch throw (their I-5 = my O-6), same-task config wiring (their T-D = my S-3), the
-fingerprint compat pin (their T-7 = my task-constraint 5), and Gate-2 residuals held as settled (their §4
-"accepted" = my "recorded residuals"). The friction they predicted from my lens — telemetry, richer
-non-owner exposure — does not exist: my r1 already held ADR-005/007/008 as closed. What follows is a
-per-finding disposition, then my final position stated under the four mandatory dimension headings.
+Adversarial r1 worked one layer below my r1 (signatures, a closed error table, oracles, primary-source line
+numbers) and the two proposals are complementary, not opposed. **I concede or converge on every one of their
+seven ranked findings**, several of which are holes my r1 missed outright (the stranded pre-v22 suspended
+run; `scriptSha256` permanently unsatisfiable; the three-way `scriptVersion` field conflation). Of their
+eight predicted disagreements with me (§6), **five were mispredictions** — my r1 already held their
+position — and the rest converge with small riders. I make **one owned retraction** (SUS-1: per-version
+delete is now in-slice, my "prune is a future requirements decision" is withdrawn), contribute **one guard
+their own logic requires** (`VERSION_IN_USE` on per-version delete — without it their §2B.1 "closed cohort"
+argument is falsified by their own §2B.4), and **hold two items they did not address**: the `validation`
+key in the non-owner view (my lead finding — now a *blocking* decision, because their own key-set oracle
+cannot be written until `EXPECTED_NON_OWNER_KEYS` is final) and where the fire-time trigger refusal lands
+(my OBS-2/R2).
 
-## 1. Responses to adversarial r1 (rebut / concede / hold)
+## 1. Responses to adversarial r1 — rebut / concede / hold
+
+### 1.1 Their seven ranked findings
 
 | Their item | Disposition | Reason |
 |---|---|---|
-| I-1 widen `catalog.get()`, first task | **Concede (verified)** | Fact: narrow `get()` makes ARCH-066's "no second query" unimplementable and leaves the nested `workflow()` path without defaults/contract. Option (a) over (b) is right — `getFull()` leaks `owner` into the run path and two row-read shapes is where drift starts. My R-2 task ordering amends to: T-A first, then contract/resolve. |
-| I-2 nesting semantics | **Concede the gap; endorse their conditional recommendation, with an observability rider** | My r1 missed nesting entirely. Position: the three harness knobs do NOT propagate (child-contract integrity — validated against the parent's contract only); `appendPrompt` DOES propagate (REQ-094's "any `agent()` in that run" reads on the frame tree, and it is structurally powerless per ADR-007). Rider that makes this my lens's business: propagation must be *visible*, not inferred — the child's descriptors record `provenance.appendPrompt:'override'`, and one Gate-7.5 scenario runs a nested workflow with an appendPrompt and asserts it on a child descriptor. See §2.4 for the run-boundary half of the rule. This is now a **joint recommendation**, not a dispute. |
-| I-3 optional DTO fields, decoration at `onHarness` merge site | **Concede** | Their empirical case is correct (two descriptor construction sites; historical records lack the fields; `provenance` is knowledge the gateway does not have). It also *strengthens* my O-1: the executor-side merge closure is exactly "the descriptor writer receives `EffectiveCallParams`, not the raw inputs" — one decoration site is the same-object invariant, realized. Bonus I endorse loudly: switching `gateway/client.ts`'s inline literal to `redactHarness()` collapses the duplicated 4096/2048 cap to one implementation (my O-5's pinned truncation test then guards one site, not two). Tri-state `effortApplied` schema from my O-5 is unchallenged and stands. |
-| I-4 `mapEffort` runs in the gateway; applied object returns via `onHarness(descriptor, applied?)` | **Concede, and restate the merged invariant** | Verified: provider is only resolvable gateway-side. Their option (b) preserves the invariant that actually matters. Merged statement for the DES: `resolveCallParams` (executor) is the single construction site for `{model, effort, timeoutMs, appendPrompt, provenance}`; `mapEffort` (one pure function in `src/params/resolve.ts`, imported by both gateway clients, called once per invoke) is the single translation site; at **every** seam the *object* travels — resolver→dispatch, mapper→wire, mapper→`onHarness` second argument→descriptor merge. Recorded ≡ applied by object identity at each handoff; re-derivation anywhere recreates the echo-not-wire class. Their rejection of a `resolveTarget` interface method is right (my R-4 never asked for one). |
-| I-5 error surface for script-supplied bad effort | **Converged** | Identical to my O-6: coded, catchable, pre-dispatch, no harness event, `CallKey`/ADR-002 untouched. Use their `PARAM_OUT_OF_RANGE` coding on the thrown error for one-taxonomy consistency. |
-| I-6 `overrides` never on `RunSpec`; `start(spec, overrides?)` | **Concede — a strict improvement for my O-2/F-2** | One durable representation (the redacted snapshot) means one sink to redact, one sweep row, one thing the resume path can even be tempted by. Note for §3: this also makes the F-2 alternative (a second, unredacted persisted copy) strictly worse than in r1 — there is now deliberately no raw durable copy anywhere. |
-| I-7 `workflow_list` reads `params` from the column | **Concede** | Consumability: the list surface and the get surface must not have two derivations. Description re-parse recorded as inherited debt with a v22 owner — fine. |
-| B-1 total condition→code→payload table | **Concede/adopt as the design's spine** | This is the artifact my C-1 asked for, done properly (total over ≥8 conditions, not just three shapes). One amendment carried from my C-1: `allowed` stays machine-shaped (`{enum:[…]}` or `{min?,max?}`), which their rows already imply. |
-| B-1a never echo free-text values; bytes + `suppliedTruncated` | **Concede — my r1 missed it** | It bounds my C-1 self-repair claim correctly: "4096 bytes, max 1024" is fully actionable; echoing 1 KB of unscreened caller text into logged envelopes is a new leak surface. Adopted as stated. |
-| B-2 knob default derived from `defaults` column, cross-validated at registration | **Concede, with one normalization line they did not specify** | Derivation beats authority-splitting; a value that cannot diverge after storage needs no reconciliation story. The unspecified case: an author declares `params.<knob>.default` with **no** corresponding `defaults.<knob>` entry. That must be **accept-and-normalize** (write it into the stored defaults as if declared there), not reject — REQ-090 explicitly documents `default` in the params vocabulary, and rejecting the documented spelling is a consumability lie. Divergent *pair* → typed rejection, per their proposal. `workflow_get` serves the one derived value. |
-| B-3 `workflow_get` serves `min(author bound, engine ceiling)` computed at read time | **Concede — and it triggers my O-3 concession** | This closes the discoverability lie better than my `source` field explained it. **Conditional withdrawal:** with B-3 landed, the caller's repair action is identical whichever side imposed the bound, so `PARAM_OUT_OF_RANGE.source` is no longer worth its string — withdrawn. **Iff** the synthesizer drops B-3, `source` returns, because then the served bound and the enforced bound can disagree and the error must say who to believe. The coupling must not be silently halved. |
-| B-4 `EFFORT_RANK` in `contract.ts`; DEPLOY documents refused-by-default levels | **Converged** | Identical to my S-4 (single ordering table) + my C-3 (docs=behavior, refuse-don't-clamp documented). |
-| B-5 resume: presence of `overrides` field is a typed error, no equality semantics | **Concede** | Simpler than inv-2's "new or changed" reading, same guarantee, three untestable edge cases deleted. Composes with my S-2 fallback (below). |
-| B-6 `thinkingFor` stays sole writer of `options.thinking`, takes effort as input | **Converged — adopt their phrasing** | Same finding independently (my O-4/F-1). "Sole writer, effort directive as an input" is sharper than my "compose with, never override" and is the sentence the DES should carry. Their regression pin (non-Anthropic alias + `effort:'max'` ⇒ `options.thinking` byte-identical to today) merges with my Gate-7.5 requirement (same scenario real-tier, asserting `effortApplied:{reason}` and no 400). |
-| B-7 four-segment prompt order; REQ-094 "last" means last *content* segment | **Concede (verified), with the T-8 interaction neither r1 stated** | Their option (i) is right; moving the schema block would re-open the D-V4 OpenAI conformance defect. But T-8 (also theirs) adds a `defaults.prompt` segment — so the pinned order is **five** segments: system / author-default-prompt / script / user-appendPrompt / engine-protocol (schema block + retry nudge). Pin the full five-segment order in one test. And scope the compat pin precisely: my S-1(a) byte-identity test remains **as-is** for the no-`defaults.prompt`, no-`appendPrompt` case (byte-equal to today's composition) — the segment-order pin is a *separate* test, not a restatement, or the regression immune system weakens exactly when the composition grows. |
-| B-8 admission placement covers all five `start()` callers; webhook args-validation behavior change | **Concede/adopt** | Fail-closed at trigger time is right and attributable. The DEPLOY note rides my C-3 living-documents row; one test as they specify. |
-| B-9 `defaultRunParams` factory; chained runs never inherit the parent's snapshot | **Concede — and claim the self-sustainability half** | The `?? {}` reflex at four call sites is precisely the inert-default class. Their chained-run test (no silent `appendPrompt` inheritance) is the run-boundary half of the propagation rule I state in §2.4. |
-| B-10 concrete registration bounds (4 KB / 32 knobs+args / 32 enum / depth 4) | **Concede** | Any number beats none; these are generous; testable. |
-| T-1 required field on `AgentReq` + the `_spawnerOverride` seam | **Concede** | Refines ARCH-068's ambiguity toward where `tsc` actually bites; the spawner-seam carve-out is the kind of one-word omission my S-7 tripwire exists for — belongs in DES text as they ask. My task-constraint 3 (no split from dispatch wiring) is unchanged and compatible. |
-| T-2 three named observables for the pre-durable-work test | **Converged** | I endorse the exact three (store count / no run dir on the filesystem / zero spawns). This is "name the Gate-7.5 assertions in advance" (my S-7) applied at the unit/integration tier. |
-| T-3 pre-commit REQ-093's real-tier evidence plan now | **Concede/adopt** | Ollama has no reasoning dial, so real-tier green = the honest no-op branch on Ollama **plus** mapped-value assertions at the injected seams (both clients, parameterized — my R-3's test shape). Deciding at Gate 3/4 costs a paragraph; at Gate 7.5 it costs a round (VAL-003 precedent). |
-| T-4 split pre-eval source-size guard from post-eval structural guard | **Concede (their signature argument is airtight)** | `metaParams: unknown` only exists after evaluation; the split keeps `parseParamContract` pure, which is what keeps my R-2 table-driven tests honest. |
-| T-5 `params = excluded.params` + re-register test; NULL-params migration test | **Concede (verified)** | The omitted-`owner` pattern is a real trap I confirmed at source. Their NULL-`params` read-back test is my C-2 invariant applied at the migration boundary — same canonical-unconstrained-contract shape. Note the scope boundary in §2.4: T-5 covers catalog NULL `params`; it does **not** cover run-row NULL `effectiveParams` on resume (my S-2), which remains unowned. |
-| T-6 provenance from the resolver's single pass | **Converged** | Identical to my O-1; their value-collision argument (two rungs holding `sonnet`) is the concrete case that makes inference-by-comparison a liar. 20 table cases + 1–2 IT, agreed. |
-| T-7 absent-`workflow` fingerprint byte-identity | **Converged** | Matches my task-constraint 5's regression test; their compat pin is the sharper half. |
-| T-8 the locked trio (`defaults.prompt/tools/skills`) is unplaced | **Concede — the biggest thing my r1 missed** | REQ-092's closing clause has no ARCH home; shipping it inert repeats the exact class v21 exists to close. Adopt: `mergeRunParams` folds all five registered keys into the snapshot (three author-only — trivially user-unreachable since `UserOverrides` cannot spell them, ADR-001); `composePrompt` gains the author-prompt segment at the pinned position (B-7 interaction above); descriptor `tools`/`skills` carry provenance; `defaults.tools` sits directly below agentType in the tool-surface precedence. And their sequencing constraint is the part my lens co-signs hardest: `resolveHarnessParams` is deleted only **after** `mergeRunParams` subsumes it — deleting the shape beats documenting why not to use it. |
+| §2B.1 pre-v22 suspended named run stranded by the pin (HIGH) | **Concede the gap (my r1 missed the cohort); endorse option (b), with an observability rider** | Their mechanism is verified primary source (`run-manager.ts:385-394`, `workflow-catalog.ts:210-220`): the old bytes are already destroyed, so option (c)'s pin rewrite would *manufacture* a false REQ-096 answer — their reasoning for rejecting (c) is exactly this lens's. (b) is fail-soft degradation **recorded, not silent**: the substitution lands on the run's `validation` observation. Rider (folds into my OBS-1): the substitution must be visible **on the wire** — `workflow_status` for that run must surface it from the recorded observation, not leave it a stored-but-never-read field. Their RED-test shape (hand-built legacy fixture, assert resume + recorded substitution) is endorsed as-is; add one assertion on the status response. |
+| §2A.7 `scriptSha256` permanently unsatisfiable | **Concede — my r1 missed it; textbook consumability defect** | An advertised parameter whose every use errors is the inverse of message-carries-recipe: the schema itself teaches the agent a lie. Remove with `script` in the same task, absence joins the ARCH-051 drift-lock. Their refusal to re-offer it on `workflow_register` is right (no requirement buys it). |
+| §2A.1 complete catalog surface; `getFull` **renamed** to `resolveDetail` | **Concede/endorse — this is my REP-1 done properly** | Rename-not-keep makes every call site a compile error — the only mechanism this repo has that reliably works against the unwired-module class. `exists(): boolean` never-throws kills the `try/catch`-as-existence pattern at four call sites; `resolve()` excluding `owner` keeps authorization inputs off the execution read. All four contract points adopted. |
+| §2A.4 `SubmissionValidatorDeps` shrinks to `{catalog}` | **Concede/endorse — REP-3's bug class, prevented in the opposite direction** | My r1 only guarded wiring-in (composeConfig class); they spotted the dual: dead wiring left behind is a standing invitation to grow a second enforcement site. Deleting the three dep fields turns that into a `tsc` error. Adopted. |
+| §2B.4 version ceiling wedge → `workflow_deregister({name, version?})` | **Concede, and I retract SUS-1's deferral — with one guard their own argument requires (§1.3)** | Owned retraction: my r1 said prune is "a future requirements decision, not designed now" because the fence's one new MCP tool was spent. An optional parameter on an existing tool is not a new tool; the fence holds, and a wedge reachable by using the feature as designed (their words) is not simplicity. Their two refusals (channel-pointed, last-remaining) are necessary but **not sufficient** — see §1.3 for `VERSION_IN_USE`. `VERSION_CEILING_EXCEEDED`'s message names this escape (merges into my CONS-1 template table, satisfying my SUS-1(a)). |
+| §2A.5 three meanings of `scriptVersion`; distinct journal field + decouple the counter | **Concede/endorse — observability is field-meaning purity** | Their primary-source finding (counter seeded from catalog version at `:394`, re-stamped `` `v${…}` `` at `:883`) shows the journal stamp is *already* neither meaning after the first resume. `resolvedWorkflowVersion?: string` as a new field + counter seeded from 1: both rulings adopted. A field that means two things is unobservable in the precise sense — you cannot ask it a question and trust the answer. |
+| §2B.3 `.immediate()` + typed `REGISTRATION_CONFLICT` | **Concede/endorse** | Self-sustainability: an untyped 500 under self-update overlap is exactly the silent-ish failure ARCH-071 inv-5 claims to prevent; the typed "retry" code is the graceful-degradation shape. Their honesty that the race itself is not in-process-testable (assert transaction mode, record the residual) is the right testability call. |
 
-**Their expected disagreements with me, answered:** (1) more telemetry/exposure surfaces — no push; my r1
-already held ADR-008 closed, the only ask was the `source` string, now conditionally withdrawn per B-3.
-(2) contract expressiveness — I take exactly the `description` field they pre-accepted (optional, pure
-documentation, serves the agent caller reading `workflow_get`); I ask for nothing that branches at run
-time. (3) their I-3/T-1 "softening" — not backsliding; conceded above with reasons. (4) I-4 — conceded;
-I never wanted the `resolveTarget` seam. (5) I-2 — position taken above, jointly.
+### 1.2 Their §6 predicted disagreements with me — scored
+
+| # | Their prediction | Actual disposition |
+|---|---|---|
+| 6.1 publish audit trail (they cite "their OBS-2" — **citation error: it is my OBS-3**; OBS-2 is fire-time refusals) | **Converged, their rider accepted.** My r1 proposed exactly one log line, no table — ADR-009's decline stands. Their half-concession is a genuine improvement: an unasserted INFO line is the same class as an unwired module. The design pins the line's fields (`name, channel, fromVersion, toVersion, principal, at`) and a test asserts them. |
+| 6.2 `validation` on `workflow_list` | **Misprediction — no dispute.** My r1's R5 already accepted the exclusion (3s poll × per-row parse); `workflow_get` is the seam. |
+| 6.3 dashboard identity | **Misprediction; their mitigation endorsed.** I never asked for browser-session identity. The masked panel showing the exact `workflow_get` invocation that would return the script to its owner is message-carries-recipe applied to a dashboard — adopted into CONS-1's spirit at zero cost. |
+| 6.4 retention/GC sweep | **Misprediction.** My r1 explicitly endorsed ceiling-with-visible-refusal *over* silent GC (dangling run pins). The real residual was the wedge, resolved via §2B.4 + §1.3. |
+| 6.5 `resolveVersionRequest` as a separate injected module | **Concede their placement.** Replaceability is satisfied by purity + injected inputs (`ReadonlySet`, not a DB handle), not by file count. Exported pure function in the owning file; equally table-testable. |
+| 6.6 `workflow_resume({runId, version})` (they cite "their CON-3" — **attribution error: my CONS-3 was inputSchema descriptions; I never proposed resume-time version selection**) | **No dispute.** ADR-010 stands; the legacy cohort they suspected I was reaching for is properly fixed by §2B.1(b). |
+| 6.7 `Scheduler.create` resolves-release refusal | **Misprediction — my SUS-3 endorsed it in r1.** Their error-text sharpening ("publish `<name>@<version>` to `release` first") merges into the CONS-1 template table alongside my `context: 'schedule_create'` marker. No `schedule_create({channel})` — agreed. |
+| 6.8 author-chosen version strings / semver | **Misprediction.** Never proposed; engine-assigned `v<n>` endorsed (their ambiguity argument — an author string colliding with a channel name — is a good extra reason). |
+| 6.9 where they expected agreement | Confirmed: `get(name)` deleted outright; `WorkflowPublicView` with `script` unrepresentable. On record. |
+
+### 1.3 My round-2 contribution: `VERSION_IN_USE` — the guard their own logic requires
+
+Their §5.1 justifies the §2B.1 legacy fallback *because* "the cohort is closed and cannot grow after the
+migration." Their §2B.4 per-version delete **falsifies that premise**: an author deletes `v2` while a run
+suspended at pin `v2` sleeps, and we have recreated the identical stranding — post-v22, author-inflicted,
+reachable forever. The two refusals they specified (channel-pointed, last-remaining) do not cover it.
+
+**Rider (this lens insists):** `workflow_deregister({name, version})` also refuses when any **non-terminal**
+run (`queued|running|suspended`) pins that version — one `SELECT` on the existing `runs.scriptVersion`
+column, typed `VERSION_IN_USE`, message naming the blocking run id(s) (CONS-1: the error is the runbook).
+Terminal runs do **not** block deletion — their pin degrades to the already-specified fail-soft shape
+(pin string survives on the run record, status renders, DAG falls back; SUS-2's tests extend to cover the
+per-version case). With pointer-clearing transactional alongside the delete (their §2B.6), their
+`DANGLING_CHANNEL` becomes a true never-should-happen invariant code; it joins the CONS-1 table as such.
+
+If adversarial contests the extra `SELECT` on cost grounds: it runs only inside an owner-initiated delete,
+never on a hot path, and the alternative is re-opening §2B.1 as a permanent class instead of a closed cohort.
+
+### 1.4 Smaller adoptions and merges (no dispute)
+
+- **§2A.2 truth table, channel-token-first precedence** — adopted, including the four precedence-collision
+  test rows. `DANGLING_CHANNEL` and the `requested` echo both join my CONS-1/OBS-1 items.
+- **§2A.3 `workflow_run` returns `{runId, version, requested}`** — claimed as OBS-1 converged: the pin is
+  usable without a second `workflow_status` call, and it is how a caller *sees* which of version/channel won
+  (paying the silently-discarded-argument debt with visibility instead of an error — their §5.2, co-signed).
+- **§2A.3 additive fourth `createRun` param, options-object refactor deferred as recorded debt** — endorsed;
+  33 mechanical edits is review budget this slice cannot spare. Discriminated-union `RequestShape` adopted
+  (renderable without parsing = consumability).
+- **§2A.6 `MISSING_SCRIPT` → `MISSING_NAME`** — endorsed; an error code that teaches an agent to retry with
+  a removed parameter is an agent-altitude defect, their framing exactly.
+- **§2A.6 no unification of `UNKNOWN_WORKFLOW`/`WORKFLOW_NOT_FOUND`/`CatalogNotFoundError` in v22** —
+  concede (churn vs. silent-failure risk profile), with the mapping pinned as a row block **inside the
+  CONS-1 table** so Gate 5/6 cannot add a fourth name.
+- **§2B.2 `DROP COLUMN` + `PRAGMA table_info` absence assertion** — endorsed; "the assertion, not a review,
+  is what makes 'moved' true" is this lens's replaceability creed verbatim.
+- **§2B.5 NULL-owner distinct remediation text** ("no recorded owner; run the boot backfill") — endorsed;
+  one string is the difference between a bug report and a fix.
+- **§2C oracles 1–6** — all endorsed. My OBS-1 (literal key assertions on `workflow_status`) and OBS-4
+  (second boot logs 0-migrated, not silence) merge into their oracle set; their oracle 3 (IT-011 relative →
+  literal) is v22 Rule 1 applied to the exact field this slice promotes to the pin.
+- **§2C clock note** — `workflow_versions.createdAt` via `this._clock.isoNow()`: endorsed (untestable
+  ordering under a fake clock is an observability failure of the test tier itself).
+- **§3 task groupings T1/T4/T7/T2 + orderings** — fully compatible with my r1 task notes; merged. My note 1
+  (wiring travels with the constructor) = their T7; my note 2 (real-transport masking as DoD) = their T4;
+  my note 3 (pure-first TDD) is compatible with their "fixture task first"; my note 4 (one shared
+  error-taxonomy DES item) now hosts their §2A.6 table as its content.
 
 ## 2. Final position — the four dimensions
 
-### 2.1 Observability
+### Dimension 1 — Observability
 
-- **Same-object end to end (merged O-1 + their I-4/T-6/I-3):** `resolveCallParams` = single construction
-  site (params + per-key provenance from one pass); `mapEffort` = single translation site (pure, in
-  `src/params/resolve.ts`, imported by both gateway clients); the applied object returns via
-  `onHarness(descriptor, applied?)`; the executor-side merge closure is the single descriptor-decoration
-  site and receives `EffectiveCallParams` — never the pre-resolution inputs. Object identity at every
-  handoff; no re-derivation anywhere.
-- **Per-client "wire" pinned (O-4 + B-6):** LiteLLM client — mapped `{param, value}` on the request body,
-  spy-asserted `low` vs `max`. SDK client — `thinkingFor` remains the **sole writer** of
-  `options.thinking` and takes the effort directive as input; non-Anthropic aliases get the explicit
-  `{applied:false, reason}` no-op, thinking stays disabled, pinned byte-identical at `effort:'max'`.
-- **Descriptor delta (O-5, DTO-optional per I-3):** `effort?`, tri-state `effortApplied?`, `timeoutMs`,
-  `appendPromptBytes?`, `promptTruncated`, per-key `provenance` — decorated at the one merge site;
-  `gateway/client.ts` switches to `redactHarness()` so the truncation cap has one implementation.
-- **Errors are the observability for rejections (C-1 + B-1/B-1a):** the total condition→code→payload
-  table is the design's spine; `allowed` machine-shaped; free-text values reported as bytes, never
-  content; `source` withdrawn iff B-3 lands.
-- **Named assertions before the tests exist:** T-2's three observables; the Gate-7.5 per-rung provenance
-  assertions (S-7); the nested-run appendPrompt-provenance scenario (§1 I-2 rider); the REQ-093
-  real-tier plan pre-committed per T-3.
+Altitude unchanged from r1: system-dominant; agent-side transcript/token observability (REQ-007) untouched
+by this slice — recorded so the dimension is judged, not skipped. Final package:
 
-### 2.2 Replaceability
+1. **OBS-1 (wire, not just record):** `workflow_status`/`/api/runs/:id` carry `{version (pin), requested,
+   validation}` with literal key assertions; **extended r2:** `workflow_run` returns `{runId, version,
+   requested}` (their §2A.3, converged); the §2B.1(b) legacy substitution is surfaced on `workflow_status`
+   from the recorded observation. `RequestShape` is a discriminated union.
+2. **OBS-2 (held — unaddressed by adversarial, still open):** fire-time resolution refusals on unattended
+   triggers (standing schedule/webhook/chain hitting `CHANNEL_UNPUBLISHED`/deregistered name at 3am with no
+   caller) must land in a run-refused/trigger-failed journal entry attributable to the schedule id, surfaced
+   in the ARCH-046/047 reliability metrics. A log line alone is not a seam a caller can read. This is my R2
+   and I restate it for the synthesizer as the default unless rebutted.
+3. **OBS-3 (converged with their rider):** one structured journal line per successful `publish`
+   (`{name, channel, fromVersion, toVersion, principal, at}`), **fields test-pinned** — unasserted logging
+   is the unwired-module class. No audit table; ADR-009 stands.
+4. **OBS-4:** migration boot line contract + idempotent second boot logs `0 migrated` (asserted in S-2's
+   real-fixture test, per their oracle 2's hand-written-SQL rule).
+5. **Field-meaning purity (new, from their §2A.5):** `resolvedWorkflowVersion` as a distinct journal field;
+   resume counter decoupled and seeded from 1. A field with two meanings cannot be trusted to answer either
+   question.
 
-- **One contract vocabulary, one owner (R-2):** `contract.ts`/`resolve.ts` standalone and first (after
-  T-A); no consumer re-declares key lists or bounds; MCP schema/descriptions generated under the
-  ARCH-051 drift-lock. `EFFORT_RANK` lives once, next to `isEffort()` (S-4 = B-4).
-- **Backend swap stays a config row (R-3):** contract `model` enums reference alias names, validated at
-  registration; effective model re-checked at submission via `UNKNOWN_ALIAS`. New provider with a dial =
-  one `ProviderEffortProfile` entry; without = one explicit no-op entry. The gateway effort contract test
-  is parameterized over both `GatewayClient` impls so a third client inherits it.
-- **No new seams for their own sake:** `resolveTarget` rejected (with adversarial); one pure `mapEffort`,
-  two import sites. `ProviderEffortProfile` typed apart from the fenced `effortMapping`; the
-  zero-`src/`-importer tripwire test on `session-options-builder.ts` stands (R-1) — one grep-shaped
-  assertion that retires when the security-hardening track wires the module deliberately.
-- **Delete the rival shape (their T-8/cleanup, co-signed):** `resolveHarnessParams` retired in-sequence
-  after `mergeRunParams` subsumes the author-side path.
+### Dimension 2 — Replaceability
 
-### 2.3 Consumability
+1. **Compile-error-driven replacement:** `get()` deleted, `getFull` **renamed** `resolveDetail` (their
+   §2A.1 — adopted over my r1's silence on `getFull`); `SubmissionValidatorDeps` shrunk to `{catalog}`
+   (their §2A.4) so both directions of the wiring bug class are `tsc` errors.
+2. **Port shapes pinned (REP-1):** `validateScriptEntry`'s `mcpLookup` is `(name) => boolean`, not the
+   registry object; `resolveVersionRequest` takes `ReadonlySet<string>`, not a DB handle. Placement
+   conceded to adversarial: exported pure function in the owning file, no separate module — purity, not
+   file count, is what buys replaceability.
+3. **One-predicate rule (REP-2):** `FRAME_CLOSE_FORGERY` imported from `params/contract.ts`; grep-style
+   test asserts no second regex copy (v21 QD-REP-1 precedent). Their oracle 6's structural assertions are
+   the same instrument generalized; endorsed wholesale.
+4. **Wiring is DoD (REP-3):** catalog deps + `maxWorkflowVersions` threaded in `main.ts` and added to
+   `compose-config-v2-wiring.test.ts` in the same task (= their T7). Storage stays un-injected (their §5.3:
+   tmp-workRoot real file beats a `Database` seam — conceded; the simpler design is the more testable one
+   here). ADR-014's CAS-ref-ready script column keeps storage replaceable without building it. LLM-backend
+   pluggability untouched by the slice — correct.
 
-- **Discovery never lies:** NULL `params` serves the canonical unconstrained contract at every read
-  surface — `workflow_get`, `workflow_list` (column, not re-parse — I-7), and the migration read-back
-  (T-5). Bounds served are **effective** bounds, `min(author, ceiling)` computed at read time (B-3).
-  Knob defaults have one derived source (B-2), with the accept-and-normalize rule for
-  `params.<knob>.default` declared alone — the documented vocabulary is never rejected for being used.
-- **Errors self-repair in one bounce:** total table (B-1); machine-shaped `allowed`; bytes-not-content
-  for free text (B-1a); resume refuses the `overrides` field by presence (B-5); registration rejections
-  typed with nothing stored, against concrete bounds (B-10).
-- **Contract gains `description` (optional, documentation-only)** — the one expressiveness item taken;
-  nothing that branches at run time.
-- **Docs = behavior, generated (C-3):** overrides inputSchema (`additionalProperties:false`, four
-  properties, effort enum inline) generated from ARCH-064 types under drift-lock; DEPLOY §1 rows for the
-  three config keys including refuse-don't-clamp, refused-by-default effort levels (B-4), and the
-  webhook/schedule args-validation behavior change (B-8). appendPrompt cap semantics per my C-4 (raw
-  text, byte-measured, pre-frame; frame is an exported drift-locked constant). Issue tools reuse the
-  registration-name predicate, no transcribed regex (C-5). No plugin change (C-6).
+### Dimension 3 — Consumability
 
-### 2.4 Self-sustainability
+Callers are agents; schema + error text are the documentation (their altitude principle 1 = my r1 stance).
 
-- **One propagation rule, stated once (merging I-2 + B-9 + S-6):** `appendPrompt`'s scope is the run's
-  frame tree — it propagates into nested `workflow()` (visible via child provenance, charged to the same
-  run budget, so my S-6 fan-out budget test extends to nesting for free) and **dies at the run
-  boundary**: chained runs (continuation-store), webhooks, and schedules start from their own workflow's
-  registered defaults via `defaultRunParams`, never a prior run's snapshot. Harness knobs never cross
-  either boundary. One test per boundary direction.
-- **Upgrade compat is two distinct NULLs — do not let one test claim both:** T-5 covers catalog-row NULL
-  `params` (registration/migration). My **S-2 hold** covers run-row NULL `effectiveParams` on resume of
-  a pre-v21 suspended run: fallback = canonical default re-resolution from the run's pinned catalog
-  version row, never a crash; `overrides` refused on resume exactly as for v21 runs; plus the
-  suspended-pre-v21-journal replay fixture with zero cache misses (ADR-002 made checkable). No ARCH
-  clause and no adversarial task owns this — it needs a **named task/test** or it is the slice's
-  likeliest silent omission.
-- **Regression immune system, precisely scoped (S-1 × B-7/T-8):** byte-identity pins stay for the
-  no-new-inputs cases — (a) `composePrompt` with no `defaults.prompt` and no `appendPrompt` byte-equals
-  today; (b) no-overrides run of an unconstrained workflow behaves identically pre/post; (c)
-  effort-absent composition byte-identical on both clients; plus absent-`workflow` fingerprint
-  byte-identity (T-7). The five-segment order pin is a **separate** test.
-- **Fail-closed config + same-task wiring (S-3/S-4 = their T-D):** the three keys' `composeConfig()`
-  forwarding and their `compose-config-v2-wiring.test.ts` rows land in the admission task — never a
-  standalone "config plumbing" task (four shipped precedents).
-- **Lifecycle untouched, verified (S-5):** no new process/port/table/watchdog; snapshot survives
-  `workspace_purge` like the transcript — one assertion in the existing purge test.
-- **The standing tripwire (S-7):** per-key provenance is the self-diagnosing mechanism for the next
-  wiring miss (`'engine'` where `'default'` was expected); Gate-7.5 assertions named per rung, armed
-  from day one.
+1. **CONS-1, now the design's spine:** one DES item hosting (a) their §2A.6 closed per-surface code table,
+   (b) my message-template column (every code's literal template, tested per v22 Rule 1), (c) the
+   three-names-one-condition mapping pinned, (d) new rows from r2: `MISSING_NAME` (renamed),
+   `DANGLING_CHANNEL` (never-should-happen invariant once §1.3 lands), `REGISTRATION_CONFLICT` ("retry"),
+   `VERSION_IN_USE` (names blocking run ids), `LEGACY_PIN_UNRESOLVABLE` **only if** §2B.1 is decided
+   strict — my position is (b), so this row should not exist, (e) `VERSION_CEILING_EXCEEDED` naming both
+   remedies including the now-real per-version deregister, (f) `CHANNEL_UNPUBLISHED` in `schedule_create`
+   context carrying "publish `<name>@<version>` to `release` first", (g) NULL-owner `scriptWithheld` reason
+   distinguishing not-owner from no-recorded-owner.
+2. **CONS-2:** list → `get(name)` errors → `get(name, version-from-error)` succeeds, asserted as a
+   sequence; the error detail (available versions + published channels) widens nothing already on the
+   everyone-visible `workflow_list` allowlist.
+3. **CONS-3:** `version?`/`channel?` inputSchema descriptions state precedence (version wins; channel
+   defaults to release; registration ≠ publication) and join the ARCH-051 drift-lock; `scriptSha256` and
+   `script` absent from the schema, absence drift-locked (their §2A.7).
+4. **CONS-4 = the lead finding, held (see §3).** Dashboard signpost mitigation (their §6.3) adopted.
+5. **Schema-teaches-truth rule (generalizing §2A.7):** no advertised parameter may be permanently
+   unsatisfiable; no error code may name a removed concept. Both are agent-altitude defects, not cosmetics.
+
+### Dimension 4 — Self-sustainability
+
+System altitude; agent-altitude memory-metabolism/prompt-calibration remain honestly out of scope, with the
+one legitimate mapping unchanged: ARCH-074's lazy read/admission staleness recompute is this system's
+tool-liveness probe, and a background sweep stays refused (fence: zero new background jobs).
+
+1. **SUS-1 revised (owned retraction):** the ceiling dead-end is closed *in-slice* by
+   `workflow_deregister({name, version?})` (their §2B.4) — my r1's "prune later" deferral is withdrawn:
+   an optional parameter is not a new tool, the fence holds, and a documented trap is not simplicity.
+   **Conditional on the §1.3 `VERSION_IN_USE` guard**, without which the slice trades an author wedge for
+   a permanent run-stranding class.
+2. **SUS-2 extended:** the fail-soft degradation shapes are test-pinned, now including: per-version-deleted
+   pin on a terminal run (string survives, status renders, DAG falls back), the §2B.1(b) legacy resume with
+   recorded substitution, and pre-v22 inline-cohort resume via persisted `spec.script` (ARCH-072 inv-3).
+3. **SUS-3 converged:** `Scheduler.create` refusal endorsed by both lenses; error shape = CONS-1 row (f);
+   pairs with OBS-2 for the standing-schedule case creation-time checks cannot cover.
+4. **Cross-process self-healing:** `.immediate()` transactions + `busy_timeout` + typed
+   `REGISTRATION_CONFLICT` (their §2B.3) — degradation under self-update overlap is a typed, actionable
+   refusal, not an untyped 500. Migration atomicity/idempotence (ADR-011) unchanged and endorsed.
+5. **Legacy-cohort closure (their §2B.1(b)):** the self-healing answer for a closed cohort whose true bytes
+   are unrecoverable — substitute, record, surface. Option (c)'s pin rewrite stays rejected jointly: a
+   manufactured answer is worse than an honest substitution.
 
 ## 3. Remaining disagreements / open items for the synthesizer
 
-1. **F-2 (snapshot is redacted-on-persist AND read back for execution on resume) — still unaddressed by
-   any other lens; I hold accept-and-pin.** If caller text literally contains a server-secret value, the
-   resumed tail composes from `‹secret:NAME›` while pre-suspend dispatches used raw text — a replay
-   divergence with a pathological trigger, and masking-on-resume fails safe. Adversarial's I-6 (no raw
-   `RunSpec` copy) makes the alternative — a second, unredacted durable copy — strictly worse than at
-   r1: it would be the *only* raw durable copy in the design. Needs one line in the DES invariant table
-   plus one documenting test. I remain willing to move if anyone shows a non-pathological trigger.
-2. **S-2 legacy NULL-`effectiveParams` resume needs a named owner.** Distinct from T-5's catalog NULL;
-   currently owned by neither ARCH nor any proposed task. Cheap; omission breaks every in-flight
-   suspended run on deploy day.
-3. **`PARAM_OUT_OF_RANGE.source` — conditionally withdrawn.** Withdrawn iff B-3 (effective bound at read
-   time) is adopted; if B-3 is dropped, `source` returns with it. The synthesizer must take or leave the
-   pair, not halve it.
-4. **R-1 zero-importer fence test on `session-options-builder.ts`** — possibly read as creep by a
-   simplicity tie-break; I hold: one grep-shaped standing assertion on a module that already caused one
-   scope-leak debate, self-retiring when the hardening track wires it deliberately.
-5. **Recorded as joint recommendations (no longer disputes):** nesting semantics (knobs contained /
-   appendPrompt propagates, provenance-visible, budget-charged; dies at the run boundary); five-segment
-   prompt order; REQ-093's two-tier real-tier evidence plan; the B-2 derivation with the
-   accept-and-normalize rider.
-6. **Residuals held settled by both lenses:** ADR-005 cost amplification, ADR-007 injection residual,
-   ADR-008 no telemetry / no non-owner masking before v22-D15.
+1. **[BLOCKING — decide in 04-design] `validation` in the non-owner `workflow_get` view (my r1 lead
+   finding, R1).** Adversarial was **silent** on it, but their own altitude principle 2 ("the masked view
+   must still let a non-owner agent decide and act") entails my position: an agent choosing between `beta`
+   and `release` cannot decide without seeing that beta references a deprovisioned MCP server; withholding
+   it only moves discovery to a failed run. This is now *blocking*, not ambient: their §2C.5 two-sided
+   key-set oracle **cannot be written** until `EXPECTED_NON_OWNER_KEYS` is finalized. Recommendation
+   unchanged: include `validation` (environment status, not script disclosure; `errors[].code/message`
+   name only aliases/MCP names the run transcript would surface anyway) and amend the allowlist
+   deliberately. If excluded, that must be an explicit recorded decision with the consumability cost named.
+2. **[OPEN — unaddressed] OBS-2 fire-time refusal landing.** Restated as the default: journal entry
+   attributable to the schedule id + ARCH-046/047 reliability-metrics surfacing. A silently dying cron
+   remains this lens's definition of a design defect.
+3. **[CONDITIONAL] `VERSION_IN_USE` (§1.3).** I expect adversarial to accept (it is their own closed-cohort
+   premise, defended); if contested on cost, the counter is recorded in §1.3. My concession on §2B.4 is
+   coupled to this guard.
+4. **Coupled pair to carry whole:** their B-3-style coupling discipline applies to §2B.1 — if the
+   synthesizer picks strict option (a) over (b), then `LEGACY_PIN_UNRESOLVABLE` enters CONS-1 *and* the
+   OBS-1 status-surface rider changes shape; the choice must not be silently halved.
+5. **No other disputes remain.** Everything else in both r1s is converged as disposed above; r1 items not
+   named here stand unchanged.

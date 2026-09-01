@@ -12,8 +12,9 @@ import type { Clock } from '../../src/clock.js';
 const ANCHOR = new Date('2024-06-01T12:00:00.000Z');
 const CLOCK: Clock = { now: () => ANCHOR.getTime(), isoNow: () => ANCHOR.toISOString() };
 
+// v22 (DES-111): CatalogPort shrank to the existence-only shape webhook-registry.ts actually needs.
 function fakeCatalog(known: Set<string>) {
-  return { async get(name: string) { if (!known.has(name)) throw new Error('not found'); return { script: '', version: 'v1' }; } };
+  return { async exists(name: string) { return known.has(name); } };
 }
 function fakeRunManager() {
   const started: Array<{ name?: string; args?: unknown }> = [];

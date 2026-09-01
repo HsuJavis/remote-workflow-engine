@@ -158,6 +158,10 @@ export interface ServerConfig {
   maxTimeoutMs?: number;
   maxAppendPromptBytes?: number;
   maxEffort?: Effort;
+  // v22 (ARCH-071, ADR-014, TASK-107): per-name version ceiling — same composeConfig wiring
+  // convention as the three ceilings above. Goes into the SAME WorkflowCatalogOpts.ceilings object
+  // (no new plumbing); absent -> WorkflowCatalog treats it as uncapped (front door, not a GC).
+  maxWorkflowVersions?: number;
 }
 
 export interface Server {
@@ -184,6 +188,8 @@ const TOOL_NAMES = [
   'workflow_agent_log',
   'workflow_register',
   'workflow_deregister',
+  // v22 (REQ-097, DES-111/DES-114, TASK-109): NEW tool — moves a named channel pointer.
+  'workflow_publish',
   'workflow_get',
   'workflow_artifacts',
   // v1.5/v2: byte-fetch a workspace file chunk (REQ-022) + purge a run's workspace (REQ-026).
@@ -276,12 +282,13 @@ const SCRIPT_DSL_DOC =
 
 const TOOL_METADATA: Record<ToolName, ToolMeta> = {
   workflow_run: {
-    description: 'Starts a new workflow run from either an inline script or a previously registered workflow name. Returns the envelope {runId, status, result:{runId}} — the run starts asynchronously; poll workflow_status and read workflow_result for the script\'s return value.',
+    description: 'Starts a new workflow run of a previously registered workflow name (REQ-098: inline scripts are no longer accepted — register once via workflow_register, then run by name; a hand-rolled body carrying `script` is refused INLINE_SCRIPT_CLOSED). Selects which registered version to run: an explicit `version` wins over any `channel`; with neither, runs the `release` channel. Returns the envelope {runId, status, result:{runId}} — the run starts asynchronously; poll workflow_status and read workflow_result for the script\'s return value.',
     inputSchema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Name of a previously registered workflow to run (mutually exclusive with script).' },
-        script: { type: 'string', description: 'Inline JavaScript workflow script to run (mutually exclusive with name). ' + SCRIPT_DSL_DOC },
+        name: { type: 'string', description: 'Name of a previously registered workflow to run.' },
+        version: { type: 'string', description: 'Explicit registered version to run (e.g. "v2"). Wins over `channel` when both are supplied. Omitted -> resolved via `channel` (or `release` if that is also omitted). Unknown version -> UNKNOWN_VERSION.' },
+        channel: { type: 'string', enum: ['beta', 'release'], description: 'Named channel to run (see workflow_publish). Ignored when `version` is supplied. Omitted -> defaults to `release`. An unpublished channel -> CHANNEL_UNPUBLISHED naming the channel and the workflow\'s available versions.' },
         args: { description: 'Arbitrary arguments passed through to the script as the injected `args` global.' },
         budget: { type: ['number', 'null'], description: 'Optional token budget (input+output tokens) for the whole run — a shared pool across the script and every agent()/workflow() call. null/omitted = unbounded. Enforced BETWEEN agent() calls, not mid-call: a call that starts under budget always completes; the NEXT agent() call throws once the pool is exhausted. Inside the script, `budget` is a {total, spent(), remaining()} object.' },
         // Seed params MUST be declared here with their array/object types — the handler (mcp-facade
@@ -315,7 +322,6 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
         },
         seedNamespace: { type: 'string', description: 'Per-tenant CAS namespace whose blobs seedManifest/seedManifestRef resolves against (default "_default").' },
         seedManifestRef: { type: 'string', description: 'v14 server-side manifest ref (REQ-082): the sha256 of a manifest blob registered via POST /assets/manifest. The engine loads and re-validates the manifest at run-time (security boundary). Mutually exclusive with seed/seedManifest/seedRef (→ SEED_SOURCE_CONFLICT). Use blob_put + POST /assets/manifest to register the manifest, then pass the returned seedManifestRef here.' },
-        scriptSha256: { type: 'string', description: 'Optional integrity guard. 64-char lowercase hex sha256 of the script\'s UTF-8 bytes. If present and mismatched, returns SCRIPT_SHA_MISMATCH and creates no run. Omit to skip.' },
         seedRef: {
           type: 'object',
           description: 'v13 engine-pull seed (REQ-080): the engine fetches {repoUrl, sha} itself, for CI/forge/air-gapped callers that hold code the client cannot push. Mutually exclusive with seed/seedManifest (→ SEED_SOURCE_CONFLICT). Requires an operator egress allowlist in engine config, else SEEDREF_DISABLED (hint: add seedRefAllowlist:[…]); a repoUrl off the allowlist (or an SSRF-shaped target: internal IP / localhost / metadata endpoint / non-https) → SEEDREF_EGRESS_DENIED before any network call. Pre-run errors return on this call; a post-run fetch failure (SEEDREF_FETCH_FAILED / SEEDREF_SHA_MISMATCH / SEEDREF_TOO_LARGE) fails the run and shows on workflow_status.seedRef.',
@@ -352,12 +358,11 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     inputSchema: { type: 'object', properties: { runId: { type: 'string', description: 'The run to suspend.' } }, required: ['runId'] },
   },
   workflow_resume: {
-    description: 'Resumes a suspended or stopped run, optionally with an edited script; unchanged, already-journaled calls replay from cache instead of re-invoking the gateway.',
+    description: 'Resumes a suspended or stopped run, continuing its original pinned script unchanged (REQ-098: workflow_resume no longer accepts a replacement script — a hand-rolled body carrying `script` is refused INLINE_SCRIPT_CLOSED); unchanged, already-journaled calls replay from cache instead of re-invoking the gateway.',
     inputSchema: {
       type: 'object',
       properties: {
         runId: { type: 'string', description: 'The run to resume.' },
-        script: { type: 'string', description: 'Optional replacement script; omitted continues the original script.' },
       },
       required: ['runId'],
     },
@@ -420,11 +425,31 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
       required: ['name'],
     },
   },
-  workflow_get: {
-    description: "Returns a registered workflow's full detail — {name, version, createdAt, description (its purpose, from meta.description), phases, script, skeleton, owner (registration principal), defaults (harness defaults bound at registration), params (the tunable-parameter contract declared via meta.params — always present, ceiling-bounded; a script with no params block reads back the canonical 4-knob contract)} — so a client can understand what it does, inspect its owner, query its registered harness defaults and tunable-parameter contract, and see its predicted DAG (a static scan of phase/agent/parallel/workflow calls) BEFORE deciding to reuse it or author a new one. Unknown name → WORKFLOW_NOT_FOUND.",
+  // v22 (REQ-097, DES-111, DES-114, TASK-109): NEW tool — moves a named channel pointer to an
+  // already-registered version. Registration != publication: workflow_run/workflow_get resolve
+  // through a channel pointer, never "the newest registered row".
+  workflow_publish: {
+    description: 'Moves a named channel (`beta` or `release`) to an already-registered version of a workflow, so workflow_run({name}) (or {channel}) resolves to it. Registration alone does not publish — a freshly registered version is on no channel until this is called. Only the owner may publish (non-owner → NOT_WORKFLOW_OWNER); unknown version → UNKNOWN_VERSION.',
     inputSchema: {
       type: 'object',
-      properties: { name: { type: 'string', description: 'The registered workflow to inspect.' } },
+      properties: {
+        name: { type: 'string', description: 'The registered workflow name.' },
+        version: { type: 'string', description: 'An already-registered version of this workflow (e.g. "v2") to point the channel at.' },
+        channel: { type: 'string', enum: ['beta', 'release'], description: 'Which channel pointer to move.' },
+        // v15 (DES-096, TASK-087) pattern: optional caller principal for ownership gate.
+        principal: { type: 'string', description: 'Caller identity (email) for ownership gate. When auth is enabled this is resolved from the bearer; when absent, the server uses null (auth-disabled or loopback path).' },
+      },
+      required: ['name', 'version', 'channel'],
+    },
+  },
+  workflow_get: {
+    description: "Returns a registered workflow's full detail — {name, version, createdAt, description (its purpose, from meta.description), phases, script, skeleton, owner (registration principal), defaults (harness defaults bound at registration), params (the tunable-parameter contract declared via meta.params — always present, ceiling-bounded; a script with no params block reads back the canonical 4-knob contract)} — so a client can understand what it does, inspect its owner, query its registered harness defaults and tunable-parameter contract, and see its predicted DAG (a static scan of phase/agent/parallel/workflow calls) BEFORE deciding to reuse it or author a new one. Unknown name → WORKFLOW_NOT_FOUND; a known name with an unresolvable `version` → UNKNOWN_VERSION.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The registered workflow to inspect.' },
+        version: { type: 'string', description: 'Optional explicit version to inspect (e.g. "v2"); omitted reads the `release` channel\'s version. Unknown version -> UNKNOWN_VERSION.' },
+      },
       required: ['name'],
     },
   },
@@ -797,15 +822,20 @@ async function callTool(
   name: string,
   args: Record<string, unknown>,
   principal: string | null = null,
+  // v22 (DES-116, ARCH-076, TASK-111): server-level "is auth configured at all" — sourced from
+  // `authCfg`/`authHandlers` presence at BOTH call sites, never from whether `principal` resolved
+  // (a D-BIND loopback-exempt caller reaches the auth-enabled server with `principal === null`, and
+  // masking must still apply — ADR-012).
+  authEnabled = false,
 ): Promise<unknown> {
   switch (name as ToolName) {
-    case 'workflow_run': return facade.workflow_run(args as { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: { path: string; sha256: string; exec?: boolean }[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string }; seedManifestRef?: string; scriptSha256?: string; overrides?: unknown }, principal);
+    case 'workflow_run': return facade.workflow_run(args as { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: { path: string; sha256: string; exec?: boolean }[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string }; seedManifestRef?: string; version?: string; channel?: 'beta' | 'release'; overrides?: unknown }, principal);
     case 'workflow_status': return facade.workflow_status(args as { runId: string });
     case 'workflow_result': return facade.workflow_result(args as { runId: string });
     case 'workflow_suspend': return facade.workflow_suspend(args as { runId: string });
     case 'workflow_resume': return facade.workflow_resume(args as { runId: string; script?: string });
     case 'workflow_stop': return facade.workflow_stop(args as { runId: string });
-    case 'workflow_list': return facade.workflow_list();
+    case 'workflow_list': return facade.workflow_list(args, { authEnabled, principal });
     case 'workflow_agent_log': return facade.workflow_agent_log(args as { runId: string; agentId: string });
     // v15 (DES-096, TASK-087): thread principal to mutation methods for ownership attribution.
     // Effective principal: auth-resolved wins; if null (loopback/auth-disabled), fall back to
@@ -820,7 +850,13 @@ async function callTool(
       const effectivePrincipal = principal ?? (typeof argPrincipal === 'string' ? argPrincipal : null);
       return facade.workflow_deregister(deregArgs, effectivePrincipal);
     }
-    case 'workflow_get': return facade.workflow_get(args as { name: string });
+    // v22 (REQ-097, DES-111/DES-114, TASK-109): same principal-threading pattern as register/deregister.
+    case 'workflow_publish': {
+      const { principal: argPrincipal, ...pubArgs } = args as { name: string; version: string; channel: 'beta' | 'release'; principal?: string | null };
+      const effectivePrincipal = principal ?? (typeof argPrincipal === 'string' ? argPrincipal : null);
+      return facade.workflow_publish(pubArgs, effectivePrincipal);
+    }
+    case 'workflow_get': return facade.workflow_get(args as { name: string; version?: string }, { authEnabled, principal });
     case 'workflow_artifacts': return facade.workflow_artifacts(args as { runId: string });
     case 'workflow_artifact_get': return facade.workflow_artifact_get(args as { runId: string; path: string; offset?: number; length?: number });
     case 'workspace_purge': return facade.workspace_purge(args as { runId: string });
@@ -954,6 +990,10 @@ async function handleDashboardRequest(
   facade: McpFacade,
   systemInfo: SystemInfoSampler,
   buildModelCatalog: () => Promise<ModelEntry[]>,
+  // v22 (DES-115, REQ-100, TASK-111): the skeleton route is script-derived and has no bearer/identity
+  // plumbing at all (a browser GET carries none) — so under auth it is unconditionally the
+  // non-owner/masked row; auth off keeps the pre-v22 surface.
+  authEnabled = false,
 ): Promise<void> {
   if (req.method !== 'GET') {
     sendJson(res, 405, { error: 'Dashboard API is read-only: only GET is supported.' });
@@ -1002,9 +1042,15 @@ async function handleDashboardRequest(
     if (skeletonMatch) {
       const name = decodeURIComponent(skeletonMatch[1]!);
       try {
-        const full = await runManager.catalog.getFull(name);
+        const full = await runManager.catalog.resolveDetail(name, {});
         const meta = parseMeta(full.script);
-        sendJson(res, 200, { name, version: full.version, description: meta.description, phases: meta.phases, skeleton: parseWorkflowSkeleton(full.script) });
+        // v22 (DES-115, REQ-100, TASK-111): skeleton/phases are script-derived and masked by
+        // default — this route carries no bearer, so under auth it is always the non-owner row.
+        if (authEnabled) {
+          sendJson(res, 200, { name, version: full.version, description: meta.description });
+        } else {
+          sendJson(res, 200, { name, version: full.version, description: meta.description, phases: meta.phases, skeleton: parseWorkflowSkeleton(full.script) });
+        }
       } catch { sendJson(res, 404, { error: `Workflow not found: ${name}` }); }
       return;
     }
@@ -1042,7 +1088,24 @@ async function handleDashboardRequest(
       if (!stored) { sendJson(res, 404, { error: `Run not found: ${runId}` }); return; }
       const view = await runManager.status(runId).catch(() => stored);
       const spec = await store.getSpec(runId);
-      const skeletonNodes = parseWorkflowSkeleton(spec?.script ?? '');
+      // v22 (DES-114, TASK-109): the DAG skeleton derives from the run's PINNED (name, version), not
+      // `spec.script` — a named run never persists an inline script (start() resolves it from the
+      // catalog), so `spec?.script` is empty for every named run today. Mirrors run-manager.ts's own
+      // legacy-cohort fallback (`_requireLive`): try the pin, else `release`, else an empty skeleton
+      // (never crash the dashboard route over a stale/unresolvable pin).
+      let skeletonScript = spec?.script ?? '';
+      if (spec?.name) {
+        try {
+          skeletonScript = (await runManager.catalog.resolve(spec.name, { version: view.scriptVersion })).script;
+        } catch {
+          try {
+            skeletonScript = (await runManager.catalog.resolve(spec.name, {})).script;
+          } catch {
+            skeletonScript = '';
+          }
+        }
+      }
+      const skeletonNodes = parseWorkflowSkeleton(skeletonScript);
       const layout = layoutGraph(skeletonNodes, view.agents, { startedByType: view.startedBy?.type });
       // DES-064: flat GraphPayload — cells/edges/warnings/truncated at top level (not nested under 'layout').
       const payload: Record<string, unknown> = {
@@ -1145,14 +1208,29 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v21 Gate 8 RE-REVIEW #6 (P6-5): the per-key fallback reads contract.ts's shared
   // DEFAULT_CEILINGS. This composition root used to re-type the three numbers, so a change at
   // run-manager.ts/mcp-facade.ts would have left PRODUCTION on the old values with a green suite.
-  const ceilings: Ceilings = {
+  // v22 (TASK-107): widened inline (was `: Ceilings`) so the object can also carry
+  // maxWorkflowVersions, structurally compatible with every Ceilings-typed consumer below — same
+  // `Ceilings & { maxWorkflowVersions? }` shape workflow-catalog.ts's own read already casts to.
+  // No shared DEFAULT_CEILINGS entry for it — absent means uncapped (DES-111).
+  const ceilings: Ceilings & { maxWorkflowVersions?: number } = {
     maxTimeoutMs: config?.maxTimeoutMs ?? DEFAULT_CEILINGS.maxTimeoutMs,
     maxAppendPromptBytes: config?.maxAppendPromptBytes ?? DEFAULT_CEILINGS.maxAppendPromptBytes,
     maxEffort: config?.maxEffort ?? DEFAULT_CEILINGS.maxEffort,
+    maxWorkflowVersions: config?.maxWorkflowVersions,
   };
+  // v3 (DES-024/TASK-028/TASK-029): SQLite sibling catalog, same workRoot convention as
+  // catalog.db/store/schedules.db — survives restart. Moved up from its old below-catalog spot
+  // (v22, TASK-107) so the WorkflowCatalog's own registration-time MCP_NOT_PROVISIONED check
+  // (DES-112, ADR-013) can wire a real mcpLookup instead of registering unwired (this repo's
+  // signature defect class) — no ordering dependency on `catalog` in either direction.
+  const mcpProbe: McpProbe = config?.mcpProbe ?? new RealMcpProbe();
+  const mcpRegistry = new McpRegistry({ dbPath: join(workRoot, 'mcp-registry.db'), probe: mcpProbe });
   // v15 (DES-098, DES-099, TASK-089): boot backfill + alias-aware validation
   const catalog = new WorkflowCatalog(workRoot, clock, {
     backfillOwner: config?.auth?.enabled ? true : undefined,
+    // v22 (DES-112, TASK-107): the SAME registry the mcp_provision admin tool reads/writes —
+    // registration now refuses an unprovisioned MCP name the same way submission used to.
+    mcpLookup: (name) => mcpRegistry.get(name) !== undefined,
     // v21 Gate 8 re-review #3 (P-A2): mirror the run manager's own fallback (line ~1196,
     // R-G3) — an unconfigured deployment must feed the SAME non-empty DEFAULT_ALIASES table to
     // BOTH registration and admission, or a model.enum/default absent from DEFAULT_ALIASES
@@ -1217,16 +1295,12 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   void continuations.rearmAtBoot();
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
-  // v3 (DES-020/TASK-026): defaults to a real network/spawn probe; tests inject a FakeMcpProbe.
-  // Constructed here (moved up from its old asset_push-only spot) so the v3 MCP Provisioning
-  // Registry below can reuse the SAME injected probe seam (DES-024's "provision-time McpProbe
-  // wiring" — no second, undertested probe port).
-  const mcpProbe: McpProbe = config?.mcpProbe ?? new RealMcpProbe();
-  // v3 (DES-024/TASK-028/TASK-029): SQLite sibling catalog, same workRoot convention as
-  // catalog.db/store/schedules.db — survives restart. Referenced by the submission validator
-  // below (fail-fast on an unprovisioned `mcp` name) and by the mcp_provision admin tool.
-  const mcpRegistry = new McpRegistry({ dbPath: join(workRoot, 'mcp-registry.db'), probe: mcpProbe });
-  const validator = new SubmissionValidator({ catalog, aliases: config?.aliases, mcpRegistry });
+  // v22 (TASK-107): mcpProbe/mcpRegistry moved up above the catalog (see there) so registration can
+  // wire the same registry's MCP_NOT_PROVISIONED check; still referenced below by the mcp_provision
+  // admin tool.
+  // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/
+  // parse checks moved to registration (ADR-013); see submission-validator.ts's own header.
+  const validator = new SubmissionValidator({ catalog });
   const facade = new McpFacade({ clock, store, runManager, validator, ceilings });
   // v6 (REQ-036): best-effort engine-side diagnostics for a runId, pulled through the SAME facade
   // the MCP tools use (status + artifact list + failing/last agent transcript tail), formatted as a
@@ -1298,10 +1372,13 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         .start({ name: firing.workflow, args: firing.args, startedBy: { type: 'schedule', id: firing.workflow } })
         .then((runId) => scheduler.markFired(firing, runId))
         .catch((err: unknown) => {
-          // A failed dispatch (e.g. the catalog entry was deleted after the schedule was created)
-          // must not wedge this schedule as permanently "due" — a bare console.error surfaces it
-          // without crashing the driver loop; targeted follow-up dispatch-failure handling is a
-          // documented v3 boundary (mirrors runManager.start's own existing error surface).
+          // DES-118: a failed dispatch (e.g. the catalog entry was deleted after the schedule was
+          // created) gets a writer — `markFailed` advances/disables the schedule exactly like a
+          // successful `markFired` would, and records `lastError` so `schedule_list` shows the
+          // failure instead of silence. Without this the schedule stays "due" and re-fires at the
+          // 500ms driver-tick cadence forever.
+          const code = err instanceof Error && 'code' in err ? String((err as { code: unknown }).code) : 'DISPATCH_FAILED';
+          scheduler.markFailed(firing, code);
           // eslint-disable-next-line no-console
           console.error(`[remote-workflow-engine] scheduled firing ${firing.id} failed to start:`, err);
         });
@@ -1560,7 +1637,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
                 const name = rpc.params?.name ?? '';
                 const args = rpc.params?.arguments ?? {};
                 const webhookBaseUrl = `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
-                const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, systemInfoSampler, name, args, p.principal);
+                const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, systemInfoSampler, name, args, p.principal, !!authCfg);
                 sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } }); return;
               }
               sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32601, message: `Method not found: ${rpc.method}` } });
@@ -1623,7 +1700,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       req.url?.startsWith('/api/system') ||
       req.url?.startsWith('/api/models')
     ) {
-      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, buildModelCatalog).catch(() => {
+      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, buildModelCatalog, !!authCfg).catch(() => {
         sendJson(res, 200, { degraded: 'internal dashboard error' });
       });
       return;
@@ -1755,7 +1832,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           const name = rpc.params?.name ?? '';
           const args = rpc.params?.arguments ?? {};
           const webhookBaseUrl = `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
-          const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, systemInfoSampler, name, args);
+          const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, systemInfoSampler, name, args, null, !!authCfg);
           sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } });
           return;
         }

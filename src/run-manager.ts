@@ -286,13 +286,20 @@ export class RunManager {
    *  RunSpec (read back wholesale by getSpec() on resume) would be a second unredacted sink plus a
    *  standing temptation to re-merge on resume. The redacted `effectiveParams` snapshot (below) is
    *  the single durable representation. */
-  async start(spec: RunSpec, overrides?: unknown): Promise<string> {
-    // v14 (REQ-085 / DES-090, TASK-084): top rung — pure request-shape check before any durable work.
-    //   Pinned first: SCRIPT_SHA_WITHOUT_SCRIPT → SCRIPT_SHA_MISMATCH → (admission) → …
-    if (spec.scriptSha256 !== undefined) {
-      if (!spec.script) throw codedError('SCRIPT_SHA_WITHOUT_SCRIPT', 'scriptSha256 supplied but no inline script; omit scriptSha256 for named workflow runs');
-      assertScriptIntegrity(spec.script, spec.scriptSha256);
+  async start(spec: RunSpec & { scriptSha256?: string }, overrides?: unknown): Promise<string> {
+    // v22 (REQ-098, ADR-013, DES-113, DES-117, TASK-108/TASK-109): the inline ban is on INGRESS
+    // ONLY — start() refuses ANY inline script, even off the wire (a caller that bypasses the MCP
+    // schema entirely and calls RunManager directly). resume() never applies this check: a run
+    // suspended before the ban shipped has a persisted spec.script and must still resume.
+    if (spec.script !== undefined) {
+      throw codedError('INLINE_SCRIPT_CLOSED', 'Inline scripts are no longer accepted at run start; register once (workflow_register) then run by name: workflow_register({script}) then workflow_run({name})');
     }
+    // v22 (DES-114, TASK-109): `scriptSha256` was an integrity guard for INLINE scripts only
+    // (REQ-085) — with inline scripts closed above, it has nothing left to guard; the
+    // SCRIPT_SHA_WITHOUT_SCRIPT / SCRIPT_SHA_MISMATCH ladder that used to live here is deleted with
+    // it (not re-offered on workflow_register — no requirement buys it). `scriptSha256` is accepted
+    // on the type but is now inert everywhere; kept ONLY so `spec: RunSpec & {scriptSha256?}` still
+    // widens for the pre-existing `assertScriptIntegrity` unit that exercises it directly.
     // v8 REQ-054: admission chokepoint — reject BEFORE any durable/expensive work (createRun,
     // workspace mkdir, seed, sandbox spawn) when the cap is already reached. The global agent
     // semaphore caps only agent() dispatch, not run count / sandbox forks / workspace materialization.
@@ -388,7 +395,9 @@ export class RunManager {
     let registeredContract: ParamContract | undefined;
     let registeredDefaults: HarnessDefaults | undefined;
     if (spec.name && !spec.script) {
-      const registered = await this._catalog.get(spec.name); // throws CatalogNotFoundError — caught by SubmissionValidator pre-run
+      // v22 (REQ-097, DES-114, TASK-109): the wire selector — explicit `version` wins over `channel`;
+      // neither supplied defaults to `release` (DES-110's resolveVersionRequest truth table).
+      const registered = await this._catalog.resolve(spec.name, { version: spec.version, channel: spec.channel }); // throws CatalogNotFoundError/typed resolve error — caught by SubmissionValidator pre-run
       script = registered.script;
       resolvedVersion = registered.version;
       scriptVersion = Number(registered.version.replace(/^v/, '')) || 1;
@@ -535,7 +544,7 @@ export class RunManager {
     await this._transition(runId, entry, 'suspended');
   }
 
-  async resume(runId: string, script?: string): Promise<void> {
+  async resume(runId: string): Promise<void> {
     const entry = await this._requireLive(runId);
     // v8 Defer A (REQ-060): `interrupted` (crashed while running) is resumable, like suspended/stopped.
     if (entry.status !== 'suspended' && entry.status !== 'stopped' && entry.status !== 'interrupted') {
@@ -557,9 +566,11 @@ export class RunManager {
     if (typeof entry.effectiveParams.appendPrompt === 'string' && FRAME_CLOSE_FORGERY.test(entry.effectiveParams.appendPrompt)) {
       throw codedError('PARAM_OUT_OF_RANGE', `Run ${runId}'s admission-time appendPrompt carries the user-instructions frame close delimiter and cannot be resumed`);
     }
-    const newScript = script ?? entry.script;
-    const cachePlan = ResumeCache.build(entry.journal, newScript);
-    entry.script = newScript;
+    // v22 (DES-113/DES-114, TASK-109): the replacement-script parameter is CLOSED with inline
+    // scripts (REQ-098) — a resume always continues `entry.script` unchanged, never a caller-supplied
+    // substitute. A hand-rolled `workflow_resume({runId, script})` is refused INLINE_SCRIPT_CLOSED at
+    // the facade before this method is ever called.
+    const cachePlan = ResumeCache.build(entry.journal, entry.script);
     entry.scriptVersion += 1;
     entry.abortController = new AbortController();
     entry.sandbox = this._newSandbox(runId, entry.workspace, entry.name);
@@ -570,7 +581,7 @@ export class RunManager {
     entry.nestedFrameSeq = 0;
     entry.workflowNodes = [];
     await this._transition(runId, entry, 'running');
-    this._runLive(runId, entry, newScript, cachePlan);
+    this._runLive(runId, entry, entry.script, cachePlan);
   }
 
   async stop(runId: string): Promise<void> {
@@ -632,9 +643,24 @@ export class RunManager {
     let script = spec.script ?? '';
     let registeredDefaults: HarnessDefaults | undefined;
     if (spec.name && !spec.script) {
-      const registered = await this._catalog.get(spec.name); // throws CatalogNotFoundError — same as start()
-      script = registered.script;
-      registeredDefaults = registered.defaults;
+      // v22 (DES-113, ADR-010, TASK-108): resolve the PIN (view.scriptVersion), never the current
+      // `release` — a suspended run continues the version it started with. Legacy-cohort fallback
+      // (the name row exists, but the pin isn't in workflow_versions — e.g. after a
+      // deregister/re-register restarted the lineage): resolve through `release` instead, and
+      // record the substitution durably (the pin itself is NEVER rewritten).
+      try {
+        const registered = await this._catalog.resolve(spec.name, { version: view.scriptVersion });
+        script = registered.script;
+        registeredDefaults = registered.defaults;
+      } catch (err) {
+        if ((err as { code?: string } | undefined)?.code !== 'UNKNOWN_VERSION') throw err;
+        const registered = await this._catalog.resolve(spec.name, {});
+        script = registered.script;
+        registeredDefaults = registered.defaults;
+        const sub = { pinned: view.scriptVersion, resolved: registered.version };
+        await this._store.recordLegacySubstitution(runId, sub);
+        console.log(`run.legacySubstitution: ${JSON.stringify({ runId, name: spec.name, ...sub })}`);
+      }
     }
     // v8 Defer A (REQ-059): read the persisted journal back so a run resumed in a fresh process
     // replays its settled agent()/workflow() calls from cache instead of re-running them live.
@@ -798,7 +824,7 @@ export class RunManager {
       throw codedError('DESCENDANT_CAP_EXCEEDED', `workflow() exceeds maxWorkflowDescendants=${this._maxWorkflowDescendants} for this run`);
     }
 
-    const registered = await this._catalog.get(name); // throws CatalogNotFoundError — message names the missing workflow
+    const registered = await this._catalog.resolve(name, {}); // throws CatalogNotFoundError/typed resolve error — message names the missing workflow
     const framePathKey = `${parentPathKey}.${parentCallSeq}`;
     const frameBase = this._frameBaseFor(entry, framePathKey);
     const childAncestors = new Set(ancestors).add(name);

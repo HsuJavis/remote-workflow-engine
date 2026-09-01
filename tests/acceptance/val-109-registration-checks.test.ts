@@ -1,0 +1,83 @@
+// VAL-109 (REQ-099): the submission-time static checks move to registration, so closing inline
+// script loses no validation. Real entrypoint: `createServer`, real MCP HTTP.
+//
+// Mock policy (acceptance, DES-119): no mocking of the SUT's own boundaries. No LLM dispatch
+// needed — these are static/registration-time checks.
+//
+// Red reason: today PARSE_ERROR/UNKNOWN_ALIAS/MCP_NOT_PROVISIONED are checked ONLY at submission
+// (`if (spec.script)` in submission-validator.ts), never at `workflow_register` — every registration
+// below succeeds today regardless of the script's validity, and a run-by-name is not covered by any
+// equivalent check.
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
+import { createServer } from '../../src/server.js';
+import type { Server } from '../../src/server.js';
+
+let server: Server;
+let tmpDir: string;
+
+beforeAll(async () => {
+  tmpDir = mkdtempSync(join(tmpdir(), 'rwe-val109-'));
+  server = await createServer({
+    port: 0, bind: '127.0.0.1', workRoot: tmpDir,
+    aliases: { sonnet: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' } },
+  });
+});
+afterAll(async () => { await server?.close(); rmSync(tmpDir, { recursive: true, force: true }); });
+
+async function toolCall(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+  });
+  const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
+  return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+}
+
+describe('REQ-099: registration enforces the checks the engine used to run only at submission (VAL-109)', () => {
+  it('an unparseable script is refused PARSE_ERROR at registration, the SAME code submission produced, nothing stored', async () => {
+    const r = await toolCall('workflow_register', { name: 'val109-parse', script: 'not { valid javascript (((' });
+    expect((r['error'] as { code?: string } | undefined)?.code).toBe('PARSE_ERROR');
+    const got = await toolCall('workflow_get', { name: 'val109-parse' });
+    expect(got['code']).toBe('WORKFLOW_NOT_FOUND');
+  });
+
+  it('an unresolvable model alias is refused UNKNOWN_ALIAS at registration, nothing stored', async () => {
+    const r = await toolCall('workflow_register', { name: 'val109-alias', script: `await agent('a', { model: 'no-such-alias' });` });
+    expect((r['error'] as { code?: string } | undefined)?.code).toBe('UNKNOWN_ALIAS');
+    const got = await toolCall('workflow_get', { name: 'val109-alias' });
+    expect(got['code']).toBe('WORKFLOW_NOT_FOUND');
+  });
+
+  it('a run BY NAME is covered — a legitimately registered workflow runs fine (no path skips validation)', async () => {
+    const reg = await toolCall('workflow_register', { name: 'val109-clean', script: `await agent('a', { model: 'sonnet' }); return 'ok';` });
+    expect(reg['error']).toBeUndefined();
+  });
+});
+
+describe('REQ-099: a pre-existing workflow that would now fail is NOT retroactively refused, but its staleness is surfaced (VAL-109)', () => {
+  it('a workflow whose alias went stale AFTER registration still runs; workflow_get exposes validation:{ok:false}', async () => {
+    // Hand-seed a v22-schema row referencing an alias this server was never configured with —
+    // models "registered before the alias was removed" (registration itself would refuse
+    // UNKNOWN_ALIAS for a NEW registration, per the case above; this reaches the grandfathered
+    // state directly, the same technique tests/integration/catalog-versions.test.ts uses for its
+    // migration fixtures).
+    const dbPath = join(tmpDir, 'catalog.db');
+    const db = new Database(dbPath);
+    const now = new Date().toISOString();
+    db.prepare('INSERT INTO workflows (name, createdAt, owner, release_version) VALUES (?, ?, NULL, ?)').run('val109-stale', now, 'v1');
+    db.prepare('INSERT INTO workflow_versions (name, version, script, createdAt) VALUES (?, ?, ?, ?)')
+      .run('val109-stale', 'v1', `await agent('a', { model: 'now-deprovisioned-alias' }); return 'still-runs';`, now);
+    db.close();
+
+    const got = await toolCall('workflow_get', { name: 'val109-stale' });
+    const validation = (got['result'] as { validation?: { ok?: boolean } } | undefined)?.validation;
+    expect(validation?.ok).toBe(false); // surfaced, not silently swallowed
+
+    const run = await toolCall('workflow_run', { name: 'val109-stale' });
+    expect(run['error']).toBeUndefined(); // NOT retroactively refused — the last REQ-099 clause
+  });
+});

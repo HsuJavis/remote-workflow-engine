@@ -27,7 +27,8 @@ describe('McpFacade — ResultEnvelope contract', () => {
 
   it('workflow_list returns an array result', async () => {
     const facade = new McpFacade();
-    const env = await facade.workflow_list();
+    // v22 (DES-116, TASK-111): ctx is required, no default — see mcp-facade.ts's ReadContext.
+    const env = await facade.workflow_list(undefined, { authEnabled: false, principal: null });
     expect(Array.isArray(env.result)).toBe(true);
   });
 

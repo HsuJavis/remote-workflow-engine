@@ -19,9 +19,9 @@ import type { ErrEnvelope } from './types.js';
 interface RunManagerPort {
   start(spec: { name?: string; script?: string; args?: unknown; budget?: number | null; startedBy?: { type: string; id?: string } }): Promise<string>;
 }
-/** Structural seam — matches WorkflowCatalog.get() (workflow-existence check at create time). */
+/** Structural seam — matches WorkflowCatalog.exists() (workflow-existence check at create time). */
 interface CatalogPort {
-  get(name: string): Promise<{ script: string; version: string }>;
+  exists(name: string): Promise<boolean>;
 }
 
 export interface WebhookRegistryDeps {
@@ -85,9 +85,7 @@ export class WebhookRegistry {
   /** Registers a webhook for a PRE-BOUND workflow. Generates the secret server-side and returns it
    *  EXACTLY ONCE — it is never retrievable again (list shows only a fingerprint). */
   async create(spec: { workflow: string; enabled?: boolean }): Promise<{ webhookId: string; secret: string } | { error: ErrEnvelope }> {
-    try {
-      await this._catalog.get(spec.workflow);
-    } catch {
+    if (!(await this._catalog.exists(spec.workflow))) {
       return { error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${spec.workflow}` } };
     }
     const id = randomUUID();

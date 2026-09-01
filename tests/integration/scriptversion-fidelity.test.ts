@@ -3,13 +3,16 @@
 // Integration tier (DES-015): real McpFacade + real RunManager + real WorkflowCatalog + real
 // InMemoryRunStore; no network.
 //
-// Red reason (2026-07-03, before Gate 6 rework): RunManager.start() (src/run-manager.ts)
-// correctly resolves `scriptVersion` from the catalog (`registered.version`) but never threads it
-// into `this._store.createRun(spec)` — RunStore.createRun (both InMemoryRunStore and
-// SqliteRunStore) hardcodes `scriptVersion: 'v1'` for every run regardless of which version
-// actually executed (confirmed at Gate 7.5 real-run — see 08-validation.md VAL-014). This test
-// pins the case Gate 7.5 found: register twice (v1, v2), run twice, and check the SECOND run's
-// recorded scriptVersion is genuinely "v2", not "v1" again.
+// v22 rewrite (DES-113, ARCH-072, TASK-108): the ORIGINAL case ("v2 !== v1") is a relative oracle
+// that passes when both are wrong (v22 Rule 1, 01-requirements.md Round v22) — rewritten to LITERAL
+// 'v1'/'v2' assertions, plus a third clause: after a THIRD version is registered+published, run 1
+// still reports 'v1' literally (not merely "not v3"). v22 also requires an explicit `publish` to
+// `release` — registration alone no longer makes a version runnable by name (REQ-097).
+//
+// Red reason: `WorkflowCatalog.publish` does not exist yet (register() still overwrites in place,
+// so there is no "second, distinct v2 row" to publish) — MODULE-level red on `catalog.publish is
+// not a function`, and even once stubbed, `run-manager.ts:391/635` resolve via the deleted
+// `catalog.get()`'s "newest row" semantics, not a literal 'v1'/'v2' pin.
 import { describe, it, expect } from 'vitest';
 import { McpFacade } from '../../src/mcp-facade.js';
 import { RunManager } from '../../src/run-manager.js';
@@ -27,26 +30,30 @@ async function pollUntilSettled(facade: McpFacade, runId: string) {
   return s;
 }
 
-describe('scriptVersion fidelity across a workflow update (IT-011, D-V7)', () => {
-  it('a run after an update records the actually-executed version, not always v1', async () => {
+describe('scriptVersion fidelity across a workflow update (IT-011, D-V7, v22 rewrite)', () => {
+  it('two runs after two published versions report literal "v1"/"v2" — not merely "different"', async () => {
     const store = new InMemoryRunStore(CLOCK);
     const runManager = new RunManager({ store, clock: CLOCK });
     const facade = new McpFacade({ clock: CLOCK, store, runManager });
 
-    await runManager.catalog.register('sv-fidelity', `return 'version-one';`);
+    const { version: v1 } = await runManager.catalog.register('sv-fidelity', `return 'version-one';`);
+    await runManager.catalog.publish('sv-fidelity', v1, 'release', null);
     const run1 = await facade.workflow_run({ name: 'sv-fidelity' });
     const status1 = await pollUntilSettled(facade, run1.result!.runId);
     expect(status1.status).toBe('completed');
-    const v1 = status1.result!.scriptVersion;
+    expect(status1.result!.scriptVersion).toBe('v1'); // literal, per v22 Rule 1
 
-    await runManager.catalog.register('sv-fidelity', `return 'version-two';`);
+    const { version: v2 } = await runManager.catalog.register('sv-fidelity', `return 'version-two';`);
+    await runManager.catalog.publish('sv-fidelity', v2, 'release', null);
     const run2 = await facade.workflow_run({ name: 'sv-fidelity' });
     const status2 = await pollUntilSettled(facade, run2.result!.runId);
     expect(status2.status).toBe('completed');
-    const v2 = status2.result!.scriptVersion;
+    expect(status2.result!.scriptVersion).toBe('v2'); // literal, per v22 Rule 1
 
-    // The script content genuinely executes correctly (already green — VAL-014); what this test
-    // pins is the METADATA: the second run's recorded scriptVersion must differ from the first's.
-    expect(v2).not.toBe(v1);
+    // After a THIRD version is registered+published, run 1's own record is unchanged — still 'v1'.
+    const { version: v3 } = await runManager.catalog.register('sv-fidelity', `return 'version-three';`);
+    await runManager.catalog.publish('sv-fidelity', v3, 'release', null);
+    const stillStatus1 = await facade.workflow_status({ runId: run1.result!.runId });
+    expect(stillStatus1.result!.scriptVersion).toBe('v1');
   }, 15000);
 });

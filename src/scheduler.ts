@@ -38,6 +38,7 @@ export interface ScheduleStatus {
   nextFire?: string;
   lastFire?: string;
   lastRunId?: string;
+  lastError?: { code: string; at: string };
 }
 
 export interface ScheduleResult<T> {
@@ -45,9 +46,9 @@ export interface ScheduleResult<T> {
   error?: ErrEnvelope;
 }
 
-/** Structural seam — matches WorkflowCatalog's own get() signature without importing the class. */
+/** Structural seam — matches WorkflowCatalog's own exists() signature without importing the class. */
 interface CatalogPort {
-  get(name: string): Promise<{ script: string; version: string }>;
+  exists(name: string): Promise<boolean>;
 }
 /** Structural seam — matches RunManager's own start() signature without importing the class. */
 interface RunManagerPort {
@@ -82,6 +83,7 @@ interface ScheduleRow {
   nextFire: number | null;
   lastFire: string | null;
   lastRunId: string | null;
+  lastError: string | null;
 }
 
 function rowToSchedule(r: ScheduleRow): Schedule {
@@ -104,6 +106,7 @@ function rowToStatus(r: ScheduleRow): ScheduleStatus {
     nextFire: r.nextFire != null ? new Date(r.nextFire).toISOString() : undefined,
     lastFire: r.lastFire ?? undefined,
     lastRunId: r.lastRunId ?? undefined,
+    lastError: r.lastError != null ? (JSON.parse(r.lastError) as { code: string; at: string }) : undefined,
   };
 }
 
@@ -141,12 +144,14 @@ export class SqliteSchedulerPort {
         kind TEXT NOT NULL
       );
     `);
+    // DES-118: idempotent add-column idiom (this repo's established pattern, e.g.
+    // sqlite-run-store.ts:65-71) — a pre-v22 `schedules` table gets `lastError` on next boot; a
+    // fresh CREATE TABLE above already has it, so this is a silent no-op there.
+    try { this._db.exec('ALTER TABLE schedules ADD COLUMN lastError TEXT'); } catch { /* already present */ }
   }
 
   async create(s: NewSchedule): Promise<ScheduleResult<Schedule>> {
-    try {
-      await this._catalog.get(s.workflow);
-    } catch {
+    if (!(await this._catalog.exists(s.workflow))) {
       return { error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${s.workflow}`, field: 'workflow' } };
     }
     if (s.kind === 'cron' && !isValidCron(s.cron)) {
@@ -205,9 +210,7 @@ export class SqliteSchedulerPort {
    *  D-V2I-3: `workflow` must be a catalog-REGISTERED workflow (REQ-014/REQ-015 wording) — an
    *  unknown name never silently starts an ad-hoc run here. */
   async trigger(workflow: string, args?: unknown): Promise<ScheduleResult<{ runId: string }>> {
-    try {
-      await this._catalog.get(workflow);
-    } catch {
+    if (!(await this._catalog.exists(workflow))) {
       return { error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${workflow}`, field: 'workflow' } };
     }
     const row = this._db
@@ -269,6 +272,25 @@ export class SqliteSchedulerPort {
     this._db
       .prepare('INSERT OR REPLACE INTO run_origins (runId, scheduleId, kind) VALUES (?, ?, ?)')
       .run(runId, firing.id, firing.kind);
+  }
+
+  /** DES-118: the driver's `.catch()` gets a writer — exactly what `markFired` does minus `runId`
+   *  (a failed dispatch never started a run): `once` auto-disables, `cron` recomputes a fresh future
+   *  `nextFire` from `clock.now()`, both record `lastError:{code, at}`. Without this, nothing
+   *  advances/disables the schedule after a failed dispatch, so it stays "due" and re-fires at the
+   *  driver's tick cadence forever while `schedule_list` shows silence. */
+  markFailed(firing: ScheduleFiring, code: string): void {
+    const at = this._clock.isoNow();
+    const lastError = JSON.stringify({ code, at });
+    if (firing.kind === 'once') {
+      this._db.prepare('UPDATE schedules SET enabled = 0, lastError = ? WHERE id = ?').run(lastError, firing.id);
+    } else {
+      const row = this._db.prepare('SELECT cron, tz FROM schedules WHERE id = ?').get(firing.id) as
+        | { cron: string; tz: string | null }
+        | undefined;
+      const nextFire = row ? computeNextFire(row.cron, row.tz ?? undefined, this._clock.now()) : null;
+      this._db.prepare('UPDATE schedules SET nextFire = ?, lastError = ? WHERE id = ?').run(nextFire, lastError, firing.id);
+    }
   }
 
   /** D-V2I-2 (DES-017 "Boot re-arm from persistence using the injected Clock"): re-derives every

@@ -726,3 +726,92 @@ status: draft
 - **iter:** v21
 - **`files:` corrected at the v21 Gate 6 integrator closeout (2026-09-01, adjudication B-8):** this line named `tests/unit/harness-defaults.test.ts`, a file that never existed under that name — a stale pointer to the deleted `tests/unit/resolve-harness-params.test.ts`. The real files this task touched are `src/harness-defaults.ts` (where `resolveHarnessParams` was removed) and the deleted `tests/unit/resolve-harness-params.test.ts`, whose coverage is now carried by `tests/unit/params-resolve.test.ts` (UT-099) — that replacement is what the `files:` line names, since a deleted path is not a partitionable file. See IMPL-137.
 - Runs LAST (after TASK-098 + TASK-101). Leaving a `Partial<HarnessDefaults>`-shaped merge function (three of whose five keys are D12-locked) next to the new closed-type one is a standing invitation for a future implementer to "finally wire the one that was never wired" — reintroducing exactly the ADR-001 escalation. Deleting the shape is cheaper than documenting why not to use it.
+
+---
+
+## v22 — Author/user separation part 2: version history, channels, closing inline script (REQ-096..100 → ARCH-071..076, ADR-009..014)
+
+> Dependency edges (the partitioner batches on `files:`): TASK-105 → {TASK-107, TASK-108, TASK-109, TASK-111};
+> TASK-106 → TASK-107; TASK-110 → TASK-111; TASK-108 → TASK-109 (the DAG reads the pin);
+> TASK-112 independent. Pure-first TDD order: TASK-106 + TASK-110 units and DES-110's truth table are the
+> first RED tests written; they are database-free and pin the two external contracts v22 Rule 1 names.
+
+### TASK-105 — versioned catalog: `workflow_versions` table, transactional idempotent boot migration, `resolve`/`resolveDetail`/`exists`/`listVersions`/`publish`, and every converted call site in ONE commit
+- **status:** draft
+- **traces:** ARCH-071
+- **files:** src/workflow-catalog.ts, src/run-manager.ts, src/scheduler.ts, src/webhook-registry.ts, src/submission-validator.ts, src/mcp-facade.ts, src/server.ts, tests/integration/catalog-versions.test.ts
+- **des:** DES-109, DES-110, DES-111
+- **dod:** `npx vitest run tests/integration/catalog-versions.test.ts` green — a **hand-written** pre-v22 `catalog.db` migrates (rows copied, `release_version` set, second boot logs `0 migrated`), `PRAGMA table_info(workflows)` no longer lists `script`/`version`/`defaults`/`params`, both versions of a twice-registered name are retrievable, and the file's own structural case asserts `rg "catalog\.get\(|\.getFull\("` over `src/` finds nothing.
+- **estimate:** L
+- **iter:** v22
+- **`get()` and `getFull()` are deleted, not left beside `resolve()`/`resolveDetail()`** — after this commit the compiler, not a reviewer, finds a missed call site. Splitting the accessor change from its six call sites (`run-manager.ts:391,635,801`; `scheduler.ts:148,209`; `webhook-registry.ts:89`; `submission-validator.ts:83`) leaves a legacy "newest row" read alive for a review cycle, which is exactly how this repo's stored-but-never-wired class survives (four documented recurrences). Registration is mechanical here (INSERT a new row, no channel) — enforcement and the ceiling land in TASK-107 so this task stays reviewable.
+
+### TASK-106 — pure `src/script-checks.ts`: `validateScriptEntry` with injected ports + the shared frame-delimiter predicate
+- **status:** draft
+- **traces:** ARCH-074
+- **files:** src/script-checks.ts, tests/unit/script-checks.test.ts
+- **des:** DES-112
+- **dod:** `npx vitest run tests/unit/script-checks.test.ts` green — one case per code (`PARSE_ERROR`, `UNKNOWN_ALIAS`, `MCP_NOT_PROVISIONED`, frame-delimiter forgery), the `openrouter/<id>` passthrough accepted unchanged, multiple errors returned in one call, and the structural case asserting exactly one frame-delimiter regex exists under `src/`.
+- **estimate:** M
+- **iter:** v22
+- Lifted **verbatim** out of `submission-validator.ts:92-124`'s `if (spec.script)` block into a new tiny pure module — not a call into `submission-validator.ts`, because `workflow-catalog.ts` becomes the enforcement site and that file already type-imports the catalog (a cycle). The delimiter predicate is **imported** from `params/contract.ts`, never transcribed (P6-2's registration half; v21 QD-REP-1 precedent).
+
+### TASK-107 — registration ENFORCES: `validateScriptEntry` before any write, the per-name version ceiling, and the `main.ts` threading + `compose-config-v2-wiring.test.ts` rows IN THIS TASK
+- **status:** draft
+- **traces:** ARCH-071, ARCH-074
+- **files:** src/workflow-catalog.ts, src/main.ts, src/server.ts, tests/unit/compose-config-v2-wiring.test.ts, tests/integration/registration-enforcement.test.ts
+- **des:** DES-111, DES-112, DES-117
+- **dod:** `npx vitest run tests/integration/registration-enforcement.test.ts tests/unit/compose-config-v2-wiring.test.ts` green — a script failing each of the three checks is refused with the same typed code the engine produced at submission and `listVersions(name)` is unchanged (**nothing stored**); an (N+1)th registration is refused `VERSION_CEILING_EXCEEDED` whose message names both remedies; and `maxWorkflowVersions` + the catalog's new alias/MCP deps appear in the wiring test.
+- **estimate:** M
+- **iter:** v22
+- Depends on TASK-105 + TASK-106. **One task by decree** — a new config key plus a widened constructor is the exact trigger of this repo's five-instance `composeConfig` wiring bug class (v11 `updateFlagPath`, v15 `auth`, v16 `workspaceTtlMs`, v21 `resolveHarnessParams`); a separate "config plumbing" task is how the sixth ships. `maxWorkflowVersions` goes into the **existing** `WorkflowCatalogOpts.ceilings` object (`workflow-catalog.ts:57`) — no new plumbing. Order inside `register`: `validateScriptEntry` first, ceiling second (DES-117).
+
+### TASK-108 — resolve once at admission, pin the version on the run, resume/nested/legacy through the pin, and the `SubmissionValidator` shrink
+- **status:** draft
+- **traces:** ARCH-072, ARCH-074
+- **files:** src/run-manager.ts, src/run-store.ts, src/store/sqlite-run-store.ts, src/submission-validator.ts, src/types.ts, tests/integration/run-version-pin.test.ts, tests/integration/scriptversion-fidelity.test.ts
+- **des:** DES-113, DES-112, DES-117
+- **dod:** `npx vitest run tests/integration/run-version-pin.test.ts tests/integration/scriptversion-fidelity.test.ts` green — start `foo@v1` (script returns marker `A`) → suspend → register+publish `v2` (marker `B`) → resume → the run's **result is `A`**; run 1 reports `'v1'` and run 2 `'v2'` **literally** after a third version is registered; a hand-written legacy DB whose run pin is absent from `workflow_versions` resumes with the substitution recorded; and `submission-validator.ts` contains zero `if (spec.script)` branches.
+- **estimate:** L
+- **iter:** v22
+- Depends on TASK-105. **The pin is a correctness fix, not decoration** — today `resume` re-reads the catalog and continues *whatever is registered now* (`run-manager.ts:632-636`), so the marker test is RED against current code. Carries the three `scriptVersion`-meaning rulings (DES-113), the legacy-cohort fallback, `SubmissionValidatorDeps` shrinking to `{catalog}` and `MISSING_SCRIPT` → `MISSING_NAME` — the shrink lives **here**, with the checks it orphans, because dead wiring left in `main.ts` is a standing invitation to grow the second enforcement site ADR-013 exists to prevent.
+
+### TASK-109 — the wire surface: `script` + `scriptSha256` removed from the schemas and `RunSpec`, `workflow_publish`, `version`/`channel` parameters with descriptions, drift-lock rows, DAG from the pin
+- **status:** draft
+- **traces:** ARCH-073
+- **files:** src/server.ts, src/mcp-facade.ts, src/types.ts, src/run-manager.ts, tests/integration/schema-drift-v22.test.ts, tests/integration/inline-script-closed.test.ts
+- **des:** DES-114, DES-117
+- **dod:** `npx vitest run tests/integration/schema-drift-v22.test.ts tests/integration/inline-script-closed.test.ts` green — `tools/list` advertises neither `script` nor `scriptSha256` on `workflow_run` and no `script` on `workflow_resume`, advertises `workflow_publish` with the `beta|release` enum, every new optional parameter has a non-empty description; and a hand-rolled `/mcp` body carrying `script` is refused `INLINE_SCRIPT_CLOSED` with the two-call migration recipe in the message.
+- **estimate:** L
+- **iter:** v22
+- Depends on TASK-105 + TASK-108. **Closure is schema-level AND runtime-level and the two are asserted separately** — `/mcp` accepts arbitrary JSON, so removal from the advertised schema is not a refusal. `scriptSha256` leaves in the **same** task as `script` (`run-manager.ts:292-294` refuses it whenever there is no inline script, i.e. always after REQ-098 — an advertised parameter whose every use errors teaches a schema-reading agent a lie). The DAG route derives its skeleton from the pinned `(name, version)`; `server.ts:1044-1046`'s `spec?.script` read is empty for every named run today.
+
+### TASK-110 — pure `src/workflow-view.ts`: `projectWorkflowForRead`, the two view types, `EXPECTED_NON_OWNER_KEYS`
+- **status:** draft
+- **traces:** ARCH-075
+- **files:** src/workflow-view.ts, tests/unit/workflow-view.test.ts
+- **des:** DES-115
+- **dod:** `npx vitest run tests/unit/workflow-view.test.ts` green — `Object.keys(deepFlatten(projectWorkflowForRead(full, false))).sort()` equals `EXPECTED_NON_OWNER_KEYS` **literally** (so a new leaked field fails AND a missing `scriptWithheld` fails, and `validation.errors` is absent), and the owner branch returns the script byte-identically.
+- **estimate:** S
+- **iter:** v22
+- Pure, no I/O, no auth — the *shape* is built here, the *policy* is evaluated in TASK-111, split so each is testable without the other. The non-owner branch is **constructed** from an explicit field list, never a `delete` on a full row (`script` is returned **twice** today, `mcp-facade.ts:220/232`, so a delete-based fix leaks `result.script` — v21's fragment-leak defect verbatim).
+
+### TASK-111 — masked reads: **required** `ReadContext` on `workflow_get`/`workflow_list`, every call site, `/api/*` masked while auth is on, and the real-transport non-owner test
+- **status:** draft
+- **traces:** ARCH-076, ARCH-073
+- **files:** src/mcp-facade.ts, src/server.ts, tests/integration/workflow-masking-http.test.ts
+- **des:** DES-116, DES-115
+- **dod:** `npx vitest run tests/integration/workflow-masking-http.test.ts` green — an authenticated **non-owner** driven through `/mcp` with a real bearer minted via `TokenStore` gets exactly `EXPECTED_NON_OWNER_KEYS`; passing `{principal:'<owner-email>'}` in the arguments does **not** unmask; the owner gets the script; auth disabled returns the pre-v22 surface; and a NULL-owner row is masked from everyone with the distinct remediation text.
+- **estimate:** M
+- **iter:** v22
+- Depends on TASK-105 + TASK-110. **One task by decree** — the whole value of a required `ctx` is that an unwired call site is a `tsc` error; a task that adds it with a `= null` default "to unblock the next task" deletes the entire protection and reproduces the `composeConfig` class verbatim. A facade-level unit test with an injected principal **cannot** see the `server.ts:823` hole, which is why the transport test is this task's DoD and not a later test task.
+
+### TASK-112 — scheduler failed dispatch gets a writer: `markFailed` + `lastError`, the driver's `.catch()`, and the false comment corrected
+- **status:** draft
+- **traces:** ARCH-072
+- **files:** src/scheduler.ts, src/server.ts, tests/unit/scheduler-failed-dispatch.test.ts
+- **des:** DES-118
+- **dod:** `npx vitest run tests/unit/scheduler-failed-dispatch.test.ts` green — a schedule whose workflow resolution fails, driven across **three** fake-clock ticks, attempts `start()` exactly **once**, has `nextFire` advanced (or is auto-disabled for `once`), and reports `lastError:{code, at}` on `schedule_list`.
+- **estimate:** S
+- **iter:** v22
+- Independent of every other v22 task. **Reopens a recorded architecture decline on new primary-source evidence** (see Decision rationale D3): `server.ts:1294-1309`'s `.catch()` writes nothing, `markFired` is the sole writer that advances a schedule after a firing, and the ticker is 500 ms — so a failed dispatch re-fires at 2 Hz forever while `schedule_list` shows silence, directly under a comment claiming the opposite. A single-tick test passes today and proves nothing; the defect is only visible on tick 2.
