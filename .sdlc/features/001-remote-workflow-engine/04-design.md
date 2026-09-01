@@ -3830,3 +3830,44 @@ drift-locks likewise still have a job — they should now pin the *absence* of `
 already-completed run. Its replay oracle is genuinely carried by `crash-resume`'s REQ-059 case. Debt,
 named: either make the run long enough that `stop` lands mid-flight, or retire it. `resident-trigger`'s
 surviving early-return guard is the same class.
+
+---
+
+## Orchestrator adjudication (v22) #4 — the dispatch path swallows an unprovisioned MCP (2026-09-02)
+
+### N-1 — surface it on the run; do NOT retroactively refuse
+The closeout agent found, and correctly reported rather than fixed, that `MCP_NOT_PROVISIONED` now has
+**no live run-level enforcement at all**. `src/gateway/claude-agent-sdk-client.ts:422` drops an
+unresolvable MCP config and returns `{}`, carrying the comment *"submission already fails fast on this"*
+— which stopped being true when v22 shrank `submission-validator.ts`. A grandfathered pre-v22 workflow
+naming an MCP that is no longer provisioned therefore **dispatches its agents with that capability
+silently missing**: nothing on `workflow_run`, `workflow_status` or `workflow_result` says so. The agent
+is quietly less capable than the workflow it is executing declares.
+
+That is the sixth instance across v21 and v22 of **a comment asserting a guarantee the code no longer
+provides.** The comment is not the defect — it is the tell. What made this one reachable is that the
+guarantee moved and nothing re-checked who still depended on it.
+
+**REQ-099 settles the shape of the fix, and it cuts both ways.** It explicitly says such a workflow is
+**not** retroactively refused — so do not raise a run-level error and do not fail the run. It equally
+explicitly requires the condition to be *"surfaced (observable, not silently swallowed) so the author can
+fix and re-register"* — and silently swallowed is exactly what dispatch does. **Record it as an
+observable condition on the run** (the harness descriptor is where every other honest-no-op of this kind
+already lives — `effortApplied`'s `{reason}` branch is the precedent), and **fix the stale comment to
+state what is actually true.** A dropped capability that the run's own record admits to is recoverable;
+one that no surface mentions is not.
+
+Pair it with a test that asserts the *observable*, not the drop — an oracle that only checks
+`mcpServers` came back empty would pass just as well if the surfacing were removed again.
+
+### N-2 — the ledger follow-ups the closeout correctly declined
+`05-tests.md` and the trace chain still describe VAL-006's retired edited-script case, the
+submission-validator cases' old subject, and REQ-085's two now-inverted drift-locks. Real work, out of
+that dispatch's scope, in scope for the gate closeout.
+
+### N-3 — duplicate coverage left in place, deliberately
+Two re-sited `submission-validator` cases now overlap `script-checks.test.ts`, and the two schema
+drift-locks overlap `schema-drift-v22.test.ts`'s absence lock. The agent declined to delete the
+duplicates because deleting an assertion was barred, which was the right call under its constraints.
+**Ruling: leave them.** Duplicated coverage of a check that has just moved sites is cheap insurance
+during exactly the iteration that moved it; consolidate in v23 if it still looks redundant then.
