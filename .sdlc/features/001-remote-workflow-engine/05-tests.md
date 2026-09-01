@@ -4866,6 +4866,13 @@ in this environment (no `OLLAMA_BASE_URL`) and deferred to Gate 7.5 real-run, pe
 evidence-plan pre-commitment (VAL-003 precedent: deciding the split now costs a paragraph, at Gate
 7.5 it costs a round).
 
+**Extended at Gate 7.5 ROUND 2 (2026-09-01, post adjudication #6/#7 IMPL-141):** 2 more cases added
+— 1 UNGATED (`defaults.effort` above the server's `maxEffort` ceiling with NO `params.knobs` block
+declared → `HARNESS_DEFAULTS_INVALID`, the G-1 ceiling-bypass fix) and 1 gated on `OLLAMA_BASE_URL`
+(a `defaults.effort` registered default with no override/no per-call effort reaches dispatch with
+`provenance.effort:'default'`, the P-A3 dispatch-inertness fix). File now 4 cases total (2 ungated,
+2 gated); see 08-validation.md's "v21 Gate 7.5 ROUND 2" section for full real-tier evidence.
+
 ### VAL-104 — REQ-094: a user-supplied `appendPrompt` attaches at a fixed position after everything the author controls (REQ-094)
 - **status:** green
 - **traces:** REQ-094
