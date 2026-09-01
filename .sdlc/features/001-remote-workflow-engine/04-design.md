@@ -3018,3 +3018,91 @@ covered. Do not rely on the admission backstop.
 The oracle problem in E-1 is the lesson of this whole iteration: **a test whose expected value is derived
 from the code under test cannot fail when the code is wrong.** Where a clause names an external contract
 (a transport's documented request shape, a provider's API), assert against that contract literally.
+
+
+---
+
+## Orchestrator adjudication #6 — E-3 REVERSED; dedup approved (2026-09-01)
+
+### F-1 — **Adjudication #5's E-3 is SUPERSEDED. The Gate 5 tests were right; my adjudication was wrong.**
+
+E-3 chose "reject a declared default for a knob no rung can apply, widening is out of v21 scope". That
+contradicts **REQ-090's own acceptance text**, which I wrote at Gate 1: the params block declares, *per
+tunable knob*, "its name, type, default, and an allowed enum/range" — and `effort` and `appendPrompt`
+are two of the four tunable knobs (D12). Rejecting their defaults makes the engine refuse a declaration
+the requirement explicitly permits, and hollows out the declared-default vocabulary for half the knob
+set. **A requirement outranks an adjudication.** REQ-092's precedence chain already names "registered
+defaults" as a rung; widening simply lets those two knobs participate in a rung the requirement has
+defined all along, and REQ-088's "at minimum `{model, tools, skills, timeoutMs, prompt}`" wording
+permits the set to grow.
+
+Root cause of the conflict, recorded so Gate 8 does not read it as drift: adjudication #5 was committed
+**one minute after** the in-flight Gate 5 re-run wrote tests for the opposite shape — two workflows were
+running against the same tree. The tests encode the correct resolution; the code at
+`src/workflow-catalog.ts:132-135` that cites adjudication #5 by name implements the wrong one.
+
+**Adopted fix — widen, don't reject:**
+- `HarnessDefaults`' `KNOWN_KEYS` gains `effort` and `appendPrompt`; `validateHarnessDefaults` gains
+  their shape checks.
+- `defaultRunParams` reads both, with `'default'` rung provenance, so the descriptor stops reporting
+  "never requested" for an author-declared default.
+- The engine ceilings still bound them: an author `effort` default above `maxEffort`, or an
+  `appendPrompt` default over `maxAppendPromptBytes`, behaves exactly like any other out-of-bounds
+  declared value — no special case.
+- The **round-trip must go green**: re-registering the `defaults` object that `workflow_get` served
+  succeeds.
+
+**Precise scope of the removal — two branches sit next to each other, only one goes:**
+- `violatesOwnSpec(spec.default, spec)` at `workflow-catalog.ts:132` — a declared default that violates
+  its **own** declared enum/range → typed rejection, nothing stored. This is adjudication **A-2(b)** and
+  **STAYS**.
+- The unappliable-knob rejection added by adjudication #5 at `:135` → **REMOVED**, along with its
+  comment citing #5.
+
+### F-2 (P-A5) — dedup approved; TASK-096's "no contract.ts import" note is narrowed
+
+`checkValueAgainstSpec` (contract.ts, unexported) and `violatesOwnSpec` (workflow-catalog.ts) are two
+hand-rolled bounds checkers over the same `ParamSpec` shape. **They will drift, and the drift is exactly
+the class that has bitten this iteration twice** — an advertised bound disagreeing with an enforced one
+(P-A2), and a comment claiming a guarantee the code does not provide (R-G10). One predicate, shared.
+
+The DoD note this reverses ("no contract.ts import — TASK-099 stays out of TASK-097's file") was
+protecting a boundary the catalog **already crosses in substance**: it throws `PARAM_CONTRACT_INVALID`
+itself, so it is already doing validation, and it already carries a type-only import from contract.ts
+(`workflow-catalog.ts:30`, the A-1 convention). What the note actually barred was dragging the validator
+in as a value dependency; that cost is now justified by the correctness gain, and adjudication A-1's
+type-only rule is **not** weakened for any other file.
+
+**No runtime hazard:** the known sandbox-child `.js→.ts` value-import limitation does not apply —
+`workflow-catalog.ts` is server-side (it loads `better-sqlite3`, which the child cannot require), and
+`contract.ts` is already value-imported by `run-manager.ts`.
+
+**Constraint:** the dedup must not change any pinned error shape — `detail.param` naming and the
+`suppliedTruncated` echo stay byte-identical. Extract the shared core predicate rather than forcing the
+catalog through the full `Err` machinery if that reads cleaner.
+
+### F-3 — DES-102 doc sync (was flagged as non-blocking drift; fold it in here)
+DES-102 still says `RunParams` carries the "author-only trio (prompt/tools/skills)" and that
+`mergeRunParams` folds "all seven registered keys". The shipped shape omits `skills` per adjudication
+B-3 (six keys), and F-1 now makes all four tunable knobs defaultable. Update the prose to the real
+shape; do not leave the design doc specifying a snapshot the code deliberately does not build.
+
+### F-4 — ownership of the batched leftovers, so nothing drops at re-review #4
+These belong to the **integrator closeout**, not to any single TASK's file partition — the implementers
+were right to leave them rather than reach across:
+- **P-A6** — secret-marker grammar duplicated between `src/secret-resolver.ts` and `run-manager.ts:538`.
+- **Doc batch** — `server.ts:373`'s `workflow_agent_log` description must document DES-105's v21
+  descriptor fields (`effort` / `effortApplied` / `timeoutMs` / `provenance`); the ARCH-064 rename and
+  the three remaining 02-architecture.md amendments; and 05-tests.md's UT-020 entry says "6/6 pass"
+  where the file holds 5 cases — a miscount in the note, not a missing test.
+
+### F-5 — Gate 5 additions this pass (the relaunch starts at `tests`, not `impl`)
+The widen-encoding tests stand as the target and need no rewrite. Add:
+- `defaultRunParams` reads an author-declared `effort` / `appendPrompt` default with `'default'` rung
+  provenance;
+- the UT-099 provenance-matrix gaps the implementer flagged — no `overrides.effort` merge case, no
+  `opts.timeoutMs` call-rung case — now that the `'default'` rung for `effort` becomes reachable;
+- an author `effort` default above the configured `maxEffort` ceiling is bounded like any other declared
+  value.
+
+---

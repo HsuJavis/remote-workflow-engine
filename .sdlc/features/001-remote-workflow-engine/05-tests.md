@@ -5180,3 +5180,40 @@ missing implementation (same shape as A-3/A-7 in the prior re-run).
 `suppliedTruncated` (Part 2 item 2) = 2 new red, joining the 1 pre-existing UT-100/A-8 red = 3 red
 total; all other new/extended cases green on first write; 0 unrelated regressions. See the verifier's
 gate report for the exact pass/fail counts from the final full-suite run.
+
+---
+
+## Gate 5 scope — v21 adjudication #6 (2026-09-01)
+
+**Read `04-design.md` → "Orchestrator adjudication #6" first.** It SUPERSEDES adjudication #5's E-3:
+author-declared `effort` / `appendPrompt` defaults are **widened, not rejected**, because REQ-090's own
+acceptance text permits a default on every tunable knob and `effort`/`appendPrompt` are two of the four.
+
+**The existing widen-encoding tests were RIGHT and stand as the target — do not rewrite them.**
+`harness-defaults-validation.test.ts` case (e) (the discover → edit → re-register round-trip including an
+author-declared `effort` default) and the P-A3 describe block in `params-admission.test.ts` already
+encode the adopted resolution. They are currently red because the code implements the superseded
+rejection; the fix is in `src/`, not in these files.
+
+### Add
+1. **`defaultRunParams` reads the two new author-side keys** (`src/params/resolve.ts`): an author-declared
+   `effort` / `appendPrompt` default reaches the snapshot with `'default'` rung provenance, so the
+   descriptor stops reporting "never requested".
+2. **UT-099 provenance-matrix gaps** the implementer flagged, now that the `'default'` rung for `effort`
+   becomes reachable: a `mergeRunParams` case for `overrides.effort`, and a call-rung case for
+   `opts.timeoutMs`.
+3. **Ceiling interaction**: an author `effort` default above the configured `maxEffort` (and an
+   `appendPrompt` default over `maxAppendPromptBytes`) is bounded exactly like any other declared value —
+   no special case for author-side defaults.
+
+### Retire — two blocks currently assert opposite outcomes for the same scenario
+`IT-081`'s **B4** describe block (unconfigured-server model enum) contradicts `IT-083`'s newer **P-A2**
+block on an identical setup. P-A2 encodes the adjudicated behavior (registration and admission receive
+the same alias table, so an unconfigured server no longer accepts a model enum that every run will
+refuse). **Retire or flip B4**; do not leave two suites pinning contradictory expectations — that is how
+a green suite stops meaning anything.
+
+### Not test scope
+The code changes F-1 names (remove the adjudication-#5 rejection at `workflow-catalog.ts:135` while
+**keeping** the `violatesOwnSpec` self-consistency check at `:132`; widen `KNOWN_KEYS` and
+`validateHarnessDefaults`), the F-2 predicate dedup, and the F-3/F-4 doc and integrator items.
