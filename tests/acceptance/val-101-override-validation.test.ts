@@ -33,6 +33,14 @@ async function runCount(): Promise<number> {
   return (list.result ?? []).filter((e) => e.kind === 'run').length;
 }
 
+async function callToolRaw(name: string, args: Record<string, unknown>): Promise<string> {
+  const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+  });
+  return res.text(); // the FULL wire body — not just whatever fields the parsed-object assertions look at
+}
+
 describe('REQ-091: overrides validated against the contract; locked config unreachable (VAL-101)', () => {
   it('overrides:{prompt} → PARAM_LOCKED, no run row appears in workflow_list, no workspace dir on disk', async () => {
     await callTool('workflow_register', { name: 'val101-locked', script: 'return 1;' });
@@ -70,5 +78,30 @@ describe('REQ-091: overrides validated against the contract; locked config unrea
     expect(typeof r.runId).toBe('string');
     expect(r.code).not.toBe('PARAM_LOCKED');
     expect(r.code).not.toBe('PARAM_OUT_OF_RANGE');
+  });
+
+  // v21 Gate 7.5 ROUND 3 (post-IMPL-144/997626d): DES-101 row 6's "an appendPrompt rejection never
+  // echoes the caller's text" invariant also holds when the constraint violated is an AUTHOR-
+  // DECLARED `enum` on appendPrompt (not just the byte ceiling VAL-104 already covers) — the
+  // adjacent leak path 997626d closed. Asserted against the FULL raw wire body, not just the
+  // parsed fields the other cases check, so a leak anywhere in the response (a `detail`/`supplied`
+  // key this test doesn't know to look for by name) would still fail it.
+  it('overrides:{appendPrompt} outside an author-declared enum → PARAM_OUT_OF_RANGE; the caller text never appears anywhere in the wire response, no durable work', async () => {
+    const script = `export const meta = { params: { knobs: { appendPrompt: { type: 'string', enum: ['be terse', 'be verbose'] } } } };\nreturn 1;`;
+    await callTool('workflow_register', { name: 'val101-append-enum', script });
+    const before = await runCount();
+
+    const secret = 'SECRET-MARKER hunter2 api-key=sk-abcdef1234567890';
+    const raw = await callToolRaw('workflow_run', { name: 'val101-append-enum', overrides: { appendPrompt: secret } });
+    expect(raw).not.toContain(secret);
+    expect(raw).not.toContain('hunter2');
+    const parsed = JSON.parse(JSON.parse(raw).result.content[0].text) as { error?: { code?: string } };
+    expect(parsed.error?.code).toBe('PARAM_OUT_OF_RANGE');
+    expect(await runCount()).toBe(before);
+
+    // control: a value INSIDE the declared enum is admitted (the constraint really is enforced,
+    // not merely never-echoed-because-never-checked).
+    const ok = await callTool('workflow_run', { name: 'val101-append-enum', overrides: { appendPrompt: 'be terse' } });
+    expect(typeof ok.runId).toBe('string');
   });
 });
