@@ -45,7 +45,7 @@ import Database from 'better-sqlite3';
 import { TokenStore } from './auth/token-store.js';
 import { createAuthRouteHandlers, resolvePrincipal, type AuthConfig } from './auth/auth-service.js';
 import { wwwAuthenticateHeader } from './auth/oauth-metadata.js';
-import type { Ceilings, Effort } from './params/contract.js';
+import { DEFAULT_CEILINGS, type Ceilings, type Effort } from './params/contract.js';
 
 // REQ-066 (v11): engine version from package.json + best-effort git describe, replacing the hardcoded '1.0.0'.
 const ENGINE_VERSION = resolveEngineVersion();
@@ -150,10 +150,11 @@ export interface ServerConfig {
   // open behavior is preserved byte-for-byte (no auth gates added). Google is a legitimately-doubled
   // external dep via injected googleAuthorizeUrl/googleTokenUrl/googleJwksUrl+jwksFetch (same contract as the integration tests). DES-095 v18.
   auth?: AuthConfig;
-  // v21 (ARCH-066 inv-6, DES-104, TASK-100): engine ceilings bounding the USER-override rung
-  // (ADR-005) — refuse, never clamp. Each defaults fail-closed (RunManager/McpFacade) when absent:
-  // maxTimeoutMs 600_000ms, maxAppendPromptBytes 1024, maxEffort 'high' (so xhigh/max are refused
-  // by default — see DEPLOY §1).
+  // v21 (ARCH-066 inv-6, DES-104, TASK-100): engine ceilings bounding the caller-override rung at
+  // admission AND, since adjudication #7's G-1 fix, the values stored into a workflow's `defaults`
+  // column at registration (ADR-005 — script per-call agent() opts stay unbounded) — refuse, never
+  // clamp. Each key falls back independently to contract.ts's shared DEFAULT_CEILINGS when absent,
+  // so the defaults are stated in exactly one place — see DEPLOY §1b for the values.
   maxTimeoutMs?: number;
   maxAppendPromptBytes?: number;
   maxEffort?: Effort;
@@ -1141,10 +1142,13 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v21 adjudication #6 (F-1 ceiling interaction): computed BEFORE the catalog so a declared knob
   // default can be bounded at registration too, not just at admission/read (moved up from its
   // former spot below — same object, forwarded to the catalog AND to RunManager/McpFacade).
+  // v21 Gate 8 RE-REVIEW #6 (P6-5): the per-key fallback reads contract.ts's shared
+  // DEFAULT_CEILINGS. This composition root used to re-type the three numbers, so a change at
+  // run-manager.ts/mcp-facade.ts would have left PRODUCTION on the old values with a green suite.
   const ceilings: Ceilings = {
-    maxTimeoutMs: config?.maxTimeoutMs ?? 600_000,
-    maxAppendPromptBytes: config?.maxAppendPromptBytes ?? 1024,
-    maxEffort: config?.maxEffort ?? 'high',
+    maxTimeoutMs: config?.maxTimeoutMs ?? DEFAULT_CEILINGS.maxTimeoutMs,
+    maxAppendPromptBytes: config?.maxAppendPromptBytes ?? DEFAULT_CEILINGS.maxAppendPromptBytes,
+    maxEffort: config?.maxEffort ?? DEFAULT_CEILINGS.maxEffort,
   };
   // v15 (DES-098, DES-099, TASK-089): boot backfill + alias-aware validation
   const catalog = new WorkflowCatalog(workRoot, clock, {

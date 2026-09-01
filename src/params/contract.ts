@@ -42,6 +42,16 @@ export interface Ceilings {
   maxEffort: Effort;
 }
 
+// v21 Gate 8 RE-REVIEW #6 (P6-5, DES-104/ADR-005): THE fail-closed default for the three engine
+// ceilings. It used to be re-typed at three independent sites — run-manager.ts, mcp-facade.ts and
+// (worst) server.ts's production composition root, which imported neither of the other two — so a
+// future change at the "natural" site would leave production on the old number with a green suite.
+// One literal, imported everywhere; applied PER KEY, so a config supplying only one still gets sane
+// bounds on the other two. Values are DEPLOY §1b's / ADR-005's documented defaults. Pinned
+// structurally by tests/unit/params-contract.test.ts: a fourth literal, or a site that stops
+// importing this one, goes red.
+export const DEFAULT_CEILINGS: Ceilings = { maxTimeoutMs: 600_000, maxAppendPromptBytes: 1024, maxEffort: 'high' };
+
 export type Err = {
   ok: false;
   code: 'PARAM_LOCKED' | 'PARAM_OUT_OF_RANGE' | 'PARAM_UNKNOWN' | 'PARAM_CONTRACT_INVALID' | 'UNKNOWN_ALIAS';

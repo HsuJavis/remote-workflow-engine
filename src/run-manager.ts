@@ -39,7 +39,7 @@ import { WorkflowCatalog } from './workflow-catalog.js';
 import type { GatewayClient, GatewayConfig } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
-import { validateUserOverrides, validateDeclaredArgs, canonicalContract, isKnownAlias, FRAME_CLOSE_FORGERY, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
+import { validateUserOverrides, validateDeclaredArgs, canonicalContract, isKnownAlias, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
 import { defaultRunParams, mergeRunParams, type RunParams } from './params/resolve.js';
 import type { HarnessDefaults } from './harness-defaults.js';
 
@@ -104,10 +104,6 @@ export interface RunManagerDeps {
 }
 
 const TERMINAL: RunStatus[] = ['stopped', 'completed', 'failed'];
-
-// v21 (ARCH-066 inv-6, DES-104): fail-closed defaults for the three engine ceilings, applied
-// per-key so a config supplying only one still gets sane bounds on the other two.
-const DEFAULT_CEILINGS: Ceilings = { maxTimeoutMs: 600_000, maxAppendPromptBytes: 1024, maxEffort: 'high' };
 
 /** v21 (DES-101): wraps a params/contract.ts rejection into the codebase's one Error factory,
  *  carrying the machine-shaped `detail` object as an extra (non-ErrEnvelope) property — read by

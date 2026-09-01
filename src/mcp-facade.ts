@@ -11,13 +11,13 @@ import { RunManager } from './run-manager.js';
 import { SubmissionValidator } from './submission-validator.js';
 import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent, HarnessDescriptor, ManifestEntry } from './types.js';
 import { parseMeta, parseWorkflowSkeleton, type SkeletonNode } from './workflow-meta.js';
-import { canonicalContract, effectiveBounds, type ParamContract, type Ceilings } from './params/contract.js';
+import { canonicalContract, effectiveBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings } from './params/contract.js';
 
-// v21 (DES-103/DES-104): fail-closed defaults for the engine ceilings that bound the read surfaces
-// (workflow_get/list) at read time — TASK-100 wires the live values from ServerConfig via
-// McpFacadeDeps.ceilings (server.ts); these apply only when a caller omits it (e.g. direct
-// RunManager-less test construction), same convention as run-manager.ts's own DEFAULT_CEILINGS.
-const DEFAULT_CEILINGS: Ceilings = { maxTimeoutMs: 600_000, maxAppendPromptBytes: 1024, maxEffort: 'high' };
+// v21 (DES-103/DES-104): the engine ceilings bound the read surfaces (workflow_get/list) at read
+// time — TASK-100 wires the live values from ServerConfig via McpFacadeDeps.ceilings (server.ts);
+// contract.ts's shared DEFAULT_CEILINGS applies only when a caller omits them (e.g. direct
+// RunManager-less test construction). v21 Gate 8 RE-REVIEW #6 (P6-5): this file used to re-type
+// that literal; it now imports the one constant, like every other site.
 
 /** Read surfaces never serve null/unbounded (DES-103): a missing contract reads back as the
  *  canonical 4-knob contract, and every contract is bounded by the engine ceilings at read time. */

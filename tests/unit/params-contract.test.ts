@@ -18,6 +18,7 @@ import {
   validateDeclaredArgs,
   checkValueAgainstSpec,
   isEffort,
+  DEFAULT_CEILINGS,
 } from '../../src/params/contract.js';
 import type { ParamContract, Ceilings } from '../../src/params/contract.js';
 
@@ -761,5 +762,91 @@ describe('parseParamContract() — min/max on a type:\'enum\' spec is rejected a
     const r = parseParamContract({ knobs: { effort: { type: 'enum', enum: ['low', 'high'], max: 5 } } }, ALIASES);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+  });
+});
+
+// v21 Gate 8 RE-REVIEW #6 (P6-5, LOW): the fail-closed ceiling default triple used to be re-typed
+// at THREE independent sites — `run-manager.ts`, `mcp-facade.ts`, and (the one that matters)
+// `server.ts`'s production composition root, which imported neither of the other two. The values
+// were identical, so a value-equality assertion passed while three copies existed; the hazard is a
+// future change made at the "natural" site leaving PRODUCTION on the old number with a green suite
+// — the same shape as several defects this iteration. Hence STRUCTURAL pins: they read the source
+// text, so a fourth literal, or a site that stops importing the shared constant, goes red.
+//
+// Mutation-checked when written (these are green-on-write, so "it fires" is NOT assumed — this
+// iteration's own retro lesson is that a claim no test checked is not a control). Three mutations,
+// each applied to the real tree, run, and reverted: (1) re-typing ONE fallback at `server.ts`'s
+// composition root (`?? 600_000`) → (c) red; (2) dropping `DEFAULT_CEILINGS` from `server.ts`'s
+// import and re-typing all three → (b)+(c) red; (3) a FOURTH `const DEFAULT_CEILINGS` declared in
+// `mcp-facade.ts` → (a)+(b)+(c) red. Mutation (1) is the one that mattered: it passed the first
+// draft of (c) and is why that regex reads the whole value expression — see its own note.
+describe('DEFAULT_CEILINGS lives at exactly ONE site in src/ (v21 Gate 8 RE-REVIEW #6, P6-5)', () => {
+  const CEILING_KEYS = ['maxTimeoutMs', 'maxAppendPromptBytes', 'maxEffort'] as const;
+  const CONTRACT_REL = 'params/contract.ts';
+  /** Every `.ts` file under `src/`, as `[repo-relative-ish path, source text]`. */
+  const srcFiles = async (): Promise<Array<[string, string]>> => {
+    const { readdirSync, readFileSync, statSync } = await import('node:fs');
+    const { join, relative } = await import('node:path');
+    const srcDir = join(import.meta.dirname, '../../src');
+    const out: Array<[string, string]> = [];
+    const walk = (dir: string): void => {
+      for (const name of readdirSync(dir)) {
+        const p = join(dir, name);
+        if (statSync(p).isDirectory()) { walk(p); continue; }
+        if (!name.endsWith('.ts')) continue;
+        out.push([relative(srcDir, p).replaceAll('\\', '/'), readFileSync(p, 'utf8')]);
+      }
+    };
+    walk(srcDir);
+    return out;
+  };
+
+  it('(a) exactly one `const DEFAULT_CEILINGS` DECLARATION exists under src/, and it is params/contract.ts\'s exported one', async () => {
+    const declares = (await srcFiles()).filter(([, src]) => /\bconst\s+DEFAULT_CEILINGS\b/.test(src)).map(([rel]) => rel);
+    expect(declares).toEqual([CONTRACT_REL]);
+    const [, contractSrc] = (await srcFiles()).find(([rel]) => rel === CONTRACT_REL)!;
+    expect(/\bexport\s+const\s+DEFAULT_CEILINGS\b/.test(contractSrc)).toBe(true);
+  });
+
+  it('(b) the three consumer sites IMPORT the shared constant rather than re-typing it', async () => {
+    const files = await srcFiles();
+    // `matchAll`, not a single `.exec`: a SECOND import statement from the same module must not be
+    // able to hide behind a first, innocuous one (the QD-REP-1 fence's precedent).
+    const importsIt = (src: string): boolean =>
+      [...src.matchAll(/import\s*\{([^}]*)\}\s*from\s*['"][^'"]*params\/contract(?:\.js)?['"]/g)]
+        .some((m) => /\bDEFAULT_CEILINGS\b/.test(m[1]!));
+    for (const rel of ['run-manager.ts', 'mcp-facade.ts', 'server.ts']) {
+      const entry = files.find(([f]) => f === rel);
+      expect(entry, `${rel} must exist under src/`).toBeDefined();
+      expect(importsIt(entry![1]), `${rel} must import DEFAULT_CEILINGS from params/contract.js`).toBe(true);
+    }
+  });
+
+  it('(c) no file under src/ other than params/contract.ts assigns a LITERAL to any of the three ceiling keys', async () => {
+    // Every `<key>:` ASSIGNMENT (not `maxTimeoutMs?: number` — the `?` breaks the match, so type
+    // declarations are excluded, and not a bare `.maxAppendPromptBytes` property read, which has no
+    // colon), then the whole value expression up to the next `,`/`;`/`}`/newline is searched for a
+    // bare numeric or quoted literal anywhere inside it.
+    //
+    // "Anywhere inside it" is load-bearing and was found by mutation-checking rather than assumed:
+    // the FIRST version of this pin only looked directly after the colon, which caught a fresh
+    // `{ maxTimeoutMs: 600_000, … }` object but NOT `maxTimeoutMs: config?.maxTimeoutMs ?? 600_000`
+    // — i.e. it missed the exact shape P6-5 was filed about (a composition root re-typing the
+    // fallback). Identifier-embedded digits are excluded by the `[^\w.]` guard, and a property path
+    // like `DEFAULT_CEILINGS.maxTimeoutMs` is not a literal.
+    const assignment = new RegExp(String.raw`\b(?:${CEILING_KEYS.join('|')})\s*:\s*([^,;}\n]*)`, 'g');
+    const bareLiteral = /(?:^|[^\w.])(\d[\d_]*|'[^']*'|"[^"]*")/;
+    const offenders = (await srcFiles())
+      .filter(([rel]) => rel !== CONTRACT_REL)
+      .filter(([, src]) => [...src.matchAll(assignment)].some((m) => bareLiteral.test(m[1]!)))
+      .map(([rel]) => rel);
+    expect(offenders).toEqual([]);
+  });
+
+  it('(d) the one literal carries the values DEPLOY §1b / ADR-005 document (oracle = the docs, not the code)', () => {
+    // Supplementary to the structural pins above, not a substitute: three copies with equal values
+    // pass a value check. The oracle is the published contract — DEPLOY.md §1b's `rwe.config.json`
+    // rows and ADR-005's decision text both state 600000 / 1024 / 'high'.
+    expect(DEFAULT_CEILINGS).toEqual({ maxTimeoutMs: 600000, maxAppendPromptBytes: 1024, maxEffort: 'high' });
   });
 });
