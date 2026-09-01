@@ -132,6 +132,60 @@ describe('version history: both versions of a twice-registered name remain retri
     const { version: v2 } = await catalog.register('list-versions', `return 2;`);
     expect(await catalog.listVersions('list-versions')).toEqual([v1, v2]);
   });
+
+  it('publish naming a version that was never registered is refused UNKNOWN_VERSION; no pointer moves (Gate 6.5+7 coverage)', async () => {
+    const catalog = new WorkflowCatalog(workRoot, CLOCK);
+    await catalog.register('publish-unknown-version', `return 1;`, undefined, 'owner@example.com');
+    await expect(
+      catalog.publish('publish-unknown-version', 'v99', 'release', 'owner@example.com')
+    ).rejects.toThrow(/UNKNOWN_VERSION/);
+    // the refusal happened BEFORE any pointer write — `release` is still unpublished, not
+    // pointing at the (never-registered) 'v99'.
+    await expect(catalog.resolve('publish-unknown-version', {})).rejects.toThrow(/CHANNEL_UNPUBLISHED/);
+  });
+});
+
+// UT-106 (H3 send-back, 07-review.md §4.2 — ARCH-071 inv 7, DES-111, ADR-011, ADR-009, REQ-096):
+// `register()`'s next-version allocator uses `SELECT COUNT(*)` over a name's `workflow_versions`
+// rows (`workflow-catalog.ts:341`), not `MAX(version)` — confirmed against `git show
+// a54a794^:src/workflow-catalog.ts:205` (the pre-v22 allocator was monotonic-per-name over a
+// single overwritten row). ARCH-071 inv 7 requires "computed as max over the name's rows"
+// (`02-architecture.md:1009`, verbatim). COUNT and MAX only diverge when a name's version rows
+// don't start contiguously at v1 — exactly the shape a migrated (ADR-011) or previously-gapped
+// workflow has. Red reason: both cases below observe `v2`/`v3` (COUNT-based) where MAX-based
+// allocation requires `v8`/`v4`.
+describe("version allocator: MAX over a name's rows, not COUNT (ARCH-071 inv 7, H3 send-back, 07-review.md §4.2)", () => {
+  it('re-registering a workflow migrated at a HIGH version number (v7) allocates v8, not v2', async () => {
+    buildLegacyDb(join(workRoot, 'catalog.db'), [
+      { name: 'h3-migrated', script: `return 'v7';`, version: 'v7', createdAt: '2025-01-01T00:00:00.000Z', owner: 'owner@example.com' },
+    ]);
+    const catalog = new WorkflowCatalog(workRoot, CLOCK); // triggers the boot migration (v7 lands in workflow_versions)
+    const { version } = await catalog.register('h3-migrated', `return 'v8-body';`);
+    // Today: COUNT(*) over the 1 migrated row + 1 = 'v2' — OLDER-numbered than 'v7', the version
+    // it supersedes (ARCH-071 inv 7 violated). Correct: MAX(7) + 1 = 'v8'.
+    expect(version).toBe('v8');
+  });
+
+  it('a gapped version history (v1, v3 — no v2) does not brick re-registration behind REGISTRATION_CONFLICT', async () => {
+    // Hand-seed the v22 schema DIRECTLY (not via register(), which cannot itself produce a gap
+    // under either the buggy or the fixed allocator) — reproduces the "already-migrated
+    // multi-registration cohort" shape 07-review.md H3 describes without needing 3+ live
+    // registrations to walk COUNT up to a collision.
+    const catalog = new WorkflowCatalog(workRoot, CLOCK); // creates the schema
+    const raw = new Database(join(workRoot, 'catalog.db'));
+    const now = CLOCK.isoNow();
+    raw.prepare('INSERT INTO workflows (name, createdAt, owner, release_version) VALUES (?, ?, ?, ?)').run('h3-gapped', now, 'owner2@example.com', 'v1');
+    raw.prepare('INSERT INTO workflow_versions (name, version, script, createdAt) VALUES (?, ?, ?, ?)').run('h3-gapped', 'v1', `return 'v1';`, now);
+    raw.prepare('INSERT INTO workflow_versions (name, version, script, createdAt) VALUES (?, ?, ?, ?)').run('h3-gapped', 'v3', `return 'v3';`, now);
+    raw.close();
+
+    // Today: COUNT(*) = 2 rows -> v${2+1} = 'v3' -> collides with the row already at 'v3'
+    // (PRIMARY KEY (name, version)) -> maps to REGISTRATION_CONFLICT ("retry") -> retrying
+    // recomputes the SAME 'v3' every time -> permanently bricked, exactly H3's "any migrated
+    // multi-registration workflow" scenario. Correct: MAX(1,3) + 1 = 'v4', no collision.
+    const { version } = await catalog.register('h3-gapped', `return 'v4-body';`, undefined, 'owner2@example.com');
+    expect(version).toBe('v4');
+  });
 });
 
 describe('per-name version ceiling (ADR-014, S-1 debt closed, IT-084)', () => {

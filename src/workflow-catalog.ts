@@ -346,7 +346,14 @@ export class WorkflowCatalog {
             `VERSION_CEILING_EXCEEDED: workflow '${name}' already has ${count} version(s) (maximum ${maxWorkflowVersions}) — deregister an old version, or raise the engine's maxWorkflowVersions ceiling`,
           );
         }
-        const v = `v${count + 1}`;
+        // v22 send-back H3 (07-review.md §4.2, ARCH-071 inv 7): the allocator must be the MAX over
+        // the name's existing rows, not a COUNT — a migrated-then-re-registered name (e.g. one row
+        // at 'v7') must allocate 'v8', not 'v2'; COUNT also collides on a gapped version history.
+        // Same expression _listVersions (:402) already uses for ordering.
+        const maxVersion = (this._db
+          .prepare('SELECT MAX(CAST(SUBSTR(version, 2) AS INTEGER)) AS m FROM workflow_versions WHERE name = ?')
+          .get(name) as { m: number | null }).m;
+        const v = `v${(maxVersion ?? 0) + 1}`;
         const owner = existing?.owner ?? principal;
         if (!existing) {
           this._db.prepare('INSERT INTO workflows (name, createdAt, owner) VALUES (?, ?, ?)').run(name, createdAt, owner);

@@ -3523,6 +3523,7 @@ classDiagram
   | `VERSION_CEILING_EXCEEDED` | `workflow_register` | `listVersions(name).length >= maxWorkflowVersions` | names **both** remedies: operator raises `maxWorkflowVersions`; owner `workflow_deregister({name})` **with its stated consequences** |
   | `REGISTRATION_CONFLICT` | `workflow_register` / `workflow_publish` | residual `SQLITE_BUSY`/`SQLITE_CONSTRAINT_PRIMARYKEY` | "concurrent registration for `<name>`; retry" |
   | `NOT_WORKFLOW_OWNER` | `publish` / `register` / `deregister` | principal ≠ `row.owner` | unchanged |
+  | `PRINCIPAL_REQUIRED` **[AMENDED v22 send-back, 07-review.md H1]** | `publish` / `register` / `deregister` | `authEnabled && effectivePrincipal === null` — checked BEFORE the ownership comparison, on ALL THREE mutations | names the remedy: authenticate via a bearer, or disable auth for single-operator use. **Not** `NOT_WORKFLOW_OWNER` — no ownership comparison ever runs; the refusal is "no identity under auth" (ADR-012's masking-keys-on-`authEnabled` rule, now applied to writes, not only reads). `workflow_publish` computes `effectivePrincipal` from the server-resolved principal ONLY (the `args.principal` fallback is dropped, matching the reads' `args.principal`-barred rule); `workflow_register`/`workflow_deregister` KEEP the fallback this round (a caller supplying a non-null self-asserted string still passes — recorded accepted debt, `06-impl-log.md`'s send-back entry, not a second closure claim). |
   | `INVALID_CHANNEL` | run / get / publish | channel token ∉ `{beta,release}` | names the closed enum `beta|release` |
   | `UNKNOWN_VERSION` | run / get / publish | version ∉ `known` | lists the known versions |
   | `CHANNEL_UNPUBLISHED` | run / get / `schedule_create` | pointer is NULL | names the channel, lists available `versions[]`, states that publication is required; **never** names a "newest"/"latest"/recommended version. In `schedule_create` context: "publish `<name>@<version>` to `release` first" |
@@ -3895,3 +3896,49 @@ site point at the new one.
 When `mcpRegistryDbPath` is not configured, every referenced MCP name resolves to nothing and is dropped
 with no record at all — outside the grandfathered case N-1 ruled on, and unchanged by it. Named debt for
 v23 or the security-hardening iteration; not silently inherited.
+
+---
+
+## Orchestrator adjudication (v22) #6 — H4's second site: fold in webhook, scope out trigger(), record chain as new (2026-09-02)
+
+The Gate 6 implementer stopped rather than choose. Correct: H4's finding text names
+`webhook-registry.ts` as a second site with the identical bug, but the send-back's only H4 red test
+(IT-093) exercises `Scheduler.create()` alone. It neither silently fixed nor silently skipped. Ruling
+on all THREE trigger ingresses, because the finding named two and a fourth check surfaced a third.
+
+### P-1 — `webhook-registry.ts:88` — FOLD INTO THIS BATCH
+Add a red test (`CHANNEL_UNPUBLISHED` at `webhooks.create()` against a registered-but-unpublished
+workflow), then the same `exists()` → `resolve(name, {channel:'release'})` swap Gate 6 already applied
+at `scheduler.ts:157`, with the same coded-error passthrough.
+
+**Closing half of a HIGH finding whose own text names two sites would leave 07-review.md asserting a
+fix that half exists** — the defect class this iteration has now produced eight times (comments ×2,
+docblocks, `02-architecture.md`, retired tests left green, and now a review finding). H4 is not closed
+until both sites it names are closed.
+
+### P-2 — `scheduler.ts:232` `trigger()` — EXPLICITLY SCOPED OUT, recorded so it is not read as a miss
+It still uses `exists()`, and that is **correct here**. `trigger()` starts a run immediately through
+`RunManager.start()`, which resolves the channel itself — so an unpublished workflow surfaces
+`CHANNEL_UNPUBLISHED` **synchronously, to the caller, at the moment of the mistake**. That is the
+property H4 exists to protect; it is already satisfied by a different mechanism. Not a third instance.
+
+### P-3 — `chain_create` — NEW FINDING, NOT part of H4, NOT folded into this batch
+`ContinuationStore.chainCreate` (`continuation-store.ts:93`) validates `afterRunId` only. It has **no
+catalog reference at all**: a chain against a workflow name that does not exist — never mind one
+without a release — is accepted, stored, and fails later at `_reconcile`. Strictly worse than H4.
+
+**Not folded in, on a principled line:** v22 introduced the registered-but-unpublished state, so v22
+**broke** scheduler and webhook — those are v22 finishing its own mess. Chain was never validated (v8),
+so it is a pre-existing defect, not a v22 regression. It also costs more than a one-line swap:
+`ContinuationStore` has no catalog seam, so closing it means a new constructor port plus
+composition-root wiring — this repo's known silent-no-op class (`composeConfig` wiring: v11, v15), which
+only a Gate 7.5 real run catches. It needs its own REQ and its own real-tier evidence, not a
+tail-end graft onto a send-back batch.
+
+Recorded as a new finding in 07-review.md for the re-review to scope into v22 or v23. **Recorded, not
+remembered** — the reason chain surfaced at all is that H4's text named two sites and someone checked
+whether there was a third.
+
+### P-4 — the standing rule this batch must not break
+Expanding an in-flight batch beyond the finding's own text is what cost v21 fifty minutes of two impl
+gates writing the same tree. P-1 is inside H4's text. P-3 is outside it and therefore waits.

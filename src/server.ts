@@ -805,6 +805,15 @@ async function checkMcpConfigTransport(push: AssetPush, probe: McpProbe): Promis
   return null;
 }
 
+/** v22 send-back (H1, 07-review.md §4.2, DES-117): the flat error envelope for a catalog-write
+ *  mutation refused under `authEnabled && effectivePrincipal === null` — same shape as the facade's
+ *  own catch-block envelopes (`{runId,status,code,error}`), matched here rather than reused because
+ *  the refusal happens before the facade method (and its `codedError`/`toErrEnvelope`) is ever called. */
+function principalRequiredEnvelope(): Record<string, unknown> {
+  const message = 'PRINCIPAL_REQUIRED: authenticate via a bearer, or disable auth for single-operator use';
+  return { runId: '', status: 'failed', code: 'PRINCIPAL_REQUIRED', error: { code: 'PRINCIPAL_REQUIRED', message } };
+}
+
 /** Dispatches a tools/call to the matching McpFacade method (pure delegation, DES-001). */
 async function callTool(
   facade: McpFacade,
@@ -840,20 +849,30 @@ async function callTool(
     // v15 (DES-096, TASK-087): thread principal to mutation methods for ownership attribution.
     // Effective principal: auth-resolved wins; if null (loopback/auth-disabled), fall back to
     // args.principal if the caller supplies one (IT-080 pattern for catalog-layer integration tests).
+    // v22 send-back (H1, 07-review.md §4.2, DES-117 PRINCIPAL_REQUIRED): masking keys on
+    // `authEnabled`, never on `principal == null` alone (ADR-012) — applied here to WRITES, not
+    // only reads. A D-BIND-exempt caller reaches these cases with `principal === null`; without this
+    // check the ownership comparisons below silently treat that as "unowned, anyone may write".
     case 'workflow_register': {
       const { principal: argPrincipal, ...regArgs } = args as { name: string; script: string; principal?: string | null; defaults?: Record<string, unknown> };
       const effectivePrincipal = principal ?? (typeof argPrincipal === 'string' ? argPrincipal : null);
+      if (authEnabled && effectivePrincipal === null) return principalRequiredEnvelope();
       return facade.workflow_register(regArgs, effectivePrincipal);
     }
     case 'workflow_deregister': {
       const { principal: argPrincipal, ...deregArgs } = args as { name: string; principal?: string | null };
       const effectivePrincipal = principal ?? (typeof argPrincipal === 'string' ? argPrincipal : null);
+      if (authEnabled && effectivePrincipal === null) return principalRequiredEnvelope();
       return facade.workflow_deregister(deregArgs, effectivePrincipal);
     }
     // v22 (REQ-097, DES-111/DES-114, TASK-109): same principal-threading pattern as register/deregister.
+    // v22 send-back (H1): unlike register/deregister, the `args.principal` self-assertion fallback is
+    // dropped ENTIRELY here — effective principal is the server-resolved one, full stop (matches the
+    // `args.principal`-barred rule the read surfaces already apply).
     case 'workflow_publish': {
-      const { principal: argPrincipal, ...pubArgs } = args as { name: string; version: string; channel: 'beta' | 'release'; principal?: string | null };
-      const effectivePrincipal = principal ?? (typeof argPrincipal === 'string' ? argPrincipal : null);
+      const { principal: _argPrincipal, ...pubArgs } = args as { name: string; version: string; channel: 'beta' | 'release'; principal?: string | null };
+      const effectivePrincipal = principal;
+      if (authEnabled && effectivePrincipal === null) return principalRequiredEnvelope();
       return facade.workflow_publish(pubArgs, effectivePrincipal);
     }
     case 'workflow_get': return facade.workflow_get(args as { name: string; version?: string }, { authEnabled, principal });
@@ -1105,7 +1124,12 @@ async function handleDashboardRequest(
           }
         }
       }
-      const skeletonNodes = parseWorkflowSkeleton(skeletonScript);
+      // v22 send-back H2 (DES-114, ARCH-073/075, ADR-012, REQ-100): this route carries no bearer/
+      // identity plumbing at all, so under auth it must always serve the non-owner projection —
+      // same rule the sibling /api/workflows/:name/skeleton route already applies. The
+      // script-derived skeleton overlay is withheld; live agent nodes still render (layoutGraph
+      // below still receives view.agents).
+      const skeletonNodes = authEnabled ? [] : parseWorkflowSkeleton(skeletonScript);
       const layout = layoutGraph(skeletonNodes, view.agents, { startedByType: view.startedBy?.type });
       // DES-064: flat GraphPayload — cells/edges/warnings/truncated at top level (not nested under 'layout').
       const payload: Record<string, unknown> = {

@@ -4,7 +4,6 @@
 // observable elsewhere (DES-003 signature). Owns one RunGuard + one SandboxHost per run so caps
 // and in-flight processes never leak across runs; suspend/stop actually abort in-flight agent()
 // calls (AbortSignal) and kill the sandbox child, not just flip the status flag.
-import { createHash } from 'node:crypto';
 import { cpus, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
@@ -119,15 +118,6 @@ function toErr(err: unknown): { code: string; message: string } {
   }
   if (err instanceof Error) return { code: err.name || 'SCRIPT_ERROR', message: err.message };
   return { code: 'SCRIPT_ERROR', message: String(err) };
-}
-
-/** v14 (REQ-085 / DES-090, TASK-084): pure script integrity guard.
- *  `sha` present: computes sha256(Buffer.from(script,'utf8')).hex and compares — ANY mismatch
- *  (wrong hash, uppercase, wrong length) → SCRIPT_SHA_MISMATCH. `sha` absent → no-op. */
-export function assertScriptIntegrity(script: string, sha?: string): void {
-  if (sha === undefined) return;
-  const computed = createHash('sha256').update(script, 'utf8').digest('hex');
-  if (computed !== sha) throw codedError('SCRIPT_SHA_MISMATCH', `script sha256 mismatch: expected ${sha}, got ${computed}`);
 }
 
 interface RunEntry {
@@ -286,7 +276,7 @@ export class RunManager {
    *  RunSpec (read back wholesale by getSpec() on resume) would be a second unredacted sink plus a
    *  standing temptation to re-merge on resume. The redacted `effectiveParams` snapshot (below) is
    *  the single durable representation. */
-  async start(spec: RunSpec & { scriptSha256?: string }, overrides?: unknown): Promise<string> {
+  async start(spec: RunSpec, overrides?: unknown): Promise<string> {
     // v22 (REQ-098, ADR-013, DES-113, DES-117, TASK-108/TASK-109): the inline ban is on INGRESS
     // ONLY — start() refuses ANY inline script, even off the wire (a caller that bypasses the MCP
     // schema entirely and calls RunManager directly). resume() never applies this check: a run
@@ -294,12 +284,11 @@ export class RunManager {
     if (spec.script !== undefined) {
       throw codedError('INLINE_SCRIPT_CLOSED', 'Inline scripts are no longer accepted at run start; register once (workflow_register) then run by name: workflow_register({script}) then workflow_run({name})');
     }
-    // v22 (DES-114, TASK-109): `scriptSha256` was an integrity guard for INLINE scripts only
-    // (REQ-085) — with inline scripts closed above, it has nothing left to guard; the
-    // SCRIPT_SHA_WITHOUT_SCRIPT / SCRIPT_SHA_MISMATCH ladder that used to live here is deleted with
-    // it (not re-offered on workflow_register — no requirement buys it). `scriptSha256` is accepted
-    // on the type but is now inert everywhere; kept ONLY so `spec: RunSpec & {scriptSha256?}` still
-    // widens for the pre-existing `assertScriptIntegrity` unit that exercises it directly.
+    // v22 (DES-114, TASK-109): `scriptSha256` was REQ-085's integrity guard for INLINE scripts
+    // only — with inline scripts closed above and REQ-085 `[SUPERSEDED v22]`, it has nothing left
+    // to guard. `scriptSha256` was already removed from `RunSpec` (types.ts); the guard function
+    // (`assertScriptIntegrity`) and its now-orphaned unit test were removed in the same pass
+    // (v22 gate-closeout, adjudication (v22) #2 L-1 / REQ-085's own retirement instruction).
     // v8 REQ-054: admission chokepoint — reject BEFORE any durable/expensive work (createRun,
     // workspace mkdir, seed, sandbox spawn) when the cap is already reached. The global agent
     // semaphore caps only agent() dispatch, not run count / sandbox forks / workspace materialization.

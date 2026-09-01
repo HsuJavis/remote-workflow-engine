@@ -5079,3 +5079,238 @@ Output: `npm install` clean → `rwe.config.json` already exists (the hand-place
 **Unreachable dependencies:** none this round — all five riders refuse or accept at the admission/registration/read rung, needing no LLM/provider dispatch or external credential.
 
 **`trace --check` + `rtm.md`:** see the top-level Gate self-check section of this document for the post-ROUND-5 run (unchanged item/gap counts from the verifier's own Gate 6.5+7 baseline — this round added no new src/ files, only test/probe evidence).
+
+---
+
+## v22 GATE 7.5 (2026-09-02, validator) — REQ-096..100 real-tier
+
+Scope: the 5 REQ-096..100 `未真實驗證` gaps left open by Gate 6.5+7 (verifier ran the full suite green
+but flagged `real:false` on all 11 new work items by design — "Gate 7.5 flips it after a genuine
+real-tier run"). Validated against the **uncommitted v22 working tree** (`HEAD=23a5fd9`,
+`docs(v22): adjudication #5`), the same tree the verifier's Gate 6.5+7 pass closed out with 1665/1665.
+
+**Boot — documented steps only, no manual fixes needed:**
+```
+git rev-parse --short HEAD              # -> 23a5fd9
+RWE_PORT=8790 ./deploy.sh --background
+```
+Output: `npm install` clean → `rwe.config.json` already existed, reused unmodified (the host's real
+config: `bind:0.0.0.0`, `workRoot:/home/user/.local/share/rwe-data`, **`auth.enabled:true`** with a
+real Google OAuth client — this turned out to be the right fixture for REQ-100, see below) → litellm
+venv found at `~/.rwe-litellm-venv`, reused → server started, PID recorded to `.rwe.pid` → health check
+passed: `{"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (v0.20.0-57-g23a5fd9)"}`.
+**Zombie check (the documented v21-round-2 gotcha applies to every round on this host):** cross-checked
+the health response's `g23a5fd9` suffix against `git rev-parse --short HEAD` on the working tree before
+trusting anything — matched exactly, so this was a genuine fresh boot of the code under validation, not
+a stale long-lived process (a separate `rwe.service` systemd unit was independently found still running
+the pre-v22 `8月19` build on port 8899 — untouched, out of scope for a Gate 7.5 dispatch; rolling the
+production systemd unit forward is the self-update mechanism's job, not this gate's).
+
+**Auth fixture:** since the live config has `auth.enabled:true`, real bearer tokens were minted with the
+engine's own `TokenStore` class against the live `auth-tokens.db` (SUT-internal component, not a mock —
+the same pattern `IT-089`/`VAL-110` use in-process) for an owner principal and a non-owner principal, then
+used as real `Authorization: Bearer …` headers against the CLI-launched server over real HTTP.
+
+**REQ-098 (inline script closed) — live MCP HTTP:**
+- `tools/list` (owner bearer): `workflow_run`'s `inputSchema.properties` = `{args,budget,channel,name,
+  overrides,seed,seedManifest,seedManifestRef,seedNamespace,seedRef,version}` — **no `script` key at
+  all**; `workflow_resume`'s properties = `{runId}` only. A schema-reading client cannot discover the
+  parameter exists.
+- Forced anyway: `workflow_run({script:"return 1+1"})` → `{"error":{"code":"INLINE_SCRIPT_CLOSED",
+  "message":"Inline scripts are no longer accepted at run start; register once (workflow_register) then
+  run by name: workflow_register({script}) then workflow_run({name})"}}` — typed refusal, migration path
+  stated in the message itself.
+- `_adhoc` retirement confirmed by code read (`run-manager.ts:258/448/669`, `spec.name ?? '_adhoc'`):
+  since every reachable run now carries a `spec.name` (inline is refused before this line), the fallback
+  is dead code, never executed — matches "retired or left inert, with no run able to create one."
+
+**REQ-096 (version history + run pin) — live MCP HTTP, workflow `val22-hist-<ts>`:**
+- `workflow_register` × 2 (same name) → `{"version":1,...}` then `{"version":2,...}` — both stored.
+- `workflow_get({name,version:'v1'})` → `script:"return {v:1}"`; `workflow_get({name,version:'v2'})` →
+  `script:"return {v:2}"` — both independently retrievable, the v1 script byte-unchanged after v2 landed.
+- `workflow_run({name,version:'v1'})` → real `runId`; `workflow_list` at this point shows
+  `versions:["v1","v2"]`, `channels:{release:null,beta:null}` for the workflow entry, and a `kind:"run"`
+  entry with `scriptVersion:"v1"` for the run.
+- Registered a **third** version (`v3`) after the run completed, then re-polled `workflow_status` on the
+  same `runId` → `scriptVersion:"v1"` **unchanged** — the pin survives a later registration.
+- Pre-v22-catalog migration: not hand-rolled live (redundant with a real on-disk fixture) — cited from
+  the real-tier acceptance run below (`val-106-version-history.test.ts` logs `catalog.migrate: 1
+  workflows → workflow_versions, release published` against a byte-real pre-v22-shaped SQLite row, real
+  `createServer`, no SUT-boundary mock — DES-119's own documented mock policy for this clause).
+
+**REQ-097 (beta/release channels) — live MCP HTTP, same workflow:**
+- `workflow_run({name})` before any publish → `{"error":{"code":"CHANNEL_UNPUBLISHED","message":
+  "CHANNEL_UNPUBLISHED: release (workflow 'val22-hist-…')"}}`.
+- Non-owner bearer `workflow_publish({name,version:'v2',channel:'release'})` → `{"error":{"code":
+  "NOT_WORKFLOW_OWNER","message":"NOT_WORKFLOW_OWNER: workflow 'val22-hist-…' is owned by
+  val-v22-owner@example.com"}}`.
+- Owner `workflow_publish({version:'v2',channel:'release'})` → `{"channel":"release","version":"v2",
+  "from":null}`; owner `workflow_publish({version:'v3',channel:'beta'})` → `{"channel":"beta",
+  "version":"v3","from":null}`.
+- `workflow_run({name})` (no selector) → completed with `scriptVersion:"v2"` (release default).
+- `workflow_run({name,channel:'beta'})` → completed with `scriptVersion:"v3"`.
+- `workflow_run({name,version:'v1'})` → completed with `scriptVersion:"v1"` — **explicit version wins
+  over any channel**, confirmed by literal poll of all three runs' `workflow_status`, not by log
+  inspection.
+- `workflow_run({name,channel:'bogus'})` → `{"error":{"code":"INVALID_CHANNEL","message":
+  "INVALID_CHANNEL: bogus (workflow 'val22-hist-…')"}}` — typed validation error, not a silent fallback.
+
+**REQ-099 (registration-time static checks) — live MCP HTTP:**
+- `workflow_register({script:"this is not valid js {{{"})` → `{"code":"PARSE_ERROR","message":
+  "Unexpected identifier 'is'"}}`.
+- `workflow_register({script:"return await agent('hi', {model:'this-alias-does-not-exist-xyz'})"})` →
+  `{"code":"UNKNOWN_ALIAS","message":"Unknown model alias: this-alias-does-not-exist-xyz"}}`.
+- `workflow_register({script:"return await agent('hi', {mcp:['nonexistent-mcp-server-xyz']})"})` →
+  `{"code":"MCP_NOT_PROVISIONED","message":"Unprovisioned MCP name: nonexistent-mcp-server-xyz"}}`.
+- `workflow_get` on the `PARSE_ERROR` name afterward → `{"code":"WORKFLOW_NOT_FOUND"}` — nothing stored
+  for any of the three refusals.
+- "a run by name is covered" (clause 4) and the grandfathered-pre-v22 surfacing clause (clause 5): not
+  independently hand-probed live — structurally entailed by REQ-098 (every run now goes through
+  registration, so there is no separate inline path left to skip the checks) and cited from the real-tier
+  acceptance run (`val-109-registration-checks.test.ts`, real `createServer` + real MCP HTTP + real
+  configured alias table, 4/4 pass, no SUT-boundary mock).
+
+**REQ-100 (script masking) — live MCP HTTP + real HTTP `/api/*`, same workflow (auth genuinely enabled
+on this boot, not simulated):**
+- Owner `workflow_get({name,version:'v1'})` → `script:"return {v:1}"` present (twice — top-level echo +
+  nested `result.script`), full access.
+- Non-owner `workflow_get({name,version:'v1'})` → no `script` key anywhere in the response; body carries
+  `name`/`version`/`channels`/`description`/`params`/`owner`/`reportProblem`/`validation.ok`/
+  `scriptWithheld:true` — everything a legitimate caller needs, minus the script text, and the response
+  says so rather than pretending the workflow has none.
+- `GET /api/workflows` (no bearer — the live route is public but pre-v22-unmasked-by-design, per the
+  acceptance suite's own green pin) → workflow entry has no `script` field, consistent.
+- `GET /api/workflows/<name>/skeleton` (no bearer, auth enabled on this boot) → `{"name":...,"version":
+  ...,"description":""}` — `skeleton`/`phases` omitted entirely while auth is on, matching clause 3's
+  masked branch.
+- `GET /dashboard` HTML: `grep -c "return {v:1}"` and `grep -c "<workflow-name>"` both `0` — no
+  server-rendered leak (dashboard fetches via the already-masked `/api/*` JSON).
+- Auth-disabled pre-v22-surface clause and the `args.principal` non-unmask clause: not hand-probed live
+  on this boot (it has `auth.enabled:true` fixed by the real deployment config) — cited from the
+  real-tier acceptance/integration run below, which exercises both an auth-off `createServer` instance
+  and an explicit `{principal:'<owner-email>'}` injection attempt.
+
+**Real-tier acceptance suite re-run (layer 2, closes every sub-clause not hand-probed above):**
+```
+npx vitest run tests/acceptance/val-106-version-history.test.ts \
+  tests/acceptance/val-107-release-channels.test.ts \
+  tests/acceptance/val-108-inline-script-closed.test.ts \
+  tests/acceptance/val-109-registration-checks.test.ts \
+  tests/acceptance/val-110-script-masking.test.ts \
+  tests/integration/workflow-masking-http.test.ts
+```
+→ **6 files, 24 tests, 24 pass, 0 fail.** Every file's own mock-policy header confirms DES-119's tier for
+this slice: real `createServer` (the same composition root `node src/main.ts` calls) + real MCP HTTP +
+real on-disk SQLite, no LLM dispatch needed (marker scripts only, no `agent()` call on the REQ-096..100
+critical path) and no SUT-boundary mock. `npx vitest run tests/unit/compose-config-v2-wiring.test.ts` →
+**19/19 pass**, including the `maxWorkflowVersions`-forwarding case (TASK-107's own DoD).
+
+**Config-file sync check (§4b):** `maxWorkflowVersions` (TASK-107, `server.ts`/`workflow-catalog.ts`) is
+a genuinely new optional config key this iteration — **was missing from both `rwe.config.example.json`
+and DEPLOY.md §1b 設定總表**, confirmed drift. Fixed this round: added a `maxWorkflowVersions` row to
+§1b (carrier `rwe.config.json`, type `number`, default "省略 = 不設上限" per `server.ts:1214`'s own
+comment "No shared DEFAULT_CEILINGS entry for it — absent means uncapped (DES-111)", not required).
+`rwe.config.example.json` deliberately left without the key, matching the documented "absent = uncapped"
+default (adding it would silently change behavior for every existing deployment that copies the example
+verbatim). No other config keys changed this iteration.
+
+**README.md / DEPLOY.md rewritten to current state (§5a):** REQ-098 retired the `script` param from
+`workflow_run`/`workflow_resume` and REQ-085's `scriptSha256` guard was already superseded (removed as
+dead code at Gate 6.5's simplify pass) — README's feature list, usage examples (3 inline-`script`
+`workflow_run` calls), and security-model item 9 all described a surface that no longer exists; rewrote
+the usage examples to the real register→publish→run sequence (commands above, actually run against the
+fresh boot) and item 9 to describe the closed-inline-script + registration-time-check behavior, added a
+new item 10 for non-owner masking (`auth.enabled:true` only — `auth.enabled:false` stays byte-identical
+to the pre-v22 surface, confirmed by the acceptance suite's own auth-off cases). Tool count **37 → 38**
+(the new `workflow_publish` tool) corrected in 2 spots in README.md (feature-count line, usage-example
+comment) and 3 in DEPLOY.md (feature intro, quickstart expected output, §3 healthcheck acceptance
+criterion) — 5 total, confirmed live via `tools/list` (38 names enumerated). Grepped both manuals for
+history tell-tales (`舊版`/`原本`/`以前`/`previously`/`變更紀錄`/`Changelog`) after the rewrite —
+remaining hits are current-state feature descriptions (how version retention/rollback behave today),
+not doc-history; no changelog section exists in either file. **Minted-token hygiene:** the two bearer
+tokens minted for validation (`val-v22-owner@example.com`, `val-v22-nonowner@example.com`) were left in
+the live `auth-tokens.db` with their original 24h TTL rather than explicitly revoked — no revoke tool
+exists on the MCP surface; they self-expire and the auth-table GC sweep (`gcExpired()`, §1b
+`workspaceTtlMs`) reaps them on schedule, same as any other short-lived validation credential this
+ledger has minted in prior rounds.
+
+**Cleanup:** deregistered the `val22-hist-…` test workflow (`workflow_deregister`) after evidence
+gathering; killed both validation boot PIDs (`8790` and a second `8791` boot used only to re-confirm the
+tool count), removed `.rwe.pid`/`.rwe.log` and the scratch minting script — no new zombie processes left
+for the next validation round.
+
+**Unreachable dependencies:** none. All five REQs resolve/refuse at the registration/publish/dispatch-
+admission rung; none of the v22 acceptance clauses require a completed `agent()` LLM call (the LLM tier
+itself, VAL-092/REQ-083, stays the pre-existing documented-deferred gap, unrelated to this iteration's
+scope — `litellm` binary absent from `PATH` by default on this host, unchanged since v1).
+
+### VAL-106 — real-run acceptance for REQ-096 (versioned catalog; a run pins the exact version it executed)
+- **status:** green
+- **traces:** REQ-096
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** live MCP HTTP against `RWE_PORT=8790 ./deploy.sh --background` (working tree `23a5fd9`):
+  two `workflow_register` calls on one name → v1/v2 both independently retrievable via
+  `workflow_get({name,version})`; a run pinned at v1 (`workflow_status.result.scriptVersion:"v1"`)
+  unchanged after a v3 registration; `workflow_list` reports `versions:["v1","v2"]` +
+  `channels:{release:null,beta:null}`. Plus `npx vitest run tests/acceptance/val-106-version-history.test.ts`
+  → 4/4 pass (real `createServer`, real on-disk `catalog.db`, migration clause: `catalog.migrate: 1
+  workflows → workflow_versions, release published` against a hand-written pre-v22-shaped fixture row).
+- **iter:** v22
+
+### VAL-107 — real-run acceptance for REQ-097 (beta/release channels; run resolves a channel to a version)
+- **status:** green
+- **traces:** REQ-097
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** live MCP HTTP, same boot: `CHANNEL_UNPUBLISHED` before any publish; non-owner
+  `workflow_publish` → `NOT_WORKFLOW_OWNER`; owner publishes v2→release, v3→beta; no-selector run →
+  v2, `{channel:'beta'}` run → v3, `{version:'v1'}` run → v1 (explicit wins), `{channel:'bogus'}` →
+  `INVALID_CHANNEL`, all confirmed by polling each run's own `workflow_status.scriptVersion`. Plus
+  `npx vitest run tests/acceptance/val-107-release-channels.test.ts` → 3/3 pass.
+- **iter:** v22
+
+### VAL-108 — real-run acceptance for REQ-098 (inline script closed; every run goes through a registered workflow)
+- **status:** green
+- **traces:** REQ-098
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** live MCP HTTP, same boot: `tools/list` shows `script` absent from `workflow_run`'s and
+  `workflow_resume`'s input schema; a hand-rolled `workflow_run({script:"return 1+1"})` over real HTTP
+  → `{"error":{"code":"INLINE_SCRIPT_CLOSED",...}}` naming the register-then-run-by-name migration.
+  `_adhoc` fallback confirmed dead-but-inert by code read (unreachable now that inline is refused
+  upstream). Plus `npx vitest run tests/acceptance/val-108-inline-script-closed.test.ts` → 3/3 pass
+  (includes the plain-`workflow_resume({runId})`-still-works regression pin).
+- **iter:** v22
+
+### VAL-109 — real-run acceptance for REQ-099 (submission-time static checks moved to registration)
+- **status:** green
+- **traces:** REQ-099
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** live MCP HTTP, same boot: `workflow_register` with unparseable script → `PARSE_ERROR`;
+  with an unknown model alias → `UNKNOWN_ALIAS`; with an unprovisioned MCP name → `MCP_NOT_PROVISIONED`;
+  `workflow_get` on the refused name afterward → `WORKFLOW_NOT_FOUND` (nothing stored, all three). Plus
+  `npx vitest run tests/acceptance/val-109-registration-checks.test.ts` → 4/4 pass (covers "a run by
+  name is covered" and the grandfathered-pre-v22-workflow surfacing clause not hand-probed live).
+- **iter:** v22
+
+### VAL-110 — real-run acceptance for REQ-100 (`workflow_get` masks the script for non-owners)
+- **status:** green
+- **traces:** REQ-100
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** live MCP HTTP + real HTTP `/api/*` against a genuinely `auth.enabled:true` boot: owner
+  bearer gets the full script; non-owner bearer gets `scriptWithheld:true` with no `script` key anywhere
+  and every other legitimate field intact; `GET /api/workflows` never carries `script`; `GET
+  /api/workflows/<name>/skeleton` omits `skeleton`/`phases` while auth is on; `GET /dashboard` HTML has
+  zero occurrences of the script text or workflow name (client-side JSON fetch only). Plus
+  `npx vitest run tests/acceptance/val-110-script-masking.test.ts tests/integration/workflow-masking-http.test.ts`
+  → 10/10 pass (covers `args.principal` non-unmask, NULL-owner fail-closed, and auth-OFF byte-identical
+  pre-v22-surface clauses not hand-probed on this auth-on boot).
+- **iter:** v22

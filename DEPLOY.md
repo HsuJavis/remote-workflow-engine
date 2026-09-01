@@ -6,7 +6,7 @@
 > `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
 
 這是一個可遠端操控的 **Claude 工作流程執行引擎**：一台常駐伺服器，透過 **MCP Streamable HTTP**
-介面對外提供 **37 個工具**（工作流程執行/查詢、排程、串接、資產同步、問題回報、系統監控、模型目錄、
+介面對外提供 **38 個工具**（工作流程執行/查詢、排程、串接、資產同步、問題回報、系統監控、模型目錄、
 OAuth 2.0 身份認證……），並把每個 `agent()` 呼叫路由到你設定的 LLM 供應商（Anthropic / OpenAI /
 Gemini / 本機 Ollama）。狀態全存在本機檔案（SQLite + JSONL journal），不需要外部資料庫伺服器。
 
@@ -119,7 +119,7 @@ curl -s -X POST http://localhost:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | python3 -c \
   "import json,sys; d=json.load(sys.stdin); print('tools:', len(d['result']['tools']))"
-# 預期：tools: 37
+# 預期：tools: 38
 
 # 主機系統資源快照（第一次呼叫 utilizationPct=null；第二次有值）
 curl -s http://localhost:8787/api/system | python3 -c \
@@ -336,6 +336,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `assetRoot` | `asset_push` 資產儲存根目錄 | `string` / `$workRoot/assets` | 否 | v1 |
 | `rwe.config.json` → `maxWorkflowDepth` | 具名 `workflow()` 巢狀組合單一分支深度上限（頂層 run=0）；超過回可分支的 `NESTING_DEPTH_EXCEEDED`（不崩父 run）；≤0 或非整數在啟動時拒絕 | `number` / `4` | 否 | v8 |
 | `rwe.config.json` → `maxWorkflowDescendants` | 巢狀 `workflow()` 呼叫總數上限（整棵 fan-out × depth 樹）；超過回 `DESCENDANT_CAP_EXCEEDED` | `number` / `256` | 否 | v8 |
+| `rwe.config.json` → `maxWorkflowVersions` | 同一工作流程名稱累積保留的版本數上限；達上限時 `workflow_register` 回 `VERSION_CEILING_EXCEEDED`（需先 `workflow_deregister` 舊版本或調高此值） | `number` / 省略 = 不設上限 | 否 | v22 |
 | `rwe.config.json` → `seedRefAllowlist` | engine-pull `seedRef:{repoUrl,sha}` 的 egress 白名單（`https://` URL 前綴）；**fail-closed**：省略/空陣列 = 任何 seedRef 回 `SEEDREF_DISABLED`；不命中前綴（含 `169.254.169.254`/`localhost`/私有 IP/`file://`）→ `SEEDREF_EGRESS_DENIED`（SSRF 安全） | `string[]` / `[]` | 否 | v13 |
 | `rwe.config.json` → `maxBlobBytes` | `POST /assets/blob/:sha`（streaming raw-body 上傳）最大 body bytes；超過 → HTTP 413 `BLOB_TOO_LARGE` | `number` / `268435456`（256 MiB，最小 1048576） | 否 | v10 |
 | `rwe.config.json` → `maxConcurrentRuns` | 頂層 run 並行上限（run-admission counter）；達上限時 `start()` 在任何持久化動作之前以 `RUN_ADMISSION_LIMIT` 拒絕；巢狀 `workflow()` 不佔用槽位 | `number` / `64` | 否 | v8 |
@@ -537,7 +538,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
-判定標準：回傳 `200`，且 body 的 `result.tools` 陣列包含 37 個工具（含全部 `workflow_*` 家族）；
+判定標準：回傳 `200`，且 body 的 `result.tools` 陣列包含 38 個工具（含全部 `workflow_*` 家族）；
 終端機/日誌會印出 `[remote-workflow-engine] ready`；`GET /api/status` 回 `{agentSemaphore,version}`。
 完整真實層驗證證據（含逐 REQ 的真實指令與觀察輸出）見
 `.sdlc/features/001-remote-workflow-engine/08-validation.md`。

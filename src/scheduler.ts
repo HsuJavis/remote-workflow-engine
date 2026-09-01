@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import type { Clock } from './clock.js';
 import type { ErrEnvelope } from './types.js';
 import { computeNextFire, bootRearm, type StoredSchedule, type ScheduleFiring } from './scheduler-engine.js';
+import { CatalogNotFoundError } from './errors.js';
 
 export type Schedule =
   | { kind: 'cron'; id: string; workflow: string; args?: unknown; cron: string; tz?: string; enabled: boolean }
@@ -46,9 +47,12 @@ export interface ScheduleResult<T> {
   error?: ErrEnvelope;
 }
 
-/** Structural seam — matches WorkflowCatalog's own exists() signature without importing the class. */
+/** Structural seam — matches WorkflowCatalog's own exists()/resolve() signatures without importing
+ *  the class. `resolve` widened here for H4 (07-review.md §4.2, ARCH-072 note 1): `create()` needs
+ *  the SAME channel-resolution check `workflow_run` uses, not just "the name exists". */
 interface CatalogPort {
   exists(name: string): Promise<boolean>;
+  resolve(name: string, sel: { channel?: string }): Promise<unknown>;
 }
 /** Structural seam — matches RunManager's own start() signature without importing the class. */
 interface RunManagerPort {
@@ -151,8 +155,23 @@ export class SqliteSchedulerPort {
   }
 
   async create(s: NewSchedule): Promise<ScheduleResult<Schedule>> {
-    if (!(await this._catalog.exists(s.workflow))) {
-      return { error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${s.workflow}`, field: 'workflow' } };
+    // v22 send-back (H4, 07-review.md §4.2, ARCH-072 note 1): upgraded from "the name exists" to
+    // "the name resolves on `release`" — a registered-but-unpublished draft (REQ-097's normal
+    // author-loop state) must be refused CHANNEL_UNPUBLISHED HERE, not accepted and left to fail at
+    // every subsequent fire with no operator signal at the point of the actual mistake.
+    try {
+      await this._catalog.resolve(s.workflow, { channel: 'release' });
+    } catch (err) {
+      if (err instanceof CatalogNotFoundError) {
+        return { error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${s.workflow}`, field: 'workflow' } };
+      }
+      // Same coded-error shape every `codedError()` throw carries (errors.ts) — e.g.
+      // CHANNEL_UNPUBLISHED/UNKNOWN_VERSION/INVALID_CHANNEL from `resolveVersionRequest`.
+      if (err instanceof Error) {
+        const code = (err as { code?: unknown }).code;
+        return { error: { code: typeof code === 'string' && code ? code : 'INTERNAL_ERROR', message: err.message, field: 'workflow' } };
+      }
+      return { error: { code: 'INTERNAL_ERROR', message: String(err), field: 'workflow' } };
     }
     if (s.kind === 'cron' && !isValidCron(s.cron)) {
       return { error: { code: 'INVALID_CRON', message: `Not a valid cron expression: ${s.cron}`, field: 'cron' } };

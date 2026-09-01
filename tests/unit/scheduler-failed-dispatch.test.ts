@@ -30,7 +30,9 @@ function failingRunManager(code: string) {
 }
 
 // v22 (DES-111): CatalogPort shrank to the existence-only shape scheduler.ts actually needs.
-const OK_CATALOG = { exists: vi.fn().mockResolvedValue(true) };
+// v22 send-back (H4, 07-review.md §4.2): `create()` now also calls `resolve()` (the release-channel
+// check) — this fake always resolves so the dispatch-failure scenario under test is unaffected.
+const OK_CATALOG = { exists: vi.fn().mockResolvedValue(true), resolve: vi.fn().mockResolvedValue({ script: '', version: 'v1' }) };
 
 /** Mirrors the real driver loop's body (server.ts:1294-1309) exactly, so this test drives the same
  *  shape the fix must land in production, not a re-invented one. */

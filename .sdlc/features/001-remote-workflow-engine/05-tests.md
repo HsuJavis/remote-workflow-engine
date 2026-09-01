@@ -410,7 +410,7 @@ provider unreachable → ok:false (not throws); invoke tags request with runId/a
 
 ### UT-010 — RunStore port: create / append / transition / query
 - **status:** green
-- **traces:** DES-010, DES-104, TASK-100
+- **traces:** DES-010, DES-104, TASK-100, DES-113, TASK-108
 - **tier:** unit
 - **real:** false
 - **result:** pass
@@ -427,6 +427,16 @@ second `RunManager` sharing the same `InMemoryRunStore` to hit that path. 3 new 
 against the store: `getEffectiveParams` returns the snapshot passed as `createRun`'s third argument;
 returns `null` when `createRun` was called with no `effectiveParams` (legacy/adhoc); returns `null` for
 an unknown runId. Closes the coverage-gate finding for `src/run-store.ts:163-165` (0/3 → 3/3 statements).
+
+**Gate 6.5+7 coverage-gate extension (verifier, 2026-09-02):** `recordLegacySubstitution` (v22,
+DES-113/TASK-108) had zero covering cases — the production caller (`run-manager.ts:650`, the
+legacy-cohort resume fallback) always runs against the real `SqliteRunStore` (covered via IT-086),
+so `InMemoryRunStore`'s own copy was never exercised by any test (same class of gap as
+`getEffectiveParams` above). 2 new cases added directly against the store: recording a substitution
+surfaces `legacySubstitution:{pinned,resolved}` on a subsequent `getRun` (absent beforehand); an
+unknown `runId` is a silent no-op (matches the file's existing `recordTransition`/`saveSnapshot`
+unknown-runId convention). Closes the coverage-gate finding for `src/run-store.ts:243-245` (1/4 →
+4/4 statements, missed-lines 3 → 0).
 
 ### UT-011 — WorkflowCatalog: registry, workspace rooting, path-escape rejection
 - **status:** green
@@ -1039,11 +1049,11 @@ tool or status field exposes a run's workspace file listing today, see `08-valid
 calling it throws `TypeError: facade.workflow_artifacts is not a function`.
 
 ### IT-011 — scriptVersion fidelity: a run after a workflow update records the version it actually executed
-- **status:** red
+- **status:** green
 - **traces:** ARCH-006, ARCH-072, DES-113, TASK-108
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v1
 
 File: `tests/integration/scriptversion-fidelity.test.ts`.
@@ -1064,6 +1074,10 @@ that passes when both are wrong. Rewritten to literal `'v1'`/`'v2'` assertions p
 requires an explicit `publish` to `release` — a bare `register()` no longer makes a version runnable
 by name (REQ-097). Red reason: `WorkflowCatalog.publish` does not exist yet → confirmed red
 (`npx vitest run` — `TypeError: runManager.catalog.publish is not a function`).
+
+**Gate 6.5+7 regression (2026-09-02):** `WorkflowCatalog.publish` shipped at TASK-105/IMPL-149 —
+`npx vitest run tests/integration/scriptversion-fidelity.test.ts` green, all 3 clauses (literal
+`'v1'`/`'v2'`, run 1 still `'v1'` after a third version).
 
 ### IT-012 — WorkflowCatalog registrations persist in the on-disk SQLite DB across instances
 - **status:** green
@@ -4295,14 +4309,16 @@ File: `tests/unit/redact-persist-only.test.ts`. Mock policy (unit): pure functio
 **Amendment note (v21 Gate 8 re-review, review §R2 R-G10 — no case changed, all 6 still green):** the heading's "double-redaction exclusivity" names DES-088 invariant (a) as first written; that invariant has been **restated** (04-design.md) to "one redaction pass per persisted event", positional rather than kind-based, because `redactHarness` was never a redactor and the two paths were never alternatives. Every case here survives the restatement unchanged — cases (4) and (6) assert exactly what stays true, that `redactHarness` emits no `‹secret:NAME›` marker (which is *why* the harness sink needs its own `redact()`, review §4 B3). No case asserted the deleted `kind!=='harness'` sink carve-outs, so deleting them left this file green as-is.
 
 ### UT-091 — pure `assertScriptIntegrity` + `SCRIPT_SHA_MISMATCH` ladder rung (DES-090)
-- **status:** green
+- **status:** retired
 - **traces:** DES-090, ARCH-058, TASK-084
 - **tier:** unit
 - **real:** false
-- **result:** pass
+- **result:** not-run
 - **iter:** v14
 
-File: `tests/unit/assert-script-integrity.test.ts`. Mock policy (unit): pure function + real `RunManager` (no gateway/spawner; ladder fires before sandbox). 9 cases: (1) matching sha → no throw; (2) one-byte-altered script → SCRIPT_SHA_MISMATCH; (3) absent sha (undefined) → no-op; (4) absent sha (not passed) → no-op; (5) uppercase hex sha → SCRIPT_SHA_MISMATCH (REJECT not normalize); (6) 63-char hex sha → SCRIPT_SHA_MISMATCH (wrong length); (7) emoji script UTF-8 sha → correct match; (8) scriptSha256 on named run (no inline script) → SCRIPT_SHA_WITHOUT_SCRIPT; (9) SCRIPT_SHA_MISMATCH fires BEFORE admission — no store row created. Red reason: `assertScriptIntegrity` is not exported from `run-manager.ts` → "does not provide an export named 'assertScriptIntegrity'" at import time → all 9 tests fail for the correct unimplemented reason.
+**[RETIRED v22 gate-closeout, REQ-085 `[SUPERSEDED v22]` / adjudication (v22) #2 L-1]** `tests/unit/assert-script-integrity.test.ts` guarded `scriptSha256` on a script supplied **on the wire** — REQ-098 closed that door entirely, so the guarded input is unreachable by construction. The file was deleted, not migrated (migrating it would fabricate coverage for an input the engine can no longer accept); the integrity concern moves to REQ-099's registration checks and REQ-096's version pin. This entry was left describing a deleted file as green/passing through Gate 6 — corrected here rather than silently deleted, per this repo's own ledger-honesty precedent (IMPL-140/142's "the tests are the truth" convention). Original content preserved below for history only, **not current**.
+
+~~File: `tests/unit/assert-script-integrity.test.ts`. Mock policy (unit): pure function + real `RunManager` (no gateway/spawner; ladder fires before sandbox). 9 cases: (1) matching sha → no throw; (2) one-byte-altered script → SCRIPT_SHA_MISMATCH; (3) absent sha (undefined) → no-op; (4) absent sha (not passed) → no-op; (5) uppercase hex sha → SCRIPT_SHA_MISMATCH (REJECT not normalize); (6) 63-char hex sha → SCRIPT_SHA_MISMATCH (wrong length); (7) emoji script UTF-8 sha → correct match; (8) scriptSha256 on named run (no inline script) → SCRIPT_SHA_WITHOUT_SCRIPT; (9) SCRIPT_SHA_MISMATCH fires BEFORE admission — no store row created.~~
 
 ### IT-075 — redact-at-capture completeness sweep: all persist sinks — `appendTranscript` / SDK-capture / `saveSnapshot` / `appendJournal` (DES-088)
 - **status:** green
@@ -4397,14 +4413,16 @@ File: `tests/acceptance/val-092-redact-capture.test.ts`. Mock policy (acceptance
 File: `tests/acceptance/val-093-asset-push-honesty.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real HTTP; real `tools/list` endpoint (not the raw TOOL_DEFS object). 4 cases: (1) tools/list asset_push kind description contains 'HOOKS_UNSUPPORTED' — RED; (2) tools/list asset_push kind description names 'mcp_provision' — RED; (3) pushing kind=hook still returns HOOKS_UNSUPPORTED — TRIVIALLY PASSES (existing behavior); (4) every kind enum value has in-schema rejection/redirect note — RED (same assertion as case 1). Red reason: current `asset_push` kind description says `"One of 'skill' | 'hook' | 'mcp-config'."` without naming HOOKS_UNSUPPORTED or mcp_provision → 3 of 4 assertions fail for the correct unimplemented reason.
 
 ### VAL-094 — REQ-085: optional `scriptSha256` integrity guard (REQ-085)
-- **status:** green
+- **status:** retired
 - **traces:** REQ-085, DES-090, DES-091
 - **tier:** acceptance
 - **real:** false
-- **result:** pass
+- **result:** not-run
 - **iter:** v14
 
-File: `tests/acceptance/val-094-script-sha.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real HTTP; real `RunManager` ladder (`scriptSha256` check fires before any sandbox/gateway code). 5 cases: (1) matching scriptSha256 → run proceeds normally — would pass once routes work; (2) mismatched scriptSha256 → SCRIPT_SHA_MISMATCH, no run created — RED; (3) no scriptSha256 → runs exactly as before (backward compat) — trivially passes; (4) named run + scriptSha256 → SCRIPT_SHA_WITHOUT_SCRIPT — RED; (2b) SCRIPT_SHA_MISMATCH fires synchronously (before createRun) — RED. Red reason: `RunManager.start()` has no `assertScriptIntegrity` call → scriptSha256 silently ignored → returns a runId instead of SCRIPT_SHA_MISMATCH/SCRIPT_SHA_WITHOUT_SCRIPT → 3 of 5 cases fail for the correct unimplemented reason.
+**[RETIRED v22 gate-closeout, REQ-085 `[SUPERSEDED v22]` / adjudication (v22) #2 L-1]** Same disposition as UT-091: `tests/acceptance/val-094-script-sha.test.ts` guarded a wire-supplied `script`'s integrity; REQ-098 removed `script` from `workflow_run`'s advertised surface entirely, so the guarded input cannot reach the engine. The file was deleted with the requirement, not migrated. This entry was left describing a deleted file as green/passing through Gate 6 — corrected here. Original content preserved below for history only, **not current**.
+
+~~File: `tests/acceptance/val-094-script-sha.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real `createServer`, real HTTP; real `RunManager` ladder (`scriptSha256` check fires before any sandbox/gateway code). 5 cases: (1) matching scriptSha256 → run proceeds normally — would pass once routes work; (2) mismatched scriptSha256 → SCRIPT_SHA_MISMATCH, no run created — RED; (3) no scriptSha256 → runs exactly as before (backward compat) — trivially passes; (4) named run + scriptSha256 → SCRIPT_SHA_WITHOUT_SCRIPT — RED; (2b) SCRIPT_SHA_MISMATCH fires synchronously (before createRun) — RED.~~
 
 ---
 ## v15 Slice B — per-caller identity, workflow ownership, harness binding, fail-closed bind (DES-092..100, REQ-012 + REQ-086..089)
@@ -5660,11 +5678,11 @@ sets), never a relative/shape-only oracle.
 ### New (11 new work items, no new module before Gate 6)
 
 ### UT-102 — pure `src/script-checks.ts`: `validateScriptEntry` + the shared frame-delimiter predicate
-- **status:** red
+- **status:** green
 - **traces:** DES-112, ARCH-074, TASK-106
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/unit/script-checks.test.ts`. Mock policy (unit): pure module, ports are plain
@@ -5676,11 +5694,11 @@ re-exports (never re-implements) `params/contract.ts`'s `FRAME_CLOSE_FORGERY`, a
 Red reason: `src/script-checks.ts` does not exist → MODULE NOT FOUND at collect time.
 
 ### UT-103 — `resolveVersionRequest`: the total, pure resolution truth table
-- **status:** red
+- **status:** green
 - **traces:** DES-110, ARCH-071, TASK-105
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/unit/resolve-version-request.test.ts`. Mock policy (unit): pure function, `known` is a
@@ -5691,11 +5709,11 @@ known-version+unpublished-channel, unknown-version+valid-channel). Red reason:
 resolveVersionRequest is not a function` (confirmed via `npx vitest run`, 9/9 red).
 
 ### UT-104 — pure `src/workflow-view.ts`: `projectWorkflowForRead`, `EXPECTED_NON_OWNER_KEYS`
-- **status:** red
+- **status:** green
 - **traces:** DES-115, ARCH-075, TASK-110
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/unit/workflow-view.test.ts`. Mock policy (unit): pure, no I/O/auth/clock. The two-sided
@@ -5708,11 +5726,11 @@ single source of truth for the literal key set); `validation.errors` absent for 
 precedent). Red reason: `src/workflow-view.ts` does not exist → MODULE NOT FOUND.
 
 ### UT-105 — `Scheduler.markFailed`: the driver's `.catch()` gets a writer
-- **status:** red
+- **status:** green
 - **traces:** DES-118, ARCH-072, TASK-112
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/unit/scheduler-failed-dispatch.test.ts`. Mock policy (unit): injected clock (a local
@@ -5726,11 +5744,11 @@ auto-disabled, records `lastError`; a failing `cron` schedule attempts `start()`
 is not a function` (confirmed, 2/2 red).
 
 ### IT-084 — versioned catalog: schema, boot migration, `resolve`/`resolveDetail`/`publish`/`listVersions`
-- **status:** red
+- **status:** green
 - **traces:** ARCH-071, DES-109, DES-110, DES-111, TASK-105
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/integration/catalog-versions.test.ts`. Mock policy (integration): real `WorkflowCatalog`
@@ -5748,12 +5766,21 @@ today, and 6 live call sites still call the doomed `get()`/`getFull()` — confi
 behavioural cases + the structural case (6 hits: mcp-facade.ts, run-manager.ts, scheduler.ts,
 server.ts, submission-validator.ts, webhook-registry.ts).
 
+**Gate 6.5+7 coverage-gate extension (verifier, 2026-09-02):** `publish`'s `UNKNOWN_VERSION` refusal
+(`workflow-catalog.ts:477-478` — a version argument that was never registered under this name) had
+zero covering cases; the schema documents it (`server.ts:432`'s `workflow_publish` description) and
+the pure `resolveVersionRequest` truth table covers the read-side equivalent (UT-103), but nothing
+exercised `WorkflowCatalog.publish()`'s own pre-write check. 1 new case: publishing an unregistered
+version is refused `UNKNOWN_VERSION`, and the channel is confirmed still unpublished afterward (the
+refusal happened before any pointer write). Closes the coverage-gate finding for `publish`
+(89.5% → 100%, 17/19 → 19/19 statements).
+
 ### IT-085 — registration ENFORCES: `validateScriptEntry` first, the version ceiling second
-- **status:** red
+- **status:** green
 - **traces:** ARCH-071, ARCH-074, DES-111, DES-112, DES-117, TASK-107
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/integration/registration-enforcement.test.ts`. Mock policy (integration): real
@@ -5768,11 +5795,11 @@ harness-defaults/param-contract checks today, never `validateScriptEntry` (which
 has no version ceiling — confirmed 6/6 red (5 in this file + UT-033's new case).
 
 ### IT-086 — resume determinism: a suspended run continues its PINNED version, never "whatever is registered now"
-- **status:** red
+- **status:** green
 - **traces:** ARCH-072, DES-112, DES-113, DES-117, TASK-108
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/integration/run-version-pin.test.ts`. Mock policy (integration): real RunManager + real
@@ -5791,11 +5818,11 @@ fallback (DES-113): a hand-seeded run whose pin is absent from `workflow_version
 unconditionally (1/4) — confirmed 4/4 red.
 
 ### IT-087 — schema drift-lock v22: `script`/`scriptSha256` removed, `workflow_publish`, `version`/`channel`
-- **status:** red
+- **status:** green
 - **traces:** ARCH-073, DES-114, DES-117, TASK-109
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/integration/schema-drift-v22.test.ts`. Mock policy (integration): real server, real
@@ -5807,11 +5834,11 @@ closed enum; `workflow_get` gains optional `version`. Red reason: today's schema
 `script`/`scriptSha256`, no `version`/`channel`/`workflow_publish` exist — confirmed 8/8 red.
 
 ### IT-088 — inline script closed at RUNTIME, not just the advertised schema
-- **status:** red
+- **status:** green
 - **traces:** ARCH-073, DES-114, DES-117, TASK-109
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/integration/inline-script-closed.test.ts`. Mock policy (integration): real server, real
@@ -5824,11 +5851,11 @@ unaffected. Red reason: `script` is accepted (and actually runs) on both tools t
 red (the plain-resume negative is a legitimate green pin, unaffected either way).
 
 ### IT-089 — masked reads over the REAL transport: required `ReadContext`, `args.principal` barred
-- **status:** red
+- **status:** green
 - **traces:** ARCH-073, ARCH-076, DES-115, DES-116, TASK-111
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/integration/workflow-masking-http.test.ts`. Mock policy (integration): real
@@ -5843,11 +5870,11 @@ full script regardless of ownership/auth — confirmed 6/6 red (2 pre-existing-s
 NULL-owner case, correct red for "the v22 schema doesn't exist yet").
 
 ### VAL-106 — REQ-096: the catalog keeps version history; a run pins the exact version it executed
-- **status:** red
+- **status:** green
 - **traces:** REQ-096
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/acceptance/val-106-version-history.test.ts`. Real entrypoint: `createServer` (the same
@@ -5861,11 +5888,11 @@ not exist — confirmed 3/5 genuinely red (2 green pins: the pre-v22-boot smoke 
 scriptVersion-survives-a-later-registration case, both already true of today's engine).
 
 ### VAL-107 — REQ-097: `beta`/`release` channels; a run resolves a channel to a version, defaulting to release
-- **status:** red
+- **status:** green
 - **traces:** REQ-097
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/acceptance/val-107-release-channels.test.ts`. Real `createServer` + real MCP HTTP, no
@@ -5876,11 +5903,11 @@ refused `CHANNEL_UNPUBLISHED` naming the channel. Red reason: `workflow_publish`
 `workflow_run`/`workflow_get` accept no `version`/`channel` selector — confirmed 3/3 red.
 
 ### VAL-108 — REQ-098: inline script is closed; every run goes through a registered workflow
-- **status:** red
+- **status:** green
 - **traces:** REQ-098
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/acceptance/val-108-inline-script-closed.test.ts`. Real `createServer` + real MCP HTTP.
@@ -5890,11 +5917,11 @@ A hand-rolled `workflow_run({script})` over the real transport is refused `INLIN
 reason: confirmed 2/3 red (the plain-resume negative is a legitimate green pin).
 
 ### VAL-109 — REQ-099: the submission-time static checks move to registration, closing inline loses no validation
-- **status:** red
+- **status:** green
 - **traces:** REQ-099
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/acceptance/val-109-registration-checks.test.ts`. Real `createServer` + real MCP HTTP,
@@ -5906,11 +5933,11 @@ server was never configured with still RUNS (not retroactively refused) while `w
 legitimate green pin — a clean registration already runs fine today).
 
 ### VAL-110 — REQ-100: `workflow_get` masks the script for non-owners
-- **status:** red
+- **status:** green
 - **traces:** REQ-100
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/acceptance/val-110-script-masking.test.ts`. Real `createServer`, real HTTP, real
@@ -5939,6 +5966,32 @@ shape (missing exports/modules/properties on `WorkflowCatalog`/`SqliteSchedulerP
 not yet on `FileConfig`) — 0 errors outside the 17 touched files. Hermetic: every new case with a
 clock uses `FixedClock`/a local mutable fake anchored to a fixed instant; no absolute-date-vs-
 real-clock comparisons.
+
+### Gate 6.5+7 regression confirmation (2026-09-02, verifier)
+Gate 6 (TASK-105..112, backfilled as IMPL-149..156) implemented all 11 new items above plus the
+`UT-033`/`IT-011` in-place extensions, per commits `a54a794`/`fd19710`/`ccee745`/`1ffca37` (see
+`06-impl-log.md`). `npx vitest run` (post-simplify, this pass): **1662 passed / 1662 total (257
+files, exit 0)** — the 2 documented `spawn litellm ENOENT` background artifacts are unaffected
+unhandled-rejection noise, not test failures (`which litellm` absent on this host, same as every
+prior round since IMPL-140). `npx tsc --noEmit` clean. All 11 new items (UT-102..105, IT-084..089,
+VAL-106..110) plus `UT-033`/`IT-011` flipped to `status: green` / `result: pass` above; `real`
+stays `false` (Gate 7.5 flips it after a genuine real-tier run).
+
+**Coverage-gate closure (2026-09-02):** `npx vitest run --coverage` → `src/` overall **95.02%**
+(13672/14388 statements, ≥90% bar). Per-function sweep of every v22-touched file surfaced 2 genuine
+new-in-v22 offenders (functions >5 lines below 95%, or ≤5-line functions missing >1 line):
+`WorkflowCatalog.publish`'s `UNKNOWN_VERSION` refusal (89.5%, IT-084 extended) and
+`InMemoryRunStore.recordLegacySubstitution` (25%, UT-010 extended) — both closed to 100% with the 3
+cases logged above. The remaining ~27 sub-threshold functions in v22-touched files are all
+pre-existing (git-blame-confirmed origin v1/v2/v7/v11/v15/v20, predating this iteration; the largest,
+`server.ts`'s `createServer` composition root at 81.7%, is the same function the v21 close already
+carried as accepted debt) — part of the standing "pre-existing function debt list, not re-scoped"
+this ledger has carried since v21 (94.80% → 95.02% overall, no regression). Final regression after
+the 3 coverage-gate additions: **1665 passed / 1665 total (257 files, exit 0)**, `tsc` clean.
+Time-travel re-run (`TZ='Pacific/Kiritimati' npx vitest run`, `faketime` unavailable on this host):
+**1662 passed / 1662 total, exit 0** — no test flipped red under the shifted clock (run before the 3
+coverage-gate additions; those 3 cases carry no clock/date literals — `FixedClock`/CLOCK-anchored
+throughout — so are not expected to be time-sensitive). 0 remaining red in this pass's scope.
 
 ---
 
@@ -6027,3 +6080,171 @@ moved it; consolidate in v23 if it still looks redundant then.
 The `src/` change itself (IMPL-148): `HarnessDescriptor.mcpUnresolved`, `redactHarness`'s
 `unresolvedMcp` input, `resolveProvisionedMcp` returning `{configs, unresolved}`, the two stale
 comments, and the `workflow_agent_log` schema clause.
+
+---
+
+## Gate 5 scope — v22 GATE 8 send-back (2026-09-02, verifier)
+
+**Read `07-review.md`'s "v22 GATE 8 REVIEW" §4.2/§8 first.** Binding: 4 HIGH architecture-vs-
+implementation deviations (H1–H4), each needing a regression test that would have caught it, plus
+the small code fix each finding names. The 6 MEDIUM + 4 LOW findings in §4.3 are recorded debt,
+non-blocking this round — **no new tests written for them here**, per the send-back's own scope pin
+(§8: "the 4 HIGH findings... each need (a) a regression test").
+
+`04-design.md` DES-117 amended in place this pass: new `PRINCIPAL_REQUIRED` error-code row
+`[AMENDED v22 send-back, 07-review.md H1]` — the concrete code/scope decision H1's fix note left
+open (register/deregister keep the `args.principal` fallback; `workflow_publish` drops it; all
+three refuse `authEnabled && effectivePrincipal === null` before the ownership check). Read that
+row before reading IT-091 below — it is the design source these tests assert against.
+
+### IT-091 — H1: catalog WRITE mutations refuse an anonymous (no-identity) caller under auth, even via D-BIND
+- **status:** red
+- **traces:** ARCH-071, ARCH-073, ADR-012, DES-114, DES-117, REQ-097, REQ-100
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/integration/catalog-write-auth-dbind.test.ts`. Mock policy (integration, DES-119): real
+`createServer` + real HTTP + real on-disk `catalog.db`. 5 cases: (1) anonymous `workflow_publish`
+on a hand-seeded published workflow does not move the `release` pointer — asserts `code:
+'PRINCIPAL_REQUIRED'` and the store's `release_version` unchanged; (2) anonymous
+`workflow_deregister` does not remove the workflow — row + version count unchanged; (3) anonymous
+`workflow_register` (a new version onto an OWNED name, no `principal` key at all) does not insert a
+version row; (4) GREEN PIN — the same three calls all succeed anonymously on an auth-DISABLED
+server (D-AUTH-6 preserved, ADR-012); (5) GREEN PIN — anonymous `workflow_run` is unaffected on the
+auth-enabled D-BIND server (the ADR-012 rescue path stays open; only catalog WRITES close). Every
+negative case uses its own `uniqueWorkflowName()`-style fixture (isolation — a shared row would
+make a later case red for the wrong reason). Setup hand-seeds the starting `release_version`
+pointer directly in catalog.db rather than routing through `workflow_publish`: on this D-BIND-exempt
+connection (bind `0.0.0.0`, loopback test client) `resolvePrincipal` is never even invoked
+(server.ts's gated `/mcp` block is skipped whole), so a bearer cannot be validated here at all —
+the file header explains why the "owner CAN still publish with a real bearer" positive pin
+correctly lives elsewhere (IT-089, a loopback-BOUND server where D-BIND never applies) rather than
+being duplicated in this file.
+
+**Scope note (recorded, not hidden):** `workflow_register`/`workflow_deregister` KEEP the
+`args.principal` self-assertion fallback this round — a caller supplying a non-null self-asserted
+principal string still attributes as before (H1's fix note: closing this is "ideally", not
+required for the send-back's blocking scope). This is accepted debt, not a second closure claim;
+`06-impl-log.md`'s send-back entry records it explicitly so a later reviewer reads it as a known,
+narrower residual rather than a dangling half.
+
+Red reason (measured, pre-fix): cases 1–3 all observe `code: undefined` (the write silently
+succeeded) where `PRINCIPAL_REQUIRED` is required; store oracles confirm each write actually took
+effect (pointer moved / row deleted / version row inserted). Cases 4–5 are legitimate green pins,
+already true today.
+
+**`workflow-ownership.test.ts` (IT-080) amended in place, no new IDs** — this file's own D-BIND
+server can no longer reach `workflow_publish` anonymously (the exact write IT-091 above proves must
+now be refused), so every case that used to route a publish through the tool now hand-seeds the
+`release_version` pointer directly instead (`publishPointer()`, same store-write idiom IT-091 uses
+for setup) — pure fixture-reachability change, zero assertion changes. Case 6 (`null principal →
+ungated mutation... [D-AUTH-6]`) is RE-SITED onto its own small auth-DISABLED server: its original
+claim was true only because the D-BIND server it ran on was, in this exact shape, H1's own
+vulnerability — post-fix that call now returns `PRINCIPAL_REQUIRED` on the auth-enabled server, so
+the still-true D-AUTH-6 floor ("auth genuinely off ⇒ every mutation ungated") is preserved on a
+server where `authEnabled` is actually `false`. Case 9 (NULL-owner boot-backfill fixture) switches
+from an anonymous register+publish pair to hand-seeding the v22 schema directly (IT-089's
+NULL-owner pattern) for the same reachability reason. Cases 3/4/5/7/8 are untouched (non-null
+self-asserted principals still pass the new gate; run/read stay ungated). Confirmed: all 10 cases
+in the amended file pass unchanged against TODAY's pre-fix engine (this amendment is a pure fixture
+migration, not a new assertion — it does not itself carry any red case; IT-091 above is where H1's
+red assertions live).
+
+### IT-092 — H2: `GET /api/runs/:id/dag` masks the script-derived skeleton overlay while auth is enabled
+- **status:** red
+- **traces:** ARCH-073, ARCH-075, ADR-012, DES-114, DES-115, REQ-100
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/integration/dag-masking-auth.test.ts`. Mock policy (integration, DES-119): real
+`createServer` + real HTTP + real `RunManager`/catalog; only the `GatewayClient` is faked (a
+never-resolving stub, so the run is provably still `running` with ZERO completed agents at the
+moment the DAG route is read — the skeleton-derived-vs-live distinction only means something
+before any agent has finished). 2 cases: (1) auth ON, no bearer on the DAG GET (the route has no
+identity plumbing at all, confirmed by the review's own read — an anonymous GET is exactly the
+finding's reachability claim): `cells` carries ONLY `__trigger__`, no `__skel_*` placeholder for
+any of the script's 3 registered `agent()` calls; (2) GREEN PIN — auth OFF (pre-v22 surface): the
+same shape of run serves the full predicted skeleton (`__trigger__` + 3 `__skel_*` cells). The
+owner/bearer setup for the auth-ON case uses a real minted `TokenStore` bearer (IT-089's
+`mintBearer` pattern) — register/publish/run all need one, since this server binds to loopback
+(`127.0.0.1`, not `0.0.0.0`), so D-BIND does not exempt it and every `/mcp` call is genuinely
+bearer-gated; only the subsequent DAG GET is deliberately anonymous, matching what the finding
+itself describes as reachable with none.
+
+Red reason (measured, pre-fix): case 1 observes `cells = [__trigger__, __skel_0__, __skel_1__,
+__skel_2__]` where `[__trigger__]` is required — `dagMatch`'s handler (`server.ts`) has no
+`authEnabled` branch at all, confirmed by direct read, unlike its sibling `/api/workflows/:name/
+skeleton` route which already masks. Case 2 is a legitimate green pin, already true today.
+
+### UT-106 — H3: `register()`'s version allocator uses MAX over a name's rows, not COUNT
+- **status:** red
+- **traces:** ARCH-071 (inv 7), DES-111, ADR-011, ADR-009, REQ-096
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/integration/catalog-versions.test.ts` (extended in place — same file as IT-084's boot
+migration + version-history coverage; UT-tier logic, IT-file placement, matching this repo's own
+precedent of colocating `WorkflowCatalog` allocator tests with its migration suite). Mock policy:
+real on-disk `WorkflowCatalog`, no fakes. 2 cases: (1) a workflow migrated (ADR-011 boot migration)
+at a HIGH version number (`v7`, one row) — re-registering allocates `v8`, not `v2`; (2) a
+hand-seeded gapped version history (`v1`, `v3` — no `v2`, the v22 schema written directly, not via
+`register()`, which cannot itself produce a gap under either allocator) — re-registering allocates
+`v4`, not the collision `v3`. Both trace to `workflow-catalog.ts:341,349`'s `SELECT COUNT(*)`
++`v${count+1}` — ARCH-071 inv 7 requires `MAX(CAST(SUBSTR(version,2) AS INTEGER))+1`, the exact
+expression `_listVersions` (`:402`) already uses for ordering.
+
+Red reason (measured, pre-fix): case 1 observes `version: 'v2'` where `'v8'` is required — older-
+numbered than the version it supersedes (ARCH-071 inv 7 violated exactly as 07-review.md H3
+describes). Case 2 throws `REGISTRATION_CONFLICT: concurrent registration... retry` — the COUNT-based
+allocator computes `v3`, colliding with the already-existing `v3` row's PRIMARY KEY — reproducing
+H3's "permanently bricked" scenario directly (retrying recomputes the identical colliding version
+every time), not merely an off-by-N.
+
+### IT-093 — H4: `Scheduler.create()` refuses `CHANNEL_UNPUBLISHED`, not accepted-then-doomed
+- **status:** red
+- **traces:** ARCH-072 (note 1), DES-113, DES-117, REQ-097
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v22
+
+File: `tests/integration/scheduler-create-channel-check.test.ts`. Mock policy (integration,
+DES-119): a REAL `WorkflowCatalog` (real on-disk sqlite) — `grep -rn "CHANNEL_UNPUBLISHED" tests/`
+found zero hits against `Scheduler.create()` pre-fix, and a hand-mocked catalog implementing only
+`exists()` cannot exercise the missing `resolve()` call at all (would red on a type-shape artifact,
+not the genuine runtime gap); only `RunManager` is faked (irrelevant to `create()`). 3 cases: (1) a
+REGISTERED but UNPUBLISHED workflow (REQ-097's normal draft state) is refused `error.code ===
+'CHANNEL_UNPUBLISHED'`, `result` undefined; (2) GREEN PIN — a PUBLISHED workflow still creates
+successfully; (3) GREEN PIN — an unknown workflow name is still refused `WORKFLOW_NOT_FOUND`
+(existing behavior, unaffected). Message text is deliberately NOT pinned literally here (unlike
+DES-117's other rows): ARCH-072 note (1) prices this fix at "one line" (a `resolve()` call reusing
+`CHANNEL_UNPUBLISHED`'s existing message, not a bespoke `schedule_create`-specific string), and
+DES-117's own "In `schedule_create` context" phrasing names an unresolved concrete `<version>`
+that `create()` has no way to supply (no version is registered on the refused channel) — recorded
+as a documentation ambiguity for Gate 6 to either resolve with a literal message assertion added
+here, or drop from DES-117 as aspirational; not blocking this red batch.
+
+Red reason (measured, pre-fix): case 1 observes `result.error` undefined (creation wrongly
+SUCCEEDED) — `scheduler.ts:153-156` calls only `catalog.exists(s.workflow)`, confirmed by direct
+read; `grep -rn "CHANNEL_UNPUBLISHED" src/scheduler.ts` finds nothing. Cases 2–3 are legitimate
+green pins, already true today.
+
+### Full-suite confirmation (2026-09-02, verifier)
+`npx tsc --noEmit`: clean, 0 errors across all new/amended files. Targeted run (the 4 new/amended
+files): **16 passed, 7 failed** — exactly this pass's 7 genuinely-red cases (IT-091 ×3, IT-092 ×1,
+UT-106 ×2, IT-093 ×1) plus 16 legitimate green pins across the same files, 0 unrelated regressions.
+`workflow-ownership.test.ts` (IT-080, amended): 10/10 pass unchanged against pre-fix HEAD (pure
+fixture-reachability migration, carries no red case of its own).
+
+Full-suite `npx vitest run`: **1677 total, 1670 passed / 7 failed (260 files)** — exactly this
+pass's 7 genuinely-red cases, **0 unrelated regressions** against the v22 Gate 6.5+7 close baseline
+of 1665/1665 (1670 = 1665 + 5 new green pins this pass's own files add: IT-091 ×2, IT-092 ×1,
+IT-093 ×2; 2 pre-existing `spawn litellm ENOENT` background artifacts, documented since IMPL-140,
+unaffected). Hermetic: every new case uses a `FixedClock`-anchored or store-observed oracle; no
+absolute-date-vs-real-clock comparisons.

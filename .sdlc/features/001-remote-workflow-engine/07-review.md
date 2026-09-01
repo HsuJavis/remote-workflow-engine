@@ -4,7 +4,266 @@ status: send-back
 ---
 # 07 Review & Retro — Gate 8
 
-## v21 GATE 8 RE-REVIEW #6 (2026-09-01, CURRENT / AUTHORITATIVE — SEND BACK to tests+impl)
+## v22 GATE 8 REVIEW (2026-09-02, CURRENT / AUTHORITATIVE — SEND BACK to tests+impl)
+
+> **First Gate 8 pass for v22** (REQ-096..100 — versioned catalog + beta/release channels +
+> closing inline script + moving static checks to registration + non-owner script masking;
+> ARCH-071..076, ADR-009..014, IMPL-148..156). Reviewed after Gate 7.5 v22 PASSED (real-tier
+> REQ-096..100 on HEAD `23a5fd9` + the uncommitted Gate 6.5+7 simplify diff that was already in
+> the working tree when Gate 7.5 booted — same tree this review read). The two pre-run
+> architecture-expert reports (`.panel/review/adversarial.md`, `.panel/review/quality-dimensions.md`)
+> were consolidated, not re-spawned, per dispatch. **Every HIGH finding below was independently
+> re-verified against source by this reviewer** (own `grep`/`sed` reads, not taken on the panel's
+> word) — see §4.2. **Verdict: NOT consistent — `send_back: ["tests","impl"]`, `arch_consistent: false`.**
+> 4 HIGH architecture-vs-implementation deviations, each with a concrete failure scenario and each
+> with a small, already-named fix (no ARCH-071..076 rework needed): an unauthenticated catalog-write
+> path that the very ADR written to close it (ADR-012) does not reach; an unmasked endpoint leaking
+> the script-derived skeleton REQ-100 withholds one endpoint over (and falsifying README.md's own
+> "no backdoor endpoint" claim); a version-numbering bug that permanently bricks re-registration for
+> any migrated pre-v22 workflow; and a self-sustainability commitment (`Scheduler.create()` resolving
+> `release` at creation) that the architecture priced at "one line" and that shipped with zero test
+> coverage. 6 MEDIUM + 4 LOW findings recorded as non-blocking tech debt (§4.3), all with a clear
+> disposition, none requiring an ARCH rewrite.
+
+### §1 Traceability consistency
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` regenerated the dashboard:
+**885 items / 17 gaps, 0 orphan, 0 broken-link.** `--check` fails (exit 1) only on these 17, every
+one pre-existing and previously disclosed, unchanged in kind since v14/v21:
+- **15 LOW** iteration-drift pairs (a test/design item's `iter:` tag lags a newer design/impl by
+  one or more iterations — `UT-010`, `IT-011`, `UT-058`, `UT-064`, `IT-057`, `UT-094`, `UT-095`,
+  `DES-094`, `DES-088`×2, `DES-066`×2, `DES-099`×2, `DES-100`). All re-verified byte-identical to
+  the v22 Gate 6.5+7/7.5 disclosure.
+- **1 LOW** unimplemented `TASK-018` — carried since v3, recorded every pass.
+- **1 MID** TDD gap `IMPL-082` (no test coverage) — carried since v14, recorded every pass.
+
+0 new gap **classes** vs the v22 Gate 7.5 baseline (885/17, unchanged). Doc↔code iteration drift:
+none beyond the 15 pairs above (every v22 IMPL/DES/UT/IT pair this reviewer sampled shares the
+`v22` iter tag). RTM regenerated via the plugin's newer `trace.py --rtm` (this repo's checked-in
+`trace.py` predates that flag — §2's version-skew debt): **100/100 REQ rows `real:true`, 0 red.**
+
+### §2 Dashboard QA (`dashboard_check.py`, plugin 2.1.3 — run directly; this repo's `.sdlc/trace`
+predates the plugin's `--tool` dispatcher named in the dispatch prompt — recorded version-skew debt,
+unchanged since it was first disclosed several reviews ago)
+**0 high / 2 mid / 1 low:**
+- 2×MID "括號不平衡（()​, []​, {}​）" at `02-architecture.md:933` (v21 ER) and `:1197` (v22 ER) —
+  **recorded checker false positive**, same class disclosed in every prior review pass in this
+  file (e.g. the `02-architecture.md:931`/`:967` entries earlier in this document's history): the
+  lexical bracket-balance checker treats mermaid `erDiagram` crow's-foot cardinality tokens
+  (`||--o{`, `}o--o{`) as literal unclosed `{`. Hand-verified both blocks: every attribute-block
+  `{ … }` closes correctly once the cardinality tokens are read as mermaid grammar, not JS braces.
+  No doc fix needed; this is a checker limitation, not a diagram defect.
+- 1×LOW "無 mermaid 離線 fallback" — this repo's `.sdlc/trace.py` (dated 2026-08-01) predates the
+  plugin 2.1.3 offline-CDN-fallback feature. Same pre-existing debt recorded every prior pass.
+- SoT `file:line` link check: **0 dead links** (dashboard_check's third check class, clean).
+- Playwright browser tools were not available in this session — visual `<svg>` render confirmation
+  and click-through were not performed; the lexical/link checks above stand in (degraded per the
+  contract's own fallback clause).
+
+### §3 Module-boundary check (`solid_check.py`, plugin 2.1.3)
+**0 high / 0 mid / 10 low — PASS.** 10 LOW = pre-existing "unclaimed file" warnings (`main.ts`,
+`net-guard.ts`, `webhook-registry.ts`, `harness-defaults.ts`, `self-update.ts`,
+`agent-semaphore.ts`, `mcp-probe.ts`, `workflow-meta.ts`, `workspace-artifacts.ts`,
+`continuation-store.ts` — files with no `module:` declaration on any ARCH item), unchanged from the
+v22 Gate 6.5+7 measurement. 0 undeclared cross-module dependencies, 0 dependency cycles, 0
+deep-internal-import bypasses, 0 god-modules. Consistent with the verifier's own earlier fix of the
+one solid_check HIGH this iteration (ARCH-073 missing ARCH-069 in `deps:`).
+
+### §4 Architecture consistency — **NOT CONSISTENT**
+
+#### §4.1 Consolidated verdict
+Both pre-run expert reports (adversarial: security/scalability/testability; quality-dimensions:
+observability/replaceability/consumability/self-sustainability), each scoped to the union of
+IMPL-148..156's `files:` lists per dispatch, independently concluded **NOT consistent**:
+adversarial found **12 deviations (3 HIGH, 5 MEDIUM, 4 LOW)**; quality-dimensions found **3
+deviations (1 HIGH, 2 MEDIUM)**. Two pairs of findings are the *same underlying defect* found
+independently by both lenses and are consolidated below rather than double-counted:
+`Scheduler.create()` (adversarial A5, MEDIUM) = quality S-1 (HIGH) — consolidated at the higher
+severity, since quality's escalation rationale (concrete failure scenario + zero test coverage
+protecting it) is itself verified true; and the `requested` run-record field (adversarial A4) =
+quality O-1 — the same silent drop, independently found. Net: **13 distinct deviations — 4 HIGH,
+6 MEDIUM, 4 LOW** (not 15).
+
+#### §4.2 The 4 HIGH findings, reviewer-verified against source independently of the panel
+
+**H1 (=A1, security).** `workflow_publish` — and the pre-existing `workflow_register`/
+`workflow_deregister` idiom it copied — is gated on `principal !== null`, which a D-BIND
+loopback-exempt caller satisfies as `null` **even while `auth.enabled:true`** (server.ts's own
+comment at the `authEnabled` parameter admits this: "a D-BIND loopback-exempt caller reaches the
+auth-enabled server with `principal === null`"). Confirmed by direct read, independent of the
+panel's citation: `server.ts:1495` computes `dbindExempt`; `server.ts:1611`
+(`if (!dbindExempt && … '/mcp'))`) is the **only** auth-gated `/mcp` handler and it `return`s at
+its end — when `dbindExempt` is true this whole block is skipped; a **second, unconditional** `/mcp`
+handler further down the same function (`server.ts:1793` onward) is what then runs, and it calls
+`callTool(…, null, !!authCfg)` at `server.ts:1835` — `principal=null`, `authEnabled=true`, exactly
+as the panel described. `workflow-catalog.ts:473` (`publish`), `:338` (`register`), `:378`
+(`deregister`) all skip their `NOT_WORKFLOW_OWNER` check outright when `principal === null`. Any
+local process reachable on a non-loopback-bound, auth-enabled deployment (a co-tenant, a sandboxed
+agent that can reach the port) can move a name's `release`/`beta` pointer or deregister it entirely,
+unauthenticated — the exact write surface ADR-012 exists to close, left open one layer down (ADR-012
+closed *reads*; this idiom governs *writes* and was never revisited when `workflow_publish` reused
+it). **Violates** ARCH-071 ("owner-gated, `NOT_WORKFLOW_OWNER`"), ADR-012. **Fix** (Karpathy-sized,
+matches the panel's own note): gate catalog mutations on `authEnabled` the same way reads already
+are (`authEnabled && principal === null ⇒ refuse`), and drop the `args.principal` self-assertion
+fallback from `workflow_publish`'s (and ideally register/deregister's) dispatch — integration tests
+already mint real bearers through the injectable `TokenStore` seam (`IT-089`'s own pattern).
+
+**H2 (=A2, security).** `GET /api/runs/:id/dag` (`server.ts:1085-1109`) resolves the pinned script
+and runs `parseWorkflowSkeleton` unconditionally — **no `authEnabled` branch anywhere in the
+block**, confirmed by direct read; contrast the sibling `/api/workflows/:name/skeleton` route
+(`:1049-1053`), which correctly masks. An unauthenticated client on an auth-enabled deployment can
+enumerate `GET /api/runs/<runId>/dag` and receive the full predicted agent graph — phase names,
+agent names, nested `workflow()` names — statically decompiled from script text REQ-100 withholds
+one endpoint over. **This also falsifies a shipped doc claim**: `README.md:159` states
+"workflow_list、/api/workflows*、儀表板同樣一致遮蔽，**沒有後門端點能看到未授權的腳本本文**" ("…no
+backdoor endpoint can see unauthorized script text") — the DAG route is exactly such a backdoor.
+**Violates** ARCH-073 ("serve the non-owner projection whenever auth is enabled"), ARCH-075 (trap 2:
+skeleton/phases are script-derived and masked by default), ADR-012's own accepted-cost note (the DAG
+predicted-skeleton overlay is *supposed* to be lost under auth — the code pays that usability cost
+without collecting the security benefit, per the panel's §C1 conflict). **Fix**: apply the same
+non-owner projection the sibling skeleton route already uses to the DAG route.
+
+**H3 (=A3, correctness/upgrade).** `workflow-catalog.ts:341` computes the next version as
+`SELECT COUNT(*) … WHERE name = ?` then `v${count+1}` — confirmed by direct read, and confirmed
+against `git show a54a794^:src/workflow-catalog.ts:205`, which shows the **pre-v22** allocator was
+monotonic-per-name over a single overwritten row. ARCH-071 inv 7 explicitly requires the v22
+allocator be "**computed as max over the name's rows**" (verbatim, `02-architecture.md:1009`) —
+grep-confirmed. For any pre-v22 workflow registered more than once (migrated as one row at its
+stored version, e.g. `v7`), the first post-upgrade re-registration computes `v2` — **older-numbered
+than the version it supersedes** — and after enough registrations the generated version collides
+with an already-migrated one, permanently bricking that workflow's registration behind a
+`REGISTRATION_CONFLICT … retry` that can never succeed. **Violates** ARCH-071 inv 7, ADR-011/S-2.
+**Fix**: `SELECT MAX(CAST(SUBSTR(version,2) AS INTEGER))` — the exact expression `_listVersions`
+(`:402`) already uses for ordering; no new state.
+
+**H4 (=A5+S-1 consolidated, self-sustainability).** `Scheduler.create()` (`scheduler.ts:153-156`)
+and `webhook-registry.ts`'s equivalent check only `catalog.exists(name)` — confirmed by direct read,
+no `resolve(name, {channel:'release'})` call anywhere in `create()`. ARCH-072 note (1) explicitly
+prices this as "`Scheduler.create()` upgrades its check to 'resolves `release`' … [bought for one
+line]", and the v22 interface table lists `CHANNEL_UNPUBLISHED` as a `schedule_create`-time error.
+REQ-097 makes "registered but on no channel" the *normal* state of a fresh version (register-draft
+→ publish-later is the sanctioned author loop), so a schedule created against a drafted-but-unpublished
+workflow is accepted at creation and fails at **every** subsequent fire with no operator signal at
+the point of the actual mistake — `grep -rn "CHANNEL_UNPUBLISHED" tests/` confirms **zero** test
+exercises `Scheduler.create()` against an unpublished-but-registered workflow, so this was never
+RED. Aggravating: `06-impl-log.md`'s IMPL-152 note asserts this behavior as accomplished fact
+("nested `workflow()` resolves `release`…") when the actual diff does not perform it — a ledger
+claim vs. code mismatch on the *same* commit note. **Violates** ARCH-072 note (1), quality SUS-5,
+the v22 interface table's own `schedule_create` error list. **Fix**: call `resolve(name,
+{channel:'release'})` inside `create()`, refuse `CHANNEL_UNPUBLISHED` before the row is written.
+
+#### §4.3 6 MEDIUM + 4 LOW findings — recorded as tech debt, non-blocking this round
+Per this ledger's own terminating-rule convention (used verbatim in the v21 RE-REVIEW #6 section
+below), only genuinely boundary-crossing/HIGH findings block Gate 8; the following are real,
+verified, and worth closing in the same fix batch (several touch the same files as §4.2) but do not
+themselves reopen `send_back` if left for a follow-up:
+
+| # | Sev | Area | Finding | Violates | Evidence |
+|---|---|---|---|---|---|
+| M1 (A4+O-1) | MEDIUM | observability | `requested:{version}\|{channel}\|'default-release'` is **computed** (`workflow-catalog.ts:67-90`) but dropped before persistence (`run-manager.ts:447`, `sqlite-run-store.ts:35,85-86` have no such column); 3 architecture surfaces (api clause, ER diagram, interface table) still assert it | ARCH-072 api + ER + interface table | `run-manager.ts:447`; `sqlite-run-store.ts:35,85-86` |
+| M2 (A6) | MEDIUM | security-structural (latent) | `workflow_list`/`/api/workflows`/`/api/home` read the raw catalog row, bypassing `projectWorkflowForRead`; no live leak today (`list()` carries no `script`), but the next field added to the select reaches 3 unauthenticated surfaces with no review gate | ARCH-076, ARCH-075, ARCH-073 | `mcp-facade.ts:240,248`; `server.ts:1010-1017,1037-1039` |
+| M3 (A7) | MEDIUM | scalability (stated rationale voided) | ADR-013's reason for excluding `workflow_list` from `validateCurrent` ("3s poll × per-row script parse") is false as written — `list()` already does a per-row `SELECT script` + `parseMeta` on every poll | ADR-013 rationale, ARCH-076 | `workflow-catalog.ts:504-509` |
+| M4 (A8) | MEDIUM | testability | `maxWorkflowVersions` reaches `WorkflowCatalog` through an unchecked structural cast on both sides; live-correct today, but deleting the literal compiles clean and silently disables the ceiling — the exact `composeConfig` wiring-bug class ARCH-071's DoD exists to prevent, reproduced inside its own mitigation | ARCH-071 inv 6 | `workflow-catalog.ts:342`; `server.ts:1215-1219` |
+| M5 (O-2) | MEDIUM | observability | nested `workflow()` resolves `release` (`run-manager.ts:816`) but discards the version before pushing the journal's `workflowNodes` entry — no `version` field on `WorkflowNodeView`; contradicts IMPL-152's own ledger note claiming this was done | ARCH-072 api | `run-manager.ts:816,821`; `types.ts:100-105` |
+| L1 (A9) | LOW | concurrency | `publish()`'s ownership/existence reads run outside its `db.transaction()`, only the `UPDATE` is inside — a concurrent `deregister` racing the read can leave `publish` reporting success + an audit log line for a write that touched zero rows | ARCH-071 inv 5 | `workflow-catalog.ts:472-484` vs `:333-358` |
+| L2 (A10) | LOW | consumability | `VERSION_CEILING_EXCEEDED`'s error text says "deregister an old version" but `deregister` is name-granular (drops every version) — following the text destroys the whole history believing it prunes one draft | ADR-014, ARCH-073 error-text principle | `workflow-catalog.ts:346,373-387` |
+| L3 (A11) | LOW | consumability | `workflow_get`'s owner branch drops `versions[]`/`channels{}` the v22 interface table promises; the non-owner branch has `channels` but not `versions` either (table itself internally inconsistent here) | v22 interface table | `mcp-facade.ts:326-343` |
+| L4 (A12) | LOW | consistency | `list()` falls back to the newest row for an unpublished draft's reported `version`, while `workflow_run({name})` on the same name refuses `CHANNEL_UNPUBLISHED` — two surfaces disagree about runnability | ARCH-071 inv 2 / ADR-009 (spirit) | `workflow-catalog.ts:503,509-510` |
+
+#### §4.4 What the implementation got right (from the panel, spot-checked)
+The pin + resume-through-pin (`run-manager.ts:389,447,641,645-651`) is genuinely correct and
+verified independently; ingress closure is enforced at both schema and runtime level, including the
+in-process direct-caller path; the non-owner projection *reads* exactly to the letter of ADR-012
+(`mcp-facade.ts:286` correctly keys on `authEnabled`, not `principal==null`) — which is precisely
+what makes H1's write-side asymmetry conspicuous rather than merely unlucky; `catalog.get()`/
+`getFull()` are genuinely deleted (0 hits); the boot migration is atomic/idempotent; `script-checks.ts`
+is a clean lift with zero remaining `if (spec.script)` branches in `submission-validator.ts`.
+
+### §5 Validation & handover
+Gate 7.5 v22 real-tier evidence: REQ-096..100 all live-confirmed against a real boot (auth enabled,
+real `TokenStore`-minted bearers) — `08-validation.md` present (5316 lines, all iterations).
+`sh .sdlc/trace --check` shows **0** `未真實驗證`/`未驗證` gaps; `rtm.md` (regenerated this pass)
+shows **100/100 REQ rows `real:true`**. `README.md` + `DEPLOY.md` present at `layout.readme`/
+`layout.deploy`, both current-state and history-free per their own header banners ("本文件描述系統
+**目前**的部署方式與行為——不是變更歷程"); the `iter`-tagged rows in DEPLOY.md §1b `設定總表` are
+per-key provenance metadata, not superseded-instruction narrative (same convention every closed
+review in this file has accepted — not re-litigated). `DEPLOY.md §0` leads with `./deploy.sh
+--background`, reproduced with real output from the actual run this iteration's Gate 7.5 performed.
+No stale ports/keys/duplicated config found; single §1b 設定總表. Tool count (38, incl.
+`workflow_publish`) consistent across both manuals, confirmed live via `tools/list` per the
+validator's own note. **One doc-accuracy finding, tied to H2**: `README.md:159`'s "no backdoor
+endpoint can see unauthorized script text" claim is currently false (see §4.2 H2) — this is not a
+separate validation-gate failure (the claim was true when written and Gate 7.5's REQ-100 probes,
+which did not include the DAG route, did not catch it), but the fix batch for H2 must either make
+the claim true again or soften it; no action needed on `08-validation.md`/`README.md` beyond what
+H2's fix already requires.
+
+### §6 Special-file review
+N/A this iteration. `git status` + `06-impl-log.md`'s IMPL-148..156 `files:` lines show no
+`CLAUDE.md`/`AGENTS.md`/`SKILL.md` touched — only `src/*.ts`, `tests/*.ts`, ledger docs, `README.md`,
+`DEPLOY.md`.
+
+### §7 Independent verification (this reviewer, re-run from scratch — not taken from the ledger's own notes)
+- `npx vitest run`: **257 files / 1665 tests passed, 0 failed**, exit 0 (2 "unhandled error" —
+  `spawn litellm ENOENT` — the documented pre-existing background-cleanup artifact unrelated to any
+  assertion, same class disclosed since IMPL-140).
+- `npx tsc --noEmit`: clean, 0 errors.
+Both numbers match the ledger's own Gate 6.5+7/7.5 claims exactly — no drift between what was
+reported and what re-running produces.
+
+### §8 Send-back scope
+`send_back: ["tests","impl"]` — the 4 HIGH findings in §4.2 each need (a) a regression test that
+would have caught it (none of the four had test coverage exercising the failing shape — confirmed:
+no test asserts a D-BIND-exempt `workflow_publish` is refused, no test asserts the DAG route masks
+under auth, no test asserts monotonic versioning across a migrated multi-registration cohort, no
+test asserts `CHANNEL_UNPUBLISHED` at `schedule_create`) and (b) the small code fix each finding
+names. The 6 MEDIUM + 4 LOW findings in §4.3 are recorded debt and do not themselves gate
+re-review, but are cheap enough (mostly one column/one line/one amended doc sentence) that folding
+them into the same fix batch is recommended over a second round-trip.
+
+### §9 Retro (v22)
+**What went well.** The version/channel model (ARCH-071) is structurally sound where it was built to
+be strict — the pin, resume-through-pin, ingress closure, and the non-owner *read* projection are
+all genuinely correct and independently verified, not merely claimed. The migration is a textbook
+atomic/idempotent boot step. Full regression (1665/1665) and `tsc` stayed green through a
+substantial slice.
+**What to change.** Two of the four HIGH findings (H1, H4) are cases where an *existing* idiom
+(`principal !== null`, `exists()`-only) was copied onto a new v22 surface without re-deriving
+whether the idiom's original justification still holds for the new surface — the same "reuse a
+pattern past its original context" failure mode this ledger has now named at least twice (H1 here;
+the composeConfig wiring class M4 reproduces its own mitigation). **When architecture says "reuse
+the existing pattern," the design/impl gates should re-verify the pattern's precondition still
+holds at the new call site, not just that the pattern is present.** Two findings (H4, M5) show the
+ledger's own IMPL notes asserting behavior that the diff does not perform — a "verify what the note
+claims against the actual diff, not the architecture text" gap in Gate 6.5/7's own closeout process
+that let two aspirational claims through 4 rounds of gate-closeout notes undetected until this
+review's fresh panel.
+**Known tech debt carried forward** (in addition to §4.3's M1-M5/L1-L4): 15 LOW iter-drift pairs,
+1 LOW `TASK-018`, 1 MID `IMPL-082` TDD gap (all §1, pre-existing, re-verified unchanged), `dashboard_check`'s
+2 recorded erDiagram crow's-foot false positives + 1 LOW trace.py/plugin version skew (§2), 10 LOW
+`solid_check` unclaimed-file warnings (§3).
+
+### Report (v22, this pass)
+```
+Gaps: high=4 mid=9 low=31 (4 HIGH are new/blocking §4.2; 9 MID = 6 new architecture debt §4.3 + 1
+  pre-existing IMPL-082 TDD (§1) + 2 dashboard_check erDiagram false-positive (§2, recorded, not a
+  doc defect); 31 LOW = 4 new architecture debt §4.3 + 15 pre-existing iter-drift + 1 pre-existing
+  TASK-018 (§1) + 1 dashboard_check trace.py version-skew (§2) + 10 solid_check unclaimed-file (§3)
+  — all non-blocking items explicitly recorded above)
+Drift: 0 new doc↔code iteration drift; 15 pre-existing LOW pairs unchanged (§1). Substantive drift
+  this pass is architecture↔implementation, not doc↔code: 13 deviations from Gate 2's
+  ARCH-071..076/ADR-009..014 (§4).
+Architecture consistent: NO — 4 HIGH + 6 MEDIUM + 4 LOW (§4.2/§4.3), both pre-run expert reports
+  independently concluded NOT consistent, reviewer-verified against source.
+Validation: real-tier all-green? YES (100/100 REQ real:true, 0 mock-only/未驗證) · README+DEPLOY
+  present? YES (current-state, history-free, 一鍵部署 verified-run) — one doc-accuracy finding tied
+  to H2, resolved by H2's fix (§5).
+Conclusion: send back to tests + impl for the 4 HIGH findings (§4.2); 6 MEDIUM + 4 LOW recorded as
+  debt, non-blocking, recommended for the same batch.
+```
+
+---
+
+## v21 GATE 8 RE-REVIEW #6 (2026-09-01, superseded by v22 GATE 8 REVIEW above — kept for history; was SEND BACK to tests+impl)
 
 > **Sixth Gate 8 pass — after the §S7 send-back was closed end to end** (Gate 5 RED `976249c`,
 > Gate 6 closeout #6 `2e58d86` + doc closeout `9eae708` + adjudication #9 `c0e6cec`, Gate 6.5+7

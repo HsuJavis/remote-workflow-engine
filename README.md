@@ -12,17 +12,23 @@
 
 **目前功能**：
 
-- **工作流程執行**：`workflow_run`（含 inline seed + CAS seedManifest + `seedManifestRef` + `scriptSha256`
-  完整性守衛 + 可調參數 `overrides`，見下）、`workflow_status`、`workflow_suspend`/`workflow_resume`/`workflow_stop`、
-  當機可續跑（重啟後 `interrupted` → `workflow_resume`）
+- **工作流程執行**：`workflow_run`（一律指名已註冊的工作流程 `{name}`，見下「版本與發布頻道」；
+  含 inline seed + CAS seedManifest + `seedManifestRef` + 可調參數 `overrides`）、`workflow_status`、
+  `workflow_suspend`/`workflow_resume`/`workflow_stop`、當機可續跑（重啟後 `interrupted` → `workflow_resume`）
+- **版本與發布頻道（v22）**：同一個工作流程名稱可以註冊多次——每次註冊都保留成一個新版本（`v1`、`v2`、…），
+  舊版本不會被覆蓋。擁有者用 `workflow_publish({name,version,channel})` 把 `release`（穩定）或 `beta`
+  （測試）頻道指到某個版本；`workflow_run({name})` 不指定版本時永遠跑 `release` 指到的版本（避免不小心
+  跑到還在測試的草稿），`workflow_run({name,channel:'beta'})` 跑 beta，`workflow_run({name,version:'v3'})`
+  可直接指定精確版本（優先權最高）。**已停止接受呼叫端直接夾帶腳本**：`workflow_run`/`workflow_resume`
+  不再有 `script` 參數——必須先 `workflow_register` 註冊、再用 `workflow_run({name})` 執行（見下方使用範例）。
 - **可調參數契約（tunable-parameter contract）**：工作流程腳本可在 `export const meta = { params: { knobs: {...}, args: {...} } }`
   宣告每個旋鈕的型別/預設值/允許範圍——`workflow_get`/`workflow_list` 不必讀腳本本文即可查出這份契約；
   呼叫端用 `workflow_run({overrides:{model?,effort?,timeoutMs?,appendPrompt?}})` 在契約範圍內覆寫、
   超出範圍即在送出當下被拒（`PARAM_OUT_OF_RANGE`/`PARAM_LOCKED`），從不留下半途而廢的 run；
   `prompt`/`tools`/`skills`/`mcp`/`workdir` 五個鍵永遠鎖定、呼叫端無法觸及。優先序：
   每次 `agent()` 呼叫自帶的選項 > 該次 run 的 `overrides` > 註冊時的 `defaults` > 引擎預設別名。
-- **已知工作流程探索**：`workflow_register`/`workflow_list`/`workflow_get`/`workflow_deregister`、
-  預測靜態 DAG 骨架（`workflow_get.skeleton`）
+- **已知工作流程探索**：`workflow_register`/`workflow_publish`/`workflow_list`/`workflow_get`/
+  `workflow_deregister`、預測靜態 DAG 骨架（`workflow_get.skeleton`）
 - **串接**：`chain_create`/`chain_list`（完成即啟動下游 run，恰好一次）
 - **排程**：`schedule_create`/`schedule_list`/`schedule_delete`/`schedule_setEnabled`（cron/once/resident）
   + `workflow_trigger`
@@ -62,7 +68,7 @@
   harness defaults（`HARNESS_DEFAULTS_INVALID`）。
   啟用方式：在 `rwe.config.json` 加入 `auth:{enabled:true,...}` 區塊（見 `rwe.config.example.json` / DEPLOY.md §1b 設定總表）。
 
-共 **37 個** MCP 工具。
+共 **38 個** MCP 工具。
 
 ## 前置需求
 
@@ -95,37 +101,64 @@ export ANTHROPIC_API_KEY=sk-ant-...     # 若要用 anthropic 別名（或 OPENA
 ## 使用範例
 
 ```bash
-# 跑一個簡單工作流程（立刻完成）
+# 第一步：註冊一個工作流程（inline script 已停止接受，一律要先註冊、再指名執行）
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_run","arguments":{"script":"return {answer:42,tags:[\"a\",\"b\"]}"}}}'
-# -> {"result":{"content":[{"type":"text","text":"{\"runId\":\"...\",\"status\":\"completed\",\"result\":{\"answer\":42,\"tags\":[\"a\",\"b\"]}}"}]}}
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_register","arguments":{"name":"greet","script":"return {answer:42,tags:[\"a\",\"b\"]}"}}}'
+# -> {"result":{"content":[{"type":"text","text":"{\"status\":\"completed\",\"version\":1,\"result\":{\"name\":\"greet\",\"version\":\"v1\"}}"}]}}
+# 每次 workflow_register 都是新版本（v1、v2、…），舊版本不會被覆蓋或刪除。
 
-# 跑包含 agent() 的工作流程（需要 gateway:"sdk" + LiteLLM + 供應商 key）
+# 第二步：把該版本發布到 release 頻道（沒發布過的頻道跑不了，見下方 CHANNEL_UNPUBLISHED）
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_run","arguments":{"script":"return await agent(\"just reply PONG\")","agentModel":"local"}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_publish","arguments":{"name":"greet","version":"v1","channel":"release"}}}'
+
+# 第三步：指名執行（不帶 version/channel = 跑 release 指到的版本）
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_run","arguments":{"name":"greet"}}}'
+# -> {"result":{"content":[{"type":"text","text":"{\"runId\":\"...\",\"status\":\"completed\",\"result\":{\"answer\":42,\"tags\":[\"a\",\"b\"]}}"}]}}
+# 也可以指名 {"channel":"beta"} 跑 beta 版本，或 {"version":"v1"} 跑指定版本（優先權最高）；
+# 未發布過的頻道會被拒絕：{"error":{"code":"CHANNEL_UNPUBLISHED","message":"CHANNEL_UNPUBLISHED: beta (workflow 'greet')"}}
+
+# 跑包含 agent() 的工作流程（需要 gateway:"sdk" + LiteLLM + 供應商 key）——一樣先註冊、發布、再指名執行
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_register","arguments":{"name":"ping","script":"return await agent(\"just reply PONG\")"}}}'
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_publish","arguments":{"name":"ping","version":"v1","channel":"release"}}}'
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_run","arguments":{"name":"ping"}}}'
 # 用回傳的 runId 輪詢狀態：
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"workflow_status","arguments":{"runId":"<上面的 runId>"}}}'
 # -> status:"completed"  result:"PONG"  agents[0].provider/model/tokens
+# -> result.scriptVersion 永遠是這次 run 實際執行的版本，即使之後又註冊了新版本也不會變
 
 # 註冊一個宣告可調參數契約的工作流程，並在執行時覆寫（v21）
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_register","arguments":{"name":"greet","script":"export const meta = { params: { knobs: { model: { type: \"enum\", enum: [\"local\"] } } } };\nreturn await agent(\"hi\");","defaults":{"model":"local"}}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_register","arguments":{"name":"greet2","script":"export const meta = { params: { knobs: { model: { type: \"enum\", enum: [\"local\"] } } } };\nreturn await agent(\"hi\");","defaults":{"model":"local"}}}}'
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_run","arguments":{"name":"greet","overrides":{"effort":"high","appendPrompt":"回覆請用中文"}}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_publish","arguments":{"name":"greet2","version":"v1","channel":"release"}}}'
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_run","arguments":{"name":"greet2","overrides":{"effort":"high","appendPrompt":"回覆請用中文"}}}}'
 # -> effort 超出宣告範圍或 appendPrompt 過長會在送出當下被拒（PARAM_OUT_OF_RANGE），從不留下半途而廢的 run
 # 用 workflow_get 查看契約（不必讀腳本本文）：
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_get","arguments":{"name":"greet"}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_get","arguments":{"name":"greet2"}}}'
 # -> params.knobs.model.enum = ["local"]
+# 用非擁有者（或 auth 關閉時的匿名者）的身份呼叫 workflow_get，腳本本文會被遮蔽（v22）：
+# -> {"scriptWithheld":true, ...其餘欄位（name/version/channels/owner/params/如何回報問題）照常回傳，就是沒有 script}
+# workflow_list、/api/workflows*、儀表板同樣一致遮蔽，沒有後門端點能看到未授權的腳本本文。
 
-# 查詢 37 個 MCP 工具（含 schema）
+# 查詢 38 個 MCP 工具（含 schema）
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
@@ -196,8 +229,9 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 6. **Webhook HMAC**：常數時間比對 `X-Hub-Signature-256`；deliveryId 去重；±300s 時戳窗口。
 7. **伺服器端 secret**：config 內 `${secret:NAME}` → 由 `RWE_SECRET_<NAME>` 解析；缺失 → `SECRET_MISSING`；字面值永不外洩。
 8. **Redact-at-capture**：`SecretValueProvider.entries()` 拿到所有 provisioned secret 的明文；每次寫入逐字稿/快照/日誌/SDK-capture 前，均先呼叫 `redact({name,value}[])` 把值替換為 `‹secret:NAME›` marker（4 個 sink：appendTranscript/saveSnapshot/appendJournal（整個 JournalEntry 含 key.prompt）/SDK-capture；DES-088 invariant b：工作流程的最終回傳值（script `return` 的內容）維持原始值，不做 redact）。
-9. **scriptSha256 完整性守衛**：`workflow_run` 可選填 `scriptSha256`（十六進位 sha256）；提供時引擎在 `createRun` 前用 `assertScriptIntegrity` 比對，雜湊不符 → `SCRIPT_SHA_MISMATCH`（403）；命名 workflow + sha 無意義 → `SCRIPT_SHA_WITHOUT_SCRIPT`（400）。
-10. **SSRF-safe seedRef**：`seedRef:{repoUrl,sha}` 由 `HardenedSeedRefFetcher` 拉取；URL 必須匹配 `seedRefAllowlist`，否則 `SEEDREF_EGRESS_DENIED`；省略 allowlist 則全部 `SEEDREF_DISABLED`（fail-closed）；hardened git subprocess，不轉 shell。
+9. **Inline script 已關閉**：`workflow_run`/`workflow_resume` 不再接受呼叫端夾帶的 `script`；`tools/list` 的 schema 上根本沒有這個欄位，就算硬塞也在送出當下被拒（`INLINE_SCRIPT_CLOSED`）。腳本一律要先 `workflow_register`，靜態檢查（語法解析、模型別名、MCP 名稱是否已 provision）也移到註冊當下做，不會因為改用具名執行就少檢查。
+10. **非擁有者遮蔽腳本本文（僅 `auth.enabled:true` 時生效）**：啟用 auth 後，`workflow_get`/`workflow_list`、`/api/workflows*`、儀表板對非擁有者一律回傳 `scriptWithheld:true`、不含腳本本文；擁有者仍可看到完整腳本。`auth.enabled:false`（單人本機部署的預設）沒有「非擁有者」這個概念——任何人都能看到完整腳本，不遮蔽。
+11. **SSRF-safe seedRef**：`seedRef:{repoUrl,sha}` 由 `HardenedSeedRefFetcher` 拉取；URL 必須匹配 `seedRefAllowlist`，否則 `SEEDREF_EGRESS_DENIED`；省略 allowlist 則全部 `SEEDREF_DISABLED`（fail-closed）；hardened git subprocess，不轉 shell。
 
 ## 已知限制
 
