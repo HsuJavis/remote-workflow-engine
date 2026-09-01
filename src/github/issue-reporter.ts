@@ -165,7 +165,16 @@ export function issueFingerprint(title: string, component?: string, workflow?: s
  *  remain reportable) — so the `workflow:<name>` GitHub label is produced by a LABEL-SCOPED
  *  sanitize only: characters GitHub rejects in a label become '-', and the whole label is
  *  truncated to GitHub's 50-character cap. The untruncated `name@version` is recorded separately
- *  in the issue body (renderIssueBody), never here. */
+ *  in the issue body (renderIssueBody), never here.
+ *
+ *  v21 Gate 8 RE-REVIEW #5 (F5, LOW, decided+recorded — not fixed in code): two workflow names
+ *  differing only after char 50 truncate to the same label, so `issue_list({workflow})` (a
+ *  label-filter fold-in) can return one workflow's issues under the other's filter. Declined the
+ *  hash-suffix route: no Gate 5 red test exercises it, and this contract forbids shipping untested
+ *  behavior. The dedup fingerprint (`issueFingerprint`, above) uses the raw untruncated `name` and
+ *  is unaffected — only `issue_list` filtering can collide. Documented on the `issue_list` tool
+ *  description (`server.ts`) instead; revisit with a hash-suffixed label if a real collision is
+ *  reported. */
 function workflowLabel(name: string): string {
   return `workflow:${name.replace(/[^A-Za-z0-9:_./-]/g, '-')}`.slice(0, 50);
 }

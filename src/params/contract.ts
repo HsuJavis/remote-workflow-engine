@@ -65,6 +65,15 @@ const MAX_SUPPLIED_BYTES = 64;
  *  `openrouter/*` wildcard, so it needs no entry in `aliasNames`. */
 const OPENROUTER_PASSTHROUGH = /^openrouter\/.+/;
 
+/** v21 Gate 8 RE-REVIEW #5 (F2, MED — BLOCKING): mirrors resolve.ts's `USER_INSTRUCTIONS_CLOSE`
+ *  frame marker (ADR-007's structural control) without importing resolve.ts — this module is pure
+ *  and resolve.ts already imports types from here, so importing the value back would create a
+ *  cycle. Matches the tighter `<` + `/user-instructions` shape (not the exact closing tag text) so
+ *  a variant like `</user-instructions >` cannot slip a literal-string check; a non-owner
+ *  submitter embedding this in `appendPrompt` would otherwise close the untrusted frame early and
+ *  attribute trailing text to the workflow author (cross-principal attribution forgery). */
+const FRAME_CLOSE_FORGERY = /<\/user-instructions/;
+
 /** D-AUTH-5-B precedent (`harness-defaults.ts:70`): the alias check only applies when the server
  *  has a configured, non-empty alias table — an unconfigured/default-alias server must not reject
  *  every model string. An `openrouter/<id>` passthrough is always accepted regardless. */
@@ -165,6 +174,14 @@ function validateSpecShape(param: string, spec: ParamSpec): Err | null {
   }
   if (spec.max !== undefined && typeof spec.max !== 'number') {
     return invalid(param, 'max must be a number');
+  }
+  // v21 Gate 8 RE-REVIEW #5 (F4, residual edge of A4): a `type:'enum'` spec is bounded by its own
+  // membership (checkValueAgainstSpec's `enum.includes(value)`) — the numeric min/max branch never
+  // applies to it (NaN-inert), so a declared min/max on an enum spec was advertised on
+  // `workflow_get` but silently never enforced. Reject the declaration outright rather than ship a
+  // second, dead bound.
+  if (spec.type === 'enum' && (spec.min !== undefined || spec.max !== undefined)) {
+    return invalid(param, "min/max do not apply to a type:'enum' spec — enum membership is its own bound");
   }
   return null;
 }
@@ -325,6 +342,18 @@ export function validateUserOverrides(
     // branches below for exactly this reason).
     if (key === 'appendPrompt' && typeof val === 'string') {
       const bytes = Buffer.byteLength(val, 'utf8');
+      // F2 (v21 Gate 8 RE-REVIEW #5): refusal, not escaping — escaping would alter caller-supplied
+      // text, breaking ARCH-066 inv-2 (resume byte-identity) and inv-4 (refuse, never silently
+      // alter). Checked before the size bounds and reported by size only (DES-101 row 6
+      // discipline): never echo the forged text or anything around it.
+      if (FRAME_CLOSE_FORGERY.test(val)) {
+        return {
+          ok: false,
+          code: 'PARAM_OUT_OF_RANGE',
+          message: 'appendPrompt cannot contain the user-instructions frame close delimiter',
+          detail: { param: 'appendPrompt', suppliedBytes: bytes },
+        };
+      }
       if (spec.min !== undefined && bytes < spec.min) {
         return {
           ok: false,

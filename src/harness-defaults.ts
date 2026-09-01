@@ -9,7 +9,7 @@
 // `timeoutMs` already are — adjudication #5's "reject a default no rung can apply" is SUPERSEDED.
 // EFFORT_RANK is the single ordering table (contract.ts) so KNOWN_KEYS validation never drifts
 // from the enum the ceiling/override paths already enforce.
-import { EFFORT_RANK, type Effort } from './params/contract.js';
+import { EFFORT_RANK, isKnownAlias, type Effort } from './params/contract.js';
 
 /** Shared harness configuration that can be bound at workflow registration time. */
 export interface HarnessDefaults {
@@ -81,9 +81,13 @@ export function validateHarnessDefaults(
     return { ok: false, message: 'defaults.appendPrompt must be a string' };
   }
 
-  // D-AUTH-5-B: model alias must be resolvable (only when alias table is configured)
-  if (typeof defaults.model === 'string' && aliasNames !== undefined && aliasNames.size > 0) {
-    if (!aliasNames.has(defaults.model)) {
+  // D-AUTH-5-B: model alias must be resolvable (only when alias table is configured).
+  // v21 Gate 8 RE-REVIEW #5 (F1): shares contract.ts's `isKnownAlias` predicate (empty-table skip
+  // + openrouter/<id> passthrough carve-out) so the SAME declared model string gets the SAME
+  // answer whether it registers through this door (top-level `defaults.model`) or the other
+  // (`meta.params.knobs.model.default`, contract.ts's own `isKnownAlias` call sites).
+  if (typeof defaults.model === 'string' && aliasNames !== undefined) {
+    if (!isKnownAlias(defaults.model, aliasNames)) {
       return { ok: false, message: `Model alias not resolvable: "${defaults.model}"` };
     }
   }

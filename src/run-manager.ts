@@ -538,6 +538,16 @@ export class RunManager {
     if (hasSecretMarker(entry.effectiveParams)) {
       throw codedError('PARAM_SECRET_UNAVAILABLE', `Run ${runId}'s admission-time parameters carry a redaction marker that resume never restores (ARCH-066 inv-5 forbids dispatching it)`);
     }
+    // v21 Gate 8 RE-REVIEW #5 (review §S7 F2, durable half): `validateUserOverrides` (contract.ts)
+    // refuses this shape AT ADMISSION, but a row admitted before that guard existed could already
+    // carry it in the persisted snapshot — resume must not silently re-dispatch a forged frame-close
+    // delimiter any more than it silently re-dispatches an unrestorable secret marker (same "refuse,
+    // never dispatch" discipline as the check above). Mirrors contract.ts's FRAME_CLOSE_FORGERY
+    // pattern inline rather than importing it (that constant is module-private, not exported) — the
+    // tighter `<` + `/user-instructions` shape catches variants like `</user-instructions >` too.
+    if (typeof entry.effectiveParams.appendPrompt === 'string' && /<\/user-instructions/.test(entry.effectiveParams.appendPrompt)) {
+      throw codedError('PARAM_OUT_OF_RANGE', `Run ${runId}'s admission-time appendPrompt carries the user-instructions frame close delimiter and cannot be resumed`);
+    }
     const newScript = script ?? entry.script;
     const cachePlan = ResumeCache.build(entry.journal, newScript);
     entry.script = newScript;

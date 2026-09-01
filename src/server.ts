@@ -392,13 +392,15 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
         // v15 (DES-099, TASK-089): optional harness defaults bound at registration time.
         defaults: {
           type: 'object',
-          description: 'Optional harness defaults bound at registration (DES-099): {model?, tools?, skills?, timeoutMs?, prompt?}. Validated at register time: model must be a resolvable alias, tools must be in the curated allowlist, skills are deferred to run time. Invalid → HARNESS_DEFAULTS_INVALID, nothing stored.',
+          description: 'Optional harness defaults bound at registration (DES-099, widened v21 adjudication #6 F-1): {model?, tools?, skills?, timeoutMs?, prompt?, effort?, appendPrompt?}. Validated at register time: model must be a resolvable alias, tools must be in the curated allowlist, skills are deferred to run time, effort/timeoutMs/appendPrompt above the engine\'s configured ceilings are refused. Invalid → HARNESS_DEFAULTS_INVALID, nothing stored.',
           properties: {
             model: { type: 'string', description: 'Default model alias for agents in this workflow.' },
             tools: { type: 'array', items: { type: 'string' }, description: 'Default curated tool allowlist for agents.' },
             skills: { type: 'array', items: { type: 'string' }, description: 'Default skill names (existence deferred to run time).' },
             timeoutMs: { type: 'number', description: 'Default per-agent timeout in milliseconds.' },
             prompt: { type: 'string', description: 'Default system prompt prefix for agents.' },
+            effort: { type: 'string', description: "Default reasoning effort ('low'|'medium'|'high'|'xhigh'|'max'), bounded by the engine's maxEffort ceiling." },
+            appendPrompt: { type: 'string', description: "Default text appended to every agent's prompt, bounded by the engine's maxAppendPromptBytes ceiling." },
           },
         },
       },
@@ -557,7 +559,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
         state: { type: 'string', description: "One of 'open' | 'closed' | 'all' (default 'open')." },
         since: { type: 'string', description: 'ISO timestamp; only issues updated at/after this.' },
         limit: { type: 'number', description: 'Max issues to return (default 30, capped at 100).' },
-        workflow: { type: 'string', description: 'Filter to issues bound to this workflow name (folds into the label filter as `workflow:<name>`, optional).' },
+        workflow: { type: 'string', description: 'Filter to issues bound to this workflow name (folds into the label filter as `workflow:<name>`, optional). The label truncates at 50 chars, so two long names agreeing on their first 50 chars can collide in this filter (recorded, low-severity; unaffected: issue de-duplication uses the untruncated name).' },
       },
     },
   },
