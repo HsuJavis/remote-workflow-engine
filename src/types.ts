@@ -236,6 +236,14 @@ export interface HarnessDescriptor {
   tools: string[];
   skills: string[];
   mcpServers: string[];
+  /** v22 (REQ-099, adjudication #4 N-1): names this agent referenced in `opts.mcp` that could NOT be
+   *  resolved against the provisioning registry at dispatch — the capability is absent from the
+   *  session and the run says so. REQ-099 forbids retroactively refusing such a (pre-v22, since
+   *  registration now refuses it) workflow, and equally requires the condition to be observable
+   *  rather than silently swallowed; this is that record, following `effortApplied`'s `{reason}`
+   *  branch — the same honest-no-op convention. Emitted ONLY when non-empty (absent, never `[]`), so
+   *  a run with nothing dropped carries a byte-identical descriptor to before. */
+  mcpUnresolved?: string[];
   surfaceType: 'curated' | 'none';
   /** v21 (ARCH-068, DES-105, TASK-101): the resolved per-call effort directive, when any rung set one. */
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';

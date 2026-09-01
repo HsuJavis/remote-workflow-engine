@@ -32,7 +32,10 @@ export function capPrompt(prompt: string): string {
  *  Redacts no secret VALUES and emits no `‹secret:NAME›` markers; that is the persist site's job.
  *  - surfaceType:'none' (direct-fetch) → all arrays empty (no curated surface available).
  *  - MCP configs: name only, never URL/key/token.
- *  - prompt passes through UNCUT — see `capPrompt` (R-G9: cap after redact, never before). */
+ *  - prompt passes through UNCUT — see `capPrompt` (R-G9: cap after redact, never before).
+ *  - `unresolvedMcp` (v22, REQ-099 / adjudication #4 N-1): referenced MCP names the dispatch site
+ *    could not resolve. Carried onto `mcpUnresolved` only when non-empty, so an unaffected run's
+ *    descriptor keeps exactly the keys it had before. */
 export function redactHarness(resolved: {
   surfaceType: 'curated' | 'none';
   modelName: string;
@@ -41,6 +44,7 @@ export function redactHarness(resolved: {
   curatedTools: string[];
   mergedMcp: Array<{ name: string; [key: string]: unknown }>;
   skills: string[];
+  unresolvedMcp?: string[];
 }): HarnessDescriptor {
   const provider = resolved.provider ?? '';
   const prompt = resolved.prompt;
@@ -54,6 +58,7 @@ export function redactHarness(resolved: {
     tools: resolved.curatedTools,
     skills: resolved.skills,
     mcpServers: resolved.mergedMcp.map((m) => m.name),
+    ...(resolved.unresolvedMcp !== undefined && resolved.unresolvedMcp.length > 0 ? { mcpUnresolved: resolved.unresolvedMcp } : {}),
     surfaceType: 'curated',
   };
 }

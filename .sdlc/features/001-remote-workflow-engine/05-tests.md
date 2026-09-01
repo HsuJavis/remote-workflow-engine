@@ -450,8 +450,17 @@ resolveInWorkspace with "../" → WorkspaceEscapeError; safe path resolves corre
 - **iter:** v1
 
 File: `tests/unit/submission-validator.test.ts`.
-Cases: valid script → ok:true; TS syntax → PARSE_ERROR; unknown alias → UNKNOWN_ALIAS;
-unknown workflow name → UNKNOWN_WORKFLOW; errors have code+message; no name+no script → MISSING_SCRIPT.
+**v22 (adjudication #3 M-6, ledger brought in line with the file on 2026-09-02): this entry's SUBJECT
+split in two.** The script-shaped checks moved to `src/script-checks.ts`, enforced at
+`WorkflowCatalog.register()` (ADR-013, REQ-099); they were re-sited, not deleted.
+Cases now: **against `validateScriptEntry`** — valid script → ok:true; a real `export const meta = {…}`
+preamble still parses; TS syntax → PARSE_ERROR; unknown alias → UNKNOWN_ALIAS; every error carries
+code+message. **Against `SubmissionValidator`** (what remains genuinely its own — the submission
+shape): unknown workflow name → UNKNOWN_WORKFLOW; no name → **MISSING_NAME** (renamed from
+MISSING_SCRIPT by DES-117 when REQ-098 closed inline script — the old code named a parameter that no
+longer exists).
+The `validateScriptEntry` cases deliberately duplicate part of UT-102's `script-checks.test.ts`
+coverage; adjudication #4 N-3 rules that duplication stays for this iteration.
 
 ### UT-013 — Cross-cutting null semantics
 - **status:** green
@@ -977,9 +986,16 @@ Red reason: WorkflowCatalog.runWorkspace() throws NotImplementedError.
 - **iter:** v1
 
 File: `tests/integration/submission-entry-point.test.ts`.
-Cases: TS syntax → failed envelope with runId=''; unknown alias → UNKNOWN_ALIAS;
-unknown workflow name → UNKNOWN_WORKFLOW; valid script → runId immediately.
-Red reason: McpFacade.workflow_run() throws NotImplementedError.
+**v22 (adjudication #3 M-6, ledger brought in line with the file on 2026-09-02): the fail-fast DOOR
+moved for the script-shaped cases.** The property this entry pins — a bad submission is refused
+SYNCHRONOUSLY at the facade, one uniform error shape, nothing durable created — is unchanged; which
+facade method is that door changed (`workflow_register` for script-shaped faults per REQ-099/ADR-013,
+`workflow_run` for name-shaped ones per REQ-098's closure of inline script).
+Cases now: `workflow_register` TS syntax → failed envelope, PARSE_ERROR, `catalog.exists()` false;
+`workflow_register` unmapped alias → failed envelope, UNKNOWN_ALIAS; `workflow_run` unknown workflow
+name → UNKNOWN_WORKFLOW; `workflow_run` of a registered+published workflow → runId immediately;
+`workflow_run({})` → one uniform error shape (code+message).
+Red reason (historical): McpFacade.workflow_run() throws NotImplementedError.
 
 ### IT-009 — McpFacade.workflow_agent_log returns the real persisted transcript, never a hard-coded []
 - **status:** green
@@ -2073,9 +2089,19 @@ fast no-credential completion path, ~150-200ms) with the same `waitUntilRunning(
 helper. Re-confirmed 3/3 files, 6/6 sub-tests green across 3 consecutive isolated runs plus green in
 the full-suite run.
 
+v22 amendment (adjudication #3 M-3, ledger brought in line with the file on 2026-09-02): **one
+CLAUSE was retired, not the case.** The `stop` case used to continue into a
+`workflow_resume({runId, script})` asserting "an edited script re-runs from the first changed
+`agent()` call". REQ-006's edited-script entry point is `[SUPERSEDED v22, owner-confirmed
+2026-09-01]` (REQ-098 closes inline script on resume; REQ-096 pins the version a run executed;
+ADR-010), so that tail is retired with the clause. **REQ-006's own `workflow_stop` clause is still
+live and still asserted here** — the case now runs a workflow, waits until running, stops it, and
+polls to `stopped`. The sanctioned replacement path (register a new version → run by version) is
+covered by the version-pin tests and is deliberately NOT re-covered here.
+
 File: `tests/acceptance/val-006-lifecycle.test.ts`.
-Cases: suspend → suspended; resume → running; stop terminates;
-resume with edited script re-runs from first changed agent() call; status survives server restart.
+Cases: suspend → suspended; resume → running; **stop terminates the run (status `stopped`)**;
+status survives server restart.
 
 ### VAL-007 — Per-agent observability via MCP tools
 - **status:** green
@@ -3537,7 +3563,11 @@ error).
 - **status:** green
 - **traces:** DES-039
 - **iter:** v7
-- tests/unit/claude-agent-sdk-provider-aware-env.test.ts (`buildSubprocessEnv`: anthropic → real `ANTHROPIC_BASE_URL` + LiteLLM bypassed; api-key mode → real ANTHROPIC_API_KEY not dummy; subscription mode → CLAUDE_CODE_OAUTH_TOKEN and NO ANTHROPIC_API_KEY; missing required secret → typed `ANTHROPIC_AUTH_MISSING`; non-anthropic → LiteLLM proxy + dummy; auth material only in the subprocess env) + tests/unit/openrouter-provider.test.ts (`openrouter` accepted as provider; `openrouter/<id>` passthrough left RAW/uncloaked so the LiteLLM `openrouter/*` wildcard matches; `isPassthroughModel`/`effectiveProvider`; direct-fetch openrouter case with OPENROUTER_API_KEY; passthrough not `UNKNOWN_ALIAS` in submission-validator).
+- tests/unit/claude-agent-sdk-provider-aware-env.test.ts (`buildSubprocessEnv`: anthropic → real `ANTHROPIC_BASE_URL` + LiteLLM bypassed; api-key mode → real ANTHROPIC_API_KEY not dummy; subscription mode → CLAUDE_CODE_OAUTH_TOKEN and NO ANTHROPIC_API_KEY; missing required secret → typed `ANTHROPIC_AUTH_MISSING`; non-anthropic → LiteLLM proxy + dummy; auth material only in the subprocess env) + tests/unit/openrouter-provider.test.ts (`openrouter` accepted as provider; `openrouter/<id>` passthrough left RAW/uncloaked so the LiteLLM `openrouter/*` wildcard matches; `isPassthroughModel`/`effectiveProvider`; direct-fetch openrouter case with OPENROUTER_API_KEY; passthrough not `UNKNOWN_ALIAS` — **v22
+(adjudication #3 M-6, ledger corrected 2026-09-02): that alias check now runs in
+`validateScriptEntry` (`src/script-checks.ts`) at `WorkflowCatalog.register`, not in
+`submission-validator.ts`; the file's three passthrough cases were re-sited onto it, keeping the
+`openrouterPassthrough` port that was the validator's own switch**).
 ### UT-060 — federated model catalog build + filter (REQ-039, REQ-040)
 - **status:** green
 - **traces:** DES-040
@@ -4324,7 +4354,7 @@ File: `tests/integration/blob-manifest-routes.test.ts`. Mock policy (integration
 - **result:** pass
 - **iter:** v14
 
-File: `tests/integration/v14-schema-drift.test.ts`. Mock policy (integration): real `createServer` + real HTTP `tools/list` round trip; no SUT-boundary mocks (same pattern as IT-072/IT-074). 11 cases (all red): (1) asset_push kind description contains 'HOOKS_UNSUPPORTED'; (2) asset_push kind description names 'mcp_provision'; (3) workflow_run has 'scriptSha256' property; (4) scriptSha256 description names 'UTF-8'; (5) scriptSha256 description names 'SCRIPT_SHA_MISMATCH'; (6) workflow_run schema names 'seedManifestRef'; (7) workflow_run schema names 'SEED_SOURCE_CONFLICT'; (8) workflow_run schema names '/assets/manifest'; (9) blob_put description names '/assets/blob/'; (10) blob_put description names 'BLOB_SHA_MISMATCH'; (11) seed_plan description names '/assets/manifest'. Red reason: `server.ts` TOOL_DEFS missing all v14 schema additions → served tools/list shows old schema → all 11 structured-fact assertions fail for the correct unimplemented reason.
+File: `tests/integration/v14-schema-drift.test.ts`. Mock policy (integration): real `createServer` + real HTTP `tools/list` round trip; no SUT-boundary mocks (same pattern as IT-072/IT-074). 11 cases (all red at v14): (1) asset_push kind description contains 'HOOKS_UNSUPPORTED'; (2) asset_push kind description names 'mcp_provision'; **(3)(4)(5) — INVERTED in v22 (adjudication #3 M-6, ledger brought in line with the file on 2026-09-02): REQ-085 is `[SUPERSEDED v22]` and REQ-098 closed inline script, so the guarded parameter is unreachable by construction and was removed (adjudication #1 K-4). The lock was not retired with it — it now pins the ABSENCE the schema must keep: (3) `workflow_run` has NO `scriptSha256` property; (4) `workflow_run` has NO `script` property; (5) no advertised `workflow_run` parameter re-introduces `SCRIPT_SHA_MISMATCH` as a live contract. A schema-reading client must not learn that these exist. This deliberately overlaps IT-087's v22 absence lock (adjudication #4 N-3: duplicated coverage of a check that just moved sites stays for this iteration) — a re-added field must fail both.** (6) workflow_run schema names 'seedManifestRef'; (7) workflow_run schema names 'SEED_SOURCE_CONFLICT'; (8) workflow_run schema names '/assets/manifest'; (9) blob_put description names '/assets/blob/'; (10) blob_put description names 'BLOB_SHA_MISMATCH'; (11) seed_plan description names '/assets/manifest'. Red reason: `server.ts` TOOL_DEFS missing all v14 schema additions → served tools/list shows old schema → all 11 structured-fact assertions fail for the correct unimplemented reason.
 
 ### VAL-090 — REQ-081: raw HTTP body-streaming blob upload (REQ-081)
 - **status:** green
@@ -5909,3 +5939,91 @@ shape (missing exports/modules/properties on `WorkflowCatalog`/`SqliteSchedulerP
 not yet on `FileConfig`) — 0 errors outside the 17 touched files. Hermetic: every new case with a
 clock uses `FixedClock`/a local mutable fake anchored to a fixed instant; no absolute-date-vs-
 real-clock comparisons.
+
+---
+
+## Gate 5 scope — v22 adjudication #4 (2026-09-02)
+
+**Read `04-design.md` → "Orchestrator adjudication (v22) #4" first (N-1..N-3).** It is binding.
+
+**N-1 in one line:** `MCP_NOT_PROVISIONED` has no run-level enforcement any more (v22 moved it to
+registration, ADR-013), so a workflow registered BEFORE that check — naming an MCP that is no longer
+provisioned — dispatched its agents with the capability silently missing. REQ-099 forbids refusing
+such a run retroactively **and** requires the condition to be surfaced. The fix records the dropped
+names on the harness descriptor (`effortApplied`'s `{reason}` branch is the precedent), so the run's
+own record admits to it.
+
+### New (1 new work item)
+
+### IT-090 — a grandfathered unprovisioned-MCP reference is DROPPED but RECORDED on the run
+- **status:** green
+- **traces:** REQ-099, ARCH-074, DES-024, DES-066, ADR-013
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v22
+
+File: `tests/integration/mcp-unresolved-surface.test.ts`. Mock policy (integration, IT-039's own
+policy): real `composeConfig()` + real `createServer()` + real HTTP + real `McpRegistry` persistence
++ real sandbox/run lifecycle; only the third-party SDK `query()` export (the `queryImpl` seam) and
+the managed LiteLLM proxy subprocess are faked.
+
+**Oracle (binding, adjudication #4): the SURFACING, never the drop.** Asserting only that
+`mcpServers` came back empty would keep passing if the surfacing were deleted again — the exact
+failure mode that let this defect through — so case 1's primary assertion is that
+`workflow_agent_log(runId, agentId).harness.mcpUnresolved` **names** the unresolved MCP; the
+`mcpServers` check is explicitly secondary.
+
+2 cases. (1) A catalog row **hand-seeded** in the v22 two-table shape (`workflow_register` now refuses
+this script `MCP_NOT_PROVISIONED`, so the grandfathered state is reached the way VAL-109/VAL-100 reach
+theirs) whose script is `agent('…', { mcp: ['it090-never-provisioned'], model: 'local' })`: the run is
+**not** refused and reaches `completed` (REQ-099's last clause), and its harness record carries
+`mcpUnresolved: ['it090-never-provisioned']` while `mcpServers` does not. (2) A provisioned,
+resolvable reference records **no `mcpUnresolved` key at all** (absent, never `[]`) and carries the
+name in `mcpServers` — pinning that the field is conditional, so every unaffected run's descriptor is
+byte-identical to before.
+
+Fixture notes, both load-bearing: the `agent()` call names the **ollama** alias (`local`) because an
+`anthropic` alias with no `ANTHROPIC_API_KEY` returns `ANTHROPIC_AUTH_MISSING` *before* `onHarness`
+fires, leaving no harness to read; and the server is booted before the row is seeded, so the catalog
+schema exists.
+
+Red reason (measured, pre-fix): 1 of 2 red — case 1 fails at
+`expect(harness.mcpUnresolved).toContain('it090-never-provisioned')` with *"the given combination of
+arguments (undefined and string) is invalid for this assertion"* (the field does not exist; the drop
+is invisible). Case 2 is a legitimate green pin (the field is absent today and must stay absent when
+every reference resolves). Post-fix: 2/2 green.
+
+### Ledger brought in line with the tests (N-2) — amended in place, no new IDs
+
+Where a ledger claim and the tests disagreed, **the tests are the truth**; each entry below now
+describes what its file actually asserts.
+
+- **UT-012** (`submission-validator.test.ts`) — subject split: the parse/alias cases are re-sited onto
+  `validateScriptEntry`; `MISSING_SCRIPT` corrected to **`MISSING_NAME`** (DES-117).
+- **IT-008** (`submission-entry-point.test.ts`) — the fail-fast door for script-shaped faults is
+  `workflow_register`, not `workflow_run`; case list rewritten, property pinned unchanged.
+- **UT-059**'s `openrouter-provider.test.ts` bullet — the passthrough/`UNKNOWN_ALIAS` cases now run
+  against `validateScriptEntry`, not `submission-validator.ts`.
+- **IT-077** (`v14-schema-drift.test.ts`) — REQ-085's cases (3)(4)(5) **inverted**: they pin the
+  *absence* of `script`/`scriptSha256` (and of a live `SCRIPT_SHA_MISMATCH` contract) from the
+  advertised schema.
+- **VAL-006** (`val-006-lifecycle.test.ts`) — only the **edited-script tail** of the stop case is
+  retired (REQ-006's superseded clause); the `workflow_stop` clause is still live and still asserted.
+- **`tests/unit/default-aliases-single-source.test.ts`** has no work-item entry of its own in this
+  ledger (its origin is the Gate 8 v2 review item **R-1**, `journal.md`); recorded here instead: its
+  case (b) moved from `new SubmissionValidator()` to booting a real unconfigured server, because
+  registration now takes `aliasNames` by injection and the composition root is the one place the
+  "same source" claim still holds. The `journal.md` R-1 line is left as written — it is an accurate
+  record of what was true in v6.
+
+### Duplicate coverage deliberately retained (N-3)
+UT-012's re-sited `validateScriptEntry` cases overlap UT-102 (`script-checks.test.ts`), and IT-077's
+inverted absence locks overlap IT-087 (`schema-drift-v22.test.ts`). **Ruled: leave them.** Duplicated
+coverage of a check that has just moved sites is cheap insurance during exactly the iteration that
+moved it; consolidate in v23 if it still looks redundant then.
+
+### Not test scope
+The `src/` change itself (IMPL-148): `HarnessDescriptor.mcpUnresolved`, `redactHarness`'s
+`unresolvedMcp` input, `resolveProvisionedMcp` returning `{configs, unresolved}`, the two stale
+comments, and the `workflow_agent_log` schema clause.
