@@ -3639,3 +3639,66 @@ resume counter reseeded from 1; `MISSING_SCRIPT` → `MISSING_NAME`; `Submission
 `scriptVersion` made required (one measured positional call site) while the options-object refactor stays
 debt (33 sites); no `Database` injection seam (a hand-written legacy file in a tmp `workRoot` is simpler
 *and* a stronger test — the rare case where simpler is also more testable).
+
+---
+
+## Orchestrator adjudication (v22) #1 — the inline-script ban's fixture cost (2026-09-02)
+
+Gate 6 surfaced the consequence this iteration was always going to have, and the Gate 3/4 plan did not
+itemise it: closing inline script and separating registration from publication invalidates a large body
+of **pre-existing test fixtures** that used `start({script})` and bare `register()+run` as setup
+shortcuts — not as tests of either behaviour. The implementers were right to stop rather than reach
+across into files no task owns. Four decisions, then the repair.
+
+### K-1 — registration is NOT publication; do not auto-publish on register
+REQ-097's acceptance says it in as many words: a newly registered version "is **not** automatically on
+any channel — registration and publication are separate acts, so an author can register a draft without
+affecting a single user." That is not incidental wording. It is the exact property that forced v22's
+ordering in the first place: without it, an author testing a draft overwrites the version users are
+running, which is why channels and the inline-script ban had to ship together. Auto-publishing to
+`release` would make ~45 fixture files pass and would silently re-create the hazard one layer up.
+**The fixtures adapt to the design; the design does not bend to the fixtures.**
+
+### K-2 — the fixture migration is IN SCOPE, as a repair of a planning gap
+There is no version of "close inline script" that leaves dozens of files calling it. The tasks existed;
+the cost of their consequence was not broken out at Gate 3/4. This is that repair — not new scope.
+
+**It is done in two steps, and the order is load-bearing:**
+1. **One shared test helper first** (`registerPublishRun`-shaped): register → publish to `release` →
+   run by name, returning what `start({script})` used to return. Design it against the fixture shapes
+   that **actually occur** — measure them, do not guess. Land and commit it before any sweep.
+2. **Then sweep** the failing files onto the helper. Ninety-odd files each hand-rolling their own
+   register+publish+name-generation is next iteration's drift; one helper is not.
+
+**Excluded from the sweep, by name:** tests whose *subject* is the ban or the pin —
+`inline-script-closed.test.ts` and `run-version-pin.test.ts`'s "even off the wire" oracle — keep their
+raw inline calls. A sweep that "fixes" the tests that exist to observe the refusal destroys the only
+evidence the refusal works.
+
+**Migrate to the measured failing-file list, not to a grep pattern.** A single-line regex misses
+multi-line call shapes and misses files that never call `register` at all but run a pre-seeded name and
+now hit `CHANNEL_UNPUBLISHED`.
+
+### K-3 — the facade ordering fix is confirmed
+`workflow_run({script})` with no `name` currently returns `MISSING_NAME` because the validator runs
+before `RunManager.start()`'s ban. Check `script !== undefined` first, at the facade or schema level, so
+the caller gets `INLINE_SCRIPT_CLOSED` — the error that tells a migrating caller what actually changed.
+That is TASK-109's own test's oracle.
+
+### K-4 — `RunSpec.script` is RETAINED; DES-114's literal deletion is amended
+DES-114 says delete `script`/`scriptSha256` from `RunSpec`. Deleting `script` breaks the persisted-spec
+read-back in the store, and a run **suspended before the ban shipped** genuinely needs its script
+restored on resume. Retained, redocumented as **"closed at every ingress; retained only for pre-v22
+persisted read-back."** `scriptSha256` is fully removed (never persisted, no conflict). Gate 8 must read
+the retained field as adjudicated, not as a missed removal. A `PersistedRunSpec`/wire-`RunSpec` split
+would be the clean end state and is a follow-up, not a v22 blocker.
+
+### K-5 — disposition for the DES-113 remainders, so they do not dangle
+The implementer correctly declined to build these untested. Each gets a disposition **now**, not at
+closeout — v21 lost two whole closeouts to unpinned leftovers:
+- `ValidationObservation` / `requested` wire fields, and `workflow_run` returning `{version, requested}`
+  so a caller sees which version resolved without a second call — **in scope**, red tests first, under
+  the wire-surface task.
+- `JournalEntry.resolvedWorkflowVersion` for nested `workflow()` resolution — **in scope**, same route.
+- The `entry.scriptVersion` resume-generation re-seed semantics — **deferred**, recorded debt: current
+  behaviour was observed consistent, and no requirement asks for a change.
