@@ -74,11 +74,20 @@ export function isKnownAlias(alias: string, aliasNames: Set<string>): boolean {
   return aliasNames.has(alias);
 }
 
+// v21 Gate 8 RE-REVIEW #4 (A2): O(n) buffer slice, not a per-char re-measuring loop — the previous
+// shape re-copied the whole string and re-measured its byte length on every iteration (O(n^2)),
+// which made rejecting one ~1MB out-of-enum value take ~60s+.
 function truncatedSupplied(value: unknown): { supplied: unknown; suppliedTruncated?: true } {
-  if (typeof value === 'string' && Buffer.byteLength(value, 'utf8') > MAX_SUPPLIED_BYTES) {
-    let truncated = value;
-    while (Buffer.byteLength(truncated, 'utf8') > MAX_SUPPLIED_BYTES) truncated = truncated.slice(0, -1);
-    return { supplied: truncated, suppliedTruncated: true };
+  if (typeof value === 'string') {
+    const buf = Buffer.from(value, 'utf8');
+    if (buf.byteLength > MAX_SUPPLIED_BYTES) {
+      // Back `end` off any UTF-8 continuation bytes (10xxxxxx) at the cut point so the slice lands
+      // on a character boundary — cutting mid-sequence would decode to a handful of valid bytes
+      // plus a substitute char, overshooting the 64-byte cap the caller relies on.
+      let end = MAX_SUPPLIED_BYTES;
+      while (end > 0 && (buf[end]! & 0xc0) === 0x80) end--;
+      return { supplied: buf.subarray(0, end).toString('utf8'), suppliedTruncated: true };
+    }
   }
   return { supplied: value };
 }
@@ -101,13 +110,20 @@ export function canonicalContract(): ParamContract {
   };
 }
 
-function boundTimeoutMs(spec: ParamSpec, ceilings: Ceilings): ParamSpec {
-  const authorMax = spec.max ?? Infinity;
-  return { ...spec, max: Math.min(authorMax, ceilings.maxTimeoutMs) };
+/** min(author, ceiling) on `max`, shared by timeoutMs (ms) and appendPrompt (bytes). Same totality
+ *  principle as `boundEffort` (A1 half 2): a stored row that predates the parser's shape guard may
+ *  carry a non-number `max` — treated as "author left it unconstrained" rather than propagating
+ *  `NaN` (which would otherwise both serve `null` and be inert at admission, a ceiling bypass). */
+function boundMax(spec: ParamSpec, ceilingMax: number): ParamSpec {
+  const authorMax = typeof spec.max === 'number' ? spec.max : Infinity;
+  return { ...spec, max: Math.min(authorMax, ceilingMax) };
 }
 
+// v21 Gate 8 RE-REVIEW #4 (A1 half 2): `effectiveBounds` must stay TOTAL even over a stored
+// contract that predates the parser's shape guard (a live deployment has one) — a non-array
+// `enum` must never crash `.filter`, it must be treated as "author left it unconstrained".
 function boundEffort(spec: ParamSpec, ceilings: Ceilings): ParamSpec {
-  const authorEnum = (spec.enum as Effort[] | undefined) ?? ALL_EFFORTS;
+  const authorEnum = Array.isArray(spec.enum) ? (spec.enum as Effort[]) : ALL_EFFORTS;
   const ceilingRank = EFFORT_RANK[ceilings.maxEffort];
   return { ...spec, enum: authorEnum.filter((e) => EFFORT_RANK[e] <= ceilingRank) };
 }
@@ -119,8 +135,9 @@ export function effectiveBounds(c: ParamContract, ceilings: Ceilings): ParamCont
   const knobs: Record<string, ParamSpec> = {};
   for (const key of TUNABLE_KEYS) {
     const spec = c.knobs[key] ?? base.knobs[key]!;
-    knobs[key] = key === 'timeoutMs' ? boundTimeoutMs(spec, ceilings)
+    knobs[key] = key === 'timeoutMs' ? boundMax(spec, ceilings.maxTimeoutMs)
       : key === 'effort' ? boundEffort(spec, ceilings)
+      : key === 'appendPrompt' ? boundMax(spec, ceilings.maxAppendPromptBytes)
       : spec;
   }
   return { knobs, args: c.args };
@@ -128,6 +145,28 @@ export function effectiveBounds(c: ParamContract, ceilings: Ceilings): ParamCont
 
 function invalid(param: string, reason: string): Err {
   return { ok: false, code: 'PARAM_CONTRACT_INVALID', message: reason, detail: { param, reason } };
+}
+
+const VALID_SPEC_TYPES = ['string', 'number', 'enum'] as const;
+
+// v21 Gate 8 RE-REVIEW #4 (A1 half 1): the parser previously only checked `enum.length` and the
+// locked/unknown-key set — a malformed `type`, a non-array `enum`, or a non-number `min`/`max`
+// registered as-is and poisoned every later read of the stored row. Typed rejection, nothing
+// stored.
+function validateSpecShape(param: string, spec: ParamSpec): Err | null {
+  if (!(VALID_SPEC_TYPES as readonly string[]).includes(spec.type)) {
+    return invalid(param, `type must be one of ${VALID_SPEC_TYPES.join(', ')}`);
+  }
+  if (spec.enum !== undefined && !Array.isArray(spec.enum)) {
+    return invalid(param, 'enum must be an array');
+  }
+  if (spec.min !== undefined && typeof spec.min !== 'number') {
+    return invalid(param, 'min must be a number');
+  }
+  if (spec.max !== undefined && typeof spec.max !== 'number') {
+    return invalid(param, 'max must be a number');
+  }
+  return null;
 }
 
 /** Registration-time parse of `meta.params` (DES-101 row 8). Post-eval structural bounds only —
@@ -165,6 +204,8 @@ export function parseParamContract(
     if (!(TUNABLE_KEYS as readonly string[]).includes(key)) {
       return invalid(key, 'unknown knob');
     }
+    const shapeErr = validateSpecShape(key, spec);
+    if (shapeErr) return shapeErr;
     if (spec.enum !== undefined && spec.enum.length > MAX_ENUM_MEMBERS) {
       return invalid(key, `enum has more than ${MAX_ENUM_MEMBERS} members`);
     }
@@ -188,6 +229,8 @@ export function parseParamContract(
   }
 
   for (const [key, spec] of Object.entries(argsIn)) {
+    const shapeErr = validateSpecShape(`args.${key}`, spec);
+    if (shapeErr) return shapeErr;
     if (spec.enum !== undefined && spec.enum.length > MAX_ENUM_MEMBERS) {
       return invalid(`args.${key}`, `enum has more than ${MAX_ENUM_MEMBERS} members`);
     }
@@ -219,7 +262,12 @@ export function checkValueAgainstSpec(param: string, value: unknown, spec: Param
       detail: { param, ...truncatedSupplied(value), allowed: { enum: spec.enum } },
     };
   }
-  if (spec.min !== undefined && (value as number) < spec.min) {
+  // v21 Gate 8 RE-REVIEW #4 (A4): for a `type:'string'` spec, `min`/`max` bound the value's UTF-8
+  // BYTE LENGTH — comparing the string itself against a numeric bound is NaN-inert and the check
+  // never fires. This matches how `maxAppendPromptBytes`/`MAX_SUPPLIED_BYTES` already express
+  // string limits elsewhere in this module.
+  const bound = spec.type === 'string' ? Buffer.byteLength(value as string, 'utf8') : (value as number);
+  if (spec.min !== undefined && bound < spec.min) {
     return {
       ok: false,
       code: 'PARAM_OUT_OF_RANGE',
@@ -227,7 +275,7 @@ export function checkValueAgainstSpec(param: string, value: unknown, spec: Param
       detail: { param, ...truncatedSupplied(value), allowed: { min: spec.min, max: spec.max } },
     };
   }
-  if (spec.max !== undefined && (value as number) > spec.max) {
+  if (spec.max !== undefined && bound > spec.max) {
     return {
       ok: false,
       code: 'PARAM_OUT_OF_RANGE',
@@ -267,22 +315,39 @@ export function validateUserOverrides(
       };
     }
 
-    // appendPrompt is reported by size, never by content (DES-101 note): checked against the raw
-    // ceiling before any generic spec check, so the oversized text never reaches a detail object.
+    const spec = eff.knobs[key]!;
+
+    // appendPrompt is reported by size, never by content (DES-101 note): checked in bytes against
+    // the EFFECTIVE bound (min(author, ceiling), post-A5) before any generic spec check — an
+    // author-declared bound tighter than the raw ceiling must refuse the same way, and neither path
+    // may let the oversized text reach a detail object (unlike checkValueAgainstSpec's generic
+    // min/max branches, which echo a truncated `supplied` — appendPrompt is excluded from those
+    // branches below for exactly this reason).
     if (key === 'appendPrompt' && typeof val === 'string') {
       const bytes = Buffer.byteLength(val, 'utf8');
-      if (bytes > ceilings.maxAppendPromptBytes) {
+      if (spec.min !== undefined && bytes < spec.min) {
+        return {
+          ok: false,
+          code: 'PARAM_OUT_OF_RANGE',
+          message: 'appendPrompt is below the minimum byte length',
+          detail: { param: 'appendPrompt', suppliedBytes: bytes, minBytes: spec.min },
+        };
+      }
+      if (spec.max !== undefined && bytes > spec.max) {
         return {
           ok: false,
           code: 'PARAM_OUT_OF_RANGE',
           message: 'appendPrompt exceeds the byte ceiling',
-          detail: { param: 'appendPrompt', suppliedBytes: bytes, maxBytes: ceilings.maxAppendPromptBytes },
+          detail: { param: 'appendPrompt', suppliedBytes: bytes, maxBytes: spec.max },
         };
       }
     }
 
-    const spec = eff.knobs[key]!;
-    const result = checkValueAgainstSpec(key, val, spec);
+    // appendPrompt's min/max were already enforced size-only above without echoing content; strip
+    // them before the generic check so checkValueAgainstSpec's min/max branches (which echo a
+    // truncated `supplied`) never fire a second time for this key.
+    const specForCheck = key === 'appendPrompt' ? { ...spec, min: undefined, max: undefined } : spec;
+    const result = checkValueAgainstSpec(key, val, specForCheck);
     if (!result.ok) return result;
 
     // D-AUTH-5-B / UNKNOWN_ALIAS precedent, applied at submission for the case the author left
