@@ -4718,3 +4718,51 @@ Architecture consistent: yes for all previously-HIGH findings — 0 remaining un
 Validation: real-tier all-green? yes (Gate 7.5 round 6 CONVERGENCE RULE + round 7 scoped real-process re-confirmation of the 3 most operationally-critical D-G8 fixes) · README+DEPLOY present? yes, step-by-step, updated in round 7
 Conclusion: iteration can close. All 4 HIGH + 2 MEDIUM binding Gate-8 fixes (D-G8-1..6) confirmed resolved at the code/test tier and re-confirmed via Gate 7.5 round-7 real-process evidence for the 3 highest-risk ones (S-1 zero-config hang, O-1 transcript black-box, C-1 tools/list placeholders). 7 remaining MEDIUM/LOW architecture-consistency findings correctly recorded as v1.1 backlog, not silently dropped. gates.review.passed=true.
 ```
+
+---
+
+## GATE 8 — v21 CLOSED BY OWNER DECISION (2026-09-01)
+
+**Decision, and who made it.** After Gate 8 re-review #6, the owner was shown every open finding with
+what each actually allows, who can trigger it, and the cost to fix, and chose: **land P6-1 and its five
+riders, do not run a seventh review pass, close v21, and carry the remainder as named debt into v22.**
+This closure is that decision, not a reviewer's `arch_consistent=true`. Recording it as an owner call
+rather than a passing gate is the honest form.
+
+**State at close** (commit `2c08719`): suite **1582/1582**, `tsc` clean, coverage **95.31%**, trace
+**824 items / 14 gaps — 0 severe, 0 unverified REQs, 0 mock-only**, rtm **95/95 real:true**. Gate 7.5
+ROUND 5 booted from the docs alone and confirmed every REQ live, including the P6-1 variants and P6-2's
+enforcement point.
+
+### What v21 delivered
+REQ-090..095: a declared parameter contract an author writes and the engine enforces; per-run overrides
+validated against it with `PARAM_LOCKED` / `PARAM_OUT_OF_RANGE` refused before any durable work; the
+repair of two pre-existing defects that made REQ-088's promise hollow (`resolveHarnessParams` had zero
+callers; `effort` was a documented no-op); `appendPrompt` fixed after the author-controlled segment; and
+problem reports bound to a workflow and version.
+
+### Debt carried into v22 — named, not assumed
+
+| item | what it is | why it was left |
+|---|---|---|
+| **P6-2 (partial)** | An author-declared `defaults.appendPrompt` carrying a forged frame delimiter is **not** refused at registration. It **is** refused at dispatch admission (verified live, ROUND 5), so no forged frame reaches a model. | Author-scoped, and the enforcing rung holds. Closing the registration door is a v22 one-liner. |
+| **S-1** | A `WorkflowCatalog` built with no `ceilings` enforces no registration ceiling. Production always passes the shared object. | Its recorded rationale is now **stale**: it cited "would need a third copy of `DEFAULT_CEILINGS`", and P6-5's shared export dissolved that. Cheap in v22. |
+| **`deploy.sh` re-run trap** | `rwe.config.json` stores the template's raw `workRoot`; `deploy.sh` exports a writable default only for the invocation that creates the config. Stopping the service and re-running in a fresh shell hits `EACCES`. | Pre-existing; the fresh-checkout quickstart is always a first invocation, and touching that file would have invalidated the boot-from-docs evidence. |
+| **DEPLOY.md rows** | `maxAppendPromptBytes` / `maxEffort` name only the `overrides.*` rung. Incomplete since G-1, but they assert no falsehood. | Doc completeness, not a false claim. |
+| **`state.yaml` line 73** | Not strict-YAML-parseable (an unescaped quote in a v20-era note). `trace.py` does not strict-parse, which is why 21 iterations never noticed. | Pre-existing; anything that `yaml.safe_load`s this file will choke. |
+| **14 trace gaps** | 1 MID (IMPL-082, TDD label), 1 LOW (TASK-018 unimplemented), 12 LOW iter-drift — including 3 minted by IMPL-145/146 tracing v15 designs honestly. | All disclosed. The alternatives to holding the count down were dropping real relationships or falsifying an `iter:` origin. |
+| **81-function coverage debt** | Pre-existing functions below the per-function bar, first measured this iteration. Whole-tree coverage is 95.31%. | Recorded with a Decision-rationale at first measurement; never re-litigated per pass. |
+| **Three unwired modules** | `session-options-builder`, `cli-lifecycle`, `timeout-race` still have zero importers in `src/`. | Not a v21 concern; belongs to the security-hardening iteration. |
+| **`trace --rtm`** | The role contract calls a flag this project's `trace.py` does not have — a plugin/project version mismatch. `rtm.md` is generated via the module functions instead. | Reconcile upstream in the plugin, not by teaching the local tool a flag it never had. |
+
+### The lesson worth carrying forward
+Six review passes found, in order: a dead alias parameter; a secret-marker dereference; an `effort`
+parameter sent at the wrong level of the request body while the descriptor claimed success; a poisoned
+registration that could brick workflow discovery; a quadratic truncation that could block the event loop
+for an hour; a forgeable trust frame; and that frame's fix missing four of six variants.
+
+**Four of those survived earlier test tiers for the same reason: the test's oracle was the code under
+test.** "Low and max produce different bytes" passes when both are wrong. "The wrapping is applied" passes
+when the wrapping is forgeable. `not.toContain(wholeString)` passes when a fragment leaks. A comment
+asserting a guarantee is not a control. **Where a clause names an external contract or a security
+property, assert against that property — never derive the expectation from the implementation.**
