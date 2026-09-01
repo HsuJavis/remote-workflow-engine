@@ -3234,3 +3234,33 @@ clause names a security property, assert the property.
 ### I-2 (F1, F4) — ride along in the same pass
 F1's both-doors parity and F4's enum `min`/`max` rejection are in the pinned scope and land together
 with I-1; their reds are already written.
+
+---
+
+## Orchestrator adjudication #10 — v21 Gate 8 re-review #6 (2026-09-01)
+
+### J-1 (P6-1, BLOCKING) — the fix I approved one round ago was half a fix
+
+Adjudication #9 accepted a refusal on the frame's closing delimiter. The shipped constant is
+`/<\/user-instructions/` — **no `i` flag, no whitespace tolerance**. `</USER-INSTRUCTIONS>`,
+`</User-Instructions>`, `</ user-instructions>` and `< /user-instructions>` all pass the caller rung:
+**four of six variants slip**, so the cross-principal attribution forgery I said was closed is still
+open by any submitter who presses shift.
+
+And the control's own comment claims the variant class cannot slip. That is the **fifth** instance this
+iteration of a comment asserting a guarantee the code does not provide — this time inside the fix that
+was supposed to end the previous instance. The lesson is not about regexes: **an assertion written in a
+comment is not a control, and reviewing a fix means testing the property, not reading the claim.**
+
+**Fix: widen the one shared constant to `/<\s*\/\s*user-instructions/i`.** Nothing else — both refusal
+sites inherit it by import after the dedup. Keep the pattern **linear**: no nested quantifiers. A
+careless widening here is exactly how an A2-class quadratic blowup would return, and the whole point of
+this rung is that it costs nothing before admission.
+
+Not semantic screening, and not a broader sanitizer: ADR-007's chosen control is a structural frame, and
+the rung's job is to refuse a literal forgery of that frame — no more.
+
+### J-2 — the riders take the fix route, not the recorded-decision escape
+P6-2/P6-3/P6-4 are each a one-to-three-line change on an existing precedent, and QD-REP-1 is a green
+fence. Land them; a "recorded decision" is for a trade-off, not for work small enough that writing the
+justification costs more than the change.
