@@ -1,87 +1,78 @@
-# Gate 8 review — quality-dimensions lens (v21 slice, ARCH-064..070 / ADR-001..008, IMPL-129..140)
+# Gate 8 review — Quality-dimensions lens (v21 slice)
 
-- **Reviewer lens:** Quality-dimensions expert (observability / replaceability / consumability / self-sustainability)
-- **Scope:** v21 iteration only — the files named on IMPL-129..140's `files:` lines in `06-impl-log.md`, checked against `02-architecture.md`'s v21 slice (ARCH-064..070, ADR-001..008, the v21 4+1 views and interface table) plus the amended cross-cutting invariants (ARCH-056 redact-at-capture, ARCH-051 self-describing schemas). This is the post-IMPL-140 state (i.e. after the §4 and §R2 send-back closeouts).
-- **Verdict: consistent = NO — 4 violations, all LOW.** Every load-bearing v21 invariant verified holds in code; the four findings are three architecture-doc drift items IMPL-140 explicitly declared out of its §R2 scope and left "for the next reviewer to route" (confirmed still open, re-reported here as QD-1..3), plus one new inert-at-one-rung consistency gap of the R-G3 class (QD-4).
+- **Scope:** ARCH-064..070 + ADR-001..008 (02-architecture.md:710-980) vs IMPL-129..141 (06-impl-log.md v21 slice). Files read: the union of the v21 IMPLs' `files:` lines (src/params/{contract,resolve}.ts, workflow-catalog.ts, workflow-meta.ts, mcp-facade.ts, server.ts, run-manager.ts, run-store.ts, store/sqlite-run-store.ts, main.ts, agent-executor.ts, types.ts, gateway/{client,claude-agent-sdk-client}.ts, github/issue-reporter.ts, harness-defaults.ts) plus the module-boundary references they import.
+- **Reading discipline:** the integrator note in 06-impl-log.md binds the 04-design.md adjudications (A-1..A-9, B-1..B-8, C-1..C-2) as design, not drift — adjudicated departures (B-1 depth bound dropped, B-2 descriptor fields dropped, B-3 `RunParams.skills` removed, A-6 2-arg `thinkingFor`) are **not** reported as violations here. Findings already closed by IMPL-139/140/141 (B1..B5, R-G1..R-G10, F-1/F-2, G-1/G-2, P-A6) were spot-verified at their code anchors and are **not** re-reported; where a closeout claim was checked it is listed under "verified consistent".
+- **Verdict:** the v21 *code* is substantively consistent with the (amended) architecture — every load-bearing invariant checked at its anchor holds. All 8 open violations are doc-layer drift or declared residuals, LOW severity; 7 of the 8 were declared and routed by IMPL-140/141 ("left for the next reviewer to route") and are hereby routed as findings, 1 is new.
 
 ---
 
-## 1. Observability — transparency of internal state
+## (1) Observability — transparency of internal state
 
-**Conformant (verified against code):**
-
-- **Per-key provenance emitted by the computing function, never inferred** (ARCH-065/ARCH-068, quality O-1 ≡ adversarial T-4): `resolveCallParams` emits `{value, rung}` in one pass (`src/params/resolve.ts:68-121`); the single decoration site `onHarness` merges `effort`/`timeoutMs`/`provenance`/`effortApplied` onto the gateway descriptor without overwriting `descriptor.model`/`provider` (`src/agent-executor.ts:409-419`). A future wiring miss surfaces as `provenance.model:'engine'` where a test expects `'default'` — exactly the ARCH-068 design intent.
-- **Tri-state `effortApplied`** (ARCH-068/069): applied `{param,value}` / not-applied `{reason}` / absent-because-never-requested, computed ONCE per invoke and the SAME object travels to both the outbound request and the descriptor (`src/gateway/client.ts:46-50,327,340`; `src/gateway/claude-agent-sdk-client.ts:509,581,596`) — recorded ≡ applied by object identity, killing the false-success mode REQ-093 forbids.
-- **Pre-dispatch rejection is recorded THEN thrown** (ARCH-068/DES-105): an invalid script-supplied `effort` writes a terminal-failure entry through `_sink.capture` before throwing `PARAM_OUT_OF_RANGE` (`src/agent-executor.ts:312-320`) — can never become a silent `null` via `parallel()`'s swallow.
-- **Redact-before-cap ordering (R-G9) holds**: the persist site redacts first, then applies the unconditional `capPrompt` (`src/agent-executor.ts:435-439`); `redactHarness` is structural-only and passes the prompt uncut (`src/agent-executor.ts:19-36`). No partial-credential-bytes window.
-- **Typed refusals throughout**: `PARAM_SECRET_UNAVAILABLE` on marker-carrying resume (`src/run-manager.ts:538-539`), `RESUME_OVERRIDES_NOT_ALLOWED` on override presence (`src/mcp-facade.ts:175-176`), `UNKNOWN_ALIAS` on the effective post-merge model (`src/run-manager.ts:424-431`) — no silent/opaque failure on any v21 path.
-- *Note, not counted:* the legacy NULL-`effectiveParams` resume fallback (`src/run-manager.ts:633`) resolves from the current catalog row — the designed transitional carve-out from IMPL-133; its observable is the NULL snapshot in the store, so it is not an opaque path.
-
-**Violation:**
-
-### QD-1 (LOW, doc drift — declared by IMPL-140 as QD-OBS-1, confirmed still open)
-- **Violates:** ARCH-068's own api line ("`appendPromptBytes` / `promptTruncated` dropped — adjudication B-2") — the v21 process view contradicts it.
-- **Evidence:** `02-architecture.md:913` — the process-view sequence diagram still ends with `harness event {model, effort, effortApplied, provenance, appendPromptBytes}`. `appendPromptBytes` was dropped by adjudication B-2 and is confirmed absent from `src/types.ts:232-239` and all of `src/`. A reader auditing observability from the process view expects a field that never exists.
-- **Fix shape:** one-word deletion in the mermaid line (same class as the R-G6/G7/G8 amendments; B-5/R-G8 corrected the api/note lines but the diagram was outside §R2's pinned list).
-
-## 2. Replaceability — decoupling & pluggability
-
-**Conformant (verified against code) — zero violations:**
-
-- **One wired `mapEffort`, two import sites** (ARCH-069/DES-106): exported from `src/gateway/client.ts:46` and imported by `src/gateway/claude-agent-sdk-client.ts:19` — no second mapper on the run path.
-- **Provider dial is config, not code** (ARCH-069, quality R-1): `EFFORT_PROFILES` table (`src/gateway/client.ts:32-34`) — a new provider with an equivalent dial is one row; a provider with no entry yields the honest `{applied:false, reason}` no-op (`client.ts:48`), degrading without failing.
-- **`thinkingFor` remains the SOLE writer of `options.thinking`** (the D-F6 regression guard): the effort mapper writes a distinct wire field (`claude-agent-sdk-client.ts:507-509,532,581`) — the shipped Ollama thinking-400 defect is not re-opened.
-- **ADR-006 scope fence holds**: `grep -rln session-options-builder src/` → only a comment reference in `src/params/resolve.ts`; zero value importers. The built-but-unwired module stayed on its own track.
-- *Recorded debt, not counted:* `src/params/resolve.ts:147-157` carries a second, zero-production-caller `mapEffort`/`ProviderEffortProfile` pair — this is the §4 F5/QD-2 item, now recorded **in the architecture itself** (ARCH-065 api line names `src/gateway/client.ts` as the wired copy and calls the `resolve.ts` copy recorded debt), so doc and code agree; it stays a tracked cleanup for whoever next touches DES-102/DES-106.
-
-## 3. Consumability — interface friendliness & integration cost
-
-**Conformant (verified against code):**
-
-- **Closed override surface at both ends** (ARCH-064 inv-2): `workflow_run.overrides` inputSchema declares exactly `{model, effort, timeoutMs, appendPrompt}` with `additionalProperties:false` (`src/server.ts:327-337`), and the parser rejects unknown keys with `PARAM_UNKNOWN` / locked keys with `PARAM_LOCKED` (`src/params/contract.ts:241-257`).
-- **Self-describing errors** (ARCH-064 inv-3, D-REDACT discipline): `PARAM_OUT_OF_RANGE` carries `{param, supplied, allowed}`, `PARAM_LOCKED` carries `{param, tunable:[…]}`, oversize `appendPrompt` is reported by byte count only — the text never enters a detail object (`contract.ts:259-271`); free-text echoes truncated at 64 bytes with `suppliedTruncated:true` (`contract.ts:77-84`).
-- **Read surfaces never serve null/unbounded** (ARCH-067/DES-103): `workflow_get`/`workflow_list` serve `effectiveBounds(stored ?? canonicalContract(), ceilings)` (`src/mcp-facade.ts:24-25,196,217`); the `workflow_get` description documents `params` incl. the canonical-contract fallback (`src/server.ts:421`) — advertised bound == enforced bound (A-3).
-- **Uniform result envelope preserved**: `RESUME_OVERRIDES_NOT_ALLOWED` rides the standard `{runId, status, error}` envelope (`src/mcp-facade.ts:176`).
-- **`issue_report`/`issue_list` symmetric `workflow` handling** (ARCH-070): label-scoped sanitize + 50-char cap (`src/github/issue-reporter.ts:169-170`), untruncated `name@version` in the body (`:204`), fingerprint extension with byte-identical absent-`workflow` output (`:158-160`).
+**Verified consistent (code):**
+- Per-key provenance is emitted by the function that computes each value, one pass, never inferred by value comparison (ARCH-065/068; `src/params/resolve.ts:75-128`) — the anti-wiring-miss observable works as designed.
+- ONE descriptor-decoration site: `agent-executor.ts:409-418` merges `effort`/`timeoutMs`/`provenance`/`effortApplied` onto the gateway descriptor without overwriting `descriptor.model`/`provider`; recorded ≡ applied by object identity (`gateway/client.ts:338→351`, `claude-agent-sdk-client.ts:509→596`).
+- Pre-dispatch guard **records then throws** (ARCH-068): `agent-executor.ts:312-321` writes a terminal-failure capture before `codedError('PARAM_OUT_OF_RANGE')` — no silent null via `parallel()`'s swallow.
+- R-G9 ordering holds in code: `redact()` at `agent-executor.ts:437` then `capPrompt` at `:439`; `redactHarness` (`:36`) passes the prompt uncut; R-G10's `kind !== 'harness'` carve-outs are gone (`:181`, `:459` redact unconditionally).
+- `effortApplied` is tri-state in `types.ts:228-239`; live `markHarness` surfaces model/provider before the first token (`agent-executor.ts:425`).
 
 **Violations:**
 
-### QD-2 (LOW, doc/behavior split — declared by IMPL-140 as QD-CONS-1, confirmed still open)
-- **Violates:** ARCH-051's self-describing-schema discipline as invoked by ARCH-067's note ("the `effort` no-op being repaired here was precisely a docs/behavior split, so the fix must not create a new one") and the v21 interface table (`02-architecture.md:961`), which declares `workflow_agent_log({…}).harness` gains `+effort`, `+effortApplied` (tri-state), `+timeoutMs`, `+provenance`.
-- **Evidence:** `src/server.ts:372-373` — the `workflow_agent_log` tool description describes only "captured transcript events (message/tool_call/tool_result/usage)" plus the secret-marker sentence; it does not mention the served `harness` object at all, let alone the four v21 fields. An agent caller reading the tool description cannot discover the provenance observability v21's headline feature added.
-- **Fix shape:** one sentence in the description (the same shape as IMPL-127's DES-088 secret-marker sentence, ideally pinned in the ARCH-051 drift-lock test).
+| # | What | Evidence | Severity | Status |
+|---|---|---|---|---|
+| O-1 | ARCH-068/B-2 contradicted by the arch doc's own process view: the v21 sequence diagram still emits `appendPromptBytes` in the harness event, a field adjudication B-2 dropped and `types.ts` does not carry | `02-architecture.md:913` vs `:760` (api line), `:961` (interface table), `src/types.ts:227-239` | LOW | Declared (QD-OBS-1, routed by IMPL-140 "not done") — still open |
+| O-2 | ARCH-068's note still states `PROMPT_CAP=4096` "lives in `redactHarness` (`agent-executor.ts:23`)" and the v21 decision rationale still says the truncation residual is "handled by `promptTruncated` + `appendPromptBytes` + a small cap" — both false after R-G9 relocated the cap to `capPrompt` applied *after* `redact()` at the persist site and B-2 dropped both fields. An auditor following ARCH-068 to verify the security-relevant redact→cap ordering is pointed at the wrong site | `02-architecture.md:761`, `:975` vs `src/agent-executor.ts:25` (capPrompt), `:437-439` (redact-then-cap) | LOW | Declared (IMPL-141 F-4 "three remaining 02-architecture.md amendments", routed) — still open |
+| O-3 | Evidence-chain observability: 05-tests.md's UT-020 re-run note claims "6/6 pass"; the file holds 5 cases (re-run this review: 5/5). A green count that cannot be reproduced weakens the audit trail the harness-descriptor observability rests on | `.sdlc/…/05-tests.md:651` vs `tests/unit/claude-agent-sdk-gateway-thinking.test.ts` (5 `it(` cases; vitest 5/5) | LOW | Declared (IMPL-141 F-4 doc batch, routed) — still open |
 
-### QD-3 (LOW, doc drift — declared by IMPL-140 as QD-CONS-2, confirmed still open)
-- **Violates:** ARCH-064 internal consistency — its api line was corrected by R-G7 to name the real functions, but its note and scenario S-2 still name a phantom.
-- **Evidence:** `02-architecture.md:725` ("**`parseUserOverrides`** is the ONLY constructor from caller data") and `02-architecture.md:921` (S-2: "`additionalProperties:false` + `parseUserOverrides` refuse with `PARAM_LOCKED`") — no function of that name exists; the implemented constructor is `validateUserOverrides` (`src/params/contract.ts:231`). A reader auditing ADR-001's "one total parser" claim greps for a function that isn't there.
-- **Fix shape:** two-word rename in the note and scenario.
+## (2) Replaceability — decoupling & pluggability
 
-## 4. Self-sustainability — closed-loop autonomy & lifecycle
+**Verified consistent (code):**
+- One wired effort mapper: `EFFORT_PROFILES`/`profileFor`/`mapEffort` in `gateway/client.ts:41-55`, imported by `claude-agent-sdk-client.ts:19` — a new provider dial is a config row (ARCH-069, D-PROFILE lineage).
+- `thinkingFor` remains the **sole** writer of `options.thinking` (`claude-agent-sdk-client.ts:325`, `:532`; the mapper writes a different wire field, `:506-509`) — the D-F6 regression fence held.
+- ADR-006's fence held: `session-options-builder.ts` has zero `src/` importers (grep-verified), pinned structurally by the UT-101 addendum test.
+- Effort rides the wire on BOTH LiteLLM branches via `effortBodyFields` (`gateway/client.ts:167`, `:304`) and on the SDK `Options` object — ARCH-069's "visible on the wire" clause.
 
-**Conformant (verified against code):**
+**Violations:**
 
-- **ARCH-066 inv-6 (the composeConfig bug class) closed**: `composeConfig()` forwards all three ceiling keys (`src/main.ts:162-164`); ONE `ceilings` object built in `createServer` (`src/server.ts:1184-1187`) feeds BOTH `RunManager` (`:1197`) and `McpFacade` (`:1214`); per-key fail-closed defaults are present and **byte-identical across all three consumers** (600_000 / 1024 / 'high' — `server.ts:1185-1187`, `run-manager.ts:110,233-237`, `mcp-facade.ts:20`).
-- **Refuse, never clamp** (ARCH-066 inv-4/ADR-005): ceilings bound the user-override rung only, via `effectiveBounds` min(author, ceiling) computed at READ time so lowering a ceiling needs no re-register (`contract.ts:104-127`); violations refuse with `PARAM_OUT_OF_RANGE` — no silent alteration path exists.
-- **Run-immutable snapshot + refusal-only resume** (ARCH-066 inv-1/2, R-G1): admission rung sits between `catalog.get` and `createRun`/`runWorkspace` with zero durable work on rejection (`run-manager.ts:403-439`); resume reads the pinned snapshot and refuses marker-carrying params typed (`:528-539`); `CallKey` built from raw prompt+opts, untouched (`:812`).
-- **New persist sink routed through `redact()`** (ARCH-066 inv-5/ARCH-056): snapshot redacted before the durable write, live entry keeps the unredacted copy for dispatch (`run-manager.ts:432-439,503`).
-- **Fail-closed registration** (ARCH-067): `parseMetaParams` + A-2 cross-validation run before ANY DB operation, nothing stored on rejection; the `ON CONFLICT` upsert updates `params = excluded.params` so a re-register cannot leave a stale contract (`src/workflow-catalog.ts:115-170`).
+| # | What | Evidence | Severity | Status |
+|---|---|---|---|---|
+| R-1 | Two `mapEffort` implementations ship: `src/params/resolve.ts:151-164` exports a richer `ProviderEffortProfile`/`mapEffort` pair with **zero production callers** (grep: only run-manager/stores/agent-executor import resolve.js, none import its mapper); the wired one is `gateway/client.ts:55`. A future provider added to one table but not the other is exactly the advertised-vs-enforced drift class v21 repairs. Amended ARCH-065 records this as F5/QD-2 debt but both copies still ship | `src/params/resolve.ts:151-164` vs `src/gateway/client.ts:41-55`; ARCH-065 api line (`02-architecture.md:731`) | LOW | Declared (F5/QD-2, recorded in amended ARCH-065 + IMPL-138 observation) — still open |
+| R-2 | **NEW.** Undeclared, direction-inverting module dependency ARCH-069 → ARCH-068/004: both gateway impls **value-import** `redactHarness` from the executor module (`gateway/client.ts:7` — added in v21 by adjudication A-4's swap; `claude-agent-sdk-client.ts:16` pre-existing). ARCH-069's `deps:` names only ARCH-065, ARCH-005; the container diagram's dependency direction is K4→K5, not K5→K4. The Gate 6.5+7 `solid_check` declaration-completeness fix covered only the opposite direction (run-manager/agent-executor → gateway). Replaceability cost: a third `GatewayClient` implementation must import a record-shaping transform from the executor module | `src/gateway/client.ts:7`, `src/gateway/claude-agent-sdk-client.ts:16` vs ARCH-069 `deps:` (`02-architecture.md:768`) and the diagram | LOW | New — same declaration-completeness class as the solid_check fix; either declare the dep on ARCH-069 or move `redactHarness`/`capPrompt` to a neutral module |
 
-**Violation:**
+## (3) Consumability — interface friendliness & integration cost
 
-### QD-4 (LOW, new — the R-G3 inert-control class, one rung earlier)
-- **Violates:** ARCH-064's api claim that `isKnownAlias` is "the ONE alias predicate … **shared by the registration-time and admission-time rungs**" (`02-architecture.md:724`), and the spirit of R-G3's fix rationale ("both ends now read the same table"). The *predicate* is shared; the *table* is not.
-- **Evidence:** `src/server.ts:1142` hands `WorkflowCatalog` `config?.aliases ? new Set(Object.keys(config.aliases)) : undefined` (→ `new Set()` at `workflow-catalog.ts:117` → `isKnownAlias` skips every check via the empty-table rule, `contract.ts:72`), while `src/server.ts:1196` hands `RunManager` `new Set(Object.keys(config?.aliases ?? DEFAULT_ALIASES))` per R-G3. On the documented default deployment (no `config.aliases` — `main.ts` default path), registration-time model-enum validation (`contract.ts:171-179`, whose own comment says "validated against aliasNames at REGISTRATION only") and `validateHarnessDefaults`' model check are inert, while admission enforces `DEFAULT_ALIASES`. Consequence: `workflow_register` accepts a `params.knobs.model.enum` entry (or `defaults.model`) that **every** subsequent `workflow_run` of that workflow refuses with `UNKNOWN_ALIAS` at `run-manager.ts:424` — register-succeeds-every-run-fails, discovered only at run time.
-- **Severity rationale:** LOW, not MED like R-G3 — the end state is a typed refusal before any durable work (R-G2's post-merge check is the backstop), so nothing is silent and nothing leaks; the defect is a late, surprising error surface plus a doc claim ("shared by both rungs") that overstates the consistency. Pre-v21 registration leniency is itself deliberate (D-AUTH-5-B), but R-G3 changed the meaning of "unconfigured" at the admission end only, leaving the two rungs disagreeing about the same deployment.
-- **Fix shape:** feed `server.ts:1142` the same `config?.aliases ?? DEFAULT_ALIASES` table (one line), or amend ARCH-064's api line to state that registration deliberately skips the check on a default-alias server and why.
+**Verified consistent (code):**
+- `workflow_run.overrides` inputSchema: `additionalProperties:false`, exactly the four tunable properties, each self-describing incl. its bounding ceiling; description names the locked keys and the resume exclusion (`src/server.ts:328-341`) — ARCH-064 inv (2) allowlist-at-both-ends holds.
+- Three-rungs-three-codes discipline holds in code: registration → `PARAM_CONTRACT_INVALID` only (`contract.ts:129-131`); alias-table → `UNKNOWN_ALIAS` at both override rung (`contract.ts:295-302`) and effective post-merge rung (`run-manager.ts:424-430`); author-enum → `PARAM_OUT_OF_RANGE`. Errors are self-repairing: `{param, supplied(+truncation), allowed}` / `{param, tunable[]}`; `appendPrompt` reported by size, never content (`contract.ts:270-282`).
+- Read surfaces never serve null/unbounded: `readParams = effectiveBounds(stored ?? canonicalContract(), ceilings)` (`mcp-facade.ts:24-25`); advertised bound == enforced bound by the shared `checkValueAgainstSpec` predicate.
+- `workflow_agent_log`'s tool description documents all four v21 harness fields + the secret-marker sentence (`server.ts:373` block) — the F-4 doc-batch item for this surface is **closed** in current state (QD-CONS-1 no longer reproduces).
+- `issue_report`/`issue_list` symmetric `workflow` filter, label-scoped sanitize + 50-char cap, untruncated `name@version` in body, fingerprint extension (`github/issue-reporter.ts:158-170`, `:416`, `:438`) — ARCH-070/A-5 as amended.
+
+**Violations:**
+
+| # | What | Evidence | Severity | Status |
+|---|---|---|---|---|
+| C-1 | ARCH-064's load-bearing invariant (1) and scenario S-2 name a phantom function `parseUserOverrides` as "the ONLY constructor from caller data"; the module exports `validateUserOverrides` (no `parseUserOverrides` exists anywhere in src/). A consumer of the architecture doc greps for a function that does not exist — the exact docs/behavior split class v21 repaired for `effort` | `02-architecture.md:725`, `:921` vs `src/params/contract.ts:242` | LOW | Declared (QD-CONS-2 / IMPL-141 F-4 "ARCH-064 rename", routed) — still open |
+| C-2 | DES-102 still specifies `RunParams` carrying the "author-only trio (prompt/tools/**skills**)" and `mergeRunParams` folding "all **seven** registered keys"; the shipped shape omits `skills` per binding adjudication B-3 (six keys; `resolve.ts:22-27` records the claim). The design doc specifies a snapshot the code deliberately does not build | `.sdlc/…/04-design.md:2559`, `:2574` vs `src/params/resolve.ts:17-31`; drift self-acknowledged at `04-design.md:3085-3088` (F-3) yet prose unfixed | LOW | Declared (IMPL-141 F-3, routed) — still open |
+
+## (4) Self-sustainability — closed-loop autonomy & lifecycle
+
+**Verified consistent (code):**
+- Resume is refusal-only (R-G1 end state): `hasSecretMarker(entry.effectiveParams)` → typed `PARAM_SECRET_UNAVAILABLE` (`run-manager.ts:538-539`); `unredactBestEffort` deleted (grep: 0 code hits, 1 historical comment); marker grammar is NOT duplicated — `hasSecretMarker` is exported by `secret-resolver.ts:124` and imported (`run-manager.ts:35`), so P-A6 is closed.
+- Deploy-day continuity: legacy NULL-`effectiveParams` fallback to `defaultRunParams(registered.defaults)` (`run-manager.ts:633`) — in-flight suspended runs survive the upgrade; ADR-002's CallKey fence held (resolution downstream of key construction).
+- The composeConfig bug class (5th would-be instance) is closed: `main.ts:162-164` forwards all three ceiling keys; UT-033 carries the three rows (`compose-config-v2-wiring.test.ts:130-140`); per-consumer fail-closed defaults exist.
+- ONE ceilings object at the production composition root threaded to all three consumers: `server.ts:1142` → catalog `:1156`, RunManager `:1207`, facade `:1224`; R-G3's two-tables split is closed (`:1155` and `:1206` both read `DEFAULT_ALIASES`).
+- Lowering a ceiling self-applies with no re-register: `effectiveBounds` computed at read AND admission from live config (`contract.ts:115-127`, `:249`); G-1's ceiling pass over the FINAL `effectiveDefaults` landed (`workflow-catalog.ts:54-59` ceilings opt + the `effectiveDefaults` loop at `:139-148`).
+
+**Violations:**
+
+| # | What | Evidence | Severity | Status |
+|---|---|---|---|---|
+| S-1 | `DEFAULT_CEILINGS` is hand-duplicated in two consumers (`run-manager.ts:110`, `mcp-facade.ts:20` — same literal, two copies), and a `WorkflowCatalog` constructed without `opts.ceilings` enforces **no** registration ceiling at all while `RunManager` applies its own defaults — the P-A2 two-tables-one-predicate shape one level up. No shipped deployment splits (server.ts always passes the shared object), but the closed-loop property depends on every future composition site remembering to; a drifted default edit in one copy silently splits advertised vs enforced bounds | `src/run-manager.ts:110`, `src/mcp-facade.ts:20`, `src/workflow-catalog.ts:59,74`; residual recorded in IMPL-141 | LOW | Declared residual (IMPL-141, with its rationale for not fixing now) — still open |
 
 ---
 
-## ARCHCHECK summary
+## Tally
 
-| | |
-|---|---|
-| lens | quality-dimensions (observability / replaceability / consumability / self-sustainability) |
-| consistent | **no** |
-| violations | **4** (QD-1 obs doc-drift LOW · QD-2 cons docs/behavior LOW · QD-3 cons doc-drift LOW · QD-4 self-sust alias-table divergence LOW) |
-| of which pre-declared by IMPL-140 | 3 (QD-1/2/3 — left outside §R2's pinned scope "for the next reviewer to route"; routed here) |
-| load-bearing invariants checked & held | ADR-001 closed type · ADR-002 CallKey/snapshot · ADR-003 five rungs · ADR-005 refuse-not-clamp · ADR-006 fence · ADR-007 frame+cap · inv-6 composeConfig wiring · R-G1 refusal-only resume · R-G2 effective-model check · R-G9 redact-before-cap · R-G10 no carve-outs |
+- **Violations (still-open + new): 8** — O-1, O-2, O-3, R-1, R-2, C-1, C-2, S-1. All LOW; 7 declared-and-routed by the v21 closeouts, 1 new (R-2).
+- **No code-level invariant of ARCH-064..070 / ADR-001..008 was found violated.** The open set is architecture/design/test-doc text lagging adjudicated code (the living-documents discipline's own defect class) plus two declared duplication residuals.
+- **Recommended routing:** O-1/O-2/C-1 + O-3 are one small 02-architecture.md/05-tests.md amendment batch (already named by IMPL-141 F-4); C-2 is the F-3 one-paragraph DES-102 fix; R-1/S-1 stay tracked debt with their recorded rationales; R-2 needs either a one-line `deps:` amendment on ARCH-069 or a relocation decision for `redactHarness`/`capPrompt`.

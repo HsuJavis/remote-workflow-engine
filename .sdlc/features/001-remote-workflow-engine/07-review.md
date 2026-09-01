@@ -4,7 +4,225 @@ status: send-back
 ---
 # 07 Review & Retro — Gate 8
 
-## v21 GATE 8 RE-REVIEW #3 (2026-09-01, CURRENT / AUTHORITATIVE — SEND BACK to tests+impl)
+## v21 GATE 8 RE-REVIEW #4 (2026-09-01, CURRENT / AUTHORITATIVE — SEND BACK to tests+impl)
+
+> **Fourth Gate 8 pass — after the IMPL-141 closeout (commits `90b5d30`, `1f13b61`, `016e95c`) and
+> Gate 7.5 ROUND 2 (real-tier re-validation of G-1/P-A3 against a fresh `deploy.sh --background`
+> boot).** Both architecture experts were re-dispatched on the post-IMPL-141 state
+> (`.panel/review/adversarial.md` pass 4, `quality-dimensions.md` — both dated this pass).
+> **Every prior send-back item is genuinely closed in code**: R-G1..R-G10, P-A1..P-A4, F-1/F-2,
+> G-1/G-2 and P-A6 were all re-verified at HEAD by the adversarial expert's "Checked and clean"
+> table AND spot-verified independently by this reviewer (§Q1). The v21 wiring — ceilings threaded
+> from ONE shared object, one bounds predicate at all rungs, refusal-only resume, redact-then-cap,
+> correct `output_config.effort` wire shape against both vendored SDKs — is sound.
+> **Verdict: still NOT closeable — `send_back: ["tests","impl"]`, `arch_consistent: false`.** The
+> block is TWO NEW HIGH findings in `src/params/contract.ts` — the parser's own input validation
+> (A1) and the cost of its rejection path (A2). Neither is a regression of any prior fix (the
+> auto-re-run-ONCE budget has not been spent on them); they are the *inverse* of the class the three
+> send-backs closed: not "an advertised bound enforced nowhere" but "an accepted input that is
+> unsurvivable downstream". Both were **independently reproduced by this reviewer on this tree**,
+> not taken on the expert's word.
+
+### Q1. Prior-send-back closure verification (independent, on disk at `016e95c`)
+
+| item | reviewer verification |
+|---|---|
+| P-A1 (wire shape) | `gateway/client.ts:42` `restPath:['output_config','effort']`; adversarial cross-checked against the **vendored** `@anthropic-ai/sdk` `OutputConfig` type (`messages.d.ts:853-863`) — genuinely closed |
+| P-A2/R-G3 (one alias table) | `server.ts:1155`/`:1206` both read `config?.aliases ?? DEFAULT_ALIASES` |
+| P-A3 (defaults reach dispatch) | Gate 7.5 ROUND 2 live evidence: registered `defaults.effort:'high'`, no override → `workflow_agent_log` harness `effort:'high'`, `provenance.effort:'default'`, real Ollama run completed (08-validation.md v21 ROUND 2) |
+| P-A4 (model.default alias-checked at registration) | `contract.ts:184-186` |
+| F-1/G-1 (ceiling over FINAL effectiveDefaults) | `workflow-catalog.ts:171-193`, one pass keyed by knob, shares `checkValueAgainstSpec`; real-tier ceiling-bypass refusal case green (VAL evidence, `HARNESS_DEFAULTS_INVALID`) |
+| F-2 (one bounds predicate) | `checkValueAgainstSpec` exported (`contract.ts:204`), catalog's `violatesOwnSpec` delegates |
+| G-2 | both surviving adjudication-#5 citations read as historical SUPERSEDED notes — verified by adversarial, spot-read by reviewer |
+| P-A6 (marker grammar dedup) | `hasSecretMarker` exported from `secret-resolver.ts:124`, imported at `run-manager.ts:35` — **closed in code**, but see A7: the ledger says otherwise |
+
+### Q2. Traceability consistency
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: **818 items / 11 gaps — the
+identical set carried since IMPL-140**, byte-matched against the extracted dashboard gap list:
+
+- 9 × 漂移 LOW: UT-058→DES-038, UT-064→DES-054, IT-057→DES-054, UT-094→DES-095, UT-095→DES-095,
+  DES-094→IMPL-122, DES-088→IMPL-127, DES-088→IMPL-140, DES-066→IMPL-140 (the last two are the
+  **declared false-positive pairs** — `iter:` records origin, not last-touched; amended notes exist
+  on both DES items)
+- 1 × 未實作 LOW: TASK-018 (pre-existing, recorded debt since v14)
+- 1 × TDD MID: IMPL-082 no test coverage (pre-existing, recorded debt since v14)
+
+0 高嚴重度, 0 未驗證, 0 未真實驗證, 0 orphan/broken-link. **All 11 remain recorded known tech
+debt** (this section renews the record). One NEW ledger-honesty gap found outside trace.py's view:
+**A7** — `src/secret-resolver.ts` changed in v21 (`git diff 637b86e..HEAD` = +14/−1: `MARKER_PREFIX`,
+`hasSecretMarker()`) but appears on **no v21 IMPL `files:` line**, and IMPL-141's "Not done,
+declared" paragraph still routes F-4/P-A6 as outstanding although the code closed it (Q1 last row).
+Doc↔code drift in the impl log itself → folded into the send-back's doc batch (§Q7).
+
+### Q3. Dashboard QA
+
+- Regenerated via `sh .sdlc/trace` (repo copy). **Degraded modes, recorded per contract:** (a) this
+  repo's `trace.py` predates the `--tool` dispatcher, so `dashboard_check`/`solid_check` were run
+  from the plugin cache (`iso-agile-sdlc/2.1.3/skills/iso-agile-sdlc/scripts/`); (b) no playwright
+  browser tools in this session — no in-browser render/tab/SoT-click pass; lexical + structural
+  checks only.
+- `dashboard_check.py`: 0 high / 1 mid / 1 low.
+  - **MID — determined a checker FALSE POSITIVE, verified, not a defect:** "02-architecture.md:929
+    (v21 data architecture) 括號不平衡". The block is a mermaid `erDiagram`; the "unbalanced"
+    character is the `{` in the crow's-foot cardinality `WORKFLOWS ||--o{ RUNS : "…"` — **valid
+    mermaid erDiagram syntax**; the checker is a lexical bracket counter that does not know the
+    notation. All identifier/attribute `{…}` blocks in the diagram balance. Recorded here so the
+    next reviewer's re-run of the same checker does not re-file it as unaddressed.
+  - LOW — `dashboard.html` has no mermaid offline fallback because the repo's `trace.py` is older
+    than the plugin's. **Recorded debt:** sync the repo's `.sdlc/trace.py` with the plugin copy in a
+    future housekeeping pass (also retires degraded mode (a)).
+- SoT links / other mermaid blocks: clean per the checker.
+
+### Q4. Module-boundary check (SOLID)
+
+`solid_check.py`: **PASS** — 7 modules, all cross-module deps as declared on the ARCH `module:`/
+`deps:` lines; 0 mid. 10 LOW "未認領檔案" warnings (`harness-defaults.ts`, `self-update.ts`,
+`agent-semaphore.ts`, `mcp-probe.ts`, `net-guard.ts`, `workflow-meta.ts`, `workspace-artifacts.ts`,
+`webhook-registry.ts`, `continuation-store.ts`, `main.ts` unclaimed by any ARCH module) —
+pre-existing arch-doc drift, recorded debt (not v21-caused). One boundary finding the checker's
+granularity misses, from the quality expert (**R-2, NEW, LOW**): both gateway impls value-import
+`redactHarness` from the executor module (`gateway/client.ts:7` added in v21 by adjudication A-4;
+`claude-agent-sdk-client.ts:16` pre-existing) — ARCH-069's `deps:` names only ARCH-065/ARCH-005 and
+the container diagram's direction is K4→K5. Route: one-line `deps:` amendment on ARCH-069 (or
+relocate `redactHarness`/`capPrompt` to a neutral module) — folded into the doc batch (§Q7).
+
+### Q5. Architecture consistency (consolidated from the 2 pre-run expert reports)
+
+**Sources:** `.panel/review/adversarial.md` (security+scalability+testability, pass 4) and
+`.panel/review/quality-dimensions.md` (observability/replaceability/consumability/self-sustainability).
+QM ⇒ no safety lenses, correct.
+
+**The two reports disagree and the disagreement was adjudicated on primary evidence, not averaged.**
+Quality's §3 "verified consistent" claims — "allowlist-at-both-ends holds", "advertised bound ==
+enforced bound by the shared predicate" — are **contradicted by adversarial's reproductions**, and
+this reviewer's own reads sided with adversarial each time: no schema validator exists on the tool
+dispatch path (A3 — `inputSchema` is declarative metadata; grep confirms the only ajv is the
+agent-*output* schema), `min`/`max` on a `type:'string'` knob are NaN-inert (A4 — `contract.ts:222,
+230` compare `(value as number)`), and `effectiveBounds` narrows only `timeoutMs`/`effort` so the
+third ceiling is never advertised (A5 — `contract.ts:117-127`). Quality verified that text/pointers
+exist; adversarial verified what executes. Where they agree (the entire Q1 closure table, purity of
+`params/*`, ONE decoration site, refusal-only resume) the agreement is genuine and independently
+anchored.
+
+**Consolidated findings (deduplicated across both reports):**
+
+| # | sev | finding (evidence) | route |
+|---|---|---|---|
+| **A1** | **HIGH** | `parseParamContract` never checks `ParamSpec.type` ∈ literals / `enum` is an array / `min`/`max` are numbers (`contract.ts:161-197`; only locked-key, unknown-key, `enum.length`, model-alias checks exist). `enum:'abc'` on `effort` **registers** ('abc'.length=3 ≤ 32 passes the only guard); `boundEffort` (`contract.ts:110-112`) then throws `TypeError: authorEnum.filter is not a function` on **every** `workflow_get`/`workflow_list` — one poisoned registration by any authenticated principal (or the LAN, auth off by default) is a **durable, engine-wide denial of workflow discovery**, and turns admission into an untyped 500. Violates ARCH-067 fail-closed ("nothing is stored") + ARCH-064's typed-taxonomy invariant. Reviewer-verified in source. | **BLOCKING → tests+impl.** Fix has TWO halves: (1) parser shape guard (~6 lines, `invalid(param,reason)`); (2) **the durable-poison half** — a row poisoned pre-fix still bricks the read path; the re-run must either make `readParams`/`effectiveBounds` total over a malformed stored contract (canonical fallback or typed error, never TypeError) or record an explicit verified decision that no deployed DB carries a poisoned row (a live deployment EXISTS — this is not vacuous). |
+| **A2** | **HIGH** | `truncatedSupplied`'s loop trims ONE char per iteration, re-measuring/re-copying each time (`contract.ts:77-84`) — O(n²). **Reviewer-reproduced on this host: 611 ms @ 100k chars, 2396 ms @ 200k, clean 4× per doubling** → an 8 MiB `overrides.model` (bounded only by `MAX_BODY_BYTES`, `server.ts:687`) blocks the single-threaded event loop ≈70 min from ONE request, upstream of `createRun`/`maxConcurrentRuns`/budget, leaving no journal trace. Violates ARCH-066's zero-durable-cost rung property + ADR-005's cost-bounding purpose. | **BLOCKING → tests+impl.** One O(n) `slice` (`Buffer.byteLength` guard + single `subarray(0,64)`). **Red-test shape (pin, to avoid a Gate 5 stall on "testing a complexity bug"):** assert supplied-echo ≤ 64 bytes AND a generous wall-clock ceiling (< 1 s) on a ~1 MB out-of-enum `model` — current code takes ≫60 s, fixed code takes ms; the 100–1000× separation makes the timing assertion robust, not flaky. |
+| A3 | MED | ARCH-064 inv (2) "allowlist at both ends" + S-2 credit `additionalProperties:false` as a control; nothing evaluates `inputSchema` server-side (`server.ts:799` casts and forwards). Behaviourally fail-closed today (`validateUserOverrides` is total); the defect is the doc claiming a control that does not run. | Doc fix (adversarial's own adjudicated call, dissent recorded): amend ARCH-064 inv (2)/S-2 — the closed type + parser are the control, the schema is client-facing documentation. Fold into impl re-run doc batch. |
+| A4 | MED | `min`/`max` on a `type:'string'` knob are inert (NaN comparisons, `contract.ts:222,230`); author's declared `max` is served on `workflow_get` and enforced nowhere — advertised≠enforced, 4th instance; ADR-007's stated fallback mechanism silently does nothing. Adversarial reproduced (`'x'.repeat(40)` vs `max:10` → ok:true). | **Fold into the A1 fix batch** (same module, same shape guard): length semantics for string `min`/`max` in `checkValueAgainstSpec`, or reject `min`/`max` on string specs at parse. |
+| A5 | MED | `maxAppendPromptBytes` enforced at admission but never advertised — `effectiveBounds` narrows only 2 of 3 ceilings; the shipped tool description (`server.ts:334`) even names the ceiling. Fail-closed, consumability defect. | Fold into the A4/A1 batch: add the byte bound to the `appendPrompt` spec in `effectiveBounds`, same-predicate discipline. |
+| A6 | MED | `effortApplied:true` keyed per-**provider** (`EFFORT_PROFILES`, `gateway/client.ts:41-43,55-59` — reviewer-verified) while effort support is per-**model** (vendored `claude-agent-sdk/sdk.d.ts:174-178,1198-1202`: per-model `supportsEffort`, silent downgrade). A run on an effort-less anthropic model records "applied" — the dishonest-observability mode ARCH-068's tri-state exists to prevent; weakens REQ-093's low-vs-max assertion shape. | Doc-or-code, expert-sanctioned either way: amend ARCH-069/068 to define `effortApplied:true` = "sent, not honoured" (cheap), or consult the SDK's post-downgrade report (better). Impl re-run decides; record the choice. |
+| A7 | LOW | `secret-resolver.ts` v21 change untraced in 06-impl-log; IMPL-141 falsely declares F-4/P-A6 "not done" (it IS done in code — Q1). | Ledger fix in impl re-run: IMPL entry naming the file + correct the IMPL-141 paragraph. |
+| A8/O-1 | LOW | 02-architecture.md:913 sequence diagram still emits `appendPromptBytes` (dropped by adjudication B-2). | Doc batch. |
+| A9/C-1 | LOW | ARCH-064 note 1 + S-2 name phantom `parseUserOverrides` (grep src/ → 0; real name `validateUserOverrides`). Reviewer-verified. | Doc batch (the F-4 "ARCH-064 rename"). |
+| A10/O-2 | LOW | `:975` decision rationale + `:761` note still describe the pre-R-G9 cap site/fields (`redactHarness` cap, `promptTruncated`+`appendPromptBytes`); auditor following ARCH-068 to the redact→cap ordering is pointed at the wrong site. | Doc batch. |
+| A11 | LOW | DES-105 body still declares `appendPromptBytes?`/`promptTruncated?` — only the appended B-2 adjudication retracts them; neither exists in `types.ts`. | Doc batch. |
+| A12/R-1 | LOW | ARCH-065/069 api lines describe the pre-P-A1 flat `{param,value}` shape; AND the zero-caller duplicate `mapEffort` in `params/resolve.ts:151-164` has **no `restPath`** — the declared F5/QD-2 debt has diverged from "duplicate" to "wrong" (a future caller picking it emits the exact top-level-`effort` HIGH pass 3 filed). | Doc batch + upgrade the debt entry's wording; deleting the dead duplicate is the cheaper true fix — impl re-run's call. |
+| O-3 | LOW | 05-tests.md UT-020 note claims "6/6"; file holds 5 cases (quality re-ran: 5/5). | Doc batch. |
+| C-2 | LOW | DES-102 prose still says skills-carrying trio / "seven registered keys" vs shipped six-key shape (adjudication B-3) — the routed F-3. | Doc batch (F-3). |
+| R-2 | LOW | Undeclared gateway→executor `redactHarness` dep (see Q4). | Doc batch (ARCH-069 `deps:` line) or relocation. |
+| S-1 | LOW | `DEFAULT_CEILINGS` duplicated (`run-manager.ts:110`, `mcp-facade.ts:20`); catalog without `opts.ceilings` enforces no registration ceiling. Declared residual with recorded rationale (IMPL-141); production composition root always passes the shared object — adversarial re-verified. | Stays recorded debt, rationale stands. |
+
+**arch_consistent = false.** Violations that block: A1, A2 (both ARCH-invariant violations verified
+in source and reproduced). A3..A6 are MED honesty-of-control defects (doc-or-cheap-code); the LOW
+set is doc-layer drift, 7 of it already routed by IMPL-141's own F-3/F-4 and still open.
+
+### Q6. Validation & handover
+
+- **Real-tier: all green.** trace: 0 未驗證, 0 未真實驗證. `rtm.md` (regenerated at Gate 7.5 R2 via
+  trace.py's own scan/build_matrix): **95/95 REQs ✅ real:true**, 0 ❌ (reviewer-grepped: no ❌ rows).
+- `08-validation.md` exists with the v21 ROUND 2 section: fresh `deploy.sh --background` boot
+  (version string cross-checked against the clone's `git rev-parse` — the stale-zombie-port gotcha
+  honestly recorded), G-1 refusal + P-A3 default-reaches-dispatch live over MCP HTTP against local
+  Ollama, suite 1519/1519, tsc clean.
+- **README.md + DEPLOY.md present, current-state, 淺白繁中, ASCII 系統圖在 DEPLOY §0.**
+  DEPLOY.md **leads with the 一鍵部署** (`./deploy.sh --background`, §0) **that Gate 7.5 actually
+  ran**, with the real captured output. History-free by construction (header declares it; spot-greps
+  for changelog/version-diff narrative → none; the 設定總表 `iter` column is per-key provenance
+  metadata, not superseded instructions — same format every closed review accepted). **設定總表 §1b
+  is declared and verified the single place config keys are documented** (other mentions are
+  references); v21's 3 ceiling keys present (rows at DEPLOY.md:349-351); Gate 7.5 re-confirmed
+  32↔32 both directions.
+- **Checked, clean.**
+
+### Q6b. Special-file review (files touched this iteration)
+
+`git diff 637b86e..HEAD --name-only` ∩ {CLAUDE.md, AGENTS.md, *SKILL.md} = **CLAUDE.md (new file,
+22 lines)**. Reviewed via the claude-md-improver skill in **audit-only mode** (reviewer discipline:
+no edits to work under review). Verdict: **pass, LOW notes only.**
+
+- Accuracy: correct (`git show <sha>:<path>` reads without writing; `git checkout <sha> -- <path>`
+  does overwrite AND stage — verified semantics). Currency: reflects a real 2026-08-31 incident;
+  actionable, imperative, no stale instructions. The trace-baseline rule matches how this repo's
+  trace.py actually works (reads working tree).
+- LOW note 1: the incident narrative (7 lines) is longer than CLAUDE.md norms — 2–3 lines would
+  carry the rule; the severity context arguably earns its keep. Non-blocking.
+- LOW note 2: file is rule-only (no build/test/architecture context). Acceptable here: README/
+  DEPLOY/.sdlc carry that for humans and agents alike; not a Gate 8 finding.
+
+### Q7. Send-back scope pin (§P2-style — the auto re-run runs each gate ONCE; unpinned scope is how F-3/F-4 dangled through two closeouts)
+
+- **Gate 5 (tests) — RED first:** A1 (registration of each malformed-spec shape refused typed +
+  nothing stored; read path total over a pre-poisoned stored row — seed the column directly);
+  A2 (echo ≤64 bytes + <1 s wall-clock on ~1 MB out-of-enum `model`; see the pinned test shape in
+  Q5 — do NOT write a bare timing-only assertion); A4 (string `min`/`max` enforced or rejected —
+  pick ONE semantics and pin it); A5 (advertised `appendPrompt` bound == `maxAppendPromptBytes`).
+- **Gate 6 (impl) — GREEN + doc batch in the same pass:** A1 both halves, A2 one-line O(n) fix,
+  A4/A5 same-module fold-ins; A6 decision (doc or SDK-truth) recorded; the deduplicated doc batch =
+  A3, A8/O-1, A9/C-1, A10/O-2, A11, A12/R-1 (incl. debt-entry upgrade or duplicate deletion), O-3,
+  C-2 (=F-3), R-2 (ARCH-069 deps line), A7 (IMPL entry for secret-resolver.ts + correct IMPL-141's
+  false "F-4 not done"). S-1 stays debt.
+- NOT in scope: anything green in Q1; the 11 recorded trace gaps; the solid_check unclaimed-file
+  list; trace.py version sync (housekeeping debt).
+
+### Q8. Retro (v21, fourth pass)
+
+- **What went well:** the send-back machinery converged — all 24 accumulated findings across three
+  passes (R-G1..10, P-A1..A4+P-A6, F-1/F-2, G-1/G-2) are verifiably closed in code, most re-proved
+  at the REAL tier against a fresh one-command boot; the two-expert split (adversarial reproduces,
+  quality traces) caught each other's blind spots — quality's "verified consistent" on A3/A4/A5
+  was falsified by adversarial's reproductions, exactly what the two-lens design is for.
+- **To change:** (1) every send-back so far attacked the *enforcement* seams; nobody until pass 4
+  asked "is the parser's own input survivable downstream?" — add a standing "fail-open parser"
+  lens item: any accepted input must be provably consumable by every downstream reader.
+  (2) Rejection-path COST is part of the contract: a validator that is fail-closed but O(n²) is
+  still a hole; cheap micro-benchmark on new hot validators at Gate 7. (3) Ledger honesty drifted
+  under out-of-band commits (35e6994 landed work with no IMPL entry; IMPL-141 declares done work
+  not-done) — the "no commit without an IMPL entry" rule needs to survive racing workflows.
+- **Known tech debt (all recorded):** the 11 trace gaps (9 drift LOW incl. 2 declared
+  false-positive pairs, TASK-018 LOW, IMPL-082 MID); S-1 ceilings-copy residual; solid_check's 10
+  unclaimed files; repo trace.py older than plugin (no --tool, no mermaid offline fallback);
+  A6's provider-vs-model honesty note if the doc route is chosen; **NEW LOW (found this pass,
+  pre-existing)**: `state.yaml` is not strict-valid YAML — an old gate note (line 73, the
+  validation entry, col ~8978: `version:"v1.4.0-val75"` unescaped inner quotes inside a
+  double-quoted flow scalar) breaks `yaml.safe_load`; the workflow tooling reads it leniently so
+  nothing is broken today, but any strict-YAML consumer of the resume file will fail — housekeeping
+  fix (escape or re-quote that one note) alongside the trace.py sync.
+
+### Q9. Report
+
+```
+Gaps: high=2 (A1, A2 — NEW, blocking) mid=5 (A3..A6 new; IMPL-082 pre-existing TDD)
+      low=22 (10 expert/deduped + 10 trace-recorded + 1 dashboard-fallback + 1 state.yaml
+      strict-YAML defect, pre-existing) — all remaining recorded
+Drift: doc-layer only — 9 trace iter-drift LOW (2 declared false positives) + the Q5 LOW doc batch
+       (arch/design/test text lagging adjudicated code) + A7 impl-log honesty; no unrecorded drift
+Architecture consistent: NO — A1 (ARCH-067 fail-closed violated, durable engine-wide discovery DoS),
+       A2 (ARCH-066/ADR-005 rejection-cost violated, single-request event-loop DoS ~70 min),
+       A3..A6 MED honesty-of-control
+Validation: real-tier all-green? YES (95/95 real:true, fresh one-command boot) · README+DEPLOY? YES
+       (current-state, history-free, 繁中, 一鍵部署 verified-run)
+Dashboard: renders per lexical checks; 1 checker false positive (erDiagram crow's-foot) recorded;
+       no-playwright + plugin-script degraded modes noted
+Module boundaries: solid_check PASS (10 pre-existing LOW unclaimed + R-2 deps-line amendment)
+Conclusion: SEND BACK to Gate 5 (tests) + Gate 6 (impl) — scope pinned in Q7. Not closeable over
+       A1/A2. .panel/ retained for the re-run.
+```
+
+## v21 GATE 8 RE-REVIEW #3 (2026-09-01, SUPERSEDED by RE-REVIEW #4 above — kept for history; was SEND BACK to tests+impl)
 
 > **Third Gate 8 pass — after the §R2 closeout (IMPL-140, commits `f8bb366`, `50a2a36`).**
 > Both architecture experts were re-dispatched on the post-IMPL-140 state

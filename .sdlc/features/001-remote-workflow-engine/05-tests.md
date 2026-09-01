@@ -4590,11 +4590,11 @@ File: `tests/acceptance/val-099-bind-fail-closed.test.ts`. Mock policy (acceptan
 ## v21 slice — tunable-parameter contract, author/user separation part 1 (REQ-090..095)
 
 ### UT-098 — pure `src/params/contract.ts`: locked/tunable vocabulary, `parseParamContract`, `validateUserOverrides`, the total rejection table (DES-101)
-- **status:** green
+- **status:** red
 - **traces:** DES-101, ARCH-064, TASK-097
 - **tier:** unit
 - **real:** false
-- **result:** pass
+- **result:** fail
 - **iter:** v21
 
 File: `tests/unit/params-contract.test.ts`. Mock policy (unit): pure module, zero I/O/VM/clock/randomness.
@@ -4644,6 +4644,51 @@ passthrough accepted in a declared model enum even when not literally in `aliasN
 no empty-table skip, no passthrough carve-out — both cases get `PARAM_CONTRACT_INVALID` when `ok:true`
 is expected. Confirmed via direct re-run: 3/4 fail for exactly this reason (1 GREEN pin), full file
 34 tests, 3 failed / 31 passed.
+
+**v21 GATE 5 RE-RUN #4 (2026-09-01, verifier, test-first RED — 07-review.md GATE 8 RE-REVIEW #4
+§Q7 send-back scope: A1(both halves)/A2/A4/A5):** 12 new cases across 6 new describe blocks, 10
+genuinely red / 2 GREEN regression pins (same "kept as the pin" precedent as B1/B4 above). Full file
+now 46 tests, 10 failed / 36 passed, confirmed via `npx vitest run tests/unit/params-contract.test.ts`.
+**A1 half 1** (`parseParamContract() — malformed ParamSpec shape guard`, 4 cases, all red):
+`parseParamContract` never validates `ParamSpec.type` ∈ the 3 literals, that a declared `enum` is
+actually an array, or that `min`/`max` are numbers (`contract.ts:161-197` — only locked-key,
+unknown-key, `enum.length`, and model-alias checks exist) — a `type:'boolean'` knob, a non-array
+`enum` (`'abc'`, whose `.length===3` sails under the ≤32 member guard), and non-number `min`/`max`
+all register today with `ok:true` when `ok:false` is expected.
+**A1 half 2** (`effectiveBounds() — total over an already-poisoned stored contract`, 2 cases, both
+red): a stored `effort` spec with the exact poison shape above (`enum:'abc'`, simulating a row that
+reached storage before half 1's guard existed — a live deployment has one) throws
+`TypeError: authorEnum.filter is not a function` inside `boundEffort` today; `effectiveBounds` must
+stay total (never throw) and return a usable (array) `enum` even over that row — pinned as the fix
+shape, decision deferred to Gate 6 on HOW (canonical fallback vs. typed error upstream of this call),
+this only pins that the pure function itself must not crash.
+**A4** (`checkValueAgainstSpec() — string min/max are byte-length bounds, not NaN-inert`, 3 cases, 2
+red / 1 green pin): `min`/`max` on a `type:'string'` spec are compared as `(value as number)` today
+— always NaN, so `'x'.repeat(40) > {max:10}` and `'ab' < {min:5}` both wrongly return `ok:true`.
+**Pinned semantics (Gate-5 decision, needed by A5 below):** for a string-typed spec, `min`/`max`
+bound the value's UTF-8 BYTE LENGTH (matching `maxAppendPromptBytes`/`MAX_SUPPLIED_BYTES`'s existing
+byte-length convention in this module) — enforced in `checkValueAgainstSpec` itself, NOT rejected at
+parse time, so the same predicate `effectiveBounds` narrows for `appendPrompt` (A5) is the one
+`validateUserOverrides` already calls (F-2's "one bounds predicate" discipline, not a second one).
+The "value within bounds" case is a GREEN regression pin (NaN comparisons are already vacuously
+`ok:true` — must stay `ok:true` once the real length check lands).
+**A5** (`effectiveBounds() — appendPrompt advertises the maxAppendPromptBytes ceiling`, 2 cases, 1
+red / 1 green pin): `effectiveBounds` narrows only `timeoutMs`/`effort` — `appendPrompt` passes
+through unchanged, so `eff.knobs.appendPrompt.max` is `undefined` though the shipped tool
+description names the ceiling (server.ts:334) and it IS enforced at admission
+(`validateUserOverrides`'s own byte check, ahead of `checkValueAgainstSpec`) — advertised≠enforced.
+Pinned fix shape: same `min(author, ceiling)` precedent `boundTimeoutMs` already uses (a
+`boundAppendPrompt`), applied in bytes per the A4 pin. The "author-declared max tighter than
+ceiling" case is a coincidental GREEN pin today (an author-set `max` already passes through
+unchanged pre-fix) — must still equal the tighter author value once ceiling-narrowing exists.
+**A2** (`checkValueAgainstSpec() — rejection cost must not scale quadratically`, 1 case, red,
+per-test `it()` timeout raised to 90s): pinned red-test shape exactly as prescribed in 07-review.md
+§Q5 — a ~1MB out-of-enum `model` value must be rejected in <1s wall-clock with the echoed `supplied`
+capped at 64 bytes; reviewer-reproduced 611ms@100k/2396ms@200k (O(n²), `truncatedSupplied` trims one
+char per iteration) reconfirmed on this host (602/2401/9614/29274/59770ms @ 100k/200k/400k/700k/1M
+chars respectively — clean quadratic scaling) — today's actual elapsed time at 1M chars is
+~59.8s ≫ 1s, the 100-1000x separation the review calls "robust, not flaky". This is the slow test in
+the file (~60s); it becomes a millisecond regression pin once Gate 6's O(n) slice fix lands.
 
 ### UT-099 — pure `src/params/resolve.ts`: two-moment merge, per-key provenance, five-segment `composePrompt`, `mapEffort` (DES-102)
 - **status:** red
@@ -4791,11 +4836,11 @@ v21 defect).
 **v21 GATE 8 RE-REVIEW #3 re-run (2026-09-01, review 07-review.md §P2 — Gate 5 re-run scope pinned (b)/(c)):** 2 new describe blocks, extended in place, no new IDs. **P-A2 ≡ adversarial A2 ≡ quality QD-4** (registration-end companion to R-G3's admission-end fix; the registration-side half of this same finding also lives in `harness-defaults-validation.test.ts`'s P-A2/model-enum coverage — this block is the run-time-admission-facing half): own `beforeAll`/own default-alias (unconfigured) server, 3 cases — (1) a `model.enum` entry absent from `DEFAULT_ALIASES` is rejected AT REGISTRATION on the default deployment (genuinely RED — today the catalog's `aliasNames` is an empty Set, and `isKnownAlias` treats size-0 as accept-all, so registration succeeds and only fails `UNKNOWN_ALIAS` at every subsequent run, `run-manager.ts:424`); (2) regression pin — a real `DEFAULT_ALIASES` member (`sonnet`) still registers fine on the default deployment; (3) regression pin — on a CONFIGURED-alias deployment (this file's outer `server`/`callTool` fixture) a bogus `model.enum` entry is ALREADY rejected at registration (parity already holds at that end — only the default/unconfigured end of the seam is broken). Red reason for (1): `server.ts:1142` hands the catalog `config?.aliases ? new Set(...) : undefined`, which `workflow-catalog.ts` defaults to an empty Set when unconfigured, vs `server.ts:1196` which hands `RunManager` `config?.aliases ?? DEFAULT_ALIASES` (always non-empty) — the two ends of the SAME seam disagree exactly on the default/unconfigured deployment (the shape R-G3 already taught, at the other end). Confirmed via direct re-run (`npx vitest run tests/integration/params-admission.test.ts -t "P-A2"`): case (1) fails on `expect(r.error).toBeDefined()` (`expected undefined not to be undefined` — registration silently succeeds); cases (2)/(3) pass. **P-A3 ≡ adversarial A3** (dispatch-inertness half; the registration/round-trip half of this same finding lives in `harness-defaults-validation.test.ts`'s own P-A3 addition above): new `P-A3` describe block, own real `WorkflowCatalog` + `RunManager` with an injected `spawner` (same direct-observation pattern as the B2 block above, capturing `req.runParams` — the run-immutable admission snapshot dispatch actually receives) — 1 case: a workflow registered with an author-declared `effort.default` (`params.knobs.effort.default:'max'`) and run with NO overrides at all must dispatch with `runParams.effort==='max'` and `runParams.provenance.effort==='default'`. Red reason: `defaultRunParams` (`src/params/resolve.ts:38-51`) only ever reads `model/timeoutMs/prompt/tools` off the registered `defaults` — `effort` (and `appendPrompt`) are stored (workflow-catalog.ts's effectiveDefaults loop injects them) and served on `workflow_get`, but read NOWHERE at dispatch; confirmed via direct re-run: the assertion `expect(captured[0]!.effort).toBe('max')` fails with `expected undefined to be 'max'` after polling the run to `'completed'` (the real sandboxed script genuinely reached its `agent()` call and dispatched). Full-suite re-run (`npx vitest run`, 2026-09-01): 6 failed / 1503 passed (1509 total, 243 files) — exactly the 6 genuinely-new-red cases across this re-run's 3 touched files (2 REST transport-shape cases in `gateway-effort.test.ts`, 1 round-trip case + 1 model-default case in `harness-defaults-validation.test.ts`, 1 registration-parity case + 1 dispatch-inertness case here) — 0 unrelated regressions vs the pre-re-run 1499/1499 baseline (the 2 `spawn litellm ENOENT` unhandled background-process errors are the same documented pre-existing environment artifact). `npx tsc --noEmit` clean. Hermetic: `FixedClock` anchor only (P-A3), no absolute-date-vs-real-clock comparisons anywhere in the new cases.
 
 ### VAL-100 — REQ-090: a workflow declares its tunable-parameter contract, discoverable without reading the script (REQ-090)
-- **status:** green
+- **status:** red
 - **traces:** REQ-090
 - **tier:** acceptance
 - **real:** false
-- **result:** pass
+- **result:** fail
 - **iter:** v21
 
 File: `tests/acceptance/val-100-param-contract.test.ts`. Mock policy (acceptance, DES-108): real
@@ -4807,6 +4852,32 @@ key (`mcp`) is rejected, nothing stored; a script with no `params` block still r
 compatible) and reads back the canonical 4-knob contract.
 Red reason: `meta.params` is not parsed/stored/validated anywhere today — every assertion fails
 against the current engine, confirmed via `npx vitest run`.
+
+**v21 GATE 5 RE-RUN #4 (2026-09-01, verifier, test-first RED — 07-review.md GATE 8 RE-REVIEW #4
+§Q7 send-back, real-tier half of A1):** new describe block `REQ-090 real-tier: a
+malformed/poisoned params contract must not durably break workflow discovery`, 2 new cases, both
+red (real `createServer` HTTP + a direct `better-sqlite3` connection to the same `catalog.db` to
+seed a pre-existing poisoned row — same "seed the column directly" pattern IT-012/
+`catalog-persistence.test.ts` already established for pre-v21 schema rows). (1) a
+`params.knobs.effort` with a non-array `enum` (`'abc'`) registers successfully today (no shape
+guard exists) instead of being rejected typed with nothing stored — same assertion shape as the
+existing LOCKED-key case above. (2) a row seeded directly with that exact poison shape (bypassing
+`workflow_register` entirely, simulating data written before the registration guard existed) makes
+`workflow_get` return a JSON-RPC `error.code:-32000` ("authorEnum.filter is not a function") instead
+of a normal tool-call envelope — server.ts's generic `tools/call` catch (`server.ts:1561`) is
+turning the engine's own `TypeError` into what the review calls an "untyped 500"; asserted via a new
+`callToolRaw` helper (added alongside the existing `callTool`) that inspects the un-unwrapped
+JSON-RPC body directly, so the pin is resolution-agnostic (a total canonical fallback OR a typed
+application-level error both satisfy `error` being absent at the transport level — Gate 6 picks
+which). A sibling healthy workflow registered before the poison must still appear in `workflow_list`
+(today it does — the crash is per-request on the poisoned name only, but recorded as a live
+assertion, not assumed). Confirmed via direct re-run (`npx vitest run
+tests/acceptance/val-100-param-contract.test.ts`): 2 failed / 4 passed (6 total), both for exactly
+the stated reason. Full-suite re-run (`npx vitest run`): 12 failed / 1521 passed (1533 total, 243
+files) — exactly the 10 new UT-098 cases + these 2, 0 unrelated regressions vs the pre-re-run
+1519/1519 (v21 Gate 7.5 ROUND 2) baseline. `npx tsc --noEmit` clean. Hermetic: no clock/date
+literals in any new case (uses `new Date().toISOString()` only to satisfy the `createdAt NOT NULL`
+column on a directly-seeded row, never compared as future/past).
 
 ### VAL-101 — REQ-091: per-run overrides validated against the contract; locked configuration is unreachable from the caller (REQ-091)
 - **status:** green

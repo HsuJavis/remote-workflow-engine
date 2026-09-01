@@ -16,6 +16,7 @@ import {
   parseParamContract,
   validateUserOverrides,
   validateDeclaredArgs,
+  checkValueAgainstSpec,
   isEffort,
 } from '../../src/params/contract.js';
 import type { ParamContract, Ceilings } from '../../src/params/contract.js';
@@ -329,4 +330,128 @@ describe('parseParamContract() model-enum vs aliasNames — empty-table skip + o
     const r = parseParamContract({ knobs: { model: { type: 'enum', enum: ['openrouter/some-vendor/some-model'] } } }, ALIASES);
     expect(r.ok).toBe(true);
   });
+});
+
+// v21 Gate 8 RE-REVIEW #4 (review §Q5 A1, BLOCKING HIGH): `parseParamContract` never checks
+// `ParamSpec.type` is one of the 3 literals, nor that a declared `enum` is actually an array, nor
+// that `min`/`max` are numbers — only locked-key, unknown-key, `enum.length`, and model-alias
+// checks exist (contract.ts:161-197). `enum:'abc'` on `effort` REGISTERS today ('abc'.length===3
+// passes the only length guard), and the poisoned row then throws `TypeError: authorEnum.filter is
+// not a function` inside `boundEffort` on every subsequent `workflow_get`/`workflow_list` — a
+// durable, engine-wide denial of workflow discovery from one poisoned registration. Fix has TWO
+// halves, both pinned below: (1) the parser must reject each malformed shape typed, nothing stored;
+// (2) `effectiveBounds` must stay TOTAL even over a row that reached storage before this fix
+// shipped (a live deployment has one) — never throw, always return a usable contract.
+describe('parseParamContract() — malformed ParamSpec shape guard (v21 Gate 8 RE-REVIEW #4, A1 half 1)', () => {
+  it('a `type` outside the 3 literals is rejected, not silently accepted (today: registers as-is)', () => {
+    const r = parseParamContract({ knobs: { model: { type: 'boolean' } } }, ALIASES);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+      expect(r.detail['param']).toBe('model');
+    }
+  });
+
+  it('a declared `enum` that is not an array is rejected (today: only `.length` is checked, so a string like "abc" — length 3 — sails through the ≤32 guard)', () => {
+    const r = parseParamContract({ knobs: { effort: { type: 'enum', enum: 'abc' as unknown as string[] } } }, ALIASES);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+  });
+
+  it('a non-number `min` is rejected (today: passed through unchecked)', () => {
+    const r = parseParamContract({ knobs: { timeoutMs: { type: 'number', min: 'abc' as unknown as number } } }, ALIASES);
+    expect(r.ok).toBe(false);
+  });
+
+  it('a non-number `max` is rejected (today: passed through unchecked)', () => {
+    const r = parseParamContract({ knobs: { timeoutMs: { type: 'number', max: 'abc' as unknown as number } } }, ALIASES);
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe('effectiveBounds() — total over an already-poisoned stored contract, never throws (v21 Gate 8 RE-REVIEW #4, A1 half 2)', () => {
+  it('a stored `effort` spec with a non-array `enum` (a row that predates the half-1 parser guard) does not crash boundEffort\'s authorEnum.filter (today: throws TypeError)', () => {
+    const poisoned: ParamContract = {
+      knobs: { ...canonicalContract().knobs, effort: { type: 'enum', enum: 'abc' as unknown as string[] } },
+      args: {},
+    };
+    expect(() => effectiveBounds(poisoned, CEILINGS)).not.toThrow();
+  });
+
+  it('the recovered effort spec still carries a usable (array) enum after surviving a poisoned stored value', () => {
+    const poisoned: ParamContract = {
+      knobs: { ...canonicalContract().knobs, effort: { type: 'enum', enum: 'abc' as unknown as string[] } },
+      args: {},
+    };
+    const eff = effectiveBounds(poisoned, CEILINGS);
+    expect(Array.isArray(eff.knobs.effort?.enum)).toBe(true);
+  });
+});
+
+// v21 Gate 8 RE-REVIEW #4 (review §Q5 A4, MED, folded into the A1 batch): `min`/`max` on a
+// `type:'string'` knob are NaN-inert today — `checkValueAgainstSpec` always compares `(value as
+// number)`, so `'x'.repeat(40) > 10` is `NaN > 10` (`false`) and the check never fires
+// (contract.ts:222,230). Pinned semantics (same-predicate discipline the A5 fix below relies on):
+// for a string-typed spec, `min`/`max` bound the value's UTF-8 BYTE LENGTH (matching how
+// `maxAppendPromptBytes`/`MAX_SUPPLIED_BYTES` already express string limits in this module).
+describe('checkValueAgainstSpec() — string min/max are byte-length bounds, not NaN-inert (v21 Gate 8 RE-REVIEW #4, A4)', () => {
+  it('a string value over a declared `max` is rejected (today: ok:true, NaN comparison never fires)', () => {
+    const r = checkValueAgainstSpec('bio', 'x'.repeat(40), { type: 'string', max: 10 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('PARAM_OUT_OF_RANGE');
+      expect((r.detail['allowed'] as { max?: number } | undefined)?.max).toBe(10);
+    }
+  });
+
+  it('a string value under a declared `min` is rejected (today: ok:true)', () => {
+    const r = checkValueAgainstSpec('bio', 'ab', { type: 'string', min: 5 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('PARAM_OUT_OF_RANGE');
+  });
+
+  it('a string value within declared min/max round-trips ok (regression pin, already true today)', () => {
+    const r = checkValueAgainstSpec('bio', 'hello', { type: 'string', min: 1, max: 10 });
+    expect(r.ok).toBe(true);
+  });
+});
+
+// v21 Gate 8 RE-REVIEW #4 (review §Q5 A5, MED, folded into the A1/A4 batch): `effectiveBounds`
+// narrows only `timeoutMs`/`effort` — the third ceiling, `maxAppendPromptBytes`, is enforced at
+// admission (contract.ts's `validateUserOverrides`) but never ADVERTISED, even though the shipped
+// tool description names it (server.ts:334). Pinned fix shape: same min(author,ceiling) precedent
+// `boundTimeoutMs` already uses, applied to `appendPrompt.max` in BYTES (consistent with the A4 pin
+// above: string `max` means byte length).
+describe('effectiveBounds() — appendPrompt advertises the maxAppendPromptBytes ceiling (v21 Gate 8 RE-REVIEW #4, A5)', () => {
+  it('the effective appendPrompt knob carries max === ceilings.maxAppendPromptBytes (today: undefined — appendPrompt passes through effectiveBounds unchanged)', () => {
+    const eff = effectiveBounds(canonicalContract(), CEILINGS);
+    expect(eff.knobs.appendPrompt?.max).toBe(CEILINGS.maxAppendPromptBytes);
+  });
+
+  it('an author-declared appendPrompt max tighter than the ceiling is preserved (min-of-both, same precedent as timeoutMs)', () => {
+    const c: ParamContract = { knobs: { ...canonicalContract().knobs, appendPrompt: { type: 'string', max: 100 } }, args: {} };
+    const eff = effectiveBounds(c, CEILINGS);
+    expect(eff.knobs.appendPrompt?.max).toBe(100);
+  });
+});
+
+// v21 Gate 8 RE-REVIEW #4 (review §Q5 A2, BLOCKING HIGH): `truncatedSupplied`'s loop trims ONE
+// char per iteration, re-measuring `Buffer.byteLength` and re-copying the whole string every time
+// (contract.ts:77-84) — O(n²). Reviewer-reproduced: 611ms@100k chars, 2396ms@200k (clean 4x per
+// doubling). Pinned red-test shape (per review §Q5, to avoid a "testing a complexity bug" stall):
+// assert the echoed `supplied` is ≤64 bytes AND a generous (<1s) wall-clock ceiling on a ~1MB
+// out-of-enum `model` value — the 100-1000x separation between today's ~60s and a fixed O(n) slice
+// makes this a robust, non-flaky timing assertion, not a micro-benchmark.
+describe('checkValueAgainstSpec() — rejection cost must not scale quadratically with input size (v21 Gate 8 RE-REVIEW #4, A2)', () => {
+  it('a ~1MB out-of-enum model value is rejected in well under 1s, echo capped at 64 bytes (today: O(n^2) truncation loop takes ~60s+ at this size)', () => {
+    const huge = 'x'.repeat(1_000_000);
+    const t0 = Date.now();
+    const r = checkValueAgainstSpec('model', huge, { type: 'string', enum: ['sonnet', 'haiku'] });
+    const elapsedMs = Date.now() - t0;
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(Buffer.byteLength(String(r.detail['supplied']), 'utf8')).toBeLessThanOrEqual(64);
+    }
+    expect(elapsedMs).toBeLessThan(1000);
+  }, 90_000);
 });
