@@ -25,6 +25,7 @@ import { FixedClock } from '../../src/clock.js';
 import type { AgentSpawner } from '../../src/agent-executor.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
 import type { JournalEntry } from '../../src/types.js';
+import { registerPublished, startScript } from '../helpers/workflow-fixtures.js';
 
 const CLOCK = new FixedClock(new Date('2024-01-01T00:00:00Z'));
 
@@ -66,67 +67,70 @@ describe('N-level workflow() composition (v8 Slice 1, REQ-041..044)', () => {
   // ── REQ-041: depth up to the configured cap ──────────────────────────────────────────────
   it('REQ-041 runs a composite as a NODE inside another composite up to maxWorkflowDepth', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    await catalog.register('leaf', `return 'L';`);
-    await catalog.register('mid', `const x = await workflow('leaf', {}); return 'M(' + x + ')';`);
+    await registerPublished(catalog, 'leaf', `return 'L';`);
+    await registerPublished(catalog, 'mid', `const x = await workflow('leaf', {}); return 'M(' + x + ')';`);
     const store = new InMemoryRunStore(CLOCK);
     const mgr = new RunManager({ store, clock: CLOCK, catalog, spawner: echoSpawner(), maxWorkflowDepth: 2 });
 
     // top(0) → mid(1) → leaf(2): today mid's workflow('leaf') throws NESTING_ERROR; with depth 2 it runs.
-    const runId = await mgr.start({ script: `const m = await workflow('mid', {}); return m;` });
+    const runId = await startScript(mgr, `const m = await workflow('mid', {}); return m;`);
     expect(await completedValue(mgr, runId)).toBe('M(L)');
   });
 
   it('REQ-041 rejects a workflow() call that would exceed maxWorkflowDepth with NESTING_DEPTH_EXCEEDED', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    await catalog.register('leaf', `return 'L';`);
-    await catalog.register('mid', `const x = await workflow('leaf', {}); return 'M(' + x + ')';`);
+    await registerPublished(catalog, 'leaf', `return 'L';`);
+    await registerPublished(catalog, 'mid', `const x = await workflow('leaf', {}); return 'M(' + x + ')';`);
     const store = new InMemoryRunStore(CLOCK);
     const mgr = new RunManager({ store, clock: CLOCK, catalog, spawner: echoSpawner(), maxWorkflowDepth: 1 });
 
     // top(0) → mid(1) OK; mid → leaf(2) exceeds the cap of 1.
-    const runId = await mgr.start({
-      script: `try { const m = await workflow('mid', {}); return { m }; } catch (e) { return { code: e && (e.code || e.name) }; }`,
-    });
+    const runId = await startScript(
+      mgr,
+      `try { const m = await workflow('mid', {}); return { m }; } catch (e) { return { code: e && (e.code || e.name) }; }`,
+    );
     expect(await completedValue(mgr, runId)).toEqual({ code: 'NESTING_DEPTH_EXCEEDED' });
   });
 
   // ── REQ-042: ancestor-cycle guard, and diamond allowed ───────────────────────────────────
   it('REQ-042 refuses an ancestor cycle with NESTING_CYCLE', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    await catalog.register('a', `const x = await workflow('b', {}); return x;`);
-    await catalog.register('b', `const y = await workflow('a', {}); return y;`);
+    await registerPublished(catalog, 'a', `const x = await workflow('b', {}); return x;`);
+    await registerPublished(catalog, 'b', `const y = await workflow('a', {}); return y;`);
     const store = new InMemoryRunStore(CLOCK);
     const mgr = new RunManager({ store, clock: CLOCK, catalog, spawner: echoSpawner(), maxWorkflowDepth: 10 });
 
     // top → a(1,{a}) → b(2,{a,b}) → a: 'a' is already an ancestor → cycle, not depth.
-    const runId = await mgr.start({
-      script: `try { await workflow('a', {}); return { ok: true }; } catch (e) { return { code: e && (e.code || e.name) }; }`,
-    });
+    const runId = await startScript(
+      mgr,
+      `try { await workflow('a', {}); return { ok: true }; } catch (e) { return { code: e && (e.code || e.name) }; }`,
+    );
     expect(await completedValue(mgr, runId)).toEqual({ code: 'NESTING_CYCLE' });
   });
 
   it('REQ-042 allows a diamond: the same NON-ancestor workflow called in two sibling branches', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    await catalog.register('d', `return 'D';`);
-    await catalog.register('fork', `const [x, y] = await parallel([() => workflow('d', {}), () => workflow('d', {})]); return x + y;`);
+    await registerPublished(catalog, 'd', `return 'D';`);
+    await registerPublished(catalog, 'fork', `const [x, y] = await parallel([() => workflow('d', {}), () => workflow('d', {})]); return x + y;`);
     const store = new InMemoryRunStore(CLOCK);
     const mgr = new RunManager({ store, clock: CLOCK, catalog, spawner: echoSpawner(), maxWorkflowDepth: 2 });
 
-    const runId = await mgr.start({ script: `return await workflow('fork', {});` });
+    const runId = await startScript(mgr, `return await workflow('fork', {});`);
     expect(await completedValue(mgr, runId)).toBe('DD');
   });
 
   // ── REQ-043: total-descendant cap ────────────────────────────────────────────────────────
   it('REQ-043 caps total nested workflow() invocations per run with DESCENDANT_CAP_EXCEEDED', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    await catalog.register('leaf', `return 'x';`);
+    await registerPublished(catalog, 'leaf', `return 'x';`);
     const store = new InMemoryRunStore(CLOCK);
     const mgr = new RunManager({ store, clock: CLOCK, catalog, spawner: echoSpawner(), maxWorkflowDepth: 4, maxWorkflowDescendants: 3 });
 
     // 5 sequential depth-1 calls; the 4th exceeds the total-descendant cap of 3.
-    const runId = await mgr.start({
-      script: `try { for (let i = 0; i < 5; i++) { await workflow('leaf', {}); } return { ok: true }; } catch (e) { return { code: e && (e.code || e.name) }; }`,
-    });
+    const runId = await startScript(
+      mgr,
+      `try { for (let i = 0; i < 5; i++) { await workflow('leaf', {}); } return { ok: true }; } catch (e) { return { code: e && (e.code || e.name) }; }`,
+    );
     expect(await completedValue(mgr, runId)).toEqual({ code: 'DESCENDANT_CAP_EXCEEDED' });
   });
 
@@ -135,8 +139,8 @@ describe('N-level workflow() composition (v8 Slice 1, REQ-041..044)', () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
     // leaf catches its own agent() failure and reports the code as a VALUE — so the shared-budget
     // block is observed directly (an uncaught agent throw flattens to SCRIPT_ERROR in evaluateScript).
-    await catalog.register('leaf', `try { const l = await agent('L'); return { l }; } catch (e) { return { blocked: e && (e.name || e.code) }; }`);
-    await catalog.register('mid', `const m = await agent('M'); const x = await workflow('leaf', {}); return { m, x };`);
+    await registerPublished(catalog, 'leaf', `try { const l = await agent('L'); return { l }; } catch (e) { return { blocked: e && (e.name || e.code) }; }`);
+    await registerPublished(catalog, 'mid', `const m = await agent('M'); const x = await workflow('leaf', {}); return { m, x };`);
     const store = new InMemoryRunStore(CLOCK);
     const gwCounts = new Map<string, number>();
     const gateway: GatewayClient = {
@@ -149,10 +153,11 @@ describe('N-level workflow() composition (v8 Slice 1, REQ-041..044)', () => {
 
     // Budget 2000 tokens @ 1000/call: T(top) then M(mid) spend it; L(leaf, depth 2) must be blocked by
     // the SHARED guard — proving the nested level did NOT get a fresh per-level budget.
-    const runId = await mgr.start({
-      script: `const t = await agent('T'); const w = await workflow('mid', {}); return { t, w };`,
-      budget: 2000,
-    });
+    const runId = await startScript(
+      mgr,
+      `const t = await agent('T'); const w = await workflow('mid', {}); return { t, w };`,
+      { budget: 2000 },
+    );
     expect(await completedValue(mgr, runId)).toEqual({ t: 'T', w: { m: 'M', x: { blocked: 'BudgetExceededError' } } });
     expect(gwCounts.get('T')).toBe(1);
     expect(gwCounts.get('M')).toBe(1);
@@ -162,13 +167,13 @@ describe('N-level workflow() composition (v8 Slice 1, REQ-041..044)', () => {
   // ── REQ-044(b): journal callSeq unique + MAX_SAFE_INTEGER-safe at depth 3 ─────────────────
   it('REQ-044 keeps nested journal callSeq keys unique and within MAX_SAFE_INTEGER at depth 3', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    await catalog.register('leaf', `const l = await agent('L'); return l;`);
-    await catalog.register('mid', `const m = await agent('M'); const x = await workflow('leaf', {}); return { m, x };`);
+    await registerPublished(catalog, 'leaf', `const l = await agent('L'); return l;`);
+    await registerPublished(catalog, 'mid', `const m = await agent('M'); const x = await workflow('leaf', {}); return { m, x };`);
     const store = new CapturingStore(CLOCK);
     const mgr = new RunManager({ store, clock: CLOCK, catalog, spawner: echoSpawner(), maxWorkflowDepth: 3 });
 
     // top(0):agent(T) → mid(1):agent(M) → leaf(2):agent(L). Three agent() journal entries in ONE run.
-    const runId = await mgr.start({ script: `const t = await agent('T'); const w = await workflow('mid', {}); return { t, w };` });
+    const runId = await startScript(mgr, `const t = await agent('T'); const w = await workflow('mid', {}); return { t, w };`);
     const value = await completedValue(mgr, runId);
     expect(value).toEqual({ t: 'T', w: { m: 'M', x: 'L' } });
 

@@ -3,6 +3,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia, runScriptVia } from '../helpers/workflow-fixtures.js';
 
 describe('E2E: named workflow registry + per-run workspace isolation (REQ-014, REQ-013)', () => {
   let server: Server;
@@ -45,7 +46,7 @@ describe('E2E: named workflow registry + per-run workspace isolation (REQ-014, R
   });
 
   it('workflow_run with name invokes the registered script', async () => {
-    await mcpCall('workflow_register', { name: 'calc', script: `return args.a + args.b;` });
+    await registerPublishedVia(mcpCall, 'calc', `return args.a + args.b;`);
     const run = await mcpCall('workflow_run', { name: 'calc', args: { a: 3, b: 4 } });
     const runId = run.runId;
     const status = await pollUntil(runId);
@@ -56,8 +57,8 @@ describe('E2E: named workflow registry + per-run workspace isolation (REQ-014, R
   }, 20000);
 
   it('workflow(name) inside a script uses the registered version', async () => {
-    await mcpCall('workflow_register', { name: 'inner', script: `return args.val * 2;` });
-    await mcpCall('workflow_register', { name: 'outer', script: `return workflow('inner', {val: args.n});` });
+    await registerPublishedVia(mcpCall, 'inner', `return args.val * 2;`);
+    await registerPublishedVia(mcpCall, 'outer', `return workflow('inner', {val: args.n});`);
     const run = await mcpCall('workflow_run', { name: 'outer', args: { n: 5 } });
     const status = await pollUntil(run.runId);
     expect(status.status).toBe('completed');
@@ -66,12 +67,10 @@ describe('E2E: named workflow registry + per-run workspace isolation (REQ-014, R
   }, 20000);
 
   it('workflow(unknownName) inside a script throws a catchable error', async () => {
-    const run = await mcpCall('workflow_run', {
-      script: `
+    const run = await runScriptVia(mcpCall, `
         try { return await workflow('no-such-workflow'); }
         catch (e) { return 'caught:' + e.message; }
-      `,
-    });
+      `);
     const status = await pollUntil(run.runId);
     const result = await mcpCall('workflow_result', { runId: run.runId });
     expect(String(result.result)).toMatch(/caught:/);
@@ -84,10 +83,7 @@ describe('E2E: named workflow registry + per-run workspace isolation (REQ-014, R
     // the real filesystem in IT-007 (WorkflowCatalog.runWorkspace). Here we prove isolation
     // through the documented script API surface: two concurrent runs of the same registered
     // workflow must each resolve their own args, never the other run's.
-    await mcpCall('workflow_register', {
-      name: 'workspace-test',
-      script: `return args.runId;`,
-    });
+    await registerPublishedVia(mcpCall, 'workspace-test', `return args.runId;`);
 
     const runA = await mcpCall('workflow_run', { name: 'workspace-test', args: { runId: 'A' } });
     const runB = await mcpCall('workflow_run', { name: 'workspace-test', args: { runId: 'B' } });
@@ -103,11 +99,11 @@ describe('E2E: named workflow registry + per-run workspace isolation (REQ-014, R
   }, 25000);
 
   it('updating a registered workflow: new runs use new version, prior runs keep their version', async () => {
-    await mcpCall('workflow_register', { name: 'versioned', script: `return 'v1';` });
+    await registerPublishedVia(mcpCall, 'versioned', `return 'v1';`);
     const runV1 = await mcpCall('workflow_run', { name: 'versioned' });
     await pollUntil(runV1.runId);
 
-    await mcpCall('workflow_register', { name: 'versioned', script: `return 'v2';` });
+    await registerPublishedVia(mcpCall, 'versioned', `return 'v2';`);
     const runV2 = await mcpCall('workflow_run', { name: 'versioned' });
     await pollUntil(runV2.runId);
 
