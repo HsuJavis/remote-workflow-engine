@@ -108,6 +108,29 @@ describe('parseParamContract() — registration-time parse of meta.params (DES-1
     expect(r.ok).toBe(false);
   });
 
+  // v21 Gate 6.5+7 coverage-gate extension (verifier, 2026-09-01): the two sibling shape guards on
+  // `params.knobs`/`params.args` themselves (as opposed to the whole `metaParams` object, pinned
+  // above) had no covering case — a `metaParams` that IS an object but whose `knobs`/`args`
+  // property is an array or a primitive reached `Object.entries()` uncaught before these guards
+  // existed, and remained an unexercised branch after they landed.
+  it('params.knobs present but not an object (an array) → PARAM_CONTRACT_INVALID, detail.param:"knobs"', () => {
+    const r = parseParamContract({ knobs: ['not', 'an', 'object'] }, ALIASES);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+      expect(r.detail['param']).toBe('knobs');
+    }
+  });
+
+  it('params.args present but not an object (a string) → PARAM_CONTRACT_INVALID, detail.param:"args"', () => {
+    const r = parseParamContract({ args: 'not-an-object' }, ALIASES);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('PARAM_CONTRACT_INVALID');
+      expect(r.detail['param']).toBe('args');
+    }
+  });
+
   // v21 Gate 5 addendum Part 2 (DES-101 rejection table row 8 — clause-coverage sweep): row 8 names
   // FOUR conditions (locked key, unknown knob, malformed, over bounds); locked-key/malformed/over-32
   // were each already covered above, but no case exercised "unknown knob" — a knob name that is

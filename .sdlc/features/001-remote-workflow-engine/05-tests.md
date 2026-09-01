@@ -4484,11 +4484,11 @@ File: `tests/integration/net-guard-bind-integration.test.ts`. Mock policy (integ
 File: `tests/integration/workflow-ownership.test.ts`. Mock policy (integration): real server + real SQLite catalog; principal passed as tool arg per v15 spec. 10 cases: (1) first registration by alice → owned; (2) alice overwrite → succeeds; (3) bob overwrite → NOT_WORKFLOW_OWNER + stored unchanged; (4) bob deregister → NOT_WORKFLOW_OWNER + still present; (5) alice deregister → succeeds; (6) null principal → ungated [D-AUTH-6]; (7) workflow_get includes owner; (8) workflow_run by bob → not gated; (9) boot backfill: NULL owner → hsuhungjung@gmail.com; (10) backfill idempotent. Red reason: `owner` column not yet added; NOT_WORKFLOW_OWNER never returned; boot backfill absent → 7 of 10 cases fail.
 
 ### IT-081 — harness defaults register-time validation: D-AUTH-5 named assertions (DES-099, DES-100)
-- **status:** red
+- **status:** green
 - **traces:** DES-099, DES-100, ARCH-062, TASK-089, ARCH-067, DES-103, TASK-099
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/integration/harness-defaults-validation.test.ts`. Mock policy (integration): real server + real SQLite catalog; injected alias table for predictable validation. Named assertions per D-AUTH-5: (D-AUTH-5-A) unknown key → HARNESS_DEFAULTS_INVALID + nothing stored; (D-AUTH-5-B) unresolvable model alias → HARNESS_DEFAULTS_INVALID + nothing stored; (D-AUTH-5-C) non-allowlisted tool → HARNESS_DEFAULTS_INVALID; (D-AUTH-5-D) unknown skill → register SUCCEEDS (deferred); (D-AUTH-5-E) mixed valid+invalid → HARNESS_DEFAULTS_INVALID + nothing stored; backward-compat (no defaults → registers); valid defaults → stored + queryable; run-time merge (per-run override wins). Red reason: `defaults` field not yet in tool schema / not yet validated → HARNESS_DEFAULTS_INVALID never returned → 8 of 10 cases fail.
@@ -4590,11 +4590,11 @@ File: `tests/acceptance/val-099-bind-fail-closed.test.ts`. Mock policy (acceptan
 ## v21 slice — tunable-parameter contract, author/user separation part 1 (REQ-090..095)
 
 ### UT-098 — pure `src/params/contract.ts`: locked/tunable vocabulary, `parseParamContract`, `validateUserOverrides`, the total rejection table (DES-101)
-- **status:** red
+- **status:** green
 - **traces:** DES-101, ARCH-064, TASK-097
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/unit/params-contract.test.ts`. Mock policy (unit): pure module, zero I/O/VM/clock/randomness.
@@ -4690,12 +4690,38 @@ chars respectively — clean quadratic scaling) — today's actual elapsed time 
 ~59.8s ≫ 1s, the 100-1000x separation the review calls "robust, not flaky". This is the slow test in
 the file (~60s); it becomes a millisecond regression pin once Gate 6's O(n) slice fix lands.
 
+**v21 GATE 6.5+7 (verifier, 2026-09-01):** confirmed green post-`43042d3` — all 12 RE-RUN #4 cases
+pass, the A2 timing case now runs in milliseconds (O(n) slice landed). **Plus 9 new cases from
+commit `997626d`, an untraced fix reconciled this pass (see IMPL-144):** 3 UTF-8-boundary pins on
+the A2 rewrite's cut point (emoji/CJK/exact-boundary — the byte-offset slice can land mid-sequence,
+pinned to back off to a character boundary, stay ≤64 bytes, and never emit `�`); 3 cases pinning
+DES-101 row 6 as unconditional (an author-declared `appendPrompt` `max`/`min`/`enum` rejection must
+report size only — the `enum` branch was the actual bug 997626d fixes: `checkValueAgainstSpec`'s
+generic enum branch echoed up to 64 bytes of caller text before this commit); 3 cases pinning A1
+half 2's poisoned-`max` ceiling fallback (`timeoutMs.max`/`appendPrompt.max` seeded as non-number
+strings must read back as the ceiling, and admission must still refuse an over-ceiling value rather
+than silently admitting on a NaN bound). `npx vitest run tests/unit/params-contract.test.ts`:
+**55/55 pass** (was 46). Timing: full file now completes in ~24ms — the O(n²) case that used to take
+~60s is gone from the critical path (O(n) fix), so per-file wall-clock dropped by roughly two orders
+of magnitude versus the RE-RUN #4 baseline. `npx tsc --noEmit` clean.
+
+**Gate 6.5+7 coverage-gate extension (verifier, 2026-09-01, this pass):** `parseParamContract`
+(67 lines, a v21-added function — `TASK-097`) measured at **94.03%** (63/67 statements), below the
+95% per-function bar. The 2 missed statements are the `raw.knobs`/`raw.args` "must be an object"
+sibling shape guards (`contract.ts:185-186,188-189`) — pinned for the whole-`metaParams` case
+(`'malformed params (not an object)'` above) but never for a `metaParams` that IS an object with a
+non-object `knobs`/`args` property. **2 new cases** close it: `knobs` as an array, `args` as a
+string, both → `PARAM_CONTRACT_INVALID` with `detail.param` naming the offending field.
+`npx vitest run tests/unit/params-contract.test.ts`: **57/57 pass** (was 55). Re-measured:
+`parseParamContract` 67/67 = 100%. Overall `src/` line coverage **94.80%** (13709 statements,
+12996 covered, ≥ the 90% whole-tree bar), up from the prior round's 94.54%.
+
 ### UT-099 — pure `src/params/resolve.ts`: two-moment merge, per-key provenance, five-segment `composePrompt`, `mapEffort` (DES-102)
-- **status:** red
+- **status:** green
 - **traces:** DES-102, ARCH-065, TASK-098, TASK-104
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/unit/params-resolve.test.ts`. Mock policy (unit): pure module, zero I/O.
@@ -4746,11 +4772,11 @@ records nor throws (the call proceeds to a normal `{kind:'text',...}` result). A
 confirmed via `npx vitest run`.
 
 ### UT-101 — effort on the wire: `mapEffort` consumed by `LiteLLMGatewayClient`; `thinkingFor` stays the sole writer of `options.thinking` (DES-106)
-- **status:** red
+- **status:** green
 - **traces:** DES-106, ARCH-069, TASK-102
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/unit/gateway-effort.test.ts`. Mock policy (unit): `fetchImpl` spy intercepts the
@@ -4775,11 +4801,11 @@ pinning that `thinkingFor()` stays the SOLE writer of `options.thinking` — see
 **v21 Gate 5 relaunch (2026-09-01, orchestrator adjudication #6):** the P-A1 fix landed out-of-band between the RE-REVIEW #3 re-run above and this pass (commit `244f9f0`, adjudicated correct at commit `9d86075`) — `effortBodyFields()` now nests under `output_config` on both branches, so both new shape-pin cases above are GREEN. This exposed the OLDER `LiteLLM-proxy branch (v21 Gate 5 re-run A-7)` case ("the mapped effort value reaches the outbound request…") as a now-contradictory suite: it asserted the value lands at the top-level `parsed.effort` key — the exact placement the shape-pin block proves is wrong. Fixed in place (not force-kept red, not deleted — it predates the P-A1 finding and is otherwise a valid proxy-branch pin) to assert `parsed.output_config?.effort` instead, matching the adopted contract; confirmed GREEN after the fix, no behavior change to `src/`.
 
 ### IT-083 — admission rung + run-immutable `effectiveParams` snapshot + resume + engine ceilings, inserted between `catalog.get()` and `createRun()`/`runWorkspace()` (DES-104)
-- **status:** red
+- **status:** green
 - **traces:** DES-104, ARCH-066, TASK-100, DES-103
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/integration/params-admission.test.ts`. Mock policy (integration, DES-108): real
@@ -4836,11 +4862,11 @@ v21 defect).
 **v21 GATE 8 RE-REVIEW #3 re-run (2026-09-01, review 07-review.md §P2 — Gate 5 re-run scope pinned (b)/(c)):** 2 new describe blocks, extended in place, no new IDs. **P-A2 ≡ adversarial A2 ≡ quality QD-4** (registration-end companion to R-G3's admission-end fix; the registration-side half of this same finding also lives in `harness-defaults-validation.test.ts`'s P-A2/model-enum coverage — this block is the run-time-admission-facing half): own `beforeAll`/own default-alias (unconfigured) server, 3 cases — (1) a `model.enum` entry absent from `DEFAULT_ALIASES` is rejected AT REGISTRATION on the default deployment (genuinely RED — today the catalog's `aliasNames` is an empty Set, and `isKnownAlias` treats size-0 as accept-all, so registration succeeds and only fails `UNKNOWN_ALIAS` at every subsequent run, `run-manager.ts:424`); (2) regression pin — a real `DEFAULT_ALIASES` member (`sonnet`) still registers fine on the default deployment; (3) regression pin — on a CONFIGURED-alias deployment (this file's outer `server`/`callTool` fixture) a bogus `model.enum` entry is ALREADY rejected at registration (parity already holds at that end — only the default/unconfigured end of the seam is broken). Red reason for (1): `server.ts:1142` hands the catalog `config?.aliases ? new Set(...) : undefined`, which `workflow-catalog.ts` defaults to an empty Set when unconfigured, vs `server.ts:1196` which hands `RunManager` `config?.aliases ?? DEFAULT_ALIASES` (always non-empty) — the two ends of the SAME seam disagree exactly on the default/unconfigured deployment (the shape R-G3 already taught, at the other end). Confirmed via direct re-run (`npx vitest run tests/integration/params-admission.test.ts -t "P-A2"`): case (1) fails on `expect(r.error).toBeDefined()` (`expected undefined not to be undefined` — registration silently succeeds); cases (2)/(3) pass. **P-A3 ≡ adversarial A3** (dispatch-inertness half; the registration/round-trip half of this same finding lives in `harness-defaults-validation.test.ts`'s own P-A3 addition above): new `P-A3` describe block, own real `WorkflowCatalog` + `RunManager` with an injected `spawner` (same direct-observation pattern as the B2 block above, capturing `req.runParams` — the run-immutable admission snapshot dispatch actually receives) — 1 case: a workflow registered with an author-declared `effort.default` (`params.knobs.effort.default:'max'`) and run with NO overrides at all must dispatch with `runParams.effort==='max'` and `runParams.provenance.effort==='default'`. Red reason: `defaultRunParams` (`src/params/resolve.ts:38-51`) only ever reads `model/timeoutMs/prompt/tools` off the registered `defaults` — `effort` (and `appendPrompt`) are stored (workflow-catalog.ts's effectiveDefaults loop injects them) and served on `workflow_get`, but read NOWHERE at dispatch; confirmed via direct re-run: the assertion `expect(captured[0]!.effort).toBe('max')` fails with `expected undefined to be 'max'` after polling the run to `'completed'` (the real sandboxed script genuinely reached its `agent()` call and dispatched). Full-suite re-run (`npx vitest run`, 2026-09-01): 6 failed / 1503 passed (1509 total, 243 files) — exactly the 6 genuinely-new-red cases across this re-run's 3 touched files (2 REST transport-shape cases in `gateway-effort.test.ts`, 1 round-trip case + 1 model-default case in `harness-defaults-validation.test.ts`, 1 registration-parity case + 1 dispatch-inertness case here) — 0 unrelated regressions vs the pre-re-run 1499/1499 baseline (the 2 `spawn litellm ENOENT` unhandled background-process errors are the same documented pre-existing environment artifact). `npx tsc --noEmit` clean. Hermetic: `FixedClock` anchor only (P-A3), no absolute-date-vs-real-clock comparisons anywhere in the new cases.
 
 ### VAL-100 — REQ-090: a workflow declares its tunable-parameter contract, discoverable without reading the script (REQ-090)
-- **status:** red
+- **status:** green
 - **traces:** REQ-090
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
 File: `tests/acceptance/val-100-param-contract.test.ts`. Mock policy (acceptance, DES-108): real
@@ -4878,6 +4904,18 @@ files) — exactly the 10 new UT-098 cases + these 2, 0 unrelated regressions vs
 1519/1519 (v21 Gate 7.5 ROUND 2) baseline. `npx tsc --noEmit` clean. Hermetic: no clock/date
 literals in any new case (uses `new Date().toISOString()` only to satisfy the `createdAt NOT NULL`
 column on a directly-seeded row, never compared as future/past).
+
+**v21 GATE 6.5+7 (verifier, 2026-09-01, re-run after commit 997626d — see IMPL-144):** confirmed
+green post-43042d3 (both A1 cases above pass) plus **1 new real-tier case** landed by 997626d, an
+untraced fix commit reconciled this pass (no `06-impl-log.md`/`05-tests.md` update at commit time —
+same "no commit without an IMPL entry" class as IMPL-142/143, now recorded in IMPL-144): a
+`timeoutMs.max`/`appendPrompt.max` seeded as non-number strings reads back via `workflow_get` as the
+engine ceiling (600000 / 1024), never `null`/`NaN` — the real-tier sibling of UT-098's A1-half-2 unit
+pins, closing the same NaN-ceiling-bypass class at the HTTP boundary. `npx vitest run
+tests/acceptance/val-100-param-contract.test.ts`: **7/7 pass** (was 6, +1). Full suite `npx vitest
+run`: **1543/1543 pass** (243 files, up from 1533 by 997626d's 9 new unit cases in UT-098 + this 1
+acceptance case, i.e. the reported 12→1 delta nets to +10 test files' worth of cases across the two
+IDs). `npx tsc --noEmit` clean.
 
 ### VAL-101 — REQ-091: per-run overrides validated against the contract; locked configuration is unreachable from the caller (REQ-091)
 - **status:** green
