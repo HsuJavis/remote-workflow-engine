@@ -3871,3 +3871,27 @@ drift-locks overlap `schema-drift-v22.test.ts`'s absence lock. The agent decline
 duplicates because deleting an assertion was barred, which was the right call under its constraints.
 **Ruling: leave them.** Duplicated coverage of a check that has just moved sites is cheap insurance
 during exactly the iteration that moved it; consolidate in v23 if it still looks redundant then.
+
+---
+
+## Orchestrator adjudication (v22) #5 — the architecture describes a mechanism that does not exist (2026-09-02)
+
+### O-1 — amend ARCH-074 / ADR-013 to what is actually built
+Both say `start()` recomputes the two environmental checks against the resolved version and **records
+the outcome on the run record**. `run-manager.ts` contains no such call. Adjudication #4 is later and
+binding, and it sited the observable on the **harness descriptor** instead — so the architecture's
+wording is superseded, not an unimplemented seam. But it currently asserts a mechanism that is not
+there, which is **the seventh instance across v21 and v22 of exactly the defect class that produced N-1
+in the first place.** Amend both to describe the shipped mechanism (`HarnessDescriptor.mcpUnresolved`,
+emitted only when non-empty; `workflow_get.validation` for the read surface) and mark the amendment, so
+the next reader is not misled the way this one nearly was.
+
+The pattern is worth stating once more, plainly: **every time a check moves, something that described
+its old home keeps describing it.** Comments, docblocks, architecture notes, ledger entries — this
+iteration has now found all four. Moving a check is not done until the things that pointed at the old
+site point at the new one.
+
+### O-2 — recorded debt: a deployment with no MCP registry wired drops every name silently
+When `mcpRegistryDbPath` is not configured, every referenced MCP name resolves to nothing and is dropped
+with no record at all — outside the grandfathered case N-1 ruled on, and unchanged by it. Named debt for
+v23 or the security-hardening iteration; not silently inherited.
