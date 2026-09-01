@@ -4,6 +4,13 @@
 // (mergeRunParams/defaultRunParams, DES-102) — this file's own author-side merge helper was
 // retired once that path subsumed it (TASK-104).
 
+// v21 adjudication #6 (F-1 widen, TASK-099): `effort`/`appendPrompt` are two of REQ-090's four
+// tunable knobs (D12) and must be representable as an author-declared default like `model`/
+// `timeoutMs` already are — adjudication #5's "reject a default no rung can apply" is SUPERSEDED.
+// EFFORT_RANK is the single ordering table (contract.ts) so KNOWN_KEYS validation never drifts
+// from the enum the ceiling/override paths already enforce.
+import { EFFORT_RANK, type Effort } from './params/contract.js';
+
 /** Shared harness configuration that can be bound at workflow registration time. */
 export interface HarnessDefaults {
   model?: string;
@@ -11,6 +18,8 @@ export interface HarnessDefaults {
   skills?: string[];
   timeoutMs?: number;
   prompt?: string;
+  effort?: Effort;
+  appendPrompt?: string;
 }
 
 /** Curated static tool allowlist [D-AUTH-5-C] — only names in this set are accepted in
@@ -27,7 +36,7 @@ export const HARNESS_TOOL_ALLOWLIST = new Set<string>([
 ]);
 
 // The complete set of recognized HarnessDefaults keys (D-AUTH-5-A)
-const KNOWN_KEYS = new Set<string>(['model', 'tools', 'skills', 'timeoutMs', 'prompt']);
+const KNOWN_KEYS = new Set<string>(['model', 'tools', 'skills', 'timeoutMs', 'prompt', 'effort', 'appendPrompt']);
 
 /** Register-time validation [D-AUTH-5 named assertions — do not simplify].
  *  Returns { ok:true } on success or { ok:false, message } on any violation.
@@ -64,6 +73,12 @@ export function validateHarnessDefaults(
   }
   if (defaults.skills !== undefined && !Array.isArray(defaults.skills)) {
     return { ok: false, message: 'defaults.skills must be an array' };
+  }
+  if (defaults.effort !== undefined && !Object.prototype.hasOwnProperty.call(EFFORT_RANK, defaults.effort as Effort)) {
+    return { ok: false, message: `defaults.effort must be one of: ${Object.keys(EFFORT_RANK).join(', ')}` };
+  }
+  if (defaults.appendPrompt !== undefined && typeof defaults.appendPrompt !== 'string') {
+    return { ok: false, message: 'defaults.appendPrompt must be a string' };
   }
 
   // D-AUTH-5-B: model alias must be resolvable (only when alias table is configured)

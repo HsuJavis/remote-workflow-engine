@@ -1136,6 +1136,14 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   };
   ingestUpdateResult(); // boot-time read (covers the "applied" case after a systemctl restart)
 
+  // v21 adjudication #6 (F-1 ceiling interaction): computed BEFORE the catalog so a declared knob
+  // default can be bounded at registration too, not just at admission/read (moved up from its
+  // former spot below — same object, forwarded to the catalog AND to RunManager/McpFacade).
+  const ceilings: Ceilings = {
+    maxTimeoutMs: config?.maxTimeoutMs ?? 600_000,
+    maxAppendPromptBytes: config?.maxAppendPromptBytes ?? 1024,
+    maxEffort: config?.maxEffort ?? 'high',
+  };
   // v15 (DES-098, DES-099, TASK-089): boot backfill + alias-aware validation
   const catalog = new WorkflowCatalog(workRoot, clock, {
     backfillOwner: config?.auth?.enabled ? true : undefined,
@@ -1145,6 +1153,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // registers fine here and is refused only later at every run ("register succeeds, every run
     // fails", discovered only after the fact).
     aliasNames: new Set(Object.keys(config?.aliases ?? DEFAULT_ALIASES)),
+    ceilings,
   });
   const gateway =
     config?.gateway ??
@@ -1183,14 +1192,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       return secretSource.names().map((n) => ({ name: n, value: secretSource.resolve(n) ?? '' })).filter((s) => s.value.length > 0);
     },
   };
-  // v21 (ARCH-066 inv-6, DES-104, TASK-100): forwarded to BOTH RunManager (admission — refuses)
-  // and McpFacade (workflow_get/list read-time effective bounds) so a lowered ceiling is honored
-  // consistently everywhere, not just at the rung that happens to enforce it.
-  const ceilings: Ceilings = {
-    maxTimeoutMs: config?.maxTimeoutMs ?? 600_000,
-    maxAppendPromptBytes: config?.maxAppendPromptBytes ?? 1024,
-    maxEffort: config?.maxEffort ?? 'high',
-  };
+  // `ceilings` (ARCH-066 inv-6, DES-104, TASK-100) is defined above, before `catalog`, and forwarded
+  // to BOTH RunManager (admission — refuses) and McpFacade (workflow_get/list read-time effective
+  // bounds) so a lowered ceiling is honored consistently everywhere, not just at the rung that
+  // happens to enforce it — now including the catalog's own registration-time check (F-1).
   let continuations: ContinuationStore | undefined;
   // v21 Gate 8 RE-REVIEW (review §R2 (c), R-G3 MED): unlike the catalog's aliasNames (line ~1141,
   // registration-time enum check, deliberately empty=accept-all per D-AUTH-5-B), the admission-time

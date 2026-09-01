@@ -34,18 +34,29 @@ export interface EffectiveCallParams extends Omit<RunParams, 'provenance'> {
   provenance: Record<'model' | 'effort' | 'timeoutMs' | 'appendPrompt', Rung>;
 }
 
+// F-1 widen (orchestrator adjudication #6): `effort`/`appendPrompt` are two of REQ-090's four
+// tunable knobs and must be representable as an author-declared default like `model`/`timeoutMs`
+// already are. The `HarnessDefaults` interface itself (KNOWN_KEYS + shape validation) is widened
+// in TASK-104's file (`harness-defaults.ts`), not here — this local intersection type lets the
+// pure-function contract land first, mirroring the `as HarnessDefaults` cast the Gate 5 test uses.
+// Delete this alias (and the cast below) once `harness-defaults.ts` declares these fields.
+type AuthorDefaults = HarnessDefaults & { effort?: Effort; appendPrompt?: string };
+
 /** The ONLY no-overrides producer: a run registered with no `overrides` at admission time. */
 export function defaultRunParams(defaults: HarnessDefaults | undefined): RunParams {
+  const d = defaults as AuthorDefaults | undefined;
   return {
-    model: defaults?.model,
-    timeoutMs: defaults?.timeoutMs,
-    prompt: defaults?.prompt,
-    tools: defaults?.tools,
+    model: d?.model,
+    effort: d?.effort,
+    timeoutMs: d?.timeoutMs,
+    appendPrompt: d?.appendPrompt,
+    prompt: d?.prompt,
+    tools: d?.tools,
     provenance: {
-      model: defaults?.model !== undefined ? 'default' : 'engine',
-      effort: 'engine', // HarnessDefaults carries no author-side effort
-      timeoutMs: defaults?.timeoutMs !== undefined ? 'default' : 'engine',
-      appendPrompt: 'engine', // no author-side appendPrompt exists
+      model: d?.model !== undefined ? 'default' : 'engine',
+      effort: d?.effort !== undefined ? 'default' : 'engine',
+      timeoutMs: d?.timeoutMs !== undefined ? 'default' : 'engine',
+      appendPrompt: d?.appendPrompt !== undefined ? 'default' : 'engine',
     },
   };
 }

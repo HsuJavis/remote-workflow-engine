@@ -27,21 +27,23 @@ import { validateHarnessDefaults, type HarnessDefaults } from './harness-default
 // Bars a VALUE import only (which would drag the validator into a module the catalog stays
 // independent of); typing get()/getFull()'s `params` as ParamContract|undefined instead of
 // `unknown` is the point of the adjudication; list() carries the same typing.
-import type { ParamContract } from './params/contract.js';
+import type { ParamContract, Ceilings } from './params/contract.js';
+// v21 adjudication #6 (F-2): value import sanctioned for THIS file only — the catalog already
+// throws PARAM_CONTRACT_INVALID itself (already doing validation) and already carries the A-1
+// type-only import above; a second hand-rolled bounds checker here is exactly the drift class
+// that has bitten this iteration twice (P-A2, R-G10). No sandbox-child hazard: this file is
+// server-side (loads better-sqlite3) and contract.ts is already value-imported by run-manager.ts.
+import { checkValueAgainstSpec, effectiveBounds } from './params/contract.js';
 
 // DES-098: hardcoded operator email for boot backfill of NULL-owner rows
 const BOOT_BACKFILL_EMAIL = 'hsuhungjung@gmail.com';
 
-// v21 Gate 5 re-run (A-2, DES-103): does a declared `params.knobs.<key>.default` violate that
-// same knob's own declared type/enum/min/max? Self-contained (no contract.ts import — TASK-099
-// stays out of TASK-097's file) since this only ever checks one already-parsed spec's own default.
-function violatesOwnSpec(value: unknown, spec: { type: string; enum?: unknown[]; min?: number; max?: number }): boolean {
-  const expectedType = spec.type === 'number' ? 'number' : 'string';
-  if (typeof value !== expectedType) return true;
-  if (spec.enum !== undefined && !spec.enum.includes(value)) return true;
-  if (spec.min !== undefined && (value as number) < spec.min) return true;
-  if (spec.max !== undefined && (value as number) > spec.max) return true;
-  return false;
+// v21 Gate 5 re-run (A-2, DES-103): does a declared `params.knobs.<key>.default` violate a given
+// spec's type/enum/min/max (either the knob's OWN declared bounds, or a ceiling-narrowed one)?
+// v21 adjudication #6 (F-2): was a hand-rolled duplicate of contract.ts's bounds predicate;
+// now delegates to the shared `checkValueAgainstSpec` (see import above).
+function violatesOwnSpec(value: unknown, spec: Parameters<typeof checkValueAgainstSpec>[2]): boolean {
+  return !checkValueAgainstSpec('', value, spec).ok;
 }
 
 export interface WorkflowCatalogOpts {
@@ -49,6 +51,10 @@ export interface WorkflowCatalogOpts {
   backfillOwner?: boolean;
   /** Set of valid model alias names for register-time validation (D-AUTH-5-B). */
   aliasNames?: Set<string>;
+  /** v21 adjudication #6 (F-1 ceiling interaction): engine ceilings, so a declared knob default
+   *  above the configured ceiling (e.g. `effort` above `maxEffort`) is refused at registration
+   *  exactly like any other declared value, instead of registering above a bound admission enforces. */
+  ceilings?: Ceilings;
 }
 
 export class WorkflowCatalog {
@@ -57,11 +63,13 @@ export class WorkflowCatalog {
   private readonly _clock: Clock;
   private readonly _workRoot: string;
   private readonly _aliasNames?: Set<string>;
+  private readonly _ceilings?: Ceilings;
 
   constructor(workRoot: string, clock?: Clock, opts?: WorkflowCatalogOpts) {
     this._workRoot = workRoot;
     this._clock = clock ?? new SystemClock();
     this._aliasNames = opts?.aliasNames;
+    this._ceilings = opts?.ceilings;
     mkdirSync(workRoot, { recursive: true });
     this._db = new Database(join(workRoot, 'catalog.db'));
     this._db.pragma('journal_mode = WAL');
@@ -127,21 +135,34 @@ export class WorkflowCatalog {
     // corresponding defaults.<knob> is accept-and-normalize: written into the stored defaults so
     // the served default is always DERIVED from the defaults column, never a second source.
     const effectiveDefaults: Record<string, unknown> = defaults ? { ...defaults } : {};
+    // v21 adjudication #6 (F-1 ceiling interaction): the engine's own ceilings bound a declared
+    // knob default exactly like any other declared value — computed once per registration from
+    // live config (effectiveBounds is a READ-time narrowing, same function the read surfaces use).
+    const ceilingKnobs = this._ceilings ? effectiveBounds(paramsResult.value, this._ceilings).knobs : undefined;
     for (const [key, spec] of Object.entries(paramsResult.value.knobs)) {
       if (spec.default === undefined) continue;
       if (violatesOwnSpec(spec.default, spec)) {
         throw codedError('PARAM_CONTRACT_INVALID', `params.knobs.${key}.default violates its own declared bounds`);
       }
-      // v21 Gate 8 re-review #3 adjudication #5 (E-3, 04-design.md "Orchestrator adjudication #5"):
-      // a declared default for a knob NO RUNG can apply — `effort`/`appendPrompt` are not
-      // HarnessDefaults keys, so defaultRunParams (src/params/resolve.ts) never reads them off this
-      // column — must be REJECTED at registration, not silently stored into a type that cannot
-      // represent it (that broke the discover->edit->re-register round-trip: the engine's own served
-      // `defaults` then failed HARNESS_DEFAULTS_INVALID on re-register). `model`/`timeoutMs` are the
-      // only TUNABLE_KEYS a rung can apply via HarnessDefaults, so only those may be normalized here.
-      if (key !== 'model' && key !== 'timeoutMs') {
-        throw codedError('PARAM_CONTRACT_INVALID', `params.knobs.${key}.default cannot be applied: no defaults.${key} exists`);
+      const ceilingSpec = ceilingKnobs?.[key];
+      if (ceilingSpec && violatesOwnSpec(spec.default, ceilingSpec)) {
+        throw codedError('PARAM_CONTRACT_INVALID', `params.knobs.${key}.default exceeds the engine's configured ceiling`);
       }
+      // appendPrompt's ceiling is a byte cap, not a spec-shaped bound (DES-101 row 6) — checked by
+      // size only, never echoing the declared text (same "report by size, never by content" rule
+      // contract.ts's validateUserOverrides applies to a caller-supplied appendPrompt).
+      if (this._ceilings && key === 'appendPrompt' && typeof spec.default === 'string') {
+        const bytes = Buffer.byteLength(spec.default, 'utf8');
+        if (bytes > this._ceilings.maxAppendPromptBytes) {
+          throw codedError('PARAM_CONTRACT_INVALID', `params.knobs.appendPrompt.default exceeds the engine's configured byte ceiling (${bytes} > ${this._ceilings.maxAppendPromptBytes} bytes)`);
+        }
+      }
+      // v21 adjudication #6 (F-1): adjudication #5's E-3 ("reject a default for a knob no rung can
+      // apply") is SUPERSEDED — REQ-090's own acceptance text permits a declared default on every
+      // tunable knob, `effort`/`appendPrompt` included (D12). Widen, don't reject: every declared
+      // knob default is normalized into the stored `defaults`/`effectiveDefaults` here; the two
+      // author-only knobs becoming readable by a rung (`defaultRunParams`, KNOWN_KEYS) is TASK-098/104's
+      // side of this fix, not this file's.
       if (key in effectiveDefaults) {
         if (effectiveDefaults[key] !== spec.default) {
           throw codedError('PARAM_CONTRACT_INVALID', `params.knobs.${key}.default disagrees with defaults.${key}`);

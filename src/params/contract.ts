@@ -197,7 +197,11 @@ export function parseParamContract(
   return { ok: true, value: { knobs, args } };
 }
 
-function checkValueAgainstSpec(param: string, value: unknown, spec: ParamSpec): { ok: true } | Err {
+/** v21 adjudication #6 (F-2): the single bounds predicate shared with `workflow-catalog.ts`'s
+ *  own-spec-violation check — two hand-rolled type/enum/min/max checkers over the same ParamSpec
+ *  shape drift (an advertised bound disagreeing with an enforced one, P-A2's failure class). This
+ *  is the one exported so the catalog's own-default check reuses it instead of re-typing it. */
+export function checkValueAgainstSpec(param: string, value: unknown, spec: ParamSpec): { ok: true } | Err {
   const expectedType = spec.type === 'number' ? 'number' : 'string';
   if (typeof value !== expectedType) {
     return {

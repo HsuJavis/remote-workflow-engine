@@ -243,50 +243,16 @@ describe('meta.params contract — registration, discoverability, ceilings (REQ-
   });
 });
 
-// v21 Gate 8 send-back re-run (2026-09-01, review §4 B4 ≡ quality QD-3, same seam as B1):
-// `server.ts:1141` passes `aliasNames: undefined` when `config.aliases` is unconfigured;
-// `workflow-catalog.ts:117` then does `this._aliasNames ?? new Set()` — an EMPTY Set — and
-// `parseParamContract`'s model-enum check does an unconditional `aliasNames.has(entry)`, so on a
-// default-alias server EVERY declared model-enum entry is rejected at registration. This
-// contradicts `validateHarnessDefaults` (harness-defaults.ts:70), which deliberately SKIPS the same
-// check when the alias table is empty/unconfigured (D-AUTH-5-B) — the two register-time checks
-// disagree on the exact same server. Uses its OWN server (no `aliases` config at all), unlike every
-// other describe block in this file (which injects a known 4-alias table).
-describe('meta.params model-enum vs a default-alias (unconfigured) server — registration vocabulary parity (DES-101, B4)', () => {
-  let defaultServer: Server;
-  let defaultTmp: string;
-
-  beforeAll(async () => {
-    defaultTmp = mkdtempSync(join(tmpdir(), 'rwe-it081-b4-'));
-    defaultServer = await createServer({ port: 0, bind: '127.0.0.1', workRoot: defaultTmp }); // no `aliases` key
-  });
-
-  afterAll(async () => {
-    await defaultServer?.close();
-    rmSync(defaultTmp, { recursive: true, force: true });
-  });
-
-  async function defaultCall(name: string, args: Record<string, unknown>) {
-    const res = await fetch(`http://127.0.0.1:${defaultServer.port}/mcp`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
-    });
-    const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
-    return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
-  }
-
-  it('a declared model-enum registers on a default-alias (no aliases configured) server, same as validateHarnessDefaults already allows for defaults.model', async () => {
-    const script = `export const meta = { params: { knobs: { model: { type: 'enum', enum: ['whatever-alias'] } } } };\nreturn 1;`;
-    const r = await defaultCall('workflow_register', { name: 'it081-b4-default-server-enum', script });
-    expect(r.error).toBeUndefined();
-    expect(r.code).not.toBe('PARAM_CONTRACT_INVALID');
-
-    const got = await defaultCall('workflow_get', { name: 'it081-b4-default-server-enum' });
-    const params = (got as { params?: { knobs?: Record<string, { enum?: string[] }> } }).params;
-    expect(params?.knobs?.['model']?.enum).toEqual(['whatever-alias']);
-  });
-});
+// RETIRED (2026-09-01, orchestrator adjudication #6, 04-design.md "Orchestrator adjudication #6"):
+// this describe block ("meta.params model-enum vs a default-alias (unconfigured) server —
+// registration vocabulary parity (DES-101, B4)") asserted that a model-enum entry absent from the
+// alias table SHOULD register on an unconfigured/default server. `tests/integration/
+// params-admission.test.ts`'s newer P-A2 describe block ("registration is fed the SAME alias table
+// admission enforces") pins the adjudicated-correct, OPPOSITE outcome for the identical scenario
+// (registration and admission now share DEFAULT_ALIASES, so an unresolvable alias is rejected at
+// registration on the default deployment too — "register succeeds, every run fails" is exactly the
+// defect P-A2 exists to kill). Two suites pinning contradictory expectations for the same setup make
+// the green suite stop meaning anything; removed per the adjudication rather than left to bit-rot.
 
 // v21 Gate 5 re-run (2026-08-31, A-2 / 04-design.md "Orchestrator adjudication — v21 Gate 6
 // send-back"): cross-validated defaults. `spec.default` is read NOWHERE in src/params/contract.ts
@@ -376,5 +342,70 @@ describe('meta.params model.default bypasses D-AUTH-5-B alias validation (DES-10
     const script = `export const meta = { params: { knobs: { model: { type: 'string', default: 'sonnet' } } } };\nreturn 1;`;
     const r = await callTool('workflow_register', { name: 'it081-pa4-good-model-default', script });
     expect(r.error).toBeUndefined();
+  });
+});
+
+// v21 orchestrator adjudication #6 (2026-09-01, 04-design.md "Orchestrator adjudication #6" F-1
+// "Ceiling interaction"): "an author `effort` default above the configured `maxEffort` … is bounded
+// exactly like any other declared value — no special case for author-side defaults." Today's
+// `WorkflowCatalog.register()` never receives `Ceilings` at all (only `violatesOwnSpec` — a knob's
+// OWN declared enum/range — is checked; `server.ts`'s `ceilings` object is threaded only to
+// `RunManager`/`McpFacade`, never to the catalog) — a declared default can exceed the engine's own
+// ceiling and still register. Genuine v21 red: not yet implemented.
+//
+// Note: the "over ceiling" case below currently PASSES too, but for the WRONG reason — the
+// still-present adjudication-#5 E-3 rejection at workflow-catalog.ts:142 rejects EVERY `effort`
+// default outright (P-A3), regardless of any ceiling. Its companion "at/below ceiling" case is what
+// isolates genuine ceiling behavior (RED today): once Gate 6 removes the E-3 rejection AND wires
+// ceilings into registration, "over" must stay rejected (now specifically by the ceiling) while
+// "at/below" must newly succeed — the pair only means something correct together.
+describe('meta.params declared default vs the ENGINE ceiling (not just its own spec) — F-1 ceiling interaction (2026-09-01 adjudication #6)', () => {
+  it('an effort.default above the server\'s configured maxEffort ceiling is rejected at registration, not silently stored above the ceiling', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'rwe-it081-ceiling-'));
+    const lowCeilingServer = await createServer({ port: 0, bind: '127.0.0.1', workRoot: tmp, maxEffort: 'low' });
+    try {
+      const call = async (name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> => {
+        const res = await fetch(`http://127.0.0.1:${lowCeilingServer.port}/mcp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+        });
+        const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
+        return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+      };
+      const script = `export const meta = { params: { knobs: { effort: { type: 'enum', enum: ['low','max'], default: 'max' } } } };\nreturn 1;`;
+      const r = await call('workflow_register', { name: 'it081-ceiling-effort-over', script });
+      expect(r.error).toBeDefined(); // passes today, but only because E-3 rejects every effort default
+
+      const got = await call('workflow_get', { name: 'it081-ceiling-effort-over' });
+      expect(got.code).toBe('WORKFLOW_NOT_FOUND'); // fail-closed: nothing stored
+    } finally {
+      await lowCeilingServer.close();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // Genuine red (isolates ceiling behavior from the E-3 blanket rejection above): an effort.default
+  // AT OR BELOW the ceiling must register fine once E-3 is removed per adjudication #6.
+  it('an effort.default at or below the ceiling registers fine', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'rwe-it081-ceiling-ok-'));
+    const lowCeilingServer = await createServer({ port: 0, bind: '127.0.0.1', workRoot: tmp, maxEffort: 'low' });
+    try {
+      const call = async (name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> => {
+        const res = await fetch(`http://127.0.0.1:${lowCeilingServer.port}/mcp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+        });
+        const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
+        return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+      };
+      const script = `export const meta = { params: { knobs: { effort: { type: 'enum', enum: ['low'], default: 'low' } } } };\nreturn 1;`;
+      const r = await call('workflow_register', { name: 'it081-ceiling-effort-ok', script });
+      expect(r.error).toBeUndefined();
+    } finally {
+      await lowCeilingServer.close();
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

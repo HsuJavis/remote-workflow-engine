@@ -102,6 +102,10 @@ describe('LiteLLMGatewayClient effort-on-the-wire — LiteLLM-proxy branch (UT-1
     else process.env['ANTHROPIC_API_KEY'] = ORIGINAL_KEY;
   });
 
+  // Superseded (2026-09-01, review §P2 P-A1): originally asserted the value landed at the
+  // top-level `effort` key — the exact placement the P-A1 shape-pin describe block below proves is
+  // WRONG (a real 400 on the live API; the documented Messages contract nests it under
+  // `output_config`). Corrected to the adjudicated shape so this pin doesn't contradict that block.
   it('the mapped effort value reaches the outbound request on the LiteLLM-proxy branch', async () => {
     const { fetchImpl, bodies } = spyFetch();
     const gw = new LiteLLMGatewayClient({
@@ -112,8 +116,8 @@ describe('LiteLLMGatewayClient effort-on-the-wire — LiteLLM-proxy branch (UT-1
     await gw.invoke({ prompt: 'hi', opts: { model: 'sonnet', effort: 'max' }, runId: 'r1', agentId: 'a1' });
 
     expect(bodies).toHaveLength(1);
-    const parsed = JSON.parse(bodies[0]!) as { effort?: string };
-    expect(parsed.effort).toBe('max');
+    const parsed = JSON.parse(bodies[0]!) as { output_config?: { effort?: string } };
+    expect(parsed.output_config?.effort).toBe('max');
   });
 
   it('a provider with NO reasoning dial on the proxy branch: onHarness records applied:false and no effort key reaches the outbound proxy body', async () => {

@@ -35,6 +35,22 @@ describe('defaultRunParams() — the ONLY no-overrides producer', () => {
     expect(rp.provenance.model).toBe('default');
     expect(rp.provenance.timeoutMs).toBe('default');
   });
+
+  // v21 orchestrator adjudication #6 (2026-09-01, F-5): once F-1 widens `HarnessDefaults` with
+  // `effort`/`appendPrompt` (adjudication #6 reverses #5's E-3 — these ARE two of REQ-090's four
+  // tunable knobs, an author default must be representable), `defaultRunParams` must read them with
+  // `'default'` rung provenance the same way it already does for model/timeoutMs. Genuine v21 red:
+  // `HarnessDefaults` doesn't declare these fields yet (cast bypasses the not-yet-widened type — the
+  // interface change itself is F-1/Gate 6, this pins the pure-function CONTRACT ahead of it) and
+  // today's `defaultRunParams` hardcodes `effort`/`appendPrompt` provenance to `'engine'` regardless
+  // of what `defaults` carries.
+  it('with a registered author-declared effort/appendPrompt default, provenance is "default" (F-1 widen, not yet implemented)', () => {
+    const rp = defaultRunParams({ effort: 'max', appendPrompt: 'author note' } as HarnessDefaults);
+    expect(rp.effort).toBe('max');
+    expect(rp.provenance.effort).toBe('default');
+    expect(rp.appendPrompt).toBe('author note');
+    expect(rp.provenance.appendPrompt).toBe('default');
+  });
 });
 
 describe('mergeRunParams() — admission-time fold of overrides over registered defaults (ADR-002)', () => {
@@ -84,6 +100,17 @@ describe('mergeRunParams() — admission-time fold of overrides over registered 
     expect(rp.appendPrompt).toBe('extra instructions');
     expect(rp.provenance.appendPrompt).toBe('override');
   });
+
+  // v21 orchestrator adjudication #6 (2026-09-01, F-5): provenance-matrix coverage gap the
+  // implementer flagged — no dedicated `overrides.effort` merge case existed in this describe block
+  // (only `model` and `appendPrompt` were covered). Already correctly implemented today (green) —
+  // recorded here so the full per-key parity (model/effort/timeoutMs/appendPrompt) is pinned in one
+  // place, matching the pattern the other three keys already follow.
+  it('overrides.effort wins over a registered default; provenance:"override"', () => {
+    const rp = mergeRunParams(DEFAULTS, { effort: 'low' });
+    expect(rp.effort).toBe('low');
+    expect(rp.provenance.effort).toBe('override');
+  });
 });
 
 describe('resolveCallParams() — dispatch-time application of the two per-call rungs (ARCH-065)', () => {
@@ -129,6 +156,16 @@ describe('resolveCallParams() — dispatch-time application of the two per-call 
     const eff = resolveCallParams({}, undefined, RUN_PARAMS, {});
     expect(eff.timeoutMs).toBe(30_000);
     expect(eff.provenance.timeoutMs).toBe('default');
+  });
+
+  // v21 orchestrator adjudication #6 (2026-09-01, F-5): provenance-matrix coverage gap the
+  // implementer flagged — no dedicated per-call `opts.timeoutMs` call-rung case existed (only the
+  // fallback-to-snapshot case above). Already correctly implemented today (green) — pins the call
+  // rung explicitly, same pattern as `opts.model`'s "rung 1" case.
+  it('per-call agent() opts.timeoutMs wins over the run snapshot (rung 1, same ladder as model)', () => {
+    const eff = resolveCallParams({ timeoutMs: 5_000 }, undefined, RUN_PARAMS, {});
+    expect(eff.timeoutMs).toBe(5_000);
+    expect(eff.provenance.timeoutMs).toBe('call');
   });
 });
 
