@@ -3191,3 +3191,38 @@ The review pinned the send-back scope explicitly (§Q7) precisely because unpinn
 dangled through two closeouts. Land the doc batch **in the same pass** as the code, not as a follow-up:
 A3, A6..A12, O-1..O-3, C-2 (=F-3), R-2, and A7's correction of IMPL-141's false "F-4 not done" claim
 (the P-A6 dedup had in fact landed earlier in 244f9f0). S-1 stays recorded debt.
+
+---
+
+## Orchestrator adjudication #9 — v21 Gate 8 re-review #5 (2026-09-01)
+
+### I-1 (F2, MED but correctly BLOCKING) — the trust frame must not be forgeable by its own payload
+
+ADR-007 chose a **structural** control: user-supplied `appendPrompt` is wrapped in
+`<user-instructions untrusted="true">` so the model can tell author instruction from user text. The
+control is defeated by the text it wraps — `composePrompt` concatenates with no scan, and the
+`appendPrompt` branch checks byte length only. A submitter who is **not** the workflow's owner can put
+a closing `</user-instructions>` in their append, end the untrusted block early, and have everything
+after it read as the author's own instruction. That is cross-principal attribution forgery against the
+exact boundary this iteration exists to create: D12/D13 say a user may append text, never that a user
+may speak as the author.
+
+The accepted residual claimed the append was "bounded **and attributed**". The bound half held; the
+attribution half never did.
+
+**Adopted fix: refuse at admission, fail-closed** — an `appendPrompt` containing the frame's closing
+delimiter is rejected with a typed error, in `validateUserOverrides`, the same rung every other override
+constraint is enforced at. Not escaping, not silent stripping: a caller who sends a forged delimiter
+gets told, and nothing about the composition changes for the honest case. `composePrompt` stays
+byte-identical for every input that is accepted — pin that, because a composition change would
+invalidate REQ-094's real-tier ordering evidence.
+
+**Note the oracle failure, because it is the fourth of this class in v21:** the drift-lock at
+`params-resolve.test.ts:193-200` pinned *that the wrapping is applied*, not *that the wrapping holds*.
+A test that asserts the shape of a control rather than the property the control exists to provide will
+pass while the control is defeated — exactly how the `effort` placement bug survived four tiers. When a
+clause names a security property, assert the property.
+
+### I-2 (F1, F4) — ride along in the same pass
+F1's both-doors parity and F4's enum `min`/`max` rejection are in the pinned scope and land together
+with I-1; their reds are already written.
