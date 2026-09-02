@@ -4638,3 +4638,56 @@ Suite **1792/1792**, `tsc` clean. The two erroring suites (`val-023-sdk-gateway-
 `hooks-reject-and-timeout-bound-journey`) are pre-existing timing-sensitive teardown hooks — their
 tests all pass, only the hooks exceed 10s under load, and both fail identically at the v22 merge point
 `f01fa4d` (verified in a throwaway worktree). TASK-117 and TASK-127 both close.
+
+---
+
+## Orchestrator adjudication (v23) #6 — REQ-103 was silently narrowed; build the clause, don't ratify the loss (2026-09-03)
+
+### V-1 — the analyzer never receives the bindings. IMPLEMENT, do not amend.
+Verified at source, not from the report: `graph-analyzer.ts:296` computes `bindings`, `:297` passes
+them to `_buildAllowlist`, and `:298` builds the prompt as `systemPrompt + "---Workflow script:" +
+script`. **The bindings never enter the prompt.** The validator proved it live too — identical
+`promptTokens` with and without a cron binding.
+
+Meanwhile `04-design.md`'s REQ-103 validation row narrowed the acceptance to the `triggers` FIELD plus
+the staleness flip, dropping *"the diagram's entry node names that trigger method"* — **with no
+adjudication recording the narrowing.** A design row quietly redefining what a requirement means is the
+worst version of this iteration's recurring defect: not a stale description of the code, but a
+description that changes what we owe.
+
+**Ruled (a): feed the projected bindings into the analyzer prompt.** Not (b), because:
+- The clause is the owner's ORIGINAL ask — 觸發方式 was named in the first sentence of the request that
+  started v21..v23 — and it is the specific gap I flagged in issue #32 at Gate 1 ("triggers are not in
+  the script, so an analyzer fed only the script can never show them"). Amending it away would
+  un-deliver the one thing v23 added to #32's own design.
+- It is cheap and safe: the projection already exists at `:296` and is **already secret-free by
+  construction** (ARCH-078 builds it from an explicit field list precisely because `webhooks.secret`
+  is a live credential feeding an LLM prompt). Nothing new is exposed; a value already computed simply
+  reaches the prompt it was computed for.
+
+Scope: Gate 6 changes `:298`; Gate 5 writes the RED first; Gate 7.5 re-runs VAL-118 only. The
+`04-design.md` REQ-103 row is amended back to both arms.
+
+### V-2 — the LiteLLM spawn can kill the process, and v23 is what made it reachable
+The managed-LiteLLM spawn has no `proc.on('error')` handler, so on a host without `litellm` on PATH the
+`ENOENT` surfaces as an unhandled error event. Pre-existing — but **v23 made it reachable from
+`workflow_register`**, because registration now enqueues an analyzer call. A documented caveat in two
+manuals is not a fix for "a registration can take the engine down".
+
+**Fix it in v23.** It is a handler on a spawn this engine already owns, and shipping an iteration that
+newly exposes a crash path while only writing it down is not a trade I will make. If the fix proves
+larger than a handler, stop and report rather than widening.
+
+### V-3 — AUTHORING.md states a rule authors cannot act on
+It tells authors to declare knobs in `meta.params` but never shows the `{knobs:{…}, args:{…}}` shape,
+and the engine **silently ignores a mis-shaped block** (verified live: the described contract came back
+as the canonical 4-knob default). A rule without a shape plus a silent failure means an author gets it
+wrong and never learns. Add the example line; state that a mis-shaped block is ignored rather than
+rejected, so the silence is at least documented.
+
+### V-4 — the last place the retired word reaches a client
+`/api/runs/:id/dag` returns `warnings: ['agent <id> unmatched to skeleton: frame-grouped']`
+(`dashboard.ts:342`). It projects no skeleton content and `dashboard.ts` is on ADR-022's allowlist, so
+REQ-105 is not failed — but REQ-105's text is "no … still tells a reader the skeleton is a surface
+available to them", and this is user-visible string. Reword to name the layout, not the retired
+concept. Cheap, and it is the difference between a guard that passes and a deletion that is finished.
