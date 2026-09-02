@@ -1162,11 +1162,11 @@ returned as a JSON-RPC `error` envelope (`{code:-32000, message:'Unknown tool: w
 — even though `McpFacade.workflow_artifacts` itself works correctly (proven by green IT-010).
 
 ### IT-015 — Real @anthropic-ai/claude-agent-sdk session against a local stub /v1/messages server completes an agent() round trip, including a real tool-use turn
-- **status:** red
+- **status:** blocked
 - **traces:** DES-007, DES-009
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** not-run
 - **iter:** v1
 
 **Gate 6 closure (IMPL-037) — RED for a documented environment reason, reported as a test_defect,
@@ -1220,6 +1220,8 @@ shape, not validated against a real completed round trip (chicken-and-egg — th
 test drives doesn't exist yet). If Gate 6's real run reveals the stub's shape needs adjustment, that
 is expected TDD ping-pong for a new external-SDK integration, not a test-authoring defect.
 
+
+**Re-labelled `red`/`fail` → `blocked`/`not-run` at v23 Gate 6.5+7 ROUND 2 (2026-09-03, verifier), meaning unchanged.** The test does not fail: `claude-agent-sdk-session.test.ts` green-SKIPS via its own two hermeticity guards (no request reaches the local stub within 20s, or the installed CLI's SSE tool-loop has drifted from this hand-rolled stub), printing an explicit `IT-015 SKIPPED:` reason — verified by running the file alone this gate (1 passed, 4.9s). `red` was stale v1 bookkeeping that made the suite-wide statement "no remaining red" read as false while the suite was in fact 281/281 green. Same treatment, and same reason, as `VAL-115`'s re-label at the previous closeout: the item's owner, evidence bar and `real:false` are untouched, and it still claims NOTHING — the real SDK tool loop is proven elsewhere (the live Gate 7.5 run, and UT-018 against the faked SDK module).
 ### IT-016 — agentType composition-root loader: agents/*.md frontmatter populates the registry at startup
 - **status:** green
 - **traces:** DES-007, ARCH-004
@@ -7356,6 +7358,13 @@ behaviour change). "Revert any cleanup that goes red" was never reached — ther
 below (not on inspection). `real:` stays `false` on all three: they are unit tests, and REQ-103's
 real evidence is `VAL-118`, which Gate 7.5 owns and re-runs.
 
+**One stale label corrected.** `IT-015` still carried `red`/`fail` from v1 while its file green-SKIPS
+through its own hermeticity guards (verified by running it alone: 1 passed, 4.9s, with the explicit
+`IT-015 SKIPPED:` reason printed) — so "no remaining red" read as false about a suite that is
+281/281 green. Re-labelled `blocked`/`not-run` with the rationale recorded on the item itself, exactly
+as `VAL-115` was re-labelled at the previous closeout; nothing about its meaning, owner, `real:false`
+or evidence bar changed. After this the ledger holds **zero** `status: red` items.
+
 ### The two `spawn litellm ENOENT` / hook-timeout "background artifact" files — genuinely fixed
 
 The ledger has carried "2 pre-existing failing test FILES" as an accepted artifact since v22, and
@@ -7444,9 +7453,16 @@ reader at all, flagged as possibly-dead accessor, not removed).
 
 - **Full regression:** `npx vitest run` → **281 files / 1806 tests, 0 failed, exit 0** (1803 + UT-122's
   2 cases + IT-100). `npx tsc --noEmit`: clean.
-- **`sh .sdlc/trace … --check`:** 992 items, 17 gaps, exit 1 — the gap set is **byte-identical** to the
-  baseline captured to a scratch file before any edit (15 low doc/test-drift rows, `TASK-018` low
-  未實作, `IMPL-082` mid TDD). No new gap, no severe gap, no broken link, no orphan.
+- **`sh .sdlc/trace … --check`:** **993 items, 18 gaps, exit 1** — the 17-gap baseline captured to a
+  scratch file before any edit is **byte-identical** (15 low doc/test-drift rows, `TASK-018` low
+  未實作, `IMPL-082` mid TDD), **plus exactly one new LOW**: `DES-064` (v11) now lags `IMPL-173`
+  (v23). That row is the honest consequence of backfilling the IMPL entry that V-4's code change
+  belongs to; `DES-064`'s own boundary-conditions still quoted the retired
+  `"unmatched to skeleton"` literal and was amended in place with an `[AMENDED v23 adjudication #6]`
+  marker, with its `iter` deliberately left at `v11` — bumping it would turn the three v11 items that
+  trace it (`IT-048`, `UT-068`, `IT-064`, all unchanged this round) into three drift rows instead of
+  one. 0 high, 0 未真實驗證, 0 broken links, 0 orphans; exit 1 is by construction on this ledger's
+  long-standing low/mid residue, the same disposition both prior closeouts recorded.
 - **`solid_check`:** PASS — 23 modules, 0 high / 0 mid / 10 low (the same pre-existing unclaimed-file
   rows).
 - **`determinism_check src --check`:** exit 0 — no production wall-clock/randomness read outside the
