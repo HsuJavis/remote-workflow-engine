@@ -220,6 +220,34 @@ names. The 6 MEDIUM + 4 LOW findings in §4.3 are recorded debt and do not thems
 re-review, but are cheap enough (mostly one column/one line/one amended doc sentence) that folding
 them into the same fix batch is recommended over a second round-trip.
 
+#### §8.1 Orchestrator ruling on H4's second site (adjudication #6, 04-design.md, 2026-09-02)
+The Gate 6 implementer stopped rather than silently fix or silently skip the second site H4's own
+text names. Ruling, applied to this batch:
+
+- **`webhook-registry.ts:88` — IN SCOPE for this send-back.** Same defect, same consequence, same
+  fix as `Scheduler.create()`. Needs its own red test (`CHANNEL_UNPUBLISHED` at `webhooks.create()`
+  against a registered-but-unpublished workflow). **H4 is not closed until both sites it names are
+  closed** — half-closing it would leave this document asserting a fix that half exists.
+- **`scheduler.ts:232` `trigger()` — OUT of scope, and correctly so.** It still uses `exists()`, but
+  it starts the run immediately through `RunManager.start()`, which resolves the channel itself, so
+  `CHANNEL_UNPUBLISHED` surfaces synchronously to the caller at the point of the mistake — H4's
+  protected property, already satisfied by another mechanism. Recorded here so a later reviewer does
+  not read it as a missed third site.
+
+#### §8.2 NEW FINDING (orchestrator-raised, not part of H4) — `chain_create` validates no workflow at all
+`ContinuationStore.chainCreate` (`continuation-store.ts:93`) checks `afterRunId` only and holds **no
+catalog reference whatsoever**. A chain bound to a workflow name that does not exist — never mind one
+with no published release — is accepted, stored, and fails later inside `_reconcile`. Strictly worse
+than H4, whose sites at least verified existence.
+
+Surfaced only because H4's text named two sites and the third ingress was checked. **Deliberately not
+folded into this batch**, on the line that v22 introduced the registered-but-unpublished state and so
+*created* H4's two sites, whereas chain has been unvalidated since v8 — a pre-existing defect, not a
+v22 regression. It also costs more than a one-line swap: `ContinuationStore` has no catalog seam, so
+closing it needs a new constructor port plus composition-root wiring, this repo's known
+silent-no-op class (v11 `updateFlagPath`, v15 auth) that only a Gate 7.5 real run catches. **The
+re-review scopes it into v22 or v23 with its own REQ and its own real-tier evidence.**
+
 ### §9 Retro (v22)
 **What went well.** The version/channel model (ARCH-071) is structurally sound where it was built to
 be strict — the pin, resume-through-pin, ingress closure, and the non-owner *read* projection are
