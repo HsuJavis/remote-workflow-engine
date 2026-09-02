@@ -3260,13 +3260,14 @@ Red reason: read `src/server.ts`'s `asset_push` case directly — it calls
 branch at all yet.
 
 ### E2E-006 — Provision MCP with secret handle → real tool_use round trip, secret never leaked (REQ-016, REQ-017, REQ-018)
-- **status:** red
+- **status:** green
 - **traces:** REQ-016, REQ-017, REQ-018, DES-024, DES-025, DES-026
 - **tier:** e2e
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v3
 
+**Ledger-hygiene fix (Gate 6.5+7 round 2 sweep, verifier, 2026-09-02):** header `status`/`result` fields were left `red`/`fail` from this item's original Gate-5 write even though the body text above already documents (or this gate's own direct re-run confirms) it has been green for one or more iterations — a metadata-only staleness the trace.py gap check does not surface (it does not flag `status: red` ledger entries as gaps). Corrected here; no `src/`/test-file change.
 File: `tests/e2e/mcp-provision-secret-tooluse-journey.test.ts`.
 Mock policy (e2e — no SUT boundary mocked): real server, real MCP HTTP calls, real local Ollama when
 gated on (env-var convention matching VAL-003/VAL-004, so a bare `npm test` stays hermetic; Gate 7.5
@@ -3281,13 +3282,14 @@ tool: mcp_provision'}`, confirmed via a direct run of this exact assertion) — 
 independent of any live-provider availability.
 
 ### E2E-007 — Hooks rejected + a hung SDK-gateway provider call bounded, never smuggled as success (REQ-019, REQ-020)
-- **status:** red
+- **status:** green
 - **traces:** REQ-019, REQ-020, DES-027, DES-028, DES-029
 - **tier:** e2e
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v3
 
+**Ledger-hygiene fix (Gate 6.5+7 round 2 sweep, verifier, 2026-09-02):** header `status`/`result` fields were left `red`/`fail` from this item's original Gate-5 write even though the body text above already documents (or this gate's own direct re-run confirms) it has been green for one or more iterations — a metadata-only staleness the trace.py gap check does not surface (it does not flag `status: red` ledger entries as gaps). Corrected here; no `src/`/test-file change.
 File: `tests/e2e/hooks-reject-and-timeout-bound-journey.test.ts`.
 Mock policy (e2e — no SUT boundary mocked): real server, real spawned `claude` CLI via
 `ClaudeAgentSdkGatewayClient`; the ONLY fake is the third-party network endpoint the CLI dials (a
@@ -3331,13 +3333,14 @@ unweakened — the plain-resolve `../` escape denial `isPathContained` reduces t
 don't exist yet is a strict subset of its own behavior).
 
 ### VAL-019 — REQ-016: non-Anthropic models run the full agent harness via the SDK gateway
-- **status:** red
+- **status:** green
 - **traces:** REQ-016
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v3
 
+**Ledger-hygiene fix (Gate 6.5+7 round 2 sweep, verifier, 2026-09-02):** header `status`/`result` fields were left `red`/`fail` from this item's original Gate-5 write even though the body text above already documents (or this gate's own direct re-run confirms) it has been green for one or more iterations — a metadata-only staleness the trace.py gap check does not surface (it does not flag `status: red` ledger entries as gaps). Corrected here; no `src/`/test-file change.
 File: `tests/acceptance/val-019-non-anthropic-harness.test.ts`.
 Mock policy (acceptance — no SUT boundary mocked): real `gateway:"sdk"` (`ClaudeAgentSdkGatewayClient`
 composition-root override) + a real local Ollama model, gated on `OLLAMA_BASE_URL` (VAL-003/VAL-004
@@ -3373,13 +3376,14 @@ IT-038's own pattern) — no test-file change needed. Re-run:
 `npx vitest run tests/acceptance/val-020-mcp-provisioning.test.ts` → 4/4 pass.
 
 ### VAL-021 — REQ-018: secrets for providers/MCP via a server-side store, never workspace-reachable
-- **status:** red
+- **status:** green
 - **traces:** REQ-018
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v3
 
+**Ledger-hygiene fix (Gate 6.5+7 round 2 sweep, verifier, 2026-09-02):** header `status`/`result` fields were left `red`/`fail` from this item's original Gate-5 write even though the body text above already documents (or this gate's own direct re-run confirms) it has been green for one or more iterations — a metadata-only staleness the trace.py gap check does not surface (it does not flag `status: red` ledger entries as gaps). Corrected here; no `src/`/test-file change.
 File: `tests/acceptance/val-021-secret-store.test.ts`.
 Mock policy (acceptance — no SUT boundary mocked): real server + real env-loaded secret + real
 `mcp_provision`/`workflow_run`; the live-model round trip is gated (`OLLAMA_BASE_URL`).
@@ -3408,13 +3412,14 @@ Red reason: `classifyAsset is not a function` (named export absent) + real `asse
 materializes a hook today (`stored:['val022-hook']`), confirmed via a direct run.
 
 ### VAL-023 — REQ-020: SDK gateway path bounds a hung agent LLM call (timeout + retries)
-- **status:** red
+- **status:** green
 - **traces:** REQ-020
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v3
 
+**Ledger-hygiene fix (Gate 6.5+7 round 2 sweep, verifier, 2026-09-02):** header `status`/`result` fields were left `red`/`fail` from this item's original Gate-5 write even though the body text above already documents (or this gate's own direct re-run confirms) it has been green for one or more iterations — a metadata-only staleness the trace.py gap check does not surface (it does not flag `status: red` ledger entries as gaps). Corrected here; no `src/`/test-file change.
 File: `tests/acceptance/val-023-sdk-gateway-timeout.test.ts`.
 Mock policy (acceptance — no SUT boundary mocked): real spawned `claude` CLI via
 `ClaudeAgentSdkGatewayClient`, pointed at a real local HTTP server that never responds (a real
@@ -3443,12 +3448,13 @@ implementation. UT-053 covers the extended DES-031 contract (3rd param + typed e
 
 ### UT-052 — findProjectMarkerAncestor pure predicate — full truth table (DES-031)
 - **traces:** DES-031, TASK-038
-- **status:** red
+- **status:** green
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v3
 
+**Ledger-hygiene fix (Gate 6.5+7 round 2 sweep, verifier, 2026-09-02):** header `status`/`result` fields were left `red`/`fail` from this item's original Gate-5 write even though the body text above already documents (or this gate's own direct re-run confirms) it has been green for one or more iterations — a metadata-only staleness the trace.py gap check does not surface (it does not flag `status: red` ledger entries as gaps). Corrected here; no `src/`/test-file change.
 File: `tests/unit/workroot-guard-predicate.test.ts`.
 Pure (no real fs): all four params injected (`path`, `stopAt`, `existsImpl`, `realpathImpl`).
 Cases: marker at path itself → returns that path; marker at mid-ancestor → returns ancestor; `.git`
@@ -3463,12 +3469,13 @@ Red reason: `findProjectMarkerAncestor` is not yet exported from `workroot-guard
 
 ### UT-053 — WorkRootInsideProjectError typed fields + realpathImpl 3rd param (DES-031)
 - **traces:** DES-031, TASK-038
-- **status:** red
+- **status:** green
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v3
 
+**Ledger-hygiene fix (Gate 6.5+7 round 2 sweep, verifier, 2026-09-02):** header `status`/`result` fields were left `red`/`fail` from this item's original Gate-5 write even though the body text above already documents (or this gate's own direct re-run confirms) it has been green for one or more iterations — a metadata-only staleness the trace.py gap check does not surface (it does not flag `status: red` ledger entries as gaps). Corrected here; no `src/`/test-file change.
 File: `tests/unit/workroot-guard.test.ts` (new describe block appended).
 Pure (no real fs): injected `existsImpl` + `realpathImpl`.
 Cases: `.ancestor` field on thrown error equals the offending dir (currently undefined → fails);
@@ -3483,12 +3490,13 @@ Red reason: `WorkRootInsideProjectError` class lacks `.ancestor`/`.marker`/`.rem
 
 ### UT-054 — buildSessionOptions settingSources invariant + session-init re-walk (DES-026 R9, DES-031)
 - **traces:** DES-026, DES-031, TASK-038
-- **status:** red
+- **status:** green
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v3
 
+**Ledger-hygiene fix (Gate 6.5+7 round 2 sweep, verifier, 2026-09-02):** header `status`/`result` fields were left `red`/`fail` from this item's original Gate-5 write even though the body text above already documents (or this gate's own direct re-run confirms) it has been green for one or more iterations — a metadata-only staleness the trace.py gap check does not surface (it does not flag `status: red` ledger entries as gaps). Corrected here; no `src/`/test-file change.
 File: `tests/unit/session-options-builder.test.ts` (two new describe blocks appended).
 Pure (no fs/net): `existsImpl`/`realpathImpl` injected for the re-walk case.
 Cases: `out.sessionInit.settingSources` field exists and never contains `'user'` or `'local'`
@@ -3503,12 +3511,13 @@ fail; 8 existing UT-044 tests still pass).
 
 ### VAL-024 — REQ-021: workRoot project-isolation guard — boot fail-fast + session-init re-walk
 - **traces:** REQ-021, DES-031, ARCH-019
-- **status:** red
+- **status:** green
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v3
 
+**Ledger-hygiene fix (Gate 6.5+7 round 2 sweep, verifier, 2026-09-02):** header `status`/`result` fields were left `red`/`fail` from this item's original Gate-5 write even though the body text above already documents (or this gate's own direct re-run confirms) it has been green for one or more iterations — a metadata-only staleness the trace.py gap check does not surface (it does not flag `status: red` ledger entries as gaps). Corrected here; no `src/`/test-file change.
 File: `tests/acceptance/val-024-workroot-isolation.test.ts`.
 Mock policy (acceptance — no SUT boundary mocked): real fs operations (real `writeFileSync`/
 `mkdirSync` plant actual markers on disk); real `assertWorkRootIsolated` call with no injected
@@ -4552,7 +4561,9 @@ File: `tests/integration/net-guard-bind-integration.test.ts`. Mock policy (integ
 - **result:** pass
 - **iter:** v15
 
-File: `tests/integration/workflow-ownership.test.ts`. Mock policy (integration): real server + real SQLite catalog; principal passed as tool arg per v15 spec. 10 cases: (1) first registration by alice → owned; (2) alice overwrite → succeeds; (3) bob overwrite → NOT_WORKFLOW_OWNER + stored unchanged; (4) bob deregister → NOT_WORKFLOW_OWNER + still present; (5) alice deregister → succeeds; (6) null principal → ungated [D-AUTH-6]; (7) workflow_get includes owner; (8) workflow_run by bob → not gated; (9) boot backfill: NULL owner → hsuhungjung@gmail.com; (10) backfill idempotent. Red reason: `owner` column not yet added; NOT_WORKFLOW_OWNER never returned; boot backfill absent → 7 of 10 cases fail.
+File: `tests/integration/workflow-ownership.test.ts`. Mock policy (integration, v15 original): real server + real SQLite catalog; principal passed as tool arg per v15 spec. 10 cases: (1) first registration by alice → owned; (2) alice overwrite → succeeds; (3) bob overwrite → NOT_WORKFLOW_OWNER + stored unchanged; (4) bob deregister → NOT_WORKFLOW_OWNER + still present; (5) alice deregister → succeeds; (6) null principal → ungated [D-AUTH-6]; (7) workflow_get includes owner; (8) workflow_run by bob → not gated; (9) boot backfill: NULL owner → hsuhungjung@gmail.com; (10) backfill idempotent. Red reason: `owner` column not yet added; NOT_WORKFLOW_OWNER never returned; boot backfill absent → 7 of 10 cases fail.
+
+**v22 send-back ROUND 2 migration (`7bfdc3c`, IMPL-158):** the original v15 topology bound its server to `0.0.0.0` (taking the D-BIND loopback exemption) and self-asserted identity via `{principal: ALICE}` as a tool argument — exactly the spoof shape B1's `!authEnabled`-gated `PRINCIPAL_REQUIRED` fix closes, so extending the gate to `workflow_register`/`workflow_deregister` turned 7 of these 10 cases red (they were relying on the vulnerability, not testing ownership). Migrated to real identity, mirroring IT-089's pattern: the server now binds `127.0.0.1` (not D-BIND-exempt, `resolvePrincipal` actually runs); `mintBearer()` issues real tokens through the real `TokenStore` against the server's own `auth-tokens.db`, giving alice and bob genuinely distinct authenticated identities; every call carries a bearer, reads included. No oracle changed — `NOT_WORKFLOW_OWNER` for a non-owner, success for the owner, byte-for-byte — only how each case proves who it is. The `publishPointer()` helper (existed only because `workflow_publish` was unreachable anonymously) was removed; with a real owner bearer the call succeeds directly, so cases 1/2/10 now make the real `workflow_publish` call and assert success. 10/10 green post-migration.
 
 ### IT-081 — harness defaults register-time validation: D-AUTH-5 named assertions (DES-099, DES-100)
 - **status:** green
@@ -4734,13 +4745,14 @@ File: `tests/acceptance/val-099-bind-fail-closed.test.ts`. Mock policy (acceptan
 ## v21 slice — tunable-parameter contract, author/user separation part 1 (REQ-090..095)
 
 ### UT-098 — pure `src/params/contract.ts`: locked/tunable vocabulary, `parseParamContract`, `validateUserOverrides`, the total rejection table (DES-101)
-- **status:** red
+- **status:** green
 - **traces:** DES-101, ARCH-064, TASK-097
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
+**Ledger-hygiene fix (Gate 6.5+7 round 2 sweep, verifier, 2026-09-02):** header `status`/`result` fields were left `red`/`fail` from this item's original Gate-5 write even though the body text above already documents (or this gate's own direct re-run confirms) it has been green for one or more iterations — a metadata-only staleness the trace.py gap check does not surface (it does not flag `status: red` ledger entries as gaps). Corrected here; no `src/`/test-file change.
 File: `tests/unit/params-contract.test.ts`. Mock policy (unit): pure module, zero I/O/VM/clock/randomness.
 Cases: `LOCKED_KEYS`/`TUNABLE_KEYS`/`EFFORT_RANK` vocabulary + `isEffort`; `canonicalContract()` shape
 (4 knobs, no author bounds, no declared args); `effectiveBounds()` = min(author, ceiling) computed at
@@ -5072,13 +5084,14 @@ pinning that `thinkingFor()` stays the SOLE writer of `options.thinking` — see
 **v21 Gate 5 relaunch (2026-09-01, orchestrator adjudication #6):** the P-A1 fix landed out-of-band between the RE-REVIEW #3 re-run above and this pass (commit `244f9f0`, adjudicated correct at commit `9d86075`) — `effortBodyFields()` now nests under `output_config` on both branches, so both new shape-pin cases above are GREEN. This exposed the OLDER `LiteLLM-proxy branch (v21 Gate 5 re-run A-7)` case ("the mapped effort value reaches the outbound request…") as a now-contradictory suite: it asserted the value lands at the top-level `parsed.effort` key — the exact placement the shape-pin block proves is wrong. Fixed in place (not force-kept red, not deleted — it predates the P-A1 finding and is otherwise a valid proxy-branch pin) to assert `parsed.output_config?.effort` instead, matching the adopted contract; confirmed GREEN after the fix, no behavior change to `src/`.
 
 ### IT-083 — admission rung + run-immutable `effectiveParams` snapshot + resume + engine ceilings, inserted between `catalog.get()` and `createRun()`/`runWorkspace()` (DES-104)
-- **status:** red
+- **status:** green
 - **traces:** DES-104, ARCH-066, TASK-100, DES-103
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v21
 
+**Ledger-hygiene fix (Gate 6.5+7 round 2 sweep, verifier, 2026-09-02):** header `status`/`result` fields were left `red`/`fail` from this item's original Gate-5 write even though the body text above already documents (or this gate's own direct re-run confirms) it has been green for one or more iterations — a metadata-only staleness the trace.py gap check does not surface (it does not flag `status: red` ledger entries as gaps). Corrected here; no `src/`/test-file change.
 File: `tests/integration/params-admission.test.ts`. Mock policy (integration, DES-108): real
 `RunManager`, real SQLite catalog/run-store, real sandbox; no network/LLM needed (rejections happen
 before any agent() call). Cases: `overrides:{prompt}` → `PARAM_LOCKED`, no run row appended to
