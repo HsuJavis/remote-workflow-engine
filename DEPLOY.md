@@ -6,7 +6,7 @@
 > `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
 
 這是一個可遠端操控的 **Claude 工作流程執行引擎**：一台常駐伺服器，透過 **MCP Streamable HTTP**
-介面對外提供 **38 個工具**（工作流程執行/查詢、排程、串接、資產同步、問題回報、系統監控、模型目錄、
+介面對外提供 **40 個工具**（工作流程執行/查詢、排程、串接、資產同步、問題回報、系統監控、模型目錄、
 OAuth 2.0 身份認證……），並把每個 `agent()` 呼叫路由到你設定的 LLM 供應商（Anthropic / OpenAI /
 Gemini / 本機 Ollama）。狀態全存在本機檔案（SQLite + JSONL journal），不需要外部資料庫伺服器。
 
@@ -46,21 +46,33 @@ litellm 已存在於 ~/.rwe-litellm-venv/bin/litellm，略過建立。
 背景模式：服務持續在背景執行（PID=xxxxx）。停止：kill $(cat .rwe.pid)
 ```
 
+同一台機器要跑第二個實例（例如驗證用），用 `RWE_BIND` / `RWE_PORT` / `RWE_CONFIG_PATH` 覆蓋即可，
+腳本本身不變（三個鍵的說明見 §1b）：
+
+```bash
+RWE_CONFIG_PATH=/path/to/another/rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=8792 ./deploy.sh --background
+```
+
 系統概觀：
 
 ```
-        curl / MCP client                  agent() 呼叫
-              │                                  │
-              ▼                                  ▼
-   ┌─────────────────────┐   spawn    ┌──────────────────────┐
-   │  remote-workflow-    │───────────▶│  LiteLLM proxy 子行程 │
-   │  engine (Node,       │            │  （gateway:"sdk" 預設）│
-   │  MCP Streamable HTTP)│◀───────────│                      │
-   └─────────┬────────────┘   結果      └──────────┬───────────┘
-             │                                     │
-             ▼                                     ▼
-   本機檔案：SQLite + JSONL journal      Anthropic / OpenAI / Gemini
-   （$workRoot/store、run 工作目錄）       / 本機 Ollama
+     curl / MCP client         workflow_register        agent() 呼叫
+              │                       │                       │
+              │                       ▼                       │
+              │              ┌─────────────────┐              │
+              │              │ 畫圖分析器       │              │
+              │              │ (graphAnalyzer) │              │
+              ▼              └────────┬────────┘              ▼
+   ┌─────────────────────┐            │        ┌──────────────────────┐
+   │  remote-workflow-   │────────────┴───────▶│  LiteLLM proxy 子行程 │
+   │  engine (Node,      │       spawn         │  （gateway:"sdk" 預設）│
+   │  MCP Streamable HTTP)│◀───────────────────│                      │
+   └─────────┬───────────┘        結果         └──────────┬───────────┘
+             │                                            │
+             ▼                                            ▼
+   本機檔案：SQLite + JSONL journal             Anthropic / OpenAI / Gemini
+   （$workRoot/store、run 工作目錄、           / 本機 Ollama
+     每個版本的結構圖）
 ```
 
 停止服務：`kill $(cat .rwe.pid)`。不加 `--background` 則前景執行、Ctrl-C 停止。
@@ -119,7 +131,7 @@ curl -s -X POST http://localhost:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | python3 -c \
   "import json,sys; d=json.load(sys.stdin); print('tools:', len(d['result']['tools']))"
-# 預期：tools: 38
+# 預期：tools: 40
 
 # 主機系統資源快照（第一次呼叫 utilizationPct=null；第二次有值）
 curl -s http://localhost:8787/api/system | python3 -c \
@@ -291,7 +303,11 @@ curl -s http://localhost:8787/api/models | python3 -c \
   ```
   若系統本來就有 Python 3.11/3.12（`python3.12 --version` 有輸出），可以省略 `uv`，直接
   `python3.12 -m venv <venv路徑> && <venv路徑>/bin/pip install 'litellm[proxy]'`。
-  **不需要 `agent()`**（純跑工作流程腳本邏輯）的部署可以完全跳過這一步。
+  **要跳過這一步，必須同時關掉兩條會用到 LiteLLM 的路徑**：`agent()` 呼叫，以及註冊時自動畫圖的
+  分析器（`workflow_register` 會把腳本送給模型畫結構圖，走的是同一條 gateway）。可行組合有兩種：
+  (a) `gateway:"direct-fetch"` + `useLiteLLMProxy:false`（本機 Ollama 直連，兩條路徑都不碰 LiteLLM）；
+  (b) 保留 `gateway:"sdk"` 但設 `graphAnalyzer.enabled:false` 且工作流程完全不呼叫 `agent()`。
+  留著預設值卻沒裝 `litellm`，第一次 `workflow_register` 就會去 spawn 它——見 §5 的對應處置。
   正常關機（`SIGTERM`）會連帶停掉這個子行程，不留孤兒；可在 `rwe.config.json` 用 `litellmPort`
   鍵讓每個實例指定不同 port（省略則綁一個 OS 分配的 ephemeral 空閒 port，天生不會多實例撞號）。
 - 外部依賴：不需要資料庫伺服器（狀態存在本機檔案：SQLite + JSONL journal，路徑見 `workRoot`）。
@@ -360,6 +376,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `maxAppendPromptBytes` | `overrides.appendPrompt` 的位元組上限；超過在送出時以 `PARAM_OUT_OF_RANGE` 拒絕（不截斷、原文不回顯於錯誤訊息） | `number` / `1024` | 否 | v21 |
 | `rwe.config.json` → `maxEffort` | `overrides.effort`／`meta.params` 宣告的 `effort` 上限（`low\|medium\|high\|xhigh\|max` 五階） | `string` / `'high'` | 否 | v21 |
 | `rwe.config.json` → `auth.enabled` | OAuth 2.0 身份認證 toggle；`false`（省略）= 開放行為（無 auth） | `boolean` / `false` | 否 | v15 |
+| `rwe.config.json` → `auth.issuer` | 這台引擎當作 OAuth 授權伺服器時對外宣告的 base URL（寫進 AS metadata、`WWW-Authenticate` 與 client redirect 的 `iss`）；省略時自動用 `http://<bind>:<實際 port>`，公開部署（HTTPS tunnel）必須明寫成對外網址 | `string` / `http://<bind>:<port>` | 否（公開部署時建議設定） | v15 |
 | `rwe.config.json` → `auth.googleClientId` | Google Cloud Console OAuth 2.0 client ID；用於 `/authorize` 重導向 + id_token aud 驗證 | `string` / — | 當 `auth.enabled:true` | v15 |
 | `rwe.config.json` → `auth.googleClientSecret` | Google OAuth 2.0 client secret；用於 `/oauth/google/callback` code exchange | `string` / — | 當 `auth.enabled:true` | v15 |
 | `rwe.config.json` → `auth.googleAuthorizeUrl` | Google authorization endpoint override（一般部署不需設定） | `string` / `'https://accounts.google.com/o/oauth2/v2/auth'` | 否 | v18 |
@@ -470,8 +487,8 @@ curl -s http://localhost:8787/api/models | python3 -c \
 **docker-compose**（不需要另外寫 Dockerfile；直接把 repo 掛進官方 Node 22 image，跑與手動部署
 完全相同的 `npm ci && npm run start`）：
 ```bash
-docker compose up                              # 預設 profile：只跑 server，走免依賴的
-                                                # direct-fetch/SDK 路徑，不需要 LiteLLM/Python
+docker compose up                              # 預設 profile：只跑 server（映像內沒有 LiteLLM/Python；
+                                                # 要免 LiteLLM 依賴，設定檔請照 §1a 的 (a) 或 (b) 組合）
 docker compose --profile litellm up server-litellm
                                                 # 選用 profile：容器內額外安裝 Python 3.11 +
                                                 # litellm[proxy]
@@ -561,7 +578,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
-判定標準：回傳 `200`，且 body 的 `result.tools` 陣列包含 38 個工具（含全部 `workflow_*` 家族）；
+判定標準：回傳 `200`，且 body 的 `result.tools` 陣列包含 40 個工具（含全部 `workflow_*` 家族）；
 終端機/日誌會印出 `[remote-workflow-engine] ready`；`GET /api/status` 回 `{agentSemaphore,version}`。
 完整真實層驗證證據（含逐 REQ 的真實指令與觀察輸出）見
 `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
@@ -594,6 +611,9 @@ npm run start
 | 續跑（`workflow_resume`）之後，原本被中止那次呼叫的紀錄一直卡在 `"state":"running"` | 已知的顯示瑕疵：中止的呼叫紀錄不會自己轉成終止狀態，續跑會多出一筆新紀錄 | 純顯示瑕疵，不影響最終 `workflow_result` 的正確性；可忽略舊的那筆紀錄 |
 | 關掉伺服器後還有一個 `litellm --config ...` process 留著 | 正常 `SIGTERM`/`SIGINT` 關機會連帶砍掉內部管理的 `litellm` 子行程；殘留多半是非正常關機（如 `kill -9`）留下的 | 手動 `ps aux \| grep litellm` 找到後 `kill`；也可以用 `litellmPort` 鍵讓每個實例用不同 port，避開多實例誤連風險 |
 | Node 啟動就報 SyntaxError / 找不到 `--experimental-transform-types` | Node 版本 < 22.6 | 升級 Node 到 22.6 以上（`node --version` 確認） |
+| `workflow_describe` 的 `diagramStatus` 一直是 `"unavailable"`，`diagramNote` 說逾時或「did not return a valid diagram」 | 畫圖的模型太小或太慢：出廠預設 prompt 要求「只輸出圖、不夾帶其他文字」，本機 7B 級模型常多寫字或用到規定外符號而被把關擋下（journal 的 `gateFail:"codepoint"`／`noteCode:"TIMEOUT"` 就是訊號） | 換一個能穩定照格式輸出的 `graphAnalyzer.model`，或把 `graphAnalyzer.systemPrompt` 改寫成給該模型的明確模板；改完重啟即生效（不需重新編譯）。真的不需要圖就設 `graphAnalyzer.enabled:false` |
+| 沒裝 `litellm`，第一次 `workflow_register` 之後服務就不見了 | 預設 `gateway:"sdk"` 在畫圖／`agent()` 時 spawn `litellm`；找不到執行檔時的 spawn 失敗目前沒有被接住（已知缺陷） | 照 §1a 把 litellm venv 的 `bin/` 加進 `PATH` 再啟動；或改成 §1a 的 (a)／(b) 免 LiteLLM 組合 |
+| 註冊了工作流程，圖上卻看不到 cron/webhook 觸發節點 | 目前送給畫圖模型的內容只有腳本，觸發綁定不在腳本裡（已知限制，非設定問題） | 看 `workflow_describe` 的 `triggers` 欄位——它是即時值；圖比綁定舊時 `diagramStale` 會是 `true` |
 | 手動用 `curl http://0.0.0.0:<port>/api/status` 檢查健康狀態，收到 `403 Forbidden`（不是逾時、不是連不上） | 伺服器的 Host-header 允許清單刻意不把 `0.0.0.0` 當成合法 Host（那是「監聽所有介面」的萬用位址，不是真實可連的目的地名稱）——`RWE_BIND=0.0.0.0` 只影響「監聽哪些介面」，不代表 `0.0.0.0` 本身能當 URL 用 | 改用 `127.0.0.1:<port>` 檢查（`deploy.sh` §0 本身在 `RWE_BIND=0.0.0.0` 時也是這樣做）；要從區網其他主機檢查，用該主機看到的 LAN IP（並確認已列在 §1b `allowedHosts`） |
 | `RWE_BIND=<LAN IP>`（如 §2 systemd 範例的 `192.168.0.125`）部署後，手動用 `curl http://127.0.0.1:<port>/api/status` 檢查，收到 `Connection refused`（連不上，不是 403） | 服務只監聽 `$RWE_BIND` 指定的那個介面；綁定成具體 LAN IP 時，該主機的 `127.0.0.1` 迴環介面根本沒有服務在聽 | 改用 `$RWE_BIND` 本身（例如 `curl http://192.168.0.125:<port>/api/status`）；`deploy.sh` §0 的健康檢查已依 `RWE_BIND` 是否為 `0.0.0.0`/`::` 自動選擇正確目的地，不需要手動判斷 |
 
@@ -642,9 +662,33 @@ running→interrupted (resumable)`）；`workflow_resume(runId)` 即可續跑。
 派發但尚未寫入日誌）的呼叫，續跑時會真的重跑（cache MISS，非靜默遺失）；若該次呼叫有非冪等副
 作用可能重複，由工作流程作者負責冪等性。
 
-**重用前先看用途 + 靜態 DAG**：`workflow_list` 每筆回傳 `description`；`workflow_get({name})`
-回傳完整定義（未知名稱 → `WORKFLOW_NOT_FOUND`）；`workflow_get.skeleton` 與
-`GET /api/workflows/:name/skeleton` 回傳純靜態掃描出的預測 DAG 骨架（不執行 script）。
+**重用前先看用途（`workflow_describe`）**：`workflow_list` 每筆回傳 `description`；
+`workflow_get({name})` 回傳完整定義（未知名稱 → `WORKFLOW_NOT_FOUND`，非擁有者不含腳本本文）；
+**`workflow_describe({name, version?, channel?})` 是給「要不要用這個工作流程」的人看的單一說明面**
+——用途、版本/頻道、階段、可調參數契約、鎖定鍵、擁有者、回報問題方式、**目前的觸發綁定**
+（`triggers`，每次呼叫即時讀取）以及一張 **ASCII 結構圖**（`diagram`）。HTTP 版：
+`GET /api/workflows/:name/describe`。任何 principal 都能呼叫，回應**永遠不含腳本本文**。
+
+結構圖由 `graphAnalyzer` 設定區塊指定的 LLM 在註冊時非同步畫出（設定鍵見 §1b）：
+
+```
+workflow_register ──▶ 立刻回 {version}      （註冊從不等畫圖）
+        │
+        └─▶ 佇列(並行度 1) ──▶ LLM 畫圖 ──▶ 把關(字元/大小/字彙) ──▶ 存進該 (name, version)
+                                     │                    │
+                                  失敗/逾時            不合格
+                                     └────────┬───────────┘
+                                              ▼
+                        workflow_describe 回 diagram:null + diagramStatus:"unavailable"
+                                          + diagramNote 說明原因（沒有退化的替代圖）
+```
+
+- `diagramStatus`：`ready`（有圖）／`pending`（還在畫）／`unavailable`（畫不出來，看 `diagramNote`）。
+- `diagramStale:true`：圖畫好之後觸發綁定又改過了——圖沒錯，只是比 `triggers` 舊。
+- 擁有者可 `workflow_regenerate_diagram({name, version})` 重畫（非擁有者 → `NOT_WORKFLOW_OWNER`；
+  分析器關閉時 → `ANALYZER_DISABLED`）。
+- **目前結構圖不會畫出觸發節點**：送給畫圖模型的內容只有腳本，而 cron/webhook/chain 綁定不在腳本裡。
+  要知道現在綁了什麼，看 `triggers` 欄位。
 
 **高效大型程式庫 seeding**：`/mcp` 請求體接受 `Content-Encoding: gzip|deflate`（雙重上限：壓縮
 輸入 8 MiB + 解壓輸出 8×，防 gzip bomb）；超過上限回具型別 413

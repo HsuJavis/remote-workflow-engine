@@ -1,3 +1,46 @@
+- 2026-09-03 — v23 Gate 7.5 (validator, real-run validation & handover) **FAILED — one REQ half-built**.
+Booted the real system twice using documented steps only, both through the committed one-command
+`./deploy.sh --background` (BOOT A: `RWE_BIND=127.0.0.1 RWE_PORT=8791` on the repo's own
+`rwe.config.json` — `gateway:"sdk"`, `auth.enabled:true`, real `TokenStore`-minted owner/non-owner
+bearers; BOOT B: `RWE_CONFIG_PATH=<scratch>/rwe.config.json RWE_PORT=8792` on a scratch config
+assembled only from DEPLOY §2's Ollama recipe + §1b rows — `gateway:"direct-fetch"`,
+`useLiteLLMProxy:false` — restarted three more times for the config-edit arms). Both boots stamped
+`v0.20.0-87-gb5043bf`; the long-lived 8月19 production instance on 8787 was untouched throughout.
+**Six of seven v23 acceptance items are real-tier green**, every one against real wiring and a real
+provider (local Ollama `qwen2.5:7b` / `qwen2.5vl:7b`, nothing mocked): VAL-111 (a non-owner sees real
+phase titles with `scriptWithheld:true` and zero secret hits), VAL-112 (`workflow_describe` returns the
+full DES-125 field set to a non-owner with no script anywhere, refuses an unpublished channel with
+`CHANNEL_UNPUBLISHED`, and really surfaces a declared knob's default + engine ceiling), VAL-113 (a real
+`ready` ASCII diagram whose text contains none of the script's secret literal / distinctive prompt
+sentence / `appendPrompt` marker; registration never blocks; honest absence proven three separate ways —
+`TIMEOUT`, `GATE_REJECTED_SHAPE`/`codepoint` with the shipped default prompt, and
+`enabled:false` → `ANALYZER_DISABLED`), VAL-114 (live cron+webhook `triggers`, removal reflected in the
+same read, `diagramStale` flip and clear), VAL-115 (REQ-104 re-confirmed **on the integrated tree**: an
+on-disk `graphAnalyzer.model`+`systemPrompt` edit plus a restart, no rebuild, produced a visibly
+different diagram and a journal line naming the new model, with v1's diagram untouched), VAL-116
+(`/skeleton` 404, `/describe` 200, zero `skeleton` in the entire live `tools/list`, run DAG serving
+layout only), VAL-117 (the four authoring rules + the `docs/AUTHORING.md` pointer inside the live
+`workflow_register.script` description a cold client actually reads).
+**Fail cause — REQ-103 (new VAL-118, `real:true`, `result:fail`)**: its first clause requires the
+analyzer to be *given the trigger bindings* so the diagram's entry node names cron/webhook/chain, but
+`src/graph-analyzer.ts:299` builds the prompt from `systemPrompt` + the script only —
+`getTriggerBindings()` feeds nothing but the token allowlist and the staleness fingerprint. Proven live:
+the same `(name, version)` analyzed with and without a live cron binding reported the **identical**
+`promptTokens: 297`, and the regenerated diagram names no trigger. `04-design.md:4224` narrowed the
+acceptance to the `triggers`-field + staleness arm with no adjudication recording the drop. Route: Gate
+6 (feed the projected bindings into the prompt) or an owner-signed REQ-103 amendment; not fixed here.
+**Docs rewritten to current state**: tool count 38 → 40 (counted live), DEPLOY §6's `workflow_get.skeleton`
+/ `/skeleton` paragraph replaced by `workflow_describe` + an ASCII flow of the analyzer (itself REQ-105
+evidence — a manual still describing the deleted surface), §1a/§2's "you can skip LiteLLM" caveat
+rewritten now that every `workflow_register` reaches the gateway through the analyzer, three new §5
+troubleshooting rows, and §1b gained the missing `auth.issuer` row (`server.ts:1724` really reads it);
+§4b round-trips both directions with no other drift and no config value change needed for v23.
+`sh .sdlc/trace --check`: 987 items / 17 gaps — 0 高 / 0 未驗證 / 0 僅mock驗證 (the three HIGH
+未真實驗證 on REQ-103/105/106 are closed), residue byte-identical to the Gate 6.5+7 baseline (16 low
+drift + 1 mid `IMPL-082` TDD), so it still exits 1 by construction. `state.yaml`:
+`gates.validation.passed=false`, `current_stage` stays `validation`. Next: Gate 6 for REQ-103's
+analyzer-prompt clause (or an owner decision to amend REQ-103), then a Gate 7.5 re-run of VAL-118 only.
+
 - 2026-09-03 — v23 Gate 6.5+7 (verifier, simplify + regression closeout) **DONE** — **Simplify.** Found an
 uncommitted Gate-6.5 diff already in the tree at dispatch (no journal or IMPL record of it): `_attempt`
 rebuilt around the `AttemptOutcome` discriminated union and `_runJob`'s `for` → `do/while`, together

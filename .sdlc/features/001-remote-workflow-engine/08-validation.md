@@ -5801,3 +5801,302 @@ remediation, rather than the shipped default.
 - **iter:** v23
 
 **Unreachable dependencies:** none.
+
+## v23 GATE 7.5 (2026-09-03, validator) — REQ-101..106 real-tier + REQ-100 `[AMENDED v23]`
+
+**Verdict: FAIL — one requirement (REQ-103) is only half-built.** Six of the seven v23 acceptance
+items are real-tier green against a really-booted engine and a real local LLM provider; REQ-103's
+first clause ("the analyzer is **given the trigger bindings** alongside the script, so the diagram's
+entry node names cron/webhook/chain") is **not implemented** — see VAL-118 below. Everything else in
+this section is green and re-runnable.
+
+### Boot evidence — documented steps only (§0 一鍵部署, the committed `deploy.sh`)
+
+HEAD `b5043bf` (`v0.20.0-87-gb5043bf`), branch `feat/v23-workflow-describe`. Both boots used the
+**committed one-command deploy script**, with only 設定總表 rows as env overrides (`RWE_BIND`,
+`RWE_PORT`, `RWE_CONFIG_PATH`) — no undocumented step, no manual fix, nothing edited in the engine.
+
+```bash
+# BOOT A — the repo's own rwe.config.json (gateway:"sdk", auth.enabled:true, workRoot shared with
+# the long-lived production instance), own port so the 8月19 production instance is untouched:
+RWE_BIND=127.0.0.1 RWE_PORT=8791 ./deploy.sh --background
+# -> 步驟 1/5..5/5 all pass; 健康檢查通過:
+#    {"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (v0.20.0-87-gb5043bf)",...}
+#    [remote-workflow-engine] listening on http://127.0.0.1:8791/mcp (workRoot=/home/user/.local/share/rwe-data)
+#    [remote-workflow-engine] ready
+
+# BOOT B — a scratch config (own port, own workRoot outside the repo), assembled ONLY from
+# DEPLOY.md §2's "無 root 部署 + 本地 Ollama" recipe + §1b 設定總表 rows
+# (gateway:"direct-fetch", useLiteLLMProxy:false, aliases default->ollama qwen2.5:7b,
+#  vl->ollama qwen2.5vl:7b, graphAnalyzer{...}); restarted 3 more times for the REQ-104/REQ-102 arms:
+RWE_CONFIG_PATH=/home/user/.local/share/rwe-scratch-v23/rwe.config.json \
+  RWE_BIND=127.0.0.1 RWE_PORT=8792 ./deploy.sh --background
+# -> 健康檢查通過 {"version":"0.1.0 (v0.20.0-87-gb5043bf)"}; ready on http://127.0.0.1:8792/mcp
+```
+
+**Auth fixture (Boot A only):** the live config has `auth.enabled:true`, so real bearer tokens were
+minted in-process with the engine's OWN `TokenStore.issue()` against the live `auth-tokens.db`
+(SUT-internal component, not a mock — same technique as ROUND 2/3 of v22) for an owner
+(`val-v23-owner@example.com`) and a non-owner (`val-v23-nonowner@example.com`), then sent as real
+`Authorization: Bearer …` headers over real HTTP. Boot B runs with no `auth` block (open mode), so
+ownership is attributed from `args.principal`, which is that mode's documented behavior.
+
+**Live tool surface:** `tools/list` over real MCP HTTP returns **40** tools (was 38 before v23;
+`workflow_describe` + `workflow_regenerate_diagram` are the two new ones). DEPLOY.md's two "38"
+claims were stale and are corrected in this round's doc rewrite.
+
+**Doc gaps found and folded into the manuals (not silently worked around):**
+1. DEPLOY.md §6 still described `workflow_get.skeleton` and `GET /api/workflows/:name/skeleton` as a
+   live feature — the exact "something still describes the deleted thing" defect REQ-105 names.
+   Rewritten to the current surfaces (`workflow_describe` / `workflow_regenerate_diagram`).
+2. Tool count 38 → 40 (two occurrences).
+3. §1a/§2 said an `agent()`-free deployment can skip LiteLLM/Python entirely. Since v23 every
+   `workflow_register` reaches the gateway through the analyzer, so that is only true with
+   `graphAnalyzer.enabled:false` **or** `gateway:"direct-fetch"` + `useLiteLLMProxy:false`. Both
+   places rewritten, and §5 gained a troubleshooting row.
+4. §1b 設定總表 had **no row for `auth.issuer`**, which `server.ts:1724` really reads
+   (`authCfg?.issuer ?? http://<bind>:<port>`) and the production `rwe.config.json` really sets —
+   config drift in the missing direction. Row added.
+
+### VAL-111 — real-run acceptance for REQ-100 `[AMENDED v23]` (phases are public on every surface)
+- **status:** green
+- **traces:** REQ-100, DES-136, TASK-125
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Boot A, live MCP HTTP, **non-owner** bearer. A workflow whose script carries a secret
+  literal (`sk-val23-SECRET-LITERAL-9f3a`), a distinctive prompt sentence ("Reticulate the crimson
+  splines for the quarterly audit.") and an `appendPrompt` marker (`VAL23APPENDMARKER`) was
+  registered by the owner and published to `release`. `workflow_get({name:"val23demo"})` as the
+  non-owner returned `phases:[{"title":"Fetch"},{"title":"Analyze"}]` — the real phase titles —
+  together with `scriptWithheld:true` and **zero** occurrences of any of the three strings
+  (`grep -c` = 0 over the whole response). The owner's own `workflow_get` on the same boot returned
+  the script (2 occurrences of the secret literal), so the mask is per-principal, not a global
+  redaction.
+- **iter:** v23
+
+### VAL-112 — real-run acceptance for REQ-101 (`workflow_describe`, the one explain surface)
+- **status:** green
+- **traces:** REQ-101, DES-125, DES-126, TASK-118, TASK-119
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Boot A, live MCP HTTP, **non-owner** bearer, `workflow_describe({name:"val23demo"})`
+  → one response carrying every DES-125 field: `name`, `version:"v1"`, `resolvedBy:"default-release"`,
+  `channels:{release:"v1",beta:null}`, `versions:["v1"]`, `description`, `phases`, `params`,
+  `lockedKeys:["prompt","tools","skills","mcp","workdir","cwd"]`, `owner`,
+  `reportProblem:"issue_report({workflow: \"val23demo\"})"`, `triggers`, `diagram`, `diagramStatus`,
+  `diagramNote`, `diagramGeneratedAt`, `diagramStale` — and **no `script` key and no secret string**
+  anywhere in the JSON. Selector behavior on the same boot: `{channel:"beta"}` on an unpublished
+  channel → `CHANNEL_UNPUBLISHED` (never silently resolved), and before any publish the default
+  resolution also refused `CHANNEL_UNPUBLISHED` rather than serving v1. Tunable contract really
+  reaches the surface: a second workflow declaring
+  `meta.params={knobs:{timeoutMs:{type:"number",default:120000,max:300000}},args:{topic:{type:"string"}}}`
+  described back as `params.knobs.timeoutMs {type:"number",default:120000,max:300000}` (author default
+  **and** engine-ceiling bound) plus `params.args.topic`. Schema-only discoverability: the advertised
+  `workflow_describe` description in the live `tools/list` states the returned field list and that
+  "The raw workflow script is deliberately NOT part of this response, on any principal."
+- **iter:** v23
+
+### VAL-113 — real-run acceptance for REQ-102 (structure-only ASCII diagram; honest absence)
+- **status:** green
+- **traces:** REQ-102, DES-131, DES-134, TASK-117, TASK-122, ARCH-079
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** all four arms run for real against a real provider (local Ollama, no mock anywhere in
+  the path):
+  1. **Ready, structure-only** (Boot B, `gateway:"direct-fetch"`, `model:"default"` → `qwen2.5:7b`):
+     registering the secret-bearing script produced, 19 s later,
+     `[remote-workflow-engine] graph-analyzer {"name":"val23demo","version":"v1","model":"default",
+     "promptTokens":297,"completionTokens":36,"durationMs":19071,"outcome":"ready","noteCode":null,
+     "gateFail":null}` and `workflow_describe` → `diagramStatus:"ready"`,
+     `diagram:"╭──────────╮\n│ Fetch │\n╰──────────╯\n     │\n     ▶\n╭──────────╮\n│ Analyze │\n╰──────────╯"`.
+     The secret literal, the distinctive prompt sentence, the `appendPrompt` marker, `API_KEY` and
+     even `agent(` are each **individually absent** from the emitted diagram (asserted string by
+     string) — the diagram carries phase structure only.
+  2. **Never blocks registration**: `workflow_register` returned `{status:"completed",version:1}`
+     immediately; the diagram settled asynchronously (`diagramStatus:"pending"` in between).
+  3. **Honest absence, provider failure** (Boot A, `gateway:"sdk"` + Ollama): after 120 s the journal
+     printed `…"durationMs":120003,"outcome":"unavailable","noteCode":"TIMEOUT"` and describe returned
+     `diagram:null, diagramStatus:"unavailable", diagramNote:"The diagram generator timed out."` —
+     no degraded fallback diagram, no error to the caller.
+     Second failure shape, Boot B with the **shipped default** `systemPrompt` against `qwen2.5:7b`:
+     `…"outcome":"unavailable","noteCode":"GATE_REJECTED_SHAPE","gateFail":"codepoint"` →
+     `diagramNote:"The analyzer did not return a valid diagram."` (an independent live reproduction
+     of the model-class degradation DEPLOY.md §1b item 3 documents).
+  4. **Disabled** (Boot B, `graphAnalyzer.enabled:false`, restart): `workflow_register` still
+     succeeded (`version:4`), describe → `diagramStatus:"unavailable"`,
+     `diagramNote:"Diagram generation is disabled for this deployment."`, and
+     `workflow_regenerate_diagram` → `ANALYZER_DISABLED` — never an error at registration. A
+     previously generated `ready` diagram (v1) stayed `ready` and served unchanged.
+  5. **Per-version isolation**: v2's diagram is generated fresh and v1's diagram is byte-identical
+     before and after (see VAL-115), i.e. no version ever serves another version's diagram.
+- **iter:** v23
+
+### VAL-114 — real-run acceptance for REQ-103 (live trigger bindings + machine-checkable staleness)
+- **status:** green
+- **traces:** REQ-103, DES-125, DES-128, ARCH-078, ARCH-081
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** **Scoped to REQ-103's live-bindings and staleness clauses only** (the diagram-entry-node
+  clause is VAL-118, and it fails). Boot A, live MCP HTTP: `schedule_create({kind:"cron",
+  workflow:"val23demo",cron:"0 3 * * *",tz:"Asia/Taipei"})` + `webhook_create({workflow:"val23demo"})`
+  → a **non-owner** `workflow_describe` immediately reported
+  `triggers:[{kind:"cron",cron:"0 3 * * *",tz:"Asia/Taipei",enabled:false},{kind:"webhook",enabled:true}]`
+  — and no webhook `secret`/`id` in the projection. `schedule_delete` then `webhook_delete` → the very
+  next describe returned `triggers:[{kind:"webhook",…}]` and then `triggers:[]`, i.e. the removal is
+  reflected in the same read, with no diagram regeneration. Boot B staleness: against an unchanged
+  `ready` diagram (`diagramGeneratedAt:"2026-09-02T20:12:36.610Z"`), binding a cron flipped
+  `diagramStale:false → true`; `workflow_regenerate_diagram` then re-drew against the current
+  bindings and `diagramStale` went back to `false` with a new `diagramGeneratedAt`.
+- **iter:** v23
+
+### VAL-115 — real-run acceptance for REQ-104 (`graphAnalyzer` config reaches the analyzer, no redeploy)
+- **status:** green
+- **traces:** REQ-104, DES-134, TASK-124, ARCH-085
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** **Re-confirmed on the fully-integrated tree** (`b5043bf`, all v23 tasks landed), as
+  TASK-124's own entry required. Boot B, real Ollama, no code change and no rebuild between the two
+  observations — only `rwe.config.json` edited on disk and the process restarted via the same
+  `./deploy.sh --background` command:
+  1. `graphAnalyzer:{model:"default", systemPrompt:<vertical template>}` → registering `val23demo`
+     produced journal `…"model":"default",…,"outcome":"ready"` and the vertical diagram
+     `╭──────────╮ │ Fetch │ ╰──────────╯ │ ▶ ╭──────────╮ │ Analyze │ ╰──────────╯`.
+  2. Edited on disk: `graphAnalyzer.model:"default" → "vl"` (a second Ollama alias, `qwen2.5vl:7b`)
+     and `graphAnalyzer.systemPrompt` → a side-by-side template. Restarted.
+  3. Re-registering the same name produced `version:2` and journal
+     `[remote-workflow-engine] graph-analyzer {"name":"val23demo","version":"v2","model":"vl",
+     "promptTokens":283,"completionTokens":32,"durationMs":33720,"outcome":"ready"}` — the journal
+     names the **new** model, and the emitted diagram is visibly different:
+     `╭──────────╮      ╭──────────╮\n│ Fetch │──▶│ Analyze │\n╰──────────╯      ╰──────────╯`.
+  4. v1's diagram re-read after the edit: **unchanged**. Removing `graphAnalyzer.systemPrompt`
+     entirely fell back to the shipped default prompt (observable as `promptTokens` 297 → 579), and
+     `enabled:false` took effect on the next restart — three different keys of the block each
+     demonstrably reaching the analyzer through `composeConfig()`.
+- **iter:** v23
+
+### VAL-116 — real-run acceptance for REQ-105 (the static skeleton left every user-facing surface)
+- **status:** green
+- **traces:** REQ-105, DES-132, DES-133, TASK-120, ARCH-083, ADR-022
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Boot A, real HTTP/MCP. `GET /api/workflows/val23demo/skeleton` → **404**
+  `{"error":"Not found"}` both with and without a bearer (the surface no longer exists);
+  `GET /api/workflows/val23demo/describe` → **200** with the describe projection (its replacement).
+  The whole live `tools/list` payload contains the word "skeleton" **0 times** (`workflow_get`'s
+  description now advertises the describe-style field list and no skeleton). `GET /api/runs/:id/dag`
+  against a real completed run on an `auth.enabled:true` boot returned layout only — one live
+  `agent-1` cell plus the trigger cell — with no script-derived nodes and no requestable artifact
+  name. **Observation for Gate 8 (not a gate failure):** that same DAG response body carries
+  `"warnings":["agent agent-1 unmatched to skeleton: frame-grouped"]` (`src/dashboard.ts:342`) — an
+  allowlisted file, and the string is a diagnostic that projects no skeleton content, but it is the
+  one place where the retired word still reaches a client's eyes. Documentation half: DEPLOY.md §6
+  still advertised `workflow_get.skeleton` + the `/skeleton` route as live features; rewritten in
+  this round (see doc gaps above), which is the part of REQ-105 that says "the deletion is not
+  finished while something still describes the deleted thing".
+- **iter:** v23
+
+### VAL-117 — real-run acceptance for REQ-106 (authoring rules discoverable from the MCP surface)
+- **status:** green
+- **traces:** REQ-106, DES-135, TASK-123, ARCH-086, ARCH-051
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Boot A, live `tools/list` over real MCP HTTP (what a cold, schema-only client sees).
+  The advertised `workflow_register.script` description ends with: "Authoring rules (docs/AUTHORING.md
+  has the full text): (1) declare every tunable knob in `meta.params` rather than hard-coding it;
+  (2) never read a param key the contract does not declare; (3) the six LOCKED_KEYS
+  (prompt/tools/skills/mcp/workdir/cwd) are engine-owned — do not redeclare them; (4) phase titles are
+  visible to every principal who can see the workflow (including the generated diagram) — keep
+  secrets/distinctive prose out of phase titles. Registering a workflow sends the script itself to the
+  configured LLM provider to draw a diagram; set graphAnalyzer.enabled:false to turn this off." —
+  four rules, the file pointer, and the standing analyzer note, reachable with no other fetch.
+  `docs/AUTHORING.md` exists in the repo and carries the same four rules plus the standing note; the
+  live `lockedKeys` array from `workflow_describe` matches rule (3) exactly. No registration-time
+  rejection was added (rule violations stay a smell): a script that hard-codes a value and declares
+  nothing registers fine.
+  **Observation for Gate 8 (not a gate failure):** AUTHORING.md tells an author to "declare every
+  knob in `meta.params`" but never shows the shape, and the engine accepts a wrongly-shaped
+  `meta.params:{temperature:{…}}` **silently** (it is simply ignored — verified live: the described
+  contract came back as the canonical 4-knob default with `args:{}`). One example line of the
+  `{knobs:{…},args:{…}}` shape would close the gap between the rule and what an author can act on.
+- **iter:** v23
+
+### VAL-118 — REQ-103's first clause: the analyzer is NOT given the trigger bindings
+- **status:** blocked
+- **traces:** REQ-103, DES-128, ARCH-078, TASK-117
+- **tier:** acceptance
+- **real:** true
+- **result:** fail
+- **evidence:** REQ-103's acceptance opens with: "its diagram's entry node names that trigger method
+  (cron/webhook/chain, and for chain the upstream workflow), **because the analyzer is given the
+  trigger bindings alongside the script** … so an analyzer fed only the script can never show them
+  (the gap in issue #32 as filed)". The shipped implementation feeds the analyzer **only the script**:
+  `src/graph-analyzer.ts:299` builds the whole prompt as
+  `` `${this._config.systemPrompt}\n\n---\nWorkflow script:\n${script}` `` — `getTriggerBindings()`
+  (line 297) is used for exactly two things, the token **allowlist** (line 298 → `_buildAllowlist`
+  adds `b.kind`) and the staleness **fingerprint** (lines 314/322). No binding value ever enters the
+  prompt.
+  Observed live on Boot B, real Ollama: the same `(name, version)` was analyzed twice, once with **no**
+  trigger bound and once with a live cron binding, and the journal reported the **identical**
+  `"promptTokens":297` both times (`durationMs` 19071 → 5631; the second was a
+  `workflow_regenerate_diagram`) — the prompt did not change when the workflow gained a trigger. The
+  regenerated diagram names no trigger (`'cron' in diagram` → `False`), and it cannot: the model is
+  never told a binding exists. The second clause ("a workflow with no trigger bound → the entry node
+  reads as a direct `workflow_run` invocation") is unbuilt for the same reason — no entry node is
+  produced at all.
+  The shipped default `graphAnalyzer.systemPrompt` (`rwe.config.example.json`, `server.ts`'s
+  `DEFAULT_GRAPH_ANALYZER_SYSTEM_PROMPT`) *asks* the model for "trigger bindings" and to label nodes
+  from "the workflow's own … trigger names" — instructions the model has no data to satisfy, so the
+  only way a diagram could name a trigger today is invention (which the allowlist would even permit,
+  since `b.kind` is allow-listed whenever a binding exists).
+  Design trace: `04-design.md:4224` narrowed REQ-103's acceptance to the `triggers`-field + staleness
+  arm; ADR-019 decided **not to regenerate** on binding changes (correct, and unrelated), but no
+  adjudication records dropping the "analyzer is given the bindings" clause. **Route: Gate 6** (feed
+  the projected bindings into the analyzer prompt alongside the script), **or** an owner-signed
+  amendment to REQ-103. Not fixed here — the validator reports defects, it does not implement them.
+- **iter:** v23
+
+### v23 Gate 7.5 — config-file sync check (§4b)
+
+Config carriers in this system: `rwe.config.json` (+ the committed `rwe.config.example.json`
+template), environment variables, `docker-compose.yml`, `deploy/rwe.service` / `deploy/rwe.user.service`.
+- **v23's own new keys** — the nine `graphAnalyzer.*` keys — were already present in
+  `rwe.config.example.json` **and** in DEPLOY.md §1b before this round, and all nine round-trip
+  against `src/server.ts:1465-1481` (the single defaulting site). Verified live by actually editing
+  `enabled`, `model` and `systemPrompt` and watching each one change behavior (VAL-115).
+- **One missing row found and added**: `auth.issuer` is read by `src/server.ts:1724`
+  (`authCfg?.issuer ?? http://<bind>:<port>`) and set in the production `rwe.config.json`, but had no
+  §1b row. Added. No other key the code reads lacks a row, and every §1b row still maps to a key the
+  code reads (checked in both directions against `ServerConfig`/`FileConfig`/`AuthConfig`).
+- **No config file needed a value change for v23** — no new key, secret, port or flag was introduced
+  by this round; `rwe.config.example.json` is unchanged and still boots (Boot B's config was derived
+  from it plus DEPLOY §2's Ollama recipe).
+
+### v23 Gate 7.5 — unreachable dependencies
+
+**None for the v23 scope.** Every arm ran against a real provider (local Ollama `qwen2.5:7b` /
+`qwen2.5vl:7b` over `localhost:11434`) or real engine wiring. Carry-forward (unchanged, still true):
+paid providers (Anthropic/OpenAI/Gemini) still have no sandbox key here, so "a real successful call
+on a paid provider" remains unverified; and the known local-7B tool-loop ceiling still stands.
+
+**Known engine defect carried into this round's docs (found by Gate 6.5+7, not re-reproduced here):**
+on a host with no `litellm` binary on `PATH`, the managed-LiteLLM spawn has no `proc.on('error')`
+handler, so v23's registration-time analyzer call can kill the process. The manuals no longer tell
+readers they can skip the LiteLLM/Python step unconditionally; the safe combinations are named
+instead.
+
+### v23 Gate 7.5 — cleanup
+
+Boot A: `val23demo` deregistered with the owner bearer (`workflow_describe` → `WORKFLOW_NOT_FOUND`),
+its cron schedule and webhook deleted (`schedule_list` → `[]`), process killed. Boot B: scratch
+instance killed and its whole scratch tree (config + `workRoot`, i.e. every workflow, diagram,
+schedule and run it created) removed. `.rwe.pid`/`.rwe.log` and the token-minting fixture removed.
+Validation bearer tokens are left in `auth-tokens.db` to self-expire (24 h TTL), the same convention
+as v22 ROUND 1/2/3. The long-lived production instance (PIDs 2815228/2815242 + its litellm 2815257,
+started 8月19, port 8787) was confirmed running and untouched throughout.
