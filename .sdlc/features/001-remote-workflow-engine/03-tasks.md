@@ -898,7 +898,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - Depends on TASK-117 + TASK-118. `ctx: ReadContext` stays **required with no default** (ADR-012) — an optional `principal = null` reproduces this repo's `composeConfig` wiring-bug class verbatim.
 
 ### TASK-120 — the server wire: two tool schemas, `/describe` replaces `/skeleton`, every skeleton deletion, and the mechanical guard
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-083, ARCH-051
 - **files:** src/server.ts, src/mcp-facade.ts, src/workflow-view.ts, tests/unit/no-skeleton-surface.test.ts, tests/integration/workflow-describe-http.test.ts
 - **des:** DES-132, DES-125
@@ -908,7 +908,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - Depends on TASK-119. **Write the guard with its three-entry allowlist FIRST, watch it fail on the current tree, then delete** — a guard written after the deletion is a guard fitted to whatever the deletion happened to leave, which is how this ledger's most-repeated defect (nine instances across v21/v22) stayed at nine. `GET /api/runs/:id/dag` is **untouched** and keeps its `authEnabled ? [] : parseWorkflowSkeleton(...)` line (v22 finding H2 closed that hole; v23 must not re-open it). The parity test is **one** test spanning both files — split by file it becomes two tests each proving half a property.
 
 ### TASK-121 — the dashboard: skeleton previews out, the ASCII diagram into a `<pre>` via `textContent`
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-084
 - **files:** src/dashboard-page.ts, tests/unit/dashboard-diagram-render.test.ts
 - **des:** DES-133
@@ -928,7 +928,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - Depends on TASK-117. **All four artifacts in one task by decree** — this engine's recurring defect (v11 `updateFlagPath`, v15 `auth`, v16 `workspaceTtlMs`) is exactly "the config-forward and its wiring-test row landed in different changes". A unit test alone does **not** close REQ-104; that is TASK-124.
 
 ### TASK-123 — `docs/AUTHORING.md` and the same rules on the MCP surface a cold client sees
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-086
 - **files:** docs/AUTHORING.md, src/server.ts, tests/unit/tool-schema-drift.test.ts
 - **des:** DES-135
@@ -959,7 +959,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 
 
 ### TASK-126 — construct and wire the v23 subsystem in `createServer()`, and make both new seams REQUIRED
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-079, ARCH-078, ARCH-081
 - **files:** src/server.ts, src/mcp-facade.ts, src/graph-analyzer.ts, tests/acceptance/val-114-trigger-bindings-live.test.ts
 - **des:** DES-125, DES-127, DES-131, DES-134

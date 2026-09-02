@@ -6641,10 +6641,14 @@ File: `tests/unit/no-skeleton-surface.test.ts`. Static analysis over `src/**` so
 beyond reading this repo's own files) — same convention as this ledger's other mechanical
 grep-guard/drift-lock tests. Written FIRST and watched to fail against the CURRENT tree (TASK-120's own
 dod: "a guard written after the deletion is a guard fitted to whatever the deletion happened to
-leave"). 3 cases: `src/**` mentions "skeleton" (case-insensitive) nowhere outside the exactly-three
-allowlist (`workflow-meta.ts`, `dashboard.ts`, `server.ts`); the allowlist is exactly 3, not "3 or
-more"; no advertised MCP tool description/schema string in `server.ts`'s `TOOL_METADATA` block
-contains the word. Red reason: 6 files mention "skeleton" today (`dashboard-page.ts`, `dashboard.ts`,
+leave"). 3 cases: `src/**` mentions "skeleton" (case-insensitive) nowhere outside the exactly-FOUR
+allowlist (`workflow-meta.ts`, `dashboard.ts`, `server.ts`, `graph-analyzer.ts`); the allowlist is
+exactly 4, not "4 or more"; no advertised MCP tool description/schema string in `server.ts`'s
+`TOOL_METADATA` block contains the word. **[AMENDED — orchestrator adjudication (v23) #3,
+2026-09-03]** the fourth entry is `graph-analyzer.ts`, whose reuse of `parseWorkflowSkeleton` as
+analyzer grounding DES-131 sanctions. Membership requires BOTH: the file consumes the skeleton
+internally, AND it serves the skeleton or any projection of it to no principal. A fifth entry is
+argued against those two sentences in an adjudication, never merely added to the `Set`. Red reason: 6 files mention "skeleton" today (`dashboard-page.ts`, `dashboard.ts`,
 `mcp-facade.ts`, `server.ts`, `workflow-meta.ts`, `workflow-view.ts`) — 3 more than the allowlist
 permits; `workflow_get`'s own advertised description literally contains "skeleton". Confirmed: `npx
 vitest run tests/unit/no-skeleton-surface.test.ts` — 3 tests, 2 failed (the file-allowlist case listing
