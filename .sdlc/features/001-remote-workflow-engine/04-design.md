@@ -4496,7 +4496,7 @@ ones not yet running. Write the row.
 
 ---
 
-## Orchedstrator adjudication (v23) #3 — the no-skeleton allowlist takes a fourth file, on a stated criterion (2026-09-03)
+## Orchestrator adjudication (v23) #3 — the no-skeleton allowlist takes a fourth file, on a stated criterion (2026-09-03)
 
 ### S-1 — widen to four; do NOT rename
 TASK-120's guard (UT-115) permits `skeleton` in exactly three files — `workflow-meta.ts` (defines
