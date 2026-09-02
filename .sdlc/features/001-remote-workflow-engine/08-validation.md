@@ -6028,6 +6028,11 @@ claims were stale and are corrected in this round's doc rewrite.
 - **iter:** v23
 
 ### VAL-118 — REQ-103's first clause: the analyzer is NOT given the trigger bindings
+
+> **SUPERSEDED by the `VAL-118` entry in the "v23 GATE 7.5 ROUND 2" section at the end of this file**
+> (adjudication #6's V-1 fixed exactly this; the round-2 entry is green). Kept verbatim as the record
+> of what round 1 found. The clause that is *still* red after V-1 is a different one — see `VAL-119`.
+
 - **status:** blocked
 - **traces:** REQ-103, DES-128, ARCH-078, TASK-117
 - **tier:** acceptance
@@ -6100,3 +6105,227 @@ schedule and run it created) removed. `.rwe.pid`/`.rwe.log` and the token-mintin
 Validation bearer tokens are left in `auth-tokens.db` to self-expire (24 h TTL), the same convention
 as v22 ROUND 1/2/3. The long-lived production instance (PIDs 2815228/2815242 + its litellm 2815257,
 started 8月19, port 8787) was confirmed running and untouched throughout.
+
+---
+
+## v23 GATE 7.5 ROUND 2 (2026-09-03, validator) — re-run REQ-103 after adjudication #6's V-1..V-4 fixes
+
+**Verdict: FAIL — REQ-103 is still half-built, for a different reason.** The V-1 fix landed and works:
+the analyzer prompt now really carries the live trigger bindings, and a bound workflow's diagram
+entry node really names `cron` / `webhook` / the chain's upstream workflow, all observed live against
+a real provider (VAL-118, flipped to green). But REQ-103's **second** clause — "Given a workflow with
+no trigger bound Then the entry node reads as a direct `workflow_run` invocation" — now fails in a new,
+sharper way: the engine *instructs* the model to write the literal `workflow_run`, and the engine's own
+diagram gate then *rejects* that exact word because `_buildAllowlist` never allow-lists it. An unbound
+workflow therefore gets **no diagram at all** (`GATE_REJECTED_CONTENT` / `gateFail:"token"`), which is a
+regression against round 1, where an unbound registration produced a `ready` diagram. See VAL-119.
+
+Scope of this round: delta re-validation only (the v22 ROUND 2/3 precedent). REQ-100/101/104/105/106's
+round-1 real-tier greens (VAL-111/112/115/116/117) stand — none of the four changed files touches the
+auth, describe-projection, config-loading or authoring surfaces they cover — except where this round
+re-observed them anyway, which it did for the two Gate-8 observations round 1 raised (both now closed,
+see "Round-1 Gate-8 observations" below).
+
+### Boot evidence — documented steps only (§0 一鍵部署, the committed `deploy.sh`)
+
+HEAD `9d7276d` (`v0.20.0-94-g9d7276d`, a WIP checkpoint over `b71906a`), branch
+`feat/v23-workflow-describe`. The primary boot used the **committed one-command deploy script** with
+only 設定總表 rows as env overrides — no undocumented step, no manual fix, nothing edited in the engine.
+
+```bash
+# BOOT B — a scratch config (own port, own workRoot outside the repo), assembled ONLY from
+# DEPLOY.md §2's "無 root 部署 + 本地 Ollama" recipe + §1b 設定總表 rows
+# (gateway:"direct-fetch", useLiteLLMProxy:false, aliases default->ollama qwen2.5:7b,
+#  vl->ollama qwen2.5vl:7b, graphAnalyzer{...}); restarted once for the systemPrompt edit:
+RWE_CONFIG_PATH=/home/user/.local/share/rwe-val23r2/rwe.config.json \
+  RWE_BIND=127.0.0.1 RWE_PORT=8793 ./deploy.sh --background
+# -> 步驟 1/5..5/5 all pass; 健康檢查通過:
+#    {"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (v0.20.0-94-g9d7276d)"}
+#    [remote-workflow-engine] graph-analyzer effective tools=[] jail=…/work/.graph-analyzer-scratch
+#    [remote-workflow-engine] listening on http://127.0.0.1:8793/mcp (workRoot=…/rwe-val23r2/work)
+#    [remote-workflow-engine] ready
+```
+
+Two further boots were **documented-scenario probes**, not the one-command path — they deliberately
+reproduce DEPLOY §5's "no `litellm` on `PATH`" row, which `deploy.sh` step 3/5 can never produce
+because it installs the venv and prepends it to `PATH`. Both used the §2 systemd start shape
+(`node node_modules/tsx/dist/cli.mjs src/main.ts`) with `PATH=/usr/bin:/bin`:
+
+```bash
+# BOOT C — gateway:"sdk", no litellm on PATH
+env -i HOME=$HOME PATH=/usr/bin:/bin RWE_CONFIG_PATH=…/rwe-val23r2c/rwe.config.json \
+  RWE_BIND=127.0.0.1 RWE_PORT=8794 node node_modules/tsx/dist/cli.mjs src/main.ts
+# BOOT D — gateway:"direct-fetch" + useLiteLLMProxy:true, no litellm on PATH (same command)
+```
+
+**Live tool surface:** `tools/list` over real MCP HTTP returns **40** tools, `workflow_describe`
+present, and the word "skeleton" appears **0** times in the whole payload (unchanged from round 1).
+
+**Analyzer harness used for the green arms (recorded because REQ-104 makes it operator-tunable):**
+`graphAnalyzer.model:"default"` → Ollama `qwen2.5:7b`, `timeoutMs:120000`, `retries:0`, `tools:[]`,
+and an operator `systemPrompt` that pins the character set, restricts the vocabulary to phase titles
+plus the given trigger word, and asks for `[ TRIGGER ]` on line 1 followed by one rounded box per
+phase. The shipped default `systemPrompt` was **not** used for the green arms: round 1 already
+established live that it degrades to `GATE_REJECTED_SHAPE`/`gateFail:"codepoint"` on `qwen2.5:7b`
+(DEPLOY §1b item 3 documents exactly this model-class ceiling), so it cannot discriminate at the token
+gate. The defect VAL-119 records is present in the shipped default prompt too — `src/server.ts:313`
+carries the same "reads as a plain `workflow_run` entry point when no trigger is bound" instruction.
+
+### VAL-118 — real-run acceptance for REQ-103 (the analyzer IS given the trigger bindings; the entry node names the trigger)
+- **status:** green
+- **traces:** REQ-103, DES-128, DES-131, ARCH-078, ARCH-079, TASK-117
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** **Scoped to REQ-103's bound-trigger and live-bindings/staleness clauses only — the
+  unbound-workflow clause is `VAL-119`, and it FAILS, so REQ-103 as a whole is NOT closed by this
+  green.** Boot B, real MCP HTTP, real provider (Ollama `qwen2.5:7b`), no mock in any path.
+  Round 1's own oracle, inverted: the prompt now **changes** when the bindings change. The same
+  `(val23r2demo, v1)` reported `promptTokens:437` with no trigger bound, `457` once a cron was bound,
+  and `463` once a webhook was added — round 1 reported an identical `297` in both states.
+  1. **cron** — `workflow_publish` then `schedule_create({kind:"cron",workflow:"val23r2demo",
+     cron:"0 3 * * *",tz:"Asia/Taipei"})` (before publishing, the same call was correctly refused
+     `CHANNEL_UNPUBLISHED`), then `workflow_regenerate_diagram` →
+     `…"promptTokens":457,"completionTokens":21,"durationMs":12673,"outcome":"ready"` and
+     `workflow_describe` served the diagram whose **entry node is the trigger kind**:
+     `[ cron ]` / `|` / `▶` / `╭ Fetch ╮` / `|` / `▶` / `╭ Analyze ╮`.
+     The raw expression is **not** drawn: `'0 3 * * *'`, `'Asia/Taipei'` each absent from the diagram
+     (asserted string by string) — the kind is drawn, the expression stays context only.
+  2. **webhook** — `webhook_create({workflow:"val23r2demo"})`, regenerate →
+     `…"promptTokens":463,…,"outcome":"ready"`, diagram entry node `[ webhook ]`. Neither the webhook
+     `secret` (`9c49240930600961…`) nor its `id` (`c7c4e330…`) appears in the diagram or anywhere in
+     the non-owner `workflow_describe` response.
+  3. **chain** — a real upstream run (`workflow_run({name:"val23r2upstream"})` →
+     `9be1aed3-…`, a genuine Ollama essay call) plus
+     `chain_create({afterRunId:"9be1aed3-…",run:{workflow:"val23r2chained"}})`; the downstream
+     workflow's registration-time analysis ran while that continuation was pending →
+     `…"promptTokens":364,"completionTokens":24,"durationMs":20906,"outcome":"ready"` and the entry
+     node names **the upstream workflow**: `[ val23r2upstream ]` / `|` / `╭ Fetch ╮` / `|` / `▶` /
+     `╭ Analyze ╮`. `workflow_describe` reported the binding as
+     `triggers:[{"kind":"chain","upstreamWorkflow":"val23r2upstream"}]`.
+  4. **Live bindings + staleness (REQ-103's third clause)** — a **non-owner** `workflow_describe`
+     reported `triggers:[{kind:"cron",cron:"0 3 * * *",tz:"Asia/Taipei",enabled:false},
+     {kind:"webhook",enabled:true}]`; `webhook_create` flipped `diagramStale:false → true` against an
+     unchanged `diagramGeneratedAt`, `workflow_regenerate_diagram` cleared it back to `false` with a
+     new `diagramGeneratedAt:"2026-09-02T22:48:31.130Z"`; `schedule_delete` then `webhook_delete` were
+     each reflected in the very next read (`triggers` → webhook-only → `[]`) with `diagramStale`
+     flipping to `true`, i.e. a stale diagram never silently contradicts the live bindings.
+  5. **Secret absence re-asserted on the CHANGED prompt path** (the prompt text is new, so round 1's
+     assertion does not carry): against the `ready` cron+webhook diagram, each of
+     `sk-val23r2-SECRET-LITERAL-7c1b`, `Reticulate the crimson splines`, `VAL23R2APPENDMARKER`,
+     `API_KEY`, `agent(` is **individually absent**; the whole non-owner describe response has
+     **0** occurrences of any of them and no `script` key.
+- **iter:** v23
+
+### VAL-119 — REQ-103's unbound clause: the engine asks for `workflow_run`, then its own gate rejects it
+- **status:** blocked
+- **traces:** REQ-103, DES-128, DES-131, ARCH-078, ARCH-080, TASK-117
+- **tier:** acceptance
+- **real:** true
+- **result:** fail
+- **evidence:** REQ-103's second clause: "Given a workflow with no trigger bound Then the entry node
+  reads as a direct `workflow_run` invocation rather than inventing a trigger."
+  V-1 implements the instruction half — `src/trigger-bindings.ts:66`
+  (`describeTriggerBindings([])`) tells the model *'none — this workflow is started by a direct
+  workflow_run call; label the entry node "workflow_run"'*, and the shipped default systemPrompt
+  (`src/server.ts:313`) says the same. It does **not** implement the gate half:
+  `GraphAnalyzer._buildAllowlist` (`src/graph-analyzer.ts:225-240`) adds script skeleton titles,
+  `meta.phases` titles, every configured alias name, the two reserved sentinels `default` and
+  `model:param`, each binding's `kind`, and a chain's `upstreamWorkflow` — **never `workflow_run`**.
+  `gateDiagram`'s token pass (`src/diagram-gate.ts:59-66`) therefore rejects the one word the engine
+  just asked for.
+  **Observed live, Boot B, real Ollama — 5 rejections, 0 successes, no mock:**
+  - `val23r2demo` v1 before any binding: `…"promptTokens":437,"completionTokens":26,
+    "outcome":"unavailable","noteCode":"GATE_REJECTED_CONTENT","gateFail":"token"`.
+  - `val23r2unbound` v1 (a clean, never-bound workflow): the same outcome on registration **and on
+    two further `workflow_regenerate_diagram` calls** — 3/3, `promptTokens:411` each time,
+    `durationMs` 10421 / 8468 / 3469. `workflow_describe` serves
+    `diagram:null, diagramStatus:"unavailable",
+    diagramNote:"The diagram generator produced content outside the allowed vocabulary."`
+  - `val23r2upstream` v1 (unbound at registration): same, `promptTokens:358`.
+  - **Control experiment that isolates the cause to the allowlist, not the model**:
+    `val23r2unboundctl` — byte-for-byte the same script and the same prompt, except one extra
+    `meta.phases` entry deliberately titled `workflow_run`, which is the ONLY way to get that token
+    into `_buildAllowlist`. Same model, same boot → `outcome:"ready"`, and the served diagram is
+    exactly what REQ-103's clause asks for:
+    `[ workflow_run ]` / `|` / `▶` / `╭ workflow_run ╮` / `|` / `▶` / `╭ Fetch ╮` / `|` / `▶` /
+    `╭ Analyze ╮`. The model does write the sentinel; the gate is what drops it.
+  **Impact — this is a regression, and it hits the common case.** `schedule_create`/`webhook_create`
+  are refused `CHANNEL_UNPUBLISHED` until a workflow is published (verified live this round), so a
+  workflow is **always** unbound at v1 registration: with an instruction-following model, every newly
+  registered workflow now loses its first diagram. Round 1's unbound registration produced a `ready`
+  diagram; after V-1 it cannot. (On the shipped default prompt + `qwen2.5:7b` the failure surfaces one
+  gate earlier as `GATE_REJECTED_SHAPE`/`codepoint` — the documented model-class ceiling — so that
+  combination masks, but does not remove, the contradiction.)
+  **Route: Gate 6**, one line in `_buildAllowlist` beside the existing `default` / `model:param`
+  sentinels (`labels.add('workflow_run')`) — the sentinel the engine authors must be allow-listed the
+  same way the other two engine-authored sentinels are. **Gate 5 first**: UT-119 captured the analyzer
+  *prompts* but never ran `gateDiagram` over an obedient unbound *output*, which is exactly the test
+  gap that let V-1 ship half-fixed; the RED belongs there. Not fixed here — the validator reports
+  defects, it does not implement them.
+- **iter:** v23
+
+### Round-1 Gate-8 observations — both closed for real this round
+
+1. **`skeleton` still reaching a client's eyes in the run-DAG warnings** (round 1's VAL-116
+   observation, fixed by V-4). Re-run for real: a workflow whose two `agent()` calls are built
+   dynamically (so the layout predictor cannot match them) was registered, published and **really
+   run** on Boot B; `GET /api/runs/c9bba7ae-…/dag` returned
+   `"warnings":["agent agent-1 unmatched to the predicted layout: frame-grouped",
+   "agent agent-2 unmatched to the predicted layout: frame-grouped"]` — the retired word is gone from
+   the last surface that emitted it, and `'skeleton' in <whole DAG body>` is `False`. The other
+   REQ-105 surfaces re-confirmed unchanged on the same boot:
+   `GET /api/workflows/val23r2demo/skeleton` → **404**, `GET /api/workflows/val23r2demo/describe` →
+   **200**, `tools/list` → 0 occurrences of "skeleton".
+2. **AUTHORING.md said "declare every knob in `meta.params`" without showing the shape** (round 1's
+   VAL-117 observation, fixed by the V-3 doc edit). `docs/AUTHORING.md` now carries a runnable
+   `{knobs:{…},args:{…}}` example and states in bold that a mis-shaped `params` block is **ignored,
+   not rejected**, with the "read it back with `workflow_describe`" remedy — which matches the live
+   behavior round 1 observed.
+
+### V-2 — the no-`litellm` host, re-verified at the real tier (supports REQ-102, and drives this round's doc rewrite)
+
+Round 1 recorded, from the Gate 6.5+7 verifier's finding, that a host with no `litellm` on `PATH`
+could be taken down by v23's registration-time analyzer call, and the manuals were written to say so.
+V-2 fixed it; both shapes were re-observed live this round, and the manuals are rewritten to match:
+
+| shape | observed now |
+|---|---|
+| `gateway:"sdk"`, no `litellm` on `PATH` (BOOT C) | the engine **refuses to start**, with one clear named line and a non-zero exit: `[remote-workflow-engine] fatal startup error: Error: litellm proxy failed to spawn: spawn litellm ENOENT` (`litellm-proxy.ts:188` ← `composeConfig` `main.ts:208`). Nothing half-started; port 8794 never listens. |
+| `gateway:"direct-fetch"` + `useLiteLLMProxy:true`, no `litellm` on `PATH` (BOOT D) | the engine **boots healthy** (`/api/status` → 200), `workflow_register` succeeds (`version:1`), the analyzer lands cleanly as `…"outcome":"unavailable","noteCode":"PROVIDER_UNREACHABLE","durationMs":287`, `workflow_describe` → `diagram:null, diagramNote:"The diagram generator's provider was unreachable."`, and `/api/status` is **still 200** afterwards — the registration no longer kills the process. |
+
+### v23 GATE 7.5 ROUND 2 — config-file sync check (§4b)
+
+The four changed files (`src/graph-analyzer.ts`, `src/trigger-bindings.ts`,
+`src/gateway/litellm-proxy.ts`, `src/dashboard.ts`) plus `docs/AUTHORING.md` introduce **no new
+config key, secret, port or flag**, and change no default. `rwe.config.example.json` is unchanged and
+still boots (Boot B's config was derived from it plus DEPLOY §2's Ollama recipe plus §1b rows).
+DEPLOY §1b 設定總表 re-checked in both directions against `ServerConfig`/`FileConfig`/`AuthConfig` and
+`rwe.config.example.json`: no missing row, no dead row. **No config drift.**
+
+### v23 GATE 7.5 ROUND 2 — doc gaps found and folded into the manuals
+
+Round 1 wrote the (then-real) "a `workflow_register` can kill the engine / the spawn failure is not
+caught — 已知缺陷" defect INTO README and DEPLOY. V-2 fixed the defect, so those four passages became
+stale instructions — the exact current-state violation the gate checks for. Rewritten from BOOT C/D's
+observed behavior: `README.md` 已知限制 bullet, `DEPLOY.md` §1a's "要跳過這一步" paragraph, §2's
+免依賴啟動 note, and §5's troubleshooting row. No other manual statement changed (round 1's rewrite of
+the tool count, the §6 describe section and the `auth.issuer` row was re-checked and is still true).
+
+### v23 GATE 7.5 ROUND 2 — unreachable dependencies
+
+**None for this round's scope.** Every arm ran against a real provider (local Ollama `qwen2.5:7b` over
+`localhost:11434`) or real engine wiring. Carry-forward (unchanged, still true): paid providers
+(Anthropic/OpenAI/Gemini) have no sandbox key here, so "a real successful call on a paid provider"
+remains unverified; and the local-7B tool-loop ceiling still stands.
+
+### v23 GATE 7.5 ROUND 2 — cleanup
+
+Boot B: all five validation workflows (`val23r2demo`, `val23r2unbound`, `val23r2unboundctl`,
+`val23r2upstream`, `val23r2chained`, `val23r2warn`) deregistered, their cron schedule and webhook
+already deleted as part of VAL-118's removal arm, the chain continuation consumed by its own upstream
+run; process killed. Boots C/D: exited / killed, and the whole `rwe-val23r2c` scratch tree removed
+along with `rwe-val23r2` (config + `workRoot`, i.e. every workflow, diagram, schedule and run they
+created). `.rwe.pid`/`.rwe.log` removed. Boot B ran with no `auth` block, so no bearer tokens were
+minted this round. The long-lived production instance (PIDs 2815228/2815242 + its litellm 2815257,
+started 8月19, port 8899) was confirmed listening and untouched throughout.

@@ -307,7 +307,10 @@ curl -s http://localhost:8787/api/models | python3 -c \
   分析器（`workflow_register` 會把腳本送給模型畫結構圖，走的是同一條 gateway）。可行組合有兩種：
   (a) `gateway:"direct-fetch"` + `useLiteLLMProxy:false`（本機 Ollama 直連，兩條路徑都不碰 LiteLLM）；
   (b) 保留 `gateway:"sdk"` 但設 `graphAnalyzer.enabled:false` 且工作流程完全不呼叫 `agent()`。
-  留著預設值卻沒裝 `litellm`，第一次 `workflow_register` 就會去 spawn 它——見 §5 的對應處置。
+  留著預設值 `gateway:"sdk"` 卻沒裝 `litellm`：**服務在啟動階段就會直接拒絕啟動**，印出一行
+  `fatal startup error: Error: litellm proxy failed to spawn: spawn litellm ENOENT` 後結束
+  （不會半開著讓人以為成功）。`gateway:"direct-fetch"` + `useLiteLLMProxy:true` 則是正常啟動，
+  只有實際用到代理的呼叫失敗成 `PROVIDER_UNREACHABLE`——兩種情況都見 §5 的對應處置。
   正常關機（`SIGTERM`）會連帶停掉這個子行程，不留孤兒；可在 `rwe.config.json` 用 `litellmPort`
   鍵讓每個實例指定不同 port（省略則綁一個 OS 分配的 ephemeral 空閒 port，天生不會多實例撞號）。
 - 外部依賴：不需要資料庫伺服器（狀態存在本機檔案：SQLite + JSONL journal，路徑見 `workRoot`）。
@@ -542,9 +545,12 @@ curl -s -o /dev/null -w "dashboard=%{http_code}\n" http://127.0.0.1:8787/dashboa
    `ExecStart=<node 絕對路徑> node_modules/tsx/dist/cli.mjs src/main.ts`，並在 unit 裡設
    `Environment=PATH=<node bin 目錄>:/usr/bin:/bin`。用 `node -e 'console.log(process.execPath)'`
    查你的 node 真實路徑。
-2. **免依賴啟動要設 `useLiteLLMProxy:false`** —— 否則開機/首次 `agent()` 會去 `spawn litellm`，
-   沒裝就 `ENOENT` 崩潰。設 `gateway:"direct-fetch"` + `useLiteLLMProxy:false`，ollama 走原生直連
-   `localhost:11434`，完全不碰 LiteLLM。
+2. **免依賴啟動要設 `useLiteLLMProxy:false`** —— 否則就會需要 `litellm` 執行檔：`gateway:"sdk"`
+   在**開機時**就去 `spawn litellm`，沒裝的話服務會帶著
+   `fatal startup error: ... spawn litellm ENOENT` 直接拒絕啟動；`useLiteLLMProxy:true` 則是
+   啟動正常、但每次 `agent()`／畫圖都失敗成 `PROVIDER_UNREACHABLE`。設
+   `gateway:"direct-fetch"` + `useLiteLLMProxy:false`，ollama 走原生直連 `localhost:11434`，
+   完全不碰 LiteLLM。
 3. **`timeoutMs` 是「單次 `agent()` LLM 呼叫」的斷路器，不是整體 workflow 逾時**（workflow 本身
    非同步、無總時長限制）。本地 7B 生成大回應會超過預設 15 秒 → 被切成 null；跑本地模型建議調高
    到 `300000`（5 分鐘）。
@@ -612,8 +618,9 @@ npm run start
 | 關掉伺服器後還有一個 `litellm --config ...` process 留著 | 正常 `SIGTERM`/`SIGINT` 關機會連帶砍掉內部管理的 `litellm` 子行程；殘留多半是非正常關機（如 `kill -9`）留下的 | 手動 `ps aux \| grep litellm` 找到後 `kill`；也可以用 `litellmPort` 鍵讓每個實例用不同 port，避開多實例誤連風險 |
 | Node 啟動就報 SyntaxError / 找不到 `--experimental-transform-types` | Node 版本 < 22.6 | 升級 Node 到 22.6 以上（`node --version` 確認） |
 | `workflow_describe` 的 `diagramStatus` 一直是 `"unavailable"`，`diagramNote` 說逾時或「did not return a valid diagram」 | 畫圖的模型太小或太慢：出廠預設 prompt 要求「只輸出圖、不夾帶其他文字」，本機 7B 級模型常多寫字或用到規定外符號而被把關擋下（journal 的 `gateFail:"codepoint"`／`noteCode:"TIMEOUT"` 就是訊號） | 換一個能穩定照格式輸出的 `graphAnalyzer.model`，或把 `graphAnalyzer.systemPrompt` 改寫成給該模型的明確模板；改完重啟即生效（不需重新編譯）。真的不需要圖就設 `graphAnalyzer.enabled:false` |
-| 沒裝 `litellm`，第一次 `workflow_register` 之後服務就不見了 | 預設 `gateway:"sdk"` 在畫圖／`agent()` 時 spawn `litellm`；找不到執行檔時的 spawn 失敗目前沒有被接住（已知缺陷） | 照 §1a 把 litellm venv 的 `bin/` 加進 `PATH` 再啟動；或改成 §1a 的 (a)／(b) 免 LiteLLM 組合 |
-| 註冊了工作流程，圖上卻看不到 cron/webhook 觸發節點 | 目前送給畫圖模型的內容只有腳本，觸發綁定不在腳本裡（已知限制，非設定問題） | 看 `workflow_describe` 的 `triggers` 欄位——它是即時值；圖比綁定舊時 `diagramStale` 會是 `true` |
+| 服務啟動失敗，log 只有一行 `fatal startup error: Error: litellm proxy failed to spawn: spawn litellm ENOENT` | `gateway:"sdk"` 在**開機階段**就要起一個 `litellm` 代理子行程，而 `PATH` 上沒有 `litellm` 執行檔（常見於 systemd unit 的 `PATH` 沒帶到 venv） | 照 §1a 把 litellm venv 的 `bin/` 加進 `PATH`（systemd 要寫在 unit 的 `Environment=PATH=...`）再啟動；或改成 §1a 的 (a)／(b) 免 LiteLLM 組合 |
+| 服務起得來，但每次 `agent()`／註冊畫圖都是 `PROVIDER_UNREACHABLE` | `gateway:"direct-fetch"` + `useLiteLLMProxy:true`，但 `PATH` 上沒有 `litellm`：代理是用到才起，起不來就這一次呼叫失敗（服務本身不受影響、不會中止） | 同上：補 `PATH`，或設 `useLiteLLMProxy:false` 讓 ollama 走原生直連 |
+| 剛註冊完的新工作流程，`diagramStatus` 是 `"unavailable"`、`diagramNote` 說 `produced content outside the allowed vocabulary` | **已知缺陷**：還沒綁觸發器時，引擎會叫畫圖模型把入口節點寫成 `workflow_run`，但輸出把關的字彙清單沒有收錄這個字，於是整張圖被擋掉（journal 顯示 `noteCode:"GATE_REJECTED_CONTENT"`／`gateFail:"token"`）。新註冊的工作流程一定還沒綁觸發器，所以每個新工作流程的第一張圖都會踩到 | 先 `workflow_publish`，再 `schedule_create`／`webhook_create` 綁一個觸發器，然後 `workflow_regenerate_diagram` 重畫——綁了觸發器的圖可以正常畫出來（入口節點會寫 `cron`／`webhook`／上游工作流程名稱）。不論有沒有圖，`workflow_describe` 的 `triggers` 欄位永遠是即時正確值 |
 | 手動用 `curl http://0.0.0.0:<port>/api/status` 檢查健康狀態，收到 `403 Forbidden`（不是逾時、不是連不上） | 伺服器的 Host-header 允許清單刻意不把 `0.0.0.0` 當成合法 Host（那是「監聽所有介面」的萬用位址，不是真實可連的目的地名稱）——`RWE_BIND=0.0.0.0` 只影響「監聽哪些介面」，不代表 `0.0.0.0` 本身能當 URL 用 | 改用 `127.0.0.1:<port>` 檢查（`deploy.sh` §0 本身在 `RWE_BIND=0.0.0.0` 時也是這樣做）；要從區網其他主機檢查，用該主機看到的 LAN IP（並確認已列在 §1b `allowedHosts`） |
 | `RWE_BIND=<LAN IP>`（如 §2 systemd 範例的 `192.168.0.125`）部署後，手動用 `curl http://127.0.0.1:<port>/api/status` 檢查，收到 `Connection refused`（連不上，不是 403） | 服務只監聽 `$RWE_BIND` 指定的那個介面；綁定成具體 LAN IP 時，該主機的 `127.0.0.1` 迴環介面根本沒有服務在聽 | 改用 `$RWE_BIND` 本身（例如 `curl http://192.168.0.125:<port>/api/status`）；`deploy.sh` §0 的健康檢查已依 `RWE_BIND` 是否為 `0.0.0.0`/`::` 自動選擇正確目的地，不需要手動判斷 |
 
@@ -687,8 +694,23 @@ workflow_register ──▶ 立刻回 {version}      （註冊從不等畫圖）
 - `diagramStale:true`：圖畫好之後觸發綁定又改過了——圖沒錯，只是比 `triggers` 舊。
 - 擁有者可 `workflow_regenerate_diagram({name, version})` 重畫（非擁有者 → `NOT_WORKFLOW_OWNER`；
   分析器關閉時 → `ANALYZER_DISABLED`）。
-- **目前結構圖不會畫出觸發節點**：送給畫圖模型的內容只有腳本，而 cron/webhook/chain 綁定不在腳本裡。
-  要知道現在綁了什麼，看 `triggers` 欄位。
+- **入口節點會寫出觸發方式**：除了腳本，畫圖模型還會收到「這個工作流程目前綁了哪些觸發器」這段
+  資訊（cron／webhook／chain 綁定不在腳本裡，是引擎另外從排程／webhook／續接三張表讀出來給它的）。
+  綁了觸發器時，圖的第一個方框就會寫 `cron`／`webhook`／上游工作流程名稱：
+
+  ```
+  [ cron ]            [ webhook ]         [ upstream-workflow-name ]
+      │                    │                          │
+      ▶                    ▶                          ▶
+  ╭ Fetch ╮            ╭ Fetch ╮                  ╭ Fetch ╮
+  ```
+
+  圖上只寫**觸發種類**，不會寫出 cron 運算式本身（例如 `0 3 * * *` 不會出現在圖上）。
+- **已知缺陷：還沒綁觸發器時畫不出圖**。沒有任何觸發綁定時，引擎會叫模型把入口節點寫成
+  `workflow_run`，但輸出把關的字彙清單沒收錄這個字，整張圖會被擋掉
+  （`noteCode:"GATE_REJECTED_CONTENT"`／`gateFail:"token"`）。剛註冊的新工作流程一定還沒綁觸發器，
+  所以第一張圖通常畫不出來——處置見 §5 對應那一列。
+- 不論圖畫得出來與否，`triggers` 欄位永遠是即時正確值；要知道現在綁了什麼，看它就對了。
 
 **高效大型程式庫 seeding**：`/mcp` 請求體接受 `Content-Encoding: gzip|deflate`（雙重上限：壓縮
 輸入 8 MiB + 解壓輸出 8×，防 gzip bomb）；超過上限回具型別 413

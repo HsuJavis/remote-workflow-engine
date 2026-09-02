@@ -280,12 +280,22 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
   模型（如 `qwen2.5:7b`）常會多寫字或用到規定外的符號，被把關擋下 → `diagramStatus:"unavailable"`。
   這是模型能力問題，處置方式是換 `graphAnalyzer.model` 或改寫 `graphAnalyzer.systemPrompt`
   （改設定即可，不必改程式、不必重新編譯）。
-- **結構圖不會標示觸發方式**：目前送給畫圖模型的只有腳本本身，而觸發綁定（cron/webhook/chain）不在
-  腳本裡，所以圖上不會出現觸發節點。要看目前綁了什麼，請看 `workflow_describe` 的 `triggers` 欄位
-  （永遠是即時值）。
-- **沒有 `litellm` 時，預設設定下註冊可能讓服務中止**：預設 `gateway:"sdk"` 會 spawn `litellm`；
-  若它不在 `PATH` 上，spawn 失敗目前沒有被接住。請照「前置需求」把 venv 的 `bin/` 加進 `PATH`，
-  或改用 `gateway:"direct-fetch"` + `useLiteLLMProxy:false`。
+- **還沒綁觸發器的工作流程，圖可能畫不出來**：畫圖模型除了腳本，還會收到「這個工作流程怎麼被觸發」
+  這段資訊。已經綁了 cron／webhook／chain 時，圖的入口節點會寫出 `cron`／`webhook`／上游工作流程
+  名稱（正常運作）。但**還沒綁任何觸發器**時，引擎會叫模型把入口節點寫成 `workflow_run`，而輸出把關
+  的字彙清單目前沒有收錄這個字，於是整張圖被擋下 → `diagramStatus:"unavailable"`、
+  `diagramNote` 寫「produced content outside the allowed vocabulary」。因為剛註冊的新工作流程一定
+  還沒綁觸發器，所以「第一次註冊常常看不到圖」。**處置**：先 `workflow_publish`，再用
+  `schedule_create`／`webhook_create` 綁一個觸發器，然後 `workflow_regenerate_diagram` 重畫即可。
+  不論有沒有圖，`workflow_describe` 的 `triggers` 欄位永遠是即時正確值。
+- **沒有 `litellm` 時的行為**（`PATH` 上找不到 `litellm` 執行檔）：
+  - `gateway:"sdk"`（預設）：**服務會直接拒絕啟動**，並印出一行明確訊息
+    `fatal startup error: Error: litellm proxy failed to spawn: spawn litellm ENOENT`。不會半開著。
+  - `gateway:"direct-fetch"` + `useLiteLLMProxy:true`：服務正常啟動，只有真正要用到代理的呼叫
+    （`agent()`、註冊時畫圖）會乾淨地失敗成 `PROVIDER_UNREACHABLE`，服務本身不受影響。
+
+  兩種情況的處置都一樣：照「前置需求」把 venv 的 `bin/` 加進 `PATH`，或改用
+  `gateway:"direct-fetch"` + `useLiteLLMProxy:false`（本機 Ollama 直連，完全不需要 litellm）。
 
 ## 更多
 

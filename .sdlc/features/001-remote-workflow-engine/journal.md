@@ -1356,3 +1356,67 @@ low); `determinism_check src --check` exit 0; time-travel re-run under `TZ='Paci
 **State.** `gates.verification.passed` stays `true` with its note rewritten for this round;
 `current_stage` impl → **validation**; `updated` bumped; this entry appended. Next: Gate 7.5
 (validator) re-runs `VAL-118` for REQ-103.
+
+---
+
+## 2026-09-03 — v23 Gate 7.5 ROUND 2 (validator): V-1 works, REQ-103 still fails on a different clause
+
+**Booted from documented steps only.** `RWE_CONFIG_PATH=<scratch>/rwe.config.json RWE_BIND=127.0.0.1
+RWE_PORT=8793 ./deploy.sh --background`, on a scratch config assembled only from DEPLOY §2's no-root
+Ollama recipe plus §1b rows (`gateway:"direct-fetch"`, `useLiteLLMProxy:false`, real local Ollama
+`qwen2.5:7b`), workRoot outside the repo, restarted once for a `graphAnalyzer.systemPrompt` edit.
+Version stamp `v0.20.0-94-g9d7276d` each time. Two further boots (BOOT C/D) used the §2 systemd start
+shape with `PATH=/usr/bin:/bin` to reproduce DEPLOY §5's "no `litellm` on PATH" row, which `deploy.sh`
+itself can never produce. The 8月19 production instance (8899) confirmed listening and untouched.
+
+**`VAL-118` flipped red → green.** V-1 really landed: the analyzer prompt now carries the live
+bindings. Round 1's own oracle, inverted — the same `(val23r2demo, v1)` reported `promptTokens` 437
+unbound / 457 cron-bound / 463 cron+webhook (round 1 reported an identical 297 both ways). A real
+`ready` diagram's entry node names the trigger for all three kinds: `[ cron ]`, `[ webhook ]`, and
+— over a real `chain_create` on a real upstream run — `[ val23r2upstream ]`. The raw `0 3 * * *`
+expression never reaches the diagram; the webhook secret and id never reach it either; the secret
+literal / distinctive prompt sentence / `appendPrompt` marker are each individually absent on the
+changed prompt path.
+
+**New `VAL-119` is red, and it is a regression.** `trigger-bindings.ts:66` (and the shipped default
+prompt at `server.ts:313`) tells the model to label an unbound workflow's entry node `workflow_run`;
+`GraphAnalyzer._buildAllowlist` never allow-lists that token, so `gateDiagram`'s token pass rejects
+the exact word the engine asked for. Live: 5 rejections, 0 successes
+(`GATE_REJECTED_CONTENT`/`gateFail:"token"`), describe serving `diagram:null` + "produced content
+outside the allowed vocabulary". The control experiment pins the cause to the allowlist rather than
+the model: an otherwise byte-identical workflow with one extra `meta.phases` entry titled
+`workflow_run` — the only way that token enters the allowlist — came back `ready`, drawing exactly
+the entry node REQ-103 asks for. Because `schedule_create`/`webhook_create` are refused
+`CHANNEL_UNPUBLISHED` before publish, every workflow is unbound at v1 registration, so every newly
+registered workflow now loses its first diagram; round 1's unbound registration produced `ready`.
+Route: a Gate 5 RED first (UT-119 captured prompts but never ran `gateDiagram` over an obedient
+unbound *output* — the test gap that let V-1 ship half-fixed), then one line in `_buildAllowlist`
+beside the existing `default` / `model:param` engine-authored sentinels.
+
+**V-2/V-3/V-4 re-verified real.** No-`litellm` host: `gateway:"sdk"` now fail-fasts at boot with one
+named line and never listens; `direct-fetch`+`useLiteLLMProxy:true` boots healthy, `workflow_register`
+succeeds, the analyzer lands `PROVIDER_UNREACHABLE` in 287 ms, and `/api/status` is still 200 — a
+registration no longer kills the engine. A real run with two dynamically-built `agent()` calls
+returned `warnings:["agent agent-1 unmatched to the predicted layout: frame-grouped", …]`; "skeleton"
+is 0 in the whole DAG body, 0 in `tools/list`, the `/skeleton` route is still 404 and `/describe`
+still 200. `docs/AUTHORING.md` now shows the `{knobs,args}` shape and says a mis-shaped block is
+ignored, not rejected.
+
+**Manuals rewritten to current state.** Round 1 had written the then-real litellm-spawn defect INTO
+README/DEPLOY; V-2 fixed it, so those passages had become stale instructions — the exact current-state
+violation this gate checks. Rewritten from BOOT C/D's observed behavior: README's two 已知限制
+bullets, DEPLOY §1a's 要跳過這一步 paragraph, §2's 免依賴啟動 note, three §5 troubleshooting rows, and
+§6's analyzer section (which still claimed the diagram cannot show triggers). §6 now carries the three
+entry-node shapes plus the unbound known-defect. §4b: the four changed source files introduce no new
+key/secret/port/flag and change no default; `rwe.config.example.json` unchanged and still boots; §1b
+round-trips both directions — no config drift.
+
+**Mechanical gates.** `sh .sdlc/trace` 994 items / 18 gaps — residue byte-identical to the baseline
+captured to a scratch file before any edit (16 low drift + 1 mid `IMPL-082` TDD + 1 low `TASK-018`
+未實作), 0 高 / 0 未驗證 / 0 僅mock驗證; the only new ID is `VAL-119`; `--check` exits 1 by
+construction. `rtm.md` deliberately NOT regenerated — it is the pass-round UAT deliverable and would
+render REQ-103 ✅ off `VAL-118` while clause 2 is red.
+
+**State.** `gates.validation.passed` stays `false` with its note rewritten (Prior chain kept);
+`current_stage` stays `validation`; `updated` bumped. Next: Gate 5 RED + Gate 6 one-liner, then Gate
+7.5 round 3.
