@@ -956,6 +956,16 @@ flowchart LR
 - **acceptance:** Given a principal that is **not** the workflow's owner calls `workflow_get({name})` Then the response omits the script body while still returning everything a user legitimately needs — name, version, channel, purpose, declared parameter contract (REQ-090), owner, and how to report a problem against it (REQ-095); Given the **owner** calls it Then the full script is returned exactly as today; Given auth is disabled (no principal) Then behaviour matches the pre-v22 surface, so a local single-operator deployment is unaffected; Given any other read surface that exposes script text — `workflow_list`, the HTTP `/api/workflows*` routes, the dashboard — Then it is masked consistently, so masking cannot be trivially side-stepped by asking a different endpoint; Given a masked response Then it says the script is withheld rather than pretending the workflow has none.
 - **iter:** v22
 
+**[AMENDED v23, owner-ruled 2026-09-02]** `phases` (`meta.phases[].title`) JOINS the non-owner
+allowlist. v22 shipped it masked; v23's diagram (REQ-102) draws phase names, and serving them there
+while `workflow_get` and `/api/workflows/:name/skeleton` withheld them would be this requirement's own
+"cannot be side-stepped by asking a different endpoint" clause violated in mirror image. The owner
+ruled 一律公開: the diagram draws them AND both read surfaces stop masking them, one decision applied
+everywhere. `WorkflowPublicView` and `EXPECTED_NON_OWNER_KEYS` both gain the field (the two-sided
+oracle still catches a leak in either direction), and `docs/AUTHORING.md` (REQ-106) must state that
+phase titles are visible to every principal who can see the workflow. Full reasoning: 04-design.md,
+v23 adjudication #1.
+
 ---
 
 ### Round v22 — 2026-09-01 (clarification: no new interview needed)

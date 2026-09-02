@@ -858,3 +858,67 @@ The 12 `未實作`/`未驗證` gaps on REQ-101..106 are the expected Gate-2 stat
 v23 regression. Every ARCH traces to an existing REQ, every in-scope REQ is covered, every ARCH declares
 `module:` + `deps:`. `state.yaml`: `gates.architecture.passed=true`, `current_stage: design`, `updated`
 refreshed. `.panel/architecture/` retained for Gate 3's use. No `needs_clarification` raised.
+---
+
+## 2026-09-02 — v23 GATE 3+4 (tasks + detailed design, merged) — designer/synthesizer
+
+**TASK-113..124 → 03-tasks.md, DES-120..135 → 04-design.md.** Synthesized from the pre-run design panel
+(`.panel/design/{adversarial,quality-dimensions}.r{1,2}.md`) — **no second panel spawned**, per the
+dispatch. Every ARCH-077..086 has ≥1 TASK; every card carries `files:`/`des:`/`dod:`/`estimate:`.
+DES numbering deliberately preserves the panel's own DES-120..129 assignments where the content aligns,
+so Gate 8's re-read of the `.panel` files joins without a mapping table.
+
+**The two round-2 files crossed** — each was written against the *other group's r1*, not its final
+form, so their "finals" disagree on paper about things neither had seen. Adjudicated on the surviving
+argument, not on which file was later: `DiagramNoteCode` is **ten** values, `MALFORMED_COMPLETION`
+deleted per adversarial's own r2 self-reversal (`gateDiagram(raw: unknown)` makes the gate total over
+the gateway's *actual* return type, so a non-string completion is `GATE_REJECTED_SHAPE`), and
+quality-dimensions' diagnostic need is met by the closed, journal-only, engine-authored
+`gateFail:'type'|'codepoint'|'size'|'token'` rather than by storing a byte/line metric. That field is an
+**explicit amendment to ARCH-079 invariant 5**, granted here and recorded in the design's Decision
+rationale; `02-architecture.md` is not edited.
+
+**The scratch-`cwd` fight both r1 files predicted did not happen.** Adversarial withdrew its own r1
+tie-break on new evidence: it had argued against widening `invoke()` with `cwd?: string`, which quality
+never proposed — they proposed a construction-time repoint. Converged: isolation-by-omission stays the
+primary control (`no workspace ⇒ settingSources: []` is the real guard against the recorded
+CLAUDE.md/MEMORY.md leak class), DES-120's empty-set fix is the control for the default path, and
+`main.ts`'s one-line `cwd` repoint is the belt for ADR-020's non-empty-tools case. I verified the
+repoint is safe to make: `AgentExecReq.workspace` is typed **non-optional** (`agent-executor.ts:133`)
+and there is exactly one production `invoke()` call site (`:470`), so it changes the analyzer's jail and
+nothing else. Adversarial's new r2 finding rides along: a zero-config install has no resolvable jail root
+at all, so `graphAnalyzer.tools` is **forced to `[]`** in that state and the boot line says so.
+
+**The round's highest-severity finding is a code fix, not prose.** `curateToolsForProvider([], 'ollama')
+=== ['Bash']` (`claude-agent-sdk-client.ts:223-227`), so ADR-020's "the default blast radius is nil" is
+**falsified** on this deployment's own default path — `graphAnalyzer.tools: []` would ship a Bash-enabled
+session whose prompt is attacker-authored script text. TASK-116 is the one-line fix and lands **strictly
+before** the analyzer; TASK-117 keeps the analyzer-level literal built-options assertion, because a
+gateway-level test cannot see a `cfg.tools → opts.tools` mis-map. This is a deliberate refinement of the
+panel's "one task" item 5: same protection, two right-sized tasks.
+
+**Four primary-source corrections to the architecture are carried inside the DES an implementer greps,**
+not only in the rationale, so nobody builds against the wrong text: ARCH-077's `maxWorkflowVersions`
+prune **does not exist** (the ceiling refuses; `deregister()`'s transaction is the only deletion path) →
+DES-130; ADR-020's falsified blast radius → DES-120; ADR-015's "phase names are already served to
+non-owners" is **false** → DES-135; "an explicit scratch `cwd`" is not expressible through `invoke()` →
+DES-122.
+
+**One item escalated to the owner, non-blocking.** The diagram is the **first** surface to serve
+`meta.phases[].title` to a non-owner (`WorkflowPublicView` has no `phases`; `server.ts:1079` calls them
+masked). REQ-102/A3 authorises phase names as diagram content and that decision stands — but it was
+taken on a false "pre-existing exposure" premise, which is exactly why nobody escalated it, and
+`docs/AUTHORING.md` rule 4 is its **sole** control. Default shipped behaviour is A3 as written, **pinned
+by a test** asserting a secret placed in a phase name appears in the diagram, so overruling it turns a
+test red and names the decision instead of silently editing an allowlist builder (a one-line change to
+DES-131's allowlist).
+
+**Gate self-check.** `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine`: 945 items, **41 gaps =
+29 pre-write baseline + 12 new `TASK-113..124 has no IMPL`** — the normal pre-implementation state that
+closes at Gate 6. Baseline computed **without touching the working tree** (parsed the same files in
+memory with the `## v23` sections elided — never `git checkout <sha> -- <path>`, per CLAUDE.md).
+**0 broken links, 0 orphans on both sides.** Exit-gate 4 (real-tier path per REQ + per-tier mock policy)
+and exit-gate 5 (seam consistency — *every* analyzer time read goes through the injected `Clock`;
+`generatedAt`, `durationMs` and the journal timestamps all named) are their own sections in 04-design.md.
+`state.yaml`: `gates.tasks.passed=true` (v23 note prepended), `gates.design.passed=true`,
+`current_stage: design → tests`, `updated` refreshed. `.panel/design/` retained as the archive.
