@@ -2536,6 +2536,20 @@ Cases: `GET /api/runs` returns 200 with a JSON array; a run submitted via `workf
 router).
 Red reason: `expected 404 to be 200` — `/api/runs` endpoint not registered in `server.ts`.
 
+**v22 Gate 6.5+7 (coverage gate) — extended in place, 3 new cases, no new ID:** this round's H2 fix
+(IT-092) touches `handleDashboardRequest`; per the standing whole-function coverage bar (v21
+`harness-defaults.ts` precedent — a function this round *modifies* is measured whole, not just its
+new line), the function measured 93.6% (below the 95% bar for a >5-line function), missing 3
+pre-existing gaps that predate this round's H2 diff: the unmatched-route default 404, the outer
+try/catch degrade-not-500 handler, and the DAG route's double catalog-resolve fallback
+(`server.ts:1118-1125`, TASK-109/IMPL-153 era). 3 cases close all three: (1) `GET
+/api/issues/not-a-number` (routed to the handler, matches none of its internal patterns) → 404
+`{error:'Not found'}`; (2) `GET /api/workflows/%/skeleton` (`decodeURIComponent('%')` throws
+`URIError` inside the try) → 200 `{degraded: <message>}`, never a 500; (3) a run pinned to a
+workflow deregistered afterward (both the pinned-version resolve and the release-channel fallback
+resolve throw `CatalogNotFoundError`) → DAG still 200, `cells` carries no `__skel_*` placeholder
+(empty-skeleton fallback, not a crash). Re-measured: `handleDashboardRequest` 100%.
+
 ### IT-034 — v2 MCP tools in tools/list + asset_push/list/delete + McpProbe injection (DES-019, DES-020)
 - **status:** green
 - **traces:** DES-019, DES-020, ARCH-012
@@ -4688,6 +4702,15 @@ File: `tests/acceptance/val-096-per-caller-principal.test.ts`. Mock policy (acce
 
 File: `tests/acceptance/val-097-workflow-ownership.test.ts`. Mock policy (acceptance — MUST NOT mock SUT boundaries): real server routes, real HTTP; bearer obtained via full OAuth flow through the SUT's own `/token` route with fake Google stub. 8 cases: alice registers → owned; bob overwrite → NOT_WORKFLOW_OWNER; stored unchanged; bob deregister → NOT_WORKFLOW_OWNER; still present; bob can run (not gated); alice deregisters (succeeds); boot backfill NULL-owner → hsuhungjung@gmail.com. Red reason: NOT_WORKFLOW_OWNER never returned; owner column absent → 6 of 8 cases fail. v20 fix: getBearerFor() updated from stale 302 location-header pattern to v20b 200-HTML extraction via `id="callback-url"` element content (DES-095 Decision F).
 
+**v22 send-back ROUND 2 (07-review.md §4.2/§8, B2) — 9th case added, GREEN PIN:** "bob (authenticated,
+real bearer) tries to publish alice's workflow → NOT_WORKFLOW_OWNER", inserted after the deregister
+case, same pattern as the register/deregister oracles above. Re-pins the real-bearer
+non-owner-refused-on-`workflow_publish`-over-HTTP shape that round 1's fixture rewrite (VAL-107,
+§4.2's B2 finding) left with zero coverage anywhere. Already true today (unaffected by this batch's
+register/deregister fix): `workflow_publish`'s dispatch has always computed its effective principal
+from the server-resolved bearer only, never `args.principal`, so bob's real authenticated identity
+already fails the ownership comparison. Confirmed green pre-fix, stays green post-fix.
+
 ### VAL-098 — REQ-088: harness defaults bound at registration, queryable, per-param merged at run time (REQ-088)
 - **status:** green
 - **traces:** REQ-088, DES-099, DES-100, TASK-089
@@ -5888,19 +5911,39 @@ not exist — confirmed 3/5 genuinely red (2 green pins: the pre-v22-boot smoke 
 scriptVersion-survives-a-later-registration case, both already true of today's engine).
 
 ### VAL-107 — REQ-097: `beta`/`release` channels; a run resolves a channel to a version, defaulting to release
-- **status:** green
+- **status:** red
 - **traces:** REQ-097
 - **tier:** acceptance
 - **real:** false
-- **result:** pass
+- **result:** fail
 - **iter:** v22
 
 File: `tests/acceptance/val-107-release-channels.test.ts`. Real `createServer` + real MCP HTTP, no
 LLM (marker scripts). A fresh registration is on no channel; `publish` moves the named pointer;
-non-owner refused `NOT_WORKFLOW_OWNER`; `workflow_run({name})` with no selector runs `release`;
+`workflow_run({name})` with no selector runs `release`;
 `{channel:'beta'}` runs beta; an explicit `version` wins over any channel; an unpublished channel is
 refused `CHANNEL_UNPUBLISHED` naming the channel. Red reason: `workflow_publish` does not exist and
 `workflow_run`/`workflow_get` accept no `version`/`channel` selector — confirmed 3/3 red.
+
+**v22 Gate 6.5+7 send-back-fallout amendment (ROUND 1, superseded below):** the "non-owner refused
+`NOT_WORKFLOW_OWNER`" case was amended to "the anonymous/self-asserted-principal call succeeds" —
+round 1's H1 fix (07-review.md §4.2, DES-117) dropped `workflow_publish`'s `args.principal`
+self-assertion fallback ENTIRELY.
+
+**v22 send-back ROUND 2 (07-review.md §4.2/§8, B1/B2) — the round-1 amendment above was ITSELF the
+B2 regression, now corrected:** round 1 over-fixed by dropping `args.principal` for
+`workflow_publish` unconditionally, which silently broke no-auth attribution (wrinkle 1, §4.2) as a
+side effect nobody named. The corrected design gates the drop on `authEnabled` — under
+`authEnabled:false`, `args.principal` remains legitimate identity for ALL THREE catalog writes
+(register/deregister/publish alike), matching the pre-round-1 behavior this file originally pinned.
+The assertion is restored: `anyonePublish['code']` must be `NOT_WORKFLOW_OWNER`, not "succeeds".
+The authenticated-non-owner-over-HTTP shape (a REAL bearer, `authEnabled:true`) is separately
+re-pinned by `val-097-workflow-ownership.test.ts` (bob-tries-to-publish-alice's-workflow, B2's own
+`§8` remedy); the fully-anonymous-write-refusal-under-auth path stays `IT-091`/`IT-095`.
+
+Red reason (measured, pre-fix): `anyonePublish['code']` observes `undefined` (the call silently
+succeeded — `workflow_publish` still drops `args.principal` unconditionally today, not gated on
+`authEnabled`) where `'NOT_WORKFLOW_OWNER'` is required.
 
 ### VAL-108 — REQ-098: inline script is closed; every run goes through a registered workflow
 - **status:** green
@@ -6098,11 +6141,11 @@ three refuse `authEnabled && effectivePrincipal === null` before the ownership c
 row before reading IT-091 below — it is the design source these tests assert against.
 
 ### IT-091 — H1: catalog WRITE mutations refuse an anonymous (no-identity) caller under auth, even via D-BIND
-- **status:** red
+- **status:** green
 - **traces:** ARCH-071, ARCH-073, ADR-012, DES-114, DES-117, REQ-097, REQ-100
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/integration/catalog-write-auth-dbind.test.ts`. Mock policy (integration, DES-119): real
@@ -6152,12 +6195,52 @@ in the amended file pass unchanged against TODAY's pre-fix engine (this amendmen
 migration, not a new assertion — it does not itself carry any red case; IT-091 above is where H1's
 red assertions live).
 
-### IT-092 — H2: `GET /api/runs/:id/dag` masks the script-derived skeleton overlay while auth is enabled
+**v22 send-back ROUND 2 fixture amendment (this file, no new ID, IT-091 stays green):** case 1's
+setup used to register a second version onto the D-BIND connection with a self-asserted `principal`
+(accepted as setup, not the assertion, under round 1's scope). Round 2 closes that exact fallback
+for `workflow_register`/`workflow_deregister` (see `IT-095` below) — the fallback the setup itself
+relied on — so a hand-seeded `workflow_versions` row (`seedExtraVersion()`) replaces it. Pure
+fixture-reachability change, zero assertion change; IT-091's 5 cases are unaffected and stay green
+both pre- and post- round-2 fix.
+
+### IT-095 — H1 residual (round 2): self-asserted `args.principal` is ALSO refused `PRINCIPAL_REQUIRED` on `workflow_register`/`workflow_deregister` under auth
 - **status:** red
-- **traces:** ARCH-073, ARCH-075, ADR-012, DES-114, DES-115, REQ-100
+- **traces:** ARCH-071, ARCH-073, ADR-012, DES-114, DES-117, REQ-097, REQ-100
 - **tier:** integration
 - **real:** false
 - **result:** fail
+- **iter:** v22
+
+File: `tests/integration/catalog-write-auth-dbind.test.ts` (same file as IT-091, new `describe`
+block, same fixtures). Mock policy (integration, DES-119): real `createServer` + real HTTP + real
+on-disk `catalog.db`. Closes the exact residual 07-review.md §4.2/§8 (B1) re-raised: IT-091 only
+proved a caller with NO identity at all is refused; `workflow_register`/`workflow_deregister` still
+accepted a caller who supplies a self-asserted `args.principal` string, and that string is exactly
+what `workflow_get`'s owner field (on the everyone-visible non-owner allowlist) discloses to every
+reader. 3 cases: (1) a D-BIND-exempt caller (no real bearer) replays the REAL owner string as
+`args.principal` on `workflow_register` → `PRINCIPAL_REQUIRED` (not `NOT_WORKFLOW_OWNER` — no
+ownership comparison ever runs, DES-117), no version row inserted; (2) same replay on
+`workflow_deregister` → `PRINCIPAL_REQUIRED`, workflow row still present; (3) GREEN PIN (wrinkle 1,
+07-review.md §4.2: no-auth attribution must survive): on an auth-DISABLED server, `args.principal`
+STILL attributes ownership on `workflow_register` — a different self-asserted principal is refused
+`NOT_WORKFLOW_OWNER`, proving the gate keys on `authEnabled`, never on "does a principal exist".
+
+Red reason (measured, pre-fix): cases 1–2 observe `code: undefined` (the spoofed write silently
+succeeded) where `PRINCIPAL_REQUIRED` is required — `server.ts:857-866`'s `effectivePrincipal =
+principal ?? (typeof argPrincipal === 'string' ? argPrincipal : null)` is unconditional on
+`authEnabled`, so a D-BIND-exempt caller's self-asserted string satisfies both the
+`PRINCIPAL_REQUIRED` gate and the downstream ownership comparison (`existing.owner === principal`
+in `workflow-catalog.ts:338/385`). Case 3 is a legitimate green pin, already true today (no-auth
+attribution via `args.principal` is today's un-gated, always-on behavior — the fix must keep it
+alive specifically when `authEnabled` is false, not remove it wholesale the way round 1 did to
+`workflow_publish`, per `VAL-107`'s corrected oracle).
+
+### IT-092 — H2: `GET /api/runs/:id/dag` masks the script-derived skeleton overlay while auth is enabled
+- **status:** green
+- **traces:** ARCH-073, ARCH-075, ADR-012, DES-114, DES-115, REQ-100
+- **tier:** integration
+- **real:** false
+- **result:** pass
 - **iter:** v22
 
 File: `tests/integration/dag-masking-auth.test.ts`. Mock policy (integration, DES-119): real
@@ -6181,11 +6264,11 @@ __skel_2__]` where `[__trigger__]` is required — `dagMatch`'s handler (`server
 skeleton` route which already masks. Case 2 is a legitimate green pin, already true today.
 
 ### UT-106 — H3: `register()`'s version allocator uses MAX over a name's rows, not COUNT
-- **status:** red
+- **status:** green
 - **traces:** ARCH-071 (inv 7), DES-111, ADR-011, ADR-009, REQ-096
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/integration/catalog-versions.test.ts` (extended in place — same file as IT-084's boot
@@ -6207,11 +6290,11 @@ H3's "permanently bricked" scenario directly (retrying recomputes the identical 
 every time), not merely an off-by-N.
 
 ### IT-093 — H4: `Scheduler.create()` refuses `CHANNEL_UNPUBLISHED`, not accepted-then-doomed
-- **status:** red
+- **status:** green
 - **traces:** ARCH-072 (note 1), DES-113, DES-117, REQ-097
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/integration/scheduler-create-channel-check.test.ts`. Mock policy (integration,
@@ -6235,6 +6318,35 @@ SUCCEEDED) — `scheduler.ts:153-156` calls only `catalog.exists(s.workflow)`, c
 read; `grep -rn "CHANNEL_UNPUBLISHED" src/scheduler.ts` finds nothing. Cases 2–3 are legitimate
 green pins, already true today.
 
+**H4's second site (07-review.md §8.1, adjudication #6): `WebhookRegistry.create()` — see IT-094
+below.** `Scheduler.create()` (this item) and `webhook_create` were the two sites H4's finding text
+named; `Scheduler.trigger()` was ruled out of scope (starts the run immediately through
+`RunManager.start()`, which resolves the channel itself, so `CHANNEL_UNPUBLISHED` already surfaces
+synchronously — H4's protected property is already satisfied there by another mechanism).
+
+### IT-094 — H4 second site: `WebhookRegistry.create()` refuses `CHANNEL_UNPUBLISHED`, not accepted-then-doomed
+- **status:** green
+- **traces:** ARCH-072 (note 1), DES-117, REQ-097, REQ-058
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v22
+
+File: `tests/integration/webhook-create-channel-check.test.ts` (written after the Gate 6 fix, per
+this gate's "system-level IT-*/VAL-* only writable after implementation" allowance — the send-back's
+original RED batch scoped IT-093 to `Scheduler.create()` only; the orchestrator's adjudication #6
+ruled `webhook_create` in scope for the same underlying defect before Gate 6 closed it). Mock policy
+(integration, DES-119): a REAL `WorkflowCatalog`, same shape as IT-093. 3 cases, same structure as
+IT-093: (1) a REGISTERED but UNPUBLISHED workflow is refused `CHANNEL_UNPUBLISHED` at
+`webhook_create` time, not accepted and left to fail at every delivery; (2) GREEN PIN — a PUBLISHED
+workflow still creates a webhook successfully; (3) GREEN PIN — an unknown workflow name is still
+refused `WORKFLOW_NOT_FOUND` (existing behavior, unaffected). This test and its fix
+(`WebhookRegistry.create()` calling `catalog.resolve(name,{channel:'release'})`, `CatalogPort.exists()`
+dropped, its only caller) landed in the same commit (`2e865e8`); this gate re-verified the red reason
+by temporarily restoring the pre-`2e865e8` `webhook-registry.ts` — case (1) fails exactly as IT-093's
+pre-fix case does (`expected false to be 'CHANNEL_UNPUBLISHED'`) — then reverted the probe. 11/11
+green against HEAD including the amended `webhook-registry.test.ts` suite; `tsc` clean.
+
 ### Full-suite confirmation (2026-09-02, verifier)
 `npx tsc --noEmit`: clean, 0 errors across all new/amended files. Targeted run (the 4 new/amended
 files): **16 passed, 7 failed** — exactly this pass's 7 genuinely-red cases (IT-091 ×3, IT-092 ×1,
@@ -6248,3 +6360,27 @@ of 1665/1665 (1670 = 1665 + 5 new green pins this pass's own files add: IT-091 �
 IT-093 ×2; 2 pre-existing `spawn litellm ENOENT` background artifacts, documented since IMPL-140,
 unaffected). Hermetic: every new case uses a `FixedClock`-anchored or store-observed oracle; no
 absolute-date-vs-real-clock comparisons.
+
+### Full-suite confirmation — ROUND 2 (2026-09-02, verifier, 07-review.md §4.2/§8 B1/B2 send-back)
+`npx tsc --noEmit`: clean, 0 errors. Targeted run (3 files touched this round —
+`catalog-write-auth-dbind.test.ts`, `val-107-release-channels.test.ts`,
+`val-097-workflow-ownership.test.ts`): 20 tests, **17 passed, 3 failed** — exactly the 3 genuinely-red
+cases this round adds (IT-095 ×2, VAL-107 ×1), 17 legitimate passes (IT-091's 5 pre-existing cases
+unaffected by the fixture-reachability change; IT-095's 1 own green pin; VAL-097's 8 pre-existing
+cases + its 1 new B2 green pin).
+
+Full-suite `npx vitest run`: **1687 total, 1684 passed / 3 failed (261 files)** — exactly this
+round's 3 genuinely-red cases, **0 unrelated regressions** against the prior round's close baseline
+of 1683/1683 (1684 = 1683 + 4 new tests this round's touched files add, minus 3 red = 1 net new
+green: IT-095 contributes 1 green pin + VAL-097 contributes 1 green pin = 2 new green, but 1683 + 4
+new − 3 red = 1684 ✓). 2 pre-existing `spawn litellm ENOENT` background artifacts (unrelated file,
+`params-admission.test.ts`), documented since IMPL-140, unaffected. Hermetic: every new/amended case
+is a real-clock-free store/HTTP-response oracle (owner-string equality, row presence/absence,
+version-row content) — no absolute-date-vs-real-clock comparisons, nothing to time-travel.
+
+**Red reason confirmed for the right cause, not incidentally:** IT-095's two red cases fail with
+`code: undefined` (the spoofed write silently SUCCEEDED) — not a thrown exception, not a schema/type
+error — matching exactly the "self-asserted principal satisfies both gates" defect §4.2 describes.
+VAL-107's red case fails the same way (`anyonePublish['code']` is `undefined`, the call succeeded).
+None are red for an unrelated reason (no syntax errors, no fixture setup failures — the seeded
+starting rows are confirmed present by the surrounding oracles in each case).

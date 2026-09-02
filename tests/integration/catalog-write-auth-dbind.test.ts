@@ -10,19 +10,29 @@
 //
 // Scope of the fix this batch encodes (recorded so a later reviewer does not read partial closure
 // as a dangling half, ARCH-071's own "no partial adoption" lesson):
-//   - `workflow_publish`: `args.principal` is dropped ENTIRELY (ADR-012's `args.principal`-barred
-//     idiom, already applied to reads, now applied to this write too) — effective principal is
-//     the server-resolved one, full stop.
-//   - `workflow_register`/`workflow_deregister`: the `args.principal` self-assertion fallback is
-//     RETAINED this round (a caller that supplies a non-null string still attributes as before —
-//     recorded accepted debt, not a green pin: see the note at the bottom of this file and
-//     `journal.md`/`06-impl-log.md`'s send-back entry). What closes here is the narrower, more
-//     severe hole: a caller supplying NO identity at all (omitted, or explicit `null`) is refused,
-//     not silently treated as "unowned".
+//   - v22 send-back ROUND 2 (07-review.md §4.2/§8, B1): the prior round's accepted debt below is
+//     now CLOSED. `workflow_register`/`workflow_deregister` no longer accept a self-asserted
+//     `args.principal` as identity WHILE `authEnabled` — the exact residual the H1 finding was
+//     re-raised for (a caller reads `owner` off `workflow_get`, replays it as `args.principal`,
+//     and the ownership comparison passes because the strings match). `IT-095` below (this file)
+//     encodes the closure; the ORIGINAL (superseded) scope note is kept one paragraph down for
+//     history since it explains why the D-BIND setup at case 1 changed shape.
+//   - Two wrinkles the fix must NOT silently resolve either way (07-review.md §4.2's own list):
+//     (1) **no-auth attribution**: on an auth-DISABLED server, `args.principal` remains legitimate
+//     identity for ALL THREE writes (including `workflow_publish`, whose own fallback was dropped
+//     too aggressively in round 1 — see `val-107-release-channels.test.ts`'s restored oracle) —
+//     the gate is `authEnabled`, never "does a principal exist"; (2) once closed, a loopback-origin
+//     catalog write on a `0.0.0.0`+auth deployment becomes categorically impossible on ALL THREE
+//     writes (matching `workflow_publish`'s already-shipped shape) — the intended consequence, not
+//     a regression.
 //   - All three: `authEnabled && effectivePrincipal === null` is checked BEFORE the ownership
 //     comparison and refuses with a NEW typed code, `PRINCIPAL_REQUIRED` (04-design.md DES-117,
 //     amended this batch — `NOT_WORKFLOW_OWNER` is the wrong code here: no ownership comparison
 //     ever runs, the refusal is "no identity under auth").
+//
+// [ROUND 1 scope note, superseded by the above — kept for history / to explain case-1's setup]:
+//   `workflow_publish` dropped `args.principal` entirely; `workflow_register`/`workflow_deregister`
+//   KEPT the self-assertion fallback (accepted debt). Round 2 (above) closes that debt.
 //
 // D-BIND mechanics (mirrors IT-080): server binds `0.0.0.0`, auth enabled; the test client
 // connects from `127.0.0.1`, so `isLoopbackPeer && !isLoopback(bind)` is true and the caller is
@@ -102,15 +112,27 @@ function seedPublishedWorkflow(dbPath: string, name: string, owner: string, vers
   db.close();
 }
 
+/** Round 2 (IT-095): adds a second UNPUBLISHED version row directly, bypassing `workflow_register`.
+ *  Needed because case 1's setup used to register v2 through the D-BIND connection with a
+ *  self-asserted `principal` — round 2's fix now refuses that call `PRINCIPAL_REQUIRED` (the exact
+ *  closure this file proves), so a hand-seed is the only way left to reach a two-version starting
+ *  state on this D-BIND-exempt server. */
+function seedExtraVersion(dbPath: string, name: string, version: string, script: string): void {
+  const db = new Database(dbPath);
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO workflow_versions (name, version, script, createdAt) VALUES (?, ?, ?, ?)').run(name, version, script, now);
+  db.close();
+}
+
 describe('H1: anonymous (no-identity) catalog writes are refused while auth is enabled, even via D-BIND (07-review.md §4.2)', () => {
   it('anonymous workflow_publish does NOT move the release pointer', async () => {
     const name = uniqueName('publish');
     const dbPath = join(dbindTmpDir, 'catalog.db');
     seedPublishedWorkflow(dbPath, name, 'it091-owner@example.com', 'v1', `return 'v1';`);
-    // A second version exists to publish (registration keeps its fallback this round, so an
-    // owner-asserted register still works via D-BIND — this is setup, not the assertion).
-    const reg = await callTool(dbindServer, 'workflow_register', { name, script: `return 'v2';`, principal: 'it091-owner@example.com' });
-    expect(reg['error']).toBeUndefined();
+    // A second version exists to publish — hand-seeded (round 2 closes the register/deregister
+    // self-assertion fallback, so this can no longer be reached by registering through the D-BIND
+    // connection; see seedExtraVersion's doc comment).
+    seedExtraVersion(dbPath, name, 'v2', `return 'v2';`);
 
     const pub = await callTool(dbindServer, 'workflow_publish', { name, version: 'v2', channel: 'release' /* NO principal at all */ });
     expect(pub['code']).toBe('PRINCIPAL_REQUIRED');
@@ -181,5 +203,78 @@ describe('H1: anonymous (no-identity) catalog writes are refused while auth is e
     const run = await callTool(dbindServer, 'workflow_run', { name });
     expect(run['code']).not.toBe('PRINCIPAL_REQUIRED');
     expect(typeof run['runId']).toBe('string');
+  });
+});
+
+// IT-095 (v22 send-back ROUND 2, 07-review.md §4.2/§8, B1): closes the residual H1 hole IT-091
+// above deliberately left open — `workflow_register`/`workflow_deregister` must ALSO refuse a
+// SELF-ASSERTED `args.principal` while `authEnabled`, not only the fully-anonymous (no principal
+// key at all) case IT-091 covers. This is the exact attack scenario from §4.2: an unauthenticated
+// D-BIND-exempt caller reads `owner` off `workflow_get` (on the non-owner allowlist,
+// `mcp-facade.ts:308,330,338`), then replays that exact string as `args.principal` on
+// `workflow_register`/`workflow_deregister` — today the ownership comparison passes because the
+// strings match, even though no real identity was ever authenticated.
+//
+// Red reason (measured against today's engine): both mutation calls below currently SUCCEED — the
+// spoofed `args.principal` satisfies both the (absent) `PRINCIPAL_REQUIRED` gate and the
+// `workflow-catalog.ts` ownership comparison (`existing.owner === principal`), so the write goes
+// through and the store-level oracles below observe it took effect.
+describe('IT-095: H1 residual — self-asserted args.principal is ALSO refused PRINCIPAL_REQUIRED under auth (07-review.md §4.2/§8)', () => {
+  it('D-BIND caller replays the REAL owner string as args.principal on workflow_register → still PRINCIPAL_REQUIRED', async () => {
+    const name = uniqueName('spoof-register');
+    const dbPath = join(dbindTmpDir, 'catalog.db');
+    const owner = 'it095-owner@example.com';
+    seedPublishedWorkflow(dbPath, name, owner, 'v1', `return 'v1';`);
+
+    // The exact attack: no real bearer (D-BIND-exempt connection), but `args.principal` is the
+    // CORRECT owner string (as if just read off a prior `workflow_get`).
+    const reg = await callTool(dbindServer, 'workflow_register', { name, script: `return 'hijack-attempt';`, principal: owner });
+    expect(reg['code']).toBe('PRINCIPAL_REQUIRED');
+    expect(reg['code']).not.toBe('NOT_WORKFLOW_OWNER'); // no ownership comparison ever runs (DES-117)
+
+    const db = new Database(dbPath);
+    try {
+      const versions = db.prepare('SELECT COUNT(*) AS n FROM workflow_versions WHERE name = ?').get(name) as { n: number };
+      expect(versions.n).toBe(1); // no v2 row from the spoofed register
+      const rows = db.prepare('SELECT script FROM workflow_versions WHERE name = ?').all(name) as Array<{ script: string }>;
+      for (const r of rows) expect(r.script).not.toContain('hijack-attempt');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('D-BIND caller replays the REAL owner string as args.principal on workflow_deregister → still PRINCIPAL_REQUIRED', async () => {
+    const name = uniqueName('spoof-deregister');
+    const dbPath = join(dbindTmpDir, 'catalog.db');
+    const owner = 'it095-owner2@example.com';
+    seedPublishedWorkflow(dbPath, name, owner, 'v1', `return 'v1';`);
+
+    const dereg = await callTool(dbindServer, 'workflow_deregister', { name, principal: owner });
+    expect(dereg['code']).toBe('PRINCIPAL_REQUIRED');
+    expect(dereg['code']).not.toBe('NOT_WORKFLOW_OWNER');
+
+    const db = new Database(dbPath);
+    try {
+      const wf = db.prepare('SELECT name FROM workflows WHERE name = ?').get(name);
+      expect(wf).toBeDefined(); // still present — the spoofed deregister never took effect
+    } finally {
+      db.close();
+    }
+  });
+
+  it('GREEN PIN (wrinkle 1, no-auth attribution preserved): with auth DISABLED, args.principal STILL attributes ownership on workflow_register', async () => {
+    const name = uniqueName('open-attrib');
+    const reg = await callTool(openServer, 'workflow_register', { name, script: `return 'v1';`, principal: 'it095-open-owner@example.com' });
+    expect(reg['error']).toBeUndefined();
+    expect(reg['code']).not.toBe('PRINCIPAL_REQUIRED');
+
+    // A DIFFERENT self-asserted principal is refused NOT_WORKFLOW_OWNER — proving ownership is
+    // genuinely enforced via args.principal on a no-auth deployment, not merely accepted-then-inert.
+    const hijack = await callTool(openServer, 'workflow_register', { name, script: `return 'hijack';`, principal: 'someone-else@example.com' });
+    expect(hijack['code']).toBe('NOT_WORKFLOW_OWNER');
+
+    // The true owner can still register a new version.
+    const ownerReg = await callTool(openServer, 'workflow_register', { name, script: `return 'v2';`, principal: 'it095-open-owner@example.com' });
+    expect(ownerReg['error']).toBeUndefined();
   });
 });

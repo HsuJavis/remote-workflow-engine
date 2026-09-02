@@ -4,7 +4,271 @@ status: send-back
 ---
 # 07 Review & Retro — Gate 8
 
-## v22 GATE 8 REVIEW (2026-09-02, CURRENT / AUTHORITATIVE — SEND BACK to tests+impl)
+## v22 GATE 8 RE-REVIEW #2 (2026-09-02, CURRENT / AUTHORITATIVE — SEND BACK to tests+impl)
+
+> **Second Gate 8 pass for v22**, after IMPL-157 (`330eefd`, `2e865e8`, on HEAD `28d24c7`) claimed to
+> close the prior pass's 4 HIGH findings (H1-H4), and Gate 7.5 ROUND 2 (validator) re-confirmed
+> REQ-096/097/100 real-tier evidence against the fix. Both architecture-expert groups were
+> **re-dispatched** on the post-fix tree (`.panel/review/adversarial.md` pass 2,
+> `.panel/review/quality-dimensions.md`, both dated this pass) per the contract's RE-REVIEW
+> instruction (not re-spawned by this reviewer — pre-run, consolidated only). **Verdict: STILL NOT
+> consistent — `send_back: ["tests","impl"]`, `arch_consistent: false`.** H2, H3 and H4 are
+> genuinely, completely fixed (independently re-verified against source below). **H1 is only
+> half-fixed**: `workflow_publish` correctly dropped the `args.principal` self-assertion fallback,
+> but `workflow_register`/`workflow_deregister` — copied from the same pre-existing idiom H1 was
+> raised to retire — kept it, and the exact string that unlocks it (`owner`) is served to every
+> reader by REQ-100's own non-owner allowlist. The identical attack H1 was raised to close (an
+> unauthenticated local caller moving/destroying a catalog name on an auth-enabled deployment)
+> reopens with one extra `workflow_get` read. This is disclosed in the ledger (DES-117, IT-091's
+> header, IMPL-157's note) but was never ratified by an orchestrator adjudication — unlike H4's
+> second site, which the implementer correctly stopped and escalated (adjudication #6), the
+> register/deregister residue was a unilateral implementer call. The fix's own cost accounting
+> (`git log` shows only adjudications #1-#10, none ratifying this residue) does not change that the
+> protected property still fails, one read away, and the fix needed is the same one-line deletion
+> already applied to `workflow_publish`.
+
+### §1 Traceability consistency
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` regenerated the dashboard:
+**891 items / 17 gaps, 0 orphan, 0 broken-link.** `--check` fails (exit 1) only on the same 17
+pre-existing items disclosed at every prior pass, unchanged in kind and count since the prior Gate 8
+pass (885/17 → 891/17, same 3 classes, +6 items from this pass's own ledger growth, 0 new gap
+classes):
+- **1 MID** TDD gap `IMPL-082` (no test coverage) — carried since v14.
+- **15 LOW** iteration-drift pairs (`UT-010`, `IT-011`, `UT-058`, `UT-064`, `IT-057`, `UT-094`,
+  `UT-095`, `DES-094`, `DES-088`×2, `DES-066`×2, `DES-099`×2, `DES-100`) — byte-identical set to the
+  prior pass.
+- **1 LOW** unimplemented `TASK-018` — carried since v3.
+
+Doc↔code iteration drift: none beyond the 15 pairs above. Gap-tab content read directly out of the
+regenerated `dashboard.html` (not taken from the ledger's prior claim) — confirmed byte-identical in
+kind to the immediately-prior review pass's own disclosure.
+
+### §2 Dashboard QA (`dashboard_check.py`, plugin 2.1.3 — run directly; this repo's checked-in
+`.sdlc/trace.py` still predates the plugin's `--tool` dispatcher — same recorded version-skew debt)
+**0 high / 2 mid / 1 low** — re-run this pass, identical result to the prior pass:
+- 2×MID "括號不平衡" at `02-architecture.md:933`/`:1197` (v21/v22 ER diagrams) — **hand-re-verified
+  this pass** (both blocks read in full): both are mermaid `erDiagram` crow's-foot cardinality tokens
+  (`||--o{`, `||--o|`) that the checker's lexical bracket counter misreads as unclosed `{`; every
+  attribute block closes correctly under mermaid grammar. Recorded checker false positive, unchanged.
+- 1×LOW "無 mermaid 離線 fallback" — pre-existing trace.py-version debt, unchanged.
+- SoT `file:line` link check: 0 dead links.
+- Playwright browser tools were not available in this session (checked: no MCP playwright tool
+  exposed) — visual `<svg>` render confirmation and click-through were not performed; the
+  lexical/link checks stand in per the contract's degraded-fallback clause, same as the prior pass.
+
+### §3 Module-boundary check (`solid_check.py`, plugin 2.1.3)
+**0 high / 0 mid / 10 low — PASS**, re-run this pass. Same 10 pre-existing "unclaimed file" LOW
+warnings as the prior pass (`main.ts`, `net-guard.ts`, `webhook-registry.ts`, `harness-defaults.ts`,
+`self-update.ts`, `agent-semaphore.ts`, `mcp-probe.ts`, `workflow-meta.ts`,
+`workspace-artifacts.ts`, `continuation-store.ts`). 0 undeclared cross-module deps, 0 cycles, 0
+deep-internal-import bypasses, 0 god-modules.
+
+### §4 Architecture consistency — **STILL NOT CONSISTENT**
+
+#### §4.1 Consolidated verdict
+Both re-dispatched expert reports independently re-verified the post-fix tree against source (not
+against either panel's or the ledger's prior word):
+- **Adversarial** (security/scalability/testability): H2, H3, both H4 sites **cleanly FIXED**. H1
+  **PARTLY FIXED** → re-raised as **B1 (HIGH)**, plus a new finding the fix itself introduced (**B2,
+  MEDIUM** — an asymmetric identity idiom across the three catalog writes + an inverted acceptance
+  oracle). The 6 prior MEDIUM + 4 prior LOW (§4.3 below, this document's own prior pass) were all
+  re-verified **STILL OPEN**, unchanged, correctly non-blocking. One new LOW surfaced (**B13** — a
+  `scriptVersion`/catalog-version namespace collision made newly plausible by version history).
+  **13 open deviations: 1 HIGH, 7 MEDIUM, 5 LOW.**
+- **Quality-dimensions**: independently confirmed **S-1 (=H4) fully RESOLVED** at both sites; O-1/O-2
+  (=M1/M5) and the `maxWorkflowVersions` cast (=M4) **still open**, unchanged; C-1/C-2 (=L2/L3) still
+  open, unchanged. **5 open deviations, 0 HIGH** (this lens does not cover H1's security surface —
+  consistent with its own stated scope).
+
+Both lenses agree H2/H3/H4 are cleanly closed. The adversarial lens's H1 finding is the only
+disagreement with a clean "resolved" verdict, and this reviewer independently re-verified it against
+source (below) rather than taking it on the panel's word.
+
+#### §4.2 The 1 remaining HIGH finding — reviewer-verified against source independently of the panel
+
+**H1 residual (= adversarial B1, security). `workflow_register`/`workflow_deregister` still accept a
+caller-asserted `args.principal`, and the string that satisfies it is published to every reader.**
+
+**Violates:** ARCH-071 (`register`/`deregister`/`publish` — "owner-gated, `NOT_WORKFLOW_OWNER`"),
+uniformly, as a property of the *operation*, not the transport; ADR-012's rider (identity for masking
+comes only from `resolvePrincipal`, never `args.principal`, precisely *because* `owner` is disclosed
+to readers) — applied to `publish` and to reads, not to the other two writes.
+
+**Confirmed by direct read, independent of the panel's citation:**
+- `src/server.ts:857-859` (`workflow_register`) — `const effectivePrincipal = principal ??
+  (typeof argPrincipal === 'string' ? argPrincipal : null); if (authEnabled && effectivePrincipal
+  === null) return principalRequiredEnvelope();` — a supplied string satisfies the new
+  `PRINCIPAL_REQUIRED` gate.
+- `src/server.ts:864-866` (`workflow_deregister`) — identical shape.
+- `src/server.ts:876-880` (`workflow_publish`) by contrast — `const { principal: _argPrincipal,
+  ...pubArgs } = args …; const effectivePrincipal = principal;` — the fallback is **dropped
+  entirely** here, confirming the correct pattern exists one function away.
+- `src/workflow-catalog.ts:338` / `:385` — the ownership comparison then passes because the asserted
+  string equals the stored `owner`.
+- `src/mcp-facade.ts:308,330,338` / `src/workflow-view.ts:41` — `owner` is on the non-owner allowlist
+  and on the owner branch: every reader, authenticated or not (once masking's own `authEnabled`
+  branch is satisfied), is handed the exact string the register/deregister fallback accepts.
+- `08-validation.md`'s v22 GATE 7.5 ROUND 2 section (grep-confirmed: only `workflow_publish`'s
+  `args.principal` forgery was probed) never exercised this shape — the register/deregister spoof
+  path escaped real-tier validation too.
+
+**Failure scenario.** Server bound `0.0.0.0`, `auth.enabled:true` — the exact deployment shape
+REQ-100/ADR-012 exist for. An unauthenticated local process calls
+`workflow_get({name:'deploy-prod'})`, reads `owner:"alice@example.com"` off the masked
+(non-owner-projected, still-served) response, then calls
+`workflow_deregister({name:'deploy-prod', principal:'alice@example.com'})`.
+`PRINCIPAL_REQUIRED` does not fire (principal is non-null); the catalog's owner check does not fire
+(the strings match); the workflow and every one of its version rows are deleted. `workflow_register`
+is reachable the same way, adding versions under a stolen identity.
+
+**Why this is still a blocking architecture deviation, not accepted debt.** The disclosure in
+DES-117 documents *that* the fallback survives; it is not a ruling *that* it should. The ledger's own
+established mechanism for exactly this kind of judgment call — stop, and let the orchestrator
+adjudicate — was used correctly for H4's second site (adjudication #6) and was not used here; `git
+log`/`04-design.md` show adjudications #1-#10, none addressing this residue. The property H1 was
+raised to protect ("an unauthenticated caller cannot move or destroy a catalog name on an
+auth-enabled deployment") still fails. The fix is the same two-line deletion already proven correct
+on `workflow_publish` — this is not new mechanism, it is finishing the one already shipped.
+
+**Two wrinkles the fix batch must name explicitly, not silently resolve either way (raised so round 3
+doesn't bounce):**
+1. **No-auth attribution.** `VAL-107`'s own `workflow_register` sets ownership via `args.principal`
+   on a **no-auth** server (`auth.enabled:false`) — this is legitimate single-operator attribution,
+   not the vulnerability. The RED test and the fix must pin the property as "**under
+   `authEnabled:true`**, `args.principal` is never identity on any catalog write" — dropping the
+   fallback unconditionally (rather than gating the drop on `authEnabled`) would silently break
+   no-auth attribution and the tests that depend on it (or store `owner:null`, which then fail-closes
+   masking if auth is enabled later without re-registering). Whichever shape is chosen, it must be a
+   named decision in the fix's design note, not a side effect discovered at Gate 7.5 round 3.
+2. **`0.0.0.0`+auth consequence.** Gate 7.5 ROUND 2's own evidence shows bearers are *ignored*
+   entirely on the D-BIND-exempt path (`dbindExempt` short-circuits `resolvePrincipal` before it
+   runs) — so once H1 is fully closed, a loopback-origin catalog write on a `0.0.0.0`+auth deployment
+   becomes categorically impossible, matching `workflow_publish`'s already-shipped behavior today.
+   This is the intended, coherent consequence of closing H1 all the way — record it so a future pass
+   does not read it as a new regression and "fix" it backward.
+
+**Also fold into the same batch (adversarial B2, MEDIUM, same root cause):** the regression this fix
+introduced at `tests/acceptance/val-107-release-channels.test.ts:57-62` — a real-tier acceptance
+oracle that used to assert "a non-owner is refused `NOT_WORKFLOW_OWNER`" on `workflow_publish` was
+rewritten in place to assert the call **succeeds** (confirmed via `git diff`: `expect(anyonePublish
+['error']).toBeUndefined()` replaced the refusal assertion), and — verified by reading every file
+that mentions the code — **no test anywhere now asserts that an authenticated non-owner is refused
+`NOT_WORKFLOW_OWNER` on `workflow_publish` over HTTP**, the one shape ARCH-071's owner-gate clause is
+actually about. `val-097-workflow-ownership.test.ts:147-160` already pins exactly this shape for
+`workflow_register`/`workflow_deregister` with real bearers through the injectable `TokenStore` — one
+`it()` block away, same fixture, same pattern.
+
+#### §4.3 6 MEDIUM + 5 LOW findings (was 4 LOW; +B13 new) — recorded as tech debt, unchanged
+disposition, non-blocking this round
+
+All re-verified STILL OPEN by both re-dispatched experts, unchanged from the prior pass's §4.3
+(renumbered B3-B12 in the adversarial report, same underlying findings as prior M1-M5/L1-L4), plus
+one new LOW:
+
+| # | Sev | Area | Finding | Evidence |
+|---|---|---|---|---|
+| M1 (=B3) | MEDIUM | observability | `runs.requested` computed, never persisted; 3 arch surfaces still assert it | `workflow-catalog.ts:95`; `run-manager.ts:447`; `sqlite-run-store.ts:35,85-86` |
+| M2 (=B4) | MEDIUM | security-structural (latent) | `workflow_list`/`/api/workflows`/`/api/home` bypass `projectWorkflowForRead`; no live leak today, next field added reaches 3 unauth surfaces ungated | `mcp-facade.ts:240,248`; `server.ts:1029-1034,1056-1058` |
+| M3 (=B5) | MEDIUM | scalability | ADR-013's stated reason to exclude `workflow_list` from `validateCurrent` is false as written — the 3s poll already does a per-row script SELECT+parse; new second site at the DAG route resolves-then-discards the script every poll | `workflow-catalog.ts:511-516`; `server.ts:1114-1132` |
+| M4 (=B6) | MEDIUM | testability | `maxWorkflowVersions` reaches the catalog via an unchecked structural cast both sides — deleting the literal compiles clean, ceiling silently disables | `workflow-catalog.ts:342`; `server.ts:1239-1243`; `params/contract.ts:39-43` |
+| M5 (=B7) | MEDIUM | observability | nested `workflow()` resolves `release`, discards the version before the journal push; IMPL-152's note claims otherwise | `run-manager.ts:816,821`; `types.ts:100-105` |
+| M6 (=B8) | MEDIUM | doc-vs-code | v22 interface table asserts a `chain_create` release-check with zero code/seam (pre-existing since v8, not a v22 regression, but the table now asserts it for all 3 rows when only 2 implement it) | `continuation-store.ts:93-106` |
+| L1 (=B9) | LOW | concurrency | `publish()`'s ownership/existence reads run outside its transaction | `workflow-catalog.ts:479-491` vs `:333-365` |
+| L2 (=B10) | LOW | consumability | `VERSION_CEILING_EXCEEDED` names a remedy (`deregister` one version) that doesn't exist (name-granular only) | `workflow-catalog.ts:346,380-394` |
+| L3 (=B11) | LOW | consumability | `workflow_get` owner branch drops `versions[]`/`channels{}` the interface table promises | `mcp-facade.ts:326-345` |
+| L4 (=B12) | LOW | consistency | `list()` newest-row fallback vs `workflow_run` refusing `CHANNEL_UNPUBLISHED` on the same name | `workflow-catalog.ts:510,516-517` |
+| L5 (=B13, NEW) | LOW | testability/diagnosability | `scriptVersion` (in-memory resume counter, seeded from catalog version) is journal-stamped with the same string shape as a real catalog version — version history makes the two newly confusable at the one surface a debugger reads | `run-manager.ts:392,563,691,898` |
+
+### §5 Validation & handover
+Gate 7.5 v22 ROUND 2 real-tier evidence (`08-validation.md`, 5503 lines total): H2/H3/H4 fully
+re-confirmed live against the fixed code (DAG masking, MAX-based allocator, both `create()` sites
+refusing `CHANNEL_UNPUBLISHED`); H1's `workflow_publish` forgery-drop and the anonymous-refusal shape
+for all three writes were live-confirmed — **but the register/deregister `args.principal` spoof shape
+(§4.2's exact failure scenario) was never probed**, consistent with this reviewer's finding that H1 is
+only half-closed. `sh .sdlc/trace --check`: 891/17, 0 未真實驗證/未驗證/僅mock驗證. `rtm.md`
+100/100 REQ `real:true`. `README.md`+`DEPLOY.md` present, current-state, history-free (re-grepped for
+`舊版`/`原本`/`以前`/`previously`/`變更紀錄`/Changelog tell-tales — none found this pass either);
+`README.md:159`'s "no backdoor endpoint" claim was tightened this round to name the DAG route
+explicitly and is true again post-H2-fix (re-verified). `DEPLOY.md §0` still leads with
+`./deploy.sh --background`. Single §1b 設定總表, no new config keys this pass (H1-H4 are pure logic
+fixes). **No new validation-gate finding this pass** — H1's residual gap is an architecture-vs-impl
+deviation (§4.2), not a validation/handover defect; the existing REQ-096/097 `real:true` flags are not
+falsified by it (the flag describes the scenarios Gate 7.5 did test, all of which are genuinely
+green). **Standing flag for the next Gate 7.5 round** (v21 RE-REVIEW #6 precedent — flag, not
+send_back): once the H1 fix batch lands, Gate 7.5 must re-confirm the register/deregister write-auth
+path specifically (the exact spoof scenario in §4.2), not just re-read the ledger's claim.
+
+### §6 Special-file review
+N/A this pass. `git status` this pass touched: `.panel/review/*.md`, `04-design.md`, `05-tests.md`,
+`06-impl-log.md`, `08-validation.md`, `dashboard.html`, `journal.md`, `state.yaml`, `README.md`,
+`src/errors.ts`, `src/scheduler.ts`, `src/webhook-registry.ts`,
+`tests/acceptance/val-107-release-channels.test.ts`, `tests/integration/dashboard-http.test.ts` — no
+`CLAUDE.md`/`AGENTS.md`/`SKILL.md`.
+
+### §7 Independent verification (this reviewer, re-run from scratch — not taken from the ledger's own notes)
+- `npx tsc --noEmit`: clean, 0 errors.
+- `npx vitest run`: **261 files / 1683 tests passed, 0 failed**, exit 0 (2 "unhandled error" — `spawn
+  litellm ENOENT` — the documented pre-existing background-cleanup artifact, unrelated to any
+  assertion, same class disclosed since IMPL-140).
+Both numbers match the ledger's own Gate 6.5+7/7.5 ROUND 2 claims exactly (261/1683) — no drift
+between what was reported and what re-running produces.
+- `git log --oneline`: confirmed only adjudications #1-#10 exist in `04-design.md`/commit history for
+  v21/v22; none ratifies the H1 register/deregister residue (relevant to §4.2's "unilateral call, not
+  an adjudicated decision" finding).
+
+### §8 Send-back scope
+`send_back: ["tests","impl"]` — **B1 alone governs this verdict** (per this ledger's own
+terminating-rule convention, used at every prior pass in this document): a RED test asserting an
+authenticated D-BIND-exempt or self-asserted-principal caller is refused `PRINCIPAL_REQUIRED` on
+`workflow_register`/`workflow_deregister` (mirroring `workflow_publish`'s already-shipped shape), with
+the two wrinkles in §4.2 (no-auth attribution; the `0.0.0.0`+auth consequence) explicitly named in the
+fix's design note — plus, in the same batch, re-pinning B2's authenticated-non-owner-refused-on-
+`workflow_publish`-over-HTTP oracle (one `it()`, `val-097-workflow-ownership.test.ts:147-160`'s
+pattern). M1-M6/L1-L5 in §4.3 are recorded debt, unchanged disposition, non-blocking.
+
+### §9 Retro (v22, this pass)
+**What went well.** 3 of 4 prior HIGH findings (H2, H3, H4) are genuinely, completely fixed — not
+just claimed — independently re-verified by this reviewer at source. The Gate 6.5 simplify
+(`catalogResolveErrorEnvelope`) is a real simplification. Full regression stayed green (1683/1683)
+and `tsc` clean through a second fix batch.
+**What to change (sharpened from the prior pass's own retro item, which repeats here in a stronger
+form).** The prior retro named "when architecture says reuse the existing pattern, re-verify the
+pattern's precondition still holds at the new call site" as the lesson from H1's first appearance. The
+fix batch applied that lesson to `workflow_publish` (the new v22 tool) but **not** to
+`workflow_register`/`workflow_deregister` (the pre-existing tools the vulnerable idiom actually lived
+on) — the same lesson, half-applied to the easier target. A send-back naming a specific vulnerable
+idiom should be read as closing the idiom everywhere it appears, not just at the call site the
+finding happened to cite first. Second: an implementer-declared "accepted debt" on a HIGH
+security finding, absent an orchestrator adjudication, should not be treated as a ratified decision by
+the next gate — this review reinforces (does not newly discover) the ledger's existing adjudication
+mechanism as the correct escalation path for exactly this kind of judgment call.
+**Known tech debt carried forward** (§4.3, M1-M6/L1-L5; +B13/L5 new this pass): 15 LOW iter-drift
+pairs, 1 LOW `TASK-018`, 1 MID `IMPL-082` (§1); 2 recorded `dashboard_check` erDiagram false
+positives + 1 LOW trace.py/plugin version skew (§2); 10 LOW `solid_check` unclaimed-file warnings
+(§3).
+
+### Report (v22, this pass)
+```
+Gaps: high=1 mid=10 low=32 (1 HIGH = B1 §4.2, blocking; 10 MID = 6 architecture debt §4.3 + 1
+  pre-existing IMPL-082 TDD (§1) + 2 dashboard_check erDiagram false-positive (§2, recorded, not a
+  doc defect) + 1 new B2 §4.2 tied to the same send-back, folded into the batch not counted separately
+  in the blocking count; 32 LOW = 5 architecture debt §4.3 (incl. new B13/L5) + 15 pre-existing
+  iter-drift + 1 pre-existing TASK-018 (§1) + 1 dashboard_check trace.py version-skew (§2) + 10
+  solid_check unclaimed-file (§3))
+Drift: 0 new doc↔code iteration drift; 15 pre-existing LOW pairs unchanged (§1). Substantive drift
+  this pass is still architecture↔implementation: 1 HIGH (H1 residual) + 6 MEDIUM + 5 LOW (§4.2/§4.3).
+Architecture consistent: NO — 1 HIGH (H1 half-fixed) + 6 MEDIUM + 5 LOW; H2/H3/H4 confirmed fully
+  fixed by both re-dispatched expert reports and independently by this reviewer.
+Validation: real-tier all-green on the scenarios tested? YES · README+DEPLOY present/current-state?
+  YES · but the register/deregister spoof shape (§4.2) was never probed at Gate 7.5 — standing flag
+  for the next round once the fix lands (§5), not a validation-gate finding this pass.
+Conclusion: send back to tests + impl for B1 (H1's incomplete closure) + B2 (the oracle it broke),
+  §4.2/§8; 6 MEDIUM + 5 LOW recorded as debt, non-blocking.
+```
+
+---
+
+## v22 GATE 8 REVIEW (2026-09-02, superseded by v22 GATE 8 RE-REVIEW #2 above — kept for history; was SEND BACK to tests+impl)
 
 > **First Gate 8 pass for v22** (REQ-096..100 — versioned catalog + beta/release channels +
 > closing inline script + moving static checks to registration + non-owner script masking;

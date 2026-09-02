@@ -156,7 +156,8 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # -> params.knobs.model.enum = ["local"]
 # 用非擁有者（或 auth 關閉時的匿名者）的身份呼叫 workflow_get，腳本本文會被遮蔽（v22）：
 # -> {"scriptWithheld":true, ...其餘欄位（name/version/channels/owner/params/如何回報問題）照常回傳，就是沒有 script}
-# workflow_list、/api/workflows*、儀表板同樣一致遮蔽，沒有後門端點能看到未授權的腳本本文。
+# workflow_list、/api/workflows*、GET /api/runs/:id/dag（跑過的 run 的即時 DAG 圖）、儀表板
+# 同樣一致遮蔽，沒有後門端點能看到未授權的腳本本文。
 
 # 查詢 38 個 MCP 工具（含 schema）
 curl -s -X POST http://127.0.0.1:8787/mcp \

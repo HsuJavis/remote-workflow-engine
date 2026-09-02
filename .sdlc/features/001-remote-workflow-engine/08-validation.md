@@ -5314,3 +5314,190 @@ scope — `litellm` binary absent from `PATH` by default on this host, unchanged
   → 10/10 pass (covers `args.principal` non-unmask, NULL-owner fail-closed, and auth-OFF byte-identical
   pre-v22-surface clauses not hand-probed on this auth-on boot).
 - **iter:** v22
+
+## v22 GATE 7.5 ROUND 2 (2026-09-02, validator) — re-confirm REQ-096/097/100 after the Gate 8 send-back's H1-H4 fixes
+
+**Why a re-run, not a re-read.** Gate 8 REVIEW (07-review.md, this section's "v22 GATE 8 REVIEW")
+found 4 HIGH deviations in the code the FIRST Gate 7.5 pass had validated: **H1** — a D-BIND
+loopback-exempt caller reaches `workflow_publish`/`register`/`deregister` with `principal===null`
+even under `auth.enabled:true`, an unauthenticated catalog-write bypass (REQ-096/097); **H2** — `GET
+/api/runs/:id/dag` never checked `authEnabled`, leaking the script-derived predicted skeleton
+(REQ-100); **H3** — the version allocator used `COUNT(*)` instead of `MAX(...)`, bricking
+re-registration for any pre-v22 workflow migrated at a version >1 (REQ-096); **H4** —
+`Scheduler.create()`/`WebhookRegistry.create()` only checked `catalog.exists()`, not
+`resolve(name,{channel:'release'})`, accepting a schedule/webhook against a registered-but-
+unpublished workflow that would fail at every subsequent fire (REQ-097). The FIRST Gate 7.5 pass's
+own VAL-106/107/110 evidence pre-dates all four fixes and therefore never exercised any of them — the
+`real:true` flag those items already carry describes evidence collected against the PRE-fix code, so
+per this ledger's own standing-flag precedent (v21 ROUND 2..5) it must be re-confirmed against the
+POST-fix code, not trusted as still current. Scope, per the orchestrator's own dispatch: REQ-096,
+REQ-097, REQ-100 (the three REQs H1/H3/H2/H4 touch). REQ-098/099's OWN acceptance clauses are not
+touched by any of the four fixes' *behavior* — H1 gates `server.ts`'s shared `callTool` dispatch (the
+same function REQ-098's `INLINE_SCRIPT_CLOSED` refusal flows through) and H3 changes `register()` in
+`workflow-catalog.ts` (the same file `validateScriptEntry`, REQ-099's registration-time checks, lives
+in), so this is not a file-untouched claim — it rests instead on this round's own green real-tier
+re-run: `tests/acceptance/val-108-inline-script-closed.test.ts` (3/3) and
+`tests/acceptance/val-109-registration-checks.test.ts` (4/4), both real `createServer` + real HTTP,
+executed as part of this round's 12-file/66-test regression run (below) against the exact POST-fix
+tree, not diff-scoped out. VAL-108/109's ROUND 1 stamps stand, now reinforced by this round's own
+passing re-run rather than by an assumption that the shared files' unrelated changes couldn't affect
+them.
+
+**Boot — documented steps only:**
+```
+git rev-parse --short HEAD                    # -> 28d24c7
+RWE_BIND=127.0.0.1 RWE_PORT=8790 ./deploy.sh --background   # owner-authenticated probes (H3/H4, REQ-096/097 writes, masking)
+# then, separately, to reproduce H1's exact vulnerable shape:
+RWE_BIND=0.0.0.0 RWE_PORT=8790 ./deploy.sh --background     # D-BIND loopback-exempt path (only reachable when bind != loopback)
+```
+Both boots healthy (`{"agentSemaphore":...,"version":"0.1.0 (v0.20.0-61-g28d24c7)"}`), version suffix
+cross-checked against `git rev-parse --short HEAD` before trusting any result (the documented
+zombie-check gotcha — a separate long-lived pre-v22 production `rwe` instance from 8月19 was
+independently confirmed still running on port 8787/8899, untouched, out of scope). Auth fixture: the
+live `rwe.config.json` has `auth.enabled:true` (real Google OAuth client) — real bearer tokens minted
+in-process via the engine's own `TokenStore` class against the live `auth-tokens.db` (SUT-internal
+component, same `IT-089`/ROUND-1 pattern, not a mock) for an owner (`val-v22r2-owner@example.com`) and
+a non-owner (`val-v22r2-nonowner@example.com`) principal.
+
+**H1 (REQ-096/097 write-auth bypass) — live MCP HTTP, `RWE_BIND=0.0.0.0` boot, no bearer header at all
+(the exact D-BIND-exempt shape: loopback socket peer, non-loopback bind):**
+- `workflow_register({name,script})` → `{"code":"PRINCIPAL_REQUIRED","message":"PRINCIPAL_REQUIRED:
+  authenticate via a bearer, or disable auth for single-operator use"}` — refused, nothing stored
+  (confirmed no row for the attempted name).
+- `workflow_publish({name,version:'v2',channel:'release'})` against an existing owned workflow →
+  same `PRINCIPAL_REQUIRED` refusal — the pointer did not move (re-read confirmed unchanged).
+- `workflow_deregister({name})` → same `PRINCIPAL_REQUIRED` refusal — the workflow still exists
+  afterward.
+- **Old-idiom regression check**: `workflow_publish({...,principal:'val-v22r2-owner@example.com'})`
+  (the `args.principal` self-assertion forgery H1's own fix text says to drop) → still
+  `PRINCIPAL_REQUIRED` — an anonymous caller cannot forge ownership by typing a `principal` field into
+  `args`, confirming "drops the `args.principal` self-assertion fallback from `workflow_publish`'s
+  dispatch entirely" is real, not just documented.
+- **Positive control** (same `0.0.0.0` boot, real bearer supplied over `127.0.0.1`): a bearer header is
+  *also* ignored on this bind shape — `dbindExempt` short-circuits bearer resolution entirely for a
+  loopback peer, so `principal` is unconditionally `null` regardless of the header (confirmed by
+  reading `server.ts:1520,1635` — `resolvePrincipal` only runs inside `if (!dbindExempt && ...)`).
+  This is the documented DES-097 loopback-admin design, not a new defect; it is *why* H1 was a real
+  bypass (the exempt path reaches catalog writes with `principal===null`) and *why* the fix (gate on
+  `authEnabled && principal===null`, not on the write flowing through the exempt path) closes it
+  without breaking the legitimate non-loopback bearer path, re-confirmed next.
+
+**H1 positive/negative control (REQ-097 ownership, unaffected by the fix) — live MCP HTTP,
+`RWE_BIND=127.0.0.1` boot (bind IS loopback ⇒ `dbindExempt` always false ⇒ real bearer path):**
+- Owner bearer `workflow_register`/`workflow_publish` on a fresh workflow → both succeed normally.
+- Non-owner bearer (valid, authenticated, just not the owner) `workflow_publish` → `NOT_WORKFLOW_OWNER`
+  — confirms H1's fix did not collapse the distinct "no principal at all" vs. "authenticated but wrong
+  principal" cases into one error.
+
+**H3 (REQ-096 version allocator) — direct real-tier repro against a scratch on-disk `WorkflowCatalog`
+(the actual SUT class, no mock; a throwaway `workRoot` used instead of the shared production
+`catalog.db` to avoid seeding a raw fixture into live data — same reasoning ROUND 1 used for the
+migration clause):**
+```js
+// real WorkflowCatalog, real on-disk SQLite (same catalog.db shape production uses)
+await cat.register('h3-migrated', 'return 1', {}, 'owner-x');
+// simulate a pre-v22 workflow migrated at a HIGH single version, hand-edited via raw SQL exactly like
+// ADR-011's boot migration would leave it
+db.prepare("UPDATE workflow_versions SET version='v7' WHERE name='h3-migrated'").run();
+await cat.register('h3-migrated', 'return 2', {}, 'owner-x');
+// -> version = "v8"   (COUNT(*)-based would have produced "v2", OLDER-numbered than v7, and would
+//    eventually collide with an already-migrated version, per H3's exact bricking scenario)
+```
+Result: `v8`, confirmed MAX-based. A second case — hand-seeded gapped history `v1`,`v3` (no `v2`,
+schema written directly since `register()` cannot itself produce a gap under either allocator) —
+re-registering allocates `v4`, not the `v3` collision a COUNT-based allocator would produce. Both
+match `_listVersions`'s own `MAX(CAST(SUBSTR(version,2) AS INTEGER))` expression
+(`workflow-catalog.ts:354`), confirmed by direct read to be the actual shipped fix, not a different
+number that happens to look right.
+
+**H4 (REQ-097 channel-gated trigger creation) — live MCP HTTP, `RWE_BIND=127.0.0.1` boot, owner
+bearer, a freshly registered but never-published workflow:**
+- `schedule_create({workflow,cron:'0 0 * * *'})` → `{"code":"CHANNEL_UNPUBLISHED","message":
+  "CHANNEL_UNPUBLISHED: release (workflow '...')"}"` — refused at creation, nothing stored.
+- `webhook_create({workflow})` on the same unpublished workflow → same `CHANNEL_UNPUBLISHED` refusal —
+  confirms 07-review.md §8.1's ruling that **both** named sites (not just `Scheduler.create()`) are
+  closed; `webhook_create` was the site the Gate 6 implementer stopped on rather than silently
+  fix/skip, per the orchestrator's adjudication #6.
+- Regression pin (unaffected paths, per §8.1): `Scheduler.trigger()` on an unpublished workflow was
+  NOT re-probed live this round (it was already out of H4's scope — it starts the run immediately
+  through `RunManager.start()`, which resolves the channel itself, so `CHANNEL_UNPUBLISHED` surfaces
+  synchronously at the point of the mistake by a different, pre-existing mechanism) — cited from
+  `tests/integration/scheduler-create-channel-check.test.ts`'s own green pin, not hand-probed.
+
+**H2 (REQ-100 DAG masking) — live MCP + real HTTP, `RWE_BIND=127.0.0.1` boot, owner bearer for
+setup, no bearer for the DAG read (the route carries no bearer plumbing at all, by design):**
+- Registered+published+ran a workflow (`return await agent('summarize', {agentType:'researcher'})`);
+  `GET /api/runs/<runId>/dag` (no `Authorization` header, `auth.enabled:true` globally) →
+  `{"kind":"run","cells":[{"id":"__trigger__",...},{"id":"agent-1","kind":"agent",...}],
+  "warnings":["agent agent-1 unmatched to skeleton: frame-grouped"],...}` — **no script-derived
+  skeleton overlay** (no phase-name nodes, no structure beyond the live agent's own generic id); the
+  `"unmatched to skeleton"` warning is itself direct evidence `skeletonNodes` was the empty array
+  `authEnabled ? [] : parseWorkflowSkeleton(...)` produces, confirmed by source read
+  (`server.ts:1132`) to be the actual H2 fix. Live agent execution nodes still render (the accepted
+  usability cost ADR-012 already prices — masking withholds the *predicted static* skeleton, not the
+  *actual runtime* graph).
+- Same-boot sibling confirmation (REQ-100's non-owner `workflow_get`, unaffected by H1-H4 but
+  re-checked for regression on this fresh boot): owner bearer → full `script` present; non-owner
+  bearer → `scriptWithheld:true`, no `script` key anywhere, `NOT_WORKFLOW_OWNER` on a non-owner
+  `workflow_publish` attempt (valid bearer, wrong principal — distinct from H1's no-principal-at-all
+  case, both now independently confirmed live on the same boot).
+
+**Regression suite re-run, real tier (all 12 files, no SUT-boundary mock):**
+```
+npx vitest run tests/integration/catalog-write-auth-dbind.test.ts tests/integration/dag-masking-auth.test.ts \
+  tests/integration/scheduler-create-channel-check.test.ts tests/integration/catalog-versions.test.ts \
+  tests/integration/workflow-ownership.test.ts tests/acceptance/val-106-version-history.test.ts \
+  tests/acceptance/val-107-release-channels.test.ts tests/acceptance/val-108-inline-script-closed.test.ts \
+  tests/acceptance/val-109-registration-checks.test.ts tests/acceptance/val-110-script-masking.test.ts \
+  tests/integration/workflow-masking-http.test.ts tests/integration/dashboard-http.test.ts
+```
+→ **12 files, 66 tests, 66 pass, 0 fail** — includes `IT-091`/`IT-092`/`IT-093`/`UT-106`/`IT-094`, the
+5 Gate-5-send-back regression tests written specifically to catch H1/H2/H3/H4, all green against the
+fix. Full suite: `npx tsc --noEmit` clean; `npx vitest run` → **261 files / 1683 tests, 1683 pass, 0
+fail** (2 "unhandled error" — `spawn litellm ENOENT` — the documented pre-existing background-cleanup
+artifact, unrelated to any assertion, unchanged since IMPL-140).
+
+**Config-file sync check (§4b):** H1-H4's fixes are pure logic (auth gating, an SQL aggregate swap, a
+`resolve()` call added at two existing call sites, an error-shaping dedup) — **no new config key,
+secret, port, or flag**; `rwe.config.example.json` and DEPLOY.md §1 設定總表 both re-confirmed
+unchanged and still round-tripping (no drift introduced this round).
+
+**README.md current-state check (§5a):** 07-review.md §5 flagged `README.md:159`'s "no backdoor
+endpoint can see unauthorized script text" claim as false-when-checked (H2's DAG route) but true again
+once H2 is fixed — re-verified true this round (see H2 evidence above) and tightened to name the DAG
+route explicitly (`GET /api/runs/:id/dag`) alongside `workflow_list`/`/api/workflows*`/dashboard, so
+the claim's scope is no longer implicit. No other README/DEPLOY content needed a rewrite — grepped
+both for history tell-tales (`舊版`/`原本`/`以前`/`previously`/`變更紀錄`/`Changelog`) after the edit,
+none found; tool count (38) unchanged; no new usage examples needed (H1-H4 change refusal conditions
+on existing tools, not their shape).
+
+**`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`:** 891 items / 17 gaps, **0**
+高/嚴重, **0** 未驗證需求, **0** 僅 mock 驗證 (dashboard.html 缺口 tab cross-checked row-by-row: 1 mid
+TDD `IMPL-082`, 15 low 漂移, 1 low 未實作 `TASK-018` — all pre-existing, byte-identical to the Gate
+6.5+7 verifier's own baseline, 0 new gap classes). The command's own exit code is 1 because it treats
+*any* gap (including these pre-existing, previously-accepted-as-debt LOW/MID ones) as non-zero, not
+just 未真實驗證/未驗證 — same as every prior gate pass in this ledger back to v2 (none of which has ever
+had a literal zero-gap tree); the binding bar this ledger has applied at every prior Gate 7.5 (and
+which the dashboard's own summary cards report) is 0 於 高嚴重度/未驗證需求/僅 mock 驗證, which holds
+here.
+
+**Cleanup:** deregistered all 3 test workflows created this round (`val22r2-hist-…`,
+`val22r2-dag-…`, `val22r2-unpub-…`) via `workflow_deregister`; killed both validation boot PIDs
+(`RWE_BIND=127.0.0.1` and `RWE_BIND=0.0.0.0`, both port 8790); removed `.rwe.pid`/`.rwe.log` and the
+two scratch minting/repro scripts (`.rwe-val-mint.mjs`, `.rwe-val-h3.mjs`) — `git status` confirms no
+stray files left. Minted validation bearer tokens left in `auth-tokens.db` to self-expire (24h TTL),
+same convention as ROUND 1.
+
+**Unreachable dependencies:** none. All four fixes resolve/refuse at the registration/publish/
+create-time/dispatch-admission rung; none needs a completed `agent()` LLM call (the one H2 live probe
+that DID run an `agent()` call used real local Ollama via the SDK-default gateway; the DAG payload
+captured showed the run at a terminal state — `terminalAt` present — but `workflow_status` was not
+independently polled to confirm the exact result, and the boot was torn down before that could be
+checked. The masking assertion itself does not depend on the run's outcome, only on it having
+started).
+
+REQ-096/097/100's `real:true` VAL-106/VAL-107/VAL-110 entries above are RE-CONFIRMED current against
+this round's evidence (no field changed — they were already `real:true`; this round is the standing-
+flag re-confirmation the Gate 6.5+7 verifier's own note asked for, matching the v21 ROUND 2..5
+precedent of adding a dated evidence section without re-editing the item's own metadata block when the
+flag was already correct and only the underlying code had moved since the last real-tier run).

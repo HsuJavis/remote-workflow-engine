@@ -17,7 +17,7 @@ import { randomUUID } from 'node:crypto';
 import type { Clock } from './clock.js';
 import type { ErrEnvelope } from './types.js';
 import { computeNextFire, bootRearm, type StoredSchedule, type ScheduleFiring } from './scheduler-engine.js';
-import { CatalogNotFoundError } from './errors.js';
+import { catalogResolveErrorEnvelope } from './errors.js';
 
 export type Schedule =
   | { kind: 'cron'; id: string; workflow: string; args?: unknown; cron: string; tz?: string; enabled: boolean }
@@ -162,16 +162,9 @@ export class SqliteSchedulerPort {
     try {
       await this._catalog.resolve(s.workflow, { channel: 'release' });
     } catch (err) {
-      if (err instanceof CatalogNotFoundError) {
-        return { error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${s.workflow}`, field: 'workflow' } };
-      }
       // Same coded-error shape every `codedError()` throw carries (errors.ts) — e.g.
       // CHANNEL_UNPUBLISHED/UNKNOWN_VERSION/INVALID_CHANNEL from `resolveVersionRequest`.
-      if (err instanceof Error) {
-        const code = (err as { code?: unknown }).code;
-        return { error: { code: typeof code === 'string' && code ? code : 'INTERNAL_ERROR', message: err.message, field: 'workflow' } };
-      }
-      return { error: { code: 'INTERNAL_ERROR', message: String(err), field: 'workflow' } };
+      return { error: catalogResolveErrorEnvelope(err, s.workflow, { field: 'workflow' }) };
     }
     if (s.kind === 'cron' && !isValidCron(s.cron)) {
       return { error: { code: 'INVALID_CRON', message: `Not a valid cron expression: ${s.cron}`, field: 'cron' } };

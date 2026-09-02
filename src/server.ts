@@ -847,31 +847,36 @@ async function callTool(
     case 'workflow_list': return facade.workflow_list(args, { authEnabled, principal });
     case 'workflow_agent_log': return facade.workflow_agent_log(args as { runId: string; agentId: string });
     // v15 (DES-096, TASK-087): thread principal to mutation methods for ownership attribution.
-    // Effective principal: auth-resolved wins; if null (loopback/auth-disabled), fall back to
-    // args.principal if the caller supplies one (IT-080 pattern for catalog-layer integration tests).
+    // Effective principal: auth-resolved wins; if null AND auth is disabled, fall back to
+    // args.principal if the caller supplies one (no-auth single-operator attribution).
     // v22 send-back (H1, 07-review.md §4.2, DES-117 PRINCIPAL_REQUIRED): masking keys on
     // `authEnabled`, never on `principal == null` alone (ADR-012) — applied here to WRITES, not
     // only reads. A D-BIND-exempt caller reaches these cases with `principal === null`; without this
     // check the ownership comparisons below silently treat that as "unowned, anyone may write".
+    // v22 send-back ROUND 2 (07-review.md §4.2/§8, B1/B2): the `args.principal` fallback is now
+    // gated on `!authEnabled` on ALL THREE catalog writes (register/deregister/publish alike) — a
+    // caller cannot satisfy `PRINCIPAL_REQUIRED` (or the downstream ownership comparison) by
+    // self-asserting a string while auth is enabled; a D-BIND-exempt or otherwise unauthenticated
+    // caller who replays `owner` (read off `workflow_get`) as `args.principal` is refused the same
+    // as one who supplies no principal at all (IT-095). While auth is disabled, the fallback still
+    // attributes ownership on all three writes, unchanged (wrinkle 1, no-auth attribution — IT-095
+    // green pin, VAL-107's restored oracle).
     case 'workflow_register': {
       const { principal: argPrincipal, ...regArgs } = args as { name: string; script: string; principal?: string | null; defaults?: Record<string, unknown> };
-      const effectivePrincipal = principal ?? (typeof argPrincipal === 'string' ? argPrincipal : null);
+      const effectivePrincipal = principal ?? (!authEnabled && typeof argPrincipal === 'string' ? argPrincipal : null);
       if (authEnabled && effectivePrincipal === null) return principalRequiredEnvelope();
       return facade.workflow_register(regArgs, effectivePrincipal);
     }
     case 'workflow_deregister': {
       const { principal: argPrincipal, ...deregArgs } = args as { name: string; principal?: string | null };
-      const effectivePrincipal = principal ?? (typeof argPrincipal === 'string' ? argPrincipal : null);
+      const effectivePrincipal = principal ?? (!authEnabled && typeof argPrincipal === 'string' ? argPrincipal : null);
       if (authEnabled && effectivePrincipal === null) return principalRequiredEnvelope();
       return facade.workflow_deregister(deregArgs, effectivePrincipal);
     }
     // v22 (REQ-097, DES-111/DES-114, TASK-109): same principal-threading pattern as register/deregister.
-    // v22 send-back (H1): unlike register/deregister, the `args.principal` self-assertion fallback is
-    // dropped ENTIRELY here — effective principal is the server-resolved one, full stop (matches the
-    // `args.principal`-barred rule the read surfaces already apply).
     case 'workflow_publish': {
-      const { principal: _argPrincipal, ...pubArgs } = args as { name: string; version: string; channel: 'beta' | 'release'; principal?: string | null };
-      const effectivePrincipal = principal;
+      const { principal: argPrincipal, ...pubArgs } = args as { name: string; version: string; channel: 'beta' | 'release'; principal?: string | null };
+      const effectivePrincipal = principal ?? (!authEnabled && typeof argPrincipal === 'string' ? argPrincipal : null);
       if (authEnabled && effectivePrincipal === null) return principalRequiredEnvelope();
       return facade.workflow_publish(pubArgs, effectivePrincipal);
     }

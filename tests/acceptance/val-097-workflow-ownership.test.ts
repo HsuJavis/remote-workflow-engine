@@ -161,6 +161,18 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
     expect(r.code).toBe('NOT_WORKFLOW_OWNER');
   });
 
+  // v22 send-back ROUND 2 (07-review.md §4.2, B2): re-pins the oracle a round-1 fixture rewrite
+  // dropped from `val-107-release-channels.test.ts` — an AUTHENTICATED (real bearer, not a
+  // self-asserted string) non-owner is refused `NOT_WORKFLOW_OWNER` on `workflow_publish` over
+  // HTTP, the one shape ARCH-071's owner-gate clause is actually about. GREEN PIN: `workflow_publish`
+  // computes its effective principal from the server-resolved bearer only (never `args.principal`,
+  // both before and after round 2's fix — only register/deregister's fallback is gated by round 2),
+  // so bob's real, authenticated identity already fails the ownership comparison today.
+  it('bob (authenticated, real bearer) tries to publish alice\'s workflow → NOT_WORKFLOW_OWNER', async () => {
+    const r = await mcp(bobBearer, 'workflow_publish', { name: WF, version: 'v1', channel: 'release' });
+    expect(r.code).toBe('NOT_WORKFLOW_OWNER');
+  });
+
   it('workflow still present after bob\'s rejected deregister', async () => {
     const r = await mcp(aliceBearer, 'workflow_get', { name: WF });
     expect(r.error).toBeUndefined();

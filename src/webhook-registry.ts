@@ -14,7 +14,7 @@ import { dirname } from 'node:path';
 import { randomUUID, randomBytes, createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { Clock } from './clock.js';
 import type { ErrEnvelope } from './types.js';
-import { CatalogNotFoundError } from './errors.js';
+import { catalogResolveErrorEnvelope } from './errors.js';
 
 /** Structural seam — matches RunManager.start() without importing the class (as scheduler/continuation). */
 interface RunManagerPort {
@@ -96,14 +96,7 @@ export class WebhookRegistry {
     try {
       await this._catalog.resolve(spec.workflow, { channel: 'release' });
     } catch (err) {
-      if (err instanceof CatalogNotFoundError) {
-        return { error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${spec.workflow}` } };
-      }
-      if (err instanceof Error) {
-        const code = (err as { code?: unknown }).code;
-        return { error: { code: typeof code === 'string' && code ? code : 'INTERNAL_ERROR', message: err.message } };
-      }
-      return { error: { code: 'INTERNAL_ERROR', message: String(err) } };
+      return { error: catalogResolveErrorEnvelope(err, spec.workflow) };
     }
     const id = randomUUID();
     const secret = randomBytes(32).toString('hex');
