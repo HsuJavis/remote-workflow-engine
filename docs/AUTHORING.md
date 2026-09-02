@@ -10,6 +10,25 @@ Four rules govern a well-behaved workflow script:
    the caller should be able to tune at run time belongs in the workflow's declared param
    contract, not a literal baked into the script body.
 
+   The block has two halves — `knobs` (the four engine-tunable harness settings a user may
+   override) and `args` (the workflow's own inputs):
+
+   ```js
+   export const meta = {
+     name: 'triage',
+     description: 'Classify an inbound issue and draft a reply',
+     params: {
+       knobs: { model: { default: 'sonnet' }, effort: { enum: ['low', 'medium', 'high'] } },
+       args:  { issueUrl: { type: 'string' }, dryRun: { type: 'boolean', default: true } },
+     },
+   };
+   ```
+
+   **A mis-shaped `params` block is ignored, not rejected.** The engine falls back to the canonical
+   four-knob default and registration still succeeds — so a typo here costs you the whole contract
+   with no error to tell you. Read your workflow back with `workflow_describe` after registering
+   and confirm the `params` you meant are the `params` it reports.
+
 2. **Never read a value the contract does not declare.** A script that reaches for a param key
    outside its own `meta.params` declaration is reading a value nobody promised it, and nobody
    who published/audited the workflow can see it coming.

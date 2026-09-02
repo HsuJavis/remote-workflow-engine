@@ -7,6 +7,7 @@
 // Red reason: today's LiteLLMGatewayClient never reads req.opts.effort anywhere in callProvider() —
 // a 'low' and a 'max' request produce a byte-identical body. Genuine v21 behavioral red.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { EventEmitter } from 'node:events'; // a real ChildProcess IS an EventEmitter — the fake must be too (v23 adjudication #6 V-2)
 import type { ChildProcess } from 'node:child_process';
 import { LiteLLMGatewayClient } from '../../src/gateway/client.js';
 import type { GatewayConfig } from '../../src/gateway/client.js';
@@ -22,7 +23,7 @@ const ALIASES: GatewayConfig['aliases'] = {
 // subprocess — GatewayConfig.fetchImpl (spyFetch below) is a SEPARATE injection point that captures
 // the actual outbound /v1/messages call.
 function makeFakeProxyManager(): LiteLLMProxyManager {
-  const fakeSpawn = vi.fn(() => ({ exitCode: null, kill: vi.fn() }) as unknown as ChildProcess);
+  const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
   const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
   return new LiteLLMProxyManager(ALIASES, {
     spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,

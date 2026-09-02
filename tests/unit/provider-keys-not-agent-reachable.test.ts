@@ -19,6 +19,7 @@
 // injection seams (no real `litellm` binary); ClaudeAgentSdkGatewayClient's own pre-existing
 // vi.mock('@anthropic-ai/claude-agent-sdk') seam (no real CLI subprocess).
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { EventEmitter } from 'node:events'; // a real ChildProcess IS an EventEmitter (v23 adjudication #6 V-2)
 import type { ChildProcess } from 'node:child_process';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 import type { AgentOpts } from '../../src/types.js';
@@ -28,7 +29,7 @@ const REAL_ANTHROPIC_KEY = 'sk-ant-REAL-secret-for-this-test-only';
 const REAL_OPENAI_KEY = 'sk-openai-REAL-secret-for-this-test-only';
 
 function makeFakeSpawn(pid: number | undefined) {
-  const fakeProc = { exitCode: null, kill: vi.fn(), pid } as unknown as ChildProcess;
+  const fakeProc = Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn(), pid }) as unknown as ChildProcess;
   return { fakeSpawn: vi.fn(() => fakeProc), fakeProc };
 }
 

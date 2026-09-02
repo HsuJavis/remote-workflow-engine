@@ -10,6 +10,7 @@
 // tests the breaker (bounded timeout -> retry -> null), not Python cold-start. Real-subprocess
 // proof belongs to Gate 7.5 with environment caveats (D-R3).
 import { describe, it, expect, vi } from 'vitest';
+import { EventEmitter } from 'node:events'; // a real ChildProcess IS an EventEmitter — the fake must be too (v23 adjudication #6 V-2)
 import type { ChildProcess } from 'node:child_process';
 import { LiteLLMGatewayClient } from '../../src/gateway/client.js';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
@@ -17,7 +18,7 @@ import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 const ALIASES = { default: { provider: 'anthropic' as const, model: 'claude-3-5-haiku-20241022' } };
 
 function makeFakeProxyManager() {
-  const fakeSpawn = vi.fn(() => ({ exitCode: null, kill: vi.fn() }) as unknown as ChildProcess);
+  const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
   const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
   return new LiteLLMProxyManager(ALIASES, {
     spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,

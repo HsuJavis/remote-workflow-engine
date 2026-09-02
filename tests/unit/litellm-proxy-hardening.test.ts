@@ -7,13 +7,18 @@
 // this implementer round closes that coverage gap directly rather than shipping it untested.
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import net from 'node:net';
+import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 
 const ALIASES = { default: { provider: 'anthropic' as const, model: 'claude-3-5-haiku-20241022' } };
 
 function makeFakeSpawn(pid: number | undefined) {
-  const fakeProc = { exitCode: null, kill: vi.fn(), pid } as unknown as ChildProcess;
+  // A real ChildProcess IS an EventEmitter; this fake was a plain object, so it silently lacked
+  // `.on`/`.once` and any production code attaching a listener would blow up here rather than in
+  // production. Built on EventEmitter now (v23 adjudication #6 V-2, which attaches an 'error'
+  // listener at spawn) — a more faithful stand-in, not a concession to the code under test.
+  const fakeProc = Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn(), pid }) as unknown as ChildProcess;
   return { fakeSpawn: vi.fn(() => fakeProc), fakeProc };
 }
 
@@ -111,5 +116,55 @@ describe('LiteLLMProxyManager hardening (TASK-027)', () => {
     await proxy.stop();
 
     expect(fakeProc.kill).toHaveBeenCalled();
+  });
+});
+
+// V-2 (v23 orchestrator adjudication #6 — REQ-102, ARCH-005): the managed-LiteLLM spawn has no
+// `proc.on('error', ...)` handler. A ChildProcess's 'error' event with ZERO listeners throws
+// synchronously wherever Node emits it (EventEmitter's own contract); for a real spawn failure
+// (e.g. `litellm` missing from PATH -> ENOENT) that emission happens from libuv's own callback with
+// no enclosing try/catch, i.e. an UNCAUGHT PROCESS-LEVEL EXCEPTION — and v23 made this reachable
+// from `workflow_register` (registration now enqueues an analyzer job that lazily starts this
+// proxy). Verified at source: `litellm-proxy.ts` attaches `proc.once('exit', ...)` only AFTER a
+// successful healthcheck (`_superviseExit`, called only on the `res.ok` branch) — there is no
+// `.on('error', ...)`/`.once('error', ...)` call anywhere in the file.
+//
+// This test asserts a listener is attached to the spawned child by the time of the FIRST startup
+// health poll — the actual vulnerable window (a real spawn failure fires 'error' during startup,
+// before the process is ever healthy) — not merely by the time `start()` eventually settles: a fix
+// that only attaches the listener in `_superviseExit` (next to the existing `once('exit')`, the
+// natural place to look) would leave this exact window open while still turning a weaker
+// after-settle assertion green. Deterministic and safe: it checks registration, not a real crash,
+// because deliberately triggering the real (unhandled, async) crash inside a test would risk taking
+// the whole test worker down with it.
+//
+// Red reason: no such listener is ever attached anywhere in `start()` — verified by reading
+// litellm-proxy.ts's full `start()` body before writing this assertion, not assumed.
+describe('LiteLLMProxyManager — a spawn failure must not escape as an unhandled process-level exception (V-2, adjudication #6)', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('attaches an error listener to the spawned child BEFORE the first startup health poll', async () => {
+    let proc: (EventEmitter & { exitCode: number | null; pid: undefined; kill: () => void }) | undefined;
+    const fakeSpawn = vi.fn(() => {
+      proc = new EventEmitter() as EventEmitter & { exitCode: number | null; pid: undefined; kill: () => void };
+      proc.exitCode = null;
+      proc.pid = undefined;
+      proc.kill = () => { proc!.exitCode = 0; };
+      return proc as unknown as ChildProcess;
+    });
+    let listenersAtFirstPoll = -1;
+    const fakeHealthFetch = vi.fn(async () => {
+      if (listenersAtFirstPoll === -1) listenersAtFirstPoll = proc!.listenerCount('error');
+      return { ok: true } as unknown as Response;
+    });
+    const proxy = new LiteLLMProxyManager(ALIASES, {
+      port: 48176,
+      spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
+      fetchImpl: fakeHealthFetch as unknown as typeof fetch,
+    });
+
+    await proxy.start();
+
+    expect(listenersAtFirstPoll).toBeGreaterThan(0);
   });
 });

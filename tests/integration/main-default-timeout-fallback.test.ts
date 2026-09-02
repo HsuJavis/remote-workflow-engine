@@ -24,6 +24,7 @@
 // when `this._config.timeoutMs !== undefined` (src/gateway/claude-agent-sdk-client.ts:78), so a
 // hung session never settles at all.
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { EventEmitter } from 'node:events'; // a real ChildProcess IS an EventEmitter — the fake must be too (v23 adjudication #6 V-2)
 import type { ChildProcess } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -36,7 +37,7 @@ import type { GatewayClient } from '../../src/gateway/client.js';
 // fake node:child_process.spawn to neutralize any background real litellm subprocess attempt.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
-  return { ...actual, spawn: vi.fn(() => ({ exitCode: null, kill: vi.fn() }) as unknown as ChildProcess) };
+  return { ...actual, spawn: vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess) };
 });
 
 const TEST_LEVEL_ESCAPE = Symbol('it-029-test-level-escape-hatch');
@@ -46,7 +47,7 @@ const TEST_LEVEL_ESCAPE = Symbol('it-029-test-level-escape-hatch');
 const ESCAPE_HATCH_MS = 20000;
 
 function makeFakeProxyManager(): LiteLLMProxyManager {
-  const fakeSpawn = vi.fn(() => ({ exitCode: null, kill: vi.fn() }) as unknown as ChildProcess);
+  const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
   const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
   return new LiteLLMProxyManager(
     { default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' } },

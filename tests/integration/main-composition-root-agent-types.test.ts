@@ -29,6 +29,7 @@
 // matching IT-016's own documented pre-D-F2 failure mode) or to the captured prompt/model never
 // reflecting the definition's frontmatter.
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { EventEmitter } from 'node:events'; // a real ChildProcess IS an EventEmitter — the fake must be too (v23 adjudication #6 V-2)
 import type { ChildProcess } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -43,7 +44,7 @@ import { runScriptVia } from '../helpers/workflow-fixtures.js';
 // has a real side effect regardless of what's being tested).
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
-  return { ...actual, spawn: vi.fn(() => ({ exitCode: null, kill: vi.fn() }) as unknown as ChildProcess) };
+  return { ...actual, spawn: vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess) };
 });
 
 const ALIASES: AliasMap = {
@@ -53,7 +54,7 @@ const ALIASES: AliasMap = {
 
 /** Same fake-proxy pattern as IT-021 / claude-agent-sdk-gateway-timeout.test.ts. */
 function makeFakeProxyManager(): LiteLLMProxyManager {
-  const fakeSpawn = vi.fn(() => ({ exitCode: null, kill: vi.fn() }) as unknown as ChildProcess);
+  const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
   const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
   return new LiteLLMProxyManager(ALIASES, {
     spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,

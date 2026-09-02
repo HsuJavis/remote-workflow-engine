@@ -9,7 +9,7 @@ import type { Clock } from './clock.js';
 import type { AgentOpts } from './types.js';
 import type { GatewayClient, GatewayResult } from './gateway/client.js';
 import type { DiagramRow, PersistedDiagramNoteCode, WorkflowCatalog } from './workflow-catalog.js';
-import { getTriggerBindings, type TriggerBinding, type TriggerPorts } from './trigger-bindings.js';
+import { describeTriggerBindings, getTriggerBindings, type TriggerBinding, type TriggerPorts } from './trigger-bindings.js';
 
 // DES-123: the full, closed 10-value note vocabulary. DISABLED/NOT_GENERATED are synthesized at
 // READ time only (workflow-view.ts's projectWorkflowDescribe) and are never persisted — the store's
@@ -296,7 +296,12 @@ export class GraphAnalyzer {
   ): Promise<void> {
     const bindings = getTriggerBindings(name, this._ports);
     const allowedLabels = this._buildAllowlist(script, bindings.bindings);
-    const prompt = `${this._config.systemPrompt}\n\n---\nWorkflow script:\n${script}`;
+    // v23 adjudication #6 V-1 (REQ-103): the bindings reach the PROMPT, not only the allowlist.
+    // Triggers live in the schedule/webhook/continuation stores and are ABSENT from the script,
+    // so an analyzer fed only the script can never name how the workflow is started — the gap in
+    // issue #32 as filed, and the clause 04-design.md's REQ-103 row had silently dropped.
+    const prompt = `${this._config.systemPrompt}\n\n---\nHow this workflow is triggered:\n`
+      + `${describeTriggerBindings(bindings.bindings)}\n\n---\nWorkflow script:\n${script}`;
     const attempts = 1 + this._config.retries;
 
     // do/while, not for: the first attempt is unconditional, which is what makes `last` definitely

@@ -376,3 +376,83 @@ describe('GraphAnalyzer — journal line never carries provider/model text (UT-1
     logSpy.mockRestore();
   });
 });
+
+// UT-119 (v23 orchestrator adjudication #6, V-1 — REQ-103, DES-131, DES-128, ARCH-078/079): the
+// bindings ARE computed (`getTriggerBindings` at graph-analyzer.ts:297) and already reach
+// `_buildAllowlist`, but never reach the PROMPT itself (`:299` builds it from
+// `systemPrompt + script` only). Proven live by the validator: the identical `(name,version)`
+// analyzed with and without a live cron binding reported the IDENTICAL `promptTokens:297` both
+// times. This is the specific defect 04-design.md's REQ-103 validation row silently dropped with
+// no adjudication recording the narrowing — adjudication #6 rules it back in.
+//
+// Red reason: `_runJob` builds `prompt` with no binding text in it — verified by reading
+// `graph-analyzer.ts:299` before writing these assertions, not assumed.
+describe('GraphAnalyzer — the analyzer prompt itself must carry the live trigger bindings (UT-119, DES-131, DES-128, ARCH-078, ARCH-079, REQ-103)', () => {
+  const CRON_EXPR = '*/5 * * * *';
+  const UPSTREAM_NAME = 'upstream-flow';
+
+  function cronBoundPorts(): TriggerPorts {
+    return {
+      schedules: { listByWorkflow: () => [{ cron: CRON_EXPR, enabled: true }] },
+      webhooks: { listByWorkflow: () => [] },
+      continuations: { listPendingByWorkflow: () => [] },
+      runs: { getWorkflowName: () => null },
+    };
+  }
+
+  function chainBoundPorts(): TriggerPorts {
+    return {
+      schedules: { listByWorkflow: () => [] },
+      webhooks: { listByWorkflow: () => [] },
+      continuations: { listPendingByWorkflow: () => [{ afterRunId: 'run-1' }] },
+      runs: { getWorkflowName: (runId: string) => (runId === 'run-1' ? UPSTREAM_NAME : null) },
+    };
+  }
+
+  it('a live cron binding makes the prompt sent to the gateway DIFFERENT from the identical script with no binding, and names the cron expression', async () => {
+    const script = `return 1;`;
+    await catalog.register('ga-trig-cron', script); // v1: no trigger bound
+    await catalog.register('ga-trig-cron', script); // v2: same script, now cron-bound
+
+    const capturedPrompts: string[] = [];
+    const gateway: GatewayClient = {
+      invoke: async (req) => { capturedPrompts.push(req.prompt); return okResult('╭─Draft─╮'); },
+    };
+
+    const unbound = new GraphAnalyzer({
+      gateway, catalog, ports: NO_TRIGGERS, clock: CLOCK, config: baseConfig(), aliasNames: ALIAS_NAMES, schedule: runInline,
+    });
+    unbound.enqueue('ga-trig-cron', 'v1', script, null);
+    await settle();
+
+    const bound = new GraphAnalyzer({
+      gateway, catalog, ports: cronBoundPorts(), clock: CLOCK, config: baseConfig(), aliasNames: ALIAS_NAMES, schedule: runInline,
+    });
+    bound.enqueue('ga-trig-cron', 'v2', script, null);
+    await settle();
+
+    expect(capturedPrompts).toHaveLength(2);
+    // TODAY these are byte-identical (the validator's own live oracle: identical promptTokens with
+    // and without a cron binding) — this is the exact bug adjudication #6 orders fixed.
+    expect(capturedPrompts[1]).not.toBe(capturedPrompts[0]);
+    expect(capturedPrompts[1]).toContain(CRON_EXPR);
+  });
+
+  it('a live chain binding names the upstream workflow in the prompt', async () => {
+    const script = `return 1;`;
+    await catalog.register('ga-trig-chain', script);
+
+    const capturedPrompts: string[] = [];
+    const gateway: GatewayClient = {
+      invoke: async (req) => { capturedPrompts.push(req.prompt); return okResult('╭─Draft─╮'); },
+    };
+    const analyzer = new GraphAnalyzer({
+      gateway, catalog, ports: chainBoundPorts(), clock: CLOCK, config: baseConfig(), aliasNames: ALIAS_NAMES, schedule: runInline,
+    });
+    analyzer.enqueue('ga-trig-chain', 'v1', script, null);
+    await settle();
+
+    expect(capturedPrompts).toHaveLength(1);
+    expect(capturedPrompts[0]).toContain(UPSTREAM_NAME);
+  });
+});

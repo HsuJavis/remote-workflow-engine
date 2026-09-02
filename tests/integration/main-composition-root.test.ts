@@ -39,6 +39,7 @@
 // `agentDefinitionsDir` absent from the returned config) once the export exists but the fields still
 // aren't threaded through — this file is written so it stays meaningful (not vacuous) at BOTH stages.
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { EventEmitter } from 'node:events'; // a real ChildProcess IS an EventEmitter — the fake must be too (v23 adjudication #6 V-2)
 import type { ChildProcess } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -60,7 +61,7 @@ import type { AliasMap, GatewayClient } from '../../src/gateway/client.js';
 // settles fast into a harmless ephemeral-port server instead of hanging ~20s or crashing on ENOENT.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
-  return { ...actual, spawn: vi.fn(() => ({ exitCode: null, kill: vi.fn() }) as unknown as ChildProcess) };
+  return { ...actual, spawn: vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess) };
 });
 
 const ALIASES: AliasMap = {
@@ -73,7 +74,7 @@ const TEST_LEVEL_BOUND = Symbol('it-021-test-level-bound');
 /** Same fake-proxy pattern as claude-agent-sdk-gateway-timeout.test.ts / gateway-provider-down.test.ts
  *  — proxy.start() resolves instantly, no real `litellm` subprocess. */
 function makeFakeProxyManager(): LiteLLMProxyManager {
-  const fakeSpawn = vi.fn(() => ({ exitCode: null, kill: vi.fn() }) as unknown as ChildProcess);
+  const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
   const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
   return new LiteLLMProxyManager(ALIASES, {
     spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,

@@ -50,3 +50,30 @@ export function getTriggerBindings(name: string, ports: TriggerPorts): { binding
   const bindingsFp = createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
   return { bindings, bindingsFp };
 }
+
+/** Human-readable rendering of the projected bindings, for the analyzer PROMPT (v23 adjudication #6
+ *  V-1, REQ-103). Built from the SAME projection `bindingsFp` fingerprints, so it inherits that
+ *  projection's guarantee: `TriggerPorts.webhooks` pins `secret`/`id` to `never` in the TYPE, and a
+ *  gate downstream would stop a secret reaching the DIAGRAM but nothing would stop it reaching the
+ *  PROVIDER — which is precisely why the rendering is derived here and not re-read from a store.
+ *
+ *  The entry-node LABEL the analyzer is told to draw is the trigger KIND, never the raw cron
+ *  expression: `_buildAllowlist` allows the kind (and a chain's upstream name) but not arbitrary
+ *  expression text, so a diagram naming a raw cron expression would be gate-rejected. The
+ *  expression is given as context; the kind is what gets drawn. */
+export function describeTriggerBindings(bindings: TriggerBinding[]): string {
+  if (bindings.length === 0) {
+    return 'none — this workflow is started by a direct workflow_run call; label the entry node "workflow_run".';
+  }
+  const lines = bindings.map((b) => {
+    switch (b.kind) {
+      case 'cron':
+        return `- kind=cron (schedule ${b.cron}${b.tz !== undefined ? `, tz ${b.tz}` : ''})${b.enabled ? '' : ' [disabled]'}`;
+      case 'webhook':
+        return `- kind=webhook${b.enabled ? '' : ' [disabled]'}`;
+      case 'chain':
+        return `- kind=chain, upstream workflow ${b.upstreamWorkflow ?? '(not resolvable)'}`;
+    }
+  });
+  return `${lines.join('\n')}\nLabel the entry node with the KIND (cron / webhook / chain), not the raw expression.`;
+}
