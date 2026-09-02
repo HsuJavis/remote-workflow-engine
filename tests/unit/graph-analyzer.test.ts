@@ -268,7 +268,13 @@ describe('GraphAnalyzer.regenerate — single-flight + no-clobber (UT-111, DES-1
 
 describe('GraphAnalyzer.sweepAtBoot — the three row shapes (UT-111, DES-131, DES-127 B7)', () => {
   it('unstamped pending (generated_at IS NULL) -> requeue once AND stamp clock.now() via putDiagramPending', async () => {
-    await catalog.register('ga-sweep-unstamped', `return 1;`);
+    // The script MUST declare the phase the stubbed completion draws, or `_buildAllowlist` will not
+    // contain 'Draft' and `gateDiagram` correctly rejects it -> status 'unavailable', never 'ready'.
+    // (The success case at :222 already registers exactly this shape; this fixture had `return 1;`
+    // and was red for that reason alone. The gate was right; the fixture was wrong. Do NOT "fix"
+    // this by loosening the label gate — it is what stops an analyzer summary leaking script text
+    // to principals REQ-100 forbids from reading the script.)
+    await catalog.register('ga-sweep-unstamped', `export const meta = { phases: [{title:'Draft'}] };\nreturn 1;`);
     await (catalog as any).putDiagramPending('ga-sweep-unstamped', 'v1'); // never stamped — a crash mid-generation
     const invoke = vi.fn(async () => okResult('╭─Draft─╮'));
     const analyzer = new GraphAnalyzer({

@@ -4594,3 +4594,47 @@ TASK-119 → `done`: its unit tests are green and val-112, the last red attribut
 defect in someone else's file, not a gap in its implementation. TASK-117 stays `draft` — UT-111's
 `sweepAtBoot` unstamped-pending case is genuinely red in its own file. TASK-124 stays `draft`: it is a
 Gate 7.5 obligation and is correctly blocked until TASK-117 lands.
+
+---
+
+## Orchestrator adjudication (v23) #5 — CORRECTING #4's T-4: UT-111 was a fixture defect, not a code gap (2026-09-03)
+
+### U-1 — **I got T-4 wrong, and the wrong version was dangerous**
+Adjudication #4 T-4 said UT-111's `sweepAtBoot` unstamped-pending case was *"genuinely red in its own
+file"* — a code gap in `graph-analyzer.ts`. **It was not.** I took the implementer's characterisation
+and ruled on it without opening the test.
+
+What the test actually did: registered `ga-sweep-unstamped` with the script `return 1;`, then stubbed
+the gateway to return the diagram `╭─Draft─╮`. `_buildAllowlist()` derives permitted labels from the
+script's phases, skeleton node titles, alias names and trigger kinds — and `return 1;` declares **no
+phases**, so `Draft` was never allowed and `gateDiagram` correctly refused it: status `unavailable`,
+exactly as designed. The passing success case twenty lines earlier registers
+`meta = { phases: [{title:'Draft'}] }` — the same stub, with the fixture the sweep case was missing.
+
+**The gate was right; the fixture was wrong.** Fixed by giving the sweep fixture the phase its own stub
+draws. 17/17 green, gate untouched.
+
+**Why the mistaken ruling mattered:** an implementer following T-4 literally would have gone looking for
+a bug in `graph-analyzer.ts` and the cheapest way to turn that test green is to loosen the label gate —
+the control that stops an analyzer summary carrying script-derived text to principals REQ-100 forbids
+from reading the script. A wrong diagnosis in an adjudication does not stay a wrong diagnosis; it
+becomes a work order. A comment now sits in the fixture saying so, so the next person to see it red does
+not reach for the gate.
+
+The rule for me, not for them: **a characterisation in a report is a lead, not a finding.** I verified
+R-1's unwired composition root at source before ruling and it held; I did not verify T-4 and it did not.
+Both were in the same report.
+
+### U-2 — TASK-127's guard already landed; TASK-117's card no longer owns it
+`server.ts:1471-1476` now carries `graphAnalyzerNoJail` and forces `tools: []`, with the boot line at
+`:1483`. IT-099 4/4 green. TASK-117's card still claimed the downgrade lands "inside THIS task, not as a
+follow-up" — a claim **my own adjudication #4 invalidated when it moved the work to TASK-127**, and
+which I then left standing. Amended. Moving work without updating what claims to own it is the same
+defect as moving a check without updating what describes it; authoring the ruling does not exempt the
+ruler.
+
+### U-3 — state
+Suite **1792/1792**, `tsc` clean. The two erroring suites (`val-023-sdk-gateway-timeout`,
+`hooks-reject-and-timeout-bound-journey`) are pre-existing timing-sensitive teardown hooks — their
+tests all pass, only the hooks exceed 10s under load, and both fail identically at the v22 merge point
+`f01fa4d` (verified in a throwaway worktree). TASK-117 and TASK-127 both close.

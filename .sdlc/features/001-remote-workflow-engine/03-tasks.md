@@ -868,7 +868,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **Lands strictly before TASK-117.** ADR-020's "the default blast radius is nil" is **falsified** on this deployment's own default path: `curateToolsForProvider([], 'ollama') === ['Bash']`, so `graphAnalyzer.tools: []` would ship a Bash-enabled session whose prompt is attacker-authored script text. The fix is one line (`if (tools.length === 0) return [];`) and is a general fix, not analyzer-specific.
 
 ### TASK-117 — `src/graph-analyzer.ts`: the analyzer — queue, single-flight, own retry loop, note enum, journal line, isolation, boot validation
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-079
 - **files:** src/graph-analyzer.ts, src/main.ts, tests/unit/graph-analyzer.test.ts, tests/unit/graph-analyzer-wire.test.ts, tests/integration/graph-analyzer-late-write.test.ts
 - **des:** DES-131, DES-121, DES-122, DES-123, DES-129, DES-127
@@ -967,7 +967,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **estimate:** L
 
 ### TASK-127 — build DES-122's zero-config fail-closed guard, which the design specifies and no code implements
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-079, ARCH-085
 - **files:** src/server.ts, tests/integration/graph-analyzer-composition-root.test.ts
 - **des:** DES-122

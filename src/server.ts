@@ -1462,17 +1462,27 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v23 (DES-134, TASK-126): the ONE site every `graphAnalyzer` key defaults — a Partial config
   // block that is read but never forwarded is this engine's own recurring wiring defect (v11
   // updateFlagPath, v15 auth), so every key is applied here, by name, next to its default literal.
+  const graphAnalyzerEnabled = config?.graphAnalyzer?.enabled ?? true;
+  // DES-122 zero-config fail-closed rule (TASK-127): with no resolvable `config?.workRoot` (the
+  // operator-configured value `main.ts`'s own SDK-gateway `cwd` construction keys off — NOT the
+  // internal mkdtemp fallback this function applies below for its own storage needs), the jail root
+  // is unresolvable and that client's own docblock records "nothing to enforce against, allow" — so
+  // force `tools` to `[]` regardless of what was configured; the boot line below states why.
+  const graphAnalyzerNoJail = graphAnalyzerEnabled && config?.workRoot === undefined;
   const graphAnalyzerConfig: GraphAnalyzerConfig = {
-    enabled: config?.graphAnalyzer?.enabled ?? true,
+    enabled: graphAnalyzerEnabled,
     model: config?.graphAnalyzer?.model ?? 'default',
     systemPrompt: config?.graphAnalyzer?.systemPrompt ?? DEFAULT_GRAPH_ANALYZER_SYSTEM_PROMPT,
-    tools: config?.graphAnalyzer?.tools ?? [],
+    tools: graphAnalyzerNoJail ? [] : (config?.graphAnalyzer?.tools ?? []),
     timeoutMs: config?.graphAnalyzer?.timeoutMs ?? 60000,
     retries: config?.graphAnalyzer?.retries ?? 0,
     maxBytes: config?.graphAnalyzer?.maxBytes ?? 8192,
     maxLines: config?.graphAnalyzer?.maxLines ?? 120,
     maxQueueDepth: config?.graphAnalyzer?.maxQueueDepth ?? 8,
   };
+  if (graphAnalyzerNoJail) {
+    console.log(`[remote-workflow-engine] graph-analyzer: no resolvable workRoot — forcing graphAnalyzer.tools to [] (fail-closed, DES-122)`);
+  }
   // The analyzer needs a REAL GatewayClient (DES-131: "never a narrower ad hoc shape") even on the
   // documented zero-config deployment, where `gateway` above is `undefined` because no `aliases`
   // were supplied — same fallback RunManager's own constructor applies internally for the identical
