@@ -172,6 +172,8 @@ pre{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);p
       <svg id="dag-graph" xmlns="http://www.w3.org/2000/svg" style="display:block"></svg>
     </div>
     <div id="tree"></div>
+    <pre id="diagram" style="display:none"></pre>
+    <p id="diagramNote" style="display:none"></p>
     <h2>Transcript <span id="tr-agent" class="mdl"></span></h2>
     <pre id="transcript">Select an agent node above.</pre>
   </section>
@@ -198,46 +200,33 @@ window.addEventListener('popstate', render);
 
 async function getJSON(u){ try{ var r=await fetch(u); if(!r.ok) return null; return await r.json(); }catch(e){ return null; } }
 
-// v9 (REQ-062): a workflow's predicted static DAG — inspect its shape before deciding to reuse it.
-async function showSkeleton(name){
-  var s=await getJSON('/api/workflows/'+encodeURIComponent(name)+'/skeleton'); if(!s) return;
-  var tree=document.getElementById('tree'); document.getElementById('home').style.display='none'; document.getElementById('detail').style.display='block';
-  document.getElementById('detail-runid').textContent='workflow: '+name;
-  var badge=document.getElementById('detail-status'); badge.textContent='skeleton (predicted)'; badge.className='pill';
-  renderPhases([], ''); document.getElementById('transcript').textContent=s.description||'(no description)';
-  tree.innerHTML='';
-  var curGroup=null, groupBox=null;
-  (s.skeleton||[]).forEach(function(n){
-    if(n.kind==='agent' && n.parallel!=null){
-      if(n.parallel!==curGroup){ curGroup=n.parallel; groupBox=el('div','grp'); groupBox.appendChild(el('div','grp-h','parallel group')); tree.appendChild(groupBox); }
-    } else { curGroup=null; groupBox=null; }
-    var label = n.kind==='phase' ? ('phase: '+(n.title||'')) : n.kind==='workflow' ? ('workflow: '+(n.workflow||'?')) : 'agent';
-    var node=el('div','node'); node.appendChild(el('span','lbl',label));
-    if(n.dynamic) node.appendChild(el('span','mdl','×? (dynamic)'));
-    (groupBox||tree).appendChild(node);
-  });
+// v23 (REQ-101, DES-133): a workflow's public description — the model-authored ASCII diagram
+// replaces the old predicted-DAG preview. currentWorkflowName is re-read by render() on
+// every 3s tick (no new timer), so a pending -> ready diagram appears within the existing poll.
+var currentWorkflowName=null;
+function showDescribe(name){
+  currentWorkflowName=name;
+  document.getElementById('home').style.display='none'; document.getElementById('detail').style.display='block';
+  document.getElementById('tree').innerHTML='';
+  renderDescribe(name);
 }
-// v11 F1 (REQ-074/075, DES-070/071): home view — 3-way grouped cards with metrics + mini skeleton preview.
+async function renderDescribe(name){
+  var s=await getJSON('/api/workflows/'+encodeURIComponent(name)+'/describe'); if(!s) return;
+  document.getElementById('detail-runid').textContent='workflow: '+name;
+  var badge=document.getElementById('detail-status'); badge.textContent=s.diagramStatus; badge.className='pill';
+  renderPhases([], ''); document.getElementById('transcript').textContent=s.description||'(no description)';
+  var pre=document.getElementById('diagram'); var note=document.getElementById('diagramNote');
+  if(s.diagramStatus==='ready'){ pre.style.display='block'; pre.textContent=s.diagram; note.style.display='none'; note.textContent=''; }
+  else { pre.style.display='none'; pre.textContent=''; note.style.display='block'; note.textContent=s.diagramNote||''; }
+}
+// v11 F1 (REQ-074/075, DES-070/071): home view — 3-way grouped cards with metrics.
 function fmtMetric(val,suffix){ return val==null?'—':Math.round(val)+suffix; }
-function renderMiniSkeletonAsync(card,name){
-  getJSON('/api/workflows/'+encodeURIComponent(name)+'/skeleton').then(function(s){
-    if(!s||(s.skeleton||[]).length===0) return;
-    var ns2='http://www.w3.org/2000/svg';
-    var svg=document.createElementNS(ns2,'svg');
-    var W=18,H=12,GAP=3,nodes=(s.skeleton||[]).slice(0,10);
-    svg.setAttribute('width',String(nodes.length*(W+GAP)));
-    svg.setAttribute('height',String(H+4));
-    svg.style.cssText='display:block;margin:6px 0 2px';
-    nodes.forEach(function(n,i){
-      var r=document.createElementNS(ns2,'rect');
-      r.setAttribute('x',String(i*(W+GAP))); r.setAttribute('y','2');
-      r.setAttribute('width',String(W)); r.setAttribute('height',String(H));
-      r.setAttribute('rx','3');
-      var fill=n.kind==='phase'?'#D7E0E6':n.kind==='workflow'?'#E6E2D9':'#DCE5DA';
-      r.setAttribute('fill',fill); r.setAttribute('stroke','#C4BDAE'); r.setAttribute('stroke-width','0.5');
-      svg.appendChild(r);
-    });
-    card.appendChild(svg);
+// v23 (DES-133, owner decision A1): honest absence, no fallback drawing — the old node-array
+// SVG preview is gone (no structured shape survives to the client); this fetches /describe and
+// renders nothing, whether or not a diagram exists, until a mini-preview is designed for it.
+function renderMiniPreviewAsync(card,name){
+  getJSON('/api/workflows/'+encodeURIComponent(name)+'/describe').then(function(s){
+    if(!s||!s.diagram) return;
   });
 }
 function renderHomeGroup(box,cards){
@@ -251,9 +240,9 @@ function renderHomeGroup(box,cards){
     var ms=el('div','s');
     ms.textContent='sr: '+fmtMetric(m.successRate!=null?Math.round(m.successRate*100):null,'%')+' · avg: '+fmtMetric(m.avgDurationMs,'ms')+' · runs: '+m.terminalCount;
     c.appendChild(ms);
-    if(card.name) renderMiniSkeletonAsync(c,card.name);
+    if(card.name) renderMiniPreviewAsync(c,card.name);
     if(card.activeRunId){ var aid=card.activeRunId; c.onclick=function(){ go(aid); }; }
-    else if(card.name){ var cname=card.name; c.onclick=function(){ showSkeleton(cname); }; }
+    else if(card.name){ var cname=card.name; c.onclick=function(){ showDescribe(cname); }; }
     else if(card.latestRunId){ var lid=card.latestRunId; c.onclick=function(){ go(lid); }; }
     box.appendChild(c);
   });
@@ -494,11 +483,13 @@ async function loadIssues(){
 async function render(){
   var runId=currentRunId();
   var issuesView=isIssuesView();
-  document.getElementById('home').style.display = (!runId&&!issuesView)?'block':'none';
-  document.getElementById('detail').style.display = (runId&&!issuesView)?'block':'none';
+  if(runId||issuesView) currentWorkflowName=null;
+  document.getElementById('home').style.display = (!runId&&!issuesView&&!currentWorkflowName)?'block':'none';
+  document.getElementById('detail').style.display = ((runId||currentWorkflowName)&&!issuesView)?'block':'none';
   document.getElementById('issues').style.display = issuesView?'block':'none';
   if(issuesView){ await loadIssues(); }
   else if(runId){ await loadDag(runId); }
+  else if(currentWorkflowName){ await renderDescribe(currentWorkflowName); }
   else { await loadHome(); }
 }
 render();

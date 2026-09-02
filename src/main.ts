@@ -19,7 +19,7 @@
 // This entrypoint is the ONLY place that decides between the two — server.ts's own default (an
 // undefined `config.gateway` falling through to LiteLLMGatewayClient) stays exactly as it was for
 // every test caller, none of which sets RWE_CONFIG_PATH/goes through main().
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from './server.js';
@@ -175,6 +175,12 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     webhookDbPath: fileConfig.webhookDbPath,
     casDir: fileConfig.casDir,
     continuationDbPath: fileConfig.continuationDbPath,
+    // v23 (DES-134, ARCH-085, TASK-122): forwarded as a WHOLE object, unmodified — same
+    // composeConfig wiring-gap class as v11 updateFlagPath / v15 auth / v16 workspaceTtlMs / v22
+    // maxWorkflowVersions. No defaults applied here: the one site that constructs the GraphAnalyzer
+    // (server.ts) is the ONE place each of the nine keys defaults (DES-134) — a second defaulting
+    // site here would make "the config's effective value" ambiguous between two call sites.
+    graphAnalyzer: fileConfig.graphAnalyzer,
   };
 
   if (gatewayChoice === 'sdk') {
@@ -199,12 +205,21 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // — gateway path specifically).
     config.proxyManager = proxy;
     const { baseUrl } = await proxy.start();
+    // v23 (DES-122, TASK-117): this `cwd` is ONLY ever the fallback for a call that carries no
+    // `req.workspace` (every real workflow run's `AgentExecReq.workspace` is non-optional and always
+    // set — agent-executor.ts:133/:470) — so in production the sole caller that ever lands on it is
+    // the graph analyzer's own `invoke()` (DES-122's request shape has no `workspace` field at all).
+    // Repointed to a dedicated scratch subdirectory (created once, here) rather than the whole
+    // server workRoot, so an analyzer session's `cwd` is never the same directory a real run's
+    // workspace lives under.
+    const analyzerScratchCwd = config.workRoot ? join(config.workRoot, '.graph-analyzer-scratch') : undefined;
+    if (analyzerScratchCwd) mkdirSync(analyzerScratchCwd, { recursive: true });
     // D-F10(a): forward aliases/timeoutMs/retries — previously omitted, which silently degraded
     // D-F7's timeout/retry bound to dead code and D-F6's alias-aware thinking policy to "always
     // disabled" in production (Gate 7.5 round 4's real repro).
     config.gateway = new ClaudeAgentSdkGatewayClient({
       baseUrl,
-      cwd: config.workRoot,
+      cwd: analyzerScratchCwd,
       queryImpl: deps.queryImpl,
       aliases,
       // D-G8-4: use the RESOLVED config.timeoutMs (which carries the hardcoded 15000 fallback

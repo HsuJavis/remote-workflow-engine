@@ -37,8 +37,8 @@ const FULL: WorkflowOwnerView = {
   channels: { release: 'v2', beta: 'v3' },
   versions: ['v1', 'v2', 'v3'],
   description: 'a fixture workflow',
-  phases: ['phase-one'],
-  skeleton: { nodes: [] } as unknown as WorkflowOwnerView['skeleton'],
+  // v23 (DES-136, TASK-125): the shape `parseMeta` actually produces (`workflow-meta.ts:10`).
+  phases: [{ title: 'phase-one' }],
   params: { knobs: {} } as unknown as WorkflowOwnerView['params'],
   owner: 'owner@example.com',
   createdAt: '2026-01-01T00:00:00.000Z',
@@ -59,12 +59,17 @@ const FULL: WorkflowOwnerView = {
  *  would satisfy the letter and not the clause), owner→`owner`, report-a-problem→`reportProblem`,
  *  withheld-not-absent→`scriptWithheld`. `validation.ok` is REQ-099's "staleness visible on every
  *  read" (its `errors` detail is owner-only — the next case pins that). */
+// v23 (DES-136, TASK-125, adjudication #1 2026-09-02): `phases` joins the allowlist, ONE entry
+// (deepFlatten does not recurse into arrays, `:29` below) — 一律公開, ratified by the owner: serving
+// phase titles inside the diagram (REQ-102/A3) while `workflow_get` withheld them would be REQ-100's
+// own "cannot be side-stepped by asking a different endpoint" clause violated in mirror image.
 const REQ_100_NON_OWNER_KEYS = [
   'channels', 'channels.beta', 'channels.release',
   'description',
   'name',
   'owner',
   'params', 'params.knobs',
+  'phases',
   'reportProblem',
   'scriptWithheld',
   'validation', 'validation.ok',
@@ -99,10 +104,19 @@ describe('projectWorkflowForRead — non-owner branch (DES-115, UT-104, v22 Rule
     expect('script' in resp).toBe(false);
   });
 
-  it('phases/skeleton are script-derived and are NOT on the non-owner allowlist', () => {
+  it('v23 (DES-136): phases IS on the non-owner allowlist (adjudication #1, 一律公開) — skeleton stays OFF it (REQ-105 retires the surface, the function stays internal)', () => {
     const resp = projectWorkflowForRead(FULL, false) as unknown as Record<string, unknown>;
-    expect('phases' in resp).toBe(false);
+    expect(resp['phases']).toEqual([{ title: 'phase-one' }]);
     expect('skeleton' in resp).toBe(false);
+  });
+
+  it('v23 (DES-136): a secret in a PHASE TITLE DOES appear on the non-owner projection, while a secret in the SCRIPT BODY stays absent — two distinct fixtures, not one', () => {
+    const secretPhaseFixture: WorkflowOwnerView = { ...FULL, phases: [{ title: 'SEKRIT-9F2A' }], script: 'return "unrelated";' };
+    const secretScriptFixture: WorkflowOwnerView = { ...FULL, phases: [{ title: 'ordinary phase' }], script: 'const key = "SEKRIT-9F2A"; return key;' };
+    const respPhase = projectWorkflowForRead(secretPhaseFixture, false) as unknown as Record<string, unknown>;
+    const respScript = projectWorkflowForRead(secretScriptFixture, false) as unknown as Record<string, unknown>;
+    expect(JSON.stringify(respPhase)).toContain('SEKRIT-9F2A'); // phase titles are public (adjudication #1)
+    expect(JSON.stringify(respScript)).not.toContain('SEKRIT-9F2A'); // script body stays masked (REQ-100, unchanged)
   });
 
   it('owner/reportProblem/params ARE on the non-owner allowlist (REQ-100 legitimate-need clauses)', () => {

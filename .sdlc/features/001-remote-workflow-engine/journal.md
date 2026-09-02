@@ -922,3 +922,114 @@ and exit-gate 5 (seam consistency — *every* analyzer time read goes through th
 `generatedAt`, `durationMs` and the journal timestamps all named) are their own sections in 04-design.md.
 `state.yaml`: `gates.tasks.passed=true` (v23 note prepended), `gates.design.passed=true`,
 `current_stage: design → tests`, `updated` refreshed. `.panel/design/` retained as the archive.
+
+
+## 2026-09-02 — v23 Gate 3+4 RE-RUN (designer, merged) — post-adjudication #1
+
+**TASK-125 → 03-tasks.md, DES-136 → 04-design.md; eleven shipped DES amended in place.** Synthesized
+from the post-adjudication panel (`.panel/design/adversarial.r1.md`, `adversarial.r2.md`,
+`quality-dimensions.r2.md`, overwritten in the working tree; the pre-adjudication versions remain at
+`git show ba3db17:<path>` — nothing was `git checkout`-ed, per CLAUDE.md). **No new panel was spawned.**
+
+**The blocking defect this re-dispatch existed to catch.** Owner ruling 一律公開 (`ba3db17`) made phase
+titles public, but `WorkflowDescribeView` had been written before it and still had no `phases`. Left
+alone, `EXPECTED_DESCRIBE_KEYS` — generated from that type — would have **rejected `phases` as a leaked
+field** while the `diagram` string inside the very same response rendered the titles: one response, two
+contradictory disclosure rules, the stricter one enforced by a test failing for the wrong reason.
+TASK-125 + DES-136 close it on `WorkflowPublicView`/`EXPECTED_NON_OWNER_KEYS`, DES-125 on the describe
+side, and the ruling is now pinned in **both** directions (a secret in a phase title *appears* in the
+diagram; `phases` is *required* in both key oracles).
+
+**Two corrections to the panel's own text, from primary source.** `'phases'` is **one** oracle entry,
+not a set of flattened `phases[].title` keys — the oracle's `deepFlatten` explicitly does not recurse
+into arrays (`workflow-view.test.ts:29`). And `src/server.ts` is **deliberately not** in TASK-125's
+`files:`: the only other masking site is the `/skeleton` branch that DES-132 deletes whole, so patching
+it to unmask and then deleting it is work with no surviving artifact — the interim window leaves that
+dying route *stricter* than the ruling, never looser. DES-132 carries the one sentence that stops anyone
+re-adding masking to its successor.
+
+**The two r2 files crossed a second time, and the ruling overtook them both.** Quality-dimensions' r2
+(19:41) still "seconds the escalation" that `ba3db17` had already resolved at 19:21, and adversarial's
+own disclosure that "QD did not re-run" was stale by its write time. Recorded as **overtaken by the
+owner ruling**, not as a concession by either lens. QD's one hard condition — the `MALFORMED_COMPLETION`
+fold-in ships together with `gateFail`, or the member returns — is satisfied by the shipped text, so the
+enum stays at **ten** and **no lens-vs-lens conflict remains open** in either document.
+
+**Two boundary states neither the architecture nor the first design pass covered, both adopted in the
+cheapest correct form.** (B6) A job settling **after** `deregister` created an immortal orphan row —
+and the single-deletion-path rule that makes ADR-021 true is exactly what made it unreachable; fixed by
+an existence guard inside `putDiagramResult`'s own transaction, **not** by a reaper or a cancellation
+channel. (B7) "One requeue" was unrepresentable across a restart, so a crash *caused by* the generation
+amplified into a crash loop on the model-call path; fixed by stamping the already-NULLable
+`generated_at`, no new column, all three shapes testable under `FixedClock`. B7 owes one clause and pays
+it: `diagramGeneratedAt` is projected only when `status === 'ready'`, or an honest-absence fix becomes a
+dishonest-presence one.
+
+**One requirement-compliance variance fixed, one ARCH edit declined.** REQ-104's acceptance reads "**at
+minimum** … and **no analyzer harness value is hard-coded in engine source**", so `maxBytes`, `maxLines`
+and `maxQueueDepth` move into the `graphAnalyzer` block (six keys → nine, three new
+`compose-config-v2-wiring.test.ts` rows; only the default's *home* moves). Adversarial's request to
+amend `02-architecture.md` invariant 5 for `gateFail` is **declined on scope, not merit** — that file is
+not this gate's output; the assent is recorded in the rationale **and inside DES-129**, where an
+implementer greps. Invariant 4's "provider HTTP status" clause is struck the same way: `GatewayResult`
+has no such field and the line must not invent one.
+
+**Also corrected, because a rationale a reader can disprove in one grep stops protecting its decision:**
+`/describe` is **unauthenticated** (the route it replaces says so in its own comments) and therefore
+pinned to the non-owner projection — which changes the parity test's context to
+`{authEnabled: true, principal: null}`; the catalog's alias set is **no longer** "deliberately empty"
+(v21 P-A2 made it the same expression); the log census is **6 of 17**, not seven of seven; and the
+allowlist's model sentinel is the ASCII token `model:param`, because the panel's bracketed form would
+have failed the gate's own codepoint pass.
+
+**Gate self-check.** `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine`: **947 items, 42 gaps =
+41 pre-write baseline (captured to file before any edit) + 1 new `TASK-125 has no IMPL`** — the normal
+pre-implementation state that closes at Gate 6. **0 broken links, 0 orphans.** Every ARCH-077..086 still
+has ≥1 TASK; `state.yaml` `gates.tasks`/`gates.design` stay `passed: true` with re-run notes prepended,
+`current_stage` stays `tests`. **No escalation is open** — the one prior escalation is owner-resolved,
+and the remaining residual (a diagram may rearrange already-public words misleadingly) is a DEPLOY note
+in DES-134, not a user decision.
+
+**Three contradictions inside the shipped v23 text, caught by checking claims neither panel checked.**
+The anti-drift table named `GET /api/workflows/:name` — **no such route exists** (`server.ts:1035-1039`);
+the fourth surface is the `/api/workflows` **list**, script-free by construction but re-parsing the
+script for `description`, so the leak class is real. `DIAGRAM_CODEPOINTS` was "printable ASCII
+`0x20-0x7E`", which *contains* `<`, `>`, `&`, while DES-133 and TASK-113 both assert `<` ⇒ `SHAPE` — the
+three SGML-active characters are now subtracted, so the gate is the first layer as both documents
+already claimed rather than only `textContent`. And two stale counts of this design's own making ("five
+boundary states", "one rule governs four of them") corrected to seven and five.
+
+## v23 Gate 5 — test-first RED (2026-09-02, verifier)
+
+Wrote RED tests for TASK-113..125 / DES-120..136 / ARCH-077..086 / REQ-101..106 (+ REQ-100
+`[AMENDED v23]`): UT-107..117 (11 new/extended unit items), IT-096/097 (2 new integration items),
+VAL-111..117 (7 new acceptance items — VAL-115/REQ-104 deliberately `result: not-run`, no runnable
+unit test permitted per the requirement's own text). Brand-new modules (`diagram-gate.ts`,
+`trigger-bindings.ts`, `graph-analyzer.ts`) red at collect time (module-not-found), matching this
+ledger's own v13 seedref precedent; existing-module gaps (`WorkflowCatalog`'s diagram accessors,
+`McpFacade.workflow_describe`/`workflow_regenerate_diagram`, `workflow-view.ts`'s
+`projectWorkflowDescribe`) red via runtime TypeError, using the `(obj as any).newMethod(...)`
+convention already established in `put-blob-stream.test.ts`. Two existing files extended in place:
+`claude-agent-sdk-gateway-allowed-tools.test.ts` gains a REAL behavioral-red case
+(`curateToolsForProvider([], 'ollama')` returns `['Bash']` today, falsifying ADR-020's "blast radius
+is nil" on this deployment's own default path — DES-120's own correction); `compose-config-v2-wiring
+.test.ts` gains the `graphAnalyzer` forwarding rows (same wiring-gap class as v11/v15/v16/v22);
+`workflow-view.test.ts` corrected for adjudication #1 (`phases` now public to non-owners, `skeleton`
+stays off the allowlist — two distinct secret-placement fixtures pin the two properties separately).
+
+One deliberate scope call, recorded rather than silently under-delivered: `dashboard-page.ts`'s
+browser-side diagram rendering (TASK-121/DES-133) has no jsdom harness in this repo, so
+`dashboard-diagram-render.test.ts` pins the MECHANICAL source-level properties (fetch endpoint,
+`.textContent =` not `innerHTML`) rather than a full DOM behavioral proof — the same convention this
+ledger already uses for the no-skeleton-surface grep guard; a full Playwright-driven proof is left as
+a residual for whoever implements TASK-121.
+
+**Confirmation.** Targeted run (21 files): 93 total, 58 failed / 35 passed — every fail traced to its
+genuine unimplemented cause, every pass a documented green pin. Full suite: 1751 total, 1693 passed /
+58 failed (279 files) — exactly this pass's own reds, 0 unrelated regressions against the v22 close
+baseline (258/279 files fully unchanged; 2 pre-existing `spawn litellm ENOENT` artifacts, documented
+since IMPL-140, unaffected). `sh .sdlc/trace --check`: 967 items, 42 gaps — every DES-120..136 has a
+direct UT/IT/VAL trace, 0 broken links, 0 orphans; the 25 new gap rows (REQ-101..106's
+未實作+未真實驗證, TASK-113..125's 未實作) are the correct expected pre-Gate-6/pre-Gate-7.5 shape,
+not a defect. `state.yaml`: `gates.tests.passed=true`, `current_stage: tests -> impl`. Next: Gate 6
+(implementer).

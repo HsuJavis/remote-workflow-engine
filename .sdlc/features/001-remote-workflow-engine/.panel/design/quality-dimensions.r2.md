@@ -1,342 +1,105 @@
 # Quality-Dimensions Panel — Round 2 (Design, v23)
 
 **Lens**: Observability / Replaceability / Consumability / Self-sustainability.
-**Read this round**: `quality-dimensions.r1.md` (own prior stance) and `adversarial.r1.md` (Interface-
-contract × Boundary/error × Testability, DES-120..134). Re-verified two load-bearing adversarial claims
-against primary source before responding: `curateToolsForProvider`/`NON_ANTHROPIC_EXCLUDED_TOOLS`
-(`src/gateway/claude-agent-sdk-client.ts:197,223-227`) and `providerOf`/`effectiveProvider`
-(`:201,215-216`) — both confirmed exactly as quoted. No new file contradicts either r1 document; this
-round is synthesis, not re-litigation of settled fact.
 
-Structure: §1 responds point-by-point to `adversarial.r1.md` (every disagreement labelled **rebut /
-concede / hold**), §2 states this lens's converged final position under all four dimension headings —
-required even where the section is pure convergence, because a skipped dimension is itself a defect —
-§3 lists what remains genuinely open.
+**Dispatch disclosure.** This file **replaces** the committed pre-run v23 archive at the same path
+(clean at session start, last touched by `ba3db17` "adjudication #1"). The prior content is
+recoverable at `git show ba3db17:.sdlc/features/001-remote-workflow-engine/.panel/design/quality-dimensions.r2.md`.
+Nothing was `git checkout`-ed or `restore`-ed into the tree — CLAUDE.md's prohibition observed.
 
----
+**Read for this round**: `quality-dimensions.r1.md` (my own), `adversarial.r1.md` and
+`adversarial.r2.md` in full. Adversarial's r2 is the operative document — it already scored every
+point of contact with my r1 (their §0 scoreboard, Q1–Q11) and moved first. My job this round is to
+confirm or contest each of their verdicts against primary source, not to re-litigate my own r1 from
+scratch.
 
-## 1. Response to `adversarial.r1.md`
+**Verification pass, today**: `src/main.ts:80-100,195-235`, `src/server.ts:1189-1200,1315-1335`,
+`src/params/contract.ts:60-100`, `src/session-options-builder.ts:1-100`,
+`src/gateway/claude-agent-sdk-client.ts:230-260,525-555`. Every fact adversarial's r2 built its
+concessions and its one new finding on was independently re-derived, not taken on their word — see
+inline citations below.
 
-### 1.1 DES-120 (tools:[] curation fix) — **concede the fix, rebut the tie-break**
-
-**Concede**: `curateToolsForProvider`'s missing `if (tools.length === 0) return [];` guard is the correct,
-minimal, general-purpose fix — verified in source, not analyzer-specific, and it closes the *default*
-`graphAnalyzer.tools:[]` path completely. This is a stronger and more general fix than anything my r1
-proposed for the same failure mode; adopt it as-is.
-
-**Rebut** the §5.1 tie-break conclusion that this makes the scratch-`cwd` proposal (my r1
-Self-sustainability §1) "mostly moot." It moots the *default* path only. Adversarial's own residual
-paragraph in §2.1 admits the counter-example: an operator who sets `graphAnalyzer.tools:['Read']` (the
-exact ADR-020-accepted-risk state their own architecture round contemplates as reachable) still gets
-`curateToolsForProvider(['Read'], 'ollama') === ['Bash']` after DES-120 lands — the empty-set guard does
-not touch a *non-empty* configured set. And per their own §2.2/§2.3 table, when neither `workspace` is
-passed nor a dedicated `cwd` is pinned, `canUseTool` jails that Bash session to `this._config.cwd`, which
-they verify is **the server workRoot — the directory containing every other run's workspace and
-journal**, not an empty scratch directory. So the residual state is: an attacker-authored script (via
-`workflow_register`) drives a Bash-enabled session jailed to *all runs' data*, gated only by an operator
-flipping one non-default config key. That is not "a belt whose suspenders are already on" — it is the
-one config state where the belt is the only thing holding.
-
-**Position held from r1, sharpened**: give the analyzer's gateway construction an explicit
-`cwd: ${workRoot}/.graph-analyzer-scratch/` (created once, never written by any run) regardless of
-whether `tools` is empty. Cost is one directory literal; it is free when tools are empty (nothing runs
-there) and load-bearing exactly in the residual case DES-120 leaves open. **Integrate with DES-120's own
-proposal**, don't compete with it: the boot warning DES-120 already asks for ("name the *effective
-post-curation* set, not the configured one") should name the jail directory alongside the effective tool
-set — one warning, two facts, same operational convention.
-
-### 1.2 DES-121 (analyzer-owned retry loop) — **concede, fully integrate**
-
-No `retries` channel exists in `AgentOpts`/`invoke()`; retries live on the gateway instance and are shared
-with every user-facing `agent()` call. This is a self-sustainability finding my r1 did not surface at
-all — a real bounded-spend gap, not adjacent to my lens but squarely inside it (closed-loop autonomy
-means the system's own resource consumption is bounded and legible, not "whatever composes out of two
-independently-configured retry knobs"). Adopt without modification: the analyzer owns its own attempt
-loop, `graphAnalyzer.retries` defaults to `0`, and the multiplicative worst case
-`(1 + graphAnalyzer.retries) × (1 + gatewayConfig.retries)` is written into DEPLOY.md as a documented
-cost formula, not discovered by an operator after the fact. This becomes part of my final
-Self-sustainability position (§2.4).
-
-### 1.3 DES-122 (isolation by omission, property table) — **concede, converge**
-
-My r1 Self-sustainability §1 already established that omitting `workspace` yields `settingSources: []`
-and that this — not the `cwd` fallback — is the actual guard against the CLAUDE.md/MEMORY.md leak class.
-DES-122 states the same conclusion independently and adds the full omission→property table (`onEvent`/
-`onHarness` ⇒ no transcript events exist to persist; synthetic `runId`/`agentId` ⇒ never joins a real
-run's records). No disagreement — adopt the table as the design-doc artifact that makes each omission's
-purpose explicit rather than looking like an oversight to a future maintainer, which was exactly my r1's
-concern about an unstated default.
-
-### 1.4 DES-123 (closed `DiagramNoteCode` enum + `noteCodeFor`) — **concede the decomposition, extend it**
-
-My r1 proposed a 7-value enum (`TIMEOUT | RETRIES_EXHAUSTED | QUEUE_FULL | DISABLED |
-GATE_REJECTED_CONTENT | GATE_REJECTED_SHAPE | MODEL_UNMAPPED`) that collapsed every `GatewayResult`
-failure reason into a single `TIMEOUT` and had no code at all for `content: unknown` (a non-string /
-empty completion). DES-123's 10-value enum decomposes `ok:false` into `TIMEOUT | PROVIDER_UNREACHABLE |
-PROVIDER_ERROR` (matching the three actual `reason` values on the wire) and adds `MALFORMED_COMPLETION`
-for the `content: unknown` state and `NOT_GENERATED` for the no-row case. This is strictly more complete
-than my r1 enum and I concede the collapse was a real gap — a `PROVIDER_ERROR` and a `TIMEOUT` are
-different operator-actionable signals (one says "check the provider," the other says "raise
-`graphAnalyzer.timeoutMs`") and collapsing them would have made the per-run rate signal I asked for in my
-r1 Observability §3 report the wrong rate.
-
-**What I still hold**: `MODEL_UNMAPPED` (my r1 Self-sustainability §2) is not covered by DES-123's
-`noteCodeFor` input union (`GatewayResult | {kind:'gate'} | {kind:'queue'} | {kind:'disabled'}`) because a
-misconfigured alias means the model is **never called** — there is no `GatewayResult` to map. Proposed
-integration: extend the union with a fifth variant, `{kind:'config'; reason:'model_unmapped'}`, so
-`noteCodeFor` stays the single total mapping function DES-123 wants it to be, rather than gaining a
-side-channel that writes `MODEL_UNMAPPED` outside the function's discipline. This reconciles cleanly with
-DES-127 B2's rule ("a persisted row is written only by an attempt"): an enqueue that fails pre-call
-alias validation *is* a settled attempt (it never got further, but it was attempted and it terminated),
-so persisting the row through the same `noteCodeFor` path is consistent with B2, not an exception to it.
-
-**Merged enum, final position** — 11 values:
-`TIMEOUT | PROVIDER_UNREACHABLE | PROVIDER_ERROR | MALFORMED_COMPLETION | GATE_REJECTED_CONTENT |
-GATE_REJECTED_SHAPE | QUEUE_FULL | RETRIES_EXHAUSTED | DISABLED | NOT_GENERATED | MODEL_UNMAPPED`.
-
-One seam worth naming explicitly in the design doc so an implementer doesn't get it backwards:
-`NOT_GENERATED` and `DISABLED` are **synthesized at read time** from "no row + `enabled` flag" (DES-127
-B1/B2), never persisted; every other value in the enum is written to the row by an actual attempt. A
-`workflow_diagrams` row whose `note_code` is `NOT_GENERATED` or `DISABLED` should never exist — those two
-values only ever appear in the *describe projection*, not in the table. Worth a one-line CHECK-constraint
-comment or a code comment at the write site, because the enum being flat hides this asymmetry.
-
-### 1.5 DES-124 (gate tokenizer specification) — **no position, defer to adversarial/interface lens**
-
-The four-pass tokenizer algorithm is an interface-contract/boundary concern with no direct quality-
-dimensions stake. One convergence point, addressed together with §1.7 below: the *diagnostic residue*
-question (what gets stored when the gate rejects something) does touch Observability, and that is where
-I engage — see §1.7.
-
-### 1.6 DES-125 (`projectWorkflowDescribe` signature, `EXPECTED_DESCRIBE_KEYS`) — **concede, converge**
-
-This is exactly my r1 Consumability §2 ("one exported constant... not a duplicate literal per test
-file"), independently reached and specified further: DES-125 exports `EXPECTED_DESCRIBE_KEYS` next to the
-already-established `EXPECTED_NON_OWNER_KEYS` pattern from v22, and both the facade test and the route
-test import it. No disagreement — this *is* my proposal, just with the concrete home named. I add nothing
-except noting the pattern precedent makes this low-risk to implement correctly the first time.
-
-### 1.7 DES-127 boundary states (B1–B5) — **concede B1 (with the boot-log compromise), concede B2–B5**
-
-- **B1 (no boot backfill for pre-v23 versions)**: adversarial predicted (their §8.1) that I would want a
-  backfill from consumability — an operator upgrading and finding every workflow's diagram
-  `unavailable` has a bad first five minutes. **I do not hold that position.** A backfill is N model calls
-  triggered by an upgrade with no principal to attribute the spend to — exactly the "every read/upgrade
-  might trigger a model call" shape ADR-017 already rejected, and self-sustainability's "minimize human
-  intervention" goal does not mean "maximize autonomous spend without asking." **Accept their offered
-  compromise as the converged position**: a one-line boot log naming the count of versions with no
-  diagram row and the exact recovery command (`workflow_regenerate_diagram`). Zero model calls at boot,
-  full discoverability — this satisfies Consumability (the gap is visible, not silently discovered later)
-  without violating Self-sustainability (no unbounded autonomous spend). Predicted disagreement resolves
-  to convergence.
-- **B2 (row written only by an attempt, `DISABLED` synthesized)**: concede — consistent with §1.4's
-  `MODEL_UNMAPPED` reconciliation above.
-- **B3 (`diagramStale` false unless `status==='ready'`)**: concede — this is the same "flag stops meaning
-  anything if it fires on every absent diagram" argument I would have made from Observability; adversarial
-  got there first and the reasoning is identical to my own carried-in-rule-1 discipline.
-- **B4 (per-`(name,version)` single-flight on regenerate)**: concede — this is a self-sustainability point
-  in different clothing (bounded spend under repeated owner action) and the "no new mechanism, correct
-  implementation of an existing invariant" framing in their §5.3 is the right simplicity call.
-- **B5 (failed regenerate leaves the prior `ready` row untouched)**: concede — a self-sustainability
-  closed-loop property (a degraded dependency must not destroy previously-good state) stated better than
-  I would have stated it.
-
-None of B1–B5 requires a new dashboard mechanism: all four synthesized/persisted states flow through the
-same `describe` → 3s-poll path my r1 Consumability §1 already confirmed needs no new refresh mechanism.
-Worth stating explicitly so the task that implements B1–B5 doesn't also invent a boot-triggered dashboard
-notification for the B1 log line — the log line is an operator-facing stdout convention (same channel as
-DES-120's boot warning), not a dashboard feature.
-
-### 1.8 DES-128 (`TriggerPorts` narrow interfaces) — **concede, endorse as reinforcing evidence**
-
-This is a direct instantiation of my r1 Replaceability §1 principle (`GraphAnalyzer` takes the existing
-`GatewayClient` interface, not a narrower ad hoc shape, so a future backend swap needs no analyzer-
-specific code path) applied to a different seam: `getTriggerBindings(name, ports: TriggerPorts)` takes
-four one-method structural interfaces instead of three SQLite store classes. Same design language, same
-payoff (a unit test stands up plain object literals, no SQLite; a future fourth store type is a config
-change to the port implementation, not a rewrite of the projection). No disagreement, and I fold this in
-as supporting evidence that the slice's Replaceability posture is consistent across both the LLM-backend
-seam and the data-source seam — worth saying explicitly in the design doc as one deliberate pattern
-("narrow structural ports at every seam this slice touches"), not two coincidentally similar decisions.
-
-### 1.9 DES-129 (typed journal record) — **concede, integrate one correction to the field-name question**
-
-**Concede and integrate**: `principal` must be captured at **enqueue time** as a field on the queued job,
-not read at completion — by the time an async job settles, the HTTP/MCP request that carried the
-principal is long gone. This is an Observability *accuracy* bug my r1 §1/§3 didn't catch (I pinned the
-sink and the enum but assumed the field values themselves were unproblematic to obtain). Fold this into my
-final Observability position (§2.1).
-
-**Flag, not silently adopt**: DES-129 proposes renaming `promptTokens`/`completionTokens` to
-`tokens.{input,output}` on the journal line, on the grounds that `GatewayResult` already uses those names
-internally. My r1 header treats ARCH-079 invariant 5's field list (`{name, version, principal, model,
-promptTokens, completionTokens, durationMs, outcome, noteCode}`) as **ratified**, inherited from the
-architecture round, not re-litigated here. I don't object to the rename on engineering grounds — one
-fewer mapping to get backwards is a real observability-accuracy win, matching this lens's "no
-opaque translation layer between internal state and the logged fact" instinct — but a pinned invariant's
-literal field list changing is an ARCH-text amendment, not a design-round free choice. **Flagging
-explicitly for the synthesizer**: either amend ARCH-079 invariant 5's field list to `tokens.input` /
-`tokens.output` now (my preferred outcome, on observability-accuracy grounds), or keep `promptTokens`/
-`completionTokens` on the wire and let the journal-line writer do the one-line rename from
-`GatewayResult.tokens` at the log call site. Either is fine; a silent drift between what invariant 5 says
-and what ships is not.
-
-### 1.10 Response to adversarial §8's remaining predicted disagreements
-
-- **§8.2 (analyzer diagnostics / raw-completion residue)** — **accept with one correction.** Adversarial
-  offered: "store the rejected token for `GATE_REJECTED_SHAPE` only, never for `GATE_REJECTED_CONTENT`."
-  But per their own DES-124 pass ordering, an `allowedLabels` miss (the "rejected token" case) is a **pass
-  3** failure, which their own algorithm classifies as `GATE_REJECTED_CONTENT`, not `SHAPE` — `SHAPE`
-  covers passes 1–2 (bad codepoints, oversize). As written the compromise asks to store, under `SHAPE`, a
-  kind of value that cannot occur under `SHAPE`. **Corrected version, which I accept**: for
-  `GATE_REJECTED_SHAPE`, store the engine-classified failure metric (which codepoint class was rejected,
-  or the byte/line count that exceeded the ceiling) — safe by construction, since it's a fact about the
-  input's *shape*, not its content, and it is exactly the signal needed to diagnose a shape-rejection
-  storm after a model swap (e.g. a new model consistently emitting a disallowed Unicode box-drawing
-  variant). For `GATE_REJECTED_CONTENT`, store nothing, ever — the rejected token *is* the thing ADR-016
-  forbids storing. This gives Observability the degradation-diagnosis signal on the one failure class
-  where it's safe and costs nothing on the one where it isn't.
-- **§8.3 (`viewerIsOwner` parameter)** — **concede.** No quality-dimensions stake in keeping a parameter
-  that provably cannot change the output; "extensibility for a future owner-only field" is not a
-  consumability argument for a caller today, and adding it back together with a `workflow_get` change (as
-  adversarial proposes) if the owner ever revisits A3 is the right shape for that future change anyway.
-- **§8.4 (`inputs_fp`/cache)** — **no position; already settled.** My r1 header already lists "no
-  `inputs_fp`" among the architecture-round decisions this design round inherits as ratified. Nothing to
-  re-litigate.
-- **§8.5 (where the "wired but degraded" signal lives)** — **full convergence, no disagreement.** This is
-  precisely my r1 Observability §3 position (the per-run journal line carrying the split
-  `GATE_REJECTED_CONTENT`/`GATE_REJECTED_SHAPE` code *is* the rate signal; no new metrics surface needed).
-  Independently reached by both lenses from different starting points — strong signal this is the right
-  call, not just a compromise.
-- **§8.6 (phase-name disclosure framing, §3.3)** — **hold, out of lens.** Whether the phase-name residual
-  disclosure is adequately controlled by AUTHORING.md alone is a security/interface-contract question
-  about *what* is disclosed and to whom; quality-dimensions has no independent claim about the disclosure
-  itself. The one place my lens touches this is already covered: DES-125's `EXPECTED_DESCRIBE_KEYS` oracle
-  (§1.6) makes `workflow_describe` serving `meta.phases[].title` a two-sided, literally-asserted fact the
-  moment the projection ships, so the "first surface to serve phases to non-owners" claim in their §3.3(1)
-  is automatically observable in the test suite, not just in prose. No additional position needed.
-
-### 1.11 Primary-source corrections (§3.1–3.4) — **acknowledge, minor Self-sustainability consequence**
-
-§3.1 (no `maxWorkflowVersions` prune; `deregister()`'s transaction is the only diagram-row deletion path)
-is a correction to architecture text, not a disagreement with my r1. Consequence for my final position:
-the worst-case analyzer spend for one workflow name is bounded by `maxWorkflowVersions` initial
-registrations **plus unbounded owner-initiated regenerates** — the "unbounded" half is exactly why DES-121
-§1.2's retry cap and DES-127 B4's single-flight guard (both conceded above) matter more than a GC-shaped
-mechanism would have. §3.4 is the same scratch-`cwd` point addressed in §1.1.
+**Headline of this round**: adversarial conceded nearly everything from my r1 (Q1–Q9 all
+concede/agree) and, in return, corrected one of my own arguments (Q9's rationale) and surfaced one
+finding neither r1 file had (the zero-config `cwd`-undefined divergence, §Self-sustainability
+below) — which I verified today and accept as this round's most important addition. What remains
+open is small: one conditional design decision (`gateFail`) I resolve here, two enum members I
+accept outright, and one item that is correctly an owner escalation rather than a panel dispute.
 
 ---
 
-## 2. Final position, by dimension
+## Scoreboard — my side of adversarial's §0 (rebut / concede / hold on every contact point)
 
-### 2.1 Observability
+| Their item | My verdict | Reasoning (see dimension sections below) |
+|---|---|---|
+| Q1/Q3 concede (journal sink = existing stdout convention, verbatim) | **HOLD** — this is my own position, confirmed unchanged | Observability §1 |
+| Q2 merge to 10-value enum | **HOLD**, with the two D3 members folded in (not left open) | Observability §2 |
+| §2.2 self-reversal (`MALFORMED_COMPLETION` → folds into `GATE_REJECTED_SHAPE`) | **CONCEDE the fold, ON CONDITION** `gateFail` ships with it | Observability §3 |
+| §7 `gateFail: 'type'\|'codepoint'\|'size'\|'token'` (D2) | **ACCEPT** — same sink, closed engine-authored values, no model bytes | Observability §3 |
+| Q4 concede (`gateway: GatewayClient`) + rider (stub suite + one `queryImpl`-level wire test) | **HOLD my Q4**, **ACCEPT the rider** | Replaceability §1 |
+| Q5 concede (alias-map resolution stated in design) | **HOLD** — unchanged | Replaceability §2 |
+| Q9 concede code/posture, **correct rationale**, pin mechanism (`isKnownAlias`) | **CONCEDE the correction** — my r1 mechanism was wrong, my conclusion was right | Self-sustainability §1 |
+| Q6/Q7 converge, name the module | **HOLD** — unchanged | Consumability §1 |
+| Q8 concede scratch-`cwd`, withdraw their r1 tie-break, **new zero-config finding** | **ACCEPT** the concession and the new finding; extend it one line | Self-sustainability §2 |
+| D3 — `PROVIDER_UNREACHABLE`/`PROVIDER_ERROR` split | **ACCEPT**, closes D3 half 1 | Observability §2 |
+| D3 — `NOT_GENERATED` | **ACCEPT**, closes D3 half 2 | Self-sustainability §3 |
+| D4 — phases escalation to owner | **SECOND the escalation**, add one consumability rider | Consumability §2 |
+| §9 held-unchallenged (DES-120/121/124/125/126/127/128, §3.1, §4, §3.3) | **HOLD — no objection**, including DES-125's no-`viewerIsOwner` (resolved by silence in r1, made explicit here) | throughout |
+| Task-splitting merged list (§8, 10 items) | **HOLD — no objection** | — |
 
-- **Sink**: one `console.log('[remote-workflow-engine] graph-analyzer ' + JSON.stringify({...}))` line per
-  analyzer attempt, on the project's one existing stdout/stderr convention (`DEPLOY.md §6`) — no new log
-  file, no DB-only channel. (r1, unchanged.)
-- **Journal fields**: `{name, version, principal, model, promptTokens, completionTokens, durationMs,
-  outcome, noteCode}` per ARCH-079 invariant 5, with two design-round refinements: `principal` is captured
-  **at enqueue time** and carried as a field on the queued job, not re-read at completion (§1.9, conceded
-  from DES-129); and the `promptTokens`/`completionTokens` vs `tokens.{input,output}` naming question is
-  flagged for the synthesizer as a proposed ARCH-079 amendment, not silently resolved at design altitude
-  (§1.9).
-- **Closed enum**: the merged 11-value `DiagramNoteCode` (§1.4) — `TIMEOUT | PROVIDER_UNREACHABLE |
-  PROVIDER_ERROR | MALFORMED_COMPLETION | GATE_REJECTED_CONTENT | GATE_REJECTED_SHAPE | QUEUE_FULL |
-  RETRIES_EXHAUSTED | DISABLED | NOT_GENERATED | MODEL_UNMAPPED` — asserted literally in its own test per
-  carried-in rule 1, through a single total `noteCodeFor` function whose input union is extended with a
-  `{kind:'config'; reason:'model_unmapped'}` variant so the boot-time alias-validation path stays inside
-  the same mapping discipline as every gateway/gate/queue outcome. `NOT_GENERATED`/`DISABLED` are
-  synthesized at read time and never appear in a persisted row; every other value is written by an actual
-  attempt — call this out explicitly in the design doc.
-- **Per-run granularity for the rate signal**: unchanged from r1 §3 — the terminal `workflow_diagrams` row
-  holds only the latest outcome; the per-run journal line is what lets an operator see a
-  `GATE_REJECTED_SHAPE` (or `PROVIDER_ERROR`) **rate** rising after a model swap. Full convergence with
-  adversarial §8.5: this is the counter, no new metrics surface.
-- **Diagnostic residue**: on `GATE_REJECTED_SHAPE` only, store the engine-classified failure metric
-  (rejected codepoint class, or the byte/line count over ceiling) — never the content itself and never on
-  `GATE_REJECTED_CONTENT`, where the rejected token is definitionally the thing ADR-016 forbids storing
-  (§1.10, corrected from adversarial's §8.2 offer).
-- **Boot-time visibility, two items, same convention**: (a) a misconfigured `graphAnalyzer.model` alias
-  logs a loud boot warning on the `[remote-workflow-engine]` stdout channel (r1 §Self-sustainability-2,
-  unchanged); (b) the pre-v23-versions-with-no-diagram count logs a one-line boot summary naming the count
-  and the recovery command (conceded from adversarial §8.1/DES-127-B1, §1.7 above). Both are the same
-  operational surface an operator already watches — not two new things, one convention used twice.
-
-### 2.2 Replaceability
-
-- **`GraphAnalyzer` takes the existing `GatewayClient` interface**, not a narrower ad hoc shape — unchanged
-  from r1 §1, pinned as a design constraint so a future third gateway implementation needs no
-  analyzer-specific code path.
-- **`graphAnalyzer.model` resolves through the same shared `AliasMap`** `agent()` calls use (r1 §2,
-  re-verified this round: `providerOf`/`effectiveProvider` at `claude-agent-sdk-client.ts:201,215-216`
-  confirm an unmapped alias resolves to `undefined`, not a raw provider string) — this must be stated
-  explicitly in the design doc, and its boot-time-validation consequence is now folded into the merged
-  `MODEL_UNMAPPED` enum value (§2.1).
-- **New this round, endorsed not authored here**: `TriggerPorts` (DES-128, §1.8) is the same decoupling
-  principle applied at the trigger-binding seam — four one-method structural interfaces instead of three
-  store classes. Recorded as reinforcing evidence that this slice applies "narrow structural interface at
-  every backend/data-source seam" as one deliberate, consistent pattern, worth naming as such in the
-  design doc rather than treating each seam's port as a local decision.
-
-### 2.3 Consumability
-
-Mostly convergence this round — no new disputes, one adopted specification.
-
-- **Dashboard live-update needs no new mechanism** for `pending → ready`, nor for any of DES-127's B1–B5
-  synthesized/persisted states (§1.7) — all flow through the existing `describe`-inside-the-3s-poll path
-  (r1 §1, unchanged, and explicitly extended this round to cover the boundary states so no implementer
-  invents a bespoke notification for the boot-log line).
-- **`EXPECTED_DESCRIBE_KEYS` gets one exported home** — my r1 §2 proposal, and DES-125 (§1.6) specifies the
-  concrete location (next to `EXPECTED_NON_OWNER_KEYS`, the v22-established pattern) that both the facade
-  test and the route test import. Full convergence, nothing left to resolve.
-- **`viewerIsOwner` parameter dropped** from `projectWorkflowDescribe` (§1.10, conceded) — one fewer
-  parameter for a caller to reason about, and interface simplicity here is also a (mild) consumability win:
-  a describe caller has no owner/non-owner branch to think about at all, matching REQ-101's "the same
-  response shape for any principal" framing.
-
-### 2.4 Self-sustainability
-
-- **Scratch `cwd` under `workRoot`, defense-in-depth**: give the analyzer's gateway construction an
-  explicit `cwd: ${workRoot}/.graph-analyzer-scratch/`, created once, never written by any run, regardless
-  of whether `graphAnalyzer.tools` is empty. Closes the residual state DES-120's tools-curation fix leaves
-  open (§1.1): an operator-accepted non-empty `tools` config, combined with `curateToolsForProvider`'s
-  Bash-injection-for-non-Anthropic-providers behavior, still produces a Bash-enabled session; without a
-  pinned scratch `cwd` that session is jailed to the server workRoot (all runs' data), not an empty
-  directory. Cost is one directory literal, inherited-for-free `.git`/`CLAUDE.md`-non-reachability from the
-  existing `workroot-guard` (REQ-021) boot invariant. Pair with DES-120's boot warning: name both the
-  effective post-curation tool set and the jail directory in the same log line.
-- **Retries are the analyzer's own attempt loop, capped and documented** (§1.2, conceded from DES-121):
-  `graphAnalyzer.retries` defaults to `0`; the multiplicative worst case
-  `(1 + graphAnalyzer.retries) × (1 + gatewayConfig.retries)`, each bounded by `graphAnalyzer.timeoutMs`,
-  is written into DEPLOY.md as a documented cost formula.
-- **`graphAnalyzer.model` alias validated once at boot**, loud warning on the existing stdout convention,
-  `MODEL_UNMAPPED` on every subsequent affected row rather than a silent wrong-provider dispatch (r1 §2,
-  unchanged, now integrated into the merged enum's total mapping via the `{kind:'config'}` variant).
-- **No boot backfill for pre-v23 versions** (§1.7, conceded to adversarial's compromise): a one-line boot
-  log naming the count and recovery command, zero autonomous model spend. Predicted disagreement resolved
-  to convergence.
-- **Per-`(name, version)` single-flight on regenerate, and failure leaves the prior `ready` row untouched**
-  (DES-127 B4/B5, §1.7, conceded) — both are closed-loop properties (bounded spend under repeated action; a
-  degraded dependency must not destroy previously-good state) that belong in this dimension and are
-  correctly scoped as "no new mechanism," matching this slice's Karpathy discipline.
-- **Row-lifecycle consequence of the no-prune correction** (§1.11): the only diagram-row deletion path is
-  `deregister()`'s transaction; unbounded spend risk therefore comes entirely from owner-initiated
-  regenerate calls, not from any GC mechanism — which is exactly why the retry cap and single-flight guard
-  above are the load-bearing bounds, not a table-size argument.
+No item is left as "resolved by silence" this round — every row above has an explicit verdict.
 
 ---
 
-## 3. What remains genuinely open
+## Observability
 
-- **Field-name amendment to ARCH-079 invariant 5** (§1.9): `promptTokens`/`completionTokens` vs
-  `tokens.{input,output}` on the journal line. I prefer the rename; either is engineering-fine; the open
-  item is procedural — this needs an explicit ARCH-text amendment, not a silent design-round substitution,
-  and I'm flagging it rather than resolving it unilaterally.
-- **Scratch-`cwd` residual (§1.1, §2.4)**: this is the one place I hold a position adversarial's own
-  tie-break (§5.1) explicitly argued against ("mostly moot"). I don't believe it's fully moot — the
-  residual is real, narrow, and cheap to close (one directory literal) — but this is a judgment call about
-  whether a low-probability, operator-opt-in, already-warned-about state justifies a design-doc line the
-  other lens sees as unnecessary belt-and-suspenders. Flagging for the synthesizer/owner rather than
-  claiming a unilateral win.
-- **Everything else in §1 resolved to concede or full convergence** — no other disputed item remains open
-  between this lens and adversarial's r1.
+**§1 — Journal sink: unchanged, confirmed.** My r1 pinned the existing `console.log('[remote-workflow-engine] …')` convention as the sink, with no second channel. Adversarial's Q1/Q3 concede this in full and add one refinement I accept without reservation: the secret-absence test must assert against the **emitted string** (the concatenation), not against the pre-serialization `rec` object — because the concatenation point is exactly where an implementer appends `res.detail` "for debugging" and a `rec`-only oracle stays green through that edit. This is a strictly stronger test than what I proposed in r1; folding it in.
+
+**§2 — The enum: hold at 10, both D3 members accepted, nothing left open.** Adversarial's merge (my 7 ∪ their original 10, minus the `MALFORMED_COMPLETION` self-reversal, plus `MODEL_UNMAPPED` from my r1) lands at ten members. Both halves of D3 are mine to close:
+
+- **`PROVIDER_UNREACHABLE` / `PROVIDER_ERROR` split — accept.** `GatewayResult`'s failure branch already carries `reason: 'timeout' | 'unreachable' | 'terminal'` on the wire (`gateway/client.ts:61-79`, cited by both r1 files and unchanged this round). Collapsing an already-distinguished signal into one code is not simplification, it is discarding information the caller was handed for free — squarely an observability regression by this lens's own definition (a distinguishable failure mode collapsed into an indistinguishable one is a step *toward* the black box, not away from it). "My Ollama is down" and "my model rejected the request" are different operator remediation paths (restart a process vs. edit a prompt/model config) — the split is what makes the note code actionable rather than merely present. Accept as written.
+- **`DISABLED`/`NOT_GENERATED` read-synthesized-only typing** (§2.1's `Exclude<DiagramNoteCode, 'DISABLED'|'NOT_GENERATED'>` on `putDiagramResult`, CHECK enumerates eight) — accept. This is exactly the "closed set, literally written, and the persistence layer must not be able to lie about which member reached it" discipline my r1 asked for; adversarial applied it one layer deeper than I did. No note.
+
+**§3 — The `MALFORMED_COMPLETION` fold-in and `gateFail` are a package; I accept the package, not the fold-in alone.** Adversarial's §2.2 self-reversal (folding a non-string/empty completion into `GATE_REJECTED_SHAPE`, gate typed `raw: unknown`) is a genuine simplification I'd have made myself under my own carried-in economy-of-mechanism instinct — total-over-the-actual-return-type, one fewer branch, one fewer row in `noteTextFor`. But it deletes a distinction my lens needs: without something restoring it, `GATE_REJECTED_SHAPE` becomes ambiguous between "the model degraded" (a replaceability signal — swap the model) and "the gateway contract broke" (a defect signal — file a bug), and an operator watching the rate of that one code cannot tell which action to take. That ambiguity is precisely the "silent/opaque failure is a design defect" case this lens exists to catch, just relocated from the enum to the journal line's internals instead of removed.
+
+Their proposed replacement — `gateFail?: 'type' | 'codepoint' | 'size' | 'token'` on the journal record, closed, engine-authored, never carrying model-derived bytes, same sink — satisfies my r1 Observability §1 stricter-line argument exactly (no second sink, no new store) while restoring the distinction at the correct altitude (the journal line, not the enum, matching their own point that `MALFORMED_COMPLETION` was "real in the code and meaningless at the operator's altitude"). **Accept `gateFail`, and state the conditional explicitly rather than leaving it implicit**: the fold-in and `gateFail` ship **together**, in the same task. If the synthesizer refuses `gateFail` as amending ARCH-079's pinned field list (D2's stated risk), then `MALFORMED_COMPLETION` **must return as its own enum member** — I do not accept the fold-in alone, because that leaves the degradation counter polluted by plumbing bugs, which is the exact failure my r1 grounding pass and adversarial's own r1 (§2.4, before their reversal) both independently flagged as a real risk. One of the two must land; picking neither is not on the table for this lens.
+
+---
+
+## Replaceability
+
+**§1 — `GraphAnalyzer` takes `gateway: GatewayClient`: hold; accept the testability rider as the thing that makes the claim non-vacuous.** My r1 Replaceability §1 argued this constructor shape is what makes the backend-swap property extend to the analyzer "for free" — GPT↔Claude↔local-model as a config change, no analyzer-specific code path. Adversarial concedes the constructor outright (Q4) and adds a rider I did not have in r1: a suite built entirely on a hand-written `GatewayClient` stub cannot see DES-120's Bash-curation bug, because that bug lives inside `ClaudeAgentSdkGatewayClient`'s own `options` builder (`claude-agent-sdk-client.ts:478-487,535-581`), not behind the interface boundary. **Accept the rider without reservation** — it is not in tension with my replaceability claim, it is what keeps that claim honest. A "the backend is swappable" design property proven only against a stub that never exercises the real adapter's option-building logic is a property proven of the interface's *shape*, not of the *system* — my lens's own goal statement ("cut tech debt, no vendor lock-in") is about the real adapters actually being swappable, which requires at least one test that builds real `Options` for a non-Anthropic alias and inspects them literally. Folding this in: the design must carry **both** tiers (many fast stub-tier tests for the `noteCodeFor`/queue/single-flight logic, plus exactly one `queryImpl`-level test asserting the literal built options for a non-Anthropic alias — `tools: []`, `allowedTools: []`, `settingSources: []`, thinking disabled), and a design doc listing the stub tier alone is a defect by my own dimension, not just theirs.
+
+**§2 — `graphAnalyzer.model` resolves through the shared `AliasMap`: hold, unchanged.** Adversarial's Q5 confirms this and adds nothing in tension. No new content this round.
+
+---
+
+## Consumability
+
+**§1 — Dashboard poll and the shared key-oracle module: hold, converged, naming closed.** My r1 Consumability §1 (no new poll mechanism needed) and §2 (`EXPECTED_DESCRIBE_KEYS` needs one home) are both confirmed independently this round (`dashboard-page.ts:505`, and adversarial's own already-existing `DES-125`). Adversarial adds the concrete home — `src/workflow-view.ts`, next to `EXPECTED_NON_OWNER_KEYS` — and one distinction worth carrying into the design doc verbatim because it is a genuine addition to my consumability point, not a restatement: **the key-oracle is not the anti-drift oracle.** Two surfaces can agree on which keys exist and disagree on the values inside them. Their four-surface literal-secret-absence table (`workflow_get` non-owner, `workflow_describe`, `GET /api/workflows/:name`, `GET …/describe`) is the actual anti-drift guarantee; the key-oracle only catches a *shape* drift. Both belong in the design doc as named, distinct tests — accepting this as strengthening my own §2 rather than replacing it.
+
+**§2 — Phases disclosure (D4): second the escalation; add the measurement rider.** Adversarial correctly identifies that ADR-015/ARCH-080's premise ("phase names are already served to non-owners") is **false** against `WorkflowPublicView` (`workflow-view.ts:33-44`, confirmed by both r1 files independently) — `workflow_describe` is the *first* surface to disclose `meta.phases[].title` to a non-owner, not a restatement of an existing disclosure. My r1 did not touch this because I was working from the ARCH text's stated premise, not re-deriving `workflow-view.ts` myself; I have no independent finding to add on the fact itself, and I agree it is not a two-lens disagreement to adjudicate here — a false premise underlying an owner ruling is an owner-level correction, not a design-panel vote. **Seconding the escalation to Gate 4 review**, and endorsing their proposed control (a companion test asserting a secret placed in a phase title *does* appear, pinning the ruling so that overruling it turns a test red and names the decision rather than silently narrowing an allowlist builder).
+
+One consumability-flavored addition on top, predicted in adversarial's own §9.4 and worth confirming now rather than waiting for them to raise it again: ARCH's own note that the dashboard home card fetches a full `describe` per card is a real per-card payload-size question, but **not one this round should design against** — it is exactly the kind of surface my lens's own economy argument (and the shared Karpathy discipline both lenses invoke) says to leave alone until measured. A `brief` projection proposed now, before any home-card payload size is actually observed to matter, is speculative machinery of precisely the kind ADR-018's declined-cache precedent already rejected once this iteration. If the measurement later shows it matters, that is a future slice's design item, not this one's — I decline to propose it, matching adversarial's own prediction of where I'd land.
+
+---
+
+## Self-sustainability
+
+**§1 — `MODEL_UNMAPPED`: concede the rationale correction, hold the conclusion.** My r1 Self-sustainability §2 argued an unmapped `graphAnalyzer.model` "silently degrades" or "fails silently forever." Adversarial's Q9 re-derived the actual code path this round (`providerOf` → `undefined` → `thinkingFor` disabled (harmless, already the default) → `curateToolsForProvider(tools, undefined)` returns `tools` **unchanged**, the `provider === undefined` early-return branch — `claude-agent-sdk-client.ts:223-227`, which I re-verified today and confirms their read exactly) → dispatch goes to the LiteLLM proxy with a model string that does not exist there → `ok:false, reason:'terminal'`. So today's actual behavior is **loud but misattributed** (every diagram lands `unavailable/PROVIDER_ERROR`, and the operator debugs their provider instead of their config), not silent. **I own this correction**: my r1 argument for *why* the state was bad was wrong; the state itself — an operator burning a wasted provider round-trip per registration while debugging the wrong layer — is still bad, and my r1's *conclusion* (a boot-time warning plus a short-circuiting note code) still holds, now for the corrected reason.
+
+I also accept the mechanism they pinned in place of what my r1 left unspecified: validate against `isKnownAlias(alias, aliasNames)` (`params/contract.ts:94`, re-read today — `if (aliasNames.size === 0) return true; if (OPENROUTER_PASSTHROUGH.test(alias)) return true; return aliasNames.has(alias);`) with `aliasNames` built the **same way run-admission builds it**, `new Set(Object.keys(config?.aliases ?? DEFAULT_ALIASES))` at `server.ts:1327` (re-read today, confirmed — the comment there explicitly documents this is the *admission-time* set, not the catalog's deliberately-empty-by-default `aliasNames`). Using the catalog's set — which my r1 did not distinguish from the admission set — would have wired the boot check to an always-inert predicate on the documented default deployment; that would have been a config-validation feature that validates nothing, the exact "wired but degraded, no signal" failure mode this dimension exists to catch, self-inflicted by my own proposal. Good catch, no residual disagreement — this closes Q9/D-none.
+
+**§2 — the zero-config `cwd`-undefined divergence: accept as this round's most important new finding, independently verified.** My r1 Self-sustainability §1 argued the analyzer's scratch-`cwd` was unpinned and load-bearing for ADR-020's non-empty-`tools` accepted-risk case; adversarial's r1 rejected an `invoke()`-level `cwd` widening (correctly — I have no quarrel with that rejection, then or now) but their r2 goes further and finds a gap neither r1 file had: **on a zero-config deployment, `config.workRoot` is legitimately `undefined`** (`main.ts:94` guards `assertWorkRootIsolated` only `if (workRoot !== undefined)`; re-read today, confirmed), and `main.ts:207`'s `cwd: config.workRoot` passes that `undefined` straight through **unguarded** to the constructed gateway. I independently traced the consequence today rather than take their word for it: `claude-agent-sdk-client.ts`'s own docblock at the `canUseTool` boundary (re-read today, ~line 246) states plainly — *"No workspace root known at all (e.g. a direct unit-tier call with neither `req.workspace` nor a configured `cwd`) → nothing to enforce against, allow (unchanged legacy behavior)."* That branch was written and accepted as a unit-tier-only edge case. **`GraphAnalyzer` is v23's first production caller that omits `workspace` by design** (ARCH-079's own invariant), so on the documented, supported combination of {zero-config workRoot} + {sdk gateway} + {non-Anthropic alias} + {operator sets `graphAnalyzer.tools` non-empty, ADR-020's own accepted-risk case}, the result is a Bash-capable session (DES-120's curation-widens-empty-to-Bash bug, independently, if not also separately fixed) with **the path-jail hook itself standing down**, not merely a jail rooted at an unexpected directory. That is strictly worse than what either r1 file was arguing about — my r1 worried about *where* the jail points; this finding is about the jail *not engaging at all*.
+
+This is squarely my dimension's territory, not just adversarial's — a config-accepted-risk state silently degrading from "jailed at an unexpected place" to "no jail" with zero operator-visible signal is exactly the closed-loop-autonomy failure this lens exists to name: an operator who read ADR-020's promise and enabled `graphAnalyzer.tools` in good faith gets a materially different security posture than what they were told, and nothing tells them. **Accept their proposed fix in full**: when the analyzer's jail root is not resolvable (no `workRoot`), force the analyzer's effective `tools` to `[]` at construction and say so on the boot line — combined with my own r1's ADR-020-warning amendment (the warning must name the **effective post-curation** set, not the configured one, so an operator sees what they actually got in both the zero-config and the mis-curated-non-empty cases). I extend it by exactly one framing line for the design doc, not by new mechanism: this rule and the `cwd` repoint (§Self-sustainability §1's sibling proposal, `main.ts:207` → `join(workRoot, '.graph-analyzer-scratch')`) are two faces of the same invariant — *the analyzer's tool surface must never exceed what its current jail can actually enforce* — and should be written as one sentence in the design doc rather than two independent bullet fixes, so a future reader implementing one doesn't assume the other is unrelated. I do **not** propose widening this into a general "warn whenever `workRoot` is undefined" boot check across the whole engine — that reopens the already-recorded unwired-security-modules debt tracked separately from this iteration, and both lenses' own declining discipline (my Self-sustainability §3 below, their §7 Karpathy tie-break) argues against scope-creeping a v23 slice into a pre-existing, differently-scoped hardening backlog item.
+
+**§3 — `NOT_GENERATED`: accept, closes D3's second half.** Inseparable from the no-boot-backfill decision (DES-127 B1, held unchallenged in both rounds): a pre-v23 workflow version has no diagram row and never will unless an owner calls `workflow_regenerate_diagram`. A read-synthesized `NOT_GENERATED` note code is exactly the self-sustainability-adjacent discoverability signal my r1 Self-sustainability §2 was reaching for when I flagged the migration gap — except adversarial's own volunteered addition (the boot line naming the count of no-diagram versions plus the exact recovery command, "zero model calls, all of the discoverability") is a *better* answer to the same concern than an automatic backfill would have been, because it keeps the closed-loop property (REQ-104's non-blocking, non-spending boot) while still giving an operator a concrete, actionable next step instead of silence. Accept both the code and the boot line as a pair; no residual disagreement.
+
+---
+
+## Remaining disagreements
+
+None with adversarial's lens. Every item on the scoreboard above resolved this round: Q1–Q9 held or conceded with reasons stated, D2 resolved as a conditional package (fold-in ships with `gateFail`, or neither ships), D3 accepted in full (both members), D4 seconded as an owner escalation rather than adjudicated here. The one open item going into Gate 4 is D4 itself, and it is explicitly not a disagreement *between the two lenses* — both rounds of both files agree on the fact pattern and the recommended control (the secret-in-phase-title pinning test); it needs the owner's confirmation of the 一律公開 ruling's scope, which is outside what either lens can settle by argument.
+
+If the synthesizer's merge produces a different outcome on the D2 conditional than "fold-in ships with `gateFail`, or `MALFORMED_COMPLETION` returns," that is a new disagreement this file does not yet have a position on — flagging the conditional explicitly here so a future round doesn't have to re-derive why the two are coupled.

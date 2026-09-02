@@ -821,8 +821,11 @@ status: draft
 ## v23 — Author/user separation part 3: `workflow_describe`, the analyzer-drawn ASCII diagram, retiring the skeleton (REQ-101..106 → ARCH-077..086, ADR-015..022)
 
 **Landing order (edges are load-bearing, not preferences):**
-`113 → 114 → 115 → 116 → 117 → 118 → 119 → 120 → 121`, with `122` after `117`, `123` any time before `120`,
+`113 → 114 → 115 → 116 → 125 → 117 → 118 → 119 → 120 → 121`, with `122` after `117`, `123` any time before `120`,
 and `124` last (it is a Gate 7.5 item, not a code item). Rationale for each edge is on the card.
+**`125` (adjudication #1, phases go public) lands before `117` and `118`**: the diagram's `allowedLabels`
+must point at a field that is *already* public, and `118` edits the same file — landing them in the other
+order opens a window in which one response's key oracle rejects what its own `diagram` string renders.
 
 ### TASK-113 — `src/diagram-gate.ts`: the pure allowlist gate and `DIAGRAM_CODEPOINTS`
 - **status:** draft
@@ -839,7 +842,7 @@ and `124` last (it is a Gate 7.5 item, not a code item). Rationale for each edge
 - **traces:** ARCH-077
 - **files:** src/workflow-catalog.ts, tests/unit/workflow-diagrams-store.test.ts
 - **des:** DES-130, DES-127
-- **dod:** `npx vitest run tests/unit/workflow-diagrams-store.test.ts` green against an in-memory `Database` — `putDiagramPending`/`putDiagramResult`/`getDiagram`/`listPendingDiagrams` round-trip; a `v3` read never returns the `v4` row; `deregister('n')` removes the workflow **and** its diagram rows in one transaction (assert: a mid-transaction throw leaves *both* present); `getDiagram` on a version registered before v23 returns `null`.
+- **dod:** `npx vitest run tests/unit/workflow-diagrams-store.test.ts` green against an in-memory `Database` — `putDiagramPending`/`putDiagramResult`/`getDiagram`/`listPendingDiagrams` round-trip; a `v3` read never returns the `v4` row; `deregister('n')` removes the workflow **and** its diagram rows in one transaction (assert: a mid-transaction throw leaves *both* present); `getDiagram` on a version registered before v23 returns `null`; **`putDiagramResult` for a `(name, version)` with no surviving `workflow_versions` row is a silent no-op** (assert `getDiagram` is `null` **and** `SELECT COUNT(*) FROM workflow_diagrams` is `0`); `putDiagramPending(n, v, at)` stamps `generated_at` while `putDiagramPending(n, v)` leaves it `NULL`.
 - **estimate:** S
 - **iter:** v23
 - **ARCH-077's "`maxWorkflowVersions` prune" does not exist** — the ceiling *refuses* registration (`VERSION_CEILING_EXCEEDED`, `workflow-catalog.ts:342-346`). `deregister()`'s transaction is the **only** deletion path. Do not implement a prune hook (see DES-130).
@@ -867,22 +870,22 @@ and `124` last (it is a Gate 7.5 item, not a code item). Rationale for each edge
 ### TASK-117 — `src/graph-analyzer.ts`: the analyzer — queue, single-flight, own retry loop, note enum, journal line, isolation, boot validation
 - **status:** draft
 - **traces:** ARCH-079
-- **files:** src/graph-analyzer.ts, src/main.ts, tests/unit/graph-analyzer.test.ts, tests/unit/graph-analyzer-wire.test.ts
+- **files:** src/graph-analyzer.ts, src/main.ts, tests/unit/graph-analyzer.test.ts, tests/unit/graph-analyzer-wire.test.ts, tests/integration/graph-analyzer-late-write.test.ts
 - **des:** DES-131, DES-121, DES-122, DES-123, DES-129, DES-127
-- **dod:** `npx vitest run tests/unit/graph-analyzer.test.ts tests/unit/graph-analyzer-wire.test.ts` green — with a stub `GatewayClient` and `runInline`: `enqueue()` returns **before** the job runs and writes the `pending` row; each of the ten `DiagramNoteCode` values is produced by its own literal input row; a never-resolving `queryImpl` + fake timers settles `unavailable/TIMEOUT` after **exactly** `1 + retries` calls; a provider error whose message contains the secret literal produces a journal **string** that does not contain it; a second `regenerate` while `pending` enqueues **no** second job; a failed regenerate leaves a prior `ready` row untouched. And in `graph-analyzer-wire.test.ts`, at `queryImpl` level with a **non-Anthropic alias**, the built `options` object literally equals `tools: []`, `allowedTools: []`, `settingSources: []`, `strictMcpConfig: true`, empty `mcpServers`, thinking disabled, `cwd` = `<workRoot>/.graph-analyzer-scratch`.
+- **dod:** `npx vitest run tests/unit/graph-analyzer.test.ts tests/unit/graph-analyzer-wire.test.ts` green — with a stub `GatewayClient` and `runInline`: `enqueue()` returns **before** the job runs and writes the `pending` row; each of the ten `DiagramNoteCode` values is produced by its own literal input row; a never-resolving `queryImpl` + fake timers settles `unavailable/TIMEOUT` after **exactly** `1 + retries` calls; a provider error whose message contains the secret literal produces a journal **string** that does not contain it; a second `regenerate` while `pending` enqueues **no** second job; a failed regenerate leaves a prior `ready` row untouched; and `sweepAtBoot()` under a `FixedClock` produces **all three** shapes from DES-131 (unstamped ⇒ requeue **and** stamp; stamped before the boot instant ⇒ settle `unavailable/RETRIES_EXHAUSTED` with **no** model call; stamped at/after the boot instant ⇒ untouched). And in `graph-analyzer-wire.test.ts`, at `queryImpl` level with a **non-Anthropic alias**, the built `options` object literally equals `tools: []`, `allowedTools: []`, `settingSources: []`, `strictMcpConfig: true`, empty `mcpServers`, thinking disabled, `cwd` = `<workRoot>/.graph-analyzer-scratch`. And `npx vitest run tests/integration/graph-analyzer-late-write.test.ts` green on the **real `setImmediate`** path (DES-130): enqueue → `deregister(name)` → release the gateway fake → `getDiagram()` is `null` and `SELECT COUNT(*) FROM workflow_diagrams` is `0`.
 - **estimate:** L
 - **iter:** v23
-- Depends on TASK-113 (gate), TASK-114 (table), TASK-115 (bindings), TASK-116 (curation). **The `main.ts` scratch-`cwd` repoint, the no-`workRoot` forced-`tools:[]` downgrade, and the two boot lines land inside THIS task**, not as follow-ups — they are constructor-time properties of the class this task builds (both panel groups). The wire test is **not optional next to the stub tests**: TASK-116's bug lives inside the SDK client's `options` builder and no stub can see a `cfg.tools → opts.tools` mis-map.
+- Depends on TASK-113 (gate), TASK-114 (table), TASK-115 (bindings), TASK-116 (curation), TASK-125 (`phases` public before the allowlist points at them). **The late-write test must stay on the real `setImmediate` path** — the `schedule` seam that makes every other analyzer test deterministic would make this one vacuous; a later "make the suite faster" pass must not seam it. **The `main.ts` scratch-`cwd` repoint, the no-`workRoot` forced-`tools:[]` downgrade, and the two boot lines land inside THIS task**, not as follow-ups — they are constructor-time properties of the class this task builds (both panel groups). The wire test is **not optional next to the stub tests**: TASK-116's bug lives inside the SDK client's `options` builder and no stub can see a `cfg.tools → opts.tools` mis-map.
 
 ### TASK-118 — `projectWorkflowDescribe` + `WorkflowDescribeView` + `EXPECTED_DESCRIBE_KEYS`
 - **status:** draft
 - **traces:** ARCH-081
 - **files:** src/workflow-view.ts, tests/unit/workflow-describe-projection.test.ts
 - **des:** DES-125, DES-127
-- **dod:** `npx vitest run tests/unit/workflow-describe-projection.test.ts` green — `Object.keys(deepFlatten(view)).sort()` equals the **literal** `EXPECTED_DESCRIBE_KEYS` (two-sided: an added field fails, a dropped `lockedKeys`/`diagramStatus` fails); all three `diagramStatus` values are asserted literally; `lockedKeys` is `LOCKED_KEYS` imported from `src/params/contract.ts`, not six re-typed strings; `diagramStale` is `true` only for a `ready` row whose `bindings_fp` differs from the live fp, and `false` for `pending`/`unavailable`/no-row; `tsc` rejects assigning a `script` field.
+- **dod:** `npx vitest run tests/unit/workflow-describe-projection.test.ts` green — `Object.keys(deepFlatten(view)).sort()` equals the **literal** `EXPECTED_DESCRIBE_KEYS`, which **includes `phases`** (two-sided: an added field fails, a dropped `phases`/`lockedKeys`/`diagramStatus` fails); `diagramGeneratedAt` is `null` for every non-`ready` row **including a swept `pending` row whose `generated_at` is stamped**; all three `diagramStatus` values are asserted literally; `lockedKeys` is `LOCKED_KEYS` imported from `src/params/contract.ts`, not six re-typed strings; `diagramStale` is `true` only for a `ready` row whose `bindings_fp` differs from the live fp, and `false` for `pending`/`unavailable`/no-row; `tsc` rejects assigning a `script` field.
 - **estimate:** M
 - **iter:** v23
-- Depends on TASK-115. Pure — no clock, no I/O, no auth, **no `viewerIsOwner`** (a parameter that cannot change the output is one that will eventually be made to; both groups agreed to drop it).
+- Depends on TASK-115 and TASK-125 (same file; `phases` must already be on the public allowlist). Pure — no clock, no I/O, no auth, **no `viewerIsOwner`** (a parameter that cannot change the output is one that will eventually be made to; both groups agreed to drop it).
 
 ### TASK-119 — the facade: `workflow_describe` (any principal) and `workflow_regenerate_diagram` (owner-gated)
 - **status:** draft
@@ -899,7 +902,7 @@ and `124` last (it is a Gate 7.5 item, not a code item). Rationale for each edge
 - **traces:** ARCH-083, ARCH-051
 - **files:** src/server.ts, src/mcp-facade.ts, src/workflow-view.ts, tests/unit/no-skeleton-surface.test.ts, tests/integration/workflow-describe-http.test.ts
 - **des:** DES-132, DES-125
-- **dod:** `npx vitest run tests/unit/no-skeleton-surface.test.ts tests/integration/workflow-describe-http.test.ts` green — the guard greps `src/**` case-insensitively for `skeleton` and fails on any hit outside the **exactly three** allowlisted internal sites (`workflow-meta.ts` `parseWorkflowSkeleton`, `dashboard.ts` `layoutGraph`, `server.ts`'s `/api/runs/:id/dag` branch), a fourth entry fails the test, and **no** advertised tool description or input-schema string contains the word; and the four-surface anti-drift table registers ONE secret-bearing script and asserts the **exact secret literal** absent from `JSON.stringify` of `workflow_get` (non-owner), `workflow_describe`, `GET /api/workflows/:name` and `GET /api/workflows/:name/describe`, with the MCP tool and the HTTP route returning the **identical** object.
+- **dod:** `npx vitest run tests/unit/no-skeleton-surface.test.ts tests/integration/workflow-describe-http.test.ts` green — the guard greps `src/**` case-insensitively for `skeleton` and fails on any hit outside the **exactly three** allowlisted internal sites (`workflow-meta.ts` `parseWorkflowSkeleton`, `dashboard.ts` `layoutGraph`, `server.ts`'s `/api/runs/:id/dag` branch), a fourth entry fails the test, and **no** advertised tool description or input-schema string contains the word; and the four-surface anti-drift table registers ONE secret-bearing script and asserts the **exact secret literal** absent from `JSON.stringify` of `workflow_get` (non-owner), `workflow_describe`, `GET /api/workflows` (the list — **there is no `GET /api/workflows/:name` route in this codebase**, verified `server.ts:1035-1039`) and `GET /api/workflows/:name/describe`, with the MCP tool and the HTTP route returning the **identical** object — the route body compared against the MCP tool invoked with `ctx = {authEnabled: true, principal: null}` (the route is **unauthenticated**; comparing against an *owner* call passes for the wrong reason and hides the divergence the test exists to catch).
 - **estimate:** L
 - **iter:** v23
 - Depends on TASK-119. **Write the guard with its three-entry allowlist FIRST, watch it fail on the current tree, then delete** — a guard written after the deletion is a guard fitted to whatever the deletion happened to leave, which is how this ledger's most-repeated defect (nine instances across v21/v22) stayed at nine. `GET /api/runs/:id/dag` is **untouched** and keeps its `authEnabled ? [] : parseWorkflowSkeleton(...)` line (v22 finding H2 closed that hole; v23 must not re-open it). The parity test is **one** test spanning both files — split by file it becomes two tests each proving half a property.
@@ -919,7 +922,7 @@ and `124` last (it is a Gate 7.5 item, not a code item). Rationale for each edge
 - **traces:** ARCH-085
 - **files:** src/main.ts, rwe.config.example.json, DEPLOY.md, tests/unit/compose-config-v2-wiring.test.ts
 - **des:** DES-134
-- **dod:** `npx vitest run tests/unit/compose-config-v2-wiring.test.ts` green — the new row proves a `graphAnalyzer` block in `rwe.config.json` reaches `ServerConfig` **through `composeConfig()`**, each of the six keys defaulted at exactly one place, and `enabled:false` still yields a successful registration; `rwe.config.example.json` carries the block and DEPLOY.md documents the six keys, the `(1 + graphAnalyzer.retries) × (1 + gateway retries)` worst-case call formula, and the model class the shipped default `systemPrompt` assumes.
+- **dod:** `npx vitest run tests/unit/compose-config-v2-wiring.test.ts` green — the new rows prove a `graphAnalyzer` block in `rwe.config.json` reaches `ServerConfig` **through `composeConfig()`**, each of the **nine** keys (`enabled`, `model`, `systemPrompt`, `tools`, `timeoutMs`, `retries`, **`maxBytes`, `maxLines`, `maxQueueDepth`**) defaulted at exactly one place, and `enabled:false` still yields a successful registration; `rwe.config.example.json` carries the block and DEPLOY.md documents the nine keys, the `(1 + graphAnalyzer.retries) × (1 + gateway retries)` worst-case call formula, the model class the shipped default `systemPrompt` assumes, and the one sentence saying registration now sends the **workflow script itself** to the configured provider.
 - **estimate:** M
 - **iter:** v23
 - Depends on TASK-117. **All four artifacts in one task by decree** — this engine's recurring defect (v11 `updateFlagPath`, v15 `auth`, v16 `workspaceTtlMs`) is exactly "the config-forward and its wiring-test row landed in different changes". A unit test alone does **not** close REQ-104; that is TASK-124.
@@ -929,10 +932,10 @@ and `124` last (it is a Gate 7.5 item, not a code item). Rationale for each edge
 - **traces:** ARCH-086
 - **files:** docs/AUTHORING.md, src/server.ts, tests/unit/tool-schema-drift.test.ts
 - **des:** DES-135
-- **dod:** `npx vitest run tests/unit/tool-schema-drift.test.ts` green — `workflow_register`'s `script` parameter description contains the four authoring rules in condensed form plus the `docs/AUTHORING.md` pointer, and the new string is pinned by ARCH-051's structured drift-lock; `docs/AUTHORING.md` exists and states all four rules including the phase-name rule.
+- **dod:** `npx vitest run tests/unit/tool-schema-drift.test.ts` green — `workflow_register`'s `script` parameter description contains the four authoring rules in condensed form plus the `docs/AUTHORING.md` pointer, and the new string is pinned by ARCH-051's structured drift-lock; `docs/AUTHORING.md` exists and states all four rules including rule (4) in its post-adjudication wording (**phase titles are visible to every principal who can see the workflow** — keep secrets and distinctive prose out of them), plus the standing note that registration sends the script to the configured LLM provider and `graphAnalyzer.enabled:false` is the control.
 - **estimate:** S
 - **iter:** v23
-- Independent of every other v23 task and **must not be scheduled last**: the phase-name rule is the *sole* control over the disclosure REQ-102/A3 authorises (see DES-135 and the Decision rationale escalation). Registration gains **no** new rejection — this is documentation, deliberately not enforcement.
+- Independent of every other v23 task and **must not be scheduled last**: rule (4) is the *sole* control over a disclosure the owner has now ruled deliberate (adjudication #1, 2026-09-02 — the escalation is **resolved**, not open). Registration gains **no** new rejection — this is documentation, deliberately not enforcement.
 
 ### TASK-124 — REQ-104's Gate 7.5 real run: an operator edits the analyzer config and the diagram visibly changes with no redeploy
 - **status:** draft
@@ -943,3 +946,13 @@ and `124` last (it is a Gate 7.5 item, not a code item). Rationale for each edge
 - **estimate:** S
 - **iter:** v23
 - Its own task line at Gate 7.5, not a bullet inside TASK-122. **No unit test may be written that claims to prove REQ-104** — a unit assertion reads its value off the same path that would be broken, which is the defect this requirement is named after.
+
+### TASK-125 — adjudication #1: `phases` joins the public allowlist on every surface (amends v22's shipped REQ-100 projection)
+- **status:** draft
+- **traces:** ARCH-075, ARCH-081
+- **files:** src/workflow-view.ts, tests/unit/workflow-view.test.ts
+- **des:** DES-136
+- **dod:** `npx vitest run tests/unit/workflow-view.test.ts` green — `WorkflowPublicView` carries `phases: Array<{title: string}>`, `EXPECTED_NON_OWNER_KEYS` contains the literal `'phases'` as **one** entry (the test's own `deepFlatten` does not recurse into arrays — `workflow-view.test.ts:29`), the two-sided oracle still fails on both a leaked extra field and a dropped one, and a non-owner projection of a row whose `meta.phases[0].title` is `SEKRIT-9F2A` **does** contain that literal while a secret in the *script body* is still absent (two distinct fixtures, not one).
+- **estimate:** S
+- **iter:** v23
+- **Lands before TASK-117 and TASK-118.** Owner ruling 一律公開 (2026-09-02; recorded in 04-design.md "Orchestrator adjudication (v23) #1" and as REQ-100's `[AMENDED v23]` block): serving phase titles inside the diagram while `workflow_get` withheld them is REQ-100's own "cannot be side-stepped by asking a different endpoint" clause violated in mirror image. **`server.ts` is deliberately not in `files:`** — the only other masking site is the `/api/workflows/:name/skeleton` branch (`:1075-1084`), which TASK-120 **deletes** whole; patching a route to unmask and then deleting it is work with no surviving artifact. The window between the two tasks leaves that dying route *stricter* than the ruling, never looser. Its stale "phases are masked" comment dies with it, and DES-132 carries the one sentence that stops anyone re-adding masking to its successor.

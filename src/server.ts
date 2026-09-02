@@ -29,7 +29,7 @@ import { WebhookRegistry } from './webhook-registry.js';
 import { CasStore, isValidSha256Hex, isValidNamespace } from './cas-store.js';
 import type { SecretValueProvider } from './secret-resolver.js';
 import { isAllowedHost, isAllowedOrigin, isLoopback, isLoopbackPeer } from './net-guard.js';
-import { parseMeta, parseWorkflowSkeleton } from './workflow-meta.js';
+import { parseWorkflowSkeleton } from './workflow-meta.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
 import { AssetSyncService, classifyAsset, type AssetPush, type AssetKind } from './asset-sync.js';
 import { classifyTransport, RealMcpProbe, type McpProbe, type McpServerConfig } from './mcp-probe.js';
@@ -52,6 +52,7 @@ const ENGINE_VERSION = resolveEngineVersion();
 import { buildDashboardModel, layoutGraph, buildHomeView, computeWorkflowMetrics } from './dashboard.js';
 import { DASHBOARD_HTML, buildDashboardHtml } from './dashboard-page.js';
 import type { RunStore } from './run-store.js';
+import type { GraphAnalyzerConfig } from './graph-analyzer.js';
 
 export interface ServerConfig {
   bind?: string;   // default '127.0.0.1'
@@ -162,6 +163,11 @@ export interface ServerConfig {
   // convention as the three ceilings above. Goes into the SAME WorkflowCatalogOpts.ceilings object
   // (no new plumbing); absent -> WorkflowCatalog treats it as uncapped (front door, not a GC).
   maxWorkflowVersions?: number;
+  // v23 (DES-134, ARCH-085, TASK-122): the graph-analyzer harness block, forwarded through
+  // composeConfig() as a WHOLE object, unmodified (same convention as maxWorkflowVersions above) —
+  // Partial because every key defaults at the ONE site that actually constructs the GraphAnalyzer
+  // (TASK-120), never here.
+  graphAnalyzer?: Partial<GraphAnalyzerConfig>;
 }
 
 export interface Server {
@@ -191,6 +197,10 @@ const TOOL_NAMES = [
   // v22 (REQ-097, DES-111/DES-114, TASK-109): NEW tool — moves a named channel pointer.
   'workflow_publish',
   'workflow_get',
+  // v23 (REQ-101/102, DES-125/126/132, ARCH-081/082/083, TASK-119/120): the ONE explain surface
+  // (any principal, same shape) + the owner-gated diagram-regeneration kick.
+  'workflow_describe',
+  'workflow_regenerate_diagram',
   'workflow_artifacts',
   // v1.5/v2: byte-fetch a workspace file chunk (REQ-022) + purge a run's workspace (REQ-026).
   'workflow_artifact_get',
@@ -278,7 +288,11 @@ const SCRIPT_DSL_DOC =
   'The `model` string is either a curated alias (see models_list entries\' `alias`, e.g. "opus"/"sonnet") or the join `provider + "/" + model` from a models_list entry (e.g. "openrouter/google/gemma-3-27b-it:free"); omitted → the "default" alias. ' +
   'The script\'s `return` value is exactly what workflow_result later yields. ' +
   'Optional: `export const meta = { name, description, phases }` (a pure literal) supplies workflow_list metadata + dashboard phase names — omit it and the script still runs (treated as empty, not an error). ' +
-  'Minimal example: `const r = await agent("Summarize: " + args.text, { model: "sonnet" }); return { summary: r };`';
+  'Minimal example: `const r = await agent("Summarize: " + args.text, { model: "sonnet" }); return { summary: r };` ' +
+  // v23 (DES-135, TASK-123, ARCH-051 drift-lock): the condensed authoring rules — full text in
+  // docs/AUTHORING.md, the only guidance a schema-only cold MCP client ever sees.
+  'Authoring rules (docs/AUTHORING.md has the full text): (1) declare every tunable knob in `meta.params` rather than hard-coding it; (2) never read a param key the contract does not declare; (3) the six LOCKED_KEYS (prompt/tools/skills/mcp/workdir/cwd) are engine-owned — do not redeclare them; (4) phase titles are visible to every principal who can see the workflow (including the generated diagram) — keep secrets/distinctive prose out of phase titles. ' +
+  'Registering a workflow sends the script itself to the configured LLM provider to draw a diagram; set graphAnalyzer.enabled:false to turn this off.';
 
 const TOOL_METADATA: Record<ToolName, ToolMeta> = {
   workflow_run: {
@@ -443,7 +457,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     },
   },
   workflow_get: {
-    description: "Returns a registered workflow's full detail — {name, version, createdAt, description (its purpose, from meta.description), phases, script, skeleton, owner (registration principal), defaults (harness defaults bound at registration), params (the tunable-parameter contract declared via meta.params — always present, ceiling-bounded; a script with no params block reads back the canonical 4-knob contract)} — so a client can understand what it does, inspect its owner, query its registered harness defaults and tunable-parameter contract, and see its predicted DAG (a static scan of phase/agent/parallel/workflow calls) BEFORE deciding to reuse it or author a new one. Unknown name → WORKFLOW_NOT_FOUND; a known name with an unresolvable `version` → UNKNOWN_VERSION.",
+    description: "Returns a registered workflow's full detail — {name, version, createdAt, description (its purpose, from meta.description), phases, script, owner (registration principal), defaults (harness defaults bound at registration), params (the tunable-parameter contract declared via meta.params — always present, ceiling-bounded; a script with no params block reads back the canonical 4-knob contract)} — so a client can understand what it does, inspect its owner, and query its registered harness defaults and tunable-parameter contract BEFORE deciding to reuse it or author a new one. Unknown name → WORKFLOW_NOT_FOUND; a known name with an unresolvable `version` → UNKNOWN_VERSION.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -451,6 +465,34 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
         version: { type: 'string', description: 'Optional explicit version to inspect (e.g. "v2"); omitted reads the `release` channel\'s version. Unknown version -> UNKNOWN_VERSION.' },
       },
       required: ['name'],
+    },
+  },
+  // v23 (REQ-101, DES-125/126, ARCH-081/082, TASK-119/120): the ONE explain surface — every
+  // principal (owner or not) gets the SAME shape; the script itself is deliberately never in it.
+  workflow_describe: {
+    description: 'Returns the one public explain view for a registered workflow — {name, version, resolvedBy (how the version was picked: "version"|"channel"|"default-release"), channels{release,beta}, versions, description, phases ([{title}] — visible to every principal, including the diagram), params (the tunable-parameter contract), lockedKeys (the engine-owned param keys), owner, reportProblem, triggers (live schedule/webhook/chain bindings, current as of this call), diagram (an ASCII structure-only diagram drawn by a configured LLM, or null), diagramStatus ("ready"|"pending"|"unavailable"), diagramNote (why, when not ready), diagramGeneratedAt, diagramStale (true when the diagram was drawn against trigger bindings that have since changed)}. The raw workflow script is deliberately NOT part of this response, on any principal. Unknown name → WORKFLOW_NOT_FOUND; an unresolvable `version`/`channel` selector → UNKNOWN_VERSION | INVALID_CHANNEL | CHANNEL_UNPUBLISHED | DANGLING_CHANNEL.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The registered workflow to describe.' },
+        version: { type: 'string', description: 'Optional explicit version (e.g. "v2"). Wins over `channel`. Unknown version -> UNKNOWN_VERSION.' },
+        channel: { type: 'string', enum: ['beta', 'release'], description: 'Named channel to describe. Ignored when `version` is supplied. Omitted -> defaults to `release`. An unpublished channel -> CHANNEL_UNPUBLISHED; a pointer to a pruned version -> DANGLING_CHANNEL.' },
+      },
+      required: ['name'],
+    },
+  },
+  // v23 (REQ-102, DES-126/127/131, ARCH-082, TASK-119/120): owner-gated kick of a diagram
+  // regeneration for one already-registered (name, version); idempotent while one is in flight.
+  workflow_regenerate_diagram: {
+    description: 'Kicks off (or, if one is already in flight for this exact (name, version), no-ops idempotently against) an asynchronous re-draw of the workflow_describe diagram. Returns {queued, status:"pending"} immediately — never waits for the draw. `version` is required (never "whatever release currently points at"). Only the workflow\'s owner may call this (non-owner → NOT_WORKFLOW_OWNER); ANALYZER_DISABLED when graphAnalyzer.enabled:false; unknown name/version → WORKFLOW_NOT_FOUND | UNKNOWN_VERSION.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The registered workflow name.' },
+        version: { type: 'string', description: 'An already-registered version of this workflow to regenerate the diagram for.' },
+        principal: { type: 'string', description: 'Caller identity (email) for the ownership gate. When auth is enabled this is resolved from the bearer; when absent, the server uses null (auth-disabled or loopback path).' },
+      },
+      required: ['name', 'version'],
     },
   },
   workflow_artifacts: {
@@ -889,6 +931,17 @@ async function callTool(
       return facade.workflow_publish(pubArgs, effectivePrincipal);
     }
     case 'workflow_get': return facade.workflow_get(args as { name: string; version?: string }, { authEnabled, principal });
+    // v23 (REQ-101, DES-126, TASK-120): any principal, same shape — `ctx` is threaded for
+    // signature consistency with every other read tool (ADR-012) but makes no masking decision.
+    case 'workflow_describe': return facade.workflow_describe(args as { name: string; version?: string; channel?: 'beta' | 'release' }, { authEnabled, principal });
+    // v23 (REQ-102, DES-126, TASK-120): owner-gated — same principal-threading pattern as the
+    // catalog writes (auth-resolved principal wins; args.principal fallback only while auth is off).
+    case 'workflow_regenerate_diagram': {
+      const { principal: argPrincipal, ...regenArgs } = args as { name: string; version: string; principal?: string | null };
+      const effectivePrincipal = resolveWritePrincipal(principal, authEnabled, argPrincipal);
+      if (authEnabled && effectivePrincipal === null) return principalRequiredEnvelope();
+      return facade.workflow_regenerate_diagram(regenArgs, effectivePrincipal);
+    }
     case 'workflow_artifacts': return facade.workflow_artifacts(args as { runId: string });
     case 'workflow_artifact_get': return facade.workflow_artifact_get(args as { runId: string; path: string; offset?: number; length?: number });
     case 'workspace_purge': return facade.workspace_purge(args as { runId: string });
@@ -1022,9 +1075,9 @@ async function handleDashboardRequest(
   facade: McpFacade,
   systemInfo: SystemInfoSampler,
   buildModelCatalog: () => Promise<ModelEntry[]>,
-  // v22 (DES-115, REQ-100, TASK-111): the skeleton route is script-derived and has no bearer/identity
-  // plumbing at all (a browser GET carries none) — so under auth it is unconditionally the
-  // non-owner/masked row; auth off keeps the pre-v22 surface.
+  // v22 (DES-115, REQ-100, TASK-111): several dashboard routes are script-derived and have no
+  // bearer/identity plumbing at all (a browser GET carries none) — so under auth those routes are
+  // unconditionally the non-owner/masked row; auth off keeps the pre-v22 surface.
   authEnabled = false,
 ): Promise<void> {
   if (req.method !== 'GET') {
@@ -1034,7 +1087,11 @@ async function handleDashboardRequest(
   const path = (req.url ?? '').split('?')[0]!;
   const agentMatch = /^\/api\/runs\/([^/]+)\/agents\/([^/]+)$/.exec(path);
   const dagMatch = /^\/api\/runs\/([^/]+)\/dag$/.exec(path);
-  const skeletonMatch = /^\/api\/workflows\/([^/]+)\/skeleton$/.exec(path);
+  // v23 (DES-125/132, REQ-101, ARCH-083, TASK-120): replaces the deleted /skeleton route. This
+  // route carries no bearer/identity at all (a browser GET carries none), so — unlike /skeleton,
+  // which branched on `authEnabled` to choose WHAT to disclose — `workflow_describe` makes no
+  // masking decision on `ctx` at all: every principal gets the same shape (DES-125).
+  const describeMatch = /^\/api\/workflows\/([^/]+)\/describe$/.exec(path);
   const runMatch = /^\/api\/runs\/([^/]+)$/.exec(path);
   const issuesDetailMatch = /^\/api\/issues\/(\d+)$/.exec(path);
   try {
@@ -1070,20 +1127,20 @@ async function handleDashboardRequest(
       sendJson(res, 200, await runManager.catalog.list());
       return;
     }
-    // v9 (REQ-062): a registered workflow's predicted static DAG skeleton (inspect before running).
-    if (skeletonMatch) {
-      const name = decodeURIComponent(skeletonMatch[1]!);
-      try {
-        const full = await runManager.catalog.resolveDetail(name, {});
-        const meta = parseMeta(full.script);
-        // v22 (DES-115, REQ-100, TASK-111): skeleton/phases are script-derived and masked by
-        // default — this route carries no bearer, so under auth it is always the non-owner row.
-        if (authEnabled) {
-          sendJson(res, 200, { name, version: full.version, description: meta.description });
-        } else {
-          sendJson(res, 200, { name, version: full.version, description: meta.description, phases: meta.phases, skeleton: parseWorkflowSkeleton(full.script) });
-        }
-      } catch { sendJson(res, 404, { error: `Workflow not found: ${name}` }); }
+    // v23 (REQ-101, DES-125/132, ARCH-083, TASK-120): replaces the deleted /skeleton route — the
+    // same `workflow_describe` response the MCP tool returns (DES-132's parity guarantee), unwrapped
+    // to its `result` (never the raw envelope). Unauthenticated with no owner branch to make (DES-125
+    // drops `viewerIsOwner`), so `ctx` here makes no masking decision either.
+    if (describeMatch) {
+      const name = decodeURIComponent(describeMatch[1]!);
+      const resp = await facade.workflow_describe({ name }, { authEnabled, principal: null }) as {
+        status: string; error?: { message?: string }; result?: unknown;
+      };
+      if (resp.status === 'failed') {
+        sendJson(res, 404, { error: resp.error?.message ?? `Workflow not found: ${name}` });
+        return;
+      }
+      sendJson(res, 200, resp.result);
       return;
     }
     // v11 (REQ-067): GET /api/issues — read-only issues dashboard list, partitioned by state.

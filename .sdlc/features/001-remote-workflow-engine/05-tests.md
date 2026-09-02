@@ -6410,3 +6410,494 @@ error — matching exactly the "self-asserted principal satisfies both gates" de
 VAL-107's red case fails the same way (`anyonePublish['code']` is `undefined`, the call succeeded).
 None are red for an unrelated reason (no syntax errors, no fixture setup failures — the seeded
 starting rows are confirmed present by the surrounding oracles in each case).
+
+## Iteration v23 — Gate 5 RED: explain surface, agent-drawn diagram, skeleton retirement
+
+> Test-first RED for TASK-113..125 / DES-120..136 / ARCH-077..086 / REQ-101..106 (+ REQ-100
+> `[AMENDED v23]`). Per-tier mock policy per 04-design.md's v23 section: unit mocks freely
+> (`GatewayClient` stubs, plain-object `TriggerPorts`, `FixedClock`, `runInline`, in-memory-shaped
+> real sqlite); integration uses real adjacent components (real `WorkflowCatalog`, real HTTP, real
+> `SqliteSchedulerPort`; only the model provider is stubbed); acceptance/VAL hits the real entrypoint
+> (real `createServer`, real `/mcp`, real `TokenStore`-minted bearer where a non-owner view is under
+> test) and does not mock the SUT's own boundary. No test computes its expected value from the
+> function under test (`EXPECTED_DESCRIBE_KEYS`/`bindingsFp`/gate-accepts-what-gate-produced are all
+> literals). Hermetic: every clock reference is a `FixedClock` anchor; no absolute-date-vs-real-clock
+> comparisons.
+>
+> **Brand-new modules (`src/diagram-gate.ts`, `src/trigger-bindings.ts`, `src/graph-analyzer.ts`)
+> don't exist yet** — their tests red at collect time (`Cannot find module` / `Failed to load url`),
+> the same accepted precedent as UT-082/UT-084/IT-073 (v13 seedref RED batch). Tests against a
+> not-yet-exported member of an EXISTING module (`projectWorkflowDescribe`) red via a runtime
+> `TypeError: ... is not a function`, same precedent as UT-069/morandi-renderer (an ESM
+> not-yet-provided-export can surface as either a collect-time SyntaxError or a runtime TypeError
+> depending on the transform pipeline — both are the same class of "correct red for an unimplemented
+> symbol", confirmed either way by direct `npx vitest run` per file below). Calling a not-yet-declared
+> member of an EXISTING class (`WorkflowCatalog.putDiagramPending`, `McpFacade.workflow_describe`)
+> uses this codebase's own `(obj as any).newMethod(...)` convention (see `put-blob-stream.test.ts`)
+> and reds as a genuine runtime `TypeError`.
+
+### UT-107 — `gateDiagram`: the pure allowlist gate, four passes, exact reason codes
+- **status:** red
+- **traces:** DES-124, TASK-113, ARCH-080
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/diagram-gate.test.ts`. 14 cases across the four passes (type/codepoint/size/token) —
+hostile-input table with the EXACT reason code per row (per carried-in rule 1, every assertion names
+the literal secret/codepoint, never `not.toContain(wholeScript)`), plus `DIAGRAM_CODEPOINTS`'
+vocabulary-glyph and `<`/`>`/`&`-exclusion checks, plus the byte-identical verbatim-return success
+case. Red reason: `src/diagram-gate.ts` does not exist yet → MODULE NOT FOUND, all 14 cases fail at
+collect time. Confirmed: `npx vitest run tests/unit/diagram-gate.test.ts` — 0 tests collected,
+`Failed to load url ../../src/diagram-gate.js`.
+
+### UT-108 — `workflow_diagrams`: table + four accessors + the single deletion path
+- **status:** red
+- **traces:** DES-130, TASK-114, ARCH-077
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/workflow-diagrams-store.test.ts`. Mock policy (unit, DES-119 discretion): a REAL
+on-disk `WorkflowCatalog` under a tmpdir (same convention as IT-093/UT-104 — a hand-mocked catalog
+cannot exercise a genuine transactional deletion race). 9 cases: pending/ready/unavailable round-trip,
+`listPendingDiagrams()`, a v3 read never returning a v4 row (PK is a schema property),
+`deregister()`'s single-transaction deletion, a pre-v23 version's `getDiagram` → null,
+`putDiagramPending`'s optional stamp, and the late-write no-op guard (DES-127 B6, DES-130). Red
+reason: `WorkflowCatalog` has none of these four accessors today. Confirmed: `npx vitest run
+tests/unit/workflow-diagrams-store.test.ts` — 9/9 fail, `TypeError: catalog.putDiagramPending/
+putDiagramResult/getDiagram is not a function`.
+
+### UT-109 — `getTriggerBindings`: four narrow ports, the canonical fingerprint
+- **status:** red
+- **traces:** DES-128, TASK-115, ARCH-078
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/trigger-bindings.test.ts`. Plain object-literal ports, no SQLite (per TASK-115's own
+dod). 7 cases: cron+webhook+chain composition, a null `runs` port never inventing a name, the
+identical `bindingsFp` under row-order permutation, a changed fingerprint on a new schedule, `null` vs
+a named upstream producing different fingerprints (serialised, not omitted), plus a `@ts-expect-error`
+documentation case for the `webhooks` port's `secret`/`id`-exclusion type invariant. Red reason:
+`src/trigger-bindings.ts` does not exist yet → MODULE NOT FOUND. Confirmed: `npx vitest run
+tests/unit/trigger-bindings.test.ts` — 0 tests collected, `Failed to load url
+../../src/trigger-bindings.js`.
+
+### UT-110 — `curateToolsForProvider` preserves an explicitly-empty tool set (D-F11 general fix)
+- **status:** red
+- **traces:** DES-120, TASK-116, ARCH-079, ADR-020
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+Extends `tests/unit/claude-agent-sdk-gateway-allowed-tools.test.ts` (UT-024's file) with 3 new cases,
+each via a dynamic `await import(...)` (the file's own established convention — a static top-level
+value import of this module would load it, and its `@anthropic-ai/claude-agent-sdk` import, before
+`const queryMock = vi.fn()` initializes, breaking the hoisted `vi.mock` factory; confirmed by hitting
+exactly that `ReferenceError: Cannot access 'queryMock' before initialization` on the first attempt
+and fixing it). Cases: `curateToolsForProvider([], 'ollama')` stays `[]` (the genuine red — today
+`['Bash']`); `[]` for `undefined`/`'anthropic'` is unaffected (green pin); a NON-empty set for a
+non-Anthropic provider stays Bash-augmented (green pin, UT-024's fallback path unaffected — note
+`'Read'` is excluded from the non-Anthropic set by `NON_ANTHROPIC_EXCLUDED_TOOLS`, so the green-pin
+case uses `'Write'`). Red reason: `curateToolsForProvider([], 'ollama')` returns `['Bash']` today
+(`claude-agent-sdk-client.ts:223-227` adds Bash unconditionally, no empty-input early return) — a REAL
+behavioral red, not an import/syntax gap; this is this deployment's own default path
+(`graphAnalyzer.tools: []` + a local Ollama alias), so ADR-020's "blast radius is nil" claim is
+falsified without this fix (DES-120's own correction to the ARCH). Confirmed: `npx vitest run
+tests/unit/claude-agent-sdk-gateway-allowed-tools.test.ts` — 6 tests, 1 failed (the empty-set case),
+5 passed (3 pre-existing UT-024 green + 2 new green pins).
+
+### UT-111 — `GraphAnalyzer`: queue, single-flight, retry loop, the 8 persisted note codes, sweepAtBoot
+- **status:** red
+- **traces:** DES-131, DES-121, DES-122, DES-123, DES-127, DES-129, TASK-117, ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts`. Mock policy (unit): a stub `GatewayClient` (`invoke()`
+controlled per case), a REAL on-disk `WorkflowCatalog`, plain-object `TriggerPorts`, `FixedClock`, the
+`schedule: runInline` seam (fires the job WITHOUT awaiting it — enqueue must return before the job
+settles, REQ-102). Cases: `enqueue()` returns before the job runs having already written the
+`pending` row; each of the 8 PERSISTED `DiagramNoteCode` values (TIMEOUT, PROVIDER_UNREACHABLE,
+PROVIDER_ERROR, GATE_REJECTED_CONTENT, GATE_REJECTED_SHAPE, QUEUE_FULL, RETRIES_EXHAUSTED,
+MODEL_UNMAPPED — `DISABLED`/`NOT_GENERATED` are read-time-synthesized-only per DES-123/DES-127 B2 and
+belong to UT-113 instead) from its own literal input row; the success path (`status:'ready'`, diagram
+stored verbatim); `regenerate()` single-flight (a second call while `pending` enqueues no second job)
+and no-clobber (a failed regenerate leaves a prior `ready` row untouched); `sweepAtBoot()`'s two
+reachable-without-a-restart-harness shapes under `FixedClock` (unstamped → requeue+stamp; stamped
+at/after boot → left alone) plus the "stamped before boot" shape via a direct pre-seeded row (the
+`RETRIES_EXHAUSTED` case, zero model calls;  DES-131's third shape); the journal-line redaction
+property (a provider error containing the secret literal never reaches the emitted console.log
+string, ADR-016); AND the retry loop itself, pinned separately from the note-code table
+(TASK-117's own dod: "settles after exactly 1+retries calls" — DES-121's whole point is that
+`retries` is expressible ONLY as this class's own loop, since `AgentOpts` has `timeoutMs` but no
+`retries` field, so forwarding it into `opts` instead of looping is a silent no-op, this repo's own
+recurring wiring-defect class): a counting-stub case (`retries:2`) asserts EXACTLY 3 `invoke()` calls
+(the call count is the load-bearing assertion; the resulting noteCode is deliberately left
+unasserted there — DES-121's prose is genuinely ambiguous on whether a same-reason-every-attempt
+exhaustion persists the generic `RETRIES_EXHAUSTED` or the last attempt's own reason-derived code,
+flagged for Gate 6 rather than guessed at twice), plus a literal-text case DES-121 DOES pin
+unambiguously: the last attempt's own specific reason (`timeout`) wins over the generic exhaustion
+code when it is also the final attempt. 17 cases total. Red reason: `src/graph-analyzer.ts` does not
+exist → MODULE NOT FOUND. Confirmed: `npx vitest run tests/unit/graph-analyzer.test.ts` — 0 tests
+collected, `Failed to load url ../../src/graph-analyzer.js`.
+
+### UT-112 — `GraphAnalyzer` → real `ClaudeAgentSdkGatewayClient` wire: isolation, non-Anthropic alias
+- **status:** red
+- **traces:** DES-122, DES-131, TASK-117, ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer-wire.test.ts`. Mock policy (unit): `vi.mock` intercepts only the
+third-party `@anthropic-ai/claude-agent-sdk` module (same pattern as UT-024/UT-110) — the REAL
+`GraphAnalyzer` drives the REAL gateway. One case, at `queryImpl` level: with a non-Anthropic alias,
+the built `options` literally equals `tools:[]`, `allowedTools:[]`, `settingSources:[]`,
+`strictMcpConfig:true`, empty `mcpServers`, `thinking:{type:'disabled'}`, and `cwd` = the analyzer's
+own scratch directory (simulated here by constructing the gateway directly with that `cwd` — the
+repoint itself is `main.ts`'s job, out of this module's scope, TASK-117's own dod note). Red reason:
+`src/graph-analyzer.ts` does not exist → MODULE NOT FOUND. Confirmed: `npx vitest run
+tests/unit/graph-analyzer-wire.test.ts` — 1/1 fail, `Failed to load url ../../src/graph-analyzer.js`.
+
+### IT-096 — the late write: `enqueue` → `deregister` commits → `putDiagramResult` lands → silent no-op
+- **status:** red
+- **traces:** DES-130, DES-127, TASK-117, ARCH-077
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/integration/graph-analyzer-late-write.test.ts`. Deliberately on the REAL `setImmediate`
+path (production `schedule` default, NOT `runInline`) — the race between an in-flight async job and a
+synchronous `deregister()` needs the real scheduler; a `runInline`-seamed test cannot exercise it at
+all (TASK-117's own dod note: a later "make the suite faster" pass must not seam this file). Mock
+policy (integration, DES-119): a REAL `WorkflowCatalog`, a stub `GatewayClient` (the only
+network-shaped dependency). One case: enqueue → let the job reach its awaited gateway call → deregister
+commits mid-flight → release the gateway → `getDiagram()` is null AND the row count is 0. Red reason:
+`src/graph-analyzer.ts` does not exist → MODULE NOT FOUND. Confirmed: `npx vitest run
+tests/integration/graph-analyzer-late-write.test.ts` — 0 tests collected.
+
+### UT-113 — `projectWorkflowDescribe` + `WorkflowDescribeView` + `EXPECTED_DESCRIBE_KEYS`
+- **status:** red
+- **traces:** DES-125, DES-127, TASK-118, ARCH-081
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/workflow-describe-projection.test.ts`. Pure module, plain fixtures. Cases: the
+two-sided literal key oracle (`EXPECTED_DESCRIBE_KEYS_LITERAL`, transcribed from DES-125's field list,
+never derived from the module under test — the anti-vacuity rule 04-design.md v23 names by name); no
+`script` field for ANY input; diagram-field honest-absence rules (DES-127 B3: `diagramGeneratedAt`
+null for every non-ready row INCLUDING a swept `pending` row whose `generated_at` IS stamped;
+`diagramStale` true only for a `ready` row with a mismatched `bindingsFp`, false for `pending`/
+`unavailable`/no-row); `triggers` always the live snapshot argument, independent of the stored row;
+`lockedKeys` present/non-empty; `owner` served unconditionally (function is 2-ary, no `viewerIsOwner`
+parameter — pinned via `.length`); the B1/B2 boundary states (`analyzerEnabled:false` vs
+`enabled+no-row` both read `unavailable` but with DISTINCT notes — DISABLED vs NOT_GENERATED). Red
+reason: `projectWorkflowDescribe`/`EXPECTED_DESCRIBE_KEYS` are not exported from `src/workflow-view.ts`
+today. Confirmed: `npx vitest run tests/unit/workflow-describe-projection.test.ts` — 11/11 fail,
+`TypeError: projectWorkflowDescribe is not a function`.
+
+### UT-114 — the facade: `workflow_describe` (any principal) + `workflow_regenerate_diagram` (owner-gated)
+- **status:** red
+- **traces:** DES-126, TASK-119, ARCH-082
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/workflow-describe-facade.test.ts`. Mock policy (unit, DES-119 discretion): a REAL
+on-disk `WorkflowCatalog` wired through a REAL `RunManager` (same convention as IT-093/UT-108 — a
+hand-mocked catalog cannot exercise `resolveVersionRequest`'s genuine truth table). Table-driven over
+6 selector shapes (explicit version, channel:beta, channel:release, no selector, unknown version,
+unpublished beta) asserting `workflow_describe`'s error code equals `resolveVersionRequest`'s own code
+for the identical input (one table, two call sites — REQ-101's resolve-order guarantee is checkable
+only if the two cannot silently drift); an unknown workflow name → `WORKFLOW_NOT_FOUND`; a
+`DANGLING_CHANNEL` pin (not collapsed into `CHANNEL_UNPUBLISHED`, verified directly against
+`resolveVersionRequest`'s own truth table); `workflow_regenerate_diagram`'s owner gate
+(`NOT_WORKFLOW_OWNER`), `WORKFLOW_NOT_FOUND`, `UNKNOWN_VERSION`. Red reason: `McpFacade` has neither
+method today. Confirmed: `npx vitest run tests/unit/workflow-describe-facade.test.ts` — 11 tests, 10
+failed (`TypeError: facade.workflow_describe/workflow_regenerate_diagram is not a function`), 1
+legitimate green pin (the `DANGLING_CHANNEL` case, which exercises the EXISTING `resolveVersionRequest`
+directly as a documentation/support assertion, not the new facade surface).
+
+### UT-115 — the mechanical no-skeleton-surface guard (ADR-022)
+- **status:** red
+- **traces:** DES-132, TASK-120, ARCH-083
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/no-skeleton-surface.test.ts`. Static analysis over `src/**` source text (no I/O
+beyond reading this repo's own files) — same convention as this ledger's other mechanical
+grep-guard/drift-lock tests. Written FIRST and watched to fail against the CURRENT tree (TASK-120's own
+dod: "a guard written after the deletion is a guard fitted to whatever the deletion happened to
+leave"). 3 cases: `src/**` mentions "skeleton" (case-insensitive) nowhere outside the exactly-three
+allowlist (`workflow-meta.ts`, `dashboard.ts`, `server.ts`); the allowlist is exactly 3, not "3 or
+more"; no advertised MCP tool description/schema string in `server.ts`'s `TOOL_METADATA` block
+contains the word. Red reason: 6 files mention "skeleton" today (`dashboard-page.ts`, `dashboard.ts`,
+`mcp-facade.ts`, `server.ts`, `workflow-meta.ts`, `workflow-view.ts`) — 3 more than the allowlist
+permits; `workflow_get`'s own advertised description literally contains "skeleton". Confirmed: `npx
+vitest run tests/unit/no-skeleton-surface.test.ts` — 3 tests, 2 failed (the file-allowlist case listing
+`dashboard-page.ts`/`mcp-facade.ts`/`workflow-view.ts` as violators; the tool-description case), 1
+passed (the allowlist-size documentation case, a tautology about the test's own constant).
+
+### IT-097 — the four-surface anti-drift table: one secret-bearing script, four read surfaces
+- **status:** red
+- **traces:** DES-132, TASK-120, ARCH-083, ARCH-081
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/integration/workflow-describe-http.test.ts`. Mock policy (integration, DES-119): a REAL
+`createServer()`, real HTTP, real `/mcp` — no LLM (the diagram's own content is REQ-102/VAL-113's
+concern, not this parity table's). One secret-bearing script registered once; the exact secret literal
+asserted absent from `JSON.stringify` of: `workflow_get` (a genuine NON-OWNER view, exercised via a
+second in-process `McpFacade` on the SAME on-disk catalog with `ctx={authEnabled:true, principal:
+'someone-else'}` rather than standing up a full OAuth bearer flow for one green-pin assertion — auth
+off on the running server makes everyone the owner branch, so a true non-owner check needs
+`authEnabled:true` regardless of transport); `workflow_describe`; `GET /api/workflows` (the list);
+`GET /api/workflows/:name/describe`, which must additionally EXIST (200) and equal the MCP tool
+response on this SAME (unauthenticated) server — `/describe` carries no bearer/identity at all and has
+no owner branch by construction (DES-125 drops `viewerIsOwner`), so `authEnabled` cannot change its
+output; comparing route-vs-tool on the SAME auth state is therefore a valid parity check without
+needing a real bearer flow for this specific pairing (DES-132's own named hazard — an OWNER-branch
+comparison — does not apply here precisely because describe has no owner branch to diverge into). Red
+reason: `workflow_describe` doesn't exist as a tool (`Unknown tool` RPC error) and
+`/api/workflows/:name/describe` doesn't exist as a route (404). Confirmed: `npx vitest run
+tests/integration/workflow-describe-http.test.ts` — 4 tests, 2 failed (describe tool + describe
+route), 2 passed (the pre-existing `workflow_get`/list masking, unaffected by v23, green pins).
+
+### UT-116 — dashboard diagram surface: mechanical source-level properties (jsdom-free)
+- **status:** red
+- **traces:** DES-133, TASK-121, ARCH-084
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/dashboard-diagram-render.test.ts`. **Engineering call, recorded here rather than
+silently under-delivering:** this repo has no jsdom/browser-DOM test harness (`environment:'node'` in
+vitest.config, confirmed; no jsdom devDependency) and `dashboard-page.ts`'s browser logic lives inside
+an embedded `<script>` STRING (`DASHBOARD_HTML`), not a Node-importable function — a full behavioral
+DOM proof (a diagram containing `<script>` rendering as literal text; the home-card's actual silence)
+is out of reach at unit tier without adding new test infrastructure, which is not this gate's call to
+make silently. This file pins the MECHANICAL, source-level properties DES-133 names instead — the same
+convention this exact ledger already uses for the no-skeleton-surface guard (UT-115) and the schema
+drift-lock series. The full DOM behavior is additionally provable at real-tier by a Playwright-driven
+acceptance path (same pattern as `val-018-dashboard-browser-ui`) — not built this pass; recorded as a
+residual for whoever picks up TASK-121's implementation. 4 cases: workflow-detail fetches `/describe`
+not `/skeleton`; the diagram is written via `.textContent = s.diagram` (never innerHTML for this
+field); `diagramNote`/`diagramStatus` are referenced; the mini-preview section fetches `/describe`. Red
+reason: `DASHBOARD_HTML`'s embedded script still fetches `/skeleton` for both surfaces and never
+references `diagramNote`. Confirmed: `npx vitest run tests/unit/dashboard-diagram-render.test.ts` —
+4/4 fail.
+
+### Extended in place (no new ID) — UT-033, compose-config-v2-wiring.test.ts
+The `graphAnalyzer` config block (TASK-122, DES-134, ARCH-085) — same wiring-gap class as every prior
+case in this file (v11 `updateFlagPath` / v15 `auth` / v16 `workspaceTtlMs` / v22
+`maxWorkflowVersions`). 3 new cases: the whole block forwarded verbatim; `enabled:false` forwarded (a
+first-class tested state, never dropped); `graphAnalyzer` stays `undefined` when the file config omits
+it (backward-compat, same convention as `auth`). The `as any` cast on the `FileConfig` literal is this
+codebase's own established convention for exercising a not-yet-declared key (TS excess-property check
+would otherwise reject it before the test runs — `ServerConfig`/`composeConfig()` have no
+`graphAnalyzer` key today). **Per REQ-104's own acceptance text, this row is necessary and NOT
+sufficient** — a unit assertion reads its value off the same path that would be broken; only
+TASK-124's Gate 7.5 real run (VAL-115) is proof. Confirmed: `npx vitest run
+tests/unit/compose-config-v2-wiring.test.ts` — 22 tests, 2 failed (the new `graphAnalyzer` cases), 20
+passed (every pre-existing case unaffected).
+
+### UT-117 — `docs/AUTHORING.md` + the same rules on `workflow_register.script`'s advertised description
+- **status:** red
+- **traces:** DES-135, TASK-123, ARCH-086, ARCH-051
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/tool-schema-drift.test.ts`. Static source-text assertions (a real `fs.readFileSync`
+of `docs/AUTHORING.md` + `src/server.ts`'s `SCRIPT_DSL_DOC`) — same convention as UT-115 and this
+ledger's ARCH-051 drift-lock series. 4 cases: `docs/AUTHORING.md` exists; states all four rules
+(`meta.params`, "never read a value the contract does not declare", `LOCKED_KEYS`/"locked key", "phase
+title"); states the standing note (`graphAnalyzer.enabled`); `SCRIPT_DSL_DOC` mentions the
+`AUTHORING.md` pointer + the four rules in condensed form. Red reason: `docs/AUTHORING.md` doesn't
+exist (`ENOENT`); `SCRIPT_DSL_DOC` contains none of the four rules or an `AUTHORING.md` pointer today.
+Confirmed: `npx vitest run tests/unit/tool-schema-drift.test.ts` — 4/4 fail.
+
+### Extended in place (no new ID) — UT-104, workflow-view.test.ts
+`phases` joins the non-owner allowlist (TASK-125, DES-136, adjudication #1 2026-09-02, 一律公開). The
+`FULL` fixture's `phases` is corrected to the shape `parseMeta` actually produces
+(`Array<{title:string}>`, was a bare string array); `REQ_100_NON_OWNER_KEYS` gains the literal
+`'phases'`, ONE entry (`deepFlatten` does not recurse into arrays, `:29`); the former "phases/skeleton
+are NOT on the allowlist" case is corrected to "phases IS, skeleton stays OFF it"; a NEW case pins the
+two-distinct-fixtures rule DES-136 names — a secret in a PHASE TITLE appears on the non-owner
+projection while a secret in the SCRIPT BODY stays absent (one fixture carrying both would let either
+property mask the other). Red reason: `WorkflowPublicView` has no `phases` field and
+`EXPECTED_NON_OWNER_KEYS` doesn't list it today. Confirmed: `npx vitest run
+tests/unit/workflow-view.test.ts` — 8 tests, 3 failed (the two v23 phases cases + the corrected key-set
+oracle), 5 passed (owner branch, scriptWithheld, owner/reportProblem/params, and the module's own
+advertised-keys self-check — all pre-existing v22 behavior, unaffected).
+
+### VAL-111 — REQ-100 `[AMENDED v23]`: phases are public on every surface, not just the diagram
+- **status:** red
+- **traces:** REQ-100, DES-136, TASK-125
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/acceptance/val-111-phases-public-everywhere.test.ts`. Real `createServer`, real `/mcp`,
+real `TokenStore`-minted bearer (no OAuth flow needed for a bearer, same technique as VAL-110). One
+case: a non-owner `workflow_get` sees the real phase titles while `script` stays withheld. Red reason:
+`WorkflowPublicView` has no `phases` field today. Confirmed: `npx vitest run
+tests/acceptance/val-111-phases-public-everywhere.test.ts` — 1/1 fail.
+
+### VAL-112 — REQ-101: `workflow_describe` — the one explain surface, any principal
+- **status:** red
+- **traces:** REQ-101, DES-125, DES-126, TASK-118, TASK-119
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/acceptance/val-112-workflow-describe.test.ts`. Real `createServer`, real `/mcp`, real
+bearer. Diagram-CONTENT assertions are out of scope here (REQ-102/VAL-113's own concern) — this file
+proves the describe surface's SHAPE and mask, which needs no live LLM call. 2 cases: a non-owner sees
+the full describe field set (every DES-125 field present) and never the raw secret literal; an
+unpublished beta channel returns `CHANNEL_UNPUBLISHED`. Red reason: `workflow_describe` doesn't exist
+as an MCP tool. Confirmed: `npx vitest run tests/acceptance/val-112-workflow-describe.test.ts` — 2/2
+fail.
+
+### VAL-113 — REQ-102: the analyzer draws a structure-only ASCII diagram; honest absence when disabled
+- **status:** red
+- **traces:** REQ-102, DES-131, DES-134, TASK-117, TASK-122, ARCH-079
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/acceptance/val-113-graph-analyzer-diagram.test.ts`. Real `createServer`, real `/mcp`.
+`graphAnalyzer.enabled:false` needs NO live provider (an honest-absence property of config alone) and
+is asserted UNCONDITIONALLY. The "a real analyzer run produces a gate-passing diagram" case genuinely
+needs a live LLM call — gated behind `HAS_PROVIDER` (same convention as VAL-003/004/080), but the
+gated BODY is a real assertion, not an always-pass shell: it registers a script carrying a secret
+literal, a distinctive prompt sentence, and an `appendPrompt` marker on a SEPARATE analyzer-enabled
+server (built only inside the gate, never in `beforeAll`, so a provider-less run boots nothing extra),
+polls `workflow_describe` up to 30s for `diagramStatus:'ready'`, then asserts each of the three strings
+individually absent from the returned diagram — the actual REQ-102/A3 property, not a placeholder. This
+environment has no provider configured, so the gated case legitimately no-ops here (real-tier proof
+deferred to Gate 7.5/TASK-124, same as every other online-gated VAL in this ledger — the assertions
+themselves are ready to run the moment a provider is configured). Red reason:
+`graphAnalyzer.enabled:false` has no effect today (the key doesn't exist) and `workflow_describe`
+doesn't exist. Confirmed: `npx vitest run tests/acceptance/val-113-graph-analyzer-diagram.test.ts` —
+2 tests, 1 failed (the unconditional case), 1 passed (the HAS_PROVIDER-gated case — a genuine no-op in
+this provider-less environment, verified by reading the guard: `if (!HAS_PROVIDER) return;` precedes
+every assertion, so nothing is silently faked green).
+
+### VAL-114 — REQ-103: live trigger bindings + machine-checkable staleness
+- **status:** red
+- **traces:** REQ-103, DES-125, DES-128, ARCH-078, ARCH-081
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/acceptance/val-114-trigger-bindings-live.test.ts`. Real `createServer`, real `/mcp`, real
+`SqliteSchedulerPort`. `triggers` itself needs no live LLM (structured data the engine already owns) —
+asserted unconditionally. The `diagramStale` flip needs an EXISTING `ready` diagram row to flip
+against; seeded directly through a second `WorkflowCatalog` handle on the SAME on-disk workRoot (same
+"second handle on the real store" technique as IT-097) rather than depending on a live provider for a
+REQ-103-scoped assertion. 2 cases: a bound cron schedule is named in `triggers`, and deleting it is
+reflected in the SAME `workflow_describe` call; `diagramStale` flips `true` against an unchanged
+`ready` diagram when a new binding is added. Red reason: `workflow_describe` doesn't exist. Confirmed:
+`npx vitest run tests/acceptance/val-114-trigger-bindings-live.test.ts` — 2/2 fail.
+
+### VAL-115 — REQ-104: an operator edits the analyzer config and the diagram visibly changes, no redeploy
+- **status:** red
+- **traces:** REQ-104, DES-134, TASK-124, ARCH-085
+- **tier:** acceptance
+- **real:** false
+- **result:** not-run
+- **iter:** v23
+
+**No runnable test file — by design, not an omission.** REQ-104's own acceptance text and TASK-124's
+dod are explicit: "no unit test may be written that claims to prove REQ-104" — a unit assertion reads
+its value off the same path that would be broken, which is the defect class this requirement is named
+after (v11 `updateFlagPath` / v15 `auth` / v16 `workspaceTtlMs`). The UT-033-extension row (this
+file's "Extended in place" entry above) is necessary and not sufficient. The ONLY proof is Gate 7.5's
+real run (TASK-124, 08-validation.md): register a workflow on a real booted engine with a real
+provider → `workflow_describe` shows a `ready` diagram; edit `graphAnalyzer.systemPrompt` AND
+`graphAnalyzer.model` in `rwe.config.json`; restart the process (no rebuild, no code change);
+re-register a new version → the emitted diagram is visibly different and the
+`[remote-workflow-engine] graph-analyzer` journal line names the new model. `result: not-run` here is
+the honest state per the contract's own template ("not-run" is a valid enum value) — there is nothing
+to run before Gate 6 lands `GraphAnalyzer`/`composeConfig` forwarding, and nothing a mock/unit run
+could prove even after.
+
+### VAL-116 — REQ-105: the skeleton route is gone (404); the run DAG stays behind the auth gate
+- **status:** red
+- **traces:** REQ-105, DES-132, DES-133, TASK-120, ARCH-083, ADR-022
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/acceptance/val-116-skeleton-route-404.test.ts`. Real `createServer`, real HTTP. The grep
+guard (UT-115) + the tool-schema assertion are the mechanical proof; this is the real-tier half. 2
+cases: `GET /api/workflows/:name/skeleton` → 404 (the surface no longer exists); `GET
+/api/workflows/:name/describe` → 200 (its replacement exists). Red reason: `/skeleton` is a live 200
+route today; `/describe` doesn't exist (404). Confirmed: `npx vitest run
+tests/acceptance/val-116-skeleton-route-404.test.ts` — 2/2 fail (skeleton returns 200 not 404; describe
+returns 404 not 200 — inverse-of-expected on both, correctly).
+
+### VAL-117 — REQ-106: authoring rules are reachable from the MCP surface a cold client actually sees
+- **status:** red
+- **traces:** REQ-106, DES-135, TASK-123, ARCH-086, ARCH-051
+- **tier:** acceptance
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/acceptance/val-117-authoring-schema-discoverable.test.ts`. Real `createServer`, real
+`/mcp` `tools/list`. One case: the real advertised `workflow_register.script` description contains the
+four authoring rules + the `docs/AUTHORING.md` pointer — readable by a cold schema-only client with no
+guidance skills, without fetching anything else. Red reason: the advertised description mentions
+neither `AUTHORING.md`, `meta.params`, "locked", nor "phase title" today. Confirmed: `npx vitest run
+tests/acceptance/val-117-authoring-schema-discoverable.test.ts` — 1/1 fail.
+
+### v23 Gate 5 RED confirmation (2026-09-02, verifier)
+Targeted run (21 new/amended files): `npx vitest run <21 files>` — **93 total, 58 failed / 35
+passed**. Every failure traced above to its genuine unimplemented cause (module-not-found, a
+not-yet-declared class member, or a real behavioral gap in existing code); every pass is a documented
+green pin (existing v22 behavior this pass leaves unaffected, or a self-referential documentation
+case).
+
+Full-suite `npx vitest run`: **1751 total, 1693 passed / 58 failed (279 files)** — exactly this pass's
+58 genuinely-red cases, **0 unrelated regressions** against the v22 Gate 8 close baseline (258 of 279
+files fully green, unchanged; 2 pre-existing `spawn litellm ENOENT` background artifacts in
+`tests/integration/params-admission.test.ts`, documented since IMPL-140, unaffected). Hermetic: every
+new/amended case uses a `FixedClock` anchor or a store/HTTP-response oracle — no absolute-date-vs-
+real-clock comparisons.
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: 42 gaps detected, all either (a)
+pre-existing debt unrelated to this pass (`UT-010`/`IT-011`/`UT-058`/`UT-064`/`IT-057`/`UT-094`/
+`UT-095`/`DES-094`/`DES-088`×2/`DES-066`×2/`DES-099`×2/`DES-100`, `TASK-018`, `IMPL-082` — none touched
+by v23) or (b) the EXPECTED pre-implementation state for this pass's own items: REQ-101..106 each show
+one mid-sev "未實作" (unimplemented — Gate 6's job) AND one high-sev "未真實驗證" (mock-only/not yet
+real-verified — Gate 7.5's job; every VAL this pass adds is `real:false` by design, per the contract's
+own rule that only a real run flips it), 12 rows total; TASK-113..125 each show one low-sev "未實作",
+13 rows total. **These 25 rows are the correct, expected TDD-RED shape for a Gate-5 pass — a REQ with
+`real:true` before Gate 6 lands the code would itself be the defect.** `sh .sdlc/trace --check` will
+not exit 0 until Gate 7.5; that is by design, not a defect of this pass. **Zero 斷鏈 (broken trace
+links), zero 孤兒 (orphans) — every new UT/IT/VAL resolved cleanly into the trace graph with no dangling
+`traces:` reference.**

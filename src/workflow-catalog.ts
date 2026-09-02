@@ -38,6 +38,23 @@ import { canonicalContract, checkValueAgainstSpec, effectiveBounds } from './par
 // same codes submission used to produce, so no caller learns a new vocabulary (ADR-013).
 import { validateScriptEntry, violatesFrameDelimiter } from './script-checks.js';
 
+// v23 (DES-130, DES-123): the eight note codes the store actually persists — DISABLED/NOT_GENERATED
+// are read-time-synthesized only (never written), so the full ten-value DiagramNoteCode (TASK-117)
+// is deliberately not reused here.
+export type PersistedDiagramNoteCode =
+  | 'TIMEOUT' | 'PROVIDER_UNREACHABLE' | 'PROVIDER_ERROR'
+  | 'GATE_REJECTED_CONTENT' | 'GATE_REJECTED_SHAPE'
+  | 'QUEUE_FULL' | 'RETRIES_EXHAUSTED' | 'MODEL_UNMAPPED';
+
+export interface DiagramRow {
+  name: string; version: string;
+  status: 'pending' | 'ready' | 'unavailable';
+  diagram: string | null;
+  noteCode: PersistedDiagramNoteCode | null;
+  generatedAt: string | null;
+  bindingsFp: string | null;
+}
+
 // DES-098: hardcoded operator email for boot backfill of NULL-owner rows
 const BOOT_BACKFILL_EMAIL = 'hsuhungjung@gmail.com';
 
@@ -207,6 +224,88 @@ export class WorkflowCatalog {
         }).immediate()
       : 0;
     console.log(`catalog.migrate: ${migrated} workflows → workflow_versions, release published`);
+
+    // v23 (DES-130, TASK-114): the graph-analyzer's own diagram store, folded into the same DB/
+    // handle as workflow_versions (a derived store must not outlive its source, ADR-021). PK is
+    // (name, version) — a v3 read can never return a v4 row, a schema property, not a code
+    // discipline. `deregister()`'s existing transaction is the ONLY deletion path (below); no prune
+    // hook, sweep, GC or orphan-reaper exists (ARCH-077's "maxWorkflowVersions prune" does not exist
+    // — the ceiling refuses registration, ADR-014).
+    this._db.exec(`
+      CREATE TABLE IF NOT EXISTS workflow_diagrams (
+        name TEXT NOT NULL, version TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending','ready','unavailable')),
+        diagram TEXT NULL, note_code TEXT NULL, generated_at TEXT NULL, bindings_fp TEXT NULL,
+        CHECK ((status = 'ready') = (diagram IS NOT NULL)),
+        CHECK (note_code IS NULL OR note_code IN ('TIMEOUT','PROVIDER_UNREACHABLE','PROVIDER_ERROR',
+          'GATE_REJECTED_CONTENT','GATE_REJECTED_SHAPE','QUEUE_FULL','RETRIES_EXHAUSTED','MODEL_UNMAPPED')),
+        PRIMARY KEY (name, version));
+    `);
+  }
+
+  /** v23 (DES-130): stamps the boot sweep's own attempt marker into `generated_at` when given
+   *  (DES-131's `sweepAtBoot`); a fresh enqueue omits it and the column stays NULL. Overwrites any
+   *  prior row for the same (name, version) back to a clean pending state. */
+  putDiagramPending(name: string, version: string, generatedAt?: string): void {
+    this._db
+      .prepare(`
+        INSERT INTO workflow_diagrams (name, version, status, diagram, note_code, generated_at, bindings_fp)
+        VALUES (?, ?, 'pending', NULL, NULL, ?, NULL)
+        ON CONFLICT (name, version) DO UPDATE SET
+          status = 'pending', diagram = NULL, note_code = NULL, generated_at = excluded.generated_at, bindings_fp = NULL
+      `)
+      .run(name, version, generatedAt ?? null);
+  }
+
+  /** v23 (DES-130, DES-127 B6): the late-write guard — runs inside a transaction and writes ONLY
+   *  where a `workflow_versions` row for (name, version) still exists; otherwise a silent no-op.
+   *  Without this, `enqueue → deregister commits → putDiagramResult lands` would create an immortal
+   *  orphan row (this table has no foreign key, and the single-deletion-path rule is exactly what
+   *  makes an orphan unreachable afterwards). */
+  putDiagramResult(
+    name: string,
+    version: string,
+    r:
+      | { status: 'ready'; diagram: string; generatedAt: string; bindingsFp: string }
+      | { status: 'unavailable'; noteCode: PersistedDiagramNoteCode; generatedAt: string; bindingsFp: string },
+  ): void {
+    this._db
+      .transaction(() => {
+        const exists = this._db.prepare('SELECT 1 FROM workflow_versions WHERE name = ? AND version = ?').get(name, version);
+        if (!exists) return; // late-write guard: no surviving version row, nothing written
+        const diagram = r.status === 'ready' ? r.diagram : null;
+        const noteCode = r.status === 'unavailable' ? r.noteCode : null;
+        this._db
+          .prepare(`
+            INSERT INTO workflow_diagrams (name, version, status, diagram, note_code, generated_at, bindings_fp)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (name, version) DO UPDATE SET
+              status = excluded.status, diagram = excluded.diagram, note_code = excluded.note_code,
+              generated_at = excluded.generated_at, bindings_fp = excluded.bindings_fp
+          `)
+          .run(name, version, r.status, diagram, noteCode, r.generatedAt, r.bindingsFp);
+      })
+      .immediate();
+  }
+
+  /** v23 (DES-130): null for a version with no diagram row at all — a version registered before v23
+   *  (DES-127 B1), or one no attempt has ever been written for. */
+  getDiagram(name: string, version: string): DiagramRow | null {
+    const row = this._db
+      .prepare('SELECT name, version, status, diagram, note_code, generated_at, bindings_fp FROM workflow_diagrams WHERE name = ? AND version = ?')
+      .get(name, version) as
+      | { name: string; version: string; status: DiagramRow['status']; diagram: string | null; note_code: PersistedDiagramNoteCode | null; generated_at: string | null; bindings_fp: string | null }
+      | undefined;
+    if (!row) return null;
+    return {
+      name: row.name, version: row.version, status: row.status,
+      diagram: row.diagram, noteCode: row.note_code, generatedAt: row.generated_at, bindingsFp: row.bindings_fp,
+    };
+  }
+
+  /** v23 (DES-130): the only sweep, bounded by the number of `pending` rows (DES-131's boot sweep). */
+  listPendingDiagrams(): Array<{ name: string; version: string }> {
+    return this._db.prepare("SELECT name, version FROM workflow_diagrams WHERE status = 'pending'").all() as Array<{ name: string; version: string }>;
   }
 
   // v15 (DES-098, DES-099, TASK-089): ownership gate + harness defaults registration.
@@ -388,6 +487,7 @@ export class WorkflowCatalog {
 
     const info = this._db.transaction(() => {
       this._db.prepare('DELETE FROM workflow_versions WHERE name = ?').run(name);
+      this._db.prepare('DELETE FROM workflow_diagrams WHERE name = ?').run(name); // v23 (DES-130): same transaction, so a mid-transaction throw leaves both present
       return this._db.prepare('DELETE FROM workflows WHERE name = ?').run(name);
     }).immediate();
     return { removed: info.changes > 0 };

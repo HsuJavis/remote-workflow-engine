@@ -337,6 +337,15 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `maxWorkflowDepth` | 具名 `workflow()` 巢狀組合單一分支深度上限（頂層 run=0）；超過回可分支的 `NESTING_DEPTH_EXCEEDED`（不崩父 run）；≤0 或非整數在啟動時拒絕 | `number` / `4` | 否 | v8 |
 | `rwe.config.json` → `maxWorkflowDescendants` | 巢狀 `workflow()` 呼叫總數上限（整棵 fan-out × depth 樹）；超過回 `DESCENDANT_CAP_EXCEEDED` | `number` / `256` | 否 | v8 |
 | `rwe.config.json` → `maxWorkflowVersions` | 同一工作流程名稱累積保留的版本數上限；達上限時 `workflow_register` 回 `VERSION_CEILING_EXCEEDED`（需先 `workflow_deregister` 舊版本或調高此值） | `number` / 省略 = 不設上限 | 否 | v22 |
+| `rwe.config.json` → `graphAnalyzer.enabled` | Graph analyzer（`workflow_register` 時把腳本送給設定的 LLM provider，畫出 `workflow_describe` 的 ASCII 診斷圖）總開關；`false` 時註冊照樣成功，只是不寫入診斷圖列（`workflow_describe` 回 `diagramStatus:"unavailable"`／`DISABLED`），**永遠不是錯誤** | `boolean` / `true` | 否 | v23 |
+| `rwe.config.json` → `graphAnalyzer.model` | 畫圖用的模型別名（`aliases` 表裡的鍵，同 `agent()` 用的那張表；不是 `provider:model` 字串）；未知別名時**開機只警告、不擋開機**，該工作流程的每次 `enqueue` 直接以 `MODEL_UNMAPPED`（零次模型呼叫）落地 | `string` / 部署的預設別名 | 否 | v23 |
+| `rwe.config.json` → `graphAnalyzer.systemPrompt` | 畫圖 prompt——附加在腳本文字之前送給模型；出廠預設 prompt 假設的字彙相容模型等級見下方說明 | `string` / 出廠預設 prompt（畫圖字彙說明） | 否 | v23 |
+| `rwe.config.json` → `graphAnalyzer.tools` | 分析器這次 LLM 呼叫允許的工具集（會經 `curateToolsForProvider` 過濾）；空陣列＝**無工具**，因為 prompt 承載的是攻擊者可控的腳本文字 | `string[]` / `[]` | 否 | v23 |
+| `rwe.config.json` → `graphAnalyzer.timeoutMs` | 單次畫圖呼叫逾時（ms） | `number` / `60000` | 否 | v23 |
+| `rwe.config.json` → `graphAnalyzer.retries` | 單次畫圖呼叫失敗後的引擎端重試次數（**不含** gateway 自己的重試，見下方公式） | `number` / `0` | 否 | v23 |
+| `rwe.config.json` → `graphAnalyzer.maxBytes` | 畫圖輸出（`gateDiagram` 第三關）位元組上限；超過回 `GATE_REJECTED_SHAPE` | `number` / `8192` | 否 | v23 |
+| `rwe.config.json` → `graphAnalyzer.maxLines` | 畫圖輸出行數上限，同上一關 | `number` / `120` | 否 | v23 |
+| `rwe.config.json` → `graphAnalyzer.maxQueueDepth` | 分析器佇列深度（並行度固定 1）；滿了直接以 `QUEUE_FULL` 落地，不是錯誤 | `number` / `8` | 否 | v23 |
 | `rwe.config.json` → `seedRefAllowlist` | engine-pull `seedRef:{repoUrl,sha}` 的 egress 白名單（`https://` URL 前綴）；**fail-closed**：省略/空陣列 = 任何 seedRef 回 `SEEDREF_DISABLED`；不命中前綴（含 `169.254.169.254`/`localhost`/私有 IP/`file://`）→ `SEEDREF_EGRESS_DENIED`（SSRF 安全） | `string[]` / `[]` | 否 | v13 |
 | `rwe.config.json` → `maxBlobBytes` | `POST /assets/blob/:sha`（streaming raw-body 上傳）最大 body bytes；超過 → HTTP 413 `BLOB_TOO_LARGE` | `number` / `268435456`（256 MiB，最小 1048576） | 否 | v10 |
 | `rwe.config.json` → `maxConcurrentRuns` | 頂層 run 並行上限（run-admission counter）；達上限時 `start()` 在任何持久化動作之前以 `RUN_ADMISSION_LIMIT` 拒絕；巢狀 `workflow()` 不佔用槽位 | `number` / `64` | 否 | v8 |
@@ -378,6 +387,20 @@ curl -s http://localhost:8787/api/models | python3 -c \
   "googleClientSecret": "GOCSPX-…"
 }
 ```
+
+`graphAnalyzer` 說明（`rwe.config.json`，九個鍵，範例見 `rwe.config.example.json`）：
+
+1. **`workflow_register` 現在會把「腳本本身」送給設定的 LLM provider**，用來畫 `workflow_describe` 的
+   ASCII 診斷圖——這是 v22 花一整輪把 `script` 從其他引擎內部 principal 遮起來的同一份文字，對著
+   設定的 provider 這層遮罩並不存在，因為畫圖本來就需要讀懂腳本的結構。這是本功能的內在行為，不是
+   缺陷；`graphAnalyzer.enabled:false` 是唯一、也是完整的控制項——關掉即完全不送出。
+2. **最壞情況呼叫次數公式**：`(1 + graphAnalyzer.retries) × (1 + gateway 本身的 retries)`——例如
+   `graphAnalyzer.retries:0` + `gateway retries:1`（v1 預設）＝每次註冊最多 2 次模型呼叫；兩者都調高
+   會相乘放大，估算費用/延遲時務必用這個公式，不要只看其中一個鍵。
+3. **出廠預設 `systemPrompt` 假設的模型等級**：字彙相容（照著要求只輸出 ASCII + 診斷圖字彙、不夾帶
+   額外文字）的模型。在本機 Ollama 這類較小模型（例如 `qwen2.5:7b`）上，字彙相容度會先出現退化——
+   持續升高的 `GATE_REJECTED_SHAPE` 或 journal 裡的 `gateFail:"codepoint"` 就是這個訊號，代表該換
+   `graphAnalyzer.model` 或重寫 `graphAnalyzer.systemPrompt`，而不是引擎故障。
 
 ## 1c. 安全模型（Security Model）
 

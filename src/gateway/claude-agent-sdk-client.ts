@@ -222,6 +222,7 @@ export function effectiveProvider(aliases: AliasMap | undefined, model: string |
  *  Claude keeps its native tools and direct/test callers are unaffected. */
 export function curateToolsForProvider(tools: string[], provider: string | undefined): string[] {
   if (provider === undefined || provider === 'anthropic') return tools;
+  if (tools.length === 0) return []; // DES-120: an intentionally-empty set is never Bash-augmented
   const filtered = tools.filter((t) => !NON_ANTHROPIC_EXCLUDED_TOOLS.has(t));
   return filtered.includes('Bash') ? filtered : [...filtered, 'Bash'];
 }

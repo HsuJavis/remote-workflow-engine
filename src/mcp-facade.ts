@@ -8,13 +8,23 @@ import { SystemClock } from './clock.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore } from './run-store.js';
 import { RunManager } from './run-manager.js';
-import type { WorkflowDetail, Channel } from './workflow-catalog.js';
+import { resolveVersionRequest, type WorkflowDetail, type Channel, type VersionSelector } from './workflow-catalog.js';
 import { SubmissionValidator } from './submission-validator.js';
 import { CatalogNotFoundError } from './errors.js';
 import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent, HarnessDescriptor, ManifestEntry } from './types.js';
-import { parseMeta, parseWorkflowSkeleton, type SkeletonNode } from './workflow-meta.js';
+import { parseMeta } from './workflow-meta.js';
 import { canonicalContract, effectiveBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings } from './params/contract.js';
-import { projectWorkflowForRead, type WorkflowOwnerView } from './workflow-view.js';
+import { projectWorkflowForRead, projectWorkflowDescribe, type WorkflowOwnerView } from './workflow-view.js';
+import { getTriggerBindings, type TriggerPorts } from './trigger-bindings.js';
+
+// v23 (DES-128, TASK-119): read-time trigger snapshot when no store ports are wired (e.g. a facade
+// constructed standalone in a unit test) — synthesizes the honest empty snapshot, never a crash.
+const NO_TRIGGER_PORTS: TriggerPorts = {
+  schedules: { listByWorkflow: () => [] },
+  webhooks: { listByWorkflow: () => [] },
+  continuations: { listPendingByWorkflow: () => [] },
+  runs: { getWorkflowName: () => null },
+};
 
 // v21 (DES-103/DES-104): the engine ceilings bound the read surfaces (workflow_get/list) at read
 // time — TASK-100 wires the live values from ServerConfig via McpFacadeDeps.ceilings (server.ts);
@@ -48,6 +58,14 @@ export interface McpFacadeDeps {
   /** v21 (ARCH-066, DES-104, TASK-100): engine ceilings bounding workflow_get/list's read-time
    *  effective bounds — forwarded from ServerConfig (see server.ts's createServer). */
   ceilings?: Ceilings;
+  /** v23 (DES-128, TASK-119): live cross-store ports for workflow_describe's `triggers` field —
+   *  DES-128's read-time call site (the analyzer's own generation-time call is separate, TASK-117).
+   *  Omitted (e.g. a facade built without the trigger stores wired) synthesizes an empty snapshot. */
+  triggerPorts?: TriggerPorts;
+  /** v23 (DES-126, DES-127 B2/B4, TASK-119): analyzer enabled-state + regenerate delegate for
+   *  workflow_describe's diagram fields and workflow_regenerate_diagram's gate. Omitted = disabled
+   *  (honest absence, not a crash — matches an unwired analyzer to `unavailable`/`DISABLED`). */
+  graphAnalyzer?: { enabled: boolean; regenerate(name: string, version: string, principal: string | null): { queued: boolean; status: 'pending' } };
 }
 
 function toErrEnvelope(err: unknown): ErrEnvelope {
@@ -105,6 +123,8 @@ export class McpFacade {
   private readonly runManager: RunManager;
   private readonly validator: SubmissionValidator;
   private readonly ceilings: Ceilings;
+  private readonly triggerPorts: TriggerPorts;
+  private readonly graphAnalyzer: McpFacadeDeps['graphAnalyzer'];
 
   constructor(deps: McpFacadeDeps = {}) {
     const clock = deps.clock ?? new SystemClock();
@@ -115,6 +135,8 @@ export class McpFacade {
     this.runManager = deps.runManager ?? new RunManager({ store: this.store, clock });
     this.validator = deps.validator ?? new SubmissionValidator({ catalog: this.runManager.catalog });
     this.ceilings = deps.ceilings ?? DEFAULT_CEILINGS;
+    this.triggerPorts = deps.triggerPorts ?? NO_TRIGGER_PORTS;
+    this.graphAnalyzer = deps.graphAnalyzer;
   }
 
   async workflow_run(a: { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: ManifestEntry[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string }; seedManifestRef?: string; version?: string; channel?: 'beta' | 'release'; overrides?: unknown }, principal: string | null = null): Promise<ResultEnvelope<{ runId: string }>> {
@@ -252,7 +274,7 @@ export class McpFacade {
   }
 
   /** v9 (REQ-061/062): full detail for one registered workflow — its purpose (meta.description +
-   *  phases), the script, and a predicted static DAG skeleton — so a client can understand what a
+   *  phases) and the script — so a client can understand what a
    *  workflow does and see its shape BEFORE deciding to reuse it or author a new one. Unknown name →
    *  typed WORKFLOW_NOT_FOUND envelope (never throws across the tool boundary).
    *  v15 (DES-098, DES-099, TASK-089): adds owner + defaults to output; flat response surfaces
@@ -304,7 +326,6 @@ export class McpFacade {
         channels: full.channels as unknown as Record<string, string>,
         versions: full.versions,
         description: meta.description, phases: meta.phases,
-        skeleton: parseWorkflowSkeleton(full.script),
         params, owner: full.owner, createdAt: full.createdAt,
         reportProblem: full.owner === null
           ? `this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: "${full.name}"})`
@@ -326,7 +347,6 @@ export class McpFacade {
     const resultObj = {
       name: full.name, version: full.version, createdAt: full.createdAt,
       description: meta.description, phases: meta.phases, script: full.script,
-      skeleton: parseWorkflowSkeleton(full.script),
       owner: full.owner,
       defaults: full.defaults as Record<string, unknown> | undefined,
       params,
@@ -341,6 +361,84 @@ export class McpFacade {
       script: full.script,
       result: resultObj,
     };
+  }
+
+  /** v23 (REQ-101, DES-125, DES-126, ARCH-082, TASK-119): the ONE workflow_describe response — every
+   *  principal gets the SAME non-owner-shaped view (DES-125 drops `viewerIsOwner`; `ctx` stays
+   *  required with no default per ADR-012, but this tool makes no masking decision on it — a future
+   *  field that does need one is added to an already-wired call site). Reuses `resolveVersionRequest`
+   *  (via `catalog.resolveDetail`) so its error code is IDENTICAL to run-admission's for the same
+   *  selector — the only structural way REQ-101's "resolve by REQ-097's exact order" survives someone
+   *  editing one call site without the other. */
+  async workflow_describe(a: { name: string; version?: string; channel?: 'beta' | 'release' }, _ctx: ReadContext): Promise<Record<string, unknown>> {
+    const catalog = this.runManager.catalog;
+    const sel: VersionSelector = { version: a.version, channel: a.channel };
+    let full: WorkflowDetail;
+    try {
+      full = await catalog.resolveDetail(a.name, sel);
+    } catch (err) {
+      if (err instanceof CatalogNotFoundError) {
+        const e = { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` };
+        return { runId: '', status: 'failed', code: e.code, error: e };
+      }
+      const e = toErrEnvelope(err);
+      return { runId: '', status: 'failed', code: e.code, error: e };
+    }
+    // Same pure resolver, called again against the row we already have, purely to name HOW this
+    // version was picked (`resolvedBy`) — the codes on the error path above already came from it.
+    const requested = resolveVersionRequest(sel, full.channels, new Set(full.versions));
+    const meta = parseMeta(full.script);
+    const params = readParams(full.params, this.ceilings);
+    const check = catalog.validateCurrent(full.script);
+    const ownerView: WorkflowOwnerView = {
+      name: full.name, version: full.version,
+      resolvedBy: requested.ok ? requested.requested.kind : 'default-release',
+      channels: full.channels as unknown as Record<string, string>,
+      versions: full.versions,
+      description: meta.description, phases: meta.phases,
+      params, owner: full.owner, createdAt: full.createdAt,
+      reportProblem: full.owner === null
+        ? `this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: "${full.name}"})`
+        : `issue_report({workflow: "${full.name}"})`,
+      validation: check.ok ? { ok: true, errors: [] } : { ok: false, errors: check.errors },
+      script: full.script,
+    };
+    const { bindings, bindingsFp } = getTriggerBindings(full.name, this.triggerPorts);
+    const diagram = catalog.getDiagram(full.name, full.version);
+    const view = projectWorkflowDescribe(ownerView, {
+      diagram, bindings, bindingsFp, analyzerEnabled: this.graphAnalyzer?.enabled ?? false,
+    });
+    return { runId: '', status: 'completed', result: view };
+  }
+
+  /** v23 (REQ-102, DES-126, DES-127 B4/B5, ARCH-082, TASK-119): owner-gated kick of a diagram
+   *  regeneration for one already-registered `(name, version)`. `version` is required (never
+   *  "whatever release currently points at") so nobody regenerates a version they didn't mean to.
+   *  Ownership + existence are checked HERE (mirrors `catalog.publish`'s own gate) before the
+   *  analyzer is ever touched, so a non-owner or a dangling name/version never reaches it; in-flight
+   *  idempotence (DES-127 B4) is `GraphAnalyzer.regenerate`'s own property, simply delegated to. */
+  async workflow_regenerate_diagram(a: { name: string; version: string }, principal: string | null = null): Promise<Record<string, unknown>> {
+    const catalog = this.runManager.catalog;
+    let full: WorkflowDetail;
+    try {
+      full = await catalog.resolveDetail(a.name, { version: a.version });
+    } catch (err) {
+      if (err instanceof CatalogNotFoundError) {
+        const e = { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` };
+        return { queued: false, code: e.code, error: e };
+      }
+      const e = toErrEnvelope(err);
+      return { queued: false, code: e.code, error: e };
+    }
+    if (full.owner && principal !== null && full.owner !== principal) {
+      const e = { code: 'NOT_WORKFLOW_OWNER', message: `NOT_WORKFLOW_OWNER: workflow '${a.name}' is owned by ${full.owner}` };
+      return { queued: false, code: e.code, error: e };
+    }
+    if (!this.graphAnalyzer?.enabled) {
+      const e = { code: 'ANALYZER_DISABLED', message: 'the graph analyzer is disabled (graphAnalyzer.enabled:false)' };
+      return { queued: false, code: e.code, error: e };
+    }
+    return this.graphAnalyzer.regenerate(a.name, a.version, principal);
   }
 
   /** DES-067 (TASK-070): shaped agent log — harness descriptor at top level, stripped from events,
