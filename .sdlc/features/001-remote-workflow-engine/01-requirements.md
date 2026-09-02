@@ -751,7 +751,7 @@ flowchart LR
 - **iter:** v12
 
 ### REQ-078 — enriched model catalog: capability, stability, in/out modalities, cost level 0–10
-- **status:** draft
+- **status:** done   <!-- v23 Gate 1 hygiene: shipped in v12 (IMPL-113/114/120), rtm.md row real-verified ✅; the `draft` marker was stale metadata, not an open requirement. This IS the owner's original "model selection driven by per-model data". -->
 - **traces:** REQ-039
 - **acceptance:** Given `models_list`, When it returns each model entry Then the entry ALSO carries: a `capability` description (what the model is good at — curated for well-known models, derived from the source description for live ones), a `stability` rating (a small ordered enum, e.g. `stable | variable | best-effort`, derived from tier — curated/paid provider = stable, OpenRouter `:free`/besteffort = best-effort), its supported `modalities.in` / `modalities.out` (already present — surfaced explicitly), and a `costLevel` INTEGER 0–10 where 0 = free (local Ollama + OpenRouter `:free`) and 10 = the most expensive tier, banded from the model's price (a model with `price:'unknown'` gets `costLevel:null`, never a guessed number). Observable: an Ollama/`:free` model has `costLevel:0` and `stability:'best-effort'` (free) or `'variable'`; a top Anthropic model has a high `costLevel` and `stability:'stable'`; `costLevel` is monotonic with price across the catalog (a dearer model never has a lower level than a cheaper one); the dashboard model list shows these columns per model.
 - **iter:** v12
@@ -985,3 +985,112 @@ items are cheap to close inside v22's own scope and should be taken while the su
 copy" rationale died with P6-5's shared export) and **P6-2's registration half** (an author-declared
 `defaults.appendPrompt` carrying a forged frame delimiter is refused at dispatch but not at
 registration).
+
+---
+
+## Iteration v23 — Author/user separation, part 3: the explain surface, the agent-drawn diagram, and retiring the skeleton
+
+> **v23 goal (owner, decisions D14/D15 + Round v23 answers A1–A3)**: v21 gave users a declared set of
+> knobs; v22 stopped them editing the script at all. What is still missing is the other half of the
+> bargain — if a user may not read the script, the engine owes them a way to understand the workflow
+> anyway. Today the only structural view is a regex-derived `skeleton` the owner has called unreadable
+> and asked to retire, replaced by an ASCII line diagram an agent draws from the actual code.
+>
+> Closes GitHub issue **#32**, with **two deliberate deltas** from the issue as filed, both owner-ratified
+> at Round v23 and both to be stated in the close comment: the diagram is **ASCII, not Mermaid** (A2),
+> and there is **no deterministic skeleton fallback** when the analyzer fails (A1).
+>
+> Scope note recorded at Gate 1: the owner's original five-part ask is now fully accounted for. Parts 1
+> and 5b shipped in v21 (REQ-090..095), 5a in v22 (REQ-096..097), and part 4 — model selection driven by
+> per-model data — **already shipped in v12 as REQ-078** (`models_list` carries capability, stability,
+> modalities and a 0–10 costLevel; RTM row real-verified). Nothing from the original request is
+> outstanding beyond this iteration.
+
+### REQ-101 — `workflow_describe`: one read-only surface that explains a workflow without showing its script
+- **status:** draft
+- **traces:** REQ-100, REQ-090, REQ-096, REQ-097, REQ-095
+- **acceptance:** Given any principal calls `workflow_describe({name, version?, channel?})` Then it returns, in one response, everything a *user* (not an author) needs to run the workflow responsibly: purpose, the resolved `(name, version)` and which channel resolved it, the ASCII diagram (REQ-102), the declared tunable-parameter contract with each knob's type/default/allowed range and its engine-ceiling bound, the locked keys **named as locked** so a client learns they exist and cannot be set, the available versions and channel pointers, the owner, and how to file a problem report against this workflow (REQ-095); Given the caller is not the owner Then the response contains **no script text at all** — asserted by the same secret-bearing-script test REQ-102 uses, so the two masks cannot drift apart; Given the version/channel selectors Then they resolve by REQ-097's exact order and an unpublished channel is refused with `CHANNEL_UNPUBLISHED`, never silently resolved to something else; Given a schema-only MCP client with no prior knowledge Then the tool description alone is sufficient to learn what the tool returns and that the script is deliberately not among it.
+- **iter:** v23
+
+### REQ-102 — the workflow diagram is drawn by an analyzer agent, structure only, honest when absent
+- **status:** draft
+- **traces:** REQ-101, REQ-096, REQ-100
+- **acceptance:** Given a workflow is registered Then an analyzer agent reads its script and emits an **ASCII line diagram** using the fixed vocabulary — rounded-corner box = one `agent()` call annotated with its resolved model, square box = trigger or output artifact, `◇` = conditional branch, `⟲` = loop back-edge, `──┬──▶` = fan-out, converging arrows = fan-in/join — and the diagram is stored against the exact `(name, version)` it was derived from and never served against a different version; Given registration Then it **never blocks on the analyzer** (generate async, reconcile) and the analyzer is bounded by a configured `timeoutMs`; Given the analyzer times out, errors, or is disabled Then `workflow_describe` returns `diagram: null` with `diagramStatus: 'pending'|'unavailable'` and a human-readable note — **there is no degraded fallback diagram** (owner decision A1, superseding issue #32's skeleton-fallback clause); Given a workflow whose script contains a secret literal, a distinctive prompt sentence, or an `appendPrompt` string Then **none of those strings appear anywhere in the emitted diagram** for any principal — the diagram carries structure only: node types, agent count, resolved model per agent, fan-out/join, branches, loops, phase names, trigger bindings (owner decision A3; this is what stops a summarising analyzer from re-opening REQ-100's mask); Given a new version of the same name is registered Then its diagram is generated fresh and the prior version's diagram is unchanged.
+- **iter:** v23
+
+### REQ-103 — the diagram shows how the workflow is triggered, which the script does not contain
+- **status:** draft
+- **traces:** REQ-102, REQ-053, REQ-058
+- **acceptance:** Given a workflow bound by `schedule_create`, `webhook_create`, and/or `chain_create` Then its diagram's entry node names that trigger method (cron/webhook/chain, and for chain the upstream workflow), because the analyzer is given the **trigger bindings** alongside the script — trigger bindings live in the schedule/webhook/continuation tables keyed by workflow name and are **absent from the script entirely**, so an analyzer fed only the script can never show them (the gap in issue #32 as filed); Given a workflow with no trigger bound Then the entry node reads as a direct `workflow_run` invocation rather than inventing a trigger; Given a trigger is added or removed after the diagram was generated Then the change is observable — either the diagram regenerates or `workflow_describe` reports the current bindings as a separate field alongside a diagram marked as generated-at that time, so a stale diagram never silently contradicts the live bindings.
+- **iter:** v23
+
+### REQ-104 — the analyzer is config-separated and admin-tunable with no code change
+- **status:** draft
+- **traces:** REQ-102
+- **acceptance:** Given the engine config Then a `graphAnalyzer` block sets at minimum `enabled`, `model`, `systemPrompt` (the diagram vocabulary and instructions), `tools`, `timeoutMs` and `retries`, and **no analyzer harness value is hard-coded in engine source**; Given an operator edits `graphAnalyzer.systemPrompt` or `graphAnalyzer.model` and re-registers a workflow Then the emitted diagram visibly changes with no redeploy — **this is the acceptance, and it is verified by a Gate 7.5 real run, not by a unit test**: a config block that is read but never forwarded through `composeConfig()` passes every unit test and silently does nothing, which is this engine's known recurring wiring defect (v11 `updateFlagPath`, v15 auth); Given `graphAnalyzer.enabled:false` Then registration still succeeds and `workflow_describe` reports `diagramStatus:'unavailable'` per REQ-102, never an error.
+- **iter:** v23
+
+### REQ-105 — the static skeleton leaves every user-facing surface
+- **status:** draft
+- **traces:** REQ-102, REQ-100
+- **acceptance:** Given any user-facing read surface — `workflow_get`, the `/api/workflows/:name/skeleton` route, `workflow-view.ts`'s projection, the dashboard workflow-detail preview and home-card mini-preview, and `workflow_get`'s own tool description — Then **none of them returns, renders, or mentions the regex-derived skeleton**, so a schema-reading client can no longer learn the concept exists; Given the run-DAG route `/api/runs/:id/dag`, which retains the skeleton internally as its layout spine Then it stays **behind the auth gate** (v22 finding H2 closed exactly this hole; v23 must not re-open it) and serves layout only, never a named artifact a client can request; Given the codebase after v23 Then no comment, docblock, tool description, architecture note, or ledger entry still tells a reader the skeleton is a surface available to them — **the deletion is not finished while something still describes the deleted thing**, which is the single most-repeated defect in this ledger's history (nine recorded instances across v21 and v22).
+- **iter:** v23
+
+### REQ-106 — authoring rules are documented and discoverable, so authors keep data out of logic
+- **status:** draft
+- **traces:** REQ-090, REQ-101
+- **acceptance:** Given `docs/AUTHORING.md` Then it states the rules an author must follow for a workflow to be tunable without editing it: declare every knob a user might need in `meta.params` rather than hard-coding it, never read a value the contract does not declare, and treat the six locked keys as engine-owned; Given a schema-only MCP client Then the same rules are reachable from the MCP surface itself (the `workflow_register.script` description or an equivalent discoverable reference), because the plugin ships no guidance skills and the tool schemas are all a cold client has; Given a registered workflow that hard-codes a value the engine could tune Then this is **documented as an authoring smell, not enforced** — no new rejection is added at registration.
+- **iter:** v23
+
+---
+
+### Round v23 — 2026-09-02 (three boundary calls, owner-answered in session)
+
+The owner's standing instruction is 「哪幾個邊界情況 你跟我說一下 我來判斷」. v22 legitimately skipped an
+interview because its scope literally *was* the Round v21 answers; v23 does not get that pass — two of
+the three questions below could silently undo work v22 had just shipped.
+
+**A1 — analyzer failure/timeout → 誠實缺席 (honest absence).** `diagram: null` + `diagramStatus:
+'pending'|'unavailable'` + a human-readable note. **No degraded skeleton fallback**, which overrides
+issue #32's "ALWAYS provide a deterministic skeleton→mermaid fallback" clause. Rationale: it matches
+REQ-100's rule that a withheld thing *says* it is withheld, and a fallback would put the hard-to-read
+diagram the owner asked to retire back in front of users on exactly the failure path.
+
+**A2 — ASCII everywhere.** One artifact: MCP clients and the browser render the same ASCII line
+diagram. **No Mermaid path**, so #32's `flowchart LR` deliverable is consciously not built. Rationale: a
+single source of truth cannot disagree with itself, and a second render path is scope the owner did not
+ask for.
+
+**A3 — the diagram carries structure only** (orchestrator-proposed, owner did not overrule): node types,
+agent count, resolved model per agent, fan-out/join, branches, loops, phase names, trigger binding.
+**Never** prompt bodies, `appendPrompt`, or literal string arguments. A test registers a secret-bearing
+script and asserts the secret is absent from its diagram. Without this pin, an analyzer that
+"summarises the workflow" quietly re-opens the mask v22 shipped.
+
+**Boundary call the orchestrator made and recorded, rather than reading the owner's words
+hyper-literally.** Round v21's answer 3 was 「skeleton 應該要移除」. Read as "delete
+`parseWorkflowSkeleton`", that collides with two other things the same owner set: the `/goal` Playwright
+condition (the function is the layout spine of the LIVE RUN graph at `server.ts:1108` —
+`layoutGraph(skeletonNodes, view.agents)` positionally matches live agents to predicted slots, and an
+empty skeleton degrades every agent to the `frame-grouped` path), and issue #32 itself, which names the
+skeleton as the analyzer's grounding input. The whole sentence 「使用者知道工作流的樣子就好」 is about what
+users see, so REQ-105 removes it from every user-facing surface and keeps the function internal-only —
+**behind the auth gate**, per v22's H2.
+
+**Rules carried in from v21 and v22, each bought at cost:**
+
+1. **A test whose oracle is the code under test cannot fail when the code is wrong.** v22 produced a
+   fresh instance: `val-107`'s "a non-owner is refused `NOT_WORKFLOW_OWNER`" was rewritten to assert
+   success so it would match the new code. v23's own external contracts — the diagram vocabulary and
+   `workflow_describe`'s response shape — must be asserted literally, never derived.
+2. **A test can be built on the vulnerability it should be catching.** IT-080 bound its server to
+   `0.0.0.0` to take the D-BIND exemption and then self-asserted `{principal: ALICE}` — the exact shape
+   H1 existed to close. When the fix landed, seven cases went red because they depended on it.
+3. **Moving a check is not done until everything that described its old home points at the new one.**
+   Nine instances across v21 and v22: code comments (×2), docblocks, `02-architecture.md`, retired tests
+   left green, a review finding, and `ARCH-072`/`ADR-010`/`ADR-014` never amended for a ratified design
+   decision. REQ-105 deletes a surface that **seven files currently describe**.
+
+**Debt carried in from v22** (recorded, not assumed): `chain_create` validates no workflow at all
+(07-review.md §8.2); with no MCP registry configured every referenced MCP name is dropped with no record
+(adjudication #5 O-2); and v22's own 7 MEDIUM + 12 LOW in 07-review.md §4.3.
