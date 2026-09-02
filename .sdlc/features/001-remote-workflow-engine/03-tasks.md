@@ -590,7 +590,7 @@ status: draft
 - Two surgical changes in the shipped v15 auth code, both in the ARCH-059 closure. **(HIGH-1)** in `src/auth/auth-service.ts`: add exported pure `isLoopbackRedirectUri(uri)` (RFC 8252: `http:` scheme + host ∈ {`127.0.0.1`,`localhost`,`[::1]`}, any port/path; parse-in-try/catch→false) and call it in `authorize()` **before `tokenStore.putState(...)`** — non-loopback/missing/unparseable → `400 invalid_request`, no state row written. **(MED-2)** in `src/server.ts` (~line 1259 sweep): call `tokenStore.gcExpired()` each tick wrapped try/catch→log+continue, and create the sweep interval when `workspaceTtlMs>0` **OR** auth enabled (so auth-enabled/no-TTL still bounds tables). Both keep auth-disabled behavior byte-for-byte unchanged. Design: DES-095, DES-093. Right-side: UT-only for `isLoopbackRedirectUri`; IT-078 gains a 400/no-state-row case + a gc-sweep-prunes-expired case (verifier), IT-079 unaffected.
 
 ### TASK-091 — RFC 7591 Dynamic Client Registration: advertise `registration_endpoint` + public `POST /register` (loopback-clamped, metadata-clamped, persisted+GC'd) + `/authorize` registered-client redirect binding (port-agnostic)
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-059
 - **estimate:** M
 - **iter:** v17
@@ -599,28 +599,28 @@ status: draft
 ## v18 real-consent fix (F1) — Google's 3 OAuth endpoints on 3 distinct hosts, not one `googleBase` (REQ-012 → ARCH-059)
 
 ### TASK-092 — split the conflated single `googleBase` into three separately-injectable Google endpoint URLs (authorize / token / JWKS), each with a correct exported production default + a static regression guard
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-059
 - **estimate:** S
 - **iter:** v18
 - Closes the observed live-connect failure: a REAL Google consent succeeded (code+state returned) but `/oauth/google/callback` 502'd because v15..v17 used one `googleBase` (default `accounts.google.com`) for all three Google endpoints, while token exchange lives at `oauth2.googleapis.com/token` and JWKS at `www.googleapis.com/oauth2/v3/certs` — `accounts.google.com/token` + `/oauth2/v3/certs` do not exist. Invisible to tests because the fake IdP double served all three off one base. Two edits, both inside the ARCH-059 closure. **(1)** `src/auth/auth-service.ts` (DES-095): export `GOOGLE_AUTHORIZE_URL='https://accounts.google.com/o/oauth2/v2/auth'`, `GOOGLE_TOKEN_URL='https://oauth2.googleapis.com/token'`, `GOOGLE_JWKS_URL='https://www.googleapis.com/oauth2/v3/certs'`; `AuthConfig` drops `googleBase?` and gains `googleAuthorizeUrl?`/`googleTokenUrl?`/`googleJwksUrl?` (test-injectable, default to the constants via `??`); `createAuthRouteHandlers` uses the three resolved URLs (authorize `new URL(authorizeUrl)`, token `fetch(tokenUrl,…)`, default `jwksFetch` fetches the full `jwksUrl`); pass `jwksUri: jwksUrl` into `verifyIdToken` deps; update `server.ts:149`'s stale `googleBase+jwksFetch` comment. **(2)** `src/auth/google-verifier.ts` (DES-094): rename deps `googleBase`→`jwksUri` and `JwksPort` arg `googleBase`→`jwksUri`; call site `deps.jwksFetch(deps.jwksUri)` — rename-only, zero behavior change. Design: DES-094, DES-095. Right-side (verifier): a static UT importing `GOOGLE_TOKEN_URL`/`GOOGLE_JWKS_URL` and asserting their exact production values (the ONLY tier that catches this fake-double class); UT-094 fixture rename `googleBase:`→`jwksUri:`; IT-078 v18 points the fake at `googleAuthorizeUrl`+`googleTokenUrl` (distinct hosts) with `jwksFetch` injected as today; VAL-095 real-tier drives a real Google consent that completes the callback → 302 to loopback with an engine auth-code. Sanctioned fallout: removing `AuthConfig.googleBase` compile-breaks the VAL-095 fake-Google setup + UT-094 fixtures — mechanical renames owned by Gate 5/7.5, not new scope.
 
 ### TASK-093 — echo the client's OAuth2 `state` (RFC 6749 §4.1.2) + RFC 9207 `iss` back to the client at the final `/oauth/google/callback` redirect; persist client state across the Google round-trip, kept separate from the engine's own Google-leg state
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-059
 - **estimate:** S
 - **iter:** v19
 - Closes the observed real-client connect failure: a real Claude Code MCP OAuth connect hit **"OAuth state mismatch - possible CSRF attack"** because the engine dropped the CLIENT's `state` — it only generated/handled its OWN Google-leg `state` (its CSRF token to Google, PK of `oauth_state`) and never echoed the client's `state` back to the client's `redirect_uri`. Per RFC 6749 §4.1.2 the AS MUST return the client's exact `state` on the authorization response. Two edits, both inside the ARCH-059 closure. **(1)** `src/auth/token-store.ts` (DES-093): `oauth_state` gains a nullable `client_state TEXT` column (in `CREATE TABLE IF NOT EXISTS` AND an idempotent `try { ALTER TABLE oauth_state ADD COLUMN client_state TEXT } catch {}` migration — same pattern as `sqlite-run-store.ts:64`); `putState` accepts an optional `clientState: string | null`; `consumeState` returns it in its payload. **(2)** `src/auth/auth-service.ts` (DES-095): `authorize()` captures `url.searchParams.get('state')` (the client's state; `null` when absent, `''` when `state=` — both stored as null) and passes it to `putState`; `googleCallback()` reads `clientState` from `consumeState` and, in the absolute-URL (try) branch of the final client redirect, sets `state=<clientState>` ONLY when non-null/non-empty and unconditionally sets `iss=<effectiveIssuer>` (RFC 9207 — byte-equal to the AS metadata `issuer`, which is the RAW `effectiveIssuer` per `oauth-metadata.ts:38`, NOT the slash-stripped `b`). The engine's Google-leg `state` (the `oauth_state` PK) is unchanged and never confused with the client's. The catch branch (relative-URI fallback, ~line 257) is unreachable post-v16 loopback validation and is NOT touched (flag-don't-remove, per DES-095 v16). Design: DES-093, DES-095. Right-side (verifier, IT-078 v19 cases): `/authorize?...&state=ABC123&redirect_uri=http://127.0.0.1:P/cb` drives the flow to a final client redirect carrying `state=ABC123` unchanged; omitted/empty client state → NO `state` param on the client redirect (no spurious `state=`); `iss` param present on the client redirect and byte-equal to the AS metadata `issuer`; engine-leg `state` still generated+consumed independently (regression). Full REQ-012 v19 end-to-end (spell out or the verifier under-tests): a real `@modelcontextprotocol/sdk` client with a fake IdP completes register→authorize→callback→**token exchange→bearer→authenticated `/mcp`** with its `state` accepted at every step. Real tier = VAL-095-style real Claude Code connect completing the whole loop against the running engine.
 
 ### TASK-094 — refresh tokens end-to-end (RFC 6749 §6 / MCP `offline_access`): advertise scopes/refresh in AS metadata, thread client-requested scope across the Google round-trip, issue a rotating sha256-at-rest refresh_token when offline_access granted, add a `grant_type=refresh_token` branch, widen the DCR grant-types clamp
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-059
 - **estimate:** M
 - **iter:** v20
 - Closes the user-requested improvement: a real Claude Code MCP client currently must re-auth in a browser on every access-token expiry because the engine issues no refresh token. Four coordinated edits, all inside the ARCH-059 closure. **(1)** `src/auth/oauth-metadata.ts` (DES-092): `buildAuthServerMetadata` adds `scopes_supported:["openid","email","offline_access"]`, `token_endpoint_auth_methods_supported:["none"]`, `authorization_response_iss_parameter_supported:true`, and widens `grant_types_supported` to `["authorization_code","refresh_token"]` (Claude Code auto-appends `offline_access` ONLY when it sees it advertised). **(2)** `src/auth/token-store.ts` (DES-093): new 5th table `refresh_tokens(token_hash PK, principal, scope, client_id/*nullable*/, issued_at, expires_at)`; new nullable `scope TEXT` on BOTH `oauth_state` and `auth_codes` (idempotent `ALTER … catch {}` migrations, sqlite-run-store.ts:64 pattern); `putState`/`mintAuthCode` accept `scope`, `consumeState`/`consumeAuthCode` return it; new `issueRefresh(principal, scope, clientId, ttlMs)` (opaque, sha256-at-rest, csprng+clock seams) + `consumeRefresh(rawToken)` (single-use atomic DELETE-RETURNING); `gcExpired()` now sweeps all FIVE tables. **(3)** `src/auth/auth-service.ts` (DES-095): `authorize()` captures `scope` from the query (client-requested, SEPARATE from the hard-coded Google-leg `openid email`, NEVER forwarded to Google) → `putState`; `tokenExchange()` authorization_code grant response becomes `{access_token, token_type, expires_in, scope, refresh_token?}` with `expires_in` ALWAYS present (issue #26281) and `scope` ALWAYS echoed (`""` when none), issuing a refresh_token IFF space-split membership of `offline_access` in the granted scope; new `grant_type=refresh_token` branch (no PKCE) → `consumeRefresh` (rotate: new bearer + new refresh, sliding `REFRESH_TTL_MS` ~90d), `client_id` binding enforce-if-stored, `400 invalid_grant` on unknown/expired/consumed/mismatched; export `REFRESH_TTL_MS`. **(4)** the v17 DCR `/register` grant-types clamp widens from `["authorization_code"]` to `["authorization_code","refresh_token"]` (else a registered client is never told the refresh grant exists — defeats the fix for the exact target client). Design: DES-092, DES-093, DES-095. Right-side (verifier): UT — offline_access→refresh issued / absent→omitted, expires_in+scope always present, space-split (not substring) membership, rotation yields a DIFFERENT token; IT-078 v20 — real server+SQLite, `/authorize?...&scope=...%20offline_access`→callback→`/token` yields refresh_token, then `grant_type=refresh_token` yields fresh access + different refresh + re-use→`invalid_grant`, plus a no-offline_access flow yielding none; real tier = VAL-095 real client staying connected across an access-token expiry with no new browser sign-in.
 
 ### TASK-095 — callback success page: `/oauth/google/callback` returns a 200 HTML success page (copyable redirect URL + one-click copy + meta/JS auto-forward) instead of a bare 302, so a headless/`--no-browser` connect no longer sees a broken-loopback browser error
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-059
 - **estimate:** S
 - **iter:** v20
@@ -636,7 +636,7 @@ status: draft
 > TASK-104 last (delete `resolveHarnessParams` only after TASK-098+101 subsume its author-side path).
 
 ### TASK-096 — catalog row widening: `params TEXT` column + `get()` returns `{script, version, defaults, params}` (lands FIRST, alone)
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-067
 - **files:** src/workflow-catalog.ts, tests/integration/catalog-persistence.test.ts
 - **des:** DES-103
@@ -646,7 +646,7 @@ status: draft
 - Zero-dependency schema+read change that every later task compiles against. Today `get()` is `SELECT script, version` (`workflow-catalog.ts:136`) while `defaults` is only reachable via `getFull()`, so ARCH-066's "the row the run path already reads carries the contract and defaults" is not implementable and `start()`/`resume()` would each need a second query. Widen `get()` (option (a), not "point start() at getFull()" — `getFull()` additionally returns `owner`, which the run path has no business carrying, and two row-read shapes is where `defaults`-vs-`params` drift starts); `getFull()` then delegates to `get()` + owner. Includes the idempotent `ALTER TABLE workflows ADD COLUMN params TEXT` migration (reuse the `workflow-catalog.ts:58–67` PRAGMA/try-catch pattern verbatim). **No contract.ts import** — `get()` returns the stored JSON parsed as `ParamContract | undefined`; canonicalization of `undefined` belongs to the consumers (TASK-099/100).
 
 ### TASK-097 — pure `src/params/contract.ts`: locked/tunable vocabulary, `parseParamContract`, `validateUserOverrides`, the total rejection table
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-064
 - **files:** src/params/contract.ts, tests/unit/params-contract.test.ts
 - **des:** DES-101
@@ -656,7 +656,7 @@ status: draft
 - The single place that knows the contract vocabulary (registration, submission and v23's describe surface all consume it, so the locked-key list cannot drift into three copies). Pure: no I/O, no clock, no VM — the post-eval structural bounds live here, the pre-eval source-size bound lives in `workflow-meta.ts` (TASK-099), because `parseParamContract(metaParams: unknown, …)` by its own signature only sees a value that already survived evaluation. Test-first in the strictest sense; this task carries the majority of the slice's coverage.
 
 ### TASK-098 — pure `src/params/resolve.ts`: two-moment merge, per-key provenance, five-segment `composePrompt`, `mapEffort`
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-065
 - **files:** src/params/resolve.ts, tests/unit/params-resolve.test.ts
 - **des:** DES-102
@@ -666,7 +666,7 @@ status: draft
 - Depends on TASK-097's types only. Provenance is emitted by the function that computes the value (one pass, `{value, rung}` per key) — a second function inferring provenance by comparing values lies whenever two rungs hold the same value (registered default and engine default both `sonnet`), which is exactly the case a wiring-miss test must distinguish. `mapEffort` is pure and provider-keyed; it is *called* inside the gateways (TASK-102), never here.
 
 ### TASK-099 — registration stores the normalized contract: pre-eval source bound, cross-validated defaults, `ON CONFLICT … params = excluded.params`, ceiling-bounded read surfaces
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-067
 - **files:** src/workflow-catalog.ts, src/workflow-meta.ts, src/mcp-facade.ts, src/server.ts, tests/unit/meta-literal.test.ts, tests/integration/harness-defaults-validation.test.ts
 - **des:** DES-103, DES-101
@@ -677,7 +677,7 @@ status: draft
 - Depends on TASK-096 + TASK-097. **The `ON CONFLICT` clause is the trap:** `workflow-catalog.ts:110–114` updates script/version/createdAt/defaults and *deliberately omits* `owner`; an implementer adding `params` by pattern-copy leaves a stale contract on re-register — silent, no error, and exactly the drift class v21 exists to close. Also: `list()` reads `params` from the column (never a script re-parse — v22/D15 masks the script); `workflow_get`/`workflow_list` serve `min(author bound, engine ceiling)` computed at read time; MCP tool descriptions/inputSchema generated from the ARCH-064 types under the existing ARCH-051 drift-lock (the `effort` no-op being repaired here WAS a docs/behaviour split — the fix must not mint a new one). The `meta.description` re-parse in `list()` stays as-is: inherited debt, v22 owner.
 
 ### TASK-100 — admission rung + run-immutable snapshot + resume, with the three config keys and their `composeConfig()` wiring rows IN THIS TASK
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-066
 - **files:** src/run-manager.ts, src/run-store.ts, src/store/sqlite-run-store.ts, src/mcp-facade.ts, src/server.ts, src/main.ts, tests/unit/compose-config-v2-wiring.test.ts, tests/integration/params-admission.test.ts
 - **des:** DES-104
@@ -687,7 +687,7 @@ status: draft
 - Depends on TASK-096 + TASK-098. **One task by decree** (ARCH-066 inv-6): admission rung + snapshot persist + `redact()` routing + REQ-083 sweep row + config-key forwarding + the `compose-config-v2-wiring.test.ts` rows. A separate "config plumbing" task is how a **fifth** instance of that bug class ships (v11 `updateFlagPath`, v15 `auth`, v16 `workspaceTtlMs`, now `resolveHarnessParams`). Carries the MCP surface too: `workflow_run` gains `overrides` (inputSchema `additionalProperties:false`, exactly four properties) threaded to `start(spec, overrides?)` — **`overrides` never hangs off `RunSpec`** (a second persist sink carrying caller text that the REQ-083 sweep would miss, plus a standing temptation to re-merge on resume); `workflow_resume` rejects the *presence* of an `overrides` field outright. Includes the legacy NULL-`effectiveParams` resume fallback — no ARCH clause owns it and it breaks every in-flight suspended run on deploy day if omitted.
 
 ### TASK-101 — dispatch wiring: required `runParams` on `AgentReq`, single-site descriptor decoration, five-segment prompt, observable pre-dispatch rejection
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-068
 - **files:** src/agent-executor.ts, src/run-manager.ts, src/types.ts, src/gateway/client.ts, tests/unit/agent-executor-params.test.ts, tests/integration/agent-executor-wiring.test.ts, tests/integration/agent-log-harness-shape.test.ts
 - **des:** DES-105
@@ -697,7 +697,7 @@ status: draft
 - Depends on TASK-098 + TASK-100. **The `tsc` lever goes on `AgentReq`, not the constructor:** `AgentExecutorDeps = {}` is an all-optional bag constructed at ~30 sites across 12 test files, and the executor instance is not where params semantically live; `AgentReq` is built at exactly ONE production site (`run-manager.ts:_handleAgentRequest`), which also means `_spawnerOverride` carries the field automatically instead of bypassing the lever. Also folds the REQ-092 locked trio (`defaults.prompt/tools/skills`) into the snapshot and the composition — that clause has no ARCH-064..070 home today and would otherwise ship still-inert, repeating the exact class this iteration exists to close.
 
 ### TASK-102 — effort on the wire: one shared `mapEffort` imported by both gateway clients, `thinkingFor` stays sole writer
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-069
 - **files:** src/gateway/client.ts, src/gateway/claude-agent-sdk-client.ts, tests/unit/gateway-effort.test.ts, tests/unit/claude-agent-sdk-gateway-thinking.test.ts
 - **des:** DES-106
@@ -707,7 +707,7 @@ status: draft
 - Depends on TASK-098. **Top risk in the slice:** `thinkingFor()` (`claude-agent-sdk-client.ts:325`, wired at `:527`) is the SOLE writer of `options.thinking` and exists *because* unconditional extended thinking made every real SDK+local-Ollama call fail with a 400 after ~4 minutes (Gate 7.5 round 3). An effort mapper that assigns `options.thinking` from a second site re-opens that shipped defect on the default path. Mapping runs **inside** the gateway (the provider is only resolvable there — `gateway/client.ts:281`) and the applied object travels back up via `onHarness(descriptor, applied?)`; no `resolveTarget` interface method is invented.
 
 ### TASK-103 — workflow-bound problem reports: `workflow:<name>` label, `name@version` + runId in the body, label-filtered `issue_list`, fingerprint extension
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-070
 - **files:** src/github/issue-reporter.ts, src/mcp-facade.ts, src/server.ts, tests/unit/issue-reporter.test.ts, tests/integration/issue-report-http.test.ts
 - **des:** DES-107
@@ -717,7 +717,7 @@ status: draft
 - Independent of every other v21 task. Reuses the registration-name charset/length predicate minus the existence check (transcription of the regex is drift); a just-deregistered workflow must still be reportable, so the name is never existence-checked.
 
 ### TASK-104 — cleanup: delete `resolveHarnessParams` once `mergeRunParams` owns the author-side path
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-065
 - **files:** src/harness-defaults.ts, tests/unit/params-resolve.test.ts
 - **des:** DES-102
@@ -737,7 +737,7 @@ status: draft
 > first RED tests written; they are database-free and pin the two external contracts v22 Rule 1 names.
 
 ### TASK-105 — versioned catalog: `workflow_versions` table, transactional idempotent boot migration, `resolve`/`resolveDetail`/`exists`/`listVersions`/`publish`, and every converted call site in ONE commit
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-071
 - **files:** src/workflow-catalog.ts, src/run-manager.ts, src/scheduler.ts, src/webhook-registry.ts, src/submission-validator.ts, src/mcp-facade.ts, src/server.ts, tests/integration/catalog-versions.test.ts
 - **des:** DES-109, DES-110, DES-111
@@ -747,7 +747,7 @@ status: draft
 - **`get()` and `getFull()` are deleted, not left beside `resolve()`/`resolveDetail()`** — after this commit the compiler, not a reviewer, finds a missed call site. Splitting the accessor change from its six call sites (`run-manager.ts:391,635,801`; `scheduler.ts:148,209`; `webhook-registry.ts:89`; `submission-validator.ts:83`) leaves a legacy "newest row" read alive for a review cycle, which is exactly how this repo's stored-but-never-wired class survives (four documented recurrences). Registration is mechanical here (INSERT a new row, no channel) — enforcement and the ceiling land in TASK-107 so this task stays reviewable.
 
 ### TASK-106 — pure `src/script-checks.ts`: `validateScriptEntry` with injected ports + the shared frame-delimiter predicate
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-074
 - **files:** src/script-checks.ts, tests/unit/script-checks.test.ts
 - **des:** DES-112
@@ -757,7 +757,7 @@ status: draft
 - Lifted **verbatim** out of `submission-validator.ts:92-124`'s `if (spec.script)` block into a new tiny pure module — not a call into `submission-validator.ts`, because `workflow-catalog.ts` becomes the enforcement site and that file already type-imports the catalog (a cycle). The delimiter predicate is **imported** from `params/contract.ts`, never transcribed (P6-2's registration half; v21 QD-REP-1 precedent).
 
 ### TASK-107 — registration ENFORCES: `validateScriptEntry` before any write, the per-name version ceiling, and the `main.ts` threading + `compose-config-v2-wiring.test.ts` rows IN THIS TASK
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-071, ARCH-074
 - **files:** src/workflow-catalog.ts, src/main.ts, src/server.ts, tests/unit/compose-config-v2-wiring.test.ts, tests/integration/registration-enforcement.test.ts
 - **des:** DES-111, DES-112, DES-117
@@ -767,7 +767,7 @@ status: draft
 - Depends on TASK-105 + TASK-106. **One task by decree** — a new config key plus a widened constructor is the exact trigger of this repo's five-instance `composeConfig` wiring bug class (v11 `updateFlagPath`, v15 `auth`, v16 `workspaceTtlMs`, v21 `resolveHarnessParams`); a separate "config plumbing" task is how the sixth ships. `maxWorkflowVersions` goes into the **existing** `WorkflowCatalogOpts.ceilings` object (`workflow-catalog.ts:57`) — no new plumbing. Order inside `register`: `validateScriptEntry` first, ceiling second (DES-117).
 
 ### TASK-108 — resolve once at admission, pin the version on the run, resume/nested/legacy through the pin, and the `SubmissionValidator` shrink
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-072, ARCH-074
 - **files:** src/run-manager.ts, src/run-store.ts, src/store/sqlite-run-store.ts, src/submission-validator.ts, src/types.ts, tests/integration/run-version-pin.test.ts, tests/integration/scriptversion-fidelity.test.ts
 - **des:** DES-113, DES-112, DES-117
@@ -777,7 +777,7 @@ status: draft
 - Depends on TASK-105. **The pin is a correctness fix, not decoration** — today `resume` re-reads the catalog and continues *whatever is registered now* (`run-manager.ts:632-636`), so the marker test is RED against current code. Carries the three `scriptVersion`-meaning rulings (DES-113), the legacy-cohort fallback, `SubmissionValidatorDeps` shrinking to `{catalog}` and `MISSING_SCRIPT` → `MISSING_NAME` — the shrink lives **here**, with the checks it orphans, because dead wiring left in `main.ts` is a standing invitation to grow the second enforcement site ADR-013 exists to prevent.
 
 ### TASK-109 — the wire surface: `script` + `scriptSha256` removed from the schemas and `RunSpec`, `workflow_publish`, `version`/`channel` parameters with descriptions, drift-lock rows, DAG from the pin
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-073
 - **files:** src/server.ts, src/mcp-facade.ts, src/types.ts, src/run-manager.ts, tests/integration/schema-drift-v22.test.ts, tests/integration/inline-script-closed.test.ts
 - **des:** DES-114, DES-117
@@ -787,7 +787,7 @@ status: draft
 - Depends on TASK-105 + TASK-108. **Closure is schema-level AND runtime-level and the two are asserted separately** — `/mcp` accepts arbitrary JSON, so removal from the advertised schema is not a refusal. `scriptSha256` leaves in the **same** task as `script` (`run-manager.ts:292-294` refuses it whenever there is no inline script, i.e. always after REQ-098 — an advertised parameter whose every use errors teaches a schema-reading agent a lie). The DAG route derives its skeleton from the pinned `(name, version)`; `server.ts:1044-1046`'s `spec?.script` read is empty for every named run today.
 
 ### TASK-110 — pure `src/workflow-view.ts`: `projectWorkflowForRead`, the two view types, `EXPECTED_NON_OWNER_KEYS`
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-075
 - **files:** src/workflow-view.ts, tests/unit/workflow-view.test.ts
 - **des:** DES-115
@@ -797,7 +797,7 @@ status: draft
 - Pure, no I/O, no auth — the *shape* is built here, the *policy* is evaluated in TASK-111, split so each is testable without the other. The non-owner branch is **constructed** from an explicit field list, never a `delete` on a full row (`script` is returned **twice** today, `mcp-facade.ts:220/232`, so a delete-based fix leaks `result.script` — v21's fragment-leak defect verbatim).
 
 ### TASK-111 — masked reads: **required** `ReadContext` on `workflow_get`/`workflow_list`, every call site, `/api/*` masked while auth is on, and the real-transport non-owner test
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-076, ARCH-073
 - **files:** src/mcp-facade.ts, src/server.ts, tests/integration/workflow-masking-http.test.ts
 - **des:** DES-116, DES-115
@@ -807,7 +807,7 @@ status: draft
 - Depends on TASK-105 + TASK-110. **One task by decree** — the whole value of a required `ctx` is that an unwired call site is a `tsc` error; a task that adds it with a `= null` default "to unblock the next task" deletes the entire protection and reproduces the `composeConfig` class verbatim. A facade-level unit test with an injected principal **cannot** see the `server.ts:823` hole, which is why the transport test is this task's DoD and not a later test task.
 
 ### TASK-112 — scheduler failed dispatch gets a writer: `markFailed` + `lastError`, the driver's `.catch()`, and the false comment corrected
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-072
 - **files:** src/scheduler.ts, src/server.ts, tests/unit/scheduler-failed-dispatch.test.ts
 - **des:** DES-118
