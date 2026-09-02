@@ -169,10 +169,16 @@ describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
     expect(body.error).toBe('Not found');
   });
 
+  // [RE-POINTED v23, adjudication #2 R-3(b)] Was driven through the now-deleted
+  // `/api/workflows/:name/skeleton` route (404s since REQ-105/TASK-120). The DES-018 guarantee this
+  // pins — a malformed %-encoded path segment never propagates as a 500 — is untouched by that
+  // deletion; `/api/workflows/:name/describe` (DES-125/132) decodes the same path segment the same
+  // way, so it is the surviving route through the same failure mode. Expectation is read from the
+  // handler's own contract, not from running the route: `decodeURIComponent` at server.ts:1174 throws
+  // a URIError inside the handler's try block, caught by the SAME outer catch (server.ts:1279-1282)
+  // that produced this test's original 200.
   it('a malformed %-encoded path segment degrades to 200 + a partial view (DES-018: never a 500)', async () => {
-    // decodeURIComponent('%') throws URIError — inside the handler's try block, caught by the
-    // outer catch (server.ts:1170-1173), never propagated as an unhandled 500.
-    const res = await fetch(`http://127.0.0.1:${server.port}/api/workflows/%/skeleton`);
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/workflows/%/describe`);
     expect(res.status).toBe(200);
     const body = await res.json() as { degraded?: string };
     expect(typeof body.degraded).toBe('string');

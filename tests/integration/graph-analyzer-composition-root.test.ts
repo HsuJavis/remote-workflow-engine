@@ -19,7 +19,7 @@
 // returns `ANALYZER_DISABLED` — the facade's `graphAnalyzer` dep is `undefined` regardless of what
 // the config says, because nothing ever constructs and passes it (case 3 fails for the genuine
 // unimplemented reason, not a config or auth mistake).
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { readdirSync, readFileSync, statSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -84,5 +84,52 @@ describe('TASK-126: composition root — behavioral (real createServer, real /mc
     expect(resp.code).not.toBe('ANALYZER_DISABLED');
     expect(resp.queued).toBe(true);
     expect(resp.status).toBe('pending');
+  });
+});
+
+// TASK-127 (DES-122, ARCH-079, ARCH-085): DES-122's zero-config fail-closed rule — "with
+// `graphAnalyzer.enabled` and no resolvable `workRoot`, `tools` is forced to `[]` regardless of what
+// the operator configured, and the boot line states the downgrade and its reason". Today
+// `graphAnalyzerConfig.tools` (server.ts:1462-1475) applies `config?.graphAnalyzer?.tools ?? []`
+// unconditionally — never consulting `config?.workRoot` — so an operator who configures
+// `graphAnalyzer.tools` without also configuring `workRoot` (the exact zero-config shape: `main.ts`'s
+// own SDK-gateway `cwd` falls back to `undefined`, i.e. "nothing to enforce against, allow", per the
+// docblock DES-122 cites) gets their configured tools through UNCURATED. This is a real gap, not a
+// hypothetical: the SAME `graphAnalyzer.model: 'default'` alias this suite's other case relies on
+// resolves to `provider: 'anthropic'` (`default-aliases.ts`), and `curateToolsForProvider` is a
+// no-op for `'anthropic'` (`claude-agent-sdk-client.ts:224`) — so no existing curation layer masks
+// the missing guard.
+//
+// Mock policy (integration, DES-119): real `createServer`, real boot; the only thing spied is
+// `console.log` to read the two already-shipped boot lines (DES-131's own "two boot lines, same
+// stdout convention") — same convention as UT-111's journal-line spy.
+//
+// Red reason: TODAY the `graph-analyzer effective tools=` boot line prints `["Bash"]` (the
+// configured value, unfiltered) instead of `[]`, because server.ts never branches on `config?.workRoot`
+// when computing `graphAnalyzerConfig.tools` — the guard TASK-127 exists to build is simply absent.
+describe('TASK-127: DES-122 zero-config fail-closed guard — graphAnalyzer.tools forced to [] with no resolvable workRoot', () => {
+  it('graphAnalyzer.enabled:true + a configured non-empty tools list + NO config.workRoot -> effective tools forced to [], and the boot line names workRoot as the reason', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    let server: Server | undefined;
+    try {
+      // Deliberately omits `workRoot` — the exact zero-config shape DES-122 names ("on a zero-config
+      // install the jail root is unresolvable"). `createServer` still mkdtemps an internal fallback
+      // (server.ts:1290) for its OWN storage needs, but that is a different thing from the operator
+      // having configured a real, certified `workRoot` — DES-122's rule keys off the latter
+      // (`config?.workRoot`, the value `main.ts`'s own `analyzerScratchCwd` guard already keys off).
+      server = await createServer({
+        port: 0, bind: '127.0.0.1',
+        graphAnalyzer: { enabled: true, tools: ['Bash'] },
+      } as never);
+      const emittedLines = logSpy.mock.calls.map((c) => c.join(' '));
+      const toolsLine = emittedLines.find((l) => l.includes('graph-analyzer effective tools='));
+      expect(toolsLine).toBeDefined();
+      expect(toolsLine).toContain('effective tools=[]');
+      // The reason must be stated somewhere in the boot output, not silently applied.
+      expect(emittedLines.some((l) => /workRoot/i.test(l))).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+      await server?.close();
+    }
   });
 });

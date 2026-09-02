@@ -631,6 +631,14 @@ flowchart LR
 - **acceptance:** Given a registered workflow's script, When a client requests its skeleton (`workflow_get`'s `skeleton` field and/or `GET /api/workflows/:name/skeleton`), Then the engine returns a PREDICTED DAG skeleton — a pure static scan of the script's `phase(...)`, `agent(...)`, `parallel([...])`, and `workflow('name', ...)` calls — as an ordered node list where each node carries its kind (`phase`/`agent`/`workflow`) and, for a `workflow` node, the referenced sub-workflow name; nodes whose count/shape is runtime-dependent (inside a `for`/`while` loop or an `if`) are marked `dynamic:true` (best-effort, since loops/conditionals resolve only at run time). The scan never executes the script and never throws on an odd script (returns whatever it can parse). The dashboard's registered-workflow card links to this skeleton so a user can SEE a workflow's shape before deciding to reuse it or author a new one. Observable: the customer-service example (`parallel` of 2 drafting agents → a verify agent) yields a skeleton with a parallel group of 2 agent nodes followed by an agent node; a composite that calls `workflow('reserve-stock')` yields a `workflow` node naming `reserve-stock`.
 - **iter:** v9
 
+**[PARTIALLY SUPERSEDED v23, adjudication #2 R-3(a)]** The **user-facing surface** — `workflow_get`'s
+`skeleton` field and the `GET /api/workflows/:name/skeleton` route — is withdrawn by REQ-105: the
+route is deleted and no advertised schema mentions the concept. `parseWorkflowSkeleton` itself
+**survives**, unchanged in shape, as (1) the run-DAG route's internal layout spine
+(`/api/runs/:id/dag`, still behind the auth gate) and (2) REQ-102's analyzer grounding
+(`graph-analyzer.ts`) — neither serves it to a client as a named artifact. Only the two named
+user-facing vehicles are gone; the static-scan guarantee this requirement describes is not.
+
 <!-- ── v10 Slice 1 — efficient seeding, immediate win: compressed request body + a typed too-large error. See docs/seed-sync-architecture.md (Roadmap Slice 1). The CAS substrate is Slice 2 (docs §"the CAS substrate"). ── -->
 
 ### REQ-063 — compressed request bodies + a typed, actionable too-large error
@@ -965,6 +973,13 @@ everywhere. `WorkflowPublicView` and `EXPECTED_NON_OWNER_KEYS` both gain the fie
 oracle still catches a leak in either direction), and `docs/AUTHORING.md` (REQ-106) must state that
 phase titles are visible to every principal who can see the workflow. Full reasoning: 04-design.md,
 v23 adjudication #1.
+
+**[PARTIALLY SUPERSEDED v23, adjudication #2 R-3(a)]** — for `skeleton`/`phases` only. This
+requirement's own "auth disabled → pre-v22 surface" clause named `skeleton`/`phases` staying
+unmasked on the deleted `/api/workflows/:name/skeleton` route and `workflow_get`; both are removed
+by REQ-105 regardless of auth state, so there is no surface left for that clause to apply to. Every
+other field this requirement names (script masking itself, owner/report metadata) is unaffected and
+stands as written.
 
 ---
 

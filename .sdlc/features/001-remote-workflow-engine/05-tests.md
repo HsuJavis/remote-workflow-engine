@@ -2550,6 +2550,11 @@ workflow deregistered afterward (both the pinned-version resolve and the release
 resolve throw `CatalogNotFoundError`) → DAG still 200, `cells` carries no `__skel_*` placeholder
 (empty-skeleton fallback, not a crash). Re-measured: `handleDashboardRequest` 100%.
 
+**[RE-POINTED v23, adjudication #2 R-3(b)]** case (2) now drives `GET /api/workflows/%/describe` —
+the `/skeleton` route it originally used is deleted (REQ-105). The DES-018 guarantee under test
+(never a 500 on a malformed path segment) is unaffected by that deletion; `/describe` decodes the
+same path segment through the same outer catch (server.ts:1279-1282). Still green.
+
 ### IT-034 — v2 MCP tools in tools/list + asset_push/list/delete + McpProbe injection (DES-019, DES-020)
 - **status:** green
 - **traces:** DES-019, DES-020, ARCH-012
@@ -3729,7 +3734,8 @@ error).
 - **status:** green
 - **traces:** DES-054
 - **iter:** v9
-- tests/integration/workflow-discovery-http.test.ts (NEW, 4 cases) — integration tier over a REAL `createServer` (real MCP-over-HTTP + real dashboard routes + real on-disk WorkflowCatalog); a `cs` workflow is registered via the real `workflow_register` tool with a meta `description` + `phases` and a body of `parallel([agent,agent]) → agent('verify') → workflow('log-it')`. CASES: (1) REQ-061 — `workflow_list` returns the `cs` entry carrying `description: 'two models draft in parallel, a stronger model verifies'`; (2) REQ-061 — `workflow_get({name:'cs'})` returns full detail (`description`, `phases ['Draft','Verify']`, `script`), and an unknown name → a `WORKFLOW_NOT_FOUND` error envelope (never a throw); (3) REQ-062 — `workflow_get.skeleton` predicts the DAG: 3 agent nodes with the two drafts sharing one `parallel` group + a `workflow` node naming `log-it`; (4) REQ-062 — `GET /api/workflows/cs/skeleton` serves `{skeleton[], description}` with status 200, and an unknown name → 404. All 4 RED before the `workflow_get` tool / `/skeleton` route / catalog `description` existed.
+- tests/integration/workflow-discovery-http.test.ts (2 cases; originally 4) — integration tier over a REAL `createServer` (real MCP-over-HTTP + real dashboard routes + real on-disk WorkflowCatalog); a `cs` workflow is registered via the real `workflow_register` tool with a meta `description` + `phases` and a body of `parallel([agent,agent]) → agent('verify') → workflow('log-it')`. CASES: (1) REQ-061 — `workflow_list` returns the `cs` entry carrying `description: 'two models draft in parallel, a stronger model verifies'`; (2) REQ-061 — `workflow_get({name:'cs'})` returns full detail (`description`, `phases ['Draft','Verify']`, `script`), and an unknown name → a `WORKFLOW_NOT_FOUND` error envelope (never a throw). Both RED before the `workflow_get` tool / catalog `description` existed.
+- **[RETIRED v23, adjudication #2 R-3(a)]** the original cases (3) `workflow_get.skeleton` predicts the DAG and (4) `GET /api/workflows/:name/skeleton` serves it — REQ-105 deletes both the user-facing `skeleton` field and the `/skeleton` route; see 01-requirements.md REQ-062's own partial-supersession note. `parseWorkflowSkeleton` survives internally (unaffected); its successor route `GET /api/workflows/:name/describe` is proven by IT-098 + VAL-113.
 
 ## v10 — efficient large-codebase seeding tests (IT-058, IT-059, IT-060)
 
@@ -6004,10 +6010,15 @@ legitimate green pin — a clean registration already runs fine today).
 File: `tests/acceptance/val-110-script-masking.test.ts`. Real `createServer`, real HTTP, real
 `TokenStore` bearer, real `/api/*` routes. Owner reads the script via `/mcp`; a non-owner bearer gets
 `scriptWithheld:true` with no script text anywhere; `/api/workflows/:name/skeleton` omits
-`skeleton`/`phases` entirely while auth is on (and DOES carry them with auth off — the pre-v22
-surface, REQ-100 clause 3); `/api/workflows` never carries `script` (green pin — already true
-pre-v22). Red reason: confirmed 3/5 red (2 legitimate green pins: `/api/workflows` never had a
-`script` field, and the auth-off skeleton route is the unchanged pre-v22 surface).
+`skeleton`/`phases` entirely while auth is on (green pin — the route no longer exists, so this is
+vacuously true; left as-is, not this pass's scope); `/api/workflows` never carries `script` (green
+pin — already true pre-v22).
+
+**[RETIRED v23, adjudication #2 R-3(a)]** the "returns the real skeleton/phases when auth is
+disabled" case (the old REQ-100 clause 3, auth-off pre-v22 surface) — REQ-105 deletes the
+`/api/workflows/:name/skeleton` route unconditionally, so auth state no longer applies to it; see
+01-requirements.md REQ-100's own partial-supersession note. Every other REQ-100 field (script
+masking, owner/report metadata) is untouched and both remaining green pins above still hold.
 
 ### Extended in place (no new ID)
 
@@ -6955,3 +6966,117 @@ clock/date literals — the structural cases read source text, the behavioral ca
 comparison. `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: gap count moves by
 exactly the expected pre-Gate-6 rows for this one item (`IT-098` itself is fully implemented/traced —
 no new gap from it); 0 broken links, 0 orphans.
+
+## Gate 5 scope — v23 adjudication #2 R-3(a)/(b): retire + re-point (2026-09-03, verifier)
+
+Since the TASK-126 targeted pass above, Gate 6 (implementer) landed TASK-120/121/123/126 (`6447aa2`,
+`0f4bf67`) — the `/skeleton` route is deleted, `/describe` is live, the no-skeleton allowlist grew to
+four (adjudication #3). What was still outstanding: adjudication #2's **R-3(a)/(b)**, the RETIRE and
+RE-POINT halves of "the nine reds are four kinds" (R-3(c)/(d) — `UT-111`, `val-112` — stay
+implementer-owned, `TASK-117`/`TASK-119`, draft). R-3(a)/(b) is test-authoring work with no owning
+TASK (the same "unowned" shape as TASK-126's own construction site, at test-file scope rather than
+src scope), and this ledger's own convention (the flip commit `0f4bf67`) reserves 05-tests.md/test-file
+edits for the verifier lane. Confirmed outstanding by running the 3 named files before touching
+anything: exactly the 4 reds R-3(a)/(b) name, 0 others.
+
+**(a) RETIRE — 3 cases asserting the deleted `/skeleton` surface**, each replaced with a comment
+recording the retirement and pointing at 01-requirements.md's new partial-supersession note (never a
+blanket `[SUPERSEDED]` — `parseWorkflowSkeleton` survives internally per REQ-105/REQ-062's own text):
+`tests/integration/workflow-discovery-http.test.ts`'s two REQ-062 cases (`workflow_get.skeleton`;
+`GET /api/workflows/:name/skeleton`), and `tests/acceptance/val-110-script-masking.test.ts`'s "returns
+the real skeleton/phases when auth is disabled" case. A fourth skeleton-touching case in the same
+val-110 file ("omits skeleton/phases entirely while auth is on") is **left untouched, not this pass's
+scope**: adjudication #2's R-3(a) names only the auth-OFF case; the auth-ON case now passes vacuously
+(the route 404s, so the omitted-keys assertion holds trivially) rather than red, so it was not among
+the nine reds the ruling triaged — flagged here as a residual for a future adjudication, not silently
+fixed. 01-requirements.md: REQ-062 and REQ-100 each gain a `[PARTIALLY SUPERSEDED v23, adjudication #2
+R-3(a)]` note, scoped narrowly (REQ-062's user-facing vehicles only, not the static-scan guarantee;
+REQ-100's skeleton/phases clause only, not script masking) — the "REQ-006 form" the ruling asked for,
+by the precedent at REQ-085.
+
+**(b) RE-POINT — 1 case, the DES-018 malformed-path guarantee.**
+`tests/integration/dashboard-http.test.ts`'s "a malformed %-encoded path segment degrades to 200 + a
+partial view" case drove through the deleted `/skeleton` route. Oracle discipline (binding per the
+ruling): the expectation came from reading `server.ts` first, not from running the route —
+`decodeURIComponent` at `server.ts:1174` (inside the `describeMatch` handler) throws the identical
+`URIError` for a `%` segment that the deleted `/skeleton` handler did, caught by the SAME outer
+try/catch (`server.ts:1279-1282`) that produces the `{degraded}` 200. Re-pointed to
+`/api/workflows/%/describe`; green immediately (the route already exists — TASK-120), because the
+guarantee under test was never about the route that carried it, only about the shared catch. `05-
+tests.md`'s `IT-033` and `VAL-110` entries gain notes so a reader hits the retirement/re-point
+reasoning next to the case, not just in this section.
+
+**Confirmation.** `npx vitest run` on the 3 touched files: 14/14 pass (0 fail) — the 3 retired cases
+are gone, the re-pointed case and every untouched case in those files are green. `npx tsc --noEmit`:
+clean. Full suite: **1792 total, 1790 passed / 2 failed (280 files, 4 failed)** — exactly `UT-111` +
+`val-112` (R-3(c)/(d), draft-task-owned, untouched by this pass) plus the 2 `spawn litellm ENOENT`
+background artifacts (documented since IMPL-140); **1792 = 1795 − 3 retired**, confirming no case was
+silently dropped beyond the 3 named retirements. Hermetic: no clock/date literals touched or added.
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: 969 items, 40 gaps — unchanged
+against a pre-edit baseline captured to file before any edit (per CLAUDE.md, never reconstructed via
+`git checkout <sha> --`); 0 broken links, 0 orphans — retiring a test CASE (not a work-item ID) moves
+nothing trace.py parses. `state.yaml`: `gates.tests.passed` stays `true` (already closed for
+TASK-113..126); `current_stage` stays `impl` (Gate 6 is mid-flight and unaffected — this pass is
+test-file work only, no `src/` change). Next: Gate 6 (implementer) continues on `UT-111`/`val-112`
+(TASK-117/TASK-119); the flagged val-110 auth-ON residual awaits a future adjudication, not a task.
+
+## Gate 5 re-verification + TASK-127 targeted RED (2026-09-03, verifier)
+
+Re-verified the R-3(a)/(b) pass above against the tree as it stands at `HEAD` (`63bf21d`, landed after
+the numbers above were captured — TASK-119 shipped, TASK-127 was newly drafted): re-running the 3
+touched files now shows 13/13 pass, not 14/14 (`val-110-script-masking.test.ts`'s vacuous auth-ON
+skeleton case named as a residual above was itself retired by `63bf21d`, per its own commit message —
+one fewer case, not a regression). Full suite now **1791 total, 1790 passed / 1 failed** (`UT-111`
+alone — `val-112`/TASK-119 is green now, R-3(c)/(d)'s other half landed); `sh .sdlc/trace --check`:
+970 items / 41 gaps (+1 item, +1 gap — exactly `TASK-127` itself, newly drafted with no coverage yet
+at that commit). Every delta traces to `63bf21d`; none of it is this pass's own edit, and none of it
+is a defect.
+
+### IT-099 — TASK-127: DES-122's zero-config fail-closed guard forces `graphAnalyzer.tools` to `[]`
+- **status:** red
+- **traces:** TASK-127, DES-122, ARCH-079, ARCH-085
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+TASK-127 (`status: draft`, added by `63bf21d`) has its own `dod`: "Gate 5 writes the RED case FIRST" —
+this is that pass, scoped to TASK-127 only (same targeted-RED convention as IT-098 for TASK-126).
+File: `tests/integration/graph-analyzer-composition-root.test.ts` (TASK-127's own `files:` list),
+new describe block appended after IT-098's.
+
+DES-122's zero-config fail-closed rule: "with `graphAnalyzer.enabled` and no resolvable `workRoot`,
+`tools` is forced to `[]` regardless of what the operator configured, and the boot line states the
+downgrade and its reason." Read `server.ts:1462-1475` first (TASK-127's own dod names it as the ONE
+site): `graphAnalyzerConfig.tools` applies `config?.graphAnalyzer?.tools ?? []` unconditionally —
+never consulting `config?.workRoot` — so today an operator who sets `graphAnalyzer.tools` without also
+setting `workRoot` (the zero-config shape `main.ts`'s own `analyzerScratchCwd` guard already keys off:
+`config.workRoot ? join(...) : undefined`) gets their configured tools through uncurated. Confirmed
+this isn't masked by the existing `curateToolsForProvider` layer: the default `model: 'default'` alias
+resolves `provider: 'anthropic'` (`default-aliases.ts`), and `curateToolsForProvider` is a no-op for
+`'anthropic'` (`claude-agent-sdk-client.ts:224`) — so the gap is real, not hidden behind provider
+curation.
+
+Mock policy (integration, DES-119): real `createServer`, real boot; the only thing spied is
+`console.log`, to read the two boot lines DES-131 already ships (`graph-analyzer effective tools=...`
+and the missing-diagram count) — same convention as UT-111's journal-line spy (mocking a stdout sink,
+not the SUT boundary). One case: boot `createServer({port:0, bind:'127.0.0.1', graphAnalyzer:
+{enabled:true, tools:['Bash']}})` — deliberately omitting `workRoot` — and assert (1) the
+`effective tools=` boot line reads `[]`, not `["Bash"]`; (2) some boot line names `workRoot` as the
+reason (loose match, `/workRoot/i` — the exact wording is an implementation choice TASK-127's dod
+doesn't pin, only that the reason is stated, not silent).
+
+**Confirmation.** `npx vitest run tests/integration/graph-analyzer-composition-root.test.ts`: 4 tests,
+1 failed (the new case) / 3 passed (IT-098's own 3, unaffected) — failure is exactly `effective
+tools=["Bash"]` where `[]` was expected, the genuine unimplemented reason (no code path branches on
+`config?.workRoot` at all yet), not a syntax/setup error. `npx tsc --noEmit`: clean. Full suite:
+**1792 total, 1790 passed / 2 failed** — exactly `UT-111` (pre-existing, TASK-117-owned) + this new
+`IT-099` case; 1792 = 1791 (pre-edit) + 1 (this new case), confirming nothing else moved. Hermetic: no
+clock/date literals — the boot-line assertions are string/array content, no time comparison.
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: 971 items (+1 for `IT-099`), 41
+gaps — unchanged from the 970/41 baseline captured above (TASK-127 itself is still `未實作`/`draft`,
+now with a red test rather than none — the gap moves from "no coverage" to "expected pre-Gate-6 red",
+not a new or resolved gap in trace.py's own count); 0 broken links, 0 orphans (`IT-099` confirmed
+present in the dashboard's own rows). `state.yaml`: `gates.tests.passed` stays `true`; `current_stage`
+stays `impl` (Gate 6 is mid-flight; TASK-127 is now covered for whoever implements it). Next: Gate 6
+(implementer) continues, now with TASK-127 covered by a RED test to build against.
