@@ -7228,3 +7228,110 @@ this round is measured whole; a function merely NEIGHBOURING the diff is not re-
 stated here rather than left implicit. The 77 are carried as named debt, not silently absorbed — a
 retro-coverage iteration for them is a scope decision for the owner, and several of them genuinely
 require a real `litellm`/MCP/sandbox environment, i.e. Gate 7.5's tier rather than this one's.
+
+## v23 Gate 5 RE-RUN — orchestrator adjudication #6 (REQ-103 was silently narrowed; V-1/V-2/V-4 RED)
+
+Gate 7.5 FAILED on REQ-103 (VAL-118, `08-validation.md`): the trigger bindings are computed and
+already reach `_buildAllowlist`, but never reach the analyzer **prompt** itself
+(`graph-analyzer.ts:299` builds it from `systemPrompt + script` only). `04-design.md`'s orchestrator
+adjudication #6 (2026-09-03) ruled the clause back in and additionally ordered two smaller fixes it
+found while reproducing the failure live: V-2 (the managed-LiteLLM spawn's missing
+`proc.on('error')` handler, newly reachable from `workflow_register` since v23) and V-4 (a
+client-visible `"unmatched to skeleton"` string on the live `/api/runs/:id/dag` route, REQ-105). V-3
+(an `AUTHORING.md` shape example) is doc-only and carries no test.
+
+Per the adjudication's own scope line — *"Gate 6 changes `:298`; Gate 5 writes the RED first"* —
+this pass writes the RED for all three code-behavior items. `VAL-118` itself is validator-owned
+(`real:true`) and is re-run, not duplicated, at Gate 7.5; nothing here touches it.
+
+### UT-119 — the analyzer PROMPT (not just the allowlist) must carry the live trigger bindings
+- **status:** red
+- **traces:** DES-131, DES-128, ARCH-078, ARCH-079, REQ-103
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts` (new describe block). Mock policy (unit): a stub
+`GatewayClient.invoke` that captures the `prompt` string it was called with; a real `WorkflowCatalog`
+on a tmpdir sqlite (existing file convention); plain-object `TriggerPorts`; the `schedule: runInline`
+seam. Two cases, both asserted against **literals** (never derived from the SUT, per the ledger's
+carried-in rule 1): (1) the identical script registered as two versions, one with no trigger bound
+and one with a live cron binding (`*/5 * * * *`) — asserts the two captured prompts are NOT
+byte-identical (today they are: this is the validator's own live oracle, identical `promptTokens`
+with and without a cron binding, reproduced here as a unit-level prompt-string diff) and that the
+bound prompt contains the cron expression literal; (2) a live chain binding (a pending continuation
+whose `runs` port resolves an upstream workflow name) — asserts the upstream name literal appears in
+the prompt. Confirmed red because unimplemented: both fail today — the first on `not.toBe` (prompts
+ARE identical), the second on `.toContain` (the prompt has no binding text at all) — verified by
+reading `graph-analyzer.ts:296-299` before writing the assertions, not assumed.
+
+### UT-120 — the live `/api/runs/:id/dag` warning never re-surfaces the retired "skeleton" word
+- **status:** red
+- **traces:** DES-064, REQ-105
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/graph-layout.test.ts` (appended to the existing UT-068 suite, same fixture
+convention: `layoutGraph(skeleton, liveAgents, opts)`). `dashboard.ts:342`'s unmatched-agent warning
+is served verbatim on `GET /api/runs/:id/dag` (`server.ts:1242`); today it reads
+`` `agent ${a.agentId} unmatched to skeleton: frame-grouped` ``, a live client-facing string that
+still names the deleted surface — REQ-105's own text: *"no ... still tells a reader the skeleton is
+a surface available to them"*. `dashboard.ts` is (correctly) on ADR-022's source-grep guard
+allowlist for its **internal** consumption of `parseWorkflowSkeleton`, so that guard does not, and
+should not, catch a wording choice inside a string it is allowed to contain the concept for — this
+is a narrower, separate pin on the actual live wire content. Assertion: the existing unmatched-agent
+fixture's `result.warnings` contains no case-insensitive `'skeleton'` substring. Confirmed red:
+fails today (`true` where the assertion expects `false`) — verified by reading `dashboard.ts:342`
+before writing the assertion.
+
+### UT-121 — a `litellm` spawn failure must not escape as an unhandled process-level exception
+- **status:** red
+- **traces:** ARCH-005, REQ-102
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/litellm-proxy-hardening.test.ts` (new describe block, existing spawnImpl/fetchImpl
+injection convention; the EventEmitter-fake-proc pattern is borrowed from
+`litellm-proxy-supervision.test.ts` since 'error' must be a real emittable event). Verified at
+source before writing this test: `litellm-proxy.ts`'s `start()` attaches `proc.once('exit', ...)`
+only AFTER a successful healthcheck (`_superviseExit`, called only on the `res.ok` branch) — there
+is no `.on('error', ...)`/`.once('error', ...)` anywhere in the file. An `EventEmitter`'s `'error'`
+event with zero listeners throws synchronously wherever Node emits it (the language's own contract);
+for a real spawn failure (`litellm` missing from PATH → ENOENT) that emission happens from libuv's
+own callback with no enclosing try/catch — i.e. an **uncaught process-level exception** — and v23
+made this newly reachable from `workflow_register` (registration now enqueues an analyzer job that
+lazily starts this proxy on the default `useLiteLLMProxy:true` path). This is also the documented
+root cause of two long-carried `spawn litellm ENOENT` "background artifact" test files (05-tests.md's
+own Gate 6.5+7 real-dependency-smoke section flagged it, unfixed there as out of a quality-only
+gate's scope). Assertion: the spawned fake child has at least one `'error'` listener attached **by
+the time of the FIRST startup health poll** (captured inside the fake `fetchImpl`, which fires after
+spawn and before healthy) — the actual vulnerable window, not merely "by the time `start()`
+eventually settles": a fix that only attaches the listener inside `_superviseExit` (next to the
+existing `once('exit')`, the natural place to look) would leave this window open while still
+turning a weaker after-settle assertion green. Deterministic and safe (registration is checked, not
+a real crash: deliberately provoking the actual unhandled, async-timed crash inside a test would
+risk taking the whole test worker down with it, which is exactly the failure mode being fixed).
+Confirmed red: `listenerCount('error')` is `0` at the first poll today.
+
+**Not tested here, doc-only (V-3):** adjudication #6's `AUTHORING.md` shape-example gap has no code
+assertion — it is a documentation addition (one example line of the `{knobs:{...},args:{...}}`
+shape) plus stating that a mis-shaped `meta.params` block is silently ignored rather than rejected.
+No new registration behavior is added, so no test traces it.
+
+**Confirmation.** `npx vitest run tests/unit/graph-analyzer.test.ts tests/unit/graph-layout.test.ts
+tests/unit/litellm-proxy-hardening.test.ts tests/unit/litellm-proxy-supervision.test.ts`: the 3 new
+items (UT-119's 2 `it` cases, UT-120, UT-121 — 4 failing cases total) fail, each for its stated
+reason, confirmed by reading the current source before writing the assertion in every case; all
+pre-existing cases in the same
+files remain green (no regression from the new fixtures/imports). `npx tsc --noEmit`: clean. Hermetic:
+no clock/date literals — `graph-analyzer.test.ts` reuses the file's existing `FixedClock`; the new
+litellm-proxy tests use no time values at all. `state.yaml`: `gates.tests.passed` stays `true`
+(Gate 5 was already closed for the rest of v23's slice and stays so); `current_stage` moves back to
+`impl` for Gate 6 to land the three fixes (`graph-analyzer.ts:299`, `litellm-proxy.ts`'s
+`proc.on('error', ...)`, `dashboard.ts:342`'s wording) plus V-3's doc addition, then Gate 7.5 re-runs
+`VAL-118` only.

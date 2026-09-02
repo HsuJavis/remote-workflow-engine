@@ -1223,3 +1223,64 @@ so); `current_stage` stays `impl` (Gate 6 is mid-flight and this pass does not r
 a note documenting this targeted pass is prepended. Next: Gate 6 (implementer) continues, now with
 TASK-126 covered by RED tests to build against; who executes adjudication #2's R-3 test
 retire/re-point work is orchestrator routing, not this pass's job.
+
+## 2026-09-03 — v23 Gate 5 RE-RUN (verifier, test-first RED) — orchestrator adjudication #6
+
+Gate 7.5 failed on REQ-103 (`VAL-118`, `08-validation.md`): the analyzer computes the live trigger
+bindings and hands them to `_buildAllowlist`, but never to the PROMPT itself
+(`graph-analyzer.ts:299` builds it from `systemPrompt + script` only) — proven live by the validator
+with byte-identical `promptTokens` on the same `(name,version)` with and without a bound cron
+trigger. `04-design.md`'s own REQ-103 validation row had silently narrowed the acceptance to the
+`triggers`-field + staleness arm, with no adjudication recording the drop. Orchestrator adjudication
+#6 (2026-09-03, `04-design.md`) ruled the clause back in (V-1) and named two more code-behavior
+items found while reproducing it live: V-2, the managed-LiteLLM spawn has no `proc.on('error')`
+handler and v23 made that crash newly reachable from `workflow_register`; V-4, the live
+`/api/runs/:id/dag` route still serves a warning string naming the retired "skeleton" concept. V-3
+(an `AUTHORING.md` shape example) is doc-only, no code, no test.
+
+Per the adjudication's own scope line ("Gate 6 changes `:298`; Gate 5 writes the RED first"), this
+pass writes the RED for V-1/V-2/V-4 and leaves `VAL-118` untouched (validator-owned, `real:true`,
+re-run not duplicated at Gate 7.5).
+
+**UT-119** (`tests/unit/graph-analyzer.test.ts`) — two cases against a stub `GatewayClient` that
+captures the exact `prompt` string sent: (1) the identical script registered as two versions, one
+unbound and one with a live cron binding — asserts the captured prompts are NOT byte-identical
+(today they are) and that the bound one contains the cron literal; (2) a live chain binding —
+asserts the resolved upstream workflow name appears in the prompt. Both literal-oracle assertions
+(never derived from the SUT), per the ledger's carried-in rule. Confirmed red: `not.toBe` fails
+(prompts are identical) and `.toContain` fails (no binding text in the prompt at all) — verified by
+reading `graph-analyzer.ts:296-299` first.
+
+**UT-120** (`tests/unit/graph-layout.test.ts`) — the existing unmatched-agent fixture's
+`result.warnings` must not contain a case-insensitive `'skeleton'` substring; today
+`dashboard.ts:342` literally emits `"...unmatched to skeleton: frame-grouped"`, served verbatim on
+the live `/api/runs/:id/dag` route. `dashboard.ts` stays correctly on the ADR-022 source-grep
+guard's internal-use allowlist — this is a narrower, separate pin on the actual wire content the
+guard doesn't and shouldn't police. Confirmed red.
+
+**UT-121** (`tests/unit/litellm-proxy-hardening.test.ts`) — by the time of the FIRST startup health
+poll (captured inside the fake `fetchImpl`, which fires after spawn and before healthy — the actual
+vulnerable window for a real spawn failure), the spawned child must already carry at least one
+`'error'` listener; today it carries zero (only `.once('exit', ...)` is attached, and only after a
+successful healthcheck via `_superviseExit`). Deliberately checks listener registration at the
+vulnerable moment rather than provoking the real async, unhandled 'error' crash inside the test
+itself (which would risk taking the whole worker down with it — the real-world failure mode this
+item exists to close), and deliberately checks it BEFORE `start()` settles rather than after: a fix
+that only attaches the listener inside `_superviseExit` would pass a weaker after-settle assertion
+while leaving the pre-healthy crash window wide open. Confirmed red (`listenerCount('error')` is 0
+at the first poll).
+
+Also amended `04-design.md`: the REQ-103 validation-path row (~line 4224) restores both arms with an
+`[AMENDED v23 adjudication #6]` marker, and DES-131's allowlist-note gained a one-line amendment
+clarifying the prompt itself (not only the allowlist) must carry the bindings.
+
+**Confirmation.** `npx vitest run tests/unit/graph-analyzer.test.ts tests/unit/graph-layout.test.ts
+tests/unit/litellm-proxy-hardening.test.ts tests/unit/litellm-proxy-supervision.test.ts`: 4 new
+failed / 36 pre-existing passed (no regression). `npx tsc --noEmit`: clean. `sh .sdlc/trace
+.sdlc/features/001-remote-workflow-engine --check`: 990 items (987+3, exactly the new UTs), 17 gaps
+— byte-identical residue to a baseline captured into a scratch file *before* any edit (per
+CLAUDE.md's rule: never reconstruct a trace baseline by checking the ledger backwards). `state.yaml`:
+`gates.tests.passed` stays `true`; `current_stage` validation→impl; `updated` bumped; this entry
+appended. Next: Gate 6 (implementer) lands `graph-analyzer.ts:299`'s prompt fix,
+`litellm-proxy.ts`'s `proc.on('error', ...)`, `dashboard.ts:342`'s wording, and V-3's
+`docs/AUTHORING.md` example — then Gate 7.5 re-runs `VAL-118` only.
