@@ -456,3 +456,30 @@ describe('GraphAnalyzer — the analyzer prompt itself must carry the live trigg
     expect(capturedPrompts[0]).toContain(UPSTREAM_NAME);
   });
 });
+
+// UT-123 (v23 orchestrator adjudication #7 — REQ-103): the engine must not instruct a token its own
+// gate rejects. `describeTriggerBindings` tells the model to label an UNBOUND workflow's entry node
+// `workflow_run`, and the shipped default systemPrompt says the same — so an OBEDIENT model's output
+// must survive `gateDiagram`. Gate 7.5 found this live: every workflow is unbound at v1 (schedule
+// and webhook creation are both refused CHANNEL_UNPUBLISHED before publish), so an obedient model
+// lost EVERY first diagram.
+//
+// Red reason before the fix: `_buildAllowlist` added only 'default' and 'model:param' as
+// engine-authored sentinels — verified by reading graph-analyzer.ts:225-240, not assumed.
+describe('GraphAnalyzer — an obedient unbound diagram survives the gate (UT-123, adjudication #7, REQ-103)', () => {
+  it('a diagram labelling the entry node `workflow_run` on an UNBOUND workflow settles ready, not gate-rejected', async () => {
+    const script = `return 1;`;
+    await catalog.register('ga-unbound-obedient', script);
+    const analyzer = new GraphAnalyzer({
+      gateway: gatewayResolving(okResult('╭─workflow_run─╮')),
+      catalog, ports: NO_TRIGGERS, clock: CLOCK, config: baseConfig(), aliasNames: ALIAS_NAMES, schedule: runInline,
+    });
+    analyzer.enqueue('ga-unbound-obedient', 'v1', script, null);
+    await settle();
+    const row = await (catalog as any).getDiagram('ga-unbound-obedient', 'v1');
+    // The oracle is the ENGINE'S OWN INSTRUCTION (describeTriggerBindings + the shipped
+    // systemPrompt both say `workflow_run`), not whatever the allowlist happens to contain.
+    expect(row?.status).toBe('ready');
+    expect(row?.diagram).toBe('╭─workflow_run─╮');
+  });
+});

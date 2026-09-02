@@ -4691,3 +4691,42 @@ rejected, so the silence is at least documented.
 REQ-105 is not failed — but REQ-105's text is "no … still tells a reader the skeleton is a surface
 available to them", and this is user-visible string. Reword to name the layout, not the retired
 concept. Cheap, and it is the difference between a guard that passes and a deletion that is finished.
+
+---
+
+## Orchestrator adjudication (v23) #7 — the engine instructed a token its own gate rejects (2026-09-03)
+
+### W-1 — my V-1 fix shipped half-working, and Gate 7.5 caught it live
+`describeTriggerBindings` tells the model to label an unbound workflow's entry node `workflow_run`,
+and the shipped default `systemPrompt` says the same. `_buildAllowlist` allowed only two
+engine-authored sentinels — `default` and `model:param`. So **the engine instructed a word its own
+gate refuses.**
+
+The blast radius is what makes this more than a typo: `schedule_create` and `webhook_create` are both
+refused `CHANNEL_UNPUBLISHED` before publish, so **every workflow is unbound at v1 registration**. An
+obedient model therefore lost **every first diagram** — a regression against Gate 7.5 round 1, where an
+unbound registration produced a ready diagram.
+
+Fixed with the one line the validator named: `labels.add('workflow_run')`, beside the two sentinels it
+belongs with. UT-123 pins it, and its oracle is **the engine's own instruction**, not whatever the
+allowlist happens to hold — because deriving the expectation from the allowlist is how the two halves
+were allowed to disagree in the first place.
+
+This is instance twelve of the same defect, and the first where **both disagreeing halves were mine**,
+written minutes apart in the same change.
+
+### W-2 — a correction I owe: the two "spawn litellm ENOENT" files were NOT green when I said they were
+`c3b0c01`'s message states the EventEmitter fixture fix turned `val-023-sdk-gateway-timeout` and
+`hooks-reject-and-timeout-bound-journey` green. **It did not.** They were still failing on the
+`afterAll` hook; the real cause was a deliberately-hung stub holding sockets it never answered, so
+`close()` never returned. The verifier root-caused it, confirmed it pre-existing in a scratch worktree,
+and fixed it with one `hungStub.closeAllConnections()` per file.
+
+I read `Tests 1803 passed (1803)` and reported "zero erroring files" **without reading the `Test Files`
+line**, which was still showing failures. Assertions passing is not the suite passing. The fix on my
+side is procedural and it is now habit: read both lines, every time.
+
+### W-3 — carried, not silently inherited
+REQ-004's paid-provider success path stays unverified at the real tier — no Anthropic/OpenAI/Gemini
+credential exists in this environment. Unchanged from every prior round; needs an owner decision only
+if a sandbox key is to be provisioned.

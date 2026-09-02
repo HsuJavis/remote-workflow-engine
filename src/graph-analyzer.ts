@@ -232,6 +232,13 @@ export class GraphAnalyzer {
     for (const alias of this._aliasNames) labels.add(alias);
     labels.add('default');
     labels.add('model:param'); // the shipped systemPrompt's own sentinel for a run-time-determined model
+    // v23 adjudication #7: the THIRD engine-authored sentinel. `describeTriggerBindings` (for an
+    // unbound workflow) and the shipped default systemPrompt both instruct the model to label the
+    // entry node `workflow_run` — so the gate must allow it, exactly as it allows the other two
+    // tokens the engine itself authors. Without this the engine instructs a word its own gate
+    // refuses, and since every workflow is unbound at v1 (schedule/webhook creation is refused
+    // CHANNEL_UNPUBLISHED before publish), an obedient model loses EVERY first diagram.
+    labels.add('workflow_run');
     for (const b of bindings) {
       labels.add(b.kind);
       if (b.kind === 'chain' && b.upstreamWorkflow !== null) labels.add(b.upstreamWorkflow);
