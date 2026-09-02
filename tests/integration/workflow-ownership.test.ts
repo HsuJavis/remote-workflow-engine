@@ -17,98 +17,123 @@
 //   parameter, and the `owner` column does not exist → NOT_WORKFLOW_OWNER never returned →
 //   non-owner mutation succeeds when it should fail → assertions fail. Correct RED.
 //
-// Mock policy (integration): real server + real SQLite catalog (`:memory:` or on-disk tmpDir).
-//   Principal passed as a JSON arg to the MCP tool (workflow_register gains `principal` field
-//   per DES-098). No LLM/gateway needed (workflow_run uses script-only).
+// Mock policy (integration): real server + real SQLite catalog (on-disk tmpDir) + real TokenStore
+//   bearers. Nothing at the SUT boundary is mocked. No LLM/gateway needed (workflow_run is
+//   script-only). NOTE: principal is NO LONGER passed as a tool argument — see the ROUND 2
+//   migration note below; that path is exactly what H1/B1 closed.
 
-// v22 sweep note (adjudication #2, L-4): the register/deregister/publish half of this file was
-// migrated WITH each case's own principal threaded (`workflow_publish` is ownership-gated, so a null
-// principal there would turn the NOT_WORKFLOW_OWNER oracles into silent passes).
+// v22 adjudication #3 (M-5) — the read half. SUPERSEDED IN PART by the ROUND 2 migration below:
+// M-5 reasoned from a server where `ctx.principal` was null on every read (the D-BIND exemption), so
+// every `workflow_get` returned the MASKED public view. That premise is gone — alice now reads with
+// her own bearer and takes the OWNER branch. What survives unchanged:
+//   - cases 7/9/10 read `owner` off `r.result.owner`. Still correct: the owner branch returns `owner`
+//     both flat and under `result`, and REQ-100 keeps it on the non-owner allowlist too, so the path
+//     holds under either view. Same oracle either way.
+//   - case 3's oracle ("the stored definition is unchanged") stays asserted at the STORE (catalog.db
+//     directly) rather than through a read response. That was M-5's call for a masked-view reason,
+//     but it is the better assertion regardless: the store is where "unchanged" actually means
+//     something, and it does not silently weaken if the view changes again.
 //
-// v22 adjudication #3 (M-5) — the read half, settled: this server runs auth ENABLED with the D-BIND
-// loopback exemption, so `ctx.principal` is null on every read and ADR-012 explicitly bars the
-// `args.principal` unmask path. Every `workflow_get` here therefore returns the MASKED public view
-// (DES-115: the allowlist projection IS the whole response, under `result`; REQ-100 withholds
-// `script` entirely, replacing it with `scriptWithheld:true`).
-//   - cases 7, 9, 10 only ever needed `owner`, which REQ-100 keeps in the public view: the read path
-//     moves from the (now gone) flat `r.owner` to `r.result.owner`. Same oracle, correct path.
-//   - case 3's oracle ("the stored definition is unchanged") is unreachable through ANY masked read
-//     path — `script` is absent by design, so an assertion phrased over the response could only ever
-//     degrade into "something came back". It is asserted at the STORE instead (catalog.db directly),
-//     which is where "unchanged" actually means something.
+// v22 H1 send-back ROUND 2 — REAL-BEARER MIGRATION (07-review.md §4.2 B1, orchestrator-applied):
 //
-// v22 H1 send-back amendment (07-review.md §4.2, see `catalog-write-auth-dbind.test.ts`/IT-091):
-// `workflow_publish` now refuses an anonymous caller under `authEnabled` — and on THIS file's
-// D-BIND-exempt server (bind `0.0.0.0`, loopback test client) a bearer can never be validated at
-// all (server.ts's gated `/mcp` block is skipped whole for a D-BIND-exempt connection, so there is
-// no code path that would even read an `Authorization` header here). Every case below that used to
-// route a publish through `workflow_publish({..., principal: ALICE})` over this connection now
-// HAND-SEEDS the `release_version` pointer directly in catalog.db instead (`publishPointer()`) —
-// that was always pure fixture setup, never the assertion under test in this file. `workflow_get`'s
-// masked view was already reading `owner`/`removed`/etc. off the STORE-visible projection, not off
-// `workflow_publish`'s response, so this changes zero assertions, only how the fixture reaches its
-// starting state.
-// `workflow_register`/`workflow_deregister` KEEP the `args.principal` self-assertion fallback this
-// round (H1's fix note: "ideally register/deregister's" — a recommendation, not required for this
-// send-back's blocking scope) — cases 1–5/8 are otherwise UNCHANGED. This is accepted, RECORDED
-// debt, not a feature: a D-BIND-exempt caller can still self-assert any principal string to
-// register a new version or deregister an owned name (case 5 already exercises exactly this path
-// for the legitimate owner; nothing here newly celebrates it as safe). See `06-impl-log.md`'s
-// send-back entry / `journal.md` for the full disposition.
+// What this file used to be, stated plainly: it bound the server to `0.0.0.0` so the loopback test
+// client would take the D-BIND exemption, which skips server.ts's gated `/mcp` block entirely — and
+// then self-asserted identity with `{principal: ALICE}` as a tool argument. **That is exactly the
+// shape H1 was raised to close.** The test topology existed because the vulnerability existed; when
+// B1 extended the `!authEnabled` gate from `workflow_publish` to `workflow_register`/
+// `workflow_deregister` as well, all seven of those cases went red. They were not broken by the fix
+// — they were relying on what the fix removes.
+//
+// So identity now comes from a REAL minted bearer, IT-089's (`workflow-masking-http.test.ts`)
+// exact pattern:
+//   - the main `server` binds `127.0.0.1`, so the connection is NOT D-BIND-exempt and
+//     `resolvePrincipal` actually runs. (Minting a bearer while still bound to `0.0.0.0` would be a
+//     silent no-op: no code path there ever reads an `Authorization` header.)
+//   - `mintBearer()` issues a real token through the real `TokenStore` against the server's own
+//     `auth-tokens.db`; alice and bob get DISTINCT bearers, because case 3/4's `NOT_WORKFLOW_OWNER`
+//     oracle is meaningless unless two genuinely different authenticated identities exist.
+//   - every call on this server now carries a bearer — reads included; without the D-BIND exemption
+//     the gate applies to all of them.
+//
+// **No oracle changed.** `NOT_WORKFLOW_OWNER` for a non-owner, success for the owner, byte for byte
+// as before. Only the way each case proves who it is changed. (The round-1 counter-example is on
+// record: `val-107`'s non-owner oracle was rewritten to assert success so it would match the new
+// code — an expected value derived from the code under test cannot fail when the code is wrong.)
+//
+// `publishPointer()` is DELETED, not merely unused. It existed solely because `workflow_publish`
+// was unreachable on the D-BIND-exempt connection; with an owner bearer the real call works, so
+// every case that needs "alice's latest is on release" now makes it. Cases 1/2/10 assert the
+// publish succeeded — the hand-seeded pointer could never have caught a broken publish.
+//
+// Cases 9/10's second/third boots keep `bind: '0.0.0.0'` — they only READ, through a masked view
+// that is identical either way, and case 9 was never red.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { TokenStore } from '../../src/auth/token-store.js';
 
 let server: Server;
 let tmpDir: string;
+let aliceToken: string;
+let bobToken: string;
 
 beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it080-'));
   server = await createServer({
     port: 0,
-    bind: '0.0.0.0',
+    // 127.0.0.1, NOT 0.0.0.0: a loopback client against a loopback bind is NOT D-BIND-exempt, so
+    // `resolvePrincipal` runs and a real bearer is actually validated. See the header — the old
+    // `0.0.0.0` binding existed to bypass that gate, which is the vulnerability B1 closed.
+    bind: '127.0.0.1',
     workRoot: tmpDir,
-    // Auth enabled so that boot backfill (DES-098) runs; bind=0.0.0.0 so that the loopback
-    // test client gets D-BIND exemption (isLoopbackPeer && !isLoopback('0.0.0.0')) and bypasses
-    // the bearer gate — letting us inject principal as a tool arg to test the catalog layer directly.
+    // Auth enabled: the boot backfill (DES-098) needs it, and it is the condition under which the
+    // ownership gate is worth testing at all.
     auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it080-cid', googleClientSecret: 'it080-cs' },
   } as never);
+  aliceToken = mintBearer(tmpDir, ALICE);
+  bobToken = mintBearer(tmpDir, BOB);
 });
+
+/** Issues a REAL bearer through the real TokenStore against the server's own auth-tokens.db —
+ *  IT-089's (`workflow-masking-http.test.ts`) pattern. Identity is proven, never self-asserted. */
+function mintBearer(workRoot: string, email: string): string {
+  const db = new Database(join(workRoot, 'auth-tokens.db'));
+  try {
+    const store = new TokenStore(db, { clock: () => Date.now(), csprng: (n: number) => randomBytes(n) });
+    return store.issue(email, 7 * 24 * 3600_000).token;
+  } finally {
+    db.close();
+  }
+}
 
 afterAll(async () => {
   await server?.close();
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-// D-BIND bypass: server binds to 0.0.0.0, test client connects from 127.0.0.1. The D-BIND
-// formula (isLoopbackPeer && !isLoopback(bind)) evaluates to true, bypassing the auth bearer
-// gate. callTool injects principal as a tool arg (the args.principal fallback in server.ts,
-// RETAINED for register/deregister post-H1 — see header note). This tests the CATALOG ownership
-// layer directly without auth ceremony.
-async function callToolOn(srv: Server, name: string, args: Record<string, unknown>) {
+/** Identity travels in the `Authorization` header, never in `args` — server.ts's `args.principal`
+ *  fallback is now gated on `!authEnabled` (B1), and this server has auth ON. A call with no bearer
+ *  is refused PRINCIPAL_REQUIRED on every catalog write, which is the point of the fix. */
+async function callToolOn(srv: Server, name: string, args: Record<string, unknown>, bearer?: string) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
   const res = await fetch(`http://127.0.0.1:${srv.port}/mcp`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
   });
   const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
-async function callTool(name: string, args: Record<string, unknown>) {
-  return callToolOn(server, name, args);
+async function callTool(name: string, args: Record<string, unknown>, bearer?: string) {
+  return callToolOn(server, name, args, bearer);
 }
 
-/** Post-H1 fixture helper: moves the `release` pointer directly in catalog.db. Setup only — see
- *  the header's H1 amendment note. Mirrors IT-089's NULL-owner direct-seed pattern. */
-function publishPointer(dbPath: string, name: string, version: string): void {
-  const db = new Database(dbPath);
-  db.prepare('UPDATE workflows SET release_version = ? WHERE name = ?').run(version, name);
-  db.close();
-}
 
 const ALICE = 'alice@example.com';
 const BOB = 'bob@example.com';
@@ -117,20 +142,16 @@ const SCRIPT = 'return "hello";';
 
 describe('Workflow ownership gate (DES-098, IT-080)', () => {
   it('case 1: first registration by alice → owned by alice', async () => {
-    const r = await callTool('workflow_register', {
-      name: OWNER_WORKFLOW,
-      script: SCRIPT,
-      principal: ALICE,  // v15: new parameter
-    });
+    const r = await callTool('workflow_register', { name: OWNER_WORKFLOW, script: SCRIPT }, aliceToken);
     expect(r.error).toBeUndefined();
     expect(typeof r.version).toBe('number');
-    // v22: registration is not publication. Hand-seeded onto `release` (H1 amendment, see header):
-    // `workflow_publish` can no longer be reached anonymously on this D-BIND-exempt connection.
-    publishPointer(join(tmpDir, 'catalog.db'), OWNER_WORKFLOW, `v${r.version}`);
+    // v22: registration is not publication. With a real owner bearer the real call is reachable.
+    const pub = await callTool('workflow_publish', { name: OWNER_WORKFLOW, version: `v${r.version}`, channel: 'release' }, aliceToken);
+    expect(pub.error).toBeUndefined();
   });
 
   it('case 7: workflow_get includes owner field', async () => {
-    const r = await callTool('workflow_get', { name: OWNER_WORKFLOW });
+    const r = await callTool('workflow_get', { name: OWNER_WORKFLOW }, aliceToken);
     expect(r.error).toBeUndefined();
     // v22 (DES-115): the projection under `result` IS the response; `owner` stays on the public
     // allowlist (REQ-100 names it), only its path changed.
@@ -138,25 +159,18 @@ describe('Workflow ownership gate (DES-098, IT-080)', () => {
   });
 
   it('case 2: register-overwrite by alice (same owner) → succeeds', async () => {
-    const r = await callTool('workflow_register', {
-      name: OWNER_WORKFLOW,
-      script: SCRIPT + ' // v2',
-      principal: ALICE,
-    });
+    const r = await callTool('workflow_register', { name: OWNER_WORKFLOW, script: SCRIPT + ' // v2' }, aliceToken);
     expect(r.error).toBeUndefined();
     expect(r.code).not.toBe('NOT_WORKFLOW_OWNER');
-    // Alice's own new version onto `release` (hand-seeded, H1 amendment — see header), so the
-    // reads below see her latest — the pre-v22 "newest registration wins" semantics case 3's
-    // "stored definition unchanged" oracle assumes.
-    publishPointer(join(tmpDir, 'catalog.db'), OWNER_WORKFLOW, `v${r.version}`);
+    // Alice's own new version onto `release`, so the reads below see her latest — the state case 3's
+    // "stored definition unchanged" oracle compares against.
+    const pub = await callTool('workflow_publish', { name: OWNER_WORKFLOW, version: `v${r.version}`, channel: 'release' }, aliceToken);
+    expect(pub.error).toBeUndefined();
   });
 
   it('case 3: register-overwrite by bob (non-owner) → NOT_WORKFLOW_OWNER + stored unchanged', async () => {
-    const r = await callTool('workflow_register', {
-      name: OWNER_WORKFLOW,
-      script: 'return "hijacked";',
-      principal: BOB,
-    });
+    // Bob is a genuinely authenticated, genuinely different identity — not a self-asserted string.
+    const r = await callTool('workflow_register', { name: OWNER_WORKFLOW, script: 'return "hijacked";' }, bobToken);
     expect(r.code).toBe('NOT_WORKFLOW_OWNER');
 
     // Stored definition must be unchanged — asserted at the STORE (see the M-5 note in the header):
@@ -180,25 +194,25 @@ describe('Workflow ownership gate (DES-098, IT-080)', () => {
   });
 
   it('case 4: deregister by bob (non-owner) → NOT_WORKFLOW_OWNER; workflow still present', async () => {
-    const r = await callTool('workflow_deregister', { name: OWNER_WORKFLOW, principal: BOB });
+    const r = await callTool('workflow_deregister', { name: OWNER_WORKFLOW }, bobToken);
     expect(r.code).toBe('NOT_WORKFLOW_OWNER');
 
-    const check = await callTool('workflow_get', { name: OWNER_WORKFLOW });
+    const check = await callTool('workflow_get', { name: OWNER_WORKFLOW }, aliceToken);
     expect(check.error).toBeUndefined();
     // workflow_get puts name inside result (flat top-level: owner/defaults/script only; DES-098)
     expect(typeof (check.result as { name?: string })?.name).toBe('string');
   });
 
   it('case 8: workflow_run by bob (non-owner) → NOT gated (read/run open to any)', async () => {
-    const r = await callTool('workflow_run', { name: OWNER_WORKFLOW, principal: BOB });
+    const r = await callTool('workflow_run', { name: OWNER_WORKFLOW }, bobToken);
     expect(r.code).not.toBe('NOT_WORKFLOW_OWNER');
     expect(typeof r.runId).toBe('string');
   });
 
   it('case 5: deregister by alice (owner) → succeeds', async () => {
     // Re-register as alice first (a prior write above may not have changed owner)
-    await callTool('workflow_register', { name: OWNER_WORKFLOW, script: SCRIPT, principal: ALICE });
-    const r = await callTool('workflow_deregister', { name: OWNER_WORKFLOW, principal: ALICE });
+    await callTool('workflow_register', { name: OWNER_WORKFLOW, script: SCRIPT }, aliceToken);
+    const r = await callTool('workflow_deregister', { name: OWNER_WORKFLOW }, aliceToken);
     expect(r.code).not.toBe('NOT_WORKFLOW_OWNER');
     expect((r as { removed?: boolean }).removed).toBe(true);
   });
@@ -282,9 +296,10 @@ describe('Boot backfill: NULL owner → hsuhungjung@gmail.com (DES-098, IT-080)'
     // header), then hand-seed the release pointer (publish can no longer be reached anonymously
     // on this connection — same H1 amendment as cases 1/2).
     const wf = 'alice-owned-it080';
-    const r = await callTool('workflow_register', { name: wf, script: SCRIPT, principal: ALICE });
+    const r = await callTool('workflow_register', { name: wf, script: SCRIPT }, aliceToken);
     expect(r.error).toBeUndefined();
-    publishPointer(join(tmpDir, 'catalog.db'), wf, `v${r.version}`);
+    const pub = await callTool('workflow_publish', { name: wf, version: `v${r.version}`, channel: 'release' }, aliceToken);
+    expect(pub.error).toBeUndefined();
 
     // Second boot
     const server3 = await createServer({
