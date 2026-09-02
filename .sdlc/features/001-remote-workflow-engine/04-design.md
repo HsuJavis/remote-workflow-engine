@@ -4372,3 +4372,124 @@ overwritten in place; the pre-adjudication versions are at `git show ba3db17:<pa
   stamp on an existing NULLable column, three defaults moving into the existing config block, one field
   on two existing view types, and prose. No reaper, no cancellation channel, no new column, no new
   accessor, no auth branch, no grammar parser.
+
+---
+
+## Orchestrator adjudication (v23) #2 — the unowned composition root, and nine reds that are not one kind (2026-09-02)
+
+State at ruling: `tsc` clean, 1783/1792, 9 red across 8 files (from Gate 5's 58). WIP `ebd530d`.
+
+### R-1 — **THE BLOCKER: the whole v23 subsystem is built and not wired. No TASK owned building it.**
+Verified at source, not taken from the report:
+- `grep -rn "new GraphAnalyzer" src/` → **zero results.**
+- `server.ts:1398` → `new McpFacade({ clock, store, runManager, validator, ceilings })` — no `triggerPorts`,
+  no `graphAnalyzer`.
+- `mcp-facade.ts:138` → `this.triggerPorts = deps.triggerPorts ?? NO_TRIGGER_PORTS`.
+
+Every unit test passes against the modules; the engine never constructs them. That is this repo's
+**named recurring defect** — correct implementation, unwired call site, every unit test green, zero
+protection (memory: `composeconfig-wiring-bug-class`; v11 `updateFlagPath`, v15 auth). VAL-113/114/115
+are the only things that could have caught it, and they are exactly the three still red.
+
+**Why the process missed it:** `02-architecture.md` names `createServer()` as "the ONE site that
+actually constructs the GraphAnalyzer", but **no TASK's `files:` list owned that construction**. Trace
+was clean throughout — every TASK traced to a DES, every DES to an ARCH — because the gap was not a
+broken link. It was an **unowned composition root**. Record the class: Gate 3 partitioning must check
+that every "constructed at X" claim in the architecture has a TASK owning X, not merely that every
+ARCH has a TASK.
+
+**Adopted — TASK-126 (new): construct and wire the v23 subsystem in `createServer()`.** Folds in three
+riders that otherwise drop on the floor, because their original owners are blocked on precisely this
+site:
+- TASK-117's two deferred boot lines (effective post-curation tool set + jail dir; B1's
+  missing-diagram count + recovery command).
+- The `McpFacadeDeps.graphAnalyzer` shape question — TASK-120 built a narrow structural interface
+  `{enabled, regenerate()}` rather than importing the concrete class. **Keep the structural interface**
+  (it is the same seam convention the rest of this engine uses and it keeps `mcp-facade.ts` free of a
+  concrete dependency); TASK-126 satisfies it from the real instance.
+- Real `TriggerPorts` built from the three trigger stores — which, per ARCH-078, are **three separate
+  SQLite files**, so this is API composition, not one batched read.
+
+### R-2 — **the seam must be REQUIRED, not optional-with-a-null-default. This is v22's own lesson.**
+`triggerPorts ?? NO_TRIGGER_PORTS` silently degrades an unwired call site into "no triggers exist".
+v22 hit this and encoded the fix in `mcp-facade.ts:31-37`'s own docblock for `ReadContext`: *"a required
+(no default) read-time identity — an optional `principal = null` default would reproduce this project's
+`composeConfig` wiring-bug class verbatim … A required argument makes an unwired call site a `tsc` error
+instead."* v23's new seam went the other way and reproduced the hazard within one iteration of the
+lesson being written down.
+
+**Make `triggerPorts` and `graphAnalyzer` required in `McpFacadeDeps`**; tests that do not care pass
+`NO_TRIGGER_PORTS` / a disabled analyzer explicitly. TASK-126 fixes this instance; the required seam is
+what stops the next one, and it is the structural half of this ruling.
+
+### R-3 — the nine reds are FOUR different kinds. Treating them alike is how a real guarantee gets deleted.
+
+**(a) Asserting a feature v23 deliberately deletes → RETIRE, with the supersession recorded.**
+- `val-110`'s `/api/workflows/:name/skeleton returns the real skeleton/phases when auth is disabled`
+- `workflow-discovery-http`'s two REQ-062 cases (the skeleton route; `workflow_get.skeleton`)
+
+Retire the cases, not the files. **Supersede in the REQ-006 form — partially, and say which part.**
+REQ-062's *user-facing surface* is withdrawn by REQ-105; `parseWorkflowSkeleton` **survives as internal
+run-DAG layout and analyzer grounding**, so a blanket `[SUPERSEDED]` would tell the next reader to
+delete a function that must stay. Likewise REQ-100's "auth off → pre-v22 surface byte-for-byte" is
+superseded **for `skeleton`/`phases` only** — the rest of that clause stands unchanged.
+
+**(b) The guarantee is still valid; only its vehicle was deleted → RE-POINT, never retire.**
+`dashboard-http`'s "a malformed %-encoded path segment degrades, never a 500" now 404s because it drove
+through `/api/workflows/%/skeleton`. The guarantee (DES-018: never propagate a `URIError` as a 500) is
+untouched by v23. Re-point it at a surviving decoding route — `/api/workflows/%/describe`.
+
+**Oracle discipline, binding on every fix below:** the expected status and body come from the NEW
+route's DES contract, read first. Do **not** run the route and write down what it returned. v22 produced
+the counter-example (`val-107`'s non-owner oracle rewritten to assert success so it would match the
+code); a re-point that derives its expectation from the code is that same defect wearing a different hat.
+
+**(c) A genuine implementation gap → FIX.**
+- `graph-analyzer` UT-111 `sweepAtBoot` unstamped-pending (`'unavailable'` vs expected `'ready'`) —
+  TASK-117's own file.
+- `no-skeleton-surface` UT-115 — REQ-105's own guard, correctly red: `src/**` still says "skeleton"
+  outside the three-file allowlist. Finish the deletions. `dashboard-page.ts` must **not** be added to
+  the allowlist; it is meant to come out clean.
+- `dashboard-diagram-render` UT-116 — the reported one-line anchor fix
+  (`renderMiniSkeletonAsync` → `renderMiniPreviewAsync`) plus TASK-121 landing.
+
+**(d) A design/implementation disagreement → resolve against the DESIGN, then fix whichever side is wrong.**
+`val-112` case 2 (`CHANNEL_UNPUBLISHED` envelope shape). Read DES-126's error contract first and make
+the disagreeing side conform to it. If the design is what is wrong, amend the design and say so —
+do not quietly reshape the assertion to fit the code.
+
+### R-4 — ratifying the two design corrections the implementer found. Both stand; **DES-128's TEXT changes too.**
+
+**(a) DES-128's type guard did not guard.** Its literal `Array<{enabled: boolean}>` was justified in the
+design by "a future edit that returns the row is a `tsc` error". The implementer disproved it with a
+minimal repro: a **method-return position gets no fresh-object-literal excess-property check**, so
+`{enabled, secret, id}` type-checks fine. Shipped instead: `Array<{enabled: boolean; secret?: never;
+id?: never}>`, which does fail `tsc` and is what UT-109's `@ts-expect-error` case requires. **Ratified.**
+
+This one matters more than its size: the guard exists because `webhooks.secret` is a **live credential**
+in a table whose projection feeds an LLM prompt (ARCH-078). A guard that does not guard, protecting a
+secret, is worse than no guard — it stops anyone looking again.
+
+**Amend DES-128's text to the shipped signature.** Ratifying the code while leaving the design doc
+asserting the original would be **instance ten** of this ledger's most-repeated defect, inside the very
+ruling that counts instances one through nine.
+
+**(b) `bindingsFp`'s sort key was too coarse** — `(kind, cron|'', upstreamWorkflow|'')` cannot separate
+two webhook rows differing only in `enabled`, or two cron rows differing in `tz`, so the fingerprint
+would flap on ties. Shipped: sort the canonical JSON strings themselves. **Ratified**; note that no test
+caught it (the UT-109 cases happen not to tie), so add a tie case rather than trusting the fix bare.
+
+### R-5 — `ANALYZER_DISABLED` gets its own facade unit-test row. No implicit coverage.
+It is a designed, closed error code on a pure pass-through: one row, no oracle hazard, trivially
+testable. "TASK-120/124's real-tier wiring covers it" is **the same implicit-coverage reasoning that let
+the unwired facade survive all the way to VAL-114** — where the only tests that could catch it were the
+ones not yet running. Write the row.
+
+### R-6 — pre-flight for the relaunch, both items learned the hard way this iteration
+1. **Reconcile `03-tasks.md` statuses before any run that includes `impl`.** Implementers deliberately
+   do not edit that file, so landed tasks still read `draft`, and the impl gate dispatches on that field.
+   That is exactly the setup that cost 17 agents and ~1.1M tokens earlier today. Flip to `done` only what
+   has IMPL/git evidence; **TASK-121, TASK-124 and the new TASK-126 stay `draft`.**
+2. **Override the model policy away from `claude-fable-5`.** `400 tools.6.model: claude-fable-5` has now
+   fired twice; the first was survivable, the second **killed TASK-124 outright**. A blind re-dispatch
+   runs the same policy into the same 400 a third time.
