@@ -19,6 +19,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { RunManager } from '../../src/run-manager.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
+import { startScript } from '../helpers/workflow-fixtures.js';
 
 async function pollUntilSettled(mgr: RunManager, runId: string) {
   let view = await mgr.status(runId);
@@ -58,15 +59,14 @@ describe('RunGuard budget accounting under concurrent parallel() dispatch (IT-03
     };
     const mgr = new RunManager({ gateway, concurrency: CALLS });
 
-    const runId = await mgr.start({
-      script: `
+    const runId = await startScript(mgr, `
         const thunks = [];
         for (let i = 0; i < ${CALLS}; i++) {
           thunks.push(async () => agent('call-' + i));
         }
         const results = await parallel(thunks);
         return { results, finalSpent: budget.spent() };
-      `,
+      `, {
       budget: BUDGET,
     });
 

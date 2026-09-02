@@ -69,6 +69,9 @@ export class SqliteRunStore implements RunStore {
     // parameter snapshot (RunParams). A pre-v21 row reads back NULL; RunManager applies the legacy
     // defaultRunParams(registered.defaults) fallback on resume, never a crash.
     try { this._db.exec('ALTER TABLE runs ADD COLUMN effective_params TEXT'); } catch { /* already exists */ }
+    // v22 (DES-113, TASK-108): additive migration — the legacy-cohort fallback record (never the
+    // pin itself, which stays in `scriptVersion`). Same idempotent idiom as the columns above.
+    try { this._db.exec('ALTER TABLE runs ADD COLUMN legacy_substitution TEXT'); } catch { /* already exists */ }
   }
 
   private _runDir(runId: string): string {
@@ -211,7 +214,7 @@ export class SqliteRunStore implements RunStore {
 
   async getRun(runId: string): Promise<RunStatusView | null> {
     const row = this._db.prepare('SELECT * FROM runs WHERE runId = ?').get(runId) as
-      | { runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null; principal?: string | null }
+      | { runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null; principal?: string | null; legacy_substitution?: string | null }
       | undefined;
     if (!row) return null;
     // v8 Slice 2c: a persisted terminal snapshot restores the full DAG (frames/phases/timing) after a
@@ -231,11 +234,17 @@ export class SqliteRunStore implements RunStore {
       terminalAt: termRow?.ts,
       // v15 (DES-096): omit when absent (conditional spread mirrors terminalAt pattern).
       ...(row.principal ? { principal: row.principal } : {}),
+      // v22 (DES-113): omit when absent, same conditional-spread convention.
+      ...(row.legacy_substitution ? { legacySubstitution: JSON.parse(row.legacy_substitution) as RunStatusView['legacySubstitution'] } : {}),
     };
   }
 
   async saveSnapshot(runId: string, snapshot: RunDagSnapshot): Promise<void> {
     this._db.prepare('INSERT OR REPLACE INTO run_snapshots (runId, json) VALUES (?, ?)').run(runId, JSON.stringify(snapshot));
+  }
+
+  async recordLegacySubstitution(runId: string, sub: { pinned: string; resolved: string }): Promise<void> {
+    this._db.prepare('UPDATE runs SET legacy_substitution = ? WHERE runId = ?').run(JSON.stringify(sub), runId);
   }
 
   async listRuns(): Promise<RunSummary[]> {

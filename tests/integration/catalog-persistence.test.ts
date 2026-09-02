@@ -31,8 +31,10 @@ describe('WorkflowCatalog SQLite persistence (IT-012, D-V2)', () => {
     const { version } = await cat1.register('persist-flow', `return 1;`);
 
     // New instance simulates a server restart against the same on-disk workRoot.
+    // v22 (DES-111): get() is deleted — resolve() with an explicit {version} selector always
+    // resolves regardless of publish/channel state (registration ≠ publication, REQ-097).
     const cat2 = new WorkflowCatalog(dir, CLOCK);
-    const entry = await cat2.get('persist-flow');
+    const entry = await cat2.resolve('persist-flow', { version });
     expect(entry.script).toBe('return 1;');
     expect(entry.version).toBe(version);
   });
@@ -51,19 +53,20 @@ describe('WorkflowCatalog SQLite persistence (IT-012, D-V2)', () => {
   // undefined even for a row registered WITH defaults (only getFull() sees it). This is the
   // trivially-green-trap-avoiding assertion: NOT "params is undefined on a fresh row" (vacuously
   // true today) but "defaults survives get(), not just getFull()".
-  it('get() (not just getFull()) returns the registered `defaults`, matching ARCH-066\'s "one row-read, no second query"', async () => {
+  it('resolve() (not just resolveDetail()) returns the registered `defaults`, matching ARCH-066\'s "one row-read, no second query"', async () => {
     const cat = new WorkflowCatalog(dir, CLOCK);
-    await cat.register('it012-defaults', 'return 1;', { model: 'sonnet' });
-    const entry = await cat.get('it012-defaults');
+    const { version } = await cat.register('it012-defaults', 'return 1;', { model: 'sonnet' });
+    const entry = await cat.resolve('it012-defaults', { version });
     expect((entry as { defaults?: unknown }).defaults).toEqual({ model: 'sonnet' });
   });
 
-  it('a pre-v21 row (registered with no meta.params) reads back get().params as the canonical contract shape, not a raw undefined key omission', async () => {
+  it('a pre-v21 row (registered with no meta.params) reads back resolve().params as the canonical contract shape, not a raw undefined key omission', async () => {
     const cat = new WorkflowCatalog(dir, CLOCK);
-    await cat.register('it012-no-params', 'return 1;');
-    const entry = await cat.get('it012-no-params');
-    // Today `get()`'s return type has no `params` key at all; once TASK-096/099 land this must be
-    // an explicit key (even if its value is `undefined`) so getFull()'s delegation stays 1 row-shape.
+    const { version } = await cat.register('it012-no-params', 'return 1;');
+    const entry = await cat.resolve('it012-no-params', { version });
+    // `resolve()`'s return type has no `params` key at all when the row carries none; once
+    // TASK-096/099 land this must be an explicit key (even if its value is `undefined`) so
+    // resolveDetail()'s delegation stays 1 row-shape.
     expect('params' in entry).toBe(true);
   });
 
@@ -72,7 +75,7 @@ describe('WorkflowCatalog SQLite persistence (IT-012, D-V2)', () => {
   // touches the ALTER-TABLE migration path itself. This fixture writes a row the way the pre-v21
   // schema genuinely did (no `params` column at all) directly against catalog.db, THEN constructs
   // a WorkflowCatalog on top of it so the idempotent migration is the thing under test.
-  it('a genuine pre-v21 catalog.db (no params column) migrates cleanly: get() returns params:undefined', async () => {
+  it('a genuine pre-v21 catalog.db (no params column) migrates cleanly: resolve() returns params:undefined', async () => {
     const raw = new Database(join(dir, 'catalog.db'));
     raw.exec(`
       CREATE TABLE workflows (
@@ -93,7 +96,8 @@ describe('WorkflowCatalog SQLite persistence (IT-012, D-V2)', () => {
     // row never went through parseParamContract at all, exercising the migration path IT-012's
     // other pre-v21 case (registered via v21 code) cannot reach.
     const cat = new WorkflowCatalog(dir, CLOCK);
-    const entry = await cat.get('it012-pre-v21');
+    // ADR-011: a migrated row is published to release, so a no-selector resolve() works unaided.
+    const entry = await cat.resolve('it012-pre-v21', {});
     expect(entry.params).toBeUndefined();
   });
 });

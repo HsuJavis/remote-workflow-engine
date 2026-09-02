@@ -101,4 +101,20 @@ describe('InMemoryRunStore', () => {
     const store = new InMemoryRunStore(CLOCK);
     expect(await store.getEffectiveParams('no-such-run')).toBeNull();
   });
+
+  // v22 (DES-113, TASK-108): recordLegacySubstitution — RunManager's own resume path
+  // (run-manager.ts:650) is the production caller via SqliteRunStore, but no test exercised
+  // InMemoryRunStore's own copy directly (same precedent as getEffectiveParams above).
+  it('recordLegacySubstitution surfaces legacySubstitution on getRun once recorded', async () => {
+    const store = new InMemoryRunStore(CLOCK);
+    const runId = await store.createRun({ script: 'return 1;' });
+    expect((await store.getRun(runId))!.legacySubstitution).toBeUndefined();
+    await store.recordLegacySubstitution(runId, { pinned: 'v3', resolved: 'v5' });
+    expect((await store.getRun(runId))!.legacySubstitution).toEqual({ pinned: 'v3', resolved: 'v5' });
+  });
+
+  it('recordLegacySubstitution on an unknown runId is a silent no-op (no throw)', async () => {
+    const store = new InMemoryRunStore(CLOCK);
+    await expect(store.recordLegacySubstitution('no-such-run', { pinned: 'v1', resolved: 'v2' })).resolves.toBeUndefined();
+  });
 });

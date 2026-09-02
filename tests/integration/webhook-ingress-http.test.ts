@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { createHmac } from 'node:crypto';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -33,7 +34,7 @@ afterAll(async () => {
 describe('webhook ingress POST /hooks/:id (v8 Defer B, REQ-057)', () => {
   it('a correctly-signed delivery fires the pre-bound workflow; a bad signature does not', async () => {
     // register the target workflow + a webhook bound to it
-    await callTool('workflow_register', { name: 'on-hook', script: `return { hooked: args.event };` });
+    await registerPublishedVia(callTool, 'on-hook', `return { hooked: args.event };`);
     const created = await callTool('webhook_create', { workflow: 'on-hook' });
     expect(created.result.secret).toBeTruthy();
     expect(created.result.url).toContain('/hooks/');

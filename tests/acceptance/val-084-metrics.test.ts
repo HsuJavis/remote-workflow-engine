@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -58,22 +59,19 @@ type HomeView = { running: WorkflowCard[]; registered: WorkflowCard[]; other: Wo
 describe('VAL-084: home card metrics — avg success rate + avg execution time (REQ-075)', () => {
   it('4 completed + 1 failed terminal runs → successRate 0.8, finite avgDurationMs, no NaN (CI-safe)', async () => {
     const wfName = 'val084-metrics-wf';
-    await callTool('workflow_register', {
-      name: wfName,
-      script: `export const meta = { name: '${wfName}', description: 'metrics under test' };
-               return "ok";`,
-    });
+    // v22: `workflow_run({name})` resolves the `release` channel, so each registered version must
+    // be published for the run to reach it (a bare register → CHANNEL_UNPUBLISHED).
+    await registerPublishedVia(callTool, wfName, `export const meta = { name: '${wfName}', description: 'metrics under test' };
+               return "ok";`);
     // Seed 4 completed runs
     for (let i = 0; i < 4; i++) {
       const sub = await callTool('workflow_run', { name: wfName }) as { runId?: string };
       await pollDone(sub?.runId!);
     }
     // Seed 1 failed run (throw causes failed status)
-    await callTool('workflow_register', {
-      name: wfName,
-      script: `export const meta = { name: '${wfName}', description: 'metrics under test' };
-               throw new Error("intentional failure for val-084");`,
-    });
+    // Publishing v2 onto `release` is what makes the 5th run pick up the throwing script.
+    await registerPublishedVia(callTool, wfName, `export const meta = { name: '${wfName}', description: 'metrics under test' };
+               throw new Error("intentional failure for val-084");`);
     const sub5 = await callTool('workflow_run', { name: wfName }) as { runId?: string };
     await pollDone(sub5?.runId!);
 

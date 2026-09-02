@@ -135,6 +135,12 @@ export interface RunStatusView {
   /** v15 (REQ-086 / DES-096): authenticated caller identity attributed at submission time.
    *  Absent when auth is disabled or the caller is a token-free loopback peer. */
   principal?: string;
+  /** v22 (DES-113, TASK-108): the legacy-cohort fallback record — set when this run's pinned
+   *  scriptVersion is absent from workflow_versions (the name row exists, but the pin doesn't,
+   *  e.g. after a deregister/re-register restarted the lineage) and resume resolved through
+   *  `release` instead. The pin itself is NEVER rewritten; this is a sibling record of what
+   *  actually happened. Absent for every run that resolved its own pin normally. */
+  legacySubstitution?: { pinned: string; resolved: string };
 }
 
 export interface RunSummary {
@@ -152,9 +158,20 @@ export interface RunSummary {
 
 export interface RunSpec {
   name?: string;
+  /** v22 (REQ-098 / DES-114, TASK-109): CLOSED at every ingress (advertised schema, facade,
+   *  RunManager.start() itself) — a submission carrying this is refused INLINE_SCRIPT_CLOSED, never
+   *  admitted. Field kept (not deleted) ONLY because RunSpec doubles as the persisted-spec read-back
+   *  type: a run suspended before this ban shipped has a real `script` value in storage and must
+   *  still resume through it (`_requireLive` in run-manager.ts). Never populated by a new run. */
   script?: string;
   args?: unknown;
   budget?: number | null;
+  /** v22 (REQ-097 / DES-114, TASK-109): explicit version selector — wins over any `channel`.
+   *  Ignored (never resolved) unless `name` is set. */
+  version?: string;
+  /** v22 (REQ-097 / DES-114, TASK-109): named-channel selector ('beta'|'release'); defaults to
+   *  'release' when neither `version` nor `channel` is supplied. */
+  channel?: 'beta' | 'release';
   /** v11 Sprint 3 (TASK-066 / DES-063): who triggered this run — set at the start() call site. */
   startedBy?: StartedBy;
   /** REQ-025 (v2): optional seed tree materialized into the run workspace BEFORE agents start, so
@@ -173,10 +190,6 @@ export interface RunSpec {
   /** v14 (REQ-082 / DES-087): server-side manifest ref — the sha256 of a manifest blob registered via
    *  POST /assets/manifest. Mutually exclusive with `seed`, `seedManifest`, and `seedRef`. */
   seedManifestRef?: string;
-  /** v14 (REQ-085 / DES-090): optional integrity guard — 64-char lowercase hex sha256 of the inline
-   *  script's UTF-8 bytes. If present and mismatched → SCRIPT_SHA_MISMATCH, no run created.
-   *  Supply with a named run (no inline script) → SCRIPT_SHA_WITHOUT_SCRIPT. */
-  scriptSha256?: string;
   /** v15 (REQ-086 / DES-096): authenticated caller identity — attributed on the run record.
    *  null iff auth disabled or token-free loopback caller. NEVER forwarded to sandbox env. */
   principal?: string | null;
@@ -223,6 +236,14 @@ export interface HarnessDescriptor {
   tools: string[];
   skills: string[];
   mcpServers: string[];
+  /** v22 (REQ-099, adjudication #4 N-1): names this agent referenced in `opts.mcp` that could NOT be
+   *  resolved against the provisioning registry at dispatch — the capability is absent from the
+   *  session and the run says so. REQ-099 forbids retroactively refusing such a (pre-v22, since
+   *  registration now refuses it) workflow, and equally requires the condition to be observable
+   *  rather than silently swallowed; this is that record, following `effortApplied`'s `{reason}`
+   *  branch — the same honest-no-op convention. Emitted ONLY when non-empty (absent, never `[]`), so
+   *  a run with nothing dropped carries a byte-identical descriptor to before. */
+  mcpUnresolved?: string[];
   surfaceType: 'curated' | 'none';
   /** v21 (ARCH-068, DES-105, TASK-101): the resolved per-call effort directive, when any rung set one. */
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';

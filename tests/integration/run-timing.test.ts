@@ -12,6 +12,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RunManager } from '../../src/run-manager.js';
+import { startScript } from '../helpers/workflow-fixtures.js';
 import { WorkflowCatalog } from '../../src/workflow-catalog.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import type { Clock } from '../../src/clock.js';
@@ -48,7 +49,7 @@ describe('phase timeline + per-agent timing (v8 Slice 2b, REQ-050/051)', () => {
     const store = new InMemoryRunStore(clock);
     const mgr = new RunManager({ store, clock, catalog: new WorkflowCatalog(workRoot, clock), gateway: echoGateway() });
 
-    const runId = await mgr.start({ script: `phase('draft'); const a = await agent('A', { label: 'A' }); phase('verify'); return a;` });
+    const runId = await startScript(mgr, `phase('draft'); const a = await agent('A', { label: 'A' }); phase('verify'); return a;`);
     const view = await settled(mgr, runId);
     expect(view.status).toBe('completed');
 
@@ -63,7 +64,7 @@ describe('phase timeline + per-agent timing (v8 Slice 2b, REQ-050/051)', () => {
     const store = new InMemoryRunStore(clock);
     const mgr = new RunManager({ store, clock, catalog: new WorkflowCatalog(workRoot, clock), gateway: echoGateway() });
 
-    const runId = await mgr.start({ script: `const a = await agent('A', { label: 'A' }); return a;` });
+    const runId = await startScript(mgr, `const a = await agent('A', { label: 'A' }); return a;`);
     const view = await settled(mgr, runId);
     expect(view.status).toBe('completed');
 

@@ -26,6 +26,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const sha256 = (b: Buffer | string) => createHash('sha256').update(b).digest('hex');
 const NAMESPACE = 'val091ns';
@@ -106,8 +107,7 @@ describe('REQ-082: seedManifestRef round-trip (VAL-091)', () => {
 
     // Script is minimal: vm.Script context does not support dynamic import() or process.env.
     // Workspace assembly (REQ-082 byte-identity clause) is verified via workflow_artifacts below.
-    const r = await mcpCall('workflow_run', {
-      script: `return 'seeded';`,
+    const r = await runScriptVia(mcpCall, `return 'seeded';`, {
       seedManifestRef,
       seedNamespace: NAMESPACE,
     });
@@ -130,8 +130,7 @@ describe('REQ-082: seedManifestRef round-trip (VAL-091)', () => {
   }, 30_000);
 
   it('2. seedManifestRef + seed → SEED_SOURCE_CONFLICT', async () => {
-    const r = await mcpCall('workflow_run', {
-      script: 'return 1;',
+    const r = await runScriptVia(mcpCall, 'return 1;', {
       seedManifestRef: 'a'.repeat(64),
       seedNamespace: NAMESPACE,
       seed: [{ path: 'f.txt', contentB64: Buffer.from('x').toString('base64') }],
@@ -140,8 +139,7 @@ describe('REQ-082: seedManifestRef round-trip (VAL-091)', () => {
   });
 
   it('3. seedManifestRef + seedManifest → SEED_SOURCE_CONFLICT', async () => {
-    const r = await mcpCall('workflow_run', {
-      script: 'return 1;',
+    const r = await runScriptVia(mcpCall, 'return 1;', {
       seedManifestRef: 'a'.repeat(64),
       seedNamespace: NAMESPACE,
       seedManifest: [{ path: 'f.txt', sha256: 'a'.repeat(64) }],
@@ -150,8 +148,7 @@ describe('REQ-082: seedManifestRef round-trip (VAL-091)', () => {
   });
 
   it('4. seedManifestRef naming a missing blob → MISSING_BLOBS', async () => {
-    const r = await mcpCall('workflow_run', {
-      script: 'return 1;',
+    const r = await runScriptVia(mcpCall, 'return 1;', {
       seedManifestRef: 'b'.repeat(64), // not uploaded
       seedNamespace: NAMESPACE,
     });

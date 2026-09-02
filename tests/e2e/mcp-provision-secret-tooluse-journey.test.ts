@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { FakeMcpProbe } from '../../src/mcp-probe.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const HAS_PROVIDER = !!(process.env['ANTHROPIC_API_KEY'] || process.env['OLLAMA_BASE_URL']);
 
@@ -56,8 +57,11 @@ async function mcpCall(name: string, args: Record<string, unknown> = {}) {
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
 
+// v22 (adjudication #1 K-1/K-2): inline script is closed at every ingress — register+publish the
+// script and run it by name. Its only caller is gated on HAS_PROVIDER, so this path is NOT exercised
+// by a bare `npm test` (it would have broken at Gate 7.5, where the env var is set).
 async function runAndWait(script: string): Promise<Record<string, unknown>> {
-  const run = await mcpCall('workflow_run', { script });
+  const run = await runScriptVia(mcpCall, script);
   const runId = run['runId'] as string;
   for (let i = 0; i < 90; i++) {
     const s = await mcpCall('workflow_status', { runId });

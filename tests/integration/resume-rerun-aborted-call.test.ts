@@ -30,6 +30,7 @@
 // it does not).
 import { describe, it, expect } from 'vitest';
 import { RunManager } from '../../src/run-manager.js';
+import { startScript } from '../helpers/workflow-fixtures.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
 
 async function pollUntilSettled(mgr: RunManager, runId: string, maxIters = 60) {
@@ -64,7 +65,7 @@ describe('workflow_resume re-runs an aborted-mid-flight agent() call live (IT-02
     };
     const mgr = new RunManager({ gateway });
 
-    const runId = await mgr.start({ script: `return await agent('slow-call');` });
+    const runId = await startScript(mgr, `return await agent('slow-call');`);
 
     // Deterministic: wait for the agent() call to have actually reached the gateway before
     // suspending — avoids a race against the real child process's own startup time.

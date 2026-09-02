@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -35,9 +36,13 @@ async function mcpCall(name: string, args: Record<string, unknown> = {}) {
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
 
+// v22 (adjudication #1 K-1): registration is NOT publication — a freshly registered version sits on
+// no channel, so the schedule's own firing (RunManager.start via the `release` channel) died with
+// CHANNEL_UNPUBLISHED and workflow_trigger returned no runId. Register AND publish, via the shared
+// helper. It throws on either half failing, so the old `expect(r.error).toBeUndefined()` oracle is
+// preserved (and now also covers publish).
 async function registerWorkflow(name: string, script: string) {
-  const r = await mcpCall('workflow_register', { name, script });
-  expect(r['error']).toBeUndefined();
+  await registerPublishedVia(mcpCall, name, script);
 }
 
 async function pollUntilTerminal(runId: string, maxMs = 10_000) {

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -23,17 +24,23 @@ afterAll(async () => {
 
 const BASE = () => `http://127.0.0.1:${server.port}`;
 
-async function submitRun(script: string): Promise<string> {
+// v22: the same `${BASE()}/mcp` POST + parse `submitRun` already did, generalised over the tool name
+// so the shared fixture helper can drive register→publish→run through it.
+async function mcpCall(tool: string, args: unknown): Promise<Record<string, unknown>> {
   const res = await fetch(`${BASE()}/mcp`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       jsonrpc: '2.0', id: 1, method: 'tools/call',
-      params: { name: 'workflow_run', arguments: { script } },
+      params: { name: tool, arguments: args },
     }),
   });
   const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
-  const env = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { runId?: string };
+  return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+}
+
+async function submitRun(script: string): Promise<string> {
+  const env = await runScriptVia(mcpCall, script) as { runId?: string };
   return env.runId ?? '';
 }
 

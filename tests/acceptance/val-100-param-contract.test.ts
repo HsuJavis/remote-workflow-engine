@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -42,8 +43,11 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Re
 describe('REQ-090: tunable-parameter contract, discoverable without reading the script (VAL-100)', () => {
   it('a params block constraining model to an enum + timeoutMs to a ceiling registers; workflow_get returns the structured contract', async () => {
     const script = `export const meta = { params: { knobs: { model: { type: 'enum', enum: ['sonnet'] }, timeoutMs: { type: 'number', max: 60000 } } } };\nreturn 1;`;
-    const r = await callTool('workflow_register', { name: 'val100-contract', script });
-    expect(r.error).toBeUndefined();
+    // v22 (REQ-097/DES-110): `workflow_get({name})` with no version selector resolves the RELEASE
+    // channel, so a registered-but-unpublished draft reads back CHANNEL_UNPUBLISHED instead of its
+    // contract. registerPublishedVia does register+publish; it throws (naming the code) if either
+    // leg comes back failed, which is the `expect(r.error).toBeUndefined()` setup guard it replaces.
+    await registerPublishedVia(callTool, 'val100-contract', script);
 
     const got = await callTool('workflow_get', { name: 'val100-contract' });
     const params = (got as { params?: { knobs?: Record<string, { enum?: string[]; max?: number }> } }).params;
@@ -66,8 +70,7 @@ describe('REQ-090: tunable-parameter contract, discoverable without reading the 
   });
 
   it('a script with no params block still registers (backward compatible) and reads back the canonical 4-knob contract', async () => {
-    const r = await callTool('workflow_register', { name: 'val100-no-block', script: 'return 1;' });
-    expect(r.error).toBeUndefined();
+    await registerPublishedVia(callTool, 'val100-no-block', 'return 1;');
     const got = await callTool('workflow_get', { name: 'val100-no-block' });
     const knobs = (got as { params?: { knobs?: Record<string, unknown> } }).params?.knobs ?? {};
     expect(Object.keys(knobs).sort()).toEqual(['appendPrompt', 'effort', 'model', 'timeoutMs'].sort());
@@ -110,9 +113,15 @@ describe('REQ-090 real-tier: a malformed/poisoned params contract must not durab
       },
       args: {},
     });
-    raw.prepare(
-      'INSERT INTO workflows (name, script, version, createdAt, owner, defaults, params) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    ).run('val100-poisoned', 'return 1;', 'v1', new Date().toISOString(), null, null, poisonedParams);
+    // v22 (DES-109/DES-111): script/version/defaults/params moved off `workflows` into
+    // `workflow_versions`, and the channel pointer lives in `workflows.release_version`. Seeded in
+    // the CURRENT schema (same technique as val-109's grandfathered-row fixture) so the poisoned
+    // `params` value still reaches storage by the only route that could ever have written it.
+    const now100 = new Date().toISOString();
+    raw.prepare('INSERT INTO workflows (name, createdAt, owner, release_version) VALUES (?, ?, NULL, ?)')
+      .run('val100-poisoned', now100, 'v1');
+    raw.prepare('INSERT INTO workflow_versions (name, version, script, createdAt, defaults, params) VALUES (?, ?, ?, ?, NULL, ?)')
+      .run('val100-poisoned', 'v1', 'return 1;', now100, poisonedParams);
     raw.close();
 
     // workflow_get on the poisoned entry itself must not degrade into a transport-level JSON-RPC
@@ -147,9 +156,11 @@ describe('REQ-090 real-tier: a malformed/poisoned params contract must not durab
       },
       args: {},
     });
-    raw.prepare(
-      'INSERT INTO workflows (name, script, version, createdAt, owner, defaults, params) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    ).run('val100-poisoned-max', 'return 1;', 'v1', new Date().toISOString(), null, null, poisonedParams);
+    const nowMax = new Date().toISOString();
+    raw.prepare('INSERT INTO workflows (name, createdAt, owner, release_version) VALUES (?, ?, NULL, ?)')
+      .run('val100-poisoned-max', nowMax, 'v1');
+    raw.prepare('INSERT INTO workflow_versions (name, version, script, createdAt, defaults, params) VALUES (?, ?, ?, ?, NULL, ?)')
+      .run('val100-poisoned-max', 'v1', 'return 1;', nowMax, poisonedParams);
     raw.close();
 
     const getBody = await callToolRaw('workflow_get', { name: 'val100-poisoned-max' });

@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 describe('VAL-001: 100% workflow JS API compatibility (REQ-001)', () => {
   let server: Server;
@@ -15,7 +16,7 @@ describe('VAL-001: 100% workflow JS API compatibility (REQ-001)', () => {
   afterAll(async () => { await server?.close(); });
 
   async function runAndWait(script: string, args?: unknown) {
-    const run = await callTool('workflow_run', { script, args });
+    const run = await runScriptVia(callTool, script, { args });
     const runId = run.runId as string;
     for (let i = 0; i < 50; i++) {
       const s = await callTool('workflow_status', { runId });
@@ -86,7 +87,7 @@ describe('VAL-001: 100% workflow JS API compatibility (REQ-001)', () => {
   }, 20000);
 
   it('phase() calls are recorded in run status', async () => {
-    const run = await callTool('workflow_run', { script: `phase('init'); phase('process'); return 'done';` });
+    const run = await runScriptVia(callTool, `phase('init'); phase('process'); return 'done';`);
     const runId = run.runId as string;
     for (let i = 0; i < 30; i++) {
       const s = await callTool('workflow_status', { runId });

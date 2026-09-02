@@ -31,6 +31,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const PINNED_REPO = 'https://github.com/octocat/Hello-World'; // public repo (test_defect fix: HsuJavis/remote-workflow-plugin is PRIVATE, not anonymously fetchable for a real-pull test)
 const PINNED_SHA = '7fd1a60b01f91b314f59955a4e4d4e80d8edf11d';
@@ -50,6 +51,10 @@ async function call(s: Server, name: string, args: unknown): Promise<any> {
   const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}');
 }
+
+// v22: binds this file's own 3-arg `call(server, tool, args)` into the 2-arg shape the shared
+// fixture helper drives (`register` → `publish` → `run` against ONE server).
+const callerFor = (s: Server) => (tool: string, args: Record<string, unknown>) => call(s, tool, args);
 
 async function poll(s: Server, runId: string): Promise<any> {
   for (let i = 0; i < 60; i++) {
@@ -81,8 +86,7 @@ afterAll(async () => {
 
 describe('VAL-089: REQ-080 engine-pull seedRef — no allowlist → SEEDREF_DISABLED', () => {
   it('workflow_run with seedRef and no allowlist returns SEEDREF_DISABLED (fail-closed)', async () => {
-    const r = await call(server, 'workflow_run', {
-      script: `return 'seeded';`,
+    const r = await runScriptVia(callerFor(server), `return 'seeded';`, {
       seedRef: { repoUrl: PINNED_REPO, sha: PINNED_SHA },
     });
     // Expect either a pre-run error (status:'failed', error.code:'SEEDREF_DISABLED')
@@ -94,8 +98,7 @@ describe('VAL-089: REQ-080 engine-pull seedRef — no allowlist → SEEDREF_DISA
 
 describe('VAL-089: REQ-080 — SSRF URL → SEEDREF_EGRESS_DENIED (zero outbound, no network)', () => {
   it('http://169.254.169.254/ → SEEDREF_EGRESS_DENIED before any network call', async () => {
-    const r = await call(serverWithAllowlist, 'workflow_run', {
-      script: `return 'seeded';`,
+    const r = await runScriptVia(callerFor(serverWithAllowlist), `return 'seeded';`, {
       seedRef: { repoUrl: 'http://169.254.169.254/latest/meta-data/', sha: PINNED_SHA },
     });
     const code = r.error?.code ?? (r.status === 'failed' ? r.result?.error?.code : undefined);
@@ -103,8 +106,7 @@ describe('VAL-089: REQ-080 — SSRF URL → SEEDREF_EGRESS_DENIED (zero outbound
   });
 
   it('file:// scheme → SEEDREF_EGRESS_DENIED', async () => {
-    const r = await call(serverWithAllowlist, 'workflow_run', {
-      script: `return 'seeded';`,
+    const r = await runScriptVia(callerFor(serverWithAllowlist), `return 'seeded';`, {
       seedRef: { repoUrl: 'file:///etc/passwd', sha: PINNED_SHA },
     });
     const code = r.error?.code ?? (r.status === 'failed' ? r.result?.error?.code : undefined);
@@ -114,8 +116,7 @@ describe('VAL-089: REQ-080 — SSRF URL → SEEDREF_EGRESS_DENIED (zero outbound
 
 describe('VAL-089: REQ-080 — seed + seedRef → SEED_SOURCE_CONFLICT', () => {
   it('supplying both seed (inline) and seedRef yields SEED_SOURCE_CONFLICT, no run created', async () => {
-    const r = await call(serverWithAllowlist, 'workflow_run', {
-      script: `return 'seeded';`,
+    const r = await runScriptVia(callerFor(serverWithAllowlist), `return 'seeded';`, {
       seed: [{ path: 'a.txt', contentB64: Buffer.from('hello').toString('base64') }],
       seedRef: { repoUrl: PINNED_REPO, sha: PINNED_SHA },
     });
@@ -125,8 +126,7 @@ describe('VAL-089: REQ-080 — seed + seedRef → SEED_SOURCE_CONFLICT', () => {
 
   it('supplying both seedManifest and seedRef yields SEED_SOURCE_CONFLICT', async () => {
     const fakeHash = sha256(Buffer.from('x'));
-    const r = await call(serverWithAllowlist, 'workflow_run', {
-      script: `return 'seeded';`,
+    const r = await runScriptVia(callerFor(serverWithAllowlist), `return 'seeded';`, {
       seedManifest: [{ path: 'x.txt', sha256: fakeHash }],
       seedNamespace: '_test',
       seedRef: { repoUrl: PINNED_REPO, sha: PINNED_SHA },
@@ -138,8 +138,7 @@ describe('VAL-089: REQ-080 — seed + seedRef → SEED_SOURCE_CONFLICT', () => {
 
 describe('VAL-089: REQ-080 — INVALID_SEED_SPEC: branch name rejected (only full 40-or-64 hex sha)', () => {
   it('sha:"main" (branch ref, not a hex sha) → INVALID_SEED_SPEC', async () => {
-    const r = await call(serverWithAllowlist, 'workflow_run', {
-      script: `return 'seeded';`,
+    const r = await runScriptVia(callerFor(serverWithAllowlist), `return 'seeded';`, {
       seedRef: { repoUrl: PINNED_REPO, sha: 'main' },
     });
     const code = r.error?.code ?? (r.status === 'failed' ? r.result?.error?.code : undefined);
@@ -154,8 +153,7 @@ describe('VAL-089: REQ-080 — real pull materializes files (skip when offline)'
       return;
     }
 
-    const run = await call(serverWithAllowlist, 'workflow_run', {
-      script: `return 'seeded from git';`,
+    const run = await runScriptVia(callerFor(serverWithAllowlist), `return 'seeded from git';`, {
       seedRef: { repoUrl: PINNED_REPO, sha: PINNED_SHA },
       seedNamespace: '_val089',
     });

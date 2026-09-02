@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { ClaudeAgentSdkGatewayClient } from '../../src/gateway/claude-agent-sdk-client.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const HUNG_PROVIDER_PORT = 38199;
 
@@ -72,9 +73,13 @@ describe('REQ-019: a hook-kind asset is rejected by construction, the internal P
 
 describe('REQ-020: a hung SDK-gateway provider call is bounded by timeoutMs — agent() resolves null, run continues, never fake success', () => {
   it('a workflow whose agent() call hits the hung provider completes (not hangs forever) with a null agent() result', async () => {
-    const run = await mcpCall('workflow_run', {
-      script: `const r = await agent('this call will hang'); return r === null ? 'bounded-null' : 'unexpected-value';`,
-    });
+    // v22 (adjudication #1 K-1/K-2): inline script is closed at every ingress, so the hung-provider
+    // script is registered+published and run by name. The bounded-timeout subject is unchanged —
+    // only how the script reaches the engine.
+    const run = await runScriptVia(
+      mcpCall,
+      `const r = await agent('this call will hang'); return r === null ? 'bounded-null' : 'unexpected-value';`,
+    );
     const runId = run['runId'] as string;
     let finalStatus: Record<string, unknown> | undefined;
     for (let i = 0; i < 30; i++) {

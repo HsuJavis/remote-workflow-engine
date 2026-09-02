@@ -16,8 +16,11 @@ afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 
 const CLOCK = new FixedClock(new Date('2020-09-01T00:00:00.000Z'));
 
+// v22 (DES-111): CatalogPort shrank to the existence-only shape scheduler.ts actually needs.
+// v22 send-back (H4, 07-review.md §4.2): `create()` now also calls `resolve()` (the release-channel
+// check) — this fake always resolves so these persistence-only cases are unaffected.
 function makeFakeCatalog() {
-  return { get: async (_n: string) => ({ script: '// stub', version: 'v1' }) };
+  return { exists: async (_n: string) => true, resolve: async (_n: string) => ({ script: '', version: 'v1' }) };
 }
 function makeFakeRunManager() {
   return { start: async () => 'run-1' };

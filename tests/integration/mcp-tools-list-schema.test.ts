@@ -5,8 +5,13 @@
 //   const tools = TOOL_NAMES.map((name) => ({ name, description: name, inputSchema: { type: 'object' } }));
 // Every tool's `description` is literally its own name, and every `inputSchema` is an empty
 // `{type:'object'}` with no `properties`/`required` — an MCP client cannot learn from the served
-// schema what fields any tool takes (e.g. that `workflow_run` takes `script`/`args`, or that
+// schema what fields any tool takes (e.g. that `workflow_run` takes `name`/`args`, or that
 // `workflow_agent_log` needs both `runId` and `agentId`).
+//
+// v22 adjudication #3 (M-6): two cases below moved with their subject — REQ-098 removed `script`
+// (and `scriptSha256`) from `workflow_run`'s advertised schema, so the consumability drift-lock now
+// pins their ABSENCE there and pins the DSL authoring contract on `workflow_register.script`, the
+// authoring surface that replaced them.
 //
 // Mock policy (DES-015, integration/acceptance-adjacent tier): real HTTP MCP server, real
 // tools/list JSON-RPC round trip — no mock of the SUT's own boundary at all.
@@ -84,13 +89,21 @@ describe('MCP tools/list serves real, non-placeholder tool metadata (IT-028, D-G
     }
   });
 
-  it("workflow_run's inputSchema documents its real parameters (script/args), not an opaque object", async () => {
+  it("workflow_run's inputSchema documents its real parameters (name/args) and no longer advertises script", async () => {
+    // v22 adjudication #3 (M-6): this case pinned `script` + `args` when inline script was how a run
+    // was submitted. REQ-098 closed inline script and removed `script`/`scriptSha256` from the
+    // advertised schema precisely so a schema-reading client never learns they exist — so the
+    // drift-lock inverts for `script` and follows the parameter that replaced it (`name`). The
+    // consumability property is identical: what the tool really takes must be readable from
+    // tools/list alone.
     const tools = await fetchTools();
     const workflowRun = tools.find((t) => t.name === 'workflow_run');
     expect(workflowRun).toBeDefined();
     const props = workflowRun!.inputSchema?.properties ?? {};
-    expect(props).toHaveProperty('script');
+    expect(props).toHaveProperty('name');
     expect(props).toHaveProperty('args');
+    expect(props).not.toHaveProperty('script');
+    expect(props).not.toHaveProperty('scriptSha256');
   });
 
   it("workflow_run's inputSchema declares the seed params as arrays (issue #21 schema-drift lock)", async () => {
@@ -105,13 +118,17 @@ describe('MCP tools/list serves real, non-placeholder tool metadata (IT-028, D-G
     expect(props.seedNamespace?.type).toBe('string');
   });
 
-  it("workflow_run's script/budget descriptions carry the DSL authoring contract (issue #24)", async () => {
+  it("workflow_register's script description carries the DSL authoring contract; workflow_run's budget/return-shape stay honest (issue #24)", async () => {
     // A schema-only consumer must be able to author a workflow from the tool schema alone. Pin the
     // load-bearing pieces so the description can't silently drift back to an opaque "Inline JS script".
+    // v22 adjudication #3 (M-6): `workflow_register.script` is now the ONLY authoring surface
+    // (REQ-098 removed `script` from workflow_run's schema), so the DSL-contract needles are pinned
+    // there — same needles, same reason, on the parameter that still exists.
     const tools = await fetchTools();
     const run = tools.find((t) => t.name === 'workflow_run')!;
     const props = run.inputSchema?.properties as Record<string, { description?: string }>;
-    const script = props.script?.description ?? '';
+    const reg = tools.find((t) => t.name === 'workflow_register')!;
+    const script = (reg.inputSchema?.properties as Record<string, { description?: string }>).script?.description ?? '';
     // injected globals + agent() option surface + model-string rule + return + optional-meta + example
     for (const needle of ['agent(', 'parallel(', 'pipeline(', 'phase(', 'workflow(', 'effort', 'schema', 'models_list', 'return', 'meta']) {
       expect(script).toContain(needle);
@@ -122,9 +139,6 @@ describe('MCP tools/list serves real, non-placeholder tool metadata (IT-028, D-G
     expect(props.budget?.description ?? '').toMatch(/between agent\(\) calls|shared pool|next agent/i);
     // return-shape honesty: workflow_run returns the envelope, not a bare runId.
     expect(run.description).toContain('runId, status, result');
-    // register shares the same script contract.
-    const reg = tools.find((t) => t.name === 'workflow_register')!;
-    expect((reg.inputSchema?.properties as Record<string, { description?: string }>).script?.description ?? '').toContain('agent(');
   });
 
   it("workflow_agent_log's inputSchema documents both required parameters (runId, agentId)", async () => {

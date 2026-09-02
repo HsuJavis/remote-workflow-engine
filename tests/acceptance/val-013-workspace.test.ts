@@ -5,6 +5,7 @@ import type { Server } from '../../src/server.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { registerPublishedVia, runScriptVia } from '../helpers/workflow-fixtures.js';
 
 describe('VAL-013: per-workflow work folder + per-run workspace isolation (REQ-013)', () => {
   let server: Server;
@@ -33,7 +34,7 @@ describe('VAL-013: per-workflow work folder + per-run workspace isolation (REQ-0
   }
 
   async function runAndWait(script: string, args?: unknown) {
-    const run = await callTool('workflow_run', { script, args });
+    const run = await runScriptVia(callTool, script, { args });
     const runId = run.runId as string;
     for (let i = 0; i < 30; i++) {
       const s = await callTool('workflow_status', { runId });
@@ -64,8 +65,8 @@ describe('VAL-013: per-workflow work folder + per-run workspace isolation (REQ-0
   }, 30000);
 
   it('different workflows have distinct work folders', async () => {
-    await callTool('workflow_register', { name: 'wf-alpha', script: `return 'alpha';` });
-    await callTool('workflow_register', { name: 'wf-beta', script: `return 'beta';` });
+    await registerPublishedVia(callTool, 'wf-alpha', `return 'alpha';`);
+    await registerPublishedVia(callTool, 'wf-beta', `return 'beta';`);
 
     // Both should run successfully in their own work folders
     const [ra, rb] = await Promise.all([

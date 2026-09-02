@@ -33,6 +33,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const SECRET_NAME = 'VAL092_SECRET';
 const SECRET_VALUE = 'val092-secret-tok-abc9981xyz';
@@ -90,9 +91,7 @@ afterAll(async () => {
 describe('REQ-083: redact-at-capture (VAL-092)', () => {
   it('2. ordinary non-secret string NOT redacted (no over-redaction, no LLM needed)', async () => {
     // Run a script that returns the ordinary string — it should NOT be redacted
-    const r = await mcpCall('workflow_run', {
-      script: `return { data: "${ORDINARY_STRING}" };`,
-    });
+    const r = await runScriptVia(mcpCall, `return { data: "${ORDINARY_STRING}" };`);
     const runId: string = r.runId ?? '';
     expect(runId).toBeTruthy();
     const status = await poll(runId);
@@ -121,15 +120,13 @@ describe('REQ-083: redact-at-capture (VAL-092)', () => {
     //   - secretValueProvider injection doesn't exist in RunManager
     //   - transcript capture sinks don't call redact()
     //   → raw secret value present in agent log
-    const r = await mcpCall('workflow_run', {
-      script: `
+    const r = await runScriptVia(mcpCall, `
         const result = await agent(
           'Echo this exact string verbatim: ${SECRET_VALUE}',
           { label: 'secret-echo-agent' }
         );
         return { agentResult: result };
-      `,
-    });
+      `);
     const runId: string = r.runId ?? '';
     expect(runId).toBeTruthy();
     const status = await poll(runId);
@@ -163,9 +160,7 @@ describe('REQ-083: redact-at-capture (VAL-092)', () => {
     // workflow_agent_log output. This is a regression guard for the DES-088 exclusivity invariant.
     // The harness field is stripped from the log but visible as a separate "harness" field per IT-066.
     // This test does not require a real LLM — it checks structural behavior.
-    const r = await mcpCall('workflow_run', {
-      script: 'return "harness-regression-check";',
-    });
+    const r = await runScriptVia(mcpCall, 'return "harness-regression-check";');
     const runId: string = r.runId ?? '';
     if (!runId) return;
     await poll(runId);

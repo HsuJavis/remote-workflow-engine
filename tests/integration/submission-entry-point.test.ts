@@ -1,42 +1,76 @@
-// IT-008: SubmissionValidator at the McpFacade entry point (ARCH-008)
-import { describe, it, expect } from 'vitest';
+// IT-008: fail-fast at the McpFacade entry point (ARCH-008)
+//
+// v22 adjudication #3 (M-6): the entry point MOVED for three of these cases. PARSE_ERROR and
+// UNKNOWN_ALIAS were produced by SubmissionValidator's `if (spec.script)` block on
+// `workflow_run({script})`; REQ-098 closed inline script and REQ-099/ADR-013 moved those checks to
+// `WorkflowCatalog.register()` via `script-checks.ts`. The property this file exists to pin —
+// a bad submission is refused SYNCHRONOUSLY at the facade, with one uniform error shape and no run
+// created — is unchanged; only which facade method is the fail-fast door changed
+// (`workflow_register` for script-shaped faults, `workflow_run` for name-shaped ones).
+//
+// Mock policy (integration): real McpFacade + real RunManager + real WorkflowCatalog on a tmp
+// workRoot. The catalog is constructed with an explicit `aliasNames` set because that is what the
+// composition root does (server.ts) — a catalog built with none accepts every alias, which would
+// make the UNKNOWN_ALIAS case vacuous. ONE store instance is shared by RunManager and McpFacade
+// (D-I1, the facade's own constructor comment) or every facade lookup 404s.
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { McpFacade } from '../../src/mcp-facade.js';
+import { RunManager } from '../../src/run-manager.js';
+import { WorkflowCatalog } from '../../src/workflow-catalog.js';
+import { InMemoryRunStore } from '../../src/run-store.js';
+import { SystemClock } from '../../src/clock.js';
+import { facadeCaller, runScriptVia } from '../helpers/workflow-fixtures.js';
 
-describe('SubmissionValidator at entry point (ARCH-008)', () => {
-  it('workflow_run with TS syntax returns failed envelope synchronously (no runId)', async () => {
-    const facade = new McpFacade();
-    const env = await facade.workflow_run({ script: 'const x: number = 1; return x;' });
-    expect(env.status).toBe('failed');
-    expect(env.runId).toBe('');
-    expect(env.error).toBeDefined();
-    expect(env.error!.code).toBe('PARSE_ERROR');
+let facade: McpFacade;
+let catalog: WorkflowCatalog;
+let workRoot: string;
+
+beforeAll(() => {
+  workRoot = mkdtempSync(join(tmpdir(), 'rwe-it008-'));
+  const clock = new SystemClock();
+  catalog = new WorkflowCatalog(workRoot, clock, { aliasNames: new Set(['sonnet', 'default']) });
+  const store = new InMemoryRunStore(clock);
+  const runManager = new RunManager({ store, clock, catalog, workRoot });
+  facade = new McpFacade({ store, runManager, clock });
+});
+
+afterAll(() => {
+  rmSync(workRoot, { recursive: true, force: true });
+});
+
+describe('fail-fast at the McpFacade entry point (ARCH-008)', () => {
+  it('workflow_register with TS syntax returns a failed envelope synchronously (PARSE_ERROR, nothing stored)', async () => {
+    const env = await facade.workflow_register({ name: 'it008-ts-syntax', script: 'const x: number = 1; return x;' });
+    expect(env['status']).toBe('failed');
+    expect(env['error']).toBeDefined();
+    expect((env['error'] as { code?: string }).code).toBe('PARSE_ERROR');
+    expect(await catalog.exists('it008-ts-syntax')).toBe(false); // refused before any write
   });
 
-  it('workflow_run with unmapped model alias returns failed envelope at submission', async () => {
-    const facade = new McpFacade();
-    const env = await facade.workflow_run({ script: `return agent('x',{model:'no-alias'});` });
-    expect(env.status).toBe('failed');
-    expect(env.error?.code).toBe('UNKNOWN_ALIAS');
+  it('workflow_register with an unmapped model alias returns a failed envelope at registration', async () => {
+    const env = await facade.workflow_register({ name: 'it008-bad-alias', script: `return agent('x',{model:'no-alias'});` });
+    expect(env['status']).toBe('failed');
+    expect((env['error'] as { code?: string }).code).toBe('UNKNOWN_ALIAS');
   });
 
-  it('workflow_run with unknown workflow name (no inline script) returns UNKNOWN_WORKFLOW', async () => {
-    const facade = new McpFacade();
+  it('workflow_run with an unknown workflow name returns UNKNOWN_WORKFLOW', async () => {
     const env = await facade.workflow_run({ name: 'does-not-exist-xyz' });
     expect(env.status).toBe('failed');
     expect(env.error?.code).toBe('UNKNOWN_WORKFLOW');
   });
 
-  it('workflow_run with valid script returns a runId immediately (async execution)', async () => {
-    const facade = new McpFacade();
-    const env = await facade.workflow_run({ script: 'return 1;' });
+  it('workflow_run of a valid registered workflow returns a runId immediately (async execution)', async () => {
+    const env = await runScriptVia(facadeCaller(facade), 'return 1;');
     expect(env.status).not.toBe('failed');
     expect(env.result?.runId).toBeTruthy();
     expect(typeof env.result?.runId).toBe('string');
-  });
+  }, 30000);
 
   it('validation errors have code and message fields (one uniform error shape)', async () => {
-    const facade = new McpFacade();
-    const env = await facade.workflow_run({});  // no script and no name
+    const env = await facade.workflow_run({}); // no name (and `script` is closed, REQ-098)
     expect(env.status).toBe('failed');
     expect(env.error).toBeDefined();
     expect(typeof env.error!.code).toBe('string');

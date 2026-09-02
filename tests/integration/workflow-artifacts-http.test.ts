@@ -14,6 +14,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 interface RpcResponse {
   result?: { tools?: Array<{ name: string }>; content?: Array<{ text: string }> };
@@ -55,7 +56,10 @@ describe('workflow_artifacts over the real MCP HTTP surface (IT-014, D-R4)', () 
   });
 
   it("tools/call workflow_artifacts lists a file written into a completed run's workspace", async () => {
-    const run = await toolCall(baseUrl, 'workflow_run', { script: `return 'done';` });
+    // v22: inline script is closed, so the run is NAMED and its workspace bucket is that name
+    // rather than the pre-v22 '_adhoc' bucket for unnamed runs.
+    const wfName = 'it014-artifacts';
+    const run = await runScriptVia((tool, args) => toolCall(baseUrl, tool, args), `return 'done';`, { name: wfName });
     const runId = run.runId as string;
 
     let status = await toolCall(baseUrl, 'workflow_status', { runId });
@@ -67,8 +71,8 @@ describe('workflow_artifacts over the real MCP HTTP surface (IT-014, D-R4)', () 
 
     // Simulate an agent's SDK-session tool call writing a file into the run's workspace
     // (parent-side; the sandboxed script itself has no fs access — DES-005), mirroring IT-010's
-    // own path (workRoot/workflows/_adhoc/runs/<runId>, per WorkflowCatalog.runWorkspace).
-    const workspace = join(server.workRoot, 'workflows', '_adhoc', 'runs', runId);
+    // own path (workRoot/workflows/<name>/runs/<runId>, per WorkflowCatalog.runWorkspace).
+    const workspace = join(server.workRoot, 'workflows', wfName, 'runs', runId);
     mkdirSync(workspace, { recursive: true });
     writeFileSync(join(workspace, 'output.txt'), 'artifact content');
 

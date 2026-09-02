@@ -9,6 +9,7 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 describe('VAL-015: named workflow registry survives server restart (REQ-014, D-V2)', () => {
   let server: Server;
@@ -45,7 +46,9 @@ describe('VAL-015: named workflow registry survives server restart (REQ-014, D-V
     server = await createServer({ port: 0 });
     baseUrl = `http://127.0.0.1:${server.port}`;
 
-    await callTool('workflow_register', { name: 'val015-persist', script: `return 'still-here';` });
+    // v22: run-by-name resolves the `release` channel, so the fixture registers AND publishes —
+    // the restart assertion below now covers the channel pointer surviving too.
+    await registerPublishedVia(callTool, 'val015-persist', `return 'still-here';`);
     const workRoot = server.workRoot;
     await server.close();
 

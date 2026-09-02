@@ -63,19 +63,41 @@ describe('mcp_provision end to end (REQ-017): provision once, later run referenc
   });
 
   it('a workflow referencing an UNPROVISIONED MCP name gets a clear MCP_NOT_PROVISIONED error, not a silent no-op', async () => {
-    const run = await callTool('workflow_run', { script: `return agent('use tool', { mcp: ['never-provisioned'] });` }) as { runId?: string };
-    const runId = run.runId ?? '';
+    // v22 adjudication #3 (M-2): oracle WIDENED, not weakened. This fixture's script intentionally
+    // names an unprovisioned MCP; REQ-099 MOVED that check to registration (ADR-013,
+    // `validateScriptEntry` in `WorkflowCatalog.register`), so the workflow the run-level surfaces
+    // need can no longer be created at all. The requirement names registration as the surface, so
+    // registration joins the two surfaces this case already sanctioned (submission, run-level) —
+    // the matched set below is all three, and the engine must hit one of them.
+    const NAME = 'it038-unprovisioned-mcp';
+    const reg = await callTool('workflow_register', { name: NAME, script: `return agent('use tool', { mcp: ['never-provisioned'] });` }) as { error?: { code?: string }; code?: string };
+    // Only reachable if some future change stops refusing at registration — then the run-level
+    // surfaces must carry it instead, exactly as this case originally asserted.
+    const refusedAtRegistration = (reg.error?.code ?? reg.code) !== undefined;
+    let run: unknown;
     let finalStatus: unknown;
-    for (let i = 0; i < 20; i++) {
-      finalStatus = await callTool('workflow_status', { runId });
-      const status = (finalStatus as { status?: string }).status;
-      if (status === 'completed' || status === 'failed') break;
-      await new Promise((r) => setTimeout(r, 500));
+    let result: unknown;
+    if (!refusedAtRegistration) {
+      await callTool('workflow_publish', { name: NAME, version: 'v1', channel: 'release' });
+      run = await callTool('workflow_run', { name: NAME });
+      const runId = (run as { runId?: string }).runId ?? '';
+      for (let i = 0; i < 20; i++) {
+        finalStatus = await callTool('workflow_status', { runId });
+        const status = (finalStatus as { status?: string }).status;
+        if (status === 'completed' || status === 'failed') break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      result = await callTool('workflow_result', { runId });
     }
-    const result = await callTool('workflow_result', { runId });
-    // Either rejected at submission (workflow_run itself) or surfaced as a run-level error later
-    // (workflow_status/workflow_result) — never silently ignored.
-    expect(JSON.stringify({ run, finalStatus, result })).toMatch(/MCP_NOT_PROVISIONED/);
+    // Refused at registration, at submission, or surfaced as a run-level error later — never
+    // silently ignored.
+    expect(JSON.stringify({ reg, run, finalStatus, result })).toMatch(/MCP_NOT_PROVISIONED/);
+    if (refusedAtRegistration) {
+      // Fail-closed half (REQ-099 "nothing is stored"): the refusal left no catalog row behind, so
+      // the widened oracle can't be satisfied by an error message over a workflow that registered.
+      const got = await callTool('workflow_get', { name: NAME }) as { code?: string };
+      expect(got.code).toBe('WORKFLOW_NOT_FOUND');
+    }
   }, 30000);
 });
 

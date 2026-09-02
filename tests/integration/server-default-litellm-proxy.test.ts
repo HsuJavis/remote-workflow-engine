@@ -23,6 +23,7 @@ import type { ChildProcess } from 'node:child_process';
 import { createServer } from '../../src/server.js';
 import type { Server, ServerConfig } from '../../src/server.js';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
+import { runScriptVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
 
 const ALIASES = { default: { provider: 'anthropic' as const, model: 'claude-3-5-haiku-20241022' } };
 
@@ -86,16 +87,16 @@ describe('Default GatewayClient/server construction uses the LiteLLM proxy path 
     } as ServerConfig & { proxyManager: LiteLLMProxyManager });
     const baseUrl = `http://127.0.0.1:${server.port}`;
 
-    const runRes = await fetch(`${baseUrl}/mcp`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0', id: 1, method: 'tools/call',
-        params: { name: 'workflow_run', arguments: { script: `return agent('ping');` } },
-      }),
-    });
-    const runBody = (await runRes.json()) as { result?: { content: Array<{ text: string }> } };
-    const runId = (JSON.parse(runBody.result!.content[0].text) as { runId: string }).runId;
+    const callTool: ToolCaller = async (name, args) => {
+      const res = await fetch(`${baseUrl}/mcp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+      });
+      const body = (await res.json()) as { result?: { content: Array<{ text: string }> } };
+      return JSON.parse(body.result!.content[0]!.text);
+    };
+    const runId = (await runScriptVia(callTool, `return agent('ping');`) as { runId: string }).runId;
 
     const status = await pollUntilSettled(baseUrl, runId);
     expect(status.status).toBe('completed');

@@ -22,6 +22,7 @@ import { createHash } from 'node:crypto';
 import { RunManager } from '../../src/run-manager.js';
 import { FixedClock } from '../../src/clock.js';
 import { CasStore } from '../../src/cas-store.js';
+import { startScript } from '../helpers/workflow-fixtures.js';
 
 // Pinned sha (real HsuJavis/remote-workflow-plugin HEAD, pinned at Gate 5 2026-08-15)
 const PINNED_SHA = '60ee8954e19fe5eaf2cf498202475c3c6fc9b8a4';
@@ -89,8 +90,7 @@ describe('UT-085: RunManager fake-SeedRefFetcher wiring (DES-083)', () => {
       seedRefAllowlist: ALLOWLIST,
     } as any);
 
-    const runId = await mgr.start({
-      script: `return 'seeded';`,
+    const runId = await startScript(mgr, `return 'seeded';`, {
       seedRef: { repoUrl: ALLOWLISTED_URL, sha: PINNED_SHA },
       seedNamespace: '_test',
     } as any);
@@ -116,8 +116,7 @@ describe('UT-085: RunManager fake-SeedRefFetcher wiring (DES-083)', () => {
       seedRefAllowlist: ALLOWLIST,
     } as any);
 
-    const runId = await mgr.start({
-      script: `return 'seeded';`,
+    const runId = await startScript(mgr, `return 'seeded';`, {
       seedRef: { repoUrl: ALLOWLISTED_URL, sha: PINNED_SHA },
       seedNamespace: '_test',
     } as any);
@@ -144,8 +143,7 @@ describe('UT-085: RunManager fake-SeedRefFetcher wiring (DES-083)', () => {
       seedRefAllowlist: ALLOWLIST,
     } as any);
 
-    const runId = await mgr.start({
-      script: `return 'seeded';`,
+    const runId = await startScript(mgr, `return 'seeded';`, {
       seedRef: { repoUrl: ALLOWLISTED_URL, sha: PINNED_SHA },
       seedNamespace: '_test',
     } as any);
@@ -181,8 +179,7 @@ describe('UT-085: RunManager fake-SeedRefFetcher wiring (DES-083)', () => {
       seedRefAllowlist: ALLOWLIST,
     } as any);
 
-    const runId = await mgr.start({
-      script: `return 'seeded';`,
+    const runId = await startScript(mgr, `return 'seeded';`, {
       seedRef: { repoUrl: ALLOWLISTED_URL, sha: PINNED_SHA },
       seedNamespace: '_test',
     } as any);
@@ -213,8 +210,7 @@ describe('UT-085: RunManager fake-SeedRefFetcher wiring (DES-083)', () => {
       seedRefAllowlist: ALLOWLIST,
     } as any);
 
-    const runId = await mgr.start({
-      script: `return 'seeded';`,
+    const runId = await startScript(mgr, `return 'seeded';`, {
       seedRef: { repoUrl: ALLOWLISTED_URL, sha: PINNED_SHA },
       seedNamespace: '_test',
     } as any);

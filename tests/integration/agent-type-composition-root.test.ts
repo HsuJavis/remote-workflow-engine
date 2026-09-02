@@ -27,6 +27,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server, ServerConfig } from '../../src/server.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const STUB_PORT = 38125;
 
@@ -118,9 +119,7 @@ describe('agentType composition-root loader (IT-016, D-F2)', () => {
       } as ServerConfig & { agentDefinitionsDir: string });
       const baseUrl = `http://127.0.0.1:${server.port}`;
 
-      const run = await mcpCall(baseUrl, 'workflow_run', {
-        script: `return agent('respond', { agentType: 'helper' });`,
-      });
+      const run = await runScriptVia((tool, args) => mcpCall(baseUrl, tool, args), `return agent('respond', { agentType: 'helper' });`);
       const status = await pollUntilSettled(baseUrl, run.runId as string);
       expect(status.status).toBe('completed');
 
@@ -148,12 +147,10 @@ describe('agentType composition-root loader (IT-016, D-F2)', () => {
       const baseUrl = `http://127.0.0.1:${server.port}`;
       const requestsBefore = stub.requests.length;
 
-      const run = await mcpCall(baseUrl, 'workflow_run', {
-        script: `
+      const run = await runScriptVia((tool, args) => mcpCall(baseUrl, tool, args), `
           try { return await agent('respond', { agentType: 'does-not-exist' }); }
           catch (e) { return 'caught:' + e.message; }
-        `,
-      });
+        `);
       const status = await pollUntilSettled(baseUrl, run.runId as string);
       expect(status.status).toBe('completed');
 

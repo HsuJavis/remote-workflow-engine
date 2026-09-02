@@ -21,6 +21,7 @@ import { RunManager } from '../../src/run-manager.js';
 import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
 import { WorkflowCatalog } from '../../src/workflow-catalog.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
+import { registerPublished, startScript } from '../helpers/workflow-fixtures.js';
 
 const CLOCK = new FixedClock(new Date('2024-01-01T00:00:00Z'));
 const SCRIPT = `const a = await agent('A'); const b = await agent('B'); return { a, b };`;
@@ -68,7 +69,7 @@ describe('crash durability (v8 Defer A, REQ-059/060)', () => {
       const store1 = new SqliteRunStore(join(dir, 'store'), CLOCK);
       const g1 = blockingGateway();
       const mgr1 = new RunManager({ store: store1, clock: CLOCK, workRoot: dir, gateway: g1.gateway });
-      const runId = await mgr1.start({ script: SCRIPT });
+      const runId = await startScript(mgr1, SCRIPT);
       await g1.bReached;                    // A already journaled; B in flight
       expect(g1.counts.get('A')).toBe(1);
       await mgr1.suspend(runId);
@@ -99,7 +100,7 @@ describe('crash durability (v8 Defer A, REQ-059/060)', () => {
       const store1 = new SqliteRunStore(join(dir, 'store'), CLOCK);
       const g1 = blockingGateway();
       const mgr1 = new RunManager({ store: store1, clock: CLOCK, workRoot: dir, gateway: g1.gateway });
-      const runId = await mgr1.start({ script: SCRIPT });
+      const runId = await startScript(mgr1, SCRIPT);
       await g1.bReached;
       const midRun = await store1.getRun(runId);
       expect(midRun?.status).toBe('running'); // genuinely running at the "crash" instant
@@ -125,7 +126,7 @@ describe('crash durability (v8 Defer A, REQ-059/060)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-crash-named-'));
     try {
       const catalog = new WorkflowCatalog(join(dir, 'wf'), CLOCK);
-      await catalog.register('two-step', SCRIPT); // `const a=agent('A'); const b=agent('B'); return {a,b}`
+      await registerPublished(catalog, 'two-step', SCRIPT); // `const a=agent('A'); const b=agent('B'); return {a,b}`
       const store1 = new SqliteRunStore(join(dir, 'store'), CLOCK);
       const g1 = blockingGateway();
       const mgr1 = new RunManager({ store: store1, clock: CLOCK, workRoot: dir, catalog, gateway: g1.gateway });
@@ -151,7 +152,7 @@ describe('crash durability (v8 Defer A, REQ-059/060)', () => {
       const store = new SqliteRunStore(join(dir, 'store'), CLOCK);
       const g = countingGateway();
       const mgr = new RunManager({ store, clock: CLOCK, workRoot: dir, gateway: g.gateway });
-      const runId = await mgr.start({ script: SCRIPT });
+      const runId = await startScript(mgr, SCRIPT);
       await pollStatus(mgr, runId, 'completed');
       const entries = await store.getJournal(runId);
       expect(entries.map((e) => e.key.prompt).sort()).toEqual(['A', 'B']); // the two settled agent calls
@@ -159,4 +160,38 @@ describe('crash durability (v8 Defer A, REQ-059/060)', () => {
       expect(await store.getJournal('no-such-run')).toEqual([]);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 20000);
+
+  // v22 adjudication #2 (L-2) + adjudication #1 (K-4): `RunSpec.script` was RETAINED precisely for
+  // the PRE-v22 persisted-spec read-back — a run suspended before REQ-098 shipped still has to get
+  // its own script back on resume (`run-manager.ts`: `let script = spec.script ?? ''`, taken whenever
+  // the spec carries a script and no name). Every other case in this file now starts a NAMED run, so
+  // without this one the retained field has zero coverage and reads as dead code next iteration.
+  // `start()` can no longer PRODUCE that shape, so the spec is seeded straight against the store —
+  // the same store-level pattern `run-store-persistence.test.ts` uses (and which is green).
+  it('REQ-060/K-4 a PRE-v22 persisted spec (inline script, no name) resumes FROM that persisted script', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-crash-legacy-spec-'));
+    try {
+      const store1 = new SqliteRunStore(join(dir, 'store'), CLOCK);
+      const runId = await store1.createRun({ script: `const a = await agent('A'); return { a };` });
+      await store1.recordTransition(runId, null, 'queued', CLOCK.isoNow());
+      await store1.recordTransition(runId, 'queued', 'running', CLOCK.isoNow());
+
+      // "crash + restart": hydrateAll re-classifies the running run as interrupted (resumable).
+      const store2 = new SqliteRunStore(join(dir, 'store'), CLOCK);
+      await store2.hydrateAll();
+      const recovered = await store2.getRun(runId);
+      expect(recovered?.status).not.toBe('failed');
+
+      const g2 = countingGateway();
+      const mgr2 = new RunManager({ store: store2, clock: CLOCK, workRoot: dir, gateway: g2.gateway });
+      await mgr2.resume(runId);
+      const done = await pollStatus(mgr2, runId, 'completed');
+      expect(done.status).toBe('completed');
+      const result = await mgr2.result(runId);
+      // The PERSISTED script really executed. An empty script resolves to `undefined` here — the
+      // exact failure mode the named-workflow case above was written for, one branch over.
+      expect(result.ok && result.value).toEqual({ a: 'A' });
+      expect(g2.counts.get('A')).toBe(1); // nothing journaled pre-crash, so 'A' is genuinely dispatched
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 30000);
 });

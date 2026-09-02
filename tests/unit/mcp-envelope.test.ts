@@ -1,11 +1,12 @@
 // UT-001: MCP result envelope contract (DES-001)
 import { describe, it, expect } from 'vitest';
 import { McpFacade } from '../../src/mcp-facade.js';
+import { facadeCaller, runScriptVia } from '../helpers/workflow-fixtures.js';
 
 describe('McpFacade — ResultEnvelope contract', () => {
   it('workflow_run returns an envelope with runId and status, not a bare throw', async () => {
     const facade = new McpFacade();
-    const env = await facade.workflow_run({ script: 'return 42;' });
+    const env = await runScriptVia(facadeCaller(facade), 'return 42;');
     expect(env).toHaveProperty('runId');
     expect(env).toHaveProperty('status');
     expect(typeof env.runId).toBe('string');
@@ -27,13 +28,14 @@ describe('McpFacade — ResultEnvelope contract', () => {
 
   it('workflow_list returns an array result', async () => {
     const facade = new McpFacade();
-    const env = await facade.workflow_list();
+    // v22 (DES-116, TASK-111): ctx is required, no default — see mcp-facade.ts's ReadContext.
+    const env = await facade.workflow_list(undefined, { authEnabled: false, principal: null });
     expect(Array.isArray(env.result)).toBe(true);
   });
 
   it('workflow_status is uniform: only {runId,status,result} at top level — RunStatusView lives in result (C-3)', async () => {
     const facade = new McpFacade();
-    const run = await facade.workflow_run({ script: `phase('p'); return 1;` });
+    const run = await runScriptVia(facadeCaller(facade), `phase('p'); return 1;`);
     const runId = run.result!.runId;
     let env = await facade.workflow_status({ runId });
     for (let i = 0; i < 60 && (env.status === 'running' || env.status === 'queued'); i++) {

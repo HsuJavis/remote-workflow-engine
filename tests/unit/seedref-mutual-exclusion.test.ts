@@ -12,6 +12,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { RunManager } from '../../src/run-manager.js';
+import { startScript } from '../helpers/workflow-fixtures.js';
 
 // Pinned 40-hex sha (real HsuJavis/remote-workflow-plugin HEAD, pinned at Gate 5 2026-08-15)
 const PINNED_SHA = '60ee8954e19fe5eaf2cf498202475c3c6fc9b8a4';
@@ -24,8 +25,7 @@ describe('seed-source mutual-exclusion (DES-080)', () => {
   it('SEED_SOURCE_CONFLICT (highest precedence): seed + seedRef both present', async () => {
     const mgr = new RunManager();
     await expect(
-      mgr.start({
-        script: 'return 1;',
+      startScript(mgr, 'return 1;', {
         seed: INLINE_SEED,
         seedRef: { repoUrl: ALLOWLISTED_URL, sha: PINNED_SHA },
       } as any)
@@ -35,8 +35,7 @@ describe('seed-source mutual-exclusion (DES-080)', () => {
   it('SEED_SOURCE_CONFLICT: seedManifest + seedRef both present', async () => {
     const mgr = new RunManager();
     await expect(
-      mgr.start({
-        script: 'return 1;',
+      startScript(mgr, 'return 1;', {
         seedManifest: [{ path: 'x.ts', sha256: 'a'.repeat(64), exec: false }],
         seedRef: { repoUrl: ALLOWLISTED_URL, sha: PINNED_SHA },
       } as any)
@@ -49,8 +48,7 @@ describe('pre-createRun precedence (DES-080): SEEDREF_DISABLED → INVALID_SEED_
     // RunManager without seedRefAllowlist config → SEEDREF_DISABLED
     const mgr = new RunManager({ seedRefAllowlist: [] } as any);
     await expect(
-      mgr.start({
-        script: 'return 1;',
+      startScript(mgr, 'return 1;', {
         seedRef: { repoUrl: ALLOWLISTED_URL, sha: PINNED_SHA },
       } as any)
     ).rejects.toMatchObject({ code: 'SEEDREF_DISABLED' });
@@ -59,8 +57,7 @@ describe('pre-createRun precedence (DES-080): SEEDREF_DISABLED → INVALID_SEED_
   it('SEEDREF_DISABLED fires before INVALID_SEED_SPEC (no allowlist + bad sha)', async () => {
     const mgr = new RunManager({ seedRefAllowlist: [] } as any);
     await expect(
-      mgr.start({
-        script: 'return 1;',
+      startScript(mgr, 'return 1;', {
         seedRef: { repoUrl: ALLOWLISTED_URL, sha: 'bad-sha' },
       } as any)
     ).rejects.toMatchObject({ code: 'SEEDREF_DISABLED' });
@@ -69,8 +66,7 @@ describe('pre-createRun precedence (DES-080): SEEDREF_DISABLED → INVALID_SEED_
   it('INVALID_SEED_SPEC: sha is not full 40-or-64 hex (branch/short-sha rejected)', async () => {
     const mgr = new RunManager({ seedRefAllowlist: ALLOWLIST } as any);
     await expect(
-      mgr.start({
-        script: 'return 1;',
+      startScript(mgr, 'return 1;', {
         seedRef: { repoUrl: ALLOWLISTED_URL, sha: 'main' },
       } as any)
     ).rejects.toMatchObject({ code: 'INVALID_SEED_SPEC' });
@@ -79,8 +75,7 @@ describe('pre-createRun precedence (DES-080): SEEDREF_DISABLED → INVALID_SEED_
   it('INVALID_SEED_SPEC: sha is short hex (not full 40-char)', async () => {
     const mgr = new RunManager({ seedRefAllowlist: ALLOWLIST } as any);
     await expect(
-      mgr.start({
-        script: 'return 1;',
+      startScript(mgr, 'return 1;', {
         seedRef: { repoUrl: ALLOWLISTED_URL, sha: '60ee8954' },
       } as any)
     ).rejects.toMatchObject({ code: 'INVALID_SEED_SPEC' });
@@ -89,8 +84,7 @@ describe('pre-createRun precedence (DES-080): SEEDREF_DISABLED → INVALID_SEED_
   it('INVALID_SEED_SPEC: repoUrl is empty', async () => {
     const mgr = new RunManager({ seedRefAllowlist: ALLOWLIST } as any);
     await expect(
-      mgr.start({
-        script: 'return 1;',
+      startScript(mgr, 'return 1;', {
         seedRef: { repoUrl: '', sha: PINNED_SHA },
       } as any)
     ).rejects.toMatchObject({ code: 'INVALID_SEED_SPEC' });
@@ -99,8 +93,7 @@ describe('pre-createRun precedence (DES-080): SEEDREF_DISABLED → INVALID_SEED_
   it('SEEDREF_EGRESS_DENIED fires before CAS_UNAVAILABLE (SSRF URL + no cas)', async () => {
     const mgr = new RunManager({ seedRefAllowlist: ALLOWLIST } as any);
     await expect(
-      mgr.start({
-        script: 'return 1;',
+      startScript(mgr, 'return 1;', {
         seedRef: { repoUrl: SSRF_URL, sha: PINNED_SHA },
       } as any)
     ).rejects.toMatchObject({ code: 'SEEDREF_EGRESS_DENIED' });
@@ -109,8 +102,7 @@ describe('pre-createRun precedence (DES-080): SEEDREF_DISABLED → INVALID_SEED_
   it('SEEDREF_EGRESS_DENIED: file:// scheme denied even with allowlist', async () => {
     const mgr = new RunManager({ seedRefAllowlist: ALLOWLIST } as any);
     await expect(
-      mgr.start({
-        script: 'return 1;',
+      startScript(mgr, 'return 1;', {
         seedRef: { repoUrl: 'file:///etc/passwd', sha: PINNED_SHA },
       } as any)
     ).rejects.toMatchObject({ code: 'SEEDREF_EGRESS_DENIED' });
@@ -120,8 +112,7 @@ describe('pre-createRun precedence (DES-080): SEEDREF_DISABLED → INVALID_SEED_
     // cas not injected → CAS_UNAVAILABLE (seedRef assembles via materializeManifest like seedManifest)
     const mgr = new RunManager({ seedRefAllowlist: ALLOWLIST } as any);
     await expect(
-      mgr.start({
-        script: 'return 1;',
+      startScript(mgr, 'return 1;', {
         seedRef: { repoUrl: ALLOWLISTED_URL, sha: PINNED_SHA },
       } as any)
     ).rejects.toMatchObject({ code: 'CAS_UNAVAILABLE' });
@@ -132,8 +123,7 @@ describe('pre-createRun precedence (DES-080): SEEDREF_DISABLED → INVALID_SEED_
     // Primary assertion: the correct code is thrown. Secondary: status lookup yields nothing.
     const mgr = new RunManager();
     await expect(
-      mgr.start({
-        script: 'return 1;',
+      startScript(mgr, 'return 1;', {
         seed: INLINE_SEED,
         seedRef: { repoUrl: ALLOWLISTED_URL, sha: PINNED_SHA },
       } as any)

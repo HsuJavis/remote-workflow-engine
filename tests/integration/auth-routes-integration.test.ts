@@ -9,7 +9,7 @@
 //
 // Pinned storage contracts (implementer must honor):
 //   Token-store DB:  join(workRoot, 'auth-tokens.db')
-//   Ad-hoc workspace: join(workRoot, 'workflows', '_adhoc', 'runs', '<runId>')
+//   Run workspace: join(workRoot, 'workflows', '<workflow name>', 'runs', '<runId>')
 //
 // Cases (DES-095, DES-096, DES-100):
 //   1. GET /.well-known/oauth-protected-resource → 200 JSON with resource + authorization_servers
@@ -41,6 +41,7 @@ import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { TokenStore } from '../../src/auth/token-store.js';
 import Database from 'better-sqlite3';
+import { runScriptVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
 
 // ── RS256 test id_token helper ────────────────────────────────────────────────
 
@@ -206,18 +207,21 @@ describe('I-2 hermeticity (DES-096 DoD, IT-078)', () => {
     const email = 'hermetic-it078@example.com';
     const token = await mintTestBearer(email);
 
+    // Every call carries THIS caller's bearer: v22 gates `workflow_publish` on ownership, so the
+    // principal that registers the workflow has to be the one that publishes it too.
+    const callTool: ToolCaller = async (name, args) => {
+      const res = await fetch(mcpUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
+      return JSON.parse(body.result?.content?.[0]?.text ?? '{}');
+    };
     // Use a simple script — no process.env introspection (not available in VM sandbox)
-    const runRes = await fetch(mcpUrl(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: JSON.stringify({
-        jsonrpc: '2.0', id: 1, method: 'tools/call',
-        params: { name: 'workflow_run', arguments: { script: `return "done";` } },
-      }),
-    });
-    expect(runRes.status).toBe(200);
-    const runBody = await runRes.json() as { result?: { content?: Array<{ text?: string }> } };
-    const runResult = JSON.parse(runBody.result?.content?.[0]?.text ?? '{}') as { runId?: string };
+    const wfName = 'it078-hermetic';
+    const runResult = await runScriptVia(callTool, `return "done";`, { name: wfName }) as { runId?: string };
     const runId = runResult.runId;
     expect(typeof runId).toBe('string');
 
@@ -243,9 +247,10 @@ describe('I-2 hermeticity (DES-096 DoD, IT-078)', () => {
     expect(status.principal).toBe(email);
 
     // I-2 absence half: scan the run workspace files for the principal email.
-    // Pinned contract: ad-hoc workspace = join(workRoot, 'workflows', '_adhoc', 'runs', runId)
+    // Pinned contract: workspace = join(workRoot, 'workflows', <workflow name>, 'runs', runId)
+    // (v22 closed inline script, so a run is always named — no '_adhoc' bucket any more).
     // Unconditional — readdirSync throws ENOENT if workspace doesn't exist, failing the test.
-    const wsPath = join(tmpDir, 'workflows', '_adhoc', 'runs', runId as string);
+    const wsPath = join(tmpDir, 'workflows', wfName, 'runs', runId as string);
     const entries = readdirSync(wsPath, { recursive: true }) as string[];
     const foundInWorkspace = entries.some(f => {
       const fp = join(wsPath, f);

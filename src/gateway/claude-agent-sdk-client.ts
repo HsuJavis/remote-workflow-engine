@@ -406,20 +406,29 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
 
   /** D-V3M-1 (REQ-017/REQ-018, closes ①): resolves an agent()'s referenced `opts.mcp` names against
    *  the MCP Provisioning Registry, substituting `${secret:NAME}` handles from the server-side
-   *  secret store. Returns ONLY the explicitly-referenced entries (strict-by-name isolation). An
-   *  unconfigured DB path / empty name list / an unprovisioned name (already rejected at submission)
-   *  all yield "no injection". A referenced config whose `${secret:...}` handle can't be resolved
+   *  secret store. Returns ONLY the explicitly-referenced entries (strict-by-name isolation), plus
+   *  `unresolved` — the referenced names with no registry row. An unconfigured DB path / empty name
+   *  list yields "no injection" with nothing unresolved; an unprovisioned name yields "no injection"
+   *  AND names itself in `unresolved` (v22, REQ-099 / adjudication #4 N-1: `MCP_NOT_PROVISIONED` is
+   *  raised only at REGISTRATION now — `script-checks.ts` via `WorkflowCatalog.register`, ADR-013 —
+   *  so a workflow registered before that check existed reaches this dispatch, and REQ-099 forbids
+   *  refusing it retroactively while requiring the dropped capability to be observable; the caller
+   *  records `unresolved` on the harness descriptor).
+   *  A referenced config whose `${secret:...}` handle can't be resolved
    *  THROWS with the code in the message (SECRET_MISSING / SECRET_HANDLE_INVALID) — REQ-018's
    *  fail-loud contract: the run surfaces a clear error rather than silently running a tool with no
    *  credential or (worse) smuggling the literal handle through as a value. The throw propagates up
    *  as that agent()'s failure (same shape as an unknown agentType/MCP name). */
-  private resolveProvisionedMcp(names: string[] | undefined): Record<string, McpServerConfig> {
-    if (this._config.mcpRegistryDbPath === undefined || names === undefined || names.length === 0) return {};
+  private resolveProvisionedMcp(names: string[] | undefined): { configs: Record<string, McpServerConfig>; unresolved: string[] } {
+    if (this._config.mcpRegistryDbPath === undefined || names === undefined || names.length === 0) return { configs: {}, unresolved: [] };
     if (this._mcpRegistry === undefined) {
       this._mcpRegistry = new McpRegistry({ dbPath: this._config.mcpRegistryDbPath, probe: NOOP_PROBE });
     }
-    const resolved = this._mcpRegistry.resolveInjected(names);
-    if ('error' in resolved) return {}; // MCP_NOT_PROVISIONED — submission already fails fast on this
+    const registry = this._mcpRegistry;
+    const resolved = registry.resolveInjected(names);
+    // MCP_NOT_PROVISIONED. Injection stays all-or-nothing exactly as before (no partial surface);
+    // what changes is that the dropped names are reported back instead of vanishing.
+    if ('error' in resolved) return { configs: {}, unresolved: names.filter((n) => registry.get(n) === undefined) };
     const out: Record<string, McpServerConfig> = {};
     for (const [name, config] of Object.entries(resolved.configs)) {
       try {
@@ -432,7 +441,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         throw err;
       }
     }
-    return out;
+    return { configs: out, unresolved: [] };
   }
 
   async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void> }): Promise<GatewayResult> {
@@ -493,8 +502,8 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // `${secret:NAME}` handles substituted server-side. `strictMcpConfig: true` stays true, so the
     // model still sees ONLY this set — the VAL-003 host-ambient-MCP isolation invariant holds.
     const assetMcp = this._config.assetRoot !== undefined ? readMcpConfigAssets(this._config.assetRoot) : {};
-    const provisionedMcp = this.resolveProvisionedMcp(req.opts.mcp);
-    const mergedMcp = { ...assetMcp, ...provisionedMcp };
+    const provisioned = this.resolveProvisionedMcp(req.opts.mcp);
+    const mergedMcp = { ...assetMcp, ...provisioned.configs };
     const mcpServers = Object.keys(mergedMcp).length > 0 ? mergedMcp : undefined;
 
     // REQ-037: provider-aware routing. An alias whose provider is `anthropic` dispatches DIRECT to
@@ -590,6 +599,11 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         curatedTools,
         mergedMcp: Object.entries(mergedMcp).map(([name, cfg]) => ({ name, ...(cfg as Record<string, unknown>) })),
         skills,
+        // v22 (REQ-099, adjudication #4 N-1): a referenced-but-unprovisioned MCP is dropped from the
+        // session (unchanged) — but the descriptor now admits to it, so `workflow_agent_log` shows
+        // the author which capability their grandfathered workflow lost. Same honest-no-op record as
+        // `effortApplied`'s `{reason}` branch; empty ⇒ the field is not emitted at all.
+        unresolvedMcp: provisioned.unresolved,
       });
       // `applied` travels to the caller as onHarness's own second argument (the single source of
       // truth downstream decoration reads) — no separate write onto `descriptor` needed here.

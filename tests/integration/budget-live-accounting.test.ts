@@ -18,6 +18,7 @@
 import { describe, it, expect } from 'vitest';
 import { RunManager } from '../../src/run-manager.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
+import { startScript } from '../helpers/workflow-fixtures.js';
 
 async function pollUntilSettled(mgr: RunManager, runId: string) {
   let view = await mgr.status(runId);
@@ -41,13 +42,12 @@ describe('Live budget accounting observable in-script (IT-018, D-F8)', () => {
     };
     const mgr = new RunManager({ gateway });
 
-    const runId = await mgr.start({
-      script: `
+    const runId = await startScript(mgr, `
         const before = budget.spent();
         await agent('hi');
         const after = budget.spent();
         return { before, after, remaining: budget.remaining() };
-      `,
+      `, {
       budget: 500,
     });
 

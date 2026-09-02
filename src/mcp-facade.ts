@@ -8,10 +8,13 @@ import { SystemClock } from './clock.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore } from './run-store.js';
 import { RunManager } from './run-manager.js';
+import type { WorkflowDetail, Channel } from './workflow-catalog.js';
 import { SubmissionValidator } from './submission-validator.js';
+import { CatalogNotFoundError } from './errors.js';
 import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent, HarnessDescriptor, ManifestEntry } from './types.js';
 import { parseMeta, parseWorkflowSkeleton, type SkeletonNode } from './workflow-meta.js';
 import { canonicalContract, effectiveBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings } from './params/contract.js';
+import { projectWorkflowForRead, type WorkflowOwnerView } from './workflow-view.js';
 
 // v21 (DES-103/DES-104): the engine ceilings bound the read surfaces (workflow_get/list) at read
 // time — TASK-100 wires the live values from ServerConfig via McpFacadeDeps.ceilings (server.ts);
@@ -23,6 +26,18 @@ import { canonicalContract, effectiveBounds, DEFAULT_CEILINGS, type ParamContrac
  *  canonical 4-knob contract, and every contract is bounded by the engine ceilings at read time. */
 function readParams(stored: unknown, ceilings: Ceilings): ParamContract {
   return effectiveBounds((stored as ParamContract | undefined) ?? canonicalContract(), ceilings);
+}
+
+/** v22 (DES-116, ARCH-076, ADR-012, TASK-111): required (no default) read-time identity for
+ *  `workflow_get`/`workflow_list` — an optional `principal = null` default would reproduce this
+ *  project's `composeConfig` wiring-bug class verbatim (correct implementation, unwired call site,
+ *  every unit test green, zero protection). A required argument makes an unwired call site a `tsc`
+ *  error instead. Masking keys on `authEnabled`, NEVER on `principal == null` alone: a null
+ *  principal has TWO causes — auth genuinely off, and the D-BIND loopback-peer exemption on an
+ *  auth-enabled non-loopback-bound server — and both must mask. */
+export interface ReadContext {
+  authEnabled: boolean;
+  principal: string | null;
 }
 
 export interface McpFacadeDeps {
@@ -63,6 +78,11 @@ function notFound(runId: string): ErrEnvelope {
   return { code: 'RUN_NOT_FOUND', message: `Run not found: ${runId}` };
 }
 
+// v22 (DES-117, TASK-109): the closed-error message template, shared by both ingress refusal sites
+// in this file (workflow_run/workflow_resume) and RunManager.start()'s own chokepoint check — the
+// two-call migration recipe an agent needs (workflow_register then workflow_run({name})).
+const INLINE_SCRIPT_CLOSED_MESSAGE = 'Inline scripts are no longer accepted at run start; register once (workflow_register) then run by name: workflow_register({script}) then workflow_run({name})';
+
 // Shared body for suspend/resume/stop: pre-check, delegate action, post-read new status (or old on error).
 async function lifecycle(
   store: RunStore,
@@ -97,16 +117,23 @@ export class McpFacade {
     this.ceilings = deps.ceilings ?? DEFAULT_CEILINGS;
   }
 
-  async workflow_run(a: { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: ManifestEntry[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string }; seedManifestRef?: string; scriptSha256?: string; overrides?: unknown }, principal: string | null = null): Promise<ResultEnvelope<{ runId: string }>> {
+  async workflow_run(a: { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: ManifestEntry[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string }; seedManifestRef?: string; version?: string; channel?: 'beta' | 'release'; overrides?: unknown }, principal: string | null = null): Promise<ResultEnvelope<{ runId: string }>> {
+    // v22 (DES-114, DES-117, TASK-109): ingress closure is asserted BEFORE `validator.validate()` —
+    // `script` is no longer on the advertised schema, but `/mcp` accepts arbitrary JSON, so a
+    // hand-rolled body carrying it must be refused INLINE_SCRIPT_CLOSED here; validate() only checks
+    // `name` and would otherwise mask this behind MISSING_NAME (script-only bodies carry no name).
+    if (a.script !== undefined) {
+      return { runId: '', status: 'failed', error: { code: 'INLINE_SCRIPT_CLOSED', message: INLINE_SCRIPT_CLOSED_MESSAGE } };
+    }
     // Fail fast at submission (DES-012/ARCH-008), never mid-run.
-    const validation = await this.validator.validate({ name: a.name, script: a.script });
+    const validation = await this.validator.validate({ name: a.name });
     if (!validation.ok) {
       return { runId: '', status: 'failed', error: validation.errors[0] };
     }
     try {
       // v21 (ARCH-066, DES-104, TASK-100): `overrides` travels as start()'s own argument, never as
       // a RunSpec field (RunSpec is persisted+read-back wholesale by getSpec() on resume).
-      const runId = await this.runManager.start({ name: a.name, script: a.script, args: normalizeArgs(a.args), budget: a.budget ?? null, seed: a.seed, seedManifest: a.seedManifest, seedNamespace: a.seedNamespace, seedRef: a.seedRef, seedManifestRef: a.seedManifestRef, scriptSha256: a.scriptSha256, startedBy: { type: 'client' }, ...(principal ? { principal } : {}) }, a.overrides);
+      const runId = await this.runManager.start({ name: a.name, args: normalizeArgs(a.args), budget: a.budget ?? null, seed: a.seed, seedManifest: a.seedManifest, seedNamespace: a.seedNamespace, seedRef: a.seedRef, seedManifestRef: a.seedManifestRef, version: a.version, channel: a.channel, startedBy: { type: 'client' }, ...(principal ? { principal } : {}) }, a.overrides);
       const view = await this.store.getRun(runId);
       return { runId, status: view?.status ?? 'queued', result: { runId } };
     } catch (err) {
@@ -142,6 +169,20 @@ export class McpFacade {
     }
   }
 
+  /** v22 (REQ-097, DES-111, DES-114, TASK-109): NEW tool — moves a named channel pointer to an
+   *  already-registered version. Ownership-gated like register/deregister (NOT_WORKFLOW_OWNER for a
+   *  non-owner); registration ≠ publication (a freshly registered version is on no channel until
+   *  this is called). Same flat-response shape as workflow_register/deregister. */
+  async workflow_publish(a: { name: string; version: string; channel: Channel }, principal: string | null = null): Promise<Record<string, unknown>> {
+    try {
+      const result = await this.runManager.catalog.publish(a.name, a.version, a.channel, principal);
+      return { runId: '', status: 'completed', result };
+    } catch (err) {
+      const e = toErrEnvelope(err);
+      return { runId: '', status: 'failed', code: e.code, error: e };
+    }
+  }
+
   /** C-3 (review finding): returns the SAME uniform `{ runId, status, result }` envelope as every
    *  other tool — the full RunStatusView (phases/agents/scriptVersion) is the `result` payload, NOT
    *  spread at the top level (which previously made this the only non-uniform tool of the 16). */
@@ -169,13 +210,19 @@ export class McpFacade {
   }
 
   async workflow_resume(a: { runId: string; script?: string }): Promise<ResultEnvelope> {
+    // v22 (DES-114, DES-117, TASK-109): the replacement-script capability is CLOSED with inline
+    // scripts (REQ-098) — `script` is no longer on the advertised schema; a hand-rolled body
+    // carrying it is refused here, before any run lookup (matches workflow_run's ordering).
+    if (a.script !== undefined) {
+      return { runId: a.runId, status: 'failed', error: { code: 'INLINE_SCRIPT_CLOSED', message: INLINE_SCRIPT_CLOSED_MESSAGE } };
+    }
     // v21 (ARCH-066, DES-104, TASK-100): the mere PRESENCE of an `overrides` field is a typed
     // rejection, full stop — no absent-vs-{}-vs-equal semantics to get subtly wrong. A resumed run
     // always re-dispatches from its pinned admission-time snapshot, never a second merge.
     if (Object.prototype.hasOwnProperty.call(a, 'overrides')) {
       return { runId: a.runId, status: 'failed', error: { code: 'RESUME_OVERRIDES_NOT_ALLOWED', message: 'workflow_resume does not accept overrides; the pinned admission-time snapshot is reused. Start a new run to apply different overrides.' } };
     }
-    return lifecycle(this.store, a.runId, () => this.runManager.resume(a.runId, a.script));
+    return lifecycle(this.store, a.runId, () => this.runManager.resume(a.runId));
   }
 
   async workflow_stop(a: { runId: string }): Promise<ResultEnvelope> {
@@ -185,7 +232,12 @@ export class McpFacade {
   /** REQ-014: a registered workflow must be visible here BEFORE any run — result is a flat
    *  kind-discriminated array mixing catalog entries (unrun workflows) with run summaries, so
    *  callers can find either a workflow by `.name` or a run by `.runId` in the same list (D-I9). */
-  async workflow_list(_a?: Record<string, never>): Promise<ResultEnvelope<Array<
+  // v22 (DES-116, TASK-111): `ctx` is required (see ReadContext) — entries here have never carried
+  // `script` (a catalog-list entry is `{kind:'workflow', name, version, createdAt, description,
+  // params, versions, channels}`, never the script text), so there is no masking DECISION to make
+  // yet; the parameter exists so a future field that DOES need one is added to an already-wired
+  // call site, not a `= null`-defaulted one (the composeConfig class this task exists to close).
+  async workflow_list(_a: unknown, _ctx: ReadContext): Promise<ResultEnvelope<Array<
     ({ kind: 'workflow'; name: string; version: string; createdAt: string; description: string; params: ParamContract }) | (RunSummary & { kind: 'run' })
   >>> {
     const workflows = await this.runManager.catalog.list();
@@ -205,16 +257,72 @@ export class McpFacade {
    *  typed WORKFLOW_NOT_FOUND envelope (never throws across the tool boundary).
    *  v15 (DES-098, DES-099, TASK-089): adds owner + defaults to output; flat response surfaces
    *  owner/defaults/code at top level for direct `r.owner` / `r.defaults` / `r.code` callers. */
-  async workflow_get(a: { name: string }): Promise<Record<string, unknown>> {
-    let full: { name: string; script: string; version: string; createdAt: string; owner: string | null; defaults: import('./harness-defaults.js').HarnessDefaults | undefined; params: unknown };
+  async workflow_get(a: { name: string; version?: string }, ctx: ReadContext): Promise<Record<string, unknown>> {
+    let full: WorkflowDetail;
     try {
-      full = await this.runManager.catalog.getFull(a.name);
-    } catch {
-      return { runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` } };
+      // v22 (REQ-097, DES-114, TASK-109): optional version selector — no `channel` here (unlike
+      // workflow_run), same DES-110 truth table, so an unpublished draft still reads by version.
+      full = await this.runManager.catalog.resolveDetail(a.name, { version: a.version });
+    } catch (err) {
+      // Unknown NAME keeps the pre-v22 WORKFLOW_NOT_FOUND code (existing callers depend on it);
+      // a KNOWN name with an unresolvable version/channel selector surfaces its real typed code
+      // (UNKNOWN_VERSION/CHANNEL_UNPUBLISHED/INVALID_CHANNEL) instead of being swallowed into it.
+      if (err instanceof CatalogNotFoundError) {
+        return { runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` } };
+      }
+      const e = toErrEnvelope(err);
+      return { runId: '', status: 'failed', code: e.code, error: e };
     }
     const meta = parseMeta(full.script);
     // v21 (DES-103, TASK-099): ceiling-bounded contract — never null/unbounded (REQ-090..093).
     const params = readParams(full.params, this.ceilings);
+
+    // v22 (DES-116, ADR-012, TASK-111): masking keys on `ctx.authEnabled`, never on
+    // `ctx.principal == null` alone — a null principal has two causes (auth off; the D-BIND
+    // loopback exemption while auth stays on) and both mask. A NULL-`owner` row falls out of this
+    // SAME check with no special-casing (`ctx.principal !== null` never matches a null `owner`).
+    // `a`'s caller-supplied args are NEVER consulted for identity (ADR-012 bars an `args.principal`
+    // unmask path) — only the server-resolved `ctx.principal`.
+    const viewerIsOwner = ctx.authEnabled ? (ctx.principal !== null && ctx.principal === full.owner) : true;
+
+    // REQ-099: re-validated against the CURRENT alias/MCP config, never the registration-time
+    // result, so staleness (an alias removed after registration) is visible on every read.
+    // v22 adjudication #3 (M-1): computed for BOTH branches. It used to run only inside the
+    // non-owner branch, so on a default auth-disabled server — where every reader takes the owner
+    // branch — REQ-099's "surfaced, not silently swallowed, so the author can fix and re-register"
+    // was observable to everyone EXCEPT the author it exists for.
+    const check = this.runManager.catalog.validateCurrent(full.script);
+    const validation = check.ok ? { ok: true, errors: [] } : { ok: false, errors: check.errors };
+
+    if (!viewerIsOwner) {
+      const ownerView: WorkflowOwnerView = {
+        name: full.name, version: full.version,
+        // v22 (DES-115): workflow-view.ts's `channels` is typed `Record<string,string>` while the
+        // catalog's `Channels` allows a null (unpublished) pointer; the double cast is a type-shape
+        // reconciliation only — `channels` (with its possible nulls) is on the public allowlist
+        // either way (REQ-096's `+channels{release,beta}`), so this widens no disclosure.
+        channels: full.channels as unknown as Record<string, string>,
+        versions: full.versions,
+        description: meta.description, phases: meta.phases,
+        skeleton: parseWorkflowSkeleton(full.script),
+        params, owner: full.owner, createdAt: full.createdAt,
+        reportProblem: full.owner === null
+          ? `this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: "${full.name}"})`
+          : `issue_report({workflow: "${full.name}"})`,
+        validation,
+        script: full.script,
+      };
+      // v22 (DES-115): the allowlist projection is the ENTIRE response — no flat top-level copies
+      // (the `script` twice-leak this design closes, `mcp-facade.ts:220/232` pre-v22).
+      return { runId: '', status: 'completed', result: projectWorkflowForRead(ownerView, false) };
+    }
+
+    // Owner (or auth disabled): the pre-v22 surface (REQ-100 clause 3), plus exactly ONE added
+    // field — `result.validation` (v22 adjudication #3, M-1). REQ-099 requires the staleness of a
+    // workflow that would now fail its registration checks to be observable to the AUTHOR, who is
+    // this branch's reader on every auth-disabled deployment; a non-owner already got it. Full
+    // `{ok, errors}` here (the non-owner projection narrows it to `{ok}`) because the author is the
+    // one who has to act on the errors and re-register.
     const resultObj = {
       name: full.name, version: full.version, createdAt: full.createdAt,
       description: meta.description, phases: meta.phases, script: full.script,
@@ -222,6 +330,7 @@ export class McpFacade {
       owner: full.owner,
       defaults: full.defaults as Record<string, unknown> | undefined,
       params,
+      validation,
     };
     return {
       runId: '', status: 'completed',

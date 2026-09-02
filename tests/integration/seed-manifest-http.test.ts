@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -64,8 +65,7 @@ describe('efficient seeding via CAS manifest (v10 Slice 2, REQ-064/065)', () => 
   it('REQ-065 workflow_run with a seedManifest assembles the workspace from the CAS (script reads the file)', async () => {
     // the blob was uploaded above; a script reads the seeded file back via the sandbox has no fs — so
     // instead assert the run completes and the workspace really has the file by listing artifacts.
-    const run = await call('workflow_run', {
-      script: `return 'seeded';`,
+    const run = await runScriptVia(call, `return 'seeded';`, {
       seedManifest: [{ path: 'src/answer.ts', sha256: h, exec: false }],
       seedNamespace: NS,
     });
@@ -83,8 +83,7 @@ describe('efficient seeding via CAS manifest (v10 Slice 2, REQ-064/065)', () => 
     // Reproduces the reported break: a schema-blind MCP client serialized the array to a string, so the
     // engine received `"[…]"` and `spec.seedManifest.map(...)` threw `TypeError: … .map is not a
     // function`. The run-manager guard now rejects a non-array seed spec with a typed, actionable error.
-    const run = await call('workflow_run', {
-      script: `return 1;`,
+    const run = await runScriptVia(call, `return 1;`, {
       seedManifest: JSON.stringify([{ path: 'x.ts', sha256: h }]),
       seedNamespace: NS,
     });
@@ -95,8 +94,7 @@ describe('efficient seeding via CAS manifest (v10 Slice 2, REQ-064/065)', () => 
 
   it('REQ-065 a seedManifest referencing an un-uploaded blob fails fast with MISSING_BLOBS (no run created)', async () => {
     const ghost = sha('never uploaded');
-    const run = await call('workflow_run', {
-      script: `return 1;`,
+    const run = await runScriptVia(call, `return 1;`, {
       seedManifest: [{ path: 'ghost.ts', sha256: ghost }],
       seedNamespace: NS,
     });

@@ -22,6 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia, runScriptVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -62,17 +63,13 @@ describe('VAL-081: composed runs carry depth-nested frame cells (REQ-072)', () =
     // The dag cells must include frame cells with name and depth fields.
     if (!HAS_PROVIDER) return;
 
-    await callTool('workflow_register', {
-      name: 'val081-sub',
-      script: `return await agent('sub-agent');`,
-    });
-    await callTool('workflow_register', {
-      name: 'val081-main',
-      script: `
+    // v22: `workflow('val081-sub')` and run-by-name both resolve `release`, so each link in the
+    // composition must be PUBLISHED, not merely registered.
+    await registerPublishedVia(callTool, 'val081-sub', `return await agent('sub-agent');`);
+    await registerPublishedVia(callTool, 'val081-main', `
         const r = await workflow('val081-sub', {});
         return r;
-      `,
-    });
+      `);
 
     const sub = await callTool('workflow_run', { name: 'val081-main' }) as { runId?: string };
     const runId = sub?.runId!;
@@ -95,9 +92,9 @@ describe('VAL-081: composed runs carry depth-nested frame cells (REQ-072)', () =
     // Depth-2 composition: main → mid → leaf.
     if (!HAS_PROVIDER) return;
 
-    await callTool('workflow_register', { name: 'val081-leaf', script: `return await agent('leaf');` });
-    await callTool('workflow_register', { name: 'val081-mid', script: `return await workflow('val081-leaf', {});` });
-    await callTool('workflow_register', { name: 'val081-root', script: `return await workflow('val081-mid', {});` });
+    await registerPublishedVia(callTool, 'val081-leaf', `return await agent('leaf');`);
+    await registerPublishedVia(callTool, 'val081-mid', `return await workflow('val081-leaf', {});`);
+    await registerPublishedVia(callTool, 'val081-root', `return await workflow('val081-mid', {});`);
 
     const sub = await callTool('workflow_run', { name: 'val081-root' }) as { runId?: string };
     const runId = sub?.runId!;
@@ -115,7 +112,7 @@ describe('VAL-081: composed runs carry depth-nested frame cells (REQ-072)', () =
 
   it('single-workflow run dag has no frame cells (CI-safe)', async () => {
     // REQ-072: "a single-workflow run shows one plain region" — no sub-workflow frames.
-    const sub = await callTool('workflow_run', { script: 'return "no-frames";' }) as { runId?: string };
+    const sub = await runScriptVia(callTool, 'return "no-frames";') as { runId?: string };
     const runId = sub?.runId!;
     await pollDone(runId);
 

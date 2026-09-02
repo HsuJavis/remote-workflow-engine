@@ -161,7 +161,17 @@ flowchart LR
 - **acceptance:**
   - Given a running workflow When `workflow_suspend(runId)` is called Then in-flight agents are stopped, state persists, and status becomes `suspended`; When `workflow_resume(runId)` is called Then completed `agent()` calls replay from the journal cache instantly and only unfinished calls run live, producing the same final result as an uninterrupted run
   - Given a suspended or completed run When the server process is restarted Then `workflow_status(runId)` still returns the run's state and a suspended run can still be resumed (journal + store survive restarts)
-  - Given `workflow_stop(runId)` Then the run terminates, its sandbox process exits, status becomes `stopped`, and a subsequent `workflow_resume` with an edited script re-runs only from the first changed `agent()` call (cached-prefix resume semantics)
+  - Given `workflow_stop(runId)` Then the run terminates, its sandbox process exits, and status becomes `stopped`.
+    **[SUPERSEDED v22, owner-confirmed 2026-09-01]** The remainder of this clause — "a subsequent `workflow_resume` with an
+    edited script re-runs only from the first changed `agent()` call (cached-prefix resume semantics)" — is superseded by
+    **REQ-098** (inline script is closed; `workflow_resume` no longer accepts a replacement script) together with
+    **REQ-096** (a run pins the version it executed). Decided in **ADR-010**. The cached-prefix machinery itself is
+    unaffected and still governs a bare `workflow_resume(runId)`; what is withdrawn is the *edited-script* entry point.
+    **Sanctioned replacement:** register a new version, then run by version. A `workflow_resume({runId, version})`
+    re-point was considered and rejected — no v22 REQ asks for it, and it collides with v21's ADR-002 run-immutable
+    `effectiveParams` snapshot; restoring an edited-script loop would be a future requirements decision, not an
+    architecture one. No test pinned the withdrawn clause (every suite calls `resume(runId)` bare), so nothing green
+    was weakened to make this true.
 - **iter:** v1
 
 ### REQ-007 — Per-agent observability via MCP tools
@@ -783,6 +793,16 @@ flowchart LR
 - **iter:** v14
 
 ### REQ-085 — optional `scriptSha256` integrity guard on `workflow_run({script})`
+- **[SUPERSEDED v22, owner-confirmed 2026-09-02]** This requirement guards the integrity of a script
+  supplied **on the wire**. **REQ-098 closes that door entirely**, so the guarded input can no longer
+  exist: `scriptSha256` is unreachable by construction, not merely unused. Removed in v22 (adjudication
+  K-4; `RunSpec.script` itself is retained solely for pre-v22 persisted read-back on resume). The
+  integrity concern it addressed does not disappear — it **moves to registration**, where `REQ-099`'s
+  parse / alias / MCP checks now run, and where `REQ-096`'s version pin means a run executes exactly the
+  stored bytes of the version it names. Its two test files (`assert-script-integrity.test.ts`,
+  `val-094-script-sha.test.ts`) therefore test a surface that no longer exists and are retired with it,
+  not migrated — migrating them would fabricate coverage for an input the engine cannot accept.
+
 - **status:** draft
 - **traces:** REQ-081
 - **acceptance:** Given `workflow_run({script, scriptSha256})`, When `scriptSha256` is supplied AND equals the sha256 of the `script` bytes, Then the run proceeds normally. When `scriptSha256` is supplied but does NOT equal the sha256 of `script`, Then the engine rejects with a typed `SCRIPT_SHA_MISMATCH` and creates no run (a transcription slip in a large inline script cannot silently change gate behavior and burn budget). When `scriptSha256` is absent, Then behavior is unchanged (optional / additive; existing callers unaffected). Observable: a `workflow_run` with a matching `scriptSha256` runs; the same call with one byte of the script altered → `SCRIPT_SHA_MISMATCH`, no run; omitting `scriptSha256` runs exactly as before.
@@ -886,3 +906,82 @@ flowchart LR
 - **traces:** REQ-090
 - **acceptance:** Given `issue_report({workflow, version, runId, …})` Then the created GitHub issue carries a **`workflow:<name>` label** and its body records `name@version` plus the `runId` that reproduced it, so the workflow's author can see which of their workflows is being reported against; Given `issue_list({workflow:'x'})` Then only issues labelled `workflow:x` are returned; Given `issue_report` called **without** a `workflow` (an engine-level bug report) Then it behaves exactly as it does today, unlabelled by workflow; Given a `workflow` name that is not registered Then the report is still filed (a user must be able to report against a workflow that was just deregistered) but records the name as-supplied without asserting it exists.
 - **iter:** v21
+
+
+---
+
+## Iteration v22 — Author/user separation, part 2: version history, release channels, closing inline script
+
+> **v22 goal (user 2026-08-31, decisions D14/D15)**: v21 gave users a declared set of knobs, but the
+> separation is still bypassable — `workflow_run({script})` accepts arbitrary inline JS and
+> `workflow_get` hands the full script to anyone, so a user can copy a workflow, edit two lines and
+> run it. v22 closes that path. It cannot be closed alone: the catalog stores exactly one row per name
+> (`workflows` PK = `name`, register overwrites the script and bumps `version`), so an author whose
+> only remaining way to test a draft is `workflow_register` would overwrite the very version users are
+> running. **Version history and channels therefore ship in the same iteration as the ban.**
+>
+> A consequence recorded at Gate 1 and carried into REQ-099: the submission-time static checks —
+> script parse, model-alias resolution, MCP-provisioned lookup (`src/submission-validator.ts:92`) —
+> are all gated on `if (spec.script)`, so a run by name skips every one of them. Closing inline script
+> without moving those checks to registration would silently delete the engine's entire fail-fast
+> submission validation.
+
+### REQ-096 — the catalog keeps version history; a run pins the exact version it executed
+- **status:** draft
+- **traces:** REQ-014, REQ-087
+- **acceptance:** Given a workflow registered twice under the same name, When the second registration lands Then **both versions remain retrievable** (the catalog is keyed by `(name, version)`, not by `name` alone) and the earlier script is unchanged — closing the current behaviour where registering overwrites the stored script in place; Given `workflow_get({name, version})` Then that specific version is returned, and `workflow_get({name})` without a version returns the version the `release` channel points at (REQ-097); Given a run started from a named workflow Then its record pins the concrete version it executed, and re-reading that run's status after a newer version is registered still reports the version that actually ran; Given an existing pre-v22 catalog with one row per name, When the engine first boots on v22 Then the migration preserves every existing registration as its current version with its existing owner (no loss, idempotent, restart-safe); Given `workflow_list` Then each workflow reports its available versions and which version each channel points at.
+- **iter:** v22
+
+### REQ-097 — `beta` and `release` channels; a run resolves a channel to a version, defaulting to release
+- **status:** draft
+- **traces:** REQ-096, REQ-087
+- **acceptance:** Given the owner calls `workflow_publish({name, version, channel})` with `channel` one of `beta|release` Then that channel pointer moves to that version, and a non-owner principal attempting the same is refused with the existing `NOT_WORKFLOW_OWNER`; Given `workflow_run({name})` with **no** channel Then it runs the version the **`release`** channel points at (the default, so a user never accidentally runs a draft); Given `workflow_run({name, channel:'beta'})` Then it runs the beta version; Given `workflow_run({name, version:'v7'})` Then it runs exactly that version regardless of any channel; Given a channel that has never been published for that name Then the run is refused with a typed error naming the channel, rather than silently falling back to the newest script; Given a newly registered version Then it is **not** automatically on any channel — registration and publication are separate acts, so an author can register a draft without affecting a single user; Given `channel` supplied as anything other than `beta|release` Then a typed validation error. Channel resolution is a run-time parameter only: no per-user channel assignment or opt-in state exists.
+- **iter:** v22
+
+### REQ-098 — inline script is closed; every run goes through a registered workflow
+- **status:** draft
+- **traces:** REQ-090, REQ-096, REQ-087
+- **acceptance:** Given `workflow_run({script})` with caller-supplied inline JavaScript Then it is refused with a typed error directing the caller to register the workflow first — the `script` parameter is removed from the tool's input schema so a schema-reading client never learns it exists; Given `workflow_resume({runId, script})` Then the replacement-script parameter is likewise refused/removed, and a plain `workflow_resume({runId})` continues to work unchanged; Given the three deferred-trigger tools (`schedule_create`, `chain_create`, `webhook_create`) Then they are unaffected — each already binds a registered workflow **name** only (confirmed at Gate 1, so no new surface to close); Given any existing caller that used inline script Then the documented migration is `workflow_register` followed by `workflow_run({name})`, and the error message states it; Given the `_adhoc` workspace path that existed only to host nameless runs Then it is retired or left inert, with no run able to create one.
+- **iter:** v22
+
+### REQ-099 — the submission-time static checks move to registration, so closing inline loses no validation
+- **status:** draft
+- **traces:** REQ-098, REQ-014
+- **acceptance:** Given `workflow_register({name, script})` whose script fails to parse Then registration is refused with the same typed `PARSE_ERROR` the engine previously produced at run submission, and **nothing is stored**; Given a script referencing a model alias the engine cannot resolve Then registration is refused with `UNKNOWN_ALIAS` (the `openrouter/<id>` passthrough remains accepted, unchanged); Given a script referencing an MCP server name that has not been provisioned Then registration is refused with `MCP_NOT_PROVISIONED`; Given the engine after v22 Then **no code path performs these checks only for inline scripts** — the checks that used to sit behind `if (spec.script)` in the submission validator now run wherever a script actually enters the engine, and a test pins that a run by name is covered; Given a workflow that was registered BEFORE v22 and would now fail one of these checks Then the engine does not retroactively refuse to run it, but the condition is surfaced (observable, not silently swallowed) so the author can fix and re-register.
+- **iter:** v22
+
+### REQ-100 — `workflow_get` masks the script for non-owners
+- **status:** draft
+- **traces:** REQ-098, REQ-087
+- **acceptance:** Given a principal that is **not** the workflow's owner calls `workflow_get({name})` Then the response omits the script body while still returning everything a user legitimately needs — name, version, channel, purpose, declared parameter contract (REQ-090), owner, and how to report a problem against it (REQ-095); Given the **owner** calls it Then the full script is returned exactly as today; Given auth is disabled (no principal) Then behaviour matches the pre-v22 surface, so a local single-operator deployment is unaffected; Given any other read surface that exposes script text — `workflow_list`, the HTTP `/api/workflows*` routes, the dashboard — Then it is masked consistently, so masking cannot be trivially side-stepped by asking a different endpoint; Given a masked response Then it says the script is withheld rather than pretending the workflow has none.
+- **iter:** v22
+
+---
+
+### Round v22 — 2026-09-01 (clarification: no new interview needed)
+
+The v22 scope **is** the owner's own answers from the Round v21 interview: Q1 (close inline script
+entirely) and Q3 (mask the script from non-owners) are REQ-098 and REQ-100, and Q4 approved the
+v21→v22→v23 ordering. Recording that explicitly rather than staging a second interview to produce
+answers that already exist.
+
+**Two rules carried in from v21, both bought at high cost:**
+
+1. **A test whose oracle is the code under test cannot fail when the code is wrong.** Four v21 defects
+   survived multiple tiers this way — "low and max produce *different* bytes" passes when both are
+   wrong; "the wrapping is applied" passes when the wrapping is forgeable; `not.toContain(whole)` passes
+   when a fragment leaks; and a comment asserting a guarantee is not a control. v22 has two external
+   contracts of its own — channel resolution and the masked `workflow_get` response shape — and both
+   must be asserted against the contract literally.
+2. **Never launch a workflow while a prior run is unstopped and unreported.** A run started with
+   `gates:["review"]` can still be running `tests` and `impl` from its own send-back. In v21 two impl
+   gates wrote the same tree for ~50 minutes; five commits reached `src/` with no ledger entry as a
+   direct result, and an adjudication landed one minute after an in-flight Gate 5 wrote tests for the
+   opposite resolution.
+
+**Debt inherited from v21** is named in `07-review.md` → "GATE 8 — v21 CLOSED BY OWNER DECISION". Two
+items are cheap to close inside v22's own scope and should be taken while the surrounding code is open:
+**S-1** (a ceilings-less `WorkflowCatalog` enforces no registration ceiling — its "would need a third
+copy" rationale died with P6-5's shared export) and **P6-2's registration half** (an author-declared
+`defaults.appendPrompt` carrying a forged frame delimiter is refused at dispatch but not at
+registration).

@@ -4,6 +4,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { FixedClock } from '../../src/clock.js';
 // Value import — causes module-not-found at load time when module is absent.
 import { SqliteSchedulerPort } from '../../src/scheduler.js';
+import { CatalogNotFoundError } from '../../src/errors.js';
 
 const CLOCK = new FixedClock(new Date('2020-03-01T10:00:00.000Z'));
 
@@ -12,12 +13,16 @@ function makeFakeRunManager() {
   return { start: vi.fn().mockResolvedValue('run-abc') };
 }
 
-// Minimal fake WorkflowCatalog: get(name) resolves (workflow exists).
+// Minimal fake WorkflowCatalog: exists(name) resolves true/false (v22, DES-111 — CatalogPort shrank
+// to the existence-only shape scheduler.ts actually needs).
+// v22 send-back (H4, 07-review.md §4.2): `create()` now also calls `resolve()` (the release-channel
+// check) — mirrors `exists`'s membership check so these CRUD-shape cases are unaffected.
 function makeFakeCatalog(names: string[] = ['my-workflow']) {
   return {
-    get: vi.fn().mockImplementation(async (n: string) => {
-      if (!names.includes(n)) throw Object.assign(new Error(`Not found: ${n}`), { name: 'CatalogNotFoundError' });
-      return { script: '// stub', version: 'v1' };
+    exists: vi.fn().mockImplementation(async (n: string) => names.includes(n)),
+    resolve: vi.fn().mockImplementation(async (n: string) => {
+      if (!names.includes(n)) throw new CatalogNotFoundError(n);
+      return { script: '', version: 'v1' };
     }),
   };
 }

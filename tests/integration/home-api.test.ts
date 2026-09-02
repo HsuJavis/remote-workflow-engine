@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia, runScriptVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -82,7 +83,7 @@ describe('GET /api/home + terminalAt in RunSummary (IT-068, DES-070, DES-071)', 
   });
 
   it('RunSummary.terminalAt is populated by listRuns() for a completed run', async () => {
-    const sub = await callTool('workflow_run', { script: 'return "done-for-terminalAt";' }) as { runId?: string };
+    const sub = await runScriptVia(callTool, 'return "done-for-terminalAt";') as { runId?: string };
     const runId = sub?.runId!;
     await pollDone(runId);
     // listRuns is exposed via GET /api/runs
@@ -100,11 +101,8 @@ describe('GET /api/home + terminalAt in RunSummary (IT-068, DES-070, DES-071)', 
   it('GET /api/home includes metrics with successRate and terminalCount after a run completes', async () => {
     // Register a named workflow and run it once (will complete)
     const wfName = 'it068-metrics';
-    await callTool('workflow_register', {
-      name: wfName,
-      script: `export const meta = { name: '${wfName}', description: 'metrics test' };
-               return "ok";`,
-    });
+    await registerPublishedVia(callTool, wfName, `export const meta = { name: '${wfName}', description: 'metrics test' };
+               return "ok";`);
     const sub = await callTool('workflow_run', { name: wfName }) as { runId?: string };
     await pollDone(sub?.runId!);
 

@@ -3,7 +3,17 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
+// v22 (adjudication #2 L-2): these three cases are genuinely about suspend/resume/replay, so they
+// all migrate onto the register→publish→run helper. The `RunSpec.script` field K-4 RETAINED (for the
+// pre-v22 persisted-spec read-back at run-manager.ts `_requireLive`, `let script = spec.script ?? ''`)
+// is NOT reachable from this tier: an e2e file's only ingress is the MCP HTTP surface, where inline
+// script is refused by design, so no HTTP test can produce a script-bearing persisted spec. That
+// branch keeps its coverage in the integration tier, on a directly-seeded spec (the
+// `run-store-persistence.test.ts` pattern). What this file DOES now cover is the sibling branch:
+// `spec.name && !spec.script` re-resolving the pinned version from the catalog on rehydrate — see
+// the restart case below.
 describe('E2E: suspend / resume / cache replay (REQ-006, REQ-002)', () => {
   let server: Server;
   let baseUrl: string;
@@ -60,13 +70,11 @@ describe('E2E: suspend / resume / cache replay (REQ-006, REQ-002)', () => {
   }
 
   it('suspend stops in-flight work and status becomes suspended', async () => {
-    const run = await mcpCall('workflow_run', {
-      script: `
+    const run = await runScriptVia(mcpCall, `
         const r = await agent('step-1');
         const r2 = await agent('step-2');
         return {r, r2};
-      `,
-    });
+      `);
     const runId = run.runId;
 
     await waitUntilRunning(runId);
@@ -79,7 +87,7 @@ describe('E2E: suspend / resume / cache replay (REQ-006, REQ-002)', () => {
   it('resume replays cached agent() calls without re-running them', async () => {
     // First run: stop midway (we simulate by letting a single-agent workflow complete once,
     // stopping it, then resuming with the same script — the first call replays from cache)
-    const run = await mcpCall('workflow_run', { script: `return agent('the-query');` });
+    const run = await runScriptVia(mcpCall, `return agent('the-query');`);
     const runId = run.runId;
 
     await pollUntil(runId, (s) => s === 'completed');
@@ -94,7 +102,9 @@ describe('E2E: suspend / resume / cache replay (REQ-006, REQ-002)', () => {
   it('suspended run survives server restart and can be resumed', async () => {
     // This tests journal durability. We simulate restart by closing and reopening the server
     // with the same work root (same SQLite + journal.jsonl files).
-    const run = await mcpCall('workflow_run', { script: `return agent('persist-query');` });
+    // v22: the same work root also carries the catalog, so the registered+published version this run
+    // is pinned to survives the restart and `_requireLive` re-resolves it by pin (DES-113/ADR-010).
+    const run = await runScriptVia(mcpCall, `return agent('persist-query');`);
     const runId = run.runId;
 
     await waitUntilRunning(runId);

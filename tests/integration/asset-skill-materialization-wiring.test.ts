@@ -34,6 +34,7 @@ import type { Server } from '../../src/server.js';
 import { composeConfig } from '../../src/main.js';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 import type { AliasMap } from '../../src/gateway/client.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const ALIASES: AliasMap = {
   default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
@@ -92,8 +93,12 @@ describe('skill asset materialization + scoped settingSources/cwd (IT-036, D-V2V
     return JSON.parse(body.result!.content[0]!.text);
   }
 
+  /** The workflow name every run in this file registers under, so the run's workspace bucket is
+   *  known to `expectedWorkspace` below. */
+  const WF_NAME = 'it036-skill-asset';
+
   async function runToCompletion(script: string): Promise<string> {
-    const run = await mcpCall('workflow_run', { script });
+    const run = await runScriptVia(mcpCall, script, { name: WF_NAME });
     const runId = run.runId as string;
     let done = false;
     for (let i = 0; i < 50 && !done; i++) {
@@ -106,11 +111,11 @@ describe('skill asset materialization + scoped settingSources/cwd (IT-036, D-V2V
   }
 
   // Per WorkflowCatalog's own documented on-disk convention (`workFolder(name)/runs/<runId>` —
-  // workflow-catalog.ts header comment + IT-010's own direct use of
-  // `catalog.runWorkspace('_adhoc', runId)`); an inline (unnamed) script workflow uses the
-  // '_adhoc' bucket (`spec.name ?? '_adhoc'`, run-manager.ts).
+  // workflow-catalog.ts header comment). v22 closed inline script, so every run is NAMED and its
+  // bucket is the workflow name (`spec.name ?? '_adhoc'`, run-manager.ts) rather than the '_adhoc'
+  // bucket the pre-v22 unnamed shape landed in.
   function expectedWorkspace(runId: string): string {
-    return join(workRoot, 'workflows', '_adhoc', 'runs', runId);
+    return join(workRoot, 'workflows', WF_NAME, 'runs', runId);
   }
 
   it("an accepted skill asset is materialized into the run workspace .claude/skills, and the SDK call carries settingSources:['project'] with cwd = that workspace", async () => {

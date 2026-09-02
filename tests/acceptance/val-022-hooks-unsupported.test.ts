@@ -9,6 +9,7 @@ import type { Server } from '../../src/server.js';
 // Value import — module-not-found when absent (guarantees this file is RED at collection,
 // independent of any live-provider availability).
 import { classifyAsset } from '../../src/asset-sync.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -56,7 +57,7 @@ describe('VAL-022: REQ-019 clause 2 — no user hook ever runs; the engine\'s OW
     // Reuses the already-real, already-shipped D-V2G8-1(d) workspace boundary — this run never
     // pushes a hook asset at all, proving the internal control is independent of the (now-rejected)
     // user-hook upload path.
-    const run = await mcpCall('workflow_run', { script: `return 1 + 1;` });
+    const run = await runScriptVia(mcpCall, `return 1 + 1;`);
     const runId = run['runId'] as string;
     for (let i = 0; i < 20; i++) {
       const s = await mcpCall('workflow_status', { runId });

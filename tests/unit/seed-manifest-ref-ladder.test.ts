@@ -31,6 +31,7 @@ import { RunManager } from '../../src/run-manager.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { SystemClock } from '../../src/clock.js';
 import { CasStore } from '../../src/cas-store.js';
+import { startScript } from '../helpers/workflow-fixtures.js';
 
 const sha256 = (b: Buffer | string): string => createHash('sha256').update(b).digest('hex');
 
@@ -56,8 +57,7 @@ afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 describe('seedManifestRef 4-way SEED_SOURCE_CONFLICT ladder (DES-087)', () => {
   it('seedManifestRef + seed → SEED_SOURCE_CONFLICT (not MISSING_BLOBS)', async () => {
     await expect(
-      mgr.start({
-        script: 'return 42;',
+      startScript(mgr, 'return 42;', {
         seedManifestRef: 'a'.repeat(64),
         seedNamespace: 'ns',
         seed: [{ path: 'file.txt', contentB64: Buffer.from('x').toString('base64') }],
@@ -67,8 +67,7 @@ describe('seedManifestRef 4-way SEED_SOURCE_CONFLICT ladder (DES-087)', () => {
 
   it('seedManifestRef + seedManifest → SEED_SOURCE_CONFLICT', async () => {
     await expect(
-      mgr.start({
-        script: 'return 42;',
+      startScript(mgr, 'return 42;', {
         seedManifestRef: 'a'.repeat(64),
         seedNamespace: 'ns',
         seedManifest: [{ path: 'f.txt', sha256: 'a'.repeat(64) }],
@@ -78,8 +77,7 @@ describe('seedManifestRef 4-way SEED_SOURCE_CONFLICT ladder (DES-087)', () => {
 
   it('seedManifestRef + seedRef → SEED_SOURCE_CONFLICT', async () => {
     await expect(
-      mgr.start({
-        script: 'return 42;',
+      startScript(mgr, 'return 42;', {
         seedManifestRef: 'a'.repeat(64),
         seedNamespace: 'ns',
         seedRef: { repoUrl: 'https://github.com/example/repo', sha: 'a'.repeat(40) },
@@ -91,8 +89,7 @@ describe('seedManifestRef 4-way SEED_SOURCE_CONFLICT ladder (DES-087)', () => {
     // seedManifestRef + seed: even though the manifest ref is absent from CAS,
     // SEED_SOURCE_CONFLICT fires first (conflict beats lookup)
     await expect(
-      mgr.start({
-        script: 'return 42;',
+      startScript(mgr, 'return 42;', {
         seedManifestRef: sha256(Buffer.from('no such blob')), // not in CAS
         seedNamespace: 'ns',
         seed: [{ path: 'x.txt', contentB64: 'aGVsbG8=' }],
@@ -103,8 +100,7 @@ describe('seedManifestRef 4-way SEED_SOURCE_CONFLICT ladder (DES-087)', () => {
   it('seedManifestRef alone, ref not in CAS → MISSING_BLOBS listing the sha', async () => {
     const absentSha = 'b'.repeat(64);
     await expect(
-      mgr.start({
-        script: 'return 42;',
+      startScript(mgr, 'return 42;', {
         seedManifestRef: absentSha,
         seedNamespace: 'ns',
       }),
@@ -118,8 +114,7 @@ describe('seedManifestRef 4-way SEED_SOURCE_CONFLICT ladder (DES-087)', () => {
     await cas.putBlob('ns', h, garbage);
 
     await expect(
-      mgr.start({
-        script: 'return 42;',
+      startScript(mgr, 'return 42;', {
         seedManifestRef: h,
         seedNamespace: 'ns',
       }),
@@ -134,8 +129,7 @@ describe('seedManifestRef 4-way SEED_SOURCE_CONFLICT ladder (DES-087)', () => {
     await cas.putBlob('ns', manifestSha, manifest); // manifest itself is present
 
     await expect(
-      mgr.start({
-        script: 'return 42;',
+      startScript(mgr, 'return 42;', {
         seedManifestRef: manifestSha,
         seedNamespace: 'ns',
       }),
@@ -149,8 +143,7 @@ describe('seedManifestRef 4-way SEED_SOURCE_CONFLICT ladder (DES-087)', () => {
     const preCount = listBefore.length;
 
     await expect(
-      localMgr.start({
-        script: 'return 42;',
+      startScript(localMgr, 'return 42;', {
         seedManifestRef: 'a'.repeat(64),
         seedNamespace: 'ns',
         seed: [{ path: 'f.txt', contentB64: 'aGVsbG8=' }],

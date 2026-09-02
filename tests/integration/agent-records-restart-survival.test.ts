@@ -29,6 +29,7 @@ import { RunManager } from '../../src/run-manager.js';
 import { McpFacade } from '../../src/mcp-facade.js';
 import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
+import { facadeCaller, runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const CLOCK = new FixedClock(new Date('2024-01-01T00:00:00Z'));
 
@@ -51,7 +52,7 @@ describe('Per-agent records survive a real server restart (IT-020, D-F9b)', () =
       const mgr1 = new RunManager({ store: store1, clock: CLOCK, workRoot: dir, gateway });
       const facade1 = new McpFacade({ store: store1, runManager: mgr1, clock: CLOCK });
 
-      const submitted = await facade1.workflow_run({ script: `return await agent('hi');` });
+      const submitted = await runScriptVia(facadeCaller(facade1), `return await agent('hi');`);
       const runId = submitted.result!.runId;
 
       let status = await facade1.workflow_status({ runId });

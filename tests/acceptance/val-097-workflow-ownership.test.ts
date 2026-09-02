@@ -26,6 +26,7 @@ import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { createServer as nodeHttp } from 'node:http';
 import type { Server as NodeServer } from 'node:http';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 // ── fake Google for two users ─────────────────────────────────────────────────
 
@@ -131,6 +132,18 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
     const r = await mcp(aliceBearer, 'workflow_register', { name: WF, script: SCRIPT });
     expect(r.error).toBeUndefined();
     expect(r.code).not.toBe('NOT_WORKFLOW_OWNER');
+
+    // v22 (REQ-097): registration ≠ publication. Deliberately NOT routed through the shared fixture
+    // helper (L-4): this file injects identity via a real BEARER, and the ownership oracles below
+    // (bob → NOT_WORKFLOW_OWNER) only mean anything while the same identity that registered also
+    // publishes. Publishing as ALICE here keeps the gate live AND makes "bob can RUN alice's
+    // workflow" reach a released version instead of CHANNEL_UNPUBLISHED. The register oracles above
+    // are left literally intact rather than folded into a helper call.
+    const version = (r['result'] as { version?: string } | undefined)?.version;
+    expect(typeof version).toBe('string');
+    const pub = await mcp(aliceBearer, 'workflow_publish', { name: WF, version: version!, channel: 'release' });
+    expect(pub['code']).not.toBe('NOT_WORKFLOW_OWNER');
+    expect(pub['status']).toBe('completed');
   });
 
   it('bob tries to overwrite alice workflow → NOT_WORKFLOW_OWNER', async () => {
@@ -145,6 +158,18 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
 
   it('bob tries to deregister alice workflow → NOT_WORKFLOW_OWNER', async () => {
     const r = await mcp(bobBearer, 'workflow_deregister', { name: WF });
+    expect(r.code).toBe('NOT_WORKFLOW_OWNER');
+  });
+
+  // v22 send-back ROUND 2 (07-review.md §4.2, B2): re-pins the oracle a round-1 fixture rewrite
+  // dropped from `val-107-release-channels.test.ts` — an AUTHENTICATED (real bearer, not a
+  // self-asserted string) non-owner is refused `NOT_WORKFLOW_OWNER` on `workflow_publish` over
+  // HTTP, the one shape ARCH-071's owner-gate clause is actually about. GREEN PIN: `workflow_publish`
+  // computes its effective principal from the server-resolved bearer only (never `args.principal`,
+  // both before and after round 2's fix — only register/deregister's fallback is gated by round 2),
+  // so bob's real, authenticated identity already fails the ownership comparison today.
+  it('bob (authenticated, real bearer) tries to publish alice\'s workflow → NOT_WORKFLOW_OWNER', async () => {
+    const r = await mcp(bobBearer, 'workflow_publish', { name: WF, version: 'v1', channel: 'release' });
     expect(r.code).toBe('NOT_WORKFLOW_OWNER');
   });
 
@@ -179,7 +204,11 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
         const b = await r.json() as { result?: { content?: Array<{ text?: string }> } };
         return JSON.parse(b.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
       };
-      await nullMcp('workflow_register', { name: wf2, script: SCRIPT });
+      // v22 (DES-110): `workflow_get({name})` resolves the RELEASE channel, so the seeded NULL-owner
+      // row must be published or the backfill read-back below gets CHANNEL_UNPUBLISHED. Registered
+      // AND published with a null principal — which is the point of this case (a pre-v15 row that
+      // predates ownership), so the null default is correct HERE, unlike the alice/bob cases above.
+      await registerPublishedVia(nullMcp, wf2, SCRIPT);
     } finally {
       await nullServer.close();
     }
@@ -193,7 +222,13 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
     try {
       const b2 = await getBearerFor(ALICE);
       const r = await mcp(b2, 'workflow_get', { name: wf2 });
-      expect((r as { owner?: string }).owner).toBe('hsuhungjung@gmail.com');
+      // v22 (DES-115/REQ-100): alice is NOT the backfilled owner, so this read takes the non-owner
+      // projection — which is the ENTIRE response body under `result`, with the pre-v22 flat
+      // top-level copies deliberately removed (that was the `script` twice-leak DES-115 closes).
+      // `owner` is on the non-owner allowlist (workflow-view.ts EXPECTED_NON_OWNER_KEYS), so the
+      // oracle is unchanged — only the field's location moved.
+      const view = r['result'] as { owner?: string } | undefined;
+      expect(view?.owner).toBe('hsuhungjung@gmail.com');
     } finally {
       await bootedServer.close();
     }

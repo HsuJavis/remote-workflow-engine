@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -34,7 +35,7 @@ return final;`;
 beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'rwe-disc-'));
   server = await createServer({ port: 0, bind: '127.0.0.1', workRoot: tmpDir });
-  await call('workflow_register', { name: 'cs', script: SCRIPT });
+  await registerPublishedVia(call, 'cs', SCRIPT);
 });
 afterAll(async () => {
   await server?.close();

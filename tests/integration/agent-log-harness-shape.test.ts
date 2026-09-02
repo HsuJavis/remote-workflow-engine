@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -59,7 +60,7 @@ async function pollDone(runId: string, maxMs = 8000): Promise<void> {
 }
 
 async function runAndGetAgentId(script: string): Promise<{ runId: string; agentId: string }> {
-  const sub = await callTool('workflow_run', { script }) as { runId?: string };
+  const sub = await runScriptVia(callTool, script) as { runId?: string };
   const runId = sub?.runId!;
   await pollDone(runId);
   const status = await callTool('workflow_status', { runId }) as { agents?: Array<{ agentId: string }> };
@@ -82,7 +83,7 @@ describe('workflow_agent_log harness shape (IT-066, DES-067)', () => {
   it('harness field is null for a never-dispatched agent (no events)', async () => {
     // An agent in a parallel group that was queued but never dispatched has no harness event.
     // Since we can't easily create such an agent in integration, we use a non-existent agentId.
-    const sub = await callTool('workflow_run', { script: 'return 1;' }) as { runId?: string };
+    const sub = await runScriptVia(callTool, 'return 1;') as { runId?: string };
     const runId = sub?.runId!;
     await pollDone(runId);
 
@@ -166,7 +167,7 @@ describe('workflow_agent_log harness provenance (IT-066 v21, DES-105)', () => {
   }
 
   it('harness descriptor carries per-key provenance (model/effort/timeoutMs/appendPrompt)', async () => {
-    const sub = await provCallTool('workflow_run', { script: 'return await agent("say hi");' }) as { runId?: string };
+    const sub = await runScriptVia(provCallTool, 'return await agent("say hi");') as { runId?: string };
     const runId = sub.runId!;
     // A script with exactly one top-level agent() call always gets agentId 'agent-1' (workflow_status
     // nests agents under `.result.agents`, not top-level — same fixed convention runAndGetAgentId

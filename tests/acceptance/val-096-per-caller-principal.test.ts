@@ -28,6 +28,7 @@ import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { createServer as nodeHttp } from 'node:http';
 import type { Server as NodeServer } from 'node:http';
+import { registerPublishedVia, uniqueWorkflowName } from '../helpers/workflow-fixtures.js';
 
 // ── shared RS256 key for fake Google ─────────────────────────────────────────
 
@@ -162,10 +163,25 @@ describe('REQ-086: valid bearer → principal attributed on artifacts (VAL-096)'
   it('workflow_run with bearer → workflow_status carries principal:<email>', async () => {
     const bearer = await getBearer();
 
+    // v22: runs are by name only, so register+publish first — through the SAME bearer, so the
+    // publish ownership gate is exercised by the real principal (L-4) rather than skipped by a
+    // null one. The raw run fetch below is left intact so its `runRes.status === 200` oracle stands.
+    const bearerCall = async (tool: string, args: Record<string, unknown>) => {
+      const r = await fetch(`${BASE()}/mcp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${bearer}` },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: tool, arguments: args } }),
+      });
+      const b = await r.json() as { result?: { content?: Array<{ text?: string }> } };
+      return JSON.parse(b.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+    };
+    const wf = uniqueWorkflowName('val096-attributed');
+    await registerPublishedVia(bearerCall, wf, 'return "attributed";');
+
     const runRes = await fetch(`${BASE()}/mcp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${bearer}` },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_run', arguments: { script: 'return "attributed";' } } }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_run', arguments: { name: wf } } }),
     });
     expect(runRes.status).toBe(200);
     const rb = await runRes.json() as { result?: { content?: Array<{ text?: string }> } };

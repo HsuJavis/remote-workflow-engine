@@ -27,6 +27,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -197,6 +198,10 @@ describe('Harness defaults register-time validation — D-AUTH-5 named assertion
     });
     expect(r.error).toBeUndefined();
     expect(r.code).not.toBe('HARNESS_DEFAULTS_INVALID');
+    // v22: registration is not publication — `workflow_get({name})` with no version selector
+    // resolves the `release` channel, so the just-registered version has to be published for the
+    // read-back this case is about to reach it.
+    await callTool('workflow_publish', { name: 'it081-valid-defaults', version: `v${r.version}`, channel: 'release' });
 
     const got = await callTool('workflow_get', { name: 'it081-valid-defaults' });
     const defaults = (got as { defaults?: { model?: string; timeoutMs?: number; tools?: string[] } }).defaults;
@@ -208,11 +213,12 @@ describe('Harness defaults register-time validation — D-AUTH-5 named assertion
   // Run-time merge: per-run override wins per-param; missing keys fall back to registered
   it('run-time merge: per-run timeoutMs wins; model falls back to registered', async () => {
     // Register with defaults
-    await callTool('workflow_register', {
-      name: 'it081-merge-test',
-      script: `return {model: args.__harnessModel, timeout: args.__harnessTimeout};`,
-      defaults: { model: 'opus', timeoutMs: 120_000 },
-    });
+    await registerPublishedVia(
+      callTool,
+      'it081-merge-test',
+      `return {model: args.__harnessModel, timeout: args.__harnessTimeout};`,
+      { defaults: { model: 'opus', timeoutMs: 120_000 } },
+    );
 
     // Run with timeoutMs override but no model override
     const runResult = await callTool('workflow_run', {
@@ -238,6 +244,7 @@ describe('meta.params contract — registration, discoverability, ceilings (REQ-
     const r = await callTool('workflow_register', { name: 'it081-params-model-enum', script });
     expect(r.code).not.toBe('HARNESS_DEFAULTS_INVALID');
     expect(r.error).toBeUndefined();
+    await callTool('workflow_publish', { name: 'it081-params-model-enum', version: `v${r.version}`, channel: 'release' });
 
     const got = await callTool('workflow_get', { name: 'it081-params-model-enum' });
     const params = (got as { params?: { knobs?: Record<string, { enum?: string[] }> } }).params;
@@ -254,7 +261,7 @@ describe('meta.params contract — registration, discoverability, ceilings (REQ-
   });
 
   it('a script with NO params block reads back workflow_get.params as the canonical 4-knob contract, ceiling-bounded (never null/unbounded)', async () => {
-    await callTool('workflow_register', { name: 'it081-no-params-block', script: 'return 1;' });
+    await registerPublishedVia(callTool, 'it081-no-params-block', 'return 1;');
     const got = await callTool('workflow_get', { name: 'it081-no-params-block' });
     const params = (got as { params?: { knobs?: Record<string, unknown> } }).params;
     expect(params).toBeDefined();
@@ -267,9 +274,12 @@ describe('meta.params contract — registration, discoverability, ceilings (REQ-
   // the NEW contract, not the old one.
   it('re-registering with a CHANGED params block updates the stored contract (ON CONFLICT trap)', async () => {
     const v1 = `export const meta = { params: { knobs: { model: { type: 'enum', enum: ['sonnet'] } } } };\nreturn 1;`;
-    await callTool('workflow_register', { name: 'it081-params-reregister', script: v1 });
+    await registerPublishedVia(callTool, 'it081-params-reregister', v1);
     const v2 = `export const meta = { params: { knobs: { model: { type: 'enum', enum: ['sonnet','opus'] } } } };\nreturn 2;`;
-    await callTool('workflow_register', { name: 'it081-params-reregister', script: v2 });
+    // Both versions are published onto `release`: pre-v22 the newest registration was what
+    // `workflow_get({name})` served, so publishing v2 is what keeps this case's ON-CONFLICT
+    // oracle ("the read-back shows the NEW contract") pointed at the new version.
+    await registerPublishedVia(callTool, 'it081-params-reregister', v2);
 
     const got = await callTool('workflow_get', { name: 'it081-params-reregister' });
     const params = (got as { params?: { knobs?: Record<string, { enum?: string[] }> } }).params;
@@ -331,6 +341,7 @@ describe('meta.params default cross-validation (DES-103, REQ-090, v21 Gate 5 re-
     const script = `export const meta = { params: { knobs: { timeoutMs: { type: 'number', default: 5000 } } } };\nreturn 1;`;
     const r = await callTool('workflow_register', { name: 'it081-a2-default-normalize', script });
     expect(r.error).toBeUndefined();
+    await callTool('workflow_publish', { name: 'it081-a2-default-normalize', version: `v${r.version}`, channel: 'release' });
 
     const got = await callTool('workflow_get', { name: 'it081-a2-default-normalize' });
     const defaults = (got as { defaults?: { timeoutMs?: number } }).defaults;
@@ -361,6 +372,7 @@ describe('meta.params default cross-validation (DES-103, REQ-090, v21 Gate 5 re-
     const script = `export const meta = { params: { knobs: { effort: { type: 'enum', enum: ['low','high'], default: 'high' } } } };\nreturn 1;`;
     const first = await callTool('workflow_register', { name: 'it081-pa3-roundtrip', script });
     expect(first.error).toBeUndefined();
+    await callTool('workflow_publish', { name: 'it081-pa3-roundtrip', version: `v${first.version}`, channel: 'release' });
 
     const got = await callTool('workflow_get', { name: 'it081-pa3-roundtrip' });
     const servedDefaults = (got as { defaults?: Record<string, unknown> }).defaults;
@@ -534,7 +546,7 @@ describe('caller-supplied `defaults` are bounded by the engine ceilings even wit
 
     // The other end of the same bound: the identical value is refused at the admission rung, and
     // the value AT the configured ceiling is accepted there — the same boundary, both rungs.
-    await g1Call('workflow_register', { name: 'it081-g1-admission-pin', script: 'return 1;' });
+    await registerPublishedVia(g1Call, 'it081-g1-admission-pin', 'return 1;');
     const over = await g1Call('workflow_run', { name: 'it081-g1-admission-pin', overrides: { effort: 'max' } });
     expect(over.code ?? (over.error as { code?: string } | undefined)?.code).toBe('PARAM_OUT_OF_RANGE');
     const atBound = await g1Call('workflow_run', { name: 'it081-g1-admission-pin', overrides: { effort: MAX_EFFORT } });
@@ -546,6 +558,7 @@ describe('caller-supplied `defaults` are bounded by the engine ceilings even wit
       name: 'it081-g1-effort-ok', script: NO_PARAMS_SCRIPT, defaults: { effort: MAX_EFFORT },
     });
     expect(r.error).toBeUndefined();
+    await g1Call('workflow_publish', { name: 'it081-g1-effort-ok', version: `v${r.version}`, channel: 'release' });
 
     const got = await g1Call('workflow_get', { name: 'it081-g1-effort-ok' });
     expect((got as { defaults?: Record<string, unknown> }).defaults?.['effort']).toBe(MAX_EFFORT);
@@ -563,7 +576,7 @@ describe('caller-supplied `defaults` are bounded by the engine ceilings even wit
 
     // Admission enforces the same byte bound registration just refused against: over-by-one is
     // refused there too, and exactly-at-the-bound is accepted at both rungs.
-    await g1Call('workflow_register', { name: 'it081-g1-append-admission-pin', script: 'return 1;' });
+    await registerPublishedVia(g1Call, 'it081-g1-append-admission-pin', 'return 1;');
     const over = await g1Call('workflow_run', {
       name: 'it081-g1-append-admission-pin', overrides: { appendPrompt: overByOne },
     });

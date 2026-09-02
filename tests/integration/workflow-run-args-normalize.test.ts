@@ -7,6 +7,7 @@ import { McpFacade } from '../../src/mcp-facade.js';
 import { RunManager } from '../../src/run-manager.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
+import { facadeCaller, runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const CLOCK = new FixedClock(new Date('2024-01-01T00:00:00Z'));
 
@@ -16,7 +17,7 @@ function facade() {
 }
 
 async function runAndGet(f: McpFacade, script: string, args: unknown): Promise<unknown> {
-  const run = await f.workflow_run({ script, args });
+  const run = await runScriptVia(facadeCaller(f), script, { args });
   const runId = run.result!.runId;
   let s = await f.workflow_status({ runId });
   for (let i = 0; i < 60 && (s.status === 'running' || s.status === 'queued'); i++) {

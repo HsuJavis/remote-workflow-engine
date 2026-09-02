@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -53,7 +54,7 @@ afterAll(async () => {
 
 describe('startedBy provenance — HTTP + store (IT-063, DES-063)', () => {
   it('workflow_run via MCP facade → startedBy:{type:"client"} on workflow_status result', async () => {
-    const sub = await callTool('workflow_run', { script: 'return "done";' }) as { runId?: string };
+    const sub = await runScriptVia(callTool, 'return "done";') as { runId?: string };
     const runId = sub?.runId;
     expect(runId).toBeTruthy();
     const status = await pollStatus(runId!);
@@ -66,7 +67,7 @@ describe('startedBy provenance — HTTP + store (IT-063, DES-063)', () => {
   });
 
   it('GET /api/runs/:id surfaces startedBy.type on the run JSON', async () => {
-    const sub = await callTool('workflow_run', { script: 'return 1;' }) as { runId?: string };
+    const sub = await runScriptVia(callTool, 'return 1;') as { runId?: string };
     const runId = sub?.runId;
     await pollStatus(runId!);
     const res = await fetch(`http://127.0.0.1:${server.port}/api/runs/${runId}`);
@@ -95,7 +96,7 @@ describe('startedBy provenance — HTTP + store (IT-063, DES-063)', () => {
     //
     // This case is partially covered by UT-067 (unit test on InMemoryRunStore).
     // Here, we create a run WITHOUT passing startedBy and confirm the response still has the field.
-    const sub = await callTool('workflow_run', { script: 'return 0;' }) as { runId?: string };
+    const sub = await runScriptVia(callTool, 'return 0;') as { runId?: string };
     const runId = sub?.runId;
     await pollStatus(runId!);
     const res = await fetch(`http://127.0.0.1:${server.port}/api/runs/${runId}`);

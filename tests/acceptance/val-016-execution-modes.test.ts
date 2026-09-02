@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -48,9 +49,12 @@ async function pollUntilTerminal(runId: string, maxMs = 10_000) {
   return 'timeout';
 }
 
+// v22: a schedule/trigger target is STARTED by name, which resolves the `release` channel — so a
+// bare register leaves it unpublished (CHANNEL_UNPUBLISHED at fire time). Register AND publish.
+// The old `expect(r['error']).toBeUndefined()` setup guard is preserved as the helper's own throw:
+// it raises a named error if either register or publish comes back failed.
 async function registerWorkflow(name: string, script: string) {
-  const r = await mcpCall('workflow_register', { name, script });
-  expect(r['error']).toBeUndefined();
+  await registerPublishedVia(mcpCall, name, script);
 }
 
 describe('Execution modes (REQ-015, VAL-016)', () => {

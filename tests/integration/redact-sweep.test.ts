@@ -39,6 +39,7 @@ import { AgentExecutor } from '../../src/agent-executor.js';
 import type { HarnessDescriptor } from '../../src/types.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { RunManager } from '../../src/run-manager.js';
+import { startScript } from '../helpers/workflow-fixtures.js';
 import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
 import { FixedClock } from '../../src/clock.js';
 import type { GatewayClient, GatewayResult } from '../../src/gateway/client.js';
@@ -198,7 +199,7 @@ describe('redact-at-capture completeness sweep — sink (4): appendJournal (DES-
       // entry must be redacted — key.prompt was the live-Ollama Gate-7.5 leak (only .value was redacted).
       const gateway = makeContentGateway(SECRET_VALUE);
       const mgr = new RunManager({ store, clock, workRoot: dir, gateway, secretValueProvider: secretProvider } as any);
-      const runId = await mgr.start({ script: `const a = await agent(${JSON.stringify('use token ' + SECRET_VALUE)}); return a;` });
+      const runId = await startScript(mgr, `const a = await agent(${JSON.stringify('use token ' + SECRET_VALUE)}); return a;`);
       expect(await pollStatus(mgr, runId, 'completed')).toBe('completed');
 
       // Persisted journal.jsonl (the REPLAY source) is redacted — sink (4).
@@ -226,7 +227,7 @@ describe('redact-at-capture completeness sweep — sink (2): saveSnapshot (DES-0
       const gateway = makeContentGateway('ok');
       const mgr1 = new RunManager({ store: store1, clock, workRoot: dir, gateway, secretValueProvider: secretProvider } as any);
       const label = `lbl-${SECRET_VALUE}`;
-      const runId = await mgr1.start({ script: `await agent('A', { label: ${JSON.stringify(label)} }); return 1;` });
+      const runId = await startScript(mgr1, `await agent('A', { label: ${JSON.stringify(label)} }); return 1;`);
       expect(await pollStatus(mgr1, runId, 'completed')).toBe('completed');
 
       // "Restart": a fresh store reads the persisted terminal snapshot (getRun returns snap.agents
@@ -257,7 +258,7 @@ describe('redact-at-capture completeness sweep — sink (5): effectiveParams sna
       const gateway = makeContentGateway('ok');
       const mgr = new RunManager({ store, clock, workRoot: dir, gateway, secretValueProvider: secretProvider } as any);
       const appendPrompt = `use token ${SECRET_VALUE}`;
-      const runId = await mgr.start({ script: 'return 1;' }, { appendPrompt });
+      const runId = await startScript(mgr, 'return 1;', {}, { appendPrompt });
       expect(await pollStatus(mgr, runId, 'completed')).toBe('completed');
 
       const persisted = await store.getEffectiveParams(runId);

@@ -19,6 +19,7 @@ import { McpFacade } from '../../src/mcp-facade.js';
 import { RunManager } from '../../src/run-manager.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
+import { facadeCaller, runScriptVia, uniqueWorkflowName } from '../helpers/workflow-fixtures.js';
 
 const CLOCK = new FixedClock(new Date('2024-01-01T00:00:00Z'));
 
@@ -37,14 +38,17 @@ describe('workflow_artifacts: run-workspace files retrievable via the API (IT-01
     const runManager = new RunManager({ store, clock: CLOCK });
     const facade = new McpFacade({ clock: CLOCK, store, runManager });
 
-    const run = await facade.workflow_run({ script: `return 'done';` });
+    // v22: a run is always NAMED now, so its workspace bucket is the workflow name rather than
+    // the `_adhoc` bucket `spec.name ?? '_adhoc'` used for the pre-v22 inline-script shape.
+    const wfName = uniqueWorkflowName('it010');
+    const run = await runScriptVia(facadeCaller(facade), `return 'done';`, { name: wfName });
     const runId = run.result!.runId;
     const status = await pollUntilSettled(facade, runId);
     expect(status.status).toBe('completed');
 
     // Simulate an agent's SDK-session tool call writing a file into the run's workspace
     // (parent-side; the sandboxed script itself has no fs access — DES-005).
-    const workspace = runManager.catalog.runWorkspace('_adhoc', runId);
+    const workspace = runManager.catalog.runWorkspace(wfName, runId);
     mkdirSync(workspace, { recursive: true });
     writeFileSync(join(workspace, 'output.txt'), 'artifact content');
 

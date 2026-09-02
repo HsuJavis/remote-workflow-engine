@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -37,7 +38,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Re
 
 describe('REQ-094: appendPrompt attaches last, after everything the author controls (VAL-104)', () => {
   it('an over-cap appendPrompt is refused at submission with byte counts, and the text is NEVER echoed in the error', async () => {
-    await callTool('workflow_register', { name: 'val104-overcap', script: 'return 1;' });
+    await registerPublishedVia(callTool, 'val104-overcap', 'return 1;');
     const big = 'A'.repeat(2000);
     const r = await callTool('workflow_run', { name: 'val104-overcap', overrides: { appendPrompt: big } });
     expect(r.code ?? (r.error as { code?: string } | undefined)?.code).toBe('PARAM_OUT_OF_RANGE');
@@ -45,7 +46,7 @@ describe('REQ-094: appendPrompt attaches last, after everything the author contr
   });
 
   it('the captured transcript prompt shows the framed appendPrompt AFTER the author\'s own prompt segments', async () => {
-    await callTool('workflow_register', { name: 'val104-order', script: `return await agent("SCRIPT-PROMPT-MARKER");` });
+    await registerPublishedVia(callTool, 'val104-order', `return await agent("SCRIPT-PROMPT-MARKER");`);
     const run = await callTool('workflow_run', { name: 'val104-order', overrides: { appendPrompt: 'USER-TEXT-MARKER' } });
     const runId = run.runId as string;
     // A script with exactly one top-level agent() call always gets agentId 'agent-1' (workflow_status

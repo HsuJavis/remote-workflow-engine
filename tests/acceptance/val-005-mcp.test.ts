@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia, uniqueWorkflowName } from '../helpers/workflow-fixtures.js';
 
 describe('VAL-005: MCP Streamable HTTP interface (REQ-005)', () => {
   let server: Server;
@@ -13,6 +14,19 @@ describe('VAL-005: MCP Streamable HTTP interface (REQ-005)', () => {
   });
 
   afterAll(async () => { await server?.close(); });
+
+  // v22: the raw-fetch tests below need a name to run, and a name needs register+publish. This is
+  // the same `${baseUrl}/mcp` POST + `result.content[0].text` parse the tests do inline; it exists
+  // only so the shared fixture helper can drive it. The tests keep their own raw fetches.
+  async function callTool(name: string, args: unknown) {
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    const body = await res.json() as { result?: { content: Array<{ text: string }> } };
+    return JSON.parse(body.result!.content[0].text);
+  }
 
   it('tools/list returns all required v1 MCP tools', async () => {
     const res = await fetch(`${baseUrl}/mcp`, {
@@ -31,11 +45,14 @@ describe('VAL-005: MCP Streamable HTTP interface (REQ-005)', () => {
   });
 
   it('workflow_run returns runId immediately (async — does not block until completion)', async () => {
+    // Register+publish OUTSIDE the timed window so `elapsed` still measures only the run submission.
+    const wf = uniqueWorkflowName('val005-immediate');
+    await registerPublishedVia(callTool, wf, 'return 42;');
     const start = Date.now();
     const res = await fetch(`${baseUrl}/mcp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_run', arguments: { script: 'return 42;' } } }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_run', arguments: { name: wf } } }),
     });
     const elapsed = Date.now() - start;
     const body = await res.json() as { result?: { content: Array<{ text: string }> } };
@@ -58,11 +75,13 @@ describe('VAL-005: MCP Streamable HTTP interface (REQ-005)', () => {
 
   it('workflow_result polled after completion returns the script return value', async () => {
     // Submit a deterministic script and poll for the result
+    const wf = uniqueWorkflowName('val005-result');
+    await registerPublishedVia(callTool, wf, 'return {x:7};');
     const run = await (async () => {
       const res = await fetch(`${baseUrl}/mcp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_run', arguments: { script: 'return {x:7};' } } }),
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_run', arguments: { name: wf } } }),
       });
       const body = await res.json() as { result?: { content: Array<{ text: string }> } };
       return JSON.parse(body.result!.content[0].text);

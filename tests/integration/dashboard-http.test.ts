@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { runScriptVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -21,17 +22,18 @@ afterAll(async () => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-async function submitRun(script: string): Promise<string> {
+const callTool: ToolCaller = async (name, args) => {
   const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0', id: 1, method: 'tools/call',
-      params: { name: 'workflow_run', arguments: { script } },
-    }),
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
   });
   const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
-  const env = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { runId?: string };
+  return JSON.parse(body.result?.content?.[0]?.text ?? '{}');
+};
+
+async function submitRun(script: string): Promise<string> {
+  const env = await runScriptVia(callTool, script) as { runId?: string };
   return env.runId ?? '';
 }
 
@@ -150,5 +152,62 @@ describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
       }
     }
     throw new Error('/api/runs/:id/dag never returned 200');
+  });
+
+  // v22 Gate 6.5+7 (coverage gate, IT-033 extended in place): `handleDashboardRequest` was touched
+  // by this round's H2 fix (server.ts, DAG masking) — the standing whole-function coverage bar
+  // (v21 harness-defaults.ts precedent) applies to the whole function, not just the new line. These
+  // 3 cases close its 3 pre-existing gaps: the unmatched-route default, the outer degrade-not-500
+  // catch, and the DAG route's double catalog-resolve fallback.
+  it('GET an unmatched /api/* path returns 404 { error: "Not found" } (dashboard-handler default, not the top-level JSON-RPC 404)', async () => {
+    // Must start with a routed prefix (`/api/issues`) to actually reach `handleDashboardRequest` —
+    // an unrelated `/api/*` prefix falls through to the top-level `/mcp`-style JSON-RPC 404 instead
+    // (server.ts:1719-1731), which is a different code path entirely.
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/issues/not-a-number`);
+    expect(res.status).toBe(404);
+    const body = await res.json() as { error?: string };
+    expect(body.error).toBe('Not found');
+  });
+
+  it('a malformed %-encoded path segment degrades to 200 + a partial view (DES-018: never a 500)', async () => {
+    // decodeURIComponent('%') throws URIError — inside the handler's try block, caught by the
+    // outer catch (server.ts:1170-1173), never propagated as an unhandled 500.
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/workflows/%/skeleton`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { degraded?: string };
+    expect(typeof body.degraded).toBe('string');
+  });
+
+  it('DAG of a run whose workflow was deregistered after it started falls back to an empty skeleton, not a crash', async () => {
+    const name = 'dash-deregistered-dag';
+    await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'workflow_register', arguments: { name, script: 'return 1;' } } }),
+    });
+    const pub = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name: 'workflow_publish', arguments: { name, version: 'v1', channel: 'release' } } }),
+    });
+    expect((await pub.json() as { result?: { content?: Array<{ text?: string }> } }).result).toBeDefined();
+    const run = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name: 'workflow_run', arguments: { name } } }),
+    });
+    const runBody = JSON.parse((await run.json() as { result: { content: Array<{ text: string }> } }).result.content[0]!.text) as { runId?: string };
+    const runId = runBody.runId!;
+    expect(typeof runId).toBe('string');
+    // Deregister removes EVERY version — the pinned-version resolve AND the release-channel
+    // fallback resolve (server.ts:1118/1121) both now throw CatalogNotFoundError.
+    await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 13, method: 'tools/call', params: { name: 'workflow_deregister', arguments: { name } } }),
+    });
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/runs/${runId}/dag`);
+    expect(res.status).toBe(200);
+    const payload = await res.json() as { kind?: string; cells?: unknown[] };
+    expect(payload.kind).toBe('run');
+    // No __skel_* placeholder cells — the skeleton derives from an empty script, only the live
+    // trigger/agent cells (if any) remain.
+    expect((payload.cells ?? []).some((c) => String((c as { id?: string }).id ?? '').startsWith('__skel_'))).toBe(false);
   });
 });

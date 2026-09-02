@@ -16,6 +16,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RunManager } from '../../src/run-manager.js';
+import { registerPublished, startScript } from '../helpers/workflow-fixtures.js';
 import { WorkflowCatalog } from '../../src/workflow-catalog.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
@@ -47,14 +48,12 @@ describe('call-tree + composite linkage (v8 Slice 2, REQ-045..047)', () => {
 
   it('REQ-045/046/047 tags agents with frames + records nested workflow() boundary nodes', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    await catalog.register('leaf', `const l = await agent('do-L', { label: 'L' }); return l;`);
-    await catalog.register('mid', `const m = await agent('do-M', { label: 'M' }); const x = await workflow('leaf', {}); return { m, x };`);
+    await registerPublished(catalog, 'leaf', `const l = await agent('do-L', { label: 'L' }); return l;`);
+    await registerPublished(catalog, 'mid', `const m = await agent('do-M', { label: 'M' }); const x = await workflow('leaf', {}); return { m, x };`);
     const store = new InMemoryRunStore(CLOCK);
     const mgr = new RunManager({ store, clock: CLOCK, catalog, gateway: echoGateway(), maxWorkflowDepth: 3 });
 
-    const runId = await mgr.start({
-      script: `const t = await agent('do-T', { label: 'T' }); const w = await workflow('mid', {}); return { t, w };`,
-    });
+    const runId = await startScript(mgr, `const t = await agent('do-T', { label: 'T' }); const w = await workflow('mid', {}); return { t, w };`);
     const view = await settled(mgr, runId);
     expect(view.status).toBe('completed');
 
@@ -87,13 +86,11 @@ describe('call-tree + composite linkage (v8 Slice 2, REQ-045..047)', () => {
 
   it('REQ-046 a diamond (same workflow called twice) yields two distinct boundary nodes', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    await catalog.register('d', `const x = await agent('do-D', { label: 'D' }); return x;`);
+    await registerPublished(catalog, 'd', `const x = await agent('do-D', { label: 'D' }); return x;`);
     const store = new InMemoryRunStore(CLOCK);
     const mgr = new RunManager({ store, clock: CLOCK, catalog, gateway: echoGateway(), maxWorkflowDepth: 2 });
 
-    const runId = await mgr.start({
-      script: `const [a, b] = await parallel([() => workflow('d', {}), () => workflow('d', {})]); return a + b;`,
-    });
+    const runId = await startScript(mgr, `const [a, b] = await parallel([() => workflow('d', {}), () => workflow('d', {})]); return a + b;`);
     const view = await settled(mgr, runId);
     expect(view.status).toBe('completed');
 

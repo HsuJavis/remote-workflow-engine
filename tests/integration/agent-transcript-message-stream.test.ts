@@ -20,6 +20,7 @@
 // tool-using agent turn produces.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AgentOpts } from '../../src/types.js';
+import { facadeCaller, runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const queryMock = vi.fn();
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
@@ -83,7 +84,7 @@ describe('AgentTranscriptSink captures the SDK message/tool_call/tool_result str
     const runManager = new RunManager({ store, clock, gateway });
     const facade = new McpFacade({ clock, store, runManager });
 
-    const run = await facade.workflow_run({ script: `return agent('read foo.txt');` });
+    const run = await runScriptVia(facadeCaller(facade), `return agent('read foo.txt');`);
     const runId = run.result!.runId;
 
     let status = await facade.workflow_status({ runId });

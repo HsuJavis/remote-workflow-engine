@@ -162,6 +162,9 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     maxTimeoutMs: fileConfig.maxTimeoutMs,
     maxAppendPromptBytes: fileConfig.maxAppendPromptBytes,
     maxEffort: fileConfig.maxEffort,
+    // v22 (ARCH-071, ADR-014, TASK-107): same composeConfig wiring convention as the three
+    // ceilings above — goes into the existing WorkflowCatalogOpts.ceilings object (no new plumbing).
+    maxWorkflowVersions: fileConfig.maxWorkflowVersions,
     // Gate 7.5 v21 config-sync check (§4b): same composeConfig wiring-gap class as the four fields
     // above — these four were documented in rwe.config.json/DEPLOY.md but never named in this
     // object literal, so `npm start`/systemd (the real production entrypoint) silently ignored
