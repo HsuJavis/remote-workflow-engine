@@ -888,7 +888,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - Depends on TASK-115 and TASK-125 (same file; `phases` must already be on the public allowlist). Pure — no clock, no I/O, no auth, **no `viewerIsOwner`** (a parameter that cannot change the output is one that will eventually be made to; both groups agreed to drop it).
 
 ### TASK-119 — the facade: `workflow_describe` (any principal) and `workflow_regenerate_diagram` (owner-gated)
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-082
 - **files:** src/mcp-facade.ts, tests/unit/workflow-describe-facade.test.ts
 - **des:** DES-126
@@ -965,3 +965,11 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **des:** DES-125, DES-127, DES-131, DES-134
 - **dod:** `grep -rn "new GraphAnalyzer" src/` returns the ONE construction site in `createServer()` (today it returns nothing); `new McpFacade(...)` at server.ts:1398 passes real `triggerPorts` (composed from the THREE separate trigger stores per ARCH-078 — scheduler, webhook, continuation — not one batched read) and the real analyzer satisfying `McpFacadeDeps`' structural `{enabled, regenerate()}` shape; VAL-113/114/115 go green over live HTTP. **Both seams become REQUIRED in `McpFacadeDeps`** (adjudication #2 R-2) so an unwired call site is a `tsc` error rather than a silent degrade — `triggerPorts ?? NO_TRIGGER_PORTS` is deleted and tests that do not care pass `NO_TRIGGER_PORTS` explicitly; `npx tsc --noEmit` clean proves every call site was updated. Also lands TASK-117's two deferred boot lines (effective post-curation tool set + jail dir; B1's missing-diagram count + recovery command), which were blocked on exactly this construction site.
 - **estimate:** L
+
+### TASK-127 — build DES-122's zero-config fail-closed guard, which the design specifies and no code implements
+- **status:** draft
+- **traces:** ARCH-079, ARCH-085
+- **files:** src/server.ts, tests/integration/graph-analyzer-composition-root.test.ts
+- **des:** DES-122
+- **dod:** Gate 5 writes the RED case FIRST (a guard shipped without a test asserting it is exactly how DES-122 reached Gate 6 unbuilt and unnoticed). With `graphAnalyzer.enabled: true` and NO resolvable `workRoot`, `graphAnalyzer.tools` is forced to `[]` regardless of what the operator configured, and the boot line states the downgrade and its reason. Lands at `server.ts:1462-1475` — the ONE site where every `graphAnalyzer` key defaults — NOT `main.ts`, whose own convention at `:178-183` is "No defaults applied here". Rationale: with no `workRoot` the SDK gateway's `cwd` is `undefined` and that client's docblock records "nothing to enforce against, allow", i.e. no jail for an agent the architecture classifies as running on attacker-influenced input (ADR-016). Narrow exposure (the operator must BOTH set non-empty `graphAnalyzer.tools` AND run with no `workRoot`; the default is `[]`) bounds severity — it does not make an unbuilt guard acceptable.
+- **estimate:** S
