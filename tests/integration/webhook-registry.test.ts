@@ -7,14 +7,22 @@ import { join } from 'node:path';
 import { createHmac } from 'node:crypto';
 import { WebhookRegistry } from '../../src/webhook-registry.js';
 import type { Clock } from '../../src/clock.js';
+import { CatalogNotFoundError } from '../../src/errors.js';
 
 // An advancing-free clock anchored at a real "now" so the ±300s timestamp window is meaningful.
 const ANCHOR = new Date('2024-06-01T12:00:00.000Z');
 const CLOCK: Clock = { now: () => ANCHOR.getTime(), isoNow: () => ANCHOR.toISOString() };
 
-// v22 (DES-111): CatalogPort shrank to the existence-only shape webhook-registry.ts actually needs.
+// H4 second site (07-review.md §8.1): CatalogPort widened from exists() to resolve() — `create()`
+// now checks the name resolves on `release`, not merely that it exists. This fake only tracks
+// existence (`known`), so a known name always resolves; it is not modeling channel state.
 function fakeCatalog(known: Set<string>) {
-  return { async exists(name: string) { return known.has(name); } };
+  return {
+    async resolve(name: string) {
+      if (!known.has(name)) throw new CatalogNotFoundError(name);
+      return { script: '', version: 'v1' };
+    },
+  };
 }
 function fakeRunManager() {
   const started: Array<{ name?: string; args?: unknown }> = [];

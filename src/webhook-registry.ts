@@ -14,14 +14,20 @@ import { dirname } from 'node:path';
 import { randomUUID, randomBytes, createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { Clock } from './clock.js';
 import type { ErrEnvelope } from './types.js';
+import { CatalogNotFoundError } from './errors.js';
 
 /** Structural seam — matches RunManager.start() without importing the class (as scheduler/continuation). */
 interface RunManagerPort {
   start(spec: { name?: string; script?: string; args?: unknown; budget?: number | null; startedBy?: { type: string; id?: string } }): Promise<string>;
 }
-/** Structural seam — matches WorkflowCatalog.exists() (workflow-existence check at create time). */
+/** Structural seam — matches WorkflowCatalog's own resolve() signature without importing the class.
+ *  Widened for H4's second site (07-review.md §4.2/§8.1, ARCH-072 note 1): `create()` needs the SAME
+ *  channel-resolution check `workflow_run`/`Scheduler.create()` use, not just "the name exists" —
+ *  a registered-but-unpublished draft (REQ-097's normal author-loop state) must be refused
+ *  CHANNEL_UNPUBLISHED here, not accepted and left to fail at every subsequent delivery. `exists()`
+ *  is dropped — `create()` was its only caller in this file. */
 interface CatalogPort {
-  exists(name: string): Promise<boolean>;
+  resolve(name: string, sel: { channel?: string }): Promise<unknown>;
 }
 
 export interface WebhookRegistryDeps {
@@ -85,8 +91,19 @@ export class WebhookRegistry {
   /** Registers a webhook for a PRE-BOUND workflow. Generates the secret server-side and returns it
    *  EXACTLY ONCE — it is never retrievable again (list shows only a fingerprint). */
   async create(spec: { workflow: string; enabled?: boolean }): Promise<{ webhookId: string; secret: string } | { error: ErrEnvelope }> {
-    if (!(await this._catalog.exists(spec.workflow))) {
-      return { error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${spec.workflow}` } };
+    // H4 second site (07-review.md §8.1): upgraded from "the name exists" to "the name resolves on
+    // `release`" — same check Scheduler.create() uses (scheduler.ts:157-175).
+    try {
+      await this._catalog.resolve(spec.workflow, { channel: 'release' });
+    } catch (err) {
+      if (err instanceof CatalogNotFoundError) {
+        return { error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${spec.workflow}` } };
+      }
+      if (err instanceof Error) {
+        const code = (err as { code?: unknown }).code;
+        return { error: { code: typeof code === 'string' && code ? code : 'INTERNAL_ERROR', message: err.message } };
+      }
+      return { error: { code: 'INTERNAL_ERROR', message: String(err) } };
     }
     const id = randomUUID();
     const secret = randomBytes(32).toString('hex');
