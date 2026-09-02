@@ -828,7 +828,7 @@ must point at a field that is *already* public, and `118` edits the same file �
 order opens a window in which one response's key oracle rejects what its own `diagram` string renders.
 
 ### TASK-113 — `src/diagram-gate.ts`: the pure allowlist gate and `DIAGRAM_CODEPOINTS`
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-080
 - **files:** src/diagram-gate.ts, tests/unit/diagram-gate.test.ts
 - **des:** DES-124
@@ -838,7 +838,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - Lands **first and alone**: pure, `deps: —`, and it carries REQ-102/A3's security invariant, so it must be green before `GraphAnalyzer` exists (both panel groups, independently). Per the ledger's carried-in rule 1 every assertion names the literal secret, never `not.toContain(wholeScript)`.
 
 ### TASK-114 — `workflow_diagrams`: the table, the four accessors, and the one deletion path
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-077
 - **files:** src/workflow-catalog.ts, tests/unit/workflow-diagrams-store.test.ts
 - **des:** DES-130, DES-127
@@ -848,7 +848,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **ARCH-077's "`maxWorkflowVersions` prune" does not exist** — the ceiling *refuses* registration (`VERSION_CEILING_EXCEEDED`, `workflow-catalog.ts:342-346`). `deregister()`'s transaction is the **only** deletion path. Do not implement a prune hook (see DES-130).
 
 ### TASK-115 — `src/trigger-bindings.ts`: `getTriggerBindings` over four narrow ports, plus the canonical fingerprint
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-078
 - **files:** src/trigger-bindings.ts, tests/unit/trigger-bindings.test.ts
 - **des:** DES-128
@@ -858,7 +858,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - Lands before **both** consumers (the analyzer and the describe projection) — one normalization feeding both is what makes `diagramStale` a real signal instead of a formatting artifact.
 
 ### TASK-116 — `curateToolsForProvider` preserves an intentionally-empty tool set (latent security fix, gateway-level proof)
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-079
 - **files:** src/gateway/claude-agent-sdk-client.ts, tests/unit/claude-agent-sdk-gateway-allowed-tools.test.ts
 - **des:** DES-120
@@ -878,7 +878,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - Depends on TASK-113 (gate), TASK-114 (table), TASK-115 (bindings), TASK-116 (curation), TASK-125 (`phases` public before the allowlist points at them). **The late-write test must stay on the real `setImmediate` path** — the `schedule` seam that makes every other analyzer test deterministic would make this one vacuous; a later "make the suite faster" pass must not seam it. **The `main.ts` scratch-`cwd` repoint, the no-`workRoot` forced-`tools:[]` downgrade, and the two boot lines land inside THIS task**, not as follow-ups — they are constructor-time properties of the class this task builds (both panel groups). The wire test is **not optional next to the stub tests**: TASK-116's bug lives inside the SDK client's `options` builder and no stub can see a `cfg.tools → opts.tools` mis-map.
 
 ### TASK-118 — `projectWorkflowDescribe` + `WorkflowDescribeView` + `EXPECTED_DESCRIBE_KEYS`
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-081
 - **files:** src/workflow-view.ts, tests/unit/workflow-describe-projection.test.ts
 - **des:** DES-125, DES-127
@@ -918,7 +918,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - Depends on TASK-120, separate from it: this is the first model-authored string this renderer has ever received, and a `textContent`-by-convention file is not a control when the input's author is a language model.
 
 ### TASK-122 — the `graphAnalyzer` config block: `composeConfig()` forward + wiring-test row + example config + DEPLOY.md, in ONE change
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-085
 - **files:** src/main.ts, rwe.config.example.json, DEPLOY.md, tests/unit/compose-config-v2-wiring.test.ts
 - **des:** DES-134
@@ -948,7 +948,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - Its own task line at Gate 7.5, not a bullet inside TASK-122. **No unit test may be written that claims to prove REQ-104** — a unit assertion reads its value off the same path that would be broken, which is the defect this requirement is named after.
 
 ### TASK-125 — adjudication #1: `phases` joins the public allowlist on every surface (amends v22's shipped REQ-100 projection)
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-075, ARCH-081
 - **files:** src/workflow-view.ts, tests/unit/workflow-view.test.ts
 - **des:** DES-136
@@ -956,3 +956,12 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **estimate:** S
 - **iter:** v23
 - **Lands before TASK-117 and TASK-118.** Owner ruling 一律公開 (2026-09-02; recorded in 04-design.md "Orchestrator adjudication (v23) #1" and as REQ-100's `[AMENDED v23]` block): serving phase titles inside the diagram while `workflow_get` withheld them is REQ-100's own "cannot be side-stepped by asking a different endpoint" clause violated in mirror image. **`server.ts` is deliberately not in `files:`** — the only other masking site is the `/api/workflows/:name/skeleton` branch (`:1075-1084`), which TASK-120 **deletes** whole; patching a route to unmask and then deleting it is work with no surviving artifact. The window between the two tasks leaves that dying route *stricter* than the ruling, never looser. Its stale "phases are masked" comment dies with it, and DES-132 carries the one sentence that stops anyone re-adding masking to its successor.
+
+
+### TASK-126 — construct and wire the v23 subsystem in `createServer()`, and make both new seams REQUIRED
+- **status:** draft
+- **traces:** ARCH-079, ARCH-078, ARCH-081
+- **files:** src/server.ts, src/mcp-facade.ts, src/graph-analyzer.ts, tests/acceptance/val-114-trigger-bindings-live.test.ts
+- **des:** DES-125, DES-127, DES-131, DES-134
+- **dod:** `grep -rn "new GraphAnalyzer" src/` returns the ONE construction site in `createServer()` (today it returns nothing); `new McpFacade(...)` at server.ts:1398 passes real `triggerPorts` (composed from the THREE separate trigger stores per ARCH-078 — scheduler, webhook, continuation — not one batched read) and the real analyzer satisfying `McpFacadeDeps`' structural `{enabled, regenerate()}` shape; VAL-113/114/115 go green over live HTTP. **Both seams become REQUIRED in `McpFacadeDeps`** (adjudication #2 R-2) so an unwired call site is a `tsc` error rather than a silent degrade — `triggerPorts ?? NO_TRIGGER_PORTS` is deleted and tests that do not care pass `NO_TRIGGER_PORTS` explicitly; `npx tsc --noEmit` clean proves every call site was updated. Also lands TASK-117's two deferred boot lines (effective post-curation tool set + jail dir; B1's missing-diagram count + recovery command), which were blocked on exactly this construction site.
+- **estimate:** L
