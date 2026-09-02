@@ -7532,7 +7532,7 @@ verbatim — its oracle taken from the engine's instruction, not from the allowl
 
 ### Regression, coverage, and the mechanical gates — ROUND 3
 
-- **Full regression:** `npx vitest run` → **Test Files 281 passed (281)`, `Tests 1807 passed (1807)`,
+- **Full regression:** `npx vitest run` → `Test Files  281 passed (281)`, `Tests  1807 passed (1807)`,
   exit 0** — both summary lines read, which is the specific failure mode `c9ea0aa`'s own message
   records (assertions passing is not the suite passing). Measured twice: once as the pre-simplify
   baseline, once after the `UNBOUND_ENTRY_LABEL` extraction, byte-identical counts. `npx tsc

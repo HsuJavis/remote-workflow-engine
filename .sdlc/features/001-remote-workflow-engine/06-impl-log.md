@@ -2622,7 +2622,7 @@ files `08-validation.md`/`DEPLOY.md`), owned by the validator, not by Gate 6.
 - **traces:** REQ-103, DES-131, DES-128, ARCH-078, ARCH-079
 - **greens:** UT-123
 - **files:** src/graph-analyzer.ts, src/trigger-bindings.ts, tests/unit/graph-analyzer.test.ts
-- **commit:** c9ea0aa (+ the Gate 6.5 extraction below, verifier)
+- **commit:** c9ea0aa (+ dda0109, the Gate 6.5 extraction below, verifier)
 - **iter:** v23
 - **note:** Backfilled by the Gate 6.5+7 ROUND 3 verifier (2026-09-03) — the implementer shipped `c9ea0aa` with no IMPL entry, the **sixth** occurrence of this ledger-honesty gap this iteration (after IMPL-149..156 / 157 / 158 / 159..172 / 173). Attributed from `git show c9ea0aa`, verified against the source, not from the commit subject. No TASK exists by design: orchestrator adjudication #7 is the task-equivalent authorization, cut against the Gate 7.5 ROUND 2 failure `VAL-119`.
   **The fix (REQ-103's unbound clause):** `GraphAnalyzer._buildAllowlist` admitted only two engine-authored sentinels — `default` and `model:param` — while `describeTriggerBindings` (and the shipped default `systemPrompt`) instruct the model to label an unbound workflow's entry node `workflow_run`. The engine therefore instructed a token its own gate refused. Because `schedule_create` and `webhook_create` are both refused `CHANNEL_UNPUBLISHED` before publish, **every** workflow is unbound at registration, so an obedient model lost **every** first diagram — a regression against Gate 7.5 round 1, which is why it was a REQ failure and not a cosmetic gap. One line, beside the two sentinels it belongs with.
