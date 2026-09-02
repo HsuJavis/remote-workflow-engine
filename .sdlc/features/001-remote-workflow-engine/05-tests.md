@@ -7485,3 +7485,108 @@ reader at all, flagged as possibly-dead accessor, not removed).
   honest-failure path the previous closeout's smoke also recorded. The ready path is therefore NOT
   re-confirmed by this round's smoke — it is Gate 7.5's `VAL-118` to close for real, and it stays the
   one unverified-at-real-tier item of this gate.
+
+## Gate 6.5+7 ROUND 3 — adjudication #7 closeout (2026-09-03, verifier)
+
+Third Gate 6.5+7 pass of v23, over the Gate 6 delta `c9ea0aa` — one production line
+(`labels.add('workflow_run')` in `GraphAnalyzer._buildAllowlist`) plus the test below, closing the
+Gate 7.5 ROUND 2 failure (`VAL-119`: the engine instructed a token its own gate rejected).
+
+**Simplify (Gate 6.5) — one reuse fix, quality only, zero behaviour change.** The delta's own defect
+class *is* a duplication: the unbound entry label was typed as an independent literal in
+`trigger-bindings.ts`'s instruction to the model and again in `graph-analyzer.ts`'s allowlist, and
+the two immediately disagreed. Extracted to ONE exported declaration —
+`UNBOUND_ENTRY_LABEL = 'workflow_run'` in `trigger-bindings.ts`, the module that authors the
+instruction — consumed by `describeTriggerBindings` (template literal, byte-identical output string)
+and by `_buildAllowlist` (`labels.add(UNBOUND_ENTRY_LABEL)`). Same one-declaration rule as v23 round
+1's `ANALYZER_SCRATCH_SUBDIR` and v21's `DEFAULT_CEILINGS`, and `graph-analyzer.ts` already imported
+this module, so no new module edge (`solid_check` unchanged). Two candidates rejected on purpose:
+(a) folding `server.ts`'s `DEFAULT_GRAPH_ANALYZER_SYSTEM_PROMPT` prose ("reads as a plain
+workflow_run entry point") into the same constant — that string is an operator-overridable default,
+so a constant cannot protect the surface that actually matters, and `server.ts:189`'s `workflow_run`
+is the TOOL NAME, the same characters with a different meaning; (b) importing the constant into
+`UT-123` — the test's oracle is deliberately the engine's own instruction as a literal, and reading
+it from the implementation would restore exactly the tautology that let the two halves disagree.
+`npx tsc --noEmit` clean; the two directly-affected unit files re-run green (30/30) before the full
+regression; nothing was reverted because nothing went red.
+
+### UT-123 — an obedient diagram of an UNBOUND workflow must survive the gate
+
+- **status:** green
+- **traces:** DES-131, DES-128, REQ-103
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts` (1 case; shipped inside `c9ea0aa` with no ledger entry —
+backfilled here, the **sixth** occurrence of the implementer-writes-no-item gap this iteration).
+Written RED against the pre-fix tree: `_buildAllowlist` admitted only `default` and `model:param` as
+engine-authored sentinels, so a model that obeyed `describeTriggerBindings`' own instruction
+("label the entry node \"workflow_run\"") was gate-rejected. Blast radius is what made it a REQ-103
+failure rather than a typo: `schedule_create`/`webhook_create` are both refused
+`CHANNEL_UNPUBLISHED` before publish, so **every** workflow is unbound at registration and an
+obedient model lost **every** first diagram. The case registers an unbound workflow, resolves the
+gateway with `╭─workflow_run─╮`, and asserts the persisted row is `ready` with that diagram stored
+verbatim — its oracle taken from the engine's instruction, not from the allowlist.
+
+### Regression, coverage, and the mechanical gates — ROUND 3
+
+- **Full regression:** `npx vitest run` → **Test Files 281 passed (281)`, `Tests 1807 passed (1807)`,
+  exit 0** — both summary lines read, which is the specific failure mode `c9ea0aa`'s own message
+  records (assertions passing is not the suite passing). Measured twice: once as the pre-simplify
+  baseline, once after the `UNBOUND_ENTRY_LABEL` extraction, byte-identical counts. `npx tsc
+  --noEmit` clean. **Zero remaining red** in this document (`IT-015`/`VAL-115` remain the two
+  `blocked`/`not-run` deferrals labelled at earlier closeouts, unchanged).
+- **No new system-level `IT-*`/`VAL-*` were required.** This round's delta is one allowlist token;
+  its system-level half already exists and passes (`IT-098` pins the single composition site,
+  `VAL-113`/`VAL-114` the describe surface), and the ONE thing only a real run can settle — an
+  obedient unbound diagram surviving the gate against a real provider — was settled by the smoke
+  below and belongs to `VAL-119` at Gate 7.5, not to a new mock-tier item.
+- **Coverage:** `src/` overall **95.46%** lines (95.44% functions / 88.42% branches), against the
+  ≥90% whole-tree bar — measured with `npx vitest run --coverage --coverage.provider=v8
+  --coverage.include='src/**/*.ts' --coverage.reportOnFailure=true` (`@vitest/coverage-v8` is not a
+  declared devDependency in this repo; installed with `npm i --no-save` so `package.json`/lockfile
+  stay untouched). **Per-function bar on this round's slice: 2/2 at 100%** —
+  `GraphAnalyzer._buildAllowlist` (23 lines, 0 missed) and `describeTriggerBindings` (16 lines, 0
+  missed); `getTriggerBindings`/`canonicalize`, touched only by the new import, also 100%. The
+  **77** pre-existing `>5`-line functions below 95% and **8** short functions missing more than one
+  line are the same named debt the previous closeout carried — **the count did not grow** (77 → 77),
+  and none is in this round's diff. Worst offenders, unchanged: `sandbox/child-entry.ts` 0% (only
+  ever executes inside a spawned subprocess), `main.ts` `main`/`loadFileConfig`/`onSupervisionEvent`
+  0%, `server.ts` `checkMcpConfigTransport` 0% / `runDiagnostics` 3.8%, `mcp-probe.ts` `_probeStdio`
+  3.7%. Decision rationale (standing, recorded at the v23 round-1 closeout and re-affirmed here, not
+  newly lowered): the per-function ≥95% bar is enforced on the code each round adds or modifies;
+  whole-tree the bar is the ≥90% overall figure, because the residue needs a real
+  `litellm`/MCP/sandbox environment — i.e. Gate 7.5's tier, not a unit test's.
+- **`sh .sdlc/trace … --check`:** 996 items (was 994 — `UT-123` + `IMPL-174`), **18 gaps, the
+  byte-identical baseline set** captured before this pass: 16 low iter-drift + 1 low `TASK-018`
+  未實作 + 1 mid `IMPL-082` TDD. **0 new gaps, 0 new gap classes, 0 high, 0 未真實驗證, 0 broken
+  links, 0 orphans.** `IMPL-174` traces only v23 items (`REQ-103`, `DES-131`, `DES-128`, `ARCH-078`,
+  `ARCH-079`), so the backfill adds no drift row of its own. Exit is 1 on the standing low/mid
+  residue, the same disposition all three v23 closeouts recorded.
+- **`solid_check`:** PASS — 23 modules, 0 high / 0 mid / 10 low (the same pre-existing
+  unclaimed-file rows). The extraction added no module edge: `graph-analyzer.ts` already imported
+  `trigger-bindings.ts`.
+- **`determinism_check src --check`:** exit 0.
+- **Time-travel re-run:** no `libfaketime` on this host, so the install-free fallback —
+  `TZ='Pacific/Kiritimati'` (UTC+14) full suite — 281 files / 1807 tests pass, identical to
+  baseline, **0 tests flipped**.
+- **Seam production-wiring:** no new seam this round (an exported string constant is pure).
+  `new GraphAnalyzer(`/`new McpFacade(` still appear exactly once each in `src/`, both in
+  `createServer`'s composition root (`IT-098` pins it mechanically), and `UNBOUND_ENTRY_LABEL`'s
+  consumer is production code (`graph-analyzer.ts`), not a test.
+- **Real-dependency smoke (real local Ollama `qwen2.5:7b` on 127.0.0.1:11434, NOT a mock):** real
+  `createServer` + real JSON-RPC-over-HTTP + real `LiteLLMGatewayClient` direct-fetch, three real
+  registrations of the same UNBOUND workflow (`triggers: []`), throwaway script deleted after the
+  run. **(a) shipped default `systemPrompt`:** a genuine 489-token prompt and a real 197-token answer
+  that failed the codepoint pass → `unavailable`/`GATE_REJECTED_SHAPE`, the documented small-model
+  outcome. **(b) the discriminating case for adjudication #7** — an operator `systemPrompt`
+  (REQ-104's real config surface) that this model actually obeys: the real model returned
+  `╭─workflow_run─╮`, and the engine settled **`diagramStatus: ready`** with that diagram stored and
+  served verbatim through `workflow_describe`. Before this round's line, that same real output would
+  have been rejected — which is exactly what Gate 7.5 ROUND 2 observed. **(c) non-vacuity control:**
+  the identical path asking for `╭─not_a_real_label─╮` still settles
+  `unavailable`/`GATE_REJECTED_CONTENT` (`gateFail: 'token'`) — the gate is live and still
+  content-checking, so (b)'s `ready` is the added sentinel and not a disabled gate. The shipped
+  default prompt's ready path against a capable provider remains `VAL-119`/Gate 7.5's to close.

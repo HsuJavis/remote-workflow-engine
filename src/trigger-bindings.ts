@@ -20,6 +20,14 @@ export type TriggerBinding =
   | { kind: 'webhook'; enabled: boolean }
   | { kind: 'chain'; upstreamWorkflow: string | null };
 
+/** The entry-node label the analyzer is INSTRUCTED to draw when a workflow has no trigger bound
+ *  (`describeTriggerBindings` below), and therefore the label `_buildAllowlist` must admit. ONE
+ *  declaration on purpose (Gate 6.5, same rule as ANALYZER_SCRATCH_SUBDIR): the two halves were
+ *  written minutes apart as independent literals and immediately disagreed — the engine instructed a
+ *  token its own gate rejected, and since every workflow is unbound at registration that cost every
+ *  first diagram (adjudication #7). */
+export const UNBOUND_ENTRY_LABEL = 'workflow_run';
+
 /** Fixed JSON key order per binding kind — `JSON.stringify` on an object literal already preserves
  *  insertion order, so each branch just needs to be written with a stable key order; `null` is
  *  serialised explicitly (never omitted), so a named upstream and an unnamed one fingerprint apart. */
@@ -63,7 +71,7 @@ export function getTriggerBindings(name: string, ports: TriggerPorts): { binding
  *  expression is given as context; the kind is what gets drawn. */
 export function describeTriggerBindings(bindings: TriggerBinding[]): string {
   if (bindings.length === 0) {
-    return 'none — this workflow is started by a direct workflow_run call; label the entry node "workflow_run".';
+    return `none — this workflow is started by a direct ${UNBOUND_ENTRY_LABEL} call; label the entry node "${UNBOUND_ENTRY_LABEL}".`;
   }
   const lines = bindings.map((b) => {
     switch (b.kind) {

@@ -9,7 +9,7 @@ import type { Clock } from './clock.js';
 import type { AgentOpts } from './types.js';
 import type { GatewayClient, GatewayResult } from './gateway/client.js';
 import type { DiagramRow, PersistedDiagramNoteCode, WorkflowCatalog } from './workflow-catalog.js';
-import { describeTriggerBindings, getTriggerBindings, type TriggerBinding, type TriggerPorts } from './trigger-bindings.js';
+import { describeTriggerBindings, getTriggerBindings, UNBOUND_ENTRY_LABEL, type TriggerBinding, type TriggerPorts } from './trigger-bindings.js';
 
 // DES-123: the full, closed 10-value note vocabulary. DISABLED/NOT_GENERATED are synthesized at
 // READ time only (workflow-view.ts's projectWorkflowDescribe) and are never persisted — the store's
@@ -232,13 +232,13 @@ export class GraphAnalyzer {
     for (const alias of this._aliasNames) labels.add(alias);
     labels.add('default');
     labels.add('model:param'); // the shipped systemPrompt's own sentinel for a run-time-determined model
-    // v23 adjudication #7: the THIRD engine-authored sentinel. `describeTriggerBindings` (for an
-    // unbound workflow) and the shipped default systemPrompt both instruct the model to label the
-    // entry node `workflow_run` — so the gate must allow it, exactly as it allows the other two
-    // tokens the engine itself authors. Without this the engine instructs a word its own gate
-    // refuses, and since every workflow is unbound at v1 (schedule/webhook creation is refused
-    // CHANNEL_UNPUBLISHED before publish), an obedient model loses EVERY first diagram.
-    labels.add('workflow_run');
+    // v23 adjudication #7: the THIRD engine-authored sentinel — the label `describeTriggerBindings`
+    // instructs for an unbound workflow, read from its ONE declaration rather than re-typed here
+    // (Gate 6.5), since re-typing it is exactly how the instruction and the gate came to disagree.
+    // Without it the engine instructs a word its own gate refuses, and since every workflow is
+    // unbound at v1 (schedule/webhook creation is refused CHANNEL_UNPUBLISHED before publish), an
+    // obedient model loses EVERY first diagram.
+    labels.add(UNBOUND_ENTRY_LABEL);
     for (const b of bindings) {
       labels.add(b.kind);
       if (b.kind === 'chain' && b.upstreamWorkflow !== null) labels.add(b.upstreamWorkflow);
