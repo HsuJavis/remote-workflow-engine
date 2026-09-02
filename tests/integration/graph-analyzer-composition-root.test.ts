@@ -25,6 +25,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { DEFAULT_ALIASES } from '../../src/default-aliases.js';
 import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 const SRC_ROOT = join(__dirname, '..', '..', 'src');
@@ -130,6 +131,59 @@ describe('TASK-127: DES-122 zero-config fail-closed guard — graphAnalyzer.tool
     } finally {
       logSpy.mockRestore();
       await server?.close();
+    }
+  });
+});
+
+// IT-100 (Gate 6.5+7 system-level addition, 2026-09-03 — REQ-102, ARCH-005, DES-131): the
+// system-level half of V-2, only writable now that V-2 is implemented. UT-121 pins that a listener
+// is attached to the spawned child; this pins the CONSEQUENCE on the real wire, through the real
+// server: with the MANAGED-proxy gateway (`useLiteLLMProxy`, the documented default deployment
+// shape) wired as the analyzer's gateway, `workflow_register` alone reaches a real `litellm` spawn —
+// and on a host without that binary the ENOENT 'error' event, with no listener, was an uncaught
+// process-level exception that took the ENGINE down. That is how the validator met it.
+//
+// `PATH` is emptied for the duration so the spawn is a guaranteed ENOENT on any host (including one
+// that does have `litellm`), then restored. Verified NON-VACUOUS the only way that means anything:
+// run against the pre-V-2 tree it kills the worker; against this tree the engine keeps answering
+// and the diagram settles `unavailable` with an engine-authored note — a degraded feature, not a
+// dead process.
+describe('IT-100: a workflow_register on a host with no `litellm` binary must not take the engine down (REQ-102, ARCH-005)', () => {
+  it('the analyzer job fails, the diagram settles unavailable with a note, and the server still answers', async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-it100-'));
+    const emptyBinDir = mkdtempSync(join(tmpdir(), 'rwe-it100-nopath-'));
+    const realPath = process.env.PATH;
+    process.env.PATH = emptyBinDir; // set BEFORE the gateway exists: `litellm` is unresolvable
+    // `aliases` and no `gateway`: createServer itself builds the LiteLLMGatewayClient with
+    // `useLiteLLMProxy: config?.useLiteLLMProxy ?? true` (server.ts:1383, D-R1 — the production
+    // default), and `analyzerGateway` is that same client. This is the deployed shape, not a
+    // gateway hand-built by the test.
+    const server = await createServer({
+      port: 0, bind: '127.0.0.1', workRoot, aliases: DEFAULT_ALIASES, graphAnalyzer: { enabled: true },
+    } as never);
+    async function call(name: string, args: unknown): Promise<any> {
+      const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+      });
+      const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
+      return JSON.parse(body.result?.content?.[0]?.text ?? '{}');
+    }
+    try {
+      await registerPublishedVia(call, 'it100-flow', `return 1;`);
+      // Poll the engine itself — every answered poll is also the survival assertion.
+      let view: any;
+      for (let i = 0; i < 20 && (view?.diagramStatus ?? 'pending') === 'pending'; i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        view = (await call('workflow_describe', { name: 'it100-flow' })).result;
+      }
+      expect(view.diagramStatus).toBe('unavailable');
+      expect(view.diagramNote).toMatch(/\S/); // an engine-authored note, never an empty string
+    } finally {
+      process.env.PATH = realPath;
+      await server.close();
+      rmSync(workRoot, { recursive: true, force: true });
+      rmSync(emptyBinDir, { recursive: true, force: true });
     }
   });
 });

@@ -1284,3 +1284,75 @@ CLAUDE.md's rule: never reconstruct a trace baseline by checking the ledger back
 appended. Next: Gate 6 (implementer) lands `graph-analyzer.ts:299`'s prompt fix,
 `litellm-proxy.ts`'s `proc.on('error', ...)`, `dashboard.ts:342`'s wording, and V-3's
 `docs/AUTHORING.md` example — then Gate 7.5 re-runs `VAL-118` only.
+
+## 2026-09-03 — v23 Gate 6.5+7 ROUND 2 (verifier): simplify + regression closeout over the Gate 6 delta
+
+**Scope.** The merged Gate 6.5 (simplify) + Gate 7 (regression + coverage) pass over `c3b0c01`, the
+implementer's adjudication-#6 delta (V-1 bindings-in-the-prompt, V-2 the litellm spawn listener, V-4
+the retired word off the live wire, V-3 the AUTHORING.md `params` shape).
+
+**Simplify: no code change, on purpose.** 52 changed `src` lines, already minimal.
+`describeTriggerBindings` is one `switch` over the same closed union `canonicalize` walks — merging
+them would couple a fingerprint to a prompt string; the `spawnError` capture is two statements inside
+the loop that already owns startup failure; V-4 is one string literal. Two candidates were considered
+and rejected, and are named in `IMPL-173` rather than silently absorbed: consolidating the 13
+near-identical fake-`ChildProcess` builders (a 13-file blast radius during a verification gate), and
+making `_doStart`'s two early `throw`s reset `_startPromise` the way the deadline path does (a
+behaviour change, not a cleanup). Nothing was reverted because nothing was cleaned.
+
+**`IMPL-173` backfilled.** The implementer shipped `c3b0c01` with no IMPL entry — the **fifth**
+occurrence of this same ledger-honesty gap (after IMPL-149..156 / 157 / 158 / 159..172), and one
+`trace.py` structurally cannot catch here, because adjudication #6 created no TASK for it to find
+unimplemented.
+
+**The two "background artifact" test files are fixed, not re-accepted.** `val-023-sdk-gateway-timeout`
+and `hooks-reject-and-timeout-bound-journey` were still failing (`Hook timed out in 10000ms` in
+`afterAll`, with all 5 of their assertions passing), despite `c3b0c01`'s message claiming the
+completed `ChildProcess` fakes had turned them green. Root cause: each fixture stands up a
+deliberately-hung HTTP stub that never ends a response, so every request it received is still an open
+socket and `close()` waits for all of them. Confirmed **pre-existing** by running the same two files
+in a scratch `git worktree` at `71490c0` — a worktree, never `git checkout <sha> -- <path>`, per this
+repo's CLAUDE.md — where they fail identically. Fixed with one `hungStub.closeAllConnections()` per
+file, no assertion touched. The suite is now **281/281 files** green for the first time in this
+ledger's history of that caveat.
+
+**Numbers.** Full regression `npx vitest run`: 281 files / **1806 tests / 0 failed**, exit 0; `npx tsc
+--noEmit` clean. Coverage (v8, `@vitest/coverage-v8@1.6.0` installed `--no-save`): **95.45% overall**
+(14809/15514) against the ≥90% bar. Per-function bar over what this round added or modified: **all
+100%** — after new **UT-122** took `LiteLLMProxyManager._doStart` from 93.6% (its child-died and
+deadline-expired exits were never executed) to 100%. The whole-tree 77 sub-95% functions are the same
+77 as the previous closeout, unchanged named debt; three smaller ones inside the file V-2 touched are
+newly named (`_assertPortFree` 88%, `_killProcessGroup` 75%, `get baseUrl` with zero callers at all).
+
+**New system-level test, verified non-vacuous.** **IT-100**: real `createServer` with `aliases` and no
+injected gateway — so the server itself builds the managed-proxy `LiteLLMGatewayClient` D-R1 makes the
+production default, and hands that client to the analyzer — then a real `workflow_register` over real
+JSON-RPC-over-HTTP with `PATH` emptied so the spawn is a guaranteed ENOENT. The engine must keep
+answering and settle the diagram `unavailable` with a note. Run against the pre-V-2 worktree it exits
+1 with an unhandled `Error: spawn litellm ENOENT`; here it exits 0 with the journal line showing
+`durationMs:269, noteCode:"PROVIDER_UNREACHABLE"` — the spawn path genuinely executed. That check
+matters because this ledger's own carried rule is "a test built on the vulnerability it should catch"
+— an earlier draft of IT-100 passed on BOTH trees, and was rewritten rather than shipped.
+
+**Real-dependency smoke (real local Ollama, not a mock).** V-1 changed what is actually sent to the
+provider, so the smoke was re-run end to end: a 2-phase workflow registered with **no** trigger bound
+→ real `qwen2.5:7b` call, `promptTokens: 526`; then a real `schedule_create` (`*/5 * * * *`) +
+`workflow_regenerate_diagram` → `promptTokens: 536`, with `workflow_describe` reporting the live cron
+binding. **The prompt genuinely changes with a live binding — which is the exact oracle Gate 7.5 used
+to prove REQ-103 was NOT implemented** (identical 297/297 then). Both diagrams settled
+`unavailable`/`GATE_REJECTED_SHAPE` on this small local model, so the **ready** path is not
+re-confirmed at real tier by this gate — that is `VAL-118`, and Gate 7.5 owns it.
+
+**Mechanical gates.** `sh .sdlc/trace … --check`: 993 items / 18 gaps — the baseline residue captured
+to a scratch file before any edit, byte-identical, **plus exactly one new LOW**: `DES-064` (v11) now
+lags `IMPL-173` (v23). `DES-064`'s own boundary-conditions still quoted the retired
+`"unmatched to skeleton"` literal, so it was amended in place with an `[AMENDED v23 adjudication #6]`
+marker; its `iter` was deliberately left at v11, since bumping it would turn the three v11 tests that
+trace it into three drift rows instead of one. `solid_check` PASS (23 modules, 0 high / 0 mid / 10
+low); `determinism_check src --check` exit 0; time-travel re-run under `TZ='Pacific/Kiritimati'`
+(no `libfaketime` on this host) identical, 0 tests flipped; seam wiring re-checked —
+`describeTriggerBindings` has a production caller, and the round introduced no new seam.
+
+**State.** `gates.verification.passed` stays `true` with its note rewritten for this round;
+`current_stage` impl → **validation**; `updated` bumped; this entry appended. Next: Gate 7.5
+(validator) re-runs `VAL-118` for REQ-103.

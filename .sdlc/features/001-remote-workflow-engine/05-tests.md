@@ -7245,11 +7245,11 @@ this pass writes the RED for all three code-behavior items. `VAL-118` itself is 
 (`real:true`) and is re-run, not duplicated, at Gate 7.5; nothing here touches it.
 
 ### UT-119 — the analyzer PROMPT (not just the allowlist) must carry the live trigger bindings
-- **status:** red
+- **status:** green
 - **traces:** DES-131, DES-128, ARCH-078, ARCH-079, REQ-103
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 File: `tests/unit/graph-analyzer.test.ts` (new describe block). Mock policy (unit): a stub
@@ -7267,11 +7267,11 @@ ARE identical), the second on `.toContain` (the prompt has no binding text at al
 reading `graph-analyzer.ts:296-299` before writing the assertions, not assumed.
 
 ### UT-120 — the live `/api/runs/:id/dag` warning never re-surfaces the retired "skeleton" word
-- **status:** red
+- **status:** green
 - **traces:** DES-064, REQ-105
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 File: `tests/unit/graph-layout.test.ts` (appended to the existing UT-068 suite, same fixture
@@ -7288,11 +7288,11 @@ fails today (`true` where the assertion expects `false`) — verified by reading
 before writing the assertion.
 
 ### UT-121 — a `litellm` spawn failure must not escape as an unhandled process-level exception
-- **status:** red
+- **status:** green
 - **traces:** ARCH-005, REQ-102
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 File: `tests/unit/litellm-proxy-hardening.test.ts` (new describe block, existing spawnImpl/fetchImpl
@@ -7335,3 +7335,137 @@ litellm-proxy tests use no time values at all. `state.yaml`: `gates.tests.passed
 `impl` for Gate 6 to land the three fixes (`graph-analyzer.ts:299`, `litellm-proxy.ts`'s
 `proc.on('error', ...)`, `dashboard.ts:342`'s wording) plus V-3's doc addition, then Gate 7.5 re-runs
 `VAL-118` only.
+
+## Gate 6.5+7 ROUND 2 — adjudication #6 closeout (2026-09-03, verifier)
+
+Second Gate 6.5+7 pass of v23, over the Gate 6 delta `c3b0c01` (V-1/V-2/V-4 code + V-3 doc). Scope
+of this section: the simplify pass, the three flips, the two new tests the coverage gate and the
+system-level rule required, and the mechanical gates.
+
+**Simplify (Gate 6.5) — no code change, deliberately.** Reviewed the 52 changed `src` lines for
+reuse / simplification / efficiency / altitude. Nothing to cut: `describeTriggerBindings` is a single
+`switch` over the same closed union `canonicalize` already walks (merging them would couple a
+fingerprint to a prompt string), the `spawnError` capture is two statements inside the loop that
+already owns startup failure, and V-4 is one string literal. Two candidates rejected as out of a
+quality-only gate's scope and recorded as debt in `IMPL-173` instead: consolidating the 13
+near-identical fake-`ChildProcess` builders (13-file blast radius during a verification gate), and
+making `_doStart`'s two early `throw`s reset `_startPromise` the way the deadline path does (a
+behaviour change). "Revert any cleanup that goes red" was never reached — there was no cleanup.
+
+**Flips.** `UT-119`, `UT-120`, `UT-121` → `status: green`, `result: pass`, on the full-suite re-run
+below (not on inspection). `real:` stays `false` on all three: they are unit tests, and REQ-103's
+real evidence is `VAL-118`, which Gate 7.5 owns and re-runs.
+
+### The two `spawn litellm ENOENT` / hook-timeout "background artifact" files — genuinely fixed
+
+The ledger has carried "2 pre-existing failing test FILES" as an accepted artifact since v22, and
+`c3b0c01`'s message claimed the completed `ChildProcess` fakes had turned them green. Re-measured
+here: they were still **failing** — `val-023-sdk-gateway-timeout.test.ts` and
+`hooks-reject-and-timeout-bound-journey.test.ts`, `Hook timed out in 10000ms`, all 5 of their
+assertions passing. Diagnosed rather than re-accepted, and confirmed **pre-existing** by running the
+same two files against a scratch `git worktree` at `71490c0` (the commit before the Gate 6 delta —
+worktree, never `git checkout <sha> -- <path>`, per this repo's CLAUDE.md): identical failure, so it
+is not a V-2 regression. Cause: both fixtures stand up a deliberately-hung HTTP stub that never ends
+a response, so every request it received is still an open socket and `server.close()` waits for all
+of them — `afterAll` never returns. Fix (test-only, one line each, no assertion weakened):
+`hungStub.closeAllConnections()` before `close()`. Both files now pass in ~7s each. **The
+"2 background artifacts" caveat is retired, not carried forward** — the full suite is 281/281 files
+green for the first time in this ledger's history of that caveat.
+
+### New tests written by THIS gate
+
+### UT-122 — `LiteLLMProxyManager._doStart`'s other two startup-failure exits
+- **status:** green
+- **traces:** ARCH-005, REQ-102, TASK-027
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/litellm-proxy-hardening.test.ts` (2 cases, existing `spawnImpl`/`fetchImpl`
+injection convention). Coverage-gate driven: V-2 modified `_doStart`, so the whole method is
+re-measured against the per-function bar and it came back at **93.6%** — the child-died-during-startup
+`throw` and the deadline-expired `kill`+`throw` were never executed by any test. Both are the paths a
+real operator meets when `litellm` is present but broken (bad config, wrong Python, port stolen
+between the pre-bind probe and the spawn), i.e. the same failure class V-2 is about: startup must
+fail as a rejected promise the caller can report, never as a hang or a process-level crash. Case 1
+spawns a child already carrying `exitCode: 3` and asserts the rejection names the code AND that the
+health poll was never called (the exit check precedes it); case 2 sets `startupTimeoutMs: 300`
+(relative to the deadline the SUT computes itself — no date literals, hermetic) with a fetch that
+always throws, and asserts the rejection plus that the child was killed. `_doStart` re-measured at
+**100%**.
+
+### IT-100 — a `workflow_register` on a host with no `litellm` binary must not take the engine down
+- **status:** green
+- **traces:** REQ-102, ARCH-005, DES-131
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/integration/graph-analyzer-composition-root.test.ts` (appended). The system-level half
+of V-2, writable only now that V-2 exists: `UT-121` pins that a listener is attached, this pins the
+consequence on the real wire. Real `createServer` with `aliases` and no injected gateway — so the
+server itself builds the `LiteLLMGatewayClient` with `useLiteLLMProxy: config?.useLiteLLMProxy ?? true`
+(`server.ts:1383`, D-R1's production default) and hands that same client to the analyzer — then a real
+`workflow_register` over real JSON-RPC-over-HTTP, with `PATH` emptied for the duration so the spawn is
+a guaranteed ENOENT on any host (restored in `finally`). Asserts the engine keeps answering
+`workflow_describe` and the diagram settles `unavailable` with a non-empty engine-authored note.
+**Verified non-vacuous** (this ledger's own named recurring defect — "a test built on the
+vulnerability it should catch"): run against the pre-V-2 worktree at `71490c0` it exits 1 with an
+unhandled `Error: spawn litellm ENOENT`; against this tree it exits 0, with the journal line showing
+`durationMs:269`, `noteCode:"PROVIDER_UNREACHABLE"` — the spawn path genuinely executed, not
+short-circuited.
+
+### Coverage gate — numbers
+
+**Overall `src/` line coverage: 95.45%** (14809/15514), against the ≥90% whole-tree bar. Measured
+with `npx vitest run --coverage --coverage.provider=v8 --coverage.include='src/**/*.ts'
+--coverage.reportOnFailure=true` (`@vitest/coverage-v8@1.6.0` installed `--no-save`; `package.json`
+and the lockfile are untouched).
+
+**Per-function bar over the code this round added or modified: all clear at 100%** —
+`describeTriggerBindings` (new), `getTriggerBindings`, `GraphAnalyzer._runJob`/`_attempt`,
+`layoutGraph`, and `LiteLLMProxyManager._doStart` (100% after UT-122; 93.6% before it).
+
+**Worst offenders, whole tree: 77 functions of >5 lines below 95% — the same 77, unchanged from the
+previous closeout**, all pre-existing and none touched this round: `main.ts`'s `main`/`loadFileConfig`/
+`onSupervisionEvent` (0%, the real-process entrypoint), `sandbox/child-entry.ts`'s child body (0%,
+only ever executed inside a spawned subprocess), `server.ts`'s `checkMcpConfigTransport` (0%) and
+`runDiagnostics` (3.8%), `mcp-probe.ts`'s `_probeStdio`/`_probeHttp`/`probe` (3.7%/12.5%/12.5%).
+Carried as named debt under the scope rule recorded in `gates.verification` since v21 (a function
+MODIFIED this round is measured whole; a function merely NEIGHBOURING the diff is not re-scoped).
+Three smaller ones sit in the file V-2 touched but outside the modified method, and are named rather
+than absorbed: `_assertPortFree` (88%, the non-`EADDRINUSE` reject), `_killProcessGroup` (75%, the
+`process.kill` catch fall-through), and `get baseUrl` (3 lines, 0 calls — no production or test
+reader at all, flagged as possibly-dead accessor, not removed).
+
+### Mechanical gates re-run by this pass
+
+- **Full regression:** `npx vitest run` → **281 files / 1806 tests, 0 failed, exit 0** (1803 + UT-122's
+  2 cases + IT-100). `npx tsc --noEmit`: clean.
+- **`sh .sdlc/trace … --check`:** 992 items, 17 gaps, exit 1 — the gap set is **byte-identical** to the
+  baseline captured to a scratch file before any edit (15 low doc/test-drift rows, `TASK-018` low
+  未實作, `IMPL-082` mid TDD). No new gap, no severe gap, no broken link, no orphan.
+- **`solid_check`:** PASS — 23 modules, 0 high / 0 mid / 10 low (the same pre-existing unclaimed-file
+  rows).
+- **`determinism_check src --check`:** exit 0 — no production wall-clock/randomness read outside the
+  injected seam.
+- **Time-travel re-run:** `libfaketime` is not installed on this host, so the install-free fallback —
+  `TZ='Pacific/Kiritimati'` (UTC+14) full suite — was used: identical result, 0 tests flipped red.
+- **Seam production-wiring:** `describeTriggerBindings` has a production caller (`graph-analyzer.ts`),
+  not a test-only one; the round introduced no new seam, and `GraphAnalyzer`/`TriggerPorts` still have
+  exactly one construction site each (`IT-098` pins this mechanically).
+- **Real-dependency smoke (real local Ollama, NOT a mock):** the V-1 change alters what is actually
+  sent to the provider, so the smoke was re-run against real `ollama` (`qwen2.5:7b`) through real
+  `createServer` + real JSON-RPC-over-HTTP (throwaway script, deleted after the run). Registered a
+  2-phase workflow with **no** trigger bound → real model call, journal `promptTokens: 526`. Then
+  `schedule_create` (a real cron row, `*/5 * * * *`) + `workflow_regenerate_diagram` → second real
+  model call, journal `promptTokens: 536`, and `workflow_describe` reports
+  `triggers:[{kind:'cron',cron:'*/5 * * * *',enabled:true}]`. **The prompt genuinely changes with a
+  live binding — 526 → 536 — which is the exact oracle Gate 7.5 used to prove REQ-103 was NOT
+  implemented** (identical 297/297 then). Both diagrams settled `unavailable`/`GATE_REJECTED_SHAPE`
+  (`gateFail:'codepoint'`): this small local model's ASCII output failed the diagram gate, the same
+  honest-failure path the previous closeout's smoke also recorded. The ready path is therefore NOT
+  re-confirmed by this round's smoke — it is Gate 7.5's `VAL-118` to close for real, and it stays the
+  one unverified-at-real-tier item of this gate.

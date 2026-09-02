@@ -42,6 +42,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await server?.close();
+  // Same fix as val-023-sdk-gateway-timeout.test.ts: the deliberately-hung stub still holds every
+  // socket it never answered, so `close()` waits forever and this hook times out (10s) with all
+  // assertions green. Drop them first (Gate 6.5+7 verifier, 2026-09-03).
+  hungStub.closeAllConnections();
   await new Promise<void>((resolve) => hungStub.close(() => resolve()));
   rmSync(tmpDir, { recursive: true, force: true });
 });

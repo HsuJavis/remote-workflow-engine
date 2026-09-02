@@ -168,3 +168,45 @@ describe('LiteLLMProxyManager — a spawn failure must not escape as an unhandle
     expect(listenersAtFirstPoll).toBeGreaterThan(0);
   });
 });
+
+// UT-122 (Gate 6.5+7 coverage gate, 2026-09-03 — ARCH-005, REQ-102, TASK-027): V-2 modified
+// `_doStart`, so the whole method is re-measured against the per-function bar; it came back at
+// 93.6% with the two OTHER startup-failure exits — "the child died before it ever answered" and
+// "the deadline expired" — never executed by any test. Both are the paths a real operator meets on
+// a host where `litellm` is present but broken (bad config, wrong Python, port stolen between the
+// pre-bind probe and the spawn), i.e. exactly the failure class V-2 is about: startup must fail as
+// a rejected promise the caller can report, never as a hang or a process-level crash.
+describe('LiteLLMProxyManager — the other two startup-failure exits (UT-122, ARCH-005, REQ-102)', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('rejects with the exit code when the child dies before the first health poll answers', async () => {
+    // Already dead at the first loop check — the shape of a `litellm` that starts, reads a bad
+    // config and exits, which the health poll alone would only ever surface as a timeout.
+    const { fakeSpawn } = makeFakeSpawn(undefined);
+    const deadProc = fakeSpawn() as unknown as { exitCode: number | null };
+    deadProc.exitCode = 3;
+    const fakeHealthFetch = vi.fn(async () => { throw new Error('ECONNREFUSED'); });
+    const proxy = new LiteLLMProxyManager(ALIASES, {
+      port: 48177,
+      spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
+      fetchImpl: fakeHealthFetch as unknown as typeof fetch,
+    });
+
+    await expect(proxy.start()).rejects.toThrow(/exited during startup \(code 3\)/);
+    expect(fakeHealthFetch).not.toHaveBeenCalled(); // the exit check precedes the poll
+  });
+
+  it('kills the child and rejects when it never becomes healthy within the startup timeout', async () => {
+    const { fakeSpawn, fakeProc } = makeFakeSpawn(undefined); // no pid → direct-handle kill
+    const fakeHealthFetch = vi.fn(async () => { throw new Error('ECONNREFUSED'); });
+    const proxy = new LiteLLMProxyManager(ALIASES, {
+      port: 48178,
+      startupTimeoutMs: 300, // relative to the deadline the SUT computes itself; no date literals
+      spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,
+      fetchImpl: fakeHealthFetch as unknown as typeof fetch,
+    });
+
+    await expect(proxy.start()).rejects.toThrow(/did not become healthy within 300ms/);
+    expect(fakeProc.kill).toHaveBeenCalled(); // never leaves the unhealthy child running
+  });
+});
