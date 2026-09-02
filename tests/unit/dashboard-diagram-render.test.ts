@@ -44,7 +44,7 @@ describe('dashboard home-card mini-preview — honest absence, no fallback drawi
   it('fetches /describe (not /skeleton) for the mini-preview and renders nothing when no diagram exists', () => {
     // The mini-preview function body must no longer reference the skeleton array at all — it fetches
     // /describe and bails out when there is no `diagram` string (never draws a fallback skeleton SVG).
-    const miniPreviewSection = DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf('renderMiniSkeletonAsync'));
+    const miniPreviewSection = DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf('renderMiniPreviewAsync'));
     expect(miniPreviewSection.slice(0, 400)).toContain('/describe');
   });
 });

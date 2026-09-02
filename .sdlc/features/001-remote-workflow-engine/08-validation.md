@@ -5733,3 +5733,71 @@ target is a derived local shell variable (`HEALTHCHECK_HOST`), not a new configu
 (the ROUND 3 session's four ledger files + `DEPLOY.md`/`deploy.sh`, both further amended this closeout).
 
 **Unreachable dependencies:** none.
+
+## v23 TASK-124 (2026-09-02, implementer) — REQ-104 real-run: operator edits `graphAnalyzer` config, diagram visibly changes, no redeploy
+
+**Scope**: TASK-124 only — REQ-104's Gate 7.5 real run (DES-134's boundary item (3), the only item
+that can prove the config value reached the analyzer; per DES-134 no unit test may claim this — a
+unit assertion reads its value off the same path that would be broken). Ran against a **scratch**
+instance (own port 8798, own `workRoot`, own `rwe.config.json` outside the repo), never against the
+long-lived production instance (PID unaffected, confirmed untouched throughout via `ps aux`) — the
+production `rwe.config.json` (`gateway:"sdk"`, `auth.enabled:true`) was never read or written. Real
+provider: local Ollama (`gateway:"direct-fetch"`, zero LiteLLM/API-key dependency, per DEPLOY.md's
+own documented Ollama-only recipe), two real local models (`qwen2.5:7b`, `qwen2.5vl:7b`) actually
+queried over `localhost:11434` — no gateway/LLM call was mocked or stubbed. `/api/status` reported
+`0.1.0 (v0.20.0-77-gc3101f3)`; the working tree was **dirty** during this run (v23 sibling tasks
+mid-flight in the same parallel dispatch round — `src/mcp-facade.ts` and two test files were being
+edited concurrently by other implementers; none of the touched files intersect `graph-analyzer.ts`,
+`server.ts`'s analyzer construction site, or `diagram-gate.ts`). This round is a spot real-run, not
+the formal v23 Gate 7.5 — **VAL-115 should be re-confirmed once against the fully-integrated tree**
+(all of TASK-117/119/120/121/123/126 landed and committed) before the iteration closes.
+
+**Corroborates DEPLOY.md §1b item 3 empirically**: before tuning the prompt below, the very first
+attempt used the **shipped default** `systemPrompt` (server.ts's `DEFAULT_GRAPH_ANALYZER_SYSTEM_PROMPT`,
+untouched) against `qwen2.5:7b` — both the initial generation and one `workflow_regenerate_diagram`
+retry came back `outcome:"unavailable", noteCode:"GATE_REJECTED_SHAPE", gateFail:"codepoint"` (the
+model used box-drawing corner glyphs `└ ┘` outside the vocabulary and wrapped the reply in a
+markdown code fence despite being told not to). That is a live, unprompted reproduction of exactly
+the degradation DEPLOY.md already documents for this model class ("rising `gateFail:"codepoint"` is
+the operator's signal to retune `graphAnalyzer.model`/`systemPrompt`, not an engine fault") — so the
+evidence below deliberately starts from an **already-retuned** `systemPrompt`, the documented
+remediation, rather than the shipped default.
+
+### VAL-115 — real-run acceptance for REQ-104 (`graphAnalyzer` config reaches the analyzer at boot, no redeploy)
+- **status:** green
+- **traces:** REQ-104, TASK-124, DES-134
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  1. Scratch boot #1 — `rwe.config.json`: `gateway:"direct-fetch"`, `aliases.default -> ollama
+     qwen2.5:7b`, `graphAnalyzer:{enabled:true, model:"default", systemPrompt:<operator-tuned
+     ASCII-template prompt for this model class>}`. `workflow_register({name:"diagramdemo", script:
+     "export const meta={...phases:[{title:'Fetch'},{title:'Analyze'}]};phase('Fetch');await
+     agent(...);phase('Analyze');return 1;"})` over live MCP HTTP -> `{status:"completed",
+     version:1}`. Journal: `[remote-workflow-engine] graph-analyzer
+     {"name":"diagramdemo","version":"v1","model":"default",...,"outcome":"ready","gateFail":null}`.
+     `workflow_describe({name:"diagramdemo",version:"v1"})` -> `diagramStatus:"ready"`,
+     `diagram:"╭────────╮\n│ Fetch  │\n╰────────╯\n    │\n╭────────╮\n│ Analyze│\n╰────────╯"`.
+  2. **Edited `rwe.config.json` on disk** (no code change, no rebuild): added a second alias
+     (`vl -> ollama qwen2.5vl:7b`), set `graphAnalyzer.model:"vl"` and replaced
+     `graphAnalyzer.systemPrompt` with a different template (side-by-side layout).
+  3. **Restarted the process** (`kill` the running node/tsx process, re-launch the identical
+     `node node_modules/tsx/dist/cli.mjs src/main.ts` command against the same `RWE_CONFIG_PATH`) —
+     catalog rehydrated from disk (`versions with no diagram yet: 0`, v1's diagram intact).
+  4. `workflow_register` on the **same name** again -> `{status:"completed", version:2}` (v2).
+     Journal line for v2: `[remote-workflow-engine] graph-analyzer
+     {"name":"diagramdemo","version":"v2","model":"vl",...,"outcome":"ready","gateFail":null}` — the
+     journal names the **new** model (`vl`, not `default`), naming it on the very next line as
+     DES-134 predicted.
+  5. `workflow_describe({name:"diagramdemo",version:"v2"})` -> `diagramStatus:"ready"`,
+     `diagram:"╭────────╮   ╭────────╮\n│ Fetch │──▶│ Analyze │\n╰────────╯   ╰────────╯"` —
+     **visibly different** from v1's diagram (vertical stack vs. side-by-side with an arrow), and v1's
+     own `workflow_describe` output re-checked unchanged (the edit did not retroactively touch v1).
+  6. Scratch instance torn down (process `kill`ed; scratch `workRoot`, `rwe.config.json`, pid/log
+     files all removed) before write-up; the separate long-lived production instance (started 8/19,
+     port 8787) confirmed running and untouched throughout (`ps aux`), and its `rwe.config.json` was
+     never opened for write.
+- **iter:** v23
+
+**Unreachable dependencies:** none.

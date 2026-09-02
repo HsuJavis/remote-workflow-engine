@@ -2,9 +2,18 @@
 // finished while something still describes the deleted thing" is this ledger's single most-repeated
 // defect (nine recorded instances across v21/v22), so REQ-105's deletion is enforced by a grep guard
 // in CI, not by review discipline. `src/**` must mention "skeleton" (case-insensitive) NOWHERE outside
-// an EXACTLY-THREE file allowlist (`workflow-meta.ts`, `dashboard.ts`, `server.ts` — the last for its
-// unchanged, still-auth-gated `/api/runs/:id/dag` branch, ADR-022/v22 finding H2), and no advertised
+// an EXACTLY-FOUR file allowlist (`workflow-meta.ts`, `dashboard.ts`, `server.ts` — the last for its
+// unchanged, still-auth-gated `/api/runs/:id/dag` branch, ADR-022/v22 finding H2 — and
+// `graph-analyzer.ts`, added by Orchestrator adjudication (v23) #3, 04-design.md), and no advertised
 // MCP tool description or input-schema string may contain the word at all.
+//
+// Adjudication (v23) #3 criterion (S-2) for ANY allowlist membership — both required, or it is not
+// on the list: (1) the file consumes the skeleton INTERNALLY (layout, or grounding for the graph
+// analyzer's prompt) and (2) it serves the skeleton, or any projection of it, to NO principal —
+// directly or through a response body, tool schema, or rendered page. `graph-analyzer.ts` satisfies
+// both: it grounds the analyzer's prompt from `parseWorkflowSkeleton` and the skeleton never reaches
+// the analyzer's output, which is structure-only (adjudication A3). A fifth entry must be argued
+// against these two sentences in a new adjudication, not merely added to the Set.
 //
 // Written FIRST and watched to fail against the CURRENT tree (TASK-120's own dod: "a guard written
 // after the deletion is a guard fitted to whatever the deletion happened to leave"). Gate 6 performs
@@ -24,7 +33,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 const SRC_ROOT = join(__dirname, '..', '..', 'src');
-const ALLOWLIST = new Set(['workflow-meta.ts', 'dashboard.ts', 'server.ts']);
+const ALLOWLIST = new Set(['workflow-meta.ts', 'dashboard.ts', 'server.ts', 'graph-analyzer.ts']);
 
 function listTsFiles(dir: string): string[] {
   const out: string[] = [];
@@ -38,7 +47,7 @@ function listTsFiles(dir: string): string[] {
 }
 
 describe('no-skeleton-surface guard (UT-115, ADR-022, REQ-105)', () => {
-  it('src/** mentions "skeleton" (case-insensitive) NOWHERE outside the exactly-three-file allowlist', () => {
+  it('src/** mentions "skeleton" (case-insensitive) NOWHERE outside the exactly-four-file allowlist', () => {
     const violators: string[] = [];
     for (const file of listTsFiles(SRC_ROOT)) {
       const base = relative(SRC_ROOT, file);
@@ -49,8 +58,8 @@ describe('no-skeleton-surface guard (UT-115, ADR-022, REQ-105)', () => {
     expect(violators).toEqual([]);
   });
 
-  it('a FOURTH allowlist entry would still fail — the allowlist is exactly three, not "three or more"', () => {
-    expect(ALLOWLIST.size).toBe(3);
+  it('a FIFTH allowlist entry would still fail — the allowlist is exactly four, not "four or more"', () => {
+    expect(ALLOWLIST.size).toBe(4);
   });
 
   it('no advertised MCP tool description or input-schema string in server.ts contains the word "skeleton"', () => {

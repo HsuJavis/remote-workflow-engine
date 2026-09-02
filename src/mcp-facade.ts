@@ -435,7 +435,7 @@ export class McpFacade {
    *  Ownership + existence are checked HERE (mirrors `catalog.publish`'s own gate) before the
    *  analyzer is ever touched, so a non-owner or a dangling name/version never reaches it; in-flight
    *  idempotence (DES-127 B4) is `GraphAnalyzer.regenerate`'s own property, simply delegated to. */
-  async workflow_regenerate_diagram(a: { name: string; version: string }, principal: string | null = null): Promise<Record<string, unknown>> {
+  async workflow_regenerate_diagram(a: { name: string; version: string }, principal: string | null): Promise<Record<string, unknown>> {
     const catalog = this.runManager.catalog;
     let full: WorkflowDetail;
     try {
