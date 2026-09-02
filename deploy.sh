@@ -63,9 +63,21 @@ echo "啟動中，PID=$RWE_PID，log 在 .rwe.log"
 
 echo "== 步驟 5/5：健康檢查 (等待 /api/status 回應) =="
 deadline=$((SECONDS + 30))
-until curl -s -o /dev/null -w '%{http_code}' "http://${RWE_BIND}:${RWE_PORT}/api/status" 2>/dev/null | grep -q 200; do
+# 健康檢查目的地依 $RWE_BIND 決定，不能無條件打 127.0.0.1 或無條件打 $RWE_BIND：
+# - RWE_BIND=0.0.0.0（或 ::）是「監聽所有介面」的萬用位址，不是真實可連的目的地/Host 名稱——
+#   伺服器的 Host-header 允許清單 (net-guard.ts D-BIND/REQ-056) 刻意不把它當合法 Host，用它當
+#   目的地一定收到伺服器主動回的 403；這種情況一律改連 127.0.0.1（loopback，一律在允許清單內）。
+# - RWE_BIND=<實際 LAN IP>（如 §2 systemd 範例的 192.168.0.125）時，服務只監聽該介面，
+#   127.0.0.1 完全連不上（connection refused，不是 403）——這種情況必須用 $RWE_BIND 本身。
+# - RWE_BIND=127.0.0.1（預設）兩種寫法等價。
+if [ "$RWE_BIND" = "0.0.0.0" ] || [ "$RWE_BIND" = "::" ]; then
+  HEALTHCHECK_HOST="127.0.0.1"
+else
+  HEALTHCHECK_HOST="$RWE_BIND"
+fi
+until curl -s -o /dev/null -w '%{http_code}' "http://${HEALTHCHECK_HOST}:${RWE_PORT}/api/status" 2>/dev/null | grep -q 200; do
   if [ $SECONDS -ge $deadline ]; then
-    echo "健康檢查逾時 (30s) — 服務未在 http://${RWE_BIND}:${RWE_PORT}/api/status 回應 200。"
+    echo "健康檢查逾時 (30s) — 服務未在 http://${HEALTHCHECK_HOST}:${RWE_PORT}/api/status 回應 200。"
     echo "請查看 log（前景模式看終端輸出；背景模式看 .rwe.log）。"
     exit 1
   fi
@@ -73,7 +85,7 @@ until curl -s -o /dev/null -w '%{http_code}' "http://${RWE_BIND}:${RWE_PORT}/api
 done
 
 echo "健康檢查通過："
-curl -s "http://${RWE_BIND}:${RWE_PORT}/api/status"
+curl -s "http://${HEALTHCHECK_HOST}:${RWE_PORT}/api/status"
 echo
 echo "部署完成。服務位址：http://${RWE_BIND}:${RWE_PORT}/mcp"
 
