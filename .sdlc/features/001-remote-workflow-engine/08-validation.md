@@ -6321,7 +6321,7 @@ remains unverified; and the local-7B tool-loop ceiling still stands.
 
 ### v23 GATE 7.5 ROUND 2 — cleanup
 
-Boot B: all five validation workflows (`val23r2demo`, `val23r2unbound`, `val23r2unboundctl`,
+Boot B: all six validation workflows (`val23r2demo`, `val23r2unbound`, `val23r2unboundctl`,
 `val23r2upstream`, `val23r2chained`, `val23r2warn`) deregistered, their cron schedule and webhook
 already deleted as part of VAL-118's removal arm, the chain continuation consumed by its own upstream
 run; process killed. Boots C/D: exited / killed, and the whole `rwe-val23r2c` scratch tree removed
