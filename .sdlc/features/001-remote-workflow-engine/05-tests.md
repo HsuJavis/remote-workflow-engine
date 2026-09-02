@@ -5911,11 +5911,11 @@ not exist — confirmed 3/5 genuinely red (2 green pins: the pre-v22-boot smoke 
 scriptVersion-survives-a-later-registration case, both already true of today's engine).
 
 ### VAL-107 — REQ-097: `beta`/`release` channels; a run resolves a channel to a version, defaulting to release
-- **status:** red
+- **status:** green
 - **traces:** REQ-097
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/acceptance/val-107-release-channels.test.ts`. Real `createServer` + real MCP HTTP, no
@@ -5944,6 +5944,11 @@ re-pinned by `val-097-workflow-ownership.test.ts` (bob-tries-to-publish-alice's-
 Red reason (measured, pre-fix): `anyonePublish['code']` observes `undefined` (the call silently
 succeeded — `workflow_publish` still drops `args.principal` unconditionally today, not gated on
 `authEnabled`) where `'NOT_WORKFLOW_OWNER'` is required.
+
+Green evidence (Gate 6.5+7 round 2 closeout, IMPL-158): `server.ts`'s `workflow_publish` case now
+uses the same `!authEnabled`-gated `resolveWritePrincipal()` as register/deregister — under
+`authEnabled:false` the self-asserted non-owner principal is refused `NOT_WORKFLOW_OWNER` again, as
+originally pinned. Full 3/3 file green.
 
 ### VAL-108 — REQ-098: inline script is closed; every run goes through a registered workflow
 - **status:** green
@@ -6204,11 +6209,11 @@ fixture-reachability change, zero assertion change; IT-091's 5 cases are unaffec
 both pre- and post- round-2 fix.
 
 ### IT-095 — H1 residual (round 2): self-asserted `args.principal` is ALSO refused `PRINCIPAL_REQUIRED` on `workflow_register`/`workflow_deregister` under auth
-- **status:** red
+- **status:** green
 - **traces:** ARCH-071, ARCH-073, ADR-012, DES-114, DES-117, REQ-097, REQ-100
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v22
 
 File: `tests/integration/catalog-write-auth-dbind.test.ts` (same file as IT-091, new `describe`
@@ -6234,6 +6239,14 @@ in `workflow-catalog.ts:338/385`). Case 3 is a legitimate green pin, already tru
 attribution via `args.principal` is today's un-gated, always-on behavior — the fix must keep it
 alive specifically when `authEnabled` is false, not remove it wholesale the way round 1 did to
 `workflow_publish`, per `VAL-107`'s corrected oracle).
+
+Green evidence (Gate 6.5+7 round 2 closeout, IMPL-158): `server.ts:864-882` now gates the
+`args.principal` fallback on `!authEnabled` uniformly across all three catalog writes
+(register/deregister/publish) via the shared `resolveWritePrincipal()` helper (Gate 6.5 simplify —
+the 2-line effective-principal computation was identical across all three `case` blocks; factored
+out so they cannot drift on the `!authEnabled` gate independently, mirroring the errors.ts
+`catalogResolveErrorEnvelope` precedent one round earlier). All 3 cases pass; wrinkle-1 no-auth
+attribution confirmed unaffected.
 
 ### IT-092 — H2: `GET /api/runs/:id/dag` masks the script-derived skeleton overlay while auth is enabled
 - **status:** green

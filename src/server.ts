@@ -814,6 +814,14 @@ function principalRequiredEnvelope(): Record<string, unknown> {
   return { runId: '', status: 'failed', code: 'PRINCIPAL_REQUIRED', error: { code: 'PRINCIPAL_REQUIRED', message } };
 }
 
+/** v22 send-back ROUND 2 (Gate 6.5 simplify, 07-review.md §4.2/§8, B1/B2): the effective-principal
+ *  computation was identical across all three catalog writes (register/deregister/publish) — auth-
+ *  resolved wins; while auth is disabled only, fall back to a caller-asserted `args.principal`.
+ *  Factored out so the three call sites can't drift on the `!authEnabled` gate independently. */
+function resolveWritePrincipal(principal: string | null, authEnabled: boolean, argPrincipal: unknown): string | null {
+  return principal ?? (!authEnabled && typeof argPrincipal === 'string' ? argPrincipal : null);
+}
+
 /** Dispatches a tools/call to the matching McpFacade method (pure delegation, DES-001). */
 async function callTool(
   facade: McpFacade,
@@ -863,20 +871,20 @@ async function callTool(
     // green pin, VAL-107's restored oracle).
     case 'workflow_register': {
       const { principal: argPrincipal, ...regArgs } = args as { name: string; script: string; principal?: string | null; defaults?: Record<string, unknown> };
-      const effectivePrincipal = principal ?? (!authEnabled && typeof argPrincipal === 'string' ? argPrincipal : null);
+      const effectivePrincipal = resolveWritePrincipal(principal, authEnabled, argPrincipal);
       if (authEnabled && effectivePrincipal === null) return principalRequiredEnvelope();
       return facade.workflow_register(regArgs, effectivePrincipal);
     }
     case 'workflow_deregister': {
       const { principal: argPrincipal, ...deregArgs } = args as { name: string; principal?: string | null };
-      const effectivePrincipal = principal ?? (!authEnabled && typeof argPrincipal === 'string' ? argPrincipal : null);
+      const effectivePrincipal = resolveWritePrincipal(principal, authEnabled, argPrincipal);
       if (authEnabled && effectivePrincipal === null) return principalRequiredEnvelope();
       return facade.workflow_deregister(deregArgs, effectivePrincipal);
     }
     // v22 (REQ-097, DES-111/DES-114, TASK-109): same principal-threading pattern as register/deregister.
     case 'workflow_publish': {
       const { principal: argPrincipal, ...pubArgs } = args as { name: string; version: string; channel: 'beta' | 'release'; principal?: string | null };
-      const effectivePrincipal = principal ?? (!authEnabled && typeof argPrincipal === 'string' ? argPrincipal : null);
+      const effectivePrincipal = resolveWritePrincipal(principal, authEnabled, argPrincipal);
       if (authEnabled && effectivePrincipal === null) return principalRequiredEnvelope();
       return facade.workflow_publish(pubArgs, effectivePrincipal);
     }
