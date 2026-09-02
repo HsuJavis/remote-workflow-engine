@@ -1420,3 +1420,43 @@ render REQ-103 ✅ off `VAL-118` while clause 2 is red.
 **State.** `gates.validation.passed` stays `false` with its note rewritten (Prior chain kept);
 `current_stage` stays `validation`; `updated` bumped. Next: Gate 5 RED + Gate 6 one-liner, then Gate
 7.5 round 3.
+
+---
+
+## 2026-09-03 — v23 Gate 6.5+7 ROUND 3 (verifier): simplify + regression closeout over `c9ea0aa`
+
+**Scope.** The Gate 6 delta from orchestrator adjudication #7 — one production line in
+`GraphAnalyzer._buildAllowlist` (`labels.add('workflow_run')`) plus its unit case, answering the Gate
+7.5 ROUND 2 failure `VAL-119` (the engine instructed a token its own gate rejected, and because every
+workflow is unbound at registration, an obedient model lost every first diagram).
+
+**Simplify — one reuse fix, applied.** The delta's own defect class is a duplication: the unbound
+entry label was typed as an independent literal in `trigger-bindings.ts` (the instruction the model
+is given) and again in `graph-analyzer.ts` (the gate that must admit it), minutes apart, and the two
+disagreed immediately. Extracted to one exported `UNBOUND_ENTRY_LABEL` in `trigger-bindings.ts`,
+consumed by `describeTriggerBindings` (byte-identical output string) and by `_buildAllowlist`. Same
+one-declaration rule as `ANALYZER_SCRATCH_SUBDIR`; no new module edge; nothing reverted, nothing went
+red. Rejected on purpose and named: folding `server.ts`'s operator-overridable prompt prose in (an
+override replaces that default entirely, and `server.ts:189`'s `workflow_run` is the TOOL NAME), and
+importing the constant into `UT-123` (its oracle must stay the engine's instruction as a literal).
+
+**Ledger backfill, sixth occurrence this iteration.** `c9ea0aa` shipped code and a test with no
+ledger item: `UT-123` (05-tests.md) and `IMPL-174` (06-impl-log.md), attributed from `git show` and
+verified against source.
+
+**Gates.** Regression 281/281 files, 1807/1807 tests, exit 0 — read on BOTH summary lines, measured
+pre- and post-simplify with identical counts; `tsc` clean; zero red. Coverage 95.46% overall, this
+round's two functions at 100%, the 77 pre-existing sub-95% functions unchanged in count. trace 996
+items / 18 gaps (byte-identical baseline set, 0 new gap classes). `solid_check` 0 high / 0 mid / 10
+low. `determinism_check` exit 0. TZ-travel (Pacific/Kiritimati) identical, 0 flips. No new seam.
+
+**Real smoke (real local Ollama, not a mock).** Three real registrations of the same unbound
+workflow through real HTTP: the shipped default prompt still fails the codepoint pass on this small
+model (documented); with an operator `systemPrompt` the model obeys, the real model's own
+`╭─workflow_run─╮` now settles `ready` and is served verbatim; and a control label on the identical
+real path still settles `GATE_REJECTED_CONTENT` — so the gate is live and the fix is what admits the
+engine's own token.
+
+**State.** `gates.verification.passed` stays `true` with its note prepended (Prior chain kept);
+`current_stage` stays `validation`; `updated` bumped. Next: Gate 7.5 ROUND 3 to flip `VAL-119` on the
+SHIPPED default prompt against a capable provider — the one item this gate could not close.
