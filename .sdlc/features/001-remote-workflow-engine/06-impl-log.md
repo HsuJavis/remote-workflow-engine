@@ -2457,3 +2457,143 @@ Re-measured (scoped `--coverage.include` run over just the two touched files, sa
   - **`errors.ts`/`scheduler.ts`/`webhook-registry.ts` diff in `ea97bc8`:** this is round 1's own `catalogResolveErrorEnvelope` simplify (IMPL-157's note), which per that note's own text was applied "this gate" (i.e., in the working tree) but — per the recurring ledger-honesty pattern — was never committed on its own; it rode into the tree together with round 2's fix and was swept into `ea97bc8` by the implementer's `git add -A`. Re-verified unchanged from IMPL-157's description (100% line coverage on `catalogResolveErrorEnvelope`, confirmed this gate); not re-described here to avoid duplicating that entry.
   - **Test migration (`7bfdc3c`, not part of the send-back's named scope but required to keep it green):** `workflow-ownership.test.ts` (IT-080) bound its server to `0.0.0.0` to take the D-BIND exemption and then self-asserted identity via `args.principal` — precisely the shape B1 closes, so extending the `!authEnabled` gate to register/deregister turned 7 of its cases red. Migrated to real identity (127.0.0.1 bind + `mintBearer()`-issued distinct bearers for alice/bob, IT-089's pattern); oracles unchanged byte-for-byte (`NOT_WORKFLOW_OWNER` for non-owner, success for owner) — only how each case proves who it is. Also removed `publishPointer()` (existed only because `workflow_publish` was unreachable anonymously; with an owner bearer the real call works, so cases 1/2/10 now make it directly).
   - **Verification (this gate, run end to end):** `npx tsc --noEmit` clean. `npx vitest run` → **261 files / 1687 tests passed, exit 0** (2 documented pre-existing `spawn litellm ENOENT` background artifacts, unaffected) — +4 over the 1683 pre-round-2 baseline (IT-095 ×3 new cases, VAL-097 ×1 new green-pin case; VAL-107's existing 3 cases stay 3, one oracle restored in place). Re-ran after the `resolveWritePrincipal` simplify: still 261/1687, 0 regressions. Full-tree coverage (`npx vitest run --coverage --coverage.include='src/**'`): **95.12% overall** (≥90% bar). Per-function sweep of this round's touched/introduced code: `principalRequiredEnvelope` 100%, `resolveWritePrincipal` 100%, the three register/deregister/publish `case` blocks 100%, `callTool` as a whole 96.7% (its 6 missed lines are the pre-existing, untouched `chain_create` case — out of this round's scope per adjudication #6, already clears the 95% bar on its own), `errors.ts`'s `catalogResolveErrorEnvelope` still 100%, `Scheduler.create`/`WebhookRegistry.create` at 95.7%/100% (unchanged from IMPL-157, pre-existing `INVALID_AT` branch). `sh .sdlc/trace --check`: **892 items / 17 gaps** (byte-identical pre-existing set: 1 mid `IMPL-082` TDD, 15 low iter-drift, 1 low `TASK-018`; 0 severe, 0 new gap classes). `solid_check.py` (plugin 2.1.3, run directly — this repo's `trace.py` predates the `--tool` dispatcher): PASS, 0 high / 0 mid / 10 low (pre-existing unclaimed-file warnings, unchanged). `determinism_check.py --check`: clean (no un-allowed wall-clock reads). Time-travel (`TZ='Pacific/Kiritimati' npx vitest run`, install-free fallback — no `libfaketime` in this environment): full suite green, no time bombs flipped (see 07-review.md/journal for the exact count). Seam wiring: the real `WorkflowCatalog` instance (not a fake) confirmed wired into both `SqliteSchedulerPort` and `WebhookRegistry` at their `server.ts:1266/1334/1390` composition-root construction sites — unchanged, no new seams introduced this round (`resolveWritePrincipal` is pure, not a seam). Real-dependency smoke: IT-095/IT-080/VAL-107/VAL-097 all use real `createServer` + real HTTP + real on-disk SQLite (`catalog.db`, `auth-tokens.db`), no SUT-boundary mock; LiteLLM stays the one documented mock-only limitation (unrelated to this round, unaffected by the two pre-existing background ENOENT artifacts).
+
+## IMPL-159..172 — v23 TASK-113..127 backfill, recorded retroactively (Gate 6.5+7 gate-closeout)
+
+**Ledger-honesty note (FOURTH occurrence of this class, after IMPL-149..156 / IMPL-157 / IMPL-158).**
+The Gate 6 implementer shipped every v23 task across `ebd530d` / `277a8d9` / `6447aa2` / `3185c39`
+(plus `63bf21d`'s test-side flips) and left the tree at **1792/1792 green, `tsc` clean** — but wrote
+**zero `IMPL-*` entries**, left `current_stage: impl`, and left all 22 v23 items in 05-tests.md reading
+`red`/`fail`. The consequence was mechanically visible, not merely cosmetic: `sh .sdlc/trace --check`
+reported **6 `mid` 未實作 gaps (REQ-101..106, "no IMPL traces to it")** and **15 `low` 未實作 gaps
+(TASK-113..127)** for code that demonstrably exists. Backfilled below by the Gate 6.5+7 verifier,
+**git-show-attributed and verified against source directly** (never taken from a commit's own subject —
+`277a8d9` is subject-labelled `docs(v23)` yet carries four production source files). Same precedent as
+IMPL-149..156. TASK-124 gets **no** IMPL entry: it is REQ-104's Gate 7.5 real run (`status: draft`,
+files `08-validation.md`/`DEPLOY.md`), owned by the validator, not by Gate 6.
+
+### IMPL-159 — `src/diagram-gate.ts`: the pure four-pass allowlist gate + `DIAGRAM_CODEPOINTS` (TASK-113)
+- **status:** done
+- **traces:** TASK-113, DES-124, ARCH-080
+- **greens:** UT-107
+- **files:** src/diagram-gate.ts, tests/unit/diagram-gate.test.ts
+- **commit:** ebd530d
+- **iter:** v23
+- **note:** New module, 70 lines, no dependency on anything in the engine. `gateDiagram(raw, allowedLabels, {maxBytes, maxLines})` runs the four passes **in DES-124's order** — type (non-string / whitespace-only → `GATE_REJECTED_SHAPE`+`type`), codepoint (every character must be in `DIAGRAM_CODEPOINTS` → `shape`+`codepoint`), size (`Buffer.byteLength` on UTF-8, **not** `.length`; `\n`-count+1 for lines → `shape`+`size`), token (strip the 13 vocabulary glyphs, split on `/[^A-Za-z0-9_.:@/-]+/`, every remaining token must be an EXACT case-sensitive member of `allowedLabels` → `GATE_REJECTED_CONTENT`+`token`). On success returns `raw` **verbatim** — a validator, never a transformer, so nothing downstream has to trust a rewrite. `DIAGRAM_CODEPOINTS` is printable ASCII `0x20-0x7E` **minus `<` `>` `&`** plus `\n` plus the vocabulary glyphs: the `<` exclusion is the upstream half of DES-133's XSS pair (the dashboard's `textContent` is the downstream half), built into the alphabet so a `<script>` can never reach the renderer even if the renderer regresses.
+
+### IMPL-160 — `workflow_diagrams`: the table, the four accessors, the late-write guard, the one deletion path (TASK-114)
+- **status:** done
+- **traces:** TASK-114, DES-130, DES-127, ARCH-077
+- **greens:** UT-108, IT-096
+- **files:** src/workflow-catalog.ts, tests/unit/workflow-diagrams-store.test.ts, tests/integration/graph-analyzer-late-write.test.ts
+- **commit:** ebd530d
+- **iter:** v23
+- **note:** The derived diagram store folded into the **same DB handle** as `workflow_versions` (ADR-021: a derived store must not outlive its source), created in the existing boot migration. PK `(name, version)` makes "a v3 read can never return a v4 row" a **schema** property, not a code discipline; two `CHECK` constraints pin `status='ready' ⟺ diagram IS NOT NULL` and the eight-value `note_code` enum. Four accessors: `putDiagramPending` (optional `generatedAt` = the boot sweep's attempt marker, `ON CONFLICT DO UPDATE` back to a clean pending state), `putDiagramResult` (**DES-127 B6 late-write guard**: runs `.immediate()` inside a transaction and writes only where a `workflow_versions` row still exists — without it, `enqueue → deregister commits → putDiagramResult lands` creates an immortal orphan, since the table has no FK and `deregister` is the sole deletion path), `getDiagram` (null = "no attempt ever written", covering DES-127 B1's pre-v23 versions), `listPendingDiagrams` (the only sweep, bounded by pending rows). `deregister()`'s existing transaction gains one `DELETE FROM workflow_diagrams WHERE name = ?` **inside the same transaction**, so a mid-transaction throw leaves both tables present. `PersistedDiagramNoteCode` is deliberately its own 8-value type, NOT `DiagramNoteCode` (10) — `DISABLED`/`NOT_GENERATED` are read-synthesized and must be unrepresentable in the store.
+
+### IMPL-161 — `src/trigger-bindings.ts`: `getTriggerBindings` over four narrow ports + the canonical fingerprint (TASK-115)
+- **status:** done
+- **traces:** TASK-115, DES-128, ARCH-078
+- **greens:** UT-109
+- **files:** src/trigger-bindings.ts, tests/unit/trigger-bindings.test.ts
+- **commit:** ebd530d
+- **iter:** v23
+- **note:** One pure projection over four **narrow** ports (`schedules`/`webhooks`/`continuations`/`runs`), returning `{bindings, bindingsFp}`. The security property is **in the type**: `webhooks.listByWorkflow` returns `Array<{enabled: boolean; secret?: never; id?: never}>` — pinned to `never` rather than merely omitted, because a method-signature return position gets no fresh-object-literal excess-property check, and this snapshot is fed into an LLM prompt where a downstream gate would stop a secret reaching the *diagram* but nothing would stop it reaching the *provider*. `bindingsFp` sorts the **canonical strings themselves** (not a coarser `(kind, cron, upstream)` key) before hashing, so two webhook bindings differing only in `enabled`, or two cron rows sharing a cron but differing in `tz`, don't leave the fingerprint flapping on read order; `null` upstream is serialised explicitly, never omitted, so a named and an unnamed upstream fingerprint apart.
+
+### IMPL-162 — `curateToolsForProvider` preserves an intentionally-empty tool set (TASK-116)
+- **status:** done
+- **traces:** TASK-116, DES-120, ARCH-079, ADR-020
+- **greens:** UT-110
+- **files:** src/gateway/claude-agent-sdk-client.ts, tests/unit/claude-agent-sdk-gateway-allowed-tools.test.ts
+- **commit:** ebd530d
+- **iter:** v23
+- **note:** One line, **latent security fix**: `if (tools.length === 0) return [];` ahead of the non-Anthropic filter. Before it, the function's `filtered.includes('Bash') ? filtered : [...filtered, 'Bash']` tail **augmented an explicitly-empty set with `Bash`** — so the analyzer's "no tools at all" configuration would have silently become "Bash" for every non-Anthropic provider. Fixed at the gateway (the depth where the augmentation lives), not special-cased at the analyzer call site, so every present and future caller that means "no tools" gets no tools. Proven at the gateway level rather than through the analyzer, per the task card.
+
+### IMPL-163 — `src/graph-analyzer.ts`: the analyzer — queue, single-flight, retry loop, note enum, journal line, isolation, boot sweep (TASK-117)
+- **status:** done
+- **traces:** TASK-117, DES-131, DES-121, DES-122, DES-123, DES-127, DES-129, ARCH-079
+- **greens:** UT-111, UT-112, IT-096
+- **files:** src/graph-analyzer.ts, src/main.ts, tests/unit/graph-analyzer.test.ts, tests/unit/graph-analyzer-wire.test.ts, tests/integration/graph-analyzer-late-write.test.ts
+- **commit:** ebd530d (the class + `main.ts`'s scratch-`cwd` repoint), 3185c39 (the UT-111 fixture correction — see below)
+- **iter:** v23
+- **note:** The whole subsystem, ~330 lines. **Concurrency 1** (one running slot + a bounded FIFO `maxQueueDepth` queue) with single-flight keyed `name@version`, claimed from the moment the pending row is written until the job settles — including while merely queued. `enqueue()` **returns before the job runs** (REQ-102): the production `schedule` is `setImmediate`, injectable so tests can run inline or exercise the real async race. Two zero-model-call short-circuits ahead of `pending`: an unknown alias settles `MODEL_UNMAPPED`, a full queue settles `QUEUE_FULL`. `regenerate()` claims the key **synchronously** before the async `catalog.resolve`, which is what closes the race between two back-to-back calls. `sweepAtBoot()` distinguishes DES-127 B7's three restart shapes by `generated_at` alone (null → requeue once with the attempt marker; stamped before the boot instant → settle `RETRIES_EXHAUSTED` with zero model calls; stamped at/after → a live job in this process, left alone). **DES-127 B5** is enforced in two places: `_settleUnavailable` refuses to clobber a `ready` row, and `_runJob` restores the untouched `priorRow` rather than overwrite it with a failure. The retry loop is the analyzer's own (DES-121) and **stops early on a gate rejection** — retrying a provider that answered successfully but out-of-vocabulary cannot help. `noteCodeFor` is a **total** mapping over every failure shape (exhaustive `switch` on a closed union, so a new failure shape is a `tsc` error); `NOTE_TEXT` is engine-authored for all ten codes, with `GATE_REJECTED_SHAPE` worded as an outcome because it folds together two different causes. **ADR-016**: the `catch` around `gateway.invoke` never inspects or forwards the thrown message — it can echo request text containing the masked script, and the journal line is a concatenation site. `main.ts`'s SDK-gateway `cwd` was repointed from the whole `workRoot` to a dedicated `<workRoot>/.graph-analyzer-scratch` (created once, at composition time) so an analyzer session's cwd is never the directory a real run's workspace lives under. **UT-111's sweep case was a FIXTURE defect, not a code gap** (`3185c39`, adjudication #5 correcting #4's T-4): the case registered a script with no phases and then stubbed a completion drawing `╭─Draft─╮`, so `_buildAllowlist` correctly lacked `Draft` and `gateDiagram` correctly refused it. The fixture now registers the phase it draws and carries a comment saying so — recorded here because the cheapest way to have "fixed" it in `src/` would have been to loosen the label gate, i.e. to delete the control that stops script-derived text reaching principals REQ-100 forbids from reading the script.
+
+### IMPL-164 — `projectWorkflowDescribe` + `WorkflowDescribeView` + `EXPECTED_DESCRIBE_KEYS` (TASK-118)
+- **status:** done
+- **traces:** TASK-118, DES-125, DES-127, ARCH-081
+- **greens:** UT-113
+- **files:** src/workflow-view.ts, tests/unit/workflow-describe-projection.test.ts
+- **commit:** ebd530d
+- **iter:** v23
+- **note:** The ONE describe projection — pure, no clock/IO/auth. **No `viewerIsOwner` parameter** (DES-125: a parameter that cannot change the output eventually gets made to) and **no `script` field on the type at all**, so a script leak through this surface is a `tsc` error rather than a review finding. `lockedKeys` is `LOCKED_KEYS` **imported** from `params/contract.ts`, never re-typed. Three DES-127 boundaries land here: **B2** — a null row synthesizes `DISABLED` vs `NOT_GENERATED` at read time (never persisted), chosen on the live `analyzerEnabled` flag; **B3** — `diagramGeneratedAt` is non-null only for a `ready` row, because a swept `pending` row's own `generated_at` is the boot sweep's *attempt* marker and must not leak as a generation timestamp; and staleness is computed against the **live** `bindingsFp` recomputed by the caller, never the one stored on the row. `EXPECTED_DESCRIBE_KEYS` is transcribed literally from the interface's own field list, the same anti-drift convention as `EXPECTED_NON_OWNER_KEYS`.
+
+### IMPL-165 — the facade: `workflow_describe` (any principal) + `workflow_regenerate_diagram` (owner-gated) (TASK-119)
+- **status:** done
+- **traces:** TASK-119, DES-126, ARCH-082
+- **greens:** UT-114, VAL-112
+- **files:** src/mcp-facade.ts, tests/unit/workflow-describe-facade.test.ts
+- **commit:** ebd530d, 6447aa2 (the `regenerate` principal argument)
+- **iter:** v23
+- **note:** `workflow_describe` resolves through **`catalog.resolveDetail` + `resolveVersionRequest`** — the same resolver run-admission uses — so its error code for any given selector is IDENTICAL to a run's (`UNKNOWN_VERSION`/`CHANNEL_UNPUBLISHED`/`INVALID_CHANNEL`/`DANGLING_CHANNEL`, `WORKFLOW_NOT_FOUND` only for an unknown *name*). That reuse is the only structural way REQ-101's "resolve by REQ-097's exact order" survives someone editing one call site and not the other. `resolveVersionRequest` is called a second time against the row already in hand purely to name **how** the version was picked (`resolvedBy`). `workflow_regenerate_diagram` checks existence and ownership **before** the analyzer is touched (mirroring `catalog.publish`'s own gate), then `ANALYZER_DISABLED`, then delegates — in-flight idempotence stays `GraphAnalyzer.regenerate`'s property, not re-implemented here. `version` is required, never "whatever `release` points at". **The `McpFacadeDeps` seam change rides here** (adjudication #2 R-2): `triggerPorts` and `graphAnalyzer` are **required** fields and the `deps = {}` constructor default is **gone**, so an unwired facade cannot be constructed — a caller that genuinely wants neither passes the exported `NO_TRIGGER_PORTS`/`NO_GRAPH_ANALYZER` explicitly, which reads as a decision instead of an omission.
+
+### IMPL-166 — the server wire: two tool schemas, `/describe` replaces `/skeleton`, every skeleton deletion (TASK-120)
+- **status:** done
+- **traces:** TASK-120, DES-132, DES-125, ARCH-083, ARCH-051, ADR-022
+- **greens:** UT-115, IT-097
+- **files:** src/server.ts, src/mcp-facade.ts, src/workflow-view.ts, tests/unit/no-skeleton-surface.test.ts, tests/integration/workflow-describe-http.test.ts
+- **commit:** ebd530d, 6447aa2 (the no-skeleton allowlist widened to four files on a stated criterion — adjudication #3)
+- **iter:** v23
+- **note:** `workflow_describe`/`workflow_regenerate_diagram` added to `tools/list` with full descriptions (including `workflow_register`'s new standing disclosure that registering sends the script to the configured provider, and how to turn that off). `GET /api/workflows/:name/skeleton` **deleted** and `/describe` put in its place; `skeleton` removed from `workflow_get`'s two response shapes and from `WorkflowOwnerView`. `parseWorkflowSkeleton` itself **survives** — the live-run DAG overlay still uses it (a different, auth-gated view of a different thing), which is why the guard is an allowlist and not a ban. UT-115 is a mechanical source-level guard (ADR-022): no `/skeleton` route, no `skeleton` key on any read surface, with a four-file allowlist each entry of which meets a stated criterion. Adjudication #3 widened it to a fourth file **on that criterion**, not to make a test pass.
+
+### IMPL-167 — the dashboard: skeleton previews out, the ASCII diagram into a `<pre>` via `textContent` (TASK-121)
+- **status:** done
+- **traces:** TASK-121, DES-133, ARCH-084
+- **greens:** UT-116
+- **files:** src/dashboard-page.ts, tests/unit/dashboard-diagram-render.test.ts
+- **commit:** ebd530d, 6447aa2 (the mini-preview anchor)
+- **iter:** v23
+- **note:** `showSkeleton` → `showDescribe`/`renderDescribe`, fetching `/api/workflows/:name/describe` and writing the diagram with **`.textContent`, never `innerHTML`** — this is the first model-authored string this renderer has ever received, and convention is not a control when the author is a language model (`DIAGRAM_CODEPOINTS`' `<`/`>`/`&` exclusion is the upstream layer, IMPL-159). Non-`ready` statuses render `diagramNote` instead. Refresh rides the **existing** `setInterval(render, 3000)` via a `currentWorkflowName` re-read — no second timer, no websocket, no manual-refresh affordance — so `pending → ready` appears within 3s with no new mechanism. Per owner decision A1 (honest absence, no fallback drawing) the home-card mini-preview's node-array SVG is **deleted** rather than approximated from data that no longer reaches the client; `renderMiniPreviewAsync` remains as a named anchor that renders nothing. **Known residual, raised by this gate's simplify pass and NOT fixed here** (fixing it would go red against UT-116's `/describe` oracle, and the contract forbids weakening a test to make a cleanup land): that anchor still issues a `/describe` fetch per home card on every 3s tick and discards the response — dead poll traffic, no user-visible effect. Recorded for Gate 8 as either "delete the fetch and re-point UT-116's oracle at the absence of `/skeleton`" or "finish the mini-preview DES-133 leaves open".
+
+### IMPL-168 — the `graphAnalyzer` config block: `composeConfig()` forward + wiring row + example config + DEPLOY.md (TASK-122)
+- **status:** done
+- **traces:** TASK-122, DES-134, ARCH-085
+- **greens:** UT-033 (extended in place)
+- **files:** src/main.ts, rwe.config.example.json, DEPLOY.md, tests/unit/compose-config-v2-wiring.test.ts
+- **commit:** ebd530d
+- **iter:** v23
+- **note:** `graphAnalyzer: fileConfig.graphAnalyzer` forwarded from `composeConfig()` as a **whole object, unmodified, with no defaults applied here** — this engine's own named recurring defect (v11 `updateFlagPath`, v15 `auth`, v16 `workspaceTtlMs`, v22 `maxWorkflowVersions`: a config block read but never forwarded fails silently, and only a real boot catches it). Defaults live at exactly ONE site, `server.ts`'s construction (IMPL-171), because a second defaulting site would make "the config's effective value" ambiguous between two call sites. Shipped in one change with its `compose-config-v2-wiring.test.ts` rows (whole block forwarded; `enabled:false` forwarded as a first-class state, never dropped; absent stays `undefined` for backward compat), `rwe.config.example.json`, and DEPLOY.md §1b. **Per REQ-104's own acceptance text this is necessary and NOT sufficient** — a unit assertion reads the value off the same path that would be broken; only TASK-124's Gate 7.5 real run (VAL-115) is proof, which is exactly why VAL-115 stays `not-run` at this gate.
+
+### IMPL-169 — `docs/AUTHORING.md` and the same rules on the MCP surface a cold client sees (TASK-123)
+- **status:** done
+- **traces:** TASK-123, DES-135, ARCH-086, ARCH-051
+- **greens:** UT-117
+- **files:** docs/AUTHORING.md, src/server.ts, tests/unit/tool-schema-drift.test.ts
+- **commit:** ebd530d
+- **iter:** v23
+- **note:** REQ-106's authoring rules written once in `docs/AUTHORING.md` and mirrored onto `workflow_register.script`'s advertised description, so a **cold MCP client with no filesystem access** learns the same rules the doc states — the ARCH-051 tool-description convention this codebase already uses. UT-117 pins both surfaces together, which is what stops the pair drifting.
+
+### IMPL-170 — adjudication #1: `phases` joins the public allowlist on every surface (TASK-125)
+- **status:** done
+- **traces:** TASK-125, DES-136, ARCH-075, ARCH-081, REQ-100
+- **greens:** VAL-111
+- **files:** src/workflow-view.ts, tests/unit/workflow-view.test.ts
+- **commit:** ebd530d
+- **iter:** v23
+- **note:** Owner ruling 一律公開 (adjudication #1, `ba3db17`): `phases` (titles only) added to `WorkflowPublicView`, to `projectWorkflowForRead`'s projection, and to `EXPECTED_NON_OWNER_KEYS` — **amending v22's shipped REQ-100 masking**, so the non-owner read, `workflow_describe` and the dashboard all agree instead of one surface publishing what another masks. Lands before TASK-118/119/120 so no new surface is written against the old allowlist.
+
+### IMPL-171 — construct and wire the v23 subsystem in `createServer()`; both new seams REQUIRED (TASK-126)
+- **status:** done
+- **traces:** TASK-126, DES-125, DES-127, DES-131, DES-134, ARCH-078, ARCH-079, ARCH-081
+- **greens:** IT-098, VAL-113, VAL-114
+- **files:** src/server.ts, src/mcp-facade.ts, src/graph-analyzer.ts, src/scheduler.ts, src/continuation-store.ts, src/store/sqlite-run-store.ts, tests/integration/graph-analyzer-composition-root.test.ts, tests/acceptance/val-114-trigger-bindings-live.test.ts
+- **commit:** 277a8d9 (the three sync port reads + the composition root — subject-labelled `docs(v23)`, do not read the subject as a description of contents), ebd530d (the defaults table it wires)
+- **iter:** v23
+- **note:** Closes the **unowned composition root** adjudication #2 found: the whole v23 subsystem existed and nothing constructed it. Three new SYNC port reads were added to their own stores for `TriggerPorts` — `SqliteSchedulerPort.listByWorkflow` (cron-only, includes disabled rows because `enabled` is how a caller learns that), `ContinuationStore.listPendingByWorkflow` (`pending` only — `fired`/`skipped` are history, not a live binding), `SqliteRunStore.getWorkflowName` (a purged run is a first-class `null`, never an invented name; concrete-class-only, deliberately not on the `RunStore` interface). `triggerPorts` composes them at the root, with `webhooks` remapped to a **fresh `{enabled}` literal** rather than passing `WebhookView` through — a method-return position gets no excess-property check, so passing the view straight through would let `id`/`secretFingerprint` ride past IMPL-161's `?: never` pin. `graphAnalyzerConfig` defaults all nine keys by name next to their literals; `analyzerGateway` falls back to a **real** `LiteLLMGatewayClient` on the zero-config path (DES-131: never a narrower ad hoc shape); a non-alias `model` **warns and does not fail boot** (REQ-104) because `enqueue()` already settles every diagram `MODEL_UNMAPPED` with zero model calls until corrected. `sweepAtBoot()` runs unconditionally (a row pending from a prior life is swept regardless of this boot's `enabled`), then two boot lines and the "versions with no diagram yet: N — recover with workflow_regenerate_diagram({name, version})" count (DES-127 B1: discoverability at zero model calls, no backfill). Both `McpFacadeDeps` seams are **required**, so the next unwired call site is a `tsc` error rather than a silent degrade to "no triggers exist" — the property IT-098 pins structurally, in the same mechanical style as UT-115/UT-117, because "the wiring is not finished while the source text still says otherwise" is this ledger's own named recurring defect class.
+
+### IMPL-172 — DES-122's zero-config fail-closed guard, which the design specified and no code implemented (TASK-127)
+- **status:** done
+- **traces:** TASK-127, DES-122, ARCH-079, ARCH-085
+- **greens:** IT-099
+- **files:** src/server.ts, tests/integration/graph-analyzer-composition-root.test.ts
+- **commit:** 3185c39
+- **iter:** v23
+- **note:** `graphAnalyzerNoJail = enabled && config?.workRoot === undefined` now forces `tools: []` **regardless of what the operator configured**, with a boot line naming the downgrade and its reason. The distinction that makes it correct: the guard keys off the **operator-configured `config?.workRoot`** — the value `main.ts` builds the SDK gateway's `cwd` from — not off `createServer`'s internal `mkdtemp` fallback, which exists for the engine's own storage and is not a jail the gateway knows about. Without it, a zero-config deployment ran the analyzer with configured tools and **no enforceable jail root**, the gateway's own docblock having recorded "nothing to enforce against, allow". The guard sits at the composition root, where the jail root is either resolvable or not — not inside the analyzer, which would have had to re-derive the same fact.

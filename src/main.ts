@@ -30,6 +30,7 @@ import { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { assertWorkRootIsolated } from './workroot-guard.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
+import { ANALYZER_SCRATCH_SUBDIR } from './graph-analyzer.js';
 
 type GatewayChoice = 'sdk' | 'direct-fetch';
 
@@ -212,7 +213,7 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // Repointed to a dedicated scratch subdirectory (created once, here) rather than the whole
     // server workRoot, so an analyzer session's `cwd` is never the same directory a real run's
     // workspace lives under.
-    const analyzerScratchCwd = config.workRoot ? join(config.workRoot, '.graph-analyzer-scratch') : undefined;
+    const analyzerScratchCwd = config.workRoot ? join(config.workRoot, ANALYZER_SCRATCH_SUBDIR) : undefined;
     if (analyzerScratchCwd) mkdirSync(analyzerScratchCwd, { recursive: true });
     // D-F10(a): forward aliases/timeoutMs/retries — previously omitted, which silently degraded
     // D-F7's timeout/retry bound to dead code and D-F6's alias-aware thinking policy to "always

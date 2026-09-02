@@ -91,6 +91,24 @@ describe('workflow_regenerate_diagram — owner gate, ANALYZER_DISABLED, in-flig
     expect(resp.error?.code ?? resp.code).toBe('WORKFLOW_NOT_FOUND');
   });
 
+  // Written at Gate 6.5+7: the ANALYZER_DISABLED arm had ZERO coverage — every existing case in this
+  // block returns from an EARLIER guard (owner / not-found / unknown-version), so the branch that
+  // makes `graphAnalyzer.enabled:false` a first-class, non-degrading answer was never executed. It
+  // is also the arm that proves the disabled deployment refuses BEFORE touching the analyzer.
+  it('an owner-authorised call on a disabled analyzer is refused ANALYZER_DISABLED, not silently queued', async () => {
+    const { version } = await catalog.register('regen-disabled', `return 1;`, undefined, 'owner@example.com');
+    let delegated = false;
+    const disabledFacade = new McpFacade({
+      runManager: new RunManager({ catalog, clock: CLOCK }),
+      triggerPorts: NO_TRIGGER_PORTS,
+      graphAnalyzer: { enabled: false, regenerate: () => { delegated = true; return { queued: true, status: 'pending' as const }; } },
+    } as any);
+    const resp = await (disabledFacade as any).workflow_regenerate_diagram({ name: 'regen-disabled', version }, 'owner@example.com');
+    expect(resp.queued).toBe(false);
+    expect(resp.error?.code ?? resp.code).toBe('ANALYZER_DISABLED');
+    expect(delegated).toBe(false); // refused BEFORE the analyzer is touched
+  });
+
   it('an unknown version on a known workflow returns UNKNOWN_VERSION', async () => {
     await catalog.register('regen-unknown-version', `return 1;`);
     const resp = await (facade as any).workflow_regenerate_diagram({ name: 'regen-unknown-version', version: 'v99' }, null);

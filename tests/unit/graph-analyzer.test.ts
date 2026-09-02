@@ -233,6 +233,64 @@ describe('GraphAnalyzer — success path (UT-111, DES-124/131)', () => {
   });
 });
 
+describe('GraphAnalyzer — the live trigger snapshot joins the diagram allowlist (UT-111, DES-128/131, Gate 6.5+7 coverage gate)', () => {
+  // Written at Gate 6.5+7: `_buildAllowlist`'s `for (const b of bindings)` arm had ZERO coverage —
+  // every existing case ran with NO_TRIGGERS, so a diagram naming a real trigger kind or a real
+  // chain-upstream workflow was never gate-checked. That arm is the reason DES-128's snapshot is
+  // fed to the analyzer at all, and it is a SECURITY-shaped arm: too narrow and every live-trigger
+  // diagram is rejected; the same code path is what decides which strings a model may echo back.
+  const LIVE_TRIGGERS: TriggerPorts = {
+    schedules: { listByWorkflow: () => [{ cron: '0 9 * * *', tz: 'UTC', enabled: true }] },
+    webhooks: { listByWorkflow: () => [{ enabled: true }] },
+    continuations: { listPendingByWorkflow: () => [{ afterRunId: 'run-upstream' }] },
+    runs: { getWorkflowName: (runId) => (runId === 'run-upstream' ? 'upstream-wf' : null) },
+  };
+
+  it('a diagram naming the live binding kinds AND the chain upstream workflow passes the gate', async () => {
+    const script = `export const meta = { phases: [{title:'Draft'}] };\nreturn 1;`;
+    await catalog.register('ga-bindings-ok', script);
+    const analyzer = new GraphAnalyzer({
+      gateway: gatewayResolving(okResult('cron webhook chain upstream-wf ╭─Draft─╮')),
+      catalog, ports: LIVE_TRIGGERS, clock: CLOCK, config: baseConfig(), aliasNames: ALIAS_NAMES, schedule: runInline,
+    });
+    analyzer.enqueue('ga-bindings-ok', 'v1', script, null);
+    await settle();
+    const row = await (catalog as any).getDiagram('ga-bindings-ok', 'v1');
+    expect(row?.status).toBe('ready');
+    expect(row?.diagram).toBe('cron webhook chain upstream-wf ╭─Draft─╮');
+  });
+
+  it('a workflow name that is NOT this snapshot\'s upstream is still refused GATE_REJECTED_CONTENT', async () => {
+    // The allowlist widens by exactly the live upstream name and no further — a model that invents
+    // a neighbouring workflow name is still refused, which is what makes the widening safe.
+    const script = `export const meta = { phases: [{title:'Draft'}] };\nreturn 1;`;
+    await catalog.register('ga-bindings-strict', script);
+    const analyzer = new GraphAnalyzer({
+      gateway: gatewayResolving(okResult('chain some-other-wf')),
+      catalog, ports: LIVE_TRIGGERS, clock: CLOCK, config: baseConfig(), aliasNames: ALIAS_NAMES, schedule: runInline,
+    });
+    analyzer.enqueue('ga-bindings-strict', 'v1', script, null);
+    await settle();
+    const row = await (catalog as any).getDiagram('ga-bindings-strict', 'v1');
+    expect(row?.status).toBe('unavailable');
+    expect(row?.noteCode).toBe('GATE_REJECTED_CONTENT');
+  });
+
+  it('an UNNAMED chain upstream (purged run) adds no label — a null is never stringified into the allowlist', async () => {
+    const script = `export const meta = { phases: [{title:'Draft'}] };\nreturn 1;`;
+    await catalog.register('ga-bindings-null', script);
+    const PURGED: TriggerPorts = { ...LIVE_TRIGGERS, runs: { getWorkflowName: () => null } };
+    const analyzer = new GraphAnalyzer({
+      gateway: gatewayResolving(okResult('null')),
+      catalog, ports: PURGED, clock: CLOCK, config: baseConfig(), aliasNames: ALIAS_NAMES, schedule: runInline,
+    });
+    analyzer.enqueue('ga-bindings-null', 'v1', script, null);
+    await settle();
+    const row = await (catalog as any).getDiagram('ga-bindings-null', 'v1');
+    expect(row?.noteCode).toBe('GATE_REJECTED_CONTENT');
+  });
+});
+
 describe('GraphAnalyzer.regenerate — single-flight + no-clobber (UT-111, DES-127 B4/B5)', () => {
   it('a second regenerate() while the row is still "pending" enqueues NO second job', async () => {
     await catalog.register('ga-inflight', `return 1;`);

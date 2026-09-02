@@ -52,7 +52,7 @@ const ENGINE_VERSION = resolveEngineVersion();
 import { buildDashboardModel, layoutGraph, buildHomeView, computeWorkflowMetrics } from './dashboard.js';
 import { DASHBOARD_HTML, buildDashboardHtml } from './dashboard-page.js';
 import type { RunStore } from './run-store.js';
-import { GraphAnalyzer, type GraphAnalyzerConfig } from './graph-analyzer.js';
+import { GraphAnalyzer, ANALYZER_SCRATCH_SUBDIR, type GraphAnalyzerConfig } from './graph-analyzer.js';
 import type { TriggerPorts } from './trigger-bindings.js';
 import { effectiveProvider, curateToolsForProvider } from './gateway/claude-agent-sdk-client.js';
 
@@ -1506,7 +1506,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // Two boot lines, same stdout convention as main.ts's own (DES-131's own closing sentence).
   const analyzerProvider = effectiveProvider(config?.aliases ?? DEFAULT_ALIASES, graphAnalyzerConfig.model);
   const analyzerEffectiveTools = curateToolsForProvider(graphAnalyzerConfig.tools, analyzerProvider);
-  const analyzerJailDir = join(workRoot, '.graph-analyzer-scratch');
+  const analyzerJailDir = join(workRoot, ANALYZER_SCRATCH_SUBDIR);
   console.log(`[remote-workflow-engine] graph-analyzer effective tools=${JSON.stringify(analyzerEffectiveTools)} jail=${analyzerJailDir}`);
   let missingDiagramCount = 0;
   if (graphAnalyzerConfig.enabled) {

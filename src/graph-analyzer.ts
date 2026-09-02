@@ -65,6 +65,13 @@ export function noteTextFor(code: DiagramNoteCode): string {
   return NOTE_TEXT[code];
 }
 
+/** DES-122: the analyzer session's own scratch `cwd`, a subdirectory of the operator-configured
+ *  `workRoot`. TWO importers, and they must never drift: `main.ts` creates it and passes it as the
+ *  SDK gateway's `cwd`, `server.ts` names it in the `graph-analyzer effective tools=… jail=…` boot
+ *  line — a re-typed literal at either site would make that line describe a directory nothing uses
+ *  (same one-declaration/two-importers rule as `DEFAULT_CEILINGS`, v21 P6-5). */
+export const ANALYZER_SCRATCH_SUBDIR = '.graph-analyzer-scratch';
+
 export interface GraphAnalyzerConfig {
   enabled: boolean;
   model: string;
