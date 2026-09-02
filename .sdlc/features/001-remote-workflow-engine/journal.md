@@ -1033,3 +1033,55 @@ direct UT/IT/VAL trace, 0 broken links, 0 orphans; the 25 new gap rows (REQ-101.
 未實作+未真實驗證, TASK-113..125's 未實作) are the correct expected pre-Gate-6/pre-Gate-7.5 shape,
 not a defect. `state.yaml`: `gates.tests.passed=true`, `current_stage: tests -> impl`. Next: Gate 6
 (implementer).
+
+## v23 Gate 5 — TASK-126 targeted RED (2026-09-02, verifier)
+
+Between the Gate-5 close above and this entry, Gate 6 (implementer) ran, and adjudication #2 found the
+composition root for the whole v23 subsystem unowned: `GraphAnalyzer` and real `TriggerPorts` are
+built and exported (`src/graph-analyzer.ts`, `src/trigger-bindings.ts`) but `createServer()` never
+constructs/wires either into `new McpFacade(...)` (server.ts:1398 passes neither). No TASK's `files:`
+list owned that construction site, so trace stayed clean — an unowned composition root is not a broken
+link. New `TASK-126` was written to own it (traces ARCH-078/079/081; dod: exactly-one `new
+GraphAnalyzer(` site, both `McpFacadeDeps` seams made REQUIRED with `?? NO_TRIGGER_PORTS` deleted so
+the next unwired call site is a `tsc` error, VAL-113/114/115 go green over live HTTP). TASK-126 has no
+test-first coverage of its own — it did not exist when the Gate-5 pass above was written — so this is
+a targeted RED pass scoped to that one item only; Gate 5 for TASK-113..125 stays closed as written, and
+Gate 6's other in-flight work (including the 9 reds adjudication #2 already triaged into
+retire/re-point/fix/resolve-design-vs-code) is untouched.
+
+Added `IT-098` (`tests/integration/graph-analyzer-composition-root.test.ts`, traces TASK-126,
+DES-125/127/131/134, ARCH-078/079/081). Two structural cases, mechanical grep over `src/**` — same
+convention as UT-115/UT-117, because "the deletion/wiring is not finished while the source text still
+says otherwise" is this ledger's own named recurring defect class (composeConfig wiring: v11/v15/v16/
+v22): (1) `new GraphAnalyzer(` count across `src/**` must be exactly 1 (today 0). (2)
+`McpFacadeDeps.triggerPorts`/`.graphAnalyzer` must not be declared `?:`, and `?? NO_TRIGGER_PORTS`
+must be gone from `mcp-facade.ts` (today both still optional, fallback still present). One behavioral
+case, no live LLM required: boot a real `createServer` with `graphAnalyzer.enabled:true` in config,
+register+publish a workflow, call `workflow_regenerate_diagram` as its (unauthenticated) owner —
+expect `queued:true, status:'pending'`, not `ANALYZER_DISABLED`. `workflow_regenerate_diagram`'s own
+advertised contract is to return that envelope immediately without waiting for the draw, so this proves
+the config reaches the facade with no live provider needed; the draw itself stays REQ-102/VAL-113's
+concern. Today the facade's `graphAnalyzer` dependency is `undefined` regardless of what the config
+says (server.ts's own comment already names the missing construction site), so it is unconditionally
+`ANALYZER_DISABLED` — red for the genuine unimplemented reason, verified by reading the current
+`mcp-facade.ts`/`server.ts` before writing the assertion, not assumed.
+
+`VAL-114`'s existing first case (a live `schedule_create` not reflected in `workflow_describe`'s
+`triggers`) is independent corroborating evidence of the same unwired `triggerPorts` seam; left as-is
+and not re-pointed to TASK-126 (surgical-changes rule — TASK-126's own dod already names it as
+evidence, and trace.py does not require a test-to-TASK link).
+
+**Confirmation.** `npx vitest run tests/integration/graph-analyzer-composition-root.test.ts`: 3/3 fail,
+each for its stated reason. `npx tsc --noEmit`: clean, no errors from the new file. Full suite: 1795
+total, 1783 passed / 12 failed (280 files, 9 failed) — exactly the 9 reds adjudication #2 already
+triaged (four kinds: retire/re-point/fix/resolve-design-vs-code; that ruling's own scope, not this
+pass's) plus these 3 new reds; the 2 `spawn litellm ENOENT` background artifacts (documented since
+IMPL-140) unaffected. Hermetic: no clock/date literals anywhere in the new file. `sh .sdlc/trace
+.sdlc/features/001-remote-workflow-engine --check`: 969 items (+1 for `IT-098`), 43 gaps — unchanged
+from the pre-edit baseline (43), i.e. `IT-098` itself introduces zero new gap and resolves none; 0
+broken links, 0 orphans (confirmed via the dashboard's own `IT-098` row). `state.yaml`:
+`gates.tests.passed` stays `true` (unchanged — Gate 5 for TASK-113..125 was already closed and stays
+so); `current_stage` stays `impl` (Gate 6 is mid-flight and this pass does not reopen or advance it) —
+a note documenting this targeted pass is prepended. Next: Gate 6 (implementer) continues, now with
+TASK-126 covered by RED tests to build against; who executes adjudication #2's R-3 test
+retire/re-point work is orchestrator routing, not this pass's job.

@@ -17,13 +17,23 @@ import { canonicalContract, effectiveBounds, DEFAULT_CEILINGS, type ParamContrac
 import { projectWorkflowForRead, projectWorkflowDescribe, type WorkflowOwnerView } from './workflow-view.js';
 import { getTriggerBindings, type TriggerPorts } from './trigger-bindings.js';
 
-// v23 (DES-128, TASK-119): read-time trigger snapshot when no store ports are wired (e.g. a facade
-// constructed standalone in a unit test) — synthesizes the honest empty snapshot, never a crash.
-const NO_TRIGGER_PORTS: TriggerPorts = {
+// v23 (DES-128, TASK-119): the honest empty snapshot for a test that doesn't care about triggers —
+// `triggerPorts` is REQUIRED on McpFacadeDeps (adjudication #2 R-2), so a test facade passes this
+// explicitly rather than relying on a silently-degrading default.
+export const NO_TRIGGER_PORTS: TriggerPorts = {
   schedules: { listByWorkflow: () => [] },
   webhooks: { listByWorkflow: () => [] },
   continuations: { listPendingByWorkflow: () => [] },
   runs: { getWorkflowName: () => null },
+};
+
+// v23 (DES-126/DES-131, TASK-126): the disabled-analyzer default — same convention as
+// NO_TRIGGER_PORTS above. `regenerate` is unreachable through the facade while `enabled:false`
+// (workflow_regenerate_diagram short-circuits to ANALYZER_DISABLED first) so it never needs to do
+// real work here.
+export const NO_GRAPH_ANALYZER: NonNullable<McpFacadeDeps['graphAnalyzer']> = {
+  enabled: false,
+  regenerate: () => ({ queued: false, status: 'pending' }),
 };
 
 // v21 (DES-103/DES-104): the engine ceilings bound the read surfaces (workflow_get/list) at read
@@ -60,12 +70,15 @@ export interface McpFacadeDeps {
   ceilings?: Ceilings;
   /** v23 (DES-128, TASK-119): live cross-store ports for workflow_describe's `triggers` field —
    *  DES-128's read-time call site (the analyzer's own generation-time call is separate, TASK-117).
-   *  Omitted (e.g. a facade built without the trigger stores wired) synthesizes an empty snapshot. */
-  triggerPorts?: TriggerPorts;
+   *  REQUIRED (adjudication #2 R-2, TASK-126): an unwired call site must be a `tsc` error, not a
+   *  silent degrade to "no triggers exist" — a caller that genuinely doesn't care passes
+   *  `NO_TRIGGER_PORTS` explicitly. */
+  triggerPorts: TriggerPorts;
   /** v23 (DES-126, DES-127 B2/B4, TASK-119): analyzer enabled-state + regenerate delegate for
-   *  workflow_describe's diagram fields and workflow_regenerate_diagram's gate. Omitted = disabled
-   *  (honest absence, not a crash — matches an unwired analyzer to `unavailable`/`DISABLED`). */
-  graphAnalyzer?: { enabled: boolean; regenerate(name: string, version: string, principal: string | null): { queued: boolean; status: 'pending' } };
+   *  workflow_describe's diagram fields and workflow_regenerate_diagram's gate. REQUIRED (same R-2
+   *  ruling as `triggerPorts` — a disabled deployment passes `NO_GRAPH_ANALYZER` explicitly, never
+   *  an omission that reads as "unwired" and "genuinely disabled" alike). */
+  graphAnalyzer: { enabled: boolean; regenerate(name: string, version: string, principal: string | null): { queued: boolean; status: 'pending' } };
 }
 
 function toErrEnvelope(err: unknown): ErrEnvelope {
@@ -126,7 +139,12 @@ export class McpFacade {
   private readonly triggerPorts: TriggerPorts;
   private readonly graphAnalyzer: McpFacadeDeps['graphAnalyzer'];
 
-  constructor(deps: McpFacadeDeps = {}) {
+  // v23 (adjudication #2 R-2, TASK-126): `deps` itself has no default — `triggerPorts`/
+  // `graphAnalyzer` are required fields on `McpFacadeDeps`, so a `deps = {}` default would fail to
+  // typecheck here and, worse, would reintroduce exactly the silent-degrade default this ruling
+  // closes. Every caller (including a facade built only for the pre-v23 core 8 tools) passes
+  // `NO_TRIGGER_PORTS`/`NO_GRAPH_ANALYZER` explicitly.
+  constructor(deps: McpFacadeDeps) {
     const clock = deps.clock ?? new SystemClock();
     // Construct the store FIRST and inject it into RunManager (D-I1) — otherwise RunManager
     // builds its own private InMemoryRunStore and every lookup through `this.store` 404s
@@ -135,7 +153,7 @@ export class McpFacade {
     this.runManager = deps.runManager ?? new RunManager({ store: this.store, clock });
     this.validator = deps.validator ?? new SubmissionValidator({ catalog: this.runManager.catalog });
     this.ceilings = deps.ceilings ?? DEFAULT_CEILINGS;
-    this.triggerPorts = deps.triggerPorts ?? NO_TRIGGER_PORTS;
+    this.triggerPorts = deps.triggerPorts;
     this.graphAnalyzer = deps.graphAnalyzer;
   }
 
@@ -406,7 +424,7 @@ export class McpFacade {
     const { bindings, bindingsFp } = getTriggerBindings(full.name, this.triggerPorts);
     const diagram = catalog.getDiagram(full.name, full.version);
     const view = projectWorkflowDescribe(ownerView, {
-      diagram, bindings, bindingsFp, analyzerEnabled: this.graphAnalyzer?.enabled ?? false,
+      diagram, bindings, bindingsFp, analyzerEnabled: this.graphAnalyzer.enabled,
     });
     return { runId: '', status: 'completed', result: view };
   }
@@ -434,7 +452,7 @@ export class McpFacade {
       const e = { code: 'NOT_WORKFLOW_OWNER', message: `NOT_WORKFLOW_OWNER: workflow '${a.name}' is owned by ${full.owner}` };
       return { queued: false, code: e.code, error: e };
     }
-    if (!this.graphAnalyzer?.enabled) {
+    if (!this.graphAnalyzer.enabled) {
       const e = { code: 'ANALYZER_DISABLED', message: 'the graph analyzer is disabled (graphAnalyzer.enabled:false)' };
       return { queued: false, code: e.code, error: e };
     }

@@ -131,6 +131,16 @@ export class ContinuationStore {
     }));
   }
 
+  /** v23 (DES-128, ARCH-078, TASK-126): the SYNC `TriggerPorts.continuations` read — `workflow` is
+   *  the DOWNSTREAM target column (a continuation row is transient, so this is always the live
+   *  snapshot, never a cached one). Only `pending` rows are live trigger bindings; `fired`/`skipped`
+   *  are history, not a binding. */
+  listPendingByWorkflow(workflow: string): Array<{ afterRunId: string }> {
+    return this._db
+      .prepare("SELECT afterRunId FROM continuations WHERE workflow = ? AND status = 'pending'")
+      .all(workflow) as Array<{ afterRunId: string }>;
+  }
+
   /** Atomically claims a pending continuation and either starts run B (target completed) or marks it
    *  skipped (target failed/stopped). The `WHERE status='pending'` claim makes fire/skip idempotent —
    *  a concurrent onTerminal + boot reconcile can each attempt it but only one wins the row. */

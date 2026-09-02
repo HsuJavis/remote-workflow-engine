@@ -4493,3 +4493,43 @@ ones not yet running. Write the row.
 2. **Override the model policy away from `claude-fable-5`.** `400 tools.6.model: claude-fable-5` has now
    fired twice; the first was survivable, the second **killed TASK-124 outright**. A blind re-dispatch
    runs the same policy into the same 400 a third time.
+
+---
+
+## Orchedstrator adjudication (v23) #3 — the no-skeleton allowlist takes a fourth file, on a stated criterion (2026-09-03)
+
+### S-1 — widen to four; do NOT rename
+TASK-120's guard (UT-115) permits `skeleton` in exactly three files — `workflow-meta.ts` (defines
+`parseWorkflowSkeleton`), `dashboard.ts` (`layoutGraph`), `server.ts` (the still-auth-gated
+`/api/runs/:id/dag` branch, ADR-022 / v22 finding H2). DES-131 separately sanctions
+`graph-analyzer.ts` reusing the same function as analyzer grounding. Both are correct; they simply
+were never reconciled. **`graph-analyzer.ts` joins the allowlist.**
+
+The rejected alternative — renaming the shared export to dodge the grep — would be **actively worse**.
+The guard exists to stop the skeleton *surface* surviving, and renaming hides a legitimate internal use
+from the one check that can see it while the concept stays exactly where it was. A guard you evade by
+vocabulary is not a guard.
+
+### S-2 — the criterion, so a four-item list does not become a seven-item one
+An allowlist that grows whenever it is inconvenient has stopped guarding anything. Membership requires
+**both**:
+1. the file consumes the skeleton **internally** — layout, or grounding for the analyzer; and
+2. it serves the skeleton, or any projection of it, to **no principal** — directly or through a
+   response body, tool schema, or rendered page.
+
+`graph-analyzer.ts` satisfies both: the skeleton grounds the analyzer's prompt and never reaches the
+output, which A3 pins to structure only. A future fifth entry must be argued against these two
+sentences, in an adjudication, not merely added to a `Set`.
+
+### S-3 — the wording changes with the number
+DES-132 and TASK-120's `dod:` both say **"exactly three"**, and the guard file's own header comment
+names the three. All three sites move to four **with the S-2 criterion stated in the test file itself**,
+so the next reader learns the rule and not just the roster. Ratifying a fourth entry while three
+documents still say three is the defect this iteration has now counted ten times; the guard's own
+header is the last place that should carry it.
+
+### S-4 — noted, not a gap
+`graph-analyzer.ts` needed zero edits under TASK-126: TASK-117 had already shipped a correct,
+structurally-compatible class. **Only its construction site was unowned** — which is precisely
+adjudication #2's R-1 finding, now confirmed from the opposite direction by an implementer who went
+looking for work and found the code already right.

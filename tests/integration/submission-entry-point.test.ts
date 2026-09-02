@@ -17,7 +17,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { McpFacade } from '../../src/mcp-facade.js';
+import { McpFacade, NO_TRIGGER_PORTS, NO_GRAPH_ANALYZER } from '../../src/mcp-facade.js';
 import { RunManager } from '../../src/run-manager.js';
 import { WorkflowCatalog } from '../../src/workflow-catalog.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
@@ -34,7 +34,7 @@ beforeAll(() => {
   catalog = new WorkflowCatalog(workRoot, clock, { aliasNames: new Set(['sonnet', 'default']) });
   const store = new InMemoryRunStore(clock);
   const runManager = new RunManager({ store, clock, catalog, workRoot });
-  facade = new McpFacade({ store, runManager, clock });
+  facade = new McpFacade({ store, runManager, clock, triggerPorts: NO_TRIGGER_PORTS, graphAnalyzer: NO_GRAPH_ANALYZER });
 });
 
 afterAll(() => {

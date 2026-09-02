@@ -6901,3 +6901,53 @@ own rule that only a real run flips it), 12 rows total; TASK-113..125 each show 
 not exit 0 until Gate 7.5; that is by design, not a defect of this pass. **Zero 斷鏈 (broken trace
 links), zero 孤兒 (orphans) — every new UT/IT/VAL resolved cleanly into the trace graph with no dangling
 `traces:` reference.**
+
+## Gate 5 scope — v23 adjudication #2, TASK-126 (2026-09-02, verifier)
+
+Targeted RED pass for the ONE work item created after the Gate-5 close above: TASK-126 (the unowned
+composition root — `GraphAnalyzer` and real `TriggerPorts` are built but `createServer()` never
+constructs/wires either into `new McpFacade(...)`; adjudication #2 R-1/R-2). Gate 5 for
+TASK-113..125 stays closed as written above; Gate 6 is mid-flight on the rest of v23 and is untouched
+by this pass. The 9 reds already triaged by adjudication #2 (four kinds: retire/re-point/fix/resolve
+design-vs-code) are that ruling's own scope, not test-first RED — not touched here.
+
+### IT-098 — TASK-126: `createServer()` actually constructs and wires the analyzer + real trigger ports
+- **status:** red
+- **traces:** TASK-126, DES-125, DES-127, DES-131, DES-134, ARCH-078, ARCH-079, ARCH-081
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/integration/graph-analyzer-composition-root.test.ts`. Mock policy (integration, DES-119):
+real `createServer`, real `/mcp` over live HTTP for the behavioral case — no live LLM needed, since
+`workflow_regenerate_diagram`'s own contract is to return `{queued, status:'pending'}` immediately and
+never wait for the draw (the draw itself is REQ-102/VAL-113's concern). The two structural cases are
+pure static-text reads over `src/**`, same convention as UT-115/UT-117's mechanical grep guards — this
+repo's named recurring defect class (composeConfig wiring, v11/v15/v16/v22) gets the same treatment
+here rather than relying only on an incidental behavioral symptom.
+
+Three cases: (1) `new GraphAnalyzer(` appears exactly once across `src/**` — the one construction site
+`createServer()` owns; today zero. (2) `McpFacadeDeps.triggerPorts`/`.graphAnalyzer` are REQUIRED
+(no `?:`) and `triggerPorts ?? NO_TRIGGER_PORTS` is gone from `mcp-facade.ts` (adjudication #2 R-2 —
+an unwired call site becomes a `tsc` error, not a silent degrade); today both are still optional and
+the fallback is still present. (3) with `graphAnalyzer.enabled:true` on `createServer`'s own config,
+`workflow_regenerate_diagram` is NOT `ANALYZER_DISABLED` — proves the config reaches the facade, not
+just that the key is accepted; today the facade's `graphAnalyzer` dep is `undefined` regardless of
+config (server.ts's own comment: "the ONE site that actually constructs the GraphAnalyzer" does not
+exist yet), so it is always `ANALYZER_DISABLED`.
+
+`VAL-114`'s existing first case (`triggers` not reflecting a live `schedule_create`) is independent
+corroborating evidence of the same unwired `triggerPorts` seam — left as-is, not re-pointed to
+TASK-126, per the contract's surgical-changes rule; TASK-126's own `dod` already names it.
+
+**Confirmation.** `npx vitest run tests/integration/graph-analyzer-composition-root.test.ts`: 3/3 fail,
+each for the stated genuine-unimplemented reason (`0 !== 1`; both fields still `?:` + fallback still
+present; `ANALYZER_DISABLED` returned when it must not be). `npx tsc --noEmit`: clean, no errors in the
+new file. Full suite: **1795 total, 1783 passed / 12 failed (280 files, 9 failed)** — exactly the 9
+reds adjudication #2 already triaged (unaffected, not this pass's scope) plus these 3 new reds; the 2
+`spawn litellm ENOENT` background artifacts (documented since IMPL-140) are unaffected. Hermetic: no
+clock/date literals — the structural cases read source text, the behavioral case has no time
+comparison. `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: gap count moves by
+exactly the expected pre-Gate-6 rows for this one item (`IT-098` itself is fully implemented/traced —
+no new gap from it); 0 broken links, 0 orphans.

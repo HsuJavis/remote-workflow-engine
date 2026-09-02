@@ -95,6 +95,16 @@ export class SqliteRunStore implements RunStore {
     return JSON.parse(row.effective_params) as RunParams;
   }
 
+  /** v23 (DES-128, ARCH-078, TASK-126): the SYNC `TriggerPorts.runs` read — the chain-upstream join
+   *  `getTriggerBindings` needs (a continuation names its DOWNSTREAM target; the upstream workflow
+   *  name is this lookup on `afterRunId`). A purged/unknown run is a first-class `null`, never an
+   *  invented name. Concrete-class-only (not part of the `RunStore` interface — no other consumer
+   *  needs a sync read). */
+  getWorkflowName(runId: string): string | null {
+    const row = this._db.prepare('SELECT name FROM runs WHERE runId = ?').get(runId) as { name: string | null } | undefined;
+    return row?.name ?? null;
+  }
+
   /** Rebuilds the original submission (name/script/args/budget) — lets RunManager reconstruct a
    *  live RunEntry for a suspended/stopped run after a process restart (REQ-006). */
   async getSpec(runId: string): Promise<RunSpec | null> {

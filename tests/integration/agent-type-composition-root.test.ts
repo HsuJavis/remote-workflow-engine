@@ -116,6 +116,12 @@ describe('agentType composition-root loader (IT-016, D-F2)', () => {
         aliases: ALIASES,
         useLiteLLMProxy: false,
         agentDefinitionsDir: definitionsDir,
+        // v23 (REQ-102, TASK-126): this file counts `stub.requests` as a proxy for the script's
+        // OWN agent() calls — unrelated to the graph analyzer, which now also fires a real request
+        // through the same stub on registration (REQ-102's own "registration sends the script to
+        // the configured LLM provider"). Disabled here so that count stays exactly what this test
+        // is about.
+        graphAnalyzer: { enabled: false },
       } as ServerConfig & { agentDefinitionsDir: string });
       const baseUrl = `http://127.0.0.1:${server.port}`;
 
@@ -143,6 +149,7 @@ describe('agentType composition-root loader (IT-016, D-F2)', () => {
         aliases: ALIASES,
         useLiteLLMProxy: false,
         agentDefinitionsDir: definitionsDir,
+        graphAnalyzer: { enabled: false },
       } as ServerConfig & { agentDefinitionsDir: string }));
       const baseUrl = `http://127.0.0.1:${server.port}`;
       const requestsBefore = stub.requests.length;

@@ -138,6 +138,10 @@ describe('src/main.ts composition-root: agentDefinitionsDir end-to-end (IT-022, 
           aliases: ALIASES,
           agentDefinitionsDir: definitionsDir,
           gateway: 'sdk',
+          // v23 (REQ-102, TASK-126): `requests` below counts the script's OWN agent() calls —
+          // unrelated to the graph analyzer, which now also fires a real request through the SAME
+          // queryImpl stub on registration. Disabled here so the count stays what this test is about.
+          graphAnalyzer: { enabled: false },
         },
         {
           queryImpl: vi.fn((opts: { prompt: string; options?: { model?: string } }) => {

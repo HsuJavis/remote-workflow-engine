@@ -15,7 +15,7 @@
 import { describe, it, expect } from 'vitest';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { McpFacade } from '../../src/mcp-facade.js';
+import { McpFacade, NO_TRIGGER_PORTS, NO_GRAPH_ANALYZER } from '../../src/mcp-facade.js';
 import { RunManager } from '../../src/run-manager.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
@@ -36,7 +36,7 @@ describe('workflow_artifacts: run-workspace files retrievable via the API (IT-01
   it('a file written into a completed run\'s workspace is listed by workflow_artifacts', async () => {
     const store = new InMemoryRunStore(CLOCK);
     const runManager = new RunManager({ store, clock: CLOCK });
-    const facade = new McpFacade({ clock: CLOCK, store, runManager });
+    const facade = new McpFacade({ clock: CLOCK, store, runManager, triggerPorts: NO_TRIGGER_PORTS, graphAnalyzer: NO_GRAPH_ANALYZER });
 
     // v22: a run is always NAMED now, so its workspace bucket is the workflow name rather than
     // the `_adhoc` bucket `spec.name ?? '_adhoc'` used for the pre-v22 inline-script shape.
@@ -66,7 +66,7 @@ describe('workflow_artifacts: run-workspace files retrievable via the API (IT-01
     // No such run → no workspace → null (the facade maps this to an empty result, not an fs error).
     expect(await runManager.listArtifacts('no-such-run')).toBeNull();
 
-    const facade = new McpFacade({ clock: CLOCK, store, runManager });
+    const facade = new McpFacade({ clock: CLOCK, store, runManager, triggerPorts: NO_TRIGGER_PORTS, graphAnalyzer: NO_GRAPH_ANALYZER });
     const env = await facade.workflow_artifacts({ runId: 'no-such-run' });
     expect(env.error).toBeDefined(); // unknown run → RUN_NOT_FOUND envelope, never a thrown readdir error
   });

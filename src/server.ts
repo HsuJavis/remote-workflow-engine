@@ -45,14 +45,16 @@ import Database from 'better-sqlite3';
 import { TokenStore } from './auth/token-store.js';
 import { createAuthRouteHandlers, resolvePrincipal, type AuthConfig } from './auth/auth-service.js';
 import { wwwAuthenticateHeader } from './auth/oauth-metadata.js';
-import { DEFAULT_CEILINGS, type Ceilings, type Effort } from './params/contract.js';
+import { DEFAULT_CEILINGS, isKnownAlias, type Ceilings, type Effort } from './params/contract.js';
 
 // REQ-066 (v11): engine version from package.json + best-effort git describe, replacing the hardcoded '1.0.0'.
 const ENGINE_VERSION = resolveEngineVersion();
 import { buildDashboardModel, layoutGraph, buildHomeView, computeWorkflowMetrics } from './dashboard.js';
 import { DASHBOARD_HTML, buildDashboardHtml } from './dashboard-page.js';
 import type { RunStore } from './run-store.js';
-import type { GraphAnalyzerConfig } from './graph-analyzer.js';
+import { GraphAnalyzer, type GraphAnalyzerConfig } from './graph-analyzer.js';
+import type { TriggerPorts } from './trigger-bindings.js';
+import { effectiveProvider, curateToolsForProvider } from './gateway/claude-agent-sdk-client.js';
 
 export interface ServerConfig {
   bind?: string;   // default '127.0.0.1'
@@ -293,6 +295,24 @@ const SCRIPT_DSL_DOC =
   // docs/AUTHORING.md, the only guidance a schema-only cold MCP client ever sees.
   'Authoring rules (docs/AUTHORING.md has the full text): (1) declare every tunable knob in `meta.params` rather than hard-coding it; (2) never read a param key the contract does not declare; (3) the six LOCKED_KEYS (prompt/tools/skills/mcp/workdir/cwd) are engine-owned — do not redeclare them; (4) phase titles are visible to every principal who can see the workflow (including the generated diagram) — keep secrets/distinctive prose out of phase titles. ' +
   'Registering a workflow sends the script itself to the configured LLM provider to draw a diagram; set graphAnalyzer.enabled:false to turn this off.';
+
+// v23 (DES-131, DES-134, TASK-126): the shipped default `graphAnalyzer.systemPrompt` — the third
+// consumer of DIAGRAM_CODEPOINTS (diagram-gate.ts, this prompt, docs/AUTHORING.md). Defaults live
+// at exactly this ONE site (the construction site, DES-134) so an operator's override in
+// rwe.config.json fully replaces it rather than layering on top. Prose here is NOT itself gated
+// (gateDiagram only validates the model's OUTPUT) but sticks to the vocabulary anyway, on purpose.
+const DEFAULT_GRAPH_ANALYZER_SYSTEM_PROMPT =
+  'You are drawing a structural ASCII diagram of a workflow script, for a human operator reading it in a terminal. ' +
+  'Output ONLY the diagram itself — no prose, no markdown, no code fences. ' +
+  'Use exactly this fixed vocabulary and nothing outside it: ' +
+  'a rounded-corner box (corners ╭ ╮ ╰ ╯) is one agent() call, labelled with its resolved model name; ' +
+  'a square box (plain [ and ]) is a trigger or an output artifact; ' +
+  '◇ marks a conditional branch; ' +
+  '⟲ marks a loop back-edge; ' +
+  'lines are drawn with ─ (horizontal), │ (vertical), ┬ ┴ ├ ┤ (junctions) and ▶ (arrowhead) — a fan-out is one line splitting into several with ┬, a fan-in/join is several lines converging with ┴. ' +
+  'Show, top to bottom: every agent() call in order (its resolved model), phase names, fan-out/fan-in, conditional branches, loop back-edges, and how the workflow is triggered — its entry node names "cron", "webhook", or "chain" (plus the upstream workflow name for a chain) from the trigger bindings you are given below the script, or reads as a plain workflow_run entry point when no trigger is bound. Never invent a trigger that is not given to you. ' +
+  'If a node\'s model is only knowable at run time (a tunable param, not a literal in the script), label that node with the literal text model:param — never guess a model name. ' +
+  'Every word you write must be either one of the glyphs above or a name copied verbatim from the script or the trigger bindings you were given. Never invent, summarize, or restate configuration, secrets, or comments in prose — if you are unsure a name is safe to reuse, omit it rather than paraphrase it.';
 
 const TOOL_METADATA: Record<ToolName, ToolMeta> = {
   workflow_run: {
@@ -864,6 +884,16 @@ function resolveWritePrincipal(principal: string | null, authEnabled: boolean, a
   return principal ?? (!authEnabled && typeof argPrincipal === 'string' ? argPrincipal : null);
 }
 
+// v23 (REQ-102, DES-131, TASK-126): the narrow enqueue-only seam `callTool`'s `workflow_register`
+// case needs — deliberately NOT the same structural shape McpFacadeDeps.graphAnalyzer uses
+// (adjudication #2 R-1 keeps THAT one at `{enabled, regenerate()}`); `server.ts` is the ONE site
+// that also owns the register->enqueue wire (ARCH-079's sequence diagram: `S->>GA: enqueue`, the
+// server, not the facade).
+interface AnalyzerRegisterPort {
+  enabled: boolean;
+  enqueue(name: string, version: string, script: string, principal: string | null): void;
+}
+
 /** Dispatches a tools/call to the matching McpFacade method (pure delegation, DES-001). */
 async function callTool(
   facade: McpFacade,
@@ -878,6 +908,7 @@ async function callTool(
   issueReporter: IssueReporter,
   buildModelCatalog: () => Promise<ModelEntry[]>,
   systemInfo: SystemInfoSampler,
+  graphAnalyzer: AnalyzerRegisterPort,
   name: string,
   args: Record<string, unknown>,
   principal: string | null = null,
@@ -915,7 +946,15 @@ async function callTool(
       const { principal: argPrincipal, ...regArgs } = args as { name: string; script: string; principal?: string | null; defaults?: Record<string, unknown> };
       const effectivePrincipal = resolveWritePrincipal(principal, authEnabled, argPrincipal);
       if (authEnabled && effectivePrincipal === null) return principalRequiredEnvelope();
-      return facade.workflow_register(regArgs, effectivePrincipal);
+      const out = await facade.workflow_register(regArgs, effectivePrincipal);
+      // v23 (REQ-102, DES-131, TASK-126): registration kicks off the async diagram draw — never
+      // awaited (enqueue() itself returns immediately after writing the `pending` row) and never
+      // affects this response either way (REQ-102's own "never blocks on the analyzer").
+      if (out['status'] === 'completed' && graphAnalyzer.enabled) {
+        const registeredVersion = (out['result'] as { version?: string } | undefined)?.version;
+        if (registeredVersion !== undefined) graphAnalyzer.enqueue(regArgs.name, registeredVersion, regArgs.script, effectivePrincipal);
+      }
+      return out;
     }
     case 'workflow_deregister': {
       const { principal: argPrincipal, ...deregArgs } = args as { name: string; principal?: string | null };
@@ -1395,7 +1434,96 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/
   // parse checks moved to registration (ADR-013); see submission-validator.ts's own header.
   const validator = new SubmissionValidator({ catalog });
-  const facade = new McpFacade({ clock, store, runManager, validator, ceilings });
+  // v2 (DES-016/TASK-019): SQLite-persisted schedule store, same workRoot convention as
+  // catalog.db/store — survives restart (REQ-014-style persistence extended to schedules). Moved up
+  // from its old below-facade spot (v23, TASK-126) so the v23 composition root below can compose
+  // real TriggerPorts from it — `webhooks`/`continuations` are already in scope above.
+  const scheduler = new SqliteSchedulerPort({
+    clock, catalog, runManager,
+    dbPath: config?.schedulerDbPath ?? join(workRoot, 'schedules.db'),
+  });
+  // D-V2I-2 (DES-017): re-derive nextFire for every persisted cron/once schedule from THIS boot's
+  // clock before the driver's first tick — matches DES-017's own "Boot re-arm from persistence".
+  scheduler.rearmAtBoot();
+
+  // v23 (DES-128, ARCH-078, TASK-126): the ONE composition of the three trigger stores' own public
+  // reads into TriggerPorts — API composition, not a batched read (the stores are three separate
+  // SQLite files). `webhooks` is remapped to a FRESH `{enabled}` literal (never the `WebhookView`
+  // passed through): a method-return position gets no excess-property check, so passing the view
+  // straight through would let `id`/`secretFingerprint` ride along silently past the `id?: never`
+  // pin DES-128/R-4a exists to enforce.
+  const triggerPorts: TriggerPorts = {
+    schedules: { listByWorkflow: (name) => scheduler.listByWorkflow(name) },
+    webhooks: { listByWorkflow: (name) => webhooks.list().filter((w) => w.workflow === name).map((w) => ({ enabled: w.enabled })) },
+    continuations: { listPendingByWorkflow: (name) => continuations!.listPendingByWorkflow(name) },
+    runs: { getWorkflowName: (runId) => store.getWorkflowName(runId) },
+  };
+
+  // v23 (DES-134, TASK-126): the ONE site every `graphAnalyzer` key defaults — a Partial config
+  // block that is read but never forwarded is this engine's own recurring wiring defect (v11
+  // updateFlagPath, v15 auth), so every key is applied here, by name, next to its default literal.
+  const graphAnalyzerConfig: GraphAnalyzerConfig = {
+    enabled: config?.graphAnalyzer?.enabled ?? true,
+    model: config?.graphAnalyzer?.model ?? 'default',
+    systemPrompt: config?.graphAnalyzer?.systemPrompt ?? DEFAULT_GRAPH_ANALYZER_SYSTEM_PROMPT,
+    tools: config?.graphAnalyzer?.tools ?? [],
+    timeoutMs: config?.graphAnalyzer?.timeoutMs ?? 60000,
+    retries: config?.graphAnalyzer?.retries ?? 0,
+    maxBytes: config?.graphAnalyzer?.maxBytes ?? 8192,
+    maxLines: config?.graphAnalyzer?.maxLines ?? 120,
+    maxQueueDepth: config?.graphAnalyzer?.maxQueueDepth ?? 8,
+  };
+  // The analyzer needs a REAL GatewayClient (DES-131: "never a narrower ad hoc shape") even on the
+  // documented zero-config deployment, where `gateway` above is `undefined` because no `aliases`
+  // were supplied — same fallback RunManager's own constructor applies internally for the identical
+  // reason (DEFAULT_GATEWAY_CONFIG), reused here rather than re-typed.
+  const analyzerGateway: GatewayClient =
+    gateway ?? new LiteLLMGatewayClient({ aliases: config?.aliases ?? DEFAULT_ALIASES, timeoutMs: config?.timeoutMs ?? 15000, retries: config?.retries ?? 1 });
+  if (graphAnalyzerConfig.enabled && !isKnownAlias(graphAnalyzerConfig.model, aliasNames)) {
+    // DES-131: warn, never fail boot (REQ-104) — `enqueue()` itself short-circuits every
+    // registration to unavailable/MODEL_UNMAPPED with zero model calls until this is fixed.
+    console.warn(`[remote-workflow-engine] graph-analyzer: graphAnalyzer.model "${graphAnalyzerConfig.model}" is not a known alias — every diagram will settle unavailable/MODEL_UNMAPPED until this is corrected`);
+  }
+  const graphAnalyzer = new GraphAnalyzer({
+    gateway: analyzerGateway, catalog, ports: triggerPorts, clock,
+    config: graphAnalyzerConfig, aliasNames,
+  });
+  // DES-127 B7: one requeue per pending row across restarts, then unavailable/RETRIES_EXHAUSTED —
+  // unconditional (a row pending from a PRIOR life is swept regardless of THIS boot's enabled flag,
+  // matching the class's own boundary; `enabled:false` only gates the two call sites below that
+  // would otherwise start a NEW job).
+  graphAnalyzer.sweepAtBoot();
+  // Two boot lines, same stdout convention as main.ts's own (DES-131's own closing sentence).
+  const analyzerProvider = effectiveProvider(config?.aliases ?? DEFAULT_ALIASES, graphAnalyzerConfig.model);
+  const analyzerEffectiveTools = curateToolsForProvider(graphAnalyzerConfig.tools, analyzerProvider);
+  const analyzerJailDir = join(workRoot, '.graph-analyzer-scratch');
+  console.log(`[remote-workflow-engine] graph-analyzer effective tools=${JSON.stringify(analyzerEffectiveTools)} jail=${analyzerJailDir}`);
+  let missingDiagramCount = 0;
+  if (graphAnalyzerConfig.enabled) {
+    // DES-127 B1: no boot backfill (no model calls on an upgrade) — just the count + the exact
+    // recovery command, so discoverability costs zero model calls.
+    for (const wf of await catalog.list()) {
+      for (const version of wf.versions) {
+        if (catalog.getDiagram(wf.name, version) === null) missingDiagramCount++;
+      }
+    }
+  }
+  console.log(`[remote-workflow-engine] graph-analyzer versions with no diagram yet: ${missingDiagramCount} — recover with workflow_regenerate_diagram({name, version})`);
+
+  // v23 (adjudication #2 R-1/R-2, TASK-126): the ONE construction+wiring site — both
+  // `McpFacadeDeps.triggerPorts`/`.graphAnalyzer` are REQUIRED, so this is the only place an
+  // unwired McpFacade can even be built for production use.
+  const facade = new McpFacade({
+    clock, store, runManager, validator, ceilings, triggerPorts,
+    graphAnalyzer: { enabled: graphAnalyzerConfig.enabled, regenerate: (name, version, principal) => graphAnalyzer.regenerate(name, version, principal) },
+  });
+  // v23 (REQ-102, TASK-126): the `callTool` register->enqueue seam (see `AnalyzerRegisterPort`) —
+  // a separate narrow wrapper from the facade's own `{enabled, regenerate()}` dep above, per
+  // adjudication #2 R-1's ruling to keep that structural interface unwidened.
+  const analyzerRegisterPort: AnalyzerRegisterPort = {
+    enabled: graphAnalyzerConfig.enabled,
+    enqueue: (name, version, script, principal) => graphAnalyzer.enqueue(name, version, script, principal),
+  };
   // v6 (REQ-036): best-effort engine-side diagnostics for a runId, pulled through the SAME facade
   // the MCP tools use (status + artifact list + failing/last agent transcript tail), formatted as a
   // short markdown block. Bounded and swallow-all — an unknown/failed run returns null so the
@@ -1442,15 +1570,6 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // and GET /api/system (DES-073 "sample once"). Tests inject a StubProbe-backed sampler via
   // config.systemInfo; production defaults to a RealSystemProbe.
   const systemInfoSampler = config?.systemInfo ?? new SystemInfoSampler(new RealSystemProbe(workRoot), clock, 1500);
-  // v2 (DES-016/TASK-019): SQLite-persisted schedule store, same workRoot convention as
-  // catalog.db/store — survives restart (REQ-014-style persistence extended to schedules).
-  const scheduler = new SqliteSchedulerPort({
-    clock, catalog, runManager,
-    dbPath: config?.schedulerDbPath ?? join(workRoot, 'schedules.db'),
-  });
-  // D-V2I-2 (DES-017): re-derive nextFire for every persisted cron/once schedule from THIS boot's
-  // clock before the driver's first tick — matches DES-017's own "Boot re-arm from persistence".
-  scheduler.rearmAtBoot();
   // v2 (DES-019/TASK-021): asset store rooted under workRoot; `selfBind` (this server's own
   // address) is assigned once the real listening port is known, just below.
   let assetSync: AssetSyncService;
@@ -1731,7 +1850,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
                 const name = rpc.params?.name ?? '';
                 const args = rpc.params?.arguments ?? {};
                 const webhookBaseUrl = `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
-                const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, systemInfoSampler, name, args, p.principal, !!authCfg);
+                const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, systemInfoSampler, analyzerRegisterPort, name, args, p.principal, !!authCfg);
                 sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } }); return;
               }
               sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32601, message: `Method not found: ${rpc.method}` } });
@@ -1926,7 +2045,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           const name = rpc.params?.name ?? '';
           const args = rpc.params?.arguments ?? {};
           const webhookBaseUrl = `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
-          const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, systemInfoSampler, name, args, null, !!authCfg);
+          const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, systemInfoSampler, analyzerRegisterPort, name, args, null, !!authCfg);
           sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } });
           return;
         }

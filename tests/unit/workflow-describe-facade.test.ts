@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { FixedClock } from '../../src/clock.js';
 import { WorkflowCatalog, resolveVersionRequest, type Channels } from '../../src/workflow-catalog.js';
 import { RunManager } from '../../src/run-manager.js';
-import { McpFacade, type ReadContext } from '../../src/mcp-facade.js';
+import { McpFacade, NO_TRIGGER_PORTS, NO_GRAPH_ANALYZER, type ReadContext } from '../../src/mcp-facade.js';
 
 const CLOCK = new FixedClock(new Date('2026-09-02T10:00:00.000Z'));
 const CTX: ReadContext = { authEnabled: false, principal: null };
@@ -30,7 +30,7 @@ let facade: McpFacade;
 beforeEach(() => {
   workRoot = mkdtempSync(join(tmpdir(), 'rwe-facade-describe-'));
   catalog = new WorkflowCatalog(workRoot, CLOCK);
-  facade = new McpFacade({ runManager: new RunManager({ catalog, clock: CLOCK }) } as any);
+  facade = new McpFacade({ runManager: new RunManager({ catalog, clock: CLOCK }), triggerPorts: NO_TRIGGER_PORTS, graphAnalyzer: NO_GRAPH_ANALYZER } as any);
 });
 afterEach(() => { rmSync(workRoot, { recursive: true, force: true }); });
 
