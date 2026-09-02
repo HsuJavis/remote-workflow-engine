@@ -253,38 +253,35 @@ export class GraphAnalyzer {
     }
     const durationMs = this._clock.now() - start;
 
-    let promptTokens: number | null = null;
-    let completionTokens: number | null = null;
-    let outcome: 'ready' | 'unavailable';
-    let noteCode: Exclude<DiagramNoteCode, 'DISABLED' | 'NOT_GENERATED'> | undefined;
-    let gateFail: GateFailReason | undefined;
-    let diagram: string | undefined;
-
+    // Build the outcome ONCE, as the discriminated union it already is (Gate 6.5 simplify: the
+    // previous shape carried four independent `let`s that the return statement then had to re-narrow
+    // with two `as` casts the compiler could not check).
+    let outcome: AttemptOutcome;
+    let gateFail: GateFailReason | null = null;
     if (result.ok) {
-      promptTokens = result.tokens.input;
-      completionTokens = result.tokens.output;
       const gate = gateDiagram(result.content, allowedLabels, { maxBytes: this._config.maxBytes, maxLines: this._config.maxLines });
       if (gate.ok) {
-        outcome = 'ready';
-        diagram = gate.diagram;
+        outcome = { ok: true, diagram: gate.diagram };
       } else {
-        outcome = 'unavailable';
-        noteCode = noteCodeFor({ kind: 'gate', reason: gate.reason });
+        outcome = { ok: false, noteCode: noteCodeFor({ kind: 'gate', reason: gate.reason }), gatewayOk: true };
         gateFail = gate.gateFail;
       }
     } else {
-      outcome = 'unavailable';
-      noteCode = noteCodeFor(result);
+      outcome = { ok: false, noteCode: noteCodeFor(result), gatewayOk: false };
     }
 
     // eslint-disable-next-line no-console
     console.log('[remote-workflow-engine] graph-analyzer ' + JSON.stringify({
       name, version, principal, model: this._config.model,
-      promptTokens, completionTokens, durationMs, outcome, noteCode: noteCode ?? null, gateFail: gateFail ?? null,
+      promptTokens: result.ok ? result.tokens.input : null,
+      completionTokens: result.ok ? result.tokens.output : null,
+      durationMs,
+      outcome: outcome.ok ? 'ready' : 'unavailable',
+      noteCode: outcome.ok ? null : outcome.noteCode,
+      gateFail,
     }));
 
-    if (outcome === 'ready') return { ok: true, diagram: diagram as string };
-    return { ok: false, noteCode: noteCode as Exclude<DiagramNoteCode, 'DISABLED' | 'NOT_GENERATED'>, gatewayOk: result.ok };
+    return outcome;
   }
 
   private async _runJob(
@@ -295,12 +292,15 @@ export class GraphAnalyzer {
     const prompt = `${this._config.systemPrompt}\n\n---\nWorkflow script:\n${script}`;
     const attempts = 1 + this._config.retries;
 
-    let attemptResult: AttemptOutcome | undefined;
-    for (let i = 1; i <= attempts; i++) {
-      attemptResult = await this._attempt(name, version, principal, i, prompt, allowedLabels);
-      if (attemptResult.ok || attemptResult.gatewayOk) break; // success, or a gate rejection — retrying won't help either
-    }
-    const last: AttemptOutcome = attemptResult as AttemptOutcome; // attempts >= 1, so the loop always runs
+    // do/while, not for: the first attempt is unconditional, which is what makes `last` definitely
+    // assigned without the `as AttemptOutcome` cast the `for` shape needed (Gate 6.5 simplify).
+    let last: AttemptOutcome;
+    let attemptNum = 0;
+    do {
+      attemptNum++;
+      last = await this._attempt(name, version, principal, attemptNum, prompt, allowedLabels);
+      // success, or a gate rejection — retrying won't help either
+    } while (!last.ok && !last.gatewayOk && attemptNum < attempts);
 
     const generatedAt = this._clock.isoNow();
     if (last.ok) {

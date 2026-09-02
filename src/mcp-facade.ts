@@ -109,6 +109,27 @@ function notFound(runId: string): ErrEnvelope {
   return { code: 'RUN_NOT_FOUND', message: `Run not found: ${runId}` };
 }
 
+/** v23 Gate 6.5 simplify: the `{code, error}` half of a failed `catalog.resolveDetail`, shared by
+ *  `workflow_describe`/`workflow_regenerate_diagram` (byte-identical in both before this extraction;
+ *  they differ only in the envelope keys they spread it into). Unknown NAME keeps the pre-v22
+ *  `WORKFLOW_NOT_FOUND` code; a known name with an unresolvable version/channel selector surfaces
+ *  its own typed code (UNKNOWN_VERSION/CHANNEL_UNPUBLISHED/INVALID_CHANNEL/DANGLING_CHANNEL). */
+function catalogResolveFailure(err: unknown, name: string): { code: string; error: ErrEnvelope } {
+  const error = err instanceof CatalogNotFoundError
+    ? { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${name}` }
+    : toErrEnvelope(err);
+  return { code: error.code, error };
+}
+
+/** v23 Gate 6.5 simplify: the `reportProblem` line every workflow view carries — byte-identical at
+ *  the two sites that build a `WorkflowOwnerView` (workflow_get's non-owner branch, and
+ *  workflow_describe) before this extraction. */
+function reportProblemFor(name: string, owner: string | null): string {
+  return owner === null
+    ? `this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: "${name}"})`
+    : `issue_report({workflow: "${name}"})`;
+}
+
 // v22 (DES-117, TASK-109): the closed-error message template, shared by both ingress refusal sites
 // in this file (workflow_run/workflow_resume) and RunManager.start()'s own chokepoint check — the
 // two-call migration recipe an agent needs (workflow_register then workflow_run({name})).
@@ -345,9 +366,7 @@ export class McpFacade {
         versions: full.versions,
         description: meta.description, phases: meta.phases,
         params, owner: full.owner, createdAt: full.createdAt,
-        reportProblem: full.owner === null
-          ? `this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: "${full.name}"})`
-          : `issue_report({workflow: "${full.name}"})`,
+        reportProblem: reportProblemFor(full.name, full.owner),
         validation,
         script: full.script,
       };
@@ -395,12 +414,7 @@ export class McpFacade {
     try {
       full = await catalog.resolveDetail(a.name, sel);
     } catch (err) {
-      if (err instanceof CatalogNotFoundError) {
-        const e = { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` };
-        return { runId: '', status: 'failed', code: e.code, error: e };
-      }
-      const e = toErrEnvelope(err);
-      return { runId: '', status: 'failed', code: e.code, error: e };
+      return { runId: '', status: 'failed', ...catalogResolveFailure(err, a.name) };
     }
     // Same pure resolver, called again against the row we already have, purely to name HOW this
     // version was picked (`resolvedBy`) — the codes on the error path above already came from it.
@@ -415,9 +429,7 @@ export class McpFacade {
       versions: full.versions,
       description: meta.description, phases: meta.phases,
       params, owner: full.owner, createdAt: full.createdAt,
-      reportProblem: full.owner === null
-        ? `this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: "${full.name}"})`
-        : `issue_report({workflow: "${full.name}"})`,
+      reportProblem: reportProblemFor(full.name, full.owner),
       validation: check.ok ? { ok: true, errors: [] } : { ok: false, errors: check.errors },
       script: full.script,
     };
@@ -441,12 +453,7 @@ export class McpFacade {
     try {
       full = await catalog.resolveDetail(a.name, { version: a.version });
     } catch (err) {
-      if (err instanceof CatalogNotFoundError) {
-        const e = { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` };
-        return { queued: false, code: e.code, error: e };
-      }
-      const e = toErrEnvelope(err);
-      return { queued: false, code: e.code, error: e };
+      return { queued: false, ...catalogResolveFailure(err, a.name) };
     }
     if (full.owner && principal !== null && full.owner !== principal) {
       const e = { code: 'NOT_WORKFLOW_OWNER', message: `NOT_WORKFLOW_OWNER: workflow '${a.name}' is owned by ${full.owner}` };
