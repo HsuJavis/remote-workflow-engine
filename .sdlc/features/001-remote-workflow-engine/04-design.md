@@ -4533,3 +4533,64 @@ header is the last place that should carry it.
 structurally-compatible class. **Only its construction site was unowned** — which is precisely
 adjudication #2's R-1 finding, now confirmed from the opposite direction by an implementer who went
 looking for work and found the code already right.
+
+---
+
+## Orchestrator adjudication (v23) #4 — a specified security guard that was never built, a vacuous survivor, and a lying annotation (2026-09-03)
+
+### T-1 — **DES-122's zero-config fail-closed rule is specified and NOT built. New TASK-127 owns it.**
+DES-122 says: *"When `graphAnalyzer.enabled` and no `workRoot` resolves, `tools` is forced to `[]` and
+the boot line says so."* It exists in neither `main.ts` nor `server.ts`, and **no test anywhere
+exercises it** — `graph-analyzer-composition-root.test.ts` always passes a concrete `workRoot`.
+
+Reachable in production, not theoretical: `main.ts:89`'s `workRoot = RWE_WORK_ROOT ?? fileConfig.workRoot`
+is legitimately `undefined` on a true zero-config deploy; the SDK gateway's `cwd` then resolves to
+`undefined`, and that client's own docblock records *"nothing to enforce against, allow"* — i.e. **no
+jail** for an agent the architecture itself classifies as running on attacker-influenced input (an
+author's script). Exposure is narrow (an operator must BOTH configure non-empty `graphAnalyzer.tools`
+AND run with no `workRoot`; the default is `[]`), which bounds the severity — it does not excuse
+shipping a guard the design claims exists.
+
+**Landing site: `server.ts:1462-1475`, the one site where every `graphAnalyzer` key defaults.** Not
+`main.ts`, whose own convention at `:178-183` is "No defaults applied here" — putting it there would
+contradict a documented rule to satisfy a task boundary.
+
+**New TASK-127, not a TASK-126 re-open.** TASK-126 is `done` on IT-098's evidence and that evidence is
+real; flipping it back would muddy exactly the status/reality trail R-6 exists to keep clean. TASK-127
+needs its own Gate 5 RED first — asserting `tools` is forced to `[]` and the boot line says so — because
+a guard that ships without a test asserting it is how this one got here.
+
+### T-2 — the val-110 auth-ON case now passes VACUOUSLY. Retire it.
+The Gate 5 pass correctly retired the three cases adjudication #2 named and **flagged rather than
+silently fixed** an adjacent one: val-110's auth-ON *"omits skeleton"* case. With the route deleted it
+now 404s, so the assertion passes **for the wrong reason** — a vacuous test, the class the v22 sweep
+found four of. It was not in #2's named scope, and the implementer was right not to widen scope
+unilaterally.
+
+**Ruled: retire it, same treatment and same recorded reason as its three siblings.** A masking
+assertion that would pass against a deleted endpoint protects nothing; leaving it green is worse than
+deleting it, because a future reader counts it as coverage.
+
+### T-3 — val-112 was a TEST defect, and its root cause was an annotation that lied
+`workflow_describe` was correct all along. `rpc()` returns the **unwrapped tool payload**, whose two
+shapes differ — success carries `result`, failure carries `code`/`error` and **no `result` key at
+all** — but its return-type annotation declared only `{result?, error?}`. Reading through the missing
+`.result` wrapper yielded `undefined` forever.
+
+Fixed by reading `code` where the facade actually puts it, and by **widening the annotation to declare
+both shapes**, so the next author is not sent down the same path. The expected value stayed
+`CHANNEL_UNPUBLISHED` throughout — sourced from REQ-097/REQ-101's acceptance text, never read back off
+the implementation. **Only the path was wrong; the expectation never moved.** That distinction is the
+whole of the oracle rule: had the response been reshaped to match what the code returned, this would
+have been B2 again.
+
+Note the shape of the root cause: a **type annotation** joins comments, docblocks, architecture notes,
+retired tests, a review finding and ledger entries as a carrier of "a description that no longer matches
+the thing". That is the eleventh instance across v21–v23, and the first where the false description was
+enforced by the compiler and still wrong.
+
+### T-4 — status reconciliation
+TASK-119 → `done`: its unit tests are green and val-112, the last red attributed to it, was a test-shape
+defect in someone else's file, not a gap in its implementation. TASK-117 stays `draft` — UT-111's
+`sweepAtBoot` unstamped-pending case is genuinely red in its own file. TASK-124 stays `draft`: it is a
+Gate 7.5 obligation and is correctly blocked until TASK-117 lands.

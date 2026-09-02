@@ -44,7 +44,13 @@ async function mintBearer(email: string): Promise<string> {
   return token;
 }
 
-async function rpc(name: string, args: Record<string, unknown>, bearer?: string): Promise<{ result?: Record<string, unknown>; error?: { code?: string; message?: string } }> {
+/** Returns the UNWRAPPED tool payload (`body.result.content[0].text`, JSON-parsed) — NOT the
+ *  JSON-RPC envelope. The two payload shapes differ and both are declared here, because an
+ *  annotation that omits one is what sent VAL-112's channel case reading `.result.code` on a
+ *  response that has no `result` key at all:
+ *    success -> { runId, status: 'completed', result: {...} }
+ *    failure -> { runId, status: 'failed', code, error: { code, message } }   // no `result` */
+async function rpc(name: string, args: Record<string, unknown>, bearer?: string): Promise<{ result?: Record<string, unknown>; code?: string; error?: { code?: string; message?: string } }> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
   const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
@@ -79,11 +85,12 @@ describe('REQ-101: workflow_describe over real /mcp (VAL-112)', () => {
     await registerPublishedVia((n, a) => rpc(n, a, ownerToken).then((r) => r as unknown as Record<string, unknown>), 'val112-draft', `return 1;`);
 
     const resp = await rpc('workflow_describe', { name: 'val112-draft', channel: 'beta' }, ownerToken);
-    expect(resp.result?.['code'] ?? resp.error?.message ?? (resp.result as unknown as { error?: { code?: string } })?.error?.code)
-      .toBeDefined();
-    // The typed code, wherever the envelope places it:
-    const code = (resp.result as unknown as { error?: { code?: string }; code?: string } | undefined)?.error?.code
-      ?? (resp.result as unknown as { code?: string } | undefined)?.code;
-    expect(code).toBe('CHANNEL_UNPUBLISHED');
+    // The failure payload carries no `result` key — read `code` where the facade actually puts it.
+    // The EXPECTED value below is REQ-097/REQ-101's acceptance text ("an unpublished channel is
+    // refused with CHANNEL_UNPUBLISHED, never silently resolved"), not something read back off the
+    // implementation; only the PATH was wrong here, never the expectation.
+    expect(resp.result).toBeUndefined();
+    expect(resp.code).toBe('CHANNEL_UNPUBLISHED');
+    expect(resp.error?.code).toBe('CHANNEL_UNPUBLISHED');
   });
 });
