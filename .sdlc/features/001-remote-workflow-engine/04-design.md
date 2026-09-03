@@ -4764,3 +4764,39 @@ B6 的註解說它防的是 immortal orphan row,但**留在 `pending` 也是一�
 但 `enqueue` 第一行就是 single-flight 守衛(DES-127 B4),第二次呼叫在到達佇列深度檢查前就被
 靜默 no-op。它比照同檔已綠的 UT-128(用兩個不同名稱)修好 —— **拿既有的綠案例當範本,而不是自己發明**,
 是對的做法。
+
+---
+
+## Orchestrator adjudication (v23) #9 — AUTHORING.md 教了一個引擎會拒絕的範例(我寫的) (2026-09-04)
+
+### Y-1 — 缺陷確認,來源是我
+Gate 7.5 的 validator **把 `docs/AUTHORING.md` 規則 1 的 `meta.params` 範例拿去對活的引擎跑**,
+照抄回 `PARAM_CONTRACT_INVALID`。三處皆錯,且全部由我在本輪對話中寫入:
+- `model: { default: 'sonnet' }` —— 缺 `type`（`ParamSpec.type` 必填)
+- `effort: { enum: [...] }` —— 同上
+- `dryRun: { type: 'boolean' }` —— **`boolean` 不在詞彙表**（`VALID_SPEC_TYPES = string|number|enum`)
+
+`src/params/contract.ts:173-181` 與 DES-101 一致,**錯的是文件不是引擎**。
+
+### Y-2 — 為什麼這比一般的文件錯誤嚴重
+`AUTHORING.md` 存在的唯一目的,就是讓作者寫得出**有效的** params。
+**一份教出無效範例的指南,比沒有指南更糟** —— 作者照抄、被拒、然後開 issue,
+而那正是擁有者當初要求加 `workflow_authoring_guide` 的理由。
+這是「描述與實物不符」的第十四例,而且發生在**專門用來防止這件事的文件裡**。
+
+### Y-3 — 連帶修正:我對 fallback 的說明也是錯的
+我寫「a mis-shaped params block is ignored, not rejected」。validator 實測後釐清:
+- **巢狀錯誤**（`params` 根本不是 `{knobs, args}` 形狀)→ 靜默退回標準四旋鈕契約,註冊成功
+- **巢狀正確但 spec 無效** → **拒絕**,`PARAM_CONTRACT_INVALID` 並指名出錯的 param
+
+兩種行為不同,我把它們混為一談。已改寫成分開陳述。
+
+### Y-4 — validator 的處置正確,不要責備它沒順手修
+它刻意不改:「a silent patch would hide it from Gate 8」——
+`AUTHORING.md` 是 Gate 6 的產出(TASK-123/DES-135),悄悄補掉會讓 Gate 8 看不到這個缺陷曾經存在。
+**正確做法是公開裁定後再修**,這樣 Gate 8 同時看到缺陷與修法。本裁定即為此。
+
+### Y-5 — 驗證方式的教訓
+它是**實際執行**發現的,不是閱讀發現的。文件裡的程式碼範例應該像程式碼一樣被驗證 ——
+v24 的 `workflow_authoring_guide` 若要交付,**它給的每個範例都必須有一個測試實際註冊它**,
+否則同一個缺陷會以更大的規模重演(那份 guide 的範例會多得多)。

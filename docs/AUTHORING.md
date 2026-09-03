@@ -18,16 +18,21 @@ Four rules govern a well-behaved workflow script:
      name: 'triage',
      description: 'Classify an inbound issue and draft a reply',
      params: {
-       knobs: { model: { default: 'sonnet' }, effort: { enum: ['low', 'medium', 'high'] } },
-       args:  { issueUrl: { type: 'string' }, dryRun: { type: 'boolean', default: true } },
+       knobs: { effort: { type: 'enum', enum: ['low', 'medium', 'high'], default: 'low' } },
+       args:  { topic: { type: 'string' } },
      },
    };
    ```
 
-   **A mis-shaped `params` block is ignored, not rejected.** The engine falls back to the canonical
-   four-knob default and registration still succeeds — so a typo here costs you the whole contract
-   with no error to tell you. Read your workflow back with `workflow_describe` after registering
-   and confirm the `params` you meant are the `params` it reports.
+   **`type` is REQUIRED on every spec, and the only valid types are `string`, `number`, `enum`**
+   (`contract.ts`'s `VALID_SPEC_TYPES` — there is no `boolean`). A correctly-nested block carrying an
+   invalid spec is **rejected** with `PARAM_CONTRACT_INVALID`, naming the offending param.
+
+   The "ignored, not rejected" fallback applies only to a **wrongly-nested** block: if `params` is not
+   shaped `{knobs, args}` at all, the engine falls back to the canonical four-knob contract and
+   registration succeeds silently. So a nesting typo costs you the whole contract with no error.
+   Read your workflow back with `workflow_describe` after registering and confirm the `params` you
+   meant are the `params` it reports.
 
 2. **Never read a value the contract does not declare.** A script that reaches for a param key
    outside its own `meta.params` declaration is reading a value nobody promised it, and nobody
