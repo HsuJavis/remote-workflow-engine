@@ -10,6 +10,7 @@
 // network/process), and the missing-secret case throws at session-build BEFORE `query()` is ever
 // invoked — so "fails before any provider dial" still holds with no live model.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { EventEmitter } from 'node:events'; // a real ChildProcess IS an EventEmitter — the fake must be too (v23 adjudication #6 V-2)
 import { mkdtempSync, rmSync, readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,7 +34,7 @@ const ALIASES: AliasMap = {
 };
 
 function makeFakeProxyManager(): LiteLLMProxyManager {
-  const fakeSpawn = vi.fn(() => ({ exitCode: null, kill: vi.fn() }) as unknown as ChildProcess);
+  const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
   const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
   return new LiteLLMProxyManager(ALIASES, {
     spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,

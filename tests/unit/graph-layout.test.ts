@@ -125,4 +125,26 @@ describe('layoutGraph — pure topology (UT-068, DES-064)', () => {
     expect(() => layoutGraph([], [], {})).not.toThrow();
     expect(() => layoutGraph([{ kind: 'phase' } as SkeletonNode], [], { startedByType: 'unknown' })).not.toThrow();
   });
+
+  // UT-120 (v23 orchestrator adjudication #6, V-4 — REQ-105, DES-064): the retired 'skeleton'
+  // concept must not reach a live client through ANY channel, not just source-grep-visible ones.
+  // `layoutGraph`'s unmatched-agent warning is served verbatim on `GET /api/runs/:id/dag`
+  // (server.ts:1242) and today literally reads `"agent <id> unmatched to skeleton: frame-grouped"`
+  // (dashboard.ts:342) — a live client-facing string still names the deleted surface, which is
+  // exactly REQ-105's own text: "no ... still tells a reader the skeleton is a surface available
+  // to them". `dashboard.ts` is on the source-grep guard's internal-use allowlist (it is the
+  // layout spine's positional consumer), so that guard does not — and must not be asked to — catch
+  // a wording choice in a string it is allowed to contain the word for; this is a separate,
+  // narrower pin on the actual live wire content.
+  //
+  // Red reason: verified by reading dashboard.ts:342 before writing this assertion — the warning
+  // literal is `` `agent ${a.agentId} unmatched to skeleton: frame-grouped` ``.
+  it('the unmatched-agent warning names the layout fallback, never the retired "skeleton" word (UT-120, DES-064, REQ-105)', () => {
+    const skeleton: SkeletonNode[] = [{ kind: 'phase', title: 'A' }];
+    const liveAgents: AgentRecord[] = [
+      agent('dyn-1', 'loop-iteration', 'A', '2024-01-01T00:00:00Z'),
+    ];
+    const result = layoutGraph(skeleton, liveAgents, { startedByType: 'client' });
+    expect(result.warnings.some((w) => w.toLowerCase().includes('skeleton'))).toBe(false);
+  });
 });

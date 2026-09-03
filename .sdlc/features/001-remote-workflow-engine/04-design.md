@@ -1810,7 +1810,7 @@ classDiagram
 - **status:** done
 - **traces:** ARCH-042, TASK-067
 - **signature:** `type GraphPayload = { kind:'skeleton'; cells:LayoutCell[]; edges:LayoutEdge[]; warnings:string[]; name:string } | { kind:'run'; cells:LayoutCell[]; edges:LayoutEdge[]; warnings:string[]; truncated?:boolean; startedBy:StartedBy; terminalAt?:number }`. **Both arms carry logical `cells`** — the skeleton arm is run through the same adapter→`layoutGraph` server-side so the browser renderer is a single branchless projection. `LayoutNode` = a narrow adapter type over `SkeletonNode` (only the fields layoutGraph uses: id, kind, label, phase, group/parallel, depth) built by `toLayoutNodes(SkeletonNode[]):LayoutNode[]`. `layoutGraph(nodes:LayoutNode[], liveAgents:AgentRecord[], opts?:{maxNodes?:number}) → { cells:LayoutCell[]; edges:LayoutEdge[]; warnings:string[]; truncated?:boolean }` is **PURE** (no clock/store/DOM). `LayoutCell = { id:string; col:number; row:number; laneSpan:number; kind; state?:AgentState; label:string; frame?:string; depth?:number }` — **logical grid cells, never device pixels** (col by phase→parallel-group→nesting depth; row by index within a parallel group). `LayoutEdge = { from:string; to:string }`. Exposed additively on `GET /api/runs/:id/dag` (internal seam, not a frozen public contract; JSDoc: "may change without notice"). `terminalAt?` added to `RunStatusView` (ARCH-028 pass-through → `workflow_status`).
-- **boundary-conditions:** **total — never throws.** Node-id is a pure deterministic function of node identity (agent→`agentId`; trigger/phase/frame→a stable synthetic key) so pan/zoom + click-selection survive the 3s re-render — an id must not reshuffle per poll. Skeleton-overlay join is **phase → parallel-group → ordered set of AgentRecords (ordered by `startedAt`/dispatch seq), NOT a 1:1 `label+phase` lookup** (else two same-label parallel agents collapse into one box and a live agent silently vanishes). An unmatched **live** agent (loop/conditional/dynamic label the static scan missed) falls back to frame-based `buildDagModel` grouping and still renders (**never drop a live agent**) AND pushes `warnings:["agent <id> unmatched to skeleton: frame-grouped"]`. An unmatched **skeleton** node renders inert. Empty run → trigger node only. `maxNodes` default **200** (== the client "N more" ceiling, DES-065 — one shared constant) → over-limit sets `truncated:true` and a `warnings[]` entry. `warnings[]` surfaced in BOTH the JSON response and the SVG (DES-065).
+- **boundary-conditions:** **total — never throws.** Node-id is a pure deterministic function of node identity (agent→`agentId`; trigger/phase/frame→a stable synthetic key) so pan/zoom + click-selection survive the 3s re-render — an id must not reshuffle per poll. Skeleton-overlay join is **phase → parallel-group → ordered set of AgentRecords (ordered by `startedAt`/dispatch seq), NOT a 1:1 `label+phase` lookup** (else two same-label parallel agents collapse into one box and a live agent silently vanishes). An unmatched **live** agent (loop/conditional/dynamic label the static scan missed) falls back to frame-based `buildDagModel` grouping and still renders (**never drop a live agent**) AND pushes `warnings:["agent <id> unmatched to the predicted layout: frame-grouped"]` **[AMENDED v23 adjudication #6, V-4 — string only, no behaviour change]**: this warning is served verbatim on the live `GET /api/runs/:id/dag`, so the wording had to stop naming the retired "skeleton" surface (REQ-105); the join it describes is unchanged. Pinned by UT-120. An unmatched **skeleton** node renders inert. Empty run → trigger node only. `maxNodes` default **200** (== the client "N more" ceiling, DES-065 — one shared constant) → over-limit sets `truncated:true` and a `warnings[]` entry. `warnings[]` surfaced in BOTH the JSON response and the SVG (DES-065).
 - **iter:** v11
 
 ### DES-065 — Morandi n8n SVG renderer + cell→pixel mapper + `morandiFrameHue` (src/dashboard-page.ts)
@@ -3942,3 +3942,861 @@ whether there was a third.
 ### P-4 — the standing rule this batch must not break
 Expanding an in-flight batch beyond the finding's own text is what cost v21 fifty minutes of two impl
 gates writing the same tree. P-1 is inside H4's text. P-3 is outside it and therefore waits.
+
+---
+
+## v23 — `workflow_describe`, the analyzer-drawn diagram, retiring the skeleton (DES-120..135)
+
+```mermaid
+classDiagram
+    class GraphAnalyzer {
+      -gateway: GatewayClient
+      -catalog: WorkflowCatalog
+      -clock: Clock
+      -schedule: (job) =~ void
+      -cfg: GraphAnalyzerConfig
+      +enqueue(name, version, script, principal) void
+      +regenerate(name, version, principal) RegenResult
+      +sweepAtBoot() void
+    }
+    class WorkflowCatalog {
+      +putDiagramPending(name, version)
+      +putDiagramResult(name, version, r)
+      +getDiagram(name, version) DiagramRow
+      +listPendingDiagrams() Key[]
+      +deregister(name)
+    }
+    class DiagramGate {
+      +gateDiagram(raw, allowed, limits) GateResult
+      +DIAGRAM_CODEPOINTS
+    }
+    class TriggerBindings {
+      +getTriggerBindings(name, ports) Snapshot
+    }
+    class WorkflowView {
+      +projectWorkflowForRead(full, viewerIsOwner) WorkflowPublicView
+      +projectWorkflowDescribe(full, ctx) WorkflowDescribeView
+      +EXPECTED_NON_OWNER_KEYS
+      +EXPECTED_DESCRIBE_KEYS
+    }
+    class McpFacade {
+      +workflow_describe(a, ctx)
+      +workflow_regenerate_diagram(a, principal)
+    }
+    class GatewayClient {
+      <<interface>>
+      +invoke(req) GatewayResult
+    }
+    GraphAnalyzer --> GatewayClient
+    GraphAnalyzer --> WorkflowCatalog
+    GraphAnalyzer --> DiagramGate
+    GraphAnalyzer --> TriggerBindings
+    McpFacade --> WorkflowView
+    McpFacade --> WorkflowCatalog
+    McpFacade --> TriggerBindings
+    McpFacade --> GraphAnalyzer
+    WorkflowView --> TriggerBindings
+```
+
+### DES-120 — `curateToolsForProvider` preserves an explicitly-empty tool set; the analyzer's tool field is `opts.allowedTools`
+- **status:** draft
+- **traces:** ARCH-079, TASK-116, TASK-117
+- **signature:** `src/gateway/claude-agent-sdk-client.ts:223` gains ONE line at the top of `curateToolsForProvider(tools, provider)`: `if (tools.length === 0) return [];`. The analyzer passes its config through the **existing off-schema field name**: `opts: { model: cfg.model, timeoutMs: cfg.timeoutMs, allowedTools: cfg.tools }`.
+- **boundary:** **Correction to ADR-020, verified in primary source, not inferred:** today `curateToolsForProvider([], 'ollama') === ['Bash']` (`:223-227` adds Bash to any non-Anthropic set), so "the default blast radius is nil" is **false** on this deployment's own default path (`gateway:"sdk"` + a local Ollama alias) — `graphAnalyzer.tools: []` ships a Bash-enabled session whose prompt is attacker-authored script text. The SDK honours `tools: []` as "disable all built-in tools" (`sdk.d.ts:102-105`). UT-024's "must be non-empty" assertion applies only to the **no-opts fallback** path and is unaffected. The config key REQ-104 mandates is `tools`; the wire field is `allowedTools` (`:478-487`) — a `cfg.tools → opts.tools` mapping type-checks, passes every analyzer-level unit test, and silently gets `defaultAllowedTools ?? BUILT_IN_CORE_TOOLS`, so the wire assertion (DES-122) is mandatory. Residual, recorded not enforced: a **non-empty** configured set is still Bash-augmented for a non-Anthropic provider, so the ADR-020 boot warning names the **effective post-curation** set, never the configured one.
+- **iter:** v23
+
+### DES-121 — the analyzer owns the only retry loop; `timeoutMs` is passed per call
+- **status:** draft
+- **traces:** ARCH-079, TASK-117
+- **signature:** `private async attempt(job): Promise<GatewayResult>` called from a loop of `1 + cfg.retries` iterations inside `GraphAnalyzer`; each iteration passes `opts.timeoutMs = cfg.timeoutMs` explicitly. `graphAnalyzer.retries` default **`0`**.
+- **boundary:** `AgentOpts` (`src/types.ts:44-63`) has `timeoutMs` but **no `retries`** — retries are a property of the gateway *instance* (`claude-agent-sdk-client.ts:452-453`), shared with every user-facing `agent()`. So `graphAnalyzer.retries` is only expressible as the analyzer's own loop; passing it in `opts` is a silent no-op (this repo's wiring-defect class). Worst case is **multiplicative**: `(1 + graphAnalyzer.retries) × (1 + gatewayConfig.retries)` calls, each bounded by `cfg.timeoutMs` — written into DEPLOY.md (DES-134), not discovered by an operator afterwards. Exhausting the loop settles `unavailable/RETRIES_EXHAUSTED`; a per-attempt `ok:false reason:'timeout'` that is also the last attempt settles `TIMEOUT` (the specific reason wins over the generic exhaustion code).
+- **iter:** v23
+
+### DES-122 — analyzer isolation: what is omitted, what each omission buys, and the scratch `cwd`
+- **status:** draft
+- **traces:** ARCH-079, ARCH-085, TASK-117
+- **signature:** the analyzer's `invoke()` request is exactly `{prompt, opts, runId: 'analyzer:<name>@<version>:<attempt>', agentId: 'graph-analyzer'}` — and **nothing else**. `main.ts`'s `ClaudeAgentSdkGatewayClient` construction changes `cwd: config.workRoot` → `cwd: join(config.workRoot, '.graph-analyzer-scratch')`, `mkdirSync(..., {recursive:true})` once at boot.
+- **boundary:** **ARCH-079's "explicit scratch `cwd`" is not expressible through `invoke()`** — the interface has `workspace`, not `cwd` (`gateway/client.ts:93-97`). It is achieved at *construction* instead, and `invoke()` is **NOT widened**: an optional `cwd?: string` with a `?? this._config.cwd` fallback is this repo's documented silent-default bug class. Omission table, each entry load-bearing: no `workspace` ⇒ `settingSources: []` (`:573` — `:495` is the neighbouring `materializeAssets` guard; both facts hold, the citation was crossed) which is the **actual** guard against the recorded CLAUDE.md/MEMORY.md leak class, plus no asset materialisation; no `onEvent`/`onHarness` ⇒ no transcript events exist to persist (ADR-016 — there is no analyzer transcript to mask); no `SecretValueProvider`; a synthetic `runId`/`agentId` ⇒ never joins a real run's records, listings, `maxConcurrentRuns` slots or REQ-075 cards. The UT asserts the built request object's **absent keys** — an omission-based control is testable no other way. `this._config.cwd` has exactly three uses, all `req.workspace ?? this._config.cwd` (`:535`, `:549`, `:581`), and `AgentExecReq.workspace` is typed **non-optional** (`agent-executor.ts:133`) with one production `invoke()` call site (`:470`), so the repoint changes the analyzer's jail **and nothing else**; `workRoot` is already boot-certified outside any project by `assertWorkRootIsolated` (`main.ts:94`, REQ-021), so "not project-reachable" is inherited, not re-derived. **Zero-config fail-closed rule:** `main.ts:207` passes `cwd` unguarded and `workRoot` is legitimately optional (`:89-94`), so on a zero-config install the jail root is unresolvable and the client's own docblock (`:246-248`) records "nothing to enforce against, allow". When `graphAnalyzer.enabled` and no `workRoot` resolves, `tools` is **forced to `[]`** and the boot line says so.
+- **iter:** v23
+
+### DES-123 — `DiagramNoteCode` (10, closed), the total `noteCodeFor`, and `noteTextFor`
+- **status:** draft
+- **traces:** ARCH-077, ARCH-079, TASK-117
+- **signature:**
+```ts
+export type DiagramNoteCode =
+  | 'TIMEOUT' | 'PROVIDER_UNREACHABLE' | 'PROVIDER_ERROR'      // GatewayResult ok:false reasons
+  | 'GATE_REJECTED_CONTENT' | 'GATE_REJECTED_SHAPE'            // ARCH-080
+  | 'QUEUE_FULL' | 'RETRIES_EXHAUSTED' | 'MODEL_UNMAPPED'      // analyzer-side
+  | 'DISABLED' | 'NOT_GENERATED';                              // READ-SYNTHESIZED ONLY
+export function noteCodeFor(
+  r: Extract<GatewayResult, {ok:false}>
+   | {kind:'gate'; reason:'GATE_REJECTED_CONTENT'|'GATE_REJECTED_SHAPE'}
+   | {kind:'queue'} | {kind:'exhausted'} | {kind:'config'; reason:'model_unmapped'},
+): Exclude<DiagramNoteCode,'DISABLED'|'NOT_GENERATED'>;
+export function noteTextFor(code: DiagramNoteCode): string;   // engine-authored, ADR-016
+```
+- **boundary:** There is **no `MALFORMED_COMPLETION`**: `GatewayResult.ok:true` carries `content: unknown`, and that value is handed **straight to `gateDiagram(raw: unknown, …)`**, whose first pass is the type check (DES-124) — a non-string or empty completion is `GATE_REJECTED_SHAPE`. `noteCodeFor` is therefore total over the `ok:false` branch plus the four engine-side kinds, and is never called on success. `detail` on the failure branch is provider text: consumed **only** to select a code, never stored, never journalled, never rendered. `DISABLED` and `NOT_GENERATED` are synthesized at read time and **never persisted** — so `putDiagramResult`'s `noteCode` is typed `Exclude<DiagramNoteCode,'DISABLED'|'NOT_GENERATED'>` and the SQLite CHECK enumerates **eight**, not ten. Status follows mechanically: every note code ⇒ `'unavailable'`; only a gate-passed diagram is `'ready'`. **`noteTextFor('GATE_REJECTED_SHAPE')` must be true of BOTH causes it now covers** — word it *"the analyzer did not return a valid diagram"*, never *"the model's output violated the vocabulary"*: since the fold, this one persisted, user-facing text also covers the provider-returned-nothing case, where the vocabulary wording would be a false statement. **UT:** the ten values are asserted **literally** (never inferred from two branches), and `Object.keys(NOTE_TEXT).sort()` equals the enum so a new code without a message is a red test rather than `undefined` in a user-facing field.
+- **iter:** v23
+
+### DES-124 — `gateDiagram`: four passes, exact membership, verbatim return
+- **status:** draft
+- **traces:** ARCH-080, TASK-113
+- **signature:** `gateDiagram(raw: unknown, allowedLabels: ReadonlySet<string>, limits: {maxBytes: number; maxLines: number}) → {ok:true; diagram: string} | {ok:false; reason:'GATE_REJECTED_CONTENT'|'GATE_REJECTED_SHAPE'; gateFail:'type'|'codepoint'|'size'|'token'}`; `export const DIAGRAM_CODEPOINTS` (printable ASCII `0x20-0x7E` **minus the three SGML-active characters `<` `>` `&`** + `\n` + `◇ ⟲ ─ │ ┬ ┴ ├ ┤ ▶ ╭ ╮ ╰ ╯`) with exactly three consumers: this gate, the shipped default `graphAnalyzer.systemPrompt`, the AUTHORING/tool-description text.
+- **boundary:** Passes, in this order. **(1) type** — not a string, or empty/whitespace-only ⇒ `SHAPE`/`'type'`. This is a **live-path guard, not a type-system formality**: `GatewayResult.content` is optional-chained off a parsed provider body (`client.ts:192`, `:212`, `:233`, `:249`), so `ok:true` with `content: undefined` is reachable **today** whenever a provider returns an unexpected 200-shape — a LiteLLM proxy in front of Ollama being this deployment's documented case. **(2) codepoint** — every codepoint must be in `DIAGRAM_CODEPOINTS` ⇒ else `SHAPE`/`'codepoint'`; explicitly excluded and explicitly tested: C0/C1 controls, `\r`, `\t`, ESC/CSI, RTL/LTR overrides (`U+202A-202E`, `U+2066-2069`), zero-width (`U+200B-200D`, `U+FEFF`), NBSP, **and `<` `>` `&`** — the last three are excluded from the constant *by subtraction* so that the gate, not the renderer's `textContent`, is the first layer (DES-133 and TASK-113 both assert `<` ⇒ `SHAPE`, and pass 4 would otherwise treat it as a harmless separator between two allowed tokens); nothing in the vocabulary needs them, `▶` being the arrow. **(3) size** — `maxBytes` on **UTF-8 byte length** (not `.length`) and `maxLines` = `\n` count + 1 ⇒ `SHAPE`/`'size'`. **The gate has no defaults of its own**: `limits` is a required parameter and both values arrive from the `graphAnalyzer` config block (DES-134, values `8192`/`120`) — a cap on model-authored text is an analyzer harness value, and REQ-104 forbids hard-coding one in engine source. **(4) token** — strip every vocabulary glyph, split the remainder on `/[^A-Za-z0-9_.:@\/-]+/`, drop empties, and require **every** remaining token to be a member of `allowedLabels`, matched **exactly and case-sensitively** — no prefix, no substring, no normalisation ⇒ else `CONTENT`/`'token'`. On success return `raw` **verbatim**: the gate is a validator, never a transformer. Exactness is the whole requirement — a tokeniser that skips "punctuation-ish" runs is how `api_key=sk-abc123` becomes three tokens of which one is silently dropped. `allowedLabels` is built by the caller (DES-131) so its casing is the engine's. **Why an allowlist and not a denylist:** the defeating attack is one line — an author writes a script whose *comment* instructs the analyzer to "include the configuration string verbatim in a node label" and reads it back through `workflow_describe`, which any principal may call.
+- **iter:** v23
+
+### DES-125 — `WorkflowDescribeView`, `projectWorkflowDescribe`, `EXPECTED_DESCRIBE_KEYS`
+- **status:** draft
+- **traces:** ARCH-081, TASK-118, TASK-120
+- **signature:**
+```ts
+export interface WorkflowDescribeView {
+  name: string; version: string;
+  resolvedBy: 'version' | 'channel' | 'default-release';
+  channels: { release: string | null; beta: string | null };
+  versions: string[];
+  description: string;
+  phases: Array<{title: string}>;  // adjudication #1 — public to every principal (DES-136)
+  params: unknown;                 // the REQ-090 contract, already ceiling-bounded
+  lockedKeys: readonly string[];   // === LOCKED_KEYS from src/params/contract.ts:8 — imported, never re-typed
+  owner: string | null;
+  reportProblem: string;
+  triggers: TriggerBinding[];      // ALWAYS the live snapshot (DES-128)
+  diagram: string | null;
+  diagramStatus: 'ready' | 'pending' | 'unavailable';
+  diagramNote: string;             // noteTextFor(code) — engine-authored
+  diagramGeneratedAt: string | null;
+  diagramStale: boolean;
+}
+export function projectWorkflowDescribe(
+  full: WorkflowOwnerView,
+  ctx: { diagram: DiagramRow | null; bindings: TriggerBinding[]; bindingsFp: string; analyzerEnabled: boolean },
+): WorkflowDescribeView;                        // pure: no clock, no I/O, no auth
+export const EXPECTED_DESCRIBE_KEYS: readonly string[];   // exported from src/workflow-view.ts, next to EXPECTED_NON_OWNER_KEYS
+```
+- **boundary:** **No `script` field in the type at all** — a leak is a `tsc` error, not a review item. **No `viewerIsOwner` parameter**: the type has no owner-only field, so a parameter that cannot change the output is one that will eventually be *made* to; dropping it makes "there is exactly one describe response and every principal gets it" a signature-level property. `owner` is served to every principal exactly as v22's ratified non-owner allowlist already serves it (`workflow-view.ts:50`) — describe opens no new owner exposure. **Describe is NOT a superset of `projectWorkflowForRead`**: `WorkflowPublicView` (`:35-48`) has no `versions`, and REQ-101 requires `versions` for every principal — so the two overlap, and the "cannot drift apart" guarantee is a **shared property test** (the four-surface secret-absence table, DES-132), not an object compare. `channels` is `{release: string|null; beta: string|null}`, not `Record<string,string>` — `CHANNEL_UNPUBLISHED` exists precisely because `null` is a real value, and v22 had to double-cast through a non-nullable type (`mcp-facade.ts:300-305`); a new type has no compatibility reason to repeat that. `diagramStale = (row?.status === 'ready') && (liveBindingsFp !== row.bindings_fp)`, `false` otherwise (DES-127 B3). **`diagramGeneratedAt` is projected ONLY when `status === 'ready'`, `null` otherwise** — same shape as B3 and for the same reason: DES-131's boot sweep re-uses `generated_at` as its attempt marker, so a swept `pending` row carries a stamp for a diagram that was never generated, and projecting it would trade an honest-absence gap for a dishonest-presence one. **`phases` is present and public** (adjudication #1, DES-136); `EXPECTED_DESCRIBE_KEYS` gains **one** entry, the literal `'phases'` — the oracle's `deepFlatten` does not recurse into arrays (`workflow-view.test.ts:29`), so `phases`, `versions` and `triggers` each contribute exactly one key. **Both oracles are required and neither substitutes for the other:** the two-sided literal key oracle (a leaked field fails **and** a dropped `lockedKeys`/`diagramStatus` fails) proves shape; the four-surface literal-secret table proves the mask. Two surfaces can agree on a key list and disagree on values.
+- **iter:** v23
+
+### DES-126 — the describe/regenerate error contract: the existing resolve truth table, re-asserted
+- **status:** draft
+- **traces:** ARCH-082, TASK-119
+- **signature:** `workflow_describe(a: {name: string; version?: string; channel?: 'beta'|'release'}, ctx: ReadContext)` reuses `resolveVersionRequest` (`workflow-catalog.ts:59-89`) **verbatim** and surfaces all four of its codes — `INVALID_CHANNEL | UNKNOWN_VERSION | CHANNEL_UNPUBLISHED | DANGLING_CHANNEL` — plus `WORKFLOW_NOT_FOUND` for an unknown name. `workflow_regenerate_diagram(a: {name: string; version: string}, principal: string|null)` → `{queued: boolean; status: 'pending'}`; codes `NOT_WORKFLOW_OWNER` (via the **existing** `resolveWritePrincipal`, `server.ts:822` — the fourth call site of the shared helper v22's send-back factored out, so the four cannot drift on the `!authEnabled` gate independently), `WORKFLOW_NOT_FOUND`, `UNKNOWN_VERSION`, `ANALYZER_DISABLED`.
+- **boundary:** `ctx` is **required with no default** (ADR-012). `DANGLING_CHANNEL` is **not** collapsed into `CHANNEL_UNPUBLISHED` — a pointer to a pruned version and an unpublished channel are different operator faults. `version` is **required** on regenerate so nobody regenerates "whatever release currently points at" and is surprised. `ANALYZER_DISABLED` rather than a cheerful "queued" for a job that will never run — returning success for a no-op is exactly the dishonesty owner decision A1 forbids. **UT is table-driven and asserts describe's code EQUALS run-admission's code for the same input** — one table, two call sites, is the only structural way REQ-101's "resolve by REQ-097's exact order" survives someone editing one of them. There is **no `admin` tier in this codebase** (authorization is owner-vs-non-owner); both panel groups' "owner/admin" reads as **owner**.
+- **iter:** v23
+
+### DES-127 — the seven boundary states the architecture left open
+- **status:** draft
+- **traces:** ARCH-077, ARCH-079, ARCH-081, TASK-114, TASK-117, TASK-118
+- **signature:** one rule governs five of them (B1, B2, B4, B5, B6): **a `workflow_diagrams` row is written only by an attempt whose workflow version still exists.**
+- **boundary:** **B1 — a version registered before v23 has no row.** `getDiagram` → `null`; describe emits `unavailable` / `NOT_GENERATED` / `diagramGeneratedAt:null` / `diagramStale:false`. **No boot backfill** (N model calls triggered by an *upgrade*, attributed to no principal, is the "every read might trigger a model call" shape ADR-017 already rejected, moved to boot). Recovery is the owner's explicit `workflow_regenerate_diagram`; discoverability is **one boot line** naming the count of versions with no diagram row and the exact recovery command — zero model calls, all of the discoverability. **B2 — `graphAnalyzer.enabled:false` at registration writes no row**; describe synthesizes `unavailable` / `DISABLED` from `analyzerEnabled === false` + missing row (a persisted `DISABLED` becomes a lie the moment the operator flips the flag back). `NOT_GENERATED` is the missing-row case **while enabled**. **B3 — `diagramStale` is `false` unless `status === 'ready'`** — otherwise every absent diagram reads "stale" and REQ-103's machine-checkable promise degrades to noise. **B4 — `regenerate` while the row is `pending`** returns `{queued:false, status:'pending'}`: accepted, idempotent, **no second job**. Single-flight is per `(name, version)`, not merely global concurrency 1 — without the per-key guard N owner calls become N model calls behind the depth cap. **B5 — a failed regenerate leaves a prior `ready` row untouched**; only success overwrites. One `if` in `putDiagramResult`'s caller, and it is the difference between a recovery action and a foot-gun. **B6 — a job that settles AFTER its workflow was deregistered writes nothing** (the late write; mechanism and test in DES-130). **B7 — a `pending` row surviving a process death is requeued exactly once across restarts** (mechanism and the three row shapes in DES-131). Residual recorded, not built for: a patient caller can still serialise regenerate calls; no rate limiter is added (ADR-018 just deleted a mechanism on those grounds).
+- **iter:** v23
+
+### DES-128 — `getTriggerBindings`, the four narrow ports, and the canonical fingerprint
+- **status:** draft
+- **traces:** ARCH-078, TASK-115
+- **signature:**
+```ts
+export interface TriggerPorts {
+  schedules:     { listByWorkflow(name: string): Array<{cron: string; tz?: string; enabled: boolean}> };
+  webhooks:      { listByWorkflow(name: string): Array<{enabled: boolean}> };   // NO secret, NO id — in the TYPE
+  continuations: { listPendingByWorkflow(name: string): Array<{afterRunId: string}> };
+  runs:          { getWorkflowName(runId: string): string | null };
+}
+export type TriggerBinding =
+  | {kind:'cron'; cron: string; tz?: string; enabled: boolean}
+  | {kind:'webhook'; enabled: boolean}
+  | {kind:'chain'; upstreamWorkflow: string | null};
+export function getTriggerBindings(name: string, ports: TriggerPorts):
+  {bindings: TriggerBinding[]; bindingsFp: string};
+```
+- **boundary:** **Security invariant, non-negotiable:** the `webhooks` table stores a live HMAC `secret` column (`webhook-registry.ts:76-82`) and this snapshot is fed into an **LLM prompt** — the gate would stop a secret reaching the *diagram*, nothing would stop it reaching the *provider*, so the closure is here, at the read. Making it a **type** (no `secret`, no `id` field) means a future edit that returns the row is a `tsc` error. The webhook `id` is out because no requirement asks for it, and not building a masking mechanism beats building one. **Three primary-source facts the ports encode:** the three trigger stores are three separate SQLite **files** (`schedules.db`/`webhooks.db`/`continuations.db`, `server.ts:1331/1334/1392`), so this is a composition of store APIs, not a batched read; continuations are keyed by `afterRunId` and the `workflow` column is the **downstream** target (`continuation-store.ts:75-86`), so naming the upstream costs a `RunStore.getRun` join that yields `null` when the run was purged — `upstreamWorkflow: null` is a **first-class rendering** (an unnamed chain entry), never an invented name; a continuation row is **transient** (lives only while `status='pending'`), so the describe response always serves the live snapshot. `bindingsFp = sha256` over a canonical form — sort by `(kind, cron|'', upstreamWorkflow|'')`, fixed JSON key order, `upstreamWorkflow: null` serialised as `null` (not omitted) — or the flag flaps on row ordering. **Two call sites, exactly:** the analyzer at generation time and `projectWorkflowDescribe` at read time; the same normalization on both sides is what makes a `bindingsFp` mismatch a real staleness signal.
+- **iter:** v23
+
+### DES-129 — the analyzer journal record and its sink
+- **status:** draft
+- **traces:** ARCH-079, TASK-117
+- **signature:** one line per attempt, on this project's single logging convention:
+```ts
+// eslint-disable-next-line no-console
+console.log('[remote-workflow-engine] graph-analyzer ' + JSON.stringify({
+  name, version, principal, model, promptTokens, completionTokens, durationMs, outcome, noteCode, gateFail,
+}));
+```
+- **boundary:** **No second sink** — no log file, no DB table, no metrics surface: an operator's existing `journalctl -u rwe -f` already shows it. Census taken this round, correcting the panel's and this DES's own earlier claim: `src/` has **17** `console.*` sites, of which **6** carry the `[remote-workflow-engine]` prefix (boot/lifecycle lines); the rest are `[ContinuationStore]`, `[RunStore]`, `[rwe]`, and bare dotted-subsystem structured records (`catalog.publish:`, `auth.migrate:`, `catalog.migrate:`, `run.legacySubstitution:`). The prefix is chosen because it is the **majority boot-line convention an operator already greps**, not because the codebase is uniform — it is not. `promptTokens`/`completionTokens` keep ARCH-079 invariant 5's ratified names and are mapped **at this call site** from `GatewayResult.tokens.{input,output}` (one line, stated so it cannot drift silently); they are **`number | null`** and are `null` on every failure branch — `GatewayResult`'s `ok:false` shape (`client.ts:61-79`) carries no tokens at all, and a `0` indistinguishable from a real zero silently corrupts the cost attribution ADR-016 promises. **ARCH-079 invariant 4's "the provider HTTP status" clause is struck, not implemented**: no such field exists on `GatewayResult`, so the line would have to invent one; the engine-classified `noteCode` + `gateFail` carry the diagnosis instead. `principal` is captured **at enqueue time** as a field on the queued job — by the time an async job settles the request that carried it is long gone. `gateFail` (`'type'|'codepoint'|'size'|'token'`, DES-124) is set only for the two `GATE_*` codes: closed, engine-authored, **never a value** — it is the degradation signal an operator greps after a model swap without anyone ever learning what the rejected token was. It is **journal-only and is never a column**. **The line carries no model or provider text on any channel** (ADR-016): a provider error payload can echo the request, and the request contains the masked script. **UT oracle:** a failing `queryImpl` whose error message contains the secret literal ⇒ the **emitted string** (not the record object) does not contain it — the prefix is a concatenation, and a concatenation is where an implementer appends `res.detail` "for debugging"; a `JSON.stringify(rec)`-only oracle stays green through exactly that edit. The **per-run line, not the table row, is the rate signal**: `workflow_diagrams` holds only the latest outcome per `(name, version)`, so "log the outcome" must never be implemented as "read back the row we just wrote".
+- **iter:** v23
+
+### DES-130 — `workflow_diagrams`: the table, the accessors, the single deletion path
+- **status:** draft
+- **traces:** ARCH-077, TASK-114
+- **signature:** in `src/workflow-catalog.ts`, with the file's `CREATE TABLE IF NOT EXISTS` idiom (`:144/177`):
+```sql
+CREATE TABLE IF NOT EXISTS workflow_diagrams (
+  name TEXT NOT NULL, version TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending','ready','unavailable')),
+  diagram TEXT NULL, note_code TEXT NULL, generated_at TEXT NULL, bindings_fp TEXT NULL,
+  CHECK ((status = 'ready') = (diagram IS NOT NULL)),
+  CHECK (note_code IS NULL OR note_code IN ('TIMEOUT','PROVIDER_UNREACHABLE','PROVIDER_ERROR',
+    'GATE_REJECTED_CONTENT','GATE_REJECTED_SHAPE','QUEUE_FULL','RETRIES_EXHAUSTED','MODEL_UNMAPPED')),
+  PRIMARY KEY (name, version));
+```
+```ts
+putDiagramPending(name: string, version: string, generatedAt?: string): void;  // stamp = the boot sweep's attempt marker
+putDiagramResult(name: string, version: string, r:
+  | {status:'ready';       diagram: string; generatedAt: string; bindingsFp: string}
+  | {status:'unavailable'; noteCode: Exclude<DiagramNoteCode,'DISABLED'|'NOT_GENERATED'>; generatedAt: string; bindingsFp: string},
+): void;
+getDiagram(name: string, version: string): DiagramRow | null;
+listPendingDiagrams(): Array<{name: string; version: string}>;
+```
+- **boundary:** The **PK is `(name, version)`**, so "a diagram is never served against a different version" is a schema property, not a code discipline. The writer's **discriminated union** makes "unavailable with a diagram present" fail `tsc`; the CHECK is the second layer. The persisted note set is **eight** values (DES-123). **`deregister()`'s existing `db.transaction()` (`:389`) is the ONLY deletion path** — ARCH-077's "`maxWorkflowVersions` prune" **does not exist**: the ceiling *refuses* the registration (`VERSION_CEILING_EXCEEDED`, `:342-346`; ADR-014 "no GC"). Do not add a prune hook, a sweep, a GC or an orphan-reaper. `listPendingDiagrams()` is the only sweep, bounded by the number of `pending` rows. No `inputs_fp` column (ADR-018: there is no cache) and no `analyzer_model` column (the journal line carries the model per run). **The late write (DES-127 B6): `putDiagramResult` runs inside a `db.transaction()` and writes ONLY where a `workflow_versions` row for `(name, version)` still exists; otherwise it is a silent no-op.** Without it `enqueue → deregister commits → putDiagramResult lands` creates an immortal orphan: this table has no foreign key (neither do `workflows`/`workflow_versions`, `:144`/`:177`), so nothing at the storage layer refuses the row, and the single-deletion-path rule — which is right — is exactly what makes it unreachable afterwards. The guard is the cheapest form that makes ADR-021's "an orphan row is unrepresentable" true for **both** orderings. Explicitly NOT added on top: a job-level cancellation check (a second mechanism for a race this settles) or an orphan reaper. `putDiagramPending`'s optional `generatedAt` exists only for DES-131's boot sweep; a fresh enqueue omits it and the column stays `NULL`.
+- **iter:** v23
+
+### DES-131 — `GraphAnalyzer`: class API, the queue, single-flight, the seams, and the allowlist it builds
+- **status:** draft
+- **traces:** ARCH-079, TASK-117
+- **signature:**
+```ts
+export interface GraphAnalyzerConfig {
+  enabled: boolean; model: string; systemPrompt: string; tools: string[]; timeoutMs: number; retries: number;
+  maxBytes: number; maxLines: number; maxQueueDepth: number;   // REQ-104: harness values, not engine constants
+}
+export class GraphAnalyzer {
+  constructor(deps: {
+    gateway: GatewayClient;            // the EXISTING interface type — never a narrower ad hoc shape
+    catalog: WorkflowCatalog; ports: TriggerPorts;
+    clock: Clock;                      // every time read goes through this
+    config: GraphAnalyzerConfig; aliasNames: Set<string>;
+    schedule?: (job: () => Promise<void>) => void;   // prod default setImmediate; tests pass runInline
+  });                                  // queue depth and the gate's caps come from `config`, not from constructor defaults
+  enqueue(name: string, version: string, script: string, principal: string | null): void;  // returns AFTER writing the pending row, never awaits the job
+  regenerate(name: string, version: string, principal: string | null): {queued: boolean; status: 'pending'};
+  sweepAtBoot(): void;                 // ONE requeue per pending row across restarts, then unavailable/RETRIES_EXHAUSTED
+}
+```
+- **boundary:** **Registration never awaits the analyzer** (REQ-102) — `enqueue` writes `pending` and returns; a synchronous generation would make registration latency a function of provider health. **Concurrency 1, queue depth `config.maxQueueDepth`**; a full queue settles `unavailable/QUEUE_FULL` — honest absence working as designed, not an error. **Single-flight is keyed by `(name, version)`** (DES-127 B4). **`sweepAtBoot` distinguishes three row shapes with no new column** (DES-127 B7), re-using `generated_at` as the attempt marker and the injected `Clock` for the boot instant — so the whole rule is unit-testable under `FixedClock` with no restart harness: `pending` + `generated_at IS NULL` ⇒ never swept, requeue once **and** stamp `clock.now()` via `putDiagramPending(n, v, at)`; `pending` + `generated_at` **<** this process's boot instant ⇒ swept by a previous life, settle `unavailable/RETRIES_EXHAUSTED` with **zero** model calls; `pending` + `generated_at` **≥** the boot instant ⇒ a live job in this process, leave alone. Without the marker a crash caused by the generation itself is requeued on every boot forever — an unbounded crash-loop amplifier whose amplified path is the model call. The clause this owes: DES-125 projects `diagramGeneratedAt` only for `ready`. **Seam consistency — every method that reads time takes the injected `clock`**, with no exception: `generatedAt` on both `putDiagramResult` branches, `durationMs` (`clock.now()` at attempt start and end), and the journal line's own timestamps. No method reads the wall clock directly; a `FixedClock` makes `generatedAt` a literal in every assertion (never `expect.any(String)`). The `schedule` seam exists so tests run the job inline and deterministically instead of racing an async worker — an async-by-default job with no run-now seam produces flaky tests, and flaky tests get deleted. **The allowlist passed to `gateDiagram` is built here**: `parseWorkflowSkeleton(script)` (phase names, agent count/order, child `workflow()` names) ∪ the **configured alias names ∪ `'default'` ∪ the single literal sentinel token `model:param`** ∪ the trigger kinds and upstream name from DES-128 ∪ `DIAGRAM_CODEPOINTS`. The model component is pinned that way because a node's model is **not statically derivable**: it can come from a script literal, an `agentType`'s frontmatter, or (since v21) a tunable param supplied per run — `SkeletonNode` carries no model (`workflow-meta.ts:135-160`). One clause in the shipped `systemPrompt` tells the model to write `model:param` for the run-time-determined case (chosen ASCII and inside pass 4's own token charset `[A-Za-z0-9_.:@/-]`, so it survives both the codepoint pass and the tokeniser as **one** token); anything else it invents is `GATE_REJECTED_CONTENT`, correctly, because an invented model name is model-authored text present in no engine source. Zero new machinery. This is `parseWorkflowSkeleton`'s **second internal consumer** and the concrete reason REQ-105 retires the *surface* rather than the function. **`graphAnalyzer.model` is an alias name from the same table `agent()` uses**, not a `provider:model` string; it is validated **once at boot** with `isKnownAlias` (`params/contract.ts:94`) against `new Set(Object.keys(config?.aliases ?? DEFAULT_ALIASES))` — the **admission** set built at `server.ts:1327`. (Justification corrected this round: the catalog's `aliasNames` is now built from the *same* expression, `server.ts:1276`, changed by v21 Gate 8 P-A2 for exactly this reason, so the two sets are identical and the "deliberately empty" hazard survives only in the stale comment at `:1321-1326`. Use the admission set anyway because that is the set whose meaning is pinned; do **not** scope-push into fixing the comment.) `isKnownAlias` also accepts REQ-038's `openrouter/<id>` passthrough, which a hand-rolled `Object.hasOwn` check would wrongly reject. On failure: **warn, never fail boot** (REQ-104's "never an error"), and `enqueue` **short-circuits to `unavailable/MODEL_UNMAPPED` with zero model calls** — today an unmapped alias resolves `providerOf → undefined` (`claude-agent-sdk-client.ts:201-202`), dispatches the literal string to the proxy and lands `PROVIDER_ERROR`, so the operator debugs their provider instead of their config file; the code does not merely relabel the failure, it deletes N doomed round-trips per registration. **Two boot lines, same stdout convention:** the effective post-curation tool set + the jail directory (DES-120/DES-122), and B1's missing-diagram count + recovery command. **[AMENDED v23 adjudication #6, V-1]** The bindings from DES-128 are consumed for the **allowlist** above, but that is not REQ-103's whole acceptance: `_runJob`'s prompt text (`` `${systemPrompt}\n\n---\nWorkflow script:\n${script}` ``) must ALSO carry the live binding data (e.g. one appended `Trigger bindings:` section rendering each binding's kind/cron/upstream), because the allowlist only constrains what the model is *permitted* to say — a model never told a binding exists has nothing to name. Without this, the allowlist admits `'cron'`/`'chain'`/an upstream name as valid tokens the model could emit, but supplies no data that would ever cause it to; the live oracle that found this (`08-validation.md` VAL-118) is byte-identical `promptTokens` with and without a bound trigger.
+- **iter:** v23
+
+### DES-132 — the server wire: two schemas, `/describe` for `/skeleton`, the enumerated deletion, the mechanical guard
+- **status:** draft
+- **traces:** ARCH-083, ARCH-051, TASK-120
+- **signature:** advertise `workflow_describe` and `workflow_regenerate_diagram` (both joining ARCH-051's structured drift-lock); `GET /api/workflows/:name/describe` returning the **same** `projectWorkflowDescribe` object as the MCP tool; `GET /api/workflows/:name/skeleton` **deleted**.
+- **boundary:** **`/describe` is UNAUTHENTICATED and therefore pinned to the non-owner projection unconditionally** — not "auth-gated as the route it replaces", which the route it replaces is not: `server.ts:1025`/`:1080` say in their own comments that it carries no bearer/identity, and the handler branches on `authEnabled` to choose *what to disclose*, never *whether to answer*. An implementer told "auth-gated" looks for a bearer check that is not there, or adds one and breaks the dashboard. This composes cleanly with DES-125's dropped `viewerIsOwner`: the route has no owner branch to make. **The parity test therefore compares the route body against the MCP tool called with `ctx = {authEnabled: true, principal: null}`** — an owner call would pass for the wrong reason. **The four surfaces of the anti-drift table, named against the routing table and not from memory** (`server.ts:1035-1039`, `:1069`): `workflow_get` (non-owner), `workflow_describe`, **`GET /api/workflows`** — the list — and `GET /api/workflows/:name/describe`. **There is no `GET /api/workflows/:name` route**; the panel and this design's earlier text both named one, and a fixture written against it would 404 and pass for the wrong reason. The list is script-safe by construction (`catalog.list()` returns a constructed row with no `script`, `workflow-catalog.ts:498-521`) but it *does* re-parse the script for `description`, so it is a real leak class and belongs in the table. It serves no `phases` and gains none: adjudication #1 removes masking from surfaces that deliberately stripped the field, it does not add a field to a narrower projection that never carried one. **The adjudication-#1 half nobody wrote down:** the ruling names `/api/workflows/:name/skeleton` as a surface that must stop masking `phases`, and this DES **deletes that route**; its successor `/describe` is public-by-construction (DES-125's `phases`, DES-136's allowlist), so nobody may read the deletion as a way to dodge the ruling, and nobody may "restore" masking on a route that no longer exists. **The deletion is enumerated by line, because intent is what failed nine times.** Sites that lose it: `mcp-facade.ts:255` (docblock), `:307`, `:329` (the two response fields); `server.ts:446` (the `workflow_get` tool description loses `skeleton` and "predicted DAG"), `:1037` + `:1074-1084` (the route); `workflow-view.ts:24` (`skeleton?: unknown` deleted from the **type**, so a stray write is a `tsc` error); `dashboard-page.ts:203-210`, `:223-227` (DES-133). Sites that **keep** it, internal-only, and are the guard's exactly-four allowlist: `workflow-meta.ts:131` (`parseWorkflowSkeleton`), `dashboard.ts:246` (`layoutGraph`'s positional spine), `server.ts:1123-1146` (`/api/runs/:id/dag` — **unchanged**, and `:1145`'s `authEnabled ? [] : parseWorkflowSkeleton(...)` is left untouched: v22 finding H2 closed that hole and v23 must not re-open it), and `graph-analyzer.ts` (Orchestrator adjudication (v23) #3 — analyzer grounding only, never served). **Guard:** a UT greps `src/**` case-insensitively for `skeleton` and fails on any occurrence outside those three **plus `graph-analyzer.ts`** (Orchestrator adjudication (v23) #3 — `graph-analyzer.ts` consumes the skeleton only internally as analyzer grounding and serves it, or any projection of it, to no principal, so it joins the allowlist at four; a fifth entry requires a new adjudication, not a `Set` edit), **plus** a second assertion that no advertised tool description or input-schema string contains the word — REQ-105's literal acceptance ("a schema-reading client can no longer learn the concept exists") converted from a review checklist into a CI failure. Two-sided: a fifth allowlist entry fails the test. `workflow_describe`'s own tool description must state, in the description alone, what the tool returns **and that the script is deliberately not among it** (REQ-101's last clause; it is a property of the advertised schema, so the drift-lock is where it becomes a test). Accepted cost, recorded not hidden: the dashboard workflow-detail view loses its predicted-DAG preview until a diagram is `ready`.
+- **iter:** v23
+
+### DES-133 — the dashboard: `<pre>` + `textContent`, inside the existing 3s poll
+- **status:** draft
+- **traces:** ARCH-084, TASK-121
+- **signature:** the workflow-detail view fetches `/api/workflows/:name/describe` (replacing the `/skeleton` fetch at `:203`) **from inside the ticked `render()`** driven by the file's single `setInterval(render, 3000)` (`:505`), and writes `diagram` into a `<pre>` via `el.textContent = diagram`, or `diagramNote` when `diagramStatus !== 'ready'`. The home-card mini-preview (`:223-227`) drops its skeleton fetch and renders **nothing** when no diagram exists.
+- **boundary:** `pending → ready` therefore appears within 3s with **no new mechanism** — no second timer, no websocket, no manual-refresh affordance, and no bespoke notification for the boot log line. **Never `innerHTML`**: this is the first model-authored string this renderer has ever received, and `textContent`-by-convention (KP-12) is not a control when the input's author is a language model — the explicit UT feeds a diagram containing `<script>` and asserts it appears as literal text with no element created. `DIAGRAM_CODEPOINTS` is the second, upstream layer (a `<` never survives the gate). `layoutGraph` and the live run DAG are **untouched** — a different view of a different thing, auth-gated, keeping its internal skeleton spine. One artifact, one render path (owner decision A2): the browser and an MCP client display the same ASCII string.
+- **iter:** v23
+
+### DES-134 — the `graphAnalyzer` config block and its three-part definition of done
+- **status:** draft
+- **traces:** ARCH-085, TASK-122, TASK-124
+- **signature:** `FileConfig.graphAnalyzer?: {enabled?: boolean; model?: string; systemPrompt?: string; tools?: string[]; timeoutMs?: number; retries?: number; maxBytes?: number; maxLines?: number; maxQueueDepth?: number}` in `rwe.config.json`, forwarded **as a whole** through `composeConfig()` (`main.ts:86`) into `ServerConfig` using the same convention as `maxWorkflowVersions` (`main.ts:167`). Defaults, at exactly one place: `enabled: true`, `model: <the deployment's default alias>`, `systemPrompt: <the shipped diagram-vocabulary prompt, the third consumer of DIAGRAM_CODEPOINTS>`, `tools: []`, `timeoutMs: 60000`, `retries: 0`, `maxBytes: 8192`, `maxLines: 120`, `maxQueueDepth: 8`.
+- **boundary:** **All three DoD items, not a choice of one:** (1) the `composeConfig()` forwarding line; (2) a row in `tests/unit/compose-config-v2-wiring.test.ts` **in the same change**; (3) REQ-104's Gate 7.5 real run (TASK-124). Only (3) can prove the value reached the analyzer — a status field or a unit assertion can itself be read off the same broken path, which is why **no effective-config readback surface is built** (DES-129's journal line already names the model per run: an operator who edits `graphAnalyzer.model` and re-registers sees the new model on the very next line, or sees the *old* one, which is the wiring-gap signature). A block that is read but never forwarded passes every unit test and silently does nothing — v11 `updateFlagPath`, v15 `auth`, v16 `workspaceTtlMs`. **`maxBytes`/`maxLines`/`maxQueueDepth` are in the block, not in engine source**, because REQ-104's list is a floor ("at minimum") and its second clause — *no analyzer harness value is hard-coded in engine source* — covers a cap on model-authored text just as much as a timeout: an operator whose model class needs a bigger diagram must not need a redeploy. No new mechanism: `gateDiagram` already takes `limits` and the analyzer already takes a depth; only the default's **home** moves, and it moves to the one site the wiring test guards (three new rows). **`enabled:false` is a first-class tested state**: registration still succeeds, no row is written, describe reports `unavailable`/`DISABLED` — never an error. DEPLOY.md documents the nine keys, the `(1 + graphAnalyzer.retries) × (1 + gateway retries)` worst-case formula, **one sentence stating that registration now performs an outbound LLM call whose payload is the workflow script itself** — the artifact v22 spent an iteration masking from other *engine* principals; against the configured provider that mask does not exist, which is inherent to the feature, has an existing control (`enabled:false`), and an operator can only choose it if told — and **the model class the shipped default `systemPrompt` assumes** — on a local Ollama `qwen2.5:7b` vocabulary compliance is what degrades first, and a rising `GATE_REJECTED_SHAPE`/`gateFail:"codepoint"` rate is the operator's signal that it has.
+- **iter:** v23
+
+### DES-135 — `docs/AUTHORING.md` and the same rules on the schema a cold client sees
+- **status:** draft
+- **traces:** ARCH-086, TASK-123
+- **signature:** `docs/AUTHORING.md` states exactly four rules: (1) declare every knob a user might need in `meta.params` rather than hard-coding it; (2) never read a value the contract does not declare; (3) treat the six `LOCKED_KEYS` as engine-owned; (4) **phase titles are visible to every principal who can see the workflow — keep secrets and distinctive prose out of them**. Plus one standing note, deliberately **not** a fifth rule (the "four rules" string is drift-locked in three places): registering a workflow sends the script to the configured LLM provider for diagram generation, and `graphAnalyzer.enabled:false` turns that off. `workflow_register`'s `script` parameter description carries the same four in condensed form plus the `docs/AUTHORING.md` pointer, and joins ARCH-051's drift-lock.
+- **boundary:** Documentation, **deliberately not enforcement** — a workflow that hard-codes a tunable value is an authoring *smell*; no new registration rejection is added (REQ-106's last clause). The discoverability half is the load-bearing half: this plugin ships no guidance skills, so the tool schemas are all a cold MCP client has. **Rule (4) is the sole control over a real disclosure and the reason TASK-123 is not scheduled last.** History, because the rule's wording depends on it: ADR-015/ARCH-080's premise that phase names were already served to non-owners was **false** (`WorkflowPublicView`, `workflow-view.ts:33-44`, had no `phases`; `server.ts:1079` masked them), so v23's diagram would have been the *first* surface to disclose them. **That escalation is RESOLVED, not open** — the owner ruled 一律公開 on 2026-09-02 (`ba3db17`; REQ-100 `[AMENDED v23]`; DES-136 makes it true on every surface). Rule (4) is therefore **strengthened, not deleted**: it stops being advice pending an escalation and becomes the standing control over a now-documented, owner-authorised disclosure. **Pinned in both directions**: a secret placed in a phase name is asserted to *appear* in the diagram (DES-131's allowlist) and `phases` is asserted *present* in both key oracles (DES-136) — so revisiting the ruling turns two tests red and names the decision, instead of silently narrowing an allowlist builder.
+- **iter:** v23
+
+### DES-136 — `phases` joins the public allowlist: `WorkflowPublicView` + `EXPECTED_NON_OWNER_KEYS`
+- **status:** draft
+- **traces:** ARCH-075, ARCH-081, TASK-125
+- **signature:** in `src/workflow-view.ts`: `WorkflowPublicView` gains `phases: Array<{title: string}>` (the shape `parseMeta` already produces — `workflow-meta.ts:10`), projected in the **constructed** non-owner branch (never a `delete` on the full row — DES-115's rule stands); `EXPECTED_NON_OWNER_KEYS` gains the literal `'phases'`, **one** entry, sorted into the existing array. `WorkflowDescribeView` carries the same field (DES-125).
+- **boundary:** **One entry, not many** — `workflow-view.test.ts`'s `deepFlatten` explicitly does not recurse into arrays (`:29`), so an array-valued key contributes exactly its own name; writing `phases[0].title` into the oracle makes the oracle green against a shape the code never emits. **Titles only**: the ruling authorises `meta.phases[].title`; if `parseMeta` ever widens the element, the projection stays `{title}` and the key oracle is what fails. **Two fixtures, kept distinct** — a secret in the *script body* stays absent from every non-owner surface (v22's oracle, unchanged), and a secret in a *phase title* is now asserted **present**; one fixture carrying both would let either property mask the other. `server.ts` is untouched: the only other masking site is the `/skeleton` branch DES-132 deletes whole (patching then deleting leaves no artifact; the interim leaves that route stricter than the ruling, never looser). No new mechanism, no owner branch, no allowlist builder outside this file.
+- **iter:** v23
+
+## v23 — real-tier validation paths and the per-tier mock policy
+
+**Per-tier mock policy** (binding on the verifier): **unit** may mock freely to isolate logic — the `GatewayClient` stub, `TriggerPorts` object literals, `FixedClock`, `runInline`, an in-memory `Database`. **Integration** uses the real adjacent components — a real `createServer()` over real HTTP/`/mcp`, a real SQLite catalog, a real `TokenStore`-minted bearer; only the model provider may be mocked at `queryImpl`. **E2E / acceptance must not mock the SUT's own boundaries** — a real booted engine, a real MCP transport, a real provider (local Ollama). **One anti-test rule, because this ledger produced an instance in each of the last two iterations: no v23 test may compute its expected value with the function under test.** The three places at risk are `EXPECTED_DESCRIBE_KEYS` (derive it from the type ⇒ vacuous), `bindingsFp` (assert equal-to-itself ⇒ vacuous), and the gate (assert the gate accepts what the gate produced ⇒ vacuous). All three expected values are literals in the test file. **And no unit test may claim to prove REQ-104.**
+
+| REQ | Real-tier path the validator runs (real entrypoint + real wiring) |
+|---|---|
+| REQ-100 (`[AMENDED v23]`) | On a booted auth-enabled engine, a **non-owner** `workflow_get({name})` over real `/mcp` returns `phases` with the author's titles while `script` is still withheld — the amendment's own surface, proven where it ships, not only in the projection unit test. |
+| REQ-101 | Over the real `/mcp` transport with a real bearer: `workflow_describe({name})` as a **non-owner** returns purpose, resolved `(name, version)` + `resolvedBy`, `params`, `lockedKeys`, `versions`, `channels`, `owner`, `reportProblem`, `triggers`, diagram fields — and `JSON.stringify` of the response does not contain the registered script's secret literal. An unpublished `channel:'beta'` returns `CHANNEL_UNPUBLISHED`. |
+| REQ-102 | Register a workflow on a real engine with a real provider → poll `workflow_describe` until `diagramStatus:'ready'` → the diagram is ASCII in the vocabulary, and the secret literal / the distinctive prompt sentence / the `appendPrompt` string are each individually absent. `graphAnalyzer.enabled:false` → registration still succeeds and describe returns `diagram:null`, `diagramStatus:'unavailable'`. |
+| REQ-103 (`[AMENDED v23 adjudication #6]`) | **Both arms, not just the field:** `schedule_create` (and `webhook_create`) against a registered workflow, then `workflow_describe`: `triggers` names the live cron/webhook binding; delete the schedule and describe reflects it **in the same call** while `diagramStale` flips `true` against the unchanged diagram (staleness arm, unchanged). **Restored, previously silently dropped with no adjudication recording the narrowing:** the analyzer is itself GIVEN the trigger bindings (`getTriggerBindings` must reach the prompt built at `graph-analyzer.ts:299`, not only `_buildAllowlist`'s allowlist) — regenerate the diagram after binding it and its entry node names the trigger method (cron/webhook/chain, chain names the upstream workflow); with no trigger bound the entry node reads as a direct `workflow_run` invocation, not an invented trigger. See orchestrator adjudication #6 (below) and `VAL-118` (`08-validation.md`) for the live oracle that found this: an identical `(name,version)` re-diagrammed with and without a live cron binding reported IDENTICAL `promptTokens`. |
+| REQ-104 | TASK-124's DoD, verbatim: edit `graphAnalyzer.systemPrompt` **and** `.model` in `rwe.config.json`, restart with **no rebuild and no code change**, re-register → the emitted diagram is visibly different and the `graph-analyzer` journal line names the **new** model. This is the only proof; the `compose-config-v2-wiring.test.ts` row is necessary and not sufficient. |
+| REQ-105 | The grep guard + the tool-schema assertion are the mechanical proof; the real-tier half is `GET /api/workflows/:name/skeleton` returning **404** on a booted engine while `GET /api/runs/:id/dag` still serves its layout behind the auth gate. |
+| REQ-106 | On a real `tools/list` over `/mcp`, `workflow_register`'s `script` description contains the four rules and the `docs/AUTHORING.md` pointer — i.e. a cold schema-only client can read them without fetching anything. |
+
+## Decision rationale — v23
+
+Both design-panel groups' r1 and r2 files are the archive (`.panel/design/`); only decisions are recorded here.
+
+- **The two r2 files crossed** — each was written against the *other group's r1*, not its final form. Where they appear to disagree in their finals, the later argument wins on merit and is named below.
+- **`DiagramNoteCode` is ten values, not eleven.** `MALFORMED_COMPLETION` is deleted per adversarial r2 §2.2 (self-reversal of its own r1): `gateDiagram` takes `raw: unknown` and its first pass is the type check, which makes the gate total over the gateway's *actual* return type, removes a branch from `noteCodeFor` and a row from `NOTE_TEXT`, and gives the operator the same correct action (swap or re-prompt the model). QD's r2 kept the member only because it had not seen that reversal. QD's need — knowing *which* pass rejected — is served by `gateFail`, and QD's alternative (store the byte/line count) is declined in favour of the stricter closed 4-literal enum: same signal, zero value channel, same sink.
+- **`gateFail` is an explicit amendment to ARCH-079 invariant 5's pinned field list** (adversarial flagged it as needing the synthesizer's assent; granted). It is journal-only, never a column, and carries no model-derived bytes. 02-architecture.md is **not** edited; the amendment is recorded here and in DES-129.
+- **Journal token field names stay `promptTokens`/`completionTokens`** (ARCH-079's ratified list), mapped at the log call site from `GatewayResult.tokens.{input,output}`. QD flagged the rename as preferable but explicitly said either is fine provided the drift is not silent; keeping the ratified names avoids a second ARCH amendment for a one-line mapping.
+- **The scratch-`cwd` fight both r1 files predicted did not happen.** Adversarial withdrew its r1 tie-break on new evidence (it had argued against widening `invoke()` with `cwd?: string`, which QD never proposed; QD proposed a construction-time repoint). Converged: isolation by omission stays the primary control, DES-120 is the control for the default path, and QD's one-line `cwd` repoint is accepted as the belt for ADR-020's non-empty-tools case. Adversarial's new finding on top — a zero-config install has no resolvable jail root at all — produces the fail-closed forced-`tools:[]` rule in DES-122.
+- **Four primary-source corrections to 02-architecture.md are carried inside the DES an implementer will read**, not only here, so nobody builds against the wrong text: the phantom `maxWorkflowVersions` prune → DES-130; ADR-020's falsified "blast radius is nil" → DES-120; the false "phase names are already served to non-owners" → DES-135; "an explicit scratch `cwd`" not being expressible through `invoke()` → DES-122.
+- **TASK-116/117 split, a deliberate refinement of the panel's "one task" item 5.** The panel's named risk is *the fix landing after the analyzer*; the split lands it strictly **before**, keeps the analyzer-level literal built-options assertion in TASK-117's DoD (a gateway-level test cannot see a `cfg.tools → opts.tools` mis-map), and states the dependency edge on the card. Equal protection, two right-sized tasks instead of one oversized one.
+- **The ADR-022 grep guard lands in the same task as the deletions (TASK-120), written first and red.** The panel allowed "before or with"; a separately-landed red guard would leave the suite red between two tasks, which this ledger's discipline does not tolerate. Red-then-green inside one task preserves the property that matters — the allowlist is written against the *current* tree, not fitted to whatever the deletion left.
+- **Conceded by adversarial, adopted: no boot backfill**, plus the one-line boot log naming the missing-diagram count and the recovery command (zero model calls, all of the discoverability). **Conceded by QD, adopted: `MODEL_UNMAPPED`** — with adversarial's corrected rationale (today's failure is loud-but-misattributed, not silent) and its pinned mechanism (`isKnownAlias` against the *server's* alias set, not the catalog's deliberately-empty one).
+- **`viewerIsOwner` dropped from `projectWorkflowDescribe`** (both groups): a parameter that provably cannot change the output is one that will eventually be made to, which is how a second disclosure policy gets born. If A3's owner-field decision is ever revisited it is revisited for `workflow_get` and `workflow_describe` **together**.
+- **No new mechanism was added anywhere in this slice**: no rate limiter, no cache/`inputs_fp`, no backfill, no GC, no second sink, no metrics surface, no effective-config readback, no process sandbox, no trust tier, no second renderer, no widened `invoke()`. The whole design is one one-line curation fix, one closed enum with a total mapping, one tokeniser spec, one table, one port interface, one projection, seven pinned boundary states, and one deletion.
+- **[RESOLVED 2026-09-02 by adjudication #1 below — kept for the record; no escalation is open.]** REQ-102/A3 authorises phase names as diagram content, and the diagram is served to **any** principal — so v23's diagram is the **first** surface to expose `meta.phases[].title` to a non-owner. ADR-015/ARCH-080 dismissed this as "pre-existing exposure"; that premise is **false** (verified: `WorkflowPublicView` has no `phases`; `server.ts:1079` calls them masked), and it is why nobody escalated it — it looked free. The decision is the owner's and it is already recorded in A3; what was never confirmed is that it is *new* and that a document (`docs/AUTHORING.md` rule 4) is its **sole** control. Default shipped behaviour = A3 as written, pinned by a test asserting a secret placed in a phase name appears in the diagram; overruling it is a one-line change to DES-131's allowlist builder that turns that test red and names the decision. Cost of overruling: the diagram loses most of its readable labels.
+
+---
+
+## Orchestrator adjudication (v23) #1 — phase names become public on EVERY surface, not just the diagram (2026-09-02)
+
+### Q-1 — the finding: A3's "phase names" premise was false, and I wrote it
+Gate 3+4 verified what ADR-015/ARCH-080 assumed and I had assumed writing Round v23's A3: that
+`meta.phases[].title` was already disclosed to non-owners. **It is not.** `WorkflowPublicView`
+(`workflow-view.ts:35-48`) has no `phases`, `EXPECTED_NON_OWNER_KEYS` does not list it, and
+`server.ts:1079` masks it explicitly under auth with a comment saying so. Listing phase names as safe
+diagram content would have made the **diagram the first and only surface** serving them to a non-owner.
+
+That is REQ-100's own acceptance violated — "masked consistently, so masking cannot be trivially
+side-stepped by asking a different endpoint" — in the mirror image of v22's H2, which took three review
+rounds to close. A new surface disclosing what the old ones mask is the same defect as an old surface
+disclosing what the new one masks.
+
+### Q-2 — OWNER RULING (2026-09-02, in session): 一律公開 — make phases public everywhere
+Phase titles join the public allowlist as a deliberate, consistent decision:
+- `WorkflowPublicView` gains `phases`; `EXPECTED_NON_OWNER_KEYS` gains it too — that constant is the
+  two-sided oracle (DES-115), so both a leaked extra field and a missing expected one still fail.
+- `server.ts:1079`'s auth branch stops stripping `phases`, and its comment must stop saying they are
+  masked. (A comment describing the old behaviour is instance ten.)
+- The diagram draws them, per REQ-102/A3 as written.
+
+**Rationale the owner endorsed:** a phase title is a label the author writes for humans to read about
+the workflow's structure — far closer to `description`, already public, than to prompt text. And
+REQ-101 exists precisely so a user can understand a workflow they may not read. A diagram whose nodes
+read `agent-1`, `agent-2` satisfies the letter of that requirement and none of its purpose.
+
+**The control is stated, not implied:** `docs/AUTHORING.md` must say that phase titles are public to
+every principal who can see the workflow, and the secret-in-a-phase-name test stays — it now pins a
+*documented* disclosure boundary rather than an accidental one. Authors are told, once, in the place
+they will look.
+
+### Q-3 — scope consequence for Gate 3+4 to absorb on re-run
+This is no longer diagram-only. `workflow-view.ts`, its expected-key oracle, and `server.ts`'s
+skeleton-route branch all change, so REQ-100's shipped v22 surface is amended by v23 — a new
+TASK/DES pair, not a one-line tweak inside DES-131's allowlist builder. Amend REQ-100 in
+`01-requirements.md` with an `[AMENDED v23, owner-ruled]` block naming `phases` as an added allowlist
+member, so no future reader takes v22's list as final.
+
+## Decision rationale — v23 Gate 3+4 re-run (post-adjudication panel, 2026-09-02)
+
+Synthesized from the re-run panel (`.panel/design/{adversarial.r1, adversarial.r2, quality-dimensions.r2}.md`,
+overwritten in place; the pre-adjudication versions are at `git show ba3db17:<path>`). Only decisions here.
+
+- **Adjudication #1 absorbed: TASK-125 + DES-136, landing before TASK-117/118.** Without it the shipped
+  design was internally contradictory: `EXPECTED_DESCRIBE_KEYS`, generated from a type with no `phases`,
+  would reject `phases` as a leaked field while the `diagram` string *inside the same response* rendered
+  the titles. Adversarial r2 §3.1 named this the round's blocking defect; conceded and adopted in full.
+  Two refinements of theirs on primary source: `'phases'` is **one** key (the oracle's `deepFlatten`
+  skips arrays, `workflow-view.test.ts:29`), and `server.ts` is **out of scope** for the task because
+  DES-132 deletes the only other masking site whole — patching a route on its way to deletion is work
+  with no surviving artifact, and the interim leaves that route stricter, never looser.
+- **The two r2 files crossed a second time, and the ruling overtook them both.** QD's r2 (19:41) still
+  "seconds the escalation" that `ba3db17` (19:21) had already resolved; adversarial's r2 disclosure that
+  "QD did not re-run" was stale by its own write time. Recorded as **overtaken by the owner ruling**, not
+  as a concession by either lens — nothing about the fact pattern changed, only who had decided it.
+- **QD's one hard condition is satisfied as shipped.** QD r2 made the `MALFORMED_COMPLETION` fold-in
+  conditional on `gateFail` shipping in the same task; `gateFail` is in DES-129 and DES-124, so the enum
+  stays at **ten**. Adversarial's r2 §2.4 additionally showed QD's 11th member was not independently
+  derived (it came from adversarial's own r1, later self-reversed) and that `content: undefined` is
+  dominantly a *provider-shape* fault (`client.ts:192/212/233`) — which is what `GATE_REJECTED_SHAPE`
+  counts. No lens-vs-lens disagreement remains open in either file.
+- **Adversarial's request to amend `02-architecture.md` invariant 5 is declined on scope, not on merit.**
+  `gateFail` genuinely is a tenth field against a pinned nine, and invariant 4's "provider HTTP status"
+  genuinely has no `GatewayResult` field behind it — but 02-architecture is not this gate's output.
+  Both are recorded here and, more importantly, **inside the DES an implementer greps** (DES-129 carries
+  the strike and the tenth field). A Gate 8 reviewer diffing the pinned list finds the assent, not a drift.
+- **The three lifted caps (`maxBytes`/`maxLines`/`maxQueueDepth`) are a REQ-104 compliance fix, not a
+  preference.** The acceptance reads "**at minimum** … and **no analyzer harness value is hard-coded in
+  engine source**"; "at minimum" makes the six-key list a floor, and a cap on model-authored text is a
+  harness value an operator with a different model class cannot change without a redeploy. Costs three
+  wiring-test rows and moves a default's home; adds no mechanism. Recorded as an explicit amendment to
+  ARCH-079's `GraphAnalyzerConfig` and ARCH-085's key list, same treatment as `gateFail`.
+- **Two boundary states the shipped text did not cover, both adopted in their cheapest correct form.**
+  (a) The **late write** — an in-flight job settling after `deregister` created an immortal orphan,
+  because the single-deletion-path rule that makes ADR-021 true is exactly what makes the row
+  unreachable; fixed by an existence guard inside `putDiagramResult`'s transaction, **not** by a
+  cancellation check or a reaper. (b) The **boot sweep's missing attempt marker** — "one requeue" was
+  unrepresentable across restarts, so a crash caused by the generation itself amplified into a crash
+  loop on the model-call path; fixed by stamping the already-NULLable `generated_at`, with no new column
+  and no restart harness (`FixedClock` + the boot instant give all three shapes). The clause that owes:
+  DES-125 projects `diagramGeneratedAt` only for `ready`, or the fix trades honest absence for
+  dishonest presence.
+- **One test is deliberately exempted from the `schedule` seam.** The late-write race is the only v23
+  test that must run on the real `setImmediate` path — seaming it makes it vacuous. Written as a rule on
+  TASK-117's card so a later "make the suite faster" pass cannot quietly remove the last real-path test.
+- **`/describe` is unauthenticated, and the parity test's context changed because of it.** DES-132 said
+  "auth-gated exactly as the route it replaces"; that route is not auth-gated (`server.ts:1025`/`:1080`
+  say so in their own comments) and branches on `authEnabled` to choose *what* to disclose. The parity
+  test compares against `ctx = {authEnabled: true, principal: null}` — an owner call would pass for the
+  wrong reason and hide the divergence the test exists to catch.
+- **Two stale justifications corrected in place, with no scope-push.** DES-131's "the catalog's
+  `aliasNames` is deliberately empty" is false since v21 Gate 8 P-A2 (`server.ts:1276` now builds the
+  same expression; only the neighbouring comment still says otherwise — not fixed here). DES-129's log
+  census was "seven of seven"; the real count is **6 of 17**, and the closest structural precedent for a
+  per-event record is the un-prefixed `catalog.publish: {json}`. The conclusions stand; a rationale a
+  reader can disprove in one grep stops protecting its decision.
+- **The word-level gate stands; adversarial withdrew its own whole-label reading.** Post-ruling, the
+  words a recombination attack would rearrange are public phase titles, and a secret literal is a single
+  token rejected under either reading — so a grammar parser to prevent rearrangement of public words is
+  exactly the needless machinery the shared Karpathy tie-break declines. Consequence owned: the r1
+  recombination fixture (T2(b)) is **dropped rather than written** — keeping a fixture while conceding
+  the design it tests would ship a red test. Residual, recorded not built for: a diagram may phrase
+  public words misleadingly; if one is ever observed, the fix is the `systemPrompt`, not the gate. The
+  operator-facing half of it is already a DEPLOY line in DES-134 (on `qwen2.5:7b`, vocabulary compliance
+  degrades first, so honest absence is a common path and a rising `GATE_REJECTED_SHAPE`/`'codepoint'`
+  rate is the expected early signal).
+- **`model:param` rather than a bracketed sentinel.** The allowlist's model component is not statically
+  derivable (a model can arrive as a v21 tunable param; `SkeletonNode` carries none), so one sentinel is
+  needed — and it must be ASCII inside pass 4's own token charset, or the gate rejects its own
+  vocabulary. `⟨param⟩` (the panel's phrasing) fails the codepoint pass; `<param>` fails it too.
+- **Three contradictions inside the shipped v23 text, found by checking claims neither panel checked.**
+  (a) The anti-drift table named `GET /api/workflows/:name` — **that route does not exist**
+  (`server.ts:1035-1039` has only `/skeleton`, plus the `/api/workflows` list at `:1069`); a fixture
+  written against it would 404 and pass for the wrong reason, so the fourth surface is the **list**,
+  which is script-free by construction yet re-parses the script for `description` and is therefore a
+  real leak class. (b) `DIAGRAM_CODEPOINTS` was pinned as "printable ASCII `0x20-0x7E`", which
+  **contains** `<`, `>`, `&`, while DES-133 and TASK-113 both assert `<` ⇒ `SHAPE` — as written, a bare
+  `<` between two allowed tokens is a pass-4 separator and survives. The three SGML-active characters
+  are subtracted from the constant, so the gate is the first layer and `textContent` the second, as
+  both documents already claimed. (c) Two stale counts of this design's own making — "five boundary
+  states" and "one rule governs four of them" — corrected to seven and five; a stale count next to a
+  renamed thing is this ledger's own nine-instance defect class in miniature.
+- **Still no new mechanism.** Everything added this round is a guard inside an existing transaction, a
+  stamp on an existing NULLable column, three defaults moving into the existing config block, one field
+  on two existing view types, and prose. No reaper, no cancellation channel, no new column, no new
+  accessor, no auth branch, no grammar parser.
+
+---
+
+## Orchestrator adjudication (v23) #2 — the unowned composition root, and nine reds that are not one kind (2026-09-02)
+
+State at ruling: `tsc` clean, 1783/1792, 9 red across 8 files (from Gate 5's 58). WIP `ebd530d`.
+
+### R-1 — **THE BLOCKER: the whole v23 subsystem is built and not wired. No TASK owned building it.**
+Verified at source, not taken from the report:
+- `grep -rn "new GraphAnalyzer" src/` → **zero results.**
+- `server.ts:1398` → `new McpFacade({ clock, store, runManager, validator, ceilings })` — no `triggerPorts`,
+  no `graphAnalyzer`.
+- `mcp-facade.ts:138` → `this.triggerPorts = deps.triggerPorts ?? NO_TRIGGER_PORTS`.
+
+Every unit test passes against the modules; the engine never constructs them. That is this repo's
+**named recurring defect** — correct implementation, unwired call site, every unit test green, zero
+protection (memory: `composeconfig-wiring-bug-class`; v11 `updateFlagPath`, v15 auth). VAL-113/114/115
+are the only things that could have caught it, and they are exactly the three still red.
+
+**Why the process missed it:** `02-architecture.md` names `createServer()` as "the ONE site that
+actually constructs the GraphAnalyzer", but **no TASK's `files:` list owned that construction**. Trace
+was clean throughout — every TASK traced to a DES, every DES to an ARCH — because the gap was not a
+broken link. It was an **unowned composition root**. Record the class: Gate 3 partitioning must check
+that every "constructed at X" claim in the architecture has a TASK owning X, not merely that every
+ARCH has a TASK.
+
+**Adopted — TASK-126 (new): construct and wire the v23 subsystem in `createServer()`.** Folds in three
+riders that otherwise drop on the floor, because their original owners are blocked on precisely this
+site:
+- TASK-117's two deferred boot lines (effective post-curation tool set + jail dir; B1's
+  missing-diagram count + recovery command).
+- The `McpFacadeDeps.graphAnalyzer` shape question — TASK-120 built a narrow structural interface
+  `{enabled, regenerate()}` rather than importing the concrete class. **Keep the structural interface**
+  (it is the same seam convention the rest of this engine uses and it keeps `mcp-facade.ts` free of a
+  concrete dependency); TASK-126 satisfies it from the real instance.
+- Real `TriggerPorts` built from the three trigger stores — which, per ARCH-078, are **three separate
+  SQLite files**, so this is API composition, not one batched read.
+
+### R-2 — **the seam must be REQUIRED, not optional-with-a-null-default. This is v22's own lesson.**
+`triggerPorts ?? NO_TRIGGER_PORTS` silently degrades an unwired call site into "no triggers exist".
+v22 hit this and encoded the fix in `mcp-facade.ts:31-37`'s own docblock for `ReadContext`: *"a required
+(no default) read-time identity — an optional `principal = null` default would reproduce this project's
+`composeConfig` wiring-bug class verbatim … A required argument makes an unwired call site a `tsc` error
+instead."* v23's new seam went the other way and reproduced the hazard within one iteration of the
+lesson being written down.
+
+**Make `triggerPorts` and `graphAnalyzer` required in `McpFacadeDeps`**; tests that do not care pass
+`NO_TRIGGER_PORTS` / a disabled analyzer explicitly. TASK-126 fixes this instance; the required seam is
+what stops the next one, and it is the structural half of this ruling.
+
+### R-3 — the nine reds are FOUR different kinds. Treating them alike is how a real guarantee gets deleted.
+
+**(a) Asserting a feature v23 deliberately deletes → RETIRE, with the supersession recorded.**
+- `val-110`'s `/api/workflows/:name/skeleton returns the real skeleton/phases when auth is disabled`
+- `workflow-discovery-http`'s two REQ-062 cases (the skeleton route; `workflow_get.skeleton`)
+
+Retire the cases, not the files. **Supersede in the REQ-006 form — partially, and say which part.**
+REQ-062's *user-facing surface* is withdrawn by REQ-105; `parseWorkflowSkeleton` **survives as internal
+run-DAG layout and analyzer grounding**, so a blanket `[SUPERSEDED]` would tell the next reader to
+delete a function that must stay. Likewise REQ-100's "auth off → pre-v22 surface byte-for-byte" is
+superseded **for `skeleton`/`phases` only** — the rest of that clause stands unchanged.
+
+**(b) The guarantee is still valid; only its vehicle was deleted → RE-POINT, never retire.**
+`dashboard-http`'s "a malformed %-encoded path segment degrades, never a 500" now 404s because it drove
+through `/api/workflows/%/skeleton`. The guarantee (DES-018: never propagate a `URIError` as a 500) is
+untouched by v23. Re-point it at a surviving decoding route — `/api/workflows/%/describe`.
+
+**Oracle discipline, binding on every fix below:** the expected status and body come from the NEW
+route's DES contract, read first. Do **not** run the route and write down what it returned. v22 produced
+the counter-example (`val-107`'s non-owner oracle rewritten to assert success so it would match the
+code); a re-point that derives its expectation from the code is that same defect wearing a different hat.
+
+**(c) A genuine implementation gap → FIX.**
+- `graph-analyzer` UT-111 `sweepAtBoot` unstamped-pending (`'unavailable'` vs expected `'ready'`) —
+  TASK-117's own file.
+- `no-skeleton-surface` UT-115 — REQ-105's own guard, correctly red: `src/**` still says "skeleton"
+  outside the three-file allowlist. Finish the deletions. `dashboard-page.ts` must **not** be added to
+  the allowlist; it is meant to come out clean.
+- `dashboard-diagram-render` UT-116 — the reported one-line anchor fix
+  (`renderMiniSkeletonAsync` → `renderMiniPreviewAsync`) plus TASK-121 landing.
+
+**(d) A design/implementation disagreement → resolve against the DESIGN, then fix whichever side is wrong.**
+`val-112` case 2 (`CHANNEL_UNPUBLISHED` envelope shape). Read DES-126's error contract first and make
+the disagreeing side conform to it. If the design is what is wrong, amend the design and say so —
+do not quietly reshape the assertion to fit the code.
+
+### R-4 — ratifying the two design corrections the implementer found. Both stand; **DES-128's TEXT changes too.**
+
+**(a) DES-128's type guard did not guard.** Its literal `Array<{enabled: boolean}>` was justified in the
+design by "a future edit that returns the row is a `tsc` error". The implementer disproved it with a
+minimal repro: a **method-return position gets no fresh-object-literal excess-property check**, so
+`{enabled, secret, id}` type-checks fine. Shipped instead: `Array<{enabled: boolean; secret?: never;
+id?: never}>`, which does fail `tsc` and is what UT-109's `@ts-expect-error` case requires. **Ratified.**
+
+This one matters more than its size: the guard exists because `webhooks.secret` is a **live credential**
+in a table whose projection feeds an LLM prompt (ARCH-078). A guard that does not guard, protecting a
+secret, is worse than no guard — it stops anyone looking again.
+
+**Amend DES-128's text to the shipped signature.** Ratifying the code while leaving the design doc
+asserting the original would be **instance ten** of this ledger's most-repeated defect, inside the very
+ruling that counts instances one through nine.
+
+**(b) `bindingsFp`'s sort key was too coarse** — `(kind, cron|'', upstreamWorkflow|'')` cannot separate
+two webhook rows differing only in `enabled`, or two cron rows differing in `tz`, so the fingerprint
+would flap on ties. Shipped: sort the canonical JSON strings themselves. **Ratified**; note that no test
+caught it (the UT-109 cases happen not to tie), so add a tie case rather than trusting the fix bare.
+
+### R-5 — `ANALYZER_DISABLED` gets its own facade unit-test row. No implicit coverage.
+It is a designed, closed error code on a pure pass-through: one row, no oracle hazard, trivially
+testable. "TASK-120/124's real-tier wiring covers it" is **the same implicit-coverage reasoning that let
+the unwired facade survive all the way to VAL-114** — where the only tests that could catch it were the
+ones not yet running. Write the row.
+
+### R-6 — pre-flight for the relaunch, both items learned the hard way this iteration
+1. **Reconcile `03-tasks.md` statuses before any run that includes `impl`.** Implementers deliberately
+   do not edit that file, so landed tasks still read `draft`, and the impl gate dispatches on that field.
+   That is exactly the setup that cost 17 agents and ~1.1M tokens earlier today. Flip to `done` only what
+   has IMPL/git evidence; **TASK-121, TASK-124 and the new TASK-126 stay `draft`.**
+2. **Override the model policy away from `claude-fable-5`.** `400 tools.6.model: claude-fable-5` has now
+   fired twice; the first was survivable, the second **killed TASK-124 outright**. A blind re-dispatch
+   runs the same policy into the same 400 a third time.
+
+---
+
+## Orchestrator adjudication (v23) #3 — the no-skeleton allowlist takes a fourth file, on a stated criterion (2026-09-03)
+
+### S-1 — widen to four; do NOT rename
+TASK-120's guard (UT-115) permits `skeleton` in exactly three files — `workflow-meta.ts` (defines
+`parseWorkflowSkeleton`), `dashboard.ts` (`layoutGraph`), `server.ts` (the still-auth-gated
+`/api/runs/:id/dag` branch, ADR-022 / v22 finding H2). DES-131 separately sanctions
+`graph-analyzer.ts` reusing the same function as analyzer grounding. Both are correct; they simply
+were never reconciled. **`graph-analyzer.ts` joins the allowlist.**
+
+The rejected alternative — renaming the shared export to dodge the grep — would be **actively worse**.
+The guard exists to stop the skeleton *surface* surviving, and renaming hides a legitimate internal use
+from the one check that can see it while the concept stays exactly where it was. A guard you evade by
+vocabulary is not a guard.
+
+### S-2 — the criterion, so a four-item list does not become a seven-item one
+An allowlist that grows whenever it is inconvenient has stopped guarding anything. Membership requires
+**both**:
+1. the file consumes the skeleton **internally** — layout, or grounding for the analyzer; and
+2. it serves the skeleton, or any projection of it, to **no principal** — directly or through a
+   response body, tool schema, or rendered page.
+
+`graph-analyzer.ts` satisfies both: the skeleton grounds the analyzer's prompt and never reaches the
+output, which A3 pins to structure only. A future fifth entry must be argued against these two
+sentences, in an adjudication, not merely added to a `Set`.
+
+### S-3 — the wording changes with the number
+DES-132 and TASK-120's `dod:` both say **"exactly three"**, and the guard file's own header comment
+names the three. All three sites move to four **with the S-2 criterion stated in the test file itself**,
+so the next reader learns the rule and not just the roster. Ratifying a fourth entry while three
+documents still say three is the defect this iteration has now counted ten times; the guard's own
+header is the last place that should carry it.
+
+### S-4 — noted, not a gap
+`graph-analyzer.ts` needed zero edits under TASK-126: TASK-117 had already shipped a correct,
+structurally-compatible class. **Only its construction site was unowned** — which is precisely
+adjudication #2's R-1 finding, now confirmed from the opposite direction by an implementer who went
+looking for work and found the code already right.
+
+---
+
+## Orchestrator adjudication (v23) #4 — a specified security guard that was never built, a vacuous survivor, and a lying annotation (2026-09-03)
+
+### T-1 — **DES-122's zero-config fail-closed rule is specified and NOT built. New TASK-127 owns it.**
+DES-122 says: *"When `graphAnalyzer.enabled` and no `workRoot` resolves, `tools` is forced to `[]` and
+the boot line says so."* It exists in neither `main.ts` nor `server.ts`, and **no test anywhere
+exercises it** — `graph-analyzer-composition-root.test.ts` always passes a concrete `workRoot`.
+
+Reachable in production, not theoretical: `main.ts:89`'s `workRoot = RWE_WORK_ROOT ?? fileConfig.workRoot`
+is legitimately `undefined` on a true zero-config deploy; the SDK gateway's `cwd` then resolves to
+`undefined`, and that client's own docblock records *"nothing to enforce against, allow"* — i.e. **no
+jail** for an agent the architecture itself classifies as running on attacker-influenced input (an
+author's script). Exposure is narrow (an operator must BOTH configure non-empty `graphAnalyzer.tools`
+AND run with no `workRoot`; the default is `[]`), which bounds the severity — it does not excuse
+shipping a guard the design claims exists.
+
+**Landing site: `server.ts:1462-1475`, the one site where every `graphAnalyzer` key defaults.** Not
+`main.ts`, whose own convention at `:178-183` is "No defaults applied here" — putting it there would
+contradict a documented rule to satisfy a task boundary.
+
+**New TASK-127, not a TASK-126 re-open.** TASK-126 is `done` on IT-098's evidence and that evidence is
+real; flipping it back would muddy exactly the status/reality trail R-6 exists to keep clean. TASK-127
+needs its own Gate 5 RED first — asserting `tools` is forced to `[]` and the boot line says so — because
+a guard that ships without a test asserting it is how this one got here.
+
+### T-2 — the val-110 auth-ON case now passes VACUOUSLY. Retire it.
+The Gate 5 pass correctly retired the three cases adjudication #2 named and **flagged rather than
+silently fixed** an adjacent one: val-110's auth-ON *"omits skeleton"* case. With the route deleted it
+now 404s, so the assertion passes **for the wrong reason** — a vacuous test, the class the v22 sweep
+found four of. It was not in #2's named scope, and the implementer was right not to widen scope
+unilaterally.
+
+**Ruled: retire it, same treatment and same recorded reason as its three siblings.** A masking
+assertion that would pass against a deleted endpoint protects nothing; leaving it green is worse than
+deleting it, because a future reader counts it as coverage.
+
+### T-3 — val-112 was a TEST defect, and its root cause was an annotation that lied
+`workflow_describe` was correct all along. `rpc()` returns the **unwrapped tool payload**, whose two
+shapes differ — success carries `result`, failure carries `code`/`error` and **no `result` key at
+all** — but its return-type annotation declared only `{result?, error?}`. Reading through the missing
+`.result` wrapper yielded `undefined` forever.
+
+Fixed by reading `code` where the facade actually puts it, and by **widening the annotation to declare
+both shapes**, so the next author is not sent down the same path. The expected value stayed
+`CHANNEL_UNPUBLISHED` throughout — sourced from REQ-097/REQ-101's acceptance text, never read back off
+the implementation. **Only the path was wrong; the expectation never moved.** That distinction is the
+whole of the oracle rule: had the response been reshaped to match what the code returned, this would
+have been B2 again.
+
+Note the shape of the root cause: a **type annotation** joins comments, docblocks, architecture notes,
+retired tests, a review finding and ledger entries as a carrier of "a description that no longer matches
+the thing". That is the eleventh instance across v21–v23, and the first where the false description was
+enforced by the compiler and still wrong.
+
+### T-4 — status reconciliation
+TASK-119 → `done`: its unit tests are green and val-112, the last red attributed to it, was a test-shape
+defect in someone else's file, not a gap in its implementation. TASK-117 stays `draft` — UT-111's
+`sweepAtBoot` unstamped-pending case is genuinely red in its own file. TASK-124 stays `draft`: it is a
+Gate 7.5 obligation and is correctly blocked until TASK-117 lands.
+
+---
+
+## Orchestrator adjudication (v23) #5 — CORRECTING #4's T-4: UT-111 was a fixture defect, not a code gap (2026-09-03)
+
+### U-1 — **I got T-4 wrong, and the wrong version was dangerous**
+Adjudication #4 T-4 said UT-111's `sweepAtBoot` unstamped-pending case was *"genuinely red in its own
+file"* — a code gap in `graph-analyzer.ts`. **It was not.** I took the implementer's characterisation
+and ruled on it without opening the test.
+
+What the test actually did: registered `ga-sweep-unstamped` with the script `return 1;`, then stubbed
+the gateway to return the diagram `╭─Draft─╮`. `_buildAllowlist()` derives permitted labels from the
+script's phases, skeleton node titles, alias names and trigger kinds — and `return 1;` declares **no
+phases**, so `Draft` was never allowed and `gateDiagram` correctly refused it: status `unavailable`,
+exactly as designed. The passing success case twenty lines earlier registers
+`meta = { phases: [{title:'Draft'}] }` — the same stub, with the fixture the sweep case was missing.
+
+**The gate was right; the fixture was wrong.** Fixed by giving the sweep fixture the phase its own stub
+draws. 17/17 green, gate untouched.
+
+**Why the mistaken ruling mattered:** an implementer following T-4 literally would have gone looking for
+a bug in `graph-analyzer.ts` and the cheapest way to turn that test green is to loosen the label gate —
+the control that stops an analyzer summary carrying script-derived text to principals REQ-100 forbids
+from reading the script. A wrong diagnosis in an adjudication does not stay a wrong diagnosis; it
+becomes a work order. A comment now sits in the fixture saying so, so the next person to see it red does
+not reach for the gate.
+
+The rule for me, not for them: **a characterisation in a report is a lead, not a finding.** I verified
+R-1's unwired composition root at source before ruling and it held; I did not verify T-4 and it did not.
+Both were in the same report.
+
+### U-2 — TASK-127's guard already landed; TASK-117's card no longer owns it
+`server.ts:1471-1476` now carries `graphAnalyzerNoJail` and forces `tools: []`, with the boot line at
+`:1483`. IT-099 4/4 green. TASK-117's card still claimed the downgrade lands "inside THIS task, not as a
+follow-up" — a claim **my own adjudication #4 invalidated when it moved the work to TASK-127**, and
+which I then left standing. Amended. Moving work without updating what claims to own it is the same
+defect as moving a check without updating what describes it; authoring the ruling does not exempt the
+ruler.
+
+### U-3 — state
+Suite **1792/1792**, `tsc` clean. The two erroring suites (`val-023-sdk-gateway-timeout`,
+`hooks-reject-and-timeout-bound-journey`) are pre-existing timing-sensitive teardown hooks — their
+tests all pass, only the hooks exceed 10s under load, and both fail identically at the v22 merge point
+`f01fa4d` (verified in a throwaway worktree). TASK-117 and TASK-127 both close.
+
+---
+
+## Orchestrator adjudication (v23) #6 — REQ-103 was silently narrowed; build the clause, don't ratify the loss (2026-09-03)
+
+### V-1 — the analyzer never receives the bindings. IMPLEMENT, do not amend.
+Verified at source, not from the report: `graph-analyzer.ts:296` computes `bindings`, `:297` passes
+them to `_buildAllowlist`, and `:298` builds the prompt as `systemPrompt + "---Workflow script:" +
+script`. **The bindings never enter the prompt.** The validator proved it live too — identical
+`promptTokens` with and without a cron binding.
+
+Meanwhile `04-design.md`'s REQ-103 validation row narrowed the acceptance to the `triggers` FIELD plus
+the staleness flip, dropping *"the diagram's entry node names that trigger method"* — **with no
+adjudication recording the narrowing.** A design row quietly redefining what a requirement means is the
+worst version of this iteration's recurring defect: not a stale description of the code, but a
+description that changes what we owe.
+
+**Ruled (a): feed the projected bindings into the analyzer prompt.** Not (b), because:
+- The clause is the owner's ORIGINAL ask — 觸發方式 was named in the first sentence of the request that
+  started v21..v23 — and it is the specific gap I flagged in issue #32 at Gate 1 ("triggers are not in
+  the script, so an analyzer fed only the script can never show them"). Amending it away would
+  un-deliver the one thing v23 added to #32's own design.
+- It is cheap and safe: the projection already exists at `:296` and is **already secret-free by
+  construction** (ARCH-078 builds it from an explicit field list precisely because `webhooks.secret`
+  is a live credential feeding an LLM prompt). Nothing new is exposed; a value already computed simply
+  reaches the prompt it was computed for.
+
+Scope: Gate 6 changes `:298`; Gate 5 writes the RED first; Gate 7.5 re-runs VAL-118 only. The
+`04-design.md` REQ-103 row is amended back to both arms.
+
+### V-2 — the LiteLLM spawn can kill the process, and v23 is what made it reachable
+The managed-LiteLLM spawn has no `proc.on('error')` handler, so on a host without `litellm` on PATH the
+`ENOENT` surfaces as an unhandled error event. Pre-existing — but **v23 made it reachable from
+`workflow_register`**, because registration now enqueues an analyzer call. A documented caveat in two
+manuals is not a fix for "a registration can take the engine down".
+
+**Fix it in v23.** It is a handler on a spawn this engine already owns, and shipping an iteration that
+newly exposes a crash path while only writing it down is not a trade I will make. If the fix proves
+larger than a handler, stop and report rather than widening.
+
+### V-3 — AUTHORING.md states a rule authors cannot act on
+It tells authors to declare knobs in `meta.params` but never shows the `{knobs:{…}, args:{…}}` shape,
+and the engine **silently ignores a mis-shaped block** (verified live: the described contract came back
+as the canonical 4-knob default). A rule without a shape plus a silent failure means an author gets it
+wrong and never learns. Add the example line; state that a mis-shaped block is ignored rather than
+rejected, so the silence is at least documented.
+
+### V-4 — the last place the retired word reaches a client
+`/api/runs/:id/dag` returns `warnings: ['agent <id> unmatched to skeleton: frame-grouped']`
+(`dashboard.ts:342`). It projects no skeleton content and `dashboard.ts` is on ADR-022's allowlist, so
+REQ-105 is not failed — but REQ-105's text is "no … still tells a reader the skeleton is a surface
+available to them", and this is user-visible string. Reword to name the layout, not the retired
+concept. Cheap, and it is the difference between a guard that passes and a deletion that is finished.
+
+---
+
+## Orchestrator adjudication (v23) #7 — the engine instructed a token its own gate rejects (2026-09-03)
+
+### W-1 — my V-1 fix shipped half-working, and Gate 7.5 caught it live
+`describeTriggerBindings` tells the model to label an unbound workflow's entry node `workflow_run`,
+and the shipped default `systemPrompt` says the same. `_buildAllowlist` allowed only two
+engine-authored sentinels — `default` and `model:param`. So **the engine instructed a word its own
+gate refuses.**
+
+The blast radius is what makes this more than a typo: `schedule_create` and `webhook_create` are both
+refused `CHANNEL_UNPUBLISHED` before publish, so **every workflow is unbound at v1 registration**. An
+obedient model therefore lost **every first diagram** — a regression against Gate 7.5 round 1, where an
+unbound registration produced a ready diagram.
+
+Fixed with the one line the validator named: `labels.add('workflow_run')`, beside the two sentinels it
+belongs with. UT-123 pins it, and its oracle is **the engine's own instruction**, not whatever the
+allowlist happens to hold — because deriving the expectation from the allowlist is how the two halves
+were allowed to disagree in the first place.
+
+This is instance twelve of the same defect, and the first where **both disagreeing halves were mine**,
+written minutes apart in the same change.
+
+### W-2 — a correction I owe: the two "spawn litellm ENOENT" files were NOT green when I said they were
+`c3b0c01`'s message states the EventEmitter fixture fix turned `val-023-sdk-gateway-timeout` and
+`hooks-reject-and-timeout-bound-journey` green. **It did not.** They were still failing on the
+`afterAll` hook; the real cause was a deliberately-hung stub holding sockets it never answered, so
+`close()` never returned. The verifier root-caused it, confirmed it pre-existing in a scratch worktree,
+and fixed it with one `hungStub.closeAllConnections()` per file.
+
+I read `Tests 1803 passed (1803)` and reported "zero erroring files" **without reading the `Test Files`
+line**, which was still showing failures. Assertions passing is not the suite passing. The fix on my
+side is procedural and it is now habit: read both lines, every time.
+
+### W-3 — carried, not silently inherited
+REQ-004's paid-provider success path stays unverified at the real tier — no Anthropic/OpenAI/Gemini
+credential exists in this environment. Unchanged from every prior round; needs an owner decision only
+if a sandbox key is to be provisioned.
+
+---
+
+## Orchestrator adjudication (v23) #8 — UT-125 的 oracle 與 DES-130 B6 相衝:改 oracle,不動守衛 (2026-09-03)
+
+### X-1 — 裁定 (a):amend ARCH-079 的 oracle,把斷言指向 journal 而非 DB 列狀態
+`ARCH-079` R-1 的 oracle 列舉「(b) the row settles」,但 `DES-130 B6` 的遲寫守衛
+(`workflow-catalog.ts:274-275`)在沒有 `workflow_versions` 列時讓 `putDiagramResult` 無條件 no-op ——
+而 orphan 的定義**就是**沒有那一列(`CatalogNotFoundError` 正因如此才拋出)。所以那個轉移**結構上不可達**,
+不是 Gate 6 的實作缺口。verifier 實測驗證過,沒有擅自放寬,做得對。
+
+**採 (a) 而非 (b),三個理由:**
+1. **B6 存在的目的正是防止 immortal orphan row(ADR-021 GC)。** 為了讓一次結算寫入而給它開洞,
+   等於重新打開它守著的東西。用架構變更去遷就一個代理指標,方向相反。
+2. **UT-125 的目的是「orphan 不會卡死佇列」,而那個不變式完全成立** ——
+   斷言 (1) 零未處理拒絕、(3) claim/slot 釋放、(4) 下一個工作仍會跑,三個都通過。
+3. **斷言 (b) 只是「結算發生了」的代理指標;journal 的 `cause:'script_unresolved'` 是同一件事的直接觀測,
+   而它確實會發出**(UT-135 在完全相同的 fixture 形狀上已綠)。
+   所以改指向 journal **不是放寬,是從代理指標改成直接證據** —— 而代理指標之所以量不到,
+   是因為另一道正當的守衛擋著。
+
+`ARCH-079` 的 oracle 文字須加註 B6 的存在並改寫該項;UT-125 的斷言 (b) 改為
+「不再嘗試任何寫入」或「journal 發出 `cause:'script_unresolved'`」。
+
+### X-2 — 連帶待查(不阻斷本輪)
+B6 的註解說它防的是 immortal orphan row,但**留在 `pending` 也是一列不會消失的資料**。
+`workflow_deregister` 是否連帶刪除 `workflow_diagrams` 的列?若否,那是 ADR-021 的 GC 缺口而非 B6 的問題,
+但要有人確認過才算數。標為 Gate 8 待查,不要靜默假設。
+
+### X-3 — UT-135 的 fixture 缺陷已由 verifier 自行修正,方法正確
+`queue_full` 案例用**同一個 name/version** 連呼 `enqueue` 兩次來模擬「佔住 slot 再被拒」,
+但 `enqueue` 第一行就是 single-flight 守衛(DES-127 B4),第二次呼叫在到達佇列深度檢查前就被
+靜默 no-op。它比照同檔已綠的 UT-128(用兩個不同名稱)修好 —— **拿既有的綠案例當範本,而不是自己發明**,
+是對的做法。
+
+---
+
+## Orchestrator adjudication (v23) #9 — AUTHORING.md 教了一個引擎會拒絕的範例(我寫的) (2026-09-04)
+
+### Y-1 — 缺陷確認,來源是我
+Gate 7.5 的 validator **把 `docs/AUTHORING.md` 規則 1 的 `meta.params` 範例拿去對活的引擎跑**,
+照抄回 `PARAM_CONTRACT_INVALID`。三處皆錯,且全部由我在本輪對話中寫入:
+- `model: { default: 'sonnet' }` —— 缺 `type`（`ParamSpec.type` 必填)
+- `effort: { enum: [...] }` —— 同上
+- `dryRun: { type: 'boolean' }` —— **`boolean` 不在詞彙表**（`VALID_SPEC_TYPES = string|number|enum`)
+
+`src/params/contract.ts:173-181` 與 DES-101 一致,**錯的是文件不是引擎**。
+
+### Y-2 — 為什麼這比一般的文件錯誤嚴重
+`AUTHORING.md` 存在的唯一目的,就是讓作者寫得出**有效的** params。
+**一份教出無效範例的指南,比沒有指南更糟** —— 作者照抄、被拒、然後開 issue,
+而那正是擁有者當初要求加 `workflow_authoring_guide` 的理由。
+這是「描述與實物不符」的第十四例,而且發生在**專門用來防止這件事的文件裡**。
+
+### Y-3 — 連帶修正:我對 fallback 的說明也是錯的
+我寫「a mis-shaped params block is ignored, not rejected」。validator 實測後釐清:
+- **巢狀錯誤**（`params` 根本不是 `{knobs, args}` 形狀)→ 靜默退回標準四旋鈕契約,註冊成功
+- **巢狀正確但 spec 無效** → **拒絕**,`PARAM_CONTRACT_INVALID` 並指名出錯的 param
+
+兩種行為不同,我把它們混為一談。已改寫成分開陳述。
+
+### Y-4 — validator 的處置正確,不要責備它沒順手修
+它刻意不改:「a silent patch would hide it from Gate 8」——
+`AUTHORING.md` 是 Gate 6 的產出(TASK-123/DES-135),悄悄補掉會讓 Gate 8 看不到這個缺陷曾經存在。
+**正確做法是公開裁定後再修**,這樣 Gate 8 同時看到缺陷與修法。本裁定即為此。
+
+### Y-5 — 驗證方式的教訓
+它是**實際執行**發現的,不是閱讀發現的。文件裡的程式碼範例應該像程式碼一樣被驗證 ——
+v24 的 `workflow_authoring_guide` 若要交付,**它給的每個範例都必須有一個測試實際註冊它**,
+否則同一個缺陷會以更大的規模重演(那份 guide 的範例會多得多)。

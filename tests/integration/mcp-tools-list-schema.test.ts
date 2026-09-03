@@ -150,3 +150,103 @@ describe('MCP tools/list serves real, non-placeholder tool metadata (IT-028, D-G
     expect(props).toHaveProperty('agentId');
   });
 });
+
+// IT-102 (v23 Gate 8 send-back A6, 02-architecture.md ARCH-051 amendment ≡ adversarial P5 ≡ QD-C2,
+// Gate-2-re-run `d294880`): the drift-lock's MEMBERSHIP half was a length floor, not a set equality
+// — `REQUIRED_TOOLS` above lists 10 names and is used only as
+// `expect(tools.length).toBeGreaterThanOrEqual(REQUIRED_TOOLS.length)`, so a rename of every tool
+// stays green and neither v23 tool (`workflow_describe`, `workflow_regenerate_diagram`) was ever
+// name-compared against anything. `server.ts:493`'s load-bearing sentence — "The raw workflow script
+// is deliberately NOT part of this response, on any principal" — had NO test at all
+// (`grep -rn "deliberately NOT" tests/` was empty), so deleting REQ-101's own sentence would turn
+// nothing red.
+//
+// ARCH-051's amended contract, part (a) — "all v23 owes": (1) sorted-name SET EQUALITY over
+// advertised vs a hand-written literal, never imported/derived from `server.ts` (an oracle sourced
+// from the code under test cannot fail when the code is wrong); (2) per-tool assertion rows for the
+// two v23 tools only; (3) one literal assertion on the script-absence sentence. Part (b) — a total
+// `Record<ToolName, Assertions>` covering all 40 tools — is NAMED BACKFILL DEBT budgeted at Gate 3,
+// explicitly not built here (ARCH-051's own text).
+//
+// Primary-source correction to the architecture note itself, recorded here for Gate 8's grep pass
+// (CLAUDE.md: no ledger prose accepted as evidence): 02-architecture.md:555 states `TOOL_NAMES`
+// "declares 39" tools; a direct count (`awk` over the `TOOL_NAMES` array literal, `server.ts:188-`)
+// gives 40 — the literal list below is the VERIFIED count, not the architecture's approximation, per
+// the same "verify by grep, not by reading the note" rule Gate 8 is told to apply to this send-back.
+//
+// Red reason (measured against today's engine): assertion (1) fails today because `TOOL_NAMES` (40)
+// does not equal `REQUIRED_TOOLS` (10, `server.ts:188-242` vs `mcp-tools-list-schema.test.ts:28-39`
+// — verified by direct read before writing this list); assertion (3) fails today because no test
+// anywhere asserts the script-absence sentence (`grep -rn "deliberately NOT" tests/` returns
+// nothing).
+const ALL_ADVERTISED_TOOL_NAMES = [
+  'workflow_run', 'workflow_status', 'workflow_result', 'workflow_suspend', 'workflow_resume',
+  'workflow_stop', 'workflow_list', 'workflow_agent_log', 'workflow_register', 'workflow_deregister',
+  'workflow_publish', 'workflow_get', 'workflow_describe', 'workflow_regenerate_diagram',
+  'workflow_artifacts', 'workflow_artifact_get', 'workspace_purge', 'schedule_create',
+  'schedule_list', 'schedule_delete', 'schedule_setEnabled', 'workflow_trigger', 'asset_push',
+  'asset_list', 'asset_delete', 'mcp_provision', 'issue_report', 'issue_get', 'issue_list',
+  'issue_comments', 'issue_comment', 'models_list', 'chain_create', 'chain_list', 'webhook_create',
+  'webhook_list', 'webhook_delete', 'blob_put', 'seed_plan', 'system_info',
+];
+
+describe('MCP tools/list drift-lock — SET EQUALITY over the full advertised name list (IT-102, ARCH-051, A6)', () => {
+  let server: Server;
+
+  beforeEach(async () => {
+    server = await createServer({ port: 0, bind: '127.0.0.1' });
+  });
+
+  afterEach(async () => {
+    await server?.close();
+  });
+
+  async function fetchTools(): Promise<ToolDescriptor[]> {
+    const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+    const body = (await res.json()) as { result?: { tools: ToolDescriptor[] } };
+    return body.result!.tools;
+  }
+
+  it('the sorted advertised tool-name set equals the hand-written literal list, exactly — a rename or an addition either fails', async () => {
+    const tools = await fetchTools();
+    const advertisedNames = tools.map((t) => t.name).sort();
+    expect(advertisedNames).toEqual([...ALL_ADVERTISED_TOOL_NAMES].sort());
+  });
+
+  it("workflow_describe's schema documents its selectors and the full response shape it advertises", async () => {
+    const tools = await fetchTools();
+    const describe = tools.find((t) => t.name === 'workflow_describe');
+    expect(describe).toBeDefined();
+    const props = describe!.inputSchema?.properties ?? {};
+    expect(props).toHaveProperty('name');
+    expect(props).toHaveProperty('version');
+    expect(props).toHaveProperty('channel');
+    // the response-shape needles from DES-125's own field list, so a schema that stops advertising
+    // one of them (e.g. quietly re-adding `script`) turns this red.
+    for (const needle of ['diagram', 'diagramStatus', 'triggers', 'lockedKeys', 'resolvedBy']) {
+      expect(describe!.description).toContain(needle);
+    }
+  });
+
+  it("workflow_regenerate_diagram's schema documents its required selector and owner-gating", async () => {
+    const tools = await fetchTools();
+    const regen = tools.find((t) => t.name === 'workflow_regenerate_diagram');
+    expect(regen).toBeDefined();
+    const props = regen!.inputSchema?.properties ?? {};
+    expect(props).toHaveProperty('name');
+    expect(props).toHaveProperty('version');
+    expect(regen!.inputSchema?.required ?? []).toContain('version');
+    expect(regen!.description.toLowerCase()).toContain('owner');
+  });
+
+  it('workflow_describe\'s advertised description carries the LITERAL script-absence sentence — REQ-101\'s last clause, asserted nowhere today', async () => {
+    const tools = await fetchTools();
+    const describe = tools.find((t) => t.name === 'workflow_describe');
+    expect(describe!.description).toContain('The raw workflow script is deliberately NOT part of this response');
+  });
+});
+

@@ -25,10 +25,20 @@
   宣告每個旋鈕的型別/預設值/允許範圍——`workflow_get`/`workflow_list` 不必讀腳本本文即可查出這份契約；
   呼叫端用 `workflow_run({overrides:{model?,effort?,timeoutMs?,appendPrompt?}})` 在契約範圍內覆寫、
   超出範圍即在送出當下被拒（`PARAM_OUT_OF_RANGE`/`PARAM_LOCKED`），從不留下半途而廢的 run；
-  `prompt`/`tools`/`skills`/`mcp`/`workdir` 五個鍵永遠鎖定、呼叫端無法觸及。優先序：
+  `prompt`/`tools`/`skills`/`mcp`/`workdir`/`cwd` 六個鍵永遠鎖定、呼叫端無法觸及。優先序：
   每次 `agent()` 呼叫自帶的選項 > 該次 run 的 `overrides` > 註冊時的 `defaults` > 引擎預設別名。
 - **已知工作流程探索**：`workflow_register`/`workflow_publish`/`workflow_list`/`workflow_get`/
-  `workflow_deregister`、預測靜態 DAG 骨架（`workflow_get.skeleton`）
+  `workflow_deregister`
+- **一份看得懂的說明（`workflow_describe`）**：任何人（不必是擁有者）都能用
+  `workflow_describe({name, version?, channel?})` 一次拿到「要不要用這個工作流程」需要知道的全部：
+  用途、解析到的版本與是哪個頻道解析的、階段名稱、可調參數契約（含每個旋鈕的型別/預設值/上限）、
+  被鎖定的鍵名、所有版本與頻道指向、擁有者、怎麼回報問題、目前綁了哪些觸發方式，以及一張
+  **ASCII 結構圖**。回應裡**永遠沒有腳本本文**。
+- **自動畫的結構圖**：註冊一個工作流程時，引擎會把腳本交給你設定的 LLM（`graphAnalyzer` 設定區塊）
+  畫成一張只含結構的 ASCII 圖（階段、模型別名、分支、迴圈），存在該版本名下。**畫圖失敗不會影響註冊**
+  ——`workflow_describe` 會誠實回 `diagram:null` + `diagramStatus:"unavailable"` + 一句原因，
+  不會拿一張退化的假圖充數。擁有者可用 `workflow_regenerate_diagram({name,version})` 重畫。
+  `graphAnalyzer.enabled:false` 可完全關閉（連腳本都不會送出）。
 - **串接**：`chain_create`/`chain_list`（完成即啟動下游 run，恰好一次）
 - **排程**：`schedule_create`/`schedule_list`/`schedule_delete`/`schedule_setEnabled`（cron/once/resident）
   + `workflow_trigger`
@@ -42,8 +52,9 @@
 - **問題回報**：`issue_report`（版本欄位自動填入，caller 可覆寫；`issue_list`/`issue_get`/`issue_comments`/`issue_comment`）
 - **系統監控**：`system_info`（CPU 負載 + 核心數 + 利用率 %、記憶體 total/used/free、磁碟、引擎行程 + 主機 Top-N 行程 + 系統行程統計，`GET /api/system`）
 - **模型目錄**：`models_list`（跨供應商統一目錄，含 `capability`/`stability`/`costLevel 0–10`/`modalities`/`ref` 等豐富欄位，支援多維篩選，`GET /api/models`）
-- **儀表板**：`GET /dashboard`（首頁：工作流程卡片按 RUNNING/REGISTERED/OTHER 分組，各附描述 + 小型骨架預覽 +
-  可靠性指標；System 面板：即時主機資源；Models 面板：模型目錄）、`GET /dashboard/issues`（Issues 頁面：Open/Resolved 分組、點擊顯示 detail）、
+- **儀表板**：`GET /dashboard`（首頁：工作流程卡片按 RUNNING/REGISTERED/OTHER 分組，各附描述 +
+  可靠性指標；點進工作流程可看它的 ASCII 結構圖，畫不出來時顯示原因；System 面板：即時主機資源；
+  Models 面板：模型目錄）、`GET /dashboard/issues`（Issues 頁面：Open/Resolved 分組、點擊顯示 detail）、
   `GET /dashboard/<runId>`（run 詳情：DAG + 逐字稿）
 - **可觀測性**：`GET /api/home`（首頁工作流程分組 JSON）、`GET /api/status`（agentSemaphore）、
   `GET /api/system`（主機 + 行程快照）、`GET /api/models`（統一模型目錄）、
@@ -68,14 +79,17 @@
   harness defaults（`HARNESS_DEFAULTS_INVALID`）。
   啟用方式：在 `rwe.config.json` 加入 `auth:{enabled:true,...}` 區塊（見 `rwe.config.example.json` / DEPLOY.md §1b 設定總表）。
 
-共 **38 個** MCP 工具。
+共 **40 個** MCP 工具。
 
 ## 前置需求
 
 - **Node.js 22.6 以上**（`tsx` 與沙箱子行程均依賴 Node 22 原生 TypeScript 支援）
 - npm（隨 Node 附帶）
-- **Python 3.11 或 3.12**（`gateway:"sdk"` 路徑需要 `litellm[proxy]`；純工作流程邏輯不呼叫 `agent()`
-  則可略過 Python/LiteLLM）
+- **Python 3.11 或 3.12**（`gateway:"sdk"`（預設）需要 `litellm[proxy]`）。
+  **要略過 Python/LiteLLM，必須同時關掉兩條會用到它的路徑**：`agent()` 呼叫，以及註冊時自動畫圖的
+  分析器。也就是在 `rwe.config.json` 設 `gateway:"direct-fetch"` + `useLiteLLMProxy:false`（本機
+  Ollama 直連），或設 `graphAnalyzer.enabled:false` 並且不呼叫 `agent()`。只要留著預設值，
+  `workflow_register` 就會經由分析器走到 gateway，需要 `litellm` 在 `PATH` 上。
 - 至少一個可用的 LLM 供應商（Anthropic / OpenAI / Gemini API key，或本機 Ollama）
 
 ## 快速開始 Quickstart
@@ -159,7 +173,30 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # workflow_list、/api/workflows*、GET /api/runs/:id/dag（跑過的 run 的即時 DAG 圖）、儀表板
 # 同樣一致遮蔽，沒有後門端點能看到未授權的腳本本文。
 
-# 查詢 38 個 MCP 工具（含 schema）
+# 看一個工作流程「在做什麼」——任何 principal 都能問（不必是擁有者），回應永遠沒有腳本本文
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_describe","arguments":{"name":"greet"}}}'
+# -> {name, version, resolvedBy, channels, versions, description, phases, params, lockedKeys,
+#     owner, reportProblem, triggers, diagram, diagramStatus, diagramNote, diagramGeneratedAt, diagramStale}
+# diagramStatus:"ready" 時 diagram 是一張 ASCII 結構圖；"pending" 表示還在畫；
+# "unavailable" 表示畫不出來（diagramNote 會說原因，例如「The diagram generator timed out.」），
+# 此時 diagram 是 null——不會給你一張退化的假圖。
+# triggers 是「現在」綁在這個工作流程上的觸發方式（cron/webhook/chain），每次呼叫都重新讀取；
+# 綁定變動後圖還沒重畫時，diagramStale 會是 true。
+# 同樣的內容也有 HTTP 版：curl -s http://127.0.0.1:8787/api/workflows/greet/describe
+# 「任何 principal 都能問」指的是授權層級（不看擁有者身份），不等於「不需要驗證」：
+# auth.enabled:true 時，這條 HTTP 路由跟 /mcp 走同一套 D-BIND 規則（見 DEPLOY.md §1b），
+# 沒過就回 401 + WWW-Authenticate——而且是在讀到任何工作流程資料「之前」就擋下，
+# 所以未授權的呼叫端連「這個名稱存不存在」都問不出來（存在與不存在都是同一個 401）。
+
+# 擁有者重畫某個版本的圖（非擁有者會被拒：NOT_WORKFLOW_OWNER）
+curl -s -X POST http://127.0.0.1:8787/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_regenerate_diagram","arguments":{"name":"greet","version":"v1"}}}'
+# -> {"queued":true,"status":"pending"}（立刻回，不會等畫完）
+
+# 查詢 40 個 MCP 工具（含 schema）
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
@@ -240,6 +277,27 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 - **OAuth 2.0 auth 為 opt-in**：`auth.enabled:false`（預設／省略）= 無 auth 開放行為（任何連得到 `/mcp` 的人皆可呼叫）；啟用後需要 Google Cloud Console client_id/secret，且引擎需有 HTTPS 公開 callback URL（`/oauth/google/callback`，讓 Google 能回呼）。
 - **docker/sudo 部署未驗證**：環境沒有 docker 也沒有 sudo，docker-compose 與 root systemd 路徑未跑過（僅語法驗證）；npm path 路徑 + systemd user service 已對真實 process 驗證。
 - **`workflow_status.agents[]` 暫停後 state 不自動更新**：被 suspend/stop 的 agent 記錄永遠停在 `"running"`；續跑後會多出一筆新紀錄，純屬顯示瑕疵。
+- **註冊會把腳本送給 LLM**：畫結構圖需要讀懂腳本，所以 `workflow_register` 會把**腳本本文**送到
+  `graphAnalyzer.model` 指到的供應商。這是這個功能的本質，不是缺陷；不想送出就設
+  `graphAnalyzer.enabled:false`（唯一且完整的開關）。
+- **小模型畫不出合格的圖**：出廠預設畫圖 prompt 假設模型能「只輸出圖、不夾帶其他文字」。本機 7B 級
+  模型（如 `qwen2.5:7b`）常會多寫字或用到規定外的符號，被把關擋下 → `diagramStatus:"unavailable"`。
+  這是模型能力問題，處置方式是換 `graphAnalyzer.model` 或改寫 `graphAnalyzer.systemPrompt`
+  （改設定即可，不必改程式、不必重新編譯）。
+- **腳本沒有宣告步驟（`phase()`／`meta.phases`）就畫不出圖**：把關清單只收錄「腳本裡真的出現過的
+  名字」——步驟標題、模型別名、觸發方式。一個完全沒宣告步驟的腳本，等於沒給模型任何可用的節點名稱，
+  模型只好自己編，然後被擋下 → `diagramStatus:"unavailable"`、`diagramNote` 寫
+  「produced content outside the allowed vocabulary」。**處置**：在腳本裡用 `phase('取資料')` 之類
+  的呼叫（或 `export const meta = { phases: [...] }`）標出步驟，再 `workflow_regenerate_diagram`
+  重畫。不論有沒有圖，`workflow_describe` 的 `triggers` 欄位永遠是即時正確值。
+- **沒有 `litellm` 時的行為**（`PATH` 上找不到 `litellm` 執行檔）：
+  - `gateway:"sdk"`（預設）：**服務會直接拒絕啟動**，並印出一行明確訊息
+    `fatal startup error: Error: litellm proxy failed to spawn: spawn litellm ENOENT`。不會半開著。
+  - `gateway:"direct-fetch"` + `useLiteLLMProxy:true`：服務正常啟動，只有真正要用到代理的呼叫
+    （`agent()`、註冊時畫圖）會乾淨地失敗成 `PROVIDER_UNREACHABLE`，服務本身不受影響。
+
+  兩種情況的處置都一樣：照「前置需求」把 venv 的 `bin/` 加進 `PATH`，或改用
+  `gateway:"direct-fetch"` + `useLiteLLMProxy:false`（本機 Ollama 直連，完全不需要 litellm）。
 
 ## 更多
 

@@ -58,22 +58,11 @@ describe('workflow discovery (v9, REQ-061/062)', () => {
     expect(missing.error.code).toBe('WORKFLOW_NOT_FOUND');
   });
 
-  it('REQ-062 workflow_get.skeleton predicts the DAG (parallel group + workflow node)', async () => {
-    const got = await call('workflow_get', { name: 'cs' });
-    const skel = got.result.skeleton as Array<any>;
-    const agents = skel.filter((n) => n.kind === 'agent');
-    expect(agents.length).toBe(3);
-    expect(new Set(agents.slice(0, 2).map((a) => a.parallel)).size).toBe(1); // two drafts share a group
-    expect(skel.find((n) => n.kind === 'workflow').workflow).toBe('log-it');
-  });
-
-  it('REQ-062 GET /api/workflows/:name/skeleton serves the skeleton for the dashboard', async () => {
-    const res = await fetch(`${base()}/api/workflows/cs/skeleton`);
-    expect(res.status).toBe(200);
-    const body = await res.json() as { skeleton?: unknown[]; description?: string };
-    expect(Array.isArray(body.skeleton)).toBe(true);
-    expect(body.description).toContain('two models draft');
-    const missing = await fetch(`${base()}/api/workflows/none/skeleton`);
-    expect(missing.status).toBe(404);
-  });
+  // [RETIRED v23, adjudication #2 R-3(a)] Both REQ-062 skeleton cases that lived here —
+  // `workflow_get.skeleton` predicting the DAG, and `GET /api/workflows/:name/skeleton` serving it —
+  // asserted a user-facing surface REQ-105 deliberately deletes (01-requirements.md REQ-062's own
+  // partial-supersession note). `parseWorkflowSkeleton` itself survives internally (run-DAG layout
+  // spine + analyzer grounding); only these two client-facing vehicles are gone, so the cases are
+  // retired, not converted to absence pins — UT-115's grep guard already covers absence repo-wide.
+  // The route's new replacement (`GET /api/workflows/:name/describe`) is proven by IT-098 + VAL-113.
 });

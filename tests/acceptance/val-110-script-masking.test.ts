@@ -3,9 +3,11 @@
 //
 // Mock policy (acceptance, DES-119): no mocking of the SUT's own boundaries. No LLM dispatch needed.
 //
-// Red reason: `/api/workflows/:name/skeleton` returns the script-derived skeleton/phases
-// unconditionally today, and `server.ts:823` threads no principal into `workflow_get` at all — every
-// masking assertion below fails against the current engine.
+// Original Gate-5 red reason (v22): `/api/workflows/:name/skeleton` returned the script-derived
+// skeleton/phases unconditionally, and `server.ts:823` threaded no principal into `workflow_get` at
+// all. The skeleton/phases clause below was retired in v23 (see the note further down) once REQ-105
+// deleted the `/skeleton` route outright; the remaining cases are the `workflow_get` script-masking
+// and `/api/workflows` no-`script`-field assertions.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -83,17 +85,16 @@ describe('REQ-100: two real principals over /mcp (VAL-110)', () => {
   });
 });
 
-describe('REQ-100: /api/workflows and the skeleton route are masked while auth is enabled, no exceptions (VAL-110)', () => {
-  it('/api/workflows/:name/skeleton omits skeleton/phases entirely while auth is on', async () => {
-    const ownerToken = await mintBearer(authTmpDir, 'val110-owner2@example.com');
-    await registerPublishedVia(callerFor(authServer, ownerToken), 'val110-api', `phase('secret-phase'); return 1;`);
-
-    const res = await fetch(`http://127.0.0.1:${authServer.port}/api/workflows/val110-api/skeleton`);
-    const body = await res.json() as Record<string, unknown>;
-    expect(body['skeleton']).toBeUndefined();
-    expect(body['phases']).toBeUndefined();
-    expect(JSON.stringify(body)).not.toContain('secret-phase');
-  });
+describe('REQ-100: /api/workflows is masked while auth is enabled, no exceptions (VAL-110)', () => {
+  // [RETIRED v23 — orchestrator adjudication #4 T-2] The case that stood here probed
+  // `/api/workflows/:name/skeleton` and asserted the response omitted `skeleton`/`phases`.
+  // REQ-105 DELETED that route, so it began returning 404 `{error:"Not found"}` — against which
+  // all three assertions pass trivially. It was VACUOUS, not passing: a masking assertion that
+  // succeeds against a deleted endpoint protects nothing, and leaving it green is worse than
+  // deleting it because a future reader counts it as coverage. (Its `phases` assertion was
+  // independently obsolete too — adjudication #1 made phase titles PUBLIC on every surface.)
+  // The surviving masking guarantees are asserted by the cases below and by UT-115's
+  // no-skeleton-surface guard.
 
   it('/api/workflows never carries a `script` field while auth is on', async () => {
     const res = await fetch(`http://127.0.0.1:${authServer.port}/api/workflows`);
@@ -102,11 +103,9 @@ describe('REQ-100: /api/workflows and the skeleton route are masked while auth i
   });
 });
 
-describe('REQ-100: auth OFF → pre-v22 surface, byte-for-byte (VAL-110)', () => {
-  it('/api/workflows/:name/skeleton returns the real skeleton/phases when auth is disabled', async () => {
-    await registerPublishedVia(callerFor(openServer), 'val110-open-api', `phase('open-phase'); return 1;`);
-    const res = await fetch(`http://127.0.0.1:${openServer.port}/api/workflows/val110-open-api/skeleton`);
-    const body = await res.json() as Record<string, unknown>;
-    expect(body['phases']).toBeDefined();
-  });
-});
+// [RETIRED v23, adjudication #2 R-3(a)] This describe block asserted the auth-disabled skeleton
+// route (`GET /api/workflows/:name/skeleton`) still serves `phases` byte-for-byte — a surface
+// REQ-105 deletes unconditionally (auth state no longer matters; there is no route left). See
+// 01-requirements.md REQ-100's own "[PARTIALLY SUPERSEDED v23, adjudication #2 R-3(a)]" note: every
+// OTHER field REQ-100 names (script masking, owner/report metadata) is unaffected and still applies
+// with auth off — only this skeleton/phases clause had nothing left to test.

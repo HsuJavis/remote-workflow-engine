@@ -17,7 +17,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { McpFacade } from '../../src/mcp-facade.js';
+import { McpFacade, NO_TRIGGER_PORTS, NO_GRAPH_ANALYZER } from '../../src/mcp-facade.js';
 import { RunManager } from '../../src/run-manager.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
@@ -45,7 +45,7 @@ describe('scriptVersion fidelity across a workflow update (IT-011, D-V7, v22 rew
     workRoot = mkdtempSync(join(tmpdir(), 'rwe-it011-'));
     const store = new InMemoryRunStore(CLOCK);
     const runManager = new RunManager({ store, clock: CLOCK, workRoot });
-    const facade = new McpFacade({ clock: CLOCK, store, runManager });
+    const facade = new McpFacade({ clock: CLOCK, store, runManager, triggerPorts: NO_TRIGGER_PORTS, graphAnalyzer: NO_GRAPH_ANALYZER });
 
     const { version: v1 } = await runManager.catalog.register('sv-fidelity', `return 'version-one';`);
     await runManager.catalog.publish('sv-fidelity', v1, 'release', null);

@@ -26,7 +26,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FixedClock } from '../../src/clock.js';
 import { RunManager } from '../../src/run-manager.js';
-import { McpFacade } from '../../src/mcp-facade.js';
+import { McpFacade, NO_TRIGGER_PORTS, NO_GRAPH_ANALYZER } from '../../src/mcp-facade.js';
 import { SqliteRunStore } from '../../src/store/sqlite-run-store.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
 import { facadeCaller, runScriptVia } from '../helpers/workflow-fixtures.js';
@@ -50,7 +50,7 @@ describe('Per-agent records survive a real server restart (IT-020, D-F9b)', () =
       // --- "before restart" process ---
       const store1 = new SqliteRunStore(join(dir, 'store'), CLOCK);
       const mgr1 = new RunManager({ store: store1, clock: CLOCK, workRoot: dir, gateway });
-      const facade1 = new McpFacade({ store: store1, runManager: mgr1, clock: CLOCK });
+      const facade1 = new McpFacade({ store: store1, runManager: mgr1, clock: CLOCK, triggerPorts: NO_TRIGGER_PORTS, graphAnalyzer: NO_GRAPH_ANALYZER });
 
       const submitted = await runScriptVia(facadeCaller(facade1), `return await agent('hi');`);
       const runId = submitted.result!.runId;
@@ -67,7 +67,7 @@ describe('Per-agent records survive a real server restart (IT-020, D-F9b)', () =
       // --- "restart": fresh instances against the SAME on-disk data dir, no live process state ---
       const store2 = new SqliteRunStore(join(dir, 'store'), CLOCK);
       const mgr2 = new RunManager({ store: store2, clock: CLOCK, workRoot: dir, gateway });
-      const facade2 = new McpFacade({ store: store2, runManager: mgr2, clock: CLOCK });
+      const facade2 = new McpFacade({ store: store2, runManager: mgr2, clock: CLOCK, triggerPorts: NO_TRIGGER_PORTS, graphAnalyzer: NO_GRAPH_ANALYZER });
 
       const statusAfterRestart = await facade2.workflow_status({ runId });
       expect(statusAfterRestart.status).toBe('completed'); // run status itself already survives (real, Gate 7.5)

@@ -3,7 +3,7 @@
 // `args` back into an object so a workflow's `args.field` reads work; a non-JSON string is left
 // as-is; an object passes through unchanged.
 import { describe, it, expect } from 'vitest';
-import { McpFacade } from '../../src/mcp-facade.js';
+import { McpFacade, NO_TRIGGER_PORTS, NO_GRAPH_ANALYZER } from '../../src/mcp-facade.js';
 import { RunManager } from '../../src/run-manager.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
@@ -13,7 +13,7 @@ const CLOCK = new FixedClock(new Date('2024-01-01T00:00:00Z'));
 
 function facade() {
   const store = new InMemoryRunStore(CLOCK);
-  return new McpFacade({ clock: CLOCK, store, runManager: new RunManager({ store, clock: CLOCK }) });
+  return new McpFacade({ clock: CLOCK, store, runManager: new RunManager({ store, clock: CLOCK }), triggerPorts: NO_TRIGGER_PORTS, graphAnalyzer: NO_GRAPH_ANALYZER });
 }
 
 async function runAndGet(f: McpFacade, script: string, args: unknown): Promise<unknown> {

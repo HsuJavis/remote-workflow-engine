@@ -11,3 +11,7 @@ data/
 # Python bytecode cache (trace.py compiled artifact)
 __pycache__/
 *.pyc
+
+# a test passing SQLite's in-memory marker as a PATH creates this dir;
+# it was tracked once (v23 Gate 8 AC-3) via an over-broad `git add`
+:memory:/

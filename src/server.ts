@@ -29,7 +29,7 @@ import { WebhookRegistry } from './webhook-registry.js';
 import { CasStore, isValidSha256Hex, isValidNamespace } from './cas-store.js';
 import type { SecretValueProvider } from './secret-resolver.js';
 import { isAllowedHost, isAllowedOrigin, isLoopback, isLoopbackPeer } from './net-guard.js';
-import { parseMeta, parseWorkflowSkeleton } from './workflow-meta.js';
+import { parseWorkflowSkeleton } from './workflow-meta.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
 import { AssetSyncService, classifyAsset, type AssetPush, type AssetKind } from './asset-sync.js';
 import { classifyTransport, RealMcpProbe, type McpProbe, type McpServerConfig } from './mcp-probe.js';
@@ -45,13 +45,17 @@ import Database from 'better-sqlite3';
 import { TokenStore } from './auth/token-store.js';
 import { createAuthRouteHandlers, resolvePrincipal, type AuthConfig } from './auth/auth-service.js';
 import { wwwAuthenticateHeader } from './auth/oauth-metadata.js';
-import { DEFAULT_CEILINGS, type Ceilings, type Effort } from './params/contract.js';
+import { DEFAULT_CEILINGS, isKnownAlias, type Ceilings, type Effort } from './params/contract.js';
 
 // REQ-066 (v11): engine version from package.json + best-effort git describe, replacing the hardcoded '1.0.0'.
 const ENGINE_VERSION = resolveEngineVersion();
 import { buildDashboardModel, layoutGraph, buildHomeView, computeWorkflowMetrics } from './dashboard.js';
 import { DASHBOARD_HTML, buildDashboardHtml } from './dashboard-page.js';
 import type { RunStore } from './run-store.js';
+import { GraphAnalyzer, ANALYZER_SCRATCH_SUBDIR, type GraphAnalyzerConfig } from './graph-analyzer.js';
+import { VOCAB_GLYPHS } from './diagram-gate.js';
+import type { TriggerPorts } from './trigger-bindings.js';
+import { effectiveProvider, curateToolsForProvider } from './gateway/claude-agent-sdk-client.js';
 
 export interface ServerConfig {
   bind?: string;   // default '127.0.0.1'
@@ -162,6 +166,11 @@ export interface ServerConfig {
   // convention as the three ceilings above. Goes into the SAME WorkflowCatalogOpts.ceilings object
   // (no new plumbing); absent -> WorkflowCatalog treats it as uncapped (front door, not a GC).
   maxWorkflowVersions?: number;
+  // v23 (DES-134, ARCH-085, TASK-122): the graph-analyzer harness block, forwarded through
+  // composeConfig() as a WHOLE object, unmodified (same convention as maxWorkflowVersions above) —
+  // Partial because every key defaults at the ONE site that actually constructs the GraphAnalyzer
+  // (TASK-120), never here.
+  graphAnalyzer?: Partial<GraphAnalyzerConfig>;
 }
 
 export interface Server {
@@ -191,6 +200,10 @@ const TOOL_NAMES = [
   // v22 (REQ-097, DES-111/DES-114, TASK-109): NEW tool — moves a named channel pointer.
   'workflow_publish',
   'workflow_get',
+  // v23 (REQ-101/102, DES-125/126/132, ARCH-081/082/083, TASK-119/120): the ONE explain surface
+  // (any principal, same shape) + the owner-gated diagram-regeneration kick.
+  'workflow_describe',
+  'workflow_regenerate_diagram',
   'workflow_artifacts',
   // v1.5/v2: byte-fetch a workspace file chunk (REQ-022) + purge a run's workspace (REQ-026).
   'workflow_artifact_get',
@@ -278,7 +291,30 @@ const SCRIPT_DSL_DOC =
   'The `model` string is either a curated alias (see models_list entries\' `alias`, e.g. "opus"/"sonnet") or the join `provider + "/" + model` from a models_list entry (e.g. "openrouter/google/gemma-3-27b-it:free"); omitted → the "default" alias. ' +
   'The script\'s `return` value is exactly what workflow_result later yields. ' +
   'Optional: `export const meta = { name, description, phases }` (a pure literal) supplies workflow_list metadata + dashboard phase names — omit it and the script still runs (treated as empty, not an error). ' +
-  'Minimal example: `const r = await agent("Summarize: " + args.text, { model: "sonnet" }); return { summary: r };`';
+  'Minimal example: `const r = await agent("Summarize: " + args.text, { model: "sonnet" }); return { summary: r };` ' +
+  // v23 (DES-135, TASK-123, ARCH-051 drift-lock): the condensed authoring rules — full text in
+  // docs/AUTHORING.md, the only guidance a schema-only cold MCP client ever sees.
+  'Authoring rules (docs/AUTHORING.md has the full text): (1) declare every tunable knob in `meta.params` rather than hard-coding it; (2) never read a param key the contract does not declare; (3) the six LOCKED_KEYS (prompt/tools/skills/mcp/workdir/cwd) are engine-owned — do not redeclare them; (4) phase titles are visible to every principal who can see the workflow (including the generated diagram) — keep secrets/distinctive prose out of phase titles. ' +
+  'Registering a workflow sends the script itself to the configured LLM provider to draw a diagram; set graphAnalyzer.enabled:false to turn this off.';
+
+// v23 Gate 2 re-run (ARCH-080 A5): defaults live at exactly this ONE site (the construction site,
+// DES-134) so an operator's override in rwe.config.json fully replaces it rather than layering on
+// top. Prose here is NOT itself gated (gateDiagram only validates the model's OUTPUT) but sticks to
+// the vocabulary anyway, on purpose — every glyph below is interpolated FROM diagram-gate.ts's
+// VOCAB_GLYPHS (the one canonical declaration), never re-typed, so the two cannot drift apart.
+const [DIAMOND, LOOP_BACK, HLINE, VLINE, T_DOWN, T_UP, T_RIGHT, T_LEFT, ARROW, BOX_TL, BOX_TR, BOX_BL, BOX_BR] = VOCAB_GLYPHS;
+export const DEFAULT_GRAPH_ANALYZER_SYSTEM_PROMPT =
+  'You are drawing a structural ASCII diagram of a workflow script, for a human operator reading it in a terminal. ' +
+  'Output ONLY the diagram itself — no prose, no markdown, no code fences. ' +
+  'Use exactly this fixed vocabulary and nothing outside it: ' +
+  `a rounded-corner box (corners ${BOX_TL} ${BOX_TR} ${BOX_BL} ${BOX_BR}) is one agent() call, labelled with its resolved model name; ` +
+  'a square box (plain [ and ]) is a trigger or an output artifact; ' +
+  `${DIAMOND} marks a conditional branch; ` +
+  `${LOOP_BACK} marks a loop back-edge; ` +
+  `lines are drawn with ${HLINE} (horizontal), ${VLINE} (vertical), ${T_DOWN} ${T_UP} ${T_RIGHT} ${T_LEFT} (junctions) and ${ARROW} (arrowhead) — a fan-out is one line splitting into several with ${T_DOWN}, a fan-in/join is several lines converging with ${T_UP}. ` +
+  'Show, top to bottom: every agent() call in order (its resolved model), phase names, fan-out/fan-in, conditional branches, loop back-edges, and how the workflow is triggered — its entry node names "cron", "webhook", or "chain" (plus the upstream workflow name for a chain) from the trigger bindings you are given below the script, or reads as a plain workflow_run entry point when no trigger is bound. Never invent a trigger that is not given to you. ' +
+  'If a node\'s model is only knowable at run time (a tunable param, not a literal in the script), label that node with the literal text model:param — never guess a model name. ' +
+  'Every word you write must be either one of the glyphs above or a name copied verbatim from the script or the trigger bindings you were given. Never invent, summarize, or restate configuration, secrets, or comments in prose — if you are unsure a name is safe to reuse, omit it rather than paraphrase it.';
 
 const TOOL_METADATA: Record<ToolName, ToolMeta> = {
   workflow_run: {
@@ -443,7 +479,7 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
     },
   },
   workflow_get: {
-    description: "Returns a registered workflow's full detail — {name, version, createdAt, description (its purpose, from meta.description), phases, script, skeleton, owner (registration principal), defaults (harness defaults bound at registration), params (the tunable-parameter contract declared via meta.params — always present, ceiling-bounded; a script with no params block reads back the canonical 4-knob contract)} — so a client can understand what it does, inspect its owner, query its registered harness defaults and tunable-parameter contract, and see its predicted DAG (a static scan of phase/agent/parallel/workflow calls) BEFORE deciding to reuse it or author a new one. Unknown name → WORKFLOW_NOT_FOUND; a known name with an unresolvable `version` → UNKNOWN_VERSION.",
+    description: "Returns a registered workflow's full detail — {name, version, createdAt, description (its purpose, from meta.description), phases, script, owner (registration principal), defaults (harness defaults bound at registration), params (the tunable-parameter contract declared via meta.params — always present, ceiling-bounded; a script with no params block reads back the canonical 4-knob contract)} — so a client can understand what it does, inspect its owner, and query its registered harness defaults and tunable-parameter contract BEFORE deciding to reuse it or author a new one. Unknown name → WORKFLOW_NOT_FOUND; a known name with an unresolvable `version` → UNKNOWN_VERSION.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -451,6 +487,34 @@ const TOOL_METADATA: Record<ToolName, ToolMeta> = {
         version: { type: 'string', description: 'Optional explicit version to inspect (e.g. "v2"); omitted reads the `release` channel\'s version. Unknown version -> UNKNOWN_VERSION.' },
       },
       required: ['name'],
+    },
+  },
+  // v23 (REQ-101, DES-125/126, ARCH-081/082, TASK-119/120): the ONE explain surface — every
+  // principal (owner or not) gets the SAME shape; the script itself is deliberately never in it.
+  workflow_describe: {
+    description: 'Returns the one public explain view for a registered workflow — {name, version, resolvedBy (how the version was picked: "version"|"channel"|"default-release"), channels{release,beta}, versions, description, phases ([{title}] — visible to every principal, including the diagram), params (the tunable-parameter contract), lockedKeys (the engine-owned param keys), owner, reportProblem, triggers (live schedule/webhook/chain bindings, current as of this call), diagram (an ASCII structure-only diagram drawn by a configured LLM, or null), diagramStatus ("ready"|"pending"|"unavailable"), diagramNote (why, when not ready), diagramGeneratedAt, diagramStale (true when the diagram was drawn against trigger bindings that have since changed)}. The raw workflow script is deliberately NOT part of this response, on any principal. Unknown name → WORKFLOW_NOT_FOUND; an unresolvable `version`/`channel` selector → UNKNOWN_VERSION | INVALID_CHANNEL | CHANNEL_UNPUBLISHED | DANGLING_CHANNEL.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The registered workflow to describe.' },
+        version: { type: 'string', description: 'Optional explicit version (e.g. "v2"). Wins over `channel`. Unknown version -> UNKNOWN_VERSION.' },
+        channel: { type: 'string', enum: ['beta', 'release'], description: 'Named channel to describe. Ignored when `version` is supplied. Omitted -> defaults to `release`. An unpublished channel -> CHANNEL_UNPUBLISHED; a pointer to a pruned version -> DANGLING_CHANNEL.' },
+      },
+      required: ['name'],
+    },
+  },
+  // v23 (REQ-102, DES-126/127/131, ARCH-082, TASK-119/120): owner-gated kick of a diagram
+  // regeneration for one already-registered (name, version); idempotent while one is in flight.
+  workflow_regenerate_diagram: {
+    description: 'Kicks off (or, if one is already in flight for this exact (name, version), no-ops idempotently against) an asynchronous re-draw of the workflow_describe diagram. Returns {queued, status:"pending"} immediately — never waits for the draw. `version` is required (never "whatever release currently points at"). Only the workflow\'s owner may call this (non-owner → NOT_WORKFLOW_OWNER); ANALYZER_DISABLED when graphAnalyzer.enabled:false; unknown name/version → WORKFLOW_NOT_FOUND | UNKNOWN_VERSION.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The registered workflow name.' },
+        version: { type: 'string', description: 'An already-registered version of this workflow to regenerate the diagram for.' },
+        principal: { type: 'string', description: 'Caller identity (email) for the ownership gate. When auth is enabled this is resolved from the bearer; when absent, the server uses null (auth-disabled or loopback path).' },
+      },
+      required: ['name', 'version'],
     },
   },
   workflow_artifacts: {
@@ -822,6 +886,16 @@ function resolveWritePrincipal(principal: string | null, authEnabled: boolean, a
   return principal ?? (!authEnabled && typeof argPrincipal === 'string' ? argPrincipal : null);
 }
 
+// v23 (REQ-102, DES-131, TASK-126): the narrow enqueue-only seam `callTool`'s `workflow_register`
+// case needs — deliberately NOT the same structural shape McpFacadeDeps.graphAnalyzer uses
+// (adjudication #2 R-1 keeps THAT one at `{enabled, regenerate()}`); `server.ts` is the ONE site
+// that also owns the register->enqueue wire (ARCH-079's sequence diagram: `S->>GA: enqueue`, the
+// server, not the facade).
+interface AnalyzerRegisterPort {
+  enabled: boolean;
+  enqueue(name: string, version: string, script: string, principal: string | null): void;
+}
+
 /** Dispatches a tools/call to the matching McpFacade method (pure delegation, DES-001). */
 async function callTool(
   facade: McpFacade,
@@ -836,6 +910,7 @@ async function callTool(
   issueReporter: IssueReporter,
   buildModelCatalog: () => Promise<ModelEntry[]>,
   systemInfo: SystemInfoSampler,
+  graphAnalyzer: AnalyzerRegisterPort,
   name: string,
   args: Record<string, unknown>,
   principal: string | null = null,
@@ -873,7 +948,15 @@ async function callTool(
       const { principal: argPrincipal, ...regArgs } = args as { name: string; script: string; principal?: string | null; defaults?: Record<string, unknown> };
       const effectivePrincipal = resolveWritePrincipal(principal, authEnabled, argPrincipal);
       if (authEnabled && effectivePrincipal === null) return principalRequiredEnvelope();
-      return facade.workflow_register(regArgs, effectivePrincipal);
+      const out = await facade.workflow_register(regArgs, effectivePrincipal);
+      // v23 (REQ-102, DES-131, TASK-126): registration kicks off the async diagram draw — never
+      // awaited (enqueue() itself returns immediately after writing the `pending` row) and never
+      // affects this response either way (REQ-102's own "never blocks on the analyzer").
+      if (out['status'] === 'completed' && graphAnalyzer.enabled) {
+        const registeredVersion = (out['result'] as { version?: string } | undefined)?.version;
+        if (registeredVersion !== undefined) graphAnalyzer.enqueue(regArgs.name, registeredVersion, regArgs.script, effectivePrincipal);
+      }
+      return out;
     }
     case 'workflow_deregister': {
       const { principal: argPrincipal, ...deregArgs } = args as { name: string; principal?: string | null };
@@ -889,6 +972,17 @@ async function callTool(
       return facade.workflow_publish(pubArgs, effectivePrincipal);
     }
     case 'workflow_get': return facade.workflow_get(args as { name: string; version?: string }, { authEnabled, principal });
+    // v23 (REQ-101, DES-126, TASK-120): any principal, same shape — `ctx` is threaded for
+    // signature consistency with every other read tool (ADR-012) but makes no masking decision.
+    case 'workflow_describe': return facade.workflow_describe(args as { name: string; version?: string; channel?: 'beta' | 'release' }, { authEnabled, principal });
+    // v23 (REQ-102, DES-126, TASK-120): owner-gated — same principal-threading pattern as the
+    // catalog writes (auth-resolved principal wins; args.principal fallback only while auth is off).
+    case 'workflow_regenerate_diagram': {
+      const { principal: argPrincipal, ...regenArgs } = args as { name: string; version: string; principal?: string | null };
+      const effectivePrincipal = resolveWritePrincipal(principal, authEnabled, argPrincipal);
+      if (authEnabled && effectivePrincipal === null) return principalRequiredEnvelope();
+      return facade.workflow_regenerate_diagram(regenArgs, effectivePrincipal);
+    }
     case 'workflow_artifacts': return facade.workflow_artifacts(args as { runId: string });
     case 'workflow_artifact_get': return facade.workflow_artifact_get(args as { runId: string; path: string; offset?: number; length?: number });
     case 'workspace_purge': return facade.workspace_purge(args as { runId: string });
@@ -1022,9 +1116,9 @@ async function handleDashboardRequest(
   facade: McpFacade,
   systemInfo: SystemInfoSampler,
   buildModelCatalog: () => Promise<ModelEntry[]>,
-  // v22 (DES-115, REQ-100, TASK-111): the skeleton route is script-derived and has no bearer/identity
-  // plumbing at all (a browser GET carries none) — so under auth it is unconditionally the
-  // non-owner/masked row; auth off keeps the pre-v22 surface.
+  // v22 (DES-115, REQ-100, TASK-111): several dashboard routes are script-derived and have no
+  // bearer/identity plumbing at all (a browser GET carries none) — so under auth those routes are
+  // unconditionally the non-owner/masked row; auth off keeps the pre-v22 surface.
   authEnabled = false,
 ): Promise<void> {
   if (req.method !== 'GET') {
@@ -1034,7 +1128,11 @@ async function handleDashboardRequest(
   const path = (req.url ?? '').split('?')[0]!;
   const agentMatch = /^\/api\/runs\/([^/]+)\/agents\/([^/]+)$/.exec(path);
   const dagMatch = /^\/api\/runs\/([^/]+)\/dag$/.exec(path);
-  const skeletonMatch = /^\/api\/workflows\/([^/]+)\/skeleton$/.exec(path);
+  // v23 (DES-125/132, REQ-101, ARCH-083, TASK-120): replaces the deleted /skeleton route. This
+  // route carries no bearer/identity at all (a browser GET carries none), so — unlike /skeleton,
+  // which branched on `authEnabled` to choose WHAT to disclose — `workflow_describe` makes no
+  // masking decision on `ctx` at all: every principal gets the same shape (DES-125).
+  const describeMatch = /^\/api\/workflows\/([^/]+)\/describe$/.exec(path);
   const runMatch = /^\/api\/runs\/([^/]+)$/.exec(path);
   const issuesDetailMatch = /^\/api\/issues\/(\d+)$/.exec(path);
   try {
@@ -1070,20 +1168,20 @@ async function handleDashboardRequest(
       sendJson(res, 200, await runManager.catalog.list());
       return;
     }
-    // v9 (REQ-062): a registered workflow's predicted static DAG skeleton (inspect before running).
-    if (skeletonMatch) {
-      const name = decodeURIComponent(skeletonMatch[1]!);
-      try {
-        const full = await runManager.catalog.resolveDetail(name, {});
-        const meta = parseMeta(full.script);
-        // v22 (DES-115, REQ-100, TASK-111): skeleton/phases are script-derived and masked by
-        // default — this route carries no bearer, so under auth it is always the non-owner row.
-        if (authEnabled) {
-          sendJson(res, 200, { name, version: full.version, description: meta.description });
-        } else {
-          sendJson(res, 200, { name, version: full.version, description: meta.description, phases: meta.phases, skeleton: parseWorkflowSkeleton(full.script) });
-        }
-      } catch { sendJson(res, 404, { error: `Workflow not found: ${name}` }); }
+    // v23 (REQ-101, DES-125/132, ARCH-083, TASK-120): replaces the deleted /skeleton route — the
+    // same `workflow_describe` response the MCP tool returns (DES-132's parity guarantee), unwrapped
+    // to its `result` (never the raw envelope). Unauthenticated with no owner branch to make (DES-125
+    // drops `viewerIsOwner`), so `ctx` here makes no masking decision either.
+    if (describeMatch) {
+      const name = decodeURIComponent(describeMatch[1]!);
+      const resp = await facade.workflow_describe({ name }, { authEnabled, principal: null }) as {
+        status: string; error?: { message?: string }; result?: unknown;
+      };
+      if (resp.status === 'failed') {
+        sendJson(res, 404, { error: resp.error?.message ?? `Workflow not found: ${name}` });
+        return;
+      }
+      sendJson(res, 200, resp.result);
       return;
     }
     // v11 (REQ-067): GET /api/issues — read-only issues dashboard list, partitioned by state.
@@ -1338,7 +1436,112 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/
   // parse checks moved to registration (ADR-013); see submission-validator.ts's own header.
   const validator = new SubmissionValidator({ catalog });
-  const facade = new McpFacade({ clock, store, runManager, validator, ceilings });
+  // v2 (DES-016/TASK-019): SQLite-persisted schedule store, same workRoot convention as
+  // catalog.db/store — survives restart (REQ-014-style persistence extended to schedules). Moved up
+  // from its old below-facade spot (v23, TASK-126) so the v23 composition root below can compose
+  // real TriggerPorts from it — `webhooks`/`continuations` are already in scope above.
+  const scheduler = new SqliteSchedulerPort({
+    clock, catalog, runManager,
+    dbPath: config?.schedulerDbPath ?? join(workRoot, 'schedules.db'),
+  });
+  // D-V2I-2 (DES-017): re-derive nextFire for every persisted cron/once schedule from THIS boot's
+  // clock before the driver's first tick — matches DES-017's own "Boot re-arm from persistence".
+  scheduler.rearmAtBoot();
+
+  // v23 (DES-128, ARCH-078, TASK-126): the ONE composition of the three trigger stores' own public
+  // reads into TriggerPorts — API composition, not a batched read (the stores are three separate
+  // SQLite files). `webhooks` is remapped to a FRESH `{enabled}` literal (never the `WebhookView`
+  // passed through): a method-return position gets no excess-property check, so passing the view
+  // straight through would let `id`/`secretFingerprint` ride along silently past the `id?: never`
+  // pin DES-128/R-4a exists to enforce.
+  const triggerPorts: TriggerPorts = {
+    schedules: { listByWorkflow: (name) => scheduler.listByWorkflow(name) },
+    webhooks: { listByWorkflow: (name) => webhooks.list().filter((w) => w.workflow === name).map((w) => ({ enabled: w.enabled })) },
+    continuations: { listPendingByWorkflow: (name) => continuations!.listPendingByWorkflow(name) },
+    runs: { getWorkflowName: (runId) => store.getWorkflowName(runId) },
+  };
+
+  // v23 (DES-134, TASK-126): the ONE site every `graphAnalyzer` key defaults — a Partial config
+  // block that is read but never forwarded is this engine's own recurring wiring defect (v11
+  // updateFlagPath, v15 auth), so every key is applied here, by name, next to its default literal.
+  const graphAnalyzerEnabled = config?.graphAnalyzer?.enabled ?? true;
+  // DES-122 zero-config fail-closed rule (TASK-127): with no resolvable `config?.workRoot` (the
+  // operator-configured value `main.ts`'s own SDK-gateway `cwd` construction keys off — NOT the
+  // internal mkdtemp fallback this function applies below for its own storage needs), the jail root
+  // is unresolvable and that client's own docblock records "nothing to enforce against, allow" — so
+  // force `tools` to `[]` regardless of what was configured; the boot line below states why.
+  const graphAnalyzerNoJail = graphAnalyzerEnabled && config?.workRoot === undefined;
+  const graphAnalyzerConfig: GraphAnalyzerConfig = {
+    enabled: graphAnalyzerEnabled,
+    model: config?.graphAnalyzer?.model ?? 'default',
+    systemPrompt: config?.graphAnalyzer?.systemPrompt ?? DEFAULT_GRAPH_ANALYZER_SYSTEM_PROMPT,
+    tools: graphAnalyzerNoJail ? [] : (config?.graphAnalyzer?.tools ?? []),
+    timeoutMs: config?.graphAnalyzer?.timeoutMs ?? 60000,
+    retries: config?.graphAnalyzer?.retries ?? 0,
+    maxBytes: config?.graphAnalyzer?.maxBytes ?? 8192,
+    maxLines: config?.graphAnalyzer?.maxLines ?? 120,
+    maxQueueDepth: config?.graphAnalyzer?.maxQueueDepth ?? 8,
+  };
+  if (graphAnalyzerNoJail) {
+    console.log(`[remote-workflow-engine] graph-analyzer: no resolvable workRoot — forcing graphAnalyzer.tools to [] (fail-closed, DES-122)`);
+  }
+  // The analyzer needs a REAL GatewayClient (DES-131: "never a narrower ad hoc shape") even on the
+  // documented zero-config deployment, where `gateway` above is `undefined` because no `aliases`
+  // were supplied — same fallback RunManager's own constructor applies internally for the identical
+  // reason (DEFAULT_GATEWAY_CONFIG), reused here rather than re-typed.
+  const analyzerGateway: GatewayClient =
+    gateway ?? new LiteLLMGatewayClient({ aliases: config?.aliases ?? DEFAULT_ALIASES, timeoutMs: config?.timeoutMs ?? 15000, retries: config?.retries ?? 1 });
+  if (graphAnalyzerConfig.enabled && !isKnownAlias(graphAnalyzerConfig.model, aliasNames)) {
+    // DES-131: warn, never fail boot (REQ-104) — `enqueue()` itself short-circuits every
+    // registration to unavailable/MODEL_UNMAPPED with zero model calls until this is fixed.
+    console.warn(`[remote-workflow-engine] graph-analyzer: graphAnalyzer.model "${graphAnalyzerConfig.model}" is not a known alias — every diagram will settle unavailable/MODEL_UNMAPPED until this is corrected`);
+  }
+  const graphAnalyzer = new GraphAnalyzer({
+    gateway: analyzerGateway, catalog, ports: triggerPorts, clock,
+    config: graphAnalyzerConfig, aliasNames,
+  });
+  // DES-127 B7: one requeue per pending row across restarts, then unavailable/RETRIES_EXHAUSTED —
+  // unconditional (a row pending from a PRIOR life is swept regardless of THIS boot's enabled flag,
+  // matching the class's own boundary; `enabled:false` only gates the two call sites below that
+  // would otherwise start a NEW job).
+  graphAnalyzer.sweepAtBoot();
+  // Two boot lines, same stdout convention as main.ts's own (DES-131's own closing sentence).
+  const analyzerProvider = effectiveProvider(config?.aliases ?? DEFAULT_ALIASES, graphAnalyzerConfig.model);
+  const analyzerEffectiveTools = curateToolsForProvider(graphAnalyzerConfig.tools, analyzerProvider);
+  const analyzerJailDir = join(workRoot, ANALYZER_SCRATCH_SUBDIR);
+  console.log(`[remote-workflow-engine] graph-analyzer effective tools=${JSON.stringify(analyzerEffectiveTools)} jail=${analyzerJailDir}`);
+  // ADR-020 mirror row (v23 Gate 2 RE-RUN #2, IT-104): a warn-level line keyed off the EFFECTIVE
+  // tool set (not the configured one — curation can narrow or empty it) naming the risk of running
+  // an analyzer with tool access on attacker-influenced input (ADR-016); none when empty.
+  if (analyzerEffectiveTools.length > 0) {
+    console.warn(`[remote-workflow-engine] graph-analyzer: effective tool set is non-empty (${JSON.stringify(analyzerEffectiveTools)}) — the analyzer runs on attacker-influenced input (ADR-016), confirm this is intended`);
+  }
+  let missingDiagramCount = 0;
+  if (graphAnalyzerConfig.enabled) {
+    // DES-127 B1: no boot backfill (no model calls on an upgrade) — just the count + the exact
+    // recovery command, so discoverability costs zero model calls.
+    for (const wf of await catalog.list()) {
+      for (const version of wf.versions) {
+        if (catalog.getDiagram(wf.name, version) === null) missingDiagramCount++;
+      }
+    }
+  }
+  console.log(`[remote-workflow-engine] graph-analyzer versions with no diagram yet: ${missingDiagramCount} — recover with workflow_regenerate_diagram({name, version})`);
+
+  // v23 (adjudication #2 R-1/R-2, TASK-126): the ONE construction+wiring site — both
+  // `McpFacadeDeps.triggerPorts`/`.graphAnalyzer` are REQUIRED, so this is the only place an
+  // unwired McpFacade can even be built for production use.
+  const facade = new McpFacade({
+    clock, store, runManager, validator, ceilings, triggerPorts,
+    graphAnalyzer: { enabled: graphAnalyzerConfig.enabled, regenerate: (name, version, principal) => graphAnalyzer.regenerate(name, version, principal) },
+  });
+  // v23 (REQ-102, TASK-126): the `callTool` register->enqueue seam (see `AnalyzerRegisterPort`) —
+  // a separate narrow wrapper from the facade's own `{enabled, regenerate()}` dep above, per
+  // adjudication #2 R-1's ruling to keep that structural interface unwidened.
+  const analyzerRegisterPort: AnalyzerRegisterPort = {
+    enabled: graphAnalyzerConfig.enabled,
+    enqueue: (name, version, script, principal) => graphAnalyzer.enqueue(name, version, script, principal),
+  };
   // v6 (REQ-036): best-effort engine-side diagnostics for a runId, pulled through the SAME facade
   // the MCP tools use (status + artifact list + failing/last agent transcript tail), formatted as a
   // short markdown block. Bounded and swallow-all — an unknown/failed run returns null so the
@@ -1385,15 +1588,6 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // and GET /api/system (DES-073 "sample once"). Tests inject a StubProbe-backed sampler via
   // config.systemInfo; production defaults to a RealSystemProbe.
   const systemInfoSampler = config?.systemInfo ?? new SystemInfoSampler(new RealSystemProbe(workRoot), clock, 1500);
-  // v2 (DES-016/TASK-019): SQLite-persisted schedule store, same workRoot convention as
-  // catalog.db/store — survives restart (REQ-014-style persistence extended to schedules).
-  const scheduler = new SqliteSchedulerPort({
-    clock, catalog, runManager,
-    dbPath: config?.schedulerDbPath ?? join(workRoot, 'schedules.db'),
-  });
-  // D-V2I-2 (DES-017): re-derive nextFire for every persisted cron/once schedule from THIS boot's
-  // clock before the driver's first tick — matches DES-017's own "Boot re-arm from persistence".
-  scheduler.rearmAtBoot();
   // v2 (DES-019/TASK-021): asset store rooted under workRoot; `selfBind` (this server's own
   // address) is assigned once the real listening port is known, just below.
   let assetSync: AssetSyncService;
@@ -1531,6 +1725,16 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // self-update rescue path. Loopback-bound servers are excluded (no non-loopback peers possible).
     // Tunnel/forwarded headers → NEVER exempt (D-AUTH-3 cloudflared-on-loopback hole).
     const dbindExempt = isLoopbackPeer(req.socket?.remoteAddress, req.headers) && !isLoopback(bind);
+    // v23 Gate 6.5 (round 4): the ONE way this handler dispatches a dashboard/API request. A1 gave
+    // `/api/workflows/:name/describe` a second, authenticated entry, and the nine POSITIONAL
+    // arguments — including the `!!authCfg` masking flag — were typed out twice; a drift between
+    // the two copies would mask on one path and not the other, with no type error. Same
+    // one-declaration rule as `DEFAULT_CEILINGS`/`UNBOUND_ENTRY_LABEL`.
+    const dispatchDashboard = (): void => {
+      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, buildModelCatalog, !!authCfg).catch(() => {
+        sendJson(res, 200, { degraded: 'internal dashboard error' });
+      });
+    };
     // v15 (DES-095, TASK-086): OAuth AS routes — public (no bearer required), only when auth enabled.
     // effectiveIssuer replaces port 0 with the real bound port (issuer placeholder at startup).
     if (authHandlers) {
@@ -1674,7 +1878,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
                 const name = rpc.params?.name ?? '';
                 const args = rpc.params?.arguments ?? {};
                 const webhookBaseUrl = `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
-                const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, systemInfoSampler, name, args, p.principal, !!authCfg);
+                const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, systemInfoSampler, analyzerRegisterPort, name, args, p.principal, !!authCfg);
                 sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } }); return;
               }
               sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, error: { code: -32601, message: `Method not found: ${rpc.method}` } });
@@ -1689,6 +1893,22 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
             sendJson(res, 500, { jsonrpc: '2.0', id: null, error: { code: -32603, message: 'Internal error' } });
           });
         }).catch(() => { sendJson(res, 500, { jsonrpc: '2.0', id: null, error: { code: -32603, message: 'Internal error' } }); });
+        return;
+      }
+      // v23 Gate 2 re-run (ADJ-A1, ARCH-083 amendment, TASK-120): GET /api/workflows/:name/describe
+      // joins dbindExempt's gated set as the FOURTH member, alongside blob/manifest/mcp above —
+      // admitted only when the peer is loopback-exempt or resolvePrincipal succeeds; otherwise 401 +
+      // WWW-Authenticate, BEFORE any store read. The handler itself (handleDashboardRequest's
+      // describeMatch branch below, DES-132) is unchanged — unauthenticated, no owner branch
+      // (DES-125) — this block only decides whether the request is allowed to reach it.
+      const describeGateMatch = req.method === 'GET'
+        ? /^\/api\/workflows\/([^/]+)\/describe$/.exec((req.url ?? '').split('?')[0]!)
+        : null;
+      if (!dbindExempt && describeGateMatch) {
+        void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then((p) => {
+          if ('status' in p) { send401(); return; }
+          dispatchDashboard();
+        }).catch(() => { sendJson(res, 500, { error: 'auth error' }); });
         return;
       }
     }
@@ -1737,9 +1957,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       req.url?.startsWith('/api/system') ||
       req.url?.startsWith('/api/models')
     ) {
-      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, buildModelCatalog, !!authCfg).catch(() => {
-        sendJson(res, 200, { degraded: 'internal dashboard error' });
-      });
+      dispatchDashboard();
       return;
     }
     // v8 Defer B (REQ-057): webhook ingress. POST /hooks/:id — verify (HMAC over the RAW body BEFORE
@@ -1869,7 +2087,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           const name = rpc.params?.name ?? '';
           const args = rpc.params?.arguments ?? {};
           const webhookBaseUrl = `http://${req.headers.host ?? `${bind}:${boundPort}`}`;
-          const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, systemInfoSampler, name, args, null, !!authCfg);
+          const result = await callTool(facade, scheduler, continuations!, webhooks, webhookBaseUrl, cas, assetSync, mcpProbe, mcpRegistry, issueReporter, buildModelCatalog, systemInfoSampler, analyzerRegisterPort, name, args, null, !!authCfg);
           sendJson(res, 200, { jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } });
           return;
         }

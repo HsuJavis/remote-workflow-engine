@@ -32,6 +32,11 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await server?.close();
+  // The stub is DELIBERATELY hung: it never ends a response, so every request it received is still
+  // an open socket, and `close()` waits for all of them — it does not return, and this hook times
+  // out (10s) even though all assertions passed. Drop those sockets first: the connections exist
+  // only because the fixture chose never to answer them (Gate 6.5+7 verifier, 2026-09-03).
+  hungStub.closeAllConnections();
   await new Promise<void>((resolve) => hungStub.close(() => resolve()));
   rmSync(tmpDir, { recursive: true, force: true });
 });

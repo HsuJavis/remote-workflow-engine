@@ -19,6 +19,7 @@
 // defaults to the direct-per-provider-fetch path (`_proxy` stays undefined). This test's injected
 // proxyManager's `spawnImpl` is therefore never called.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'node:events'; // a real ChildProcess IS an EventEmitter — the fake must be too (v23 adjudication #6 V-2)
 import type { ChildProcess } from 'node:child_process';
 import { createServer } from '../../src/server.js';
 import type { Server, ServerConfig } from '../../src/server.js';
@@ -31,7 +32,7 @@ function makeFakeProxyManager() {
   // Fakes the proxy's own process boundary only (D-R2/DES-015: never spawn/require a real
   // `litellm` binary in automated tests) — the health check resolves instantly so no real
   // subprocess timing is involved either.
-  const fakeSpawn = vi.fn(() => ({ exitCode: null, kill: vi.fn() }) as unknown as ChildProcess);
+  const fakeSpawn = vi.fn(() => (Object.assign(new EventEmitter(), { exitCode: null, kill: vi.fn() })) as unknown as ChildProcess);
   const fakeHealthFetch = vi.fn(async () => ({ ok: true }) as unknown as Response);
   const proxyManager = new LiteLLMProxyManager(ALIASES, {
     spawnImpl: fakeSpawn as unknown as typeof import('node:child_process').spawn,

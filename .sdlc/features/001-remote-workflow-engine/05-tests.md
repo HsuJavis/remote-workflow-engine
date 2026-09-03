@@ -1162,11 +1162,11 @@ returned as a JSON-RPC `error` envelope (`{code:-32000, message:'Unknown tool: w
 — even though `McpFacade.workflow_artifacts` itself works correctly (proven by green IT-010).
 
 ### IT-015 — Real @anthropic-ai/claude-agent-sdk session against a local stub /v1/messages server completes an agent() round trip, including a real tool-use turn
-- **status:** red
+- **status:** blocked
 - **traces:** DES-007, DES-009
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** not-run
 - **iter:** v1
 
 **Gate 6 closure (IMPL-037) — RED for a documented environment reason, reported as a test_defect,
@@ -1220,6 +1220,8 @@ shape, not validated against a real completed round trip (chicken-and-egg — th
 test drives doesn't exist yet). If Gate 6's real run reveals the stub's shape needs adjustment, that
 is expected TDD ping-pong for a new external-SDK integration, not a test-authoring defect.
 
+
+**Re-labelled `red`/`fail` → `blocked`/`not-run` at v23 Gate 6.5+7 ROUND 2 (2026-09-03, verifier), meaning unchanged.** The test does not fail: `claude-agent-sdk-session.test.ts` green-SKIPS via its own two hermeticity guards (no request reaches the local stub within 20s, or the installed CLI's SSE tool-loop has drifted from this hand-rolled stub), printing an explicit `IT-015 SKIPPED:` reason — verified by running the file alone this gate (1 passed, 4.9s). `red` was stale v1 bookkeeping that made the suite-wide statement "no remaining red" read as false while the suite was in fact 281/281 green. Same treatment, and same reason, as `VAL-115`'s re-label at the previous closeout: the item's owner, evidence bar and `real:false` are untouched, and it still claims NOTHING — the real SDK tool loop is proven elsewhere (the live Gate 7.5 run, and UT-018 against the faked SDK module).
 ### IT-016 — agentType composition-root loader: agents/*.md frontmatter populates the registry at startup
 - **status:** green
 - **traces:** DES-007, ARCH-004
@@ -2550,6 +2552,11 @@ workflow deregistered afterward (both the pinned-version resolve and the release
 resolve throw `CatalogNotFoundError`) → DAG still 200, `cells` carries no `__skel_*` placeholder
 (empty-skeleton fallback, not a crash). Re-measured: `handleDashboardRequest` 100%.
 
+**[RE-POINTED v23, adjudication #2 R-3(b)]** case (2) now drives `GET /api/workflows/%/describe` —
+the `/skeleton` route it originally used is deleted (REQ-105). The DES-018 guarantee under test
+(never a 500 on a malformed path segment) is unaffected by that deletion; `/describe` decodes the
+same path segment through the same outer catch (server.ts:1279-1282). Still green.
+
 ### IT-034 — v2 MCP tools in tools/list + asset_push/list/delete + McpProbe injection (DES-019, DES-020)
 - **status:** green
 - **traces:** DES-019, DES-020, ARCH-012
@@ -3729,7 +3736,8 @@ error).
 - **status:** green
 - **traces:** DES-054
 - **iter:** v9
-- tests/integration/workflow-discovery-http.test.ts (NEW, 4 cases) — integration tier over a REAL `createServer` (real MCP-over-HTTP + real dashboard routes + real on-disk WorkflowCatalog); a `cs` workflow is registered via the real `workflow_register` tool with a meta `description` + `phases` and a body of `parallel([agent,agent]) → agent('verify') → workflow('log-it')`. CASES: (1) REQ-061 — `workflow_list` returns the `cs` entry carrying `description: 'two models draft in parallel, a stronger model verifies'`; (2) REQ-061 — `workflow_get({name:'cs'})` returns full detail (`description`, `phases ['Draft','Verify']`, `script`), and an unknown name → a `WORKFLOW_NOT_FOUND` error envelope (never a throw); (3) REQ-062 — `workflow_get.skeleton` predicts the DAG: 3 agent nodes with the two drafts sharing one `parallel` group + a `workflow` node naming `log-it`; (4) REQ-062 — `GET /api/workflows/cs/skeleton` serves `{skeleton[], description}` with status 200, and an unknown name → 404. All 4 RED before the `workflow_get` tool / `/skeleton` route / catalog `description` existed.
+- tests/integration/workflow-discovery-http.test.ts (2 cases; originally 4) — integration tier over a REAL `createServer` (real MCP-over-HTTP + real dashboard routes + real on-disk WorkflowCatalog); a `cs` workflow is registered via the real `workflow_register` tool with a meta `description` + `phases` and a body of `parallel([agent,agent]) → agent('verify') → workflow('log-it')`. CASES: (1) REQ-061 — `workflow_list` returns the `cs` entry carrying `description: 'two models draft in parallel, a stronger model verifies'`; (2) REQ-061 — `workflow_get({name:'cs'})` returns full detail (`description`, `phases ['Draft','Verify']`, `script`), and an unknown name → a `WORKFLOW_NOT_FOUND` error envelope (never a throw). Both RED before the `workflow_get` tool / catalog `description` existed.
+- **[RETIRED v23, adjudication #2 R-3(a)]** the original cases (3) `workflow_get.skeleton` predicts the DAG and (4) `GET /api/workflows/:name/skeleton` serves it — REQ-105 deletes both the user-facing `skeleton` field and the `/skeleton` route; see 01-requirements.md REQ-062's own partial-supersession note. `parseWorkflowSkeleton` survives internally (unaffected); its successor route `GET /api/workflows/:name/describe` is proven by IT-098 + VAL-113.
 
 ## v10 — efficient large-codebase seeding tests (IT-058, IT-059, IT-060)
 
@@ -6004,10 +6012,15 @@ legitimate green pin — a clean registration already runs fine today).
 File: `tests/acceptance/val-110-script-masking.test.ts`. Real `createServer`, real HTTP, real
 `TokenStore` bearer, real `/api/*` routes. Owner reads the script via `/mcp`; a non-owner bearer gets
 `scriptWithheld:true` with no script text anywhere; `/api/workflows/:name/skeleton` omits
-`skeleton`/`phases` entirely while auth is on (and DOES carry them with auth off — the pre-v22
-surface, REQ-100 clause 3); `/api/workflows` never carries `script` (green pin — already true
-pre-v22). Red reason: confirmed 3/5 red (2 legitimate green pins: `/api/workflows` never had a
-`script` field, and the auth-off skeleton route is the unchanged pre-v22 surface).
+`skeleton`/`phases` entirely while auth is on (green pin — the route no longer exists, so this is
+vacuously true; left as-is, not this pass's scope); `/api/workflows` never carries `script` (green
+pin — already true pre-v22).
+
+**[RETIRED v23, adjudication #2 R-3(a)]** the "returns the real skeleton/phases when auth is
+disabled" case (the old REQ-100 clause 3, auth-off pre-v22 surface) — REQ-105 deletes the
+`/api/workflows/:name/skeleton` route unconditionally, so auth state no longer applies to it; see
+01-requirements.md REQ-100's own partial-supersession note. Every other REQ-100 field (script
+masking, owner/report metadata) is untouched and both remaining green pins above still hold.
 
 ### Extended in place (no new ID)
 
@@ -6410,3 +6423,1774 @@ error — matching exactly the "self-asserted principal satisfies both gates" de
 VAL-107's red case fails the same way (`anyonePublish['code']` is `undefined`, the call succeeded).
 None are red for an unrelated reason (no syntax errors, no fixture setup failures — the seeded
 starting rows are confirmed present by the surrounding oracles in each case).
+
+## Iteration v23 — Gate 5 RED: explain surface, agent-drawn diagram, skeleton retirement
+
+> Test-first RED for TASK-113..125 / DES-120..136 / ARCH-077..086 / REQ-101..106 (+ REQ-100
+> `[AMENDED v23]`). Per-tier mock policy per 04-design.md's v23 section: unit mocks freely
+> (`GatewayClient` stubs, plain-object `TriggerPorts`, `FixedClock`, `runInline`, in-memory-shaped
+> real sqlite); integration uses real adjacent components (real `WorkflowCatalog`, real HTTP, real
+> `SqliteSchedulerPort`; only the model provider is stubbed); acceptance/VAL hits the real entrypoint
+> (real `createServer`, real `/mcp`, real `TokenStore`-minted bearer where a non-owner view is under
+> test) and does not mock the SUT's own boundary. No test computes its expected value from the
+> function under test (`EXPECTED_DESCRIBE_KEYS`/`bindingsFp`/gate-accepts-what-gate-produced are all
+> literals). Hermetic: every clock reference is a `FixedClock` anchor; no absolute-date-vs-real-clock
+> comparisons.
+>
+> **Brand-new modules (`src/diagram-gate.ts`, `src/trigger-bindings.ts`, `src/graph-analyzer.ts`)
+> don't exist yet** — their tests red at collect time (`Cannot find module` / `Failed to load url`),
+> the same accepted precedent as UT-082/UT-084/IT-073 (v13 seedref RED batch). Tests against a
+> not-yet-exported member of an EXISTING module (`projectWorkflowDescribe`) red via a runtime
+> `TypeError: ... is not a function`, same precedent as UT-069/morandi-renderer (an ESM
+> not-yet-provided-export can surface as either a collect-time SyntaxError or a runtime TypeError
+> depending on the transform pipeline — both are the same class of "correct red for an unimplemented
+> symbol", confirmed either way by direct `npx vitest run` per file below). Calling a not-yet-declared
+> member of an EXISTING class (`WorkflowCatalog.putDiagramPending`, `McpFacade.workflow_describe`)
+> uses this codebase's own `(obj as any).newMethod(...)` convention (see `put-blob-stream.test.ts`)
+> and reds as a genuine runtime `TypeError`.
+
+### UT-107 — `gateDiagram`: the pure allowlist gate, four passes, exact reason codes
+- **status:** green
+- **traces:** DES-124, TASK-113, ARCH-080
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/diagram-gate.test.ts`. 14 cases across the four passes (type/codepoint/size/token) —
+hostile-input table with the EXACT reason code per row (per carried-in rule 1, every assertion names
+the literal secret/codepoint, never `not.toContain(wholeScript)`), plus `DIAGRAM_CODEPOINTS`'
+vocabulary-glyph and `<`/`>`/`&`-exclusion checks, plus the byte-identical verbatim-return success
+case. Red reason: `src/diagram-gate.ts` does not exist yet → MODULE NOT FOUND, all 14 cases fail at
+collect time. Confirmed: `npx vitest run tests/unit/diagram-gate.test.ts` — 0 tests collected,
+`Failed to load url ../../src/diagram-gate.js`.
+
+### UT-108 — `workflow_diagrams`: table + four accessors + the single deletion path
+- **status:** green
+- **traces:** DES-130, TASK-114, ARCH-077
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/workflow-diagrams-store.test.ts`. Mock policy (unit, DES-119 discretion): a REAL
+on-disk `WorkflowCatalog` under a tmpdir (same convention as IT-093/UT-104 — a hand-mocked catalog
+cannot exercise a genuine transactional deletion race). 9 cases: pending/ready/unavailable round-trip,
+`listPendingDiagrams()`, a v3 read never returning a v4 row (PK is a schema property),
+`deregister()`'s single-transaction deletion, a pre-v23 version's `getDiagram` → null,
+`putDiagramPending`'s optional stamp, and the late-write no-op guard (DES-127 B6, DES-130). Red
+reason: `WorkflowCatalog` has none of these four accessors today. Confirmed: `npx vitest run
+tests/unit/workflow-diagrams-store.test.ts` — 9/9 fail, `TypeError: catalog.putDiagramPending/
+putDiagramResult/getDiagram is not a function`.
+
+### UT-109 — `getTriggerBindings`: four narrow ports, the canonical fingerprint
+- **status:** green
+- **traces:** DES-128, TASK-115, ARCH-078
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/trigger-bindings.test.ts`. Plain object-literal ports, no SQLite (per TASK-115's own
+dod). 7 cases: cron+webhook+chain composition, a null `runs` port never inventing a name, the
+identical `bindingsFp` under row-order permutation, a changed fingerprint on a new schedule, `null` vs
+a named upstream producing different fingerprints (serialised, not omitted), plus a `@ts-expect-error`
+documentation case for the `webhooks` port's `secret`/`id`-exclusion type invariant. Red reason:
+`src/trigger-bindings.ts` does not exist yet → MODULE NOT FOUND. Confirmed: `npx vitest run
+tests/unit/trigger-bindings.test.ts` — 0 tests collected, `Failed to load url
+../../src/trigger-bindings.js`.
+
+### UT-110 — `curateToolsForProvider` preserves an explicitly-empty tool set (D-F11 general fix)
+- **status:** green
+- **traces:** DES-120, TASK-116, ARCH-079, ADR-020
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+Extends `tests/unit/claude-agent-sdk-gateway-allowed-tools.test.ts` (UT-024's file) with 3 new cases,
+each via a dynamic `await import(...)` (the file's own established convention — a static top-level
+value import of this module would load it, and its `@anthropic-ai/claude-agent-sdk` import, before
+`const queryMock = vi.fn()` initializes, breaking the hoisted `vi.mock` factory; confirmed by hitting
+exactly that `ReferenceError: Cannot access 'queryMock' before initialization` on the first attempt
+and fixing it). Cases: `curateToolsForProvider([], 'ollama')` stays `[]` (the genuine red — today
+`['Bash']`); `[]` for `undefined`/`'anthropic'` is unaffected (green pin); a NON-empty set for a
+non-Anthropic provider stays Bash-augmented (green pin, UT-024's fallback path unaffected — note
+`'Read'` is excluded from the non-Anthropic set by `NON_ANTHROPIC_EXCLUDED_TOOLS`, so the green-pin
+case uses `'Write'`). Red reason: `curateToolsForProvider([], 'ollama')` returns `['Bash']` today
+(`claude-agent-sdk-client.ts:223-227` adds Bash unconditionally, no empty-input early return) — a REAL
+behavioral red, not an import/syntax gap; this is this deployment's own default path
+(`graphAnalyzer.tools: []` + a local Ollama alias), so ADR-020's "blast radius is nil" claim is
+falsified without this fix (DES-120's own correction to the ARCH). Confirmed: `npx vitest run
+tests/unit/claude-agent-sdk-gateway-allowed-tools.test.ts` — 6 tests, 1 failed (the empty-set case),
+5 passed (3 pre-existing UT-024 green + 2 new green pins).
+
+### UT-111 — `GraphAnalyzer`: queue, single-flight, retry loop, the 8 persisted note codes, sweepAtBoot
+- **status:** green
+- **traces:** DES-131, DES-121, DES-122, DES-123, DES-127, DES-129, TASK-117, ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts`. Mock policy (unit): a stub `GatewayClient` (`invoke()`
+controlled per case), a REAL on-disk `WorkflowCatalog`, plain-object `TriggerPorts`, `FixedClock`, the
+`schedule: runInline` seam (fires the job WITHOUT awaiting it — enqueue must return before the job
+settles, REQ-102). Cases: `enqueue()` returns before the job runs having already written the
+`pending` row; each of the 8 PERSISTED `DiagramNoteCode` values (TIMEOUT, PROVIDER_UNREACHABLE,
+PROVIDER_ERROR, GATE_REJECTED_CONTENT, GATE_REJECTED_SHAPE, QUEUE_FULL, RETRIES_EXHAUSTED,
+MODEL_UNMAPPED — `DISABLED`/`NOT_GENERATED` are read-time-synthesized-only per DES-123/DES-127 B2 and
+belong to UT-113 instead) from its own literal input row; the success path (`status:'ready'`, diagram
+stored verbatim); `regenerate()` single-flight (a second call while `pending` enqueues no second job)
+and no-clobber (a failed regenerate leaves a prior `ready` row untouched); `sweepAtBoot()`'s two
+reachable-without-a-restart-harness shapes under `FixedClock` (unstamped → requeue+stamp; stamped
+at/after boot → left alone) plus the "stamped before boot" shape via a direct pre-seeded row (the
+`RETRIES_EXHAUSTED` case, zero model calls;  DES-131's third shape); the journal-line redaction
+property (a provider error containing the secret literal never reaches the emitted console.log
+string, ADR-016); AND the retry loop itself, pinned separately from the note-code table
+(TASK-117's own dod: "settles after exactly 1+retries calls" — DES-121's whole point is that
+`retries` is expressible ONLY as this class's own loop, since `AgentOpts` has `timeoutMs` but no
+`retries` field, so forwarding it into `opts` instead of looping is a silent no-op, this repo's own
+recurring wiring-defect class): a counting-stub case (`retries:2`) asserts EXACTLY 3 `invoke()` calls
+(the call count is the load-bearing assertion; the resulting noteCode is deliberately left
+unasserted there — DES-121's prose is genuinely ambiguous on whether a same-reason-every-attempt
+exhaustion persists the generic `RETRIES_EXHAUSTED` or the last attempt's own reason-derived code,
+flagged for Gate 6 rather than guessed at twice), plus a literal-text case DES-121 DOES pin
+unambiguously: the last attempt's own specific reason (`timeout`) wins over the generic exhaustion
+code when it is also the final attempt. 17 cases total. Red reason: `src/graph-analyzer.ts` does not
+exist → MODULE NOT FOUND. Confirmed: `npx vitest run tests/unit/graph-analyzer.test.ts` — 0 tests
+collected, `Failed to load url ../../src/graph-analyzer.js`.
+
+### UT-112 — `GraphAnalyzer` → real `ClaudeAgentSdkGatewayClient` wire: isolation, non-Anthropic alias
+- **status:** green
+- **traces:** DES-122, DES-131, TASK-117, ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer-wire.test.ts`. Mock policy (unit): `vi.mock` intercepts only the
+third-party `@anthropic-ai/claude-agent-sdk` module (same pattern as UT-024/UT-110) — the REAL
+`GraphAnalyzer` drives the REAL gateway. One case, at `queryImpl` level: with a non-Anthropic alias,
+the built `options` literally equals `tools:[]`, `allowedTools:[]`, `settingSources:[]`,
+`strictMcpConfig:true`, empty `mcpServers`, `thinking:{type:'disabled'}`, and `cwd` = the analyzer's
+own scratch directory (simulated here by constructing the gateway directly with that `cwd` — the
+repoint itself is `main.ts`'s job, out of this module's scope, TASK-117's own dod note). Red reason:
+`src/graph-analyzer.ts` does not exist → MODULE NOT FOUND. Confirmed: `npx vitest run
+tests/unit/graph-analyzer-wire.test.ts` — 1/1 fail, `Failed to load url ../../src/graph-analyzer.js`.
+
+### IT-096 — the late write: `enqueue` → `deregister` commits → `putDiagramResult` lands → silent no-op
+- **status:** green
+- **traces:** DES-130, DES-127, TASK-117, ARCH-077
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/integration/graph-analyzer-late-write.test.ts`. Deliberately on the REAL `setImmediate`
+path (production `schedule` default, NOT `runInline`) — the race between an in-flight async job and a
+synchronous `deregister()` needs the real scheduler; a `runInline`-seamed test cannot exercise it at
+all (TASK-117's own dod note: a later "make the suite faster" pass must not seam this file). Mock
+policy (integration, DES-119): a REAL `WorkflowCatalog`, a stub `GatewayClient` (the only
+network-shaped dependency). One case: enqueue → let the job reach its awaited gateway call → deregister
+commits mid-flight → release the gateway → `getDiagram()` is null AND the row count is 0. Red reason:
+`src/graph-analyzer.ts` does not exist → MODULE NOT FOUND. Confirmed: `npx vitest run
+tests/integration/graph-analyzer-late-write.test.ts` — 0 tests collected.
+
+### UT-113 — `projectWorkflowDescribe` + `WorkflowDescribeView` + `EXPECTED_DESCRIBE_KEYS`
+- **status:** green
+- **traces:** DES-125, DES-127, TASK-118, ARCH-081
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/workflow-describe-projection.test.ts`. Pure module, plain fixtures. Cases: the
+two-sided literal key oracle (`EXPECTED_DESCRIBE_KEYS_LITERAL`, transcribed from DES-125's field list,
+never derived from the module under test — the anti-vacuity rule 04-design.md v23 names by name); no
+`script` field for ANY input; diagram-field honest-absence rules (DES-127 B3: `diagramGeneratedAt`
+null for every non-ready row INCLUDING a swept `pending` row whose `generated_at` IS stamped;
+`diagramStale` true only for a `ready` row with a mismatched `bindingsFp`, false for `pending`/
+`unavailable`/no-row); `triggers` always the live snapshot argument, independent of the stored row;
+`lockedKeys` present/non-empty; `owner` served unconditionally (function is 2-ary, no `viewerIsOwner`
+parameter — pinned via `.length`); the B1/B2 boundary states (`analyzerEnabled:false` vs
+`enabled+no-row` both read `unavailable` but with DISTINCT notes — DISABLED vs NOT_GENERATED). Red
+reason: `projectWorkflowDescribe`/`EXPECTED_DESCRIBE_KEYS` are not exported from `src/workflow-view.ts`
+today. Confirmed: `npx vitest run tests/unit/workflow-describe-projection.test.ts` — 11/11 fail,
+`TypeError: projectWorkflowDescribe is not a function`.
+
+### UT-114 — the facade: `workflow_describe` (any principal) + `workflow_regenerate_diagram` (owner-gated)
+- **status:** green
+- **traces:** DES-126, TASK-119, ARCH-082
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/workflow-describe-facade.test.ts`. Mock policy (unit, DES-119 discretion): a REAL
+on-disk `WorkflowCatalog` wired through a REAL `RunManager` (same convention as IT-093/UT-108 — a
+hand-mocked catalog cannot exercise `resolveVersionRequest`'s genuine truth table). Table-driven over
+6 selector shapes (explicit version, channel:beta, channel:release, no selector, unknown version,
+unpublished beta) asserting `workflow_describe`'s error code equals `resolveVersionRequest`'s own code
+for the identical input (one table, two call sites — REQ-101's resolve-order guarantee is checkable
+only if the two cannot silently drift); an unknown workflow name → `WORKFLOW_NOT_FOUND`; a
+`DANGLING_CHANNEL` pin (not collapsed into `CHANNEL_UNPUBLISHED`, verified directly against
+`resolveVersionRequest`'s own truth table); `workflow_regenerate_diagram`'s owner gate
+(`NOT_WORKFLOW_OWNER`), `WORKFLOW_NOT_FOUND`, `UNKNOWN_VERSION`. Red reason: `McpFacade` has neither
+method today. Confirmed: `npx vitest run tests/unit/workflow-describe-facade.test.ts` — 11 tests, 10
+failed (`TypeError: facade.workflow_describe/workflow_regenerate_diagram is not a function`), 1
+legitimate green pin (the `DANGLING_CHANNEL` case, which exercises the EXISTING `resolveVersionRequest`
+directly as a documentation/support assertion, not the new facade surface).
+
+### UT-115 — the mechanical no-skeleton-surface guard (ADR-022)
+- **status:** green
+- **traces:** DES-132, TASK-120, ARCH-083
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/no-skeleton-surface.test.ts`. Static analysis over `src/**` source text (no I/O
+beyond reading this repo's own files) — same convention as this ledger's other mechanical
+grep-guard/drift-lock tests. Written FIRST and watched to fail against the CURRENT tree (TASK-120's own
+dod: "a guard written after the deletion is a guard fitted to whatever the deletion happened to
+leave"). 3 cases: `src/**` mentions "skeleton" (case-insensitive) nowhere outside the exactly-FOUR
+allowlist (`workflow-meta.ts`, `dashboard.ts`, `server.ts`, `graph-analyzer.ts`); the allowlist is
+exactly 4, not "4 or more"; no advertised MCP tool description/schema string in `server.ts`'s
+`TOOL_METADATA` block contains the word. **[AMENDED — orchestrator adjudication (v23) #3,
+2026-09-03]** the fourth entry is `graph-analyzer.ts`, whose reuse of `parseWorkflowSkeleton` as
+analyzer grounding DES-131 sanctions. Membership requires BOTH: the file consumes the skeleton
+internally, AND it serves the skeleton or any projection of it to no principal. A fifth entry is
+argued against those two sentences in an adjudication, never merely added to the `Set`. Red reason: 6 files mention "skeleton" today (`dashboard-page.ts`, `dashboard.ts`,
+`mcp-facade.ts`, `server.ts`, `workflow-meta.ts`, `workflow-view.ts`) — 3 more than the allowlist
+permits; `workflow_get`'s own advertised description literally contains "skeleton". Confirmed: `npx
+vitest run tests/unit/no-skeleton-surface.test.ts` — 3 tests, 2 failed (the file-allowlist case listing
+`dashboard-page.ts`/`mcp-facade.ts`/`workflow-view.ts` as violators; the tool-description case), 1
+passed (the allowlist-size documentation case, a tautology about the test's own constant).
+
+### IT-097 — the four-surface anti-drift table: one secret-bearing script, four read surfaces
+- **status:** green
+- **traces:** DES-132, TASK-120, ARCH-083, ARCH-081
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/integration/workflow-describe-http.test.ts`. Mock policy (integration, DES-119): a REAL
+`createServer()`, real HTTP, real `/mcp` — no LLM (the diagram's own content is REQ-102/VAL-113's
+concern, not this parity table's). One secret-bearing script registered once; the exact secret literal
+asserted absent from `JSON.stringify` of: `workflow_get` (a genuine NON-OWNER view, exercised via a
+second in-process `McpFacade` on the SAME on-disk catalog with `ctx={authEnabled:true, principal:
+'someone-else'}` rather than standing up a full OAuth bearer flow for one green-pin assertion — auth
+off on the running server makes everyone the owner branch, so a true non-owner check needs
+`authEnabled:true` regardless of transport); `workflow_describe`; `GET /api/workflows` (the list);
+`GET /api/workflows/:name/describe`, which must additionally EXIST (200) and equal the MCP tool
+response on this SAME (unauthenticated) server — `/describe` carries no bearer/identity at all and has
+no owner branch by construction (DES-125 drops `viewerIsOwner`), so `authEnabled` cannot change its
+output; comparing route-vs-tool on the SAME auth state is therefore a valid parity check without
+needing a real bearer flow for this specific pairing (DES-132's own named hazard — an OWNER-branch
+comparison — does not apply here precisely because describe has no owner branch to diverge into). Red
+reason: `workflow_describe` doesn't exist as a tool (`Unknown tool` RPC error) and
+`/api/workflows/:name/describe` doesn't exist as a route (404). Confirmed: `npx vitest run
+tests/integration/workflow-describe-http.test.ts` — 4 tests, 2 failed (describe tool + describe
+route), 2 passed (the pre-existing `workflow_get`/list masking, unaffected by v23, green pins).
+
+### UT-116 — dashboard diagram surface: mechanical source-level properties (jsdom-free)
+- **status:** green
+- **traces:** DES-133, TASK-121, ARCH-084
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/dashboard-diagram-render.test.ts`. **Engineering call, recorded here rather than
+silently under-delivering:** this repo has no jsdom/browser-DOM test harness (`environment:'node'` in
+vitest.config, confirmed; no jsdom devDependency) and `dashboard-page.ts`'s browser logic lives inside
+an embedded `<script>` STRING (`DASHBOARD_HTML`), not a Node-importable function — a full behavioral
+DOM proof (a diagram containing `<script>` rendering as literal text; the home-card's actual silence)
+is out of reach at unit tier without adding new test infrastructure, which is not this gate's call to
+make silently. This file pins the MECHANICAL, source-level properties DES-133 names instead — the same
+convention this exact ledger already uses for the no-skeleton-surface guard (UT-115) and the schema
+drift-lock series. The full DOM behavior is additionally provable at real-tier by a Playwright-driven
+acceptance path (same pattern as `val-018-dashboard-browser-ui`) — not built this pass; recorded as a
+residual for whoever picks up TASK-121's implementation. 4 cases: workflow-detail fetches `/describe`
+not `/skeleton`; the diagram is written via `.textContent = s.diagram` (never innerHTML for this
+field); `diagramNote`/`diagramStatus` are referenced; the mini-preview section fetches `/describe`. Red
+reason: `DASHBOARD_HTML`'s embedded script still fetches `/skeleton` for both surfaces and never
+references `diagramNote`. Confirmed: `npx vitest run tests/unit/dashboard-diagram-render.test.ts` —
+4/4 fail.
+
+**Case 4 RE-POINTED at v23 Gate 6.5+7 ROUND 4 (2026-09-03, verifier) — authorized by name, and it
+gets stronger, not weaker.** 02-architecture.md's ARCH-084 dashboard row (A4 amendment) reads
+*"'removed' means `renderMiniPreviewAsync` and its call site are DELETED, not re-pointed"*, and the
+Gate-2-re-run handoff assigns Gate 6 *"A4's two deleted lines + UT-116 re-point"*. Gate 6 shipped
+neither (see IMPL-176), so case 4 was still asserting that the mini-preview existed and fetched
+`/describe` — i.e. pinning the exact per-card-per-3s-tick cost the amendment deletes. The new case
+is ABSENCE and two-sided: no `renderMiniPreviewAsync` in `DASHBOARD_HTML`, `function
+renderHomeGroup(` still present (a truncated page cannot pass), and **exactly one** `/describe`
+fetch left — the workflow-detail view's, reached from a card click. Non-vacuity measured against
+`15de3ce`, not assumed: that tree holds two such fetches plus the deleted identifier, so the new
+case fails there on both assertions. Cases 1–3 untouched. `iter:` stays `v23` (origin, per house
+convention).
+
+### Extended in place (no new ID) — UT-033, compose-config-v2-wiring.test.ts
+The `graphAnalyzer` config block (TASK-122, DES-134, ARCH-085) — same wiring-gap class as every prior
+case in this file (v11 `updateFlagPath` / v15 `auth` / v16 `workspaceTtlMs` / v22
+`maxWorkflowVersions`). 3 new cases: the whole block forwarded verbatim; `enabled:false` forwarded (a
+first-class tested state, never dropped); `graphAnalyzer` stays `undefined` when the file config omits
+it (backward-compat, same convention as `auth`). The `as any` cast on the `FileConfig` literal is this
+codebase's own established convention for exercising a not-yet-declared key (TS excess-property check
+would otherwise reject it before the test runs — `ServerConfig`/`composeConfig()` have no
+`graphAnalyzer` key today). **Per REQ-104's own acceptance text, this row is necessary and NOT
+sufficient** — a unit assertion reads its value off the same path that would be broken; only
+TASK-124's Gate 7.5 real run (VAL-115) is proof. Confirmed: `npx vitest run
+tests/unit/compose-config-v2-wiring.test.ts` — 22 tests, 2 failed (the new `graphAnalyzer` cases), 20
+passed (every pre-existing case unaffected).
+
+### UT-117 — `docs/AUTHORING.md` + the same rules on `workflow_register.script`'s advertised description
+- **status:** green
+- **traces:** DES-135, TASK-123, ARCH-086, ARCH-051
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/tool-schema-drift.test.ts`. Static source-text assertions (a real `fs.readFileSync`
+of `docs/AUTHORING.md` + `src/server.ts`'s `SCRIPT_DSL_DOC`) — same convention as UT-115 and this
+ledger's ARCH-051 drift-lock series. 4 cases: `docs/AUTHORING.md` exists; states all four rules
+(`meta.params`, "never read a value the contract does not declare", `LOCKED_KEYS`/"locked key", "phase
+title"); states the standing note (`graphAnalyzer.enabled`); `SCRIPT_DSL_DOC` mentions the
+`AUTHORING.md` pointer + the four rules in condensed form. Red reason: `docs/AUTHORING.md` doesn't
+exist (`ENOENT`); `SCRIPT_DSL_DOC` contains none of the four rules or an `AUTHORING.md` pointer today.
+Confirmed: `npx vitest run tests/unit/tool-schema-drift.test.ts` — 4/4 fail.
+
+### Extended in place (no new ID) — UT-104, workflow-view.test.ts
+`phases` joins the non-owner allowlist (TASK-125, DES-136, adjudication #1 2026-09-02, 一律公開). The
+`FULL` fixture's `phases` is corrected to the shape `parseMeta` actually produces
+(`Array<{title:string}>`, was a bare string array); `REQ_100_NON_OWNER_KEYS` gains the literal
+`'phases'`, ONE entry (`deepFlatten` does not recurse into arrays, `:29`); the former "phases/skeleton
+are NOT on the allowlist" case is corrected to "phases IS, skeleton stays OFF it"; a NEW case pins the
+two-distinct-fixtures rule DES-136 names — a secret in a PHASE TITLE appears on the non-owner
+projection while a secret in the SCRIPT BODY stays absent (one fixture carrying both would let either
+property mask the other). Red reason: `WorkflowPublicView` has no `phases` field and
+`EXPECTED_NON_OWNER_KEYS` doesn't list it today. Confirmed: `npx vitest run
+tests/unit/workflow-view.test.ts` — 8 tests, 3 failed (the two v23 phases cases + the corrected key-set
+oracle), 5 passed (owner branch, scriptWithheld, owner/reportProblem/params, and the module's own
+advertised-keys self-check — all pre-existing v22 behavior, unaffected).
+
+### VAL-111 — REQ-100 `[AMENDED v23]`: phases are public on every surface, not just the diagram
+- **status:** green
+- **traces:** REQ-100, DES-136, TASK-125
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/acceptance/val-111-phases-public-everywhere.test.ts`. Real `createServer`, real `/mcp`,
+real `TokenStore`-minted bearer (no OAuth flow needed for a bearer, same technique as VAL-110). One
+case: a non-owner `workflow_get` sees the real phase titles while `script` stays withheld. Red reason:
+`WorkflowPublicView` has no `phases` field today. Confirmed: `npx vitest run
+tests/acceptance/val-111-phases-public-everywhere.test.ts` — 1/1 fail.
+
+### VAL-112 — REQ-101: `workflow_describe` — the one explain surface, any principal
+- **status:** green
+- **traces:** REQ-101, DES-125, DES-126, TASK-118, TASK-119
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/acceptance/val-112-workflow-describe.test.ts`. Real `createServer`, real `/mcp`, real
+bearer. Diagram-CONTENT assertions are out of scope here (REQ-102/VAL-113's own concern) — this file
+proves the describe surface's SHAPE and mask, which needs no live LLM call. 2 cases: a non-owner sees
+the full describe field set (every DES-125 field present) and never the raw secret literal; an
+unpublished beta channel returns `CHANNEL_UNPUBLISHED`. Red reason: `workflow_describe` doesn't exist
+as an MCP tool. Confirmed: `npx vitest run tests/acceptance/val-112-workflow-describe.test.ts` — 2/2
+fail.
+
+### VAL-113 — REQ-102: the analyzer draws a structure-only ASCII diagram; honest absence when disabled
+- **status:** green
+- **traces:** REQ-102, DES-131, DES-134, TASK-117, TASK-122, ARCH-079
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/acceptance/val-113-graph-analyzer-diagram.test.ts`. Real `createServer`, real `/mcp`.
+`graphAnalyzer.enabled:false` needs NO live provider (an honest-absence property of config alone) and
+is asserted UNCONDITIONALLY. The "a real analyzer run produces a gate-passing diagram" case genuinely
+needs a live LLM call — gated behind `HAS_PROVIDER` (same convention as VAL-003/004/080), but the
+gated BODY is a real assertion, not an always-pass shell: it registers a script carrying a secret
+literal, a distinctive prompt sentence, and an `appendPrompt` marker on a SEPARATE analyzer-enabled
+server (built only inside the gate, never in `beforeAll`, so a provider-less run boots nothing extra),
+polls `workflow_describe` up to 30s for `diagramStatus:'ready'`, then asserts each of the three strings
+individually absent from the returned diagram — the actual REQ-102/A3 property, not a placeholder. This
+environment has no provider configured, so the gated case legitimately no-ops here (real-tier proof
+deferred to Gate 7.5/TASK-124, same as every other online-gated VAL in this ledger — the assertions
+themselves are ready to run the moment a provider is configured). Red reason:
+`graphAnalyzer.enabled:false` has no effect today (the key doesn't exist) and `workflow_describe`
+doesn't exist. Confirmed: `npx vitest run tests/acceptance/val-113-graph-analyzer-diagram.test.ts` —
+2 tests, 1 failed (the unconditional case), 1 passed (the HAS_PROVIDER-gated case — a genuine no-op in
+this provider-less environment, verified by reading the guard: `if (!HAS_PROVIDER) return;` precedes
+every assertion, so nothing is silently faked green).
+
+### VAL-114 — REQ-103: live trigger bindings + machine-checkable staleness
+- **status:** green
+- **traces:** REQ-103, DES-125, DES-128, ARCH-078, ARCH-081
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/acceptance/val-114-trigger-bindings-live.test.ts`. Real `createServer`, real `/mcp`, real
+`SqliteSchedulerPort`. `triggers` itself needs no live LLM (structured data the engine already owns) —
+asserted unconditionally. The `diagramStale` flip needs an EXISTING `ready` diagram row to flip
+against; seeded directly through a second `WorkflowCatalog` handle on the SAME on-disk workRoot (same
+"second handle on the real store" technique as IT-097) rather than depending on a live provider for a
+REQ-103-scoped assertion. 2 cases: a bound cron schedule is named in `triggers`, and deleting it is
+reflected in the SAME `workflow_describe` call; `diagramStale` flips `true` against an unchanged
+`ready` diagram when a new binding is added. Red reason: `workflow_describe` doesn't exist. Confirmed:
+`npx vitest run tests/acceptance/val-114-trigger-bindings-live.test.ts` — 2/2 fail.
+
+### VAL-115 — REQ-104: an operator edits the analyzer config and the diagram visibly changes, no redeploy
+- **status:** pass
+- **traces:** REQ-104, DES-134, TASK-124, ARCH-085
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v23
+
+**[CLOSED v23 Gate 7.5 — orchestrator-verified 2026-09-03]** The paragraph below still stands: no unit
+test may claim to prove REQ-104. What changed is that Gate 7.5 produced the only proof that counts, and
+this row had not been updated to say so — `08-validation.md`'s REQ-104 entry records it: editing
+`graphAnalyzer.systemPrompt` on disk and restarting turned the same `(val23r3unbound, v1)` from
+`unavailable`/`GATE_REJECTED_SHAPE` (boot 1) into a `ready` diagram (boot 2), and editing
+`graphAnalyzer.model` to `"vl"` made the engine's own journal line report `"model":"vl"` (boot 7).
+Nothing was recompiled or code-edited at any point. Verified in both documents before flipping this row —
+the ledger was disagreeing with itself, which is this iteration's own recurring defect wearing
+bookkeeping clothes.
+
+**No runnable test file — by design, not an omission.** REQ-104's own acceptance text and TASK-124's
+dod are explicit: "no unit test may be written that claims to prove REQ-104" — a unit assertion reads
+its value off the same path that would be broken, which is the defect class this requirement is named
+after (v11 `updateFlagPath` / v15 `auth` / v16 `workspaceTtlMs`). The UT-033-extension row (this
+file's "Extended in place" entry above) is necessary and not sufficient. The ONLY proof is Gate 7.5's
+real run (TASK-124, 08-validation.md): register a workflow on a real booted engine with a real
+provider → `workflow_describe` shows a `ready` diagram; edit `graphAnalyzer.systemPrompt` AND
+`graphAnalyzer.model` in `rwe.config.json`; restart the process (no rebuild, no code change);
+re-register a new version → the emitted diagram is visibly different and the
+`[remote-workflow-engine] graph-analyzer` journal line names the new model. `result: not-run` here is
+the honest state per the contract's own template ("not-run" is a valid enum value) — there is nothing
+to run before Gate 6 lands `GraphAnalyzer`/`composeConfig` forwarding, and nothing a mock/unit run
+could prove even after.
+
+### VAL-116 — REQ-105: the skeleton route is gone (404); the run DAG stays behind the auth gate
+- **status:** green
+- **traces:** REQ-105, DES-132, DES-133, TASK-120, ARCH-083, ADR-022
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/acceptance/val-116-skeleton-route-404.test.ts`. Real `createServer`, real HTTP. The grep
+guard (UT-115) + the tool-schema assertion are the mechanical proof; this is the real-tier half. 2
+cases: `GET /api/workflows/:name/skeleton` → 404 (the surface no longer exists); `GET
+/api/workflows/:name/describe` → 200 (its replacement exists). Red reason: `/skeleton` is a live 200
+route today; `/describe` doesn't exist (404). Confirmed: `npx vitest run
+tests/acceptance/val-116-skeleton-route-404.test.ts` — 2/2 fail (skeleton returns 200 not 404; describe
+returns 404 not 200 — inverse-of-expected on both, correctly).
+
+### VAL-117 — REQ-106: authoring rules are reachable from the MCP surface a cold client actually sees
+- **status:** green
+- **traces:** REQ-106, DES-135, TASK-123, ARCH-086, ARCH-051
+- **tier:** acceptance
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/acceptance/val-117-authoring-schema-discoverable.test.ts`. Real `createServer`, real
+`/mcp` `tools/list`. One case: the real advertised `workflow_register.script` description contains the
+four authoring rules + the `docs/AUTHORING.md` pointer — readable by a cold schema-only client with no
+guidance skills, without fetching anything else. Red reason: the advertised description mentions
+neither `AUTHORING.md`, `meta.params`, "locked", nor "phase title" today. Confirmed: `npx vitest run
+tests/acceptance/val-117-authoring-schema-discoverable.test.ts` — 1/1 fail.
+
+### v23 Gate 5 RED confirmation (2026-09-02, verifier)
+Targeted run (21 new/amended files): `npx vitest run <21 files>` — **93 total, 58 failed / 35
+passed**. Every failure traced above to its genuine unimplemented cause (module-not-found, a
+not-yet-declared class member, or a real behavioral gap in existing code); every pass is a documented
+green pin (existing v22 behavior this pass leaves unaffected, or a self-referential documentation
+case).
+
+Full-suite `npx vitest run`: **1751 total, 1693 passed / 58 failed (279 files)** — exactly this pass's
+58 genuinely-red cases, **0 unrelated regressions** against the v22 Gate 8 close baseline (258 of 279
+files fully green, unchanged; 2 pre-existing `spawn litellm ENOENT` background artifacts in
+`tests/integration/params-admission.test.ts`, documented since IMPL-140, unaffected). Hermetic: every
+new/amended case uses a `FixedClock` anchor or a store/HTTP-response oracle — no absolute-date-vs-
+real-clock comparisons.
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: 42 gaps detected, all either (a)
+pre-existing debt unrelated to this pass (`UT-010`/`IT-011`/`UT-058`/`UT-064`/`IT-057`/`UT-094`/
+`UT-095`/`DES-094`/`DES-088`×2/`DES-066`×2/`DES-099`×2/`DES-100`, `TASK-018`, `IMPL-082` — none touched
+by v23) or (b) the EXPECTED pre-implementation state for this pass's own items: REQ-101..106 each show
+one mid-sev "未實作" (unimplemented — Gate 6's job) AND one high-sev "未真實驗證" (mock-only/not yet
+real-verified — Gate 7.5's job; every VAL this pass adds is `real:false` by design, per the contract's
+own rule that only a real run flips it), 12 rows total; TASK-113..125 each show one low-sev "未實作",
+13 rows total. **These 25 rows are the correct, expected TDD-RED shape for a Gate-5 pass — a REQ with
+`real:true` before Gate 6 lands the code would itself be the defect.** `sh .sdlc/trace --check` will
+not exit 0 until Gate 7.5; that is by design, not a defect of this pass. **Zero 斷鏈 (broken trace
+links), zero 孤兒 (orphans) — every new UT/IT/VAL resolved cleanly into the trace graph with no dangling
+`traces:` reference.**
+
+## Gate 5 scope — v23 adjudication #2, TASK-126 (2026-09-02, verifier)
+
+Targeted RED pass for the ONE work item created after the Gate-5 close above: TASK-126 (the unowned
+composition root — `GraphAnalyzer` and real `TriggerPorts` are built but `createServer()` never
+constructs/wires either into `new McpFacade(...)`; adjudication #2 R-1/R-2). Gate 5 for
+TASK-113..125 stays closed as written above; Gate 6 is mid-flight on the rest of v23 and is untouched
+by this pass. The 9 reds already triaged by adjudication #2 (four kinds: retire/re-point/fix/resolve
+design-vs-code) are that ruling's own scope, not test-first RED — not touched here.
+
+### IT-098 — TASK-126: `createServer()` actually constructs and wires the analyzer + real trigger ports
+- **status:** green
+- **traces:** TASK-126, DES-125, DES-127, DES-131, DES-134, ARCH-078, ARCH-079, ARCH-081
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/integration/graph-analyzer-composition-root.test.ts`. Mock policy (integration, DES-119):
+real `createServer`, real `/mcp` over live HTTP for the behavioral case — no live LLM needed, since
+`workflow_regenerate_diagram`'s own contract is to return `{queued, status:'pending'}` immediately and
+never wait for the draw (the draw itself is REQ-102/VAL-113's concern). The two structural cases are
+pure static-text reads over `src/**`, same convention as UT-115/UT-117's mechanical grep guards — this
+repo's named recurring defect class (composeConfig wiring, v11/v15/v16/v22) gets the same treatment
+here rather than relying only on an incidental behavioral symptom.
+
+Three cases: (1) `new GraphAnalyzer(` appears exactly once across `src/**` — the one construction site
+`createServer()` owns; today zero. (2) `McpFacadeDeps.triggerPorts`/`.graphAnalyzer` are REQUIRED
+(no `?:`) and `triggerPorts ?? NO_TRIGGER_PORTS` is gone from `mcp-facade.ts` (adjudication #2 R-2 —
+an unwired call site becomes a `tsc` error, not a silent degrade); today both are still optional and
+the fallback is still present. (3) with `graphAnalyzer.enabled:true` on `createServer`'s own config,
+`workflow_regenerate_diagram` is NOT `ANALYZER_DISABLED` — proves the config reaches the facade, not
+just that the key is accepted; today the facade's `graphAnalyzer` dep is `undefined` regardless of
+config (server.ts's own comment: "the ONE site that actually constructs the GraphAnalyzer" does not
+exist yet), so it is always `ANALYZER_DISABLED`.
+
+`VAL-114`'s existing first case (`triggers` not reflecting a live `schedule_create`) is independent
+corroborating evidence of the same unwired `triggerPorts` seam — left as-is, not re-pointed to
+TASK-126, per the contract's surgical-changes rule; TASK-126's own `dod` already names it.
+
+**Confirmation.** `npx vitest run tests/integration/graph-analyzer-composition-root.test.ts`: 3/3 fail,
+each for the stated genuine-unimplemented reason (`0 !== 1`; both fields still `?:` + fallback still
+present; `ANALYZER_DISABLED` returned when it must not be). `npx tsc --noEmit`: clean, no errors in the
+new file. Full suite: **1795 total, 1783 passed / 12 failed (280 files, 9 failed)** — exactly the 9
+reds adjudication #2 already triaged (unaffected, not this pass's scope) plus these 3 new reds; the 2
+`spawn litellm ENOENT` background artifacts (documented since IMPL-140) are unaffected. Hermetic: no
+clock/date literals — the structural cases read source text, the behavioral case has no time
+comparison. `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: gap count moves by
+exactly the expected pre-Gate-6 rows for this one item (`IT-098` itself is fully implemented/traced —
+no new gap from it); 0 broken links, 0 orphans.
+
+## Gate 5 scope — v23 adjudication #2 R-3(a)/(b): retire + re-point (2026-09-03, verifier)
+
+Since the TASK-126 targeted pass above, Gate 6 (implementer) landed TASK-120/121/123/126 (`6447aa2`,
+`0f4bf67`) — the `/skeleton` route is deleted, `/describe` is live, the no-skeleton allowlist grew to
+four (adjudication #3). What was still outstanding: adjudication #2's **R-3(a)/(b)**, the RETIRE and
+RE-POINT halves of "the nine reds are four kinds" (R-3(c)/(d) — `UT-111`, `val-112` — stay
+implementer-owned, `TASK-117`/`TASK-119`, draft). R-3(a)/(b) is test-authoring work with no owning
+TASK (the same "unowned" shape as TASK-126's own construction site, at test-file scope rather than
+src scope), and this ledger's own convention (the flip commit `0f4bf67`) reserves 05-tests.md/test-file
+edits for the verifier lane. Confirmed outstanding by running the 3 named files before touching
+anything: exactly the 4 reds R-3(a)/(b) name, 0 others.
+
+**(a) RETIRE — 3 cases asserting the deleted `/skeleton` surface**, each replaced with a comment
+recording the retirement and pointing at 01-requirements.md's new partial-supersession note (never a
+blanket `[SUPERSEDED]` — `parseWorkflowSkeleton` survives internally per REQ-105/REQ-062's own text):
+`tests/integration/workflow-discovery-http.test.ts`'s two REQ-062 cases (`workflow_get.skeleton`;
+`GET /api/workflows/:name/skeleton`), and `tests/acceptance/val-110-script-masking.test.ts`'s "returns
+the real skeleton/phases when auth is disabled" case. A fourth skeleton-touching case in the same
+val-110 file ("omits skeleton/phases entirely while auth is on") is **left untouched, not this pass's
+scope**: adjudication #2's R-3(a) names only the auth-OFF case; the auth-ON case now passes vacuously
+(the route 404s, so the omitted-keys assertion holds trivially) rather than red, so it was not among
+the nine reds the ruling triaged — flagged here as a residual for a future adjudication, not silently
+fixed. 01-requirements.md: REQ-062 and REQ-100 each gain a `[PARTIALLY SUPERSEDED v23, adjudication #2
+R-3(a)]` note, scoped narrowly (REQ-062's user-facing vehicles only, not the static-scan guarantee;
+REQ-100's skeleton/phases clause only, not script masking) — the "REQ-006 form" the ruling asked for,
+by the precedent at REQ-085.
+
+**(b) RE-POINT — 1 case, the DES-018 malformed-path guarantee.**
+`tests/integration/dashboard-http.test.ts`'s "a malformed %-encoded path segment degrades to 200 + a
+partial view" case drove through the deleted `/skeleton` route. Oracle discipline (binding per the
+ruling): the expectation came from reading `server.ts` first, not from running the route —
+`decodeURIComponent` at `server.ts:1174` (inside the `describeMatch` handler) throws the identical
+`URIError` for a `%` segment that the deleted `/skeleton` handler did, caught by the SAME outer
+try/catch (`server.ts:1279-1282`) that produces the `{degraded}` 200. Re-pointed to
+`/api/workflows/%/describe`; green immediately (the route already exists — TASK-120), because the
+guarantee under test was never about the route that carried it, only about the shared catch. `05-
+tests.md`'s `IT-033` and `VAL-110` entries gain notes so a reader hits the retirement/re-point
+reasoning next to the case, not just in this section.
+
+**Confirmation.** `npx vitest run` on the 3 touched files: 14/14 pass (0 fail) — the 3 retired cases
+are gone, the re-pointed case and every untouched case in those files are green. `npx tsc --noEmit`:
+clean. Full suite: **1792 total, 1790 passed / 2 failed (280 files, 4 failed)** — exactly `UT-111` +
+`val-112` (R-3(c)/(d), draft-task-owned, untouched by this pass) plus the 2 `spawn litellm ENOENT`
+background artifacts (documented since IMPL-140); **1792 = 1795 − 3 retired**, confirming no case was
+silently dropped beyond the 3 named retirements. Hermetic: no clock/date literals touched or added.
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: 969 items, 40 gaps — unchanged
+against a pre-edit baseline captured to file before any edit (per CLAUDE.md, never reconstructed via
+`git checkout <sha> --`); 0 broken links, 0 orphans — retiring a test CASE (not a work-item ID) moves
+nothing trace.py parses. `state.yaml`: `gates.tests.passed` stays `true` (already closed for
+TASK-113..126); `current_stage` stays `impl` (Gate 6 is mid-flight and unaffected — this pass is
+test-file work only, no `src/` change). Next: Gate 6 (implementer) continues on `UT-111`/`val-112`
+(TASK-117/TASK-119); the flagged val-110 auth-ON residual awaits a future adjudication, not a task.
+
+## Gate 5 re-verification + TASK-127 targeted RED (2026-09-03, verifier)
+
+Re-verified the R-3(a)/(b) pass above against the tree as it stands at `HEAD` (`63bf21d`, landed after
+the numbers above were captured — TASK-119 shipped, TASK-127 was newly drafted): re-running the 3
+touched files now shows 13/13 pass, not 14/14 (`val-110-script-masking.test.ts`'s vacuous auth-ON
+skeleton case named as a residual above was itself retired by `63bf21d`, per its own commit message —
+one fewer case, not a regression). Full suite now **1791 total, 1790 passed / 1 failed** (`UT-111`
+alone — `val-112`/TASK-119 is green now, R-3(c)/(d)'s other half landed); `sh .sdlc/trace --check`:
+970 items / 41 gaps (+1 item, +1 gap — exactly `TASK-127` itself, newly drafted with no coverage yet
+at that commit). Every delta traces to `63bf21d`; none of it is this pass's own edit, and none of it
+is a defect.
+
+### IT-099 — TASK-127: DES-122's zero-config fail-closed guard forces `graphAnalyzer.tools` to `[]`
+- **status:** green
+- **traces:** TASK-127, DES-122, ARCH-079, ARCH-085
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+TASK-127 (`status: draft`, added by `63bf21d`) has its own `dod`: "Gate 5 writes the RED case FIRST" —
+this is that pass, scoped to TASK-127 only (same targeted-RED convention as IT-098 for TASK-126).
+File: `tests/integration/graph-analyzer-composition-root.test.ts` (TASK-127's own `files:` list),
+new describe block appended after IT-098's.
+
+DES-122's zero-config fail-closed rule: "with `graphAnalyzer.enabled` and no resolvable `workRoot`,
+`tools` is forced to `[]` regardless of what the operator configured, and the boot line states the
+downgrade and its reason." Read `server.ts:1462-1475` first (TASK-127's own dod names it as the ONE
+site): `graphAnalyzerConfig.tools` applies `config?.graphAnalyzer?.tools ?? []` unconditionally —
+never consulting `config?.workRoot` — so today an operator who sets `graphAnalyzer.tools` without also
+setting `workRoot` (the zero-config shape `main.ts`'s own `analyzerScratchCwd` guard already keys off:
+`config.workRoot ? join(...) : undefined`) gets their configured tools through uncurated. Confirmed
+this isn't masked by the existing `curateToolsForProvider` layer: the default `model: 'default'` alias
+resolves `provider: 'anthropic'` (`default-aliases.ts`), and `curateToolsForProvider` is a no-op for
+`'anthropic'` (`claude-agent-sdk-client.ts:224`) — so the gap is real, not hidden behind provider
+curation.
+
+Mock policy (integration, DES-119): real `createServer`, real boot; the only thing spied is
+`console.log`, to read the two boot lines DES-131 already ships (`graph-analyzer effective tools=...`
+and the missing-diagram count) — same convention as UT-111's journal-line spy (mocking a stdout sink,
+not the SUT boundary). One case: boot `createServer({port:0, bind:'127.0.0.1', graphAnalyzer:
+{enabled:true, tools:['Bash']}})` — deliberately omitting `workRoot` — and assert (1) the
+`effective tools=` boot line reads `[]`, not `["Bash"]`; (2) some boot line names `workRoot` as the
+reason (loose match, `/workRoot/i` — the exact wording is an implementation choice TASK-127's dod
+doesn't pin, only that the reason is stated, not silent).
+
+**Confirmation.** `npx vitest run tests/integration/graph-analyzer-composition-root.test.ts`: 4 tests,
+1 failed (the new case) / 3 passed (IT-098's own 3, unaffected) — failure is exactly `effective
+tools=["Bash"]` where `[]` was expected, the genuine unimplemented reason (no code path branches on
+`config?.workRoot` at all yet), not a syntax/setup error. `npx tsc --noEmit`: clean. Full suite:
+**1792 total, 1790 passed / 2 failed** — exactly `UT-111` (pre-existing, TASK-117-owned) + this new
+`IT-099` case; 1792 = 1791 (pre-edit) + 1 (this new case), confirming nothing else moved. Hermetic: no
+clock/date literals — the boot-line assertions are string/array content, no time comparison.
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check`: 971 items (+1 for `IT-099`), 41
+gaps — unchanged from the 970/41 baseline captured above (TASK-127 itself is still `未實作`/`draft`,
+now with a red test rather than none — the gap moves from "no coverage" to "expected pre-Gate-6 red",
+not a new or resolved gap in trace.py's own count); 0 broken links, 0 orphans (`IT-099` confirmed
+present in the dashboard's own rows). `state.yaml`: `gates.tests.passed` stays `true`; `current_stage`
+stays `impl` (Gate 6 is mid-flight; TASK-127 is now covered for whoever implements it). Next: Gate 6
+(implementer) continues, now with TASK-127 covered by a RED test to build against.
+
+## Gate 6.5+7 regression confirmation — v23 (2026-09-03, verifier)
+
+Closes v23's Gate 6.5 (simplify) + Gate 7 (regression + coverage) in one pass. Every v23 test item
+above was flipped from `red`/`fail` to `green`/`pass` **on a full-suite re-run**, not on inspection:
+`UT-107..117`, `IT-096..099`, `VAL-111..114`, `VAL-116/117` (21 items). `VAL-115` is the one
+exception and is NOT a failing red — see below.
+
+**`VAL-115` (REQ-104) → `status: blocked`, `result: not-run`.** Deliberate, by REQ-104's own
+acceptance text and TASK-124's own card: no unit or integration assertion may claim it, because a
+config-forwarding assertion can be read off the same broken path it is meant to police. Only Gate
+7.5's real run (an operator edits `graphAnalyzer.systemPrompt`/`.model`, re-registers, and the
+emitted diagram visibly changes with no redeploy) is proof. Re-labelled from `red` to `blocked`
+this gate purely so "no remaining red" is a true statement about the suite — the item's meaning,
+owner (TASK-124, `status: draft`) and evidence bar are unchanged.
+
+### New tests written by THIS gate (coverage-gate shortfalls, per-function bar)
+
+Three v23-introduced functions were below the per-function bar. Each got real cases, and each case
+was written from the DES boundary it guards — never as a line-toucher:
+
+- **`UT-111` extended in place — `GraphAnalyzer._buildAllowlist`'s live-bindings arm** (3 new cases,
+  `tests/unit/graph-analyzer.test.ts`). Measured 81.25% (lines 236-238, the `for (const b of
+  bindings)` arm) with **zero** coverage: every prior case ran with `NO_TRIGGERS`, so a diagram
+  naming a real trigger kind or a real chain-upstream workflow was never gate-checked — even though
+  widening the allowlist by the live snapshot is the entire reason DES-128's snapshot reaches the
+  analyzer. Cases: (1) a diagram naming `cron`/`webhook`/`chain` **and** the live upstream workflow
+  name passes the gate and stores verbatim; (2) a diagram naming a DIFFERENT workflow name is still
+  refused `GATE_REJECTED_CONTENT` — the widening is exactly the live upstream and no further, which
+  is what makes it safe; (3) a purged upstream (`getWorkflowName → null`) adds **no** label, so a
+  `null` is never stringified into the allowlist.
+- **`UT-114` extended in place — `McpFacade.workflow_regenerate_diagram`'s `ANALYZER_DISABLED` arm**
+  (1 new case, `tests/unit/workflow-describe-facade.test.ts`). Measured 83.33% (lines 463-465) with
+  zero coverage: all three existing cases return from an EARLIER guard (owner / not-found /
+  unknown-version), so the branch that makes `graphAnalyzer.enabled:false` a first-class refusal was
+  never executed. The new case is owner-authorised on an existing `(name, version)` with a
+  **spy** `regenerate` delegate, and asserts both the `ANALYZER_DISABLED` code and that the delegate
+  was never called — refusal happens BEFORE the analyzer is touched (DES-126).
+- **NEW `UT-118` — `SqliteRunStore.getWorkflowName`** (3 cases, new file
+  `tests/unit/sqlite-run-store-workflow-name.test.ts`). Measured 25% (3 of 4 lines missed): the
+  method shipped with **no direct coverage at all** — the composition root wires it, but every
+  analyzer/describe test in the suite passes a ports object whose `runs.getWorkflowName` is a stub,
+  so the real SQL never ran. Real `SqliteRunStore` on real on-disk sqlite. Cases: a real run's
+  registered name; an unknown `runId` → first-class `null`, never an invented name (DES-128); an
+  inline-script run with no workflow name → `null`, not the empty string.
+
+### UT-118 — `SqliteRunStore.getWorkflowName`: the chain-upstream join, on real sqlite
+- **status:** green
+- **traces:** DES-128, TASK-126, ARCH-078
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+### Real-dependency smoke (exit-check item 7) — analyzer → real local Ollama, NOT a mock
+
+The analyzer's LLM call is v23's one new external integration, so it was smoked against a **real**
+provider (`ollama` on `127.0.0.1:11434`, model `qwen2.5:7b`) twice, both throwaway scripts, both
+deleted after the run:
+
+1. **Subsystem level** — real `GraphAnalyzer` + real `LiteLLMGatewayClient` (direct-fetch) + real
+   `WorkflowCatalog` on disk. `enqueue()` returned immediately with a `pending` row; 16.3s later the
+   real model answered (143 prompt / 10 completion tokens, journal line as DES-129 specifies) and the
+   row settled `status:'ready'` with a genuine model-authored, gate-passed diagram:
+   `╭─Draft──▶─Review──╯`. Every one of its tokens is a real phase title from the registered script.
+2. **Composition root over real HTTP** — real `createServer({workRoot, aliases, useLiteLLMProxy:false,
+   graphAnalyzer:{enabled:true, model:'ollama-qwen', …}})`, real `workflow_register` then
+   `workflow_describe` over real JSON-RPC-over-HTTP. Both v23 boot lines printed; the register
+   triggered a genuine 17.4s Ollama call (167/106 tokens); the model's answer failed the codepoint
+   pass and the row settled `unavailable`/`GATE_REJECTED_SHAPE`, surfacing through `workflow_describe`
+   as `diagramNote:"The analyzer did not return a valid diagram."` with `diagram:null`,
+   `diagramStale:false` and **no `script` key anywhere in the response**. The honest-failure path is
+   therefore real-verified too, not just the happy path.
+
+**Finding raised by that smoke (NOT fixed here — pre-existing module, behaviour-changing fix, out of
+a quality-only gate's scope): the composition root's default gateway path CRASHES the process when
+the `litellm` binary is absent, and v23 puts that path on `workflow_register`.**
+`createServer` defaults `useLiteLLMProxy: true` (D-R1), so `analyzerGateway` is the managed-proxy
+client; `LiteLLMProxyManager.start()` calls `spawn('litellm', …)` and **never attaches a
+`proc.on('error')` handler** (`src/gateway/litellm-proxy.ts:165`), so a missing binary emits an
+unhandled `'error'` event and Node terminates the process. Reproduced live this gate: an otherwise
+identical boot **without** `useLiteLLMProxy:false` died with `Error: spawn litellm ENOENT`
+immediately after `workflow_register` returned. The defect is pre-v23 (that module is untouched by
+this iteration) but its **reachability** is new — before v23 only an `agent()` call could reach it;
+now every registration does, because registration enqueues a diagram. This is also the true cause of
+the suite's two long-documented `spawn litellm ENOENT` "background artifact" files (8 uncaught events
+this round, up from 2 in v22 — the growth is exactly this new reachability, not a new defect).
+Routed to Gate 7.5/Gate 8, not patched here. One-line shape of the fix, for whoever takes it:
+`proc.on('error', (err) => { … })` so the manager's own bounded-timeout path reports it instead.
+
+### Mechanical gates re-run by this pass
+
+- `npx tsc --noEmit`: clean.
+- Full suite (post-simplify, post-new-tests): see `state.yaml`'s `gates.verification` note for the
+  exact counts.
+- `sh .sdlc/trace --check`: **41 → 20 gaps** (985 items). Every one of the 21 gaps the missing Gate-6
+  `IMPL-*` entries had produced (6 `mid` REQ-101..106 未實作 + 15 `low` TASK-113..127 未實作) is
+  closed by the IMPL-159..172 backfill. The remaining 20 are byte-identical to the pre-pass
+  baseline's own residue: 15 `low` iter-drift, 1 `low` TASK-018, 1 `mid` IMPL-082 TDD, and **3
+  `high` 未真實驗證 (REQ-103/105/106)** — the last of which only Gate 7.5's validator can close, by
+  flipping `real:true` on a real run. No new gap class.
+- `solid_check.py`: **PASS, 0 high / 0 mid / 10 low.** One HIGH was found and fixed at the document
+  level: `ARCH-085` claims `src/main.ts` as its module but declared only `ARCH-079` in `deps:`, while
+  `main.ts` has imported `src/gateway` (`ARCH-069`) since D-F4 — a Gate-2 write-up omission that
+  became visible the moment ARCH-085 took ownership of the file. Declared, with the rationale
+  recorded inline in ARCH-085 (same remedy as v22's ARCH-073 `deps:` fix). No code moved.
+- `determinism_check.py --check`: clean.
+- Time-travel re-run (`TZ='Pacific/Kiritimati'`, no `libfaketime` in this environment): see the
+  `gates.verification` note.
+- Seam wiring: `new GraphAnalyzer(` and `new McpFacade(` each appear **exactly once** in `src/`,
+  both in `createServer`'s composition root, both with real dependencies (a real `GatewayClient`, the
+  real `WorkflowCatalog`, and `triggerPorts` composed from the real scheduler/webhook/continuation/
+  run stores). `NO_TRIGGER_PORTS`/`NO_GRAPH_ANALYZER` are **defined in `src/` but referenced only by
+  tests** — confirmed by grep — which is the intended shape: they exist so a test states "no
+  triggers" as a decision rather than an omission, and production never reaches for them.
+
+### Coverage gate — scope, numbers, and the one Decision rationale
+
+**Overall `src/` line coverage: 95.42%** (14760/15468 lines), against a ≥90% whole-tree bar. Measured
+with `npx vitest run --coverage --coverage.provider=v8 --coverage.include='src/**/*.ts'
+--coverage.reportOnFailure=true` — the `reportOnFailure` flag is required in this environment, since
+the two `spawn litellm ENOENT` artifact files count as failed FILES and vitest otherwise skips report
+generation entirely (v22 and earlier did not need it; see the ENOENT finding above for why the count
+grew this iteration).
+
+**Per-function bar, v23 slice: 33/33 clear, every one at 100%.** That is every function in the three
+new modules (`diagram-gate.ts`, `graph-analyzer.ts`, `trigger-bindings.ts`) plus every function this
+iteration added or modified in an existing module (`projectWorkflowDescribe`, `workflow_describe`,
+`workflow_regenerate_diagram`, `catalogResolveFailure`, `reportProblemFor`, the four
+`workflow_diagrams` accessors, `deregister`, the three new sync port reads,
+`curateToolsForProvider`). The three v23 blocks that live inside pre-existing large functions were
+measured as blocks: `createServer`'s v23 construction/wiring block (88/88 lines),
+`callTool`'s register→enqueue seam (21/21), and `composeConfig`'s `graphAnalyzer` forward + the
+analyzer scratch-`cwd` construction (10/10 and 11/11) — all 100%.
+
+**Decision rationale (scope of the per-function bar).** The per-function bar is enforced against the
+code THIS round added or modified, not retroactively across the whole tree; the whole-tree bar
+enforced is the ≥90% overall figure. Whole-tree, **77 functions of >5 lines sit below 95%** — all
+pre-existing, none touched by v23; the worst are `child-entry.ts`'s sandbox child body (0%, only ever
+executed inside a spawned subprocess, so no in-process measurement can see it), `mcp-probe.ts`'s
+three probe methods, `main.ts`'s `main`/`loadFileConfig`/`onSupervisionEvent` (the real-process
+entrypoint, and the LiteLLM supervision callback which is unreachable without a real `litellm`
+binary), and `server.ts`'s `runDiagnostics`/`checkMcpConfigTransport`. This is the same scope rule
+recorded in `gates.verification` since v21 (the `harness-defaults.ts` precedent: a function MODIFIED
+this round is measured whole; a function merely NEIGHBOURING the diff is not re-scoped) and it is
+stated here rather than left implicit. The 77 are carried as named debt, not silently absorbed — a
+retro-coverage iteration for them is a scope decision for the owner, and several of them genuinely
+require a real `litellm`/MCP/sandbox environment, i.e. Gate 7.5's tier rather than this one's.
+
+## v23 Gate 5 RE-RUN — orchestrator adjudication #6 (REQ-103 was silently narrowed; V-1/V-2/V-4 RED)
+
+Gate 7.5 FAILED on REQ-103 (VAL-118, `08-validation.md`): the trigger bindings are computed and
+already reach `_buildAllowlist`, but never reach the analyzer **prompt** itself
+(`graph-analyzer.ts:299` builds it from `systemPrompt + script` only). `04-design.md`'s orchestrator
+adjudication #6 (2026-09-03) ruled the clause back in and additionally ordered two smaller fixes it
+found while reproducing the failure live: V-2 (the managed-LiteLLM spawn's missing
+`proc.on('error')` handler, newly reachable from `workflow_register` since v23) and V-4 (a
+client-visible `"unmatched to skeleton"` string on the live `/api/runs/:id/dag` route, REQ-105). V-3
+(an `AUTHORING.md` shape example) is doc-only and carries no test.
+
+Per the adjudication's own scope line — *"Gate 6 changes `:298`; Gate 5 writes the RED first"* —
+this pass writes the RED for all three code-behavior items. `VAL-118` itself is validator-owned
+(`real:true`) and is re-run, not duplicated, at Gate 7.5; nothing here touches it.
+
+### UT-119 — the analyzer PROMPT (not just the allowlist) must carry the live trigger bindings
+- **status:** green
+- **traces:** DES-131, DES-128, ARCH-078, ARCH-079, REQ-103
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts` (new describe block). Mock policy (unit): a stub
+`GatewayClient.invoke` that captures the `prompt` string it was called with; a real `WorkflowCatalog`
+on a tmpdir sqlite (existing file convention); plain-object `TriggerPorts`; the `schedule: runInline`
+seam. Two cases, both asserted against **literals** (never derived from the SUT, per the ledger's
+carried-in rule 1): (1) the identical script registered as two versions, one with no trigger bound
+and one with a live cron binding (`*/5 * * * *`) — asserts the two captured prompts are NOT
+byte-identical (today they are: this is the validator's own live oracle, identical `promptTokens`
+with and without a cron binding, reproduced here as a unit-level prompt-string diff) and that the
+bound prompt contains the cron expression literal; (2) a live chain binding (a pending continuation
+whose `runs` port resolves an upstream workflow name) — asserts the upstream name literal appears in
+the prompt. Confirmed red because unimplemented: both fail today — the first on `not.toBe` (prompts
+ARE identical), the second on `.toContain` (the prompt has no binding text at all) — verified by
+reading `graph-analyzer.ts:296-299` before writing the assertions, not assumed.
+
+### UT-120 — the live `/api/runs/:id/dag` warning never re-surfaces the retired "skeleton" word
+- **status:** green
+- **traces:** DES-064, REQ-105
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-layout.test.ts` (appended to the existing UT-068 suite, same fixture
+convention: `layoutGraph(skeleton, liveAgents, opts)`). `dashboard.ts:342`'s unmatched-agent warning
+is served verbatim on `GET /api/runs/:id/dag` (`server.ts:1242`); today it reads
+`` `agent ${a.agentId} unmatched to skeleton: frame-grouped` ``, a live client-facing string that
+still names the deleted surface — REQ-105's own text: *"no ... still tells a reader the skeleton is
+a surface available to them"*. `dashboard.ts` is (correctly) on ADR-022's source-grep guard
+allowlist for its **internal** consumption of `parseWorkflowSkeleton`, so that guard does not, and
+should not, catch a wording choice inside a string it is allowed to contain the concept for — this
+is a narrower, separate pin on the actual live wire content. Assertion: the existing unmatched-agent
+fixture's `result.warnings` contains no case-insensitive `'skeleton'` substring. Confirmed red:
+fails today (`true` where the assertion expects `false`) — verified by reading `dashboard.ts:342`
+before writing the assertion.
+
+### UT-121 — a `litellm` spawn failure must not escape as an unhandled process-level exception
+- **status:** green
+- **traces:** ARCH-005, REQ-102
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/litellm-proxy-hardening.test.ts` (new describe block, existing spawnImpl/fetchImpl
+injection convention; the EventEmitter-fake-proc pattern is borrowed from
+`litellm-proxy-supervision.test.ts` since 'error' must be a real emittable event). Verified at
+source before writing this test: `litellm-proxy.ts`'s `start()` attaches `proc.once('exit', ...)`
+only AFTER a successful healthcheck (`_superviseExit`, called only on the `res.ok` branch) — there
+is no `.on('error', ...)`/`.once('error', ...)` anywhere in the file. An `EventEmitter`'s `'error'`
+event with zero listeners throws synchronously wherever Node emits it (the language's own contract);
+for a real spawn failure (`litellm` missing from PATH → ENOENT) that emission happens from libuv's
+own callback with no enclosing try/catch — i.e. an **uncaught process-level exception** — and v23
+made this newly reachable from `workflow_register` (registration now enqueues an analyzer job that
+lazily starts this proxy on the default `useLiteLLMProxy:true` path). This is also the documented
+root cause of two long-carried `spawn litellm ENOENT` "background artifact" test files (05-tests.md's
+own Gate 6.5+7 real-dependency-smoke section flagged it, unfixed there as out of a quality-only
+gate's scope). Assertion: the spawned fake child has at least one `'error'` listener attached **by
+the time of the FIRST startup health poll** (captured inside the fake `fetchImpl`, which fires after
+spawn and before healthy) — the actual vulnerable window, not merely "by the time `start()`
+eventually settles": a fix that only attaches the listener inside `_superviseExit` (next to the
+existing `once('exit')`, the natural place to look) would leave this window open while still
+turning a weaker after-settle assertion green. Deterministic and safe (registration is checked, not
+a real crash: deliberately provoking the actual unhandled, async-timed crash inside a test would
+risk taking the whole test worker down with it, which is exactly the failure mode being fixed).
+Confirmed red: `listenerCount('error')` is `0` at the first poll today.
+
+**Not tested here, doc-only (V-3):** adjudication #6's `AUTHORING.md` shape-example gap has no code
+assertion — it is a documentation addition (one example line of the `{knobs:{...},args:{...}}`
+shape) plus stating that a mis-shaped `meta.params` block is silently ignored rather than rejected.
+No new registration behavior is added, so no test traces it.
+
+**Confirmation.** `npx vitest run tests/unit/graph-analyzer.test.ts tests/unit/graph-layout.test.ts
+tests/unit/litellm-proxy-hardening.test.ts tests/unit/litellm-proxy-supervision.test.ts`: the 3 new
+items (UT-119's 2 `it` cases, UT-120, UT-121 — 4 failing cases total) fail, each for its stated
+reason, confirmed by reading the current source before writing the assertion in every case; all
+pre-existing cases in the same
+files remain green (no regression from the new fixtures/imports). `npx tsc --noEmit`: clean. Hermetic:
+no clock/date literals — `graph-analyzer.test.ts` reuses the file's existing `FixedClock`; the new
+litellm-proxy tests use no time values at all. `state.yaml`: `gates.tests.passed` stays `true`
+(Gate 5 was already closed for the rest of v23's slice and stays so); `current_stage` moves back to
+`impl` for Gate 6 to land the three fixes (`graph-analyzer.ts:299`, `litellm-proxy.ts`'s
+`proc.on('error', ...)`, `dashboard.ts:342`'s wording) plus V-3's doc addition, then Gate 7.5 re-runs
+`VAL-118` only.
+
+## Gate 6.5+7 ROUND 2 — adjudication #6 closeout (2026-09-03, verifier)
+
+Second Gate 6.5+7 pass of v23, over the Gate 6 delta `c3b0c01` (V-1/V-2/V-4 code + V-3 doc). Scope
+of this section: the simplify pass, the three flips, the two new tests the coverage gate and the
+system-level rule required, and the mechanical gates.
+
+**Simplify (Gate 6.5) — no code change, deliberately.** Reviewed the 52 changed `src` lines for
+reuse / simplification / efficiency / altitude. Nothing to cut: `describeTriggerBindings` is a single
+`switch` over the same closed union `canonicalize` already walks (merging them would couple a
+fingerprint to a prompt string), the `spawnError` capture is two statements inside the loop that
+already owns startup failure, and V-4 is one string literal. Two candidates rejected as out of a
+quality-only gate's scope and recorded as debt in `IMPL-173` instead: consolidating the 13
+near-identical fake-`ChildProcess` builders (13-file blast radius during a verification gate), and
+making `_doStart`'s two early `throw`s reset `_startPromise` the way the deadline path does (a
+behaviour change). "Revert any cleanup that goes red" was never reached — there was no cleanup.
+
+**Flips.** `UT-119`, `UT-120`, `UT-121` → `status: green`, `result: pass`, on the full-suite re-run
+below (not on inspection). `real:` stays `false` on all three: they are unit tests, and REQ-103's
+real evidence is `VAL-118`, which Gate 7.5 owns and re-runs.
+
+**One stale label corrected.** `IT-015` still carried `red`/`fail` from v1 while its file green-SKIPS
+through its own hermeticity guards (verified by running it alone: 1 passed, 4.9s, with the explicit
+`IT-015 SKIPPED:` reason printed) — so "no remaining red" read as false about a suite that is
+281/281 green. Re-labelled `blocked`/`not-run` with the rationale recorded on the item itself, exactly
+as `VAL-115` was re-labelled at the previous closeout; nothing about its meaning, owner, `real:false`
+or evidence bar changed. After this the ledger holds **zero** `status: red` items.
+
+### The two `spawn litellm ENOENT` / hook-timeout "background artifact" files — genuinely fixed
+
+The ledger has carried "2 pre-existing failing test FILES" as an accepted artifact since v22, and
+`c3b0c01`'s message claimed the completed `ChildProcess` fakes had turned them green. Re-measured
+here: they were still **failing** — `val-023-sdk-gateway-timeout.test.ts` and
+`hooks-reject-and-timeout-bound-journey.test.ts`, `Hook timed out in 10000ms`, all 5 of their
+assertions passing. Diagnosed rather than re-accepted, and confirmed **pre-existing** by running the
+same two files against a scratch `git worktree` at `71490c0` (the commit before the Gate 6 delta —
+worktree, never `git checkout <sha> -- <path>`, per this repo's CLAUDE.md): identical failure, so it
+is not a V-2 regression. Cause: both fixtures stand up a deliberately-hung HTTP stub that never ends
+a response, so every request it received is still an open socket and `server.close()` waits for all
+of them — `afterAll` never returns. Fix (test-only, one line each, no assertion weakened):
+`hungStub.closeAllConnections()` before `close()`. Both files now pass in ~7s each. **The
+"2 background artifacts" caveat is retired, not carried forward** — the full suite is 281/281 files
+green for the first time in this ledger's history of that caveat.
+
+### New tests written by THIS gate
+
+### UT-122 — `LiteLLMProxyManager._doStart`'s other two startup-failure exits
+- **status:** green
+- **traces:** ARCH-005, REQ-102, TASK-027
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/litellm-proxy-hardening.test.ts` (2 cases, existing `spawnImpl`/`fetchImpl`
+injection convention). Coverage-gate driven: V-2 modified `_doStart`, so the whole method is
+re-measured against the per-function bar and it came back at **93.6%** — the child-died-during-startup
+`throw` and the deadline-expired `kill`+`throw` were never executed by any test. Both are the paths a
+real operator meets when `litellm` is present but broken (bad config, wrong Python, port stolen
+between the pre-bind probe and the spawn), i.e. the same failure class V-2 is about: startup must
+fail as a rejected promise the caller can report, never as a hang or a process-level crash. Case 1
+spawns a child already carrying `exitCode: 3` and asserts the rejection names the code AND that the
+health poll was never called (the exit check precedes it); case 2 sets `startupTimeoutMs: 300`
+(relative to the deadline the SUT computes itself — no date literals, hermetic) with a fetch that
+always throws, and asserts the rejection plus that the child was killed. `_doStart` re-measured at
+**100%**.
+
+### IT-100 — a `workflow_register` on a host with no `litellm` binary must not take the engine down
+- **status:** green
+- **traces:** REQ-102, ARCH-005, DES-131
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/integration/graph-analyzer-composition-root.test.ts` (appended). The system-level half
+of V-2, writable only now that V-2 exists: `UT-121` pins that a listener is attached, this pins the
+consequence on the real wire. Real `createServer` with `aliases` and no injected gateway — so the
+server itself builds the `LiteLLMGatewayClient` with `useLiteLLMProxy: config?.useLiteLLMProxy ?? true`
+(`server.ts:1383`, D-R1's production default) and hands that same client to the analyzer — then a real
+`workflow_register` over real JSON-RPC-over-HTTP, with `PATH` emptied for the duration so the spawn is
+a guaranteed ENOENT on any host (restored in `finally`). Asserts the engine keeps answering
+`workflow_describe` and the diagram settles `unavailable` with a non-empty engine-authored note.
+**Verified non-vacuous** (this ledger's own named recurring defect — "a test built on the
+vulnerability it should catch"): run against the pre-V-2 worktree at `71490c0` it exits 1 with an
+unhandled `Error: spawn litellm ENOENT`; against this tree it exits 0, with the journal line showing
+`durationMs:269`, `noteCode:"PROVIDER_UNREACHABLE"` — the spawn path genuinely executed, not
+short-circuited.
+
+### Coverage gate — numbers
+
+**Overall `src/` line coverage: 95.45%** (14809/15514), against the ≥90% whole-tree bar. Measured
+with `npx vitest run --coverage --coverage.provider=v8 --coverage.include='src/**/*.ts'
+--coverage.reportOnFailure=true` (`@vitest/coverage-v8@1.6.0` installed `--no-save`; `package.json`
+and the lockfile are untouched).
+
+**Per-function bar over the code this round added or modified: all clear at 100%** —
+`describeTriggerBindings` (new), `getTriggerBindings`, `GraphAnalyzer._runJob`/`_attempt`,
+`layoutGraph`, and `LiteLLMProxyManager._doStart` (100% after UT-122; 93.6% before it).
+
+**Worst offenders, whole tree: 77 functions of >5 lines below 95% — the same 77, unchanged from the
+previous closeout**, all pre-existing and none touched this round: `main.ts`'s `main`/`loadFileConfig`/
+`onSupervisionEvent` (0%, the real-process entrypoint), `sandbox/child-entry.ts`'s child body (0%,
+only ever executed inside a spawned subprocess), `server.ts`'s `checkMcpConfigTransport` (0%) and
+`runDiagnostics` (3.8%), `mcp-probe.ts`'s `_probeStdio`/`_probeHttp`/`probe` (3.7%/12.5%/12.5%).
+Carried as named debt under the scope rule recorded in `gates.verification` since v21 (a function
+MODIFIED this round is measured whole; a function merely NEIGHBOURING the diff is not re-scoped).
+Three smaller ones sit in the file V-2 touched but outside the modified method, and are named rather
+than absorbed: `_assertPortFree` (88%, the non-`EADDRINUSE` reject), `_killProcessGroup` (75%, the
+`process.kill` catch fall-through), and `get baseUrl` (3 lines, 0 calls — no production or test
+reader at all, flagged as possibly-dead accessor, not removed).
+
+### Mechanical gates re-run by this pass
+
+- **Full regression:** `npx vitest run` → **281 files / 1806 tests, 0 failed, exit 0** (1803 + UT-122's
+  2 cases + IT-100). `npx tsc --noEmit`: clean.
+- **`sh .sdlc/trace … --check`:** **993 items, 18 gaps, exit 1** — the 17-gap baseline captured to a
+  scratch file before any edit is **byte-identical** (15 low doc/test-drift rows, `TASK-018` low
+  未實作, `IMPL-082` mid TDD), **plus exactly one new LOW**: `DES-064` (v11) now lags `IMPL-173`
+  (v23). That row is the honest consequence of backfilling the IMPL entry that V-4's code change
+  belongs to; `DES-064`'s own boundary-conditions still quoted the retired
+  `"unmatched to skeleton"` literal and was amended in place with an `[AMENDED v23 adjudication #6]`
+  marker, with its `iter` deliberately left at `v11` — bumping it would turn the three v11 items that
+  trace it (`IT-048`, `UT-068`, `IT-064`, all unchanged this round) into three drift rows instead of
+  one. 0 high, 0 未真實驗證, 0 broken links, 0 orphans; exit 1 is by construction on this ledger's
+  long-standing low/mid residue, the same disposition both prior closeouts recorded.
+- **`solid_check`:** PASS — 23 modules, 0 high / 0 mid / 10 low (the same pre-existing unclaimed-file
+  rows).
+- **`determinism_check src --check`:** exit 0 — no production wall-clock/randomness read outside the
+  injected seam.
+- **Time-travel re-run:** `libfaketime` is not installed on this host, so the install-free fallback —
+  `TZ='Pacific/Kiritimati'` (UTC+14) full suite — was used: identical result, 0 tests flipped red.
+- **Seam production-wiring:** `describeTriggerBindings` has a production caller (`graph-analyzer.ts`),
+  not a test-only one; the round introduced no new seam, and `GraphAnalyzer`/`TriggerPorts` still have
+  exactly one construction site each (`IT-098` pins this mechanically).
+- **Real-dependency smoke (real local Ollama, NOT a mock):** the V-1 change alters what is actually
+  sent to the provider, so the smoke was re-run against real `ollama` (`qwen2.5:7b`) through real
+  `createServer` + real JSON-RPC-over-HTTP (throwaway script, deleted after the run). Registered a
+  2-phase workflow with **no** trigger bound → real model call, journal `promptTokens: 526`. Then
+  `schedule_create` (a real cron row, `*/5 * * * *`) + `workflow_regenerate_diagram` → second real
+  model call, journal `promptTokens: 536`, and `workflow_describe` reports
+  `triggers:[{kind:'cron',cron:'*/5 * * * *',enabled:true}]`. **The prompt genuinely changes with a
+  live binding — 526 → 536 — which is the exact oracle Gate 7.5 used to prove REQ-103 was NOT
+  implemented** (identical 297/297 then). Both diagrams settled `unavailable`/`GATE_REJECTED_SHAPE`
+  (`gateFail:'codepoint'`): this small local model's ASCII output failed the diagram gate, the same
+  honest-failure path the previous closeout's smoke also recorded. The ready path is therefore NOT
+  re-confirmed by this round's smoke — it is Gate 7.5's `VAL-118` to close for real, and it stays the
+  one unverified-at-real-tier item of this gate.
+
+## Gate 6.5+7 ROUND 3 — adjudication #7 closeout (2026-09-03, verifier)
+
+Third Gate 6.5+7 pass of v23, over the Gate 6 delta `c9ea0aa` — one production line
+(`labels.add('workflow_run')` in `GraphAnalyzer._buildAllowlist`) plus the test below, closing the
+Gate 7.5 ROUND 2 failure (`VAL-119`: the engine instructed a token its own gate rejected).
+
+**Simplify (Gate 6.5) — one reuse fix, quality only, zero behaviour change.** The delta's own defect
+class *is* a duplication: the unbound entry label was typed as an independent literal in
+`trigger-bindings.ts`'s instruction to the model and again in `graph-analyzer.ts`'s allowlist, and
+the two immediately disagreed. Extracted to ONE exported declaration —
+`UNBOUND_ENTRY_LABEL = 'workflow_run'` in `trigger-bindings.ts`, the module that authors the
+instruction — consumed by `describeTriggerBindings` (template literal, byte-identical output string)
+and by `_buildAllowlist` (`labels.add(UNBOUND_ENTRY_LABEL)`). Same one-declaration rule as v23 round
+1's `ANALYZER_SCRATCH_SUBDIR` and v21's `DEFAULT_CEILINGS`, and `graph-analyzer.ts` already imported
+this module, so no new module edge (`solid_check` unchanged). Two candidates rejected on purpose:
+(a) folding `server.ts`'s `DEFAULT_GRAPH_ANALYZER_SYSTEM_PROMPT` prose ("reads as a plain
+workflow_run entry point") into the same constant — that string is an operator-overridable default,
+so a constant cannot protect the surface that actually matters, and `server.ts:189`'s `workflow_run`
+is the TOOL NAME, the same characters with a different meaning; (b) importing the constant into
+`UT-123` — the test's oracle is deliberately the engine's own instruction as a literal, and reading
+it from the implementation would restore exactly the tautology that let the two halves disagree.
+`npx tsc --noEmit` clean; the two directly-affected unit files re-run green (30/30) before the full
+regression; nothing was reverted because nothing went red.
+
+### UT-123 — an obedient diagram of an UNBOUND workflow must survive the gate
+
+- **status:** green
+- **traces:** DES-131, DES-128, REQ-103
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts` (1 case; shipped inside `c9ea0aa` with no ledger entry —
+backfilled here, the **sixth** occurrence of the implementer-writes-no-item gap this iteration).
+Written RED against the pre-fix tree: `_buildAllowlist` admitted only `default` and `model:param` as
+engine-authored sentinels, so a model that obeyed `describeTriggerBindings`' own instruction
+("label the entry node \"workflow_run\"") was gate-rejected. Blast radius is what made it a REQ-103
+failure rather than a typo: `schedule_create`/`webhook_create` are both refused
+`CHANNEL_UNPUBLISHED` before publish, so **every** workflow is unbound at registration and an
+obedient model lost **every** first diagram. The case registers an unbound workflow, resolves the
+gateway with `╭─workflow_run─╮`, and asserts the persisted row is `ready` with that diagram stored
+verbatim — its oracle taken from the engine's instruction, not from the allowlist.
+
+### Regression, coverage, and the mechanical gates — ROUND 3
+
+- **Full regression:** `npx vitest run` → `Test Files  281 passed (281)`, `Tests  1807 passed (1807)`,
+  exit 0** — both summary lines read, which is the specific failure mode `c9ea0aa`'s own message
+  records (assertions passing is not the suite passing). Measured twice: once as the pre-simplify
+  baseline, once after the `UNBOUND_ENTRY_LABEL` extraction, byte-identical counts. `npx tsc
+  --noEmit` clean. **Zero remaining red** in this document (`IT-015`/`VAL-115` remain the two
+  `blocked`/`not-run` deferrals labelled at earlier closeouts, unchanged).
+- **No new system-level `IT-*`/`VAL-*` were required.** This round's delta is one allowlist token;
+  its system-level half already exists and passes (`IT-098` pins the single composition site,
+  `VAL-113`/`VAL-114` the describe surface), and the ONE thing only a real run can settle — an
+  obedient unbound diagram surviving the gate against a real provider — was settled by the smoke
+  below and belongs to `VAL-119` at Gate 7.5, not to a new mock-tier item.
+- **Coverage:** `src/` overall **95.46%** lines (95.44% functions / 88.42% branches), against the
+  ≥90% whole-tree bar — measured with `npx vitest run --coverage --coverage.provider=v8
+  --coverage.include='src/**/*.ts' --coverage.reportOnFailure=true` (`@vitest/coverage-v8` is not a
+  declared devDependency in this repo; installed with `npm i --no-save` so `package.json`/lockfile
+  stay untouched). **Per-function bar on this round's slice: 2/2 at 100%** —
+  `GraphAnalyzer._buildAllowlist` (23 lines, 0 missed) and `describeTriggerBindings` (16 lines, 0
+  missed); `getTriggerBindings`/`canonicalize`, touched only by the new import, also 100%. The
+  **77** pre-existing `>5`-line functions below 95% and **8** short functions missing more than one
+  line are the same named debt the previous closeout carried — **the count did not grow** (77 → 77),
+  and none is in this round's diff. Worst offenders, unchanged: `sandbox/child-entry.ts` 0% (only
+  ever executes inside a spawned subprocess), `main.ts` `main`/`loadFileConfig`/`onSupervisionEvent`
+  0%, `server.ts` `checkMcpConfigTransport` 0% / `runDiagnostics` 3.8%, `mcp-probe.ts` `_probeStdio`
+  3.7%. Decision rationale (standing, recorded at the v23 round-1 closeout and re-affirmed here, not
+  newly lowered): the per-function ≥95% bar is enforced on the code each round adds or modifies;
+  whole-tree the bar is the ≥90% overall figure, because the residue needs a real
+  `litellm`/MCP/sandbox environment — i.e. Gate 7.5's tier, not a unit test's.
+- **`sh .sdlc/trace … --check`:** 996 items (was 994 — `UT-123` + `IMPL-174`), **18 gaps, the
+  byte-identical baseline set** captured before this pass: 16 low iter-drift + 1 low `TASK-018`
+  未實作 + 1 mid `IMPL-082` TDD. **0 new gaps, 0 new gap classes, 0 high, 0 未真實驗證, 0 broken
+  links, 0 orphans.** `IMPL-174` traces only v23 items (`REQ-103`, `DES-131`, `DES-128`, `ARCH-078`,
+  `ARCH-079`), so the backfill adds no drift row of its own. Exit is 1 on the standing low/mid
+  residue, the same disposition all three v23 closeouts recorded.
+- **`solid_check`:** PASS — 23 modules, 0 high / 0 mid / 10 low (the same pre-existing
+  unclaimed-file rows). The extraction added no module edge: `graph-analyzer.ts` already imported
+  `trigger-bindings.ts`.
+- **`determinism_check src --check`:** exit 0.
+- **Time-travel re-run:** no `libfaketime` on this host, so the install-free fallback —
+  `TZ='Pacific/Kiritimati'` (UTC+14) full suite — 281 files / 1807 tests pass, identical to
+  baseline, **0 tests flipped**.
+- **Seam production-wiring:** no new seam this round (an exported string constant is pure).
+  `new GraphAnalyzer(`/`new McpFacade(` still appear exactly once each in `src/`, both in
+  `createServer`'s composition root (`IT-098` pins it mechanically), and `UNBOUND_ENTRY_LABEL`'s
+  consumer is production code (`graph-analyzer.ts`), not a test.
+- **Real-dependency smoke (real local Ollama `qwen2.5:7b` on 127.0.0.1:11434, NOT a mock):** real
+  `createServer` + real JSON-RPC-over-HTTP + real `LiteLLMGatewayClient` direct-fetch, three real
+  registrations of the same UNBOUND workflow (`triggers: []`), throwaway script deleted after the
+  run. **(a) shipped default `systemPrompt`:** a genuine 489-token prompt and a real 197-token answer
+  that failed the codepoint pass → `unavailable`/`GATE_REJECTED_SHAPE`, the documented small-model
+  outcome. **(b) the discriminating case for adjudication #7** — an operator `systemPrompt`
+  (REQ-104's real config surface) that this model actually obeys: the real model returned
+  `╭─workflow_run─╮`, and the engine settled **`diagramStatus: ready`** with that diagram stored and
+  served verbatim through `workflow_describe`. Before this round's line, that same real output would
+  have been rejected — which is exactly what Gate 7.5 ROUND 2 observed. **(c) non-vacuity control:**
+  the identical path asking for `╭─not_a_real_label─╮` still settles
+  `unavailable`/`GATE_REJECTED_CONTENT` (`gateFail: 'token'`) — the gate is live and still
+  content-checking, so (b)'s `ready` is the added sentinel and not a disabled gate. The shipped
+  default prompt's ready path against a capable provider remains `VAL-119`/Gate 7.5's to close.
+
+---
+
+## v23 Gate 5 RE-RUN (verifier, test-first RED) — the Gate 2 re-run handoff, send-back `d294880`
+
+Scope per 02-architecture.md's "Handoff" paragraph (line ~1953): Gate 2 closed A1/A7/A8/A9/A10 and
+wrote testable invariants for A2/A3/A5/A6 for Gates 5/6 to consume. A7/A8/A9/A10 are doc-only
+closures (no new tests owed — verified, their own text names no Gate 5/6 work). This pass covers
+A1, A2, A3, V-D (required by A2's fix, ARCH-081), A5, A6.
+
+**Process note, recorded honestly per this ledger's own immune system (CLAUDE.md; retro
+`sdlc-agent-ledger-clobber`):** a SIBLING Gate 5 dispatch was found executing concurrently in this
+same working tree (same send-back scope, overlapping test files, live at the time of this write).
+Three items below (`IT-101`, `IT-102`'s file, `UT-128`) were authored by that sibling, not this
+instance — this instance independently verified each is red (or, for `IT-102`, correctly green) for
+the right reason before recording it, and ceded/removed its own duplicate attempts at `IT-101` and
+half of `IT-102` (a second file/block claiming an already-covered oracle is the trace-gap this note
+exists to avoid, not a contribution). Dedup across both dispatches' ledger writes is owed to the
+orchestrator; this write claims only what this instance authored plus what it independently
+verified.
+
+### UT-124 — A2: `GraphAnalyzer` never reaches the gateway when `config.enabled === false`, all three entry points
+- **status:** green
+- **traces:** ARCH-079, DES-131, DES-134
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts` (new describe block, appended to the existing UT-111
+file — same mock policy: stub `GatewayClient` via a `vi.fn()` spy, REAL on-disk `WorkflowCatalog`,
+`FixedClock`, `schedule: runInline`). Four cases, one per caller of `_startJob`
+(`enqueue`/`sweepAtBoot`/`regenerate`) with `config.enabled:false`: the spied `gateway.invoke` must
+never be called, and (for `enqueue`/`sweepAtBoot`) the row must not stay `pending` forever (nothing
+stranded, QD Risk #5). **Fourth case added by this instance** (inv 11's own latent-clobber text —
+"the enqueue/regenerate row may be ready, so `_settleUnavailable`'s ready-check returns early and a
+prior good diagram survives" — that property depends on the durable `putDiagramPending` write moving
+BEHIND the guard, not just the in-memory claim, or a guard placed one level too deep trades a known
+bug for a latent one): a PRIOR `ready` row + `enqueue()` with `enabled:false` must leave the row
+`ready` with its diagram intact, not just make zero gateway calls. Deliberately NOT asserted: the
+specific persisted `noteCode` the guard settle uses on the other three cases — 02-architecture.md
+leaves that unpinned in the handoff text, but inv 11 itself names it explicitly ("Settle code is the
+persisted RETRIES_EXHAUSTED (no migration)") — flagged here for Gate 6 rather than pinned in the
+test, so a Gate 6 that reads only the ledger (not the architecture) still gets the answer without
+this test over-specifying the implementation choice. Red reason (measured): `npx vitest run
+tests/unit/graph-analyzer.test.ts -t UT-124` → 4/4 fail — three `expected "spy" to not be called at
+all, but actually been called 1 times`, one (the clobber case) asserting the row stays `ready` with
+`diagram:'╭─PriorGood─╮'` — confirmed by direct read that `enqueue`/`sweepAtBoot`/`regenerate` never
+check `this._config.enabled` today, and that `putDiagramPending`'s `ON CONFLICT … SET diagram=NULL`
+runs unconditionally ahead of any guard.
+
+### UT-125 — A3/N-1: an orphan-pending row's rejected scriptPromise must not wedge the queue
+- **status:** green
+- **traces:** ARCH-079, DES-131
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts` (new describe block, same file/mock policy as UT-124,
+except `schedule` is a test-side seam that captures any rejection from `job()` into an array rather
+than letting it escape as an unhandled promise rejection — capturing IS part of the invariant under
+test, "the closure never rejects"). Setup: `catalog.putDiagramPending('ga-orphan','v1')` on a name
+NEVER registered (no FK on `workflow_diagrams`) — an "orphan pending" row; `sweepAtBoot()`'s
+never-stamped branch then calls `catalog.resolve()`, which rejects `CatalogNotFoundError`,
+reproducing A3's "one reachable throw" through `_startJob`'s unguarded scheduled closure. Three
+assertions: (1) the closure itself never rejects; (2) the claim (`_pendingKeys`) and the slot
+(`_runningCount`) are released, not stranded on the orphan key; (3) a subsequently enqueued, GENUINELY
+valid job still runs to completion — proving the queue is not wedged behind the leaked slot. Red
+reason (measured): `npx vitest run tests/unit/graph-analyzer.test.ts -t UT-125` → fails at assertion
+(1), `expected [ …(1) ] to have a length of +0 but got 1` — confirmed by direct read that `_startJob`
+has no `try/catch/finally` around the scheduled closure today.
+
+### UT-126 — V-D: `projectWorkflowDescribe`'s diagramNote precedence — analyzerEnabled:false always wins over a persisted noteCode
+- **status:** green
+- **traces:** ARCH-081, DES-125, DES-127
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/workflow-describe-projection.test.ts` (new describe block, appended to the
+existing UT-113 file; pure function, no I/O). Full oracle table over `{row: null | pending |
+unavailable+code | ready} x {analyzerEnabled}` per 02-architecture.md's V-D amendment (required by
+A2's fix — "what stops A2's fix from shipping a lie"): 6 cases, 2 genuinely red (a persisted
+`unavailable+RETRIES_EXHAUSTED` row and a swept `pending` row, both with `analyzerEnabled:false`,
+must both read `DISABLED`) and 4 green pins (the already-correct cells, kept as regression guards).
+Red reason (measured): `npx vitest run tests/unit/workflow-describe-projection.test.ts -t UT-126` →
+2/6 fail — `unavailable+RETRIES_EXHAUSTED` reads `'The diagram generator exhausted its retries.'`
+instead of `'Diagram generation is disabled for this deployment.'`, and the swept `pending` row reads
+`''` instead of `DISABLED`'s text — confirmed by direct read that `analyzerEnabled` is consulted only
+on the `diagram === null` branch today (`workflow-view.ts:129-138`).
+
+### UT-127 — A5: the diagram vocabulary has one canonical source, consumed by membership everywhere
+- **status:** green
+- **traces:** ARCH-080
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/diagram-vocabulary-consistency.test.ts` (new file). Naming choice, not pinned by
+02-architecture.md, decided here so Gate 6 inherits it: the ordered glyph array is exported as
+`VOCAB_GLYPHS` from `diagram-gate.ts` and the shipped default prompt as
+`DEFAULT_GRAPH_ANALYZER_SYSTEM_PROMPT` from `server.ts` — both names already used by the existing
+private consts, only visibility changes. Two membership assertions (the architecture's own chosen,
+cheaper oracle — not a structural "was it interpolated" check): every glyph in `VOCAB_GLYPHS`
+appears in the shipped default `systemPrompt`, and in `rwe.config.example.json`'s
+`graphAnalyzer.systemPrompt` (a real file read). Red reason (measured): neither export exists today
+→ `TypeError: VOCAB_GLYPHS is not iterable` (vitest's esbuild-transformed import resolves the
+missing named export to `undefined`) — `npx vitest run tests/unit/diagram-vocabulary-consistency.test.ts`
+→ 2/2 fail, this error.
+
+### IT-101 — A1/ADJ-A1: `GET /api/workflows/:name/describe` gains a transport gate (401 off-loopback, before any store read)
+- **status:** green
+- **traces:** ARCH-083, DES-132
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+**Authored by a sibling Gate 5 dispatch found running concurrently in this working tree** (see
+process note above) — recorded here because this instance independently verified it, not because
+this instance wrote it. File: `tests/integration/workflow-describe-auth-gate.test.ts`. Mock policy
+(integration, DES-119): real `createServer` + real HTTP + real on-disk catalog.db, hand-seeded
+(IT-091/IT-097 precedent, avoids the unrelated `PRINCIPAL_REQUIRED` catalog-WRITE gate). Implements
+02-architecture.md's own four-row parameterized oracle, `{authEnabled:false}` first: row 1
+(`authEnabled:false` → 200), row 2 (D-BIND loopback-exempt peer, bind `0.0.0.0` + auth on, client via
+127.0.0.1 → 200), row 3a (a GENUINE non-loopback LAN peer, `it.skipIf(!HAS_LAN_IP)` — this host has a
+LAN interface so it ran for real — no bearer / an invalid bearer → 401), row 3b
+(environment-independent variant: loopback BIND + auth on, `dbindExempt` structurally impossible →
+401, mirrors IT-078/IT-091's own bearer-required mechanics), and a parity row (HTTP body ===
+`workflow_describe`'s MCP result, key-for-key and value-for-value). Zero-store-reads proof: row 3's
+name is deliberately never registered — a post-gate 404 vs a pre-gate 401 is the discriminator. Red
+reason (measured by this instance): `npx vitest run tests/integration/workflow-describe-auth-gate.test.ts`
+→ 3/6 fail (row 3a's two cases + row 3b), all `expected 404 to be 401` — confirmed by direct read
+that the route (`server.ts:1173-1184`) is dispatched outside the `authHandlers` block and makes no
+authorization decision today; rows 1/2/parity are legitimate green pins (already correct, kept as
+regression guards for what this fix must not disturb).
+
+**ROW 4 ADDED at v23 Gate 6.5+7 ROUND 4 (2026-09-03, verifier) off a MEASURED coverage hole, not a
+hunch.** With A1 shipped (IMPL-175), v8 line coverage showed `server.ts:1904` — the gate's ADMIT
+line, `dispatchDashboard()` inside the `resolvePrincipal` success branch — executed by **no test in
+the suite**: rows 1 and 2 never enter the block at all (auth off / D-BIND exempt) and rows 3a/3b stop
+at the 401, so **a gate that refused every authenticated caller would have passed the entire
+oracle**. Row 4 is the non-vacuity control: same loopback-BOUND auth-enabled construction as row 3b,
+with a live `bearer_tokens` row hand-seeded into `auth-tokens.db` (the pattern IT-078's own file
+uses; `expires_at` derived RELATIVE to `Date.now()`, never a date literal — hermetic under the
+time-travel re-run). Two cases: the valid bearer → **200** with the full projection **and still no
+script body** (DES-125: clearing the gate does not make the caller an owner), and the SAME server
+401ing the SAME name with no bearer, so the 200 is attributable to the token and not to an open
+route. 8/8 green; `server.ts:1904` covered.
+
+### IT-102 — A6: `tools/list`'s name-set drift-lock is a two-sided SET EQUALITY, plus the two v23 tool rows and the literal script-absence sentence
+- **status:** green
+- **traces:** ARCH-051
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+**Authored by a sibling Gate 5 dispatch** (see process note above; this instance's own independent
+attempt at the same oracle — same 40-name literal list, verified identically by direct read of
+`server.ts:188-242` — duplicated the sibling's coverage and was removed rather than left as a second
+block claiming the same ID). File: `tests/integration/mcp-tools-list-schema.test.ts` (new describe
+block appended to the existing IT-028 file). Amended contract (a), all v23 owes per
+02-architecture.md's A6 text: sorted-name SET EQUALITY over advertised tools vs a hand-written
+literal (40 names, never imported from `server.ts`) — replacing `REQUIRED_TOOLS`'s
+`toBeGreaterThanOrEqual(10)` length floor, which let a rename of every tool stay green; per-tool
+assertion rows for the two v23 tools (`workflow_describe`, `workflow_regenerate_diagram`); one
+literal assertion on `server.ts:493`'s script-absence sentence ("The raw workflow script is
+deliberately NOT part of this response"), previously asserted nowhere (`grep -rn "deliberately NOT"
+tests/` was empty pre-this-item). **Status note, not a red-because-unimplemented item:** verified
+that production already conforms on every assertion — `npx vitest run
+tests/integration/mcp-tools-list-schema.test.ts -t IT-102` → all pass. This is a drift-lock
+HARDENING (02-architecture.md's own words: "this is all v23 owes" for A6), with no production code
+delta owed; precedent for a legitimate immediate green in this exact ledger: IT-092's own case 2,
+IT-097 in full. **Primary-source correction for Gate 8's grep pass:** 02-architecture.md:555 states
+`TOOL_NAMES` "declares 39" tools; a direct count of `server.ts:188-242` gives **40** — the literal
+list in both this item's test and the sibling's independent transcription agree at 40; the
+architecture's "39" is stale doc drift, not corrected in this pass (not this instance's send-back
+scope).
+
+### UT-128 — R-1/inv 5: exactly one journal line per SETTLE, even with zero model calls
+- **status:** green
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+**Authored by a sibling Gate 5 dispatch** (see process note above) — not in this instance's original
+six-item scope (02-architecture.md's "Handoff" paragraph names A1/A2/A3/V-D/A5/A6 explicitly; R-1's
+inv 5 is a defensible in-scope read of the same send-back, since Gate 2's Referee call R-1 moved the
+settle-line emitter to the choke point as part of this exact re-run). File:
+`tests/unit/graph-analyzer.test.ts` (new describe block). `grep -n "console.log"
+src/graph-analyzer.ts` returns exactly one hit (inside `_attempt`), so `_settleUnavailable` and the
+boot-sweep's zero-call settle branch persist a terminal row and log nothing — `MODEL_UNMAPPED`
+(this repo's own recurring `composeConfig`-forwarding-gap signature) and `QUEUE_FULL`/the boot-sweep
+exhausted settle are silent today. Scope note (the sibling's own docblock, verified accurate):
+the new `enabled:false` guard settle (UT-124/A2) is deliberately NOT covered here — with no guard
+yet, `enqueue()` on a disabled config still reaches `_attempt` for real, which already logs once
+unconditionally, so a pre-fix assertion on that path could not be red for the right reason; named as
+Gate 6.5+7 coverage debt once A2's guard exists, not silently dropped. Red reason (verified by this
+instance): `npx vitest run tests/unit/graph-analyzer.test.ts -t UT-128` → 3/3 fail, `expected "log"
+to be called 1 times, but got 0 times` on `MODEL_UNMAPPED`, `QUEUE_FULL`, and the boot-sweep
+zero-call settle.
+
+## Gate 6.5+7 ROUND 4 — the Gate 8 send-back's code half closes (2026-09-03, verifier)
+
+Fourth Gate 6.5+7 pass of v23, over the Gate 6 delta `a39c0e7` (TASK-128/129/130 — A1/A2/A3/A5/A10
++ V-D + inv 5). Six Gate 5 items flip `red → green`: **UT-124, UT-125, UT-126, UT-127, UT-128,
+IT-101**. `IT-102` was already green (a drift-lock hardening, not a RED).
+
+**One Gate 6 item had NOT shipped, despite the commit subject naming it — A4.** `a39c0e7`'s subject
+reads "A1/A2/A3/A4/A5/A10 landed"; `renderMiniPreviewAsync` was still in `dashboard-page.ts`, still
+called per card, and UT-116's fourth case still asserted its presence. Closed here as **IMPL-176**
+with UT-116's authorized re-point (details on UT-116's own entry above and in 06-impl-log.md).
+Recorded as a finding, not absorbed: this is the same class as `277a8d9`'s `docs(v23)` subject
+carrying four production source files, and Gate 8's own instruction for this send-back is to
+re-verify each amendment **by grep, not by reading a note**.
+
+**Simplify (Gate 6.5) — two reuse fixes, quality only, zero behaviour change.** Both are duplications
+this delta itself introduced, and both are the repo's named one-declaration class:
+(a) `graph-analyzer.ts` — inv 5's new settle-line made the ten-key
+`console.log('[remote-workflow-engine] graph-analyzer ' + JSON.stringify({…}))` shape exist twice
+(`_settleUnavailable` and `_attempt`); extracted to one private `_journal(fields)` writing the keys
+in the existing order, so the emitted line is byte-identical at both sites — confirmed on a real run
+(the suite log's live `{"name":"cron-target",…,"gateFail":null}` lines are unchanged in shape).
+(b) `server.ts` — A1's gate made the **nine-positional-argument** `handleDashboardRequest(…, !!authCfg)`
+call plus its identical `.catch(… degraded …)` exist twice, across an auth boundary where a drift in
+the trailing masking flag would mask on one path and not the other with no type error; both sites now
+call one `dispatchDashboard()` declared beside `dbindExempt`. The two catch bodies were verified
+byte-identical before merging, not assumed. Three candidates rejected and named rather than silently
+absorbed — merging the two `enabled:false` guards (they differ in `principal` and serve two different
+state machines), collapsing `sweepAtBoot`'s disabled branch into its stale-stamp branch (correct only
+by reasoning about a row state no test pins), and indexing `VOCAB_GLYPHS` instead of destructuring it
+(shorter, but the 13 names are what makes the prompt readable). `npx tsc --noEmit` clean; the
+directly-affected files re-run green before the full regression; nothing reverted, nothing went red.
+
+**New cases added this gate (no new ID — UT-128 extended in place).** UT-128's own docblock named the
+gap: *"the new `enabled:false` guard settle (UT-124/A2) is deliberately NOT covered here … named as
+Gate 6.5+7 coverage debt once A2's guard exists, not silently dropped."* A2's guard now exists, so
+its two settle paths — `enqueue()`'s disabled guard and `sweepAtBoot()`'s never-stamped disabled
+branch — are the two terminal writes inv 5's one-line count had never been asserted over. Two cases
+added, each also pinning `gateway.invoke` untouched, so a future "fix" that restores the line by
+letting the disabled path reach `_attempt` cannot pass them.
+
+**IT-101 row 4 added** (details on IT-101's entry): the coverage measurement found A1's own ADMIT
+line executed by no test — rows 1/2 never enter the gated block and rows 3a/3b stop at the 401 — so
+a gate that refused every authenticated caller passed the whole four-row oracle. Row 4 closes that
+and is the non-vacuity control for rows 3a/3b.
+
+**Regression:** 283 test files / **1837** tests passed, 0 failed, `vitest` exit **0** (read off the
+process's own exit status, not a `| tail` pipeline's — the failure mode this ledger has recorded
+before). `npx tsc --noEmit` clean. Zero remaining red; `IT-015` stays the single
+`blocked`/`not-run` deferral, labelled and unchanged (`VAL-115` was closed at `15de3ce`).
+
+## Gate 5 RE-RUN (v23 Gate 2 RE-RUN #2, send-back `41e6382`, 2026-09-03, verifier)
+
+Per `02-architecture.md`'s own "Handoff" paragraph under **Decision rationale — v23 Gate 2 RE-RUN
+#2** ("Gate 5 (RED first): O1 ... O2 ... O3 ... O4 ... O5 ... plus `cause` value assertions ... a
+type-level assertion ... the twelve-key `Object.keys(...).sort()` set equality, ADR-020's two
+mirror rows ... and the two defence-in-depth one-line assertions"). Gates 3/4 were **not** sent
+back this round — no new DES/TASK items. `sh .sdlc/trace` baseline before this round: 1012
+items / 18 gaps (all 18 pre-existing, none referencing a v23 or ARCH id).
+
+**UT-125 AMENDED IN PLACE** (O3, quality QD-O4.2, inv 8's new rule — "an enumerated oracle is
+satisfied only in full"): the item shipped `status: green` at the prior Gate 6.5+7 round with its
+own enumerated oracle's assertion (b) — "the row settles" — silently dropped (only (a) rejections
+and (c) next-job-runs were asserted). Restored as its own numbered assertion; flipped back to red.
+
+### UT-125 — A3/N-1: an orphan-pending row's rejected scriptPromise must not wedge the queue
+- **status:** green
+- **traces:** ARCH-079, DES-131
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+**AMENDED v23 Gate 2 RE-RUN #2 (send-back `41e6382`), O3/inv 8.** File:
+`tests/unit/graph-analyzer.test.ts` (same describe block, same fixture — an orphan `pending` row for
+a never-registered name, swept via `sweepAtBoot()`, `schedule` a rejection-capturing test seam).
+Restored assertion: `getDiagram('ga-orphan','v1')?.status` must be `'unavailable'`, not stay
+`'pending'` forever — inserted between the existing "claim/slot released" and "next job runs"
+assertions, matching the architecture's own lettered order (a) rejections (b) row settles (c) claim/
+slot released (d) next job runs.
+
+**BLOCKED at Gate 6.5+7 (send-back from implementer, re-verified by the verifier against primary
+source): this is a structural conflict between two v23-ratified documents, not a Gate 6 code defect.**
+`src/workflow-catalog.ts:274-275`'s `putDiagramResult` late-write guard (DES-130 B6) is
+`SELECT 1 FROM workflow_versions WHERE name = ? AND version = ?` → no row ⇒ silent no-op. The orphan
+fixture (no `catalog.register('ga-orphan', ...)` ever called) is, by construction, the SAME DB state
+that any `putDiagramResult` call on this path will always see: no `workflow_versions` row for
+`(ga-orphan, v1)`. So assertion (b) is structurally unreachable given B6's own committed guard — not
+an artifact of a missing `try/catch`. Confirmed by an actual run:
+`npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-125'` now fails ONLY at assertion (b)
+(`expected 'pending' to be 'unavailable'`); assertions (a) zero unhandled rejections, (c) claim/slot
+released, and (d) next job still runs all PASS, and the journal line fires with
+`cause:"script_unresolved"`, `noteCode:"RETRIES_EXHAUSTED"` (confirmed by direct run output) — the
+row's DB status is the only piece of assertion (b) that cannot happen. This is a genuine conflict:
+ARCH-079 R-1's own text explicitly calls UT-125's assertion (b) "not a judgement call" (an enumerated
+oracle satisfied only in part is a send-back item), which is exactly why the verifier is not loosening
+it unilaterally — either ARCH-079's oracle needs amending to acknowledge B6 (the orphan row legitimately
+stays `pending` forever, harmless per B6's own "an orphan row is unrepresentable" framing — reframe
+assertion (b) around the journal's `cause:'script_unresolved'` line instead of the DB row), or DES-130
+B6 needs an explicit carve-out (e.g. gate the guard on the `workflow_diagrams` row's own existence, not
+`workflow_versions`, for the `unavailable`-only recovery write) — the latter is a production-code/
+architecture change with ADR-021 GC implications, out of test-author scope. **Needs a Gate 2/5
+decision; sent back up rather than resolved here.**
+
+**RESOLVED — Gate 5 RE-ENTRY (adjudication #8, 04-design.md/commit `9fc4439`, 2026-09-03, verifier).**
+Ruled (a): amend the oracle, do not carve out the B6 guard (see rationale quoted above — B6 exists to
+prevent an immortal orphan row, ADR-021 GC; opening it for one settle-write reopens what it guards).
+Assertion (b) re-pointed in `tests/unit/graph-analyzer.test.ts:722-770` from
+`expect(orphanRow?.status).toBe('unavailable')` to asserting the journal line fires with
+`cause:'script_unresolved'` (the direct evidence the DB-row check was only ever a proxy for).
+Assertions (a)/(c)/(d) unchanged — the adjudication explicitly kept them. Confirmed green:
+`npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-125'` → 1/1 pass. Same "legitimate
+immediate green" shape as IT-102/IT-103 (the underlying behavior — the journal line firing — was
+already shipped by Gate 6's inv 2 closure; only the test's own oracle needed amending, not the code).
+`npx tsc --noEmit` clean. Full file pair (`tests/unit/graph-analyzer.test.ts` +
+`tests/integration/graph-analyzer-composition-root.test.ts`) → 51/51 pass, closing UT-135's fixture
+defect too (already fixed at Gate 6.5+7 round 4, re-confirmed here). Full suite `npx vitest run` →
+283/283 files, 1850/1850 pass — 0 remaining red anywhere (Gate 6's a39c0e7 report of 1848/1850 with
+exactly UT-125/UT-135 red is now fully closed). `sh .sdlc/trace --check`: 1024 items / 18 gaps,
+byte-identical residue to the prior round (0 new gaps, 0 broken links — no new work-item IDs, only
+UT-125 amended in place). Per this Mode's own scope, UT-129..137/IT-104 are **not** flipped
+green→pass here even though the full-suite run shows them passing — that flip is Gate 6.5+7's
+regression-closeout job (Mode B step 1), not Gate 5's; their rows stay as Gate 6 last left them.
+Flagged for Gate 8 (X-2, unresolved): does `workflow_deregister` delete `workflow_diagrams` rows, or
+does an orphan merely trade one immortal status (`pending`) for another (`unavailable`)? An ADR-021
+GC question, not a B6 defect — not assumed either way here.
+
+### UT-129 — R-1/inv 2, oracle O1: a throwing `ports.getTriggerBindings` inside `_runJob` must not wedge the queue
+- **status:** green
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts` (new describe block, same mock policy as UT-124/UT-125 —
+stub `GatewayClient`, real on-disk `WorkflowCatalog`, `FixedClock`, a rejection-capturing `schedule`
+seam). `_runJob` calls `getTriggerBindings(name, this._ports)` directly (`graph-analyzer.ts:355`,
+building the allowlist/prompt) with no try/catch anywhere around it today — a DIFFERENT reachable
+throw from UT-125/O3's `scriptPromise` rejection (which `_startJob` already wraps and releases-only,
+release-without-settle). Fixture: the injected `ports.schedules.listByWorkflow` throws on its FIRST
+call only, then delegates to the real `NO_TRIGGERS` implementation — a permanently-throwing port
+would also break the RECOVERY settle's own `getTriggerBindings` call, making assertion (b)
+unsatisfiable even after a correct fix (a test defect, not a real requirement). Five assertions per
+02-architecture.md's own enumeration: (a) zero unhandled rejections, (b) the row settles
+`unavailable`, (c) exactly one journal line, (d) the next enqueued job still runs, (e)
+`_runningCount === 0`. Red reason (measured): `npx vitest run tests/unit/graph-analyzer.test.ts -t
+'UT-129'` → fails at assertion (a), `rejections.length` is 1 not 0 (the closure has no try/catch
+around the `_runJob` call); (b)-(e) go unreached behind it, same "vitest stops at the first failing
+expect" shape as UT-125.
+
+### UT-130 — R-1/inv 2 FLOOR 2b, oracle O2: a throwing `catalog.putDiagramResult` on the ready branch must be recovered
+- **status:** green
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts`. `_runJob`'s success branch calls
+`this._catalog.putDiagramResult(..., {status:'ready', ...})` (`:377`) with no try around it today.
+Fixture: `vi.spyOn(catalog, 'putDiagramResult').mockImplementationOnce(...)` throws on the FIRST
+call only, falling through to the real store afterward — a job that genuinely drew a diagram but
+could not PERSIST it must still leave an honest `unavailable` row, not a lost result and a
+forever-`pending` row. (A PERMANENTLY throwing store is the different, dedicated `settle_failed`
+shape — UT-136.) Same five assertions as O1/UT-129 ("the same five", 02-architecture.md's own
+words). Red reason (measured): `npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-130'` →
+fails at assertion (a) exactly like O1 — the injected throw escapes `job()` uncaught.
+
+### UT-131 — R-1/inv 2 FLOOR 2a, oracle O4: the slot-accounting floor over a mixed burst
+- **status:** green
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts`. One leaking job (the O1 shape — a `ports` throwing ONLY
+for that job's own name, reused because the scriptPromise-reject fixture O3 uses is ALREADY caught
+cleanly by `_startJob`'s existing try/catch and would not leak), then `maxQueueDepth + 3` (11) valid,
+distinct, registered jobs. Two families of assertion: the FLOOR itself (`_runningCount` never
+negative, never exceeds 1 at every sampled settle; concurrent `gateway.invoke()` calls never
+overlap) — both true TODAY as green pins (nothing downstream of the leak ever runs, so there is no
+live double-release yet; this is the falsifier a future partial Gate 6 fix must survive) — and the
+DRAIN outcome (every queued valid job eventually settles `ready`, `_runningCount === 0` after
+drain), which is genuinely red. Red reason (measured): `npx vitest run
+tests/unit/graph-analyzer.test.ts -t 'UT-131'` → fails on the first queued job's
+`row?.status === 'ready'` assertion (`'pending'` instead) — the leaked slot wedges the whole queue.
+
+### UT-132 — R-2b, inv 5(f), oracle O5: the relational settle oracle (B5 case)
+- **status:** green
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts`. "The one oracle to keep if only one could be kept — for
+every path that writes a terminal row, assert the journal line's `outcome` EQUALS the status of the
+row read back from the catalog." A RELATIONAL oracle (compares two things the code produces, not a
+literal), so it cannot be satisfied by editing an expected value to match shipped behaviour (the v22
+`val-107`/IT-080 test-drift class). Fixture: a real `ready` diagram first (the priorRow the B5 branch
+must protect), then a second pass whose every attempt fails at the provider — the B5 branch restores
+the prior `ready` row rather than clobbering it. Today's ONLY emitted line for that settle comes from
+`_attempt`'s own failing attempt (`outcome:'unavailable'`), while the row the code actually wrote is
+`status:'ready'` — the exact mismatch this oracle exists to catch. Red reason (measured): `npx
+vitest run tests/unit/graph-analyzer.test.ts -t 'UT-132'` → `expect(parsed.outcome).toBe(row?.status)`
+fails, `'unavailable'` !== `'ready'`.
+
+### UT-133 — R-2b(c): exactly one journal line per SETTLE across a real multi-attempt retry loop, plus the `attempts` field
+- **status:** green
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts`. Complements UT-128 (already green, zero-model-call paths
+only — UT-128's own docblock named this real multi-attempt case as scope it deliberately did not
+cover). `retries:1`, both attempts fail at the provider → `invoke` called twice (the retry loop is
+real, UT-111 precedent) but must still settle with exactly ONE journal line, carrying `attempts:2`
+— "the only information the move [to the settle choke point] destroys" (02-architecture.md). Red
+reason (measured): `npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-133'` → fails at the
+line-count assertion, 2 lines not 1 (`_attempt` still journals once per attempt today); the
+`attempts` field assertion is independently red too (the field does not exist in the emitted JSON).
+
+### UT-134 — R-2b(b): the journal line is a TWELVE-key SET EQUALITY, wire order pinned
+- **status:** green
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts`. `expect(Object.keys(JSON.parse(line)).sort()).toEqual([…
+].sort())` — set equality, never `toContain` (a one-sided check lets a thirteenth field grow
+silently, the same A6 ruling one file away, IT-102). Hand-written literal, never imported from
+source. Red reason (measured): `npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-134'` → the
+emitted line has TEN keys today (`gateFail` already shipped by a prior amendment); `attempts` and
+`cause` do not exist, so the sorted-set comparison fails.
+
+### UT-135 — R-2(d): the `cause` VALUE domain over the five zero-model-call settle paths
+- **status:** green
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts` (two `it`s: four cases in a loop, plus the orphan case
+separately). "So Gate 5 asserts VALUES and not presence (the `RETRIES_EXHAUSTED` overload was
+accepted ON THE CONDITION that the distinct cause rides this field; `cause:null` would satisfy an
+`Object.keys` assertion and leave the overload exactly as opaque as before)." Five zero-model-call
+paths, each already reachable in today's code (only the `cause` FIELD is new): `disabled` (enqueue's
+existing guard), `boot_abandoned` (sweepAtBoot's stale-stamp branch), `model_unmapped`, `queue_full`,
+and `script_unresolved` (the orphan-pending scriptPromise rejection UT-125/O3 also exercises — folded
+in here as its own case rather than a second file re-asserting the same setup, per this send-back's
+own inv 8 rule against duplicate coverage of one defect).
+
+**FIXTURE DEFECT FIXED at Gate 6.5+7 (send-back from implementer, verifier fix): the `queue_full` case
+in the four-case loop called `analyzer.enqueue(c.name, 'v1', ...)` TWICE with the SAME name/version to
+simulate "occupy the slot, then get refused". `enqueue()`'s single-flight guard (DES-127 B4,
+`if (this._pendingKeys.has(key)) return;`) is the closure's first line — since the first call's job
+never resolves (hung `invoke`), the key stays claimed and the second call silently no-ops before ever
+reaching the queue-depth check, so no second journal line for `c.name` is ever emitted
+(`parsed.cause` was `undefined`, not a wrong value — a fixture bug, not a code defect). Fixed by giving
+the `queue_full` case a second, distinct registered name (`ga-o5-cause-queue-full-2`) for the refused
+enqueue call, mirroring UT-128's own already-green two-name pattern (`ga-journal-q1`/`ga-journal-q2`,
+:533-548) — the slot-occupying call keeps `c.name`, the refused call and its journal-line assertion now
+target `c.refusedName`.** Confirmed green: `npx vitest run tests/unit/graph-analyzer.test.ts -t
+'UT-135'` → 2/2 pass (`parsed.cause` matches the expected literal for all five paths, including
+`script_unresolved`, whose journal line fires with `cause:"script_unresolved"` even though the
+underlying `workflow_diagrams` row write is a no-op — see UT-125's own blocked note).
+
+### UT-136 — inv 2 FLOOR 2b / V-F, O5's own carve-out: `settle_failed` — a permanently-failing store
+- **status:** green
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts`. "`settle_failed` is explicitly OUT of O5's scope and takes
+its own case (no row is written, the row stays `pending`, exactly one line with
+`cause:'settle_failed'`)." Genuinely different fixture from UT-130/O2 (whose recovery write
+succeeds): here `putDiagramResult` throws on EVERY call, so there is nothing left for a recovery
+write to try. Red reason (measured): `npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-136'`
+→ fails at the zero-unhandled-rejections assertion, `rejections.length` is 1 not 0 (no try around
+today's write call at all — same failure shape as O1/O2).
+
+### UT-137 — R-2(d): `AnalyzerCause` is a closed union, never `string` (type-level, compile-time only)
+- **status:** green
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts` (same convention as `tests/unit/trigger-bindings.test.ts`'s
+DES-128 case). ADR-016's "engine-classified class, never raw provider/model text" must be a COMPILE
+ERROR, not a matter of care — a provider error payload can echo the request, and the request carries
+the masked script. A type-only `import type { AnalyzerCause }` (erased by esbuild regardless of
+whether the export exists — no vitest collection failure for the other 30+ tests in the file) plus a
+`// @ts-expect-error` on assigning an arbitrary string. **Vitest itself shows this trivially green**
+(esbuild strips types); the real enforcement is `npx tsc --noEmit`, stated on the item's own scope
+line so Gate 6.5+7 does not misread a vitest pass as this item being green. Red reason (measured via
+`npx tsc --noEmit`, NOT vitest): two errors today, both from the same root cause (the type does not
+exist yet) — TS2305 "Module has no exported member 'AnalyzerCause'" on the type-only import, and
+TS2578 "Unused '@ts-expect-error' directive" on the assignment (an unresolvable type suppresses the
+assignability check the comment expects to suppress). Once Gate 6 exports the closed union, TS2305
+disappears and the `@ts-expect-error` starts doing its real job — a regression to `string` would
+re-trigger TS2578 for the opposite reason.
+
+### IT-103 — R-3: `server.ts:955` defence-in-depth — a disabled analyzer never reaches the injected gateway on register
+- **status:** green
+- **traces:** ARCH-079
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+**Authored by a sibling Gate 5 dispatch found running concurrently in this working tree** (see this
+ledger's own established process note, e.g. IT-101/IT-102/UT-128) — recorded here because this
+instance independently verified it (`npx vitest run
+tests/integration/graph-analyzer-composition-root.test.ts -t 'IT-103'` → pass), not because this
+instance wrote it. File: `tests/integration/graph-analyzer-composition-root.test.ts`. `02-
+architecture.md`'s R-3 ruling keeps `server.ts:955`'s `graphAnalyzer.enabled` check as explicit
+DEFENCE-IN-DEPTH under the choke-point fix ("stay as defence-in-depth ... and EACH EARNS A ONE-LINE
+ASSERTION"); `mcp-facade.ts:462`'s own guard is already pinned by
+`tests/unit/workflow-describe-facade.test.ts:98` (UT-114, cited not duplicated, per this send-back's
+own inv 8 rule). Status note, not a red-because-unimplemented item (IT-102's own precedent for a
+legitimate immediate green — a defence-in-depth hardening pin, not a missing feature): real
+`createServer`, real `/mcp`, `graphAnalyzer: {enabled:false}`, a spied `gateway.invoke` — verified
+this already holds today, `server.ts:955`'s `if (... && graphAnalyzer.enabled)` guard runs before
+`graphAnalyzer.enqueue(...)` is ever reached.
+
+### IT-104 — SUS-2/ADR-020: mirror rows — a boot-time `console.warn` when the EFFECTIVE analyzer tool set is non-empty, none when empty
+- **status:** green
+- **traces:** ARCH-079
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+**Authored by a sibling Gate 5 dispatch** (same process note as IT-103) — recorded here because this
+instance independently verified it (`npx vitest run
+tests/integration/graph-analyzer-composition-root.test.ts -t 'IT-104'` → 1/2 fail, matching this
+entry's own red reason below), not because this instance wrote it. File:
+`tests/integration/graph-analyzer-composition-root.test.ts`. "Gate 5 owes the mirror rows — a
+warn-level line when `tools` is non-empty, and none when empty — without which this drops silently a
+second time" (ADR-020's own re-assertion this round). Verified against primary source: `server.ts:1512`
+is the only analyzer-tools boot line and it is an unconditional `console.log`, byte-identical for
+`tools:[]` and `tools:["Bash"]`; the only `console.warn` in this block fires for the UNRELATED
+unknown-alias case at `:1497`. Fixture: `model` left at its default (`'default'` → `'anthropic'`, a
+KNOWN alias, so the unrelated unknown-alias warn cannot pollute this assertion) and
+`curateToolsForProvider` is a documented no-op for `'anthropic'` (same fact TASK-127's own fixture
+relies on), so the EFFECTIVE tool set equals the CONFIGURED one — the simplest fixture that still
+keys the warning off the effective set per the amendment's own "keyed off the effective set because
+three sets are in play". Red reason (measured): `npx vitest run
+tests/integration/graph-analyzer-composition-root.test.ts -t 'IT-104'` → the non-empty-tools case
+fails, no `console.warn` call mentions the analyzer's tool surface at all today, in either fixture;
+the empty-tools case is a legitimate green pin (nothing warns either way today, so "no warning"
+already holds vacuously).
+
+**Gate 5 exit-gate self-check summary.** Nine new/amended UT items (UT-125 amended in place +
+UT-129..UT-137) in `tests/unit/graph-analyzer.test.ts`, all measured red for the stated reason (nine
+`npx vitest run tests/unit/graph-analyzer.test.ts` failures across ten failing `it`s, plus UT-137's
+independent `npx tsc --noEmit` red); two IT items in
+`tests/integration/graph-analyzer-composition-root.test.ts` — IT-103 a legitimate immediate green
+(defence-in-depth already holds), IT-104 one red case + one green pin — both authored by a sibling
+Gate 5 dispatch and independently re-verified by this instance. No new DES/TASK (Gates 3/4 not sent
+back this round); every item traces to ARCH-079 (the only ARCH item this send-back's R-1/R-2/R-2b/R-3
+rulings amend). No VAL/E2E owed this round (rtm stays 106/106 real:true; this send-back is Gates
+2/5/6/8 only, per Gate 2's own handoff naming Gate 5 and Gate 6, not Gate 7.5).

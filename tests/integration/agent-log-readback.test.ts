@@ -10,7 +10,7 @@
 // `store.appendTranscript(...)` (proven green by IT-004's "transcript is appended to RunStore"
 // case). The gap is purely on the read-back path.
 import { describe, it, expect, vi } from 'vitest';
-import { McpFacade } from '../../src/mcp-facade.js';
+import { McpFacade, NO_TRIGGER_PORTS, NO_GRAPH_ANALYZER } from '../../src/mcp-facade.js';
 import { RunManager } from '../../src/run-manager.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
@@ -37,7 +37,7 @@ describe('workflow_agent_log real transcript read-back (IT-009, D-V6)', () => {
     };
     const store = new InMemoryRunStore(CLOCK);
     const runManager = new RunManager({ store, clock: CLOCK, gateway });
-    const facade = new McpFacade({ clock: CLOCK, store, runManager });
+    const facade = new McpFacade({ clock: CLOCK, store, runManager, triggerPorts: NO_TRIGGER_PORTS, graphAnalyzer: NO_GRAPH_ANALYZER });
 
     const run = await runScriptVia(facadeCaller(facade), `return agent('ping');`);
     const runId = run.result!.runId;

@@ -168,11 +168,25 @@ export class LiteLLMProxyManager {
       env: { ...process.env },
     });
     this._proc = proc;
+    // v23 adjudication #6 V-2: attach the 'error' listener HERE — before the first health poll, which
+    // is the actual vulnerable window. A spawn failure (no `litellm` on PATH, the documented state of
+    // hosts that never installed it) emits 'error' on the child; with no listener Node re-raises it as
+    // an unhandled error event and takes the ENGINE down. v23 is what made this reachable from
+    // `workflow_register`, because registration now enqueues an analyzer call — a caveat in two
+    // manuals is not a fix for "a registration can kill the process". The startup poll below already
+    // fails cleanly on its own deadline, so recording the error and letting that path run is enough.
+    let spawnError: Error | undefined;
+    // `.once`, matching this file's existing `.once('exit', ...)` convention — a spawn 'error'
+    // fires at most once, and the narrower API is what the existing test fakes implement.
+    proc.once('error', (err: Error) => { spawnError = err; });
     const baseUrl = `http://127.0.0.1:${port}`;
 
     const deadline = Date.now() + this._startupTimeoutMs;
     let lastErr: unknown;
     while (Date.now() < deadline) {
+      if (spawnError !== undefined) {
+        throw new Error(`litellm proxy failed to spawn: ${spawnError.message}`);
+      }
       if (proc.exitCode !== null) {
         throw new Error(`litellm proxy exited during startup (code ${proc.exitCode})`);
       }

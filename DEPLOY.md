@@ -6,7 +6,7 @@
 > `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
 
 這是一個可遠端操控的 **Claude 工作流程執行引擎**：一台常駐伺服器，透過 **MCP Streamable HTTP**
-介面對外提供 **38 個工具**（工作流程執行/查詢、排程、串接、資產同步、問題回報、系統監控、模型目錄、
+介面對外提供 **40 個工具**（工作流程執行/查詢、排程、串接、資產同步、問題回報、系統監控、模型目錄、
 OAuth 2.0 身份認證……），並把每個 `agent()` 呼叫路由到你設定的 LLM 供應商（Anthropic / OpenAI /
 Gemini / 本機 Ollama）。狀態全存在本機檔案（SQLite + JSONL journal），不需要外部資料庫伺服器。
 
@@ -46,21 +46,33 @@ litellm 已存在於 ~/.rwe-litellm-venv/bin/litellm，略過建立。
 背景模式：服務持續在背景執行（PID=xxxxx）。停止：kill $(cat .rwe.pid)
 ```
 
+同一台機器要跑第二個實例（例如驗證用），用 `RWE_BIND` / `RWE_PORT` / `RWE_CONFIG_PATH` 覆蓋即可，
+腳本本身不變（三個鍵的說明見 §1b）：
+
+```bash
+RWE_CONFIG_PATH=/path/to/another/rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=8792 ./deploy.sh --background
+```
+
 系統概觀：
 
 ```
-        curl / MCP client                  agent() 呼叫
-              │                                  │
-              ▼                                  ▼
-   ┌─────────────────────┐   spawn    ┌──────────────────────┐
-   │  remote-workflow-    │───────────▶│  LiteLLM proxy 子行程 │
-   │  engine (Node,       │            │  （gateway:"sdk" 預設）│
-   │  MCP Streamable HTTP)│◀───────────│                      │
-   └─────────┬────────────┘   結果      └──────────┬───────────┘
-             │                                     │
-             ▼                                     ▼
-   本機檔案：SQLite + JSONL journal      Anthropic / OpenAI / Gemini
-   （$workRoot/store、run 工作目錄）       / 本機 Ollama
+     curl / MCP client         workflow_register        agent() 呼叫
+              │                       │                       │
+              │                       ▼                       │
+              │              ┌─────────────────┐              │
+              │              │ 畫圖分析器       │              │
+              │              │ (graphAnalyzer) │              │
+              ▼              └────────┬────────┘              ▼
+   ┌─────────────────────┐            │        ┌──────────────────────┐
+   │  remote-workflow-   │────────────┴───────▶│  LiteLLM proxy 子行程 │
+   │  engine (Node,      │       spawn         │  （gateway:"sdk" 預設）│
+   │  MCP Streamable HTTP)│◀───────────────────│                      │
+   └─────────┬───────────┘        結果         └──────────┬───────────┘
+             │                                            │
+             ▼                                            ▼
+   本機檔案：SQLite + JSONL journal             Anthropic / OpenAI / Gemini
+   （$workRoot/store、run 工作目錄、           / 本機 Ollama
+     每個版本的結構圖）
 ```
 
 停止服務：`kill $(cat .rwe.pid)`。不加 `--background` 則前景執行、Ctrl-C 停止。
@@ -119,7 +131,7 @@ curl -s -X POST http://localhost:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | python3 -c \
   "import json,sys; d=json.load(sys.stdin); print('tools:', len(d['result']['tools']))"
-# 預期：tools: 38
+# 預期：tools: 40
 
 # 主機系統資源快照（第一次呼叫 utilizationPct=null；第二次有值）
 curl -s http://localhost:8787/api/system | python3 -c \
@@ -291,7 +303,14 @@ curl -s http://localhost:8787/api/models | python3 -c \
   ```
   若系統本來就有 Python 3.11/3.12（`python3.12 --version` 有輸出），可以省略 `uv`，直接
   `python3.12 -m venv <venv路徑> && <venv路徑>/bin/pip install 'litellm[proxy]'`。
-  **不需要 `agent()`**（純跑工作流程腳本邏輯）的部署可以完全跳過這一步。
+  **要跳過這一步，必須同時關掉兩條會用到 LiteLLM 的路徑**：`agent()` 呼叫，以及註冊時自動畫圖的
+  分析器（`workflow_register` 會把腳本送給模型畫結構圖，走的是同一條 gateway）。可行組合有兩種：
+  (a) `gateway:"direct-fetch"` + `useLiteLLMProxy:false`（本機 Ollama 直連，兩條路徑都不碰 LiteLLM）；
+  (b) 保留 `gateway:"sdk"` 但設 `graphAnalyzer.enabled:false` 且工作流程完全不呼叫 `agent()`。
+  留著預設值 `gateway:"sdk"` 卻沒裝 `litellm`：**服務在啟動階段就會直接拒絕啟動**，印出一行
+  `fatal startup error: Error: litellm proxy failed to spawn: spawn litellm ENOENT` 後結束
+  （不會半開著讓人以為成功）。`gateway:"direct-fetch"` + `useLiteLLMProxy:true` 則是正常啟動，
+  只有實際用到代理的呼叫失敗成 `PROVIDER_UNREACHABLE`——兩種情況都見 §5 的對應處置。
   正常關機（`SIGTERM`）會連帶停掉這個子行程，不留孤兒；可在 `rwe.config.json` 用 `litellmPort`
   鍵讓每個實例指定不同 port（省略則綁一個 OS 分配的 ephemeral 空閒 port，天生不會多實例撞號）。
 - 外部依賴：不需要資料庫伺服器（狀態存在本機檔案：SQLite + JSONL journal，路徑見 `workRoot`）。
@@ -337,6 +356,15 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `maxWorkflowDepth` | 具名 `workflow()` 巢狀組合單一分支深度上限（頂層 run=0）；超過回可分支的 `NESTING_DEPTH_EXCEEDED`（不崩父 run）；≤0 或非整數在啟動時拒絕 | `number` / `4` | 否 | v8 |
 | `rwe.config.json` → `maxWorkflowDescendants` | 巢狀 `workflow()` 呼叫總數上限（整棵 fan-out × depth 樹）；超過回 `DESCENDANT_CAP_EXCEEDED` | `number` / `256` | 否 | v8 |
 | `rwe.config.json` → `maxWorkflowVersions` | 同一工作流程名稱累積保留的版本數上限；達上限時 `workflow_register` 回 `VERSION_CEILING_EXCEEDED`（需先 `workflow_deregister` 舊版本或調高此值） | `number` / 省略 = 不設上限 | 否 | v22 |
+| `rwe.config.json` → `graphAnalyzer.enabled` | Graph analyzer（`workflow_register` 時把腳本送給設定的 LLM provider，畫出 `workflow_describe` 的 ASCII 診斷圖）總開關；`false` 時註冊照樣成功，只是不寫入診斷圖列（`workflow_describe` 回 `diagramStatus:"unavailable"`／`DISABLED`），**永遠不是錯誤** | `boolean` / `true` | 否 | v23 |
+| `rwe.config.json` → `graphAnalyzer.model` | 畫圖用的模型別名（`aliases` 表裡的鍵，同 `agent()` 用的那張表；不是 `provider:model` 字串）；未知別名時**開機只警告、不擋開機**，該工作流程的每次 `enqueue` 直接以 `MODEL_UNMAPPED`（零次模型呼叫）落地 | `string` / 部署的預設別名 | 否 | v23 |
+| `rwe.config.json` → `graphAnalyzer.systemPrompt` | 畫圖 prompt——附加在腳本文字之前送給模型；出廠預設 prompt 假設的字彙相容模型等級見下方說明 | `string` / 出廠預設 prompt（畫圖字彙說明） | 否 | v23 |
+| `rwe.config.json` → `graphAnalyzer.tools` | 分析器這次 LLM 呼叫允許的工具集（會經 `curateToolsForProvider` 過濾）；空陣列＝**無工具**，因為 prompt 承載的是攻擊者可控的腳本文字 | `string[]` / `[]` | 否 | v23 |
+| `rwe.config.json` → `graphAnalyzer.timeoutMs` | 單次畫圖呼叫逾時（ms） | `number` / `60000` | 否 | v23 |
+| `rwe.config.json` → `graphAnalyzer.retries` | 單次畫圖呼叫失敗後的引擎端重試次數（**不含** gateway 自己的重試，見下方公式） | `number` / `0` | 否 | v23 |
+| `rwe.config.json` → `graphAnalyzer.maxBytes` | 畫圖輸出（`gateDiagram` 第三關）位元組上限；超過回 `GATE_REJECTED_SHAPE` | `number` / `8192` | 否 | v23 |
+| `rwe.config.json` → `graphAnalyzer.maxLines` | 畫圖輸出行數上限，同上一關 | `number` / `120` | 否 | v23 |
+| `rwe.config.json` → `graphAnalyzer.maxQueueDepth` | 分析器佇列深度（並行度固定 1）；滿了直接以 `QUEUE_FULL` 落地，不是錯誤 | `number` / `8` | 否 | v23 |
 | `rwe.config.json` → `seedRefAllowlist` | engine-pull `seedRef:{repoUrl,sha}` 的 egress 白名單（`https://` URL 前綴）；**fail-closed**：省略/空陣列 = 任何 seedRef 回 `SEEDREF_DISABLED`；不命中前綴（含 `169.254.169.254`/`localhost`/私有 IP/`file://`）→ `SEEDREF_EGRESS_DENIED`（SSRF 安全） | `string[]` / `[]` | 否 | v13 |
 | `rwe.config.json` → `maxBlobBytes` | `POST /assets/blob/:sha`（streaming raw-body 上傳）最大 body bytes；超過 → HTTP 413 `BLOB_TOO_LARGE` | `number` / `268435456`（256 MiB，最小 1048576） | 否 | v10 |
 | `rwe.config.json` → `maxConcurrentRuns` | 頂層 run 並行上限（run-admission counter）；達上限時 `start()` 在任何持久化動作之前以 `RUN_ADMISSION_LIMIT` 拒絕；巢狀 `workflow()` 不佔用槽位 | `number` / `64` | 否 | v8 |
@@ -351,6 +379,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `maxAppendPromptBytes` | `overrides.appendPrompt` 的位元組上限；超過在送出時以 `PARAM_OUT_OF_RANGE` 拒絕（不截斷、原文不回顯於錯誤訊息） | `number` / `1024` | 否 | v21 |
 | `rwe.config.json` → `maxEffort` | `overrides.effort`／`meta.params` 宣告的 `effort` 上限（`low\|medium\|high\|xhigh\|max` 五階） | `string` / `'high'` | 否 | v21 |
 | `rwe.config.json` → `auth.enabled` | OAuth 2.0 身份認證 toggle；`false`（省略）= 開放行為（無 auth） | `boolean` / `false` | 否 | v15 |
+| `rwe.config.json` → `auth.issuer` | 這台引擎當作 OAuth 授權伺服器時對外宣告的 base URL（寫進 AS metadata、`WWW-Authenticate` 與 client redirect 的 `iss`）；省略時自動用 `http://<bind>:<實際 port>`，公開部署（HTTPS tunnel）必須明寫成對外網址 | `string` / `http://<bind>:<port>` | 否（公開部署時建議設定） | v15 |
 | `rwe.config.json` → `auth.googleClientId` | Google Cloud Console OAuth 2.0 client ID；用於 `/authorize` 重導向 + id_token aud 驗證 | `string` / — | 當 `auth.enabled:true` | v15 |
 | `rwe.config.json` → `auth.googleClientSecret` | Google OAuth 2.0 client secret；用於 `/oauth/google/callback` code exchange | `string` / — | 當 `auth.enabled:true` | v15 |
 | `rwe.config.json` → `auth.googleAuthorizeUrl` | Google authorization endpoint override（一般部署不需設定） | `string` / `'https://accounts.google.com/o/oauth2/v2/auth'` | 否 | v18 |
@@ -368,7 +397,14 @@ curl -s http://localhost:8787/api/models | python3 -c \
 `auth.enabled:true` 時的部署前提：
 1. `bind` 改成 `0.0.0.0`（或公開 IP），並在 `allowedHosts` 列出你的 LAN IP／主機名稱。
 2. 引擎需有 HTTPS 公開 callback URL（`https://<your-host>/oauth/google/callback`），因為 Google 要求 callback URI 為 HTTPS（cloudflared tunnel 可提供）。在 Google Cloud Console 的「Authorized redirect URIs」填入此 callback URL。
-3. D-BIND fail-closed：`auth.enabled:true` + 非 loopback 來源沒有有效 bearer → 401。loopback（127.0.0.1/::1）永遠豁免（本機開發用）。
+3. D-BIND fail-closed（`/mcp`、`GET /api/workflows/:name/describe`、blob/manifest 上傳都走這一套）：
+   `auth.enabled:true` 時，沒有有效 bearer 一律 401 + `WWW-Authenticate`，**唯一的豁免**是
+   「來源是 loopback（127.0.0.1/::1）**而且** `bind` 不是 loopback」。所以：
+   - `bind` 是 `0.0.0.0`／LAN IP → 本機（127.0.0.1）連進來免 bearer，區網來源要 bearer。
+   - `bind` 是 `127.0.0.1`（預設）→ **沒有任何豁免**，連本機自己 curl 也要 bearer
+     （這個 bind 根本不可能有非 loopback 來源，豁免對它沒有意義）。
+   - 帶 tunnel／forwarded 標頭（`X-Forwarded-For` 等）的請求**永不豁免**，避免「把 cloudflared
+     架在 loopback 上」變成繞過。
 
 範例 `auth` 區塊（`rwe.config.json`）：
 ```json
@@ -378,6 +414,21 @@ curl -s http://localhost:8787/api/models | python3 -c \
   "googleClientSecret": "GOCSPX-…"
 }
 ```
+
+`graphAnalyzer` 說明（`rwe.config.json`，九個鍵，範例見 `rwe.config.example.json`）：
+
+1. **`workflow_register` 會把「腳本本身」送給設定的 LLM provider**，用來畫 `workflow_describe` 的
+   ASCII 診斷圖。請注意：這正是引擎對非擁有者遮起來的同一份文字（`workflow_get` 會回
+   `scriptWithheld`），但對設定的 provider 這層遮罩並不存在——畫圖本來就需要讀懂腳本結構。
+   這是本功能的內在行為，不是缺陷；`graphAnalyzer.enabled:false` 是唯一、也是完整的控制項——
+   關掉即完全不送出。
+2. **最壞情況呼叫次數公式**：`(1 + graphAnalyzer.retries) × (1 + gateway 本身的 retries)`——例如
+   `graphAnalyzer.retries:0` + `gateway retries:1`（v1 預設）＝每次註冊最多 2 次模型呼叫；兩者都調高
+   會相乘放大，估算費用/延遲時務必用這個公式，不要只看其中一個鍵。
+3. **出廠預設 `systemPrompt` 假設的模型等級**：字彙相容（照著要求只輸出 ASCII + 診斷圖字彙、不夾帶
+   額外文字）的模型。在本機 Ollama 這類較小模型（例如 `qwen2.5:7b`）上，字彙相容度會先出現退化——
+   持續升高的 `GATE_REJECTED_SHAPE` 或 journal 裡的 `gateFail:"codepoint"` 就是這個訊號，代表該換
+   `graphAnalyzer.model` 或重寫 `graphAnalyzer.systemPrompt`，而不是引擎故障。
 
 ## 1c. 安全模型（Security Model）
 
@@ -447,8 +498,8 @@ curl -s http://localhost:8787/api/models | python3 -c \
 **docker-compose**（不需要另外寫 Dockerfile；直接把 repo 掛進官方 Node 22 image，跑與手動部署
 完全相同的 `npm ci && npm run start`）：
 ```bash
-docker compose up                              # 預設 profile：只跑 server，走免依賴的
-                                                # direct-fetch/SDK 路徑，不需要 LiteLLM/Python
+docker compose up                              # 預設 profile：只跑 server（映像內沒有 LiteLLM/Python；
+                                                # 要免 LiteLLM 依賴，設定檔請照 §1a 的 (a) 或 (b) 組合）
 docker compose --profile litellm up server-litellm
                                                 # 選用 profile：容器內額外安裝 Python 3.11 +
                                                 # litellm[proxy]
@@ -502,9 +553,12 @@ curl -s -o /dev/null -w "dashboard=%{http_code}\n" http://127.0.0.1:8787/dashboa
    `ExecStart=<node 絕對路徑> node_modules/tsx/dist/cli.mjs src/main.ts`，並在 unit 裡設
    `Environment=PATH=<node bin 目錄>:/usr/bin:/bin`。用 `node -e 'console.log(process.execPath)'`
    查你的 node 真實路徑。
-2. **免依賴啟動要設 `useLiteLLMProxy:false`** —— 否則開機/首次 `agent()` 會去 `spawn litellm`，
-   沒裝就 `ENOENT` 崩潰。設 `gateway:"direct-fetch"` + `useLiteLLMProxy:false`，ollama 走原生直連
-   `localhost:11434`，完全不碰 LiteLLM。
+2. **免依賴啟動要設 `useLiteLLMProxy:false`** —— 否則就會需要 `litellm` 執行檔：`gateway:"sdk"`
+   在**開機時**就去 `spawn litellm`，沒裝的話服務會帶著
+   `fatal startup error: ... spawn litellm ENOENT` 直接拒絕啟動；`useLiteLLMProxy:true` 則是
+   啟動正常、但每次 `agent()`／畫圖都失敗成 `PROVIDER_UNREACHABLE`。設
+   `gateway:"direct-fetch"` + `useLiteLLMProxy:false`，ollama 走原生直連 `localhost:11434`，
+   完全不碰 LiteLLM。
 3. **`timeoutMs` 是「單次 `agent()` LLM 呼叫」的斷路器，不是整體 workflow 逾時**（workflow 本身
    非同步、無總時長限制）。本地 7B 生成大回應會超過預設 15 秒 → 被切成 null；跑本地模型建議調高
    到 `300000`（5 分鐘）。
@@ -538,7 +592,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
-判定標準：回傳 `200`，且 body 的 `result.tools` 陣列包含 38 個工具（含全部 `workflow_*` 家族）；
+判定標準：回傳 `200`，且 body 的 `result.tools` 陣列包含 40 個工具（含全部 `workflow_*` 家族）；
 終端機/日誌會印出 `[remote-workflow-engine] ready`；`GET /api/status` 回 `{agentSemaphore,version}`。
 完整真實層驗證證據（含逐 REQ 的真實指令與觀察輸出）見
 `.sdlc/features/001-remote-workflow-engine/08-validation.md`。
@@ -571,7 +625,13 @@ npm run start
 | 續跑（`workflow_resume`）之後，原本被中止那次呼叫的紀錄一直卡在 `"state":"running"` | 已知的顯示瑕疵：中止的呼叫紀錄不會自己轉成終止狀態，續跑會多出一筆新紀錄 | 純顯示瑕疵，不影響最終 `workflow_result` 的正確性；可忽略舊的那筆紀錄 |
 | 關掉伺服器後還有一個 `litellm --config ...` process 留著 | 正常 `SIGTERM`/`SIGINT` 關機會連帶砍掉內部管理的 `litellm` 子行程；殘留多半是非正常關機（如 `kill -9`）留下的 | 手動 `ps aux \| grep litellm` 找到後 `kill`；也可以用 `litellmPort` 鍵讓每個實例用不同 port，避開多實例誤連風險 |
 | Node 啟動就報 SyntaxError / 找不到 `--experimental-transform-types` | Node 版本 < 22.6 | 升級 Node 到 22.6 以上（`node --version` 確認） |
+| `workflow_describe` 的 `diagramStatus` 一直是 `"unavailable"`，`diagramNote` 說逾時或「did not return a valid diagram」 | 畫圖的模型太小或太慢：出廠預設 prompt 要求「只輸出圖、不夾帶其他文字」，本機 7B 級模型常多寫字或用到規定外符號而被把關擋下（journal 的 `gateFail:"codepoint"`／`noteCode:"TIMEOUT"` 就是訊號） | 換一個能穩定照格式輸出的 `graphAnalyzer.model`，或把 `graphAnalyzer.systemPrompt` 改寫成給該模型的明確模板；改完重啟即生效（不需重新編譯）。真的不需要圖就設 `graphAnalyzer.enabled:false` |
+| 服務啟動失敗，log 只有一行 `fatal startup error: Error: litellm proxy failed to spawn: spawn litellm ENOENT` | `gateway:"sdk"` 在**開機階段**就要起一個 `litellm` 代理子行程，而 `PATH` 上沒有 `litellm` 執行檔（常見於 systemd unit 的 `PATH` 沒帶到 venv） | 照 §1a 把 litellm venv 的 `bin/` 加進 `PATH`（systemd 要寫在 unit 的 `Environment=PATH=...`）再啟動；或改成 §1a 的 (a)／(b) 免 LiteLLM 組合 |
+| 服務起得來，但每次 `agent()`／註冊畫圖都是 `PROVIDER_UNREACHABLE` | `gateway:"direct-fetch"` + `useLiteLLMProxy:true`，但 `PATH` 上沒有 `litellm`：代理是用到才起，起不來就這一次呼叫失敗（服務本身不受影響、不會中止） | 同上：補 `PATH`，或設 `useLiteLLMProxy:false` 讓 ollama 走原生直連 |
+| `diagramStatus` 是 `"unavailable"`、`diagramNote` 說 `produced content outside the allowed vocabulary`（journal 顯示 `noteCode:"GATE_REJECTED_CONTENT"`／`gateFail:"token"`） | 畫圖模型寫出了「把關字彙清單」以外的字。清單只收錄腳本裡真的存在的名字：`phase()`／`meta.phases` 的步驟標題、`aliases` 的模型別名、目前綁定的觸發方式，加上三個引擎自己指定的字（`default`／`model:param`／`workflow_run`）。最常見的原因是**腳本完全沒宣告步驟**，模型沒有任何可用名稱只好自己編 | 在腳本裡用 `phase('取資料')` 標出步驟（或 `export const meta = { phases: [...] }`），再 `workflow_regenerate_diagram` 重畫。若是自訂了 `graphAnalyzer.systemPrompt`，檢查 prompt 裡有沒有留下模板佔位字（例如寫「輸出 `[ TRIGGER ]`」，小模型會照抄 `TRIGGER` 這個字而被擋下）。不論有沒有圖，`workflow_describe` 的 `triggers` 欄位永遠是即時正確值 |
+| 呼叫過 `workflow_regenerate_diagram`，log 也印了 `outcome:"ready"`，但 `workflow_describe` 的圖跟 `diagramGeneratedAt` 都沒變 | 這是刻意的保護：這次重畫失敗了，引擎把**原本那張畫好的圖原封不動留著**，而不是把它清成「沒有圖」。log 那行的 `cause:"prior_restored"` 就是這個意思，`attempts` 是失敗前試了幾次 | 先看同一行的 `noteCode`／`gateFail` 找出重畫失敗的原因（多半是模型或把關問題，見上面兩列），修好再重畫一次；在那之前舊圖仍可安全閱讀，只是內容停留在 `diagramGeneratedAt` 那個時間點 |
 | 手動用 `curl http://0.0.0.0:<port>/api/status` 檢查健康狀態，收到 `403 Forbidden`（不是逾時、不是連不上） | 伺服器的 Host-header 允許清單刻意不把 `0.0.0.0` 當成合法 Host（那是「監聽所有介面」的萬用位址，不是真實可連的目的地名稱）——`RWE_BIND=0.0.0.0` 只影響「監聽哪些介面」，不代表 `0.0.0.0` 本身能當 URL 用 | 改用 `127.0.0.1:<port>` 檢查（`deploy.sh` §0 本身在 `RWE_BIND=0.0.0.0` 時也是這樣做）；要從區網其他主機檢查，用該主機看到的 LAN IP（並確認已列在 §1b `allowedHosts`） |
+| `auth.enabled:true` + `bind:"0.0.0.0"`，從**本機**呼叫 `/mcp` 做寫入（`workflow_register`／`workflow_publish`／`workflow_deregister`／`webhook_delete`…），明明帶了有效 bearer 卻回 `PRINCIPAL_REQUIRED` | 這個組合下本機來源走的是 D-BIND 豁免（§1b 部署前提第 3 點），伺服器直接放行、**根本不會去讀你帶的 bearer**，於是這次呼叫沒有身份可用，而寫入類操作在 `auth.enabled:true` 時不接受 `args.principal` 自稱 | 要用 bearer 身份做寫入，就從**非 loopback 來源**呼叫（例如從該主機的 LAN IP 打進去），或把 `bind` 設成 `127.0.0.1`（loopback bind 沒有豁免，bearer 一定會被讀取）；只讀不寫時維持現狀即可 |
 | `RWE_BIND=<LAN IP>`（如 §2 systemd 範例的 `192.168.0.125`）部署後，手動用 `curl http://127.0.0.1:<port>/api/status` 檢查，收到 `Connection refused`（連不上，不是 403） | 服務只監聽 `$RWE_BIND` 指定的那個介面；綁定成具體 LAN IP 時，該主機的 `127.0.0.1` 迴環介面根本沒有服務在聽 | 改用 `$RWE_BIND` 本身（例如 `curl http://192.168.0.125:<port>/api/status`）；`deploy.sh` §0 的健康檢查已依 `RWE_BIND` 是否為 `0.0.0.0`/`::` 自動選擇正確目的地，不需要手動判斷 |
 
 ## 6. 維運注意事項 / 已知限制
@@ -619,9 +679,104 @@ running→interrupted (resumable)`）；`workflow_resume(runId)` 即可續跑。
 派發但尚未寫入日誌）的呼叫，續跑時會真的重跑（cache MISS，非靜默遺失）；若該次呼叫有非冪等副
 作用可能重複，由工作流程作者負責冪等性。
 
-**重用前先看用途 + 靜態 DAG**：`workflow_list` 每筆回傳 `description`；`workflow_get({name})`
-回傳完整定義（未知名稱 → `WORKFLOW_NOT_FOUND`）；`workflow_get.skeleton` 與
-`GET /api/workflows/:name/skeleton` 回傳純靜態掃描出的預測 DAG 骨架（不執行 script）。
+**重用前先看用途（`workflow_describe`）**：`workflow_list` 每筆回傳 `description`；
+`workflow_get({name})` 回傳完整定義（未知名稱 → `WORKFLOW_NOT_FOUND`，非擁有者不含腳本本文）；
+**`workflow_describe({name, version?, channel?})` 是給「要不要用這個工作流程」的人看的單一說明面**
+——用途、版本/頻道、階段、可調參數契約、鎖定鍵、擁有者、回報問題方式、**目前的觸發綁定**
+（`triggers`，每次呼叫即時讀取）以及一張 **ASCII 結構圖**（`diagram`）。HTTP 版：
+`GET /api/workflows/:name/describe`。任何 principal 都能呼叫（不看擁有者身份），回應**永遠不含
+腳本本文**。**這條 HTTP 路由跟其他 `/api/*` 路由不同，不是無條件放行**：`auth.enabled:true`
+時它套用跟 `/mcp` 完全一樣的 D-BIND 規則（見 §1b 最後的「`auth.enabled:true` 時的部署前提」
+第 3 點），沒過就在讀取任何工作流程資料**之前**回 401 + `WWW-Authenticate`；`auth.enabled:false`
+時維持開放。**擋下的時機很重要**：名稱存在與不存在都是同一個 401，未授權的呼叫端沒辦法靠
+「回 404 還是回 200」去試探某個工作流程名稱存不存在。
+
+結構圖由 `graphAnalyzer` 設定區塊指定的 LLM 在註冊時非同步畫出（設定鍵見 §1b）：
+
+```
+workflow_register ──▶ 立刻回 {version}      （註冊從不等畫圖）
+        │
+        └─▶ 佇列(並行度 1) ──▶ LLM 畫圖 ──▶ 把關(字元/大小/字彙) ──▶ 存進該 (name, version)
+                                     │                    │
+                                  失敗/逾時            不合格
+                                     └────────┬───────────┘
+                                              ▼
+                        workflow_describe 回 diagram:null + diagramStatus:"unavailable"
+                                          + diagramNote 說明原因（沒有退化的替代圖）
+```
+
+- `diagramStatus`：`ready`（有圖）／`pending`（還在畫）／`unavailable`（畫不出來，看 `diagramNote`）。
+- `diagramStale:true`：圖畫好之後觸發綁定又改過了——圖沒錯，只是比 `triggers` 舊。
+- 擁有者可 `workflow_regenerate_diagram({name, version})` 重畫（非擁有者 → `NOT_WORKFLOW_OWNER`；
+  分析器關閉時 → `ANALYZER_DISABLED`）。
+- **入口節點會寫出觸發方式**：除了腳本，畫圖模型還會收到「這個工作流程目前綁了哪些觸發器」這段
+  資訊（cron／webhook／chain 綁定不在腳本裡，是引擎另外從排程／webhook／續接三張表讀出來給它的）。
+  綁了觸發器時，圖的第一個方框就會寫 `cron`／`webhook`／上游工作流程名稱：
+
+  ```
+  [ cron ]         [ webhook ]      [ upstream-workflow-name ]   [ workflow_run ]
+      │                 │                       │                       │
+      ▶                 ▶                       ▶                       ▶
+  ╭ Fetch ╮         ╭ Fetch ╮               ╭ Fetch ╮               ╭ Fetch ╮
+   （排程）          （webhook）              （上游跑完接著跑）        （還沒綁，直接呼叫）
+  ```
+
+  圖上只寫**觸發種類**，不會寫出 cron 運算式本身（例如 `0 3 * * *` 不會出現在圖上）。
+  還沒綁任何觸發器時，入口節點寫 `workflow_run`——意思是「這個工作流程目前只能由人／程式直接
+  `workflow_run` 叫起來」，而不是憑空編一個觸發器出來。
+- 不論圖畫得出來與否，`triggers` 欄位永遠是即時正確值；要知道現在綁了什麼，看它就對了。
+- **每畫一次圖就寫一行 log（診斷全靠它）**：每一次「有結論」的畫圖——不管成功、失敗、還是連模型
+  都沒呼叫就直接放棄——都會在 stdout 印出**恰好一行**、固定十二個欄位、固定順序：
+
+  ```
+  [remote-workflow-engine] graph-analyzer {"name":"greet","version":"v1","principal":"alice@example.com",
+   "model":"default","promptTokens":438,"completionTokens":19,"durationMs":12337,
+   "outcome":"ready","noteCode":null,"gateFail":null,"attempts":1,"cause":null}
+  ```
+
+  怎麼讀：
+
+  | 欄位 | 意思 |
+  |---|---|
+  | `outcome` | `ready`（這次落地的圖可以看）或 `unavailable`（沒有圖） |
+  | `noteCode` | 沒有圖時的原因代碼：`TIMEOUT`／`PROVIDER_UNREACHABLE`／`PROVIDER_ERROR`／`GATE_REJECTED_SHAPE`／`GATE_REJECTED_CONTENT`／`RETRIES_EXHAUSTED`／`MODEL_UNMAPPED`／`QUEUE_FULL` |
+  | `gateFail` | 被把關擋下時是哪一關：`codepoint`＝用了規定外的符號、`token`＝寫了字彙清單以外的字、`type`／`size`＝空回應或超出上限 |
+  | `promptTokens`／`completionTokens` | 這次落地累計用掉的 token（多次嘗試會相加）；`null` 代表模型從未成功回應 |
+  | `durationMs` | 這次落地的總耗時（多次嘗試相加）；`0` 代表根本沒呼叫模型 |
+  | `attempts` | 這次落地實際打了幾次模型。`0`＝一次都沒打（設定或關機清理就直接落地）；`2` 以上＝重試過（次數由 `graphAnalyzer.retries` 決定） |
+  | `cause` | 為什麼會落成這個結果的**引擎判定原因**，成功時是 `null`（見下表） |
+
+  `cause` 的完整值域（只有這幾種，永遠不會是模型或供應商回傳的原始文字）：
+
+  | `cause` | 白話解釋 |
+  |---|---|
+  | `null` | 正常畫成功 |
+  | `gate_refused` | 模型有回應，但被把關擋下（配 `gateFail` 看是哪一關） |
+  | `provider_timeout` | 呼叫模型逾時（`graphAnalyzer.timeoutMs`） |
+  | `provider_terminal` | 供應商連不上或回錯誤 |
+  | `model_unmapped` | `graphAnalyzer.model` 不是 `aliases` 裡的別名，連打都沒打 |
+  | `queue_full` | 畫圖佇列滿了（`graphAnalyzer.maxQueueDepth`） |
+  | `disabled` | 分析器關著，所以直接落地（只會出現在開機清理卡住的那筆時） |
+  | `boot_abandoned` | 上一個行程畫到一半就死了，這次開機把它收掉 |
+  | `prior_restored` | 這次重畫失敗，**保留了原本那張畫好的圖**——所以 `outcome` 仍是 `ready` |
+  | `script_unresolved` | 排到要畫時腳本已被 `workflow_deregister` 刪掉 |
+  | `job_exception` | 畫圖工作本身丟出非預期例外 |
+  | `settle_failed` | 連寫入結果都失敗（資料庫層問題），只留這行 log |
+
+  要估成本，把這些行的 token 數加起來就是畫圖的全部花費。
+- **`graphAnalyzer.enabled:false` 當下實際會發生什麼**：註冊照樣成功（永遠不是錯誤）、完全不呼叫
+  模型，註冊當下也不會多出任何一行上面那種 log（連分析器都沒進去）。`workflow_describe` 這時一律回
+  `diagramStatus:"unavailable"` ＋ `diagramNote:"Diagram generation is disabled for this
+  deployment."`，**唯一的例外是先前已經畫好的圖**——那張 `ready` 的圖會照常繼續提供。上次關機時
+  正在畫、卡在 `pending` 的那筆，會在下次開機時直接收掉成 `unavailable`（不會永遠卡著，也不會偷偷
+  再送一次腳本給 provider）——這種清理**會**印一行上面那種 log，`attempts:0`、`principal:null`、
+  `cause:"disabled"`（分析器關著）或 `cause:"boot_abandoned"`（分析器開著、但上個行程畫到一半就死了）；
+  之後把 `enabled` 打開再 `workflow_regenerate_diagram` 即可重畫。
+- **開機時的工具警告**：`graphAnalyzer.tools` 不是空陣列時，開機會多印一行 `warn`，把**實際生效**
+  的工具集念出來（設定值會先經過各供應商的工具整理，可能被增刪，所以印的是整理後的結果）：
+  `graph-analyzer: effective tool set is non-empty (["Bash"]) — the analyzer runs on
+  attacker-influenced input (ADR-016), confirm this is intended`。畫圖的 prompt 內容就是別人送來的
+  腳本，給它工具等於讓外來文字有機會驅動工具，這行是提醒你確認這是刻意的。空陣列（預設）不會有這行。
 
 **高效大型程式庫 seeding**：`/mcp` 請求體接受 `Content-Encoding: gzip|deflate`（雙重上限：壓縮
 輸入 8 MiB + 解壓輸出 8×，防 gzip bomb）；超過上限回具型別 413

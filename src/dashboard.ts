@@ -339,7 +339,7 @@ export function layoutGraph(
       cells.push({ id: a.agentId, kind: 'agent', col, row, laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId });
       matchedIds.add(a.agentId);
       agentCellCount++;
-      warnings.push(`agent ${a.agentId} unmatched to skeleton: frame-grouped`);
+      warnings.push(`agent ${a.agentId} unmatched to the predicted layout: frame-grouped`);
     }
   }
 

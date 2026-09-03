@@ -73,7 +73,7 @@ describe('AgentTranscriptSink captures the SDK message/tool_call/tool_result str
 
   it('workflow_agent_log returns message/tool_call/tool_result events (in order), not only a terminal usage line', async () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
-    const { McpFacade } = await import('../../src/mcp-facade.js');
+    const { McpFacade, NO_TRIGGER_PORTS, NO_GRAPH_ANALYZER } = await import('../../src/mcp-facade.js');
     const { RunManager } = await import('../../src/run-manager.js');
     const { InMemoryRunStore } = await import('../../src/run-store.js');
     const { FixedClock } = await import('../../src/clock.js');
@@ -82,7 +82,7 @@ describe('AgentTranscriptSink captures the SDK message/tool_call/tool_result str
     const gateway = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:4000' });
     const store = new InMemoryRunStore(clock);
     const runManager = new RunManager({ store, clock, gateway });
-    const facade = new McpFacade({ clock, store, runManager });
+    const facade = new McpFacade({ clock, store, runManager, triggerPorts: NO_TRIGGER_PORTS, graphAnalyzer: NO_GRAPH_ANALYZER });
 
     const run = await runScriptVia(facadeCaller(facade), `return agent('read foo.txt');`);
     const runId = run.result!.runId;
