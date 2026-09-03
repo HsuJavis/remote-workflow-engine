@@ -397,7 +397,14 @@ curl -s http://localhost:8787/api/models | python3 -c \
 `auth.enabled:true` 時的部署前提：
 1. `bind` 改成 `0.0.0.0`（或公開 IP），並在 `allowedHosts` 列出你的 LAN IP／主機名稱。
 2. 引擎需有 HTTPS 公開 callback URL（`https://<your-host>/oauth/google/callback`），因為 Google 要求 callback URI 為 HTTPS（cloudflared tunnel 可提供）。在 Google Cloud Console 的「Authorized redirect URIs」填入此 callback URL。
-3. D-BIND fail-closed：`auth.enabled:true` + 非 loopback 來源沒有有效 bearer → 401。loopback（127.0.0.1/::1）永遠豁免（本機開發用）。
+3. D-BIND fail-closed（`/mcp`、`GET /api/workflows/:name/describe`、blob/manifest 上傳都走這一套）：
+   `auth.enabled:true` 時，沒有有效 bearer 一律 401 + `WWW-Authenticate`，**唯一的豁免**是
+   「來源是 loopback（127.0.0.1/::1）**而且** `bind` 不是 loopback」。所以：
+   - `bind` 是 `0.0.0.0`／LAN IP → 本機（127.0.0.1）連進來免 bearer，區網來源要 bearer。
+   - `bind` 是 `127.0.0.1`（預設）→ **沒有任何豁免**，連本機自己 curl 也要 bearer
+     （這個 bind 根本不可能有非 loopback 來源，豁免對它沒有意義）。
+   - 帶 tunnel／forwarded 標頭（`X-Forwarded-For` 等）的請求**永不豁免**，避免「把 cloudflared
+     架在 loopback 上」變成繞過。
 
 範例 `auth` 區塊（`rwe.config.json`）：
 ```json
@@ -410,10 +417,11 @@ curl -s http://localhost:8787/api/models | python3 -c \
 
 `graphAnalyzer` 說明（`rwe.config.json`，九個鍵，範例見 `rwe.config.example.json`）：
 
-1. **`workflow_register` 現在會把「腳本本身」送給設定的 LLM provider**，用來畫 `workflow_describe` 的
-   ASCII 診斷圖——這是 v22 花一整輪把 `script` 從其他引擎內部 principal 遮起來的同一份文字，對著
-   設定的 provider 這層遮罩並不存在，因為畫圖本來就需要讀懂腳本的結構。這是本功能的內在行為，不是
-   缺陷；`graphAnalyzer.enabled:false` 是唯一、也是完整的控制項——關掉即完全不送出。
+1. **`workflow_register` 會把「腳本本身」送給設定的 LLM provider**，用來畫 `workflow_describe` 的
+   ASCII 診斷圖。請注意：這正是引擎對非擁有者遮起來的同一份文字（`workflow_get` 會回
+   `scriptWithheld`），但對設定的 provider 這層遮罩並不存在——畫圖本來就需要讀懂腳本結構。
+   這是本功能的內在行為，不是缺陷；`graphAnalyzer.enabled:false` 是唯一、也是完整的控制項——
+   關掉即完全不送出。
 2. **最壞情況呼叫次數公式**：`(1 + graphAnalyzer.retries) × (1 + gateway 本身的 retries)`——例如
    `graphAnalyzer.retries:0` + `gateway retries:1`（v1 預設）＝每次註冊最多 2 次模型呼叫；兩者都調高
    會相乘放大，估算費用/延遲時務必用這個公式，不要只看其中一個鍵。
@@ -622,6 +630,7 @@ npm run start
 | 服務起得來，但每次 `agent()`／註冊畫圖都是 `PROVIDER_UNREACHABLE` | `gateway:"direct-fetch"` + `useLiteLLMProxy:true`，但 `PATH` 上沒有 `litellm`：代理是用到才起，起不來就這一次呼叫失敗（服務本身不受影響、不會中止） | 同上：補 `PATH`，或設 `useLiteLLMProxy:false` 讓 ollama 走原生直連 |
 | `diagramStatus` 是 `"unavailable"`、`diagramNote` 說 `produced content outside the allowed vocabulary`（journal 顯示 `noteCode:"GATE_REJECTED_CONTENT"`／`gateFail:"token"`） | 畫圖模型寫出了「把關字彙清單」以外的字。清單只收錄腳本裡真的存在的名字：`phase()`／`meta.phases` 的步驟標題、`aliases` 的模型別名、目前綁定的觸發方式，加上三個引擎自己指定的字（`default`／`model:param`／`workflow_run`）。最常見的原因是**腳本完全沒宣告步驟**，模型沒有任何可用名稱只好自己編 | 在腳本裡用 `phase('取資料')` 標出步驟（或 `export const meta = { phases: [...] }`），再 `workflow_regenerate_diagram` 重畫。若是自訂了 `graphAnalyzer.systemPrompt`，檢查 prompt 裡有沒有留下模板佔位字（例如寫「輸出 `[ TRIGGER ]`」，小模型會照抄 `TRIGGER` 這個字而被擋下）。不論有沒有圖，`workflow_describe` 的 `triggers` 欄位永遠是即時正確值 |
 | 手動用 `curl http://0.0.0.0:<port>/api/status` 檢查健康狀態，收到 `403 Forbidden`（不是逾時、不是連不上） | 伺服器的 Host-header 允許清單刻意不把 `0.0.0.0` 當成合法 Host（那是「監聽所有介面」的萬用位址，不是真實可連的目的地名稱）——`RWE_BIND=0.0.0.0` 只影響「監聽哪些介面」，不代表 `0.0.0.0` 本身能當 URL 用 | 改用 `127.0.0.1:<port>` 檢查（`deploy.sh` §0 本身在 `RWE_BIND=0.0.0.0` 時也是這樣做）；要從區網其他主機檢查，用該主機看到的 LAN IP（並確認已列在 §1b `allowedHosts`） |
+| `auth.enabled:true` + `bind:"0.0.0.0"`，從**本機**呼叫 `/mcp` 做寫入（`workflow_register`／`workflow_publish`／`workflow_deregister`／`webhook_delete`…），明明帶了有效 bearer 卻回 `PRINCIPAL_REQUIRED` | 這個組合下本機來源走的是 D-BIND 豁免（§1b 部署前提第 3 點），伺服器直接放行、**根本不會去讀你帶的 bearer**，於是這次呼叫沒有身份可用，而寫入類操作在 `auth.enabled:true` 時不接受 `args.principal` 自稱 | 要用 bearer 身份做寫入，就從**非 loopback 來源**呼叫（例如從該主機的 LAN IP 打進去），或把 `bind` 設成 `127.0.0.1`（loopback bind 沒有豁免，bearer 一定會被讀取）；只讀不寫時維持現狀即可 |
 | `RWE_BIND=<LAN IP>`（如 §2 systemd 範例的 `192.168.0.125`）部署後，手動用 `curl http://127.0.0.1:<port>/api/status` 檢查，收到 `Connection refused`（連不上，不是 403） | 服務只監聽 `$RWE_BIND` 指定的那個介面；綁定成具體 LAN IP 時，該主機的 `127.0.0.1` 迴環介面根本沒有服務在聽 | 改用 `$RWE_BIND` 本身（例如 `curl http://192.168.0.125:<port>/api/status`）；`deploy.sh` §0 的健康檢查已依 `RWE_BIND` 是否為 `0.0.0.0`/`::` 自動選擇正確目的地，不需要手動判斷 |
 
 ## 6. 維運注意事項 / 已知限制
@@ -676,9 +685,10 @@ running→interrupted (resumable)`）；`workflow_resume(runId)` 即可續跑。
 （`triggers`，每次呼叫即時讀取）以及一張 **ASCII 結構圖**（`diagram`）。HTTP 版：
 `GET /api/workflows/:name/describe`。任何 principal 都能呼叫（不看擁有者身份），回應**永遠不含
 腳本本文**。**這條 HTTP 路由跟其他 `/api/*` 路由不同，不是無條件放行**：`auth.enabled:true`
-時它套用跟 `/mcp` 一樣的 D-BIND 規則（§1b、上方）——loopback 來源或有效 bearer 才放行，否則
-在讀取任何工作流程資料**之前**就回 401 + `WWW-Authenticate`（不會讓未授權呼叫端先探出某個
-名稱是否存在）；`auth.enabled:false` 時維持開放（ADJ-A1，v24）。
+時它套用跟 `/mcp` 完全一樣的 D-BIND 規則（見 §1b 最後的「`auth.enabled:true` 時的部署前提」
+第 3 點），沒過就在讀取任何工作流程資料**之前**回 401 + `WWW-Authenticate`；`auth.enabled:false`
+時維持開放。**擋下的時機很重要**：名稱存在與不存在都是同一個 401，未授權的呼叫端沒辦法靠
+「回 404 還是回 200」去試探某個工作流程名稱存不存在。
 
 結構圖由 `graphAnalyzer` 設定區塊指定的 LLM 在註冊時非同步畫出（設定鍵見 §1b）：
 
@@ -714,6 +724,28 @@ workflow_register ──▶ 立刻回 {version}      （註冊從不等畫圖）
   還沒綁任何觸發器時，入口節點寫 `workflow_run`——意思是「這個工作流程目前只能由人／程式直接
   `workflow_run` 叫起來」，而不是憑空編一個觸發器出來。
 - 不論圖畫得出來與否，`triggers` 欄位永遠是即時正確值；要知道現在綁了什麼，看它就對了。
+- **每畫一次圖就寫一行 log（診斷全靠它）**：每一次「有結論」的畫圖——不管成功、失敗、還是連模型
+  都沒呼叫就直接放棄——都會在 stdout 印出**恰好一行**、固定十個欄位、固定順序：
+
+  ```
+  [remote-workflow-engine] graph-analyzer {"name":"greet","version":"v1","principal":"alice@example.com",
+   "model":"default","promptTokens":438,"completionTokens":19,"durationMs":12337,
+   "outcome":"ready","noteCode":null,"gateFail":null}
+  ```
+
+  怎麼讀：`outcome` 是 `ready`（畫成功）或 `unavailable`（沒畫成）；沒畫成時 `noteCode` 說原因
+  （`TIMEOUT`／`PROVIDER_UNREACHABLE`／`GATE_REJECTED_SHAPE`／`GATE_REJECTED_CONTENT`／
+  `RETRIES_EXHAUSTED`／`MODEL_UNMAPPED`／`QUEUE_FULL`），被把關擋下時 `gateFail` 再說是哪一關
+  （`codepoint`＝用了規定外的符號、`token`＝寫了字彙清單以外的字）。
+  `promptTokens`／`completionTokens` 是 `null`、`durationMs` 是 `0`，代表**這次根本沒有呼叫模型**
+  ——例如 `graphAnalyzer.model` 填了不存在的別名（`MODEL_UNMAPPED`），或關機時卡住的那筆在下次
+  開機被直接收掉（`RETRIES_EXHAUSTED`）。要估成本，直接把這幾行的 token 數加起來就是畫圖的全部花費。
+- **`graphAnalyzer.enabled:false` 當下實際會發生什麼**：註冊照樣成功（永遠不是錯誤）、完全不呼叫
+  模型、也不會多出任何一行上面那種 log。`workflow_describe` 這時一律回
+  `diagramStatus:"unavailable"` ＋ `diagramNote:"Diagram generation is disabled for this
+  deployment."`，**唯一的例外是先前已經畫好的圖**——那張 `ready` 的圖會照常繼續提供。上次關機時
+  正在畫、卡在 `pending` 的那筆，會在下次開機時直接收掉成 `unavailable`（不會永遠卡著，也不會偷偷
+  再送一次腳本給 provider）；之後把 `enabled` 打開再 `workflow_regenerate_diagram` 即可重畫。
 
 **高效大型程式庫 seeding**：`/mcp` 請求體接受 `Content-Encoding: gzip|deflate`（雙重上限：壓縮
 輸入 8 MiB + 解壓輸出 8×，防 gzip bomb）；超過上限回具型別 413

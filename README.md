@@ -185,9 +185,10 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # triggers 是「現在」綁在這個工作流程上的觸發方式（cron/webhook/chain），每次呼叫都重新讀取；
 # 綁定變動後圖還沒重畫時，diagramStale 會是 true。
 # 同樣的內容也有 HTTP 版：curl -s http://127.0.0.1:8787/api/workflows/greet/describe
-# 「任何 principal 都能問」指授權層級（不看擁有者身份），不是「不需要驗證」：auth.enabled:true 時
-# 這條 HTTP 路由跟 /mcp 一樣要求 loopback 來源或有效 bearer，否則回 401（ADJ-A1，v24）——
-# 在讀到任何工作流程資料之前就擋下，不會讓未授權呼叫端先探出名稱是否存在。
+# 「任何 principal 都能問」指的是授權層級（不看擁有者身份），不等於「不需要驗證」：
+# auth.enabled:true 時，這條 HTTP 路由跟 /mcp 走同一套 D-BIND 規則（見 DEPLOY.md §1b），
+# 沒過就回 401 + WWW-Authenticate——而且是在讀到任何工作流程資料「之前」就擋下，
+# 所以未授權的呼叫端連「這個名稱存不存在」都問不出來（存在與不存在都是同一個 401）。
 
 # 擁有者重畫某個版本的圖（非擁有者會被拒：NOT_WORKFLOW_OWNER）
 curl -s -X POST http://127.0.0.1:8787/mcp \
