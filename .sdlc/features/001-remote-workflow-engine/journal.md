@@ -1,3 +1,54 @@
+- 2026-09-04 — v23 Gate 8 RE-REVIEW #2 (reviewer, consistency review + retro) **CLOSE — `send_back=[]`,
+0 HIGH**. Third Gate 8 pass for v23, after RE-REVIEW #1 sent back `["architecture","tests","impl"]` on one
+HIGH. **That HIGH is closed and re-verified on disk**, not from the commit's own claims:
+`src/graph-analyzer.ts:329-345` — the `try` covers `await scriptSource()` *and* `await this._runJob(…)`,
+`finally { this._release(key) }` is the only release site, `_release` idempotent per key at `:300`.
+R-2 (settle seam, one `putDiagramResult` caller at `:241`, twelve keys at `:289-293`), R-3 (`enabled`
+choke point as `_startJob`'s first statement, `:323`), R-6 and adjudication #9 (`docs/AUTHORING.md:20-32`)
+are closed too.
+
+**`arch_consistent: false` — 11 deviations recorded as v24 tech debt (0 HIGH / 3 MID / 8 LOW after
+de-duplicating the two pre-run panels, which overlap on four items).** The two architecture-expert
+reports were **pre-run by the workflow and consolidated, not re-spawned**; both returned 0 HIGH
+independently. **AC-1 (MID)** FLOOR 2b is not total — `_settleUnavailable`'s own `getDiagram` at `:260`
+sits *outside* the `try` that opens at `:262`, so a store **read** failure inside the closure's one
+recovery path escapes as an unhandled rejection, reachable at boot via `sweepAtBoot()`
+(`server.ts:1507`); both panels graded it MED because the trigger is a disk-level event, and this
+reviewer found no fact they lacked to overrule upward. **AC-2 (MID)** the DES-127 B5 early return
+(`:259-261`) swallows *every* zero-model-call settle silently when a prior `ready` row exists —
+`regenerate` reports `queued:true`, nothing is queued, no journal line is emitted; consolidation
+correction: inv 5's *letter* holds (no row is written), what is violated is ARCH-085's readback-seam
+intent. **AC-3 (MID) is new this pass and was raised by neither panel and no prior gate**: a stray
+directory literally named `:memory:` holding a 28 KB `catalog.db` was swept into commit `9fc4439` by an
+over-broad `git add` and is **still tracked at HEAD** — no `src/` or `tests/` code produces it (every
+`':memory:'` in `src/` is the guarded sentinel; every test `WorkflowCatalog` uses `tmpdir()`), so it is
+repo hygiene rather than a code defect, but a colon is an illegal NTFS path character, so `git clone`
+fails on Windows. It is the **fourth** symptom of this iteration's dominant defect class, after three
+mislabelled commit subjects. AC-4..AC-11 are LOW.
+
+**Everything else is clean.** Traceability: 1028 items / 18 gaps = **0 high, 1 mid (`IMPL-082`, since
+v14), 17 low** (16 unchanged iter-drift pairs + `TASK-018` since v3), 0 orphan, 0 broken-link,
+**0 未真實驗證, 0 未驗證**; `rtm.md` 106/106 REQ `real:true`. Dashboard QA: **0 dead links**; the 3 MID
+bracket-imbalance flags are erDiagram crow's-foot false positives, re-verified by reading
+`02-architecture.md:1645-1680` in full; the 1 LOW missing offline fallback is recorded debt **with a
+caveat the previous pass missed** — refresh `.sdlc/trace.py` from the plugin but **keep** this repo's
+local `^###` `ITEM_RE` hardening, because plugin 2.1.3 is still `^#{2,4}` and a blind copy re-opens the
+v7 false-gap incident. Module boundaries: `solid_check` **PASS**, 23 modules, 0 high / 0 mid, the same
+10 LOW unclaimed files. Validation & handover: `VAL-124..127` all `tier: acceptance` / `real: true` /
+`pass` with real-boot stdout evidence; `08-validation.md` present; `README.md` + `DEPLOY.md` present,
+step-by-step 淺白繁中 with ASCII diagrams, history-free banner, a single 設定總表 at `DEPLOY.md:332`,
+and **DEPLOY §0 leads with `./deploy.sh --background`, which Gate 7.5 round 5 actually ran for all 13
+boots** (62 references in `08-validation.md`). Reviewer-run regression: `tsc --noEmit` clean,
+`npx vitest run` **283 files / 1850 tests / 0 failed**.
+
+**Housekeeping done by this gate:** `gates.review.passed` flipped **true** and `current_stage: review`
+recorded (it had been left un-landed since v22); the `pending` entry holding the `docs/AUTHORING.md`
+example defect **rewritten as RESOLVED** — it was fixed at `46a0c38` and the ledger was still carrying a
+closed defect as open; `.panel/` removed per the reviewer contract, since `send_back` is empty.
+Special-file reviews were **N/A** (no `CLAUDE.md`/`AGENTS.md`/`SKILL.md` on any v23 `files:` line or in
+the v23 git range). **Degraded mode declared:** no playwright browser tool in this session, so the
+visual `<svg>`/tab-switch/link-click confirmation was replaced by the static link + lexical check.
+
 - 2026-09-03 — v23 Gate 7.5 (validator, real-run validation & handover) **FAILED — one REQ half-built**.
 Booted the real system twice using documented steps only, both through the committed one-command
 `./deploy.sh --background` (BOOT A: `RWE_BIND=127.0.0.1 RWE_PORT=8791` on the repo's own

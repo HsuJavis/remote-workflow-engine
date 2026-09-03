@@ -4,7 +4,379 @@ status: closed
 ---
 # 07 Review & Retro — Gate 8
 
-## v23 GATE 8 RE-REVIEW #1 (2026-09-03, CURRENT / AUTHORITATIVE — **SEND BACK**, 1 HIGH blocking)
+## v23 GATE 8 RE-REVIEW #2 (2026-09-04, CURRENT / AUTHORITATIVE — **CLOSE**, `send_back = []`, 0 HIGH)
+
+> Third Gate 8 pass for **v23**, re-dispatched after RE-REVIEW #1 sent back
+> `["architecture","tests","impl"]` at `41e6382` on **one HIGH**: inv 2's `try/catch/finally` wrapped
+> only the `scriptPromise` await, not the scheduled closure (`R-1`/`SUS-1`). Those gates re-ran —
+> Gate 2 RE-RUN #2 (`41e6382`: FLOOR 2a/2b, oracles O1..O5, R-2/R-2b, R-3, CONS-1), Gate 5 re-entry
+> (adjudication #8, UT-129..137 + IT-103/104), Gate 6 re-entry + Gate 6.5+7 round 5 (`9fc4439`,
+> `8912b38`), Gate 7.5 round 5 (`2156c78`) and adjudication #9 (`46a0c38`). **Scope: verify the
+> fixes**, not re-open v23.
+>
+> Both architecture-expert groups were **pre-run by the workflow** for this round
+> (`.panel/review/{adversarial,quality-dimensions}.md`, both rewritten against HEAD `46a0c38`) —
+> **consolidated here, not re-spawned** per the dispatch. Every load-bearing claim below was
+> re-verified by this reviewer against source at `file:line`; nothing was accepted from a panel
+> summary, an ARCH sentence or an IMPL note.
+>
+> **Verdict: `send_back = []` — the iteration can close.** The blocking HIGH is **closed and
+> verified on disk** (`src/graph-analyzer.ts:329-345`: the `try` covers `await scriptSource()` **and**
+> `await this._runJob(…)`, with `finally { this._release(key) }` as the only release site).
+> `arch_consistent: **false**` — **11 recorded deviations (0 HIGH / 3 MID / 8 LOW)**: ten consolidated
+> from the two panels after de-duplication (they overlap on four items), plus one MID (**AC-3**) this
+> reviewer found that neither panel nor any prior gate raised. All are
+> **recorded as tech debt below and routed to v24**; none meets the blocking bar (no REQ on
+> mock-only evidence, no missing/history-carrying handover doc, no non-rendering dashboard, no
+> module-boundary violation, no unrecorded HIGH). Traceability, module boundaries, validation and
+> handover are **clean**: 0 未驗證 / 0 未真實驗證, 106/106 REQ real-tier ✅, suite **1850/1850**,
+> `tsc` clean.
+
+### §1 Traceability consistency
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` regenerated the dashboard:
+**1028 items / 18 gaps, 0 orphan, 0 broken-link, 0 未驗證, 0 未真實驗證** (`--check` exits 1 on the
+same set and prints counts only; the gap list was re-derived by importing this repo's own
+`trace.py` `scan()`/`analyze()` in-process — no ledger was read backwards, no `git checkout <sha> --`,
+per `CLAUDE.md`). The item count grew 1012 → 1028 across the re-run gates (Gate 5's UT-129..137 +
+IT-103/104, Gate 6's IMPL-177, Gate 7.5's VAL-124..127). **Severity profile: 0 high / 1 mid / 17 low**
+— one LOW more than the previous pass, and the delta is disclosed rather than smoothed over:
+
+- **1 MID** TDD gap `IMPL-082` (no test coverage) — carried since v14. **Recorded debt.**
+- **16 LOW** iteration-drift pairs (`UT-010`, `IT-011`, `UT-058`, `UT-064`, `IT-057`, `UT-094`,
+  `UT-095`, `DES-094`, `DES-088`×2, `DES-066`×2, `DES-099`×2, `DES-100`, `DES-064`) — the identical
+  set as the previous pass; **no new pair was minted by the re-run gates**. All are the declared
+  false-positive class the ledger has carried since IMPL-140: `iter:` records a work item's ORIGIN
+  iteration, not its last touch. **Recorded debt.**
+- **1 LOW** unimplemented `TASK-018` — carried since v3. **Recorded debt.**
+
+Doc↔code iteration drift: **none beyond those 16 recorded pairs.** The re-run chain is at one
+iteration end to end (ARCH-079 amendments v23 → UT-129..137/IT-103/104 v23 → IMPL-177 v23 →
+VAL-124..127 v23). `rtm.md` is **106/106 REQ rows ✅ (real:true)**; the single `❌` in that file is
+its own legend line (`rtm.md:3`), not a row.
+
+### §2 Dashboard QA (`dashboard_check.py`, plugin 2.1.3 — run directly)
+`sh .sdlc/trace --tool dashboard_check …` still errors (`unrecognized arguments: --tool`): this
+repo's checked-in `.sdlc/trace.py` predates the plugin's `--tool` dispatcher, so the plugin's own
+`scripts/trace --tool dashboard_check` was run against the ledger. Result: **0 high / 3 mid / 1 low**,
+disposition unchanged from the previous pass and **independently re-verified this pass**:
+- 3×MID `括號不平衡` at `02-architecture.md:934` / `:1198` / `:1645` — **verified false positives, by
+  reading the block in full this pass** (`:1645-1680`). All three are mermaid `erDiagram` blocks;
+  the checker counts brackets lexically and mis-reads the crow's-foot cardinality tokens:
+  `WORKFLOWS ||--o{ WORKFLOW_VERSIONS` contributes an unmatched `{` and the four `}o--||`
+  relationship lines contribute unmatched `}`, while every attribute block
+  (`WORKFLOW_DIAGRAMS`, `SCHEDULES`, `WEBHOOKS`, `CONTINUATIONS`) opens and closes correctly under
+  mermaid grammar. **Checker debt, recorded.**
+- 1×LOW `無 mermaid 離線 fallback` — a real deliverable gap caused by the vendored `trace.py`
+  (the plugin's newer generator emits an offline source+banner fallback). **Recorded debt (LOW):**
+  refresh `.sdlc/trace.py` from plugin 2.1.3 — **but not by blind copy.** This repo's copy carries a
+  deliberate local hardening the plugin's does not: `ITEM_RE` is restricted to `^###` with an
+  in-file comment naming the v7 incident it fixed (`#### ARCH-025/026` prose headings in
+  `07-review.md` were shadowing the real ARCH-025/026 and minting false 「未實作」 gaps for
+  REQ-037..040). Plugin 2.1.3 is still `^#{2,4}`, so a straight refresh **regresses** that. The debt
+  item is: port the offline fallback forward, keep the `###` restriction.
+- SoT `file:line` link check: **0 dead links** across all 1028 items.
+- **Degraded mode declared:** no playwright browser tool is available in this session, so no visual
+  `<svg>` / tab-switch / link-click confirmation was performed. Same declared degradation as every
+  prior pass; the static link+lexical check above is the substitute, and it is clean apart from the
+  four dispositioned items.
+
+### §3 Module-boundary check (`solid_check.py`, plugin 2.1.3 — run directly)
+**PASS — 23 modules, dependencies exactly as declared on the ARCH `module:`/`deps:` rows: 0 high /
+0 mid / 10 low.** No undeclared cross-module dependency, no cycle, no deep-internal import bypassing
+a module surface, no god-module. The 10 LOW are the unchanged pre-existing 「未認領檔案」 set
+(`harness-defaults`, `self-update`, `agent-semaphore`, `mcp-probe`, `net-guard`, `workflow-meta`,
+`workspace-artifacts`, `webhook-registry`, `continuation-store`, `clock`) — **recorded debt**, not
+v23-minted. **No boundary regression from the re-run gates.**
+
+### §4 Architecture consistency — **NOT consistent: 0 HIGH · 3 MID · 8 LOW (all recorded debt)**
+Consolidated from the two pre-run expert reports, de-duplicated (they overlap on four items), then
+re-verified line by line against source. **Both panels independently return `consistent: NO` with
+0 HIGH**, and both explicitly close the previous round's blocking HIGH.
+
+#### Closed this round — re-verified by this reviewer, not quoted
+| Item | Ordered by | Evidence at HEAD `46a0c38` |
+|---|---|---|
+| **R-1 / SUS-1** (the blocking HIGH) | ARCH-079 inv 2, FLOOR 2a | `graph-analyzer.ts:329-345` — the `try` at `:330` covers `await scriptSource()` (`:331`) **and** `await this._runJob(…)` (`:332`); the `catch` at `:333` classifies by `instanceof CatalogNotFoundError` only and never reads `.message` (ADR-016); `finally { this._release(key) }` at `:342-344` is the **only** release site (`_runJob`'s old tail release is gone). `_release` is idempotent per key at `:300`. **CLOSED.** |
+| **R-2** settle choke point + 12 fields + closed `cause` | ARCH-079 inv 5, R-2b | `_settle` (`:231-248`) is the only caller of `putDiagramResult` (`:241`); `_journal` emits twelve keys in pinned wire order (`:289-293`) with `attempts`/`cause` appended last; `AnalyzerCause` is a closed union (`:74-77`). **CLOSED** (placement residual → F-3). |
+| **R-3** the `enabled` choke point | ARCH-079 inv 11 | `graph-analyzer.ts:323` is `_startJob`'s **first** statement, before both claims and before `putDiagramPending` (`:327`); `scriptSource` is a thunk (`:321`/`:213`); `enqueue`/`sweepAtBoot` carry no `enabled` check of their own. **CLOSED in the analyzer** (caller interaction → F-5; process condition → F-7). |
+| **R-6** stale `TOOL_NAMES` count | ARCH-051, ARCH-082 A6 | both rows now **delete** the integer rather than correct it. **CLOSED.** |
+| **adjudication #9** `docs/AUTHORING.md` `params` example | REQ-106, ARCH-086 | `docs/AUTHORING.md:20-32` re-read this pass: teaches `{knobs:{effort:{type:'enum',…}}, args:{topic:{type:'string'}}}`, states `type` is REQUIRED and the vocabulary is `string|number|enum`, and correctly scopes 「ignored, not rejected」 to a *wrongly-nested* block. **CLOSED.** |
+| **A1 / A4 / A5(code) / V-D / inv 4 / inv 6 / ARCH-078 / DES-120** | various | verified `HOLDS` by both panels at `file:line`; spot-re-checked: `server.ts:955` guard, `server.ts:1511` boot line, `mcp-facade.ts:462-466` `ANALYZER_DISABLED` branch. |
+
+#### Recorded deviations (de-duplicated across the two panels)
+
+**AC-1 — MID — FLOOR 2b is not total: `_settleUnavailable`'s DES-127 B5 read sits *outside* its own guard**
+*(adversarial F-1 ≡ quality S-1 — the two panels' single strongest converging finding)*
+- **Violates:** ARCH-079 inv 2 **FLOOR 2b (V-F)** — 「the catch body is total」/「the closure never
+  rejects」 — and inv 8's 「an enumerated oracle is satisfied only in full」.
+- **Verified by this reviewer** at `src/graph-analyzer.ts:256-276`: `const current =
+  this._catalog.getDiagram(name, version)` at `:260` is **before** the `try` that opens at `:262`.
+  `_settleUnavailable` is the closure's one recovery path (called from the `catch` at `:341`), so a
+  throw at `:260` originates *inside* a `catch`, escapes `job()` past the `finally`, and — with
+  production `schedule` still `void job()` at `:157` and no `unhandledRejection` handler in `src/`
+  (grep clean) — terminates the process on this project's pinned Node 22. `sweepAtBoot()` is called
+  at `server.ts:1507`, so it is reachable at boot.
+- **Both panels measured it** (adversarial probe A: `rejections = 1`, expected 0). This reviewer did
+  **not** re-run the probe: the mechanism is unambiguous from the source above, and a
+  re-measurement cannot move the severity.
+- **Test gap:** UT-136 (`tests/unit/graph-analyzer.test.ts:1257-1284`), the case written for FLOOR
+  2b, spies only on `putDiagramResult` — `getDiagram` keeps working, so the floor is proven in the
+  write direction and unproven in the read direction, on a function whose *first* statement is a read.
+- **Why MID and not blocking, stated rather than hidden:** the consequence equals the previous
+  round's HIGH, but the trigger is strictly rarer — R-1 fired on a benign by-design orphan `pending`
+  row; this needs a genuine `better-sqlite3` **read** failure, a disk-level event. Both panels
+  independently graded it MED, one of them explicitly arguing it down from HIGH on exactly this
+  ground. This reviewer found no fact the panels lacked, and declines to overrule two independent
+  graders upward without one. **Recorded debt → v24, Gate 5 then Gate 6** (move `:260-261` inside the
+  `try`, one line; extend UT-136's fixture to fail reads).
+
+**AC-2 — MID — a zero-model-call settle is silently swallowed when a prior `ready` row exists**
+*(quality O-1; not raised by the adversarial panel)*
+- **Verified:** `graph-analyzer.ts:259-261` returns before the `try`, and `_settleUnavailable` is the
+  single funnel for **every** zero-model-call settle — `model_unmapped` (`:166`), `queue_full`
+  (`:170`), `disabled` (`:324`), `boot_abandoned` (`:218`) and the closure's catch (`:341`).
+- **Reachable today, chain re-walked this pass:** an operator mistypes `graphAnalyzer.model` on a
+  workflow that already has a `ready` diagram → `workflow_regenerate_diagram` →
+  `mcp-facade.ts:466` → `GraphAnalyzer.regenerate` returns **`{queued:true, status:'pending'}`**
+  (`:195`) → `enqueue`'s `isKnownAlias` is false (`:164`) → `_settleUnavailable` → prior row is
+  `ready` → **silent return**. The tool reported 「queued」, nothing was queued, no row changed, and
+  **zero journal lines were emitted**. `MODEL_UNMAPPED` is precisely the `composeConfig`-forwarding
+  signature inv 5 was amended to make loud.
+- **Consolidation correction (the panel's citation is one notch too strong).** inv 5's literal text
+  binds 「every path that **writes a terminal row**」; this path writes no row, so inv 5's *letter*
+  holds. What is actually violated is **ARCH-085**'s justification that the journal line **is** the
+  effective-config readback seam, and inv 5's *stated purpose*. The finding stands at MED on that
+  narrower basis, not on the wider one.
+- **Test gap:** UT-128's five cases all use a fixture with no prior `ready` row
+  (`tests/unit/graph-analyzer.test.ts:520-604`), so the count assertion never crosses the B5 branch.
+- **Recorded debt → v24, Gate 5 then Gate 6** (one `_journal` line on the B5 early-return path,
+  `outcome:'ready'` matching the row that remains, so O5's relational property stays intact).
+
+**AC-3 — MID — a stray `:memory:/catalog.db` was committed into the repository and is still tracked**
+*(**new this pass — raised by neither panel and by no prior gate**)*
+- **Evidence, first-hand:** `git show --stat 9fc4439` lists `:memory:/catalog.db | Bin 0 -> 28672
+  bytes`; `git ls-files | grep` confirms it is **still tracked at HEAD**, and it is present on disk
+  (`./:memory:/catalog.db`, 28 KB, mtime 2026-09-03 21:32).
+- **What it is:** a throwaway probe (this iteration's implementer/panel probes both wrote and deleted
+  fixtures under `tests/`) constructed a store with the literal string `':memory:'` where a
+  *directory* was expected — `WorkflowCatalog` does `new Database(join(workRoot,'catalog.db'))`
+  (`src/workflow-catalog.ts:155`) — so a real on-disk SQLite file was created in a directory literally
+  named `:memory:`, and an over-broad `git add` swept it into the commit. **No production or test
+  source does this** — every `':memory:'` in `src/` is the documented sentinel guarded by
+  `if (deps.dbPath !== ':memory:')` (`continuation-store.ts:71`, `webhook-registry.ts:72`,
+  `scheduler.ts:128`, `self-update.ts:66`), and every `new WorkflowCatalog(...)` under `tests/` passes
+  a `tmpdir()`/`mkdtempSync` path. So this is **repo hygiene, not a code defect** — no REQ, ARCH or
+  INV is violated by it.
+- **Why MID rather than LOW:** `:` is an illegal path character on NTFS, so `git clone` of this
+  repository **fails outright on Windows**. Bounded by the fact that README/DEPLOY target a Linux
+  host, and the engine never reads the file. It also **corroborates AC-8/F-7 independently**: the same
+  commit that mislabelled 249 lines of production source as `docs(v23)` also swept in an untracked
+  artifact — one over-broad `git add -A`, two symptoms.
+- **Recorded debt → v24, Gate 6:** `git rm -r --cached ':memory:'` + `rm -rf ':memory:'` + a
+  `.gitignore` entry. A reviewer who weights Windows checkout as a delivery property could reasonably
+  escalate this; on a Linux-only deployment target it does not meet the blocking bar.
+
+**AC-4 — LOW — `enqueue()` is still not TOTAL at its own front door, and the decline is unrecorded**
+*(adversarial F-2 ≡ quality S-2)*
+- **Violates:** ARCH-079's `api:` row as amended (CONS-1(b)): 「`enqueue()` is TOTAL at its own front
+  door … one `try` inside `enqueue` … covers `server.ts:957`, the facade's regenerate path and every
+  future caller」.
+- **Verified:** `graph-analyzer.ts:161-180` contains no `try` at any level; `server.ts:955-957`
+  calls it synchronously and unguarded **after** `facade.workflow_register` has already committed at
+  `:951`. Three reachable synchronous throw sites on that path: `_settleUnavailable`'s `getDiagram`
+  (`:260`), `enqueue`'s own `priorRow` read (`:178`), and `_startJob`'s `putDiagramPending` (`:327`,
+  moved here by R-3 this round). A throw turns a **committed** registration into a failed tool
+  response.
+- **The shape was ratified LOW and Gate-6-opportunistic by the amendment itself, so the shape is not
+  the finding.** The finding is that `9fc4439` reworked this exact function without taking it and
+  **without recording the decline** — IMPL-177's note covers R-1/R-2/R-2b/R-3 and never mentions
+  CONS-1(b). That is the class ARCH-079's own NEW RULE names. **Recorded debt → v24, Gate 2 or 6
+  (either the `try` or one sentence on the ARCH row).**
+
+**AC-5 — LOW — FLOOR 2b's guard was placed in `_settleUnavailable`, not *inside `_settle`* as ordered**
+*(adversarial F-3; the same placement the quality panel files as S-1's 「secondary half」)*
+- **Violates:** ARCH-079 inv 5 / R-2b(a) (「one private `_settle(…)` is the **only** caller of
+  `putDiagramResult` and the **only** caller of `_journal`」) and FLOOR 2b's 「the terminal row write
+  is `try`-wrapped **inside `_settle`**」.
+- **Verified:** `_settle` (`:231-248`) is deliberately unwrapped — its own docblock at `:226-230` says
+  so — so the `try` lives one level out and `_journal` has **two** callers, `:242` and `:270`.
+  `putDiagramResult` does still have exactly one caller (`:241`), so that half holds.
+- **Second-order drift, unpinned:** on the `ready` branch a throwing `putDiagramResult` escapes
+  `_settle` and is classified by the *closure's* catch (`:340`) as `'job_exception'`, where inv 5(d)
+  pins 「a failed settle → `'settle_failed'`」. UT-130 (`:886-927`), the O2 case for exactly this
+  scenario, never asserts `cause`. **Recorded debt → v24** (one `cause` assertion on UT-130, plus
+  either the move or an ARCH amendment recording the placement taken).
+
+**AC-6 — LOW — `sweepAtBoot()` bypasses `maxQueueDepth` entirely** *(adversarial F-4)*
+- **Verified:** the depth test lives at `graph-analyzer.ts:169-172` and **only** there; `sweepAtBoot`
+  calls `_startJob` directly (`:211-215`) and `_startJob` pushes onto `_queue` with no depth test
+  (`:346-351`). Panel probe C: `queue length = 4` with `maxQueueDepth = 1`.
+- inv 2 says 「single-flight, concurrency 1, **with a bounded queue depth**」. The bound is real but is
+  an *admission* bound, not a *queue* bound; what caps the boot queue is the `pending`-row count, i.e.
+  the workflow count, bounded per-name by `maxWorkflowVersions` and unbounded across names (v22 debt
+  S-1). Each queued job is itself `timeoutMs`-bounded, so the effect is a longer boot drain, not a
+  runaway. **Recorded debt → v24, Gate 2 or 6.**
+
+**AC-7 — LOW — `server.ts:955` preempts the choke point, so the disabled path's ordered settle and journal line never fire for the primary caller** *(adversarial F-5)*
+- **Verified:** `server.ts:955` reads `if (out['status'] === 'completed' && graphAnalyzer.enabled)` —
+  when disabled, `enqueue` is never called, `_startJob` (`:323`) is never reached from the
+  highest-volume caller, and no `cause:'disabled'` line is emitted. inv 11 / R-3 declares this site
+   「defence-in-depth, **not load-bearing**」; a check that changes the observable outcome is by
+  definition load-bearing.
+- **The panel's counterweight is adopted, and it changes the recommended fix:** writing the row would
+  make the version **invisible** to `server.ts:1519-1529`'s `missingDiagramCount` recovery hint
+  (which counts `getDiagram(...) === null`), so the 「observability fix」 would cost discoverability.
+  The user-facing contract still holds — `workflow-view.ts:136-137` synthesizes `DISABLED` from a null
+  row (V-D). **Recorded debt → v24, Gate 2 (amend inv 11 to record the preemption and its reason) +
+  Gate 5 (one IT-103 assertion pinning 「no row, no journal line」). Do not write the row.**
+
+**AC-8 — LOW — R-3's *sequencing condition* was not met** *(adversarial F-7)*
+- **Violates:** ARCH-079 R-3's ruling condition — 「the guard lands as a **separate RED→GREEN step
+  AFTER inv 2's fix** … two structural changes to one closure in one commit is how a fix and a
+  regression become indistinguishable at Gate 8」.
+- **Verified first-hand by this reviewer via `git log`/`git show --stat` only (never `git checkout`):**
+  `git log -- src/graph-analyzer.ts` shows `9fc4439` as the newest commit touching it, with
+  `b0945c9` (a WIP checkpoint) immediately before and no intervening commit; `9fc4439`'s stat is
+  `src/graph-analyzer.ts | 249 +++--` and `tests/unit/graph-analyzer.test.ts | 556 ++++++-` in one
+  commit, under the subject `docs(v23): adjudication #8 …`. So inv 2's closure wrap, R-2's settle
+  seam, R-3's choke point and all nine new RED oracles landed together, and **no commit in this
+  repository contains those oracles in a failing state** — every 「Red reason (measured)」 docblock is
+  uncorroborated by the record it was written to leave.
+- **Nothing to rebuild** (the fix is genuinely good and independently verified above); the remedy is
+  to record the deviation on ARCH-079's R-3 row and, for the AC-1/AC-5 remediation, land RED and
+  GREEN as two commits with subjects naming the production files. **Recorded debt → v24, Gate 2 +
+  process.** *(This is also the third mislabelled subject this iteration — `277a8d9`, `a39c0e7`,
+  `9fc4439` — and AC-3 is its fourth symptom.)*
+- **Re-grade owned, not silent:** the adversarial panel filed this at **MED**; this reviewer records
+  it at **LOW**. The same rule that stopped AC-1 being pushed *up* applies downward, so the reason is
+  stated rather than assumed: it is a process/record finding with **nothing to rebuild**, and the fix
+  it actually produced was independently re-verified from source by this pass — so the evidence the
+  missing RED commit would have supplied has been obtained another way. The remedy (record the
+  deviation on the R-3 row; split RED/GREEN next time) is **identical at either grade**, so the
+  re-grade moves the debt's priority, not its content.
+
+**AC-9 — LOW — the canonical vocabulary declaration still claims three consumers; the third does not exist** *(adversarial F-6 ≡ quality R-1)*
+- **Verified, both halves, this pass:** `src/diagram-gate.ts:22-24` still reads 「Three consumers,
+  elsewhere: this gate, the shipped default graphAnalyzer.systemPrompt, and the AUTHORING/
+  tool-description text」; `grep -c "◇\|⟲\|╭\|▶" docs/AUTHORING.md` → **0**, and `46a0c38` edited that
+  same file without adding it. The sibling false comment at `server.ts:299-300` **is** gone.
+- Violates ARCH-080 A5's one-declaration class rule. **Second consecutive round unfixed**, on the one
+  module A5 made canonical. Doc-only, one comment edit. **Recorded debt → v24, Gate 6.**
+
+**AC-10 — LOW — the HTTP describe route is not the MCP tool** *(quality C-1)*
+- **Verified:** `server.ts:1175-1185` parses only `:name`, passes no `version`/`channel` although both
+  are advertised on the MCP tool (`:500-501`), and on failure emits `{error:<message>}` at a flat 404,
+  dropping the `code` (`UNKNOWN_VERSION`/`CHANNEL_UNPUBLISHED`/`INVALID_CHANNEL`/`DANGLING_CHANNEL`/
+  `WORKFLOW_NOT_FOUND`) the facade computed one frame earlier. Deviates from ARCH-083's 「the **same**
+  `projectWorkflowDescribe` object as the MCP tool」 and ARCH-082's reuse claim. Bounded: the only
+  shipped consumer is the dashboard detail view, which wants default-release, and the pinned parity
+  (key-identical bodies) holds. **Recorded debt → v24, Gate 6.**
+
+**AC-11 — LOW — the `jail=` boot line can name a directory nothing uses** *(quality O-2)*
+- **Verified:** `server.ts:1511` builds the advertised jail from the **internal** `workRoot`
+  (`:1292`, `config?.workRoot ?? mkdtempSync(...)`), while `main.ts:216` builds the gateway's actual
+  `cwd` from the **operator-configured** `config.workRoot` only, passing `undefined` when absent. On
+  the zero-config path the boot line prints a `jail=/tmp/rwe-XXXX/.graph-analyzer-scratch` that is
+  never created and never used, one line after 「no resolvable workRoot」 — the two lines contradict
+  each other. Honesty defect only; DES-122's fail-closed `tools:[]` (`:1473`) contains the security
+  side. **Recorded debt → v24, Gate 6.**
+
+**Lens conflicts, surfaced rather than smoothed** (adopted from the adversarial panel's §4, each
+re-checked): security-vs-observability on AC-7 genuinely does not resolve, and the tie-breaker is a
+third fact (`missingDiagramCount`) the architecture did not have — which is why AC-7's fix is to
+amend the invariant, not the code. Karpathy-vs-testability on AC-1/AC-5 is **ruled for the
+architecture at LOW**: the ordered placement is one line cheaper *and* structurally stronger, so
+simplicity never actually favoured what shipped.
+
+**Explicitly not re-opened** (adjudicated calls; re-litigating them is the ratchet the send-back
+exists to stop): `model_unmapped`/`queue_full` ordering inside `enqueue`; the `RETRIES_EXHAUSTED`
+overload; `prior_restored` not carrying the preceding noteCode; ADJ-A1's transport-gate shape;
+UT-125's oracle re-point (adjudication #8); script egress on-by-default (`server.ts:1467`,
+owner-ratified with a standing disclosure at `server.ts:298`).
+
+### §5 Validation & handover (Gate 7.5 confirmation)
+- **Mock hard-rule: PASS.** trace.py reports **0 未真實驗證 (mock-only) and 0 未驗證** gaps;
+  `rtm.md` is **106/106 REQ ✅ real:true**. The four v23-delta VAL items were re-read in the ledger
+  and each carries `tier: acceptance` / **`real: true`** / `result: pass` with transcript evidence
+  copied from a real boot's own `.rwe.log`: `VAL-124` (12-key journal line + `cause`, real provider),
+  `VAL-125` (failed re-draw keeps the prior diagram, O5), `VAL-126` (read surfaces, `auth.enabled:true`
+  + real bearers), `VAL-127` (trigger bindings through the reworked `_runJob`).
+- **`08-validation.md` present** (613 KB), round-5 evidence for 13 documented-steps boots.
+- **Handover docs present at `state.yaml layout.readme`/`layout.deploy`** (`README.md` 306 lines,
+  `DEPLOY.md` 972 lines, both at the product root), step-by-step, 淺白繁體中文, with ASCII diagrams.
+- **一鍵部署: PASS.** `DEPLOY.md` **leads** with `## §0 一鍵部署 One-command Deploy` →
+  `./deploy.sh --background`, with the real 5-step transcript pasted in and the second-instance
+  override form (`RWE_CONFIG_PATH`/`RWE_BIND`/`RWE_PORT`). `deploy.sh` exists and is executable;
+  `08-validation.md` references it **62 times** as the boot mechanism for round 5's 13 boots.
+- **Current-state / history-free: PASS with one carried LOW debt.** Both manuals open with the
+  history-free banner (「本文件描述系統**目前**的部署方式與行為——不是變更歷程 … 歷史紀錄只在
+  `.sdlc/` 追溯帳本內」). `## 1b. 設定總表` (`DEPLOY.md:332`) is the **single** deduplicated config
+  table — the other four 設定總表 mentions (`README.md:80`, `DEPLOY.md:17/108/110`) are
+  cross-references by name, not restatements. No changelog section, no superseded
+  instruction/key/port found. **Carried LOW debt, unchanged and re-verified this pass:** `README.md`
+  still annotates features with the iteration that introduced them (`:18` v22, `:62-74`
+  v15+/v17/v19/v20, `:155` v21, `:171` v22) including two version-diff sentences (`:64`
+  「（v17，解決「Incompatible auth server…」）」 and `:74` 「（v20 UX）… **改為** 200 HTML」), and
+  DEPLOY.md carries two (`:426`, `:813`). The Gate-8 clause targets changelogs and superseded
+  instructions; none of these is stale, duplicated or false — current-state phrasing would simply
+  read the same without the tags. **Not escalated; carried for the next manual rewrite.**
+- **Stale `state.yaml pending` entry, found and cleared by this pass:** the 「OPEN DOC DEFECT …
+  docs/AUTHORING.md rule 1's illustrative meta.params example is REFUSED by the running engine」 item
+  raised at Gate 7.5 round 5 was **fixed at `46a0c38`** (adjudication #9) — verified on disk at
+  `docs/AUTHORING.md:20-32`. The entry is rewritten as RESOLVED in the same 4b edit that lands this
+  gate, so the ledger does not carry a closed defect as open.
+
+### §6 Special-file reviews (Task 4b)
+**N/A this iteration — stated explicitly rather than left silent.** No `CLAUDE.md`, `AGENTS.md` or
+`SKILL.md` appears on any v23 `IMPL-*` `files:` line (checked all of IMPL-159..177), and
+`git log --name-only` over the v23 range lists only `DEPLOY.md`, `README.md`, `deploy.sh`,
+`docs/AUTHORING.md`, `rwe.config.example.json` plus `src/` and `tests/` files. The two `CLAUDE.md`
+mentions in `06-impl-log.md` (`:2332`, `:2341`) are v21-era prose citing the repo rule against
+`git checkout <sha> -- <path>`, not edits to the file. Neither `claude-md-improver` nor
+`skill-creator` was therefore invoked.
+
+### §7 Regression evidence run by this reviewer (not inherited)
+- `npx tsc --noEmit` → **clean**, exit 0.
+- `npx vitest run` → **283 test files / 1850 tests passed, 0 failed** (248 s). Matches the Gate 6.5+7
+  round-5 closeout figure exactly, so nothing drifted between that gate and this review.
+- `sh .sdlc/trace …` and `… --check` → 1028 items / 18 gaps (0 high), dashboard regenerated.
+- `dashboard_check` / `solid_check` (plugin 2.1.3, run directly) → as §2 / §3.
+
+### §8 Retro
+**What went well.** The send-back mechanism did its job on a defect that three earlier passes had
+looked at: RE-REVIEW #1's single HIGH is closed, *and* the closure was verified from source rather
+than from the commit's own claims. Both panels independently graded 0 HIGH and independently closed
+R-1 — an agreement that is worth more than either report alone, because they read the same lines
+from different lenses. Severity fell a full grade in one round (1 HIGH + 4 MED + 4 LOW → 0 HIGH +
+3 MED + 5 LOW after de-duplication) with no regression in traceability, module boundaries, tests or
+validation. The 「measure, don't reason」 discipline both panels adopted (probes written, run, deleted)
+produced findings a code-read alone would have argued about.
+
+**What to change.** (1) **The commit-hygiene class is now the iteration's dominant defect shape and
+it produced a *fourth* symptom this pass** — AC-3, a 28 KB SQLite file in a directory named
+`:memory:`, tracked in git and missed by every gate and both panels. Three mislabelled subjects
+(`277a8d9`, `a39c0e7`, `9fc4439`) plus one swept-in artifact all come from the same over-broad
+`git add`. A `git status` check before each gate's WIP commit costs nothing and would have caught
+all four. (2) **R-3's sequencing condition was written as a ruling condition and then not met**
+(AC-8), on the round that shipped AC-1 — a hole inside the very closure that commit rewrote, under
+nine new oracles that all pass. That is the mechanism the condition existed to prevent, paying for
+itself immediately. (3) **An enumerated floor keeps being satisfied in one of the two directions it
+enumerates** — FLOOR 2b names read *and* write failure; UT-136 fixtures only the write. inv 8 already
+has the rule; it needs to be applied when the fixture is written, not when the next review reads it.
+
+**Known tech debt carried out of v23** (all recorded, none blocking):
+`IMPL-082` no test coverage (MID, since v14) · 16 iteration-drift pairs (LOW, declared
+false-positive `iter:`-origin class) · `TASK-018` unimplemented (LOW, since v3) · 3 mermaid
+bracket-imbalance false positives in `dashboard_check` (checker debt) · no mermaid offline fallback
+in the vendored `trace.py` (LOW — port the fallback forward but **keep** the local `^###` `ITEM_RE`
+hardening) · 10 未認領 source files outside any ARCH `module:` (LOW) · **AC-1..AC-11 above** ·
+`README.md`/`DEPLOY.md` iteration tags and two version-diff sentences (LOW) · the pre-existing
+operational items unchanged since v1 (orphan litellm on shutdown, hard-coded litellm port 4000,
+aborted `AgentRecord` stuck in `running`).
+
+---
+
+## v23 GATE 8 RE-REVIEW #1 (2026-09-03, SUPERSEDED by RE-REVIEW #2 above — kept for history; was SEND BACK, 1 HIGH blocking)
 
 > Second Gate 8 pass for **v23**, re-dispatched after the first pass sent back
 > `["architecture","tests","impl"]` at `d294880`. Those three gates re-ran (Gate 2 re-run `d294880`
