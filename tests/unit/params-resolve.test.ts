@@ -288,3 +288,50 @@ describe('mapEffort (this file) stays FENCED — zero src/ importers outside res
     expect(offenders).toEqual([]);
   });
 });
+
+// UT-148 (DES-146, v24 REWRITE — appended block, [T3]): resolveAgentParams(label, contract,
+// overrides, engineDefaults) — three rungs (override > default > engine), not five; the
+// 'call'/'agentType' rungs are DELETED. Written test-first (Gate 5, RED) — resolveAgentParams
+// does not exist yet (this file's existing content above still exercises the old five-rung
+// resolveCallParams; that content asserts a still-valid PURE function's mechanics and is left
+// untouched here per surgical discipline — DES-146's own rewrite is TASK-137's job at Gate 6).
+import { describe as describeV24, it as itV24, expect as expectV24 } from 'vitest';
+// @ts-expect-error — resolveAgentParams does not exist yet (v24 DES-146/TASK-137)
+import { resolveAgentParams } from '../../src/params/resolve.js';
+
+const v24Contract = {
+  plan: {
+    model: { default: 'sonnet-5' },
+    effort: { default: 'low' },
+    timeoutMs: { default: 60000 },
+  },
+};
+
+describeV24('v24: resolveAgentParams — three rungs (UT-148, DES-146)', () => {
+  itV24('override wins over the contract default', () => {
+    const eff = resolveAgentParams('plan', v24Contract, { effort: 'high' }, {});
+    expectV24(eff.effort).toBe('high');
+    expectV24(eff.provenance.effort).toBe('override');
+  });
+
+  itV24('with no override, the contract default is used and provenance says default', () => {
+    const eff = resolveAgentParams('plan', v24Contract, {}, {});
+    expectV24(eff.model).toBe('sonnet-5');
+    expectV24(eff.provenance.model).toBe('default');
+  });
+
+  itV24("'engine' is reachable only for appendPrompt (absent ⇒ undefined, provenance 'engine')", () => {
+    const eff = resolveAgentParams('plan', v24Contract, {}, {});
+    expectV24(eff.appendPrompt).toBeUndefined();
+    expectV24(eff.provenance.appendPrompt).toBe('engine');
+  });
+
+  itV24('a label absent from the contract at dispatch throws INTERNAL_ERROR (a programming error, admission already validated it)', () => {
+    expectV24(() => resolveAgentParams('ghost', v24Contract, {}, {})).toThrow(/INTERNAL_ERROR/);
+  });
+
+  itV24('provenance.model is NEVER "call" or "agentType" — those rungs are deleted', () => {
+    const eff = resolveAgentParams('plan', v24Contract, { model: 'sonnet-5' }, {});
+    expectV24(['override', 'default']).toContain(eff.provenance.model);
+  });
+});

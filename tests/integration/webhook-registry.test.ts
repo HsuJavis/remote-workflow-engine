@@ -131,3 +131,61 @@ describe('WebhookRegistry (v8 Defer B, REQ-057/058)', () => {
     expect(rm2.started.length).toBe(1);
   });
 });
+
+// IT-112 (DES-150, v24 REWRITE — appended block, [T3]): webhooks created UNCLAIMED
+// (create({}), no `workflow`); wrong HMAC on an unclaimed hook ⇒ 401 never 409; the same
+// deliveryId delivered twice while unclaimed ⇒ 409/409 + refusalCount 2, then claimed ⇒ 202.
+// Written test-first (Gate 5, RED) — today's create({workflow}) shape REQUIRES workflow at
+// creation (the exact retired shape DES-159 names for this file).
+describe('v24: webhooks created unclaimed, claimed at registration (IT-112, DES-150)', () => {
+  it('create({}) with no workflow creates an UNCLAIMED webhook, returning its id', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-wh-v24-'));
+    try {
+      const reg = new WebhookRegistry({ clock: CLOCK, runManager: fakeRunManager(), catalog: fakeCatalog(new Set()), dbPath: join(dir, 'wh.db') });
+      // @ts-expect-error — v24 create({}) creates an unclaimed hook; today `workflow` is required
+      const created = await reg.create({});
+      expect(created).toHaveProperty('webhookId');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('wrong HMAC on an UNCLAIMED hook is 401, never 409 (signature checked before claim state)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-wh-v24-'));
+    try {
+      const reg = new WebhookRegistry({ clock: CLOCK, runManager: fakeRunManager(), catalog: fakeCatalog(new Set()), dbPath: join(dir, 'wh.db') });
+      // @ts-expect-error — v24 create({}) shape
+      const created = await reg.create({});
+      const body = '{}';
+      const result = await reg.deliver((created as { webhookId: string }).webhookId, {
+        signature: 'sha256=wrong', timestamp: CLOCK.isoNow(), deliveryId: 'd1', rawBody: body, parsedBody: {},
+      });
+      expect(result).toMatchObject({ ok: false, httpStatus: 401 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('same deliveryId delivered twice while unclaimed ⇒ 409 both times, and once claimed the SAME id fires for real (202)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-wh-v24-'));
+    try {
+      const reg = new WebhookRegistry({ clock: CLOCK, runManager: fakeRunManager(), catalog: fakeCatalog(new Set(['deploy'])), dbPath: join(dir, 'wh.db') });
+      // @ts-expect-error — v24 create({}) shape
+      const created = await reg.create({});
+      const { webhookId, secret } = created as { webhookId: string; secret: string };
+      const body = '{}';
+      const req = { signature: sign(secret, body), timestamp: CLOCK.isoNow(), deliveryId: 'dup-1', rawBody: body, parsedBody: {} };
+      const first = await reg.deliver(webhookId, req);
+      const second = await reg.deliver(webhookId, req);
+      expect(first).toMatchObject({ ok: false, httpStatus: 409 });
+      expect(second).toMatchObject({ ok: false, httpStatus: 409 });
+
+      // @ts-expect-error — claim() does not exist yet (v24 DES-149/TASK-142)
+      await reg.claim(webhookId, 'deploy');
+      const third = await reg.deliver(webhookId, req); // dedup record was NEVER written for a refused delivery
+      expect(third).toMatchObject({ ok: true, httpStatus: 202 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

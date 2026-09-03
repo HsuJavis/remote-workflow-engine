@@ -186,4 +186,23 @@ describe('workflow_agent_log harness provenance (IT-066 v21, DES-105)', () => {
       expect(['call', 'agentType', 'override', 'default', 'engine']).toContain(harness?.provenance?.[key]);
     }
   }, 10_000);
+
+  // IT-120 (DES-160, v24 REWRITE — appended case, [T3]): the decorated HarnessDescriptor gains
+  // `label` (from opts.label) and `materialized: {skills, mcp, missing}`. Written test-first
+  // (Gate 5, RED) — neither field exists on the harness descriptor today. Reuses THIS block's
+  // aliased provServer (the shared top-level `server` has no alias and would fail registration
+  // for an unrelated reason — UNKNOWN_ALIAS — before ever reaching the harness assertion).
+  it('v24: harness carries label and materialized on a curated dispatch', async () => {
+    const sub = await runScriptVia(provCallTool, "return await agent('plan', {});") as { runId?: string };
+    const runId = sub.runId!;
+    const agentId = 'agent-1';
+    let harness: { label?: string; materialized?: unknown } | undefined;
+    for (let i = 0; i < 60 && !harness?.label; i++) {
+      const log = await provCallTool('workflow_agent_log', { runId, agentId }) as { harness?: { label?: string; materialized?: unknown } };
+      harness = log.harness ?? undefined;
+      if (!harness?.label) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(harness?.label).toBe('plan');
+    expect(harness?.materialized).toBeDefined();
+  }, 10_000);
 });

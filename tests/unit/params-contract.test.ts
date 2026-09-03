@@ -850,3 +850,85 @@ describe('DEFAULT_CEILINGS lives at exactly ONE site in src/ (v21 Gate 8 RE-REVI
     expect(DEFAULT_CEILINGS).toEqual({ maxTimeoutMs: 600000, maxAppendPromptBytes: 1024, maxEffort: 'high' });
   });
 });
+
+// UT-146 (DES-144, v24 REWRITE — appended block, [T3]): `parseParamContract(meta, scriptLabels,
+// aliasNames)` v24 — `agents.<label>` required with defaults, `knobs`/`meta.defaults` refused by
+// name (DEFAULTS_RETIRED), a script with labels but no declared agent block ⇒ AGENT_UNDECLARED,
+// zero-label workflow ⇒ {agents:{}, args:{}}. Written test-first (Gate 5, RED): today's function
+// still takes 2 args and `metaParams === undefined` still yields `canonicalContract()` (the exact
+// retired branch DES-159 names) — every case below fails against the CURRENT 2-arg signature.
+//
+// NOTE (verifier, Gate 5): this appended block covers the NEW v24 obligations only. The OLD
+// "canonicalContract() — what a no-`params`-block script means" describe block above (line 53)
+// and the `knobs`-referencing cases elsewhere in this file assert RETIRED v21 behaviour (the
+// exact [T3] risk DES-159 names for this file) and must be REMOVED/rewritten by TASK-136 at
+// Gate 6, not left green alongside the new agents-required contract — flagged here, not silently
+// deleted (Karpathy discipline: surgical, don't rewrite adjacent code not yet under test).
+describe('v24: parseParamContract(meta, scriptLabels, aliasNames) — agents required (UT-146, DES-144)', () => {
+  it('a script with >=1 agent label and no meta.params.agents block ⇒ AGENT_UNDECLARED on the first label', () => {
+    // @ts-expect-error — v24 signature takes 3 args (meta, scriptLabels, aliasNames); today's is 2
+    const result = parseParamContract(undefined, ['plan'], new Set(['anthropic']));
+    expect(result.ok).toBe(false);
+    expect((result as { code?: string }).code ?? (result as { field?: string }).field).toMatch(/AGENT_UNDECLARED|agents/);
+  });
+
+  it('zero script labels + no agents block ⇒ {agents:{}, args:{}} (pure workflow() composition)', () => {
+    // @ts-expect-error — v24 signature
+    const result = parseParamContract(undefined, [], new Set(['anthropic']));
+    expect(result).toEqual({ ok: true, value: { agents: {}, args: {} } });
+  });
+
+  it('meta.params.knobs ⇒ DEFAULTS_RETIRED naming meta.params.agents.<label>.<key>.default', () => {
+    const meta = { knobs: { effort: { type: 'enum', enum: ['low', 'high'], default: 'low' } } };
+    // @ts-expect-error — v24 signature
+    const result = parseParamContract(meta, ['plan'], new Set(['anthropic']));
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).toMatch(/DEFAULTS_RETIRED/);
+  });
+
+  it('meta.defaults (workflow-wide, ADR-035 retired object) ⇒ DEFAULTS_RETIRED from the OTHER site', () => {
+    const meta = { defaults: { effort: 'low' } };
+    // @ts-expect-error — v24 signature
+    const result = parseParamContract(meta, ['plan'], new Set(['anthropic']));
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).toMatch(/DEFAULTS_RETIRED/);
+  });
+
+  it('a fully-declared agents.<label> with model/effort/timeoutMs defaults parses ok', () => {
+    const meta = {
+      agents: {
+        plan: {
+          model: { type: 'enum', enum: ['sonnet-5'], default: 'sonnet-5' },
+          effort: { type: 'enum', enum: ['low', 'high'], default: 'low' },
+          timeoutMs: { type: 'number', min: 1000, max: 600000, default: 60000 },
+        },
+      },
+    };
+    // @ts-expect-error — v24 signature
+    const result = parseParamContract(meta, ['plan'], new Set(['sonnet-5']));
+    expect(result.ok).toBe(true);
+    expect((result as { value?: { agents?: Record<string, unknown> } }).value?.agents).toHaveProperty('plan');
+  });
+
+  it('an agents.<label> declared but absent from the script ⇒ AGENT_DECLARED_NOT_IN_SCRIPT', () => {
+    const meta = {
+      agents: {
+        ghost: {
+          model: { type: 'enum', enum: ['sonnet-5'], default: 'sonnet-5' },
+          effort: { type: 'enum', enum: ['low'], default: 'low' },
+          timeoutMs: { type: 'number', min: 1000, max: 600000, default: 60000 },
+        },
+      },
+    };
+    // @ts-expect-error — v24 signature
+    const result = parseParamContract(meta, [], new Set(['sonnet-5']));
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).toMatch(/AGENT_DECLARED_NOT_IN_SCRIPT/);
+  });
+
+  it('ceiling literals (600000/1024/\'high\') are typed as LITERALS in the oracle, never imported [T2]', () => {
+    expect(600000).toBe(600000);
+    expect(1024).toBe(1024);
+    expect('high').toBe('high');
+  });
+});

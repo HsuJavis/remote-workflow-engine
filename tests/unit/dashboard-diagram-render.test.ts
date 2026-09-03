@@ -57,3 +57,24 @@ describe('dashboard home-card mini-preview — honest absence, no fallback drawi
     expect(fetches).toBe(1);
   });
 });
+
+// UT-158 (DES-156, v24 REWRITE — appended block, [T3]): the dashboard renders describe.mermaid
+// into <pre> via textContent; the diagramStatus/diagramNote branches (this file's own subject
+// above) and per-card describe fetches are gone; no client-side Mermaid library. Written
+// test-first (Gate 5, RED) — `DASHBOARD_HTML`'s embedded script still branches on
+// `s.diagramStatus`/`s.diagram`/`s.diagramNote` today (the exact v23 machinery this file's
+// EARLIER cases pin as CURRENT behaviour — TASK-149's rewrite target, flagged not touched here).
+describe('v24: dashboard renders mermaid, not diagramStatus (UT-158, DES-156)', () => {
+  it('the page source references describe.mermaid rendered via textContent', () => {
+    expect(DASHBOARD_HTML).toMatch(/\.mermaid\b/);
+  });
+
+  it('the page source no longer branches on diagramStatus/diagramNote (retired v23 machinery)', () => {
+    expect(DASHBOARD_HTML).not.toMatch(/diagramStatus/);
+    expect(DASHBOARD_HTML).not.toMatch(/diagramNote/);
+  });
+
+  it('no client-side Mermaid rendering library is referenced (CDN script or import)', () => {
+    expect(DASHBOARD_HTML.toLowerCase()).not.toMatch(/mermaid\.min\.js|cdn.*mermaid/);
+  });
+});

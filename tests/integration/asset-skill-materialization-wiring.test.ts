@@ -164,4 +164,24 @@ describe('skill asset materialization + scoped settingSources/cwd (IT-036, D-V2V
     const neverMaterialized = join(expectedWorkspace(runId), '.claude', 'skills', 'rwe-guard-test');
     expect(existsSync(neverMaterialized)).toBe(false);
   }, 20000);
+
+  // IT-116 (DES-154, v24 REWRITE [T3]): "every skill copied" is the DEFECT this case exists to
+  // flip. An agent that declares NEITHER of two stored skills must materialize NEITHER — today's
+  // copy-ALL loop (`claude-agent-sdk-client.ts:161-175`) copies every asset in the tree into every
+  // run regardless of what the calling agent declared, so this is a genuine v24 red: BOTH pushed
+  // skills currently land in the workspace. Written test-first (Gate 5, RED).
+  it('v24: an agent with no declared skills materializes NEITHER of two pushed skills (selective, not copy-all)', async () => {
+    await mcpCall('asset_push', {
+      kind: 'skill', name: 'undeclared-a',
+      files: [{ path: 'SKILL.md', contentB64: Buffer.from('# A').toString('base64') }],
+    });
+    await mcpCall('asset_push', {
+      kind: 'skill', name: 'undeclared-b',
+      files: [{ path: 'SKILL.md', contentB64: Buffer.from('# B').toString('base64') }],
+    });
+    const runId = await runToCompletion("return agent('noop', {model:'local'});");
+    const workspace = expectedWorkspace(runId);
+    expect(existsSync(join(workspace, '.claude', 'skills', 'undeclared-a'))).toBe(false);
+    expect(existsSync(join(workspace, '.claude', 'skills', 'undeclared-b'))).toBe(false);
+  }, 20000);
 });

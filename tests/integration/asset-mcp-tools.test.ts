@@ -123,3 +123,24 @@ describe('asset_push/list/delete via MCP (DES-019)', () => {
     expect(envelope.error).toBeDefined();
   });
 });
+
+// IT-115 (DES-153, v24 REWRITE — appended block, [T3]): mcp_provision and the asset_* tool names
+// are RETIRED — workspace_push({kind:'mcp'|'skill'}) replaces them, over real MCP HTTP.
+// Written test-first (Gate 5, RED) — mcp_provision/asset_push still ARE registered today, and
+// workspace_push does not exist yet.
+describe('v24: mcp_provision retired, workspace_push replaces asset_push/mcp_provision (IT-115, DES-153)', () => {
+  it('mcp_provision is ABSENT from tools/list (retired)', async () => {
+    const names = await toolsList();
+    expect(names).not.toContain('mcp_provision');
+  });
+
+  it('asset_push is ABSENT from tools/list (retired, replaced by workspace_push)', async () => {
+    const names = await toolsList();
+    expect(names).not.toContain('asset_push');
+  });
+
+  it('workspace_push({workflow, kind:"skill", name, files, pushedBy resolved from principal}) is present and callable', async () => {
+    const names = await toolsList();
+    expect(names).toContain('workspace_push');
+  });
+});

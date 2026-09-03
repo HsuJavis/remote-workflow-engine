@@ -218,3 +218,29 @@ describe('projectWorkflowDescribe — lockedKeys and owner (UT-113, DES-125)', (
     expect(view.owner).toBe('owner@example.com');
   });
 });
+
+// UT-157 (DES-156, v24 REWRITE — appended block, [T3]): the `diagram*` family is DELETED (not
+// left optional), replaced by `mermaid`/`mermaidNote`/`runnable`/`runnableReason` and
+// `params.agents.<label>`. Written test-first (Gate 5, RED) — today's projection still emits the
+// full diagram* family (this file's own EXPECTED_DESCRIBE_KEYS_LITERAL pins it above) and has no
+// notion of `mermaid`/`runnable` at all.
+describe('v24: projectWorkflowDescribe — mermaid/runnable replace the diagram* family (UT-157, DES-156)', () => {
+  it('the response has NO diagramStatus/diagramNote/diagramGeneratedAt/diagramStale keys', () => {
+    const view = projectWorkflowDescribe(FULL, { diagram: null, bindings: [], bindingsFp: 'fp', analyzerEnabled: true }) as unknown as Record<string, unknown>;
+    for (const retired of ['diagramStatus', 'diagramNote', 'diagramGeneratedAt', 'diagramStale']) {
+      expect(retired in view).toBe(false);
+    }
+  });
+
+  it('the response carries mermaid (verbatim) and runnable/runnableReason', () => {
+    const view = projectWorkflowDescribe(FULL, { diagram: null, bindings: [], bindingsFp: 'fp', analyzerEnabled: true }) as unknown as Record<string, unknown>;
+    expect('mermaid' in view).toBe(true);
+    expect('runnable' in view).toBe(true);
+    expect('runnableReason' in view).toBe(true);
+  });
+
+  it('params.agents.<label> reports {type, default, range} — range = author ∩ engine ceiling, never the raw author range', () => {
+    const view = projectWorkflowDescribe(FULL, { diagram: null, bindings: [], bindingsFp: 'fp', analyzerEnabled: true }) as unknown as { params?: { agents?: Record<string, unknown> } };
+    expect(view.params?.agents).toBeDefined();
+  });
+});

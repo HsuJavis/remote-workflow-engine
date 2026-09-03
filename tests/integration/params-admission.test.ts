@@ -730,3 +730,39 @@ describe('P-A3: a declared effort default takes effect at dispatch, or is refuse
     }
   });
 });
+
+// IT-109 (DES-145, v24 REWRITE — appended block, [T3]): S-3 — a per-agent override refusal over
+// the REAL booted engine names the ceiling in its message (e.g. "maxTimeoutMs 600000"). Written
+// test-first (Gate 5, RED): `run_start` does not exist yet (only the retired `workflow_run` does),
+// so this is red at the unknown-tool boundary today — the deeper per-agent ceiling-naming
+// assertion cannot even be reached until TASK-147/148 land.
+//
+// NOTE (verifier, Gate 5): every describe block ABOVE this one in the file exercises the v21 FLAT
+// `overrides:{effort:'low'}` shape via `RunManager.start()` directly — that shape becomes
+// INVALID_ARGUMENT from the closed v24 schema (DES-145's own boundary line) and this whole
+// fixture surface is TASK-136/148's REWRITE target at Gate 6 (DES-159 names this file explicitly:
+// "params-admission (rewrite [T3])" in the Real-tier validation table). Flagged, not rewritten
+// here, per Karpathy surgical discipline — a wholesale rewrite of ~700 lines of still-referenced
+// fixture setup is Gate 6/6.5 work, not Gate 5's.
+describe('v24: per-agent override refusal over real MCP HTTP names the ceiling (IT-109, DES-145)', () => {
+  it('run_start({overrides:{agents:{plan:{timeoutMs:999999}}}}) refuses naming maxTimeoutMs 600000', async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: {
+          name: 'run_start',
+          arguments: { name: 'v24-admission-fixture', overrides: { agents: { plan: { timeoutMs: 999999 } } } },
+        },
+      }),
+    });
+    const body = (await res.json()) as { error?: unknown; result?: { error?: { code?: string; message?: string } } };
+    // Today: run_start is an unknown tool (TASK-132/147 not yet landed) — the deeper
+    // PARAM_OUT_OF_RANGE / "maxTimeoutMs 600000" message assertion is the v24 target.
+    expect(body.error).toBeUndefined();
+    const err = body.result?.error;
+    expect(err?.code).toBe('PARAM_OUT_OF_RANGE');
+    expect(err?.message).toMatch(/maxTimeoutMs 600000/);
+  });
+});

@@ -1927,3 +1927,66 @@ reads them as decided amendments rather than drift.
 must pass `isEgressAllowed` — was ACCEPTED AS THE FAIL-CLOSED DEFAULT by orchestrator adjudication #1, but it narrows
 the owner's own ch.16.2 ruling and the confirm-or-overrule is still owed. Design builds the fail-closed shape
 (DES-153); flipping it later is one authz mode row plus the probe gate.
+
+## v24 Gate 5 (2026-09-04) — verifier, test-first RED
+
+Wrote 52 new work items test-first, before any v24 implementation: UT-138..162 (22, one per key
+DES-137..162 boundary rule), IT-105..121 (16, real SQLite stores / real booted `createServer()`
+HTTP — no mock of the SUT boundary), E2E-008/009 (register-crash-window's in-process crash-window
+floor, per DES-149's own Gate-7.5 scope note; admin-cross-read S-4), VAL-118..129 (one per
+REQ-107..118, mapped from `04-design.md`'s own Real-tier validation table). Every item was RUN
+once and confirmed red for the stated reason — a whole-file import failure for 10 brand-new
+source files (`tool-specs.ts`, `authz.ts`, `path-verdict.ts`, `scan-agent-calls.ts`,
+`check-mermaid.ts`, `authoring-guide.ts`, `call-tool.ts`, `owner-lookup.ts`, `audited-read.ts`,
+`run-view.ts`) or a genuine behavioural red against an EXISTING module/real engine (`params/
+contract.ts`, `params/resolve.ts`, `scheduler.ts`, `webhook-registry.ts`, `asset-sync.ts`,
+`workflow-catalog.ts`, `run-store.ts`, `dashboard-page.ts`, `workflow-view.ts`,
+`claude-agent-sdk-client.ts`, `server.ts` still exhibit pre-v24 behaviour).
+
+**REQ-113/REQ-117 recorded honestly, not silently skipped.** `04-design.md`'s own boundary rulings
+say both are provable ONLY by a Gate 7.5 real run — REQ-113 needs a real workspace/`run_agent_log`
+read, REQ-117 explicitly disqualifies anyone who has seen this project's development (this
+verifier included) as a subject. VAL-124 and VAL-128 are filed `status:blocked`/`result:not-run`
+rather than a mocked stand-in, which would itself be the "oracle is the code under test" defect
+the v24 Gate-1 notes warn against (rule 1, carried in from v22's `val-107`).
+
+**Eight files extended in place, not rewritten wholesale (surgical discipline).**
+`compose-config-v2-wiring.test.ts`, `params-contract.test.ts`, `params-admission.test.ts`,
+`webhook-registry.test.ts`, `asset-mcp-tools.test.ts`, `asset-skill-materialization-wiring.test.ts`,
+`agent-log-harness-shape.test.ts`, `workflow-describe-projection.test.ts` each got an appended
+v24 block rather than a line-by-line rewrite of their (large, still partially valid) existing
+content. DES-159 names four of these files' OLD assertions as testing RETIRED v21-v23 behaviour
+([T3]) — flagged in each 05-tests.md item and left for the implementer task DES-159 itself
+names as owner, per Karpathy surgical discipline ("touch only what you must"). Every append was
+re-run in full afterward and the pre-existing cases still pass (regression intact; e.g.
+`compose-config-v2-wiring.test.ts`: 3 new fail / 19 pass; `params-contract.test.ts`: 6 new fail /
+76 pass; `params-admission.test.ts`: 1 new fail / 23 pass; `webhook-registry.test.ts`: 3 new fail
+/ 8 pass; `asset-mcp-tools.test.ts`: 3 new fail / 10 pass; `asset-skill-materialization-wiring.
+test.ts`: 1 new fail / 2 pass; `agent-log-harness-shape.test.ts`: 1 new fail / 6 pass;
+`workflow-describe-projection.test.ts`: 3 new fail / 17 pass).
+
+**Two authoring mistakes caught and fixed while writing these tests (worth recording).** (1) A
+namespace-derivation fixture (`namespace-derivation.test.ts`) originally posted to
+`/assets/blob/deadbeef` — an already-malformed sha256 that today's code refuses 400
+`INVALID_BLOB_REQUEST` for the UNRELATED "invalid hex" reason, a false-green risk that would have
+hidden whether the real subject (`?namespace=` removal) was ever exercised; fixed to a
+valid-format sha256 of the actual body so the only possible refusal is the namespace check. (2) A
+catalog test (`catalog-v24.test.ts`) asserted "a refusal leaves the version-row count unchanged"
+without pinning WHICH refusal caused it — any register failure (not just `MERMAID_REQUIRED`) would
+have satisfied the assertion; fixed to assert the specific thrown message first.
+
+**Hermetic throughout.** Every clock-dependent case (scheduler refusal accounting, audit
+timestamps, asset `pushedAt`, the register-crash-window E2E) drives a `FixedClock`/injected
+`Clock`; zero bare `Date.now()`/`new Date()`/absolute-future-date-literal comparisons appear in
+any new test (the one grep guard that checks exactly this, UT-161, is itself among the new items).
+
+Exit gate: `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` → **1166 items / 65 gaps**
+(was 1124/65) — 0 broken links, 0 orphans; REQ-107..118's own gap TYPE flipped from 未驗證
+(no test at all traces to it) to 未實作 + 未真實驗證 (a test now traces to it, mock-only, awaiting
+Gate 6 implementation and Gate 7.5's real:true) — the intended Gate 5 signal, not a new defect;
+gap COUNT held steady because that flip is a 1-for-1 type substitution, not a net-new gap.
+`state.yaml`: `gates.tests.passed=true`, `current_stage: impl`. No `needs_clarification` — every
+open question this pass ran into was a documentation/authoring-fidelity call already settled by
+`04-design.md`'s own boundary rulings, not a new product/technical decision. Next: Gate 6
+(implementer) works TASK-131..153 in the pinned order (03-tasks.md), each RED item above going
+green.
