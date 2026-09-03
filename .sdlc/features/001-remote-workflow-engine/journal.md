@@ -1891,3 +1891,39 @@ R1's SSRF/command-spawn finding. (2) ADR-023 — the rectangle `["…"]` as a fi
 nested-`workflow()` black box ch. 11.4 tells authors to draw. (3) ADR-035 — `workflow_register.defaults`
 removed in favour of the required per-agent defaults. Per `notes:`, the workflow PAUSES for user architecture
 review before Gate 3.
+
+## 2026-09-04 — v24 GATE 3+4 DONE (designer, merged tasks+design)
+
+**TASK-131..153** (03-tasks.md) and **DES-137..162** (04-design.md) synthesized from the pre-run panel
+(`.panel/design/adversarial.r1/.r2` + `quality-dimensions.r1/.r2`) — no new panel spawned. Every ARCH-087..108 has
+≥1 TASK (checked programmatically); every card carries `files:`/`des:`/`dod:` with one runnable command.
+
+**The two round-2 files crossed** (adversarial r2 06:01 read QD r1; QD r2 06:04 read adversarial r1), so three
+points were ruled by reading the tree, with lines cited in the rationale: (1) `label`/`materialized` go ON the
+decorated descriptor at the ONE decoration site (`agent-executor.ts:410-450`, downstream of both gateways, already
+merging `provenance`) — the sibling placement adversarial r2 proposed solves a problem that does not exist, and
+`deriveAgentRecords` already destructures `data.descriptor`; (2) `adminReads` is attached at the facade projection
+(never a field of `RunStatusView`) **and** a reduced `toPublicRunView` strips the pre-existing `principal` from the
+ungated `/api/runs*` — both panels' fixes, in their strongest forms, five lines; (3) `ERROR_CATALOG`'s drift lock is
+`tsc` (four upstream unions constrained to `ErrorCode`) plus the grep, because the grep alone is blind to six codes
+that reach `codedError` only through union-typed pass-throughs.
+
+**O-7b resolved by moving nothing:** ARCH-103 already places `materializeAssets` in the SDK gateway client (where
+the copy-all loop lives, `claude-agent-sdk-client.ts:161-175`); adversarial's DES-154 had moved it up to the executor,
+which is what created the "truthful field that reads as a lie" on a `surfaceType:'none'` dispatch. Keeping the
+architecture's placement gives the direct-fetch path zero wasted copies and an honest `missing = declared` in one `??`.
+
+Exit gate: every in-scope ARCH broken down; key TASKs have a DES; boundary/error scenarios enumerated per DES;
+real-tier path named for each of REQ-107..118 plus the per-tier mock policy; the clock seam enumerated method by
+method (no asymmetry). `sh .sdlc/trace` = **1124 items / 65 gaps** (was 1075 / 42) — the 23 new gaps are exactly the
+LOW "TASK has no IMPL yet" rows for TASK-131..153, the other 42 byte-identical to the Gate 2 baseline, 0 broken links,
+0 orphans. `state.yaml`: `gates.tasks.passed=true`, `gates.design.passed=true`, `current_stage: tests`.
+
+**Not edited on purpose:** 02-architecture.md. The 12 architecture sentences both panels agree must change are
+recorded BY ID in the design's Decision rationale (ARCH-088/090/091/093/095/099/101/103/104/107, ADR-027) so Gate 8
+reads them as decided amendments rather than drift.
+
+**Carry-forward for the owner (not a new blocker):** ADR-030 — `stdio` MCP configs stay admin-only and `http` probes
+must pass `isEgressAllowed` — was ACCEPTED AS THE FAIL-CLOSED DEFAULT by orchestrator adjudication #1, but it narrows
+the owner's own ch.16.2 ruling and the confirm-or-overrule is still owed. Design builds the fail-closed shape
+(DES-153); flipping it later is one authz mode row plus the probe gate.

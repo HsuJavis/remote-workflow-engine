@@ -998,3 +998,224 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **dod:** UT-126's two red cells (`unavailable+RETRIES_EXHAUSTED × disabled`, `pending × disabled`) and UT-127 green. A5: the vocabulary becomes an export the shipped prompt AND `rwe.config.example.json:59` are interpolated from, so a membership assertion can hold over both — plus delete the false comment at `server.ts:299-300`. A4: the two deleted lines and the UT-116 re-point. The four green pins in UT-126 stay as regression guards; do not weaken them to make the two red cells pass.
 - **estimate:** M
 - **closeout (Gate 6.5+7 round 4, 2026-09-03):** V-D and A5 landed in `a39c0e7` (IMPL-175); **A4 did not**, despite that commit's subject naming it — closed by the verifier as IMPL-176. Two `files:` entries needed no edit and this is why: `rwe.config.example.json`'s prompt already contains all 13 glyphs, so UT-127's membership oracle (the architecture's own chosen, cheaper check) holds over it unmodified; `src/trigger-bindings.ts` states no glyph of its own. `src/dashboard-page.ts` and `tests/unit/dashboard-diagram-render.test.ts` — A4's real targets — were missing from this list, which is part of why A4 was the item that slipped.
+
+---
+
+## v24 slice — TASK-131..153 (ARCH-087..108 / REQ-107..118)
+
+> **Panel provenance:** synthesized from `.panel/design/` r1+r2 (adversarial 18-row partition + quality-dimensions'
+> 7 split rules, both rounds). **Ordering constraints (binding):** TASK-139 (deletion) BEFORE TASK-147/148 (a facade
+> written while the analyzer still compiles keeps a dead port "for now"); TASK-140..145 (stores/gateway) BEFORE
+> TASK-147/148; TASK-146 BEFORE TASK-147/148; TASK-152 (rename sweep) is the LAST code task and lands as ONE
+> mechanical commit whose message carries the `grep -c` before/after counts — running it earlier buries the genuine
+> Gate 6 reds under 113 rename failures. **One WIP commit per task** (the window between 139 and 148 is a deliberately
+> red tree; this ledger has already lost an iteration to an agent diffing an unclean tree — CLAUDE.md 2026-08-31).
+> TASK-153 is external (separate repo, owner-scheduled) and blocks the REQ-117 probe, not Gate 6.
+
+### TASK-131 — `ERROR_CATALOG` becomes the closed `ErrorCode` union; `see` is attached in one place
+- **status:** draft
+- **traces:** ARCH-087, ARCH-107
+- **files:** src/errors.ts, src/params/contract.ts, src/seedref-egress.ts, src/workflow-catalog.ts, src/run-manager.ts, tests/unit/error-catalog.test.ts
+- **des:** DES-137
+- **dod:** `npx vitest run tests/unit/error-catalog.test.ts && npx tsc --noEmit` → ≥7 cases green (every `codedError('X'` literal in `src/` is a catalog key; every key ∈ some `TOOL_SPECS[].errors` ∪ `INGRESS_CODES`; `toErrEnvelope` attaches `see`; an uncatalogued string lands in `detail.rawCode`) and tsc clean with the four upstream unions constrained to `ErrorCode`.
+- **estimate:** M
+- **iter:** v24
+
+### TASK-132 — `src/tool-specs.ts`: the 35-row array, the mode resolver, `projectToolsList()`
+- **status:** draft
+- **traces:** ARCH-087
+- **files:** src/tool-specs.ts, tests/unit/tool-specs.test.ts
+- **des:** DES-138
+- **dod:** `npx vitest run tests/unit/tool-specs.test.ts` → ≥12 green incl. `TOOL_SPECS.length === 35`, the REQ-107 prefix rule, none of the 15 old names present, "a description containing /admin/i has `minRole:'admin'`", `run_start`'s two REQ-117 trap sentences as literals, and every `fixture` arg-set resolving to a named mode (never `'invalid'`).
+- **estimate:** L
+- **iter:** v24
+
+### TASK-133 — `src/authz.ts`: `Principal`, `resolveRole`, `authorize()` total over the matrix
+- **status:** draft
+- **traces:** ARCH-088
+- **files:** src/authz.ts, tests/unit/authz.test.ts, tests/integration/authz-owner-lookup.test.ts
+- **des:** DES-139
+- **dod:** `npx vitest run tests/unit/authz.test.ts tests/integration/authz-owner-lookup.test.ts` → ≥40 generated unit rows green WITH the `cases.length === N` pin (a partially-written table is red, not green) and ≥6 integration rows binding the real store columns to the port with the same verdicts.
+- **estimate:** L
+- **iter:** v24
+
+### TASK-134 — `src/path-verdict.ts`: lexical verdict pure, containment through an injected `realpath`
+- **status:** draft
+- **traces:** ARCH-093
+- **files:** src/path-verdict.ts, src/path-containment.ts, src/workspace-seed.ts, src/asset-sync.ts, tests/unit/path-verdict.test.ts
+- **des:** DES-142
+- **dod:** `npx vitest run tests/unit/path-verdict.test.ts` → ≥30 table rows green: every former `STRIP_RE` and `safeRelPath` case (copied as LITERAL rows, not imported) lands on the same verdict, a fake `realpath` returning an escaping target ⇒ `SYMLINK`, Windows separators and NUL rejected; `grep -c "STRIP_RE\|safeRelPath" src/workspace-seed.ts src/asset-sync.ts` → 0 (private copies gone).
+- **estimate:** M
+- **iter:** v24
+
+### TASK-135 — `scanAgentCalls(script)`: literal labels, refused in-script params, line numbers
+- **status:** draft
+- **traces:** ARCH-096
+- **files:** src/workflow-meta.ts, tests/unit/scan-agent-calls.test.ts
+- **des:** DES-143
+- **dod:** `npx vitest run tests/unit/scan-agent-calls.test.ts` → ≥25 green: one case per violation code with its expected 1-based `line`, nested `workflow(` argument lists NOT scanned, duplicate labels legal and de-duplicated in `labels`.
+- **estimate:** M
+- **iter:** v24
+
+### TASK-136 — `params/contract.ts` v24: `agents.<label>` required defaults, `knobs`/`defaults` refused by name
+- **status:** draft
+- **traces:** ARCH-094
+- **files:** src/params/contract.ts, tests/unit/params-contract.test.ts, tests/unit/params-overrides.test.ts
+- **des:** DES-144, DES-145
+- **dod:** `npx vitest run tests/unit/params-contract.test.ts tests/unit/params-overrides.test.ts` → ≥30 + ≥20 green (each new code; every ceiling REFUSED at registration, never clamped; `DEFAULTS_RETIRED` from both `meta.params.knobs` and `meta.defaults`; `UNKNOWN_AGENT_LABEL.detail.known` listed) and `grep -c "knobs" src/params/contract.ts` → 0.
+- **estimate:** L
+- **iter:** v24
+
+### TASK-137 — `params/resolve.ts`: three rungs (`override › default › engine`), per-key provenance
+- **status:** draft
+- **traces:** ARCH-095
+- **files:** src/params/resolve.ts, tests/unit/params-resolve.test.ts
+- **des:** DES-146
+- **dod:** `npx vitest run tests/unit/params-resolve.test.ts` → ≥15 green (ladder + provenance per key; an undeclared label at dispatch THROWS `INTERNAL_ERROR`, never silently uses engine defaults) and `grep -c "'call'\|agentType" src/params/resolve.ts` → 0.
+- **estimate:** M
+- **iter:** v24
+
+### TASK-138 — `diagram-gate.ts` → `checkMermaid`: fixed grammar, bidirectional label diff, value triple
+- **status:** draft
+- **traces:** ARCH-097
+- **files:** src/diagram-gate.ts, tests/unit/check-mermaid.test.ts
+- **des:** DES-147
+- **dod:** `npx vitest run tests/unit/check-mermaid.test.ts` → ≥60 green: one case per code × rule with the expected `line`, `UNDECLARED_NODE` and `DUPLICATE_NODE`, CRLF accepted, the SCC cycle set (`<-->` is not a cycle), `120s ≡ 120000`, BOTH diff sets on one mismatch, and every `GUIDE_EXAMPLES[].mermaid` passing against its own script's labels.
+- **estimate:** L
+- **iter:** v24
+
+### TASK-139 — the deletion, with its own definition of done (3+1 source files, 15 test files, 3 grep guards)
+- **status:** draft
+- **traces:** ARCH-089, ARCH-096, ARCH-101, ARCH-106
+- **files:** src/graph-analyzer.ts (DELETE), src/continuation-store.ts (DELETE), src/mcp-registry.ts (DELETE), src/trigger-bindings.ts (DELETE), src/server.ts, src/mcp-facade.ts, src/main.ts, src/workflow-view.ts, src/gateway/claude-agent-sdk-client.ts, tests/unit/no-retired-surface.test.ts (NEW), tests/acceptance/val-113-graph-analyzer-diagram.test.ts (DELETE), tests/acceptance/val-020-mcp-provisioning.test.ts (DELETE), tests/integration/continuation-store.test.ts (DELETE), tests/integration/graph-analyzer-composition-root.test.ts (DELETE), tests/integration/graph-analyzer-late-write.test.ts (DELETE), tests/integration/mcp-provision-wiring.test.ts (DELETE), tests/integration/mcp-provision-injection-wiring.test.ts (DELETE), tests/unit/diagram-gate.test.ts (DELETE), tests/unit/diagram-vocabulary-consistency.test.ts (DELETE), tests/unit/graph-analyzer-wire.test.ts (DELETE), tests/unit/graph-analyzer.test.ts (DELETE), tests/unit/mcp-registry.test.ts (DELETE), tests/unit/trigger-bindings.test.ts (DELETE), tests/e2e/mcp-provision-secret-tooluse-journey.test.ts (DELETE)
+- **des:** DES-159
+- **note:** SCOPE — in the five CONSUMER files listed above (`server.ts`, `mcp-facade.ts`, `main.ts`, `workflow-view.ts`, `gateway/claude-agent-sdk-client.ts`) remove ONLY the import and the code that used it: the `GraphAnalyzer`/`ContinuationStore` constructions and their `case` arms, the `graphAnalyzer` boot warn and config field, `ANALYZER_SCRATCH_SUBDIR`, `noteTextFor`, the `TriggerBinding`/`getTriggerBindings` reads (`server.ts:1458-1459`, `mcp-facade.ts:24-25/436`), and the `McpRegistry` import — replacing `resolveProvisionedMcp`'s registry read with DES-154's injected `resolveMcp` port left UNBOUND (resolves nothing) so the final seam shape exists without a throwaway stub. NO replacement wiring here: `describe.triggers[]` by id is TASK-149, the catalog-backed `resolveMcp` is TASK-145, the new `callTool`/facade are TASK-147/148 — which is exactly why this task precedes them. The in-file symbol deletions (`gateDiagram`/`VOCAB_GLYPHS`/`DIAGRAM_CODEPOINTS`, `resolveCallParams`, `knobs`, the no-meta branch) belong to TASK-138/137/136, which rewrite those files.
+- **dod:** `npx vitest run tests/unit/no-retired-surface.test.ts && npx tsc --noEmit` → the three source-text guards green (no `mermaid` import/CDN in `src/`; none of the 15 old tool names in `src/`; no `Date.now()`/`new Date()` outside `clock.ts` in the four new files) and tsc clean after the deletions — i.e. no surviving import of a deleted module.
+- **estimate:** L
+- **iter:** v24
+
+### TASK-140 — run store: filtered `list` + its index, `getOwner`, the `audit_events` table and its reader
+- **status:** draft
+- **traces:** ARCH-092
+- **files:** src/store/sqlite-run-store.ts, src/run-store.ts, src/types.ts, tests/integration/run-list.test.ts, tests/integration/run-store-audit.test.ts, tests/unit/audit-order.test.ts
+- **des:** DES-151, DES-152
+- **dod:** `npx vitest run tests/integration/run-list.test.ts tests/integration/run-store-audit.test.ts tests/unit/audit-order.test.ts` → ≥10 + ≥8 + ≥4 green incl. `EXPLAIN QUERY PLAN` naming `runs_name_status_created`, `InMemoryRunStore.list` parity against a hand-written expected array, and the recording-fake order `['appendAudit','readArtifactChunk']`.
+- **estimate:** L
+- **iter:** v24
+
+### TASK-141 — scheduler: the five columns, `claim`/`release`/`ownerOf`, `markRefused`, the H4 check moved out of `create`
+- **status:** draft
+- **traces:** ARCH-099
+- **files:** src/scheduler.ts, src/types.ts, tests/unit/scheduler-refusal.test.ts
+- **des:** DES-149, DES-150
+- **dod:** `npx vitest run tests/unit/scheduler-refusal.test.ts` → ≥10 green under a FixedClock and `:memory:`, incl. TWO ticks at the same instant ⇒ `refusalCount === 1` AND `nextFire > now` (the tight-loop trap), a refused `once` consumed, `markFired` resetting `refusalCount` to 0, `lastError` untouched by a refusal.
+- **estimate:** L
+- **iter:** v24
+
+### TASK-142 — webhooks: the same claim model; HMAC/timestamp/dedup BEFORE the claim checks
+- **status:** draft
+- **traces:** ARCH-100
+- **files:** src/webhook-registry.ts, tests/integration/webhook-registry.test.ts
+- **des:** DES-149, DES-150
+- **dod:** `npx vitest run tests/integration/webhook-registry.test.ts` → ≥12 green incl. a wrong HMAC on an UNCLAIMED webhook ⇒ 401 (never 409 — an unauthenticated caller must not learn claim state), the same `deliveryId` twice while unclaimed ⇒ 409/409 with `refusalCount === 2` and NO dedup record, then claimed ⇒ 202 with a real run.
+- **estimate:** M
+- **iter:** v24
+
+### TASK-143 — catalog: `validateRegistration`/`insertVersion` split, `mermaid`+`triggers` columns, the `assets` table, migrations, `deregister`
+- **status:** draft
+- **traces:** ARCH-098
+- **files:** src/workflow-catalog.ts, src/workspace-gc.ts, tests/integration/catalog-v24.test.ts
+- **des:** DES-148
+- **dod:** `npx vitest run tests/integration/catalog-v24.test.ts` → ≥25 green: after EVERY refusal code the `workflow_versions` row count is unchanged (validation writes nothing); the migration over a v23 fixture db runs twice with an identical end state; no post-migration row is written with `mermaid NULL`; `deregister` deletes `assets` rows and returns the union of `triggers[]` over all versions; an orphan `<workRoot>/<name>/assets/` tree is reclaimed by the GC sweep while a live workflow's tree is not.
+- **estimate:** L
+- **iter:** v24
+
+### TASK-144 — `asset-sync.ts` v24: two scopes, `pushedBy` on every row, `kind:'mcp'` behind the egress gate
+- **status:** draft
+- **traces:** ARCH-102
+- **files:** src/asset-sync.ts, tests/unit/asset-sync-v24.test.ts, tests/integration/asset-mcp-tools.test.ts
+- **des:** DES-153
+- **dod:** `npx vitest run tests/unit/asset-sync-v24.test.ts tests/integration/asset-mcp-tools.test.ts` → ≥20 + rewrite green incl. an `http` MCP config outside the allowlist ⇒ `EGRESS_DENIED` with the probe spy asserting ZERO probe calls, FS-written-then-row order proven by a recording catalog fake, and `pushedBy` present on every stored row.
+- **estimate:** L
+- **iter:** v24
+
+### TASK-145 — selective materialization inside the SDK gateway + `label`/`materialized` on the descriptor + `deriveAgentRecords` reads `label`
+- **status:** draft
+- **traces:** ARCH-103, ARCH-104
+- **files:** src/gateway/claude-agent-sdk-client.ts, src/agent-executor.ts, src/run-store.ts, src/types.ts, tests/unit/materialize-assets.test.ts, tests/unit/derive-agent-records-v24.test.ts, tests/integration/agent-log-harness-shape.test.ts, tests/integration/asset-skill-materialization-wiring.test.ts
+- **des:** DES-154, DES-160, DES-161
+- **dod:** `npx vitest run tests/unit/materialize-assets.test.ts tests/unit/derive-agent-records-v24.test.ts tests/integration/agent-log-harness-shape.test.ts tests/integration/asset-skill-materialization-wiring.test.ts` → ≥12 + ≥6 + the two rewrites green, incl. the `surfaceType:'none'` fixture (`materialized = {skills:[],mcp:[],missing:declared}`, nothing copied) and a `run_status` read from the store with the `RunManager` dropped still showing each agent's `label`.
+- **estimate:** L
+- **iter:** v24
+
+### TASK-146 — `composeConfig()` forwards `principals` + `mcpEgressAllowlist`; unknown-key warn; the auth announcement
+- **status:** draft
+- **traces:** ARCH-090
+- **files:** src/main.ts, src/server.ts, rwe.config.example.json, README.md, DEPLOY.md, tests/unit/compose-config-v2-wiring.test.ts, tests/unit/normalize-principals.test.ts, tests/integration/main-composition-root.test.ts
+- **des:** DES-141
+- **dod:** `npx vitest run tests/unit/compose-config-v2-wiring.test.ts tests/unit/normalize-principals.test.ts tests/integration/main-composition-root.test.ts` → the wiring test GAINS rows for `principals` and `mcpEgressAllowlist` and LOSES the `graphAnalyzer` row; ≥5 normalize cases incl. a malformed role refusing boot; the boot line `auth: enabled=… principals=… defaultRole=…` and `system_info.auth` asserted, with a stale `graphAnalyzer` key warned once naming ADR-025.
+- **estimate:** M
+- **iter:** v24
+
+### TASK-147 — the server wire: `Principal` at the edge, `callTool(deps, …)`, `tools/list` as a projection, no identity on ungated `/api/*`
+- **status:** draft
+- **traces:** ARCH-089
+- **files:** src/server.ts, tests/unit/call-tool-order.test.ts, tests/integration/mcp-tools-list-http.test.ts, tests/integration/namespace-derivation.test.ts, tests/integration/api-runs-public-projection.test.ts
+- **des:** DES-140, DES-142, DES-162
+- **dod:** `npx vitest run tests/unit/call-tool-order.test.ts tests/integration/mcp-tools-list-http.test.ts tests/integration/namespace-derivation.test.ts tests/integration/api-runs-public-projection.test.ts` → ≥5 order cases (schema BEFORE authz, short-circuit proven), `tools/list` over real HTTP byte-equal to `projectToolsList()` and containing none of the 15 old names, ≥4 namespace cases (all three caller-typed sites refused; the derived namespace equals the principal id), ≥3 projection cases (`/api/runs` and `/api/runs/:id` carry no `principal`, MCP `run_status` still carries `adminReads` for the owner).
+- **estimate:** L
+- **iter:** v24
+
+### TASK-148 — the facade: 35 handlers, the register→claim→insert→compensate sequence, the six `workspace_*` modes, the audited cross-read
+- **status:** draft
+- **traces:** ARCH-091
+- **files:** src/mcp-facade.ts, src/run-manager.ts, tests/integration/workspace-tools.test.ts, tests/integration/trigger-claims.test.ts, tests/e2e/admin-cross-read.test.ts, tests/e2e/register-crash-window.test.ts
+- **des:** DES-149, DES-151, DES-152, DES-155
+- **dod:** `npx vitest run tests/integration/workspace-tools.test.ts tests/integration/trigger-claims.test.ts` → ≥25 + ≥20 green incl. every `workspace_*` mode's happy and refusal path, `runId` on push refused BY THE SCHEMA, all-or-nothing `workspace_delete`, `RUN_NOT_TERMINAL` against a live sandbox run, and the compensation releasing ONLY the ids this call claimed (an id already `'held'` by an earlier version stays claimed).
+- **estimate:** L
+- **iter:** v24
+
+### TASK-149 — the read projections and the dashboard: `params.agents`, `mermaid`, `runnable`; the `diagramStatus` family gone
+- **status:** draft
+- **traces:** ARCH-105, ARCH-106
+- **files:** src/workflow-view.ts, src/dashboard-page.ts, tests/unit/workflow-describe-projection.test.ts, tests/unit/dashboard-diagram-render.test.ts
+- **des:** DES-156
+- **dod:** `npx vitest run tests/unit/workflow-describe-projection.test.ts tests/unit/dashboard-diagram-render.test.ts` → `EXPECTED_DESCRIBE_KEYS` re-pinned by a HAND-TYPED array (the four `diagram*` keys gone, `mermaid`/`mermaidNote`/`runnable`/`runnableReason` present), a ≥6-row `runnable` truth table, `describe.params.agents.<label>` reporting range = author ∩ ceiling, and the dashboard writing `describe.mermaid` into `<pre>` via `textContent` with no polling branch.
+- **estimate:** M
+- **iter:** v24
+
+### TASK-150 — `workflow_authoring_guide` built from the enforcement constants; `GUIDE_EXAMPLES`; generated `docs/AUTHORING.md`
+- **status:** draft
+- **traces:** ARCH-107
+- **files:** src/authoring-guide.ts, scripts/gen-authoring-md.ts, docs/AUTHORING.md, package.json, tests/unit/authoring-guide.test.ts, tests/unit/authoring-md-generated.test.ts, tests/integration/guide-examples-register.test.ts
+- **des:** DES-157
+- **dod:** `npx vitest run tests/integration/guide-examples-register.test.ts tests/unit/authoring-guide.test.ts tests/unit/authoring-md-generated.test.ts` → one `it` PER example (≥10) registering over real MCP HTTP against a booted engine and returning `{version}`; the fake-ceiling test proving interpolation (a non-default `maxTimeoutMs` appears in the text); every `[A-Z_]{6,}` token in the guide is an `ERROR_CATALOG` key and every tool name is in `TOOL_SPECS`; `docs/AUTHORING.md` byte-equal to the builder's output.
+- **estimate:** L
+- **iter:** v24
+
+### TASK-151 — the REQ-118 live-engine table (generated) and the REQ-117 cold-model runbook
+- **status:** draft
+- **traces:** ARCH-108
+- **files:** tests/acceptance/v24-tool-surface.test.ts, tests/acceptance/val-mermaid-renders.test.ts, .sdlc/features/001-remote-workflow-engine/v24-tool-surface.md, .sdlc/features/001-remote-workflow-engine/08-validation.md
+- **des:** DES-158, DES-147
+- **dod:** `npx vitest run tests/acceptance/v24-tool-surface.test.ts` → one `it` per `TOOL_SPECS` happy fixture and one per constructible `errors[]` entry, all green or `UNVERIFIED(reason)` as a ROW; the generated `v24-tool-surface.md` is written ONLY on a full 35/35 run and carries a `rows: N/35` stamp, with the per-array-entry assertion failing on a short table.
+- **estimate:** L
+- **iter:** v24
+
+### TASK-152 — the rename sweep: 113 test files, one mechanical commit, grep target zero
+- **status:** draft
+- **traces:** ARCH-087, ARCH-089
+- **files:** tests/** (113 files referencing an old tool name or `params.knobs`)
+- **des:** DES-159
+- **dod:** `grep -rlE "workflow_run|workflow_get|workflow_artifacts|workflow_artifact_get|blob_put|seed_plan|asset_push|asset_list|asset_delete|chain_create|chain_list|workflow_trigger|run_trigger|mcp_provision|workflow_regenerate_diagram|issue_comments\b|issue_comment\b|params\.knobs" src tests | grep -v "tests/unit/tool-specs.test.ts"` → EMPTY, and `npx vitest run` fully green; the commit message carries the before/after `grep -c` counts.
+- **estimate:** M
+- **iter:** v24
+
+### TASK-153 — client plugin v24 sync (EXTERNAL repo, owner-scheduled; blocks the REQ-117 probe, not Gate 6)
+- **status:** draft
+- **traces:** ARCH-013
+- **files:** (external) iso-rwe client plugin: guidance skill text, push_workspace.py
+- **des:** DES-138, DES-142
+- **dod:** From a checkout of the plugin: `grep -rlE "workflow_run|workflow_get|blob_put|mcp_provision|namespace=" .` → EMPTY; the guidance skill lists exactly the 35 `TOOL_SPECS` names. Recorded as the REQ-117 probe precondition in 08-validation.md; if unmet at Gate 7.5 the probe is `UNVERIFIED(client plugin not synced)`, never run against a stale surface.
+- **estimate:** M
+- **iter:** v24
