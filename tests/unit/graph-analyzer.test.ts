@@ -715,10 +715,25 @@ describe('GraphAnalyzer — the enabled:false guard, all three entry points (UT-
 // it). Restored below as its own numbered assertion, per inv 8's new rule: an enumerated oracle
 // satisfied only in part is a send-back item, not a judgement call.
 //
-// Red reason for the restored assertion (measured): today `_startJob`'s scheduled closure has no
-// `catch` that settles the row on the `scriptPromise` rejection path — it only releases the claim/
-// slot (once Gate 6 stops leaking them) — so `ga-orphan@v1` stays `status:'pending'` forever;
-// `expect(row?.status).toBe('unavailable')` fails, `pending !== unavailable`.
+// Red reason for the restored assertion (measured, PRE-adjudication): today `_startJob`'s scheduled
+// closure has no `catch` that settles the row on the `scriptPromise` rejection path — it only
+// releases the claim/slot (once Gate 6 stops leaking them) — so `ga-orphan@v1` stays
+// `status:'pending'` forever; `expect(row?.status).toBe('unavailable')` fails, `pending !==
+// unavailable`.
+//
+// **RE-POINTED, adjudication #8 (04-design.md, commit `9fc4439`, 2026-09-03): BLOCKED at Gate 6.5+7
+// — DES-130 B6's late-write guard (`workflow-catalog.ts:274-275`) makes `putDiagramResult` an
+// unconditional no-op when no `workflow_versions` row exists for `(name, version)`, which is what an
+// orphan IS by construction (`catalog.resolve` throws `CatalogNotFoundError` for exactly that
+// reason) — so assertion (b)'s DB-row transition is structurally UNREACHABLE, not a Gate 6 gap.
+// Ruled (a): amend the oracle, do not carve out the guard (opening B6 for one settle-write reopens
+// the immortal-orphan-row hole it exists to close, ADR-021 GC). Assertion (b) now asserts the
+// journal's `cause:'script_unresolved'` line fires instead of the row's status — the direct evidence
+// the DB-row proxy stood in for. Confirmed green once re-pointed (Gate 6's inv 2 closure already
+// makes the journal line fire; UT-135's own `script_unresolved` case is the same fixture shape and
+// was already green). Flagged for Gate 8, not assumed: does `workflow_deregister` delete
+// `workflow_diagrams` rows, or does an orphan merely trade one immortal status (`pending`) for
+// another (`unavailable`)? An ADR-021 GC question, not a B6 defect.
 describe('GraphAnalyzer — an orphan-pending row must not wedge the queue (UT-125, ARCH-079 A3/N-1)', () => {
   it('a rejecting scriptPromise (orphan pending row) still releases the claim and the slot, settles the row, and the next enqueued job still runs', async () => {
     // Orphan: a pending diagram row for a name NEVER registered (no FK on workflow_diagrams) —
@@ -736,17 +751,26 @@ describe('GraphAnalyzer — an orphan-pending row must not wedge the queue (UT-1
       config: baseConfig(), aliasNames: ALIAS_NAMES, schedule: capturingSchedule,
     });
 
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     analyzer.sweepAtBoot();
     await settle();
+    const orphanLines = logSpy.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('"name":"ga-orphan"'));
+    logSpy.mockRestore();
 
     // 1: the closure itself never rejects (A3's stated fix shape).
     expect(rejections).toHaveLength(0);
-    // 2 (RESTORED, O3/inv 8): the row itself settles — it does not stay `pending` forever. The
-    // orphan's script never resolved, so this is the `script_unresolved` shape of a zero-model-call
-    // settle; the specific persisted noteCode is deliberately not pinned here (see UT-124's own
-    // note on the same point), only that it is no longer `pending`.
-    const orphanRow = await (catalog as any).getDiagram('ga-orphan', 'v1');
-    expect(orphanRow?.status).toBe('unavailable');
+    // 2 (RE-POINTED, adjudication #8 [04-design.md, commit `9fc4439`]: X-1 ruled "amend the oracle,
+    // do not carve out the guard" — DES-130 B6's late-write guard makes `putDiagramResult` an
+    // unconditional no-op when no `workflow_versions` row exists, which is what an orphan IS by
+    // construction, so the DB row structurally cannot reach `'unavailable'`; carving out B6 for one
+    // settle-write reopens the immortal-orphan-row hole it exists to close (ADR-021 GC). Assertion
+    // (b) was only ever a PROXY for "the settle happened" — the journal's `cause:'script_unresolved'`
+    // line is the direct observation of the same event and IS emitted (confirmed by UT-135's own
+    // identical fixture shape, already green). Re-pointing is not weakening the oracle: it trades a
+    // proxy blocked by another legitimate guard for the real evidence.
+    expect(orphanLines).toHaveLength(1);
+    const orphanParsed = JSON.parse(orphanLines[0].replace(/^.*graph-analyzer /, ''));
+    expect(orphanParsed.cause).toBe('script_unresolved');
     // 3: the claim and the slot are released, not stranded on the orphan key.
     expect((analyzer as any)._pendingKeys.has('ga-orphan@v1')).toBe(false);
     expect((analyzer as any)._runningCount).toBe(0);

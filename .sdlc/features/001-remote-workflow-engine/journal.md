@@ -1643,3 +1643,76 @@ slot and the second refused.
 `state.yaml`: `gates.impl.passed` stays **false**, `current_stage` stays `impl` — the round does not advance
 to verification with two in-scope reds outstanding, per the implementer contract's exit gate. Both defects
 route back through Gate 5.
+
+**2026-09-03 v23 GATE 5 RE-ENTRY (verifier) — adjudication #8 applied; both Gate 6-reported defects
+closed.** `04-design.md`'s "Orchestrator adjudication (v23) #8" (commit `9fc4439`) ruled on UT-125's
+reported conflict: `ARCH-079` R-1's oracle enumerates "(b) the row settles", but `DES-130` B6's
+late-write guard (`workflow-catalog.ts:274-275`) makes `putDiagramResult` an unconditional no-op when
+no `workflow_versions` row exists — which is what an orphan IS by construction — so the transition is
+structurally unreachable, not a Gate 6 gap. Ruled (a): amend the oracle, do not carve out the guard
+(B6 exists to prevent an immortal orphan row, ADR-021 GC; opening it for one settle-write reopens what
+it guards). The ruling had been recorded in `04-design.md`/`02-architecture.md` but not yet applied to
+the test itself — that application is this round's work.
+
+Amended `tests/unit/graph-analyzer.test.ts:722-770` (UT-125): assertion (b) re-pointed from
+`expect(orphanRow?.status).toBe('unavailable')` to spying on `console.log` and asserting the journal
+line fires with `cause:'script_unresolved'` — the direct evidence the DB-row check was only ever a
+proxy for (assertions (a) zero unhandled rejections, (c) claim/slot released, (d) next job runs, are
+unchanged). Docblock appended in place (history not rewritten) citing the adjudication and its commit.
+
+**Evidence.** `npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-125'` → 1/1 pass. Same file pair
+(`tests/unit/graph-analyzer.test.ts` + `tests/integration/graph-analyzer-composition-root.test.ts`) →
+51/51 pass — this also re-confirms UT-135's fixture defect (already fixed at Gate 6.5+7 round 4) stays
+closed. `npx tsc --noEmit` clean. Full suite `npx vitest run` → 283/283 files, 1850/1850 tests pass —
+0 remaining red anywhere (Gate 6's `a39c0e7` report of 1848/1850 with exactly these two cases red is
+now fully closed). `sh .sdlc/trace --check`: 1024 items / 18 gaps, byte-identical to the pre-round
+residue (0 new gaps, 0 broken links — no new work-item IDs, UT-125 amended in place only).
+
+**Scope discipline (Mode A, not Mode B):** `UT-129..137`/`IT-104` are **not** flipped green→pass here
+even though the full-suite run above shows them passing — that flip belongs to Gate 6.5+7's regression
+closeout (contract Mode B step 1), not to this Gate-5 re-entry; their rows stay exactly as Gate 6 last
+left them (red, per the send-back's remaining implementation scope).
+
+`state.yaml`: `gates.tests.passed` stays `true`; `current_stage` stays `impl` — Gate 6 (implementer)
+still owns confirming the rest of the send-back and driving Gate 6.5+7's regression closeout (flip
+UT-129..137/IT-104, IMPL-log entries, coverage/determinism/time-travel/seam checks). No owner decision
+is owed this round — adjudication #8 already made the technical call; the ADR-021 GC question (does
+`workflow_deregister` delete `workflow_diagrams` rows?) stays flagged for Gate 8, not assumed here.
+
+## 2026-09-03 — v23 Gate 6 RE-ENTRY (implementer) — both reported test defects closed, no code change owed
+
+**Task:** send-back `41e6382`'s Gate 6 round previously shipped IMPL-177 (the settle choke point `_settle`,
+the closure-level `try/catch/finally`, the `AnalyzerCause` closed union, R-3's `_startJob` choke point) but
+reported two test defects blocking full green: UT-125's restored assertion (b) and UT-135's `queue_full`
+fixture. gates.impl stayed `false` pending a Gate 5 decision. The Gate 5 RE-ENTRY (verifier, adjudication
+#8, commit `9fc4439`) has since ruled: UT-125's assertion (b) was a wrong oracle, not a code gap — re-pointed
+from the DB row (structurally unreachable per DES-130 B6's late-write guard on any orphan fixture) to the
+journal's `cause:'script_unresolved'` line; UT-135's fixture was already fixed at Gate 6.5+7 round 4. This
+round's job: confirm both are closed and no code is actually owed, then flip the gate.
+
+**Re-verified directly, not taken on the verifier's word.** `npx vitest run tests/unit/graph-analyzer.test.ts`
+→ 43/43 pass (UT-124..137 all green, including UT-125 and UT-135). `npx vitest run
+tests/integration/graph-analyzer-composition-root.test.ts -t 'IT-104'` → pass (both the non-empty and empty
+tools-list cases). Full suite `npx vitest run` → 283 files / 1850 tests, 0 failed, exit 0. `npx tsc --noEmit`
+clean. `git status` confirms `src/graph-analyzer.ts` and `src/server.ts` are unmodified relative to `HEAD`
+(`9fc4439`) — the behaviour these 13 items pin was already shipped; only the two test oracles/fixtures needed
+the Gate-5 fix, which has landed.
+
+**Ledger closed, no new code.** IMPL-177 amended in place (not superseded, not re-filed — same precedent as
+IMPL-176's declared-not-absorbed closures): `greens` extended from 11 items to all 13 in-scope items
+(UT-125..137 except UT-126..128 already counted, plus IT-103/IT-104), `files` corrected to include
+`src/server.ts` (the IT-104 mirror-row warn), `commit` corrected from "(uncommitted at report time)" to
+`9fc4439` (now committed, despite that commit's `docs(v23)` subject actually carrying the code — a
+mislabelled-subject instance this ledger has recorded before), and the closing "two reported test defects
+block full green" paragraph replaced with a RESOLVED note citing this round's re-verification.
+
+**Scope discipline (per the Gate-5 verifier's own Mode-A note, honored, not re-litigated):** `05-tests.md`'s
+UT-129..137/IT-104 status lines are **not** flipped green→pass here even though the full-suite run above
+shows them passing — that flip is Gate 6.5+7's regression-closeout job, not this Gate-6 re-entry's; their
+rows stay exactly as the Gate-5 verifier last left them, so the next gate's own residue check has a clean,
+unambiguous starting point.
+
+**Trace:** `sh .sdlc/trace .sdlc/features/001-remote-workflow-engine --check` → 1024 items / 18 gaps,
+byte-identical to the pre-round residue (0 new gaps, 0 broken links — this round added no new work-item IDs,
+only amended fields on IMPL-177). `state.yaml`: `gates.impl.passed` flips `true`; `current_stage` →
+`verification`. No owner decision is owed this round — adjudication #8 already made the technical call.

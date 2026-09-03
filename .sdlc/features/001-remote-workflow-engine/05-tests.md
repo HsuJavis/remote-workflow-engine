@@ -7886,11 +7886,11 @@ own enumerated oracle's assertion (b) — "the row settles" — silently dropped
 and (c) next-job-runs were asserted). Restored as its own numbered assertion; flipped back to red.
 
 ### UT-125 — A3/N-1: an orphan-pending row's rejected scriptPromise must not wedge the queue
-- **status:** blocked
+- **status:** green
 - **traces:** ARCH-079, DES-131
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 **AMENDED v23 Gate 2 RE-RUN #2 (send-back `41e6382`), O3/inv 8.** File:
@@ -7923,6 +7923,29 @@ B6 needs an explicit carve-out (e.g. gate the guard on the `workflow_diagrams` r
 `workflow_versions`, for the `unavailable`-only recovery write) — the latter is a production-code/
 architecture change with ADR-021 GC implications, out of test-author scope. **Needs a Gate 2/5
 decision; sent back up rather than resolved here.**
+
+**RESOLVED — Gate 5 RE-ENTRY (adjudication #8, 04-design.md/commit `9fc4439`, 2026-09-03, verifier).**
+Ruled (a): amend the oracle, do not carve out the B6 guard (see rationale quoted above — B6 exists to
+prevent an immortal orphan row, ADR-021 GC; opening it for one settle-write reopens what it guards).
+Assertion (b) re-pointed in `tests/unit/graph-analyzer.test.ts:722-770` from
+`expect(orphanRow?.status).toBe('unavailable')` to asserting the journal line fires with
+`cause:'script_unresolved'` (the direct evidence the DB-row check was only ever a proxy for).
+Assertions (a)/(c)/(d) unchanged — the adjudication explicitly kept them. Confirmed green:
+`npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-125'` → 1/1 pass. Same "legitimate
+immediate green" shape as IT-102/IT-103 (the underlying behavior — the journal line firing — was
+already shipped by Gate 6's inv 2 closure; only the test's own oracle needed amending, not the code).
+`npx tsc --noEmit` clean. Full file pair (`tests/unit/graph-analyzer.test.ts` +
+`tests/integration/graph-analyzer-composition-root.test.ts`) → 51/51 pass, closing UT-135's fixture
+defect too (already fixed at Gate 6.5+7 round 4, re-confirmed here). Full suite `npx vitest run` →
+283/283 files, 1850/1850 pass — 0 remaining red anywhere (Gate 6's a39c0e7 report of 1848/1850 with
+exactly UT-125/UT-135 red is now fully closed). `sh .sdlc/trace --check`: 1024 items / 18 gaps,
+byte-identical residue to the prior round (0 new gaps, 0 broken links — no new work-item IDs, only
+UT-125 amended in place). Per this Mode's own scope, UT-129..137/IT-104 are **not** flipped
+green→pass here even though the full-suite run shows them passing — that flip is Gate 6.5+7's
+regression-closeout job (Mode B step 1), not Gate 5's; their rows stay as Gate 6 last left them.
+Flagged for Gate 8 (X-2, unresolved): does `workflow_deregister` delete `workflow_diagrams` rows, or
+does an orphan merely trade one immortal status (`pending`) for another (`unavailable`)? An ADR-021
+GC question, not a B6 defect — not assumed either way here.
 
 ### UT-129 — R-1/inv 2, oracle O1: a throwing `ports.getTriggerBindings` inside `_runJob` must not wedge the queue
 - **status:** red
