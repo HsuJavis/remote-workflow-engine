@@ -1719,6 +1719,16 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // self-update rescue path. Loopback-bound servers are excluded (no non-loopback peers possible).
     // Tunnel/forwarded headers → NEVER exempt (D-AUTH-3 cloudflared-on-loopback hole).
     const dbindExempt = isLoopbackPeer(req.socket?.remoteAddress, req.headers) && !isLoopback(bind);
+    // v23 Gate 6.5 (round 4): the ONE way this handler dispatches a dashboard/API request. A1 gave
+    // `/api/workflows/:name/describe` a second, authenticated entry, and the nine POSITIONAL
+    // arguments — including the `!!authCfg` masking flag — were typed out twice; a drift between
+    // the two copies would mask on one path and not the other, with no type error. Same
+    // one-declaration rule as `DEFAULT_CEILINGS`/`UNBOUND_ENTRY_LABEL`.
+    const dispatchDashboard = (): void => {
+      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, buildModelCatalog, !!authCfg).catch(() => {
+        sendJson(res, 200, { degraded: 'internal dashboard error' });
+      });
+    };
     // v15 (DES-095, TASK-086): OAuth AS routes — public (no bearer required), only when auth enabled.
     // effectiveIssuer replaces port 0 with the real bound port (issuer placeholder at startup).
     if (authHandlers) {
@@ -1891,9 +1901,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       if (!dbindExempt && describeGateMatch) {
         void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then((p) => {
           if ('status' in p) { send401(); return; }
-          handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, buildModelCatalog, !!authCfg).catch(() => {
-            sendJson(res, 200, { degraded: 'internal dashboard error' });
-          });
+          dispatchDashboard();
         }).catch(() => { sendJson(res, 500, { error: 'auth error' }); });
         return;
       }
@@ -1943,9 +1951,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       req.url?.startsWith('/api/system') ||
       req.url?.startsWith('/api/models')
     ) {
-      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, buildModelCatalog, !!authCfg).catch(() => {
-        sendJson(res, 200, { degraded: 'internal dashboard error' });
-      });
+      dispatchDashboard();
       return;
     }
     // v8 Defer B (REQ-057): webhook ingress. POST /hooks/:id — verify (HMAC over the RAW body BEFORE

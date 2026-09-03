@@ -209,11 +209,27 @@ export class GraphAnalyzer {
     this._catalog.putDiagramResult(name, version, {
       status: 'unavailable', noteCode, generatedAt: this._clock.isoNow(), bindingsFp: bindings.bindingsFp,
     });
-    // eslint-disable-next-line no-console
-    console.log('[remote-workflow-engine] graph-analyzer ' + JSON.stringify({
-      name, version, principal, model: this._config.model,
+    this._journal({
+      name, version, principal,
       promptTokens: null, completionTokens: null, durationMs: 0,
       outcome: 'unavailable', noteCode, gateFail: null,
+    });
+  }
+
+  /** ARCH-079 inv 5: the ONE emitter of the `graph-analyzer` journal line. Both terminal paths —
+   *  the zero-model-call settle above and `_attempt`'s completed attempt — go through here, so the
+   *  line's shape cannot drift between them (the same one-declaration rule as `UNBOUND_ENTRY_LABEL`
+   *  and `ANALYZER_SCRATCH_SUBDIR`). The key order below IS the line's wire format; keep it. */
+  private _journal(f: {
+    name: string; version: string; principal: string | null;
+    promptTokens: number | null; completionTokens: number | null; durationMs: number;
+    outcome: 'ready' | 'unavailable'; noteCode: PersistedDiagramNoteCode | null; gateFail: GateFailReason | null;
+  }): void {
+    // eslint-disable-next-line no-console
+    console.log('[remote-workflow-engine] graph-analyzer ' + JSON.stringify({
+      name: f.name, version: f.version, principal: f.principal, model: this._config.model,
+      promptTokens: f.promptTokens, completionTokens: f.completionTokens, durationMs: f.durationMs,
+      outcome: f.outcome, noteCode: f.noteCode, gateFail: f.gateFail,
     }));
   }
 
@@ -320,16 +336,15 @@ export class GraphAnalyzer {
       outcome = { ok: false, noteCode: noteCodeFor(result), gatewayOk: false };
     }
 
-    // eslint-disable-next-line no-console
-    console.log('[remote-workflow-engine] graph-analyzer ' + JSON.stringify({
-      name, version, principal, model: this._config.model,
+    this._journal({
+      name, version, principal,
       promptTokens: result.ok ? result.tokens.input : null,
       completionTokens: result.ok ? result.tokens.output : null,
       durationMs,
       outcome: outcome.ok ? 'ready' : 'unavailable',
       noteCode: outcome.ok ? null : outcome.noteCode,
       gateFail,
-    }));
+    });
 
     return outcome;
   }

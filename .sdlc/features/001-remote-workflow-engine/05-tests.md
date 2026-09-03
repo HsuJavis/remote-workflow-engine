@@ -6720,6 +6720,19 @@ reason: `DASHBOARD_HTML`'s embedded script still fetches `/skeleton` for both su
 references `diagramNote`. Confirmed: `npx vitest run tests/unit/dashboard-diagram-render.test.ts` —
 4/4 fail.
 
+**Case 4 RE-POINTED at v23 Gate 6.5+7 ROUND 4 (2026-09-03, verifier) — authorized by name, and it
+gets stronger, not weaker.** 02-architecture.md's ARCH-084 dashboard row (A4 amendment) reads
+*"'removed' means `renderMiniPreviewAsync` and its call site are DELETED, not re-pointed"*, and the
+Gate-2-re-run handoff assigns Gate 6 *"A4's two deleted lines + UT-116 re-point"*. Gate 6 shipped
+neither (see IMPL-176), so case 4 was still asserting that the mini-preview existed and fetched
+`/describe` — i.e. pinning the exact per-card-per-3s-tick cost the amendment deletes. The new case
+is ABSENCE and two-sided: no `renderMiniPreviewAsync` in `DASHBOARD_HTML`, `function
+renderHomeGroup(` still present (a truncated page cannot pass), and **exactly one** `/describe`
+fetch left — the workflow-detail view's, reached from a card click. Non-vacuity measured against
+`15de3ce`, not assumed: that tree holds two such fetches plus the deleted identifier, so the new
+case fails there on both assertions. Cases 1–3 untouched. `iter:` stays `v23` (origin, per house
+convention).
+
 ### Extended in place (no new ID) — UT-033, compose-config-v2-wiring.test.ts
 The `graphAnalyzer` config block (TASK-122, DES-134, ARCH-085) — same wiring-gap class as every prior
 case in this file (v11 `updateFlagPath` / v15 `auth` / v16 `workspaceTtlMs` / v22
@@ -7622,11 +7635,11 @@ orchestrator; this write claims only what this instance authored plus what it in
 verified.
 
 ### UT-124 — A2: `GraphAnalyzer` never reaches the gateway when `config.enabled === false`, all three entry points
-- **status:** red
+- **status:** green
 - **traces:** ARCH-079, DES-131, DES-134
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 File: `tests/unit/graph-analyzer.test.ts` (new describe block, appended to the existing UT-111
@@ -7652,11 +7665,11 @@ check `this._config.enabled` today, and that `putDiagramPending`'s `ON CONFLICT 
 runs unconditionally ahead of any guard.
 
 ### UT-125 — A3/N-1: an orphan-pending row's rejected scriptPromise must not wedge the queue
-- **status:** red
+- **status:** green
 - **traces:** ARCH-079, DES-131
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 File: `tests/unit/graph-analyzer.test.ts` (new describe block, same file/mock policy as UT-124,
@@ -7674,11 +7687,11 @@ reason (measured): `npx vitest run tests/unit/graph-analyzer.test.ts -t UT-125` 
 has no `try/catch/finally` around the scheduled closure today.
 
 ### UT-126 — V-D: `projectWorkflowDescribe`'s diagramNote precedence — analyzerEnabled:false always wins over a persisted noteCode
-- **status:** red
+- **status:** green
 - **traces:** ARCH-081, DES-125, DES-127
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 File: `tests/unit/workflow-describe-projection.test.ts` (new describe block, appended to the
@@ -7694,11 +7707,11 @@ instead of `'Diagram generation is disabled for this deployment.'`, and the swep
 on the `diagram === null` branch today (`workflow-view.ts:129-138`).
 
 ### UT-127 — A5: the diagram vocabulary has one canonical source, consumed by membership everywhere
-- **status:** red
+- **status:** green
 - **traces:** ARCH-080
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 File: `tests/unit/diagram-vocabulary-consistency.test.ts` (new file). Naming choice, not pinned by
@@ -7714,11 +7727,11 @@ missing named export to `undefined`) — `npx vitest run tests/unit/diagram-voca
 → 2/2 fail, this error.
 
 ### IT-101 — A1/ADJ-A1: `GET /api/workflows/:name/describe` gains a transport gate (401 off-loopback, before any store read)
-- **status:** red
+- **status:** green
 - **traces:** ARCH-083, DES-132
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 **Authored by a sibling Gate 5 dispatch found running concurrently in this working tree** (see
@@ -7739,6 +7752,19 @@ reason (measured by this instance): `npx vitest run tests/integration/workflow-d
 that the route (`server.ts:1173-1184`) is dispatched outside the `authHandlers` block and makes no
 authorization decision today; rows 1/2/parity are legitimate green pins (already correct, kept as
 regression guards for what this fix must not disturb).
+
+**ROW 4 ADDED at v23 Gate 6.5+7 ROUND 4 (2026-09-03, verifier) off a MEASURED coverage hole, not a
+hunch.** With A1 shipped (IMPL-175), v8 line coverage showed `server.ts:1904` — the gate's ADMIT
+line, `dispatchDashboard()` inside the `resolvePrincipal` success branch — executed by **no test in
+the suite**: rows 1 and 2 never enter the block at all (auth off / D-BIND exempt) and rows 3a/3b stop
+at the 401, so **a gate that refused every authenticated caller would have passed the entire
+oracle**. Row 4 is the non-vacuity control: same loopback-BOUND auth-enabled construction as row 3b,
+with a live `bearer_tokens` row hand-seeded into `auth-tokens.db` (the pattern IT-078's own file
+uses; `expires_at` derived RELATIVE to `Date.now()`, never a date literal — hermetic under the
+time-travel re-run). Two cases: the valid bearer → **200** with the full projection **and still no
+script body** (DES-125: clearing the gate does not make the caller an owner), and the SAME server
+401ing the SAME name with no bearer, so the 200 is attributable to the token and not to an open
+route. 8/8 green; `server.ts:1904` covered.
 
 ### IT-102 — A6: `tools/list`'s name-set drift-lock is a two-sided SET EQUALITY, plus the two v23 tool rows and the literal script-absence sentence
 - **status:** green
@@ -7771,11 +7797,11 @@ architecture's "39" is stale doc drift, not corrected in this pass (not this ins
 scope).
 
 ### UT-128 — R-1/inv 5: exactly one journal line per SETTLE, even with zero model calls
-- **status:** red
+- **status:** green
 - **traces:** ARCH-079
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 **Authored by a sibling Gate 5 dispatch** (see process note above) — not in this instance's original
@@ -7794,3 +7820,53 @@ Gate 6.5+7 coverage debt once A2's guard exists, not silently dropped. Red reaso
 instance): `npx vitest run tests/unit/graph-analyzer.test.ts -t UT-128` → 3/3 fail, `expected "log"
 to be called 1 times, but got 0 times` on `MODEL_UNMAPPED`, `QUEUE_FULL`, and the boot-sweep
 zero-call settle.
+
+## Gate 6.5+7 ROUND 4 — the Gate 8 send-back's code half closes (2026-09-03, verifier)
+
+Fourth Gate 6.5+7 pass of v23, over the Gate 6 delta `a39c0e7` (TASK-128/129/130 — A1/A2/A3/A5/A10
++ V-D + inv 5). Six Gate 5 items flip `red → green`: **UT-124, UT-125, UT-126, UT-127, UT-128,
+IT-101**. `IT-102` was already green (a drift-lock hardening, not a RED).
+
+**One Gate 6 item had NOT shipped, despite the commit subject naming it — A4.** `a39c0e7`'s subject
+reads "A1/A2/A3/A4/A5/A10 landed"; `renderMiniPreviewAsync` was still in `dashboard-page.ts`, still
+called per card, and UT-116's fourth case still asserted its presence. Closed here as **IMPL-176**
+with UT-116's authorized re-point (details on UT-116's own entry above and in 06-impl-log.md).
+Recorded as a finding, not absorbed: this is the same class as `277a8d9`'s `docs(v23)` subject
+carrying four production source files, and Gate 8's own instruction for this send-back is to
+re-verify each amendment **by grep, not by reading a note**.
+
+**Simplify (Gate 6.5) — two reuse fixes, quality only, zero behaviour change.** Both are duplications
+this delta itself introduced, and both are the repo's named one-declaration class:
+(a) `graph-analyzer.ts` — inv 5's new settle-line made the ten-key
+`console.log('[remote-workflow-engine] graph-analyzer ' + JSON.stringify({…}))` shape exist twice
+(`_settleUnavailable` and `_attempt`); extracted to one private `_journal(fields)` writing the keys
+in the existing order, so the emitted line is byte-identical at both sites — confirmed on a real run
+(the suite log's live `{"name":"cron-target",…,"gateFail":null}` lines are unchanged in shape).
+(b) `server.ts` — A1's gate made the **nine-positional-argument** `handleDashboardRequest(…, !!authCfg)`
+call plus its identical `.catch(… degraded …)` exist twice, across an auth boundary where a drift in
+the trailing masking flag would mask on one path and not the other with no type error; both sites now
+call one `dispatchDashboard()` declared beside `dbindExempt`. The two catch bodies were verified
+byte-identical before merging, not assumed. Three candidates rejected and named rather than silently
+absorbed — merging the two `enabled:false` guards (they differ in `principal` and serve two different
+state machines), collapsing `sweepAtBoot`'s disabled branch into its stale-stamp branch (correct only
+by reasoning about a row state no test pins), and indexing `VOCAB_GLYPHS` instead of destructuring it
+(shorter, but the 13 names are what makes the prompt readable). `npx tsc --noEmit` clean; the
+directly-affected files re-run green before the full regression; nothing reverted, nothing went red.
+
+**New cases added this gate (no new ID — UT-128 extended in place).** UT-128's own docblock named the
+gap: *"the new `enabled:false` guard settle (UT-124/A2) is deliberately NOT covered here … named as
+Gate 6.5+7 coverage debt once A2's guard exists, not silently dropped."* A2's guard now exists, so
+its two settle paths — `enqueue()`'s disabled guard and `sweepAtBoot()`'s never-stamped disabled
+branch — are the two terminal writes inv 5's one-line count had never been asserted over. Two cases
+added, each also pinning `gateway.invoke` untouched, so a future "fix" that restores the line by
+letting the disabled path reach `_attempt` cannot pass them.
+
+**IT-101 row 4 added** (details on IT-101's entry): the coverage measurement found A1's own ADMIT
+line executed by no test — rows 1/2 never enter the gated block and rows 3a/3b stop at the 401 — so
+a gate that refused every authenticated caller passed the whole four-row oracle. Row 4 closes that
+and is the non-vacuity control for rows 3a/3b.
+
+**Regression:** 283 test files / **1837** tests passed, 0 failed, `vitest` exit **0** (read off the
+process's own exit status, not a `| tail` pipeline's — the failure mode this ledger has recorded
+before). `npx tsc --noEmit` clean. Zero remaining red; `IT-015` stays the single
+`blocked`/`not-run` deferral, labelled and unchanged (`VAL-115` was closed at `15de3ce`).

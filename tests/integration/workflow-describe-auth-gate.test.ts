@@ -25,7 +25,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir, networkInterfaces } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
@@ -163,6 +163,53 @@ describe('row 3b: auth ENABLED, LOOPBACK bind (exemption excluded by constructio
     const res = await getDescribe(`http://127.0.0.1:${server.port}`, 'it101-never-registered-2');
     expect(res.status).toBe(401);
     expect(res.headers.get('www-authenticate')).toBeTruthy();
+  });
+});
+
+// ── Row 4: {authEnabled:true, non-exempt peer, VALID bearer} -> 200. ADDED at v23 Gate 6.5+7
+//    round 4 (verifier) off a measured coverage hole: the gate's ADMIT line (`dispatchDashboard()`
+//    at server.ts:1904) was executed by no test in the suite — rows 1 and 2 never enter the block
+//    (auth off / D-BIND exempt) and rows 3a/3b stop at the 401. A gate that refused EVERY
+//    authenticated caller would have passed the whole oracle, so this row is what makes rows 3a/3b
+//    mean something. Same loopback-BOUND construction as row 3b (exemption excluded by
+//    construction), with a hand-seeded live bearer — the same `bearer_tokens` seeding pattern
+//    IT-078/auth-routes-integration.test.ts uses, expiry derived RELATIVE to now, never a literal
+//    date. ────────────────────────────────────────────────────────────────────────────────────────
+
+describe('row 4: auth ENABLED, non-exempt peer, VALID bearer -> 200 (IT-101, ADJ-A1 — the gate admits, not only refuses)', () => {
+  let server: Server;
+  let workRoot: string;
+  const NAME = uniqueName('bearer');
+  const RAW_TOKEN = 'it101-bearer-' + randomBytes(8).toString('hex');
+
+  beforeAll(async () => {
+    workRoot = mkdtempSync(join(tmpdir(), 'rwe-it101-bearer-'));
+    server = await createServer({
+      port: 0, bind: '127.0.0.1', workRoot, graphAnalyzer: { enabled: false },
+      auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it101-b-cid', googleClientSecret: 'it101-b-cs' },
+    } as never);
+    seedPublishedWorkflow(join(workRoot, 'catalog.db'), NAME, 'it101-owner4@example.com', 'v1', `return 'v1';`);
+    const db = new Database(join(workRoot, 'auth-tokens.db'));
+    const now = Date.now();
+    db.prepare('INSERT INTO bearer_tokens (token_hash, principal, issued_at, expires_at) VALUES (?, ?, ?, ?)')
+      .run(createHash('sha256').update(RAW_TOKEN).digest('hex'), 'it101-caller@example.com', now, now + 7 * 24 * 3600_000);
+    db.close();
+  });
+  afterAll(async () => { await server?.close(); rmSync(workRoot, { recursive: true, force: true }); });
+
+  it('a valid bearer on a loopback-BOUND auth-enabled server -> 200 with the full describe projection', async () => {
+    const res = await getDescribe(`http://127.0.0.1:${server.port}`, NAME, { Authorization: `Bearer ${RAW_TOKEN}` });
+    expect(res.status).toBe(200);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body['name']).toBe(NAME);
+    // DES-125: the projection is single — passing the gate does NOT turn the caller into an owner,
+    // so the response still carries no script body.
+    expect(JSON.stringify(body)).not.toContain(`return 'v1';`);
+  });
+
+  it('the SAME server 401s the SAME name with no bearer — so the 200 above is the token, not an open route', async () => {
+    const res = await getDescribe(`http://127.0.0.1:${server.port}`, NAME);
+    expect(res.status).toBe(401);
   });
 });
 

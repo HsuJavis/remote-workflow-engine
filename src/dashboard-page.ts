@@ -222,13 +222,9 @@ async function renderDescribe(name){
 // v11 F1 (REQ-074/075, DES-070/071): home view — 3-way grouped cards with metrics.
 function fmtMetric(val,suffix){ return val==null?'—':Math.round(val)+suffix; }
 // v23 (DES-133, owner decision A1): honest absence, no fallback drawing — the old node-array
-// SVG preview is gone (no structured shape survives to the client); this fetches /describe and
-// renders nothing, whether or not a diagram exists, until a mini-preview is designed for it.
-function renderMiniPreviewAsync(card,name){
-  getJSON('/api/workflows/'+encodeURIComponent(name)+'/describe').then(function(s){
-    if(!s||!s.diagram) return;
-  });
-}
+// SVG preview is gone (no structured shape survives to the client), and the /describe fetch that
+// briefly replaced it is DELETED too (ARCH-084 A4): it discarded every response, so each card was
+// costing one request per 3s tick for nothing. No mini-preview until one is designed.
 function renderHomeGroup(box,cards){
   box.innerHTML='';
   if(!cards||!cards.length){ box.appendChild(el('div','empty','(none)')); return; }
@@ -240,7 +236,6 @@ function renderHomeGroup(box,cards){
     var ms=el('div','s');
     ms.textContent='sr: '+fmtMetric(m.successRate!=null?Math.round(m.successRate*100):null,'%')+' · avg: '+fmtMetric(m.avgDurationMs,'ms')+' · runs: '+m.terminalCount;
     c.appendChild(ms);
-    if(card.name) renderMiniPreviewAsync(c,card.name);
     if(card.activeRunId){ var aid=card.activeRunId; c.onclick=function(){ go(aid); }; }
     else if(card.name){ var cname=card.name; c.onclick=function(){ showDescribe(cname); }; }
     else if(card.latestRunId){ var lid=card.latestRunId; c.onclick=function(){ go(lid); }; }

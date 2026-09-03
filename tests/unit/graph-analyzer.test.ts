@@ -542,6 +542,44 @@ describe('GraphAnalyzer — exactly one journal line per SETTLE, even with zero 
     logSpy.mockRestore();
   });
 
+  // ADDED at v23 Gate 6.5+7 round 4 (verifier), closing the coverage debt this describe block's own
+  // docblock names: "the new `enabled:false` guard settle (UT-124/A2) is deliberately NOT covered
+  // here ... named as Gate 6.5+7 coverage debt once A2's guard exists, not silently dropped".
+  // A2's guard now exists (IMPL-175), so the two settle paths it added are the two paths inv 5's
+  // count was never asserted over. Both also pin `gateway.invoke` untouched, so a future "fix" that
+  // restores the line by letting the disabled path reach `_attempt` cannot pass this.
+  it('the DISABLED-guard settle in enqueue() emits exactly one journal line, with zero model calls', async () => {
+    await catalog.register('ga-journal-disabled', `return 1;`);
+    const invoke = vi.fn();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const analyzer = new GraphAnalyzer({
+      gateway: { invoke }, catalog, ports: NO_TRIGGERS, clock: CLOCK,
+      config: baseConfig({ enabled: false }), aliasNames: ALIAS_NAMES, schedule: runInline,
+    });
+    analyzer.enqueue('ga-journal-disabled', 'v1', `return 1;`, 'alice');
+    await settle();
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(invoke).not.toHaveBeenCalled();
+    logSpy.mockRestore();
+  });
+
+  it('the DISABLED-guard settle in sweepAtBoot() (never-stamped row) emits exactly one journal line, with zero model calls', async () => {
+    await catalog.register('ga-journal-sweep-disabled', `return 1;`);
+    // A never-stamped pending row: generatedAt === null — the branch that requeues when enabled.
+    await (catalog as any).putDiagramPending('ga-journal-sweep-disabled', 'v1');
+    const invoke = vi.fn();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const analyzer = new GraphAnalyzer({
+      gateway: { invoke }, catalog, ports: NO_TRIGGERS, clock: CLOCK,
+      config: baseConfig({ enabled: false }), aliasNames: ALIAS_NAMES, schedule: runInline,
+    });
+    analyzer.sweepAtBoot();
+    await settle();
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(invoke).not.toHaveBeenCalled();
+    logSpy.mockRestore();
+  });
+
   it('the boot-sweep ZERO-CALL settle (stamped before the boot instant) emits exactly one journal line', async () => {
     await catalog.register('ga-journal-sweep-exhausted', `return 1;`);
     await (catalog as any).putDiagramPending('ga-journal-sweep-exhausted', 'v1', '2026-09-01T00:00:00.000Z');

@@ -975,7 +975,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **estimate:** S
 
 ### TASK-128 — A1: the `workflow_describe` auth gate must run BEFORE any store read
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-076, ADR-012
 - **files:** src/server.ts, src/mcp-facade.ts, README.md, DEPLOY.md, tests/integration/workflow-describe-auth-gate.test.ts
 - **des:** DES-125
@@ -983,7 +983,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **estimate:** M
 
 ### TASK-129 — A2/A3/A10: the analyzer must not call the gateway when disabled, must not strand a pending row, and must stop describing what it no longer does
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-079, ARCH-085
 - **files:** src/graph-analyzer.ts, tests/unit/graph-analyzer.test.ts
 - **des:** DES-127, DES-131
@@ -991,9 +991,10 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **estimate:** M
 
 ### TASK-130 — A4/A5/V-D: the diagram vocabulary is one declaration, and the projection is total over {row} × {analyzerEnabled}
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-080, ARCH-085
 - **files:** src/workflow-view.ts, src/server.ts, src/trigger-bindings.ts, rwe.config.example.json, tests/unit/workflow-describe-projection.test.ts, tests/unit/diagram-vocabulary-consistency.test.ts
 - **des:** DES-129, DES-130, DES-132
 - **dod:** UT-126's two red cells (`unavailable+RETRIES_EXHAUSTED × disabled`, `pending × disabled`) and UT-127 green. A5: the vocabulary becomes an export the shipped prompt AND `rwe.config.example.json:59` are interpolated from, so a membership assertion can hold over both — plus delete the false comment at `server.ts:299-300`. A4: the two deleted lines and the UT-116 re-point. The four green pins in UT-126 stay as regression guards; do not weaken them to make the two red cells pass.
 - **estimate:** M
+- **closeout (Gate 6.5+7 round 4, 2026-09-03):** V-D and A5 landed in `a39c0e7` (IMPL-175); **A4 did not**, despite that commit's subject naming it — closed by the verifier as IMPL-176. Two `files:` entries needed no edit and this is why: `rwe.config.example.json`'s prompt already contains all 13 glyphs, so UT-127's membership oracle (the architecture's own chosen, cheaper check) holds over it unmodified; `src/trigger-bindings.ts` states no glyph of its own. `src/dashboard-page.ts` and `tests/unit/dashboard-diagram-render.test.ts` — A4's real targets — were missing from this list, which is part of why A4 was the item that slipped.

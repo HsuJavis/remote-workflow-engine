@@ -41,10 +41,19 @@ describe('dashboard workflow-detail view — diagram surface (UT-116, DES-133)',
 });
 
 describe('dashboard home-card mini-preview — honest absence, no fallback drawing (UT-116, DES-133, owner decision A1)', () => {
-  it('fetches /describe (not /skeleton) for the mini-preview and renders nothing when no diagram exists', () => {
-    // The mini-preview function body must no longer reference the skeleton array at all — it fetches
-    // /describe and bails out when there is no `diagram` string (never draws a fallback skeleton SVG).
-    const miniPreviewSection = DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf('renderMiniPreviewAsync'));
-    expect(miniPreviewSection.slice(0, 400)).toContain('/describe');
+  // RE-POINTED at v23 Gate 6.5+7 round 4, per 02-architecture.md's A4 amendment (ARCH-084 dashboard
+  // row) and the Gate-2-re-run handoff line "A4's two deleted lines + UT-116 re-point": "removed"
+  // means `renderMiniPreviewAsync` and its call site are DELETED, not re-pointed at a different
+  // endpoint. The old oracle asserted the function still existed and fetched /describe — which is
+  // the very cost A4 removes (one request per card per 3s tick, response discarded). The oracle is
+  // now ABSENCE, and it is two-sided: the home-card renderer must still exist, so a whole-file
+  // truncation cannot pass this.
+  it('has no home-card mini-preview at all — no renderMiniPreviewAsync, no per-card /describe fetch', () => {
+    expect(DASHBOARD_HTML).not.toContain('renderMiniPreviewAsync');
+    expect(DASHBOARD_HTML).toContain('function renderHomeGroup(');
+    // The ONLY surviving /describe fetch is the workflow-detail view's (case 1 above), reached from a
+    // card click, never from the card render itself.
+    const fetches = DASHBOARD_HTML.split("/api/workflows/'+encodeURIComponent(name)+'/describe").length - 1;
+    expect(fetches).toBe(1);
   });
 });
