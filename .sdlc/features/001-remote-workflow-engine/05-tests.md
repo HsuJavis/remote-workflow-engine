@@ -6840,12 +6840,22 @@ reflected in the SAME `workflow_describe` call; `diagramStale` flips `true` agai
 `npx vitest run tests/acceptance/val-114-trigger-bindings-live.test.ts` — 2/2 fail.
 
 ### VAL-115 — REQ-104: an operator edits the analyzer config and the diagram visibly changes, no redeploy
-- **status:** blocked
+- **status:** pass
 - **traces:** REQ-104, DES-134, TASK-124, ARCH-085
 - **tier:** acceptance
-- **real:** false
-- **result:** not-run
+- **real:** true
+- **result:** pass
 - **iter:** v23
+
+**[CLOSED v23 Gate 7.5 — orchestrator-verified 2026-09-03]** The paragraph below still stands: no unit
+test may claim to prove REQ-104. What changed is that Gate 7.5 produced the only proof that counts, and
+this row had not been updated to say so — `08-validation.md`'s REQ-104 entry records it: editing
+`graphAnalyzer.systemPrompt` on disk and restarting turned the same `(val23r3unbound, v1)` from
+`unavailable`/`GATE_REJECTED_SHAPE` (boot 1) into a `ready` diagram (boot 2), and editing
+`graphAnalyzer.model` to `"vl"` made the engine's own journal line report `"model":"vl"` (boot 7).
+Nothing was recompiled or code-edited at any point. Verified in both documents before flipping this row —
+the ledger was disagreeing with itself, which is this iteration's own recurring defect wearing
+bookkeeping clothes.
 
 **No runnable test file — by design, not an omission.** REQ-104's own acceptance text and TASK-124's
 dod are explicit: "no unit test may be written that claims to prove REQ-104" — a unit assertion reads
@@ -7590,3 +7600,197 @@ verbatim — its oracle taken from the engine's instruction, not from the allowl
   `unavailable`/`GATE_REJECTED_CONTENT` (`gateFail: 'token'`) — the gate is live and still
   content-checking, so (b)'s `ready` is the added sentinel and not a disabled gate. The shipped
   default prompt's ready path against a capable provider remains `VAL-119`/Gate 7.5's to close.
+
+---
+
+## v23 Gate 5 RE-RUN (verifier, test-first RED) — the Gate 2 re-run handoff, send-back `d294880`
+
+Scope per 02-architecture.md's "Handoff" paragraph (line ~1953): Gate 2 closed A1/A7/A8/A9/A10 and
+wrote testable invariants for A2/A3/A5/A6 for Gates 5/6 to consume. A7/A8/A9/A10 are doc-only
+closures (no new tests owed — verified, their own text names no Gate 5/6 work). This pass covers
+A1, A2, A3, V-D (required by A2's fix, ARCH-081), A5, A6.
+
+**Process note, recorded honestly per this ledger's own immune system (CLAUDE.md; retro
+`sdlc-agent-ledger-clobber`):** a SIBLING Gate 5 dispatch was found executing concurrently in this
+same working tree (same send-back scope, overlapping test files, live at the time of this write).
+Three items below (`IT-101`, `IT-102`'s file, `UT-128`) were authored by that sibling, not this
+instance — this instance independently verified each is red (or, for `IT-102`, correctly green) for
+the right reason before recording it, and ceded/removed its own duplicate attempts at `IT-101` and
+half of `IT-102` (a second file/block claiming an already-covered oracle is the trace-gap this note
+exists to avoid, not a contribution). Dedup across both dispatches' ledger writes is owed to the
+orchestrator; this write claims only what this instance authored plus what it independently
+verified.
+
+### UT-124 — A2: `GraphAnalyzer` never reaches the gateway when `config.enabled === false`, all three entry points
+- **status:** red
+- **traces:** ARCH-079, DES-131, DES-134
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts` (new describe block, appended to the existing UT-111
+file — same mock policy: stub `GatewayClient` via a `vi.fn()` spy, REAL on-disk `WorkflowCatalog`,
+`FixedClock`, `schedule: runInline`). Four cases, one per caller of `_startJob`
+(`enqueue`/`sweepAtBoot`/`regenerate`) with `config.enabled:false`: the spied `gateway.invoke` must
+never be called, and (for `enqueue`/`sweepAtBoot`) the row must not stay `pending` forever (nothing
+stranded, QD Risk #5). **Fourth case added by this instance** (inv 11's own latent-clobber text —
+"the enqueue/regenerate row may be ready, so `_settleUnavailable`'s ready-check returns early and a
+prior good diagram survives" — that property depends on the durable `putDiagramPending` write moving
+BEHIND the guard, not just the in-memory claim, or a guard placed one level too deep trades a known
+bug for a latent one): a PRIOR `ready` row + `enqueue()` with `enabled:false` must leave the row
+`ready` with its diagram intact, not just make zero gateway calls. Deliberately NOT asserted: the
+specific persisted `noteCode` the guard settle uses on the other three cases — 02-architecture.md
+leaves that unpinned in the handoff text, but inv 11 itself names it explicitly ("Settle code is the
+persisted RETRIES_EXHAUSTED (no migration)") — flagged here for Gate 6 rather than pinned in the
+test, so a Gate 6 that reads only the ledger (not the architecture) still gets the answer without
+this test over-specifying the implementation choice. Red reason (measured): `npx vitest run
+tests/unit/graph-analyzer.test.ts -t UT-124` → 4/4 fail — three `expected "spy" to not be called at
+all, but actually been called 1 times`, one (the clobber case) asserting the row stays `ready` with
+`diagram:'╭─PriorGood─╮'` — confirmed by direct read that `enqueue`/`sweepAtBoot`/`regenerate` never
+check `this._config.enabled` today, and that `putDiagramPending`'s `ON CONFLICT … SET diagram=NULL`
+runs unconditionally ahead of any guard.
+
+### UT-125 — A3/N-1: an orphan-pending row's rejected scriptPromise must not wedge the queue
+- **status:** red
+- **traces:** ARCH-079, DES-131
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts` (new describe block, same file/mock policy as UT-124,
+except `schedule` is a test-side seam that captures any rejection from `job()` into an array rather
+than letting it escape as an unhandled promise rejection — capturing IS part of the invariant under
+test, "the closure never rejects"). Setup: `catalog.putDiagramPending('ga-orphan','v1')` on a name
+NEVER registered (no FK on `workflow_diagrams`) — an "orphan pending" row; `sweepAtBoot()`'s
+never-stamped branch then calls `catalog.resolve()`, which rejects `CatalogNotFoundError`,
+reproducing A3's "one reachable throw" through `_startJob`'s unguarded scheduled closure. Three
+assertions: (1) the closure itself never rejects; (2) the claim (`_pendingKeys`) and the slot
+(`_runningCount`) are released, not stranded on the orphan key; (3) a subsequently enqueued, GENUINELY
+valid job still runs to completion — proving the queue is not wedged behind the leaked slot. Red
+reason (measured): `npx vitest run tests/unit/graph-analyzer.test.ts -t UT-125` → fails at assertion
+(1), `expected [ …(1) ] to have a length of +0 but got 1` — confirmed by direct read that `_startJob`
+has no `try/catch/finally` around the scheduled closure today.
+
+### UT-126 — V-D: `projectWorkflowDescribe`'s diagramNote precedence — analyzerEnabled:false always wins over a persisted noteCode
+- **status:** red
+- **traces:** ARCH-081, DES-125, DES-127
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/workflow-describe-projection.test.ts` (new describe block, appended to the
+existing UT-113 file; pure function, no I/O). Full oracle table over `{row: null | pending |
+unavailable+code | ready} x {analyzerEnabled}` per 02-architecture.md's V-D amendment (required by
+A2's fix — "what stops A2's fix from shipping a lie"): 6 cases, 2 genuinely red (a persisted
+`unavailable+RETRIES_EXHAUSTED` row and a swept `pending` row, both with `analyzerEnabled:false`,
+must both read `DISABLED`) and 4 green pins (the already-correct cells, kept as regression guards).
+Red reason (measured): `npx vitest run tests/unit/workflow-describe-projection.test.ts -t UT-126` →
+2/6 fail — `unavailable+RETRIES_EXHAUSTED` reads `'The diagram generator exhausted its retries.'`
+instead of `'Diagram generation is disabled for this deployment.'`, and the swept `pending` row reads
+`''` instead of `DISABLED`'s text — confirmed by direct read that `analyzerEnabled` is consulted only
+on the `diagram === null` branch today (`workflow-view.ts:129-138`).
+
+### UT-127 — A5: the diagram vocabulary has one canonical source, consumed by membership everywhere
+- **status:** red
+- **traces:** ARCH-080
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/diagram-vocabulary-consistency.test.ts` (new file). Naming choice, not pinned by
+02-architecture.md, decided here so Gate 6 inherits it: the ordered glyph array is exported as
+`VOCAB_GLYPHS` from `diagram-gate.ts` and the shipped default prompt as
+`DEFAULT_GRAPH_ANALYZER_SYSTEM_PROMPT` from `server.ts` — both names already used by the existing
+private consts, only visibility changes. Two membership assertions (the architecture's own chosen,
+cheaper oracle — not a structural "was it interpolated" check): every glyph in `VOCAB_GLYPHS`
+appears in the shipped default `systemPrompt`, and in `rwe.config.example.json`'s
+`graphAnalyzer.systemPrompt` (a real file read). Red reason (measured): neither export exists today
+→ `TypeError: VOCAB_GLYPHS is not iterable` (vitest's esbuild-transformed import resolves the
+missing named export to `undefined`) — `npx vitest run tests/unit/diagram-vocabulary-consistency.test.ts`
+→ 2/2 fail, this error.
+
+### IT-101 — A1/ADJ-A1: `GET /api/workflows/:name/describe` gains a transport gate (401 off-loopback, before any store read)
+- **status:** red
+- **traces:** ARCH-083, DES-132
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+**Authored by a sibling Gate 5 dispatch found running concurrently in this working tree** (see
+process note above) — recorded here because this instance independently verified it, not because
+this instance wrote it. File: `tests/integration/workflow-describe-auth-gate.test.ts`. Mock policy
+(integration, DES-119): real `createServer` + real HTTP + real on-disk catalog.db, hand-seeded
+(IT-091/IT-097 precedent, avoids the unrelated `PRINCIPAL_REQUIRED` catalog-WRITE gate). Implements
+02-architecture.md's own four-row parameterized oracle, `{authEnabled:false}` first: row 1
+(`authEnabled:false` → 200), row 2 (D-BIND loopback-exempt peer, bind `0.0.0.0` + auth on, client via
+127.0.0.1 → 200), row 3a (a GENUINE non-loopback LAN peer, `it.skipIf(!HAS_LAN_IP)` — this host has a
+LAN interface so it ran for real — no bearer / an invalid bearer → 401), row 3b
+(environment-independent variant: loopback BIND + auth on, `dbindExempt` structurally impossible →
+401, mirrors IT-078/IT-091's own bearer-required mechanics), and a parity row (HTTP body ===
+`workflow_describe`'s MCP result, key-for-key and value-for-value). Zero-store-reads proof: row 3's
+name is deliberately never registered — a post-gate 404 vs a pre-gate 401 is the discriminator. Red
+reason (measured by this instance): `npx vitest run tests/integration/workflow-describe-auth-gate.test.ts`
+→ 3/6 fail (row 3a's two cases + row 3b), all `expected 404 to be 401` — confirmed by direct read
+that the route (`server.ts:1173-1184`) is dispatched outside the `authHandlers` block and makes no
+authorization decision today; rows 1/2/parity are legitimate green pins (already correct, kept as
+regression guards for what this fix must not disturb).
+
+### IT-102 — A6: `tools/list`'s name-set drift-lock is a two-sided SET EQUALITY, plus the two v23 tool rows and the literal script-absence sentence
+- **status:** green
+- **traces:** ARCH-051
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+**Authored by a sibling Gate 5 dispatch** (see process note above; this instance's own independent
+attempt at the same oracle — same 40-name literal list, verified identically by direct read of
+`server.ts:188-242` — duplicated the sibling's coverage and was removed rather than left as a second
+block claiming the same ID). File: `tests/integration/mcp-tools-list-schema.test.ts` (new describe
+block appended to the existing IT-028 file). Amended contract (a), all v23 owes per
+02-architecture.md's A6 text: sorted-name SET EQUALITY over advertised tools vs a hand-written
+literal (40 names, never imported from `server.ts`) — replacing `REQUIRED_TOOLS`'s
+`toBeGreaterThanOrEqual(10)` length floor, which let a rename of every tool stay green; per-tool
+assertion rows for the two v23 tools (`workflow_describe`, `workflow_regenerate_diagram`); one
+literal assertion on `server.ts:493`'s script-absence sentence ("The raw workflow script is
+deliberately NOT part of this response"), previously asserted nowhere (`grep -rn "deliberately NOT"
+tests/` was empty pre-this-item). **Status note, not a red-because-unimplemented item:** verified
+that production already conforms on every assertion — `npx vitest run
+tests/integration/mcp-tools-list-schema.test.ts -t IT-102` → all pass. This is a drift-lock
+HARDENING (02-architecture.md's own words: "this is all v23 owes" for A6), with no production code
+delta owed; precedent for a legitimate immediate green in this exact ledger: IT-092's own case 2,
+IT-097 in full. **Primary-source correction for Gate 8's grep pass:** 02-architecture.md:555 states
+`TOOL_NAMES` "declares 39" tools; a direct count of `server.ts:188-242` gives **40** — the literal
+list in both this item's test and the sibling's independent transcription agree at 40; the
+architecture's "39" is stale doc drift, not corrected in this pass (not this instance's send-back
+scope).
+
+### UT-128 — R-1/inv 5: exactly one journal line per SETTLE, even with zero model calls
+- **status:** red
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+**Authored by a sibling Gate 5 dispatch** (see process note above) — not in this instance's original
+six-item scope (02-architecture.md's "Handoff" paragraph names A1/A2/A3/V-D/A5/A6 explicitly; R-1's
+inv 5 is a defensible in-scope read of the same send-back, since Gate 2's Referee call R-1 moved the
+settle-line emitter to the choke point as part of this exact re-run). File:
+`tests/unit/graph-analyzer.test.ts` (new describe block). `grep -n "console.log"
+src/graph-analyzer.ts` returns exactly one hit (inside `_attempt`), so `_settleUnavailable` and the
+boot-sweep's zero-call settle branch persist a terminal row and log nothing — `MODEL_UNMAPPED`
+(this repo's own recurring `composeConfig`-forwarding-gap signature) and `QUEUE_FULL`/the boot-sweep
+exhausted settle are silent today. Scope note (the sibling's own docblock, verified accurate):
+the new `enabled:false` guard settle (UT-124/A2) is deliberately NOT covered here — with no guard
+yet, `enqueue()` on a disabled config still reaches `_attempt` for real, which already logs once
+unconditionally, so a pre-fix assertion on that path could not be red for the right reason; named as
+Gate 6.5+7 coverage debt once A2's guard exists, not silently dropped. Red reason (verified by this
+instance): `npx vitest run tests/unit/graph-analyzer.test.ts -t UT-128` → 3/3 fail, `expected "log"
+to be called 1 times, but got 0 times` on `MODEL_UNMAPPED`, `QUEUE_FULL`, and the boot-sweep
+zero-call settle.

@@ -938,7 +938,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - Independent of every other v23 task and **must not be scheduled last**: rule (4) is the *sole* control over a disclosure the owner has now ruled deliberate (adjudication #1, 2026-09-02 — the escalation is **resolved**, not open). Registration gains **no** new rejection — this is documentation, deliberately not enforcement.
 
 ### TASK-124 — REQ-104's Gate 7.5 real run: an operator edits the analyzer config and the diagram visibly changes with no redeploy
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-085
 - **files:** 08-validation.md, DEPLOY.md
 - **des:** DES-134
@@ -973,3 +973,27 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **des:** DES-122
 - **dod:** Gate 5 writes the RED case FIRST (a guard shipped without a test asserting it is exactly how DES-122 reached Gate 6 unbuilt and unnoticed). With `graphAnalyzer.enabled: true` and NO resolvable `workRoot`, `graphAnalyzer.tools` is forced to `[]` regardless of what the operator configured, and the boot line states the downgrade and its reason. Lands at `server.ts:1462-1475` — the ONE site where every `graphAnalyzer` key defaults — NOT `main.ts`, whose own convention at `:178-183` is "No defaults applied here". Rationale: with no `workRoot` the SDK gateway's `cwd` is `undefined` and that client's docblock records "nothing to enforce against, allow", i.e. no jail for an agent the architecture classifies as running on attacker-influenced input (ADR-016). Narrow exposure (the operator must BOTH set non-empty `graphAnalyzer.tools` AND run with no `workRoot`; the default is `[]`) bounds severity — it does not make an unbuilt guard acceptable.
 - **estimate:** S
+
+### TASK-128 — A1: the `workflow_describe` auth gate must run BEFORE any store read
+- **status:** draft
+- **traces:** ARCH-076, ADR-012
+- **files:** src/server.ts, src/mcp-facade.ts, README.md, DEPLOY.md, tests/integration/workflow-describe-auth-gate.test.ts
+- **des:** DES-125
+- **dod:** IT-101's four-row parameterized route oracle green, `{authEnabled:false} → 200` FIRST per 02-architecture.md's handoff. Today rows 3a/3b return **404 instead of 401**, which proves the gate does not run before the store read — an unauthenticated caller learns whether a name exists. Per ADJ-A1 the gate is at the TRANSPORT, a single projection, loopback-exempt. README/DEPLOY edits land in this task, not as a follow-up.
+- **estimate:** M
+
+### TASK-129 — A2/A3/A10: the analyzer must not call the gateway when disabled, must not strand a pending row, and must stop describing what it no longer does
+- **status:** draft
+- **traces:** ARCH-079, ARCH-085
+- **files:** src/graph-analyzer.ts, tests/unit/graph-analyzer.test.ts
+- **des:** DES-127, DES-131
+- **dod:** UT-124 (4 cases incl. a prior `ready` row surviving a disabled `enqueue()` — inv 11's latent-clobber text), UT-125 and UT-128 green. A2: the guard plus the moved write, so `enabled:false` never reaches `_attempt` at ANY entry point. A3: the closure handler, whose third assertion is that **the next enqueued job still runs** — a boot sweep that strands the queue is not a fix. A10: delete the false comment at `graph-analyzer.ts:176-179`.
+- **estimate:** M
+
+### TASK-130 — A4/A5/V-D: the diagram vocabulary is one declaration, and the projection is total over {row} × {analyzerEnabled}
+- **status:** draft
+- **traces:** ARCH-080, ARCH-085
+- **files:** src/workflow-view.ts, src/server.ts, src/trigger-bindings.ts, rwe.config.example.json, tests/unit/workflow-describe-projection.test.ts, tests/unit/diagram-vocabulary-consistency.test.ts
+- **des:** DES-129, DES-130, DES-132
+- **dod:** UT-126's two red cells (`unavailable+RETRIES_EXHAUSTED × disabled`, `pending × disabled`) and UT-127 green. A5: the vocabulary becomes an export the shipped prompt AND `rwe.config.example.json:59` are interpolated from, so a membership assertion can hold over both — plus delete the false comment at `server.ts:299-300`. A4: the two deleted lines and the UT-116 re-point. The four green pins in UT-126 stay as regression guards; do not weaken them to make the two red cells pass.
+- **estimate:** M

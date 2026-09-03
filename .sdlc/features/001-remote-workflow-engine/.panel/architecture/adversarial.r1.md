@@ -1,318 +1,486 @@
 # Architecture panel — Adversarial group (Security × Scalability × Testability), round 1
 
-**Iteration**: v23 (REQ-101..106) — `workflow_describe`, agent-drawn diagram, config-separated analyzer,
-skeleton retirement, AUTHORING.md.
-**Lens**: adversarial trio. Each section argues its own lens; §6 states where the three lenses fight
-each other and how I break the tie. Karpathy simplicity-first is the tie-breaker: minimum architecture
-that closes the requirement, nothing speculative.
+**Iteration**: v23 (REQ-101..106) — **Gate 2 RE-RUN** for the Gate 8 send-back at `d294880`
+(`send_back: ["architecture","tests","impl"]`, `arch_consistent:false`, 3 HIGH / 3 MED / 4 LOW).
+**This file supersedes the pre-send-back `adversarial.r1.md`** for the same iteration; the earlier
+proposal argued ARCH-077..086 into existence, this one argues what must *change* in them now that
+the code exists and ten deviations are on the table.
+
+**Scope taken.** The reviewer assigns Gate 2 the **A1 decision** plus the **four ARCH/ADR
+amendments (A7–A10)**, and Gates 5/6 the rest. I honour that split, but architecture still owes
+Gates 5/6 an *invariant to test against* for **A2, A3, A5, A6** — a Gate-5 RED row with no
+architectural oracle is how this ledger got here. So each of those gets a one-line invariant, an
+owning-gate tag, and nothing more. I also file **three items no panel filed** (V-A, V-B, V-C).
+
+**Lens.** Three lenses that trade off: (a) security, (b) scalability/performance & consistency,
+(c) testability. §5 is where they fight; Karpathy simplicity-first is the tie-breaker — the minimum
+architecture that closes the deviation, nothing speculative.
 
 ---
 
-## 0. Altitude call (do this first, per the panel brief)
+## 0. Altitude call (per the panel brief, done before anything else)
 
-`tech_stack` describes a Node/TS HTTP+JSON-RPC server, SQLite (WAL, better-sqlite3), an auth subsystem,
-a sandbox, a scheduler — **a conventional system**. It *also* describes `agent()` dispatch through two
-GatewayClients into real LLMs, a curated tool surface, prompt/harness records — **an AI-agent system**.
-So both altitudes apply, and they apply to *different parts* of v23.
+`tech_stack` describes a Node/TS JSON-RPC-over-HTTP server, better-sqlite3 stores, an OAuth2/OIDC
+auth subsystem, a `node:vm` sandbox, a scheduler — **a conventional system**. It *also* describes
+`agent()` dispatch through two `GatewayClient` implementations into real LLMs, a curated tool
+surface, and — new in v23 — **the engine itself as an LLM consumer for an internal control
+surface**. So **both altitudes apply, to different parts of this send-back**:
 
-The thing that makes v23 architecturally novel, and which every lens below turns on:
+- **System altitude** owns A1 (route authorization), A3 (async lifecycle, slot accounting), A4
+  (request amplification), A10 (row state machine / crash consistency), V-B (per-process vs
+  per-deployment bounds).
+- **Agent altitude** owns A2 (script egress to a provider is the thing `enabled:false` exists to
+  stop), A5 (prompt-vocabulary vs gate-vocabulary drift — a *replaceability* property of a
+  model-authored artifact), A7 (the allowlist **is** ADR-015's security audit input), and the
+  honest-absence discipline that A1's owner decision put in the requirement.
 
-> **v23 is the first iteration where the engine itself is an LLM consumer for an internal control
-> surface.** Until now every agent call was *the user's workflow* running *the user's prompt*, and the
-> engine was the referee. The analyzer (REQ-102/104) is the engine calling a model **on attacker-
-> influenced input** (an author's script) and then **publishing the model's output to other
-> principals** (REQ-101) as if it were engine-authored fact.
-
-That inverts the trust direction the whole codebase is built around. Concretely, at agent altitude:
-non-determinism, prompt injection, honest absence, cost, and model replaceability are now *engine*
-properties, not workflow properties. At system altitude: a new async job, a new table, a new read
-projection, a new config block — all of which land in this ledger's two best-documented defect classes
-(the `composeConfig()` wiring gap; the "deletion isn't finished while something still describes the
-deleted thing" gap).
-
-Everything in the lens template about JWT forgery / brute force / distributed failure counters is
-**not** this iteration's surface and I do not force it. The real v23 attack surface is: prompt injection
-via author scripts, the diagram as an exfiltration channel around REQ-100's mask, cost amplification via
-registration, and injection-into-renderer (ANSI/terminal escapes, DOM) via a model-authored string.
+**What I deliberately do not force.** The lens template names JWT forgery, brute force, distributed
+failure counters and timing attacks. None of those is this send-back's surface: the token path
+(v15) is untouched by v23, and no failure counter is distributed. The one template item that *is*
+live is **unauthenticated enumeration**, and it lands squarely on A1. Forcing the rest would spend
+the panel's credibility on machinery nobody asked for — the same discipline REQ-102's "no degraded
+fallback" applies to the product.
 
 ---
 
 ## 1. Summary
 
-Six components, one new table, one new config block, no new subsystems.
+The ten deviations are not ten problems. They are **three structural mistakes plus a documentary
+habit**, and the architecture of record should be amended to say so rather than patched ten times:
 
-1. **`DiagramStore`** — `workflow_diagrams(name, version, status, diagram, note_code, generated_at,
-   inputs_fp, PRIMARY KEY(name, version))`, in the existing `catalog.db`. `workflow_versions` stays
-   append-only/immutable (ADR-009); the diagram is *derived*, mutable, and therefore must not live in
-   the immutable row. Keyed by `(name, version)` so REQ-102's "never served against a different
-   version" is a **schema property**, not a code discipline.
-2. **`TriggerBindings` aggregator** — one pure-ish reader `getTriggerBindings(name)` over the existing
-   schedules / webhooks / continuations tables, returning a normalized snapshot + a `bindingsFp`
-   fingerprint. **Two call sites, one function**: it feeds the analyzer at generation time and serves
-   the live-bindings field at describe time. One function is what stops the generated view and the
-   served view of triggers from drifting (the same anti-drift argument REQ-101 makes for the mask).
-3. **`GraphAnalyzer`** — a *dedicated internal invocation path* straight onto `GatewayClient.invoke`
-   (not `AgentExecutor`, see §2.4), bounded by its own `timeoutMs`/`retries` from config, single-flight
-   with concurrency 1, no secret resolution, no seeded workspace, empty tool surface by default.
-4. **`diagram-gate.ts`** — a **pure** function
-   `gateDiagram(raw, allowedLabels, limits) -> {ok:true, diagram} | {ok:false, reason: GateReason}`.
-   This is the security control. Everything the model authored passes through it; nothing else does.
-5. **`projectWorkflowDescribe()`** — one projection in the `workflow-view.ts` family, consumed by
-   **both** the `workflow_describe` MCP tool and the auth-gated `GET /api/workflows/:name/describe`
-   route that replaces the dying `/skeleton` route. REQ-101 explicitly demands the two masks cannot
-   drift; the only structural way to guarantee that is one function and one test asserting both call
-   sites' output are the same object.
-6. **`graphAnalyzer` config block** threaded through `composeConfig()` — with a wiring-test row and a
-   Gate 7.5 real-run, because REQ-104's acceptance *names this engine's recurring wiring defect*.
+1. **A surface was placed where it cannot express the decision it must make.** `GET
+   /api/workflows/:name/describe` sits in the `/api/*` dashboard dispatch block
+   (`server.ts:1918-1930`), which is structurally incapable of an authorization decision — the only
+   three routes that make one (`/assets/blob`, `/assets/manifest`, `/mcp`) live in the
+   `authHandlers` block at `:1722` and are the sole users of `dbindExempt` (`:1719`). ARCH-083 says
+   the route is "auth-gated exactly as the route it replaces"; the replaced `/skeleton` route *did*
+   branch (`git show ebd530d^:src/server.ts`). **The deviation is a placement fact, not an
+   oversight of an `if`.** → **P1**.
+2. **A bound that one throw can lose is not a bound, and a flag checked at call sites is not a
+   control.** A3 (`_runJob` has no `finally`; `setImmediate(() => { void job(); })` at `:127`) and
+   A2 (`sweepAtBoot` never reads `_config.enabled`) are the same shape: an invariant asserted in
+   prose at the *callers* instead of enforced at the *choke point*. ARCH-079 inv 2 and ARCH-085's
+   "`enabled:false` is a first-class state" are both currently unfalsifiable. → **P2, P3**.
+3. **A constant claimed three consumers and got one.** A5's 13 glyphs are hand-typed at
+   `diagram-gate.ts:5/22`, `server.ts:306-311` and `rwe.config.example.json:59`, with a *false*
+   "third consumer" comment at `server.ts:300` — one file away from IMPL-174, which paid for exactly
+   this defect class (`UNBOUND_ENTRY_LABEL`) one round ago. Same shape as A6, where the drift-lock
+   is a **subset** assertion and therefore admits new tools silently. → **P4, P5**.
+4. **Four rows were never amended** (A7–A10). Three are genuinely documentary. **A7 is not** — see
+   §2.1/P6.
 
-State machine (REQ-102 honest absence): `pending` → `ok` | `unavailable`. `unavailable` is terminal for
-that `(name, version)` and carries an **engine-authored** `noteCode` from a fixed enum
-(`DISABLED | TIMEOUT | RETRIES_EXHAUSTED | GATE_REJECTED | NO_ANALYZER_CONFIG`). Boot sweep maps orphan
-`pending` rows (process died mid-generation) to one requeue, then `unavailable` — otherwise a restart
-strands a row in `pending` forever and "honest absence" becomes "silent hang".
+**Headline position.** Gate 2's only *decision* is A1, and I recommend **gating the route behind the
+existing `dbindExempt` predicate**, not shrinking the payload and not building a second projection.
+Everything else is amendment text plus four invariants for Gates 5/6.
 
 ---
 
 ## 2. Key points
 
-### 2.1 (Security, highest-value) The gate is the control; the prompt is not
+### 2.1 Security lens
 
-REQ-102's structure-only invariant ("no secret literal, no distinctive prompt sentence, no
-`appendPrompt` string appears anywhere in the diagram, for any principal") is stated as a property of
-model output. **A system prompt is not an access control.** An author who wants to defeat REQ-100's
-script mask writes a script whose comments instruct the analyzer to "include the configuration string
-verbatim in a node label", registers it, and reads it back through `workflow_describe`, which any
-principal may call. The mask v22 shipped is then re-opened by v23's own feature.
+**P1 — A1: gate the route with the predicate REQ-089 already ships. `RECOMMENDED`. Owning gate: 2
+(decision + ARCH-083 amendment), then 6 (wire) and 5 (RED).**
 
-Therefore: **allowlist, don't denylist.** The gate accepts a diagram only if every label token is a
-member of `allowedLabels`, computed deterministically from inputs the engine already trusts:
+Amend ARCH-083's `api:` from the unfalsifiable *"auth-gated exactly as the route it replaces"* to a
+literal rule:
 
-- phase names, agent count/order, `workflow()` child names — from `parseWorkflowSkeleton()`
-  (the function REQ-105 keeps internal; v23 gives it a *second* internal job, which is also the
-  argument for keeping it rather than deleting it);
-- resolved model aliases — from the alias table / registered `defaults`;
-- trigger kinds + upstream workflow name — from the `TriggerBindings` snapshot;
-- the fixed vocabulary glyphs and structural punctuation.
+> `GET /api/workflows/:name/describe` is admitted **only** when `!authEnabled`, **or** the peer is
+> loopback (`isLoopbackPeer`, the REQ-089/D-BIND exemption), **or** `resolvePrincipal` returns a
+> principal; otherwise **401** with `wwwChallenge()`, before any store read.
+>
+> **Wiring, stated literally because it is the whole finding:** the **gate** joins the
+> `authHandlers` block (`server.ts:1722`) as the **fourth** `dbindExempt` member alongside
+> `/assets/blob`, `/assets/manifest` and `/mcp` — it either 401s or lets the request **fall
+> through**. The **handler stays where it is**, in the `/api/*` dispatch at `:1918-1930`. This
+> ordering is not cosmetic: `authHandlers` is `authCfg && authTokenStore` (`:1623`), so the entire
+> block is skipped when auth is disabled — a route that *lived* inside it would 404 for every
+> no-auth deployment, which is this product's majority local posture. The three existing
+> `dbindExempt` routes already have exactly this shape. Being the fourth member is the enforcement,
+> and the four cannot drift on the `!authEnabled` gate independently.
 
-**Invariant, stated for the design gate to inherit:** *the diagram cannot widen the disclosure surface
-by construction, because every token it may contain is already served on a masked surface today.* A
-secret embedded in a *phase name* still passes — but phase names are already returned to non-owners by
-today's masked `workflow_get`, so that is pre-existing exposure, not a v23 regression. It belongs in
-AUTHORING.md (REQ-106) as an authoring smell, not in the gate.
+Why this and not the alternatives:
 
-### 2.2 (Security, novel) The "human-readable note" is a second output channel — close it
+- *Shrink the response for the unauthenticated surface* — this is the second masking projection the
+  reviewer forbids, and REQ-101's own words ("the two masks cannot drift apart") forbid it too. It
+  is also **dishonest by the iteration's own rule**: an anonymous caller receiving `triggers: []`
+  when three triggers are bound is a silent lie, and owner decision A1 (`diagramStatus`,
+  `diagramNote`) established that a withheld thing must *say* it is withheld. A `triggersWithheld`
+  marker is a second response shape, i.e. the forbidden thing wearing a hat.
+- *Shrink the single projection for everyone* — deletes `triggers`/`versions`/`owner` from
+  `WorkflowDescribeView` and breaks REQ-101's and REQ-103's literal field lists.
+- *Accept it as pre-existing `/api/*` posture* — the counterweight is real (`/api/runs/:id` already
+  serves `principal`), but the shipped object is **not** the ratified non-owner projection:
+  `EXPECTED_NON_OWNER_KEYS` (`workflow-view.ts:59-62`) contains no `triggers`, `versions` or
+  `diagram`, so DES-132's own justification does not describe what it shipped.
 
-REQ-102 requires `diagramStatus` plus "a human-readable note". If that note ever carries the analyzer's
-own words, or a raw provider/CLI error string, then **injection routes around the gate entirely**: the
-attacker makes the analyzer fail in a controlled way and smuggles text out through the error path,
-which by construction is the path that skips diagram validation.
+The incremental anonymous disclosure, ranked: **`triggers[]`** — raw cron expression + `tz` +
+per-binding `enabled` + chain `upstreamWorkflow` (`trigger-bindings.ts:18-21`) is *operational
+timing intelligence and internal topology*, and it is the one field with no anonymous precedent
+anywhere in this codebase; then **`diagram`** (agent count, resolved model per agent, fan-out,
+phases); then **`versions[]`** and **`owner`**, both of which have weaker claims — `catalog.list()`
+already serves `versions`/`channels`/`description`/`params` anonymously at `/api/workflows`
+(`workflow-catalog.ts:598`), and `owner` is an email already reachable via `/api/runs/:id`'s
+`principal`. **I do not inflate the `owner` finding**: its real security weight is that engine
+authorization is owner-email-valued, so anonymous *per-workflow* attribution improves an attacker's
+enumeration of the exact strings that appear in authorization decisions — an increment in
+enumerability, not in kind.
 
-Rule: **everything analyzer-authored passes the gate; everything else is engine-authored.** The note is
-rendered from the fixed `noteCode` enum above. Provider error detail goes to the journal/log (operator
-altitude), never into a `workflow_describe` response. This also makes the note assertable literally in
-tests, which Round v23's carried-in rule 1 demands ("external contracts must be asserted literally,
-never derived").
+**Named cost, and it needs an owner ruling (`ADJ-A1`).** REQ-086's non-goal states the read-only
+dashboard stays unauthenticated (documented trusted-network caveat). P1 **partially retires that
+posture for one route**. Concretely: under `auth.enabled:true` on a non-loopback bind, a *remote*
+browser's workflow-detail view goes dark; a browser on the engine host or over an SSH tunnel
+(DEPLOY's own operator posture) is loopback-exempt and unaffected. Blast radius is exactly one view,
+because A4 deletes the only other consumer. This is the same degradation shape v22's H2 already
+established at `server.ts:1241` (`authEnabled ? [] : parseWorkflowSkeleton(...)`) — and the fact
+that the **sibling route applies the opposite rule to the same class of script-derived structure**
+is what makes the current state a deviation rather than a policy.
 
-### 2.3 (Security) The vocabulary is Unicode, so specify a codepoint allowlist
+**Contingent doc edits, same round, or the fix is not done:** `README.md` §使用範例 (~:176,
+「任何人都能問」) and DEPLOY's description of the HTTP describe route both become false.
 
-`◇`, `⟲`, `──┬──▶` are not ASCII. Two failure modes follow, in opposite directions:
+**P2 — A2: put the `enabled:false` guard at the choke point, not on the branches. Owning gates: 5
+then 6. This is a deliberate deviation from the reviewer's prescribed fix, flagged as such.**
 
-- Too permissive → the model emits ANSI/CSI escapes (`\x1b[…`), C0 controls, RTL overrides, or
-  zero-width characters. An MCP client renders the diagram in a terminal; the dashboard renders it in
-  the DOM. This is injection into the *renderer*, independent of content leakage.
-- Too restrictive → someone "fixes" it later with a naive strip-non-ASCII and destroys the vocabulary.
+The reviewer prescribes gating `sweepAtBoot`'s requeue branch. That closes today's hole and leaves
+the shape that produced it: `_config.enabled` consulted by *callers*. `_startJob` is the single
+point at which this class decides to spend a model call — reached from `enqueue` (registration),
+from `regenerate` via `enqueue`, and from `sweepAtBoot` — so:
 
-So define **one exported constant** `DIAGRAM_CODEPOINTS` (printable ASCII + the named box-drawing /
-vocabulary glyphs + newline) used by three consumers: the gate, the *default* `graphAnalyzer.systemPrompt`,
-and the AUTHORING/tool-description text. Plus hard `maxBytes` and `maxLines` caps (an unbounded
-model-authored string is stored, served on every describe, and rendered in every home card).
+> **ARCH-079, new invariant:** no `GraphAnalyzer` code path reaches `this._gateway` when
+> `config.enabled === false`; the guard is at `_startJob`, so a future fourth caller is covered by
+> construction. The guard **settles** — it never returns leaving a `pending` row, because ADR-017's
+> "`pending` always settles" is the property that makes `unavailable` honest rather than lost.
 
-Dashboard rendering must stay `textContent` into a `<pre>` — `dashboard-page.ts` is already
-textContent-only by convention (KP-12) but has `innerHTML=''` clear patterns nearby; the diagram is the
-first *model-authored* string to reach that renderer, so this needs an explicit design line and a test.
+Two facts constrain the settle value, both verified: (i) `note_code`'s CHECK constraint
+(`workflow-catalog.ts:240-241`) admits eight codes and **`DISABLED` is not among them** —
+`DISABLED`/`NOT_GENERATED` are read-synthesized only (`graph-analyzer.ts:14-21`, applied at
+`workflow-view.ts:131-133` for the *no-row* case). So the guard settles `RETRIES_EXHAUSTED` (the
+reviewer's constraint-safe choice, and the treatment `sweepAtBoot`'s second branch already gives),
+**or** we add `DISABLED` to the enum + a migration — which I do not recommend, for one code's worth
+of prose. (ii) `_settleUnavailable` already refuses to clobber a `ready` row (`:194-199`), so the
+guard inherits that protection for free.
 
-### 2.4 (Scalability + observability) A dedicated internal path, not the run pipeline
+**Residual this creates, and it must be pinned rather than left as an accident:** with the guard at
+`_startJob`, an `enabled:false` *regenerate* on a `ready` row would run `putDiagramPending` (nulling
+the diagram) before the guard settles. That path is currently unreachable **only because
+`mcp-facade.ts:462-464` short-circuits to `ANALYZER_DISABLED`** — which means that short-circuit is
+now load-bearing and needs its own assertion, not a comment.
 
-Tempting reuse: run the analyzer through `AgentExecutor` and get budget, redaction, and transcript for
-free. **Reject** — for a concrete product reason, not purity:
+**P6 — A7 is a security finding, and I escalate it from the reviewer's LOW to MED. Owning gate: 2.**
 
-- analyzer invocations would appear in run listings and **corrupt REQ-075's per-workflow success-rate
-  and average-execution-time card metrics**, and pollute `workflow_status`;
-- they would consume `maxConcurrentRuns` admission slots (REQ-054) meant for user work;
-- they have no owner principal, no workspace seed, and no params contract — every `AgentExecutor`
-  concept is inapplicable.
+ARCH-079 inv 6 defines the allowlist as `parseWorkflowSkeleton(script)` ∪ model aliases ∪ trigger
+kinds/upstream ∪ `DIAGRAM_CODEPOINTS`. The code adds four members it does not name —
+`meta.phases[].title`, `'default'`, `'model:param'`, `UNBOUND_ENTRY_LABEL`
+(`graph-analyzer.ts:231/233/234/241`) — and `DIAGRAM_CODEPOINTS` is not a label member at all, it is
+a separate codepoint pass. **ADR-015's entire security claim — "every token the diagram may contain
+is already served on a masked surface today" — is audited against that membership list.** An
+un-amended list means an unaudited claim, which is a different thing from stale prose.
 
-Instead: `GatewayClient.invoke()` directly, with the analyzer's **own** bounds (REQ-104 supplies
-`timeoutMs` and `retries`), its own single-flight queue (`concurrency 1` default), and **one journal
-line per analyzer run** so the engine's own LLM spend is observable rather than invisible. Invisible
-engine-initiated model spend is a self-sustainability defect at agent altitude, and this engine already
-has the scar (D-G8-4: a default gateway path with no bound of its own).
+I performed the re-audit; **the claim survives**, and the amendment must record *that*, not merely
+the four names: `meta.phases[].title` is served to non-owners today (`WorkflowPublicView.phases`,
+`workflow-view.ts:46`, owner adjudication #1 一律公開); `'default'`, `'model:param'` and
+`UNBOUND_ENTRY_LABEL` are **engine-authored constants**, not author-controlled, so they cannot carry
+script-derived text. Amend ARCH-079 inv 6 to the true membership list, move `DIAGRAM_CODEPOINTS` out
+of it into the shape pass, and append: *"ADR-015's claim is re-audited whenever this list changes;
+adding an author-controlled member requires that member to be independently non-owner-visible."*
+That last clause is the only new rule I propose, and it exists so the next widening cannot be a
+one-line diff with no security thought.
 
-Isolation, non-negotiable: no `SecretValueProvider`, no provisioned secrets in env, no seeded workspace,
-no CLAUDE.md-reachable cwd (the workroot-guard hazard already recorded in memory), tools `[]` by default.
+**Held, re-verified by me, filed here so the consolidator does not re-derive it:** the webhook HMAC
+`secret` and webhook `id` cannot reach the analyzer prompt (`trigger-bindings.ts:13` type +
+`server.ts:1457` fresh-`{enabled}` remap) — this matters *more* than the diagram gate, because the
+gate protects the diagram while the prompt goes to the provider. `script` is absent from
+`WorkflowDescribeView` as a **type** (`workflow-view.ts:87-105`). The gate is an allowlist and never
+a transformer (`diagram-gate.ts:33-69`). v22's H2 is still closed (`server.ts:1241`).
 
-### 2.5 (Scalability + REQ-104) Fingerprint = script ‖ bindings ‖ analyzer config
+### 2.2 Scalability / performance / consistency lens
 
-`inputs_fp = sha256(script ‖ bindingsSnapshot ‖ analyzerFingerprint)` where `analyzerFingerprint`
-covers `model`, `systemPrompt`, `tools`, and the vocabulary constant.
+**P3 — A3: the release is the invariant, not the happy path. Owning gates: 5 then 6.**
 
-This single field does three jobs and adds no machinery:
-- **REQ-104's acceptance survives caching.** A cache keyed on script alone would return the pre-edit
-  diagram after an operator changes `systemPrompt`/`model` — i.e. the acceptance ("re-register → the
-  diagram visibly changes with no redeploy") would fail *because of* an optimization. Including the
-  analyzer fingerprint makes the config edit a cache miss by construction.
-- **REQ-103 staleness.** At describe time, recompute `bindingsFp` and compare: mismatch → serve the
-  diagram with `generatedAt` + `diagramStale: true` alongside the **live** bindings field. This takes
-  REQ-103's explicitly-offered second branch, and it is the minimum design: the alternative (regenerate
-  on every schedule/webhook/chain mutation) couples three subsystems to the analyzer, multiplies LLM
-  cost by trigger-churn, and buys nothing the stale flag doesn't.
-- **Idempotence.** Re-registering byte-identical inputs under the same `name` reuses the stored result
-  instead of making a second model call. Note the tension with REQ-102's letter ("a new version → its
-  diagram is generated fresh"): the new version still gets **its own** `workflow_diagrams` row and the
-  prior version's row is untouched, so the served-per-version guarantee holds either way. If the panel
-  reads "generated fresh" as *must re-invoke the model*, **drop the skip** — it saves one call on a rare
-  path, while the fingerprint's other two jobs (REQ-104 cache-bust, REQ-103 staleness) are the load-
-  bearing ones.
+`_runJob` (`graph-analyzer.ts:301-344`) releases `_pendingKeys`/`_runningCount`/`_queue` at
+`:337-343`, *after* `getTriggerBindings` at `:304` (three separate SQLite files) and three
+`putDiagramResult` calls (`:326/329/334`, `.immediate()` write lock). `_attempt` catches only around
+`gateway.invoke` (`:263-267`). Amend **ARCH-079 invariant 2** to say what a bound means:
 
-**Explicitly rejected (Karpathy):** cross-workflow content-addressed dedupe by script hash. It saves
-one model call in a scenario that barely occurs (registrations are rare, one call each), and it creates
-a cross-principal oracle — principal B learns their script is byte-identical to principal A's by
-observing an instant `ok`. Scalability lost this one to security, and simplicity agreed. See §6.
+> Single-flight `concurrency:1` + `maxQueueDepth` is a bound **only if the slot is released on every
+> exit path**: the releases live in a `finally`, the catch settles `unavailable` and emits the
+> journal line, and the production scheduler attaches a rejection handler (`setImmediate(() => {
+> job().catch(…) })`) — a `void promise` on an engine-owned path is prohibited. `QUEUE_FULL` is
+> honest absence **only** under this invariant; a wedged slot reports itself with the same string,
+> so a lost release is *indistinguishable from correct operation* at the surface.
 
-### 2.6 (Testability) Three seams, and the two tests that actually protect the iteration
+That last sentence is the severity argument and it is why I concur with the adjudication to HIGH:
+the failure disguises itself as the design.
 
-Seams, all matching existing convention (`ServerConfig.proxyManager`, `queryImpl`, `Clock`):
-`GatewayClient` injected into `GraphAnalyzer`; `Clock` injected for timeout/`generatedAt`; and a
-`schedule` seam so tests run the job **inline/deterministically** instead of racing an async worker.
-An async-by-default job with no run-now seam produces flaky tests, and flaky tests get deleted.
+**V-A (original, not filed by either panel) — the crash-loop is bounded, and the thing that bounds
+it is unwritten.** `deploy/rwe.service` runs `Restart=on-failure` (DEPLOY.md:500). A throw on the
+job path under Node's default `--unhandled-rejections=throw` (no `unhandledRejection` handler
+anywhere in `src/`) kills the process; systemd restarts; `sweepAtBoot` runs again. This does **not**
+amplify model calls — because `sweepAtBoot` calls `putDiagramPending(name, version, stamp)`
+*before* `_startJob` (`:172-179`), so the next boot finds `generatedAt < bootInstant` and takes the
+**zero-model-call** settle branch (`:180-188`). The per-row lifetime budget is therefore
+`1 + retries` in-process plus exactly one post-crash requeue. **This ordering is load-bearing and
+no ARCH row states it** — a future refactor that moves the stamp after the requeue converts a
+bounded cost into a restart-driven billing loop. Pin as ARCH-079 invariant 9: *"the boot sweep
+stamps its attempt marker before scheduling the requeue; the stamp is what makes the requeue
+at-most-once across restarts."* Cost: one sentence. (I record this as a **corrected** claim: my
+first reading of A3 assumed an unbounded crash-loop. It is not one, and the panel should not carry
+that overclaim forward.)
 
-The two tests that carry the iteration:
+**V-B (original) — ARCH-079's bounds are per-*process*, and the document reads as if they were
+per-*deployment*.** `_runningCount`, `_queue` and `_pendingKeys` are in-memory; `workflow_diagrams`
+is durable and shared. DEPLOY.md:882 already states single-instance-only for the self-update
+mechanism, but ARCH-079 says "concurrency: 1" with no such qualifier, and this engine has a standing
+temptation toward multi-port instances over one work root. Two processes on one catalog DB would
+each run one job, double the bound, break DES-127 B4 single-flight, and race `putDiagramResult`.
+**I do not propose a distributed lock** — that is exactly the speculative machinery this slice spent
+its budget avoiding. I propose one clause in ARCH-079: *"these bounds are per-process; the durable
+row is the only cross-process state and it has no lock. Multi-instance over one catalog is out of
+scope (DEPLOY §multi-instance)."* Writing the constraint down is the whole fix.
 
-- **`gateDiagram` is pure** → the security invariant (REQ-102/A3) is unit-testable with *zero* model
-  involvement: feed a hostile "diagram" containing the secret, assert rejection. The acceptance test
-  that registers a secret-bearing script and calls the real analyzer still exists, but it is not the
-  only line of defense — and it must assert the *literal* absence string, per carried-in rule 1.
-- **A mechanical REQ-105 guard.** REQ-105's real risk is the ledger's most-repeated defect (nine
-  instances): the code is deleted, the *descriptions* survive. Make it executable — a test that greps
-  `src/` for `skeleton` and fails on any occurrence outside an explicit internal allowlist
-  (`workflow-meta.ts`, `dashboard.ts` layout, the auth-gated `/api/runs/:id/dag` path), plus an
-  assertion that no MCP tool description or JSON schema string in the server's tool list contains the
-  word. That converts a review-discipline problem into a CI failure.
+**P7 — A4: delete `renderMiniPreviewAsync`, do not re-point it. Owning gate: 6.** ARCH-084 says the
+home-card mini-preview "drops its skeleton fetch"; `dashboard-page.ts:227-231` fetches `/describe`
+and its body is `if(!s||!s.diagram) return;` on every branch — a fetch whose response is
+unconditionally discarded, called at `:243` per named card under `setInterval(render,3000)`
+(`:496`). That is **20N requests/minute/tab**, and each one performs the describe read: three
+separate synchronous SQLite file reads in `getTriggerBindings` plus a `RunStore.getRun` join for
+chain upstream, on the single Node thread that also dispatches `/mcp` runs. **The security and
+scalability lenses converge here**: A1 removes the anonymous vector, A4 removes the amplifier, and
+either alone leaves the other half. Both panels reached the same two-line fix independently; I add
+only that UT-116's oracle re-points to the *absence* of `/skeleton`.
 
-Third: the **`composeConfig()` wiring row**. `graphAnalyzer` must be forwarded in the object literal and
-asserted in `compose-config-v2-wiring.test.ts`. REQ-104 additionally (and correctly) refuses to accept a
-unit test as proof and demands a Gate 7.5 real run — keep that, because the wiring defect class is
-precisely one that passes unit tests.
+**P8 — A10: state the window; the "one-line SQL fix" is not one line, and I withdraw it. Owning
+gate: 2 (ADR-017 amendment) + a comment correction.**
 
-### 2.7 (Lifecycle) The new table must not become the next stale second source
+DES-127 B5 ("a failure must never clobber a prior `ready` row") is an **in-memory compensation**
+(`_runJob`'s `priorRow`), not an invariant. `putDiagramPending`'s `ON CONFLICT … SET
+status='pending', diagram=NULL, note_code=NULL, generated_at=excluded.generated_at,
+bindings_fp=NULL` (`workflow-catalog.ts:249-258`) destroys the prior row on disk; on
+`regenerate → crash → boot sweep`, `sweepAtBoot` requeues with `priorRow = null` (`:176-179`) and a
+failed attempt loses a previously-good diagram permanently. The in-line comment there — *"a
+still-pending row was never 'ready' — nothing to restore on failure"* — is **false** for that
+sequence.
 
-Delete `workflow_diagrams` rows on `workflow_deregister` and on `maxWorkflowVersions` pruning (v22
-ARCH-071 already prunes versions). Otherwise v23 ships a derived store that outlives its source — the
-exact defect class this ledger keeps re-recording. Cheapest correct form: `ON DELETE`-equivalent cleanup
-inside the same transaction as the version prune, or a foreign key with cascade if the existing
-migration tolerates it.
+I initially favoured "stop nulling `diagram` on conflict." **That is wrong as costed**, and the
+structural reason is the finding worth recording: **`generated_at` serves two state machines at
+once** — provenance stamp on `ready`/`unavailable` rows, and boot-sweep attempt marker on `pending`
+rows, which is precisely what `sweepAtBoot`'s three branches discriminate on. Preserving a prior
+diagram through `pending` therefore needs `prior_*` columns (or a separate marker column) plus a
+migration, and a `pending` row carrying an old `generated_at` would be mis-read by the next sweep as
+"stamped by a dead process" and settled over. So: **primary = the reviewer's option** (state the
+window in ADR-017, correct the false comment), **alternative = the schema variant, honestly costed
+as a migration**, deferred. Amend ADR-017 to say the durable guarantee is *"`pending` always
+settles"*, and that *"a prior `ready` diagram survives a failure only within one process lifetime;
+across a crash it is lost — the row is `unavailable`, never stale-but-wrong,"* which is at least
+consistent with owner decision A1.
+
+**Recorded, not architected around:** S-1 (every registration costs an LLM call, ceiling-less
+catalog). With P1 landed, the cost surface is bounded by *authenticated principals* × ADR-014's
+`maxWorkflowVersions`, and `workflow_regenerate_diagram` is owner-gated. No rate limiter. This is
+conditional on P3 — the reviewer's own §4.4 note is right that a bound one throw can lose is not a
+bound.
+
+### 2.3 Testability lens
+
+**P4 — A5: one exported ordered constant, interpolated, asserted at both copy sites. Owning gates:
+5 + 6.** Export the ordered glyph list from `diagram-gate.ts`, interpolate it into the shipped
+default `systemPrompt`, delete the false "third consumer" comment at `server.ts:300`, and add one
+membership assertion covering the prompt string **and** `rwe.config.example.json:59` (a file read,
+which is the point — the config example is the copy that rots silently). 08-validation ROUND 3's own
+live failure mode is `GATE_REJECTED_SHAPE`/`gateFail:"codepoint"`, i.e. prompt-vocabulary vs
+gate-vocabulary disagreement, so this is not hypothetical drift.
+
+**A5 collides with REQ-104 and the resolution must be written down, or a careful reader will file it
+as a new violation.** REQ-104 says *"no analyzer harness value is hard-coded in engine source"*, and
+interpolating the vocabulary into the default prompt puts vocabulary in source. The resolution:
+**the default is source; an operator override replaces the prompt wholesale, and the gate constant
+is unchanged either way** — so an override can never *widen* the vocabulary, and an override with a
+wrong vocabulary self-diagnoses as `GATE_REJECTED_SHAPE`. That asymmetry is ADR-015 restated ("the
+system prompt is a hint, the gate is the control") and belongs in ARCH-080's note.
+
+**P5 — A6: the drift-lock is currently a subset assertion, which is why it admitted two tools
+silently. Owning gate: 5.** `tests/integration/mcp-tools-list-schema.test.ts:28-39` lists ten tools
+and neither `workflow_describe` nor `workflow_regenerate_diagram`; the only assertions reaching them
+are generic loops a one-word description would pass. ARCH-082's "**Both** new tool schemas join
+ARCH-051's structured drift-lock" is asserted nowhere, so REQ-101's last clause (a schema-only
+client learns the script is deliberately not in the response) has no test. Amend **ARCH-051**:
+
+> the drift-lock asserts **set equality** between the advertised tool list and the test's literal
+> expectation, not containment — adding a tool without updating the lock must turn the build red.
+> Per the carried-in rule *"a test whose oracle is the code under test cannot fail when the code is
+> wrong,"* the literal list stays in the test and is never imported from `server.ts`.
+
+Plus one literal assertion on `server.ts:493`'s served sentence — today deleting it turns nothing
+red.
+
+**V-C (original) — every seam this design added is a happy-path seam.** ARCH-079 inv 8 introduced
+`schedule` (default `setImmediate`, tests pass `runInline`) precisely so the job runs
+deterministically. But the **failure** path has no seam: there is no injection point that makes
+`getTriggerBindings` or `putDiagramResult` throw, which is exactly why A3 has no test. Generalize it
+in ARCH-079: *"a seam added for happy-path determinism must also admit the failure the invariant
+claims to survive; otherwise the invariant is prose."* Concretely this costs nothing new — `ports`
+and `catalog` are already injected, so the Gate-5 RED row is "a throwing `putDiagramResult`, and the
+*next* enqueued job still runs."
+
+**Testability of P1**, so Gate 5 has an oracle: one parameterized route test over
+`{authEnabled:false}` → 200; `{authEnabled:true, loopback peer}` → 200; `{authEnabled:true,
+non-loopback, no/invalid bearer}` → **401 + `WWW-Authenticate`, and zero store reads**; plus a
+**parity** assertion that the 200 bodies are key-identical to the MCP tool's `result` under the
+existing two-sided `EXPECTED_DESCRIBE_KEYS` literal oracle. The parity assertion is the structural
+guarantee ARCH-081 already claims and currently only exercises on one of the two call sites.
 
 ---
 
 ## 3. Risks
 
-**R1 (HIGH, security).** *Analyzer output is a mask bypass.* Without §2.1's allowlist gate, REQ-100's
-v22 script mask is re-opened by v23's own feature, via author-controlled injection. Mitigation is the
-gate; residual risk is a secret placed in a phase name (already exposed today — document, don't enforce).
+**R1 — P1 partially retires a ratified non-goal (REQ-086: "the read-only dashboard remains
+unauthenticated").** Needs an owner ruling (`ADJ-A1`). Mitigation: loopback exemption preserves the
+documented operator posture; blast radius is one view once A4 lands. *If the owner rules the route
+stays open,* then the honest consequence is that ARCH-083 and ADR-012's masking posture must be
+amended to **say** the describe payload is public-by-decision, and `EXPECTED_NON_OWNER_KEYS` must be
+reconciled with it — the one outcome I will argue against is leaving the documents claiming a gate
+that does not exist.
 
-**R2 (HIGH, security).** *The status note is an ungated output channel* (§2.2). If any provider/model
-text reaches `workflow_describe`, the gate is decorative.
+**R2 — P2's choke-point guard is safe only while `mcp-facade.ts:462-464` short-circuits.** If that
+short-circuit is ever removed, an `enabled:false` regenerate nulls a good diagram before settling.
+Mitigation: assert it (§2.1 P2). This is the *same* class as A10 — a compensation standing in for an
+invariant.
 
-**R3 (MEDIUM-HIGH, security×requirement conflict).** *`graphAnalyzer.tools` is admin-tunable by
-REQ-104's letter.* A tool-enabled agent whose input is attacker-authored script text is an execution
-primitive — with this engine's `defaultAllowedTools` including `Read`/`Write`/`Bash` in some configs,
-that is arbitrary read/write in the engine's own process context, reached by registering a workflow.
-I do **not** unilaterally forbid it (the requirement mandates the key). Proposal: **default `[]`**, a
-loud boot warning when non-empty, and an ADR recording that a non-empty analyzer tool surface is an
-accepted-risk operator decision. Flagged for owner ratification.
+**R3 — P1 edits the request dispatcher**, the file with this iteration's highest defect density.
+Smaller than it first appears: P1 **adds a gate, it does not move a route** (§2.1) — the handler
+stays at `:1918-1930` and the auth block gains a fourth 401-or-fall-through clause using an existing
+predicate pair (`isLoopbackPeer` + `resolvePrincipal`), introducing no new concept. The residual
+risk is the auth-disabled path, and it is the one Gate 5 must assert first
+(`{authEnabled:false} → 200`), because a gate placed one block too deep returns 404 to every
+no-auth deployment. The rejected fallback — threading a resolved principal into
+`handleDashboardRequest` — I like less: it makes an authorization decision reachable from a block
+whose other seven routes do not make one, i.e. it re-creates the condition that produced A1.
 
-**R4 (MEDIUM, security).** *Cost / DoS amplification.* Registration now triggers a model call. Even
-authenticated, a principal can drive unbounded LLM spend by re-registering versions. Mitigations, all
-already-owned mechanisms: concurrency 1 + queue depth cap, the `inputs_fp` no-op on identical inputs,
-`maxWorkflowVersions` as the natural per-workflow ceiling, and the analyzer's own `timeoutMs`. No new
-rate-limiter subsystem — that would be speculative.
+**R4 — A7's amendment could be read as a rubber stamp.** Mitigation: the amendment records the
+re-audit *result* per member and the rule for future widenings, not just the four names.
 
-**R5 (MEDIUM, security, ESCALATED TO OWNER — not decided here).** REQ-101 lists **the owner** in a
-response any principal may call. Owner is an email (`BOOT_BACKFILL_EMAIL` convention), so
-`workflow_describe` becomes a PII/principal-enumeration surface. Masking it would contradict the
-requirement as written, so I raise it rather than architect around it: *should the owner field be
-full-value for all principals, or full for owner/admin and an opaque handle otherwise?* Same posture for
-webhook identifiers in the live-bindings field: per REQ-058 the `/hooks/:id` id is not itself a
-credential (the HMAC secret is), and `webhook_list` returns it — but that is an admin surface, whereas
-describe is universal. Proposal for debate: show trigger **kind** always, and the webhook id masked
-(`****3f2`, reusing the existing `secretFingerprint` idiom) unless caller is owner/admin.
+**R5 — scope creep back into Gates 5/6.** Four of my eight proposals are Gate 5/6 work. Mitigation:
+each carries an owning-gate tag and contributes only an invariant here. Gate 2 must not "fix" A2/A3
+in prose and let Gate 5 skip the RED row — this ledger has a recorded instance of exactly that.
 
-**R6 (MEDIUM, renderer injection).** Model-authored text reaching a terminal and the DOM (§2.3).
-Bounded by the codepoint allowlist + size caps; needs an explicit test, not a convention.
-
-**R7 (MEDIUM, correctness/observability).** *Orphan `pending` after a crash.* Async generation with no
-boot sweep converts "honest absence" into an indefinite hang that looks identical to "still working".
-Boot sweep + a single requeue.
-
-**R8 (MEDIUM, agent-altitude replaceability).** The default `systemPrompt` shipped in
-`rwe.config.example.json` is tuned against one model. Swap `graphAnalyzer.model` to a weaker/local one
-(this deployment's real case — Ollama `qwen2.5:7b`) and the gate rejection rate rises, so the honest-
-absence path becomes the *common* path, not the exceptional one. That is not a bug, but it must be
-observable: count gate rejections in the journal, and DEPLOY.md must say which model class the shipped
-prompt assumes.
-
-**R9 (LOW-MEDIUM, scalability).** `workflow_describe` aggregates catalog + versions + channels + params
-+ diagram + three binding tables. The dashboard home view calls it per card. All reads are local SQLite
-and the engine is single-process by design (no horizontal-scaling requirement exists in this ledger, and
-I will not invent one), but the bindings aggregator should be a single batched read per call, and the
-response needs a size bound. If home-card load ever bites, the fix is a `describe({brief:true})`
-projection — noted, not built.
-
-**R10 (LOW, requirement interaction).** REQ-103's "trigger bindings" depends on `chain_create`, which
-per v22's own review (§8.2) *validates no workflow at all*. A chain binding may reference a
-non-existent upstream workflow, and the diagram will faithfully draw a trigger to nothing. Carried debt,
-not v23 scope — but the analyzer must render it verbatim rather than "correcting" it.
+**R6 — A10 remains a real, accepted data-loss window** after the recommended fix. It is
+`regenerate → crash → sweep` only, it degrades to `unavailable` (never to stale-but-wrong), and the
+schema variant is available if the owner values the prior diagram more than a migration.
 
 ---
 
-## 4. Expected disagreements with other lenses
+## 4. Karpathy check (what I am NOT proposing)
 
-**vs. the quality-dimensions lens (consumability / observability), predicted, four fights:**
+No rate limiter. No distributed lock or leader election. No second masking projection. No
+`diagramCache`. No `admin` trust tier. No new state store. No `unhandledRejection` global handler
+(a `.catch()` at the one scheduler site is the fix; a global handler converts a crash into silent
+corruption everywhere). No `DISABLED` note-code migration. No preserved-prior-diagram schema change.
+**Net new mechanism across all eight proposals: one reuse of an existing predicate pair (P1), one
+`finally` + one `.catch()` (P3), one `if` (P2), one exported constant (P4), one `toEqual` where a
+`toContain` stands (P5).** Everything else is amendment text — which is the correct output for a
+gate whose deviations are 40% "the row was never edited".
 
-1. *Richer diagrams vs. A3 structure-only.* They will want the diagram to summarize what each agent
-   *does* (a label like "reviews the PR diff") because that is what makes it consumable. I oppose: any
-   summarization capability is an exfiltration channel from a script the caller is forbidden to read,
-   and A3 pinned structure-only for exactly that reason. My gate makes their version *impossible* by
-   construction, which is the point of contention, not an accident. If the owner overrules A3, the
-   architecture changes materially (the allowlist gate collapses to a denylist and R1 goes unmitigated).
-2. *A prettier render vs. A2 one-artifact.* They will want Mermaid/SVG in the browser and ASCII for MCP.
-   I hold A2: two render paths can disagree, and disagreement between two views of the same masked
-   object is precisely the drift REQ-101 was written to prevent.
-3. *A fallback vs. A1 honest absence.* When the analyzer fails, they will want *something* on screen —
-   and the nearest something is the retired skeleton. That resurrects the artifact the owner asked to
-   retire, on exactly the failure path, and would also re-open the REQ-105 surface. Hold A1.
-4. *Analyzer `tools` for fidelity vs. my empty default* (R3). They will argue a `Read`-capable analyzer
-   produces better diagrams for composed workflows. I argue that is an execution primitive reachable by
-   registering a workflow.
+---
 
-**vs. a simplicity-purist reading of my own proposal:** someone will say the gate, the fingerprint, the
-new table, and the boot sweep are four mechanisms where "just call the model and store the string"
-would do. My answer: three of the four are *forced by requirement text* (versioned storage by REQ-102's
-never-serve-across-versions; the fingerprint by REQ-104's no-redeploy acceptance; the sweep by REQ-102's
-honest-absence promise), and the fourth (the gate) is the only thing standing between v23 and undoing
-v22. Nothing here is speculative infrastructure: no queue service, no cache tier, no distributed
-anything, no second render path.
+## 5. Where my three lenses fight, and how I break the tie
 
-**My own internal conflicts, resolved:**
+**C1 — A1: security wants the route gated; consumability/availability wants it open; testability is
+neutral-to-positive on gating (an auth branch is testable; an implicit posture is not).** The real
+conflict is that the route's *only* consumer is an explicitly-unauthenticated dashboard, so gating
+it under auth = deleting the browser feature for remote viewers. **Tie-break: `dbindExempt`.** It is
+the minimum mechanism that satisfies security (no anonymous remote topology read), preserves the
+documented operator posture (loopback/SSH-tunnel browsers keep working), and adds zero new concepts.
+Karpathy: reusing REQ-089's predicate beats inventing a per-surface policy.
 
-- *Scalability vs. security:* cross-workflow diagram dedupe by script hash — **security wins** (§2.5),
-  and simplicity concurred; the load it optimizes does not exist.
-- *Scalability vs. observability:* the analyzer skips `AgentExecutor`, so it also skips the transcript
-  machinery — **resolved by adding one journal line**, not by re-entering the run pipeline (§2.4).
-- *Security vs. testability:* an allowlist gate needs the label set, which needs `parseWorkflowSkeleton`
-  — the function REQ-105 is retiring from user surfaces. **No conflict in the end**: REQ-105 retires the
-  *surface*, and v23 gives the *function* a second internal consumer, which strengthens the case for the
-  orchestrator's recorded boundary call rather than weakening it.
-- *Security vs. consumability:* owner email and webhook ids in a universally-callable response —
-  **not resolved by me**; escalated as R5, because deciding it unilaterally would contradict REQ-101's
-  own acceptance text.
+**C2 — A10: security's instinct is that a `pending` row must not serve a diagram whose provenance is
+mid-flight; availability wants the last-good diagram retained.** On inspection **security has no
+real objection**: a retained diagram is a previously gate-passed artifact for the *same*
+`(name, version)`, so retention opens no disclosure the surface did not already have. The genuine
+objection is a *consistency* one — `status` and payload would disagree — and it is answered by
+fields the response already carries (`diagramStatus`, `diagramGeneratedAt`). **So the tie is broken
+not by lens but by cost** (§2.2 P8: `generated_at`'s double duty makes it a migration), and I say so
+explicitly because "security prefers nulling" would be a false justification for the cheap option.
+
+**C3 — A2: security wants one choke-point guard; testability wants the guard visible at each caller
+so each caller's behaviour is asserted independently.** Resolved without a trade: the guard goes at
+`_startJob` (drift-proof for a future fourth caller) **and** Gate 5 writes one RED row *per entry
+point* asserting `gateway.invoke` is never called — the gateway is already injected, so per-caller
+assertions cost nothing extra. Testability's real requirement was per-caller *assertions*, not
+per-caller *code*.
+
+**C4 — A5: security's fix (interpolate the gate constant into the shipped prompt) reads as a
+REQ-104 violation ("no analyzer harness value hard-coded in engine source"), which is a
+replaceability/config-separation requirement.** Tie-break by asymmetry, not by precedence: the
+constant governs the **gate**, which an operator cannot override; the prompt is a default an
+operator replaces wholesale. So interpolation cannot reduce operator tunability, and it removes the
+one drift (prompt vocabulary vs gate vocabulary) that 08-validation shows failing in real runs.
+Must be *stated* in ARCH-080, because the collision is real and a future reviewer will re-file it.
+
+**C5 — the standing lens tension in this slice, restated:** security's answer to every analyzer
+question is "gate it, allowlist it, do not call the model"; scalability's is "the model call is the
+product, bound it"; testability's is "make it deterministic". The one place all three agree is
+**ARCH-080's gate**, which is why it is the only part of v23 with no HIGH against it. That
+agreement is evidence the gate is in the right place, and I would resist any send-back fix that
+moves policy *out* of it.
+
+---
+
+## 6. Expected disagreements with the quality-dimensions lens
+
+1. **A1 (biggest).** I expect quality to weight **consumability** — the dashboard's describe view
+   and README's 「任何人都能問」 — and to prefer keeping the route open with a trimmed payload. I
+   will argue that is the forbidden second mask, that an empty `triggers[]` is a silent lie under
+   this iteration's own honest-absence rule, and that `dbindExempt` gives them the operator's
+   browser back for free. **Expected convergence point:** both of us treat "the documents claim a
+   gate that does not exist" as unacceptable; we differ on which side of the claim moves.
+2. **A10.** Quality's self-sustainability instinct is "document the window honestly" — which is now
+   *also* my recommendation, but I arrived via cost, not via honesty, and I want the **structural
+   cause** (`generated_at` serving two state machines) in the amendment. Expect them to accept the
+   cause and to be lukewarm on carrying the schema variant as a named alternative.
+3. **A2.** Quality filed this as SUS-1 against the sweep branch; I move the guard to `_startJob`.
+   Expect them to object that a guard inside a private method is less **observable** than one at the
+   call site. Counter: the journal line already carries the outcome per run, and a settle emits it.
+4. **Auto-retry.** Quality's self-sustainability lens may want `unavailable` to self-heal in the
+   background. ADR-017 forbids it and I side with ADR-017: a background retry is an unbounded cost
+   loop against a paid provider, and A3 shows this module cannot yet be trusted with an unattended
+   loop.
+5. **Observability additions.** I expect quality to propose an effective-config readback surface or
+   a gate-decision counter. ARCH-079 inv 5's journal line already carries `model` per run (the
+   wiring-gap signature) and ARCH-080's split reason code already separates the security event
+   (`GATE_REJECTED_CONTENT`) from the replaceability event (`GATE_REJECTED_SHAPE`). Both exist; I
+   will argue against a third surface.
+6. **A7 severity.** I escalate LOW→MED on security grounds (it is ADR-015's audit input). Expect
+   quality to hold it at LOW as documentation drift. Severity is the disagreement; the amendment
+   text is not.
+7. **Where I expect no daylight:** A3's fix, A4's deletion, A5's single constant, A6's equality
+   assertion, A8's and A9's straight amendments. Both prior panels agreed on facts everywhere they
+   overlapped, and I found nothing in the code to reopen.
+
+---
+
+## 7. Concrete amendment list handed to Gate 2's writer
+
+| # | Row | Amendment | Gate |
+|---|-----|-----------|------|
+| P1 | **ARCH-083** `api:` | Replace "auth-gated exactly as the route it replaces" with the literal `!authEnabled ‖ loopback ‖ resolvePrincipal` rule; state that the **gate** joins the `authHandlers` block as the **fourth** `dbindExempt` member (401 or fall through) while the **handler stays** at `:1918-1930`, because the block is skipped entirely when auth is off; name the guard test. Record `ADJ-A1` (partially retires REQ-086's dashboard non-goal) and the README/DEPLOY edits. | 2 |
+| P2 | **ARCH-085** + **ARCH-079** | New invariant: no path reaches `gateway` when `enabled:false`; guard at `_startJob`; it **settles** (`RETRIES_EXHAUSTED`, because `DISABLED` is read-synthesized only and outside the `note_code` CHECK). Note the load-bearing `ANALYZER_DISABLED` short-circuit. | 2 (text) / 5,6 |
+| P3 | **ARCH-079** inv 2 | A bound requires release-on-every-exit-path: `finally`, catch→settle+journal, `.catch()` at the `setImmediate` site; no `void promise` on engine paths. State that a wedge reports itself as `QUEUE_FULL`. | 2 (text) / 5,6 |
+| P4 | **ARCH-080** | Reduce the "three consumers" claim to one exported ordered constant + interpolation into the default prompt + a membership assertion over the prompt and `rwe.config.example.json`; add the REQ-104 asymmetry paragraph (default is source, override is wholesale, gate is unoverridable). | 2 (text) / 5,6 |
+| P5 | **ARCH-051** / **ARCH-082** | Drift-lock is **set equality**, not containment; literal expectation stays in the test; one literal assertion on the script-absence sentence. | 2 (text) / 5 |
+| P6 | **ARCH-079** inv 6 | True membership (+`meta.phases[].title`, `'default'`, `'model:param'`, `UNBOUND_ENTRY_LABEL`; −`DIAGRAM_CODEPOINTS`→shape pass); record the ADR-015 re-audit **result** per member; add the rule for future widenings. **MED, not LOW.** | 2 |
+| P7 | **ARCH-084** | The mini-preview is **deleted**, not re-pointed; state the 20N/min amplification it caused and that A1+A4 close two halves of one hole. | 2 (text) / 6 |
+| P8 | **ADR-017** / **ARCH-077** / **ADR-021** | State the `regenerate→crash→sweep` window and its cause (`generated_at` serving two state machines); correct the false comment. Strike the `maxWorkflowVersions` **prune** — the ceiling *refuses registration* (`workflow-catalog.ts:441-445`); note diagram rows are consequently bounded, not pruned. | 2 |
+| — | **ARCH-079** inv 4 | Strike "provider HTTP status" from the journal line (struck by DES-129, never amended); record the replaceability-observability loss as accepted. | 2 |
+| — | **ADR-022** / **ARCH-083** | Grep allowlist is **four** entries (`graph-analyzer.ts` added by adjudication #3); say the test pins the size so the number cannot re-drift. | 2 |
+| V-A | **ARCH-079** inv 9 (new) | The boot sweep stamps before scheduling; the stamp is what makes the requeue at-most-once across restarts under `Restart=on-failure`. | 2 |
+| V-B | **ARCH-079** | The bounds are **per-process**; the durable row is the only cross-process state and has no lock; multi-instance over one catalog is out of scope. | 2 |
+| V-C | **ARCH-079** inv 8 | A seam added for happy-path determinism must also admit the failure the invariant claims to survive. | 2 |
+
+**Verified by me at `file:line` for this proposal** (not taken from either prior panel or from ledger
+prose): `server.ts:1169-1183`, `:1241-1244`, `:1719-1722`, `:1774/1798/1834`, `:1918-1930`;
+`workflow-view.ts:40-62`, `:87-105`, `:131-133`; `workflow-catalog.ts:240-258`, `:270`, `:598`;
+`graph-analyzer.ts:14-21`, `:108-160`, `:165-199`, `:250-344`; `dashboard-page.ts:203-246`;
+`DEPLOY.md:500`, `:882`. **One claim of my own falsified and withdrawn** (V-A: the crash-loop is
+bounded), **one costing of my own falsified and withdrawn** (P8: the ON CONFLICT change is a
+migration, not a one-liner).

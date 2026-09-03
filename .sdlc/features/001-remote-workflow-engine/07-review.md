@@ -4,7 +4,357 @@ status: closed
 ---
 # 07 Review & Retro — Gate 8
 
-## v22 GATE 8 RE-REVIEW #3 (2026-09-02, CURRENT / AUTHORITATIVE — CLOSE, recorded debt only)
+## v23 GATE 8 REVIEW (2026-09-03, CURRENT / AUTHORITATIVE — **SEND BACK**, 3 HIGH blocking)
+
+> First Gate 8 pass for **v23** (REQ-101..106: `workflow_describe` + analyzer-drawn ASCII diagram +
+> trigger bindings + `/skeleton` deletion), over ARCH-077..086 / ADR-015..022 vs IMPL-159..174, at
+> HEAD `d294880`. Both architecture-expert groups were **pre-run by the workflow**
+> (`.panel/review/{adversarial,quality-dimensions}.md`) — consolidated here, not re-spawned. Every
+> load-bearing claim below was **re-verified by this reviewer against source**, never accepted from a
+> panel or from the ledger's own prose (this iteration alone recorded six ledger-honesty gaps where an
+> IMPL entry did not exist for shipped code, so ledger text is not evidence).
+>
+> **Verdict: `send_back = ["architecture", "tests", "impl"]`.** Three HIGH deviations, each
+> independently confirmed at `file:line`, each with a small named fix. This is the first v23 pass —
+> none of the three is a severity re-argument over unchanged, previously-dispositioned code, which is
+> the only thing this ledger's terminating-rule convention protects against. Traceability, validation
+> and handover are **clean** (0 未驗證 / 0 未真實驗證; 106/106 REQ real-tier green); the block is
+> entirely architecture-consistency.
+
+### §1 Traceability consistency
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` regenerated the dashboard:
+**996 items / 18 gaps, 0 orphan, 0 broken-link.** `--check` exits 1 on the same pre-existing set
+(re-enumerated by running `trace.analyze()` directly, since `--check` only prints counts):
+- **1 MID** TDD gap `IMPL-082` (no test coverage) — carried since v14, re-recorded.
+- **16 LOW** iteration-drift pairs (`UT-010`, `IT-011`, `UT-058`, `UT-064`, `IT-057`, `UT-094`,
+  `UT-095`, `DES-094`, `DES-088`×2, `DES-066`×2, `DES-099`×2, `DES-100`, `DES-064`) — the v22 set
+  plus exactly one new pair: **`DES-064` (v11) ← `IMPL-173` (v23)**, minted by this iteration's
+  Gate 6.5 hardening of `litellm-proxy.ts`/`dashboard.ts` tracing an honest v11 design ancestor.
+  Recorded, non-blocking.
+- **1 LOW** unimplemented `TASK-018` — carried since v3.
+
+Doc↔code iteration drift: **none beyond those 16 pairs**. v23's own chain is at a single iteration
+end to end (REQ-101..106 → ARCH-077..086 → TASK-113..127 → DES-122..136 → UT/IT/VAL → IMPL-159..174),
+including the two backfilled entries (UT-123/IMPL-174) that the Gate 6.5+7 verifier added for the
+`c9ea0aa` delta. `rtm.md`: **106/106 REQ rows ✅ (real:true)**, 0 ❌.
+
+### §2 Dashboard QA (`dashboard_check.py`, plugin 2.1.3 — run directly)
+This repo's checked-in `.sdlc/trace.py` (2026-08-01) still predates the plugin's `--tool` dispatcher,
+so `sh .sdlc/trace --tool dashboard_check …` errors; the plugin's checker was run directly against the
+ledger. Result: **0 high / 3 mid / 1 low → the tool reports 不可交付.** Adjudicated:
+- 3×MID `括號不平衡` at `02-architecture.md:933` / `:1197` / `:1643` (v21/v22/**v23** data
+  architecture) — **verified false positives.** All three are mermaid `erDiagram` blocks; the checker
+  counts brackets lexically and mis-reads the crow's-foot cardinality tokens. In the v23 block
+  (`:1642-1677`, read in full) `WORKFLOWS ||--o{ WORKFLOW_VERSIONS` contributes an unmatched `{` and
+  the four `}o--||` relationship lines contribute unmatched `}`; every attribute block
+  (`WORKFLOW_DIAGRAMS { … }`, `SCHEDULES { … }`, `WEBHOOKS { … }`, `CONTINUATIONS { … }`) opens and
+  closes correctly under mermaid grammar. Same diagnosis as the two carried v21/v22 findings.
+  **The v23 diagram adds no new failure mode** — it is the same syntax, so it does not change the
+  disposition. Recorded checker debt, not a doc defect.
+- 1×LOW `無 mermaid 離線 fallback` — a real deliverable gap, caused by the stale vendored `trace.py`:
+  the plugin's newer generator emits an offline source+banner fallback, the checked-in one does not,
+  so on a host that cannot reach the mermaid CDN the diagram tabs render blank rather than degraded.
+  **Recorded debt (LOW, non-blocking): refresh `.sdlc/trace.py` from plugin 2.1.3.** A reviewer must
+  not edit the work under review, so this pass did not upgrade it.
+- SoT `file:line` link check: **0 dead links** (every work item's cited file exists, line in range,
+  and the line is the item's own heading).
+- **Degraded mode, declared:** no playwright browser tool is exposed in this session, so the visual
+  `<svg>`-render confirmation and SoT click-through were **not** performed. The lexical + link checks
+  stand in per the contract's degraded-fallback clause. The dashboard file itself passes the
+  structural checks (`__DATA__` substituted, no empty `.mermaid` block).
+
+### §3 Module-boundary check (`solid_check.py`, plugin 2.1.3 — run directly)
+**PASS — 0 high / 0 mid / 10 low.** 23 modules recognised (up from 13 at v22 — v23's three new files
+`diagram-gate.ts`, `trigger-bindings.ts`, `graph-analyzer.ts` are all correctly claimed by
+ARCH-077..080). **0 undeclared cross-module deps, 0 dependency cycles, 0 deep-internal imports
+bypassing a public surface, 0 god-modules.** The 10 LOW warnings are the unchanged "unclaimed file"
+set (`harness-defaults.ts`, `self-update.ts`, `agent-semaphore.ts`, `mcp-probe.ts`, `net-guard.ts`,
+`workflow-meta.ts`, `workspace-artifacts.ts`, `webhook-registry.ts`, `continuation-store.ts`,
+`clock.ts`) — recorded debt, no new entrant from v23.
+
+### §4 Architecture consistency — **NOT consistent: 3 HIGH (blocking) · 3 MED · 4 LOW**
+
+#### §4.0 Consolidation of the two pre-run expert groups
+- **Adversarial** (security/scalability/testability): `consistent: NO` — 7 deviations, 1 HIGH, 2 MED,
+  4 LOW (`V-1`..`V-7`), plus a 33-row table of invariants it checked and found **held**.
+- **Quality-dimensions** (observability/replaceability/consumability/self-sustainability):
+  `NOT consistent` — 7 deviations, 2 HIGH, 3 MED, 2 LOW (`SUS-1/2/3`, `REP-1`, `CONS-1`, `OBS-1/2`).
+
+The two groups **agree on every fact they both examined** and overlap on three findings
+(`V-2`≡`SUS-2`, `V-3`≡`SUS-3`, `V-4`+`V-5`≡`OBS-1`+`OBS-2`). The only severity divergence is on the
+analyzer job-path wedge: adversarial MED, quality HIGH. **Adjudicated HIGH** (§4.1 A3) — quality's
+report additionally establishes the *process-death* branch, which adversarial's own evidence supports
+but files at a lower severity, and a boot-time crash path is not MED. Deduplicated total: **10
+deviations — 3 HIGH, 3 MED, 4 LOW.**
+
+Both groups also explicitly re-verified a large body of invariants as **held**; this reviewer spot-
+re-checked the security-critical ones and confirms them (webhook `secret` cannot reach the prompt —
+`src/trigger-bindings.ts:13` type + `src/server.ts:1457` fresh-`{enabled}` remap; the gate is an
+allowlist and never a transformer — `src/diagram-gate.ts:33-69`; `script` absent from
+`WorkflowDescribeView` as a *type* — `src/workflow-view.ts:87-105`; owner-gating of
+`workflow_regenerate_diagram` through the shared `resolveWritePrincipal` — `src/server.ts:978-983`;
+v22 finding H2 still closed — `src/server.ts:1241`).
+
+#### §4.1 The three HIGH findings (all independently re-verified by this reviewer)
+
+**A1 — HIGH — `GET /api/workflows/:name/describe` is unauthenticated and unconditional; ARCH-083 says
+it is auth-gated "exactly as the route it replaces", and the replaced route did mask.**
+(= adversarial `V-1`; quality did not file it.) Violates **ARCH-083**, and ADR-012's masking posture.
+- `src/server.ts:1173-1183` — the route body: no bearer check, no `authEnabled` branch; it calls
+  `facade.workflow_describe({name}, {authEnabled, principal: null})` and sends `resp.result` whole.
+- `src/server.ts:1918-1930` — `/api/workflows*` is dispatched **outside** the `if (authHandlers){…}`
+  block; the only routes gated inside it are `/assets/blob/:sha`, `/assets/manifest` and `/mcp`
+  (`:1774`, `:1798`, `:1834` — the sole three uses of `dbindExempt`). So with `auth.enabled:true` and
+  a **non-loopback bind** (D-BIND, ARCH-063 — a documented, supported deployment), an anonymous LAN
+  socket receives the full describe object. The Host/Origin allowlist (`:1710`) is a rebinding/CSRF
+  floor, not an authorization check — a plain `curl` with the right `Host` passes it.
+- `git show ebd530d^:src/server.ts` (lines 1074-1087) — **the replaced `/skeleton` route did branch**:
+  `if (authEnabled) sendJson(res,200,{name,version,description}) else {…phases, skeleton}`. ARCH-083's
+  "auth-gated exactly as the route it replaces" is therefore unsatisfied on any reading.
+- The incremental v23 delta to the anonymous edge is `owner` (an email), `triggers[]` (raw cron
+  expressions, `tz`, per-binding `enabled`, chain upstream workflow names — `src/trigger-bindings.ts:18-21`),
+  `versions[]` and `diagram`. `EXPECTED_NON_OWNER_KEYS` (`src/workflow-view.ts:59-62`) contains none
+  of `triggers`/`versions`/`diagram`, so the response is **not** "the non-owner projection" that
+  DES-132's override claims it is pinned to.
+- **Honest counterweight** (both this reviewer and adversarial): `/api/*` being unauthenticated is a
+  pre-existing posture (`/api/runs/:id` already serves `principal` — `src/store/sqlite-run-store.ts:246`,
+  `src/server.ts:1215`), and `phases` going public is owner adjudication #1. The finding is the
+  *incremental* topology/ownership leak plus the fact that the sibling route at `src/server.ts:1241`
+  applies exactly the opposite rule to the same class of script-derived structure.
+- **Why this is a deviation, not a disagreement:** DES-132 (`04-design.md:4184`) consciously overrode
+  ARCH-083 — but **ARCH-083 was never amended**, so the architecture of record asserts a gate that
+  does not exist, and the override's own justification does not describe the shipped response.
+- **Owning gate: Gate 2 (architecture) first, then Gate 6.** The fix requires choosing which contract
+  holds — gate the route (one `authEnabled ?:` like its sibling, or move it behind `resolvePrincipal`)
+  **or** shrink the response to the ratified non-owner allowlist — and amending ARCH-083 either way.
+  Do **not** build a second masking projection; DES-125's single projection is right.
+  *If the route is gated, `README.md` (§使用範例, "任何人都能問") must be edited in the same round.*
+
+**A2 — HIGH — `graphAnalyzer.enabled:false` does not stop the boot sweep from making a model call, so
+the operator's only documented script-egress control leaks on the restart path.**
+(= quality `SUS-1`.) Violates **ARCH-085** ("`enabled:false` is a first-class, tested state") and
+**DES-134**, which names `enabled:false` as *the* control for "registration now performs an outbound
+LLM call whose payload is the workflow script itself".
+- `src/graph-analyzer.ts:165-192` — `sweepAtBoot()` never reads `this._config.enabled`. Its first
+  branch (`row.generatedAt === null`, i.e. a crash mid-generation) calls `_startJob(…)` at `:175-179`,
+  which schedules a real `gateway.invoke()` carrying the workflow script (`:256-262`).
+- `src/server.ts:1505` calls it unconditionally, and the comment at `:1502-1504` states the intent
+  outright: "unconditional … `enabled:false` only gates the two call sites below that would otherwise
+  start a NEW job". **The re-run must address that stated intent, not just the line** — the sweep's
+  requeue *is* a new job with a new model call; only the second branch (`:180-188`) is the
+  zero-model-call settle. Everything else in the boot path does honour the flag (`server.ts:1512`).
+- Failure: an operator who reads DEPLOY §1b, sets `graphAnalyzer.enabled:false` *because* registration
+  ships the script to the provider, and restarts with a `pending` row present, ships that script
+  anyway. Secondary: with `enabled:false` the facade refuses `workflow_regenerate_diagram`
+  (`src/mcp-facade.ts:462-464`), so ADR-017's closed loop is open in exactly this configuration.
+- **Owning gates: 5 then 6.** Fix: gate only the requeue branch — when `!enabled`, settle the
+  `generated_at IS NULL` branch to `unavailable/RETRIES_EXHAUSTED` with zero model calls (the
+  treatment the second branch already gets). One `if`, plus a RED unit row asserting the gateway is
+  never invoked when `enabled:false`.
+
+**A3 — HIGH — an exception on the analyzer job path escapes as an unhandled rejection and permanently
+wedges the concurrency-1 slot; the wedge then reports itself as the designed `QUEUE_FULL`.**
+(= quality `SUS-2` HIGH ≡ adversarial `V-2` MED; adjudicated HIGH.) Violates **ARCH-079 invariant 2**
+and ADR-017's "`pending` always settles".
+- `src/graph-analyzer.ts:301-344` — `_runJob` has **no `try`/`catch`/`finally`**. The releases
+  (`_pendingKeys.delete(key)`, `_runningCount--`, `_queue.shift()` drain) sit at `:337-343`, after
+  every statement that can throw: `getTriggerBindings(name, this._ports)` at `:304` (reads three
+  separate SQLite files — `src/server.ts:1455-1460`) and `putDiagramResult` at `:326/329/334`
+  (`.immediate()` write lock). `_attempt` catches only around `gateway.invoke` (`:263-267`).
+- `src/graph-analyzer.ts:127` — the production scheduler is
+  `setImmediate(() => { void job(); })`; `void` discards the promise with no handler, and
+  `grep -rn "unhandledRejection" src/` returns nothing.
+- Two consequences, and the dichotomy is itself the defect: **process death** under Node's default
+  `--unhandled-rejections=throw` (and via `sweepAtBoot`'s `catalog.resolve(...).then(...)` at
+  `:177` — a rejected `scriptPromise` for a version deleted while `pending` — this is a **boot-time**
+  crash), or, wherever a global handler exists, a **permanent wedge**: `_runningCount` stays 1, the
+  queue is never drained, and past `maxQueueDepth` (default 8) every later registration settles
+  `unavailable/QUEUE_FULL` — the exact string ARCH-079 defines as "honest absence working as
+  designed". No journal line is emitted on this path, so it is also invisible.
+- Same class as adjudication #6 `V-2`, filed and fixed one round ago in `litellm-proxy.ts` with the
+  words "takes the ENGINE down" (`src/gateway/litellm-proxy.ts:178-188` — verified fixed).
+- **Owning gates: 5 then 6.** Fix: move `:337-343` into a `finally`, `catch` → settle `unavailable` +
+  emit the journal line, and attach a `.catch()` at the `setImmediate` site. Plus a RED unit row where
+  `putDiagramResult` throws and the *next* enqueued job must still run.
+
+#### §4.2 The three MEDIUM findings (in the same re-run, not deferred)
+- **A4 — MED — the home-card mini-preview was not removed; it fetches `/describe` per card per 3 s
+  tick and discards the response** (= `V-3` ≡ `SUS-3`). Violates **ARCH-084** ("the home-card
+  mini-preview **drops its skeleton fetch** and renders nothing") — the fetch was re-pointed, not
+  dropped. `src/dashboard-page.ts:227-231` (body is `if(!s||!s.diagram) return;` on every branch),
+  called at `:243` for every named card, under `setInterval(render, 3000)` (`:496`). 20N
+  synchronous-SQLite requests/minute per open tab, on the route A1 shows needs no credential.
+  **Both panels independently adjudicate the same fix: delete `renderMiniPreviewAsync` and its call
+  site** (and re-point UT-116's oracle at the absence of `/skeleton`). Gate 6, two lines.
+- **A5 — MED — `DIAGRAM_CODEPOINTS` has one consumer, not the three ARCH-080 makes load-bearing; the
+  13-glyph vocabulary is hand-copied at three sites** (= `REP-1`). Violates **ARCH-080** ("one
+  exported constant with three named consumers is what stops both" failure directions).
+  `src/diagram-gate.ts:5/22` declares/exports it; `src/server.ts:300` carries a comment *claiming* to
+  be the third consumer while `:306-311` re-types all 13 glyphs as prose; `rwe.config.example.json:59`
+  re-types them a third time; `docs/AUTHORING.md` carries no vocabulary at all. **This is precisely
+  the defect class adjudication #7 / IMPL-174 just paid to fix one file away** (two disagreeing copies
+  of the unbound entry label lost every first diagram), and 08-validation's own round-3 table shows
+  the live failure mode is `GATE_REJECTED_SHAPE`/`gateFail:"codepoint"` — prompt-vocabulary vs
+  gate-vocabulary disagreement. Fix: export the ordered glyph list, interpolate it into the shipped
+  prompt, one membership assertion over the prompt and the example config, and correct the false
+  comment. Gates 5 + 6.
+- **A6 — MED — neither new tool joined ARCH-051's structured drift-lock, so REQ-101's last clause is
+  asserted nowhere** (= `CONS-1`). Violates **ARCH-082**'s explicit note ("**Both new tool schemas
+  join ARCH-051's structured drift-lock test** … the drift-lock is where that becomes a test rather
+  than a hope") and ARCH-086. Verified: `tests/integration/mcp-tools-list-schema.test.ts:28-39` lists
+  ten tools, **neither `workflow_describe` nor `workflow_regenerate_diagram`**; the only assertions
+  reaching them are two generic loops a one-word description would pass. The served sentence "The raw
+  workflow script is deliberately NOT part of this response" (`src/server.ts:493`) is good — and
+  deleting it turns nothing red. Fix: two names in `REQUIRED_TOOLS` + one description assertion.
+  Gate 5.
+
+#### §4.3 The four LOW findings — all "the ARCH row was never amended" (Gate 2, doc-only)
+Four of the ten deviations are the *same* documentary defect class: a decision was correctly made at
+Gate 4 and correctly implemented, and the ARCH/ADR row that says otherwise was never edited — in the
+one iteration whose flagship ADR-022 exists because "review discipline demonstrably does not catch
+this class". The `[AMENDED v23 …]` marker on ARCH-085 proves the convention already exists.
+- **A7 (= `V-4` + `OBS-1`)** — ARCH-081's `api:` says the response emits **exactly** a 16-key list
+  that omits `phases`; the code emits it (`src/workflow-view.ts:94/113/147`, owner adjudication #1).
+  Likewise ARCH-079 invariant 6's allowlist definition omits the four members `_buildAllowlist`
+  actually adds (`meta.phases[].title`, `'default'`, `'model:param'`, `UNBOUND_ENTRY_LABEL` —
+  `src/graph-analyzer.ts:231/233/234/241`) and names `DIAGRAM_CODEPOINTS`, which is a separate gate
+  pass, not a label token. This matters more than ordinary drift because ADR-015's security claim
+  ("every token the diagram may contain is already served on a masked surface today") is audited
+  *against that membership list*. Also the v23 interface table row.
+- **A8 (= `V-5` + `OBS-2`)** — ARCH-077 `api:`/invariant 7 and ADR-021 both assert a
+  `maxWorkflowVersions` **prune** that deletes diagram rows. There is no prune: the ceiling *refuses
+  the registration* (`src/workflow-catalog.ts:441-445`), and the code says so in-line at `:231-233`.
+  DES-130 struck the clause; ARCH-077/ADR-021 were not amended. Same for ARCH-079 invariant 4's
+  "provider HTTP status" on the journal line — struck by DES-129, which states outright that
+  "02-architecture.md is **not** edited" (`04-design.md:4235`); the line indeed carries no provider
+  status (`src/graph-analyzer.ts:287-296`).
+- **A9 (= `V-6`)** — ADR-022 and ARCH-083 both say the grep guard's allowlist has **three** entries;
+  `tests/unit/no-skeleton-surface.test.ts:36` has four (`graph-analyzer.ts` added by adjudication #3)
+  and `:61-63` pins `size === 4`. The widening is legitimate (the analyzer consumes the skeleton only
+  as gate grounding — `src/graph-analyzer.ts:227-230`); only the text is stale.
+- **A10 (= `V-7`)** — DES-127 B5 ("a failure must never clobber a prior `ready` row") is an in-memory
+  compensation, not an invariant: `putDiagramPending` runs `ON CONFLICT … SET status='pending',
+  diagram=NULL` (`src/workflow-catalog.ts:249-258`), so on the `regenerate → crash → boot sweep` path
+  `sweepAtBoot` requeues with `priorRow = null` (`src/graph-analyzer.ts:176-179`) and a failed attempt
+  loses the previously-good diagram for good. The comment there — *"a still-pending row was never
+  'ready' — nothing to restore on failure"* — is **false** for that sequence. Cheapest correct fix is
+  to *state* the window in ADR-017 and correct the comment; the alternative (preserve `diagram` on
+  conflict) is Gate 6. Either way it must be stated, not asserted false in a comment.
+
+#### §4.4 Recorded residuals deliberately **not** re-filed as violations
+`owner` served to every *principal* on the MCP surface (ARCH-081, recorded); S-1, every registration
+costs an LLM call (ARCH-079 — bounds re-verified: version ceiling at `workflow-catalog.ts:441-445`,
+`concurrency 1` + `maxQueueDepth` + `timeoutMs` all real and config-sourced — **conditional on A3
+being fixed**, since a bound that one throw can lose is not a bound); a secret in a *phase name*
+passing the gate (owner-ruled 一律公開, documented in `docs/AUTHORING.md`); the dashboard losing its
+predicted-DAG preview until a diagram is `ready`; `/skeleton` disappearing as a breaking change;
+`gateFail` as a 10th journal field (explicitly granted by DES-129); the 13 fake-`ChildProcess`
+builders deferred by IMPL-173.
+
+### §5 Validation & handover — **CLEAN, no send-back**
+- **Real-tier coverage:** trace reports **0 `未真實驗證` (mock-only) and 0 `未驗證` gaps**; `rtm.md`
+  106/106 REQ rows ✅ `real:true`. Gate 7.5 ROUND 3 (2026-09-03) re-ran REQ-103's unbound clause on a
+  real local Ollama with a non-vacuity control (labels the allowlist can never hold still settle
+  `GATE_REJECTED_CONTENT`), and re-observed VAL-118's three bound kinds. Two honest negatives are
+  recorded in `08-validation.md` and neither is a code defect (the shipped default `systemPrompt`
+  exceeds a 7B-class model's ceiling; two of the round's own operator prompts were rejected because
+  the model echoed their placeholder word — root-caused by replaying the exact prompt at Ollama).
+- `08-validation.md` present with the v23 ROUND 3 evidence table.
+- **Handover docs** at `layout.readme`/`layout.deploy` (`README.md`, `DEPLOY.md`, product root) exist,
+  are 淺白繁體中文, step-by-step, with ASCII structure sketches. **DEPLOY.md leads with §0 一鍵部署**
+  (`./deploy.sh --background`) — and Gate 7.5 ROUND 3 **actually ran it** on a scratch config
+  (`RWE_CONFIG_PATH=<scratch> RWE_BIND=127.0.0.1 RWE_PORT=8795 ./deploy.sh --background`), with the
+  real transcript pasted into §0. `## 1b. 設定總表` states in its own preamble that it is the **only**
+  place keys/ports/flags are listed, and the rest of the manual references by name — spot-checked, no
+  duplicate key table. Both manuals carry the current-state/history-free preamble, and both were
+  **rewritten this round** to delete the now-false publish-then-bind workaround the ROUND 2 defect had
+  put in them (README 已知限制 bullet, DEPLOY §5 已知缺陷 row, DEPLOY §6 entry-node sketch).
+- **Two LOW doc-debt items recorded, neither blocking** (this clause targets changelogs and superseded
+  instructions; neither of these is): `README.md:74` uses version-diff phrasing
+  ("callback success page（v20 UX）：`/oauth/google/callback` **改為** 200 HTML") where current-state
+  phrasing would do; the 設定總表's `iter` column is defensible current-state provenance metadata but
+  is the one history-shaped artefact left in the manuals.
+- **Contingent doc edit, if A1 is fixed by gating the route:** `README.md` §使用範例
+  ("看一個工作流程「在做什麼」——**任何人都能問**", ~line 176) and DEPLOY's描述 of the HTTP describe
+  route become false and must change in the same round.
+
+### §6 Special-file review
+No `CLAUDE.md`, `AGENTS.md` or `SKILL.md` appears on any v23 IMPL's `files:` line (IMPL-159..174 touch
+`src/**`, `tests/**`, `docs/AUTHORING.md`, `DEPLOY.md`, `rwe.config.example.json` only), and
+`git log --name-only` over the v23 window shows none of them modified; `git status` is clean apart
+from the pre-run `.panel/review/` reports. **Not applicable this iteration** — no claude-md-improver /
+skill-creator pass was owed.
+
+### §7 Independent verification performed by this reviewer (not taken from the panels)
+`src/server.ts:1173-1183`, `:1241`, `:1495-1520`, `:1710-1719`, `:1774/1798/1834`, `:1918-1930`;
+`src/graph-analyzer.ts:120-135`, `:165-220`, `:296-344`; `src/dashboard-page.ts:222-246`;
+`tests/integration/mcp-tools-list-schema.test.ts:28-39`; `tests/unit/no-skeleton-surface.test.ts:36`;
+`git show ebd530d^:src/server.ts` (read-only, per CLAUDE.md's prohibition on `git checkout <sha> --`);
+`02-architecture.md:1642-1700`; `DEPLOY.md` §0/§1b; `README.md` headings; `rtm.md` counts; and the
+trace gap list re-derived by importing `.sdlc/trace.py` and calling `analyze()` directly.
+
+### §8 Send-back scope — `["architecture", "tests", "impl"]`
+| gate | items |
+|---|---|
+| **Gate 2 architecture** | **A1** (decide: gate the route vs shrink the response — then amend ARCH-083), **A7**, **A8**, **A9**, **A10**'s ADR-017 window statement. |
+| **Gate 5 tests (RED first)** | **A2** (gateway never invoked when `enabled:false`), **A3** (`putDiagramResult` throws → next job still runs), **A6** (two names in `REQUIRED_TOOLS` + the script-absence description assertion), **A5**'s vocabulary-membership assertion. |
+| **Gate 6 impl** | **A1**'s chosen fix + the matching `README.md` edit, **A2**'s one `if`, **A3**'s `try/finally` + `.catch()`, **A4** (delete two lines, re-point UT-116), **A5** (export the vocabulary, correct `server.ts:299-300`). |
+
+Not sent back: Gate 7.5 (validation is clean and its docs are current), Gate 4 (the design docs are
+*right* in every one of the four LOW findings — it is the architecture text that lags), Gate 6.5/7
+(the regression suite is 1807/1807 green, tsc clean, measured twice).
+
+### §9 Retro (v23, first Gate 8 pass)
+**What went well**
+- The three brand-new modules (`diagram-gate`, `trigger-bindings`, `workflow-view`) are genuinely
+  well-bounded: `solid_check` recognises 23 modules with **zero** boundary violations, and the new
+  files import no I/O beyond `node:crypto`. The security-critical invariants (secret-never-in-prompt,
+  gate-is-a-validator-not-a-transformer, script-absent-as-a-type) are enforced *structurally* — by a
+  port type plus a composition-root remap, by SQL `CHECK`s, and by the type system — not by review.
+- `composeConfig` wiring, this repo's signature bug class (v11/v15/v16), was closed on **both** halves
+  this time (`src/main.ts:184` + three new rows in `compose-config-v2-wiring.test.ts`) before Gate 7.5
+  ran, instead of being caught by it.
+- Gate 7.5 remained the only oracle that could catch the prompt-composition defect, and it did (twice,
+  across three rounds) — including root-causing a negative by replaying the engine's exact prompt at
+  the provider rather than guessing.
+
+**What to change**
+1. **An adjudication that overrides an ARCH/ADR row must edit that row in the same commit.** Four of
+   ten deviations this pass are exactly that omission, and the `[AMENDED …]` convention already
+   exists on ARCH-085. This is now a repeat pattern across v22 and v23.
+2. **Six retroactive IMPL backfills in one iteration** (IMPL-159..172's note, IMPL-173, IMPL-174) —
+   the implementer shipped code with no ledger entry six times and verifiers wrote the entries after
+   the fact. The ledger stayed honest only because the verifiers were diligent.
+3. **A deletion is not finished while something still calls the deleted thing** (A4) — ADR-022 built a
+   CI grep guard for the *word* `skeleton`, which cannot see a dead call site that was renamed.
+4. **`try/finally` on any path that holds a slot** (A3): this ledger has now filed the identical
+   unguarded-async class twice in two consecutive rounds, in two different files.
+
+**Known tech debt recorded this pass (non-blocking)**
+- 18 trace gaps: 1 MID `IMPL-082` (TDD label, since v14), 16 LOW iteration-drift pairs (one new:
+  `DES-064`←`IMPL-173`), 1 LOW `TASK-018` unimplemented (since v3).
+- `.sdlc/trace.py` is stale vs plugin 2.1.3 → no `--tool` dispatcher and **no offline mermaid
+  fallback** in the generated dashboard; 3 MID `dashboard_check` "bracket imbalance" hits are verified
+  `erDiagram` false positives; no playwright in-session, so render QA ran in declared degraded mode.
+- 10 LOW `solid_check` unclaimed-file warnings (unchanged set).
+- README's one version-diff sentence (`:74`) and the 設定總表 `iter` column.
+- ADR-016's testability price (nothing is stored, so nothing can be asserted about what reached the
+  provider) — recommend recording *in the ADR* that prompt-composition changes are provable only at
+  the real tier, so a green unit suite is never mistaken for coverage of that seam.
+
+### §10 Report
+```
+Gaps: high=0 mid=1 low=17  (all remaining recorded as known tech debt)
+Drift: none beyond the 16 recorded iter-drift pairs (1 new this pass: DES-064 ← IMPL-173)
+Architecture consistent: NO — 10 deviations (3 HIGH blocking, 3 MED, 4 LOW)
+Validation: real-tier all-green? yes (0 mock-only, 0 unverified, 106/106 ✅) · README+DEPLOY present,
+            current-state, 一鍵部署 verified by Gate 7.5? yes
+Conclusion: SEND BACK — Gate 2 (architecture), Gate 5 (tests), Gate 6 (impl)
+```
+
+---
+
+## v22 GATE 8 RE-REVIEW #3 (2026-09-02, superseded by the v23 section above — kept for history)
 
 > **Third Gate 8 pass for v22**, after IMPL-158 (`ea97bc8`/`7bfdc3c`/`cbc7da4`) closed RE-REVIEW #2's
 > B1 (H1 residual — `workflow_register`/`workflow_deregister` self-asserted `args.principal` spoof)
