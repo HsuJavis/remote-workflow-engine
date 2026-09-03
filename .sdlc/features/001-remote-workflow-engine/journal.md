@@ -1857,3 +1857,37 @@ troubleshooting row for `prior_restored`. §4b: the delta changed no config file
 §1b round-trips clean in both directions. trace 1028/18 with residue byte-identical to the
 pre-round baseline (0 未驗證需求, 0 僅mock驗證); `rtm.md` regenerated, 106 rows, all ✅.
 `gates.validation.passed=true`; `current_stage → review`.
+
+## 2026-09-04 — v24 Gate 2 (architecture) — PASSED
+
+Synthesized from the **pre-run** panel (`.panel/architecture/adversarial.r1.md` + `quality-dimensions.r1.md`);
+**no round 2 spawned** — the headlines are complementary (one authz table before dispatch; fixed grammar not a
+renderer; guide rendered from constants; per-agent harness descriptor; `principals` into the wiring guard;
+analyzer deletion as a double win). Appended the **v24 slice** to `02-architecture.md`: **ARCH-087..108**
+(22 module roots — new pure `tool-specs.ts`, `authz.ts`, `path-verdict.ts`, `authoring-guide.ts`; surgical
+edits to server/main/facade/run-store/params/workflow-meta/diagram-gate/catalog/scheduler/webhooks/
+trigger-bindings/asset-sync/sdk-client/agent-executor/workflow-view/dashboard; one acceptance-test module;
+deletions `graph-analyzer.ts`, `continuation-store.ts`, `mcp-registry.ts`) + **ADR-023..035**, plus 4+1 views,
+data architecture (new `assets`, `audit_events`; dropped `workflow_diagrams`, `mcp_provisions`, `continuations`)
+and the interface table for the **35-tool** surface (ch. 7's 36 − `run_trigger` − `mcp_provision` +
+`workflow_authoring_guide`; `TOOL_SPECS.length` is the check — the number is written once).
+
+Referee calls (both lenses agreed on structure): audit read-back on `run_status.adminReads[]` (QD, per this
+ledger's AC-2 rule) with no new tool (adversarial); trigger refusals **coalesced** on the trigger row (bounded,
+nothing dropped, no owner call needed); the diagram value-triple compare adopted because ch. 12 requires a
+default for every tunable of every agent. Panel "requirement gaps" G1/G3/G4/G5 were already owner-ruled in
+`v24-gate1-working-notes.md` ch. 5 / 19 / 15.2 / 16.1 and are closed by citation. Version semantics of trigger
+claims decided (ADR-026: `claimedBy` on the row + `triggers[]` on the version row + fire-time membership;
+legacy rows keep firing). `workflow_register.defaults` retired (ADR-035).
+
+Exit gate: REQ-107..118 each covered by ≥1 ARCH; every new ARCH declares `module:` + `deps:`; every cited id
+exists; `sh .sdlc/trace` = **1075 items / 42 gaps** (was 1040 / 42) — all 42 pre-existing (16 drift, 13
+unimplemented, 12 unverified, 1 TDD), none referencing a v24 id; the 24 `未實作/未驗證` rows for
+REQ-107..118 stay until Gates 5/6. `state.yaml`: `gates.architecture.passed=true`, `current_stage: design`.
+
+**Owner confirms owed (defaults decided, confirm-or-overrule):** (1) ADR-030 — `stdio` MCP configs stay
+admin-only and `http` probes pass `isEgressAllowed`; this narrows ch. 16.2's author-push ruling on adversarial
+R1's SSRF/command-spawn finding. (2) ADR-023 — the rectangle `["…"]` as a fifth fixed shape for the
+nested-`workflow()` black box ch. 11.4 tells authors to draw. (3) ADR-035 — `workflow_register.defaults`
+removed in favour of the required per-agent defaults. Per `notes:`, the workflow PAUSES for user architecture
+review before Gate 3.

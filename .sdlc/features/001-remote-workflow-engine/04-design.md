@@ -4800,3 +4800,46 @@ Gate 7.5 的 validator **把 `docs/AUTHORING.md` 規則 1 的 `meta.params` 範�
 它是**實際執行**發現的,不是閱讀發現的。文件裡的程式碼範例應該像程式碼一樣被驗證 ——
 v24 的 `workflow_authoring_guide` 若要交付,**它給的每個範例都必須有一個測試實際註冊它**,
 否則同一個缺陷會以更大的規模重演(那份 guide 的範例會多得多)。
+
+---
+
+## Orchestrator adjudication (v24) #1 — Gate 2 的三個問題:兩個我裁,一個轉給擁有者 (2026-09-04)
+
+### A-1 — ADR-023(Mermaid 缺一個形狀):**確認採用,是我的規格漏洞**
+工作筆記 ch.11.4 叫作者把他人的 `workflow()` 呼叫畫成黑箱節點,但 REQ-112 的固定形狀表**沒有給它形狀**
+—— 兩處都是我寫的,我沒有把它們對起來。
+
+架構取的預設(純矩形 `["…"]` 作為第五個固定形狀,且**排除在 agent-label 雙向比對之外**)是對的:
+- `[/"…"/]` 已給觸發/產出、`(["…"])` agent、`{"…"}` 分支、`{{"…"}}` 非-agent 彙總 —— 純矩形未被佔用,不衝突
+- **必須排除在比對之外**:它不是本工作流的 agent,若納入 REQ-111 的雙向檢查會直接把合法的巢狀呼叫判成不一致
+
+REQ-112 的形狀表補上第五列,並在 `workflow_authoring_guide` 說明「呼叫他人工作流 = 黑箱矩形」。
+
+### A-2 — ADR-035(退掉 `workflow_register.defaults`):**確認移除,且是全部移除,不保留 appendPrompt**
+架構的理由成立:REQ-110 讓 `model`/`effort`/`timeoutMs` 的預設變成**每個宣告 agent 必填**,
+工作流層級那一階因此對這三個鍵不可達。留著只會多一階**冷模型無法從 `tools/list` 學到的優先序** ——
+直接傷害 REQ-117。
+
+**不保留 appendPrompt 的例外**:REQ-110 的驗收明列 `meta.params.agents.<label>` 宣告
+**四個**鍵(含 `appendPrompt`),所以 `defaults` 對四個鍵**全部**冗餘。留一個只服務單鍵的殘階,
+是「冷模型要學兩套規則」的代價換「幾乎沒有的彈性」,不划算。
+
+REQ-088/092 的意圖由 per-agent 階承接(同樣綁在註冊時的 meta 上)。
+工作筆記 ch.9 的工具表仍列著 `defaults`(它早於 ch.12),**一併更正** —— 否則就是第十六例
+「描述沒跟著搬」。
+
+### A-3 — ADR-030(MCP 推送權限):**轉給擁有者,因為它縮限了擁有者自己的裁定**
+架構對 ch.16.2「管理者與編排者都可推 MCP」提出安全反駁,查證屬實:
+```
+mcp-probe.ts:71   spawn(command, args, …)      ← stdio:拿使用者字串當命令,在引擎主機執行
+mcp-probe.ts:62   fetch(url, …)                ← http:對使用者 URL 發請求,目前無 egress 閘門
+                  isEgressAllowed 只接在 seedRef，沒接 MCP 探測
+```
+架構取的預設(**fail closed**):http 開放給編排者但探測須通過 `isEgressAllowed` 允許清單
+(預設空 = 一律拒);**stdio 維持管理者專屬**。
+
+**這與既有防線一致**:`hook` 資產由構造擋掉上傳,註解寫明「closes the arbitrary-server-side-code
+vector」。stdio MCP 是同一個向量換一條路徑 —— 若對編排者開放,`hook` 那道防線等於繞過。
+
+我不替擁有者決定,但**強烈建議照架構的 fail-closed**:REQ-114 的 `pushedBy` 讓「查得到是誰」,
+但查得到不等於擋得住 —— 追溯是事後的,任意程式碼執行是當下的。
