@@ -131,13 +131,21 @@ export class GraphAnalyzer {
   enqueue(name: string, version: string, script: string, principal: string | null): void {
     const key = `${name}@${version}`;
     if (this._pendingKeys.has(key)) return; // DES-127 B4: single-flight, no second job
+    // A2 (ARCH-079 inv 11): `enabled:false` is the operator's script-egress control — this check
+    // must run BEFORE the durable `putDiagramPending` write (not just guard the in-memory claim),
+    // or a prior `ready` row is clobbered to NULL before `_settleUnavailable`'s ready-check ever
+    // sees it (the latent-clobber trap UT-124's fourth case pins).
+    if (!this._config.enabled) {
+      this._settleUnavailable(name, version, noteCodeFor({ kind: 'exhausted' }), principal);
+      return;
+    }
     if (!isKnownAlias(this._config.model, this._aliasNames)) {
       // DES-131: short-circuit, zero model calls, never even reaches `pending`.
-      this._settleUnavailable(name, version, noteCodeFor({ kind: 'config', reason: 'model_unmapped' }));
+      this._settleUnavailable(name, version, noteCodeFor({ kind: 'config', reason: 'model_unmapped' }), principal);
       return;
     }
     if (this._runningCount >= 1 && this._queue.length >= this._config.maxQueueDepth) {
-      this._settleUnavailable(name, version, noteCodeFor({ kind: 'queue' }));
+      this._settleUnavailable(name, version, noteCodeFor({ kind: 'queue' }), principal);
       return;
     }
     const priorRow = this._catalog.getDiagram(name, version);
@@ -168,6 +176,12 @@ export class GraphAnalyzer {
       const row = this._catalog.getDiagram(name, version);
       if (!row) continue;
       if (row.generatedAt === null) {
+        // A2: `enabled:false` must not reach the gateway on restart either — settle instead of
+        // requeueing, so a never-stamped pending row does not strand forever.
+        if (!this._config.enabled) {
+          this._settleUnavailable(name, version, noteCodeFor({ kind: 'exhausted' }), null);
+          continue;
+        }
         // Never stamped — a crash mid-generation. Requeue exactly once, stamping the attempt marker.
         const stamp = this._clock.isoNow();
         this._catalog.putDiagramPending(name, version, stamp);
@@ -175,23 +189,19 @@ export class GraphAnalyzer {
         this._startJob(
           name, version, null, key,
           this._catalog.resolve(name, { version }).then((e) => e.script),
-          null, // a still-pending row was never 'ready' — nothing to restore on failure
+          null,
         );
       } else if (Date.parse(row.generatedAt) < bootInstant) {
         // Stamped by a previous, now-dead process — settle with ZERO model calls.
-        const bindings = getTriggerBindings(name, this._ports);
-        this._catalog.putDiagramResult(name, version, {
-          status: 'unavailable',
-          noteCode: noteCodeFor({ kind: 'exhausted' }),
-          generatedAt: this._clock.isoNow(),
-          bindingsFp: bindings.bindingsFp,
-        });
+        this._settleUnavailable(name, version, noteCodeFor({ kind: 'exhausted' }), null);
       }
       // else: stamped at/after the boot instant — a live job in THIS process, leave alone.
     }
   }
 
-  private _settleUnavailable(name: string, version: string, noteCode: PersistedDiagramNoteCode): void {
+  /** UT-128/ARCH-079 inv 5: every path that writes a terminal row emits exactly one journal line,
+   *  even a zero-model-call settle (no `_attempt`, so no other emitter runs for it). */
+  private _settleUnavailable(name: string, version: string, noteCode: PersistedDiagramNoteCode, principal: string | null): void {
     // DES-127 B5: a failure must never clobber a prior `ready` row.
     const current = this._catalog.getDiagram(name, version);
     if (current?.status === 'ready') return;
@@ -199,6 +209,26 @@ export class GraphAnalyzer {
     this._catalog.putDiagramResult(name, version, {
       status: 'unavailable', noteCode, generatedAt: this._clock.isoNow(), bindingsFp: bindings.bindingsFp,
     });
+    // eslint-disable-next-line no-console
+    console.log('[remote-workflow-engine] graph-analyzer ' + JSON.stringify({
+      name, version, principal, model: this._config.model,
+      promptTokens: null, completionTokens: null, durationMs: 0,
+      outcome: 'unavailable', noteCode, gateFail: null,
+    }));
+  }
+
+  /** A3/N-1: the single release point for a claimed slot — used both by a normal settle
+   *  (`_runJob`'s tail) and by the scheduled closure's catch below, so an orphan-pending row's
+   *  rejected `scriptPromise` (e.g. `CatalogNotFoundError`) releases the claim and the running
+   *  slot exactly like any other settle, instead of wedging the queue behind a leaked count. */
+  private _release(key: string): void {
+    this._pendingKeys.delete(key);
+    this._runningCount--;
+    const next = this._queue.shift();
+    if (next) {
+      this._runningCount++;
+      this._schedule(next);
+    }
   }
 
   private _startJob(
@@ -207,7 +237,13 @@ export class GraphAnalyzer {
   ): void {
     this._pendingKeys.add(key);
     const job = async (): Promise<void> => {
-      const script = await scriptPromise;
+      let script: string;
+      try {
+        script = await scriptPromise;
+      } catch {
+        this._release(key);
+        return;
+      }
       await this._runJob(name, version, script, principal, key, priorRow);
     };
     if (this._runningCount >= 1) {
@@ -334,12 +370,6 @@ export class GraphAnalyzer {
       this._catalog.putDiagramResult(name, version, { status: 'unavailable', noteCode: last.noteCode, generatedAt, bindingsFp: bindings.bindingsFp });
     }
 
-    this._pendingKeys.delete(key);
-    this._runningCount--;
-    const next = this._queue.shift();
-    if (next) {
-      this._runningCount++;
-      this._schedule(next);
-    }
+    this._release(key);
   }
 }

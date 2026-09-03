@@ -53,6 +53,7 @@ import { buildDashboardModel, layoutGraph, buildHomeView, computeWorkflowMetrics
 import { DASHBOARD_HTML, buildDashboardHtml } from './dashboard-page.js';
 import type { RunStore } from './run-store.js';
 import { GraphAnalyzer, ANALYZER_SCRATCH_SUBDIR, type GraphAnalyzerConfig } from './graph-analyzer.js';
+import { VOCAB_GLYPHS } from './diagram-gate.js';
 import type { TriggerPorts } from './trigger-bindings.js';
 import { effectiveProvider, curateToolsForProvider } from './gateway/claude-agent-sdk-client.js';
 
@@ -296,20 +297,21 @@ const SCRIPT_DSL_DOC =
   'Authoring rules (docs/AUTHORING.md has the full text): (1) declare every tunable knob in `meta.params` rather than hard-coding it; (2) never read a param key the contract does not declare; (3) the six LOCKED_KEYS (prompt/tools/skills/mcp/workdir/cwd) are engine-owned — do not redeclare them; (4) phase titles are visible to every principal who can see the workflow (including the generated diagram) — keep secrets/distinctive prose out of phase titles. ' +
   'Registering a workflow sends the script itself to the configured LLM provider to draw a diagram; set graphAnalyzer.enabled:false to turn this off.';
 
-// v23 (DES-131, DES-134, TASK-126): the shipped default `graphAnalyzer.systemPrompt` — the third
-// consumer of DIAGRAM_CODEPOINTS (diagram-gate.ts, this prompt, docs/AUTHORING.md). Defaults live
-// at exactly this ONE site (the construction site, DES-134) so an operator's override in
-// rwe.config.json fully replaces it rather than layering on top. Prose here is NOT itself gated
-// (gateDiagram only validates the model's OUTPUT) but sticks to the vocabulary anyway, on purpose.
-const DEFAULT_GRAPH_ANALYZER_SYSTEM_PROMPT =
+// v23 Gate 2 re-run (ARCH-080 A5): defaults live at exactly this ONE site (the construction site,
+// DES-134) so an operator's override in rwe.config.json fully replaces it rather than layering on
+// top. Prose here is NOT itself gated (gateDiagram only validates the model's OUTPUT) but sticks to
+// the vocabulary anyway, on purpose — every glyph below is interpolated FROM diagram-gate.ts's
+// VOCAB_GLYPHS (the one canonical declaration), never re-typed, so the two cannot drift apart.
+const [DIAMOND, LOOP_BACK, HLINE, VLINE, T_DOWN, T_UP, T_RIGHT, T_LEFT, ARROW, BOX_TL, BOX_TR, BOX_BL, BOX_BR] = VOCAB_GLYPHS;
+export const DEFAULT_GRAPH_ANALYZER_SYSTEM_PROMPT =
   'You are drawing a structural ASCII diagram of a workflow script, for a human operator reading it in a terminal. ' +
   'Output ONLY the diagram itself — no prose, no markdown, no code fences. ' +
   'Use exactly this fixed vocabulary and nothing outside it: ' +
-  'a rounded-corner box (corners ╭ ╮ ╰ ╯) is one agent() call, labelled with its resolved model name; ' +
+  `a rounded-corner box (corners ${BOX_TL} ${BOX_TR} ${BOX_BL} ${BOX_BR}) is one agent() call, labelled with its resolved model name; ` +
   'a square box (plain [ and ]) is a trigger or an output artifact; ' +
-  '◇ marks a conditional branch; ' +
-  '⟲ marks a loop back-edge; ' +
-  'lines are drawn with ─ (horizontal), │ (vertical), ┬ ┴ ├ ┤ (junctions) and ▶ (arrowhead) — a fan-out is one line splitting into several with ┬, a fan-in/join is several lines converging with ┴. ' +
+  `${DIAMOND} marks a conditional branch; ` +
+  `${LOOP_BACK} marks a loop back-edge; ` +
+  `lines are drawn with ${HLINE} (horizontal), ${VLINE} (vertical), ${T_DOWN} ${T_UP} ${T_RIGHT} ${T_LEFT} (junctions) and ${ARROW} (arrowhead) — a fan-out is one line splitting into several with ${T_DOWN}, a fan-in/join is several lines converging with ${T_UP}. ` +
   'Show, top to bottom: every agent() call in order (its resolved model), phase names, fan-out/fan-in, conditional branches, loop back-edges, and how the workflow is triggered — its entry node names "cron", "webhook", or "chain" (plus the upstream workflow name for a chain) from the trigger bindings you are given below the script, or reads as a plain workflow_run entry point when no trigger is bound. Never invent a trigger that is not given to you. ' +
   'If a node\'s model is only knowable at run time (a tunable param, not a literal in the script), label that node with the literal text model:param — never guess a model name. ' +
   'Every word you write must be either one of the glyphs above or a name copied verbatim from the script or the trigger bindings you were given. Never invent, summarize, or restate configuration, secrets, or comments in prose — if you are unsure a name is safe to reuse, omit it rather than paraphrase it.';
@@ -1875,6 +1877,24 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
             sendJson(res, 500, { jsonrpc: '2.0', id: null, error: { code: -32603, message: 'Internal error' } });
           });
         }).catch(() => { sendJson(res, 500, { jsonrpc: '2.0', id: null, error: { code: -32603, message: 'Internal error' } }); });
+        return;
+      }
+      // v23 Gate 2 re-run (ADJ-A1, ARCH-083 amendment, TASK-120): GET /api/workflows/:name/describe
+      // joins dbindExempt's gated set as the FOURTH member, alongside blob/manifest/mcp above —
+      // admitted only when the peer is loopback-exempt or resolvePrincipal succeeds; otherwise 401 +
+      // WWW-Authenticate, BEFORE any store read. The handler itself (handleDashboardRequest's
+      // describeMatch branch below, DES-132) is unchanged — unauthenticated, no owner branch
+      // (DES-125) — this block only decides whether the request is allowed to reach it.
+      const describeGateMatch = req.method === 'GET'
+        ? /^\/api\/workflows\/([^/]+)\/describe$/.exec((req.url ?? '').split('?')[0]!)
+        : null;
+      if (!dbindExempt && describeGateMatch) {
+        void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then((p) => {
+          if ('status' in p) { send401(); return; }
+          handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, buildModelCatalog, !!authCfg).catch(() => {
+            sendJson(res, 200, { degraded: 'internal dashboard error' });
+          });
+        }).catch(() => { sendJson(res, 500, { error: 'auth error' }); });
         return;
       }
     }

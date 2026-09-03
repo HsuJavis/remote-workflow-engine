@@ -674,7 +674,11 @@ running→interrupted (resumable)`）；`workflow_resume(runId)` 即可續跑。
 **`workflow_describe({name, version?, channel?})` 是給「要不要用這個工作流程」的人看的單一說明面**
 ——用途、版本/頻道、階段、可調參數契約、鎖定鍵、擁有者、回報問題方式、**目前的觸發綁定**
 （`triggers`，每次呼叫即時讀取）以及一張 **ASCII 結構圖**（`diagram`）。HTTP 版：
-`GET /api/workflows/:name/describe`。任何 principal 都能呼叫，回應**永遠不含腳本本文**。
+`GET /api/workflows/:name/describe`。任何 principal 都能呼叫（不看擁有者身份），回應**永遠不含
+腳本本文**。**這條 HTTP 路由跟其他 `/api/*` 路由不同，不是無條件放行**：`auth.enabled:true`
+時它套用跟 `/mcp` 一樣的 D-BIND 規則（§1b、上方）——loopback 來源或有效 bearer 才放行，否則
+在讀取任何工作流程資料**之前**就回 401 + `WWW-Authenticate`（不會讓未授權呼叫端先探出某個
+名稱是否存在）；`auth.enabled:false` 時維持開放（ADJ-A1，v24）。
 
 結構圖由 `graphAnalyzer` 設定區塊指定的 LLM 在註冊時非同步畫出（設定鍵見 §1b）：
 

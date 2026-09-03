@@ -2,7 +2,10 @@
 // diagram text. Four passes, in order: type -> codepoint -> size -> token. On success returns
 // `raw` verbatim (validator, never a transformer).
 
-const VOCAB_GLYPHS = ['◇', '⟲', '─', '│', '┬', '┴', '├', '┤', '▶', '╭', '╮', '╰', '╯'];
+// UT-127 (v23 Gate 2 re-run, send-back `d294880`, A5): exported — the ONE canonical declaration
+// of the diagram vocabulary. Every other consumer (the shipped default systemPrompt, the example
+// config) must build off THIS array by interpolation, never re-type it.
+export const VOCAB_GLYPHS = ['◇', '⟲', '─', '│', '┬', '┴', '├', '┤', '▶', '╭', '╮', '╰', '╯'];
 
 function buildDiagramCodepoints(): ReadonlySet<string> {
   const codepoints = new Set<string>();

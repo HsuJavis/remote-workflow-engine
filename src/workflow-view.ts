@@ -126,11 +126,19 @@ export function projectWorkflowDescribe(
   const { diagram, bindings, bindingsFp, analyzerEnabled } = ctx;
   const isReady = diagram?.status === 'ready';
 
+  // UT-126 (V-D, send-back `d294880`): a `ready` row's note always stays `''`; otherwise,
+  // whenever `analyzerEnabled === false` the note is DISABLED regardless of whether a row exists
+  // at all and regardless of what it persists — analyzerEnabled must win before any persisted
+  // noteCode is consulted, not only on the `diagram === null` branch.
   let diagramNote: string;
-  if (diagram === null) {
-    // B2: no row at all — DISABLED (analyzer was off) vs NOT_GENERATED (no attempt yet), never
-    // persisted, synthesized here only.
-    diagramNote = noteTextFor(analyzerEnabled ? 'NOT_GENERATED' : 'DISABLED');
+  if (isReady) {
+    diagramNote = '';
+  } else if (!analyzerEnabled) {
+    diagramNote = noteTextFor('DISABLED');
+  } else if (diagram === null) {
+    // B2: no row at all, analyzer on — NOT_GENERATED (no attempt yet), never persisted,
+    // synthesized here only.
+    diagramNote = noteTextFor('NOT_GENERATED');
   } else if (diagram.status === 'unavailable' && diagram.noteCode) {
     diagramNote = noteTextFor(diagram.noteCode);
   } else {

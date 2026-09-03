@@ -173,7 +173,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # workflow_list、/api/workflows*、GET /api/runs/:id/dag（跑過的 run 的即時 DAG 圖）、儀表板
 # 同樣一致遮蔽，沒有後門端點能看到未授權的腳本本文。
 
-# 看一個工作流程「在做什麼」——任何人都能問，回應永遠沒有腳本本文
+# 看一個工作流程「在做什麼」——任何 principal 都能問（不必是擁有者），回應永遠沒有腳本本文
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_describe","arguments":{"name":"greet"}}}'
@@ -185,6 +185,9 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # triggers 是「現在」綁在這個工作流程上的觸發方式（cron/webhook/chain），每次呼叫都重新讀取；
 # 綁定變動後圖還沒重畫時，diagramStale 會是 true。
 # 同樣的內容也有 HTTP 版：curl -s http://127.0.0.1:8787/api/workflows/greet/describe
+# 「任何 principal 都能問」指授權層級（不看擁有者身份），不是「不需要驗證」：auth.enabled:true 時
+# 這條 HTTP 路由跟 /mcp 一樣要求 loopback 來源或有效 bearer，否則回 401（ADJ-A1，v24）——
+# 在讀到任何工作流程資料之前就擋下，不會讓未授權呼叫端先探出名稱是否存在。
 
 # 擁有者重畫某個版本的圖（非擁有者會被拒：NOT_WORKFLOW_OWNER）
 curl -s -X POST http://127.0.0.1:8787/mcp \

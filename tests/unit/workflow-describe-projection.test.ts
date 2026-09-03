@@ -13,6 +13,7 @@
 // module).
 import { describe, it, expect } from 'vitest';
 import { projectWorkflowDescribe, EXPECTED_DESCRIBE_KEYS, type WorkflowOwnerView } from '../../src/workflow-view.js';
+import { noteTextFor } from '../../src/graph-analyzer.js';
 
 function deepFlatten(obj: unknown, prefix = ''): Record<string, unknown> {
   if (obj === null || obj === undefined || typeof obj !== 'object' || Array.isArray(obj)) {
@@ -136,6 +137,71 @@ describe('projectWorkflowDescribe — triggers are ALWAYS the live snapshot (UT-
     const bindings = [{ kind: 'webhook', enabled: true }] as any;
     const view = projectWorkflowDescribe(FULL, { diagram: null, bindings, bindingsFp: 'fp', analyzerEnabled: true });
     expect(view.triggers).toEqual(bindings);
+  });
+});
+
+// UT-126 (v23 Gate 2 re-run, send-back `d294880`, V-D — REQUIRED BY ARCH-079 inv 11, ARCH-081):
+// note precedence. Today `analyzerEnabled` is consulted ONLY on the `diagram === null` branch; an
+// `unavailable` row with a persisted `noteCode` takes the next branch and prints THAT note's text
+// regardless of `analyzerEnabled` — so once A2's fix ships (a disabled analyzer always finds a row
+// by guard time), an operator who switched the analyzer off would read "the diagram model could
+// not be reached after several attempts" for a subsystem that made ZERO attempts. This is what
+// stops A2's fix from shipping a lie.
+//
+// Amended rule (verified against workflow-view.ts:129-138 by direct read): a `ready` row's note
+// stays `''`; otherwise, whenever `ctx.analyzerEnabled === false` the note is `DISABLED` —
+// regardless of whether a row exists at all and regardless of what it persists. Full oracle table
+// over `{row: null | pending | unavailable+code | ready} x {analyzerEnabled}` — the two RED cells
+// are the ones where a persisted row exists AND the analyzer is off; the rest are green pins
+// (already correct today, kept here so a regression in either direction is caught).
+//
+// Red reason (measured, pre-fix): both `unavailable+RETRIES_EXHAUSTED x disabled` and
+// `pending x disabled` currently print the WRONG text (the persisted code's text, and `''`,
+// respectively) instead of DISABLED's text —
+// `npx vitest run tests/unit/workflow-describe-projection.test.ts -t 'UT-126'` fails 2/6.
+describe('projectWorkflowDescribe — note precedence table, {row} x {analyzerEnabled} (UT-126, ARCH-081 V-D)', () => {
+  const DISABLED_TEXT = noteTextFor('DISABLED');
+
+  it('[RED] unavailable row with a persisted noteCode + analyzerEnabled:false -> DISABLED, not the persisted code\'s own text', () => {
+    const view = projectWorkflowDescribe(FULL, {
+      diagram: { status: 'unavailable', diagram: null, noteCode: 'RETRIES_EXHAUSTED', generatedAt: '2026-09-02T09:00:00.000Z', bindingsFp: 'fp' } as any,
+      bindings: [], bindingsFp: 'fp', analyzerEnabled: false,
+    });
+    expect(view.diagramNote).toBe(DISABLED_TEXT);
+  });
+
+  it('[RED] a swept pending row (generated_at stamped, status still pending) + analyzerEnabled:false -> DISABLED, not \'\'', () => {
+    const view = projectWorkflowDescribe(FULL, {
+      diagram: { status: 'pending', diagram: null, noteCode: null, generatedAt: '2026-09-02T09:00:00.000Z', bindingsFp: 'fp' } as any,
+      bindings: [], bindingsFp: 'fp', analyzerEnabled: false,
+    });
+    expect(view.diagramNote).toBe(DISABLED_TEXT);
+  });
+
+  it('[green pin] unavailable row with a persisted noteCode + analyzerEnabled:true -> the persisted code\'s own text (unaffected)', () => {
+    const view = projectWorkflowDescribe(FULL, {
+      diagram: { status: 'unavailable', diagram: null, noteCode: 'RETRIES_EXHAUSTED', generatedAt: '2026-09-02T09:00:00.000Z', bindingsFp: 'fp' } as any,
+      bindings: [], bindingsFp: 'fp', analyzerEnabled: true,
+    });
+    expect(view.diagramNote).toBe(noteTextFor('RETRIES_EXHAUSTED'));
+  });
+
+  it('[green pin] no row at all + analyzerEnabled:false -> DISABLED (already correct, B2)', () => {
+    const view = projectWorkflowDescribe(FULL, { diagram: null, bindings: [], bindingsFp: 'fp', analyzerEnabled: false });
+    expect(view.diagramNote).toBe(DISABLED_TEXT);
+  });
+
+  it('[green pin] ready row + analyzerEnabled:false -> \'\' (a ready row\'s note always stays empty)', () => {
+    const view = projectWorkflowDescribe(FULL, {
+      diagram: { status: 'ready', diagram: 'x', noteCode: null, generatedAt: 'now', bindingsFp: 'fp' } as any,
+      bindings: [], bindingsFp: 'fp', analyzerEnabled: false,
+    });
+    expect(view.diagramNote).toBe('');
+  });
+
+  it('[green pin] no row at all + analyzerEnabled:true -> NOT_GENERATED (already correct, B2)', () => {
+    const view = projectWorkflowDescribe(FULL, { diagram: null, bindings: [], bindingsFp: 'fp', analyzerEnabled: true });
+    expect(view.diagramNote).toBe(noteTextFor('NOT_GENERATED'));
   });
 });
 
