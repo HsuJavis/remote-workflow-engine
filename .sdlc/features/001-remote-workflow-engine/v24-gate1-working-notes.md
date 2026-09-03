@@ -233,7 +233,7 @@ Gate 7.5 實跑。需求須指定舊名相容期與其終止條件。
 ### 工作流定義（6）— 鍵是 `name`
 | 工具 | 必要輸入 | 輸出 | 描述 |
 |---|---|---|---|
-| `workflow_register` | `name`, `script`, `mermaid` | `{version}` | 註冊/更新具名工作流。**`mermaid` 必填**:該 script 的流程圖,render 不過即拒。可選 `triggers[]`(先建立的觸發器 id;不帶 = 只能手動執行)、`defaults`、`params`。首位註冊者成為擁有者。錯誤:`PARSE_ERROR`／`MERMAID_INVALID`／`UNKNOWN_ALIAS`／`MCP_NOT_PROVISIONED`／`TRIGGER_NOT_FOUND`／`TRIGGER_ALREADY_CLAIMED`／`NOT_WORKFLOW_OWNER` |
+| `workflow_register` | `name`, `script`, `mermaid` | `{version}` | 註冊/更新具名工作流。**`mermaid` 必填**:該 script 的流程圖,render 不過即拒。可選 `triggers[]`(先建立的觸發器 id;不帶 = 只能手動執行)。**`defaults` 已退場**(ADR-035 / 裁定 v24 #1 A-2):每個 agent 的 `model`/`effort`/`timeoutMs`/`appendPrompt` 預設一律寫在 `meta.params.agents.<label>`,帶 `defaults` 一律拒絕而非忽略。首位註冊者成為擁有者。錯誤:`PARSE_ERROR`／`MERMAID_INVALID`／`UNKNOWN_ALIAS`／`MCP_NOT_PROVISIONED`／`TRIGGER_NOT_FOUND`／`TRIGGER_ALREADY_CLAIMED`／`NOT_WORKFLOW_OWNER` |
 | `workflow_deregister` | `name` | `{removed, releasedTriggers[]}` | 移除工作流。**回傳原本認領的觸發器 id,提示你去刪除** —— 引擎不代刪使用者建立的資源。錯誤:`NOT_WORKFLOW_OWNER` |
 | `workflow_publish` | `name`, `version`, `channel` | `{}` | 把 `beta`／`release` 指標移到已註冊的某版本。**註冊不等於發布**;未發布的 channel 被解析時回 `CHANNEL_UNPUBLISHED` |
 | `workflow_describe` | `name` | 公開解釋面 | **任何人可讀、無 script**。回傳用途、解析出的 `(version, resolvedBy)`、`channels`、`versions`、`params`(含引擎上限)、`lockedKeys`、`triggers`(現行綁定)、`mermaid`、`owner`、`reportProblem`。可選 `version`／`channel` 選擇版本 |
@@ -393,7 +393,7 @@ A3(只畫結構、秘密不入圖)原本綁在 analyzer 輸出上。作者自供
 **區別在作者把 model 寫在哪:**
 ```
 script 裡 agent({ model:'opus' })   → 寫死,使用者 override 蓋不過（per-call opts 優先序最高)
-註冊 defaults / meta.params.default → 預設,使用者 override 蓋得過
+註冊時 `meta.params.agents.<label>.<key>.default` → 預設(每個 agent 各自一份),使用者 override 蓋得過
 ```
 **缺口:`workflow_describe` 只回宣告的 `params` 與六個「引擎」鎖定鍵,不會說「第 3 個 agent 的
 model 被作者寫死」** —— 那在 script 裡,非擁有者讀不到。實際會發生:
