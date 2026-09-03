@@ -1460,3 +1460,42 @@ engine's own token.
 **State.** `gates.verification.passed` stays `true` with its note prepended (Prior chain kept);
 `current_stage` stays `validation`; `updated` bumped. Next: Gate 7.5 ROUND 3 to flip `VAL-119` on the
 SHIPPED default prompt against a capable provider — the one item this gate could not close.
+
+## 2026-09-03 — v23 Gate 7.5 ROUND 3 (validation) — PASSED
+
+**Verdict: PASS.** `VAL-119` flips red→green. A brand-new, never-bound workflow now gets its **first**
+diagram at registration, entry node `[ workflow_run ]` — the exact shape round 2 could only fake by
+adding a `meta.phases` entry titled `workflow_run`. Round 2's regression (every workflow is unbound at
+`v1`, so every first diagram was lost) is closed.
+
+**Boot.** Seven boots, every one the committed one-command `deploy.sh`
+(`RWE_CONFIG_PATH=<scratch> RWE_BIND=127.0.0.1 RWE_PORT=8795 ./deploy.sh --background`) on a scratch
+config assembled only from DEPLOY §2's no-root Ollama recipe + §1b rows; the only thing edited between
+boots is the `graphAnalyzer` block, which is REQ-104's own operator surface. Stamp
+`v0.20.0-101-g8458928`. Real local Ollama throughout, no mock in any path. Production 8899 untouched.
+
+**Evidence.** `val23r3fresh` registration → `promptTokens:433, completionTokens:21, durationMs:6622,
+outcome:"ready"`; `workflow_describe` serves `ready` / `triggers:[]` / `diagramStale:false` and the
+`[ workflow_run ]` entry over `╭ Fetch ╮` / `╭ Analyze ╮`. Non-vacuity control on the same build: node
+labels the allowlist can never hold still settle `GATE_REJECTED_CONTENT`/`token`. `VAL-118`
+re-observed on the changed `_buildAllowlist`: `[ cron ]`, `[ webhook ]`, `[ val23r3up ]` all ready,
+raw cron expression and tz absent, webhook secret/id absent, staleness flip/clear and immediate
+removal reflection intact, DES-127 B5 (a failed regen restores the prior row) confirmed live.
+
+**Two honest negatives, neither a code defect.** The shipped default `systemPrompt` degrades to
+`GATE_REJECTED_SHAPE`/`codepoint` on both local 7B-class models — the documented model-class ceiling —
+so its `ready` path on a capable provider stays unverified for want of a paid-provider key. And two of
+this round's *own* operator prompts were rejected on the bound case because the model copied their
+placeholder word; root-caused by replaying the engine's exact prompt at Ollama `/api/generate`, which
+reproduced `prompt_eval_count:461, eval_count:21` and returned the literal `TRIGGER`.
+
+**Docs.** Round 2 had written the then-real unbound defect into both manuals with a
+publish-then-bind workaround; that is now false, so the README 已知限制 bullet, the DEPLOY §5 已知缺陷
+row and the DEPLOY §6 entry-node sketch were each **replaced** (four shapes now, including
+`[ workflow_run ]`), plus a §5 row for the residual real case (a script declaring no
+`phase()`/`meta.phases` has no node labels to draw from). No config file needed a change; §1b
+round-trips both directions.
+
+**State.** `gates.validation.passed` → `true`; `current_stage` → `review`; trace 996 items / 18 gaps,
+byte-identical to the Gate 6.5+7 ROUND 3 baseline (0 高 / 0 未驗證 / 0 僅mock驗證); `rtm.md`
+regenerated — 106 REQ rows, all ✅. Next: Gate 8 review.

@@ -620,7 +620,7 @@ npm run start
 | `workflow_describe` 的 `diagramStatus` 一直是 `"unavailable"`，`diagramNote` 說逾時或「did not return a valid diagram」 | 畫圖的模型太小或太慢：出廠預設 prompt 要求「只輸出圖、不夾帶其他文字」，本機 7B 級模型常多寫字或用到規定外符號而被把關擋下（journal 的 `gateFail:"codepoint"`／`noteCode:"TIMEOUT"` 就是訊號） | 換一個能穩定照格式輸出的 `graphAnalyzer.model`，或把 `graphAnalyzer.systemPrompt` 改寫成給該模型的明確模板；改完重啟即生效（不需重新編譯）。真的不需要圖就設 `graphAnalyzer.enabled:false` |
 | 服務啟動失敗，log 只有一行 `fatal startup error: Error: litellm proxy failed to spawn: spawn litellm ENOENT` | `gateway:"sdk"` 在**開機階段**就要起一個 `litellm` 代理子行程，而 `PATH` 上沒有 `litellm` 執行檔（常見於 systemd unit 的 `PATH` 沒帶到 venv） | 照 §1a 把 litellm venv 的 `bin/` 加進 `PATH`（systemd 要寫在 unit 的 `Environment=PATH=...`）再啟動；或改成 §1a 的 (a)／(b) 免 LiteLLM 組合 |
 | 服務起得來，但每次 `agent()`／註冊畫圖都是 `PROVIDER_UNREACHABLE` | `gateway:"direct-fetch"` + `useLiteLLMProxy:true`，但 `PATH` 上沒有 `litellm`：代理是用到才起，起不來就這一次呼叫失敗（服務本身不受影響、不會中止） | 同上：補 `PATH`，或設 `useLiteLLMProxy:false` 讓 ollama 走原生直連 |
-| 剛註冊完的新工作流程，`diagramStatus` 是 `"unavailable"`、`diagramNote` 說 `produced content outside the allowed vocabulary` | **已知缺陷**：還沒綁觸發器時，引擎會叫畫圖模型把入口節點寫成 `workflow_run`，但輸出把關的字彙清單沒有收錄這個字，於是整張圖被擋掉（journal 顯示 `noteCode:"GATE_REJECTED_CONTENT"`／`gateFail:"token"`）。新註冊的工作流程一定還沒綁觸發器，所以每個新工作流程的第一張圖都會踩到 | 先 `workflow_publish`，再 `schedule_create`／`webhook_create` 綁一個觸發器，然後 `workflow_regenerate_diagram` 重畫——綁了觸發器的圖可以正常畫出來（入口節點會寫 `cron`／`webhook`／上游工作流程名稱）。不論有沒有圖，`workflow_describe` 的 `triggers` 欄位永遠是即時正確值 |
+| `diagramStatus` 是 `"unavailable"`、`diagramNote` 說 `produced content outside the allowed vocabulary`（journal 顯示 `noteCode:"GATE_REJECTED_CONTENT"`／`gateFail:"token"`） | 畫圖模型寫出了「把關字彙清單」以外的字。清單只收錄腳本裡真的存在的名字：`phase()`／`meta.phases` 的步驟標題、`aliases` 的模型別名、目前綁定的觸發方式，加上三個引擎自己指定的字（`default`／`model:param`／`workflow_run`）。最常見的原因是**腳本完全沒宣告步驟**，模型沒有任何可用名稱只好自己編 | 在腳本裡用 `phase('取資料')` 標出步驟（或 `export const meta = { phases: [...] }`），再 `workflow_regenerate_diagram` 重畫。若是自訂了 `graphAnalyzer.systemPrompt`，檢查 prompt 裡有沒有留下模板佔位字（例如寫「輸出 `[ TRIGGER ]`」，小模型會照抄 `TRIGGER` 這個字而被擋下）。不論有沒有圖，`workflow_describe` 的 `triggers` 欄位永遠是即時正確值 |
 | 手動用 `curl http://0.0.0.0:<port>/api/status` 檢查健康狀態，收到 `403 Forbidden`（不是逾時、不是連不上） | 伺服器的 Host-header 允許清單刻意不把 `0.0.0.0` 當成合法 Host（那是「監聽所有介面」的萬用位址，不是真實可連的目的地名稱）——`RWE_BIND=0.0.0.0` 只影響「監聽哪些介面」，不代表 `0.0.0.0` 本身能當 URL 用 | 改用 `127.0.0.1:<port>` 檢查（`deploy.sh` §0 本身在 `RWE_BIND=0.0.0.0` 時也是這樣做）；要從區網其他主機檢查，用該主機看到的 LAN IP（並確認已列在 §1b `allowedHosts`） |
 | `RWE_BIND=<LAN IP>`（如 §2 systemd 範例的 `192.168.0.125`）部署後，手動用 `curl http://127.0.0.1:<port>/api/status` 檢查，收到 `Connection refused`（連不上，不是 403） | 服務只監聽 `$RWE_BIND` 指定的那個介面；綁定成具體 LAN IP 時，該主機的 `127.0.0.1` 迴環介面根本沒有服務在聽 | 改用 `$RWE_BIND` 本身（例如 `curl http://192.168.0.125:<port>/api/status`）；`deploy.sh` §0 的健康檢查已依 `RWE_BIND` 是否為 `0.0.0.0`/`::` 自動選擇正確目的地，不需要手動判斷 |
 
@@ -699,17 +699,16 @@ workflow_register ──▶ 立刻回 {version}      （註冊從不等畫圖）
   綁了觸發器時，圖的第一個方框就會寫 `cron`／`webhook`／上游工作流程名稱：
 
   ```
-  [ cron ]            [ webhook ]         [ upstream-workflow-name ]
-      │                    │                          │
-      ▶                    ▶                          ▶
-  ╭ Fetch ╮            ╭ Fetch ╮                  ╭ Fetch ╮
+  [ cron ]         [ webhook ]      [ upstream-workflow-name ]   [ workflow_run ]
+      │                 │                       │                       │
+      ▶                 ▶                       ▶                       ▶
+  ╭ Fetch ╮         ╭ Fetch ╮               ╭ Fetch ╮               ╭ Fetch ╮
+   （排程）          （webhook）              （上游跑完接著跑）        （還沒綁，直接呼叫）
   ```
 
   圖上只寫**觸發種類**，不會寫出 cron 運算式本身（例如 `0 3 * * *` 不會出現在圖上）。
-- **已知缺陷：還沒綁觸發器時畫不出圖**。沒有任何觸發綁定時，引擎會叫模型把入口節點寫成
-  `workflow_run`，但輸出把關的字彙清單沒收錄這個字，整張圖會被擋掉
-  （`noteCode:"GATE_REJECTED_CONTENT"`／`gateFail:"token"`）。剛註冊的新工作流程一定還沒綁觸發器，
-  所以第一張圖通常畫不出來——處置見 §5 對應那一列。
+  還沒綁任何觸發器時，入口節點寫 `workflow_run`——意思是「這個工作流程目前只能由人／程式直接
+  `workflow_run` 叫起來」，而不是憑空編一個觸發器出來。
 - 不論圖畫得出來與否，`triggers` 欄位永遠是即時正確值；要知道現在綁了什麼，看它就對了。
 
 **高效大型程式庫 seeding**：`/mcp` 請求體接受 `Content-Encoding: gzip|deflate`（雙重上限：壓縮

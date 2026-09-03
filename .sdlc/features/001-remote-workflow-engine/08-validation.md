@@ -6218,6 +6218,11 @@ carries the same "reads as a plain `workflow_run` entry point when no trigger is
 - **iter:** v23
 
 ### VAL-119 — REQ-103's unbound clause: the engine asks for `workflow_run`, then its own gate rejects it
+
+> **SUPERSEDED by the `VAL-119` entry in the "v23 GATE 7.5 ROUND 3" section at the end of this file**
+> (adjudication #7 / `c9ea0aa` + the Gate 6.5 `UNBOUND_ENTRY_LABEL` extraction fixed exactly this; the
+> round-3 entry is green). Kept verbatim as the record of what round 2 found.
+
 - **status:** blocked
 - **traces:** REQ-103, DES-128, DES-131, ARCH-078, ARCH-080, TASK-117
 - **tier:** acceptance
@@ -6329,3 +6334,279 @@ along with `rwe-val23r2` (config + `workRoot`, i.e. every workflow, diagram, sch
 created). `.rwe.pid`/`.rwe.log` removed. Boot B ran with no `auth` block, so no bearer tokens were
 minted this round. The long-lived production instance (PIDs 2815228/2815242 + its litellm 2815257,
 started 8月19, port 8899) was confirmed listening and untouched throughout.
+
+## v23 GATE 7.5 ROUND 3 (2026-09-03, validator) — re-run REQ-103's unbound clause after adjudication #7
+
+**Verdict: PASS.** `c9ea0aa` + the Gate 6.5 `UNBOUND_ENTRY_LABEL` extraction closed round 2's
+`VAL-119`: an unbound workflow's diagram now renders, its entry node reads `[ workflow_run ]`, and the
+regression round 2 found — *every* newly registered workflow losing its first diagram — is gone,
+observed on a brand-new `v1` registration against a real provider. The gate is still live and still
+content-checking (non-vacuity control below). REQ-103's bound clauses were re-observed for real on the
+changed `_buildAllowlist` (cron / webhook / chain all still name their trigger), and the other v23 REQ
+surfaces were re-observed on the same live boots.
+
+Scope: delta re-validation (the v22 ROUND 2/3 and v23 ROUND 2 precedent). The delta is one allowlist
+token in `GraphAnalyzer._buildAllowlist` plus a pure constant extraction in `trigger-bindings.ts`;
+`VAL-111`/`VAL-112`/`VAL-115`/`VAL-116`/`VAL-117`'s round-1 greens stand, and the ones this round could
+re-observe cheaply on the same boots, it did (recorded under "Other v23 surfaces re-observed").
+
+### Boot evidence — documented steps only (§0 一鍵部署, the committed `deploy.sh`)
+
+HEAD `8458928` (`v0.20.0-101-g8458928`, this round's WIP checkpoint over `aa2a0ba`), branch
+`feat/v23-workflow-describe`. **Seven boots, every one of them the committed one-command deploy
+script**, with only 設定總表 rows as env overrides — no undocumented step, no manual fix, nothing
+edited in the engine. The scratch config was assembled ONLY from DEPLOY.md §2's "無 root 部署 + 本地
+Ollama" recipe plus §1b rows; the only thing that changed between boots is the `graphAnalyzer` block
+(REQ-104's own operator surface).
+
+```bash
+# The one command, run once per boot (7×, ports/paths identical, only rwe.config.json's
+# graphAnalyzer block edited in between):
+RWE_CONFIG_PATH=/home/user/.local/share/rwe-val23r3/rwe.config.json \
+  RWE_BIND=127.0.0.1 RWE_PORT=8795 ./deploy.sh --background
+# -> 步驟 1/5..5/5 all pass; 健康檢查通過:
+#    {"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (v0.20.0-101-g8458928)"}
+#    [remote-workflow-engine] graph-analyzer effective tools=[] jail=…/work/.graph-analyzer-scratch
+#    [remote-workflow-engine] listening on http://127.0.0.1:8795/mcp (workRoot=…/rwe-val23r3/work)
+#    [remote-workflow-engine] ready
+```
+
+The scratch `rwe.config.json` (derived from `rwe.config.example.json` + DEPLOY §2's Ollama recipe):
+`bind:"127.0.0.1"`, `port:8795`, `workRoot` outside the repo, `timeoutMs:300000`,
+`gateway:"direct-fetch"`, `useLiteLLMProxy:false`, `aliases{default→ollama qwen2.5:7b,
+vl→ollama qwen2.5vl:7b}`, `graphAnalyzer{enabled:true, model:"default", tools:[], timeoutMs:120000,
+retries:0}` (+ a `systemPrompt` on the boots noted below). Real provider throughout: local Ollama on
+`127.0.0.1:11434`, **no mock anywhere in the path**.
+
+**Live tool surface:** `tools/list` over real MCP HTTP returns **40** tools, `workflow_describe`
+present, `"skeleton"` appears **0** times in the whole payload.
+
+The seven boots, and the `graph-analyzer` journal line each one produced (all real, all quoted
+verbatim from the engine's own stdout):
+
+| boot | `graphAnalyzer` config | workflow | journal line |
+|---|---|---|---|
+| 1 | shipped default `systemPrompt`, `model:"default"` | `val23r3unbound` v1 registration | `promptTokens:602, completionTokens:202, durationMs:66007, outcome:"unavailable", noteCode:"GATE_REJECTED_SHAPE", gateFail:"codepoint"` |
+| 2 | operator `systemPrompt` #1 | `val23r3unbound` regen (unbound) | `promptTokens:358, completionTokens:21, durationMs:19877, outcome:"ready"` |
+| 2 | same | `val23r3unbound` regen ×3 (cron bound) | `promptTokens:378, completionTokens:21, durationMs:13907 / 3434 / 3475, outcome:"unavailable", noteCode:"GATE_REJECTED_CONTENT", gateFail:"token"` |
+| 3 | operator `systemPrompt` #2 | `val23r3unbound` regen (cron bound) | `promptTokens:461, completionTokens:21, durationMs:23160, outcome:"unavailable", noteCode:"GATE_REJECTED_CONTENT", gateFail:"token"` |
+| 4 | operator `systemPrompt` #3 (final) | cron / webhook / unbound / fresh / chain — see `VAL-119`, `VAL-118`re | five `outcome:"ready"` lines + one honest rejection, all quoted in the entries below |
+| 5 | control prompt A | `val23r3ctl` v1 | `promptTokens:435, completionTokens:21, durationMs:18350, outcome:"ready"` (control did **not** discriminate — see below) |
+| 6 | control prompt B | `val23r3ctl2` v1 | `promptTokens:445, completionTokens:26, durationMs:7356, outcome:"unavailable", noteCode:"GATE_REJECTED_CONTENT", gateFail:"token"` |
+| 7 | shipped default `systemPrompt`, `model:"vl"` | `val23r3vl` v1 | `promptTokens:593, completionTokens:66, durationMs:53316, outcome:"unavailable", noteCode:"GATE_REJECTED_SHAPE", gateFail:"codepoint"` |
+
+**Boots 2 and 3 are recorded honestly as operator-prompt defects of MINE, not engine defects.** Both
+rejected the *bound* case because the 7B model wrote my prompt's own placeholder word. Boot 3 was
+root-caused, not guessed: replaying the prompt the engine builds
+(`systemPrompt` + `\n\n---\nHow this workflow is triggered:\n` + `describeTriggerBindings(...)` +
+`\n\n---\nWorkflow script:\n` + script) straight at Ollama's `/api/generate` reproduced
+`prompt_eval_count:461, eval_count:21` **exactly**, and the raw output was
+`[ TRIGGER ]\n|\n▶\n╭ Fetch ╮\n|\n▶\n╭ Analyze ╮` — the model had copied the literal placeholder
+`TRIGGER` instead of substituting `cron`, and `TRIGGER` is (correctly) not in the allowlist. Boot 4's
+prompt names the substitution explicitly (`kind=cron -> write cron`, …) and the same model obeys.
+Those four rejections are therefore also a **live non-vacuity observation** in their own right: a token
+the allowlist does not hold is still refused on the very same engine build that now admits
+`workflow_run`.
+
+### VAL-119 — real-run acceptance for REQ-103's unbound clause (the entry node reads `workflow_run`, and the diagram survives the gate)
+- **status:** green
+- **traces:** REQ-103, DES-128, DES-131, ARCH-078, ARCH-080, TASK-117
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** REQ-103's second clause: *"Given a workflow with no trigger bound Then the entry node
+  reads as a direct `workflow_run` invocation rather than inventing a trigger."* Round 2 found the
+  engine instructing `workflow_run` (`trigger-bindings.ts` `describeTriggerBindings([])` and the
+  shipped default `systemPrompt`) while `GraphAnalyzer._buildAllowlist` never allow-listed it — 5
+  live rejections, 0 successes. `c9ea0aa` added the token; Gate 6.5 collapsed the two disagreeing
+  literals into one exported `UNBOUND_ENTRY_LABEL`. **Re-run for real on boot 4, real MCP HTTP, real
+  provider (Ollama `qwen2.5:7b`), no mock in any path — round 2's own oracle, inverted:**
+  1. **The common case, end to end.** A brand-new workflow `val23r3fresh`, registered once and never
+     bound to anything, got its **first** diagram at registration time:
+     `…"promptTokens":433,"completionTokens":21,"durationMs":6622,"outcome":"ready"`, and
+     `workflow_describe({name:"val23r3fresh",version:"v1"})` served
+     `diagramStatus:"ready"`, `triggers:[]`, `diagramStale:false`,
+     `diagramGeneratedAt:"2026-09-03T00:16:03.558Z"` and the diagram
+     ```
+     [ workflow_run ]
+     |
+     ▶
+     ╭ Fetch ╮
+     |
+     ▶
+     ╭ Analyze ╮
+     ```
+     This is exactly the shape round 2's control experiment had to fake by adding a `meta.phases`
+     entry titled `workflow_run`; it now falls out of the engine's own sentinel. Round 2's regression
+     ("every workflow is unbound at v1 registration, so every first diagram is lost") is closed.
+  2. **The same result by regeneration, on a workflow whose triggers were removed.**
+     `val23r3unbound` v1, after `webhook_delete` + `schedule_delete` left `triggers:[]`,
+     `workflow_regenerate_diagram` → `…"promptTokens":432,"completionTokens":21,"durationMs":12928,
+     "outcome":"ready"` and the identical `[ workflow_run ]` entry node,
+     `diagramStale:false`, `diagramGeneratedAt:"2026-09-03T00:15:51.836Z"`.
+  3. **Structure only, on this newly-reachable surface** (REQ-102's mask, re-asserted because a
+     *ready unbound diagram* is a surface that did not exist before): the script carries
+     `sk-val23r3fresh-SECRET-LITERAL-8f2a`, the distinctive prompt sentence
+     `Reticulate the crimson splines`, the `appendPrompt` marker `VAL23R3freshAPPENDMARKER`, the
+     identifier `API_KEY` and the literal `agent(`. Each string is **individually absent from the
+     diagram**, and its count in the **whole** `workflow_describe` response is **0**; the response has
+     no `script` key at all.
+  4. **NON-VACUITY CONTROL, same engine build, same model, same script** (boot 6): the identical
+     operator prompt with one change — every node label asked for is `not_a_real_label`, a word the
+     allowlist can never hold (not a phase title, not an alias, not a trigger kind, not an engine
+     sentinel). Registration of `val23r3ctl2` →
+     `…"promptTokens":445,"completionTokens":26,"durationMs":7356,"outcome":"unavailable",
+     "noteCode":"GATE_REJECTED_CONTENT","gateFail":"token"`, and `workflow_describe` serves
+     `diagram:null, diagramStatus:"unavailable",
+     diagramNote:"The diagram generator produced content outside the allowed vocabulary."` The gate is
+     live and still content-checking, so (1)/(2)'s `ready` is the added sentinel, not a disabled gate.
+     (Boot 5 tried a weaker control — asking only for a different *entry* label — and the model
+     followed the engine's own `describeTriggerBindings` line instead, returning `workflow_run` and
+     `outcome:"ready"`; recorded because it did not discriminate, and replaced by boot 6's.)
+  5. **Honest absence still honest** (REQ-102): boot 1 — the **shipped default** `systemPrompt` on
+     `qwen2.5:7b` — landed `unavailable`/`GATE_REJECTED_SHAPE`/`codepoint` with
+     `diagramNote:"The analyzer did not return a valid diagram."`, and boot 7 — shipped default prompt
+     with `graphAnalyzer.model:"vl"` (`qwen2.5vl:7b`) — landed the same. That is the documented
+     model-class ceiling (DEPLOY §1b `graphAnalyzer` item 3), not a defect, and it is orthogonal to
+     this entry: the defect round 2 found was the engine contradicting itself, which any obedient
+     model exposes. See "unreachable dependencies" for what stays unverified.
+- **iter:** v23
+
+### VAL-118 — re-observed for real on the changed `_buildAllowlist` (bound entry nodes still name their trigger)
+- **status:** green
+- **traces:** REQ-103, DES-128, DES-131, ARCH-078, ARCH-079, TASK-117
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `_buildAllowlist` is the function this round changed, and the verifier's own smoke
+  covered only the unbound case — so all three bound kinds were re-run for real (boot 4, real MCP
+  HTTP, real Ollama `qwen2.5:7b`). This re-confirms the round-2 green on the current tree; it does not
+  supersede it.
+  1. **cron** — `schedule_create({kind:"cron",workflow:"val23r3unbound",cron:"0 3 * * *",
+     tz:"Asia/Taipei"})` (the same call **before** `workflow_publish` was correctly refused
+     `CHANNEL_UNPUBLISHED: release (workflow 'val23r3unbound')`), then
+     `workflow_regenerate_diagram` → `…"promptTokens":452,"completionTokens":20,"durationMs":13785,
+     "outcome":"ready"` and the served entry node is `[ cron ]`. The raw expression is **not** drawn:
+     `'0 3 * * *'` and `'Asia/Taipei'` are each absent from the diagram.
+  2. **webhook** — `webhook_create({workflow:"val23r3unbound"})` → regen
+     `…"promptTokens":458,"completionTokens":20,"durationMs":12974,"outcome":"ready"`, entry node
+     `[ webhook ]`. Neither the returned `secret`
+     (`38561f7942f4a288…`) nor the `webhookId` (`4f37c079-…`) appears anywhere in the
+     `workflow_describe` response.
+  3. **chain** — a real upstream run (`workflow_run({name:"val23r3up"})` →
+     `c8559688-139c-480d-b04d-9ff7d73b754e`, a genuine Ollama essay call) plus
+     `chain_create({afterRunId:"c8559688-…",run:{workflow:"val23r3down"}})`; regenerating the
+     downstream's diagram while that continuation was pending →
+     `…"promptTokens":445,"completionTokens":25,"durationMs":83958,"outcome":"ready"` with the entry
+     node naming **the upstream workflow**: `[ val23r3up ]`. `workflow_describe` had reported the
+     binding as `triggers:[{"kind":"chain","upstreamWorkflow":"val23r3up"}]`.
+  4. **Live bindings + staleness (REQ-103's third clause)** — `webhook_create` flipped
+     `diagramStale:false → true` against an unchanged `diagramGeneratedAt`;
+     `workflow_regenerate_diagram` cleared it back to `false` with a new timestamp; `webhook_delete`
+     then `schedule_delete` were each reflected in the **very next** read (`triggers` → cron-only →
+     `[]`) with `diagramStale` flipping to `true` while the previously-drawn `[ webhook ]` diagram was
+     still served — a stale diagram never silently contradicts the live bindings. The chain arm shows
+     the same: once the upstream run completed and consumed the continuation, `triggers` went to `[]`
+     and the `[ val23r3up ]` diagram was marked `diagramStale:true`.
+  5. **DES-127 B5 confirmed live**: the four failed regenerations of boots 2/3 did **not** clobber the
+     stored `ready` row — `workflow_describe` kept serving the prior diagram with its original
+     `diagramGeneratedAt` and `diagramStale:true`, exactly as designed.
+- **iter:** v23
+
+### Other v23 surfaces re-observed on the same live boots
+
+Round-1/round-2 greens for REQ-100 `[AMENDED v23]`, REQ-101, REQ-104, REQ-105 and REQ-106 stand (the
+delta touched none of those surfaces). What could be re-observed cheaply on these boots was, and all
+of it held:
+
+- **REQ-101 (`VAL-112`)** — `workflow_describe` returned the full DES-125 field set in one response:
+  `name, version, resolvedBy, channels, versions, description, phases, params, lockedKeys, owner,
+  reportProblem, triggers, diagram, diagramStatus, diagramNote, diagramGeneratedAt, diagramStale` —
+  with the declared knob (`effort` enum + default `low`), the engine ceiling
+  (`timeoutMs.max:600000`), the declared arg (`topic`), the six `lockedKeys` named as locked, and no
+  `script` key. An unpublished channel is refused, never silently resolved:
+  `workflow_describe({name:"val23r3fresh",channel:"beta"})` →
+  `CHANNEL_UNPUBLISHED: beta (workflow 'val23r3fresh')`.
+- **REQ-100 `[AMENDED v23]` (`VAL-111`)** — `phases:[{title:"Fetch"},{title:"Analyze"}]` is served on
+  the public describe surface while the script never is.
+- **REQ-104 (`VAL-115`)** — re-confirmed on the integrated tree, config-only, no redeploy: editing
+  `graphAnalyzer.systemPrompt` on disk and restarting turned the same `(val23r3unbound, v1)` from
+  `unavailable`/`GATE_REJECTED_SHAPE` (boot 1) into a `ready` diagram (boot 2); editing
+  `graphAnalyzer.model` to `"vl"` and restarting made the engine's own journal line report
+  `"model":"vl"` (boot 7). Nothing was recompiled or code-edited at any point.
+- **REQ-105 (`VAL-116`)** — on the live boot: `GET /api/workflows/val23r3unbound/skeleton` → **404**,
+  `GET /api/workflows/val23r3unbound/describe` → **200** with 0 occurrences of `"skeleton"` and no
+  `"script"` key, `GET /api/workflows` → **200** with 0 occurrences of `"skeleton"`, and the whole
+  `tools/list` payload has **0**.
+- **REQ-106 (`VAL-117`)** — the live `workflow_register.script` description carries all four authoring
+  rules and the `docs/AUTHORING.md` pointer verbatim: *"Authoring rules (docs/AUTHORING.md has the
+  full text): (1) declare every tunable knob in `meta.params` … (2) never read a param key the
+  contract does not declare; (3) the six LOCKED_KEYS (prompt/tools/skills/mcp/workdir/cwd) are
+  engine-owned … (4) phase titles are visible to every principal who can see the workflow (including
+  the generated diagram)…"*.
+
+One incidental observation, **not** a defect and not REQ-blocking: `val23r3up`'s own registration
+(`return { done: await agent('…') }`, a script with **no** `phase()` call and no `meta.phases`) landed
+`GATE_REJECTED_CONTENT`. With no phase titles there is nothing in the allowlist for the model to draw
+node labels from, so any label it invents is refused. That is the gate behaving as designed on a
+script that declares no structure; the remedy is the documented one (declare `meta.phases` /
+`phase()`), and `workflow_describe` reports the absence honestly.
+
+### v23 GATE 7.5 ROUND 3 — config-file sync check (§4b)
+
+This round's delta (`src/graph-analyzer.ts` — one `labels.add(UNBOUND_ENTRY_LABEL)`;
+`src/trigger-bindings.ts` — one exported string constant; `tests/unit/graph-analyzer.test.ts`)
+introduces **no new config key, secret, port or flag**, and changes no default. `rwe.config.example.json`
+is unchanged and still boots (this round's scratch config was derived from it plus DEPLOY §2's Ollama
+recipe plus §1b rows, and all seven boots came up green). DEPLOY §1b 設定總表 was re-checked in both
+directions against `ServerConfig`/`FileConfig`/`AuthConfig`/`GraphAnalyzerConfig` and
+`rwe.config.example.json`: every key the code reads has a row, every row still maps to a key the code
+reads — no missing row, no dead row. **No config drift; no config file needed a change this round.**
+
+### v23 GATE 7.5 ROUND 3 — doc gaps found and folded into the manuals
+
+Round 2 wrote the (then-real) `GATE_REJECTED_CONTENT`-on-unbound defect INTO both manuals, together
+with a publish-then-bind workaround. This round's fix makes all of that false, so those passages were
+stale instructions — the exact current-state violation the gate checks for. Rewritten from this
+round's observed behavior:
+
+1. `README.md` 已知限制 — the bullet 「還沒綁觸發器的工作流程，圖可能畫不出來」 (which told the reader
+   the first diagram is always lost and to publish-then-bind-then-regenerate) is **deleted** and
+   replaced by a bullet that states what the engine now does: the entry node reads `workflow_run` when
+   nothing is bound, and `cron`/`webhook`/上游工作流程名稱 once something is.
+2. `DEPLOY.md` §5 疑難排解 — the 「剛註冊完的新工作流程 … produced content outside the allowed
+   vocabulary」 **已知缺陷** row is deleted (the defect is gone) and replaced by a row for the residual,
+   genuinely-possible case: a script that declares no `phase()`/`meta.phases` structure has no node
+   labels to draw from.
+3. `DEPLOY.md` §6 分析器/診斷圖 section — the paragraph listing the three entry-node shapes plus the
+   unbound known-defect is rewritten to four shapes with no defect caveat.
+
+No other manual statement changed. The remaining model-capability passages (README「小模型畫不出合格
+的圖」, DEPLOY §5 `diagramStatus` row, §1b `graphAnalyzer` item 3) were re-checked against boots 1 and
+7 and are still exactly true.
+
+### v23 GATE 7.5 ROUND 3 — unreachable dependencies
+
+**None that block a REQ.** Every arm ran against a real provider (local Ollama `qwen2.5:7b` /
+`qwen2.5vl:7b` over `localhost:11434`) or real engine wiring, through the real MCP HTTP surface.
+
+Carry-forward (unchanged, still true, still not REQ-blocking):
+- **No paid-provider key** (Anthropic/OpenAI/Gemini) exists in this environment, so *"the **shipped
+  default** `systemPrompt` producing a `ready` diagram on a vocabulary-compatible model"* remains
+  unverified at the real tier — boots 1 and 7 show both local 7B-class models degrading at the
+  codepoint pass, the documented ceiling. This does **not** hold `VAL-119` open: the defect round 2
+  recorded was the engine instructing a token its own gate refused, which is model-independent and is
+  proven closed by any obedient model plus the non-vacuity control.
+- The local-7B tool-loop ceiling (`agent()` does not really trigger tool use) is unchanged.
+
+### v23 GATE 7.5 ROUND 3 — cleanup
+
+All seven validation workflows (`val23r3unbound`, `val23r3fresh`, `val23r3up`, `val23r3down`,
+`val23r3ctl`, `val23r3ctl2`, `val23r3vl`) deregistered — `workflow_list` shows no registration left,
+`schedule_list` → `[]`, `webhook_list` → `[]`; the chain continuation was consumed by its own upstream
+run. The boot process was killed, `.rwe.pid`/`.rwe.log` removed, and the whole
+`/home/user/.local/share/rwe-val23r3` tree (config + `workRoot`, i.e. every workflow, diagram,
+schedule, webhook and run these boots created) deleted. `git status` clean apart from this round's
+intended ledger/manual edits. No `auth` block was configured on any boot, so no bearer tokens were
+minted. The long-lived production instance (PID 2815242, started 8月19, port 8899) was confirmed
+listening and untouched before and after.
