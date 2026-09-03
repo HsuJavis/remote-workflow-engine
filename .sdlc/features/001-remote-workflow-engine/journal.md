@@ -1761,3 +1761,48 @@ why the line must key off effective, not configured. **Flagged for Gate 7.5, not
 validation evidence was collected against `a39c0e7`/`eef7809`, which PRE-DATES `9fc4439`'s settle rework, so
 validation round 5 should re-run the v23 REQ surfaces against this tree. `gates.verification.passed=true`;
 `current_stage → validation`.
+
+## 2026-09-04 — v23 Gate 7.5 ROUND 5 (validation) — PASSED
+
+Round 4's real evidence pre-dated `9fc4439`, and the round-5 verifier said so out loud; this round
+re-ran the v23 REQ surfaces against that tree (`d17d5a2` = `v0.20.0-115-gd17d5a2`). **Thirteen boots,
+every one the committed `./deploy.sh --background`** with only 設定總表 env rows
+(`RWE_CONFIG_PATH`/`RWE_BIND`/`RWE_PORT`), a scratch config built only from DEPLOY §2's no-root Ollama
+recipe plus §1b rows, and the `graphAnalyzer` block as the single thing edited between boots. Real
+Ollama (`qwen2.5:7b`, `qwen2.5vl:7b`) throughout; no mock in any path.
+
+**Four new real-tier greens.** `VAL-124`: the journal line now carries twelve keys, and the new
+`attempts`/`cause` pair was observed on every settle shape a deployment can actually reach — `ready`
+(`attempts:1`, `cause:null`), `gate_refused`, `model_unmapped` (`attempts:0`, zero model calls), and
+**both** members of `RETRIES_EXHAUSTED`'s old overload, separated live by two **real** `SIGKILL`
+crashes: an orphan `pending` row settled at the next boot as `cause:"disabled"`, then — after a boot
+sweep re-stamped and requeued it inside `_startJob` and that process was killed mid-draw — as
+`cause:"boot_abandoned"`. Same `noteCode`, different `cause`: R-2(d)'s whole purpose, and its own
+non-vacuity control. R-3 was proven at the store rather than by reading code: registering while
+`enabled:false` leaves **no `workflow_diagrams` row at all**, so there is nothing to clobber or
+strand. `VAL-125`: with an alias pointing at a genuinely absent Ollama model and `retries:1`, a
+regenerate over a `ready` row journalled `attempts:2` / summed `durationMs` / `outcome:"ready"` /
+`cause:"prior_restored"` while the served diagram stayed byte-identical and its `diagramGeneratedAt`
+unchanged — oracle O5 (the line matches the row actually written) and DES-127 B5 in one observation.
+`VAL-126`: the describe surfaces over those rows — 401 before any store read (byte-identical for an
+existing and a never-registered name), non-owner 200 with no script and 0 secret hits, HTTP/MCP
+parity value-for-value, the full 17-field projection, and REQ-105's skeleton absence counted in the
+bytes the engine actually serves. `VAL-127`: `[ workflow_run ]` / `[ webhook ]` / `[ cron ]` entry
+nodes with `promptTokens` 509→513→529 proving the bindings really enter the prompt, secrets and cron
+expressions absent from every diagram, staleness flipping and clearing live.
+
+**One defect found and deliberately not fixed here:** `docs/AUTHORING.md` rule 1's example
+`meta.params` block is refused by the running engine (`PARAM_CONTRACT_INVALID: type must be one of
+string, number, enum`). The code matches DES-101, so the doc is wrong; REQ-106's three acceptance
+clauses still hold, so it is recorded as an open Gate-8//sdlc-fix item for the owner, not a REQ
+failure.
+
+**DEPLOY.md rewritten to current state** (README re-checked live and needed none): the journal
+paragraph said 「固定十個欄位」 and showed ten — replaced by the twelve-key line, a field-by-field
+reading table and the complete `cause` vocabulary in plain language; the `enabled:false` paragraph
+claimed no log line is ever printed — rewritten to the two cases actually observed; a new paragraph
+for the boot-time ADR-016/ADR-020 warn (it names the **curated** effective tool set); a new §5
+troubleshooting row for `prior_restored`. §4b: the delta changed no config file and adds no key —
+§1b round-trips clean in both directions. trace 1028/18 with residue byte-identical to the
+pre-round baseline (0 未驗證需求, 0 僅mock驗證); `rtm.md` regenerated, 106 rows, all ✅.
+`gates.validation.passed=true`; `current_stage → review`.

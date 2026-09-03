@@ -629,6 +629,7 @@ npm run start
 | 服務啟動失敗，log 只有一行 `fatal startup error: Error: litellm proxy failed to spawn: spawn litellm ENOENT` | `gateway:"sdk"` 在**開機階段**就要起一個 `litellm` 代理子行程，而 `PATH` 上沒有 `litellm` 執行檔（常見於 systemd unit 的 `PATH` 沒帶到 venv） | 照 §1a 把 litellm venv 的 `bin/` 加進 `PATH`（systemd 要寫在 unit 的 `Environment=PATH=...`）再啟動；或改成 §1a 的 (a)／(b) 免 LiteLLM 組合 |
 | 服務起得來，但每次 `agent()`／註冊畫圖都是 `PROVIDER_UNREACHABLE` | `gateway:"direct-fetch"` + `useLiteLLMProxy:true`，但 `PATH` 上沒有 `litellm`：代理是用到才起，起不來就這一次呼叫失敗（服務本身不受影響、不會中止） | 同上：補 `PATH`，或設 `useLiteLLMProxy:false` 讓 ollama 走原生直連 |
 | `diagramStatus` 是 `"unavailable"`、`diagramNote` 說 `produced content outside the allowed vocabulary`（journal 顯示 `noteCode:"GATE_REJECTED_CONTENT"`／`gateFail:"token"`） | 畫圖模型寫出了「把關字彙清單」以外的字。清單只收錄腳本裡真的存在的名字：`phase()`／`meta.phases` 的步驟標題、`aliases` 的模型別名、目前綁定的觸發方式，加上三個引擎自己指定的字（`default`／`model:param`／`workflow_run`）。最常見的原因是**腳本完全沒宣告步驟**，模型沒有任何可用名稱只好自己編 | 在腳本裡用 `phase('取資料')` 標出步驟（或 `export const meta = { phases: [...] }`），再 `workflow_regenerate_diagram` 重畫。若是自訂了 `graphAnalyzer.systemPrompt`，檢查 prompt 裡有沒有留下模板佔位字（例如寫「輸出 `[ TRIGGER ]`」，小模型會照抄 `TRIGGER` 這個字而被擋下）。不論有沒有圖，`workflow_describe` 的 `triggers` 欄位永遠是即時正確值 |
+| 呼叫過 `workflow_regenerate_diagram`，log 也印了 `outcome:"ready"`，但 `workflow_describe` 的圖跟 `diagramGeneratedAt` 都沒變 | 這是刻意的保護：這次重畫失敗了，引擎把**原本那張畫好的圖原封不動留著**，而不是把它清成「沒有圖」。log 那行的 `cause:"prior_restored"` 就是這個意思，`attempts` 是失敗前試了幾次 | 先看同一行的 `noteCode`／`gateFail` 找出重畫失敗的原因（多半是模型或把關問題，見上面兩列），修好再重畫一次；在那之前舊圖仍可安全閱讀，只是內容停留在 `diagramGeneratedAt` 那個時間點 |
 | 手動用 `curl http://0.0.0.0:<port>/api/status` 檢查健康狀態，收到 `403 Forbidden`（不是逾時、不是連不上） | 伺服器的 Host-header 允許清單刻意不把 `0.0.0.0` 當成合法 Host（那是「監聽所有介面」的萬用位址，不是真實可連的目的地名稱）——`RWE_BIND=0.0.0.0` 只影響「監聽哪些介面」，不代表 `0.0.0.0` 本身能當 URL 用 | 改用 `127.0.0.1:<port>` 檢查（`deploy.sh` §0 本身在 `RWE_BIND=0.0.0.0` 時也是這樣做）；要從區網其他主機檢查，用該主機看到的 LAN IP（並確認已列在 §1b `allowedHosts`） |
 | `auth.enabled:true` + `bind:"0.0.0.0"`，從**本機**呼叫 `/mcp` 做寫入（`workflow_register`／`workflow_publish`／`workflow_deregister`／`webhook_delete`…），明明帶了有效 bearer 卻回 `PRINCIPAL_REQUIRED` | 這個組合下本機來源走的是 D-BIND 豁免（§1b 部署前提第 3 點），伺服器直接放行、**根本不會去讀你帶的 bearer**，於是這次呼叫沒有身份可用，而寫入類操作在 `auth.enabled:true` 時不接受 `args.principal` 自稱 | 要用 bearer 身份做寫入，就從**非 loopback 來源**呼叫（例如從該主機的 LAN IP 打進去），或把 `bind` 設成 `127.0.0.1`（loopback bind 沒有豁免，bearer 一定會被讀取）；只讀不寫時維持現狀即可 |
 | `RWE_BIND=<LAN IP>`（如 §2 systemd 範例的 `192.168.0.125`）部署後，手動用 `curl http://127.0.0.1:<port>/api/status` 檢查，收到 `Connection refused`（連不上，不是 403） | 服務只監聽 `$RWE_BIND` 指定的那個介面；綁定成具體 LAN IP 時，該主機的 `127.0.0.1` 迴環介面根本沒有服務在聽 | 改用 `$RWE_BIND` 本身（例如 `curl http://192.168.0.125:<port>/api/status`）；`deploy.sh` §0 的健康檢查已依 `RWE_BIND` 是否為 `0.0.0.0`/`::` 自動選擇正確目的地，不需要手動判斷 |
@@ -725,27 +726,57 @@ workflow_register ──▶ 立刻回 {version}      （註冊從不等畫圖）
   `workflow_run` 叫起來」，而不是憑空編一個觸發器出來。
 - 不論圖畫得出來與否，`triggers` 欄位永遠是即時正確值；要知道現在綁了什麼，看它就對了。
 - **每畫一次圖就寫一行 log（診斷全靠它）**：每一次「有結論」的畫圖——不管成功、失敗、還是連模型
-  都沒呼叫就直接放棄——都會在 stdout 印出**恰好一行**、固定十個欄位、固定順序：
+  都沒呼叫就直接放棄——都會在 stdout 印出**恰好一行**、固定十二個欄位、固定順序：
 
   ```
   [remote-workflow-engine] graph-analyzer {"name":"greet","version":"v1","principal":"alice@example.com",
    "model":"default","promptTokens":438,"completionTokens":19,"durationMs":12337,
-   "outcome":"ready","noteCode":null,"gateFail":null}
+   "outcome":"ready","noteCode":null,"gateFail":null,"attempts":1,"cause":null}
   ```
 
-  怎麼讀：`outcome` 是 `ready`（畫成功）或 `unavailable`（沒畫成）；沒畫成時 `noteCode` 說原因
-  （`TIMEOUT`／`PROVIDER_UNREACHABLE`／`GATE_REJECTED_SHAPE`／`GATE_REJECTED_CONTENT`／
-  `RETRIES_EXHAUSTED`／`MODEL_UNMAPPED`／`QUEUE_FULL`），被把關擋下時 `gateFail` 再說是哪一關
-  （`codepoint`＝用了規定外的符號、`token`＝寫了字彙清單以外的字）。
-  `promptTokens`／`completionTokens` 是 `null`、`durationMs` 是 `0`，代表**這次根本沒有呼叫模型**
-  ——例如 `graphAnalyzer.model` 填了不存在的別名（`MODEL_UNMAPPED`），或關機時卡住的那筆在下次
-  開機被直接收掉（`RETRIES_EXHAUSTED`）。要估成本，直接把這幾行的 token 數加起來就是畫圖的全部花費。
+  怎麼讀：
+
+  | 欄位 | 意思 |
+  |---|---|
+  | `outcome` | `ready`（這次落地的圖可以看）或 `unavailable`（沒有圖） |
+  | `noteCode` | 沒有圖時的原因代碼：`TIMEOUT`／`PROVIDER_UNREACHABLE`／`PROVIDER_ERROR`／`GATE_REJECTED_SHAPE`／`GATE_REJECTED_CONTENT`／`RETRIES_EXHAUSTED`／`MODEL_UNMAPPED`／`QUEUE_FULL` |
+  | `gateFail` | 被把關擋下時是哪一關：`codepoint`＝用了規定外的符號、`token`＝寫了字彙清單以外的字、`type`／`size`＝空回應或超出上限 |
+  | `promptTokens`／`completionTokens` | 這次落地累計用掉的 token（多次嘗試會相加）；`null` 代表模型從未成功回應 |
+  | `durationMs` | 這次落地的總耗時（多次嘗試相加）；`0` 代表根本沒呼叫模型 |
+  | `attempts` | 這次落地實際打了幾次模型。`0`＝一次都沒打（設定或關機清理就直接落地）；`2` 以上＝重試過（次數由 `graphAnalyzer.retries` 決定） |
+  | `cause` | 為什麼會落成這個結果的**引擎判定原因**，成功時是 `null`（見下表） |
+
+  `cause` 的完整值域（只有這幾種，永遠不會是模型或供應商回傳的原始文字）：
+
+  | `cause` | 白話解釋 |
+  |---|---|
+  | `null` | 正常畫成功 |
+  | `gate_refused` | 模型有回應，但被把關擋下（配 `gateFail` 看是哪一關） |
+  | `provider_timeout` | 呼叫模型逾時（`graphAnalyzer.timeoutMs`） |
+  | `provider_terminal` | 供應商連不上或回錯誤 |
+  | `model_unmapped` | `graphAnalyzer.model` 不是 `aliases` 裡的別名，連打都沒打 |
+  | `queue_full` | 畫圖佇列滿了（`graphAnalyzer.maxQueueDepth`） |
+  | `disabled` | 分析器關著，所以直接落地（只會出現在開機清理卡住的那筆時） |
+  | `boot_abandoned` | 上一個行程畫到一半就死了，這次開機把它收掉 |
+  | `prior_restored` | 這次重畫失敗，**保留了原本那張畫好的圖**——所以 `outcome` 仍是 `ready` |
+  | `script_unresolved` | 排到要畫時腳本已被 `workflow_deregister` 刪掉 |
+  | `job_exception` | 畫圖工作本身丟出非預期例外 |
+  | `settle_failed` | 連寫入結果都失敗（資料庫層問題），只留這行 log |
+
+  要估成本，把這些行的 token 數加起來就是畫圖的全部花費。
 - **`graphAnalyzer.enabled:false` 當下實際會發生什麼**：註冊照樣成功（永遠不是錯誤）、完全不呼叫
-  模型、也不會多出任何一行上面那種 log。`workflow_describe` 這時一律回
+  模型，註冊當下也不會多出任何一行上面那種 log（連分析器都沒進去）。`workflow_describe` 這時一律回
   `diagramStatus:"unavailable"` ＋ `diagramNote:"Diagram generation is disabled for this
   deployment."`，**唯一的例外是先前已經畫好的圖**——那張 `ready` 的圖會照常繼續提供。上次關機時
   正在畫、卡在 `pending` 的那筆，會在下次開機時直接收掉成 `unavailable`（不會永遠卡著，也不會偷偷
-  再送一次腳本給 provider）；之後把 `enabled` 打開再 `workflow_regenerate_diagram` 即可重畫。
+  再送一次腳本給 provider）——這種清理**會**印一行上面那種 log，`attempts:0`、`principal:null`、
+  `cause:"disabled"`（分析器關著）或 `cause:"boot_abandoned"`（分析器開著、但上個行程畫到一半就死了）；
+  之後把 `enabled` 打開再 `workflow_regenerate_diagram` 即可重畫。
+- **開機時的工具警告**：`graphAnalyzer.tools` 不是空陣列時，開機會多印一行 `warn`，把**實際生效**
+  的工具集念出來（設定值會先經過各供應商的工具整理，可能被增刪，所以印的是整理後的結果）：
+  `graph-analyzer: effective tool set is non-empty (["Bash"]) — the analyzer runs on
+  attacker-influenced input (ADR-016), confirm this is intended`。畫圖的 prompt 內容就是別人送來的
+  腳本，給它工具等於讓外來文字有機會驅動工具，這行是提醒你確認這是刻意的。空陣列（預設）不會有這行。
 
 **高效大型程式庫 seeding**：`/mcp` 請求體接受 `Content-Encoding: gzip|deflate`（雙重上限：壓縮
 輸入 8 MiB + 解壓輸出 8×，防 gzip bomb）；超過上限回具型別 413
