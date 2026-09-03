@@ -1519,3 +1519,127 @@ regenerated — 106 REQ rows, all ✅. Next: Gate 8 review.
 **Incident, recorded not hidden.** A `pkill -9 -f "src/main.ts"` also matched the long-lived production instance (PID 2815242, port 8899); the `systemd --user` unit from DEPLOY §2 restarted it automatically (`NRestarts=2`, `/api/status` 200) — the documented self-healing path is now real-run evidence, and every later kill targeted an explicit PID. **Consequence for the owner to decide:** the unit's `ExecStart` runs tsx off this repo's working tree, so the restart loaded today's `feat/v23-workflow-describe` checkout rather than the 8月19 `v0.20.0` build that process had been serving. Nothing broke and no REQ is affected, but that long-lived instance is now on un-reviewed v23 code; leaving it or restoring it to a tagged release is the owner's call.
 
 **State.** `gates.validation.passed` stays `true`; `current_stage` → `review`; §4b config sync — the delta changed **no** config file and introduces no key/port/flag, §1b round-trips both directions; trace 1012 items / 18 gaps, byte-identical to the Gate 6.5+7 ROUND 4 baseline captured before this pass (0 嚴重 / 0 未驗證需求 / 0 僅mock驗證); `rtm.md` regenerated — 106 REQ rows, all ✅. Cleanup: nine workflows deregistered, all lists empty, the whole scratch tree (including the `auth-tokens.db` holding this round's bearers) deleted. Next: Gate 8 review.
+
+- 2026-09-03 — v23 **GATE 8 RE-REVIEW #1 (reviewer) SENDS BACK AGAIN** — `send_back: ["architecture","tests","impl"]`, `arch_consistent: false` (9 deviations: **1 HIGH blocking** / 4 MED / 4 LOW, plus **1 expert finding overruled**). Second Gate 8 pass, re-dispatched after the first pass's send-back at `d294880`; scope was **verify the fixes**, not re-open v23. Both architecture panels were **re-run by the workflow** (`.panel/review/{adversarial,quality-dimensions}.md`, both rewritten against HEAD `41e6382`) and consolidated, **not re-spawned**; every load-bearing claim re-verified by this reviewer at `file:line`. **All three previous HIGHs are closed or substantially closed** — A1's transport gate is real (`server.ts:1892-1907`: `GET /api/workflows/:name/describe` computed **inside** the `authHandlers` block as the fourth `dbindExempt` member, `send401()` with `WWW-Authenticate` before any store read, handler untouched so the projection stays single), A2's `enabled:false` never reaches the gateway (guards at `graph-analyzer.ts:138`/`:181` **plus** caller guards at `server.ts:955`/`mcp-facade.ts:462`), A4 (`renderMiniPreviewAsync` genuinely deleted, one `/describe` fetch left), A5 (`VOCAB_GLYPHS` exported + interpolated), A6 (IT-102 set equality), A10, V-D, inv 4/6/9/10. **The one HIGH that remains is the unfixed half of A3** (`R-1` ≡ `SUS-1`, both panels): ARCH-079 inv 2 as amended orders the `try{…}catch{settle+journal}finally{release+drain}` to **wrap the scheduled closure**, but `graph-analyzer.ts:255-264` puts `await this._runJob(…)` at `:263` **outside** the `try`, has **no `finally`**, and its `catch` only `_release(key)`s — no settle, no journal — while `:127` still schedules `void job()` with no `.catch()`. So any throw from `getTriggerBindings` (`:355`) or `putDiagramResult` (`:377`/`:380`/`:385`) leaks the concurrency-1 slot permanently (every later registration then settles the designed-looking `QUEUE_FULL`) and escapes as an unhandled rejection, reachable at boot via `sweepAtBoot` (`server.ts:1507`). **Empirical half, run by this reviewer:** `npx vitest run tests/unit/graph-analyzer.test.ts` is **33/33 green** over that defect, because UT-125 dropped the ordered assertion (b) "the row settles" and inv 8's V-C throwing-`putDiagramResult` oracle — named as debt in UT-128's own docblock at `:497-501` — was never picked up. **MED:** R-2/OBS-1 the journal line ships **ten** keys against the amended eleven (`cause` absent at `graph-analyzer.ts:223-233`; the quality lens's three-identical-lines table **corrected** — `:139` is unreachable behind `server.ts:955`, the real overload is `:182` vs `:196`); R-2b/OBS-2 the emitter is still inside `_attempt` (`:339`) so the DES-127 B5 restore writes `status:'ready'` while its only line says `outcome:'unavailable'`; SUS-2 ADR-020's "warn loudly at boot when `tools` is non-empty" was never built (`server.ts:1512` is an unconditional `console.log`, identical for `[]` and `["Bash"]`); R-3/REP-1 inv 11's guard is at four call sites across three modules, not at the `_startJob` choke point the amendment prescribes — adjudicated MED on one ground only, that **nothing records taking the pre-authorized fallback**. **LOW:** R-5 the struck "three consumers" claim survives in `diagram-gate.ts:22-24`; R-6 `TOOL_NAMES` counted **40**, `02-architecture.md:555` says 39; CONS-1 ARCH-085 advertises six `graphAnalyzer` keys, the shipped block has nine; R-4 analyzer store I/O on the registration request path. **OVERRULED, recorded not dropped:** quality's OBS-3 ("DEPLOY still says the disabled path emits no log line and writes no row") is **false** — `server.ts:955` guards `enabled` before `enqueue` and `mcp-facade.ts:462` refuses `regenerate`, so `DEPLOY.md:743-744`/`:359` are accurate and Gate 7.5 round 4's own real-run observation agrees; only a boot-sweep-line nit remains (LOW debt). **Clean, no send-back:** traceability (**1012 items / 18 gaps**, residue byte-identical to the pre-send-back baseline — 0 new gaps, 0 orphan, 0 broken-link; 1 MID `IMPL-082`, 16 LOW iter-drift, 1 LOW `TASK-018`); `solid_check` **PASS** (23 modules, 0 high / 0 mid, 10 LOW unclaimed-file warnings); validation + handover (`rtm.md` **106/106 ✅ real:true**, 0 未驗證 / 0 僅mock, `08-validation.md` v23 ROUND 4 present, DEPLOY §0 一鍵部署 `./deploy.sh --background` run twelve times by Gate 7.5 round 4, single §1b 設定總表, A1's contingent README/DEPLOY edits landed and the 「（ADJ-A1，v24）」 phantom-iteration leak removed) — **Gate 7.5 is NOT sent back**. **Dashboard QA:** `dashboard_check` 0 high / 3 mid / 1 low — the 3 mids (`02-architecture.md:934/1198/1645`) re-verified as `erDiagram` crow's-foot false positives (`||--o{` / `}o--||` defeat lexical bracket counting), the LOW (no offline mermaid fallback) is real and caused by the checked-in `.sdlc/trace.py` predating plugin 2.1.3's `--tool` dispatcher — recorded as debt, not fixed here; 0 dead SoT links; **degraded mode declared** (no playwright in session). Reviewer also ran `npx tsc --noEmit` (exit 0) and the **full suite `npx vitest run` → 283 files / 1837 tests, 0 failed, exit 0**. Special files: no `CLAUDE.md`/`AGENTS.md`/`SKILL.md` on any v23 IMPL `files:` line or in the v23 git window — not applicable. `07-review.md`'s new top section ("v23 GATE 8 RE-REVIEW #1") written; the first-pass v23 section marked superseded. `state.yaml` **not** advanced and `.panel/` **left in place** — both are on-pass-only steps and this pass sends back. Next: Gate 2 (R-3 + R-2b decisions, R-6, CONS-1) → Gate 5 RED (UT-125 assertion (b), V-C throwing-`putDiagramResult`/`getTriggerBindings`, `cause` assertions) → Gate 6 (R-1's closure wrap, `cause`, B5 mismatch, SUS-2 warn, R-5 comment) → Gate 8 re-review. If R-1 is still blocking after this auto re-run, the dispatch contract hands back to the orchestrator.
+
+## 2026-09-03 — v23 **Gate 2 RE-RUN #2** (architecture) — PASSED, for the Gate 8 re-review send-back at `41e6382`
+
+Synthesized from the **pre-run** panel (`.panel/architecture/adversarial.r1.md` + `quality-dimensions.r1.md`,
+both rewritten for this send-back; the on-disk `*.r2.md` belong to the previous `d294880` round). **Round 2
+skipped on purpose**: the two r1 headlines are complementary, not contradictory — both rule "build inv 11's
+choke point", both hold inv 5's settle scope, both keep `cause`, both delete the tool count — leaving only
+referee-decidable details (RR-1..RR-4 in the new Decision rationale). Panel **not** re-spawned, per contract.
+
+Nine rulings, no new work items. **R-1 (HIGH)**: inv 2 re-asserted verbatim (text right, code wrong) **plus two
+new testable floors** neither the doc nor the review had — `_release` idempotent per key with `_runningCount`
+never `<0` / never `>1` (a double release is the likely partial fix and fails *open*, silently turning
+concurrency-1 into unbounded LLM calls), and a **total catch** realized inside the settle seam. **R-2b**: the
+settle scope is held and made structural — one `_settle()` is the only caller of `putDiagramResult` and of
+`_journal`, which closes the B5 row-`ready`/line-`unavailable` mismatch by construction. **R-2**: `cause` kept
+and typed as a **closed union** (a `string` there re-opens ADR-016's channel that can echo the masked script;
+the union makes the leak a compile error), plus a twelfth `attempts` field and a pinned wire order. **R-3**: the
+egress **choke point is built**, the pre-authorized fallback declined, and its **sequencing after R-1 as a
+separate RED→GREEN step is a condition of the ruling**. **R-6/CONS-1**: the counts are deleted rather than
+corrected — including a **fourth stale-`39` site in ARCH-082 that neither panel nor the reviewer caught** — and
+the six-key config list is replaced by the declaration name at all three of its homes (verified doc-only, *not*
+a `composeConfig` gap). Plus `:1708`'s self-contradicting clause struck, ADR-020(c)'s boot warning re-asserted
+against the *effective* tool set, `enqueue()` made total at its front door, and two process rules written where
+they can fire (inv 8: an enumerated oracle is satisfied only in full — UT-125 dropped assertion (b), which is
+how 33/33 green coexisted with a leaking slot; ARCH-079 preamble: an implementation that deviates from an
+amended invariant must amend it in the same commit).
+
+Gate 5 inherits **five oracles that are red against `41e6382`** (O1–O5, no new seam needed) plus the `cause`
+value domain. Karpathy: one method, three `if`/`try`, one union type, one parameter, one `console.warn`, one
+field — and two claims deleted. `sh .sdlc/trace` = **1012 items / 18 gaps** — the same counts as the run
+captured before the edits, and every one of the 18 is pre-existing (1 TDD on IMPL-082, 16 v1..v22 drift rows,
+1 unimplemented TASK-018; **none references a v23 or ARCH id**); no orphan REQ, no broken link, no new gap. `state.yaml` advanced (`current_stage: design` per the
+standard exit contract — **Gates 3/4 were not sent back, so the next dispatch is Gate 5**). No owner decision
+is owed this round.
+
+## 2026-09-03 — v23 **Gate 5 RE-RUN** (verifier, test-first RED) — the Gate 2 RE-RUN #2 handoff, send-back `41e6382`
+
+**Verdict: PASS.** All items 02-architecture.md's Decision-rationale "Handoff" paragraph named for this round are
+authored, run, and confirmed red for the measured reason (or a legitimate immediate green, per this ledger's
+own `IT-102` precedent): `UT-125` amended in place — O3's own dropped assertion (b), "the row settles" — is
+restored between the existing rejections/claim-release assertions and flips the item back to `red`; nine new
+items, `UT-129`..`UT-137`, cover O1 (a throwing `ports.getTriggerBindings` inside `_runJob`), O2 (a throwing
+`catalog.putDiagramResult` on the `ready` branch, recovered by the settle seam), O4 (the slot-accounting floor
+over a `maxQueueDepth+3` burst behind one leaking job), O5 (the relational settle oracle — the B5 restore's
+`outcome:'unavailable'`-vs-`status:'ready'` mismatch), the real multi-attempt retry loop's `attempts` field,
+the twelve-key journal set equality, the `cause` value domain across five zero-model-call paths, the
+`settle_failed` carve-out, and `AnalyzerCause`'s closed-union type check (red via `npx tsc --noEmit`, not
+vitest — the same `@ts-expect-error` convention `trigger-bindings.test.ts` already uses); two new items,
+`IT-103`/`IT-104`, pin the R-3 ruling's defence-in-depth pair — `IT-103` (`server.ts:955`) is a legitimate
+immediate green (the guard already holds; `mcp-facade.ts:462`'s own guard is cited to `UT-114`, not
+re-tested), `IT-104` proves ADR-020's warn-line mirror rows red for the effective-tool-set-non-empty case.
+
+**Concurrency, recorded honestly (CLAUDE.md / retro `sdlc-agent-ledger-clobber`).** A sibling Gate 5 dispatch
+was found executing in this exact working tree on this exact send-back scope, mid-flight, while this instance
+was orienting — the same pattern this ledger has already recorded three times (`IT-101`/`IT-102`/`UT-128`).
+This instance's own independent, functionally-equivalent authoring of O1/O2/O4/O5 (as `UT-129`..`UT-134`) was
+**removed** once the collision was discovered — a direct `npx vitest run` comparison showed the sibling's
+version was the more complete one (per-name journal-line filtering avoids cross-test spy pollution; the B5
+case drives a genuine two-pass real settle rather than poking the store directly; the retry-loop/attempts case
+is its own item) and running BOTH copies together produced a spurious `unhandledRejection` process-level error
+from test interaction that vanished once the duplicate was deleted — a correctness argument for de-duplication,
+not just tidiness. This instance kept and independently re-verified: `UT-125`'s amendment, the sibling's
+`UT-129`..`UT-137`, and authored `IT-103`/`IT-104` (a different file, no collision) plus this journal/
+05-tests.md/state.yaml closeout, since the sibling had not yet reached those steps when this instance checked
+(three stability polls over ~30–45s each, confirmed via `md5sum`).
+
+**Evidence.** `npx vitest run tests/unit/graph-analyzer.test.ts tests/integration/graph-analyzer-composition-root.test.ts`
+→ 51 tests, 11 failed (10 `it`s across `UT-125`/`UT-129`..`UT-136` + `IT-104`'s non-empty case), 40 passed
+(pre-existing green pins + `UT-137` vitest-green/tsc-red + `IT-103` + `IT-104`'s empty-tools green pin); `npx
+tsc --noEmit` → exactly 2 errors, both `UT-137`'s own designed red (`AnalyzerCause` not yet exported, and the
+resulting "unused `@ts-expect-error`" secondary error). `npx vitest run tests/unit tests/integration` (full
+directories, 216 files) → 214 passed, 2 failed (the two touched files only), 1554/1565 tests passing — no
+collateral red anywhere else in the unit/integration suites. `sh .sdlc/trace` baseline unchanged this round
+(no new DES/TASK — Gates 3/4 were not sent back). `state.yaml` advanced: `gates.tests.passed:true` (Gate 5's
+own exit gate — RED confirmed for the right reason, not "all tests green"), `current_stage: impl`. No owner
+decision is owed this round (Gate 2's own finding: every item here is an engineering call inside
+already-ratified decisions). Next: Gate 6 (impl), in the order 02-architecture.md's own Handoff paragraph
+pins — inv 2's closure wrap, then inv 5's `_settle` seam, then inv 11's choke point, then ADR-020's warn, then
+`enqueue()`'s front-door `try`.
+
+**2026-09-03 v23 GATE 6 (send-back `41e6382`, this round, implementer) — 11/13 green, 2 reported as test
+defects, IMPL-177.** Built, in the order Gate 2's Handoff pinned: (1) `_startJob`'s scheduled closure now
+wraps `await scriptSource()` **and** the `_runJob` call in one `try/catch/finally` (inv 2 FLOOR 2a/2b) — the
+catch is total (`CatalogNotFoundError` → `cause:'script_unresolved'`, else `'job_exception'`) and calls the
+one recovery path; `_release` is now idempotent per key and is the ONLY release site (`_runJob`'s own tail
+release deleted). (2) one private `_settle(name, version, principal, row, telemetry)` is now the ONLY caller
+of `catalog.putDiagramResult`/`_journal` — `_attempt` returns telemetry instead of journalling, `_runJob`'s
+retry loop sums tokens/duration across every attempt and journals once (closes `UT-133`), the B5 restore
+branch settles through `_settle` so the journal's `outcome` is computed from the row actually written (closes
+`UT-132`/O5's relational mismatch), and the new `AnalyzerCause` closed union (`UT-137`, `npx tsc --noEmit`)
+rides every line (`UT-134`'s 12-key set equality, `UT-135`'s value domain). (3) `settle_failed` (`UT-136`):
+`_settleUnavailable`'s own write is try-wrapped so a permanently-failing store settles with one journal line
+and no row write, never a second rejection. (4) R-3's `_startJob` choke point, landed as its own sequencing
+step after (1)-(3) were green, per the ruling's own condition: `config.enabled` is now read in exactly one
+place (`_startJob`'s first statement, before either claim and before the durable `putDiagramPending` write,
+which moves inside behind the guard); `enqueue()`/`sweepAtBoot()` lost their own `enabled` checks;
+`scriptSource` became a thunk (not an already-started promise) so a guard-short-circuited disabled path never
+leaves an unawaited, potentially-rejecting `catalog.resolve()` promise behind.
+
+**Evidence.** `npx tsc --noEmit` clean. `npx vitest run tests/unit/graph-analyzer.test.ts
+tests/integration/graph-analyzer-composition-root.test.ts` → 51 tests, 2 failed (both reported below), 49
+passed. Full `npx vitest run` (283 files) → 1848/1850 passed, 1 file failing (the same file, same 2 cases) —
+zero collateral red anywhere else. `sh .sdlc/trace` unchanged (no new DES/TASK this round).
+
+**Two test defects reported, neither fudged (implementer contract rule 4).** `UT-125`'s restored assertion
+(b) (`orphanRow?.status` → `'unavailable'`): empirically confirmed `catalog.putDiagramResult` silently
+no-ops whenever no `workflow_versions` row exists for `(name, version)` — DES-130 B6's own late-write guard,
+"a job that settles after its workflow was deregistered writes nothing." Any fixture that makes
+`catalog.resolve` throw `CatalogNotFoundError` (the ONLY way this closure's catch can classify
+`script_unresolved`) implies exactly that absent-`workflow_versions` state, so "the row settles to
+`unavailable`" is structurally unreachable under B6 as written — a conflict between ARCH-079 R-1's own oracle
+enumeration and DES-130 B6, not a missing catch/write in this file (assertions 1/3/4 hold; the journal line
+with `cause:'script_unresolved'` does fire, per `UT-135`'s own passing case on the identical fixture shape).
+`UT-135`'s `queue_full` case: the fixture calls `enqueue(c.name, ...)` twice with the SAME name/version — the
+single-flight `_pendingKeys` guard (DES-127 B4, `enqueue`'s own first line) absorbs the second call before it
+ever reaches the queue-depth check, so no line for that name is ever emitted a second time. The already-green
+`UT-128` QUEUE_FULL case (lines 533-548) is the correct pattern: two DISTINCT names, the first occupying the
+slot and the second refused.
+
+`state.yaml`: `gates.impl.passed` stays **false**, `current_stage` stays `impl` — the round does not advance
+to verification with two in-scope reds outstanding, per the implementer contract's exit gate. Both defects
+route back through Gate 5.

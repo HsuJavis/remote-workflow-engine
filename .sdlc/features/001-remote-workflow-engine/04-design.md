@@ -4730,3 +4730,37 @@ side is procedural and it is now habit: read both lines, every time.
 REQ-004's paid-provider success path stays unverified at the real tier — no Anthropic/OpenAI/Gemini
 credential exists in this environment. Unchanged from every prior round; needs an owner decision only
 if a sandbox key is to be provisioned.
+
+---
+
+## Orchestrator adjudication (v23) #8 — UT-125 的 oracle 與 DES-130 B6 相衝:改 oracle,不動守衛 (2026-09-03)
+
+### X-1 — 裁定 (a):amend ARCH-079 的 oracle,把斷言指向 journal 而非 DB 列狀態
+`ARCH-079` R-1 的 oracle 列舉「(b) the row settles」,但 `DES-130 B6` 的遲寫守衛
+(`workflow-catalog.ts:274-275`)在沒有 `workflow_versions` 列時讓 `putDiagramResult` 無條件 no-op ——
+而 orphan 的定義**就是**沒有那一列(`CatalogNotFoundError` 正因如此才拋出)。所以那個轉移**結構上不可達**,
+不是 Gate 6 的實作缺口。verifier 實測驗證過,沒有擅自放寬,做得對。
+
+**採 (a) 而非 (b),三個理由:**
+1. **B6 存在的目的正是防止 immortal orphan row(ADR-021 GC)。** 為了讓一次結算寫入而給它開洞,
+   等於重新打開它守著的東西。用架構變更去遷就一個代理指標,方向相反。
+2. **UT-125 的目的是「orphan 不會卡死佇列」,而那個不變式完全成立** ——
+   斷言 (1) 零未處理拒絕、(3) claim/slot 釋放、(4) 下一個工作仍會跑,三個都通過。
+3. **斷言 (b) 只是「結算發生了」的代理指標;journal 的 `cause:'script_unresolved'` 是同一件事的直接觀測,
+   而它確實會發出**(UT-135 在完全相同的 fixture 形狀上已綠)。
+   所以改指向 journal **不是放寬,是從代理指標改成直接證據** —— 而代理指標之所以量不到,
+   是因為另一道正當的守衛擋著。
+
+`ARCH-079` 的 oracle 文字須加註 B6 的存在並改寫該項;UT-125 的斷言 (b) 改為
+「不再嘗試任何寫入」或「journal 發出 `cause:'script_unresolved'`」。
+
+### X-2 — 連帶待查(不阻斷本輪)
+B6 的註解說它防的是 immortal orphan row,但**留在 `pending` 也是一列不會消失的資料**。
+`workflow_deregister` 是否連帶刪除 `workflow_diagrams` 的列?若否,那是 ADR-021 的 GC 缺口而非 B6 的問題,
+但要有人確認過才算數。標為 Gate 8 待查,不要靜默假設。
+
+### X-3 — UT-135 的 fixture 缺陷已由 verifier 自行修正,方法正確
+`queue_full` 案例用**同一個 name/version** 連呼 `enqueue` 兩次來模擬「佔住 slot 再被拒」,
+但 `enqueue` 第一行就是 single-flight 守衛(DES-127 B4),第二次呼叫在到達佇列深度檢查前就被
+靜默 no-op。它比照同檔已綠的 UT-128(用兩個不同名稱)修好 —— **拿既有的綠案例當範本,而不是自己發明**,
+是對的做法。

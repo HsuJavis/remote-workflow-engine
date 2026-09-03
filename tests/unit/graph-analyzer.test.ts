@@ -18,6 +18,11 @@ import { WorkflowCatalog } from '../../src/workflow-catalog.js';
 import { GraphAnalyzer, type GraphAnalyzerConfig } from '../../src/graph-analyzer.js';
 import type { GatewayClient, GatewayResult } from '../../src/gateway/client.js';
 import type { TriggerPorts } from '../../src/trigger-bindings.js';
+// v23 Gate 2 RE-RUN #2 (send-back `41e6382`), R-2(d): `AnalyzerCause` does not exist yet — this is
+// a TYPE-ONLY import, erased at collect time regardless of whether the named export exists (no
+// vitest/esbuild collection failure for the other 30+ tests in this file); the enforcement this
+// import exists for is `npx tsc --noEmit`, not vitest (see UT-132's own type-level case below).
+import type { AnalyzerCause } from '../../src/graph-analyzer.js';
 
 const CLOCK = new FixedClock(new Date('2026-09-02T10:00:00.000Z'));
 const ALIAS_NAMES = new Set(['sonnet-5']);
@@ -700,8 +705,22 @@ describe('GraphAnalyzer — the enabled:false guard, all three entry points (UT-
 // `npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-125'` fails at assertion (1)
 // (`rejections.length === 0`); vitest stops there, so (2)/(3) go unreached behind it, not
 // independently confirmed red.
+//
+// **AMENDED v23 Gate 2 RE-RUN #2 (send-back `41e6382`), O3/inv 8 (quality QD-O4.2): this oracle was
+// enumerated with THREE assertions — (a) no unhandled rejections, (b) the row settles, (c) the next
+// enqueued job still runs — and this file shipped only (a) and (c), dropping (b). That is how a
+// 33/33-green `graph-analyzer.test.ts` coexisted with an orphan row stuck `pending` forever (the
+// row settling is a DIFFERENT thing from the slot/claim being released — a leaked slot release
+// alone does not put the row itself into a terminal state, and nothing else in this file pinned
+// it). Restored below as its own numbered assertion, per inv 8's new rule: an enumerated oracle
+// satisfied only in part is a send-back item, not a judgement call.
+//
+// Red reason for the restored assertion (measured): today `_startJob`'s scheduled closure has no
+// `catch` that settles the row on the `scriptPromise` rejection path — it only releases the claim/
+// slot (once Gate 6 stops leaking them) — so `ga-orphan@v1` stays `status:'pending'` forever;
+// `expect(row?.status).toBe('unavailable')` fails, `pending !== unavailable`.
 describe('GraphAnalyzer — an orphan-pending row must not wedge the queue (UT-125, ARCH-079 A3/N-1)', () => {
-  it('a rejecting scriptPromise (orphan pending row) still releases the claim and the slot, and the next enqueued job still runs', async () => {
+  it('a rejecting scriptPromise (orphan pending row) still releases the claim and the slot, settles the row, and the next enqueued job still runs', async () => {
     // Orphan: a pending diagram row for a name NEVER registered (no FK on workflow_diagrams) —
     // sweepAtBoot's never-stamped branch will call catalog.resolve(), which rejects
     // CatalogNotFoundError for an unknown name, reproducing A3's "one reachable throw".
@@ -722,17 +741,23 @@ describe('GraphAnalyzer — an orphan-pending row must not wedge the queue (UT-1
 
     // 1: the closure itself never rejects (A3's stated fix shape).
     expect(rejections).toHaveLength(0);
-    // 2: the claim and the slot are released, not stranded on the orphan key.
+    // 2 (RESTORED, O3/inv 8): the row itself settles — it does not stay `pending` forever. The
+    // orphan's script never resolved, so this is the `script_unresolved` shape of a zero-model-call
+    // settle; the specific persisted noteCode is deliberately not pinned here (see UT-124's own
+    // note on the same point), only that it is no longer `pending`.
+    const orphanRow = await (catalog as any).getDiagram('ga-orphan', 'v1');
+    expect(orphanRow?.status).toBe('unavailable');
+    // 3: the claim and the slot are released, not stranded on the orphan key.
     expect((analyzer as any)._pendingKeys.has('ga-orphan@v1')).toBe(false);
     expect((analyzer as any)._runningCount).toBe(0);
 
-    // 3: the next enqueued job (a genuinely valid, registered one) still runs to completion —
+    // 4: the next enqueued job (a genuinely valid, registered one) still runs to completion —
     // proving the queue is not wedged behind the leaked slot.
     // The follow-up script must DECLARE the phase its stub draws, or `_buildAllowlist` has no
     // 'Draft' and `gateDiagram` correctly refuses it -> 'unavailable', which would fail assertion
-    // 3 for a reason that has nothing to do with the queue. Same fixture shape as UT-111 and the
-    // success case at :222. (Assertions 1 and 2 — the claim and the slot — are what this test
-    // exists to prove, and they pass; do not "fix" a red here by loosening the gate.)
+    // 4 for a reason that has nothing to do with the queue. Same fixture shape as UT-111 and the
+    // success case at :222. (Assertions 1 and 3 — the claim and the slot — are what the ORIGINAL
+    // A3/N-1 round proved; do not "fix" a red here by loosening the gate.)
     const afterScript = `export const meta = { phases: [{title:'Draft'}] };\nreturn 1;`;
     await catalog.register('ga-after-orphan', afterScript);
     analyzer.enqueue('ga-after-orphan', 'v1', afterScript, null);
@@ -740,5 +765,524 @@ describe('GraphAnalyzer — an orphan-pending row must not wedge the queue (UT-1
     const row = await (catalog as any).getDiagram('ga-after-orphan', 'v1');
     expect(row?.status).toBe('ready');
     expect(invoke).toHaveBeenCalledTimes(1);
+  });
+});
+
+// UT-129 (v23 Gate 2 RE-RUN #2, send-back `41e6382`, R-1/inv 2 — oracle O1): the closure-level
+// try/catch/finally ARCH-079 inv 2 requires must also cover a throw from `ports.getTriggerBindings`
+// — not just the `scriptPromise` await UT-125 exercises — because `_runJob` calls
+// `getTriggerBindings(name, this._ports)` directly (`graph-analyzer.ts:355`, building the
+// allowlist/prompt) OUTSIDE any try today. Every enumerated assertion (inv 8's own new rule):
+// (a) zero unhandled rejections, (b) the row settles unavailable, (c) exactly one journal line,
+// (d) the next enqueued job still runs, (e) `_runningCount === 0`.
+//
+// Fixture note: the injected `ports.schedules.listByWorkflow` throws ONCE, not permanently — the
+// same `getTriggerBindings` call is reached a SECOND time by the settle path's own `bindingsFp`
+// lookup once Gate 6 builds the closure wrap, and a permanently-throwing port would make the
+// settle itself fail too (the different, dedicated `settle_failed` shape UT-132 exercises
+// separately). One throw is what reproduces "a job that reaches `_runJob`" without also breaking
+// the recovery this oracle exists to prove.
+//
+// Red reason (measured): today `_startJob`'s scheduled closure has no try/catch around the
+// `_runJob` call — only around the `scriptPromise` await (UT-125's own scope) — so the thrown
+// error escapes `job()` uncaught: `npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-129'`
+// fails at assertion (a), `rejections.length` is 1 not 0; (b)-(e) go unreached behind it (same
+// "vitest stops at the first failing expect" shape as UT-125).
+describe('GraphAnalyzer — a throwing ports.getTriggerBindings inside _runJob must not wedge the queue (UT-129, ARCH-079 inv 2, oracle O1)', () => {
+  it('one-shot throw from getTriggerBindings: zero unhandled rejections, the row settles unavailable, exactly one journal line, the next job still runs, and the slot is released', async () => {
+    await catalog.register('ga-o1', `return 1;`);
+    let bindingsCalls = 0;
+    const throwOncePorts: TriggerPorts = {
+      schedules: {
+        listByWorkflow: (name: string) => {
+          bindingsCalls++;
+          if (bindingsCalls === 1) throw new Error('boom-bindings');
+          return NO_TRIGGERS.schedules.listByWorkflow(name);
+        },
+      },
+      webhooks: NO_TRIGGERS.webhooks,
+      continuations: NO_TRIGGERS.continuations,
+      runs: NO_TRIGGERS.runs,
+    };
+
+    const rejections: unknown[] = [];
+    const capturingSchedule = (job: () => Promise<void>): void => {
+      void job().catch((e: unknown) => { rejections.push(e); });
+    };
+    const invoke = vi.fn(async () => okResult('╭─Draft─╮'));
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const analyzer = new GraphAnalyzer({
+      gateway: { invoke }, catalog, ports: throwOncePorts, clock: CLOCK,
+      config: baseConfig(), aliasNames: ALIAS_NAMES, schedule: capturingSchedule,
+    });
+
+    analyzer.enqueue('ga-o1', 'v1', `return 1;`, null);
+    await settle();
+
+    // (a)
+    expect(rejections).toHaveLength(0);
+    // (b)
+    const row = await (catalog as any).getDiagram('ga-o1', 'v1');
+    expect(row?.status).toBe('unavailable');
+    // (c) — exactly one line for THIS name (the spy is shared across the whole test).
+    const linesForThis = logSpy.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('"name":"ga-o1"'));
+    expect(linesForThis).toHaveLength(1);
+    // (e)
+    expect((analyzer as any)._runningCount).toBe(0);
+    logSpy.mockRestore();
+
+    // (d) — the next enqueued job (a genuinely valid, registered one) still runs to completion.
+    const afterScript = `export const meta = { phases: [{title:'Draft'}] };\nreturn 1;`;
+    await catalog.register('ga-after-o1', afterScript);
+    analyzer.enqueue('ga-after-o1', 'v1', afterScript, null);
+    await settle();
+    const afterRow = await (catalog as any).getDiagram('ga-after-o1', 'v1');
+    expect(afterRow?.status).toBe('ready');
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+});
+
+// UT-130 (v23 Gate 2 RE-RUN #2, send-back `41e6382`, R-1/inv 2 — oracle O2): the SAME
+// try/catch/finally must also cover `catalog.putDiagramResult` throwing on the terminal `ready`
+// write (`_runJob:377` today) — inv 8's V-C case, named as debt in UT-128's own docblock and never
+// picked up. Every enumerated assertion, "the same five" as O1 (02-architecture.md's own words).
+//
+// Fixture note: `putDiagramResult` throws on its FIRST call only (`vi.spyOn` +
+// `mockImplementationOnce`, falling through to the real store on every later call) — a job that
+// genuinely drew a diagram but could not PERSIST it must still leave the operator an honest
+// `unavailable` row, not a silent crash and a forever-`pending` one. A PERMANENTLY throwing store
+// is the different, dedicated `settle_failed` case (no row ever written, named debt out of O5's
+// relational scope) exercised in UT-132.
+//
+// Red reason (measured): today `_runJob`'s ready branch calls `this._catalog.putDiagramResult(...)`
+// with no try around it at all (`:377`), so the injected throw escapes `job()` uncaught exactly
+// like O1 — `npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-130'` fails at assertion (a),
+// `rejections.length` is 1 not 0.
+describe('GraphAnalyzer — a throwing catalog.putDiagramResult on the ready branch must not wedge the queue (UT-130, ARCH-079 inv 2, oracle O2)', () => {
+  it('one-shot throw from putDiagramResult(ready): zero unhandled rejections, the row settles unavailable, exactly one journal line, the next job still runs, and the slot is released', async () => {
+    const draftScript = `export const meta = { phases: [{title:'Draft'}] };\nreturn 1;`;
+    await catalog.register('ga-o2', draftScript);
+    const writeSpy = vi.spyOn(catalog, 'putDiagramResult').mockImplementationOnce(() => { throw new Error('boom-write'); });
+
+    const rejections: unknown[] = [];
+    const capturingSchedule = (job: () => Promise<void>): void => {
+      void job().catch((e: unknown) => { rejections.push(e); });
+    };
+    const invoke = vi.fn(async () => okResult('╭─Draft─╮'));
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const analyzer = new GraphAnalyzer({
+      gateway: { invoke }, catalog, ports: NO_TRIGGERS, clock: CLOCK,
+      config: baseConfig(), aliasNames: ALIAS_NAMES, schedule: capturingSchedule,
+    });
+
+    analyzer.enqueue('ga-o2', 'v1', draftScript, null);
+    await settle();
+
+    // (a)
+    expect(rejections).toHaveLength(0);
+    // (b) — the diagram was drawn but the FIRST write attempt failed; the row must still settle
+    // unavailable rather than being stuck pending forever with a lost result.
+    const row = await (catalog as any).getDiagram('ga-o2', 'v1');
+    expect(row?.status).toBe('unavailable');
+    // (c)
+    const linesForThis = logSpy.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('"name":"ga-o2"'));
+    expect(linesForThis).toHaveLength(1);
+    // (e)
+    expect((analyzer as any)._runningCount).toBe(0);
+    logSpy.mockRestore();
+    writeSpy.mockRestore();
+
+    // (d)
+    const afterScript = `export const meta = { phases: [{title:'Draft'}] };\nreturn 1;`;
+    await catalog.register('ga-after-o2', afterScript);
+    analyzer.enqueue('ga-after-o2', 'v1', afterScript, null);
+    await settle();
+    const afterRow = await (catalog as any).getDiagram('ga-after-o2', 'v1');
+    expect(afterRow?.status).toBe('ready');
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+});
+
+// UT-131 (v23 Gate 2 RE-RUN #2, send-back `41e6382`, R-1/inv 2 FLOOR 2a — oracle O4): "a bound is a
+// bound only if the claim and the slot are released on every exit path" — this is the burst that
+// makes FLOOR 2a's release-idempotence floor falsifiable BEFORE Gate 6 writes the `finally`: one
+// throwing job (the SAME `_runJob`-internal reachable throw as UT-129/O1 — the scriptPromise-reject
+// path UT-125/O3 exercises is a DIFFERENT reachable throw that today's `_startJob` ALREADY wraps
+// and releases, so it would not leak the slot here), then `maxQueueDepth + 3` valid, distinct,
+// registered jobs. Two families of assertion: the FLOORS themselves (`_runningCount` never
+// negative, never exceeds 1; concurrent `gateway.invoke()` calls never overlap) — both true TODAY,
+// as green pins, precisely because nothing in today's code ever decrements `_runningCount` more
+// than once per settle (the double-release failure mode FLOOR 2a exists to catch has no live
+// instance yet; this test is the falsifier a future partial fix must survive) — and the DRAIN
+// outcome, which is genuinely red today.
+//
+// Red reason (measured): the leaking job's throw escapes `_startJob`'s scheduled closure uncaught
+// (no try/catch around the `_runJob` call today) — `_runningCount` never returns to 0, so the first
+// `maxQueueDepth` (8) valid jobs queue behind it and never run: `npx vitest run
+// tests/unit/graph-analyzer.test.ts -t 'UT-131'` fails on the first queued job's
+// `row?.status === 'ready'` assertion (`pending` instead).
+describe('GraphAnalyzer — slot-accounting floor over a mixed burst: one throwing job then maxQueueDepth+3 valid ones (UT-131, ARCH-079 inv 2 FLOOR 2a, oracle O4)', () => {
+  it('_runningCount never negative and never exceeds 1, concurrent invoke() never overlaps, and every queued valid job eventually settles ready with the count drained to 0', async () => {
+    // Throws ONLY for the leaking job's own name — the 11 valid jobs below must build their
+    // allowlist/prompt normally once queued, or a future fix that stops the leak would still fail
+    // this test for an unrelated reason (the same trap UT-129's own docblock names).
+    const leakOnceForOneName: TriggerPorts = {
+      schedules: {
+        listByWorkflow: (name: string) => {
+          if (name === 'ga-o4-leak') throw new Error('boom-leak');
+          return NO_TRIGGERS.schedules.listByWorkflow(name);
+        },
+      },
+      webhooks: NO_TRIGGERS.webhooks,
+      continuations: NO_TRIGGERS.continuations,
+      runs: NO_TRIGGERS.runs,
+    };
+    await catalog.register('ga-o4-leak', `return 1;`);
+
+    // capturingSchedule (same as UT-125/UT-129's own convention): `job()`'s own rejection — the
+    // leaking job's uncaught throw — must not escape as an unhandled process-level rejection and
+    // fail this file with a process-level error rather than a clean assertion.
+    const rejections: unknown[] = [];
+    const capturingSchedule = (job: () => Promise<void>): void => {
+      void job().catch((e: unknown) => { rejections.push(e); });
+    };
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const invoke = vi.fn(async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await Promise.resolve();
+      inFlight--;
+      return okResult('╭─Draft─╮');
+    });
+
+    const analyzer = new GraphAnalyzer({
+      gateway: { invoke }, catalog, ports: leakOnceForOneName, clock: CLOCK,
+      config: baseConfig({ maxQueueDepth: 8 }), aliasNames: ALIAS_NAMES, schedule: capturingSchedule,
+    });
+
+    // Sample `_runningCount` at every settle this burst produces (every terminal `putDiagramResult`
+    // write) — the FLOOR must hold at each one, not just at the end.
+    const runningCountSamples: number[] = [];
+    const originalPutDiagramResult = catalog.putDiagramResult.bind(catalog);
+    const writeSpy = vi.spyOn(catalog, 'putDiagramResult').mockImplementation((...args: Parameters<typeof catalog.putDiagramResult>) => {
+      runningCountSamples.push((analyzer as any)._runningCount);
+      return (originalPutDiagramResult as any)(...args);
+    });
+
+    analyzer.enqueue('ga-o4-leak', 'v1', `return 1;`, null); // leaks the slot today (unwrapped `_runJob` throw)
+    await settle();
+
+    const validNames = Array.from({ length: 11 }, (_, i) => `ga-o4-valid-${i}`);
+    const validScript = `export const meta = { phases: [{title:'Draft'}] };\nreturn 1;`;
+    for (const name of validNames) { await catalog.register(name, `return 1;`); }
+    for (const name of validNames) { analyzer.enqueue(name, 'v1', validScript, null); }
+    await settle();
+    await settle();
+    await settle();
+
+    // FLOOR (green pin today): the slot count never goes negative and never exceeds 1, at every
+    // settle sampled (only the 3 QUEUE_FULL settles fire while the queue is wedged).
+    expect(runningCountSamples.every((n) => n >= 0)).toBe(true);
+    expect(runningCountSamples.every((n) => n <= 1)).toBe(true);
+    // FLOOR (green pin today, becomes load-bearing once concurrency is real): invoke() never
+    // overlaps itself.
+    expect(maxInFlight).toBeLessThanOrEqual(1);
+
+    // RED (measured): the first `maxQueueDepth` (8) valid jobs are queued behind the leaked slot
+    // and never drain; `_runningCount` never returns to 0.
+    for (const name of validNames.slice(0, 8)) {
+      const row = await (catalog as any).getDiagram(name, 'v1');
+      expect(row?.status).toBe('ready');
+    }
+    expect((analyzer as any)._runningCount).toBe(0);
+
+    writeSpy.mockRestore();
+  });
+});
+
+// UT-132 (v23 Gate 2 RE-RUN #2, send-back `41e6382`, R-2b, inv 5(f) — oracle O5): "the one [oracle]
+// to keep if only one could be kept — for every path that writes a terminal row (all five, including
+// the B5 restore), assert the journal line's `outcome` EQUALS the status of the row read back from
+// the catalog." A RELATIONAL oracle (it compares two things the code produces, not a literal), so it
+// cannot be satisfied by editing an expected value to match shipped behaviour — the v22 `val-107`/
+// IT-080 test-drift class this ledger already named.
+describe('GraphAnalyzer — the relational settle oracle O5: the journal line\'s outcome must equal the row it actually wrote (UT-132, ARCH-079 inv 5, oracle O5)', () => {
+  it('B5 restore: the row is written ready (a good prior diagram is kept) but the ONLY journal line for this settle says unavailable — the store and the log disagree about one event', async () => {
+    await catalog.register('ga-o5-b5', `return 1;`);
+    const draftScript = `export const meta = { phases: [{title:'Draft'}] };\nreturn 1;`;
+    // First pass: a real ready diagram, becoming the priorRow the B5 branch must protect.
+    const firstAnalyzer = new GraphAnalyzer({
+      gateway: gatewayResolving(okResult('╭─Draft─╮')), catalog, ports: NO_TRIGGERS, clock: CLOCK,
+      config: baseConfig(), aliasNames: ALIAS_NAMES, schedule: runInline,
+    });
+    firstAnalyzer.enqueue('ga-o5-b5', 'v1', draftScript, null);
+    await settle();
+    expect((await (catalog as any).getDiagram('ga-o5-b5', 'v1'))?.status).toBe('ready');
+
+    // Second pass: every attempt fails at the provider, retries:0 -> exactly one failed attempt ->
+    // the B5 branch restores the prior ready row instead of clobbering it.
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const secondAnalyzer = new GraphAnalyzer({
+      gateway: gatewayResolving({ ok: false, provider: 'anthropic', reason: 'unreachable' }),
+      catalog, ports: NO_TRIGGERS, clock: CLOCK, config: baseConfig(), aliasNames: ALIAS_NAMES, schedule: runInline,
+    });
+    secondAnalyzer.enqueue('ga-o5-b5', 'v1', draftScript, null);
+    await settle();
+
+    const row = await (catalog as any).getDiagram('ga-o5-b5', 'v1');
+    expect(row?.status).toBe('ready'); // the B5 protection itself already works today (green pin)
+    const linesForThis = logSpy.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('"name":"ga-o5-b5"'));
+    expect(linesForThis).toHaveLength(1); // the SECOND settle's own line (first pass's own line predates the spy)
+    const parsed = JSON.parse(linesForThis[0].replace(/^.*graph-analyzer /, ''));
+    // O5's relational oracle: the journal line's outcome must equal the row status just read back.
+    expect(parsed.outcome).toBe(row?.status);
+    logSpy.mockRestore();
+  });
+});
+
+// UT-133 (v23 Gate 2 RE-RUN #2, send-back `41e6382`, R-2b(c) — inv 5's aggregation clause): "moving
+// the emitter loses nothing" — a real multi-attempt retry loop (`retries:1`, both attempts fail)
+// must still settle with EXACTLY one journal line, and the new `attempts` field must carry the
+// count the move destroys ("the only information the move destroys"). Complements UT-128's own
+// "exactly one line per SETTLE" oracle (already green, zero-model-call paths only): this is the
+// REAL multi-attempt case UT-128's own docblock named as scope it deliberately did not cover.
+//
+// Red reason (measured): today's `_attempt` journals once PER ATTEMPT (`graph-analyzer.ts:339`),
+// not once per settle — `npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-133'` fails at the
+// line-count assertion, 2 lines not 1; the `attempts` field assertion (unreached behind it) is
+// independently red too — the field does not exist in the emitted JSON at all yet.
+describe('GraphAnalyzer — exactly one journal line per SETTLE across a real multi-attempt retry loop, plus the `attempts` field (UT-133, ARCH-079 inv 5(c))', () => {
+  it('exactly one journal line per SETTLE even across a real multi-attempt retry loop (retries:1, both attempts fail) — today logs once PER ATTEMPT, and the new `attempts` field does not exist yet', async () => {
+    await catalog.register('ga-o5-retries', `return 1;`);
+    const invoke = vi.fn(async () => ({ ok: false, provider: 'anthropic', reason: 'unreachable' }) as GatewayResult);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const analyzer = new GraphAnalyzer({
+      gateway: { invoke }, catalog, ports: NO_TRIGGERS, clock: CLOCK,
+      config: baseConfig({ retries: 1 }), aliasNames: ALIAS_NAMES, schedule: runInline,
+    });
+    analyzer.enqueue('ga-o5-retries', 'v1', `return 1;`, null);
+    await settle();
+
+    expect(invoke).toHaveBeenCalledTimes(2); // 1 + retries(1) — the retry loop is real (UT-111 precedent)
+    const linesForThis = logSpy.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('"name":"ga-o5-retries"'));
+    // RED: one line per SETTLE, not per attempt.
+    expect(linesForThis).toHaveLength(1);
+    const parsed = JSON.parse(linesForThis[0].replace(/^.*graph-analyzer /, ''));
+    // RED: the twelfth field, carrying the only information moving the emitter destroys.
+    expect(parsed.attempts).toBe(2);
+    logSpy.mockRestore();
+  });
+});
+
+// UT-134 (v23 Gate 2 RE-RUN #2, send-back `41e6382`, R-2b(b), inv 5): "Twelve fields, wire order
+// pinned ... Gate 5 pins it with `expect(Object.keys(JSON.parse(line)).sort()).toEqual([…].sort())`
+// — set equality, never `toContain`: a one-sided check lets a thirteenth field grow silently, the
+// same A6 ruling one file away." A hand-written literal, never imported from source (IT-102's own
+// convention one file away — the whole point is that the test does not compute its own oracle from
+// the code under test).
+//
+// Red reason (measured): `npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-134'` — the
+// emitted line has TEN keys today (`gateFail`'s own predecessor amendment already shipped it, per
+// `graph-analyzer.ts:223-233`); `attempts` and `cause` do not exist, so the sorted-set comparison
+// fails.
+describe('GraphAnalyzer — the journal line is a TWELVE-key SET EQUALITY, wire order pinned (UT-134, v23 Gate 2 RE-RUN #2, R-2b(b))', () => {
+  it('the 12-key wire format is a SET EQUALITY (name, version, principal, model, promptTokens, completionTokens, durationMs, outcome, noteCode, gateFail, attempts, cause), never a one-sided toContain', async () => {
+    await catalog.register('ga-o5-keys', `return 1;`);
+    const draftScript = `export const meta = { phases: [{title:'Draft'}] };\nreturn 1;`;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const analyzer = new GraphAnalyzer({
+      gateway: gatewayResolving(okResult('╭─Draft─╮')), catalog, ports: NO_TRIGGERS, clock: CLOCK,
+      config: baseConfig(), aliasNames: ALIAS_NAMES, schedule: runInline,
+    });
+    analyzer.enqueue('ga-o5-keys', 'v1', draftScript, null);
+    await settle();
+    const line = logSpy.mock.calls.map((c) => c.join(' ')).find((l) => l.includes('"name":"ga-o5-keys"'));
+    logSpy.mockRestore();
+    const parsed = JSON.parse((line ?? '').replace(/^.*graph-analyzer /, ''));
+    const expectedKeys = [
+      'name', 'version', 'principal', 'model', 'promptTokens', 'completionTokens', 'durationMs',
+      'outcome', 'noteCode', 'gateFail', 'attempts', 'cause',
+    ].sort();
+    expect(Object.keys(parsed).sort()).toEqual(expectedKeys); // RED today: only 10 keys, no attempts/cause
+  });
+});
+
+// UT-135 (v23 Gate 2 RE-RUN #2, send-back `41e6382`, R-2(d) — the `cause` VALUE domain, inv 5(d)'s
+// table): "so Gate 5 asserts VALUES and not presence (the `RETRIES_EXHAUSTED` overload was accepted
+// ON THE CONDITION that the distinct cause rides this field; `cause:null` on those paths would
+// satisfy an `Object.keys` assertion and leave the overload exactly as opaque as before)." Five
+// zero-model-call paths, each already reachable in today's code (only the `cause` FIELD is new):
+// `disabled`, `boot_abandoned`, `model_unmapped`, `queue_full` (enqueue()/sweepAtBoot()'s existing
+// zero-model-call settles), plus `script_unresolved` (the orphan-pending scriptPromise rejection
+// UT-125/O3 also exercises — folded in here as its own case rather than a second file asserting the
+// same setup, per this send-back's own inv 8 rule against duplicate coverage of one defect).
+//
+// Red reason (measured): `cause` does not exist anywhere in `src/graph-analyzer.ts` today (verified
+// by the architecture synthesizer's own primary-source re-check) — every case below reads
+// `parsed.cause === undefined`, never the expected literal; the `script_unresolved` case is
+// ADDITIONALLY red for UT-125/O3's own reason (zero journal lines are emitted at all today, since
+// the closure's throw escapes uncaught before any settle is attempted).
+describe('GraphAnalyzer — the `cause` VALUE domain over the five zero-model-call settle paths (UT-135, ARCH-079 inv 5(d), R-2(d))', () => {
+  it('cause value domain over the four zero-model-call settle paths already reachable today (disabled / boot_abandoned / model_unmapped / queue_full)', async () => {
+    const cases: Array<{ name: string; cause: AnalyzerCause; setup: (a: GraphAnalyzer) => void; refusedName?: string }> = [
+      {
+        name: 'ga-o5-cause-disabled', cause: 'disabled',
+        setup: (a) => { a.enqueue('ga-o5-cause-disabled', 'v1', `return 1;`, null); },
+      },
+      {
+        name: 'ga-o5-cause-boot-abandoned', cause: 'boot_abandoned',
+        setup: (a) => { a.sweepAtBoot(); },
+      },
+      {
+        name: 'ga-o5-cause-model-unmapped', cause: 'model_unmapped',
+        setup: (a) => { a.enqueue('ga-o5-cause-model-unmapped', 'v1', `return 1;`, null); },
+      },
+      {
+        // Two DISTINCT names, mirroring UT-128's own established pattern (:533-548): enqueue()'s
+        // single-flight guard (DES-127 B4) keys on (name, version) and no-ops a second call for the
+        // SAME key before it ever reaches the queue-depth check, so the slot-occupying call and the
+        // refused call must be different registered workflows.
+        name: 'ga-o5-cause-queue-full', cause: 'queue_full', refusedName: 'ga-o5-cause-queue-full-2',
+        setup: (a) => { a.enqueue('ga-o5-cause-queue-full', 'v1', `return 1;`, null); },
+      },
+    ];
+    for (const c of cases) {
+      await catalog.register(c.name, `return 1;`);
+      if (c.refusedName) await catalog.register(c.refusedName, `return 1;`);
+    }
+    // boot_abandoned needs a pending row stamped by a DEAD (previous) process.
+    (catalog as any).putDiagramPending('ga-o5-cause-boot-abandoned', 'v1', '2026-09-01T00:00:00.000Z');
+
+    for (const c of cases) {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const isDisabled = c.cause === 'disabled';
+      const isUnmapped = c.cause === 'model_unmapped';
+      const isQueueFull = c.cause === 'queue_full';
+      const gateway = isQueueFull
+        ? { invoke: async () => new Promise<GatewayResult>(() => {}) } // never resolves -> occupies the slot
+        : { invoke: vi.fn() };
+      const analyzer = new GraphAnalyzer({
+        gateway, catalog, ports: NO_TRIGGERS, clock: CLOCK,
+        config: baseConfig({
+          enabled: !isDisabled,
+          model: isUnmapped ? 'not-a-real-alias' : 'sonnet-5',
+          maxQueueDepth: isQueueFull ? 0 : 8,
+        }),
+        aliasNames: ALIAS_NAMES, schedule: runInline,
+      });
+      if (isQueueFull) {
+        // Occupy the single slot with c.name first, then refuse a DIFFERENT registered name
+        // (c.refusedName) -> QUEUE_FULL settle for that second name (see the case's own comment above).
+        analyzer.enqueue(c.name, 'v1', `return 1;`, null);
+        await settle();
+        logSpy.mockClear();
+        analyzer.enqueue(c.refusedName!, 'v1', `return 1;`, null);
+      } else {
+        c.setup(analyzer);
+      }
+      await settle();
+      const targetName = isQueueFull ? c.refusedName! : c.name;
+      const line = logSpy.mock.calls.map((call) => call.join(' ')).find((l) => l.includes(`"name":"${targetName}"`));
+      logSpy.mockRestore();
+      // RED for every case: `cause` does not exist in the emitted line at all yet.
+      const parsed = JSON.parse((line ?? '{}').replace(/^.*graph-analyzer /, ''));
+      expect(parsed.cause).toBe(c.cause);
+    }
+  });
+
+  it('an orphan-pending row\'s scriptPromise rejection carries cause:"script_unresolved" once it settles (today it never settles at all — see UT-125)', async () => {
+    (catalog as any).putDiagramPending('ga-o5-cause-orphan', 'v1');
+    const rejections: unknown[] = [];
+    const capturingSchedule = (job: () => Promise<void>): void => {
+      void job().catch((e: unknown) => { rejections.push(e); });
+    };
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const analyzer = new GraphAnalyzer({
+      gateway: { invoke: vi.fn() }, catalog, ports: NO_TRIGGERS, clock: CLOCK,
+      config: baseConfig(), aliasNames: ALIAS_NAMES, schedule: capturingSchedule,
+    });
+    analyzer.sweepAtBoot();
+    await settle();
+    const linesForThis = logSpy.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('"name":"ga-o5-cause-orphan"'));
+    logSpy.mockRestore();
+    // RED (today, for the SAME reason as UT-125's restored assertion): zero lines at all, because
+    // the closure's own throw escapes uncaught before any settle is even attempted.
+    expect(linesForThis).toHaveLength(1);
+    const parsed = JSON.parse(linesForThis[0].replace(/^.*graph-analyzer /, ''));
+    expect(parsed.cause).toBe('script_unresolved');
+    void rejections; // captured only so this schedule matches UT-125's own convention; not re-asserted here
+  });
+});
+
+// UT-136 (v23 Gate 2 RE-RUN #2, send-back `41e6382`, R-2(d) + O5's own carve-out — FLOOR 2b / V-F):
+// "a failed settle → `'settle_failed'`, NO ROW WRITTEN ... `settle_failed` is explicitly OUT of O5's
+// scope and takes its own case (no row is written, the row stays `pending`, exactly one line with
+// `cause:'settle_failed'`) — stated here because an unscoped O5 would either be weakened by Gate 5
+// or file a false defect." Named debt, not smuggled: a PERMANENTLY throwing store (every
+// `putDiagramResult` call fails, not just the first attempted write) is genuinely different from
+// UT-130/O2's one-shot fixture (whose recovery write succeeds) — this is the case where the
+// RECOVERY itself has nothing left to try.
+//
+// Red reason (measured): today `_runJob`'s (and `_settleUnavailable`'s) write call has no `try`
+// around it at all, so the injected permanent throw escapes `job()` uncaught — same failure shape as
+// O1/O2: `npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-136'` fails at the
+// zero-unhandled-rejections assertion, `rejections.length` is 1 not 0.
+describe('GraphAnalyzer — settle_failed: a permanently-failing store, O5\'s own carve-out (UT-136, ARCH-079 inv 2 FLOOR 2b / V-F)', () => {
+  it('settle_failed: a permanently-failing store writes NO row, releases the slot anyway, and logs exactly one line with cause:"settle_failed"', async () => {
+    const draftScript = `export const meta = { phases: [{title:'Draft'}] };\nreturn 1;`;
+    await catalog.register('ga-o5-settle-failed', draftScript);
+    const writeSpy = vi.spyOn(catalog, 'putDiagramResult').mockImplementation(() => { throw new Error('boom-permanent'); });
+    const rejections: unknown[] = [];
+    const capturingSchedule = (job: () => Promise<void>): void => {
+      void job().catch((e: unknown) => { rejections.push(e); });
+    };
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const invoke = vi.fn(async () => okResult('╭─Draft─╮'));
+    const analyzer = new GraphAnalyzer({
+      gateway: { invoke }, catalog, ports: NO_TRIGGERS, clock: CLOCK,
+      config: baseConfig(), aliasNames: ALIAS_NAMES, schedule: capturingSchedule,
+    });
+    analyzer.enqueue('ga-o5-settle-failed', 'v1', draftScript, null);
+    await settle();
+
+    expect(rejections).toHaveLength(0); // RED today: the write's throw escapes job() uncaught
+    const row = await (catalog as any).getDiagram('ga-o5-settle-failed', 'v1');
+    expect(row?.status).toBe('pending'); // no row is EVER written on this path — left pending on purpose
+    const linesForThis = logSpy.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('"name":"ga-o5-settle-failed"'));
+    expect(linesForThis).toHaveLength(1);
+    const parsed = JSON.parse(linesForThis[0].replace(/^.*graph-analyzer /, ''));
+    expect(parsed.cause).toBe('settle_failed');
+    expect((analyzer as any)._runningCount).toBe(0); // the finally still releases
+    logSpy.mockRestore();
+    writeSpy.mockRestore();
+  });
+});
+
+// UT-137 (v23 Gate 2 RE-RUN #2, send-back `41e6382`, R-2(d) — the type-level closed-union check):
+// Type-level, compile-time-only (same convention as trigger-bindings.test.ts's DES-128 case):
+// `AnalyzerCause` must be a CLOSED UNION of engine-authored literals, never `string` — ADR-016's
+// "engine-classified class, never raw provider/model text" must be a compile error, not a matter
+// of care (a provider error payload can echo the request, and the request carries the masked
+// script). Vitest itself shows this trivially green (esbuild strips the type-only import and the
+// `@ts-expect-error` comment regardless of whether the annotation type-checks) — the real
+// enforcement is `npx tsc --noEmit`.
+//
+// Red reason (measured via `npx tsc --noEmit`, NOT vitest — confirmed by direct run): TWO errors
+// today, both from the same root cause (the type does not exist yet): TS2305 "Module
+// '../../src/graph-analyzer.js' has no exported member 'AnalyzerCause'" on the type-only import at
+// the top of this file, AND TS2578 "Unused '@ts-expect-error' directive" on the assignment below
+// (an unresolvable type suppresses the assignability check the comment expects to suppress, so the
+// directive itself has nothing to catch — a DIFFERENT reason than the one it is written for). Once
+// Gate 6 exports the closed union, TS2305 disappears and the `@ts-expect-error` starts doing its
+// real, INTENDED job: if `AnalyzerCause` ever widens to include `string`, tsc reports the
+// assignment as NOT an error and TS2578 fires again — red for the opposite (regression) reason.
+describe('GraphAnalyzer — AnalyzerCause is a closed union, never string (UT-137, ARCH-079 inv 5(d)/R-2)', () => {
+  it('AnalyzerCause is a closed union, never string (ARCH-079 inv 5(d)/R-2) — compile-time only, see docblock', () => {
+    // @ts-expect-error — AnalyzerCause must reject an arbitrary string; if this ever type-checks,
+    // ADR-016's "never raw provider/model text" invariant has regressed to a runtime-only convention.
+    const bad: AnalyzerCause = 'anything the provider echoed';
+    expect(bad).toBeDefined();
   });
 });

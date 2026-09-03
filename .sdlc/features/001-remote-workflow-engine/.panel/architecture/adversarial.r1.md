@@ -1,486 +1,622 @@
-# Architecture panel — Adversarial group (Security × Scalability × Testability), round 1
+# Architecture panel — Adversarial group (Security × Scalability/Consistency × Testability), round 1
 
-**Iteration**: v23 (REQ-101..106) — **Gate 2 RE-RUN** for the Gate 8 send-back at `d294880`
-(`send_back: ["architecture","tests","impl"]`, `arch_consistent:false`, 3 HIGH / 3 MED / 4 LOW).
-**This file supersedes the pre-send-back `adversarial.r1.md`** for the same iteration; the earlier
-proposal argued ARCH-077..086 into existence, this one argues what must *change* in them now that
-the code exists and ten deviations are on the table.
+**Iteration**: v23 (REQ-101..106) — **Gate 2 RE-RUN #2**, for the Gate 8 **re-review** send-back at
+`41e6382` (`07-review.md` §8: `send_back = ["architecture","tests","impl"]`, `consistent: NO`,
+**1 HIGH · 4 MED · 4 LOW**; the HIGH is the unfixed half of the *previous* send-back's A3).
 
-**Scope taken.** The reviewer assigns Gate 2 the **A1 decision** plus the **four ARCH/ADR
-amendments (A7–A10)**, and Gates 5/6 the rest. I honour that split, but architecture still owes
-Gates 5/6 an *invariant to test against* for **A2, A3, A5, A6** — a Gate-5 RED row with no
-architectural oracle is how this ledger got here. So each of those gets a one-line invariant, an
-owning-gate tag, and nothing more. I also file **three items no panel filed** (V-A, V-B, V-C).
+**This file supersedes the previous `adversarial.r1.md`** (written for the first send-back at
+`d294880`, which argued A1–A10 / V-A–V-D into ARCH-077..086). That round's amendments are **not
+re-opened**: eight of them were verified CLOSED in code this pass. This round argues only what must
+change *now that the amended architecture and the shipped code disagree in four specific places*.
 
-**Lens.** Three lenses that trade off: (a) security, (b) scalability/performance & consistency,
-(c) testability. §5 is where they fight; Karpathy simplicity-first is the tie-breaker — the minimum
-architecture that closes the deviation, nothing speculative.
+**Baseline read this pass** (every claim below is anchored at `file:line` I opened, not quoted from
+the ledger — this iteration has recorded seven ledger-honesty gaps, so no ARCH/DES/IMPL sentence was
+accepted as evidence of code behaviour):
+`src/graph-analyzer.ts` (whole file, esp. `:110-145`, `:170-235`, `:250-271`, `:299-400`),
+`src/server.ts:173`, `:948-960`, `:1476-1516`, `src/main.ts:184`, `src/mcp-facade.ts:462`,
+`src/diagram-gate.ts:18-26`, `tests/unit/graph-analyzer.test.ts:695-745`,
+`02-architecture.md:555`, `:1403` (ARCH-079's whole invariant list), `:1456`, `:1478` (ADR-016),
+`:1611`, `:1708`, and `07-review.md` §4/§8/§9.
 
----
-
-## 0. Altitude call (per the panel brief, done before anything else)
-
-`tech_stack` describes a Node/TS JSON-RPC-over-HTTP server, better-sqlite3 stores, an OAuth2/OIDC
-auth subsystem, a `node:vm` sandbox, a scheduler — **a conventional system**. It *also* describes
-`agent()` dispatch through two `GatewayClient` implementations into real LLMs, a curated tool
-surface, and — new in v23 — **the engine itself as an LLM consumer for an internal control
-surface**. So **both altitudes apply, to different parts of this send-back**:
-
-- **System altitude** owns A1 (route authorization), A3 (async lifecycle, slot accounting), A4
-  (request amplification), A10 (row state machine / crash consistency), V-B (per-process vs
-  per-deployment bounds).
-- **Agent altitude** owns A2 (script egress to a provider is the thing `enabled:false` exists to
-  stop), A5 (prompt-vocabulary vs gate-vocabulary drift — a *replaceability* property of a
-  model-authored artifact), A7 (the allowlist **is** ADR-015's security audit input), and the
-  honest-absence discipline that A1's owner decision put in the requirement.
-
-**What I deliberately do not force.** The lens template names JWT forgery, brute force, distributed
-failure counters and timing attacks. None of those is this send-back's surface: the token path
-(v15) is untouched by v23, and no failure counter is distributed. The one template item that *is*
-live is **unauthenticated enumeration**, and it lands squarely on A1. Forcing the rest would spend
-the panel's credibility on machinery nobody asked for — the same discipline REQ-102's "no degraded
-fallback" applies to the product.
+**Lens.** Three lenses that trade against each other: **(a) security** — authn/authz correctness,
+secret/script protection, attack surface; **(b) scalability & consistency** — state storage,
+concurrency, the correctness of *counting* under failure; **(c) testability** — module boundaries,
+injectable dependencies, oracles that can actually go red. §7 is where they fight. **Karpathy
+simplicity-first is the tie-breaker**: the minimum architecture that closes the deviation, nothing
+speculative.
 
 ---
 
-## 1. Summary
+## §0 Altitude call (done first, per the panel brief)
 
-The ten deviations are not ten problems. They are **three structural mistakes plus a documentary
-habit**, and the architecture of record should be amended to say so rather than patched ten times:
+`tech_stack` describes a Node 22 / TypeScript ESM server: hand-rolled JSON-RPC-over-HTTP, two
+`better-sqlite3` stores, an OAuth2 authorization server of its own, a `node:vm` + child-process
+sandbox, an in-memory scheduler. That is a **conventional system**. It *also* describes `agent()`
+dispatch through two `GatewayClient` implementations into real LLMs and — new in v23 — **the engine
+itself as an LLM consumer for an internal control surface** (`GraphAnalyzer` → `gateway.invoke()`).
+So **both altitudes apply, and they own different findings in this send-back**:
 
-1. **A surface was placed where it cannot express the decision it must make.** `GET
-   /api/workflows/:name/describe` sits in the `/api/*` dashboard dispatch block
-   (`server.ts:1918-1930`), which is structurally incapable of an authorization decision — the only
-   three routes that make one (`/assets/blob`, `/assets/manifest`, `/mcp`) live in the
-   `authHandlers` block at `:1722` and are the sole users of `dbindExempt` (`:1719`). ARCH-083 says
-   the route is "auth-gated exactly as the route it replaces"; the replaced `/skeleton` route *did*
-   branch (`git show ebd530d^:src/server.ts`). **The deviation is a placement fact, not an
-   oversight of an `if`.** → **P1**.
-2. **A bound that one throw can lose is not a bound, and a flag checked at call sites is not a
-   control.** A3 (`_runJob` has no `finally`; `setImmediate(() => { void job(); })` at `:127`) and
-   A2 (`sweepAtBoot` never reads `_config.enabled`) are the same shape: an invariant asserted in
-   prose at the *callers* instead of enforced at the *choke point*. ARCH-079 inv 2 and ARCH-085's
-   "`enabled:false` is a first-class state" are both currently unfalsifiable. → **P2, P3**.
-3. **A constant claimed three consumers and got one.** A5's 13 glyphs are hand-typed at
-   `diagram-gate.ts:5/22`, `server.ts:306-311` and `rwe.config.example.json:59`, with a *false*
-   "third consumer" comment at `server.ts:300` — one file away from IMPL-174, which paid for exactly
-   this defect class (`UNBOUND_ENTRY_LABEL`) one round ago. Same shape as A6, where the drift-lock
-   is a **subset** assertion and therefore admits new tools silently. → **P4, P5**.
-4. **Four rows were never amended** (A7–A10). Three are genuinely documentary. **A7 is not** — see
-   §2.1/P6.
+- **System altitude** owns R-1 (async lifecycle, slot accounting, process termination), R-2/R-2b
+  (log-as-state-machine-record), R-4 (request-path I/O), R-6 / CONS-1 (interface drift-locks).
+- **Agent altitude** owns R-3: `graphAnalyzer.enabled:false` is not a feature flag, it is the
+  operator's **script-egress control** — the one switch that stops a registered (and, since v22,
+  masked) workflow script from being shipped to a third-party provider. Its correctness property is
+  "no code path reaches the model", which is an *agent-system* property; a conventional feature flag
+  would be satisfied by "the feature appears off".
 
-**Headline position.** Gate 2's only *decision* is A1, and I recommend **gating the route behind the
-existing `dbindExempt` predicate**, not shrinking the payload and not building a second projection.
-Everything else is amendment text plus four invariants for Gates 5/6.
+**What I deliberately do not force.** The standing lens charter names JWT forgery, brute force,
+distributed failure counters and timing attacks. **None of those is this send-back's surface**: the
+v15 token path is untouched by v23 (no v23 IMPL lists `auth*.ts` on its `files:` line), and no
+failure counter is distributed — inv 10 already fixed the bounds as *per-process*. The charter items
+that *are* live, translated to real surfaces: **egress control correctness** (R-3), **a bound whose
+loss is indistinguishable from correct operation** (R-1, and this is the closest thing here to a
+"failure counting consistency" problem), and **a log channel that can echo request text** (R-2's
+`cause` field). Forcing the rest would spend the round's credibility on prose.
 
 ---
 
-## 2. Key points
+## §1 Summary
 
-### 2.1 Security lens
+**Position in one line:** three of the four MED/HIGH items are the *same shape* — an invariant was
+amended in round 1 and implemented "to the letter of its most convenient clause" in round 2, with no
+record of the downgrade — and the fix for that shape is **not more prose; it is to move each rule to
+a choke point where the narrower implementation is not expressible, and to hand Gate 5 oracles that
+are red against today's tree.**
 
-**P1 — A1: gate the route with the predicate REQ-089 already ships. `RECOMMENDED`. Owning gate: 2
-(decision + ARCH-083 amendment), then 6 (wire) and 5 (RED).**
+Rulings I propose, each argued in §3:
 
-Amend ARCH-083's `api:` from the unfalsifiable *"auth-gated exactly as the route it replaces"* to a
-literal rule:
+| # | Item | Ruling | Net new mechanism |
+|---|---|---|---|
+| **P1** | R-1 (HIGH) — inv 2's wrap covers one `await`, not the closure | **Re-assert inv 2 unchanged. It is right; the code is wrong.** Architecture adds only the *residual hole* the ordered shape still has (P2) and three red-today oracles | 0 (Gate 6 owes ~8 lines) |
+| **P2** | NEW **V-E** — a naive `finally { this._release(key) }` **double-releases** with `_runJob`'s tail release: `_runningCount` goes negative and concurrency-1 silently becomes concurrency-N | **Amend inv 2**: `_release` is **idempotent per key**, and `_runningCount` is never negative — stated as a testable floor, not a review note | one `if` |
+| **P3** | NEW **V-F** — the ordered `catch { settle + journal }` can itself throw (`_settleUnavailable` does three store calls), so the closure rejects anyway | **Amend inv 2**: the catch body is **total** — a failed settle still journals and still releases; the row stays `pending` and the next boot sweep settles it (ADR-017's existing crash path, reused, not extended) | one nested `try` |
+| **P4** | R-2b/OBS-2 (MED) — emitter still inside `_attempt`; the B5 restore logs `unavailable` over a row it writes `ready` | **Hold inv 5 as amended (settle choke point). Do not ratify per-attempt lines.** Introduce one private `_settle()` that writes the row *and* emits the line; `_attempt` returns telemetry instead of logging | one function, 3 call sites moved |
+| **P5** | R-2/OBS-1 (MED) — 10 shipped keys vs 11 pinned (`cause` absent) | **Keep `cause`; implement it.** But **amend its type**: a closed union, never `string` — ADR-016's "never raw provider text" must be enforced by the compiler, not by care | one union type |
+| **P6** | R-3 (MED) — inv 11's guard sits at 4 caller sites, not at `_startJob` | **Build the choke point.** Decline the pre-authorized fallback. Security lens overrules the churn objection; testability lens gets it **sequenced after P1**, not merged into it | one `if` + two moved lines + one param |
+| **P7** | SUS-2 (MED) — ADR-020's "loud boot warning when `tools` is non-empty" never built | **Re-assert. Doc is right, code is missing.** Add the mirror-test row so the third mitigation cannot be dropped silently again | 0 (Gate 6 owes one `console.warn`) |
+| **P8** | R-6 (LOW) — doc says 39 tools, code declares 40 | **Delete the number from the architecture**, do not correct it. A count in prose is a second source of truth; the amendment that carries it *replaced a count-based lock with set equality* | −1 claim |
+| **P9** | CONS-1 (LOW) — ARCH-085 lists six `graphAnalyzer` keys, nine ship | **Replace the enumerated literal with the derived type.** `server.ts:173` already says `Partial<GraphAnalyzerConfig>` — one declaration, nine keys, cannot drift again | −1 re-typed list |
+| **P10** | Interface table's journal row contradicts itself (`:1708`) | Strike the trailing clause. Doc-only, one line | 0 |
+| **P11** | R-4 (LOW) — analyzer store I/O on the registration request path | **Make `enqueue()` total at its own front door**, not `try/catch` at the caller — the same choke-point argument as P6, applied consistently | one `try` |
 
-> `GET /api/workflows/:name/describe` is admitted **only** when `!authEnabled`, **or** the peer is
-> loopback (`isLoopbackPeer`, the REQ-089/D-BIND exemption), **or** `resolvePrincipal` returns a
-> principal; otherwise **401** with `wwwChallenge()`, before any store read.
->
-> **Wiring, stated literally because it is the whole finding:** the **gate** joins the
-> `authHandlers` block (`server.ts:1722`) as the **fourth** `dbindExempt` member alongside
-> `/assets/blob`, `/assets/manifest` and `/mcp` — it either 401s or lets the request **fall
-> through**. The **handler stays where it is**, in the `/api/*` dispatch at `:1918-1930`. This
-> ordering is not cosmetic: `authHandlers` is `authCfg && authTokenStore` (`:1623`), so the entire
-> block is skipped when auth is disabled — a route that *lived* inside it would 404 for every
-> no-auth deployment, which is this product's majority local posture. The three existing
-> `dbindExempt` routes already have exactly this shape. Being the fourth member is the enforcement,
-> and the four cannot drift on the `!authEnabled` gate independently.
-
-Why this and not the alternatives:
-
-- *Shrink the response for the unauthenticated surface* — this is the second masking projection the
-  reviewer forbids, and REQ-101's own words ("the two masks cannot drift apart") forbid it too. It
-  is also **dishonest by the iteration's own rule**: an anonymous caller receiving `triggers: []`
-  when three triggers are bound is a silent lie, and owner decision A1 (`diagramStatus`,
-  `diagramNote`) established that a withheld thing must *say* it is withheld. A `triggersWithheld`
-  marker is a second response shape, i.e. the forbidden thing wearing a hat.
-- *Shrink the single projection for everyone* — deletes `triggers`/`versions`/`owner` from
-  `WorkflowDescribeView` and breaks REQ-101's and REQ-103's literal field lists.
-- *Accept it as pre-existing `/api/*` posture* — the counterweight is real (`/api/runs/:id` already
-  serves `principal`), but the shipped object is **not** the ratified non-owner projection:
-  `EXPECTED_NON_OWNER_KEYS` (`workflow-view.ts:59-62`) contains no `triggers`, `versions` or
-  `diagram`, so DES-132's own justification does not describe what it shipped.
-
-The incremental anonymous disclosure, ranked: **`triggers[]`** — raw cron expression + `tz` +
-per-binding `enabled` + chain `upstreamWorkflow` (`trigger-bindings.ts:18-21`) is *operational
-timing intelligence and internal topology*, and it is the one field with no anonymous precedent
-anywhere in this codebase; then **`diagram`** (agent count, resolved model per agent, fan-out,
-phases); then **`versions[]`** and **`owner`**, both of which have weaker claims — `catalog.list()`
-already serves `versions`/`channels`/`description`/`params` anonymously at `/api/workflows`
-(`workflow-catalog.ts:598`), and `owner` is an email already reachable via `/api/runs/:id`'s
-`principal`. **I do not inflate the `owner` finding**: its real security weight is that engine
-authorization is owner-email-valued, so anonymous *per-workflow* attribution improves an attacker's
-enumeration of the exact strings that appear in authorization decisions — an increment in
-enumerability, not in kind.
-
-**Named cost, and it needs an owner ruling (`ADJ-A1`).** REQ-086's non-goal states the read-only
-dashboard stays unauthenticated (documented trusted-network caveat). P1 **partially retires that
-posture for one route**. Concretely: under `auth.enabled:true` on a non-loopback bind, a *remote*
-browser's workflow-detail view goes dark; a browser on the engine host or over an SSH tunnel
-(DEPLOY's own operator posture) is loopback-exempt and unaffected. Blast radius is exactly one view,
-because A4 deletes the only other consumer. This is the same degradation shape v22's H2 already
-established at `server.ts:1241` (`authEnabled ? [] : parseWorkflowSkeleton(...)`) — and the fact
-that the **sibling route applies the opposite rule to the same class of script-derived structure**
-is what makes the current state a deviation rather than a policy.
-
-**Contingent doc edits, same round, or the fix is not done:** `README.md` §使用範例 (~:176,
-「任何人都能問」) and DEPLOY's description of the HTTP describe route both become false.
-
-**P2 — A2: put the `enabled:false` guard at the choke point, not on the branches. Owning gates: 5
-then 6. This is a deliberate deviation from the reviewer's prescribed fix, flagged as such.**
-
-The reviewer prescribes gating `sweepAtBoot`'s requeue branch. That closes today's hole and leaves
-the shape that produced it: `_config.enabled` consulted by *callers*. `_startJob` is the single
-point at which this class decides to spend a model call — reached from `enqueue` (registration),
-from `regenerate` via `enqueue`, and from `sweepAtBoot` — so:
-
-> **ARCH-079, new invariant:** no `GraphAnalyzer` code path reaches `this._gateway` when
-> `config.enabled === false`; the guard is at `_startJob`, so a future fourth caller is covered by
-> construction. The guard **settles** — it never returns leaving a `pending` row, because ADR-017's
-> "`pending` always settles" is the property that makes `unavailable` honest rather than lost.
-
-Two facts constrain the settle value, both verified: (i) `note_code`'s CHECK constraint
-(`workflow-catalog.ts:240-241`) admits eight codes and **`DISABLED` is not among them** —
-`DISABLED`/`NOT_GENERATED` are read-synthesized only (`graph-analyzer.ts:14-21`, applied at
-`workflow-view.ts:131-133` for the *no-row* case). So the guard settles `RETRIES_EXHAUSTED` (the
-reviewer's constraint-safe choice, and the treatment `sweepAtBoot`'s second branch already gives),
-**or** we add `DISABLED` to the enum + a migration — which I do not recommend, for one code's worth
-of prose. (ii) `_settleUnavailable` already refuses to clobber a `ready` row (`:194-199`), so the
-guard inherits that protection for free.
-
-**Residual this creates, and it must be pinned rather than left as an accident:** with the guard at
-`_startJob`, an `enabled:false` *regenerate* on a `ready` row would run `putDiagramPending` (nulling
-the diagram) before the guard settles. That path is currently unreachable **only because
-`mcp-facade.ts:462-464` short-circuits to `ANALYZER_DISABLED`** — which means that short-circuit is
-now load-bearing and needs its own assertion, not a comment.
-
-**P6 — A7 is a security finding, and I escalate it from the reviewer's LOW to MED. Owning gate: 2.**
-
-ARCH-079 inv 6 defines the allowlist as `parseWorkflowSkeleton(script)` ∪ model aliases ∪ trigger
-kinds/upstream ∪ `DIAGRAM_CODEPOINTS`. The code adds four members it does not name —
-`meta.phases[].title`, `'default'`, `'model:param'`, `UNBOUND_ENTRY_LABEL`
-(`graph-analyzer.ts:231/233/234/241`) — and `DIAGRAM_CODEPOINTS` is not a label member at all, it is
-a separate codepoint pass. **ADR-015's entire security claim — "every token the diagram may contain
-is already served on a masked surface today" — is audited against that membership list.** An
-un-amended list means an unaudited claim, which is a different thing from stale prose.
-
-I performed the re-audit; **the claim survives**, and the amendment must record *that*, not merely
-the four names: `meta.phases[].title` is served to non-owners today (`WorkflowPublicView.phases`,
-`workflow-view.ts:46`, owner adjudication #1 一律公開); `'default'`, `'model:param'` and
-`UNBOUND_ENTRY_LABEL` are **engine-authored constants**, not author-controlled, so they cannot carry
-script-derived text. Amend ARCH-079 inv 6 to the true membership list, move `DIAGRAM_CODEPOINTS` out
-of it into the shape pass, and append: *"ADR-015's claim is re-audited whenever this list changes;
-adding an author-controlled member requires that member to be independently non-owner-visible."*
-That last clause is the only new rule I propose, and it exists so the next widening cannot be a
-one-line diff with no security thought.
-
-**Held, re-verified by me, filed here so the consolidator does not re-derive it:** the webhook HMAC
-`secret` and webhook `id` cannot reach the analyzer prompt (`trigger-bindings.ts:13` type +
-`server.ts:1457` fresh-`{enabled}` remap) — this matters *more* than the diagram gate, because the
-gate protects the diagram while the prompt goes to the provider. `script` is absent from
-`WorkflowDescribeView` as a **type** (`workflow-view.ts:87-105`). The gate is an allowlist and never
-a transformer (`diagram-gate.ts:33-69`). v22's H2 is still closed (`server.ts:1241`).
-
-### 2.2 Scalability / performance / consistency lens
-
-**P3 — A3: the release is the invariant, not the happy path. Owning gates: 5 then 6.**
-
-`_runJob` (`graph-analyzer.ts:301-344`) releases `_pendingKeys`/`_runningCount`/`_queue` at
-`:337-343`, *after* `getTriggerBindings` at `:304` (three separate SQLite files) and three
-`putDiagramResult` calls (`:326/329/334`, `.immediate()` write lock). `_attempt` catches only around
-`gateway.invoke` (`:263-267`). Amend **ARCH-079 invariant 2** to say what a bound means:
-
-> Single-flight `concurrency:1` + `maxQueueDepth` is a bound **only if the slot is released on every
-> exit path**: the releases live in a `finally`, the catch settles `unavailable` and emits the
-> journal line, and the production scheduler attaches a rejection handler (`setImmediate(() => {
-> job().catch(…) })`) — a `void promise` on an engine-owned path is prohibited. `QUEUE_FULL` is
-> honest absence **only** under this invariant; a wedged slot reports itself with the same string,
-> so a lost release is *indistinguishable from correct operation* at the surface.
-
-That last sentence is the severity argument and it is why I concur with the adjudication to HIGH:
-the failure disguises itself as the design.
-
-**V-A (original, not filed by either panel) — the crash-loop is bounded, and the thing that bounds
-it is unwritten.** `deploy/rwe.service` runs `Restart=on-failure` (DEPLOY.md:500). A throw on the
-job path under Node's default `--unhandled-rejections=throw` (no `unhandledRejection` handler
-anywhere in `src/`) kills the process; systemd restarts; `sweepAtBoot` runs again. This does **not**
-amplify model calls — because `sweepAtBoot` calls `putDiagramPending(name, version, stamp)`
-*before* `_startJob` (`:172-179`), so the next boot finds `generatedAt < bootInstant` and takes the
-**zero-model-call** settle branch (`:180-188`). The per-row lifetime budget is therefore
-`1 + retries` in-process plus exactly one post-crash requeue. **This ordering is load-bearing and
-no ARCH row states it** — a future refactor that moves the stamp after the requeue converts a
-bounded cost into a restart-driven billing loop. Pin as ARCH-079 invariant 9: *"the boot sweep
-stamps its attempt marker before scheduling the requeue; the stamp is what makes the requeue
-at-most-once across restarts."* Cost: one sentence. (I record this as a **corrected** claim: my
-first reading of A3 assumed an unbounded crash-loop. It is not one, and the panel should not carry
-that overclaim forward.)
-
-**V-B (original) — ARCH-079's bounds are per-*process*, and the document reads as if they were
-per-*deployment*.** `_runningCount`, `_queue` and `_pendingKeys` are in-memory; `workflow_diagrams`
-is durable and shared. DEPLOY.md:882 already states single-instance-only for the self-update
-mechanism, but ARCH-079 says "concurrency: 1" with no such qualifier, and this engine has a standing
-temptation toward multi-port instances over one work root. Two processes on one catalog DB would
-each run one job, double the bound, break DES-127 B4 single-flight, and race `putDiagramResult`.
-**I do not propose a distributed lock** — that is exactly the speculative machinery this slice spent
-its budget avoiding. I propose one clause in ARCH-079: *"these bounds are per-process; the durable
-row is the only cross-process state and it has no lock. Multi-instance over one catalog is out of
-scope (DEPLOY §multi-instance)."* Writing the constraint down is the whole fix.
-
-**P7 — A4: delete `renderMiniPreviewAsync`, do not re-point it. Owning gate: 6.** ARCH-084 says the
-home-card mini-preview "drops its skeleton fetch"; `dashboard-page.ts:227-231` fetches `/describe`
-and its body is `if(!s||!s.diagram) return;` on every branch — a fetch whose response is
-unconditionally discarded, called at `:243` per named card under `setInterval(render,3000)`
-(`:496`). That is **20N requests/minute/tab**, and each one performs the describe read: three
-separate synchronous SQLite file reads in `getTriggerBindings` plus a `RunStore.getRun` join for
-chain upstream, on the single Node thread that also dispatches `/mcp` runs. **The security and
-scalability lenses converge here**: A1 removes the anonymous vector, A4 removes the amplifier, and
-either alone leaves the other half. Both panels reached the same two-line fix independently; I add
-only that UT-116's oracle re-points to the *absence* of `/skeleton`.
-
-**P8 — A10: state the window; the "one-line SQL fix" is not one line, and I withdraw it. Owning
-gate: 2 (ADR-017 amendment) + a comment correction.**
-
-DES-127 B5 ("a failure must never clobber a prior `ready` row") is an **in-memory compensation**
-(`_runJob`'s `priorRow`), not an invariant. `putDiagramPending`'s `ON CONFLICT … SET
-status='pending', diagram=NULL, note_code=NULL, generated_at=excluded.generated_at,
-bindings_fp=NULL` (`workflow-catalog.ts:249-258`) destroys the prior row on disk; on
-`regenerate → crash → boot sweep`, `sweepAtBoot` requeues with `priorRow = null` (`:176-179`) and a
-failed attempt loses a previously-good diagram permanently. The in-line comment there — *"a
-still-pending row was never 'ready' — nothing to restore on failure"* — is **false** for that
-sequence.
-
-I initially favoured "stop nulling `diagram` on conflict." **That is wrong as costed**, and the
-structural reason is the finding worth recording: **`generated_at` serves two state machines at
-once** — provenance stamp on `ready`/`unavailable` rows, and boot-sweep attempt marker on `pending`
-rows, which is precisely what `sweepAtBoot`'s three branches discriminate on. Preserving a prior
-diagram through `pending` therefore needs `prior_*` columns (or a separate marker column) plus a
-migration, and a `pending` row carrying an old `generated_at` would be mis-read by the next sweep as
-"stamped by a dead process" and settled over. So: **primary = the reviewer's option** (state the
-window in ADR-017, correct the false comment), **alternative = the schema variant, honestly costed
-as a migration**, deferred. Amend ADR-017 to say the durable guarantee is *"`pending` always
-settles"*, and that *"a prior `ready` diagram survives a failure only within one process lifetime;
-across a crash it is lost — the row is `unavailable`, never stale-but-wrong,"* which is at least
-consistent with owner decision A1.
-
-**Recorded, not architected around:** S-1 (every registration costs an LLM call, ceiling-less
-catalog). With P1 landed, the cost surface is bounded by *authenticated principals* × ADR-014's
-`maxWorkflowVersions`, and `workflow_regenerate_diagram` is owner-gated. No rate limiter. This is
-conditional on P3 — the reviewer's own §4.4 note is right that a bound one throw can lose is not a
-bound.
-
-### 2.3 Testability lens
-
-**P4 — A5: one exported ordered constant, interpolated, asserted at both copy sites. Owning gates:
-5 + 6.** Export the ordered glyph list from `diagram-gate.ts`, interpolate it into the shipped
-default `systemPrompt`, delete the false "third consumer" comment at `server.ts:300`, and add one
-membership assertion covering the prompt string **and** `rwe.config.example.json:59` (a file read,
-which is the point — the config example is the copy that rots silently). 08-validation ROUND 3's own
-live failure mode is `GATE_REJECTED_SHAPE`/`gateFail:"codepoint"`, i.e. prompt-vocabulary vs
-gate-vocabulary disagreement, so this is not hypothetical drift.
-
-**A5 collides with REQ-104 and the resolution must be written down, or a careful reader will file it
-as a new violation.** REQ-104 says *"no analyzer harness value is hard-coded in engine source"*, and
-interpolating the vocabulary into the default prompt puts vocabulary in source. The resolution:
-**the default is source; an operator override replaces the prompt wholesale, and the gate constant
-is unchanged either way** — so an override can never *widen* the vocabulary, and an override with a
-wrong vocabulary self-diagnoses as `GATE_REJECTED_SHAPE`. That asymmetry is ADR-015 restated ("the
-system prompt is a hint, the gate is the control") and belongs in ARCH-080's note.
-
-**P5 — A6: the drift-lock is currently a subset assertion, which is why it admitted two tools
-silently. Owning gate: 5.** `tests/integration/mcp-tools-list-schema.test.ts:28-39` lists ten tools
-and neither `workflow_describe` nor `workflow_regenerate_diagram`; the only assertions reaching them
-are generic loops a one-word description would pass. ARCH-082's "**Both** new tool schemas join
-ARCH-051's structured drift-lock" is asserted nowhere, so REQ-101's last clause (a schema-only
-client learns the script is deliberately not in the response) has no test. Amend **ARCH-051**:
-
-> the drift-lock asserts **set equality** between the advertised tool list and the test's literal
-> expectation, not containment — adding a tool without updating the lock must turn the build red.
-> Per the carried-in rule *"a test whose oracle is the code under test cannot fail when the code is
-> wrong,"* the literal list stays in the test and is never imported from `server.ts`.
-
-Plus one literal assertion on `server.ts:493`'s served sentence — today deleting it turns nothing
-red.
-
-**V-C (original) — every seam this design added is a happy-path seam.** ARCH-079 inv 8 introduced
-`schedule` (default `setImmediate`, tests pass `runInline`) precisely so the job runs
-deterministically. But the **failure** path has no seam: there is no injection point that makes
-`getTriggerBindings` or `putDiagramResult` throw, which is exactly why A3 has no test. Generalize it
-in ARCH-079: *"a seam added for happy-path determinism must also admit the failure the invariant
-claims to survive; otherwise the invariant is prose."* Concretely this costs nothing new — `ports`
-and `catalog` are already injected, so the Gate-5 RED row is "a throwing `putDiagramResult`, and the
-*next* enqueued job still runs."
-
-**Testability of P1**, so Gate 5 has an oracle: one parameterized route test over
-`{authEnabled:false}` → 200; `{authEnabled:true, loopback peer}` → 200; `{authEnabled:true,
-non-loopback, no/invalid bearer}` → **401 + `WWW-Authenticate`, and zero store reads**; plus a
-**parity** assertion that the 200 bodies are key-identical to the MCP tool's `result` under the
-existing two-sided `EXPECTED_DESCRIBE_KEYS` literal oracle. The parity assertion is the structural
-guarantee ARCH-081 already claims and currently only exercises on one of the two call sites.
+**Net new mechanism across all eleven: one function, three `if`/`try` statements, one union type,
+one parameter, and two deleted claims.** No new module, no new store, no new config key, no
+migration, no global handler. That is the correct output for a gate whose defect is *deviation from
+an already-agreed shape*, not missing design.
 
 ---
 
-## 3. Risks
+## §2 Key points
 
-**R1 — P1 partially retires a ratified non-goal (REQ-086: "the read-only dashboard remains
-unauthenticated").** Needs an owner ruling (`ADJ-A1`). Mitigation: loopback exemption preserves the
-documented operator posture; blast radius is one view once A4 lands. *If the owner rules the route
-stays open,* then the honest consequence is that ARCH-083 and ADR-012's masking posture must be
-amended to **say** the describe payload is public-by-decision, and `EXPECTED_NON_OWNER_KEYS` must be
-reconciled with it — the one outcome I will argue against is leaving the documents claiming a gate
-that does not exist.
+1. **The architecture text is not the problem this round; the *enforcement site* is.** Round 1's
+   amendments were correct and were verified correct in code eight times out of ten. The two that
+   failed (inv 2, inv 11) failed the same way: they described a **property** ("the bound holds on
+   every exit path", "no path reaches the gateway") and Gate 6 shipped the **narrowest instance**
+   that satisfies the sentence's example. A property enforced at N call sites is not a property; it
+   is N chances to be right. Both fixes I propose are *reductions* in site count (4 → 1 for the
+   egress guard, 3 → 1 for the settle emitter), which is why simplicity-first does not fight
+   security here — this once, they agree.
 
-**R2 — P2's choke-point guard is safe only while `mcp-facade.ts:462-464` short-circuits.** If that
-short-circuit is ever removed, an `enabled:false` regenerate nulls a good diagram before settling.
-Mitigation: assert it (§2.1 P2). This is the *same* class as A10 — a compensation standing in for an
-invariant.
+2. **R-1 is a bound whose loss is invisible, which is the only reason it survived four gates.**
+   ARCH-079 inv 2 itself says it: a wedged slot reports `QUEUE_FULL`, and `QUEUE_FULL` is *designed*
+   behaviour. There is no metric, no log line, and no test that distinguishes "the queue is busy"
+   from "the queue has been dead since boot". Everything else in this document is secondary to
+   making that state **observable** (P4's settle line at the choke point) and **impossible** (P2's
+   floor assertion).
 
-**R3 — P1 edits the request dispatcher**, the file with this iteration's highest defect density.
-Smaller than it first appears: P1 **adds a gate, it does not move a route** (§2.1) — the handler
-stays at `:1918-1930` and the auth block gains a fourth 401-or-fall-through clause using an existing
-predicate pair (`isLoopbackPeer` + `resolvePrincipal`), introducing no new concept. The residual
-risk is the auth-disabled path, and it is the one Gate 5 must assert first
-(`{authEnabled:false} → 200`), because a gate placed one block too deep returns 404 to every
-no-auth deployment. The rejected fallback — threading a resolved principal into
-`handleDashboardRequest` — I like less: it makes an authorization decision reachable from a block
-whose other seven routes do not make one, i.e. it re-creates the condition that produced A1.
+3. **R-1's blast radius is process-level, not queue-level — stated precisely, without the overclaim
+   both panels already withdrew once.** Node 22's default for an unhandled rejection is to
+   terminate the process; `grep -rn "unhandledRejection" src/` is empty; and the reachable throw
+   sites (`getTriggerBindings`, `putDiagramResult`) are inside a closure scheduled from
+   `sweepAtBoot()` at `server.ts:1507`. So a single orphan `pending` row can take the engine down
+   **at boot**. It is bounded to **one** such restart by inv 9 (the sweep stamps before it
+   schedules, so the second boot takes the "stamped by a dead process" branch and settles with zero
+   model calls) — this is *not* the unbounded crash-loop the round-1 panels filed and withdrew. One
+   crash, one restart, then correct. That is still an availability defect on the boot path, and it
+   is the reason I keep R-1 at HIGH rather than accepting "it only leaks a slot".
 
-**R4 — A7's amendment could be read as a rubber stamp.** Mitigation: the amendment records the
-re-audit *result* per member and the rule for future widenings, not just the four names.
+4. **The oracle problem is the real finding.** The reviewer ran
+   `npx vitest run tests/unit/graph-analyzer.test.ts` → **33/33 green with the defect present**, and
+   the full suite → **1837 green**. UT-125 (`tests/unit/graph-analyzer.test.ts:703-743`) asserts the
+   released claim, the released slot and the next job — and **drops the ordered assertion (b), that
+   the orphan row settles**; its own docblock calls the `scriptPromise` rejection *"the one
+   reachable throw"*, which the four throw sites in `_runJob` falsify. Architecture's deliverable
+   this round is therefore not only amended prose but **five oracles that are red against
+   `41e6382`** (§4). An architecture that ships an invariant without a red-today oracle has shipped
+   a wish.
 
-**R5 — scope creep back into Gates 5/6.** Four of my eight proposals are Gate 5/6 work. Mitigation:
-each carries an owning-gate tag and contributes only an invariant here. Gate 2 must not "fix" A2/A3
-in prose and let Gate 5 skip the RED row — this ledger has a recorded instance of exactly that.
-
-**R6 — A10 remains a real, accepted data-loss window** after the recommended fix. It is
-`regenerate → crash → sweep` only, it degrades to `unavailable` (never to stale-but-wrong), and the
-schema variant is available if the owner values the prior diagram more than a migration.
-
----
-
-## 4. Karpathy check (what I am NOT proposing)
-
-No rate limiter. No distributed lock or leader election. No second masking projection. No
-`diagramCache`. No `admin` trust tier. No new state store. No `unhandledRejection` global handler
-(a `.catch()` at the one scheduler site is the fix; a global handler converts a crash into silent
-corruption everywhere). No `DISABLED` note-code migration. No preserved-prior-diagram schema change.
-**Net new mechanism across all eight proposals: one reuse of an existing predicate pair (P1), one
-`finally` + one `.catch()` (P3), one `if` (P2), one exported constant (P4), one `toEqual` where a
-`toContain` stands (P5).** Everything else is amendment text — which is the correct output for a
-gate whose deviations are 40% "the row was never edited".
+5. **One new rule, and only one** (this ledger's own retro asked for it, §9 item 1): **an
+   implementation that deviates from an amended invariant must amend that invariant in the same
+   commit.** I would put it in ARCH-079's preamble rather than leave it in a retro, because a retro
+   is not a gate input. R-3 is the pure case: the shipped shape is *defensible* (it has no live
+   hole, and the architecture pre-authorized a weaker fallback), and it is still a finding **solely
+   because nothing recorded taking the fallback**. The doc and the code disagreeing is the defect,
+   independent of which one is better.
 
 ---
 
-## 5. Where my three lenses fight, and how I break the tie
+## §3 Proposals
 
-**C1 — A1: security wants the route gated; consumability/availability wants it open; testability is
-neutral-to-positive on gating (an auth branch is testable; an implicit posture is not).** The real
-conflict is that the route's *only* consumer is an explicitly-unauthenticated dashboard, so gating
-it under auth = deleting the browser feature for remote viewers. **Tie-break: `dbindExempt`.** It is
-the minimum mechanism that satisfies security (no anonymous remote topology read), preserves the
-documented operator posture (loopback/SSH-tunnel browsers keep working), and adds zero new concepts.
-Karpathy: reusing REQ-089's predicate beats inventing a per-surface policy.
+### P1 — R-1: re-assert inv 2 verbatim; the amendment was right and is still unbuilt
 
-**C2 — A10: security's instinct is that a `pending` row must not serve a diagram whose provenance is
-mid-flight; availability wants the last-good diagram retained.** On inspection **security has no
-real objection**: a retained diagram is a previously gate-passed artifact for the *same*
-`(name, version)`, so retention opens no disclosure the surface did not already have. The genuine
-objection is a *consistency* one — `status` and payload would disagree — and it is answered by
-fields the response already carries (`diagramStatus`, `diagramGeneratedAt`). **So the tie is broken
-not by lens but by cost** (§2.2 P8: `generated_at`'s double duty makes it a migration), and I say so
-explicitly because "security prefers nulling" would be a false justification for the cheap option.
+**Finding, re-verified this pass** at `src/graph-analyzer.ts:255-264`:
 
-**C3 — A2: security wants one choke-point guard; testability wants the guard visible at each caller
-so each caller's behaviour is asserted independently.** Resolved without a trade: the guard goes at
-`_startJob` (drift-proof for a future fourth caller) **and** Gate 5 writes one RED row *per entry
-point* asserting `gateway.invoke` is never called — the gateway is already injected, so per-caller
-assertions cost nothing extra. Testability's real requirement was per-caller *assertions*, not
-per-caller *code*.
+```ts
+const job = async (): Promise<void> => {
+  let script: string;
+  try { script = await scriptPromise; }
+  catch { this._release(key); return; }          // no settle, no journal
+  await this._runJob(name, version, script, principal, key, priorRow);   // OUTSIDE the try
+};
+```
 
-**C4 — A5: security's fix (interpolate the gate constant into the shipped prompt) reads as a
-REQ-104 violation ("no analyzer harness value hard-coded in engine source"), which is a
-replaceability/config-separation requirement.** Tie-break by asymmetry, not by precedence: the
-constant governs the **gate**, which an operator cannot override; the prompt is a default an
-operator replaces wholesale. So interpolation cannot reduce operator tunability, and it removes the
-one drift (prompt vocabulary vs gate vocabulary) that 08-validation shows failing in real runs.
-Must be *stated* in ARCH-080, because the collision is real and a future reviewer will re-file it.
+and `:127` — `this._schedule = deps.schedule ?? ((job) => { setImmediate(() => { void job(); }); })`,
+i.e. the belt-and-braces `.catch()` was not added either. `_release` is otherwise reached only at
+`_runJob`'s tail.
 
-**C5 — the standing lens tension in this slice, restated:** security's answer to every analyzer
-question is "gate it, allowlist it, do not call the model"; scalability's is "the model call is the
-product, bound it"; testability's is "make it deterministic". The one place all three agree is
-**ARCH-080's gate**, which is why it is the only part of v23 with no HIGH against it. That
-agreement is evidence the gate is in the right place, and I would resist any send-back fix that
-moves policy *out* of it.
+**Ruling: no amendment.** ARCH-079 inv 2 as amended already prescribes exactly the right shape —
+*"the `try { … } catch { settle + journal } finally { release + drain }` **wraps the scheduled
+closure**"* — and it is right for the reason it gives: the claim and the slot are taken in
+`_startJob`, so any narrower wrap leaves an exit path that never releases. Architecture does not owe
+new text for R-1; **it owes the two residual holes the ordered shape still has (P2, P3) and the
+oracles (§4).** Gate 6 owes ~8 lines: wrap the closure, `catch` → settle + journal, `finally` →
+release + drain, **delete `_runJob`'s tail release**, add the `.catch()` backstop at `:127`.
+
+**Why the `.catch()` at `:127` is belt-and-braces and not the mechanism** (worth restating, because
+it is the clause most likely to be "implemented instead of" the real one): `schedule` is an
+injectable seam (inv 8), so an invariant enforced only in the *default* seam is one every test that
+injects `runInline` never exercises — which is precisely how this defect reached Gate 8 twice.
 
 ---
 
-## 6. Expected disagreements with the quality-dimensions lens
+### P2 — NEW (V-E): the ordered `finally` **double-releases** unless `_release` is made idempotent — and a negative `_runningCount` silently converts concurrency-1 into unbounded concurrency
 
-1. **A1 (biggest).** I expect quality to weight **consumability** — the dashboard's describe view
-   and README's 「任何人都能問」 — and to prefer keeping the route open with a trimmed payload. I
-   will argue that is the forbidden second mask, that an empty `triggers[]` is a silent lie under
-   this iteration's own honest-absence rule, and that `dbindExempt` gives them the operator's
-   browser back for free. **Expected convergence point:** both of us treat "the documents claim a
-   gate that does not exist" as unacceptable; we differ on which side of the claim moves.
-2. **A10.** Quality's self-sustainability instinct is "document the window honestly" — which is now
-   *also* my recommendation, but I arrived via cost, not via honesty, and I want the **structural
-   cause** (`generated_at` serving two state machines) in the amendment. Expect them to accept the
-   cause and to be lukewarm on carrying the schema variant as a named alternative.
-3. **A2.** Quality filed this as SUS-1 against the sweep branch; I move the guard to `_startJob`.
-   Expect them to object that a guard inside a private method is less **observable** than one at the
-   call site. Counter: the journal line already carries the outcome per run, and a settle emits it.
-4. **Auto-retry.** Quality's self-sustainability lens may want `unavailable` to self-heal in the
-   background. ADR-017 forbids it and I side with ADR-017: a background retry is an unbounded cost
-   loop against a paid provider, and A3 shows this module cannot yet be trusted with an unattended
-   loop.
-5. **Observability additions.** I expect quality to propose an effective-config readback surface or
-   a gate-decision counter. ARCH-079 inv 5's journal line already carries `model` per run (the
-   wiring-gap signature) and ARCH-080's split reason code already separates the security event
-   (`GATE_REJECTED_CONTENT`) from the replaceability event (`GATE_REJECTED_SHAPE`). Both exist; I
-   will argue against a third surface.
-6. **A7 severity.** I escalate LOW→MED on security grounds (it is ADR-015's audit input). Expect
-   quality to hold it at LOW as documentation drift. Severity is the disagreement; the amendment
-   text is not.
-7. **Where I expect no daylight:** A3's fix, A4's deletion, A5's single constant, A6's equality
-   assertion, A8's and A9's straight amendments. Both prior panels agreed on facts everywhere they
-   overlapped, and I found nothing in the code to reopen.
+This is the most consequential thing in this file, and no panel has filed it.
+
+`_release(key)` does three things: `_pendingKeys.delete(key)`, `_runningCount--`, and drain (shift
+the queue, `_runningCount++`, schedule). Today it is called from **`_runJob`'s tail** on the normal
+path. P1's ordered fix adds a `finally { this._release(key) }` around the closure — and `_runJob`
+runs *inside* that closure. **If Gate 6 adds the `finally` without deleting the tail release — the
+single most likely partial implementation, and this iteration's demonstrated failure mode — every
+successful job releases twice.** `_runningCount` then goes `1 → 0 → -1`, and `_startJob`'s admission
+test is `if (this._runningCount >= 1) queue else run`. At `-1`, **every** subsequent job runs
+immediately: the "concurrency: 1, bounded queue" invariant becomes unbounded parallel
+`gateway.invoke()` — an internal LLM caller with no bound, which ARCH-079's own note calls "the scar
+this engine already carries (D-G8-4)". Cost amplification and provider rate-limit exhaustion, from a
+two-line edit that looks like the fix.
+
+Note the asymmetry that makes this worth an invariant rather than a code review comment: the
+**leak** direction (R-1) fails closed and loudly-ish (`QUEUE_FULL`); the **double-release** direction
+fails **open and silently** — more diagrams get drawn, faster, and every test that asserts "the next
+job runs" goes *greener*. A test suite cannot distinguish it from a performance improvement.
+
+**Amendment to ARCH-079 inv 2 (append):**
+
+> **The release is idempotent per key.** `_release(key)` returns without effect unless the key is
+> still claimed (`_pendingKeys.has(key)`); the claim is the authoritative record that this unit still
+> owns a slot. Consequences pinned as testable floors: **`_runningCount` is never negative**, and
+> **`_runningCount` never exceeds 1**, at any observable point, including after a job that both
+> throws and completes a settle. The `finally` in inv 2's closure is therefore the *only* release
+> site; `_runJob`'s tail release is deleted, and if a future edit re-adds one, idempotence — not
+> review vigilance — is what keeps the bound true.
+
+**Cost: one `if`.** Simplicity-first note: I considered and rejected a counter/semaphore abstraction
+(`agent-semaphore.ts` already exists, unclaimed, in the `solid_check` LOW list). Reusing it here
+would be a module-boundary change at a send-back gate to solve a problem one `if` solves.
 
 ---
 
-## 7. Concrete amendment list handed to Gate 2's writer
+### P3 — NEW (V-F): the ordered `catch { settle + journal }` can itself throw, so "the closure never rejects" is not yet true
 
-| # | Row | Amendment | Gate |
-|---|-----|-----------|------|
-| P1 | **ARCH-083** `api:` | Replace "auth-gated exactly as the route it replaces" with the literal `!authEnabled ‖ loopback ‖ resolvePrincipal` rule; state that the **gate** joins the `authHandlers` block as the **fourth** `dbindExempt` member (401 or fall through) while the **handler stays** at `:1918-1930`, because the block is skipped entirely when auth is off; name the guard test. Record `ADJ-A1` (partially retires REQ-086's dashboard non-goal) and the README/DEPLOY edits. | 2 |
-| P2 | **ARCH-085** + **ARCH-079** | New invariant: no path reaches `gateway` when `enabled:false`; guard at `_startJob`; it **settles** (`RETRIES_EXHAUSTED`, because `DISABLED` is read-synthesized only and outside the `note_code` CHECK). Note the load-bearing `ANALYZER_DISABLED` short-circuit. | 2 (text) / 5,6 |
-| P3 | **ARCH-079** inv 2 | A bound requires release-on-every-exit-path: `finally`, catch→settle+journal, `.catch()` at the `setImmediate` site; no `void promise` on engine paths. State that a wedge reports itself as `QUEUE_FULL`. | 2 (text) / 5,6 |
-| P4 | **ARCH-080** | Reduce the "three consumers" claim to one exported ordered constant + interpolation into the default prompt + a membership assertion over the prompt and `rwe.config.example.json`; add the REQ-104 asymmetry paragraph (default is source, override is wholesale, gate is unoverridable). | 2 (text) / 5,6 |
-| P5 | **ARCH-051** / **ARCH-082** | Drift-lock is **set equality**, not containment; literal expectation stays in the test; one literal assertion on the script-absence sentence. | 2 (text) / 5 |
-| P6 | **ARCH-079** inv 6 | True membership (+`meta.phases[].title`, `'default'`, `'model:param'`, `UNBOUND_ENTRY_LABEL`; −`DIAGRAM_CODEPOINTS`→shape pass); record the ADR-015 re-audit **result** per member; add the rule for future widenings. **MED, not LOW.** | 2 |
-| P7 | **ARCH-084** | The mini-preview is **deleted**, not re-pointed; state the 20N/min amplification it caused and that A1+A4 close two halves of one hole. | 2 (text) / 6 |
-| P8 | **ADR-017** / **ARCH-077** / **ADR-021** | State the `regenerate→crash→sweep` window and its cause (`generated_at` serving two state machines); correct the false comment. Strike the `maxWorkflowVersions` **prune** — the ceiling *refuses registration* (`workflow-catalog.ts:441-445`); note diagram rows are consequently bounded, not pruned. | 2 |
-| — | **ARCH-079** inv 4 | Strike "provider HTTP status" from the journal line (struck by DES-129, never amended); record the replaceability-observability loss as accepted. | 2 |
-| — | **ADR-022** / **ARCH-083** | Grep allowlist is **four** entries (`graph-analyzer.ts` added by adjudication #3); say the test pins the size so the number cannot re-drift. | 2 |
-| V-A | **ARCH-079** inv 9 (new) | The boot sweep stamps before scheduling; the stamp is what makes the requeue at-most-once across restarts under `Restart=on-failure`. | 2 |
-| V-B | **ARCH-079** | The bounds are **per-process**; the durable row is the only cross-process state and has no lock; multi-instance over one catalog is out of scope. | 2 |
-| V-C | **ARCH-079** inv 8 | A seam added for happy-path determinism must also admit the failure the invariant claims to survive. | 2 |
+`_settleUnavailable` (`:204-221`) performs `getDiagram`, `getTriggerBindings(name, this._ports)` and
+`putDiagramResult` — the *same* three store/port calls that are the reachable throw sites R-1 is
+about. So the ordered `catch { settle + journal }` calls, in its recovery path, the code whose
+failure it is recovering from. If `putDiagramResult` is what threw, the settle throws too, the
+`finally` still releases (good), and the closure **still rejects** (bad) — inv 2's headline claim,
+*"the closure never rejects"*, remains false, and the process still terminates at boot.
 
-**Verified by me at `file:line` for this proposal** (not taken from either prior panel or from ledger
-prose): `server.ts:1169-1183`, `:1241-1244`, `:1719-1722`, `:1774/1798/1834`, `:1918-1930`;
-`workflow-view.ts:40-62`, `:87-105`, `:131-133`; `workflow-catalog.ts:240-258`, `:270`, `:598`;
-`graph-analyzer.ts:14-21`, `:108-160`, `:165-199`, `:250-344`; `dashboard-page.ts:203-246`;
-`DEPLOY.md:500`, `:882`. **One claim of my own falsified and withdrawn** (V-A: the crash-loop is
-bounded), **one costing of my own falsified and withdrawn** (P8: the ON CONFLICT change is a
-migration, not a one-liner).
+**Amendment to ARCH-079 inv 2 (append):**
+
+> **The catch body is total.** The settle attempt inside the `catch` is itself wrapped; if it fails,
+> the journal line is still emitted (with `outcome:'unavailable'` and `cause:'settle_failed'`) and
+> the `finally` still releases. The row is then left `pending` **on purpose**: that is exactly the
+> state ADR-017's boot sweep already resolves (inv 9 stamps before scheduling, so the next boot
+> settles it with zero model calls). No new recovery path is built — the existing one is named as
+> the fallback, so "we could not settle" is a *recorded* state rather than an unhandled rejection.
+> `_journal` is a `console.log` of engine-classified fields only and cannot throw, which is what
+> makes this ordering safe; that property is now load-bearing and is stated here so a future edit
+> that makes the emitter do I/O has to come back to this sentence.
+
+**Cost: one nested `try`.** This is the difference between an invariant that holds on the paths we
+imagined and one that holds on the path that actually breaks.
+
+---
+
+### P4 — R-2b/OBS-2: hold inv 5 (settle choke point); do **not** ratify per-attempt lines
+
+**Finding, re-verified:** `grep -n "_journal(" src/graph-analyzer.ts` → `212` (`_settleUnavailable`),
+`223` (declaration), **`339` (`_attempt`)**. Two consequences, both real:
+
+1. With `retries > 0` the `do/while` at `:369-373` emits N lines for one settle. (Shipped default is
+   `retries: 0` at `server.ts:1480`, so this is config-dependent — but `retries` is a REQ-104
+   operator knob, so "the default hides it" is not a defence.)
+2. **The B5 prior-ready restore (`:378-383`) writes the row `status:'ready'` while the only line
+   emitted for that settle says `outcome:'unavailable'`.** The journal actively contradicts the
+   store. This is a defect **under either reading of inv 5**, which is why the reviewer said so.
+
+**Ruling: hold the amended invariant.** Gate 2 already adjudicated this once (referee call R-1,
+quality's §1.1 adopted over adversarial's §5.4) — re-litigating an adjudicated call because the
+implementation went the other way is exactly the ratchet this send-back exists to stop. Beyond
+precedent, the substantive argument: a **settle** is the state transition an operator counts (one
+diagram, one outcome, one cost); an **attempt** is an implementation detail of the retry policy. A
+log whose line count varies with a config knob cannot be summed into "how many diagrams settled
+unavailable this week" without knowing that knob's history.
+
+**Minimal shape (this is the whole design):** one private method
+
+> `_settle(name, version, row, telemetry)` — the **only** caller of
+> `catalog.putDiagramResult(...)`, and the only caller of `_journal(...)`. Every terminal path goes
+> through it: `_settleUnavailable`'s zero-call settle, `_runJob`'s three branches (`ready`, B5
+> restore, `unavailable`), and inv 2's catch. `_attempt` **returns** its telemetry
+> (`promptTokens`, `completionTokens`, `durationMs`, `gateFail`) inside its existing
+> `AttemptOutcome` union instead of logging it.
+
+Two properties fall out **by construction** rather than by care: the journal line's `outcome` is
+computed from the very row being written (B5 can no longer disagree with itself), and "exactly one
+line per settle" is true because there is exactly one place that writes a terminal row.
+
+**Cost accounting across a retry loop, so the move loses nothing:** `promptTokens` /
+`completionTokens` / `durationMs` are **summed across attempts** (cost attribution is the reason
+inv 5 exists — S-1), `gateFail` and `noteCode` come from the last attempt, and I propose one extra
+field, **`attempts: number`**, as the minimum that preserves the only information the move destroys.
+*Marked referee-decidable*: if the referee judges a twelfth field to be scope, drop it and record
+"per-attempt visibility is lost when `retries > 0`" as named debt — but do not keep the `_attempt`
+emitter as the way to get it back.
+
+**The B5 restore line's exact shape, pinned here so this proposal does not leave the very ambiguity
+it is filed against.** Under O5 the restore settle must log the row it wrote, i.e.
+`outcome:'ready'` — but the attempt that triggered it *failed*, so "`noteCode`/`gateFail` from the
+last attempt" is ambiguous exactly where Gate 6 has twice taken the convenient clause. Pinned:
+**`outcome:'ready'`, `noteCode:null`** (preserving the shipped `ready ⇒ noteCode null` convention,
+which `workflow-view.ts`'s note precedence relies on), `gateFail` from the last attempt (it is a
+model-call fact, null when no call was made), and the failure class carried by
+**`cause:'prior_restored'`** — added to P5's union. So the line reads "this settle left a good
+diagram in place, and here is why a new one was not drawn", which is the only reading an operator
+can act on.
+
+---
+
+### P5 — R-2/OBS-1: keep `cause`, and make it a closed union (the security half no one has stated)
+
+**Finding, re-verified:** `_journal`'s parameter type and its `JSON.stringify` literal
+(`:223-233`) both carry exactly ten keys; `cause` exists nowhere in `src/`. The amended inv 5,
+ADR-016's true-up and the interface table's journal row all pin **eleven**.
+
+**Ruling: implement `cause`, do not amend it away.** It is not decoration: inv 11 makes
+`RETRIES_EXHAUSTED` cover *three operationally distinct* states — the operator switched the
+analyzer off, a previous process died mid-generation, and the provider genuinely failed after
+retries — which are identical on both the persisted channel (the `note_code` `CHECK` stays at eight
+values, no migration) and the user-visible channel (one enum string). Without `cause`, the operator
+cannot tell "I did this" from "the provider is down". That is the same class as this repo's
+`composeConfig` forwarding-gap signature, which inv 5 was amended to make loud.
+
+**But the security lens amends its *type*, and this is my one substantive change to an
+already-amended invariant:**
+
+> **Amendment to inv 5 (and the same sentence to ADR-016):** `cause` is a **closed union of
+> engine-authored literals** — today `'disabled' | 'model_unmapped' | 'queue_full' |
+> 'boot_abandoned' | 'provider_terminal' | 'gate_refused' | 'script_unresolved' | 'prior_restored' |
+> 'settle_failed'` —
+> declared once beside `GateFailReason` and **never typed `string`**. ADR-016's rule ("the journal
+> carries an engine-classified error class, never raw provider or model text, because a provider
+> error payload can echo the request and the request contains the masked script") is currently held
+> by a `catch` that discards the error object at `:318`. A field typed `string` re-opens that
+> channel with a one-line diff and no security thought; a union makes the leak a **compile error**.
+
+This is the cheapest possible enforcement of the one genuine confidentiality property v23 added
+(REQ-100's mask must not be undone by the analyzer's own log), and it costs a type alias.
+
+---
+
+### P6 — R-3: build inv 11's choke point; decline the pre-authorized fallback
+
+**Finding, re-verified:** the `enabled` guard is at `graph-analyzer.ts:138` (`enqueue`) and `:181`
+(`sweepAtBoot`); `_startJob` (`:250-271`) reads `this._config.enabled` **nowhere**;
+`putDiagramPending` was **not** moved behind any guard (still at `enqueue:152` / `sweepAtBoot:187`);
+`_startJob` takes no stamp parameter. Total sites now carrying this one rule: `server.ts:955`,
+`mcp-facade.ts:462`, `graph-analyzer.ts:138`, `:181` — **four, across three modules.** The
+architecture of record (inv 11) asserts a choke point that does not exist.
+
+**The counterweight is real and I state it before my ruling:** there is **no live hole** — all three
+`_startJob` callers are covered, UT-124 pins all three entry points plus the prior-`ready` clobber
+trap, the guard-before-`putDiagramPending` ordering the amendment actually cared about *does* hold at
+both sites, and inv 11 itself pre-authorized the weaker fallback ("QD-S1's requeue-branch-only `if`")
+for exactly the situation we are in. On a pure risk-today reading, the shipped shape is fine and the
+honest fix is a doc amendment.
+
+**Ruling: build the choke point anyway.** Three grounds, in decreasing strength:
+
+1. **Agent-altitude security.** `enabled:false` is the *script-egress* control — the switch an
+   operator flips because DEPLOY §1b told them registration ships the script to the provider. Its
+   correctness property is "no path reaches `this._gateway`", a **universal over paths**. A
+   universal enforced at four sites in three modules is one refactor, one new caller, or one
+   `regenerate`-shaped feature away from false; inv 11's own rationale is this repo's evidence:
+   *"three callers each carrying the check, two remembered, one forgot."* v22 already shipped a
+   masking control that a later surface (`workflow_agent_log`) could have re-opened; that is the
+   same story one iteration earlier.
+2. **The fallback was authorized for a *cost* that has since been paid.** Its stated justification
+   was "if Gate 6 wants zero structural change at a send-back gate". Gate 6 is now doing structural
+   work in this exact function regardless (P1 rewrites the closure `_startJob` schedules). The
+   marginal cost of the choke point is now **one `if`, two moved lines and one parameter**, against
+   a permanent reduction from four rule-sites to one load-bearing site plus two defence-in-depth
+   ones.
+3. **Site count is the simplicity metric here.** Karpathy-minimal is not "smallest diff today"; it
+   is "least machinery to maintain". Four copies of a security rule is more machinery than one.
+
+**Shape (unchanged from inv 11, restated so Gate 6 cannot ship a third reading):** `_startJob`'s
+first statement is the `enabled` check, **before either claim**; when disabled it **settles**
+(`_settleUnavailable`, code `RETRIES_EXHAUSTED`, `cause:'disabled'` per P5) and returns.
+`putDiagramPending` moves **into** `_startJob`, behind that guard, with `sweepAtBoot` passing its
+attempt stamp as a parameter (inv 9's stamp-before-schedule ordering is preserved — it is now
+stamp-inside-`_startJob`-before-schedule, which is strictly tighter). `enqueue` keeps reading
+`priorRow` **before** calling `_startJob` and passes it through, so the B5 prior-`ready` protection
+is unchanged. `server.ts:955` and `mcp-facade.ts:462` stay as defence-in-depth and each earn a
+one-line assertion — they are no longer load-bearing.
+
+**Sequencing, and this is a condition of my ruling, not a note:** P6 lands as a **separate RED→GREEN
+step after P1/P2/P3**, not in the same commit. Two structural changes to the same closure in one
+commit is how a fix and a regression become indistinguishable at Gate 8 — and this subsystem has now
+produced two consecutive blocking rounds by exactly that mechanism.
+
+---
+
+### P7 — SUS-2: re-assert ADR-020(c); the doc is right and the mitigation is missing
+
+**Finding, re-verified:** `src/server.ts:1512` is the only analyzer-tools boot line and it is an
+unconditional `console.log`, byte-identical in form for `tools=[]` and `tools=["Bash","Write"]`;
+`console.warn` appears once in this block, for the unknown-alias case at `:1497`. ADR-020 decision
+(c) is verbatim *"mandate the key, default it to `[]`, **warn loudly at boot when it is non-empty**,
+and record non-empty as an accepted operator risk."*
+
+**Ruling: no amendment — Gate 6 owes one conditional `console.warn` beside `:1512`, naming the risk
+in the operator's words** (a non-empty tool surface gives the analyzer model tools inside the
+scratch jail). ADR-020 is the decision that *permits* the key to exist at all; two of its three
+mitigations shipped and the one that converts a silent hazard into an **accepted** one did not. An
+ADR whose permission survives and whose condition does not is a decision that was never actually
+made. The loud-line pattern already exists eight lines above (the fail-closed no-jail downgrade at
+`:1486`), so this is reuse, not new machinery. **Add the mirror test row** (assert a warn-level line
+when `tools` is non-empty and none when empty) — without it, this drops silently a second time.
+
+---
+
+### P8 — R-6: delete the count, don't correct it
+
+`02-architecture.md:555` says `TOOL_NAMES` *"declares **39** tools, all 39 advertised"*; direct count
+this pass: **40**. The delicious part is where the wrong number sits — **inside the amendment whose
+entire purpose was to replace a count-based drift-lock with a set equality**, because a count cannot
+detect a rename.
+
+**Ruling: strike the number from ARCH-051/ARCH-082 rather than update it**, replacing it with the
+mechanism: *"`TOOL_NAMES` (`server.ts:189-243`) is the single declaration; the advertised set is
+pinned by IT-102's two-sided set equality against a hand-written literal that is never imported from
+`server.ts`."* Correcting 39→40 buys one iteration of accuracy and re-arms the same trap; deleting
+the claim removes a second source of truth permanently. (Same reasoning applied in P9.)
+
+---
+
+### P9 — CONS-1: replace the enumerated key list with the derived type
+
+`02-architecture.md:1456` advertises
+`FileConfig.graphAnalyzer?: {enabled?, model?, systemPrompt?, tools?, timeoutMs?, retries?}` — six
+keys. The shipped block has **nine** (`maxBytes`, `maxLines`, `maxQueueDepth` added, ratified by
+DES-134 for a REQ-104 reason), defaulted at `server.ts:1481-1483`.
+
+**Checked, because this repo's signature bug is exactly here and a doc-only ruling would be wrong if
+the wiring were broken:** `src/server.ts:173` declares `graphAnalyzer?: Partial<GraphAnalyzerConfig>`
+— a **derived** type over the nine-key `GraphAnalyzerConfig` (`graph-analyzer.ts:75-85`) — and
+`src/main.ts:184` forwards `graphAnalyzer: fileConfig.graphAnalyzer` **as a whole block**. So all
+nine keys genuinely reach `ServerConfig`; this is **not** a `composeConfig` forwarding gap (v11
+`updateFlagPath`, v15 `auth`, v16 `workspaceTtlMs`), and I say so explicitly because the row's
+六-key text *looks* exactly like one and the next reader will assume it is.
+
+**Ruling: doc-only, and fix it by pointing at the declaration** —
+*"`FileConfig.graphAnalyzer?: Partial<GraphAnalyzerConfig>` (`server.ts:173`) — one declaration
+(`graph-analyzer.ts:75-85`, nine keys today), forwarded whole through `composeConfig()`
+(`main.ts:184`), defaulted at one place (`server.ts:1476-1484`), documented in
+`rwe.config.example.json` + DEPLOY §1b."* A row that re-types a key list will drift on the tenth key;
+a row that names the type cannot.
+
+---
+
+### P10 — the interface table's journal row contradicts itself in one line
+
+`02-architecture.md:1708` states **"+ provider HTTP status" STRUCK** (A8) and then closes with
+*"Engine-classified error class + provider HTTP status only"*. One line, both readings. **Strike the
+trailing clause** → *"Engine-classified error class + token counts only; **never** transcript text,
+raw provider text, or the script."* The mermaid note at `:1611` and ADR-016 at `:1478` already read
+correctly, so this is the fourth-of-four site the A8 strike missed — the very defect class A8 was
+written to repair.
+
+---
+
+### P11 — R-4 (LOW): make `enqueue()` total at its own front door
+
+`server.ts:957` calls `graphAnalyzer.enqueue(...)` **synchronously and after**
+`facade.workflow_register` has committed; `enqueue` does `getDiagram` + `putDiagramPending` (and on
+a settle path, `getTriggerBindings` ×N + an `.immediate()` write). A throw turns a **committed**
+registration into a failed tool response — the caller retries, gets `VERSION_CEILING_EXCEEDED` or a
+duplicate version, and the engine has lied about what it did.
+
+The reviewer's suggested fix is a two-line `try/catch` at the call site, marked "owner's call".
+**I propose the choke-point form instead**, for consistency with P6: the analyzer's own front door
+is total — `enqueue()` never throws at its caller; an internal failure settles (or, if the settle
+fails, journals `cause:'settle_failed'` per P3) and returns. One `try` inside `enqueue` covers
+`server.ts:957`, `mcp-facade.ts`'s regenerate path, and any future caller; a `try` at one call site
+covers one call site. Still **LOW** — `better-sqlite3` is single-process-synchronous and inv 10 rules
+multi-process contention out of scope — so this is a Gate 6 opportunistic item, not a blocker.
+
+---
+
+## §4 What architecture owes Gate 5: five oracles that are **red today**
+
+Gate 8's retro item 2 is right — *"a deferred oracle is where this defect hides"* — so these are
+listed with their owning gate on the scope line, not in a docblock. All five are reachable with
+**seams that already exist** (`schedule`, `ports`, `catalog`, `gateway` are constructor-injected);
+**no new seam is proposed**, which is the V-C amendment already paying for itself.
+
+| # | Oracle | Red against `41e6382` because | Pins |
+|---|---|---|---|
+| **O1** | Injected `ports` whose `getTriggerBindings` throws, on a job reaching `_runJob`: assert (a) zero unhandled rejections, (b) **the row settles** `unavailable`, (c) exactly **one** journal line, (d) the next enqueued job runs, (e) `_runningCount === 0` | `_runJob` is outside the `try`; nothing settles, nothing journals, the slot leaks | inv 2, inv 5, P3 |
+| **O2** | Injected `catalog` whose `putDiagramResult` throws **on the `ready` branch**: same five assertions | inv 8's V-C case, named as debt in UT-128's docblock `:497-501` and never picked up | inv 2, inv 5, inv 8 |
+| **O3** | UT-125 **gains its dropped assertion (b)**: the orphan `ga-orphan@v1` row settles (not left `pending`) | the shipped `catch` calls `_release` only | inv 2, ADR-017 |
+| **O4** | **Slot-accounting floor**: across a mixed burst (one throwing job, then `maxQueueDepth + 3` valid ones) assert `_runningCount` is never `< 0` and never `> 1` at any settle, and that concurrent `gateway.invoke` calls never exceed 1 | nothing today can observe a double release; this is the oracle that makes P2 falsifiable **before** Gate 6 writes the `finally` | inv 2 (P2) |
+| **O5** | **Self-checking settle**: for every terminal path (all six, incl. B5 restore), assert the journal line's `outcome` **equals** the status of the row actually read back from the catalog | today the B5 restore writes `ready` and logs `unavailable` | inv 5 (P4) |
+
+**O5 is the one I would keep if I could keep only one.** It is a *relational* oracle — it compares
+two things the code produces rather than asserting a literal — so it cannot be satisfied by editing
+the expected value to match the shipped behaviour, which is this iteration's documented test-drift
+failure (v22's `val-107` rewritten to assert success; IT-080 built on the vulnerability it should
+have caught). A relational oracle is the cheapest structural defence against an oracle that drifts
+with the code.
+
+Additionally, if the referee keeps P5's eleven/twelve-field list: **a `cause`-value assertion on
+UT-128's five zero-model-call paths**, and a type-level assertion that `cause` is not `string`
+(a `@ts-expect-error` on assigning an arbitrary string is enough).
+
+---
+
+## §5 What I decline to build (simplicity-first, stated so the declines are on the record)
+
+- **A process-level `unhandledRejection` handler.** It would mask R-1 rather than fix it, at the
+  wrong altitude (global) for a bound owned by one closure, and it would make O1/O2 pass without
+  the invariant holding. Declined even though it is one line and would have prevented the boot
+  crash — *because* it would have prevented the boot crash, which is the only reason this defect was
+  ever visible.
+- **A distributed lock / cross-process slot accounting.** Inv 10 already rules multi-instance over
+  one catalog out of scope; P2's per-process floor is the honest bound.
+- **A ninth persisted `note_code` + `CHECK` migration.** `cause` on the journal field is the
+  precedent-backed (DES-129 `gateFail`) zero-migration answer; the migration stays scheduled debt.
+- **A rate limiter over registrations** (v22 debt S-1: every registration now costs an LLM call).
+  Concurrency 1 + queue cap + `timeoutMs` + `maxWorkflowVersions` bound it; a limiter is a new
+  subsystem at a send-back gate.
+- **Reusing `agent-semaphore.ts`** for P2 (see P2's note): a module-boundary change to replace one
+  `if`.
+- **A second render path / any change to A1, A4, A5, V-D, inv 4/6/9/10.** Verified CLOSED this pass;
+  re-opening verified-closed items at a send-back round is how a gate loop fails to terminate.
+
+---
+
+## §6 Risks
+
+| # | Risk | Severity | Mitigation I am proposing |
+|---|---|---|---|
+| **RK-1** | Gate 6 implements P1's `finally` **without** deleting `_runJob`'s tail release → concurrency-1 becomes unbounded, silently, and every existing test goes greener | **HIGH** (fails open; cost + provider rate limits) | P2's idempotent `_release` + **O4**, which is red *before* the `finally` is written |
+| **RK-2** | P1 and P6 land in one commit → a fix and a regression in the same closure are indistinguishable at Gate 8, producing a **third** consecutive blocking round on this file | **HIGH** (process risk, and this loop has already run twice) | P6 sequenced as a separate RED→GREEN step; each with its own oracle |
+| **RK-3** | The `catch { settle }` throws (P3) and the closure rejects anyway → R-1 is reported fixed while the boot-path termination remains | MED | P3's total catch + O1/O2 assert *zero unhandled rejections*, not "the row settled" |
+| **RK-4** | `cause` ships as `string` and a later "helpful" edit concatenates the provider message → REQ-100's mask is undone through the log channel, silently, with no test failing | MED (confidentiality) | P5's closed union: the leak becomes a compile error |
+| **RK-5** | Moving the emitter to `_settle` (P4) loses per-attempt cost visibility when an operator sets `retries > 0` | LOW | summed tokens/duration + `attempts` field; if the referee cuts `attempts`, record as named debt on the scope line — never in a docblock (retro item 2) |
+| **RK-6** | Moving `putDiagramPending` into `_startJob` (P6) re-orders it relative to `enqueue`'s `priorRow` read → the B5 prior-`ready` protection silently regresses | MED | `priorRow` is read in `enqueue` **before** `_startJob` and passed through, unchanged; UT-124's fourth case (the latent-clobber trap) is the existing guard and must stay green |
+| **RK-7** | The doc-only items (P8/P9/P10) are treated as cosmetic and deferred → the architecture of record keeps asserting a choke point, a key count and a struck clause that the code contradicts, and Gate 8 files them a third time | LOW individually, **structural in aggregate** | all four are ≤2 lines; they are the cheapest items in the round and there is no defensible reason to carry them |
+| **RK-8** | This round adds text to an invariant that is already ~2 400 words (ARCH-079 inv 2/5/11) and the *next* implementer reads the most convenient clause again | MED (the documented failure mode) | P2/P3 are appended as **numbered, testable floors** (`never negative`, `never > 1`, `no unhandled rejection`), each with a named oracle — a floor with a test ID is not a clause to interpret |
+
+---
+
+## §7 Where my own three lenses conflict (the part the brief actually asks for)
+
+1. **Security vs Testability — P6's timing.** Security wants the egress choke point *now*: four
+   sites in three modules is a control with no owner, and the repo's own history is "two remembered,
+   one forgot". Testability wants **zero** structural change to `_startJob` in the same round that
+   rewrites the closure it schedules, because confounded changes are unverifiable and this exact
+   confusion has now cost two Gate 8 rounds. **Resolution: build it, sequenced separately.** Neither
+   lens gets what it asked for (security waits a step; testability accepts churn), and that is the
+   correct outcome — the alternative "amend the doc to ratify four sites" makes the *architecture*
+   the thing that drifted, which is worse than either.
+
+2. **Scalability/consistency vs Security — the direction of P2's failure.** The consistency lens
+   reads the missing `finally` as a **leak** (slot lost, queue wedged, `QUEUE_FULL` forever) and
+   would fix it by always releasing. The security lens reads the *fix* as the bigger hazard: a leak
+   fails **closed** (no model calls, no spend, honest-if-misleading `QUEUE_FULL`), while a
+   double-release fails **open** (unbounded concurrent LLM calls, cost amplification, provider
+   rate-limit exhaustion) and looks like a performance win to every test. **Resolution: idempotence
+   plus a two-sided floor** (`never < 0` *and* `never > 1`). The one-sided fix each lens would have
+   written alone is wrong in the other's direction.
+
+3. **Observability vs Confidentiality — P5's `cause`.** Observability wants the distinct reason on
+   the log line and, taken alone, would type it `string` and let the provider's own message through
+   (that is the most *useful* value). Confidentiality says the request contains the v22-masked
+   script and a provider error payload can echo the request. **Resolution: keep the field, close the
+   type.** The observability gain (distinguishing "operator disabled it" / "process died" /
+   "provider failed") is fully realised by eight engine literals; the leak is fully prevented by the
+   compiler. This is the only place where the two lenses can both win outright, and it costs a type
+   alias.
+
+4. **Testability vs Security — injectable failure seams (V-C).** Testability needs `ports` and
+   `catalog` to be able to throw on demand (O1/O2 do not exist otherwise). Security's reflex is that
+   every seam is attack surface. **Resolution: dismissed, with the boundary stated** — these are
+   **constructor** parameters resolved in the composition root, not config-reachable and not
+   run-reachable; the hazard would be a test-only seam that is *also* an operator knob
+   (`graphAnalyzer.tools` is precisely that, which is why ADR-020(c)'s warning in P7 is not
+   optional). Recording the distinction is what stops the next seam from being added at the wrong
+   altitude.
+
+5. **Simplicity vs Observability — P4's `attempts`.** Simplicity says the settle line is already
+   eleven fields and a twelfth is scope at a send-back gate. Observability says moving the emitter
+   *destroys* information that exists today (per-attempt lines under `retries > 0`) and that
+   deleting information is not simplification. **Resolution: propose it, mark it
+   referee-decidable, and pre-commit to the debt entry if it is cut** — I am not willing to have
+   the loss be silent either way, and that is the actual requirement.
+
+---
+
+## §8 Expected disagreements with the quality-dimensions lens (round 2 preview)
+
+1. **P6 (inv 11 choke point) — the sharpest one.** Quality filed the **weaker** fix in round 1
+   (QD-S1's requeue-branch-only `if`) and the reviewer graded R-3 quality-**LOW** / adversarial-MED.
+   I expect them to argue *"no live hole; amend inv 11 to ratify the two-caller placement and say
+   why; a send-back round is the wrong place for a structural move."* That is a coherent
+   consumability/replaceability position and it is not stupid. **My concession in advance:** if the
+   referee takes it, the amendment must state (a) that the guard is enforced at four sites across
+   three modules, (b) that adding a caller requires carrying it, and (c) an assertion per site — a
+   ratification that does not enumerate the cost is just the silence that produced R-3.
+
+2. **P4's `attempts` field / a config-readback surface.** Quality's observability and
+   self-sustainability altitudes tend to want *more* surface: an `attempts` field, a
+   `graphAnalyzer_status` MCP tool, a persisted ninth note code. I expect to be arguing **against**
+   at least the last two: the journal line is already the effective-config seam (inv 5's own
+   rationale — an operator who edits `graphAnalyzer.model` sees the new model on the next line), and
+   a second readback surface is a second thing that can disagree with the first.
+
+3. **A process-level `unhandledRejection` handler.** Classic self-sustainability ask (the engine
+   should not die at boot), and I decline it in §5 for a reason quality will find unsatisfying:
+   masking is not surviving. Expect this to need a referee call. **My fallback if I lose:** the
+   handler must **log and re-throw** in test/CI mode, or O1/O2 stop being able to fail.
+
+4. **P8/P9 (delete the count, name the type).** Quality's consumability lens may prefer the
+   architecture to spell keys out for a human reader rather than point at a TypeScript declaration.
+   I would rather a reader follow one link than trust a list that has now drifted twice (39/40,
+   six/nine) in a single iteration. Compromise available: keep the enumerated list **plus** the type
+   name, on the explicit condition that the type name comes first, so a drifted list is visibly
+   secondary.
+
+5. **Where we will agree, stated so the referee does not have to discover it:** inv 5's settle choke
+   point (they won that call in round 1 and I am holding their result **against** the shipped code),
+   the B5 mismatch being a defect under either reading, SUS-2 (their filing, and it is right), and —
+   I expect — P2 and P3 once stated, since both are pure "an invariant that does not hold on the
+   failure path is prose", which is their vocabulary as much as mine.
+
+---
+
+## §9 Karpathy check on this round
+
+**Net new mechanism, counted:** one private `_settle()` method (which *removes* two of the three
+existing terminal-write sites and one of the two emitters), one `if` for idempotent release, one
+nested `try` in a `catch`, one `if` + two moved lines + one parameter for the egress choke point, one
+`try` at `enqueue`'s front door, one closed union type, one conditional `console.warn` (reusing the
+pattern eight lines above it), one journal field, and — in the docs — **two claims deleted** (a tool
+count, a re-typed key list) and one contradictory clause struck.
+
+**Nothing new is stored, nothing new is configured, nothing new is exposed on any surface, no
+migration.** Five of the eleven proposals *reduce* the number of places a rule lives (4 → 1 egress
+sites, 3 → 1 emitter sites, 4 → 1 terminal-write sites, 2 → 1 release sites, 2 → 1 key-list sources).
+That is the shape a send-back round should have: the defect was never missing design, it was a
+design enforced in too many places to hold.

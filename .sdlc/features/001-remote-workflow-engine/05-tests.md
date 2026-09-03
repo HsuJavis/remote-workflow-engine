@@ -7870,3 +7870,304 @@ and is the non-vacuity control for rows 3a/3b.
 process's own exit status, not a `| tail` pipeline's — the failure mode this ledger has recorded
 before). `npx tsc --noEmit` clean. Zero remaining red; `IT-015` stays the single
 `blocked`/`not-run` deferral, labelled and unchanged (`VAL-115` was closed at `15de3ce`).
+
+## Gate 5 RE-RUN (v23 Gate 2 RE-RUN #2, send-back `41e6382`, 2026-09-03, verifier)
+
+Per `02-architecture.md`'s own "Handoff" paragraph under **Decision rationale — v23 Gate 2 RE-RUN
+#2** ("Gate 5 (RED first): O1 ... O2 ... O3 ... O4 ... O5 ... plus `cause` value assertions ... a
+type-level assertion ... the twelve-key `Object.keys(...).sort()` set equality, ADR-020's two
+mirror rows ... and the two defence-in-depth one-line assertions"). Gates 3/4 were **not** sent
+back this round — no new DES/TASK items. `sh .sdlc/trace` baseline before this round: 1012
+items / 18 gaps (all 18 pre-existing, none referencing a v23 or ARCH id).
+
+**UT-125 AMENDED IN PLACE** (O3, quality QD-O4.2, inv 8's new rule — "an enumerated oracle is
+satisfied only in full"): the item shipped `status: green` at the prior Gate 6.5+7 round with its
+own enumerated oracle's assertion (b) — "the row settles" — silently dropped (only (a) rejections
+and (c) next-job-runs were asserted). Restored as its own numbered assertion; flipped back to red.
+
+### UT-125 — A3/N-1: an orphan-pending row's rejected scriptPromise must not wedge the queue
+- **status:** blocked
+- **traces:** ARCH-079, DES-131
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+**AMENDED v23 Gate 2 RE-RUN #2 (send-back `41e6382`), O3/inv 8.** File:
+`tests/unit/graph-analyzer.test.ts` (same describe block, same fixture — an orphan `pending` row for
+a never-registered name, swept via `sweepAtBoot()`, `schedule` a rejection-capturing test seam).
+Restored assertion: `getDiagram('ga-orphan','v1')?.status` must be `'unavailable'`, not stay
+`'pending'` forever — inserted between the existing "claim/slot released" and "next job runs"
+assertions, matching the architecture's own lettered order (a) rejections (b) row settles (c) claim/
+slot released (d) next job runs.
+
+**BLOCKED at Gate 6.5+7 (send-back from implementer, re-verified by the verifier against primary
+source): this is a structural conflict between two v23-ratified documents, not a Gate 6 code defect.**
+`src/workflow-catalog.ts:274-275`'s `putDiagramResult` late-write guard (DES-130 B6) is
+`SELECT 1 FROM workflow_versions WHERE name = ? AND version = ?` → no row ⇒ silent no-op. The orphan
+fixture (no `catalog.register('ga-orphan', ...)` ever called) is, by construction, the SAME DB state
+that any `putDiagramResult` call on this path will always see: no `workflow_versions` row for
+`(ga-orphan, v1)`. So assertion (b) is structurally unreachable given B6's own committed guard — not
+an artifact of a missing `try/catch`. Confirmed by an actual run:
+`npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-125'` now fails ONLY at assertion (b)
+(`expected 'pending' to be 'unavailable'`); assertions (a) zero unhandled rejections, (c) claim/slot
+released, and (d) next job still runs all PASS, and the journal line fires with
+`cause:"script_unresolved"`, `noteCode:"RETRIES_EXHAUSTED"` (confirmed by direct run output) — the
+row's DB status is the only piece of assertion (b) that cannot happen. This is a genuine conflict:
+ARCH-079 R-1's own text explicitly calls UT-125's assertion (b) "not a judgement call" (an enumerated
+oracle satisfied only in part is a send-back item), which is exactly why the verifier is not loosening
+it unilaterally — either ARCH-079's oracle needs amending to acknowledge B6 (the orphan row legitimately
+stays `pending` forever, harmless per B6's own "an orphan row is unrepresentable" framing — reframe
+assertion (b) around the journal's `cause:'script_unresolved'` line instead of the DB row), or DES-130
+B6 needs an explicit carve-out (e.g. gate the guard on the `workflow_diagrams` row's own existence, not
+`workflow_versions`, for the `unavailable`-only recovery write) — the latter is a production-code/
+architecture change with ADR-021 GC implications, out of test-author scope. **Needs a Gate 2/5
+decision; sent back up rather than resolved here.**
+
+### UT-129 — R-1/inv 2, oracle O1: a throwing `ports.getTriggerBindings` inside `_runJob` must not wedge the queue
+- **status:** red
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts` (new describe block, same mock policy as UT-124/UT-125 —
+stub `GatewayClient`, real on-disk `WorkflowCatalog`, `FixedClock`, a rejection-capturing `schedule`
+seam). `_runJob` calls `getTriggerBindings(name, this._ports)` directly (`graph-analyzer.ts:355`,
+building the allowlist/prompt) with no try/catch anywhere around it today — a DIFFERENT reachable
+throw from UT-125/O3's `scriptPromise` rejection (which `_startJob` already wraps and releases-only,
+release-without-settle). Fixture: the injected `ports.schedules.listByWorkflow` throws on its FIRST
+call only, then delegates to the real `NO_TRIGGERS` implementation — a permanently-throwing port
+would also break the RECOVERY settle's own `getTriggerBindings` call, making assertion (b)
+unsatisfiable even after a correct fix (a test defect, not a real requirement). Five assertions per
+02-architecture.md's own enumeration: (a) zero unhandled rejections, (b) the row settles
+`unavailable`, (c) exactly one journal line, (d) the next enqueued job still runs, (e)
+`_runningCount === 0`. Red reason (measured): `npx vitest run tests/unit/graph-analyzer.test.ts -t
+'UT-129'` → fails at assertion (a), `rejections.length` is 1 not 0 (the closure has no try/catch
+around the `_runJob` call); (b)-(e) go unreached behind it, same "vitest stops at the first failing
+expect" shape as UT-125.
+
+### UT-130 — R-1/inv 2 FLOOR 2b, oracle O2: a throwing `catalog.putDiagramResult` on the ready branch must be recovered
+- **status:** red
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts`. `_runJob`'s success branch calls
+`this._catalog.putDiagramResult(..., {status:'ready', ...})` (`:377`) with no try around it today.
+Fixture: `vi.spyOn(catalog, 'putDiagramResult').mockImplementationOnce(...)` throws on the FIRST
+call only, falling through to the real store afterward — a job that genuinely drew a diagram but
+could not PERSIST it must still leave an honest `unavailable` row, not a lost result and a
+forever-`pending` row. (A PERMANENTLY throwing store is the different, dedicated `settle_failed`
+shape — UT-136.) Same five assertions as O1/UT-129 ("the same five", 02-architecture.md's own
+words). Red reason (measured): `npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-130'` →
+fails at assertion (a) exactly like O1 — the injected throw escapes `job()` uncaught.
+
+### UT-131 — R-1/inv 2 FLOOR 2a, oracle O4: the slot-accounting floor over a mixed burst
+- **status:** red
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts`. One leaking job (the O1 shape — a `ports` throwing ONLY
+for that job's own name, reused because the scriptPromise-reject fixture O3 uses is ALREADY caught
+cleanly by `_startJob`'s existing try/catch and would not leak), then `maxQueueDepth + 3` (11) valid,
+distinct, registered jobs. Two families of assertion: the FLOOR itself (`_runningCount` never
+negative, never exceeds 1 at every sampled settle; concurrent `gateway.invoke()` calls never
+overlap) — both true TODAY as green pins (nothing downstream of the leak ever runs, so there is no
+live double-release yet; this is the falsifier a future partial Gate 6 fix must survive) — and the
+DRAIN outcome (every queued valid job eventually settles `ready`, `_runningCount === 0` after
+drain), which is genuinely red. Red reason (measured): `npx vitest run
+tests/unit/graph-analyzer.test.ts -t 'UT-131'` → fails on the first queued job's
+`row?.status === 'ready'` assertion (`'pending'` instead) — the leaked slot wedges the whole queue.
+
+### UT-132 — R-2b, inv 5(f), oracle O5: the relational settle oracle (B5 case)
+- **status:** red
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts`. "The one oracle to keep if only one could be kept — for
+every path that writes a terminal row, assert the journal line's `outcome` EQUALS the status of the
+row read back from the catalog." A RELATIONAL oracle (compares two things the code produces, not a
+literal), so it cannot be satisfied by editing an expected value to match shipped behaviour (the v22
+`val-107`/IT-080 test-drift class). Fixture: a real `ready` diagram first (the priorRow the B5 branch
+must protect), then a second pass whose every attempt fails at the provider — the B5 branch restores
+the prior `ready` row rather than clobbering it. Today's ONLY emitted line for that settle comes from
+`_attempt`'s own failing attempt (`outcome:'unavailable'`), while the row the code actually wrote is
+`status:'ready'` — the exact mismatch this oracle exists to catch. Red reason (measured): `npx
+vitest run tests/unit/graph-analyzer.test.ts -t 'UT-132'` → `expect(parsed.outcome).toBe(row?.status)`
+fails, `'unavailable'` !== `'ready'`.
+
+### UT-133 — R-2b(c): exactly one journal line per SETTLE across a real multi-attempt retry loop, plus the `attempts` field
+- **status:** red
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts`. Complements UT-128 (already green, zero-model-call paths
+only — UT-128's own docblock named this real multi-attempt case as scope it deliberately did not
+cover). `retries:1`, both attempts fail at the provider → `invoke` called twice (the retry loop is
+real, UT-111 precedent) but must still settle with exactly ONE journal line, carrying `attempts:2`
+— "the only information the move [to the settle choke point] destroys" (02-architecture.md). Red
+reason (measured): `npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-133'` → fails at the
+line-count assertion, 2 lines not 1 (`_attempt` still journals once per attempt today); the
+`attempts` field assertion is independently red too (the field does not exist in the emitted JSON).
+
+### UT-134 — R-2b(b): the journal line is a TWELVE-key SET EQUALITY, wire order pinned
+- **status:** red
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts`. `expect(Object.keys(JSON.parse(line)).sort()).toEqual([…
+].sort())` — set equality, never `toContain` (a one-sided check lets a thirteenth field grow
+silently, the same A6 ruling one file away, IT-102). Hand-written literal, never imported from
+source. Red reason (measured): `npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-134'` → the
+emitted line has TEN keys today (`gateFail` already shipped by a prior amendment); `attempts` and
+`cause` do not exist, so the sorted-set comparison fails.
+
+### UT-135 — R-2(d): the `cause` VALUE domain over the five zero-model-call settle paths
+- **status:** green
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts` (two `it`s: four cases in a loop, plus the orphan case
+separately). "So Gate 5 asserts VALUES and not presence (the `RETRIES_EXHAUSTED` overload was
+accepted ON THE CONDITION that the distinct cause rides this field; `cause:null` would satisfy an
+`Object.keys` assertion and leave the overload exactly as opaque as before)." Five zero-model-call
+paths, each already reachable in today's code (only the `cause` FIELD is new): `disabled` (enqueue's
+existing guard), `boot_abandoned` (sweepAtBoot's stale-stamp branch), `model_unmapped`, `queue_full`,
+and `script_unresolved` (the orphan-pending scriptPromise rejection UT-125/O3 also exercises — folded
+in here as its own case rather than a second file re-asserting the same setup, per this send-back's
+own inv 8 rule against duplicate coverage of one defect).
+
+**FIXTURE DEFECT FIXED at Gate 6.5+7 (send-back from implementer, verifier fix): the `queue_full` case
+in the four-case loop called `analyzer.enqueue(c.name, 'v1', ...)` TWICE with the SAME name/version to
+simulate "occupy the slot, then get refused". `enqueue()`'s single-flight guard (DES-127 B4,
+`if (this._pendingKeys.has(key)) return;`) is the closure's first line — since the first call's job
+never resolves (hung `invoke`), the key stays claimed and the second call silently no-ops before ever
+reaching the queue-depth check, so no second journal line for `c.name` is ever emitted
+(`parsed.cause` was `undefined`, not a wrong value — a fixture bug, not a code defect). Fixed by giving
+the `queue_full` case a second, distinct registered name (`ga-o5-cause-queue-full-2`) for the refused
+enqueue call, mirroring UT-128's own already-green two-name pattern (`ga-journal-q1`/`ga-journal-q2`,
+:533-548) — the slot-occupying call keeps `c.name`, the refused call and its journal-line assertion now
+target `c.refusedName`.** Confirmed green: `npx vitest run tests/unit/graph-analyzer.test.ts -t
+'UT-135'` → 2/2 pass (`parsed.cause` matches the expected literal for all five paths, including
+`script_unresolved`, whose journal line fires with `cause:"script_unresolved"` even though the
+underlying `workflow_diagrams` row write is a no-op — see UT-125's own blocked note).
+
+### UT-136 — inv 2 FLOOR 2b / V-F, O5's own carve-out: `settle_failed` — a permanently-failing store
+- **status:** red
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts`. "`settle_failed` is explicitly OUT of O5's scope and takes
+its own case (no row is written, the row stays `pending`, exactly one line with
+`cause:'settle_failed'`)." Genuinely different fixture from UT-130/O2 (whose recovery write
+succeeds): here `putDiagramResult` throws on EVERY call, so there is nothing left for a recovery
+write to try. Red reason (measured): `npx vitest run tests/unit/graph-analyzer.test.ts -t 'UT-136'`
+→ fails at the zero-unhandled-rejections assertion, `rejections.length` is 1 not 0 (no try around
+today's write call at all — same failure shape as O1/O2).
+
+### UT-137 — R-2(d): `AnalyzerCause` is a closed union, never `string` (type-level, compile-time only)
+- **status:** red
+- **traces:** ARCH-079
+- **tier:** unit
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+File: `tests/unit/graph-analyzer.test.ts` (same convention as `tests/unit/trigger-bindings.test.ts`'s
+DES-128 case). ADR-016's "engine-classified class, never raw provider/model text" must be a COMPILE
+ERROR, not a matter of care — a provider error payload can echo the request, and the request carries
+the masked script. A type-only `import type { AnalyzerCause }` (erased by esbuild regardless of
+whether the export exists — no vitest collection failure for the other 30+ tests in the file) plus a
+`// @ts-expect-error` on assigning an arbitrary string. **Vitest itself shows this trivially green**
+(esbuild strips types); the real enforcement is `npx tsc --noEmit`, stated on the item's own scope
+line so Gate 6.5+7 does not misread a vitest pass as this item being green. Red reason (measured via
+`npx tsc --noEmit`, NOT vitest): two errors today, both from the same root cause (the type does not
+exist yet) — TS2305 "Module has no exported member 'AnalyzerCause'" on the type-only import, and
+TS2578 "Unused '@ts-expect-error' directive" on the assignment (an unresolvable type suppresses the
+assignability check the comment expects to suppress). Once Gate 6 exports the closed union, TS2305
+disappears and the `@ts-expect-error` starts doing its real job — a regression to `string` would
+re-trigger TS2578 for the opposite reason.
+
+### IT-103 — R-3: `server.ts:955` defence-in-depth — a disabled analyzer never reaches the injected gateway on register
+- **status:** green
+- **traces:** ARCH-079
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v23
+
+**Authored by a sibling Gate 5 dispatch found running concurrently in this working tree** (see this
+ledger's own established process note, e.g. IT-101/IT-102/UT-128) — recorded here because this
+instance independently verified it (`npx vitest run
+tests/integration/graph-analyzer-composition-root.test.ts -t 'IT-103'` → pass), not because this
+instance wrote it. File: `tests/integration/graph-analyzer-composition-root.test.ts`. `02-
+architecture.md`'s R-3 ruling keeps `server.ts:955`'s `graphAnalyzer.enabled` check as explicit
+DEFENCE-IN-DEPTH under the choke-point fix ("stay as defence-in-depth ... and EACH EARNS A ONE-LINE
+ASSERTION"); `mcp-facade.ts:462`'s own guard is already pinned by
+`tests/unit/workflow-describe-facade.test.ts:98` (UT-114, cited not duplicated, per this send-back's
+own inv 8 rule). Status note, not a red-because-unimplemented item (IT-102's own precedent for a
+legitimate immediate green — a defence-in-depth hardening pin, not a missing feature): real
+`createServer`, real `/mcp`, `graphAnalyzer: {enabled:false}`, a spied `gateway.invoke` — verified
+this already holds today, `server.ts:955`'s `if (... && graphAnalyzer.enabled)` guard runs before
+`graphAnalyzer.enqueue(...)` is ever reached.
+
+### IT-104 — SUS-2/ADR-020: mirror rows — a boot-time `console.warn` when the EFFECTIVE analyzer tool set is non-empty, none when empty
+- **status:** red
+- **traces:** ARCH-079
+- **tier:** integration
+- **real:** false
+- **result:** fail
+- **iter:** v23
+
+**Authored by a sibling Gate 5 dispatch** (same process note as IT-103) — recorded here because this
+instance independently verified it (`npx vitest run
+tests/integration/graph-analyzer-composition-root.test.ts -t 'IT-104'` → 1/2 fail, matching this
+entry's own red reason below), not because this instance wrote it. File:
+`tests/integration/graph-analyzer-composition-root.test.ts`. "Gate 5 owes the mirror rows — a
+warn-level line when `tools` is non-empty, and none when empty — without which this drops silently a
+second time" (ADR-020's own re-assertion this round). Verified against primary source: `server.ts:1512`
+is the only analyzer-tools boot line and it is an unconditional `console.log`, byte-identical for
+`tools:[]` and `tools:["Bash"]`; the only `console.warn` in this block fires for the UNRELATED
+unknown-alias case at `:1497`. Fixture: `model` left at its default (`'default'` → `'anthropic'`, a
+KNOWN alias, so the unrelated unknown-alias warn cannot pollute this assertion) and
+`curateToolsForProvider` is a documented no-op for `'anthropic'` (same fact TASK-127's own fixture
+relies on), so the EFFECTIVE tool set equals the CONFIGURED one — the simplest fixture that still
+keys the warning off the effective set per the amendment's own "keyed off the effective set because
+three sets are in play". Red reason (measured): `npx vitest run
+tests/integration/graph-analyzer-composition-root.test.ts -t 'IT-104'` → the non-empty-tools case
+fails, no `console.warn` call mentions the analyzer's tool surface at all today, in either fixture;
+the empty-tools case is a legitimate green pin (nothing warns either way today, so "no warning"
+already holds vacuously).
+
+**Gate 5 exit-gate self-check summary.** Nine new/amended UT items (UT-125 amended in place +
+UT-129..UT-137) in `tests/unit/graph-analyzer.test.ts`, all measured red for the stated reason (nine
+`npx vitest run tests/unit/graph-analyzer.test.ts` failures across ten failing `it`s, plus UT-137's
+independent `npx tsc --noEmit` red); two IT items in
+`tests/integration/graph-analyzer-composition-root.test.ts` — IT-103 a legitimate immediate green
+(defence-in-depth already holds), IT-104 one red case + one green pin — both authored by a sibling
+Gate 5 dispatch and independently re-verified by this instance. No new DES/TASK (Gates 3/4 not sent
+back this round); every item traces to ARCH-079 (the only ARCH item this send-back's R-1/R-2/R-2b/R-3
+rulings amend). No VAL/E2E owed this round (rtm stays 106/106 real:true; this send-back is Gates
+2/5/6/8 only, per Gate 2's own handoff naming Gate 5 and Gate 6, not Gate 7.5).

@@ -1510,6 +1510,12 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   const analyzerEffectiveTools = curateToolsForProvider(graphAnalyzerConfig.tools, analyzerProvider);
   const analyzerJailDir = join(workRoot, ANALYZER_SCRATCH_SUBDIR);
   console.log(`[remote-workflow-engine] graph-analyzer effective tools=${JSON.stringify(analyzerEffectiveTools)} jail=${analyzerJailDir}`);
+  // ADR-020 mirror row (v23 Gate 2 RE-RUN #2, IT-104): a warn-level line keyed off the EFFECTIVE
+  // tool set (not the configured one — curation can narrow or empty it) naming the risk of running
+  // an analyzer with tool access on attacker-influenced input (ADR-016); none when empty.
+  if (analyzerEffectiveTools.length > 0) {
+    console.warn(`[remote-workflow-engine] graph-analyzer: effective tool set is non-empty (${JSON.stringify(analyzerEffectiveTools)}) — the analyzer runs on attacker-influenced input (ADR-016), confirm this is intended`);
+  }
   let missingDiagramCount = 0;
   if (graphAnalyzerConfig.enabled) {
     // DES-127 B1: no boot backfill (no model calls on an upgrade) — just the count + the exact

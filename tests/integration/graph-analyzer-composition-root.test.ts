@@ -187,3 +187,95 @@ describe('IT-100: a workflow_register on a host with no `litellm` binary must no
     }
   });
 });
+
+// IT-103 (v23 Gate 2 RE-RUN #2, send-back `41e6382`, R-3): the R-3 ruling keeps `server.ts:955`'s
+// `graphAnalyzer.enabled` check as explicit DEFENCE-IN-DEPTH under the choke-point fix ("`server.ts:955`
+// and `mcp-facade.ts:462` STAY as defence-in-depth ... and EACH EARNS A ONE-LINE ASSERTION" — 02-
+// architecture.md, ARCH-079 inv 11). `mcp-facade.ts:462`'s guard is ALREADY pinned by
+// `tests/unit/workflow-describe-facade.test.ts:98` ("an owner-authorised call on a disabled analyzer
+// is refused ANALYZER_DISABLED") — cited here, not duplicated, per this send-back's own inv 8 rule
+// (an oracle's scope lives on the item's own scope line, never rediscovered by a second test). This
+// item is the OTHER half: the dispatch-level guard at the `workflow_register` handler.
+//
+// Status note, not a red-because-unimplemented item (IT-102's own precedent in this exact ledger for
+// a legitimate immediate green — a drift-lock/defence-in-depth hardening, not a missing feature):
+// verified this already holds today — `server.ts:955`'s `if (out['status'] === 'completed' &&
+// graphAnalyzer.enabled)` guard runs before `graphAnalyzer.enqueue(...)` is ever reached, so an
+// injected gateway's `invoke` is never called when the port's `enabled` is `false`. `npx vitest run
+// tests/integration/graph-analyzer-composition-root.test.ts -t 'IT-103'` -> pass today.
+describe('IT-103: server.ts:955 defence-in-depth — a disabled analyzer never reaches the injected gateway on register', () => {
+  it('registering with graphAnalyzer.enabled:false never calls gateway.invoke', async () => {
+    const invoke = vi.fn(async () => ({
+      ok: true as const, provider: 'anthropic', model: 'sonnet-5', tokens: { input: 1, output: 1 }, content: '╭─Draft─╮',
+    }));
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-it103-'));
+    const server = await createServer({
+      port: 0, bind: '127.0.0.1', workRoot, gateway: { invoke },
+      graphAnalyzer: { enabled: false },
+    } as never);
+    async function call(name: string, args: unknown): Promise<any> {
+      const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+      });
+      const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
+      return JSON.parse(body.result?.content?.[0]?.text ?? '{}');
+    }
+    try {
+      await registerPublishedVia(call, 'it103-flow', `return 1;`);
+      expect(invoke).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+      rmSync(workRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// IT-104 (v23 Gate 2 RE-RUN #2, send-back `41e6382`, SUS-2, ADR-020): "Gate 5 owes the mirror
+// rows — a warn-level line when `tools` is non-empty, and none when empty — without which this
+// drops silently a second time." Verified against primary source: `server.ts:1512` is the ONLY
+// analyzer-tools boot line and it is an unconditional `console.log`, byte-identical in form for
+// `tools:[]` and `tools:["Bash"]`; the only `console.warn` in this block fires for the UNRELATED
+// unknown-alias case at `:1497`.
+//
+// Fixture: `model` is left at its default (`'default'` alias -> `'anthropic'`, a KNOWN alias, so
+// the unrelated unknown-alias warn at `:1497` never fires and cannot pollute this assertion), and
+// `curateToolsForProvider` is a documented no-op for `'anthropic'`
+// (`claude-agent-sdk-client.ts:224` — the SAME fact TASK-127's own fixture above already relies
+// on), so the EFFECTIVE tool set equals the CONFIGURED one here — the simplest fixture that still
+// keys the warning off the effective set per the amendment ("keyed off the effective set because
+// three sets are in play").
+//
+// Red reason (measured): `npx vitest run tests/integration/graph-analyzer-composition-root.test.ts
+// -t 'IT-104'` -> the non-empty-tools case fails: no `console.warn` call mentions the analyzer's
+// tool surface at all today, in either fixture.
+describe('IT-104: ADR-020 mirror rows — a boot-time console.warn when the EFFECTIVE analyzer tool set is non-empty, none when empty', () => {
+  async function bootWithTools(tools: string[]): Promise<{ warnLines: string[] }> {
+    const workRoot = mkdtempSync(join(tmpdir(), 'rwe-it104-'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let server: Server | undefined;
+    try {
+      server = await createServer({
+        port: 0, bind: '127.0.0.1', workRoot,
+        graphAnalyzer: { enabled: true, tools },
+      } as never);
+      return { warnLines: warnSpy.mock.calls.map((c) => c.join(' ')) };
+    } finally {
+      warnSpy.mockRestore();
+      await server?.close();
+      rmSync(workRoot, { recursive: true, force: true });
+    }
+  }
+
+  it('a non-empty configured tools list (default model -> a known alias, no curation change) emits a warn line naming the risk', async () => {
+    const { warnLines } = await bootWithTools(['Bash']);
+    const riskLine = warnLines.find((l) => l.includes('graph-analyzer') && /Bash/.test(l) && /tool/i.test(l));
+    expect(riskLine).toBeDefined();
+  });
+
+  it('an empty (default) tools list emits no such warn line', async () => {
+    const { warnLines } = await bootWithTools([]);
+    const riskLine = warnLines.find((l) => l.includes('graph-analyzer') && /tool/i.test(l));
+    expect(riskLine).toBeUndefined();
+  });
+});

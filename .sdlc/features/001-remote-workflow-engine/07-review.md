@@ -4,7 +4,342 @@ status: closed
 ---
 # 07 Review & Retro — Gate 8
 
-## v23 GATE 8 REVIEW (2026-09-03, CURRENT / AUTHORITATIVE — **SEND BACK**, 3 HIGH blocking)
+## v23 GATE 8 RE-REVIEW #1 (2026-09-03, CURRENT / AUTHORITATIVE — **SEND BACK**, 1 HIGH blocking)
+
+> Second Gate 8 pass for **v23**, re-dispatched after the first pass sent back
+> `["architecture","tests","impl"]` at `d294880`. Those three gates re-ran (Gate 2 re-run `d294880`
+> amendments A1–A10 / V-A–V-D / ADJ-A1 / inv 9-10-11; Gate 5 RED UT-124..128 + IT-101/102; Gate 6
+> `a39c0e7` + the Gate 6.5+7 round-4 closeout `eef7809`/IMPL-175/176; Gate 7.5 round 4 re-validated
+> and passed at `41e6382`). **Scope: verify the fixes**, not re-open v23 — every item previously
+> dispositioned and unchanged is left as it was ruled.
+>
+> Both architecture-expert groups were **re-run by the workflow** for this round
+> (`.panel/review/{adversarial,quality-dimensions}.md`, both rewritten against HEAD `41e6382`) —
+> consolidated here, **not re-spawned**. Every load-bearing claim below was re-verified by this
+> reviewer against source; **one expert finding was overruled on primary evidence** (§4, OBS-3) and
+> one had its rationale corrected (OBS-1). This iteration has recorded seven ledger-honesty gaps, so
+> no ARCH/DES/IMPL/journal sentence was accepted as evidence of code behaviour.
+>
+> **Verdict: `send_back = ["architecture", "tests", "impl"]`.** All three of the previous round's
+> HIGHs are closed or substantially closed; **one HIGH remains — the unfixed half of A3** (`R-1` /
+> `SUS-1`, both panels, independently confirmed by this reviewer at
+> `src/graph-analyzer.ts:255-264`). This is now the **second consecutive blocking round on the same
+> defect shape**; per the dispatch contract a still-blocking result after this auto re-run hands back
+> to the orchestrator. Traceability, module boundaries, validation and handover are **clean**
+> (0 未驗證 / 0 未真實驗證; 106/106 REQ real-tier ✅); the block is entirely architecture-consistency.
+
+### §1 Traceability consistency
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` regenerated the dashboard:
+**1012 items / 18 gaps, 0 orphan, 0 broken-link** (`--check` exits 1 on the same set; the gap list was
+re-derived from the dashboard's own embedded data, since `--check` prints counts only). The item count
+grew 996 → 1012 across the re-run gates (Gate 5's 7 RED items, Gate 6's IMPL/TASK closures, Gate 7.5's
+VAL-120..123); **the gap residue is byte-identical to the pre-send-back baseline — zero new gaps**:
+- **1 MID** TDD gap `IMPL-082` (no test coverage) — carried since v14, re-recorded.
+- **16 LOW** iteration-drift pairs (`UT-010`, `IT-011`, `UT-058`, `UT-064`, `IT-057`, `UT-094`,
+  `UT-095`, `DES-094`, `DES-088`×2, `DES-066`×2, `DES-099`×2, `DES-100`, `DES-064`) — unchanged set,
+  including the one v23-minted pair `DES-064` (v11) ← `IMPL-173` (v23). No pair was added by the
+  re-run gates.
+- **1 LOW** unimplemented `TASK-018` — carried since v3.
+
+Doc↔code iteration drift: **none beyond those 16 pairs**. The re-run chain is at one iteration end to
+end (ARCH amendments v23 → UT-124..128/IT-101/102 v23 → IMPL-175/176 v23 → VAL-120..123 v23), and
+`rtm.md` is **106/106 REQ rows ✅ (real:true)**, 0 ❌.
+
+### §2 Dashboard QA (`dashboard_check.py`, plugin 2.1.3 — run directly)
+`sh .sdlc/trace --tool dashboard_check …` still errors (`unrecognized arguments: --tool`): this repo's
+checked-in `.sdlc/trace.py` (2026-08-01) predates the plugin's `--tool` dispatcher, so the plugin's
+own `scripts/trace --tool dashboard_check` was run against the ledger. Result: **0 high / 3 mid / 1
+low.** Disposition unchanged from the previous pass and re-verified this pass:
+- 3×MID `括號不平衡` at `02-architecture.md:934` / `:1198` / `:1645` — **verified false positives.**
+  All three are mermaid `erDiagram` blocks; the checker counts brackets lexically and mis-reads the
+  crow's-foot cardinality tokens. Re-read in full this pass at `:1645-1677`:
+  `WORKFLOWS ||--o{ WORKFLOW_VERSIONS` contributes an unmatched `{`, the four `}o--||` relationship
+  lines contribute unmatched `}`, and every attribute block (`WORKFLOW_DIAGRAMS`, `SCHEDULES`,
+  `WEBHOOKS`, `CONTINUATIONS`) opens and closes correctly under mermaid grammar. Checker debt.
+- 1×LOW `無 mermaid 離線 fallback` — a real deliverable gap caused by the stale vendored `trace.py`
+  (the plugin's newer generator emits an offline source+banner fallback). **Recorded debt (LOW):**
+  refresh `.sdlc/trace.py` from plugin 2.1.3. A reviewer does not edit the work under review.
+- SoT `file:line` link check: **0 dead links.**
+- **Degraded mode declared:** no playwright browser tool in this session, so no visual `<svg>` /
+  tab-switch / link-click confirmation was possible. Same declared degradation as every prior pass.
+
+### §3 Module-boundary check (`solid_check.py`, plugin 2.1.3 — run directly)
+**PASS — 23 modules, dependencies exactly as declared on the ARCH `module:`/`deps:` rows: 0 high /
+0 mid / 10 low.** No undeclared cross-module dependency, no cycle, no deep-internal import bypassing a
+module surface, no god-module. The 10 LOW are the unchanged pre-existing "unclaimed file" set
+(`harness-defaults`, `self-update`, `agent-semaphore`, `mcp-probe`, `net-guard`, `workflow-meta`,
+`workspace-artifacts`, `webhook-registry`, `continuation-store`, `clock`) — carried debt, not v23.
+**No boundary regression from the re-run gates.**
+
+### §4 Architecture consistency — **NOT consistent: 1 HIGH (blocking) · 4 MED · 4 LOW**
+Consolidated from the two pre-run expert reports, then re-verified line by line. Both panels converge
+on the same single HIGH.
+
+#### R-1 / SUS-1 — **HIGH, BLOCKING** — inv 2's `try/catch/finally` wraps only the `scriptPromise` await, not the scheduled closure
+- **Violates:** ARCH-079 **inv 2** as amended (A3/N-1) — verbatim *"the `try { … } catch { settle +
+  journal } finally { release + drain }` **wraps the scheduled closure**"* (one occurrence,
+  `02-architecture.md`, grep-confirmed) — plus inv 5's "exceptional exit of inv 2's closure", inv 8's
+  V-C falsifiability clause, and ADR-017's "`pending` always settles".
+- **Verified by this reviewer at `src/graph-analyzer.ts:255-264`** (read this pass, not quoted from a
+  panel): `await this._runJob(…)` at `:263` is **outside** the `try`; there is **no `finally`**; the
+  `catch` at `:259-262` calls `this._release(key)` only — it neither settles nor journals; and
+  `:127` is still `this._schedule = deps.schedule ?? ((job) => { setImmediate(() => { void job(); }); })`
+  — the belt-and-braces `.catch()` the amendment named was not added either. `_release` is otherwise
+  reached only at `_runJob`'s tail (`:388`).
+- **Consequences, both reachable at HEAD:** (a) any throw inside `_runJob` — `getTriggerBindings` at
+  `:355` (four real store reads) or `putDiagramResult` at `:377`/`:380`/`:385` (an `.immediate()`
+  write inside a transaction) — leaks the concurrency-1 slot **permanently**, after which every later
+  registration settles the designed-looking `QUEUE_FULL`, which inv 2's own text calls
+  indistinguishable from correct operation; and it escapes as an **unhandled rejection** (no
+  `unhandledRejection` handler in `src/`), reachable at boot via `sweepAtBoot()` (`server.ts:1507`).
+  (b) the one path that *is* caught leaves the `pending` row un-settled and emits no journal line.
+- **Empirical proof the oracle drifted the same way (this reviewer ran it):**
+  `npx vitest run tests/unit/graph-analyzer.test.ts` → **33/33 passed** while the defect above is
+  present. Gate 2's RED oracle ordered three assertions — *(a) no unhandled rejection, (b) the row
+  settles, (c) the next enqueued job still runs*; UT-125 as shipped
+  (`tests/unit/graph-analyzer.test.ts:703-743`) asserts (a) and (c) and the released claim/slot, and
+  **drops (b)**. Its own docblock calls the `scriptPromise` rejection *"the one reachable throw"*,
+  which the four throw sites in `_runJob` falsify. Separately, inv 8's V-C case (a throwing
+  `putDiagramResult` must still produce exactly one journal line) was recorded as named debt in
+  UT-128's docblock at `:497-501` and was **not** picked up by Gate 6.5+7 round 4.
+- **Severity HIGH, blocking:** the unfixed remainder of a HIGH send-back item, on the one subsystem
+  whose failure is silent by construction, reachable at boot, and whose bound the architecture calls
+  load-bearing for `QUEUE_FULL`'s honesty. Fix is ~8 lines and the seams already exist.
+
+#### R-2 / OBS-1 — MED — the journal line ships **ten** keys; the amended architecture pins **eleven** (`cause` absent)
+- **Violates:** ARCH-079 inv 5 as amended, ADR-016's true-up, and the v23 interface table journal row
+  — all three carry the literal field list ending `…, gateFail, cause}` (3 occurrences,
+  grep-confirmed in `02-architecture.md`).
+- **Verified:** `src/graph-analyzer.ts:223-233` — `_journal`'s parameter type and the emitted
+  `JSON.stringify` literal both have exactly ten keys; `cause` exists nowhere in `src/`. Live evidence
+  from this reviewer's own test run: `{"name":…,"gateFail":null}` — ten keys, no `cause`.
+- **Rationale corrected against the quality report.** OBS-1's "three byte-identical lines" table lists
+  `graph-analyzer.ts:139` (`enqueue`'s disabled guard) as one of the three. That site is **not
+  reachable** from a registration: `server.ts:955` guards `graphAnalyzer.enabled` *before* calling
+  `enqueue`, and `mcp-facade.ts:462` guards `regenerate` with `ANALYZER_DISABLED`. The real overload
+  is two-way, not three-way — `:182` (boot sweep, disabled) vs `:196` (boot sweep, genuinely
+  abandoned by a dead process) both emit `RETRIES_EXHAUSTED, durationMs:0, promptTokens:null`. **The
+  finding stands on the doc↔code field-count mismatch** (the amendment explicitly said the distinct
+  cause "rides the journal field" *now*, with only the ninth persisted code + `CHECK` migration
+  deferred), at MED, on this corrected reasoning.
+
+#### R-2b / OBS-2 — MED — the emitter is still inside `_attempt`, and the B5-restore line contradicts the row it settles
+- **Violates:** ARCH-079 inv 5 as amended — *"The emitter lives at the settle choke point, not inside
+  `_attempt`"*, and *"exactly one journal line per settle"*.
+- **Verified:** `_journal` is called from `_settleUnavailable:212` **and `_attempt:339`**
+  (`grep -n "_journal(" src/graph-analyzer.ts` → `212`, `223` (decl), `339`). Two consequences:
+  with `retries > 0` the loop at `:369-373` emits N lines for one settle (the shipped default is
+  `retries: 0` at `server.ts:1480`, so this is config-dependent, not the default); and on the DES-127
+  B5 prior-ready restore (`:378-383`) the terminal row is written `status:'ready'` while the only line
+  emitted says `outcome:'unavailable'` — the journal describing an attempt where the architecture
+  asked it to describe a settle. **The second consequence is a defect under either reading**, so
+  whichever way Gate 2 rules (move the emitter, or amend inv 5 to ratify per-attempt lines plus a
+  settle line), the B5 mismatch must be fixed.
+
+#### SUS-2 — MED — ADR-020's "loud boot warning when `tools` is non-empty" was never built
+- **Violates:** ADR-020 decision (c) — *"mandate the key, default it to `[]`, **warn loudly at boot
+  when it is non-empty**, and record non-empty as an accepted operator risk"* (grep-confirmed
+  verbatim) — and the v23 interface table's config row.
+- **Verified:** `src/server.ts:1512` is the only analyzer-tools boot line and it is an unconditional
+  `console.log`, byte-identical in form for `tools=[]` and `tools=["Bash","Write"]`, with no severity
+  marker and no risk statement; `grep -n "console.warn" src/server.ts` returns exactly one
+  analyzer-related hit — the unknown-alias warning at `:1497` — and none for a non-empty tool surface.
+  The loud-line pattern exists in this very block for the fail-closed no-jail downgrade (`:1486`).
+- ADR-020 is the decision that *permits* the key at all; two of its three mitigations shipped, and the
+  one that converts a silent hazard into an operator-**accepted** one did not. MED.
+
+#### R-3 / REP-1 — MED (adjudicated; adversarial MED, quality LOW) — inv 11's guard sits at the callers, not at the `_startJob` choke point
+- **Violates:** ARCH-079 **inv 11** as amended — *"`_startJob` is the single choke point … The
+  `enabled` guard is the first statement, before either claim"*, whose own rationale is *"three
+  callers each carrying the check, two remembered, one forgot."*
+- **Verified:** the guard is at `graph-analyzer.ts:138` (`enqueue`) and `:181` (`sweepAtBoot`);
+  `_startJob` (`:250-271`) reads `this._config.enabled` nowhere; `putDiagramPending` was **not** moved
+  behind any guard (still at `enqueue:152` / `sweepAtBoot:187`) and `_startJob` takes no stamp
+  parameter. Counting every site now carrying this one rule: `server.ts:955`, `mcp-facade.ts:462`,
+  `graph-analyzer.ts:138`, `:181` — **four**, across three modules.
+- **Counterweight recorded, and it is strong:** no live hole (all three `_startJob` callers are
+  covered; UT-124 pins all three entry points plus the prior-`ready` clobber trap), the
+  guard-before-`putDiagramPending` ordering the amendment cared about does hold at both sites, and the
+  architecture pre-authorized a weaker fallback that the shipped shape exceeds.
+- **Adjudicated MED, on one ground only:** nothing records taking the fallback. IMPL-175's A2
+  paragraph states the caller-side shape as if it were the plan, without naming inv 11's primary
+  prescription or the fallback clause — so the architecture of record asserts a choke point that does
+  not exist. **Either remedy closes it:** build the choke point, or amend inv 11 to ratify the
+  two-caller placement and say why. What is not acceptable is the doc and the code disagreeing.
+
+#### R-5 / REP-2 — LOW — the struck "three consumers" claim survives in `diagram-gate.ts`'s own docblock
+- **Violates:** ARCH-080 as amended (A5), which established ONE consumer and ordered the false
+  `server.ts:299-300` comment deleted.
+- **Verified:** the `server.ts` copy **is** gone; `src/diagram-gate.ts:22-24` still reads *"Three
+  consumers, elsewhere: this gate, the shipped default graphAnalyzer.systemPrompt, and the
+  AUTHORING/tool-description text."* — on the module the amendment made canonical, i.e. the first
+  thing a future engineer reads before touching the vocabulary. One-line fix.
+
+#### R-6 — LOW — the amended ARCH-051/ARCH-082 rows say `TOOL_NAMES` declares **39** tools; it declares **40**
+- **Verified by direct count this pass:**
+  `awk "/^const TOOL_NAMES = \[/,/^\] as const/" src/server.ts | grep -cE "^\s+'"` → **40**;
+  `02-architecture.md:555` says *"declares **39** tools, all 39 advertised"* (and the claim repeats).
+  Gate 5 found this and recorded the correction only in the test file's comment; the architecture of
+  record was never fixed. Doc-only. Notably the wrong count sits inside the amendment written to
+  replace a *count-based* drift-lock with a set equality.
+
+#### CONS-1 — LOW — ARCH-085 advertises a six-key `graphAnalyzer` block; the shipped one has nine
+- **Verified:** `02-architecture.md:1456` —
+  `FileConfig.graphAnalyzer?: {enabled?, model?, systemPrompt?, tools?, timeoutMs?, retries?}`; the
+  shipped block also carries `maxBytes` / `maxLines` / `maxQueueDepth`
+  (`src/graph-analyzer.ts:82-84`, defaulted at `server.ts:1481-1483`, present in
+  `rwe.config.example.json`, documented as 九個鍵 in `DEPLOY.md`). Ratified by DES-134 for a REQ-104
+  reason; the ARCH row simply never caught up. Doc-only, two lines.
+
+#### R-4 — LOW — `enqueue()` runs synchronous store I/O on the registration request path
+- `server.ts:957` calls `graphAnalyzer.enqueue(…)` synchronously and unguarded **after**
+  `facade.workflow_register` has committed, and `enqueue` performs `getDiagram`/`putDiagramPending`
+  (and on a settle path four store reads plus an `.immediate()` write). A throw turns a committed
+  registration into a failed tool response — against ARCH-079 inv 1 in spirit. **LOW** because
+  `better-sqlite3` is single-process-synchronous and inv 10 rules multi-process contention out of
+  scope; the honest fix is a two-line `try/catch` at `server.ts:957`. Owner's call.
+
+#### OVERRULED — OBS-3 (quality lens, LOW) — "DEPLOY still says the `enabled:false` path emits no log line and writes no row"
+Recorded rather than silently dropped, because a consolidated report that omits an expert finding is
+worse than one that overrules it. **The core claim is false on primary evidence:** the quality lens
+reasoned from `graph-analyzer.ts:139` being reachable at registration, but `src/server.ts:955` guards
+`out['status'] === 'completed' && graphAnalyzer.enabled` **before** calling `enqueue`, and
+`src/mcp-facade.ts:462` refuses `regenerate` with `ANALYZER_DISABLED`. So with `enabled:false` a
+registration really does emit **no** journal line and write **no** diagram row — `DEPLOY.md:743-744`
+and `:359` are **accurate**, and Gate 7.5 round 4's own real-run observation ("zero journal lines")
+independently agrees. **Residual (LOW nit, recorded as debt, not sent back):** `sweepAtBoot`'s
+disabled branch (`:182`) does emit one line at boot; DEPLOY's sentence is registration-scoped and its
+next sentence describes the boot settle correctly, so at most one clause could be sharpened.
+
+#### Confirmed CLOSED — the previous round's send-back items, re-verified at `file:line`
+| Item | Ordered by | Status | Evidence re-checked this pass |
+|---|---|---|---|
+| **A1** transport gate on `GET /api/workflows/:name/describe` | ADJ-A1, ARCH-083 | **CLOSED** | `server.ts:1892-1907` — `GET` + path regex computed **inside** the `authHandlers` block as the fourth `dbindExempt` member; non-exempt peers must clear `resolvePrincipal` before `dispatchDashboard()`, else `send401()` (`:1745-1750`, 401 + `WWW-Authenticate`) **before any store read**; handler untouched at `:1175-1186`, so the projection stays single. Existence leak closed. |
+| **A2** `enabled:false` never reaches the gateway | inv 11 | **CLOSED (behaviour)** | `graph-analyzer.ts:138`, `:181`, plus the two caller guards; UT-124 4/4 green. Structural residue = R-3. |
+| **A3** unguarded async in `_startJob` | inv 2 / N-1 | **PARTIAL** | `scriptPromise` rejection handled at `:257-262`; remainder = **R-1**, still blocking. |
+| **A4** mini-preview deleted, not re-pointed | ARCH-084 | **CLOSED** | `renderMiniPreviewAsync` absent from `src/`; exactly one `/describe` fetch survives. |
+| **A5** one vocabulary declaration | ARCH-080 | **CLOSED in code** | `VOCAB_GLYPHS` exported at `diagram-gate.ts:8`, destructured at `server.ts:305` and interpolated; the false `server.ts:299-300` comment is gone. Comment residue = R-5. |
+| **A6** `tools/list` drift-lock | ARCH-051/082 | **CLOSED** | IT-102: sorted set equality against a hand-written literal never imported from `server.ts`, per-tool rows for both v23 tools, literal script-absence assertion. Count residue = R-6. |
+| **A10** false in-line comment | ARCH-085 | **CLOSED** | grep returns empty. |
+| **V-D** note precedence total over `{row} × {analyzerEnabled}` | ARCH-081 | **CLOSED** | `workflow-view.ts:133-146` — `!analyzerEnabled → DISABLED` **before** any persisted `noteCode`. |
+| **inv 4 / 6 / 9 / 10** | ARCH-079 | **HOLD** | journal carries no provider/model text; allowlist membership exactly as amended; sweep stamps before it schedules; per-process bounds documented in DEPLOY. |
+| A7/A8/A9 Gate-2 doc closures | — | **CLOSED** | the amended rows are present; verified by grep per Gate 2's own handoff instruction. |
+
+### §5 Validation & handover — **CLEAN, no send-back**
+- **Real-tier coverage:** trace reports **0 `未真實驗證` (mock-only) and 0 `未驗證` gaps**; `rtm.md`
+  **106/106 REQ rows ✅ `real:true`**. Gate 7.5 **ROUND 4** re-validated the re-run delta on a real
+  booted engine (twelve boots, all via the committed one-command `./deploy.sh --background`, real
+  Ollama, real MCP/dashboard HTTP, a genuine LAN socket `192.168.0.125`, a real SIGKILL-mid-generation)
+  and added `VAL-120..123` for A1 / V-D+A2+A3+inv5 / A4 / A5.
+- `08-validation.md` present with the v23 ROUND 4 evidence.
+- **Handover docs** at `layout.readme`/`layout.deploy` (`README.md`, `DEPLOY.md`) exist, are 淺白繁體
+  中文, step-by-step, with ASCII structure sketches. **DEPLOY.md leads with `## §0 一鍵部署`**
+  (`./deploy.sh --background`) with the real transcript pasted in, and Gate 7.5 round 4 **actually ran
+  it twelve times**. `## 1b. 設定總表` is the single deduplicated config table (spot-checked: README
+  and DEPLOY §2 reference it by name rather than restating keys). Both manuals carry the
+  current-state/history-free preamble.
+- **A1's contingent doc edits landed in the same round** (the previous pass listed them as owed):
+  `README.md:188-191` now states the 401 + `WWW-Authenticate` and that an unauthorized caller cannot
+  learn whether a name exists; `DEPLOY.md:400` lists the describe route in the D-BIND set. The round
+  also removed the 「（ADJ-A1，v24）」 ledger-ID/phantom-iteration leak and corrected §1b's false
+  「loopback 永遠豁免」 claim.
+- **LOW doc-debt recorded, not blocking** (the clause targets changelogs and superseded instructions;
+  none of these is either): the 設定總表's `iter` column is defensible provenance metadata but is the
+  one history-shaped artefact left; and `README.md` still annotates features with the iteration that
+  introduced them (`:18` v22, `:62-74` v15+/v17/v19/v20, `:123`, `:155` v21, `:171` v22), including
+  two version-diff sentences (`:64` 「解決…」, `:74` 「改為 200 HTML」). Current-state phrasing would
+  read the same without the tags. **Wider than the single line the previous pass recorded** — carried
+  as debt for the next manual rewrite, not escalated, because nothing here is stale or duplicated.
+
+### §6 Special-file review
+No `CLAUDE.md`, `AGENTS.md` or `SKILL.md` appears on any v23 IMPL's `files:` line (IMPL-159..176 touch
+`src/**`, `tests/**`, `docs/AUTHORING.md`, `README.md`, `DEPLOY.md`, `rwe.config.example.json` only),
+and `git log --name-only` over the v23 window shows none of them modified; `git status` is clean apart
+from the two pre-run `.panel/review/` reports. **Not applicable this iteration** — no
+claude-md-improver / skill-creator pass was owed.
+
+### §7 Independent verification performed by this reviewer (not taken from the panels or the ledger)
+Read this pass: `src/graph-analyzer.ts:120-145`, `:175-235`, `:250-275`; `src/server.ts:186-244`
+(`TOOL_NAMES` counted), `:945-960`, `:1508-1516`, `:1740-1755`, `:1890-1912`; `src/mcp-facade.ts:455-470`;
+`src/diagram-gate.ts:20-26`; `tests/unit/graph-analyzer.test.ts:681-745`;
+`02-architecture.md:555`, `:1395-1405`, `:1456`, `:1643-1677` (+ greps for the inv-2/inv-5/ADR-020
+verbatim clauses); `DEPLOY.md:1-40`, `:357-361`, `:398-402`, `:735-765`; `README.md:183-195` and the
+version-tag lines; `rtm.md`; `state.yaml` `layout`/`gates`; the dashboard's embedded gap list.
+**Commands run:** `sh .sdlc/trace …` (+ `--check`), the plugin's `dashboard_check` and `solid_check`,
+`npx tsc --noEmit` → **exit 0, clean**; `npx vitest run tests/unit/graph-analyzer.test.ts` →
+**33/33 green** (the empirical half of R-1); and the **full regression run by this reviewer**:
+`npx vitest run` → **283 files / 1837 tests, 0 failed, exit 0** (245.8 s) — independently confirming
+the Gate 6.5+7 round-4 figure, and confirming that a fully green suite coexists with R-1's defect.
+No `git checkout <sha> -- <path>` was used anywhere (CLAUDE.md prohibition).
+
+### §8 Send-back scope — `["architecture", "tests", "impl"]`
+| gate | items |
+|---|---|
+| **Gate 2 architecture** | **R-3** (build inv 11's choke point **or** amend inv 11 to ratify the two-caller placement — the current silence is the finding), **R-2b/OBS-2** (move the emitter to the settle choke point **or** amend inv 5 to ratify per-attempt lines — either way the B5-restore mismatch is a defect), **R-6** (39 → 40 at `02-architecture.md:555` and the repeat), **CONS-1** (six → nine `graphAnalyzer` keys at `:1456` + the interface-table row). Also re-state the interface table's self-contradicting journal row (declares "+ provider HTTP status" STRUCK, then closes with it). |
+| **Gate 5 tests (RED first)** | **R-1**: UT-125's dropped assertion **(b) the row settles**; inv 8's V-C case (a throwing `putDiagramResult` must leave no unhandled rejection, a settled row, exactly one journal line, and the next job running) — named debt in UT-128's own docblock, still open; and the same for a throwing `getTriggerBindings`. Plus a `cause`-value assertion on UT-128's five zero-call paths if Gate 2 keeps the eleven-field list. |
+| **Gate 6 impl** | **R-1** (the amendment's own shape: wrap the whole closure, `catch` → settle+journal, `finally` → release+drain, drop `_runJob:388`'s release, add the `.catch()` backstop at `:127`), **R-2/OBS-1** (`cause` key + the `_settleUnavailable` call sites), **R-2b** (the B5-restore journal/row mismatch, whichever way Gate 2 rules), **SUS-2** (one conditional `console.warn` beside `server.ts:1512` + the mirror test row), **R-5** (one comment in `diagram-gate.ts:22-24`), and R-3's code half if Gate 2 chooses the choke point. |
+
+Not sent back: **Gate 7.5 (validation)** — real-tier coverage, `08-validation.md` and both manuals are
+current-state and the 一鍵部署 command was genuinely run; the OBS-3 doc claim against DEPLOY was
+**overruled on primary evidence** (§4). **Gate 3/4** — the design rows are right in every doc-only
+finding; it is the architecture text that lags. **Gate 6.5/7** — `tsc` clean and the suite green.
+
+### §9 Retro (v23, re-review round)
+**What went well**
+- The Gate 2 re-run's grep-driven amendment discipline worked: A7/A8/A9/A10, inv 4/6, ARCH-077's prune
+  clause and ADR-021 were all struck at **every** site, and the "one of four sites" defect class did
+  not recur in the architecture text.
+- A1 — the round's genuine security fix — landed exactly as ADJ-A1 specified and was proven at the
+  real tier against a genuine LAN socket, including the existence-leak case (401 identical for an
+  existing and a never-registered name). The gate lives in the `authHandlers` block while the handler
+  stays in the `/api/*` dispatch, so no-auth deployments still work — the subtlety the decision named.
+- Gate 6.5+7 round 4 caught, recorded and closed an item (`A4`) that the Gate 6 commit subject claimed
+  and had not shipped, instead of absorbing it silently. That is the ledger working.
+
+**What to change**
+1. **An invariant amended in one round and implemented "to the letter of its most convenient clause"
+   in the next is this iteration's dominant failure mode.** R-1, R-2, R-2b and R-3 are all the same
+   shape: the amendment's *primary* prescription was replaced by a narrower shipped form with no
+   record of the downgrade. The rule for v24: **an implementation that deviates from an amended
+   invariant must amend that invariant in the same commit** — Gate 8 will keep filing this otherwise.
+2. **A deferred oracle is where this defect hides.** UT-128's docblock named *both* items that would
+   have caught R-1 and R-2b, Gate 5 deferred them by name, and Gate 6.5+7 picked up one of two.
+   A RED item that is deferred must be re-listed on the next gate's own scope line, not left in a
+   comment.
+3. **Third consecutive round with the unguarded-async class** (`litellm-proxy.ts` v23 adjudication #6,
+   then `_startJob` twice). A repo-level rule is cheaper than a fourth finding: any function that
+   claims a slot or a key releases it in a `finally`, and any fire-and-forget scheduler gets a
+   `.catch()`.
+
+**Known tech debt recorded this pass (non-blocking)**
+- 18 trace gaps: 1 MID `IMPL-082` (TDD, since v14), 16 LOW iteration-drift pairs (unchanged set),
+  1 LOW `TASK-018` unimplemented (since v3).
+- `.sdlc/trace.py` stale vs plugin 2.1.3 → no `--tool` dispatcher and **no offline mermaid fallback**
+  in the generated dashboard; the 3 MID `dashboard_check` bracket hits are verified `erDiagram` false
+  positives; no playwright in-session → render QA in declared degraded mode.
+- 10 LOW `solid_check` unclaimed-file warnings (unchanged set).
+- `README.md`'s iteration tags and two version-diff sentences; the 設定總表 `iter` column.
+- **R-4** (LOW): analyzer store I/O on the registration request path — owner's call, two lines.
+- OBS-3's residual: `sweepAtBoot`'s disabled branch emits one boot-time journal line that DEPLOY's
+  registration-scoped sentence does not mention.
+- The 29 advertised tools with no per-tool assertion row (named backfill debt from the Gate 2 re-run,
+  budgeted at Gate 3 for a later iteration) — carried, not v23's to pay.
+
+### §10 Report
+```
+Gaps: high=0 mid=1 low=17  (all remaining recorded as known tech debt)
+Drift: none beyond the 16 recorded iter-drift pairs (0 new this round; residue byte-identical)
+Architecture consistent: NO — 9 deviations (1 HIGH blocking, 4 MED, 4 LOW); 1 expert finding overruled
+Validation: real-tier all-green? yes (0 mock-only, 0 unverified, 106/106 ✅) · README+DEPLOY present,
+            current-state, 一鍵部署 verified by Gate 7.5 round 4? yes
+Conclusion: SEND BACK — Gate 2 (architecture), Gate 5 (tests), Gate 6 (impl).
+            Second consecutive blocking round on A3's shape (R-1 is its unfixed half); if it is still
+            blocking after this auto re-run, the dispatch contract hands back to the orchestrator.
+```
+
+---
+
+## v23 GATE 8 REVIEW — FIRST PASS (2026-09-03, superseded by the RE-REVIEW #1 section above — kept for history; was SEND BACK, 3 HIGH)
 
 > First Gate 8 pass for **v23** (REQ-101..106: `workflow_describe` + analyzer-drawn ASCII diagram +
 > trigger bindings + `/skeleton` deletion), over ARCH-077..086 / ADR-015..022 vs IMPL-159..174, at

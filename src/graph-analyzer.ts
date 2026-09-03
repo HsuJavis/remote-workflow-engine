@@ -5,6 +5,7 @@
 import { gateDiagram, type GateDiagramResult } from './diagram-gate.js';
 import { parseMeta, parseWorkflowSkeleton } from './workflow-meta.js';
 import { isKnownAlias } from './params/contract.js';
+import { CatalogNotFoundError } from './errors.js';
 import type { Clock } from './clock.js';
 import type { AgentOpts } from './types.js';
 import type { GatewayClient, GatewayResult } from './gateway/client.js';
@@ -65,6 +66,29 @@ export function noteTextFor(code: DiagramNoteCode): string {
   return NOTE_TEXT[code];
 }
 
+// ARCH-079 R-2(d): the journal's `cause` field — a CLOSED UNION of engine-classified literals,
+// never `string` (ADR-016: never raw provider/model text; a provider error payload can echo the
+// request, and the request carries the masked script). One literal per distinct reason a settle
+// can occur, so `RETRIES_EXHAUSTED`'s persisted-noteCode overload (disabled / boot_abandoned /
+// script_unresolved / job_exception all share that one noteCode) stops being opaque in the log.
+export type AnalyzerCause =
+  | 'disabled' | 'model_unmapped' | 'queue_full' | 'boot_abandoned' | 'script_unresolved'
+  | 'job_exception' | 'provider_terminal' | 'provider_timeout' | 'gate_refused' | 'prior_restored'
+  | 'settle_failed';
+
+/** R-2(d): the total mapping from a real attempt's failure noteCode to its `cause` — only the
+ *  three provider/gate noteCodes `_attempt` can actually produce reach here. */
+function causeForAttemptFailure(noteCode: Exclude<DiagramNoteCode, 'DISABLED' | 'NOT_GENERATED'>): AnalyzerCause {
+  switch (noteCode) {
+    case 'TIMEOUT': return 'provider_timeout';
+    case 'PROVIDER_UNREACHABLE':
+    case 'PROVIDER_ERROR': return 'provider_terminal';
+    case 'GATE_REJECTED_CONTENT':
+    case 'GATE_REJECTED_SHAPE': return 'gate_refused';
+    default: return 'job_exception'; // unreachable via _attempt's own real-call path
+  }
+}
+
 /** DES-122: the analyzer session's own scratch `cwd`, a subdirectory of the operator-configured
  *  `workRoot`. TWO importers, and they must never drift: `main.ts` creates it and passes it as the
  *  SDK gateway's `cwd`, `server.ts` names it in the `graph-analyzer effective tools=… jail=…` boot
@@ -84,9 +108,15 @@ export interface GraphAnalyzerConfig {
   maxQueueDepth: number; // REQ-104: harness values, not engine constants
 }
 
+// R-2b(c): _attempt returns its telemetry inside this union and emits nothing itself — the ONE
+// settle seam (_settle) aggregates promptTokens/completionTokens/durationMs across every attempt
+// and is the ONE place that journals (R-2/R-2b).
 type AttemptOutcome =
-  | { ok: true; diagram: string }
-  | { ok: false; noteCode: Exclude<DiagramNoteCode, 'DISABLED' | 'NOT_GENERATED'>; gatewayOk: boolean };
+  | { ok: true; diagram: string; promptTokens: number; completionTokens: number; durationMs: number }
+  | {
+      ok: false; noteCode: Exclude<DiagramNoteCode, 'DISABLED' | 'NOT_GENERATED'>; gatewayOk: boolean;
+      gateFail: GateFailReason | null; promptTokens: number | null; completionTokens: number | null; durationMs: number;
+    };
 
 type GateFailReason = Extract<GateDiagramResult, { ok: false }>['gateFail'];
 
@@ -131,26 +161,22 @@ export class GraphAnalyzer {
   enqueue(name: string, version: string, script: string, principal: string | null): void {
     const key = `${name}@${version}`;
     if (this._pendingKeys.has(key)) return; // DES-127 B4: single-flight, no second job
-    // A2 (ARCH-079 inv 11): `enabled:false` is the operator's script-egress control — this check
-    // must run BEFORE the durable `putDiagramPending` write (not just guard the in-memory claim),
-    // or a prior `ready` row is clobbered to NULL before `_settleUnavailable`'s ready-check ever
-    // sees it (the latent-clobber trap UT-124's fourth case pins).
-    if (!this._config.enabled) {
-      this._settleUnavailable(name, version, noteCodeFor({ kind: 'exhausted' }), principal);
-      return;
-    }
     if (!isKnownAlias(this._config.model, this._aliasNames)) {
       // DES-131: short-circuit, zero model calls, never even reaches `pending`.
-      this._settleUnavailable(name, version, noteCodeFor({ kind: 'config', reason: 'model_unmapped' }), principal);
+      this._settleUnavailable(name, version, noteCodeFor({ kind: 'config', reason: 'model_unmapped' }), principal, 'model_unmapped');
       return;
     }
     if (this._runningCount >= 1 && this._queue.length >= this._config.maxQueueDepth) {
-      this._settleUnavailable(name, version, noteCodeFor({ kind: 'queue' }), principal);
+      this._settleUnavailable(name, version, noteCodeFor({ kind: 'queue' }), principal, 'queue_full');
       return;
     }
+    // ARCH-079 R-3: `_startJob` is the ONE choke point for `config.enabled` (below) — the durable
+    // `putDiagramPending` write also moves there, behind the guard, so a prior `ready` row is never
+    // clobbered to NULL before a disabled analyzer's settle ever runs (the latent-clobber trap
+    // UT-124's fourth case pins). `priorRow` is still read HERE, before that write, so B5's
+    // protection is unchanged regardless of where the write itself lands.
     const priorRow = this._catalog.getDiagram(name, version);
-    this._catalog.putDiagramPending(name, version);
-    this._startJob(name, version, principal, key, Promise.resolve(script), priorRow);
+    this._startJob(name, version, principal, key, () => Promise.resolve(script), priorRow, null);
   }
 
   /** DES-127 B4/B5: idempotent while already pending; a real regenerate resolves the CURRENT
@@ -176,68 +202,102 @@ export class GraphAnalyzer {
       const row = this._catalog.getDiagram(name, version);
       if (!row) continue;
       if (row.generatedAt === null) {
-        // A2: `enabled:false` must not reach the gateway on restart either — settle instead of
-        // requeueing, so a never-stamped pending row does not strand forever.
-        if (!this._config.enabled) {
-          this._settleUnavailable(name, version, noteCodeFor({ kind: 'exhausted' }), null);
-          continue;
-        }
-        // Never stamped — a crash mid-generation. Requeue exactly once, stamping the attempt marker.
-        const stamp = this._clock.isoNow();
-        this._catalog.putDiagramPending(name, version, stamp);
+        // Never stamped — a crash mid-generation. Requeue exactly once, stamping the attempt marker
+        // — ARCH-079 R-3: the stamp write now lands INSIDE `_startJob`, behind the `enabled` guard
+        // (inv 9's "stamp before schedule" becomes "stamp inside _startJob before schedule", which
+        // is strictly tighter: a disabled analyzer settles the row without ever stamping it, so a
+        // never-stamped pending row does not strand forever).
         const key = `${name}@${version}`;
         this._startJob(
           name, version, null, key,
-          this._catalog.resolve(name, { version }).then((e) => e.script),
-          null,
+          () => this._catalog.resolve(name, { version }).then((e) => e.script),
+          null, this._clock.isoNow(),
         );
       } else if (Date.parse(row.generatedAt) < bootInstant) {
         // Stamped by a previous, now-dead process — settle with ZERO model calls.
-        this._settleUnavailable(name, version, noteCodeFor({ kind: 'exhausted' }), null);
+        this._settleUnavailable(name, version, noteCodeFor({ kind: 'exhausted' }), null, 'boot_abandoned');
       }
       // else: stamped at/after the boot instant — a live job in THIS process, leave alone.
     }
   }
 
-  /** UT-128/ARCH-079 inv 5: every path that writes a terminal row emits exactly one journal line,
-   *  even a zero-model-call settle (no `_attempt`, so no other emitter runs for it). */
-  private _settleUnavailable(name: string, version: string, noteCode: PersistedDiagramNoteCode, principal: string | null): void {
-    // DES-127 B5: a failure must never clobber a prior `ready` row.
-    const current = this._catalog.getDiagram(name, version);
-    if (current?.status === 'ready') return;
-    const bindings = getTriggerBindings(name, this._ports);
-    this._catalog.putDiagramResult(name, version, {
-      status: 'unavailable', noteCode, generatedAt: this._clock.isoNow(), bindingsFp: bindings.bindingsFp,
-    });
+  /** ARCH-079 R-2/R-2b: the ONE settle seam — the only caller of `catalog.putDiagramResult` and
+   *  the only caller of `_journal`, in that order. Every terminal path funnels through here, which
+   *  is what makes "exactly one line per settle" and "the line's outcome equals the row just
+   *  written" (oracle O5) hold BY CONSTRUCTION rather than by care. Deliberately unwrapped: if the
+   *  write throws (a permanently-orphaned row per DES-130 B6, or a genuine store failure), it
+   *  propagates to the scheduled closure's own catch (below) / `_settleUnavailable`'s inner catch,
+   *  which performs the ONE recovery attempt — this function does not retry itself. */
+  private _settle(
+    name: string, version: string, principal: string | null,
+    row:
+      | { status: 'ready'; diagram: string; generatedAt: string; bindingsFp: string }
+      | { status: 'unavailable'; noteCode: PersistedDiagramNoteCode; generatedAt: string; bindingsFp: string },
+    telemetry: {
+      promptTokens: number | null; completionTokens: number | null; durationMs: number;
+      gateFail: GateFailReason | null; attempts: number; cause: AnalyzerCause | null;
+    },
+  ): void {
+    this._catalog.putDiagramResult(name, version, row);
     this._journal({
       name, version, principal,
-      promptTokens: null, completionTokens: null, durationMs: 0,
-      outcome: 'unavailable', noteCode, gateFail: null,
+      promptTokens: telemetry.promptTokens, completionTokens: telemetry.completionTokens, durationMs: telemetry.durationMs,
+      outcome: row.status, noteCode: row.status === 'unavailable' ? row.noteCode : null,
+      gateFail: telemetry.gateFail, attempts: telemetry.attempts, cause: telemetry.cause,
     });
   }
 
-  /** ARCH-079 inv 5: the ONE emitter of the `graph-analyzer` journal line. Both terminal paths —
-   *  the zero-model-call settle above and `_attempt`'s completed attempt — go through here, so the
+  /** UT-128/ARCH-079 inv 5: every path that writes a terminal row emits exactly one journal line,
+   *  even a zero-model-call settle (no `_attempt`, so no other emitter runs for it). Also the ONE
+   *  recovery path (inv 2 FLOOR 2b/V-F): the scheduled closure's catch and `enqueue`/`sweepAtBoot`'s
+   *  zero-model-call guards both call this, and its own write is guarded against a SECOND failure —
+   *  a permanently-failing store settles with `cause:'settle_failed'` and writes no row at all,
+   *  rather than letting the closure reject a second time. */
+  private _settleUnavailable(
+    name: string, version: string, noteCode: PersistedDiagramNoteCode, principal: string | null, cause: AnalyzerCause,
+  ): void {
+    // DES-127 B5: a failure must never clobber a prior `ready` row.
+    const current = this._catalog.getDiagram(name, version);
+    if (current?.status === 'ready') return;
+    try {
+      const bindings = getTriggerBindings(name, this._ports);
+      this._settle(
+        name, version, principal,
+        { status: 'unavailable', noteCode, generatedAt: this._clock.isoNow(), bindingsFp: bindings.bindingsFp },
+        { promptTokens: null, completionTokens: null, durationMs: 0, gateFail: null, attempts: 0, cause },
+      );
+    } catch {
+      this._journal({
+        name, version, principal,
+        promptTokens: null, completionTokens: null, durationMs: 0,
+        outcome: 'unavailable', noteCode: null, gateFail: null, attempts: 0, cause: 'settle_failed',
+      });
+    }
+  }
+
+  /** ARCH-079 inv 5: the ONE emitter of the `graph-analyzer` journal line. Every settle path — the
+   *  zero-model-call settle above and `_settle`'s own model-call settle — goes through here, so the
    *  line's shape cannot drift between them (the same one-declaration rule as `UNBOUND_ENTRY_LABEL`
    *  and `ANALYZER_SCRATCH_SUBDIR`). The key order below IS the line's wire format; keep it. */
   private _journal(f: {
     name: string; version: string; principal: string | null;
     promptTokens: number | null; completionTokens: number | null; durationMs: number;
     outcome: 'ready' | 'unavailable'; noteCode: PersistedDiagramNoteCode | null; gateFail: GateFailReason | null;
+    attempts: number; cause: AnalyzerCause | null;
   }): void {
     // eslint-disable-next-line no-console
     console.log('[remote-workflow-engine] graph-analyzer ' + JSON.stringify({
       name: f.name, version: f.version, principal: f.principal, model: this._config.model,
       promptTokens: f.promptTokens, completionTokens: f.completionTokens, durationMs: f.durationMs,
-      outcome: f.outcome, noteCode: f.noteCode, gateFail: f.gateFail,
+      outcome: f.outcome, noteCode: f.noteCode, gateFail: f.gateFail, attempts: f.attempts, cause: f.cause,
     }));
   }
 
-  /** A3/N-1: the single release point for a claimed slot — used both by a normal settle
-   *  (`_runJob`'s tail) and by the scheduled closure's catch below, so an orphan-pending row's
-   *  rejected `scriptPromise` (e.g. `CatalogNotFoundError`) releases the claim and the running
-   *  slot exactly like any other settle, instead of wedging the queue behind a leaked count. */
+  /** ARCH-079 inv 2 FLOOR 2a (V-E): the single release site, idempotent per key — a key already
+   *  released (or never claimed) is a no-op, so a `finally` that ever ran twice for the same job
+   *  cannot double-release the slot into negative/unbounded concurrency. */
   private _release(key: string): void {
+    if (!this._pendingKeys.has(key)) return;
     this._pendingKeys.delete(key);
     this._runningCount--;
     const next = this._queue.shift();
@@ -247,20 +307,41 @@ export class GraphAnalyzer {
     }
   }
 
+  /** ARCH-079 R-3: the ONE choke point for `config.enabled` — every `_startJob` caller
+   *  (`enqueue`, `sweepAtBoot`, `regenerate` via `enqueue`) funnels through here, and this is the
+   *  FIRST statement, before either claim (`_pendingKeys`/`_runningCount`) and before the durable
+   *  `putDiagramPending` write. `server.ts:955`/`mcp-facade.ts:462` stay as defence-in-depth, not
+   *  load-bearing. `scriptSource` is a THUNK, not an already-started promise: constructing it (e.g.
+   *  `sweepAtBoot`'s `catalog.resolve`) must not happen until the guard passes, or a disabled
+   *  analyzer would leave an unawaited, potentially-rejecting promise behind — the exact
+   *  unhandled-rejection shape inv 2 exists to close. `bootStamp` is `sweepAtBoot`'s attempt marker
+   *  (`null` from `enqueue`, which never stamps). */
   private _startJob(
     name: string, version: string, principal: string | null, key: string,
-    scriptPromise: Promise<string>, priorRow: DiagramRow | null,
+    scriptSource: () => Promise<string>, priorRow: DiagramRow | null, bootStamp: string | null,
   ): void {
+    if (!this._config.enabled) {
+      this._settleUnavailable(name, version, noteCodeFor({ kind: 'exhausted' }), principal, 'disabled');
+      return;
+    }
+    this._catalog.putDiagramPending(name, version, bootStamp ?? undefined);
     this._pendingKeys.add(key);
     const job = async (): Promise<void> => {
-      let script: string;
       try {
-        script = await scriptPromise;
-      } catch {
+        const script = await scriptSource();
+        await this._runJob(name, version, script, principal, priorRow);
+      } catch (e) {
+        // ARCH-079 inv 2 FLOOR 2b: the catch is TOTAL — every reachable throw in this closure
+        // (the orphan `scriptPromise` rejection, `_runJob`'s own `getTriggerBindings`/write throws)
+        // settles the row unavailable via the one recovery path, so the closure itself never
+        // rejects. `CatalogNotFoundError` is the enqueue-races-deregister orphan case (A3/N-1);
+        // any other throw is an opaque `job_exception` (ADR-016: never inspect the error's own
+        // message, it can echo request text that contains the masked script).
+        const cause: AnalyzerCause = e instanceof CatalogNotFoundError ? 'script_unresolved' : 'job_exception';
+        this._settleUnavailable(name, version, noteCodeFor({ kind: 'exhausted' }), principal, cause);
+      } finally {
         this._release(key);
-        return;
       }
-      await this._runJob(name, version, script, principal, key, priorRow);
     };
     if (this._runningCount >= 1) {
       this._queue.push(job);
@@ -321,36 +402,29 @@ export class GraphAnalyzer {
 
     // Build the outcome ONCE, as the discriminated union it already is (Gate 6.5 simplify: the
     // previous shape carried four independent `let`s that the return statement then had to re-narrow
-    // with two `as` casts the compiler could not check).
+    // with two `as` casts the compiler could not check). R-2b(c): telemetry rides the outcome —
+    // `_attempt` emits nothing; `_settle` (the one settle seam) journals once per SETTLE, not once
+    // per attempt.
     let outcome: AttemptOutcome;
-    let gateFail: GateFailReason | null = null;
     if (result.ok) {
       const gate = gateDiagram(result.content, allowedLabels, { maxBytes: this._config.maxBytes, maxLines: this._config.maxLines });
       if (gate.ok) {
-        outcome = { ok: true, diagram: gate.diagram };
+        outcome = { ok: true, diagram: gate.diagram, promptTokens: result.tokens.input, completionTokens: result.tokens.output, durationMs };
       } else {
-        outcome = { ok: false, noteCode: noteCodeFor({ kind: 'gate', reason: gate.reason }), gatewayOk: true };
-        gateFail = gate.gateFail;
+        outcome = {
+          ok: false, noteCode: noteCodeFor({ kind: 'gate', reason: gate.reason }), gatewayOk: true, gateFail: gate.gateFail,
+          promptTokens: result.tokens.input, completionTokens: result.tokens.output, durationMs,
+        };
       }
     } else {
-      outcome = { ok: false, noteCode: noteCodeFor(result), gatewayOk: false };
+      outcome = { ok: false, noteCode: noteCodeFor(result), gatewayOk: false, gateFail: null, promptTokens: null, completionTokens: null, durationMs };
     }
-
-    this._journal({
-      name, version, principal,
-      promptTokens: result.ok ? result.tokens.input : null,
-      completionTokens: result.ok ? result.tokens.output : null,
-      durationMs,
-      outcome: outcome.ok ? 'ready' : 'unavailable',
-      noteCode: outcome.ok ? null : outcome.noteCode,
-      gateFail,
-    });
 
     return outcome;
   }
 
   private async _runJob(
-    name: string, version: string, script: string, principal: string | null, key: string, priorRow: DiagramRow | null,
+    name: string, version: string, script: string, principal: string | null, priorRow: DiagramRow | null,
   ): Promise<void> {
     const bindings = getTriggerBindings(name, this._ports);
     const allowedLabels = this._buildAllowlist(script, bindings.bindings);
@@ -364,27 +438,50 @@ export class GraphAnalyzer {
 
     // do/while, not for: the first attempt is unconditional, which is what makes `last` definitely
     // assigned without the `as AttemptOutcome` cast the `for` shape needed (Gate 6.5 simplify).
+    // R-2b(c): promptTokens/completionTokens are SUMMED and durationMs is the TOTAL wall clock
+    // across every attempt this settle makes — "the only information the move [to the settle
+    // choke point] destroys" is the per-attempt count, which `attemptNum` (below) restores as its
+    // own field.
     let last: AttemptOutcome;
     let attemptNum = 0;
+    let promptTokens: number | null = null;
+    let completionTokens: number | null = null;
+    let totalDurationMs = 0;
     do {
       attemptNum++;
       last = await this._attempt(name, version, principal, attemptNum, prompt, allowedLabels);
+      totalDurationMs += last.durationMs;
+      if (last.promptTokens !== null) promptTokens = (promptTokens ?? 0) + last.promptTokens;
+      if (last.completionTokens !== null) completionTokens = (completionTokens ?? 0) + last.completionTokens;
       // success, or a gate rejection — retrying won't help either
     } while (!last.ok && !last.gatewayOk && attemptNum < attempts);
 
     const generatedAt = this._clock.isoNow();
+    const telemetry = { promptTokens, completionTokens, durationMs: totalDurationMs, attempts: attemptNum };
     if (last.ok) {
-      this._catalog.putDiagramResult(name, version, { status: 'ready', diagram: last.diagram, generatedAt, bindingsFp: bindings.bindingsFp });
+      this._settle(
+        name, version, principal,
+        { status: 'ready', diagram: last.diagram, generatedAt, bindingsFp: bindings.bindingsFp },
+        { ...telemetry, gateFail: null, cause: null },
+      );
     } else if (priorRow?.status === 'ready') {
-      // DES-127 B5: restore the untouched prior row rather than clobber it with this failure.
-      this._catalog.putDiagramResult(name, version, {
-        status: 'ready', diagram: priorRow.diagram as string,
-        generatedAt: priorRow.generatedAt as string, bindingsFp: priorRow.bindingsFp as string,
-      });
+      // DES-127 B5: restore the untouched prior row rather than clobber it with this failure. R-2b(e):
+      // the journal line still reads `outcome:'ready'` (O5's relational oracle — the line must match
+      // the row actually written) with `cause:'prior_restored'` naming why a new one was not drawn.
+      this._settle(
+        name, version, principal,
+        {
+          status: 'ready', diagram: priorRow.diagram as string,
+          generatedAt: priorRow.generatedAt as string, bindingsFp: priorRow.bindingsFp as string,
+        },
+        { ...telemetry, gateFail: last.gateFail, cause: 'prior_restored' },
+      );
     } else {
-      this._catalog.putDiagramResult(name, version, { status: 'unavailable', noteCode: last.noteCode, generatedAt, bindingsFp: bindings.bindingsFp });
+      this._settle(
+        name, version, principal,
+        { status: 'unavailable', noteCode: last.noteCode, generatedAt, bindingsFp: bindings.bindingsFp },
+        { ...telemetry, gateFail: last.gateFail, cause: causeForAttemptFailure(last.noteCode) },
+      );
     }
-
-    this._release(key);
   }
 }
