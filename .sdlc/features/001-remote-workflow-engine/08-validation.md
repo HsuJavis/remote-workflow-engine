@@ -6922,6 +6922,16 @@ DEPLOY §2's 「無 root 部署」 recipe restarted it automatically within seco
 documented `Restart=` self-healing path is now real-run evidence in its own right, and every
 subsequent kill this round targeted an explicit PID instead of a pattern.
 
+**One consequence that is NOT cosmetic, recorded for the operator to decide on.** The unit's
+`ExecStart` runs `tsx src/main.ts` **off this repo's working tree**, so the restart did not reload the
+build that process had been running since 8月19 (the `v0.20.0` tag) — it loaded **today's checkout of
+`feat/v23-workflow-describe`**, which is what `/api/status` now reports (`v0.20.0-109-g6f4714b`). No
+data was lost, no configuration changed, and no REQ is affected; but a long-lived instance that was
+serving a tagged release is now serving un-reviewed v23 code purely as a side effect of this incident.
+Whether to leave it there (v23 is one gate from closing) or check the working tree back onto a tagged
+release and restart is the **owner's call**, not the validator's — raised in this round's
+`needs_clarification`, not silently fixed.
+
 ### v23 GATE 7.5 ROUND 4 — config-file sync check (§4b)
 
 This round's delta (`src/server.ts`, `src/graph-analyzer.ts`, `src/workflow-view.ts`,
