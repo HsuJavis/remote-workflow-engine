@@ -1716,3 +1716,48 @@ unambiguous starting point.
 byte-identical to the pre-round residue (0 new gaps, 0 broken links — this round added no new work-item IDs,
 only amended fields on IMPL-177). `state.yaml`: `gates.impl.passed` flips `true`; `current_stage` →
 `verification`. No owner decision is owed this round — adjudication #8 already made the technical call.
+
+- 2026-09-03 — v23 **GATE 6.5+7 ROUND 5 DONE** (verifier, simplify + regression closeout over the Gate 6
+RE-ENTRY). **The scope is not what the commit subject says it is**: `9fc4439`'s subject reads
+`docs(v23): adjudication #8`, but the commit carries **179 lines of `src/`** — `graph-analyzer.ts`'s `_settle`
+choke point, the TOTAL closure `try/catch/finally`, the `AnalyzerCause` closed union and R-3's `_startJob`
+`enabled` guard, plus `server.ts`'s ADR-020 mirror warn. That code landed AFTER round 4's simplify pass, so it
+is this round's simplify scope; taking the Gate 6 RE-ENTRY's "no code change needed" at face value would have
+skipped a whole delta. **Simplify: ZERO fixes applied — the honest outcome, not a skipped step.** All 179
+changed lines read; three candidates found and each REJECTED with a stated reason rather than left unsaid:
+(a) collapsing `_settle`'s six hand-forwarded telemetry fields into one `...telemetry` spread — the
+forwarding is fully `tsc`-checked, so it is *not* the silent-drift class this repo's one-declaration rule
+targets (round 4's two fixes both were: a re-typed `JSON.stringify` shape and a nine-positional-argument call
+across an auth boundary), and a spread would silently swallow a future telemetry field instead of erroring on
+it; (b) `_attempt`'s `let outcome … return outcome` collapsed to direct returns — churn of a decision a PRIOR
+Gate 6.5 already made and documented in place, with no defect either way; (c) extracting the zero-model-call
+telemetry literal typed twice inside `_settleUnavailable` — the two copies sit 8 lines apart inside ONE
+20-line function and deliberately differ in `cause`/`noteCode`, so a shared const is abstraction for two
+adjacent uses. No `06-impl-log.md` edit follows, because no code changed. **Regression 283 files / 1850
+tests, 0 failed, `vitest` exit 0** (read off the process's own exit status); `tsc --noEmit` clean. **Nine
+items flip red→green/pass** — UT-129/130/131/132/133/134/136/137 + IT-104, metadata only, dated red-reason
+prose left verbatim as record (round-4 precedent); UT-125/UT-135/IT-103 were already green from the Gate 5
+RE-ENTRY. Zero remaining red (IT-015 the single labelled deferral; UT-091/VAL-094 retired). **Coverage
+95.51%** overall (15004/15709 lines, up from round 4's 95.48%), and the delta measured on its own terms:
+**179 changed src lines, 179 instrumented, 0 missed**, every function in `graph-analyzer.ts` at 100% —
+including `causeForAttemptFailure`, the one function in the delta whose `default` arm is documented
+unreachable and which was the expected offender. Pre-existing debt unchanged at **77 long / 8 short**, same
+counts as round 4, inside the v21 Decision-rationale scope (worst: `main.ts:onSupervisionEvent` 0/6,
+`main.ts:loadFileConfig` 0/9, `server.ts:checkMcpConfigTransport` 0/16, `server.ts:runDiagnostics` 1/26,
+`server.ts:createServer` 717/851 — process-entrypoint/diagnostic surfaces no in-vitest test can move).
+trace **1024 items / 18 gaps, 0 HIGH** (17 low iter-drift/TASK-018, 1 mid IMPL-082), residue unchanged, no
+broken links; `solid_check` 0 high / 0 mid / 10 low; `determinism_check` exit 0; TZ-travel re-run
+(`Pacific/Kiritimati`, no `faketime` binary here) 283/1850 pass, **0 flips**; seam wiring — `server.ts:1499`
+is the ONE `new GraphAnalyzer(` site (IT-098 pins the count), passing real gateway/catalog/ports/clock with
+**no `schedule` override**, so production runs the real `setImmediate` path while only tests inject
+`runInline`. **Real smoke (real engine boot, real Ollama `qwen2.5:7b`, direct-fetch, no mocks)**: one real
+`workflow_register` emitted exactly ONE journal line with **twelve keys in wire order** carrying the delta's
+own two new fields at real tier — `attempts:1`, `cause:'gate_refused'`, alongside `promptTokens 476 /
+completionTokens 120 / durationMs 47482 / outcome 'unavailable' / noteCode 'GATE_REJECTED_SHAPE' / gateFail
+'codepoint'` (and `attempts:1` under `retries:1` is correct: a gate rejection is not retried). Both **IT-104
+rows confirmed on real boots**: effective tools `[]` emits no warn; configured `['Read']`, curated to
+`['Bash']` for the Ollama provider, emits the ADR-020 mirror warn naming the EFFECTIVE set — which is exactly
+why the line must key off effective, not configured. **Flagged for Gate 7.5, not assumed**: round 4's
+validation evidence was collected against `a39c0e7`/`eef7809`, which PRE-DATES `9fc4439`'s settle rework, so
+validation round 5 should re-run the v23 REQ surfaces against this tree. `gates.verification.passed=true`;
+`current_stage → validation`.

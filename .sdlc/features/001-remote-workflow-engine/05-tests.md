@@ -7948,11 +7948,11 @@ does an orphan merely trade one immortal status (`pending`) for another (`unavai
 GC question, not a B6 defect — not assumed either way here.
 
 ### UT-129 — R-1/inv 2, oracle O1: a throwing `ports.getTriggerBindings` inside `_runJob` must not wedge the queue
-- **status:** red
+- **status:** green
 - **traces:** ARCH-079
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 File: `tests/unit/graph-analyzer.test.ts` (new describe block, same mock policy as UT-124/UT-125 —
@@ -7972,11 +7972,11 @@ around the `_runJob` call); (b)-(e) go unreached behind it, same "vitest stops a
 expect" shape as UT-125.
 
 ### UT-130 — R-1/inv 2 FLOOR 2b, oracle O2: a throwing `catalog.putDiagramResult` on the ready branch must be recovered
-- **status:** red
+- **status:** green
 - **traces:** ARCH-079
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 File: `tests/unit/graph-analyzer.test.ts`. `_runJob`'s success branch calls
@@ -7990,11 +7990,11 @@ words). Red reason (measured): `npx vitest run tests/unit/graph-analyzer.test.ts
 fails at assertion (a) exactly like O1 — the injected throw escapes `job()` uncaught.
 
 ### UT-131 — R-1/inv 2 FLOOR 2a, oracle O4: the slot-accounting floor over a mixed burst
-- **status:** red
+- **status:** green
 - **traces:** ARCH-079
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 File: `tests/unit/graph-analyzer.test.ts`. One leaking job (the O1 shape — a `ports` throwing ONLY
@@ -8010,11 +8010,11 @@ tests/unit/graph-analyzer.test.ts -t 'UT-131'` → fails on the first queued job
 `row?.status === 'ready'` assertion (`'pending'` instead) — the leaked slot wedges the whole queue.
 
 ### UT-132 — R-2b, inv 5(f), oracle O5: the relational settle oracle (B5 case)
-- **status:** red
+- **status:** green
 - **traces:** ARCH-079
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 File: `tests/unit/graph-analyzer.test.ts`. "The one oracle to keep if only one could be kept — for
@@ -8030,11 +8030,11 @@ vitest run tests/unit/graph-analyzer.test.ts -t 'UT-132'` → `expect(parsed.out
 fails, `'unavailable'` !== `'ready'`.
 
 ### UT-133 — R-2b(c): exactly one journal line per SETTLE across a real multi-attempt retry loop, plus the `attempts` field
-- **status:** red
+- **status:** green
 - **traces:** ARCH-079
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 File: `tests/unit/graph-analyzer.test.ts`. Complements UT-128 (already green, zero-model-call paths
@@ -8047,11 +8047,11 @@ line-count assertion, 2 lines not 1 (`_attempt` still journals once per attempt 
 `attempts` field assertion is independently red too (the field does not exist in the emitted JSON).
 
 ### UT-134 — R-2b(b): the journal line is a TWELVE-key SET EQUALITY, wire order pinned
-- **status:** red
+- **status:** green
 - **traces:** ARCH-079
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 File: `tests/unit/graph-analyzer.test.ts`. `expect(Object.keys(JSON.parse(line)).sort()).toEqual([…
@@ -8095,11 +8095,11 @@ target `c.refusedName`.** Confirmed green: `npx vitest run tests/unit/graph-anal
 underlying `workflow_diagrams` row write is a no-op — see UT-125's own blocked note).
 
 ### UT-136 — inv 2 FLOOR 2b / V-F, O5's own carve-out: `settle_failed` — a permanently-failing store
-- **status:** red
+- **status:** green
 - **traces:** ARCH-079
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 File: `tests/unit/graph-analyzer.test.ts`. "`settle_failed` is explicitly OUT of O5's scope and takes
@@ -8111,11 +8111,11 @@ write to try. Red reason (measured): `npx vitest run tests/unit/graph-analyzer.t
 today's write call at all — same failure shape as O1/O2).
 
 ### UT-137 — R-2(d): `AnalyzerCause` is a closed union, never `string` (type-level, compile-time only)
-- **status:** red
+- **status:** green
 - **traces:** ARCH-079
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 File: `tests/unit/graph-analyzer.test.ts` (same convention as `tests/unit/trigger-bindings.test.ts`'s
@@ -8157,11 +8157,11 @@ this already holds today, `server.ts:955`'s `if (... && graphAnalyzer.enabled)` 
 `graphAnalyzer.enqueue(...)` is ever reached.
 
 ### IT-104 — SUS-2/ADR-020: mirror rows — a boot-time `console.warn` when the EFFECTIVE analyzer tool set is non-empty, none when empty
-- **status:** red
+- **status:** green
 - **traces:** ARCH-079
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v23
 
 **Authored by a sibling Gate 5 dispatch** (same process note as IT-103) — recorded here because this
