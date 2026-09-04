@@ -92,6 +92,11 @@ export interface McpFacadeDeps {
   /** v21 (ARCH-066, DES-104, TASK-100): engine ceilings bounding workflow_source/list's read-time
    *  effective bounds — forwarded from ServerConfig (see server.ts's createServer). */
   ceilings?: Ceilings;
+  /** v24 Gate 7.5 (D-12, REQ-117): the RESOLVED model-alias names this deployment accepts — the
+   *  same Set `RunManager` admission and the catalog's registration check use (server.ts's
+   *  `aliasNames`), so `workflow_authoring_guide` can NAME them instead of leaving a cold model to
+   *  guess. Absent (unit construction) renders the "no alias table configured" sentence. */
+  aliasNames?: Set<string>;
   cas?: CasStore;
   assetSync?: AssetSyncService;
   /** v24 (DES-149): the two trigger-claim stores the register/deregister sequence calls into.
@@ -213,6 +218,7 @@ export class McpFacade {
   private readonly runManager: RunManager;
   private readonly validator: SubmissionValidator;
   private readonly ceilings: Ceilings;
+  private readonly aliasNames: Set<string>;
   private readonly cas?: CasStore;
   // Not readonly: `AssetSyncService` needs the server's bound port for `selfBind` (server.ts
   // constructs it AFTER `http.listen()`, well after the facade). `bindAssetSync` lets the
@@ -230,6 +236,7 @@ export class McpFacade {
     this.runManager = deps.runManager ?? new RunManager({ store: this.store, clock });
     this.validator = deps.validator ?? new SubmissionValidator({ catalog: this.runManager.catalog });
     this.ceilings = deps.ceilings ?? DEFAULT_CEILINGS;
+    this.aliasNames = deps.aliasNames ?? new Set();
     this.cas = deps.cas;
     this.assetSync = deps.assetSync;
     this.schedulerClaims = deps.schedulerClaims ?? NEVER_CLAIMS;
@@ -503,7 +510,9 @@ export class McpFacade {
    *  `this.ceilings` is the RESOLVED ServerConfig value (operator-overridable), not
    *  DEFAULT_CEILINGS — the distinction DES-157's own signature insists on. */
   async workflowAuthoringGuide(): Promise<ResultEnvelope<{ text: string }>> {
-    return { runId: '', status: 'completed', result: { text: buildAuthoringGuide(this.ceilings) } };
+    // v24 Gate 7.5 (D-12): the alias names travel with the ceilings — both are "what THIS
+    // deployment accepts", and the guide is the only place the surface states either.
+    return { runId: '', status: 'completed', result: { text: buildAuthoringGuide({ ...this.ceilings, aliases: [...this.aliasNames] }) } };
   }
 
   // ============================================================================================

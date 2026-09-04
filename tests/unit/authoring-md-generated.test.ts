@@ -7,13 +7,16 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { buildAuthoringGuide } from '../../src/authoring-guide.js';
+// v24 Gate 7.5 (D-12): the generator interpolates the DOCUMENTED default alias table; this lock
+// must call it with the same input or it locks a different document than the one shipped.
+import { DEFAULT_ALIASES } from '../../src/default-aliases.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');
 
 describe('docs/AUTHORING.md is generated, not hand-maintained (UT-160, DES-157)', () => {
   it('docs/AUTHORING.md byte-equals buildAuthoringGuide() over the SAME resolved ceilings DEPLOY.md documents', () => {
     const onDisk = readFileSync(join(ROOT, 'docs/AUTHORING.md'), 'utf-8');
-    const generated = buildAuthoringGuide({ maxTimeoutMs: 600000, maxAppendPromptBytes: 1024, maxEffort: 'high' });
+    const generated = buildAuthoringGuide({ maxTimeoutMs: 600000, maxAppendPromptBytes: 1024, maxEffort: 'high', aliases: Object.keys(DEFAULT_ALIASES) });
     expect(onDisk).toBe(generated);
   });
 });

@@ -657,7 +657,9 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v24 (DES-149, TASK-148): the trigger-claim stores (schedulerClaims/webhookClaims) are wired
   // just below, once `scheduler`/`webhooks` exist; `assetSync` is bound after `http.listen()`
   // (see `facade.bindAssetSync` near the bottom — it needs the server's own bound port).
-  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks });
+  // v24 Gate 7.5 (D-12): `aliasNames` — the SAME resolved Set admission and registration validate
+  // against — reaches the facade so `workflow_authoring_guide` names the accepted aliases.
+  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, aliasNames });
 
   // v24 (DES-139, ARCH-088, TASK-147): authorize()'s OwnerLookup is SYNC (a pure decision
   // function), while RunStore/WorkflowCatalog are async ports — a second connection to each

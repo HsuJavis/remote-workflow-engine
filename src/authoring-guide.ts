@@ -12,11 +12,20 @@
 // hand-edited (tests/unit/authoring-md-generated.test.ts is the diff lock).
 import { LOCKED_KEYS, TUNABLE_KEYS, type Effort } from './params/contract.js';
 import { ERROR_CATALOG } from './errors.js';
+// v24 Gate 7.5 (D-4): the diagram grammar is READ from the checker, not re-typed here. Both consts
+// carry a comment saying this file should interpolate them; it did not, and the hand-written prose
+// taught three of the five shapes `checkMermaid` accepts.
+import { SHAPES, EDGE_FORMS } from './check-mermaid.js';
 
 export interface GuideCeilings {
   maxTimeoutMs: number;
   maxAppendPromptBytes: number;
   maxEffort: Effort;
+  /** v24 Gate 7.5 (D-12, REQ-117): the model-alias names THIS deployment accepts, from the same
+   *  resolved alias table the registration validator checks `model.default` against (server.ts's
+   *  `aliasNames`). An empty array means the deployment configured none, in which case the
+   *  validator accepts any string — the guide says so rather than printing an empty list. */
+  aliases: readonly string[];
 }
 
 export interface GuideExample {
@@ -192,6 +201,29 @@ function exampleRows(): string {
   ).join('\n\n');
 }
 
+/** v24 Gate 7.5 (D-12): the alias sentence, over the deployment's own resolved alias names. */
+function aliasSentence(aliases: readonly string[]): string {
+  if (aliases.length === 0) {
+    return 'This deployment configures no model-alias table, so any string is accepted as a ' +
+      '`model.default` and resolution happens at dispatch time.';
+  }
+  return 'A declared `model.default` (and every entry of a declared `model.enum`) must be one of ' +
+    `this deployment's model ALIAS names — ${aliases.map((a) => `\`${a}\``).join(', ')} — not a ` +
+    'provider model id. `models_list` shows the catalog MODELS an alias may resolve to; it is not ' +
+    'the alias table, and passing an id from it is refused `PARAM_CONTRACT_INVALID: default not a ' +
+    'known alias`. An `agent()` call naming an unknown alias is refused `UNKNOWN_ALIAS`.';
+}
+
+/** v24 Gate 7.5 (D-4): the node-shape table, rendered from `checkMermaid`'s own closed grammar. */
+function shapeRows(): string {
+  return SHAPES.map((s) => `- \`${s.open}…${s.close}\` (${s.name}) — ${s.role}`).join('\n');
+}
+
+/** v24 Gate 7.5 (D-4): the edge table, likewise read from the checker rather than re-typed. */
+function edgeRows(): string {
+  return EDGE_FORMS.map((e) => `- \`a${e.token}b\` — ${e.role}`).join('\n');
+}
+
 /** DES-157 / ARCH-107: assembled from the enforcement constants — the ONE builder both
  *  `workflow_authoring_guide` (the MCP tool, over the composition root's RESOLVED ceilings) and
  *  `scripts/gen-authoring-md.ts` (over `DEFAULT_CEILINGS`, the documented unconfigured default)
@@ -281,7 +313,12 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         `not exceed ${ceilings.maxTimeoutMs}ms, a declared \`appendPrompt.default\` may not exceed ` +
         `${ceilings.maxAppendPromptBytes} bytes, and a declared \`effort.default\` may not rank above ` +
         `'${ceilings.maxEffort}'. A declaration above any of these ceilings is refused ` +
-        '`PARAM_OUT_OF_RANGE` at registration — never silently clamped.',
+        '`PARAM_OUT_OF_RANGE` at registration — never silently clamped.\n\n' +
+        // v24 Gate 7.5 (D-12, REQ-117): the alias names, from the SAME resolved table the
+        // registration validator checks against. The cold subject's first registration was refused
+        // because it read a model id out of `models_list` (which lists catalog MODELS, not
+        // aliases) — nothing on the surface named what belongs in `model.default`.
+        aliasSentence(ceilings.aliases),
     ),
   );
 
@@ -291,18 +328,27 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
       'Every registration requires a non-empty Mermaid `mermaid` string (`MERMAID_REQUIRED`) — the ' +
         'engine no longer draws the diagram for you (that generator is retired: registering a script ' +
         'used to send the whole script body to an LLM as a prompt; the diagram is now yours to draw, so ' +
-        'nothing you write is sent anywhere just to produce a picture). The diagram must use only the ' +
-        'three node shapes `id(["agent label"])` (stadium — MUST exactly match your script\'s agent() ' +
-        'labels, checked both ways: an agent label with no matching node, or a node with no matching ' +
-        'label, is `DIAGRAM_MISMATCH`), `id["free text"]` (rectangle — a black-box node, e.g. another ' +
-        "owner's nested workflow; excluded from the label check), and `id[/\"free text\"/]` (trapezoid — " +
-        'e.g. a trigger header). Edges are `a-->b`, `a<-->b` (bidirectional, excluded from the cycle ' +
-        'check), or `a-.->b`, optionally carrying `|a label|`. Any edge that sits inside a cycle (a ' +
-        'directed loop back to an ancestor, or a self-loop) MUST carry a `|label|` — describe what the ' +
-        'loop is doing (e.g. `|revise|`), not just that it loops. A `subgraph "title"` / `end` pair boxes ' +
-        'related nodes (e.g. a debate) under a mandatory quoted title. For a live preview before you ' +
-        'register, paste your diagram into a Mermaid live editor (e.g. https://mermaid.live/) — this ' +
-        'guide only checks the grammar, it does not render.',
+        'nothing you write is sent anywhere just to produce a picture). A node is `id<shape>`, one per ' +
+        'line, and these are the shapes this engine accepts — nothing else parses:\n\n' +
+        shapeRows() +
+        '\n\nThe stadium (agent) nodes MUST exactly match your script\'s `agent()` labels, checked both ' +
+        'ways: an agent label with no matching node, or a stadium node with no matching label, is ' +
+        '`DIAGRAM_MISMATCH`. The other four shapes are free text and are excluded from that check.\n\n' +
+        'An agent node may also carry its resolved settings after a `<br/>`, as the triple ' +
+        '`label<br/>model · effort · timeout` (separated by ` · `, a space-padded middle dot; the ' +
+        'timeout as `120s`, `120000` or `120000ms`). If you write the triple it must AGREE with that ' +
+        "label's declared defaults — a disagreement is refused `VALUE_MISMATCH`. A node with no " +
+        '`<br/>` is simply not compared, so the triple is optional and, once written, is held to the ' +
+        'contract.\n\nEdges:\n\n' +
+        edgeRows() +
+        '\n\nAn edge may carry a label as `a-->|text|b`. Write ONE edge per line: the `&` fan-out ' +
+        'shorthand (`a-->b & c`) is refused `COLLAPSED_EDGE` — the checker matches your diagram ' +
+        'against your script edge by edge. Any edge that sits inside a cycle (a directed loop back to ' +
+        'an ancestor, or a self-loop) MUST carry a `|label|` — describe what the loop is doing (e.g. ' +
+        '`|revise|`), not just that it loops. A `subgraph "title"` / `end` pair boxes related nodes ' +
+        '(e.g. a debate) under a mandatory quoted title. For a live preview before you register, paste ' +
+        'your diagram into a Mermaid live editor (e.g. https://mermaid.live/) — this guide only checks ' +
+        'the grammar, it does not render.',
     ),
   );
 

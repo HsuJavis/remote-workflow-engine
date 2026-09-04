@@ -44,9 +44,29 @@ The six locked keys are engine-owned and can never be overridden by a caller: pr
 
 The ceilings below are this build's resolved values — operator-overridable, so a different deployment's engine may render different numbers here: a declared agent's `timeoutMs.default` may not exceed 600000ms, a declared `appendPrompt.default` may not exceed 1024 bytes, and a declared `effort.default` may not rank above 'high'. A declaration above any of these ceilings is refused `PARAM_OUT_OF_RANGE` at registration — never silently clamped.
 
+A declared `model.default` (and every entry of a declared `model.enum`) must be one of this deployment's model ALIAS names — `sonnet`, `haiku`, `opus`, `default` — not a provider model id. `models_list` shows the catalog MODELS an alias may resolve to; it is not the alias table, and passing an id from it is refused `PARAM_CONTRACT_INVALID: default not a known alias`. An `agent()` call naming an unknown alias is refused `UNKNOWN_ALIAS`.
+
 ## The author-supplied diagram
 
-Every registration requires a non-empty Mermaid `mermaid` string (`MERMAID_REQUIRED`) — the engine no longer draws the diagram for you (that generator is retired: registering a script used to send the whole script body to an LLM as a prompt; the diagram is now yours to draw, so nothing you write is sent anywhere just to produce a picture). The diagram must use only the three node shapes `id(["agent label"])` (stadium — MUST exactly match your script's agent() labels, checked both ways: an agent label with no matching node, or a node with no matching label, is `DIAGRAM_MISMATCH`), `id["free text"]` (rectangle — a black-box node, e.g. another owner's nested workflow; excluded from the label check), and `id[/"free text"/]` (trapezoid — e.g. a trigger header). Edges are `a-->b`, `a<-->b` (bidirectional, excluded from the cycle check), or `a-.->b`, optionally carrying `|a label|`. Any edge that sits inside a cycle (a directed loop back to an ancestor, or a self-loop) MUST carry a `|label|` — describe what the loop is doing (e.g. `|revise|`), not just that it loops. A `subgraph "title"` / `end` pair boxes related nodes (e.g. a debate) under a mandatory quoted title. For a live preview before you register, paste your diagram into a Mermaid live editor (e.g. https://mermaid.live/) — this guide only checks the grammar, it does not render.
+Every registration requires a non-empty Mermaid `mermaid` string (`MERMAID_REQUIRED`) — the engine no longer draws the diagram for you (that generator is retired: registering a script used to send the whole script body to an LLM as a prompt; the diagram is now yours to draw, so nothing you write is sent anywhere just to produce a picture). A node is `id<shape>`, one per line, and these are the shapes this engine accepts — nothing else parses:
+
+- `[/"…"/]` (trapezoid) — trigger / output
+- `(["…"])` (stadium) — agent node — participates in the label diff + value triple
+- `{"…"}` (diamond) — conditional
+- `{{"…"}}` (aggregation) — non-agent aggregation
+- `["…"]` (rectangle) — nested workflow() black box — free text, excluded from the diff
+
+The stadium (agent) nodes MUST exactly match your script's `agent()` labels, checked both ways: an agent label with no matching node, or a stadium node with no matching label, is `DIAGRAM_MISMATCH`. The other four shapes are free text and are excluded from that check.
+
+An agent node may also carry its resolved settings after a `<br/>`, as the triple `label<br/>model · effort · timeout` (separated by ` · `, a space-padded middle dot; the timeout as `120s`, `120000` or `120000ms`). If you write the triple it must AGREE with that label's declared defaults — a disagreement is refused `VALUE_MISMATCH`. A node with no `<br/>` is simply not compared, so the triple is optional and, once written, is held to the contract.
+
+Edges:
+
+- `a-->b` — directed edge — participates in cycle detection
+- `a-.->b` — directed dashed edge (e.g. a skipped path) — participates in cycle detection
+- `a<-->b` — bidirectional edge (e.g. a debate) — EXCLUDED from cycle detection
+
+An edge may carry a label as `a-->|text|b`. Write ONE edge per line: the `&` fan-out shorthand (`a-->b & c`) is refused `COLLAPSED_EDGE` — the checker matches your diagram against your script edge by edge. Any edge that sits inside a cycle (a directed loop back to an ancestor, or a self-loop) MUST carry a `|label|` — describe what the loop is doing (e.g. `|revise|`), not just that it loops. A `subgraph "title"` / `end` pair boxes related nodes (e.g. a debate) under a mandatory quoted title. For a live preview before you register, paste your diagram into a Mermaid live editor (e.g. https://mermaid.live/) — this guide only checks the grammar, it does not render.
 
 ## Registration and versioning
 
