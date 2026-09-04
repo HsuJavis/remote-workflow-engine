@@ -3,7 +3,6 @@
 // is a private copy-ALL function (`claude-agent-sdk-client.ts:166`, not exported) taking
 // (assetRoot, workspace) with no `declared` set at all.
 import { describe, it, expect, vi } from 'vitest';
-// @ts-expect-error — materializeAssets is not exported with the v24 signature yet (TASK-145)
 import { materializeAssets } from '../../src/gateway/claude-agent-sdk-client.js';
 
 describe('materializeAssets — selective, pure over injected fs (UT-156, DES-154)', () => {

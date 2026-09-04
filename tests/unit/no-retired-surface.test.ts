@@ -11,6 +11,15 @@ import { dirname, join } from 'node:path';
 
 const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../src');
 
+/** The clock guard is about CALLS, not prose. `scheduler.ts:218` documents its own rule with the
+ *  words "never a bare Date.now()" and was flagged as an offender by the raw source-text grep — a
+ *  guard that fails on the comment EXPLAINING the guard teaches the next author to delete the
+ *  comment. Comments are stripped; a real call still trips it (string literals are left alone, so
+ *  a `Date.now()` hidden in one still counts). */
+function stripComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
 function walk(dir: string): string[] {
   const out: string[] = [];
   for (const name of readdirSync(dir)) {
@@ -50,10 +59,7 @@ describe('grep guards — no retired v24 surface remains in src/ (UT-161, DES-15
 
   it('(3) no Date.now()/new Date() outside clock.ts in the four v24 seam files', () => {
     const seamFiles = ['scheduler.ts', 'webhook-registry.ts', 'asset-sync.ts', 'run-store.ts'].map((n) => join(SRC_DIR, n));
-    const offenders = seamFiles.filter((f) => {
-      const text = readFileSync(f, 'utf-8');
-      return /Date\.now\(\)|new Date\(\)/.test(text);
-    });
+    const offenders = seamFiles.filter((f) => /Date\.now\(\)|new Date\(\)/.test(stripComments(readFileSync(f, 'utf-8'))));
     expect(offenders).toEqual([]);
   });
 });

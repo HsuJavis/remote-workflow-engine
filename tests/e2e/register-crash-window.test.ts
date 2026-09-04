@@ -45,7 +45,6 @@ describe('register crash window — trigger stays unclaimed after a crash before
         runManager: { start: async () => ({ runId: 'r1' }) } as never,
         dbPath: join(dir, 'schedules.db'),
       });
-      // @ts-expect-error — ownerOf() does not exist yet
       expect(await schedulerAfterRestart.ownerOf(id)).toBeNull();
     } finally {
       rmSync(dir, { recursive: true, force: true });

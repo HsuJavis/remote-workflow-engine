@@ -15,7 +15,6 @@ describe('admin cross-read is audited (E2E-009, DES-151, S-4)', () => {
   beforeAll(async () => {
     server = await createServer({
       port: 0, bind: '127.0.0.1',
-      // @ts-expect-error — `principals` is not on ServerConfig yet (v24 DES-141)
       principals: { 'bob@x.com': { role: 'user' }, 'admin@x.com': { role: 'admin' } },
     });
   });

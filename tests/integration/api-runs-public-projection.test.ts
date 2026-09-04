@@ -6,21 +6,23 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-// @ts-expect-error — toPublicRunView does not exist yet (v24 DES-162/TASK-147)
 import { toPublicRunView } from '../../src/run-view.js';
+import type { RunStatusView } from '../../src/types.js';
 
 const SERVER_SRC = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../src/server.ts'), 'utf-8');
 
 describe('toPublicRunView — no identity field on an ungated /api/* route (IT-121, DES-162)', () => {
   it('strips principal from a RunStatusView, keeping every other field', () => {
-    const view = { runId: 'r1', status: 'completed', principal: 'bob@x.com', phases: [], agents: [] };
+    // A COMPLETE RunStatusView — `workflowNodes`/`scriptVersion` are required fields, and a
+    // fixture missing them was a tsc error, not a shortcut worth keeping.
+    const view: RunStatusView = { runId: 'r1', status: 'completed', principal: 'bob@x.com', phases: [], agents: [], workflowNodes: [], scriptVersion: 'v1' };
     const publicView = toPublicRunView(view);
     expect(publicView).not.toHaveProperty('principal');
     expect(publicView.runId).toBe('r1');
   });
 
   it('adminReads is never on the input (DES-151 attaches it only at the MCP facade projection) and stays absent on output', () => {
-    const view = { runId: 'r1', status: 'completed', phases: [], agents: [] };
+    const view: RunStatusView = { runId: 'r1', status: 'completed', phases: [], agents: [], workflowNodes: [], scriptVersion: 'v1' };
     const publicView = toPublicRunView(view);
     expect(publicView).not.toHaveProperty('adminReads');
   });

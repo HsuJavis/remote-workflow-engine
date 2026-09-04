@@ -56,10 +56,12 @@ describe('fail-fast at the McpFacade entry point (ARCH-008)', () => {
     expect((env['error'] as { code?: string }).code).toBe('UNKNOWN_ALIAS');
   });
 
-  it('run_start with an unknown workflow name returns UNKNOWN_WORKFLOW', async () => {
+  // v24 (integrator, DES-137): `WORKFLOW_NOT_FOUND` — the member of the closed ErrorCode union
+  // that `run_start` actually advertises. `UNKNOWN_WORKFLOW` was never in the catalog.
+  it('run_start with an unknown workflow name returns WORKFLOW_NOT_FOUND', async () => {
     const env = await facade.runStart({ name: 'does-not-exist-xyz' }, AUTH_DISABLED);
     expect(env.status).toBe('failed');
-    expect(env.error?.code).toBe('UNKNOWN_WORKFLOW');
+    expect(env.error?.code).toBe('WORKFLOW_NOT_FOUND');
   });
 
   it('run_start of a valid registered workflow returns a runId immediately (async execution)', async () => {

@@ -5,7 +5,8 @@
 // Red reason (2026-07-03, before Gate 6 rework): WorkflowCatalog is in-memory only (confirmed at
 // Gate 7.5 real-run via genuine `pkill` + fresh `npm run start` — see 08-validation.md VAL-014) —
 // a fresh server instance on the same workRoot has an empty catalog, so workflow_list omits the
-// registered workflow and run_start(name) fails with UNKNOWN_WORKFLOW.
+// registered workflow and run_start(name) fails with WORKFLOW_NOT_FOUND (v24: the catalog member;
+// UNKNOWN_WORKFLOW was never an ErrorCode).
 import { describe, it, expect, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';

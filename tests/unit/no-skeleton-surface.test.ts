@@ -30,6 +30,7 @@
 // direct read) — both assertions fail against the current tree, for the genuine unimplemented reason.
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { projectToolsList } from '../../src/tool-specs.js';
 import { join, relative } from 'node:path';
 
 const SRC_ROOT = join(__dirname, '..', '..', 'src');
@@ -62,16 +63,13 @@ describe('no-skeleton-surface guard (UT-115, ADR-022, REQ-105)', () => {
     expect(ALLOWLIST.size).toBe(4);
   });
 
-  it('no advertised MCP tool description or input-schema string in server.ts contains the word "skeleton"', () => {
-    const text = readFileSync(join(SRC_ROOT, 'server.ts'), 'utf8');
-    const metaBlockStart = text.indexOf('const TOOL_METADATA');
-    expect(metaBlockStart).toBeGreaterThan(-1);
-    // Isolate the TOOL_METADATA object literal (bounded by the next top-level `const`/`function`
-    // declaration) so this assertion is scoped to advertised schema text, not the whole file (the
-    // /dag branch's own allowlisted internal comment legitimately still says "skeleton").
-    const rest = text.slice(metaBlockStart);
-    const nextTopLevel = rest.slice(20).search(/\n(const|function|type|interface) /);
-    const metaBlock = nextTopLevel === -1 ? rest : rest.slice(0, nextTopLevel + 20);
-    expect(/skeleton/i.test(metaBlock)).toBe(false);
+  // v24 (integrator): the advertised surface MOVED. `server.ts`'s `TOOL_METADATA` object is gone —
+  // `tool-specs.ts` is now the ONE source of `tools/list` (DES-138) — so this guard's old anchor
+  // (`text.indexOf('const TOOL_METADATA')`) could never be found again and the assertion failed on
+  // its own scaffolding rather than on a leak. It now reads the REAL projection, which is strictly
+  // stronger: it checks what a client is actually served, not a source block that happens to feed it.
+  it('no advertised tool description or input/output schema contains the word "skeleton" (REQ-105)', () => {
+    const advertised = JSON.stringify(projectToolsList());
+    expect(/skeleton/i.test(advertised)).toBe(false);
   });
 });

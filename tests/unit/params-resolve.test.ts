@@ -53,6 +53,18 @@ describe('defaultRunParams() — the ONLY no-overrides producer', () => {
 
 describe('mergeRunParams() — admission-time fold of overrides over registered defaults (ADR-002)', () => {
   const DEFAULTS: HarnessDefaults = { model: 'sonnet', timeoutMs: 30_000, prompt: 'author prompt', tools: ['Read'], skills: ['s1'] };
+  // v24 (DES-145/146, TASK-158): `UserOverrides` is CLOSED and PER-AGENT — it has no flat
+  // `model`/`effort`/`timeoutMs`/`appendPrompt` fields any more, because REQ-110 requires an
+  // override to reach exactly the label it names and never broadcast to a sibling. The four cases
+  // below were written against the retired flat shape; they are MIGRATED (not deleted) onto the
+  // per-agent one, so the provenance matrix they exist to pin still has all four keys covered.
+  const CONTRACT = {
+    w: {
+      model: { type: 'string' as const, default: 'sonnet' },
+      effort: { type: 'enum' as const, enum: ['low', 'medium', 'high'], default: 'medium' },
+      timeoutMs: { type: 'number' as const, default: 30_000 },
+    },
+  };
 
   it('no overrides → registered defaults win, provenance:"default" for model/timeoutMs', () => {
     const rp = mergeRunParams(DEFAULTS, {});
@@ -62,14 +74,14 @@ describe('mergeRunParams() — admission-time fold of overrides over registered 
     expect(rp.provenance.timeoutMs).toBe('default');
   });
 
-  it('override wins for the keys it supplies; provenance:"override"', () => {
-    const overrides: UserOverrides = { model: 'haiku' };
-    const rp = mergeRunParams(DEFAULTS, overrides);
-    expect(rp.model).toBe('haiku');
-    expect(rp.provenance.model).toBe('override');
-    // untouched key falls back to the registered default
-    expect(rp.timeoutMs).toBe(30_000);
-    expect(rp.provenance.timeoutMs).toBe('default');
+  it('override wins for the keys it supplies, on THAT label only; provenance:"override"', () => {
+    const overrides: UserOverrides = { agents: { w: { model: 'haiku' } } };
+    const rp = mergeRunParams(DEFAULTS, overrides, CONTRACT);
+    expect(rp.agents?.['w']?.model).toBe('haiku');
+    expect(rp.agents?.['w']?.provenance.model).toBe('override');
+    // untouched key falls back to the label's own registered default
+    expect(rp.agents?.['w']?.timeoutMs).toBe(30_000);
+    expect(rp.agents?.['w']?.provenance.timeoutMs).toBe('default');
   });
 
   it('folds all 6 registered keys — the author-only pair (prompt/tools) rides the snapshot too (REQ-092 close); skills is NOT a RunParams field (B-3 — skills are global server-side assets, unrelated to this snapshot)', () => {
@@ -86,17 +98,17 @@ describe('mergeRunParams() — admission-time fold of overrides over registered 
 
   it('two rungs holding the SAME value are still distinguished by provenance (not inferred by comparison)', () => {
     // registered default happens to equal what the engine would have chosen anyway ("sonnet")
-    const rpNoOverride = mergeRunParams({ model: 'sonnet' }, {});
-    const rpOverride: RunParams = mergeRunParams(undefined, { model: 'sonnet' });
-    expect(rpNoOverride.model).toBe(rpOverride.model); // same value...
-    expect(rpNoOverride.provenance.model).toBe('default');   // ...but provenance differs
-    expect(rpOverride.provenance.model).toBe('override');
+    const rpNoOverride = mergeRunParams({ model: 'sonnet' }, {}, CONTRACT);
+    const rpOverride: RunParams = mergeRunParams(undefined, { agents: { w: { model: 'sonnet' } } }, CONTRACT);
+    expect(rpNoOverride.agents?.['w']?.model).toBe(rpOverride.agents?.['w']?.model); // same value...
+    expect(rpNoOverride.agents?.['w']?.provenance.model).toBe('default');   // ...but provenance differs
+    expect(rpOverride.agents?.['w']?.provenance.model).toBe('override');
   });
 
   it('appendPrompt: absent by default, "override" when the caller supplies it (no author-side default exists)', () => {
-    const rp = mergeRunParams(DEFAULTS, { appendPrompt: 'extra instructions' });
-    expect(rp.appendPrompt).toBe('extra instructions');
-    expect(rp.provenance.appendPrompt).toBe('override');
+    const rp = mergeRunParams(DEFAULTS, { agents: { w: { appendPrompt: 'extra instructions' } } }, CONTRACT);
+    expect(rp.agents?.['w']?.appendPrompt).toBe('extra instructions');
+    expect(rp.agents?.['w']?.provenance.appendPrompt).toBe('override');
   });
 
   // v21 orchestrator adjudication #6 (2026-09-01, F-5): provenance-matrix coverage gap the
@@ -105,9 +117,9 @@ describe('mergeRunParams() — admission-time fold of overrides over registered 
   // recorded here so the full per-key parity (model/effort/timeoutMs/appendPrompt) is pinned in one
   // place, matching the pattern the other three keys already follow.
   it('overrides.effort wins over a registered default; provenance:"override"', () => {
-    const rp = mergeRunParams(DEFAULTS, { effort: 'low' });
-    expect(rp.effort).toBe('low');
-    expect(rp.provenance.effort).toBe('override');
+    const rp = mergeRunParams(DEFAULTS, { agents: { w: { effort: 'low' } } }, CONTRACT);
+    expect(rp.agents?.['w']?.effort).toBe('low');
+    expect(rp.agents?.['w']?.provenance.effort).toBe('override');
   });
 });
 

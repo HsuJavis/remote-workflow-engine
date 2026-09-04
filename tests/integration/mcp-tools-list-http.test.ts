@@ -7,7 +7,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
-// @ts-expect-error — src/tool-specs.ts does not exist yet (v24 DES-138)
 import { projectToolsList } from '../../src/tool-specs.js';
 
 describe('tools/list over real MCP HTTP — the v24 surface (IT-106, DES-140)', () => {

@@ -297,7 +297,19 @@ export const TOOL_SPECS = [
         // B-1 (v24 adjudication #3): a STRING, the exact value workflow_register's
         // `result.version` returns — see workflow_publish's row for why.
         version: { type: 'string', description: "The version string returned by workflow_register, e.g. 'v1'." },
-        overrides: { type: 'object' },
+        // v24 (integrator, REQ-117): the shape is DOCUMENTED here because `tools/list` is the only
+        // thing a cold model reads. It stays OPEN (not `additionalProperties:false`) on purpose:
+        // admission answers `PARAM_LOCKED` / `PARAM_UNKNOWN` / `UNKNOWN_AGENT_LABEL`, each of which
+        // names the offending key, and a schema refusal would replace all three with a generic
+        // INVALID_ARGUMENT.
+        overrides: {
+          type: 'object',
+          description:
+            "Per-agent parameter overrides, keyed by the script's own agent label: " +
+            "{agents: {'<label>': {model?, effort?, timeoutMs?, appendPrompt?}}}. " +
+            'There are no workflow-wide override fields — an override reaches exactly the label it names. ' +
+            'prompt/tools/skills/mcp/workdir/cwd are author-locked (PARAM_LOCKED).',
+        },
         seed: { type: 'array' },
         seedManifest: { type: 'array' },
         seedRef: { type: 'object' },

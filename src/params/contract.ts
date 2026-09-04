@@ -567,6 +567,32 @@ export function validateUserOverrides(
   ceilings: Ceilings,
 ): { ok: true; value: UserOverrides } | Err {
   const obj = (raw ?? {}) as { agents?: Record<string, Record<string, unknown>> };
+  // v24 (integrator; DES-145/ADR-001): the TOP level of `overrides` is closed to `{agents}`. It
+  // used to be unread — every key other than `agents` was silently dropped, so the whole v21 FLAT
+  // shape (`overrides:{model,effort,timeoutMs,appendPrompt}`), which the plugin docs and every
+  // pre-v24 caller still spell, was accepted and then did NOTHING: the run started with the
+  // author's defaults and the caller was told it had been honoured. A locked key (`prompt`, …)
+  // vanished the same way, turning ADR-001's type-level guarantee into a silent no-op at the wire,
+  // where it matters. Locked keys keep their own code because it is the actionable one.
+  for (const key of Object.keys(obj)) {
+    if (key === 'agents') continue;
+    if ((LOCKED_KEYS as readonly string[]).includes(key)) {
+      return {
+        ok: false,
+        code: 'PARAM_LOCKED',
+        message: `"${key}" is a locked parameter and cannot be overridden`,
+        detail: { param: key, tunable: [...TUNABLE_KEYS] },
+      };
+    }
+    return {
+      ok: false,
+      code: 'PARAM_UNKNOWN',
+      message: (TUNABLE_KEYS as readonly string[]).includes(key)
+        ? `"${key}" is a per-agent override in v24 — spell it as overrides.agents.<label>.${key}`
+        : `"${key}" is not a recognized override; overrides has exactly one key: agents`,
+      detail: { param: key, tunable: [...TUNABLE_KEYS] },
+    };
+  }
   const agentsIn = obj.agents ?? {};
   const known = Object.keys(c.agents);
   const resultAgents: Record<string, Record<string, unknown>> = {};
