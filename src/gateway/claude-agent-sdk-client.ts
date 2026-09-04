@@ -397,6 +397,17 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     this._query = _config.queryImpl ?? sdkQuery;
   }
 
+  /** v24 (integrator; REQ-113, adjudication #4 C-2's wiring sweep): binds the catalog-backed
+   *  `resolveMcp` port AFTER construction. TASK-139 deleted `mcp-registry.ts` and replaced it with
+   *  this injected port, and TASK-145's own note says it was "left UNBOUND at the composition
+   *  root, out of scope" — so a declared `mcp` name resolved to nothing on every dispatch and half
+   *  of REQ-113 was dead. The gateway is constructed in `composeConfig()`, BEFORE `createServer()`
+   *  builds the catalog, so the seam has to be a late bind — the same shape as
+   *  `McpFacade.bindAssetSync`, and for the same reason. */
+  bindResolveMcp(resolve: NonNullable<ClaudeAgentSdkGatewayConfig['resolveMcp']>): void {
+    (this._config as { resolveMcp?: ClaudeAgentSdkGatewayConfig['resolveMcp'] }).resolveMcp = resolve;
+  }
+
   /** v24 (ARCH-103/DES-154, TASK-145): resolves THIS dispatch's declared `mcp` names against the
    *  injected catalog-backed `resolveMcp` port (bound at the composition root — `main.ts`/
    *  `server.ts`, out of scope), substituting `${secret:NAME}` handles from the server-side secret

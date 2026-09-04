@@ -19,6 +19,7 @@ import { SqliteRunStore } from './store/sqlite-run-store.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
 import { SystemClock } from './clock.js';
 import { LiteLLMGatewayClient, type AliasMap } from './gateway/client.js';
+import { ClaudeAgentSdkGatewayClient } from './gateway/claude-agent-sdk-client.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
 import type { GatewayClient } from './gateway/client.js';
 import type { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
@@ -30,8 +31,8 @@ import type { SecretValueProvider } from './secret-resolver.js';
 import { isAllowedHost, isAllowedOrigin, isLoopback, isLoopbackPeer } from './net-guard.js';
 import { parseWorkflowSkeleton } from './workflow-meta.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
-import { AssetSyncService, type AssetCatalogPort, type AssetCatalogRow, type AssetKind } from './asset-sync.js';
-import { RealMcpProbe, type McpProbe } from './mcp-probe.js';
+import { AssetSyncService, defaultAssetRoot, globalAssetRoot, type AssetCatalogPort, type AssetCatalogRow, type AssetKind } from './asset-sync.js';
+import { RealMcpProbe, type McpProbe, type McpServerConfig } from './mcp-probe.js';
 import { IssueReporter, resolveEngineVersion, type IssueReportInput, type IssueListFilter } from './github/issue-reporter.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { buildCatalog, filterCatalog, enrichModelEntry, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
@@ -462,6 +463,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // Real on-disk RunStore (journal.jsonl + SQLite index) — DES-015: E2E/acceptance must exercise
   // the real store, not the InMemory unit-test fake; a workRoot survives across a server restart.
   const workRoot = config?.workRoot ?? mkdtempSync(join(tmpdir(), 'rwe-'));
+  // v24 (integrator, adjudication #4 C-7 [12]): the ONE resolved asset root — read by the writer
+  // (AssetSyncService), by the reader (RunManager -> DES-154's selective materialization) and by
+  // the orphan-tree GC sweep, so all three can no longer disagree.
+  const assetRoot = config?.assetRoot ?? defaultAssetRoot(workRoot);
   const clock = new SystemClock();
 
   // v11 Sprint 2 (REQ-068, TASK-062/DES-059): self-update wiring.
@@ -586,7 +591,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // DEFAULT_GATEWAY_CONFIG), never "accept everything". Feeding an empty Set here left the B1/B2
   // admission control inert on exactly the deployment shape most installs use.
   const aliasNames = new Set(Object.keys(config?.aliases ?? DEFAULT_ALIASES));
-  const runManager = new RunManager({ store, clock, catalog, workRoot, gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/
@@ -766,7 +771,16 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           .listRuns()
           .then((runs) => {
             const statusByRun = new Map(runs.map((r) => [r.runId, r.status]));
-            reclaimStaleWorkspaces(workRoot, _gcTtl, (id) => statusByRun.get(id) ?? null, Date.now()); // det:allow — GC sweep, not a workflow decision
+            // v24 (integrator, adjudication #4 C-7 [12]): `hasWorkflow` + the resolved `assetRoot`
+            // are supplied — without them the orphan asset-tree branch was dead code in production
+            // (IT-110 only ever exercised it through a hand-built fixture).
+            catalog
+              .list()
+              .then((workflows) => {
+                const live = new Set(workflows.map((w) => w.name));
+                reclaimStaleWorkspaces(workRoot, _gcTtl, (id) => statusByRun.get(id) ?? null, Date.now(), (name) => live.has(name), assetRoot); // det:allow — GC sweep, not a workflow decision
+              })
+              .catch(() => { /* a catalog read failure must never crash the sweep — retry next interval */ });
           })
           .catch(() => {
             /* a sweep error must never crash the server — retry next interval */
@@ -1294,8 +1308,12 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     },
   };
   assetSync = new AssetSyncService({
-    workRoot,
-    globalRoot: join(workRoot, '_global_assets'),
+    // v24 (integrator, adjudication #4 C-7 [12]): the ASSET root, not the bare work root. `main.ts`
+    // has always RESOLVED `assetRoot` (defaulting it to `join(workRoot,'assets')`) and this call
+    // site never read it — so the operator-facing key did nothing and the writer disagreed with the
+    // GC about where a workflow's assets live. One expression now, in asset-sync.ts.
+    workRoot: assetRoot,
+    globalRoot: globalAssetRoot(workRoot),
     selfBind: { host: bind, port },
     clock,
     catalog: assetCatalogPort,
@@ -1303,6 +1321,24 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     egressAllowlist: config?.mcpEgressAllowlist ?? [],
   });
   facade.bindAssetSync(assetSync);
+  // v24 (integrator; REQ-113, adjudication #4 C-2's wiring sweep): bind the catalog-backed
+  // `resolveMcp` port DES-154 introduced to replace the deleted `mcp-registry.ts`. TASK-145 left it
+  // unbound "out of scope", so `agents.<label>.mcp` names resolved to nothing on every dispatch —
+  // `WorkflowCatalog.assetsOf()` was written for exactly this call and had no caller at all.
+  // Workflow scope wins a name clash with global, matching `materializeAssets`' rule for skills.
+  if (gateway instanceof ClaudeAgentSdkGatewayClient) {
+    gateway.bindResolveMcp(async (workflow, names) => {
+      const configs: Record<string, McpServerConfig> = {};
+      const missing: string[] = [];
+      const rows = catalog.assetsOf(workflow).filter((r) => r.kind === 'mcp');
+      for (const name of names) {
+        const row = rows.find((r) => r.name === name && r.workflow === workflow) ?? rows.find((r) => r.name === name);
+        if (row?.config) configs[name] = JSON.parse(row.config) as McpServerConfig;
+        else missing.push(name);
+      }
+      return { configs, missing };
+    });
+  }
 
   // v24 (DES-141): the boot announcement — "visibly", built rather than merely asserted.
   // eslint-disable-next-line no-console

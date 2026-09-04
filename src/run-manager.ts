@@ -35,6 +35,7 @@ import { redact, hasSecretMarker } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
 import { ResumeCache, MISS, type ResumePlan } from './resume-cache.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
+import { assetRootsFor, defaultAssetRoot, globalAssetRoot } from './asset-sync.js';
 import type { GatewayClient, GatewayConfig } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
@@ -56,6 +57,11 @@ export interface RunManagerDeps {
   catalog?: WorkflowCatalog;
   concurrency?: number;
   workRoot?: string;
+  /** v24 (integrator; REQ-113, DES-154/ARCH-103): the resolved asset roots this run's dispatches
+   *  materialize from. Omitted -> derived from `workRoot` with the SAME two functions
+   *  `AssetSyncService` and the GC sweep use (`asset-sync.ts`), never re-spelt here. */
+  assetRoot?: string;
+  globalAssetRoot?: string;
   /** Server-side agent-type registry (D-F2), forwarded unchanged into every AgentExecutor this
    *  manager constructs — populated at the composition root (createServer()) from agents/*.md. */
   agentTypes?: Record<string, AgentTypeDef>;
@@ -155,6 +161,26 @@ interface RunEntry {
   /** v21 (ARCH-066, DES-104, TASK-100): the run-immutable admission-time parameter snapshot —
    *  computed once in start() (or rehydrated in _requireLive() on resume), never re-resolved. */
   effectiveParams: RunParams;
+  /** v24 (integrator; REQ-113, DES-154): the author-DECLARED asset names per agent label, taken
+   *  from the registered `ParamContract`'s `agents.<label>.skills/.mcp` at admission. `RunParams`
+   *  deliberately does not carry `skills`/`mcp` (they are author-only, not tunable), so the
+   *  declared set has to travel beside the resolved one — and without it `AgentReq.assets` was
+   *  never populated at all, which is why DES-154's selective materialization had never fired on a
+   *  real dispatch (adjudication #4 C-2). Empty for an unregistered/legacy contract. */
+  declaredAssets: Record<string, { skills: string[]; mcp: string[] }>;
+}
+
+/** v24 (integrator; REQ-113, DES-154): the author-DECLARED per-label asset names, lifted out of the
+ *  registered `ParamContract` at admission so `_handleAgentRequest` can hand the dispatching
+ *  gateway the set THIS label declared — the input DES-154's selective materialization takes and
+ *  which nothing ever produced. Pure; an absent contract yields `{}` (no label declares anything,
+ *  so every dispatch materializes nothing, which is the honest v24 default). */
+function declaredAssetsOf(contract: ParamContract | undefined): Record<string, { skills: string[]; mcp: string[] }> {
+  const out: Record<string, { skills: string[]; mcp: string[] }> = {};
+  for (const [label, spec] of Object.entries(contract?.agents ?? {})) {
+    out[label] = { skills: spec.skills ?? [], mcp: spec.mcp ?? [] };
+  }
+  return out;
 }
 
 export class RunManager {
@@ -165,6 +191,8 @@ export class RunManager {
   private readonly _catalog: WorkflowCatalog;
   private readonly _concurrency: number;
   private readonly _workRoot: string;
+  private readonly _assetRoot: string;
+  private readonly _globalAssetRoot: string;
   private readonly _agentTypes: Record<string, AgentTypeDef>;
   private readonly _semaphore: Semaphore;
   private readonly _maxWorkflowDepth: number;
@@ -201,6 +229,8 @@ export class RunManager {
     this._gateway = deps.gateway ?? new LiteLLMGatewayClient(DEFAULT_GATEWAY_CONFIG);
     this._concurrency = deps.concurrency ?? Math.max(1, Math.min(16, cpus().length - 2));
     this._workRoot = deps.workRoot ?? join(tmpdir(), 'remote-workflow-runs');
+    this._assetRoot = deps.assetRoot ?? defaultAssetRoot(this._workRoot);
+    this._globalAssetRoot = deps.globalAssetRoot ?? globalAssetRoot(this._workRoot);
     this._catalog = deps.catalog ?? new WorkflowCatalog(this._workRoot, this._clock);
     this._agentTypes = deps.agentTypes ?? {};
     // D-V3M-2: unbounded local default (1024 ≫ the 1000-agent lifetime cap) preserves the exact
@@ -524,6 +554,7 @@ export class RunManager {
       nestedFrameSeq: 0,
       workflowNodes: [],
       effectiveParams,
+      declaredAssets: declaredAssetsOf(contract),
     };
     this._runs.set(runId, entry);
     entry.seedRef = seedRefView; // v13: overlaid onto RunStatusView by _mergeLive (present on success AND failure)
@@ -733,6 +764,7 @@ export class RunManager {
       nestedFrameSeq: 0,
       workflowNodes: [],
       effectiveParams,
+      declaredAssets: declaredAssetsOf(registeredContract),
     };
     this._runs.set(runId, entry);
     return entry;
@@ -941,6 +973,19 @@ export class RunManager {
         const runParams: RunParams = labelParams
           ? { ...entry.effectiveParams, model: labelParams.model, effort: labelParams.effort, timeoutMs: labelParams.timeoutMs, appendPrompt: labelParams.appendPrompt, provenance: labelParams.provenance }
           : entry.effectiveParams;
+        // v24 (integrator; REQ-113, ARCH-103/DES-154, adjudication #4 C-2): `AgentReq.assets` —
+        // THE missing wire. `agent-executor.ts` forwards it, `claude-agent-sdk-client.ts` acts on
+        // it and `materialize-assets.test.ts` proved the algorithm, but NOBODY produced the value,
+        // so on every real dispatch `req.assets` was `undefined` and the gateway took its
+        // "no workspace / no assets -> materialize nothing" branch. REQ-113 ("each agent declares
+        // the skills IT needs, not one set for the whole workflow") therefore had no runtime
+        // behaviour at all. Built here from the three things only this scope has together: the run's
+        // workflow name, THIS label's declared `skills`/`mcp`, and the resolved asset roots.
+        // Absent for an ad-hoc/unnamed run or an unlabelled call — nothing to scope assets BY.
+        const declared = key.opts.label ? entry.declaredAssets[key.opts.label] : undefined;
+        const assets = entry.name !== undefined && declared !== undefined
+          ? { roots: assetRootsFor(this._assetRoot, this._globalAssetRoot, entry.name), declared, workflow: entry.name }
+          : undefined;
         const outcome = await this._semaphore.withSlot(() =>
           entry.spawner.run({
             runId,
@@ -949,6 +994,7 @@ export class RunManager {
             opts: key.opts,
             workspace: entry.workspace,
             signal: entry.abortController.signal,
+            ...(assets !== undefined ? { assets } : {}),
             // v21 (ARCH-068, DES-105, TASK-101): the run-immutable admission-time snapshot — one
             // per run (incl. nested workflow() frames, which share the parent's entry), never
             // re-resolved per call. v24 (TASK-158): narrowed to this call's label above when the

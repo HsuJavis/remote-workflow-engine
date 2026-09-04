@@ -1,29 +1,23 @@
-// IT-036: REQ-009 clause 1 route-back — an accepted skill asset must be MATERIALIZED into the run
-// workspace's own `.claude/skills` directory and the SDK call must load it via
-// `settingSources:['project']` with `cwd` scoped to THAT run's workspace (D-V2V-1, binding ORCH
-// ruling on 08-validation.md VAL-017's finding: `settingSources: []` skips ALL filesystem skill
-// discovery, and a pushed skill's `SKILL.md` sits under `$workRoot/assets/skill/<name>/`, a
-// directory nothing ever reads at agent-invocation time). Host-level settingSources ('user'/
-// 'local') stay excluded either way — the D-F11 host-contamination isolation this system was built
-// to close is preserved; only 'project' (this run's own materialized, per-run workspace) is added.
-// This system's own `rwe-*` plugin skill remains excluded end-to-end (D4 recursion guard,
-// unchanged, re-confirmed here at the materialization boundary too).
+// IT-036 / IT-116 (REQ-113, DES-154/ARCH-103, v24 REWRITE [T3] + the C-2 wiring pin).
+//
+// What this file is for, in one sentence: it is the ONLY test that proves REQ-113 — "each agent
+// declares the skills IT needs, rather than the whole workflow sharing one set" — happens on a REAL
+// dispatch, driven from a registered script through `run_start`, not from a hand-built `AgentReq`.
+//
+// Why it had to be rewritten twice over. The pre-v24 version asserted "every stored skill is copied
+// into every run workspace", which DES-154 makes the DEFECT. The Gate 5 rewrite then flipped that
+// assertion but still only proved the NEGATIVE (an agent declaring nothing gets nothing) — which a
+// completely unwired materializer also satisfies, and that is exactly what shipped: adjudication
+// (v24) #4 C-2 found `run-manager.ts` never populated `AgentReq.assets` at all, so DES-154's
+// selective materialization had never fired outside `materialize-assets.test.ts`, which supplies
+// `assets` itself. A negative-only test cannot tell "selective" from "off". So the load-bearing
+// case here is the POSITIVE one: two skills are pushed, one label declares one of them, and after a
+// real run exactly the declared one is present in that run's workspace.
 //
 // Mock policy (DES-015, integration tier): real `composeConfig()` + real `createServer()` + real
-// HTTP `asset_push`/`workflow_run`/`workflow_status` round trip + real on-disk workspace
-// inspection; only the third-party SDK `query()` export and the managed LiteLLM proxy subprocess
-// are faked (same seams as IT-035) — no real network/process I/O.
-//
-// Red reason: no code path copies a stored skill asset into any run workspace at all (confirmed:
-// `grep -rn asset src/agent-executor.ts src/run-manager.ts src/gateway/*.ts` -> zero matches, per
-// 08-validation.md VAL-017); `ClaudeAgentSdkGatewayClient` hard-codes `settingSources: []` and its
-// `cwd` is fixed ONCE at construction time (the whole server `workRoot`, never a per-run
-// workspace) — not an import/syntax error. The 2nd case (`rwe-*` stays excluded) is an intentional
-// regression guard, NOT a forcing red: the recursion guard already rejects storage of a `rwe-*`
-// asset today (DES-019 D4, unchanged), and nothing materializes anything today either way — both
-// facts remain true after the route-back fix, so this sub-case is expected to stay green throughout
-// (same documented convention as IT-016's "unknown type still fails fast" sub-case, journal
-// 2026-07-03 12:35).
+// MCP HTTP `workflow_register`/`workflow_publish`/`workspace_push`/`run_start`/`run_status`/
+// `run_agent_log` round trips + real on-disk workspace inspection; only the third-party SDK
+// `query()` export and the managed LiteLLM proxy subprocess are faked — no real network/process I/O.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { EventEmitter } from 'node:events'; // a real ChildProcess IS an EventEmitter — the fake must be too (v23 adjudication #6 V-2)
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
@@ -35,7 +29,6 @@ import type { Server } from '../../src/server.js';
 import { composeConfig } from '../../src/main.js';
 import { LiteLLMProxyManager } from '../../src/gateway/litellm-proxy.js';
 import type { AliasMap } from '../../src/gateway/client.js';
-import { runScriptVia } from '../helpers/workflow-fixtures.js';
 
 const ALIASES: AliasMap = {
   default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
@@ -61,7 +54,19 @@ interface CapturedCall {
   options?: { settingSources?: string[]; cwd?: string };
 }
 
-describe('skill asset materialization + scoped settingSources/cwd (IT-036, D-V2V-1, REQ-009)', () => {
+const WF_NAME = 'it036-skill-asset';
+
+/** One v24 agent contract block (DES-144: model/effort/timeoutMs all required with a default),
+ *  optionally declaring the assets THAT label needs (REQ-113). */
+function agentBlock(declared?: { skills?: string[]; mcp?: string[] }): string {
+  const extra = [
+    declared?.skills ? `skills: ${JSON.stringify(declared.skills)}` : '',
+    declared?.mcp ? `mcp: ${JSON.stringify(declared.mcp)}` : '',
+  ].filter(Boolean).join(', ');
+  return `{ model: { type: 'string', default: 'local' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 }${extra ? ', ' + extra : ''} }`;
+}
+
+describe('REQ-113 selective skill materialization on a REAL dispatch (IT-036/IT-116, DES-154)', () => {
   let server: Server;
   let workRoot: string;
   let baseUrl: string;
@@ -84,6 +89,7 @@ describe('skill asset materialization + scoped settingSources/cwd (IT-036, D-V2V
     rmSync(workRoot, { recursive: true, force: true });
   });
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async function mcpCall(name: string, args: Record<string, unknown> = {}): Promise<any> {
     const res = await fetch(`${baseUrl}/mcp`, {
       method: 'POST',
@@ -94,94 +100,98 @@ describe('skill asset materialization + scoped settingSources/cwd (IT-036, D-V2V
     return JSON.parse(body.result!.content[0]!.text);
   }
 
-  /** The workflow name every run in this file registers under, so the run's workspace bucket is
-   *  known to `expectedWorkspace` below. */
-  const WF_NAME = 'it036-skill-asset';
-
-  async function runToCompletion(script: string): Promise<string> {
-    const run = await runScriptVia(mcpCall, script, { name: WF_NAME });
-    const runId = run.runId as string;
-    let done = false;
-    for (let i = 0; i < 50 && !done; i++) {
-      const status = await mcpCall('workflow_status', { runId });
-      done = status.status === 'completed' || status.status === 'failed';
-      if (!done) await new Promise((r) => setTimeout(r, 100));
-    }
-    expect(done).toBe(true);
-    return runId;
+  async function pushSkill(name: string, body: string): Promise<void> {
+    const push = await mcpCall('workspace_push', {
+      workflow: WF_NAME, kind: 'skill', name,
+      files: [{ path: 'SKILL.md', contentB64: Buffer.from(body).toString('base64') }],
+    });
+    expect(push.error, `workspace_push(${name}) failed: ${JSON.stringify(push.error)}`).toBeUndefined();
   }
 
-  // Per WorkflowCatalog's own documented on-disk convention (`workFolder(name)/runs/<runId>` —
-  // workflow-catalog.ts header comment). v22 closed inline script, so every run is NAMED and its
-  // bucket is the workflow name (`spec.name ?? '_adhoc'`, run-manager.ts) rather than the '_adhoc'
-  // bucket the pre-v22 unnamed shape landed in.
+  async function registerRunAndWait(script: string, mermaid: string): Promise<string> {
+    const registered = await mcpCall('workflow_register', { name: WF_NAME, script, mermaid });
+    expect(registered.error, `workflow_register failed: ${JSON.stringify(registered.error)}`).toBeUndefined();
+    const version = registered.result.version as string;
+    const published = await mcpCall('workflow_publish', { name: WF_NAME, version, channel: 'release' });
+    expect(published.error, `workflow_publish failed: ${JSON.stringify(published.error)}`).toBeUndefined();
+    const run = await mcpCall('run_start', { name: WF_NAME });
+    expect(run.error, `run_start failed: ${JSON.stringify(run.error)}`).toBeUndefined();
+    const runId = run.runId as string;
+    for (let i = 0; i < 100; i++) {
+      const status = await mcpCall('run_status', { runId });
+      if (status.status === 'completed' || status.status === 'failed') return runId;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('run never reached a terminal state');
+  }
+
+  // Per WorkflowCatalog's own documented on-disk convention (`workFolder(name)/runs/<runId>`).
   function expectedWorkspace(runId: string): string {
     return join(workRoot, 'workflows', WF_NAME, 'runs', runId);
   }
 
-  it("an accepted skill asset is materialized into the run workspace .claude/skills, and the SDK call carries settingSources:['project'] with cwd = that workspace", async () => {
-    const skillMd = '# Demo Skill\n\nDoes a demo thing.\n';
-    const push = await mcpCall('asset_push', {
-      kind: 'skill',
-      name: 'demo-skill',
-      files: [{ path: 'SKILL.md', contentB64: Buffer.from(skillMd).toString('base64') }],
-    });
-    expect(push.error).toBeUndefined();
-    expect(push.result?.stored).toContain('demo-skill');
+  it('the ONE declared skill is materialized and the sibling stored skill is NOT — the positive half C-2 found missing', async () => {
+    const declaredMd = '# Declared Skill\n\nThe one this label asked for.\n';
+    await pushSkill('declared-skill', declaredMd);
+    await pushSkill('undeclared-skill', '# Undeclared Skill\n');
 
-    const runId = await runToCompletion("return agent('use the demo skill', {model:'local'});");
-
-    expect(queryImpl).toHaveBeenCalled();
-    const [[call]] = queryImpl.mock.calls as unknown as [[CapturedCall]];
+    const script =
+      `export const meta = { params: { agents: { picky: ${agentBlock({ skills: ['declared-skill'] })} } } };\n` +
+      `return await agent('picky', { prompt: 'use the declared skill' });`;
+    const runId = await registerRunAndWait(script, 'graph TD;\npicky(["picky"])');
     const workspace = expectedWorkspace(runId);
 
-    // Forcing red: today `cwd` is fixed once at ClaudeAgentSdkGatewayClient construction to the
-    // whole server workRoot, never re-scoped per call to the run's own workspace.
+    // THE pin: without `run-manager.ts` populating `AgentReq.assets`, `req.assets` is undefined,
+    // the gateway takes its "materialize nothing" branch and this path does not exist.
+    const materializedPath = join(workspace, '.claude', 'skills', 'declared-skill', 'SKILL.md');
+    expect(existsSync(materializedPath), 'the declared skill was not materialized — AgentReq.assets is not wired').toBe(true);
+    expect(readFileSync(materializedPath, 'utf-8')).toBe(declaredMd);
+    // Selective, not copy-all: the sibling asset in the SAME tree was never asked for.
+    expect(existsSync(join(workspace, '.claude', 'skills', 'undeclared-skill'))).toBe(false);
+
+    // D-V2V-1: the SDK call must actually be able to LOAD what was materialized.
+    expect(queryImpl).toHaveBeenCalled();
+    const calls = queryImpl.mock.calls as unknown as Array<[CapturedCall]>;
+    const call = calls[calls.length - 1]![0];
     expect(call.options?.cwd).toBe(workspace);
-    // Forcing red: today hard-coded `settingSources: []` — 'project' (this run's own materialized
-    // .claude/) is missing.
     expect(call.options?.settingSources).toEqual(['project']);
     // Host-level sources must never leak back in (D-F11 isolation preserved).
     expect(call.options?.settingSources ?? []).not.toContain('user');
     expect(call.options?.settingSources ?? []).not.toContain('local');
+  }, 30000);
 
-    // Forcing red: nothing copies the stored skill into the run workspace's .claude/ dir today.
-    const materializedPath = join(workspace, '.claude', 'skills', 'demo-skill', 'SKILL.md');
-    expect(existsSync(materializedPath)).toBe(true);
-    expect(readFileSync(materializedPath, 'utf-8')).toBe(skillMd);
-  }, 20000);
+  it('a label declaring an ABSENT skill still runs, and run_agent_log reports it in materialized.missing (DES-154 boundary + DES-160)', async () => {
+    const script =
+      `export const meta = { params: { agents: { hopeful: ${agentBlock({ skills: ['never-pushed'] })} } } };\n` +
+      `return await agent('hopeful', { prompt: 'ask for a skill nobody pushed' });`;
+    const runId = await registerRunAndWait(script, 'graph TD;\nhopeful(["hopeful"])');
 
-  it("this system's own rwe-* skill stays excluded end-to-end: never stored, never materialized into any run workspace (regression guard, D4)", async () => {
-    const push = await mcpCall('asset_push', {
-      kind: 'skill',
-      name: 'rwe-guard-test',
+    const status = await mcpCall('run_status', { runId });
+    expect(status.result.status, 'a missing skill must NOT fail the run (owner 19.5.3)').toBe('completed');
+    const log = await mcpCall('run_agent_log', { runId, label: 'hopeful' });
+    expect(log.error, `run_agent_log refused: ${JSON.stringify(log.error)}`).toBeUndefined();
+    expect(log.harness?.materialized?.missing).toContain('never-pushed');
+    expect(log.harness?.materialized?.skills ?? []).not.toContain('never-pushed');
+  }, 30000);
+
+  it('a label declaring NO assets materializes neither of two stored skills (selective, not copy-all)', async () => {
+    const script =
+      `export const meta = { params: { agents: { plain: ${agentBlock()} } } };\n` +
+      `return await agent('plain', { prompt: 'noop' });`;
+    const runId = await registerRunAndWait(script, 'graph TD;\nplain(["plain"])');
+    const workspace = expectedWorkspace(runId);
+    expect(existsSync(join(workspace, '.claude', 'skills', 'declared-skill'))).toBe(false);
+    expect(existsSync(join(workspace, '.claude', 'skills', 'undeclared-skill'))).toBe(false);
+  }, 30000);
+
+  it("this system's own rwe-* skill stays excluded end-to-end: never stored (regression guard, D4/A-5)", async () => {
+    const push = await mcpCall('workspace_push', {
+      workflow: WF_NAME, kind: 'skill', name: 'rwe-guard-test',
       files: [{ path: 'SKILL.md', contentB64: Buffer.from('# Self-referential').toString('base64') }],
     });
-    expect(push.result?.excluded?.some((e: { name: string }) => e.name === 'rwe-guard-test')).toBe(true);
-    expect(push.result?.stored).not.toContain('rwe-guard-test');
-
-    const runId = await runToCompletion("return agent('noop', {model:'local'});");
-    const neverMaterialized = join(expectedWorkspace(runId), '.claude', 'skills', 'rwe-guard-test');
-    expect(existsSync(neverMaterialized)).toBe(false);
-  }, 20000);
-
-  // IT-116 (DES-154, v24 REWRITE [T3]): "every skill copied" is the DEFECT this case exists to
-  // flip. An agent that declares NEITHER of two stored skills must materialize NEITHER — today's
-  // copy-ALL loop (`claude-agent-sdk-client.ts:161-175`) copies every asset in the tree into every
-  // run regardless of what the calling agent declared, so this is a genuine v24 red: BOTH pushed
-  // skills currently land in the workspace. Written test-first (Gate 5, RED).
-  it('v24: an agent with no declared skills materializes NEITHER of two pushed skills (selective, not copy-all)', async () => {
-    await mcpCall('asset_push', {
-      kind: 'skill', name: 'undeclared-a',
-      files: [{ path: 'SKILL.md', contentB64: Buffer.from('# A').toString('base64') }],
-    });
-    await mcpCall('asset_push', {
-      kind: 'skill', name: 'undeclared-b',
-      files: [{ path: 'SKILL.md', contentB64: Buffer.from('# B').toString('base64') }],
-    });
-    const runId = await runToCompletion("return agent('noop', {model:'local'});");
-    const workspace = expectedWorkspace(runId);
-    expect(existsSync(join(workspace, '.claude', 'skills', 'undeclared-a'))).toBe(false);
-    expect(existsSync(join(workspace, '.claude', 'skills', 'undeclared-b'))).toBe(false);
+    // A-5 (adjudication (v24) #2): the reserved prefix is refused, not silently excluded from a
+    // success envelope — the point is that engine-owned names can never be impersonated.
+    expect(push.error?.code ?? push.code, 'a reserved rwe-* asset name must be refused').toBe('RESERVED_PREFIX');
+    expect(existsSync(join(workRoot, 'assets', WF_NAME, 'skill', 'rwe-guard-test'))).toBe(false);
   }, 20000);
 });

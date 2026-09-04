@@ -5,6 +5,7 @@
 // wall-clock or a live store.
 import { readdirSync, statSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { defaultAssetRoot } from './asset-sync.js';
 import type { RunStatus } from './types.js';
 
 const TERMINAL = new Set<RunStatus>(['stopped', 'completed', 'failed']);
@@ -14,13 +15,16 @@ export function reclaimStaleWorkspaces(
   ttlMs: number,
   statusOf: (runId: string) => RunStatus | null,
   nowMs: number,
-  // v24 (ARCH-098, DES-148, TASK-143): optional — when supplied, ALSO sweeps `<workRoot>/assets/
-  // <name>/` (matching `assetRoot`'s default derivation `join(workRoot, 'assets')` in main.ts) for
-  // a workflow name `hasWorkflow` reports as gone. `deregister()`'s FS removal is an after-hook
+  // v24 (ARCH-098, DES-148, TASK-143): optional — when supplied, ALSO sweeps `<assetRoot>/<name>/`
+  // for a workflow name `hasWorkflow` reports as gone. `deregister()`'s FS removal is an after-hook
   // OUTSIDE its DB transaction (workflow-catalog.ts); a crash between the DB delete and that
-  // `rmSync` leaves this tree orphaned, reclaimed here on the next sweep. Omitted by a caller that
-  // has no catalog handy (e.g. today's server.ts call site) to keep that behaviour verbatim.
+  // `rmSync` leaves this tree orphaned, reclaimed here on the next sweep.
+  // v24 (integrator, adjudication #4 C-7 [12]): `server.ts`'s production sweep DID omit it, so this
+  // whole branch had never run outside a test — it is passed now. `assetRoot` defaults to the same
+  // `defaultAssetRoot(workRoot)` the writer uses; the server passes its RESOLVED value so an
+  // operator-overridden `assetRoot` is swept too, instead of silently accumulating orphans.
   hasWorkflow?: (name: string) => boolean,
+  assetRoot: string = defaultAssetRoot(workRoot),
 ): string[] {
   const reclaimed: string[] = [];
   const wfRoot = join(workRoot, 'workflows');
@@ -60,7 +64,7 @@ export function reclaimStaleWorkspaces(
     }
   }
   if (hasWorkflow) {
-    const assetsRoot = join(workRoot, 'assets');
+    const assetsRoot = assetRoot;
     let wfNames: string[];
     try {
       wfNames = readdirSync(assetsRoot);

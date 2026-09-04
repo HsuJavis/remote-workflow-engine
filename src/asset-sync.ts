@@ -14,7 +14,7 @@
 // union constrains the other.
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { pathVerdict } from './path-verdict.js';
+import { pathVerdict, lexicalVerdict } from './path-verdict.js';
 import { codedError } from './errors.js';
 import type { Clock } from './clock.js';
 import type { McpProbe, McpServerConfig } from './mcp-probe.js';
@@ -107,6 +107,38 @@ export class AssetPathEscapeError extends Error {
 // rows, `kind:'mcp'` gated on egress-then-probe, `pushedBy`/`pushedAt` on every row.
 // ---------------------------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------------------------
+// The asset tree layout — ONE expression of it (v24 integrator, adjudication #4 C-7 [12])
+//
+// Three files disagreed about where a workflow's assets live, so the production asset-tree GC
+// branch had never run over a tree the production writer had actually produced:
+//   - `main.ts:192`  resolved `assetRoot` to `join(workRoot,'assets')` and `server.ts` never read
+//                    the field, so the resolved value was thrown away (the composeConfig-forward
+//                    bug class again);
+//   - `server.ts`    handed `AssetSyncService` the BARE `workRoot`, so assets landed at
+//                    `<workRoot>/<workflow>/skill/<name>`, a sibling of `workflows/`;
+//   - `workspace-gc` swept `<workRoot>/assets/<name>` — a directory nothing ever wrote, which is
+//                    why IT-110 could only pass by hand-building the fixture in the GC's own idiom.
+// Every path now comes from these two functions. `globalAssetRoot` deliberately sits OUTSIDE the
+// swept `assets/` tree: the sweep deletes every child of `assets/` whose name is not a live
+// workflow, and `_global` is not a workflow.
+// ---------------------------------------------------------------------------------------------
+
+/** Workflow-scoped asset trees: `<assetRoot>/<workflow>/<kind>/<name>`. */
+export function defaultAssetRoot(workRoot: string): string {
+  return join(workRoot, 'assets');
+}
+
+/** Global (admin-pushed) asset trees: `<workRoot>/_global_assets/<kind>/<name>`. */
+export function globalAssetRoot(workRoot: string): string {
+  return join(workRoot, '_global_assets');
+}
+
+/** The `roots` pair `materializeAssets` (DES-154) takes for one dispatch. */
+export function assetRootsFor(assetRoot: string, globalRoot: string, workflow: string): { workflow: string; global: string } {
+  return { workflow: join(assetRoot, workflow), global: globalRoot };
+}
+
 /** v24 narrow kind union — see file header for why this is decoupled from `LegacyAssetKind`. */
 export type AssetKind = 'skill' | 'mcp';
 
@@ -138,6 +170,8 @@ export type AssetPushRequest =
   | { scope: 'global'; kind: 'mcp'; name: string; config: McpServerConfig; pushedBy?: string };
 
 export interface AssetSyncDeps {
+  /** The ASSET root (`defaultAssetRoot(workRoot)` unless the operator overrode `assetRoot`) — NOT
+   *  the bare work root; see the layout block above for what handing it the bare work root cost. */
   workRoot: string;
   globalRoot: string;
   selfBind: { host: string; port: number };
@@ -206,6 +240,15 @@ export class AssetSyncService {
         `INVALID_ARGUMENT: unsupported asset kind "${kind}" — only "skill" and "mcp" are accepted (v24, DES-153); a hook is refused by the tool schema, never reaching this service.`,
       );
     }
+    // v24 (integrator; ARCH-093 + adjudication (v24) #2 A-5): the asset NAME goes through the SAME
+    // lexical rule as every file INSIDE the asset — it is itself a path segment of the asset tree
+    // (`<assetRoot>/<workflow>/<kind>/<name>`) and, for a skill, of the run workspace
+    // (`.claude/skills/<name>`). Only the per-file rule was wired, so a skill could be STORED as
+    // `rwe-…` and materialized under the engine's own reserved prefix — precisely the
+    // impersonation A-5 re-affirmed the prefix exists to prevent. Reuses `lexicalVerdict`; no
+    // second regex (a duplicated rule is a rule that drifts).
+    const nameVerdict = lexicalVerdict('asset-tree', req.name);
+    if (nameVerdict.kind !== 'ok') return { error: nameVerdict.kind === 'reject' ? nameVerdict.reason : 'INVALID_ARGUMENT' };
     const pushedBy = req.pushedBy ?? 'local';
     const pushedAt = this._clock.isoNow();
     const workflow = req.scope === 'workflow' ? req.workflow : undefined;
