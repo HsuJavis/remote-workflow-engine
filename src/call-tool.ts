@@ -6,6 +6,7 @@ import Ajv from 'ajv';
 import { TOOL_SPECS } from './tool-specs.js';
 import { authorize as realAuthorize, type Principal, type OwnerLookup, type AuthzVerdict } from './authz.js';
 import type { McpFacade } from './mcp-facade.js';
+import { INLINE_SCRIPT_CLOSED_MESSAGE } from './mcp-facade.js';
 import type { SqliteSchedulerPort, NewSchedule } from './scheduler.js';
 import type { WebhookRegistry } from './webhook-registry.js';
 import type { CasStore } from './cas-store.js';
@@ -80,6 +81,15 @@ export async function callTool(
   if (!spec) return unknownTool(name);
 
   const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
+  // v24 (integrator; REQ-098 + DES-142): `run_start`'s schema is CLOSED, so a caller still using the
+  // RETIRED inline door (`{script}`) would be answered a bare `INVALID_ARGUMENT: (root) must NOT
+  // have additional properties` — technically true and completely useless. The whole point of
+  // REQ-098's typed code is that the caller is TOLD to register first. `script` is deliberately not
+  // a declared property (the advertised schema stays the clean v24 one a new caller reads), so the
+  // migration answer is given here, ahead of ajv, for the one retired key that has one.
+  if (spec.name === 'run_start' && a['script'] !== undefined) {
+    return refusalEnvelope('INLINE_SCRIPT_CLOSED', INLINE_SCRIPT_CLOSED_MESSAGE);
+  }
   const argErr = validateArgs(spec.inputSchema, a);
   if (argErr !== null) return refusalEnvelope('INVALID_ARGUMENT', `INVALID_ARGUMENT: ${argErr}`);
 

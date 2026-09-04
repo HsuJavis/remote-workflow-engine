@@ -143,7 +143,7 @@ function reportProblemFor(name: string, owner: string | null): string {
     : `issue_report({workflow: "${name}"})`;
 }
 
-const INLINE_SCRIPT_CLOSED_MESSAGE = 'Inline scripts are no longer accepted at run start; register once (workflow_register) then run by name: workflow_register({script}) then run_start({name})';
+export const INLINE_SCRIPT_CLOSED_MESSAGE = 'Inline scripts are no longer accepted at run start; register once (workflow_register) then run by name: workflow_register({name, script, mermaid}) then run_start({name})';
 
 // Shared body for suspend/resume/stop: pre-check, delegate action, post-read new status (or old on error).
 async function lifecycle(store: RunStore, runId: string, action: () => Promise<void>): Promise<ResultEnvelope> {

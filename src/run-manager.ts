@@ -312,7 +312,7 @@ export class RunManager {
     // schema entirely and calls RunManager directly). resume() never applies this check: a run
     // suspended before the ban shipped has a persisted spec.script and must still resume.
     if (spec.script !== undefined) {
-      throw codedError('INLINE_SCRIPT_CLOSED', 'Inline scripts are no longer accepted at run start; register once (workflow_register) then run by name: workflow_register({script}) then workflow_run({name})');
+      throw codedError('INLINE_SCRIPT_CLOSED', 'Inline scripts are no longer accepted at run start; register once (workflow_register) then run by name: workflow_register({name, script, mermaid}) then run_start({name})');
     }
     // v22 (DES-114, TASK-109): `scriptSha256` was REQ-085's integrity guard for INLINE scripts
     // only — with inline scripts closed above and REQ-085 `[SUPERSEDED v22]`, it has nothing left
