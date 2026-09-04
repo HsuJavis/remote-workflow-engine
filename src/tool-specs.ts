@@ -237,16 +237,31 @@ export const TOOL_SPECS = [
     // workflow_register's `result.version` returns — not a number. The catalog stores versions as
     // strings; a number reaches it and comes back VERSION_NOT_FOUND while the correct string was
     // rejected by ajv first, so no argument shape succeeded before this fix.
-    inputSchema: schema({ name: { type: 'string' }, version: { type: 'string', description: "The version string returned by workflow_register, e.g. 'v1'." } }, ['name']),
+    // v24 (integrator, REQ-117/REQ-097 — found by the Batch-B executor): the row advertised
+    // `{name, version}` with `version` OPTIONAL and NO `channel` at all, while the handler writes
+    // `beta_version` for every channel other than the literal 'release'. So a cold model driving
+    // this tool from exactly what it was shown published to BETA, and its next `run_start`/
+    // `workflow_describe` answered CHANNEL_UNPUBLISHED — a first-try failure caused purely by the
+    // schema, which is REQ-117's own definition of a documentation defect. `version` is required in
+    // substance too (`publish()` does `known.has(version)`), so it is required here.
+    inputSchema: schema({
+      name: { type: 'string' },
+      version: { type: 'string', description: "The version string returned by workflow_register, e.g. 'v1'." },
+      channel: { type: 'string', enum: ['release', 'beta'], description: "Which pointer to move. 'release' is the channel a bare run_start resolves." },
+      // REQUIRED, per DES-114/ARCH-073's own drift lock (IT-087) — no v24 text retires it. The
+      // facade still defaults an omitted channel to 'release' as defence for a direct (non-wire)
+      // caller, but a caller reading the schema is told to name it: a silent default that sends the
+      // publish to `beta_version` is what made this tool undriveable from its own advertisement.
+    }, ['name', 'version', 'channel']),
     outputSchema: OUT,
-    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'NOT_WORKFLOW_OWNER', 'FORBIDDEN_ROLE'],
+    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'INVALID_CHANNEL', 'NOT_WORKFLOW_OWNER', 'FORBIDDEN_ROLE'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'workflow' } as AuthzRow,
     fixture: {
-      happy: { name: ref('workflow'), version: ref('version') },
+      happy: { name: ref('workflow'), version: ref('version'), channel: 'release' },
       errors: {
-        WORKFLOW_NOT_FOUND: { name: ABSENT_WORKFLOW, version: 'v1' },
-        VERSION_NOT_FOUND: { name: ref('workflow'), version: 'v999' },
+        WORKFLOW_NOT_FOUND: { name: ABSENT_WORKFLOW, version: 'v1', channel: 'release' },
+        VERSION_NOT_FOUND: { name: ref('workflow'), version: 'v999', channel: 'release' },
       },
     },
   },
@@ -315,6 +330,11 @@ export const TOOL_SPECS = [
         // B-1 (v24 adjudication #3): a STRING, the exact value workflow_register's
         // `result.version` returns — see workflow_publish's row for why.
         version: { type: 'string', description: "The version string returned by workflow_register, e.g. 'v1'." },
+        // v24 (integrator, REQ-097 — found by the Batch-B/C executors): `channel` was dropped from
+        // this CLOSED schema while `RunSpec.channel` and `run-manager.ts`'s `catalog.resolve(name,
+        // {version, channel})` both still consume it, and this row's own errors[] advertises
+        // CHANNEL_UNPUBLISHED — a code unreachable without it. No design text ratified the removal.
+        channel: { type: 'string', enum: ['release', 'beta'], description: "Which published pointer to run. Defaults to 'release'. A `version` wins over a `channel`." },
         // v24 (integrator, REQ-117): the shape is DOCUMENTED here because `tools/list` is the only
         // thing a cold model reads. It stays OPEN (not `additionalProperties:false`) on purpose:
         // admission answers `PARAM_LOCKED` / `PARAM_UNKNOWN` / `UNKNOWN_AGENT_LABEL`, each of which
@@ -330,7 +350,15 @@ export const TOOL_SPECS = [
         },
         seed: { type: 'array' },
         seedManifest: { type: 'array' },
-        seedRef: { type: 'object' },
+        // v24 (integrator, REQ-080 — found by the Batch-B executor): a bare `{type:'object'}` told
+        // a caller nothing about the two fields the fetcher requires, nor that the whole feature is
+        // fail-closed behind the operator's `seedRefAllowlist`.
+        seedRef: {
+          type: 'object',
+          description: 'Engine-pull seed from an allowlisted git remote. Requires the operator to have configured seedRefAllowlist, else SEEDREF_DISABLED. Mutually exclusive with seed/seedManifest/seedManifestRef (SEED_SOURCE_CONFLICT).',
+          properties: { repoUrl: { type: 'string' }, sha: { type: 'string', description: 'The exact commit sha to fetch; a mismatch is SEEDREF_SHA_MISMATCH.' } },
+          required: ['repoUrl', 'sha'],
+        },
         seedManifestRef: { type: 'string' },
       }, ['name']),
       additionalProperties: false,
@@ -423,7 +451,13 @@ export const TOOL_SPECS = [
   },
   {
     name: 'run_agent_log', entity: 'run', key: 'runId' as const,
-    description: "Read one agent's harness log for a run; a cross-principal read of another principal's run is audited.",
+    // v24 (integrator, REQ-083/DES-088 — found by the Batch-B executor): the redaction sentence was
+    // lost in the rename. Redaction is live (`secret-resolver.ts`'s marker), and a reader who does
+    // not know the marker is engine-written reads it as the agent's own output.
+    description:
+      "Read one agent's harness log for a run, by the agent LABEL the script declares. A " +
+      "cross-principal read of another principal's run is audited. " +
+      'Secret values are replaced with \u2039secret:NAME\u203a markers in persisted transcripts.',
     inputSchema: schema({ runId: { type: 'string' }, label: { type: 'string' } }, ['runId', 'label']),
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'AGENT_LOG_NOT_FOUND', 'NOT_RUN_OWNER'],
@@ -661,13 +695,29 @@ export const TOOL_SPECS = [
   // ---- issue (5) ----
   {
     name: 'issue_report', entity: 'issue', key: null,
-    description: 'File a new issue against the engine.',
-    inputSchema: schema({ title: { type: 'string' }, body: { type: 'string' } }, ['title', 'body']),
+    // v24 (integrator, REQ-095/REQ-032 — found by the Batch-C executor): the row advertised
+    // `{title, body}` with both required. `issue-reporter.ts`'s own REQUIRED_FIELDS are
+    // `title/reproSteps/analysis` and there is no `body` field at all, so a caller obeying this
+    // schema was refused ISSUE_REPORT_INVALID for a field it was never shown — while `workflow`,
+    // which is live (it adds the `workflow:<name>` label and enters the ARCH-024 dedup
+    // fingerprint), was undiscoverable.
+    description: 'File a pre-analyzed issue against the engine. Reports are deduplicated by title+component+workflow.',
+    inputSchema: schema({
+      title: { type: 'string' },
+      reproSteps: { type: 'string', description: 'How to reproduce it — required, non-empty.' },
+      analysis: { type: 'string', description: 'What you already established about the cause — required, non-empty.' },
+      logs: { type: 'string' },
+      severity: { type: 'string' },
+      component: { type: 'string' },
+      runId: { type: 'string', description: 'The run this was observed on, if any.' },
+      workflow: { type: 'string', description: 'Binds the report to a registered workflow name; adds a workflow:<name> label.' },
+      version: { type: 'string', description: "The engine version, or (with `workflow`) that workflow's version." },
+    }, ['title', 'reproSteps', 'analysis']),
     outputSchema: OUT,
     errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
-    fixture: { happy: { title: 'x', body: 'y' }, errors: {} },
+    fixture: { happy: { title: 'fixture issue', reproSteps: 'call issue_report', analysis: 'REQ-118 surface probe' }, errors: {} },
   },
   {
     name: 'issue_get', entity: 'issue', key: 'number' as const,
@@ -713,8 +763,26 @@ export const TOOL_SPECS = [
   // ---- environment (2) ----
   {
     name: 'models_list', entity: 'models', key: null,
-    description: 'List the model catalog: aliases, capability/stability/cost ratings.',
-    inputSchema: schema({}),
+    // v24 (integrator, REQ-117 — found by the Batch-B executor): every one of the nine filters
+    // `filterCatalog()` implements, and the meaning of the enriched rating fields, were served but
+    // undiscoverable. A cold model reading `{properties:{}}` cannot filter a catalog it must choose
+    // a model from.
+    description:
+      'List the model catalog. Each row carries provider, model, description, modalities, ' +
+      'contextWindow, price, toolUse, location, plus the engine ratings: `capability` (a one-line ' +
+      'summary), `stability`, and `costLevel` — an integer 0..10 where 0 is free and 10 is the most ' +
+      'expensive tier, null when the provider publishes no price.',
+    inputSchema: schema({
+      provider: { type: 'string', description: "Exact provider id, e.g. 'anthropic' or 'ollama'." },
+      query: { type: 'string', description: 'Substring match over the model id and description.' },
+      modalityIn: { type: 'string' },
+      modalityOut: { type: 'string' },
+      maxPricePerM: { type: 'number', description: 'Upper bound on price per million tokens.' },
+      minContext: { type: 'number', description: 'Lower bound on contextWindow.' },
+      toolUse: { type: 'boolean' },
+      location: { type: 'string', enum: ['local', 'remote'] },
+      limit: { type: 'number' },
+    }),
     outputSchema: OUT,
     errors: [] as ErrorCode[],
     seeAlso: [] as string[],
@@ -723,8 +791,22 @@ export const TOOL_SPECS = [
   },
   {
     name: 'system_info', entity: 'system', key: null,
-    description: 'Report engine system info: CPU, memory, disk, active processes, and the auth summary.',
-    inputSchema: schema({}),
+    // v24 (integrator, REQ-117 — found by the Batch-B executor): `topN` is implemented
+    // (`call-tool.ts` defaults it to 5, `system-info.ts` CLAMPS it to 50 rather than refusing) and
+    // was advertised nowhere, so the only way to discover it was to read the engine's source.
+    description:
+      'Report engine system info: CPU, memory, disk, active processes, and the auth summary. ' +
+      'Sizes are in bytes, load and utilisation as a percent (`usedPct`), uptime in seconds. ' +
+      'A block whose probe is unavailable on this host is served as null with a reason, never omitted.',
+    inputSchema: schema({
+      topN: {
+        type: 'integer',
+        default: 5,
+        minimum: 1,
+        maximum: 50,
+        description: 'How many processes to return, by descending CPU. Out-of-range values are CLAMPED to this range, never refused.',
+      },
+    }),
     outputSchema: OUT,
     errors: [] as ErrorCode[],
     seeAlso: [] as string[],

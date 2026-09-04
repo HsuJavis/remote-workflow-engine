@@ -331,7 +331,17 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
   parts.push(
     section(
       'Authoring convention (not checked)',
-      "Phase titles (`phase(title)` and `meta.phases[].title`) are visible to every principal who can " +
+      // v24 (integrator, REQ-106 — found by the Batch-B executor): the builder rendered three of
+      // REQ-106's four rules and silently dropped the second, so the generated AUTHORING.md taught
+      // three quarters of the contract. It is an authoring SMELL, deliberately not enforced
+      // (REQ-106's own last clause), which is exactly why it belongs in this section and why
+      // nothing else in the engine would ever have caught its absence.
+      'Declare every knob a user might need in `meta.params` rather than hard-coding it, and ' +
+        'never read a value the contract does not declare: a value the script reaches for but the ' +
+        'contract never named cannot be tuned by a caller, cannot be shown by `workflow_describe`, ' +
+        'and cannot be bounded by the engine ceilings. Nothing refuses it — the cost is simply that ' +
+        'the workflow can only be changed by editing it.\n\n' +
+        "Phase titles (`phase(title)` and `meta.phases[].title`) are visible to every principal who can " +
         "see the workflow, including the non-owner projection and the generated diagram — a phase " +
         'title is not a private annotation, so keep secrets and distinctive internal prose out of it. ' +
         "The diagram you draw is structure-only: it is your responsibility, not an enforced check, to " +

@@ -14,12 +14,14 @@ import { SubmissionValidator } from './submission-validator.js';
 import { CatalogNotFoundError, codedError, type ErrorCode } from './errors.js';
 import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent, HarnessDescriptor, RunListFilter, AuditAction, RunSpec } from './types.js';
 import { parseMeta } from './workflow-meta.js';
+import { buildAuthoringGuide } from './authoring-guide.js';
 import { effectiveAgentBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type AgentParamSpec } from './params/contract.js';
 import { projectWorkflowForRead, projectWorkflowDescribe, type WorkflowOwnerView } from './workflow-view.js';
 import type { Principal } from './authz.js';
 import { pathVerdict } from './path-verdict.js';
 import { auditedWorkspaceRead } from './audited-read.js';
 import type { CasStore } from './cas-store.js';
+import { casNamespaceFor } from './cas-store.js';
 import type { AssetSyncService, AssetKind, AssetScope } from './asset-sync.js';
 
 // v21 (DES-103/DES-104): the engine ceilings bound the read surfaces (workflow_source/list) at read
@@ -44,7 +46,9 @@ function readParams(stored: unknown, ceilings: Ceilings): ParamContract {
 /** v24 (DES-142, ADR-028): the ONE namespace expression — CAS namespace = the caller's own
  *  identity, `'local'` for the no-identity kinds (auth-disabled single-operator, loopback-exempt). */
 function nsOf(p: Principal): string {
-  return p.kind === 'auth-disabled' || p.kind === 'loopback-exempt' ? 'local' : p.id;
+  // Delegates to `casNamespaceFor` (cas-store.ts) — the ONE expression, shared with the READ side
+  // in run-manager.ts, which used to spell it `'_default'` and so never found what this stored.
+  return casNamespaceFor(p.kind === 'auth-disabled' || p.kind === 'loopback-exempt' ? null : p.id);
 }
 
 /** Structural port both SqliteSchedulerPort and WebhookRegistry satisfy (DES-149) — the facade's
@@ -173,6 +177,36 @@ function attributionPrincipal(p: Principal): string | null {
   return p.kind === 'auth-disabled' || p.kind === 'loopback-exempt' ? null : p.id;
 }
 
+/** v24 (integrator; RESTORES 04-design.md:3526, the v22 send-back round-2 wrinkle-1 ruling, which
+ *  the v24 dispatch rewrite dropped with no amending design row — found by the Batch-C executor).
+ *
+ *  That ruling says, in terms: *"while `authEnabled` is false, `args.principal` remains legitimate
+ *  identity for all three writes … the gate is `authEnabled`, never 'does a principal exist'."*
+ *  v24's `callTool` builds identity only from the edge-resolved `Principal`, so on a no-auth server
+ *  EVERY registration was stored ownerless and workflow ownership was neither recorded nor
+ *  enforced — REQ-100's whole subject, silently off for the single-operator deployment that is this
+ *  engine's default shape.
+ *
+ *  Scoped exactly as the ruling scopes it, and no wider: the argument is honoured ONLY for
+ *  `kind:'auth-disabled'`. A `loopback-exempt` caller on an auth-ENABLED server is deliberately
+ *  excluded — self-asserted identity reaching an authenticated deployment is the hole v22's H1
+ *  closed, and it stays closed. This is ATTRIBUTION and OWNERSHIP only; it never grants a role
+ *  (authorization already short-circuited for `auth-disabled` before this is reached). */
+function attributionWithArg(p: Principal, a: unknown): string | null {
+  const supplied = (a as { principal?: unknown } | null | undefined)?.principal;
+  if (p.kind === 'auth-disabled' && typeof supplied === 'string' && supplied !== '') return supplied;
+  return attributionPrincipal(p);
+}
+
+/** The ownership-COMPARISON identity, same rule. `bypassPrincipal` answers `null` for admin and for
+ *  the no-identity kinds, which the catalog reads as "skip the ownership gate"; with an
+ *  `args.principal` on a no-auth server there IS an identity to compare, so the gate applies. */
+function bypassWithArg(p: Principal, a: unknown): string | null {
+  const supplied = (a as { principal?: unknown } | null | undefined)?.principal;
+  if (p.kind === 'auth-disabled' && typeof supplied === 'string' && supplied !== '') return supplied;
+  return bypassPrincipal(p);
+}
+
 export class McpFacade {
   private readonly store: RunStore;
   private readonly runManager: RunManager;
@@ -241,7 +275,7 @@ export class McpFacade {
         }
       }
       const catalog = this.runManager.catalog as unknown as RegistrationCatalog;
-      const { params } = await catalog.validateRegistration({ name: a.name, script: a.script, mermaid: a.mermaid, principal: attributionPrincipal(principal) });
+      const { params } = await catalog.validateRegistration({ name: a.name, script: a.script, mermaid: a.mermaid, principal: attributionWithArg(principal, a) });
       for (const id of triggers) {
         const outcome = this._storeFor(id).claim(id, a.name);
         if (outcome === 'claimed') { claimedThisCall.push(id); continue; }
@@ -250,7 +284,7 @@ export class McpFacade {
         throw codedError(outcome === 'NOT_FOUND' ? 'TRIGGER_NOT_FOUND' : 'TRIGGER_ALREADY_CLAIMED', `${outcome}: ${id}`);
       }
       try {
-        const { version } = await catalog.insertVersion({ name: a.name, script: a.script, mermaid: a.mermaid, triggers, params, principal: attributionPrincipal(principal) });
+        const { version } = await catalog.insertVersion({ name: a.name, script: a.script, mermaid: a.mermaid, triggers, params, principal: attributionWithArg(principal, a) });
         const versionNum = Number(version.replace(/^v/, '')) || 1;
         return { runId: '', status: 'completed', version: versionNum, result: { name: a.name, version } };
       } catch (err) {
@@ -267,7 +301,7 @@ export class McpFacade {
    *  the union as `releasedTriggers`. */
   async workflowDeregister(a: { name: string }, principal: Principal): Promise<Record<string, unknown>> {
     try {
-      const { removed, claimedTriggers } = await this.runManager.catalog.deregister(a.name, bypassPrincipal(principal));
+      const { removed, claimedTriggers } = await this.runManager.catalog.deregister(a.name, bypassWithArg(principal, a));
       for (const id of claimedTriggers) this._storeFor(id).release(id, a.name);
       // v24 (integrator, REQ-118): the CATALOG method is deliberately total (`removed:false`, never
       // throws — catalog-v24.test.ts pins that contract, and it stays). The TOOL is not: its own
@@ -285,9 +319,19 @@ export class McpFacade {
     }
   }
 
-  async workflowPublish(a: { name: string; version: string; channel: Channel }, principal: Principal): Promise<Record<string, unknown>> {
+  async workflowPublish(a: { name: string; version: string; channel?: Channel }, principal: Principal): Promise<Record<string, unknown>> {
     try {
-      const result = await this.runManager.catalog.publish(a.name, a.version, a.channel, bypassPrincipal(principal));
+      // v24 (integrator, REQ-097 — found by the Batch-B executor): the channel DEFAULTS to
+      // 'release'. `catalog.publish` sends everything that is not the literal 'release' to
+      // `beta_version`, so an omitted channel — which is exactly what the advertised schema allowed
+      // — silently published to beta, and the caller's next `run_start` answered
+      // CHANNEL_UNPUBLISHED. An unrecognised channel is now refused rather than quietly meaning
+      // beta: "point the release pointer" is what this tool says it does.
+      const channel = a.channel ?? 'release';
+      if (channel !== 'release' && channel !== 'beta') {
+        throw codedError('INVALID_CHANNEL', `INVALID_CHANNEL: '${String(channel)}' — the channel must be 'release' or 'beta'`);
+      }
+      const result = await this.runManager.catalog.publish(a.name, a.version, channel, bypassWithArg(principal, a));
       return { runId: '', status: 'completed', result };
     } catch (err) {
       const e = toErrEnvelope(err);
@@ -383,18 +427,18 @@ export class McpFacade {
   /** v24 (DES-157/TASK-150 owns the full builder + GUIDE_EXAMPLES) — a minimal, real (not a stub)
    *  guide assembled from what already exists (ERROR_CATALOG-shaped rules stated in prose) so the
    *  tool is genuinely answerable today; TASK-150 replaces this body with the generated one. */
+  /** v24 (integrator; DES-157/ADR-032, REQ-116/REQ-117 — the C-2 wiring class again): this served
+   *  a HAND-TYPED nine-line paragraph while `buildAuthoringGuide()` — the 16 KB guide assembled
+   *  from the engine's OWN enforcement constants, with the ten registered examples — sat with
+   *  exactly one caller, `scripts/gen-authoring-md.ts`. DES-157 says in terms that this builder is
+   *  "the ONE builder both `workflow_authoring_guide` (the MCP tool, over the composition root's
+   *  RESOLVED ceilings) and `scripts/gen-authoring-md.ts` call". A cold model, whose only
+   *  documentation is this tool, was being handed the summary instead of the guide — and the
+   *  summary is hand-typed, i.e. exactly the drift ADR-032 introduced the builder to end.
+   *  `this.ceilings` is the RESOLVED ServerConfig value (operator-overridable), not
+   *  DEFAULT_CEILINGS — the distinction DES-157's own signature insists on. */
   async workflowAuthoringGuide(): Promise<ResultEnvelope<{ text: string }>> {
-    const text = [
-      'Authoring rules: declare every agent() call with a LITERAL string label; declare',
-      'params.agents.<label> for each label found in the script (model/effort/timeoutMs required,',
-      'each with a .default); the six LOCKED_KEYS (prompt/tools/skills/mcp/workdir/cwd) are',
-      'engine-owned — never redeclare them in an override. Register with {name, script, mermaid,',
-      'triggers?} — mermaid is REQUIRED (MERMAID_REQUIRED) and its agent nodes must match the',
-      "script's agent() labels bidirectionally (DIAGRAM_MISMATCH). A just-registered workflow has",
-      'no release — call workflow_publish (or pass {version}) before run_start; run_start returns',
-      'no result — poll run_status until terminal, then call run_result.',
-    ].join(' ');
-    return { runId: '', status: 'completed', result: { text } };
+    return { runId: '', status: 'completed', result: { text: buildAuthoringGuide(this.ceilings) } };
   }
 
   // ============================================================================================
@@ -412,7 +456,7 @@ export class McpFacade {
    *  is refused before reaching here. */
   async runStart(
     a: {
-      name?: string; args?: unknown; budget?: number | null; version?: string; overrides?: unknown;
+      name?: string; args?: unknown; budget?: number | null; version?: string; channel?: RunSpec['channel']; overrides?: unknown;
       seed?: RunSpec['seed']; seedManifest?: RunSpec['seedManifest']; seedRef?: RunSpec['seedRef']; seedManifestRef?: string;
     },
     principal: Principal,
@@ -423,6 +467,10 @@ export class McpFacade {
       const attributed = attributionPrincipal(principal);
       const runId = await this.runManager.start({
         name: a.name, args: normalizeArgs(a.args), budget: a.budget ?? null, version: a.version, startedBy: { type: 'client' },
+        // v24 (integrator, REQ-097): `channel` was dropped here too — `RunSpec.channel` and
+        // `run-manager.ts`'s resolve both consume it, and without this line the schema's channel
+        // would be admitted and then ignored, which is worse than refusing it.
+        ...(a.channel !== undefined ? { channel: a.channel } : {}),
         ...(a.seed !== undefined ? { seed: a.seed } : {}),
         ...(a.seedManifest !== undefined ? { seedManifest: a.seedManifest } : {}),
         ...(a.seedRef !== undefined ? { seedRef: a.seedRef } : {}),

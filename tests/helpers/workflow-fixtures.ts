@@ -195,11 +195,15 @@ export async function registerPublishedVia(
   script: string,
   opts: RegisterPublishOpts = {},
 ): Promise<{ version: string }> {
-  // `opts.principal` travels as a TOOL ARG here (server.ts's `args.principal` fallback, honoured by
-  // register/deregister/publish) — that is how the ownership fixtures inject an identity without a
-  // bearer token. For an in-process facade, bind the identity in `facadeCaller(facade, principal)`
-  // instead. Either way the SAME principal must register and publish: `publish` only skips the
-  // ownership gate when the principal is null.
+  // `opts.principal` travels as a TOOL ARG here — that is how the ownership fixtures inject an
+  // identity without a bearer token. v24 note (integrator): the v24 dispatch rewrite dropped this
+  // path and it has been RESTORED to exactly the scope 04-design.md:3526 gives it — the argument is
+  // honoured for attribution/ownership ONLY when the server is genuinely auth-DISABLED
+  // (`mcp-facade.ts`'s `attributionWithArg`/`bypassWithArg`). On an auth-ENABLED server it is
+  // ignored, so a fixture there must mint a real bearer; self-asserted identity reaching an
+  // authenticated deployment is the hole v22's H1 closed. For an in-process facade, bind the
+  // identity in `facadeCaller(facade, principal)` instead. Either way the SAME principal must
+  // register and publish: `publish` only skips the ownership gate when the principal is null.
   const who = typeof opts.principal === 'string' ? { principal: opts.principal } : {};
   const scriptWithMeta = synthesizeMeta(script, opts.model);
   const mermaid = opts.mermaid ?? synthesizeMermaid(scriptWithMeta);

@@ -32,6 +32,19 @@ function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+/** v24 (integrator; ADR-028, DES-142): THE CAS namespace expression, in one place. ADR-028 says the
+ *  namespace "appears once" and is DERIVED from the caller's own identity — `run_start.seedNamespace`
+ *  was removed from the tool schema for exactly that reason. But only the WRITE side ever derived
+ *  it: `mcp-facade`'s `nsOf` stored blobs under `local` (or the principal id) while `run-manager`
+ *  read them back under a pre-v24 `'_default'` literal, a pool no writer has used since. Every
+ *  seeded run therefore failed `MISSING_BLOBS` naming a sha the engine had just accepted. Both
+ *  sides now call this. `null`/`undefined` (auth disabled, or a loopback-exempt caller with no id)
+ *  is `'local'`, matching what the write side already stored under.
+ *  Found by the Batch-D executor, 2026-09-04. */
+export function casNamespaceFor(principal: string | null | undefined): string {
+  return principal ?? 'local';
+}
+
 export class CasStore {
   private readonly _db: Database.Database;
   private readonly _blobDir: string;

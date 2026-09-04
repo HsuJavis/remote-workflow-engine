@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { materializeSeed, materializeManifest } from './workspace-seed.js';
 import type { CasStore } from './cas-store.js';
+import { casNamespaceFor } from './cas-store.js';
 import { initGitBaseline } from './workspace-git.js';
 import { listArtifacts, type ArtifactEntry } from './workspace-artifacts.js';
 import { IllegalTransitionError, codedError, toErrorCode } from './errors.js';
@@ -376,7 +377,7 @@ export class RunManager {
     //   spec.seedManifest so the EXISTING materializeManifest branch runs unchanged (inline+ref parity).
     if (spec.seedManifestRef !== undefined) {
       if (!this._cas) throw codedError('CAS_UNAVAILABLE', 'seedManifestRef requires a configured content store');
-      const ns = spec.seedNamespace ?? '_default';
+      const ns = spec.seedNamespace ?? casNamespaceFor(spec.principal);
       // Check the manifest blob is present in the namespace (security boundary: namespace-scoped check).
       const manifestMissing = await this._cas.missing(ns, [spec.seedManifestRef]);
       if (manifestMissing.length > 0) {
@@ -404,7 +405,7 @@ export class RunManager {
     // hasn't uploaded — surface the missing shas so the client blob_put's them and retries.
     if (spec.seedManifest && spec.seedManifest.length > 0) {
       if (!this._cas) throw codedError('CAS_UNAVAILABLE', 'seedManifest requires a configured content store');
-      const ns = spec.seedNamespace ?? '_default';
+      const ns = spec.seedNamespace ?? casNamespaceFor(spec.principal);
       const missing = await this._cas.missing(ns, spec.seedManifest.map((e) => e.sha256));
       if (missing.length > 0) throw codedError('MISSING_BLOBS', `upload ${missing.length} blob(s) first: ${missing.slice(0, 8).join(',')}${missing.length > 8 ? '…' : ''}`);
     }
@@ -498,7 +499,7 @@ export class RunManager {
     let seedRefView: RunEntry['seedRef'];
     let seedRefFail: { code: string; message: string } | undefined;
     if (spec.seedRef !== undefined) {
-      const ns = spec.seedNamespace ?? '_default';
+      const ns = spec.seedNamespace ?? casNamespaceFor(spec.principal);
       const t0 = this._clock.now();
       try {
         const r = await this._seedFetcher.fetch(

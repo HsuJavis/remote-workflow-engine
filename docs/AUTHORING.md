@@ -78,6 +78,8 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 
 ## Authoring convention (not checked)
 
+Declare every knob a user might need in `meta.params` rather than hard-coding it, and never read a value the contract does not declare: a value the script reaches for but the contract never named cannot be tuned by a caller, cannot be shown by `workflow_describe`, and cannot be bounded by the engine ceilings. Nothing refuses it — the cost is simply that the workflow can only be changed by editing it.
+
 Phase titles (`phase(title)` and `meta.phases[].title`) are visible to every principal who can see the workflow, including the non-owner projection and the generated diagram — a phase title is not a private annotation, so keep secrets and distinctive internal prose out of it. The diagram you draw is structure-only: it is your responsibility, not an enforced check, to keep secrets out of node text and labels.
 
 ## Registered examples
