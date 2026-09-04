@@ -5135,3 +5135,121 @@ classDiagram
 **Architecture amendments recorded at design (NOT edited into 02-architecture.md — recorded by id so Gate 8 does not read them as drift).** ARCH-088: `triggerOwner(id)` tri-state, not `(kind, id)`. ARCH-090: the unknown-key warn is general (`KNOWN_FILE_CONFIG_KEYS`) + an auth boot line. ARCH-091: `run_start.seedNamespace` REMOVED and `?namespace=` dropped on both HTTP routes (ADR-028's "appears once" is false while they exist); `HOOKS_UNSUPPORTED` retired in favour of a schema `enum` refusal. ARCH-093: `pathVerdict` IMPORTS `isPathContained`, extended in place with an injectable `realpath` — it is not a second containment implementation. ARCH-095: the `agentType` rung is deleted (unreachable), `agentTypeDef.model` sources the prompt. ARCH-099: `claim` returns `'held'` as a fourth outcome (two statements in one transaction — one conditional UPDATE cannot tell null→name from name→name, and the compensation rule needs it); `markFired` resets `refusalCount`; `ScheduleStatus.workflow` → `claimedBy`; `listByWorkflow` retired. ARCH-101: `trigger-bindings.ts` is DELETED outright, not shrunk — `describe.triggers[]` is a by-id lookup after the analyzer goes. ARCH-103/104: materialization stays in the SDK gateway client and `materialized` rides the descriptor; the executor fills the direct-fetch empty set. ARCH-107: the builder takes the RESOLVED `ServerConfig` ceilings, not `DEFAULT_CEILINGS`; `ERROR_CATALOG` rows are `{see, hint}` (no `message` — the call site already supplies one with its dynamic detail). ADR-027: `run_result` added to the audited set; `adminReads` absent (not `[]`) for non-owners and attached at the projection.
 
 **Karpathy check.** Nothing speculative was added: no role service, no permission DSL, no per-resource ACLs (three roles, five ownership kinds, one function); no second containment implementation; no `mermaid` dependency; no per-fire audit table; no new isolation mechanism for concurrent agents (ADR-034's honest limit is stated instead); no compatibility readers for legacy shapes (one typed refusal each); no `AUDIT_UNAVAILABLE` code for an engine fault. Two things were REMOVED that the panel would have kept: `provenance` on `AgentRecord` (a duplicate of `run_agent_log`) and the guide byte ceiling (a budget nobody can defend).
+
+---
+
+## Orchestrator adjudication (v24) #2 — Gate 5 的 22 條澄清 (2026-09-04)
+
+**先講方法**:22 條全部逐條到原始碼查證,不採信報告的描述。**4 條已經失效** ——
+實作者寫報告當下為真,同批後面的 implementer 已經修掉。若照單全收去重派,就是 v21
+那次「17 個 agent / 1.1M token 重做已完成工作」的翻版。
+規則(v23 裁定 #4 已記過一次,再記一次):**報告裡的 characterisation 是線索,不是發現。**
+
+### 已失效 — 不派工(查證後撤銷)
+
+| # | 指控 | 查證 |
+|---|---|---|
+| 1 | `workflow-describe-projection.test.ts` 還匯入已刪的 `noteTextFor` | 檔內已無 `noteTextFor`/`graph-analyzer` |
+| 17 | `agent-executor.ts:340` 還呼叫 `resolveCallParams` | 只剩 :350 的註解說它已移除;呼叫點已遷移 |
+| 19 | `owner-lookup.ts` 無人實作 | 29 行完整實作,且 `server.ts:637` 真的接了 |
+| 22 | `mcp-facade.ts:172` 還在用舊 `catalog.register()` | :232/:241 已是 `validateRegistration`/`insertVersion`,補償序列在 :212 |
+
+19 順帶驗掉一個我特別怕的東西:v11/v15 各中過一次的**接線 bug class**(模組建好、
+`composeConfig()` 忘了轉發 → 功能靜默失效,只有真跑抓得到)。這次 `principals` 在
+`main.ts` 有驗證轉發、`authorize()` 在 `call-tool.ts:87` 真的被呼叫。**沒有復發。**
+
+### A-1 [13] — 實作者頂住了一個「照做就會弄壞產品」的 dod,這是本輪最值得記的一件事
+
+TASK-136 的 dod 寫 `grep -c "knobs" src/params/contract.ts` → **0**,
+但 DES-144 **要求**用 `raw.knobs !== undefined` 偵測退場的舊欄位才能回 `DEFAULTS_RETIRED` ——
+「knobs」這個字必須出現在原始碼裡,那條 dod 才可能不成立。兩者無法同時滿足。
+
+實作者選了 DES-144 的正確性,**而且明確拒絕**把識別字拆成 `'kno'+'bs'` 去騙過 grep,
+然後回報 dod 有問題。這正是 `/goal` 擔心的失效模式(低階模型挑最省力的路把關卡弄鬆),
+而它**沒有掉進去**。記錄下來給 Gate 8:配深規格 + 卡得住的 dod,這個組合是有效的。
+
+**缺陷在 dod 那一行,不在實作。** 改成 `grep -cE "^\s*knobs\??:" src/params/contract.ts` → 0
+(禁的是型別欄位,不是偵測字串)。目前 `contract.ts` 有 7 處 `knobs`,全屬偵測與說明,合規。
+
+### A-2 [12] — `run_start` 掉了 seed 欄位:這是規格缺陷,不是實作疏忽
+
+查證屬實:`tool-specs.ts:139` 的 `run_start` 只有 `{name, version, overrides}`,
+`seed`/`seedManifest`/`seedRef`/`seedManifestRef` **四個全不見**。
+
+DES-142 的邊界註記說它「AMENDS ARCH-091 的 seed unchanged」,原意只是拿掉
+`seedNamespace`(改由 principal 推導,ADR-028),不是清空整組 seed 入口。
+ARCH-091 的表(02-architecture.md:2644)仍列 `run_start({…, seed*, …})` 與 `SEED_*` 錯誤碼。
+
+**裁定:四個欄位恢復。** 這條不只是少個參數 ——
+TASK-153 的 plugin 文件已經照 ARCH-091 寫了 `run_start({seedManifestRef})`,
+留著就是**手冊教一個引擎會拒絕的呼叫**,與 v23 裁定 #9 的 AUTHORING.md 同一類缺陷;
+而且 REQ-117 的 seed 探測會因此永遠 UNVERIFIED。**更正我自己上一段的說法**:DES-142 的邊界註記其實只寫了移除 `seedNamespace`,
+它是對的,不需要改。缺陷純粹在 `tool-specs.ts` 的那一列 —— 實作把四個欄位一起清掉了。
+
+### A-3 [20] — ARCH-088 的散文和實際的 `authz.ts` 對不上:改文件,不改程式
+
+查證兩處確定不符:
+```
+ARCH-088 散文   authorize(spec, p, args, lookup)      triggerOwner(kind, id)
+authz.ts:77     authorize(principal, spec, args, lookup)  triggerOwner(id)
+```
+TDD 下 RED 測試(UT-140)是有效規格,實作沒錯。**ARCH-088 的 api 欄位改成實際簽名。**
+這是本專案第 16 例「描述跟不上被描述的東西」——
+前 15 例橫跨註解、docblock、02-architecture.md、退場卻留綠的測試、帳本列、
+一個編譯器強制執行但本身是錯的型別註記,以及一個寫著「Admin tool」卻什麼都不檢查的工具描述。
+每一次的代價都是後面有人照著錯的描述做事。
+
+### A-4 [6] — 錯誤碼二選一:以冷模型看得到的名字為準
+
+兩組近義重複,選 `tool-specs.ts` 那一側,理由是 REQ-117 的冷模型只看得到 `tools/list`:
+- `UNKNOWN_VERSION`(catalog 內部)→ 併入 **`VERSION_NOT_FOUND`**
+- `SEEDREF_EGRESS_DENIED` → 併入 **`EGRESS_DENIED`**
+
+改完要 grep 測試裡的舊名一起換,不能留一個斷言舊名卻仍然綠的測試(那就是第 17 例)。
+報告點名尚未進 `errors[]` 的那批(`SEEDREF_*`、`CAS_UNAVAILABLE`、`NESTING_*`、
+`DESCENDANT_CAP_EXCEEDED`、`REGISTRATION_CONFLICT`、`VERSION_CEILING_EXCEEDED`、
+`PARAM_SECRET_UNAVAILABLE`、`RUN_ADMISSION_LIMIT`、`INVALID_SEED_SPEC`、`SEED_SOURCE_CONFLICT`)
+—— 逐一確認哪個工具真的會丟,補進該列的 `errors[]`;丟得出來卻沒列出來,冷模型就無從預期。
+
+### A-5 [4] — `rwe-` 前綴逐檔檢查:維持,這是刻意的縱深防禦
+
+`workspace_push` 對資產內**每個檔**套用 asset-tree 詞法規則,所以 `rwe-notes.txt`
+也會被拒。實作者問這是不是過寬。**維持 ARCH-093 的規則。**
+理由:`rwe-` 保留前綴的目的是讓引擎自己的檔案在工作區裡不可能被使用者內容冒名;
+只擋資產名不擋內部檔案,等於留下一條用巢狀路徑繞過的路。
+代價是作者不能用這個前綴命名檔案,寫進 `workflow_authoring_guide` 講明即可。
+
+### A-6 [11] — 測試數不足是對 `/goal` 明示要求的違反,必須補滿
+
+`run-list.test.ts` 3 例(dod 要 ≥10)、`run-store-audit.test.ts` 4 例(dod 要 ≥8)。
+實作者按 TDD 紀律沒自己補測試是對的,但這個缺口不能留:
+`/goal` 明寫「測項深度廣度和測項數都要詳細一些用來卡住 sonnet/opus 出錯」——
+測試數就是這一輪的主要防線,少一半等於防線少一半。補滿並含 dod 點名的
+`EXPLAIN QUERY PLAN`、組合過濾、`InMemoryRunStore.list` 對照手寫陣列、
+owner-only 投影、absent-not-`[]` 各案。
+
+### A-7 其餘各條的處置
+
+- **[3] `asset-sync.ts` 兩個 TASK 重疊** — 依實作者建議:TASK-144 在既有 `pathVerdict`
+  接線上續建,不得重新引入 `safeRelPath`。寫進 TASK-144 的 dod。
+- **[5][15] v15 舊測試三檔無人認領** — 建 TASK-154 認領。這正是「退場了卻留著」的類別,
+  不明確指派就會再一次被靜默略過(`errors.ts` 的檔頭註解早就預告了)。
+- **[7] `AuditAction` 用平的字面聯集** — 正確的臨時解(`TOOL_SPECS` 還不是 `as const`,
+  `Extract` 會靜默變成 `never`)。等 TOOL_SPECS 收斂為 `as const` 再換,寫進 TASK-155 的 dod。
+  「靜默變成 never」值得記:那是編譯器不會抗議的錯誤型別,和第 16 例同一種危險。
+- **[8] `RefusalReason`** — 從 `types.ts` 匯入,不得各自重宣告。
+- **[9] webhook 的 `workflow` NOT NULL** — 舊 db 升級會炸,實作者沒寫沒測過的 migration 是對的。
+  建 TASK-156 補「重建表」migration **連同升級測試**。
+- **[10] `audited-read` 的 port 形狀是實作者自創** — 誠實揭露,好。由 TASK-157 統一成
+  `workspace-artifacts.ts` 真實的 `(workspace, path, offset, length)`。
+- **[14][18] `UserOverrides` 變巢狀後,admission 期的 `mergeRunParams`/`defaultRunParams` 無人調和**
+  — 這是 tsc 轉綠的必經之路,建 TASK-158。
+- **[16] `trigger-claims.test.ts` 把 `{result,error}` 信封當成 `{id}` 解構** — 測試缺陷確認
+  (`:29/:41/:52` 三處),歸 TASK-148 修。
+- **[21] `workflow-meta.ts` 三處 2 參數呼叫 3 參數函式** — 確認,`:55/:69/:72`。
+  最高嚴重度,沒有 meta.params 的 script 全部註冊失敗。歸 TASK-159。
+
+### 本輪狀態(給 Gate 6 的實話)
+
+`tsc` 119 錯、68 個測試檔 / 247 個測試紅。批次是中段,不是收尾。
+下一批 impl 的目標就是把上面這些關掉,不是新功能。

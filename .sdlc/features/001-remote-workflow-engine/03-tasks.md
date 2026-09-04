@@ -1026,7 +1026,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **traces:** ARCH-087
 - **files:** src/tool-specs.ts, tests/unit/tool-specs.test.ts
 - **des:** DES-138
-- **dod:** `npx vitest run tests/unit/tool-specs.test.ts` → ≥12 green incl. `TOOL_SPECS.length === 35`, the REQ-107 prefix rule, none of the 15 old names present, "a description containing /admin/i has `minRole:'admin'`", `run_start`'s two REQ-117 trap sentences as literals, and every `fixture` arg-set resolving to a named mode (never `'invalid'`).
+- **dod:** `npx vitest run tests/unit/tool-specs.test.ts` → ≥12 green incl. `TOOL_SPECS.length === 35`, the REQ-107 prefix rule, none of the 15 old names present, "a description containing /admin/i has `minRole:'admin'`", `run_start`'s two REQ-117 trap sentences as literals, and every `fixture` arg-set resolving to a named mode (never `'invalid'`). Restore `seed`, `seedManifest`, `seedRef` and `seedManifestRef` to the `run_start` row's `inputSchema` with the `SEED_*` errors — only `seedNamespace` was meant to go (ADR-028 derives it from the principal). Leaving them out makes the TASK-153 plugin doc advertise `run_start({seedManifestRef})` against an engine that rejects it, and pins the REQ-117 seed probe at UNVERIFIED (adjudication v24 #2 A-2).
 - **estimate:** L
 - **iter:** v24
 
@@ -1062,7 +1062,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **traces:** ARCH-094
 - **files:** src/params/contract.ts, tests/unit/params-contract.test.ts, tests/unit/params-overrides.test.ts
 - **des:** DES-144, DES-145
-- **dod:** `npx vitest run tests/unit/params-contract.test.ts tests/unit/params-overrides.test.ts` → ≥30 + ≥20 green (each new code; every ceiling REFUSED at registration, never clamped; `DEFAULTS_RETIRED` from both `meta.params.knobs` and `meta.defaults`; `UNKNOWN_AGENT_LABEL.detail.known` listed) and `grep -c "knobs" src/params/contract.ts` → 0.
+- **dod:** `npx vitest run tests/unit/params-contract.test.ts tests/unit/params-overrides.test.ts` → ≥30 + ≥20 green (each new code; every ceiling REFUSED at registration, never clamped; `DEFAULTS_RETIRED` from both `meta.params.knobs` and `meta.defaults`; `UNKNOWN_AGENT_LABEL.detail.known` listed) and `grep -cE "^\\s*knobs\\??:" src/params/contract.ts` → 0 — the ban is on `knobs` as a TYPE FIELD, not on the substring: DES-144 REQUIRES `raw.knobs !== undefined` to return `DEFAULTS_RETIRED`, so the literal word must appear for the retirement check to exist at all. The original bare-substring dod could only be satisfied by deleting that check or obfuscating the identifier; the implementer refused both and reported the contradiction (adjudication v24 #2 A-1).
 - **estimate:** L
 - **iter:** v24
 
@@ -1099,7 +1099,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **traces:** ARCH-092
 - **files:** src/store/sqlite-run-store.ts, src/run-store.ts, src/types.ts, tests/integration/run-list.test.ts, tests/integration/run-store-audit.test.ts, tests/unit/audit-order.test.ts
 - **des:** DES-151, DES-152
-- **dod:** `npx vitest run tests/integration/run-list.test.ts tests/integration/run-store-audit.test.ts tests/unit/audit-order.test.ts` → ≥10 + ≥8 + ≥4 green incl. `EXPLAIN QUERY PLAN` naming `runs_name_status_created`, `InMemoryRunStore.list` parity against a hand-written expected array, and the recording-fake order `['appendAudit','readArtifactChunk']`.
+- **dod:** `npx vitest run tests/integration/run-list.test.ts tests/integration/run-store-audit.test.ts tests/unit/audit-order.test.ts` → ≥10 + ≥8 + ≥4 green incl. `EXPLAIN QUERY PLAN` naming `runs_name_status_created`, `InMemoryRunStore.list` parity against a hand-written expected array, and the recording-fake order `['appendAudit','readArtifactChunk']`. The shipped `run-list.test.ts` (3 cases) and `run-store-audit.test.ts` (4 cases) fall short of this dod's own ≥10 and ≥8. Fill them — the /goal makes test COUNT and depth this iteration's primary defence against the lower executor tier, so half the cases is half the defence (adjudication v24 #2 A-6).
 - **estimate:** L
 - **iter:** v24
 
@@ -1135,7 +1135,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **traces:** ARCH-102
 - **files:** src/asset-sync.ts, tests/unit/asset-sync-v24.test.ts, tests/integration/asset-mcp-tools.test.ts
 - **des:** DES-153
-- **dod:** `npx vitest run tests/unit/asset-sync-v24.test.ts tests/integration/asset-mcp-tools.test.ts` → ≥20 + rewrite green incl. an `http` MCP config outside the allowlist ⇒ `EGRESS_DENIED` with the probe spy asserting ZERO probe calls, FS-written-then-row order proven by a recording catalog fake, and `pushedBy` present on every stored row.
+- **dod:** `npx vitest run tests/unit/asset-sync-v24.test.ts tests/integration/asset-mcp-tools.test.ts` → ≥20 + rewrite green incl. an `http` MCP config outside the allowlist ⇒ `EGRESS_DENIED` with the probe spy asserting ZERO probe calls, FS-written-then-row order proven by a recording catalog fake, and `pushedBy` present on every stored row. Build on the `pathVerdict(targetDir, path, undefined, 'asset-tree')` wiring TASK-134 already landed; do NOT reintroduce the private `safeRelPath` copy it deleted (adjudication v24 #2 A-7). The per-file `rwe-` first-segment rejection is INTENTIONAL defence in depth and stays (A-5) — a file named `rwe-notes.txt` inside an otherwise-allowed asset is refused, and `workflow_authoring_guide` says so.
 - **estimate:** L
 - **iter:** v24
 
@@ -1171,7 +1171,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **traces:** ARCH-091
 - **files:** src/mcp-facade.ts, src/run-manager.ts, tests/integration/workspace-tools.test.ts, tests/integration/trigger-claims.test.ts, tests/e2e/admin-cross-read.test.ts, tests/e2e/register-crash-window.test.ts
 - **des:** DES-149, DES-151, DES-152, DES-155
-- **dod:** `npx vitest run tests/integration/workspace-tools.test.ts tests/integration/trigger-claims.test.ts` → ≥25 + ≥20 green incl. every `workspace_*` mode's happy and refusal path, `runId` on push refused BY THE SCHEMA, all-or-nothing `workspace_delete`, `RUN_NOT_TERMINAL` against a live sandbox run, and the compensation releasing ONLY the ids this call claimed (an id already `'held'` by an earlier version stays claimed).
+- **dod:** `npx vitest run tests/integration/workspace-tools.test.ts tests/integration/trigger-claims.test.ts` → ≥25 + ≥20 green incl. every `workspace_*` mode's happy and refusal path, `runId` on push refused BY THE SCHEMA, all-or-nothing `workspace_delete`, `RUN_NOT_TERMINAL` against a live sandbox run, and the compensation releasing ONLY the ids this call claimed (an id already `'held'` by an earlier version stays claimed). Also fix `tests/integration/trigger-claims.test.ts` lines 29/41/52, which destructure `const { id } = await port.create(...)` off a `{result, error}` envelope — `id` is `undefined` so every `claim()` resolves NOT_FOUND. That is a test defect, not a scheduler defect: the claim/release/ownerOf implementation was verified against DES-149 independently (adjudication v24 #2 A-7).
 - **estimate:** L
 - **iter:** v24
 
@@ -1218,4 +1218,58 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **des:** DES-138, DES-142
 - **dod:** From a checkout of the plugin: `grep -rlE "workflow_run|workflow_get|blob_put|mcp_provision|namespace=" .` → EMPTY; the guidance skill lists exactly the 35 `TOOL_SPECS` names. Recorded as the REQ-117 probe precondition in 08-validation.md; if unmet at Gate 7.5 the probe is `UNVERIFIED(client plugin not synced)`, never run against a stale surface.
 - **estimate:** M
+- **iter:** v24
+
+### TASK-154 — retire the three v15-era harness-`defaults` test files that `DEFAULTS_RETIRED` invalidates
+- **status:** draft
+- **traces:** ARCH-094, ADR-035
+- **files:** tests/integration/harness-defaults-validation.test.ts, tests/acceptance/val-098-harness-defaults.test.ts, tests/acceptance/val-103-effort-real.test.ts, src/errors.ts
+- **des:** DES-144, DES-148
+- **dod:** Every assertion that exercised the v15 `defaults`/`knobs` registration path is DELETED or rewritten against `meta.params.agents.<label>` — none is left asserting `HARNESS_DEFAULTS_INVALID` as a live code. A test that named a retired mechanism and still passes is worse than a red one: `grep -rn "HARNESS_DEFAULTS_INVALID" tests/` → only rows asserting it is GONE. `src/errors.ts`'s header comment, which forewarned exactly this breakage, is updated to say it happened. Run the three files → green, and state the case count before/after in 06-impl-log.md so a silent mass-deletion is visible.
+- **estimate:** M
+- **iter:** v24
+
+### TASK-155 — `TOOL_SPECS` as const, `AuditAction` via `Extract<ToolName,…>`, and the `errors[]` reconciliation
+- **status:** draft
+- **traces:** ARCH-087, ARCH-092
+- **files:** src/tool-specs.ts, src/types.ts
+- **des:** DES-137, DES-151
+- **dod:** `TOOL_SPECS` is `as const` so `ToolName` is a literal union, and `AuditAction` becomes DES-151's `Extract<ToolName, …>` form — verify it did NOT silently resolve to `never` by asserting a value of the type compiles AND that an invalid member is a type error (a type that is `never` accepts nothing and would pass a shallow check). `UNKNOWN_VERSION` → `VERSION_NOT_FOUND` and `SEEDREF_EGRESS_DENIED` → `EGRESS_DENIED` everywhere including tests (`grep -rn "UNKNOWN_VERSION\|SEEDREF_EGRESS_DENIED" src/ tests/` → empty). Every code thrown by live `src/` appears in the `errors[]` of the row whose tool can throw it — at minimum SEEDREF_*, CAS_UNAVAILABLE, NESTING_*, DESCENDANT_CAP_EXCEEDED, REGISTRATION_CONFLICT, VERSION_CEILING_EXCEEDED, PARAM_SECRET_UNAVAILABLE, RUN_ADMISSION_LIMIT, INVALID_SEED_SPEC, SEED_SOURCE_CONFLICT, each justified by the call site that throws it.
+- **estimate:** M
+- **iter:** v24
+
+### TASK-156 — webhook store: rebuild the table so a pre-v24 db accepts an unclaimed row
+- **status:** draft
+- **traces:** ARCH-100
+- **files:** src/webhook-registry.ts, tests/integration/webhook-migration.test.ts
+- **des:** DES-150
+- **dod:** A test that CREATES a pre-v24 schema (`workflow` NOT NULL), writes a row, then opens the store and calls `create({})` with no workflow → succeeds, and the pre-existing row survives with its data intact. SQLite cannot drop NOT NULL via ALTER, so this is a create-copy-drop-rename rebuild; the test must fail against today's code first. Migration is idempotent: run the constructor twice, assert no duplicate rows and no error.
+- **estimate:** M
+- **iter:** v24
+
+### TASK-157 — reconcile `AuditReadStore.readArtifactChunk` with the real `workspace-artifacts` signature
+- **status:** draft
+- **traces:** ARCH-092
+- **files:** src/audited-read.ts, src/mcp-facade.ts, tests/unit/audit-order.test.ts
+- **des:** DES-151
+- **dod:** One signature, not two: the port matches `workspace-artifacts.ts`'s real `readArtifactChunk(workspace, path, offset, length)` (the invented `{runId, owner, path}` object shape was the implementer's own admission — adjudication v24 #2 A-7). `workspace_pull`, `run_agent_log` and `run_result` go through the audited path in the facade, and audit-order.test.ts still pins `['appendAudit','readArtifactChunk']` — the audit row is written BEFORE bytes are read (ARCH-091 note 2: an audit row for a read that did not happen is acceptable, the reverse is not).
+- **estimate:** M
+- **iter:** v24
+
+### TASK-158 — admission-time param merge reconciled with the nested `UserOverrides`
+- **status:** draft
+- **traces:** ARCH-095
+- **files:** src/params/resolve.ts, src/run-manager.ts, src/run-store.ts, src/store/sqlite-run-store.ts, tests/unit/params-resolve.test.ts
+- **des:** DES-145, DES-146
+- **dod:** `mergeRunParams`/`defaultRunParams` (DES-102, admission time) accept DES-145's `{agents?: Record<label, Partial<…>>}` instead of the flat pre-v24 shape; `npx tsc --noEmit` reports ZERO errors in these files. A test pins that a per-agent override reaches admission for that label ONLY and does not leak to a sibling agent — the flat shape's whole defect (REQ-110) was that one value applied to every agent, so a merge that silently broadcasts must fail.
+- **estimate:** L
+- **iter:** v24
+
+### TASK-159 — `workflow-meta.ts`: the three 2-arg calls into the 3-arg `parseParamContract`
+- **status:** draft
+- **traces:** ARCH-094
+- **files:** src/workflow-meta.ts
+- **des:** DES-144
+- **dod:** HIGHEST SEVERITY of the Gate 5 batch — `:55`, `:69` and `:72` pass `aliasNames` into the `scriptLabels` slot, so EVERY registration whose script omits `meta.params` throws `AGENT_UNDECLARED` naming label "undefined". All three call sites pass `scanAgentCalls(script).labels`. A test registers a script with `agent()` calls and NO `meta.params` and asserts it registers (this is the case the bug makes impossible); it must be red before the fix.
+- **estimate:** S
 - **iter:** v24
