@@ -675,14 +675,17 @@ export class WorkflowCatalog {
     return { channel, version, from };
   }
 
-  async list(): Promise<Array<{ name: string; version: string; createdAt: string; description: string; params: ParamContract | undefined; versions: string[]; channels: Channels }>> {
+  async list(): Promise<Array<{ name: string; version: string; createdAt: string; owner: string | null; description: string; params: ParamContract | undefined; versions: string[]; channels: Channels }>> {
     // v9 (REQ-061): surface each workflow's purpose (meta.description) so a client can see WHAT each
     // one does without reading its script — parsed on-demand from the stored script (always in sync).
     // v22 (DES-111): `version`/`description`/`params` describe the RELEASE channel's version when
     // published, else `beta`, else the newest registered version (a draft with no channel is still
     // visible in the listing, just not runnable by name yet).
-    const rows = this._db.prepare('SELECT name, createdAt, release_version, beta_version FROM workflows').all() as Array<{
-      name: string; createdAt: string; release_version: string | null; beta_version: string | null;
+    // v24 adjudication #6 F-4: `owner` joins the projection. `workflow_list` has advertised an
+    // `owner` field since v24 and this query never selected the column, so every caller read
+    // `null` — "this workflow has no owner" — for every workflow on every deployment.
+    const rows = this._db.prepare('SELECT name, createdAt, owner, release_version, beta_version FROM workflows').all() as Array<{
+      name: string; createdAt: string; owner: string | null; release_version: string | null; beta_version: string | null;
     }>;
     return rows.map((r) => {
       const versions = this._listVersions(r.name);
@@ -692,7 +695,7 @@ export class WorkflowCatalog {
         ? (this._db.prepare('SELECT script, params FROM workflow_versions WHERE name = ? AND version = ?').get(r.name, version) as { script: string; params: string | null } | undefined)
         : undefined;
       return {
-        name: r.name, version, createdAt: r.createdAt,
+        name: r.name, version, createdAt: r.createdAt, owner: r.owner,
         description: parseMeta(vrow?.script ?? '').description,
         params: vrow?.params ? JSON.parse(vrow.params) as ParamContract : undefined,
         versions, channels,

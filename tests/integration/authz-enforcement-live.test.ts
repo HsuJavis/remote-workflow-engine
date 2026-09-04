@@ -203,4 +203,22 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     expect(row?.refusalCount ?? 0).toBe(0);
     expect(typeof row?.lastRunId).toBe('string');
   });
+
+  // v24 adjudication #6 F-4: `workflow_list` advertises `{name, owner, versions, channels,
+  // runnable}` and `owner` was `null` for every caller on every deployment — `catalog.list()` never
+  // selected the column, and the facade's `(w as unknown as {owner?}) ?? null` cast kept tsc quiet
+  // about the missing field. The manuals had been amended to say "owner comes from
+  // workflow_describe", i.e. documentation bent to fit the defect. This is the only tier that can
+  // observe it: an auth-DISABLED boot stores `owner` NULL legitimately, so `null` there is correct
+  // and tells you nothing.
+  it('workflow_list reports the REGISTERING principal as owner, not null (F-4)', async () => {
+    const rows = (await callTool('workflow_list', {}, aliceToken))['result'] as Array<{ name: string; owner: string | null }>;
+    const mine = rows.find((r) => r.name === WF);
+    expect(mine, 'the fixture workflow is missing from the listing').toBeDefined();
+    expect(mine!.owner).toBe(ALICE);
+    // …and the same row read by ANOTHER author still names the owner (`owner` is on REQ-100's
+    // non-owner allowlist — it is how a reader knows whose workflow this is).
+    const bobsView = (await callTool('workflow_list', {}, bobToken))['result'] as Array<{ name: string; owner: string | null }>;
+    expect(bobsView.find((r) => r.name === WF)?.owner).toBe(ALICE);
+  });
 });

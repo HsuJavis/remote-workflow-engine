@@ -718,7 +718,8 @@ running→interrupted (resumable)`）；`run_resume({runId})` 即可續跑。已
 作用可能重複，由工作流程作者負責冪等性。
 
 **重用前先看用途（`workflow_describe`）**：`workflow_list` 每筆回傳 `{name, owner, versions,
-channels, runnable}`（從不含腳本本文；`owner` 欄位一律是 `null`，擁有者請看 `workflow_describe`；`user`
+channels, runnable}`（從不含腳本本文；`owner` 是註冊者的身分——啟用驗證時為登入的 email，
+關閉驗證且未帶 `args.principal` 時該工作流程本來就沒有擁有者、該欄為 `null`；`user`
 角色預設只列可執行的工作流程、`author`／`admin` 預設列全部，`onlyRunnable` 可明確指定）；腳本本文只有 `workflow_source({name, version?})` 這一個
 出口（需 `author` 角色，非擁有者拿到 `scriptWithheld:true`）；
 **`workflow_describe({name})` 是給「要不要用這個工作流程」的人看的單一說明面**

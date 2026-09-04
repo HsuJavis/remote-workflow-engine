@@ -38,8 +38,8 @@
   錯誤訊息會指出要改寫到 `meta.params.agents.<label>.<key>.default`。
 - **已知工作流程探索**：`workflow_register`/`workflow_publish`/`workflow_list`/`workflow_deregister`/
   `workflow_authoring_guide`（引擎用自己的強制常數渲染的作者指南，也就是 `docs/AUTHORING.md`）。
-  `workflow_list` 每筆是 `{name, owner, versions, channels, runnable}`；`owner` 欄位一律回 `null`，擁有者請看
-  `workflow_describe`。`user` 角色預設只看得到可執行（已發布 `release`）的工作流程，`author`／`admin` 預設看全部；
+  `workflow_list` 每筆是 `{name, owner, versions, channels, runnable}`；`owner` 就是註冊者的身分
+  （啟用驗證時是登入的 email；在關閉驗證且未帶 `args.principal` 的部署上註冊的工作流程本來就沒有擁有者，該欄為 `null`）。`user` 角色預設只看得到可執行（已發布 `release`）的工作流程，`author`／`admin` 預設看全部；
   `onlyRunnable:true|false` 可明確指定。
   讀腳本本文的工具是 `workflow_source`（需要 `author` 角色；非擁有者拿到 `scriptWithheld:true` 的遮蔽投影），
   「這個工作流程在做什麼」則一律看 `workflow_describe`（見下）。

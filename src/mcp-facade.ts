@@ -491,7 +491,9 @@ export class McpFacade {
     const workflows = await this.runManager.catalog.list();
     const onlyRunnable = a.onlyRunnable ?? (principal.kind === 'user');
     const rows = workflows
-      .map((w) => ({ name: w.name, owner: (w as unknown as { owner?: string | null }).owner ?? null, versions: w.versions, channels: w.channels as unknown as Record<string, string>, runnable: (w.channels as unknown as { release?: string | null })?.release != null }))
+      // v24 adjudication #6 F-4: `w.owner` directly — the `as unknown as {owner?}` cast this line
+      // used to carry is what let tsc stay green while `catalog.list()` had no `owner` field at all.
+      .map((w) => ({ name: w.name, owner: w.owner, versions: w.versions, channels: w.channels as unknown as Record<string, string>, runnable: (w.channels as unknown as { release?: string | null })?.release != null }))
       .filter((w) => !onlyRunnable || w.runnable);
     return { runId: '', status: 'completed', result: rows };
   }
