@@ -5476,3 +5476,139 @@ DES-137 的鎖只查「程式碼丟的碼有沒有在 spec 裡」(正向),
 
 派**一個** opus 整合者,全檔案範圍,不切割。目標明確:tsc 0、消掉紅、把上面的接縫接上。
 它不需要問「這是不是我的檔案」—— 那正是前三批卡住的原因。
+
+---
+
+## Orchestrator adjudication (v24) #5 — Gate 7.5 的 13 個缺陷與 6 項待決 (2026-09-04)
+
+Gate 7.5 **未通過,而這是對的**。它把系統真的跑起來,挖出 13 個缺陷,
+其中至少 5 個**只有真跑才看得見**(單元測試全綠、tsc 全清的情況下)。
+這一關的價值在此:mock 綠不等於系統會動。
+
+### E-0 冷模型實驗(REQ-117)—— 差一步
+
+實驗確實跑了(VAL-140,US$2.65,61 turns,233 秒),受測環境正確:
+`/tmp/rwe-cold-g1ITgN`、上溯無 `CLAUDE.md`、該路徑無記憶、`--strict-mcp-config`、
+只給任務敘述與 MCP 連線。**污染陷阱避開了。**
+
+結果:它**寫出了**一個三 agent 的 planner→writer→reviewer 工作流,含 Mermaid,
+註冊、發布、執行、讀回正確結果 —— **但不是第一次就對**。
+
+第一次 `workflow_register` 失敗:`PARAM_CONTRACT_INVALID: default not a known alias:
+claude-haiku-4-5-20251001`。它從 `models_list` 拿了一個 model id,
+因為**整個介面沒有任何地方說這個部署接受哪些 alias 名稱** ——
+guide 只在 `UNKNOWN_ALIAS` 規則行提過 alias,「Engine ceilings」段落列了三個上限卻沒列 aliases,
+沒有任何工具 schema 列出它們,而 `models_list` 列的是 catalog 模型不是 aliases。
+它第二次靠猜 guide 範例裡的 `default` 才過。
+
+**依 REQ-117 自己的規則,這就是文件缺陷(D-12),本輪驗收未過。**
+這正是擁有者定的判準:「一次要寫對,如果有錯要檢討那邊說明不夠」。
+檢討結果明確:**可用的 alias 名稱必須出現在介面上** ——
+`workflow_authoring_guide` 的 ceilings 段落加列 aliases,或給 schema 一個 enum。
+修完**換另一個全新實例重跑**,這一個已經污染。
+
+### E-1 D-11:一個鍵名之差,把 ADR-030 的 fail-closed 整個繞過 —— 最高優先
+
+已在原始碼確認:
+```
+tool-specs.ts:161  pushMode        config.transport === 'stdio'
+mcp-probe.ts:23    classifyTransport   cfg.type    === 'stdio'
+```
+探測器認得的形狀是 `{type:'stdio'}`,而 `pushMode` 找的是 `transport`,
+於是這個 config 落到 `'asset'` 分支(`minRole:'author'`)——
+**管理者專屬的閘門根本沒有執行**,而探測真的 spawn 了作者提供的命令。實測發生過。
+
+這正是 REQ-109 最後一句點名的那一類:「宣稱是 Admin tool 卻什麼都不檢查」。
+我在裁定 #1 A-3 採 fail-closed 時說過「查得到不等於擋得住」——
+現在連擋都沒擋,因為兩處讀了不同的鍵。**兩處統一讀 `type`,並補一個測試釘住
+「作者推 stdio 一定被拒」**,而不是只測 pushMode 的回傳值。
+
+### E-2 D-8:v24 的核心功能從來沒有送到使用者面前
+
+`workflow-catalog.ts:620` 的 `SELECT script, defaults, params, triggers` **沒有 `mermaid`**。
+欄位寫得進去、永遠讀不出來,所以每一個 v24 工作流的 `workflow_describe(...).mermaid` 都是 `null`,
+dashboard 上一張圖都沒有。
+
+「作者供圖、引擎雙向held住」是整個 v24 最主要的使用者可見功能,
+它通過了註冊檢查、存進了資料庫,然後**在交付介面上消失**。
+
+`UT-157` 綠,因為它拿**手工建的列**測投影 —— 測試從沒經過真正的讀取路徑。
+這是 oracle 問題的又一次:**測試驗的是自己造的資料,不是系統真的存了什麼。**
+修正時測試必須從真的 `register` 走到真的 `describe`。
+
+### E-3 D-10:跨 principal 的資料外洩,實測成立
+
+`workflow_deregister` 刪掉 `assets` 資料列,但**磁碟上的 `<assetRoot>/<name>/` 原封不動**。
+實測:`other@` 用同名重新註冊、宣告 `skills:['declared-skill']`(它自己從沒推過,
+`workspace_list` 顯示 `[]`),執行後**前一個擁有者的 `SKILL.md` 被掛進它的 agent 工作區**,
+位元組完全相同。
+
+擁有權模型在資料庫層成立、在檔案系統層不成立。**deregister 必須連磁碟一起清。**
+
+### E-4 D-1 / D-1b:擁有者親自裁定的觸發器模型沒有被實作
+
+擁有者的原話:「要先建立好 trigger 方式(e.g. webhook/schedule),然後再把回傳的 id
+傳入 workflow register 的欄位中」。REQ-115 第一款、ARCH-099/100、ADR-026 場景 S-5 全都這樣寫。
+
+實際上 `schedule_create`/`webhook_create` **兩列都把 `workflow` 設成必填**,
+所以「先建立一個還沒有人認領的觸發器」根本做不到 —— 儲存層支援(`scheduler.ts:243`),
+只有工具列擋著。
+
+Gate 7.5 問「這是缺陷還是沒記錄的設計變更」。**裁定:是缺陷。**
+帳本裡沒有任何一條裁定改過這個模型,而擁有者的裁定是明確的。
+
+更嚴重的是 D-1b:建立時就綁定的觸發器,`workflow_deregister` **不會釋放**
+(`releasedTriggers: []`,`claimedBy` 還留著已刪除的名字)。
+實測:同名重新註冊後,一個真的 cron 在 47 秒後為新註冊的工作流觸發了一次執行 ——
+**這就是 ADR-026 當初點名要防的幽靈觸發**。
+
+### E-5 D-2:我在裁定 #2 A-2 要求的「拒絕而非忽略」沒有被實作
+
+`workflow_register({defaults:{model:'default'}})` 回 `status:"completed"`,
+退場的欄位**被接受並靜默忽略**。REQ-110 最後一款要求回 `DEFAULTS_RETIRED`
+(`meta.params.knobs` 有做到,`meta.defaults` 沒有)。
+
+我當時寫的理由現在原封不動成立:冷模型拿舊範例會從帳單才發現旋鈕沒作用。
+
+### E-6 D-3 / D-4 / D-5:錯誤訊息與手冊的三個洞,全都直接打擊 REQ-117
+
+- **D-3**:`errors.ts:132` 的 `toErrEnvelope` 會從 `ERROR_CATALOG` 組出 `see` 指標,
+  但 `mcp-facade.ts:100` **另外有一個自己的 `toErrEnvelope`**,它的 `ErrEnvelope` 沒有 `see`,
+  而每個 `workflow_*` handler 呼叫的是後者 —— 指標永遠到不了線上。
+  「同一個概念有兩份實作,錯的那份是被呼叫的那份」。
+- **D-4**:guide 說「只有三種節點形狀」,但 `checkMermaid` 實際接受五種
+  (`{"…"}` 條件、`{{"…"}}` 非-agent 彙總都實測註冊成功),
+  也沒提 `<br/>` 三元組、一邊一行、虛線=跳過。REQ-116 要求「REQ-112 的完整詞彙」。
+  **手冊教的比引擎接受的少 —— 冷模型會以為自己不能用那兩種形狀。**
+- **D-5**:`workspace_push` 廣告 `WORKSPACE_ESCAPE`/`RESERVED_PREFIX`,
+  實際回 `AssetPathEscapeError`(裸的 JS class 名,不在 ERROR_CATALOG 裡)。
+  **寫入確實被拒了,洩漏的只是錯誤碼** —— 但冷模型只看得到錯誤碼。
+
+### E-7 D-6 / D-7 / D-9 / D-13:Gate 7.5 問我要不要本輪修
+
+**裁定:D-6、D-7、D-13 本輪修**(都是幾行,而且三個全都是「廣告的與實際的不一致」,
+正是本帳本數到第 18 例的那一類,放著只會變第 19 例):
+- D-6:`HOOKS_UNSUPPORTED` 廣告了但不可達 → 要嘛讓它可達,要嘛從 `errors[]` 移除。
+- D-7:`workflow_describe` 接受 `version`/`channel` 卻只廣告 `name` → schema 補上。
+- D-13:全域資產應標 `builtin:true`,現在是 `false`。
+
+**D-9 不在本輪修,但必須記成已知缺陷。** 一次不可重現的
+suspend→resume→failed,而且 agent 的工作在終態之後還在跑、8 分鐘後才產出真實輸出
+(run `3977b82d`)。**孤兒工作**比 failed 本身嚴重。
+它是 v1 REQ-006 的回歸、非決定性、未歸因到根因 —— 在沒有可靠重現前修它是猜。
+開一個 issue 帶上 run id 與時間戳,列進 v25。
+
+### E-8 其餘待決
+
+- **帳本 ID 撞號**:`08-validation.md` 的 v23 VAL-118..127 和 `05-tests.md` 的 v24 VAL-118..127
+  在 `trace.py` 裡互相遮蔽(後讀的檔勝出),v24 那批對 dashboard 是隱形的。
+  **裁定:重新編號 05 那批**,不接受「隱形但存在」。
+- **REQ-117 的 harness**:`claude -p --strict-mcp-config --setting-sources local`、
+  cwd 在任何 project 之外 —— **確認可用**,它正是避開污染的正確做法。
+  TASK-153 未同步的那個變體維持 `UNVERIFIED(client plugin not synced)`。
+- **8 個孤兒 litellm 行程**(報告寫 6,實際 8,各約 250MB)—— 我清掉。
+- **生產服務 `rwe.service`(PID 3652391,0.0.0.0:8899)正在跑這個 repo 的工作樹**,
+  載入時間 01:33,**早於本輪每一個 commit**。
+  它現在服務的是舊碼;但只要它重啟(當機、開機、自我更新),
+  就會載入磁碟上這份**還沒通過 Gate 8 的**程式碼。
+  **這是擁有者的決定,我不動它** —— 但必須讓擁有者知道這個風險存在。
