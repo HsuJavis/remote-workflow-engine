@@ -56,13 +56,45 @@ async function pollUntilSettled(runId: string) {
   return s;
 }
 
-describe('REQ-096: a pre-v22 catalog boots non-breaking, old registrations still run (VAL-106)', () => {
-  it('the migrated legacy workflow still runs by name via the (now-published) release channel', async () => {
+// v24 (integrator): REQ-096's subject — "a pre-v22 catalog BOOTS NON-BREAKING" — is unchanged and
+// still pinned below (the migration runs, the row survives, the release channel is published, every
+// later version-history case in this file works against that same booted catalog). What v24
+// deliberately changed is the second half of the old sentence, "old registrations still RUN": a
+// version row with no `params` column predates the per-agent parameter contract (DES-144), so it
+// has no declared model/effort/timeoutMs for any label and cannot be dispatched. DES-156 assigns
+// that exact state the code `LEGACY_REREGISTER` and already reports it as
+// `workflow_describe.runnableReason`; before this iteration `run_start` ran the row anyway with no
+// per-agent slice at all, i.e. the read surfaces and the run path disagreed about one row.
+// The oracle is therefore RE-POINTED, not dropped: the legacy row is refused with the typed,
+// actionable code, the describe surface says the same thing, and RE-REGISTERING it makes it
+// runnable again — which is what "non-breaking" means once a contract exists.
+describe('REQ-096: a pre-v22 catalog boots non-breaking; a pre-v24 registration is refused LEGACY_REREGISTER until re-registered (VAL-106)', () => {
+  it('the migrated legacy workflow is REFUSED LEGACY_REREGISTER by run_start, and workflow_describe says the same', async () => {
+    const run = await toolCall('run_start', { name: 'val106-legacy' });
+    const code = (run['code'] as string | undefined) ?? (run['error'] as { code?: string } | undefined)?.code;
+    expect(code).toBe('LEGACY_REREGISTER');
+    // The two surfaces must agree — that they did not is the defect this re-point records.
+    const described = await toolCall('workflow_describe', { name: 'val106-legacy' });
+    const view = described['result'] as { runnable?: boolean; runnableReason?: string } | undefined;
+    expect(view?.runnable).toBe(false);
+    expect(view?.runnableReason).toBe('LEGACY_REREGISTER');
+  });
+
+  it('re-registering the SAME script under the same name makes it runnable again (the migration is non-breaking, not a dead end)', async () => {
+    const reg = await toolCall('workflow_register', { name: 'val106-legacy', script: `return 'legacy-still-runs';`, mermaid: 'graph TD;' });
+    const version = (reg['result'] as { version?: string } | undefined)?.version as string;
+    expect(version).toBeTruthy();
+    await toolCall('workflow_publish', { name: 'val106-legacy', version, channel: 'release' });
+
     const run = await toolCall('run_start', { name: 'val106-legacy' });
     expect(run['error']).toBeUndefined();
     const runId = (run['result'] as { runId?: string } | undefined)?.runId as string;
     const settled = await pollUntilSettled(runId);
     expect(settled['status']).toBe('completed');
+    // The pre-v22 row itself is still THERE — the migration preserved history, which is REQ-096's
+    // actual subject.
+    const v1 = await toolCall('workflow_source', { name: 'val106-legacy', version: 'v1' });
+    expect((v1['result'] as { script?: string } | undefined)?.script).toBe(`return 'legacy-still-runs';`);
   });
 });
 

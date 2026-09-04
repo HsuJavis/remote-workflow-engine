@@ -39,8 +39,7 @@ describe('VAL-007: per-agent observability (REQ-007)', () => {
     throw new Error('timed out');
   }
 
-  it('run_status for a completed run includes per-agent entries with required fields', async () => {
-    if (!HAS_PROVIDER) return;
+  it.skipIf(!HAS_PROVIDER)('run_status for a completed run includes per-agent entries with required fields [UNVERIFIED here: no provider configured — set ANTHROPIC_API_KEY or OLLAMA_BASE_URL]', async () => {
     const r = await runAndWait(`
       phase('analyze');
       const result = await agent('say one word: hello', { label: 'greeter' });
@@ -59,8 +58,7 @@ describe('VAL-007: per-agent observability (REQ-007)', () => {
     expect(typeof agent.tokens.output).toBe('number');
   }, 120000);
 
-  it('run_agent_log returns the full transcript of a completed agent', async () => {
-    if (!HAS_PROVIDER) return;
+  it.skipIf(!HAS_PROVIDER)('run_agent_log returns the full transcript of a completed agent [UNVERIFIED here: no provider configured — set ANTHROPIC_API_KEY or OLLAMA_BASE_URL]', async () => {
     const r = await runAndWait(`return agent('Say exactly: OK', {});`);
     const statusView = await callTool('run_status', { runId: r.runId });
     const agentId = (statusView as { agents: Array<{ agentId: string }> }).agents[0].agentId;

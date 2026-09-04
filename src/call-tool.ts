@@ -107,6 +107,17 @@ export async function callTool(
       'INVALID_ARGUMENT: run_resume does not accept `overrides` — a resumed run replays the parameter snapshot pinned at admission (start a new run to change parameters)',
     );
   }
+  // v24 (integrator): `system_info.topN` is the one place two live design statements collide.
+  // DES-077 names the behaviour "clamp-not-reject" (IT-069) AND requires the advertised schema to
+  // carry `minimum:1, maximum:50` so a schema-only consumer knows the range (IT-072/VAL-088);
+  // DES-140 then made the advertised schema authoritative ("validation is whatever
+  // `spec.inputSchema` actually declares"), which turns the documented maximum into a refusal.
+  // Clamping HERE, before validation, honours both: the range stays documented where a cold model
+  // reads it, and an over-range request still succeeds with the 50 rows DES-077 promises. Scoped to
+  // this one field; nothing else in the surface clamps, and nothing else should.
+  if (spec.name === 'system_info' && typeof a['topN'] === 'number') {
+    a['topN'] = Math.min(50, Math.max(1, Math.floor(a['topN'])));
+  }
   const argErr = validateArgs(spec.inputSchema, a);
   if (argErr !== null) return refusalEnvelope('INVALID_ARGUMENT', `INVALID_ARGUMENT: ${argErr}`);
 

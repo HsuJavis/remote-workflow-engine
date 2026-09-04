@@ -49,17 +49,31 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Re
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
 
+
+// v24 (integrator): `UserOverrides` is per-agent (DES-145) and an in-script `effort` is refused
+// (`PARAM_IN_SCRIPT`) — the effort an agent runs at is declared on its label and overridden by
+// label. `run_agent_log` is addressed by that same label (DES-161). Oracles unchanged.
+const LABEL = 'speaker';
+function declaredScript(effortDefault = 'low'): string {
+  return [
+    'export const meta = { params: { agents: { ' + LABEL + ': {',
+    "  model: { type: 'string', default: 'default' },",
+    "  effort: { type: 'enum', enum: ['low','medium','high','xhigh','max'], default: '" + effortDefault + "' },",
+    "  timeoutMs: { type: 'number', default: 60000 } } } } };",
+    "return await agent('" + LABEL + "', { prompt: 'say hi' });",
+  ].join('\n');
+}
+
 describe('REQ-093: effort is real end-to-end, not a documented no-op (VAL-103)', () => {
   // UNGATED — requires no live backend at all (submission-time validation, admission rung).
   it('an out-of-enum effort override (outside low|medium|high|xhigh|max) is refused at submission, before any durable work', async () => {
-    await registerPublishedVia(callTool, 'val103-bad-effort', 'return 1;');
-    const r = await callTool('run_start', { name: 'val103-bad-effort', overrides: { effort: 'super-max' } });
+    await registerPublishedVia(callTool, 'val103-bad-effort', declaredScript());
+    const r = await callTool('run_start', { name: 'val103-bad-effort', overrides: { agents: { [LABEL]: { effort: 'super-max' } } } });
     expect(r.code ?? (r.error as { code?: string } | undefined)?.code).toBe('PARAM_OUT_OF_RANGE');
   });
 
-  it('a real Ollama-backed run at effort:"max" completes with effortApplied recorded (no 400, honest no-op) [requires OLLAMA_BASE_URL]', async () => {
-    if (!HAS_PROVIDER) return;
-    await registerPublishedVia(callTool, 'val103-real-effort', 'return await agent("say hi", {effort:"max"});');
+  it.skipIf(!HAS_PROVIDER)('a real Ollama-backed run at effort:"max" completes with effortApplied recorded (no 400, honest no-op) [requires OLLAMA_BASE_URL] [UNVERIFIED here: no provider configured — set OLLAMA_BASE_URL]', async () => {
+    await registerPublishedVia(callTool, 'val103-real-effort', declaredScript('max'));
     const run = await callTool('run_start', { name: 'val103-real-effort' });
     const runId = run.runId as string;
 
@@ -76,7 +90,7 @@ describe('REQ-093: effort is real end-to-end, not a documented no-op (VAL-103)',
     // naming convention VAL-102/VAL-104 rely on. `run_status` nests agents under `.result.agents`,
     // not top-level `.agents` — polling/reading top-level `.agents` never resolves (test defect fixed
     // at Gate 7.5 v21: the prior version read `s.agents?.[0]?.agentId`, always undefined).
-    const log = await callTool('run_agent_log', { runId, agentId: 'agent-1' }) as { harness?: { effortApplied?: unknown } };
+    const log = await callTool('run_agent_log', { runId, label: LABEL }) as { harness?: { effortApplied?: unknown } };
     expect(log.harness?.effortApplied).toBeDefined();
   }, 25_000);
 

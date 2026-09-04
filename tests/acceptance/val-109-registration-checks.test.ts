@@ -85,8 +85,22 @@ describe('REQ-099: a pre-existing workflow that would now fail is NOT retroactiv
     const db = new Database(dbPath);
     const now = new Date().toISOString();
     db.prepare('INSERT INTO workflows (name, createdAt, owner, release_version) VALUES (?, ?, NULL, ?)').run('val109-stale', now, 'v1');
-    db.prepare('INSERT INTO workflow_versions (name, version, script, createdAt) VALUES (?, ?, ?, ?)')
-      .run('val109-stale', 'v1', `await agent('a', { model: 'now-deprovisioned-alias' }); return 'still-runs';`, now);
+    // v24 (integrator): the seeded row carries a valid v24 PARAM CONTRACT. Without one it is a
+    // pre-v24 row and `run_start` refuses it LEGACY_REREGISTER (DES-144/156) — a correct refusal,
+    // but for a different reason than the one this case is about, which would make the assertion
+    // below pass or fail for the wrong cause. The STALENESS under test lives where it always did:
+    // in the SCRIPT's own `model: 'now-deprovisioned-alias'`, which `validateCurrent` re-checks
+    // against the CURRENT alias table on every read. Both halves of REQ-099's last clause are then
+    // exercised for their own reasons: staleness surfaced, run not retroactively refused.
+    // `sonnet` (this server's ONE configured alias) is the contract default deliberately: v21's
+    // R-G2 re-checks every label's RESOLVED model at admission, so a stale alias in the CONTRACT
+    // would be refused UNKNOWN_ALIAS there and mask the clause under test.
+    const v24Contract = JSON.stringify({
+      agents: { a: { model: { type: 'string', default: 'sonnet' }, effort: { type: 'enum', enum: ['low', 'medium', 'high'], default: 'low' }, timeoutMs: { type: 'number', default: 60_000 } } },
+      args: {},
+    });
+    db.prepare('INSERT INTO workflow_versions (name, version, script, params, createdAt) VALUES (?, ?, ?, ?, ?)')
+      .run('val109-stale', 'v1', `await agent('a', { model: 'now-deprovisioned-alias' }); return 'still-runs';`, v24Contract, now);
     db.close();
 
     const got = await toolCall('workflow_source', { name: 'val109-stale' });

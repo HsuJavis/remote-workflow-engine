@@ -142,8 +142,7 @@ describe('VAL-021: REQ-018 — a resolved secret never appears on any run-worksp
 });
 
 describe('VAL-021: REQ-018 — a real resolved secret works end to end with no byte of it in the transcript', () => {
-  it('a real provisioned MCP config secret resolves and the completed run transcript never contains it', async () => {
-    if (!HAS_PROVIDER) return;
+  it.skipIf(!HAS_PROVIDER)('a real provisioned MCP config secret resolves and the completed run transcript never contains it [UNVERIFIED here: no provider configured — set ANTHROPIC_API_KEY or OLLAMA_BASE_URL]', async () => {
     await mcpCall('workspace_push', {
       scope: 'global', kind: 'mcp', name: 'val021-real-secret-mcp',
       config: { url: 'https://example.com/mcp', headers: { Authorization: 'Bearer ${secret:VAL021}' } },

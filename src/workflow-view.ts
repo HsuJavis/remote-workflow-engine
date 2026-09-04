@@ -124,10 +124,18 @@ export const EXPECTED_DESCRIBE_KEYS = [
   'mermaid', 'mermaidNote', 'runnable', 'runnableReason',
 ] as const;
 
-/** True for the pre-v24 flat `{knobs: {...}}` params contract (ADR-035 retired it) — a workflow
- *  never migrated past registration under that shape cannot be run (LEGACY_REREGISTER). */
+/** True for any version row that predates the v24 per-agent contract — it cannot be run
+ *  (LEGACY_REREGISTER). Two shapes qualify, and the second was MISSING (v24 integrator):
+ *   - the pre-v24 flat `{knobs:{…}}` contract (ADR-035 retired it), and
+ *   - NO contract at all (`undefined`/`null`), which is every pre-v22 row a catalog migration
+ *     carried forward. `insertVersion` writes a contract unconditionally — `{agents:{},args:{}}` at
+ *     minimum — so an absent one means exactly "registered before v24".
+ *  Without the second case `workflow_describe` reported a migrated pre-v22 row as `runnable:true`
+ *  while `run_start` refused it LEGACY_REREGISTER: the read surface and the run path disagreed
+ *  about one row, which is precisely the condition this field exists to make visible. */
 function isLegacyParamsShape(params: unknown): boolean {
-  if (params === null || typeof params !== 'object') return false;
+  if (params === undefined || params === null) return true;
+  if (typeof params !== 'object') return false;
   const p = params as Record<string, unknown>;
   return 'knobs' in p && !('agents' in p);
 }

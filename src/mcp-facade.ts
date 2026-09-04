@@ -375,7 +375,6 @@ export class McpFacade {
     }
     const requested = resolveVersionRequest(sel, full.channels, new Set(full.versions));
     const meta = parseMeta(full.script);
-    const params = readParams(full.params, this.ceilings);
     const check = catalog.validateCurrent(full.script);
     const ownerView: WorkflowOwnerView = {
       name: full.name, version: full.version,
@@ -383,7 +382,14 @@ export class McpFacade {
       channels: full.channels as unknown as Record<string, string>,
       versions: full.versions,
       description: meta.description, phases: meta.phases,
-      params, owner: full.owner, createdAt: full.createdAt,
+      // v24 (integrator): the RAW stored contract, deliberately NOT `readParams`-normalized here.
+      // `readParams` turns an ABSENT contract into `{agents:{},args:{}}`, which erased the one
+      // discriminator `projectWorkflowDescribe` uses to answer `runnableReason:'LEGACY_REREGISTER'`
+      // — so a migrated pre-v22 row reported `runnable:true` while `run_start` refused it. The
+      // projection applies `effectiveAgentBounds` itself (`projectAgentParams`), so nothing is lost
+      // by handing it the raw value; `workflow_source`, which has no runnable field, keeps its own
+      // `readParams` call.
+      params: full.params, owner: full.owner, createdAt: full.createdAt,
       reportProblem: reportProblemFor(full.name, full.owner),
       validation: check.ok ? { ok: true, errors: [] } : { ok: false, errors: check.errors },
       script: full.script,

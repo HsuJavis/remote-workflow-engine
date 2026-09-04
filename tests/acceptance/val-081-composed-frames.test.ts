@@ -58,10 +58,9 @@ async function pollDone(runId: string, maxMs = 8000): Promise<void> {
 }
 
 describe('VAL-081: composed runs carry depth-nested frame cells (REQ-072)', () => {
-  it('REQ-072 frame cells are present in dag payload for a composed run (LLM-gated)', async () => {
+  it.skipIf(!HAS_PROVIDER)('REQ-072 frame cells are present in dag payload for a composed run (LLM-gated) [UNVERIFIED here: no provider configured — set ANTHROPIC_API_KEY or OLLAMA_BASE_URL]', async () => {
     // Requires a real LLM to dispatch agents inside the sub-workflow.
     // The dag cells must include frame cells with name and depth fields.
-    if (!HAS_PROVIDER) return;
 
     // v22: `workflow('val081-sub')` and run-by-name both resolve `release`, so each link in the
     // composition must be PUBLISHED, not merely registered.
@@ -88,9 +87,8 @@ describe('VAL-081: composed runs carry depth-nested frame cells (REQ-072)', () =
     expect(frameCells.some((f) => f.depth === 1)).toBe(true);
   });
 
-  it('nested (depth-2) frame appears inside parent frame in cells (LLM-gated)', async () => {
+  it.skipIf(!HAS_PROVIDER)('nested (depth-2) frame appears inside parent frame in cells (LLM-gated) [UNVERIFIED here: no provider configured — set ANTHROPIC_API_KEY or OLLAMA_BASE_URL]', async () => {
     // Depth-2 composition: main → mid → leaf.
-    if (!HAS_PROVIDER) return;
 
     await registerPublishedVia(callTool, 'val081-leaf', `return await agent('leaf', {});`);
     await registerPublishedVia(callTool, 'val081-mid', `return await workflow('val081-leaf', {});`);

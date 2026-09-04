@@ -42,11 +42,35 @@ async function callToolRaw(name: string, args: Record<string, unknown>): Promise
   return res.text(); // the FULL wire body — not just whatever fields the parsed-object assertions look at
 }
 
+
+// v24 (integrator): every case below migrates onto DES-145's PER-AGENT override shape. `UserOverrides`
+// is closed to `{agents: {'<label>': {...}}}` — the flat v21 spelling is now refused PARAM_UNKNOWN
+// (a v24 improvement: it used to be dropped in silence), which is the code these cases started
+// answering. The ORACLES are unchanged: a locked key is still PARAM_LOCKED, an over-ceiling
+// timeoutMs is still PARAM_OUT_OF_RANGE, and the never-echo invariant is still asserted against the
+// FULL raw wire body. One agent label, `work`, carries the contract for the whole file.
+const LABEL = 'work';
+function declaredScript(extra = ''): string {
+  return [
+    'export const meta = { params: { agents: { ' + LABEL + ': {',
+    "  model: { type: 'string', default: 'default' },",
+    "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
+    '  timeoutMs: { type: \'number\', default: 60000 }' + (extra ? ',' : ''),
+    extra,
+    '} } } };',
+    "return await agent('" + LABEL + "', { prompt: 'go' });",
+  ].filter(Boolean).join('\n');
+}
+
 describe('REQ-091: overrides validated against the contract; locked config unreachable (VAL-101)', () => {
   it('overrides:{prompt} → PARAM_LOCKED, no run row appears in workflow_list, no workspace dir on disk', async () => {
-    await registerPublishedVia(callTool, 'val101-locked', 'return 1;');
+    await registerPublishedVia(callTool, 'val101-locked', declaredScript());
     const before = await runCount();
 
+    // A locked key is PARAM_LOCKED at BOTH levels — inside the label block (ADR-001's type-level
+    // ban made concrete at the wire) and at the top level of `overrides`.
+    const inner = await callTool('run_start', { name: 'val101-locked', overrides: { agents: { [LABEL]: { prompt: 'hijacked' } } } });
+    expect(inner.code ?? (inner.error as { code?: string } | undefined)?.code).toBe('PARAM_LOCKED');
     const r = await callTool('run_start', { name: 'val101-locked', overrides: { prompt: 'hijacked' } });
     expect(r.code ?? (r.error as { code?: string } | undefined)?.code).toBe('PARAM_LOCKED');
     expect(await runCount()).toBe(before);
@@ -54,10 +78,10 @@ describe('REQ-091: overrides validated against the contract; locked config unrea
   });
 
   it('overrides:{timeoutMs: 10_000_000} (out of the engine ceiling) → PARAM_OUT_OF_RANGE, no durable work', async () => {
-    await registerPublishedVia(callTool, 'val101-ceiling', 'return 1;');
+    await registerPublishedVia(callTool, 'val101-ceiling', declaredScript());
     const before = await runCount();
 
-    const r = await callTool('run_start', { name: 'val101-ceiling', overrides: { timeoutMs: 10_000_000 } });
+    const r = await callTool('run_start', { name: 'val101-ceiling', overrides: { agents: { [LABEL]: { timeoutMs: 10_000_000 } } } });
     expect(r.code ?? (r.error as { code?: string } | undefined)?.code).toBe('PARAM_OUT_OF_RANGE');
     expect(await runCount()).toBe(before);
   });
@@ -74,7 +98,7 @@ describe('REQ-091: overrides validated against the contract; locked config unrea
   });
 
   it('no overrides at all behaves identically to a pre-v21 run (the run starts normally)', async () => {
-    await registerPublishedVia(callTool, 'val101-no-overrides', 'return 1;');
+    await registerPublishedVia(callTool, 'val101-no-overrides', declaredScript());
     const r = await callTool('run_start', { name: 'val101-no-overrides' });
     expect(typeof r.runId).toBe('string');
     expect(r.code).not.toBe('PARAM_LOCKED');
@@ -88,12 +112,15 @@ describe('REQ-091: overrides validated against the contract; locked config unrea
   // parsed fields the other cases check, so a leak anywhere in the response (a `detail`/`supplied`
   // key this test doesn't know to look for by name) would still fail it.
   it('overrides:{appendPrompt} outside an author-declared enum → PARAM_OUT_OF_RANGE; the caller text never appears anywhere in the wire response, no durable work', async () => {
-    const script = `export const meta = { params: { knobs: { appendPrompt: { type: 'string', enum: ['be terse', 'be verbose'] } } } };\nreturn 1;`;
+    // v24: an author-declared constraint on appendPrompt now lives on the LABEL's own block
+    // (`meta.params.knobs` is refused DEFAULTS_RETIRED, ADR-035) — the constraint and the invariant
+    // it protects are identical, only the address moved.
+    const script = declaredScript("  appendPrompt: { type: 'string', enum: ['be terse', 'be verbose'] }");
     await registerPublishedVia(callTool, 'val101-append-enum', script);
     const before = await runCount();
 
     const secret = 'SECRET-MARKER hunter2 api-key=sk-abcdef1234567890';
-    const raw = await callToolRaw('run_start', { name: 'val101-append-enum', overrides: { appendPrompt: secret } });
+    const raw = await callToolRaw('run_start', { name: 'val101-append-enum', overrides: { agents: { [LABEL]: { appendPrompt: secret } } } });
     expect(raw).not.toContain(secret);
     expect(raw).not.toContain('hunter2');
     const parsed = JSON.parse(JSON.parse(raw).result.content[0].text) as { error?: { code?: string } };
@@ -102,7 +129,7 @@ describe('REQ-091: overrides validated against the contract; locked config unrea
 
     // control: a value INSIDE the declared enum is admitted (the constraint really is enforced,
     // not merely never-echoed-because-never-checked).
-    const ok = await callTool('run_start', { name: 'val101-append-enum', overrides: { appendPrompt: 'be terse' } });
+    const ok = await callTool('run_start', { name: 'val101-append-enum', overrides: { agents: { [LABEL]: { appendPrompt: 'be terse' } } } });
     expect(typeof ok.runId).toBe('string');
   });
 });

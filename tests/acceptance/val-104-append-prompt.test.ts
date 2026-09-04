@@ -36,26 +36,43 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Re
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
 
+
+// v24 (integrator): `UserOverrides` is per-agent (DES-145) and `run_agent_log` is addressed by the
+// script's own LABEL (DES-161 — an engine-minted agentId is not something a caller can learn from
+// tools/list, and the tool's schema requires `label`). Both cases below move onto those spellings;
+// neither oracle changes — an over-cap appendPrompt is still refused without echoing the text, and
+// the framed user text still lands AFTER the author's own prompt.
+const LABEL = 'writer';
+function declaredScript(prompt: string): string {
+  return [
+    'export const meta = { params: { agents: { ' + LABEL + ': {',
+    "  model: { type: 'string', default: 'default' },",
+    "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
+    "  timeoutMs: { type: 'number', default: 60000 },",
+    // Declared explicitly: a per-agent override may only name a key the LABEL declares (v24 answers
+    // PARAM_UNKNOWN otherwise), and `appendPrompt` is the key this whole file is about.
+    "  appendPrompt: { type: 'string' } } } } };",
+    "return await agent('" + LABEL + "', { prompt: '" + prompt + "' });",
+  ].join('\n');
+}
+
 describe('REQ-094: appendPrompt attaches last, after everything the author controls (VAL-104)', () => {
   it('an over-cap appendPrompt is refused at submission with byte counts, and the text is NEVER echoed in the error', async () => {
-    await registerPublishedVia(callTool, 'val104-overcap', 'return 1;');
+    await registerPublishedVia(callTool, 'val104-overcap', declaredScript('go'));
     const big = 'A'.repeat(2000);
-    const r = await callTool('run_start', { name: 'val104-overcap', overrides: { appendPrompt: big } });
+    const r = await callTool('run_start', { name: 'val104-overcap', overrides: { agents: { [LABEL]: { appendPrompt: big } } } });
     expect(r.code ?? (r.error as { code?: string } | undefined)?.code).toBe('PARAM_OUT_OF_RANGE');
     expect(JSON.stringify(r)).not.toContain(big);
   });
 
   it('the captured transcript prompt shows the framed appendPrompt AFTER the author\'s own prompt segments', async () => {
-    await registerPublishedVia(callTool, 'val104-order', `return await agent("SCRIPT-PROMPT-MARKER", {});`);
-    const run = await callTool('run_start', { name: 'val104-order', overrides: { appendPrompt: 'USER-TEXT-MARKER' } });
+    await registerPublishedVia(callTool, 'val104-order', declaredScript('SCRIPT-PROMPT-MARKER'));
+    const run = await callTool('run_start', { name: 'val104-order', overrides: { agents: { [LABEL]: { appendPrompt: 'USER-TEXT-MARKER' } } } });
     const runId = run.runId as string;
-    // A script with exactly one top-level agent() call always gets agentId 'agent-1' (run_status
-    // nests agents under `.result.agents`, not top-level — same fixed convention IT-066 relies on).
-    const agentId = 'agent-1';
 
     let harness: { prompt?: string } | undefined;
     for (let i = 0; i < 100 && !harness; i++) {
-      const log = await callTool('run_agent_log', { runId, agentId }) as { harness?: { prompt?: string } };
+      const log = await callTool('run_agent_log', { runId, label: LABEL }) as { harness?: { prompt?: string } };
       harness = log.harness ?? undefined;
       if (!harness) await new Promise((r) => setTimeout(r, 100));
     }

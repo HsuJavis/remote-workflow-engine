@@ -75,6 +75,7 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `NESTING_DEPTH_EXCEEDED` — nested workflow() calls exceed the configured maxWorkflowDepth
 - `NESTING_CYCLE` — a workflow() call would re-enter an ancestor already on this call's chain
 - `DESCENDANT_CAP_EXCEEDED` — nested workflow() calls exceed the configured maxWorkflowDescendants
+- `RESERVED_PREFIX` — the name or a path segment starts with the engine-reserved 'rwe-' prefix (ARCH-093)
 
 ## Authoring convention (not checked)
 

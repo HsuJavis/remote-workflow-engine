@@ -100,10 +100,9 @@ describe('VAL-080: graph view returns GraphPayload (REQ-071)', () => {
     expect(html).not.toMatch(/body[^}]*overflow-x\s*:\s*scroll/i);
   });
 
-  it('REQ-071 agent+edge render (LLM-gated — deferred to Gate 7.5 real-run)', async () => {
+  it.skipIf(!HAS_PROVIDER)('REQ-071 agent+edge render (LLM-gated — deferred to Gate 7.5 real-run) [UNVERIFIED here: no provider configured — set ANTHROPIC_API_KEY or OLLAMA_BASE_URL]', async () => {
     // This case requires a real LLM to dispatch agents, producing agent cells + edges in the graph.
     // Skipped in CI; the headless-browser assertion (trigger → Draft parallel → Verify) is at Gate 7.5.
-    if (!HAS_PROVIDER) return;
     await registerPublishedVia(callTool, 'val080-cs', `export const meta = {
         name: 'val080-cs',
         phases: [{ title: 'Draft' }, { title: 'Verify' }],
