@@ -8490,7 +8490,7 @@ LOOP_LABEL, `<-->` cycle exclusion, SUBGRAPH_TITLE, black-box rectangle exclusio
 normalization). `src/check-mermaid.ts` (repurposed `diagram-gate.ts`) does not exist. Red
 (measured): whole-file red.
 
-### VAL-123 — REQ-112: the fixed Mermaid vocabulary, subset-property browser check
+### VAL-147 — REQ-112: the fixed Mermaid vocabulary, subset-property browser check
 - **status:** green
 - **traces:** REQ-112
 - **tier:** acceptance
@@ -8498,7 +8498,7 @@ normalization). `src/check-mermaid.ts` (repurposed `diagram-gate.ts`) does not e
 - **result:** pass
 - **iter:** v24
 
-**Gate 7.5 (validator, v24) — real-tier evidence lives in `VAL-135` (08-validation.md): result fail on the pointer clause (D-3/D-4); the real-browser render VAL-123 deferred is done there: 11/11 render, malformed fails.** `real:` stays `false` here — this item is the in-process vitest floor; `VAL-135` is the deploy.sh-booted run.
+**Gate 7.5 (validator, v24) — real-tier evidence lives in `VAL-135` (08-validation.md): result fail on the pointer clause (D-3/D-4); the real-browser render VAL-147 deferred is done there: 11/11 render, malformed fails.** `real:` stays `false` here — this item is the in-process vitest floor; `VAL-135` is the deploy.sh-booted run.
 
 Files: `tests/acceptance/val-mermaid-renders.test.ts` (the subset-property render check
 `checkMermaid` itself cannot prove — no headless-browser tooling exists in this repo today, so
@@ -8513,6 +8513,8 @@ and IT-118 (every `GUIDE_EXAMPLES[].mermaid` registers against a real engine) pa
 in `val-mermaid-renders.test.ts` remains `it.runIf(HAS_BROWSER_TOOLING)` — no headless-browser
 tooling exists in this repo — and its sibling `it.skipIf` case asserts `UNVERIFIED(no browser)`
 explicitly rather than omitting it. The real-browser subset property is a Gate 7.5 action item.
+
+**Gate 7.5 remediation (2026-09-04, fixer):** D-4 fixed — the guide's diagram section is interpolated from `check-mermaid.ts`'s own `SHAPES`/`EDGE_FORMS` (all five shapes, all three edges) and states the `<br/>` triple, `COLLAPSED_EDGE` and dashed-is-skipped. Pinned by UT-159's new vocabulary block. `VAL-135` stays `fail` until Gate 7.5 re-runs it.
 
 ### IT-110 — the catalog v24: validateRegistration/insertVersion split, assets, deregister union
 - **status:** green
@@ -8801,6 +8803,8 @@ every `fixture.errors[code]`). The 5 skipped rows are the GitHub-credential-gate
 paths; the generator records them as `UNVERIFIED(no GitHub token)` in the conformance artifact
 rather than as passes. Gate 7.5 owns those 5 against a real token.
 
+**Gate 7.5 remediation (2026-09-04, fixer):** D-5 fixed — a refused asset file path answers `WORKSPACE_ESCAPE`/`RESERVED_PREFIX` instead of the raw `AssetPathEscapeError` class name (IT-129). D-6 fixed — `HOOKS_UNSUPPORTED` is off `workspace_push`'s `errors[]`; D-7 fixed — `workflow_describe` advertises `version`/`channel` (both IT-130). `VAL-141` stays `fail` until Gate 7.5 re-runs it.
+
 ### UT-161 — grep guards: no retired v24 surface remains in src/
 - **status:** green
 - **traces:** DES-159
@@ -8864,7 +8868,7 @@ table and points at the UT/IT/E2E items above (and, for REQ-113/117, at the Gate
 own boundary rulings). `real:false` throughout; Gate 7.5's validator flips each to `true` after a
 real run, per the mock hard-rule (a REQ is verified only by a `real:true` green VAL/E2E).
 
-### VAL-118 — REQ-107: one tool surface, one prefix per entity
+### VAL-142 — REQ-107: one tool surface, one prefix per entity
 - **status:** green
 - **traces:** REQ-107
 - **tier:** acceptance
@@ -8878,7 +8882,7 @@ Proven by: IT-106 (`mcp-tools-list-http.test.ts`, byte-equal to `projectToolsLis
 name, `workflow_run` ⇒ unknown-tool) + UT-139 (`tool-specs.test.ts`, the prefix/length/old-name
 oracles). Red for the same reason as both: `src/tool-specs.ts` does not exist.
 
-### VAL-119 — REQ-108: one path verdict for every write, six workspace_* tools
+### VAL-143 — REQ-108: one path verdict for every write, six workspace_* tools
 - **status:** green
 - **traces:** REQ-108
 - **tier:** acceptance
@@ -8892,7 +8896,7 @@ Proven by: IT-117 (`workspace-tools.test.ts`, all six tool names + schema/refusa
 (`namespace-derivation.test.ts`, the two real HTTP CAS routes). Both red today (whole-file/module
 red and real-HTTP-behavioural red respectively).
 
-### VAL-120 — REQ-109: three roles, configured per account, enforced and audited
+### VAL-144 — REQ-109: three roles, configured per account, enforced and audited
 - **status:** green
 - **traces:** REQ-109
 - **tier:** acceptance
@@ -8916,7 +8920,9 @@ audited"; enforcement is what is broken, so this VAL is not flipped.
 
 **Gate 6.5+7 ROUND 2 (verifier, v24) — GREEN.** IT-105 is 11/11 against real stores, UT-140's 50-row matrix and E2E-009 stay green, and the new IT-123 covers the register-time trigger-ownership arm that round 1 found reached by NO test at all. Enforcement — the clause this VAL was held on — is now proven at the integration tier. `real:` stays `false`: Gate 7.5 owns the real-run flip.
 
-### VAL-121 — REQ-110: every tunable parameter declared and overridable per agent
+**Gate 7.5 remediation (2026-09-04, fixer):** D-11 fixed — `pushMode` and `classifyTransport` now read the same key (`config.type`), so the admin-only stdio row actually runs. Pinned by IT-125 (outcome-level: an author is refused FORBIDDEN_ROLE and the probe records zero calls). This row's real-tier twin `VAL-132` stays `fail` until Gate 7.5 re-runs it.
+
+### VAL-145 — REQ-110: every tunable parameter declared and overridable per agent
 - **status:** green
 - **traces:** REQ-110
 - **tier:** acceptance
@@ -8931,7 +8937,9 @@ IT-120 (`agent-log-harness-shape.test.ts` v24 case, per-label provenance in the 
 UT-146/UT-147/UT-148 (the pure contract/overrides/resolve functions). Red: `run_start` is not a
 v24 tool name yet; `resolveAgentParams` does not exist.
 
-### VAL-122 — REQ-111: the diagram is supplied by the author, held to the script bidirectionally
+**Gate 7.5 remediation (2026-09-04, fixer):** D-2 fixed — `workflow_register({defaults})` and a top-level `meta.defaults` are both refused `DEFAULTS_RETIRED` instead of silently ignored (REQ-110's last clause, adjudication #2 A-2). Pinned by IT-081's two rewritten cases. `VAL-133` stays `fail` until Gate 7.5 re-runs it.
+
+### VAL-146 — REQ-111: the diagram is supplied by the author, held to the script bidirectionally
 - **status:** green
 - **traces:** REQ-111
 - **tier:** acceptance
@@ -8946,13 +8954,15 @@ Proven by: VAL-129/IT-119's fixture rows for `MERMAID_REQUIRED`/`DIAGRAM_SCRIPT_
 diff mechanics) + UT-157 (`workflow-describe-projection.test.ts` v24 block, `mermaid` served
 verbatim). Red: `src/check-mermaid.ts` and `src/tool-specs.ts` do not exist yet.
 
-**REQ-112 cross-reference.** REQ-112 is proven by the numbered `VAL-123` entry above (this same
+**REQ-112 cross-reference.** REQ-112 is proven by the numbered `VAL-147` entry above (this same
 DES-147 area) — IT-118 (`guide-examples-register.test.ts`) + `val-mermaid-renders.test.ts`
 (real-browser subset property, `UNVERIFIED(no browser)` until Gate 7.5 adds tooling — never a unit
 test pretending to be one) + UT-149 (mechanical grammar); no second acceptance item is created
 here.
 
-### VAL-124 — REQ-113: workflow-owned assets, selective materialization
+**Gate 7.5 remediation (2026-09-04, fixer):** D-8 fixed — the version read now selects `mermaid` and the facade forwards it, so a registered diagram is served back verbatim. Pinned by IT-126 (register → SQLite → describe, no hand-built row). `VAL-134` stays `fail` until Gate 7.5 re-runs it.
+
+### VAL-148 — REQ-113: workflow-owned assets, selective materialization
 - **status:** blocked
 - **traces:** REQ-113
 - **tier:** acceptance
@@ -8972,7 +8982,9 @@ Gate 5 seeds this REQ's mechanics at UT-156 (`materialize-assets.test.ts`) and I
 `status: blocked` records that this VAL's own acceptance is a Gate 7.5 real-run action item, not a
 vitest green target — tracked here so trace.py does not read it as a silently-skipped REQ.
 
-### VAL-125 — REQ-114: every upload records who did it
+**Gate 7.5 remediation (2026-09-04, fixer):** D-10 fixed — `workflow_deregister` deletes `<assetRoot>/<name>/` as well as the rows, so a re-registration by another principal inherits nothing (pinned by IT-127, which drives the whole live sequence). D-13 fixed — a global asset lists as `builtin:true` (IT-130). `VAL-136` stays `fail` until Gate 7.5 re-runs it.
+
+### VAL-149 — REQ-114: every upload records who did it
 - **status:** green
 - **traces:** REQ-114
 - **tier:** acceptance
@@ -8988,7 +9000,7 @@ of `workspace_list` showing two principals' `pushedBy` values (design's own real
 no automated substitute claimed for that specific two-principal comparison). Red: `workspace_push`
 is not a v24 tool name yet; `AssetSyncDeps` has no `clock`/`catalog`.
 
-### VAL-126 — REQ-115: triggers created first, claimed by a workflow at registration
+### VAL-150 — REQ-115: triggers created first, claimed by a workflow at registration
 - **status:** green
 - **traces:** REQ-115
 - **tier:** acceptance
@@ -9012,7 +9024,9 @@ would certify a REQ-115 path that is provably closed.
 
 **Gate 6.5+7 ROUND 2 (verifier, v24) — GREEN.** DES-149's closing clause — "the name-level claim persists until `workflow_deregister` OR THE CREATOR DELETES THE TRIGGER" — is now reachable: `ownerOf` answers `createdBy`, so under auth the creator IS the owner authz compares against, and IT-123 proves the register sequence's own ownership arm (creator allowed, non-creator `NOT_TRIGGER_OWNER`, ownerless row admin-only, second workflow `TRIGGER_ALREADY_CLAIMED` with the working claim surviving). IT-111/IT-112/E2E-008 stay green with their claim assertions re-pointed at the CLAIM column (`get(id).claimedBy` / `get(id).workflow`) — the same fact, read off the column that actually holds it now that `ownerOf` means the creator. `real:` stays `false` for Gate 7.5.
 
-### VAL-127 — REQ-116: workflow_authoring_guide teaches the engine's own contract
+**Gate 7.5 remediation (2026-09-04, fixer):** D-1 fixed — `workflow` is optional on both create rows and the create-time catalog check is gone (it moved to the fire path, where the refusal is recorded). D-1b fixed — deregister releases the create-time binding too (`claimedIdsFor` + `release()` clearing both columns). Pinned by IT-128, with a positive control so the no-phantom-fire assertion cannot pass vacuously. `VAL-138` stays `fail` until Gate 7.5 re-runs it.
+
+### VAL-151 — REQ-116: workflow_authoring_guide teaches the engine's own contract
 - **status:** green
 - **traces:** REQ-116
 - **tier:** acceptance
@@ -9026,6 +9040,8 @@ Proven by: IT-118 (`guide-examples-register.test.ts`, every taught example regis
 UT-159 (`authoring-guide.test.ts`) + UT-160 (`authoring-md-generated.test.ts`, the drift lock).
 Red: `src/authoring-guide.ts` does not exist; `workflow_authoring_guide` is not a v24 tool yet
 (covered structurally by UT-139's tool-count/name assertions once `TOOL_SPECS` lands).
+
+**Gate 7.5 remediation (2026-09-04, fixer):** D-3 fixed — the facade's duplicate `toErrEnvelope` is deleted and `errors.ts`'s is used, so every authoring refusal carries `see:'workflow_authoring_guide'` on the wire (IT-129). D-4 fixed with it (see VAL-147). `VAL-139` stays `fail` until Gate 7.5 re-runs it.
 
 ### VAL-128 — REQ-117: a cold model, given only the schema and the guide, gets it right first try
 - **status:** blocked
@@ -9053,7 +9069,7 @@ under test" defect the v24 Gate-1 notes warn against (rule 1, carried in from v2
 is created here; this note keeps the REQ-107..118 VAL sequence readable as complete.
 
 **Gate 5 exit-gate self-check summary (v24).** 22 UT + 16 IT + 2 E2E + 12 VAL (one per
-REQ-107..118; VAL-124/REQ-113 and VAL-128/REQ-117 are `status:blocked`/`result:not-run` by the
+REQ-107..118; VAL-148/REQ-113 and VAL-128/REQ-117 are `status:blocked`/`result:not-run` by the
 design's own ruling, not silently skipped) span every DES-137..162 and every ARCH-087..108 they
 trace to. Every item was run once and confirmed red for the stated reason — either a whole-file
 import failure (a brand-new source file: `tool-specs.ts`, `authz.ts`, `path-verdict.ts`,
@@ -9077,6 +9093,8 @@ alongside the retired assertions rather than deleting/rewriting them (surgical: 
 this task must, leave the removal to the task that owns each file per DES-159's own attribution).
 DES's own suggested case counts (≥7/≥12/≥30/≥40/≥60) are Gate 6.5+7 coverage targets, not met in
 full here — the coverage-threshold exit gate (95%/90%) applies at Mode B, not this Mode A pass.
+
+**Gate 7.5 remediation (2026-09-04, fixer):** D-12 fixed — the guide's "Engine ceilings (this deployment)" section now names the deployment's accepted model ALIASES, interpolated from the same resolved `aliasNames` the registration validator checks against (server.ts → McpFacade → buildAuthoringGuide), and says explicitly that `models_list` lists models, not aliases. Pinned by UT-159 + VAL-117's new wiring case. REQ-117 needs a FRESH cold instance; `VAL-140`'s subject is contaminated and the re-run belongs to Gate 7.5.
 
 ### IT-122 — resuming a pre-v24 params snapshot answers LEGACY_REREGISTER, not a silent degrade
 - **status:** green
@@ -9205,10 +9223,10 @@ layer whose advertised schema is the thing being made true.
 **Regression.** `npx vitest run` → **301 files / 2139 tests, 2113 pass, 0 fail, 26 skip, exit 0**;
 `npx tsc --noEmit` clean. The baseline at the start of this round was 2065 tests with SIX failing —
 IT-105's send-back rows, byte-identical to round 1's failure set. Three items flipped red→green
-(IT-105, VAL-120, VAL-126) and two are new (IT-123, IT-124), alongside coverage-driven extensions to
+(IT-105, VAL-144, VAL-150) and two are new (IT-123, IT-124), alongside coverage-driven extensions to
 UT-144, UT-149, UT-163, IT-111, IT-112, E2E-008 and the params/compose-config/workspace-gc units.
 
-**Every REQ has a green VAL, with two named exceptions carried forward unchanged.** VAL-124
+**Every REQ has a green VAL, with two named exceptions carried forward unchanged.** VAL-148
 (REQ-113) and VAL-128 (REQ-117) remain `status: blocked` / `result: not-run` per their own Gate 5
 entries and the design's own Gate-7.5-only ruling — REQ-113's selective materialization and REQ-117's
 cold-model probe are both validator-owned, and recording them blocked is what the Gate 5 contract
@@ -9285,3 +9303,111 @@ missing lines are not reachable from an in-vitest test, and each is named rather
 Pre-existing non-v24 debt is unchanged in kind and improved in count (91 → 72 whole-tree long
 offenders, 7 short unchanged), and stays inside the v21/v23 Decision-rationale scope quoted above.
 
+
+---
+
+## v24 Gate 7.5 defect remediation — the tests that pin the twelve fixed defects (2026-09-04)
+
+Gate 7.5 round 1 did not pass: it booted the real system and found 13 defects, five of them
+invisible to a green suite. Adjudication (v24) #5 ruled twelve of them fixed this round (D-9 is
+deferred to v25 as [issue #53](https://github.com/HsuJavis/remote-workflow-engine/issues/53) —
+non-deterministic, no root cause, and fixing an unreproduced failure is a guess).
+
+Every item below was written RED against the tree before its fix, and each asserts an OUTCOME a
+caller or the host can observe — never a classifier's return value or a hand-built row, which is
+precisely how D-11 and D-8 passed a green suite. Where a defect's natural home was an existing
+file, the case was added there instead of a new item: **IT-081** (D-2's two arms), **UT-159**
+(D-4's vocabulary block + D-12's alias block), **UT-160** (the AUTHORING.md byte lock over the same
+alias input), **VAL-117** (D-12's wiring half, proven load-bearing by removing the one argument),
+**IT-093/IT-094/VAL-016** (rewritten onto the site REQ-115 moves the create-time check to).
+
+### IT-125 — a stdio MCP config is admin-only whichever key spells the transport (D-11)
+- **status:** green
+- **traces:** REQ-109, REQ-114, DES-138, DES-153
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v24
+
+File: `tests/integration/stdio-mcp-admin-gate.test.ts` (2 cases). Real auth-enabled boot, real
+bearers, real `authorize()`; the only seam is a RECORDING `McpProbe` so "did the engine spawn the
+author's command" is observable without spawning anything. An `author` pushing
+`{type:'stdio',command:'npx'}` gets `FORBIDDEN_ROLE`, the probe records zero calls and nothing is
+stored; the `admin` pushing the identical config is stored and does reach the probe (without that
+second half the test cannot tell a working gate from a broken path). Red before the fix: both
+cases failed — the push was stored and the probe ran twice.
+
+### IT-126 — the registered diagram survives register → SQLite → describe (D-8)
+- **status:** green
+- **traces:** REQ-111, DES-156
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v24
+
+File: `tests/integration/describe-mermaid-roundtrip.test.ts` (3 cases). Real server, real MCP HTTP,
+real SQLite; the expected value is the exact string handed to `workflow_register`, and the
+dashboard's own `GET /api/workflows/:name/describe` is asserted alongside the tool. Third case pins
+per-version selection (v2's diagram, and the release pointer still answering v1's). Red before the
+fix: all three, `mermaid: null`.
+
+### IT-127 — deregister takes the on-disk asset tree with it (D-10)
+- **status:** green
+- **traces:** REQ-113, DES-148, DES-153, DES-154
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v24
+
+File: `tests/integration/deregister-clears-asset-tree.test.ts` (1 case, the whole live sequence).
+Auth on, two authors. Owner pushes a skill → runs → the file really materializes → deregister →
+the tree is gone from disk → the OTHER principal re-registers the freed name declaring that skill →
+nothing is materialized and `run_agent_log` reports it `missing`. Red before the fix at the
+"tree is gone" assertion, which is where the cross-principal leak begins.
+
+### IT-128 — triggers are created unclaimed, and deregister releases the create-time binding (D-1, D-1b)
+- **status:** green
+- **traces:** REQ-115, ARCH-099, ARCH-100, DES-149, DES-150
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v24
+
+File: `tests/integration/unclaimed-trigger-create.test.ts` (4 cases). Real ticker, real stores.
+`schedule_create({kind:'once',at})` and `webhook_create({})` return ids (ADR-026 S-5), registration
+claims one and a second claimant is refused `TRIGGER_ALREADY_CLAIMED`. The D-1b case carries a
+POSITIVE CONTROL first — a create-time-bound once-schedule really fires for its own workflow — so
+the "a released trigger does NOT fire for a same-name re-registration" assertion cannot pass
+vacuously. Red before the fix: 3 of 4 (the two creates were `INVALID_ARGUMENT`, and
+`releasedTriggers` came back empty).
+
+### IT-129 — the guide pointer reaches the wire, and a refused write answers its advertised code (D-3, D-5)
+- **status:** green
+- **traces:** REQ-116, REQ-118, REQ-112, DES-137, DES-142
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v24
+
+File: `tests/integration/error-envelope-see-pointer.test.ts` (9 cases). The four authoring refusals
+Gate 7.5 observed pointer-less (`MERMAID_REQUIRED`, `DIAGRAM_MISMATCH`, `PARSE_ERROR`,
+`MERMAID_INVALID`) each carry `see:'workflow_authoring_guide'`; a `see:null` code does NOT invent
+one (so the field cannot be hard-coded); the three refused write shapes answer
+`WORKSPACE_ESCAPE`/`RESERVED_PREFIX` with nothing written; a well-formed push still stores. Red
+before the fix: 7 of 9.
+
+### IT-130 — advertisement and behaviour asserted together on three rows (D-6, D-7, D-13)
+- **status:** green
+- **traces:** REQ-113, REQ-118, DES-138
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v24
+
+File: `tests/integration/advertised-surface-truth.test.ts` (6 cases). Each defect is asserted BOTH
+as what `TOOL_SPECS` advertises and as what a live call does — checking one half is how all three
+shipped. Includes the case that makes D-7 load-bearing rather than cosmetic: a never-published
+workflow can only be described WITH `version`, because the bare call is refused
+`CHANNEL_UNPUBLISHED`. Red before the fix: 4 of 6 (one case exposed that `runnable` is a
+name-level fact, not a version-level one — the assertion was corrected to the engine's real
+semantics before the fix, not after).

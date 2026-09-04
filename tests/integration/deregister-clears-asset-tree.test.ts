@@ -1,4 +1,4 @@
-// IT-168 (v24 Gate 7.5 defect D-10, REQ-113): `workflow_deregister` must take the workflow's
+// IT-127 (v24 Gate 7.5 defect D-10, REQ-113): `workflow_deregister` must take the workflow's
 // on-disk asset tree with it, not only its `assets` rows.
 //
 // The defect this pins, reproduced live in 08-validation.md: deregister deleted the rows inside the
@@ -30,9 +30,9 @@ const ALIASES: AliasMap = {
   default: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
   local: { provider: 'ollama', model: 'qwen2.5:7b' },
 };
-const OWNER = 'owner@it168.example';
-const OTHER = 'other@it168.example';
-const WF = 'it168-wf';
+const OWNER = 'owner@it127.example';
+const OTHER = 'other@it127.example';
+const WF = 'it127-wf';
 const SKILL = 'declared-skill';
 const SKILL_MD = '# Owner-only skill\n\nThe previous owner\'s private instructions.\n';
 
@@ -59,7 +59,7 @@ const SCRIPT = (skills: string[]) =>
   `return await agent('worker', { prompt: 'go' });`;
 const MERMAID = 'graph TD;\nworker(["worker"])';
 
-describe('deregister removes the workflow\'s asset tree from disk, not only its rows (IT-168, D-10, REQ-113)', () => {
+describe('deregister removes the workflow\'s asset tree from disk, not only its rows (IT-127, D-10, REQ-113)', () => {
   let server: Server;
   let workRoot: string;
   let baseUrl: string;
@@ -107,11 +107,11 @@ describe('deregister removes the workflow\'s asset tree from disk, not only its 
   const workspaceOf = (runId: string) => join(workRoot, 'workflows', WF, 'runs', runId);
 
   beforeAll(async () => {
-    workRoot = mkdtempSync(join(tmpdir(), 'rwe-it168-'));
+    workRoot = mkdtempSync(join(tmpdir(), 'rwe-it127-'));
     const config = await composeConfig(
       {
         bind: '127.0.0.1', port: 0, workRoot, aliases: ALIASES, gateway: 'sdk', assetRoot: join(workRoot, 'assets'),
-        auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it168-cid', googleClientSecret: 'it168-cs' },
+        auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it127-cid', googleClientSecret: 'it127-cs' },
         principals: { [OWNER]: { role: 'author' }, [OTHER]: { role: 'author' } },
       } as never,
       { queryImpl: vi.fn(() => fakeSuccessSession()) as unknown as never, proxyManager: makeFakeProxyManager() },

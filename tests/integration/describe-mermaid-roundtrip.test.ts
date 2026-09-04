@@ -1,4 +1,4 @@
-// IT-167 (v24 Gate 7.5 defect D-8, REQ-111 / DES-156): the author-supplied diagram survives the
+// IT-126 (v24 Gate 7.5 defect D-8, REQ-111 / DES-156): the author-supplied diagram survives the
 // WHOLE round trip — `workflow_register` → SQLite → `workflow_describe` (MCP) and
 // `GET /api/workflows/:name/describe` (the dashboard's own read).
 //
@@ -25,7 +25,7 @@ import type { Server } from '../../src/server.js';
 let server: Server;
 let tmpDir: string;
 const base = () => `http://127.0.0.1:${server.port}`;
-const WF = 'it167-diagram';
+const WF = 'it126-diagram';
 
 // A real diagram, not the minimal one the fixture helper synthesizes: a trigger trapezoid, the two
 // stadium agent nodes the script dispatches, and a labelled edge — the shape an author actually
@@ -59,7 +59,7 @@ async function call(name: string, args: unknown): Promise<any> {
 }
 
 beforeAll(async () => {
-  tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it167-'));
+  tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it126-'));
   server = await createServer({ port: 0, bind: '127.0.0.1', workRoot: tmpDir });
   const reg = await call('workflow_register', { name: WF, script: SCRIPT, mermaid: MERMAID });
   expect(reg.error).toBeUndefined();
@@ -68,7 +68,7 @@ beforeAll(async () => {
 });
 afterAll(async () => { await server?.close(); rmSync(tmpDir, { recursive: true, force: true }); });
 
-describe('the registered diagram is served back verbatim (IT-167, D-8, REQ-111)', () => {
+describe('the registered diagram is served back verbatim (IT-126, D-8, REQ-111)', () => {
   it('workflow_describe returns the EXACT string registered, with no LEGACY_NO_DIAGRAM note', async () => {
     const res = await call('workflow_describe', { name: WF });
     expect(res.error).toBeUndefined();

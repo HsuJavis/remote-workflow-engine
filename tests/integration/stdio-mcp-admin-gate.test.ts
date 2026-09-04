@@ -1,4 +1,4 @@
-// IT-166 (v24 Gate 7.5 defect D-11, REQ-109 / REQ-114 / ADR-030): the admin-only gate on a stdio
+// IT-125 (v24 Gate 7.5 defect D-11, REQ-109 / REQ-114 / ADR-030): the admin-only gate on a stdio
 // MCP config, asserted as an OUTCOME through a real auth-enabled boot.
 //
 // The defect this pins: `pushMode()` classified a stdio config by `config.transport === 'stdio'`
@@ -24,9 +24,9 @@ import type { Server } from '../../src/server.js';
 import { TokenStore } from '../../src/auth/token-store.js';
 import type { McpProbe, McpProbeResult, McpServerConfig } from '../../src/mcp-probe.js';
 
-const AUTHOR = 'author@it166.example';
-const ADMIN = 'admin@it166.example';
-const WF = 'it166-wf';
+const AUTHOR = 'author@it125.example';
+const ADMIN = 'admin@it125.example';
+const WF = 'it125-wf';
 const STDIO_CONFIG = { type: 'stdio', command: 'npx', args: ['--version'] };
 
 /** Records every config it is asked to probe — "the probe really ran" is the host-side effect the
@@ -67,13 +67,13 @@ async function callTool(name: string, args: Record<string, unknown>, bearer: str
 const codeOf = (r: Record<string, unknown>) => (r['code'] ?? (r['error'] as { code?: string } | undefined)?.code) as string | undefined;
 
 beforeAll(async () => {
-  tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it166-'));
+  tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it125-'));
   probe = new RecordingProbe();
   server = await createServer({
     port: 0,
     bind: '127.0.0.1',
     workRoot: tmpDir,
-    auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it166-cid', googleClientSecret: 'it166-cs' },
+    auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it125-cid', googleClientSecret: 'it125-cs' },
     principals: { [AUTHOR]: { role: 'author' }, [ADMIN]: { role: 'admin' } },
     mcpProbe: probe,
   } as never);
@@ -88,11 +88,11 @@ afterAll(async () => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe('a stdio MCP config is admin-only, whichever key the config spells its transport with (IT-166, D-11)', () => {
+describe('a stdio MCP config is admin-only, whichever key the config spells its transport with (IT-125, D-11)', () => {
   it('an AUTHOR pushing a stdio config is REFUSED and the engine never probes it — even though the author owns the workflow', async () => {
     const res = await callTool(
       'workspace_push',
-      { workflow: WF, kind: 'mcp', name: 'it166-stdio', config: STDIO_CONFIG },
+      { workflow: WF, kind: 'mcp', name: 'it125-stdio', config: STDIO_CONFIG },
       authorToken,
     );
     expect(codeOf(res)).toBe('FORBIDDEN_ROLE');
@@ -100,17 +100,17 @@ describe('a stdio MCP config is admin-only, whichever key the config spells its 
     // …and nothing was stored: the workflow's own owner listing shows no such asset.
     const list = await callTool('workspace_list', { workflow: WF, kind: 'mcp' }, authorToken);
     const rows = ((list['result'] ?? []) as Array<{ name?: string }>);
-    expect(rows.some((r) => r.name === 'it166-stdio')).toBe(false);
+    expect(rows.some((r) => r.name === 'it125-stdio')).toBe(false);
   });
 
   it('the ADMIN pushing the SAME config is accepted and reaches the probe — the gate refuses the role, not the shape', async () => {
     const res = await callTool(
       'workspace_push',
-      { workflow: WF, kind: 'mcp', name: 'it166-stdio', config: STDIO_CONFIG },
+      { workflow: WF, kind: 'mcp', name: 'it125-stdio', config: STDIO_CONFIG },
       adminToken,
     );
     expect(codeOf(res)).toBeUndefined();
-    expect((res['result'] as { stored?: string } | undefined)?.stored).toBe('it166-stdio');
+    expect((res['result'] as { stored?: string } | undefined)?.stored).toBe('it125-stdio');
     expect(probe.seen).toEqual([STDIO_CONFIG]);
   });
 });

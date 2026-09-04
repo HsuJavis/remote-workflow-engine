@@ -7504,11 +7504,35 @@ SUT-internal component, not a mock) for `owner@val24.example` (author), `other@v
 | D-6 | LOW | REQ-118 | `HOOKS_UNSUPPORTED` is advertised on `workspace_push` but unreachable: `kind:'hook'` is refused earlier by `pushMode()` as `INVALID_ARGUMENT: … matched no known mode`; a skill containing `hooks/pre.sh` or `.claude/hooks/pre.sh` is stored. | `src/tool-specs.ts:158` |
 | D-7 | LOW | REQ-118 (schema) | `workflow_describe` accepts `version`/`channel` (`describe({name,version:'v1'})` returns the draft with `runnable:false`) but advertises only `name`; `describe({name})` on a never-published workflow is `CHANNEL_UNPUBLISHED`, so the advertised shape can never show `runnableReason:'CHANNEL_UNPUBLISHED'`. README rewritten to the real behaviour. | `src/tool-specs.ts` describe row |
 | D-8 | HIGH | REQ-111 | `workflow_describe(...).mermaid` is `null` + `mermaidNote:"LEGACY_NO_DIAGRAM"` for **every** workflow registered this round, including ones whose diagram passed `checkMermaid`. `catalog.db` has the text (`SELECT mermaid FROM workflow_versions` returns it, e.g. 56 bytes for `v24a-tune`), but the version reader selects `script, defaults, params, triggers` only — the column is written and never read. The dashboard shows no diagram for any v24 workflow. UT-157 tests the projection against a hand-built row, which is why it is green. | `src/workflow-catalog.ts:620` |
-| D-9 | MEDIUM | (v1 REQ-006 regression, non-deterministic) | On boot A, `run_start` → +1 s `run_suspend` (`suspended`) → `run_resume` (`running`) ⇒ the run was `failed` 8 ms later (`terminalAt 13:47:47.713`, no `failed` row in `transitions`, no error surfaced anywhere) while the replayed agent kept running and finished at 13:48:23 with real output — work orphaned after a terminal state. A repeat with the suspend at +3 s completed normally. Recorded with the run id `3977b82d`; not reduced to a root cause here. | run store |
+| D-9 | MEDIUM | (v1 REQ-006 regression, non-deterministic) | On boot A, `run_start` → +1 s `run_suspend` (`suspended`) → `run_resume` (`running`) ⇒ the run was `failed` 8 ms later (`terminalAt 13:47:47.713`, no `failed` row in `transitions`, no error surfaced anywhere) while the replayed agent kept running and finished at 13:48:23 with real output — work orphaned after a terminal state. A repeat with the suspend at +3 s completed normally. Recorded with the run id `3977b82d`; not reduced to a root cause here. **Deferred to v25 by adjudication (v24) #5 E-7 and filed as [issue #53](https://github.com/HsuJavis/remote-workflow-engine/issues/53)** (2026-09-04) with the run id, the timestamps and the transition evidence — without a reliable repro a fix is a guess. | run store |
 | D-10 | HIGH | REQ-113 | `workflow_deregister` deletes the `assets` rows but **leaves `<assetRoot>/<name>/` on disk** (three `SKILL.md` files still present after the admin deregistered `v24b-wf`). Consequence proven live: `other@` re-registered `v24b-wf` declaring `skills:['declared-skill']` (never pushed by them, `workspace_list` shows `[]`), ran it on the sdk path, and the previous owner's `declared-skill/SKILL.md` was materialized into their agent workspace (`materialized.skills:['declared-skill']`, file bytes byte-identical). | deregister path / `asset-sync.ts` |
 | D-11 | HIGH | REQ-109, REQ-114 (ADR-030) | `pushMode()` classifies a stdio MCP config by `config.transport === 'stdio'` (`tool-specs.ts:161`), but `classifyTransport()` and the materializer read `config.type` (`mcp-probe.ts:23`). `owner@` (author) pushed `{type:'stdio', command:'npx', args:['--version']}` ⇒ `stored` — the `asset` row (`minRole:'author'`), so the admin-only gate never ran, and the probe really spawned `npx --version` on the server. The same defect class REQ-109's last clause names ("Admin tool" advertised, no check performed). | `src/tool-specs.ts:161` |
 | D-12 | MEDIUM (doc) | REQ-117 | The cold subject's first `workflow_register` was refused `PARAM_CONTRACT_INVALID: default not a known alias: claude-haiku-4-5-20251001`: it took a model id from `models_list` because nothing on the surface says which alias names this deployment accepts — checked: the guide's only mention of aliases is the `UNKNOWN_ALIAS` rule line (`docs/AUTHORING.md:58`), its `## Engine ceilings (this deployment)` section renders the three ceilings but not `aliases`, no tool schema lists them, and `models_list` lists catalog models, not `aliases`. It recovered on the second try with `default` (a name it could only have inferred from the guide's examples). | `src/authoring-guide.ts` |
 | D-13 | LOW | REQ-113 | A global asset pushed by the admin lists as `scope:"global", builtin:false`; REQ-113 says global assets are "marked `builtin:true` in listings". | asset listing |
+
+**Remediation status (2026-09-04, fixer — code fixed, NOT re-validated here).** Twelve of the
+thirteen were fixed after this round per adjudication (v24) #5; each fix was written test-first
+against the defect's own observable outcome, and the ledger's `05-tests.md` carries the pinning
+items (IT-125..IT-130, plus cases added to IT-081 / UT-159 / UT-160 / VAL-117 and the three rewrites
+IT-093 / IT-094 / VAL-016). **Every VAL row in this file keeps its `fail` result**: the real-tier
+verdict belongs to a Gate 7.5 re-run against a real boot, not to the fixer. D-9 alone is deferred —
+issue #53.
+
+| defect | fixed as |
+|---|---|
+| D-11 | `pushMode` and `classifyTransport` read the same key (`config.type`); outcome-pinned by IT-125 |
+| D-8 | the version read selects `mermaid` and the facade forwards it (IT-126); `defaults` dropped from the same read (ADR-035) |
+| D-10 | `AssetSyncService.deleteWorkflowTree()` called from deregister, path-verdicted (IT-127) |
+| D-1 / D-1b | `workflow` optional on both create rows, create-time catalog check removed (it lives on the fire path), deregister unions `claimedIdsFor()` and `release()` clears both columns (IT-128) |
+| D-2 | `defaults` ARGUMENT and top-level `meta.defaults` both refused `DEFAULTS_RETIRED`; the catalog's private copy of `parseMetaParams` deleted (IT-081) |
+| D-12 | the guide names this deployment's aliases from the same resolved `aliasNames` the validator uses (UT-159 + VAL-117's wiring case). **REQ-117 still needs a FRESH cold instance** — this one is contaminated |
+| D-3 | the facade's duplicate `toErrEnvelope` deleted; `errors.ts`'s `see` reaches the wire (IT-129) |
+| D-4 | the guide's diagram section interpolated from `SHAPES`/`EDGE_FORMS` + the triple / COLLAPSED_EDGE / dashed rules (UT-159) |
+| D-5 | refused asset paths answer `WORKSPACE_ESCAPE`/`RESERVED_PREFIX` (IT-129) |
+| D-6 | `HOOKS_UNSUPPORTED` off `workspace_push`'s `errors[]` (IT-130) |
+| D-7 | `workflow_describe` advertises `version`/`channel` + their codes (IT-130) |
+| D-13 | global assets list `builtin:true` (IT-130) |
+| D-9 | NOT fixed — issue #53, v25 |
 
 Observations recorded, not defects: (a) hostile seed paths (`../escape.txt`, `.git/config`,
 `.git/hooks/pre-commit`) are silently dropped — never written (the `.git/` on disk is the engine's own

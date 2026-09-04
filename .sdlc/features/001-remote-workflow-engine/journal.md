@@ -2154,3 +2154,31 @@ ids start at VAL-130.
 
 `gates.validation.passed=false`; `current_stage` stays `validation`. Next: Gate 6 for D-1/D-1b/D-2/
 D-3/D-4/D-5/D-8/D-10/D-11/D-12, then a Gate 7.5 delta re-run.
+
+## 2026-09-04 — v24 Gate 7.5 remediation (fixer): twelve defects fixed, one filed, one id collision resolved
+
+Gate 7.5's 13 defects, worked in adjudication #5's order by a single fixer with no file-ownership
+split (the previous round showed that partitioning by file is what leaves cross-file defects
+unfixed — and D-11/D-3/D-2 are all "one concept, two implementations, the wrong one is called").
+Every fix landed test-first with the red observed on the current tree; each test asserts an outcome
+a caller or the host can see. Commits `ebd135c`, `85781ea`, `7a3dbee`, `7fed30c`, `f510a15`,
+`eabc17d`, `8099f41`, `dc2629d`; details in IMPL-187.
+
+**D-9 is not fixed** — non-deterministic, no root cause; filed as
+[issue #53](https://github.com/HsuJavis/remote-workflow-engine/issues/53) with the run id
+(`3977b82d`), the timestamps and the transition evidence, per adjudication #5 E-7.
+
+**The VAL-118..127 id collision this journal recorded last round is resolved.** `05-tests.md`'s v24
+batch is renumbered **VAL-118..127 → VAL-142..151** (08-validation.md's v23 rows keep the original
+ids, and every cross-file reference to VAL-118..127 in 03/04/07 was checked: all of them mean the
+v23 items, so none moved). `06-impl-log.md`'s IMPL-184 `greens:` line moved with them
+(VAL-120→144, VAL-126→150). `rtm.md` is generated and will pick this up on its next build.
+Evidence the collision was real: `sh .sdlc/trace` counted **1197** work items before and **1207**
+immediately after the renumbering — exactly the ten rows the last-file-wins shadowing had hidden —
+with the gap count unchanged at 19.
+
+**Still open for Gate 7.5, not for the fixer:** every VAL row in 08-validation.md keeps its `fail`
+result — a real-tier verdict belongs to a real boot. REQ-117 in particular needs a FRESH cold
+instance; the v24 subject is contaminated and D-12's fix (the accepted alias names now render in
+the guide's ceilings section, from the same resolved table the validator uses) is what it should be
+re-run against.

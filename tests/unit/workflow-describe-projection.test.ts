@@ -11,7 +11,7 @@
 // handed — it stayed green for the whole iteration while the catalog read never selected the
 // `mermaid` column and the facade never forwarded it, i.e. while EVERY real
 // `workflow_describe(...).mermaid` was null. The register→SQLite→describe round trip is pinned by
-// tests/integration/describe-mermaid-roundtrip.test.ts (IT-167); do not read this file as evidence
+// tests/integration/describe-mermaid-roundtrip.test.ts (IT-126); do not read this file as evidence
 // that a registered diagram is served.
 //
 // v24 [T3] REWRITE (DES-156's own `tests:` line — "today pins diagramStatus"): the whole file is

@@ -139,10 +139,19 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     expect(adminReads!.some((e) => e.actor === ROOT && e.action === 'run_result')).toBe(true);
   });
 
-  it('a claimed workflow deregistered under a live schedule refuses CLAIMED_WORKFLOW_MISSING at fire time (recorded, not silent)', async () => {
-    // The fire-path policy gate's OTHER arm, through the real driver: `resolveScheduleTarget`'s
-    // `catalog.resolve` throw. The schedule is created while the workflow is published (creation
-    // runs the same release check), then the workflow goes away underneath the live claim.
+  it('a claimed workflow deregistered under a live schedule refuses UNCLAIMED at fire time (recorded, not silent)', async () => {
+    // The fire-path policy gate's OTHER arm, through the real driver. The schedule is created
+    // while the workflow is published, then the workflow is deregistered underneath it.
+    //
+    // v24 Gate 7.5 (D-1b): the expected reason CHANGED from `CLAIMED_WORKFLOW_MISSING` to
+    // `UNCLAIMED`, and that IS the fix. 08-validation.md's observation (b) named this exactly: the
+    // old reason was a symptom of deregister failing to release a trigger bound at creation — the
+    // row still pointed at the deleted name (via the legacy `workflow` column the fire path falls
+    // back to), so the driver reported "the workflow this trigger is claimed by is missing" and,
+    // after a same-name re-registration, fired a phantom run for it. REQ-115: deregister returns
+    // its triggers to UNCLAIMED ("they are the user's resources"), and an unclaimed trigger that
+    // fires is refused and recorded. Both halves of what this case actually guards — nothing
+    // dispatched, exactly one recorded refusal — are unchanged.
     const WF2 = 'it124-doomed';
     const reg = await callTool('workflow_register', { name: WF2, script: 'return "x";', mermaid: 'graph TD;' }, aliceToken);
     await callTool('workflow_publish', { name: WF2, version: `v${reg['version'] as number}`, channel: 'release' }, aliceToken);
@@ -159,7 +168,7 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
       await new Promise((r) => setTimeout(r, 100));
     }
     expect(row?.lastRunId).toBeUndefined();          // nothing was dispatched
-    expect(row?.lastRefusalReason).toBe('CLAIMED_WORKFLOW_MISSING');
+    expect(row?.lastRefusalReason).toBe('UNCLAIMED');
     expect(row?.refusalCount).toBe(1);               // ADR-031 coalescing: one row per due instant
   });
 

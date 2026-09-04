@@ -1,4 +1,4 @@
-// IT-170 (v24 Gate 7.5 defects D-3 and D-5, REQ-116 / REQ-112 / REQ-118): what a refused caller
+// IT-129 (v24 Gate 7.5 defects D-3 and D-5, REQ-116 / REQ-112 / REQ-118): what a refused caller
 // actually receives on the wire — the catalog's `see` pointer, and the ADVERTISED code.
 //
 // D-3: `errors.ts:132 toErrEnvelope` builds `see` from `ERROR_CATALOG`, but `mcp-facade.ts` had a
@@ -24,7 +24,7 @@ import type { Server } from '../../src/server.js';
 
 let server: Server;
 let tmpDir: string;
-const WF = 'it170-wf';
+const WF = 'it129-wf';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function call(name: string, args: Record<string, unknown> = {}): Promise<any> {
@@ -39,19 +39,19 @@ async function call(name: string, args: Record<string, unknown> = {}): Promise<a
 const b64 = (s: string) => Buffer.from(s).toString('base64');
 
 beforeAll(async () => {
-  tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it170-'));
+  tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it129-'));
   server = await createServer({ port: 0, bind: '127.0.0.1', workRoot: tmpDir });
   const reg = await call('workflow_register', { name: WF, script: "return 'ok';", mermaid: 'graph TD;' });
   expect(reg.error).toBeUndefined();
 });
 afterAll(async () => { await server?.close(); rmSync(tmpDir, { recursive: true, force: true }); });
 
-describe('every authoring refusal carries the guide pointer on the wire (IT-170, D-3, REQ-116)', () => {
+describe('every authoring refusal carries the guide pointer on the wire (IT-129, D-3, REQ-116)', () => {
   const cases: Array<[string, Record<string, unknown>, string]> = [
-    ['MERMAID_REQUIRED', { name: 'it170-no-mermaid', script: 'return 1;' }, 'MERMAID_REQUIRED'],
-    ['DIAGRAM_MISMATCH', { name: 'it170-mismatch', script: 'return 1;', mermaid: 'graph TD;\nghost(["ghost"])' }, 'DIAGRAM_MISMATCH'],
-    ['PARSE_ERROR', { name: 'it170-parse', script: 'this is not { valid javascript (((', mermaid: 'graph TD;' }, 'PARSE_ERROR'],
-    ['MERMAID_INVALID', { name: 'it170-collapsed', script: 'return 1;', mermaid: 'graph TD;\na["a"]\nb["b"]\nc["c"]\na-->b & c' }, 'MERMAID_INVALID'],
+    ['MERMAID_REQUIRED', { name: 'it129-no-mermaid', script: 'return 1;' }, 'MERMAID_REQUIRED'],
+    ['DIAGRAM_MISMATCH', { name: 'it129-mismatch', script: 'return 1;', mermaid: 'graph TD;\nghost(["ghost"])' }, 'DIAGRAM_MISMATCH'],
+    ['PARSE_ERROR', { name: 'it129-parse', script: 'this is not { valid javascript (((', mermaid: 'graph TD;' }, 'PARSE_ERROR'],
+    ['MERMAID_INVALID', { name: 'it129-collapsed', script: 'return 1;', mermaid: 'graph TD;\na["a"]\nb["b"]\nc["c"]\na-->b & c' }, 'MERMAID_INVALID'],
   ];
 
   for (const [label, args, code] of cases) {
@@ -63,26 +63,26 @@ describe('every authoring refusal carries the guide pointer on the wire (IT-170,
   }
 
   it("a refusal the catalog marks see:null does NOT invent a pointer (the field is read from the catalog, never hand-typed)", async () => {
-    const r = await call('workflow_describe', { name: 'it170-definitely-absent' });
+    const r = await call('workflow_describe', { name: 'it129-definitely-absent' });
     expect(r.error?.code ?? r.code).toBe('WORKFLOW_NOT_FOUND');
     expect(r.error?.see ?? null).toBeNull();
   });
 });
 
-describe('a refused asset write answers the ADVERTISED code, not a JS class name (IT-170, D-5, REQ-118)', () => {
+describe('a refused asset write answers the ADVERTISED code, not a JS class name (IT-129, D-5, REQ-118)', () => {
   it("a files[].path escaping the asset dir ⇒ WORKSPACE_ESCAPE, and nothing is written", async () => {
     const r = await call('workspace_push', {
-      workflow: WF, kind: 'skill', name: 'it170-escape',
+      workflow: WF, kind: 'skill', name: 'it129-escape',
       files: [{ path: '../escape.md', contentB64: b64('nope') }],
     });
     expect(r.error?.code ?? r.code).toBe('WORKSPACE_ESCAPE');
-    expect(existsSync(join(tmpDir, 'assets', WF, 'skill', 'it170-escape'))).toBe(false);
+    expect(existsSync(join(tmpDir, 'assets', WF, 'skill', 'it129-escape'))).toBe(false);
     expect(existsSync(join(tmpDir, 'assets', WF, 'escape.md'))).toBe(false);
   });
 
   it('an ABSOLUTE files[].path ⇒ WORKSPACE_ESCAPE', async () => {
     const r = await call('workspace_push', {
-      workflow: WF, kind: 'skill', name: 'it170-abs',
+      workflow: WF, kind: 'skill', name: 'it129-abs',
       files: [{ path: '/etc/passwd-ish', contentB64: b64('nope') }],
     });
     expect(r.error?.code ?? r.code).toBe('WORKSPACE_ESCAPE');
@@ -90,19 +90,19 @@ describe('a refused asset write answers the ADVERTISED code, not a JS class name
 
   it("a files[].path under the engine's reserved prefix ⇒ RESERVED_PREFIX", async () => {
     const r = await call('workspace_push', {
-      workflow: WF, kind: 'skill', name: 'it170-reserved',
+      workflow: WF, kind: 'skill', name: 'it129-reserved',
       files: [{ path: 'rwe-internal/x.md', contentB64: b64('nope') }],
     });
     expect(r.error?.code ?? r.code).toBe('RESERVED_PREFIX');
-    expect(existsSync(join(tmpDir, 'assets', WF, 'skill', 'it170-reserved'))).toBe(false);
+    expect(existsSync(join(tmpDir, 'assets', WF, 'skill', 'it129-reserved'))).toBe(false);
   });
 
   it('GREEN PIN: a well-formed skill still stores', async () => {
     const r = await call('workspace_push', {
-      workflow: WF, kind: 'skill', name: 'it170-ok',
+      workflow: WF, kind: 'skill', name: 'it129-ok',
       files: [{ path: 'SKILL.md', contentB64: b64('# fine\n') }],
     });
     expect(r.error).toBeUndefined();
-    expect(existsSync(join(tmpDir, 'assets', WF, 'skill', 'it170-ok', 'SKILL.md'))).toBe(true);
+    expect(existsSync(join(tmpDir, 'assets', WF, 'skill', 'it129-ok', 'SKILL.md'))).toBe(true);
   });
 });

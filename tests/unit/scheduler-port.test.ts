@@ -61,7 +61,12 @@ describe('SchedulerPort CRUD (DES-016)', () => {
     expect(result.error?.field).toBe('cron');
   });
 
-  it('create with unknown workflow name returns an ErrEnvelope', async () => {
+  // v24 Gate 7.5 (D-1, REQ-115's last clause): `create()` no longer resolves the catalog. A
+  // trigger is created FIRST and claimed by a workflow at registration, so a name that does not
+  // exist yet is the NORMAL case here; the verdict moved to the FIRE path, which refuses
+  // CLAIMED_WORKFLOW_MISSING and records it (IT-093, VAL-016). The ARGUMENT validation this file
+  // is really about — cron/at shape — is unchanged and still refuses before any row is written.
+  it('create with an unknown workflow name is ACCEPTED — the catalog check moved to the fire path', async () => {
     const port = new SqliteSchedulerPort({
       clock: CLOCK,
       catalog: makeFakeCatalog(['my-workflow']),
@@ -71,8 +76,20 @@ describe('SchedulerPort CRUD (DES-016)', () => {
     const result = await port.create({
       kind: 'cron', workflow: 'does-not-exist', cron: '* * * * *', enabled: true,
     });
-    expect(result.error).toBeDefined();
-    expect(result.error?.code).toMatch(/NOT_FOUND|UNKNOWN/i);
+    expect(result.error).toBeUndefined();
+    expect(result.result?.id).toBeTruthy();
+  });
+
+  it('create with NO workflow at all is accepted and the row is unclaimed (REQ-115 clause 1)', async () => {
+    const port = new SqliteSchedulerPort({
+      clock: CLOCK,
+      catalog: makeFakeCatalog(),
+      runManager: makeFakeRunManager(),
+      dbPath: ':memory:',
+    });
+    const result = await port.create({ kind: 'cron', cron: '* * * * *', enabled: true });
+    expect(result.error).toBeUndefined();
+    expect(result.result?.claimedBy ?? null).toBeNull();
   });
 
   it('list returns all created schedules', async () => {
