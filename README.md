@@ -48,13 +48,18 @@
   字串（少了就 `MERMAID_REQUIRED`），而且圖裡的 stadium 節點 `id(["label"])` 要跟腳本的 agent label
   **雙向完全對應**（對不上就 `DIAGRAM_MISMATCH`）。`workflow_describe` 設計上原文回傳這張圖（目前有一個已知缺陷讓它回 `null`，見「已知限制」）。
   **引擎不自己畫圖**，註冊也不會把腳本本文送給任何模型。
-- **排程**：`schedule_create`/`schedule_list`/`schedule_delete`/`schedule_setEnabled`（cron/once/resident）
+- **排程**：`schedule_create`/`schedule_list`/`schedule_delete`/`schedule_setEnabled`（cron/once/resident）。
+  觸發器**先建立、再由工作流程認領**：`schedule_create`／`webhook_create` 都不需要 `workflow`，回一個 id，
+  再交給 `workflow_register({triggers:[id]})` 綁定到某個版本（仍可在建立時直接帶 `workflow` 綁定）。
+  沒被認領的觸發器到期時會被拒絕並把理由記在該列上（`lastRefusalReason`），不會靜默丟掉。
 - **工作區與資產（`workspace_*`，六個工具）**：`workspace_push`（兩種模式：CAS blob `{sha256,contentB64}`，
   或工作流程名下的資產 `{workflow,kind:'skill'|'mcp',name,files?/config?}`；`scope:'global'` 的全域資產需
   `admin` 角色）、`workspace_diff`（比對 manifest 與自己的 blob 池，回還缺哪些）、
   `workspace_pull`（讀某個 run 工作區裡某個檔的位元組區間）、`workspace_list`（列某個 run 的工作區檔案，
   或某個工作流程名下某類資產）、`workspace_delete`、`workspace_purge`（刪掉已終止 run 的整個工作區）。
-  hook 明確不支援（`HOOKS_UNSUPPORTED`）。**MCP server 現在就是一種資產**：
+  hook 明確不支援：`kind:'hook'` 在 schema／模式判定就被擋掉，回 `INVALID_ARGUMENT`（v24 起
+  `HOOKS_UNSUPPORTED` 不再列在 `workspace_push` 的 `errors[]`，因為沒有任何路徑會回它）；
+  seed 裡的 `.claude/hooks/…` 則是在路徑判定時就被剝掉、根本不寫進工作區。**MCP server 現在就是一種資產**：
   `workspace_push({workflow, kind:'mcp', name, config})`（secret handle `${secret:NAME}`；`stdio`
   transport 需 `admin`）。
 - **Webhook**：`webhook_create`/`webhook_list`/`webhook_delete`（HMAC-SHA256 驗簽、deliveryId 去重）
@@ -361,11 +366,14 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
   `gateway:"direct-fetch"` + `useLiteLLMProxy:false`（本機 Ollama 直連，完全不需要 litellm）。
 
 - **目前已知、尚未修復的缺陷**（詳細指令與輸出見 `DEPLOY.md` §6）：
-  `workflow_describe.mermaid` 一律回 `null`（圖有存、沒讀回）；排程／webhook 只能在建立時綁定工作流程，且
-  `workflow_deregister` 不會釋放它們——**重用名稱前先刪掉觸發器**；`workflow_deregister` 不刪磁碟上的資產目錄——
-  **重用名稱前先手動刪 `<assetRoot>/<name>/`**；`workflow_register` 的 `defaults` 參數被靜默忽略；`author`
-  可以用 `{type:"stdio"}` 推送 MCP 設定繞過 admin 限制；資產路徑逃逸回 `AssetPathEscapeError` 而非
-  `WORKSPACE_ESCAPE`；註冊錯誤訊息不指向 `workflow_authoring_guide`；冷啟動用戶端查不到可用的模型別名。
+  只剩一條——**偶發的 `suspend` → `resume` → `failed`，而且 agent 的工作在終態之後還在跑**
+  （run `3977b82d`，無法穩定重現、尚未歸因；
+  [issue #53](https://github.com/HsuJavis/remote-workflow-engine/issues/53)）。
+  v24 Gate 7.5 真跑挖出的另外十二條（圖讀不回來、觸發器只能建立時綁定又不被釋放、deregister 不刪資產目錄、
+  `defaults` 被靜默忽略、stdio MCP 繞過 admin 閘門、錯誤碼漏出 JS class 名、錯誤訊息不指向
+  `workflow_authoring_guide`、手冊教的圖語彙比引擎接受的少、別名沒出現在介面上……）
+  **已於 2026-09-04 全部修復**，由 `tests/integration/` 下的 IT-125..IT-130 等項目釘住；
+  它們的真實層（Gate 7.5）複驗尚未重跑，`08-validation.md` 裡對應的 VAL 列因此仍記為 `fail`。
 
 ## 更多
 

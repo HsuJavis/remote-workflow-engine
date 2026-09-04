@@ -211,7 +211,9 @@ function aliasSentence(aliases: readonly string[]): string {
     `this deployment's model ALIAS names — ${aliases.map((a) => `\`${a}\``).join(', ')} — not a ` +
     'provider model id. `models_list` shows the catalog MODELS an alias may resolve to; it is not ' +
     'the alias table, and passing an id from it is refused `PARAM_CONTRACT_INVALID: default not a ' +
-    'known alias`. An `agent()` call naming an unknown alias is refused `UNKNOWN_ALIAS`.';
+    'known alias`. An `agent()` call naming an unknown alias is refused `UNKNOWN_ALIAS`. (The one ' +
+    'exception is an `openrouter/<model-id>` passthrough, which the validator accepts by prefix ' +
+    'and needs no entry in the table above.)';
 }
 
 /** v24 Gate 7.5 (D-4): the node-shape table, rendered from `checkMermaid`'s own closed grammar. */

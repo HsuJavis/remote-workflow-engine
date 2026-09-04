@@ -522,10 +522,12 @@ export const TOOL_SPECS = [
     inputSchema: pushInputSchema(),
     outputSchema: OUT,
     // v24 Gate 7.5 (D-6, REQ-118): `HOOKS_UNSUPPORTED` REMOVED — no push can produce it. A
-    // `kind:'hook'` never reaches `classifyAsset` (which is where that code lives, still reachable
-    // on the seed path): `pushMode` resolves it to `'invalid'` and the answer is INVALID_ARGUMENT.
-    // Advertising a code the tool cannot answer teaches a cold model to branch on something that
-    // never arrives — the same reason `WORKFLOW_ALREADY_EXISTS` came off `workflow_register`.
+    // `kind:'hook'` never reaches `classifyAsset` (the pre-v24 classifier that owns the code, and
+    // which TASK-147/148 left with no production caller at all): `pushMode` resolves it to
+    // `'invalid'` and the answer is INVALID_ARGUMENT. The seed path refuses a `.claude/hooks/…`
+    // file through `pathVerdict`'s own CLAUDE_HOOKS strip, not through this code. Advertising a
+    // code the tool cannot answer teaches a cold model to branch on something that never arrives —
+    // the same reason `WORKFLOW_ALREADY_EXISTS` came off `workflow_register`.
     errors: ['INVALID_ARGUMENT', 'RESERVED_PREFIX', 'WORKSPACE_ESCAPE', 'BLOB_HASH_MISMATCH', 'FORBIDDEN_ROLE', 'NOT_WORKFLOW_OWNER', 'MCP_PROBE_FAILED', 'EGRESS_DENIED'],
     seeAlso: ['workflow_authoring_guide'],
     authz: {

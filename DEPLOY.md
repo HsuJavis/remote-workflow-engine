@@ -779,32 +779,41 @@ immutable-pool GC。同樣受 Host/Origin 白名單過渡管控，非公開端�
 sandbox/test key 針對付費供應商跑一次 `agent()` 成功案例。
 
 
-**目前已知、尚未修復的缺陷（操作時要知道的現況）**——每一條在
-`.sdlc/features/001-remote-workflow-engine/08-validation.md` 的 v24 章節都有實際指令與觀察到的輸出：
+**目前已知、尚未修復的缺陷（操作時要知道的現況）**
 
-1. **`workflow_describe` 的 `mermaid` 一律是 `null`**（`mermaidNote:"LEGACY_NO_DIAGRAM"`）：註冊時的圖
-   有存進資料庫，但讀回時漏了這個欄位，儀表板也看不到圖。註冊時的圖檢查不受影響。
-2. **排程／webhook 一定要在建立時就綁定工作流程**（`schedule_create`／`webhook_create` 的 `workflow` 是必填），
-   沒有「先建立、之後由 `workflow_register({triggers})` 認領」的路徑；而且這種建立時綁定的觸發器，
-   **`workflow_deregister` 不會釋放它**（`releasedTriggers` 是空的）。後果：之後任何人用同一個名稱重新
-   `workflow_register` + `workflow_publish`，這個舊排程／webhook 會直接替新工作流程開跑。
-   **對策：重用一個名稱之前，先 `schedule_delete`／`webhook_delete` 掉它名下的觸發器。**
-3. **`workflow_deregister` 不會刪掉磁碟上的資產目錄**（只刪資料庫紀錄）：`<assetRoot>/<name>/` 留在原地，
-   之後用同一名稱註冊的人，其 agent 只要宣告同名 skill，就會把前一個擁有者留下的檔案展開進自己的
-   run workspace。**對策：deregister 之後手動刪除 `<assetRoot>/<name>/`。**
-4. **`workflow_register` 帶 `defaults` 參數會被靜默忽略**（不會回 `DEFAULTS_RETIRED`）；`meta.params.knobs`
-   則會被正確拒絕。請只用 `meta.params.agents.<label>.<key>.default`。
-5. **stdio 型 MCP 設定的 admin 限制可被繞過**：角色檢查看的是 `config.transport`，而真正被執行的是
-   `config.type`；`author` 推 `{type:"stdio",command:"npx",…}` 會被當成一般資產放行，並在推送當下
-   於伺服器上真的啟動一次該指令。在修好之前，**`author` 角色只給你信任的人**。
-6. **資產檔案路徑逃逸時回的錯誤碼是 `AssetPathEscapeError`**（不是文件宣告的 `WORKSPACE_ESCAPE`）；
-   寫入本身有被擋下，只是錯誤碼不對。
-7. **註冊失敗的錯誤訊息沒有指向 `workflow_authoring_guide`**（`see` 欄位在送出前被丟掉）；
-   `workflow_authoring_guide` 本身也還沒教 `{"…"}`（條件分支）與 `{{"…"}}`（非 agent 彙整）這兩種
-   引擎其實接受的節點、以及「fan-out 每條邊各寫一行」這條會被 `COLLAPSED_EDGE` 拒絕的規則。
-8. **冷啟動的 MCP 用戶端查不到這台部署接受哪些模型別名**（`models_list` 列的是模型目錄，不是
-   `aliases`），第一次註冊很容易踩到 `PARAM_CONTRACT_INVALID: default not a known alias`。
-   **對策：把你 `aliases` 的別名名稱直接告訴使用者（例如 `default`）。**
+v24 Gate 7.5 的真跑挖出十三條缺陷，其中**十二條已於 2026-09-04 修復**（每一條都先寫出會失敗的測試、
+再修，釘在 `tests/integration/` 的 IT-125..IT-130 與 IT-081／UT-159／UT-160／VAL-117 等項目上；
+對照表見 `.sdlc/features/001-remote-workflow-engine/08-validation.md` 的「Remediation status」）。
+**這些修復尚未經過 Gate 7.5 的真實層複驗**，所以 `08-validation.md` 裡對應的 VAL 列仍記為 `fail`——
+那是真跑才能給的判定，不是修復者能自己蓋章的。
+
+下面這條**沒有修**，操作時要知道：
+
+1. **偶發的 `suspend` → `resume` → 立刻 `failed`，而且 agent 的工作在終態之後還在跑**：
+   實測 run `3977b82d`——`run_start` → 1 秒後 `run_suspend`（`suspended`）→ `run_resume`（`running`）
+   → 8 毫秒後變成 `failed`，`transitions` 裡沒有對應的 `failed` 列、任何介面都沒有錯誤原因；
+   而被重放的 agent 又跑了約 36 秒才產出真實輸出——**工作在終態之後被孤兒化**。
+   把 suspend 延到 +3 秒重做一次則完全正常，無法穩定重現、尚未歸因，因此排到 v25：
+   [issue #53](https://github.com/HsuJavis/remote-workflow-engine/issues/53)。
+   **對策：suspend/resume 之後用 `run_status` 確認狀態，發現無故 `failed` 時把 run id 貼進該 issue。**
+
+已修復、行為因此改變的幾點，操作上請照新的來：
+
+- **觸發器現在是「先建立、再認領」**：`schedule_create`／`webhook_create` 的 `workflow` 是**選填**，
+  不帶就建立一個未認領的觸發器並回 id，再由 `workflow_register({triggers:[id]})` 綁定；
+  建立時不再做目錄檢查（那個檢查移到觸發當下：未認領／工作流程不存在／未發布／不在 release 版本裡，
+  各自被拒絕並記在該列的 `lastRefusalReason`）。`workflow_deregister` 現在會釋放**兩種**綁定
+  （版本宣告的，以及建立時就綁定的），`releasedTriggers` 會列出來——重用名稱前不必再手動刪觸發器。
+- **`workflow_deregister` 會連磁碟上的 `<assetRoot>/<name>/` 一起刪**，不必再手動清。
+- **`workflow_register` 帶 `defaults` 參數會被拒絕**（`DEFAULTS_RETIRED`），不再靜默忽略；
+  腳本裡的 `meta.defaults` 同樣被拒絕。
+- **stdio 型 MCP 設定的 admin 閘門真的會執行**（角色檢查與探測器現在讀同一個鍵 `config.type`）。
+- **資產路徑逃逸回 `WORKSPACE_ESCAPE`／`RESERVED_PREFIX`**，不再漏出 JS class 名。
+- **註冊失敗的錯誤會帶 `see:"workflow_authoring_guide"`**；該手冊也已補上引擎實際接受的五種節點形狀、
+  三種邊、`<br/>` 三元組、一邊一行（`COLLAPSED_EDGE`）與虛線＝跳過，以及**這台部署接受的模型別名清單**
+  （從跟驗證器同一份 `aliases` 來，不是寫死的）。
+- **`workflow_describe` 會把註冊時的 `mermaid` 原字串讀回來**，也接受並公告 `version`／`channel`。
+- **全域資產在列表上標 `builtin:true`**。
 
 ## §6b 標籤觸發式自動更新
 

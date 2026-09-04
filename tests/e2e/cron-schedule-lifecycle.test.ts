@@ -65,15 +65,24 @@ describe('Cron schedule fires a run (REQ-015, E2E-004)', () => {
     expect(typeof (result['result'] as Record<string, unknown>)?.['id']).toBe('string');
   });
 
-  it('schedule_create for a never-registered workflow name returns WORKFLOW_NOT_FOUND (D-V2I-3)', async () => {
+  // v24 Gate 7.5 (D-1, REQ-115 clause 1 + its last clause): this used to assert `WORKFLOW_NOT_FOUND`
+  // AT CREATION. REQ-115 reverses the direction — a trigger is created UNCLAIMED and a workflow
+  // claims it at registration — so a name that does not exist yet is the normal case at this door,
+  // and the catalog check moves to the FIRE path, where the refusal is recorded on the row
+  // (`CLAIMED_WORKFLOW_MISSING`; IT-093 and VAL-016 pin that end, this file's subject is the cron
+  // firing itself). D-V2I-3's guarantee — an unregistered name never silently starts a run — is
+  // unchanged: no run is ever dispatched for this schedule.
+  it('schedule_create for a never-registered workflow name is ACCEPTED, and no run is ever started for it', async () => {
     const result = await mcpCall('schedule_create', {
       kind: 'cron',
       workflow: 'never-registered-cron-target',
       cron: '* * * * *',
       enabled: true,
     });
-    expect((result['error'] as Record<string, unknown>)?.['code']).toBe('WORKFLOW_NOT_FOUND');
-    expect(result['result']).toBeUndefined();
+    expect(result['error']).toBeUndefined();
+    const id = (result['result'] as Record<string, unknown>)['id'] as string;
+    expect(typeof id).toBe('string');
+    expect((await mcpCall('run_list', { workflow: 'never-registered-cron-target' }))['result'] ?? []).toEqual([]);
   });
 
   it('schedule_list returns the created schedule', async () => {

@@ -19,9 +19,10 @@ import type { ErrEnvelope, RefusalReason } from './types.js';
 import { computeNextFire, bootRearm, type StoredSchedule } from './scheduler-engine.js';
 
 // v24 (DES-149, ARCH-099, TASK-141): `workflow` becomes OPTIONAL — a trigger can now be created
-// UNCLAIMED (no bound workflow) and claimed later via `claim()`/`release()`/`ownerOf()`. Additive
-// only: a caller that still supplies `workflow` at creation keeps today's H4 catalog-resolve
-// behaviour verbatim (TASK-112's regression test depends on this). `claimedBy`/`createdBy` are the
+// UNCLAIMED (no bound workflow) and claimed later via `claim()`/`release()`/`ownerOf()`. A caller
+// may still supply `workflow` at creation (the pre-v24 door, kept). v24 Gate 7.5 (D-1): the H4
+// catalog-resolve check that used to run on that door is GONE — REQ-115's last clause moves it to
+// the fire path, which refuses and RECORDS the verdict. `claimedBy`/`createdBy` are the
 // new per-trigger ownership fields (ARCH-099's "five columns", the other three being the refusal
 // trio below).
 export type Schedule =
@@ -66,12 +67,13 @@ export interface ScheduleResult<T> {
   error?: ErrEnvelope;
 }
 
-/** Structural seam — matches WorkflowCatalog's own exists()/resolve() signatures without importing
- *  the class. `resolve` widened here for H4 (07-review.md §4.2, ARCH-072 note 1): `create()` needs
- *  the SAME channel-resolution check `workflow_run` uses, not just "the name exists". */
+/** Structural seam — matches WorkflowCatalog's own `exists()` signature without importing the
+ *  class. It was widened to `resolve()` for the v22 H4 check; v24 Gate 7.5 (D-1) removed that
+ *  check from `create()` (REQ-115 moves it to the fire path), leaving `trigger()`'s
+ *  "is this a registered name" as the only catalog question this module asks — so the port is
+ *  narrowed back rather than left advertising a method nothing calls. */
 interface CatalogPort {
   exists(name: string): Promise<boolean>;
-  resolve(name: string, sel: { channel?: string }): Promise<unknown>;
 }
 /** Structural seam — matches RunManager's own start() signature without importing the class. */
 interface RunManagerPort {
@@ -260,8 +262,10 @@ export class SqliteSchedulerPort {
    *  is NOT a resurrection of the retired `listByWorkflow`, which returned full binding objects for
    *  the deleted analyzer's diagram fingerprint. It exists because BOTH v24 binding doors are live:
    *  a trigger declared in a version's `triggers[]` (the claim door) and a trigger bound at
-   *  creation (`schedule_create({workflow})`, still a required argument on that row). Sourcing ids
-   *  from only one of them would make REQ-103 unobservable for triggers created the other way. */
+   *  creation (`schedule_create({workflow})` — an OPTIONAL argument since v24 Gate 7.5's D-1 fix,
+   *  but still a live door). Sourcing ids from only one of them would make REQ-103 unobservable for
+   *  triggers created the other way — and, since D-1b, would also leave the create-time binding
+   *  unreleased at deregister, which is what `McpFacade.workflowDeregister` now calls this for. */
   claimedIdsFor(workflow: string): string[] {
     const rows = this._db
       .prepare('SELECT id FROM schedules WHERE claimedBy = ? OR workflow = ?')
