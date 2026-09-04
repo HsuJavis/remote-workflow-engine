@@ -42,7 +42,6 @@ import { LiteLLMGatewayClient } from './gateway/client.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
 import { validateUserOverrides, validateDeclaredArgs, isKnownAlias, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
 import { defaultRunParams, mergeRunParams, type RunParams } from './params/resolve.js';
-import type { HarnessDefaults } from './harness-defaults.js';
 
 // Default gateway config (REQ-004) for the gateway RunManager builds when no GatewayClient is
 // injected — routes through the single-source DEFAULT_ALIASES table (src/default-aliases.ts).
@@ -413,7 +412,6 @@ export class RunManager {
     let scriptVersion = 1;
     let resolvedVersion = 'v1'; // catalog version string actually executed (D-V7) — threaded into RunStore.createRun
     let registeredContract: ParamContract | undefined;
-    let registeredDefaults: HarnessDefaults | undefined;
     if (spec.name && !spec.script) {
       // v22 (REQ-097, DES-114, TASK-109): the wire selector — explicit `version` wins over `channel`;
       // neither supplied defaults to `release` (DES-110's resolveVersionRequest truth table).
@@ -422,7 +420,6 @@ export class RunManager {
       resolvedVersion = registered.version;
       scriptVersion = Number(registered.version.replace(/^v/, '')) || 1;
       registeredContract = registered.params as ParamContract | undefined;
-      registeredDefaults = registered.defaults;
       // v24 (integrator; DES-144/DES-156, flagged by the Batch-A executor as unowned): a version
       // row whose `params` column is NULL predates the per-agent contract. Every v24 registration
       // writes one unconditionally (`insertVersion` JSON-stringifies the parsed contract, `{}`
@@ -459,8 +456,11 @@ export class RunManager {
     // defaultRunParams is the ONLY no-overrides producer (DES-104) — the callers that never supply
     // `overrides` (schedule/webhook/chain triggers) must not each reach for `overrides ?? {}`.
     const effectiveParams: RunParams = overrides === undefined
-      ? defaultRunParams(registeredDefaults, contract.agents)
-      : mergeRunParams(registeredDefaults, overridesResult.value, contract.agents);
+      // v24 Gate 7.5 (ADR-035): the workflow-wide `defaults` object is retired and no longer read
+      // from the catalog, so the first argument — the registered HarnessDefaults snapshot — is
+      // always absent. Every value now comes from the per-agent contract (`contract.agents`).
+      ? defaultRunParams(undefined, contract.agents)
+      : mergeRunParams(undefined, overridesResult.value, contract.agents);
     // v21 Gate 8 RE-REVIEW (review §R2 (b), R-G2 HIGH): validateUserOverrides only re-checks a
     // CALLER-SUPPLIED overrides.model; a registered defaults.model that was valid at registration
     // but has since fallen out of the configured alias table (a config change between restarts)
@@ -711,7 +711,6 @@ export class RunManager {
     // script from the catalog the SAME way start() does, or the resumed run executes an empty script
     // and returns undefined. (Pre-Defer-A, no test covered a named-workflow restart-resume.)
     let script = spec.script ?? '';
-    let registeredDefaults: HarnessDefaults | undefined;
     let registeredContract: ParamContract | undefined;
     if (spec.name && !spec.script) {
       // v22 (DES-113, ADR-010, TASK-108): resolve the PIN (view.scriptVersion), never the current
@@ -722,13 +721,11 @@ export class RunManager {
       try {
         const registered = await this._catalog.resolve(spec.name, { version: view.scriptVersion });
         script = registered.script;
-        registeredDefaults = registered.defaults;
         registeredContract = registered.params as ParamContract | undefined;
       } catch (err) {
         if ((err as { code?: string } | undefined)?.code !== 'VERSION_NOT_FOUND') throw err;
         const registered = await this._catalog.resolve(spec.name, {});
         script = registered.script;
-        registeredDefaults = registered.defaults;
         registeredContract = registered.params as ParamContract | undefined;
         const sub = { pinned: view.scriptVersion, resolved: registered.version };
         await this._store.recordLegacySubstitution(runId, sub);
@@ -764,7 +761,7 @@ export class RunManager {
         { runId, ...(spec.name !== undefined ? { workflow: spec.name } : {}) },
       );
     }
-    const effectiveParams = storedParams ?? defaultRunParams(registeredDefaults, registeredContract?.agents);
+    const effectiveParams = storedParams ?? defaultRunParams(undefined, registeredContract?.agents);
 
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
     const guard = new RunGuard({ concurrency: this._concurrency, budget: spec.budget ?? null });

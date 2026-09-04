@@ -25,7 +25,6 @@ import { checkMeta } from './sandbox/guards.js';
 import { checkMermaid } from './check-mermaid.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
-import type { HarnessDefaults } from './harness-defaults.js';
 // v21 Gate 6 adjudication (A-1): type-only import — erases at compile, no runtime edge, and this
 // file is not one the sandbox child loads, so the .js->.ts child-import hazard does not apply.
 // Bars a VALUE import only (which would drag the validator into a module the catalog stays
@@ -111,7 +110,6 @@ export interface VersionEntry {
   /** v24 (D-8, REQ-111/DES-156): the author-supplied Mermaid diagram, verbatim; `null` on a legacy
    *  row registered before ADR-025 required one (`mermaidNote:'LEGACY_NO_DIAGRAM'` downstream). */
   mermaid: string | null;
-  defaults?: HarnessDefaults;
   params?: ParamContract;
   /** v24 (integrator; DES-150): the trigger ids this VERSION declares — the fire path's
    *  NOT_IN_RELEASE check needs "does the currently-released version still list this trigger", and
@@ -620,8 +618,13 @@ export class WorkflowCatalog {
       throw codedError(result.code, `${result.code}: ${result.channel ?? result.version ?? ''} (workflow '${name}')`.trim());
     }
     const vrow = this._db
-      .prepare('SELECT script, mermaid, defaults, params, triggers FROM workflow_versions WHERE name = ? AND version = ?')
-      .get(name, result.version) as { script: string; mermaid: string | null; defaults: string | null; params: string | null; triggers: string | null };
+      // v24 Gate 7.5 (ADR-035): `defaults` is NOT selected — the workflow-wide defaults object is
+      // retired (a registration declaring one is refused DEFAULTS_RETIRED), so the column only ever
+      // holds pre-v24 rows, and any run reaching one of those is already refused LEGACY_REREGISTER
+      // for the missing per-agent contract. Reading a retired column kept a dead value flowing
+      // through the whole admission path.
+      .prepare('SELECT script, mermaid, params, triggers FROM workflow_versions WHERE name = ? AND version = ?')
+      .get(name, result.version) as { script: string; mermaid: string | null; params: string | null; triggers: string | null };
     return {
       script: vrow.script,
       version: result.version,
@@ -631,7 +634,6 @@ export class WorkflowCatalog {
       // iteration's main user-visible feature stored and never delivered. NULL only for a genuinely
       // legacy row registered before ADR-025 required one, which is what that note is for.
       mermaid: vrow.mermaid,
-      defaults: vrow.defaults ? JSON.parse(vrow.defaults) as HarnessDefaults : undefined,
       params: vrow.params ? JSON.parse(vrow.params) as ParamContract : undefined,
       // v24 (integrator; DES-150's NOT_IN_RELEASE): the trigger ids THIS version declares. The
       // column has existed since TASK-143 and no reader ever selected it, which is why the fire
