@@ -5253,3 +5253,121 @@ owner-only 投影、absent-not-`[]` 各案。
 
 `tsc` 119 錯、68 個測試檔 / 247 個測試紅。批次是中段,不是收尾。
 下一批 impl 的目標就是把上面這些關掉,不是新功能。
+
+---
+
+## Orchestrator adjudication (v24) #3 — Gate 5 第二批的 10 條澄清 (2026-09-04)
+
+先確認一件上一輪擔心的事:**TASK-154..159 有被派工**(agent 結果裡 155/156/157/158/159 都在),
+我新建的卡片沒有被分派步驟略過。
+
+### B-1 [10] `version` 型別:三支工具目前沒有任何寫法能成功 —— 最高優先
+
+查證屬實,而且比報告寫的更硬:
+```
+tool-specs.ts:109/:129/:170   version: { type: 'number' }
+workflow-catalog.ts:660       publish(name, version: string, …)   // 存的鍵是 'v1'
+mcp-facade.ts:267             workflowPublish(a: { version: string })
+
+  傳 1      → ajv 放行 → catalog 找不到 'v1' → UNKNOWN_VERSION
+  傳 "v1"   → ajv 擋下                        → INVALID_ARGUMENT
+  兩條路都死。
+```
+**裁定:schema 改 `type: 'string'`**(catalog 存的就是字串,是 schema 錯)。
+
+**而且欄位的 description 必須寫明格式是 `'v1'`。** 這不是可有可無的潤飾 ——
+REQ-117 的冷模型只讀得到 `tools/list`,它會照 schema 傳值。
+schema 說 number 它就傳 `1`,然後拿到 `UNKNOWN_VERSION`;
+依 REQ-117 的驗收定義,那**就是文件缺陷,本輪驗收不通過**。
+一個型別關鍵字讓整輪驗收翻掉,這是本輪最好的例子說明為什麼 schema 要當文件寫。
+
+### B-2 [7] `workflow_diagrams` 表:退場,連同它的測試一起刪
+
+實作者問得對,而且不擅自跨界是對的。查證:
+- `workflow-catalog.ts:231/295/298/326` 仍有表與 `putDiagramPending`
+- 但 `workflow-view.ts:35-37` 已寫明「**不再有獨立的 diagram row/ctx**,TASK-139 已退掉畫圖的 analyzer」
+- REQ-111 的精神就是**圖由作者提供**,非同步產圖這件事在 v24 沒有存在理由
+
+**裁定:表、`putDiagramPending` 及其存取器全刪;
+`tests/unit/workflow-diagrams-store.test.ts` 一併刪除,dod 要斷言檔案不存在。**
+
+不能留著讓它繼續綠。**「退場的東西留著綠燈的測試」是本帳本反覆記錄的類別** ——
+一個測試綠著,讀的人就以為那個機制還活著、還被保護著,兩者都不成立。
+
+### B-3 [6] 39 處舊式 positional `register()`:併成一張卡,槓桿在 helper
+
+查證:7 個檔、**39 處**呼叫仍是 `catalog.register('name', script, …)` 的舊形狀
+(新物件形式 48 處)。而且測試跑出來的錯不只這個:
+```
+AGENT_UNDECLARED: agent label "plan" has no params.agents.plan declaration
+SCAN_VIOLATION: AGENT_LABEL_REQUIRED
+```
+—— 舊 fixture 的 script 沒有 `meta.params.agents.<label>`,也沒有 `mermaid`。
+這三件事(物件形狀、必填 mermaid、per-agent 宣告)是**同一次遷移**,不是三個問題。
+
+**裁定:歸 TASK-152(rename sweep)一張卡,槓桿點是 `tests/helpers/workflow-fixtures.ts`。**
+讓 helper 從 script 的標籤自動合成最小可用的 `mermaid` 與 `params.agents`,
+67 個走這個 helper 的檔就大部分自己好了。逐檔手改 39 處是最貴的做法。
+dod:走 helper 的檔案失敗數 → 0。
+
+### B-4 [4] TASK-135/138 的 `files:` 路徑是錯的 —— 而且上一輪就報過了
+
+```
+TASK-135  files: src/workflow-meta.ts    實際落地 src/scan-agent-calls.ts
+TASK-138  files: src/diagram-gate.ts     實際落地 src/check-mermaid.ts
+```
+兩個檔都存在,`03-tasks.md` 兩處都沒提到它們。實作者指出這在**上一批就報過**、
+而我的裁定 #2 沒有處理 —— 屬實,是我漏掉的。現在改。
+
+這是第 17 例「描述跟不上被描述的東西」,而且這次的漏接責任在我:
+上一輪 22 條我逐條查了程式碼,卻沒查**帳本自己的欄位**指到的檔案存不存在。
+以後查證要含這一項。
+
+### B-5 [8] 實作者把 A-6 類推到 TASK-136/143:確認,推理正確
+
+它把「測試數低於自己 dod 的下限就補滿,不要退回」從 TASK-140 類推到
+TASK-136(`params-overrides.test.ts` 6→24)與 TASK-143(`catalog-v24.test.ts` 4→25),
+兩個檔都在它自己 TASK 的 `files:` 裡。**確認。** 理由完全一致:
+`/goal` 把測試數與深度指定為這一輪擋低階模型的主防線,而它動的是自己有主權的檔案。
+
+### B-6 [9] 它自己修掉的三個測試撰寫缺陷:確認,而且第一個值得記
+
+在自己有主權的檔案裡直接修、不當問題丟回來,對:
+1. `scheduler-refusal.test.ts` 四處 `.create()` 用 `as never` 繞過必填的 `enabled: true`,
+   **靜默建出已停用的列** —— 型別斷言把一個必填欄位的遺漏藏起來,測試照樣綠。
+   這和 `Extract<…>` 靜默變 `never` 是同一種危險:**編譯器不抗議的錯**。
+2. 「緊迴圈陷阱」的斷言用 `kind:'once'` 驗 nextFire 前進,但 DES-150 規定 once 是靠
+   `enabled=0` 停,`nextFire` 不動 —— 拆成 once 與 cron 兩案。
+3. 兩個過期的 `@ts-expect-error` 斷言一個已經不存在的型別錯誤,本身讓 `tsc` 紅(TS2578)。
+
+### B-7 [1] `ScriptCheckCode` 併入 TASK-155
+
+`script-checks.ts:17` 仍是裸字面聯集,不是 `Extract<ErrorCode, …>`。
+目前三個值都是合法的 catalog 鍵,功能沒壞,但 DES-137 要的型別安全網缺一角。
+**併進 TASK-155**(它本來就在做 `TOOL_SPECS as const` 與錯誤碼收斂)。
+
+### B-8 [2] 平行實作共用一棵工作樹 —— 我改了 `CLAUDE.md`,因為原本那條規則是我寫錯的
+
+實作者回報:約 20 個 implementer 同時在這一棵工作樹上,並提到一次 **git stash 的險些事故**。
+
+`CLAUDE.md` 原本寫「讀舊版檔案用 `git show` **或 `git stash` … `git stash pop`**」。
+那條規則是 2026-08-31 的 ledger 清空事故後我寫的,當時的情境是**一個 agent 單獨工作**。
+在 Gate 5 的平行實作下它是**危險的**:`git stash` 會把**所有人**未提交的修改一起收走,
+`pop` 之前的空窗和另外 19 個還在寫檔的 agent 直接競爭。
+
+已更新 `CLAUDE.md`:`git show <sha>:<path>` 是唯一安全做法;
+**workflow 執行期間 `git stash` 一併禁用**。
+
+值得記的通則:**一條防護規則會隨著它所處的並行度而失效。**
+當初那條規則沒有錯,是它的前提(單一 agent)悄悄不成立了,而規則沒跟著改 ——
+這其實又是一次「描述跟不上被描述的東西」,只是這次描述的是流程而不是程式碼。
+
+### B-9 結構性判斷:下一輪若再停,就換整合者,不再開第四批平行批次
+
+剩下的工作已經不是「各自實作一個模組」,而是**接縫**:
+型別對不齊、死表、fixture 契約、無主的呼叫端。
+平行分派是按檔案所有權切的,而接縫問題**天生跨檔** ——
+所以每個 implementer 都正確地拒絕跨界、改成回報,於是接縫沒有人修,只會累積成下一批澄清。
+
+**規則:再停一次且澄清仍有 10 條以上,就改派一個全域範圍的整合者(opus,`/goal` 的驗證層級),
+不要開第四批平行實作。**

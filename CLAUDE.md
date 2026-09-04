@@ -2,8 +2,15 @@
 
 ## Never restore a path from another commit to read it
 
-To read a file as it was at some commit, use `git show <sha>:<path>` (writes nothing), or
-`git stash` … `git stash pop` around the read.
+To read a file as it was at some commit, use `git show <sha>:<path>` — it writes nothing and is
+the ONLY safe method.
+
+**`git stash` … `git stash pop` is ALSO forbidden while a workflow is running.** That advice was
+written here for a single agent working alone and is unsafe as soon as the SDLC gates run: an
+implementation gate puts ~20 implementer agents on this ONE shared working tree at the same time.
+`git stash` takes *everyone's* uncommitted edits, not just yours, and the window before `pop`
+races with 19 other agents still writing. On 2026-09-04 an implementer reported a near-miss doing
+exactly this. If you think you need a stash, you need `git show` instead.
 
 **Never** run `git checkout <sha> -- <path>` or `git restore --source=<sha> -- <path>`.
 That overwrites the working tree AND stages the overwrite, and it silently destroys
