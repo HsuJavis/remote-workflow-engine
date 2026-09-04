@@ -341,8 +341,13 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'contract never named cannot be tuned by a caller, cannot be shown by `workflow_describe`, ' +
         'and cannot be bounded by the engine ceilings. Nothing refuses it — the cost is simply that ' +
         'the workflow can only be changed by editing it.\n\n' +
-        "Phase titles (`phase(title)` and `meta.phases[].title`) are visible to every principal who can " +
-        "see the workflow, including the non-owner projection and the generated diagram — a phase " +
+        // v24 (integrator): "the generated diagram" named a generator that no longer exists — v23/v24
+      // retired the analyzer that drew one (ARCH-101), and the diagram is now the AUTHOR's own
+      // `mermaid`, served verbatim by `workflow_describe`. The disclosure is unchanged and if
+      // anything wider: the author's diagram is public too.
+      "Phase titles (`phase(title)` and `meta.phases[].title`) are visible to every principal who can " +
+        "see the workflow, including the non-owner projection and your own `mermaid` diagram, which " +
+        "`workflow_describe` serves verbatim to any caller — a phase " +
         'title is not a private annotation, so keep secrets and distinctive internal prose out of it. ' +
         "The diagram you draw is structure-only: it is your responsibility, not an enforced check, to " +
         "keep secrets out of node text and labels.",
