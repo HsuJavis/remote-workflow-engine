@@ -27,7 +27,7 @@ interface RunManagerPort {
  *  CHANNEL_UNPUBLISHED here, not accepted and left to fail at every subsequent delivery. `exists()`
  *  is dropped — `create()` was its only caller in this file. */
 interface CatalogPort {
-  resolve(name: string, sel: { channel?: string }): Promise<unknown>;
+  resolve(name: string, sel: { channel?: string }): Promise<{ triggers?: string[] } | unknown>;
 }
 
 export interface WebhookRegistryDeps {
@@ -240,6 +240,29 @@ export class WebhookRegistry {
     if (row.workflow === null) {
       this._recordRefusal(id, 'UNCLAIMED');
       return { ok: false, httpStatus: 409, reason: 'webhook is not claimed by any workflow', code: 'UNCLAIMED' };
+    }
+
+    // v24 (integrator; DES-150): the OTHER three refusal reasons. `RefusalReason` is declared once
+    // in types.ts as a vocabulary SHARED by the scheduler and this registry, and this path only
+    // ever produced one of its four members — a webhook whose claimed workflow had been
+    // deregistered, unpublished, or dropped from the released version's `triggers[]` fired anyway
+    // (or failed at dispatch and was recorded as `lastError`, which the docblock says means
+    // something else entirely). Same order and same codes as the scheduler driver's gate.
+    let released: { triggers?: string[] };
+    try {
+      released = (await this._catalog.resolve(row.workflow, { channel: 'release' })) as { triggers?: string[] };
+    } catch (err) {
+      const code = (err as { code?: unknown } | null)?.code;
+      const reason: RefusalReason = code === 'CHANNEL_UNPUBLISHED' ? 'CHANNEL_UNPUBLISHED' : 'CLAIMED_WORKFLOW_MISSING';
+      this._recordRefusal(id, reason);
+      return { ok: false, httpStatus: 409, reason: `claimed workflow '${row.workflow}' cannot be fired: ${reason}`, code: reason };
+    }
+    // Only when the released version declares a trigger list at all — a version that declares none
+    // never claimed anything through that door, and treating it as a refusal would break every
+    // webhook created the pre-v24 way.
+    if (released?.triggers !== undefined && !released.triggers.includes(id)) {
+      this._recordRefusal(id, 'NOT_IN_RELEASE');
+      return { ok: false, httpStatus: 409, reason: `webhook ${id} is not in workflow '${row.workflow}'s released version`, code: 'NOT_IN_RELEASE' };
     }
 
     if (req.deliveryId) {
