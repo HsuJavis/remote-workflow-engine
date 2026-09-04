@@ -89,6 +89,7 @@ describe('VAL-083: GET /api/home — grouping + description (REQ-074)', () => {
         phases: [{ title: 'Draft' }, { title: 'Verify' }],
       };
       return "skeleton-only";`,
+      mermaid: 'graph TD;',
     });
 
     const res = await fetch(`http://127.0.0.1:${server.port}/api/home`);

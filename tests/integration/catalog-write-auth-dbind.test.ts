@@ -170,7 +170,7 @@ describe('H1: anonymous (no-identity) catalog writes are refused while auth is e
     const dbPath = join(dbindTmpDir, 'catalog.db');
     seedPublishedWorkflow(dbPath, name, 'it091-owner3@example.com', 'v1', `return 'v1';`);
 
-    const reg = await callTool(dbindServer, 'workflow_register', { name, script: `return 'hijack-attempt';` /* NO principal at all */ });
+    const reg = await callTool(dbindServer, 'workflow_register', { name, script: `return 'hijack-attempt';`, mermaid: 'graph TD;' /* NO principal at all */ });
     expect(reg['code']).toBe('PRINCIPAL_REQUIRED');
 
     const db = new Database(dbPath);
@@ -186,7 +186,7 @@ describe('H1: anonymous (no-identity) catalog writes are refused while auth is e
 
   it('GREEN PIN: with auth disabled, the SAME three anonymous calls all succeed (D-AUTH-6 preserved, ADR-012)', async () => {
     const name = uniqueName('open');
-    const reg = await callTool(openServer, 'workflow_register', { name, script: `return 'v1';` });
+    const reg = await callTool(openServer, 'workflow_register', { name, script: `return 'v1';`, mermaid: 'graph TD;' });
     expect(reg['code']).not.toBe('PRINCIPAL_REQUIRED');
     expect(reg['error']).toBeUndefined();
     const pub = await callTool(openServer, 'workflow_publish', { name, version: 'v1', channel: 'release' });
@@ -228,7 +228,7 @@ describe('IT-095: H1 residual — self-asserted args.principal is ALSO refused P
 
     // The exact attack: no real bearer (D-BIND-exempt connection), but `args.principal` is the
     // CORRECT owner string (as if just read off a prior `workflow_source`).
-    const reg = await callTool(dbindServer, 'workflow_register', { name, script: `return 'hijack-attempt';`, principal: owner });
+    const reg = await callTool(dbindServer, 'workflow_register', { name, script: `return 'hijack-attempt';`, principal: owner, mermaid: 'graph TD;' });
     expect(reg['code']).toBe('PRINCIPAL_REQUIRED');
     expect(reg['code']).not.toBe('NOT_WORKFLOW_OWNER'); // no ownership comparison ever runs (DES-117)
 
@@ -264,17 +264,17 @@ describe('IT-095: H1 residual — self-asserted args.principal is ALSO refused P
 
   it('GREEN PIN (wrinkle 1, no-auth attribution preserved): with auth DISABLED, args.principal STILL attributes ownership on workflow_register', async () => {
     const name = uniqueName('open-attrib');
-    const reg = await callTool(openServer, 'workflow_register', { name, script: `return 'v1';`, principal: 'it095-open-owner@example.com' });
+    const reg = await callTool(openServer, 'workflow_register', { name, script: `return 'v1';`, principal: 'it095-open-owner@example.com', mermaid: 'graph TD;' });
     expect(reg['error']).toBeUndefined();
     expect(reg['code']).not.toBe('PRINCIPAL_REQUIRED');
 
     // A DIFFERENT self-asserted principal is refused NOT_WORKFLOW_OWNER — proving ownership is
     // genuinely enforced via args.principal on a no-auth deployment, not merely accepted-then-inert.
-    const hijack = await callTool(openServer, 'workflow_register', { name, script: `return 'hijack';`, principal: 'someone-else@example.com' });
+    const hijack = await callTool(openServer, 'workflow_register', { name, script: `return 'hijack';`, principal: 'someone-else@example.com', mermaid: 'graph TD;' });
     expect(hijack['code']).toBe('NOT_WORKFLOW_OWNER');
 
     // The true owner can still register a new version.
-    const ownerReg = await callTool(openServer, 'workflow_register', { name, script: `return 'v2';`, principal: 'it095-open-owner@example.com' });
+    const ownerReg = await callTool(openServer, 'workflow_register', { name, script: `return 'v2';`, principal: 'it095-open-owner@example.com', mermaid: 'graph TD;' });
     expect(ownerReg['error']).toBeUndefined();
   });
 });

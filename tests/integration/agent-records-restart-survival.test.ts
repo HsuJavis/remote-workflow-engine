@@ -52,7 +52,7 @@ describe('Per-agent records survive a real server restart (IT-020, D-F9b)', () =
       const mgr1 = new RunManager({ store: store1, clock: CLOCK, workRoot: dir, gateway });
       const facade1 = new McpFacade({ store: store1, runManager: mgr1, clock: CLOCK });
 
-      const submitted = await runScriptVia(facadeCaller(facade1), `return await agent('hi');`);
+      const submitted = await runScriptVia(facadeCaller(facade1), `return await agent('hi', {});`);
       const runId = submitted.result!.runId;
 
       let status = await facade1.runStatus({ runId }, AUTH_DISABLED, false, null);

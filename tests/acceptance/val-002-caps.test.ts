@@ -85,7 +85,7 @@ describe('VAL-002: nesting, concurrency caps, budget accounting (REQ-002)', () =
     // real successful token-consuming call could ever exceed on a single agent() call).
     const r = await runAndWait(`
       try {
-        await agent('call that exceeds budget');
+        await agent('call that exceeds budget', {});
         return 'no-throw';
       } catch (e) {
         return 'budget-thrown: ' + e.code;

@@ -28,7 +28,7 @@ describe('WorkflowCatalog SQLite persistence (IT-012, D-V2)', () => {
 
   it('a registration survives a new WorkflowCatalog instance on the same workRoot', async () => {
     const cat1 = new WorkflowCatalog(dir, CLOCK);
-    const { version } = await cat1.register('persist-flow', `return 1;`);
+    const { version } = await cat1.register({ name: 'persist-flow', script: `return 1;`, mermaid: 'graph TD;' });
 
     // New instance simulates a server restart against the same on-disk workRoot.
     // v22 (DES-111): get() is deleted — resolve() with an explicit {version} selector always
@@ -41,28 +41,24 @@ describe('WorkflowCatalog SQLite persistence (IT-012, D-V2)', () => {
 
   it('list() on a fresh instance still shows a workflow registered by a prior instance', async () => {
     const cat1 = new WorkflowCatalog(dir, CLOCK);
-    await cat1.register('persist-list', `return 2;`);
+    await cat1.register({ name: 'persist-list', script: `return 2;`, mermaid: 'graph TD;' });
 
     const cat2 = new WorkflowCatalog(dir, CLOCK);
     const names = (await cat2.list()).map((e) => e.name);
     expect(names).toContain('persist-list');
   });
 
-  // v21 (ARCH-067, DES-103, TASK-096): get() widened to return {script, version, defaults, params}
-  // — today get() only SELECTs script+version (see workflow-catalog.ts:136-142), so `defaults` is
-  // undefined even for a row registered WITH defaults (only getFull() sees it). This is the
-  // trivially-green-trap-avoiding assertion: NOT "params is undefined on a fresh row" (vacuously
-  // true today) but "defaults survives get(), not just getFull()".
-  it('resolve() (not just resolveDetail()) returns the registered `defaults`, matching ARCH-066\'s "one row-read, no second query"', async () => {
-    const cat = new WorkflowCatalog(dir, CLOCK);
-    const { version } = await cat.register('it012-defaults', 'return 1;', { model: 'sonnet' });
-    const entry = await cat.resolve('it012-defaults', { version });
-    expect((entry as { defaults?: unknown }).defaults).toEqual({ model: 'sonnet' });
-  });
+  // v21 (ARCH-067, DES-103, TASK-096) case DELETED (v24, TASK-152/DES-159): `register()`'s flat
+  // `defaults` argument is retired outright (ADR-035) — nothing forwards a flat `{model:'sonnet'}`
+  // to registration any more, only a per-agent `meta.params.agents.<label>.model.default` inside
+  // the script itself. A script with no `agent()` call (as this fixture had) has no label to hang
+  // a per-agent default on, so the case has no v24 equivalent; asserting the retired flat shape
+  // survives `resolve()` would be a green test for dead behaviour (DES-159's own naming of this
+  // exact failure mode).
 
   it('a pre-v21 row (registered with no meta.params) reads back resolve().params as the canonical contract shape, not a raw undefined key omission', async () => {
     const cat = new WorkflowCatalog(dir, CLOCK);
-    const { version } = await cat.register('it012-no-params', 'return 1;');
+    const { version } = await cat.register({ name: 'it012-no-params', script: 'return 1;', mermaid: 'graph TD;' });
     const entry = await cat.resolve('it012-no-params', { version });
     // `resolve()`'s return type has no `params` key at all when the row carries none; once
     // TASK-096/099 land this must be an explicit key (even if its value is `undefined`) so

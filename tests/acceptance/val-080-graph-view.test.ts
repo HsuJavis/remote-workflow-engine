@@ -109,10 +109,10 @@ describe('VAL-080: graph view returns GraphPayload (REQ-071)', () => {
         phases: [{ title: 'Draft' }, { title: 'Verify' }],
       };
       const drafts = await parallel([
-        () => agent('draft 1'),
-        () => agent('draft 2'),
+        () => agent('draft 1', {}),
+        () => agent('draft 2', {}),
       ]);
-      return await agent('verify');`);
+      return await agent('verify', {});`);
     const sub = await callTool('run_start', { name: 'val080-cs' }) as { runId?: string };
     const runId = sub?.runId!;
     await pollDone(runId, 60_000);

@@ -27,8 +27,8 @@ const SCRIPT = `export const meta = {
   description: 'two models draft in parallel, a stronger model verifies',
   phases: [{ title: 'Draft' }, { title: 'Verify' }],
 };
-const drafts = await parallel([ () => agent('draft 1'), () => agent('draft 2') ]);
-const final = await agent('verify');
+const drafts = await parallel([ () => agent('draft 1', {}), () => agent('draft 2', {}) ]);
+const final = await agent('verify', {});
 const extra = await workflow('log-it', {});
 return final;`;
 

@@ -69,6 +69,7 @@ describe('GET /api/home + terminalAt in RunSummary (IT-068, DES-070, DES-071)', 
       name: 'it068-idle',
       script: `export const meta = { name: 'it068-idle', description: 'idle workflow for IT-068' };
                return "idle";`,
+      mermaid: 'graph TD;',
     });
     const res = await fetch(`http://127.0.0.1:${server.port}/api/home`);
     expect(res.status).toBe(200);

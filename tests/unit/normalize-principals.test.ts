@@ -1,8 +1,9 @@
 // UT-143 (DES-141, v24): normalizePrincipals(raw) — validated role map with a typed boot refusal
-// for an invalid role string. Written test-first (Gate 5, RED) — src/main.ts has no
-// normalizePrincipals export yet.
+// for an invalid role string.
+// TASK-146 (2026-09-04): normalizePrincipals is now exported by src/main.ts — the `@ts-expect-error`
+// this file started with (Gate 5, RED) is stale and removed; `tsc --noEmit` was refusing it as an
+// unused directive (TS2578).
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — normalizePrincipals does not exist yet (v24 DES-141/TASK-146)
 import { normalizePrincipals } from '../../src/main.js';
 
 describe('normalizePrincipals (UT-143, DES-141)', () => {

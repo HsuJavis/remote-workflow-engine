@@ -44,7 +44,7 @@ describe('Live budget accounting observable in-script (IT-018, D-F8)', () => {
 
     const runId = await startScript(mgr, `
         const before = budget.spent();
-        await agent('hi');
+        await agent('hi', {});
         const after = budget.spent();
         return { before, after, remaining: budget.remaining() };
       `, {

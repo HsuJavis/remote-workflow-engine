@@ -39,7 +39,7 @@ describe('E2E: named workflow registry + per-run workspace isolation (REQ-014, R
   }
 
   it('workflow_register saves a workflow and workflow_list shows it', async () => {
-    await mcpCall('workflow_register', { name: 'greet', script: `return 'hello ' + args.who;` });
+    await mcpCall('workflow_register', { name: 'greet', script: `return 'hello ' + args.who;`, mermaid: 'graph TD;' });
     const list = (await mcpCall('workflow_list', {})).result;
     const found = (list as Array<{ name: string }>).some((w) => w.name === 'greet');
     expect(found).toBe(true);

@@ -54,6 +54,31 @@ export function synthesizeMermaid(script: string): string {
   return ['graph TD;', ...lines].join('\n');
 }
 
+/** `export const meta = {…}` locator used ONLY to detect "does this script already declare its
+ *  own meta" — same pattern `src/sandbox/guards.ts`'s `checkMeta` anchors on. */
+const META_DECL_RE = /export\s+const\s+meta\s*=\s*/;
+
+/** v24 (DES-144, TASK-152 B-3): every scanned `agent()` label now needs a matching
+ *  `params.agents.<label>` declaration (model/effort/timeoutMs all required) or registration
+ *  refuses `AGENT_UNDECLARED` — there is no more "no params block ⇒ the engine-global knobs"
+ *  fallback. Dozens of pre-v24 fixture scripts declare no `meta` at all. For those (and ONLY
+ *  those — a script with its own `export const meta` is returned unchanged, never a second
+ *  declaration), this synthesizes the minimal contract from the script's own labels: `'sonnet'`
+ *  is the same alias already assumed known throughout this file's other fixtures (empty
+ *  `aliasNames` ⇒ any string passes anyway — `isKnownAlias`, contract.ts:131). */
+export function synthesizeMeta(script: string): string {
+  if (META_DECL_RE.test(script)) return script;
+  const { labels } = scanAgentCalls(script);
+  if (labels.length === 0) return script;
+  const agents = labels
+    .map(
+      (label) =>
+        `${JSON.stringify(label)}: { model: { type: 'string', default: 'sonnet' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }`,
+    )
+    .join(', ');
+  return `export const meta = { params: { agents: { ${agents} } } };\n${script}`;
+}
+
 export interface RegisterPublishOpts {
   /** Threaded through BOTH register and publish: `publish` only skips the ownership gate when the
    *  principal is null, so a workflow registered as `alice` must be published as `alice` too. */
@@ -78,8 +103,9 @@ export async function registerPublished(
   opts: RegisterPublishOpts = {},
 ): Promise<{ version: string }> {
   const principal = opts.principal ?? null;
-  const mermaid = opts.mermaid ?? synthesizeMermaid(script);
-  const { version } = await catalog.register({ name, script, mermaid, principal });
+  const scriptWithMeta = synthesizeMeta(script);
+  const mermaid = opts.mermaid ?? synthesizeMermaid(scriptWithMeta);
+  const { version } = await catalog.register({ name, script: scriptWithMeta, mermaid, principal });
   await catalog.publish(name, version, opts.channel ?? 'release', principal);
   return { version };
 }
@@ -132,15 +158,18 @@ export function facadeCaller(facade: McpFacade, principal: Principal = AUTH_DISA
   };
 }
 
-/** `workflow_register` reports the version twice: `result.version` as the `'vN'` string and a
- *  top-level `version` as a bare number. `workflow_publish`'s v24 schema (`tool-specs.ts`) requires
- *  the NUMBER (pre-v24 it took the string) — both forms are derived here so a caller missing either
- *  shape still resolves. */
-function versionNumberOf(response: unknown, name: string): number {
+/** `workflow_register` reports the version as `result.version` (the `'vN'` string) or, on an
+ *  in-process facade caller, a bare top-level `version` number. v24's `workflow_publish`/`run_start`
+ *  schema (`tool-specs.ts`) declares `version` as `{type:'string'}` — the catalog itself stores and
+ *  compares the `'vN'` string form (adjudication v24 #3 B-1: a number reaches the catalog as
+ *  `UNKNOWN_VERSION` and ajv rejects the correct string first, so no argument shape succeeds unless
+ *  this returns a string). Both response shapes are derived here so a caller missing either still
+ *  resolves. */
+function versionOf(response: unknown, name: string): string {
   const r = response as { result?: { version?: unknown }; version?: unknown; error?: { code?: string; message?: string }; code?: string } | null;
-  if (typeof r?.version === 'number') return r.version;
   const fromResult = r?.result?.version;
-  if (typeof fromResult === 'string') return Number(fromResult.replace(/^v/, ''));
+  if (typeof fromResult === 'string') return fromResult;
+  if (typeof r?.version === 'number') return `v${r.version}`;
   const code = r?.error?.code ?? r?.code ?? 'UNKNOWN';
   throw new Error(`registerPublishedVia: workflow_register('${name}') did not return a version (${code}: ${r?.error?.message ?? JSON.stringify(response)})`);
 }
@@ -159,14 +188,15 @@ export async function registerPublishedVia(
   // instead. Either way the SAME principal must register and publish: `publish` only skips the
   // ownership gate when the principal is null.
   const who = typeof opts.principal === 'string' ? { principal: opts.principal } : {};
-  const mermaid = opts.mermaid ?? synthesizeMermaid(script);
-  const registered = await call('workflow_register', { name, script, mermaid, ...who });
-  const version = versionNumberOf(registered, name);
+  const scriptWithMeta = synthesizeMeta(script);
+  const mermaid = opts.mermaid ?? synthesizeMermaid(scriptWithMeta);
+  const registered = await call('workflow_register', { name, script: scriptWithMeta, mermaid, ...who });
+  const version = versionOf(registered, name);
   const published = await call('workflow_publish', { name, version, channel: opts.channel ?? 'release', ...who }) as { status?: string; error?: { code?: string; message?: string }; code?: string };
   if (published?.status === 'failed') {
-    throw new Error(`registerPublishedVia: workflow_publish('${name}', v${version}) failed (${published.error?.code ?? published.code}: ${published.error?.message ?? ''})`);
+    throw new Error(`registerPublishedVia: workflow_publish('${name}', ${version}) failed (${published.error?.code ?? published.code}: ${published.error?.message ?? ''})`);
   }
-  return { version: `v${version}` };
+  return { version };
 }
 
 /** Drop-in for `callTool('run_start', { script, ...extra })` / `facade.runStart({ script })`:

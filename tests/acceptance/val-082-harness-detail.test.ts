@@ -105,7 +105,7 @@ describe('VAL-082: harness detail in run_agent_log (REQ-073)', () => {
     if (!HAS_PROVIDER) return;
 
     const sub = await callTool('run_start', {
-      script: `return await agent('Reply with PONG');`,
+      script: `return await agent('Reply with PONG', {});`,
     }) as { runId?: string };
     const runId = sub?.runId!;
     await pollDone(runId, 60_000);

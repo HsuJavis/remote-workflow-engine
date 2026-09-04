@@ -4,7 +4,8 @@
 // Mock policy: integration tier — real SQLite-backed stores, no mock of the SUT boundary.
 import { describe, it, expect } from 'vitest';
 import { authorize } from '../../src/authz.js';
-// @ts-expect-error — the v24 OwnerLookup port implementation does not exist yet
+// v24 (TASK-147): the OwnerLookup port implementation now exists (src/owner-lookup.ts) — the
+// `@ts-expect-error` this import used to carry is stale and was itself failing tsc.
 import { createOwnerLookup } from '../../src/owner-lookup.js';
 
 describe('authz OwnerLookup — wired to real store columns (IT-105, DES-139)', () => {

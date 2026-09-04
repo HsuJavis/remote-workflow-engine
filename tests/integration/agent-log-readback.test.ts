@@ -39,7 +39,7 @@ describe('run_agent_log real transcript read-back (IT-009, D-V6)', () => {
     const runManager = new RunManager({ store, clock: CLOCK, gateway });
     const facade = new McpFacade({ clock: CLOCK, store, runManager });
 
-    const run = await runScriptVia(facadeCaller(facade), `return agent('ping');`);
+    const run = await runScriptVia(facadeCaller(facade), `return agent('ping', {});`);
     const runId = run.result!.runId;
     const status = await pollUntilSettled(facade, runId);
     expect(status.status).toBe('completed');

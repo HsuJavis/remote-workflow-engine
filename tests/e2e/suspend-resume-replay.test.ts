@@ -71,8 +71,8 @@ describe('E2E: suspend / resume / cache replay (REQ-006, REQ-002)', () => {
 
   it('suspend stops in-flight work and status becomes suspended', async () => {
     const run = await runScriptVia(mcpCall, `
-        const r = await agent('step-1');
-        const r2 = await agent('step-2');
+        const r = await agent('step-1', {});
+        const r2 = await agent('step-2', {});
         return {r, r2};
       `);
     const runId = run.runId;
@@ -87,7 +87,7 @@ describe('E2E: suspend / resume / cache replay (REQ-006, REQ-002)', () => {
   it('resume replays cached agent() calls without re-running them', async () => {
     // First run: stop midway (we simulate by letting a single-agent workflow complete once,
     // stopping it, then resuming with the same script — the first call replays from cache)
-    const run = await runScriptVia(mcpCall, `return agent('the-query');`);
+    const run = await runScriptVia(mcpCall, `return agent('the-query', {});`);
     const runId = run.runId;
 
     await pollUntil(runId, (s) => s === 'completed');
@@ -104,7 +104,7 @@ describe('E2E: suspend / resume / cache replay (REQ-006, REQ-002)', () => {
     // with the same work root (same SQLite + journal.jsonl files).
     // v22: the same work root also carries the catalog, so the registered+published version this run
     // is pinned to survives the restart and `_requireLive` re-resolves it by pin (DES-113/ADR-010).
-    const run = await runScriptVia(mcpCall, `return agent('persist-query');`);
+    const run = await runScriptVia(mcpCall, `return agent('persist-query', {});`);
     const runId = run.runId;
 
     await waitUntilRunning(runId);

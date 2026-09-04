@@ -97,7 +97,7 @@ describe('Default GatewayClient/server construction uses the LiteLLM proxy path 
       const body = (await res.json()) as { result?: { content: Array<{ text: string }> } };
       return JSON.parse(body.result!.content[0]!.text);
     };
-    const runId = (await runScriptVia(callTool, `return agent('ping');`) as { runId: string }).runId;
+    const runId = (await runScriptVia(callTool, `return agent('ping', {});`) as { runId: string }).runId;
 
     const status = await pollUntilSettled(baseUrl, runId);
     expect(status.status).toBe('completed');

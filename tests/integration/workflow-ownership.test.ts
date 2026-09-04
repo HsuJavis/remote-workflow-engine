@@ -142,7 +142,7 @@ const SCRIPT = 'return "hello";';
 
 describe('Workflow ownership gate (DES-098, IT-080)', () => {
   it('case 1: first registration by alice → owned by alice', async () => {
-    const r = await callTool('workflow_register', { name: OWNER_WORKFLOW, script: SCRIPT }, aliceToken);
+    const r = await callTool('workflow_register', { name: OWNER_WORKFLOW, script: SCRIPT, mermaid: 'graph TD;' }, aliceToken);
     expect(r.error).toBeUndefined();
     expect(typeof r.version).toBe('number');
     // v22: registration is not publication. With a real owner bearer the real call is reachable.
@@ -159,7 +159,7 @@ describe('Workflow ownership gate (DES-098, IT-080)', () => {
   });
 
   it('case 2: register-overwrite by alice (same owner) → succeeds', async () => {
-    const r = await callTool('workflow_register', { name: OWNER_WORKFLOW, script: SCRIPT + ' // v2' }, aliceToken);
+    const r = await callTool('workflow_register', { name: OWNER_WORKFLOW, script: SCRIPT + ' // v2', mermaid: 'graph TD;' }, aliceToken);
     expect(r.error).toBeUndefined();
     expect(r.code).not.toBe('NOT_WORKFLOW_OWNER');
     // Alice's own new version onto `release`, so the reads below see her latest — the state case 3's
@@ -170,7 +170,7 @@ describe('Workflow ownership gate (DES-098, IT-080)', () => {
 
   it('case 3: register-overwrite by bob (non-owner) → NOT_WORKFLOW_OWNER + stored unchanged', async () => {
     // Bob is a genuinely authenticated, genuinely different identity — not a self-asserted string.
-    const r = await callTool('workflow_register', { name: OWNER_WORKFLOW, script: 'return "hijacked";' }, bobToken);
+    const r = await callTool('workflow_register', { name: OWNER_WORKFLOW, script: 'return "hijacked";', mermaid: 'graph TD;' }, bobToken);
     expect(r.code).toBe('NOT_WORKFLOW_OWNER');
 
     // Stored definition must be unchanged — asserted at the STORE (see the M-5 note in the header):
@@ -211,7 +211,7 @@ describe('Workflow ownership gate (DES-098, IT-080)', () => {
 
   it('case 5: deregister by alice (owner) → succeeds', async () => {
     // Re-register as alice first (a prior write above may not have changed owner)
-    await callTool('workflow_register', { name: OWNER_WORKFLOW, script: SCRIPT }, aliceToken);
+    await callTool('workflow_register', { name: OWNER_WORKFLOW, script: SCRIPT, mermaid: 'graph TD;' }, aliceToken);
     const r = await callTool('workflow_deregister', { name: OWNER_WORKFLOW }, aliceToken);
     expect(r.code).not.toBe('NOT_WORKFLOW_OWNER');
     expect((r as { removed?: boolean }).removed).toBe(true);
@@ -241,13 +241,14 @@ describe('case 6: null principal on a genuinely AUTH-DISABLED server → ungated
 
   it('case 6: null principal → ungated mutation even on an owned row [D-AUTH-6]', async () => {
     const name = 'it080-case6-open';
-    const owned = await callToolOn(openServer, 'workflow_register', { name, script: SCRIPT, principal: ALICE });
+    const owned = await callToolOn(openServer, 'workflow_register', { name, script: SCRIPT, principal: ALICE, mermaid: 'graph TD;' });
     expect(owned.error).toBeUndefined();
 
     const r = await callToolOn(openServer, 'workflow_register', {
       name,
       script: SCRIPT + ' // null-principal-ok',
       principal: null,  // no principal → ungated (auth genuinely off)
+      mermaid: 'graph TD;',
     });
     // Should NOT return NOT_WORKFLOW_OWNER, and should NOT be refused PRINCIPAL_REQUIRED either
     // (that code only ever fires when authEnabled is true — it is false on this server).
@@ -296,7 +297,7 @@ describe('Boot backfill: NULL owner → hsuhungjung@gmail.com (DES-098, IT-080)'
     // header), then hand-seed the release pointer (publish can no longer be reached anonymously
     // on this connection — same H1 amendment as cases 1/2).
     const wf = 'alice-owned-it080';
-    const r = await callTool('workflow_register', { name: wf, script: SCRIPT }, aliceToken);
+    const r = await callTool('workflow_register', { name: wf, script: SCRIPT, mermaid: 'graph TD;' }, aliceToken);
     expect(r.error).toBeUndefined();
     const pub = await callTool('workflow_publish', { name: wf, version: `v${r.version}`, channel: 'release' }, aliceToken);
     expect(pub.error).toBeUndefined();

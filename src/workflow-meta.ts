@@ -153,6 +153,26 @@ export interface AgentCallScan {
 const AGENT_CALL_RE = /(?<!\.)\bagent\s*\(/g;
 const AGENT_LABEL_FORMAT_RE = /^[A-Za-z_][\w-]*$/;
 const LOCKED_PARAM_KEYS = new Set(['model', 'effort', 'timeoutMs']);
+const WORKFLOW_CALL_RE = /(?<!\.)\bworkflow\s*\(/g;
+
+/** DES-143 boundary: "calls inside a nested `workflow(` argument list are NOT scanned" means a
+ *  call to ANOTHER named sub-workflow (`workflow("name", …)` — first arg a string literal), whose
+ *  whole argument-list span (including any inline callback body) is excluded. It does NOT mean the
+ *  top-level bootstrap wrapper (`workflow(() => { … })`, no string first arg) — that one's `agent()`
+ *  calls ARE scanned (UT-145 case 1). */
+function nestedWorkflowSpans(script: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  WORKFLOW_CALL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = WORKFLOW_CALL_RE.exec(script)) !== null) {
+    const openParen = script.indexOf('(', m.index);
+    const closeParen = matchDelimiter(script, openParen, '(', ')');
+    if (closeParen === -1) continue;
+    const [firstArg] = splitTopLevel(script.slice(openParen + 1, closeParen - 1));
+    if (firstArg !== undefined && literalStringValue(firstArg) !== null) spans.push([openParen, closeParen]);
+  }
+  return spans;
+}
 
 /** Splits `text` on its TOP-LEVEL commas (string/template/paren/brace/bracket-aware — the same
  *  depth-tracking idiom as `matchDelimiter`, generalized to multiple delimiter kinds at once since
@@ -203,10 +223,13 @@ export function scanAgentCalls(script: string): AgentCallScan {
   const violations: AgentCallViolation[] = [];
 
   const lineAt = (idx: number): number => script.slice(0, idx).split('\n').length;
+  const nestedSpans = nestedWorkflowSpans(script);
+  const inNestedWorkflow = (idx: number): boolean => nestedSpans.some(([s, e]) => idx >= s && idx < e);
 
   AGENT_CALL_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = AGENT_CALL_RE.exec(script)) !== null) {
+    if (inNestedWorkflow(m.index)) continue;
     const line = lineAt(m.index);
     const openParen = script.indexOf('(', m.index);
     const closeParen = matchDelimiter(script, openParen, '(', ')');

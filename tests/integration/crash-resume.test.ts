@@ -24,7 +24,7 @@ import type { GatewayClient } from '../../src/gateway/client.js';
 import { registerPublished, startScript } from '../helpers/workflow-fixtures.js';
 
 const CLOCK = new FixedClock(new Date('2024-01-01T00:00:00Z'));
-const SCRIPT = `const a = await agent('A'); const b = await agent('B'); return { a, b };`;
+const SCRIPT = `const a = await agent('A', {}); const b = await agent('B', {}); return { a, b };`;
 
 /** Process-1 gateway: resolves 'A' immediately, BLOCKS 'B' forever (never released), counts calls.
  *  `bReached` resolves once 'B' is first dispatched (so the run is caught mid-second-call). */
@@ -126,7 +126,7 @@ describe('crash durability (v8 Defer A, REQ-059/060)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-crash-named-'));
     try {
       const catalog = new WorkflowCatalog(join(dir, 'wf'), CLOCK);
-      await registerPublished(catalog, 'two-step', SCRIPT); // `const a=agent('A'); const b=agent('B'); return {a,b}`
+      await registerPublished(catalog, 'two-step', SCRIPT); // `const a=agent('A', {}); const b=agent('B', {}); return {a,b}`
       const store1 = new SqliteRunStore(join(dir, 'store'), CLOCK);
       const g1 = blockingGateway();
       const mgr1 = new RunManager({ store: store1, clock: CLOCK, workRoot: dir, catalog, gateway: g1.gateway });
@@ -172,7 +172,7 @@ describe('crash durability (v8 Defer A, REQ-059/060)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-crash-legacy-spec-'));
     try {
       const store1 = new SqliteRunStore(join(dir, 'store'), CLOCK);
-      const runId = await store1.createRun({ script: `const a = await agent('A'); return { a };` });
+      const runId = await store1.createRun({ script: `const a = await agent('A', {}); return { a };` });
       await store1.recordTransition(runId, null, 'queued', CLOCK.isoNow());
       await store1.recordTransition(runId, 'queued', 'running', CLOCK.isoNow());
 

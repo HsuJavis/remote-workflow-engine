@@ -32,9 +32,9 @@ const NEVER_RESOLVES_GATEWAY: GatewayClient = {
 };
 
 const SCRIPT = `
-  const a1 = await agent('do-skel-1');
-  const a2 = await agent('do-skel-2');
-  const a3 = await agent('do-skel-3');
+  const a1 = await agent('do-skel-1', {});
+  const a2 = await agent('do-skel-2', {});
+  const a3 = await agent('do-skel-3', {});
   return { a1, a2, a3 };
 `;
 

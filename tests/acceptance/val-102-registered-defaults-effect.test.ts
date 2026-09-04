@@ -58,7 +58,15 @@ const SOLE_AGENT_ID = 'agent-1';
 
 describe('REQ-092: registered defaults take effect at run time, observable in the harness descriptor (VAL-102)', () => {
   it('a call with NO per-call model dispatches with the registered default (alias-b), not silently ignored', async () => {
-    await registerPublishedVia(callTool, 'val102-defaults', 'return await agent("hi");', { defaults: { model: 'alias-b' } });
+    // v24 (ADR-035): a flat registered `defaults` no longer exists — the same effect is now a
+    // per-agent `meta.params.agents.<label>.model.default` declared inside the script itself.
+    const script =
+      `export const meta = { params: { agents: { hi: { ` +
+      `model: { type: 'string', default: 'alias-b' }, ` +
+      `effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, ` +
+      `timeoutMs: { type: 'number', default: 60000 } } } } };\n` +
+      `return await agent("hi", {});`;
+    await registerPublishedVia(callTool, 'val102-defaults', script);
     const run = await callTool('run_start', { name: 'val102-defaults' });
     const runId = run.runId as string;
 
@@ -68,7 +76,16 @@ describe('REQ-092: registered defaults take effect at run time, observable in th
   });
 
   it('the script itself calling agent({model:...}) wins over the registered default (per-call more specific)', async () => {
-    await registerPublishedVia(callTool, 'val102-percall-wins', `return await agent("hi", {model:'default'});`, { defaults: { model: 'alias-b' } });
+    // v24 (ADR-035): same relocation as the case above — the registered default lives in
+    // `meta.params.agents.hi.model.default`; the per-call `agent(..., {model:'default'})` argument
+    // still wins (the 'call' rung outranks 'default' unchanged).
+    const script =
+      `export const meta = { params: { agents: { hi: { ` +
+      `model: { type: 'string', default: 'alias-b' }, ` +
+      `effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, ` +
+      `timeoutMs: { type: 'number', default: 60000 } } } } };\n` +
+      `return await agent("hi", {model:'default'});`;
+    await registerPublishedVia(callTool, 'val102-percall-wins', script);
     const run = await callTool('run_start', { name: 'val102-percall-wins' });
     const runId = run.runId as string;
 

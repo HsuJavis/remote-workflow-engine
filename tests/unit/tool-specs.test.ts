@@ -71,4 +71,14 @@ describe('TOOL_SPECS — the v24 tool surface (UT-139, DES-138)', () => {
       }
     }
   });
+
+  it('[B-1, adjudication #3] `version` is a string (the value workflow_register returns), not a number, on workflow_publish/workflow_source/run_start', () => {
+    const byName = (n: string) =>
+      (TOOL_SPECS as unknown as Array<{ name: string; inputSchema: { properties?: Record<string, { type?: string; description?: string }> } }>).find((s) => s.name === n)!;
+    for (const name of ['workflow_publish', 'workflow_source', 'run_start']) {
+      const versionProp = byName(name).inputSchema.properties!.version;
+      expect(versionProp.type).toBe('string');
+      expect(versionProp.description).toMatch(/workflow_register/);
+    }
+  });
 });

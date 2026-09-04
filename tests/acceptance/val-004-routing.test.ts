@@ -59,7 +59,7 @@ describe('VAL-004: multi-model routing (REQ-004)', () => {
 
   it('omitting opts.model uses the default alias', async () => {
     if (!HAS_PROVIDER) return;
-    const r = await runAndWait(`return agent('say yes');`);
+    const r = await runAndWait(`return agent('say yes', {});`);
     expect(r.status).toBe('completed');
     const statusView = await callTool('run_status', { runId: r.runId });
     const agents = (statusView as { agents: Array<{ model: string }> }).agents;
@@ -86,7 +86,7 @@ describe('VAL-004: multi-model routing (REQ-004)', () => {
       const run = await (async () => {
         const res = await fetch(`${badBase}/mcp`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'run_start', arguments: { script: `const r = await agent('x'); return r === null ? 'null-ok' : 'unexpected';` } } }),
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'run_start', arguments: { script: `const r = await agent('x', {}); return r === null ? 'null-ok' : 'unexpected';` } } }),
         });
         const body = await res.json() as { result?: { content: Array<{ text: string }> } };
         return JSON.parse(body.result!.content[0].text);

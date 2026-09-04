@@ -40,7 +40,7 @@ async function submitRun(script: string): Promise<string> {
 async function registerWorkflow(name: string, script: string): Promise<void> {
   await fetch(`http://127.0.0.1:${server.port}/mcp`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'workflow_register', arguments: { name, script } } }),
+    body: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'workflow_register', arguments: { name, script, mermaid: 'graph TD;' } } }),
   });
 }
 
@@ -188,7 +188,7 @@ describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
     const name = 'dash-deregistered-dag';
     await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'workflow_register', arguments: { name, script: 'return 1;' } } }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'workflow_register', arguments: { name, script: 'return 1;', mermaid: 'graph TD;' } } }),
     });
     const pub = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },

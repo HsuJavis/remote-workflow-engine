@@ -74,12 +74,12 @@ describe('nested workflow() journal callSeq namespacing + resume fidelity (D-G8-
 
   it("a nested workflow()'s own agent() call gets a journal callSeq that never collides with the parent script's own callSeq values in the same run", async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    await registerPublished(catalog, 'inner', `const c = await agent('C'); return c;`);
+    await registerPublished(catalog, 'inner', `const c = await agent('C', {}); return c;`);
     const store = new CapturingStore(CLOCK);
     const callCounts = new Map<string, number>();
     const mgr = new RunManager({ store, clock: CLOCK, catalog, spawner: echoSpawner(callCounts) });
 
-    const runId = await startScript(mgr, `const a = await agent('A'); const w = await workflow('inner', {}); return {a, w};`);
+    const runId = await startScript(mgr, `const a = await agent('A', {}); const w = await workflow('inner', {}); return {a, w};`);
     const view = await pollUntilSettled(mgr, runId);
     expect(view.status).toBe('completed');
     const result = await mgr.result(runId);
@@ -105,7 +105,7 @@ describe('nested workflow() journal callSeq namespacing + resume fidelity (D-G8-
 
   it('resuming a run containing a nested workflow() replays the already-journaled, unmodified parent-level call from cache instead of re-invoking the gateway live', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    await registerPublished(catalog, 'inner', `const c = await agent('C'); return c;`);
+    await registerPublished(catalog, 'inner', `const c = await agent('C', {}); return c;`);
     const store = new InMemoryRunStore(CLOCK);
 
     const gatewayCallCounts = new Map<string, number>();
@@ -133,11 +133,11 @@ describe('nested workflow() journal callSeq namespacing + resume fidelity (D-G8-
     };
     const mgr = new RunManager({ store, clock: CLOCK, catalog, gateway });
 
-    const runId = await startScript(mgr, `const a = await agent('A'); const w = await workflow('inner', {}); return {a, w};`);
+    const runId = await startScript(mgr, `const a = await agent('A', {}); const w = await workflow('inner', {}); return {a, w};`);
 
-    // Deterministic: wait until the nested workflow's own agent('C') call has genuinely reached
+    // Deterministic: wait until the nested workflow's own agent('C', {}) call has genuinely reached
     // the gateway — proves 'A' already completed (and its journal entry committed) first, since
-    // the outer script awaits agent('A') before ever calling workflow('inner').
+    // the outer script awaits agent('A', {}) before ever calling workflow('inner').
     await cInvokeCalledPromise;
     expect(gatewayCallCounts.get('A')).toBe(1);
 

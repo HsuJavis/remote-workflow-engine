@@ -9,7 +9,7 @@ describe('parseMeta — extract purpose from a workflow script (v9, REQ-061)', (
       description: 'drafts a reply then verifies it',
       phases: [{ title: 'Draft' }, { title: 'Verify' }],
     };
-    const x = await agent('hi'); return x;`;
+    const x = await agent('hi', {}); return x;`;
     const meta = parseMeta(script);
     expect(meta.description).toBe('drafts a reply then verifies it');
     expect(meta.phases.map((p) => p.title)).toEqual(['Draft', 'Verify']);
@@ -28,7 +28,7 @@ describe('parseWorkflowSkeleton — predicted DAG before running (v9, REQ-062)',
   it('captures phase/agent/workflow calls in order, with the sub-workflow name', () => {
     const script = `
       phase('build');
-      const a = await agent('do A');
+      const a = await agent('do A', {});
       const b = await workflow('reserve-stock', { x: 1 });
       return { a, b };`;
     const nodes = parseWorkflowSkeleton(script);
@@ -40,10 +40,10 @@ describe('parseWorkflowSkeleton — predicted DAG before running (v9, REQ-062)',
   it('groups agents inside a parallel([...]) as one parallel group (customer-service shape)', () => {
     const script = `
       const drafts = await parallel([
-        () => agent('draft 1'),
-        () => agent('draft 2'),
+        () => agent('draft 1', {}),
+        () => agent('draft 2', {}),
       ]);
-      const final = await agent('verify both');
+      const final = await agent('verify both', {});
       return final;`;
     const nodes = parseWorkflowSkeleton(script);
     const agents = nodes.filter((n) => n.kind === 'agent');

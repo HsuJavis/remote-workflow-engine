@@ -61,7 +61,7 @@ describe('VAL-007: per-agent observability (REQ-007)', () => {
 
   it('run_agent_log returns the full transcript of a completed agent', async () => {
     if (!HAS_PROVIDER) return;
-    const r = await runAndWait(`return agent('Say exactly: OK');`);
+    const r = await runAndWait(`return agent('Say exactly: OK', {});`);
     const statusView = await callTool('run_status', { runId: r.runId });
     const agentId = (statusView as { agents: Array<{ agentId: string }> }).agents[0].agentId;
 

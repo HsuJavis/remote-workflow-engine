@@ -43,7 +43,7 @@ afterEach(() => {
 describe("WebhookRegistry.create() resolves `release` before accepting (H4 second site, 07-review.md §8.1)", () => {
   it('a REGISTERED but UNPUBLISHED workflow (REQ-097\'s normal draft state) is refused CHANNEL_UNPUBLISHED, not accepted-then-doomed', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    await catalog.register('h4-wh-unpublished', `return 1;`); // registered, published to NO channel
+    await catalog.register({ name: 'h4-wh-unpublished', script: `return 1;`, mermaid: 'graph TD;' }); // registered, published to NO channel
     const reg = new WebhookRegistry({ clock: CLOCK, runManager: makeFakeRunManager(), catalog, dbPath: join(dir, 'wh.db') });
 
     const result = await reg.create({ workflow: 'h4-wh-unpublished' });
@@ -54,7 +54,7 @@ describe("WebhookRegistry.create() resolves `release` before accepting (H4 secon
 
   it('GREEN PIN: a PUBLISHED workflow still creates a webhook successfully', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    const { version } = await catalog.register('h4-wh-published', `return 1;`);
+    const { version } = await catalog.register({ name: 'h4-wh-published', script: `return 1;`, mermaid: 'graph TD;' });
     await catalog.publish('h4-wh-published', version, 'release', null);
     const reg = new WebhookRegistry({ clock: CLOCK, runManager: makeFakeRunManager(), catalog, dbPath: join(dir, 'wh.db') });
 

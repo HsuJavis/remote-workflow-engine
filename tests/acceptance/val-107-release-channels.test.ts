@@ -45,7 +45,7 @@ async function scriptVersionOf(runId: string): Promise<string | undefined> {
 
 describe('REQ-097: release/beta channel resolution (VAL-107)', () => {
   it('a freshly registered version is on NO channel; publish moves the named pointer', async () => {
-    const reg = await toolCall('workflow_register', { name: 'val107-flow', script: `return 'r';`, principal: 'val107-owner@example.com' });
+    const reg = await toolCall('workflow_register', { name: 'val107-flow', script: `return 'r';`, principal: 'val107-owner@example.com', mermaid: 'graph TD;' });
     const v1 = (reg['result'] as { version?: string } | undefined)?.version as string;
 
     // v22 send-back ROUND 2 (07-review.md §4.2/§8, B1/B2): the previous pass's assertion here
@@ -66,11 +66,11 @@ describe('REQ-097: release/beta channel resolution (VAL-107)', () => {
   });
 
   it('run_start({name}) with no selector runs the release version; {channel:"beta"} runs beta; explicit version wins', async () => {
-    const regA = await toolCall('workflow_register', { name: 'val107-multi', script: `return 'release-marker';`, principal: 'val107-owner2@example.com' });
+    const regA = await toolCall('workflow_register', { name: 'val107-multi', script: `return 'release-marker';`, principal: 'val107-owner2@example.com', mermaid: 'graph TD;' });
     const vRelease = (regA['result'] as { version?: string } | undefined)?.version as string;
     await toolCall('workflow_publish', { name: 'val107-multi', version: vRelease, channel: 'release', principal: 'val107-owner2@example.com' });
 
-    const regB = await toolCall('workflow_register', { name: 'val107-multi', script: `return 'beta-marker';`, principal: 'val107-owner2@example.com' });
+    const regB = await toolCall('workflow_register', { name: 'val107-multi', script: `return 'beta-marker';`, principal: 'val107-owner2@example.com', mermaid: 'graph TD;' });
     const vBeta = (regB['result'] as { version?: string } | undefined)?.version as string;
     await toolCall('workflow_publish', { name: 'val107-multi', version: vBeta, channel: 'beta', principal: 'val107-owner2@example.com' });
 
@@ -91,7 +91,7 @@ describe('REQ-097: release/beta channel resolution (VAL-107)', () => {
   });
 
   it('an unpublished channel is refused, naming the channel — never a silent fallback to newest', async () => {
-    await toolCall('workflow_register', { name: 'val107-unpub', script: `return 1;` });
+    await toolCall('workflow_register', { name: 'val107-unpub', script: `return 1;`, mermaid: 'graph TD;' });
     const run = await toolCall('run_start', { name: 'val107-unpub', channel: 'beta' });
     const error = run['error'] as { code?: string; message?: string } | undefined;
     expect(error?.code).toBe('CHANNEL_UNPUBLISHED');

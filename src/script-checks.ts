@@ -7,6 +7,7 @@ import * as vm from 'node:vm';
 import { checkMeta } from './sandbox/guards.js';
 export { FRAME_CLOSE_FORGERY } from './params/contract.js';
 import { FRAME_CLOSE_FORGERY } from './params/contract.js';
+import type { ErrorCode } from './errors.js';
 
 export interface ScriptCheckPorts {
   aliases: ReadonlySet<string>;
@@ -14,7 +15,12 @@ export interface ScriptCheckPorts {
   mcpLookup: (name: string) => boolean;
 }
 
-export type ScriptCheckCode = 'PARSE_ERROR' | 'UNKNOWN_ALIAS' | 'MCP_NOT_PROVISIONED';
+// v24 (TASK-155, B-7/adjudication #3): constrained to ERROR_CATALOG's own keys via `Extract` —
+// DES-137's type-level net (every codedError(literal) is a catalog key) had exactly one hole
+// left: this bare literal union could drift from the catalog with no compiler signal. The three
+// values are today's valid catalog keys, so nothing behavioral changes; a future fourth value
+// added here without a matching catalog entry now fails `tsc`, not a runtime grep.
+export type ScriptCheckCode = Extract<ErrorCode, 'PARSE_ERROR' | 'UNKNOWN_ALIAS' | 'MCP_NOT_PROVISIONED'>;
 
 export interface ScriptCheckError {
   code: ScriptCheckCode;

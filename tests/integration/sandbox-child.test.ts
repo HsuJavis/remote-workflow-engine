@@ -28,7 +28,7 @@ describe('SandboxHost child process (ARCH-003)', () => {
     // When the child sends an 'agent' IPC message, the host (fake parent) replies with 'fake-answer'
     const r = await host.run(
       'run-dry',
-      'return agent("summarize this");',
+      'return agent("summarize this", {});',
       undefined,
       null,
     );

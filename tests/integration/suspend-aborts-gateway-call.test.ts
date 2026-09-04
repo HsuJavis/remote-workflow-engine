@@ -52,7 +52,7 @@ describe('run_suspend aborts an in-flight gateway call (IT-019, D-F9a)', () => {
     };
     const mgr = new RunManager({ gateway });
 
-    const runId = await startScript(mgr, `return await agent('slow-call');`);
+    const runId = await startScript(mgr, `return await agent('slow-call', {});`);
 
     // Deterministic: wait for the agent() call to have actually reached the gateway (not merely for
     // status==='running', which flips before the sandbox child even boots) before suspending — avoids

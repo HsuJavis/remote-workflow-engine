@@ -65,7 +65,7 @@ describe('VAL-081: composed runs carry depth-nested frame cells (REQ-072)', () =
 
     // v22: `workflow('val081-sub')` and run-by-name both resolve `release`, so each link in the
     // composition must be PUBLISHED, not merely registered.
-    await registerPublishedVia(callTool, 'val081-sub', `return await agent('sub-agent');`);
+    await registerPublishedVia(callTool, 'val081-sub', `return await agent('sub-agent', {});`);
     await registerPublishedVia(callTool, 'val081-main', `
         const r = await workflow('val081-sub', {});
         return r;
@@ -92,7 +92,7 @@ describe('VAL-081: composed runs carry depth-nested frame cells (REQ-072)', () =
     // Depth-2 composition: main → mid → leaf.
     if (!HAS_PROVIDER) return;
 
-    await registerPublishedVia(callTool, 'val081-leaf', `return await agent('leaf');`);
+    await registerPublishedVia(callTool, 'val081-leaf', `return await agent('leaf', {});`);
     await registerPublishedVia(callTool, 'val081-mid', `return await workflow('val081-leaf', {});`);
     await registerPublishedVia(callTool, 'val081-root', `return await workflow('val081-mid', {});`);
 

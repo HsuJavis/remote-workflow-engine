@@ -47,7 +47,7 @@ describe('VAL-003: real agent execution via Claude Agent SDK (REQ-003)', () => {
 
   it('agent() without schema resolves to a string (final text)', async () => {
     if (!HAS_PROVIDER) return;
-    const r = await runAndWait(`return agent('Reply with only the word: PONG');`);
+    const r = await runAndWait(`return agent('Reply with only the word: PONG', {});`);
     expect(r.status).toBe('completed');
     expect(typeof r.result).toBe('string');
     expect(String(r.result).toUpperCase()).toContain('PONG');
@@ -80,7 +80,7 @@ describe('VAL-003: real agent execution via Claude Agent SDK (REQ-003)', () => {
 
   it('agent() transcript is retrievable after completion', async () => {
     if (!HAS_PROVIDER) return;
-    const r = await runAndWait(`return agent('Say hello in one word');`);
+    const r = await runAndWait(`return agent('Say hello in one word', {});`);
     expect(r.status).toBe('completed');
     const statusView = await callTool('run_status', { runId: r.runId });
     const agents = (statusView as { agents: Array<{ agentId: string; state: string }> }).agents;

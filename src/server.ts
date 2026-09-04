@@ -616,7 +616,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   const bootRunDetails = await Promise.all(bootRunSummaries.map((r) => store.getRun(r.runId)));
   const ownerlessRuns = bootRunDetails.filter((r) => r && !r.principal).length;
   const ownerlessTriggers =
-    scheduler.all().filter((s) => !s.createdBy).length +
+    (await scheduler.list()).filter((s) => !s.createdBy).length +
     webhooks.list().filter((w) => !(w as unknown as { createdBy?: string | null }).createdBy).length;
   const authAnnounce = { enabled: authAnnounceEnabled, principalsCount, defaultRole: 'user' as const };
 

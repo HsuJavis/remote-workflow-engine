@@ -23,9 +23,9 @@ describe('Null semantics (DES-013)', () => {
     const api = apiWithFailures(['fail-me']);
     const script = `
       return parallel([
-        async () => agent('ok-1'),
-        async () => agent('fail-me'),
-        async () => agent('ok-2'),
+        async () => agent('ok-1', {}),
+        async () => agent('fail-me', {}),
+        async () => agent('ok-2', {}),
       ]);
     `;
     const r = await evaluateScript(script, api);
@@ -37,8 +37,8 @@ describe('Null semantics (DES-013)', () => {
     const api = apiWithFailures(['all-fail', 'also-fail']);
     const script = `
       return parallel([
-        async () => agent('all-fail'),
-        async () => agent('also-fail'),
+        async () => agent('all-fail', {}),
+        async () => agent('also-fail', {}),
       ]);
     `;
     const r = await evaluateScript(script, api);
@@ -87,7 +87,7 @@ describe('Null semantics (DES-013)', () => {
       args: undefined,
       budget: NEVER_BUDGET,
     };
-    const r = await evaluateScript('return agent("query");', api);
+    const r = await evaluateScript('return agent("query", {});', api);
     expect(r.kind).toBe('done');
     expect(r.value).toBeNull();
   });

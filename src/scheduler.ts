@@ -251,17 +251,6 @@ export class SqliteSchedulerPort {
     return rows.map(rowToStatus);
   }
 
-  /** v23 (DES-128, ARCH-078, TASK-126): the SYNC cron-only read `TriggerPorts.schedules` composes
-   *  (getTriggerBindings/the analyzer both need a live, non-async snapshot). Includes DISABLED rows
-   *  (the port's own `enabled` field is how a caller learns that) and excludes `once`/`resident` —
-   *  `TriggerBinding`'s `'cron'` variant is the only shape this port ever produces. */
-  listByWorkflow(workflow: string): Array<{ cron: string; tz?: string; enabled: boolean }> {
-    const rows = this._db
-      .prepare("SELECT cron, tz, enabled FROM schedules WHERE workflow = ? AND kind = 'cron'")
-      .all(workflow) as Array<{ cron: string; tz: string | null; enabled: number }>;
-    return rows.map((r) => ({ cron: r.cron, tz: r.tz ?? undefined, enabled: r.enabled === 1 }));
-  }
-
   async setEnabled(id: string, on: boolean): Promise<ScheduleResult<void>> {
     const info = this._db.prepare('UPDATE schedules SET enabled = ? WHERE id = ?').run(on ? 1 : 0, id);
     if (info.changes === 0) return { error: { code: 'SCHEDULE_NOT_FOUND', message: `Unknown schedule: ${id}` } };

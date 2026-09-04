@@ -55,7 +55,7 @@ async function mcpCall(name: string, args: Record<string, unknown> = {}) {
 
 describe('VAL-023: REQ-020 clause 1 — a hung provider call is bounded, agent() resolves null, the run continues (never hangs)', () => {
   it('a real run against the hung provider completes within the configured bound, agent() resolving null', async () => {
-    const run = await runScriptVia(mcpCall, `const r = await agent('this will hang'); return r === null ? 'bounded' : 'leaked-non-null';`);
+    const run = await runScriptVia(mcpCall, `const r = await agent('this will hang', {}); return r === null ? 'bounded' : 'leaked-non-null';`);
     const runId = run['runId'] as string;
     let finalStatus: string | undefined;
     for (let i = 0; i < 30; i++) {

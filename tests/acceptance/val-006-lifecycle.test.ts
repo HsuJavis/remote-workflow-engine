@@ -61,7 +61,7 @@ describe('VAL-006: suspend / resume / stop lifecycle (REQ-006)', () => {
   }
 
   it('suspend transitions run to suspended; resume brings it back to running', async () => {
-    const run = await runScriptVia(callTool, `return agent('slow-query');`);
+    const run = await runScriptVia(callTool, `return agent('slow-query', {});`);
     const runId = run.runId as string;
     await waitUntilRunning(runId);
     await callTool('run_suspend', { runId });
@@ -82,7 +82,7 @@ describe('VAL-006: suspend / resume / stop lifecycle (REQ-006)', () => {
   // version-pin tests, so it is deliberately NOT re-covered here. What survives is REQ-006's own
   // still-live `run_stop` clause, kept intact below.
   it('stop terminates the run and its status becomes stopped', async () => {
-    const run = await runScriptVia(callTool, `return agent('original');`);
+    const run = await runScriptVia(callTool, `return agent('original', {});`);
     const runId = run.runId as string;
 
     await waitUntilRunning(runId);

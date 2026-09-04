@@ -18,7 +18,6 @@ describe('auth boot announcement (IT-107, DES-141)', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     server = await createServer({
       port: 0, bind: '127.0.0.1',
-      // @ts-expect-error — `principals` is not on ServerConfig yet (v24 DES-141)
       principals: { 'alice@x.com': { role: 'admin' } },
     });
     const bootLine = logSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes('auth:'));
@@ -38,7 +37,6 @@ describe('auth boot announcement (IT-107, DES-141)', () => {
   it('GET /api/system reports auth = {enabled, principalsCount, defaultRole}', async () => {
     server = await createServer({
       port: 0, bind: '127.0.0.1',
-      // @ts-expect-error — `principals` is not on ServerConfig yet (v24 DES-141)
       principals: { '*': { role: 'user' } },
     });
     const res = await fetch(`http://127.0.0.1:${server.port}/api/system`);

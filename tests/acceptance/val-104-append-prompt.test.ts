@@ -46,7 +46,7 @@ describe('REQ-094: appendPrompt attaches last, after everything the author contr
   });
 
   it('the captured transcript prompt shows the framed appendPrompt AFTER the author\'s own prompt segments', async () => {
-    await registerPublishedVia(callTool, 'val104-order', `return await agent("SCRIPT-PROMPT-MARKER");`);
+    await registerPublishedVia(callTool, 'val104-order', `return await agent("SCRIPT-PROMPT-MARKER", {});`);
     const run = await callTool('run_start', { name: 'val104-order', overrides: { appendPrompt: 'USER-TEXT-MARKER' } });
     const runId = run.runId as string;
     // A script with exactly one top-level agent() call always gets agentId 'agent-1' (run_status

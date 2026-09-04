@@ -106,12 +106,16 @@ export const TOOL_SPECS = [
   {
     name: 'workflow_publish', entity: 'workflow', key: 'name' as const,
     description: "Point a workflow's release pointer at one of its registered versions.",
-    inputSchema: schema({ name: { type: 'string' }, version: { type: 'number' } }, ['name']),
+    // B-1 (v24 adjudication #3): `version` is a STRING (e.g. 'v1'), the exact value
+    // workflow_register's `result.version` returns — not a number. The catalog stores versions as
+    // strings; a number reaches it and comes back VERSION_NOT_FOUND while the correct string was
+    // rejected by ajv first, so no argument shape succeeded before this fix.
+    inputSchema: schema({ name: { type: 'string' }, version: { type: 'string', description: "The version string returned by workflow_register, e.g. 'v1'." } }, ['name']),
     outputSchema: OUT,
     errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'NOT_WORKFLOW_OWNER', 'FORBIDDEN_ROLE'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'workflow' } as AuthzRow,
-    fixture: { happy: { name: 'demo', version: 1 } },
+    fixture: { happy: { name: 'demo', version: 'v1' } },
   },
   {
     name: 'workflow_describe', entity: 'workflow', key: 'name' as const,
@@ -126,7 +130,9 @@ export const TOOL_SPECS = [
   {
     name: 'workflow_source', entity: 'workflow', key: 'name' as const,
     description: "Read a workflow version's script. A non-owner author receives a masked projection (scriptWithheld:true) — see workflow_describe for the runnable summary.",
-    inputSchema: schema({ name: { type: 'string' }, version: { type: 'number' } }, ['name']),
+    // B-1 (v24 adjudication #3): `version` is a STRING, the exact value workflow_register's
+    // `result.version` returns — see workflow_publish's row for why.
+    inputSchema: schema({ name: { type: 'string' }, version: { type: 'string', description: "The version string returned by workflow_register, e.g. 'v1'." } }, ['name']),
     outputSchema: OUT,
     errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'FORBIDDEN_ROLE'],
     seeAlso: ['workflow_describe'],
@@ -167,7 +173,9 @@ export const TOOL_SPECS = [
     inputSchema: {
       ...schema({
         name: { type: 'string' },
-        version: { type: 'number' },
+        // B-1 (v24 adjudication #3): a STRING, the exact value workflow_register's
+        // `result.version` returns — see workflow_publish's row for why.
+        version: { type: 'string', description: "The version string returned by workflow_register, e.g. 'v1'." },
         overrides: { type: 'object' },
         seed: { type: 'array' },
         seedManifest: { type: 'array' },
