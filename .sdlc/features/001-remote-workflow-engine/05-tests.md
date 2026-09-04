@@ -9207,8 +9207,10 @@ time bombs.
 
 ### Coverage gate — v24 round 2
 
-**Overall `src/` line coverage: 95.53%** (17009/17804), functions **95.47%** (654/685), against the
-≥90% whole-tree bar. Measured with `npx vitest run --coverage --coverage.provider=v8
+**Overall `src/` line coverage: 95.53%** (17010/17805), functions **95.48%** (655/686), against the
+≥90% whole-tree bar. Re-measured AFTER the simplify pass above, so these are the figures for the
+tree as committed; the new `scopeToActor` (the +1 function) is fully covered by IT-124's admin and
+author paths and is not an offender. Measured with `npx vitest run --coverage --coverage.provider=v8
 --coverage.include='src/**' --coverage.reportOnFailure`; `coverage/` is gitignored.
 
 **Per-function bar over the v24 delta (`git diff c9c6592..HEAD -- src`): 26 long offenders at the
