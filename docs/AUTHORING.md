@@ -74,6 +74,7 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 
 ## Authoring rules this engine enforces (refused with this code)
 
+- `NOT_TRIGGER_OWNER` — the caller does not own (did not create) this trigger
 - `PARSE_ERROR` — the script body failed to parse as TypeScript
 - `UNKNOWN_ALIAS` — a model alias in the script is not in the configured alias table
 - `MCP_NOT_PROVISIONED` — an agent() call references an mcp name with no provisioned secret
@@ -95,6 +96,8 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `NESTING_DEPTH_EXCEEDED` — nested workflow() calls exceed the configured maxWorkflowDepth
 - `NESTING_CYCLE` — a workflow() call would re-enter an ancestor already on this call's chain
 - `DESCENDANT_CAP_EXCEEDED` — nested workflow() calls exceed the configured maxWorkflowDescendants
+- `TRIGGER_NOT_FOUND` — no trigger (schedule or webhook) is registered under this id
+- `TRIGGER_ALREADY_CLAIMED` — this trigger id is already claimed by a different workflow
 - `RESERVED_PREFIX` — the name or a path segment starts with the engine-reserved 'rwe-' prefix (ARCH-093)
 
 ## Authoring convention (not checked)

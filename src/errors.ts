@@ -34,7 +34,11 @@ export const ERROR_CATALOG = {
   // Ownership
   NOT_WORKFLOW_OWNER: { see: null, hint: 'the caller does not own this workflow name' },
   NOT_RUN_OWNER: { see: null, hint: 'the caller does not own this run' },
-  NOT_TRIGGER_OWNER: { see: null, hint: 'the caller does not own (did not create) this trigger' },
+  // v24 adjudication #6 F-3 (D-14, REQ-116): thrown from the REGISTRATION path (mcp-facade.ts:313)
+  // when a registration declares a trigger someone else created. REQ-116 requires a registration
+  // that fails on trigger to point at the guide, and does not carve ownership out of "trigger" —
+  // the guide is where the create-then-claim lifecycle is explained.
+  NOT_TRIGGER_OWNER: { see: 'workflow_authoring_guide', hint: 'the caller does not own (did not create) this trigger' },
 
   // Script / registration authoring (workflow_authoring_guide-pointing)
   PARSE_ERROR: { see: 'workflow_authoring_guide', hint: 'the script body failed to parse as TypeScript' },
@@ -71,8 +75,10 @@ export const ERROR_CATALOG = {
   NOT_RUNNABLE: { see: null, hint: 'this version cannot be run (e.g. a legacy or refused registration)' },
   INVALID_CRON: { see: null, hint: 'the cron expression is not a valid 5-field expression' },
   INVALID_AT: { see: null, hint: 'the one-shot `at` value is not a parseable ISO timestamp' },
-  TRIGGER_NOT_FOUND: { see: null, hint: 'no trigger (schedule or webhook) is registered under this id' },
-  TRIGGER_ALREADY_CLAIMED: { see: null, hint: 'this trigger id is already claimed by a different workflow' },
+  // v24 adjudication #6 F-3 (D-14, REQ-116): both are registration-path refusals
+  // (mcp-facade.ts:308/322) — see NOT_TRIGGER_OWNER above.
+  TRIGGER_NOT_FOUND: { see: 'workflow_authoring_guide', hint: 'no trigger (schedule or webhook) is registered under this id' },
+  TRIGGER_ALREADY_CLAIMED: { see: 'workflow_authoring_guide', hint: 'this trigger id is already claimed by a different workflow' },
   UNCLAIMED: { see: null, hint: 'this trigger has not been claimed by any workflow; it will not fire' },
   CLAIMED_WORKFLOW_MISSING: { see: null, hint: 'the workflow this trigger is claimed by no longer resolves' },
   NOT_IN_RELEASE: { see: null, hint: 'this trigger id is claimed but omitted from the currently released version' },
