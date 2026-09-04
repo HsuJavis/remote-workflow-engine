@@ -5371,3 +5371,108 @@ TASK-136(`params-overrides.test.ts` 6→24)與 TASK-143(`catalog-v24.test.ts` 4�
 
 **規則:再停一次且澄清仍有 10 條以上,就改派一個全域範圍的整合者(opus,`/goal` 的驗證層級),
 不要開第四批平行實作。**
+
+---
+
+## Orchestrator adjudication (v24) #4 — 35 條澄清,B-9 停損執行 (2026-09-04)
+
+第三批:14/14 完成、tsc 67→19,但澄清從 10 條變成 **35 條**。
+裁定 #3 的 B-9 條件成立,**執行停損:改派單一全域整合者(opus),不開第四批平行實作。**
+
+清單本身就是最好的證據 —— 至少 8 條的內容是「這是別的 TASK 的檔案,我不能碰」。
+把工作按檔案所有權切開,再要求它們修**跨檔的接縫**,是自相矛盾的指派:
+每個 implementer 都正確地拒絕越界,於是接縫永遠沒有人修,只會在下一批變成更多澄清。
+這不是實作者的問題,是我派工形狀的問題。
+
+### C-1 兩條直接威脅 `/goal` 驗收的,優先級最高
+
+`/goal` 明寫「**每個 mcp tool 的介面都要實際驗過一次確認 pass**」。下面兩條讓這件事做不到:
+
+**[29] `workflow_register` 的 fixture 自己就不合法**(已查證,`tool-specs.ts:94`):
+```
+script:  workflow(async () => {})     ← 沒有任何 agent 標籤
+mermaid: graph TD; A-->B;             ← 卻宣告了節點 A、B
+         → checkMermaid 判 UNDECLARED_NODE → 註冊失敗
+```
+這一個 fixture 壞掉會連鎖讓 7 列驗證紅。**而且這已經被回報三次沒有人處理**
+(Gate 5 原始的 20/30 fixture 錯誤、測試檔自己的檔頭註解、這次)。
+一個 fixture 的修正,優先於任何其他 fixture 工作。
+
+**[30] 12 列 fixture 寫死了不可能存在的 id**(`runId:'r1'`、`scheduleId:'s1'`)。
+這些工具的目標物件要先有一次真呼叫產生 UUID 才存在,靜態 fixture 永遠滿足不了。
+
+**裁定:不接受「這 12 列記 UNVERIFIED」。** 那正好是 `/goal` 要求驗過的那 12 支。
+DES-158 增修:驗收測試在跑這 12 列前先跑一段**前置序列**(註冊 → 發布 → 起一個 run →
+記下它產生的 id),`TOOL_SPECS.fixture` 增加一個能引用「剛剛那次產生的 id」的方式。
+`run_suspend`/`run_resume`/`run_result` 需要不同狀態,前置序列就跑不只一個 run。
+
+**[31] 35 列的 `fixture.errors` 全是空的**(DES-158 自己的下限是 ≥30)。
+`/goal` 要的是「成功路徑 + 錯誤路徑」都驗 —— **錯誤路徑才驗得出授權有沒有真的接上**
+(v22 的 H2 就是只讀不問才漏掉的)。補滿。
+
+### C-2 [18] REQ-113 的選擇性掛載在真跑時根本不會發生 —— 產品缺陷
+
+查證屬實:`run-manager.ts` 完全沒有填 `AgentReq.assets`,
+`AgentExecutor.run()` 也不從 runParams 推導。所以 DES-154 的選擇性掛載
+**在真實 dispatch 上一次都沒觸發過**,單元測試綠只是因為測試自己塞了 `assets`。
+
+這是 REQ-113(每個 agent 各自宣告需要的 skill,不是整個工作流吃同一份)的核心行為 ——
+沒接上等於這條需求沒實作。**整合者必須從 `entry.spec.name` +
+該標籤的 `AgentParamSpec.skills/mcp` + asset roots 組出 `assets`,並用一個真跑測試釘住。**
+
+這又是「建好但沒接線」那一類(v11、v15 各中一次)。上一輪我查 `authorize()` 的接線確認沒復發,
+但只查了我當時想到的那一個。**教訓:接線檢查要對「本輪所有新機制」做一遍,不是抽查。**
+
+### C-3 [33] 新的一類:舊 fixture 把提示詞當標籤用
+
+`agent('Reply with only the word: PONG')`、`agent('this will hang')`、`agent('draft 1')` ——
+v24 的 `AGENT_LABEL_FORMAT = /^[A-Za-z_][\w-]*$/` 一律拒絕。
+約 10 個檔,**要逐檔改寫成 `agent('identifier', {prompt: '原本那段文字'})`,不是正則能換的**。
+
+實作者另外指出 `val-003` 的「4 tests green」可疑,懷疑是 provider gated 的空過。
+**整合者要確認**:一個因為沒有 provider 而跳過的測試不能算綠。
+
+### C-4 [11] 5 個舊測試檔沒有主人,但它們涵蓋的是仍然活著的行為
+
+`register()` 改成物件形狀後,`workflow-catalog.test.ts` 等 5 檔(17/28 紅)壞掉,
+而它們測的是 **H4 channel-check、VERSION_CEILING、pre-v21 migration —— 都還活著**。
+**裁定:遷移,不刪除。** 刪掉會把還活著的行為的保護一起刪掉。
+(對比 B-2 的 `workflow-diagrams-store.test.ts`:那個是機制真的退場了才刪。
+判準是「被測的東西還在不在」,不是「測試紅不紅」。)
+
+### C-5 [23] ARCH-002 / ARCH-107 還在說「一層巢狀」,但 v8 就做了 N 層
+
+`run-manager.ts:820-850` 的 `maxWorkflowDepth` 是 N 層,兩處架構文件從沒更新,
+DES-157 又繼承了這個過時說法。`authoring-guide.ts` 寫的是正確的 N 層行為並在程式碼裡註明了departure。
+**改文件。** 這是第 18 例「描述跟不上被描述的東西」——
+而且這次它已經污染了下游(DES-157 照抄了錯的前提)。
+
+### C-6 [21] 錯誤碼的孤兒鎖只檢查了單向
+
+`workspace_delete` 的 `errors[]` 沒有 `RUN_NOT_TERMINAL`,但 `withTerminalRun` 真的會丟。
+DES-137 的鎖只查「程式碼丟的碼有沒有在 spec 裡」(正向),
+沒查「spec 漏了程式碼會丟的碼」(反向)。**兩個方向都要查。**
+反向漏掉的後果是冷模型無從預期一個它一定會遇到的錯誤。
+
+### C-7 其餘處置(整合者一併執行)
+
+- **[12]** asset-tree GC 的路徑三處說法不一,且 `server.ts:769` 沒傳 `hasWorkflow`,
+  **生產環境的 asset 清掃分支從來沒跑過**;IT-110 綠是因為測試照 `workspace-gc.ts` 自己的
+  慣例造 fixture,證明不了生產樹。統一路徑並用生產呼叫路徑測。
+- **[28]** resume 讀回舊形狀應回 `LEGACY_REREGISTER`,現在是靜默當成「沒存過」。
+  docstring 還在描述 v24 前的行為。歸整合者,先寫紅測試。
+- **[13][14][20][25]** 都是「A 的 dod 要動 B 的檔案」——整合者有全域範圍,直接做。
+- **[15][17][19][26][27]** 帳本記錄與 dod 措辭的更正,不影響程式碼。
+  **[17] 特別註明**:TASK-159 的 dod 寫「沒有 meta.params 應該註冊成功」,
+  與 DES-144(`≥1 個未宣告標籤 ⇒ AGENT_UNDECLARED`)相反。實作的測試跟 DES-144 是對的,
+  **dod 那句話是錯的** —— 不要有人之後照 dod 把測試「改對」。
+- **[16][27]** 兩件事實記錄:部分測試因為與修正同一個 checkpoint 落地,
+  **從未在提交樹上真正紅過**。這違反「每項都跑過一次確認紅」的宣稱。
+  不追究,但 Gate 8 要看到這句話 —— 沒紅過的綠燈,證明力比紅轉綠低。
+- **[32]** TASK-153 的 plugin 是外部 repo,本 session 構不到(只有非 git 的 plugin cache)。
+  **維持 UNVERIFIED,並在 Gate 7.5 明確記為「阻擋 REQ-117 冷模型探測」**,由擁有者排程。
+
+### C-8 停損之後的做法
+
+派**一個** opus 整合者,全檔案範圍,不切割。目標明確:tsc 0、消掉紅、把上面的接縫接上。
+它不需要問「這是不是我的檔案」—— 那正是前三批卡住的原因。
