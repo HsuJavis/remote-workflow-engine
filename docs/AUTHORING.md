@@ -193,7 +193,7 @@ Mermaid:
 ```
 graph TD
 scorer(["scorer"])
-aggregate["pick the best score (no agent call)"]
+aggregate{{"pick the best score (no agent call)"}}
 scorer-->aggregate
 ```
 

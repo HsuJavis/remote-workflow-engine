@@ -99,3 +99,57 @@ describe('the diagram section teaches the COMPLETE checkMermaid vocabulary (UT-1
     expect(text()).toMatch(/skip/i);
   });
 });
+
+// v24 adjudication #6 F-4: the guide's EXAMPLES must obey the guide's own shape TABLE. The
+// "non-agent aggregation" example drew its aggregation as `aggregate["…"]` — the rectangle, which
+// `SHAPES` declares to be the "nested workflow() black box" — while the very table printed a few
+// sections above says `{{"…"}}` is the non-agent aggregation shape. `checkMermaid` accepts either
+// (both are free-text, both excluded from the label diff), so nothing in the engine could catch it;
+// the cost is a cold model reading one document that contradicts itself, and this guide is the
+// ONLY document REQ-117's subject ever reads.
+//
+// The invariant asserted is the table's own semantic, read from SHAPES rather than re-typed: a
+// rectangle node is the black-box stand-in for a `workflow()` call, so it may appear in an example
+// only when that example's script actually calls `workflow(`.
+describe("the guide's examples use the shapes the guide's own table declares (UT-159 v24, F-4)", () => {
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  /** Classify one diagram node line against SHAPES — the longest matching `open` token wins, which
+   *  is `checkMermaid`'s own precedence (`{{"` before `{"`, `(["` before `["`). */
+  function shapeOf(line: string): string | null {
+    const hits = SHAPES.filter((s) => new RegExp(`^\\w+${esc(s.open)}.*${esc(s.close)}$`).test(line));
+    if (hits.length === 0) return null;
+    return hits.reduce((a, b) => (b.open.length > a.open.length ? b : a)).name;
+  }
+
+  const nodeLines = (mermaid: string) =>
+    mermaid.split('\n').map((l) => l.trim())
+      .filter((l) => l !== '' && !/^(graph|flowchart)\s/.test(l) && !/<-->|-\.->|-->/.test(l) && !/^subgraph\s/.test(l) && l !== 'end');
+
+  it('the classifier itself agrees with SHAPES (guards the assertion below from silently matching nothing)', () => {
+    expect(shapeOf('a(["writer"])')).toBe('stadium');
+    expect(shapeOf('a["free text"]')).toBe('rectangle');
+    expect(shapeOf('a{{"agg"}}')).toBe('aggregation');
+    expect(shapeOf('a{"cond"}')).toBe('diamond');
+    expect(shapeOf('a[/"trigger"/]')).toBe('trapezoid');
+  });
+
+  it.each(GUIDE_EXAMPLES as Array<{ title: string; script: string; mermaid: string }>)(
+    'every node in "%s" is a shape SHAPES declares, and a rectangle only stands in for a workflow() call',
+    (ex) => {
+      const lines = nodeLines(ex.mermaid);
+      for (const line of lines) {
+        const shape = shapeOf(line);
+        expect(shape, `"${ex.title}": node line \`${line}\` matches none of the five declared shapes`).not.toBeNull();
+        if (shape === 'rectangle') {
+          expect(
+            ex.script.includes('workflow('),
+            `"${ex.title}": \`${line}\` uses the rectangle, which SHAPES reserves for the ` +
+              `"nested workflow() black box", but this example's script never calls workflow() — ` +
+              `the guide is contradicting its own shape table`,
+          ).toBe(true);
+        }
+      }
+    },
+  );
+});

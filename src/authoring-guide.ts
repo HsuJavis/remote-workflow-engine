@@ -97,7 +97,12 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
       `const items = ['x', 'y', 'z'];\n` +
       `const scores = await parallel(items.map((it) => () => agent('scorer', { prompt: 'Score ' + it })));\n` +
       `return scores.reduce((best, s) => (Number(s) > Number(best) ? s : best), scores[0]);`,
-    mermaid: `graph TD\nscorer(["scorer"])\naggregate["pick the best score (no agent call)"]\nscorer-->aggregate`,
+    // v24 adjudication #6 F-4: this drew the aggregation as a RECTANGLE `aggregate["…"]`, the shape
+    // this same guide's SHAPES table reserves for the nested-workflow black box. `checkMermaid`
+    // accepts either (both free text), so only a reader notices — and the only reader this guide
+    // has is a cold model with no other documentation. `{{"…"}}` is the shape the table declares
+    // for exactly this node, and it is what the example teaches now.
+    mermaid: `graph TD\nscorer(["scorer"])\naggregate{{"pick the best score (no agent call)"}}\nscorer-->aggregate`,
     expectRegister: 'ok',
   },
   {
