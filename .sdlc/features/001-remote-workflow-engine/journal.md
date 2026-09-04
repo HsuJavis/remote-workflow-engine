@@ -1990,3 +1990,63 @@ open question this pass ran into was a documentation/authoring-fidelity call alr
 `04-design.md`'s own boundary rulings, not a new product/technical decision. Next: Gate 6
 (implementer) works TASK-131..153 in the pinned order (03-tasks.md), each RED item above going
 green.
+
+## 2026-09-04 — v24 Gate 6.5+7 ROUND 1 (verifier, simplify + verification closeout) — NOT PASSED
+
+**Outcome: send back to Gate 6.** Two authorization defects, both proven by a rewritten IT-105
+against real stores; the rest of the gate is done so the next round is cheap.
+
+**(0) SIMPLIFY (merged Gate 6.5).** Scope = the v24 delta `git diff c9c6592..HEAD -- src` (5159
+insertions / 42 files; the working tree was clean, so the default diff-vs-HEAD would have been
+empty). Three fixes applied, quality-only: `server.ts`'s `?namespace=` retirement guard was
+copy-pasted at four upload routes with its 150-char message re-typed each time (→ one
+`refuseNamespaceParam`); the CAS blob-upload failure→HTTP-status mapping was duplicated verbatim in
+both copies of the blob route (→ `sendBlobUploadError`); `tool-specs.ts`'s `resolveFixture`
+resolved a `FixtureRef` twice, scalar and array arm (→ one `fill` closure). Net −24 lines, tsc
+clean, no behaviour change, all touched tests green. Two candidates NAMED AND REJECTED with
+reasons (the declarative `TOOL_SPECS` row tails; the ~90-line auth-gated/fallback duplication of
+the `/mcp` and `/assets/manifest` handlers — real, but restructuring the request pipeline is
+neither quality-only nor surgical at this gate; recorded as v25 debt). IMPL-178 amended in place.
+
+**(1) REGRESSION.** Post-simplify `npx vitest run`: 297 files / 1947 tests pass, 26 honest skips,
+0 failed, exit 0; `npx tsc --noEmit` clean. 47 of the 52 v24 items flipped red→green in
+05-tests.md. IT-105 stays red (see below), VAL-120 and VAL-126 are NOT flipped because IT-105 is
+what proves them, VAL-124/VAL-128 stay `blocked` (Gate 7.5-owned by their own Gate 5 entries).
+
+**(2) THE SEND-BACK — two authorization defects, one root cause: the ports authz is wired to.**
+`authorize()` itself is correct: UT-140 now carries a 50-row generated matrix over kind × role ×
+ownership × mode plus the `cases.length` completeness pin TASK-133's dod always required, and every
+expected verdict — written from DES-139's text before running the code — matched. The defects are
+in the wiring, and the shipped IT-105 could not see them because its three cases asserted
+`typeof lookup.runOwner === 'function'`.
+(a) **Trigger ownership reads the wrong column.** `SqliteSchedulerPort.ownerOf` returns `claimedBy`
+    and `WebhookRegistry.ownerOf` returns `workflow` — the claiming WORKFLOW NAME — where DES-139
+    (`schedules.createdBy`/`webhooks.createdBy`) and DES-149 step 2 (`createdBy === p.id`) require
+    the creating principal. With auth on, no non-admin can delete or disable a trigger they
+    created. `webhooks` has no `createdBy` column at all (TASK-142 half-done).
+(b) **The moded `workspace_*` rows never run their ownership check.** `workspace_list`,
+    `workspace_delete` and `workspace_push` carry `key: null` in TOOL_SPECS while their resolved
+    rows declare `ownership:'run'`/`'workflow'`, so `authorize`'s subject is `undefined`, the real
+    lookup answers "does not exist", and the non-leak rule returns **ok** — a non-owner passes.
+    Invisible to every existing test because they all run auth-disabled.
+
+**(1b) COVERAGE** (@vitest/coverage-v8@1.6.1, `coverage/` gitignored): overall src line coverage
+94.7% (16825/17766) — above the 90% bar. Per-function, on the v24-touched delta, the bar is NOT
+met: 32 long offenders (>5 lines, <95%) and 2 short. Four were closed this round by writing the
+tests the dods asked for (`asset-sync.resolveMcp` 0/17 → covered; `tool-specs` `listMode`/
+`deleteMode`; `params/contract` `validateRequiredKeySpec`/`validateNameArray`; `authz.authorize`
+and `owner-lookup`). The remainder is listed in the gate report and belongs to the Gate 6 round.
+
+**(3) trace --check** 1178 items / 31 gaps (was 36): 12 HIGH are all `未真實驗證` for REQ-107..118,
+structural before Gate 7.5 flips `real:true`; 1 MID (IMPL-082, pre-existing); 18 LOW. Five
+`未實作` TASK gaps closed by backfilling IMPL-179..183 (TASK-133/139/140/154/156 shipped with no
+ledger entry — the EIGHTH occurrence of this gap; TASK-153 is external and correctly unclaimed).
+**(3b) solid_check** 1 HIGH (new in v24): ARCH-103's `module:` is a single FILE nested inside
+ARCH-069's `src/gateway` module, so its import of a sibling reads as an undeclared cross-module
+dep. An architecture-declaration fix, reported not papered over.
+**(4) determinism_check** src --check: exit 0.
+**(6) SEAM WIRING** finding: `asset-sync.ts`'s exported `resolveMcp` (DES-153) has ZERO production
+callers — `server.ts:1363` re-implements the same rule inline over `catalog.assetsOf`. Two
+implementations of one rule, only one of them tested.
+
+`gates.verification.passed=false`; `gates.impl.passed=false`; `current_stage` → `impl`.

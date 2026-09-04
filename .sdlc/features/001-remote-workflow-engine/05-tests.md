@@ -8210,11 +8210,11 @@ therefore smaller than the design's target and are expected to grow at Gate 6.5+
 as complete here.
 
 ### UT-138 — ERROR_CATALOG is the closed ErrorCode union; `see` attached in one place
-- **status:** red
+- **status:** green
 - **traces:** DES-137
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/error-catalog.test.ts` (8 cases). `src/errors.ts` exists but has none of
@@ -8226,11 +8226,11 @@ doesn't exist yet) + TS2578 (the `@ts-expect-error` on `codedError('NOPE',…)` 
 `codedError` still accepts any string).
 
 ### UT-139 — TOOL_SPECS: one data array that is the tool surface
-- **status:** red
+- **status:** green
 - **traces:** DES-138
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/tool-specs.test.ts` (7 cases: length 35, prefix rule, old-name absence, the
@@ -8238,17 +8238,30 @@ REQ-117 trap sentences on `run_start`, `mode()` totality, `projectToolsList()` d
 fixture/mode coverage). `src/tool-specs.ts` does not exist. Red (measured): whole-file red,
 `Failed to load url ../../src/tool-specs.js`.
 
+**Gate 6.5+7 (verifier, v24) — coverage fill.** `workspace_list`/`workspace_delete`'s `mode()`
+functions were reached only through their happy fixtures (66.7% and 66.7% line coverage), so every
+non-matching arm — including the `'invalid'` fall-through that makes them TOTAL — was unverified.
+Added 9 table rows asserting BOTH the resolved mode and the authz row it selects, plus a
+hostile-shape row (`null`/`undefined`/string/number/array) over all three moded tools. 23/23 green.
+
 ### UT-140 — Principal, resolveRole, authorize() — total over kind × role × ownership × mode
-- **status:** red
+- **status:** green
 - **traces:** DES-139
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/authz.test.ts` (7 cases: default role, `"*"`, tri-state OwnerLookup
 undefined/null, auth-disabled no audit signal, admin cross-read flag, `mode()`-resolved row +
 `detail.mode`, loopback-exempt). `src/authz.ts` does not exist. Red (measured): whole-file red.
+
+**Gate 6.5+7 (verifier, v24) — TASK-133's dod filled.** The shipped file carried 8 hand-written
+cases; the dod requires "≥40 generated unit rows WITH the `cases.length === N` pin (a partially-
+written table is red, not green)". Added: a 50-row generated matrix over kind × role × ownership ×
+mode plus the completeness pin — 59/59 green. Every `expected` verdict was written from DES-139's
+rule text before running the code, and all 50 matched, which is what localizes IT-105's reds to the
+WIRING rather than to `authorize()` itself.
 
 ### IT-105 — OwnerLookup wired against the real store columns
 - **status:** red
@@ -8261,23 +8274,48 @@ undefined/null, auth-disabled no audit signal, admin cross-read flag, `mode()`-r
 File: `tests/integration/authz-owner-lookup.test.ts` (3 cases). `src/owner-lookup.ts` does not
 exist. Red (measured): whole-file red.
 
+**Gate 6.5+7 (verifier, v24) — REWRITTEN AND STILL RED (6 of 11 cases).** The file shipped by Gate 6
+asserted `typeof lookup.runOwner === 'function'` three times: it could not have caught "a port wired
+to the wrong column", which is the only thing DES-139 says this item exists to catch. Rewritten
+against REAL stores (`SqliteRunStore`/`WorkflowCatalog`/`SqliteSchedulerPort`/`WebhookRegistry` over
+one tmp root), wiring `createOwnerLookup` exactly as the composition root does (server.ts:666-678).
+GREEN (5): `runs.principal` owner/non-owner, the NULL-principal legacy row (admin-only), absent-run
+non-leak, `workflows.owner` owner/non-owner, admin cross-read flagged, trigger totality.
+RED (6) — two distinct PRODUCT defects, not test defects:
+(a) **trigger ownership reads the wrong column.** `SqliteSchedulerPort.ownerOf` returns `claimedBy`
+    and `WebhookRegistry.ownerOf` returns `workflow` — the CLAIMING WORKFLOW NAME — where DES-139
+    (`schedules.createdBy`/`webhooks.createdBy`) and DES-149 step 2 (`createdBy === p.id`) require
+    the creating principal. Consequences with auth on: an unclaimed schedule reads `null` ⇒
+    admin-only, so its own creator cannot `schedule_delete`/`schedule_setEnabled` it; a claimed one
+    reads `'wf-a'`, compared against `alice@x.com` ⇒ `NOT_TRIGGER_OWNER`. `webhooks` has NO
+    `createdBy` column at all (TASK-142 half-done; `webhook_create` never records a creator and
+    `call-tool.ts`'s own comment says so), so every webhook is ownerless ⇒ admin-only.
+(b) **the moded `workspace_*` rows never run their ownership check.** `workspace_list`,
+    `workspace_delete` and `workspace_push` carry `key: null` in TOOL_SPECS while their resolved
+    rows declare `ownership:'run'`/`'workflow'`. `authorize` computes `subject = spec.key !== null ?
+    args[spec.key] : undefined`, the real lookup answers `undefined` ("does not exist"), and
+    DES-139's own non-leak rule then returns **ok** — a non-owner passes. Verified against the REAL
+    `TOOL_SPECS` rows (not hand-copied constants) and a real store; invisible to every existing test
+    because they run auth-disabled, which short-circuits before the lookup.
+Both are Gate 6 send-backs. IT-105 stays `red`/`fail`; no test was weakened to make it pass.
+
 ### UT-141 — callTool(deps, name, args, principal): schema before authz, one switch
-- **status:** red
+- **status:** green
 - **traces:** DES-140
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/call-tool-order.test.ts` (3 cases, recording fakes). `src/call-tool.ts` does not
 exist (`server.ts:900-913` is still 17 positional params). Red (measured): whole-file red.
 
 ### IT-106 — tools/list over real MCP HTTP is the v24 surface
-- **status:** red
+- **status:** green
 - **traces:** DES-140
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/integration/mcp-tools-list-http.test.ts` (rewrite target of
@@ -8287,11 +8325,11 @@ whole-file red today because it imports the not-yet-existing `projectToolsList` 
 `workflow_run`/`blob_put`).
 
 ### UT-142 — composeConfig() forwards principals/mcpEgressAllowlist; graphAnalyzer is retired
-- **status:** red
+- **status:** green
 - **traces:** DES-141
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/compose-config-v2-wiring.test.ts` (appended: +3 rows, −3 old graphAnalyzer-
@@ -8302,22 +8340,22 @@ tests/unit/compose-config-v2-wiring.test.ts` → 3 new fail, 19 pre-existing pas
 intact).
 
 ### UT-143 — normalizePrincipals(raw): validated role map, typed boot refusal
-- **status:** red
+- **status:** green
 - **traces:** DES-141
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/normalize-principals.test.ts` (4 cases). `normalizePrincipals` is not exported
 from `src/main.ts` yet. Red (measured): 4/4 fail.
 
 ### IT-107 — the auth boot announcement + system_info.auth
-- **status:** red
+- **status:** green
 - **traces:** DES-141
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/integration/auth-boot-announcement.test.ts` (3 cases, new file — the composition-root
@@ -8327,11 +8365,11 @@ already live). Red (measured): 3/3 fail — no `auth: enabled=…` boot line exi
 has no `auth` key.
 
 ### UT-144 — pathVerdict: lexical verdict pure, containment through an injected realpath
-- **status:** red
+- **status:** green
 - **traces:** DES-142
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/path-verdict.test.ts` (12 cases incl. `it.each` over the stripped/not-stripped/
@@ -8340,11 +8378,11 @@ reasons, a fake-realpath SYMLINK escape). `src/path-verdict.ts` does not exist. 
 whole-file red.
 
 ### IT-108 — namespace derivation from principal; caller-supplied namespace refused
-- **status:** red
+- **status:** green
 - **traces:** DES-142
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/integration/namespace-derivation.test.ts` (3 cases) over real `createServer()` HTTP.
@@ -8355,11 +8393,11 @@ check — caught and fixed during authoring). Red (measured): 3/3 fail — `run_
 `seedNamespace`, both blob/manifest routes still accept `?namespace=`.
 
 ### UT-145 — scanAgentCalls(script): what "literal" means, line numbers on every violation
-- **status:** red
+- **status:** green
 - **traces:** DES-143
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/scan-agent-calls.test.ts` (10 cases: each violation code, nested-`workflow()`
@@ -8367,11 +8405,11 @@ exclusion, `x.agent(`/`agentFoo(` non-matches, duplicate-label dedup). `src/scan
 does not exist. Red (measured): whole-file red.
 
 ### UT-146 — parseParamContract(meta, scriptLabels, aliasNames) v24: agents required
-- **status:** red
+- **status:** green
 - **traces:** DES-144
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/params-contract.test.ts` (appended block, [T3] rewrite target per DES-159 — the
@@ -8382,12 +8420,19 @@ surgical discipline). 7 new cases: `AGENT_UNDECLARED`, zero-label `{agents:{},ar
 `AGENT_DECLARED_NOT_IN_SCRIPT`, ceiling literals (documentation pin). Red (measured): `npx vitest
 run tests/unit/params-contract.test.ts` → 6 new fail, 76 pre-existing pass (regression intact).
 
+**Gate 6.5+7 (verifier, v24) — coverage fill.** `validateRequiredKeySpec` (10/14 lines) and
+`validateNameArray` (4/6) were exercised only on their happy paths. Added the refusal side: a
+non-object model/effort/timeoutMs spec, a missing `.default` on each of the three required keys, the
+`MAX_ENUM_MEMBERS` boundary (32 legal / 33 refused), and six `skills`/`mcp` name-array refusals
+(non-array, non-string members, the reserved `rwe-` prefix, whitespace, a leading dash) plus the
+empty-array legality row. 93/93 green.
+
 ### UT-147 — validateUserOverrides v24: per-agent overrides
-- **status:** red
+- **status:** green
 - **traces:** DES-145
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/params-overrides.test.ts` (6 cases: per-agent tuning, `UNKNOWN_AGENT_LABEL`,
@@ -8398,11 +8443,11 @@ TypeErrors reading `c.knobs` on the new agents-shaped contract — both legitima
 implemented" reds).
 
 ### IT-109 — a per-agent override refusal over real MCP HTTP names the ceiling
-- **status:** red
+- **status:** green
 - **traces:** DES-145
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/integration/params-admission.test.ts` (appended block, [T3] rewrite target — every
@@ -8414,11 +8459,11 @@ deeper "message names maxTimeoutMs 600000" assertion is the v24 target once `run
 Red (measured): 1 new fail, 23 pre-existing pass (regression intact).
 
 ### UT-148 — resolveAgentParams(label, contract, overrides, engineDefaults): three rungs
-- **status:** red
+- **status:** green
 - **traces:** DES-146
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/params-resolve.test.ts` (REWRITE target [T3] — every `'call'`/`'agentType'`
@@ -8428,11 +8473,11 @@ throw on an undeclared label, provenance domain restricted to override/default.
 `resolveAgentParams` does not exist. Red (measured): 5/5 fail.
 
 ### UT-149 — checkMermaid: tokenizer → node table → edge table → diff → value triple → cycles
-- **status:** red
+- **status:** green
 - **traces:** DES-147
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/check-mermaid.test.ts` (12 cases: SIZE, UNDECLARED_NODE, DUPLICATE_NODE,
@@ -8442,11 +8487,11 @@ normalization). `src/check-mermaid.ts` (repurposed `diagram-gate.ts`) does not e
 (measured): whole-file red.
 
 ### VAL-123 — REQ-112: the fixed Mermaid vocabulary, subset-property browser check
-- **status:** red
+- **status:** green
 - **traces:** REQ-112
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 Files: `tests/acceptance/val-mermaid-renders.test.ts` (the subset-property render check
@@ -8457,12 +8502,18 @@ examples-register.test.ts` (IT-118, every `GUIDE_EXAMPLES[].mermaid` registers a
 engine) + `tests/unit/check-mermaid.test.ts` (UT-149, the mechanical grammar). `src/authoring-
 guide.ts` (`GUIDE_EXAMPLES`) does not exist. Red (measured): whole-file red on both new files.
 
+**Gate 6.5+7 (verifier, v24) — GREEN, with the deferral recorded.** UT-149 (the mechanical grammar)
+and IT-118 (every `GUIDE_EXAMPLES[].mermaid` registers against a real engine) pass. 1 of the 3 cases
+in `val-mermaid-renders.test.ts` remains `it.runIf(HAS_BROWSER_TOOLING)` — no headless-browser
+tooling exists in this repo — and its sibling `it.skipIf` case asserts `UNVERIFIED(no browser)`
+explicitly rather than omitting it. The real-browser subset property is a Gate 7.5 action item.
+
 ### IT-110 — the catalog v24: validateRegistration/insertVersion split, assets, deregister union
-- **status:** red
+- **status:** green
 - **traces:** DES-148
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/integration/catalog-v24.test.ts` (4 cases, real file-backed `WorkflowCatalog`).
@@ -8473,11 +8524,11 @@ one case specifically pins the row-count-unchanged assertion to the MERMAID_REQU
 differently-failing register can't false-green it).
 
 ### IT-111 — trigger claims: claim/release/ownerOf, "omission does not release"
-- **status:** red
+- **status:** green
 - **traces:** DES-149
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/integration/trigger-claims.test.ts` (5 cases, real `SqliteSchedulerPort` over
@@ -8487,11 +8538,11 @@ creation (NOT NULL constraint). Red (measured): 5/5 fail, several via the real S
 represent an unclaimed trigger).
 
 ### E2E-008 — register crash window: a crash before insertVersion leaves the trigger unclaimed
-- **status:** red
+- **status:** green
 - **traces:** DES-149
 - **tier:** e2e
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/e2e/register-crash-window.test.ts`. Gate-5 scope note: DES-149 itself marks this
@@ -8502,11 +8553,11 @@ instances over the SAME db files simulating restart); true OS-level process-kill
 7.5. Red (measured): fails on `create()`'s NOT NULL constraint (no unclaimed-creation path yet).
 
 ### UT-151 — scheduler refusal accounting: markRefused shares markFailed's advance
-- **status:** red
+- **status:** green
 - **traces:** DES-150
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/scheduler-refusal.test.ts` (4 cases, real `SqliteSchedulerPort`, `FixedClock` —
@@ -8516,11 +8567,11 @@ not 2); refuse×3 then fire ⇒ reset to 0; a refused `once` stays consumed; `la
 `refusalCount` column. Red (measured): 4/4 fail (`port.markRefused is not a function`).
 
 ### IT-112 — webhooks created unclaimed, claimed at registration
-- **status:** red
+- **status:** green
 - **traces:** DES-150
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/integration/webhook-registry.test.ts` (appended block, [T3] rewrite target — today's
@@ -8531,11 +8582,11 @@ File: `tests/integration/webhook-registry.test.ts` (appended block, [T3] rewrite
 (regression intact).
 
 ### UT-153 — audit order: appendAudit BEFORE bytes, fail-closed on a throwing store
-- **status:** red
+- **status:** green
 - **traces:** DES-151
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/audit-order.test.ts` (3 cases, recording fakes: ordered call log, a throwing
@@ -8543,11 +8594,11 @@ File: `tests/unit/audit-order.test.ts` (3 cases, recording fakes: ordered call l
 auth-disabled). `src/audited-read.ts` does not exist. Red (measured): whole-file red.
 
 ### IT-113 — RunStore.appendAudit/auditFor parity over both real store implementations
-- **status:** red
+- **status:** green
 - **traces:** DES-151
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/integration/run-store-audit.test.ts` (`describe.each` over InMemoryRunStore +
@@ -8555,11 +8606,11 @@ SqliteRunStore, 2 cases each = 4). Neither store has `appendAudit`/`auditFor`. R
 4/4 fail.
 
 ### E2E-009 — admin cross-read is audited (S-4)
-- **status:** red
+- **status:** green
 - **traces:** DES-151
 - **tier:** e2e
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/e2e/admin-cross-read.test.ts` (2 cases) over real `createServer()` with `principals`
@@ -8569,11 +8620,11 @@ vacuous-but-correct pin today (no result at all ⇒ trivially no such key) that 
 once the tools are real.
 
 ### IT-114 — RunStore.list filtered in SQL with its own index
-- **status:** red
+- **status:** green
 - **traces:** DES-152
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/integration/run-list.test.ts` (3 cases, real SqliteRunStore + InMemoryRunStore).
@@ -8582,11 +8633,11 @@ this is a thin existence-of-the-seam floor; the `EXPLAIN QUERY PLAN`/ownerless-r
 parity cases DES-152 names in full grow in at Gate 6.5+7 once `list()` exists to drive them.
 
 ### UT-155 — AssetSyncService v24: two scopes, mcp gating, clock-sourced pushedAt
-- **status:** red
+- **status:** green
 - **traces:** DES-153
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/asset-sync-v24.test.ts` (4 cases: `kind:'mcp'` egress-before-probe-before-row,
@@ -8594,12 +8645,20 @@ File: `tests/unit/asset-sync-v24.test.ts` (4 cases: `kind:'mcp'` egress-before-p
 `AssetSyncDeps` has no `catalog`/`clock`/`probe`/`egressAllowlist`, `push()` takes the flat pre-v24
 shape. Red (measured): 4/4 fail (constructor/shape mismatches — legitimate today).
 
+**Gate 6.5+7 (verifier, v24) — coverage fill.** `resolveMcp` (DES-153) — the whole replacement for
+the deleted `mcp-registry.ts` and the port the SDK gateway binds to — sat at **0 of 17 lines
+covered**: the shipped UT-155 exercised `push()` only. Added 6 cases over the pure catalog port:
+global resolution, workflow scope shadowing global for its own workflow only, `missing[]` for an
+unknown name, a matching row carrying no `config` counted as missing (never an `undefined` entry in
+`configs`), a `kind:'skill'` row not satisfying an mcp name, the empty request, and a
+Promise-returning `listAssets` (the real SQLite port). 10/10 green.
+
 ### IT-115 — mcp_provision retired; workspace_push replaces asset_push/mcp_provision
-- **status:** red
+- **status:** green
 - **traces:** DES-153
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/integration/asset-mcp-tools.test.ts` (appended block, 3 cases) over real
@@ -8607,11 +8666,11 @@ File: `tests/integration/asset-mcp-tools.test.ts` (appended block, 3 cases) over
 served; `workspace_push` absent), 10 pre-existing pass.
 
 ### UT-156 — materializeAssets: selective, pure over an injected fs facade
-- **status:** red
+- **status:** green
 - **traces:** DES-154
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/materialize-assets.test.ts` (4 cases: only declared skills copied, workflow
@@ -8620,11 +8679,11 @@ rewritten to an empty map). Today's `materializeAssets(assetRoot, workspace)` is
 copy-ALL function, not exported with the v24 signature. Red (measured): 4/4 fail.
 
 ### IT-116 — selective materialization over a real run (the "every skill copied" flip)
-- **status:** red
+- **status:** green
 - **traces:** DES-154
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/integration/asset-skill-materialization-wiring.test.ts` (appended case — rewrite
@@ -8634,11 +8693,11 @@ New case: an agent with no declared skills must materialize NEITHER of two pushe
 new case fails (today's copy-all loop materializes BOTH), the 2 pre-existing cases still pass.
 
 ### IT-117 — the six workspace_* tools: per-mode closed schemas, all-or-nothing delete
-- **status:** red
+- **status:** green
 - **traces:** DES-155
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/integration/workspace-tools.test.ts` (rewrite target of `workspace-artifacts.test.ts`
@@ -8647,11 +8706,11 @@ yet schema-refused, `workspace_delete` during a live run is not yet `RUN_NOT_TER
 `createServer()` HTTP. Red (measured): 8/8 fail.
 
 ### UT-157 — projectWorkflowDescribe v24: mermaid/runnable replace the diagram* family
-- **status:** red
+- **status:** green
 - **traces:** DES-156
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/workflow-describe-projection.test.ts` (appended block, [T3] — the file's OWN
@@ -8662,11 +8721,11 @@ target, flagged not touched here). 3 new cases: no `diagramStatus`/`diagramNote`
 intact).
 
 ### UT-158 — the dashboard renders mermaid via textContent, not diagramStatus
-- **status:** red
+- **status:** green
 - **traces:** DES-156
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/dashboard-diagram-render.test.ts` (3 cases, source-text assertions over
@@ -8675,11 +8734,11 @@ File: `tests/unit/dashboard-diagram-render.test.ts` (3 cases, source-text assert
 vacuous-but-correct green pin (true today, must stay true).
 
 ### UT-159 — buildAuthoringGuide(inputs): pure over resolved ceilings; GUIDE_EXAMPLES
-- **status:** red
+- **status:** green
 - **traces:** DES-157
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/authoring-guide.test.ts` (5 cases: ceiling interpolation, ≥10 examples with the
@@ -8688,11 +8747,11 @@ mention, `LEGACY_REREGISTER` mention). `src/authoring-guide.ts` does not exist. 
 whole-file red.
 
 ### IT-118 — every GUIDE_EXAMPLES entry registers over real MCP HTTP
-- **status:** red
+- **status:** green
 - **traces:** DES-157, REQ-112, REQ-116
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/integration/guide-examples-register.test.ts` (`it.each` over `GUIDE_EXAMPLES`, one
@@ -8701,11 +8760,11 @@ Red (measured): whole-file red (0 tests collected — the `it.each` source list 
 read, which is the correct failure shape for "the example set doesn't exist yet").
 
 ### UT-160 — docs/AUTHORING.md is generated, not hand-maintained (drift lock)
-- **status:** red
+- **status:** green
 - **traces:** DES-157
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/authoring-md-generated.test.ts` (1 case, byte-diff against
@@ -8713,11 +8772,11 @@ File: `tests/unit/authoring-md-generated.test.ts` (1 case, byte-diff against
 is hand-written (v23). Red (measured): whole-file red.
 
 ### VAL-129 — REQ-118: every MCP tool's interface exercised once against a live engine
-- **status:** red
+- **status:** green
 - **traces:** REQ-118, DES-158
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/acceptance/v24-tool-surface.test.ts` — `for (const spec of TOOL_SPECS)` generates one
@@ -8728,12 +8787,18 @@ exist, so the generating `for` loop produces ZERO `it`s — the correct failure 
 discover the fixtures yet"), plus an explicit `≥35 rows` guard. Red (measured): whole-file red, 0
 tests collected.
 
+**Gate 6.5+7 (verifier, v24) — GREEN, with the credential deferral recorded.** 72 of 77 generated
+cases pass against a real booted `createServer()` over real MCP HTTP (every `fixture.happy` plus
+every `fixture.errors[code]`). The 5 skipped rows are the GitHub-credential-gated `issue_*` happy
+paths; the generator records them as `UNVERIFIED(no GitHub token)` in the conformance artifact
+rather than as passes. Gate 7.5 owns those 5 against a real token.
+
 ### UT-161 — grep guards: no retired v24 surface remains in src/
-- **status:** red
+- **status:** green
 - **traces:** DES-159
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/no-retired-surface.test.ts` (3 guards: no `mermaid` import/CDN script; none of
@@ -8744,11 +8809,11 @@ names ARE still literal in `server.ts` today (the entire point: red until TASK-1
 sweep), and `scheduler.ts` still reads the wall clock directly outside `clock.ts`.
 
 ### IT-120 — HarnessDescriptor gains label and materialized
-- **status:** red
+- **status:** green
 - **traces:** DES-160
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/integration/agent-log-harness-shape.test.ts` (appended case inside the existing
@@ -8757,11 +8822,11 @@ Red (measured): the new case fails (`harness.label` is `undefined`, expected `'p
 pre-existing cases in the file still pass.
 
 ### UT-162 — deriveAgentRecords fills AgentRecord.label from the descriptor
-- **status:** red
+- **status:** green
 - **traces:** DES-161
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/unit/derive-agent-records-v24.test.ts` (3 cases: non-terminal label fill,
@@ -8771,11 +8836,11 @@ terminal-branch latest-harness-wins label copy, a pre-v24 fixture leaves the key
 field is never set at all yet).
 
 ### IT-121 — toPublicRunView: no identity field on an ungated /api/* route
-- **status:** red
+- **status:** green
 - **traces:** DES-162
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/integration/api-runs-public-projection.test.ts` (3 cases: strips `principal`, keeps
@@ -8792,11 +8857,11 @@ own boundary rulings). `real:false` throughout; Gate 7.5's validator flips each 
 real run, per the mock hard-rule (a REQ is verified only by a `real:true` green VAL/E2E).
 
 ### VAL-118 — REQ-107: one tool surface, one prefix per entity
-- **status:** red
+- **status:** green
 - **traces:** REQ-107
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 Proven by: IT-106 (`mcp-tools-list-http.test.ts`, byte-equal to `projectToolsList()`, no old
@@ -8804,11 +8869,11 @@ name, `workflow_run` ⇒ unknown-tool) + UT-139 (`tool-specs.test.ts`, the prefi
 oracles). Red for the same reason as both: `src/tool-specs.ts` does not exist.
 
 ### VAL-119 — REQ-108: one path verdict for every write, six workspace_* tools
-- **status:** red
+- **status:** green
 - **traces:** REQ-108
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 Proven by: IT-117 (`workspace-tools.test.ts`, all six tool names + schema/refusal shapes) + IT-108
@@ -8828,12 +8893,19 @@ Proven by: E2E-009 (`admin-cross-read.test.ts`, S-4: admin cross-read is audited
 (`authz.test.ts`, the authorize() matrix). Red: `src/authz.ts` does not exist; `run_start`/
 `workspace_pull`/`run_status` are not v24 tool names yet.
 
+**Gate 6.5+7 (verifier, v24) — STAYS RED.** UT-140 (the authorize() matrix, now 50 generated rows +
+the completeness pin) and E2E-009 are green: the pure decision function is correct. IT-105 is red on
+6 rows against real stores — see its entry for the two wiring defects (trigger ownership keyed off
+the claiming workflow instead of `createdBy`; the moded `workspace_*` rows' `key: null` turning the
+ownership check into a no-op). REQ-109 is "three roles, configured per account, ENFORCED and
+audited"; enforcement is what is broken, so this VAL is not flipped.
+
 ### VAL-121 — REQ-110: every tunable parameter declared and overridable per agent
-- **status:** red
+- **status:** green
 - **traces:** REQ-110
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 Proven by: IT-109 (`params-admission.test.ts` v24 block, a real-HTTP ceiling-naming refusal) +
@@ -8842,11 +8914,11 @@ UT-146/UT-147/UT-148 (the pure contract/overrides/resolve functions). Red: `run_
 v24 tool name yet; `resolveAgentParams` does not exist.
 
 ### VAL-122 — REQ-111: the diagram is supplied by the author, held to the script bidirectionally
-- **status:** red
+- **status:** green
 - **traces:** REQ-111
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 Proven by: VAL-129/IT-119's fixture rows for `MERMAID_REQUIRED`/`DIAGRAM_SCRIPT_MISMATCH` (once
@@ -8879,11 +8951,11 @@ Gate 5 seeds this REQ's mechanics at UT-156 (`materialize-assets.test.ts`) and I
 vitest green target — tracked here so trace.py does not read it as a silently-skipped REQ.
 
 ### VAL-125 — REQ-114: every upload records who did it
-- **status:** red
+- **status:** green
 - **traces:** REQ-114
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 Proven by: IT-115 (`asset-mcp-tools.test.ts` v24 block, `mcp_provision` retired/`workspace_push`
@@ -8905,12 +8977,19 @@ E2E-008 (`register-crash-window.test.ts`, the crash-window compensation floor; t
 process-kill fidelity is Gate 7.5's per DES-149's own scope note). Red: `claim`/`release`/
 `ownerOf` do not exist on either trigger store yet.
 
+**Gate 6.5+7 (verifier, v24) — STAYS RED.** IT-111/IT-112/E2E-008 are all green (claim/release/
+ownerOf, the register sequence, the crash-window compensation). What is NOT satisfied is DES-149's
+own closing sentence — "name-level claim persists until `workflow_deregister` OR THE CREATOR DELETES
+THE TRIGGER": under auth the creator cannot delete their own trigger at all, because `ownerOf`
+returns the claiming workflow name where authz needs `createdBy` (IT-105 (a)). Flipping this green
+would certify a REQ-115 path that is provably closed.
+
 ### VAL-127 — REQ-116: workflow_authoring_guide teaches the engine's own contract
-- **status:** red
+- **status:** green
 - **traces:** REQ-116
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 Proven by: IT-118 (`guide-examples-register.test.ts`, every taught example registers for real) +

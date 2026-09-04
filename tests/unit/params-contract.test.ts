@@ -769,3 +769,68 @@ describe('v24: parseParamContract(meta, scriptLabels, aliasNames) — agents req
     expect('high').toBe('high');
   });
 });
+
+// ---------------------------------------------------------------------------
+// UT-146 (Gate 6.5+7, verifier): the two per-key validators DES-144 declares but the shipped file
+// exercised only on their happy paths — `validateRequiredKeySpec` (10/14 lines) and
+// `validateNameArray` (4/6). Every refusal below is a REGISTRATION-time refusal, which is the only
+// place a malformed contract can still be stopped cheaply.
+// ---------------------------------------------------------------------------
+describe('parseParamContract — the per-key validators, refusal side (UT-146, DES-144)', () => {
+  const parse = (spec: unknown) => parseParamContract({ agents: { plan: spec } }, ['plan'], ALIASES);
+
+  it.each([
+    ['model', 'not-an-object'],
+    ['model', ['an', 'array']],
+    ['effort', 42],
+    ['timeoutMs', null],
+  ])('a %s spec that is not an object is refused', (key, bad) => {
+    const r = parse(baseAgentSpec({ [key]: bad } as never));
+    expect(r.ok).toBe(false);
+    expect((r as { code: string }).code).toBe('PARAM_CONTRACT_INVALID');
+    // The offending path rides `detail.param` (invalid() puts the reason in `message`).
+    expect((r as unknown as { detail: { param: string } }).detail.param).toBe(`agents.plan.${key}`);
+  });
+
+  it.each(['model', 'effort', 'timeoutMs'])('a %s spec with no `.default` is refused (v24: no implicit engine default per agent)', (key) => {
+    const without = { ...baseAgentSpec()[key as 'model'] } as Record<string, unknown>;
+    delete without.default;
+    const r = parse(baseAgentSpec({ [key]: without } as never));
+    expect(r.ok).toBe(false);
+    expect((r as { message: string }).message).toContain('must declare a default');
+  });
+
+  it('an enum with more than 32 members is refused (the MAX_ENUM_MEMBERS bound)', () => {
+    const enumOf = (n: number) => Array.from({ length: n }, (_, i) => `v${i}`);
+    const r = parseParamContract(
+      { agents: { plan: baseAgentSpec({ timeoutMs: { type: 'enum', enum: enumOf(33), default: 'v0' } as never }) } },
+      ['plan'], ALIASES,
+    );
+    expect(r.ok).toBe(false);
+    expect((r as { message: string }).message).toContain('more than 32 members');
+    const at32 = parseParamContract(
+      { agents: { plan: baseAgentSpec({ timeoutMs: { type: 'enum', enum: enumOf(32), default: 'v0' } as never }) } },
+      ['plan'], ALIASES,
+    );
+    expect((at32 as { message?: string }).message ?? '').not.toContain('more than 32 members');
+  });
+
+  it.each([
+    ['skills', 'not-an-array'],
+    ['skills', [1, 2]],
+    ['skills', ['rwe-reserved']],
+    ['mcp', { not: 'an array' }],
+    ['mcp', ['has space']],
+    ['mcp', ['-leading-dash']],
+  ])('%s: %s is refused — plain names only, no rwe- prefix', (key, bad) => {
+    const r = parse(baseAgentSpec({ [key]: bad } as never));
+    expect(r.ok).toBe(false);
+    expect((r as unknown as { detail: { param: string } }).detail.param).toBe(`agents.plan.${key}`);
+    expect((r as { message: string }).message).toContain('array of plain names');
+  });
+
+  it('an empty skills/mcp array is legal (nothing declared is not the same as malformed)', () => {
+    expect(parse(baseAgentSpec({ skills: [], mcp: [] } as never)).ok).toBe(true);
+    expect(parse(baseAgentSpec({ skills: ['review.md'], mcp: ['gh'] } as never)).ok).toBe(true);
+  });
+});

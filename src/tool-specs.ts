@@ -68,22 +68,15 @@ export function resolveFixture(
   args: Record<string, unknown>,
   setup: Partial<Record<SetupKey, string>>,
 ): Record<string, unknown> {
+  const fill = (v: unknown): unknown => {
+    if (!isFixtureRef(v)) return v;
+    const filled = setup[v.$setup];
+    if (filled === undefined) throw new Error(`fixture ref '${v.$setup}' was not produced by the setup sequence`);
+    return filled;
+  };
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(args)) {
-    if (isFixtureRef(v)) {
-      const filled = setup[v.$setup];
-      if (filled === undefined) throw new Error(`fixture ref '${v.$setup}' was not produced by the setup sequence`);
-      out[k] = filled;
-    } else if (Array.isArray(v)) {
-      out[k] = v.map((item) => {
-        if (!isFixtureRef(item)) return item;
-        const filled = setup[item.$setup];
-        if (filled === undefined) throw new Error(`fixture ref '${item.$setup}' was not produced by the setup sequence`);
-        return filled;
-      });
-    } else {
-      out[k] = v;
-    }
+    out[k] = Array.isArray(v) ? v.map(fill) : fill(v);
   }
   return out;
 }

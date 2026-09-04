@@ -2689,4 +2689,56 @@ files `08-validation.md`/`DEPLOY.md`), owned by the validator, not by Gate 6.
   (2) `06-impl-log.md` had NO v24 entries at all before this one, across four Gate 5 batches. This entry is a summary written by the integrator, not a substitute for the per-task entries those batches owed.
   (3) Adjudication C-7 [13][14][20][25] refers to numbered items from a Gate 5 batch-3 report that is not on disk anywhere in `.sdlc/`. They could not be actioned because they cannot be READ — the adjudication cites a document the ledger never kept. Recorded here rather than silently skipped.
 
+  **Gate 6.5 SIMPLIFY amendment (verifier, v24) — 3 fixes applied, 2 named and rejected, no behaviour change.** The `/simplify` pass over this entry's own delta (`git diff c9c6592..HEAD -- src`, 5159 insertions across 42 files) found and fixed: (1) **`src/server.ts`** — the `?namespace=` retirement guard was copy-pasted at FOUR upload routes (blob/manifest × auth-gated/no-identity fallback) with its 150-character message re-typed verbatim each time; collapsed into one `refuseNamespaceParam(req, res)` helper next to `sendJson`, the one-declaration rule this ledger has enforced since P6-5. (2) **`src/server.ts`** — the CAS blob-upload failure→HTTP-status mapping (`BLOB_TOO_LARGE`→413 / `BLOB_UPLOAD_TIMEOUT`→408 / `BLOB_SHA_MISMATCH`→409 / else 500) was duplicated verbatim in both copies of the blob route; collapsed into `sendBlobUploadError(res, err)`. (3) **`src/tool-specs.ts`** — `resolveFixture` resolved a `FixtureRef` twice, once for scalars and once inside the array `.map`, duplicating the "was not produced by the setup sequence" throw; one local `fill(v)` closure now serves both. Net −24 lines of src, tsc clean, the 10 touched test files (namespace-derivation / blob-manifest-routes / val-090 / val-091 / auth-routes / v14-schema-drift / val-096 / blob-validators / v24-tool-surface) all green, and the full suite unchanged at 0 failures.
+  REJECTED, with reasons: (a) collapsing the four repeated `errors: [] as ErrorCode[] / seeAlso: [] as string[] / authz: {…} as AuthzRow / fixture: {happy:{},errors:{}}` tails in the 35-row `TOOL_SPECS` table into a spread base — rejected, that table is DECLARATIVE data whose value is that each row is complete and greppable in place, and a shared base would hide which rows genuinely declare nothing; (b) the `/mcp` and `/assets/manifest` handlers being written twice (once behind the DES-096 auth gate, once as the no-identity fallback) — a real ~90-line duplication, but unifying it means restructuring the request pipeline, which is neither quality-only nor surgical at this gate. Recorded as v25 debt, not silently skipped.
+
   **Oracles that changed, each argued at its site and none weakened.** `val-106`'s "old registrations still run" (v24 deliberately refuses a version with no param contract — the code DES-156 already reported as `runnableReason`); `val-102`'s per-call `model` rung (retired by ARCH-095, re-pointed at the refusal that replaced it); `val-112`'s describe key list (14→16, the four `diagram*` keys DELETED per DES-156); `val-114`'s `diagramStale` case (mechanism retired, deleted with its reason); `params-admission`'s flat-overrides schema lock (replaced by two STRONGER cases — the advertised description plus a behavioural lock over real MCP HTTP importing LOCKED_KEYS/TUNABLE_KEYS so it cannot drift from the constants). Nineteen cases whose body began `if (!HAS_PROVIDER) return;` — reported PASSED having asserted nothing — became `it.skipIf` with the reason in the NAME, so the suite now reports 26 honest skips instead of 26 false greens. That includes `val-003`'s four, which adjudication C-3 asked the integrator to check specifically: the suspicion was correct.
+
+### IMPL-179..183 — v24 Gate 6 backfill, recorded retroactively by the Gate 6.5+7 verifier (EIGHTH occurrence of this ledger-honesty gap)
+
+IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v24 entries at all before this one … not a substitute for the per-task entries those batches owed"). Its `traces:` claims 22 of the 23 v24 TASKs; **five it does not claim shipped anyway** and `sh .sdlc/trace` read them as `未實作`. Each is backfilled below, git-show-attributed and verified against the source tree — never from a commit subject. TASK-153 is deliberately NOT backfilled: it is an EXTERNAL repo (iso-rwe client plugin), owner-scheduled, and its own card says it blocks the REQ-117 probe, not Gate 6.
+
+### IMPL-179 — `src/authz.ts`: `Principal`, `resolveRole`, `authorize()` total over the matrix (TASK-133)
+- **status:** done
+- **traces:** TASK-133, ARCH-088, DES-139, REQ-109
+- **greens:** UT-140
+- **files:** src/authz.ts, src/owner-lookup.ts, tests/unit/authz.test.ts, tests/integration/authz-owner-lookup.test.ts
+- **iter:** v24
+- **note:** Shipped at `2912c05` (`wip(v24): Gate 5 implementation checkpoint before adjudication`), test files touched again at `165385c`. `authorize()` is total over `Principal.kind × row.minRole × row.ownership × mode` in the documented order (auth-disabled short-circuit → row resolution → loopback-exempt → role → ownership), with the tri-state `OwnerLookup` (`undefined` = absent ⇒ ok, `null` = ownerless ⇒ admin-only) and the `detail.mode` refusal shape.
+
+  **Dod NOT met as shipped, and the shortfall was load-bearing.** TASK-133's dod requires "≥40 generated unit rows WITH the `cases.length === N` pin" plus "≥6 integration rows binding the real store columns". The tree carried **8** hand-written unit cases and **3** integration cases whose entire assertion was `expect(typeof lookup.runOwner).toBe('function')`. The Gate 6.5+7 verifier filled both (UT-140 → 50 generated rows + the pin, 59/59 green; IT-105 → real stores). Filling IT-105 immediately exposed **two authorization defects** that the vacuous version could not see — see 05-tests.md's IT-105 entry and the Gate 6.5+7 report. `authz.ts` itself is correct (all 50 matrix rows matched verdicts written from DES-139's text before running the code); the defects are in the ports it is wired to.
+
+### IMPL-180 — the retired-surface deletion: 4 source files, 15 test files, the grep guards (TASK-139)
+- **status:** done
+- **traces:** TASK-139, ARCH-089, ARCH-096, ARCH-101, ARCH-106, DES-159
+- **greens:** UT-161
+- **files:** src/graph-analyzer.ts (DELETED), src/continuation-store.ts (DELETED), src/mcp-registry.ts (DELETED), src/trigger-bindings.ts (DELETED), src/diagram-gate.ts (DELETED), src/server.ts, src/mcp-facade.ts, src/main.ts, src/workflow-view.ts, src/gateway/claude-agent-sdk-client.ts, tests/unit/no-retired-surface.test.ts
+- **iter:** v24
+- **note:** Shipped at `2912c05`; `no-retired-surface.test.ts` re-aimed at `80f9c65`. All four named source files plus `diagram-gate.ts` (a fifth, retired with the model-authored diagram gate that `check-mermaid.ts` replaces) are absent from the tree; the consumer files no longer import them; the 15 test files listed on the card are gone. UT-161's three grep guards are green. `describe.skip('workflow_regenerate_diagram — RETIRED v24 …')` in `workflow-describe-facade.test.ts` is the one deliberate skip left behind as a tombstone.
+
+### IMPL-181 — run store: filtered `list` + its index, `getOwner`, `audit_events` and its reader (TASK-140)
+- **status:** done
+- **traces:** TASK-140, ARCH-092, DES-151, DES-152, REQ-109
+- **greens:** IT-113, IT-114, UT-153
+- **files:** src/store/sqlite-run-store.ts, src/run-store.ts, src/types.ts, src/audited-read.ts, tests/integration/run-list.test.ts, tests/integration/run-store-audit.test.ts, tests/unit/audit-order.test.ts
+- **iter:** v24
+- **note:** Shipped across `2912c05` and `ba46e3b`. The dod's own case-count floor (≥10 / ≥8 / ≥4) is MET on the tree as it stands: `run-list.test.ts` 10, `run-store-audit.test.ts` 10, `audit-order.test.ts` 4 — `ba46e3b` filled the shortfall adjudication v24 #2 A-6 flagged. `auditedWorkspaceRead` appends BEFORE any byte is read and rethrows an append failure as `INTERNAL_ERROR` (fail-closed by construction, guarded around `appendAudit` only, never around `read()`).
+
+### IMPL-182 — the three v15-era harness-`defaults` test files retired against `DEFAULTS_RETIRED` (TASK-154)
+- **status:** done
+- **traces:** TASK-154, ARCH-094, ADR-035, DES-144, DES-148
+- **greens:** UT-138
+- **files:** tests/integration/harness-defaults-validation.test.ts, tests/acceptance/val-098-harness-defaults.test.ts, tests/acceptance/val-103-effort-real.test.ts, src/errors.ts
+- **iter:** v24
+- **note:** Shipped across `2912c05`/`ba46e3b`, with `val-103`'s provider-gated case corrected to `it.skipIf` at `3865dfc`. `grep -rn "HARNESS_DEFAULTS_INVALID" tests/` returns only rows asserting the code is GONE (`error-catalog.test.ts` asserts `ERROR_CATALOG` does not have the property; `harness-defaults-validation.test.ts` asserts a stray top-level `defaults` argument is `not.toBe('HARNESS_DEFAULTS_INVALID')`) plus two explanatory comments — the dod's exact condition. `src/errors.ts`'s header comment, which forewarned the breakage, now records that it happened. Case counts on the tree: 5 / 1 / 2 (1 skipped, provider-gated), all green.
+
+### IMPL-183 — webhook store: the create-copy-drop-rename rebuild so a pre-v24 db accepts an unclaimed row (TASK-156)
+- **status:** done
+- **traces:** TASK-156, ARCH-100, DES-150
+- **greens:** IT-112
+- **files:** src/webhook-registry.ts, tests/integration/webhook-migration.test.ts
+- **iter:** v24
+- **note:** Shipped at `ba46e3b`, refined at `256c686`/`6dcb555`. `webhook-registry.ts` performs the rebuild (`CREATE TABLE webhooks__v24_rebuild` → copy → drop → `RENAME TO webhooks`) only when the live schema still has `workflow NOT NULL`, so an already-migrated db skips the block entirely; the additive claim-model refusal columns follow. `webhook-migration.test.ts` (2 cases) creates the pre-v24 schema, writes a row, opens the store, calls `create({})` with no workflow and checks the pre-existing row survives, then runs the constructor twice for idempotence. Both green.
+
+  **OPEN, and it is what IT-105 went red on:** the card's sibling TASK-142 was to give webhooks a `createdBy` column. It never landed — `webhooks` has no such column, `create()` never records a creator, and `call-tool.ts`'s own comment says so ("every caller sees every webhook until that column lands"). `WebhookRegistry.ownerOf` therefore answers with the CLAIMING WORKFLOW instead of the creating principal, which is half of the authorization defect the Gate 6.5+7 verifier is sending back.
+

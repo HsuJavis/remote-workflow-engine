@@ -112,3 +112,45 @@ describe('TOOL_SPECS — the v24 tool surface (UT-139, DES-138)', () => {
     expect(strays).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// UT-139 (Gate 6.5+7, verifier): the OTHER two mode() functions. `workspace_push`'s is pinned
+// above; `workspace_list`'s and `workspace_delete`'s were only ever reached through their happy
+// fixtures, so every non-matching arm (including the 'invalid' fall-through that makes them TOTAL)
+// was uncovered. Each row asserts BOTH the resolved mode and the authz row it selects — the mode
+// name alone proves nothing about who is allowed through.
+// ---------------------------------------------------------------------------
+type ModedAuthz = { mode: (args: unknown) => string; rows: Record<string, { minRole: string; ownership: string }> };
+const moded = (name: string): ModedAuthz => {
+  const spec = TOOL_SPECS.find((s) => s.name === name)!;
+  const authz = spec.authz as unknown as ModedAuthz;
+  expect(typeof authz.mode).toBe('function');
+  return authz;
+};
+
+describe('TOOL_SPECS — mode() is total on every workspace_* tool (UT-139, DES-138/DES-139)', () => {
+  it.each([
+    ['workspace_list', { runId: 'r1' }, 'run', { minRole: 'user', ownership: 'run', adminCrossRead: true }],
+    ['workspace_list', { workflow: 'w', kind: 'skill' }, 'workflow', { minRole: 'author', ownership: 'workflow' }],
+    ['workspace_list', { workflow: 'w' }, 'invalid', { minRole: 'user', ownership: 'none' }],
+    ['workspace_list', {}, 'invalid', { minRole: 'user', ownership: 'none' }],
+    ['workspace_delete', { runId: 'r1' }, 'run', { minRole: 'user', ownership: 'run' }],
+    ['workspace_delete', { scope: 'global', kind: 'skill', name: 'n' }, 'global', { minRole: 'admin', ownership: 'none' }],
+    ['workspace_delete', { workflow: 'w', kind: 'skill', name: 'n' }, 'workflow', { minRole: 'author', ownership: 'workflow' }],
+    ['workspace_delete', { workflow: 'w', kind: 'skill' }, 'invalid', { minRole: 'user', ownership: 'none' }],
+    ['workspace_delete', {}, 'invalid', { minRole: 'user', ownership: 'none' }],
+  ])('%s %o resolves to mode %s', (tool, args, expectedMode, expectedRow) => {
+    const authz = moded(tool as string);
+    const mode = authz.mode(args);
+    expect(mode).toBe(expectedMode);
+    expect(authz.rows[mode]).toEqual(expectedRow);
+  });
+
+  it.each(['workspace_push', 'workspace_list', 'workspace_delete'])('%s mode() never throws on a hostile arg shape and always names a declared row', (tool) => {
+    const authz = moded(tool);
+    for (const args of [null, undefined, 'a string', 42, [], { runId: undefined }, { scope: 'global' }]) {
+      const mode = authz.mode(args);
+      expect(Object.keys(authz.rows)).toContain(mode);
+    }
+  });
+});

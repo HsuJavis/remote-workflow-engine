@@ -267,6 +267,31 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
+/** v24 (DES-142): `?namespace=` is retired on every CAS upload route — the namespace is derived
+ *  from the caller's own identity, never echoed from the client. ONE declaration of the rule and
+ *  its message; the four upload routes (blob/manifest x auth-gated/no-identity fallback) call it.
+ *  Returns true when it has already answered the request. */
+function refuseNamespaceParam(req: IncomingMessage, res: ServerResponse): boolean {
+  if (!new URL(req.url ?? '/', 'http://x').searchParams.has('namespace')) return false;
+  sendJson(res, 400, {
+    code: 'INVALID_BLOB_REQUEST',
+    message: 'INVALID_BLOB_REQUEST: ?namespace= is retired (v24) — the namespace is derived from the caller\'s own identity, never a query param',
+  });
+  return true;
+}
+
+/** The one CAS blob-upload failure -> HTTP-status mapping, shared by the auth-gated and the
+ *  no-identity fallback copy of the `POST /assets/blob/:sha` route. */
+function sendBlobUploadError(res: ServerResponse, err: unknown): void {
+  const code = (err as { code?: string }).code ?? 'BLOB_ERROR';
+  const message = (err as { message?: string }).message ?? String(err);
+  const status = code === 'BLOB_TOO_LARGE' ? 413
+    : code === 'BLOB_UPLOAD_TIMEOUT' ? 408
+    : code === 'BLOB_SHA_MISMATCH' ? 409
+    : 500;
+  sendJson(res, status, { code, message });
+}
+
 // v24 (DES-140, ARCH-089, TASK-147): the pre-v24 positional `callTool` (17 params, the old 9-tool
 // switch) is RETIRED — dispatch now goes through `callTool(deps, name, args, principal)` in
 // `call-tool.ts`, built from `ToolDeps` at each `/mcp` handler below.
@@ -962,24 +987,14 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           const ns = p.principal;
           // v24 (DES-142): `?namespace=` is DROPPED — a caller-supplied value is refused, naming
           // the change, rather than silently ignored.
-          if (new URL(req.url ?? '/', 'http://x').searchParams.has('namespace')) {
-            sendJson(res, 400, { code: 'INVALID_BLOB_REQUEST', message: 'INVALID_BLOB_REQUEST: ?namespace= is retired (v24) — the namespace is derived from the caller\'s own identity, never a query param' });
-            return;
-          }
+          if (refuseNamespaceParam(req, res)) return;
           if (!isValidSha256Hex(sha)) {
             sendJson(res, 400, { code: 'INVALID_BLOB_REQUEST', message: 'invalid sha256 hex' });
             return;
           }
           cas.putBlobStream(ns, sha, req, { maxBytes: blobMaxBytes, readTimeoutMs: 120_000 }).then((r) => {
             sendJson(res, 200, { sha256: r.sha256, bytes: r.bytes, namespace: ns });
-          }).catch((err: unknown) => {
-            const code = (err as { code?: string }).code ?? 'BLOB_ERROR';
-            const msg = (err as { message?: string }).message ?? String(err);
-            if (code === 'BLOB_TOO_LARGE') { sendJson(res, 413, { code, message: msg }); return; }
-            if (code === 'BLOB_UPLOAD_TIMEOUT') { sendJson(res, 408, { code, message: msg }); return; }
-            if (code === 'BLOB_SHA_MISMATCH') { sendJson(res, 409, { code, message: msg }); return; }
-            sendJson(res, 500, { code, message: msg });
-          });
+          }).catch((err: unknown) => sendBlobUploadError(res, err));
         });
         return;
       }
@@ -989,10 +1004,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           if ('status' in p) { send401(); return; }
           // DES-096: principal is the namespace for authenticated manifest uploads (server-derived).
           const ns = p.principal;
-          if (new URL(req.url ?? '/', 'http://x').searchParams.has('namespace')) {
-            sendJson(res, 400, { code: 'INVALID_BLOB_REQUEST', message: 'INVALID_BLOB_REQUEST: ?namespace= is retired (v24) — the namespace is derived from the caller\'s own identity, never a query param' });
-            return;
-          }
+          if (refuseNamespaceParam(req, res)) return;
           if (!cas) {
             sendJson(res, 400, { code: 'INVALID_BLOB_REQUEST', message: 'CAS not configured' });
             return;
@@ -1173,10 +1185,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       // v24 (DES-142): namespace is derived from the caller's own identity, never `?namespace=` —
       // this fallback path (auth-disabled or a loopback-exempt peer) has no resolved id, so `'local'`
       // (ADR-028's ONE sentinel, same as every other no-identity site).
-      if (new URL(req.url ?? '/', 'http://x').searchParams.has('namespace')) {
-        sendJson(res, 400, { code: 'INVALID_BLOB_REQUEST', message: 'INVALID_BLOB_REQUEST: ?namespace= is retired (v24) — the namespace is derived from the caller\'s own identity, never a query param' });
-        return;
-      }
+      if (refuseNamespaceParam(req, res)) return;
       const ns = 'local';
       if (!isValidSha256Hex(sha) || !isValidNamespace(ns)) {
         sendJson(res, 400, { code: 'INVALID_BLOB_REQUEST', message: 'invalid sha256 hex or namespace' });
@@ -1185,14 +1194,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       const maxBytes = blobMaxBytes;
       cas.putBlobStream(ns, sha, req, { maxBytes, readTimeoutMs: 120_000 }).then((r) => {
         sendJson(res, 200, { sha256: r.sha256, bytes: r.bytes, namespace: ns });
-      }).catch((err: unknown) => {
-        const code = (err as { code?: string }).code ?? 'BLOB_ERROR';
-        const msg = (err as { message?: string }).message ?? String(err);
-        if (code === 'BLOB_TOO_LARGE') { sendJson(res, 413, { code, message: msg }); return; }
-        if (code === 'BLOB_UPLOAD_TIMEOUT') { sendJson(res, 408, { code, message: msg }); return; }
-        if (code === 'BLOB_SHA_MISMATCH') { sendJson(res, 409, { code, message: msg }); return; }
-        sendJson(res, 500, { code, message: msg });
-      });
+      }).catch((err: unknown) => sendBlobUploadError(res, err));
       return;
     }
     // DES-087 (TASK-081, REQ-082): manifest register — POST /assets/manifest?namespace=<ns>.
@@ -1200,10 +1202,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // Parses raw bytes as JSON manifest, validates referenced blobs present, stores manifest as CAS blob.
     if (req.method === 'POST' && req.url?.startsWith('/assets/manifest')) {
       // v24 (DES-142): same namespace-derivation rule as the blob route above.
-      if (new URL(req.url, 'http://x').searchParams.has('namespace')) {
-        sendJson(res, 400, { code: 'INVALID_BLOB_REQUEST', message: 'INVALID_BLOB_REQUEST: ?namespace= is retired (v24) — the namespace is derived from the caller\'s own identity, never a query param' });
-        return;
-      }
+      if (refuseNamespaceParam(req, res)) return;
       const ns = 'local';
       if (!cas || !isValidNamespace(ns)) {
         sendJson(res, 400, { code: 'INVALID_BLOB_REQUEST', message: 'CAS not configured or invalid namespace' });

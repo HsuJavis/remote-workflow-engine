@@ -6,7 +6,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AssetSyncService, type AssetCatalogRow } from '../../src/asset-sync.js';
+import { AssetSyncService, resolveMcp, type AssetCatalogRow } from '../../src/asset-sync.js';
 import { FixedClock } from '../../src/clock.js';
 
 function fakeCatalogPort() {
@@ -79,5 +79,58 @@ describe('AssetSyncService v24 — two scopes, mcp gating, clock-sourced pushedA
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `resolveMcp` (DES-153) — the pure catalog-port helper the SDK gateway binds to. Added at
+// Gate 6.5+7 (verifier): the shipped UT-155 covered `push()` only, leaving `resolveMcp` at 0/17
+// lines despite it being the whole replacement for the deleted `mcp-registry.ts` (TASK-139/145).
+// ---------------------------------------------------------------------------
+describe('resolveMcp — workflow scope wins a name clash with global (UT-155, DES-153)', () => {
+  const row = (over: Partial<AssetCatalogRow>): AssetCatalogRow => ({
+    scope: 'global', builtin: false, kind: 'mcp', name: 'x', pushedBy: 'alice', pushedAt: '2026-01-01T00:00:00Z',
+    config: { command: 'global-bin' } as never, ...over,
+  });
+
+  it('resolves a global row when no workflow row shadows it', async () => {
+    const { configs, missing } = await resolveMcp({ listAssets: () => [row({ name: 'gh' })] }, 'wf-a', ['gh']);
+    expect(missing).toEqual([]);
+    expect(configs.gh).toEqual({ command: 'global-bin' });
+  });
+
+  it('a workflow-scoped row of the SAME name shadows the global one — only for its own workflow', async () => {
+    const rows = [
+      row({ name: 'gh' }),
+      row({ name: 'gh', scope: 'workflow', workflow: 'wf-a', config: { command: 'wf-bin' } as never }),
+    ];
+    const mine = await resolveMcp({ listAssets: () => rows }, 'wf-a', ['gh']);
+    expect(mine.configs.gh).toEqual({ command: 'wf-bin' });
+    const other = await resolveMcp({ listAssets: () => rows }, 'wf-b', ['gh']);
+    expect(other.configs.gh).toEqual({ command: 'global-bin' });
+  });
+
+  it('a name with no row at either scope lands in missing[], never as a silent empty config', async () => {
+    const { configs, missing } = await resolveMcp({ listAssets: () => [row({ name: 'gh' })] }, 'wf-a', ['gh', 'nope']);
+    expect(missing).toEqual(['nope']);
+    expect(Object.keys(configs)).toEqual(['gh']);
+  });
+
+  it('a matching row carrying no config is MISSING, not an undefined entry in configs', async () => {
+    const { configs, missing } = await resolveMcp({ listAssets: () => [row({ name: 'gh', config: undefined })] }, 'wf-a', ['gh']);
+    expect(missing).toEqual(['gh']);
+    expect(Object.keys(configs)).toEqual([]);
+  });
+
+  it('a skill row never satisfies an mcp name, and an empty request resolves to nothing', async () => {
+    const skillOnly = await resolveMcp({ listAssets: () => [row({ name: 'gh', kind: 'skill', config: undefined })] }, 'wf-a', ['gh']);
+    expect(skillOnly.missing).toEqual(['gh']);
+    const none = await resolveMcp({ listAssets: () => [row({ name: 'gh' })] }, 'wf-a', []);
+    expect(none).toEqual({ configs: {}, missing: [] });
+  });
+
+  it('awaits a Promise-returning listAssets (the real SQLite catalog port)', async () => {
+    const { configs } = await resolveMcp({ listAssets: async () => [row({ name: 'gh' })] }, 'wf-a', ['gh']);
+    expect(configs.gh).toEqual({ command: 'global-bin' });
   });
 });
