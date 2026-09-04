@@ -24,12 +24,15 @@
 //     through `lexicalVerdict('asset-tree', name)` before writing anything, so the whole push is
 //     REFUSED with `RESERVED_PREFIX` rather than quietly trimmed. Asserted again below.
 //  4. The "non-runnable MCP config type" case (a filesystem-stdio MCP server, REQ-009 clause 2) is
-//     now an AUTHZ row (`kind:'mcp'` + `config.transport:'stdio'` ⇒ `pushMode` `'stdio'` ⇒
+//     now an AUTHZ row (`kind:'mcp'` + `config.type:'stdio'` ⇒ `pushMode` `'stdio'` ⇒
 //     admin-only, DES-138) that reaches a REAL `McpProbe` (no fake injected — this file boots a
 //     plain `createServer()`), not a push-time "unsupported, excluded" classification. Exercising
 //     that would mean either injecting a `FakeMcpProbe` (new test infra beyond a rename) or
 //     tolerating a real subprocess spawn; dropped here as out of TASK-152's mechanical scope and
-//     reported rather than faked.
+//     reported rather than faked. v24 Gate 7.5 (D-11) then found that the key this row read
+//     (`config.transport`) was not the key the probe reads (`config.type`), so the admin gate never
+//     ran at all — the outcome is now pinned by tests/integration/stdio-mcp-admin-gate.test.ts,
+//     which injects a recording probe rather than spawning anything.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

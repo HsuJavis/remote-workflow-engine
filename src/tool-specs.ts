@@ -158,7 +158,14 @@ const OUT = schema({});
 function pushMode(args: any): 'cas' | 'asset' | 'global' | 'stdio' | 'invalid' {
   if (args && typeof args === 'object' && 'sha256' in args && 'contentB64' in args) return 'cas';
   if (args && args.scope === 'global') return 'global';
-  if (args && args.kind === 'mcp' && args.config && args.config.transport === 'stdio') return 'stdio';
+  // v24 Gate 7.5 (D-11, REQ-109/ADR-030): the transport key is `type` — the SAME key
+  // `classifyTransport()` (mcp-probe.ts) and the materializer read. This row used to look for
+  // `config.transport`, a key nothing else in the engine writes or reads, so a real
+  // `{type:'stdio', command:'npx', …}` fell through to the `asset` row (`minRole:'author'`), the
+  // admin-only gate never ran, and the probe spawned the author-supplied command on the engine
+  // host. One key, read the same way on both sides; the outcome is pinned by
+  // tests/integration/stdio-mcp-admin-gate.test.ts, never by this function's return value.
+  if (args && args.kind === 'mcp' && args.config && args.config.type === 'stdio') return 'stdio';
   if (args && args.workflow && args.kind) return 'asset';
   return 'invalid';
 }
