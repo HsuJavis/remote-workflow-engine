@@ -14,7 +14,6 @@ import { dirname } from 'node:path';
 import { randomUUID, randomBytes, createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { Clock } from './clock.js';
 import type { ErrEnvelope, RefusalReason } from './types.js';
-import { catalogResolveErrorEnvelope } from './errors.js';
 
 /** Structural seam — matches RunManager.start() without importing the class (as scheduler/continuation). */
 interface RunManagerPort {
@@ -144,19 +143,15 @@ export class WebhookRegistry {
   /** Registers a webhook. v24 (DES-149): `workflow` is now OPTIONAL — omitted, the webhook is
    *  created UNCLAIMED (fires nothing until `claim()`, typically via a workflow's registration
    *  `triggers[]`); supplied, it is claimed immediately (this is a brand-new row, so no other
-   *  claimant can race it — the same H4 catalog-resolve check runs either way). Generates the
-   *  secret server-side and returns it EXACTLY ONCE — it is never retrievable again (list shows
-   *  only a fingerprint). */
+   *  claimant can race it). Generates the secret server-side and returns it EXACTLY ONCE — it is
+   *  never retrievable again (list shows only a fingerprint).
+   *
+   *  v24 Gate 7.5 (D-1): the H4 create-time catalog-resolve check is GONE here for the same reason
+   *  it is gone from `Scheduler.create()` — REQ-115's last clause moves it. An unclaimed webhook
+   *  that is delivered to is refused at DELIVERY (`UNCLAIMED` / `CLAIMED_WORKFLOW_MISSING` /
+   *  `CHANNEL_UNPUBLISHED`) and the refusal is recorded on the row, which is where the answer is
+   *  still true when it matters. */
   async create(spec: { workflow?: string; enabled?: boolean; createdBy?: string }): Promise<{ webhookId: string; secret: string } | { error: ErrEnvelope }> {
-    if (spec.workflow !== undefined) {
-      // H4 second site (07-review.md §8.1): upgraded from "the name exists" to "the name resolves on
-      // `release`" — same check Scheduler.create() uses (scheduler.ts:157-175).
-      try {
-        await this._catalog.resolve(spec.workflow, { channel: 'release' });
-      } catch (err) {
-        return { error: catalogResolveErrorEnvelope(err, spec.workflow) };
-      }
-    }
     const id = randomUUID();
     const secret = randomBytes(32).toString('hex');
     this._db

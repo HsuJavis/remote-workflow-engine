@@ -326,8 +326,20 @@ export class McpFacade {
    *  the union as `releasedTriggers`. */
   async workflowDeregister(a: { name: string }, principal: Principal): Promise<Record<string, unknown>> {
     try {
+      // v24 Gate 7.5 (D-1b, REQ-115/ADR-026): the catalog reports the ids the VERSION ROWS declare
+      // — the claim door. A trigger bound AT CREATION (`schedule_create({workflow})`, the other
+      // v24 door) never enters a version's `triggers[]`, so deregister released nothing, the row
+      // kept pointing at the deleted name, and a same-name re-registration inherited it: live, a
+      // real cron fired a run for the new registration 47 s later. `claimedIdsFor()` — the exact
+      // reader `workflow_describe` already uses to SHOW both doors — is now consulted here too, so
+      // what is released is what was shown.
       const { removed, claimedTriggers } = await this.runManager.catalog.deregister(a.name, bypassWithArg(principal, a));
-      for (const id of claimedTriggers) this._storeFor(id).release(id, a.name);
+      const releasedTriggers = [...new Set([
+        ...claimedTriggers,
+        ...(this.schedulerClaims.claimedIdsFor?.(a.name) ?? []),
+        ...(this.webhookClaims.claimedIdsFor?.(a.name) ?? []),
+      ])];
+      for (const id of releasedTriggers) this._storeFor(id).release(id, a.name);
       // v24 Gate 7.5 (D-10, REQ-113): the catalog transaction deletes the workflow's `assets` ROWS;
       // the tree under `<assetRoot>/<name>/` is filesystem state no SQL statement can reach, and it
       // was surviving the delete — the next registrant of the freed name could declare a skill it
@@ -345,7 +357,7 @@ export class McpFacade {
         const error: ErrEnvelope = { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` };
         return { runId: '', status: 'failed', code: error.code, error };
       }
-      return { runId: '', status: 'completed', name: a.name, removed, releasedTriggers: claimedTriggers, result: { name: a.name, removed, releasedTriggers: claimedTriggers } };
+      return { runId: '', status: 'completed', name: a.name, removed, releasedTriggers, result: { name: a.name, removed, releasedTriggers } };
     } catch (err) {
       const e = toErrEnvelope(err);
       return { runId: '', status: 'failed', code: e.code, error: e };

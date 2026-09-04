@@ -1,71 +1,115 @@
-// IT-093 (H4 send-back, 07-review.md §4.2 — ARCH-072 note(1), DES-113, DES-117, REQ-097):
-// `Scheduler.create()` must upgrade its front-door check from "the name exists" to "the name
-// resolves on `release`" — ARCH-072 prices this at "one line" and the v22 interface table lists
-// `CHANNEL_UNPUBLISHED` as a `schedule_create`-time error. REQ-097 makes "registered but on no
-// channel" the NORMAL state of a fresh draft (register-draft → publish-later is the sanctioned
-// author loop), so a schedule created against a drafted-but-unpublished workflow is accepted at
-// creation today and fails at EVERY subsequent fire with no operator signal at the point of the
-// actual mistake.
+// IT-093, v24 Gate 7.5 REWRITE (defect D-1, REQ-115's last clause).
 //
-// Mock policy (integration, DES-119): a REAL `WorkflowCatalog` (real on-disk sqlite, no fake) —
-// per the send-back's own diagnosis (`grep -rn "CHANNEL_UNPUBLISHED" tests/` found zero hits
-// against `Scheduler.create()`), a hand-mocked catalog that only implements `exists()` cannot
-// exercise the missing `resolve()` call at all; only a real catalog keeps this red for the
-// genuine runtime reason (create() never calls `resolve()`) rather than a type-shape artifact.
-// Only `RunManager` is faked (irrelevant to `create()`, never invoked by it).
+// What this file used to pin: the v22 H4 send-back moved `Scheduler.create()`'s front door from
+// "the name exists" to "the name resolves on `release`", so a schedule created against a
+// registered-but-unpublished draft was refused CHANNEL_UNPUBLISHED AT CREATION.
 //
-// Red reason: `scheduler.ts:153-156` calls ONLY `catalog.exists(s.workflow)` — confirmed by direct
-// read, no `resolve(name, {channel:'release'})` call anywhere in `create()`. `grep -rn
-// "CHANNEL_UNPUBLISHED" src/scheduler.ts` finds nothing. The first case below observes
-// `result.error` undefined (creation wrongly SUCCEEDED) where `CHANNEL_UNPUBLISHED` is required.
+// Why it is rewritten rather than deleted: REQ-115 makes the create-then-claim model the contract
+// ("Given `schedule_create`/`webhook_create` Then they create an UNCLAIMED trigger and return its
+// id, without naming any workflow"), and its last clause says the H4 check MOVES to registration —
+// "the check does not disappear, it changes site, and everything that described its old site must
+// be updated with it". Gate 7.5 found the create-time check still in place, which is what forced
+// `workflow` to stay REQUIRED on the tool row and made an unclaimed trigger impossible to create
+// over MCP (D-1). Adjudication (v24) #5 E-4 ruled that a defect, not an undocumented design change.
+//
+// So the check's real site is now the FIRE path: at creation there is routinely no workflow to
+// resolve, while at firing time the answer is both knowable and still true. `resolveScheduleTarget`
+// (server.ts) refuses UNCLAIMED / CLAIMED_WORKFLOW_MISSING / CHANNEL_UNPUBLISHED / NOT_IN_RELEASE
+// and RECORDS the refusal on the row — REQ-115's own "a trigger that fires while unclaimed is
+// REFUSED and the refusal is recorded". Both halves are asserted below.
+//
+// Mock policy (integration, DES-119): a REAL `createServer()` — the refusal ladder lives in the
+// composition root's driver, so a hand-built `SqliteSchedulerPort` (this file's pre-v24 shape)
+// cannot exercise it at all. Real ticker, real SQLite, real catalog; the fixture script is pure.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { FixedClock } from '../../src/clock.js';
-import { SqliteSchedulerPort } from '../../src/scheduler.js';
-import { WorkflowCatalog } from '../../src/workflow-catalog.js';
+import { createServer } from '../../src/server.js';
+import type { Server } from '../../src/server.js';
 
-const CLOCK = new FixedClock(new Date('2020-03-01T10:00:00.000Z'));
+let server: Server;
+let workRoot: string;
 
-function makeFakeRunManager() {
-  return { start: async () => 'run-h4' };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function call(name: string, args: Record<string, unknown> = {}): Promise<any> {
+  const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: Math.random(), method: 'tools/call', params: { name, arguments: args } }),
+  });
+  const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
+  return JSON.parse(body.result?.content?.[0]?.text ?? '{}');
 }
 
-let workRoot: string;
-beforeEach(() => { workRoot = mkdtempSync(join(tmpdir(), 'rwe-it093-')); });
-afterEach(() => { rmSync(workRoot, { recursive: true, force: true }); });
+interface Row { id: string; refusalCount?: number; lastRefusalReason?: string; lastRunId?: string }
+const rowFor = async (id: string): Promise<Row | undefined> =>
+  ((await call('schedule_list')).result as Row[]).find((r) => r.id === id);
 
-describe("Scheduler.create() resolves `release` before accepting (H4 send-back, 07-review.md §4.2)", () => {
-  it('a REGISTERED but UNPUBLISHED workflow (REQ-097\'s normal draft state) is refused CHANNEL_UNPUBLISHED, not accepted-then-doomed', async () => {
-    const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    await catalog.register({ name: 'h4-unpublished', script: `return 1;`, mermaid: 'graph TD;' }); // registered, published to NO channel
-    const port = new SqliteSchedulerPort({ clock: CLOCK, catalog, runManager: makeFakeRunManager(), dbPath: ':memory:' });
+async function until<T>(read: () => Promise<T>, ok: (v: T) => boolean, ms = 8000): Promise<T> {
+  const deadline = Date.now() + ms;
+  let last = await read();
+  while (!ok(last) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 100));
+    last = await read();
+  }
+  return last;
+}
 
-    const result = await port.create({ kind: 'cron', workflow: 'h4-unpublished', cron: '0 3 * * *', enabled: true });
+beforeEach(async () => {
+  workRoot = mkdtempSync(join(tmpdir(), 'rwe-it093-'));
+  server = await createServer({ port: 0, bind: '127.0.0.1', workRoot });
+});
+afterEach(async () => {
+  await server?.close();
+  rmSync(workRoot, { recursive: true, force: true });
+});
 
-    expect(result.error?.code).toBe('CHANNEL_UNPUBLISHED');
-    expect(result.result).toBeUndefined();
+describe('the release-resolution check lives on the FIRE path, not on schedule_create (IT-093 v24, REQ-115, D-1)', () => {
+  it("a schedule bound to a REGISTERED but UNPUBLISHED workflow is ACCEPTED at creation — REQ-097's draft state is not a creation error any more", async () => {
+    const reg = await call('workflow_register', { name: 'h4-unpublished', script: 'return 1;', mermaid: 'graph TD;' });
+    expect(reg.error).toBeUndefined(); // registered, published to NO channel
+
+    const created = await call('schedule_create', { workflow: 'h4-unpublished', kind: 'cron', cron: '0 3 * * *' });
+
+    expect(created.error).toBeUndefined();
+    expect(((created.result ?? created) as { id?: string }).id).toBeTruthy();
   });
 
-  it('GREEN PIN: a PUBLISHED workflow still creates a schedule successfully', async () => {
-    const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    const { version } = await catalog.register({ name: 'h4-published', script: `return 1;`, mermaid: 'graph TD;' });
-    await catalog.publish('h4-published', version, 'release', null);
-    const port = new SqliteSchedulerPort({ clock: CLOCK, catalog, runManager: makeFakeRunManager(), dbPath: ':memory:' });
+  it('when that schedule comes due it is REFUSED CHANNEL_UNPUBLISHED, the refusal is recorded, and no run starts', async () => {
+    await call('workflow_register', { name: 'h4-unpublished-fire', script: 'return 1;', mermaid: 'graph TD;' });
+    const created = await call('schedule_create', {
+      workflow: 'h4-unpublished-fire', kind: 'once', at: new Date(Date.now() + 300).toISOString(),
+    });
+    const id = ((created.result ?? created) as { id: string }).id;
 
-    const result = await port.create({ kind: 'cron', workflow: 'h4-published', cron: '0 3 * * *', enabled: true });
+    const row = await until(() => rowFor(id), (r) => (r?.refusalCount ?? 0) > 0);
+    expect(row?.lastRefusalReason).toBe('CHANNEL_UNPUBLISHED');
+    expect(row?.lastRunId).toBeUndefined();
+    expect((await call('run_list', { workflow: 'h4-unpublished-fire' })).result ?? []).toEqual([]);
+  }, 20000);
 
-    expect(result.error).toBeUndefined();
-    expect(result.result?.id).toBeTruthy();
-  });
+  it('a schedule naming a workflow that does not exist AT ALL is likewise accepted, then refused CLAIMED_WORKFLOW_MISSING when due', async () => {
+    const created = await call('schedule_create', {
+      workflow: 'h4-never-registered', kind: 'once', at: new Date(Date.now() + 300).toISOString(),
+    });
+    expect(created.error).toBeUndefined();
+    const id = ((created.result ?? created) as { id: string }).id;
 
-  it('GREEN PIN: an unknown workflow name is still refused WORKFLOW_NOT_FOUND (existing behavior, unaffected)', async () => {
-    const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    const port = new SqliteSchedulerPort({ clock: CLOCK, catalog, runManager: makeFakeRunManager(), dbPath: ':memory:' });
+    const row = await until(() => rowFor(id), (r) => (r?.refusalCount ?? 0) > 0);
+    expect(row?.lastRefusalReason).toBe('CLAIMED_WORKFLOW_MISSING');
+  }, 20000);
 
-    const result = await port.create({ kind: 'cron', workflow: 'h4-never-registered', cron: '0 3 * * *', enabled: true });
+  it('GREEN PIN: a PUBLISHED workflow still creates a schedule successfully, and that one really fires', async () => {
+    const reg = await call('workflow_register', { name: 'h4-published', script: 'return 1;', mermaid: 'graph TD;' });
+    await call('workflow_publish', { name: 'h4-published', version: reg.result.version as string, channel: 'release' });
+    const created = await call('schedule_create', {
+      workflow: 'h4-published', kind: 'once', at: new Date(Date.now() + 300).toISOString(),
+    });
+    expect(created.error).toBeUndefined();
+    const id = ((created.result ?? created) as { id: string }).id;
 
-    expect(result.error?.code).toBe('WORKFLOW_NOT_FOUND');
-  });
+    const row = await until(() => rowFor(id), (r) => r?.lastRunId !== undefined);
+    expect(row?.lastRunId, 'a published, claimed schedule must still fire').toBeTruthy();
+    expect(row?.refusalCount ?? 0).toBe(0);
+  }, 20000);
 });

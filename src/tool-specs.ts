@@ -620,7 +620,7 @@ export const TOOL_SPECS = [
   // ---- schedule (4) ----
   {
     name: 'schedule_create', entity: 'schedule', key: null,
-    description: "Register a time trigger for a workflow; the caller becomes its owner. Defaults to kind:'cron' — pass kind:'once' with {at} for a one-shot, or kind:'resident' for a trigger-only schedule that never fires on a clock.",
+    description: "Create a time trigger and return its id; the caller becomes its owner. Name no workflow — hand the id to workflow_register({triggers:[id]}) to bind it to a version. Defaults to kind:'cron' — pass kind:'once' with {at} for a one-shot, or kind:'resident' for a trigger-only schedule that never fires on a clock.",
     // v24 (integrator, REQ-015): the row advertised ONLY `{workflow, cron}` with both required, so
     // the one-shot and resident kinds REQ-015 clause 2 specifies (and VAL-016 validates) were
     // unreachable through the tool surface — ajv refused them for a missing `cron` before the store
@@ -633,14 +633,24 @@ export const TOOL_SPECS = [
       tz: { type: 'string', description: "IANA timezone the cron fields are read in; UTC when omitted." },
       args: { description: 'Run arguments handed to every firing.' },
       enabled: { type: 'boolean', description: 'Defaults to true when omitted — a schedule created disabled never fires.' },
-    }, ['workflow']),
+    // v24 Gate 7.5 (D-1, REQ-115 clause 1 + ADR-026 scenario S-5): `workflow` is OPTIONAL. The
+    // owner-ruled model is "create the trigger first, then hand its id to workflow_register", and
+    // requiring a workflow here made an unclaimed trigger impossible to create over MCP — the
+    // store has supported one since TASK-141; only this row blocked it. Supplying `workflow`
+    // still binds at creation (the pre-v24 door, kept for the callers that use it).
+    }),
     outputSchema: OUT,
-    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'INVALID_CRON', 'INVALID_AT', 'TRIGGER_ALREADY_CLAIMED', 'FORBIDDEN_ROLE'],
+    // WORKFLOW_NOT_FOUND / VERSION_NOT_FOUND / CHANNEL_UNPUBLISHED are GONE with the create-time
+    // catalog check: REQ-115's last clause moves that check off this row — a trigger's target is
+    // resolved when it FIRES (`resolveScheduleTarget`, which records UNCLAIMED /
+    // CLAIMED_WORKFLOW_MISSING / CHANNEL_UNPUBLISHED / NOT_IN_RELEASE as refusals), because a
+    // trigger created before its workflow exists has nothing to resolve yet.
+    errors: ['INVALID_CRON', 'INVALID_AT', 'FORBIDDEN_ROLE'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
     fixture: {
-      happy: { workflow: ref('workflow'), cron: '* * * * *' },
-      errors: { WORKFLOW_NOT_FOUND: { workflow: ABSENT_WORKFLOW, cron: '* * * * *' } },
+      happy: { cron: '* * * * *' },
+      errors: { INVALID_CRON: { cron: 'not a cron expression' } },
     },
   },
   {
@@ -680,15 +690,19 @@ export const TOOL_SPECS = [
   // ---- webhook (3) ----
   {
     name: 'webhook_create', entity: 'webhook', key: null,
-    description: 'Register a webhook trigger for a workflow; the caller becomes its owner.',
-    inputSchema: schema({ workflow: { type: 'string' } }, ['workflow']),
+    description: 'Create a webhook trigger and return its id, url and (once only) secret; the caller becomes its owner. Name no workflow — hand the id to workflow_register({triggers:[id]}) to bind it to a version.',
+    // v24 Gate 7.5 (D-1): `workflow` optional, and no create-time catalog check — see the
+    // schedule_create row above for the same reasoning (REQ-115 clause 1, ADR-026 S-5). An
+    // unclaimed webhook that is delivered to is refused UNCLAIMED at delivery and the refusal is
+    // recorded on the row (`lastRefusalReason`), which is REQ-115's own stated behaviour.
+    inputSchema: schema({ workflow: { type: 'string' } }),
     outputSchema: OUT,
-    errors: ['WORKFLOW_NOT_FOUND', 'TRIGGER_ALREADY_CLAIMED', 'FORBIDDEN_ROLE'],
+    errors: ['FORBIDDEN_ROLE'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
     fixture: {
-      happy: { workflow: ref('workflow') },
-      errors: { WORKFLOW_NOT_FOUND: { workflow: ABSENT_WORKFLOW } },
+      happy: {},
+      errors: {},
     },
   },
   {

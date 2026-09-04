@@ -55,10 +55,20 @@ describe('WebhookRegistry (v8 Defer B, REQ-057/058)', () => {
     expect(JSON.stringify(list)).not.toContain(c.secret); // secret never exposed via list
   });
 
-  it('create rejects an unknown workflow with WORKFLOW_NOT_FOUND', async () => {
+  // v24 Gate 7.5 (D-1, REQ-115's last clause): create() no longer resolves the catalog at all —
+  // a trigger is created FIRST and claimed by a workflow at registration, so a name that does not
+  // exist yet is the NORMAL case, not an error. The verdict moved to DELIVERY, where the four
+  // refusal arms below (UNCLAIMED / CLAIMED_WORKFLOW_MISSING / CHANNEL_UNPUBLISHED /
+  // NOT_IN_RELEASE) each record `lastRefusalReason` on the row.
+  it('create ACCEPTS a workflow name that does not exist yet, and the refusal lands at delivery instead', async () => {
     const { reg } = mk();
     const c = await reg.create({ workflow: 'nope' });
-    expect('error' in c && c.error.code).toBe('WORKFLOW_NOT_FOUND');
+    expect('error' in c).toBe(false);
+    const { webhookId, secret } = c as { webhookId: string; secret: string };
+    const body = '{}';
+    const r = await reg.deliver(webhookId, { signature: sign(secret, body), timestamp: CLOCK.isoNow(), deliveryId: 'd-nope', rawBody: body, parsedBody: {} });
+    expect(r).toMatchObject({ ok: false, code: 'CLAIMED_WORKFLOW_MISSING' });
+    expect(reg.get(webhookId)?.lastRefusalReason).toBe('CLAIMED_WORKFLOW_MISSING');
   });
 
   it('deliver: a correctly-signed fresh delivery fires the PRE-BOUND workflow with args.event → 202', async () => {
@@ -269,8 +279,9 @@ describe('v24: webhooks created unclaimed, claimed at registration (IT-112, DES-
   it('a claimed workflow whose release channel is unpublished refuses CHANNEL_UNPUBLISHED, distinct from missing', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-wh-v24-'));
     try {
-      // Published at creation time (`create()` runs the same release-channel check), then the
-      // release pointer goes away underneath the live claim — which is the real-world sequence.
+      // Bound at creation while the release pointer exists, then the pointer goes away underneath
+      // the live claim — the real-world sequence. (v24 Gate 7.5/D-1: `create()` no longer runs a
+      // release-channel check of its own; this arm IS the site that check moved to.)
       let published = true;
       const catalog = { async resolve() {
         if (!published) throw Object.assign(new Error('no release'), { code: 'CHANNEL_UNPUBLISHED' });

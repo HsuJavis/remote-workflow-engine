@@ -17,7 +17,6 @@ import { randomUUID } from 'node:crypto';
 import type { Clock } from './clock.js';
 import type { ErrEnvelope, RefusalReason } from './types.js';
 import { computeNextFire, bootRearm, type StoredSchedule } from './scheduler-engine.js';
-import { catalogResolveErrorEnvelope } from './errors.js';
 
 // v24 (DES-149, ARCH-099, TASK-141): `workflow` becomes OPTIONAL — a trigger can now be created
 // UNCLAIMED (no bound workflow) and claimed later via `claim()`/`release()`/`ownerOf()`. Additive
@@ -199,23 +198,14 @@ export class SqliteSchedulerPort {
   }
 
   async create(s: NewSchedule): Promise<ScheduleResult<Schedule>> {
-    // v22 send-back (H4, 07-review.md §4.2, ARCH-072 note 1): upgraded from "the name exists" to
-    // "the name resolves on `release`" — a registered-but-unpublished draft (REQ-097's normal
-    // author-loop state) must be refused CHANNEL_UNPUBLISHED HERE, not accepted and left to fail at
-    // every subsequent fire with no operator signal at the point of the actual mistake.
-    // v24 (ARCH-099, TASK-141): the H4 catalog-resolve check only applies when a workflow is bound
-    // AT CREATION — a trigger created unclaimed (no `workflow`, claimed later via `claim()`) has
-    // nothing to resolve yet. Callers that still bind at creation (TASK-112's regression path) keep
-    // today's behaviour verbatim.
-    if (s.workflow !== undefined) {
-      try {
-        await this._catalog.resolve(s.workflow, { channel: 'release' });
-      } catch (err) {
-        // Same coded-error shape every `codedError()` throw carries (errors.ts) — e.g.
-        // CHANNEL_UNPUBLISHED/VERSION_NOT_FOUND/INVALID_CHANNEL from `resolveVersionRequest`.
-        return { error: catalogResolveErrorEnvelope(err, s.workflow, { field: 'workflow' }) };
-      }
-    }
+    // v24 Gate 7.5 (D-1, REQ-115's last clause): the v22 H4 create-time catalog-resolve check is
+    // GONE. REQ-115 moves it: a trigger is created FIRST and claimed by a workflow at registration,
+    // so at creation there is routinely nothing to resolve — and keeping the check for the
+    // bind-at-creation door meant the tool row had to require `workflow`, which made an unclaimed
+    // trigger impossible to create at all (ADR-026 scenario S-5). The check did not disappear, it
+    // changed site: the FIRE path (`resolveScheduleTarget`, server.ts) refuses and RECORDS
+    // UNCLAIMED / CLAIMED_WORKFLOW_MISSING / CHANNEL_UNPUBLISHED / NOT_IN_RELEASE, which is the
+    // signal REQ-115 asks for and the one place the answer is still true at the moment it matters.
     if (s.kind === 'cron' && !isValidCron(s.cron)) {
       return { error: { code: 'INVALID_CRON', message: `Not a valid cron expression: ${s.cron}`, field: 'cron' } };
     }
@@ -433,7 +423,16 @@ export class SqliteSchedulerPort {
    *  no-op, never an error — this is what lets compensation call `release` unconditionally on every
    *  id it attempted. */
   release(id: string, workflow: string): void {
-    this._db.prepare('UPDATE schedules SET claimedBy = NULL WHERE id = ? AND claimedBy = ?').run(id, workflow);
+    // v24 Gate 7.5 (D-1b, ADR-026): BOTH columns are cleared. Nulling `claimedBy` alone left the
+    // create-time `workflow` binding in place, and the fire path folds them together
+    // (`all()`'s `claimedBy ?? workflow`, and `resolveScheduleTarget`'s same fallback) — so a
+    // released schedule went on firing, and after a same-name re-registration it fired for a
+    // workflow that had never claimed it (live: 47 s after the deregister). The WHERE matches a
+    // row claimed by this workflow OR a legacy row bound to it before `claimedBy` existed;
+    // releasing is idempotent and touches nothing claimed by anyone else.
+    this._db
+      .prepare('UPDATE schedules SET claimedBy = NULL, workflow = NULL WHERE id = ? AND (claimedBy = ? OR (claimedBy IS NULL AND workflow = ?))')
+      .run(id, workflow, workflow);
   }
 
   /** DES-139/DES-149 step 2: the OWNER is the CREATING PRINCIPAL (`createdBy`), never the claiming
