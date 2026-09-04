@@ -125,7 +125,15 @@ export async function callTool(
     // except for the v24 principal-scoped list. ----
     case 'schedule_create': {
       const createdBy = actor ?? undefined;
-      return deps.scheduler.create({ ...(a as unknown as NewSchedule), createdBy });
+      // v24 (integrator, adjudication #4 C-1): `NewSchedule` is a union DISCRIMINATED on `kind`,
+      // but `schedule_create`'s advertised inputSchema is `{workflow, cron}` — "Register a
+      // cron-style trigger". A cold model reading `tools/list` therefore sends no `kind` and the
+      // INSERT died on `NOT NULL constraint failed: schedules.kind`, a raw SQLite string no caller
+      // can act on. The discriminant is supplied here so the advertised schema is TRUE; an explicit
+      // `kind` (the `resident`/`once` callers that predate this row) still wins.
+      const raw = a as unknown as Partial<NewSchedule> & Record<string, unknown>;
+      const withKind = (raw.kind === undefined ? { ...raw, kind: 'cron' } : raw) as NewSchedule;
+      return deps.scheduler.create({ ...withKind, createdBy });
     }
     case 'schedule_list': {
       const all = await deps.scheduler.list();
@@ -144,7 +152,14 @@ export async function callTool(
     // Note: WebhookRegistry does not persist `createdBy` yet (webhook-registry.ts, TASK-142) — every
     // caller sees every webhook until that column lands; flagged in this implementer's report.
     case 'webhook_list': return { result: deps.webhooks.list() };
-    case 'webhook_delete': return { result: deps.webhooks.delete(a['id'] as string) };
+    case 'webhook_delete': {
+      // v24 (integrator, REQ-118): the registry method is total (`{deleted:false}`); the TOOL
+      // advertises `TRIGGER_NOT_FOUND`, so deleting an id that never existed is a refusal here —
+      // not a success envelope whose only signal is a boolean nothing told the caller to read.
+      const r = deps.webhooks.delete(a['id'] as string);
+      if (!r.deleted) return { error: { code: 'TRIGGER_NOT_FOUND', message: `Unknown webhook: ${String(a['id'])}` } };
+      return { result: r };
+    }
 
     // ---- issue (5) — envelope-not-throw, unchanged from the pre-v24 surface bar the renames. ----
     case 'issue_report': {

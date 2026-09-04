@@ -25,8 +25,110 @@ export interface ToolSpec {
   errors: ReadonlyArray<ErrorCode>;
   seeAlso: readonly string[];
   authz: ToolAuthz;
-  fixture: { happy: Record<string, unknown> };
+  fixture: ToolFixture;
 }
+
+// ---------------------------------------------------------------------------
+// Fixtures (DES-158, amended by adjudication (v24) #4 C-1)
+// ---------------------------------------------------------------------------
+
+/** The ids a fixture cannot know statically. `run_status`/`run_result`/`run_suspend`/`run_resume`/
+ *  `run_stop`/`run_agent_log`/`workspace_*`/`schedule_delete`/`schedule_setEnabled` all key off an
+ *  object that only exists after a real call mints a UUID (`run-store.ts` `randomUUID()`), so the
+ *  twelve rows that used to hard-code `runId:'r1'` / `id:'s1'` could never pass. Adjudication #4 C-1
+ *  REFUSED recording them UNVERIFIED — they are exactly the tools `/goal` requires verified — so the
+ *  acceptance test runs a SETUP SEQUENCE first (register -> publish -> several runs driven into
+ *  different states -> a schedule + a webhook) and fills these slots from what it observed. */
+export type SetupKey =
+  | 'workflow'        // the registered fixture workflow's name
+  | 'version'         // the version string workflow_register returned for it ('v1')
+  | 'agentLabel'      // the fixture script's one agent label
+  | 'terminalRunId'   // a run that has reached a terminal state
+  | 'liveRunId'       // a live run NO fixture mutates — the RUN_NOT_TERMINAL / run_agent_log reads
+  | 'suspendedRunId'  // a run already driven to `suspended`, consumed by run_resume's happy path
+  | 'suspendTargetRunId' // a live run consumed by run_suspend's happy path
+  | 'stopTargetRunId'    // a live run consumed by run_stop's happy path
+  | 'seededPath'      // a file seeded into terminalRunId's workspace, for workspace_pull/delete
+  | 'scheduleId'      // a schedule minted by schedule_create, for schedule_setEnabled
+  | 'deletableScheduleId' // a SECOND schedule, consumed by schedule_delete's happy path
+  | 'webhookId';      // a webhook minted by webhook_create
+
+/** A fixture slot filled from the setup sequence rather than by a literal. Deliberately a tagged
+ *  object, not a `'${…}'` string convention: a marker that shares a type with real argument values
+ *  is a marker that eventually reaches a tool un-substituted and is refused as a plain string. */
+export interface FixtureRef { readonly $setup: SetupKey }
+export function ref(key: SetupKey): FixtureRef { return { $setup: key }; }
+export function isFixtureRef(v: unknown): v is FixtureRef {
+  return typeof v === 'object' && v !== null && typeof (v as FixtureRef).$setup === 'string';
+}
+
+/** One level deep is all any fixture needs (every argument object here is flat apart from
+ *  `config`/`seed`, which carry no ids). Arrays are walked so `paths:[ref('seededPath')]` works. */
+export function resolveFixture(
+  args: Record<string, unknown>,
+  setup: Partial<Record<SetupKey, string>>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(args)) {
+    if (isFixtureRef(v)) {
+      const filled = setup[v.$setup];
+      if (filled === undefined) throw new Error(`fixture ref '${v.$setup}' was not produced by the setup sequence`);
+      out[k] = filled;
+    } else if (Array.isArray(v)) {
+      out[k] = v.map((item) => {
+        if (!isFixtureRef(item)) return item;
+        const filled = setup[item.$setup];
+        if (filled === undefined) throw new Error(`fixture ref '${item.$setup}' was not produced by the setup sequence`);
+        return filled;
+      });
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+export interface ToolFixture {
+  /** The success-path argument set. */
+  happy: Record<string, unknown>;
+  /** Argument sets that MUST be refused with the keyed code. DES-158's floor is ≥30 across the
+   *  surface: the error path is the only place the authorization row is actually observed
+   *  (v22's H2 was a read-only check that never asked), so a surface verified on happy paths alone
+   *  is not verified. `{}` where no refusal of that tool is constructible from arguments alone. */
+  errors: Partial<Record<ErrorCode, Record<string, unknown>>>;
+}
+
+/** A runId/trigger id that is well-formed but certainly absent — the *_NOT_FOUND fixtures. */
+const ABSENT_ID = '00000000-0000-0000-0000-000000000000';
+const ABSENT_WORKFLOW = 'no-such-workflow-fixture';
+
+/** The one agent contract block the fixture script declares (DES-144 requires model/effort/
+ *  timeoutMs, each with a `.default`). Same shape `authoring-guide.ts`'s examples teach. */
+const FIXTURE_AGENT_SPEC =
+  "{ model: { type: 'string', default: 'default' }, " +
+  "effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, " +
+  'timeoutMs: { type: \'number\', default: 60000 } }';
+
+/** The `workflow_register` happy fixture's script. It was `workflow(async () => {})` — a script
+ *  declaring NO agent label against a diagram declaring nodes `A` and `B`, which `checkMermaid`
+ *  refuses (`UNDECLARED_NODE` -> MERMAID_INVALID) and which cascaded seven acceptance rows red
+ *  because every one of them keys off the `demo` workflow this call was supposed to create
+ *  (adjudication (v24) #4 C-1 [29] — reported three times before it was fixed). It is now a real
+ *  minimal v24 workflow: one declared agent label, matched one-for-one by the diagram. */
+export const FIXTURE_SCRIPT =
+  "export const meta = {\n" +
+  "  description: 'Greet the caller in one sentence',\n" +
+  `  params: { agents: { greet: ${FIXTURE_AGENT_SPEC} } },\n` +
+  '};\n' +
+  "return await agent('greet', { prompt: 'Say hello' });";
+
+/** Exactly the labels `FIXTURE_SCRIPT` uses, in the minimal form `checkMermaid` accepts (one
+ *  stadium node, no `<br/>` value triple, no edges — an edge to an undeclared node is what the
+ *  old fixture got wrong). */
+export const FIXTURE_MERMAID = 'graph TD;\ngreet(["greet"])';
+
+/** The one label `FIXTURE_SCRIPT` declares — `run_agent_log`'s happy fixture needs it by name. */
+export const FIXTURE_AGENT_LABEL = 'greet';
 
 function schema(properties: Record<string, unknown>, required: string[] = []): Record<string, unknown> {
   return { type: 'object', properties, required };
@@ -91,7 +193,14 @@ export const TOOL_SPECS = [
     errors: ['WORKFLOW_ALREADY_EXISTS', 'SCRIPT_INVALID', 'SCAN_VIOLATION', 'DIAGRAM_MISMATCH', 'MERMAID_INVALID', 'FORBIDDEN_ROLE', 'REGISTRATION_CONFLICT', 'VERSION_CEILING_EXCEEDED'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
-    fixture: { happy: { name: 'demo', script: 'workflow(async () => {})', mermaid: 'graph TD;\nA-->B;' } },
+    fixture: {
+      happy: { name: 'demo', script: FIXTURE_SCRIPT, mermaid: FIXTURE_MERMAID },
+      errors: {
+        MERMAID_REQUIRED: { name: 'fixture-no-mermaid', script: 'return 1;' },
+        DIAGRAM_MISMATCH: { name: 'fixture-mismatch', script: FIXTURE_SCRIPT, mermaid: 'graph TD;\nother(["other"])' },
+        SCAN_VIOLATION: { name: 'fixture-scan', script: 'const l = "greet";\nreturn await agent(l, {});', mermaid: FIXTURE_MERMAID },
+      },
+    },
   },
   {
     name: 'workflow_deregister', entity: 'workflow', key: 'name' as const,
@@ -101,7 +210,7 @@ export const TOOL_SPECS = [
     errors: ['WORKFLOW_NOT_FOUND', 'NOT_WORKFLOW_OWNER', 'FORBIDDEN_ROLE'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'workflow' } as AuthzRow,
-    fixture: { happy: { name: 'demo' } },
+    fixture: { happy: { name: ref('workflow') }, errors: { WORKFLOW_NOT_FOUND: { name: ABSENT_WORKFLOW } } },
   },
   {
     name: 'workflow_publish', entity: 'workflow', key: 'name' as const,
@@ -115,7 +224,13 @@ export const TOOL_SPECS = [
     errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'NOT_WORKFLOW_OWNER', 'FORBIDDEN_ROLE'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'workflow' } as AuthzRow,
-    fixture: { happy: { name: 'demo', version: 'v1' } },
+    fixture: {
+      happy: { name: ref('workflow'), version: ref('version') },
+      errors: {
+        WORKFLOW_NOT_FOUND: { name: ABSENT_WORKFLOW, version: 'v1' },
+        VERSION_NOT_FOUND: { name: ref('workflow'), version: 'v999' },
+      },
+    },
   },
   {
     name: 'workflow_describe', entity: 'workflow', key: 'name' as const,
@@ -125,7 +240,7 @@ export const TOOL_SPECS = [
     errors: ['WORKFLOW_NOT_FOUND'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
-    fixture: { happy: { name: 'demo' } },
+    fixture: { happy: { name: ref('workflow') }, errors: { WORKFLOW_NOT_FOUND: { name: ABSENT_WORKFLOW } } },
   },
   {
     name: 'workflow_source', entity: 'workflow', key: 'name' as const,
@@ -137,7 +252,13 @@ export const TOOL_SPECS = [
     errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'FORBIDDEN_ROLE'],
     seeAlso: ['workflow_describe'],
     authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
-    fixture: { happy: { name: 'demo' } },
+    fixture: {
+      happy: { name: ref('workflow') },
+      errors: {
+        WORKFLOW_NOT_FOUND: { name: ABSENT_WORKFLOW },
+        VERSION_NOT_FOUND: { name: ref('workflow'), version: 'v999' },
+      },
+    },
   },
   {
     name: 'workflow_list', entity: 'workflow', key: null,
@@ -147,7 +268,7 @@ export const TOOL_SPECS = [
     errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
-    fixture: { happy: {} },
+    fixture: { happy: {}, errors: {} },
   },
   {
     name: 'workflow_authoring_guide', entity: 'workflow', key: null,
@@ -157,7 +278,7 @@ export const TOOL_SPECS = [
     errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
-    fixture: { happy: {} },
+    fixture: { happy: {}, errors: {} },
   },
 
   // ---- run (8) ----
@@ -188,7 +309,13 @@ export const TOOL_SPECS = [
     errors: ['WORKFLOW_NOT_FOUND', 'NOT_RUNNABLE', 'PARAM_OUT_OF_RANGE', 'UNKNOWN_ALIAS', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT'],
     seeAlso: ['workflow_publish', 'run_status', 'run_result'],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
-    fixture: { happy: { name: 'demo' } },
+    fixture: {
+      happy: { name: ref('workflow') },
+      errors: {
+        WORKFLOW_NOT_FOUND: { name: ABSENT_WORKFLOW },
+        SEED_SOURCE_CONFLICT: { name: ref('workflow'), seed: [{ path: 'a.txt', contentB64: 'AAAA' }], seedManifest: [{ path: 'b.txt', sha256: '0'.repeat(64) }] },
+      },
+    },
   },
   {
     name: 'run_status', entity: 'run', key: 'runId' as const,
@@ -198,7 +325,7 @@ export const TOOL_SPECS = [
     errors: ['RUN_NOT_FOUND', 'NOT_RUN_OWNER'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
-    fixture: { happy: { runId: 'r1' } },
+    fixture: { happy: { runId: ref('terminalRunId') }, errors: { RUN_NOT_FOUND: { runId: ABSENT_ID } } },
   },
   {
     name: 'run_result', entity: 'run', key: 'runId' as const,
@@ -208,7 +335,13 @@ export const TOOL_SPECS = [
     errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'NOT_RUN_OWNER', 'NESTING_DEPTH_EXCEEDED', 'NESTING_CYCLE', 'DESCENDANT_CAP_EXCEEDED'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
-    fixture: { happy: { runId: 'r1' } },
+    fixture: {
+      happy: { runId: ref('terminalRunId') },
+      errors: {
+        RUN_NOT_FOUND: { runId: ABSENT_ID },
+        RUN_NOT_TERMINAL: { runId: ref('liveRunId') },
+      },
+    },
   },
   {
     name: 'run_suspend', entity: 'run', key: 'runId' as const,
@@ -218,7 +351,13 @@ export const TOOL_SPECS = [
     errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
-    fixture: { happy: { runId: 'r1' } },
+    fixture: {
+      happy: { runId: ref('suspendTargetRunId') },
+      errors: {
+        RUN_NOT_FOUND: { runId: ABSENT_ID },
+        ILLEGAL_TRANSITION: { runId: ref('terminalRunId') },
+      },
+    },
   },
   {
     name: 'run_resume', entity: 'run', key: 'runId' as const,
@@ -228,7 +367,13 @@ export const TOOL_SPECS = [
     errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER', 'PARAM_SECRET_UNAVAILABLE'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
-    fixture: { happy: { runId: 'r1' } },
+    fixture: {
+      happy: { runId: ref('suspendedRunId') },
+      errors: {
+        RUN_NOT_FOUND: { runId: ABSENT_ID },
+        ILLEGAL_TRANSITION: { runId: ref('terminalRunId') },
+      },
+    },
   },
   {
     name: 'run_stop', entity: 'run', key: 'runId' as const,
@@ -238,7 +383,13 @@ export const TOOL_SPECS = [
     errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
-    fixture: { happy: { runId: 'r1' } },
+    fixture: {
+      happy: { runId: ref('stopTargetRunId') },
+      errors: {
+        RUN_NOT_FOUND: { runId: ABSENT_ID },
+        ILLEGAL_TRANSITION: { runId: ref('terminalRunId') },
+      },
+    },
   },
   {
     name: 'run_agent_log', entity: 'run', key: 'runId' as const,
@@ -248,7 +399,13 @@ export const TOOL_SPECS = [
     errors: ['RUN_NOT_FOUND', 'AGENT_LOG_NOT_FOUND', 'NOT_RUN_OWNER'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run', adminCrossRead: true } as AuthzRow,
-    fixture: { happy: { runId: 'r1', label: 'main' } },
+    fixture: {
+      happy: { runId: ref('liveRunId'), label: ref('agentLabel') },
+      errors: {
+        RUN_NOT_FOUND: { runId: ABSENT_ID, label: FIXTURE_AGENT_LABEL },
+        AGENT_LOG_NOT_FOUND: { runId: ref('liveRunId'), label: 'no-such-label' },
+      },
+    },
   },
   {
     name: 'run_list', entity: 'run', key: null,
@@ -258,7 +415,7 @@ export const TOOL_SPECS = [
     errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
-    fixture: { happy: {} },
+    fixture: { happy: {}, errors: {} },
   },
 
   // ---- workspace (6) ----
@@ -270,7 +427,7 @@ export const TOOL_SPECS = [
     errors: ['INVALID_ARGUMENT'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
-    fixture: { happy: { manifest: [] } },
+    fixture: { happy: { manifest: [] }, errors: { INVALID_ARGUMENT: {} } },
   },
   {
     name: 'workspace_push', entity: 'workspace', key: null,
@@ -289,7 +446,14 @@ export const TOOL_SPECS = [
         invalid: { minRole: 'user', ownership: 'none' },
       },
     } as ToolAuthz,
-    fixture: { happy: { sha256: 'a'.repeat(64), contentB64: 'AAAA' } },
+    fixture: {
+      // The sha256 of the three zero bytes `AAAA` decodes to — a fixture whose declared hash does
+      // not match its own content is refused BLOB_HASH_MISMATCH and proves nothing about the tool.
+      happy: { sha256: '709e80c88487a2411e1ee4dfb9f22a861492d20c4765150c0c794abd70f8147c', contentB64: 'AAAA' },
+      // DES-155's own boundary, verified from the schema rather than asserted in prose: a `runId`
+      // matches NEITHER `oneOf` branch, so ajv refuses it before any handler runs.
+      errors: { INVALID_ARGUMENT: { runId: ABSENT_ID, kind: 'skill', name: 'x' } },
+    },
   },
   {
     name: 'workspace_pull', entity: 'workspace', key: 'runId' as const,
@@ -299,7 +463,14 @@ export const TOOL_SPECS = [
     errors: ['RUN_NOT_FOUND', 'WORKSPACE_ESCAPE', 'NOT_FOUND', 'NOT_RUN_OWNER'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run', adminCrossRead: true } as AuthzRow,
-    fixture: { happy: { runId: 'r1', path: 'output.txt' } },
+    fixture: {
+      happy: { runId: ref('terminalRunId'), path: ref('seededPath') },
+      errors: {
+        RUN_NOT_FOUND: { runId: ABSENT_ID, path: 'output.txt' },
+        NOT_FOUND: { runId: ref('terminalRunId'), path: 'definitely-absent.txt' },
+        WORKSPACE_ESCAPE: { runId: ref('terminalRunId'), path: '../../etc/passwd' },
+      },
+    },
   },
   {
     name: 'workspace_list', entity: 'workspace', key: null,
@@ -316,7 +487,13 @@ export const TOOL_SPECS = [
         invalid: { minRole: 'user', ownership: 'none' },
       },
     } as ToolAuthz,
-    fixture: { happy: { runId: 'r1' } },
+    fixture: {
+      happy: { runId: ref('terminalRunId') },
+      errors: {
+        RUN_NOT_FOUND: { runId: ABSENT_ID },
+        WORKFLOW_NOT_FOUND: { workflow: ABSENT_WORKFLOW, kind: 'skill' },
+      },
+    },
   },
   {
     name: 'workspace_delete', entity: 'workspace', key: null,
@@ -334,7 +511,13 @@ export const TOOL_SPECS = [
         invalid: { minRole: 'user', ownership: 'none' },
       },
     } as ToolAuthz,
-    fixture: { happy: { runId: 'r1', paths: ['a.txt'] } },
+    fixture: {
+      happy: { runId: ref('terminalRunId'), paths: [ref('seededPath')] },
+      errors: {
+        RUN_NOT_FOUND: { runId: ABSENT_ID, paths: ['a.txt'] },
+        RUN_NOT_TERMINAL: { runId: ref('liveRunId'), paths: ['a.txt'] },
+      },
+    },
   },
   {
     name: 'workspace_purge', entity: 'workspace', key: 'runId' as const,
@@ -344,7 +527,7 @@ export const TOOL_SPECS = [
     errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'NOT_RUN_OWNER'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
-    fixture: { happy: { runId: 'r1' } },
+    fixture: { happy: { runId: ref('terminalRunId') }, errors: { RUN_NOT_FOUND: { runId: ABSENT_ID } } },
   },
 
   // ---- schedule (4) ----
@@ -356,7 +539,10 @@ export const TOOL_SPECS = [
     errors: ['WORKFLOW_NOT_FOUND', 'TRIGGER_ALREADY_CLAIMED', 'FORBIDDEN_ROLE'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
-    fixture: { happy: { workflow: 'demo', cron: '* * * * *' } },
+    fixture: {
+      happy: { workflow: ref('workflow'), cron: '* * * * *' },
+      errors: { WORKFLOW_NOT_FOUND: { workflow: ABSENT_WORKFLOW, cron: '* * * * *' } },
+    },
   },
   {
     name: 'schedule_list', entity: 'schedule', key: null,
@@ -366,7 +552,7 @@ export const TOOL_SPECS = [
     errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
-    fixture: { happy: {} },
+    fixture: { happy: {}, errors: {} },
   },
   {
     name: 'schedule_delete', entity: 'schedule', key: 'id' as const,
@@ -376,7 +562,7 @@ export const TOOL_SPECS = [
     errors: ['TRIGGER_NOT_FOUND', 'NOT_TRIGGER_OWNER'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'trigger' } as AuthzRow,
-    fixture: { happy: { id: 's1' } },
+    fixture: { happy: { id: ref('deletableScheduleId') }, errors: { TRIGGER_NOT_FOUND: { id: ABSENT_ID } } },
   },
   {
     name: 'schedule_setEnabled', entity: 'schedule', key: 'id' as const,
@@ -386,7 +572,10 @@ export const TOOL_SPECS = [
     errors: ['TRIGGER_NOT_FOUND', 'NOT_TRIGGER_OWNER'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'trigger' } as AuthzRow,
-    fixture: { happy: { id: 's1', enabled: false } },
+    fixture: {
+      happy: { id: ref('scheduleId'), enabled: false },
+      errors: { TRIGGER_NOT_FOUND: { id: ABSENT_ID, enabled: false } },
+    },
   },
 
   // ---- webhook (3) ----
@@ -398,7 +587,10 @@ export const TOOL_SPECS = [
     errors: ['WORKFLOW_NOT_FOUND', 'TRIGGER_ALREADY_CLAIMED', 'FORBIDDEN_ROLE'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
-    fixture: { happy: { workflow: 'demo' } },
+    fixture: {
+      happy: { workflow: ref('workflow') },
+      errors: { WORKFLOW_NOT_FOUND: { workflow: ABSENT_WORKFLOW } },
+    },
   },
   {
     name: 'webhook_list', entity: 'webhook', key: null,
@@ -408,7 +600,7 @@ export const TOOL_SPECS = [
     errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
-    fixture: { happy: {} },
+    fixture: { happy: {}, errors: {} },
   },
   {
     name: 'webhook_delete', entity: 'webhook', key: 'id' as const,
@@ -418,7 +610,7 @@ export const TOOL_SPECS = [
     errors: ['TRIGGER_NOT_FOUND', 'NOT_TRIGGER_OWNER'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'trigger' } as AuthzRow,
-    fixture: { happy: { id: 'w1' } },
+    fixture: { happy: { id: ref('webhookId') }, errors: { TRIGGER_NOT_FOUND: { id: ABSENT_ID } } },
   },
 
   // ---- issue (5) ----
@@ -430,7 +622,7 @@ export const TOOL_SPECS = [
     errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
-    fixture: { happy: { title: 'x', body: 'y' } },
+    fixture: { happy: { title: 'x', body: 'y' }, errors: {} },
   },
   {
     name: 'issue_get', entity: 'issue', key: 'number' as const,
@@ -440,7 +632,7 @@ export const TOOL_SPECS = [
     errors: ['ISSUE_NOT_FOUND'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
-    fixture: { happy: { number: 1 } },
+    fixture: { happy: { number: 1 }, errors: { ISSUE_NOT_FOUND: { number: 999999999 } } },
   },
   {
     name: 'issue_list', entity: 'issue', key: null,
@@ -450,7 +642,7 @@ export const TOOL_SPECS = [
     errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
-    fixture: { happy: {} },
+    fixture: { happy: {}, errors: {} },
   },
   {
     name: 'issue_get_comments', entity: 'issue', key: 'number' as const,
@@ -460,7 +652,7 @@ export const TOOL_SPECS = [
     errors: ['ISSUE_NOT_FOUND'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
-    fixture: { happy: { number: 1 } },
+    fixture: { happy: { number: 1 }, errors: { ISSUE_NOT_FOUND: { number: 999999999 } } },
   },
   {
     name: 'issue_comment_post', entity: 'issue', key: 'number' as const,
@@ -470,7 +662,7 @@ export const TOOL_SPECS = [
     errors: ['ISSUE_NOT_FOUND'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
-    fixture: { happy: { number: 1, body: 'hi' } },
+    fixture: { happy: { number: 1, body: 'hi' }, errors: { ISSUE_NOT_FOUND: { number: 999999999, body: 'hi' } } },
   },
 
   // ---- environment (2) ----
@@ -482,7 +674,7 @@ export const TOOL_SPECS = [
     errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
-    fixture: { happy: {} },
+    fixture: { happy: {}, errors: {} },
   },
   {
     name: 'system_info', entity: 'system', key: null,
@@ -492,7 +684,7 @@ export const TOOL_SPECS = [
     errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
-    fixture: { happy: {} },
+    fixture: { happy: {}, errors: {} },
   },
 ] as const satisfies readonly ToolSpec[];
 

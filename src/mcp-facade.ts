@@ -11,8 +11,8 @@ import { InMemoryRunStore } from './run-store.js';
 import { RunManager } from './run-manager.js';
 import { resolveVersionRequest, type WorkflowDetail, type Channel, type VersionSelector } from './workflow-catalog.js';
 import { SubmissionValidator } from './submission-validator.js';
-import { CatalogNotFoundError, codedError } from './errors.js';
-import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent, HarnessDescriptor, RunListFilter, AuditAction } from './types.js';
+import { CatalogNotFoundError, codedError, type ErrorCode } from './errors.js';
+import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent, HarnessDescriptor, RunListFilter, AuditAction, RunSpec } from './types.js';
 import { parseMeta } from './workflow-meta.js';
 import { effectiveAgentBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type AgentParamSpec } from './params/contract.js';
 import { projectWorkflowForRead, projectWorkflowDescribe, type WorkflowOwnerView } from './workflow-view.js';
@@ -109,6 +109,18 @@ function normalizeArgs(args: unknown): unknown {
     return args;
   }
 }
+
+/** v24 (integrator, DES-137 + REQ-118): `readArtifactChunk` answers with its own INTERNAL reason
+ *  vocabulary (`workspace-artifacts.ts`'s `ArtifactError`), which used to be handed to the caller
+ *  verbatim as the error code — so `workspace_pull` advertised `WORKSPACE_ESCAPE`/`NOT_FOUND` in
+ *  `tools/list` and actually returned `PATH_OUTSIDE_WORKSPACE`/`NOT_A_FILE`, neither of them a
+ *  member of the closed `ErrorCode` union. This is the one translation point between the internal
+ *  reason and the advertised code; anything unmapped is `NOT_FOUND` (the tool's generic miss). */
+const PULL_REASON_TO_CODE: Record<string, ErrorCode> = {
+  PATH_OUTSIDE_WORKSPACE: 'WORKSPACE_ESCAPE',
+  NOT_A_FILE: 'NOT_FOUND',
+  RUN_WORKSPACE_MISSING: 'NOT_FOUND',
+};
 
 function notFound(runId: string): ErrEnvelope {
   return { code: 'RUN_NOT_FOUND', message: `Run not found: ${runId}` };
@@ -257,6 +269,15 @@ export class McpFacade {
     try {
       const { removed, claimedTriggers } = await this.runManager.catalog.deregister(a.name, bypassPrincipal(principal));
       for (const id of claimedTriggers) this._storeFor(id).release(id, a.name);
+      // v24 (integrator, REQ-118): the CATALOG method is deliberately total (`removed:false`, never
+      // throws — catalog-v24.test.ts pins that contract, and it stays). The TOOL is not: its own
+      // advertised `errors[]` promises `WORKFLOW_NOT_FOUND`, and a caller that deletes a name that
+      // was never there must be told so rather than reading `removed:false` out of a success
+      // envelope it has no schema reason to inspect.
+      if (!removed) {
+        const error: ErrEnvelope = { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` };
+        return { runId: '', status: 'failed', code: error.code, error };
+      }
       return { runId: '', status: 'completed', name: a.name, removed, releasedTriggers: claimedTriggers, result: { name: a.name, removed, releasedTriggers: claimedTriggers } };
     } catch (err) {
       const e = toErrEnvelope(err);
@@ -380,12 +401,34 @@ export class McpFacade {
   // run_* (8)
   // ============================================================================================
 
-  async runStart(a: { name?: string; args?: unknown; budget?: number | null; version?: string; overrides?: unknown }, principal: Principal): Promise<ResultEnvelope<{ runId: string }>> {
+  /** v24 (adjudication #2 A-2, then #4's wiring sweep): the four seed entry points are declared on
+   *  `run_start`'s inputSchema AND documented by the TASK-153 plugin, but this handler used to
+   *  destructure only `{name,args,budget,version,overrides}` — so ajv admitted `seedManifestRef`
+   *  and the facade silently dropped it on the floor, i.e. every seeded run started EMPTY and
+   *  REQ-117's seed probe could never pass. Same built-but-unwired class as REQ-113's `assets`
+   *  (C-2): the mechanism exists end to end except for the one line that hands the value over.
+   *  `seedNamespace` is deliberately NOT accepted — ADR-028 derives the CAS namespace from the
+   *  principal, and `run_start`'s schema is `additionalProperties:false` so a caller-supplied one
+   *  is refused before reaching here. */
+  async runStart(
+    a: {
+      name?: string; args?: unknown; budget?: number | null; version?: string; overrides?: unknown;
+      seed?: RunSpec['seed']; seedManifest?: RunSpec['seedManifest']; seedRef?: RunSpec['seedRef']; seedManifestRef?: string;
+    },
+    principal: Principal,
+  ): Promise<ResultEnvelope<{ runId: string }>> {
     const validation = await this.validator.validate({ name: a.name });
     if (!validation.ok) return { runId: '', status: 'failed', error: validation.errors[0] };
     try {
       const attributed = attributionPrincipal(principal);
-      const runId = await this.runManager.start({ name: a.name, args: normalizeArgs(a.args), budget: a.budget ?? null, version: a.version, startedBy: { type: 'client' }, ...(attributed ? { principal: attributed } : {}) }, a.overrides);
+      const runId = await this.runManager.start({
+        name: a.name, args: normalizeArgs(a.args), budget: a.budget ?? null, version: a.version, startedBy: { type: 'client' },
+        ...(a.seed !== undefined ? { seed: a.seed } : {}),
+        ...(a.seedManifest !== undefined ? { seedManifest: a.seedManifest } : {}),
+        ...(a.seedRef !== undefined ? { seedRef: a.seedRef } : {}),
+        ...(a.seedManifestRef !== undefined ? { seedManifestRef: a.seedManifestRef } : {}),
+        ...(attributed ? { principal: attributed } : {}),
+      }, a.overrides);
       const view = await this.store.getRun(runId);
       return { runId, status: view?.status ?? 'queued', result: { runId } };
     } catch (err) {
@@ -438,14 +481,23 @@ export class McpFacade {
   async runAgentLog(a: { runId: string; agentId?: string; label?: string; limit?: number; offset?: number }, _principal: Principal, crossPrincipalRead: boolean, actor: string | null): Promise<
     ResultEnvelope<TranscriptEvent[]> & { harness: HarnessDescriptor | null; events: TranscriptEvent[]; hasMore: boolean }
   > {
-    const agentId = a.agentId ?? a.label ?? '';
     const stored = await this.store.getRun(a.runId);
     if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId), harness: null, events: [], hasMore: false };
     const view = await this.runManager.status(a.runId).catch(() => stored);
-    const agent = view.agents.find((ag) => ag.agentId === agentId);
+    // v24 (integrator, REQ-118 + DES-161): `run_agent_log`'s ADVERTISED schema takes `{runId,
+    // label}` and nothing else — a cold model has no way to learn an `agentId`, which is an
+    // engine-minted counter. This used to read `a.agentId ?? a.label`, i.e. it looked the LABEL up
+    // in the agentId column, so every schema-conformant call answered AGENT_LOG_NOT_FOUND. The
+    // label column DES-161 added to `AgentRecord` had no reader until here. `agentId` stays
+    // accepted for the pre-v24 callers that already had one (val-019 reads it off `run_status`).
+    const requested = a.agentId ?? a.label ?? '';
+    const agent = a.agentId !== undefined
+      ? view.agents.find((ag) => ag.agentId === a.agentId)
+      : view.agents.find((ag) => ag.label === a.label) ?? view.agents.find((ag) => ag.agentId === a.label);
     if (!agent) {
-      return { runId: a.runId, status: view.status, error: { code: 'AGENT_LOG_NOT_FOUND', message: `Agent not found: ${agentId}`, field: 'agentId' }, harness: null, events: [], hasMore: false };
+      return { runId: a.runId, status: view.status, error: { code: 'AGENT_LOG_NOT_FOUND', message: `Agent not found: ${requested}`, field: a.agentId !== undefined ? 'agentId' : 'label' }, harness: null, events: [], hasMore: false };
     }
+    const agentId = agent.agentId;
     const owner = stored.principal ?? 'local';
     const doRead = () => this.store.getTranscript(a.runId, agentId);
     const transcript = crossPrincipalRead
@@ -526,7 +578,10 @@ export class McpFacade {
     const r = crossPrincipalRead
       ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev) }, { actor, action: 'workspace_pull' as AuditAction, runId: a.runId, owner, path: a.path }, doRead)
       : await doRead();
-    if ('error' in r) return { runId: a.runId, status: stored.status, error: { code: r.error, message: `workspace_pull denied: ${r.error} (${a.path})` } };
+    if ('error' in r) {
+      const code = PULL_REASON_TO_CODE[r.error] ?? 'NOT_FOUND';
+      return { runId: a.runId, status: stored.status, error: { code, message: `workspace_pull denied: ${r.error} (${a.path})` } };
+    }
     return { runId: a.runId, status: stored.status, result: r };
   }
 
@@ -540,6 +595,13 @@ export class McpFacade {
         ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev) }, { actor, action: 'workspace_list' as AuditAction, runId: a.runId, owner }, doRead)
         : await doRead();
       return { runId: a.runId, status: stored.status, result: files ?? [] };
+    }
+    // v24 (integrator, REQ-118): the asset-scope branch used to answer `[]` for a workflow that was
+    // never registered, which reads identically to "registered, no assets" — and the row's own
+    // advertised `errors[]` promises `WORKFLOW_NOT_FOUND`. An empty list is a fact about an
+    // existing workflow, never an answer about a name the engine has never heard of.
+    if (a.workflow !== undefined && !(await this.runManager.catalog.exists(a.workflow))) {
+      return { runId: '', status: 'failed', error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.workflow}` } };
     }
     const rows = this.assetSync && a.workflow && a.kind ? await this.assetSync.list({ workflow: a.workflow, kind: a.kind }) : [];
     return { runId: '', status: 'completed', result: rows };

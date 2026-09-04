@@ -881,10 +881,24 @@ export class RunManager {
 
   /** Handles one child agent() call: replay from the resume cache when available, otherwise
    *  enforce budget + concurrency (RunGuard, single authority) and dispatch to the AgentSpawner. */
-  private async _handleAgentRequest(runId: string, prompt: string, opts: unknown, callSeq: number, framePath = ''): Promise<unknown> {
+  private async _handleAgentRequest(runId: string, positional: string, opts: unknown, callSeq: number, framePath = ''): Promise<unknown> {
     const entry = this._runs.get(runId);
     if (!entry) throw new Error(`Unknown run: ${runId}`);
-    const key: CallKey = { prompt, opts: (opts ?? {}) as AgentOpts };
+    // v24 (integrator; DES-143/ADR-029 + REQ-110/REQ-113): the script-facing call is
+    // `agent(LABEL, {prompt, …})` — `scanAgentCalls` REFUSES registration unless the first
+    // positional is a literal label matching `/^[A-Za-z_][\w-]*$/` and a declared
+    // `meta.params.agents.<label>`. The sandbox API (`guards.ts`) still marshals that positional
+    // through as `prompt` and nothing ever set `opts.label`, so on a REAL dispatch: the per-label
+    // parameter slice below (`entry.effectiveParams.agents[label]`) never resolved, `markQueued`
+    // recorded every agent as anonymous, `run_agent_log({label})` could not find its agent, and
+    // DES-154's selective materialization had no declared set to materialize. The whole v24
+    // per-agent chain hung off one translation nobody wrote. It is written here, at the single
+    // point the positional crosses the sandbox boundary, so every caller (agent(), parallel(),
+    // pipeline(), a nested workflow() frame) gets it once.
+    const rawOpts = (opts ?? {}) as AgentOpts & { prompt?: unknown };
+    const label = typeof rawOpts.label === 'string' && rawOpts.label !== '' ? rawOpts.label : positional;
+    const prompt = typeof rawOpts.prompt === 'string' ? rawOpts.prompt : positional;
+    const key: CallKey = { prompt, opts: { ...rawOpts, label } };
     if (entry.cachePlan) {
       const cached = entry.cachePlan.replay(callSeq, key);
       if (cached !== MISS) return cached;

@@ -253,13 +253,19 @@ export class SqliteSchedulerPort {
 
   async setEnabled(id: string, on: boolean): Promise<ScheduleResult<void>> {
     const info = this._db.prepare('UPDATE schedules SET enabled = ? WHERE id = ?').run(on ? 1 : 0, id);
-    if (info.changes === 0) return { error: { code: 'SCHEDULE_NOT_FOUND', message: `Unknown schedule: ${id}` } };
+    // v24 (integrator, DES-137): `SCHEDULE_NOT_FOUND` is not a member of the closed `ErrorCode`
+    // union — `schedule_delete`/`schedule_setEnabled` both advertise `TRIGGER_NOT_FOUND` in their
+    // `tools/list` `Errors:` line, and a cold model can only anticipate the name it was shown.
+    if (info.changes === 0) return { error: { code: 'TRIGGER_NOT_FOUND', message: `Unknown schedule: ${id}` } };
     return { result: undefined };
   }
 
   async delete(id: string): Promise<ScheduleResult<void>> {
     const info = this._db.prepare('DELETE FROM schedules WHERE id = ?').run(id);
-    if (info.changes === 0) return { error: { code: 'SCHEDULE_NOT_FOUND', message: `Unknown schedule: ${id}` } };
+    // v24 (integrator, DES-137): `SCHEDULE_NOT_FOUND` is not a member of the closed `ErrorCode`
+    // union — `schedule_delete`/`schedule_setEnabled` both advertise `TRIGGER_NOT_FOUND` in their
+    // `tools/list` `Errors:` line, and a cold model can only anticipate the name it was shown.
+    if (info.changes === 0) return { error: { code: 'TRIGGER_NOT_FOUND', message: `Unknown schedule: ${id}` } };
     return { result: undefined };
   }
 

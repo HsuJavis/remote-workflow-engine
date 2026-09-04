@@ -154,7 +154,17 @@ export class BudgetExceededError extends Error {
   }
 }
 
+// v24 (integrator, DES-137 + adjudication #4 C-1/[31]): these three pre-v24 Error CLASSES predate
+// `ERROR_CATALOG` and carried no `.code`, so every envelope built from them (`toErrEnvelope` falls
+// back to `err.name`) surfaced `IllegalTransitionError` / `CatalogNotFoundError` /
+// `WorkspaceEscapeError` as the machine-readable code — three names that are not members of the
+// closed `ErrorCode` union and that no `tools/list` reader can ever anticipate. Verified live by
+// the REQ-118 table: `run_suspend` on a terminal run answered `IllegalTransitionError` while its
+// own advertised `errors[]` promises `ILLEGAL_TRANSITION`. Attaching the catalog code at the ONE
+// place each class is constructed fixes every call site at once and cannot drift, which is why the
+// fix is here and not in each of the (nine + n) throw sites.
 export class IllegalTransitionError extends Error {
+  readonly code: ErrorCode = 'ILLEGAL_TRANSITION';
   constructor(from: string, to: string) {
     super(`Illegal state transition: ${from} → ${to}`);
     this.name = 'IllegalTransitionError';
@@ -162,6 +172,7 @@ export class IllegalTransitionError extends Error {
 }
 
 export class CatalogNotFoundError extends Error {
+  readonly code: ErrorCode = 'WORKFLOW_NOT_FOUND';
   constructor(name: string) {
     super(`Workflow not found in catalog: ${name}`);
     this.name = 'CatalogNotFoundError';
@@ -169,6 +180,7 @@ export class CatalogNotFoundError extends Error {
 }
 
 export class WorkspaceEscapeError extends Error {
+  readonly code: ErrorCode = 'WORKSPACE_ESCAPE';
   constructor(path: string) {
     super(`Path escapes run workspace: ${path}`);
     this.name = 'WorkspaceEscapeError';
