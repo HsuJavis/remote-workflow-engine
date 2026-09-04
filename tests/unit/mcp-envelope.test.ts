@@ -1,15 +1,14 @@
 // UT-001: MCP result envelope contract (DES-001)
 import { describe, it, expect } from 'vitest';
-import { McpFacade, NO_TRIGGER_PORTS, NO_GRAPH_ANALYZER } from '../../src/mcp-facade.js';
-import { facadeCaller, runScriptVia } from '../helpers/workflow-fixtures.js';
+import { McpFacade } from '../../src/mcp-facade.js';
+import { facadeCaller, runScriptVia, AUTH_DISABLED } from '../helpers/workflow-fixtures.js';
 
-// v23 (adjudication #2 R-2, TASK-126): `triggerPorts`/`graphAnalyzer` are REQUIRED on
-// McpFacadeDeps — every facade built in this file passes the explicit disabled defaults, since
-// none of these cases exercise triggers or the diagram analyzer.
-const DEPS = { triggerPorts: NO_TRIGGER_PORTS, graphAnalyzer: NO_GRAPH_ANALYZER };
+// v24 (TASK-139/DES-159): `triggerPorts`/`graphAnalyzer` are gone from McpFacadeDeps with the
+// trigger-bindings/graph-analyzer ports they read.
+const DEPS = {};
 
 describe('McpFacade — ResultEnvelope contract', () => {
-  it('workflow_run returns an envelope with runId and status, not a bare throw', async () => {
+  it('run_start returns an envelope with runId and status, not a bare throw', async () => {
     const facade = new McpFacade(DEPS);
     const env = await runScriptVia(facadeCaller(facade), 'return 42;');
     expect(env).toHaveProperty('runId');
@@ -17,35 +16,35 @@ describe('McpFacade — ResultEnvelope contract', () => {
     expect(typeof env.runId).toBe('string');
   });
 
-  it('unknown runId in workflow_status returns error envelope not thrown exception', async () => {
+  it('unknown runId in run_status returns error envelope not thrown exception', async () => {
     const facade = new McpFacade(DEPS);
-    const env = await facade.workflow_status({ runId: 'nonexistent-000' });
+    const env = await facade.runStatus({ runId: 'nonexistent-000' }, AUTH_DISABLED, false, null);
     expect(env.error).toBeDefined();
     expect(env.error!.code).toBe('RUN_NOT_FOUND');
     // Must not throw — the error lives inside the envelope
   });
 
-  it('workflow_result for unknown runId returns error envelope', async () => {
+  it('run_result for unknown runId returns error envelope', async () => {
     const facade = new McpFacade(DEPS);
-    const env = await facade.workflow_result({ runId: 'nonexistent-000' });
+    const env = await facade.runResult({ runId: 'nonexistent-000' }, AUTH_DISABLED, false, null);
     expect(env.error?.code).toBe('RUN_NOT_FOUND');
   });
 
   it('workflow_list returns an array result', async () => {
     const facade = new McpFacade(DEPS);
     // v22 (DES-116, TASK-111): ctx is required, no default — see mcp-facade.ts's ReadContext.
-    const env = await facade.workflow_list(undefined, { authEnabled: false, principal: null });
+    const env = await facade.workflowList({}, AUTH_DISABLED);
     expect(Array.isArray(env.result)).toBe(true);
   });
 
-  it('workflow_status is uniform: only {runId,status,result} at top level — RunStatusView lives in result (C-3)', async () => {
+  it('run_status is uniform: only {runId,status,result} at top level — RunStatusView lives in result (C-3)', async () => {
     const facade = new McpFacade(DEPS);
     const run = await runScriptVia(facadeCaller(facade), `phase('p'); return 1;`);
     const runId = run.result!.runId;
-    let env = await facade.workflow_status({ runId });
+    let env = await facade.runStatus({ runId }, AUTH_DISABLED, false, null);
     for (let i = 0; i < 60 && (env.status === 'running' || env.status === 'queued'); i++) {
       await new Promise((r) => setTimeout(r, 20));
-      env = await facade.workflow_status({ runId });
+      env = await facade.runStatus({ runId }, AUTH_DISABLED, false, null);
     }
     // The RunStatusView payload (phases/agents/scriptVersion) must NOT leak to the top level —
     // it belongs under `result`, same envelope shape as every other tool.

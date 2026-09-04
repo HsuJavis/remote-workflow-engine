@@ -1,12 +1,12 @@
 // IT-088 (ARCH-073, DES-114, DES-117, TASK-109): closure is schema-level AND runtime-level,
 // asserted SEPARATELY (`/mcp` accepts arbitrary JSON, so schema removal alone is not a refusal) —
 // a hand-rolled body carrying `script` is refused `INLINE_SCRIPT_CLOSED` with the two-call
-// migration recipe (`workflow_register` then `workflow_run({name})`) in the message.
+// migration recipe (`workflow_register` then `run_start({name})`) in the message.
 //
 // Mock policy (integration): real server, real HTTP, real hand-rolled JSON-RPC body; no LLM (the
 // refusal happens before any agent() dispatch).
 //
-// Red reason: `workflow_run`/`workflow_resume` accept `script` today (it is the primary inline-run
+// Red reason: `run_start`/`run_resume` accept `script` today (it is the primary inline-run
 // path) — every assertion below fails against the current engine (a script actually runs instead
 // of being refused).
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -35,22 +35,22 @@ async function toolCall(name: string, args: Record<string, unknown>): Promise<Re
 }
 
 describe('REQ-098: inline script is closed — runtime refusal even off the advertised schema (IT-088)', () => {
-  it('a hand-rolled workflow_run({script}) body is refused INLINE_SCRIPT_CLOSED with the two-call migration recipe', async () => {
-    const r = await toolCall('workflow_run', { script: `return 'sneaky-inline';` });
+  it('a hand-rolled run_start({script}) body is refused INLINE_SCRIPT_CLOSED with the two-call migration recipe', async () => {
+    const r = await toolCall('run_start', { script: `return 'sneaky-inline';` });
     const error = r['error'] as { code?: string; message?: string } | undefined;
     expect(error?.code).toBe('INLINE_SCRIPT_CLOSED');
     expect(error?.message).toMatch(/workflow_register/);
-    expect(error?.message).toMatch(/workflow_run\(\{name\}\)/);
+    expect(error?.message).toMatch(/run_start\(\{name\}\)/);
   });
 
-  it('a hand-rolled workflow_resume({runId, script}) body is refused INLINE_SCRIPT_CLOSED', async () => {
-    const r = await toolCall('workflow_resume', { runId: 'irrelevant-does-not-exist', script: `return 'replacement';` });
+  it('a hand-rolled run_resume({runId, script}) body is refused INLINE_SCRIPT_CLOSED', async () => {
+    const r = await toolCall('run_resume', { runId: 'irrelevant-does-not-exist', script: `return 'replacement';` });
     const error = r['error'] as { code?: string } | undefined;
     expect(error?.code).toBe('INLINE_SCRIPT_CLOSED');
   });
 
-  it('plain workflow_resume({runId}) with no script continues to work unchanged (not refused)', async () => {
-    const r = await toolCall('workflow_resume', { runId: 'irrelevant-does-not-exist' });
+  it('plain run_resume({runId}) with no script continues to work unchanged (not refused)', async () => {
+    const r = await toolCall('run_resume', { runId: 'irrelevant-does-not-exist' });
     const error = r['error'] as { code?: string } | undefined;
     expect(error?.code).not.toBe('INLINE_SCRIPT_CLOSED'); // RUN_NOT_FOUND or similar is fine; not the inline ban
   });
@@ -61,7 +61,7 @@ describe('REQ-098: inline script is closed — runtime refusal even off the adve
     const version = (reg['result'] as { version?: string } | undefined)?.version ?? 'v1';
     const pub = await toolCall('workflow_publish', { name: 'it088-sanctioned', version, channel: 'release' });
     expect(pub['error']).toBeUndefined();
-    const run = await toolCall('workflow_run', { name: 'it088-sanctioned' });
+    const run = await toolCall('run_start', { name: 'it088-sanctioned' });
     expect(run['error']).toBeUndefined();
   });
 });

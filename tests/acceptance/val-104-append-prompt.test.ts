@@ -40,22 +40,22 @@ describe('REQ-094: appendPrompt attaches last, after everything the author contr
   it('an over-cap appendPrompt is refused at submission with byte counts, and the text is NEVER echoed in the error', async () => {
     await registerPublishedVia(callTool, 'val104-overcap', 'return 1;');
     const big = 'A'.repeat(2000);
-    const r = await callTool('workflow_run', { name: 'val104-overcap', overrides: { appendPrompt: big } });
+    const r = await callTool('run_start', { name: 'val104-overcap', overrides: { appendPrompt: big } });
     expect(r.code ?? (r.error as { code?: string } | undefined)?.code).toBe('PARAM_OUT_OF_RANGE');
     expect(JSON.stringify(r)).not.toContain(big);
   });
 
   it('the captured transcript prompt shows the framed appendPrompt AFTER the author\'s own prompt segments', async () => {
     await registerPublishedVia(callTool, 'val104-order', `return await agent("SCRIPT-PROMPT-MARKER");`);
-    const run = await callTool('workflow_run', { name: 'val104-order', overrides: { appendPrompt: 'USER-TEXT-MARKER' } });
+    const run = await callTool('run_start', { name: 'val104-order', overrides: { appendPrompt: 'USER-TEXT-MARKER' } });
     const runId = run.runId as string;
-    // A script with exactly one top-level agent() call always gets agentId 'agent-1' (workflow_status
+    // A script with exactly one top-level agent() call always gets agentId 'agent-1' (run_status
     // nests agents under `.result.agents`, not top-level — same fixed convention IT-066 relies on).
     const agentId = 'agent-1';
 
     let harness: { prompt?: string } | undefined;
     for (let i = 0; i < 100 && !harness; i++) {
-      const log = await callTool('workflow_agent_log', { runId, agentId }) as { harness?: { prompt?: string } };
+      const log = await callTool('run_agent_log', { runId, agentId }) as { harness?: { prompt?: string } };
       harness = log.harness ?? undefined;
       if (!harness) await new Promise((r) => setTimeout(r, 100));
     }

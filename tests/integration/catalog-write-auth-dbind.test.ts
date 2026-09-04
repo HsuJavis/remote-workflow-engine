@@ -13,7 +13,7 @@
 //   - v22 send-back ROUND 2 (07-review.md §4.2/§8, B1): the prior round's accepted debt below is
 //     now CLOSED. `workflow_register`/`workflow_deregister` no longer accept a self-asserted
 //     `args.principal` as identity WHILE `authEnabled` — the exact residual the H1 finding was
-//     re-raised for (a caller reads `owner` off `workflow_get`, replays it as `args.principal`,
+//     re-raised for (a caller reads `owner` off `workflow_source`, replays it as `args.principal`,
 //     and the ownership comparison passes because the strings match). `IT-095` below (this file)
 //     encodes the closure; the ORIGINAL (superseded) scope note is kept one paragraph down for
 //     history since it explains why the D-BIND setup at case 1 changed shape.
@@ -196,11 +196,11 @@ describe('H1: anonymous (no-identity) catalog writes are refused while auth is e
     expect((dereg as { removed?: boolean }).removed).toBe(true);
   });
 
-  it('GREEN PIN: anonymous workflow_run is UNAFFECTED — the ADR-012 rescue path stays open on the D-BIND server', async () => {
+  it('GREEN PIN: anonymous run_start is UNAFFECTED — the ADR-012 rescue path stays open on the D-BIND server', async () => {
     const name = uniqueName('run');
     const dbPath = join(dbindTmpDir, 'catalog.db');
     seedPublishedWorkflow(dbPath, name, 'it091-owner4@example.com', 'v1', `return 'ran';`);
-    const run = await callTool(dbindServer, 'workflow_run', { name });
+    const run = await callTool(dbindServer, 'run_start', { name });
     expect(run['code']).not.toBe('PRINCIPAL_REQUIRED');
     expect(typeof run['runId']).toBe('string');
   });
@@ -210,7 +210,7 @@ describe('H1: anonymous (no-identity) catalog writes are refused while auth is e
 // above deliberately left open — `workflow_register`/`workflow_deregister` must ALSO refuse a
 // SELF-ASSERTED `args.principal` while `authEnabled`, not only the fully-anonymous (no principal
 // key at all) case IT-091 covers. This is the exact attack scenario from §4.2: an unauthenticated
-// D-BIND-exempt caller reads `owner` off `workflow_get` (on the non-owner allowlist,
+// D-BIND-exempt caller reads `owner` off `workflow_source` (on the non-owner allowlist,
 // `mcp-facade.ts:308,330,338`), then replays that exact string as `args.principal` on
 // `workflow_register`/`workflow_deregister` — today the ownership comparison passes because the
 // strings match, even though no real identity was ever authenticated.
@@ -227,7 +227,7 @@ describe('IT-095: H1 residual — self-asserted args.principal is ALSO refused P
     seedPublishedWorkflow(dbPath, name, owner, 'v1', `return 'v1';`);
 
     // The exact attack: no real bearer (D-BIND-exempt connection), but `args.principal` is the
-    // CORRECT owner string (as if just read off a prior `workflow_get`).
+    // CORRECT owner string (as if just read off a prior `workflow_source`).
     const reg = await callTool(dbindServer, 'workflow_register', { name, script: `return 'hijack-attempt';`, principal: owner });
     expect(reg['code']).toBe('PRINCIPAL_REQUIRED');
     expect(reg['code']).not.toBe('NOT_WORKFLOW_OWNER'); // no ownership comparison ever runs (DES-117)

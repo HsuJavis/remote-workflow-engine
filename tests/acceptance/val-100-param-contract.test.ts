@@ -41,15 +41,15 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Re
 }
 
 describe('REQ-090: tunable-parameter contract, discoverable without reading the script (VAL-100)', () => {
-  it('a params block constraining model to an enum + timeoutMs to a ceiling registers; workflow_get returns the structured contract', async () => {
+  it('a params block constraining model to an enum + timeoutMs to a ceiling registers; workflow_source returns the structured contract', async () => {
     const script = `export const meta = { params: { knobs: { model: { type: 'enum', enum: ['sonnet'] }, timeoutMs: { type: 'number', max: 60000 } } } };\nreturn 1;`;
-    // v22 (REQ-097/DES-110): `workflow_get({name})` with no version selector resolves the RELEASE
+    // v22 (REQ-097/DES-110): `workflow_source({name})` with no version selector resolves the RELEASE
     // channel, so a registered-but-unpublished draft reads back CHANNEL_UNPUBLISHED instead of its
     // contract. registerPublishedVia does register+publish; it throws (naming the code) if either
     // leg comes back failed, which is the `expect(r.error).toBeUndefined()` setup guard it replaces.
     await registerPublishedVia(callTool, 'val100-contract', script);
 
-    const got = await callTool('workflow_get', { name: 'val100-contract' });
+    const got = await callTool('workflow_source', { name: 'val100-contract' });
     const params = (got as { params?: { knobs?: Record<string, { enum?: string[]; max?: number }> } }).params;
     expect(params?.knobs?.['model']?.enum).toEqual(['sonnet']);
     expect(params?.knobs?.['timeoutMs']?.max).toBe(60_000);
@@ -65,13 +65,13 @@ describe('REQ-090: tunable-parameter contract, discoverable without reading the 
     const script = `export const meta = { params: { knobs: { mcp: { type: 'string' } } } };\nreturn 1;`;
     const r = await callTool('workflow_register', { name: 'val100-locked', script });
     expect(r.error).toBeDefined();
-    const got = await callTool('workflow_get', { name: 'val100-locked' });
+    const got = await callTool('workflow_source', { name: 'val100-locked' });
     expect(got.code).toBe('WORKFLOW_NOT_FOUND');
   });
 
   it('a script with no params block still registers (backward compatible) and reads back the canonical 4-knob contract', async () => {
     await registerPublishedVia(callTool, 'val100-no-block', 'return 1;');
-    const got = await callTool('workflow_get', { name: 'val100-no-block' });
+    const got = await callTool('workflow_source', { name: 'val100-no-block' });
     const knobs = (got as { params?: { knobs?: Record<string, unknown> } }).params?.knobs ?? {};
     expect(Object.keys(knobs).sort()).toEqual(['appendPrompt', 'effort', 'model', 'timeoutMs'].sort());
   });
@@ -82,7 +82,7 @@ describe('REQ-090: tunable-parameter contract, discoverable without reading the 
 // declared `enum` that is not an array) must be refused typed at registration with NOTHING stored
 // (same fail-closed precedent as the existing LOCKED-key case above) — AND a row that reached
 // storage BEFORE this guard existed (seeded directly against `catalog.db`, simulating a live
-// deployment's pre-fix data) must not durably break `workflow_get` for that workflow, nor
+// deployment's pre-fix data) must not durably break `workflow_source` for that workflow, nor
 // `workflow_list` for every OTHER registered workflow. Today: the malformed shape registers
 // successfully (no shape guard exists — see A1 half 1's unit-level pin), and a poisoned row throws
 // `TypeError: authorEnum.filter is not a function` inside `boundEffort`, which server.ts's generic
@@ -93,11 +93,11 @@ describe('REQ-090 real-tier: a malformed/poisoned params contract must not durab
     const script = `export const meta = { params: { knobs: { effort: { type: 'enum', enum: 'abc' } } } };\nreturn 1;`;
     const r = await callTool('workflow_register', { name: 'val100-poison-attempt', script });
     expect(r.error).toBeDefined();
-    const got = await callTool('workflow_get', { name: 'val100-poison-attempt' });
+    const got = await callTool('workflow_source', { name: 'val100-poison-attempt' });
     expect(got.code).toBe('WORKFLOW_NOT_FOUND');
   });
 
-  it('a pre-existing poisoned row (seeded directly against catalog.db, simulating data written before the registration guard existed) does not crash workflow_get, nor break workflow_list for a sibling healthy workflow (today: JSON-RPC error.code:-32000 "authorEnum.filter is not a function")', async () => {
+  it('a pre-existing poisoned row (seeded directly against catalog.db, simulating data written before the registration guard existed) does not crash workflow_source, nor break workflow_list for a sibling healthy workflow (today: JSON-RPC error.code:-32000 "authorEnum.filter is not a function")', async () => {
     // A healthy sibling MUST still be discoverable after the poisoned entry is introduced.
     await callTool('workflow_register', { name: 'val100-poison-sibling', script: 'return 1;' });
 
@@ -124,10 +124,10 @@ describe('REQ-090 real-tier: a malformed/poisoned params contract must not durab
       .run('val100-poisoned', 'v1', 'return 1;', now100, poisonedParams);
     raw.close();
 
-    // workflow_get on the poisoned entry itself must not degrade into a transport-level JSON-RPC
+    // workflow_source on the poisoned entry itself must not degrade into a transport-level JSON-RPC
     // error (error.code -32000/-32603) — the engine's own typed vocabulary or a total canonical
     // fallback, never an uncaught TypeError escaping to the tool boundary.
-    const getBody = await callToolRaw('workflow_get', { name: 'val100-poisoned' });
+    const getBody = await callToolRaw('workflow_source', { name: 'val100-poisoned' });
     expect(getBody.error).toBeUndefined();
 
     // workflow_list must keep listing every OTHER workflow — one poisoned entry must not be a
@@ -142,7 +142,7 @@ describe('REQ-090 real-tier: a malformed/poisoned params contract must not durab
   // path. Its failure mode is quieter and worse than a crash: a non-number stored `max` puts NaN
   // into the bound (`Math.min("abc", 600000)` === NaN), and every comparison involving NaN is
   // false — so the admission check `value > max` silently passes and the knob becomes unbounded,
-  // a ceiling BYPASS, while `workflow_get` advertises `null` for the same bound. Seeded the same
+  // a ceiling BYPASS, while `workflow_source` advertises `null` for the same bound. Seeded the same
   // way as the case above (written straight to the catalog column, the only way this shape could
   // have reached storage before the registration guard existed).
   it('a poisoned row whose `timeoutMs.max`/`appendPrompt.max` are not numbers reads back as the ENGINE CEILING, never null/NaN (a NaN bound is a silent ceiling bypass)', async () => {
@@ -163,7 +163,7 @@ describe('REQ-090 real-tier: a malformed/poisoned params contract must not durab
       .run('val100-poisoned-max', 'v1', 'return 1;', nowMax, poisonedParams);
     raw.close();
 
-    const getBody = await callToolRaw('workflow_get', { name: 'val100-poisoned-max' });
+    const getBody = await callToolRaw('workflow_source', { name: 'val100-poisoned-max' });
     expect(getBody.error).toBeUndefined();
     const got = JSON.parse(getBody.result?.content?.[0]?.text ?? '{}') as
       { params?: { knobs?: Record<string, { max?: unknown }> } };

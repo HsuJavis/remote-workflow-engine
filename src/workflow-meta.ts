@@ -128,6 +128,134 @@ function matchDelimiter(script: string, openIdx: number, open: string, close: st
   return -1;
 }
 
+export type AgentCallViolationCode =
+  | 'AGENT_LABEL_REQUIRED'
+  | 'AGENT_LABEL_NOT_LITERAL'
+  | 'AGENT_LABEL_FORMAT'
+  | 'AGENT_OPTS_NOT_LITERAL'
+  | 'PARAM_IN_SCRIPT';
+
+export interface AgentCallViolation {
+  line: number;
+  code: AgentCallViolationCode;
+  key?: 'model' | 'effort' | 'timeoutMs';
+  hint: string;
+}
+
+export interface AgentCallScan {
+  labels: string[];
+  calls: Array<{ line: number; label: string }>;
+  violations: AgentCallViolation[];
+}
+
+const AGENT_CALL_RE = /(?<!\.)\bagent\s*\(/g;
+const AGENT_LABEL_FORMAT_RE = /^[A-Za-z_][\w-]*$/;
+const LOCKED_PARAM_KEYS = new Set(['model', 'effort', 'timeoutMs']);
+
+/** Splits `text` on its TOP-LEVEL commas (string/template/paren/brace/bracket-aware — the same
+ *  depth-tracking idiom as `matchDelimiter`, generalized to multiple delimiter kinds at once since
+ *  an argument list or an object literal's entries can nest any of them). Used both to split an
+ *  `agent(...)`'s argument list and an options object literal's `key: value` entries. */
+function splitTopLevel(text: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let str: string | null = null;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (str !== null) {
+      if (c === '\\') { i++; continue; }
+      if (c === str) str = null;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') { str = c; continue; }
+    if (c === '(' || c === '{' || c === '[') depth++;
+    else if (c === ')' || c === '}' || c === ']') depth--;
+    else if (c === ',' && depth === 0) { parts.push(text.slice(start, i)); start = i + 1; }
+  }
+  const last = text.slice(start);
+  if (last.trim() !== '') parts.push(last);
+  return parts.map((p) => p.trim());
+}
+
+/** `null` unless `text` is, in full, one quoted string literal token (splitTopLevel already
+ *  isolates a single argument, so no further string-awareness is needed here). */
+function literalStringValue(text: string): string | null {
+  if (text.length >= 2 && (text[0] === '"' || text[0] === "'") && text[text.length - 1] === text[0]) {
+    return text.slice(1, -1);
+  }
+  return null;
+}
+
+/** DES-143/ARCH-096 (TASK-135): what "literal" means for an `agent(label, {options})` call, and the
+ *  1-based line number on every violation. A call is `agent(<expr>, <balanced {…} literal>)`,
+ *  matched with the same string-aware `matchDelimiter` used by `parseWorkflowSkeleton` plus a
+ *  key/value scan — no JS parser dependency (a template/variable label or a non-literal options
+ *  object cannot be checked statically, so both are refused rather than silently accepted).
+ *  `x.agent(`/`agentFoo(` are not calls (the regex requires a preceding non-word/non-dot boundary);
+ *  a commented-out `agent(` IS matched (accepted — the refusal names the line). Duplicate labels are
+ *  legal: `labels` is de-duplicated, `calls` is not. */
+export function scanAgentCalls(script: string): AgentCallScan {
+  const labels: string[] = [];
+  const calls: Array<{ line: number; label: string }> = [];
+  const violations: AgentCallViolation[] = [];
+
+  const lineAt = (idx: number): number => script.slice(0, idx).split('\n').length;
+
+  AGENT_CALL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = AGENT_CALL_RE.exec(script)) !== null) {
+    const line = lineAt(m.index);
+    const openParen = script.indexOf('(', m.index);
+    const closeParen = matchDelimiter(script, openParen, '(', ')');
+    if (closeParen === -1) continue; // unbalanced — not a well-formed call, nothing to report
+    const args = splitTopLevel(script.slice(openParen + 1, closeParen - 1));
+
+    if (args.length < 2) {
+      violations.push({ line, code: 'AGENT_LABEL_REQUIRED', hint: 'agent() needs a literal label and an options object: agent("label", { … })' });
+      calls.push({ line, label: '' });
+      continue;
+    }
+
+    const [labelArg, optsArg] = args;
+    const labelVal = literalStringValue(labelArg!);
+    let validLabel: string | null = null;
+    if (labelVal === null) {
+      violations.push({ line, code: 'AGENT_LABEL_NOT_LITERAL', hint: 'the label must be a literal string, not a template or a variable' });
+    } else if (!AGENT_LABEL_FORMAT_RE.test(labelVal)) {
+      violations.push({ line, code: 'AGENT_LABEL_FORMAT', hint: 'a label must match /^[A-Za-z_][\\w-]*$/' });
+    } else {
+      validLabel = labelVal;
+    }
+
+    const optsText = optsArg!.trim();
+    if (!(optsText.startsWith('{') && optsText.endsWith('}'))) {
+      violations.push({ line, code: 'AGENT_OPTS_NOT_LITERAL', hint: 'the options argument must be a literal object: { … }' });
+    } else {
+      for (const entry of splitTopLevel(optsText.slice(1, -1))) {
+        const colonIdx = entry.indexOf(':');
+        if (colonIdx === -1) continue;
+        let key = entry.slice(0, colonIdx).trim();
+        if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) key = key.slice(1, -1);
+        if (LOCKED_PARAM_KEYS.has(key)) {
+          const label = validLabel ?? '<label>';
+          violations.push({
+            line,
+            code: 'PARAM_IN_SCRIPT',
+            key: key as 'model' | 'effort' | 'timeoutMs',
+            hint: `move '${key}' to meta.params.agents.${label}.${key}.default`,
+          });
+        }
+      }
+    }
+
+    calls.push({ line, label: validLabel ?? labelVal ?? '' });
+    if (validLabel && !labels.includes(validLabel)) labels.push(validLabel);
+  }
+
+  return { labels, calls, violations };
+}
+
 /** Predicted DAG skeleton — a pure static scan of phase()/agent()/parallel()/workflow() calls in
  *  source order. Nodes inside a parallel([...]) share a `parallel` group id; nodes inside a
  *  loop/map/if body are `dynamic:true` (best-effort — real shape resolves only at run time). Never

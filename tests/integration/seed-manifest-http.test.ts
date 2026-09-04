@@ -1,5 +1,5 @@
 // v10 Slice 2 — efficient seeding end-to-end over the real server (REQ-064/065): blob_put → seed_plan
-// → workflow_run with a seedManifest → the workspace is assembled from the CAS (a script reads a
+// → run_start with a seedManifest → the workspace is assembled from the CAS (a script reads a
 // seeded file back). Plus MISSING_BLOBS fail-fast + BLOB_HASH_MISMATCH.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -26,7 +26,7 @@ async function call(name: string, args: unknown): Promise<any> {
 }
 async function poll(runId: string): Promise<any> {
   for (let i = 0; i < 30; i++) {
-    const s = await call('workflow_status', { runId });
+    const s = await call('run_status', { runId });
     if (['completed', 'failed'].includes(s.status)) return s;
     await new Promise((r) => setTimeout(r, 150));
   }
@@ -62,7 +62,7 @@ describe('efficient seeding via CAS manifest (v10 Slice 2, REQ-064/065)', () => 
     expect(r.error.code).toBe('BLOB_HASH_MISMATCH');
   });
 
-  it('REQ-065 workflow_run with a seedManifest assembles the workspace from the CAS (script reads the file)', async () => {
+  it('REQ-065 run_start with a seedManifest assembles the workspace from the CAS (script reads the file)', async () => {
     // the blob was uploaded above; a script reads the seeded file back via the sandbox has no fs — so
     // instead assert the run completes and the workspace really has the file by listing artifacts.
     const run = await runScriptVia(call, `return 'seeded';`, {
@@ -72,7 +72,7 @@ describe('efficient seeding via CAS manifest (v10 Slice 2, REQ-064/065)', () => 
     expect(run.result?.runId).toBeTruthy();
     const done = await poll(run.result.runId);
     expect(done.status).toBe('completed');
-    const arts = await call('workflow_artifacts', { runId: run.result.runId });
+    const arts = await call('workspace_list', { runId: run.result.runId });
     const paths = (arts.result as Array<{ path: string; sha256: string }>).map((a) => a.path);
     expect(paths).toContain('src/answer.ts');
     const seeded = (arts.result as Array<{ path: string; sha256: string }>).find((a) => a.path === 'src/answer.ts')!;

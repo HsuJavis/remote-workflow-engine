@@ -1,5 +1,5 @@
 // VAL-021: Secrets for providers/MCP via a server-side store, never workspace-reachable (REQ-018)
-// Real entrypoint: real mcp_provision + real workflow_run + a real env-loaded secret.
+// Real entrypoint: real mcp_provision + real run_start + a real env-loaded secret.
 // No mock of the SUT's own boundaries (resolver, redaction).
 //
 // D-V3M-1: routed through the PRODUCTION SDK-gateway path (composeConfig gateway:'sdk') — MCP tool
@@ -90,11 +90,11 @@ describe('VAL-021: REQ-018 — a missing secret handle is a clear error, never a
     const run = await runScriptVia(mcpCall, `return agent('go', { mcp: ['val021-missing-secret-mcp'] });`);
     const runId = run['runId'] as string;
     for (let i = 0; i < 20; i++) {
-      const s = await mcpCall('workflow_status', { runId });
+      const s = await mcpCall('run_status', { runId });
       if (s['status'] === 'completed' || s['status'] === 'failed') break;
       await new Promise((r) => setTimeout(r, 500));
     }
-    const result = await mcpCall('workflow_result', { runId });
+    const result = await mcpCall('run_result', { runId });
     expect(JSON.stringify(result)).toMatch(/SECRET_MISSING/);
   }, 30000);
 });
@@ -129,14 +129,14 @@ describe('VAL-021: REQ-018 — a real resolved secret works end to end with no b
     const run = await runScriptVia(mcpCall, `return agent('go', { mcp: ['val021-real-secret-mcp'] });`);
     const runId = run['runId'] as string;
     for (let i = 0; i < 60; i++) {
-      const s = await mcpCall('workflow_status', { runId });
+      const s = await mcpCall('run_status', { runId });
       if (s['status'] === 'completed' || s['status'] === 'failed') break;
       await new Promise((r) => setTimeout(r, 1000));
     }
-    const statusView = await mcpCall('workflow_status', { runId });
+    const statusView = await mcpCall('run_status', { runId });
     const agents = (statusView['agents'] as Array<{ agentId: string }>) ?? [];
     if (agents.length === 0) return;
-    const transcript = await mcpCall('workflow_agent_log', { runId, agentId: agents[0]!.agentId });
+    const transcript = await mcpCall('run_agent_log', { runId, agentId: agents[0]!.agentId });
     expect(JSON.stringify(transcript)).not.toContain(REAL_SECRET_VALUE);
   }, 180000);
 });

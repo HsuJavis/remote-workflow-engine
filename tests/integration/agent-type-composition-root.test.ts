@@ -69,10 +69,10 @@ describe('agentType composition-root loader (IT-016, D-F2)', () => {
 
   async function pollUntilSettled(baseUrl: string, runId: string, maxMs = 20000) {
     const deadline = Date.now() + maxMs;
-    let status = await mcpCall(baseUrl, 'workflow_status', { runId });
+    let status = await mcpCall(baseUrl, 'run_status', { runId });
     while (Date.now() < deadline && (status.status === 'running' || status.status === 'queued')) {
       await new Promise((r) => setTimeout(r, 200));
-      status = await mcpCall(baseUrl, 'workflow_status', { runId });
+      status = await mcpCall(baseUrl, 'run_status', { runId });
     }
     return status;
   }
@@ -161,7 +161,7 @@ describe('agentType composition-root loader (IT-016, D-F2)', () => {
       const status = await pollUntilSettled(baseUrl, run.runId as string);
       expect(status.status).toBe('completed');
 
-      const result = await mcpCall(baseUrl, 'workflow_result', { runId: run.runId });
+      const result = await mcpCall(baseUrl, 'run_result', { runId: run.runId });
       expect(String(result.result)).toContain('caught:');
       // Never reached the gateway for the unknown-type call.
       expect(stub.requests.length).toBe(requestsBefore);

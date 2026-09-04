@@ -36,7 +36,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
 async function pollDone(runId: string, maxMs = 8000): Promise<void> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
-    const s = await callTool('workflow_status', { runId }) as { status?: string };
+    const s = await callTool('run_status', { runId }) as { status?: string };
     if (s?.status !== 'queued' && s?.status !== 'running') return;
     await new Promise((r) => setTimeout(r, 40));
   }
@@ -59,20 +59,20 @@ type HomeView = { running: WorkflowCard[]; registered: WorkflowCard[]; other: Wo
 describe('VAL-084: home card metrics — avg success rate + avg execution time (REQ-075)', () => {
   it('4 completed + 1 failed terminal runs → successRate 0.8, finite avgDurationMs, no NaN (CI-safe)', async () => {
     const wfName = 'val084-metrics-wf';
-    // v22: `workflow_run({name})` resolves the `release` channel, so each registered version must
+    // v22: `run_start({name})` resolves the `release` channel, so each registered version must
     // be published for the run to reach it (a bare register → CHANNEL_UNPUBLISHED).
     await registerPublishedVia(callTool, wfName, `export const meta = { name: '${wfName}', description: 'metrics under test' };
                return "ok";`);
     // Seed 4 completed runs
     for (let i = 0; i < 4; i++) {
-      const sub = await callTool('workflow_run', { name: wfName }) as { runId?: string };
+      const sub = await callTool('run_start', { name: wfName }) as { runId?: string };
       await pollDone(sub?.runId!);
     }
     // Seed 1 failed run (throw causes failed status)
     // Publishing v2 onto `release` is what makes the 5th run pick up the throwing script.
     await registerPublishedVia(callTool, wfName, `export const meta = { name: '${wfName}', description: 'metrics under test' };
                throw new Error("intentional failure for val-084");`);
-    const sub5 = await callTool('workflow_run', { name: wfName }) as { runId?: string };
+    const sub5 = await callTool('run_start', { name: wfName }) as { runId?: string };
     await pollDone(sub5?.runId!);
 
     const res = await fetch(`http://127.0.0.1:${server.port}/api/home`);

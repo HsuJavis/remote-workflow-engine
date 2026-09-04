@@ -32,12 +32,12 @@ describe('VAL-003: real agent execution via Claude Agent SDK (REQ-003)', () => {
   }
 
   async function runAndWait(script: string, opts?: { budget?: number }) {
-    const run = await callTool('workflow_run', { script, ...opts });
+    const run = await callTool('run_start', { script, ...opts });
     const runId = run.runId as string;
     for (let i = 0; i < 90; i++) {
-      const s = await callTool('workflow_status', { runId });
+      const s = await callTool('run_status', { runId });
       if (s.status === 'completed' || s.status === 'failed') {
-        const r = await callTool('workflow_result', { runId });
+        const r = await callTool('run_result', { runId });
         return { ...s, result: r.result, runId };
       }
       await new Promise((r) => setTimeout(r, 1000));
@@ -82,11 +82,11 @@ describe('VAL-003: real agent execution via Claude Agent SDK (REQ-003)', () => {
     if (!HAS_PROVIDER) return;
     const r = await runAndWait(`return agent('Say hello in one word');`);
     expect(r.status).toBe('completed');
-    const statusView = await callTool('workflow_status', { runId: r.runId });
+    const statusView = await callTool('run_status', { runId: r.runId });
     const agents = (statusView as { agents: Array<{ agentId: string; state: string }> }).agents;
     expect(agents.length).toBeGreaterThan(0);
     const agentId = agents[0].agentId;
-    const transcript = await callTool('workflow_agent_log', { runId: r.runId, agentId });
+    const transcript = await callTool('run_agent_log', { runId: r.runId, agentId });
     expect(Array.isArray(transcript)).toBe(true);
     expect((transcript as unknown[]).length).toBeGreaterThan(0);
   }, 120000);

@@ -2,7 +2,6 @@
 // table, edge table, bidirectional label diff, value triple, cycles. Written test-first (Gate 5,
 // RED) — src/check-mermaid.ts (the repurposed diagram-gate.ts) does not exist yet.
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — checkMermaid does not exist yet (v24 DES-147/TASK-138)
 import { checkMermaid } from '../../src/check-mermaid.js';
 
 const limits = { maxBytes: 8192, maxLines: 200 };

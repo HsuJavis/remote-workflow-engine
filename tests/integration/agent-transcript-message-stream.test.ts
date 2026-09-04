@@ -1,5 +1,5 @@
 // IT-027: AgentTranscriptSink captures the SDK message/tool_call/tool_result event stream —
-// workflow_agent_log returns a real reasoning/tool trace, not only a terminal usage summary
+// run_agent_log returns a real reasoning/tool trace, not only a terminal usage summary
 // (Gate 8 review D-G8-2, quality-dimensions.md finding O-1, HIGH — ARCH-004 rationale, REQ-007).
 //
 // Bug (review evidence): `src/types.ts:94` declares `TranscriptEvent.kind` as
@@ -9,7 +9,7 @@
 // SDK session's own async-generator message stream (assistant/tool_use/tool_result turns) and
 // explicitly discards every message except the final `type: 'result'` one
 // (`if (msg.type !== 'result') continue;`) — nothing forwards the intermediate messages anywhere.
-// Net effect: `workflow_agent_log` (built for exactly this purpose) can only ever show one summary
+// Net effect: `run_agent_log` (built for exactly this purpose) can only ever show one summary
 // token-count line per agent call, never the actual reasoning/tool-call trace.
 //
 // Mock policy (DES-015, integration tier): real McpFacade + real RunManager + real
@@ -20,7 +20,7 @@
 // tool-using agent turn produces.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AgentOpts } from '../../src/types.js';
-import { facadeCaller, runScriptVia } from '../helpers/workflow-fixtures.js';
+import { facadeCaller, runScriptVia, AUTH_DISABLED } from '../helpers/workflow-fixtures.js';
 
 const queryMock = vi.fn();
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
@@ -71,9 +71,9 @@ describe('AgentTranscriptSink captures the SDK message/tool_call/tool_result str
     queryMock.mockReturnValue(fakeToolUseSession());
   });
 
-  it('workflow_agent_log returns message/tool_call/tool_result events (in order), not only a terminal usage line', async () => {
+  it('run_agent_log returns message/tool_call/tool_result events (in order), not only a terminal usage line', async () => {
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
-    const { McpFacade, NO_TRIGGER_PORTS, NO_GRAPH_ANALYZER } = await import('../../src/mcp-facade.js');
+    const { McpFacade } = await import('../../src/mcp-facade.js');
     const { RunManager } = await import('../../src/run-manager.js');
     const { InMemoryRunStore } = await import('../../src/run-store.js');
     const { FixedClock } = await import('../../src/clock.js');
@@ -82,15 +82,15 @@ describe('AgentTranscriptSink captures the SDK message/tool_call/tool_result str
     const gateway = new ClaudeAgentSdkGatewayClient({ baseUrl: 'http://127.0.0.1:4000' });
     const store = new InMemoryRunStore(clock);
     const runManager = new RunManager({ store, clock, gateway });
-    const facade = new McpFacade({ clock, store, runManager, triggerPorts: NO_TRIGGER_PORTS, graphAnalyzer: NO_GRAPH_ANALYZER });
+    const facade = new McpFacade({ clock, store, runManager });
 
     const run = await runScriptVia(facadeCaller(facade), `return agent('read foo.txt');`);
     const runId = run.result!.runId;
 
-    let status = await facade.workflow_status({ runId });
+    let status = await facade.runStatus({ runId }, AUTH_DISABLED, false, null);
     for (let i = 0; i < 60 && (status.status === 'running' || status.status === 'queued'); i++) {
       await new Promise((r) => setTimeout(r, 50));
-      status = await facade.workflow_status({ runId });
+      status = await facade.runStatus({ runId }, AUTH_DISABLED, false, null);
     }
     expect(status.status).toBe('completed');
 
@@ -98,7 +98,7 @@ describe('AgentTranscriptSink captures the SDK message/tool_call/tool_result str
     expect(agents.length).toBeGreaterThan(0);
     const agentId = agents[0].agentId;
 
-    const log = await facade.workflow_agent_log({ runId, agentId });
+    const log = await facade.runAgentLog({ runId, agentId }, AUTH_DISABLED, false, null);
     expect(log.error).toBeUndefined();
     const events = log.result ?? [];
 

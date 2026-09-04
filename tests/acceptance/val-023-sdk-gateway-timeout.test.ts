@@ -59,13 +59,13 @@ describe('VAL-023: REQ-020 clause 1 — a hung provider call is bounded, agent()
     const runId = run['runId'] as string;
     let finalStatus: string | undefined;
     for (let i = 0; i < 30; i++) {
-      const s = await mcpCall('workflow_status', { runId });
+      const s = await mcpCall('run_status', { runId });
       finalStatus = s['status'] as string;
       if (finalStatus === 'completed' || finalStatus === 'failed') break;
       await new Promise((r) => setTimeout(r, 1000));
     }
     expect(finalStatus).toBe('completed');
-    const result = await mcpCall('workflow_result', { runId });
+    const result = await mcpCall('run_result', { runId });
     expect(result['result']).toBe('bounded');
   }, 60000);
 });

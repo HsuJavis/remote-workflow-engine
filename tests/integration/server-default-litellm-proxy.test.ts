@@ -51,10 +51,10 @@ async function pollUntilSettled(baseUrl: string, runId: string) {
     const body = (await res.json()) as { result?: { content: Array<{ text: string }> } };
     return JSON.parse(body.result!.content[0].text) as { status: string };
   };
-  let status = await call('workflow_status', { runId });
+  let status = await call('run_status', { runId });
   for (let i = 0; i < 60 && (status.status === 'running' || status.status === 'queued'); i++) {
     await new Promise((r) => setTimeout(r, 50));
-    status = await call('workflow_status', { runId });
+    status = await call('run_status', { runId });
   }
   return status;
 }

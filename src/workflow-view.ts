@@ -5,10 +5,7 @@
 // defect verbatim). Pure: no I/O, no auth, no clock — the policy decision (who is the owner) is made
 // by the caller (DES-116, TASK-111) and handed in as `viewerIsOwner`.
 import type { ScriptCheckError } from './script-checks.js';
-import type { DiagramRow } from './workflow-catalog.js';
-import type { TriggerBinding } from './trigger-bindings.js';
-import { noteTextFor } from './graph-analyzer.js';
-import { LOCKED_KEYS } from './params/contract.js';
+import { LOCKED_KEYS, DEFAULT_CEILINGS, effectiveAgentBounds, type Ceilings, type AgentParamSpec, type ParamSpec } from './params/contract.js';
 
 export interface ValidationPublic {
   ok: boolean;
@@ -35,6 +32,10 @@ export interface WorkflowOwnerView {
   // resolveVersionRequest's RequestShape (DES-110). Optional here (the pre-v23 read paths that
   // build a WorkflowOwnerView never set it) — projectWorkflowDescribe defaults an absent value.
   resolvedBy?: 'version' | 'channel' | 'default-release';
+  // v24 (DES-156, TASK-149): the stored Mermaid diagram string, verbatim, or absent/null on a
+  // legacy row registered before ADR-025 required one — `projectWorkflowDescribe` reads this
+  // directly (no separate diagram row/ctx any more, TASK-139 retired the analyzer that drew one).
+  mermaid?: string | null;
 }
 
 // `scriptWithheld: true` is a distinct key, not a `script: undefined`/`null` — the response never
@@ -81,9 +82,20 @@ export function projectWorkflowForRead(
   };
 }
 
-// v23 (DES-125, ARCH-081, TASK-118): the ONE `workflow_describe` response — every principal gets
-// the SAME shape (no `viewerIsOwner` parameter: a param that can't change the output eventually
-// gets made to). No `script` field exists on the type at all, so a leak is a `tsc` error.
+/** One `params.agents.<label>` entry per tunable key (DES-156) — `range` is `author ∩ ceiling`
+ *  (via `effectiveAgentBounds`), never the raw author-declared range, so a user only ever sees
+ *  what will actually be ACCEPTED. */
+export interface DescribeAgentParamKey {
+  type: ParamSpec['type'];
+  default: unknown;
+  range?: unknown[] | { min?: number; max?: number };
+}
+
+// v24 (DES-156, ARCH-105/106, TASK-149): the ONE `workflow_describe` response — every principal
+// gets the SAME shape (no `viewerIsOwner` parameter). No `script` field exists on the type at
+// all, so a leak is a `tsc` error. Replaces the retired `diagram`/`diagramStatus`/
+// `diagramGeneratedAt`/`diagramStale` family (TASK-139) with `mermaid`/`mermaidNote` (verbatim
+// stored string, honest-null note) and adds `runnable`/`runnableReason` and a by-id `triggers`.
 export interface WorkflowDescribeView {
   name: string;
   version: string;
@@ -92,58 +104,76 @@ export interface WorkflowDescribeView {
   versions: string[];
   description: string;
   phases: Array<{ title: string }>; // adjudication #1 — public to every principal (DES-136)
-  params: unknown; // the REQ-090 contract, already ceiling-bounded
+  params: { agents: Record<string, Record<string, DescribeAgentParamKey>>; args: Record<string, ParamSpec> };
   lockedKeys: readonly string[]; // === LOCKED_KEYS from src/params/contract.ts — imported, never re-typed
   owner: string | null;
   reportProblem: string;
-  triggers: TriggerBinding[]; // ALWAYS the live snapshot (DES-128)
-  diagram: string | null;
-  diagramStatus: 'ready' | 'pending' | 'unavailable';
-  diagramNote: string; // noteTextFor(code) — engine-authored
-  diagramGeneratedAt: string | null;
-  diagramStale: boolean;
+  triggers: unknown[]; // resolved BY ID by the caller (scheduler.get(id) ?? webhooks.get(id)) — live snapshot
+  mermaid: string | null; // the stored string VERBATIM
+  mermaidNote: 'LEGACY_NO_DIAGRAM' | null; // set iff mermaid === null
+  runnable: boolean;
+  runnableReason: 'CHANNEL_UNPUBLISHED' | 'LEGACY_REREGISTER' | null;
 }
 
-// Transcribed LITERALLY from WorkflowDescribeView's own field list (same convention as
-// EXPECTED_NON_OWNER_KEYS above) — `phases`, `versions`, `triggers` each contribute exactly ONE
-// top-level key (the test's own `deepFlatten` does not recurse into arrays).
+// Transcribed LITERALLY from WorkflowDescribeView's own top-level field list (same convention as
+// EXPECTED_NON_OWNER_KEYS above) — DES-156: the four `diagram*` keys are DELETED (not left
+// optional), replaced by `mermaid`/`mermaidNote`/`runnable`/`runnableReason`.
 export const EXPECTED_DESCRIBE_KEYS = [
-  'name', 'version', 'resolvedBy',
-  'channels', 'channels.release', 'channels.beta',
-  'versions', 'description', 'phases',
-  'params', 'params.knobs',
-  'lockedKeys', 'owner', 'reportProblem', 'triggers',
-  'diagram', 'diagramStatus', 'diagramNote', 'diagramGeneratedAt', 'diagramStale',
+  'name', 'version', 'resolvedBy', 'channels', 'versions', 'description', 'phases',
+  'params', 'lockedKeys', 'owner', 'reportProblem', 'triggers',
+  'mermaid', 'mermaidNote', 'runnable', 'runnableReason',
 ] as const;
 
-/** DES-125/DES-127: pure — no clock, no I/O, no auth. `ctx.diagram` is the stored row (or null for
- *  "no attempt has ever been written"); `ctx.bindings`/`ctx.bindingsFp` are the LIVE trigger
- *  snapshot (DES-128), always re-computed by the caller, never read off the stored row. */
+/** True for the pre-v24 flat `{knobs: {...}}` params contract (ADR-035 retired it) — a workflow
+ *  never migrated past registration under that shape cannot be run (LEGACY_REREGISTER). */
+function isLegacyParamsShape(params: unknown): boolean {
+  if (params === null || typeof params !== 'object') return false;
+  const p = params as Record<string, unknown>;
+  return 'knobs' in p && !('agents' in p);
+}
+
+/** DES-156: `params.agents.<label>` projected to `{type, default, range}` per tunable key, with
+ *  `range` bounded to `author ∩ ceiling` via `effectiveAgentBounds` — never the raw author range. */
+function projectAgentParams(
+  agents: Record<string, AgentParamSpec>,
+  ceilings: Ceilings,
+): Record<string, Record<string, DescribeAgentParamKey>> {
+  const out: Record<string, Record<string, DescribeAgentParamKey>> = {};
+  for (const [label, spec] of Object.entries(agents)) {
+    const eff = effectiveAgentBounds(spec, ceilings);
+    const projected: Record<string, DescribeAgentParamKey> = {};
+    for (const key of ['model', 'effort', 'timeoutMs', 'appendPrompt'] as const) {
+      const s = eff[key] as ParamSpec | undefined;
+      if (!s) continue;
+      projected[key] = {
+        type: s.type,
+        default: s.default,
+        ...(s.enum !== undefined ? { range: s.enum } : s.min !== undefined || s.max !== undefined ? { range: { min: s.min, max: s.max } } : {}),
+      };
+    }
+    out[label] = projected;
+  }
+  return out;
+}
+
+/** DES-156: pure — no clock, no I/O, no auth. `ctx.triggers` is the caller's already-resolved,
+ *  by-id live snapshot (`scheduler.get(id) ?? webhooks.get(id)`, never a by-workflow query — that
+ *  port was retired with the analyzer, TASK-139); `ctx.ceilings` defaults to `DEFAULT_CEILINGS`
+ *  when the caller has no operator override to pass. */
 export function projectWorkflowDescribe(
   full: WorkflowOwnerView,
-  ctx: { diagram: DiagramRow | null; bindings: TriggerBinding[]; bindingsFp: string; analyzerEnabled: boolean },
+  ctx: { triggers: unknown[]; ceilings?: Ceilings },
 ): WorkflowDescribeView {
-  const { diagram, bindings, bindingsFp, analyzerEnabled } = ctx;
-  const isReady = diagram?.status === 'ready';
-
-  // UT-126 (V-D, send-back `d294880`): a `ready` row's note always stays `''`; otherwise,
-  // whenever `analyzerEnabled === false` the note is DISABLED regardless of whether a row exists
-  // at all and regardless of what it persists — analyzerEnabled must win before any persisted
-  // noteCode is consulted, not only on the `diagram === null` branch.
-  let diagramNote: string;
-  if (isReady) {
-    diagramNote = '';
-  } else if (!analyzerEnabled) {
-    diagramNote = noteTextFor('DISABLED');
-  } else if (diagram === null) {
-    // B2: no row at all, analyzer on — NOT_GENERATED (no attempt yet), never persisted,
-    // synthesized here only.
-    diagramNote = noteTextFor('NOT_GENERATED');
-  } else if (diagram.status === 'unavailable' && diagram.noteCode) {
-    diagramNote = noteTextFor(diagram.noteCode);
-  } else {
-    diagramNote = '';
-  }
+  const ceilings = ctx.ceilings ?? DEFAULT_CEILINGS;
+  const paramsRaw = full.params as { agents?: Record<string, AgentParamSpec>; args?: Record<string, ParamSpec> } | undefined;
+  const legacy = isLegacyParamsShape(full.params);
+  const published = full.channels['release'] != null || full.channels['beta'] != null;
+  const runnableReason: WorkflowDescribeView['runnableReason'] = legacy
+    ? 'LEGACY_REREGISTER'
+    : !published
+      ? 'CHANNEL_UNPUBLISHED'
+      : null;
+  const mermaid = full.mermaid ?? null;
 
   return {
     name: full.name,
@@ -153,17 +183,17 @@ export function projectWorkflowDescribe(
     versions: full.versions,
     description: full.description ?? '',
     phases: (full.phases as Array<{ title: string }> | undefined) ?? [],
-    params: full.params,
+    params: {
+      agents: !legacy && paramsRaw?.agents ? projectAgentParams(paramsRaw.agents, ceilings) : {},
+      args: (!legacy && paramsRaw?.args) || {},
+    },
     lockedKeys: LOCKED_KEYS,
     owner: full.owner,
     reportProblem: full.reportProblem,
-    triggers: bindings,
-    diagram: isReady ? diagram.diagram : null,
-    diagramStatus: diagram?.status ?? 'unavailable',
-    diagramNote,
-    // B3: only a `ready` row ever carries a stamp — a swept `pending` row's own `generated_at` is
-    // the boot sweep's ATTEMPT marker, not a generation timestamp, and must not leak as one.
-    diagramGeneratedAt: isReady ? diagram.generatedAt : null,
-    diagramStale: isReady && bindingsFp !== diagram.bindingsFp,
+    triggers: ctx.triggers,
+    mermaid,
+    mermaidNote: mermaid === null ? 'LEGACY_NO_DIAGRAM' : null,
+    runnable: runnableReason === null,
+    runnableReason,
   };
 }

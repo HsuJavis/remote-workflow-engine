@@ -3,12 +3,12 @@
 //
 // REQ-088 acceptance criteria:
 //   Given a workflow registered with defaults={model:'sonnet', timeoutMs:30000},
-//   When workflow_run is called with no overrides, Then the run uses the registered model/timeout;
-//   When workflow_run is called with only a model override, Then only model is overridden
+//   When run_start is called with no overrides, Then the run uses the registered model/timeout;
+//   When run_start is called with only a model override, Then only model is overridden
 //   (timeoutMs falls back to the registered value);
 //   When workflow_register is called with an invalid defaults value (unknown model alias /
 //   non-allowlisted tool), Then it returns HARNESS_DEFAULTS_INVALID and stores nothing;
-//   workflow_get returns the stored defaults for inspection.
+//   workflow_source returns the stored defaults for inspection.
 //
 // Red reason: workflow_register does not yet accept `defaults` → HARNESS_DEFAULTS_INVALID not
 //   returned for invalid defaults → assertions fail. Correct RED.
@@ -61,7 +61,7 @@ async function callTool(name: string, args: Record<string, unknown>) {
 async function waitForCompletion(runId: string, maxMs = 15_000): Promise<Record<string, unknown>> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
-    const s = await callTool('workflow_status', { runId });
+    const s = await callTool('run_status', { runId });
     if (s.status === 'completed' || s.status === 'failed') return s;
     await new Promise(r => setTimeout(r, 200));
   }
@@ -69,7 +69,7 @@ async function waitForCompletion(runId: string, maxMs = 15_000): Promise<Record<
 }
 
 describe('REQ-088: harness defaults bound at registration (VAL-098)', () => {
-  it('register with valid defaults; workflow_get returns them', async () => {
+  it('register with valid defaults; workflow_source returns them', async () => {
     const r = await callTool('workflow_register', {
       name: 'val098-defaults',
       script: 'return "ok";',
@@ -78,13 +78,13 @@ describe('REQ-088: harness defaults bound at registration (VAL-098)', () => {
     expect(r.error).toBeUndefined();
     expect(r.code).not.toBe('HARNESS_DEFAULTS_INVALID');
 
-    // v22 (REQ-097/DES-110): `workflow_get({name})` with no version selector resolves the RELEASE
+    // v22 (REQ-097/DES-110): `workflow_source({name})` with no version selector resolves the RELEASE
     // channel, so a registered-but-unpublished draft reads back CHANNEL_UNPUBLISHED (not its
     // defaults/params). Register AND publish so the read-back below sees the stored row.
     const pub = await callTool('workflow_publish', { name: 'val098-defaults', version: (r['result'] as { version?: string }).version!, channel: 'release' });
     expect(pub['status']).toBe('completed');
 
-    const got = await callTool('workflow_get', { name: 'val098-defaults' });
+    const got = await callTool('workflow_source', { name: 'val098-defaults' });
     const def = (got as { defaults?: Record<string, unknown> }).defaults;
     expect(def?.model).toBe('sonnet');
     expect(def?.timeoutMs).toBe(30_000);
@@ -99,7 +99,7 @@ describe('REQ-088: harness defaults bound at registration (VAL-098)', () => {
     });
     expect(r.code).toBe('HARNESS_DEFAULTS_INVALID');
 
-    const check = await callTool('workflow_get', { name: 'val098-bad-model' });
+    const check = await callTool('workflow_source', { name: 'val098-bad-model' });
     expect(check.code).toBe('WORKFLOW_NOT_FOUND');
   });
 
@@ -122,29 +122,29 @@ describe('REQ-088: harness defaults bound at registration (VAL-098)', () => {
     expect(r.error).toBeUndefined();
   });
 
-  it('workflow_run with no override → registered defaults are used (run proceeds, no HARNESS error)', async () => {
+  it('run_start with no override → registered defaults are used (run proceeds, no HARNESS error)', async () => {
     // Register with defaults
     // v22: run-by-name resolves `release`, so the registered version must also be published.
     await registerPublishedVia(callTool, 'val098-run-no-override', 'return "used defaults";', {
       defaults: { model: 'sonnet', timeoutMs: 30_000 },
     });
     // Run without overrides
-    const run = await callTool('workflow_run', { name: 'val098-run-no-override' });
+    const run = await callTool('run_start', { name: 'val098-run-no-override' });
     expect(run.code).not.toBe('HARNESS_DEFAULTS_INVALID');
     expect(typeof run.runId).toBe('string');
     const s = await waitForCompletion(run.runId as string);
     expect(s.status).toBe('completed');
   }, 20_000);
 
-  it('workflow_run with model override → model overridden, registered timeoutMs preserved', async () => {
+  it('run_start with model override → model overridden, registered timeoutMs preserved', async () => {
     await registerPublishedVia(callTool, 'val098-run-partial-override', 'return "partial";', {
       defaults: { model: 'sonnet', timeoutMs: 60_000 },
     });
     // Run with only model override; timeoutMs should fall back to 60_000 registered value
-    const run = await callTool('workflow_run', { name: 'val098-run-partial-override', model: 'haiku' });
+    const run = await callTool('run_start', { name: 'val098-run-partial-override', model: 'haiku' });
     expect(run.code).not.toBe('HARNESS_DEFAULTS_INVALID');
     expect(typeof run.runId).toBe('string');
-    // The run should start (merge succeeds) — exact harness params visible in workflow_status
+    // The run should start (merge succeeds) — exact harness params visible in run_status
     const s = await waitForCompletion(run.runId as string);
     expect(s.status).toBe('completed');
     // Effective timeout in the run record should be the REGISTERED 60_000 (not a short default)

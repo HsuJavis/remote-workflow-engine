@@ -6,7 +6,7 @@
 //            frame as a strict prefix) — so agents group + nest by frame with no other data.
 //   REQ-046  every nested workflow(name) call is a `workflowNodes` entry {frame,name,parentFrame,depth}
 //            — the composite linkage that makes sub-cards.
-//   REQ-047  workflow_status returns BOTH, live, + each agentId drills to its transcript.
+//   REQ-047  run_status returns BOTH, live, + each agentId drills to its transcript.
 //
 // Mock policy (integration tier): real RunManager + real on-disk WorkflowCatalog + real sandbox child
 // processes/IPC/node:vm; only the GatewayClient is faked (so agent records/transcripts are produced

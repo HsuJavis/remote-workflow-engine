@@ -60,7 +60,7 @@ async function mcpCall(name: string, args: Record<string, unknown> = {}) {
   // NOTE: workflow_* tools return their own flat envelope directly; asset_push wraps its payload
   // under `.result` (server.ts's `{ result: await assetSync.push(...) }` shape) — dereferenced
   // explicitly at the asset_push call site below, not auto-unwrapped here (auto-unwrapping broke
-  // workflow_result's own `.result` field, which is the SCRIPT'S return value, not a wrapper).
+  // run_result's own `.result` field, which is the SCRIPT'S return value, not a wrapper).
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
 
@@ -87,13 +87,13 @@ describe('REQ-020: a hung SDK-gateway provider call is bounded by timeoutMs — 
     const runId = run['runId'] as string;
     let finalStatus: Record<string, unknown> | undefined;
     for (let i = 0; i < 30; i++) {
-      const s = await mcpCall('workflow_status', { runId });
+      const s = await mcpCall('run_status', { runId });
       if (s['status'] === 'completed' || s['status'] === 'failed') { finalStatus = s; break; }
       await new Promise((r) => setTimeout(r, 1000));
     }
     expect(finalStatus).toBeDefined();
     expect(finalStatus?.['status']).toBe('completed');
-    const result = await mcpCall('workflow_result', { runId });
+    const result = await mcpCall('run_result', { runId });
     expect(result['result']).toBe('bounded-null');
   }, 60000);
 

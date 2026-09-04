@@ -113,10 +113,10 @@ describe('src/main.ts composition-root: agentDefinitionsDir end-to-end (IT-022, 
 
   async function pollUntilSettled(baseUrl: string, runId: string, maxMs = 20000): Promise<any> {
     const deadline = Date.now() + maxMs;
-    let status = await mcpCall(baseUrl, 'workflow_status', { runId });
+    let status = await mcpCall(baseUrl, 'run_status', { runId });
     while (Date.now() < deadline && (status.status === 'running' || status.status === 'queued')) {
       await new Promise((r) => setTimeout(r, 200));
-      status = await mcpCall(baseUrl, 'workflow_status', { runId });
+      status = await mcpCall(baseUrl, 'run_status', { runId });
     }
     return status;
   }

@@ -32,14 +32,14 @@ describe('VAL-007: per-agent observability (REQ-007)', () => {
     const run = await runScriptVia(callTool, script);
     const runId = run.runId as string;
     for (let i = 0; i < 90; i++) {
-      const s = await callTool('workflow_status', { runId });
+      const s = await callTool('run_status', { runId });
       if (s.status === 'completed' || s.status === 'failed') return { ...s, runId };
       await new Promise((r) => setTimeout(r, 1000));
     }
     throw new Error('timed out');
   }
 
-  it('workflow_status for a completed run includes per-agent entries with required fields', async () => {
+  it('run_status for a completed run includes per-agent entries with required fields', async () => {
     if (!HAS_PROVIDER) return;
     const r = await runAndWait(`
       phase('analyze');
@@ -59,13 +59,13 @@ describe('VAL-007: per-agent observability (REQ-007)', () => {
     expect(typeof agent.tokens.output).toBe('number');
   }, 120000);
 
-  it('workflow_agent_log returns the full transcript of a completed agent', async () => {
+  it('run_agent_log returns the full transcript of a completed agent', async () => {
     if (!HAS_PROVIDER) return;
     const r = await runAndWait(`return agent('Say exactly: OK');`);
-    const statusView = await callTool('workflow_status', { runId: r.runId });
+    const statusView = await callTool('run_status', { runId: r.runId });
     const agentId = (statusView as { agents: Array<{ agentId: string }> }).agents[0].agentId;
 
-    const transcript = await callTool('workflow_agent_log', { runId: r.runId, agentId });
+    const transcript = await callTool('run_agent_log', { runId: r.runId, agentId });
     expect(Array.isArray(transcript)).toBe(true);
     expect((transcript as unknown[]).length).toBeGreaterThan(0);
     // Each entry should have ts, kind, data
@@ -74,7 +74,7 @@ describe('VAL-007: per-agent observability (REQ-007)', () => {
     expect(['message', 'tool_call', 'tool_result', 'usage']).toContain(entry.kind);
   }, 120000);
 
-  it('phases appear in workflow_status with their titles', async () => {
+  it('phases appear in run_status with their titles', async () => {
     // This test does not require a real LLM — phases are tracked without agent calls
     const localServer = await createServer({ port: 0 });
     const localBase = `http://127.0.0.1:${localServer.port}`;
@@ -94,7 +94,7 @@ describe('VAL-007: per-agent observability (REQ-007)', () => {
       for (let i = 0; i < 30; i++) {
         const res = await fetch(`${localBase}/mcp`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_status', arguments: { runId } } }),
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'run_status', arguments: { runId } } }),
         });
         const body = await res.json() as { result?: { content: Array<{ text: string }> } };
         const s = JSON.parse(body.result!.content[0].text);

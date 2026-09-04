@@ -2,7 +2,7 @@
 // Binds the REQ-082 acceptance clauses against the REAL engine.
 //
 // REQ-082 acceptance clauses:
-//   1. Upload blobs, register manifest via POST /assets/manifest, then workflow_run({seedManifestRef,
+//   1. Upload blobs, register manifest via POST /assets/manifest, then run_start({seedManifestRef,
 //      seedNamespace}) with a few-dozen-byte params produces a workspace byte-identical to the
 //      inline seedManifest path.
 //   2. seedManifestRef + seed → SEED_SOURCE_CONFLICT
@@ -12,7 +12,7 @@
 //   6. seedManifestRef = sha256(manifestBytes) is derivable client-side (consumability)
 //
 // Red reason: POST /assets/manifest does not exist; RunManager.start() has no seedManifestRef
-//   field → workflow_run ignores seedManifestRef → no workspace assembled / no SEED_SOURCE_CONFLICT
+//   field → run_start ignores seedManifestRef → no workspace assembled / no SEED_SOURCE_CONFLICT
 //   returned → all assertions fail for the correct unimplemented reason.
 //
 // Mock policy (acceptance — MUST NOT mock SUT boundaries): real createServer, real HTTP;
@@ -46,7 +46,7 @@ async function mcpCall(name: string, args: unknown): Promise<any> {
 
 async function poll(runId: string, ms = 200, maxIter = 60): Promise<any> {
   for (let i = 0; i < maxIter; i++) {
-    const st = await mcpCall('workflow_status', { runId });
+    const st = await mcpCall('run_status', { runId });
     if (['completed', 'failed', 'stopped'].includes(st.status)) return st;
     await new Promise((r) => setTimeout(r, ms));
   }
@@ -97,7 +97,7 @@ afterAll(async () => {
 });
 
 describe('REQ-082: seedManifestRef round-trip (VAL-091)', () => {
-  it('1. workflow_run({seedManifestRef}) assembles workspace (params are few bytes)', async () => {
+  it('1. run_start({seedManifestRef}) assembles workspace (params are few bytes)', async () => {
     const fileContent = Buffer.from('hello from val-091 seed manifest ref');
     const seedManifestRef = await setupManifest([{ path: 'hello.txt', content: fileContent }]);
 
@@ -106,7 +106,7 @@ describe('REQ-082: seedManifestRef round-trip (VAL-091)', () => {
     expect(seedManifestRef).toBe(sha256(manifestBytes));
 
     // Script is minimal: vm.Script context does not support dynamic import() or process.env.
-    // Workspace assembly (REQ-082 byte-identity clause) is verified via workflow_artifacts below.
+    // Workspace assembly (REQ-082 byte-identity clause) is verified via workspace_list below.
     const r = await runScriptVia(mcpCall, `return 'seeded';`, {
       seedManifestRef,
       seedNamespace: NAMESPACE,
@@ -119,7 +119,7 @@ describe('REQ-082: seedManifestRef round-trip (VAL-091)', () => {
     expect(status.status).toBe('completed');
 
     // Artifacts must include the seeded file with byte-identical content (REQ-082 byte-identity).
-    const artifacts = await mcpCall('workflow_artifacts', { runId });
+    const artifacts = await mcpCall('workspace_list', { runId });
     expect(Array.isArray(artifacts.result)).toBe(true);
     const entries: Array<{ path: string; sha256: string; size: number }> = artifacts.result ?? [];
     const paths = entries.map((a) => a.path);

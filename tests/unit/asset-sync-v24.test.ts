@@ -6,12 +6,12 @@ import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AssetSyncService } from '../../src/asset-sync.js';
+import { AssetSyncService, type AssetCatalogRow } from '../../src/asset-sync.js';
 import { FixedClock } from '../../src/clock.js';
 
 function fakeCatalogPort() {
-  const rows: unknown[] = [];
-  return { putAsset: vi.fn((row: unknown) => { rows.push(row); }), deleteAsset: vi.fn(), listAssets: vi.fn(() => rows) };
+  const rows: AssetCatalogRow[] = [];
+  return { putAsset: vi.fn((row: AssetCatalogRow) => { rows.push(row); }), deleteAsset: vi.fn(), listAssets: vi.fn(() => rows) };
 }
 
 describe('AssetSyncService v24 — two scopes, mcp gating, clock-sourced pushedAt (UT-155, DES-153)', () => {
@@ -23,10 +23,8 @@ describe('AssetSyncService v24 — two scopes, mcp gating, clock-sourced pushedA
       const svc = new AssetSyncService({
         workRoot: dir, globalRoot: join(dir, 'global'),
         selfBind: { host: '127.0.0.1', port: 1 }, clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
-        // @ts-expect-error — AssetSyncDeps has no catalog/probe/egressAllowlist yet (v24 DES-153/TASK-144)
         catalog, probe, egressAllowlist: [],
       });
-      // @ts-expect-error — push() takes the v24 union req shape; today's is flat {kind,name,files}
       const result = await svc.push({ scope: 'workflow', workflow: 'wf-a', kind: 'mcp', name: 'srv', config: { url: 'https://evil.example.com' }, pushedBy: 'bob' });
       expect(result).toMatchObject({ error: 'EGRESS_DENIED' });
       expect(probe.probe).not.toHaveBeenCalled();
@@ -42,11 +40,10 @@ describe('AssetSyncService v24 — two scopes, mcp gating, clock-sourced pushedA
       const svc = new AssetSyncService({
         workRoot: dir, globalRoot: join(dir, 'global'), selfBind: { host: '127.0.0.1', port: 1 },
         clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
-        // @ts-expect-error
         catalog: fakeCatalogPort(), probe: { probe: vi.fn() }, egressAllowlist: [],
       });
-      // @ts-expect-error — 'hook' is not a v24 AssetKind
-      await expect(svc.push({ scope: 'workflow', workflow: 'wf-a', kind: 'hook', name: 'x', files: [], pushedBy: 'bob' }))
+      // 'hook' is not a v24 AssetKind ('skill'|'mcp') — deliberately mistyped to prove the runtime guard.
+      await expect(svc.push({ scope: 'workflow', workflow: 'wf-a', kind: 'hook', name: 'x', files: [], pushedBy: 'bob' } as unknown as Parameters<typeof svc.push>[0]))
         .rejects.toThrow(/INVALID_ARGUMENT/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -60,10 +57,8 @@ describe('AssetSyncService v24 — two scopes, mcp gating, clock-sourced pushedA
       const catalog = fakeCatalogPort();
       const svc = new AssetSyncService({
         workRoot: dir, globalRoot: join(dir, 'global'), selfBind: { host: '127.0.0.1', port: 1 }, clock,
-        // @ts-expect-error
         catalog, probe: { probe: vi.fn() }, egressAllowlist: [],
       });
-      // @ts-expect-error
       await svc.push({ scope: 'workflow', workflow: 'wf-a', kind: 'skill', name: 'reviewer', files: [{ path: 'SKILL.md', contentB64: Buffer.from('x').toString('base64') }], pushedBy: 'bob' });
       expect(catalog.putAsset).toHaveBeenCalledWith(expect.objectContaining({ pushedAt: clock.isoNow() }));
     } finally {
@@ -77,10 +72,8 @@ describe('AssetSyncService v24 — two scopes, mcp gating, clock-sourced pushedA
       const svc = new AssetSyncService({
         workRoot: dir, globalRoot: join(dir, 'global'), selfBind: { host: '127.0.0.1', port: 1 },
         clock: new FixedClock(new Date('2026-01-01T00:00:00Z')),
-        // @ts-expect-error
         catalog: fakeCatalogPort(), probe: { probe: vi.fn() }, egressAllowlist: [],
       });
-      // @ts-expect-error — list({workflow, kind}) does not exist yet
       const result = await svc.list({ workflow: 'wf-a', kind: 'skill' });
       expect(Array.isArray(result)).toBe(true);
     } finally {

@@ -17,7 +17,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { McpFacade, NO_TRIGGER_PORTS, NO_GRAPH_ANALYZER } from '../../src/mcp-facade.js';
+import { McpFacade } from '../../src/mcp-facade.js';
+import { AUTH_DISABLED } from '../helpers/workflow-fixtures.js';
 import { RunManager } from '../../src/run-manager.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
@@ -32,10 +33,10 @@ let workRoot: string;
 afterEach(() => { rmSync(workRoot, { recursive: true, force: true }); });
 
 async function pollUntilSettled(facade: McpFacade, runId: string) {
-  let s = await facade.workflow_status({ runId });
+  let s = await facade.runStatus({ runId }, AUTH_DISABLED, false, null);
   for (let i = 0; i < 60 && (s.status === 'running' || s.status === 'queued'); i++) {
     await new Promise((r) => setTimeout(r, 50));
-    s = await facade.workflow_status({ runId });
+    s = await facade.runStatus({ runId }, AUTH_DISABLED, false, null);
   }
   return s;
 }
@@ -45,26 +46,26 @@ describe('scriptVersion fidelity across a workflow update (IT-011, D-V7, v22 rew
     workRoot = mkdtempSync(join(tmpdir(), 'rwe-it011-'));
     const store = new InMemoryRunStore(CLOCK);
     const runManager = new RunManager({ store, clock: CLOCK, workRoot });
-    const facade = new McpFacade({ clock: CLOCK, store, runManager, triggerPorts: NO_TRIGGER_PORTS, graphAnalyzer: NO_GRAPH_ANALYZER });
+    const facade = new McpFacade({ clock: CLOCK, store, runManager });
 
-    const { version: v1 } = await runManager.catalog.register('sv-fidelity', `return 'version-one';`);
+    const { version: v1 } = await runManager.catalog.register({ name: 'sv-fidelity', script: `return 'version-one';`, mermaid: 'graph TD;' });
     await runManager.catalog.publish('sv-fidelity', v1, 'release', null);
-    const run1 = await facade.workflow_run({ name: 'sv-fidelity' });
+    const run1 = await facade.runStart({ name: 'sv-fidelity' }, AUTH_DISABLED);
     const status1 = await pollUntilSettled(facade, run1.result!.runId);
     expect(status1.status).toBe('completed');
     expect(status1.result!.scriptVersion).toBe('v1'); // literal, per v22 Rule 1
 
-    const { version: v2 } = await runManager.catalog.register('sv-fidelity', `return 'version-two';`);
+    const { version: v2 } = await runManager.catalog.register({ name: 'sv-fidelity', script: `return 'version-two';`, mermaid: 'graph TD;' });
     await runManager.catalog.publish('sv-fidelity', v2, 'release', null);
-    const run2 = await facade.workflow_run({ name: 'sv-fidelity' });
+    const run2 = await facade.runStart({ name: 'sv-fidelity' }, AUTH_DISABLED);
     const status2 = await pollUntilSettled(facade, run2.result!.runId);
     expect(status2.status).toBe('completed');
     expect(status2.result!.scriptVersion).toBe('v2'); // literal, per v22 Rule 1
 
     // After a THIRD version is registered+published, run 1's own record is unchanged — still 'v1'.
-    const { version: v3 } = await runManager.catalog.register('sv-fidelity', `return 'version-three';`);
+    const { version: v3 } = await runManager.catalog.register({ name: 'sv-fidelity', script: `return 'version-three';`, mermaid: 'graph TD;' });
     await runManager.catalog.publish('sv-fidelity', v3, 'release', null);
-    const stillStatus1 = await facade.workflow_status({ runId: run1.result!.runId });
+    const stillStatus1 = await facade.runStatus({ runId: run1.result!.runId }, AUTH_DISABLED, false, null);
     expect(stillStatus1.result!.scriptVersion).toBe('v1');
   }, 15000);
 });

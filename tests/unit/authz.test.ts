@@ -1,7 +1,6 @@
 // UT-140 (DES-139, v24): Principal, resolveRole, authorize() — total over kind x role x ownership x mode.
 // Written test-first (Gate 5, RED) — src/authz.ts does not exist yet.
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — src/authz.ts does not exist yet (v24 DES-139/TASK-133)
 import { resolveRole, authorize } from '../../src/authz.js';
 
 describe('authz — Principal/resolveRole/authorize (UT-140, DES-139)', () => {

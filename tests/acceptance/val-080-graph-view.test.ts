@@ -52,7 +52,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
 async function pollDone(runId: string, maxMs = 8000): Promise<void> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
-    const s = await callTool('workflow_status', { runId }) as { status?: string };
+    const s = await callTool('run_status', { runId }) as { status?: string };
     if (s?.status !== 'queued' && s?.status !== 'running') return;
     await new Promise((r) => setTimeout(r, 40));
   }
@@ -113,7 +113,7 @@ describe('VAL-080: graph view returns GraphPayload (REQ-071)', () => {
         () => agent('draft 2'),
       ]);
       return await agent('verify');`);
-    const sub = await callTool('workflow_run', { name: 'val080-cs' }) as { runId?: string };
+    const sub = await callTool('run_start', { name: 'val080-cs' }) as { runId?: string };
     const runId = sub?.runId!;
     await pollDone(runId, 60_000);
 

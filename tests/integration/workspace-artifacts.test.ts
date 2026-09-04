@@ -5,38 +5,38 @@
 //
 // Design note (verifier-authored extension, not yet in 04-design.md — flagged for Gate 6 to
 // finalize): D-V7 allows either "a listing tool or a status field". This test targets a new
-// `McpFacade.workflow_artifacts({ runId })` tool returning the relative paths of files present
+// `McpFacade.workspace_list({ runId })` tool returning the relative paths of files present
 // in that run's workspace — the smaller of the two options (no change to the widely-shared
 // RunStatusView/RunSummary shapes).
 //
 // Red reason (2026-07-03, before Gate 6 rework): no MCP tool or status field exposes a run's
 // workspace file listing today (confirmed at Gate 7.5 real-run — see 08-validation.md VAL-013).
-// `McpFacade.workflow_artifacts` does not exist, so calling it throws a TypeError.
+// `McpFacade.workspace_list` does not exist, so calling it throws a TypeError.
 import { describe, it, expect } from 'vitest';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { McpFacade, NO_TRIGGER_PORTS, NO_GRAPH_ANALYZER } from '../../src/mcp-facade.js';
+import { McpFacade } from '../../src/mcp-facade.js';
 import { RunManager } from '../../src/run-manager.js';
 import { InMemoryRunStore } from '../../src/run-store.js';
 import { FixedClock } from '../../src/clock.js';
-import { facadeCaller, runScriptVia, uniqueWorkflowName } from '../helpers/workflow-fixtures.js';
+import { facadeCaller, runScriptVia, uniqueWorkflowName, AUTH_DISABLED } from '../helpers/workflow-fixtures.js';
 
 const CLOCK = new FixedClock(new Date('2024-01-01T00:00:00Z'));
 
 async function pollUntilSettled(facade: McpFacade, runId: string) {
-  let s = await facade.workflow_status({ runId });
+  let s = await facade.runStatus({ runId }, AUTH_DISABLED, false, null);
   for (let i = 0; i < 60 && (s.status === 'running' || s.status === 'queued'); i++) {
     await new Promise((r) => setTimeout(r, 50));
-    s = await facade.workflow_status({ runId });
+    s = await facade.runStatus({ runId }, AUTH_DISABLED, false, null);
   }
   return s;
 }
 
-describe('workflow_artifacts: run-workspace files retrievable via the API (IT-010, D-V7)', () => {
-  it('a file written into a completed run\'s workspace is listed by workflow_artifacts', async () => {
+describe('workspace_list: run-workspace files retrievable via the API (IT-010, D-V7)', () => {
+  it('a file written into a completed run\'s workspace is listed by workspace_list', async () => {
     const store = new InMemoryRunStore(CLOCK);
     const runManager = new RunManager({ store, clock: CLOCK });
-    const facade = new McpFacade({ clock: CLOCK, store, runManager, triggerPorts: NO_TRIGGER_PORTS, graphAnalyzer: NO_GRAPH_ANALYZER });
+    const facade = new McpFacade({ clock: CLOCK, store, runManager });
 
     // v22: a run is always NAMED now, so its workspace bucket is the workflow name rather than
     // the `_adhoc` bucket `spec.name ?? '_adhoc'` used for the pre-v22 inline-script shape.
@@ -52,9 +52,7 @@ describe('workflow_artifacts: run-workspace files retrievable via the API (IT-01
     mkdirSync(workspace, { recursive: true });
     writeFileSync(join(workspace, 'output.txt'), 'artifact content');
 
-    const artifacts = await (facade as unknown as {
-      workflow_artifacts(a: { runId: string }): Promise<{ result?: Array<{ path: string; size: number; sha256: string }>; error?: unknown }>;
-    }).workflow_artifacts({ runId });
+    const artifacts = await facade.workspaceList({ runId }, AUTH_DISABLED, false, null) as { result?: Array<{ path: string; size: number; sha256: string }>; error?: unknown };
 
     expect(artifacts.error).toBeUndefined();
     expect((artifacts.result ?? []).map((a) => a.path)).toContain('output.txt');
@@ -66,8 +64,8 @@ describe('workflow_artifacts: run-workspace files retrievable via the API (IT-01
     // No such run → no workspace → null (the facade maps this to an empty result, not an fs error).
     expect(await runManager.listArtifacts('no-such-run')).toBeNull();
 
-    const facade = new McpFacade({ clock: CLOCK, store, runManager, triggerPorts: NO_TRIGGER_PORTS, graphAnalyzer: NO_GRAPH_ANALYZER });
-    const env = await facade.workflow_artifacts({ runId: 'no-such-run' });
+    const facade = new McpFacade({ clock: CLOCK, store, runManager });
+    const env = await facade.workspaceList({ runId: 'no-such-run' }, AUTH_DISABLED, false, null);
     expect(env.error).toBeDefined(); // unknown run → RUN_NOT_FOUND envelope, never a thrown readdir error
   });
 });

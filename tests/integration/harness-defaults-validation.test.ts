@@ -8,8 +8,8 @@
 //   D-AUTH-5-D: skills existence DEFERRED to run time (register with unknown skill succeeds)
 //   D-AUTH-5-E: no partial write on invalid (invalid model + valid timeoutMs → nothing stored)
 //   backward-compat: defaults absent (pre-v15 shape) → registers exactly as before
-//   valid defaults: known alias + allowed tool → registers; workflow_get returns defaults
-//   run-time merge: workflow_run with per-run override wins per-param; missing keys fall back
+//   valid defaults: known alias + allowed tool → registers; workflow_source returns defaults
+//   run-time merge: run_start with per-run override wins per-param; missing keys fall back
 //
 // Named assertion IDs per D-AUTH-5 (trace.py parseable):
 //   D-AUTH-5-A (unknown-key-reject), D-AUTH-5-B (model-alias-resolvable-reject),
@@ -77,7 +77,7 @@ describe('Harness defaults register-time validation — D-AUTH-5 named assertion
   });
 
   it('D-AUTH-5-A: after invalid registration, workflow is NOT stored', async () => {
-    const r = await callTool('workflow_get', { name: 'it081-unknown-key' });
+    const r = await callTool('workflow_source', { name: 'it081-unknown-key' });
     expect(r.code).toBe('WORKFLOW_NOT_FOUND');
   });
 
@@ -92,7 +92,7 @@ describe('Harness defaults register-time validation — D-AUTH-5 named assertion
   });
 
   it('D-AUTH-5-B: after invalid model registration, workflow is NOT stored', async () => {
-    const r = await callTool('workflow_get', { name: 'it081-bad-alias' });
+    const r = await callTool('workflow_source', { name: 'it081-bad-alias' });
     expect(r.code).toBe('WORKFLOW_NOT_FOUND');
   });
 
@@ -127,7 +127,7 @@ describe('Harness defaults register-time validation — D-AUTH-5 named assertion
     });
     expect(r.code).toBe('HARNESS_DEFAULTS_INVALID');
     // Nothing stored — not even the valid fields
-    const check = await callTool('workflow_get', { name: 'it081-partial-write' });
+    const check = await callTool('workflow_source', { name: 'it081-partial-write' });
     expect(check.code).toBe('WORKFLOW_NOT_FOUND');
   });
 
@@ -143,7 +143,7 @@ describe('Harness defaults register-time validation — D-AUTH-5 named assertion
       defaults: { appendPrompt: 7 },  // number, not a string
     });
     expect(r.code).toBe('HARNESS_DEFAULTS_INVALID');
-    const check = await callTool('workflow_get', { name: 'it081-append-not-string' });
+    const check = await callTool('workflow_source', { name: 'it081-append-not-string' });
     expect(check.code).toBe('WORKFLOW_NOT_FOUND');
   });
 
@@ -189,7 +189,7 @@ describe('Harness defaults register-time validation — D-AUTH-5 named assertion
     expect(typeof r.version).toBe('number');
   });
 
-  // Valid defaults: known alias + known tool → registers; workflow_get returns defaults
+  // Valid defaults: known alias + known tool → registers; workflow_source returns defaults
   it('valid defaults with known alias + allowed tool → registers and is queryable', async () => {
     const r = await callTool('workflow_register', {
       name: 'it081-valid-defaults',
@@ -198,12 +198,12 @@ describe('Harness defaults register-time validation — D-AUTH-5 named assertion
     });
     expect(r.error).toBeUndefined();
     expect(r.code).not.toBe('HARNESS_DEFAULTS_INVALID');
-    // v22: registration is not publication — `workflow_get({name})` with no version selector
+    // v22: registration is not publication — `workflow_source({name})` with no version selector
     // resolves the `release` channel, so the just-registered version has to be published for the
     // read-back this case is about to reach it.
     await callTool('workflow_publish', { name: 'it081-valid-defaults', version: `v${r.version}`, channel: 'release' });
 
-    const got = await callTool('workflow_get', { name: 'it081-valid-defaults' });
+    const got = await callTool('workflow_source', { name: 'it081-valid-defaults' });
     const defaults = (got as { defaults?: { model?: string; timeoutMs?: number; tools?: string[] } }).defaults;
     expect(defaults?.model).toBe('sonnet');
     expect(defaults?.timeoutMs).toBe(60_000);
@@ -221,13 +221,13 @@ describe('Harness defaults register-time validation — D-AUTH-5 named assertion
     );
 
     // Run with timeoutMs override but no model override
-    const runResult = await callTool('workflow_run', {
+    const runResult = await callTool('run_start', {
       name: 'it081-merge-test',
       timeoutMs: 5_000,  // per-run override
       // model not overridden → should fall back to 'opus'
     });
     expect(typeof runResult.runId).toBe('string');
-    // (Full merge verification via workflow_status is an acceptance-tier concern — IT verifies the
+    // (Full merge verification via run_status is an acceptance-tier concern — IT verifies the
     //  register endpoint returns the stored defaults correctly and run doesn't HARNESS_DEFAULTS_INVALID)
     expect(runResult.code).not.toBe('HARNESS_DEFAULTS_INVALID');
   });
@@ -237,16 +237,16 @@ describe('Harness defaults register-time validation — D-AUTH-5 named assertion
 // the ON CONFLICT stale-contract trap, ceiling-bounded read surfaces, pre-eval source-size guard.
 //
 // Red reason: `catalog.register()`/`meta.params` parsing does not exist yet — a `params` block is
-// silently ignored (no PARAM_CONTRACT_INVALID ever returned, workflow_get never returns `.params`).
+// silently ignored (no PARAM_CONTRACT_INVALID ever returned, workflow_source never returns `.params`).
 describe('meta.params contract — registration, discoverability, ceilings (REQ-090, IT-081 v21)', () => {
-  it('a script whose meta.params constrains model to an enum registers and is queryable via workflow_get', async () => {
+  it('a script whose meta.params constrains model to an enum registers and is queryable via workflow_source', async () => {
     const script = `export const meta = { description: 'x', params: { knobs: { model: { type: 'enum', enum: ['sonnet','haiku'] } } } };\nreturn 1;`;
     const r = await callTool('workflow_register', { name: 'it081-params-model-enum', script });
     expect(r.code).not.toBe('HARNESS_DEFAULTS_INVALID');
     expect(r.error).toBeUndefined();
     await callTool('workflow_publish', { name: 'it081-params-model-enum', version: `v${r.version}`, channel: 'release' });
 
-    const got = await callTool('workflow_get', { name: 'it081-params-model-enum' });
+    const got = await callTool('workflow_source', { name: 'it081-params-model-enum' });
     const params = (got as { params?: { knobs?: Record<string, { enum?: string[] }> } }).params;
     expect(params?.knobs?.['model']?.enum).toEqual(['sonnet', 'haiku']);
   });
@@ -256,13 +256,13 @@ describe('meta.params contract — registration, discoverability, ceilings (REQ-
     const r = await callTool('workflow_register', { name: 'it081-params-locked-key', script });
     expect(r.error).toBeDefined();
 
-    const check = await callTool('workflow_get', { name: 'it081-params-locked-key' });
+    const check = await callTool('workflow_source', { name: 'it081-params-locked-key' });
     expect(check.code).toBe('WORKFLOW_NOT_FOUND');
   });
 
-  it('a script with NO params block reads back workflow_get.params as the canonical 4-knob contract, ceiling-bounded (never null/unbounded)', async () => {
+  it('a script with NO params block reads back workflow_source.params as the canonical 4-knob contract, ceiling-bounded (never null/unbounded)', async () => {
     await registerPublishedVia(callTool, 'it081-no-params-block', 'return 1;');
-    const got = await callTool('workflow_get', { name: 'it081-no-params-block' });
+    const got = await callTool('workflow_source', { name: 'it081-no-params-block' });
     const params = (got as { params?: { knobs?: Record<string, unknown> } }).params;
     expect(params).toBeDefined();
     expect(Object.keys(params?.knobs ?? {}).sort()).toEqual(['appendPrompt', 'effort', 'model', 'timeoutMs'].sort());
@@ -277,11 +277,11 @@ describe('meta.params contract — registration, discoverability, ceilings (REQ-
     await registerPublishedVia(callTool, 'it081-params-reregister', v1);
     const v2 = `export const meta = { params: { knobs: { model: { type: 'enum', enum: ['sonnet','opus'] } } } };\nreturn 2;`;
     // Both versions are published onto `release`: pre-v22 the newest registration was what
-    // `workflow_get({name})` served, so publishing v2 is what keeps this case's ON-CONFLICT
+    // `workflow_source({name})` served, so publishing v2 is what keeps this case's ON-CONFLICT
     // oracle ("the read-back shows the NEW contract") pointed at the new version.
     await registerPublishedVia(callTool, 'it081-params-reregister', v2);
 
-    const got = await callTool('workflow_get', { name: 'it081-params-reregister' });
+    const got = await callTool('workflow_source', { name: 'it081-params-reregister' });
     const params = (got as { params?: { knobs?: Record<string, { enum?: string[] }> } }).params;
     expect(params?.knobs?.['model']?.enum).toEqual(['sonnet', 'opus']);
   });
@@ -294,7 +294,7 @@ describe('meta.params contract — registration, discoverability, ceilings (REQ-
     const r = await callTool('workflow_register', { name: 'it081-params-oversized', script });
     expect(r.error).toBeDefined();
 
-    const check = await callTool('workflow_get', { name: 'it081-params-oversized' });
+    const check = await callTool('workflow_source', { name: 'it081-params-oversized' });
     expect(check.code).toBe('WORKFLOW_NOT_FOUND');
   });
 });
@@ -323,7 +323,7 @@ describe('meta.params default cross-validation (DES-103, REQ-090, v21 Gate 5 re-
     });
     expect(r.error).toBeDefined();
 
-    const check = await callTool('workflow_get', { name: 'it081-a2-default-mismatch' });
+    const check = await callTool('workflow_source', { name: 'it081-a2-default-mismatch' });
     expect(check.code).toBe('WORKFLOW_NOT_FOUND');
   });
 
@@ -333,7 +333,7 @@ describe('meta.params default cross-validation (DES-103, REQ-090, v21 Gate 5 re-
     const r = await callTool('workflow_register', { name: 'it081-a2-default-out-of-range', script });
     expect(r.error).toBeDefined();
 
-    const check = await callTool('workflow_get', { name: 'it081-a2-default-out-of-range' });
+    const check = await callTool('workflow_source', { name: 'it081-a2-default-out-of-range' });
     expect(check.code).toBe('WORKFLOW_NOT_FOUND');
   });
 
@@ -343,7 +343,7 @@ describe('meta.params default cross-validation (DES-103, REQ-090, v21 Gate 5 re-
     expect(r.error).toBeUndefined();
     await callTool('workflow_publish', { name: 'it081-a2-default-normalize', version: `v${r.version}`, channel: 'release' });
 
-    const got = await callTool('workflow_get', { name: 'it081-a2-default-normalize' });
+    const got = await callTool('workflow_source', { name: 'it081-a2-default-normalize' });
     const defaults = (got as { defaults?: { timeoutMs?: number } }).defaults;
     // The served default must be DERIVED from the defaults column (so the two can never diverge) —
     // not merely echoed back from params.knobs.timeoutMs.default.
@@ -355,7 +355,7 @@ describe('meta.params default cross-validation (DES-103, REQ-090, v21 Gate 5 re-
   // `tests/integration/params-admission.test.ts`'s own P-A3 describe block): `effort`/`appendPrompt`
   // are NOT in `harness-defaults.ts`'s `KNOWN_KEYS` (`{model,tools,skills,timeoutMs,prompt}`), yet
   // the effectiveDefaults loop (workflow-catalog.ts:130-142) stores them in the SAME `defaults`
-  // column and `workflow_get` serves them back verbatim — a real author/UI performing the
+  // column and `workflow_source` serves them back verbatim — a real author/UI performing the
   // documented discover -> edit -> re-register workflow on the engine's OWN served `defaults`
   // hits `HARNESS_DEFAULTS_INVALID: Unknown harness defaults key: "effort"`.
   //
@@ -374,7 +374,7 @@ describe('meta.params default cross-validation (DES-103, REQ-090, v21 Gate 5 re-
     expect(first.error).toBeUndefined();
     await callTool('workflow_publish', { name: 'it081-pa3-roundtrip', version: `v${first.version}`, channel: 'release' });
 
-    const got = await callTool('workflow_get', { name: 'it081-pa3-roundtrip' });
+    const got = await callTool('workflow_source', { name: 'it081-pa3-roundtrip' });
     const servedDefaults = (got as { defaults?: Record<string, unknown> }).defaults;
     expect(servedDefaults?.['effort']).toBe('high'); // sanity: the normalized default IS served
 
@@ -401,7 +401,7 @@ describe('meta.params model.default bypasses D-AUTH-5-B alias validation (DES-10
     const r = await callTool('workflow_register', { name: 'it081-pa4-bad-model-default', script });
     expect(r.error).toBeDefined();
 
-    const got = await callTool('workflow_get', { name: 'it081-pa4-bad-model-default' });
+    const got = await callTool('workflow_source', { name: 'it081-pa4-bad-model-default' });
     expect(got.code).toBe('WORKFLOW_NOT_FOUND'); // fail-closed: nothing stored
   });
 
@@ -445,7 +445,7 @@ describe('meta.params declared default vs the ENGINE ceiling (not just its own s
       const r = await call('workflow_register', { name: 'it081-ceiling-effort-over', script });
       expect(r.error).toBeDefined(); // passes today, but only because E-3 rejects every effort default
 
-      const got = await call('workflow_get', { name: 'it081-ceiling-effort-over' });
+      const got = await call('workflow_source', { name: 'it081-ceiling-effort-over' });
       expect(got.code).toBe('WORKFLOW_NOT_FOUND'); // fail-closed: nothing stored
     } finally {
       await lowCeilingServer.close();
@@ -541,15 +541,15 @@ describe('caller-supplied `defaults` are bounded by the engine ceilings even wit
     });
     expect(r.error).toBeDefined();
 
-    const got = await g1Call('workflow_get', { name: 'it081-g1-effort-over' });
+    const got = await g1Call('workflow_source', { name: 'it081-g1-effort-over' });
     expect(got.code).toBe('WORKFLOW_NOT_FOUND'); // fail-closed: nothing stored
 
     // The other end of the same bound: the identical value is refused at the admission rung, and
     // the value AT the configured ceiling is accepted there — the same boundary, both rungs.
     await registerPublishedVia(g1Call, 'it081-g1-admission-pin', 'return 1;');
-    const over = await g1Call('workflow_run', { name: 'it081-g1-admission-pin', overrides: { effort: 'max' } });
+    const over = await g1Call('run_start', { name: 'it081-g1-admission-pin', overrides: { effort: 'max' } });
     expect(over.code ?? (over.error as { code?: string } | undefined)?.code).toBe('PARAM_OUT_OF_RANGE');
-    const atBound = await g1Call('workflow_run', { name: 'it081-g1-admission-pin', overrides: { effort: MAX_EFFORT } });
+    const atBound = await g1Call('run_start', { name: 'it081-g1-admission-pin', overrides: { effort: MAX_EFFORT } });
     expect(atBound.code).not.toBe('PARAM_OUT_OF_RANGE');
   });
 
@@ -560,7 +560,7 @@ describe('caller-supplied `defaults` are bounded by the engine ceilings even wit
     expect(r.error).toBeUndefined();
     await g1Call('workflow_publish', { name: 'it081-g1-effort-ok', version: `v${r.version}`, channel: 'release' });
 
-    const got = await g1Call('workflow_get', { name: 'it081-g1-effort-ok' });
+    const got = await g1Call('workflow_source', { name: 'it081-g1-effort-ok' });
     expect((got as { defaults?: Record<string, unknown> }).defaults?.['effort']).toBe(MAX_EFFORT);
   });
 
@@ -571,17 +571,17 @@ describe('caller-supplied `defaults` are bounded by the engine ceilings even wit
     });
     expect(r.error).toBeDefined();
 
-    const got = await g1Call('workflow_get', { name: 'it081-g1-append-over' });
+    const got = await g1Call('workflow_source', { name: 'it081-g1-append-over' });
     expect(got.code).toBe('WORKFLOW_NOT_FOUND'); // fail-closed: nothing stored
 
     // Admission enforces the same byte bound registration just refused against: over-by-one is
     // refused there too, and exactly-at-the-bound is accepted at both rungs.
     await registerPublishedVia(g1Call, 'it081-g1-append-admission-pin', 'return 1;');
-    const over = await g1Call('workflow_run', {
+    const over = await g1Call('run_start', {
       name: 'it081-g1-append-admission-pin', overrides: { appendPrompt: overByOne },
     });
     expect(over.code ?? (over.error as { code?: string } | undefined)?.code).toBe('PARAM_OUT_OF_RANGE');
-    const atBound = await g1Call('workflow_run', {
+    const atBound = await g1Call('run_start', {
       name: 'it081-g1-append-admission-pin', overrides: { appendPrompt: 'x'.repeat(MAX_APPEND_BYTES) },
     });
     expect(atBound.code).not.toBe('PARAM_OUT_OF_RANGE');
@@ -669,7 +669,7 @@ describe('a declared knob default is refused under its OWN origin code, not the 
     const r = await callTool('workflow_register', { name: 'it081-f1h2-effort-junk', script: JUNK_EFFORT_SCRIPT });
     expect(r.error).toBeDefined();
 
-    const got = await callTool('workflow_get', { name: 'it081-f1h2-effort-junk' });
+    const got = await callTool('workflow_source', { name: 'it081-f1h2-effort-junk' });
     expect(got.code).toBe('WORKFLOW_NOT_FOUND'); // fail-closed: nothing stored
   });
 
@@ -688,7 +688,7 @@ describe('a declared knob default is refused under its OWN origin code, not the 
     expect(codeOf(r)).toBe(CALLER_ORIGIN_CODE);
     expect(JSON.stringify(r)).toContain('defaults.effort');
 
-    const got = await callTool('workflow_get', { name: 'it081-f1h2-effort-junk-caller' });
+    const got = await callTool('workflow_source', { name: 'it081-f1h2-effort-junk-caller' });
     expect(got.code).toBe('WORKFLOW_NOT_FOUND'); // fail-closed: nothing stored
   });
 });

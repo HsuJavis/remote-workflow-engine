@@ -1,5 +1,5 @@
 // VAL-111 (REQ-100 `[AMENDED v23]`, adjudication #1 2026-09-02, DES-136): on a booted auth-enabled
-// engine, a NON-OWNER `workflow_get({name})` over real `/mcp` returns `phases` with the author's
+// engine, a NON-OWNER `workflow_source({name})` over real `/mcp` returns `phases` with the author's
 // titles, while `script` stays withheld — the amendment's own surface, proven where it ships (not
 // only in the projection unit test, per this ledger's own carried-in discipline).
 //
@@ -52,7 +52,7 @@ async function toolCall(name: string, args: Record<string, unknown>, bearer?: st
 }
 
 describe('REQ-100 [AMENDED v23]: phases are public even to a non-owner (VAL-111)', () => {
-  it('a non-owner workflow_get sees the real phase titles while script stays withheld', async () => {
+  it('a non-owner workflow_source sees the real phase titles while script stays withheld', async () => {
     const ownerToken = await mintBearer('val111-owner@example.com');
     await registerPublishedVia(
       (n, a) => toolCall(n, a, ownerToken), 'val111-flow',
@@ -60,7 +60,7 @@ describe('REQ-100 [AMENDED v23]: phases are public even to a non-owner (VAL-111)
     );
 
     const otherToken = await mintBearer('val111-stranger@example.com');
-    const masked = await toolCall('workflow_get', { name: 'val111-flow' }, otherToken);
+    const masked = await toolCall('workflow_source', { name: 'val111-flow' }, otherToken);
     const result = masked['result'] as Record<string, unknown> | undefined;
     expect(result?.['scriptWithheld']).toBe(true);
     expect(JSON.stringify(masked)).not.toContain('val111-secret');

@@ -1,7 +1,8 @@
-// McpFacade (DES-001 / ARCH-001 / TASK-002).
-// Pure delegation + uniform ResultEnvelope: every tool call resolves to an envelope,
-// never throws across the tool boundary (DES-001).
-import { rmSync } from 'node:fs';
+// McpFacade (v24 rewrite — DES-149/151/152/155, ARCH-091, TASK-148): the 35-handler v24 tool
+// surface behind the new names. Pure delegation + uniform ResultEnvelope, same DES-001 discipline
+// as before (never throws across the tool boundary) plus three v24 additions: the register→claim→
+// insert→compensate trigger sequence, the six workspace_* modes, and the audited admin cross-read.
+import { existsSync, rmSync } from 'node:fs';
 import { readArtifactChunk, type ArtifactEntry, type ChunkResult } from './workspace-artifacts.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
@@ -10,54 +11,62 @@ import { InMemoryRunStore } from './run-store.js';
 import { RunManager } from './run-manager.js';
 import { resolveVersionRequest, type WorkflowDetail, type Channel, type VersionSelector } from './workflow-catalog.js';
 import { SubmissionValidator } from './submission-validator.js';
-import { CatalogNotFoundError } from './errors.js';
-import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent, HarnessDescriptor, ManifestEntry } from './types.js';
+import { CatalogNotFoundError, codedError } from './errors.js';
+import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent, HarnessDescriptor, RunListFilter, AuditAction } from './types.js';
 import { parseMeta } from './workflow-meta.js';
-import { canonicalContract, effectiveBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings } from './params/contract.js';
+import { effectiveAgentBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type AgentParamSpec } from './params/contract.js';
 import { projectWorkflowForRead, projectWorkflowDescribe, type WorkflowOwnerView } from './workflow-view.js';
-import { getTriggerBindings, type TriggerPorts } from './trigger-bindings.js';
+import type { Principal } from './authz.js';
+import { pathVerdict } from './path-verdict.js';
+import { auditedWorkspaceRead } from './audited-read.js';
+import type { CasStore } from './cas-store.js';
+import type { AssetSyncService, AssetKind, AssetScope } from './asset-sync.js';
 
-// v23 (DES-128, TASK-119): the honest empty snapshot for a test that doesn't care about triggers —
-// `triggerPorts` is REQUIRED on McpFacadeDeps (adjudication #2 R-2), so a test facade passes this
-// explicitly rather than relying on a silently-degrading default.
-export const NO_TRIGGER_PORTS: TriggerPorts = {
-  schedules: { listByWorkflow: () => [] },
-  webhooks: { listByWorkflow: () => [] },
-  continuations: { listPendingByWorkflow: () => [] },
-  runs: { getWorkflowName: () => null },
-};
-
-// v23 (DES-126/DES-131, TASK-126): the disabled-analyzer default — same convention as
-// NO_TRIGGER_PORTS above. `regenerate` is unreachable through the facade while `enabled:false`
-// (workflow_regenerate_diagram short-circuits to ANALYZER_DISABLED first) so it never needs to do
-// real work here.
-export const NO_GRAPH_ANALYZER: NonNullable<McpFacadeDeps['graphAnalyzer']> = {
-  enabled: false,
-  regenerate: () => ({ queued: false, status: 'pending' }),
-};
-
-// v21 (DES-103/DES-104): the engine ceilings bound the read surfaces (workflow_get/list) at read
+// v21 (DES-103/DES-104): the engine ceilings bound the read surfaces (workflow_source/list) at read
 // time — TASK-100 wires the live values from ServerConfig via McpFacadeDeps.ceilings (server.ts);
-// contract.ts's shared DEFAULT_CEILINGS applies only when a caller omits them (e.g. direct
-// RunManager-less test construction). v21 Gate 8 RE-REVIEW #6 (P6-5): this file used to re-type
-// that literal; it now imports the one constant, like every other site.
+// contract.ts's shared DEFAULT_CEILINGS applies only when a caller omits them.
 
 /** Read surfaces never serve null/unbounded (DES-103): a missing contract reads back as the
  *  canonical 4-knob contract, and every contract is bounded by the engine ceilings at read time. */
+/** v24 (DES-144): the "canonical 4-knob contract" fallback is RETIRED — a missing/legacy contract
+ *  reads back as the zero-label `{agents:{},args:{}}` shape; `effectiveAgentBounds` bounds each
+ *  declared agent's spec individually (the whole-contract `effectiveBounds` it replaces operated
+ *  on the now-deleted `knobs` shape). */
 function readParams(stored: unknown, ceilings: Ceilings): ParamContract {
-  return effectiveBounds((stored as ParamContract | undefined) ?? canonicalContract(), ceilings);
+  const c = (stored as ParamContract | undefined) ?? { agents: {}, args: {} };
+  const agents: Record<string, AgentParamSpec> = {};
+  for (const [label, spec] of Object.entries(c.agents ?? {})) {
+    agents[label] = effectiveAgentBounds(spec, ceilings);
+  }
+  return { agents, args: c.args ?? {} };
 }
 
-/** v22 (DES-116, ARCH-076, ADR-012, TASK-111): required (no default) read-time identity for
- *  `workflow_get`/`workflow_list` — an optional `principal = null` default would reproduce this
- *  project's `composeConfig` wiring-bug class verbatim (correct implementation, unwired call site,
- *  every unit test green, zero protection). A required argument makes an unwired call site a `tsc`
- *  error instead. Masking keys on `authEnabled`, NEVER on `principal == null` alone: a null
- *  principal has TWO causes — auth genuinely off, and the D-BIND loopback-peer exemption on an
- *  auth-enabled non-loopback-bound server — and both must mask. */
-export interface ReadContext {
-  authEnabled: boolean;
-  principal: string | null;
+/** v24 (DES-142, ADR-028): the ONE namespace expression — CAS namespace = the caller's own
+ *  identity, `'local'` for the no-identity kinds (auth-disabled single-operator, loopback-exempt). */
+function nsOf(p: Principal): string {
+  return p.kind === 'auth-disabled' || p.kind === 'loopback-exempt' ? 'local' : p.id;
+}
+
+/** Structural port both SqliteSchedulerPort and WebhookRegistry satisfy (DES-149) — the facade's
+ *  register/deregister sequence only needs these three trigger-claim primitives from either store. */
+interface TriggerClaimStore {
+  ownerOf(id: string): string | null | undefined;
+  claim(id: string, workflow: string): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED';
+  release(id: string, workflow: string): void;
+}
+
+const NEVER_CLAIMS: TriggerClaimStore = {
+  ownerOf: () => undefined,
+  claim: () => 'NOT_FOUND',
+  release: () => { /* no-op */ },
+};
+
+/** v24 (DES-148): the two catalog methods the facade's register sequence calls SEPARATELY (with a
+ *  trigger-claim step in between) — a structural port so this file does not need the concrete
+ *  WorkflowCatalog class beyond what's already imported for read-side helpers. */
+interface RegistrationCatalog {
+  validateRegistration(req: { name: string; script: string; mermaid: string; principal?: string | null }): Promise<{ params: ParamContract }>;
+  insertVersion(req: { name: string; script: string; mermaid: string; triggers?: string[]; params: ParamContract; principal?: string | null }): Promise<{ version: string }>;
 }
 
 export interface McpFacadeDeps {
@@ -65,20 +74,16 @@ export interface McpFacadeDeps {
   store?: RunStore;
   runManager?: RunManager;
   validator?: SubmissionValidator;
-  /** v21 (ARCH-066, DES-104, TASK-100): engine ceilings bounding workflow_get/list's read-time
+  /** v21 (ARCH-066, DES-104, TASK-100): engine ceilings bounding workflow_source/list's read-time
    *  effective bounds — forwarded from ServerConfig (see server.ts's createServer). */
   ceilings?: Ceilings;
-  /** v23 (DES-128, TASK-119): live cross-store ports for workflow_describe's `triggers` field —
-   *  DES-128's read-time call site (the analyzer's own generation-time call is separate, TASK-117).
-   *  REQUIRED (adjudication #2 R-2, TASK-126): an unwired call site must be a `tsc` error, not a
-   *  silent degrade to "no triggers exist" — a caller that genuinely doesn't care passes
-   *  `NO_TRIGGER_PORTS` explicitly. */
-  triggerPorts: TriggerPorts;
-  /** v23 (DES-126, DES-127 B2/B4, TASK-119): analyzer enabled-state + regenerate delegate for
-   *  workflow_describe's diagram fields and workflow_regenerate_diagram's gate. REQUIRED (same R-2
-   *  ruling as `triggerPorts` — a disabled deployment passes `NO_GRAPH_ANALYZER` explicitly, never
-   *  an omission that reads as "unwired" and "genuinely disabled" alike). */
-  graphAnalyzer: { enabled: boolean; regenerate(name: string, version: string, principal: string | null): { queued: boolean; status: 'pending' } };
+  cas?: CasStore;
+  assetSync?: AssetSyncService;
+  /** v24 (DES-149): the two trigger-claim stores the register/deregister sequence calls into.
+   *  Absent (unit-test construction with no triggers ever passed) degrades to a store that answers
+   *  NOT_FOUND for everything, rather than crashing. */
+  schedulerClaims?: TriggerClaimStore;
+  webhookClaims?: TriggerClaimStore;
 }
 
 function toErrEnvelope(err: unknown): ErrEnvelope {
@@ -110,10 +115,9 @@ function notFound(runId: string): ErrEnvelope {
 }
 
 /** v23 Gate 6.5 simplify: the `{code, error}` half of a failed `catalog.resolveDetail`, shared by
- *  `workflow_describe`/`workflow_regenerate_diagram` (byte-identical in both before this extraction;
- *  they differ only in the envelope keys they spread it into). Unknown NAME keeps the pre-v22
- *  `WORKFLOW_NOT_FOUND` code; a known name with an unresolvable version/channel selector surfaces
- *  its own typed code (UNKNOWN_VERSION/CHANNEL_UNPUBLISHED/INVALID_CHANNEL/DANGLING_CHANNEL). */
+ *  `workflow_describe`/`workflow_source` (byte-identical in both before this extraction). Unknown
+ *  NAME keeps the pre-v22 `WORKFLOW_NOT_FOUND` code; a known name with an unresolvable version/
+ *  channel selector surfaces its own typed code. */
 function catalogResolveFailure(err: unknown, name: string): { code: string; error: ErrEnvelope } {
   const error = err instanceof CatalogNotFoundError
     ? { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${name}` }
@@ -121,26 +125,16 @@ function catalogResolveFailure(err: unknown, name: string): { code: string; erro
   return { code: error.code, error };
 }
 
-/** v23 Gate 6.5 simplify: the `reportProblem` line every workflow view carries — byte-identical at
- *  the two sites that build a `WorkflowOwnerView` (workflow_get's non-owner branch, and
- *  workflow_describe) before this extraction. */
 function reportProblemFor(name: string, owner: string | null): string {
   return owner === null
     ? `this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: "${name}"})`
     : `issue_report({workflow: "${name}"})`;
 }
 
-// v22 (DES-117, TASK-109): the closed-error message template, shared by both ingress refusal sites
-// in this file (workflow_run/workflow_resume) and RunManager.start()'s own chokepoint check — the
-// two-call migration recipe an agent needs (workflow_register then workflow_run({name})).
-const INLINE_SCRIPT_CLOSED_MESSAGE = 'Inline scripts are no longer accepted at run start; register once (workflow_register) then run by name: workflow_register({script}) then workflow_run({name})';
+const INLINE_SCRIPT_CLOSED_MESSAGE = 'Inline scripts are no longer accepted at run start; register once (workflow_register) then run by name: workflow_register({script}) then run_start({name})';
 
 // Shared body for suspend/resume/stop: pre-check, delegate action, post-read new status (or old on error).
-async function lifecycle(
-  store: RunStore,
-  runId: string,
-  action: () => Promise<void>,
-): Promise<ResultEnvelope> {
+async function lifecycle(store: RunStore, runId: string, action: () => Promise<void>): Promise<ResultEnvelope> {
   const view = await store.getRun(runId);
   if (!view) return { runId, status: 'failed', error: notFound(runId) };
   try {
@@ -152,19 +146,34 @@ async function lifecycle(
   }
 }
 
+/** DES-149: `null` for the two no-real-identity Principal kinds; the CATALOG's own internal
+ *  ownership re-check (`existing.owner !== principal`, unchanged since v15) treats `principal ===
+ *  null` as "bypass" — the mechanism an `admin`/`auth-disabled` caller uses to act on ANY owner's
+ *  row, since authorize() already permitted it structurally and the catalog method itself has no
+ *  concept of roles. */
+function bypassPrincipal(p: Principal): string | null {
+  return p.kind === 'admin' || p.kind === 'auth-disabled' ? null : p.kind === 'loopback-exempt' ? null : p.id;
+}
+
+/** DES-149: attribution for a NEW row — always the caller's own id (never a bypass), so an
+ *  admin's own registrations/creations are attributed to them, not silently ownerless. */
+function attributionPrincipal(p: Principal): string | null {
+  return p.kind === 'auth-disabled' || p.kind === 'loopback-exempt' ? null : p.id;
+}
+
 export class McpFacade {
   private readonly store: RunStore;
   private readonly runManager: RunManager;
   private readonly validator: SubmissionValidator;
   private readonly ceilings: Ceilings;
-  private readonly triggerPorts: TriggerPorts;
-  private readonly graphAnalyzer: McpFacadeDeps['graphAnalyzer'];
+  private readonly cas?: CasStore;
+  // Not readonly: `AssetSyncService` needs the server's bound port for `selfBind` (server.ts
+  // constructs it AFTER `http.listen()`, well after the facade). `bindAssetSync` lets the
+  // composition root supply it once that port is known.
+  private assetSync?: AssetSyncService;
+  private readonly schedulerClaims: TriggerClaimStore;
+  private readonly webhookClaims: TriggerClaimStore;
 
-  // v23 (adjudication #2 R-2, TASK-126): `deps` itself has no default — `triggerPorts`/
-  // `graphAnalyzer` are required fields on `McpFacadeDeps`, so a `deps = {}` default would fail to
-  // typecheck here and, worse, would reintroduce exactly the silent-degrade default this ruling
-  // closes. Every caller (including a facade built only for the pre-v23 core 8 tools) passes
-  // `NO_TRIGGER_PORTS`/`NO_GRAPH_ANALYZER` explicitly.
   constructor(deps: McpFacadeDeps) {
     const clock = deps.clock ?? new SystemClock();
     // Construct the store FIRST and inject it into RunManager (D-I1) — otherwise RunManager
@@ -174,69 +183,90 @@ export class McpFacade {
     this.runManager = deps.runManager ?? new RunManager({ store: this.store, clock });
     this.validator = deps.validator ?? new SubmissionValidator({ catalog: this.runManager.catalog });
     this.ceilings = deps.ceilings ?? DEFAULT_CEILINGS;
-    this.triggerPorts = deps.triggerPorts;
-    this.graphAnalyzer = deps.graphAnalyzer;
+    this.cas = deps.cas;
+    this.assetSync = deps.assetSync;
+    this.schedulerClaims = deps.schedulerClaims ?? NEVER_CLAIMS;
+    this.webhookClaims = deps.webhookClaims ?? NEVER_CLAIMS;
   }
 
-  async workflow_run(a: { name?: string; script?: string; args?: unknown; budget?: number | null; seed?: { path: string; contentB64: string }[]; seedManifest?: ManifestEntry[]; seedNamespace?: string; seedRef?: { repoUrl: string; sha: string }; seedManifestRef?: string; version?: string; channel?: 'beta' | 'release'; overrides?: unknown }, principal: string | null = null): Promise<ResultEnvelope<{ runId: string }>> {
-    // v22 (DES-114, DES-117, TASK-109): ingress closure is asserted BEFORE `validator.validate()` —
-    // `script` is no longer on the advertised schema, but `/mcp` accepts arbitrary JSON, so a
-    // hand-rolled body carrying it must be refused INLINE_SCRIPT_CLOSED here; validate() only checks
-    // `name` and would otherwise mask this behind MISSING_NAME (script-only bodies carry no name).
-    if (a.script !== undefined) {
-      return { runId: '', status: 'failed', error: { code: 'INLINE_SCRIPT_CLOSED', message: INLINE_SCRIPT_CLOSED_MESSAGE } };
-    }
-    // Fail fast at submission (DES-012/ARCH-008), never mid-run.
-    const validation = await this.validator.validate({ name: a.name });
-    if (!validation.ok) {
-      return { runId: '', status: 'failed', error: validation.errors[0] };
-    }
-    try {
-      // v21 (ARCH-066, DES-104, TASK-100): `overrides` travels as start()'s own argument, never as
-      // a RunSpec field (RunSpec is persisted+read-back wholesale by getSpec() on resume).
-      const runId = await this.runManager.start({ name: a.name, args: normalizeArgs(a.args), budget: a.budget ?? null, seed: a.seed, seedManifest: a.seedManifest, seedNamespace: a.seedNamespace, seedRef: a.seedRef, seedManifestRef: a.seedManifestRef, version: a.version, channel: a.channel, startedBy: { type: 'client' }, ...(principal ? { principal } : {}) }, a.overrides);
-      const view = await this.store.getRun(runId);
-      return { runId, status: view?.status ?? 'queued', result: { runId } };
-    } catch (err) {
-      return { runId: '', status: 'failed', error: toErrEnvelope(err) };
-    }
+  /** See the `assetSync` field comment — called once by the composition root after
+   *  `AssetSyncService` is constructed (needs the server's bound port). */
+  bindAssetSync(assetSync: AssetSyncService): void {
+    this.assetSync = assetSync;
   }
 
-  /** Registers/updates a named workflow in the catalog (REQ-014). Not part of the DES-001 core
-   *  8-tool contract, but required at the same submission-style entry point for the registry slice.
-   *  v15 (DES-098, DES-099, TASK-089): principal threaded for ownership gate; defaults validated + stored.
-   *  Flat response: `version` (number) surfaced at top level for direct `r.version` callers; on error,
-   *  `code` surfaced at top level alongside `error` for direct `r.code` callers. */
-  async workflow_register(a: { name: string; script: string; defaults?: Record<string, unknown> }, principal: string | null = null): Promise<Record<string, unknown>> {
+  private _triggerOwner(id: string): string | null | undefined {
+    const s = this.schedulerClaims.ownerOf(id);
+    if (s !== undefined) return s;
+    return this.webhookClaims.ownerOf(id);
+  }
+
+  private _storeFor(id: string): TriggerClaimStore {
+    return this.schedulerClaims.ownerOf(id) !== undefined ? this.schedulerClaims : this.webhookClaims;
+  }
+
+  // ============================================================================================
+  // workflow_* (7)
+  // ============================================================================================
+
+  /** DES-149: the register→claim→insert→compensate sequence. `validateRegistration` (nothing
+   *  written) → every trigger id located + ownership-checked → `claim()` each (first non-'claimed'
+   *  releases the ids THIS call claimed, in reverse, and refuses) → `insertVersion` → on throw,
+   *  release exactly the ids this call claimed. */
+  async workflowRegister(a: { name: string; script: string; mermaid: string; triggers?: string[] }, principal: Principal): Promise<Record<string, unknown>> {
+    const claimedThisCall: string[] = [];
     try {
-      const { version } = await this.runManager.catalog.register(a.name, a.script, a.defaults as import('./harness-defaults.js').HarnessDefaults | undefined, principal);
-      const versionNum = Number(version.replace(/^v/, '')) || 1;
-      return { runId: '', status: 'completed', version: versionNum, result: { name: a.name, version } };
+      const triggers = a.triggers ?? [];
+      if (new Set(triggers).size !== triggers.length) {
+        throw codedError('INVALID_ARGUMENT', 'INVALID_ARGUMENT: duplicate ids in triggers[]');
+      }
+      const isAdmin = principal.kind === 'admin' || principal.kind === 'auth-disabled';
+      for (const id of triggers) {
+        const owner = this._triggerOwner(id);
+        if (owner === undefined) throw codedError('TRIGGER_NOT_FOUND', `TRIGGER_NOT_FOUND: ${id}`);
+        if (!isAdmin && owner !== null && owner !== (principal.kind === 'loopback-exempt' ? undefined : (principal as { id: string }).id)) {
+          throw codedError('NOT_TRIGGER_OWNER', `NOT_TRIGGER_OWNER: ${id}`);
+        }
+      }
+      const catalog = this.runManager.catalog as unknown as RegistrationCatalog;
+      const { params } = await catalog.validateRegistration({ name: a.name, script: a.script, mermaid: a.mermaid, principal: attributionPrincipal(principal) });
+      for (const id of triggers) {
+        const outcome = this._storeFor(id).claim(id, a.name);
+        if (outcome === 'claimed') { claimedThisCall.push(id); continue; }
+        if (outcome === 'held') continue; // already this workflow's from an earlier version — never released by compensation
+        for (const rid of [...claimedThisCall].reverse()) this._storeFor(rid).release(rid, a.name);
+        throw codedError(outcome === 'NOT_FOUND' ? 'TRIGGER_NOT_FOUND' : 'TRIGGER_ALREADY_CLAIMED', `${outcome}: ${id}`);
+      }
+      try {
+        const { version } = await catalog.insertVersion({ name: a.name, script: a.script, mermaid: a.mermaid, triggers, params, principal: attributionPrincipal(principal) });
+        const versionNum = Number(version.replace(/^v/, '')) || 1;
+        return { runId: '', status: 'completed', version: versionNum, result: { name: a.name, version } };
+      } catch (err) {
+        for (const id of [...claimedThisCall].reverse()) this._storeFor(id).release(id, a.name);
+        throw err;
+      }
     } catch (err) {
       const e = toErrEnvelope(err);
       return { runId: '', status: 'failed', code: e.code, error: e };
     }
   }
 
-  // v15 (DES-098, TASK-089): ownership gate → NOT_WORKFLOW_OWNER; flat response with `removed` +
-  // `code` at top level for direct `r.removed` / `r.code` callers.
-  async workflow_deregister(a: { name: string }, principal: string | null = null): Promise<Record<string, unknown>> {
+  /** DES-149 (ARCH-091): the catalog deletes; the facade releases each claimed trigger and reports
+   *  the union as `releasedTriggers`. */
+  async workflowDeregister(a: { name: string }, principal: Principal): Promise<Record<string, unknown>> {
     try {
-      const { removed } = await this.runManager.catalog.deregister(a.name, principal);
-      return { runId: '', status: 'completed', name: a.name, removed, result: { name: a.name, removed } };
+      const { removed, claimedTriggers } = await this.runManager.catalog.deregister(a.name, bypassPrincipal(principal));
+      for (const id of claimedTriggers) this._storeFor(id).release(id, a.name);
+      return { runId: '', status: 'completed', name: a.name, removed, releasedTriggers: claimedTriggers, result: { name: a.name, removed, releasedTriggers: claimedTriggers } };
     } catch (err) {
       const e = toErrEnvelope(err);
       return { runId: '', status: 'failed', code: e.code, error: e };
     }
   }
 
-  /** v22 (REQ-097, DES-111, DES-114, TASK-109): NEW tool — moves a named channel pointer to an
-   *  already-registered version. Ownership-gated like register/deregister (NOT_WORKFLOW_OWNER for a
-   *  non-owner); registration ≠ publication (a freshly registered version is on no channel until
-   *  this is called). Same flat-response shape as workflow_register/deregister. */
-  async workflow_publish(a: { name: string; version: string; channel: Channel }, principal: string | null = null): Promise<Record<string, unknown>> {
+  async workflowPublish(a: { name: string; version: string; channel: Channel }, principal: Principal): Promise<Record<string, unknown>> {
     try {
-      const result = await this.runManager.catalog.publish(a.name, a.version, a.channel, principal);
+      const result = await this.runManager.catalog.publish(a.name, a.version, a.channel, bypassPrincipal(principal));
       return { runId: '', status: 'completed', result };
     } catch (err) {
       const e = toErrEnvelope(err);
@@ -244,170 +274,10 @@ export class McpFacade {
     }
   }
 
-  /** C-3 (review finding): returns the SAME uniform `{ runId, status, result }` envelope as every
-   *  other tool — the full RunStatusView (phases/agents/scriptVersion) is the `result` payload, NOT
-   *  spread at the top level (which previously made this the only non-uniform tool of the 16). */
-  async workflow_status(a: { runId: string }): Promise<ResultEnvelope<RunStatusView>> {
-    const view = await this.store.getRun(a.runId);
-    if (!view) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
-    const merged = await this.runManager.status(a.runId).catch(() => view);
-    // v15 (DES-096): surface principal at the outer envelope level (same level as status/runId)
-    // so callers can observe attribution without unwrapping the inner result.
-    return { runId: merged.runId, status: merged.status, ...(merged.principal ? { principal: merged.principal } : {}), result: merged };
-  }
-
-  /** Returns the script's own return value (REQ-005 acceptance), not the RunStatusView — poll
-   *  workflow_status for lifecycle/observability, fetch workflow_result for the payload (D-I2). */
-  async workflow_result(a: { runId: string }): Promise<ResultEnvelope> {
-    const view = await this.store.getRun(a.runId);
-    if (!view) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
-    const outcome = await this.runManager.result(a.runId);
-    if (outcome.ok) return { runId: a.runId, status: view.status, result: outcome.value };
-    return { runId: a.runId, status: view.status, error: outcome.error };
-  }
-
-  async workflow_suspend(a: { runId: string }): Promise<ResultEnvelope> {
-    return lifecycle(this.store, a.runId, () => this.runManager.suspend(a.runId));
-  }
-
-  async workflow_resume(a: { runId: string; script?: string }): Promise<ResultEnvelope> {
-    // v22 (DES-114, DES-117, TASK-109): the replacement-script capability is CLOSED with inline
-    // scripts (REQ-098) — `script` is no longer on the advertised schema; a hand-rolled body
-    // carrying it is refused here, before any run lookup (matches workflow_run's ordering).
-    if (a.script !== undefined) {
-      return { runId: a.runId, status: 'failed', error: { code: 'INLINE_SCRIPT_CLOSED', message: INLINE_SCRIPT_CLOSED_MESSAGE } };
-    }
-    // v21 (ARCH-066, DES-104, TASK-100): the mere PRESENCE of an `overrides` field is a typed
-    // rejection, full stop — no absent-vs-{}-vs-equal semantics to get subtly wrong. A resumed run
-    // always re-dispatches from its pinned admission-time snapshot, never a second merge.
-    if (Object.prototype.hasOwnProperty.call(a, 'overrides')) {
-      return { runId: a.runId, status: 'failed', error: { code: 'RESUME_OVERRIDES_NOT_ALLOWED', message: 'workflow_resume does not accept overrides; the pinned admission-time snapshot is reused. Start a new run to apply different overrides.' } };
-    }
-    return lifecycle(this.store, a.runId, () => this.runManager.resume(a.runId));
-  }
-
-  async workflow_stop(a: { runId: string }): Promise<ResultEnvelope> {
-    return lifecycle(this.store, a.runId, () => this.runManager.stop(a.runId));
-  }
-
-  /** REQ-014: a registered workflow must be visible here BEFORE any run — result is a flat
-   *  kind-discriminated array mixing catalog entries (unrun workflows) with run summaries, so
-   *  callers can find either a workflow by `.name` or a run by `.runId` in the same list (D-I9). */
-  // v22 (DES-116, TASK-111): `ctx` is required (see ReadContext) — entries here have never carried
-  // `script` (a catalog-list entry is `{kind:'workflow', name, version, createdAt, description,
-  // params, versions, channels}`, never the script text), so there is no masking DECISION to make
-  // yet; the parameter exists so a future field that DOES need one is added to an already-wired
-  // call site, not a `= null`-defaulted one (the composeConfig class this task exists to close).
-  async workflow_list(_a: unknown, _ctx: ReadContext): Promise<ResultEnvelope<Array<
-    ({ kind: 'workflow'; name: string; version: string; createdAt: string; description: string; params: ParamContract }) | (RunSummary & { kind: 'run' })
-  >>> {
-    const workflows = await this.runManager.catalog.list();
-    const runs = await this.store.listRuns();
-    // v21 (DES-103, TASK-099): params surfaced per entry, ceiling-bounded, from the column only
-    // (catalog.list() never re-parses the script for it).
-    const result = [
-      ...workflows.map((w) => ({ kind: 'workflow' as const, ...w, params: readParams(w.params, this.ceilings) })),
-      ...runs.map((r) => ({ kind: 'run' as const, ...r })),
-    ];
-    return { runId: '', status: 'completed', result };
-  }
-
-  /** v9 (REQ-061/062): full detail for one registered workflow — its purpose (meta.description +
-   *  phases) and the script — so a client can understand what a
-   *  workflow does and see its shape BEFORE deciding to reuse it or author a new one. Unknown name →
-   *  typed WORKFLOW_NOT_FOUND envelope (never throws across the tool boundary).
-   *  v15 (DES-098, DES-099, TASK-089): adds owner + defaults to output; flat response surfaces
-   *  owner/defaults/code at top level for direct `r.owner` / `r.defaults` / `r.code` callers. */
-  async workflow_get(a: { name: string; version?: string }, ctx: ReadContext): Promise<Record<string, unknown>> {
-    let full: WorkflowDetail;
-    try {
-      // v22 (REQ-097, DES-114, TASK-109): optional version selector — no `channel` here (unlike
-      // workflow_run), same DES-110 truth table, so an unpublished draft still reads by version.
-      full = await this.runManager.catalog.resolveDetail(a.name, { version: a.version });
-    } catch (err) {
-      // Unknown NAME keeps the pre-v22 WORKFLOW_NOT_FOUND code (existing callers depend on it);
-      // a KNOWN name with an unresolvable version/channel selector surfaces its real typed code
-      // (UNKNOWN_VERSION/CHANNEL_UNPUBLISHED/INVALID_CHANNEL) instead of being swallowed into it.
-      if (err instanceof CatalogNotFoundError) {
-        return { runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` } };
-      }
-      const e = toErrEnvelope(err);
-      return { runId: '', status: 'failed', code: e.code, error: e };
-    }
-    const meta = parseMeta(full.script);
-    // v21 (DES-103, TASK-099): ceiling-bounded contract — never null/unbounded (REQ-090..093).
-    const params = readParams(full.params, this.ceilings);
-
-    // v22 (DES-116, ADR-012, TASK-111): masking keys on `ctx.authEnabled`, never on
-    // `ctx.principal == null` alone — a null principal has two causes (auth off; the D-BIND
-    // loopback exemption while auth stays on) and both mask. A NULL-`owner` row falls out of this
-    // SAME check with no special-casing (`ctx.principal !== null` never matches a null `owner`).
-    // `a`'s caller-supplied args are NEVER consulted for identity (ADR-012 bars an `args.principal`
-    // unmask path) — only the server-resolved `ctx.principal`.
-    const viewerIsOwner = ctx.authEnabled ? (ctx.principal !== null && ctx.principal === full.owner) : true;
-
-    // REQ-099: re-validated against the CURRENT alias/MCP config, never the registration-time
-    // result, so staleness (an alias removed after registration) is visible on every read.
-    // v22 adjudication #3 (M-1): computed for BOTH branches. It used to run only inside the
-    // non-owner branch, so on a default auth-disabled server — where every reader takes the owner
-    // branch — REQ-099's "surfaced, not silently swallowed, so the author can fix and re-register"
-    // was observable to everyone EXCEPT the author it exists for.
-    const check = this.runManager.catalog.validateCurrent(full.script);
-    const validation = check.ok ? { ok: true, errors: [] } : { ok: false, errors: check.errors };
-
-    if (!viewerIsOwner) {
-      const ownerView: WorkflowOwnerView = {
-        name: full.name, version: full.version,
-        // v22 (DES-115): workflow-view.ts's `channels` is typed `Record<string,string>` while the
-        // catalog's `Channels` allows a null (unpublished) pointer; the double cast is a type-shape
-        // reconciliation only — `channels` (with its possible nulls) is on the public allowlist
-        // either way (REQ-096's `+channels{release,beta}`), so this widens no disclosure.
-        channels: full.channels as unknown as Record<string, string>,
-        versions: full.versions,
-        description: meta.description, phases: meta.phases,
-        params, owner: full.owner, createdAt: full.createdAt,
-        reportProblem: reportProblemFor(full.name, full.owner),
-        validation,
-        script: full.script,
-      };
-      // v22 (DES-115): the allowlist projection is the ENTIRE response — no flat top-level copies
-      // (the `script` twice-leak this design closes, `mcp-facade.ts:220/232` pre-v22).
-      return { runId: '', status: 'completed', result: projectWorkflowForRead(ownerView, false) };
-    }
-
-    // Owner (or auth disabled): the pre-v22 surface (REQ-100 clause 3), plus exactly ONE added
-    // field — `result.validation` (v22 adjudication #3, M-1). REQ-099 requires the staleness of a
-    // workflow that would now fail its registration checks to be observable to the AUTHOR, who is
-    // this branch's reader on every auth-disabled deployment; a non-owner already got it. Full
-    // `{ok, errors}` here (the non-owner projection narrows it to `{ok}`) because the author is the
-    // one who has to act on the errors and re-register.
-    const resultObj = {
-      name: full.name, version: full.version, createdAt: full.createdAt,
-      description: meta.description, phases: meta.phases, script: full.script,
-      owner: full.owner,
-      defaults: full.defaults as Record<string, unknown> | undefined,
-      params,
-      validation,
-    };
-    return {
-      runId: '', status: 'completed',
-      // Flat: owner + defaults + params + script also at top level for direct r.owner / r.defaults / r.params access
-      owner: full.owner,
-      params,
-      defaults: full.defaults as Record<string, unknown> | undefined,
-      script: full.script,
-      result: resultObj,
-    };
-  }
-
-  /** v23 (REQ-101, DES-125, DES-126, ARCH-082, TASK-119): the ONE workflow_describe response — every
-   *  principal gets the SAME non-owner-shaped view (DES-125 drops `viewerIsOwner`; `ctx` stays
-   *  required with no default per ADR-012, but this tool makes no masking decision on it — a future
-   *  field that does need one is added to an already-wired call site). Reuses `resolveVersionRequest`
-   *  (via `catalog.resolveDetail`) so its error code is IDENTICAL to run-admission's for the same
-   *  selector — the only structural way REQ-101's "resolve by REQ-097's exact order" survives someone
-   *  editing one call site without the other. */
-  async workflow_describe(a: { name: string; version?: string; channel?: 'beta' | 'release' }, _ctx: ReadContext): Promise<Record<string, unknown>> {
+  /** v23 (REQ-101, DES-125/126, v24 rename of workflow_describe): the ONE response, same shape for
+   *  every principal (DES-125 already dropped the owner/non-owner split — v24 threads `Principal`
+   *  only for signature consistency, no masking decision here). */
+  async workflowDescribe(a: { name: string; version?: string; channel?: 'beta' | 'release' }, _principal: Principal): Promise<Record<string, unknown>> {
     const catalog = this.runManager.catalog;
     const sel: VersionSelector = { version: a.version, channel: a.channel };
     let full: WorkflowDetail;
@@ -416,8 +286,6 @@ export class McpFacade {
     } catch (err) {
       return { runId: '', status: 'failed', ...catalogResolveFailure(err, a.name) };
     }
-    // Same pure resolver, called again against the row we already have, purely to name HOW this
-    // version was picked (`resolvedBy`) — the codes on the error path above already came from it.
     const requested = resolveVersionRequest(sel, full.channels, new Set(full.versions));
     const meta = parseMeta(full.script);
     const params = readParams(full.params, this.ceilings);
@@ -433,114 +301,304 @@ export class McpFacade {
       validation: check.ok ? { ok: true, errors: [] } : { ok: false, errors: check.errors },
       script: full.script,
     };
-    const { bindings, bindingsFp } = getTriggerBindings(full.name, this.triggerPorts);
-    const diagram = catalog.getDiagram(full.name, full.version);
-    const view = projectWorkflowDescribe(ownerView, {
-      diagram, bindings, bindingsFp, analyzerEnabled: this.graphAnalyzer.enabled,
-    });
+    // v24 (TASK-149/DES-156 owns the richer `mermaid`/by-id `triggers` projection this will grow
+    // into — `ownerView.mermaid` is left unset here (WorkflowDetail does not expose the stored
+    // column yet) and `triggers: []` until TASK-149 wires the by-id lookup).
+    const view = projectWorkflowDescribe(ownerView, { ceilings: this.ceilings, triggers: [] });
     return { runId: '', status: 'completed', result: view };
   }
 
-  /** v23 (REQ-102, DES-126, DES-127 B4/B5, ARCH-082, TASK-119): owner-gated kick of a diagram
-   *  regeneration for one already-registered `(name, version)`. `version` is required (never
-   *  "whatever release currently points at") so nobody regenerates a version they didn't mean to.
-   *  Ownership + existence are checked HERE (mirrors `catalog.publish`'s own gate) before the
-   *  analyzer is ever touched, so a non-owner or a dangling name/version never reaches it; in-flight
-   *  idempotence (DES-127 B4) is `GraphAnalyzer.regenerate`'s own property, simply delegated to. */
-  async workflow_regenerate_diagram(a: { name: string; version: string }, principal: string | null): Promise<Record<string, unknown>> {
-    const catalog = this.runManager.catalog;
+  /** v24 rename of `workflow_get` (ARCH-091: "the former workflow_get") — owner/admin full,
+   *  non-owner `author` gets the masked projection (`scriptWithheld:true, see:'workflow_describe'`). */
+  async workflowSource(a: { name: string; version?: string }, principal: Principal): Promise<Record<string, unknown>> {
     let full: WorkflowDetail;
     try {
-      full = await catalog.resolveDetail(a.name, { version: a.version });
+      full = await this.runManager.catalog.resolveDetail(a.name, { version: a.version });
     } catch (err) {
-      return { queued: false, ...catalogResolveFailure(err, a.name) };
+      if (err instanceof CatalogNotFoundError) {
+        return { runId: '', status: 'failed', code: 'WORKFLOW_NOT_FOUND', error: { code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${a.name}` } };
+      }
+      const e = toErrEnvelope(err);
+      return { runId: '', status: 'failed', code: e.code, error: e };
     }
-    if (full.owner && principal !== null && full.owner !== principal) {
-      const e = { code: 'NOT_WORKFLOW_OWNER', message: `NOT_WORKFLOW_OWNER: workflow '${a.name}' is owned by ${full.owner}` };
-      return { queued: false, code: e.code, error: e };
+    const meta = parseMeta(full.script);
+    const params = readParams(full.params, this.ceilings);
+    const isOwnerOrAdmin = principal.kind === 'admin' || principal.kind === 'auth-disabled'
+      || (principal.kind !== 'loopback-exempt' && principal.id === full.owner);
+    const check = this.runManager.catalog.validateCurrent(full.script);
+    const validation = check.ok ? { ok: true, errors: [] } : { ok: false, errors: check.errors };
+
+    if (!isOwnerOrAdmin) {
+      const ownerView: WorkflowOwnerView = {
+        name: full.name, version: full.version,
+        channels: full.channels as unknown as Record<string, string>,
+        versions: full.versions,
+        description: meta.description, phases: meta.phases,
+        params, owner: full.owner, createdAt: full.createdAt,
+        reportProblem: reportProblemFor(full.name, full.owner),
+        validation,
+        script: full.script,
+      };
+      return { runId: '', status: 'completed', result: projectWorkflowForRead(ownerView, false) };
     }
-    if (!this.graphAnalyzer.enabled) {
-      const e = { code: 'ANALYZER_DISABLED', message: 'the graph analyzer is disabled (graphAnalyzer.enabled:false)' };
-      return { queued: false, code: e.code, error: e };
-    }
-    return this.graphAnalyzer.regenerate(a.name, a.version, principal);
+    const resultObj = {
+      name: full.name, version: full.version, createdAt: full.createdAt,
+      description: meta.description, phases: meta.phases, script: full.script,
+      owner: full.owner, params, validation,
+    };
+    return { runId: '', status: 'completed', owner: full.owner, params, script: full.script, result: resultObj };
   }
 
-  /** DES-067 (TASK-070): shaped agent log — harness descriptor at top level, stripped from events,
-   *  hasMore windowing. The MCP tool enforces a 50-event cap; the HTTP handler passes limit/offset.
-   *  `harness:null` means the agent was never dispatched (no harness event in transcript).
-   *  `result` retained as an alias for `events` for backward compatibility with existing callers. */
-  async workflow_agent_log(a: { runId: string; agentId: string; limit?: number; offset?: number }): Promise<
-    ResultEnvelope<TranscriptEvent[]> & {
-      harness: HarnessDescriptor | null;
-      events: TranscriptEvent[];
-      hasMore: boolean;
+  /** v24 (ARCH-091): "workflows only" — the mixed workflow+run listing moves to `run_list`. */
+  async workflowList(a: { onlyRunnable?: boolean }, principal: Principal): Promise<ResultEnvelope<Array<{ name: string; owner: string | null; versions: string[]; channels: Record<string, string>; runnable: boolean }>>> {
+    const workflows = await this.runManager.catalog.list();
+    const onlyRunnable = a.onlyRunnable ?? (principal.kind === 'user');
+    const rows = workflows
+      .map((w) => ({ name: w.name, owner: (w as unknown as { owner?: string | null }).owner ?? null, versions: w.versions, channels: w.channels as unknown as Record<string, string>, runnable: (w.channels as unknown as { release?: string | null })?.release != null }))
+      .filter((w) => !onlyRunnable || w.runnable);
+    return { runId: '', status: 'completed', result: rows };
+  }
+
+  /** v24 (DES-157/TASK-150 owns the full builder + GUIDE_EXAMPLES) — a minimal, real (not a stub)
+   *  guide assembled from what already exists (ERROR_CATALOG-shaped rules stated in prose) so the
+   *  tool is genuinely answerable today; TASK-150 replaces this body with the generated one. */
+  async workflowAuthoringGuide(): Promise<ResultEnvelope<{ text: string }>> {
+    const text = [
+      'Authoring rules: declare every agent() call with a LITERAL string label; declare',
+      'params.agents.<label> for each label found in the script (model/effort/timeoutMs required,',
+      'each with a .default); the six LOCKED_KEYS (prompt/tools/skills/mcp/workdir/cwd) are',
+      'engine-owned — never redeclare them in an override. Register with {name, script, mermaid,',
+      'triggers?} — mermaid is REQUIRED (MERMAID_REQUIRED) and its agent nodes must match the',
+      "script's agent() labels bidirectionally (DIAGRAM_MISMATCH). A just-registered workflow has",
+      'no release — call workflow_publish (or pass {version}) before run_start; run_start returns',
+      'no result — poll run_status until terminal, then call run_result.',
+    ].join(' ');
+    return { runId: '', status: 'completed', result: { text } };
+  }
+
+  // ============================================================================================
+  // run_* (8)
+  // ============================================================================================
+
+  async runStart(a: { name?: string; args?: unknown; budget?: number | null; version?: string; overrides?: unknown }, principal: Principal): Promise<ResultEnvelope<{ runId: string }>> {
+    const validation = await this.validator.validate({ name: a.name });
+    if (!validation.ok) return { runId: '', status: 'failed', error: validation.errors[0] };
+    try {
+      const attributed = attributionPrincipal(principal);
+      const runId = await this.runManager.start({ name: a.name, args: normalizeArgs(a.args), budget: a.budget ?? null, version: a.version, startedBy: { type: 'client' }, ...(attributed ? { principal: attributed } : {}) }, a.overrides);
+      const view = await this.store.getRun(runId);
+      return { runId, status: view?.status ?? 'queued', result: { runId } };
+    } catch (err) {
+      return { runId: '', status: 'failed', error: toErrEnvelope(err) };
     }
+  }
+
+  /** DES-151: `adminReads` is attached HERE, at this projection, only for the run's OWNER —
+   *  never a field of `RunStatusView` itself (DES-162's ungated `/api/*` routes therefore cannot
+   *  serve it by construction). */
+  async runStatus(a: { runId: string }, principal: Principal, _crossPrincipalRead: boolean, _actor: string | null): Promise<ResultEnvelope<RunStatusView>> {
+    const view = await this.store.getRun(a.runId);
+    if (!view) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
+    const merged = await this.runManager.status(a.runId).catch(() => view);
+    const isOwner = merged.principal !== undefined && principal.kind !== 'auth-disabled' && principal.kind !== 'loopback-exempt' && principal.id === merged.principal;
+    const adminReads = isOwner ? this.store.auditFor(a.runId) : undefined;
+    return {
+      runId: merged.runId, status: merged.status,
+      ...(merged.principal ? { principal: merged.principal } : {}),
+      ...(adminReads !== undefined ? { adminReads } : {}),
+      result: merged,
+    };
+  }
+
+  async runResult(a: { runId: string }, _principal: Principal, crossPrincipalRead: boolean, actor: string | null): Promise<ResultEnvelope> {
+    const view = await this.store.getRun(a.runId);
+    if (!view) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
+    const owner = view.principal ?? 'local';
+    const doRead = () => this.runManager.result(a.runId);
+    const outcome = crossPrincipalRead
+      ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev), readArtifactChunk: doRead }, { actor, action: 'run_result' as AuditAction, runId: a.runId, owner })
+      : await doRead();
+    const o = outcome as Awaited<ReturnType<RunManager['result']>>;
+    if (o.ok) return { runId: a.runId, status: view.status, result: o.value };
+    return { runId: a.runId, status: view.status, error: o.error };
+  }
+
+  async runSuspend(a: { runId: string }, _principal: Principal): Promise<ResultEnvelope> {
+    return lifecycle(this.store, a.runId, () => this.runManager.suspend(a.runId));
+  }
+
+  async runResume(a: { runId: string }, _principal: Principal): Promise<ResultEnvelope> {
+    return lifecycle(this.store, a.runId, () => this.runManager.resume(a.runId));
+  }
+
+  async runStop(a: { runId: string }, _principal: Principal): Promise<ResultEnvelope> {
+    return lifecycle(this.store, a.runId, () => this.runManager.stop(a.runId));
+  }
+
+  async runAgentLog(a: { runId: string; agentId?: string; label?: string; limit?: number; offset?: number }, _principal: Principal, crossPrincipalRead: boolean, actor: string | null): Promise<
+    ResultEnvelope<TranscriptEvent[]> & { harness: HarnessDescriptor | null; events: TranscriptEvent[]; hasMore: boolean }
   > {
+    const agentId = a.agentId ?? a.label ?? '';
     const stored = await this.store.getRun(a.runId);
     if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId), harness: null, events: [], hasMore: false };
     const view = await this.runManager.status(a.runId).catch(() => stored);
-    const agent = view.agents.find((ag) => ag.agentId === a.agentId);
+    const agent = view.agents.find((ag) => ag.agentId === agentId);
     if (!agent) {
-      return { runId: a.runId, status: view.status, error: { code: 'AGENT_NOT_FOUND', message: `Agent not found: ${a.agentId}`, field: 'agentId' }, harness: null, events: [], hasMore: false };
+      return { runId: a.runId, status: view.status, error: { code: 'AGENT_LOG_NOT_FOUND', message: `Agent not found: ${agentId}`, field: 'agentId' }, harness: null, events: [], hasMore: false };
     }
-    // Real read-back (D-V6): the persisted transcript events for this agent.
-    const transcript = await this.store.getTranscript(a.runId, a.agentId);
-    // DES-067: project harness event to top-level field (latest-wins), strip from events window.
+    const owner = stored.principal ?? 'local';
+    const doRead = () => this.store.getTranscript(a.runId, agentId);
+    const transcript = crossPrincipalRead
+      ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev), readArtifactChunk: doRead }, { actor, action: 'run_agent_log' as AuditAction, runId: a.runId, owner }) as TranscriptEvent[]
+      : await doRead();
     const harnessEvents = transcript.filter((e) => e.kind === 'harness');
     const lastHarness = harnessEvents[harnessEvents.length - 1];
     const harness: HarnessDescriptor | null = lastHarness
       ? ((lastHarness.data as { descriptor?: HarnessDescriptor }).descriptor ?? null)
       : null;
-    // Strip harness events; apply limit/offset windowing (MCP cap = 50; cap-exempt: harness is already out).
     const nonHarness = transcript.filter((e) => e.kind !== 'harness');
     const cap = a.limit ?? 50;
     const offset = a.offset ?? 0;
     const window = nonHarness.slice(offset, offset + cap);
     const hasMore = offset + cap < nonHarness.length;
-    // `result` = backward-compat alias for `events` (existing callers read result; new callers use events).
     return { runId: a.runId, status: view.status, harness, events: window, result: window, hasMore };
   }
 
-  /** REQ-013/D-V7: lists the relative file names present in a run's on-disk workspace — the
-   *  smaller of D-V7's two options (no change to the widely-shared RunStatusView/RunSummary
-   *  shapes). Missing/never-materialized workspace (e.g. a run that wrote nothing) → []. */
-  /** REQ-023 (v1.5): recursively list every file in the run's workspace with size + sha256, so a
-   *  client can diff/verify what changed without downloading everything. Escape-safe (realpath). */
-  async workflow_artifacts(a: { runId: string }): Promise<ResultEnvelope<ArtifactEntry[]>> {
-    const stored = await this.store.getRun(a.runId);
-    if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
-    // R-3: read through the workspace owner (RunManager), not a direct filesystem call from the
-    // facade. null (no workspace) and [] (materialized-but-empty) both surface as an empty list.
-    const files = await this.runManager.listArtifacts(a.runId);
-    return { runId: a.runId, status: stored.status, result: files ?? [] };
+  /** DES-152: filtered/paginated in SQL — `principal` is set by the facade from the caller's own
+   *  id, never from caller args (the tool schema does not even carry a `principal` key). */
+  async runList(a: { workflow?: string; status?: string; limit?: number }, principal: Principal): Promise<ResultEnvelope<RunSummary[]>> {
+    const filter: RunListFilter = { workflow: a.workflow, status: a.status as RunListFilter['status'], limit: a.limit };
+    if (principal.kind !== 'admin' && principal.kind !== 'auth-disabled') {
+      filter.principal = nsOf(principal);
+    }
+    const rows = await this.store.list(filter);
+    return { runId: '', status: 'completed', result: rows };
   }
 
-  /** REQ-022 (v1.5): read a windowed, size-capped, realpath-contained chunk of a workspace file, so
-   *  a patch/bundle too large for an inline workflow_result can be fetched without OOM. A path that
-   *  escapes the workspace (`../`/symlink) is denied with a typed error, never bytes from outside. */
-  async workflow_artifact_get(a: { runId: string; path: string; offset?: number; length?: number }): Promise<ResultEnvelope<ChunkResult>> {
+  // ============================================================================================
+  // workspace_* (6)
+  // ============================================================================================
+
+  async workspaceDiff(a: { manifest?: Array<{ sha256: string }> }, principal: Principal): Promise<ResultEnvelope<{ missing: string[] }>> {
+    const ns = nsOf(principal);
+    const shas = (a.manifest ?? []).map((e) => e.sha256).filter(Boolean);
+    const missing = this.cas ? await this.cas.missing(ns, shas) : shas;
+    return { runId: '', status: 'completed', result: { missing } };
+  }
+
+  async workspacePush(a: Record<string, unknown>, principal: Principal): Promise<Record<string, unknown>> {
+    try {
+      if (typeof a['sha256'] === 'string' && typeof a['contentB64'] === 'string') {
+        if (!this.cas) throw codedError('CAS_UNAVAILABLE', 'CAS_UNAVAILABLE: no content store configured');
+        const ns = nsOf(principal);
+        const r = await this.cas.putBlob(ns, a['sha256'] as string, Buffer.from((a['contentB64'] as string) ?? '', 'base64'));
+        return { runId: '', status: 'completed', result: { sha256: r.sha256, accepted: r.accepted } };
+      }
+      const scope: AssetScope = a['scope'] === 'global' ? 'global' : 'workflow';
+      const kind = a['kind'] as string;
+      const name = a['name'] as string;
+      if (!this.assetSync || !name || (kind !== 'skill' && kind !== 'mcp')) {
+        throw codedError('INVALID_ARGUMENT', 'INVALID_ARGUMENT: workspace_push arguments matched no known mode (see workflow_authoring_guide)');
+      }
+      const pushedBy = attributionPrincipal(principal) ?? 'local';
+      const body = kind === 'skill' ? { files: a['files'] } : { config: a['config'] };
+      const req = scope === 'global'
+        ? { scope: 'global' as const, kind: kind as AssetKind, name, pushedBy, ...body }
+        : { scope: 'workflow' as const, workflow: a['workflow'] as string, kind: kind as AssetKind, name, pushedBy, ...body };
+      const r = await this.assetSync.push(req as never);
+      if ('error' in r) return { runId: '', status: 'failed', code: r.error, error: { code: r.error, message: r.error } };
+      return { runId: '', status: 'completed', result: r };
+    } catch (err) {
+      const e = toErrEnvelope(err);
+      return { runId: '', status: 'failed', code: e.code, error: e };
+    }
+  }
+
+  async workspacePull(a: { runId: string; path: string; offset?: number; length?: number }, _principal: Principal, crossPrincipalRead: boolean, actor: string | null): Promise<ResultEnvelope<ChunkResult>> {
     const stored = await this.store.getRun(a.runId);
     if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
-    const workspace = await this.runManager.workspacePath(a.runId);
-    if (!workspace) return { runId: a.runId, status: stored.status, error: { code: 'RUN_WORKSPACE_MISSING', message: `run ${a.runId} has no on-disk workspace` } };
-    const r = readArtifactChunk(workspace, String(a.path ?? ''), a.offset, a.length);
-    if ('error' in r) return { runId: a.runId, status: stored.status, error: { code: r.error, message: `artifact_get denied: ${r.error} (${a.path})` } };
+    const owner = stored.principal ?? 'local';
+    const doRead = async (): Promise<ChunkResult | { error: string }> => {
+      const workspace = await this.runManager.workspacePath(a.runId);
+      if (!workspace) return { error: 'RUN_WORKSPACE_MISSING' };
+      return readArtifactChunk(workspace, String(a.path ?? ''), a.offset, a.length);
+    };
+    const r = crossPrincipalRead
+      ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev), readArtifactChunk: doRead }, { actor, action: 'workspace_pull' as AuditAction, runId: a.runId, owner, path: a.path }) as ChunkResult | { error: string }
+      : await doRead();
+    if ('error' in r) return { runId: a.runId, status: stored.status, error: { code: r.error, message: `workspace_pull denied: ${r.error} (${a.path})` } };
     return { runId: a.runId, status: stored.status, result: r };
   }
 
-  /** REQ-026 (v2): delete a terminal run's on-disk workspace tree (its journaled record/transcript
-   *  is preserved). Refuses while the run is still active/suspended (would race the sandbox). */
-  async workspace_purge(a: { runId: string }): Promise<ResultEnvelope<{ purged: boolean }>> {
-    const stored = await this.store.getRun(a.runId);
-    if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
-    if (stored.status === 'running' || stored.status === 'suspended' || stored.status === 'queued') {
-      return { runId: a.runId, status: stored.status, error: { code: 'RUN_NOT_TERMINAL', message: `cannot purge workspace of a ${stored.status} run` } };
+  async workspaceList(a: { runId?: string; workflow?: string; kind?: AssetKind }, _principal: Principal, crossPrincipalRead: boolean, actor: string | null): Promise<ResultEnvelope<ArtifactEntry[] | unknown[]>> {
+    if (a.runId) {
+      const stored = await this.store.getRun(a.runId);
+      if (!stored) return { runId: a.runId, status: 'failed', error: notFound(a.runId) };
+      const owner = stored.principal ?? 'local';
+      const doRead = () => this.runManager.listArtifacts(a.runId!);
+      const files = crossPrincipalRead
+        ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev), readArtifactChunk: doRead }, { actor, action: 'workspace_list' as AuditAction, runId: a.runId, owner }) as ArtifactEntry[] | null
+        : await doRead();
+      return { runId: a.runId, status: stored.status, result: files ?? [] };
     }
-    const workspace = await this.runManager.workspacePath(a.runId);
-    if (workspace) {
-      try { rmSync(workspace, { recursive: true, force: true }); } catch { /* already gone — idempotent */ }
+    const rows = this.assetSync && a.workflow && a.kind ? await this.assetSync.list({ workflow: a.workflow, kind: a.kind }) : [];
+    return { runId: '', status: 'completed', result: rows };
+  }
+
+  async workspaceDelete(a: { runId?: string; paths?: string[]; workflow?: string; kind?: AssetKind; name?: string; scope?: AssetScope }, _principal: Principal): Promise<Record<string, unknown>> {
+    try {
+      if (a.runId) {
+        return await this.runManager.withTerminalRun(a.runId, async () => {
+          const stored = await this.store.getRun(a.runId!);
+          const workspace = await this.runManager.workspacePath(a.runId!);
+          const paths = a.paths ?? [];
+          const rejected: Array<{ path: string; reason: string }> = [];
+          const resolved: string[] = [];
+          for (const p of paths) {
+            const v = workspace ? pathVerdict(workspace, p, undefined, 'run-workspace') : { kind: 'reject' as const, reason: 'ESCAPE' as const };
+            if (v.kind === 'ok' && v.abs) resolved.push(v.abs);
+            else rejected.push({ path: p, reason: v.kind !== 'ok' ? v.reason : 'ESCAPE' });
+          }
+          if (rejected.length > 0) return { runId: a.runId, status: stored?.status ?? 'unknown', result: { deleted: [], missing: [], rejected } };
+          const deleted: string[] = [];
+          const missing: string[] = [];
+          for (let i = 0; i < resolved.length; i++) {
+            const abs = resolved[i]!;
+            if (!existsSync(abs)) { missing.push(paths[i]!); continue; }
+            rmSync(abs, { recursive: true, force: true });
+            deleted.push(paths[i]!);
+          }
+          return { runId: a.runId, status: stored?.status ?? 'unknown', result: { deleted, missing, rejected: [] } };
+        });
+      }
+      if (!this.assetSync || !a.kind || !a.name) {
+        throw codedError('INVALID_ARGUMENT', 'INVALID_ARGUMENT: workspace_delete arguments matched no known mode (see workflow_authoring_guide)');
+      }
+      if (a.scope === 'global') {
+        await this.assetSync.delete({ scope: 'global', kind: a.kind, name: a.name });
+      } else {
+        await this.assetSync.delete({ scope: 'workflow', workflow: a.workflow!, kind: a.kind, name: a.name });
+      }
+      return { runId: '', status: 'completed', result: { deleted: true } };
+    } catch (err) {
+      const e = toErrEnvelope(err);
+      return { runId: a.runId ?? '', status: 'failed', code: e.code, error: e };
     }
-    return { runId: a.runId, status: stored.status, result: { purged: true } };
+  }
+
+  async workspacePurge(a: { runId: string }, _principal: Principal): Promise<ResultEnvelope<{ purged: boolean }>> {
+    try {
+      return await this.runManager.withTerminalRun(a.runId, async () => {
+        const workspace = await this.runManager.workspacePath(a.runId);
+        const existed = !!workspace && existsSync(workspace);
+        if (workspace && existed) {
+          try { rmSync(workspace, { recursive: true, force: true }); } catch { /* already gone — idempotent */ }
+        }
+        return { runId: a.runId, status: 'completed', result: { purged: existed } };
+      });
+    } catch (err) {
+      const e = toErrEnvelope(err);
+      return { runId: a.runId, status: 'failed', error: e };
+    }
   }
 }

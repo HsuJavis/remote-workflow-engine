@@ -36,10 +36,10 @@ describe('VAL-004: multi-model routing (REQ-004)', () => {
   }
 
   async function runAndWait(script: string) {
-    const run = await callTool('workflow_run', { script });
+    const run = await callTool('run_start', { script });
     const runId = run.runId as string;
     for (let i = 0; i < 90; i++) {
-      const s = await callTool('workflow_status', { runId });
+      const s = await callTool('run_status', { runId });
       if (s.status === 'completed' || s.status === 'failed') return { ...s, runId };
       await new Promise((r) => setTimeout(r, 1000));
     }
@@ -50,7 +50,7 @@ describe('VAL-004: multi-model routing (REQ-004)', () => {
     if (!HAS_PROVIDER) return;
     const r = await runAndWait(`return agent('say yes', {model: 'haiku'});`);
     expect(r.status).toBe('completed');
-    const statusView = await callTool('workflow_status', { runId: r.runId });
+    const statusView = await callTool('run_status', { runId: r.runId });
     const agents = (statusView as { agents: Array<{ provider: string; model: string }> }).agents;
     expect(agents.length).toBeGreaterThan(0);
     expect(agents[0].provider).toBe('anthropic');
@@ -61,14 +61,14 @@ describe('VAL-004: multi-model routing (REQ-004)', () => {
     if (!HAS_PROVIDER) return;
     const r = await runAndWait(`return agent('say yes');`);
     expect(r.status).toBe('completed');
-    const statusView = await callTool('workflow_status', { runId: r.runId });
+    const statusView = await callTool('run_status', { runId: r.runId });
     const agents = (statusView as { agents: Array<{ model: string }> }).agents;
     expect(agents[0].model).toBe('claude-3-5-haiku-20241022');
   }, 120000);
 
   it('unknown alias rejected at submission with UNKNOWN_ALIAS (never mid-run)', async () => {
     if (!HAS_PROVIDER) return;
-    const env = await callTool('workflow_run', { script: `return agent('x',{model:'nonexistent-alias'});` });
+    const env = await callTool('run_start', { script: `return agent('x',{model:'nonexistent-alias'});` });
     expect(env.status).toBe('failed');
     expect(env.error?.code).toBe('UNKNOWN_ALIAS');
     expect(env.runId).toBe('');  // rejected before a run is created
@@ -86,7 +86,7 @@ describe('VAL-004: multi-model routing (REQ-004)', () => {
       const run = await (async () => {
         const res = await fetch(`${badBase}/mcp`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_run', arguments: { script: `const r = await agent('x'); return r === null ? 'null-ok' : 'unexpected';` } } }),
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'run_start', arguments: { script: `const r = await agent('x'); return r === null ? 'null-ok' : 'unexpected';` } } }),
         });
         const body = await res.json() as { result?: { content: Array<{ text: string }> } };
         return JSON.parse(body.result!.content[0].text);
@@ -95,14 +95,14 @@ describe('VAL-004: multi-model routing (REQ-004)', () => {
       for (let i = 0; i < 60; i++) {
         const res = await fetch(`${badBase}/mcp`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_status', arguments: { runId } } }),
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'run_status', arguments: { runId } } }),
         });
         const body = await res.json() as { result?: { content: Array<{ text: string }> } };
         const s = JSON.parse(body.result!.content[0].text);
         if (s.status === 'completed') {
           const r2 = await fetch(`${badBase}/mcp`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_result', arguments: { runId } } }),
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'run_result', arguments: { runId } } }),
           });
           const rb = await r2.json() as { result?: { content: Array<{ text: string }> } };
           const result = JSON.parse(rb.result!.content[0].text);

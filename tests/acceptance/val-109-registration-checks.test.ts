@@ -41,14 +41,14 @@ describe('REQ-099: registration enforces the checks the engine used to run only 
   it('an unparseable script is refused PARSE_ERROR at registration, the SAME code submission produced, nothing stored', async () => {
     const r = await toolCall('workflow_register', { name: 'val109-parse', script: 'not { valid javascript (((' });
     expect((r['error'] as { code?: string } | undefined)?.code).toBe('PARSE_ERROR');
-    const got = await toolCall('workflow_get', { name: 'val109-parse' });
+    const got = await toolCall('workflow_source', { name: 'val109-parse' });
     expect(got['code']).toBe('WORKFLOW_NOT_FOUND');
   });
 
   it('an unresolvable model alias is refused UNKNOWN_ALIAS at registration, nothing stored', async () => {
     const r = await toolCall('workflow_register', { name: 'val109-alias', script: `await agent('a', { model: 'no-such-alias' });` });
     expect((r['error'] as { code?: string } | undefined)?.code).toBe('UNKNOWN_ALIAS');
-    const got = await toolCall('workflow_get', { name: 'val109-alias' });
+    const got = await toolCall('workflow_source', { name: 'val109-alias' });
     expect(got['code']).toBe('WORKFLOW_NOT_FOUND');
   });
 
@@ -59,7 +59,7 @@ describe('REQ-099: registration enforces the checks the engine used to run only 
 });
 
 describe('REQ-099: a pre-existing workflow that would now fail is NOT retroactively refused, but its staleness is surfaced (VAL-109)', () => {
-  it('a workflow whose alias went stale AFTER registration still runs; workflow_get exposes validation:{ok:false}', async () => {
+  it('a workflow whose alias went stale AFTER registration still runs; workflow_source exposes validation:{ok:false}', async () => {
     // Hand-seed a v22-schema row referencing an alias this server was never configured with —
     // models "registered before the alias was removed" (registration itself would refuse
     // UNKNOWN_ALIAS for a NEW registration, per the case above; this reaches the grandfathered
@@ -73,11 +73,11 @@ describe('REQ-099: a pre-existing workflow that would now fail is NOT retroactiv
       .run('val109-stale', 'v1', `await agent('a', { model: 'now-deprovisioned-alias' }); return 'still-runs';`, now);
     db.close();
 
-    const got = await toolCall('workflow_get', { name: 'val109-stale' });
+    const got = await toolCall('workflow_source', { name: 'val109-stale' });
     const validation = (got['result'] as { validation?: { ok?: boolean } } | undefined)?.validation;
     expect(validation?.ok).toBe(false); // surfaced, not silently swallowed
 
-    const run = await toolCall('workflow_run', { name: 'val109-stale' });
+    const run = await toolCall('run_start', { name: 'val109-stale' });
     expect(run['error']).toBeUndefined(); // NOT retroactively refused — the last REQ-099 clause
   });
 });

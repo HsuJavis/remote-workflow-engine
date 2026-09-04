@@ -1,12 +1,12 @@
 // IT-089 (ARCH-076, ARCH-073, DES-116, DES-115, TASK-111): masked reads — REQUIRED `ReadContext` on
-// `workflow_get`/`workflow_list`, driven over the REAL transport with a REAL bearer minted via
+// `workflow_source`/`workflow_list`, driven over the REAL transport with a REAL bearer minted via
 // `TokenStore` (a facade-level unit test with an injected principal cannot see the `server.ts:823`
 // hole — this file IS this task's DoD, not a follow-up).
 //
 // Mock policy (integration, DES-119): real createServer + real HTTP + real auth (TokenStore); no
 // LLM (registration/read only, no agent() dispatch).
 //
-// Red reason: `server.ts:808`/`:823` thread NO principal into `workflow_list`/`workflow_get` today
+// Red reason: `server.ts:808`/`:823` thread NO principal into `workflow_list`/`workflow_source` today
 // — every principal gets the FULL script back regardless of ownership or auth state. Every masking
 // assertion below fails against the current engine.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -75,15 +75,15 @@ async function toolCall(server: Server, name: string, args: Record<string, unkno
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
 
-describe('REQ-100: workflow_get masks the script for non-owners (auth-enabled, IT-089)', () => {
+describe('REQ-100: workflow_source masks the script for non-owners (auth-enabled, IT-089)', () => {
   it('the OWNER reads the full script through /mcp with their bearer', async () => {
     const ownerToken = await mintBearer(authTmpDir, authServer.port, 'it089-owner@example.com');
     const reg = await toolCall(authServer, 'workflow_register', { name: 'it089-owned', script: `return 'secret-script-body';` }, ownerToken);
     expect(reg['error']).toBeUndefined();
-    // v22: registration is not publication — `workflow_get({name})` resolves the `release` channel.
+    // v22: registration is not publication — `workflow_source({name})` resolves the `release` channel.
     await toolCall(authServer, 'workflow_publish', { name: 'it089-owned', version: `v${reg['version']}`, channel: 'release' }, ownerToken);
 
-    const got = await toolCall(authServer, 'workflow_get', { name: 'it089-owned' }, ownerToken);
+    const got = await toolCall(authServer, 'workflow_source', { name: 'it089-owned' }, ownerToken);
     expect((got['result'] as { script?: string } | undefined)?.script).toBe(`return 'secret-script-body';`);
   });
 
@@ -92,7 +92,7 @@ describe('REQ-100: workflow_get masks the script for non-owners (auth-enabled, I
     await registerPublishedVia(callerFor(authServer, ownerToken), 'it089-owned2', `return 'never-leak-me';`);
 
     const otherToken = await mintBearer(authTmpDir, authServer.port, 'it089-stranger@example.com');
-    const got = await toolCall(authServer, 'workflow_get', { name: 'it089-owned2' }, otherToken);
+    const got = await toolCall(authServer, 'workflow_source', { name: 'it089-owned2' }, otherToken);
     const flat = JSON.stringify(got);
     expect(flat).not.toContain('never-leak-me');
     expect(got['script']).toBeUndefined();
@@ -105,7 +105,7 @@ describe('REQ-100: workflow_get masks the script for non-owners (auth-enabled, I
     await registerPublishedVia(callerFor(authServer, ownerToken), 'it089-owned3', `return 'still-hidden';`);
 
     const otherToken = await mintBearer(authTmpDir, authServer.port, 'it089-stranger2@example.com');
-    const got = await toolCall(authServer, 'workflow_get', { name: 'it089-owned3', principal: 'it089-owner3@example.com' }, otherToken);
+    const got = await toolCall(authServer, 'workflow_source', { name: 'it089-owned3', principal: 'it089-owner3@example.com' }, otherToken);
     expect(JSON.stringify(got)).not.toContain('still-hidden');
   });
 
@@ -131,18 +131,18 @@ describe('REQ-100: workflow_get masks the script for non-owners (auth-enabled, I
     db.close();
 
     const someToken = await mintBearer(authTmpDir, authServer.port, 'it089-anyone@example.com');
-    const got = await toolCall(authServer, 'workflow_get', { name: 'it089-null-owner' }, someToken);
+    const got = await toolCall(authServer, 'workflow_source', { name: 'it089-null-owner' }, someToken);
     expect(JSON.stringify(got)).not.toContain('orphan-script');
     expect((got['result'] as Record<string, unknown> | undefined)?.['scriptWithheld']).toBe(true);
   });
 });
 
 describe('REQ-100: auth disabled ⇒ pre-v22 surface, byte-for-byte (IT-089)', () => {
-  it('with auth OFF, workflow_get returns the full script to anyone (no bearer needed)', async () => {
+  it('with auth OFF, workflow_source returns the full script to anyone (no bearer needed)', async () => {
     const reg = await toolCall(openServer, 'workflow_register', { name: 'it089-open', script: `return 'open-script';` });
     expect(reg['error']).toBeUndefined();
     await toolCall(openServer, 'workflow_publish', { name: 'it089-open', version: `v${reg['version']}`, channel: 'release' });
-    const got = await toolCall(openServer, 'workflow_get', { name: 'it089-open' });
+    const got = await toolCall(openServer, 'workflow_source', { name: 'it089-open' });
     expect((got['result'] as { script?: string } | undefined)?.script).toBe(`return 'open-script';`);
   });
 });

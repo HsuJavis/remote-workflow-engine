@@ -10,15 +10,14 @@
 // integration tier points the real export at a local stub /v1/messages server — IT-015).
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { CanUseTool, HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { existsSync, readdirSync, statSync, readFileSync, mkdirSync, copyFileSync } from 'node:fs';
-import { join, isAbsolute } from 'node:path';
+import { existsSync, readdirSync, statSync, mkdirSync, copyFileSync, writeFileSync } from 'node:fs';
+import { join, isAbsolute, dirname } from 'node:path';
 import type { AgentOpts, HarnessDescriptor, TranscriptEvent } from '../types.js';
 import { redactHarness } from '../agent-executor.js';
-import type { McpServerConfig, McpProbe } from '../mcp-probe.js';
+import type { McpServerConfig } from '../mcp-probe.js';
 import type { AliasMap, EffortApplied, GatewayClient, GatewayResult } from './client.js';
 import { resolveTimeout, mapEffort, profileFor } from './client.js';
 import { isPathContained } from '../path-containment.js';
-import { McpRegistry } from '../mcp-registry.js';
 import { resolveConfig, type SecretSource } from '../secret-resolver.js';
 import { proxyModelName } from './litellm-proxy.js';
 
@@ -54,19 +53,19 @@ export interface ClaudeAgentSdkGatewayConfig {
    *  tool surface (dozens of tools) through and overwhelmed a 7B local model's tool-selection
    *  ability (08-validation.md round-5 VAL-003). */
   defaultAllowedTools?: string[];
-  /** D-V2V-1 (REQ-009 route-back): the asset store's own on-disk root (AssetSyncService's
-   *  `assetRoot`, same value ServerConfig/composeConfig thread everywhere else) — read FRESH on
-   *  every invoke() call so a push made after boot still reaches the very next run. Omitted ->
-   *  no asset wiring at all (mcpServers stays unset, no skill/hook materialization) — unchanged
-   *  legacy behavior for any caller that never configures asset storage. */
+  /** D-V2V-1 (REQ-009 route-back): pre-v24 flat per-run asset root — UNUSED since v24 (TASK-145):
+   *  `AssetSyncService` (DES-153) now keeps two SCOPED roots (`workRoot`/`globalRoot`) reached only
+   *  through `resolveMcp`/`materializeAssets`'s injected `roots` param (per `req.assets`), never
+   *  read directly here. Left on the config type because `server.ts`'s composition root still sets
+   *  it (out of this task's file scope) — kept for source compatibility, read by nothing below. */
   assetRoot?: string;
-  /** D-V3M-1 (REQ-017 route-back, closes the ①/IT-035 gap): the MCP Provisioning Registry's own
-   *  on-disk SQLite path (server.ts's `join(workRoot,'mcp-registry.db')`, same value threaded here
-   *  by composeConfig). When set, an agent()'s `opts.mcp` names are resolved fresh off this DB per
-   *  invoke via McpRegistry.resolveInjected — so a provision made after boot reaches the very next
-   *  run, and ONLY explicitly-referenced entries are injected (strictMcpConfig preserved). Omitted
-   *  -> no registry-backed MCP injection (unchanged legacy behavior). */
-  mcpRegistryDbPath?: string;
+  /** D-V3M-1 (REQ-017 route-back, closes the ①/IT-035 gap); v24 (TASK-139/TASK-145, DES-153/154):
+   *  the MCP Provisioning Registry (`mcp-registry.ts`) is DELETED — this is now the injected
+   *  catalog port `AssetSyncService`'s `resolveMcp(catalog, workflow, names)` is bound to at the
+   *  composition root (`main.ts`/`server.ts`, out of scope), called here per dispatch with THIS
+   *  call's workflow name + its label's declared `mcp` names (`req.assets`, DES-154). Omitted ->
+   *  no MCP injection at all (same "no injection" behavior the old unconfigured-dbPath case had). */
+  resolveMcp?: (workflow: string, names: string[]) => Promise<{ configs: Record<string, McpServerConfig>; missing: string[] }>;
   /** D-V3M-1 (REQ-018): resolves `${secret:NAME}` handles inside a provisioned MCP config from the
    *  server-side secret store (loadSecretSourceFromEnv — `RWE_SECRET_*`). When set, an unresolvable
    *  handle fails the referencing agent() loudly (SECRET_MISSING) rather than passing the literal
@@ -109,38 +108,6 @@ function resolveAnthropicAuth(
   return apiKey ? { ok: true, mode: 'api-key', apiKey } : { ok: false };
 }
 
-/** D-V3M-1: resolveInjected only ever reads (get/SELECT) — never register() — so the McpRegistry the
- *  gateway opens for by-name resolution needs no live prober. This no-op satisfies the constructor
- *  port without a second real probe wiring. */
-const NOOP_PROBE: McpProbe = { probe: async () => ({ ok: true }) };
-
-/** D-V2V-1: reads every stored mcp-config asset fresh off disk (`assetRoot/mcp-config/<name>/...`)
- *  keyed by its asset name — the shape `Options.mcpServers` expects. Only the first file per asset
- *  that parses as JSON with a `url`/`command` field is used (same one-config-per-asset convention
- *  as asset-sync.ts's own `isSelfReferential` parsing). Never throws: an unreadable/malformed asset
- *  dir is simply skipped, never surfaced as an invoke() failure. */
-function readMcpConfigAssets(assetRoot: string): Record<string, McpServerConfig> {
-  const out: Record<string, McpServerConfig> = {};
-  const dir = join(assetRoot, 'mcp-config');
-  if (!existsSync(dir)) return out;
-  for (const name of readdirSync(dir)) {
-    const nameDir = join(dir, name);
-    if (!statSync(nameDir).isDirectory()) continue;
-    for (const file of readdirSync(nameDir)) {
-      try {
-        const cfg = JSON.parse(readFileSync(join(nameDir, file), 'utf-8')) as McpServerConfig;
-        if (cfg?.url || cfg?.command) {
-          out[name] = cfg;
-          break;
-        }
-      } catch {
-        continue; // not parseable JSON — try the next file in this asset dir
-      }
-    }
-  }
-  return out;
-}
-
 function copyDirRecursive(src: string, dest: string): void {
   mkdirSync(dest, { recursive: true });
   for (const entry of readdirSync(src)) {
@@ -151,28 +118,57 @@ function copyDirRecursive(src: string, dest: string): void {
   }
 }
 
-/** DES-066: returns the names of stored skill assets (for HarnessDescriptor.skills). */
-function readSkillNames(assetRoot: string): string[] {
-  const dir = join(assetRoot, 'skill');
-  if (!existsSync(dir)) return [];
-  try { return readdirSync(dir).filter((n) => statSync(join(dir, n)).isDirectory()); } catch { return []; }
+/** Injected fs facade `materializeAssets` runs over (UT-156) — defaults to real fs so production
+ *  callers never need to build one. */
+export interface AssetFsFacade {
+  exists(path: string): boolean;
+  copyDir(src: string, dest: string): void;
+  writeFile(path: string, content: string): void;
 }
 
-/** D-V2V-1: materializes every stored skill/hook asset into THIS call's run workspace, under
- *  `<workspace>/.claude/skills/<name>/` and `<workspace>/.claude/hooks/<name>/` respectively — the
- *  filesystem layout `settingSources:['project']` reads from. Idempotent (safe to call before
- *  every agent() call); a stored asset this system's own D4 recursion guard already rejected at
- *  push time never exists under `assetRoot` in the first place, so it's never materialized either. */
-function materializeAssets(assetRoot: string, workspace: string): void {
-  for (const [kind, claudeDir] of [['skill', 'skills'], ['hook', 'hooks']] as const) {
-    const dir = join(assetRoot, kind);
-    if (!existsSync(dir)) continue;
-    for (const name of readdirSync(dir)) {
-      const src = join(dir, name);
-      if (!statSync(src).isDirectory()) continue;
-      copyDirRecursive(src, join(workspace, '.claude', claudeDir, name));
+const REAL_FS: AssetFsFacade = {
+  exists: existsSync,
+  copyDir: copyDirRecursive,
+  writeFile: (path, content) => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+  },
+};
+
+/** v24 (ARCH-103/DES-154, TASK-145): SELECTIVE materialization — REPLACES the old copy-every-
+ *  stored-asset loop (`materializeAssets(assetRoot, workspace)`, no `declared` set at all, every
+ *  run got every author's skill). Copies ONLY `declared.skills` into
+ *  `<workspace>/.claude/skills/<name>/` (workflow scope wins a name clash with global — checked
+ *  first); a name absent from BOTH roots lands in `missing` and the run proceeds (owner 19.5.3 — no
+ *  refusal). `.mcp.json` is REWRITTEN (never merged) from `resolveMcp(declared.mcp)`'s configs,
+ *  an empty declared.mcp writing an empty server map. Pure over the injected `fs` facade (unit
+ *  tier: a fake; production: `REAL_FS`, the default). */
+export async function materializeAssets(
+  roots: { workflow: string; global: string },
+  workspace: string,
+  declared: { skills: string[]; mcp: string[] },
+  resolveMcp: (names: string[]) => Promise<{ configs: Record<string, McpServerConfig>; missing: string[] }>,
+  fs: AssetFsFacade = REAL_FS,
+): Promise<{ skills: string[]; mcp: string[]; missing: string[] }> {
+  const skills: string[] = [];
+  const missing: string[] = [];
+  for (const name of declared.skills) {
+    const workflowPath = join(roots.workflow, 'skill', name);
+    const globalPath = join(roots.global, 'skill', name);
+    if (fs.exists(workflowPath)) {
+      fs.copyDir(workflowPath, join(workspace, '.claude', 'skills', name));
+      skills.push(name);
+    } else if (fs.exists(globalPath)) {
+      fs.copyDir(globalPath, join(workspace, '.claude', 'skills', name));
+      skills.push(name);
+    } else {
+      missing.push(name);
     }
   }
+  const { configs, missing: mcpMissing } = await resolveMcp(declared.mcp);
+  missing.push(...mcpMissing);
+  fs.writeFile(join(workspace, '.mcp.json'), JSON.stringify({ mcpServers: configs }, null, 2));
+  return { skills, mcp: Object.keys(configs), missing };
 }
 
 /** D-F11 built-in fallback — never leaves `options.allowedTools` unset even with no
@@ -396,40 +392,23 @@ function extractEvents(msg: SDKMessage, ts: string): TranscriptEvent[] {
  *  `result` message off the session's own async-generator agent loop. */
 export class ClaudeAgentSdkGatewayClient implements GatewayClient {
   private readonly _query: QueryImpl;
-  /** D-V3M-1: one read connection to the registry DB, opened lazily and reused. A separate
-   *  connection from server.ts's own McpRegistry, but SQLite WAL makes every committed provision
-   *  visible to this reader — resolveInjected still returns fresh rows per call. */
-  private _mcpRegistry?: McpRegistry;
 
   constructor(private readonly _config: ClaudeAgentSdkGatewayConfig) {
     this._query = _config.queryImpl ?? sdkQuery;
   }
 
-  /** D-V3M-1 (REQ-017/REQ-018, closes ①): resolves an agent()'s referenced `opts.mcp` names against
-   *  the MCP Provisioning Registry, substituting `${secret:NAME}` handles from the server-side
-   *  secret store. Returns ONLY the explicitly-referenced entries (strict-by-name isolation), plus
-   *  `unresolved` — the referenced names with no registry row. An unconfigured DB path / empty name
-   *  list yields "no injection" with nothing unresolved; an unprovisioned name yields "no injection"
-   *  AND names itself in `unresolved` (v22, REQ-099 / adjudication #4 N-1: `MCP_NOT_PROVISIONED` is
-   *  raised only at REGISTRATION now — `script-checks.ts` via `WorkflowCatalog.register`, ADR-013 —
-   *  so a workflow registered before that check existed reaches this dispatch, and REQ-099 forbids
-   *  refusing it retroactively while requiring the dropped capability to be observable; the caller
-   *  records `unresolved` on the harness descriptor).
-   *  A referenced config whose `${secret:...}` handle can't be resolved
-   *  THROWS with the code in the message (SECRET_MISSING / SECRET_HANDLE_INVALID) — REQ-018's
-   *  fail-loud contract: the run surfaces a clear error rather than silently running a tool with no
-   *  credential or (worse) smuggling the literal handle through as a value. The throw propagates up
-   *  as that agent()'s failure (same shape as an unknown agentType/MCP name). */
-  private resolveProvisionedMcp(names: string[] | undefined): { configs: Record<string, McpServerConfig>; unresolved: string[] } {
-    if (this._config.mcpRegistryDbPath === undefined || names === undefined || names.length === 0) return { configs: {}, unresolved: [] };
-    if (this._mcpRegistry === undefined) {
-      this._mcpRegistry = new McpRegistry({ dbPath: this._config.mcpRegistryDbPath, probe: NOOP_PROBE });
-    }
-    const registry = this._mcpRegistry;
-    const resolved = registry.resolveInjected(names);
-    // MCP_NOT_PROVISIONED. Injection stays all-or-nothing exactly as before (no partial surface);
-    // what changes is that the dropped names are reported back instead of vanishing.
-    if ('error' in resolved) return { configs: {}, unresolved: names.filter((n) => registry.get(n) === undefined) };
+  /** v24 (ARCH-103/DES-154, TASK-145): resolves THIS dispatch's declared `mcp` names against the
+   *  injected catalog-backed `resolveMcp` port (bound at the composition root — `main.ts`/
+   *  `server.ts`, out of scope), substituting `${secret:NAME}` handles from the server-side secret
+   *  store. No `resolveMcp` / empty name list yields "no injection", nothing missing.
+   *  A resolved config whose `${secret:...}` handle can't be resolved THROWS with the code in the
+   *  message (SECRET_MISSING / SECRET_HANDLE_INVALID) — REQ-018's fail-loud contract: the run
+   *  surfaces a clear error rather than silently running a tool with no credential or (worse)
+   *  smuggling the literal handle through as a value. The throw propagates up as that agent()'s
+   *  failure (same shape as an unknown agentType/MCP name). */
+  private async _resolveMcpConfigs(workflow: string, names: string[]): Promise<{ configs: Record<string, McpServerConfig>; missing: string[] }> {
+    if (this._config.resolveMcp === undefined || names.length === 0) return { configs: {}, missing: names };
+    const resolved = await this._config.resolveMcp(workflow, names);
     const out: Record<string, McpServerConfig> = {};
     for (const [name, config] of Object.entries(resolved.configs)) {
       try {
@@ -442,10 +421,10 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         throw err;
       }
     }
-    return { configs: out, unresolved: [] };
+    return { configs: out, missing: resolved.missing };
   }
 
-  async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void> }): Promise<GatewayResult> {
+  async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; assets?: { roots: { workflow: string; global: string }; declared: { skills: string[]; mcp: string[] }; workflow: string }; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void> }): Promise<GatewayResult> {
     // D-F7: bounded race only when a timeout is in effect — otherwise unchanged legacy behavior (a
     // single unbounded attempt). issue #24/#22: a per-call AgentOpts.timeoutMs counts as "in effect"
     // even when the gateway has no configured default, so a config-less gateway still bounds+retries
@@ -460,7 +439,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     return last;
   }
 
-  private async _invokeOnce(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void> }): Promise<GatewayResult> {
+  private async _invokeOnce(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; assets?: { roots: { workflow: string; global: string }; declared: { skills: string[]; mcp: string[] }; workflow: string }; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void> }): Promise<GatewayResult> {
     // issue #24/#22: per-call AgentOpts.timeoutMs overrides the configured default (both directions);
     // MUST match invoke()'s attempts calc above so a bounded attempt count never pairs with an
     // unbounded timer (or vice-versa). resolveTimeout rejects a bad value → gateway default applies.
@@ -487,25 +466,27 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // present so reads/edits route through the shell. Anthropic (or unknown-provider) is unchanged.
     const curatedTools = curateToolsForProvider(baseTools, effectiveProvider(this._config.aliases, req.opts.model));
 
-    // D-V2V-1 (REQ-009 route-back, binding ORCH ruling): a known run workspace gets its own
-    // materialized `.claude/skills|hooks` dir and is loaded via `settingSources:['project']`,
-    // `cwd` re-scoped to THAT workspace (never the whole server workRoot) — host-level sources
-    // ('user'/'local') stay excluded either way, preserving the D-F11 isolation this class was
-    // built to close. No workspace known (e.g. a direct unit-tier invoke() call) -> unchanged
-    // legacy behavior (this._config.cwd, settingSources: []).
-    if (req.workspace !== undefined && this._config.assetRoot !== undefined) {
-      materializeAssets(this._config.assetRoot, req.workspace);
+    // v24 (ARCH-103/DES-154, TASK-145): a known run workspace + a known `req.assets` (this call's
+    // label declared skill/mcp names + the asset store's two scope roots, threaded by the executor
+    // from that label's registered AgentParamSpec) gets ONLY its declared skills materialized into
+    // `.claude/skills/<name>/`, loaded via `settingSources:['project']`, `cwd` re-scoped to THAT
+    // workspace — host-level sources ('user'/'local') stay excluded either way (D-F11 isolation).
+    // No workspace / no `req.assets` (e.g. a direct unit-tier invoke(), or the direct-fetch gateway,
+    // which never sets `req.assets` at all — DES-154's boundary) -> nothing materialized, the
+    // executor's decoration site reports the honest empty set (DES-160).
+    // `.mcp.json` is REWRITTEN by `materializeAssets` itself; `strictMcpConfig: true` below still
+    // needs the SAME resolved configs on `options.mcpServers` (a project `.mcp.json` is not read
+    // once `strictMcpConfig` is set) — resolved ONCE here and threaded into both.
+    let materialized: { skills: string[]; mcp: string[]; missing: string[] } | undefined;
+    let mcpConfigs: Record<string, McpServerConfig> = {};
+    let mcpMissing: string[] = [];
+    if (req.workspace !== undefined && req.assets !== undefined) {
+      const mcpResolved = await this._resolveMcpConfigs(req.assets.workflow, req.assets.declared.mcp);
+      mcpConfigs = mcpResolved.configs;
+      mcpMissing = mcpResolved.missing;
+      materialized = await materializeAssets(req.assets.roots, req.workspace, req.assets.declared, async () => mcpResolved);
     }
-    // D-V3M-1 (REQ-017, closes ①): the run's MCP surface = the legacy server-wide mcp-config assets
-    // (now effectively empty — mcp-config pushes redirect to provisioning, DES-028) MERGED with the
-    // registry-provisioned servers THIS agent explicitly references by name in `opts.mcp`, resolved
-    // fresh off the registry DB per call (so a provision after boot reaches the next run) with
-    // `${secret:NAME}` handles substituted server-side. `strictMcpConfig: true` stays true, so the
-    // model still sees ONLY this set — the VAL-003 host-ambient-MCP isolation invariant holds.
-    const assetMcp = this._config.assetRoot !== undefined ? readMcpConfigAssets(this._config.assetRoot) : {};
-    const provisioned = this.resolveProvisionedMcp(req.opts.mcp);
-    const mergedMcp = { ...assetMcp, ...provisioned.configs };
-    const mcpServers = Object.keys(mergedMcp).length > 0 ? mergedMcp : undefined;
+    const mcpServers = Object.keys(mcpConfigs).length > 0 ? mcpConfigs : undefined;
 
     // REQ-037: provider-aware routing. An alias whose provider is `anthropic` dispatches DIRECT to
     // the real Anthropic API (LiteLLM bypassed) — so its env carries the real auth AND its model
@@ -591,21 +572,26 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     if (applied?.applied) (options as unknown as Record<string, unknown>)[applied.param] = applied.value;
     // DES-066 (TASK-069): emit harness descriptor eagerly at session-build time (post-curation, before query).
     if (req.onHarness) {
-      const skills = this._config.assetRoot ? readSkillNames(this._config.assetRoot) : [];
       const descriptor = redactHarness({
         surfaceType: 'curated',
         modelName,
         provider,
         prompt: req.prompt,
         curatedTools,
-        mergedMcp: Object.entries(mergedMcp).map(([name, cfg]) => ({ name, ...(cfg as Record<string, unknown>) })),
-        skills,
+        mergedMcp: Object.entries(mcpConfigs).map(([name, cfg]) => ({ name, ...(cfg as Record<string, unknown>) })),
+        // v24 (ARCH-103, DES-160, TASK-145): the ACTUAL materialized skill set, not "every stored
+        // skill" — a declared-but-absent name is in `materialized.missing`, never silently dropped.
+        skills: materialized?.skills ?? [],
         // v22 (REQ-099, adjudication #4 N-1): a referenced-but-unprovisioned MCP is dropped from the
         // session (unchanged) — but the descriptor now admits to it, so `workflow_agent_log` shows
         // the author which capability their grandfathered workflow lost. Same honest-no-op record as
         // `effortApplied`'s `{reason}` branch; empty ⇒ the field is not emitted at all.
-        unresolvedMcp: provisioned.unresolved,
+        unresolvedMcp: mcpMissing,
       });
+      // v24 (ARCH-104/DES-160, TASK-145): the materialized set rides the descriptor itself (the ONE
+      // decoration site downstream, `agent-executor.ts`, fills the honest empty set for a dispatch
+      // that never sets `req.assets` at all — e.g. the direct-fetch gateway).
+      if (materialized) descriptor.materialized = materialized;
       // `applied` travels to the caller as onHarness's own second argument (the single source of
       // truth downstream decoration reads) — no separate write onto `descriptor` needed here.
       await req.onHarness(descriptor, applied);

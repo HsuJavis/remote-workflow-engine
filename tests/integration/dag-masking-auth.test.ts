@@ -26,7 +26,7 @@ import type { GatewayClient } from '../../src/gateway/client.js';
 import { registerPublishedVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
 
 // A gateway that never resolves within this test's lifetime — guarantees the run is still
-// `running` with 0 completed agents when the DAG route is read immediately after `workflow_run`.
+// `running` with 0 completed agents when the DAG route is read immediately after `run_start`.
 const NEVER_RESOLVES_GATEWAY: GatewayClient = {
   invoke: () => new Promise(() => { /* never settles */ }),
 };
@@ -94,7 +94,7 @@ function callerFor(server: Server, bearer?: string): ToolCaller {
 
 async function startRunAndGetDag(server: Server, name: string, bearer?: string): Promise<{ kind?: string; cells?: Array<{ id: string }> }> {
   await registerPublishedVia(callerFor(server, bearer), name, SCRIPT);
-  const started = await toolCall(server, 'workflow_run', { name }, bearer);
+  const started = await toolCall(server, 'run_start', { name }, bearer);
   const runId = started['runId'] as string;
   expect(typeof runId).toBe('string');
   // The DAG route itself carries no bearer and needs none to be reached (07-review.md H2: no

@@ -356,15 +356,9 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `maxWorkflowDepth` | 具名 `workflow()` 巢狀組合單一分支深度上限（頂層 run=0）；超過回可分支的 `NESTING_DEPTH_EXCEEDED`（不崩父 run）；≤0 或非整數在啟動時拒絕 | `number` / `4` | 否 | v8 |
 | `rwe.config.json` → `maxWorkflowDescendants` | 巢狀 `workflow()` 呼叫總數上限（整棵 fan-out × depth 樹）；超過回 `DESCENDANT_CAP_EXCEEDED` | `number` / `256` | 否 | v8 |
 | `rwe.config.json` → `maxWorkflowVersions` | 同一工作流程名稱累積保留的版本數上限；達上限時 `workflow_register` 回 `VERSION_CEILING_EXCEEDED`（需先 `workflow_deregister` 舊版本或調高此值） | `number` / 省略 = 不設上限 | 否 | v22 |
-| `rwe.config.json` → `graphAnalyzer.enabled` | Graph analyzer（`workflow_register` 時把腳本送給設定的 LLM provider，畫出 `workflow_describe` 的 ASCII 診斷圖）總開關；`false` 時註冊照樣成功，只是不寫入診斷圖列（`workflow_describe` 回 `diagramStatus:"unavailable"`／`DISABLED`），**永遠不是錯誤** | `boolean` / `true` | 否 | v23 |
-| `rwe.config.json` → `graphAnalyzer.model` | 畫圖用的模型別名（`aliases` 表裡的鍵，同 `agent()` 用的那張表；不是 `provider:model` 字串）；未知別名時**開機只警告、不擋開機**，該工作流程的每次 `enqueue` 直接以 `MODEL_UNMAPPED`（零次模型呼叫）落地 | `string` / 部署的預設別名 | 否 | v23 |
-| `rwe.config.json` → `graphAnalyzer.systemPrompt` | 畫圖 prompt——附加在腳本文字之前送給模型；出廠預設 prompt 假設的字彙相容模型等級見下方說明 | `string` / 出廠預設 prompt（畫圖字彙說明） | 否 | v23 |
-| `rwe.config.json` → `graphAnalyzer.tools` | 分析器這次 LLM 呼叫允許的工具集（會經 `curateToolsForProvider` 過濾）；空陣列＝**無工具**，因為 prompt 承載的是攻擊者可控的腳本文字 | `string[]` / `[]` | 否 | v23 |
-| `rwe.config.json` → `graphAnalyzer.timeoutMs` | 單次畫圖呼叫逾時（ms） | `number` / `60000` | 否 | v23 |
-| `rwe.config.json` → `graphAnalyzer.retries` | 單次畫圖呼叫失敗後的引擎端重試次數（**不含** gateway 自己的重試，見下方公式） | `number` / `0` | 否 | v23 |
-| `rwe.config.json` → `graphAnalyzer.maxBytes` | 畫圖輸出（`gateDiagram` 第三關）位元組上限；超過回 `GATE_REJECTED_SHAPE` | `number` / `8192` | 否 | v23 |
-| `rwe.config.json` → `graphAnalyzer.maxLines` | 畫圖輸出行數上限，同上一關 | `number` / `120` | 否 | v23 |
-| `rwe.config.json` → `graphAnalyzer.maxQueueDepth` | 分析器佇列深度（並行度固定 1）；滿了直接以 `QUEUE_FULL` 落地，不是錯誤 | `number` / `8` | 否 | v23 |
+| `rwe.config.json` → `graphAnalyzer` | **v24 起已移除**（結構圖改由作者在 `workflow_register` 附上 `mermaid` 字串，見 ADR-025）；此區塊留在 `rwe.config.json` 不再有作用，開機時 `composeConfig()` 會印一次 `console.warn` 點名這個未識別的鍵，提醒移除 | — | — | v23 移除於 v24 |
+| `rwe.config.json` → `principals` | 角色對照表：鍵是 principal id（OAuth 下的使用者 email，或 `"*"` 代表所有已驗證但未列名者），值是 `{role:"admin"｜"author"｜"user"}`；角色字串打錯（例如 `"admn"`）**開機直接拒絕啟動**，絕不會靜默退回 `"user"`（ADR-028 fail-closed）；整個鍵省略時，`auth.enabled:true` 下每個已驗證呼叫者一律 `"user"`（同樣是 fail-closed，且開機那行 `auth:` log 會如實顯示） | `object` / 省略 | 否 | v24 |
+| `rwe.config.json` → `mcpEgressAllowlist` | `asset_push({kind:"mcp"})` 註冊 `http` transport 時的 https-only 白名單（URL 前綴比對，同 `seedRefAllowlist` 的 fail-closed 慣例）；省略/空陣列＝任何 `http` MCP 設定一律 `EGRESS_DENIED`（探測前就擋，探測次數為零） | `string[]` / `[]` | 否 | v24 |
 | `rwe.config.json` → `seedRefAllowlist` | engine-pull `seedRef:{repoUrl,sha}` 的 egress 白名單（`https://` URL 前綴）；**fail-closed**：省略/空陣列 = 任何 seedRef 回 `SEEDREF_DISABLED`；不命中前綴（含 `169.254.169.254`/`localhost`/私有 IP/`file://`）→ `SEEDREF_EGRESS_DENIED`（SSRF 安全） | `string[]` / `[]` | 否 | v13 |
 | `rwe.config.json` → `maxBlobBytes` | `POST /assets/blob/:sha`（streaming raw-body 上傳）最大 body bytes；超過 → HTTP 413 `BLOB_TOO_LARGE` | `number` / `268435456`（256 MiB，最小 1048576） | 否 | v10 |
 | `rwe.config.json` → `maxConcurrentRuns` | 頂層 run 並行上限（run-admission counter）；達上限時 `start()` 在任何持久化動作之前以 `RUN_ADMISSION_LIMIT` 拒絕；巢狀 `workflow()` 不佔用槽位 | `number` / `64` | 否 | v8 |

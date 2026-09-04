@@ -37,14 +37,14 @@ describe('VAL-005: MCP Streamable HTTP interface (REQ-005)', () => {
     expect(res.ok).toBe(true);
     const body = await res.json() as { result?: { tools: Array<{ name: string }> } };
     const names = body.result!.tools.map((t) => t.name);
-    const required = ['workflow_run', 'workflow_status', 'workflow_result',
-      'workflow_suspend', 'workflow_resume', 'workflow_stop', 'workflow_list', 'workflow_agent_log'];
+    const required = ['run_start', 'run_status', 'run_result',
+      'run_suspend', 'run_resume', 'run_stop', 'workflow_list', 'run_agent_log'];
     for (const tool of required) {
       expect(names).toContain(tool);
     }
   });
 
-  it('workflow_run returns runId immediately (async — does not block until completion)', async () => {
+  it('run_start returns runId immediately (async — does not block until completion)', async () => {
     // Register+publish OUTSIDE the timed window so `elapsed` still measures only the run submission.
     const wf = uniqueWorkflowName('val005-immediate');
     await registerPublishedVia(callTool, wf, 'return 42;');
@@ -52,7 +52,7 @@ describe('VAL-005: MCP Streamable HTTP interface (REQ-005)', () => {
     const res = await fetch(`${baseUrl}/mcp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_run', arguments: { name: wf } } }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'run_start', arguments: { name: wf } } }),
     });
     const elapsed = Date.now() - start;
     const body = await res.json() as { result?: { content: Array<{ text: string }> } };
@@ -73,7 +73,7 @@ describe('VAL-005: MCP Streamable HTTP interface (REQ-005)', () => {
     expect(res.ok).toBe(true);
   });
 
-  it('workflow_result polled after completion returns the script return value', async () => {
+  it('run_result polled after completion returns the script return value', async () => {
     // Submit a deterministic script and poll for the result
     const wf = uniqueWorkflowName('val005-result');
     await registerPublishedVia(callTool, wf, 'return {x:7};');
@@ -81,7 +81,7 @@ describe('VAL-005: MCP Streamable HTTP interface (REQ-005)', () => {
       const res = await fetch(`${baseUrl}/mcp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_run', arguments: { name: wf } } }),
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'run_start', arguments: { name: wf } } }),
       });
       const body = await res.json() as { result?: { content: Array<{ text: string }> } };
       return JSON.parse(body.result!.content[0].text);
@@ -92,7 +92,7 @@ describe('VAL-005: MCP Streamable HTTP interface (REQ-005)', () => {
       const res = await fetch(`${baseUrl}/mcp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_status', arguments: { runId } } }),
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'run_status', arguments: { runId } } }),
       });
       const body = await res.json() as { result?: { content: Array<{ text: string }> } };
       const status = JSON.parse(body.result!.content[0].text);
@@ -100,7 +100,7 @@ describe('VAL-005: MCP Streamable HTTP interface (REQ-005)', () => {
         const res2 = await fetch(`${baseUrl}/mcp`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_result', arguments: { runId } } }),
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'run_result', arguments: { runId } } }),
         });
         const body2 = await res2.json() as { result?: { content: Array<{ text: string }> } };
         const result = JSON.parse(body2.result!.content[0].text);

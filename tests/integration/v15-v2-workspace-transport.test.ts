@@ -31,7 +31,7 @@ async function tool(name: string, args: Record<string, unknown>): Promise<any> {
 }
 async function pollDone(runId: string): Promise<void> {
   for (let i = 0; i < 30; i++) {
-    const s = await tool('workflow_status', { runId });
+    const s = await tool('run_status', { runId });
     if (s.status === 'completed' || s.status === 'failed') return;
     await new Promise((r) => setTimeout(r, 100));
   }
@@ -53,7 +53,7 @@ describe('v1.5+v2 workspace transport (REQ-022..026)', () => {
     await pollDone(runId);
 
     // REQ-023: recursive + sha256, .claude/settings|hooks stripped
-    const arts = (await tool('workflow_artifacts', { runId })).result as Array<{ path: string; size: number; sha256: string }>;
+    const arts = (await tool('workspace_list', { runId })).result as Array<{ path: string; size: number; sha256: string }>;
     const paths = arts.map((a) => a.path);
     expect(paths).toEqual(['seeded.txt', 'src/app.py']); // sorted, recursive, NO .claude/*
     const seeded = arts.find((a) => a.path === 'seeded.txt')!;
@@ -61,17 +61,17 @@ describe('v1.5+v2 workspace transport (REQ-022..026)', () => {
     expect(seeded.sha256).toBe(createHash('sha256').update(content).digest('hex'));
 
     // REQ-022: windowed byte fetch
-    const chunk = await tool('workflow_artifact_get', { runId, path: 'seeded.txt', offset: 6, length: 4 });
+    const chunk = await tool('workspace_pull', { runId, path: 'seeded.txt', offset: 6, length: 4 });
     expect(Buffer.from(chunk.result.base64, 'base64').toString()).toBe('from');
     expect(chunk.result.eof).toBe(false);
     // REQ-022: realpath escape denied
-    const esc = await tool('workflow_artifact_get', { runId, path: '../../../../etc/hostname' });
+    const esc = await tool('workspace_pull', { runId, path: '../../../../etc/hostname' });
     expect(esc.error.code).toBe('PATH_OUTSIDE_WORKSPACE');
 
     // REQ-026: purge
     const purge = await tool('workspace_purge', { runId });
     expect(purge.result.purged).toBe(true);
-    expect((await tool('workflow_artifacts', { runId })).result).toEqual([]);
+    expect((await tool('workspace_list', { runId })).result).toEqual([]);
 
     // v21 Gate 5 addendum (B-4, DES-104, REQ-091): effectiveParams rides the run row, so
     // workspace_purge (filesystem-only, mcp-facade.ts's workspace_purge) preserves it exactly as

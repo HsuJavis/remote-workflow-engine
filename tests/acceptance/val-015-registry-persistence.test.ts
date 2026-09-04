@@ -5,7 +5,7 @@
 // Red reason (2026-07-03, before Gate 6 rework): WorkflowCatalog is in-memory only (confirmed at
 // Gate 7.5 real-run via genuine `pkill` + fresh `npm run start` — see 08-validation.md VAL-014) —
 // a fresh server instance on the same workRoot has an empty catalog, so workflow_list omits the
-// registered workflow and workflow_run(name) fails with UNKNOWN_WORKFLOW.
+// registered workflow and run_start(name) fails with UNKNOWN_WORKFLOW.
 import { describe, it, expect, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
@@ -28,13 +28,13 @@ describe('VAL-015: named workflow registry survives server restart (REQ-014, D-V
   }
 
   async function runAndWait(name: string) {
-    const run = await callTool('workflow_run', { name });
+    const run = await callTool('run_start', { name });
     if (run.status === 'failed') return run;
     const runId = run.runId as string;
     for (let i = 0; i < 30; i++) {
-      const s = await callTool('workflow_status', { runId });
+      const s = await callTool('run_status', { runId });
       if (s.status === 'completed' || s.status === 'failed') {
-        const r = await callTool('workflow_result', { runId });
+        const r = await callTool('run_result', { runId });
         return { ...s, result: r.result, runId };
       }
       await new Promise((r) => setTimeout(r, 200));
@@ -42,7 +42,7 @@ describe('VAL-015: named workflow registry survives server restart (REQ-014, D-V
     throw new Error('timed out');
   }
 
-  it('registered workflow survives restart: workflow_list shows it and workflow_run(name) still works', async () => {
+  it('registered workflow survives restart: workflow_list shows it and run_start(name) still works', async () => {
     server = await createServer({ port: 0 });
     baseUrl = `http://127.0.0.1:${server.port}`;
 

@@ -25,7 +25,7 @@
 //
 // Red reason: TODAY six files mention "skeleton" (`dashboard-page.ts`, `dashboard.ts`,
 // `mcp-facade.ts`, `server.ts`, `workflow-meta.ts`, `workflow-view.ts` — confirmed via
-// `grep -rIli skeleton src/`), three more than the allowlist permits; `workflow_get`'s own advertised
+// `grep -rIli skeleton src/`), three more than the allowlist permits; `workflow_source`'s own advertised
 // tool description ALSO contains the literal word "skeleton" (`server.ts` TOOL_METADATA, confirmed by
 // direct read) — both assertions fail against the current tree, for the genuine unimplemented reason.
 import { describe, it, expect } from 'vitest';

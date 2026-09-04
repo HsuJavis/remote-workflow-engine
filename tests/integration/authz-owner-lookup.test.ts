@@ -3,7 +3,6 @@
 // verdict it gets from a fake (catches a port wired to the wrong column).
 // Mock policy: integration tier — real SQLite-backed stores, no mock of the SUT boundary.
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — src/authz.ts does not exist yet (v24 DES-139/TASK-133)
 import { authorize } from '../../src/authz.js';
 // @ts-expect-error — the v24 OwnerLookup port implementation does not exist yet
 import { createOwnerLookup } from '../../src/owner-lookup.js';

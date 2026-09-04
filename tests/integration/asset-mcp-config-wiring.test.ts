@@ -14,7 +14,7 @@
 // here would require new production wiring, not a test-only fix. See needs_clarification.
 //
 // Mock policy (DES-015, integration tier): real `composeConfig()` + real `createServer()` + real
-// HTTP `asset_push`/`workflow_run`/`workflow_status` round trip (no mock of the SUT's own asset
+// HTTP `asset_push`/`run_start`/`run_status` round trip (no mock of the SUT's own asset
 // storage, submission, sandbox, or run lifecycle); only the third-party SDK `query()` export
 // (`queryImpl` seam, same convention as IT-021/IT-022) and the managed LiteLLM proxy subprocess
 // (fake `spawnImpl`/`fetchImpl`, same convention) are faked — no real network/process I/O.
@@ -113,7 +113,7 @@ describe('mcp-config asset_push redirect supersedes the old per-call options.mcp
 
     let done = false;
     for (let i = 0; i < 50 && !done; i++) {
-      const status = await mcpCall('workflow_status', { runId });
+      const status = await mcpCall('run_status', { runId });
       done = status.status === 'completed' || status.status === 'failed';
       if (!done) await new Promise((r) => setTimeout(r, 100));
     }

@@ -4,7 +4,7 @@
 // Per DES-023: no mock of the SUT boundary; uses real createServer.
 // D-V2I-3 (ORCH binding): schedule/trigger targets are CATALOG-REGISTERED workflows only (REQ-014/
 // REQ-015 wording) — every target below is registered via `workflow_register` first, never a bare
-// `workflow_run({name, script})` (which never persists to WorkflowCatalog — see E2E-004's own note
+// `run_start({name, script})` (which never persists to WorkflowCatalog — see E2E-004's own note
 // for the exact root cause). Also pins: an unregistered workflow name -> WORKFLOW_NOT_FOUND with a
 // machine-readable code, for both `schedule_create` and `workflow_trigger`.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -41,7 +41,7 @@ async function mcpCall(name: string, args: Record<string, unknown> = {}) {
 async function pollUntilTerminal(runId: string, maxMs = 10_000) {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
-    const r = await mcpCall('workflow_status', { runId });
+    const r = await mcpCall('run_status', { runId });
     const status = (r['result'] as Record<string, unknown>)?.['status'] as string;
     if (['completed', 'failed', 'stopped'].includes(status ?? '')) return status;
     await new Promise((r2) => setTimeout(r2, 200));

@@ -1,4 +1,4 @@
-// IT-025: workflow_resume RE-RUNS an in-flight agent() call that was aborted by workflow_suspend,
+// IT-025: run_resume RE-RUNS an in-flight agent() call that was aborted by run_suspend,
 // rather than replaying the journaled null from the resume cache (D-F13, REQ-006 1st acceptance
 // clause: "only unfinished calls run live, producing the same final result as an uninterrupted
 // run").
@@ -42,7 +42,7 @@ async function pollUntilSettled(mgr: RunManager, runId: string, maxIters = 60) {
   return view;
 }
 
-describe('workflow_resume re-runs an aborted-mid-flight agent() call live (IT-025, D-F13)', () => {
+describe('run_resume re-runs an aborted-mid-flight agent() call live (IT-025, D-F13)', () => {
   it('the aborted call is genuinely re-invoked on resume, producing the uninterrupted-run result — not the cached aborted null', async () => {
     let invokeCount = 0;
     let firstInvokeStarted!: () => void;

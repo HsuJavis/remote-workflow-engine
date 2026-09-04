@@ -50,7 +50,7 @@ describe('resolveVersionRequest truth table (DES-110, UT-103)', () => {
     expect(r).toMatchObject({ ok: false, code: 'CHANNEL_UNPUBLISHED', channel: 'release' });
   });
 
-  // Row 7 — the default path every plain workflow_run({name}) takes.
+  // Row 7 — the default path every plain run_start({name}) takes.
   it('row 7: no selector, release published → resolves to the release pointer, requested:{kind:default-release}', () => {
     const r = resolveVersionRequest({}, { release: 'v2', beta: null }, KNOWN);
     expect(r).toMatchObject({ ok: true, version: 'v2', requested: { kind: 'default-release' } });

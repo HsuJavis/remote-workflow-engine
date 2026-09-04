@@ -7,7 +7,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "start": "tsx src/main.ts",
-    "build": "tsc --noEmit"
+    "build": "tsc --noEmit",
+    "gen:authoring": "tsx scripts/gen-authoring-md.ts"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

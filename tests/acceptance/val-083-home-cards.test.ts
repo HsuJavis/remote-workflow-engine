@@ -41,7 +41,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
 async function pollDone(runId: string, maxMs = 8000): Promise<void> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
-    const s = await callTool('workflow_status', { runId }) as { status?: string };
+    const s = await callTool('run_status', { runId }) as { status?: string };
     if (s?.status !== 'queued' && s?.status !== 'running') return;
     await new Promise((r) => setTimeout(r, 40));
   }
@@ -117,7 +117,7 @@ describe('VAL-083: GET /api/home — grouping + description (REQ-074)', () => {
     // other[]. Rewritten to that subject rather than retired.
     const wfName = 'val083-dereg';
     await registerPublishedVia(callTool, wfName, 'return "deregistered-for-val083";');
-    const sub = await callTool('workflow_run', { name: wfName }) as { runId?: string };
+    const sub = await callTool('run_start', { name: wfName }) as { runId?: string };
     await pollDone(sub?.runId!);
 
     const dereg = await callTool('workflow_deregister', { name: wfName }) as { removed?: boolean; result?: { removed?: boolean } };

@@ -38,8 +38,8 @@ describe('Deploy packaging artifacts (REQ-011, DES-022)', () => {
     const p = join(REPO_ROOT, 'scripts', 'smoke.sh');
     if (!existsSync(p)) return;
     const text = readFileSync(p, 'utf8');
-    // Must exercise at minimum: server boot + workflow_run call
-    expect(text).toMatch(/workflow_run|tools\/call/i);
+    // Must exercise at minimum: server boot + run_start call
+    expect(text).toMatch(/run_start|tools\/call/i);
   });
 
   it('DEPLOY.md mentions the dependency-free direct-fetch/SDK path (DES-022 replaceability)', () => {
@@ -49,10 +49,10 @@ describe('Deploy packaging artifacts (REQ-011, DES-022)', () => {
     expect(text).toMatch(/direct-fetch|sdk/i);
   });
 
-  it('DEPLOY.md mentions the no-auth caveat for asset_push (DES-022 security note)', () => {
+  it('DEPLOY.md mentions the no-auth caveat for workspace_push (DES-022 security note)', () => {
     const p = join(REPO_ROOT, 'DEPLOY.md');
     if (!existsSync(p)) return;
     const text = readFileSync(p, 'utf8');
-    expect(text).toMatch(/asset_push|ssh.tunnel|vpn/i);
+    expect(text).toMatch(/workspace_push|ssh.tunnel|vpn/i);
   });
 });

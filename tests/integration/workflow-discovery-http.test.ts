@@ -1,6 +1,6 @@
 // v9 — workflow discovery over the real server (REQ-061/062): register a workflow with a meta
-// description, then query its purpose (workflow_list description + workflow_get) and its static DAG
-// skeleton (workflow_get.skeleton + /api/workflows/:name/skeleton).
+// description, then query its purpose (workflow_list description + workflow_source) and its static DAG
+// skeleton (workflow_source.skeleton + /api/workflows/:name/skeleton).
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -49,17 +49,17 @@ describe('workflow discovery (v9, REQ-061/062)', () => {
     expect(cs.description).toBe('two models draft in parallel, a stronger model verifies');
   });
 
-  it('REQ-061 workflow_get returns full detail; unknown → WORKFLOW_NOT_FOUND', async () => {
-    const got = await call('workflow_get', { name: 'cs' });
+  it('REQ-061 workflow_source returns full detail; unknown → WORKFLOW_NOT_FOUND', async () => {
+    const got = await call('workflow_source', { name: 'cs' });
     expect(got.result.description).toContain('two models draft');
     expect(got.result.phases.map((p: any) => p.title)).toEqual(['Draft', 'Verify']);
     expect(got.result.script).toContain('parallel');
-    const missing = await call('workflow_get', { name: 'nope' });
+    const missing = await call('workflow_source', { name: 'nope' });
     expect(missing.error.code).toBe('WORKFLOW_NOT_FOUND');
   });
 
   // [RETIRED v23, adjudication #2 R-3(a)] Both REQ-062 skeleton cases that lived here —
-  // `workflow_get.skeleton` predicting the DAG, and `GET /api/workflows/:name/skeleton` serving it —
+  // `workflow_source.skeleton` predicting the DAG, and `GET /api/workflows/:name/skeleton` serving it —
   // asserted a user-facing surface REQ-105 deliberately deletes (01-requirements.md REQ-062's own
   // partial-supersession note). `parseWorkflowSkeleton` itself survives internally (run-DAG layout
   // spine + analyzer grounding); only these two client-facing vehicles are gone, so the cases are

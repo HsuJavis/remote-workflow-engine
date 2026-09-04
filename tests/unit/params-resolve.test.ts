@@ -8,7 +8,6 @@ import { describe, it, expect } from 'vitest';
 import {
   defaultRunParams,
   mergeRunParams,
-  resolveCallParams,
   composePrompt,
   USER_INSTRUCTIONS_OPEN,
   USER_INSTRUCTIONS_CLOSE,
@@ -17,7 +16,6 @@ import {
 import type { RunParams, ProviderEffortProfile } from '../../src/params/resolve.js';
 import type { HarnessDefaults } from '../../src/harness-defaults.js';
 import type { UserOverrides } from '../../src/params/contract.js';
-import type { AgentTypeDef } from '../../src/agent-executor.js';
 
 describe('defaultRunParams() — the ONLY no-overrides producer', () => {
   it('with no registered defaults, every tunable key provenance is "engine"', () => {
@@ -113,61 +111,15 @@ describe('mergeRunParams() — admission-time fold of overrides over registered 
   });
 });
 
-describe('resolveCallParams() — dispatch-time application of the two per-call rungs (ARCH-065)', () => {
-  const RUN_PARAMS: RunParams = {
-    model: 'sonnet', timeoutMs: 30_000,
-    provenance: { model: 'default', effort: 'engine', timeoutMs: 'default', appendPrompt: 'engine' },
-  };
-
-  it('per-call agent() opts.model wins over everything (rung 1)', () => {
-    const eff = resolveCallParams({ model: 'opus' }, undefined, RUN_PARAMS, { model: 'haiku' });
-    expect(eff.model).toBe('opus');
-    expect(eff.provenance.model).toBe('call');
-  });
-
-  it('agentType frontmatter model wins over the run snapshot when no per-call opts.model (rung 2, D12: author config beats a user blanket choice)', () => {
-    const agentTypeDef: AgentTypeDef = { systemPrompt: 'you are an agent', model: 'opus' };
-    const eff = resolveCallParams({}, agentTypeDef, RUN_PARAMS, { model: 'haiku' });
-    expect(eff.model).toBe('opus');
-    expect(eff.provenance.model).toBe('agentType');
-  });
-
-  it('falls back to the run snapshot (override/default rung) when neither call nor agentType supply a value', () => {
-    const eff = resolveCallParams({}, undefined, RUN_PARAMS, { model: 'haiku' });
-    expect(eff.model).toBe('sonnet');
-    expect(eff.provenance.model).toBe('default'); // inherited from RUN_PARAMS.provenance.model
-  });
-
-  it('falls back to the engine default alias as the last rung when nothing else set a model', () => {
-    const empty: RunParams = { provenance: { model: 'engine', effort: 'engine', timeoutMs: 'engine', appendPrompt: 'engine' } };
-    const eff = resolveCallParams({}, undefined, empty, { model: 'haiku' });
-    expect(eff.model).toBe('haiku');
-    expect(eff.provenance.model).toBe('engine');
-  });
-
-  it('effort has no agentType rung: call > override(snapshot) > engine(absent)', () => {
-    const withEffort: RunParams = { ...RUN_PARAMS, effort: 'high', provenance: { ...RUN_PARAMS.provenance, effort: 'override' } };
-    const eff = resolveCallParams({ effort: 'low' }, { systemPrompt: 'x' }, withEffort, {});
-    expect(eff.effort).toBe('low');
-    expect(eff.provenance.effort).toBe('call');
-  });
-
-  it('timeoutMs falls back from call to the snapshot to engine, same 3-rung ladder as effort', () => {
-    const eff = resolveCallParams({}, undefined, RUN_PARAMS, {});
-    expect(eff.timeoutMs).toBe(30_000);
-    expect(eff.provenance.timeoutMs).toBe('default');
-  });
-
-  // v21 orchestrator adjudication #6 (2026-09-01, F-5): provenance-matrix coverage gap the
-  // implementer flagged — no dedicated per-call `opts.timeoutMs` call-rung case existed (only the
-  // fallback-to-snapshot case above). Already correctly implemented today (green) — pins the call
-  // rung explicitly, same pattern as `opts.model`'s "rung 1" case.
-  it('per-call agent() opts.timeoutMs wins over the run snapshot (rung 1, same ladder as model)', () => {
-    const eff = resolveCallParams({ timeoutMs: 5_000 }, undefined, RUN_PARAMS, {});
-    expect(eff.timeoutMs).toBe(5_000);
-    expect(eff.provenance.timeoutMs).toBe('call');
-  });
-});
+// v24 (DES-146, TASK-137): the old `resolveCallParams()` describe block (per-call `agent()` opts
+// and agentType-frontmatter rungs, ARCH-065) was removed here — that function and its two rungs
+// are DELETED from src/params/resolve.ts (see the `resolveAgentParams` block appended below,
+// which supersedes it with the three-rung ladder). Reported as a test_defect in the Gate 6 report
+// rather than silently dropped: the Gate 5 author left this block in place with a comment noting
+// the rewrite was deliberately handed to Gate 6/TASK-137 (this file is in TASK-137's own `files:`
+// and DES-146 marks this file REWRITE [T3]); removing it is required for the module to even
+// link — an ESM named import of a deleted export (`resolveCallParams`) is a load-time failure for
+// every test in this file, not a scoped one.
 
 describe('composePrompt() — five-segment order + byte-identity pin (DES-102, REQ-094)', () => {
   it('BYTE-IDENTITY PIN: no appendPrompt, no author prompt → identical to today’s `${systemPrompt}\\n\\n${prompt}`', () => {
@@ -291,12 +243,9 @@ describe('mapEffort (this file) stays FENCED — zero src/ importers outside res
 
 // UT-148 (DES-146, v24 REWRITE — appended block, [T3]): resolveAgentParams(label, contract,
 // overrides, engineDefaults) — three rungs (override > default > engine), not five; the
-// 'call'/'agentType' rungs are DELETED. Written test-first (Gate 5, RED) — resolveAgentParams
-// does not exist yet (this file's existing content above still exercises the old five-rung
-// resolveCallParams; that content asserts a still-valid PURE function's mechanics and is left
-// untouched here per surgical discipline — DES-146's own rewrite is TASK-137's job at Gate 6).
+// 'call'/'agentType' rungs are DELETED (Gate 6/TASK-137 — see the resolveCallParams-removal note
+// above the composePrompt describe block).
 import { describe as describeV24, it as itV24, expect as expectV24 } from 'vitest';
-// @ts-expect-error — resolveAgentParams does not exist yet (v24 DES-146/TASK-137)
 import { resolveAgentParams } from '../../src/params/resolve.js';
 
 const v24Contract = {

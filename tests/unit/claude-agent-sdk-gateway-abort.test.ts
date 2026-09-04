@@ -5,7 +5,7 @@
 // `drain` vs a timeout/external-signal bound) is never assigned to `options.abortController` — the
 // SDK's own documented cancellation hook (node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts:1275,
 // "Controller for cancelling the query. When aborted, the query will stop and clean up resources.").
-// Real repro (08-validation.md round 4): workflow_suspend makes the local Promise race resolve early
+// Real repro (08-validation.md round 4): run_suspend makes the local Promise race resolve early
 // (state machine correct) but the real spawned `claude` CLI subprocess is NOT killed — it runs to its
 // own natural completion (observed via `ps aux`: PID alive at t=4s post-suspend, matching an
 // unsuspended control run's ~16s completion, not an immediate cancellation).

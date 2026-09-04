@@ -3,11 +3,12 @@
 // normalizeSeedRefAllowlist: config-load validator; throws codedError on bad entry.
 // NOT a reuse of net-guard.ts (that is the HTTP server-bind/host-header plane).
 
-import { codedError } from './errors.js';
+import { codedError, type ErrorCode } from './errors.js';
 
 export type EgressVerdict =
   | { ok: true; url: URL }
-  | { ok: false; code: 'SEEDREF_DISABLED' | 'SEEDREF_EGRESS_DENIED'; reason: string };
+  // v24 (DES-137): constrained to the closed ErrorCode union at its declaration.
+  | { ok: false; code: Extract<ErrorCode, 'SEEDREF_DISABLED' | 'SEEDREF_EGRESS_DENIED'>; reason: string };
 
 /**
  * Deny-by-default egress gate. Returns SEEDREF_DISABLED when allowlist is empty/absent.

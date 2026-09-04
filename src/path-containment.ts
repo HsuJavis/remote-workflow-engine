@@ -7,18 +7,20 @@ import { realpathSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 
 /** True only when `path`'s REAL (symlink-resolved) location is `root` itself or strictly nested
- *  inside `root`'s own real location. Falls back to the plain resolved path when `realpathSync`
+ *  inside `root`'s own real location. Falls back to the plain resolved path when `realpath`
  *  fails (e.g. the target does not exist yet) — still rejects a plain `../` escape (regression
- *  floor) even though it cannot yet detect a not-created symlink. */
-export function isPathContained(path: string, root: string): boolean {
-  const realRoot = safeRealpath(resolve(root));
-  const realPath = safeRealpath(resolve(path));
+ *  floor) even though it cannot yet detect a not-created symlink. `realpath` is injected (v24
+ *  DES-142/TASK-134) so callers can exercise the symlink-escape branch without touching disk;
+ *  defaults to `realpathSync` — every pre-v24 call site is unaffected. */
+export function isPathContained(path: string, root: string, realpath: (p: string) => string = realpathSync): boolean {
+  const realRoot = safeRealpath(resolve(root), realpath);
+  const realPath = safeRealpath(resolve(path), realpath);
   return realPath === realRoot || realPath.startsWith(realRoot + sep);
 }
 
-function safeRealpath(p: string): string {
+function safeRealpath(p: string, realpath: (p: string) => string): string {
   try {
-    return realpathSync(p);
+    return realpath(p);
   } catch {
     return p;
   }

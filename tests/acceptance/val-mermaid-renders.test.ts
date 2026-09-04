@@ -2,11 +2,11 @@
 // real Mermaid document that renders in a real browser — the property `checkMermaid` cannot
 // itself prove (mechanical grammar checking is not a renderer). Never a unit test pretending to
 // be a browser: no headless-browser tooling is installed in this repo today, so every case is
-// `it.skip` with the reason UNTIL Gate 7.5 adds one — never a fabricated pass. Written test-first
-// (Gate 5, RED): the import itself fails — src/authoring-guide.ts / GUIDE_EXAMPLES do not exist
-// yet (v24 DES-157/TASK-150).
+// `it.skip` with the reason UNTIL Gate 7.5 adds one — never a fabricated pass.
+// Gate 6 (implementer, TASK-151): src/authoring-guide.ts / GUIDE_EXAMPLES now exist (TASK-150,
+// built by a parallel implementer) — the Gate 5 `@ts-expect-error` import-red guard is stale and
+// removed; no other change needed, this file was already correct once its dependency landed.
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — GUIDE_EXAMPLES does not exist yet (v24 DES-157/TASK-150)
 import { GUIDE_EXAMPLES } from '../../src/authoring-guide.js';
 
 const HAS_BROWSER_TOOLING = false; // no puppeteer/playwright dep in package.json today (measured)

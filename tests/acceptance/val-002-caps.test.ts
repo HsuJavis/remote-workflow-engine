@@ -29,9 +29,9 @@ describe('VAL-002: nesting, concurrency caps, budget accounting (REQ-002)', () =
     const run = await runScriptVia(callTool, script, { budget: opts?.budget });
     const runId = run.runId as string;
     for (let i = 0; i < 60; i++) {
-      const s = await callTool('workflow_status', { runId });
+      const s = await callTool('run_status', { runId });
       if (s.status === 'completed' || s.status === 'failed') {
-        const r = await callTool('workflow_result', { runId });
+        const r = await callTool('run_result', { runId });
         return { status: s.status, result: r.result, error: r.error };
       }
       await new Promise((r) => setTimeout(r, 200));

@@ -152,7 +152,7 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
   });
 
   it('stored definition unchanged after bob\'s rejected overwrite', async () => {
-    const r = await mcp(aliceBearer, 'workflow_get', { name: WF });
+    const r = await mcp(aliceBearer, 'workflow_source', { name: WF });
     expect((r as { script?: string }).script).not.toContain('hijacked');
   });
 
@@ -174,13 +174,13 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
   });
 
   it('workflow still present after bob\'s rejected deregister', async () => {
-    const r = await mcp(aliceBearer, 'workflow_get', { name: WF });
+    const r = await mcp(aliceBearer, 'workflow_source', { name: WF });
     expect(r.error).toBeUndefined();
     expect(r.code).toBeUndefined();
   });
 
   it('bob can RUN alice\'s workflow (run not gated on ownership)', async () => {
-    const r = await mcp(bobBearer, 'workflow_run', { name: WF });
+    const r = await mcp(bobBearer, 'run_start', { name: WF });
     expect(r.code).not.toBe('NOT_WORKFLOW_OWNER');
     expect(typeof r.runId).toBe('string');
   });
@@ -204,7 +204,7 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
         const b = await r.json() as { result?: { content?: Array<{ text?: string }> } };
         return JSON.parse(b.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
       };
-      // v22 (DES-110): `workflow_get({name})` resolves the RELEASE channel, so the seeded NULL-owner
+      // v22 (DES-110): `workflow_source({name})` resolves the RELEASE channel, so the seeded NULL-owner
       // row must be published or the backfill read-back below gets CHANNEL_UNPUBLISHED. Registered
       // AND published with a null principal — which is the point of this case (a pre-v15 row that
       // predates ownership), so the null default is correct HERE, unlike the alice/bob cases above.
@@ -221,7 +221,7 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
 
     try {
       const b2 = await getBearerFor(ALICE);
-      const r = await mcp(b2, 'workflow_get', { name: wf2 });
+      const r = await mcp(b2, 'workflow_source', { name: wf2 });
       // v22 (DES-115/REQ-100): alice is NOT the backfilled owner, so this read takes the non-owner
       // projection — which is the ENTIRE response body under `result`, with the pre-v22 flat
       // top-level copies deliberately removed (that was the `script` twice-leak DES-115 closes).

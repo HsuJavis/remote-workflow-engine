@@ -60,11 +60,11 @@ describe('VAL-022: REQ-019 clause 2 — no user hook ever runs; the engine\'s OW
     const run = await runScriptVia(mcpCall, `return 1 + 1;`);
     const runId = run['runId'] as string;
     for (let i = 0; i < 20; i++) {
-      const s = await mcpCall('workflow_status', { runId });
+      const s = await mcpCall('run_status', { runId });
       if (s['status'] === 'completed' || s['status'] === 'failed') break;
       await new Promise((r) => setTimeout(r, 300));
     }
-    const result = await mcpCall('workflow_result', { runId });
+    const result = await mcpCall('run_result', { runId });
     expect(result['result']).toBe(2);
   }, 20000);
 });

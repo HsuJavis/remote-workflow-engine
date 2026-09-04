@@ -1,12 +1,12 @@
-// VAL-110 (REQ-100): `workflow_get` masks the script for non-owners. Real entrypoint: `createServer`,
+// VAL-110 (REQ-100): `workflow_source` masks the script for non-owners. Real entrypoint: `createServer`,
 // real MCP HTTP, real auth (TokenStore-minted bearer), real `/api/*` routes.
 //
 // Mock policy (acceptance, DES-119): no mocking of the SUT's own boundaries. No LLM dispatch needed.
 //
 // Original Gate-5 red reason (v22): `/api/workflows/:name/skeleton` returned the script-derived
-// skeleton/phases unconditionally, and `server.ts:823` threaded no principal into `workflow_get` at
+// skeleton/phases unconditionally, and `server.ts:823` threaded no principal into `workflow_source` at
 // all. The skeleton/phases clause below was retired in v23 (see the note further down) once REQ-105
-// deleted the `/skeleton` route outright; the remaining cases are the `workflow_get` script-masking
+// deleted the `/skeleton` route outright; the remaining cases are the `workflow_source` script-masking
 // and `/api/workflows` no-`script`-field assertions.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -70,15 +70,15 @@ async function toolCall(server: Server, name: string, args: Record<string, unkno
 describe('REQ-100: two real principals over /mcp (VAL-110)', () => {
   it('owner reads the script; a non-owner bearer gets exactly the masked non-owner key set', async () => {
     const ownerToken = await mintBearer(authTmpDir, 'val110-owner@example.com');
-    // v22 (DES-110): `workflow_get({name})` resolves the RELEASE channel, so an unpublished draft
+    // v22 (DES-110): `workflow_source({name})` resolves the RELEASE channel, so an unpublished draft
     // reads back CHANNEL_UNPUBLISHED rather than the owner/non-owner projections under test.
     await registerPublishedVia(callerFor(authServer, ownerToken), 'val110-flow', `return 'val110-secret';`);
 
-    const owned = await toolCall(authServer, 'workflow_get', { name: 'val110-flow' }, ownerToken);
+    const owned = await toolCall(authServer, 'workflow_source', { name: 'val110-flow' }, ownerToken);
     expect((owned['result'] as { script?: string } | undefined)?.script).toBe(`return 'val110-secret';`);
 
     const otherToken = await mintBearer(authTmpDir, 'val110-stranger@example.com');
-    const masked = await toolCall(authServer, 'workflow_get', { name: 'val110-flow' }, otherToken);
+    const masked = await toolCall(authServer, 'workflow_source', { name: 'val110-flow' }, otherToken);
     const maskedResult = masked['result'] as Record<string, unknown> | undefined;
     expect(maskedResult?.['scriptWithheld']).toBe(true);
     expect(JSON.stringify(masked)).not.toContain('val110-secret');

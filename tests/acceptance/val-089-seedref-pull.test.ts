@@ -1,5 +1,5 @@
 // VAL-089 (REQ-080, DES-079..085): engine-pull seedRef acceptance test.
-// Binds the REQ-080 acceptance clauses against the REAL engine entrypoint (workflow_run MCP tool
+// Binds the REQ-080 acceptance clauses against the REAL engine entrypoint (run_start MCP tool
 // + real createServer + real CasStore + real git subprocess when online).
 //
 // REQ-080 acceptance clauses tested here:
@@ -14,7 +14,7 @@
 // Skip gate: env RWE_SKIP_ONLINE_TESTS=1 skips the real-pull case.
 //
 // Red reason: seedRef is not handled by RunManager or server.ts yet:
-//   - `workflow_run` with seedRef silently ignores the field → no run error, assertions fail
+//   - `run_start` with seedRef silently ignores the field → no run error, assertions fail
 //   - SEEDREF_DISABLED / SEEDREF_EGRESS_DENIED / SEED_SOURCE_CONFLICT not returned →
 //     `expect(r.error?.code).toBe('SEEDREF_DISABLED')` fails
 //
@@ -58,7 +58,7 @@ const callerFor = (s: Server) => (tool: string, args: Record<string, unknown>) =
 
 async function poll(s: Server, runId: string): Promise<any> {
   for (let i = 0; i < 60; i++) {
-    const st = await call(s, 'workflow_status', { runId });
+    const st = await call(s, 'run_status', { runId });
     if (['completed', 'failed', 'stopped'].includes(st.status)) return st;
     await new Promise((r) => setTimeout(r, 300));
   }
@@ -85,7 +85,7 @@ afterAll(async () => {
 });
 
 describe('VAL-089: REQ-080 engine-pull seedRef — no allowlist → SEEDREF_DISABLED', () => {
-  it('workflow_run with seedRef and no allowlist returns SEEDREF_DISABLED (fail-closed)', async () => {
+  it('run_start with seedRef and no allowlist returns SEEDREF_DISABLED (fail-closed)', async () => {
     const r = await runScriptVia(callerFor(server), `return 'seeded';`, {
       seedRef: { repoUrl: PINNED_REPO, sha: PINNED_SHA },
     });
@@ -158,7 +158,7 @@ describe('VAL-089: REQ-080 — real pull materializes files (skip when offline)'
       seedNamespace: '_val089',
     });
 
-    // workflow_run should return a runId immediately (REQ-005)
+    // run_start should return a runId immediately (REQ-005)
     expect(run.result?.runId ?? run.runId).toBeTruthy();
     const runId = run.result?.runId ?? run.runId;
 
@@ -171,7 +171,7 @@ describe('VAL-089: REQ-080 — real pull materializes files (skip when offline)'
     expect(done.result?.seedRef?.latencyMs).toBeGreaterThanOrEqual(0);
 
     // Workspace artifacts: seeded files appear
-    const arts = await call(serverWithAllowlist, 'workflow_artifacts', { runId });
+    const arts = await call(serverWithAllowlist, 'workspace_list', { runId });
     const paths: string[] = (arts.result as Array<{ path: string }>).map((a) => a.path);
     expect(paths.length).toBeGreaterThan(0);
 

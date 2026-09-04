@@ -11,7 +11,7 @@ import { materializeSeed, materializeManifest } from './workspace-seed.js';
 import type { CasStore } from './cas-store.js';
 import { initGitBaseline } from './workspace-git.js';
 import { listArtifacts, type ArtifactEntry } from './workspace-artifacts.js';
-import { IllegalTransitionError, codedError } from './errors.js';
+import { IllegalTransitionError, codedError, toErrorCode } from './errors.js';
 import { isEgressAllowed, normalizeSeedRefAllowlist } from './seedref-egress.js';
 import type { SeedRefFetcher } from './seedref-fetcher.js';
 import { HardenedSeedRefFetcher } from './seedref-fetcher.js';
@@ -38,7 +38,7 @@ import { WorkflowCatalog } from './workflow-catalog.js';
 import type { GatewayClient, GatewayConfig } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
-import { validateUserOverrides, validateDeclaredArgs, canonicalContract, isKnownAlias, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
+import { validateUserOverrides, validateDeclaredArgs, isKnownAlias, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
 import { defaultRunParams, mergeRunParams, type RunParams } from './params/resolve.js';
 import type { HarnessDefaults } from './harness-defaults.js';
 
@@ -400,7 +400,12 @@ export class RunManager {
     // durable work (createRun/runWorkspace/sandbox spawn) — an ad-hoc inline script (no registered
     // contract) is bound by the canonical 4-knob contract, same as a registered script with no
     // `params` block (DES-101). Order pinned: overrides -> declared args -> merge.
-    const contract = registeredContract ?? canonicalContract();
+    // v24 (DES-144): the "canonical 4-knob contract" fallback is RETIRED (params/contract.ts no
+    // longer exports it) — an unregistered/legacy contract reads back as the zero-label shape.
+    // NOTE (out of TASK-148 scope): `validateUserOverrides`/`validateDeclaredArgs` below still take
+    // the pre-v24 flat `overrides`/whole-contract shape — DES-145/146's per-agent `{agents:{...}}}`
+    // admission ladder is TASK-136/137's own rewrite of this rung, not done here.
+    const contract = registeredContract ?? ({ agents: {}, args: {} } as ParamContract);
     const overridesResult = validateUserOverrides(contract, overrides, this._aliasNames, this._ceilings);
     if (!overridesResult.ok) throw paramCodedError(overridesResult);
     const argsResult = validateDeclaredArgs(contract, spec.args);
@@ -607,6 +612,22 @@ export class RunManager {
     if (stored) return { ok: true, value: stored.value };
     const view = await this._store.getRun(runId);
     return { ok: false, error: { code: 'RUN_NOT_TERMINAL', message: `Run ${runId} has not completed (status: ${view?.status ?? 'unknown'})` } };
+  }
+
+  /** v24 (DES-155, ARCH-091 note 1, TASK-148): the TOCTOU guard `workspace_delete`/`workspace_purge`
+   *  need — "refused while the run is live" is checked HERE, against the store (not a facade-side
+   *  status read that a concurrent start()/resume() could race), single process (a check inside the
+   *  owner, not a lock protocol — ADR-026's same assumption as the trigger stores). A run known to
+   *  the store but not to this process's `_runs` map (a restart) is resolved through `store.getRun`
+   *  and `queued`/`running`/`suspended` all count as LIVE — "not in memory" is never treated as
+   *  terminal. */
+  async withTerminalRun<T>(runId: string, fn: () => Promise<T> | T): Promise<T> {
+    const view = await this._store.getRun(runId);
+    if (!view) throw codedError('RUN_NOT_FOUND', `Run not found: ${runId}`);
+    if (!TERMINAL.includes(view.status)) {
+      throw codedError('RUN_NOT_TERMINAL', `run ${runId} is ${view.status}, not terminal`);
+    }
+    return fn();
   }
 
   /** Looks up a live RunEntry, rehydrating one from persisted state (REQ-006 restart survival)
@@ -835,7 +856,11 @@ export class RunManager {
     const outcome = await nested.run(`${runId}-nested`, registered.script, args, entry.guard.budgetView().total);
     if ('result' in outcome) return outcome.result;
     const err = toErr(outcome.error);
-    throw codedError(err.code, err.message);
+    // v24 (DES-137): the one genuinely-`string` site — `toErr()` can return a raw `Error.name`
+    // (e.g. `SCRIPT_ERROR` from an uncaught throw). An unrecognized code becomes INTERNAL_ERROR
+    // with `detail.rawCode` set, a greppable production signal rather than a silent passthrough.
+    const mapped = toErrorCode(err.code);
+    throw codedError(mapped, err.message, mapped === 'INTERNAL_ERROR' && err.code !== 'INTERNAL_ERROR' ? { rawCode: err.code } : undefined);
   }
 
   /** Handles one child agent() call: replay from the resume cache when available, otherwise

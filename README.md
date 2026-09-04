@@ -270,6 +270,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 9. **Inline script 已關閉**：`workflow_run`/`workflow_resume` 不再接受呼叫端夾帶的 `script`；`tools/list` 的 schema 上根本沒有這個欄位，就算硬塞也在送出當下被拒（`INLINE_SCRIPT_CLOSED`）。腳本一律要先 `workflow_register`，靜態檢查（語法解析、模型別名、MCP 名稱是否已 provision）也移到註冊當下做，不會因為改用具名執行就少檢查。
 10. **非擁有者遮蔽腳本本文（僅 `auth.enabled:true` 時生效）**：啟用 auth 後，`workflow_get`/`workflow_list`、`/api/workflows*`、儀表板對非擁有者一律回傳 `scriptWithheld:true`、不含腳本本文；擁有者仍可看到完整腳本。`auth.enabled:false`（單人本機部署的預設）沒有「非擁有者」這個概念——任何人都能看到完整腳本，不遮蔽。
 11. **SSRF-safe seedRef**：`seedRef:{repoUrl,sha}` 由 `HardenedSeedRefFetcher` 拉取；URL 必須匹配 `seedRefAllowlist`，否則 `SEEDREF_EGRESS_DENIED`；省略 allowlist 則全部 `SEEDREF_DISABLED`（fail-closed）；hardened git subprocess，不轉 shell。
+12. **角色（`principals`）fail-closed**：`rwe.config.json` 的 `principals` 角色字串打錯（不是 `admin`/`author`/`user`）→ 開機直接拒絕啟動，不會靜默退回 `user`；整個鍵省略時，`auth.enabled:true` 下每個已驗證呼叫者一律 `user`，且開機那行 `auth:` log 如實顯示（ADR-028）。`asset_push({kind:"mcp"})` 的 `http` transport 同理受 `mcpEgressAllowlist` fail-closed：省略/不匹配 → `EGRESS_DENIED`，探測次數為零。
 
 ## 已知限制
 

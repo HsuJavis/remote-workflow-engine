@@ -37,22 +37,22 @@ describe('E2E: full workflow run lifecycle (REQ-001, REQ-005, REQ-007)', () => {
   // file hand-rolls. One adapter, so the register→publish→run recipe stays in the helper.
   const callTool: ToolCaller = (name, args) => mcpCall('tools/call', { name, arguments: args });
 
-  it('workflow_run returns a runId immediately', async () => {
+  it('run_start returns a runId immediately', async () => {
     const result = await runScriptVia(callTool, SIMPLE_SCRIPT, { args: { x: 5 } });
     expect(result.runId).toBeTruthy();
     expect(typeof result.runId).toBe('string');
   });
 
-  it('workflow_result eventually returns the script return value', async () => {
+  it('run_result eventually returns the script return value', async () => {
     const runResult = await runScriptVia(callTool, SIMPLE_SCRIPT, { args: { x: 10 } });
     const runId = runResult.runId;
 
     // Poll until completed
     let finalResult: unknown;
     for (let i = 0; i < 30; i++) {
-      const status = await mcpCall('tools/call', { name: 'workflow_status', arguments: { runId } });
+      const status = await mcpCall('tools/call', { name: 'run_status', arguments: { runId } });
       if (status.status === 'completed') {
-        const res = await mcpCall('tools/call', { name: 'workflow_result', arguments: { runId } });
+        const res = await mcpCall('tools/call', { name: 'run_result', arguments: { runId } });
         finalResult = res.result;
         break;
       }
@@ -61,13 +61,13 @@ describe('E2E: full workflow run lifecycle (REQ-001, REQ-005, REQ-007)', () => {
     expect(finalResult).toBe(11);  // args.x + 1 = 10 + 1
   }, 30000);
 
-  it('workflow_status shows phase list', async () => {
+  it('run_status shows phase list', async () => {
     const runResult = await runScriptVia(callTool, `phase('step-1'); return 42;`, { args: {} });
     const runId = runResult.runId;
 
     // Wait a moment for it to start
     await new Promise((r) => setTimeout(r, 500));
-    const status = await mcpCall('tools/call', { name: 'workflow_status', arguments: { runId } });
+    const status = await mcpCall('tools/call', { name: 'run_status', arguments: { runId } });
     // After completion, phases should include step-1
     expect(Array.isArray(status.result.phases)).toBe(true);
   }, 15000);

@@ -48,17 +48,17 @@ async function toolCall(name: string, args: Record<string, unknown>): Promise<Re
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
 async function pollUntilSettled(runId: string) {
-  let s = await toolCall('workflow_status', { runId });
+  let s = await toolCall('run_status', { runId });
   for (let i = 0; i < 100 && (s['status'] === 'running' || s['status'] === 'queued'); i++) {
     await new Promise((r) => setTimeout(r, 30));
-    s = await toolCall('workflow_status', { runId });
+    s = await toolCall('run_status', { runId });
   }
   return s;
 }
 
 describe('REQ-096: a pre-v22 catalog boots non-breaking, old registrations still run (VAL-106)', () => {
   it('the migrated legacy workflow still runs by name via the (now-published) release channel', async () => {
-    const run = await toolCall('workflow_run', { name: 'val106-legacy' });
+    const run = await toolCall('run_start', { name: 'val106-legacy' });
     expect(run['error']).toBeUndefined();
     const runId = (run['result'] as { runId?: string } | undefined)?.runId as string;
     const settled = await pollUntilSettled(runId);
@@ -67,26 +67,26 @@ describe('REQ-096: a pre-v22 catalog boots non-breaking, old registrations still
 });
 
 describe('REQ-096: registering twice keeps BOTH versions retrievable (VAL-106)', () => {
-  it('workflow_get({name, version:"v1"}) returns the first script after a second registration', async () => {
+  it('workflow_source({name, version:"v1"}) returns the first script after a second registration', async () => {
     const first = await toolCall('workflow_register', { name: 'val106-two', script: `return 'first';` });
     const v1 = (first['result'] as { version?: string } | undefined)?.version;
     await toolCall('workflow_register', { name: 'val106-two', script: `return 'second';` });
 
-    const got = await toolCall('workflow_get', { name: 'val106-two', version: v1 });
+    const got = await toolCall('workflow_source', { name: 'val106-two', version: v1 });
     expect((got['result'] as { script?: string } | undefined)?.script).toBe(`return 'first';`);
   });
 
-  it('a run pins its version; workflow_status still reports it after a THIRD version is registered', async () => {
+  it('a run pins its version; run_status still reports it after a THIRD version is registered', async () => {
     const first = await toolCall('workflow_register', { name: 'val106-pin', script: `return 'pinned';` });
     const v1 = (first['result'] as { version?: string } | undefined)?.version as string;
     await toolCall('workflow_publish', { name: 'val106-pin', version: v1, channel: 'release' });
 
-    const run = await toolCall('workflow_run', { name: 'val106-pin' });
+    const run = await toolCall('run_start', { name: 'val106-pin' });
     const runId = (run['result'] as { runId?: string } | undefined)?.runId as string;
     await pollUntilSettled(runId);
 
     await toolCall('workflow_register', { name: 'val106-pin', script: `return 'newer';` });
-    const status = await toolCall('workflow_status', { runId });
+    const status = await toolCall('run_status', { runId });
     expect((status['result'] as { scriptVersion?: string } | undefined)?.scriptVersion).toBe(v1);
   });
 

@@ -173,7 +173,7 @@ pre{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);p
     </div>
     <div id="tree"></div>
     <pre id="diagram" style="display:none"></pre>
-    <p id="diagramNote" style="display:none"></p>
+    <p id="mermaidNote" style="display:none"></p>
     <h2>Transcript <span id="tr-agent" class="mdl"></span></h2>
     <pre id="transcript">Select an agent node above.</pre>
   </section>
@@ -200,9 +200,11 @@ window.addEventListener('popstate', render);
 
 async function getJSON(u){ try{ var r=await fetch(u); if(!r.ok) return null; return await r.json(); }catch(e){ return null; } }
 
-// v23 (REQ-101, DES-133): a workflow's public description — the model-authored ASCII diagram
-// replaces the old predicted-DAG preview. currentWorkflowName is re-read by render() on
-// every 3s tick (no new timer), so a pending -> ready diagram appears within the existing poll.
+// v24 (DES-156, TASK-149): a workflow's public description — the author-supplied Mermaid source
+// (stored verbatim, never rendered client-side — no Mermaid library ships here, ADR-033) replaces
+// the v23 analyzer-drawn ASCII diagram / its ready-pending-unavailable polling. currentWorkflowName is re-read by
+// render() on every 3s tick (no new timer), so a re-registered mermaid string appears within the
+// existing poll — there is no separate pending/ready state to branch on any more.
 var currentWorkflowName=null;
 function showDescribe(name){
   currentWorkflowName=name;
@@ -213,11 +215,12 @@ function showDescribe(name){
 async function renderDescribe(name){
   var s=await getJSON('/api/workflows/'+encodeURIComponent(name)+'/describe'); if(!s) return;
   document.getElementById('detail-runid').textContent='workflow: '+name;
-  var badge=document.getElementById('detail-status'); badge.textContent=s.diagramStatus; badge.className='pill';
+  var badge=document.getElementById('detail-status'); badge.textContent=s.runnable?'runnable':(s.runnableReason||''); badge.className='pill';
   renderPhases([], ''); document.getElementById('transcript').textContent=s.description||'(no description)';
-  var pre=document.getElementById('diagram'); var note=document.getElementById('diagramNote');
-  if(s.diagramStatus==='ready'){ pre.style.display='block'; pre.textContent=s.diagram; note.style.display='none'; note.textContent=''; }
-  else { pre.style.display='none'; pre.textContent=''; note.style.display='block'; note.textContent=s.diagramNote||''; }
+  var pre=document.getElementById('diagram'); var note=document.getElementById('mermaidNote');
+  pre.style.display='block'; pre.textContent=s.mermaid||'';
+  if(s.mermaid){ note.style.display='none'; note.textContent=''; }
+  else { note.style.display='block'; note.textContent=s.mermaidNote||''; }
 }
 // v11 F1 (REQ-074/075, DES-070/071): home view — 3-way grouped cards with metrics.
 function fmtMetric(val,suffix){ return val==null?'—':Math.round(val)+suffix; }

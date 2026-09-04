@@ -1,6 +1,6 @@
 // UT-023: D-F10(c) route-back — LiteLLMGatewayClient (the "direct-fetch" opt-out gateway) forwards
 // a caller-supplied AbortSignal into the in-flight fetch's own AbortController, so
-// `workflow_suspend` genuinely cancels the outbound provider request instead of merely abandoning it.
+// `run_suspend` genuinely cancels the outbound provider request instead of merely abandoning it.
 //
 // D-F10(c) (binding, Gate 7.5 round 3/4, carried-forward, never fixed): `invoke()`'s own declared
 // parameter type omits `signal` entirely (`{ prompt, opts, runId, agentId }` — confirmed by reading

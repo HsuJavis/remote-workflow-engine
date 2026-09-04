@@ -2,8 +2,8 @@
 // RED: schedule_create / schedule_list MCP tools do not exist yet — assertions fail on "Unknown tool".
 // No mock of the SUT boundary: real createServer, real MCP HTTP calls.
 // D-V2I-3 (ORCH binding): schedule targets are CATALOG-REGISTERED workflows only (REQ-014/REQ-015
-// wording — "a registered workflow with a cron schedule"), never an inline ad-hoc `workflow_run`
-// script. `workflow_run({name, script})` with BOTH fields present runs an ad-hoc script tagged with
+// wording — "a registered workflow with a cron schedule"), never an inline ad-hoc `run_start`
+// script. `run_start({name, script})` with BOTH fields present runs an ad-hoc script tagged with
 // that name — it does NOT persist to WorkflowCatalog (src/run-manager.ts:118 only consults the
 // catalog when `spec.name && !spec.script`) — so every schedule/trigger target below is registered
 // via `workflow_register` first, exactly like VAL-014/E2E-003 already do.
@@ -39,7 +39,7 @@ async function mcpCall(name: string, args: Record<string, unknown> = {}) {
 }
 
 // Registers a named workflow in the catalog (D-V2I-3) — the ONLY way a schedule/trigger target
-// becomes resolvable; a bare `workflow_run({name, script})` never persists to the catalog.
+// becomes resolvable; a bare `run_start({name, script})` never persists to the catalog.
 // v22 (adjudication #1 K-1): and registration alone is no longer enough — a freshly registered
 // version is on NO channel, so every scheduled firing failed to start with
 // `CHANNEL_UNPUBLISHED: release` while these schedule-bookkeeping assertions stayed green. Register

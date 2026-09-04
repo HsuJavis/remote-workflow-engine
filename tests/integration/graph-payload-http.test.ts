@@ -41,7 +41,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
 async function pollDone(runId: string, maxMs = 8000): Promise<void> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
-    const s = await callTool('workflow_status', { runId }) as { status?: string };
+    const s = await callTool('run_status', { runId }) as { status?: string };
     if (s?.status !== 'queued' && s?.status !== 'running') return;
     await new Promise((r) => setTimeout(r, 40));
   }

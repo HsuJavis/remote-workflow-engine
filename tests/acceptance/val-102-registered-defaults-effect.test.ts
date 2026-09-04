@@ -44,7 +44,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Re
 async function pollUntilHarness(runId: string, agentId: string, maxMs = 8000): Promise<{ harness?: { model?: string; provenance?: Record<string, string> } }> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
-    const log = await callTool('workflow_agent_log', { runId, agentId }) as { harness?: { model?: string; provenance?: Record<string, string> } };
+    const log = await callTool('run_agent_log', { runId, agentId }) as { harness?: { model?: string; provenance?: Record<string, string> } };
     if (log.harness) return log;
     await new Promise((r) => setTimeout(r, 100));
   }
@@ -52,14 +52,14 @@ async function pollUntilHarness(runId: string, agentId: string, maxMs = 8000): P
 }
 
 // A script with exactly one top-level agent() call always gets agentId 'agent-1' — same fixed
-// naming convention IT-066's `runAndGetAgentId` relies on (workflow_status nests agents under
+// naming convention IT-066's `runAndGetAgentId` relies on (run_status nests agents under
 // `.result.agents`, not top-level; polling top-level `.agents` would never resolve).
 const SOLE_AGENT_ID = 'agent-1';
 
 describe('REQ-092: registered defaults take effect at run time, observable in the harness descriptor (VAL-102)', () => {
   it('a call with NO per-call model dispatches with the registered default (alias-b), not silently ignored', async () => {
     await registerPublishedVia(callTool, 'val102-defaults', 'return await agent("hi");', { defaults: { model: 'alias-b' } });
-    const run = await callTool('workflow_run', { name: 'val102-defaults' });
+    const run = await callTool('run_start', { name: 'val102-defaults' });
     const runId = run.runId as string;
 
     const { harness } = await pollUntilHarness(runId, SOLE_AGENT_ID);
@@ -69,7 +69,7 @@ describe('REQ-092: registered defaults take effect at run time, observable in th
 
   it('the script itself calling agent({model:...}) wins over the registered default (per-call more specific)', async () => {
     await registerPublishedVia(callTool, 'val102-percall-wins', `return await agent("hi", {model:'default'});`, { defaults: { model: 'alias-b' } });
-    const run = await callTool('workflow_run', { name: 'val102-percall-wins' });
+    const run = await callTool('run_start', { name: 'val102-percall-wins' });
     const runId = run.runId as string;
 
     const { harness } = await pollUntilHarness(runId, SOLE_AGENT_ID);

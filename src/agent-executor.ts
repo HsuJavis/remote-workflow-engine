@@ -6,7 +6,7 @@ import type { RunGuard } from './run-guard.js';
 import type { RunStore } from './run-store.js';
 import { redact } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
-import { resolveCallParams, composePrompt, type RunParams, type EffectiveCallParams } from './params/resolve.js';
+import { composePrompt, type RunParams, type EffectiveCallParams } from './params/resolve.js';
 import { isEffort } from './params/contract.js';
 import { codedError } from './errors.js';
 
@@ -137,6 +137,13 @@ export interface AgentReq {
    *  run-manager.ts:_handleAgentRequest) rather than on the constructor, which is a loose bag
    *  constructed at ~30 test call sites that have nothing to do with where params semantically live. */
   runParams: RunParams;
+  /** v24 (ARCH-103/ARCH-104, DES-154, TASK-145): this label's declared skill/mcp asset names + the
+   *  asset store's two scope roots, threaded to the gateway for selective per-agent materialization
+   *  (DES-154) — filled from that label's registered `AgentParamSpec.skills/mcp` and the run's
+   *  workflow name. Optional: a caller with no per-label declared-asset wiring yet (or a label with
+   *  nothing declared) omits it, which materializes nothing — the same outcome as an empty
+   *  `declared` set (DES-154's boundary), never a crash. */
+  assets?: { roots: { workflow: string; global: string }; declared: { skills: string[]; mcp: string[] }; workflow: string };
 }
 
 export type AgentOutcome =
@@ -335,9 +342,13 @@ export class AgentExecutor implements AgentSpawner {
       if (!def) throw new Error(`Unknown agentType: ${req.opts.agentType}`);
     }
 
-    // v21 (DES-102/DES-105): one resolution pass — per-call opts > agentType > run snapshot
-    // (override/default) > engine, with per-key provenance for the harness descriptor.
-    const eff: EffectiveCallParams = resolveCallParams(req.opts, def, req.runParams, {});
+    // v24 (ARCH-095/DES-146, TASK-145): the 'call' and 'agentType' rungs are RETIRED — an agent()
+    // call may no longer carry tunable values (ARCH-096 refuses PARAM_IN_SCRIPT) and every declared
+    // label's model/effort/timeoutMs.default is required at registration, so the run's admission
+    // snapshot (override > contract default > engine, already resolved per DES-146's three-rung
+    // ladder — its `provenance` values are already drawn from the same `Rung` set) IS the effective
+    // params directly; `resolveCallParams`'s former per-call/agentType merge is gone with it.
+    const eff: EffectiveCallParams = { ...req.runParams };
 
     let effectiveOpts: AgentOpts & { allowedTools?: string[] } = {
       ...req.opts,
@@ -415,11 +426,19 @@ export class AgentExecutor implements AgentSpawner {
       descriptor: HarnessDescriptor,
       applied?: { applied: true; param: string; value: unknown } | { applied: false; reason: string },
     ): Promise<void> => {
+      // v24 (ARCH-104/DES-160, TASK-145): `label` names this dispatch's script agent() label; a
+      // `surfaceType:'none'` dispatch (or one with no `req.assets` at all) never materializes
+      // anything (DES-154), so the gateway leaves `descriptor.materialized` unset and THIS site
+      // fills the honest empty set — every declared name (skills+mcp) lands in `missing`, never
+      // silently absent.
+      const declaredNames = req.assets ? [...req.assets.declared.skills, ...req.assets.declared.mcp] : [];
       const decorated: HarnessDescriptor = {
         ...descriptor,
         effort: eff.effort,
         timeoutMs: eff.timeoutMs,
         provenance: eff.provenance,
+        ...(req.opts.label !== undefined ? { label: req.opts.label } : {}),
+        materialized: descriptor.materialized ?? { skills: [], mcp: [], missing: declaredNames },
         ...(applied !== undefined ? { effortApplied: applied.applied ? { param: applied.param, value: applied.value } : { reason: applied.reason } } : {}),
       };
       // #20: surface model/provider on the LIVE agent record the moment the session is built (before
@@ -467,7 +486,7 @@ export class AgentExecutor implements AgentSpawner {
       }
       sink.markActivity(req.agentId, ev.ts);
     };
-    const invokePromise = this._gateway.invoke({ prompt, opts, runId: req.runId, agentId: req.agentId, signal: req.signal, workspace: req.workspace, onHarness, onEvent });
+    const invokePromise = this._gateway.invoke({ prompt, opts, runId: req.runId, agentId: req.agentId, signal: req.signal, workspace: req.workspace, assets: req.assets, onHarness, onEvent });
     const aborted = new Promise<'aborted'>((resolve) => {
       req.signal.addEventListener('abort', () => resolve('aborted'), { once: true });
     });

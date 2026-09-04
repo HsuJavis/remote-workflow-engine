@@ -47,7 +47,7 @@ describe('REQ-091: overrides validated against the contract; locked config unrea
     await registerPublishedVia(callTool, 'val101-locked', 'return 1;');
     const before = await runCount();
 
-    const r = await callTool('workflow_run', { name: 'val101-locked', overrides: { prompt: 'hijacked' } });
+    const r = await callTool('run_start', { name: 'val101-locked', overrides: { prompt: 'hijacked' } });
     expect(r.code ?? (r.error as { code?: string } | undefined)?.code).toBe('PARAM_LOCKED');
     expect(await runCount()).toBe(before);
     expect(existsSync(join(tmpDir, 'workflows', 'val101-locked', 'runs'))).toBe(false);
@@ -57,7 +57,7 @@ describe('REQ-091: overrides validated against the contract; locked config unrea
     await registerPublishedVia(callTool, 'val101-ceiling', 'return 1;');
     const before = await runCount();
 
-    const r = await callTool('workflow_run', { name: 'val101-ceiling', overrides: { timeoutMs: 10_000_000 } });
+    const r = await callTool('run_start', { name: 'val101-ceiling', overrides: { timeoutMs: 10_000_000 } });
     expect(r.code ?? (r.error as { code?: string } | undefined)?.code).toBe('PARAM_OUT_OF_RANGE');
     expect(await runCount()).toBe(before);
   });
@@ -66,16 +66,16 @@ describe('REQ-091: overrides validated against the contract; locked config unrea
     const script = `export const meta = { params: { args: { count: { type: 'number', min: 1, max: 5 } } } };\nreturn args;`;
     await registerPublishedVia(callTool, 'val101-args', script);
 
-    const bad = await callTool('workflow_run', { name: 'val101-args', args: { count: 99 } });
+    const bad = await callTool('run_start', { name: 'val101-args', args: { count: 99 } });
     expect(bad.code ?? (bad.error as { code?: string } | undefined)?.code).toBe('PARAM_OUT_OF_RANGE');
 
-    const okRun = await callTool('workflow_run', { name: 'val101-args', args: { count: 2, extraUndeclared: 'passthrough' } });
+    const okRun = await callTool('run_start', { name: 'val101-args', args: { count: 2, extraUndeclared: 'passthrough' } });
     expect(okRun.code).not.toBe('PARAM_OUT_OF_RANGE');
   });
 
   it('no overrides at all behaves identically to a pre-v21 run (the run starts normally)', async () => {
     await registerPublishedVia(callTool, 'val101-no-overrides', 'return 1;');
-    const r = await callTool('workflow_run', { name: 'val101-no-overrides' });
+    const r = await callTool('run_start', { name: 'val101-no-overrides' });
     expect(typeof r.runId).toBe('string');
     expect(r.code).not.toBe('PARAM_LOCKED');
     expect(r.code).not.toBe('PARAM_OUT_OF_RANGE');
@@ -93,7 +93,7 @@ describe('REQ-091: overrides validated against the contract; locked config unrea
     const before = await runCount();
 
     const secret = 'SECRET-MARKER hunter2 api-key=sk-abcdef1234567890';
-    const raw = await callToolRaw('workflow_run', { name: 'val101-append-enum', overrides: { appendPrompt: secret } });
+    const raw = await callToolRaw('run_start', { name: 'val101-append-enum', overrides: { appendPrompt: secret } });
     expect(raw).not.toContain(secret);
     expect(raw).not.toContain('hunter2');
     const parsed = JSON.parse(JSON.parse(raw).result.content[0].text) as { error?: { code?: string } };
@@ -102,7 +102,7 @@ describe('REQ-091: overrides validated against the contract; locked config unrea
 
     // control: a value INSIDE the declared enum is admitted (the constraint really is enforced,
     // not merely never-echoed-because-never-checked).
-    const ok = await callTool('workflow_run', { name: 'val101-append-enum', overrides: { appendPrompt: 'be terse' } });
+    const ok = await callTool('run_start', { name: 'val101-append-enum', overrides: { appendPrompt: 'be terse' } });
     expect(typeof ok.runId).toBe('string');
   });
 });

@@ -37,9 +37,9 @@ describe('VAL-013: per-workflow work folder + per-run workspace isolation (REQ-0
     const run = await runScriptVia(callTool, script, { args });
     const runId = run.runId as string;
     for (let i = 0; i < 30; i++) {
-      const s = await callTool('workflow_status', { runId });
+      const s = await callTool('run_status', { runId });
       if (s.status === 'completed' || s.status === 'failed') {
-        const r = await callTool('workflow_result', { runId });
+        const r = await callTool('run_result', { runId });
         return { ...s, result: r.result, runId };
       }
       await new Promise((r) => setTimeout(r, 200));
@@ -74,12 +74,12 @@ describe('VAL-013: per-workflow work folder + per-run workspace isolation (REQ-0
       runAndWait('', undefined).catch(() => ({ status: 'skipped' })),
     ]);
 
-    const runA = await callTool('workflow_run', { name: 'wf-alpha' });
-    const runB = await callTool('workflow_run', { name: 'wf-beta' });
+    const runA = await callTool('run_start', { name: 'wf-alpha' });
+    const runB = await callTool('run_start', { name: 'wf-beta' });
     const [statusA, statusB] = await Promise.all([
       (async () => {
         for (let i = 0; i < 30; i++) {
-          const s = await callTool('workflow_status', { runId: runA.runId });
+          const s = await callTool('run_status', { runId: runA.runId });
           if (s.status === 'completed' || s.status === 'failed') return s;
           await new Promise((r) => setTimeout(r, 200));
         }
@@ -87,7 +87,7 @@ describe('VAL-013: per-workflow work folder + per-run workspace isolation (REQ-0
       })(),
       (async () => {
         for (let i = 0; i < 30; i++) {
-          const s = await callTool('workflow_status', { runId: runB.runId });
+          const s = await callTool('run_status', { runId: runB.runId });
           if (s.status === 'completed' || s.status === 'failed') return s;
           await new Promise((r) => setTimeout(r, 200));
         }

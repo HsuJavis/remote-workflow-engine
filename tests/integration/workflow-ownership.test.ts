@@ -8,8 +8,8 @@
 //   4. Deregister by bob (non-owner) → NOT_WORKFLOW_OWNER; workflow still present
 //   5. Deregister by alice (owner) → succeeds
 //   6. null principal on a genuinely AUTH-DISABLED server → ungated mutation [D-AUTH-6]
-//   7. workflow_get output includes owner field
-//   8. workflow_run (by bob, non-owner) → NOT gated (runs succeed regardless of ownership)
+//   7. workflow_source output includes owner field
+//   8. run_start (by bob, non-owner) → NOT gated (runs succeed regardless of ownership)
 //   9. Boot backfill: rows with NULL owner → backfilled to 'hsuhungjung@gmail.com' on next boot
 //  10. Boot backfill is idempotent: second boot does not re-own already-owned rows
 //
@@ -18,13 +18,13 @@
 //   non-owner mutation succeeds when it should fail → assertions fail. Correct RED.
 //
 // Mock policy (integration): real server + real SQLite catalog (on-disk tmpDir) + real TokenStore
-//   bearers. Nothing at the SUT boundary is mocked. No LLM/gateway needed (workflow_run is
+//   bearers. Nothing at the SUT boundary is mocked. No LLM/gateway needed (run_start is
 //   script-only). NOTE: principal is NO LONGER passed as a tool argument — see the ROUND 2
 //   migration note below; that path is exactly what H1/B1 closed.
 
 // v22 adjudication #3 (M-5) — the read half. SUPERSEDED IN PART by the ROUND 2 migration below:
 // M-5 reasoned from a server where `ctx.principal` was null on every read (the D-BIND exemption), so
-// every `workflow_get` returned the MASKED public view. That premise is gone — alice now reads with
+// every `workflow_source` returned the MASKED public view. That premise is gone — alice now reads with
 // her own bearer and takes the OWNER branch. What survives unchanged:
 //   - cases 7/9/10 read `owner` off `r.result.owner`. Still correct: the owner branch returns `owner`
 //     both flat and under `result`, and REQ-100 keeps it on the non-owner allowlist too, so the path
@@ -150,8 +150,8 @@ describe('Workflow ownership gate (DES-098, IT-080)', () => {
     expect(pub.error).toBeUndefined();
   });
 
-  it('case 7: workflow_get includes owner field', async () => {
-    const r = await callTool('workflow_get', { name: OWNER_WORKFLOW }, aliceToken);
+  it('case 7: workflow_source includes owner field', async () => {
+    const r = await callTool('workflow_source', { name: OWNER_WORKFLOW }, aliceToken);
     expect(r.error).toBeUndefined();
     // v22 (DES-115): the projection under `result` IS the response; `owner` stays on the public
     // allowlist (REQ-100 names it), only its path changed.
@@ -197,14 +197,14 @@ describe('Workflow ownership gate (DES-098, IT-080)', () => {
     const r = await callTool('workflow_deregister', { name: OWNER_WORKFLOW }, bobToken);
     expect(r.code).toBe('NOT_WORKFLOW_OWNER');
 
-    const check = await callTool('workflow_get', { name: OWNER_WORKFLOW }, aliceToken);
+    const check = await callTool('workflow_source', { name: OWNER_WORKFLOW }, aliceToken);
     expect(check.error).toBeUndefined();
-    // workflow_get puts name inside result (flat top-level: owner/defaults/script only; DES-098)
+    // workflow_source puts name inside result (flat top-level: owner/defaults/script only; DES-098)
     expect(typeof (check.result as { name?: string })?.name).toBe('string');
   });
 
-  it('case 8: workflow_run by bob (non-owner) → NOT gated (read/run open to any)', async () => {
-    const r = await callTool('workflow_run', { name: OWNER_WORKFLOW }, bobToken);
+  it('case 8: run_start by bob (non-owner) → NOT gated (read/run open to any)', async () => {
+    const r = await callTool('run_start', { name: OWNER_WORKFLOW }, bobToken);
     expect(r.code).not.toBe('NOT_WORKFLOW_OWNER');
     expect(typeof r.runId).toBe('string');
   });
@@ -283,7 +283,7 @@ describe('Boot backfill: NULL owner → hsuhungjung@gmail.com (DES-098, IT-080)'
     } as never);
 
     try {
-      const wfGet = await callToolOn(server2, 'workflow_get', { name: wf });
+      const wfGet = await callToolOn(server2, 'workflow_source', { name: wf });
       // v22 (DES-115, M-5): masked read — `owner` moved under `result`.
       expect((wfGet.result as { owner?: string })?.owner).toBe('hsuhungjung@gmail.com');
     } finally {
@@ -310,7 +310,7 @@ describe('Boot backfill: NULL owner → hsuhungjung@gmail.com (DES-098, IT-080)'
     } as never);
 
     try {
-      const wfGet = await callToolOn(server3, 'workflow_get', { name: wf });
+      const wfGet = await callToolOn(server3, 'workflow_source', { name: wf });
       // Already-owned row must NOT be re-owned to hsuhungjung@gmail.com
       // v22 (DES-115, M-5): masked read — `owner` moved under `result`.
       expect((wfGet.result as { owner?: string })?.owner).toBe(ALICE);

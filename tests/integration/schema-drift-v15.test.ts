@@ -1,12 +1,12 @@
 // IT-082 (DES-099, DES-100, ARCH-062, TASK-089): schema drift-lock for v15 new fields on
-// `workflow_register` and `workflow_deregister` tools, and `workflow_get` output shape.
+// `workflow_register` and `workflow_deregister` tools, and `workflow_source` output shape.
 //
 // Cases (drift-lock per DES-100 per-tier mock policy):
 //   1. tools/list: `workflow_register` schema declares `defaults` (optional) in its input schema
 //   2. tools/list: `workflow_register` schema declares `principal` (optional string) — v15 attribution
 //   3. tools/list: `workflow_deregister` schema declares `principal` (optional string)
-//   4. `workflow_get` output: field `owner` present in description (observable via workflow_get response)
-//   5. `workflow_get` output: field `defaults` present in description
+//   4. `workflow_source` output: field `owner` present in description (observable via workflow_source response)
+//   5. `workflow_source` output: field `defaults` present in description
 //
 // Red reason: `workflow_register` tool schema does not yet have `defaults` or `principal` fields →
 //   the tool description assertions fail. Correct RED for unimplemented schema changes.
@@ -84,14 +84,14 @@ describe('v15 schema drift-lock — workflow_deregister (DES-099, IT-082)', () =
   });
 });
 
-describe('v15 schema drift-lock — workflow_get output (DES-098, DES-099, IT-082)', () => {
-  it('workflow_get description mentions owner', () => {
-    const desc = toolsMap['workflow_get']?.description ?? '';
+describe('v15 schema drift-lock — workflow_source output (DES-098, DES-099, IT-082)', () => {
+  it('workflow_source description mentions owner', () => {
+    const desc = toolsMap['workflow_source']?.description ?? '';
     expect(desc.toLowerCase()).toMatch(/owner/);
   });
 
-  it('workflow_get description mentions defaults', () => {
-    const desc = toolsMap['workflow_get']?.description ?? '';
+  it('workflow_source description mentions defaults', () => {
+    const desc = toolsMap['workflow_source']?.description ?? '';
     expect(desc.toLowerCase()).toMatch(/default/);
   });
 });

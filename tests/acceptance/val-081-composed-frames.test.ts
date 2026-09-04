@@ -51,7 +51,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
 async function pollDone(runId: string, maxMs = 8000): Promise<void> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
-    const s = await callTool('workflow_status', { runId }) as { status?: string };
+    const s = await callTool('run_status', { runId }) as { status?: string };
     if (s?.status !== 'queued' && s?.status !== 'running') return;
     await new Promise((r) => setTimeout(r, 40));
   }
@@ -71,7 +71,7 @@ describe('VAL-081: composed runs carry depth-nested frame cells (REQ-072)', () =
         return r;
       `);
 
-    const sub = await callTool('workflow_run', { name: 'val081-main' }) as { runId?: string };
+    const sub = await callTool('run_start', { name: 'val081-main' }) as { runId?: string };
     const runId = sub?.runId!;
     await pollDone(runId, 60_000);
 
@@ -96,7 +96,7 @@ describe('VAL-081: composed runs carry depth-nested frame cells (REQ-072)', () =
     await registerPublishedVia(callTool, 'val081-mid', `return await workflow('val081-leaf', {});`);
     await registerPublishedVia(callTool, 'val081-root', `return await workflow('val081-mid', {});`);
 
-    const sub = await callTool('workflow_run', { name: 'val081-root' }) as { runId?: string };
+    const sub = await callTool('run_start', { name: 'val081-root' }) as { runId?: string };
     const runId = sub?.runId!;
     await pollDone(runId, 60_000);
 

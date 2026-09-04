@@ -21,11 +21,8 @@ describe('scheduler refusal accounting (UT-151, DES-150)', () => {
     const port = makePort(clock);
     const created = await port.create({ kind: 'once', workflow: 'wf-a', at: '2026-01-01T00:00:00Z' } as never);
     const firing = { kind: 'once' as const, id: (created as { result: { id: string } }).result.id };
-    // @ts-expect-error — markRefused does not exist yet (v24 DES-150/TASK-141)
     port.markRefused(firing, 'UNCLAIMED');
-    // @ts-expect-error
     port.markRefused(firing, 'UNCLAIMED');
-    // @ts-expect-error — refusalCount is not on ScheduleStatus yet
     const status = (await port.list()).find((s: { id: string }) => s.id === firing.id);
     expect(status?.refusalCount).toBe(1);
     expect(new Date(status!.nextFire!).getTime()).toBeGreaterThan(clock.now());
@@ -36,14 +33,10 @@ describe('scheduler refusal accounting (UT-151, DES-150)', () => {
     const port = makePort(clock);
     const created = await port.create({ kind: 'cron', workflow: 'wf-a', cron: '0 0 * * *' } as never);
     const firing = { kind: 'cron' as const, id: (created as { result: { id: string } }).result.id };
-    // @ts-expect-error
     port.markRefused(firing, 'UNCLAIMED');
-    // @ts-expect-error
     port.markRefused(firing, 'UNCLAIMED');
-    // @ts-expect-error
     port.markRefused(firing, 'UNCLAIMED');
     port.markFired(firing, 'run-x');
-    // @ts-expect-error
     const status = (await port.list()).find((s: { id: string }) => s.id === firing.id);
     expect(status?.refusalCount).toBe(0);
   });
@@ -53,7 +46,6 @@ describe('scheduler refusal accounting (UT-151, DES-150)', () => {
     const port = makePort(clock);
     const created = await port.create({ kind: 'once', workflow: 'wf-a', at: '2026-01-01T00:00:00Z' } as never);
     const firing = { kind: 'once' as const, id: (created as { result: { id: string } }).result.id };
-    // @ts-expect-error
     port.markRefused(firing, 'UNCLAIMED');
     const status = (await port.list()).find((s: { id: string }) => s.id === firing.id);
     expect(status?.enabled).toBe(false);
@@ -64,11 +56,9 @@ describe('scheduler refusal accounting (UT-151, DES-150)', () => {
     const port = makePort(clock);
     const created = await port.create({ kind: 'once', workflow: 'wf-a', at: '2026-01-01T00:00:00Z' } as never);
     const firing = { kind: 'once' as const, id: (created as { result: { id: string } }).result.id };
-    // @ts-expect-error
     port.markRefused(firing, 'CHANNEL_UNPUBLISHED');
     const status = (await port.list()).find((s: { id: string }) => s.id === firing.id);
     expect(status?.lastError).toBeUndefined();
-    // @ts-expect-error — lastRefusalReason does not exist yet
     expect(status?.lastRefusalReason).toBe('CHANNEL_UNPUBLISHED');
   });
 });

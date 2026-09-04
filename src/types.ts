@@ -156,6 +156,39 @@ export interface RunSummary {
   terminalAt?: string;
 }
 
+/** v24 (DES-151): the four tool names whose read surfaces an admin cross-owner read audits.
+ *  DES-151's own signature is `Extract<ToolName, 'workspace_list'|'workspace_pull'|'run_agent_log'|
+ *  'run_result'>` — written as a plain literal union here (not the `Extract`) because `tool-specs.ts`'s
+ *  `ToolName` is not yet a true literal union (`TOOL_SPECS` is `ToolSpec[]`, not `as const`); TASK-132
+ *  narrowing `ToolName` makes the `Extract` form a no-op swap with no callers to update. */
+export type AuditAction = 'workspace_list' | 'workspace_pull' | 'run_agent_log' | 'run_result';
+
+/** v24 (DES-151): one recorded admin cross-owner read. `owner` is the run's actual owner (not the
+ *  reading admin); `path` only for workspace reads. */
+export interface AuditEvent {
+  ts: string;
+  actor: string;
+  action: AuditAction;
+  runId: string;
+  owner: string;
+  path?: string;
+}
+
+/** v24 (DES-152): RunStore.list()'s filter — `principal` is set by the FACADE from the caller's own
+ *  id, never from caller-supplied args (a caller cannot pass `principal` directly). `limit` defaults
+ *  to 50, capped at 500 by the store. */
+export interface RunListFilter {
+  workflow?: string;
+  status?: RunStatus;
+  principal?: string;
+  limit?: number;
+}
+
+/** v24 (DES-150): a fire-path refusal — policy refused the firing BEFORE dispatch, distinct from
+ *  `lastError` (dispatch itself failed). Shared vocabulary between the scheduler (TASK-141) and
+ *  webhook registry (TASK-142) — declared once here so neither redeclares it. */
+export type RefusalReason = 'UNCLAIMED' | 'CLAIMED_WORKFLOW_MISSING' | 'NOT_IN_RELEASE' | 'CHANNEL_UNPUBLISHED';
+
 export interface RunSpec {
   name?: string;
   /** v22 (REQ-098 / DES-114, TASK-109): CLOSED at every ingress (advertised schema, facade,
@@ -258,6 +291,15 @@ export interface HarnessDescriptor {
    *  'engine' where a rung was expected). Optional: historical records and gateway-emitted
    *  descriptors (before the executor's single decoration site runs) lack it. */
   provenance?: Record<'model' | 'effort' | 'timeoutMs' | 'appendPrompt', 'call' | 'agentType' | 'override' | 'default' | 'engine'>;
+  /** v24 (ARCH-104/DES-160, TASK-145): this dispatch's script agent() label — the first DURABLE
+   *  source `deriveAgentRecords` reads (DES-161); absent for a call with no `opts.label` and for
+   *  every pre-v24 record. */
+  label?: string;
+  /** v24 (ARCH-103/DES-154/DES-160, TASK-145): the ACTUAL materialized set for this dispatch — not
+   *  the declared one (a declared-but-absent name lands in `missing`, never silently dropped). A
+   *  `surfaceType:'none'` dispatch materializes nothing (DES-154), so its `skills`/`mcp` are empty
+   *  and every declared name is `missing`. Absent for every pre-v24 record. */
+  materialized?: { skills: string[]; mcp: string[]; missing: string[] };
 }
 
 export interface TranscriptEvent {

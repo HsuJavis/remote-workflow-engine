@@ -4,7 +4,7 @@
 // Mock policy (acceptance, DES-119): no mocking of the SUT's own boundaries. No LLM dispatch
 // needed — marker scripts distinguish which version ran.
 //
-// Red reason: `workflow_publish` does not exist and `workflow_run`/`workflow_get` accept no
+// Red reason: `workflow_publish` does not exist and `run_start`/`workflow_source` accept no
 // `version`/`channel` selector today — every assertion below fails against the current engine.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -31,15 +31,15 @@ async function toolCall(name: string, args: Record<string, unknown>): Promise<Re
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
 async function pollUntilSettled(runId: string) {
-  let s = await toolCall('workflow_status', { runId });
+  let s = await toolCall('run_status', { runId });
   for (let i = 0; i < 100 && (s['status'] === 'running' || s['status'] === 'queued'); i++) {
     await new Promise((r) => setTimeout(r, 30));
-    s = await toolCall('workflow_status', { runId });
+    s = await toolCall('run_status', { runId });
   }
   return s;
 }
 async function scriptVersionOf(runId: string): Promise<string | undefined> {
-  const s = await toolCall('workflow_status', { runId });
+  const s = await toolCall('run_status', { runId });
   return (s['result'] as { scriptVersion?: string } | undefined)?.scriptVersion;
 }
 
@@ -65,7 +65,7 @@ describe('REQ-097: release/beta channel resolution (VAL-107)', () => {
     expect(ownerPublish['error']).toBeUndefined();
   });
 
-  it('workflow_run({name}) with no selector runs the release version; {channel:"beta"} runs beta; explicit version wins', async () => {
+  it('run_start({name}) with no selector runs the release version; {channel:"beta"} runs beta; explicit version wins', async () => {
     const regA = await toolCall('workflow_register', { name: 'val107-multi', script: `return 'release-marker';`, principal: 'val107-owner2@example.com' });
     const vRelease = (regA['result'] as { version?: string } | undefined)?.version as string;
     await toolCall('workflow_publish', { name: 'val107-multi', version: vRelease, channel: 'release', principal: 'val107-owner2@example.com' });
@@ -74,17 +74,17 @@ describe('REQ-097: release/beta channel resolution (VAL-107)', () => {
     const vBeta = (regB['result'] as { version?: string } | undefined)?.version as string;
     await toolCall('workflow_publish', { name: 'val107-multi', version: vBeta, channel: 'beta', principal: 'val107-owner2@example.com' });
 
-    const runDefault = await toolCall('workflow_run', { name: 'val107-multi' });
+    const runDefault = await toolCall('run_start', { name: 'val107-multi' });
     const runDefaultId = (runDefault['result'] as { runId?: string } | undefined)?.runId as string;
     await pollUntilSettled(runDefaultId);
     expect(await scriptVersionOf(runDefaultId)).toBe(vRelease);
 
-    const runBeta = await toolCall('workflow_run', { name: 'val107-multi', channel: 'beta' });
+    const runBeta = await toolCall('run_start', { name: 'val107-multi', channel: 'beta' });
     const runBetaId = (runBeta['result'] as { runId?: string } | undefined)?.runId as string;
     await pollUntilSettled(runBetaId);
     expect(await scriptVersionOf(runBetaId)).toBe(vBeta);
 
-    const runExplicit = await toolCall('workflow_run', { name: 'val107-multi', version: vRelease, channel: 'beta' });
+    const runExplicit = await toolCall('run_start', { name: 'val107-multi', version: vRelease, channel: 'beta' });
     const runExplicitId = (runExplicit['result'] as { runId?: string } | undefined)?.runId as string;
     await pollUntilSettled(runExplicitId);
     expect(await scriptVersionOf(runExplicitId)).toBe(vRelease); // version wins over channel, REQ-097
@@ -92,7 +92,7 @@ describe('REQ-097: release/beta channel resolution (VAL-107)', () => {
 
   it('an unpublished channel is refused, naming the channel — never a silent fallback to newest', async () => {
     await toolCall('workflow_register', { name: 'val107-unpub', script: `return 1;` });
-    const run = await toolCall('workflow_run', { name: 'val107-unpub', channel: 'beta' });
+    const run = await toolCall('run_start', { name: 'val107-unpub', channel: 'beta' });
     const error = run['error'] as { code?: string; message?: string } | undefined;
     expect(error?.code).toBe('CHANNEL_UNPUBLISHED');
     expect(error?.message).toMatch(/beta/);

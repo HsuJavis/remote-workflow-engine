@@ -50,10 +50,10 @@ async function mcpCall(name: string, args: Record<string, unknown> = {}) {
 }
 
 async function runAndWait(script: string): Promise<Record<string, unknown>> {
-  const run = await mcpCall('workflow_run', { script });
+  const run = await mcpCall('run_start', { script });
   const runId = run['runId'] as string;
   for (let i = 0; i < 90; i++) {
-    const s = await mcpCall('workflow_status', { runId });
+    const s = await mcpCall('run_status', { runId });
     if (s['status'] === 'completed' || s['status'] === 'failed') return { ...s, runId };
     await new Promise((r) => setTimeout(r, 1000));
   }
@@ -65,18 +65,18 @@ describe('VAL-019: REQ-016 — non-Anthropic model runs the full agent harness (
     if (!HAS_PROVIDER) return;
     const r = await runAndWait(`return agent('write the word DONE into a file called out.txt using a tool, then say ok', { model: 'local-qwen', allowedTools: ['Write'] });`);
     expect(r['status']).toBe('completed');
-    const statusView = await mcpCall('workflow_status', { runId: r['runId'] as string });
+    const statusView = await mcpCall('run_status', { runId: r['runId'] as string });
     const agents = (statusView['agents'] as Array<{ agentId: string }>) ?? [];
-    const log = await mcpCall('workflow_agent_log', { runId: r['runId'] as string, agentId: agents[0]!.agentId });
+    const log = await mcpCall('run_agent_log', { runId: r['runId'] as string, agentId: agents[0]!.agentId });
     expect(JSON.stringify(log['result'])).toContain('tool_call');
   }, 180000);
 
   it('the SessionInitRecord transcript head shows thinkingMode:"disabled" for the non-Anthropic alias (D-F6 regression guard)', async () => {
     if (!HAS_PROVIDER) return;
     const r = await runAndWait(`return agent('reply with only PONG', { model: 'local-qwen' });`);
-    const statusView = await mcpCall('workflow_status', { runId: r['runId'] as string });
+    const statusView = await mcpCall('run_status', { runId: r['runId'] as string });
     const agents = (statusView['agents'] as Array<{ agentId: string }>) ?? [];
-    const log = await mcpCall('workflow_agent_log', { runId: r['runId'] as string, agentId: agents[0]!.agentId });
+    const log = await mcpCall('run_agent_log', { runId: r['runId'] as string, agentId: agents[0]!.agentId });
     const transcript = (log['result'] as unknown[]) ?? [];
     const head = transcript[0] as { data?: { thinkingMode?: string } } | undefined;
     expect(head?.data?.thinkingMode).toBe('disabled');

@@ -16,6 +16,8 @@ import type {
   TranscriptEvent,
   RunStatus,
   StateTransition,
+  RunListFilter,
+  AuditEvent,
 } from '../types.js';
 
 export class SqliteRunStore implements RunStore {
@@ -72,6 +74,23 @@ export class SqliteRunStore implements RunStore {
     // v22 (DES-113, TASK-108): additive migration — the legacy-cohort fallback record (never the
     // pin itself, which stays in `scriptVersion`). Same idempotent idiom as the columns above.
     try { this._db.exec('ALTER TABLE runs ADD COLUMN legacy_substitution TEXT'); } catch { /* already exists */ }
+    // v24 (DES-152, TASK-140): the one query-plan the filtered run_list projection needs — leading
+    // column `name` so a workflow-only filter still uses it (SQLite can use a prefix of a composite
+    // index), status/createdAt narrow/order the rest.
+    this._db.exec('CREATE INDEX IF NOT EXISTS runs_name_status_created ON runs(name, status, createdAt DESC)');
+    // v24 (DES-151, TASK-140): admin cross-owner read audit trail — synchronous append (better-
+    // sqlite3), `seq` (autoincrement rowid) orders reads within a runId for auditFor's newest-first cap.
+    this._db.exec(`
+      CREATE TABLE IF NOT EXISTS audit_events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        action TEXT NOT NULL,
+        runId TEXT NOT NULL,
+        owner TEXT NOT NULL,
+        path TEXT
+      );
+    `);
   }
 
   private _runDir(runId: string): string {
@@ -268,6 +287,51 @@ export class SqliteRunStore implements RunStore {
       runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null; terminalAt?: string | null;
     }>;
     return rows.map((r) => this._rowToSummary(r));
+  }
+
+  /** v24 (DES-152): filtered/paginated read behind `run_list` — `principal` is set by the FACADE
+   *  from the caller's own id (never from args); a row with `principal IS NULL` is excluded by a
+   *  `principal` filter (the cross-seam agreement with authz's null=ownerless rule). `limit`
+   *  defaults to 50, capped at 500. Uses `runs_name_status_created` (leading column `name`). */
+  async list(filter: RunListFilter = {}): Promise<RunSummary[]> {
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if (filter.workflow !== undefined) { clauses.push('r.name = ?'); params.push(filter.workflow); }
+    if (filter.status !== undefined) { clauses.push('r.status = ?'); params.push(filter.status); }
+    if (filter.principal !== undefined) { clauses.push('r.principal = ?'); params.push(filter.principal); }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+    const limit = Math.min(filter.limit ?? 50, 500);
+    const rows = this._db.prepare(`
+      SELECT r.runId, r.name, r.status, r.scriptVersion, r.createdAt, r.started_by,
+             (SELECT MIN(t.ts) FROM transitions t
+              WHERE t.runId = r.runId
+                AND t.to_status IN ('completed', 'failed', 'stopped')) AS terminalAt
+      FROM runs r
+      ${where}
+      ORDER BY r.createdAt DESC
+      LIMIT ?
+    `).all(...params, limit) as Array<{
+      runId: string; name: string | null; status: string; scriptVersion: string; createdAt: string; started_by?: string | null; terminalAt?: string | null;
+    }>;
+    return rows.map((r) => this._rowToSummary(r));
+  }
+
+  /** v24 (DES-151): synchronous append (better-sqlite3) — a throw here must reach the call site
+   *  BEFORE any bytes are read; no try/catch at this layer. */
+  appendAudit(ev: AuditEvent): void {
+    this._db.prepare('INSERT INTO audit_events (ts, actor, action, runId, owner, path) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(ev.ts, ev.actor, ev.action, ev.runId, ev.owner, ev.path ?? null);
+  }
+
+  /** v24 (DES-151): newest-first, capped at `limit` (default 200). */
+  auditFor(runId: string, limit = 200): AuditEvent[] {
+    const rows = this._db
+      .prepare('SELECT ts, actor, action, runId, owner, path FROM audit_events WHERE runId = ? ORDER BY seq DESC LIMIT ?')
+      .all(runId, limit) as Array<{ ts: string; actor: string; action: string; runId: string; owner: string; path: string | null }>;
+    return rows.map((r) => ({
+      ts: r.ts, actor: r.actor, action: r.action as AuditEvent['action'], runId: r.runId, owner: r.owner,
+      ...(r.path !== null ? { path: r.path } : {}),
+    }));
   }
 
   /** Boot recovery: enumerates persisted runs; any 'running' run was interrupted by a crash/restart —
