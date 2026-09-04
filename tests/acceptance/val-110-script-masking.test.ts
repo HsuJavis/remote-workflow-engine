@@ -33,6 +33,14 @@ beforeAll(async () => {
       googleClientId: 'val110-client-id', googleClientSecret: 'val110-client-secret',
       googleBase: 'http://127.0.0.1:0', jwksFetch: async () => [],
     },
+    // v24 (REQ-109 roles, ADR-028): both ids are AUTHORS. The owner needs it to register/publish;
+    // the STRANGER needs it because `workflow_source` is itself `{minRole:'author', ownership:'none'}`
+    // — an unlisted id is `'user'` and gets FORBIDDEN_ROLE before the owner/non-owner masking branch
+    // is ever reached, which would make the mask assertion vacuous rather than red.
+    principals: {
+      'val110-owner@example.com': { role: 'author' },
+      'val110-stranger@example.com': { role: 'author' },
+    },
   } as never);
   openTmpDir = mkdtempSync(join(tmpdir(), 'rwe-val110-open-'));
   openServer = await createServer({ port: 0, bind: '127.0.0.1', workRoot: openTmpDir });

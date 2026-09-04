@@ -64,9 +64,12 @@ describe('v1.5+v2 workspace transport (REQ-022..026)', () => {
     const chunk = await tool('workspace_pull', { runId, path: 'seeded.txt', offset: 6, length: 4 });
     expect(Buffer.from(chunk.result.base64, 'base64').toString()).toBe('from');
     expect(chunk.result.eof).toBe(false);
-    // REQ-022: realpath escape denied
+    // REQ-022: realpath escape denied. v24 (errors.ts ERROR_CATALOG): the code for this exact
+    // verdict is spelled `WORKSPACE_ESCAPE` — `workspace_pull`'s own advertised `errors[]` lists it
+    // and `PULL_REASON_TO_CODE` (mcp-facade.ts:120) maps the internal `PATH_OUTSIDE_WORKSPACE`
+    // reason onto it. Rename only; same oracle (an escaping path is refused, not read).
     const esc = await tool('workspace_pull', { runId, path: '../../../../etc/hostname' });
-    expect(esc.error.code).toBe('PATH_OUTSIDE_WORKSPACE');
+    expect(esc.error.code).toBe('WORKSPACE_ESCAPE');
 
     // REQ-026: purge
     const purge = await tool('workspace_purge', { runId });

@@ -44,9 +44,15 @@ describe('global agent semaphore bounds concurrency ACROSS runs (V2 / D-DOS)', (
     // Per-run concurrency is generous (5) so, were the cap per-run, each run alone could reach 5.
     const mgr = new RunManager({ gateway, semaphore: sem, concurrency: 5 });
 
+    // v24 (ADR-029, scanAgentCalls): `agent()` takes a LITERAL label first and the prompt inside the
+    // options object. A per-iteration label (`'c-' + i`) is AGENT_LABEL_NOT_LITERAL by design, so the
+    // 5 calls share ONE declared label and vary only their prompt. The oracle is untouched: this test
+    // counts DISPATCHES against a shared semaphore gauge, never labels, and the CallKey stays unique
+    // per iteration (run-manager.ts `key = {prompt, opts}` — prompt still varies), so no call is
+    // replayed away.
     const script = `
       const thunks = [];
-      for (let i = 0; i < 5; i++) thunks.push(async () => agent('c-' + i));
+      for (let i = 0; i < 5; i++) thunks.push(async () => agent('c', { prompt: 'c-' + i }));
       await parallel(thunks);
       return 'done';
     `;

@@ -66,32 +66,53 @@ describe('efficient seeding via CAS manifest (v10 Slice 2, REQ-064/065)', () => 
     expect(r.error.code).toBe('BLOB_HASH_MISMATCH');
   });
 
+  // LEFT RED ON PURPOSE — PRODUCT DEFECT (v24 namespace-derivation half-wiring), not a fixture bug.
+  // `workspace_push` (CAS mode) stores the blob under the DERIVED namespace (`nsOf(principal)` =
+  // `'local'` here) and the case above proves `workspace_diff` — which derives the SAME namespace —
+  // then sees it. But `run_start`'s handler never forwards a namespace onto the RunSpec
+  // (mcp-facade.ts `runStart` spreads seed/seedManifest/seedRef/seedManifestRef and nothing else),
+  // so `run-manager.ts:407` falls back to the pre-v24 `'_default'` literal. Observed:
+  //   status 'failed', MISSING_BLOBS "upload 1 blob(s) first: <the sha workspace_push just accepted>"
+  // Expected: the run starts, completes, and the workspace holds the byte-identical seeded file.
+  // Same root cause as val-091's clause 1 (seedManifestRef, run-manager.ts:379) and seedRef
+  // (run-manager.ts:501). Assertions below are the correct v24 behaviour, deliberately left failing.
   it('REQ-065 run_start with a seedManifest assembles the workspace from the CAS (script reads the file)', async () => {
     // the blob was uploaded above; a script reads the seeded file back via the sandbox has no fs — so
     // instead assert the run completes and the workspace really has the file by listing artifacts.
     const run = await runScriptVia(call, `return 'seeded';`, {
       seedManifest: [{ path: 'src/answer.ts', sha256: h, exec: false }],
     });
-    expect(run.result?.runId).toBeTruthy();
-    const done = await poll(run.result.runId);
+    expect(run.runId).toBeTruthy();
+    const done = await poll(run.runId);
     expect(done.status).toBe('completed');
-    const arts = await call('workspace_list', { runId: run.result.runId });
+    const arts = await call('workspace_list', { runId: run.runId });
     const paths = (arts.result as Array<{ path: string; sha256: string }>).map((a) => a.path);
     expect(paths).toContain('src/answer.ts');
     const seeded = (arts.result as Array<{ path: string; sha256: string }>).find((a) => a.path === 'src/answer.ts')!;
     expect(seeded.sha256).toBe(h); // assembled from the CAS, byte-identical
   });
 
-  it('issue #21: a stringified seedManifest fails with typed INVALID_SEED_SPEC, not a raw TypeError', async () => {
+  it('issue #21: a stringified seedManifest fails with a typed INVALID_ARGUMENT, not a raw TypeError', async () => {
     // Reproduces the reported break: a schema-blind MCP client serialized the array to a string, so the
     // engine received `"[…]"` and `spec.seedManifest.map(...)` threw `TypeError: … .map is not a
-    // function`. The run-manager guard now rejects a non-array seed spec with a typed, actionable error.
+    // function`. Same oracle as ever — a TYPED, actionable refusal naming the offending field, never a
+    // raw TypeError and never a started run.
+    //
+    // v24 spelling change: `run_start`'s inputSchema now declares `seedManifest: {type:'array'}`
+    // (tool-specs.ts), so ajv refuses a string at the tool boundary and answers INVALID_ARGUMENT
+    // with `/seedManifest must be array` BEFORE any handler runs. The run-manager's own defence
+    // (run-manager.ts:337, INVALID_SEED_SPEC) is now unreachable OVER THE WIRE for this input — it
+    // survives as the defence for IN-PROCESS callers of `RunManager.start`, which no test currently
+    // exercises by name (reported as a coverage gap; not fixable from this file's tier).
+    // Asserting INVALID_SEED_SPEC here would assert an unreachable path, not a stronger one.
     const run = await runScriptVia(call, `return 1;`, {
       seedManifest: JSON.stringify([{ path: 'x.ts', sha256: h }]),
     });
     expect(run.status).toBe('failed');
-    expect(run.error.code).toBe('INVALID_SEED_SPEC');
+    expect(run.error.code).toBe('INVALID_ARGUMENT');
     expect(run.error.code).not.toBe('TypeError');
+    expect(run.error.message).toContain('seedManifest');
+    expect(run.runId).toBeFalsy(); // refused at the boundary — no run created
   });
 
   it('REQ-065 a seedManifest referencing an un-uploaded blob fails fast with MISSING_BLOBS (no run created)', async () => {

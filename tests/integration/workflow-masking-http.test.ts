@@ -34,6 +34,22 @@ beforeAll(async () => {
       googleClientId: 'it089-client-id', googleClientSecret: 'it089-client-secret',
       googleBase: 'http://127.0.0.1:0', jwksFetch: async () => [],
     },
+    // v24 (REQ-109 roles, ADR-028): every id this file mints is an AUTHOR. Two separate reasons,
+    // both mechanical — no oracle changes: the owners must be able to `workflow_register`/
+    // `workflow_publish` (`minRole:'author'`), and the STRANGERS must be able to reach
+    // `workflow_source` at all, which is also `{minRole:'author', ownership:'none'}` — an unlisted
+    // id resolves to `'user'` and is refused FORBIDDEN_ROLE before any masking decision runs, which
+    // would turn every mask assertion below into a vacuous "the refusal envelope has no script".
+    principals: {
+      'it089-owner@example.com': { role: 'author' },
+      'it089-owner2@example.com': { role: 'author' },
+      'it089-owner3@example.com': { role: 'author' },
+      'it089-owner4@example.com': { role: 'author' },
+      'it089-stranger@example.com': { role: 'author' },
+      'it089-stranger2@example.com': { role: 'author' },
+      'it089-stranger3@example.com': { role: 'author' },
+      'it089-anyone@example.com': { role: 'author' },
+    },
   } as never);
 
   openTmpDir = mkdtempSync(join(tmpdir(), 'rwe-it089-open-'));
@@ -78,7 +94,9 @@ async function toolCall(server: Server, name: string, args: Record<string, unkno
 describe('REQ-100: workflow_source masks the script for non-owners (auth-enabled, IT-089)', () => {
   it('the OWNER reads the full script through /mcp with their bearer', async () => {
     const ownerToken = await mintBearer(authTmpDir, authServer.port, 'it089-owner@example.com');
-    const reg = await toolCall(authServer, 'workflow_register', { name: 'it089-owned', script: `return 'secret-script-body';` }, ownerToken);
+    // v24 (REQ-111/MERMAID_REQUIRED): registration now requires a non-empty diagram. This script
+    // has no `agent()` calls, so the header-only `graph TD;` is the whole diagram checkMermaid needs.
+    const reg = await toolCall(authServer, 'workflow_register', { name: 'it089-owned', script: `return 'secret-script-body';`, mermaid: 'graph TD;' }, ownerToken);
     expect(reg['error']).toBeUndefined();
     // v22: registration is not publication — `workflow_source({name})` resolves the `release` channel.
     await toolCall(authServer, 'workflow_publish', { name: 'it089-owned', version: `v${reg['version']}`, channel: 'release' }, ownerToken);
@@ -139,7 +157,7 @@ describe('REQ-100: workflow_source masks the script for non-owners (auth-enabled
 
 describe('REQ-100: auth disabled ⇒ pre-v22 surface, byte-for-byte (IT-089)', () => {
   it('with auth OFF, workflow_source returns the full script to anyone (no bearer needed)', async () => {
-    const reg = await toolCall(openServer, 'workflow_register', { name: 'it089-open', script: `return 'open-script';` });
+    const reg = await toolCall(openServer, 'workflow_register', { name: 'it089-open', script: `return 'open-script';`, mermaid: 'graph TD;' }); // v24: MERMAID_REQUIRED
     expect(reg['error']).toBeUndefined();
     await toolCall(openServer, 'workflow_publish', { name: 'it089-open', version: `v${reg['version']}`, channel: 'release' });
     const got = await toolCall(openServer, 'workflow_source', { name: 'it089-open' });

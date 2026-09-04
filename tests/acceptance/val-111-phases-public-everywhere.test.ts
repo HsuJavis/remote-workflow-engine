@@ -27,6 +27,13 @@ beforeAll(async () => {
   server = await createServer({
     port: 0, bind: '127.0.0.1', workRoot,
     auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'c', googleClientSecret: 's', googleBase: 'http://127.0.0.1:0', jwksFetch: async () => [] },
+    // v24 (REQ-109 roles, ADR-028): owner and stranger are both AUTHORS — the owner to register/
+    // publish, the stranger because `workflow_source` is `{minRole:'author', ownership:'none'}`.
+    // An unlisted id resolves to `'user'` and is refused before the non-owner projection runs.
+    principals: {
+      'val111-owner@example.com': { role: 'author' },
+      'val111-stranger@example.com': { role: 'author' },
+    },
   } as never);
 });
 afterAll(async () => { await server?.close(); rmSync(workRoot, { recursive: true, force: true }); });

@@ -105,7 +105,16 @@ export function resolveVersionRequest(
 
 // v22 (DES-111): VersionEntry is the ONE execution read; WorkflowDetail is the ONE read read
 // (REPLACES getFull()).
-export interface VersionEntry { script: string; version: string; defaults?: HarnessDefaults; params?: ParamContract }
+export interface VersionEntry {
+  script: string;
+  version: string;
+  defaults?: HarnessDefaults;
+  params?: ParamContract;
+  /** v24 (integrator; DES-150): the trigger ids this VERSION declares — the fire path's
+   *  NOT_IN_RELEASE check needs "does the currently-released version still list this trigger", and
+   *  the column had no reader before this. Absent when the version declares none. */
+  triggers?: string[];
+}
 export interface WorkflowDetail extends VersionEntry {
   name: string; createdAt: string; owner: string | null; channels: Channels; versions: string[];
 }
@@ -608,13 +617,17 @@ export class WorkflowCatalog {
       throw codedError(result.code, `${result.code}: ${result.channel ?? result.version ?? ''} (workflow '${name}')`.trim());
     }
     const vrow = this._db
-      .prepare('SELECT script, defaults, params FROM workflow_versions WHERE name = ? AND version = ?')
-      .get(name, result.version) as { script: string; defaults: string | null; params: string | null };
+      .prepare('SELECT script, defaults, params, triggers FROM workflow_versions WHERE name = ? AND version = ?')
+      .get(name, result.version) as { script: string; defaults: string | null; params: string | null; triggers: string | null };
     return {
       script: vrow.script,
       version: result.version,
       defaults: vrow.defaults ? JSON.parse(vrow.defaults) as HarnessDefaults : undefined,
       params: vrow.params ? JSON.parse(vrow.params) as ParamContract : undefined,
+      // v24 (integrator; DES-150's NOT_IN_RELEASE): the trigger ids THIS version declares. The
+      // column has existed since TASK-143 and no reader ever selected it, which is why the fire
+      // path could not tell "claimed but omitted from the current release" from "claimed".
+      ...(vrow.triggers ? { triggers: JSON.parse(vrow.triggers) as string[] } : {}),
     };
   }
 

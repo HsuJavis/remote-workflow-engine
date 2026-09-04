@@ -108,7 +108,7 @@ describe('agentType composition-root loader (IT-016, D-F2)', () => {
   });
 
   it(
-    "a known agentType (loaded from agents/*.md frontmatter) applies its definition's systemPrompt and model alias",
+    "a known agentType (loaded from agents/*.md frontmatter) applies its definition's systemPrompt; its retired `model:` rung does NOT route the call (v24 ARCH-095)",
     async () => {
       server = await createServer({
         port: 0,
@@ -130,12 +130,21 @@ describe('agentType composition-root loader (IT-016, D-F2)', () => {
       expect(status.status).toBe('completed');
 
       expect(stub.requests.length).toBe(1);
-      // The definition's systemPrompt was prepended to the outbound prompt.
+      // The definition's systemPrompt was prepended to the outbound prompt (still live in v24 —
+      // agent-executor.ts composes `def.systemPrompt` into the five-segment prompt).
       expect(stub.requests[0]!.prompt).toContain('You are a terse helper');
       expect(stub.requests[0]!.prompt).toContain('respond');
-      // The definition's own `model:` (an alias name, resolved the same way opts.model is) routed
-      // the call — NOT the run's unrelated 'default' alias.
-      expect(stub.requests[0]!.model).toBe('helper-specific-model');
+      // v24 MIGRATION (ARCH-095/DES-146, TASK-145 — the 'agentType' RESOLUTION RUNG IS RETIRED):
+      // `agent-executor.ts` no longer reads `def.model` at all; the model is whatever the run's
+      // admission snapshot resolved from the three surviving rungs (override › the label's declared
+      // `params.agents.<label>.model.default` › engine), and every declared label's `model.default`
+      // is REQUIRED at registration — so the agent-type registry's `model:` can never win. The
+      // fixture's synthesized contract declares `model.default: 'default'` -> alias 'default' ->
+      // 'default-model'. This assertion is NOT weakened: the frontmatter above still says
+      // `model: helper-alias`, so if the retired rung were ever re-wired this reads
+      // 'helper-specific-model' and goes red. The oracle is now "the contract default routes the
+      // call, the agentType definition does not" — direction-sensitive in both directions.
+      expect(stub.requests[0]!.model).toBe('default-model');
     },
     30000,
   );

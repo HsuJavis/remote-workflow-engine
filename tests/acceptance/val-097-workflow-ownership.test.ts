@@ -74,6 +74,13 @@ beforeAll(async () => {
   server = await createServer({
     port: 0, bind: '127.0.0.1', workRoot: tmpDir,
     auth: { enabled: true, issuer: `http://127.0.0.1:0`, googleClientId: CLIENT_ID, googleClientSecret: 'val097-cs', googleBase: `http://127.0.0.1:${fakeGoogPort}`, jwksFetch: () => Promise.resolve([JWK]) },
+    // v24 (REQ-109 roles, ADR-028): alice AND bob are both AUTHORS — that is precisely what REQ-087
+    // is about. An id absent from this map resolves to `'user'`, which cannot register/deregister/
+    // publish at all, so every `NOT_WORKFLOW_OWNER` oracle below would silently degrade into a
+    // `FORBIDDEN_ROLE` role check and stop testing ownership. Both roles are `author` so the only
+    // thing separating them is who owns the row. Alice also needs it to READ: `workflow_source` is
+    // `{minRole:'author', ownership:'none'}`.
+    principals: { [ALICE]: { role: 'author' }, [BOB]: { role: 'author' } },
   } as never);
 });
 

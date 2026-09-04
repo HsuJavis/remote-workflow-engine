@@ -169,12 +169,19 @@ describe('src/main.ts composition-root: agentDefinitionsDir end-to-end (IT-022, 
       // documents pre-D-F2).
       expect(status.status).toBe('completed');
       expect(requests.length).toBe(1);
-      // The definition's systemPrompt was prepended to the outbound prompt.
+      // The definition's systemPrompt was prepended to the outbound prompt — that is what proves
+      // `agentDefinitionsDir` really travelled through composeConfig() into the loaded registry,
+      // and it is still live in v24 (agent-executor.ts composes `def.systemPrompt`).
       expect(requests[0]!.prompt).toContain('You are a terse helper');
-      // The definition's own `model:` (an alias name) routed the call — not the run's unrelated
-      // 'default' alias. It reaches the stub as its proxy-facing name (proxyModelName): the prefix
-      // keeps the alias verbatim past the CLI's shorthand expansion so the LiteLLM proxy matches it.
-      expect(requests[0]!.model).toBe('rwe-proxy-helper-alias');
+      // v24 MIGRATION (ARCH-095/DES-146, TASK-145 — the 'agentType' RESOLUTION RUNG IS RETIRED):
+      // `agent-executor.ts` no longer reads `def.model`; the run's admission snapshot decides
+      // (override › the label's declared `params.agents.<label>.model.default` › engine), and that
+      // default is REQUIRED at registration, so the definition's `model:` can never win. The
+      // fixture's synthesized contract declares `model.default: 'default'`. It still reaches the
+      // stub as the proxy-facing name (proxyModelName prefix keeps the alias verbatim past the
+      // CLI's shorthand expansion). NOT weakened: the frontmatter still says `model: helper-alias`,
+      // so re-wiring the retired rung reads 'rwe-proxy-helper-alias' here and goes red.
+      expect(requests[0]!.model).toBe('rwe-proxy-default');
     },
     30000,
   );

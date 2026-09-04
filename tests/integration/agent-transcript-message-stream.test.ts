@@ -84,7 +84,10 @@ describe('AgentTranscriptSink captures the SDK message/tool_call/tool_result str
     const runManager = new RunManager({ store, clock, gateway });
     const facade = new McpFacade({ clock, store, runManager });
 
-    const run = await runScriptVia(facadeCaller(facade), `return agent('read foo.txt', {});`);
+    // v24 (ADR-029): the first argument is a LITERAL LABEL matching /^[A-Za-z_][\w-]*$/ — 'read foo.txt'
+    // is AGENT_LABEL_FORMAT — and the prompt travels as `options.prompt`. Same dispatch, new spelling:
+    // the fake SDK session below is what this test is actually about, not the prompt text.
+    const run = await runScriptVia(facadeCaller(facade), `return agent('read', { prompt: 'read foo.txt' });`);
     const runId = run.result!.runId;
 
     let status = await facade.runStatus({ runId }, AUTH_DISABLED, false, null);

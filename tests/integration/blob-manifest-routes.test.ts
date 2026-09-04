@@ -4,15 +4,22 @@
 // Cases:
 //   1. Foreign Host header on /assets/blob → 403 (net-guard placement — both new routes behind guard)
 //   2. Foreign Host header on /assets/manifest → 403
-//   3. Happy blob upload: POST /assets/blob/:sha?namespace=ns → 200 {sha256, bytes, namespace}
+//   3. Happy blob upload: POST /assets/blob/:sha → 200 {sha256, bytes, namespace}
 //   4. Tampered sha → 409 BLOB_SHA_MISMATCH (correct sha in path, wrong bytes in body)
 //   5. Bad hex sha in URL path → 400 INVALID_BLOB_REQUEST (validators fire before fd)
 //   6. Manifest register: upload blobs + POST /assets/manifest → 200 {seedManifestRef, namespace}
 //   7. Manifest register referencing an absent blob → MISSING_BLOBS (listing the absent shas)
 //   8. Manifest with invalid JSON body → INVALID_SEED_SPEC
 //
-// Red reason: Routes /assets/blob/:sha and /assets/manifest do not exist in server.ts →
-//   fetch returns 404 → 200/403/409/400 status assertions fail for the correct unimplemented reason.
+// v24 (DES-142, ADR-028): `?namespace=` on BOTH routes is RETIRED — a caller-supplied one is now
+// refused `400 INVALID_BLOB_REQUEST` (server.ts:930/957/1141/1168) rather than honoured, because the
+// namespace is derived from the caller's OWN identity. This server boots auth-disabled, so the
+// derived namespace is the `'local'` sentinel (`nsOf`, mcp-facade.ts:46; server.ts:1145/1172 spell
+// the same value on the unauthenticated route). Every URL below therefore drops the query param and
+// `NAMESPACE` becomes the DERIVED value the response must echo — same oracles (the response names
+// the namespace the bytes landed in; a manifest is scoped to one namespace), new spelling. The old
+// per-call caller-chosen namespace (`'ns-missing'`) has no v24 equivalent: case 7's oracle is "a sha
+// nobody uploaded is reported missing", which the never-uploaded `'d'*64` still supplies.
 //
 // Mock policy (integration — DES-091): real `createServer` + real HTTP + real CasStore + real
 //   net-guard (isAllowedHost / isAllowedOrigin). No LLM/gateway mock needed.
@@ -69,14 +76,16 @@ afterAll(async () => {
   rmSync(workRoot, { recursive: true, force: true });
 });
 
-const NAMESPACE = 'it076ns';
+/** The namespace this auth-disabled server DERIVES for every caller (ADR-028) — not a value the
+ *  test chooses any more. Asserted, not configured. */
+const NAMESPACE = 'local';
 
-function blobUrl(sha: string, ns = NAMESPACE): string {
-  return `http://127.0.0.1:${server.port}/assets/blob/${sha}?namespace=${ns}`;
+function blobUrl(sha: string): string {
+  return `http://127.0.0.1:${server.port}/assets/blob/${sha}`;
 }
 
-function manifestUrl(ns = NAMESPACE): string {
-  return `http://127.0.0.1:${server.port}/assets/manifest?namespace=${ns}`;
+function manifestUrl(): string {
+  return `http://127.0.0.1:${server.port}/assets/manifest`;
 }
 
 describe('/assets/blob net-guard (DES-086 BE placement)', () => {
@@ -86,7 +95,7 @@ describe('/assets/blob net-guard (DES-086 BE placement)', () => {
     // fetch/undici silently drops the Host header — use raw node:http to deliver it to the server.
     const status = await rawPost(
       server.port,
-      `/assets/blob/${h}?namespace=${NAMESPACE}`,
+      `/assets/blob/${h}`,
       { Host: 'evil.attacker.com:9999', 'Content-Type': 'application/octet-stream' },
       data,
     );
@@ -98,7 +107,7 @@ describe('/assets/blob net-guard (DES-086 BE placement)', () => {
     // fetch/undici silently drops the Host header — use raw node:http to deliver it to the server.
     const status = await rawPost(
       server.port,
-      `/assets/manifest?namespace=${NAMESPACE}`,
+      `/assets/manifest`,
       { Host: 'evil.attacker.com:9999', 'Content-Type': 'application/json' },
       body,
     );
@@ -145,6 +154,21 @@ describe('/assets/blob happy path and errors (DES-086)', () => {
     expect(res.status).toBe(400);
     const body = await res.json() as { code?: string };
     expect(body.code).toBe('INVALID_BLOB_REQUEST');
+  });
+
+  // v24 (DES-142, ADR-028): the replacement for the retired caller-chosen-namespace cases — the
+  // parameter is not ignored, it is REFUSED, so a pre-v24 client that still sends it learns why
+  // instead of silently writing into somebody else's derived pool.
+  it('a caller-supplied ?namespace= is refused 400 INVALID_BLOB_REQUEST (retired v24)', async () => {
+    const data = Buffer.from('namespace-is-derived-now it076');
+    const h = sha256(data);
+    for (const url of [`${blobUrl(h)}?namespace=it076ns`, `${manifestUrl()}?namespace=it076ns`]) {
+      const res = await fetch(url, { method: 'POST', body: data });
+      expect(res.status).toBe(400);
+      const body = await res.json() as { code?: string; message?: string };
+      expect(body.code).toBe('INVALID_BLOB_REQUEST');
+      expect(body.message).toContain('namespace');
+    }
   });
 
   it('upload is idempotent: re-uploading same blob → 200 again', async () => {
@@ -199,7 +223,7 @@ describe('/assets/manifest register (DES-087)', () => {
   it('manifest referencing an absent blob → MISSING_BLOBS (listing absent shas)', async () => {
     const absentSha = 'd'.repeat(64);
     const manifest = [{ path: 'missing.txt', sha256: absentSha }];
-    const res = await fetch(manifestUrl('ns-missing'), {
+    const res = await fetch(manifestUrl(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(manifest),

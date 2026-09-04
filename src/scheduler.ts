@@ -306,17 +306,24 @@ export class SqliteSchedulerPort {
    *  straight over it — `resident` schedules are excluded (trigger-only, `tick()` never fires
    *  them anyway; DES-016). */
   all(): StoredSchedule[] {
-    // v24 (ARCH-099, TASK-141): `workflow IS NOT NULL` — an unclaimed trigger has nothing for the
-    // driver to start yet; the fire-path membership/claim check (DES-149/150) lands with the facade
-    // wiring in TASK-148, out of this task's scope.
+    // v24 (integrator; ARCH-099, DES-150): the filter was `workflow IS NOT NULL` with a note saying
+    // the fire-path claim check "lands with the facade wiring in TASK-148, out of this task's
+    // scope" — TASK-148 did not land it either, so `markRefused` had NO caller and REQ-115's
+    // "recorded refusals" recorded nothing. Two consequences, both fixed here: an UNCLAIMED due row
+    // was invisible to the driver, so its refusal could never be recorded; and a row claimed AFTER
+    // creation (`claim()` writes `claimedBy`, never `workflow`) would never fire at all. The
+    // authority is `claimedBy` (ARCH-099's rename); `workflow` remains only as the create-time
+    // binding, and an unclaimed row is surfaced with an EMPTY target so the driver refuses it
+    // UNCLAIMED rather than silently skipping it.
     const rows = this._db
-      .prepare("SELECT * FROM schedules WHERE enabled = 1 AND kind IN ('cron','once') AND nextFire IS NOT NULL AND workflow IS NOT NULL")
+      .prepare("SELECT * FROM schedules WHERE enabled = 1 AND kind IN ('cron','once') AND nextFire IS NOT NULL")
       .all() as ScheduleRow[];
-    return rows.map((r): StoredSchedule =>
-      r.kind === 'cron'
-        ? { kind: 'cron', id: r.id, workflow: r.workflow!, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, cron: r.cron!, tz: r.tz ?? undefined, enabled: true, nextFire: r.nextFire! }
-        : { kind: 'once', id: r.id, workflow: r.workflow!, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, at: r.at!, enabled: true, nextFire: r.nextFire! },
-    );
+    return rows.map((r): StoredSchedule => {
+      const target = r.claimedBy ?? r.workflow ?? '';
+      return r.kind === 'cron'
+        ? { kind: 'cron', id: r.id, workflow: target, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, cron: r.cron!, tz: r.tz ?? undefined, enabled: true, nextFire: r.nextFire! }
+        : { kind: 'once', id: r.id, workflow: target, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, at: r.at!, enabled: true, nextFire: r.nextFire! };
+    });
   }
 
   /** D-V2I-2: records one `tick()` firing's outcome — the driver's own impure edge, called right

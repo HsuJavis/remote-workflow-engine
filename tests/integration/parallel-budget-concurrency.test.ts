@@ -59,10 +59,14 @@ describe('RunGuard budget accounting under concurrent parallel() dispatch (IT-03
     };
     const mgr = new RunManager({ gateway, concurrency: CALLS });
 
+    // v24 (ADR-029, scanAgentCalls): literal label first, prompt in the options object — a computed
+    // `'call-' + i` label is AGENT_LABEL_NOT_LITERAL by design, so one declared label carries all
+    // CALLS iterations and only the prompt varies. The budget oracle is unchanged (it counts
+    // dispatches and spend, never labels) and each call still journals a distinct CallKey.
     const runId = await startScript(mgr, `
         const thunks = [];
         for (let i = 0; i < ${CALLS}; i++) {
-          thunks.push(async () => agent('call-' + i));
+          thunks.push(async () => agent('call', { prompt: 'call-' + i }));
         }
         const results = await parallel(thunks);
         return { results, finalSpent: budget.spent() };

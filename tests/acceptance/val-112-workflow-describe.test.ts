@@ -1,7 +1,8 @@
 // VAL-112 (REQ-101, DES-125/126, ARCH-081/082): over the real `/mcp` transport with a real bearer,
 // `workflow_describe({name})` as a NON-OWNER returns purpose, resolved `(name, version)` +
 // `resolvedBy`, `params`, `lockedKeys`, `versions`, `channels`, `owner`, `reportProblem`, `triggers`,
-// diagram fields — and `JSON.stringify` of the response does not contain the registered script's
+// `phases`, the `mermaid`/`mermaidNote` pair and `runnable`/`runnableReason` (v24 replaced the
+// retired `diagram*` keys — see the in-test note) — and `JSON.stringify` of the response does not contain the registered script's
 // secret literal. An unpublished `channel:'beta'` returns `CHANNEL_UNPUBLISHED`.
 //
 // Mock policy (acceptance, DES-119): real `createServer`, real `/mcp`, real `TokenStore`-minted
@@ -31,6 +32,16 @@ beforeAll(async () => {
   server = await createServer({
     port: 0, bind: '127.0.0.1', workRoot,
     auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'c', googleClientSecret: 's', googleBase: 'http://127.0.0.1:0', jwksFetch: async () => [] },
+    // v24 (REQ-109 roles, ADR-028): the two owners register+publish (`{minRole:'author'}`). The
+    // STRANGER is listed as `author` too, deliberately: `workflow_describe` itself is only
+    // `{minRole:'user'}`, so a plain user would pass — but then the case would prove the describe
+    // mask against a caller who could not have read the script by ANY route, which is a weaker
+    // statement than REQ-101's ("a non-owner AUTHOR sees everything except the script").
+    principals: {
+      'val112-owner@example.com': { role: 'author' },
+      'val112-owner2@example.com': { role: 'author' },
+      'val112-stranger@example.com': { role: 'author' },
+    },
   } as never);
 });
 afterAll(async () => { await server?.close(); rmSync(workRoot, { recursive: true, force: true }); });
@@ -73,7 +84,17 @@ describe('REQ-101: workflow_describe over real /mcp (VAL-112)', () => {
     const resp = await rpc('workflow_describe', { name: 'val112-flow' }, otherToken);
     expect(resp.error).toBeUndefined();
     const r = resp.result as Record<string, unknown>;
-    for (const key of ['name', 'version', 'resolvedBy', 'channels', 'versions', 'description', 'params', 'lockedKeys', 'owner', 'reportProblem', 'triggers', 'diagram', 'diagramStatus', 'diagramNote']) {
+    // v24 MIGRATION (DES-156/TASK-149, 04-design.md:5055 — "EXPECTED_DESCRIBE_KEYS re-pinned, the
+    // four `diagram*` keys DELETED, not left optional"): the analyzer that DREW a diagram is retired
+    // (TASK-139), so `diagram`/`diagramStatus`/`diagramNote` are replaced by the author's own stored
+    // `mermaid` + `mermaidNote`, and `phases`/`runnable`/`runnableReason` joined the contract. Same
+    // oracle — "a non-owner sees the FULL describe field set" — spelled in the v24 contract, and
+    // strictly wider than before (16 keys, not 14). Deliberately a LITERAL list, not an import of
+    // `EXPECTED_DESCRIBE_KEYS`: an expectation read back off the module under test cannot fail when
+    // that module drops a key.
+    for (const key of ['name', 'version', 'resolvedBy', 'channels', 'versions', 'description', 'phases',
+      'params', 'lockedKeys', 'owner', 'reportProblem', 'triggers',
+      'mermaid', 'mermaidNote', 'runnable', 'runnableReason']) {
       expect(key in r).toBe(true);
     }
     expect('script' in r).toBe(false);

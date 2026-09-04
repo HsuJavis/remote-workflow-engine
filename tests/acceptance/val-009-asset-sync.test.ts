@@ -9,18 +9,20 @@
 //     `{stored: string[], excluded: [...]}` — there is no multi-asset-per-call batch shape left to
 //     partially exclude from, so this file uses `scope:'global'` pushes (admin-scope, matching the
 //     old flat single-operator asset store most closely) and asserts the STRING shape directly.
-//  2. `workspace_list({workflow, kind})` never checks the workflow exists (mcp-facade.ts's
-//     `workspaceList` — `assetSync.list()` is called for ANY `workflow` string; global rows are
-//     always included alongside it, DES-153) — no `workflow_register` fixture is needed here.
-//  3. The old batch `excluded[]` self-exclusion mechanism (REQ-009 clause 3, D4: a name starting
-//     with the reserved `rwe-` prefix gets excluded from the push) has NO v24 equivalent:
-//     `asset-sync.ts:148` marks `reservedPrefix` "unused by the v24 flow itself", `push()` never
-//     calls `isSelfReferential`, and `pathVerdict`'s `asset-tree` reserved-prefix rule rejects a
-//     `rwe-` REL-PATH FIRST SEGMENT, not the asset NAME — so `name:'rwe-remote-workflow'` with a
-//     `SKILL.md` file at the top level now STORES. This is a genuine D4 recursion-guard gap, not a
-//     rename target; reported in PARIMPL, not asserted here (see the same breadcrumb left by
-//     `tests/integration/asset-mcp-tools.test.ts`'s IT-115 block for the sibling gap this file's
-//     "REQ-009 clause 3" case used to cover).
+//  2. `workspace_list({workflow, kind})` DOES check the workflow exists: v24's REQ-118 wiring makes
+//     `workspaceList` answer `WORKFLOW_NOT_FOUND` for a name the catalog has never heard of
+//     (mcp-facade.ts, the `catalog.exists` branch) — "no assets" and "no such workflow" are
+//     different answers, and the row's advertised `errors[]` promises the latter. So the workflow
+//     this file lists against IS registered in `beforeAll` now. Global rows are still always
+//     included alongside the workflow's own (DES-153), which is what these cases read.
+//  3. REQ-009 clause 3 (D4 recursion guard: an asset named with the engine's own reserved `rwe-`
+//     prefix must not be materialized) is BACK, with a new spelling and a stronger verdict. The old
+//     batch mechanism silently EXCLUDED such a name from a multi-asset push (`excluded[]`); v24 has
+//     no batch shape to partially exclude from, and the gap this file's header used to record —
+//     `pathVerdict`'s `asset-tree` reserved-prefix rule applying only to a file's REL PATH, never to
+//     the asset NAME — has since been closed: `AssetSyncService.push` now runs the asset name itself
+//     through `lexicalVerdict('asset-tree', name)` before writing anything, so the whole push is
+//     REFUSED with `RESERVED_PREFIX` rather than quietly trimmed. Asserted again below.
 //  4. The "non-runnable MCP config type" case (a filesystem-stdio MCP server, REQ-009 clause 2) is
 //     now an AUTHZ row (`kind:'mcp'` + `config.transport:'stdio'` ⇒ `pushMode` `'stdio'` ⇒
 //     admin-only, DES-138) that reaches a REAL `McpProbe` (no fake injected — this file boots a
@@ -34,13 +36,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
 
+/** The workflow every `workspace_list` below scopes to. It must EXIST (see header note 2) — its
+ *  script is irrelevant; the assets under test are all `scope:'global'`, and global rows are
+ *  returned alongside any workflow's own. */
+const LIST_WORKFLOW = 'val-009-any-workflow';
+
 beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'rwe-val-009-'));
   server = await createServer({ port: 0, bind: '127.0.0.1', workRoot: tmpDir });
+  await registerPublishedVia(mcpCall, LIST_WORKFLOW, `return 'no assets of its own';`);
 });
 
 afterAll(async () => {
@@ -69,7 +78,7 @@ describe('Asset sync via MCP (REQ-009, VAL-009)', () => {
     const stored = (r['result'] as Record<string, unknown>)?.['stored'];
     expect(stored).toBe('val-009-skill');
 
-    const listR = await mcpCall('workspace_list', { workflow: 'val-009-any-workflow', kind: 'skill' });
+    const listR = await mcpCall('workspace_list', { workflow: LIST_WORKFLOW, kind: 'skill' });
     const list = (listR['result'] as Array<{ kind: string; name: string }>) ?? [];
     expect(list.some((a) => a.name === 'val-009-skill' && a.kind === 'skill')).toBe(true);
   });
@@ -80,9 +89,27 @@ describe('Asset sync via MCP (REQ-009, VAL-009)', () => {
       files: [{ path: 'SKILL.md', contentB64: btoa('# Delete me') }],
     });
     await mcpCall('workspace_delete', { scope: 'global', kind: 'skill', name: 'to-delete' });
-    const listR = await mcpCall('workspace_list', { workflow: 'val-009-any-workflow', kind: 'skill' });
+    const listR = await mcpCall('workspace_list', { workflow: LIST_WORKFLOW, kind: 'skill' });
     const list = (listR['result'] as Array<{ name: string }>) ?? [];
     expect(list.some((a) => a.name === 'to-delete')).toBe(false);
+  });
+
+  // REQ-009 clause 3 (D4 recursion guard) — see header note 3 for the v24 re-spelling. The engine's
+  // own plugin/guidance identity lives under the reserved `rwe-` prefix; an asset allowed to claim
+  // that prefix would be materialized into a run as `.claude/skills/rwe-…`, impersonating it.
+  it('an asset NAME claiming the reserved rwe- prefix is refused RESERVED_PREFIX, not stored', async () => {
+    const r = await mcpCall('workspace_push', {
+      scope: 'global', kind: 'skill',
+      name: 'rwe-remote-workflow',
+      files: [{ path: 'SKILL.md', contentB64: btoa('# impersonating the engine') }],
+    });
+    expect((r['error'] as Record<string, unknown> | undefined)?.['code']).toBe('RESERVED_PREFIX');
+    expect((r['result'] as Record<string, unknown> | undefined)?.['stored']).toBeUndefined();
+
+    // …and nothing landed: it is absent from the listing the run materializer reads.
+    const listR = await mcpCall('workspace_list', { workflow: LIST_WORKFLOW, kind: 'skill' });
+    const list = (listR['result'] as Array<{ name: string }>) ?? [];
+    expect(list.some((a) => a.name === 'rwe-remote-workflow')).toBe(false);
   });
 
   it('pushing a file with path traversal rejects the whole push (partial-push atomicity)', async () => {

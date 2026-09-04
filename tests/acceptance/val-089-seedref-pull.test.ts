@@ -126,9 +126,13 @@ describe('VAL-089: REQ-080 — seed + seedRef → SEED_SOURCE_CONFLICT', () => {
 
   it('supplying both seedManifest and seedRef yields SEED_SOURCE_CONFLICT', async () => {
     const fakeHash = sha256(Buffer.from('x'));
+    // v24 (DES-142/ADR-028, tool-specs.ts `run_start`): `seedNamespace` is gone from the schema and
+    // `run_start` is `additionalProperties:false`, so passing it made ajv answer INVALID_ARGUMENT
+    // before the run-manager's mutual-exclusion check could fire — the conflict oracle below was
+    // unreachable, not failing. The namespace is derived from the caller's identity; dropped, not
+    // renamed.
     const r = await runScriptVia(callerFor(serverWithAllowlist), `return 'seeded';`, {
       seedManifest: [{ path: 'x.txt', sha256: fakeHash }],
-      seedNamespace: '_test',
       seedRef: { repoUrl: PINNED_REPO, sha: PINNED_SHA },
     });
     const code = r.error?.code ?? (r.status === 'failed' ? r.result?.error?.code : undefined);
@@ -153,9 +157,9 @@ describe('VAL-089: REQ-080 — real pull materializes files (skip when offline)'
       return;
     }
 
+    // v24: `seedNamespace` dropped — see the SEED_SOURCE_CONFLICT case above for why.
     const run = await runScriptVia(callerFor(serverWithAllowlist), `return 'seeded from git';`, {
       seedRef: { repoUrl: PINNED_REPO, sha: PINNED_SHA },
-      seedNamespace: '_val089',
     });
 
     // run_start should return a runId immediately (REQ-005)

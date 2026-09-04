@@ -87,6 +87,11 @@ beforeAll(async () => {
       googleBase: `http://127.0.0.1:${fakeGoogPort}`,
       jwksFetch: () => Promise.resolve([JWK]),
     },
+    // v24 (REQ-109 roles, ADR-028): the attribution case registers+publishes its own workflow before
+    // running it, and both writes are `{minRole:'author'}`. An authenticated id not listed here
+    // resolves to `'user'` (fail-closed) and never reaches the run whose `principal` this file
+    // asserts. Mechanical only — the oracle is still "run_status carries principal:<email>".
+    principals: { [TEST_EMAIL]: { role: 'author' } },
   } as never);
 });
 

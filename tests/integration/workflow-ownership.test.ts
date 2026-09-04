@@ -65,8 +65,21 @@
 // every case that needs "alice's latest is on release" now makes it. Cases 1/2/10 assert the
 // publish succeeded — the hand-seeded pointer could never have caught a broken publish.
 //
-// Cases 9/10's second/third boots keep `bind: '0.0.0.0'` — they only READ, through a masked view
-// that is identical either way, and case 9 was never red.
+// v24 MIGRATION (REQ-109 roles, ADR-028; TASK-147/DES-139) — two mechanical consequences, no oracle
+// touched:
+//   - `principals` is now CONFIGURED for alice and bob, both as `author`. An authenticated id that
+//     is not listed resolves to role `'user'` (fail-closed), and register/deregister/publish all
+//     require `'author'` — so without this every case below answered `FORBIDDEN_ROLE` before the
+//     ownership comparison could run. Both are authors on purpose: the whole point of cases 3/4 is
+//     that two principals who MAY both register still cannot touch each other's workflows, which is
+//     invisible if bob is refused for lacking the role.
+//   - Cases 9/10's second/third boots no longer keep `bind: '0.0.0.0'`. That was justified by "they
+//     only READ, through a masked view that is identical either way" — v24 retires that premise:
+//     `workflow_source` is `{minRole:'author'}` (tool-specs.ts), and a D-BIND-exempt caller is the
+//     `loopback-exempt` Principal, which authorize() admits ONLY for `{minRole:'user',
+//     ownership:'none'}` — everything else is `PRINCIPAL_REQUIRED`. So those boots bind loopback and
+//     read with alice's bearer (the same `auth-tokens.db` under the shared workRoot). Same oracle:
+//     the backfilled `owner` string as observed on a freshly booted server.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -94,6 +107,10 @@ beforeAll(async () => {
     // Auth enabled: the boot backfill (DES-098) needs it, and it is the condition under which the
     // ownership gate is worth testing at all.
     auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it080-cid', googleClientSecret: 'it080-cs' },
+    // v24 (REQ-109): both alice and bob are AUTHORS. See the migration note in the header — an
+    // unlisted authenticated id is `'user'`, which cannot register at all, and a role refusal would
+    // silently replace every ownership oracle below with a role oracle.
+    principals: { [ALICE]: { role: 'author' }, [BOB]: { role: 'author' } },
   } as never);
   aliceToken = mintBearer(tmpDir, ALICE);
   bobToken = mintBearer(tmpDir, BOB);
@@ -278,13 +295,16 @@ describe('Boot backfill: NULL owner → hsuhungjung@gmail.com (DES-098, IT-080)'
     // The boot backfill runs once at startup: UPDATE workflows SET owner='hsuhungjung@gmail.com' WHERE owner IS NULL
     const server2 = await createServer({
       port: 0,
-      bind: '0.0.0.0',
+      // v24: loopback bind + alice's bearer — a D-BIND-exempt read of `workflow_source` is now
+      // `PRINCIPAL_REQUIRED` (see the header's migration note). Same workRoot ⇒ same auth-tokens.db.
+      bind: '127.0.0.1',
       workRoot: tmpDir,
       auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it080-cid2', googleClientSecret: 'cs' },
+      principals: { [ALICE]: { role: 'author' }, [BOB]: { role: 'author' } },
     } as never);
 
     try {
-      const wfGet = await callToolOn(server2, 'workflow_source', { name: wf });
+      const wfGet = await callToolOn(server2, 'workflow_source', { name: wf }, aliceToken);
       // v22 (DES-115, M-5): masked read — `owner` moved under `result`.
       expect((wfGet.result as { owner?: string })?.owner).toBe('hsuhungjung@gmail.com');
     } finally {
@@ -305,13 +325,14 @@ describe('Boot backfill: NULL owner → hsuhungjung@gmail.com (DES-098, IT-080)'
     // Second boot
     const server3 = await createServer({
       port: 0,
-      bind: '0.0.0.0',
+      bind: '127.0.0.1', // v24: same reason as server2 above.
       workRoot: tmpDir,
       auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it080-cid3', googleClientSecret: 'cs' },
+      principals: { [ALICE]: { role: 'author' }, [BOB]: { role: 'author' } },
     } as never);
 
     try {
-      const wfGet = await callToolOn(server3, 'workflow_source', { name: wf });
+      const wfGet = await callToolOn(server3, 'workflow_source', { name: wf }, aliceToken);
       // Already-owned row must NOT be re-owned to hsuhungjung@gmail.com
       // v22 (DES-115, M-5): masked read — `owner` moved under `result`.
       expect((wfGet.result as { owner?: string })?.owner).toBe(ALICE);

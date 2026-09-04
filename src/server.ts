@@ -25,6 +25,7 @@ import type { GatewayClient } from './gateway/client.js';
 import type { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { loadAgentDefinitions } from './agent-definitions.js';
 import { SqliteSchedulerPort, type Schedule, type NewSchedule } from './scheduler.js';
+import type { RefusalReason } from './types.js';
 import { WebhookRegistry } from './webhook-registry.js';
 import { CasStore, isValidSha256Hex, isValidNamespace } from './cas-store.js';
 import type { SecretValueProvider } from './secret-resolver.js';
@@ -717,11 +718,44 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // as workflow_run/workflow_trigger (DES-016's "same run path" invariant), then the outcome is
   // recorded back onto the schedule (auto-complete for `once`, fresh nextFire for `cron`).
   const ticker: Ticker = new RealTicker(500);
+  /** v24 (integrator; DES-150/ADR-031, REQ-115): the fire-path POLICY gate the design specified as
+   *  "the driver becomes `resolveTarget(firing) -> {workflow} | {refused: reason}` then `start` or
+   *  `markRefused`", and which nothing ever built — `scheduler.markRefused` had no caller at all,
+   *  so "recorded refusals" recorded nothing and an unclaimed or orphaned trigger either fired
+   *  against a missing workflow or was skipped in silence. Four reasons, in the order a firing
+   *  meets them; `markRefused` shares `markFailed`'s advance, so a refused `cron` gets a fresh
+   *  `nextFire` (ADR-031's coalescing — one row per due instant, not 1440 rows a day) and a refused
+   *  `once` is CONSUMED. */
+  async function resolveScheduleTarget(firing: { id: string; workflow: string }): Promise<{ workflow: string } | { refused: RefusalReason }> {
+    const claimedBy = scheduler.ownerOf(firing.id) ?? (firing.workflow !== '' ? firing.workflow : null);
+    if (claimedBy === null || claimedBy === '') return { refused: 'UNCLAIMED' };
+    let released;
+    try {
+      released = await catalog.resolve(claimedBy, { channel: 'release' });
+    } catch (err) {
+      const code = (err as { code?: unknown } | null)?.code;
+      if (code === 'CHANNEL_UNPUBLISHED') return { refused: 'CHANNEL_UNPUBLISHED' };
+      return { refused: 'CLAIMED_WORKFLOW_MISSING' };
+    }
+    // NOT_IN_RELEASE: the workflow still exists and is published, but the RELEASED version no
+    // longer declares this trigger id. Only checked when the released version declares a trigger
+    // list at all — a version that declares none never claimed anything through this door, and
+    // treating that as a refusal would disable every schedule created the pre-v24 way.
+    if (released.triggers !== undefined && !released.triggers.includes(firing.id)) return { refused: 'NOT_IN_RELEASE' };
+    return { workflow: claimedBy };
+  }
   ticker.start(() => {
     const due = tick(scheduler.all(), clock.now());
     for (const firing of due) {
+      void resolveScheduleTarget(firing).then((target) => {
+      if ('refused' in target) {
+        scheduler.markRefused(firing, target.refused);
+        // eslint-disable-next-line no-console
+        console.warn(`[remote-workflow-engine] scheduled firing ${firing.id} refused before dispatch: ${target.refused}`);
+        return;
+      }
       runManager
-        .start({ name: firing.workflow, args: firing.args, startedBy: { type: 'schedule', id: firing.workflow } })
+        .start({ name: target.workflow, args: firing.args, startedBy: { type: 'schedule', id: target.workflow } })
         .then((runId) => scheduler.markFired(firing, runId))
         .catch((err: unknown) => {
           // DES-118: a failed dispatch (e.g. the catalog entry was deleted after the schedule was
@@ -734,6 +768,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
           // eslint-disable-next-line no-console
           console.error(`[remote-workflow-engine] scheduled firing ${firing.id} failed to start:`, err);
         });
+      });
     }
   });
 

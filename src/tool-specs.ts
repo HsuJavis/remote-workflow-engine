@@ -566,10 +566,22 @@ export const TOOL_SPECS = [
   // ---- schedule (4) ----
   {
     name: 'schedule_create', entity: 'schedule', key: null,
-    description: 'Register a cron-style trigger for a workflow; the caller becomes its owner.',
-    inputSchema: schema({ workflow: { type: 'string' }, cron: { type: 'string' } }, ['workflow', 'cron']),
+    description: "Register a time trigger for a workflow; the caller becomes its owner. Defaults to kind:'cron' — pass kind:'once' with {at} for a one-shot, or kind:'resident' for a trigger-only schedule that never fires on a clock.",
+    // v24 (integrator, REQ-015): the row advertised ONLY `{workflow, cron}` with both required, so
+    // the one-shot and resident kinds REQ-015 clause 2 specifies (and VAL-016 validates) were
+    // unreachable through the tool surface — ajv refused them for a missing `cron` before the store
+    // ever saw them. The store has supported all three kinds since v2; only the schema was narrow.
+    inputSchema: schema({
+      workflow: { type: 'string' },
+      kind: { type: 'string', enum: ['cron', 'once', 'resident'], description: "Defaults to 'cron' when omitted." },
+      cron: { type: 'string', description: "A 5-field cron expression, e.g. '0 3 * * *'. Required when kind is 'cron'." },
+      at: { type: 'string', description: "An ISO-8601 timestamp. Required when kind is 'once'; a past value fires on the next tick." },
+      tz: { type: 'string', description: "IANA timezone the cron fields are read in; UTC when omitted." },
+      args: { description: 'Run arguments handed to every firing.' },
+      enabled: { type: 'boolean' },
+    }, ['workflow']),
     outputSchema: OUT,
-    errors: ['WORKFLOW_NOT_FOUND', 'TRIGGER_ALREADY_CLAIMED', 'FORBIDDEN_ROLE'],
+    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'INVALID_CRON', 'INVALID_AT', 'TRIGGER_ALREADY_CLAIMED', 'FORBIDDEN_ROLE'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
     fixture: {

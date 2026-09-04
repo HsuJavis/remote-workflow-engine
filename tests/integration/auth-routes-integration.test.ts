@@ -93,6 +93,12 @@ beforeAll(async () => {
       googleBase: 'http://127.0.0.1:0',      // unused in these tests (no full OAuth flow)
       jwksFetch: fakeJwksFetch,
     },
+    // v24 (REQ-109 roles, ADR-028): I-2's hermeticity case registers+publishes a workflow with its
+    // own bearer, and `workflow_register`/`workflow_publish` are `{minRole:'author'}`. An
+    // authenticated id absent from this map resolves to `'user'` and is refused FORBIDDEN_ROLE.
+    // Only the ids that perform a catalog WRITE are listed — every other case in this file exercises
+    // the auth ROUTES (token/JWKS/401), which are role-free.
+    principals: { 'hermetic-it078@example.com': { role: 'author' } },
   } as never); // `auth` not yet in ServerConfig → cast to avoid TS error
 });
 

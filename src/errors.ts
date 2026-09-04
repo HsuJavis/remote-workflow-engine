@@ -69,6 +69,8 @@ export const ERROR_CATALOG = {
   CHANNEL_UNPUBLISHED: { see: null, hint: 'the requested channel has no published version' },
   DANGLING_CHANNEL: { see: null, hint: 'the channel points at a version that no longer exists (invariant violation)' },
   NOT_RUNNABLE: { see: null, hint: 'this version cannot be run (e.g. a legacy or refused registration)' },
+  INVALID_CRON: { see: null, hint: 'the cron expression is not a valid 5-field expression' },
+  INVALID_AT: { see: null, hint: 'the one-shot `at` value is not a parseable ISO timestamp' },
   TRIGGER_NOT_FOUND: { see: null, hint: 'no trigger (schedule or webhook) is registered under this id' },
   TRIGGER_ALREADY_CLAIMED: { see: null, hint: 'this trigger id is already claimed by a different workflow' },
   UNCLAIMED: { see: null, hint: 'this trigger has not been claimed by any workflow; it will not fire' },
