@@ -22,8 +22,10 @@ traceability baseline ran
 and wiped the entire v21 architecture / tasks / design / tests documents from the working
 tree (1375 lines) while a workflow was mid-flight. Recovery was only possible because a WIP
 checkpoint commit existed. A sibling agent doing the same job used `git stash` … `git stash
-pop` correctly.
+pop`, which was the safe choice *for one agent working alone* — it is no longer permitted, for the
+reason given at the top of this file.
 
 For a trace baseline specifically: `sh .sdlc/trace` reads the ledger in the working tree, so
-compare against a baseline captured *earlier into a file*, or stash-and-pop — never by
-checking the ledger backwards in place.
+capture the baseline *earlier into a file*, or extract a clean copy somewhere else
+(`git archive HEAD | tar -x -C <scratch dir>`) and run against that — never by checking the ledger
+backwards in place, and never by stashing.

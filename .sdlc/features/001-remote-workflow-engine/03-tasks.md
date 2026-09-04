@@ -1273,3 +1273,38 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **dod:** HIGHEST SEVERITY of the Gate 5 batch — `:55`, `:69` and `:72` pass `aliasNames` into the `scriptLabels` slot, so EVERY registration whose script omits `meta.params` throws `AGENT_UNDECLARED` naming label "undefined". All three call sites pass `scanAgentCalls(script).labels`. **CORRECTED by adjudication (v24) #4 C-7 [17] — the sentence that stood here was WRONG and must not be restored:** it said "a test registers a script with `agent()` calls and NO `meta.params` and asserts it REGISTERS". DES-144 rules the opposite — one or more UNDECLARED labels ⇒ `AGENT_UNDECLARED` — and the shipped test follows DES-144, correctly. The defect this task fixes is the label NAMED in that refusal ("undefined" instead of the real label), not the refusal itself. The dod is therefore: a script with `agent('x', {})` and no `meta.params` is refused `AGENT_UNDECLARED` **naming `x`**, and the same script WITH `meta.params.agents.x` registers. Nobody may later "fix" the test toward the retracted sentence.
 - **estimate:** S
 - **iter:** v24
+
+### TASK-160 — the ARCH-098 boot migration, and a GC that cannot run before it (AF-1)
+- **status:** draft
+- **traces:** ARCH-098, ARCH-102
+- **files:** src/asset-sync.ts, src/workspace-gc.ts, src/server.ts, src/workflow-catalog.ts, tests/integration/legacy-asset-migration.test.ts
+- **des:** DES-153, DES-155
+- **dod:** A pre-v24 deployment must not lose data on upgrade. Three parts, all pinned by tests that FAIL first. (1) A boot migration moves the pre-v24 global tree at `<workRoot>/assets/<kind>/<name>` into `_global_assets` and writes `assets(workflow='', pushedBy='legacy')` rows — transactional and idempotent (run the boot twice: no duplicate rows, no error). (2) It ALSO migrates `mcp_provisions` rows — read them from the ON-DISK database, not from code: `grep -rn "mcp_provisions" src/` is empty only because v24 deleted the module, and a pre-v24 db still has the table. A test builds a real pre-v24 db with both a global skill directory and an `mcp_provisions` row and asserts both survive as v24 rows with `pushedBy='legacy'`. (3) ORDERING IS THE POINT: a test must prove the GC sweep cannot delete the pre-v24 tree because the migration has already emptied it — arrange a workRoot with a legacy `assets/skill/<name>`, boot with `workspaceTtlMs > 0`, and assert the skill still resolves afterwards. `workspace-gc.ts:66-88` deletes every child of `<assetRoot>/` that is not a live workflow, wired unconditionally at `server.ts:847`, so getting the order wrong destroys the operator's skills on the first sweep. ARCH-102 is amended to the shipped `_global_assets` path (adjudication #7 G-1: the code's deviation is the safer one and the document follows it).
+- **estimate:** L
+- **iter:** v24
+
+### TASK-161 — `triggers: []` stops being indistinguishable from a legacy NULL (AF-2)
+- **status:** draft
+- **traces:** ARCH-098, ARCH-099
+- **files:** src/workflow-catalog.ts, tests/integration/trigger-release-versioning.test.ts
+- **des:** DES-148, DES-149
+- **dod:** `workflow-catalog.ts:472` writes `NULL` for any empty array, so a v24 row declaring `triggers: []` is byte-identical to a pre-v24 row and `server.ts:775`'s `!== undefined` check skips membership entirely. Store `'[]'` for a v24 row; `NULL` stays reserved for pre-v24 rows, which is what ARCH-098 said. The test ARCH-098 itself specifies in the same sentence: no post-migration row is written `NULL`. Plus the behaviour that is currently impossible — register v1 with `triggers:[t1]`, register v2 with `triggers:[]`, publish v2 to `release`, then assert the fire path refuses `NOT_IN_RELEASE` and t1 does NOT run v2. Removing a trigger is the one direction that was never versioned.
+- **estimate:** M
+- **iter:** v24
+
+### TASK-162 — `PRINCIPAL_REQUIRED` joins the closed catalog, and the lock checks BOTH directions (AF-3)
+- **status:** draft
+- **traces:** ARCH-087, ARCH-088
+- **files:** src/errors.ts, tests/unit/error-catalog-closed.test.ts
+- **des:** DES-137
+- **dod:** `authz.ts:89` returns `PRINCIPAL_REQUIRED` and `call-tool.ts:136` copies it to the wire unremapped (`?? 'FORBIDDEN_ROLE'` only covers a verdict with NO code), yet it is absent from `ERROR_CATALOG` — so a code a client really receives carries no `see` pointer, appears in no generated documentation, and is invisible to the closure tests. Add it with its pointer. Then close the class rather than the instance: a test asserts EVERY member of `AuthzErrorCode` is a key of `ERROR_CATALOG`, and the existing orphan lock is confirmed to check the reverse direction too. Gate 7.5 round 3 fixed exactly this for three trigger codes (D-14) and left this one a function away — the narrow fix is what let it recur, and adjudication #2 A-4 already recorded one-directional locking once.
+- **estimate:** S
+- **iter:** v24
+
+### TASK-163 — backfill the missing IMPL entries, and make the omission detectable (DR-1)
+- **status:** draft
+- **traces:** ARCH-087
+- **files:** .sdlc/features/001-remote-workflow-engine/06-impl-log.md
+- **dod:** Three commits after IMPL-187 touched `src/` with no IMPL entry; the reviewer counts this as the TENTH occurrence. Backfill the three with their real commit shas and what they changed. Ten repetitions is not forgetfulness, it is a missing enforcement point, so ALSO record in the v25 debt section that the durable fix is to make "src changed without an IMPL row" mechanically checkable — a Gate 7 check or a trace.py rule — rather than something a person has to remember. Ledger-only task: no src changes, and it belongs to whoever writes the ledger, not to a parallel implementer.
+- **estimate:** S
+- **iter:** v24
