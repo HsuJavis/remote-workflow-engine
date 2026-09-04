@@ -14,6 +14,16 @@
 // (DES-144's `parseParamContract`) made every `registerPublished()`-based fixture throw
 // `AGENT_UNDECLARED` first — so removing this key changes zero passing tests either way. See
 // TASK-143's PARIMPL report (test_defects) for the full cross-task trace.
+//
+// TASK-154 (2026-09-04) update: the retirement forewarned above has now happened. All three files'
+// `HARNESS_DEFAULTS_INVALID`/`defaults`-door assertions are deleted or replaced by a compact
+// DEFAULTS_RETIRED regression suite (real HTTP + real SQLite catalog, each file's own original
+// mock policy) — `grep -rn "HARNESS_DEFAULTS_INVALID" tests/` now returns only rows asserting the
+// code is GONE, never asserting it as live. Case counts: harness-defaults-validation.test.ts 38->5,
+// val-098-harness-defaults.test.ts 6->1 (REQ-088 itself is `superseded-by: REQ-110`, whose live
+// acceptance coverage is VAL-121), val-103-effort-real.test.ts 4->2 (the 2 removed cases were the
+// only ones touching the retired `defaults.effort` door; the 2 kept are per-call `overrides`/
+// `agent(label,{effort})` cases unrelated to it).
 export const ERROR_CATALOG = {
   // Generic / cross-cutting
   INVALID_ARGUMENT: { see: null, hint: 'the call did not match its declared inputSchema' },
@@ -54,7 +64,6 @@ export const ERROR_CATALOG = {
   WORKFLOW_ALREADY_EXISTS: { see: null, hint: 'a workflow with this name is already registered under a different owner' },
   REGISTRATION_CONFLICT: { see: null, hint: 'a concurrent registration of this name raced this one; retry' },
   VERSION_CEILING_EXCEEDED: { see: null, hint: 'this workflow name already has the configured maxWorkflowVersions; deregister an old one' },
-  UNKNOWN_VERSION: { see: null, hint: 'the requested version is not a registered version of this workflow' },
   VERSION_NOT_FOUND: { see: null, hint: 'the requested version is not a registered version of this workflow' },
   INVALID_CHANNEL: { see: null, hint: 'the channel value is not "beta" or "release"' },
   CHANNEL_UNPUBLISHED: { see: null, hint: 'the requested channel has no published version' },
@@ -88,14 +97,13 @@ export const ERROR_CATALOG = {
   CAS_UNAVAILABLE: { see: null, hint: 'this operation requires a configured content store (cas) and none is available' },
   SEEDREF_DISABLED: { see: null, hint: 'seedRef requires seedRefAllowlist in engine config' },
   SEEDREF_ALLOWLIST_INVALID: { see: null, hint: 'the configured seedRefAllowlist itself is malformed' },
-  SEEDREF_EGRESS_DENIED: { see: null, hint: 'the requested repoUrl does not match any allowlisted egress prefix' },
   SEEDREF_FETCH_FAILED: { see: null, hint: 'the engine-pull git fetch of the seedRef failed' },
   SEEDREF_SHA_MISMATCH: { see: null, hint: 'the fetched commit sha does not match the requested one' },
   SEEDREF_TOO_LARGE: { see: null, hint: 'the fetched seedRef tree exceeds a configured size bound' },
 
   // MCP / issues / misc surfaces
   MCP_PROBE_FAILED: { see: null, hint: 'the MCP probe could not reach or validate the configured server' },
-  EGRESS_DENIED: { see: null, hint: 'the requested network egress is denied by the configured allowlist' },
+  EGRESS_DENIED: { see: null, hint: 'the requested network egress (seedRef repoUrl or MCP server URL) does not match any allowlisted prefix' },
   ISSUE_NOT_FOUND: { see: null, hint: 'no GitHub issue matches this reference' },
 } as const satisfies Record<string, { see: 'workflow_authoring_guide' | null; hint: string }>;
 

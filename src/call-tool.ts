@@ -183,9 +183,10 @@ export async function callTool(
       }
     }
     default: {
-      // Exhaustiveness: every TOOL_SPECS row is handled above. TypeScript cannot narrow `spec.name`
-      // to `never` here because ToolSpec['name'] is `string` (TOOL_SPECS is a plain array, not
-      // `as const` — DES-138 defers that), so this is a runtime guard, not a compile-time one.
+      // Exhaustiveness: every TOOL_SPECS row is handled above. Attempted a compile-time
+      // `default: never` check here (DES-140) after TASK-155's `as const`, but `spec.name`
+      // resolves to `any` at this call site (not the ToolName literal union `.find()` would
+      // suggest) — reported as a defect rather than forced; this stays a runtime guard.
       return unknownTool(name);
     }
   }

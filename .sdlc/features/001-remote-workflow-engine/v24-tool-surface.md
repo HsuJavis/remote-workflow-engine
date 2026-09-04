@@ -34,6 +34,6 @@ rows: 35/35
 - webhook_list: pass — args={} observed={"result":[]}
 - webhook_delete: pass — args={"id":"w1"} observed={"result":{"deleted":false}}
 - models_list: pass — args={} observed={"result":[{"provider":"anthropic","model":"claude-opus-4-8","description":"Claude Opus 4.8 — most capable Opus-tier model","modalities":{"in":["text","image"],"out":["text"]},"contextWindow":1000000,
-- system_info: pass — args={} observed={"status":"ok","result":{"cpu":{"cores":16,"loadAvg":[0.61,0.47,0.63],"utilizationPct":null,"utilizationDegraded":{"reason":"awaiting-second-sample"}},"memory":{"totalBytes":32513794048,"usedBytes":98
+- system_info: pass — args={} observed={"status":"ok","result":{"cpu":{"cores":16,"loadAvg":[0.29,0.64,0.78],"utilizationPct":null,"utilizationDegraded":{"reason":"awaiting-second-sample"}},"memory":{"totalBytes":32513794048,"usedBytes":99
 - workflow_deregister: pass — args={"name":"demo"} observed={"runId":"","status":"completed","name":"demo","removed":false,"releasedTriggers":[],"result":{"name":"demo","removed":false,"releasedTriggers":[]}}
 - workspace_purge: fail — args={"runId":"r1"} observed={"runId":"r1","status":"failed","error":{"code":"RUN_NOT_FOUND","message":"Run not found: r1"}}

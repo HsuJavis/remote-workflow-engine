@@ -1,4 +1,7 @@
-// UT-027: SchedulerPort CRUD + workflow_trigger (DES-016, TASK-019)
+// UT-027: SchedulerPort CRUD + the port-level trigger() (DES-016, TASK-019). v24 (TASK-152,
+// ARCH-087): the MCP tool that used to expose this as a manual "fire now" call is retired with no
+// replacement (ch.16.1) — `SqliteSchedulerPort.trigger()` itself is unchanged internal plumbing
+// (`scheduler.ts:280`), still exercised directly at this unit tier.
 // RED: src/scheduler.js does not exist yet — all tests fail on module-not-found.
 import { describe, it, expect, vi } from 'vitest';
 import { FixedClock } from '../../src/clock.js';

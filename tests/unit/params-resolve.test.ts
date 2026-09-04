@@ -284,3 +284,36 @@ describeV24('v24: resolveAgentParams — three rungs (UT-148, DES-146)', () => {
     expectV24(['override', 'default']).toContain(eff.provenance.model);
   });
 });
+
+// v24 (TASK-158, adjudication A-7 [14][18]): mergeRunParams()/defaultRunParams() reconciled with
+// DES-145's nested `UserOverrides.agents.<label>` shape — the admission snapshot's `.agents` slice
+// (DES-146 boundary), built one `resolveAgentParams` call per declared label. REQ-110's whole
+// defect was that a single caller-supplied value applied to EVERY agent; these cases pin that a
+// per-agent override reaches admission for that label ONLY and never leaks to a sibling.
+import { mergeRunParams as mergeRunParamsV24, defaultRunParams as defaultRunParamsV24 } from '../../src/params/resolve.js';
+
+const twoLabelContract = {
+  plan: { model: { default: 'sonnet-5' }, effort: { default: 'low' }, timeoutMs: { default: 60000 } },
+  write: { model: { default: 'haiku' }, effort: { default: 'medium' }, timeoutMs: { default: 30000 } },
+};
+
+describeV24('v24: mergeRunParams()/defaultRunParams() — per-agent-label admission snapshot (TASK-158, DES-146)', () => {
+  itV24('an override for one label reaches ONLY that label\'s slice — the sibling keeps its own contract default (no broadcast)', () => {
+    const rp = mergeRunParamsV24(undefined, { agents: { plan: { effort: 'high' } } }, twoLabelContract);
+    expectV24(rp.agents?.['plan']?.effort).toBe('high');
+    expectV24(rp.agents?.['plan']?.provenance.effort).toBe('override');
+    expectV24(rp.agents?.['write']?.effort).toBe('medium'); // untouched — its OWN contract default, not 'plan''s override
+    expectV24(rp.agents?.['write']?.provenance.effort).toBe('default');
+  });
+
+  itV24('no overrides at all: every declared label resolves to its own contract default', () => {
+    const rp = defaultRunParamsV24(undefined, twoLabelContract);
+    expectV24(rp.agents?.['plan']?.model).toBe('sonnet-5');
+    expectV24(rp.agents?.['write']?.model).toBe('haiku');
+  });
+
+  itV24('no contract supplied (ad-hoc/legacy script): `.agents` is absent, not an empty object', () => {
+    const rp = mergeRunParamsV24(undefined, {}, undefined);
+    expectV24(rp.agents).toBeUndefined();
+  });
+});

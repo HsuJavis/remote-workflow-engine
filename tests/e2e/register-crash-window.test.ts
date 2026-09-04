@@ -21,15 +21,17 @@ describe('register crash window — trigger stays unclaimed after a crash before
       const clock = new FixedClock(new Date('2026-01-01T00:00:00Z'));
       const scheduler = new SqliteSchedulerPort({
         clock,
-        catalog: { resolve: async () => ({ ok: false, code: 'UNKNOWN_VERSION' }) } as never,
+        catalog: { resolve: async () => ({ ok: false, code: 'VERSION_NOT_FOUND' }) } as never,
         runManager: { start: async () => ({ runId: 'r1' }) } as never,
         dbPath: join(dir, 'schedules.db'),
       });
       // @ts-expect-error — create() still binds workflow at creation today (v24 makes it unclaimed)
-      const { id } = await scheduler.create({ kind: 'once', at: '2026-06-01T00:00:00Z' });
+      const { result } = await scheduler.create({ kind: 'once', at: '2026-06-01T00:00:00Z' });
+      // create() returns a {result, error} envelope (scheduler.ts:58-61), not {id} directly —
+      // same test-fixture defect class as trigger-claims.test.ts (adjudication v24 #2 A-7).
+      const id = result!.id;
 
       const catalog = new WorkflowCatalog(dir);
-      // @ts-expect-error — claim() does not exist yet
       await scheduler.claim(id, 'wf-crash');
       await expect(
         // @ts-expect-error — v24 register() shape + a forced crash before insertVersion completes
@@ -39,7 +41,7 @@ describe('register crash window — trigger stays unclaimed after a crash before
       // "restart": fresh instances over the SAME db files
       const schedulerAfterRestart = new SqliteSchedulerPort({
         clock,
-        catalog: { resolve: async () => ({ ok: false, code: 'UNKNOWN_VERSION' }) } as never,
+        catalog: { resolve: async () => ({ ok: false, code: 'VERSION_NOT_FOUND' }) } as never,
         runManager: { start: async () => ({ runId: 'r1' }) } as never,
         dbPath: join(dir, 'schedules.db'),
       });

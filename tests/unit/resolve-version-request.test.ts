@@ -27,9 +27,9 @@ describe('resolveVersionRequest truth table (DES-110, UT-103)', () => {
   });
 
   // Row 3
-  it('row 3: an unknown explicit version is refused UNKNOWN_VERSION', () => {
+  it('row 3: an unknown explicit version is refused VERSION_NOT_FOUND', () => {
     const r = resolveVersionRequest({ version: 'v99' }, { release: 'v1', beta: null }, KNOWN);
-    expect(r).toMatchObject({ ok: false, code: 'UNKNOWN_VERSION', version: 'v99' });
+    expect(r).toMatchObject({ ok: false, code: 'VERSION_NOT_FOUND', version: 'v99' });
   });
 
   // Row 4
@@ -77,9 +77,9 @@ describe('resolveVersionRequest truth table (DES-110, UT-103)', () => {
       expect(r).toMatchObject({ ok: true, version: 'v2' });
     });
 
-    it('unknown version + valid channel ⇒ UNKNOWN_VERSION (version is checked before channel is consulted)', () => {
+    it('unknown version + valid channel ⇒ VERSION_NOT_FOUND (version is checked before channel is consulted)', () => {
       const r = resolveVersionRequest({ version: 'v99', channel: 'beta' }, { release: 'v1', beta: 'v2' }, KNOWN);
-      expect(r).toMatchObject({ ok: false, code: 'UNKNOWN_VERSION' });
+      expect(r).toMatchObject({ ok: false, code: 'VERSION_NOT_FOUND' });
     });
   });
 });

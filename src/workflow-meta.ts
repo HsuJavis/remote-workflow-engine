@@ -42,17 +42,19 @@ export function parseMeta(script: string): WorkflowMeta {
  *  structural bounds (DES-101), which only ever see a value that already survived evaluation. */
 export const MAX_META_LITERAL_BYTES = 4096;
 
-/** Extracts + validates `meta.params` at registration time (DES-103, ARCH-067). No meta / an
- *  impure meta (rejected elsewhere via INVALID_META) / no declared `params` field all mean
- *  "no contract" — `parseParamContract(undefined, …)` already resolves that to the canonical
- *  4-knob contract (REQ-090 backward compat; the resolver never branches on "contract missing"). */
+/** Extracts + validates `meta.params` at registration time (DES-103, ARCH-067, DES-144). No meta /
+ *  an impure meta (rejected elsewhere via INVALID_META) / no declared `params` field all mean
+ *  "no contract" — `parseParamContract(undefined, scriptLabels, …)` resolves that to the zero-label
+ *  contract when the script has no `agent()` calls, or refuses `AGENT_UNDECLARED` per label
+ *  otherwise (v24; REQ-090's old unconditional canonical-contract compat is retired by DES-144). */
 export function parseMetaParams(
   script: string,
   aliasNames: Set<string>,
 ): { ok: true; value: ParamContract } | ParamContractErr {
+  const labels = scanAgentCalls(script).labels;
   const m = checkMeta(script);
   if (!m.found || !m.pureLiteral || m.objectText === undefined) {
-    return parseParamContract(undefined, aliasNames);
+    return parseParamContract(undefined, labels, aliasNames);
   }
   if (Buffer.byteLength(m.objectText, 'utf8') > MAX_META_LITERAL_BYTES) {
     return {
@@ -66,10 +68,10 @@ export function parseMetaParams(
   try {
     obj = runInNewContext(`(${m.objectText})`, Object.create(null) as object, { timeout: 50 });
   } catch {
-    return parseParamContract(undefined, aliasNames);
+    return parseParamContract(undefined, labels, aliasNames);
   }
   const rawParams = obj && typeof obj === 'object' ? (obj as { params?: unknown }).params : undefined;
-  return parseParamContract(rawParams, aliasNames);
+  return parseParamContract(rawParams, labels, aliasNames);
 }
 
 export type SkeletonKind = 'phase' | 'agent' | 'workflow';

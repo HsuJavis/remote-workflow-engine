@@ -133,12 +133,12 @@ describe('version history: both versions of a twice-registered name remain retri
     expect(await catalog.listVersions('list-versions')).toEqual([v1, v2]);
   });
 
-  it('publish naming a version that was never registered is refused UNKNOWN_VERSION; no pointer moves (Gate 6.5+7 coverage)', async () => {
+  it('publish naming a version that was never registered is refused VERSION_NOT_FOUND; no pointer moves (Gate 6.5+7 coverage)', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
     await catalog.register({ name: 'publish-unknown-version', script: `return 1;`, mermaid: 'graph TD;', principal: 'owner@example.com' });
     await expect(
       catalog.publish('publish-unknown-version', 'v99', 'release', 'owner@example.com')
-    ).rejects.toThrow(/UNKNOWN_VERSION/);
+    ).rejects.toThrow(/VERSION_NOT_FOUND/);
     // the refusal happened BEFORE any pointer write — `release` is still unpublished, not
     // pointing at the (never-registered) 'v99'.
     await expect(catalog.resolve('publish-unknown-version', {})).rejects.toThrow(/CHANNEL_UNPUBLISHED/);

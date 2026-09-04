@@ -93,8 +93,8 @@ export function classifyAsset(kind: LegacyAssetKind, _asset: unknown): AssetDisp
   return { action: 'materialize' };
 }
 
-/** Thrown when any `files[].path` in a push fails `safeRelPath` — the whole push is rejected (no
- *  half-written asset dir), same rooting invariant as DES-011's `WorkspaceEscapeError`. */
+/** Thrown when any `files[].path` in a push fails `pathVerdict` (DES-142) — the whole push is
+ *  rejected (no half-written asset dir), same rooting invariant as DES-011's `WorkspaceEscapeError`. */
 export class AssetPathEscapeError extends Error {
   constructor(path: string) {
     super(`Asset file path escapes its asset dir: ${path}`);

@@ -5,9 +5,8 @@
 // grammar over a real (subset of) Mermaid rather than a codepoint allowlist.
 //
 // Pure: no I/O, no clock, no VM, no randomness. Order, per DES-147: (1) size (2) line classifier
-// (3) node table (4) edge table (5) [AGENT_LABEL_FORMAT — no covering test in this task's scope,
-// intentionally not implemented; see IMPL note] (6) bidirectional label diff (7) value triple
-// (8) cycles (9) subgraph title / unmatched end.
+// (3) node table (4) edge table (5) agent node text vs AGENT_LABEL_RE (6) bidirectional label diff
+// (7) value triple (8) cycles (9) subgraph title / unmatched end.
 
 // A flat (non-discriminated) shape rather than a `{ok:true} | {ok:false; rule...}` union: callers
 // commonly assert `result.ok` and `result.rule` in separate statements (no `if` narrowing between
@@ -23,7 +22,7 @@ export interface CheckMermaidResult {
 
 interface NodeRecord {
   id: string;
-  shape: 'stadium' | 'rectangle' | 'trapezoid';
+  shape: 'stadium' | 'rectangle' | 'trapezoid' | 'diamond' | 'aggregation';
   text: string;
   line: number;
 }
@@ -41,12 +40,40 @@ interface EdgeRecord {
 const STADIUM_RE = /^(\w+)\(\["(.*)"\]\)$/;
 /** Black-box rectangle: `id["free text"]` — excluded from the diff, text is unconstrained. */
 const RECTANGLE_RE = /^(\w+)\["(.*)"\]$/;
-/** Trapezoid: `id[/"text"/]` — used for non-agent nodes (e.g. a trigger header). */
+/** Trapezoid: `id[/"text"/]` — used for non-agent nodes (e.g. a trigger/output). */
 const TRAPEZOID_RE = /^(\w+)\[\/"(.*)"\/\]$/;
-const HEADER_RE = /^(graph|flowchart)\s+\S+$/;
+/** Diamond (conditional) node: `id{"text"}`. */
+const DIAMOND_RE = /^(\w+)\{"(.*)"\}$/;
+/** Aggregation (non-agent) node: `id{{"text"}}` — checked BEFORE `DIAMOND_RE` in the classifier
+ *  since a bare `{"…"}` regex would otherwise stop one brace short and mis-parse the wrapping pair. */
+const AGGREGATION_RE = /^(\w+)\{\{"(.*)"\}\}$/;
+export const HEADER_RE = /^(graph|flowchart)\s+\S+$/;
 const SUBGRAPH_RE = /^subgraph\s+"([^"]*)"$/;
 const ARROW_TOKEN_RE = /<-->|-\.->|-->/;
 const EDGE_RE = /^(\w+)\s*(<-->|-\.->|-->)\s*(?:\|([^|]*)\|\s*)?(.+)$/;
+/** DES-143's own label-format rule, reused here: the diagram's agent (stadium) node label —
+ *  everything before the first `<br/>` — must match the same grammar `scanAgentCalls` enforces on
+ *  the script side, so a diagram label that could never legally appear in the script is refused at
+ *  the diagram gate rather than surfacing later as a silent DIAGRAM_SCRIPT_MISMATCH. */
+export const AGENT_LABEL_RE = /^[A-Za-z_][\w-]*$/;
+
+/** The five node shapes `checkMermaid` recognizes, each with its token pair and role (ARCH-097's
+ *  closed grammar; DES-147's single declaration — `authoring-guide.ts` (TASK-151) interpolates
+ *  this rather than re-typing the grammar). */
+export const SHAPES = [
+  { name: 'trapezoid', open: '[/"', close: '"/]', role: 'trigger / output' },
+  { name: 'stadium', open: '(["', close: '"])', role: 'agent node — participates in the label diff + value triple' },
+  { name: 'diamond', open: '{"', close: '"}', role: 'conditional' },
+  { name: 'aggregation', open: '{{"', close: '"}}', role: 'non-agent aggregation' },
+  { name: 'rectangle', open: '["', close: '"]', role: "nested workflow() black box — free text, excluded from the diff" },
+] as const;
+
+/** The three edge forms `checkMermaid` recognizes (DES-147's single declaration). */
+export const EDGE_FORMS = [
+  { token: '-->', role: 'directed edge — participates in cycle detection' },
+  { token: '-.->', role: 'directed dashed edge (e.g. a skipped path) — participates in cycle detection' },
+  { token: '<-->', role: 'bidirectional edge (e.g. a debate) — EXCLUDED from cycle detection' },
+] as const;
 
 /** `120s` / `120000` / `120000ms` — a bare digit string means milliseconds already. */
 function parseTimeout(v: string): number | null {
@@ -101,12 +128,23 @@ export function checkMermaid(
     }
     const stadium = STADIUM_RE.exec(line);
     const trapezoid = !stadium ? TRAPEZOID_RE.exec(line) : null;
-    const rectangle = !stadium && !trapezoid ? RECTANGLE_RE.exec(line) : null;
-    const match = stadium ?? trapezoid ?? rectangle;
+    const aggregation = !stadium && !trapezoid ? AGGREGATION_RE.exec(line) : null;
+    const diamond = !stadium && !trapezoid && !aggregation ? DIAMOND_RE.exec(line) : null;
+    const rectangle = !stadium && !trapezoid && !aggregation && !diamond ? RECTANGLE_RE.exec(line) : null;
+    const match = stadium ?? trapezoid ?? aggregation ?? diamond ?? rectangle;
     if (match) {
       const [, id, text] = match;
       if (nodes.has(id!)) { classifyErr = err('DUPLICATE_NODE', { line: lineNo }); break; }
-      nodes.set(id!, { id: id!, shape: stadium ? 'stadium' : trapezoid ? 'trapezoid' : 'rectangle', text: text!, line: lineNo });
+      const shape: NodeRecord['shape'] = stadium
+        ? 'stadium'
+        : trapezoid
+          ? 'trapezoid'
+          : aggregation
+            ? 'aggregation'
+            : diamond
+              ? 'diamond'
+              : 'rectangle';
+      nodes.set(id!, { id: id!, shape, text: text!, line: lineNo });
       continue;
     }
     // Unrecognized shape — not exercised by this task's test scope; MERMAID_INVALID is the
@@ -127,6 +165,14 @@ export function checkMermaid(
     if (!nodes.has(from!)) return err('UNDECLARED_NODE', { line });
     if (!nodes.has(to)) return err('UNDECLARED_NODE', { line });
     edges.push({ from: from!, to, arrow: arrow as EdgeRecord['arrow'], label, line });
+  }
+
+  // (5) agent (stadium) node text vs AGENT_LABEL_RE — the label portion (before the first
+  // `<br/>`) must match the same grammar `scanAgentCalls` enforces on the script side.
+  for (const n of nodes.values()) {
+    if (n.shape !== 'stadium') continue;
+    const label = n.text.split('<br/>')[0]!;
+    if (!AGENT_LABEL_RE.test(label)) return err('AGENT_LABEL_FORMAT', { line: n.line });
   }
 
   // (6) bidirectional label diff — agent (stadium) node labels vs the script's own agent labels.

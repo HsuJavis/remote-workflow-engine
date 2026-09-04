@@ -3,17 +3,18 @@
 // facts over the SERVED tools/list (not the raw TOOL_DEFS object) — same pattern as IT-072 /
 // seedref-schema-drift.
 //
-// v24 (TASK-152, DES-159): DES-089 (asset_push kind naming HOOKS_UNSUPPORTED/mcp_provision),
-// DES-090 (run_start's absent scriptSha256/script), and DES-087/DES-086 (run_start's
-// seedManifestRef cross-reference, blob_put/seed_plan's route cross-references) are ALL retired
-// with their subject tools: `asset_push`, `blob_put`, `seed_plan` and `run_start`'s seed-source
-// arguments do not exist under those names/shapes in the v24 tool surface (`asset_push`/`blob_put`/
-// `seed_plan` fold into `workspace_push`/`workspace_diff` with per-tool modes, REQ-108;
-// `run_start.seedNamespace` and the seed-source arguments are dropped, DES-142; `mcp_provision` is
-// deleted outright, ARCH-101). Their drift-lock blocks are removed rather than re-pointed at a
-// differently-shaped tool — there is no v24 tool whose kind/description still needs to name
-// `HOOKS_UNSUPPORTED`/`mcp_provision`/`SEED_SOURCE_CONFLICT`/`/assets/manifest`/`/assets/blob/`/
-// `BLOB_SHA_MISMATCH` the way `asset_push`/`blob_put`/`seed_plan`/`run_start` used to.
+// v24 (TASK-152, DES-159): DES-089 (the old push tool's kind naming HOOKS_UNSUPPORTED and the old
+// MCP-provisioning tool), DES-090 (run_start's absent scriptSha256/script), and DES-087/DES-086
+// (run_start's seedManifestRef cross-reference, the old blob-upload/seed-plan route cross-
+// references) are ALL retired with their subject tools: the pre-v24 asset-push, blob-put and
+// seed-plan tools and `run_start`'s seed-source arguments do not exist under those names/shapes in
+// the v24 tool surface (they fold into `workspace_push`/`workspace_diff` with per-tool modes,
+// REQ-108; `run_start.seedNamespace` and the seed-source arguments are dropped, DES-142; the old
+// MCP-provisioning tool is deleted outright, ARCH-101). Their drift-lock blocks are removed rather
+// than re-pointed at a differently-shaped tool — there is no v24 tool whose kind/description still
+// needs to name the retired HOOKS_UNSUPPORTED-on-push code, the old provisioning tool,
+// SEED_SOURCE_CONFLICT, `/assets/manifest`, `/assets/blob/` or BLOB_SHA_MISMATCH the way the
+// pre-v24 push/blob-put/seed-plan/run_start tools used to.
 //
 // DES-088 survives unchanged in substance (only the tool's name moved, `workflow_agent_log` ->
 // `run_agent_log`, REQ-107): the secret-marker asymmetry sentence documents live redaction

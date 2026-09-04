@@ -27,58 +27,58 @@ describe('isEgressAllowed (DES-079 SSRF-matrix — deny-by-default, pure, no net
     if (!v.ok) expect(v.code).toBe('SEEDREF_DISABLED');
   });
 
-  it('SSRF: http://169.254.169.254/ (link-local metadata) → SEEDREF_EGRESS_DENIED (non-https)', () => {
+  it('SSRF: http://169.254.169.254/ (link-local metadata) → EGRESS_DENIED (non-https)', () => {
     const v = isEgressAllowed('http://169.254.169.254/', ALLOWLIST);
     expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.code).toBe('SEEDREF_EGRESS_DENIED');
+    if (!v.ok) expect(v.code).toBe('EGRESS_DENIED');
   });
 
-  it('SSRF: http://localhost/something → SEEDREF_EGRESS_DENIED (non-https scheme)', () => {
+  it('SSRF: http://localhost/something → EGRESS_DENIED (non-https scheme)', () => {
     const v = isEgressAllowed('http://localhost/something', ALLOWLIST);
     expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.code).toBe('SEEDREF_EGRESS_DENIED');
+    if (!v.ok) expect(v.code).toBe('EGRESS_DENIED');
   });
 
-  it('SSRF: file:// scheme → SEEDREF_EGRESS_DENIED', () => {
+  it('SSRF: file:// scheme → EGRESS_DENIED', () => {
     const v = isEgressAllowed('file:///etc/passwd', ALLOWLIST);
     expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.code).toBe('SEEDREF_EGRESS_DENIED');
+    if (!v.ok) expect(v.code).toBe('EGRESS_DENIED');
   });
 
-  it('SSRF: ssh:// scheme → SEEDREF_EGRESS_DENIED', () => {
+  it('SSRF: ssh:// scheme → EGRESS_DENIED', () => {
     const v = isEgressAllowed('ssh://github.com/HsuJavis/repo', ALLOWLIST);
     expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.code).toBe('SEEDREF_EGRESS_DENIED');
+    if (!v.ok) expect(v.code).toBe('EGRESS_DENIED');
   });
 
-  it('SSRF: git:// scheme → SEEDREF_EGRESS_DENIED', () => {
+  it('SSRF: git:// scheme → EGRESS_DENIED', () => {
     const v = isEgressAllowed('git://github.com/HsuJavis/repo', ALLOWLIST);
     expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.code).toBe('SEEDREF_EGRESS_DENIED');
+    if (!v.ok) expect(v.code).toBe('EGRESS_DENIED');
   });
 
-  it('userinfo (user:pass@host) → SEEDREF_EGRESS_DENIED', () => {
+  it('userinfo (user:pass@host) → EGRESS_DENIED', () => {
     const v = isEgressAllowed('https://user:pass@github.com/HsuJavis/repo', ALLOWLIST);
     expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.code).toBe('SEEDREF_EGRESS_DENIED');
+    if (!v.ok) expect(v.code).toBe('EGRESS_DENIED');
   });
 
-  it('URL parse failure → SEEDREF_EGRESS_DENIED', () => {
+  it('URL parse failure → EGRESS_DENIED', () => {
     const v = isEgressAllowed('not a valid url !!', ALLOWLIST);
     expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.code).toBe('SEEDREF_EGRESS_DENIED');
+    if (!v.ok) expect(v.code).toBe('EGRESS_DENIED');
   });
 
   it('trailing-/ over-match guard: github.com/HsuJavisEvil/ must NOT match github.com/HsuJavis/', () => {
     const v = isEgressAllowed('https://github.com/HsuJavisEvil/malicious-repo', ALLOWLIST);
     expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.code).toBe('SEEDREF_EGRESS_DENIED');
+    if (!v.ok) expect(v.code).toBe('EGRESS_DENIED');
   });
 
   it('non-matching host: github.com/Other/ vs allowlist github.com/HsuJavis/ → DENIED', () => {
     const v = isEgressAllowed('https://github.com/OtherOrg/repo', ALLOWLIST);
     expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.code).toBe('SEEDREF_EGRESS_DENIED');
+    if (!v.ok) expect(v.code).toBe('EGRESS_DENIED');
   });
 
   it('happy path: allowlisted https URL → ok:true with parsed URL', () => {

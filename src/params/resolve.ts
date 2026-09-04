@@ -10,18 +10,20 @@ import type { Effort, UserOverrides } from './contract.js';
 import type { HarnessDefaults } from '../harness-defaults.js';
 import { codedError } from '../errors.js';
 
-/** v24 (DES-146, TASK-137): the slice of `contract.ts`'s `AgentParamSpec` that `resolveAgentParams`
- *  actually reads — just the `.default` on each tunable key. A deliberately narrower structural
- *  type rather than importing `AgentParamSpec` itself: this function is pure and cares only about
- *  defaults, never about the validation-only fields (`type`, `enum`, `min`/`max`, `unit`) that
- *  `AgentParamSpec`'s `ParamSpec` carries for registration-time checking — and `AgentParamSpec` is
- *  structurally assignable here regardless, so a real `ParamContract.agents` value still type-checks
- *  at the call site. */
+/** v24 (DES-146, TASK-137/158): the slice of `contract.ts`'s `AgentParamSpec` that
+ *  `resolveAgentParams` actually reads — just the `.default` on each tunable key. A deliberately
+ *  narrower structural type rather than importing `AgentParamSpec` itself: this function is pure
+ *  and cares only about defaults, never about the validation-only fields (`type`, `enum`,
+ *  `min`/`max`, `unit`) that `AgentParamSpec`'s `ParamSpec` carries for registration-time checking.
+ *  `default` is typed `unknown` here (matching `ParamSpec.default?: unknown` exactly, not narrowed
+ *  to each key's own value type) so a real `ParamContract.agents` value is structurally assignable
+ *  at the call site without a cast (TASK-158 — the first caller to pass one in) — this function
+ *  narrows with an explicit `as` per key internally, same as it already did. */
 export type AgentDefaultsSpec = {
-  model: { default?: string };
-  effort: { default?: Effort };
-  timeoutMs: { default?: number };
-  appendPrompt?: { default?: string };
+  model: { default?: unknown };
+  effort: { default?: unknown };
+  timeoutMs: { default?: unknown };
+  appendPrompt?: { default?: unknown };
 };
 
 // v24 (DES-146, TASK-137): the ladder is now three rungs — override(agents.<label>.<key>) ›
@@ -47,6 +49,14 @@ export interface RunParams {
   prompt?: string;
   tools?: string[];
   provenance: Record<'model' | 'effort' | 'timeoutMs' | 'appendPrompt', 'override' | 'default' | 'engine'>;
+  /** v24 (DES-146, TASK-158): the pinned run snapshot's per-agent-label slice — one
+   *  `resolveAgentParams` result per declared `agents.<label>`, so a caller's `overrides.agents.
+   *  <label>` reaches admission for THAT label only and never broadcasts to a sibling (REQ-110
+   *  close). The top-level `model`/`effort`/`timeoutMs`/`appendPrompt` fields above are unaffected
+   *  by per-agent overrides now (`UserOverrides` no longer HAS flat fields to fold in) — they still
+   *  carry the registered workflow-level `defaults` (`prompt`/`tools`/legacy `HarnessDefaults`), and
+   *  `agents` is absent when the caller supplied no `contract` (e.g. no registered agents). */
+  agents?: Record<string, EffectiveCallParams>;
 }
 
 export interface EffectiveCallParams extends Omit<RunParams, 'provenance'> {
@@ -59,8 +69,16 @@ export interface EffectiveCallParams extends Omit<RunParams, 'provenance'> {
  *  `HarnessDefaults` itself now declares both fields (`harness-defaults.ts`, KNOWN_KEYS + shape
  *  validation), so the local intersection type and cast this function used while that half was
  *  in flight are gone (adjudication #7 item 4). */
-export function defaultRunParams(defaults: HarnessDefaults | undefined): RunParams {
-  return {
+/** v24 (TASK-158, adjudication A-7 [14][18]): `contract`/`engineDefaults`, when supplied, populate
+ *  the per-label `.agents` slice via `resolveAgentParams` (one call per declared label, `{}`
+ *  overrides — the no-overrides case). Optional so callers with no registered agent contract (an
+ *  ad-hoc/legacy script) still get a valid snapshot with `agents` absent. */
+export function defaultRunParams(
+  defaults: HarnessDefaults | undefined,
+  contract?: Record<string, AgentDefaultsSpec>,
+  engineDefaults: { model?: string } = {},
+): RunParams {
+  const rp: RunParams = {
     model: defaults?.model,
     effort: defaults?.effort,
     timeoutMs: defaults?.timeoutMs,
@@ -74,17 +92,32 @@ export function defaultRunParams(defaults: HarnessDefaults | undefined): RunPara
       appendPrompt: defaults?.appendPrompt !== undefined ? 'default' : 'engine',
     },
   };
+  if (contract) {
+    rp.agents = {};
+    for (const label of Object.keys(contract)) rp.agents[label] = resolveAgentParams(label, contract, {}, engineDefaults);
+  }
+  return rp;
 }
 
 /** Admission-time fold of `overrides` over the registered `defaults` (ADR-002): one pass per
- *  tunable key, override wins when supplied, else the registered-default snapshot stands. */
-export function mergeRunParams(defaults: HarnessDefaults | undefined, overrides: UserOverrides): RunParams {
-  const base = defaultRunParams(defaults);
-  const rp: RunParams = { ...base, provenance: { ...base.provenance } };
-  if (overrides.model !== undefined) { rp.model = overrides.model; rp.provenance.model = 'override'; }
-  if (overrides.effort !== undefined) { rp.effort = overrides.effort; rp.provenance.effort = 'override'; }
-  if (overrides.timeoutMs !== undefined) { rp.timeoutMs = overrides.timeoutMs; rp.provenance.timeoutMs = 'override'; }
-  if (overrides.appendPrompt !== undefined) { rp.appendPrompt = overrides.appendPrompt; rp.provenance.appendPrompt = 'override'; }
+ *  tunable key, override wins when supplied, else the registered-default snapshot stands.
+ *  v24 (DES-146, TASK-158): `UserOverrides` no longer carries flat tunable fields — every override
+ *  is scoped to `overrides.agents.<label>` (DES-145) — so the fold that used to write the
+ *  top-level `model`/`effort`/`timeoutMs`/`appendPrompt` fields from a flat override is GONE (the
+ *  whole REQ-110 defect it caused: one caller-supplied value broadcasting to every agent). Per-
+ *  agent overrides are resolved into `.agents` instead, each label independently via
+ *  `resolveAgentParams` — a label's override can never leak into a sibling label's slice. */
+export function mergeRunParams(
+  defaults: HarnessDefaults | undefined,
+  overrides: UserOverrides,
+  contract?: Record<string, AgentDefaultsSpec>,
+  engineDefaults: { model?: string } = {},
+): RunParams {
+  const rp = defaultRunParams(defaults);
+  if (contract) {
+    rp.agents = {};
+    for (const label of Object.keys(contract)) rp.agents[label] = resolveAgentParams(label, contract, overrides.agents?.[label] ?? {}, engineDefaults);
+  }
   return rp;
 }
 

@@ -1,6 +1,8 @@
 // v24 DES-138 (ARCH-087, TASK-132): the 35-row tool surface — one data array that is the only
 // source of `tools/list`, of each tool's `Errors:` line, and of the authorization row `authz.ts`
-// checks once, before the dispatch switch. Pure data + one projection; imports nothing from src/.
+// checks once, before the dispatch switch. Pure data + one projection; imports only the `ErrorCode`
+// TYPE from errors.ts (DES-137) so every row's `errors[]` is tsc-checked against the closed catalog.
+import type { ErrorCode } from './errors.js';
 
 /** Declared here (not authz.ts) so the dependency between the two files stays one-directional —
  *  authz.ts imports Role from this module (ARCH-088). */
@@ -20,7 +22,7 @@ export interface ToolSpec {
   description: string;
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
-  errors: readonly string[];
+  errors: ReadonlyArray<ErrorCode>;
   seeAlso: readonly string[];
   authz: ToolAuthz;
   fixture: { happy: Record<string, unknown> };
@@ -28,6 +30,26 @@ export interface ToolSpec {
 
 function schema(properties: Record<string, unknown>, required: string[] = []): Record<string, unknown> {
   return { type: 'object', properties, required };
+}
+
+/** v24 (DES-155, TASK-148): `workspace_push`'s two closed branches — modeA (a CAS blob) or modeB
+ *  (a workflow-owned asset, `scope:'global'` omits `workflow`). CLOSED (`additionalProperties:
+ *  false`) in EACH branch so a `runId` (or any other stray key) matches NEITHER branch and the
+ *  overall `oneOf` refuses INVALID_ARGUMENT from the schema — "a run's workspace is immutable
+ *  while live and meaningless after" (DES-155 boundary), not a runtime check. */
+function pushInputSchema(): Record<string, unknown> {
+  return {
+    type: 'object',
+    oneOf: [
+      { type: 'object', properties: { sha256: { type: 'string' }, contentB64: { type: 'string' } }, required: ['sha256', 'contentB64'], additionalProperties: false },
+      {
+        type: 'object',
+        properties: { workflow: { type: 'string' }, kind: { type: 'string' }, name: { type: 'string' }, files: { type: 'array' }, config: { type: 'object' }, scope: { type: 'string' } },
+        required: ['kind', 'name'],
+        additionalProperties: false,
+      },
+    ],
+  };
 }
 
 /** Output schemas are a TEST ORACLE (DES-138) — not published in `tools/list` until the byte
@@ -59,14 +81,14 @@ function deleteMode(args: any): 'run' | 'workflow' | 'global' | 'invalid' {
   return 'invalid';
 }
 
-export const TOOL_SPECS: ToolSpec[] = [
+export const TOOL_SPECS = [
   // ---- workflow (7) ----
   {
     name: 'workflow_register', entity: 'workflow', key: null,
     description: 'Register a new workflow version under a name; the caller becomes its owner.',
     inputSchema: schema({ name: { type: 'string' }, script: { type: 'string' }, mermaid: { type: 'string' }, triggers: { type: 'array' } }, ['name', 'script']),
     outputSchema: OUT,
-    errors: ['WORKFLOW_ALREADY_EXISTS', 'SCRIPT_INVALID', 'SCAN_VIOLATION', 'DIAGRAM_MISMATCH', 'MERMAID_INVALID', 'FORBIDDEN_ROLE'],
+    errors: ['WORKFLOW_ALREADY_EXISTS', 'SCRIPT_INVALID', 'SCAN_VIOLATION', 'DIAGRAM_MISMATCH', 'MERMAID_INVALID', 'FORBIDDEN_ROLE', 'REGISTRATION_CONFLICT', 'VERSION_CEILING_EXCEEDED'],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
     fixture: { happy: { name: 'demo', script: 'workflow(async () => {})', mermaid: 'graph TD;\nA-->B;' } },
@@ -116,7 +138,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     description: 'List registered workflows; each row carries whether it currently has a runnable release.',
     inputSchema: schema({ onlyRunnable: { type: 'boolean' } }),
     outputSchema: OUT,
-    errors: [] as string[],
+    errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
     fixture: { happy: {} },
@@ -126,7 +148,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     description: "Return the authoring guide, rendered from the engine's own enforcement constants — parameter ceilings, reserved names, and the agent-call scanning rules.",
     inputSchema: schema({}),
     outputSchema: OUT,
-    errors: [] as string[],
+    errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
     fixture: { happy: {} },
@@ -136,9 +158,26 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: 'run_start', entity: 'run', key: null,
     description: "Start a run of a workflow's current release. First-try traps: a just-registered workflow has no release — call workflow_publish first or pass {version} — and starting a run returns no result; poll run_status until terminal, then call run_result.",
-    inputSchema: schema({ name: { type: 'string' }, version: { type: 'number' }, overrides: { type: 'object' } }, ['name']),
+    // v24 adjudication #2 A-2: seed/seedManifest/seedRef/seedManifestRef are RESTORED here — only
+    // seedNamespace was meant to drop (ADR-028 derives it from the principal). Omitting them left the
+    // TASK-153 plugin doc advertising run_start({seedManifestRef}) against an engine that rejected it.
+    // v24 (DES-142, TASK-147): CLOSED (`additionalProperties:false`) — a caller-supplied
+    // `seedNamespace` (or any other unlisted key) is refused INVALID_ARGUMENT from the schema; the
+    // CAS namespace is derived ONLY from the principal (`nsOf`, mcp-facade.ts).
+    inputSchema: {
+      ...schema({
+        name: { type: 'string' },
+        version: { type: 'number' },
+        overrides: { type: 'object' },
+        seed: { type: 'array' },
+        seedManifest: { type: 'array' },
+        seedRef: { type: 'object' },
+        seedManifestRef: { type: 'string' },
+      }, ['name']),
+      additionalProperties: false,
+    },
     outputSchema: OUT,
-    errors: ['WORKFLOW_NOT_FOUND', 'NOT_RUNNABLE', 'PARAM_OUT_OF_RANGE', 'UNKNOWN_ALIAS', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER'],
+    errors: ['WORKFLOW_NOT_FOUND', 'NOT_RUNNABLE', 'PARAM_OUT_OF_RANGE', 'UNKNOWN_ALIAS', 'AGENT_UNDECLARED', 'LEGACY_REREGISTER', 'INVALID_SEED_SPEC', 'SEED_SOURCE_CONFLICT', 'SEEDREF_DISABLED', 'EGRESS_DENIED', 'CAS_UNAVAILABLE', 'MISSING_BLOBS', 'RUN_ADMISSION_LIMIT'],
     seeAlso: ['workflow_publish', 'run_status', 'run_result'],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
     fixture: { happy: { name: 'demo' } },
@@ -158,7 +197,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     description: "Fetch a terminal run's result payload.",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'NOT_RUN_OWNER'],
+    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'NOT_RUN_OWNER', 'NESTING_DEPTH_EXCEEDED', 'NESTING_CYCLE', 'DESCENDANT_CAP_EXCEEDED'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
     fixture: { happy: { runId: 'r1' } },
@@ -178,7 +217,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     description: 'Resume a suspended run.',
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER'],
+    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER', 'PARAM_SECRET_UNAVAILABLE'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
     fixture: { happy: { runId: 'r1' } },
@@ -208,7 +247,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     description: "List runs, filtered to the caller's own rows; unfiltered for the operator role.",
     inputSchema: schema({ workflow: { type: 'string' }, status: { type: 'string' }, limit: { type: 'number' } }),
     outputSchema: OUT,
-    errors: [] as string[],
+    errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
     fixture: { happy: {} },
@@ -228,7 +267,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: 'workspace_push', entity: 'workspace', key: null,
     description: 'Push content: a CAS blob into the caller\'s own pool, or a workflow-owned asset (skill/mcp). Any runId argument is refused — see workflow_authoring_guide.',
-    inputSchema: schema({ sha256: { type: 'string' }, contentB64: { type: 'string' }, workflow: { type: 'string' }, kind: { type: 'string' }, name: { type: 'string' }, scope: { type: 'string' } }),
+    inputSchema: pushInputSchema(),
     outputSchema: OUT,
     errors: ['INVALID_ARGUMENT', 'FORBIDDEN_ROLE', 'NOT_WORKFLOW_OWNER', 'MCP_PROBE_FAILED', 'EGRESS_DENIED', 'HOOKS_UNSUPPORTED'],
     seeAlso: ['workflow_authoring_guide'],
@@ -316,7 +355,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     description: "List the caller's own schedules; unfiltered for the operator role.",
     inputSchema: schema({}),
     outputSchema: OUT,
-    errors: [] as string[],
+    errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
     fixture: { happy: {} },
@@ -358,7 +397,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     description: "List the caller's own webhooks; unfiltered for the operator role.",
     inputSchema: schema({}),
     outputSchema: OUT,
-    errors: [] as string[],
+    errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
     fixture: { happy: {} },
@@ -380,7 +419,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     description: 'File a new issue against the engine.',
     inputSchema: schema({ title: { type: 'string' }, body: { type: 'string' } }, ['title', 'body']),
     outputSchema: OUT,
-    errors: [] as string[],
+    errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
     fixture: { happy: { title: 'x', body: 'y' } },
@@ -400,7 +439,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     description: 'List issues.',
     inputSchema: schema({}),
     outputSchema: OUT,
-    errors: [] as string[],
+    errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
     fixture: { happy: {} },
@@ -432,7 +471,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     description: 'List the model catalog: aliases, capability/stability/cost ratings.',
     inputSchema: schema({}),
     outputSchema: OUT,
-    errors: [] as string[],
+    errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
     fixture: { happy: {} },
@@ -442,14 +481,17 @@ export const TOOL_SPECS: ToolSpec[] = [
     description: 'Report engine system info: CPU, memory, disk, active processes, and the auth summary.',
     inputSchema: schema({}),
     outputSchema: OUT,
-    errors: [] as string[],
+    errors: [] as ErrorCode[],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
     fixture: { happy: {} },
   },
-];
+] as const satisfies readonly ToolSpec[];
 
-export type ToolName = ToolSpec['name'];
+// v24 (TASK-155, DES-138): `as const` above makes `name` a literal per row, so `ToolName` is the
+// true 35-member literal union (not `string`) — DES-151's `AuditAction = Extract<ToolName, …>`
+// depends on this narrowing to avoid silently resolving to `never`.
+export type ToolName = (typeof TOOL_SPECS)[number]['name'];
 
 function buildDescription(spec: ToolSpec): string {
   let text: string = spec.description;

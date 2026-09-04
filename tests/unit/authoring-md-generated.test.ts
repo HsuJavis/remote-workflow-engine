@@ -6,7 +6,6 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-// @ts-expect-error — src/authoring-guide.ts does not exist yet (v24 DES-157/TASK-150)
 import { buildAuthoringGuide } from '../../src/authoring-guide.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');

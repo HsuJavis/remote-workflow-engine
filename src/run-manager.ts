@@ -319,7 +319,7 @@ export class RunManager {
       }
     }
     // v13 REQ-080 (DES-080, TASK-077): seedRef pre-createRun validation — pinned precedence:
-    //   SEEDREF_DISABLED → INVALID_SEED_SPEC → SEEDREF_EGRESS_DENIED → CAS_UNAVAILABLE
+    //   SEEDREF_DISABLED → INVALID_SEED_SPEC → EGRESS_DENIED → CAS_UNAVAILABLE
     // (SEED_SOURCE_CONFLICT is now the 4-way check above.)
     if (spec.seedRef !== undefined) {
       if (this._seedRefAllowlist.length === 0) {
@@ -402,9 +402,9 @@ export class RunManager {
     // `params` block (DES-101). Order pinned: overrides -> declared args -> merge.
     // v24 (DES-144): the "canonical 4-knob contract" fallback is RETIRED (params/contract.ts no
     // longer exports it) — an unregistered/legacy contract reads back as the zero-label shape.
-    // NOTE (out of TASK-148 scope): `validateUserOverrides`/`validateDeclaredArgs` below still take
-    // the pre-v24 flat `overrides`/whole-contract shape — DES-145/146's per-agent `{agents:{...}}}`
-    // admission ladder is TASK-136/137's own rewrite of this rung, not done here.
+    // v24 (TASK-136/137/158): `validateUserOverrides`/`validateDeclaredArgs` already validate the
+    // real per-agent `{agents:{...}}}` shape (DES-145) — the merge below (TASK-158) is what folds
+    // that validated per-label result into the admission snapshot's `.agents` slice.
     const contract = registeredContract ?? ({ agents: {}, args: {} } as ParamContract);
     const overridesResult = validateUserOverrides(contract, overrides, this._aliasNames, this._ceilings);
     if (!overridesResult.ok) throw paramCodedError(overridesResult);
@@ -413,34 +413,44 @@ export class RunManager {
     // defaultRunParams is the ONLY no-overrides producer (DES-104) — the callers that never supply
     // `overrides` (schedule/webhook/chain triggers) must not each reach for `overrides ?? {}`.
     const effectiveParams: RunParams = overrides === undefined
-      ? defaultRunParams(registeredDefaults)
-      : mergeRunParams(registeredDefaults, overridesResult.value);
+      ? defaultRunParams(registeredDefaults, contract.agents)
+      : mergeRunParams(registeredDefaults, overridesResult.value, contract.agents);
     // v21 Gate 8 RE-REVIEW (review §R2 (b), R-G2 HIGH): validateUserOverrides only re-checks a
     // CALLER-SUPPLIED overrides.model; a registered defaults.model that was valid at registration
     // but has since fallen out of the configured alias table (a config change between restarts)
     // was never re-examined — every un-overridden submission using it was silently admitted. Same
     // UNKNOWN_ALIAS code, same "before any durable work" placement as the override-rung check.
-    if (effectiveParams.model !== undefined && !isKnownAlias(effectiveParams.model, this._aliasNames)) {
-      throw paramCodedError({
-        ok: false,
-        code: 'UNKNOWN_ALIAS',
-        message: `model is not a known alias: ${effectiveParams.model}`,
-        detail: { param: 'model', supplied: effectiveParams.model, allowed: { enum: [...this._aliasNames] } },
-      });
+    // v24 (TASK-158): re-checked over EVERY label's resolved model too, not just the (now largely
+    // vestigial, HarnessDefaults-only) top-level field — a per-agent override/default is just as
+    // reachable here as the old flat one was.
+    const modelsToCheck = [effectiveParams.model, ...Object.values(effectiveParams.agents ?? {}).map((a) => a.model)];
+    for (const m of modelsToCheck) {
+      if (m !== undefined && !isKnownAlias(m, this._aliasNames)) {
+        throw paramCodedError({
+          ok: false,
+          code: 'UNKNOWN_ALIAS',
+          message: `model is not a known alias: ${m}`,
+          detail: { param: 'model', supplied: m, allowed: { enum: [...this._aliasNames] } },
+        });
+      }
     }
     // v21 Gate 8 RE-REVIEW #6 (P6-2, review §T5/§T6): mirrors R-G2 one field over — F2
     // (validateUserOverrides in contract.ts) only frame-checks a CALLER-SUPPLIED
     // overrides.appendPrompt; a registered defaults.appendPrompt origin reaches this point
     // unchecked on every no-overrides submission. Re-check the EFFECTIVE post-merge value before
     // any durable work, same shared FRAME_CLOSE_FORGERY constant, reported by size only (DES-101
-    // row 6 discipline: never echo caller/author text).
-    if (typeof effectiveParams.appendPrompt === 'string' && FRAME_CLOSE_FORGERY.test(effectiveParams.appendPrompt)) {
-      throw paramCodedError({
-        ok: false,
-        code: 'PARAM_OUT_OF_RANGE',
-        message: 'appendPrompt cannot contain the user-instructions frame close delimiter',
-        detail: { param: 'appendPrompt', suppliedBytes: Buffer.byteLength(effectiveParams.appendPrompt, 'utf8') },
-      });
+    // row 6 discipline: never echo caller/author text). v24 (TASK-158): same widen as the alias
+    // check above — every label's resolved appendPrompt, not just the top-level field.
+    const appendPromptsToCheck = [effectiveParams.appendPrompt, ...Object.values(effectiveParams.agents ?? {}).map((a) => a.appendPrompt)];
+    for (const ap of appendPromptsToCheck) {
+      if (typeof ap === 'string' && FRAME_CLOSE_FORGERY.test(ap)) {
+        throw paramCodedError({
+          ok: false,
+          code: 'PARAM_OUT_OF_RANGE',
+          message: 'appendPrompt cannot contain the user-instructions frame close delimiter',
+          detail: { param: 'appendPrompt', suppliedBytes: Buffer.byteLength(ap, 'utf8') },
+        });
+      }
     }
     // DES-088/ARCH-056 (REQ-083 sink-completeness sweep): this is a NEW persist sink — redact
     // BEFORE the durable write, same convention as the journal/snapshot sinks below. The live
@@ -557,7 +567,10 @@ export class RunManager {
     // delimiter any more than it silently re-dispatches an unrestorable secret marker (same "refuse,
     // never dispatch" discipline as the check above). Shares contract.ts's exported FRAME_CLOSE_FORGERY
     // pattern so the two refusal sites can never drift onto different shapes.
-    if (typeof entry.effectiveParams.appendPrompt === 'string' && FRAME_CLOSE_FORGERY.test(entry.effectiveParams.appendPrompt)) {
+    // v24 (TASK-158): same per-label widen as the admission-time check above — a forged
+    // appendPrompt could equally have been persisted under a per-agent-label slice.
+    const resumeAppendPrompts = [entry.effectiveParams.appendPrompt, ...Object.values(entry.effectiveParams.agents ?? {}).map((a) => a.appendPrompt)];
+    if (resumeAppendPrompts.some((ap) => typeof ap === 'string' && FRAME_CLOSE_FORGERY.test(ap))) {
       throw codedError('PARAM_OUT_OF_RANGE', `Run ${runId}'s admission-time appendPrompt carries the user-instructions frame close delimiter and cannot be resumed`);
     }
     // v22 (DES-113/DES-114, TASK-109): the replacement-script parameter is CLOSED with inline
@@ -652,6 +665,7 @@ export class RunManager {
     // and returns undefined. (Pre-Defer-A, no test covered a named-workflow restart-resume.)
     let script = spec.script ?? '';
     let registeredDefaults: HarnessDefaults | undefined;
+    let registeredContract: ParamContract | undefined;
     if (spec.name && !spec.script) {
       // v22 (DES-113, ADR-010, TASK-108): resolve the PIN (view.scriptVersion), never the current
       // `release` — a suspended run continues the version it started with. Legacy-cohort fallback
@@ -662,11 +676,13 @@ export class RunManager {
         const registered = await this._catalog.resolve(spec.name, { version: view.scriptVersion });
         script = registered.script;
         registeredDefaults = registered.defaults;
+        registeredContract = registered.params as ParamContract | undefined;
       } catch (err) {
-        if ((err as { code?: string } | undefined)?.code !== 'UNKNOWN_VERSION') throw err;
+        if ((err as { code?: string } | undefined)?.code !== 'VERSION_NOT_FOUND') throw err;
         const registered = await this._catalog.resolve(spec.name, {});
         script = registered.script;
         registeredDefaults = registered.defaults;
+        registeredContract = registered.params as ParamContract | undefined;
         const sub = { pinned: view.scriptVersion, resolved: registered.version };
         await this._store.recordLegacySubstitution(runId, sub);
         console.log(`run.legacySubstitution: ${JSON.stringify({ runId, name: spec.name, ...sub })}`);
@@ -685,7 +701,7 @@ export class RunManager {
     // marker spelling, never possessed the secret, got it substituted into a dispatched prompt on
     // resume). If a marker survives in the snapshot, `resume()` below refuses typed instead —
     // "byte-identical to admission, or a typed refusal" never "silently dispatch the marker".
-    const effectiveParams = (await this._store.getEffectiveParams(runId)) ?? defaultRunParams(registeredDefaults);
+    const effectiveParams = (await this._store.getEffectiveParams(runId)) ?? defaultRunParams(registeredDefaults, registeredContract?.agents);
 
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
     const guard = new RunGuard({ concurrency: this._concurrency, budget: spec.budget ?? null });
@@ -900,6 +916,17 @@ export class RunManager {
         // D-V3M-2 (REQ-020 D-DOS): the actual gateway dispatch (the SDK-CLI subprocess spawn) runs
         // inside the process-global semaphore slot — so `GET /api/status`'s inUse reflects real
         // concurrent spawns across all runs and returns to baseline once each settles.
+        // v24 (DES-146, TASK-158): when this call's script label has its OWN per-agent slice in
+        // the admission snapshot (`entry.effectiveParams.agents[label]`), its resolved
+        // model/effort/timeoutMs/appendPrompt + provenance override the run-wide flat fields for
+        // THIS call only — a sibling label's call reads its own slice, never this one's (REQ-110
+        // close). `prompt`/`tools` stay the run-wide (workflow-level, not per-agent) fields. No
+        // label, or no contract at admission (ad-hoc/legacy script) → the flat snapshot unchanged,
+        // same as before this task.
+        const labelParams = key.opts.label ? entry.effectiveParams.agents?.[key.opts.label] : undefined;
+        const runParams: RunParams = labelParams
+          ? { ...entry.effectiveParams, model: labelParams.model, effort: labelParams.effort, timeoutMs: labelParams.timeoutMs, appendPrompt: labelParams.appendPrompt, provenance: labelParams.provenance }
+          : entry.effectiveParams;
         const outcome = await this._semaphore.withSlot(() =>
           entry.spawner.run({
             runId,
@@ -910,8 +937,9 @@ export class RunManager {
             signal: entry.abortController.signal,
             // v21 (ARCH-068, DES-105, TASK-101): the run-immutable admission-time snapshot — one
             // per run (incl. nested workflow() frames, which share the parent's entry), never
-            // re-resolved per call.
-            runParams: entry.effectiveParams,
+            // re-resolved per call. v24 (TASK-158): narrowed to this call's label above when the
+            // admission snapshot has a per-label slice for it.
+            runParams,
           }),
         );
         const value = outcome.kind === 'null' ? null : outcome.value;

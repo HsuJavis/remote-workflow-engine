@@ -202,7 +202,7 @@ export class SqliteSchedulerPort {
         await this._catalog.resolve(s.workflow, { channel: 'release' });
       } catch (err) {
         // Same coded-error shape every `codedError()` throw carries (errors.ts) — e.g.
-        // CHANNEL_UNPUBLISHED/UNKNOWN_VERSION/INVALID_CHANNEL from `resolveVersionRequest`.
+        // CHANNEL_UNPUBLISHED/VERSION_NOT_FOUND/INVALID_CHANNEL from `resolveVersionRequest`.
         return { error: catalogResolveErrorEnvelope(err, s.workflow, { field: 'workflow' }) };
       }
     }
@@ -357,14 +357,21 @@ export class SqliteSchedulerPort {
   markRefused(firing: { id: string; kind: Schedule['kind'] }, reason: RefusalReason): void {
     const ts = this._clock.isoNow();
     if (firing.kind === 'once') {
+      // Tight-loop trap: once this row is disabled by a refusal, a second refusal call for the
+      // same due firing (two ticks racing the same instant) must not double-count — `enabled = 1`
+      // in the WHERE makes the UPDATE a no-op for that second call.
       this._db
-        .prepare('UPDATE schedules SET enabled = 0, refusalCount = refusalCount + 1, lastRefusedAt = ?, lastRefusalReason = ? WHERE id = ?')
+        .prepare('UPDATE schedules SET enabled = 0, refusalCount = refusalCount + 1, lastRefusedAt = ?, lastRefusalReason = ? WHERE id = ? AND enabled = 1')
         .run(ts, reason, firing.id);
     } else {
-      const row = this._db.prepare('SELECT cron, tz FROM schedules WHERE id = ?').get(firing.id) as
-        | { cron: string; tz: string | null }
+      const row = this._db.prepare('SELECT cron, tz, nextFire FROM schedules WHERE id = ?').get(firing.id) as
+        | { cron: string; tz: string | null; nextFire: number | null }
         | undefined;
-      const nextFire = row ? computeNextFire(row.cron, row.tz ?? undefined, this._clock.now()) : null;
+      // Same trap for `cron`: once the first refusal has advanced `nextFire` past `now`, a second
+      // refusal call at the same instant is a no-op (guarded on the PRE-update `nextFire` still
+      // being due) rather than advancing it again and double-counting.
+      if (row == null || (row.nextFire != null && row.nextFire > this._clock.now())) return;
+      const nextFire = computeNextFire(row.cron, row.tz ?? undefined, this._clock.now());
       this._db
         .prepare('UPDATE schedules SET nextFire = ?, refusalCount = refusalCount + 1, lastRefusedAt = ?, lastRefusalReason = ? WHERE id = ?')
         .run(nextFire, ts, reason, firing.id);

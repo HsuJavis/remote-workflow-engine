@@ -1,6 +1,14 @@
-// v10 Slice 2 — efficient seeding end-to-end over the real server (REQ-064/065): blob_put → seed_plan
-// → run_start with a seedManifest → the workspace is assembled from the CAS (a script reads a
-// seeded file back). Plus MISSING_BLOBS fail-fast + BLOB_HASH_MISMATCH.
+// v10 Slice 2 — efficient seeding end-to-end over the real server (REQ-064/065): workspace_push
+// (CAS mode) → workspace_diff → run_start with a seedManifest → the workspace is assembled from
+// the CAS (a script reads a seeded file back). Plus MISSING_BLOBS fail-fast + BLOB_HASH_MISMATCH.
+//
+// v24 (TASK-152, DES-142): the pre-v24 seed-plan/blob-put tools fold into `workspace_diff`/
+// `workspace_push`; both DROP the caller-typed `namespace` argument — the CAS pool is derived from
+// the caller's own principal (`nsOf`), never a query/tool arg — so the old cross-tenant-namespace
+// isolation case (two DIFFERENT caller-chosen namespaces not seeing each other's blobs) has no v24
+// equivalent to assert: every call in this file now runs as the SAME derived namespace
+// (auth-disabled → `'local'`). `run_start`'s `seedNamespace` argument is dropped from the schema
+// for the same reason (`INVALID_ARGUMENT` if supplied) — omitted below, not renamed.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -40,25 +48,21 @@ beforeAll(async () => {
 afterAll(async () => { await server?.close(); rmSync(tmpDir, { recursive: true, force: true }); });
 
 describe('efficient seeding via CAS manifest (v10 Slice 2, REQ-064/065)', () => {
-  const NS = 'proj1';
   const fileText = 'export const answer = 42;\n';
   const h = sha(Buffer.from(fileText));
 
-  it('REQ-064 seed_plan reports the blob as missing before upload, present after (per-namespace)', async () => {
+  it('REQ-064 workspace_diff reports the blob as missing before upload, present after', async () => {
     const manifest = [{ path: 'src/answer.ts', sha256: h }];
-    const before = await call('seed_plan', { namespace: NS, manifest });
+    const before = await call('workspace_diff', { manifest });
     expect(before.result.missing).toEqual([h]);
-    const put = await call('blob_put', { namespace: NS, sha256: h, contentB64: b64(fileText) });
+    const put = await call('workspace_push', { sha256: h, contentB64: b64(fileText) });
     expect(put.result.sha256).toBe(h);
-    const after = await call('seed_plan', { namespace: NS, manifest });
+    const after = await call('workspace_diff', { manifest });
     expect(after.result.missing).toEqual([]);
-    // a different namespace still sees it missing (no cross-tenant leak)
-    const other = await call('seed_plan', { namespace: 'proj2', manifest });
-    expect(other.result.missing).toEqual([h]);
   });
 
-  it('REQ-064 blob_put rejects a hash mismatch (BLOB_HASH_MISMATCH)', async () => {
-    const r = await call('blob_put', { namespace: NS, sha256: sha('lie'), contentB64: b64('actual different bytes') });
+  it('REQ-064 workspace_push rejects a hash mismatch (BLOB_HASH_MISMATCH)', async () => {
+    const r = await call('workspace_push', { sha256: sha('lie'), contentB64: b64('actual different bytes') });
     expect(r.error.code).toBe('BLOB_HASH_MISMATCH');
   });
 
@@ -67,7 +71,6 @@ describe('efficient seeding via CAS manifest (v10 Slice 2, REQ-064/065)', () => 
     // instead assert the run completes and the workspace really has the file by listing artifacts.
     const run = await runScriptVia(call, `return 'seeded';`, {
       seedManifest: [{ path: 'src/answer.ts', sha256: h, exec: false }],
-      seedNamespace: NS,
     });
     expect(run.result?.runId).toBeTruthy();
     const done = await poll(run.result.runId);
@@ -85,7 +88,6 @@ describe('efficient seeding via CAS manifest (v10 Slice 2, REQ-064/065)', () => 
     // function`. The run-manager guard now rejects a non-array seed spec with a typed, actionable error.
     const run = await runScriptVia(call, `return 1;`, {
       seedManifest: JSON.stringify([{ path: 'x.ts', sha256: h }]),
-      seedNamespace: NS,
     });
     expect(run.status).toBe('failed');
     expect(run.error.code).toBe('INVALID_SEED_SPEC');
@@ -96,7 +98,6 @@ describe('efficient seeding via CAS manifest (v10 Slice 2, REQ-064/065)', () => 
     const ghost = sha('never uploaded');
     const run = await runScriptVia(call, `return 1;`, {
       seedManifest: [{ path: 'ghost.ts', sha256: ghost }],
-      seedNamespace: NS,
     });
     expect(run.status).toBe('failed');
     expect(run.error.code).toBe('MISSING_BLOBS');

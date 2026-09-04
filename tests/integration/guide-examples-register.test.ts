@@ -6,7 +6,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
-// @ts-expect-error — GUIDE_EXAMPLES does not exist yet (v24 DES-157/TASK-150)
 import { GUIDE_EXAMPLES } from '../../src/authoring-guide.js';
 
 describe('every GUIDE_EXAMPLES entry registers over real MCP HTTP (IT-118, DES-157)', () => {
@@ -31,8 +30,9 @@ describe('every GUIDE_EXAMPLES entry registers over real MCP HTTP (IT-118, DES-1
           params: { name: 'workflow_register', arguments: { name: `guide-${ex.title}`, script: ex.script, mermaid: ex.mermaid } },
         }),
       });
-      const body = (await res.json()) as { result?: { version?: unknown; result?: { version?: unknown } } };
-      expect(body.result?.version ?? body.result?.result?.version).toBeDefined();
+      const body = (await res.json()) as { result?: { content?: Array<{ text?: string }> } };
+      const parsed = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { version?: unknown; result?: { version?: unknown } };
+      expect(parsed.version ?? parsed.result?.version).toBeDefined();
     },
   );
 

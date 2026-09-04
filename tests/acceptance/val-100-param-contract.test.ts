@@ -4,8 +4,37 @@
 // Mock policy (acceptance, DES-108): no mocking of the SUT's own boundaries. No LLM dispatch is
 // needed for this REQ (registration + discovery only) — no HAS_PROVIDER gate required.
 //
-// Red reason: meta.params is not parsed/stored/validated anywhere today — every assertion below
-// fails against the current engine.
+// v24 (TASK-152, DES-144/DES-146/DES-159): the single-script-wide meta.params dot-knobs contract
+// this file pinned is ARCHITECTURALLY RETIRED, not renamed — DES-159 explicitly deletes "the 'no
+// meta ⇒ canonical contract' branch" and DES-146 deletes the `'call'`/`'agentType'` resolution
+// rungs a script-wide knobs block fed. Per-agent parameters now live at
+// `meta.params.agents.<label>` (mandatory per label, DES-144) — there is no more one contract
+// governing every `agent()` call in a script uniformly. Three of the original five cases had no
+// v24 subject left and are REMOVED (not re-pointed at a differently-shaped tool, matching the
+// DES-159 [T3] discipline):
+//  - "a meta.params dot-knobs block registers; workflow_source returns the structured contract" — the
+//    `knobs` shape itself is retired (`DEFAULTS_RETIRED` at registration, DES-144).
+//  - "workflow_list also surfaces the declared contract" — the read-side projection changed shape
+//    (`params.agents.<label>`, DES-156, TASK-149) — a different task's [T3] rewrite target.
+//  - "a script with no params block reads back the canonical 4-knob contract" — that IS the
+//    deleted "no meta ⇒ canonical contract" branch (DES-159); a zero-label script now yields
+//    `{agents:{}, args:{}}` (DES-144), not four knobs.
+//  - "a LOCKED key (mcp) is rejected at REGISTRATION" also had no v24 subject: `LOCKED_KEYS` is
+//    enforced ONLY at `run_start` override time (`contract.ts`'s `validateOneAgentOverride`, DES-145)
+//    — registration (`parseParamContract`) never references `LOCKED_KEYS` at all, and `mcp` is
+//    itself a LEGITIMATE `AgentParamSpec` declaration field in v24 (an agent's allowed MCP names),
+//    not a locked one. Removed rather than asserting a registration-time refusal that doesn't exist.
+//
+// What survives (verified against the real engine, TASK-152): the v21 Gate 8 poisoned-row
+// resilience property. A `knobs`-shaped row can still reach `workflow_versions.params` today by
+// the same route that motivated the original guard — a row written before any registration guard
+// existed (real deployments upgrading from pre-v24). Confirmed live: the engine does NOT crash on
+// it (`workflow_source`/`workflow_list` both return cleanly; the legacy `params` value is silently
+// ignored, projected as `{agents:{}, args:{}}`) and a sibling workflow stays fully discoverable.
+// DES-144 names this exact shape `runnable:false, runnableReason:'LEGACY_REREGISTER'` — NOT YET
+// WIRED in `src/` today (no reference anywhere), so that specific field is not asserted here; only
+// the "does not crash, sibling unaffected" floor this file has always guarded. Reported as an open
+// TASK-136/149 wiring gap, not fabricated.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,7 +42,6 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
-import { registerPublishedVia } from '../helpers/workflow-fixtures.js';
 
 let server: Server;
 let tmpDir: string;
@@ -40,83 +68,29 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Re
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
 
-describe('REQ-090: tunable-parameter contract, discoverable without reading the script (VAL-100)', () => {
-  it('a params block constraining model to an enum + timeoutMs to a ceiling registers; workflow_source returns the structured contract', async () => {
-    const script = `export const meta = { params: { knobs: { model: { type: 'enum', enum: ['sonnet'] }, timeoutMs: { type: 'number', max: 60000 } } } };\nreturn 1;`;
-    // v22 (REQ-097/DES-110): `workflow_source({name})` with no version selector resolves the RELEASE
-    // channel, so a registered-but-unpublished draft reads back CHANNEL_UNPUBLISHED instead of its
-    // contract. registerPublishedVia does register+publish; it throws (naming the code) if either
-    // leg comes back failed, which is the `expect(r.error).toBeUndefined()` setup guard it replaces.
-    await registerPublishedVia(callTool, 'val100-contract', script);
-
-    const got = await callTool('workflow_source', { name: 'val100-contract' });
-    const params = (got as { params?: { knobs?: Record<string, { enum?: string[]; max?: number }> } }).params;
-    expect(params?.knobs?.['model']?.enum).toEqual(['sonnet']);
-    expect(params?.knobs?.['timeoutMs']?.max).toBe(60_000);
-  });
-
-  it('workflow_list also surfaces the declared contract per entry, without reading the script body', async () => {
-    const list = await callTool('workflow_list', {}) as { result?: Array<{ name?: string; params?: unknown }> };
-    const entry = list.result?.find((e) => e.name === 'val100-contract');
-    expect(entry?.params).toBeDefined();
-  });
-
-  it('a params block naming a LOCKED key (mcp) is rejected; nothing is stored (fail-closed)', async () => {
-    const script = `export const meta = { params: { knobs: { mcp: { type: 'string' } } } };\nreturn 1;`;
-    const r = await callTool('workflow_register', { name: 'val100-locked', script });
-    expect(r.error).toBeDefined();
-    const got = await callTool('workflow_source', { name: 'val100-locked' });
-    expect(got.code).toBe('WORKFLOW_NOT_FOUND');
-  });
-
-  it('a script with no params block still registers (backward compatible) and reads back the canonical 4-knob contract', async () => {
-    await registerPublishedVia(callTool, 'val100-no-block', 'return 1;');
-    const got = await callTool('workflow_source', { name: 'val100-no-block' });
-    const knobs = (got as { params?: { knobs?: Record<string, unknown> } }).params?.knobs ?? {};
-    expect(Object.keys(knobs).sort()).toEqual(['appendPrompt', 'effort', 'model', 'timeoutMs'].sort());
-  });
-});
-
 // v21 Gate 8 RE-REVIEW #4 (review §Q5/§Q7 A1, BLOCKING HIGH, real-tier per REQ-090's own
-// "discoverable without reading the script" acceptance): a malformed `params.knobs` shape (a
-// declared `enum` that is not an array) must be refused typed at registration with NOTHING stored
-// (same fail-closed precedent as the existing LOCKED-key case above) — AND a row that reached
-// storage BEFORE this guard existed (seeded directly against `catalog.db`, simulating a live
-// deployment's pre-fix data) must not durably break `workflow_source` for that workflow, nor
-// `workflow_list` for every OTHER registered workflow. Today: the malformed shape registers
-// successfully (no shape guard exists — see A1 half 1's unit-level pin), and a poisoned row throws
-// `TypeError: authorEnum.filter is not a function` inside `boundEffort`, which server.ts's generic
-// `tools/call` catch turns into a JSON-RPC `error.code:-32000` — the "untyped 500" the review names
-// (never the engine's own typed PARAM_CONTRACT_INVALID/PARAM_OUT_OF_RANGE vocabulary).
+// "discoverable without reading the script" acceptance): a malformed/poisoned params shape that
+// reached storage BEFORE any registration guard existed (simulating a live deployment's pre-fix
+// data) must not durably break `workflow_source` for that workflow, nor `workflow_list` for every
+// OTHER registered workflow.
 describe('REQ-090 real-tier: a malformed/poisoned params contract must not durably break workflow discovery (v21 Gate 8 RE-REVIEW #4, A1)', () => {
-  it('a params.knobs.effort with a non-array enum is rejected typed at registration; nothing is stored (today: registers successfully)', async () => {
-    const script = `export const meta = { params: { knobs: { effort: { type: 'enum', enum: 'abc' } } } };\nreturn 1;`;
-    const r = await callTool('workflow_register', { name: 'val100-poison-attempt', script });
-    expect(r.error).toBeDefined();
-    const got = await callTool('workflow_source', { name: 'val100-poison-attempt' });
-    expect(got.code).toBe('WORKFLOW_NOT_FOUND');
-  });
-
-  it('a pre-existing poisoned row (seeded directly against catalog.db, simulating data written before the registration guard existed) does not crash workflow_source, nor break workflow_list for a sibling healthy workflow (today: JSON-RPC error.code:-32000 "authorEnum.filter is not a function")', async () => {
+  it('a pre-existing poisoned row (seeded directly against catalog.db, simulating data written before the registration guard existed) does not crash workflow_source, nor break workflow_list for a sibling healthy workflow', async () => {
     // A healthy sibling MUST still be discoverable after the poisoned entry is introduced.
-    await callTool('workflow_register', { name: 'val100-poison-sibling', script: 'return 1;' });
+    const sib = await callTool('workflow_register', { name: 'val100-poison-sibling', script: 'return 1;', mermaid: 'graph TD;' });
+    expect(sib['error']).toBeUndefined();
 
-    // Seed the poisoned row directly — bypasses workflow_register (and thus the half-1 guard
-    // entirely), the only way a shape like this could ever have reached storage.
+    // Seed the poisoned row directly — bypasses workflow_register (and thus any registration-time
+    // guard entirely), the only way this pre-v24 shape could ever reach storage now.
     const raw = new Database(join(tmpDir, 'catalog.db'));
     const poisonedParams = JSON.stringify({
       knobs: {
         model: { type: 'string' },
-        effort: { type: 'enum', enum: 'abc' }, // non-array — the exact poison shape
+        effort: { type: 'enum', enum: 'abc' }, // non-array — the exact v21 poison shape
         timeoutMs: { type: 'number' },
         appendPrompt: { type: 'string' },
       },
       args: {},
     });
-    // v22 (DES-109/DES-111): script/version/defaults/params moved off `workflows` into
-    // `workflow_versions`, and the channel pointer lives in `workflows.release_version`. Seeded in
-    // the CURRENT schema (same technique as val-109's grandfathered-row fixture) so the poisoned
-    // `params` value still reaches storage by the only route that could ever have written it.
     const now100 = new Date().toISOString();
     raw.prepare('INSERT INTO workflows (name, createdAt, owner, release_version) VALUES (?, ?, NULL, ?)')
       .run('val100-poisoned', now100, 'v1');
@@ -139,13 +113,10 @@ describe('REQ-090 real-tier: a malformed/poisoned params contract must not durab
   });
 
   // The sibling of the poisoned-`enum` case above, travelling the `max` path instead of the `enum`
-  // path. Its failure mode is quieter and worse than a crash: a non-number stored `max` puts NaN
-  // into the bound (`Math.min("abc", 600000)` === NaN), and every comparison involving NaN is
-  // false — so the admission check `value > max` silently passes and the knob becomes unbounded,
-  // a ceiling BYPASS, while `workflow_source` advertises `null` for the same bound. Seeded the same
-  // way as the case above (written straight to the catalog column, the only way this shape could
-  // have reached storage before the registration guard existed).
-  it('a poisoned row whose `timeoutMs.max`/`appendPrompt.max` are not numbers reads back as the ENGINE CEILING, never null/NaN (a NaN bound is a silent ceiling bypass)', async () => {
+  // path — the historically quieter, worse failure mode (a NaN bound silently passing every
+  // comparison). Seeded the same way: written straight to the catalog column, the only way this
+  // shape could reach storage now.
+  it('a poisoned row whose `timeoutMs.max`/`appendPrompt.max` are not numbers does not crash workflow_source', async () => {
     const raw = new Database(join(tmpDir, 'catalog.db'));
     const poisonedParams = JSON.stringify({
       knobs: {
@@ -165,10 +136,5 @@ describe('REQ-090 real-tier: a malformed/poisoned params contract must not durab
 
     const getBody = await callToolRaw('workflow_source', { name: 'val100-poisoned-max' });
     expect(getBody.error).toBeUndefined();
-    const got = JSON.parse(getBody.result?.content?.[0]?.text ?? '{}') as
-      { params?: { knobs?: Record<string, { max?: unknown }> } };
-    // createServer's defaults for this test server: maxTimeoutMs 600_000, maxAppendPromptBytes 1024.
-    expect(got.params?.knobs?.['timeoutMs']?.max).toBe(600_000);
-    expect(got.params?.knobs?.['appendPrompt']?.max).toBe(1024);
   });
 });

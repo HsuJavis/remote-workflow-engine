@@ -1,6 +1,6 @@
 // v9 — workflow discovery: parseMeta (purpose) + parseWorkflowSkeleton (static DAG). TEST-FIRST (RED).
 import { describe, it, expect } from 'vitest';
-import { parseMeta, parseWorkflowSkeleton } from '../../src/workflow-meta.js';
+import { parseMeta, parseWorkflowSkeleton, parseMetaParams } from '../../src/workflow-meta.js';
 
 describe('parseMeta — extract purpose from a workflow script (v9, REQ-061)', () => {
   it('extracts description + phases from an export const meta block', () => {
@@ -61,5 +61,26 @@ describe('parseWorkflowSkeleton — predicted DAG before running (v9, REQ-062)',
     const a = nodes.find((n) => n.kind === 'agent')!;
     expect(a.dynamic).toBe(true);
     expect(() => parseWorkflowSkeleton('this is ) not ( valid {{{ js')).not.toThrow();
+  });
+});
+
+// TASK-159 (DES-144): parseMetaParams's 3 call sites into the v24 3-arg parseParamContract
+// (metaParams, scriptLabels, aliasNames) were passing `aliasNames` into the `scriptLabels` slot —
+// every registration whose script omits `meta.params` threw AGENT_UNDECLARED naming label
+// "undefined", even a script with zero agent() calls at all.
+describe('parseMetaParams — scriptLabels reaches parseParamContract, not aliasNames (v24, DES-144)', () => {
+  it('a script with no agent() calls and no meta.params registers (zero-label contract)', () => {
+    const result = parseMetaParams(`return 1;`, new Set());
+    expect(result).toEqual({ ok: true, value: { agents: {}, args: {} } });
+  });
+
+  it('a script with an agent() call and no meta.params is refused AGENT_UNDECLARED naming that label', () => {
+    const script = `const x = await agent('draft', { model: 'sonnet' }); return x;`;
+    const result = parseMetaParams(script, new Set());
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('AGENT_UNDECLARED');
+      expect(result.detail).toMatchObject({ label: 'draft' });
+    }
   });
 });

@@ -3,7 +3,6 @@
 // alias in any example script. Written test-first (Gate 5, RED) — src/authoring-guide.ts does
 // not exist yet.
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — src/authoring-guide.ts does not exist yet (v24 DES-157/TASK-150)
 import { buildAuthoringGuide, GUIDE_EXAMPLES } from '../../src/authoring-guide.js';
 
 describe('buildAuthoringGuide (UT-159, DES-157)', () => {

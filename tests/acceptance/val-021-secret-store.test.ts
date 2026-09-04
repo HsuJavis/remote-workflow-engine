@@ -1,5 +1,6 @@
 // VAL-021: Secrets for providers/MCP via a server-side store, never workspace-reachable (REQ-018)
-// Real entrypoint: real mcp_provision + real run_start + a real env-loaded secret.
+// Real entrypoint: real workspace_push (mode B, kind:'mcp' — v24 DES-153/TASK-152, replaces the
+// retired MCP-provisioning tool) + real run_start + a real env-loaded secret.
 // No mock of the SUT's own boundaries (resolver, redaction).
 //
 // D-V3M-1: routed through the PRODUCTION SDK-gateway path (composeConfig gateway:'sdk') — MCP tool
@@ -56,7 +57,12 @@ beforeAll(async () => {
   // The secret store is loaded at composeConfig() time (loadSecretSourceFromEnv) — set BEFORE it.
   process.env['RWE_SECRET_VAL021'] = REAL_SECRET_VALUE;
   const config = await composeConfig(
-    { bind: '127.0.0.1', port: 0, workRoot: tmpDir, aliases: ALIASES, gateway: 'sdk', assetRoot: join(tmpDir, 'assets') },
+    {
+      bind: '127.0.0.1', port: 0, workRoot: tmpDir, aliases: ALIASES, gateway: 'sdk', assetRoot: join(tmpDir, 'assets'),
+      // v24 (DES-153/ADR-030, TASK-152): workspace_push's kind:'mcp' http mode now checks egress
+      // BEFORE probing — this file's fake MCP configs point at example.com, so it must be allowed.
+      mcpEgressAllowlist: ['https://example.com/'],
+    },
     { queryImpl: (() => fakeSuccessSession()) as unknown as never, proxyManager: makeFakeProxyManager() },
   );
   server = await createServer({ ...config, mcpProbe: new FakeMcpProbe(true) });
@@ -76,18 +82,34 @@ async function mcpCall(name: string, args: Record<string, unknown> = {}) {
   });
   const body = await res.json() as { result?: { content?: Array<{ text?: string }> }; error?: { code: number; message: string } };
   if (body.error) return { error: body.error };
-  // workflow_* tools return their own flat envelope directly; mcp_provision's payload (unused by
+  // workflow_* tools return their own flat envelope directly; workspace_push's payload (unused by
   // any assertion in this file beyond `.error`) stays wrapped under `.result`.
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
 
+// v24 (TASK-152, DES-144): every `agent()`-calling script must declare its label in
+// `meta.params.agents.<label>` (model/effort/timeoutMs, all `.default`) — `AGENT_UNDECLARED`
+// otherwise. `mcp` names ride the SAME declaration (DES-154's `declared.mcp`), not the call-site
+// options object.
+function goScript(mcpName: string): string {
+  return [
+    "export const meta = { params: { agents: { go: {",
+    "  model: { type: 'string', default: 'local' },",
+    "  effort: { type: 'enum', default: 'low' },",
+    "  timeoutMs: { type: 'number', default: 30000 },",
+    `  mcp: ['${mcpName}'],`,
+    "} } } };",
+    "return agent('go', {});",
+  ].join('\n');
+}
+
 describe('VAL-021: REQ-018 — a missing secret handle is a clear error, never a hang/leak/literal pass-through (no live model needed, fails before any provider dial)', () => {
-  it('mcp_provision with an unresolvable ${secret:...} handle used by a later run surfaces SECRET_MISSING', async () => {
-    await mcpCall('mcp_provision', {
-      name: 'val021-missing-secret-mcp', kind: 'http',
+  it('workspace_push (kind:mcp) with an unresolvable ${secret:...} handle used by a later run surfaces SECRET_MISSING', async () => {
+    await mcpCall('workspace_push', {
+      scope: 'global', kind: 'mcp', name: 'val021-missing-secret-mcp',
       config: { url: 'https://example.com/mcp', headers: { Authorization: 'Bearer ${secret:val021-never-set}' } },
     });
-    const run = await runScriptVia(mcpCall, `return agent('go', { mcp: ['val021-missing-secret-mcp'] });`);
+    const run = await runScriptVia(mcpCall, goScript('val021-missing-secret-mcp'));
     const runId = run['runId'] as string;
     for (let i = 0; i < 20; i++) {
       const s = await mcpCall('run_status', { runId });
@@ -122,11 +144,11 @@ describe('VAL-021: REQ-018 — a resolved secret never appears on any run-worksp
 describe('VAL-021: REQ-018 — a real resolved secret works end to end with no byte of it in the transcript', () => {
   it('a real provisioned MCP config secret resolves and the completed run transcript never contains it', async () => {
     if (!HAS_PROVIDER) return;
-    await mcpCall('mcp_provision', {
-      name: 'val021-real-secret-mcp', kind: 'http',
+    await mcpCall('workspace_push', {
+      scope: 'global', kind: 'mcp', name: 'val021-real-secret-mcp',
       config: { url: 'https://example.com/mcp', headers: { Authorization: 'Bearer ${secret:VAL021}' } },
     });
-    const run = await runScriptVia(mcpCall, `return agent('go', { mcp: ['val021-real-secret-mcp'] });`);
+    const run = await runScriptVia(mcpCall, goScript('val021-real-secret-mcp'));
     const runId = run['runId'] as string;
     for (let i = 0; i < 60; i++) {
       const s = await mcpCall('run_status', { runId });

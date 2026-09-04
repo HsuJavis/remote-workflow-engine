@@ -27,5 +27,6 @@ describe('classifyTransport (pure, DES-020)', () => {
 });
 
 // Note: McpProbe injection tests (fake accept/reject) are at integration tier (IT-034) where a
-// real asset_push flow runs through a real AssetService + injected FakeMcpProbe. Unit tier only
+// real workspace_push (mode B, kind:'mcp' — v24 DES-153/TASK-152, the asset-push tool this used
+// to name is retired) flow runs through a real AssetService + injected FakeMcpProbe. Unit tier only
 // covers the pure classifyTransport gate (testability-first design from DES-020 Decision rationale).

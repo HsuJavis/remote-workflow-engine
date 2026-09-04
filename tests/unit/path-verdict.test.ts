@@ -2,7 +2,6 @@
 // realpath; the three caller-typed namespaces removed. Written test-first (Gate 5, RED) —
 // src/path-verdict.ts does not exist yet.
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — src/path-verdict.ts does not exist yet (v24 DES-142/TASK-134)
 import { lexicalVerdict, pathVerdict } from '../../src/path-verdict.js';
 
 describe('pathVerdict — lexical + injected containment (UT-144, DES-142)', () => {

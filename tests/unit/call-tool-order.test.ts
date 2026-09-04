@@ -22,7 +22,8 @@ describe('callTool — schema before authz, one deps object (UT-141, DES-140)', 
   it('a valid call reaches the switch and dispatches to the matching facade handler exactly once', async () => {
     const runStart = vi.fn().mockResolvedValue({ runId: 'r1' });
     const deps = { facade: { runStart }, lookup: { workflowOwner: () => 'bob' }, audit: {} };
-    await callTool(deps, 'run_start', { name: 'wf', args: {} }, { kind: 'user', id: 'bob' });
+    // `run_start`'s schema is CLOSED (DES-142) — no stray `args` key (not a declared property).
+    await callTool(deps, 'run_start', { name: 'wf' }, { kind: 'user', id: 'bob' });
     expect(runStart).toHaveBeenCalledTimes(1);
   });
 });

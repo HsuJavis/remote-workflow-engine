@@ -8,13 +8,27 @@
 // top-level `error`, which this server only sets for ONE case (unknown tool name, DES-140 —
 // call-tool.ts's `{code:number}` lift); every real tool refusal (schema/authz/handler) is wrapped
 // in `result.content[0].text` as JSON instead. That made every happy-path `it` vacuously green
-// regardless of the actual tool outcome — verified live against a booted engine: 24 of 35
-// TOOL_SPECS happy fixtures actually error (e.g. `workflow_register`'s fixture mermaid is
-// `UNDECLARED_NODE`, cascading to every fixture keyed off the `demo` workflow it never creates).
-// Those are fixture-data defects in `src/tool-specs.ts` (TASK-132, out of this task's file scope)
-// plus a design gap (no mechanism for a static `fixture.happy` to reference an engine-minted id
-// such as a `run_start` response's `runId`) — both reported by this implementer, not silently
-// patched here or laundered by weakening this assertion back to the vacuous check.
+// regardless of the actual tool outcome — verified live against a booted engine (count as of this
+// pass, will move as TASK-132 lands, so read `v24-tool-surface.md`'s `rows:` stamp for the current
+// truth, not this number): 20 of 30 non-credential-gated TOOL_SPECS happy fixtures actually error.
+// Two distinct causes, neither this task's file scope: (1) fixture-DATA defects in
+// `src/tool-specs.ts` (TASK-132) — `workflow_register`'s fixture mermaid is `UNDECLARED_NODE`,
+// cascading to `workflow_publish`/`describe`/`source`/`run_start`/`schedule_create`/
+// `webhook_create`, all keyed off the `demo` workflow that registration never creates; also every
+// `fixture.errors` map is empty across all 35 rows, so zero error-path `it`s are generated where
+// DES-158 calls for ≥30. (2) a DES-158 design gap: `run_status`/`run_result`/`run_suspend`/
+// `run_resume`/`run_stop`/`run_agent_log`/`workspace_pull`/`workspace_list`/`workspace_delete`/
+// `workspace_purge`/`schedule_delete`/`schedule_setEnabled` fixtures hard-code `runId:'r1'` /
+// `id:'s1'`, but `run-store.ts:168` mints real run ids via `randomUUID()` — no static fixture
+// value can ever match, so no fixture-data fix alone closes these rows. Threading the minted id
+// through was considered and rejected: one `demo` run cannot satisfy every row's precondition at
+// once (`run_suspend` needs *running*, `run_resume` needs *suspended*, `run_result` needs
+// *terminal*, `workspace_pull` needs `output.txt` to exist, `run_agent_log` needs an agent labelled
+// `main` — the fixture script `workflow(async () => {})` produces none of that), so threading would
+// still leave several rows red while making the table's `args=` diverge from `TOOL_SPECS`, i.e. it
+// solves a third of the problem while inventing a mechanism DES-158 never specified. All of this is
+// reported to the orchestrator (needs_clarification), not silently patched here or laundered by
+// weakening this assertion back to the vacuous check.
 //
 // Mock policy (acceptance/VAL tier — MUST NOT mock the SUT's own boundary): real createServer(),
 // real MCP HTTP tools/call round trip for every fixture.

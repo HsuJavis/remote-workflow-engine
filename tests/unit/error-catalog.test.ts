@@ -4,7 +4,6 @@
 //
 // Mock policy: pure unit, no mocks needed — src/errors.ts has no external deps.
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — ERROR_CATALOG/toErrEnvelope/toErrorCode/ErrorCode do not exist yet (v24 DES-137)
 import { ERROR_CATALOG, codedError, toErrEnvelope, toErrorCode } from '../../src/errors.js';
 
 describe('ERROR_CATALOG — closed ErrorCode union (UT-138, DES-137)', () => {

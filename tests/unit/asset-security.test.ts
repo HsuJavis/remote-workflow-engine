@@ -54,12 +54,9 @@ describe('isSelfReferential (pure, D4, DES-019)', () => {
 // `tests/unit/path-verdict.test.ts` (DES-142's own [T2] table) — this block is fully superseded,
 // not merely renamed, so it is removed rather than re-pointed at a differently-shaped function.
 
-describe('asset_push atomicity (DES-019)', () => {
-  // Partial atomicity: if ANY file in the push fails a safety check, the whole push is rejected.
-  // This requires the full AssetPushService (part of the same module).
-  // Since the module doesn't exist yet, this block also fails at import time.
-  it('placeholder — import-level failure covers all atomicity cases', () => {
-    // Reaches here only after the module exists (RED via import failure above).
-    expect(true).toBe(true);
-  });
-});
+// v24 (TASK-152): the "placeholder — import-level failure covers all atomicity cases" block that
+// used to sit here was a vacuous stub (asserted `true === true`, never atomicity) kept only to force
+// RED while the module didn't exist. `AssetSyncService` exists now; per-file path-safety atomicity
+// ("verdict every file before writing any", DES-153 boundary) is owned by `tests/unit/
+// asset-sync-v24.test.ts` and `tests/unit/path-verdict.test.ts` (TASK-144/TASK-134) — removed here
+// rather than re-pointed at a stub with nothing to assert.

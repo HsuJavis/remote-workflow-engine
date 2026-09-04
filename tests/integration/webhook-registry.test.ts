@@ -142,9 +142,9 @@ describe('v24: webhooks created unclaimed, claimed at registration (IT-112, DES-
     const dir = mkdtempSync(join(tmpdir(), 'rwe-wh-v24-'));
     try {
       const reg = new WebhookRegistry({ clock: CLOCK, runManager: fakeRunManager(), catalog: fakeCatalog(new Set()), dbPath: join(dir, 'wh.db') });
-      // @ts-expect-error — v24 create({}) creates an unclaimed hook; today `workflow` is required
       const created = await reg.create({});
       expect(created).toHaveProperty('webhookId');
+      expect(reg.list()[0]!.workflow).toBeNull();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -154,7 +154,6 @@ describe('v24: webhooks created unclaimed, claimed at registration (IT-112, DES-
     const dir = mkdtempSync(join(tmpdir(), 'rwe-wh-v24-'));
     try {
       const reg = new WebhookRegistry({ clock: CLOCK, runManager: fakeRunManager(), catalog: fakeCatalog(new Set()), dbPath: join(dir, 'wh.db') });
-      // @ts-expect-error — v24 create({}) shape
       const created = await reg.create({});
       const body = '{}';
       const result = await reg.deliver((created as { webhookId: string }).webhookId, {
@@ -166,24 +165,73 @@ describe('v24: webhooks created unclaimed, claimed at registration (IT-112, DES-
     }
   });
 
-  it('same deliveryId delivered twice while unclaimed ⇒ 409 both times, and once claimed the SAME id fires for real (202)', async () => {
+  it('same deliveryId delivered twice while unclaimed ⇒ 409 both times with refusalCount 2 and NO dedup record, and once claimed the SAME id fires for real (202)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-wh-v24-'));
     try {
       const reg = new WebhookRegistry({ clock: CLOCK, runManager: fakeRunManager(), catalog: fakeCatalog(new Set(['deploy'])), dbPath: join(dir, 'wh.db') });
-      // @ts-expect-error — v24 create({}) shape
       const created = await reg.create({});
       const { webhookId, secret } = created as { webhookId: string; secret: string };
       const body = '{}';
       const req = { signature: sign(secret, body), timestamp: CLOCK.isoNow(), deliveryId: 'dup-1', rawBody: body, parsedBody: {} };
       const first = await reg.deliver(webhookId, req);
       const second = await reg.deliver(webhookId, req);
-      expect(first).toMatchObject({ ok: false, httpStatus: 409 });
-      expect(second).toMatchObject({ ok: false, httpStatus: 409 });
+      expect(first).toMatchObject({ ok: false, httpStatus: 409, code: 'UNCLAIMED' });
+      expect(second).toMatchObject({ ok: false, httpStatus: 409, code: 'UNCLAIMED' });
+      const afterRefusals = reg.list().find((w) => w.id === webhookId)!;
+      expect(afterRefusals.refusalCount).toBe(2); // DES-150 dod: two refusals coalesce, not double-count a dedup record
+      expect(afterRefusals.lastRefusalReason).toBe('UNCLAIMED');
 
-      // @ts-expect-error — claim() does not exist yet (v24 DES-149/TASK-142)
-      await reg.claim(webhookId, 'deploy');
+      const claimed = reg.claim(webhookId, 'deploy');
+      expect(claimed).toBe('claimed');
       const third = await reg.deliver(webhookId, req); // dedup record was NEVER written for a refused delivery
       expect(third).toMatchObject({ ok: true, httpStatus: 202 });
+      // The admitted delivery must not touch the refusal counter (DES-150: lastError vs
+      // lastRefusalReason are mutually exclusive per firing; a fire is neither).
+      expect(reg.list().find((w) => w.id === webhookId)!.refusalCount).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('release() un-claims, and a delivery to the now-unclaimed hook refuses UNCLAIMED again', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-wh-v24-'));
+    try {
+      const reg = new WebhookRegistry({ clock: CLOCK, runManager: fakeRunManager(), catalog: fakeCatalog(new Set(['deploy'])), dbPath: join(dir, 'wh.db') });
+      const { webhookId, secret } = (await reg.create({})) as { webhookId: string; secret: string };
+      expect(reg.claim(webhookId, 'deploy')).toBe('claimed');
+      reg.release(webhookId, 'deploy');
+      expect(reg.ownerOf(webhookId)).toBeNull();
+      const body = '{}';
+      const result = await reg.deliver(webhookId, { signature: sign(secret, body), timestamp: CLOCK.isoNow(), deliveryId: 'd-rel', rawBody: body, parsedBody: {} });
+      expect(result).toMatchObject({ ok: false, httpStatus: 409, code: 'UNCLAIMED' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('ownerOf is tri-state: undefined for an unknown id, null for unclaimed, the workflow name once claimed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-wh-v24-'));
+    try {
+      const reg = new WebhookRegistry({ clock: CLOCK, runManager: fakeRunManager(), catalog: fakeCatalog(new Set(['deploy'])), dbPath: join(dir, 'wh.db') });
+      expect(reg.ownerOf('nope')).toBeUndefined();
+      const { webhookId } = (await reg.create({})) as { webhookId: string };
+      expect(reg.ownerOf(webhookId)).toBeNull();
+      reg.claim(webhookId, 'deploy');
+      expect(reg.ownerOf(webhookId)).toBe('deploy');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('claim() is idempotent for the SAME claimant ("held") and refuses a second, different claimant ("ALREADY_CLAIMED")', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-wh-v24-'));
+    try {
+      const reg = new WebhookRegistry({ clock: CLOCK, runManager: fakeRunManager(), catalog: fakeCatalog(new Set(['deploy', 'other'])), dbPath: join(dir, 'wh.db') });
+      const { webhookId } = (await reg.create({})) as { webhookId: string };
+      expect(reg.claim(webhookId, 'deploy')).toBe('claimed');
+      expect(reg.claim(webhookId, 'deploy')).toBe('held');
+      expect(reg.claim(webhookId, 'other')).toBe('ALREADY_CLAIMED');
+      expect(reg.ownerOf(webhookId)).toBe('deploy'); // untouched by the refused claimant
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

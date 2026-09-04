@@ -43,6 +43,11 @@ export interface WebhookView {
   workflow: string | null;
   enabled: boolean;
   secretFingerprint: string; // short sha256 prefix — never the secret itself
+  // v24 (DES-150, TASK-142): same coalesced fire-path refusal accounting as the scheduler's
+  // ScheduleStatus (scheduler.ts) — mirrors that shape rather than declaring its own.
+  refusalCount: number;
+  lastRefusedAt?: string;
+  lastRefusalReason?: RefusalReason;
 }
 
 /** The verify+fire outcome, mapped by the HTTP route to a status code. v24 (DES-150) adds 409 for
@@ -61,6 +66,8 @@ interface WebhookRow {
   enabled: number;
   createdAt: string;
   refusalCount: number;
+  lastRefusedAt: string | null;
+  lastRefusalReason: string | null;
 }
 
 export class WebhookRegistry {
@@ -90,12 +97,38 @@ export class WebhookRegistry {
         ts TEXT NOT NULL
       );
     `);
+    // v24 (DES-150, TASK-156): a pre-v24 on-disk `webhooks.db` still carries `workflow TEXT NOT
+    // NULL` (created before the unclaimed-webhook shape existed). SQLite cannot drop a NOT NULL
+    // constraint via ALTER, so a NOT NULL `workflow` column is rebuilt: create the v24 shape under
+    // a temp name, copy every row across, drop the old table, rename. Idempotent — a fresh/already
+    // -migrated db has `workflow` nullable already, so this block is skipped entirely.
+    const workflowIsNotNull = (this._db.prepare('PRAGMA table_info(webhooks)').all() as Array<{ name: string; notnull: number }>)
+      .some((c) => c.name === 'workflow' && c.notnull === 1);
+    if (workflowIsNotNull) {
+      // Transactional (SQLite DDL is transactional): a crash mid-rebuild leaves the original
+      // `webhooks` table untouched — the next boot's PRAGMA check redoes the rebuild from
+      // scratch rather than silently stranding rows in a half-renamed table.
+      this._db.transaction(() => {
+        this._db.exec(`
+          CREATE TABLE webhooks__v24_rebuild (
+            id TEXT PRIMARY KEY,
+            workflow TEXT,
+            secret TEXT NOT NULL,
+            enabled INTEGER NOT NULL,
+            createdAt TEXT NOT NULL,
+            refusalCount INTEGER NOT NULL DEFAULT 0,
+            lastRefusedAt TEXT,
+            lastRefusalReason TEXT
+          );
+          INSERT INTO webhooks__v24_rebuild (id, workflow, secret, enabled, createdAt)
+            SELECT id, workflow, secret, enabled, createdAt FROM webhooks;
+          DROP TABLE webhooks;
+          ALTER TABLE webhooks__v24_rebuild RENAME TO webhooks;
+        `);
+      })();
+    }
     // v24 (DES-149/150, TASK-142): additive migration — the claim-model refusal accounting columns.
-    // NOTE (needs_clarification, TASK-142): `workflow` above is only nullable for a FRESH db — a
-    // pre-v24 on-disk `webhooks.db` still carries `workflow TEXT NOT NULL` (SQLite cannot drop a
-    // NOT NULL constraint without a table rebuild, which this task does not attempt untested); an
-    // old db therefore still requires `workflow` at creation. No test in this slice exercises a
-    // pre-v24 db, so this is flagged rather than silently patched.
+    // A no-op after the rebuild above (those columns already exist on the rebuilt table).
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN refusalCount INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN lastRefusedAt TEXT'); } catch { /* already exists */ }
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN lastRefusalReason TEXT'); } catch { /* already exists */ }
@@ -130,6 +163,9 @@ export class WebhookRegistry {
     return rows.map((r) => ({
       id: r.id, workflow: r.workflow, enabled: r.enabled === 1,
       secretFingerprint: createHash('sha256').update(r.secret).digest('hex').slice(0, 16),
+      refusalCount: r.refusalCount ?? 0,
+      ...(r.lastRefusedAt ? { lastRefusedAt: r.lastRefusedAt } : {}),
+      ...(r.lastRefusalReason ? { lastRefusalReason: r.lastRefusalReason as RefusalReason } : {}),
     }));
   }
 

@@ -8,11 +8,11 @@ import { codedError, type ErrorCode } from './errors.js';
 export type EgressVerdict =
   | { ok: true; url: URL }
   // v24 (DES-137): constrained to the closed ErrorCode union at its declaration.
-  | { ok: false; code: Extract<ErrorCode, 'SEEDREF_DISABLED' | 'SEEDREF_EGRESS_DENIED'>; reason: string };
+  | { ok: false; code: Extract<ErrorCode, 'SEEDREF_DISABLED' | 'EGRESS_DENIED'>; reason: string };
 
 /**
  * Deny-by-default egress gate. Returns SEEDREF_DISABLED when allowlist is empty/absent.
- * Returns SEEDREF_EGRESS_DENIED for: non-https scheme, userinfo, URL parse failure, or no
+ * Returns EGRESS_DENIED for: non-https scheme, userinfo, URL parse failure, or no
  * prefix match. Match = (url.origin + url.pathname + enforced trailing /) starts-with a
  * normalized allowlist entry. Re-appends trailing / idempotently so it is TOTAL on any string[].
  */
@@ -25,15 +25,15 @@ export function isEgressAllowed(repoUrl: string, allowlist: readonly string[]): 
   try {
     url = new URL(repoUrl);
   } catch {
-    return { ok: false, code: 'SEEDREF_EGRESS_DENIED', reason: `URL parse failure: ${repoUrl}` };
+    return { ok: false, code: 'EGRESS_DENIED', reason: `URL parse failure: ${repoUrl}` };
   }
 
   if (url.protocol !== 'https:') {
-    return { ok: false, code: 'SEEDREF_EGRESS_DENIED', reason: `non-https scheme: ${url.protocol}` };
+    return { ok: false, code: 'EGRESS_DENIED', reason: `non-https scheme: ${url.protocol}` };
   }
 
   if (url.username || url.password) {
-    return { ok: false, code: 'SEEDREF_EGRESS_DENIED', reason: 'userinfo (username/password) not allowed in seedRef URL' };
+    return { ok: false, code: 'EGRESS_DENIED', reason: 'userinfo (username/password) not allowed in seedRef URL' };
   }
 
   // Normalized URL key: origin + pathname + enforced trailing /
@@ -49,7 +49,7 @@ export function isEgressAllowed(repoUrl: string, allowlist: readonly string[]): 
 
   return {
     ok: false,
-    code: 'SEEDREF_EGRESS_DENIED',
+    code: 'EGRESS_DENIED',
     reason: `${url.host}${url.pathname} is not in the seedRefAllowlist`,
   };
 }

@@ -5,7 +5,7 @@
 //   - `run_start` description or `seedRef` description contains "SEEDREF_DISABLED",
 //     "seedRefAllowlist", and "mutually exclusive" keywords (consumability per DES-084)
 //   - `seedRef` is NOT in `required` (it is optional, mutually exclusive with seed/seedManifest)
-//   - Error redaction: the description for SEEDREF_EGRESS_DENIED references `attempted:{scheme,host}`
+//   - Error redaction: the description for EGRESS_DENIED references `attempted:{scheme,host}`
 //     but does NOT promise to include the full URL or the allowlist contents
 //
 // Red reason: `run_start` TOOL_DEFS in server.ts has no `seedRef` property yet →

@@ -14,14 +14,21 @@ export function reclaimStaleWorkspaces(
   ttlMs: number,
   statusOf: (runId: string) => RunStatus | null,
   nowMs: number,
+  // v24 (ARCH-098, DES-148, TASK-143): optional — when supplied, ALSO sweeps `<workRoot>/assets/
+  // <name>/` (matching `assetRoot`'s default derivation `join(workRoot, 'assets')` in main.ts) for
+  // a workflow name `hasWorkflow` reports as gone. `deregister()`'s FS removal is an after-hook
+  // OUTSIDE its DB transaction (workflow-catalog.ts); a crash between the DB delete and that
+  // `rmSync` leaves this tree orphaned, reclaimed here on the next sweep. Omitted by a caller that
+  // has no catalog handy (e.g. today's server.ts call site) to keep that behaviour verbatim.
+  hasWorkflow?: (name: string) => boolean,
 ): string[] {
   const reclaimed: string[] = [];
   const wfRoot = join(workRoot, 'workflows');
-  let names: string[];
+  let names: string[] = [];
   try {
     names = readdirSync(wfRoot);
   } catch {
-    return reclaimed; // no workflows dir yet
+    names = []; // no workflows dir yet — fall through to the asset sweep below regardless
   }
   for (const name of names) {
     const runsDir = join(wfRoot, name, 'runs');
@@ -47,6 +54,30 @@ export function reclaimStaleWorkspaces(
       try {
         rmSync(dir, { recursive: true, force: true });
         reclaimed.push(runId);
+      } catch {
+        /* raced/permission — skip, try next sweep */
+      }
+    }
+  }
+  if (hasWorkflow) {
+    const assetsRoot = join(workRoot, 'assets');
+    let wfNames: string[];
+    try {
+      wfNames = readdirSync(assetsRoot);
+    } catch {
+      wfNames = [];
+    }
+    for (const name of wfNames) {
+      if (hasWorkflow(name)) continue; // live workflow — never touched
+      const dir = join(assetsRoot, name);
+      try {
+        if (!statSync(dir).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      try {
+        rmSync(dir, { recursive: true, force: true });
+        reclaimed.push(`assets/${name}`);
       } catch {
         /* raced/permission — skip, try next sweep */
       }

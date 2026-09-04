@@ -7388,3 +7388,44 @@ restart it). It was left exactly as found: round 4 raised that this unit's `Exec
 against this repo's **working tree**, so starting it now would put un-reviewed v23 code on the
 long-lived port. Which build that instance should serve remains the owner's open decision — see
 `needs_clarification`.
+
+## v24 GATE 6 — VAL-128/REQ-117 runbook (owner-run at Gate 7.5, TASK-151/DES-158)
+
+**Recorded here at Gate 6 (implementer) as the runbook text only — this is a procedure, not a
+result.** VAL-128 stays `status:blocked` / `result:not-run` (05-tests.md) until an owner actually
+runs it; per REQ-117's own acceptance text ("proven by that real run and by nothing else") and its
+disqualification clause ("anyone who has seen this project's development conversation — including
+the orchestrator and any advisor — is DISQUALIFIED as a subject"), no Gate 6 implementer or Gate
+7.5 validator who has read this codebase may BE the fresh model instance; they may only prepare
+the harness and observe the transcript afterward.
+
+**Precondition — blocked on TASK-153.** TASK-153 (client plugin v24 sync, external repo,
+owner-scheduled) must land first: `grep -rlE "workflow_run|workflow_get|blob_put|mcp_provision|namespace=" .`
+over a checkout of the plugin → EMPTY, and its guidance skill must list exactly the 35
+`TOOL_SPECS` names. If unmet, this probe is `UNVERIFIED(client plugin not synced)` — it must not be
+run against a stale client surface, which would only prove the *old* vocabulary works.
+
+**Protocol (DES-158's signature, restated as steps):**
+1. Boot this engine for real (`createServer()` over real MCP HTTP), fully v24 (no `workflow_run`/
+   old tool names reachable — `no-retired-surface.test.ts` green is a precondition, not proof).
+2. Launch a **fresh** model instance **outside this project tree** — the `rwe-workspace-memory-leak`
+   finding (a workRoot nested under the Claude project directory lets an agent load the operator's
+   `MEMORY.md`/`CLAUDE.md` into context, bypassing the tool jail and contaminating "cold"). Use a
+   workRoot outside any Claude project directory.
+3. Give that instance a **stub MCP client** wired to this engine's real HTTP surface, exposing only
+   `tools/list` and `workflow_authoring_guide` — nothing else: no source tree, no prior transcript,
+   no hint beyond what a real cold user would have.
+4. Ask it to author a multi-agent workflow plus its Mermaid diagram, using only what `tools/list`
+   and the guide taught it.
+5. Watch it: `workflow_register` → `workflow_publish` → `run_start` → poll `run_status` → `run_result`.
+6. **Any wrong step is a documentation defect**, not a model-capability failure to shrug off — fix
+   it in DES-138 (tool-specs descriptions/schemas) or DES-157 (`buildAuthoringGuide`/
+   `GUIDE_EXAMPLES`), whichever surface misled it, then re-run the WHOLE protocol with **another**
+   fresh instance (a corrected doc re-verified by the same contaminated subject proves nothing).
+7. Success = the fresh instance registers, publishes, runs, and reads its own result FIRST TRY, no
+   engine-side error and no undocumented trial-and-error. Record the transcript's outcome (pass /
+   fail + which step + which doc was corrected) in this section when the owner runs it, and flip
+   VAL-128 to `status:done`/`result:pass`/`real:true` (05-tests.md) only then.
+
+**Not yet run.** No fresh-instance session has been convened as of this Gate 6 pass; TASK-153 has
+not landed either. `result: not-run` stands.

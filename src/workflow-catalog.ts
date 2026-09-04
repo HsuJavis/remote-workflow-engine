@@ -69,7 +69,7 @@ export type Channel = 'beta' | 'release';
 export interface Channels { release: string | null; beta: string | null }
 export interface VersionSelector { version?: string; channel?: Channel }
 // v24 (DES-137): constrained to the closed ErrorCode union at its declaration.
-export type ResolveErrorCode = Extract<ErrorCode, 'INVALID_CHANNEL' | 'UNKNOWN_VERSION' | 'CHANNEL_UNPUBLISHED' | 'DANGLING_CHANNEL'>;
+export type ResolveErrorCode = Extract<ErrorCode, 'INVALID_CHANNEL' | 'VERSION_NOT_FOUND' | 'CHANNEL_UNPUBLISHED' | 'DANGLING_CHANNEL'>;
 export type RequestShape = { kind: 'version'; version: string } | { kind: 'channel'; channel: Channel } | { kind: 'default-release' };
 
 export function resolveVersionRequest(
@@ -89,7 +89,7 @@ export function resolveVersionRequest(
     if (known.has(sel.version)) {
       return { ok: true, version: sel.version, requested: { kind: 'version', version: sel.version } };
     }
-    return { ok: false, code: 'UNKNOWN_VERSION', version: sel.version };
+    return { ok: false, code: 'VERSION_NOT_FOUND', version: sel.version };
   }
   // Rows 4-5: named channel.
   if (sel.channel !== undefined) {
@@ -438,6 +438,14 @@ export class WorkflowCatalog {
     if (mermaid === undefined || mermaid === '') {
       throw codedError('MERMAID_REQUIRED', `MERMAID_REQUIRED: workflow '${name}' registration requires a non-empty mermaid diagram string (ADR-025)`);
     }
+    // v24 boundary (DES-148): whitespace-only is DISTINCT from empty — `checkMermaid` treats a
+    // document with zero non-blank lines as a legitimately empty (but headed) diagram, so a
+    // string that is present but carries no real content at all (not even a header) is refused
+    // here as MERMAID_INVALID(line 1) rather than silently passing checkMermaid's own
+    // zero-labels/zero-nodes "ok" case.
+    if (mermaid.trim() === '') {
+      throw codedError('MERMAID_INVALID', `MERMAID_INVALID: workflow '${name}' mermaid diagram is whitespace-only (line 1)`, { line: 1 });
+    }
     const diagramCheck = checkMermaid(mermaid, scan.labels, agentDefaults, WorkflowCatalog.MERMAID_LIMITS);
     if (!diagramCheck.ok) {
       const code = diagramCheck.onlyInScript !== undefined || diagramCheck.onlyInDiagram !== undefined ? 'DIAGRAM_MISMATCH' : 'MERMAID_INVALID';
@@ -592,7 +600,7 @@ export class WorkflowCatalog {
     const known = new Set(this._listVersions(name));
     // A name row with zero version rows is unreachable via register() (INSERT is atomic with the
     // workflow_versions row), but is possible if a caller partially seeds a DB directly — treat the
-    // same as an unknown workflow rather than a confusing UNKNOWN_VERSION/CHANNEL_UNPUBLISHED.
+    // same as an unknown workflow rather than a confusing VERSION_NOT_FOUND/CHANNEL_UNPUBLISHED.
     if (known.size === 0) throw new CatalogNotFoundError(name);
     const channels: Channels = { release: row.release_version, beta: row.beta_version };
     const result = resolveVersionRequest(sel, channels, known);
@@ -656,7 +664,7 @@ export class WorkflowCatalog {
     }
     const known = new Set(this._listVersions(name));
     if (!known.has(version)) {
-      throw codedError('UNKNOWN_VERSION', `UNKNOWN_VERSION: '${version}' is not a registered version of '${name}'`);
+      throw codedError('VERSION_NOT_FOUND', `VERSION_NOT_FOUND: '${version}' is not a registered version of '${name}'`);
     }
     const column = channel === 'release' ? 'release_version' : 'beta_version';
     const from = channel === 'release' ? row.release_version : row.beta_version;

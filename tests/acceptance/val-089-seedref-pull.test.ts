@@ -4,7 +4,7 @@
 //
 // REQ-080 acceptance clauses tested here:
 //   1. No allowlist → SEEDREF_DISABLED (always runs, no network needed)
-//   2. SSRF URL (169.254.169.254) → SEEDREF_EGRESS_DENIED, zero outbound connection (no network)
+//   2. SSRF URL (169.254.169.254) → EGRESS_DENIED, zero outbound connection (no network)
 //   3. seed + seedRef → SEED_SOURCE_CONFLICT (no network)
 //   4. Real pull of pinned sha → workspace assembled, artifacts list the seeded files (online)
 //   5. Bad sha (non-hex branch ref) → INVALID_SEED_SPEC (no network)
@@ -15,7 +15,7 @@
 //
 // Red reason: seedRef is not handled by RunManager or server.ts yet:
 //   - `run_start` with seedRef silently ignores the field → no run error, assertions fail
-//   - SEEDREF_DISABLED / SEEDREF_EGRESS_DENIED / SEED_SOURCE_CONFLICT not returned →
+//   - SEEDREF_DISABLED / EGRESS_DENIED / SEED_SOURCE_CONFLICT not returned →
 //     `expect(r.error?.code).toBe('SEEDREF_DISABLED')` fails
 //
 // Mock policy (acceptance — MUST NOT mock SUT boundaries): real createServer, real HTTP; the
@@ -96,21 +96,21 @@ describe('VAL-089: REQ-080 engine-pull seedRef — no allowlist → SEEDREF_DISA
   });
 });
 
-describe('VAL-089: REQ-080 — SSRF URL → SEEDREF_EGRESS_DENIED (zero outbound, no network)', () => {
-  it('http://169.254.169.254/ → SEEDREF_EGRESS_DENIED before any network call', async () => {
+describe('VAL-089: REQ-080 — SSRF URL → EGRESS_DENIED (zero outbound, no network)', () => {
+  it('http://169.254.169.254/ → EGRESS_DENIED before any network call', async () => {
     const r = await runScriptVia(callerFor(serverWithAllowlist), `return 'seeded';`, {
       seedRef: { repoUrl: 'http://169.254.169.254/latest/meta-data/', sha: PINNED_SHA },
     });
     const code = r.error?.code ?? (r.status === 'failed' ? r.result?.error?.code : undefined);
-    expect(code).toBe('SEEDREF_EGRESS_DENIED');
+    expect(code).toBe('EGRESS_DENIED');
   });
 
-  it('file:// scheme → SEEDREF_EGRESS_DENIED', async () => {
+  it('file:// scheme → EGRESS_DENIED', async () => {
     const r = await runScriptVia(callerFor(serverWithAllowlist), `return 'seeded';`, {
       seedRef: { repoUrl: 'file:///etc/passwd', sha: PINNED_SHA },
     });
     const code = r.error?.code ?? (r.status === 'failed' ? r.result?.error?.code : undefined);
-    expect(code).toBe('SEEDREF_EGRESS_DENIED');
+    expect(code).toBe('EGRESS_DENIED');
   });
 });
 

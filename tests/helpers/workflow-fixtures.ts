@@ -48,7 +48,9 @@ export function uniqueWorkflowName(prefix = 'fx'): string {
  *  gets a header-only diagram (zero nodes is legal — nothing in `checkMermaid` requires any). */
 export function synthesizeMermaid(script: string): string {
   const { labels } = scanAgentCalls(script);
-  const lines = labels.map((label, i) => `n${i}(["${label}"]);`);
+  // No trailing `;` — `check-mermaid.ts`'s STADIUM_RE is `^(\w+)\(\["(.*)"\]\)$`, anchored right
+  // after the closing `"])` with no semicolon allowance (a stadium node's own line ends there).
+  const lines = labels.map((label, i) => `n${i}(["${label}"])`);
   return ['graph TD;', ...lines].join('\n');
 }
 
@@ -131,12 +133,14 @@ export function facadeCaller(facade: McpFacade, principal: Principal = AUTH_DISA
 }
 
 /** `workflow_register` reports the version twice: `result.version` as the `'vN'` string and a
- *  top-level `version` as a bare number. `workflow_publish` needs the string. */
-function versionStringOf(response: unknown, name: string): string {
+ *  top-level `version` as a bare number. `workflow_publish`'s v24 schema (`tool-specs.ts`) requires
+ *  the NUMBER (pre-v24 it took the string) — both forms are derived here so a caller missing either
+ *  shape still resolves. */
+function versionNumberOf(response: unknown, name: string): number {
   const r = response as { result?: { version?: unknown }; version?: unknown; error?: { code?: string; message?: string }; code?: string } | null;
+  if (typeof r?.version === 'number') return r.version;
   const fromResult = r?.result?.version;
-  if (typeof fromResult === 'string') return fromResult;
-  if (typeof r?.version === 'number') return `v${r.version}`;
+  if (typeof fromResult === 'string') return Number(fromResult.replace(/^v/, ''));
   const code = r?.error?.code ?? r?.code ?? 'UNKNOWN';
   throw new Error(`registerPublishedVia: workflow_register('${name}') did not return a version (${code}: ${r?.error?.message ?? JSON.stringify(response)})`);
 }
@@ -157,12 +161,12 @@ export async function registerPublishedVia(
   const who = typeof opts.principal === 'string' ? { principal: opts.principal } : {};
   const mermaid = opts.mermaid ?? synthesizeMermaid(script);
   const registered = await call('workflow_register', { name, script, mermaid, ...who });
-  const version = versionStringOf(registered, name);
+  const version = versionNumberOf(registered, name);
   const published = await call('workflow_publish', { name, version, channel: opts.channel ?? 'release', ...who }) as { status?: string; error?: { code?: string; message?: string }; code?: string };
   if (published?.status === 'failed') {
-    throw new Error(`registerPublishedVia: workflow_publish('${name}', ${version}) failed (${published.error?.code ?? published.code}: ${published.error?.message ?? ''})`);
+    throw new Error(`registerPublishedVia: workflow_publish('${name}', v${version}) failed (${published.error?.code ?? published.code}: ${published.error?.message ?? ''})`);
   }
-  return { version };
+  return { version: `v${version}` };
 }
 
 /** Drop-in for `callTool('run_start', { script, ...extra })` / `facade.runStart({ script })`:

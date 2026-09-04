@@ -28,8 +28,14 @@ describe('namespace derivation from principal, caller-supplied namespace refused
         params: { name: 'run_start', arguments: { name: 'wf', seedNamespace: 'attacker' } },
       }),
     });
-    const body = (await res.json()) as { code?: string; result?: { error?: { code?: string } }; error?: { code?: string } };
-    expect(body.result?.error?.code ?? body.error?.code).toBe('INVALID_ARGUMENT');
+    // The real /mcp wire shape wraps every tool result in `result.content[0].text` (a JSON-RPC
+    // MCP content block, server.ts:1014/1242) — the codebase-wide convention every other
+    // tests/integration/*.test.ts file already unwraps (e.g. workflow-describe-http.test.ts).
+    // The original RED draft here read `body.result?.error?.code` directly, which no real /mcp
+    // response ever carries — a test-fixture defect, not a schema-closure defect.
+    const body = (await res.json()) as { result?: { content?: Array<{ text?: string }> }; error?: { code?: string } };
+    const parsed = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { error?: { code?: string } };
+    expect(parsed.error?.code ?? body.error?.code).toBe('INVALID_ARGUMENT');
   });
 
   it('POST /assets/blob/:sha with ?namespace= is refused 400 INVALID_BLOB_REQUEST', async () => {

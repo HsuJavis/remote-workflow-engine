@@ -416,7 +416,7 @@ export class McpFacade {
     const owner = view.principal ?? 'local';
     const doRead = () => this.runManager.result(a.runId);
     const outcome = crossPrincipalRead
-      ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev), readArtifactChunk: doRead }, { actor, action: 'run_result' as AuditAction, runId: a.runId, owner })
+      ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev) }, { actor, action: 'run_result' as AuditAction, runId: a.runId, owner }, doRead)
       : await doRead();
     const o = outcome as Awaited<ReturnType<RunManager['result']>>;
     if (o.ok) return { runId: a.runId, status: view.status, result: o.value };
@@ -449,7 +449,7 @@ export class McpFacade {
     const owner = stored.principal ?? 'local';
     const doRead = () => this.store.getTranscript(a.runId, agentId);
     const transcript = crossPrincipalRead
-      ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev), readArtifactChunk: doRead }, { actor, action: 'run_agent_log' as AuditAction, runId: a.runId, owner }) as TranscriptEvent[]
+      ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev) }, { actor, action: 'run_agent_log' as AuditAction, runId: a.runId, owner }, doRead)
       : await doRead();
     const harnessEvents = transcript.filter((e) => e.kind === 'harness');
     const lastHarness = harnessEvents[harnessEvents.length - 1];
@@ -524,7 +524,7 @@ export class McpFacade {
       return readArtifactChunk(workspace, String(a.path ?? ''), a.offset, a.length);
     };
     const r = crossPrincipalRead
-      ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev), readArtifactChunk: doRead }, { actor, action: 'workspace_pull' as AuditAction, runId: a.runId, owner, path: a.path }) as ChunkResult | { error: string }
+      ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev) }, { actor, action: 'workspace_pull' as AuditAction, runId: a.runId, owner, path: a.path }, doRead)
       : await doRead();
     if ('error' in r) return { runId: a.runId, status: stored.status, error: { code: r.error, message: `workspace_pull denied: ${r.error} (${a.path})` } };
     return { runId: a.runId, status: stored.status, result: r };
@@ -537,7 +537,7 @@ export class McpFacade {
       const owner = stored.principal ?? 'local';
       const doRead = () => this.runManager.listArtifacts(a.runId!);
       const files = crossPrincipalRead
-        ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev), readArtifactChunk: doRead }, { actor, action: 'workspace_list' as AuditAction, runId: a.runId, owner }) as ArtifactEntry[] | null
+        ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev) }, { actor, action: 'workspace_list' as AuditAction, runId: a.runId, owner }, doRead)
         : await doRead();
       return { runId: a.runId, status: stored.status, result: files ?? [] };
     }

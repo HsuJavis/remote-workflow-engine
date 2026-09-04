@@ -1,4 +1,5 @@
 // Shared domain types — no implementation, pure TypeScript interfaces.
+import type { ToolName } from './tool-specs.js';
 
 /** v11 Sprint 3 (TASK-066 / DES-063): who triggered a run — total (never undefined/null/throws). */
 export type StartedBy = {
@@ -156,12 +157,11 @@ export interface RunSummary {
   terminalAt?: string;
 }
 
-/** v24 (DES-151): the four tool names whose read surfaces an admin cross-owner read audits.
- *  DES-151's own signature is `Extract<ToolName, 'workspace_list'|'workspace_pull'|'run_agent_log'|
- *  'run_result'>` — written as a plain literal union here (not the `Extract`) because `tool-specs.ts`'s
- *  `ToolName` is not yet a true literal union (`TOOL_SPECS` is `ToolSpec[]`, not `as const`); TASK-132
- *  narrowing `ToolName` makes the `Extract` form a no-op swap with no callers to update. */
-export type AuditAction = 'workspace_list' | 'workspace_pull' | 'run_agent_log' | 'run_result';
+/** v24 (DES-151, TASK-155): the four tool names whose read surfaces an admin cross-owner read
+ *  audits. `TOOL_SPECS` is now `as const` (TASK-155), so `ToolName` is a true 35-member literal
+ *  union and this `Extract` narrows to the intended 4 — never `never` (verified: TASK-155's
+ *  report records the positive/negative compile check). */
+export type AuditAction = Extract<ToolName, 'workspace_list' | 'workspace_pull' | 'run_agent_log' | 'run_result'>;
 
 /** v24 (DES-151): one recorded admin cross-owner read. `owner` is the run's actual owner (not the
  *  reading admin); `path` only for workspace reads. */
