@@ -2,7 +2,7 @@
 // source of `tools/list`, of each tool's `Errors:` line, and of the authorization row `authz.ts`
 // checks once, before the dispatch switch. Pure data + one projection; imports only the `ErrorCode`
 // TYPE from errors.ts (DES-137) so every row's `errors[]` is tsc-checked against the closed catalog.
-import type { ErrorCode } from './errors.js';
+import { ERROR_CATALOG, type ErrorCode } from './errors.js';
 
 /** Declared here (not authz.ts) so the dependency between the two files stays one-directional —
  *  authz.ts imports Role from this module (ARCH-088). */
@@ -741,7 +741,19 @@ export type ToolName = (typeof TOOL_SPECS)[number]['name'];
 function buildDescription(spec: ToolSpec): string {
   let text: string = spec.description;
   if (spec.errors.length > 0) text += `\nErrors: ${spec.errors.join(', ')}`;
-  if (spec.seeAlso.length > 0) text += `\nSee also: ${spec.seeAlso.join(', ')}`;
+  // v24 (integrator; REQ-106/REQ-116): the guide pointer is DERIVED, not hand-typed per row.
+  // `ERROR_CATALOG` already records, once, which codes point back at `workflow_authoring_guide`
+  // (DES-137's "the `see` pointer attached in this ONE place"); a tool that can answer any of them
+  // must say so in the description a cold client reads, because `tools/list` is the only
+  // documentation it ever sees. Hand-typing it per row is how `workflow_register` — the tool most
+  // in need of the pointer — ended up without one.
+  const pointsAtGuide =
+    spec.errors.some((code) => ERROR_CATALOG[code]?.see === 'workflow_authoring_guide') ||
+    spec.seeAlso.includes('workflow_authoring_guide');
+  const seeAlso = pointsAtGuide && !spec.seeAlso.includes('workflow_authoring_guide')
+    ? ['workflow_authoring_guide', ...spec.seeAlso]
+    : [...spec.seeAlso];
+  if (seeAlso.length > 0) text += `\nSee also: ${seeAlso.join(', ')}`;
   return text;
 }
 
