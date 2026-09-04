@@ -8141,3 +8141,69 @@ removed; GitHub issue #54 closed. No validation bearer or token survives anywher
 | `workspace_purge (error)` | `{"runId": "no-such"}` | `{"runId": "no-such", "status": "failed", "error": {"code": "RUN_NOT_FOUND", "message": "Run not found: no-such", "see": null}}` | pass |
 | `workflow_deregister` | `{"name": "r2s-demo"}` | `{"name": "r2s-demo", "removed": true, "releasedTriggers": []}` | pass |
 | `workflow_deregister (error)` | `{"name": "r2s-demo (again)"}` | `{"runId": "", "status": "failed", "code": "WORKFLOW_NOT_FOUND", "error": {"code": "WORKFLOW_NOT_FOUND", "message": "Unknown workflow: r2s-demo"}}` | pass |
+
+## v24 GATE 7.5 ROUND 3 — adjudication #6 closure (F-2 / F-3 / F-4)
+
+Three items only: the clean REQ-117 confirmation run adjudication #6 F-2 ordered, and live evidence
+for the two fixes that round (D-14 / F-3, and F-4's `workflow_list.owner`). Everything else from
+round 2 stands unchanged.
+
+**Boots.** Same recipe as round 2 (`deploy.sh --background`, scratch config assembled only from
+`rwe.config.example.json` keys and DEPLOY §1b/§2 rows, workRoot outside the repo), both running
+`0.1.0 (v0.20.0-176-ge9db0c4)` — i.e. the tree WITH D-14 and both F-4 fixes committed:
+
+```bash
+R=/home/user/.local/share/rwe-val24r3
+# boot C — clean workRoot for the REQ-117 cold subject; auth OFF, gateway:"direct-fetch" +
+#          useLiteLLMProxy:false, aliases {default,local} -> real Ollama qwen2.5:7b, port 8799
+RWE_CONFIG_PATH=$R/C/rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=8799 ./deploy.sh --background   # PID 259124
+# boot D — auth ON (bind 127.0.0.1 => no loopback exemption), principals
+#          {owner@val24.example:author, other@val24.example:author, "*":user}, port 8798
+RWE_CONFIG_PATH=$R/D/rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=8798 ./deploy.sh --background   # PID 294324
+# -> both: 步驟 1/5..5/5 pass, 健康檢查通過
+#    {"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (v0.20.0-176-ge9db0c4)"}
+```
+
+The production service (`rwe.service`, PID 3652391, 0.0.0.0:8899) was **not touched** — different
+ports, different workRoots, and it was still running the same PID afterwards. Adjudication #6 F-5's
+warning is unchanged and is repeated at the end of this section.
+
+### VAL-164 — REQ-117 confirmation run: a THIRD fresh cold model, no resume anywhere (adjudication #6 F-2)
+- **status:** green
+- **traces:** REQ-117, REQ-116, DES-158
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** The DES-158 protocol against boot C (verified pristine first: `workflow_list` ⇒ `[]`, `run_list` ⇒ `[]`, `tools/list` ⇒ 35). Subject: a THIRD, never-before-used `claude -p` instance (`claude-opus-5`, CLI 2.1.260, session `a18f27a7-d6fe-4f57-ab4c-c8fcaf16ed6e`) in a fresh `/tmp/rwe-cold-uuHnZP` — `CLAUDE.md` absent from every ancestor (`$CWD`, `/tmp`, `/`, checked), no memory dir for that path before launch, no plugin, no source tree, no prior transcript. Launched exactly as: `claude -p "<task>" --model opus --setting-sources local --strict-mcp-config --mcp-config '{"mcpServers":{"rwe":{"type":"http","url":"http://127.0.0.1:8799/mcp"}}}' --allowedTools 'mcp__rwe__*' --max-turns 150 --max-budget-usd 10 --output-format stream-json --verbose`. **F-2's harness change:** the subject was given NO way to sleep (`--allowedTools` admits only `mcp__rwe__*`; `permission_denials` came back `[]`, so it never even tried), so it polled in the foreground — **and there was no `--resume`, no second process and no second prompt anywhere in this run.** The ONE procedural sentence added to VAL-162's statement is the third paragraph below; the whole statement, verbatim and complete, was: 「You have access to an MCP server called `rwe`. Using only that server's tools, design and register a workflow in which at least three different agents collaborate on one task, each agent doing a distinct part of the work, including the diagram that describes it. Then publish it, run it, wait for it to finish, and read back its result. Report the workflow name, the run id, the final status and the result. ⏎ Everything you need is discoverable from the server's tools themselves. ⏎ The run takes several minutes to finish: check its status with the server's tools repeatedly, in the foreground, until it reports a terminal state, and only then read the result. Do not wait with a timer or a background command — just check again.」 — nothing else was given. **MCP call sequence, in order:** `ToolSearch` ×2 (selecting the `mcp__rwe__*` tools) → `workflow_authoring_guide` → `models_list({limit:30})` → **`workflow_register` (exactly ONE call ⇒ `v1`)** → `workflow_publish` (release) → `run_start({name,args:{topic},channel:'release'})` → `run_status` ×52 → `run_result`. **Zero error envelopes:** no tool_result in the transcript contains `"status":"failed"`, an `error` object, or any refusal code — the only occurrences of `_INVALID`/`MISMATCH`/`NOT_FOUND`/`VIOLATION`/`UNKNOWN_`/`OUT_OF_RANGE`/`RETIRED` in the whole run are inside the 20 KB `workflow_authoring_guide` text itself (its own "Authoring rules this engine enforces" list). `is_error:false`, **61 turns, 129.3 s, US$2.21**. The registered artifact (`triad-brief`, `workflow_describe` read back by the validator): three agents `researcher` → `critic` → `editor`, each with its own `model/effort/timeoutMs` defaults, and a **non-null author diagram** served back byte-identically (D-8 stays fixed) — `topic[/"topic (run arg)"/]`, three stadium nodes, labelled edges `-->|findings|` / `-->|critique|`, `brief[/"final brief"/]`; i.e. the shape vocabulary as the guide's own table teaches it. The run (`6b906e85-c997-45d4-b287-a66cb0cc328b`) completed on the engine: phases `research → critique → edit`, all three agents `state:"done"` on real Ollama `qwen2.5:7b` via the `default` alias (823 tokens), and `run_result` ⇒ `{topic, findings, critique, brief}` — the validator compared the engine's `brief` field with the text the subject reported and it is **verbatim identical**, run id included. **Contamination check on the raw transcript:** `Documents` 0, `sdlc` 0, `rwe.service` 0, `CLAUDE.md` 0; `/home/user` appears once, in the CLI's own `memory_paths.auto` init field (the subject's own scratch memory dir), and `remote-workflow` appears only as the MCP server's `server_display_name` ("remote-workflow-engine", echoed on every tool result) plus one entry in the CLI's local slash-command name inventory (`__remote-workflow`) — names only, no engine documentation, and the subject invoked neither. The subject's auto-memory dir (`~/.claude/projects/-tmp-rwe-cold-uuHnZP/`: one transcript `.jsonl`, an EMPTY `memory/`) was inspected and deleted afterwards, as was `/tmp/rwe-cold-uuHnZP`. **This supersedes VAL-162's harness note:** REQ-117 now has one-attempt evidence that needs no explanation — one `workflow_register`, zero error envelopes, one process, no resume.
+- **iter:** v24
+
+### VAL-165 — D-14 live: all three trigger refusals point at the authoring guide (adjudication #6 F-3, REQ-116)
+- **status:** green
+- **traces:** REQ-116, DES-137
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Round 2 left REQ-116 red on exactly this: the registration path's trigger arm answered `see:null`. Re-observed on the live engines after the fix, over real MCP HTTP, each through a real `workflow_register`. Boot C (auth off): `workflow_register({triggers:['00000000-0000-0000-0000-000000000000']})` ⇒ `{"code":"TRIGGER_NOT_FOUND","error":{"code":"TRIGGER_NOT_FOUND","message":"TRIGGER_NOT_FOUND: 00000000-…","see":"workflow_authoring_guide"}}`; `schedule_create({kind:'resident'})` ⇒ id `3ba0a688-…`, claimed by `d14-first` (⇒ `v1`), then `d14-second` naming the same id ⇒ `{"code":"TRIGGER_ALREADY_CLAIMED", … "see":"workflow_authoring_guide"}`. Boot D (auth ON — the only place the third arm is reachable, since an auth-disabled principal is treated as admin and skips the ownership gate): `owner@val24.example` creates resident trigger `7f13a110-…`, `other@val24.example` registers `f4a-steal` declaring it ⇒ `{"code":"NOT_TRIGGER_OWNER", … "see":"workflow_authoring_guide"}`. Bearers minted in-process with the engine's own `TokenStore.issue()` against the live `auth-tokens.db` (SUT-internal, not a mock; the mint script lived in the session scratchpad and imported `src/auth/token-store.ts` by absolute path — nothing landed in the repo). Guarded in-suite by IT-129b (`tests/integration/error-envelope-see-pointer.test.ts`), which drives the same three arms through a real booted auth-enabled server; it was measured RED (3 failed, each arriving with the right code and `see:null`) before the one-line-per-code catalog change.
+- **iter:** v24
+
+### VAL-166 — `workflow_list.owner` carries the owner, and the guide stops contradicting itself (adjudication #6 F-4)
+- **status:** green
+- **traces:** REQ-100, REQ-116, REQ-117
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Two Gate 8 observations, both "advertised ≠ actual", re-observed live after the fix. **(a) `workflow_list.owner`** — boot D (auth ON): `owner@val24.example` registers and publishes `f4a-owned`, then `workflow_list` ⇒ `[{"name":"f4a-owned","owner":"owner@val24.example", …}]` read by the owner AND, unchanged, by `other@val24.example` (REQ-100 keeps `owner` on the non-owner allowlist — it is how a reader learns whose workflow it is). Before the fix this field was `null` for every caller on every deployment because `catalog.list()` never selected the column. On boot C (auth OFF, no `args.principal`) the same call answers `owner:null` for `triad-brief` — which is now what README/DEPLOY actually say ("owner is the registering principal; a workflow registered on an auth-disabled boot with no `args.principal` genuinely has none"), instead of round 2's 「一律回 `null`，擁有者請看 `workflow_describe`」, which was documentation bent to fit the defect. Guarded by IT-124's new case, measured RED (`expected null to be 'alice@example.com'`) before the query change. **(b) the guide's own contradiction** — the live `workflow_authoring_guide` on boot C renders the non-agent-aggregation example as `aggregate{{"pick the best score (no agent call)"}}`, agreeing with the shape table three sections above it, where round 2 shipped `aggregate["…"]` (the rectangle the same table reserves for a nested-`workflow()` black box). Guarded by a new UT-159 case that reads `SHAPES` and refuses a rectangle in any example whose script does not call `workflow(` — RED on the aggregation example before the fix — plus IT-118, which re-registers all ten examples against a real engine. VAL-164's subject, reading this guide cold, drew its diagram from the table's vocabulary and registered on the first attempt.
+- **iter:** v24
+
+### v24 GATE 7.5 ROUND 3 — carry-forward
+
+- **`rwe.service` (PID 3652391, 0.0.0.0:8899) still runs pre-fix code** loaded 2026-09-04 01:33, now
+  three commits behind a tree that contains a security fix (D-11) and the three fixes above. It was
+  deliberately left alone (owner's decision, adjudication #6 F-5); the gap only widens. Restarting it
+  is what loads the current disk state.
+- **D-9** (the non-reproducible suspend→resume→failed with orphaned agent work, run `3977b82d`) stays
+  a known defect for v25, unchanged.
+- **Client plugin (TASK-153) not synced** — the plugin-mediated REQ-117 probe stays
+  `UNVERIFIED(client plugin not synced)`; VAL-164 is the raw-MCP evidence.
+- **No paid-provider key** in this environment: every model call in VAL-164 was local Ollama
+  (`qwen2.5:7b`) over the direct-fetch path. Unchanged carry-forward.
