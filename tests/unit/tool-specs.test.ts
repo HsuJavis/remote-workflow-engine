@@ -4,6 +4,7 @@
 // Mock policy: pure unit, no mocks — TOOL_SPECS is pure data + one projection.
 import { describe, it, expect } from 'vitest';
 import { TOOL_SPECS, projectToolsList } from '../../src/tool-specs.js';
+import { ERROR_CATALOG } from '../../src/errors.js';
 
 const OLD_NAMES = [
   'workflow_run', 'workflow_get', 'blob_put', 'seed_plan', 'asset_push', 'asset_list',
@@ -80,5 +81,34 @@ describe('TOOL_SPECS — the v24 tool surface (UT-139, DES-138)', () => {
       expect(versionProp.type).toBe('string');
       expect(versionProp.description).toMatch(/workflow_register/);
     }
+  });
+
+  // v24 (integrator; adjudication (v24) #4 C-6 [21]): DES-137's orphan-code lock ran ONE way — it
+  // checked that every code the source throws is a catalog key. It never checked the other
+  // direction: a code a tool really can answer but does NOT declare in its own `errors[]`.
+  // `workspace_delete` was the found example (`withTerminalRun` throws RUN_NOT_TERMINAL; the row
+  // never said so). The consequence is specific and matters for REQ-117: a cold model that only
+  // reads `tools/list` cannot anticipate a refusal it will certainly meet. This is the STATIC half
+  // — every error fixture's code must be declared by its own row. The RUNTIME half lives in
+  // tests/acceptance/v24-tool-surface.test.ts: every code OBSERVED from a real call must be
+  // declared too, which is the direction static analysis cannot see.
+  it('[C-6] every code a row has an error fixture for is declared in that row\'s own errors[]', () => {
+    const undeclared: Array<{ tool: string; code: string }> = [];
+    for (const spec of TOOL_SPECS as unknown as Array<{ name: string; errors: readonly string[]; fixture: { errors: Record<string, unknown> } }>) {
+      for (const code of Object.keys(spec.fixture.errors)) {
+        if (!spec.errors.includes(code)) undeclared.push({ tool: spec.name, code });
+      }
+    }
+    expect(undeclared).toEqual([]);
+  });
+
+  it('[C-6] no row declares a code that is not a member of the closed ErrorCode catalog', () => {
+    const strays: Array<{ tool: string; code: string }> = [];
+    for (const spec of TOOL_SPECS as unknown as Array<{ name: string; errors: readonly string[] }>) {
+      for (const code of spec.errors) {
+        if (!(code in ERROR_CATALOG)) strays.push({ tool: spec.name, code });
+      }
+    }
+    expect(strays).toEqual([]);
   });
 });

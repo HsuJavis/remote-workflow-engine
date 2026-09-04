@@ -65,6 +65,17 @@ function orderedSpecs<T extends { name: string }>(specs: readonly T[]): T[] {
 }
 
 type Row = { tool: string; args: unknown; observed: unknown; status: 'pass' | 'fail' | 'unverified' };
+/** v24 (integrator; adjudication #4 C-6 [21]): every refusal code this file OBSERVES from a real
+ *  call, per tool — the REVERSE half of DES-137's orphan lock. The forward half (a thrown code is a
+ *  catalog key) and the static half (a fixture's code is declared) cannot see this one: a code the
+ *  engine really answers but the row does not advertise is invisible to both, and it is exactly
+ *  what leaves a cold model unable to anticipate a refusal it will certainly meet. */
+const observedCodes = new Map<string, Set<string>>();
+function recordObserved(tool: string, code: string | number | undefined): void {
+  if (typeof code !== 'string') return; // a numeric code is the JSON-RPC unknown-tool lift, not a catalog refusal
+  if (!observedCodes.has(tool)) observedCodes.set(tool, new Set());
+  observedCodes.get(tool)!.add(code);
+}
 type Spec = { name: string; fixture: { happy: Record<string, unknown>; errors: Record<string, Record<string, unknown>> }; outputSchema: Record<string, unknown> };
 
 const SEEDED_FILE = 'output.txt';
@@ -245,6 +256,7 @@ describe('REQ-118 — every MCP tool interface exercised once against a live eng
       requireSetup();
       const args = resolveFixture(spec.fixture.happy, setup);
       const { code, body } = await call(spec.name, args);
+      recordObserved(spec.name, code);
       const validate = ajv.compile(spec.outputSchema);
       const schemaOk = code === undefined ? Boolean(validate(body)) : true; // schema is moot once refused
       rows.push({ tool: spec.name, args, observed: body, status: code === undefined && schemaOk ? 'pass' : 'fail' });
@@ -256,6 +268,7 @@ describe('REQ-118 — every MCP tool interface exercised once against a live eng
       it(`${spec.name} — error path ${errCode}`, async () => {
         requireSetup();
         const { code, body } = await call(spec.name, resolveFixture(errArgs, setup));
+        recordObserved(spec.name, code);
         expect(code, `${spec.name}/${errCode}: observed ${JSON.stringify(body).slice(0, 300)}`).toBe(errCode);
       });
     }
@@ -264,6 +277,15 @@ describe('REQ-118 — every MCP tool interface exercised once against a live eng
   it('every TOOL_SPECS row produced exactly one summary row (REQ-118 requires the full surface, not a subset)', () => {
     expect(TOOL_SPECS.length).toBeGreaterThanOrEqual(35);
     expect(rows.length).toBe(TOOL_SPECS.length);
+  });
+
+  it('[C-6 reverse lock] every refusal code observed from a live call is declared in that tool\'s own errors[]', () => {
+    const undeclared: Array<{ tool: string; code: string }> = [];
+    for (const [tool, codes] of observedCodes) {
+      const spec = (TOOL_SPECS as unknown as Array<{ name: string; errors: readonly string[] }>).find((t) => t.name === tool)!;
+      for (const code of codes) if (!spec.errors.includes(code)) undeclared.push({ tool, code });
+    }
+    expect(undeclared).toEqual([]);
   });
 
   it('the error surface is exercised at DES-158\'s floor (>=30 constructible error fixtures)', () => {

@@ -190,7 +190,25 @@ export const TOOL_SPECS = [
     description: 'Register a new workflow version under a name; the caller becomes its owner.',
     inputSchema: schema({ name: { type: 'string' }, script: { type: 'string' }, mermaid: { type: 'string' }, triggers: { type: 'array' } }, ['name', 'script']),
     outputSchema: OUT,
-    errors: ['WORKFLOW_ALREADY_EXISTS', 'SCRIPT_INVALID', 'SCAN_VIOLATION', 'DIAGRAM_MISMATCH', 'MERMAID_INVALID', 'FORBIDDEN_ROLE', 'REGISTRATION_CONFLICT', 'VERSION_CEILING_EXCEEDED'],
+    // v24 (integrator; adjudication #4 C-6 [21] + #2 A-4): reconciled BOTH ways against what the
+    // register path actually throws — `script-checks.ts` (PARSE_ERROR / UNKNOWN_ALIAS /
+    // MCP_NOT_PROVISIONED), `parseParamContract` (AGENT_UNDECLARED / AGENT_DECLARED_NOT_IN_SCRIPT /
+    // PARAM_CONTRACT_INVALID / DEFAULTS_RETIRED), `workflow-catalog.ts` (SCAN_VIOLATION /
+    // MERMAID_REQUIRED / MERMAID_INVALID / DIAGRAM_MISMATCH / VERSION_CEILING_EXCEEDED /
+    // NOT_WORKFLOW_OWNER / REGISTRATION_CONFLICT) and the facade's trigger-claim step
+    // (TRIGGER_NOT_FOUND / NOT_TRIGGER_OWNER / TRIGGER_ALREADY_CLAIMED / INVALID_ARGUMENT).
+    // REMOVED: `WORKFLOW_ALREADY_EXISTS` — re-registering an existing name is how a NEW VERSION is
+    // created; the refusal for someone else's name is NOT_WORKFLOW_OWNER, and advertising a code
+    // the tool cannot answer teaches a cold model to branch on something that never arrives.
+    // `SCRIPT_INVALID` stays: it is the sandbox structural refusal `validateScriptEntry` raises.
+    errors: [
+      'SCRIPT_INVALID', 'PARSE_ERROR', 'UNKNOWN_ALIAS', 'MCP_NOT_PROVISIONED', 'SCAN_VIOLATION',
+      'AGENT_UNDECLARED', 'AGENT_DECLARED_NOT_IN_SCRIPT', 'PARAM_CONTRACT_INVALID', 'DEFAULTS_RETIRED',
+      'MERMAID_REQUIRED', 'MERMAID_INVALID', 'DIAGRAM_MISMATCH',
+      'NOT_WORKFLOW_OWNER', 'REGISTRATION_CONFLICT', 'VERSION_CEILING_EXCEEDED',
+      'INVALID_ARGUMENT', 'TRIGGER_NOT_FOUND', 'NOT_TRIGGER_OWNER', 'TRIGGER_ALREADY_CLAIMED',
+      'FORBIDDEN_ROLE',
+    ],
     seeAlso: [] as string[],
     authz: { minRole: 'author', ownership: 'none' } as AuthzRow,
     fixture: {
@@ -512,7 +530,10 @@ export const TOOL_SPECS = [
     description: "Delete files from a run's workspace, an asset under a workflow, or (admin) a global asset.",
     inputSchema: schema({ runId: { type: 'string' }, paths: { type: 'array' }, workflow: { type: 'string' }, kind: { type: 'string' }, name: { type: 'string' }, scope: { type: 'string' } }),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'WORKFLOW_NOT_FOUND', 'NOT_RUN_OWNER', 'NOT_WORKFLOW_OWNER', 'FORBIDDEN_ROLE'],
+    // v24 (integrator; adjudication #4 C-6 [21] — the found example): `withTerminalRun` really
+    // throws RUN_NOT_TERMINAL on a live run and this row never said so, so a cold model could not
+    // anticipate a refusal it is certain to meet. `INVALID_ARGUMENT` is the no-mode-matched branch.
+    errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'WORKFLOW_NOT_FOUND', 'NOT_RUN_OWNER', 'NOT_WORKFLOW_OWNER', 'INVALID_ARGUMENT', 'FORBIDDEN_ROLE'],
     seeAlso: [] as string[],
     authz: {
       mode: deleteMode,

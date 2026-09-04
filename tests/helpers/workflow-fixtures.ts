@@ -66,18 +66,28 @@ const META_DECL_RE = /export\s+const\s+meta\s*=\s*/;
  *  declaration), this synthesizes the minimal contract from the script's own labels: `'sonnet'`
  *  is the same alias already assumed known throughout this file's other fixtures (empty
  *  `aliasNames` ⇒ any string passes anyway — `isKnownAlias`, contract.ts:131). */
-export function synthesizeMeta(script: string): string {
+export function synthesizeMeta(script: string, model = DEFAULT_FIXTURE_ALIAS): string {
   if (META_DECL_RE.test(script)) return script;
   const { labels } = scanAgentCalls(script);
   if (labels.length === 0) return script;
   const agents = labels
     .map(
       (label) =>
-        `${JSON.stringify(label)}: { model: { type: 'string', default: 'sonnet' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }`,
+        `${JSON.stringify(label)}: { model: { type: 'string', default: ${JSON.stringify(model)} }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }`,
     )
     .join(', ');
   return `export const meta = { params: { agents: { ${agents} } } };\n${script}`;
 }
+
+/** v24 (integrator): the synthesized contract's `model.default` used to be `'sonnet'` on the
+ *  reasoning that "empty aliasNames ⇒ any string passes". That reasoning holds only for a bare
+ *  `WorkflowCatalog`; a BOOTED server always feeds registration a non-empty alias table (its own
+ *  `config.aliases`, else `DEFAULT_ALIASES`), and several test servers configure a table without
+ *  `sonnet` — those fixtures registered `PARAM_CONTRACT_INVALID: default not a known alias`.
+ *  `'default'` is the one key `DEFAULT_ALIASES` guarantees and every alias-configuring test server
+ *  in this repo also defines. A server with an exotic table passes its own key via
+ *  `RegisterPublishOpts.model`. */
+export const DEFAULT_FIXTURE_ALIAS = 'default';
 
 export interface RegisterPublishOpts {
   /** Threaded through BOTH register and publish: `publish` only skips the ownership gate when the
@@ -88,6 +98,9 @@ export interface RegisterPublishOpts {
   /** Author-supplied diagram. Defaults to `synthesizeMermaid(script)` — pass this only when a test
    *  is itself about diagram content (DIAGRAM_SCRIPT_MISMATCH / MERMAID_INVALID / the value triple). */
   mermaid?: string;
+  /** The alias the synthesized contract declares as every label's `model.default`. Defaults to
+   *  `'default'`; pass a key from THIS server's own alias table when it does not define one. */
+  model?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +116,7 @@ export async function registerPublished(
   opts: RegisterPublishOpts = {},
 ): Promise<{ version: string }> {
   const principal = opts.principal ?? null;
-  const scriptWithMeta = synthesizeMeta(script);
+  const scriptWithMeta = synthesizeMeta(script, opts.model);
   const mermaid = opts.mermaid ?? synthesizeMermaid(scriptWithMeta);
   const { version } = await catalog.register({ name, script: scriptWithMeta, mermaid, principal });
   await catalog.publish(name, version, opts.channel ?? 'release', principal);
@@ -188,7 +201,7 @@ export async function registerPublishedVia(
   // instead. Either way the SAME principal must register and publish: `publish` only skips the
   // ownership gate when the principal is null.
   const who = typeof opts.principal === 'string' ? { principal: opts.principal } : {};
-  const scriptWithMeta = synthesizeMeta(script);
+  const scriptWithMeta = synthesizeMeta(script, opts.model);
   const mermaid = opts.mermaid ?? synthesizeMermaid(scriptWithMeta);
   const registered = await call('workflow_register', { name, script: scriptWithMeta, mermaid, ...who });
   const version = versionOf(registered, name);

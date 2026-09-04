@@ -732,7 +732,23 @@ export class RunManager {
     // marker spelling, never possessed the secret, got it substituted into a dispatched prompt on
     // resume). If a marker survives in the snapshot, `resume()` below refuses typed instead —
     // "byte-identical to admission, or a typed refusal" never "silently dispatch the marker".
-    const effectiveParams = (await this._store.getEffectiveParams(runId)) ?? defaultRunParams(registeredDefaults, registeredContract?.agents);
+    const storedParams = await this._store.getEffectiveParams(runId);
+    // v24 (integrator; DES-146/DES-156 boundary, adjudication #4 C-7 [28]): a snapshot persisted
+    // BEFORE the per-agent contract has no `.agents` key at all — every v24 admission writes one
+    // (`{}` at minimum, since `contract.agents` is always passed). Reading that legacy flat shape
+    // back and resuming on it SILENTLY dropped every per-label model/effort/timeout: the run
+    // continued with the run-wide fields and nobody was told. `LEGACY_REREGISTER` is the code the
+    // design assigns ("this version predates the v24 contract and cannot run; re-register it") and
+    // it is already what `workflow_describe`/`workflow_list` report as `runnableReason`, so the
+    // refusal a caller meets here matches what the read surfaces already told it.
+    if (storedParams !== null && storedParams.agents === undefined) {
+      throw codedError(
+        'LEGACY_REREGISTER',
+        `LEGACY_REREGISTER: run ${runId} was admitted before the v24 per-agent parameter contract and cannot be resumed; re-register the workflow and start a new run`,
+        { runId, ...(spec.name !== undefined ? { workflow: spec.name } : {}) },
+      );
+    }
+    const effectiveParams = storedParams ?? defaultRunParams(registeredDefaults, registeredContract?.agents);
 
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
     const guard = new RunGuard({ concurrency: this._concurrency, budget: spec.budget ?? null });
