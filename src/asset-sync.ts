@@ -302,6 +302,25 @@ export class AssetSyncService {
     return rows.filter((r) => r.kind === query.kind && (r.scope === 'global' || r.workflow === query.workflow));
   }
 
+  /** v24 Gate 7.5 (D-10, REQ-113): the WHOLE workflow's asset tree, for `workflow_deregister`.
+   *  The catalog transaction has always deleted the `assets` ROWS with the workflow; the tree under
+   *  `<assetRoot>/<workflow>/` was left on disk, so the next registrant of the freed name could
+   *  declare a skill it had never pushed and get the previous owner's `SKILL.md` materialized into
+   *  its own agent workspace (reproduced live, 08-validation.md D-10) — ownership held in the
+   *  database and not on the filesystem.
+   *
+   *  The workflow name is a PATH SEGMENT here, so it goes through the same `lexicalVerdict` every
+   *  asset name and file path goes through before anything is removed: a name that is not a plain
+   *  contained segment deletes NOTHING (returning false) rather than resolving to some parent of
+   *  the asset root. `deregister` accepts an arbitrary string from the wire; `rmSync` does not get
+   *  to see one. */
+  deleteWorkflowTree(workflow: string): boolean {
+    const verdict = lexicalVerdict('asset-tree', workflow);
+    if (verdict.kind !== 'ok' || workflow.includes('/') || workflow.includes('\\')) return false;
+    rmSync(join(this._workRoot, workflow), { recursive: true, force: true });
+    return true;
+  }
+
   /** Removes the row THEN the tree (DES-153) — a `skill` row also owns an on-disk tree; `mcp` is catalog-only. */
   async delete(req: { scope: AssetScope; workflow?: string; kind: AssetKind; name: string }): Promise<void> {
     await this._catalog.deleteAsset(req);

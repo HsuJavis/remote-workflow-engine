@@ -328,6 +328,14 @@ export class McpFacade {
     try {
       const { removed, claimedTriggers } = await this.runManager.catalog.deregister(a.name, bypassWithArg(principal, a));
       for (const id of claimedTriggers) this._storeFor(id).release(id, a.name);
+      // v24 Gate 7.5 (D-10, REQ-113): the catalog transaction deletes the workflow's `assets` ROWS;
+      // the tree under `<assetRoot>/<name>/` is filesystem state no SQL statement can reach, and it
+      // was surviving the delete — the next registrant of the freed name could declare a skill it
+      // had never pushed and receive the previous owner's file, byte-identical, in its own agent
+      // workspace. Only on an actual removal (`removed:false` deleted nothing and must delete
+      // nothing here either), and optional-chained because a unit-constructed facade may have no
+      // asset sync bound at all.
+      if (removed) this.assetSync?.deleteWorkflowTree(a.name);
       // v24 (integrator, REQ-118): the CATALOG method is deliberately total (`removed:false`, never
       // throws — catalog-v24.test.ts pins that contract, and it stays). The TOOL is not: its own
       // advertised `errors[]` promises `WORKFLOW_NOT_FOUND`, and a caller that deletes a name that
