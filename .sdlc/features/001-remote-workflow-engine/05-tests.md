@@ -9054,6 +9054,28 @@ this task must, leave the removal to the task that owns each file per DES-159's 
 DES's own suggested case counts (≥7/≥12/≥30/≥40/≥60) are Gate 6.5+7 coverage targets, not met in
 full here — the coverage-threshold exit gate (95%/90%) applies at Mode B, not this Mode A pass.
 
+### IT-122 — resuming a pre-v24 params snapshot answers LEGACY_REREGISTER, not a silent degrade
+- **status:** green
+- **traces:** DES-146, DES-156
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v24
+
+File: `tests/integration/resume-legacy-params.test.ts` (3 cases, real `WorkflowCatalog` + real
+`RunManager`). BACKFILLED by the Gate 6.5+7 round-2 verifier — the test file shipped at Gate 6 (its
+own header cites integrator adjudication (v24) #4 C-7 [28]) with NO entry in this document, the
+tenth occurrence of the ledger-honesty gap this feature tracks. Verified against the file, not from
+a commit subject: every v24 admission writes an `.agents` slice into `effective_params` (`{}` at
+minimum), so a snapshot with NO `agents` key is by construction a pre-v24 row; `_requireLive` used
+to read it back verbatim and the resumed run dispatched with no per-label model/effort/timeoutMs at
+all, silently degraded to the run-wide fields, telling the caller nothing. `LEGACY_REREGISTER` is
+the code the design already assigns to that condition (`workflow_describe`/`workflow_list` report it
+as `runnableReason` for the same versions), so the refusal a resumer meets now matches what the read
+surfaces already said. Cases: a pre-v24 snapshot refuses; a v24 snapshot with an EMPTY `agents`
+slice resumes normally (the check keys off the SHAPE, not on "params exist"); a legacy row's
+`workflow_describe` reports the same reason.
+
 ### IT-123 — workflowRegister's trigger-ownership arm: NOT_TRIGGER_OWNER / TRIGGER_ALREADY_CLAIMED / TRIGGER_NOT_FOUND
 - **status:** green
 - **traces:** DES-149, DES-139
@@ -9133,11 +9155,40 @@ name clash, and a name in neither root landing in `missing`.
 
 ## Gate 6.5+7 ROUND 2 — regression, time-travel and the coverage gate (verifier, v24, 2026-09-04)
 
+**Simplify (merged Gate 6.5), on round 2's OWN delta.** Round 1 had already run `/simplify` over
+`git diff c9c6592..HEAD -- src` and no src commit landed between the rounds, so re-running that range
+would have been idle — but this round then changed seven src files, so the Skill was run again scoped
+to `git diff a3b5d0a..HEAD -- src` (single-pass inline review; the Agent fan-out is unavailable in
+this context, stated so nobody reads more into it). TWO fixes applied, quality-only, zero behaviour
+change, full suite re-run green after: (i) REUSE — `schedule_list` and `webhook_list` had typed the
+same "the operator role sees everything, everyone else sees their own `createdBy` rows" predicate
+twice, which is a security-relevant rule that must not drift between the two trigger stores; now one
+`scopeToActor(rows, principal, actor)` declaration, both call sites one line each (net −3 lines).
+(ii) SIMPLIFICATION — `authorize()`'s two `subject as string` casts were orphaned by this round's own
+change (the subject expression now carries the cast), removed under the "remove only what YOUR change
+orphaned" rule. THREE candidates NAMED AND REJECTED: `raw.enabled === undefined ? true :` → `??`
+(idiomatic here, but `??` also fires on `null`, which the schema refuses and the explicit form
+documents — churn with a hypothetical semantic delta, for zero lines); `resolveMcp` through
+`assetCatalogPort` walking every workflow per dispatch where the deleted inline copy did two queries
+(real, accepted: once per agent dispatch at human-rate row counts, against keeping two
+implementations of one security-relevant rule); and `scheduler.get()`'s full projection where
+`ownerOf` did a one-column SELECT (once per due firing, and `get` is the existing public claim
+reader). ALTITUDE reviewed and found right: the `key: null` fallback generalizes the ownership-names-
+the-subject mechanism `authorize()` already used for `'asset'`/`'trigger'` rather than adding a
+special case, and `enabled`'s default sits in the tool-surface adapter beside `kind`'s, which is the
+layer whose advertised schema is the thing being made true.
+
 **Regression.** `npx vitest run` → **301 files / 2139 tests, 2113 pass, 0 fail, 26 skip, exit 0**;
 `npx tsc --noEmit` clean. The baseline at the start of this round was 2065 tests with SIX failing —
 IT-105's send-back rows, byte-identical to round 1's failure set. Three items flipped red→green
 (IT-105, VAL-120, VAL-126) and two are new (IT-123, IT-124), alongside coverage-driven extensions to
 UT-144, UT-149, UT-163, IT-111, IT-112, E2E-008 and the params/compose-config/workspace-gc units.
+
+**Every REQ has a green VAL, with two named exceptions carried forward unchanged.** VAL-124
+(REQ-113) and VAL-128 (REQ-117) remain `status: blocked` / `result: not-run` per their own Gate 5
+entries and the design's own Gate-7.5-only ruling — REQ-113's selective materialization and REQ-117's
+cold-model probe are both validator-owned, and recording them blocked is what the Gate 5 contract
+asks for rather than a silent skip. They are the same two round 1 named; no third appeared.
 
 **Test-oracle corrections, all declared, none weakened.** `ownerOf` now means "the creating
 principal" (DES-149 amended in place, bracketed), so four files that were using it as a proxy for

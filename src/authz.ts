@@ -118,10 +118,10 @@ export function authorize(
     // (Gate 6.5+7 round 1 defect (b), IT-105).
     const subject = (spec.key !== null ? args[spec.key] : args[row.ownership === 'run' ? 'runId' : 'workflow']) as string;
     if (row.ownership === 'workflow') {
-      owner = lookup.workflowOwner(subject as string);
+      owner = lookup.workflowOwner(subject);
       ownerCode = 'NOT_WORKFLOW_OWNER';
     } else {
-      owner = lookup.runOwner(subject as string);
+      owner = lookup.runOwner(subject);
       ownerCode = 'NOT_RUN_OWNER';
     }
   }

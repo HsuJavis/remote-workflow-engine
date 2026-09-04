@@ -70,6 +70,15 @@ function validateArgs(schema: Record<string, unknown>, args: unknown): string | 
   return err ? `${err.instancePath || '(root)'} ${err.message}` : 'invalid arguments';
 }
 
+/** The `*_list` scoping rule, declared ONCE (Gate 6.5+7 round 2 simplify): both trigger stores'
+ *  list tools advertise "the caller's own …; unfiltered for the operator role", and it is a
+ *  security-relevant predicate that must not drift between them. `auth-disabled` carries no actor
+ *  id, so it is unfiltered for the same reason `admin` is: there is nobody to scope to. */
+function scopeToActor<T extends { createdBy?: string | null }>(rows: T[], principal: Principal, actor: string | null): T[] {
+  if (principal.kind === 'admin' || principal.kind === 'auth-disabled') return rows;
+  return rows.filter((r) => r.createdBy === actor);
+}
+
 /** DES-140: `find spec ?? unknownTool(name)` → `validateArgs` → `authorize()` → the one switch. */
 export async function callTool(
   deps: ToolDeps,
@@ -180,11 +189,7 @@ export async function callTool(
       const enabled = raw.enabled === undefined ? true : raw.enabled;
       return deps.scheduler.create({ ...withKind, enabled, createdBy });
     }
-    case 'schedule_list': {
-      const all = await deps.scheduler.list();
-      const rows = principal.kind === 'admin' || principal.kind === 'auth-disabled' ? all : all.filter((s) => s.createdBy === actor);
-      return { result: rows };
-    }
+    case 'schedule_list': return { result: scopeToActor(await deps.scheduler.list(), principal, actor) };
     case 'schedule_delete': return deps.scheduler.delete(a['id'] as string);
     case 'schedule_setEnabled': return deps.scheduler.setEnabled(a['id'] as string, a['enabled'] as boolean);
 
@@ -197,11 +202,7 @@ export async function callTool(
     // v24 (DES-139, TASK-142): principal-scoped exactly as `schedule_list` is — the row's own
     // description ("the caller's own webhooks; unfiltered for the operator role") is only true
     // once `webhooks.createdBy` exists to filter on.
-    case 'webhook_list': {
-      const all = deps.webhooks.list();
-      const rows = principal.kind === 'admin' || principal.kind === 'auth-disabled' ? all : all.filter((w) => w.createdBy === actor);
-      return { result: rows };
-    }
+    case 'webhook_list': return { result: scopeToActor(deps.webhooks.list(), principal, actor) };
     case 'webhook_delete': {
       // v24 (integrator, REQ-118): the registry method is total (`{deleted:false}`); the TOOL
       // advertises `TRIGGER_NOT_FOUND`, so deleting an id that never existed is a refusal here —

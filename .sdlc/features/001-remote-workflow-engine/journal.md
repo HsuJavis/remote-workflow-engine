@@ -2095,5 +2095,11 @@ re-run identical with zero flips. `trace --check` still exits non-zero on 12 str
 `未真實驗證` HIGHs for REQ-107..118 — the flip Gate 7.5 owns — with the gap set byte-identical to
 round 1 and no new gaps.
 
-`gates.verification.passed=true`; `gates.impl.passed=true`; `current_stage` → `validation`.
+Simplify (the merged Gate 6.5 half) was run again on this round's own delta once the seven src
+files had changed: one `scopeToActor` declaration where the two trigger-store list tools had typed
+the same operator-scoping predicate twice, and two casts this round's change orphaned; three
+candidates named and rejected with reasons. `IT-122` was backfilled — a test file shipped at Gate 6
+with no ledger entry, the tenth occurrence. `VAL-124`/`VAL-128` stay `blocked` per their own Gate 5
+entries; the same two round 1 named, no third appeared.
 
+`gates.verification.passed=true`; `gates.impl.passed=true`; `current_stage` → `validation`.
