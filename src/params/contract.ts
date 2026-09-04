@@ -28,6 +28,13 @@ export interface ParamSpec {
   max?: number;
   unit?: string;
   description?: string;
+  /** v24 (integrator; DES-145 S-3 / TASK-136's own test row): set by `effectiveAgentBounds` ONLY
+   *  when the effective `max` came from an ENGINE ceiling rather than the author's declaration, and
+   *  naming which one. It exists so the refusal MESSAGE can say `maxTimeoutMs 600000` — a caller
+   *  reading `exceeds the maximum of 600000` cannot tell an engine ceiling from an author range
+   *  that happens to hold the same number, and the design's own test row requires that it can.
+   *  Never persisted (the stored column keeps the author's raw declaration) and never author-set. */
+  ceilingKey?: 'maxTimeoutMs' | 'maxAppendPromptBytes' | 'maxEffort';
 }
 
 /** v24 (DES-144): one script agent() label's declared contract. `model`/`effort`/`timeoutMs` are
@@ -159,9 +166,12 @@ export function isEffort(v: unknown): v is Effort {
  *  principle as `boundEffort`: a stored row that predates the parser's shape guard may carry a
  *  non-number `max` — treated as "author left it unconstrained" rather than propagating `NaN`
  *  (which would otherwise both serve `null` and be inert at admission, a ceiling bypass). */
-function boundMax(spec: ParamSpec, ceilingMax: number): ParamSpec {
+function boundMax(spec: ParamSpec, ceilingMax: number, ceilingKey: NonNullable<ParamSpec['ceilingKey']>): ParamSpec {
   const authorMax = typeof spec.max === 'number' ? spec.max : Infinity;
-  return { ...spec, max: Math.min(authorMax, ceilingMax) };
+  const effective = Math.min(authorMax, ceilingMax);
+  // The ceiling is named only when it is the bound that actually WON; when the author's own range
+  // is tighter, the message must not blame an engine ceiling the caller could not have hit.
+  return { ...spec, max: effective, ...(effective === ceilingMax && authorMax >= ceilingMax ? { ceilingKey } : {}) };
 }
 
 // v21 Gate 8 RE-REVIEW #4 (A1 half 2): `effectiveAgentBounds` must stay TOTAL even over a stored
@@ -180,9 +190,9 @@ function boundEffort(spec: ParamSpec, ceilings: Ceilings): ParamSpec {
 export function effectiveAgentBounds(spec: AgentParamSpec, ceilings: Ceilings): AgentParamSpec {
   return {
     ...spec,
-    timeoutMs: boundMax(spec.timeoutMs, ceilings.maxTimeoutMs),
+    timeoutMs: boundMax(spec.timeoutMs, ceilings.maxTimeoutMs, 'maxTimeoutMs'),
     effort: boundEffort(spec.effort, ceilings),
-    appendPrompt: spec.appendPrompt ? boundMax(spec.appendPrompt, ceilings.maxAppendPromptBytes) : spec.appendPrompt,
+    appendPrompt: spec.appendPrompt ? boundMax(spec.appendPrompt, ceilings.maxAppendPromptBytes, 'maxAppendPromptBytes') : spec.appendPrompt,
   };
 }
 
@@ -306,6 +316,23 @@ function validateOneAgentSpec(label: string, raw: unknown, aliasNames: Set<strin
   if (spec.appendPrompt !== undefined) {
     const shapeErr = validateSpecShape(`agents.${label}.appendPrompt`, spec.appendPrompt);
     if (shapeErr) return shapeErr;
+    // v24 (integrator; DES-144's boundary "`appendPrompt.default` byte-capped + frame-delimiter
+    // checked", found by the Batch-A executor): the v24 contract rewrite dropped BOTH checks on the
+    // AUTHOR-declared default and kept them only on the caller-supplied override. v22
+    // adjudication #3 (M-2) deliberately MOVED this refusal to REGISTRATION (REQ-099/ADR-013) so a
+    // forged frame-close delimiter can never be STORED; catching it later, at admission, on every
+    // run, is the state that ruling exists to end. Reported by SIZE, never by echoing the text
+    // (DES-101 row 6).
+    const declaredDefault = (spec.appendPrompt as ParamSpec).default;
+    if (typeof declaredDefault === 'string') {
+      if (FRAME_CLOSE_FORGERY.test(declaredDefault)) {
+        return invalid(`agents.${label}.appendPrompt`, 'default cannot contain the user-instructions frame close delimiter');
+      }
+      const bytes = Buffer.byteLength(declaredDefault, 'utf8');
+      if (bytes > DEFAULT_CEILINGS.maxAppendPromptBytes) {
+        return invalid(`agents.${label}.appendPrompt`, `default is ${bytes} bytes, over the engine ceiling maxAppendPromptBytes ${DEFAULT_CEILINGS.maxAppendPromptBytes}`);
+      }
+    }
   }
   if (spec.skills !== undefined) {
     const skillsErr = validateNameArray(`agents.${label}.skills`, spec.skills);
@@ -447,8 +474,10 @@ export function checkValueAgainstSpec(param: string, value: unknown, spec: Param
       // v24 (UT-147): the ceiling-vs-author-range direction must be readable from the message
       // itself, not just `detail.allowed` — the caller needs to see WHICH bound (author or engine)
       // fired without re-deriving effectiveAgentBounds.
-      message: `${param} exceeds the maximum of ${spec.max}`,
-      detail: { param, ...truncatedSupplied(value), allowed: { min: spec.min, max: spec.max } },
+      message: spec.ceilingKey !== undefined
+        ? `${param} exceeds the engine ceiling ${spec.ceilingKey} ${spec.max}`
+        : `${param} exceeds the maximum of ${spec.max}`,
+      detail: { param, ...truncatedSupplied(value), allowed: { min: spec.min, max: spec.max }, ...(spec.ceilingKey !== undefined ? { ceiling: spec.ceilingKey } : {}) },
     };
   }
   return { ok: true };

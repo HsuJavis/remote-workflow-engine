@@ -423,6 +423,21 @@ export class RunManager {
       scriptVersion = Number(registered.version.replace(/^v/, '')) || 1;
       registeredContract = registered.params as ParamContract | undefined;
       registeredDefaults = registered.defaults;
+      // v24 (integrator; DES-144/DES-156, flagged by the Batch-A executor as unowned): a version
+      // row whose `params` column is NULL predates the per-agent contract. Every v24 registration
+      // writes one unconditionally (`insertVersion` JSON-stringifies the parsed contract, `{}`
+      // included), so `undefined` here means exactly "registered before v24". `workflow_describe`
+      // and `workflow_list` ALREADY report such a version as `runnableReason:'LEGACY_REREGISTER'`;
+      // `run_start` accepted it anyway and ran it with no per-agent slice at all — the read
+      // surfaces and the run path disagreed about the same row. Same code, same reason, same
+      // remedy as the resume readback gate below.
+      if (registeredContract === undefined) {
+        throw codedError(
+          'LEGACY_REREGISTER',
+          `LEGACY_REREGISTER: workflow '${spec.name}' version ${resolvedVersion} predates the v24 per-agent parameter contract and cannot be run; re-register it`,
+          { workflow: spec.name, version: resolvedVersion },
+        );
+      }
     }
 
     // v21 (ARCH-066 inv-6, DES-104, TASK-100): admission rung — ONE task by decree (validate +

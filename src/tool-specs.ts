@@ -422,7 +422,7 @@ export const TOOL_SPECS = [
     description: 'Resume a suspended run.',
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER', 'PARAM_SECRET_UNAVAILABLE'],
+    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER', 'INVALID_ARGUMENT', 'LEGACY_REREGISTER', 'PARAM_SECRET_UNAVAILABLE'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
     fixture: {

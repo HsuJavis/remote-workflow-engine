@@ -90,6 +90,19 @@ export async function callTool(
   if (spec.name === 'run_start' && a['script'] !== undefined) {
     return refusalEnvelope('INLINE_SCRIPT_CLOSED', INLINE_SCRIPT_CLOSED_MESSAGE);
   }
+  // v24 (integrator; DES-104 rule (a), found by the Batch-A executor): "the PRESENCE of an
+  // `overrides` field on resume is a typed error, full stop — no absent-vs-`{}`-vs-equal semantics
+  // to get subtly wrong". It had never been implemented on any surface: `schema()` sets no
+  // `additionalProperties:false`, so ajv dropped the key and `runResume` never looked for it — the
+  // caller was told the resume succeeded while its override reached nothing, which is the exact
+  // silent-drop class this iteration keeps finding. A resume replays the run's PINNED admission
+  // snapshot by design (ARCH-066); re-parameterising it is not a thing the engine can honour.
+  if (spec.name === 'run_resume' && a['overrides'] !== undefined) {
+    return refusalEnvelope(
+      'INVALID_ARGUMENT',
+      'INVALID_ARGUMENT: run_resume does not accept `overrides` — a resumed run replays the parameter snapshot pinned at admission (start a new run to change parameters)',
+    );
+  }
   const argErr = validateArgs(spec.inputSchema, a);
   if (argErr !== null) return refusalEnvelope('INVALID_ARGUMENT', `INVALID_ARGUMENT: ${argErr}`);
 
