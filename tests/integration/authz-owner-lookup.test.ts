@@ -28,8 +28,10 @@ const ALICE: Principal = { kind: 'author', id: 'alice@x.com' };
 const BOB: Principal = { kind: 'author', id: 'bob@x.com' };
 const ADMIN: Principal = { kind: 'admin', id: 'root@x.com' };
 
-// The three tool rows under test, copied from TOOL_SPECS' own shapes (tool-specs.ts) so a row
-// change there is visible here rather than silently diverging.
+// The four single-row tool shapes under test, copied from TOOL_SPECS' own rows (tool-specs.ts) so
+// a row change there is visible here rather than silently diverging. The MODED tools are read
+// straight off TOOL_SPECS further down (`realSpec`) — their `key`/`rows` pairing is the thing under
+// test, so a hand-copy would defeat the point.
 const RUN_STATUS = { name: 'run_status', key: 'runId' as const, authz: { minRole: 'user' as const, ownership: 'run' as const, adminCrossRead: true as const } };
 const WORKFLOW_DEREGISTER = { name: 'workflow_deregister', key: 'name' as const, authz: { minRole: 'author' as const, ownership: 'workflow' as const } };
 const SCHEDULE_DELETE = { name: 'schedule_delete', key: 'id' as const, authz: { minRole: 'author' as const, ownership: 'trigger' as const } };
