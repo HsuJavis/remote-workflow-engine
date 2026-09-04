@@ -7429,3 +7429,346 @@ run against a stale client surface, which would only prove the *old* vocabulary 
 
 **Not yet run.** No fresh-instance session has been convened as of this Gate 6 pass; TASK-153 has
 not landed either. `result: not-run` stands.
+
+## v24 GATE 7.5 ROUND 1 (2026-09-04, validator) — REQ-107..118 real-tier
+
+**Verdict: NOT PASSED — send back to Gate 6.** Every one of the twelve v24 requirements was driven
+against the real, `deploy.sh`-booted engine over real MCP HTTP (plus the real dashboard HTTP surface,
+real SQLite files on disk, real Ollama, the real `claude` CLI on the `gateway:"sdk"` path, the real
+GitHub API and a real headless Chrome), so each now carries a `real:true` acceptance item. Three of
+the twelve are green at the real tier (REQ-107, REQ-108, REQ-114). Nine are **red on their own
+acceptance text**, on the defect register below (D-1..D-13, fourteen rows counting D-1b), four of which are security-relevant:
+a released trigger that keeps firing for whoever re-registers the name (D-1b), a deregistered owner's
+skill files being materialized into another principal's agent workspace (D-10), an `author` bypassing
+the admin-only gate on stdio MCP configs by naming the key `type` instead of `transport` (D-11), and
+the diagram every author is now forced to supply being validated and then never served (D-8). None of
+these is reachable by the vitest suite as written: the auth-enabled surface test boots with a stalled
+provider and never deregisters, the describe projection is unit-tested against a hand-built row, and
+the tool-surface generator only asserts the error codes its own fixtures name.
+
+Validated at HEAD `ce72648` (`0.1.0 (v0.20.0-156-gce72648)`), branch `master`, tree clean apart
+from the regenerated dashboard. Delta scope: the whole v24 slice (`git diff c9c6592..HEAD -- src` is
+the entire tool-surface rewrite), so nothing was re-derived from a prior round — every REQ-107..118
+item below is first-time real evidence.
+
+### Boot evidence — documented steps only (§0 一鍵部署, the committed `deploy.sh`)
+
+Three boots, all three the committed one-command script with only 設定總表 rows as env overrides
+(`RWE_CONFIG_PATH`, `RWE_BIND`, `RWE_PORT`, and on boot B `RWE_SECRET_GITHUB_TOKEN`), each on a
+scratch config assembled only from `rwe.config.example.json` keys and DEPLOY §1b rows, workRoot
+outside the repo (`/home/user/.local/share/rwe-val24/{A,B,C}/work`). No undocumented step, no manual
+fix, no engine edit. `scripts/smoke.sh` (DEPLOY §2) was also run for real (`RWE_PORT=8796`) and
+passed (`[smoke] PASS: sample workflow completed with result=42`, exit 0).
+
+```bash
+# boot A — auth off, gateway:"direct-fetch" + useLiteLLMProxy:false, real Ollama qwen2.5:7b, port 8797
+RWE_CONFIG_PATH=/home/user/.local/share/rwe-val24/A/rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=8797 ./deploy.sh --background
+# boot B — auth ON (bind 127.0.0.1 ⇒ no loopback exemption), principals {owner:author, other:author,
+#          root:admin, "*":user}, gateway:"sdk" (litellm venv + real `claude` CLI), GitHub token, port 8798
+RWE_SECRET_GITHUB_TOKEN="$(gh auth token)" RWE_CONFIG_PATH=/home/user/.local/share/rwe-val24/B/rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=8798 ./deploy.sh --background
+# boot C — a clean workRoot for the REQ-117 cold-model subject, same shape as A, port 8799
+RWE_CONFIG_PATH=/home/user/.local/share/rwe-val24/C/rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=8799 ./deploy.sh --background
+# -> each: 步驟 1/5..5/5 pass; 健康檢查通過:
+#    {"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (v0.20.0-156-gce72648)"}
+#    [remote-workflow-engine] auth: enabled=false principals=0 defaultRole=user ownerlessRuns=0 ownerlessTriggers=0   (A, C)
+#    [remote-workflow-engine] auth: enabled=true principals=4 defaultRole=user ownerlessRuns=0 ownerlessTriggers=0    (B)
+#    [remote-workflow-engine] listening on http://127.0.0.1:<port>/mcp (workRoot=…/rwe-val24/<X>/work)
+#    [remote-workflow-engine] ready
+```
+
+**Doc gap found while booting (folded into DEPLOY §0):** `deploy.sh` writes `.rwe.pid`/`.rwe.log`
+into the checkout root unconditionally, so the second boot from the same checkout overwrote the first
+boot's PID file and log. The manual now says so and tells the operator to copy the PID out.
+
+**Auth fixture (boot B):** four real bearers minted in-process with the engine's own
+`TokenStore.issue()` against the live `auth-tokens.db` (the IT-124 / v22–v23 technique — a
+SUT-internal component, not a mock) for `owner@val24.example` (author), `other@val24.example`
+(author), `root@val24.example` (admin) and `unlisted@val24.example` (not in `principals` ⇒ `"*"` ⇒
+`user`), sent as real `Authorization: Bearer …` headers.
+
+**Live tool surface:** `tools/list` over real MCP HTTP on every boot returns exactly **35** tools
+(`workflow` 7 / `run` 8 / `workspace` 6 / `schedule` 4 / `webhook` 3 / `issue` 5 / `models_list` /
+`system_info`); the `remote-workflow-plugin` client cache still carries `workflow_run`/`blob_put`
+(TASK-153 unmet), which is why the REQ-117 subject was given no plugin at all (below).
+
+### Defect register (all found live this round; none fixed here — Gate 6 products)
+
+| id | sev | REQ | what the real run showed | where |
+|---|---|---|---|---|
+| D-1 | HIGH | REQ-115 | `schedule_create({kind:'once',at})` / `webhook_create({})` ⇒ `INVALID_ARGUMENT: (root) must have required property 'workflow'`; both rows pass `['workflow']` to `schema()` and both still run the create-time catalog check (`WORKFLOW_NOT_FOUND`/`CHANNEL_UNPUBLISHED`). An unclaimed trigger cannot be created over MCP; ADR-026's own scenario S-5 (`schedule_create({cron})` returns an id nobody claims) is impossible. The store supports it (`scheduler.ts:243`); only the tool rows block it. | `src/tool-specs.ts:621,677` |
+| D-1b | HIGH | REQ-115 | A trigger bound at creation (the only kind D-1 leaves creatable) is **not released by `workflow_deregister`**: `releasedTriggers: []`, `claimedBy` keeps the deleted name (both stores). Then `workflow_register`+`publish` of the **same name** — by anyone — inherits it: a real cron fired a run (`startedBy:{type:'schedule'}`) for the re-registered `v24a-phantom` 47 s after its previous owner deregistered it. The phantom fire ADR-026 named as the fallback trigger. `workflowDeregister` releases only the ids the version rows declare; `claimedIdsFor()` exists but is not consulted. | `src/mcp-facade.ts:328-330` |
+| D-2 | HIGH | REQ-110 | `workflow_register({…, defaults:{model:'default'}})` ⇒ `status:"completed", version:1` — the retired workflow-wide `defaults` object is **accepted and silently ignored**; REQ-110's last clause requires `DEFAULTS_RETIRED`. (`meta.params.knobs` IS refused `DEFAULTS_RETIRED`.) | register path |
+| D-3 | MEDIUM | REQ-116, REQ-112 | No registration error points at `workflow_authoring_guide`: `MERMAID_REQUIRED: … (ADR-025)`, `DIAGRAM_MISMATCH: DIAGRAM_SCRIPT_MISMATCH`, `PARSE_ERROR: Unexpected identifier 'is'`, `MERMAID_INVALID: COLLAPSED_EDGE (line 5)`. `errors.ts:132 toErrEnvelope` builds `see` from `ERROR_CATALOG`, but `mcp-facade.ts:100` has its own local `toErrEnvelope` whose `ErrEnvelope` has no `see`, and that is the one every `workflow_*` handler calls — the pointer never reaches the wire. | `src/mcp-facade.ts:100` |
+| D-4 | MEDIUM | REQ-116, REQ-112 | The guide says "only the three node shapes" (stadium, rectangle, `[/"…"/]`) and never mentions `{"…"}` (conditional) or `{{"…"}}` (non-agent aggregation) — both of which `checkMermaid` ACCEPTS (registered live as `v24a-r112-full`) — nor the `label<br/>model · effort · timeoutMs` triple that `check-mermaid.ts:195` rule (7) checks, nor the one-edge-per-line rule whose violation is refused `COLLAPSED_EDGE`, nor dashed = skipped. REQ-116 requires "the complete Mermaid vocabulary of REQ-112". | `src/authoring-guide.ts` |
+| D-5 | MEDIUM | REQ-118 (contract), REQ-108 | `workspace_push({workflow,kind:'skill',name,files:[{path:'../escape.md'}]})` ⇒ `code:"AssetPathEscapeError"` — a raw JS class name, not in `ERROR_CATALOG`, while the row advertises `WORKSPACE_ESCAPE`; same for an absolute path and for `rwe-internal/x.md` (advertised `RESERVED_PREFIX`). The write IS refused (verdict shared with the seed path via `pathVerdict`), only the code leaks. | `src/asset-sync.ts:287` |
+| D-6 | LOW | REQ-118 | `HOOKS_UNSUPPORTED` is advertised on `workspace_push` but unreachable: `kind:'hook'` is refused earlier by `pushMode()` as `INVALID_ARGUMENT: … matched no known mode`; a skill containing `hooks/pre.sh` or `.claude/hooks/pre.sh` is stored. | `src/tool-specs.ts:158` |
+| D-7 | LOW | REQ-118 (schema) | `workflow_describe` accepts `version`/`channel` (`describe({name,version:'v1'})` returns the draft with `runnable:false`) but advertises only `name`; `describe({name})` on a never-published workflow is `CHANNEL_UNPUBLISHED`, so the advertised shape can never show `runnableReason:'CHANNEL_UNPUBLISHED'`. README rewritten to the real behaviour. | `src/tool-specs.ts` describe row |
+| D-8 | HIGH | REQ-111 | `workflow_describe(...).mermaid` is `null` + `mermaidNote:"LEGACY_NO_DIAGRAM"` for **every** workflow registered this round, including ones whose diagram passed `checkMermaid`. `catalog.db` has the text (`SELECT mermaid FROM workflow_versions` returns it, e.g. 56 bytes for `v24a-tune`), but the version reader selects `script, defaults, params, triggers` only — the column is written and never read. The dashboard shows no diagram for any v24 workflow. UT-157 tests the projection against a hand-built row, which is why it is green. | `src/workflow-catalog.ts:620` |
+| D-9 | MEDIUM | (v1 REQ-006 regression, non-deterministic) | On boot A, `run_start` → +1 s `run_suspend` (`suspended`) → `run_resume` (`running`) ⇒ the run was `failed` 8 ms later (`terminalAt 13:47:47.713`, no `failed` row in `transitions`, no error surfaced anywhere) while the replayed agent kept running and finished at 13:48:23 with real output — work orphaned after a terminal state. A repeat with the suspend at +3 s completed normally. Recorded with the run id `3977b82d`; not reduced to a root cause here. | run store |
+| D-10 | HIGH | REQ-113 | `workflow_deregister` deletes the `assets` rows but **leaves `<assetRoot>/<name>/` on disk** (three `SKILL.md` files still present after the admin deregistered `v24b-wf`). Consequence proven live: `other@` re-registered `v24b-wf` declaring `skills:['declared-skill']` (never pushed by them, `workspace_list` shows `[]`), ran it on the sdk path, and the previous owner's `declared-skill/SKILL.md` was materialized into their agent workspace (`materialized.skills:['declared-skill']`, file bytes byte-identical). | deregister path / `asset-sync.ts` |
+| D-11 | HIGH | REQ-109, REQ-114 (ADR-030) | `pushMode()` classifies a stdio MCP config by `config.transport === 'stdio'` (`tool-specs.ts:161`), but `classifyTransport()` and the materializer read `config.type` (`mcp-probe.ts:23`). `owner@` (author) pushed `{type:'stdio', command:'npx', args:['--version']}` ⇒ `stored` — the `asset` row (`minRole:'author'`), so the admin-only gate never ran, and the probe really spawned `npx --version` on the server. The same defect class REQ-109's last clause names ("Admin tool" advertised, no check performed). | `src/tool-specs.ts:161` |
+| D-12 | MEDIUM (doc) | REQ-117 | The cold subject's first `workflow_register` was refused `PARAM_CONTRACT_INVALID: default not a known alias: claude-haiku-4-5-20251001`: it took a model id from `models_list` because nothing on the surface says which alias names this deployment accepts — checked: the guide's only mention of aliases is the `UNKNOWN_ALIAS` rule line (`docs/AUTHORING.md:58`), its `## Engine ceilings (this deployment)` section renders the three ceilings but not `aliases`, no tool schema lists them, and `models_list` lists catalog models, not `aliases`. It recovered on the second try with `default` (a name it could only have inferred from the guide's examples). | `src/authoring-guide.ts` |
+| D-13 | LOW | REQ-113 | A global asset pushed by the admin lists as `scope:"global", builtin:false`; REQ-113 says global assets are "marked `builtin:true` in listings". | asset listing |
+
+Observations recorded, not defects: (a) hostile seed paths (`../escape.txt`, `.git/config`,
+`.git/hooks/pre-commit`) are silently dropped — never written (the `.git/` on disk is the engine's own
+baseline repo, its `config` untouched), the run completes, and `run_status` carries no rejected-paths
+signal; (b) `schedule_list` rows still carry a legacy `workflow` column beside `claimedBy`, and the
+fire path's `?? firing.workflow` fallback is what turns D-1b's released trigger into a
+`CLAIMED_WORKFLOW_MISSING` (not `UNCLAIMED`) refusal and then a phantom fire; (c) `issue_report`
+filed twice with identical fields created #51 and #52 (`deduped:false`) — GitHub search-index lag on
+the `rwe-fp` fingerprint, the v6 mechanism's documented limit; (d) the tool-surface test's five
+`issue_*` `it.skip`s are unconditional (line 249), so setting the token never un-skips them — the
+live rows below are the only real evidence for those five.
+
+### VAL-130 — real-run acceptance for REQ-107 (one prefix per entity, `run_list`, no old name)
+- **status:** green
+- **traces:** REQ-107, DES-138
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** boot A, real `tools/list` ⇒ 35 names, every one `^(workflow|run|workspace|schedule|webhook|issue)_` or `models_list`/`system_info`; `run_*` = exactly {`run_start`,`run_status`,`run_result`,`run_suspend`,`run_resume`,`run_stop`,`run_agent_log`,`run_list`}, each keyed by `runId` (required), every `workflow_*` keyed by `name`; `workflow_source` present, `workflow_get` absent; 22 old names (`workflow_run`,`workflow_get`,`blob_put`,`seed_plan`,`asset_*`,`mcp_provision`,`workflow_trigger`,`workflow_regenerate_diagram`,`chain_*`,`issue_comments`…) absent and `tools/call` on them ⇒ JSON-RPC `-32601 Unknown tool: workflow_run`. `workflow_list` rows are `{name,owner,versions,channels,runnable}` only (no `kind`, no `runId`); `runnable:false` before publish, `onlyRunnable:true` hides it, `true` after publish. Two `run_start`s then `run_list({workflow:'v24a-quick'})` ⇒ exactly those two run rows; `{status:'completed',limit:1}` ⇒ 1; `{status:'failed'}` ⇒ `[]`.
+- **iter:** v24
+
+### VAL-131 — real-run acceptance for REQ-108 (six `workspace_*` tools, one path verdict for every write)
+- **status:** green
+- **traces:** REQ-108, DES-142, DES-155
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** boot A. `workspace_diff({manifest})` (no scope argument) ⇒ `missing:[<sha>]`; `workspace_push({sha256,contentB64})` ⇒ `accepted:true`; diff again ⇒ `missing:[]`; wrong hash ⇒ `BLOB_HASH_MISMATCH`; any `runId` on push (either branch) ⇒ `INVALID_ARGUMENT` from the closed `oneOf`. Asset branch: `rwe-impostor` ⇒ `RESERVED_PREFIX`; a well-formed skill lands at `<workRoot>/assets/v24a-ws/skill/okskill/SKILL.md` on disk and `workspace_list({workflow,kind})` returns it with `scope/pushedBy/pushedAt`; `workspace_delete({workflow,kind,name})` removes it from disk. Run destination: a seed carrying `.claude/settings.json`, `.claude/settings.local.json`, `.claude/hooks/pre.sh`, `.claude/skills/fine/SKILL.md`, `input.txt` ⇒ run accepted, `workspace_list({runId})` = `['.claude/skills/fine/SKILL.md','input.txt']` and on disk neither `.claude/settings.json` nor `.claude/hooks` exists; `../escape.txt`, `.git/config`, `.git/hooks/pre-commit` never written anywhere under the workRoot. `workspace_pull` full + `offset:7,length:5` byte range; `../../catalog.db` ⇒ `WORKSPACE_ESCAPE`; missing ⇒ `NOT_FOUND`. `workspace_delete({runId,paths})` on a live Ollama run ⇒ `RUN_NOT_TERMINAL`, after `run_suspend` ⇒ `RUN_NOT_TERMINAL`, `workspace_purge` while running ⇒ `RUN_NOT_TERMINAL`; after `run_stop` both succeed (`deleted:['keep.txt']`, `purged:true`), `../x` ⇒ `rejected:[{path,reason:'ESCAPE'}]`. Contract defect D-5 (escape code leaks as `AssetPathEscapeError`) is attached to VAL-141.
+- **iter:** v24
+
+### VAL-132 — real-run acceptance for REQ-109 (three roles, ownership, audited admin cross-read)
+- **status:** red
+- **traces:** REQ-109, DES-139, DES-151
+- **tier:** acceptance
+- **real:** true
+- **result:** fail
+- **evidence:** boot B (auth on, loopback bind). No bearer ⇒ `401` + `WWW-Authenticate` on `tools/list` itself; bad bearer ⇒ `401`. `unlisted@` ⇒ `user`: `workflow_register`/`schedule_create`/`webhook_create`/`workspace_push`(asset)/`workflow_source`/`workflow_publish`/`workflow_deregister` all `FORBIDDEN_ROLE: role 'user' is below the required 'author'`; may `workflow_list`/`workflow_describe`, `run_start` a published workflow, and file issues (real #51, below). `owner@` (author) registers; `other@` (author) ⇒ `NOT_WORKFLOW_OWNER` on publish/deregister/asset push/asset list, `scriptWithheld:true` on `workflow_source`; `root@` (admin) publishes and deregisters another principal's workflow and pushes into its tree. Admin cross-reads of `run_result`, `workspace_pull`, `run_agent_log` on `owner@`'s run are allowed and the owner's `run_status.adminReads[]` carries one record each: `{ts, actor:"root@val24.example", action, runId, owner[, path]}`; `other@`/`unlisted@` on the same run ⇒ `NOT_RUN_OWNER`; a `user`'s run is theirs (`run_list` scoped, the workflow owner gets `NOT_RUN_OWNER` on it, admin `run_list` unfiltered). **Red on the last clause** ("the claim 'Admin tool' becomes true"): the surviving admin-only claim — stdio MCP configs — is bypassable (D-11): an `author` pushed `{type:'stdio',command:'npx'}` and the engine ran the probe.
+- **iter:** v24
+
+### VAL-133 — real-run acceptance for REQ-110 (every tunable declared and overridable per agent)
+- **status:** red
+- **traces:** REQ-110, DES-144, DES-146
+- **tier:** acceptance
+- **real:** true
+- **result:** fail
+- **evidence:** boot A. `model`/`effort`/`timeoutMs` inside `agent()` ⇒ `SCAN_VIOLATION: PARAM_IN_SCRIPT: move 'model' to meta.params.agents.greet.model.default (line 2)`; undeclared label ⇒ `AGENT_UNDECLARED`; `meta.params.knobs` ⇒ `DEFAULTS_RETIRED`; declared `timeoutMs.default:700000` ⇒ `PARAM_CONTRACT_INVALID: default exceeds the engine ceiling 600000` (refusal, never a clamp). `workflow_describe.params.agents` reported per label with `type/default/range` (`effort.range:['low','medium','high']`, `timeoutMs.range.max:600000`, `appendPrompt.range.max:1024`), `lockedKeys` = the six. `run_start` overrides: flat ⇒ `PARAM_UNKNOWN`, unknown label ⇒ `UNKNOWN_AGENT_LABEL`, `effort:'max'` ⇒ `PARAM_OUT_OF_RANGE`, `timeoutMs:999999999` ⇒ `PARAM_OUT_OF_RANGE: … ceiling maxTimeoutMs 600000`, 2000-byte `appendPrompt` ⇒ `PARAM_OUT_OF_RANGE`, each of the six locked keys ⇒ `PARAM_LOCKED`; `run_list` afterwards `[]` (nothing half-started). Real Ollama run with `overrides.agents.judge:{effort:'high',appendPrompt:'Reply in uppercase.'}` completed (`{g:'hello', v:'PONG'}`); `run_agent_log('judge').harness` = `effort:'high'`, `provenance:{effort:'override', appendPrompt:'override', model:'default', timeoutMs:'default'}`, prompt carries the `<user-instructions>` block; `greet` untouched (`effort:'low'`, all `provenance:'default'`). **Red on the last clause:** `workflow_register({…, defaults:{model:'default'}})` ⇒ `status:"completed", version:1` (D-2 — accepted and silently ignored).
+- **iter:** v24
+
+### VAL-134 — real-run acceptance for REQ-111 (author-supplied diagram, held to the script both ways)
+- **status:** red
+- **traces:** REQ-111, DES-147, DES-148
+- **tier:** acceptance
+- **real:** true
+- **result:** fail
+- **evidence:** boot A. `mermaid` omitted or `""` ⇒ `MERMAID_REQUIRED` (nothing stored: names absent from `workflow_list`); `graph TD\na(["a"])\na --> ` and `sequenceDiagram…` ⇒ `MERMAID_INVALID` (nothing stored); script `{a,b}` vs diagram `{a}` ⇒ `DIAGRAM_MISMATCH`; diagram `{a,b}` vs script `{a}` ⇒ `DIAGRAM_MISMATCH` (both directions, nothing stored); a matching diagram registers; a new version of the same name without `mermaid` ⇒ `MERMAID_REQUIRED` and `versions` stays `['v1']` (never re-derived); `workflow_regenerate_diagram` ⇒ `-32601`; describe carries no `diagramStatus`/`diagramNote`. **Red:** `workflow_describe(...).mermaid` is `null` / `LEGACY_NO_DIAGRAM` for every diagram-bearing workflow (`v24a-tune`, `v24a-guide-0`, `v24a-r111-ok`, with or without `version`), while `catalog.db` holds the text — D-8, `workflow-catalog.ts:620` never selects the column. The clause "the diagram … returned verbatim" fails on the delivery interface and on the dashboard.
+- **iter:** v24
+
+### VAL-135 — real-run acceptance for REQ-112 (the fixed vocabulary; real-browser render)
+- **status:** red
+- **traces:** REQ-112, DES-147
+- **tier:** acceptance
+- **real:** true
+- **result:** fail
+- **evidence:** boot A. All ten `GUIDE_EXAMPLES` registered over real MCP HTTP (`v24a-guide-0..9`, each `version:1`). Refused with the rule named: `a --> b & c` ⇒ `MERMAID_INVALID: COLLAPSED_EDGE (line 5)`; unlabelled 2-cycle ⇒ `LOOP_LABEL (line 4)`; edge to an undeclared id ⇒ `UNDECLARED_NODE (line 4)`; invented shape `a>"a"]` ⇒ `MERMAID_INVALID (line 2)`. Accepted: labelled back-edge loop, dashed `-.->|skipped|` edge, the full vocabulary in one diagram (`[/"trigger"/]`, `(["a<br/>default · low · 60000"])`, `{"branch?"}`, `{{"merge (no agent)"}}`, `[/"artifact"/]`), a black-box rectangle `child["workflow: v24a-quick (black box)"]` for a `workflow()` call excluded from the agent diff; an agent drawn as a hexagon ⇒ `DIAGRAM_MISMATCH`. **Real-browser subset property (the item VAL-123 deferred):** all ten guide diagrams plus the full-vocabulary one rendered in a real headless Chrome 150 via `npx -y @mermaid-js/mermaid-cli mmdc` (puppeteer Chrome at `~/.cache/puppeteer/chrome/linux-150.0.7871.24`) — 11/11 SVGs, 52–186 KB each — and the deliberately malformed `bad.mmd` failed to render (non-vacuity control). **Red on the last clause** ("points at `workflow_authoring_guide`"): no refusal carries the pointer (D-3); and the guide the pointer would lead to omits two of the five shapes and the edge rules (D-4).
+- **iter:** v24
+
+### VAL-136 — real-run acceptance for REQ-113 (workflow-owned assets, selective materialization, deleted with the workflow)
+- **status:** red
+- **traces:** REQ-113, DES-154
+- **tier:** acceptance
+- **real:** true
+- **result:** fail
+- **evidence:** boot B, `gateway:"sdk"` (real `claude` CLI → managed LiteLLM → Ollama). Assets live at `<workRoot>/assets/v24b-wf/skill/<name>/SKILL.md`; the admin's global asset at `<workRoot>/_global_assets/skill/global-skill/SKILL.md`; `workspace_list({workflow,kind:'skill'})` returns the workflow's own three (`declared-skill`, `undeclared-skill` by `owner@`, `admin-skill` by `root@`) AND the global one, each with `scope` and `pushedBy`. The run whose `coder` declares `skills:['declared-skill']` completed in 140 s (`run_result: {"name":"READY"}`); `run_agent_log('coder').harness.materialized` = `{skills:['declared-skill'], mcp:[], missing:[]}`, `surfaceType:'curated'`; on disk `<run>/.claude/skills/` = `['declared-skill']` only — not the undeclared, admin or global skill. **Red:** after `workflow_deregister`, `<assetRoot>/v24b-wf/skill/*/SKILL.md` all still exist on disk (D-10) and a same-name re-registration by `other@` materialized the previous owner's file into its own agent workspace; and the global asset lists `builtin:false` (D-13).
+- **iter:** v24
+
+### VAL-137 — real-run acceptance for REQ-114 (every upload records who did it)
+- **status:** green
+- **traces:** REQ-114, DES-153
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** boot B. `workspace_list({workflow:'v24b-wf',kind:'skill'})` read back by the owner shows `pushedBy:"owner@val24.example"` on `declared-skill`/`undeclared-skill` and `pushedBy:"root@val24.example"` on `admin-skill` and the global `global-skill` — two principals on one listing — every row with an ISO `pushedAt`. The MCP config record (`workspace_list({workflow,kind:'mcp'})`) carries `pushedBy:"root@val24.example"`, `pushedAt`, and the stored `config`. `http` MCP config with no `mcpEgressAllowlist` ⇒ `EGRESS_DENIED` before any probe. The open `author` MCP-push permission this REQ conditions is where D-11 lives (attached to VAL-132).
+- **iter:** v24
+
+### VAL-138 — real-run acceptance for REQ-115 (triggers created first, claimed at registration, refusals recorded)
+- **status:** red
+- **traces:** REQ-115, DES-149, DES-150, ADR-026
+- **tier:** acceptance
+- **real:** true
+- **result:** fail
+- **evidence:** boot A. **Clause 1 fails outright (D-1):** `schedule_create` / `webhook_create` without `workflow` ⇒ `INVALID_ARGUMENT … required property 'workflow'`; with an unknown name ⇒ `WORKFLOW_NOT_FOUND` (the create-time check REQ-115 says moves to `workflow_register` is still at creation). What IS real through the only door left: `workflow_register({triggers:[S_RES,S_CRON]})` by the bound workflow ⇒ held, `describe.triggers` lists both; another workflow claiming ⇒ `TRIGGER_ALREADY_CLAIMED` (no version stored); unknown id ⇒ `TRIGGER_NOT_FOUND`; duplicates ⇒ `INVALID_ARGUMENT`; a claimed `* * * * *` cron fired for real (`lastRunId`, run `completed` on `scriptVersion:v2`); `workflow_deregister` of a workflow whose VERSION declared the ids ⇒ `releasedTriggers:[both]`, rows survive `claimedBy:null`; a new workflow claims the released cron at registration and it fires again for the new owner (`startedBy:{type:'schedule'}`, `refusalCount` reset to 0); a new version omitting the id keeps the name-level claim. Webhook door: `POST /hooks/:id` with a valid HMAC ⇒ `202 {runId}` and the run completes attributed to the webhook; bad HMAC ⇒ `401 bad signature` (never 409); stale `X-RWE-Timestamp` ⇒ `401`; `webhook_list` returns `secretFingerprint`, never the secret. **Clause "deregister returns them to UNCLAIMED" fails (D-1b):** for a trigger bound at creation, `workflow_deregister` ⇒ `releasedTriggers: []`, `claimedBy` unchanged (both stores); firing then refuses `CLAIMED_WORKFLOW_MISSING` (not `UNCLAIMED`), a new claimer gets `TRIGGER_ALREADY_CLAIMED` from a dead name, and a same-name re-registration inherited the cron and got a real run. The `NOT_IN_RELEASE` refusal was not observed within the 75 s window after the release moved (the row kept `CLAIMED_WORKFLOW_MISSING` from the earlier state) — not claimed here.
+- **iter:** v24
+
+### VAL-139 — real-run acceptance for REQ-116 (`workflow_authoring_guide` teaches the contract)
+- **status:** red
+- **traces:** REQ-116, DES-157
+- **tier:** acceptance
+- **real:** true
+- **result:** fail
+- **evidence:** boot A. `workflow_authoring_guide` over real MCP HTTP returns one 16 927-char text with headings `The sandbox API` (all eight globals), `Declaring the parameter contract` (a working `params: { agents:` example), `Locked vs. tunable` (`PARAM_LOCKED` table), `Engine ceilings (this deployment)`, `The author-supplied diagram`, `Registration and versioning` (assets shared across versions; `maxWorkflowDepth` nesting per adjudication #4 C-5, with the flatten instruction), `Authoring rules this engine enforces`, `Registered examples` (ten, all ten registered live — VAL-135). `workflow_register`'s description carries `See also: workflow_authoring_guide`. **Red:** the guide's diagram section teaches three shapes and says "only the three node shapes" — `{"…"}` and `{{"…"}}` (both accepted live), the `<br/>` triple, `COLLAPSED_EDGE`, dashed/skipped are absent (D-4); and a registration that fails on parse (`PARSE_ERROR: Unexpected identifier 'is'`), contract, diagram (`DIAGRAM_MISMATCH: DIAGRAM_SCRIPT_MISMATCH`) or `MERMAID_REQUIRED` carries no pointer at this tool (D-3).
+- **iter:** v24
+
+### VAL-140 — real-run acceptance for REQ-117 (a cold model, schema + guide only, first try)
+- **status:** red
+- **traces:** REQ-117, DES-158
+- **tier:** acceptance
+- **real:** true
+- **result:** fail
+- **evidence:** The DES-158 protocol, run for real against boot C (a clean workRoot, no workflows). Subject: a fresh `claude -p` instance (`claude-opus-5[1m]`, CLI 2.1.260) launched in `/tmp/rwe-cold-g1ITgN` (no `CLAUDE.md` in any ancestor, no memory for that path, `--setting-sources local`, `--strict-mcp-config --mcp-config {rwe: http://127.0.0.1:8799/mcp}`, `--allowedTools mcp__rwe__*`, `--max-turns 80 --max-budget-usd 6`), given one task statement and NOTHING else — no plugin (the cached client plugin still teaches `workflow_run`/`blob_put`, TASK-153 unmet, so the plugin-mediated variant stays `UNVERIFIED(client plugin not synced)`), no source tree, no prior transcript. Its non-MCP tool use was `sleep`/`date` and reads of its own task files and auto-memory under `~/.claude/projects/-tmp-rwe-cold-*/` (deleted afterwards). Sequence (61 turns, 233 s, US$2.65): `workflow_authoring_guide` → `workflow_list` → `models_list({toolUse:true})` → **`workflow_register` #1 ⇒ `PARAM_CONTRACT_INVALID: default not a known alias: claude-haiku-4-5-20251001`** → `system_info`, `models_list` ×3 hunting for aliases → `workflow_register` #2 with `model.default:'default'` ⇒ `v1` → `workflow_publish` ⇒ release → `workflow_describe` → `workflow_source` → `run_start({args:{topic,rounds:2}})` → `run_status` polling → `run_result` ⇒ `{outline:…, draft:…}` — a three-agent planner→writer→reviewer loop (`explainer-desk`), all three agents `done` on the engine (`run_list` confirms one completed run). It authored a valid multi-agent workflow with its Mermaid, registered, published, ran and read back a correct result — **but not on the first attempt**: one wrong step, caused by an undiscoverable alias name (D-12, a documentation defect by REQ-117's own rule). Re-run with another fresh instance only after DES-157/DES-138 are corrected.
+- **iter:** v24
+
+### VAL-141 — real-run acceptance for REQ-118 (every MCP tool exercised once against a live engine)
+- **status:** red
+- **traces:** REQ-118, DES-158
+- **tier:** acceptance
+- **real:** true
+- **result:** fail
+- **evidence:** boot A (30 tools) + boot B with a real GitHub token (the five `issue_*` tools): **35/35 tools called over real MCP HTTP against the `deploy.sh`-booted engine, each with its required arguments, its happy response asserted against its own documented contract, plus at least one typed-error path per tool** — the full table is in this section's appendix below (`v24 live tool table`). Highlights: `workflow_source` returns the script for the owner / `VERSION_NOT_FOUND` for `v7`; `run_suspend`/`run_resume`/`run_stop` on a live Ollama run; `run_agent_log` by label / `AGENT_LOG_NOT_FOUND`; `schedule_create` ⇒ `enabled:true, kind:'cron'` by default, `INVALID_CRON`; `webhook_delete` twice ⇒ `TRIGGER_NOT_FOUND`; `models_list({provider:'ollama'})` filters; `system_info` has `cpu/memory/disk/process/sampledAt`; `issue_report` filed real issue **#51** in `HsuJavis/remote-workflow-engine` (labels `agent-reported, severity:low`), `issue_get(51)`, `issue_list({state:'open',limit:5})` contains it, `issue_comment_post` ⇒ `commentId 5541464089`, `issue_get_comments` lists it, `issue_get(999999)` ⇒ `ISSUE_NOT_FOUND`, without a token all five ⇒ `GITHUB_TOKEN_MISSING`; #51 and the duplicate #52 closed via `gh` afterwards and `issue_get` reports `closed`. **Red on "asserted against its own documented contract":** `workspace_push`'s advertised `WORKSPACE_ESCAPE`/`RESERVED_PREFIX` paths answer the un-catalogued `AssetPathEscapeError` (D-5), `HOOKS_UNSUPPORTED` is unreachable (D-6), and `workflow_describe` hides two arguments it accepts (D-7).
+- **iter:** v24
+
+### v24 GATE 7.5 — config-file sync check (§4b)
+
+This iteration changed `rwe.config.example.json` (`graphAnalyzer` block removed; `principals` and
+`mcpEgressAllowlist` added) and `package.json` (`gen:authoring` script) — both already committed at
+Gate 6 and both round-tripped here: the example file boots (`deploy.sh` step 2 copies it), every key
+in it has a §1b row, and `KNOWN_FILE_CONFIG_KEYS` (`src/main.ts:75`) minus the injection seams
+(`proxyManager`, `issueReporter`, `mcpProbe`, `modelCatalogFetchers`, `modelCatalog`, `systemInfo`,
+`agentSlots` — `ServerConfig` seams that `composeConfig()` never forwards from the file) equals the
+§1b key set. §1b changes this round: the dead `graphAnalyzer` row deleted (the boot-time
+"unrecognized config key" warn moved to §5); `assetRoot`/`continuationDbPath` rewritten to current
+state; the provider-key table that lived in §1a (a second key list) folded into §1b as env rows
+(`ANTHROPIC_API_KEY`, `RWE_SECRET_ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`,
+`RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `OPENAI_API_BASE`, `GEMINI_API_KEY`,
+`OLLAMA_BASE_URL`, `OPENROUTER_API_KEY`) so every env the code (or the LiteLLM subprocess) reads has
+exactly one row. `docker-compose.yml`, `deploy/*`, `scripts/smoke.sh`, `deploy.sh` needed no change
+(`smoke.sh` was already migrated to the v24 path at Gate 6 and passes; DEPLOY §2's stale warning that
+it was not is gone).
+
+### v24 GATE 7.5 — doc gaps found and folded into the manuals
+
+Both manuals rewritten to current state (supersede, not append): DEPLOY §1d (the old→new tool-name
+table, pure history) deleted and its §5 references re-pointed at `tools/list`; every 「v24 起／v23 那個
+／已移除／已淘汰／（vNN）」 sentence in README/DEPLOY rewritten in the present tense; §0 gained the
+`.rwe.pid`/`.rwe.log` per-checkout caveat; §2's false "smoke.sh not yet migrated" warning replaced by
+the real output; §5 gained the unrecognized-config-key row; §6 gained 「尚未修復的缺陷」 (the eight
+operator-visible consequences of D-1..D-12 with workarounds — delete triggers and the asset directory
+before re-using a name, treat `defaults` as ignored, keep `author` to trusted principals until D-11 is
+fixed); README's describe paragraph now states the real `CHANNEL_UNPUBLISHED`/`version` behaviour
+(D-7) and the known `mermaid:null` defect, and 「已知限制」 carries the same list. Self-grep for
+tell-tales (`舊版|原本|以前|previously|變更紀錄|Changelog|now use|§1d|v1[0-9]|v2[0-4]|v[0-9]起|已移除|已淘汰|
+已停止|舊的|舊名|改名|不再`) leaves only the §1b iter column, product semantics (older workflow
+*versions*, rollback), and the ledger pointer.
+
+### v24 GATE 7.5 — unreachable dependencies and explicit gaps
+
+- **`RWE_TEST_CRASH_AFTER_CLAIM` does not exist in `src/`** — DES-149's OS-level kill arm (a real
+  engine killed between `claim` and `insertVersion`) cannot be driven without editing the product;
+  E2E-008's in-process floor stands. Not REQ-blocking (REQ-115's acceptance does not require it) but
+  the design promised it; recorded for the owner.
+- **Client plugin (TASK-153) not synced** — the plugin-mediated REQ-117 probe is
+  `UNVERIFIED(client plugin not synced)`; the raw-MCP cold run above is the evidence.
+- **No paid-provider key** in this environment: every model call was local Ollama (`qwen2.5:7b`)
+  through the direct-fetch path (boots A/C) or the sdk path via LiteLLM (boot B). Unchanged carry-forward.
+- **`NOT_IN_RELEASE`** was not observed live within the 75 s window (see VAL-138); IT-124 covers the
+  scheduler arm in-process.
+- **trace.py has no `--rtm` flag** in this repo's copy (`trace.py --help`), so the RTM file was not
+  regenerated; `rtm.md` is unchanged from v23.
+
+### v24 GATE 7.5 — observations (recorded, not acted on)
+
+- The long-lived `rwe.service` (user unit, `0.0.0.0:8899`, PID 3652391) is **running** this repo's
+  working tree as loaded at 01:33 today — before every Gate 6/6.5/7 commit of this round. Left
+  untouched; which build it should serve stays the owner's decision (carried from v23).
+- Six orphan `litellm --config /tmp/rwe-litellm-*` processes from 09-01..09-03 (ports 33993, 36543,
+  38179, 42523, 45885, 46067) survive from earlier rounds' `kill -9` crash tests; DEPLOY §4 documents
+  the cleanup; not killed here.
+- **Ledger ID collision:** `08-validation.md`'s v23 items `VAL-118..VAL-127` shadow `05-tests.md`'s
+  v24 items of the same ids in trace.py (last file wins), so the verifier's VAL-118..127 are invisible
+  to the dashboard. This round's items start at VAL-130 to avoid a third overlap; the v24 05-tests
+  items carry a pointer line to their 08 counterpart instead of being renumbered.
+- `deploy.sh`'s `npm install` removed 29 packages that were in `node_modules` but not in `package.json`
+  (leftovers); harmless, noted because the first boot's output differs from the manual's sample.
+
+### v24 GATE 7.5 — cleanup
+
+All three validation boots stopped with the documented `kill <pid>` (PIDs copied out of `.rwe.pid`
+after each boot), `.rwe.pid`/`.rwe.log` removed, the temporary `.val24-mint.ts` deleted from the repo,
+the whole `/home/user/.local/share/rwe-val24` tree (three configs, three workRoots with every
+validation workflow/run/trigger/asset, and boot B's `auth-tokens.db` holding the minted bearers)
+deleted, the cold subject's `/tmp/rwe-cold-*` dirs and its auto-memory removed, GitHub issues #51/#52
+closed. No validation bearer or token survives anywhere; the GitHub token was passed inline from `gh
+auth token` and never written to disk.
+
+### Appendix — v24 live tool table (VAL-141; boot A unless noted, real MCP HTTP, every row a real call)
+
+| tool | arguments | observed (truncated) | result |
+|---|---|---|---|
+| `workflow_authoring_guide` | `{}` | `{"textLen": 16927}` | pass |
+| `workflow_register` | `{"name": "v24s-demo", "script": "<agent script>", "mermaid": "graph TD\ngreet([\"greet\"])…` | `{"runId": "", "status": "completed", "version": 1, "result": {"name": "v24s-demo", "version": "v1"}}` | pass |
+| `workflow_register (error)` | `{"name": "v24s-demo", "mermaid": null}` | `{"runId": "", "status": "failed", "code": "MERMAID_REQUIRED", "error": {"code": "MERMAID_REQUIRED", "message": "MERMAID_REQUIRED: workflow 'v24s-demo'…` | pass |
+| `workflow_register (no-agent)` | `{"name": "v24s-quick"}` | `{"runId": "", "status": "completed", "version": 1, "result": {"name": "v24s-quick", "version": "v1"}}` | pass |
+| `run_start (error)` | `{"name": "v24s-demo (unpublished)"}` | `{"runId": "", "status": "failed", "error": {"code": "CHANNEL_UNPUBLISHED", "message": "CHANNEL_UNPUBLISHED: release (workflow 'v24s-demo')"}}` | pass |
+| `workflow_publish` | `{"name": "v24s-demo", "version": "v1", "channel": "release"}` | `{"runId": "", "status": "completed", "result": {"channel": "release", "version": "v1", "from": null}}` | pass |
+| `workflow_publish (error)` | `{"version": "v9"}` | `{"runId": "", "status": "failed", "code": "VERSION_NOT_FOUND", "error": {"code": "VERSION_NOT_FOUND", "message": "VERSION_NOT_FOUND: 'v9' is not a reg…` | pass |
+| `workflow_describe` | `{"name": "v24s-demo"}` | `{"name": "v24s-demo", "version": "v1", "resolvedBy": "default-release", "runnable": true, "mermaid": null}` | FAIL |
+| `workflow_describe (error)` | `{"name": "nope"}` | `{"runId": "", "status": "failed", "code": "WORKFLOW_NOT_FOUND", "error": {"code": "WORKFLOW_NOT_FOUND", "message": "Unknown workflow: nope"}}` | pass |
+| `workflow_source` | `{"name": "v24s-demo"}` | `{"hasScript": true, "version": "v1"}` | pass |
+| `workflow_source (error)` | `{"version": "v7"}` | `{"runId": "", "status": "failed", "code": "VERSION_NOT_FOUND", "error": {"code": "VERSION_NOT_FOUND", "message": "VERSION_NOT_FOUND: v7 (workflow 'v24…` | pass |
+| `workflow_list` | `{"onlyRunnable": true}` | `[{"name": "v24s-demo", "owner": null, "versions": ["v1"], "channels": {"release": "v1", "beta": null}, "runnable": true}, {"name": "v24s-quick", "owne…` | pass |
+| `run_start` | `{"name": "v24s-quick"}` | `{"runId": "51f1a5b8-5a87-43d5-9ba3-671536e03468", "status": "running", "result": {"runId": "51f1a5b8-5a87-43d5-9ba3-671536e03468"}}` | pass |
+| `run_status` | `{"runId": "51f1a5b8-5a87-43d5-9ba3-671536e03468"}` | `{"status": "completed", "scriptVersion": "v1"}` | pass |
+| `run_status (error)` | `{"runId": "no-such"}` | `{"runId": "no-such", "status": "failed", "error": {"code": "RUN_NOT_FOUND", "message": "Run not found: no-such"}}` | pass |
+| `run_result` | `{"runId": "51f1a5b8-5a87-43d5-9ba3-671536e03468"}` | `{"runId": "51f1a5b8-5a87-43d5-9ba3-671536e03468", "status": "completed", "result": "ok"}` | pass |
+| `run_result (error)` | `{"runId": "3977b82d-5a01-4b37-a4db-d4ea4feca17a (running)"}` | `{"runId": "3977b82d-5a01-4b37-a4db-d4ea4feca17a", "status": "running", "error": {"code": "RUN_NOT_TERMINAL", "message": "Run 3977b82d-5a01-4b37-a4db-d…` | pass |
+| `run_suspend` | `{"runId": "3977b82d-5a01-4b37-a4db-d4ea4feca17a"}` | `{"runId": "3977b82d-5a01-4b37-a4db-d4ea4feca17a", "status": "suspended"}` | pass |
+| `run_suspend (error)` | `{"runId": "51f1a5b8-5a87-43d5-9ba3-671536e03468 (completed)"}` | `{"runId": "51f1a5b8-5a87-43d5-9ba3-671536e03468", "status": "completed", "error": {"code": "ILLEGAL_TRANSITION", "message": "Illegal state transition:…` | pass |
+| `run_resume` | `{"runId": "3977b82d-5a01-4b37-a4db-d4ea4feca17a"}` | `{"runId": "3977b82d-5a01-4b37-a4db-d4ea4feca17a", "status": "running"}` | pass |
+| `run_resume (error)` | `{"runId": "no-such"}` | `{"runId": "no-such", "status": "failed", "error": {"code": "RUN_NOT_FOUND", "message": "Run not found: no-such"}}` | pass |
+| `run_stop` | `{"runId": "3977b82d-5a01-4b37-a4db-d4ea4feca17a"}` | `{"runId": "3977b82d-5a01-4b37-a4db-d4ea4feca17a", "status": "failed", "error": {"code": "ILLEGAL_TRANSITION", "message": "Illegal state transition: fa…` | FAIL |
+| `run_stop (error)` | `{"runId": "no-such"}` | `{"runId": "no-such", "status": "failed", "error": {"code": "RUN_NOT_FOUND", "message": "Run not found: no-such"}}` | pass |
+| `run_agent_log` | `{"runId": "3977b82d-5a01-4b37-a4db-d4ea4feca17a", "label": "greet"}` | `{"harness.model": "default", "provider": "ollama", "label": "greet"}` | pass |
+| `run_agent_log (error)` | `{"label": "nope"}` | `{"runId": "3977b82d-5a01-4b37-a4db-d4ea4feca17a", "status": "failed", "error": {"code": "AGENT_LOG_NOT_FOUND", "message": "Agent not found: nope", "fi…` | pass |
+| `run_list` | `{"workflow": "v24s-demo"}` | `[{"runId": "3977b82d-5a01-4b37-a4db-d4ea4feca17a", "status": "failed"}]` | FAIL |
+| `workspace_diff` | `{"manifest": [{"path": "b.txt", "sha256": "8470619fce25…"}]}` | `{"runId": "", "status": "completed", "result": {"missing": ["8470619fce25eaabaa95468d8fe15aa41b1aadf2e1981eec33cf3c387e147631"]}}` | pass |
+| `workspace_diff (error)` | `{"manifest": "not-an-array"}` | `{"runId": "", "status": "failed", "code": "INVALID_ARGUMENT", "error": {"code": "INVALID_ARGUMENT", "message": "INVALID_ARGUMENT: /manifest must be ar…` | pass |
+| `workspace_push (cas)` | `{"sha256": "8470619fce25…"}` | `{"runId": "", "status": "completed", "result": {"sha256": "8470619fce25eaabaa95468d8fe15aa41b1aadf2e1981eec33cf3c387e147631", "accepted": true}}` | pass |
+| `workspace_push (error)` | `{"sha256": "aaaa…"}` | `{"runId": "", "status": "failed", "code": "BLOB_HASH_MISMATCH", "error": {"code": "BLOB_HASH_MISMATCH", "message": "declared sha256 aaaaaaaaaaaaaaaaaa…` | pass |
+| `workspace_push (asset)` | `{"workflow": "v24s-demo", "kind": "skill", "name": "sk"}` | `{"runId": "", "status": "completed", "result": {"stored": "sk"}}` | pass |
+| `workspace_push (error 2)` | `{"name": "rwe-x"}` | `{"runId": "", "status": "failed", "code": "RESERVED_PREFIX", "error": {"code": "RESERVED_PREFIX", "message": "RESERVED_PREFIX"}}` | pass |
+| `workspace_list (run)` | `{"runId": "6f8617e8-c1a9-418f-a171-dc4ab31fb496"}` | `{"runId": "6f8617e8-c1a9-418f-a171-dc4ab31fb496", "status": "completed", "result": [{"path": "out.txt", "size": 7, "sha256": "2c11e6f090564f9db1218f17…` | pass |
+| `workspace_list (asset)` | `{"workflow": "v24s-demo", "kind": "skill"}` | `{"runId": "", "status": "completed", "result": [{"scope": "workflow", "workflow": "v24s-demo", "builtin": false, "kind": "skill", "name": "sk", "pushe…` | pass |
+| `workspace_list (error)` | `{"runId": "no-such"}` | `{"runId": "no-such", "status": "failed", "error": {"code": "RUN_NOT_FOUND", "message": "Run not found: no-such"}}` | pass |
+| `workspace_pull` | `{"runId": "6f8617e8-c1a9-418f-a171-dc4ab31fb496", "path": "out.txt"}` | `{"runId": "6f8617e8-c1a9-418f-a171-dc4ab31fb496", "status": "completed", "result": {"path": "out.txt", "size": 7, "offset": 0, "length": 7, "eof": tru…` | pass |
+| `workspace_pull (error)` | `{"path": "../x"}` | `{"runId": "6f8617e8-c1a9-418f-a171-dc4ab31fb496", "status": "completed", "error": {"code": "WORKSPACE_ESCAPE", "message": "workspace_pull denied: PATH…` | pass |
+| `workspace_delete (run)` | `{"runId": "6f8617e8-c1a9-418f-a171-dc4ab31fb496", "paths": ["out.txt"]}` | `{"runId": "6f8617e8-c1a9-418f-a171-dc4ab31fb496", "status": "completed", "result": {"deleted": ["out.txt"], "missing": [], "rejected": []}}` | pass |
+| `workspace_delete (asset)` | `{"workflow": "v24s-demo", "kind": "skill", "name": "sk"}` | `{"runId": "", "status": "completed", "result": {"deleted": true}}` | pass |
+| `workspace_delete (error)` | `{"runId": "no-such"}` | `{"runId": "no-such", "status": "failed", "code": "RUN_NOT_FOUND", "error": {"code": "RUN_NOT_FOUND", "message": "Run not found: no-such"}}` | pass |
+| `schedule_create` | `{"workflow": "v24s-quick", "cron": "0 0 1 1 *"}` | `{"result": {"kind": "cron", "id": "92892d76-47f9-4cb3-bb73-1204bd1228fe", "workflow": "v24s-quick", "claimedBy": "v24s-quick", "cron": "0 0 1 1 *", "e…` | pass |
+| `schedule_create (error)` | `{"cron": "not a cron"}` | `{"error": {"code": "INVALID_CRON", "message": "Not a valid cron expression: not a cron", "field": "cron"}}` | pass |
+| `schedule_list` | `{}` | `[{"id": "92892d76-47f9-4cb3-bb73-1204bd1228fe", "kind": "cron", "workflow": "v24s-quick", "claimedBy": "v24s-quick", "enabled": true, "cron": "0 0 1 1…` | pass |
+| `schedule_setEnabled` | `{"id": "92892d76-47f9-4cb3-bb73-1204bd1228fe", "enabled": false}` | `{"enabledAfter": false}` | pass |
+| `schedule_setEnabled (error)` | `{"id": "no-such"}` | `{"error": {"code": "TRIGGER_NOT_FOUND", "message": "Unknown schedule: no-such"}}` | pass |
+| `schedule_delete` | `{"id": "92892d76-47f9-4cb3-bb73-1204bd1228fe"}` | `{"gone": true}` | pass |
+| `schedule_delete (error)` | `{"id": "no-such"}` | `{"error": {"code": "TRIGGER_NOT_FOUND", "message": "Unknown schedule: no-such"}}` | pass |
+| `webhook_create` | `{"workflow": "v24s-quick"}` | `{"webhookId": "c9bbb1f6-fe67-4be2-be2e-a7917ee49fa0", "url": "http://127.0.0.1:8797/hooks/c9bbb1f6-fe67-4be2-be2e-a7917ee49fa0", "secret": "<returned …` | pass |
+| `webhook_create (error)` | `{"workflow": "nope"}` | `{"error": {"code": "WORKFLOW_NOT_FOUND", "message": "Unknown workflow: nope"}}` | pass |
+| `webhook_list` | `{}` | `[{"id": "c9bbb1f6-fe67-4be2-be2e-a7917ee49fa0", "workflow": "v24s-quick", "createdBy": null, "enabled": true, "secretFingerprint": "f1fff7e9ac0d3295",…` | pass |
+| `webhook_delete` | `{"id": "c9bbb1f6-fe67-4be2-be2e-a7917ee49fa0"}` | `{"result": {"deleted": true}}` | pass |
+| `webhook_delete (error)` | `{"id": "c9bbb1f6-fe67-4be2-be2e-a7917ee49fa0 (again)"}` | `{"error": {"code": "TRIGGER_NOT_FOUND", "message": "Unknown webhook: c9bbb1f6-fe67-4be2-be2e-a7917ee49fa0"}}` | pass |
+| `models_list` | `{}` | `{"count": 100, "first": {"provider": "anthropic", "model": "claude-opus-4-8", "capability": "Claude Opus 4.8 — most capable Opus-tier model", "stabili…` | pass |
+| `models_list (filter)` | `{"provider": "ollama"}` | `{"count": 4, "providers": ["ollama"]}` | pass |
+| `system_info` | `{}` | `{"cpu.cores": 16, "memory.usedPct": 43.46990364500202, "process.self": true}` | pass |
+| `issue_report (no token → error)` | `{"title": "t", "reproSteps": "r", "analysis": "a"}` | `{"error": {"code": "GITHUB_TOKEN_MISSING", "message": "GitHub token not configured (set RWE_SECRET_GITHUB_TOKEN)"}}` | pass |
+| `issue_get (no token → error)` | `{"number": 1}` | `{"error": {"code": "GITHUB_TOKEN_MISSING", "message": "GitHub token not configured (set RWE_SECRET_GITHUB_TOKEN)"}}` | pass |
+| `issue_list (no token → error)` | `{}` | `{"error": {"code": "GITHUB_TOKEN_MISSING", "message": "GitHub token not configured (set RWE_SECRET_GITHUB_TOKEN)"}}` | pass |
+| `issue_get_comments (no token → error)` | `{"number": 1}` | `{"error": {"code": "GITHUB_TOKEN_MISSING", "message": "GitHub token not configured (set RWE_SECRET_GITHUB_TOKEN)"}}` | pass |
+| `issue_comment_post (no token → error)` | `{"number": 1, "body": "b"}` | `{"error": {"code": "GITHUB_TOKEN_MISSING", "message": "GitHub token not configured (set RWE_SECRET_GITHUB_TOKEN)"}}` | pass |
+| `workspace_purge` | `{"runId": "6f8617e8-c1a9-418f-a171-dc4ab31fb496"}` | `{"runId": "6f8617e8-c1a9-418f-a171-dc4ab31fb496", "status": "completed", "result": {"purged": true}}` | pass |
+| `workspace_purge (error)` | `{"runId": "no-such"}` | `{"runId": "no-such", "status": "failed", "error": {"code": "RUN_NOT_FOUND", "message": "Run not found: no-such"}}` | pass |
+| `workflow_deregister` | `{"name": "v24s-demo"}` | `{"runId": "", "status": "completed", "name": "v24s-demo", "removed": true, "releasedTriggers": [], "result": {"name": "v24s-demo", "removed": true, "r…` | pass |
+| `workflow_deregister (error)` | `{"name": "v24s-demo (again)"}` | `{"runId": "", "status": "failed", "code": "WORKFLOW_NOT_FOUND", "error": {"code": "WORKFLOW_NOT_FOUND", "message": "Unknown workflow: v24s-demo"}}` | pass |
+
+`issue_*` rows (boot B, real GitHub): see VAL-141 — `issue_report` ⇒ `{issueNumber:51,url:…/issues/51,deduped:false}`; `issue_get(51)` ⇒ `{number:51,state:"open",labels:["agent-reported","severity:low"],…}`; `issue_list({state:"open",limit:5})` ⇒ contains #51/#52; `issue_comment_post(51)` ⇒ `{commentId:5541464089,url:…#issuecomment-5541464089}`; `issue_get_comments(51)` ⇒ `[{id:5541464089,author:"HsuJavis",body:"…Closing now.",createdAt:"2026-09-04T13:55:14Z"}]`; `issue_get(999999)` ⇒ `ISSUE_NOT_FOUND`; all five without a token ⇒ `GITHUB_TOKEN_MISSING`.

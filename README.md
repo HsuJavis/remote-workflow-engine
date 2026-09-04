@@ -17,24 +17,24 @@
   **`run_start` 只回 `runId`，不回結果**——要拿結果得先 `run_status` 輪詢到終態，再 `run_result`；
   另有 `run_suspend`/`run_resume`/`run_stop`、`run_agent_log`（依腳本宣告的 agent label 讀該次 harness
   逐字稿）、`run_list`，以及當機可續跑（重啟後 `interrupted` → `run_resume`）
-- **版本與發布頻道（v22）**：同一個工作流程名稱可以註冊多次——每次註冊都保留成一個新版本（`v1`、`v2`、…），
+- **版本與發布頻道**：同一個工作流程名稱可以註冊多次——每次註冊都保留成一個新版本（`v1`、`v2`、…），
   舊版本不會被覆蓋。擁有者用 `workflow_publish({name,version,channel})` 把 `release`（穩定）或 `beta`
   （測試）頻道指到某個版本（三個參數都是必填，`version` 是 `workflow_register` 回傳的**字串**如 `'v1'`）；
   `run_start({name})` 不指定版本時永遠跑 `release` 指到的版本（避免不小心
   跑到還在測試的草稿），`run_start({name,channel:'beta'})` 跑 beta，`run_start({name,version:'v3'})`
-  可直接指定精確版本（優先權最高）。**已停止接受呼叫端直接夾帶腳本**：`run_start`/`run_resume`
-  不再有 `script` 參數——必須先 `workflow_register` 註冊、再用 `run_start({name})` 執行（見下方使用範例）。
+  可直接指定精確版本（優先權最高）。**呼叫端不能直接夾帶腳本**：`run_start`/`run_resume`
+  沒有 `script` 參數——必須先 `workflow_register` 註冊、再用 `run_start({name})` 執行（見下方使用範例）。
 - **可調參數契約（tunable-parameter contract）**：腳本裡每一個 `agent('<label>', {...})` 都必須在
   `export const meta = { params: { agents: { '<label>': {...} }, args: {...} } }` 宣告對應的契約——
-  `model`/`effort`/`timeoutMs` 三個鍵都是必填、且各自要有 `.default`（v24 起沒有「每個 agent 的隱含引擎預設」）；
+  `model`/`effort`/`timeoutMs` 三個鍵都是必填、且各自要有 `.default`（沒有「每個 agent 的隱含引擎預設」）；
   `workflow_describe` 不必讀腳本本文即可查出這份契約。
   呼叫端用 `run_start({overrides:{agents:{'<label>':{model?,effort?,timeoutMs?,appendPrompt?}}}})`
-  **逐 agent** 覆寫（沒有「整個工作流程一次覆寫」的欄位，舊的扁平寫法回 `PARAM_UNKNOWN`），
+  **逐 agent** 覆寫（沒有「整個工作流程一次覆寫」的欄位，扁平寫法回 `PARAM_UNKNOWN`），
   超出範圍即在送出當下被拒（`PARAM_OUT_OF_RANGE`/`PARAM_LOCKED`），從不留下半途而廢的 run；
   `prompt`/`tools`/`skills`/`mcp`/`workdir`/`cwd` 六個鍵永遠鎖定、呼叫端無法觸及。優先序只有兩層：
   該次 run 的 `overrides.agents.<label>.<key>` > 腳本自己宣告的 `.default`——在 `agent()` 呼叫裡直接寫
   `model`/`effort`/`timeoutMs` 會在註冊當下被拒（`SCAN_VIOLATION`）。
-  註冊時的 `defaults` 參數與 `meta.params.knobs` 皆已淘汰（`DEFAULTS_RETIRED`）。
+  `meta.params.knobs` 會被拒絕（`DEFAULTS_RETIRED`）；註冊時的 `defaults` 參數目前會被靜默忽略（已知缺陷，見「已知限制」）。
 - **已知工作流程探索**：`workflow_register`/`workflow_publish`/`workflow_list`/`workflow_deregister`/
   `workflow_authoring_guide`（引擎用自己的強制常數渲染的作者指南，也就是 `docs/AUTHORING.md`）。
   讀腳本本文的工具是 `workflow_source`（需要 `author` 角色；非擁有者拿到 `scriptWithheld:true` 的遮蔽投影），
@@ -44,12 +44,10 @@
   用途、解析到的版本與是哪個頻道解析的、階段名稱、逐 agent 的可調參數契約（含型別/預設值/上限）、
   被鎖定的鍵名、所有版本與頻道指向、擁有者、怎麼回報問題、能不能跑（`runnable`/`runnableReason`），
   以及作者附上的 **Mermaid 結構圖**（`mermaid`）。回應裡**永遠沒有腳本本文**。
-- **作者附上的結構圖（v24，ADR-025）**：`workflow_register` 必須帶一個非空的 **Mermaid** `mermaid`
+- **作者附上的結構圖**：`workflow_register` 必須帶一個非空的 **Mermaid** `mermaid`
   字串（少了就 `MERMAID_REQUIRED`），而且圖裡的 stadium 節點 `id(["label"])` 要跟腳本的 agent label
-  **雙向完全對應**（對不上就 `DIAGRAM_MISMATCH`）。`workflow_describe` 原文回傳這張圖。
-  **引擎不再自己畫圖**：v23 那個「把腳本送給 LLM 畫 ASCII 圖」的分析器（`graphAnalyzer` 設定區塊、
-  `workflow_regenerate_diagram` 工具、`diagramStatus`/`diagramNote` 欄位）已整組移除，沒有替代品——
-  也因此註冊不再會把腳本本文送給任何模型。
+  **雙向完全對應**（對不上就 `DIAGRAM_MISMATCH`）。`workflow_describe` 設計上原文回傳這張圖（目前有一個已知缺陷讓它回 `null`，見「已知限制」）。
+  **引擎不自己畫圖**，註冊也不會把腳本本文送給任何模型。
 - **排程**：`schedule_create`/`schedule_list`/`schedule_delete`/`schedule_setEnabled`（cron/once/resident）
 - **工作區與資產（`workspace_*`，六個工具）**：`workspace_push`（兩種模式：CAS blob `{sha256,contentB64}`，
   或工作流程名下的資產 `{workflow,kind:'skill'|'mcp',name,files?/config?}`；`scope:'global'` 的全域資產需
@@ -58,7 +56,7 @@
   或某個工作流程名下某類資產）、`workspace_delete`、`workspace_purge`（刪掉已終止 run 的整個工作區）。
   hook 明確不支援（`HOOKS_UNSUPPORTED`）。**MCP server 現在就是一種資產**：
   `workspace_push({workflow, kind:'mcp', name, config})`（secret handle `${secret:NAME}`；`stdio`
-  transport 需 `admin`）——舊的 `mcp_provision` 工具已移除，沒有同名替代品。
+  transport 需 `admin`）。
 - **Webhook**：`webhook_create`/`webhook_list`/`webhook_delete`（HMAC-SHA256 驗簽、deliveryId 去重）
 - **高效 seeding**：`workspace_push`（CAS 模式）/`workspace_diff`（CAS sha256 去重）；`/mcp` 接受 `Content-Encoding: gzip|deflate`；
   `POST /assets/blob/:sha`（streaming raw-body 大檔案上傳，bypass 8MiB JSON-RPC cap）；
@@ -74,19 +72,19 @@
 - **可觀測性**：`GET /api/home`（首頁工作流程分組 JSON）、`GET /api/status`（agentSemaphore）、
   `GET /api/system`（主機 + 行程快照）、`GET /api/models`（統一模型目錄）、
   `GET /api/issues`、`GET /api/issues/:number`
-- **OAuth 2.0 身份認證（v15+，opt-in）**：引擎自身即授權伺服器，以 Google 為 IdP；支援
+- **OAuth 2.0 身份認證（opt-in）**：引擎自身即授權伺服器，以 Google 為 IdP；支援
   **RFC 7591 Dynamic Client Registration**（`POST /register`），讓 Claude Code 等 MCP 用戶端
-  可零設定自行取得 `client_id`（v17，解決「Incompatible auth server: does not support dynamic client registration」）；
+  可零設定自行取得 `client_id`；
   MCP client 走 authorization-code + PKCE + loopback-redirect 流程取得引擎 opaque bearer；`/authorize`
   在寫入 state 前驗證 `redirect_uri` 必須為 loopback URI（RFC 8252），含 registration 時一致強制；
-  **OAuth2 `state` round-trip（v19，RFC 6749 §4.1.2）**：客戶端 `state` 參數由 `/authorize` 擷取、
+  **OAuth2 `state` round-trip（RFC 6749 §4.1.2）**：客戶端 `state` 參數由 `/authorize` 擷取、
   持久化至 `oauth_state.client_state`，並於最終 client redirect 回傳 `&state=<clientState>&iss=<issuer>`
-  （RFC 9207），解決「OAuth state mismatch - possible CSRF attack」連線失敗；
-  **refresh tokens（v20，RFC 6749 §6 / OAuth 2.1 / MCP offline_access）**：AS metadata 廣告
+  （RFC 9207）；
+  **refresh tokens（RFC 6749 §6 / OAuth 2.1 / MCP offline_access）**：AS metadata 廣告
   `scopes_supported:["openid","email","offline_access"]` + `grant_types_supported:["authorization_code","refresh_token"]`；
   `offline_access` 流程核發 `refresh_token`（~90 天 TTL、sha256-at-rest）；`grant_type=refresh_token`
   輪換 token（RFC 9700 rotation，單次使用）；用戶端不需重新走瀏覽器登入即可在 access_token 到期後續用。
-  **callback success page（v20 UX）**：`/oauth/google/callback` 改為 200 HTML（含 `id="callback-url"` 可複製 URL
+  **callback success page**：`/oauth/google/callback` 回 200 HTML（含 `id="callback-url"` 可複製 URL
   + meta-refresh/JS 自動轉跳），無論有無 loopback listener 都可操作。
   D-BIND fail-closed（非 loopback 來源若無有效 bearer → 401）；過期 auth 表列由 GC sweep 自動清除
   （`workspaceTtlMs` 正確從 composeConfig 傳遞）；
@@ -102,8 +100,7 @@
 - **Node.js 22.6 以上**（`tsx` 與沙箱子行程均依賴 Node 22 原生 TypeScript 支援）
 - npm（隨 Node 附帶）
 - **Python 3.11 或 3.12**（`gateway:"sdk"`（預設）需要 `litellm[proxy]`）。
-  v24 之後 LiteLLM 只剩**一個**消費者：`agent()` 呼叫（畫圖分析器已移除，`workflow_register`
-  不再走 gateway）。要略過 Python/LiteLLM，在 `rwe.config.json` 設 `gateway:"direct-fetch"` +
+  LiteLLM 只有**一個**消費者：`agent()` 呼叫（`workflow_register` 不走 gateway）。要略過 Python/LiteLLM，在 `rwe.config.json` 設 `gateway:"direct-fetch"` +
   `useLiteLLMProxy:false`（本機 Ollama 直連）。留著預設值 `gateway:"sdk"` 卻沒裝 `litellm`，
   服務會在**開機階段**就拒絕啟動（見「已知限制」）。
 - 至少一個可用的 LLM 供應商（Anthropic / OpenAI / Gemini API key，或本機 Ollama）
@@ -131,8 +128,8 @@ export ANTHROPIC_API_KEY=sk-ant-...     # 若要用 anthropic 別名（或 OPENA
 ## 使用範例
 
 ```bash
-# 第一步：註冊一個工作流程（inline script 已停止接受，一律要先註冊、再指名執行）
-# v24 起 mermaid 是必填：少了就 MERMAID_REQUIRED。這個腳本沒有 agent() 呼叫，
+# 第一步：註冊一個工作流程（一律要先註冊、再指名執行）
+# mermaid 是必填：少了就 MERMAID_REQUIRED。這個腳本沒有 agent() 呼叫，
 # 所以圖裡只要有一個矩形黑箱節點即可（stadium 節點才需要對上 agent label）。
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
@@ -159,7 +156,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # 未發布過的頻道會被拒絕：{"error":{"code":"CHANNEL_UNPUBLISHED","message":"CHANNEL_UNPUBLISHED: beta (workflow 'greet')"}}
 
 # 跑包含 agent() 的工作流程（需要 gateway:"sdk" + LiteLLM + 供應商 key）——一樣先註冊、發布、再指名執行
-# v24 的 agent() 第一個參數是「label」，prompt 走 options.prompt；每個 label 都要有
+# agent() 第一個參數是「label」，prompt 走 options.prompt；每個 label 都要有
 # meta.params.agents.<label> 契約（model/effort/timeoutMs，各自要有 .default），
 # 而且 mermaid 的 stadium 節點要跟 label 一一對上。
 # 腳本與圖寫成檔案、再組 JSON，比一長串跳脫好讀也好改：
@@ -200,7 +197,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # 到終態後用 run_result 取結果："PONG"；想看該次 agent 的 harness 逐字稿：
 #   run_agent_log({runId, label:"ping"})——label 就是腳本裡宣告的那個，不是引擎內部編號。
 
-# 註冊一個宣告可調參數契約的工作流程，並在執行時逐 agent 覆寫（v24 形狀）
+# 註冊一個宣告可調參數契約的工作流程，並在執行時逐 agent 覆寫
 cat > /tmp/greet2.js <<'JS'
 export const meta = {
   description: 'Greet the caller in one sentence',
@@ -231,7 +228,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_start","arguments":{"name":"greet2","overrides":{"agents":{"greet":{"effort":"high","appendPrompt":"回覆請用中文"}}}}}}'
 # overrides 只有 agents 這一個頂層鍵，而且只能改「該 label 契約裡宣告過」的鍵：
-#   舊的扁平寫法 {"effort":"high"}          -> PARAM_UNKNOWN
+#   扁平寫法 {"effort":"high"}              -> PARAM_UNKNOWN
 #   沒宣告過的 label {"agents":{"nope":{}}} -> UNKNOWN_AGENT_LABEL
 #   宣告範圍外的值 {"effort":"max"}          -> PARAM_OUT_OF_RANGE
 #   鎖定鍵 {"prompt":"..."}                 -> PARAM_LOCKED
@@ -260,10 +257,10 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # -> {name, version, resolvedBy, channels:{release,beta}, versions, description, phases,
 #     params:{agents,args}, lockedKeys, owner, reportProblem, triggers,
 #     mermaid, mermaidNote, runnable, runnableReason}
-# mermaid 是註冊時作者附上的那張圖，原文回傳；沒有圖（v24 之前註冊的舊版本）時 mermaid 是 null、
-# mermaidNote 是 "LEGACY_NO_DIAGRAM"。
-# runnable:false 時 runnableReason 說明原因：CHANNEL_UNPUBLISHED（還沒發布過任何頻道）或
-# LEGACY_REREGISTER（這個版本早於 v24 契約，要重新註冊才能跑）。
+# mermaid 設計上是註冊時作者附上的那張圖的原文；沒有圖的版本回 mermaid:null、mermaidNote:"LEGACY_NO_DIAGRAM"
+# （目前有一個已知缺陷讓每個工作流程都回 null，見「已知限制」）。
+# 還沒發布過任何頻道的工作流程，describe({name}) 直接回 CHANNEL_UNPUBLISHED（要看草稿就帶 {"version":"v1"}）；
+# runnable:false + runnableReason:"LEGACY_REREGISTER" 表示這個版本沒有 meta.params.agents 契約，要重新註冊才能跑。
 # triggers 是「現在」綁在這個工作流程上的排程/webhook，每次呼叫都依 id 重新讀取
 # （schedule 與 webhook 兩張表的即時快照）；已被刪掉的 id 會以 status:"TRIGGER_NOT_FOUND" 出現。
 # 同樣的內容也有 HTTP 版：curl -s http://127.0.0.1:8787/api/workflows/greet/describe
@@ -323,7 +320,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"webhook_create","arguments":{"workflow":"daily-report"}}}'
 # -> {webhookId, secret (只出現一次), url}
 
-# 排程（須先 workflow_register）
+# 排程（`workflow` 必填，而且要先 workflow_register + workflow_publish；建立當下就綁定該工作流程）
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"schedule_create","arguments":{"kind":"cron","workflow":"daily-report","cron":"0 3 * * *","enabled":true}}}'
@@ -343,10 +340,10 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 6. **Webhook HMAC**：常數時間比對 `X-Hub-Signature-256`；deliveryId 去重；±300s 時戳窗口。
 7. **伺服器端 secret**：config 內 `${secret:NAME}` → 由 `RWE_SECRET_<NAME>` 解析；缺失 → `SECRET_MISSING`；字面值永不外洩。
 8. **Redact-at-capture**：`SecretValueProvider.entries()` 拿到所有 provisioned secret 的明文；每次寫入逐字稿/快照/日誌/SDK-capture 前，均先呼叫 `redact({name,value}[])` 把值替換為 `‹secret:NAME›` marker（4 個 sink：appendTranscript/saveSnapshot/appendJournal（整個 JournalEntry 含 key.prompt）/SDK-capture；DES-088 invariant b：工作流程的最終回傳值（script `return` 的內容）維持原始值，不做 redact）。
-9. **Inline script 已關閉**：`run_start`/`run_resume` 不再接受呼叫端夾帶的 `script`；`run_start` 的 schema 是封閉的（`additionalProperties:false`），硬塞任何未宣告的欄位都在送出當下被拒（`INLINE_SCRIPT_CLOSED`／`INVALID_ARGUMENT`）。腳本一律要先 `workflow_register`，靜態檢查（語法解析、模型別名、MCP 名稱是否已推送、agent 契約、mermaid 對照）也全在註冊當下做，不會因為改用具名執行就少檢查。
+9. **Inline script 已關閉**：`run_start`/`run_resume` 不接受呼叫端夾帶的 `script`；`run_start` 的 schema 是封閉的（`additionalProperties:false`），硬塞任何未宣告的欄位都在送出當下被拒（`INLINE_SCRIPT_CLOSED`／`INVALID_ARGUMENT`）。腳本一律要先 `workflow_register`，靜態檢查（語法解析、模型別名、MCP 名稱是否已推送、agent 契約、mermaid 對照）也全在註冊當下做，不會因為改用具名執行就少檢查。
 10. **腳本本文只有一個出口，且對非擁有者遮蔽**：能回傳腳本本文的工具只有 `workflow_source`（需要 `author` 角色）。啟用 auth 後，它對非擁有者回傳 `scriptWithheld:true`、不含腳本本文；擁有者/admin 仍可看到完整腳本。`workflow_describe`／`workflow_list`／`/api/workflows*`／儀表板**在設計上就不含**腳本本文，不論身份。`auth.enabled:false`（單人本機部署的預設）沒有「非擁有者」這個概念——任何人都能透過 `workflow_source` 看到完整腳本。
 11. **SSRF-safe seedRef**：`seedRef:{repoUrl,sha}` 由 `HardenedSeedRefFetcher` 拉取；URL 必須匹配 `seedRefAllowlist`，否則 `SEEDREF_EGRESS_DENIED`；省略 allowlist 則全部 `SEEDREF_DISABLED`（fail-closed）；hardened git subprocess，不轉 shell。
-12. **角色（`principals`）fail-closed**：`rwe.config.json` 的 `principals` 角色字串打錯（不是 `admin`/`author`/`user`）→ 開機直接拒絕啟動，不會靜默退回 `user`；整個鍵省略時，`auth.enabled:true` 下每個已驗證呼叫者一律 `user`，且開機那行 `auth:` log 如實顯示（ADR-028）。`workspace_push({kind:"mcp"})` 的 `http` transport 同理受 `mcpEgressAllowlist` fail-closed：省略/不匹配 → `EGRESS_DENIED`，探測次數為零；`stdio` transport 與 `scope:'global'` 的推送都需要 `admin`。
+12. **角色（`principals`）fail-closed**：`rwe.config.json` 的 `principals` 角色字串打錯（不是 `admin`/`author`/`user`）→ 開機直接拒絕啟動，不會靜默退回 `user`；整個鍵省略時，`auth.enabled:true` 下每個已驗證呼叫者一律 `user`，且開機那行 `auth:` log 如實顯示（ADR-028）。`workspace_push({kind:"mcp"})` 的 `http` transport 同理受 `mcpEgressAllowlist` fail-closed：省略/不匹配 → `EGRESS_DENIED`，探測次數為零；`stdio` transport 與 `scope:'global'` 的推送都需要 `admin`（`stdio` 的這道檢查目前可被繞過，見「已知限制」）。
 
 ## 已知限制
 
@@ -358,10 +355,17 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
   - `gateway:"sdk"`（預設）：**服務會直接拒絕啟動**，並印出一行明確訊息
     `fatal startup error: Error: litellm proxy failed to spawn: spawn litellm ENOENT`。不會半開著。
   - `gateway:"direct-fetch"` + `useLiteLLMProxy:true`：服務正常啟動，只有真正要用到代理的呼叫
-    （`agent()`——v24 之後唯一的消費者）會乾淨地失敗成 `PROVIDER_UNREACHABLE`，服務本身不受影響。
+    （`agent()`——LiteLLM 唯一的消費者）會乾淨地失敗成 `PROVIDER_UNREACHABLE`，服務本身不受影響。
 
   兩種情況的處置都一樣：照「前置需求」把 venv 的 `bin/` 加進 `PATH`，或改用
   `gateway:"direct-fetch"` + `useLiteLLMProxy:false`（本機 Ollama 直連，完全不需要 litellm）。
+
+- **目前已知、尚未修復的缺陷**（詳細指令與輸出見 `DEPLOY.md` §6）：
+  `workflow_describe.mermaid` 一律回 `null`（圖有存、沒讀回）；排程／webhook 只能在建立時綁定工作流程，且
+  `workflow_deregister` 不會釋放它們——**重用名稱前先刪掉觸發器**；`workflow_deregister` 不刪磁碟上的資產目錄——
+  **重用名稱前先手動刪 `<assetRoot>/<name>/`**；`workflow_register` 的 `defaults` 參數被靜默忽略；`author`
+  可以用 `{type:"stdio"}` 推送 MCP 設定繞過 admin 限制；資產路徑逃逸回 `AssetPathEscapeError` 而非
+  `WORKSPACE_ESCAPE`；註冊錯誤訊息不指向 `workflow_authoring_guide`；冷啟動用戶端查不到可用的模型別名。
 
 ## 更多
 

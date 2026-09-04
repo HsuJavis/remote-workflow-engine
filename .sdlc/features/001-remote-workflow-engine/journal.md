@@ -2103,3 +2103,54 @@ with no ledger entry, the tenth occurrence. `VAL-124`/`VAL-128` stay `blocked` p
 entries; the same two round 1 named, no third appeared.
 
 `gates.verification.passed=true`; `gates.impl.passed=true`; `current_stage` → `validation`.
+
+## 2026-09-04 — v24 Gate 7.5 ROUND 1 (validator, real-run validation & handover) — NOT PASSED
+
+Every one of REQ-107..118 was driven against the real engine brought up by the committed
+`deploy.sh` (three boots: auth-off/direct-fetch Ollama; auth-ON with real bearers, `gateway:"sdk"`,
+the real `claude` CLI and a real GitHub token; and a clean workRoot for the cold-model subject), plus
+`scripts/smoke.sh`, a real headless Chrome for the Mermaid render property, and the real GitHub API.
+Twelve `real:true` items (`VAL-130`..`VAL-141`) now exist — but only **three REQs are green at the
+real tier** (REQ-107 one prefix per entity, REQ-108 the six `workspace_*` tools and the shared path
+verdict, REQ-114 `pushedBy`). Nine are red on their own acceptance text, on the defect register D-1..D-13 (fourteen rows
+counting D-1b) the suite could not see:
+
+- **Triggers (REQ-115):** `schedule_create`/`webhook_create` require `workflow`, so an unclaimed
+  trigger cannot be created over MCP at all (ADR-026's own S-5 scenario is impossible) — and a
+  trigger bound at creation is **not released by `workflow_deregister`**: a same-name
+  re-registration inherited a cron and got a real run 47 s later. The phantom fire ADR-026 named.
+- **Assets (REQ-113):** deregistering deletes the DB rows but leaves `<assetRoot>/<name>/` on disk;
+  another principal re-registering the name and declaring the same skill name had the previous
+  owner's `SKILL.md` materialized into its agent workspace on the sdk path — proven, not inferred.
+- **Authz (REQ-109/ADR-030):** `pushMode` gates stdio MCP configs on `config.transport` while the
+  probe and materializer read `config.type`; an `author` pushed `{type:'stdio',command:'npx'}` and
+  the server spawned it. Same defect class REQ-109's last clause was written against.
+- **The diagram (REQ-111):** validated at registration, written to `catalog.db`, and never SELECTed
+  back — `describe.mermaid` is `null`/`LEGACY_NO_DIAGRAM` for every v24 workflow; the dashboard shows
+  none. UT-157 is green because it projects a hand-built row.
+- **REQ-110:** `workflow_register({defaults})` is silently accepted (wants `DEFAULTS_RETIRED`).
+- **REQ-112/116:** no refusal points at `workflow_authoring_guide` (the facade's local
+  `toErrEnvelope` drops the catalog's `see`), and the guide teaches three of the five shapes and none
+  of the `<br/>` triple / `COLLAPSED_EDGE` / dashed rules. The render property VAL-123 deferred is
+  done: 11/11 diagrams render in a real browser, the malformed one fails.
+- **REQ-117:** the DES-158 protocol was run for real — a fresh `claude-opus-5[1m]` with nothing but
+  the engine's MCP surface authored a three-agent workflow, registered, published, ran and read back
+  a correct result — **but its first `workflow_register` was refused** (`PARAM_CONTRACT_INVALID:
+  default not a known alias`): nothing on the surface says which aliases this deployment accepts. By
+  REQ-117's own rule that is a documentation defect and a fail; re-run needs another fresh subject.
+- **REQ-118:** 35/35 tools called live (incl. the five `issue_*` against the real repo — #51/#52
+  filed and closed), but `workspace_push`'s escape path answers the un-catalogued
+  `AssetPathEscapeError`, `HOOKS_UNSUPPORTED` is unreachable, and `describe` hides two arguments.
+
+Handover docs rewritten to current state: DEPLOY §1d (old→new name table) deleted, every
+version-tagged sentence rewritten, §1a's second key list folded into §1b, the dead `graphAnalyzer`
+row deleted, §2's false "smoke.sh not migrated" warning replaced by the real run, §0 gained the
+`.rwe.pid` per-checkout caveat, §6 gained 「尚未修復的缺陷」 with operator workarounds (delete triggers
+and the asset directory before re-using a name; keep `author` to trusted principals until the stdio
+gate is fixed). Config round-trip clean. Gaps recorded: `RWE_TEST_CRASH_AFTER_CLAIM` never
+implemented (DES-149's kill arm unreachable); client plugin unsynced (TASK-153); no `--rtm` in this
+trace.py; a pre-existing VAL-118..127 id collision between 05 and 08 (last file wins) — this round's
+ids start at VAL-130.
+
+`gates.validation.passed=false`; `current_stage` stays `validation`. Next: Gate 6 for D-1/D-1b/D-2/
+D-3/D-4/D-5/D-8/D-10/D-11/D-12, then a Gate 7.5 delta re-run.

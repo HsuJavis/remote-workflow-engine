@@ -10,7 +10,7 @@
 `issue_*` 5、`models_list`/`system_info`），並把每個 `agent()` 呼叫路由到你設定的 LLM 供應商
 （Anthropic / OpenAI / Gemini / 本機 Ollama）。狀態全存在本機檔案（SQLite + JSONL journal），
 不需要外部資料庫伺服器。**權威工具清單是 `src/tool-specs.ts`**——不在那張表上的名字，引擎一律回
-JSON-RPC `-32601 Unknown tool`（v24 整組改名，對照見 §1d）。
+JSON-RPC `-32601 Unknown tool`。
 
 OAuth 2.0（opt-in，`auth.enabled:true`）：引擎自身即授權伺服器，以 Google 為 IdP，支援
 RFC 7591 動態用戶端註冊、authorization-code + PKCE、OAuth2 `state`/`iss` round-trip（RFC 6749
@@ -72,10 +72,15 @@ RWE_CONFIG_PATH=/path/to/another/rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=879
    （$workRoot/store、run 工作目錄、           / 本機 Ollama
      資產樹、每個版本的 mermaid 圖）
 ```
-（v24 起 `workflow_register` **不再**經過 gateway：結構圖由作者自己附上 `mermaid`，引擎不畫圖，
-所以 LiteLLM 只剩 `agent()` 這一個消費者。）
+（`workflow_register` 不經過 gateway：結構圖由作者自己附上 `mermaid`，引擎不畫圖；
+LiteLLM 只服務 `agent()` 這一個消費者。）
 
 停止服務：`kill $(cat .rwe.pid)`。不加 `--background` 則前景執行、Ctrl-C 停止。
+
+⚠ `.rwe.pid` 與 `.rwe.log` 都寫在 **這個 checkout 的根目錄**：從同一個 checkout 再跑一次
+`./deploy.sh --background`（例如上面的第二個實例）會把前一個實例的 PID 檔與 log **覆蓋掉**。要同時
+跑多個實例，啟動後先把 `.rwe.pid` 複製到別處（`cp .rwe.pid /path/to/instance-A.pid`），停止時用
+那份；log 則各自看 `ps`／process manager 的輸出。
 
 ### 展開版 Quickstart（逐步、每步都有預期輸出）
 
@@ -125,7 +130,7 @@ node node_modules/tsx/dist/cli.mjs src/main.ts
 ```bash
 # 健康確認（服務啟動後）
 curl -s http://localhost:8787/api/status
-# 預期：{"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"1.x.x"}
+# 預期：{"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (<git describe>)"}
 
 curl -s -X POST http://localhost:8787/mcp \
   -H 'Content-Type: application/json' \
@@ -274,7 +279,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > - **模型注意**: patch 模式的 git-plumbing agent(seed/finalize)**需要「真的會執行 Bash」的模型**。
 >   qwen2.5:7b 會把工具呼叫吐成文字(D-F11 能力層)沒真跑 → 這幾步請指定 Claude 或夠大的本地模型;
 >   引擎執行與 client 套用機制本身與模型無關,皆已驗證。
-> - **大 patch / 整樹開發用的工具(v24 名稱)**: `workspace_list({runId})`(遞迴列檔 + sha256)、
+> - **大 patch / 整樹開發用的工具**: `workspace_list({runId})`(遞迴列檔 + sha256)、
 >   `workspace_pull({runId,path,offset?,length?})`(分塊、限大小、realpath 封閉的 byte 取回,給太大塞不進
 >   inline result 的 patch/bundle)、`workspace_purge({runId})`(刪除 terminal run 的 workspace)。`run_start` 有
 >   選填 `seed:[{path,contentB64}]`—引擎在 agents 啟動前把整棵 tree materialize 進 workspace(**strip 掉
@@ -305,8 +310,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
   ```
   若系統本來就有 Python 3.11/3.12（`python3.12 --version` 有輸出），可以省略 `uv`，直接
   `python3.12 -m venv <venv路徑> && <venv路徑>/bin/pip install 'litellm[proxy]'`。
-  **v24 之後 LiteLLM 只剩一個消費者**：`agent()` 呼叫（畫圖分析器已隨 ADR-025 移除，
-  `workflow_register` 不再走 gateway）。要跳過這一步，設
+  **LiteLLM 只有一個消費者**：`agent()` 呼叫（`workflow_register` 不走 gateway）。要跳過這一步，設
   `gateway:"direct-fetch"` + `useLiteLLMProxy:false`（本機 Ollama 直連，完全不碰 LiteLLM）。
   留著預設值 `gateway:"sdk"` 卻沒裝 `litellm`：**服務在啟動階段就會直接拒絕啟動**，印出一行
   `fatal startup error: Error: litellm proxy failed to spawn: spawn litellm ENOENT` 後結束
@@ -315,16 +319,9 @@ curl -s http://localhost:8787/api/models | python3 -c \
   正常關機（`SIGTERM`）會連帶停掉這個子行程，不留孤兒；可在 `rwe.config.json` 用 `litellmPort`
   鍵讓每個實例指定不同 port（省略則綁一個 OS 分配的 ephemeral 空閒 port，天生不會多實例撞號）。
 - 外部依賴：不需要資料庫伺服器（狀態存在本機檔案：SQLite + JSONL journal，路徑見 `workRoot`）。
-- LLM 供應商（依你要用的模型別名擇一或多個）：
-
-  | 變數 | 用途 | 範例/來源 |
-  |------|------|-----------|
-  | `ANTHROPIC_API_KEY` | `provider:"anthropic"` 別名（預設 `sonnet`/`haiku`/`opus`/`default` 皆指向此） | Anthropic Console 的 API key，或內部 sandbox key |
-  | `OPENAI_API_KEY` | `provider:"openai"` 別名 | OpenAI Platform 的 API key |
-  | `GEMINI_API_KEY` | `provider:"gemini"` 別名 | Google AI Studio 的 API key |
-  | `OLLAMA_BASE_URL` | `provider:"ollama"` 別名（本機/內網模型，免金鑰） | 預設 `http://localhost:11434`；未設也能用；**見下方已知限制：本機 7B 級模型的工具呼叫能力上限** |
-  | `OPENROUTER_API_KEY` | `provider:"openrouter"` 別名 + passthrough `agent({model:"openrouter/<id>"})` | OpenRouter 的 API key（`sk-or-...`）；LiteLLM 以原生 `openrouter/<model>` 路由自動讀取。一把 key 開放整個 OpenRouter 目錄（`models_list` 可查、含 tool-use 標籤） |
-  | `CLAUDE_CODE_OAUTH_TOKEN` | `provider:"anthropic"` **直連**的**訂閱制**認證（`anthropicAuth:"subscription"`） | 用 `claude setup-token`（Pro/Max 帳號）產生；走訂閱額度、無 API 帳單；設定時**不要**同時設 `ANTHROPIC_API_KEY`。API-key 模式則沿用上面 `ANTHROPIC_API_KEY`（`anthropic` 別名走**直連**、bypass LiteLLM，保原生 tool schema） |
+- LLM 供應商（依你要用的模型別名擇一或多個）：對應的環境變數（`ANTHROPIC_API_KEY`／`OPENAI_API_KEY`／
+  `GEMINI_API_KEY`／`OLLAMA_BASE_URL`／`OPENROUTER_API_KEY`／`CLAUDE_CODE_OAUTH_TOKEN`／`OPENAI_API_BASE`）
+  每一個都只在 §1b 設定總表列出一次，請直接查表。
 
   **未設定的供應商不會擋住啟動** —— 對應別名的 `agent()` 呼叫只會在真正被呼叫時，走 D-G 電路斷路器
   邏輯解析成 `null`（run 繼續跑，不會掛住），已於 Gate 7.5 對真實不可達端點與缺金鑰兩種情境都實測確認
@@ -353,18 +350,17 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `anthropicAuth` | Anthropic 直連認證模式：`"api-key"`（真實 `ANTHROPIC_API_KEY`）或 `"subscription"`（`claude setup-token` 產生的 `CLAUDE_CODE_OAUTH_TOKEN`）；認證素材本身一律來自 secret store／環境變數，絕不放進此檔 | `"api-key"｜"subscription"` / 依偵測到的 secret 自動判斷 | 否 | v7 |
 | `rwe.config.json` → `litellmPort` | LiteLLM 代理子行程監聽 port | `number` / 省略則綁 OS 分配的 ephemeral 空閒 port | 否 | v1 |
 | `rwe.config.json` → `schedulerDbPath` | 排程 SQLite 檔路徑 | `string` / `$workRoot/schedules.db` | 否 | v1 |
-| `rwe.config.json` → `assetRoot` | `workspace_push` 的**工作流程範圍**資產樹根目錄，實際版面是 `<assetRoot>/<workflow>/<kind>/<name>`（`kind` 是 `skill`／`mcp`）。管理員推的全域資產不放這裡，固定在 `<workRoot>/_global_assets/<kind>/<name>`（刻意在被 GC 掃描的 `assets/` 樹之外）。**v24 才真正接線**：先前 `main.ts` 解析出這個值後 `server.ts` 從不讀取，設了等於沒設 | `string` / `$workRoot/assets` | 否 | v1（v24 起才生效） |
+| `rwe.config.json` → `assetRoot` | `workspace_push` 的**工作流程範圍**資產樹根目錄，實際版面是 `<assetRoot>/<workflow>/<kind>/<name>`（`kind` 是 `skill`／`mcp`）。管理員推的全域資產不放這裡，固定在 `<workRoot>/_global_assets/<kind>/<name>`（刻意在被 GC 掃描的 `assets/` 樹之外） | `string` / `$workRoot/assets` | 否 | v24 |
 | `rwe.config.json` → `maxWorkflowDepth` | 具名 `workflow()` 巢狀組合單一分支深度上限（頂層 run=0）；超過回可分支的 `NESTING_DEPTH_EXCEEDED`（不崩父 run）；≤0 或非整數在啟動時拒絕 | `number` / `4` | 否 | v8 |
 | `rwe.config.json` → `maxWorkflowDescendants` | 巢狀 `workflow()` 呼叫總數上限（整棵 fan-out × depth 樹）；超過回 `DESCENDANT_CAP_EXCEEDED` | `number` / `256` | 否 | v8 |
 | `rwe.config.json` → `maxWorkflowVersions` | 同一工作流程名稱累積保留的版本數上限；達上限時 `workflow_register` 回 `VERSION_CEILING_EXCEEDED`（需先 `workflow_deregister` 舊版本或調高此值） | `number` / 省略 = 不設上限 | 否 | v22 |
-| `rwe.config.json` → `graphAnalyzer` | **v24 起已移除**（結構圖改由作者在 `workflow_register` 附上 `mermaid` 字串，見 ADR-025）；此區塊留在 `rwe.config.json` 不再有作用，開機時 `composeConfig()` 會印一次 `console.warn` 點名這個未識別的鍵，提醒移除 | — | — | v23 移除於 v24 |
 | `rwe.config.json` → `principals` | 角色對照表：鍵是 principal id（OAuth 下的使用者 email，或 `"*"` 代表所有已驗證但未列名者），值是 `{role:"admin"｜"author"｜"user"}`；角色字串打錯（例如 `"admn"`）**開機直接拒絕啟動**，絕不會靜默退回 `"user"`（ADR-028 fail-closed）；整個鍵省略時，`auth.enabled:true` 下每個已驗證呼叫者一律 `"user"`（同樣是 fail-closed，且開機那行 `auth:` log 會如實顯示） | `object` / 省略 | 否 | v24 |
 | `rwe.config.json` → `mcpEgressAllowlist` | `workspace_push({kind:"mcp"})` 註冊 `http` transport 時的 https-only 白名單（URL 前綴比對，同 `seedRefAllowlist` 的 fail-closed 慣例）；省略/空陣列＝任何 `http` MCP 設定一律 `EGRESS_DENIED`（探測前就擋，探測次數為零） | `string[]` / `[]` | 否 | v24 |
 | `rwe.config.json` → `seedRefAllowlist` | engine-pull `seedRef:{repoUrl,sha}` 的 egress 白名單（`https://` URL 前綴）；**fail-closed**：省略/空陣列 = 任何 seedRef 回 `SEEDREF_DISABLED`；不命中前綴（含 `169.254.169.254`/`localhost`/私有 IP/`file://`）→ `SEEDREF_EGRESS_DENIED`（SSRF 安全） | `string[]` / `[]` | 否 | v13 |
 | `rwe.config.json` → `maxBlobBytes` | `POST /assets/blob/:sha`（streaming raw-body 上傳）最大 body bytes；超過 → HTTP 413 `BLOB_TOO_LARGE` | `number` / `268435456`（256 MiB，最小 1048576） | 否 | v10 |
 | `rwe.config.json` → `maxConcurrentRuns` | 頂層 run 並行上限（run-admission counter）；達上限時 `start()` 在任何持久化動作之前以 `RUN_ADMISSION_LIMIT` 拒絕；巢狀 `workflow()` 不佔用槽位 | `number` / `64` | 否 | v8 |
 | `rwe.config.json` → `workspaceTtlMs` | Workspace GC sweep 間隔（ms）：回收閒置舊 workspace 目錄（REQ-026），**同時決定 auth-table GC（`gcExpired()`）間隔**；`0`/省略 = workspace reclaim 關閉，auth 啟用但未設此鍵時 sweep 每小時跑一次 | `number` / `0`（停用） | 否 | v16 |
-| `rwe.config.json` → `continuationDbPath` | on-completion chaining 續接的 SQLite 檔路徑。**v24 起沒有對應的工具**（`chain_create`/`chain_list` 已隨工具面改名一併移除，沒有替代品），這個鍵目前不對應任何可呼叫的功能 | `string` / `$workRoot/continuations.db` | 否 | v8（工具面已於 v24 移除） |
+| `rwe.config.json` → `continuationDbPath` | on-completion chaining 續接的 SQLite 檔路徑；引擎會開這個檔，但 35 個工具裡沒有任何一個對應到它（沒有 `chain_*` 工具），設了不影響行為 | `string` / `$workRoot/continuations.db` | 否 | v24 |
 | `rwe.config.json` → `webhookDbPath` | webhook 註冊表（`webhooks`+`webhook_deliveries`）SQLite 檔路徑；**secret 明文儲存**於此檔（HMAC 驗簽需要），存取權限即機密邊界；`webhook_list` 只回 sha256 前綴指紋 | `string` / `$workRoot/webhooks.db` | 否 | v8 |
 | `rwe.config.json` → `casDir` | 內容定址 blob 儲存庫（CAS）目錄；`workspace_push({sha256,contentB64})` 以內容 sha256 為鍵（伺服器 byte-verify）。namespace 一律由呼叫者身份推導，不接受呼叫端指定 | `string` / `$workRoot/cas` | 否 | v10 |
 | `rwe.config.json` → `updateFlagPath` | GitHub tag/release webhook 觸發自我更新的旗標檔路徑（mode 0600，原子寫入）；**必須在所有 `workRoot` 之外**（違反則 `UPDATE_FLAG_INSIDE_WORKROOT` 拒絕啟動）；省略時 `/github/webhook` 對已驗簽事件回 503 | `string` / — | 否 | v11 |
@@ -387,6 +383,15 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | env `RWE_WORK_ROOT` | 覆蓋 `workRoot` | `string` / 設定檔值或系統暫存目錄 | 否 | v1 |
 | env `RWE_SECRET_<NAME>` | 伺服器端 secret store；provisioned MCP config 裡的 `${secret:NAME}` handle 由此解析（大小寫敏感）；缺少則該次引用以 `SECRET_MISSING` 報錯，從不外洩值或靜默跳過；絕不放進 JSON 設定檔 | `string` / 無預設 | 依 MCP 引用 | v1 |
 | env `RWE_SECRET_GITHUB_TOKEN` | `issue_report`／Issues 儀表板需要；GitHub PAT/fine-grained token，須有目標 repo `issues:write` 權限；缺少時 `issue_report` 回 `GITHUB_TOKEN_MISSING`，`GET /api/issues` 回 200 `{degraded}`（不 500） | `string` / 無預設 | 否（缺少則降級） | v1 |
+| env `ANTHROPIC_API_KEY` | `provider:"anthropic"` 別名的 API key（範例設定檔的 `sonnet`/`haiku`/`opus`/`default` 都指向此）；`gateway:"sdk"` 路徑也可改由 `RWE_SECRET_ANTHROPIC_API_KEY` 提供 | `string` / 無預設 | 用到 anthropic 別名時 | v1 |
+| env `RWE_SECRET_ANTHROPIC_API_KEY` | 同上，但走伺服器端 secret store（`gateway:"sdk"` 直連 Anthropic 時優先於 `ANTHROPIC_API_KEY`） | `string` / 無預設 | 否 | v7 |
+| env `CLAUDE_CODE_OAUTH_TOKEN` | `provider:"anthropic"` **直連**的**訂閱制**認證（`anthropicAuth:"subscription"`），用 `claude setup-token`（Pro/Max 帳號）產生；設定時**不要**同時設 `ANTHROPIC_API_KEY` | `string` / 無預設 | 否 | v7 |
+| env `RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN` | 同上，但走伺服器端 secret store（優先於 `CLAUDE_CODE_OAUTH_TOKEN`） | `string` / 無預設 | 否 | v7 |
+| env `OPENAI_API_KEY` | `provider:"openai"` 別名的 API key；打自架 OpenAI 相容端點時可給任意非空字串 | `string` / 無預設 | 用到 openai 別名時 | v1 |
+| env `OPENAI_API_BASE` | 由 LiteLLM 子行程讀取：讓所有 `provider:"openai"` 別名改打這個 base URL（vLLM／TGI／llama.cpp／LiteLLM 等 OpenAI 相容端點，見上方「情境配方」） | `string` / `https://api.openai.com/v1` | 否 | v7 |
+| env `GEMINI_API_KEY` | `provider:"gemini"` 別名的 API key | `string` / 無預設 | 用到 gemini 別名時 | v1 |
+| env `OLLAMA_BASE_URL` | `provider:"ollama"` 別名要打的 Ollama 位址（本機/內網模型，免金鑰；見 §6「本機小模型能力上限」） | `string` / `http://localhost:11434` | 否 | v1 |
+| env `OPENROUTER_API_KEY` | `provider:"openrouter"` 別名與 `agent({model:"openrouter/<id>"})` passthrough 的 API key（`sk-or-…`）；LiteLLM 以原生 `openrouter/<model>` 路由自動讀取，一把 key 開放整個 OpenRouter 目錄（`models_list` 可查） | `string` / 無預設 | 用到 openrouter 時 | v9 |
 | env `RWE_SECRET_GITHUB_WEBHOOK_SECRET` | 標籤觸發式自動更新的 GitHub webhook HMAC 共享密鑰；`POST /github/webhook` 以此對原始 body bytes 算 HMAC-SHA256 比對 `X-Hub-Signature-256`；缺少（且未設 `updateFlagPath`）則路由回 503 `UPDATE_WEBHOOK_UNCONFIGURED` | `string` / 無預設 | 否（缺少則自動更新停用） | v11 |
 
 `auth.enabled:true` 時的部署前提：
@@ -410,16 +415,16 @@ curl -s http://localhost:8787/api/models | python3 -c \
 }
 ```
 
-### 角色（`principals`）——啟用 auth 前一定要讀（v24，REQ-109）
+### 角色（`principals`）——啟用 auth 前一定要讀
 
-v24 起每個工具都有一個**最低角色**要求。角色共三級（`admin` > `author` > `user`），由 §1b 的
+每個工具都有一個**最低角色**要求。角色共三級（`admin` > `author` > `user`），由 §1b 的
 `principals` 表決定：鍵是 principal id（OAuth 下的使用者 email），值是 `{role:"..."}`；
 `"*"` 是萬用鍵，供「已驗證但沒被列名」的人使用。
 
 | 角色 | 這個角色（含以上）才叫得動的工具 |
 |---|---|
 | `author` | `workflow_register`／`workflow_deregister`／`workflow_publish`／`workflow_source`、`schedule_create`／`schedule_list`／`schedule_delete`／`schedule_setEnabled`、`webhook_create`／`webhook_list`／`webhook_delete`、`workspace_push` 的資產模式（`{workflow,kind,name}`）、`workspace_list`／`workspace_delete` 的工作流程模式 |
-| `admin` | `workspace_push`／`workspace_delete` 的 `scope:"global"`（全域資產）、以及 `workspace_push({kind:"mcp"})` 帶 `stdio` transport 的 MCP server |
+| `admin` | `workspace_push`／`workspace_delete` 的 `scope:"global"`（全域資產）、以及 `workspace_push({kind:"mcp"})` 帶 `stdio` transport 的 MCP server（目前可被繞過，見 §6 尚未修復的缺陷第 5 條） |
 | `user` | 其餘全部：`workflow_describe`／`workflow_list`／`workflow_authoring_guide`、所有 `run_*`、`workspace_diff`／`workspace_pull`／`workspace_purge` 與 run 模式的 `workspace_list`／`workspace_delete`、所有 `issue_*`、`models_list`、`system_info` |
 
 角色不足一律回 `FORBIDDEN_ROLE`。角色**之外**還有一層擁有權檢查（`NOT_WORKFLOW_OWNER`／
@@ -498,48 +503,6 @@ v24 起每個工具都有一個**最低角色**要求。角色共三級（`admin
 應用層的權限裁決 + 路徑邊界檢查，防的是「agent 被 prompt 誘導、透過 SDK 自己文件化的工具參數去
 讀寫工作目錄以外的路徑」這一類攻擊路徑；不是防一個真的被入侵、能直接呼叫任意系統呼叫繞過 SDK
 本身的惡意子行程。
-
-## 1d. v24 工具面改名對照表（舊名 → 新名）
-
-> v24 把整個 MCP 工具面重新命名成 35 個工具。**舊名一律不存在**，呼叫會得到 JSON-RPC
-> `-32601 Unknown tool`。權威清單是 `src/tool-specs.ts`（或線上的 `tools/list`）。
-> 這張表是唯一列出舊名的地方，純為遷移用；本文件其他章節一律只用新名。
-
-| v23（已停用） | v24 | 備註 |
-|---|---|---|
-| `workflow_run` | `run_start` | schema 封閉；**只回 `runId`，不回結果**（要輪詢 `run_status` 到終態再 `run_result`）；不再接受 inline `script`（`INLINE_SCRIPT_CLOSED`）；沒有 `seedNamespace`（由身份推導） |
-| `workflow_status` | `run_status` | |
-| `workflow_result` | `run_result` | 非終態 → `RUN_NOT_TERMINAL` |
-| `workflow_suspend` / `workflow_resume` / `workflow_stop` | `run_suspend` / `run_resume` / `run_stop` | |
-| `workflow_agent_log` | `run_agent_log` | 用腳本宣告的 **agent label** 指定（`{runId,label}`），不是引擎內部的 agentId |
-| （新增） | `run_list` | 只列自己的 run |
-| `workflow_get` | **拆成兩個** `workflow_describe` + `workflow_source` | `workflow_describe({name})` 是公開的「這個工作流程在做什麼」摘要，**永遠不含腳本本文**；`workflow_source({name,version?})` 才回腳本，需要 `author` 角色，非擁有者拿到 `scriptWithheld:true` |
-| （新增） | `workflow_authoring_guide` | 引擎用自己的強制常數渲染的作者指南（＝`docs/AUTHORING.md`）|
-| `workflow_artifacts` | `workspace_list({runId})` | |
-| `workflow_artifact_get` | `workspace_pull({runId,path,offset?,length?})` | |
-| `asset_push` | `workspace_push({workflow,kind,name,files?/config?})` | `kind` 是 `skill`／`mcp`；`scope:"global"` 需 `admin` |
-| `asset_list` | `workspace_list({workflow,kind})` | |
-| `asset_delete` | `workspace_delete({workflow,kind,name})` | 全域資產用 `scope:"global"`（需 `admin`）|
-| `blob_put` | `workspace_push({sha256,contentB64})` | CAS 模式；hash 對不上 → `BLOB_HASH_MISMATCH` |
-| `seed_plan` | `workspace_diff({manifest})` | |
-| `mcp_provision` | **已移除，沒有同名替代品** | MCP server 現在是一種資產：`workspace_push({workflow,kind:"mcp",name,config})`；`stdio` transport 需 `admin`，`http` 受 `mcpEgressAllowlist` 把關 |
-| `workflow_trigger` | **已移除，沒有替代品** | 要手動跑就直接 `run_start`；定時／webhook 用 `schedule_*`／`webhook_*` |
-| `workflow_regenerate_diagram` | **已移除，沒有替代品** | 引擎不再畫圖；換圖＝用新的 `mermaid` 重新 `workflow_register` 一個版本 |
-| `chain_create` / `chain_list` | **已移除，沒有替代品** | 改在腳本裡用 `await workflow(name, args)` 巢狀呼叫 |
-| `issue_comments` / `issue_comment` | `issue_get_comments` / `issue_comment_post` | `issue_report` 的必填欄位是 `title`/`reproSteps`/`analysis`（沒有 `body`）|
-
-同時改變、但不是改名的三件事（呼叫端最容易踩）：
-
-1. **`workflow_register` 多了必填的 `mermaid`**（`MERMAID_REQUIRED`），而且圖裡的 stadium 節點要跟
-   腳本的 `agent()` label 雙向對上（`DIAGRAM_MISMATCH`）。
-2. **`agent()` 的第一個參數改成 label**：`agent('<label>', { prompt: '...' })`，且每個 label 都要有
-   `meta.params.agents.<label>` 契約（`model`/`effort`/`timeoutMs`，各自要有 `.default`）。
-   在 `agent()` 呼叫裡直接寫 `model`/`effort`/`timeoutMs` → `SCAN_VIOLATION`。
-   註冊時的 `defaults` 參數與 `meta.params.knobs` 都已淘汰（`DEFAULTS_RETIRED`）。
-3. **`run_start.overrides` 改成逐 agent**：`{agents:{'<label>':{model?,effort?,timeoutMs?,appendPrompt?}}}`。
-   舊的扁平寫法 → `PARAM_UNKNOWN`；沒宣告過的 label → `UNKNOWN_AGENT_LABEL`；鎖定鍵 → `PARAM_LOCKED`。
-
-完整的腳本撰寫規則見 `docs/AUTHORING.md`（引擎產生，與 `workflow_authoring_guide` 工具同一份文字）。
 
 ## 2. 完整部署步驟（超出一鍵路徑之外：常駐化 / 容器化 / 上線前煙霧測試）
 
@@ -624,11 +587,19 @@ scripts/smoke.sh
 不需要任何 LLM 供應商金鑰或 LiteLLM/Python，只驗證「送出 run → 查狀態 → 取結果」這條核心路徑
 本身能不能跑完。
 
-> ⚠ **目前這支腳本尚未跟上 v24 的工具改名**：它送的是 `workflow_run` 帶 inline `script`，
-> 而 v24 既沒有 `workflow_run` 這個工具（回 `-32601`），也不再接受 inline script。
-> 在它被更新之前，請改用 §0 展開版 Quickstart 的手動檢查（`tools/list` 回 35 個工具 +
-> `GET /api/status`），或自己照這條 v24 路徑跑一次：`workflow_register`（含 `mermaid`）→
-> `workflow_publish` → `run_start({name})` → 輪詢 `run_status` → `run_result`。
+它走的就是現行的路徑：`workflow_register`（含 `mermaid`）→ `workflow_publish` → `run_start({name})` →
+輪詢 `run_status` → `run_result`。預設用 port 8799（用 `RWE_PORT` 改）。實際跑過的輸出：
+
+```
+[smoke] starting server on port 8796...
+[smoke] server ready
+[smoke] registering sample workflow rwe-smoke-139722...
+[smoke] publishing rwe-smoke-139722@v1 onto release...
+[smoke] submitting sample run_start...
+[smoke] runId=b7c3d1fc-3535-49f3-8ca2-d4ce2c9cf83c
+[smoke] PASS: sample workflow completed with result=42
+[smoke] shutting down server (pid 139727)...
+```
 
 ### 無訪問控制時的已知風險（`auth.enabled:false`，D5/C4）
 
@@ -640,8 +611,7 @@ scripts/smoke.sh
 `ssh -L 8787:127.0.0.1:8787 user@host`）/VPN 存取這台伺服器，絕對不要把 `workspace_push` 所在的
 port 直接暴露在公開網路上。**
 
-> ⚠ **v24 起「寫入後會被執行」這個風險是真的成立的**（v23 這裡曾寫著相反的話：「推送的 skill/MCP
-> config 目前 agent 完全用不到」。那句話已作廢，因為 ARCH-103/DES-154 把資產接上了 gateway。）
+> ⚠ **「寫入後會被執行」這個風險是真的成立的**：
 > `gateway:"sdk"` 路徑上，一次 `agent()` 呼叫如果同時有 run workspace 和資產資訊，就會用
 > `materializeAssets()` 把**該 agent label 在契約裡宣告的**（`meta.params.agents.<label>.skills`／
 > `.mcp`）skill 展開進該次 run 的 workspace（`.claude/skills/<name>/`，以
@@ -685,12 +655,13 @@ npm run start
 | 啟動失敗 `EADDRINUSE` | port 已被另一個 remote-workflow-engine process 占用 | `RWE_PORT=<other>` 換一個 port，或先確認/停掉舊 process（`ps aux \| grep "main.ts"`） |
 | `pip install 'litellm[proxy]'` 失敗（`uvloop`/`orjson` 編譯錯誤） | 系統 Python 版本太新（如 3.13/3.14），沒有預編譯 wheel | 用 §1a 的 `uv python install 3.12` 取得一份獨立的 3.12，改用它裝 |
 | `agent()` 一律回傳 `null`、`run_status.agents[].state === "failed"` | 該別名對應的 provider 沒有可用憑證/端點（伺服器不會掛住，只會讓該次呼叫失敗回 `null`） | 確認 `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY`/`OLLAMA_BASE_URL` 已正確設定，且 `rwe.config.json` 的 `aliases` 有指到你要的 provider/model |
-| `workflow_register` 回 `UNKNOWN_ALIAS` | 腳本 `meta.params.agents.<label>.model.default` 的別名沒在 `aliases` 設定檔裡 | 補上該別名，或改用已存在的別名——這是在**註冊當下**就報錯（v24 起 `model` 不能寫在 `agent()` 呼叫裡，寫了是 `SCAN_VIOLATION`），不會跑到一半才失敗 |
-| 任何工具呼叫回 JSON-RPC `-32601 Unknown tool` | 用的是 v24 之前的工具名（`workflow_run`／`workflow_status`／`asset_push`…）。v24 把整個工具面改名了 | 對照 §1d 的新舊名稱表換成新名字；權威清單是 `tools/list`（35 個）或 `src/tool-specs.ts` |
-| `workflow_register` 回 `MERMAID_REQUIRED` 或 `DIAGRAM_MISMATCH` | v24 起註冊必須附一張非空的 Mermaid 圖，而且圖裡的 stadium 節點 `id(["label"])` 要跟腳本的 `agent()` label 雙向完全對上 | 補上 `mermaid` 參數；節點少了就補、多了就刪。詳細語法見 `docs/AUTHORING.md`（或呼叫 `workflow_authoring_guide`）|
-| `run_start` 回 `PARAM_UNKNOWN`，訊息說 overrides 只有 `agents` 一個鍵 | 用的是 v21 的扁平 `overrides:{effort:...}` | 改成逐 agent：`overrides:{agents:{'<label>':{effort:...}}}`；而且該鍵必須在 `meta.params.agents.<label>` 宣告過 |
+| `workflow_register` 回 `UNKNOWN_ALIAS` | 腳本 `meta.params.agents.<label>.model.default` 的別名沒在 `aliases` 設定檔裡 | 補上該別名，或改用已存在的別名——這是在**註冊當下**就報錯（`model` 不能寫在 `agent()` 呼叫裡，寫了是 `SCAN_VIOLATION`），不會跑到一半才失敗 |
+| 任何工具呼叫回 JSON-RPC `-32601 Unknown tool` | 用的工具名不存在（例如 `workflow_run`／`workflow_status`／`asset_push`／`mcp_provision`／`chain_create`） | 用 `tools/list`（35 個）查現行名稱；權威清單是 `src/tool-specs.ts` |
+| 開機 log 出現 `unrecognized config key(s) in rwe.config.json, ignored: …` | `rwe.config.json` 有引擎不認得的鍵（打錯字，或已不存在的鍵，例如 `graphAnalyzer`） | 把該鍵從設定檔移除；有效鍵只有 §1b 設定總表列出的那些 |
+| `workflow_register` 回 `MERMAID_REQUIRED` 或 `DIAGRAM_MISMATCH` | 註冊必須附一張非空的 Mermaid 圖，而且圖裡的 stadium 節點 `id(["label"])` 要跟腳本的 `agent()` label 雙向完全對上 | 補上 `mermaid` 參數；節點少了就補、多了就刪。詳細語法見 `docs/AUTHORING.md`（或呼叫 `workflow_authoring_guide`）|
+| `run_start` 回 `PARAM_UNKNOWN`，訊息說 overrides 只有 `agents` 一個鍵 | 用的是扁平的 `overrides:{effort:...}` | 改成逐 agent：`overrides:{agents:{'<label>':{effort:...}}}`；而且該鍵必須在 `meta.params.agents.<label>` 宣告過 |
 | `run_start` 回 `CHANNEL_UNPUBLISHED`；或 `workflow_describe` 回 `runnable:false` | 剛註冊完還沒發布——註冊只建立版本，不會自動指向任何頻道 | `workflow_publish({name, version, channel:"release"})`（三個參數都必填，`version` 是註冊回傳的字串如 `"v1"`）|
-| `workflow_describe` 回 `runnable:false` + `runnableReason:"LEGACY_REREGISTER"` | 這個版本是 v24 契約之前註冊的，沒有 `meta.params.agents` 契約，引擎不提供舊版解析階梯 | 照 v24 契約重新 `workflow_register` 一次（新版本），再 `workflow_publish` |
+| `workflow_describe` 回 `runnable:false` + `runnableReason:"LEGACY_REREGISTER"` | 這個版本沒有 `meta.params.agents` 契約（引擎不提供舊契約的解析階梯） | 照現行契約重新 `workflow_register` 一次（新版本），再 `workflow_publish` |
 | 腳本內 `budget.spent()` 一直是 `0`、`budget.remaining()` 一直等於 `budget.total` | 該次執行可能尚未完成任何一次 `agent()` 呼叫 | 第一筆用量要等第一次 `agent()` 回應後才會同步 |
 | **本機 7B 級 Ollama 模型不會真的觸發工具呼叫**：`agent()` 要求讀檔/寫檔，回傳的內容看起來像結果，但檔案沒真的被寫入/讀到的內容是編造的 | 已知的模型能力上限（非程式碼缺陷）：即使工具清單已縮減到最小，SDK 的工具迴圈對本機 7B 級模型仍不會真正被觸發，模型直接生成一段編造的「工具結果」文字（直接對 Ollama 原生 API 測試排除了模型本身不支援 tool-calling 的可能） | 目前沒有繞過方法；若工作流程依賴 agent 真的讀寫檔案，改用更大的本機模型（例如 32B 級）或已驗證憑證的付費供應商 |
 | 續跑（`run_resume`）之後，原本被中止那次呼叫的紀錄一直卡在 `"state":"running"` | 已知的顯示瑕疵：中止的呼叫紀錄不會自己轉成終止狀態，續跑會多出一筆新紀錄 | 純顯示瑕疵，不影響最終 `run_result` 的正確性；可忽略舊的那筆紀錄 |
@@ -719,9 +690,8 @@ frame，頂層 `""`）+ `startedAt`/`endedAt`，`workflowNodes:[{frame,name,pare
 巢狀樹（不攤平）；改動前留下、無快照的舊 run 仍以既有方式重建。**尚未支援**：parallel-group
 標記（需 sandbox-IPC 改動）、樹的靜態預讀+快取。
 
-**跨觸發串接（v24 已從工具面移除）**：`chain_create`/`chain_list` 這兩個工具在 v24 的 35 個工具裡
-不存在，呼叫會得到 `-32601`，也沒有替代工具。`continuationDbPath` 設定鍵還在（見 §1b），但目前
-沒有任何可呼叫的功能對應到它。要串接多個工作流程，改在腳本裡用 `await workflow(name, args)`
+**沒有跨觸發串接工具**：35 個工具裡沒有 `chain_*` 這類工具（呼叫會得到 `-32601`），也沒有替代工具。
+`continuationDbPath` 設定鍵存在（見 §1b），但沒有任何可呼叫的功能對應到它。要串接多個工作流程，改在腳本裡用 `await workflow(name, args)`
 巢狀呼叫（深度/總數由 `maxWorkflowDepth`／`maxWorkflowDescendants` 把關）。
 
 **外部 ingress 安全：Host/Origin 白名單 + webhook 入口**（OIDC/OAuth 之外的過渡管控，永遠開啟、
@@ -762,17 +732,16 @@ channels, runnable}`（從不含腳本本文）；腳本本文只有 `workflow_s
 時維持開放。**擋下的時機很重要**：名稱存在與不存在都是同一個 401，未授權的呼叫端沒辦法靠
 「回 404 還是回 200」去試探某個工作流程名稱存不存在。
 
-結構圖不再由引擎畫（v24／ADR-025，`graphAnalyzer` 整個子系統已移除）：`workflow_register` 必須
+結構圖由作者附上、引擎不畫圖：`workflow_register` 必須
 帶一個非空的 **Mermaid** `mermaid` 字串（少了就 `MERMAID_REQUIRED`），圖裡的 stadium 節點
 `id(["label"])` 要跟腳本的 `agent()` label 雙向完全對上（對不上就 `DIAGRAM_MISMATCH`）。
-`workflow_describe` 原文回傳這張圖（`mermaid` 欄位）；v24 之前註冊、沒有圖的舊版本回
-`mermaid:null` + `mermaidNote:"LEGACY_NO_DIAGRAM"`。儀表板上顯示的就是這張圖的原文。
-沒有重畫工具（`workflow_regenerate_diagram` 已移除）——要換圖就用新的 `mermaid` 重新註冊一個版本。
+`workflow_describe` 的 `mermaid` 欄位設計上回傳這張圖的原文；沒有圖的版本回 `mermaid:null` +
+`mermaidNote:"LEGACY_NO_DIAGRAM"`。儀表板顯示的是同一份。沒有重畫工具——要換圖就用新的 `mermaid`
+重新註冊一個版本。（目前有一個已知缺陷讓每個工作流程都回 `null`，見本節末「尚未修復的缺陷」第 1 條。）
 完整的圖語法（三種節點形狀、邊、`subgraph`、迴圈邊必須帶標籤）見 `docs/AUTHORING.md`，或呼叫
 `workflow_authoring_guide` 工具拿同一份文字。
 
-**副作用（正面的）**：v23 的分析器會把**腳本本文**送給設定的 provider 去畫圖；v24 之後註冊完全
-不呼叫任何模型，所以註冊不再把腳本送出這台機器。
+**註冊不呼叫任何模型**：`workflow_register` 只做本機靜態檢查，腳本本文不會送出這台機器。
 
 **高效大型程式庫 seeding**：`/mcp` 請求體接受 `Content-Encoding: gzip|deflate`（雙重上限：壓縮
 輸入 8 MiB + 解壓輸出 8×，防 gzip bomb）；超過上限回具型別 413
@@ -780,9 +749,9 @@ channels, runnable}`（從不含腳本本文）；腳本本文只有 `workflow_s
 `workspace_push({sha256,contentB64})` 伺服器 byte-verify、以計算出的 hash 存放（hash 對不上 →
 `BLOB_HASH_MISMATCH`）；`workspace_diff({manifest})` 回傳此 namespace 尚須上傳的 blob；
 `run_start` 的 `seedManifest`/`seedManifestRef` 從 CAS 組裝工作區，參照未上傳的 blob 在任何
-持久化動作之前以 `MISSING_BLOBS` fail-fast。**namespace 一律由呼叫者身份推導**——v24 起
-`run_start` 沒有 `seedNamespace` 參數（封閉 schema，硬塞回 `INVALID_ARGUMENT`），HTTP 上傳端點的
-`?namespace=` 也已停用（帶了回 400 `INVALID_BLOB_REQUEST`）。**尚未支援**：per-tenant quota +
+持久化動作之前以 `MISSING_BLOBS` fail-fast。**namespace 一律由呼叫者身份推導**——`run_start` 沒有
+`seedNamespace` 參數（封閉 schema，硬塞回 `INVALID_ARGUMENT`），HTTP 上傳端點不接受 `?namespace=`
+（帶了回 400 `INVALID_BLOB_REQUEST`）。**尚未支援**：per-tenant quota +
 immutable-pool GC。同樣受 Host/Origin 白名單過渡管控，非公開端點。
 
 **本機小模型能力上限（非程式碼缺陷）**：`agent()` 工具迴圈（讀檔/寫檔）對本機 7B 級 Ollama 模型
@@ -809,7 +778,35 @@ immutable-pool GC。同樣受 Host/Origin 白名單過渡管控，非公開端�
 `gateway:"sdk"`（預設）+ 本機 Ollama 的純文字問答成功案例已驗證；部署到正式環境前，建議至少用一組
 sandbox/test key 針對付費供應商跑一次 `agent()` 成功案例。
 
-## §6b 標籤觸發式自動更新（v11 Sprint 2，REQ-068/069/070）
+
+**目前已知、尚未修復的缺陷（操作時要知道的現況）**——每一條在
+`.sdlc/features/001-remote-workflow-engine/08-validation.md` 的 v24 章節都有實際指令與觀察到的輸出：
+
+1. **`workflow_describe` 的 `mermaid` 一律是 `null`**（`mermaidNote:"LEGACY_NO_DIAGRAM"`）：註冊時的圖
+   有存進資料庫，但讀回時漏了這個欄位，儀表板也看不到圖。註冊時的圖檢查不受影響。
+2. **排程／webhook 一定要在建立時就綁定工作流程**（`schedule_create`／`webhook_create` 的 `workflow` 是必填），
+   沒有「先建立、之後由 `workflow_register({triggers})` 認領」的路徑；而且這種建立時綁定的觸發器，
+   **`workflow_deregister` 不會釋放它**（`releasedTriggers` 是空的）。後果：之後任何人用同一個名稱重新
+   `workflow_register` + `workflow_publish`，這個舊排程／webhook 會直接替新工作流程開跑。
+   **對策：重用一個名稱之前，先 `schedule_delete`／`webhook_delete` 掉它名下的觸發器。**
+3. **`workflow_deregister` 不會刪掉磁碟上的資產目錄**（只刪資料庫紀錄）：`<assetRoot>/<name>/` 留在原地，
+   之後用同一名稱註冊的人，其 agent 只要宣告同名 skill，就會把前一個擁有者留下的檔案展開進自己的
+   run workspace。**對策：deregister 之後手動刪除 `<assetRoot>/<name>/`。**
+4. **`workflow_register` 帶 `defaults` 參數會被靜默忽略**（不會回 `DEFAULTS_RETIRED`）；`meta.params.knobs`
+   則會被正確拒絕。請只用 `meta.params.agents.<label>.<key>.default`。
+5. **stdio 型 MCP 設定的 admin 限制可被繞過**：角色檢查看的是 `config.transport`，而真正被執行的是
+   `config.type`；`author` 推 `{type:"stdio",command:"npx",…}` 會被當成一般資產放行，並在推送當下
+   於伺服器上真的啟動一次該指令。在修好之前，**`author` 角色只給你信任的人**。
+6. **資產檔案路徑逃逸時回的錯誤碼是 `AssetPathEscapeError`**（不是文件宣告的 `WORKSPACE_ESCAPE`）；
+   寫入本身有被擋下，只是錯誤碼不對。
+7. **註冊失敗的錯誤訊息沒有指向 `workflow_authoring_guide`**（`see` 欄位在送出前被丟掉）；
+   `workflow_authoring_guide` 本身也還沒教 `{"…"}`（條件分支）與 `{{"…"}}`（非 agent 彙整）這兩種
+   引擎其實接受的節點、以及「fan-out 每條邊各寫一行」這條會被 `COLLAPSED_EDGE` 拒絕的規則。
+8. **冷啟動的 MCP 用戶端查不到這台部署接受哪些模型別名**（`models_list` 列的是模型目錄，不是
+   `aliases`），第一次註冊很容易踩到 `PARAM_CONTRACT_INVALID: default not a known alias`。
+   **對策：把你 `aliases` 的別名名稱直接告訴使用者（例如 `default`）。**
+
+## §6b 標籤觸發式自動更新
 
 > **範圍：僅限 systemd 部署。** Docker Compose 部署需手動更新（`git pull` + `npm ci` + `npm run build` + 重啟容器），不使用本節機制。
 
