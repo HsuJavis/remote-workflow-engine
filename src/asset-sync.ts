@@ -12,7 +12,7 @@
 // and by tests exercising `isSelfReferential`/`classifyAsset` directly) — TASK-147/148 retire them
 // when the facade is rewritten; they are decoupled from the new `AssetKind` on purpose so neither
 // union constrains the other.
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, statSync, renameSync, rmdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { pathVerdict, lexicalVerdict } from './path-verdict.js';
 import { codedError } from './errors.js';
@@ -148,6 +148,112 @@ export function globalAssetRoot(workRoot: string): string {
 /** The `roots` pair `materializeAssets` (DES-154) takes for one dispatch. */
 export function assetRootsFor(assetRoot: string, globalRoot: string, workflow: string): { workflow: string; global: string } {
   return { workflow: join(assetRoot, workflow), global: globalRoot };
+}
+
+// ---------------------------------------------------------------------------------------------
+// The pre-v24 boot migration (ARCH-098, TASK-160; Gate 8 AF-1 / adjudication (v24) #7 G-1)
+//
+// A pre-v24 deployment keeps its GLOBAL assets at `<assetRoot>/<kind>/<name>` — INSIDE the tree
+// `reclaimStaleWorkspaces` now sweeps, where every child that is not a live workflow is deleted.
+// `skill` is not a live workflow. So on the first sweep after an upgrade with `workspaceTtlMs > 0`
+// the operator's global skills are destroyed, and every provisioned MCP config silently resolves
+// to `missing` (`resolveMcp` reads only `catalog.assets`).
+//
+// This function is therefore ORDERED, not merely present: `server.ts` runs it before the GC timer
+// is armed, so by the time any sweep can run there is nothing left in `<assetRoot>/` for it to
+// destroy. A test pins the order by booting with a TTL and asserting the tree survived real sweeps
+// (tests/integration/legacy-asset-migration.test.ts) — asserting the migration "works" in
+// isolation would not have caught the hazard.
+// ---------------------------------------------------------------------------------------------
+
+/** The three pre-v24 kind directories (`LegacyAssetKind`) that could sit directly under the asset
+ *  root. Only `skill` has a v24 `assets` row equivalent; `hook`/`mcp-config` bytes are still moved
+ *  to safety rather than left for the sweep, because deleting an operator's files is not this
+ *  migration's job. */
+const LEGACY_KIND_DIRS: readonly LegacyAssetKind[] = ['skill', 'hook', 'mcp-config'];
+
+/** Written LAST, inside the global root. Its presence means "the one-shot migration is done", which
+ *  is what keeps a later boot from (a) treating a workflow legitimately NAMED `skill` as a legacy
+ *  kind directory and (b) resurrecting an `mcp_provisions` row an admin deleted after migrating —
+ *  `mcp-registry.db` is left on disk untouched, so without this the copy would come back forever. */
+const MIGRATION_MARKER = '.v24-legacy-migrated';
+
+export interface LegacyAssetRow {
+  workflow: string; // always '' — the global-scope sentinel (ARCH-098)
+  kind: string;
+  name: string;
+  pushedBy: string; // always 'legacy'
+  pushedAt: string;
+  config: string | null;
+}
+
+/** The catalog side of the migration (implemented by `WorkflowCatalog`): one transactional upsert
+ *  of every row, and a read of the PRE-v24 `mcp_provisions` table from the on-disk sibling database
+ *  (`<workRoot>/mcp-registry.db`). `grep -rn "mcp_provisions" src/` is empty only because v24
+ *  deleted `mcp-registry.ts` — an upgraded deployment's DISK still has the table. */
+export interface LegacyAssetMigrationPort {
+  putLegacyAssets(rows: readonly LegacyAssetRow[]): void;
+  readLegacyMcpProvisions(): Array<{ name: string; config: string; provisionedAt: string }>;
+}
+
+/** Idempotent, ordered: rows first (one transaction), then the file moves, then the marker. A crash
+ *  anywhere re-runs the whole thing on the next boot — the row upsert is idempotent and a move whose
+ *  source is already gone is skipped. Returns what it did, for the boot log. */
+export function migrateLegacyGlobalAssets(deps: {
+  assetRoot: string;
+  globalRoot: string;
+  clock: Clock;
+  port: LegacyAssetMigrationPort;
+}): { rows: number; movedTrees: number; alreadyDone: boolean } {
+  const { assetRoot, globalRoot, clock, port } = deps;
+  if (existsSync(join(globalRoot, MIGRATION_MARKER))) return { rows: 0, movedTrees: 0, alreadyDone: true };
+
+  const rows: LegacyAssetRow[] = [];
+  const moves: Array<{ from: string; to: string }> = [];
+  const pushedAt = clock.isoNow();
+  for (const kind of LEGACY_KIND_DIRS) {
+    const kindDir = join(assetRoot, kind);
+    let names: string[];
+    try {
+      names = readdirSync(kindDir);
+    } catch {
+      continue; // this kind was never used on that deployment
+    }
+    for (const name of names) {
+      const from = join(kindDir, name);
+      try {
+        if (!statSync(from).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      const to = join(globalRoot, kind, name);
+      // A name that ALREADY exists in the v24 global tree is left where it is rather than
+      // overwritten — this migration never destroys bytes to make room for other bytes.
+      if (!existsSync(to)) moves.push({ from, to });
+      if (kind === 'skill') rows.push({ workflow: '', kind: 'skill', name, pushedBy: 'legacy', pushedAt, config: null });
+    }
+  }
+  for (const p of port.readLegacyMcpProvisions()) {
+    rows.push({ workflow: '', kind: 'mcp', name: p.name, pushedBy: 'legacy', pushedAt: p.provisionedAt, config: p.config });
+  }
+
+  if (rows.length > 0) port.putLegacyAssets(rows);
+  for (const { from, to } of moves) {
+    mkdirSync(dirname(to), { recursive: true });
+    renameSync(from, to);
+  }
+  // Only an EMPTY legacy kind directory is removed (`rmdirSync`, never a recursive delete): if
+  // anything was left behind by the collision rule above it stays, visible, on disk.
+  for (const kind of LEGACY_KIND_DIRS) {
+    try {
+      rmdirSync(join(assetRoot, kind));
+    } catch {
+      /* absent or non-empty — nothing to reclaim */
+    }
+  }
+  mkdirSync(globalRoot, { recursive: true });
+  writeFileSync(join(globalRoot, MIGRATION_MARKER), `${clock.isoNow()}\n`);
+  return { rows: rows.length, movedTrees: moves.length, alreadyDone: false };
 }
 
 /** v24 narrow kind union — see file header for why this is decoupled from `LegacyAssetKind`. */

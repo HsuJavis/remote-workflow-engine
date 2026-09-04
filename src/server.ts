@@ -32,7 +32,7 @@ import type { SecretValueProvider } from './secret-resolver.js';
 import { isAllowedHost, isAllowedOrigin, isLoopback, isLoopbackPeer } from './net-guard.js';
 import { parseWorkflowSkeleton } from './workflow-meta.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
-import { AssetSyncService, defaultAssetRoot, globalAssetRoot, resolveMcp, type AssetCatalogPort, type AssetCatalogRow, type AssetKind } from './asset-sync.js';
+import { AssetSyncService, defaultAssetRoot, globalAssetRoot, migrateLegacyGlobalAssets, resolveMcp, type AssetCatalogPort, type AssetCatalogRow, type AssetKind } from './asset-sync.js';
 import { RealMcpProbe, type McpProbe } from './mcp-probe.js';
 import { IssueReporter, resolveEngineVersion, type IssueReportInput, type IssueListFilter } from './github/issue-reporter.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
@@ -818,6 +818,17 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   const authHandlers = authCfg && authTokenStore
     ? createAuthRouteHandlers(authCfg, authTokenStore)
     : undefined;
+
+  // v24 (ARCH-098, TASK-160; Gate 8 AF-1 / adjudication #7 G-1): the pre-v24 asset migration, and
+  // it runs HERE — synchronously, BEFORE the sweep below is armed — because the order IS the
+  // requirement. The sweep deletes every child of `<assetRoot>/` that is not a live workflow, and a
+  // pre-v24 deployment's global tree (`<assetRoot>/skill/<name>`) is exactly such a child. Arming
+  // the timer first and migrating later would work only by luck of the interval.
+  const legacyAssets = migrateLegacyGlobalAssets({ assetRoot, globalRoot: globalAssetRoot(workRoot), clock, port: catalog });
+  if (!legacyAssets.alreadyDone) {
+    // eslint-disable-next-line no-console
+    console.log(`[remote-workflow-engine] assets.migrate: ${legacyAssets.rows} legacy row(s), ${legacyAssets.movedTrees} tree(s) moved out of the swept asset root`);
+  }
 
   // REQ-026 (v2, v16): periodic maintenance sweep — workspace GC (when TTL set) + auth-table GC
   // (when auth enabled, MED-2 v16). Created when workspaceTtlMs>0 OR auth enabled; capped hourly.

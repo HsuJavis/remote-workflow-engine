@@ -23,6 +23,14 @@ export function reclaimStaleWorkspaces(
   // whole branch had never run outside a test — it is passed now. `assetRoot` defaults to the same
   // `defaultAssetRoot(workRoot)` the writer uses; the server passes its RESOLVED value so an
   // operator-overridden `assetRoot` is swept too, instead of silently accumulating orphans.
+  //
+  // v24 Gate 8 (AF-1, TASK-160) — READ THIS BEFORE CHANGING THE CALL SITE: this branch is
+  // unconditionally destructive over `<assetRoot>/`, and a PRE-v24 deployment's GLOBAL asset tree
+  // sits at `<assetRoot>/skill/<name>` — a child whose name is not a live workflow. It survives
+  // only because `server.ts` runs `migrateLegacyGlobalAssets()` (asset-sync.ts), which relocates
+  // that tree to `<workRoot>/_global_assets/`, BEFORE the sweep timer is armed. Arming the sweep
+  // before the migration destroys the operator's skills on the first tick; the ordering is pinned
+  // by tests/integration/legacy-asset-migration.test.ts, not by this comment.
   hasWorkflow?: (name: string) => boolean,
   assetRoot: string = defaultAssetRoot(workRoot),
 ): string[] {

@@ -15,7 +15,7 @@
 // this is a manual/ops-owned action, not an in-process timer, keeping the kernel free of unproven
 // background-deletion logic.
 import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync } from 'node:fs';
 import { join, resolve, sep, isAbsolute } from 'node:path';
 import { CatalogNotFoundError, WorkspaceEscapeError, codedError, type ErrorCode } from './errors.js';
 import { parseMeta, parseMetaParams } from './workflow-meta.js';
@@ -270,6 +270,36 @@ export class WorkflowCatalog {
           pushedBy = excluded.pushedBy, pushedAt = excluded.pushedAt, config = excluded.config
       `)
       .run({ workflow: row.workflow, kind: row.kind, name: row.name, pushedBy: row.pushedBy, pushedAt: row.pushedAt, config: row.config ?? null });
+  }
+
+  /** v24 (ARCH-098, TASK-160, Gate 8 AF-1): the catalog half of the pre-v24 asset migration — every
+   *  legacy row in ONE `.immediate()` transaction (ARCH-071's precedent), upsert so a re-run after a
+   *  crash writes the same rows rather than failing on the primary key. */
+  putLegacyAssets(rows: readonly { workflow: string; kind: string; name: string; pushedBy: string; pushedAt: string; config: string | null }[]): void {
+    this._db.transaction(() => {
+      for (const row of rows) this.putAsset(row);
+    }).immediate();
+  }
+
+  /** v24 (ARCH-098, TASK-160, Gate 8 AF-1): reads the PRE-v24 `mcp_provisions` table off DISK.
+   *  Pre-v24 that table lived in its own sibling database, `<workRoot>/mcp-registry.db` (pre-v24
+   *  `server.ts:1362`), NOT in `catalog.db`. `grep -rn "mcp_provisions" src/` is empty because v24
+   *  deleted `mcp-registry.ts` — that says nothing about an upgraded deployment's disk, which is
+   *  exactly the confusion AF-1 turned on. The file is left in place afterwards (never dropped): the
+   *  migration marker, not a destructive DDL, is what stops a second copy. */
+  readLegacyMcpProvisions(): Array<{ name: string; config: string; provisionedAt: string }> {
+    const dbPath = join(this._workRoot, 'mcp-registry.db');
+    if (!existsSync(dbPath)) return [];
+    const legacy = new Database(dbPath);
+    try {
+      const table = legacy.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'mcp_provisions'").get();
+      if (!table) return [];
+      return legacy.prepare('SELECT name, config, provisionedAt FROM mcp_provisions ORDER BY name').all() as Array<{
+        name: string; config: string; provisionedAt: string;
+      }>;
+    } finally {
+      legacy.close();
+    }
   }
 
   /** v24 (ARCH-098, DES-153, TASK-143): `{deleted:false}` when no such row existed (idempotent). */
