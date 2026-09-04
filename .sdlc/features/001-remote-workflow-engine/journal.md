@@ -2030,12 +2030,19 @@ in the wiring, and the shipped IT-105 could not see them because its three cases
     lookup answers "does not exist", and the non-leak rule returns **ok** — a non-owner passes.
     Invisible to every existing test because they all run auth-disabled.
 
-**(1b) COVERAGE** (@vitest/coverage-v8@1.6.1, `coverage/` gitignored): overall src line coverage
-94.7% (16825/17766) — above the 90% bar. Per-function, on the v24-touched delta, the bar is NOT
-met: 32 long offenders (>5 lines, <95%) and 2 short. Four were closed this round by writing the
-tests the dods asked for (`asset-sync.resolveMcp` 0/17 → covered; `tool-specs` `listMode`/
-`deleteMode`; `params/contract` `validateRequiredKeySpec`/`validateNameArray`; `authz.authorize`
-and `owner-lookup`). The remainder is listed in the gate report and belongs to the Gate 6 round.
+**(1b) COVERAGE** (@vitest/coverage-v8@1.6.1, `--coverage.reportOnFailure`, `coverage/`
+gitignored): overall src line coverage **94.91%** (16863/17766), functions 95.32% (653/685) — above
+the 90% bar, up from 94.70% at round start. Per-function, on the v24-touched delta, the bar is NOT
+met: 32 long offenders (>5 lines, <95%) + 2 short at round start → **26 long + 0 short** after this
+round's fills. Closed by writing the tests the dods asked for: `asset-sync.resolveMcp` (0 of 17
+lines — the entire replacement for the deleted `mcp-registry.ts`, with zero tests), `tool-specs`
+`listMode`/`deleteMode`, `params/contract` `validateRequiredKeySpec`/`validateNameArray`,
+`authz.authorize`, and `owner-lookup`'s `createOwnerLookup`/`triggerOwner` (4 of 5 lines missed —
+the defect above is exactly that hole). The 26 that remain are listed in
+`gates.verification.note` and belong to the Gate 6 round. The measurement also found DEAD CODE:
+`workflow-catalog.ts`'s `putDiagramPending`/`putDiagramResult`/`getDiagram` have ZERO callers in
+src/ or tests/ — orphaned when TASK-139 deleted `graph-analyzer.ts`, and not on that card's
+deletion list.
 
 **(3) trace --check** 1178 items / 31 gaps (was 36): 12 HIGH are all `未真實驗證` for REQ-107..118,
 structural before Gate 7.5 flips `real:true`; 1 MID (IMPL-082, pre-existing); 18 LOW. Five
@@ -2048,5 +2055,10 @@ dep. An architecture-declaration fix, reported not papered over.
 **(6) SEAM WIRING** finding: `asset-sync.ts`'s exported `resolveMcp` (DES-153) has ZERO production
 callers — `server.ts:1363` re-implements the same rule inline over `catalog.assetsOf`. Two
 implementations of one rule, only one of them tested.
+
+**(5) TIME-TRAVEL** re-run: `TZ='Pacific/Kiritimati' npx vitest run` — 296 files pass / 1 fail,
+2033 pass / 6 fail / 26 skip: byte-identical failure set to the normal-clock run (IT-105's six
+send-back rows and nothing else). Zero tests flipped; no time bombs. (No `faketime` binary in this
+sandbox — the documented install-free fallback.)
 
 `gates.verification.passed=false`; `gates.impl.passed=false`; `current_stage` → `impl`.
