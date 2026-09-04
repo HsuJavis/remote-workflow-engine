@@ -801,10 +801,6 @@ sandbox/test key 針對付費供應商跑一次 `agent()` 成功案例。
    把 suspend 延到 +3 秒重做一次則完全正常，無法穩定重現、尚未歸因：
    [issue #53](https://github.com/HsuJavis/remote-workflow-engine/issues/53)。
    **對策：suspend/resume 之後用 `run_status` 確認狀態，發現無故 `failed` 時把 run id 貼進該 issue。**
-2. **認領觸發器失敗的錯誤沒有 `see` 指標**：`workflow_register({triggers:[id]})` 遇到不存在或已被別人
-   認領的 id 時回 `TRIGGER_NOT_FOUND`／`TRIGGER_ALREADY_CLAIMED`，但 `see` 是 `null`（其他註冊錯誤都指向
-   `workflow_authoring_guide`）。只影響錯誤訊息、不影響行為。
-   **對策：認領前先用 `schedule_list`／`webhook_list` 確認 id 存在且 `claimedBy` 為 `null`。**
 
 ## §6b 標籤觸發式自動更新
 

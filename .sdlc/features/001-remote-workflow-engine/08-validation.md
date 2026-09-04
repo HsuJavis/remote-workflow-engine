@@ -7864,7 +7864,7 @@ for `owner@val24.example` (author), `other@val24.example` (author), `root@val24.
 
 | id | sev | REQ | what the real run showed | where |
 |---|---|---|---|---|
-| D-14 | LOW | REQ-116 (last clause) | `workflow_register({…, triggers:['no-such-id']})` ⇒ `TRIGGER_NOT_FOUND … "see": null`; `triggers:[<id claimed by another workflow>]` ⇒ `TRIGGER_ALREADY_CLAIMED: ALREADY_CLAIMED: <id> … "see": null`. REQ-116: "Given a registration that fails on parse, contract, diagram **or trigger** Then the error message points at this tool." Every other authoring refusal driven this round carries `see: "workflow_authoring_guide"` (D-3 is fixed on the wire); these two do not because `ERROR_CATALOG` itself assigns them `see: null` (`src/errors.ts:74-75`; `NOT_TRIGGER_OWNER` at `:37` likewise) — a catalog miss, not a wiring miss. Behaviour is otherwise correct (nothing stored, the claim refused). | `src/errors.ts:74-75` |
+| D-14 | LOW | REQ-116 (last clause) | `workflow_register({…, triggers:['no-such-id']})` ⇒ `TRIGGER_NOT_FOUND … "see": null`; `triggers:[<id claimed by another workflow>]` ⇒ `TRIGGER_ALREADY_CLAIMED: ALREADY_CLAIMED: <id> … "see": null`. REQ-116: "Given a registration that fails on parse, contract, diagram **or trigger** Then the error message points at this tool." Every other authoring refusal driven this round carries `see: "workflow_authoring_guide"` (D-3 is fixed on the wire); these two do not because `ERROR_CATALOG` itself assigns them `see: null` (`src/errors.ts:74-75`; `NOT_TRIGGER_OWNER` at `:37` likewise) — a catalog miss, not a wiring miss. Behaviour is otherwise correct (nothing stored, the claim refused). **FIXED** (adjudication #6 F-3 ruled `NOT_TRIGGER_OWNER` in as well — REQ-116 does not carve ownership out of "trigger"); all three codes now carry `see:'workflow_authoring_guide'`, re-observed live on boots C and D (VAL-165) and pinned by IT-129b. | `src/errors.ts:74-75` |
 
 Remediation status of round 1's register, re-observed live this round (all on the boots above):
 
@@ -7873,7 +7873,7 @@ Remediation status of round 1's register, re-observed live this round (all on th
 | D-1 | `schedule_create({cron:'* * * * *'})` with no `workflow` ⇒ `{kind:'cron', id, claimedBy:null, enabled:true}`; `webhook_create({})` ⇒ `{webhookId, url, secret}`; `schedule_create({kind:'once', at})` ⇒ `claimedBy:null`. **FIXED** (VAL-160) |
 | D-1b | a create-time-bound cron + webhook (`{workflow:'r2-claim'}`) both released by `workflow_deregister` ⇒ `releasedTriggers:[both]`, rows `claimedBy:null` / `workflow:null`; the released cron then claimable by `r2-third`. **FIXED** (VAL-160) |
 | D-2 | `workflow_register({…, defaults:{model:'default'}})` ⇒ `DEFAULTS_RETIRED` (`detail.param:'defaults'`); `meta.defaults` ⇒ `DEFAULTS_RETIRED`; `meta.params.knobs` ⇒ `DEFAULTS_RETIRED`; name absent from `workflow_list`. **FIXED** (VAL-155) |
-| D-3 | `see:"workflow_authoring_guide"` on the wire for `MERMAID_REQUIRED`, `MERMAID_INVALID`, `DIAGRAM_MISMATCH`, `PARSE_ERROR`, `SCAN_VIOLATION`, `PARAM_CONTRACT_INVALID`, `DEFAULTS_RETIRED`, `PARAM_UNKNOWN`, `UNKNOWN_AGENT_LABEL`, `PARAM_OUT_OF_RANGE`, `PARAM_LOCKED`. **FIXED** for every non-trigger code (VAL-156/157/161); the trigger codes are D-14 |
+| D-3 | `see:"workflow_authoring_guide"` on the wire for `MERMAID_REQUIRED`, `MERMAID_INVALID`, `DIAGRAM_MISMATCH`, `PARSE_ERROR`, `SCAN_VIOLATION`, `PARAM_CONTRACT_INVALID`, `DEFAULTS_RETIRED`, `PARAM_UNKNOWN`, `UNKNOWN_AGENT_LABEL`, `PARAM_OUT_OF_RANGE`, `PARAM_LOCKED`. **FIXED** for every non-trigger code (VAL-156/157/161); the trigger codes were D-14, **now fixed too** (VAL-165) |
 | D-4 | the live guide's "The author-supplied diagram" section lists all five shapes (`[/"…"/]`, `(["…"])`, `{"…"}`, `{{"…"}}`, `["…"]`) with their roles, the three edge forms (`-->`, `-.->`, `<-->`), the `label<br/>model · effort · timeout` triple (+`VALUE_MISMATCH`), ONE edge per line (`COLLAPSED_EDGE`), `|label|` on cycle edges, dashed = skipped, `subgraph`. **FIXED** (VAL-161) |
 | D-5 | asset push `../escape.md` ⇒ `WORKSPACE_ESCAPE`; `/etc/passwd` ⇒ `WORKSPACE_ESCAPE`; `rwe-internal/x.md` ⇒ `RESERVED_PREFIX`. No JS class name anywhere. **FIXED** (VAL-153/163) |
 | D-6 | `HOOKS_UNSUPPORTED` absent from `workspace_push`'s advertised `errors[]`; `kind:'hook'` ⇒ `INVALID_ARGUMENT: … matched no known mode (see workflow_authoring_guide)`. **FIXED** (VAL-163) |
@@ -8047,7 +8047,8 @@ data, 「尚未支援」 feature limits, the §1b iter column) and issue #53's �
 - `schedule_setEnabled` / `schedule_delete` answer `{}` (no confirmation payload); `workspace_delete`
   vetoes the whole batch on one rejected path (VAL-163).
 - `see: null` is emitted (key present) on non-authoring codes such as `CHANNEL_UNPUBLISHED`,
-  `INVALID_ARGUMENT`, `TRIGGER_*` — consistent with the catalog; only the trigger codes are D-14.
+  `INVALID_ARGUMENT` — consistent with the catalog. `TRIGGER_*` was in this list as D-14 and is not
+  any more: the three registration-path trigger codes point at the guide (VAL-165).
 - `issue_list` one second after `issue_report` did not yet show the new issue (GitHub index lag).
 - The long-lived `rwe.service` (PID 3652391, `0.0.0.0:8899`, working tree as loaded at 01:33) and the
   orphan `litellm` on port 36501 (PID 149098, its child) are still running the pre-fix tree — untouched;
@@ -8207,3 +8208,7 @@ warning is unchanged and is repeated at the end of this section.
   `UNVERIFIED(client plugin not synced)`; VAL-164 is the raw-MCP evidence.
 - **No paid-provider key** in this environment: every model call in VAL-164 was local Ollama
   (`qwen2.5:7b`) over the direct-fetch path. Unchanged carry-forward.
+- **Manuals updated with the fix, not just the ledger:** round 2's §6 「尚未修復的缺陷」 listed two live
+  items (issue #53 and D-14). D-14 is fixed, so its entry and its operator workaround are gone from
+  DEPLOY §6 and from README's mirror of that list — one live item remains, issue #53 (= D-9). The
+  round-2 sentence above describing that section still describes round 2.

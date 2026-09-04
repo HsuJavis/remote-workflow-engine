@@ -372,9 +372,6 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
      （run `3977b82d`，無法穩定重現、尚未歸因；
      [issue #53](https://github.com/HsuJavis/remote-workflow-engine/issues/53)）。
      對策：suspend/resume 之後用 `run_status` 確認狀態，發現無故 `failed` 時把 run id 貼進該 issue。
-  2. **`workflow_register({triggers:[id]})` 認領觸發器失敗時，錯誤沒有 `see` 指標**：`TRIGGER_NOT_FOUND`／
-     `TRIGGER_ALREADY_CLAIMED` 回 `see:null`，其他註冊錯誤都指向 `workflow_authoring_guide`。只影響錯誤訊息，
-     不影響行為：先用 `schedule_list`／`webhook_list` 確認 id 與 `claimedBy` 再認領即可。
 
 ## 更多
 
