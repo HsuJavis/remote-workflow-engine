@@ -9078,14 +9078,133 @@ created by alice is refused to bob, allowed to alice). MUTATION-CHECKED: restori
 
 ------------------------------------------------------------------------------------------
 
-## Gate 6.5+7 ROUND 2 regression confirmation (verifier, v24, 2026-09-04)
+### IT-124 — authorization enforced through a real auth-ENABLED boot (the seam every other test short-circuits)
+- **status:** green
+- **traces:** DES-139, DES-149, DES-151, DES-152
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v24
 
-`npx vitest run` → **299 files / 2096 tests, 2070 pass, 0 fail, 26 skip, exit 0**; `npx tsc --noEmit`
-clean. Baseline at the start of this round was 2065 tests with 6 failing (IT-105's six send-back
-rows, byte-identical to round 1's failure set); the +31 are this round's own new cases (6 IT-123 +
-25 UT-144 rows). Three items flipped red→green: IT-105, VAL-120, VAL-126. Four test files had an
-ORACLE corrected, each declared in its own entry and none weakened: `authz-owner-lookup.test.ts`
-(webhook fixture created with a `createdBy`), `trigger-claims.test.ts` and
-`register-crash-window.test.ts` (claim assertions re-pointed from `ownerOf` to `get(id).claimedBy`),
-`webhook-registry.test.ts` (same, plus a new assertion that `ownerOf` answers the CREATOR while the
-claim moves).
+File: `tests/integration/authz-enforcement-live.test.ts` (6 cases). Written at Gate 6.5+7 round 2.
+Real `createServer()` bound to `127.0.0.1` (so the D-BIND exemption is OFF and the bearer is really
+validated), auth ENABLED, three real `TokenStore` bearers with configured roles (alice/bob authors,
+root admin), real SQLite stores, real MCP HTTP. The fixture workflow's script is pure, so no gateway
+is needed. This is the seam round 1's send-back named: EVERY pre-existing test runs auth-DISABLED,
+which short-circuits `authorize()` before any ownership lookup — which is precisely how two
+authorization defects shipped past ~2000 green tests. It is also this round's exit-gate item 7
+(real-dependency smoke) for the authorization integration.
+Cases: (1) a schedule is owned by its CREATOR — `schedule_list` is principal-scoped off the same
+column, bob gets `NOT_TRIGGER_OWNER` on delete AND on `setEnabled`, alice succeeds; (2) the same
+three answers for a WEBHOOK, i.e. through the other trigger store; (3) the MODED `workspace_*` tools
+really run their check — `workspace_list`/`workspace_delete` by `runId` refuse bob `NOT_RUN_OWNER`,
+`workspace_list`/`workspace_push` by `workflow` refuse `NOT_WORKFLOW_OWNER`, and the owner is not
+refused; (4) an admin cross-read of `run_result` is allowed AND audited, and the owner sees it in
+`run_status.adminReads[]`; (5) a claimed workflow deregistered under a live schedule is refused
+`CLAIMED_WORKFLOW_MISSING` at fire time and RECORDED (`refusalCount:1`, nothing dispatched);
+(6) **the fire-path regression pin** — a schedule created by an authenticated principal, from the
+row's own advertised shape, is born ENABLED and really fires (`lastRunId` set, `refusalCount` 0).
+MUTATION-CHECKED: reverting `resolveScheduleTarget` to `ownerOf` → case 6 red with
+`CLAIMED_WORKFLOW_MISSING`; reverting `schedule_create`'s `enabled` default → case 6 red;
+reverting `run_result`'s `adminCrossRead` → case 4 red. Cases 5 and 6 together also take
+`resolveScheduleTarget` from 77.8% to 100%.
+
+### UT-163 — the refusal / non-default arms of the facade, the catalog and materializeAssets
+- **status:** green
+- **traces:** DES-138, DES-153, DES-144, DES-149
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v24
+
+File: `tests/unit/facade-refusal-arms.test.ts` (15 cases). Written at Gate 6.5+7 round 2 purely to
+close per-function coverage shortfalls the measurement named, so every case targets a line reported
+missing — a refusal branch, a filter branch or a fallback — never a re-test of a covered happy path.
+`McpFacade`: `workflowDeregister`'s catch arm and its `WORKFLOW_NOT_FOUND` (not `removed:false`)
+answer; `workflowPublish`'s `INVALID_CHANNEL`; `runList`'s principal-scoped vs unfiltered branches;
+`workspaceDelete`'s unbound-`assetSync` refusal and its two asset-scope routes. `WorkflowCatalog`:
+`deregister`'s `NOT_WORKFLOW_OWNER`; `listAssets`' kind filter; `_parseParams`' meta source-size
+bound and its eval-throw degradation (a literal `checkMeta` accepts but V8 refuses — duplicate
+`__proto__` fields); `insertVersion`'s `NOT_WORKFLOW_OWNER`, its null-principal exemption and
+`VERSION_CEILING_EXCEEDED`. `materializeAssets`: the global-root fallback, workflow-scope winning a
+name clash, and a name in neither root landing in `missing`.
+
+------------------------------------------------------------------------------------------
+
+## Gate 6.5+7 ROUND 2 — regression, time-travel and the coverage gate (verifier, v24, 2026-09-04)
+
+**Regression.** `npx vitest run` → **301 files / 2139 tests, 2113 pass, 0 fail, 26 skip, exit 0**;
+`npx tsc --noEmit` clean. The baseline at the start of this round was 2065 tests with SIX failing —
+IT-105's send-back rows, byte-identical to round 1's failure set. Three items flipped red→green
+(IT-105, VAL-120, VAL-126) and two are new (IT-123, IT-124), alongside coverage-driven extensions to
+UT-144, UT-149, UT-163, IT-111, IT-112, E2E-008 and the params/compose-config/workspace-gc units.
+
+**Test-oracle corrections, all declared, none weakened.** `ownerOf` now means "the creating
+principal" (DES-149 amended in place, bracketed), so four files that were using it as a proxy for
+"the claim" were re-pointed at the column that actually holds the claim — `get(id).claimedBy`
+(scheduler) / `get(id).workflow` (webhooks) — with the assertions unchanged in strength, and
+`webhook-registry.test.ts` GAINED an assertion that `ownerOf` keeps answering the creator while the
+claim moves. IT-105's webhook fixture, which created with `create({})` and then asserted
+`triggerOwner === alice`, now creates with `createdBy`. IT-105's `RUN_STATUS` constant is relabelled
+an AuthzRow FIXTURE (its comment claimed to be a copy of the real row and was not) and a new case
+pins, against `TOOL_SPECS` itself, exactly which real rows carry `adminCrossRead` — the assertion
+that would have caught `run_result` losing it.
+
+**Time-travel re-run.** `TZ='Pacific/Kiritimati' npx vitest run` (UTC+14; no `faketime` binary in
+this sandbox — the documented install-free fallback) → the same pass set, zero tests flipped. No
+time bombs.
+
+### Coverage gate — v24 round 2
+
+**Overall `src/` line coverage: 95.53%** (17009/17804), functions **95.47%** (654/685), against the
+≥90% whole-tree bar. Measured with `npx vitest run --coverage --coverage.provider=v8
+--coverage.include='src/**' --coverage.reportOnFailure`; `coverage/` is gitignored.
+
+**Per-function bar over the v24 delta (`git diff c9c6592..HEAD -- src`): 26 long offenders at the
+start of this round → 8; short offenders (≤5 lines, >1 missed): 2 → 0.** Closed this round by writing
+the missing tests: `workflowRegister` 83.8%→100 (IT-123), `runList` 75%→100, `workflowDeregister`
+84.2%→100, `workflowPublish` 89.5%→100, `runResult` 91.7%→100, `workspaceDelete` 92.5%→100,
+`deregister` 92.3%→100, `listAssets` 83.3%→100, `_parseParams` 76.5%→100, `insertVersion`
+70.5%→100, `validateOneAgentSpec` 85.9%→100, `checkMermaid` 94.7%→100, `parseMetaParams`
+46.2%→100, `rearmAtBoot` 41.2%→100, `deliver` 86.2%→100, `materializeAssets` 92.6%→100,
+and `resolveScheduleTarget` 77.8%→100 (IT-124's two fire-path cases).
+
+**Decision rationale — the 8 that remain, one line each (per-function, not a blanket waiver).**
+The standing scope rule (recorded in `gates.verification` since v21 and restated at the v23 coverage
+block above) is that the per-function bar is enforced against the code an iteration ADDED OR
+MODIFIED; the whole-tree bar is the ≥90% overall figure, which is met at 95.51%. For these seven the
+missing lines are not reachable from an in-vitest test, and each is named rather than absorbed:
+1. `server.ts runDiagnostics` (1/27) — the `issue_report` enrichment block; every line below its
+   first guard needs a real GitHub credential and a real failing run to enrich. Gate 7.5's tier.
+2. `server.ts createServer` (786/916) — the composition root itself. Its uncovered remainder is the
+   set of route/branch bodies that need a real external dependency (litellm supervision, MCP stdio
+   probe, self-update webhook delivery); the v24 construction block it gained is covered.
+3. `server.ts sweep` (26/30) — the two remaining lines are `catch` bodies whose only content is a
+   `console.error`, guarding the GC timer against a store fault so a sweep error can never crash the
+   server. Forcing them means injecting a throwing store into a booted server, which the
+   `createServer` signature does not expose.
+4. `server.ts sendBlobUploadError` (8/9) — the `: 500` default of a four-way status map. The three
+   named codes are covered; reaching the default needs `cas.putBlobStream` to reject with an
+   unmapped code, i.e. a disk fault, and `createServer` takes no CAS injection point.
+5. `workspace-gc.ts reclaimStaleWorkspaces` (75/79, **94.9% — 0.1 pt short**) — the two `rmSync`
+   `catch` bodies ("raced/permission — skip, try next sweep"). `rmSync(..., {force:true})` only
+   throws on a permission fault, which would require chmod-ing a temp tree read-only and risks
+   leaving an undeletable fixture behind. Both surrounding skip-and-continue arms, and the whole
+   asset-sweep half, ARE now covered (87.3% → 94.9%).
+6. `gateway/claude-agent-sdk-client.ts _resolveMcpConfigs` (15/17) — the bare `throw err` rethrow
+   for an error that is neither `SECRET_MISSING` nor `SECRET_HANDLE_INVALID`. `resolveConfig` has no
+   third failure mode today; the rethrow exists so a future one is not swallowed.
+7. `main.ts composeConfig` (176/187, 94.1%) — the remaining lines are the `onSupervisionEvent`
+   console closure handed to `LiteLLMProxyManager`, which only ever runs when a REAL managed
+   `litellm` subprocess crashes and is restarted (no `litellm` binary is on PATH in this sandbox —
+   DEPLOY §1 documents the Python 3.11/3.12 requirement). ADR-028's boot REFUSAL on a malformed
+   role, which was the load-bearing gap here, IS now covered (91.4% → 94.1%).
+8. `workflow-catalog.ts <instance_members_initializer>` (544/595) — a v8 pseudo-function spanning
+   the whole class. 47 of its 51 missing lines are `putDiagramPending`/`putDiagramResult`/
+   `getDiagram`, which round 1 found have ZERO callers anywhere in `src/` or `tests/` (orphaned when
+   TASK-139 deleted `graph-analyzer.ts`). Writing tests for dead code would be the wrong repair;
+   deleting it is v25 debt, recorded, because their `workflow_diagrams` table is v23 schema.
+
+Pre-existing non-v24 debt is unchanged in kind and improved in count (91 → 72 whole-tree long
+offenders, 7 short unchanged), and stays inside the v21/v23 Decision-rationale scope quoted above.
+

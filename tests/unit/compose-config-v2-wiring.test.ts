@@ -205,4 +205,18 @@ describe('composeConfig() v2 key wiring (DES-022, standing rule 1)', () => {
     const cfg = await composeConfig({ mcpEgressAllowlist, gateway: 'direct-fetch' } as any, FAKE_DEPS);
     expect((cfg as Record<string, unknown>)['mcpEgressAllowlist']).toEqual(mcpEgressAllowlist);
   });
+
+  // Gate 6.5+7 round 2 (verifier): ADR-028's boot REFUSAL was reached by no test — the whole point
+  // of `normalizePrincipals` returning a failure rather than defaulting is that a typo'd role stops
+  // the process, and only the accepting side was covered.
+  it('v24: a malformed principals role REFUSES the boot, naming the key and the role (ADR-028 fail-closed)', async () => {
+    await expect(composeConfig({ principals: { 'a@x.com': { role: 'admn' } }, gateway: 'direct-fetch' } as any, FAKE_DEPS))
+      .rejects.toThrow(/principals\["a@x.com"\].role is "admn".*Refusing to start/s);
+  });
+
+  it('v24: every VALID role is accepted and forwarded verbatim', async () => {
+    const principals = { 'a@x.com': { role: 'admin' }, 'b@x.com': { role: 'author' }, 'c@x.com': { role: 'user' } };
+    const cfg = await composeConfig({ principals, gateway: 'direct-fetch' } as any, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['principals']).toEqual(principals);
+  });
 });

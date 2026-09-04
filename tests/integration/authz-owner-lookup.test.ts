@@ -32,6 +32,11 @@ const ADMIN: Principal = { kind: 'admin', id: 'root@x.com' };
 // a row change there is visible here rather than silently diverging. The MODED tools are read
 // straight off TOOL_SPECS further down (`realSpec`) — their `key`/`rows` pairing is the thing under
 // test, so a hand-copy would defeat the point.
+// NOTE (Gate 6.5+7 round 2): this is an AuthzRow FIXTURE, not a copy of `run_status`'s real row —
+// the real one carries no `adminCrossRead` (correctly: `McpFacade.runStatus` ignores the flag; it is
+// where `adminReads[]` is ATTACHED, not an audited read). It exercises `authorize()`'s cross-read
+// arm. Which REAL rows carry the flag is pinned separately, against TOOL_SPECS, at the end of this
+// file — the divergence this comment used to hide is exactly how `run_result` lost the flag.
 const RUN_STATUS = { name: 'run_status', key: 'runId' as const, authz: { minRole: 'user' as const, ownership: 'run' as const, adminCrossRead: true as const } };
 const WORKFLOW_DEREGISTER = { name: 'workflow_deregister', key: 'name' as const, authz: { minRole: 'author' as const, ownership: 'workflow' as const } };
 const SCHEDULE_DELETE = { name: 'schedule_delete', key: 'id' as const, authz: { minRole: 'author' as const, ownership: 'trigger' as const } };
@@ -178,6 +183,18 @@ describe('authz OwnerLookup — wired to real store columns (IT-105, DES-139)', 
     const verdict = authorize(BOB, realSpec('workspace_push') as never, { workflow: 'wf-a', kind: 'skill', name: 'n', files: [] }, lookup);
     expect(verdict.ok).toBe(false);
     expect(verdict.code).toBe('NOT_WORKFLOW_OWNER');
+  });
+
+  it('the REAL rows carrying adminCrossRead are exactly DES-151\'s audited set (minus run_status, which only attaches adminReads[])', () => {
+    const flagged = (TOOL_SPECS as ReadonlyArray<{ name: string; authz: unknown }>)
+      .flatMap((spec) => {
+        const a = spec.authz as { adminCrossRead?: boolean; rows?: Record<string, { adminCrossRead?: boolean }> };
+        const rows = a.rows ? Object.values(a.rows) : [a];
+        return rows.some((r) => r.adminCrossRead === true) ? [spec.name] : [];
+      })
+      .sort();
+    // DES-151: `AuditAction = Extract<ToolName, 'workspace_list'|'workspace_pull'|'run_agent_log'|'run_result'>`.
+    expect(flagged).toEqual(['run_agent_log', 'run_result', 'workspace_list', 'workspace_pull']);
   });
 
   it('triggerOwner is total across BOTH stores — an id in neither is undefined (authz never leaks existence)', () => {

@@ -393,7 +393,12 @@ export const TOOL_SPECS = [
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'NOT_RUN_OWNER', 'NESTING_DEPTH_EXCEEDED', 'NESTING_CYCLE', 'DESCENDANT_CAP_EXCEEDED'],
     seeAlso: [] as string[],
-    authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
+    // Gate 6.5+7 round 2 (verifier): `adminCrossRead` was MISSING here while DES-151 states in so
+    // many words that "`run_result` is added to the audited set" and `AuditAction` names it. Without
+    // the flag `authorize()` let an admin read another principal's result and never set
+    // `crossPrincipalRead`, so `McpFacade.runResult`'s audited branch was unreachable in production:
+    // the cross-read happened, unaudited, and the owner's `run_status.adminReads[]` never showed it.
+    authz: { minRole: 'user', ownership: 'run', adminCrossRead: true } as AuthzRow,
     fixture: {
       happy: { runId: ref('terminalRunId') },
       errors: {

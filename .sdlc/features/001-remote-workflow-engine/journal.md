@@ -2062,3 +2062,38 @@ send-back rows and nothing else). Zero tests flipped; no time bombs. (No `faketi
 sandbox — the documented install-free fallback.)
 
 `gates.verification.passed=false`; `gates.impl.passed=false`; `current_stage` → `impl`.
+
+## 2026-09-04 — v24 Gate 6.5+7 ROUND 2 (verifier): PASSED
+
+The gate was re-dispatched with no Gate 6 commit between round 1's send-back (`a3b5d0a`, 19:57) and
+this round — HEAD still the verifier's own commit, tree clean, about a minute elapsed. An identical
+second send-back would have been a loop, so the verifier applied the fix directly, over tests that
+were already written and already red, and said so in the ledger: **role crossing, declared**
+(IMPL-184; IMPL-185 backfills TASK-134, IMPL-186 is the test-only coverage pass).
+
+Seven defects closed, every one mutation-checked. The two the send-back named — trigger ownership
+reading `claimedBy` where DES-139 requires `createdBy` (and the `webhooks.createdBy` column TASK-142
+never landed), and the moded `workspace_*` rows whose `key: null` turned the ownership check into a
+no-op. Then five the fixing uncovered: `workflowRegister`'s escape that let any caller adopt an
+ownerless trigger; `asset-sync`'s exported `resolveMcp`, re-implemented inline at the composition
+root and therefore reachable from nothing; `resolveScheduleTarget`, which read `ownerOf` as *the
+claim* and would have refused every authenticated user's schedule at fire time — invisible, because
+the whole suite is auth-disabled; `schedule_create`, which from its own advertised shape created a
+schedule born disabled that could never fire; and `run_result`, in DES-151's audited set but missing
+`adminCrossRead`, so an admin's cross-read happened unaudited and the owner never saw it.
+
+The through-line is the one round 1 named: **every existing test runs auth-disabled, which
+short-circuits `authorize()` before any ownership lookup.** IT-124 is the answer — the first
+auth-ENABLED boot of the real server, real bearers, real stores, real MCP HTTP — and it doubles as
+this round's real-dependency smoke, which round 1 had to declare not run.
+
+Suite 2113/2139 green, 0 fail, `tsc` clean. Coverage 94.91% → **95.53%**, with the v24 per-function
+offender list cut from 26 long + 2 short to 8 long + 0 short by writing the tests rather than
+lowering the bar; the eight that remain each carry a one-line rationale. `solid_check` 0 HIGH (round
+1's was an architecture declaration, now made), `determinism_check` exit 0, `TZ=Pacific/Kiritimati`
+re-run identical with zero flips. `trace --check` still exits non-zero on 12 structural
+`未真實驗證` HIGHs for REQ-107..118 — the flip Gate 7.5 owns — with the gap set byte-identical to
+round 1 and no new gaps.
+
+`gates.verification.passed=true`; `gates.impl.passed=true`; `current_stage` → `validation`.
+
