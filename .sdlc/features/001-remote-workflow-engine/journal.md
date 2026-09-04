@@ -2238,3 +2238,59 @@ the guide's aggregation example draws a rectangle where its own table says `{{"�
 `schedule_setEnabled`/`schedule_delete` answer `{}`; `workspace_delete` vetoes a batch on one rejected
 path. `gates.validation.passed` stays `false`; `current_stage` stays `validation`. Cleanup done (boots
 killed incl. B's litellm child, scratch tree and bearers deleted, cold subject's dirs removed, #54 closed).
+
+## 2026-09-05 — v24 Gate 8 REVIEW (reviewer, consistency + architecture + dashboard + boundaries + handover) — NOT PASSED, `send_back = ["impl","validation"]`
+
+Tree `fb13c24`. Dashboard regenerated (`sh .sdlc/trace`): **1229 items / 19 gaps**, 0 orphan,
+0 broken-link, **0 未驗證 / 0 未真實驗證** — every REQ-107..118 reaches a `real:true` item.
+`solid_check` **PASS** (45 modules, 0 mid; 10 low files claimed by no ARCH `module:`).
+`dashboard_check` **0 high** — every SoT `file:line` link resolves; its 5 mid mermaid rows were
+re-derived by hand and are **checker false positives** (erDiagram `||--o{` cardinality braces, and the
+apostrophe in `U's run` in the v24 sequence diagram). No playwright in session — real-browser render
+not re-confirmed here (degraded mode declared; VAL-157 holds the product-level browser evidence).
+
+**Both pre-run panels consolidated, not re-spawned** (`.panel/review/{adversarial,quality-dimensions}.md`).
+After de-duplicating five overlaps: **28 deviations — 3 HIGH / 11 MID / 14 LOW**; `arch_consistent: false`.
+The v24 skeleton itself matches (one `TOOL_SPECS`, one `authorize()`, one `pathVerdict`,
+audit-before-bytes, principal-derived namespace, fail-closed `principals`). The deviations cluster where
+the architecture said something was *removed / dropped / migrated* and the code kept a second copy.
+
+**Three HIGH, each re-verified on disk by this reviewer, none descoped by any adjudication:**
+- **AF-1** — ARCH-098/102's boot migration of legacy assets and `mcp_provisions` was never written
+  (`grep mcp_provisions|'legacy'` over `src/` is empty) **and** `workspace-gc.ts:66-88`, wired
+  unconditionally at `server.ts:847`, deletes every non-workflow child of `<workRoot>/assets` — i.e.
+  the pre-v24 global skill tree. Data loss on upgrade, plus every pre-v24 MCP provision silently
+  `missing`. Nothing in the tree exercises a pre-v24 `assets/skill/` directory.
+- **AF-2** — `workflow-catalog.ts:472` stores a post-v24 `triggers: []` as `NULL`, byte-identical to a
+  legacy row, so the membership guards at `server.ts:775` / `webhook-registry.ts:279` skip and ADR-026's
+  `NOT_IN_RELEASE` is unreachable: a trigger un-declared by a new release keeps firing, claim never
+  released. One-line write fix plus the test ARCH-098 already specified.
+- **AF-3** — `PRINCIPAL_REQUIRED` is a live wire refusal (`authz.ts:37,89`) that is **not** a key in the
+  closed `ERROR_CATALOG` ARCH-087/DES-137 declare to be the only catalog — no `see` pointer, invisible
+  to the closure tests. Same class as D-14, one function away.
+
+**Validation send-back (two reasons).** **V-1**: Gate 7.5 was never landed —
+`gates.validation.passed` is still `false` with a **ROUND 2** note routing back to Gate 6 for D-14, while
+round 3 ran, passed and wrote `08-validation.md` (`status: passed`); `state.yaml` is *older* than that
+file and the journal stopped at round 2. **V-2**: `VAL-161` (REQ-116) still reads
+`status: red / result: fail` with no SUPERSEDED marker, and this repo's `trace.py is_real_test()`
+(`:186-187`) keys only on `kind`/`real` and never on `status` — so a red row silently counts as
+verification. `git diff e9db0c4..HEAD -- src/` is **empty**, so round 3's evidence does cover today's
+`src/`; after the Gate 6 fixes land, REQ-113/115/116 need re-observation (precedent: `08-validation.md:4966`).
+
+**Also routed to impl (cheap, same pass):** **SF-1** — `CLAUDE.md` now both forbids and recommends
+`git stash` (commit `3c80cbd` amended only the first hunk; the incident paragraph and the trace-baseline
+recipe still endorse stash-and-pop). Reviewed with `claude-md-improver` (audit phases only — the reviewer
+does not edit the work under review): **46/100, grade D**. **DR-1** — three post-IMPL-187 `src/` commits
+(`d43d6d7`, `caf15c1`, `e9db0c4`) carry no IMPL entry; **tenth** occurrence of this ledger-honesty gap.
+
+**Clean and checked:** README.md + DEPLOY.md present, 淺白繁中, step-by-step, current-state and
+history-free, one deduplicated `## 1b. 設定總表`, and DEPLOY leads with `./deploy.sh --background` —
+the exact command Gate 7.5 round 3 ran for boots C and D. 35 `TOOL_SPECS` = 35 advertised = 35 observed
+live (VAL-163). Tooling note: this repo vendors a `trace.py` older than the plugin (no `--tool`
+subcommands, no offline mermaid fallback), so `dashboard_check`/`solid_check` were run from the plugin
+directly; the plugin's newer `trace.py` additionally reports `REQ-037/038/040 未實作`, which is the
+`####`-shadowing artifact this repo's own `.sdlc/trace.py:52-55` documents and fixes — not a product gap.
+
+`07-review.md` new top section written; the v23 RE-REVIEW #2 section marked superseded.
+**`.panel/` retained** — `send_back` is non-empty, so the re-run gates and the re-review still need it.
