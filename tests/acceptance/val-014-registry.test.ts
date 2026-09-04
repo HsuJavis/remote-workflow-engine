@@ -81,9 +81,9 @@ describe('VAL-014: named workflow registry (REQ-014)', () => {
         try {
           return await workflow('definitely-does-not-exist-xyz', {});
         } catch(e) {
-          // C-2: guards.ts's makeWorkflow now PRESERVES the delegate failure's own code
-          // (CatalogNotFoundError here), not a flat NESTING_ERROR, and keeps the original .message —
-          // REQ-014's "naming the missing workflow" lives in .message.
+          // C-2: guards.ts's makeWorkflow now PRESERVES the delegate failure's own code, not a
+          // flat NESTING_ERROR, and keeps the original .message — REQ-014's "naming the missing
+          // workflow" lives in .message.
           return 'caught: ' + e.message + ' code=' + (e.name || e.code);
         }
       `);
@@ -94,8 +94,12 @@ describe('VAL-014: named workflow registry (REQ-014)', () => {
         const res = await callTool('run_result', { runId });
         expect(String(res.result)).toMatch(/caught:/);
         expect(String(res.result)).toMatch(/definitely-does-not-exist-xyz/);
-        // C-2: the preserved code, not a flat NESTING_ERROR.
-        expect(String(res.result)).toMatch(/code=CatalogNotFoundError/);
+        // C-2: the preserved code, not a flat NESTING_ERROR. v24 (errors.ts, integrator note on
+        // `CatalogNotFoundError`): the class now carries `code:'WORKFLOW_NOT_FOUND'`, a member of
+        // the closed ERROR_CATALOG, precisely so the machine-readable signal is no longer the JS
+        // class NAME that no `tools/list` reader can anticipate. Same oracle (the delegate's own
+        // code survives the nesting boundary), migrated spelling.
+        expect(String(res.result)).toMatch(/code=WORKFLOW_NOT_FOUND/);
         return;
       }
       await new Promise((r) => setTimeout(r, 200));

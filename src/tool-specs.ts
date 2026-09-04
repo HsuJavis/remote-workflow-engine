@@ -498,7 +498,7 @@ export const TOOL_SPECS = [
     description: 'Push content: a CAS blob into the caller\'s own pool, or a workflow-owned asset (skill/mcp). Any runId argument is refused — see workflow_authoring_guide.',
     inputSchema: pushInputSchema(),
     outputSchema: OUT,
-    errors: ['INVALID_ARGUMENT', 'FORBIDDEN_ROLE', 'NOT_WORKFLOW_OWNER', 'MCP_PROBE_FAILED', 'EGRESS_DENIED', 'HOOKS_UNSUPPORTED'],
+    errors: ['INVALID_ARGUMENT', 'RESERVED_PREFIX', 'WORKSPACE_ESCAPE', 'BLOB_HASH_MISMATCH', 'FORBIDDEN_ROLE', 'NOT_WORKFLOW_OWNER', 'MCP_PROBE_FAILED', 'EGRESS_DENIED', 'HOOKS_UNSUPPORTED'],
     seeAlso: ['workflow_authoring_guide'],
     authz: {
       mode: pushMode,
@@ -516,7 +516,14 @@ export const TOOL_SPECS = [
       happy: { sha256: '709e80c88487a2411e1ee4dfb9f22a861492d20c4765150c0c794abd70f8147c', contentB64: 'AAAA' },
       // DES-155's own boundary, verified from the schema rather than asserted in prose: a `runId`
       // matches NEITHER `oneOf` branch, so ajv refuses it before any handler runs.
-      errors: { INVALID_ARGUMENT: { runId: ABSENT_ID, kind: 'skill', name: 'x' } },
+      errors: {
+        INVALID_ARGUMENT: { runId: ABSENT_ID, kind: 'skill', name: 'x' },
+        // ARCH-093/A-5: the engine's own reserved prefix is refused for the asset NAME, not only
+        // for the files inside it — a skill stored as `rwe-…` would be materialized into
+        // `.claude/skills/rwe-…`, which is the impersonation the prefix exists to prevent.
+        RESERVED_PREFIX: { workflow: 'demo', kind: 'skill', name: 'rwe-impostor', files: [] },
+        BLOB_HASH_MISMATCH: { sha256: 'b'.repeat(64), contentB64: 'AAAA' },
+      },
     },
   },
   {

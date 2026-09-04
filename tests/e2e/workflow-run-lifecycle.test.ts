@@ -72,11 +72,16 @@ describe('E2E: full workflow run lifecycle (REQ-001, REQ-005, REQ-007)', () => {
     expect(Array.isArray(status.result.phases)).toBe(true);
   }, 15000);
 
-  it('workflow_list includes the submitted run', async () => {
+  // v24 (TASK-152, DES-138): MIGRATED, same oracle ("the run this call submitted is visible in the
+  // engine's own listing"), new spelling. `workflow_list` no longer lists RUNS — its v24 rows are
+  // workflows (`{name, owner, channels, versions, runnable}`, DES-156), so a `r.runId` probe against
+  // it can never match. The run listing is `run_list` (tool-specs.ts), whose rows are `RunSummary`
+  // (`types.ts:147`) and DO carry `runId`.
+  it('run_list includes the submitted run', async () => {
     const runResult = await runScriptVia(callTool, 'return "listed";', { args: {} });
     const runId = runResult.runId;
 
-    const list = (await mcpCall('tools/call', { name: 'workflow_list', arguments: {} })).result;
+    const list = (await mcpCall('tools/call', { name: 'run_list', arguments: {} })).result;
     expect(Array.isArray(list)).toBe(true);
     const found = (list as Array<{ runId: string }>).some((r) => r.runId === runId);
     expect(found).toBe(true);

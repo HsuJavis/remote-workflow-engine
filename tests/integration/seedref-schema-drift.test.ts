@@ -14,6 +14,13 @@
 // Mock policy (integration): real `createServer` + real HTTP tools/list round trip.
 //   No mocks of the SUT boundary (same pattern as IT-072 / schema-drift.test.ts).
 
+// v24 (batch B, then CLOSED by the integrator — the four reds below are GREEN now): the report was — PRODUCT defects. `seedRef` is a
+// live v24 argument (restored deliberately by adjudication #2 A-2; `mcp-facade.runStart` forwards
+// it, `seedref-fetcher.ts`/`seedref-egress.ts` consume `repoUrl`/`sha` and answer SEEDREF_DISABLED
+// / EGRESS_DENIED), but `tool-specs.ts` advertises it as a bare `{type:'object'}` with no
+// sub-properties and no description. `seedRefAllowlist` is still the live config key
+// (errors.ts:98, seedref-egress.ts:21) and `SEED_SOURCE_CONFLICT` is still a live run_start error,
+// so both hint literals are current, not stale — the description dropped them.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

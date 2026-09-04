@@ -23,6 +23,12 @@
 // Mock policy (integration — DES-091): real `createServer` + real HTTP tools/list round trip.
 //   No SUT-boundary mocks (same pattern as IT-072 / seedref-schema-drift.test.ts).
 
+// v24 (batch B, then CLOSED by the integrator — GREEN now): the case here was — a PRODUCT defect. This file's own v24
+// header already ruled DES-088 "survives unchanged in substance (only the tool's name moved)": the
+// redaction it documents is live (`secret-resolver.ts:95` `MARKER_PREFIX = '‹secret:'`), and
+// `run_agent_log` is a live tool — but its v24 description ("Read one agent's harness log for a
+// run; a cross-principal read of another principal's run is audited.") dropped the secret-marker
+// asymmetry sentence, so the reader of a transcript is no longer told why a value reads as a marker.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

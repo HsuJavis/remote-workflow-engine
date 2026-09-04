@@ -12,9 +12,9 @@
 //   8. Manifest with invalid JSON body → INVALID_SEED_SPEC
 //
 // v24 (DES-142, ADR-028): `?namespace=` on BOTH routes is RETIRED — a caller-supplied one is now
-// refused `400 INVALID_BLOB_REQUEST` (server.ts:930/957/1141/1168) rather than honoured, because the
+// refused `400 INVALID_BLOB_REQUEST` (server.ts:966/993/1177/1204) rather than honoured, because the
 // namespace is derived from the caller's OWN identity. This server boots auth-disabled, so the
-// derived namespace is the `'local'` sentinel (`nsOf`, mcp-facade.ts:46; server.ts:1145/1172 spell
+// derived namespace is the `'local'` sentinel (`nsOf`, mcp-facade.ts:46; server.ts:1181/1208 spell
 // the same value on the unauthenticated route). Every URL below therefore drops the query param and
 // `NAMESPACE` becomes the DERIVED value the response must echo — same oracles (the response names
 // the namespace the bytes landed in; a manifest is scoped to one namespace), new spelling. The old

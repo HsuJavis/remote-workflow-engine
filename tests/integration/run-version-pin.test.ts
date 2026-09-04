@@ -56,7 +56,21 @@ describe('resume determinism: a suspended run continues the version it PINNED, n
       const store = new SqliteRunStore(join(dir, 'store'), CLOCK);
       const runManager = new RunManager({ store, clock: CLOCK, workRoot: dir, catalog, gateway });
 
-      const { version: v1 } = await catalog.register({ name: 'rvp-flow', script: `const a = await agent('slow'); return 'V1:' + a;`, mermaid: 'graph TD;\nn0(["slow"]);' });
+      // v24 (DES-143/DES-144/DES-148, TASK-152): a literal agent LABEL + `options.prompt`, a
+      // `meta.params.agents.slow` declaration (AGENT_UNDECLARED otherwise), and a stadium node
+      // whose line ends at `])` — `check-mermaid.ts`'s STADIUM_RE is anchored right after the
+      // closing bracket and allows no trailing `;`. Subject unchanged: v1 blocks inside this
+      // agent() call so the run can be suspended mid-flight.
+      const v1Script = [
+        "export const meta = { params: { agents: { slow: {",
+        "  model: { type: 'string', default: 'sonnet' },",
+        "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
+        "  timeoutMs: { type: 'number', default: 60000 },",
+        "} } } };",
+        "const a = await agent('slow', { prompt: 'take your time' });",
+        "return 'V1:' + a;",
+      ].join('\n');
+      const { version: v1 } = await catalog.register({ name: 'rvp-flow', script: v1Script, mermaid: 'graph TD;\nn0(["slow"])' });
       await catalog.publish('rvp-flow', v1, 'release', null);
 
       const runId = await runManager.start({ name: 'rvp-flow' });

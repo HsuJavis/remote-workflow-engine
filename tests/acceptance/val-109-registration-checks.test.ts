@@ -53,7 +53,23 @@ describe('REQ-099: registration enforces the checks the engine used to run only 
   });
 
   it('a run BY NAME is covered — a legitimately registered workflow runs fine (no path skips validation)', async () => {
-    const reg = await toolCall('workflow_register', { name: 'val109-clean', script: `await agent('a', { model: 'sonnet' }); return 'ok';` });
+    // v24 (DES-143/DES-144/DES-148, TASK-152): the LEGITIMATE script is now spelled with a literal
+    // label + `options.prompt`, the model alias declared as `meta.params.agents.a.model.default`
+    // (writing `model` inside the agent() options is refused SCAN_VIOLATION), and a `mermaid`
+    // diagram whose stadium nodes match the script's labels exactly. Same oracle: a script that
+    // passes every registration-time check registers with no error. `sonnet` is this server's own
+    // configured alias (beforeAll), so the UNKNOWN_ALIAS case above and this one still differ by
+    // exactly one thing — whether the alias is known.
+    const script = [
+      "export const meta = { params: { agents: { a: {",
+      "  model: { type: 'string', default: 'sonnet' },",
+      "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
+      "  timeoutMs: { type: 'number', default: 60000 },",
+      "} } } };",
+      "await agent('a', { prompt: 'do the thing' });",
+      "return 'ok';",
+    ].join('\n');
+    const reg = await toolCall('workflow_register', { name: 'val109-clean', script, mermaid: 'graph TD;\nn0(["a"])' });
     expect(reg['error']).toBeUndefined();
   });
 });

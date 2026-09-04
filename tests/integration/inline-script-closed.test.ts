@@ -56,7 +56,11 @@ describe('REQ-098: inline script is closed — runtime refusal even off the adve
   });
 
   it('the sanctioned migration (register, publish to release, then run by name) is unaffected by the ban', async () => {
-    const reg = await toolCall('workflow_register', { name: 'it088-sanctioned', script: `return 'ok';` });
+    // v24 (DES-148, REQ-111): registration REQUIRES a non-empty `mermaid` (MERMAID_REQUIRED). The
+    // header alone is the whole diagram a zero-agent script needs. Written out here rather than
+    // routed through tests/helpers/workflow-fixtures.ts on purpose: this case's whole point is that
+    // the HAND-ROLLED sanctioned sequence still works, so it must stay hand-rolled.
+    const reg = await toolCall('workflow_register', { name: 'it088-sanctioned', script: `return 'ok';`, mermaid: 'graph TD;' });
     expect(reg['error']).toBeUndefined();
     const version = (reg['result'] as { version?: string } | undefined)?.version ?? 'v1';
     const pub = await toolCall('workflow_publish', { name: 'it088-sanctioned', version, channel: 'release' });

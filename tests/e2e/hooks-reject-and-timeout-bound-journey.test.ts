@@ -93,8 +93,12 @@ describe('REQ-020: a hung SDK-gateway provider call is bounded by timeoutMs — 
       [
         "export const meta = { params: { agents: { hang: {",
         "  model: { type: 'string', default: 'default' },",
-        "  effort: { type: 'enum', default: 'low' },",
-        "  timeoutMs: { type: 'number', default: 30000 },",
+        "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
+        // The declared per-agent timeoutMs is DELIBERATELY the 5000ms this file's `beforeAll`
+        // configures on the gateway: a per-call `opts.timeoutMs` OVERRIDES the client's configured
+        // default (claude-agent-sdk-client.ts:443/457), so a declared 30000 here would have made the
+        // fixture measure a bound nothing in this test set up.
+        "  timeoutMs: { type: 'number', default: 5000 },",
         "} } } };",
         "const r = await agent('hang', {}); return r === null ? 'bounded-null' : 'unexpected-value';",
       ].join('\n'),

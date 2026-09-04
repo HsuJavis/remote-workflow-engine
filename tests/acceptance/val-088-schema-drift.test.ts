@@ -13,6 +13,11 @@
 //
 // Note: real:false — set to true by Gate 7.5 validator after a real verified run.
 
+// v24 (batch B, then CLOSED by the integrator — GREEN now): each failure was — same PRODUCT defect as IT-072 (schema-drift.test.ts), at
+// acceptance tier: `system_info` advertises no `topN` (handler honours and clamps it — probed
+// {topN:3}→3, {topN:9999}→50) and `models_list`'s description no longer carries the costLevel
+// scale/null contract that `enrichModelEntry` still serves. REQ-079's whole claim is that a
+// SCHEMA-ONLY consumer can drive both tools from `tools/list` alone; today it cannot.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

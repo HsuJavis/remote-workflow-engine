@@ -1,6 +1,11 @@
 // IT (REQ-039/040): models_list wired into the real MCP server, with injected fake live fetchers
 // (no real Ollama/OpenRouter network). Exercises tools/list schema, an unfiltered list, a filtered
 // narrow, and a source-down graceful-degradation case. No mock of the SUT boundary — real HTTP.
+// v24 (batch B, then CLOSED by the integrator — GREEN now): the first case was — a PRODUCT defect. `models_list`'s
+// advertised `inputSchema` is `{properties:{},required:[]}`, yet `filterCatalog` (model-catalog.ts)
+// still implements every one of provider/query/modalityIn/modalityOut/maxPricePerM/minContext/
+// toolUse/location/limit — proved by the three GREEN cases below, which filter over real MCP HTTP.
+// The filters work and are undiscoverable (REQ-079/REQ-117).
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

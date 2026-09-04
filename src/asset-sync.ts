@@ -124,6 +124,21 @@ export class AssetPathEscapeError extends Error {
 // workflow, and `_global` is not a workflow.
 // ---------------------------------------------------------------------------------------------
 
+/** v24 (integrator): `pathVerdict`'s REJECT reasons are its own internal vocabulary, not
+ *  `ErrorCode`s — handing one to the caller verbatim (as the first cut of the asset-NAME check did)
+ *  reproduces exactly the `NOT_A_FILE`/`PATH_OUTSIDE_WORKSPACE` drift the facade had to undo for
+ *  `workspace_pull`. `RESERVED_PREFIX` earns its own catalog key because it is specific and
+ *  actionable ("pick a name that does not start with `rwe-`"); every other lexical reject is either
+ *  a containment failure or a malformed argument. */
+function assetNameErrorCode(v: { kind: 'reject'; reason: string } | { kind: string; reason?: string }): string {
+  switch (v.reason) {
+    case 'RESERVED_PREFIX': return 'RESERVED_PREFIX';
+    case 'ESCAPE':
+    case 'SYMLINK': return 'WORKSPACE_ESCAPE';
+    default: return 'INVALID_ARGUMENT';
+  }
+}
+
 /** Workflow-scoped asset trees: `<assetRoot>/<workflow>/<kind>/<name>`. */
 export function defaultAssetRoot(workRoot: string): string {
   return join(workRoot, 'assets');
@@ -248,7 +263,7 @@ export class AssetSyncService {
     // impersonation A-5 re-affirmed the prefix exists to prevent. Reuses `lexicalVerdict`; no
     // second regex (a duplicated rule is a rule that drifts).
     const nameVerdict = lexicalVerdict('asset-tree', req.name);
-    if (nameVerdict.kind !== 'ok') return { error: nameVerdict.kind === 'reject' ? nameVerdict.reason : 'INVALID_ARGUMENT' };
+    if (nameVerdict.kind !== 'ok') return { error: assetNameErrorCode(nameVerdict) };
     const pushedBy = req.pushedBy ?? 'local';
     const pushedAt = this._clock.isoNow();
     const workflow = req.scope === 'workflow' ? req.workflow : undefined;

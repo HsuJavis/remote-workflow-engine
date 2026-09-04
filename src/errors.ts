@@ -87,6 +87,7 @@ export const ERROR_CATALOG = {
 
   // Workspace / assets / seeds / CAS
   WORKSPACE_ESCAPE: { see: null, hint: 'the resolved path escapes the run or asset workspace root' },
+  RESERVED_PREFIX: { see: 'workflow_authoring_guide', hint: "the name or a path segment starts with the engine-reserved 'rwe-' prefix (ARCH-093)" },
   HOOKS_UNSUPPORTED: { see: null, hint: 'the requested Claude hook is not supported by the sandbox' },
   INVALID_SEED_SPEC: { see: null, hint: 'the seed/seedManifest/seedManifestRef payload does not match its declared shape' },
   SEED_SOURCE_CONFLICT: { see: null, hint: 'more than one of seed/seedManifest/seedRef/seedManifestRef was supplied' },

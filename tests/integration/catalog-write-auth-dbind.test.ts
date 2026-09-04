@@ -262,6 +262,21 @@ describe('IT-095: H1 residual — self-asserted args.principal is ALSO refused P
     }
   });
 
+  // v24 STATUS (test-migration batch C): LEFT RED, reported as an adjudication item rather than
+  // rewritten. This case pins 07-review.md §4.2's wrinkle 1 — the v22 design row at
+  // 04-design.md:3526 states in terms that "while `authEnabled` is false, `args.principal` remains
+  // legitimate identity for all three writes … the gate is `authEnabled`, never 'does a principal
+  // exist'". v24's rewritten dispatch layer removed that path entirely and without an amending
+  // design row: `call-tool.ts` never reads `args.principal` (identity is ONLY the edge-resolved
+  // `Principal`), `workflow_register`'s inputSchema does not declare it, and `mcp-facade.ts`'s
+  // `attributionPrincipal`/`bypassPrincipal` both map the `auth-disabled` kind to `null` — so on a
+  // no-auth server every registration is stored OWNERLESS and the hijack below is simply allowed
+  // (observed: `code` undefined where `NOT_WORKFLOW_OWNER` is expected). Either the v22 pin is
+  // being retired (then this case and val-107's case 1 are the two that must be retired WITH it,
+  // by a recorded decision) or the attribution is an unwired regression — that is a design call,
+  // not a test-fixture call, so the oracle is left exactly as ratified. Note also that
+  // `workflow-ownership.test.ts`'s case 6 [D-AUTH-6] silently depends on the same path: it still
+  // passes, but its "owned row" premise is now unestablishable.
   it('GREEN PIN (wrinkle 1, no-auth attribution preserved): with auth DISABLED, args.principal STILL attributes ownership on workflow_register', async () => {
     const name = uniqueName('open-attrib');
     const reg = await callTool(openServer, 'workflow_register', { name, script: `return 'v1';`, principal: 'it095-open-owner@example.com', mermaid: 'graph TD;' });

@@ -15,6 +15,22 @@
 // exist in tools/list at all. Every assertion below fails against the current schema.
 //
 // Mock policy (integration): real server, real tools/list response; no LLM.
+// v24 (batch B, then CLOSED by the integrator — GREEN now): three cases were — PRODUCT defects, evidence in the batch B
+// report. Summary:
+//   * `workflow_publish` advertises `{name, version}` with ONLY `name` required and no `channel` at
+//     all, while `mcp-facade.workflowPublish` takes `{name, version, channel}` and
+//     `workflow-catalog.publish` writes `beta_version` whenever `channel !== 'release'`. Probed over
+//     real MCP HTTP: publishing exactly what the schema advertises (`{name, version}`) logs
+//     `catalog.publish` with NO channel, moves the BETA pointer, and the next `run_start({name})`
+//     and `workflow_describe({name})` both fail `CHANNEL_UNPUBLISHED: release`. A cold model
+//     obeying the advertised schema cannot make a workflow runnable — the REQ-117 first-try claim.
+//   * `run_start` advertises no `channel` and its schema is CLOSED, so `run_start({name,
+//     channel:'beta'})` is refused `INVALID_ARGUMENT: (root) must NOT have additional properties` —
+//     yet 02-architecture.md's own v24 tool table (line 2645) specifies
+//     `run_start({name, version?|channel?, …})`, `RunSpec.channel` (types.ts:207) and
+//     `run-manager.ts:419` still consume it, and the row's `errors[]` advertises
+//     CHANNEL_UNPUBLISHED. `mcp-facade.runStart` also never forwards `a.channel`. No design text
+//     ratifies removing it; if the drop WAS intended, this case is retired instead — integrator call.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

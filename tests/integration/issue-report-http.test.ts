@@ -53,10 +53,27 @@ describe('issue_report over the real MCP HTTP surface (REQ-027..030)', () => {
     expect(calls[0].body).toContain('run-1');
   });
 
-  it('missing required field → ISSUE_REPORT_INVALID envelope, no issue filed', async () => {
+  // v24 (TASK-152) MIGRATION, split in two rather than re-coded. `issue_report`'s advertised
+  // inputSchema now DECLARES its three required fields (`title/reproSteps/analysis`,
+  // tool-specs.ts), so an ABSENT one is refused by ajv — `INVALID_ARGUMENT`, the closed
+  // ERROR_CATALOG's own "the call did not match its declared inputSchema" — before the handler
+  // runs. `ISSUE_REPORT_INVALID` is NOT dead: `issue-reporter.ts:414-419` still produces it for a
+  // field that is PRESENT but empty/whitespace, which `type:'string'` cannot catch. Both ingresses
+  // are pinned here so neither refusal can be quietly lost, and BOTH keep the load-bearing half of
+  // the original oracle: no issue is filed either way.
+  it('an ABSENT required field is refused by the advertised schema, naming the field, and no issue is filed', async () => {
     const before = calls.length;
     const res = await toolCall(baseUrl, 'issue_report', { title: 'no repro', analysis: 'a' });
+    expect(res.error?.code).toBe('INVALID_ARGUMENT');
+    expect(res.error?.message).toMatch(/reproSteps/);
+    expect(calls.length).toBe(before);
+  });
+
+  it('a PRESENT but empty required field is refused ISSUE_REPORT_INVALID by the reporter, and no issue is filed', async () => {
+    const before = calls.length;
+    const res = await toolCall(baseUrl, 'issue_report', { title: 'no repro', reproSteps: '   ', analysis: 'a' });
     expect(res.error?.code).toBe('ISSUE_REPORT_INVALID');
+    expect(res.error?.field).toBe('reproSteps');
     expect(calls.length).toBe(before);
   });
 

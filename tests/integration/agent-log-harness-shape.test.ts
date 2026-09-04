@@ -74,7 +74,10 @@ async function runAndGetAgentId(script: string): Promise<{ runId: string; agentI
   const status = await callTool('run_status', { runId }) as { agents?: Array<{ agentId: string; label?: string }>; result?: { agents?: Array<{ agentId: string; label?: string }> } };
   const agents = status?.agents ?? status?.result?.agents ?? [];
   const agentId = agents[0]?.agentId ?? 'agent-1';
-  const label = agents[0]?.label ?? '';
+  const label = agents[0]?.label;
+  // Fail loudly rather than querying `label: ''`: an empty label answers AGENT_LOG_NOT_FOUND with
+  // `harness: null, events: []`, which several cases below would then pass VACUOUSLY.
+  if (!label) throw new Error(`run_status returned no label for the first agent of ${runId}`);
   return { runId, agentId, label };
 }
 

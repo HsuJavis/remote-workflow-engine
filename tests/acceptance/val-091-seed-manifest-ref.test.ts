@@ -22,7 +22,7 @@
 // v24 (DES-142, ADR-028): the CAS namespace is DERIVED from the caller's own identity, never chosen
 // by the caller. Two spellings change here, both migrations of the same fact, neither a weakening:
 //   - `?namespace=` on /assets/blob and /assets/manifest is refused 400 INVALID_BLOB_REQUEST
-//     (server.ts:930/957/1141/1168) — the query param is dropped from both URLs;
+//     (server.ts:966/993/1177/1204) — the query param is dropped from both URLs;
 //   - `run_start`'s per-call namespace argument is gone from a now-CLOSED inputSchema
 //     (`additionalProperties:false`, tool-specs.ts), so passing it made ajv answer INVALID_ARGUMENT
 //     before any seed logic ran — it is dropped from every call below, not renamed.
@@ -106,7 +106,10 @@ afterAll(async () => {
 });
 
 describe('REQ-082: seedManifestRef round-trip (VAL-091)', () => {
-  // LEFT RED ON PURPOSE — PRODUCT DEFECT (v24 namespace-derivation half-wiring), not a fixture bug.
+  // Was LEFT RED as a PRODUCT DEFECT by the batch-D executor (v24 namespace-derivation
+  // half-wiring) and is GREEN now: the integrator closed it — `casNamespaceFor` (cas-store.ts) is
+  // the ONE namespace expression, shared by the writers (nsOf) and by run-manager's readback, which
+  // used to spell it `'_default'`. The description below is kept as the record of the defect.
   // POST /assets/manifest stores the manifest blob under the DERIVED namespace (`'local'`, echoed in
   // its own 200 response), but `run_start`'s handler never forwards a namespace onto the RunSpec
   // (mcp-facade.ts `runStart` spreads seed/seedManifest/seedRef/seedManifestRef and nothing else),
@@ -114,9 +117,11 @@ describe('REQ-082: seedManifestRef round-trip (VAL-091)', () => {
   // a pool no writer has used since ADR-028. Observed:
   //   MISSING_BLOBS "manifest blob <ref> not found in namespace _default; register via POST /assets/manifest"
   // Expected: the run starts and assembles the workspace. The same mismatch breaks the inline
-  // `seedManifest` path (run-manager.ts:407, see seed-manifest-http.test.ts's REQ-065 case) and
-  // seedRef assembly (run-manager.ts:501) — i.e. EVERY CAS-seeded run. The assertions below are the
-  // correct v24 behaviour and are deliberately left failing.
+  // `seedManifest` path (run-manager.ts:407, see seed-manifest-http.test.ts's REQ-065 case) — those
+  // two entry points, where a CLIENT uploads blobs first and the run-manager reads them back later,
+  // are the whole blast radius. `seedRef` is NOT affected: it writes and reads inside one `start()`
+  // call, so its `?? '_default'` fallback is self-consistent (val-089's real-pull case is green).
+  // The assertions below are the correct v24 behaviour and are deliberately left failing.
   it('1. run_start({seedManifestRef}) assembles workspace (params are few bytes)', async () => {
     const fileContent = Buffer.from('hello from val-091 seed manifest ref');
     const seedManifestRef = await setupManifest([{ path: 'hello.txt', content: fileContent }]);

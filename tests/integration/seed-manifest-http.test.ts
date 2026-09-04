@@ -66,7 +66,10 @@ describe('efficient seeding via CAS manifest (v10 Slice 2, REQ-064/065)', () => 
     expect(r.error.code).toBe('BLOB_HASH_MISMATCH');
   });
 
-  // LEFT RED ON PURPOSE — PRODUCT DEFECT (v24 namespace-derivation half-wiring), not a fixture bug.
+  // Was LEFT RED as a PRODUCT DEFECT by the batch-D executor (v24 namespace-derivation
+  // half-wiring) and is GREEN now: the integrator closed it — `casNamespaceFor` (cas-store.ts) is
+  // the ONE namespace expression, shared by the writers (nsOf) and by run-manager's readback, which
+  // used to spell it `'_default'`. The description below is kept as the record of the defect.
   // `workspace_push` (CAS mode) stores the blob under the DERIVED namespace (`nsOf(principal)` =
   // `'local'` here) and the case above proves `workspace_diff` — which derives the SAME namespace —
   // then sees it. But `run_start`'s handler never forwards a namespace onto the RunSpec
@@ -74,8 +77,11 @@ describe('efficient seeding via CAS manifest (v10 Slice 2, REQ-064/065)', () => 
   // so `run-manager.ts:407` falls back to the pre-v24 `'_default'` literal. Observed:
   //   status 'failed', MISSING_BLOBS "upload 1 blob(s) first: <the sha workspace_push just accepted>"
   // Expected: the run starts, completes, and the workspace holds the byte-identical seeded file.
-  // Same root cause as val-091's clause 1 (seedManifestRef, run-manager.ts:379) and seedRef
-  // (run-manager.ts:501). Assertions below are the correct v24 behaviour, deliberately left failing.
+  // Same root cause as val-091's clause 1 (seedManifestRef, run-manager.ts:379). Blast radius is
+  // exactly the two entry points where a CLIENT uploads blobs first and the run-manager reads them
+  // back later; `seedRef` is NOT affected — it writes and reads inside one `start()` call, so its
+  // `?? '_default'` fallback is self-consistent (val-089's real-pull case is green).
+  // Assertions below are the correct v24 behaviour, deliberately left failing.
   it('REQ-065 run_start with a seedManifest assembles the workspace from the CAS (script reads the file)', async () => {
     // the blob was uploaded above; a script reads the seeded file back via the sandbox has no fs — so
     // instead assert the run completes and the workspace really has the file by listing artifacts.

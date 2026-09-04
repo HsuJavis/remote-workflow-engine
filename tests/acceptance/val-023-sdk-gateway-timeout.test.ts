@@ -55,7 +55,23 @@ async function mcpCall(name: string, args: Record<string, unknown> = {}) {
 
 describe('VAL-023: REQ-020 clause 1 — a hung provider call is bounded, agent() resolves null, the run continues (never hangs)', () => {
   it('a real run against the hung provider completes within the configured bound, agent() resolving null', async () => {
-    const run = await runScriptVia(mcpCall, `const r = await agent('this will hang', {}); return r === null ? 'bounded' : 'leaked-non-null';`);
+    // v24 (DES-143/DES-144, TASK-152): `agent()` takes a literal LABEL first and the prompt as
+    // `options.prompt`, and every label needs a `meta.params.agents.<label>` declaration with a
+    // `.default` for model/effort/timeoutMs (AGENT_UNDECLARED otherwise). The declared
+    // `timeoutMs.default` is DELIBERATELY the same 5000ms this file's `beforeAll` configures on the
+    // gateway: a per-call `opts.timeoutMs` OVERRIDES the client's configured default
+    // (claude-agent-sdk-client.ts:443/457), so the bound under test has to be declared here or the
+    // fixture would silently be measuring a different one. `model:'default'` resolves through
+    // DEFAULT_ALIASES to the same dial the hung stub intercepts via `baseUrl`.
+    const run = await runScriptVia(mcpCall, [
+      "export const meta = { params: { agents: { hang: {",
+      "  model: { type: 'string', default: 'default' },",
+      "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
+      "  timeoutMs: { type: 'number', default: 5000 },",
+      "} } } };",
+      "const r = await agent('hang', { prompt: 'this will hang' });",
+      "return r === null ? 'bounded' : 'leaked-non-null';",
+    ].join('\n'));
     const runId = run['runId'] as string;
     let finalStatus: string | undefined;
     for (let i = 0; i < 30; i++) {
