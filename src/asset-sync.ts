@@ -271,7 +271,9 @@ export class AssetSyncService {
       }
       const probed = await this._probe.probe(req.config);
       if (!probed.ok) return { error: 'MCP_PROBE_FAILED' };
-      await this._catalog.putAsset({ scope: req.scope, workflow, builtin: false, kind: 'mcp', name: req.name, config: req.config, pushedBy, pushedAt });
+      // v24 Gate 7.5 (D-13, REQ-113): a GLOBAL asset is a built-in — the engine-level tree only an
+      // admin can write, which every workflow sees.
+      await this._catalog.putAsset({ scope: req.scope, workflow, builtin: req.scope === 'global', kind: 'mcp', name: req.name, config: req.config, pushedBy, pushedAt });
       return { stored: req.name };
     }
 
@@ -295,7 +297,7 @@ export class AssetSyncService {
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, Buffer.from(contentB64, 'base64'));
     }
-    await this._catalog.putAsset({ scope: req.scope, workflow, builtin: false, kind: 'skill', name: req.name, pushedBy, pushedAt });
+    await this._catalog.putAsset({ scope: req.scope, workflow, builtin: req.scope === 'global', kind: 'skill', name: req.name, pushedBy, pushedAt });
     return { stored: req.name };
   }
 

@@ -1338,7 +1338,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       return raw.map((r) => ({
         scope: r.workflow === '' ? ('global' as const) : ('workflow' as const),
         ...(r.workflow !== '' ? { workflow: r.workflow } : {}),
-        builtin: false,
+        // v24 Gate 7.5 (D-13, REQ-113): "a global asset … is marked `builtin:true` in listings".
+        // This projection hard-coded `false` for every row, so the one signal distinguishing an
+        // engine-level asset every workflow sees from a workflow's own was always absent.
+        builtin: r.workflow === '',
         kind: r.kind as AssetKind,
         name: r.name,
         pushedBy: r.pushedBy ?? 'local',

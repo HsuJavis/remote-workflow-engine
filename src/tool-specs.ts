@@ -267,10 +267,20 @@ export const TOOL_SPECS = [
   },
   {
     name: 'workflow_describe', entity: 'workflow', key: 'name' as const,
-    description: "Describe a workflow's runnable release: per-agent parameters, agent labels, and its author-supplied diagram.",
-    inputSchema: schema({ name: { type: 'string' } }, ['name']),
+    description: "Describe a workflow: per-agent parameters, agent labels, live triggers, and its author-supplied diagram. Defaults to the release pointer; pass version or channel to describe another one.",
+    // v24 Gate 7.5 (D-7, REQ-118): the handler has always accepted `version`/`channel` (it builds
+    // a `VersionSelector` from them) and the row advertised only `name`. `version` is not a
+    // convenience: a workflow that was never published cannot be described WITHOUT it — the bare
+    // call is refused CHANNEL_UNPUBLISHED — so the one state a draft author most needs to read was
+    // unreachable from the advertisement. `CHANNEL_UNPUBLISHED` joins `errors[]` for the same
+    // reason: it is what a bare call on a draft answers.
+    inputSchema: schema({
+      name: { type: 'string' },
+      version: { type: 'string', description: "A specific version, e.g. 'v2' — the only way to describe a workflow that has never been published." },
+      channel: { type: 'string', enum: ['release', 'beta'], description: "Which pointer to resolve; defaults to 'release'." },
+    }, ['name']),
     outputSchema: OUT,
-    errors: ['WORKFLOW_NOT_FOUND'],
+    errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'none' } as AuthzRow,
     fixture: { happy: { name: ref('workflow') }, errors: { WORKFLOW_NOT_FOUND: { name: ABSENT_WORKFLOW } } },
@@ -511,7 +521,12 @@ export const TOOL_SPECS = [
     description: 'Push content: a CAS blob into the caller\'s own pool, or a workflow-owned asset (skill/mcp). Any runId argument is refused — see workflow_authoring_guide.',
     inputSchema: pushInputSchema(),
     outputSchema: OUT,
-    errors: ['INVALID_ARGUMENT', 'RESERVED_PREFIX', 'WORKSPACE_ESCAPE', 'BLOB_HASH_MISMATCH', 'FORBIDDEN_ROLE', 'NOT_WORKFLOW_OWNER', 'MCP_PROBE_FAILED', 'EGRESS_DENIED', 'HOOKS_UNSUPPORTED'],
+    // v24 Gate 7.5 (D-6, REQ-118): `HOOKS_UNSUPPORTED` REMOVED — no push can produce it. A
+    // `kind:'hook'` never reaches `classifyAsset` (which is where that code lives, still reachable
+    // on the seed path): `pushMode` resolves it to `'invalid'` and the answer is INVALID_ARGUMENT.
+    // Advertising a code the tool cannot answer teaches a cold model to branch on something that
+    // never arrives — the same reason `WORKFLOW_ALREADY_EXISTS` came off `workflow_register`.
+    errors: ['INVALID_ARGUMENT', 'RESERVED_PREFIX', 'WORKSPACE_ESCAPE', 'BLOB_HASH_MISMATCH', 'FORBIDDEN_ROLE', 'NOT_WORKFLOW_OWNER', 'MCP_PROBE_FAILED', 'EGRESS_DENIED'],
     seeAlso: ['workflow_authoring_guide'],
     authz: {
       mode: pushMode,
