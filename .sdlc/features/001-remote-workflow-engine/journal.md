@@ -2206,3 +2206,35 @@ fixes made stale or newly wrong, plus one leftover:
 shows the pre-renumber VAL ids in REQ-012/014/086's verification sets. Left as-is rather than
 hand-edited: it is a generated artifact and hand-editing one is how it stops matching its generator.
 
+
+## 2026-09-04 — v24 Gate 7.5 ROUND 2 (validator, delta re-run after the remediation) — NOT PASSED, by one clause
+
+Delta re-run at `946b46c` (`0.1.0 (v0.20.0-171-g946b46c)`): three `deploy.sh --background` boots
+(A auth-off/direct-fetch Ollama :8797, B auth-ON + `gateway:"sdk"` + real GitHub token :8798, C a clean
+workRoot for the cold subject :8799), `scripts/smoke.sh` PASS, only 設定總表 rows as env. Twelve new
+`real:true` items **VAL-152..163**, one per REQ-107..118 (round 1's three greens re-observed because
+`tool-specs.ts`/`mcp-facade.ts`/`asset-sync.ts` all moved in the delta).
+
+**11/12 green.** Every one of round 1's remediated defects was re-observed FIXED against the live engine
+— including the two security-relevant ones proven negative for real: a released trigger fired NOTHING for
+a same-name re-registration across two further cron ticks (D-1b), and a deregistered owner's skill was NOT
+materialized into the next principal's same-name run (`missing:['declared-skill']`, no `.claude/skills/`)
+on the sdk path (D-10). **REQ-117 passed with ANOTHER fresh `claude-opus-5[1m]` subject**: exactly one
+`workflow_register` ⇒ v1, publish, run, eight polls, `run_result` read back correctly, zero error
+envelopes; the one wrinkle — background `sleep` timers ended the first `-p` process mid-run and the same
+session was resumed once with a neutral "continue" — is a harness artifact, recorded in VAL-162.
+
+**REQ-116 red on one clause (D-14, LOW):** "a registration that fails on parse, contract, diagram **or
+trigger** … points at this tool" — `TRIGGER_NOT_FOUND` / `TRIGGER_ALREADY_CLAIMED` answer `see:null`
+because `ERROR_CATALOG` (`src/errors.ts:74-75`) assigns them null. A one-line catalog fix for Gate 6;
+independent of REQ-117's evidence (the subject never touched a trigger).
+
+Config sync: the delta touched no config file; §1b round-trips 0/0 against `KNOWN_FILE_CONFIG_KEYS`; one
+env drift closed (`deploy.sh`'s `RWE_LITELLM_VENV` gained its §1b row). Manuals rewritten to current
+state: every "known defect / not yet re-validated / 已修復" sentence removed, the changelog-shaped list in
+DEPLOY §6 replaced by a present-tense 「觸發器與資產的生命週期」 paragraph, §6's defect list = issue #53 +
+D-14. Observations for Gate 8 (not REQ clauses): `workflow_list.owner` is always `null` under auth;
+the guide's aggregation example draws a rectangle where its own table says `{{"…"}}`;
+`schedule_setEnabled`/`schedule_delete` answer `{}`; `workspace_delete` vetoes a batch on one rejected
+path. `gates.validation.passed` stays `false`; `current_stage` stays `validation`. Cleanup done (boots
+killed incl. B's litellm child, scratch tree and bearers deleted, cold subject's dirs removed, #54 closed).

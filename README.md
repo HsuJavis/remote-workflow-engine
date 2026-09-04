@@ -34,9 +34,13 @@
   `prompt`/`tools`/`skills`/`mcp`/`workdir`/`cwd` 六個鍵永遠鎖定、呼叫端無法觸及。優先序只有兩層：
   該次 run 的 `overrides.agents.<label>.<key>` > 腳本自己宣告的 `.default`——在 `agent()` 呼叫裡直接寫
   `model`/`effort`/`timeoutMs` 會在註冊當下被拒（`SCAN_VIOLATION`）。
-  `meta.params.knobs` 會被拒絕（`DEFAULTS_RETIRED`）；註冊時的 `defaults` 參數目前會被靜默忽略（已知缺陷，見「已知限制」）。
+  `meta.params.knobs`、`meta.defaults`、以及 `workflow_register` 的 `defaults` 參數都會被拒絕（`DEFAULTS_RETIRED`），
+  錯誤訊息會指出要改寫到 `meta.params.agents.<label>.<key>.default`。
 - **已知工作流程探索**：`workflow_register`/`workflow_publish`/`workflow_list`/`workflow_deregister`/
   `workflow_authoring_guide`（引擎用自己的強制常數渲染的作者指南，也就是 `docs/AUTHORING.md`）。
+  `workflow_list` 每筆是 `{name, owner, versions, channels, runnable}`；`owner` 欄位一律回 `null`，擁有者請看
+  `workflow_describe`。`user` 角色預設只看得到可執行（已發布 `release`）的工作流程，`author`／`admin` 預設看全部；
+  `onlyRunnable:true|false` 可明確指定。
   讀腳本本文的工具是 `workflow_source`（需要 `author` 角色；非擁有者拿到 `scriptWithheld:true` 的遮蔽投影），
   「這個工作流程在做什麼」則一律看 `workflow_describe`（見下）。
 - **一份看得懂的說明（`workflow_describe`）**：任何人（不必是擁有者）都能用
@@ -46,7 +50,7 @@
   以及作者附上的 **Mermaid 結構圖**（`mermaid`）。回應裡**永遠沒有腳本本文**。
 - **作者附上的結構圖**：`workflow_register` 必須帶一個非空的 **Mermaid** `mermaid`
   字串（少了就 `MERMAID_REQUIRED`），而且圖裡的 stadium 節點 `id(["label"])` 要跟腳本的 agent label
-  **雙向完全對應**（對不上就 `DIAGRAM_MISMATCH`）。`workflow_describe` 設計上原文回傳這張圖（目前有一個已知缺陷讓它回 `null`，見「已知限制」）。
+  **雙向完全對應**（對不上就 `DIAGRAM_MISMATCH`）。`workflow_describe` 會原文回傳這張圖（`mermaid` 欄位），也接受 `version`／`channel` 指定要看哪個版本。
   **引擎不自己畫圖**，註冊也不會把腳本本文送給任何模型。
 - **排程**：`schedule_create`/`schedule_list`/`schedule_delete`/`schedule_setEnabled`（cron/once/resident）。
   觸發器**先建立、再由工作流程認領**：`schedule_create`／`webhook_create` 都不需要 `workflow`，回一個 id，
@@ -57,8 +61,7 @@
   `admin` 角色）、`workspace_diff`（比對 manifest 與自己的 blob 池，回還缺哪些）、
   `workspace_pull`（讀某個 run 工作區裡某個檔的位元組區間）、`workspace_list`（列某個 run 的工作區檔案，
   或某個工作流程名下某類資產）、`workspace_delete`、`workspace_purge`（刪掉已終止 run 的整個工作區）。
-  hook 明確不支援：`kind:'hook'` 在 schema／模式判定就被擋掉，回 `INVALID_ARGUMENT`（v24 起
-  `HOOKS_UNSUPPORTED` 不再列在 `workspace_push` 的 `errors[]`，因為沒有任何路徑會回它）；
+  hook 明確不支援：`kind:'hook'` 在 schema／模式判定就被擋掉，回 `INVALID_ARGUMENT`；
   seed 裡的 `.claude/hooks/…` 則是在路徑判定時就被剝掉、根本不寫進工作區。**MCP server 現在就是一種資產**：
   `workspace_push({workflow, kind:'mcp', name, config})`（secret handle `${secret:NAME}`；`stdio`
   transport 需 `admin`）。
@@ -262,8 +265,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # -> {name, version, resolvedBy, channels:{release,beta}, versions, description, phases,
 #     params:{agents,args}, lockedKeys, owner, reportProblem, triggers,
 #     mermaid, mermaidNote, runnable, runnableReason}
-# mermaid 設計上是註冊時作者附上的那張圖的原文；沒有圖的版本回 mermaid:null、mermaidNote:"LEGACY_NO_DIAGRAM"
-# （目前有一個已知缺陷讓每個工作流程都回 null，見「已知限制」）。
+# mermaid 是註冊時作者附上的那張圖的原文；沒有圖的版本回 mermaid:null、mermaidNote:"LEGACY_NO_DIAGRAM"。
 # 還沒發布過任何頻道的工作流程，describe({name}) 直接回 CHANNEL_UNPUBLISHED（要看草稿就帶 {"version":"v1"}）；
 # runnable:false + runnableReason:"LEGACY_REREGISTER" 表示這個版本沒有 meta.params.agents 契約，要重新註冊才能跑。
 # triggers 是「現在」綁在這個工作流程上的排程/webhook，每次呼叫都依 id 重新讀取
@@ -348,7 +350,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 9. **Inline script 已關閉**：`run_start`/`run_resume` 不接受呼叫端夾帶的 `script`；`run_start` 的 schema 是封閉的（`additionalProperties:false`），硬塞任何未宣告的欄位都在送出當下被拒（`INLINE_SCRIPT_CLOSED`／`INVALID_ARGUMENT`）。腳本一律要先 `workflow_register`，靜態檢查（語法解析、模型別名、MCP 名稱是否已推送、agent 契約、mermaid 對照）也全在註冊當下做，不會因為改用具名執行就少檢查。
 10. **腳本本文只有一個出口，且對非擁有者遮蔽**：能回傳腳本本文的工具只有 `workflow_source`（需要 `author` 角色）。啟用 auth 後，它對非擁有者回傳 `scriptWithheld:true`、不含腳本本文；擁有者/admin 仍可看到完整腳本。`workflow_describe`／`workflow_list`／`/api/workflows*`／儀表板**在設計上就不含**腳本本文，不論身份。`auth.enabled:false`（單人本機部署的預設）沒有「非擁有者」這個概念——任何人都能透過 `workflow_source` 看到完整腳本。
 11. **SSRF-safe seedRef**：`seedRef:{repoUrl,sha}` 由 `HardenedSeedRefFetcher` 拉取；URL 必須匹配 `seedRefAllowlist`，否則 `SEEDREF_EGRESS_DENIED`；省略 allowlist 則全部 `SEEDREF_DISABLED`（fail-closed）；hardened git subprocess，不轉 shell。
-12. **角色（`principals`）fail-closed**：`rwe.config.json` 的 `principals` 角色字串打錯（不是 `admin`/`author`/`user`）→ 開機直接拒絕啟動，不會靜默退回 `user`；整個鍵省略時，`auth.enabled:true` 下每個已驗證呼叫者一律 `user`，且開機那行 `auth:` log 如實顯示（ADR-028）。`workspace_push({kind:"mcp"})` 的 `http` transport 同理受 `mcpEgressAllowlist` fail-closed：省略/不匹配 → `EGRESS_DENIED`，探測次數為零；`stdio` transport 與 `scope:'global'` 的推送都需要 `admin`（`stdio` 的這道檢查目前可被繞過，見「已知限制」）。
+12. **角色（`principals`）fail-closed**：`rwe.config.json` 的 `principals` 角色字串打錯（不是 `admin`/`author`/`user`）→ 開機直接拒絕啟動，不會靜默退回 `user`；整個鍵省略時，`auth.enabled:true` 下每個已驗證呼叫者一律 `user`，且開機那行 `auth:` log 如實顯示（ADR-028）。`workspace_push({kind:"mcp"})` 的 `http` transport 同理受 `mcpEgressAllowlist` fail-closed：省略/不匹配 → `EGRESS_DENIED`，探測次數為零；`stdio` transport（`config.type:"stdio"`）與 `scope:'global'` 的推送都需要 `admin`，其他角色一律 `FORBIDDEN_ROLE`、不會探測也不會啟動任何子行程。
 
 ## 已知限制
 
@@ -366,14 +368,13 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
   `gateway:"direct-fetch"` + `useLiteLLMProxy:false`（本機 Ollama 直連，完全不需要 litellm）。
 
 - **目前已知、尚未修復的缺陷**（詳細指令與輸出見 `DEPLOY.md` §6）：
-  只剩一條——**偶發的 `suspend` → `resume` → `failed`，而且 agent 的工作在終態之後還在跑**
-  （run `3977b82d`，無法穩定重現、尚未歸因；
-  [issue #53](https://github.com/HsuJavis/remote-workflow-engine/issues/53)）。
-  v24 Gate 7.5 真跑挖出的另外十二條（圖讀不回來、觸發器只能建立時綁定又不被釋放、deregister 不刪資產目錄、
-  `defaults` 被靜默忽略、stdio MCP 繞過 admin 閘門、錯誤碼漏出 JS class 名、錯誤訊息不指向
-  `workflow_authoring_guide`、手冊教的圖語彙比引擎接受的少、別名沒出現在介面上……）
-  **已於 2026-09-04 全部修復**，由 `tests/integration/` 下的 IT-125..IT-130 等項目釘住；
-  它們的真實層（Gate 7.5）複驗尚未重跑，`08-validation.md` 裡對應的 VAL 列因此仍記為 `fail`。
+  1. **偶發的 `suspend` → `resume` → `failed`，而且 agent 的工作在終態之後還在跑**
+     （run `3977b82d`，無法穩定重現、尚未歸因；
+     [issue #53](https://github.com/HsuJavis/remote-workflow-engine/issues/53)）。
+     對策：suspend/resume 之後用 `run_status` 確認狀態，發現無故 `failed` 時把 run id 貼進該 issue。
+  2. **`workflow_register({triggers:[id]})` 認領觸發器失敗時，錯誤沒有 `see` 指標**：`TRIGGER_NOT_FOUND`／
+     `TRIGGER_ALREADY_CLAIMED` 回 `see:null`，其他註冊錯誤都指向 `workflow_authoring_guide`。只影響錯誤訊息，
+     不影響行為：先用 `schedule_list`／`webhook_list` 確認 id 與 `claimedBy` 再認領即可。
 
 ## 更多
 

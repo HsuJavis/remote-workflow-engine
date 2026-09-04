@@ -381,6 +381,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | env `RWE_BIND` | 覆蓋 `bind` | `string` / `127.0.0.1` | 否 | v1 |
 | env `RWE_PORT` | 覆蓋 `port` | `number` / `8787` | 否 | v1 |
 | env `RWE_WORK_ROOT` | 覆蓋 `workRoot` | `string` / 設定檔值或系統暫存目錄 | 否 | v1 |
+| env `RWE_LITELLM_VENV` | 只有 `deploy.sh` 讀：LiteLLM Python venv 的路徑（步驟 3 檢查／建立 `<venv>/bin/litellm`，並把 `<venv>/bin` 加進服務的 `PATH`）；引擎本身不讀這個變數 | `string` / `$HOME/.rwe-litellm-venv` | 否 | v24 |
 | env `RWE_SECRET_<NAME>` | 伺服器端 secret store；provisioned MCP config 裡的 `${secret:NAME}` handle 由此解析（大小寫敏感）；缺少則該次引用以 `SECRET_MISSING` 報錯，從不外洩值或靜默跳過；絕不放進 JSON 設定檔 | `string` / 無預設 | 依 MCP 引用 | v1 |
 | env `RWE_SECRET_GITHUB_TOKEN` | `issue_report`／Issues 儀表板需要；GitHub PAT/fine-grained token，須有目標 repo `issues:write` 權限；缺少時 `issue_report` 回 `GITHUB_TOKEN_MISSING`，`GET /api/issues` 回 200 `{degraded}`（不 500） | `string` / 無預設 | 否（缺少則降級） | v1 |
 | env `ANTHROPIC_API_KEY` | `provider:"anthropic"` 別名的 API key（範例設定檔的 `sonnet`/`haiku`/`opus`/`default` 都指向此）；`gateway:"sdk"` 路徑也可改由 `RWE_SECRET_ANTHROPIC_API_KEY` 提供 | `string` / 無預設 | 用到 anthropic 別名時 | v1 |
@@ -424,7 +425,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | 角色 | 這個角色（含以上）才叫得動的工具 |
 |---|---|
 | `author` | `workflow_register`／`workflow_deregister`／`workflow_publish`／`workflow_source`、`schedule_create`／`schedule_list`／`schedule_delete`／`schedule_setEnabled`、`webhook_create`／`webhook_list`／`webhook_delete`、`workspace_push` 的資產模式（`{workflow,kind,name}`）、`workspace_list`／`workspace_delete` 的工作流程模式 |
-| `admin` | `workspace_push`／`workspace_delete` 的 `scope:"global"`（全域資產）、以及 `workspace_push({kind:"mcp"})` 帶 `stdio` transport 的 MCP server（目前可被繞過，見 §6 尚未修復的缺陷第 5 條） |
+| `admin` | `workspace_push`／`workspace_delete` 的 `scope:"global"`（全域資產）、以及 `workspace_push({kind:"mcp"})` 帶 `stdio` transport（`config.type:"stdio"`）的 MCP server——其他角色回 `FORBIDDEN_ROLE`，不探測、不啟動任何子行程 |
 | `user` | 其餘全部：`workflow_describe`／`workflow_list`／`workflow_authoring_guide`、所有 `run_*`、`workspace_diff`／`workspace_pull`／`workspace_purge` 與 run 模式的 `workspace_list`／`workspace_delete`、所有 `issue_*`、`models_list`、`system_info` |
 
 角色不足一律回 `FORBIDDEN_ROLE`。角色**之外**還有一層擁有權檢查（`NOT_WORKFLOW_OWNER`／
@@ -717,7 +718,8 @@ running→interrupted (resumable)`）；`run_resume({runId})` 即可續跑。已
 作用可能重複，由工作流程作者負責冪等性。
 
 **重用前先看用途（`workflow_describe`）**：`workflow_list` 每筆回傳 `{name, owner, versions,
-channels, runnable}`（從不含腳本本文）；腳本本文只有 `workflow_source({name, version?})` 這一個
+channels, runnable}`（從不含腳本本文；`owner` 欄位一律是 `null`，擁有者請看 `workflow_describe`；`user`
+角色預設只列可執行的工作流程、`author`／`admin` 預設列全部，`onlyRunnable` 可明確指定）；腳本本文只有 `workflow_source({name, version?})` 這一個
 出口（需 `author` 角色，非擁有者拿到 `scriptWithheld:true`）；
 **`workflow_describe({name})` 是給「要不要用這個工作流程」的人看的單一說明面**
 ——用途、版本/頻道、階段、逐 agent 的可調參數契約、鎖定鍵、擁有者、回報問題方式、能不能跑
@@ -736,10 +738,11 @@ channels, runnable}`（從不含腳本本文）；腳本本文只有 `workflow_s
 帶一個非空的 **Mermaid** `mermaid` 字串（少了就 `MERMAID_REQUIRED`），圖裡的 stadium 節點
 `id(["label"])` 要跟腳本的 `agent()` label 雙向完全對上（對不上就 `DIAGRAM_MISMATCH`）。
 `workflow_describe` 的 `mermaid` 欄位設計上回傳這張圖的原文；沒有圖的版本回 `mermaid:null` +
-`mermaidNote:"LEGACY_NO_DIAGRAM"`。儀表板顯示的是同一份。沒有重畫工具——要換圖就用新的 `mermaid`
-重新註冊一個版本。（目前有一個已知缺陷讓每個工作流程都回 `null`，見本節末「尚未修復的缺陷」第 1 條。）
-完整的圖語法（三種節點形狀、邊、`subgraph`、迴圈邊必須帶標籤）見 `docs/AUTHORING.md`，或呼叫
-`workflow_authoring_guide` 工具拿同一份文字。
+`mermaidNote:"LEGACY_NO_DIAGRAM"`；`workflow_describe` 也接受 `version`／`channel` 指定要看哪個版本的圖。
+儀表板顯示的是同一份。沒有重畫工具——要換圖就用新的 `mermaid` 重新註冊一個版本。
+完整的圖語法（五種節點形狀、三種邊、`<br/>` 參數三元組、一邊一行、`subgraph`、迴圈邊必須帶標籤、
+虛線＝跳過的路徑）見 `docs/AUTHORING.md`，或呼叫 `workflow_authoring_guide` 工具拿同一份文字；註冊時
+圖或腳本被拒絕，錯誤都帶 `see:"workflow_authoring_guide"` 指回這份指南（認領觸發器的錯誤除外，見本節末）。
 
 **註冊不呼叫任何模型**：`workflow_register` 只做本機靜態檢查，腳本本文不會送出這台機器。
 
@@ -779,41 +782,28 @@ immutable-pool GC。同樣受 Host/Origin 白名單過渡管控，非公開端�
 sandbox/test key 針對付費供應商跑一次 `agent()` 成功案例。
 
 
+**觸發器與資產的生命週期**：`schedule_create`／`webhook_create` 的 `workflow` 是選填——不帶就建立一個
+未認領的觸發器並回 id，再由 `workflow_register({triggers:[id]})` 綁定到那個版本；建立時不查目錄，
+檢查在觸發當下做：未認領／工作流程不存在／未發布／不在 release 版本裡，各自被拒絕並記在該列的
+`lastRefusalReason`／`refusalCount`（`schedule_list`／`webhook_list` 可看）。一個觸發器同時只能被一個
+工作流程認領（`TRIGGER_ALREADY_CLAIMED`）。`workflow_deregister` 會釋放它名下的每一個觸發器（版本宣告的
+與建立時就綁定的都算），回傳 `releasedTriggers[]`，觸發器本身不刪；同時刪掉 `<assetRoot>/<name>/` 整棵
+資產樹。`schedule_setEnabled`／`schedule_delete` 成功時回 `{}`，要確認結果請再呼叫 `schedule_list`。
+全域資產在 `workspace_list` 上標 `builtin:true`、`scope:"global"`，只有 `admin` 能推與刪。
+
 **目前已知、尚未修復的缺陷（操作時要知道的現況）**
-
-v24 Gate 7.5 的真跑挖出十三條缺陷，其中**十二條已於 2026-09-04 修復**（每一條都先寫出會失敗的測試、
-再修，釘在 `tests/integration/` 的 IT-125..IT-130 與 IT-081／UT-159／UT-160／VAL-117 等項目上；
-對照表見 `.sdlc/features/001-remote-workflow-engine/08-validation.md` 的「Remediation status」）。
-**這些修復尚未經過 Gate 7.5 的真實層複驗**，所以 `08-validation.md` 裡對應的 VAL 列仍記為 `fail`——
-那是真跑才能給的判定，不是修復者能自己蓋章的。
-
-下面這條**沒有修**，操作時要知道：
 
 1. **偶發的 `suspend` → `resume` → 立刻 `failed`，而且 agent 的工作在終態之後還在跑**：
    實測 run `3977b82d`——`run_start` → 1 秒後 `run_suspend`（`suspended`）→ `run_resume`（`running`）
    → 8 毫秒後變成 `failed`，`transitions` 裡沒有對應的 `failed` 列、任何介面都沒有錯誤原因；
    而被重放的 agent 又跑了約 36 秒才產出真實輸出——**工作在終態之後被孤兒化**。
-   把 suspend 延到 +3 秒重做一次則完全正常，無法穩定重現、尚未歸因，因此排到 v25：
+   把 suspend 延到 +3 秒重做一次則完全正常，無法穩定重現、尚未歸因：
    [issue #53](https://github.com/HsuJavis/remote-workflow-engine/issues/53)。
    **對策：suspend/resume 之後用 `run_status` 確認狀態，發現無故 `failed` 時把 run id 貼進該 issue。**
-
-已修復、行為因此改變的幾點，操作上請照新的來：
-
-- **觸發器現在是「先建立、再認領」**：`schedule_create`／`webhook_create` 的 `workflow` 是**選填**，
-  不帶就建立一個未認領的觸發器並回 id，再由 `workflow_register({triggers:[id]})` 綁定；
-  建立時不再做目錄檢查（那個檢查移到觸發當下：未認領／工作流程不存在／未發布／不在 release 版本裡，
-  各自被拒絕並記在該列的 `lastRefusalReason`）。`workflow_deregister` 現在會釋放**兩種**綁定
-  （版本宣告的，以及建立時就綁定的），`releasedTriggers` 會列出來——重用名稱前不必再手動刪觸發器。
-- **`workflow_deregister` 會連磁碟上的 `<assetRoot>/<name>/` 一起刪**，不必再手動清。
-- **`workflow_register` 帶 `defaults` 參數會被拒絕**（`DEFAULTS_RETIRED`），不再靜默忽略；
-  腳本裡的 `meta.defaults` 同樣被拒絕。
-- **stdio 型 MCP 設定的 admin 閘門真的會執行**（角色檢查與探測器現在讀同一個鍵 `config.type`）。
-- **資產路徑逃逸回 `WORKSPACE_ESCAPE`／`RESERVED_PREFIX`**，不再漏出 JS class 名。
-- **註冊失敗的錯誤會帶 `see:"workflow_authoring_guide"`**；該手冊也已補上引擎實際接受的五種節點形狀、
-  三種邊、`<br/>` 三元組、一邊一行（`COLLAPSED_EDGE`）與虛線＝跳過，以及**這台部署接受的模型別名清單**
-  （從跟驗證器同一份 `aliases` 來，不是寫死的）。
-- **`workflow_describe` 會把註冊時的 `mermaid` 原字串讀回來**，也接受並公告 `version`／`channel`。
-- **全域資產在列表上標 `builtin:true`**。
+2. **認領觸發器失敗的錯誤沒有 `see` 指標**：`workflow_register({triggers:[id]})` 遇到不存在或已被別人
+   認領的 id 時回 `TRIGGER_NOT_FOUND`／`TRIGGER_ALREADY_CLAIMED`，但 `see` 是 `null`（其他註冊錯誤都指向
+   `workflow_authoring_guide`）。只影響錯誤訊息、不影響行為。
+   **對策：認領前先用 `schedule_list`／`webhook_list` 確認 id 存在且 `claimedBy` 為 `null`。**
 
 ## §6b 標籤觸發式自動更新
 

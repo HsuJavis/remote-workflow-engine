@@ -8500,6 +8500,8 @@ normalization). `src/check-mermaid.ts` (repurposed `diagram-gate.ts`) does not e
 
 **Gate 7.5 (validator, v24) — real-tier evidence lives in `VAL-135` (08-validation.md): result fail on the pointer clause (D-3/D-4); the real-browser render VAL-147 deferred is done there: 11/11 render, malformed fails.** `real:` stays `false` here — this item is the in-process vitest floor; `VAL-135` is the deploy.sh-booted run.
 
+**Gate 7.5 ROUND 2 (validator, v24, delta re-run at `946b46c`) — real-tier evidence lives in `VAL-157` (08-validation.md): result pass — D-3/D-4 fixed; 11/11 real-browser renders.** `real:` stays `false` here for the same reason.
+
 Files: `tests/acceptance/val-mermaid-renders.test.ts` (the subset-property render check
 `checkMermaid` itself cannot prove — no headless-browser tooling exists in this repo today, so
 every render case is `it.skip`/`it.runIf(false)` with the reason recorded as an assertion, never a
@@ -8789,6 +8791,8 @@ is hand-written (v23). Red (measured): whole-file red.
 
 **Gate 7.5 (validator, v24) — real-tier evidence lives in `VAL-141` (08-validation.md): result fail on contract (D-5/D-6/D-7); 35/35 called live incl. the five issue_* rows against real GitHub.** `real:` stays `false` here — this item is the in-process vitest floor; `VAL-141` is the deploy.sh-booted run.
 
+**Gate 7.5 ROUND 2 (validator, v24, delta re-run at `946b46c`) — real-tier evidence lives in `VAL-163` (08-validation.md): result pass — 35/35 live incl. `issue_*` against real GitHub (#54); D-5/D-6/D-7 fixed on the wire.** `real:` stays `false` here for the same reason.
+
 File: `tests/acceptance/v24-tool-surface.test.ts` — `for (const spec of TOOL_SPECS)` generates one
 `it` per `fixture.happy` and one per `fixture.errors[code]`; an `afterAll` writes
 `v24-tool-surface.md` ONLY when `rows.length === TOOL_SPECS.length` (never a silently-truncated
@@ -8878,6 +8882,8 @@ real run, per the mock hard-rule (a REQ is verified only by a `real:true` green 
 
 **Gate 7.5 (validator, v24) — real-tier evidence lives in `VAL-130` (08-validation.md): result pass.** `real:` stays `false` here — this item is the in-process vitest floor; `VAL-130` is the deploy.sh-booted run.
 
+**Gate 7.5 ROUND 2 (validator, v24, delta re-run at `946b46c`) — real-tier evidence lives in `VAL-152` (08-validation.md): result pass.** `real:` stays `false` here for the same reason.
+
 Proven by: IT-106 (`mcp-tools-list-http.test.ts`, byte-equal to `projectToolsList()`, no old
 name, `workflow_run` ⇒ unknown-tool) + UT-139 (`tool-specs.test.ts`, the prefix/length/old-name
 oracles). Red for the same reason as both: `src/tool-specs.ts` does not exist.
@@ -8892,6 +8898,8 @@ oracles). Red for the same reason as both: `src/tool-specs.ts` does not exist.
 
 **Gate 7.5 (validator, v24) — real-tier evidence lives in `VAL-131` (08-validation.md): result pass.** `real:` stays `false` here — this item is the in-process vitest floor; `VAL-131` is the deploy.sh-booted run.
 
+**Gate 7.5 ROUND 2 (validator, v24, delta re-run at `946b46c`) — real-tier evidence lives in `VAL-153` (08-validation.md): result pass.** `real:` stays `false` here for the same reason.
+
 Proven by: IT-117 (`workspace-tools.test.ts`, all six tool names + schema/refusal shapes) + IT-108
 (`namespace-derivation.test.ts`, the two real HTTP CAS routes). Both red today (whole-file/module
 red and real-HTTP-behavioural red respectively).
@@ -8905,6 +8913,8 @@ red and real-HTTP-behavioural red respectively).
 - **iter:** v24
 
 **Gate 7.5 (validator, v24) — real-tier evidence lives in `VAL-132` (08-validation.md): result fail — D-11 stdio admin gate bypass.** `real:` stays `false` here — this item is the in-process vitest floor; `VAL-132` is the deploy.sh-booted run.
+
+**Gate 7.5 ROUND 2 (validator, v24, delta re-run at `946b46c`) — real-tier evidence lives in `VAL-154` (08-validation.md): result pass — D-11 fixed, stdio gate enforced live.** `real:` stays `false` here for the same reason.
 
 Proven by: E2E-009 (`admin-cross-read.test.ts`, S-4: admin cross-read is audited, the owner sees
 `adminReads[]`) + IT-105 (`authz-owner-lookup.test.ts`, real store columns) + UT-140
@@ -8932,6 +8942,8 @@ audited"; enforcement is what is broken, so this VAL is not flipped.
 
 **Gate 7.5 (validator, v24) — real-tier evidence lives in `VAL-133` (08-validation.md): result fail — D-2 `defaults` silently accepted.** `real:` stays `false` here — this item is the in-process vitest floor; `VAL-133` is the deploy.sh-booted run.
 
+**Gate 7.5 ROUND 2 (validator, v24, delta re-run at `946b46c`) — real-tier evidence lives in `VAL-155` (08-validation.md): result pass — D-2 fixed, `defaults` refused `DEFAULTS_RETIRED`.** `real:` stays `false` here for the same reason.
+
 Proven by: IT-109 (`params-admission.test.ts` v24 block, a real-HTTP ceiling-naming refusal) +
 IT-120 (`agent-log-harness-shape.test.ts` v24 case, per-label provenance in the real transcript) +
 UT-146/UT-147/UT-148 (the pure contract/overrides/resolve functions). Red: `run_start` is not a
@@ -8948,6 +8960,8 @@ v24 tool name yet; `resolveAgentParams` does not exist.
 - **iter:** v24
 
 **Gate 7.5 (validator, v24) — real-tier evidence lives in `VAL-134` (08-validation.md): result fail — D-8 `describe.mermaid` never read back.** `real:` stays `false` here — this item is the in-process vitest floor; `VAL-134` is the deploy.sh-booted run.
+
+**Gate 7.5 ROUND 2 (validator, v24, delta re-run at `946b46c`) — real-tier evidence lives in `VAL-156` (08-validation.md): result pass — D-8 fixed, `describe.mermaid` byte-equal.** `real:` stays `false` here for the same reason.
 
 Proven by: VAL-129/IT-119's fixture rows for `MERMAID_REQUIRED`/`DIAGRAM_SCRIPT_MISMATCH` (once
 `TOOL_SPECS.fixture.errors` carries them) + UT-149 (`check-mermaid.test.ts`, the bidirectional
@@ -8972,6 +8986,8 @@ here.
 
 **Gate 7.5 (validator, v24) — real-tier evidence lives in `VAL-136` (08-validation.md): result fail — D-10 assets survive deregister and are inherited.** `real:` stays `false` here — this item is the in-process vitest floor; `VAL-136` is the deploy.sh-booted run.
 
+**Gate 7.5 ROUND 2 (validator, v24, delta re-run at `946b46c`) — real-tier evidence lives in `VAL-158` (08-validation.md): result pass — D-10/D-13 fixed.** `real:` stays `false` here for the same reason.
+
 Per `04-design.md`'s own Real-tier validation table: the real entrypoint is "a real
 `workspace_push({workflow,kind})` then a real run whose agent declares one skill", proven ONLY by
 a Gate 7.5 run reading the run's actual workspace + `run_agent_log.materialized` — no unit/
@@ -8994,6 +9010,8 @@ vitest green target — tracked here so trace.py does not read it as a silently-
 
 **Gate 7.5 (validator, v24) — real-tier evidence lives in `VAL-137` (08-validation.md): result pass.** `real:` stays `false` here — this item is the in-process vitest floor; `VAL-137` is the deploy.sh-booted run.
 
+**Gate 7.5 ROUND 2 (validator, v24, delta re-run at `946b46c`) — real-tier evidence lives in `VAL-159` (08-validation.md): result pass.** `real:` stays `false` here for the same reason.
+
 Proven by: IT-115 (`asset-mcp-tools.test.ts` v24 block, `mcp_provision` retired/`workspace_push`
 present) + UT-155 (`asset-sync-v24.test.ts`, `pushedAt` from `deps.clock`) + a Gate 7.5 real read
 of `workspace_list` showing two principals' `pushedBy` values (design's own real-entrypoint note —
@@ -9009,6 +9027,8 @@ is not a v24 tool name yet; `AssetSyncDeps` has no `clock`/`catalog`.
 - **iter:** v24
 
 **Gate 7.5 (validator, v24) — real-tier evidence lives in `VAL-138` (08-validation.md): result fail — D-1/D-1b.** `real:` stays `false` here — this item is the in-process vitest floor; `VAL-138` is the deploy.sh-booted run.
+
+**Gate 7.5 ROUND 2 (validator, v24, delta re-run at `946b46c`) — real-tier evidence lives in `VAL-160` (08-validation.md): result pass — D-1/D-1b fixed; phantom-fire control negative.** `real:` stays `false` here for the same reason.
 
 Proven by: IT-111 (`trigger-claims.test.ts`) + IT-112 (`webhook-registry.test.ts` v24 block) +
 E2E-008 (`register-crash-window.test.ts`, the crash-window compensation floor; true OS-level
@@ -9036,6 +9056,8 @@ would certify a REQ-115 path that is provably closed.
 
 **Gate 7.5 (validator, v24) — real-tier evidence lives in `VAL-139` (08-validation.md): result fail — D-3/D-4.** `real:` stays `false` here — this item is the in-process vitest floor; `VAL-139` is the deploy.sh-booted run.
 
+**Gate 7.5 ROUND 2 (validator, v24, delta re-run at `946b46c`) — real-tier evidence lives in `VAL-161` (08-validation.md): result FAIL on the trigger arm of the pointer clause only (D-14: `TRIGGER_NOT_FOUND`/`TRIGGER_ALREADY_CLAIMED` carry `see:null`); every other clause green.** `real:` stays `false` here for the same reason.
+
 Proven by: IT-118 (`guide-examples-register.test.ts`, every taught example registers for real) +
 UT-159 (`authoring-guide.test.ts`) + UT-160 (`authoring-md-generated.test.ts`, the drift lock).
 Red: `src/authoring-guide.ts` does not exist; `workflow_authoring_guide` is not a v24 tool yet
@@ -9052,6 +9074,8 @@ Red: `src/authoring-guide.ts` does not exist; `workflow_authoring_guide` is not 
 - **iter:** v24
 
 **Gate 7.5 (validator, v24) — real-tier evidence lives in `VAL-140` (08-validation.md): result fail — cold run done for real, not first-try (D-12).** `real:` stays `false` here — this item is the in-process vitest floor; `VAL-140` is the deploy.sh-booted run.
+
+**Gate 7.5 ROUND 2 (validator, v24, delta re-run at `946b46c`) — real-tier evidence lives in `VAL-162` (08-validation.md): result pass — ANOTHER fresh cold instance, exactly one `workflow_register`, zero error envelopes, result read back.** `real:` stays `false` here for the same reason.
 
 Per REQ-117's own acceptance text: "proven by that [Gate 7.5] real run and by nothing else," and
 "anyone who has seen this project's development conversation — including the orchestrator and any
