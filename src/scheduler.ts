@@ -44,6 +44,13 @@ export interface ScheduleStatus {
   claimedBy?: string | null;
   createdBy?: string;
   enabled: boolean;
+  /** v24 (integrator; REQ-103/REQ-015): the schedule's own time expression. It was absent, so
+   *  `schedule_list` and `workflow_describe.triggers[]` could tell you a cron schedule EXISTS but
+   *  never WHEN it fires — the one fact an operator reads a schedule listing for. Present per kind:
+   *  `cron`/`tz` for a cron schedule, `at` for a one-shot; neither for a resident. */
+  cron?: string;
+  tz?: string;
+  at?: string;
   nextFire?: string;
   lastFire?: string;
   lastRunId?: string;
@@ -128,6 +135,9 @@ function rowToStatus(r: ScheduleRow): ScheduleStatus {
     claimedBy: r.claimedBy,
     createdBy: r.createdBy ?? undefined,
     enabled: r.enabled === 1,
+    cron: r.cron ?? undefined,
+    tz: r.tz ?? undefined,
+    at: r.at ?? undefined,
     nextFire: r.nextFire != null ? new Date(r.nextFire).toISOString() : undefined,
     lastFire: r.lastFire ?? undefined,
     lastRunId: r.lastRunId ?? undefined,
@@ -244,6 +254,29 @@ export class SqliteSchedulerPort {
       });
     const row = this._db.prepare('SELECT * FROM schedules WHERE id = ?').get(id) as ScheduleRow;
     return { result: rowToSchedule(row) };
+  }
+
+  /** v24 (integrator; DES-156/REQ-103 — `workflow_describe.triggers[]` is resolved BY ID, never by
+   *  workflow: `listByWorkflow` was retired with `trigger-bindings.ts` and left no by-id reader, so
+   *  the facade shipped a hardcoded `triggers: []` with a "until TASK-149 wires it" comment. */
+  get(id: string): ScheduleStatus | null {
+    const row = this._db.prepare('SELECT * FROM schedules WHERE id = ?').get(id) as ScheduleRow | undefined;
+    return row ? rowToStatus(row) : null;
+  }
+
+  /** v24 (integrator; DES-156/REQ-103): the ID SET for one workflow. DES-156 pins the RESOLUTION —
+   *  `scheduler.get(id) ?? webhooks.get(id)`, by id, never a by-workflow BINDING query — and this
+   *  respects that: it returns ids only, which `_resolveTriggers` then resolves one at a time. It
+   *  is NOT a resurrection of the retired `listByWorkflow`, which returned full binding objects for
+   *  the deleted analyzer's diagram fingerprint. It exists because BOTH v24 binding doors are live:
+   *  a trigger declared in a version's `triggers[]` (the claim door) and a trigger bound at
+   *  creation (`schedule_create({workflow})`, still a required argument on that row). Sourcing ids
+   *  from only one of them would make REQ-103 unobservable for triggers created the other way. */
+  claimedIdsFor(workflow: string): string[] {
+    const rows = this._db
+      .prepare('SELECT id FROM schedules WHERE claimedBy = ? OR workflow = ?')
+      .all(workflow, workflow) as Array<{ id: string }>;
+    return rows.map((r) => r.id);
   }
 
   async list(): Promise<ScheduleStatus[]> {

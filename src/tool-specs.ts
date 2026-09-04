@@ -327,6 +327,14 @@ export const TOOL_SPECS = [
     inputSchema: {
       ...schema({
         name: { type: 'string' },
+        // v24 (integrator, REQ-001 — found by the Batch-E executor): `args` and `budget` were lost
+        // when this schema was CLOSED (`additionalProperties:false`), exactly as the four seed
+        // fields were (adjudication #2 A-2). Both are declared on `RunSpec`, both are read by
+        // `McpFacade.runStart`, and `args` is the run-argument channel the authoring guide's own
+        // `meta.params.args` example teaches — so the engine advertised a workflow API it then
+        // refused to be called with.
+        args: { description: "Run arguments, shaped by the script's own `meta.params.args` declaration and read in-script as `args.<key>`." },
+        budget: { type: ['number', 'null'], description: 'Total token budget for the whole run, shared by every agent() call including nested workflow() frames. Omitted or null means unbounded.' },
         // B-1 (v24 adjudication #3): a STRING, the exact value workflow_register's
         // `result.version` returns — see workflow_publish's row for why.
         version: { type: 'string', description: "The version string returned by workflow_register, e.g. 'v1'." },
@@ -422,7 +430,7 @@ export const TOOL_SPECS = [
     description: 'Resume a suspended run.',
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
-    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER', 'INVALID_ARGUMENT', 'LEGACY_REREGISTER', 'PARAM_SECRET_UNAVAILABLE'],
+    errors: ['RUN_NOT_FOUND', 'ILLEGAL_TRANSITION', 'NOT_RUN_OWNER', 'INVALID_ARGUMENT', 'INLINE_SCRIPT_CLOSED', 'LEGACY_REREGISTER', 'PARAM_SECRET_UNAVAILABLE'],
     seeAlso: [] as string[],
     authz: { minRole: 'user', ownership: 'run' } as AuthzRow,
     fixture: {

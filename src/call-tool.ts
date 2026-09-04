@@ -87,7 +87,11 @@ export async function callTool(
   // REQ-098's typed code is that the caller is TOLD to register first. `script` is deliberately not
   // a declared property (the advertised schema stays the clean v24 one a new caller reads), so the
   // migration answer is given here, ahead of ajv, for the one retired key that has one.
-  if (spec.name === 'run_start' && a['script'] !== undefined) {
+  // `run_resume` is included for the reason its own case is WORSE than run_start's: its schema is
+  // open, so ajv admitted the key and the facade silently ignored it — a caller with a real
+  // suspended runId was told the resume succeeded having had its script dropped on the floor
+  // (found by the Batch-E executor).
+  if ((spec.name === 'run_start' || spec.name === 'run_resume') && a['script'] !== undefined) {
     return refusalEnvelope('INLINE_SCRIPT_CLOSED', INLINE_SCRIPT_CLOSED_MESSAGE);
   }
   // v24 (integrator; DES-104 rule (a), found by the Batch-A executor): "the PRESENCE of an

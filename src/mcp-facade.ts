@@ -57,12 +57,19 @@ interface TriggerClaimStore {
   ownerOf(id: string): string | null | undefined;
   claim(id: string, workflow: string): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED';
   release(id: string, workflow: string): void;
+  /** v24 (integrator; DES-156/REQ-103): the by-id snapshot `workflow_describe.triggers[]` serves,
+   *  and the id set for one workflow. Optional so a unit-tier construction with no trigger stores
+   *  still satisfies the port. */
+  get?(id: string): unknown;
+  claimedIdsFor?(workflow: string): string[];
 }
 
 const NEVER_CLAIMS: TriggerClaimStore = {
   ownerOf: () => undefined,
   claim: () => 'NOT_FOUND',
   release: () => { /* no-op */ },
+  get: () => null,
+  claimedIdsFor: () => [],
 };
 
 /** v24 (DES-148): the two catalog methods the facade's register sequence calls SEPARATELY (with a
@@ -247,6 +254,21 @@ export class McpFacade {
     return this.webhookClaims.ownerOf(id);
   }
 
+  /** One row per declared trigger id, in declaration order. An id that resolves in NEITHER store is
+   *  reported as `{id, status:'TRIGGER_NOT_FOUND'}` rather than dropped — a trigger the released
+   *  version claims but no store knows is precisely what the reader needs to see. */
+  private _resolveTriggers(workflow: string, declaredIds: readonly string[]): unknown[] {
+    // Both v24 binding doors, de-duplicated in declaration-then-discovery order: the ids the
+    // RESOLVED VERSION declares, plus the ids either store reports as bound to this workflow (a
+    // `schedule_create({workflow})` binds at creation and never enters a version's `triggers[]`).
+    const ids = [...new Set([
+      ...declaredIds,
+      ...(this.schedulerClaims.claimedIdsFor?.(workflow) ?? []),
+      ...(this.webhookClaims.claimedIdsFor?.(workflow) ?? []),
+    ])];
+    return ids.map((id) => this.schedulerClaims.get?.(id) ?? this.webhookClaims.get?.(id) ?? { id, status: 'TRIGGER_NOT_FOUND' });
+  }
+
   private _storeFor(id: string): TriggerClaimStore {
     return this.schedulerClaims.ownerOf(id) !== undefined ? this.schedulerClaims : this.webhookClaims;
   }
@@ -366,10 +388,13 @@ export class McpFacade {
       validation: check.ok ? { ok: true, errors: [] } : { ok: false, errors: check.errors },
       script: full.script,
     };
-    // v24 (TASK-149/DES-156 owns the richer `mermaid`/by-id `triggers` projection this will grow
-    // into — `ownerView.mermaid` is left unset here (WorkflowDetail does not expose the stored
-    // column yet) and `triggers: []` until TASK-149 wires the by-id lookup).
-    const view = projectWorkflowDescribe(ownerView, { ceilings: this.ceilings, triggers: [] });
+    // v24 (integrator; DES-156/REQ-103 — found by the Batch-E executor): `triggers` was a hardcoded
+    // `[]` behind an "until TASK-149 wires the by-id lookup" comment, so a workflow's schedules and
+    // webhooks were invisible on the ONE surface that is supposed to describe it. Resolved BY ID
+    // (`scheduler.get(id) ?? webhooks.get(id)`) from the RESOLVED VERSION's own `triggers` column —
+    // never by workflow, because `listByWorkflow` was retired with `trigger-bindings.ts` and
+    // because a claim belongs to a version, not to a name.
+    const view = projectWorkflowDescribe(ownerView, { ceilings: this.ceilings, triggers: this._resolveTriggers(full.name, full.triggers ?? []) });
     return { runId: '', status: 'completed', result: view };
   }
 

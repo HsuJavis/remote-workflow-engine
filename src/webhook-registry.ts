@@ -158,6 +158,18 @@ export class WebhookRegistry {
     return { webhookId: id, secret };
   }
 
+  /** v24 (integrator; DES-156/REQ-103): the by-id reader `workflow_describe.triggers[]` needs —
+   *  same reason as `SqliteSchedulerPort.get`. */
+  get(id: string): WebhookView | null {
+    return this.list().find((w) => w.id === id) ?? null;
+  }
+
+  /** v24 (integrator; DES-156/REQ-103) — see `SqliteSchedulerPort.claimedIdsFor` for why ids only. */
+  claimedIdsFor(workflow: string): string[] {
+    const rows = this._db.prepare('SELECT id FROM webhooks WHERE workflow = ?').all(workflow) as Array<{ id: string }>;
+    return rows.map((r) => r.id);
+  }
+
   list(): WebhookView[] {
     const rows = this._db.prepare('SELECT * FROM webhooks ORDER BY createdAt').all() as WebhookRow[];
     return rows.map((r) => ({
