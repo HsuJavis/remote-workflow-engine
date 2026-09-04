@@ -6,6 +6,14 @@
 //
 // Mock policy (unit, DES-119): pure module — plain object fixtures, no I/O, no clock, no auth.
 //
+// v24 Gate 7.5 (D-8) BOUNDARY: every case below feeds `projectWorkflowDescribe` a HAND-BUILT
+// `WorkflowOwnerView`, so it can only ever prove the projection is faithful to the object it is
+// handed — it stayed green for the whole iteration while the catalog read never selected the
+// `mermaid` column and the facade never forwarded it, i.e. while EVERY real
+// `workflow_describe(...).mermaid` was null. The register→SQLite→describe round trip is pinned by
+// tests/integration/describe-mermaid-roundtrip.test.ts (IT-167); do not read this file as evidence
+// that a registered diagram is served.
+//
 // v24 [T3] REWRITE (DES-156's own `tests:` line — "today pins diagramStatus"): the whole file is
 // rebuilt against the v24 shape; the pre-v24 diagram*/note-precedence/bindings-fp machinery this
 // file used to pin is gone along with the analyzer/trigger-bindings ports it read (TASK-139).

@@ -393,6 +393,11 @@ export class McpFacade {
       // by handing it the raw value; `workflow_source`, which has no runnable field, keeps its own
       // `readParams` call.
       params: full.params, owner: full.owner, createdAt: full.createdAt,
+      // v24 Gate 7.5 (D-8, REQ-111): the resolved version's own diagram, forwarded verbatim. The
+      // projection has read `full.mermaid` since TASK-149 and this view never set it, so even after
+      // the catalog started selecting the column the answer would still have been null — the two
+      // halves of "author-supplied diagram, served back" are the read and this hand-off.
+      mermaid: full.mermaid,
       reportProblem: reportProblemFor(full.name, full.owner),
       validation: check.ok ? { ok: true, errors: [] } : { ok: false, errors: check.errors },
       script: full.script,

@@ -108,6 +108,9 @@ export function resolveVersionRequest(
 export interface VersionEntry {
   script: string;
   version: string;
+  /** v24 (D-8, REQ-111/DES-156): the author-supplied Mermaid diagram, verbatim; `null` on a legacy
+   *  row registered before ADR-025 required one (`mermaidNote:'LEGACY_NO_DIAGRAM'` downstream). */
+  mermaid: string | null;
   defaults?: HarnessDefaults;
   params?: ParamContract;
   /** v24 (integrator; DES-150): the trigger ids this VERSION declares — the fire path's
@@ -617,11 +620,17 @@ export class WorkflowCatalog {
       throw codedError(result.code, `${result.code}: ${result.channel ?? result.version ?? ''} (workflow '${name}')`.trim());
     }
     const vrow = this._db
-      .prepare('SELECT script, defaults, params, triggers FROM workflow_versions WHERE name = ? AND version = ?')
-      .get(name, result.version) as { script: string; defaults: string | null; params: string | null; triggers: string | null };
+      .prepare('SELECT script, mermaid, defaults, params, triggers FROM workflow_versions WHERE name = ? AND version = ?')
+      .get(name, result.version) as { script: string; mermaid: string | null; defaults: string | null; params: string | null; triggers: string | null };
     return {
       script: vrow.script,
       version: result.version,
+      // v24 Gate 7.5 (D-8, REQ-111): the author-supplied diagram. `insertVersion` has written this
+      // column since TASK-143 and NO reader selected it, so every v24 workflow's
+      // `workflow_describe(...).mermaid` was null with `mermaidNote:'LEGACY_NO_DIAGRAM'` — the
+      // iteration's main user-visible feature stored and never delivered. NULL only for a genuinely
+      // legacy row registered before ADR-025 required one, which is what that note is for.
+      mermaid: vrow.mermaid,
       defaults: vrow.defaults ? JSON.parse(vrow.defaults) as HarnessDefaults : undefined,
       params: vrow.params ? JSON.parse(vrow.params) as ParamContract : undefined,
       // v24 (integrator; DES-150's NOT_IN_RELEASE): the trigger ids THIS version declares. The
