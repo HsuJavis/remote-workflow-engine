@@ -86,7 +86,7 @@ describe('authz OwnerLookup — wired to real store columns (IT-105, DES-139)', 
     claimedScheduleId = (s2 as { result: { id: string } }).result.id;
     await scheduler.claim(claimedScheduleId, 'wf-a');
 
-    const w = await webhooks.create({});
+    const w = await webhooks.create({ createdBy: ALICE.id });
     aliceWebhookId = (w as { webhookId: string }).webhookId;
 
     // The composition root's own wiring (server.ts:666-678) — raw handles over the same files.

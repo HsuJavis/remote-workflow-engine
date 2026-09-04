@@ -289,12 +289,15 @@ export class McpFacade {
         throw codedError('INVALID_ARGUMENT', 'INVALID_ARGUMENT: duplicate ids in triggers[]');
       }
       const isAdmin = principal.kind === 'admin' || principal.kind === 'auth-disabled';
+      const actorId = principal.kind === 'loopback-exempt' ? undefined : (principal as { id: string }).id;
       for (const id of triggers) {
         const owner = this._triggerOwner(id);
         if (owner === undefined) throw codedError('TRIGGER_NOT_FOUND', `TRIGGER_NOT_FOUND: ${id}`);
-        if (!isAdmin && owner !== null && owner !== (principal.kind === 'loopback-exempt' ? undefined : (principal as { id: string }).id)) {
-          throw codedError('NOT_TRIGGER_OWNER', `NOT_TRIGGER_OWNER: ${id}`);
-        }
+        // DES-139's stated operator consequence, matching `authorize()`'s own ownerless rule: an
+        // OWNERLESS trigger (`createdBy NULL`, a migrated pre-v24 row) is ADMIN-ONLY — including a
+        // re-registration naming a legacy trigger id. The removed `owner !== null` escape let any
+        // caller adopt one (Gate 6.5+7 round 2; the arm was reached by no test at all).
+        if (!isAdmin && owner !== actorId) throw codedError('NOT_TRIGGER_OWNER', `NOT_TRIGGER_OWNER: ${id}`);
       }
       const catalog = this.runManager.catalog as unknown as RegistrationCatalog;
       const { params } = await catalog.validateRegistration({ name: a.name, script: a.script, mermaid: a.mermaid, principal: attributionWithArg(principal, a) });

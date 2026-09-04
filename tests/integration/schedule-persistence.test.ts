@@ -62,3 +62,39 @@ describe('SqliteSchedulerPort persistence (DES-016, ARCH-010)', () => {
     expect(list.find((s) => s.id === id)).toBeUndefined();
   });
 });
+
+// Gate 6.5+7 round 2 (verifier): `rearmAtBoot` was 7/17 lines — every test that constructed a
+// SqliteSchedulerPort took the `rows.length === 0` early return, so the re-derive-and-persist body
+// (the whole point of the method, and what `server.ts:634` calls at every boot) ran nowhere.
+describe('SqliteSchedulerPort.rearmAtBoot (DES-017, D-V2I-2)', () => {
+  it('re-derives nextFire for persisted cron and once schedules from the injected clock and persists it', async () => {
+    const dbPath = join(tmpDir, 'rearm.db');
+    const bootClock = new FixedClock(new Date('2020-09-01T00:00:00.000Z'));
+    const port1 = new SqliteSchedulerPort({ clock: bootClock, catalog: makeFakeCatalog(), runManager: makeFakeRunManager(), dbPath });
+    await port1.create({ kind: 'cron', workflow: 'wf-cron', cron: '0 3 * * *', enabled: true, args: { a: 1 } });
+    await port1.create({ kind: 'once', workflow: 'wf-once', at: '2020-09-02T00:00:00.000Z', enabled: true });
+    await port1.create({ kind: 'resident', workflow: 'wf-res', enabled: true });
+
+    // "Restart" a YEAR later: a fresh instance whose clock has moved on re-arms from ITS clock.
+    const laterClock = new FixedClock(new Date('2021-09-01T00:00:00.000Z'));
+    const port2 = new SqliteSchedulerPort({ clock: laterClock, catalog: makeFakeCatalog(), runManager: makeFakeRunManager(), dbPath });
+    port2.rearmAtBoot();
+
+    const byWorkflow = Object.fromEntries((await port2.list()).map((s) => [s.workflow, s]));
+    // cron: a fresh future nextFire derived from the LATER clock, not the stored 2020 one.
+    expect(Date.parse(byWorkflow['wf-cron']!.nextFire!)).toBeGreaterThan(laterClock.now());
+    // once: still due at its own `at` — a restart must not lose a one-shot whose moment has passed.
+    expect(byWorkflow['wf-once']!.nextFire).toBe('2020-09-02T00:00:00.000Z');
+    // resident: never on a clock, so `rearmAtBoot` writes nothing for it.
+    expect(byWorkflow['wf-res']!.nextFire).toBeUndefined();
+  });
+
+  it('is a no-op on an empty store (the early return) and on a store holding only UNCLAIMED triggers', async () => {
+    const dbPath = join(tmpDir, 'rearm-empty.db');
+    const port = new SqliteSchedulerPort({ clock: CLOCK, catalog: makeFakeCatalog(), runManager: makeFakeRunManager(), dbPath });
+    expect(() => port.rearmAtBoot()).not.toThrow();
+    await port.create({ kind: 'cron', cron: '0 3 * * *', enabled: true }); // no workflow ⇒ unclaimed
+    expect(() => port.rearmAtBoot()).not.toThrow();
+  });
+});
+

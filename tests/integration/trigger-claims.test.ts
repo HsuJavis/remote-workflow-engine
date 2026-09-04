@@ -57,7 +57,10 @@ describe('trigger claims (IT-111, DES-149)', () => {
     const id = result!.id;
     await port.claim(id, 'wf-a');
     await port.release(id, 'wf-a');
-    expect(await port.ownerOf(id)).toBeNull();
+    // The CLAIM is `claimedBy` — `ownerOf` answers `createdBy` (the creating principal), which a
+    // claim/release never touches (Gate 6.5+7 round 2: DES-139/DES-149 step 2 over the DES-149
+    // signature line's older claim-triple reading). Same assertion, read off the right column.
+    expect(port.get(id)?.claimedBy).toBeNull();
   });
 
   it('a new version omitting a previously-claimed id does NOT release it — the fire path refuses NOT_IN_RELEASE', async () => {
@@ -66,7 +69,7 @@ describe('trigger claims (IT-111, DES-149)', () => {
     const { result } = await port.create({ kind: 'once', at: '2026-06-01T00:00:00Z' });
     const id = result!.id;
     await port.claim(id, 'wf-a');
-    // ownerOf persists across a re-registration that omits the id
-    expect(await port.ownerOf(id)).toBe('wf-a');
+    // the CLAIM persists across a re-registration that omits the id
+    expect(port.get(id)?.claimedBy).toBe('wf-a');
   });
 });

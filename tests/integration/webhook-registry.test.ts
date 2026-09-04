@@ -200,7 +200,7 @@ describe('v24: webhooks created unclaimed, claimed at registration (IT-112, DES-
       const { webhookId, secret } = (await reg.create({})) as { webhookId: string; secret: string };
       expect(reg.claim(webhookId, 'deploy')).toBe('claimed');
       reg.release(webhookId, 'deploy');
-      expect(reg.ownerOf(webhookId)).toBeNull();
+      expect(reg.get(webhookId)?.workflow).toBeNull();
       const body = '{}';
       const result = await reg.deliver(webhookId, { signature: sign(secret, body), timestamp: CLOCK.isoNow(), deliveryId: 'd-rel', rawBody: body, parsedBody: {} });
       expect(result).toMatchObject({ ok: false, httpStatus: 409, code: 'UNCLAIMED' });
@@ -209,15 +209,19 @@ describe('v24: webhooks created unclaimed, claimed at registration (IT-112, DES-
     }
   });
 
-  it('ownerOf is tri-state: undefined for an unknown id, null for unclaimed, the workflow name once claimed', async () => {
+  it('the claim is tri-state: no such id, unclaimed (null), the workflow name once claimed — and ownerOf answers the CREATOR, not the claimant', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rwe-wh-v24-'));
     try {
       const reg = new WebhookRegistry({ clock: CLOCK, runManager: fakeRunManager(), catalog: fakeCatalog(new Set(['deploy'])), dbPath: join(dir, 'wh.db') });
       expect(reg.ownerOf('nope')).toBeUndefined();
-      const { webhookId } = (await reg.create({})) as { webhookId: string };
-      expect(reg.ownerOf(webhookId)).toBeNull();
+      expect(reg.get('nope')).toBeNull();
+      const { webhookId } = (await reg.create({ createdBy: 'alice@x.com' })) as { webhookId: string };
+      expect(reg.get(webhookId)?.workflow).toBeNull();
       reg.claim(webhookId, 'deploy');
-      expect(reg.ownerOf(webhookId)).toBe('deploy');
+      expect(reg.get(webhookId)?.workflow).toBe('deploy');
+      // DES-139/DES-149 step 2 (Gate 6.5+7 round 2): claiming a trigger for a workflow does NOT
+      // transfer its ownership — `ownerOf` is the creating principal throughout.
+      expect(reg.ownerOf(webhookId)).toBe('alice@x.com');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -231,7 +235,75 @@ describe('v24: webhooks created unclaimed, claimed at registration (IT-112, DES-
       expect(reg.claim(webhookId, 'deploy')).toBe('claimed');
       expect(reg.claim(webhookId, 'deploy')).toBe('held');
       expect(reg.claim(webhookId, 'other')).toBe('ALREADY_CLAIMED');
-      expect(reg.ownerOf(webhookId)).toBe('deploy'); // untouched by the refused claimant
+      expect(reg.get(webhookId)?.workflow).toBe('deploy'); // untouched by the refused claimant
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Gate 6.5+7 round 2 (verifier): `deliver` was 50/58 — three of `RefusalReason`'s four members
+  // (`CHANNEL_UNPUBLISHED`, `CLAIMED_WORKFLOW_MISSING`, `NOT_IN_RELEASE`) were produced by no test,
+  // which is the same blind spot that let the fire-path gate ship answering only `UNCLAIMED`.
+  const deliverTo = async (reg: WebhookRegistry, webhookId: string, secret: string, deliveryId: string) => {
+    const body = '{}';
+    return reg.deliver(webhookId, { signature: sign(secret, body), timestamp: CLOCK.isoNow(), deliveryId, rawBody: body, parsedBody: {} });
+  };
+
+  it('a claimed workflow that no longer resolves refuses CLAIMED_WORKFLOW_MISSING and records the refusal', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-wh-v24-'));
+    try {
+      const known = new Set(['deploy']);
+      const reg = new WebhookRegistry({ clock: CLOCK, runManager: fakeRunManager(), catalog: fakeCatalog(known), dbPath: join(dir, 'wh.db') });
+      const { webhookId, secret } = (await reg.create({ createdBy: 'alice@x.com' })) as { webhookId: string; secret: string };
+      reg.claim(webhookId, 'deploy');
+      known.delete('deploy'); // the workflow is deregistered out from under the claim
+      const result = await deliverTo(reg, webhookId, secret, 'd-missing');
+      expect(result).toMatchObject({ ok: false, httpStatus: 409, code: 'CLAIMED_WORKFLOW_MISSING' });
+      expect(reg.get(webhookId)?.refusalCount).toBe(1);
+      expect(reg.get(webhookId)?.lastRefusalReason).toBe('CLAIMED_WORKFLOW_MISSING');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a claimed workflow whose release channel is unpublished refuses CHANNEL_UNPUBLISHED, distinct from missing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-wh-v24-'));
+    try {
+      // Published at creation time (`create()` runs the same release-channel check), then the
+      // release pointer goes away underneath the live claim — which is the real-world sequence.
+      let published = true;
+      const catalog = { async resolve() {
+        if (!published) throw Object.assign(new Error('no release'), { code: 'CHANNEL_UNPUBLISHED' });
+        return { script: '', version: 'v1' };
+      } };
+      const reg = new WebhookRegistry({ clock: CLOCK, runManager: fakeRunManager(), catalog: catalog as never, dbPath: join(dir, 'wh.db') });
+      const { webhookId, secret } = (await reg.create({ workflow: 'deploy', createdBy: 'alice@x.com' })) as { webhookId: string; secret: string };
+      published = false;
+      const result = await deliverTo(reg, webhookId, secret, 'd-unpub');
+      expect(result).toMatchObject({ ok: false, httpStatus: 409, code: 'CHANNEL_UNPUBLISHED' });
+      expect(reg.get(webhookId)?.lastRefusalReason).toBe('CHANNEL_UNPUBLISHED');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a released version that no longer declares this id refuses NOT_IN_RELEASE — but a version declaring NO triggers still fires', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-wh-v24-'));
+    try {
+      let triggers: string[] | undefined = [];
+      const catalog = { async resolve() { return { script: '', version: 'v1', ...(triggers !== undefined ? { triggers } : {}) }; } };
+      const runManager = fakeRunManager();
+      const reg = new WebhookRegistry({ clock: CLOCK, runManager, catalog: catalog as never, dbPath: join(dir, 'wh.db') });
+      const { webhookId, secret } = (await reg.create({ workflow: 'deploy', createdBy: 'alice@x.com' })) as { webhookId: string; secret: string };
+
+      expect(await deliverTo(reg, webhookId, secret, 'd-notin'))
+        .toMatchObject({ ok: false, httpStatus: 409, code: 'NOT_IN_RELEASE' });
+      expect(runManager.started).toEqual([]); // nothing was dispatched
+
+      // A version that declares NO trigger list at all is the pre-v24 shape and must still fire.
+      triggers = undefined;
+      expect(await deliverTo(reg, webhookId, secret, 'd-pre-v24')).toMatchObject({ ok: true, httpStatus: 202 });
+      expect(runManager.started).toHaveLength(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

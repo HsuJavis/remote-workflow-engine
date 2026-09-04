@@ -436,10 +436,13 @@ export class SqliteSchedulerPort {
     this._db.prepare('UPDATE schedules SET claimedBy = NULL WHERE id = ? AND claimedBy = ?').run(id, workflow);
   }
 
-  /** `undefined` = no trigger with this id in this store (distinct from `null` = unclaimed). */
+  /** DES-139/DES-149 step 2: the OWNER is the CREATING PRINCIPAL (`createdBy`), never the claiming
+   *  workflow (`claimedBy`) — claiming a trigger for a workflow does not transfer its ownership.
+   *  `undefined` = no trigger with this id in this store (distinct from `null` = a migrated row
+   *  with no recorded creator, which DES-139 makes admin-only). */
   ownerOf(id: string): string | null | undefined {
-    const row = this._db.prepare('SELECT claimedBy FROM schedules WHERE id = ?').get(id) as { claimedBy: string | null } | undefined;
-    return row ? row.claimedBy : undefined;
+    const row = this._db.prepare('SELECT createdBy FROM schedules WHERE id = ?').get(id) as { createdBy: string | null } | undefined;
+    return row ? row.createdBy : undefined;
   }
 
   /** DES-118: the driver's `.catch()` gets a writer — exactly what `markFired` does minus `runId`

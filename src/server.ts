@@ -32,8 +32,8 @@ import type { SecretValueProvider } from './secret-resolver.js';
 import { isAllowedHost, isAllowedOrigin, isLoopback, isLoopbackPeer } from './net-guard.js';
 import { parseWorkflowSkeleton } from './workflow-meta.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
-import { AssetSyncService, defaultAssetRoot, globalAssetRoot, type AssetCatalogPort, type AssetCatalogRow, type AssetKind } from './asset-sync.js';
-import { RealMcpProbe, type McpProbe, type McpServerConfig } from './mcp-probe.js';
+import { AssetSyncService, defaultAssetRoot, globalAssetRoot, resolveMcp, type AssetCatalogPort, type AssetCatalogRow, type AssetKind } from './asset-sync.js';
+import { RealMcpProbe, type McpProbe } from './mcp-probe.js';
 import { IssueReporter, resolveEngineVersion, type IssueReportInput, type IssueListFilter } from './github/issue-reporter.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { buildCatalog, filterCatalog, enrichModelEntry, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
@@ -648,7 +648,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   const ownerlessRuns = bootRunDetails.filter((r) => r && !r.principal).length;
   const ownerlessTriggers =
     (await scheduler.list()).filter((s) => !s.createdBy).length +
-    webhooks.list().filter((w) => !(w as unknown as { createdBy?: string | null }).createdBy).length;
+    webhooks.list().filter((w) => !w.createdBy).length;
   const authAnnounce = { enabled: authAnnounceEnabled, principalsCount, defaultRole: 'user' as const };
 
   // v24 (TASK-139/DES-159): the TriggerPorts composition and the GraphAnalyzer boot (config field,
@@ -752,7 +752,11 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
    *  `nextFire` (ADR-031's coalescing — one row per due instant, not 1440 rows a day) and a refused
    *  `once` is CONSUMED. */
   async function resolveScheduleTarget(firing: { id: string; workflow: string }): Promise<{ workflow: string } | { refused: RefusalReason }> {
-    const claimedBy = scheduler.ownerOf(firing.id) ?? (firing.workflow !== '' ? firing.workflow : null);
+    // The CLAIM, not the owner: `ownerOf` answers `createdBy` (the creating principal) as of the
+    // Gate 6.5+7 round-2 authorization fix, so reading it here would resolve a PRINCIPAL ID as a
+    // workflow name and refuse every authenticated user's schedule CLAIMED_WORKFLOW_MISSING.
+    // `??` still folds both "no such row" and "unclaimed" onto the pre-v24 `firing.workflow` door.
+    const claimedBy = scheduler.get(firing.id)?.claimedBy ?? (firing.workflow !== '' ? firing.workflow : null);
     if (claimedBy === null || claimedBy === '') return { refused: 'UNCLAIMED' };
     let released;
     try {
@@ -1357,21 +1361,16 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   facade.bindAssetSync(assetSync);
   // v24 (integrator; REQ-113, adjudication #4 C-2's wiring sweep): bind the catalog-backed
   // `resolveMcp` port DES-154 introduced to replace the deleted `mcp-registry.ts`. TASK-145 left it
-  // unbound "out of scope", so `agents.<label>.mcp` names resolved to nothing on every dispatch —
-  // `WorkflowCatalog.assetsOf()` was written for exactly this call and had no caller at all.
+  // unbound "out of scope", so `agents.<label>.mcp` names resolved to nothing on every dispatch.
   // Workflow scope wins a name clash with global, matching `materializeAssets`' rule for skills.
+  // Gate 6.5+7 round 2 (seam-wiring check): this call site used to RE-IMPLEMENT that rule inline
+  // over `catalog.assetsOf`, leaving `asset-sync.ts`'s exported `resolveMcp` — the helper DES-153
+  // names as THE resolver — with zero production callers. One rule, one implementation, and the
+  // production path is now the one `asset-sync-v24.test.ts` already covers. (`assetsOf` is left in
+  // place, orphaned in production but still pinned by IT catalog-v24 — v25 debt, not a silent
+  // deletion that would weaken a test.)
   if (gateway instanceof ClaudeAgentSdkGatewayClient) {
-    gateway.bindResolveMcp(async (workflow, names) => {
-      const configs: Record<string, McpServerConfig> = {};
-      const missing: string[] = [];
-      const rows = catalog.assetsOf(workflow).filter((r) => r.kind === 'mcp');
-      for (const name of names) {
-        const row = rows.find((r) => r.name === name && r.workflow === workflow) ?? rows.find((r) => r.name === name);
-        if (row?.config) configs[name] = JSON.parse(row.config) as McpServerConfig;
-        else missing.push(name);
-      }
-      return { configs, missing };
-    });
+    gateway.bindResolveMcp((workflow, names) => resolveMcp(assetCatalogPort, workflow, names));
   }
 
   // v24 (DES-141): the boot announcement — "visibly", built rather than merely asserted.

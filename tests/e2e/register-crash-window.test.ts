@@ -45,7 +45,7 @@ describe('register crash window — trigger stays unclaimed after a crash before
       // same test-fixture defect class as trigger-claims.test.ts (adjudication v24 #2 A-7).
       const { result } = await scheduler.create({ kind: 'once', at: '2026-06-01T00:00:00Z', enabled: true });
       const id = result!.id;
-      expect(scheduler.ownerOf(id)).toBeNull(); // born unclaimed
+      expect(scheduler.get(id)?.claimedBy).toBeNull(); // born unclaimed (the CLAIM column, not ownerOf/createdBy)
 
       const catalog = new WorkflowCatalog(dir, clock);
       const facade = new McpFacade({
@@ -71,7 +71,7 @@ describe('register crash window — trigger stays unclaimed after a crash before
         runManager: { start: async () => ({ runId: 'r1' }) } as never,
         dbPath: join(dir, 'schedules.db'),
       });
-      expect(schedulerAfterRestart.ownerOf(id)).toBeNull();
+      expect(schedulerAfterRestart.get(id)?.claimedBy).toBeNull();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

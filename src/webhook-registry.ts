@@ -41,6 +41,9 @@ export interface WebhookView {
   id: string;
   /** v24 (DES-149): null = created unclaimed (`create({})`) — not yet bound to any workflow. */
   workflow: string | null;
+  /** v24 (DES-139/DES-149): the CREATING PRINCIPAL — the owner authz checks. `null` = a migrated
+   *  pre-v24 row with no recorded creator (admin-only, per DES-139's tri-state). */
+  createdBy: string | null;
   enabled: boolean;
   secretFingerprint: string; // short sha256 prefix — never the secret itself
   // v24 (DES-150, TASK-142): same coalesced fire-path refusal accounting as the scheduler's
@@ -62,6 +65,7 @@ const REPLAY_WINDOW_MS = 300_000; // ±300s
 interface WebhookRow {
   id: string;
   workflow: string | null;
+  createdBy: string | null;
   secret: string;
   enabled: number;
   createdAt: string;
@@ -87,6 +91,7 @@ export class WebhookRegistry {
       CREATE TABLE IF NOT EXISTS webhooks (
         id TEXT PRIMARY KEY,
         workflow TEXT,
+        createdBy TEXT,
         secret TEXT NOT NULL,
         enabled INTEGER NOT NULL,
         createdAt TEXT NOT NULL
@@ -113,6 +118,7 @@ export class WebhookRegistry {
           CREATE TABLE webhooks__v24_rebuild (
             id TEXT PRIMARY KEY,
             workflow TEXT,
+            createdBy TEXT,
             secret TEXT NOT NULL,
             enabled INTEGER NOT NULL,
             createdAt TEXT NOT NULL,
@@ -129,6 +135,7 @@ export class WebhookRegistry {
     }
     // v24 (DES-149/150, TASK-142): additive migration — the claim-model refusal accounting columns.
     // A no-op after the rebuild above (those columns already exist on the rebuilt table).
+    try { this._db.exec('ALTER TABLE webhooks ADD COLUMN createdBy TEXT'); } catch { /* already exists */ }
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN refusalCount INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN lastRefusedAt TEXT'); } catch { /* already exists */ }
     try { this._db.exec('ALTER TABLE webhooks ADD COLUMN lastRefusalReason TEXT'); } catch { /* already exists */ }
@@ -140,7 +147,7 @@ export class WebhookRegistry {
    *  claimant can race it — the same H4 catalog-resolve check runs either way). Generates the
    *  secret server-side and returns it EXACTLY ONCE — it is never retrievable again (list shows
    *  only a fingerprint). */
-  async create(spec: { workflow?: string; enabled?: boolean }): Promise<{ webhookId: string; secret: string } | { error: ErrEnvelope }> {
+  async create(spec: { workflow?: string; enabled?: boolean; createdBy?: string }): Promise<{ webhookId: string; secret: string } | { error: ErrEnvelope }> {
     if (spec.workflow !== undefined) {
       // H4 second site (07-review.md §8.1): upgraded from "the name exists" to "the name resolves on
       // `release`" — same check Scheduler.create() uses (scheduler.ts:157-175).
@@ -153,8 +160,8 @@ export class WebhookRegistry {
     const id = randomUUID();
     const secret = randomBytes(32).toString('hex');
     this._db
-      .prepare('INSERT INTO webhooks (id, workflow, secret, enabled, createdAt) VALUES (?, ?, ?, ?, ?)')
-      .run(id, spec.workflow ?? null, secret, spec.enabled === false ? 0 : 1, this._clock.isoNow());
+      .prepare('INSERT INTO webhooks (id, workflow, createdBy, secret, enabled, createdAt) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(id, spec.workflow ?? null, spec.createdBy ?? null, secret, spec.enabled === false ? 0 : 1, this._clock.isoNow());
     return { webhookId: id, secret };
   }
 
@@ -173,7 +180,7 @@ export class WebhookRegistry {
   list(): WebhookView[] {
     const rows = this._db.prepare('SELECT * FROM webhooks ORDER BY createdAt').all() as WebhookRow[];
     return rows.map((r) => ({
-      id: r.id, workflow: r.workflow, enabled: r.enabled === 1,
+      id: r.id, workflow: r.workflow, createdBy: r.createdBy ?? null, enabled: r.enabled === 1,
       secretFingerprint: createHash('sha256').update(r.secret).digest('hex').slice(0, 16),
       refusalCount: r.refusalCount ?? 0,
       ...(r.lastRefusedAt ? { lastRefusedAt: r.lastRefusedAt } : {}),
@@ -206,11 +213,13 @@ export class WebhookRegistry {
     this._db.prepare('UPDATE webhooks SET workflow = NULL WHERE id = ? AND workflow = ?').run(id, workflow);
   }
 
-  /** v24 (DES-149): tri-state — `undefined` = no such webhook id in this store; `null` = exists,
-   *  unclaimed; a string = the claiming workflow's name. */
+  /** DES-139/DES-149 step 2: the OWNER is the CREATING PRINCIPAL (`createdBy`), never the claiming
+   *  workflow — claiming a trigger for a workflow does not transfer its ownership. Tri-state:
+   *  `undefined` = no such webhook id in this store; `null` = exists with no recorded creator
+   *  (a migrated pre-v24 row, admin-only per DES-139); a string = the creator's principal id. */
   ownerOf(id: string): string | null | undefined {
-    const row = this._db.prepare('SELECT workflow FROM webhooks WHERE id = ?').get(id) as { workflow: string | null } | undefined;
-    return row ? row.workflow : undefined;
+    const row = this._db.prepare('SELECT createdBy FROM webhooks WHERE id = ?').get(id) as { createdBy: string | null } | undefined;
+    return row ? row.createdBy : undefined;
   }
 
   /** v24 (DES-150): shares `markFailed`'s advance-and-record shape — increments `refusalCount`,

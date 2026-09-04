@@ -169,9 +169,16 @@ export async function callTool(
       // INSERT died on `NOT NULL constraint failed: schedules.kind`, a raw SQLite string no caller
       // can act on. The discriminant is supplied here so the advertised schema is TRUE; an explicit
       // `kind` (the `resident`/`once` callers that predate this row) still wins.
+      // Gate 6.5+7 round 2 (verifier): the SAME defect class one rung down. `enabled` is an
+      // OPTIONAL boolean on the advertised schema and `SqliteSchedulerPort.create` stores
+      // `s.enabled ? 1 : 0`, so the row's own happy fixture — `{workflow, cron}` — created a
+      // schedule born DISABLED, which `tick()` never selects: "Register a time trigger" registered
+      // one that could never fire, in silence. Defaulted here, next to `kind`, for the same reason:
+      // so the advertised schema is TRUE. An explicit `enabled:false` still wins.
       const raw = a as unknown as Partial<NewSchedule> & Record<string, unknown>;
       const withKind = (raw.kind === undefined ? { ...raw, kind: 'cron' } : raw) as NewSchedule;
-      return deps.scheduler.create({ ...withKind, createdBy });
+      const enabled = raw.enabled === undefined ? true : raw.enabled;
+      return deps.scheduler.create({ ...withKind, enabled, createdBy });
     }
     case 'schedule_list': {
       const all = await deps.scheduler.list();
@@ -183,13 +190,18 @@ export async function callTool(
 
     // ---- webhook (3) ----
     case 'webhook_create': {
-      const r = await deps.webhooks.create(a as unknown as { workflow?: string; enabled?: boolean });
+      const r = await deps.webhooks.create({ ...(a as unknown as { workflow?: string; enabled?: boolean }), createdBy: actor ?? undefined });
       if ('error' in r) return { error: r.error };
       return { result: { webhookId: r.webhookId, url: `${deps.webhookBaseUrl}/hooks/${r.webhookId}`, secret: r.secret } };
     }
-    // Note: WebhookRegistry does not persist `createdBy` yet (webhook-registry.ts, TASK-142) — every
-    // caller sees every webhook until that column lands; flagged in this implementer's report.
-    case 'webhook_list': return { result: deps.webhooks.list() };
+    // v24 (DES-139, TASK-142): principal-scoped exactly as `schedule_list` is — the row's own
+    // description ("the caller's own webhooks; unfiltered for the operator role") is only true
+    // once `webhooks.createdBy` exists to filter on.
+    case 'webhook_list': {
+      const all = deps.webhooks.list();
+      const rows = principal.kind === 'admin' || principal.kind === 'auth-disabled' ? all : all.filter((w) => w.createdBy === actor);
+      return { result: rows };
+    }
     case 'webhook_delete': {
       // v24 (integrator, REQ-118): the registry method is total (`{deleted:false}`); the TOOL
       // advertises `TRIGGER_NOT_FOUND`, so deleting an id that never existed is a refusal here —

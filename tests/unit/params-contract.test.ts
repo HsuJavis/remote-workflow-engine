@@ -833,4 +833,42 @@ describe('parseParamContract — the per-key validators, refusal side (UT-146, D
     expect(parse(baseAgentSpec({ skills: [], mcp: [] } as never)).ok).toBe(true);
     expect(parse(baseAgentSpec({ skills: ['review.md'], mcp: ['gh'] } as never)).ok).toBe(true);
   });
+
+  // Gate 6.5+7 round 2 (verifier): `validateOneAgentSpec` was 61/71 — five refusal arms were
+  // reached by no case. Each is an engine-CEILING or shape refusal, i.e. exactly the part of the
+  // registration contract that exists to say no.
+  it('agents.<label> that is not an object at all is refused "must be an object"', () => {
+    for (const notAnObject of ['a string', 42, ['an', 'array'], null]) {
+      const result = parse(notAnObject);
+      expect(result.ok).toBe(false);
+      expect(JSON.stringify(result)).toContain('must be an object');
+    }
+  });
+
+  it('an effort default outside the Effort vocabulary is refused, naming the whole vocabulary', () => {
+    const result = parse(baseAgentSpec({ effort: { type: 'enum', default: 'turbo' } } as never));
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).toContain('must be one of low, medium, high, xhigh, max');
+  });
+
+  it('an effort default ABOVE the engine ceiling is refused at REGISTRATION, not silently clamped', () => {
+    const result = parse(baseAgentSpec({ effort: { type: 'enum', default: 'max' } } as never));
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).toContain(`exceeds the engine ceiling ${DEFAULT_CEILINGS.maxEffort}`);
+  });
+
+  it('a timeoutMs default above maxTimeoutMs is refused at registration', () => {
+    const result = parse(baseAgentSpec({ timeoutMs: { type: 'number', default: DEFAULT_CEILINGS.maxTimeoutMs + 1 } } as never));
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).toContain(`exceeds the engine ceiling ${DEFAULT_CEILINGS.maxTimeoutMs}`);
+  });
+
+  it('an appendPrompt default over maxAppendPromptBytes is refused BY SIZE, never by echoing the text', () => {
+    const oversize = 'y'.repeat(DEFAULT_CEILINGS.maxAppendPromptBytes + 1);
+    const result = parse(baseAgentSpec({ appendPrompt: { type: 'string', default: oversize } } as never));
+    expect(result.ok).toBe(false);
+    const serialized = JSON.stringify(result);
+    expect(serialized).toContain('over the engine ceiling maxAppendPromptBytes');
+    expect(serialized).not.toContain(oversize);
+  });
 });

@@ -620,7 +620,7 @@ export const TOOL_SPECS = [
       at: { type: 'string', description: "An ISO-8601 timestamp. Required when kind is 'once'; a past value fires on the next tick." },
       tz: { type: 'string', description: "IANA timezone the cron fields are read in; UTC when omitted." },
       args: { description: 'Run arguments handed to every firing.' },
-      enabled: { type: 'boolean' },
+      enabled: { type: 'boolean', description: 'Defaults to true when omitted — a schedule created disabled never fires.' },
     }, ['workflow']),
     outputSchema: OUT,
     errors: ['WORKFLOW_NOT_FOUND', 'VERSION_NOT_FOUND', 'CHANNEL_UNPUBLISHED', 'INVALID_CRON', 'INVALID_AT', 'TRIGGER_ALREADY_CLAIMED', 'FORBIDDEN_ROLE'],

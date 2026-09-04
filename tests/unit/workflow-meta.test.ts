@@ -1,6 +1,6 @@
 // v9 — workflow discovery: parseMeta (purpose) + parseWorkflowSkeleton (static DAG). TEST-FIRST (RED).
 import { describe, it, expect } from 'vitest';
-import { parseMeta, parseWorkflowSkeleton, parseMetaParams } from '../../src/workflow-meta.js';
+import { parseMeta, parseWorkflowSkeleton, parseMetaParams, MAX_META_LITERAL_BYTES } from '../../src/workflow-meta.js';
 
 describe('parseMeta — extract purpose from a workflow script (v9, REQ-061)', () => {
   it('extracts description + phases from an export const meta block', () => {
@@ -84,3 +84,30 @@ describe('parseMetaParams — scriptLabels reaches parseParamContract, not alias
     }
   });
 });
+
+// Gate 6.5+7 round 2 (verifier): `parseMetaParams`' two guard arms — the source-size bound and the
+// eval-throw fallback — were unexercised (12/26 lines). Both are refusal/degradation paths, so a
+// happy-path test can never reach them.
+describe('parseMetaParams guard arms (v24, Gate 6.5+7 round 2)', () => {
+  it('a meta literal over MAX_META_LITERAL_BYTES is refused PARAM_CONTRACT_INVALID before it is evaluated', () => {
+    const filler = 'x'.repeat(MAX_META_LITERAL_BYTES + 100);
+    const result = parseMetaParams(`export const meta = { description: '${filler}' };\nreturn 1;`, new Set());
+    expect(result.ok).toBe(false);
+    expect((result as { code?: string }).code).toBe('PARAM_CONTRACT_INVALID');
+    expect((result as { detail?: { reason?: string } }).detail?.reason).toBe('source too large');
+  });
+
+  it('a meta literal V8 refuses to evaluate degrades to the no-contract result, it does not throw', () => {
+    // Pure by `checkMeta`'s syntactic grammar, but `SyntaxError: Duplicate __proto__ fields are
+    // not allowed in object literals` at evaluation — the one reachable input for the catch arm.
+    const result = parseMetaParams(`export const meta = { __proto__: {}, __proto__: {} };\nreturn 1;`, new Set());
+    expect(result.ok).toBe(true);
+    expect((result as { value: { agents: unknown } }).value.agents).toEqual({});
+  });
+
+  it('a script with NO meta at all takes the same no-contract path', () => {
+    const result = parseMetaParams('return 1;', new Set());
+    expect(result.ok).toBe(true);
+  });
+});
+

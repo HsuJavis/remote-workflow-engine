@@ -109,7 +109,14 @@ export function authorize(
     owner = lookup.triggerOwner(args.id as string);
     ownerCode = 'NOT_TRIGGER_OWNER';
   } else {
-    const subject = spec.key !== null ? (args[spec.key] as string) : undefined;
+    // DES-139's subject rule is `args[spec.key]`. The three MODED workspace_* tools carry
+    // `key: null` at the SPEC level because their subject differs per mode, so the resolved ROW's
+    // ownership names the argument its own `mode()` predicate already required to be present:
+    // `runId` for run ownership, `workflow` for workflow ownership. Without this fallback the
+    // subject was `undefined`, the lookup answered "does not exist", and the non-leak rule below
+    // returned ok — a silent ownership BYPASS on workspace_list/workspace_delete/workspace_push
+    // (Gate 6.5+7 round 1 defect (b), IT-105).
+    const subject = (spec.key !== null ? args[spec.key] : args[row.ownership === 'run' ? 'runId' : 'workflow']) as string;
     if (row.ownership === 'workflow') {
       owner = lookup.workflowOwner(subject as string);
       ownerCode = 'NOT_WORKFLOW_OWNER';

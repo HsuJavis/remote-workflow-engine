@@ -8264,11 +8264,11 @@ rule text before running the code, and all 50 matched, which is what localizes I
 WIRING rather than to `authorize()` itself.
 
 ### IT-105 — OwnerLookup wired against the real store columns
-- **status:** red
+- **status:** green
 - **traces:** DES-139
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 File: `tests/integration/authz-owner-lookup.test.ts` (3 cases). `src/owner-lookup.ts` does not
@@ -8298,6 +8298,8 @@ RED (6) — two distinct PRODUCT defects, not test defects:
     `TOOL_SPECS` rows (not hand-copied constants) and a real store; invisible to every existing test
     because they run auth-disabled, which short-circuits before the lookup.
 Both are Gate 6 send-backs. IT-105 stays `red`/`fail`; no test was weakened to make it pass.
+
+**Gate 6.5+7 ROUND 2 (verifier, v24) — GREEN, 11/11.** Both defects are FIXED (IMPL-184) and the fixes are MUTATION-CHECKED: reverting `ownerOf` to `claimedBy` takes 4 of these cases red, and reverting the `key: null` subject fallback takes 3 red. (a) `SqliteSchedulerPort.ownerOf`/`WebhookRegistry.ownerOf` now read `createdBy`; `webhooks` gained the column, `webhook_create` records the calling principal, and `webhook_list` is principal-scoped exactly as `schedule_list` is. (b) `authorize()`'s subject falls back, for a `key: null` spec, to the argument the RESOLVED row's ownership names (`runId` for `'run'`, `workflow` for `'workflow'`) — the argument each moded tool's own `mode()` predicate already required to be present. ONE case's ORACLE was corrected, declared, not weakened: the fixture created its webhook with `create({})` and then asserted `triggerOwner === alice`, which no implementation of `createdBy` could satisfy; it now creates with `create({createdBy: ALICE.id})`. Assertion strength unchanged.
 
 ### UT-141 — callTool(deps, name, args, principal): schema before authz, one switch
 - **status:** green
@@ -8376,6 +8378,8 @@ File: `tests/unit/path-verdict.test.ts` (12 cases incl. `it.each` over the strip
 rejected/accepted literal rows carried forward from `path-containment`/`STRIP_RE`, EMPTY/NUL
 reasons, a fake-realpath SYMLINK escape). `src/path-verdict.ts` does not exist. Red (measured):
 whole-file red.
+
+**Gate 6.5+7 ROUND 2 (verifier, v24) — EXTENDED to 40 rows.** TASK-134's dod asks for ≥ 30 rows covering "every former `STRIP_RE` and `safeRelPath` case … Windows separators and NUL rejected"; the file shipped with 15 and left six decision arms unexercised — `GIT_INTERNAL`, the `CLAUDE_SETTINGS`/`CLAUDE_HOOKS` reason split, the drive-letter `ABSOLUTE` arm, backslash normalisation happening BEFORE the `..` scan, `RESERVED_PREFIX` being asset-tree-ONLY, and `pathVerdict`'s ok/`abs` return. 25 rows added in the same table style (a reason table, a strip-reason table, an accepted table, plus a realpath-never-called short-circuit pin and the default-destination pair). 40/40 green; no assertion weakened.
 
 ### IT-108 — namespace derivation from principal; caller-supplied namespace refused
 - **status:** green
@@ -8881,11 +8885,11 @@ Proven by: IT-117 (`workspace-tools.test.ts`, all six tool names + schema/refusa
 red and real-HTTP-behavioural red respectively).
 
 ### VAL-120 — REQ-109: three roles, configured per account, enforced and audited
-- **status:** red
+- **status:** green
 - **traces:** REQ-109
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 Proven by: E2E-009 (`admin-cross-read.test.ts`, S-4: admin cross-read is audited, the owner sees
@@ -8899,6 +8903,8 @@ the completeness pin) and E2E-009 are green: the pure decision function is corre
 the claiming workflow instead of `createdBy`; the moded `workspace_*` rows' `key: null` turning the
 ownership check into a no-op). REQ-109 is "three roles, configured per account, ENFORCED and
 audited"; enforcement is what is broken, so this VAL is not flipped.
+
+**Gate 6.5+7 ROUND 2 (verifier, v24) — GREEN.** IT-105 is 11/11 against real stores, UT-140's 50-row matrix and E2E-009 stay green, and the new IT-123 covers the register-time trigger-ownership arm that round 1 found reached by NO test at all. Enforcement — the clause this VAL was held on — is now proven at the integration tier. `real:` stays `false`: Gate 7.5 owns the real-run flip.
 
 ### VAL-121 — REQ-110: every tunable parameter declared and overridable per agent
 - **status:** green
@@ -8965,11 +8971,11 @@ no automated substitute claimed for that specific two-principal comparison). Red
 is not a v24 tool name yet; `AssetSyncDeps` has no `clock`/`catalog`.
 
 ### VAL-126 — REQ-115: triggers created first, claimed by a workflow at registration
-- **status:** red
+- **status:** green
 - **traces:** REQ-115
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v24
 
 Proven by: IT-111 (`trigger-claims.test.ts`) + IT-112 (`webhook-registry.test.ts` v24 block) +
@@ -8983,6 +8989,8 @@ own closing sentence — "name-level claim persists until `workflow_deregister` 
 THE TRIGGER": under auth the creator cannot delete their own trigger at all, because `ownerOf`
 returns the claiming workflow name where authz needs `createdBy` (IT-105 (a)). Flipping this green
 would certify a REQ-115 path that is provably closed.
+
+**Gate 6.5+7 ROUND 2 (verifier, v24) — GREEN.** DES-149's closing clause — "the name-level claim persists until `workflow_deregister` OR THE CREATOR DELETES THE TRIGGER" — is now reachable: `ownerOf` answers `createdBy`, so under auth the creator IS the owner authz compares against, and IT-123 proves the register sequence's own ownership arm (creator allowed, non-creator `NOT_TRIGGER_OWNER`, ownerless row admin-only, second workflow `TRIGGER_ALREADY_CLAIMED` with the working claim surviving). IT-111/IT-112/E2E-008 stay green with their claim assertions re-pointed at the CLAIM column (`get(id).claimedBy` / `get(id).workflow`) — the same fact, read off the column that actually holds it now that `ownerOf` means the creator. `real:` stays `false` for Gate 7.5.
 
 ### VAL-127 — REQ-116: workflow_authoring_guide teaches the engine's own contract
 - **status:** green
@@ -9045,3 +9053,39 @@ alongside the retired assertions rather than deleting/rewriting them (surgical: 
 this task must, leave the removal to the task that owns each file per DES-159's own attribution).
 DES's own suggested case counts (≥7/≥12/≥30/≥40/≥60) are Gate 6.5+7 coverage targets, not met in
 full here — the coverage-threshold exit gate (95%/90%) applies at Mode B, not this Mode A pass.
+
+### IT-123 — workflowRegister's trigger-ownership arm: NOT_TRIGGER_OWNER / TRIGGER_ALREADY_CLAIMED / TRIGGER_NOT_FOUND
+- **status:** green
+- **traces:** DES-149, DES-139
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v24
+
+File: `tests/integration/register-trigger-ownership.test.ts` (6 cases). Written at Gate 6.5+7 round
+2 to close the hole round 1's send-back named: `grep -rn "TRIGGER_ALREADY_CLAIMED|NOT_TRIGGER_OWNER"
+tests/` returned NOTHING, so step 2 of DES-149's register sequence (`McpFacade.workflowRegister`)
+was reached by no test at all — which is why the ownership defect it enforces survived Gate 6.
+Real file-backed `WorkflowCatalog` + `SqliteSchedulerPort` + `WebhookRegistry` + `RunManager` and
+the real facade; nothing about the SUT boundary is mocked. Cases: the creator of an unclaimed
+trigger registers and the claim lands while `ownerOf` still answers the creator; a non-creator is
+refused `NOT_TRIGGER_OWNER` with nothing claimed; an OWNERLESS (`createdBy NULL`, migrated) row is
+admin-only per DES-139's stated operator consequence; a second workflow gets
+`TRIGGER_ALREADY_CLAIMED` and the first workflow's working claim survives the refusal; an id in
+neither store is `TRIGGER_NOT_FOUND` before any claim; the check spans BOTH stores (a webhook
+created by alice is refused to bob, allowed to alice). MUTATION-CHECKED: restoring the
+`owner !== null` escape the fix removed takes the ownerless case red.
+
+------------------------------------------------------------------------------------------
+
+## Gate 6.5+7 ROUND 2 regression confirmation (verifier, v24, 2026-09-04)
+
+`npx vitest run` → **299 files / 2096 tests, 2070 pass, 0 fail, 26 skip, exit 0**; `npx tsc --noEmit`
+clean. Baseline at the start of this round was 2065 tests with 6 failing (IT-105's six send-back
+rows, byte-identical to round 1's failure set); the +31 are this round's own new cases (6 IT-123 +
+25 UT-144 rows). Three items flipped red→green: IT-105, VAL-120, VAL-126. Four test files had an
+ORACLE corrected, each declared in its own entry and none weakened: `authz-owner-lookup.test.ts`
+(webhook fixture created with a `createdBy`), `trigger-claims.test.ts` and
+`register-crash-window.test.ts` (claim assertions re-pointed from `ownerOf` to `get(id).claimedBy`),
+`webhook-registry.test.ts` (same, plus a new assertion that `ownerOf` answers the CREATOR while the
+claim moves).

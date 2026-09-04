@@ -86,4 +86,21 @@ describe('checkMermaid (UT-149, DES-147)', () => {
     const result = checkMermaid(src, ['plan'], {}, limits);
     expect(result.ok).toBe(true);
   });
+
+  // Gate 6.5+7 round 2 (verifier): the three node-classifier arms the coverage measurement found
+  // unexercised — the `aggregation` and `diamond` shapes, and the "unrecognized shape" catch-all
+  // whose own comment said it was "not exercised by this task's test scope".
+  it('an aggregation node (id{{"text"}}) and a diamond node (id{"text"}) are both recognised shapes', () => {
+    const src = 'graph TD\n  A(["plan"])\n  agg{{"fan-in"}}\n  gate{"choose?"}\n  A --> agg\n  agg --> gate';
+    const result = checkMermaid(src, ['plan'], {}, limits);
+    expect(result.ok).toBe(true);
+  });
+
+  it('a line matching NO node shape and no arrow ⇒ MERMAID_INVALID, with the 1-based line number', () => {
+    const src = 'graph TD\n  A(["plan"])\n  this is not a node';
+    const result = checkMermaid(src, ['plan'], {}, limits);
+    expect(result.ok).toBe(false);
+    expect(result.rule).toBe('MERMAID_INVALID');
+    expect(result.line).toBe(3);
+  });
 });
