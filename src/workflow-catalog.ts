@@ -17,11 +17,9 @@
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { join, resolve, sep, isAbsolute } from 'node:path';
-import { runInNewContext } from 'node:vm';
 import { CatalogNotFoundError, WorkspaceEscapeError, codedError, type ErrorCode } from './errors.js';
-import { parseMeta, MAX_META_LITERAL_BYTES } from './workflow-meta.js';
+import { parseMeta, parseMetaParams } from './workflow-meta.js';
 import { scanAgentCalls } from './scan-agent-calls.js';
-import { checkMeta } from './sandbox/guards.js';
 import { checkMermaid } from './check-mermaid.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
@@ -31,11 +29,6 @@ import { SystemClock } from './clock.js';
 // independent of); typing get()/getFull()'s `params` as ParamContract|undefined instead of
 // `unknown` is the point of the adjudication; list() carries the same typing.
 import type { ParamContract, AgentParamSpec, Ceilings } from './params/contract.js';
-// v24 (DES-144, TASK-136): value import — `parseParamContract` is the ONE place a script's
-// `meta.params` becomes a validated contract; the catalog already re-implements the meta-literal
-// extraction below (duplicated from `workflow-meta.ts`'s `parseMetaParams`, pending its one-line
-// arity fix — see this task's PARIMPL report — rather than calling the currently-broken wrapper).
-import { parseParamContract } from './params/contract.js';
 // v22 (DES-111, DES-112, TASK-107): the lifted, pure registration-enforcement checks (TASK-106) —
 // same codes submission used to produce, so no caller learns a new vocabulary (ADR-013).
 import { validateScriptEntry } from './script-checks.js';
@@ -364,31 +357,6 @@ export class WorkflowCatalog {
     return this._db.prepare("SELECT name, version FROM workflow_diagrams WHERE status = 'pending'").all() as Array<{ name: string; version: string }>;
   }
 
-  /** v24 (DES-148, ARCH-098): extracts + validates `meta.params` exactly like `workflow-meta.ts`'s
-   *  `parseMetaParams` does, EXCEPT calling `parseParamContract` with the correct 3-argument v24
-   *  signature (`metaParams, scriptLabels, aliasNames`) — `parseMetaParams` itself still calls the
-   *  2-argument pre-v24 form (`aliasNames` lands in the `scriptLabels` slot, breaking EVERY
-   *  registration through it; a one-line fix in `workflow-meta.ts`, out of this task's file scope —
-   *  see this task's PARIMPL report, needs_clarification). Duplicated here deliberately; collapse
-   *  back into one call once that fix lands. Pure: no DB, no throw (mirrors parseParamContract). */
-  private _parseParams(script: string, labels: string[]): ReturnType<typeof parseParamContract> {
-    const m = checkMeta(script);
-    if (!m.found || !m.pureLiteral || m.objectText === undefined) {
-      return parseParamContract(undefined, labels, this._aliasNames ?? new Set());
-    }
-    if (Buffer.byteLength(m.objectText, 'utf8') > MAX_META_LITERAL_BYTES) {
-      return { ok: false, code: 'PARAM_CONTRACT_INVALID', message: `meta literal exceeds the ${MAX_META_LITERAL_BYTES}-byte source-size bound`, detail: { param: 'meta', reason: 'source too large' } };
-    }
-    let obj: unknown;
-    try {
-      obj = runInNewContext(`(${m.objectText})`, Object.create(null) as object, { timeout: 50 });
-    } catch {
-      return parseParamContract(undefined, labels, this._aliasNames ?? new Set());
-    }
-    const rawParams = obj && typeof obj === 'object' ? (obj as { params?: unknown }).params : undefined;
-    return parseParamContract(rawParams, labels, this._aliasNames ?? new Set());
-  }
-
   // v24 (ARCH-098, DES-148, TASK-143): the diagram-check's fixed size ceiling — same values the
   // retired `graphAnalyzer.maxBytes`/`maxLines` config defaulted to (rwe.config.example.json, now
   // author-supplied rather than model-generated, so no config knob is needed for it).
@@ -425,7 +393,13 @@ export class WorkflowCatalog {
     }
 
     // DES-144 (TASK-136): the per-agent parameter contract — AGENT_UNDECLARED etc.
-    const paramsResult = this._parseParams(script, scan.labels);
+    // v24 Gate 7.5 (D-2): this line used to call a PRIVATE COPY of `workflow-meta.ts`'s
+    // `parseMetaParams`, duplicated here while that function still had a call-signature bug and
+    // left behind after it was fixed — the copy was the one the registration path ran, so a check
+    // added to the shared function (`meta.defaults` is retired) would have been invisible in
+    // production. Same defect class as D-3's two `toErrEnvelope`s. The copy is gone; `scan.labels`
+    // is exactly what `parseMetaParams` recomputes internally from the same `scanAgentCalls`.
+    const paramsResult = parseMetaParams(script, this._aliasNames ?? new Set());
     if (!paramsResult.ok) {
       throw codedError(paramsResult.code, paramsResult.message, paramsResult.detail);
     }

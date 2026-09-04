@@ -84,15 +84,36 @@ describe('v24 retirement regression (IT-081, TASK-154, DES-144/DES-148): the v15
     expect(check.code).toBe('WORKFLOW_NOT_FOUND');
   });
 
-  it('a stray top-level `defaults` argument on workflow_register is silently ignored (ADR-035: not forwarded to the catalog at all), never HARNESS_DEFAULTS_INVALID', async () => {
+  // v24 Gate 7.5 (D-2, REQ-110's last clause + adjudication #2 A-2): this case used to pin
+  // "silently ignored". Silence is the defect: a cold model working from a pre-v24 example gets
+  // `status:"completed"` and only discovers from the BILL that its knobs did nothing. REQ-110
+  // requires the retired field to be REFUSED, exactly as `meta.params.knobs` already is.
+  it('a top-level `defaults` ARGUMENT on workflow_register is REFUSED DEFAULTS_RETIRED, nothing stored', async () => {
     const r = await callTool('workflow_register', {
       name: 'it081-stray-defaults-arg',
       script: 'return "ok";',
       mermaid: 'graph TD;',
-      defaults: { model: 'sonnet', timeoutMs: 30_000 }, // pre-v24 field — no longer read anywhere
+      defaults: { model: 'sonnet', timeoutMs: 30_000 }, // the pre-v24 field
     });
-    expect(r.error).toBeUndefined();
-    expect((r as { code?: string }).code).not.toBe('HARNESS_DEFAULTS_INVALID');
+    expect((r.error as { code?: string } | undefined)?.code ?? r.code).toBe('DEFAULTS_RETIRED');
+    expect((r.error as { see?: string } | undefined)?.see).toBe('workflow_authoring_guide');
+
+    const check = await callTool('workflow_source', { name: 'it081-stray-defaults-arg' });
+    expect(check.code).toBe('WORKFLOW_NOT_FOUND');
+  });
+
+  // The gap this file's own header reported and left unasserted ("a literal top-level
+  // `export const meta = { defaults: {...} }` registers successfully today, unchecked"), closed
+  // with D-2: `parseParamContract` only ever sees `meta.params`, so the SIBLING key was invisible
+  // to it — while the authoring guide told authors in as many words that `meta.defaults` is
+  // refused DEFAULTS_RETIRED. The guide was right about the intent and wrong about the engine.
+  it('a top-level `meta.defaults` (sibling to params, not nested under it) is REFUSED DEFAULTS_RETIRED', async () => {
+    const script = `export const meta = { defaults: { model: 'sonnet', timeoutMs: 30000 } };\nreturn 1;`;
+    const r = await callTool('workflow_register', { name: 'it081-meta-defaults-sibling', script, mermaid: 'graph TD;' });
+    expect((r.error as { code?: string } | undefined)?.code ?? r.code).toBe('DEFAULTS_RETIRED');
+
+    const check = await callTool('workflow_source', { name: 'it081-meta-defaults-sibling' });
+    expect(check.code).toBe('WORKFLOW_NOT_FOUND');
   });
 
   it('backward-compat: a script with no params/defaults block at all still registers (zero-label pure composition)', async () => {

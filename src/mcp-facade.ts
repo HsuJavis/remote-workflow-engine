@@ -11,7 +11,11 @@ import { InMemoryRunStore } from './run-store.js';
 import { RunManager } from './run-manager.js';
 import { resolveVersionRequest, type WorkflowDetail, type Channel, type VersionSelector } from './workflow-catalog.js';
 import { SubmissionValidator } from './submission-validator.js';
-import { CatalogNotFoundError, codedError, type ErrorCode } from './errors.js';
+// v24 Gate 7.5 (D-3): `toErrEnvelope` is IMPORTED, not re-implemented. This file used to carry a
+// private copy whose envelope had no `see` field at all, and since every `workflow_*` handler
+// called the local one, the catalog's `see:'workflow_authoring_guide'` pointer never reached the
+// wire — the guide a cold model is told to consult was unreachable from the errors that tell it to.
+import { CatalogNotFoundError, codedError, toErrEnvelope, type ErrorCode } from './errors.js';
 import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent, HarnessDescriptor, RunListFilter, AuditAction, RunSpec } from './types.js';
 import { parseMeta } from './workflow-meta.js';
 import { buildAuthoringGuide } from './authoring-guide.js';
@@ -95,16 +99,6 @@ export interface McpFacadeDeps {
    *  NOT_FOUND for everything, rather than crashing. */
   schedulerClaims?: TriggerClaimStore;
   webhookClaims?: TriggerClaimStore;
-}
-
-function toErrEnvelope(err: unknown): ErrEnvelope {
-  // Every coded error the engine throws is an Error carrying `.code` (errors.ts `codedError` — the
-  // single factory, no bare `throw {…}` in src/), so prefer `.code`, else the Error name.
-  if (err instanceof Error) {
-    const code = (err as { code?: unknown }).code;
-    return { code: typeof code === 'string' && code ? code : err.name || 'INTERNAL_ERROR', message: err.message };
-  }
-  return { code: 'INTERNAL_ERROR', message: String(err) };
 }
 
 /** Robustness at the MCP boundary: some MCP clients serialize the untyped `args` object into a JSON
@@ -284,6 +278,18 @@ export class McpFacade {
   async workflowRegister(a: { name: string; script: string; mermaid: string; triggers?: string[] }, principal: Principal): Promise<Record<string, unknown>> {
     const claimedThisCall: string[] = [];
     try {
+      // v24 Gate 7.5 (D-2, REQ-110's last clause + adjudication #2 A-2): the pre-v24 workflow-wide
+      // `defaults` ARGUMENT is retired (ADR-035). It was not declared on the schema and the schema
+      // is open, so it arrived, was never forwarded anywhere, and the caller got
+      // `status:"completed"` — a cold model working from an older example discovers from the BILL
+      // that its knobs did nothing. Refused by name, exactly as `meta.params.knobs` already is.
+      if (Object.hasOwn(a as object, 'defaults')) {
+        throw codedError(
+          'DEFAULTS_RETIRED',
+          'DEFAULTS_RETIRED: the workflow-wide `defaults` argument is retired (ADR-035) — declare meta.params.agents.<label>.<key>.default instead',
+          { param: 'defaults' },
+        );
+      }
       const triggers = a.triggers ?? [];
       if (new Set(triggers).size !== triggers.length) {
         throw codedError('INVALID_ARGUMENT', 'INVALID_ARGUMENT: duplicate ids in triggers[]');

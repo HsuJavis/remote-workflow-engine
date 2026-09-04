@@ -24,6 +24,12 @@ export interface ErrEnvelope {
   code: string;
   message: string;
   field?: string;
+  /** v24 (DES-137, D-3): the ERROR_CATALOG pointer at the tool that explains this code — always
+   *  read from the catalog by `errors.ts`'s `toErrEnvelope`, never hand-typed at a call site.
+   *  `null` for a code the catalog marks as having no guide entry. */
+  see?: 'workflow_authoring_guide' | null;
+  /** v24 (DES-137): structured context a caller can branch on (`param`, `runId`, `errors[]`, …). */
+  detail?: Record<string, unknown>;
 }
 
 export interface ResultEnvelope<T = unknown> {

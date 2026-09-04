@@ -3,7 +3,7 @@
 // register), the workflow_get MCP tool, and the dashboard's workflow-card drill-in.
 import { runInNewContext } from 'node:vm';
 import { checkMeta } from './sandbox/guards.js';
-import { parseParamContract, type ParamContract, type Err as ParamContractErr } from './params/contract.js';
+import { parseParamContract, retiredDefaults, type ParamContract, type Err as ParamContractErr } from './params/contract.js';
 
 export interface WorkflowMeta {
   description: string;
@@ -69,6 +69,15 @@ export function parseMetaParams(
     obj = runInNewContext(`(${m.objectText})`, Object.create(null) as object, { timeout: 50 });
   } catch {
     return parseParamContract(undefined, labels, aliasNames);
+  }
+  // v24 Gate 7.5 (D-2, REQ-110 / ADR-035): `meta.defaults` is a SIBLING of `params`, so
+  // `parseParamContract` — whose first argument IS `meta.params` — never saw it, and a script
+  // declaring one registered `completed` with the whole object silently dropped. The authoring
+  // guide states in as many words that `meta.params.knobs` and `meta.defaults` are both refused
+  // DEFAULTS_RETIRED; only the first of the two was true. Checked HERE, the one place the whole
+  // evaluated meta object is in hand.
+  if (obj && typeof obj === 'object' && (obj as { defaults?: unknown }).defaults !== undefined) {
+    return retiredDefaults('meta.defaults');
   }
   const rawParams = obj && typeof obj === 'object' ? (obj as { params?: unknown }).params : undefined;
   return parseParamContract(rawParams, labels, aliasNames);

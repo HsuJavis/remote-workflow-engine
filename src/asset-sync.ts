@@ -93,15 +93,6 @@ export function classifyAsset(kind: LegacyAssetKind, _asset: unknown): AssetDisp
   return { action: 'materialize' };
 }
 
-/** Thrown when any `files[].path` in a push fails `pathVerdict` (DES-142) — the whole push is
- *  rejected (no half-written asset dir), same rooting invariant as DES-011's `WorkspaceEscapeError`. */
-export class AssetPathEscapeError extends Error {
-  constructor(path: string) {
-    super(`Asset file path escapes its asset dir: ${path}`);
-    this.name = 'AssetPathEscapeError';
-  }
-}
-
 // ---------------------------------------------------------------------------------------------
 // v24 (DES-153/TASK-144): AssetSyncService — two scopes (workflow/global), a catalog port for
 // rows, `kind:'mcp'` gated on egress-then-probe, `pushedBy`/`pushedAt` on every row.
@@ -134,6 +125,11 @@ function assetNameErrorCode(v: { kind: 'reject'; reason: string } | { kind: stri
   switch (v.reason) {
     case 'RESERVED_PREFIX': return 'RESERVED_PREFIX';
     case 'ESCAPE':
+    // v24 Gate 7.5 (D-5): an ABSOLUTE path is a containment failure like `..` is — it names a
+    // destination outside the asset tree — so it answers the code the row advertises for exactly
+    // that (`WORKSPACE_ESCAPE`), not the generic malformed-argument code. `INVALID_ARGUMENT`
+    // remains for the shapes that are not about containment at all (empty, NUL).
+    case 'ABSOLUTE':
     case 'SYMLINK': return 'WORKSPACE_ESCAPE';
     default: return 'INVALID_ARGUMENT';
   }
@@ -284,7 +280,14 @@ export class AssetSyncService {
     const resolved: Array<{ abs: string; contentB64: string }> = [];
     for (const f of req.files) {
       const v = pathVerdict(root, f.path, undefined, 'asset-tree');
-      if (v.kind !== 'ok' || !v.abs) throw new AssetPathEscapeError(f.path);
+      // v24 Gate 7.5 (D-5, REQ-118): a refused file path answers the code the `workspace_push` row
+      // ADVERTISES — `WORKSPACE_ESCAPE` / `RESERVED_PREFIX` — through the SAME `assetNameErrorCode`
+      // mapping the asset NAME already goes through, three lines up. It used to throw a bare
+      // `AssetPathEscapeError`, whose JS class name reached the caller as the machine-readable
+      // code: not a member of the closed `ErrorCode` union, not in `ERROR_CATALOG`, and impossible
+      // for a cold model to anticipate. The write was always refused; only the code leaked. The
+      // whole push is still refused before ANY file is written (no half-written asset dir).
+      if (v.kind !== 'ok' || !v.abs) return { error: assetNameErrorCode(v) };
       resolved.push({ abs: v.abs, contentB64: f.contentB64 });
     }
     mkdirSync(root, { recursive: true });

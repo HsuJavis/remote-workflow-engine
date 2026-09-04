@@ -200,7 +200,7 @@ function invalid(param: string, reason: string): Err {
   return { ok: false, code: 'PARAM_CONTRACT_INVALID', message: reason, detail: { param, reason } };
 }
 
-function retiredDefaults(param: string): Err {
+export function retiredDefaults(param: string): Err {
   return {
     ok: false,
     code: 'DEFAULTS_RETIRED',
