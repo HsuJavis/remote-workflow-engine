@@ -346,6 +346,16 @@ they are not `claude-md-improver` / `skill-creator` targets.
 - **D-F** — D-9, the non-reproducible suspend→resume→failed with orphaned agent work (issue #53).
 - **D-G** — `rwe.service` (PID 3652391, port 8899) still runs pre-fix code by the owner's explicit
   decision (adjudication #6 F-5); it is now four commits behind a tree containing a security fix.
+- **D-I** — **"a commit changed `src/` without adding an IMPL row" is not mechanically checkable.**
+  DR-1 counts the TENTH occurrence of this ledger-honesty gap (and TASK-163's backfill found an
+  eleventh commit, `7febc47`, that DR-1's own count missed — the manual count is itself unreliable,
+  which is the argument). Ten repetitions across six gates is a missing enforcement point, not
+  forgetfulness, and every fix so far has been another backfill. The durable fix belongs in v25 and
+  has two candidate homes: a **Gate 7 check** (`git diff <gate-base>..HEAD -- src/` non-empty ⇒ the
+  gate's own commit range must contain a new `### IMPL-` heading) or a **`trace.py` rule** (an
+  `src/` file touched in the iteration with no IMPL entry claiming it is a gap, alongside the
+  existing 斷鏈/孤兒 checks). The `trace.py` home is the stronger of the two — it reports on the
+  ledger every gate already regenerates, so it cannot be skipped by a gate that does not run.
 - **D-H** — DEPLOY §1b's 設定總表 carries a per-key "introduced in vNN" provenance column. Judged
   **non-blocking**: it is provenance metadata on a live key, not a changelog and not a superseded
   instruction. Flagged so the next reviewer rules the same way rather than re-litigating it.

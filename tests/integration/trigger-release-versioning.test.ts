@@ -1,4 +1,4 @@
-// IT-135 (v24 Gate 8 AF-2 / TASK-161, ARCH-098 + ARCH-099 + ADR-026, adjudication (v24) #7 G-2):
+// IT-132 (v24 Gate 8 AF-2 / TASK-161, ARCH-098 + ARCH-099 + ADR-026, adjudication (v24) #7 G-2):
 // `triggers: []` stops being byte-identical to a pre-v24 `NULL`, so moving the `release` pointer
 // can finally UN-declare a trigger.
 //
@@ -41,7 +41,7 @@ function rawDb(c: WorkflowCatalog): Database.Database {
 }
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'rwe-it135-'));
+  dir = mkdtempSync(join(tmpdir(), 'rwe-it132-'));
   catalog = new WorkflowCatalog(dir);
   started = [];
   registry = new WebhookRegistry({
@@ -66,36 +66,36 @@ async function deliverSigned(id: string, secret: string) {
   });
 }
 
-describe('a v24 row is never written with NULL triggers (IT-135, AF-2, TASK-161)', () => {
+describe('a v24 row is never written with NULL triggers (IT-132, AF-2, TASK-161)', () => {
   it('ARCH-098\'s own specified test: no post-migration row is written NULL', async () => {
     for (let i = 0; i < 10; i++) {
-      await catalog.register({ name: `it135-nulls-${i}`, script: SCRIPT, mermaid: MERMAID });
+      await catalog.register({ name: `it132-nulls-${i}`, script: SCRIPT, mermaid: MERMAID });
     }
-    await catalog.register({ name: 'it135-explicit-empty', script: SCRIPT, mermaid: MERMAID, triggers: [] });
-    await catalog.register({ name: 'it135-with-trigger', script: SCRIPT, mermaid: MERMAID, triggers: ['t-abc'] });
+    await catalog.register({ name: 'it132-explicit-empty', script: SCRIPT, mermaid: MERMAID, triggers: [] });
+    await catalog.register({ name: 'it132-with-trigger', script: SCRIPT, mermaid: MERMAID, triggers: ['t-abc'] });
     const nullCount = (rawDb(catalog).prepare('SELECT COUNT(*) AS n FROM workflow_versions WHERE triggers IS NULL').get() as { n: number }).n;
     expect(nullCount, 'a v24 registration wrote NULL — indistinguishable from a pre-v24 row').toBe(0);
   });
 
   it('an empty declaration reaches a reader as [] — the exact contract server.ts:775 branches on', async () => {
-    await catalog.register({ name: 'it135-contract', script: SCRIPT, mermaid: MERMAID, triggers: [] });
-    await catalog.publish('it135-contract', 'v1', 'release', null);
-    const released = await catalog.resolve('it135-contract', { channel: 'release' });
+    await catalog.register({ name: 'it132-contract', script: SCRIPT, mermaid: MERMAID, triggers: [] });
+    await catalog.publish('it132-contract', 'v1', 'release', null);
+    const released = await catalog.resolve('it132-contract', { channel: 'release' });
     expect(released.triggers, '`triggers !== undefined` is what enables the membership check').toEqual([]);
   });
 
   it('a genuine pre-v24 row still reads as undefined, so the legacy create-time door is untouched', async () => {
-    await catalog.register({ name: 'it135-legacy', script: SCRIPT, mermaid: MERMAID, triggers: ['t-legacy'] });
+    await catalog.register({ name: 'it132-legacy', script: SCRIPT, mermaid: MERMAID, triggers: ['t-legacy'] });
     // Simulate the ONLY rows ARCH-098 permits to be NULL: ones written before the column existed.
-    rawDb(catalog).prepare('UPDATE workflow_versions SET triggers = NULL WHERE name = ?').run('it135-legacy');
-    await catalog.publish('it135-legacy', 'v1', 'release', null);
-    const released = await catalog.resolve('it135-legacy', { channel: 'release' });
+    rawDb(catalog).prepare('UPDATE workflow_versions SET triggers = NULL WHERE name = ?').run('it132-legacy');
+    await catalog.publish('it132-legacy', 'v1', 'release', null);
+    const released = await catalog.resolve('it132-legacy', { channel: 'release' });
     expect(released.triggers).toBeUndefined();
   });
 });
 
-describe('moving `release` to a version that declares no triggers un-declares them (IT-135, AF-2)', () => {
-  const WF = 'it135-fire';
+describe('moving `release` to a version that declares no triggers un-declares them (IT-132, AF-2)', () => {
+  const WF = 'it132-fire';
 
   it('v1 declares [t1], v2 declares [], release moves to v2 => NOT_IN_RELEASE and NO run', async () => {
     const created = await registry.create({});
@@ -105,7 +105,6 @@ describe('moving `release` to a version that declares no triggers un-declares th
     await catalog.register({ name: WF, script: SCRIPT, mermaid: MERMAID, triggers: [webhookId] });
     await catalog.publish(WF, 'v1', 'release', null);
     // The webhook is claimed by the workflow, exactly as workflow_register's claim step leaves it.
-    rawDb(catalog); // (no-op read for symmetry with the raw claim write below)
     await registry.claim(webhookId, WF);
 
     // Control: while v1 is released, the delivery fires for real. Without this, the refusal below
@@ -134,7 +133,7 @@ describe('moving `release` to a version that declares no triggers un-declares th
   // workflow. The honest discriminator is the trigger id itself: was it ever DECLARED by a version
   // of this workflow? If no version ever named it, the release list has no jurisdiction over it.
   it('a trigger BOUND AT CREATION still fires — no version ever declared it, so membership does not apply', async () => {
-    const WF2 = 'it135-create-door';
+    const WF2 = 'it132-create-door';
     const created = await registry.create({ workflow: WF2 });
     const { webhookId, secret } = created as { webhookId: string; secret: string };
 
@@ -147,7 +146,7 @@ describe('moving `release` to a version that declares no triggers un-declares th
   });
 
   it('MIXED: a claimed-then-undeclared trigger is refused while a create-time-bound one on the SAME workflow fires', async () => {
-    const WF3 = 'it135-mixed';
+    const WF3 = 'it132-mixed';
     const claimedHook = await registry.create({}) as { webhookId: string; secret: string };
     const createDoorHook = await registry.create({ workflow: WF3 }) as { webhookId: string; secret: string };
 

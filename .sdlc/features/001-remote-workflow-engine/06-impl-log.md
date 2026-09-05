@@ -2804,3 +2804,81 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   **Two pinned tests were rewritten, both executing an adjudicated ruling rather than accommodating the code.** IT-093/IT-094/VAL-016/scheduler-port's create-time `WORKFLOW_NOT_FOUND`/`CHANNEL_UNPUBLISHED` cases pinned the site REQ-115's last clause MOVES the check away from; they now assert the create door's new contract AND the fire path's recorded refusal (`CLAIMED_WORKFLOW_MISSING`, `CHANNEL_UNPUBLISHED`), which is the site that can still answer truthfully. IT-124's fire-path case changed from `CLAIMED_WORKFLOW_MISSING` to `UNCLAIMED` — 08-validation's own observation (b) had already named the old reason as a SYMPTOM of D-1b (the released trigger still pointing at the deleted name through the legacy `workflow` column); both halves that case actually guards, nothing dispatched and exactly one recorded refusal, are unchanged. IT-081's "a stray `defaults` argument is silently ignored" case became "is refused `DEFAULTS_RETIRED`", which is REQ-110's last clause verbatim.
 
   **Measured at the end (exit 0, both):** `npx tsc --noEmit` clean; `npx vitest run tests/unit tests/integration tests/acceptance` → **300 files (299 passed, 1 skipped), 2152 cases (2126 passed, 26 skipped), 0 failed**. `sh .sdlc/trace` → **1214 work items / 19 gaps** — the gap count is byte-identical to the pre-fix baseline (1197 / 19), and the item count grew by the ten VAL rows the id collision had been hiding, the six new IT items, and this entry.
+
+### IMPL-188 — the post-IMPL-187 `src/` commits, backfilled (DR-1, the TENTH occurrence of this gap)
+- **status:** done
+- **traces:** TASK-163, DES-137, DES-138, DES-156, ARCH-087, ARCH-092, ARCH-105, REQ-109, REQ-112, REQ-116
+- **greens:** IT-129, IT-124, UT-159, UT-160
+- **files:** src/errors.ts, src/mcp-facade.ts, src/workflow-catalog.ts, src/authoring-guide.ts, src/scheduler.ts, src/tool-specs.ts
+- **iter:** v24
+- **note:** Ledger-only entry, written by TASK-163. Four commits landed `src/` changes after
+  IMPL-187 with no IMPL entry of their own. Each is verified from its own diff, not from its
+  subject line:
+
+  - **`d43d6d7`** (`src/errors.ts`, `tests/integration/error-envelope-see-pointer.test.ts`) — D-14 /
+    adjudication #6 F-3: `NOT_TRIGGER_OWNER`, `TRIGGER_NOT_FOUND` and `TRIGGER_ALREADY_CLAIMED` gain
+    `see:'workflow_authoring_guide'`, so a registration refused on a trigger points at the document
+    that explains the create-then-claim lifecycle (REQ-116). +12/-3 in `errors.ts`, +89 test lines.
+  - **`caf15c1`** (`src/mcp-facade.ts`, `src/workflow-catalog.ts`,
+    `tests/integration/authz-enforcement-live.test.ts`) — F-4a: `workflow_list` rows carry `owner`,
+    which the row's own description already promised. +4/-1 and +11/-4, with 18 test lines.
+  - **`e9db0c4`** (`src/authoring-guide.ts`, `tests/unit/authoring-guide.test.ts`) — F-4b: the
+    guide's aggregation example stopped contradicting the guide's own shape table. +7/-1, 54 test
+    lines, `docs/AUTHORING.md` byte-lock re-green.
+  - **`7febc47`** (`src/authoring-guide.ts`, `src/scheduler.ts`, `src/tool-specs.ts`) — the sweep the
+    twelve Gate 7.5 fixes made necessary. **This one is a FOURTH occurrence the review's DR-1 did not
+    count** (it names three); it is recorded here rather than left out, because a backfill that
+    inherits the omission it is fixing is not a backfill. +22/-14 across the three files.
+
+  **The durable fix is NOT this entry.** Ten recorded occurrences (IMPL-179..183, IMPL-185, and now
+  these four) is a missing enforcement point, not ten lapses of memory: nothing in the pipeline can
+  currently answer "did this commit change `src/` without adding an IMPL row?". Recorded as v25 debt
+  D-I in `07-review.md` §8 with the two candidate homes (a Gate 7 check, or a `trace.py` rule).
+
+### IMPL-189 — the three Gate 8 HIGH findings closed test-first (AF-1, AF-2, AF-3)
+- **status:** done
+- **traces:** TASK-160, TASK-161, TASK-162, ARCH-087, ARCH-098, ARCH-099, ARCH-102, DES-137, DES-148, DES-150, DES-153, REQ-113, REQ-115, REQ-116
+- **greens:** IT-131, IT-132, UT-164
+- **files:** src/asset-sync.ts, src/workflow-catalog.ts, src/server.ts, src/workspace-gc.ts, src/authz.ts, src/errors.ts, src/webhook-registry.ts, tests/integration/legacy-asset-migration.test.ts, tests/integration/trigger-release-versioning.test.ts, tests/integration/webhook-registry.test.ts, tests/integration/webhook-migration.test.ts, tests/unit/error-catalog-closed.test.ts
+- **iter:** v24
+- **note:** One fixer, no file-ownership split (IMPL-187's reasoning, and AF-2 proved it again — its
+  fix reaches three files across two modules). Every fix RED first, and the red is quoted rather
+  than asserted. Commits in dispatch order: `9330028` (AF-1), `c2e4b64` (AF-3), `13fe5ee` (AF-2).
+
+  **`9330028` — AF-1, the data-destructive one.** ARCH-098's boot migration had never been written,
+  and the v24 sweep deletes every child of `<assetRoot>/` that is not a live workflow — which is
+  where a pre-v24 deployment's global asset tree lives. `migrateLegacyGlobalAssets()`
+  (`asset-sync.ts`) writes the legacy rows in one catalog transaction, moves the trees to
+  `<workRoot>/_global_assets`, then writes a marker file LAST; `WorkflowCatalog` gains
+  `putLegacyAssets()` and `readLegacyMcpProvisions()`, the latter reading the pre-v24
+  `mcp_provisions` table off DISK at `<workRoot>/mcp-registry.db` (the table `grep` cannot find in
+  `src/` because v24 deleted the module, not the operator's data). `server.ts` runs it BEFORE the GC
+  timer is armed — the ordering is the requirement, and IT-131 pins it by booting with a TTL and
+  asserting the tree survived real sweeps. RED: 4 of 6, first row
+  "the pre-v24 global skill was destroyed by the GC sweep (or never migrated)".
+
+  **`c2e4b64` — AF-3, the class rather than the instance.** `AuthzErrorCode` is now derived from
+  `AUTHZ_ERROR_CODES … as const satisfies readonly ErrorCode[]`, so a member outside the catalog is
+  a compile error at the declaration and the array is enumerable for UT-164. RED twice, both before
+  the key existed: `src/authz.ts(58,3): error TS2322` from `tsc --noEmit`, then 4 runtime failures
+  including `toErrorCode` degrading `PRINCIPAL_REQUIRED` to `INTERNAL_ERROR`.
+
+  **`13fe5ee` — AF-2, and the one place this dispatch deviated from its adjudication.** The storage
+  fix is the single line G-2 called for (`JSON.stringify(triggers ?? [])`). It turned FOUR
+  GREEN-PIN / positive-control tests red, all one class: a trigger bound at creation
+  (`schedule_create({workflow})` / `webhook_create({workflow})` — the door ARCH-099 says `create`
+  no longer has and AF-5 records as still shipped) stopped firing on every v24 workflow. The `NULL`
+  column had been doing double duty: "pre-v24 row" AND "did not arrive through the claim door".
+  Rather than flip those oracles (that closes a shipped door — a product decision, and it makes the
+  "no phantom fire" negatives vacuous) or revert (violates G-2), the membership check is gated on
+  the honest discriminator: `catalog.declaresTrigger(workflow, id)` — "was this id EVER declared by
+  a version of this workflow", the union `deregister` already computed, extracted so both callers
+  share one implementation. No new column, which matters because the webhook store has ONE binding
+  column and could not distinguish the doors any other way. ARCH-099 and DES-150 amended, both
+  noting the clause deletes itself when v25 closes the second door. RED in two stages, quoted in
+  IT-132's entry. **If the orchestrator prefers closing the create-time door instead, that is AF-5's
+  v25 work and `declaresTrigger` goes with it** — this is flagged as a deviation, not buried.
+
+  **Measured at the end (both exit 0):** `npx tsc --noEmit` clean;
+  `npx vitest run tests/unit tests/integration tests/acceptance` →
+  **303 files (302 passed, 1 skipped), 2183 cases (2157 passed, 26 skipped), 0 failed.**

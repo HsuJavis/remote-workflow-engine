@@ -1,4 +1,4 @@
-// UT-160 (v24 Gate 8 AF-3 / TASK-162, ARCH-087 + DES-137, adjudication (v24) #7 G-3): the closure
+// UT-164 (v24 Gate 8 AF-3 / TASK-162, ARCH-087 + DES-137, adjudication (v24) #7 G-3): the closure
 // of `ERROR_CATALOG` checked as a CLASS, not as the list of codes somebody remembered.
 //
 // The defect: `authz.ts` returns `PRINCIPAL_REQUIRED` (`authorize()`'s loopback-exempt refusal) and
@@ -27,7 +27,7 @@ import { describe, it, expect } from 'vitest';
 import { ERROR_CATALOG, toErrorCode } from '../../src/errors.js';
 import { AUTHZ_ERROR_CODES } from '../../src/authz.js';
 
-describe('ERROR_CATALOG is closed over every code authz can put on the wire (UT-160, AF-3)', () => {
+describe('ERROR_CATALOG is closed over every code authz can put on the wire (UT-164, AF-3)', () => {
   it('EVERY member of AuthzErrorCode is a key of ERROR_CATALOG', () => {
     const orphans = (AUTHZ_ERROR_CODES as readonly string[]).filter((code) => !(code in ERROR_CATALOG));
     expect(orphans, 'an authz refusal code a client can receive is outside the closed catalog').toEqual([]);

@@ -9435,3 +9435,63 @@ workflow can only be described WITH `version`, because the bare call is refused
 `CHANNEL_UNPUBLISHED`. Red before the fix: 4 of 6 (one case exposed that `runnable` is a
 name-level fact, not a version-level one — the assertion was corrected to the engine's real
 semantics before the fix, not after).
+
+### IT-131 — the pre-v24 asset migration, and the GC ordering that makes it a data-safety property (AF-1)
+- **status:** green
+- **traces:** REQ-113, ARCH-098, ARCH-102, DES-148, TASK-160
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v24
+
+File: `tests/integration/legacy-asset-migration.test.ts` (6 cases). A real `createServer()` over a
+seeded pre-v24 work root — a global skill tree at `<assetRoot>/skill/<name>` and a hand-built
+`mcp-registry.db` carrying the `mcp_provisions` table the deleted `src/mcp-registry.ts` used to own.
+Booted with `workspaceTtlMs: 15`, so REAL sweeps run before the assertions: the test asserts the
+tree survived a sweep, not merely that a migration function does something, because a test of the
+migration alone is green whichever order the two are wired in. The oracle is black-box (raw SELECTs
+over `catalog.db` plus the filesystem) so a missing migration fails behaviourally rather than at
+import. Also pinned: the moved-not-deleted pair (absence from `<assetRoot>/` alone is ALSO true when
+the sweep destroyed it), the `mcp_provisions` row's `config` and original `provisionedAt`, a second
+boot adding no duplicate rows, and an asset deleted by an admin staying deleted across the next boot
+(the marker file's reason for existing). Red before the fix: 4 of 6, the first being
+"the pre-v24 global skill was destroyed by the GC sweep (or never migrated)".
+
+### IT-132 — `triggers: []` is not a legacy NULL, and only a DECLARED trigger is bound by the release list (AF-2)
+- **status:** green
+- **traces:** REQ-115, ARCH-098, ARCH-099, DES-148, DES-150, TASK-161
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v24
+
+File: `tests/integration/trigger-release-versioning.test.ts` (6 cases). Real `WorkflowCatalog` and
+real `WebhookRegistry`, wired to each other as `server.ts` wires them; only `RunManager` is a
+recording spy, because "t1 does NOT run v2" is exactly "start() was never called". Cases: ARCH-098's
+own specified assertion (no post-migration row written `NULL`, over 12 registrations); the contract
+`server.ts:775` branches on (`resolve().triggers === []`, not `undefined`); a genuine pre-v24 row
+still reading `undefined`; the behaviour that was impossible — v1 `[t1]`, v2 `[]`, release moved to
+v2 ⇒ `409 NOT_IN_RELEASE`, `refusalCount 1`, no run — with a positive control firing first so the
+refusal cannot be green for an unrelated reason; and the two create-time-door cases (a trigger no
+version ever declared still fires; MIXED, where both doors are exercised on the same workflow).
+Red before the fix: 3 of 4 at the storage stage ("the trigger still fired a version that no longer
+declares it: expected 202 to be 409"), then 2 more at the discriminator stage ("a create-time-bound
+trigger was refused by a list it was never in: expected 409 to be 202").
+
+### UT-164 — the closed catalog checked as a CLASS: every AuthzErrorCode is a key (AF-3)
+- **status:** green
+- **traces:** REQ-116, ARCH-087, ARCH-088, DES-137, TASK-162
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v24
+
+File: `tests/unit/error-catalog-closed.test.ts` (4 cases). Pure unit over `ERROR_CATALOG` and
+`AUTHZ_ERROR_CODES`. The point is the quantifier: Gate 7.5 round 3 (D-14) added three missing keys
+and added nothing that would notice a fourth, and `PRINCIPAL_REQUIRED` was that fourth. Every member
+of the authz code array must be a catalog key, must round-trip through `toErrorCode` as itself
+(an uncatalogued code degrades to `INTERNAL_ERROR`, which is the consumer-visible loss), and must
+carry the catalog's `see`/`hint` so it appears in generated documentation. The reverse direction is
+NOT duplicated here — `tool-specs.test.ts` [C-6] and `tests/acceptance/v24-tool-surface.test.ts`
+already hold it. Red before the fix, in two stages: `tsc --noEmit` on the
+`satisfies readonly ErrorCode[]` declaration (TS2322), then 4 of 4 at runtime.

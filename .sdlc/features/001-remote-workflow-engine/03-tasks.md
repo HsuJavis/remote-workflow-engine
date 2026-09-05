@@ -1275,7 +1275,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **iter:** v24
 
 ### TASK-160 — the ARCH-098 boot migration, and a GC that cannot run before it (AF-1)
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-098, ARCH-102
 - **files:** src/asset-sync.ts, src/workspace-gc.ts, src/server.ts, src/workflow-catalog.ts, tests/integration/legacy-asset-migration.test.ts
 - **des:** DES-153, DES-155
@@ -1284,7 +1284,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **iter:** v24
 
 ### TASK-161 — `triggers: []` stops being indistinguishable from a legacy NULL (AF-2)
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-098, ARCH-099
 - **files:** src/workflow-catalog.ts, tests/integration/trigger-release-versioning.test.ts
 - **des:** DES-148, DES-149
@@ -1293,7 +1293,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **iter:** v24
 
 ### TASK-162 — `PRINCIPAL_REQUIRED` joins the closed catalog, and the lock checks BOTH directions (AF-3)
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-087, ARCH-088
 - **files:** src/errors.ts, tests/unit/error-catalog-closed.test.ts
 - **des:** DES-137
@@ -1302,7 +1302,7 @@ order opens a window in which one response's key oracle rejects what its own `di
 - **iter:** v24
 
 ### TASK-163 — backfill the missing IMPL entries, and make the omission detectable (DR-1)
-- **status:** draft
+- **status:** done
 - **traces:** ARCH-087
 - **files:** .sdlc/features/001-remote-workflow-engine/06-impl-log.md
 - **dod:** Three commits after IMPL-187 touched `src/` with no IMPL entry; the reviewer counts this as the TENTH occurrence. Backfill the three with their real commit shas and what they changed. Ten repetitions is not forgetfulness, it is a missing enforcement point, so ALSO record in the v25 debt section that the durable fix is to make "src changed without an IMPL row" mechanically checkable — a Gate 7 check or a trace.py rule — rather than something a person has to remember. Ledger-only task: no src changes, and it belongs to whoever writes the ledger, not to a parallel implementer.

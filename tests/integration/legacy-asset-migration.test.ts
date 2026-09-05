@@ -1,4 +1,4 @@
-// IT-134 (v24 Gate 8 AF-1 / TASK-160, ARCH-098 + ARCH-102, adjudication (v24) #7 G-1): the boot
+// IT-131 (v24 Gate 8 AF-1 / TASK-160, ARCH-098 + ARCH-102, adjudication (v24) #7 G-1): the boot
 // migration ARCH-098 specified and nobody wrote, plus the ORDERING that makes it a data-safety
 // property rather than a convenience.
 //
@@ -65,7 +65,7 @@ function seedPreV24Deployment(root: string): void {
 }
 
 beforeAll(async () => {
-  tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it134-'));
+  tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it131-'));
   seedPreV24Deployment(tmpDir);
   // `workspaceTtlMs > 0` is the exact precondition AF-1 identified: it is what arms the destructive
   // asset-tree branch of the sweep (`server.ts:836-849`). 15 ms => the sweep interval is 15 ms.
@@ -75,7 +75,7 @@ beforeAll(async () => {
 });
 afterAll(async () => { await server?.close(); rmSync(tmpDir, { recursive: true, force: true }); });
 
-describe('the pre-v24 global asset tree survives the v24 GC sweep (IT-134, AF-1, TASK-160)', () => {
+describe('the pre-v24 global asset tree survives the v24 GC sweep (IT-131, AF-1, TASK-160)', () => {
   it('THE ORDERING: after real sweeps have run, the legacy skill is still on disk — moved out of the swept tree', () => {
     const moved = join(tmpDir, '_global_assets', 'skill', SKILL, 'SKILL.md');
     expect(existsSync(moved), 'the pre-v24 global skill was destroyed by the GC sweep (or never migrated)').toBe(true);
@@ -106,7 +106,7 @@ describe('the pre-v24 global asset tree survives the v24 GC sweep (IT-134, AF-1,
   });
 });
 
-describe('the migration is idempotent and does not resurrect (IT-134, AF-1, TASK-160)', () => {
+describe('the migration is idempotent and does not resurrect (IT-131, AF-1, TASK-160)', () => {
   it('a SECOND boot over the same work root adds no duplicate rows and does not throw', async () => {
     const before = assetRows(tmpDir);
     await server.close();
