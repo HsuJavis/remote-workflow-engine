@@ -8247,3 +8247,29 @@ warning is unchanged and is repeated at the end of this section.
   而這次真的有一個冷模型付了代價:約 15 分鐘與三次額外註冊。列 v25。
 - **iter:** v24
 
+### VAL-165 — Playwright:兩個 dashboard 都用真的瀏覽器開過
+- **status:** green
+- **traces:** REQ-111, REQ-118
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** 2026-09-05 02:32–02:34 UTC,真的 Chromium(Playwright MCP)。
+  **(a) 引擎 dashboard** `http://127.0.0.1:8792/dashboard`(專用引擎、獨立 workRoot、無 auth):
+  標題 `Remote Workflow Engine — Dashboard`,console **僅 1 個 `favicon.ico` 404,無實質錯誤**。
+  註冊 `pw-debate`(五種形狀齊全的 Mermaid:`[/"…"/]` 觸發與產出、`(["…"])` 兩個 agent、
+  `{{"…"}}` 非-agent 彙總),點開卡片後**圖真的顯示出來**,內容與註冊時位元組相同:
+  `graph TD start[/"manual run_start"/] pro(["pro<br/>default · low · 60000"]) …`。
+  **這是 D-8 修好之後第一次在瀏覽器裡看到** —— 修好前每個 v24 工作流的 `mermaid` 都是 `null`。
+  `GET /api/workflows/pw-debate/describe` 回 257 字元、與註冊值相同,且 `mermaidNote` 不存在。
+  註記:dashboard **刻意不在前端渲染圖**(ADR-033,不載 Mermaid 函式庫),顯示的是原始碼 ——
+  所以「有圖」的斷言是「原始碼完整呈現」,不是「畫出 SVG」。
+  真實瀏覽器渲染的證明另在 VAL-157(headless Chrome 150 + mermaid-cli,11/11 SVG)。
+  **v23 REQ-105 的迴歸檢查**:`skeleton` 在整個頁面快照中出現 **0 次**,確認已完全移除。
+  **(b) SDLC 帳本 dashboard**(`python3 -m http.server` 提供,`file:` 協定被瀏覽器擋):
+  標題 `ISO-Agile SDLC 儀表板`,八個分頁(概覽/文件/追溯矩陣/溯源/圖表/迭代差異/追溯圖/缺口)
+  全部存在。點開「缺口」分頁**確實渲染出 19 筆**,含 `TASK-018`/`TASK-153`/`IMPL-082`,
+  與 `sh .sdlc/trace` 報的 19 個缺口一致。console 同樣只有 favicon 404。
+  截圖存於 `evidence/v24-engine-dashboard.png` 與 `evidence/v24-sdlc-dashboard-gaps.png`。
+  收尾:兩個測試用連接埠(8792/8799)已關,生產服務 PID 3652391 全程未受影響。
+- **iter:** v24
+
