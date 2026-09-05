@@ -71,10 +71,25 @@ describe('scanAgentCalls (UT-145, DES-143)', () => {
     expect(codes).toEqual(['effort', 'model', 'timeoutMs']);
   });
 
-  it('an unrelated key (e.g. appendPrompt) inside the options literal is NOT a violation', () => {
+  // v25 (#55, adjudication #9 I-1.4) REWRITES this case rather than deleting it — the same
+  // discipline adjudication #8 H-1 required when it overturned ADJ-A1. It used to read "an
+  // unrelated key (e.g. appendPrompt) inside the options literal is NOT a violation", and that
+  // sentence WAS the defect: an options object that accepts anything and honours only what it
+  // recognises tells an author nothing. `appendPrompt` in particular is the fourth member of
+  // TUNABLE_KEYS, which the scanner's own hard-coded triple did not know about, so it took the
+  // "unrelated" branch while its three siblings were refused. Both halves are fixed: a tunable
+  // answers PARAM_IN_SCRIPT, a genuinely unrecognised key answers PARAM_UNKNOWN (UT-165), and
+  // nothing is accepted-and-dropped.
+  it('appendPrompt inside the options literal ⇒ PARAM_IN_SCRIPT (a tunable in the wrong place, not an "unrelated key")', () => {
     const src = 'agent("plan", { appendPrompt: "note" });';
     const { violations } = scanAgentCalls(src);
-    expect(violations).toEqual([]);
+    expect(violations).toContainEqual(expect.objectContaining({ code: 'PARAM_IN_SCRIPT', key: 'appendPrompt' }));
+  });
+
+  it('a key that is neither an AgentOpts field nor a tunable ⇒ PARAM_UNKNOWN, never silently accepted', () => {
+    const src = 'agent("plan", { unrelatedKey: "note" });';
+    const { violations } = scanAgentCalls(src);
+    expect(violations).toContainEqual(expect.objectContaining({ code: 'PARAM_UNKNOWN', key: 'unrelatedKey' }));
   });
 
   it('a label failing the format regex ⇒ AGENT_LABEL_FORMAT at scan time', () => {

@@ -3,6 +3,11 @@
 // checks once, before the dispatch switch. Pure data + one projection; imports only the `ErrorCode`
 // TYPE from errors.ts (DES-137) so every row's `errors[]` is tsc-checked against the closed catalog.
 import { ERROR_CATALOG, type ErrorCode } from './errors.js';
+// v25 (#55): the ONE other value import this file takes, and for the same reason as the type one
+// above — `run_start.overrides`'s description enumerates the locked keys, and a transcribed copy of
+// that vocabulary is what let `tools` survive here after the pipeline moved to `allowedTools`.
+// `params/contract.ts` is pure (no I/O, no VM) and imports only `ErrorCode`, so this adds no cycle.
+import { LOCKED_KEYS } from './params/contract.js';
 
 /** Declared here (not authz.ts) so the dependency between the two files stays one-directional —
  *  authz.ts imports Role from this module (ARCH-088). */
@@ -364,7 +369,11 @@ export const TOOL_SPECS = [
             "Per-agent parameter overrides, keyed by the script's own agent label: " +
             "{agents: {'<label>': {model?, effort?, timeoutMs?, appendPrompt?}}}. " +
             'There are no workflow-wide override fields — an override reaches exactly the label it names. ' +
-            'prompt/tools/skills/mcp/workdir/cwd are author-locked (PARAM_LOCKED).',
+            // v25 (#55): INTERPOLATED, not transcribed. The hand-written copy of this list said
+            // `tools` and outlived the pipeline's `allowedTools` by three iterations; the drift-lock
+            // in params-admission.test.ts checks this description against LOCKED_KEYS itself, and a
+            // second literal is one more thing that can fall behind it.
+            `${LOCKED_KEYS.join('/')} are author-locked (PARAM_LOCKED).`,
         },
         seed: { type: 'array' },
         seedManifest: { type: 'array' },

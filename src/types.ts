@@ -67,6 +67,19 @@ export interface AgentOpts {
    *  entries are injected (strictMcpConfig preserved); an unprovisioned name is already rejected at
    *  submission (SubmissionValidator). Survives the sandbox boundary as an opaque opts field. */
   mcp?: string[];
+  /** v25 (issue #55, adjudication #9 I-1.1): the tool surface handed to THIS agent —
+   *  `agent('a', {prompt, allowedTools: []})` gives it no tools at all, which is what a prose-only
+   *  task on a small model needs (a model holding Write/Edit/Bash answers with a tool-call envelope
+   *  instead of prose). Precedence, unchanged and now declared rather than inferred: this per-call
+   *  value > the agentType definition's `tools` frontmatter > the gateway's configured
+   *  `defaultAllowedTools` (agent-executor.ts, claude-agent-sdk-client.ts).
+   *
+   *  The field is not new — the whole pipeline has honoured it since v21 — but it was reached
+   *  through `(req.opts as AgentOpts & {allowedTools?: string[]})` at both consumers, so it existed
+   *  for neither the compiler nor an author reading this interface, and `LOCKED_KEYS` advertised a
+   *  DIFFERENT name (`tools`) that addressed nothing. That gap is #55: the v24 cold subject wrote
+   *  `tools: []`, was silently ignored, and worked around a capability it already had. */
+  allowedTools?: string[];
 }
 
 export interface AgentRecord {

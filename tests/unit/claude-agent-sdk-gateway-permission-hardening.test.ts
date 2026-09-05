@@ -87,8 +87,8 @@ describe('ClaudeAgentSdkGatewayClient: permission/tool-surface hardening (UT-039
 
     await client.invoke(
       req({
-        // @ts-expect-error — allowedTools is a verifier-authored AgentOpts extension (same precedent
-        // as UT-024) representing an agentType's own explicit opt-in curation.
+        // v25 (#55): allowedTools is a declared AgentOpts field now — the suppression this call
+        // needed ("a verifier-authored AgentOpts extension") is gone with it.
         allowedTools: ['Read', 'Write', 'Bash'],
       }),
     );

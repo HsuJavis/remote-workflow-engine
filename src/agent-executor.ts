@@ -350,13 +350,16 @@ export class AgentExecutor implements AgentSpawner {
     // params directly; `resolveCallParams`'s former per-call/agentType merge is gone with it.
     const eff: EffectiveCallParams = { ...req.runParams };
 
-    let effectiveOpts: AgentOpts & { allowedTools?: string[] } = {
+    let effectiveOpts: AgentOpts = {
       ...req.opts,
       model: eff.model,
       effort: eff.effort,
       timeoutMs: eff.timeoutMs,
     };
-    const callerAllowedTools = (req.opts as AgentOpts & { allowedTools?: string[] }).allowedTools;
+    // v25 (#55, adjudication #9 I-1.1): read as a DECLARED field. The `as AgentOpts & {allowedTools}`
+    // cast that stood here made the option invisible to the compiler and to anyone reading
+    // `AgentOpts` — which is how a shipped capability came to have no author-facing name.
+    const callerAllowedTools = req.opts.allowedTools;
     // D-F11: the agentType definition's own `tools` frontmatter field is authoritative for the
     // outbound opts.allowedTools — but only when the caller didn't already set one of their own
     // (an explicit per-call opts.allowedTools always wins, same precedence rule `model` follows).

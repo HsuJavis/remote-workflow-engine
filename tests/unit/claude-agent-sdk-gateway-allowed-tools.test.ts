@@ -61,8 +61,10 @@ describe('ClaudeAgentSdkGatewayClient curates options.allowedTools per call (UT-
 
     await client.invoke({
       prompt: 'hi',
-      // @ts-expect-error — allowedTools is a verifier-authored design extension to AgentOpts,
-      // not yet in src/types.ts (flagged for Gate 6, same precedent as D-V5's agentType).
+      // v25 (#55): the `@ts-expect-error` that stood here said allowedTools was "a verifier-authored
+      // design extension to AgentOpts, not yet in src/types.ts (flagged for Gate 6)". It is now
+      // declared, so the suppression is gone and the compiler checks this call — the flag was open
+      // for three iterations and is exactly why no author could discover the option.
       opts: { allowedTools: ['Read', 'Write'] },
       runId: 'r1',
       agentId: 'a1',

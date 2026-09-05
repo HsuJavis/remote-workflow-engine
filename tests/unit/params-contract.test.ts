@@ -43,8 +43,15 @@ function baseAgentSpec(overrides: Partial<AgentParamSpec> = {}): AgentParamSpec 
 }
 
 describe('LOCKED_KEYS / TUNABLE_KEYS / EFFORT_RANK vocabulary (DES-101, ADR-001)', () => {
-  it('LOCKED_KEYS is exactly the 6 D12-locked keys', () => {
-    expect([...LOCKED_KEYS].sort()).toEqual(['cwd', 'mcp', 'prompt', 'skills', 'tools', 'workdir'].sort());
+  // v25 (#55, adjudication #9 I-1.2): the member was spelled `tools`, but the pipeline that
+  // actually curates an agent's tool surface reads `allowedTools` end to end (agent-executor.ts
+  // per-call > agentType frontmatter > defaults) and `tools` reaches nothing. A locked-key list is
+  // a PUBLIC vocabulary — it is rendered into `workflow_authoring_guide`, the `run_start.overrides`
+  // schema description and `workflow_describe.lockedKeys` — so a name in it that addresses nothing
+  // is worse than an omission: it is what the v24 cold subject copied, and it was silently dropped.
+  // The rename is the whole point of the fix; this pin moves WITH it, deliberately.
+  it('LOCKED_KEYS is exactly the 6 D12-locked keys, spelled as the pipeline spells them', () => {
+    expect([...LOCKED_KEYS].sort()).toEqual(['allowedTools', 'cwd', 'mcp', 'prompt', 'skills', 'workdir'].sort());
   });
 
   it('TUNABLE_KEYS is exactly the 4 engine-global harness knobs', () => {

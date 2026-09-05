@@ -3,7 +3,10 @@
 // register), the workflow_get MCP tool, and the dashboard's workflow-card drill-in.
 import { runInNewContext } from 'node:vm';
 import { checkMeta } from './sandbox/guards.js';
-import { parseParamContract, retiredDefaults, type ParamContract, type Err as ParamContractErr } from './params/contract.js';
+import { parseParamContract, retiredDefaults, TUNABLE_KEYS, type ParamContract, type Err as ParamContractErr } from './params/contract.js';
+// v25 (#55): the scanner's accepted-key set is derived from the AgentOpts TYPE, so the two
+// cannot drift apart (see AGENT_OPT_KEYS below).
+import type { AgentOpts } from './types.js';
 
 export interface WorkflowMeta {
   description: string;
@@ -144,12 +147,18 @@ export type AgentCallViolationCode =
   | 'AGENT_LABEL_NOT_LITERAL'
   | 'AGENT_LABEL_FORMAT'
   | 'AGENT_OPTS_NOT_LITERAL'
-  | 'PARAM_IN_SCRIPT';
+  | 'PARAM_IN_SCRIPT'
+  /** v25 (#55, adjudication #9 I-1.4): an options key that is neither an `AgentOpts` field nor a
+   *  tunable — same ruling `meta.params` has enforced since v21, now on the side that had it
+   *  ZERO times. A key that reads as accepted and reaches nothing is the defect. */
+  | 'PARAM_UNKNOWN';
 
 export interface AgentCallViolation {
   line: number;
   code: AgentCallViolationCode;
-  key?: 'model' | 'effort' | 'timeoutMs';
+  /** The offending option key. Closed to the tunables for `PARAM_IN_SCRIPT`; free-form for
+   *  `PARAM_UNKNOWN`, whose whole job is to hand back the name the author actually wrote. */
+  key?: string;
   hint: string;
 }
 
@@ -161,7 +170,41 @@ export interface AgentCallScan {
 
 const AGENT_CALL_RE = /(?<!\.)\bagent\s*\(/g;
 const AGENT_LABEL_FORMAT_RE = /^[A-Za-z_][\w-]*$/;
-const LOCKED_PARAM_KEYS = new Set(['model', 'effort', 'timeoutMs']);
+// v25 (#55): derived from `TUNABLE_KEYS` rather than transcribed. The literal that stood here knew
+// three of the four tunables, so `appendPrompt` written inside an `agent()` call was accepted and
+// dropped — the same silence #55 is about, in the file that is supposed to catch it.
+const LOCKED_PARAM_KEYS = new Set<string>(TUNABLE_KEYS);
+
+/** v25 (#55, adjudication #9 I-1.4): the CLOSED set of keys an `agent()` options literal may carry
+ *  — every `AgentOpts` field plus `prompt`, which the options object carries but the type does not
+ *  (the sandbox marshals it beside the label, `run-manager.ts:_handleAgentRequest`).
+ *
+ *  Written as a `Record<keyof AgentOpts | 'prompt', true>` on purpose: adding a field to `AgentOpts`
+ *  without adding it here is a COMPILE error, so the accepted set cannot silently fall behind the
+ *  type the way `LOCKED_KEYS`'s `tools` fell behind `allowedTools` for three iterations. Same
+ *  closed-class move as `AUTHZ_ERROR_CODES satisfies readonly ErrorCode[]` (TASK-162), for the same
+ *  reason: this ledger has now recorded one-directional vocabulary drift four times. */
+const AGENT_OPT_KEYS: Record<keyof AgentOpts | 'prompt', true> = {
+  prompt: true, label: true, phase: true, schema: true, model: true, effort: true,
+  timeoutMs: true, isolation: true, agentType: true, mcp: true, allowedTools: true,
+};
+
+/** The keys an author may actually write, in the refusal message: the closed set MINUS the tunables,
+ *  which have their own more specific `PARAM_IN_SCRIPT` refusal naming the declaration site. */
+export const WRITABLE_AGENT_OPT_KEYS = Object.keys(AGENT_OPT_KEYS).filter((k) => !LOCKED_PARAM_KEYS.has(k));
+
+/** Near-miss pointers: a name an author is likely to reach for, and the one that works. `tools` is
+ *  not hypothetical — it is `LOCKED_KEYS`'s own former spelling and what the v24 cold subject wrote
+ *  before spending fifteen minutes routing around a capability it already had (#55). */
+const AGENT_OPT_NEAR_MISSES: Record<string, string> = {
+  tools: 'allowedTools',
+  allowed_tools: 'allowedTools',
+  tool: 'allowedTools',
+  system: 'agentType',
+  systemPrompt: 'agentType',
+  name: 'label',
+  timeout: 'timeoutMs',
+};
 const WORKFLOW_CALL_RE = /(?<!\.)\bworkflow\s*\(/g;
 
 /** DES-143 boundary: "calls inside a nested `workflow(` argument list are NOT scanned" means a
@@ -276,8 +319,22 @@ export function scanAgentCalls(script: string): AgentCallScan {
           violations.push({
             line,
             code: 'PARAM_IN_SCRIPT',
-            key: key as 'model' | 'effort' | 'timeoutMs',
+            key,
             hint: `move '${key}' to meta.params.agents.${label}.${key}.default`,
+          });
+        } else if (!Object.hasOwn(AGENT_OPT_KEYS, key)) {
+          // v25 (#55, adjudication #9 I-1.4). `Object.hasOwn`, not `key in` — `constructor` and
+          // `toString` are `in` every object literal and would be waved through.
+          const nearMiss = AGENT_OPT_NEAR_MISSES[key];
+          violations.push({
+            line,
+            code: 'PARAM_UNKNOWN',
+            key,
+            hint:
+              `'${key}' is not an agent() option` +
+              (nearMiss !== undefined ? ` — did you mean '${nearMiss}'?` : '') +
+              `. Accepted: ${WRITABLE_AGENT_OPT_KEYS.join(', ')}` +
+              `. ${[...LOCKED_PARAM_KEYS].join('/')} belong in meta.params.agents.<label>.<key>.default`,
           });
         }
       }

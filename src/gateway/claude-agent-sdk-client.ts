@@ -466,8 +466,11 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
 
     // D-F11: caller-supplied (agentType-derived) curation wins; else the configured default core
     // set; else a built-in minimal core set — never left unset (see BUILT_IN_CORE_TOOLS above).
+    // v25 (#55): declared field, not a cast — the SECOND site the work order did not name and the
+    // one that decides what the session actually gets. `[]` is honoured (`??`, not `||`): an empty
+    // surface is a real answer, not an absent one.
     const baseTools =
-      (req.opts as AgentOpts & { allowedTools?: string[] }).allowedTools ??
+      req.opts.allowedTools ??
       this._config.defaultAllowedTools ??
       BUILT_IN_CORE_TOOLS;
     // A (per-provider tool curation): a non-Anthropic model driving the claude CLI mis-uses the

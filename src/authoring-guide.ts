@@ -11,6 +11,9 @@
 // `docs/AUTHORING.md` is generated from this SAME builder by scripts/gen-authoring-md.ts — never
 // hand-edited (tests/unit/authoring-md-generated.test.ts is the diff lock).
 import { LOCKED_KEYS, TUNABLE_KEYS, type Effort } from './params/contract.js';
+// v25 (#55): the accepted `agent()` option keys the guide lists come from the scanner that
+// enforces them, so the manual cannot teach a set the engine does not check.
+import { WRITABLE_AGENT_OPT_KEYS } from './workflow-meta.js';
 import { ERROR_CATALOG } from './errors.js';
 // v24 Gate 7.5 (D-4): the diagram grammar is READ from the checker, not re-typed here. Both consts
 // carry a comment saying this file should interpolate them; it did not, and the hand-written prose
@@ -298,8 +301,42 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         `refused \`DEFAULTS_RETIRED\`, naming \`meta.params.agents.<label>.<key>.default\` as the ` +
         `replacement.\n\n` +
         'The engine-owned keys are never written inside an `agent()` call\'s options literal — ' +
-        `\`model\`, \`effort\`, and \`timeoutMs\` there are refused \`SCAN_VIOLATION\`, naming the key ` +
-        `and the \`meta.params.agents.<label>.<key>.default\` it belongs in instead.`,
+        `\`${TUNABLE_KEYS.join('`, `')}\` there are refused \`SCAN_VIOLATION\`, naming the key ` +
+        `and the \`meta.params.agents.<label>.<key>.default\` it belongs in instead.\n\n` +
+        // v25 (#55, adjudication #9 I-1.3/I-1.4): the guide has to say that the options object is
+        // CLOSED, because until v25 it was not, and a dropped key is indistinguishable from a
+        // honoured one at the call site.
+        'The options object is closed. An `agent()` option key that is not one of ' +
+        `\`${WRITABLE_AGENT_OPT_KEYS.join('`, `')}\` is refused \`SCAN_VIOLATION: PARAM_UNKNOWN\` at ` +
+        'registration, naming the key you wrote and listing the ones that are accepted. It is never ' +
+        'silently dropped — before v25 it was, and an author who reached for a plausible-sounding ' +
+        'name got a run that looked correct and ignored the option.',
+    ),
+  );
+
+  parts.push(
+    section(
+      "The agent's tool surface",
+      // v25 (#55): the capability shipped in v21 and no author-facing surface named it until now.
+      // The second paragraph is the knowledge the v24 cold subject had to derive from a failing
+      // run; REQ-117's rule is that such knowledge belongs here so nobody derives it twice.
+      'Each `agent()` call decides which tools its model may use, with `allowedTools`:\n\n' +
+        '```js\n' +
+        "const verdict = await agent('judge', { prompt: 'Answer with one word: PASS or FAIL.', allowedTools: [] });\n" +
+        "const editor  = await agent('editor', { prompt: 'Fix the typo in README.md.', allowedTools: ['Read', 'Edit'] });\n" +
+        '```\n\n' +
+        'Three layers set it, and the first one present wins: the per-call `allowedTools` above, then ' +
+        "the `tools` field in an `agentType` definition's frontmatter (selected with the `agentType` " +
+        'option), then this deployment\'s configured `defaultAllowedTools`. Only the first is settable ' +
+        'from a script, and it is the only one of the three names that goes inside an `agent()` call.\n\n' +
+        '`allowedTools: []` means no tools at all, and for a prose-only task that is usually what you ' +
+        'want — especially on a smaller model. A smaller model handed a working tool surface tends to ' +
+        'answer with a tool call rather than with prose: ask it to produce a summary while it holds ' +
+        '`Write`, and the reply can come back as a tool-call envelope your script then has to unwrap. ' +
+        'Emptying the surface removes the option and the model answers in text. It also makes the call ' +
+        'markedly cheaper — the tool definitions are prompt tokens on every turn (measured on this ' +
+        "engine: 162 input tokens with an empty surface against 1722 with the default one, for the " +
+        'same prompt).',
     ),
   );
 

@@ -153,3 +153,43 @@ describe("the guide's examples use the shapes the guide's own table declares (UT
     },
   );
 });
+
+// UT-166 (v25, issue #55, adjudication #9 I-1.3): the guide has to TEACH the per-agent tool
+// surface, and the lesson that goes with it.
+//
+// Two separate failures met in the v24 tmux experiment. (a) The capability — an empty tool surface
+// per agent — has shipped since v21 under the name `allowedTools`, and no author-facing surface
+// named it: not the guide, not `AgentOpts`, not the locked-key list (which said `tools`). (b) The
+// knowledge — a small model handed Write/Edit/Bash will answer with a tool-call envelope instead of
+// prose — the cold subject had to derive on its own, from a failing run, in the dark. REQ-117's
+// standing rule is that a thing a cold model had to derive belongs on the surface, so the next one
+// does not derive it again.
+//
+// RED before the fix: `buildAuthoringGuide()` contained neither the word `allowedTools` nor any
+// mention of tool surfaces at all.
+describe('the guide teaches the per-agent tool surface and why to empty it (UT-166, #55)', () => {
+  const text = buildAuthoringGuide(CEILINGS);
+
+  it('names the option an author can actually write', () => {
+    expect(text).toMatch(/allowedTools/);
+  });
+
+  it('shows the empty surface — the exact spelling that fixes the prose-only case', () => {
+    expect(text).toMatch(/allowedTools:\s*\[\]/);
+  });
+
+  it('states the lesson: a small model handed a tool surface emits tool calls instead of prose', () => {
+    expect(text).toMatch(/small(er)?[- ]model/i);
+    expect(text).toMatch(/tool call/i);
+  });
+
+  it('disambiguates the three layers by their real names, since guessing between them is the defect', () => {
+    // per-call `allowedTools` > agentType frontmatter `tools` > config `defaultAllowedTools`
+    expect(text).toMatch(/defaultAllowedTools/);
+    expect(text).toMatch(/agentType/);
+  });
+
+  it('warns that an unknown agent() option key is refused, not ignored', () => {
+    expect(text).toMatch(/PARAM_UNKNOWN/);
+  });
+});

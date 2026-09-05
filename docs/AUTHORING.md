@@ -34,11 +34,26 @@ export const meta = {
 
 `meta.params.knobs` and `meta.defaults` are retired — a script that declares either is refused `DEFAULTS_RETIRED`, naming `meta.params.agents.<label>.<key>.default` as the replacement.
 
-The engine-owned keys are never written inside an `agent()` call's options literal — `model`, `effort`, and `timeoutMs` there are refused `SCAN_VIOLATION`, naming the key and the `meta.params.agents.<label>.<key>.default` it belongs in instead.
+The engine-owned keys are never written inside an `agent()` call's options literal — `model`, `effort`, `timeoutMs`, `appendPrompt` there are refused `SCAN_VIOLATION`, naming the key and the `meta.params.agents.<label>.<key>.default` it belongs in instead.
+
+The options object is closed. An `agent()` option key that is not one of `prompt`, `label`, `phase`, `schema`, `isolation`, `agentType`, `mcp`, `allowedTools` is refused `SCAN_VIOLATION: PARAM_UNKNOWN` at registration, naming the key you wrote and listing the ones that are accepted. It is never silently dropped — before v25 it was, and an author who reached for a plausible-sounding name got a run that looked correct and ignored the option.
+
+## The agent's tool surface
+
+Each `agent()` call decides which tools its model may use, with `allowedTools`:
+
+```js
+const verdict = await agent('judge', { prompt: 'Answer with one word: PASS or FAIL.', allowedTools: [] });
+const editor  = await agent('editor', { prompt: 'Fix the typo in README.md.', allowedTools: ['Read', 'Edit'] });
+```
+
+Three layers set it, and the first one present wins: the per-call `allowedTools` above, then the `tools` field in an `agentType` definition's frontmatter (selected with the `agentType` option), then this deployment's configured `defaultAllowedTools`. Only the first is settable from a script, and it is the only one of the three names that goes inside an `agent()` call.
+
+`allowedTools: []` means no tools at all, and for a prose-only task that is usually what you want — especially on a smaller model. A smaller model handed a working tool surface tends to answer with a tool call rather than with prose: ask it to produce a summary while it holds `Write`, and the reply can come back as a tool-call envelope your script then has to unwrap. Emptying the surface removes the option and the model answers in text. It also makes the call markedly cheaper — the tool definitions are prompt tokens on every turn (measured on this engine: 162 input tokens with an empty surface against 1722 with the default one, for the same prompt).
 
 ## Locked vs. tunable
 
-The six locked keys are engine-owned and can never be overridden by a caller: prompt, tools, skills, mcp, workdir, cwd. The four tunable keys an override may target, per declared agent label, are: model, effort, timeoutMs, appendPrompt.
+The six locked keys are engine-owned and can never be overridden by a caller: prompt, allowedTools, skills, mcp, workdir, cwd. The four tunable keys an override may target, per declared agent label, are: model, effort, timeoutMs, appendPrompt.
 
 ## Engine ceilings (this deployment)
 
@@ -87,7 +102,7 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `AGENT_DECLARED_NOT_IN_SCRIPT` — params.agents declares a label no agent() call in the script uses
 - `PARAM_CONTRACT_INVALID` — the declared parameter contract itself is malformed or out of its own bounds
 - `PARAM_OUT_OF_RANGE` — a declared or overridden parameter value is outside its allowed range
-- `PARAM_LOCKED` — a caller override targets a key the author locked (prompt/tools/skills/mcp/workdir/cwd)
+- `PARAM_LOCKED` — a caller override targets a key the author locked (prompt/allowedTools/skills/mcp/workdir/cwd)
 - `PARAM_UNKNOWN` — a caller override names a parameter the contract does not declare
 - `UNKNOWN_AGENT_LABEL` — a caller override names an agent label the contract does not declare
 - `DEFAULTS_RETIRED` — meta.params.knobs / meta.defaults are retired; declare params.agents.<label> instead

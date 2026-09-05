@@ -12,7 +12,16 @@
 // Pure: no I/O, no clock, no VM, no randomness.
 import type { ErrorCode } from '../errors.js';
 
-export const LOCKED_KEYS = ['prompt', 'tools', 'skills', 'mcp', 'workdir', 'cwd'] as const;
+// v25 (issue #55, adjudication #9 I-1.2): the second member was spelled `tools` while the pipeline
+// that curates an agent's tool surface reads `allowedTools` at every rung (per-call opts >
+// agentType frontmatter > `defaultAllowedTools`). `allowedTools` is the name that MOVED here,
+// because it is the one that already works: it is what `AgentOpts` now declares, what
+// `agent-executor.ts` resolves and what `claude-agent-sdk-client.ts` puts on the session. Renaming
+// the pipeline instead would have had to move the agentType frontmatter key and the whole
+// precedence chain to satisfy a list that reaches nothing. This list is PUBLIC — it renders into
+// `workflow_authoring_guide`, `run_start.overrides`'s schema description and
+// `workflow_describe.lockedKeys` — so the name in it must be the name an author would write.
+export const LOCKED_KEYS = ['prompt', 'allowedTools', 'skills', 'mcp', 'workdir', 'cwd'] as const;
 export const TUNABLE_KEYS = ['model', 'effort', 'timeoutMs', 'appendPrompt'] as const;
 
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';

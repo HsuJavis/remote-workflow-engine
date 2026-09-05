@@ -60,7 +60,7 @@ export const ERROR_CATALOG = {
   AGENT_DECLARED_NOT_IN_SCRIPT: { see: 'workflow_authoring_guide', hint: 'params.agents declares a label no agent() call in the script uses' },
   PARAM_CONTRACT_INVALID: { see: 'workflow_authoring_guide', hint: 'the declared parameter contract itself is malformed or out of its own bounds' },
   PARAM_OUT_OF_RANGE: { see: 'workflow_authoring_guide', hint: 'a declared or overridden parameter value is outside its allowed range' },
-  PARAM_LOCKED: { see: 'workflow_authoring_guide', hint: 'a caller override targets a key the author locked (prompt/tools/skills/mcp/workdir/cwd)' },
+  PARAM_LOCKED: { see: 'workflow_authoring_guide', hint: 'a caller override targets a key the author locked (prompt/allowedTools/skills/mcp/workdir/cwd)' },
   PARAM_UNKNOWN: { see: 'workflow_authoring_guide', hint: 'a caller override names a parameter the contract does not declare' },
   UNKNOWN_AGENT_LABEL: { see: 'workflow_authoring_guide', hint: 'a caller override names an agent label the contract does not declare' },
   DEFAULTS_RETIRED: { see: 'workflow_authoring_guide', hint: 'meta.params.knobs / meta.defaults are retired; declare params.agents.<label> instead' },
