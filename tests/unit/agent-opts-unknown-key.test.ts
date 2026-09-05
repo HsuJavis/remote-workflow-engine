@@ -16,7 +16,9 @@
 // mode, not the missing knob.
 //
 // Mock policy (unit tier): `scanAgentCalls` is a pure string scan — no mocks, no I/O, nothing to
-// fake. The registration-level consequence (`SCAN_VIOLATION` over the real catalog) is IT-133's.
+// fake. The registration-level consequence — the same call refused `SCAN_VIOLATION` by a REAL
+// catalog, which is where an author actually meets it — is IT-085's last case in
+// `tests/integration/registration-enforcement.test.ts`.
 //
 // RED before the fix: every case below fails with `violations` = `[]` — the scanner had no notion
 // of an unaccepted key at all.
@@ -93,5 +95,29 @@ describe('unknown agent() option keys are refused at scan time (UT-165, #55)', (
 
   it('a nested object value does not leak its inner keys into the check', () => {
     expect(scanAgentCalls('agent("plan", { schema: { type: "object", nosuchknob: 1 } });').violations).toEqual([]);
+  });
+
+  // KNOWN BOUNDARY, pinned so it is a documented limit rather than a surprise. DES-143 accepted
+  // comment-blindness from the start (a commented-out `agent(` IS matched — cheaper than a comment
+  // stripper), but before v25 that only misfired on a comment containing `model:`/`effort:`/
+  // `timeoutMs:`; the closed check widens it to ANY colon in a comment inside the options literal.
+  // The remedy is a shared `splitTopLevel` that skips comments, which is a change to the scanner's
+  // one string-splitting primitive and does not belong in this fix.
+  it('KNOWN LIMIT: a `//` comment carrying a colon inside the options literal reads as a key', () => {
+    const src = "agent('a', {\n  prompt: 'x', // TODO: tune this\n  label: 'y',\n});";
+    const { violations } = scanAgentCalls(src);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({ code: 'PARAM_UNKNOWN', key: '// TODO' });
+  });
+
+  it('the near-miss hint reads as one sentence (this message is the entire point of the item)', () => {
+    const hint = scanAgentCalls('agent("plan", { tools: [] });').violations[0]?.hint ?? '';
+    expect(hint).toContain("did you mean 'allowedTools'? Accepted:");
+    expect(hint, 'a stray "?." would make the one message #55 exists for read like a typo').not.toContain('?.');
+  });
+
+  it('`skills` — advertised in LOCKED_KEYS, never an agent() option — points at where it IS declared', () => {
+    const hint = scanAgentCalls('agent("plan", { skills: ["x"] });').violations[0]?.hint ?? '';
+    expect(hint).toContain('meta.params.agents.<label>.skills');
   });
 });

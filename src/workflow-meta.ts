@@ -204,6 +204,10 @@ const AGENT_OPT_NEAR_MISSES: Record<string, string> = {
   systemPrompt: 'agentType',
   name: 'label',
   timeout: 'timeoutMs',
+  // `skills` is advertised in `LOCKED_KEYS` but is not an `agent()` option — it is declared per
+  // label in the contract. Same incident shape as `tools`: a name the surface shows an author, in a
+  // place that never read it.
+  skills: 'meta.params.agents.<label>.skills',
 };
 const WORKFLOW_CALL_RE = /(?<!\.)\bworkflow\s*\(/g;
 
@@ -326,14 +330,15 @@ export function scanAgentCalls(script: string): AgentCallScan {
           // v25 (#55, adjudication #9 I-1.4). `Object.hasOwn`, not `key in` — `constructor` and
           // `toString` are `in` every object literal and would be waved through.
           const nearMiss = AGENT_OPT_NEAR_MISSES[key];
+          const lead = nearMiss !== undefined
+            ? `'${key}' is not an agent() option — did you mean '${nearMiss}'?`
+            : `'${key}' is not an agent() option.`;
           violations.push({
             line,
             code: 'PARAM_UNKNOWN',
             key,
             hint:
-              `'${key}' is not an agent() option` +
-              (nearMiss !== undefined ? ` — did you mean '${nearMiss}'?` : '') +
-              `. Accepted: ${WRITABLE_AGENT_OPT_KEYS.join(', ')}` +
+              `${lead} Accepted: ${WRITABLE_AGENT_OPT_KEYS.join(', ')}` +
               `. ${[...LOCKED_PARAM_KEYS].join('/')} belong in meta.params.agents.<label>.<key>.default`,
           });
         }

@@ -2919,6 +2919,19 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   `PARAM_UNKNOWN` case, already satisfied by the guide's error table) is recorded as such rather
   than implied.
 
+  **Amended by the follow-up commit (review pass).** Four things the first pass left: the WIRE was
+  never asserted — UT-165 proved the scanner, and the work order says *at registration*, so IT-085's
+  file gains the end-to-end case (real catalog, `SCAN_VIOLATION`, both `'tools'` and `allowedTools`
+  in the message, nothing stored), written after the fix and recorded as red-not-observed. UT-165's
+  own header had pointed at IT-133, which is the terminal-warnings test — a false cross-reference in
+  a ledger that has spent an adjudication on exactly that class. The near-miss hint rendered as
+  `did you mean 'allowedTools'?. Accepted:`, a stray `?.` in the single message this item exists to
+  produce. And the closed check silently widened one accepted limit: comment-blindness used to
+  misfire only on a comment containing `model:`/`effort:`/`timeoutMs:` and now catches any colon, so
+  it is pinned as a KNOWN LIMIT case and written into DES-163's boundary rather than discovered
+  later. `skills` joined the near-miss map for the same reason `tools` did — it is advertised in
+  `LOCKED_KEYS` and is not an `agent()` option.
+
 ### IMPL-191 — #53 gets instrumentation, not a guess at the race
 - **status:** done
 - **traces:** TASK-165, ARCH-002, ARCH-006, DES-165, REQ-006
@@ -2948,3 +2961,11 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   is fixed. Its own "What a fix needs first" asks for a reliable repro and names "assert on
   transitions as well as status" as the tighter signal — this is that signal, which is a
   prerequisite for the fix rather than the fix.
+
+  **Amended by the follow-up commit (review pass).** `_checkTerminalHasTransition` awaited
+  `getTransitions` OUTSIDE the sink's try/catch, so a store that threw on that read — an extra read
+  `status()` never made before — would have propagated out of a call that used to succeed. The whole
+  check body is guarded now. "Observability only" has to mean that literally: an observation that
+  can break the thing it observes is not an observation. Confirmed while checking coverage that
+  `run_status` — the tool that observed #53 — does reach `RunManager.status()`
+  (`mcp-facade.ts:572`), so the instrumented read is the one the incident went through.

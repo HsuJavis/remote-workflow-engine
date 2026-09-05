@@ -685,16 +685,22 @@ export class RunManager {
     if (!TERMINAL.includes(view.status) || view.terminalAt !== undefined) return;
     if (this._warnedMissingTransition.has(runId)) return;
     this._warnedMissingTransition.add(runId);
-    const transitions = await this._store.getTransitions(runId);
-    const entry = this._runs.get(runId);
-    this._warn({
-      kind: 'terminal_without_transition',
-      ts: this._clock.isoNow(),
-      runId,
-      terminalState: view.status,
-      reason: entry?.resultError ? `${entry.resultError.code}: ${entry.resultError.message}` : null,
-      transitions: transitions.map((t) => `${t.from ?? 'null'}->${t.to}`),
-    });
+    // The WHOLE body is guarded, not just the sink: `getTransitions` is an extra store read that
+    // `status()` did not make before, and "observability only" has to mean that a store failing on
+    // THIS read cannot turn a status call that used to succeed into a throw. An observation that
+    // can break the thing it observes is not an observation.
+    try {
+      const transitions = await this._store.getTransitions(runId);
+      const entry = this._runs.get(runId);
+      this._warn({
+        kind: 'terminal_without_transition',
+        ts: this._clock.isoNow(),
+        runId,
+        terminalState: view.status,
+        reason: entry?.resultError ? `${entry.resultError.code}: ${entry.resultError.message}` : null,
+        transitions: transitions.map((t) => `${t.from ?? 'null'}->${t.to}`),
+      });
+    } catch { /* an observer's failure is never the caller's */ }
   }
 
   /** Fire-and-forget, like `onTerminal`: a throwing sink never wedges the path it observes. */

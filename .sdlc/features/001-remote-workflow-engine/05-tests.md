@@ -5838,6 +5838,15 @@ extends `tests/unit/compose-config-v2-wiring.test.ts` (UT-033, in place, no new 
 harness-defaults/param-contract checks today, never `validateScriptEntry` (which doesn't exist), and
 has no version ceiling — confirmed 6/6 red (5 in this file + UT-033's new case).
 
+**v25 (issue #55, TASK-164, DES-163):** one case appended to this file — the WIRE half of
+UT-165. `agent('a', {prompt, tools: []})` — the v24 cold subject's exact call, which registered
+clean and dropped the option in silence — is refused by a REAL `WorkflowCatalog.register` with
+`SCAN_VIOLATION`, and the message carries BOTH `'tools'` and `allowedTools`, because a refusal that
+does not name the working spelling only tells the author it is lost. Nothing stored.
+**Its red was NOT observed**: the `scanAgentCalls → codedError('SCAN_VIOLATION')` chain is
+pre-existing and already carried `PARAM_IN_SCRIPT`, so this was written after the fix as wire
+confirmation. Recorded as such rather than implied.
+
 ### IT-086 — resume determinism: a suspended run continues its PINNED version, never "whatever is registered now"
 - **status:** green
 - **traces:** ARCH-072, DES-112, DES-113, DES-117, TASK-108
@@ -9504,7 +9513,7 @@ already hold it. Red before the fix, in two stages: `tsc --noEmit` on the
 - **result:** pass
 - **iter:** v25
 
-File: `tests/unit/agent-opts-unknown-key.test.ts` (11 cases). Pure over `scanAgentCalls` — no mocks,
+File: `tests/unit/agent-opts-unknown-key.test.ts` (14 cases). Pure over `scanAgentCalls` — no mocks,
 nothing to fake. The refusal itself, the accepted-key list in the hint (a refusal that does not say
 what IS accepted only moves the guessing), and THE incident reduced to one assertion: `tools: []`
 answers `PARAM_UNKNOWN` with a hint pointing at `allowedTools`. Then the two directions that keep it
@@ -9515,6 +9524,16 @@ which names the declaration site a generic "unknown key" would throw away. `appe
 had been taking the silently-accepted path its three siblings were refused on. Four boundary cases
 pin what is deliberately NOT refused: a spread entry and a shorthand key (neither carries a colon), a
 nested object's inner keys, and a quoted key (unquoted before the check).
+Three further cases were added after the fix and their red is NOT claimed: the near-miss hint reads
+as one sentence (a stray `?.` in the one message this whole item exists for), `skills` — advertised
+in `LOCKED_KEYS`, never an `agent()` option — points at `meta.params.agents.<label>.skills`, and one
+KNOWN LIMIT is pinned rather than left to surprise someone: a `//` comment carrying a colon inside
+the options literal now reads as a key (`key: '// TODO'`). Comment-blindness is DES-143's accepted
+limit from the start, but it used to misfire only on `model:`/`effort:`/`timeoutMs:` in a comment
+and the closed check widens it to any colon; the remedy is a comment-skipping `splitTopLevel`, which
+is a change to the scanner's one string-splitting primitive and does not belong in this fix.
+The registration-level half lives in IT-085's file (see its v25 note).
+
 Red before the fix, quoted: `expected undefined not to be undefined` on the first case, and
 `accepted key prompt not listed: expected '' to contain 'prompt'` on the hint — 5 of 11 failing,
 `violations` empty in every one, because the scanner had no notion of an unaccepted key at all.

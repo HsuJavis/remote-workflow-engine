@@ -112,3 +112,28 @@ describe('per-name version ceiling refused before any write, message names both 
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+// v25 (issue #55, adjudication #9 I-1.4): UT-165 proves the SCAN refuses an unaccepted `agent()`
+// option key. This proves the WIRE — that the refusal is what a real `workflow_register` answers,
+// with the offending key and the right name both in the message a caller reads. The chain
+// (`scanAgentCalls` → `codedError('SCAN_VIOLATION', …)` in `validateRegistration`) is pre-existing
+// and already carried `PARAM_IN_SCRIPT`, so this was written AFTER the fix as wire confirmation:
+// its RED WAS NOT OBSERVED, and it is recorded that way rather than implied.
+describe('an unaccepted agent() option key is refused by a REAL registration, not only by the scanner (#55, IT-085)', () => {
+  it("agent('a', {prompt, tools: []}) ⇒ SCAN_VIOLATION whose message names `tools` AND `allowedTools`, nothing stored", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-it085-'));
+    try {
+      const catalog = makeCatalog(dir);
+      // The v24 cold subject's exact call. It registered clean and the option was dropped in silence.
+      const script = `await agent('a', { prompt: 'Say READY', tools: [] });`;
+      const err = await catalog
+        .register({ name: 'issue-55', script, mermaid: 'graph TD;\na(["a"])' })
+        .then(() => null, (e: Error & { code?: string }) => e);
+      expect(err?.code).toBe('SCAN_VIOLATION');
+      expect(err?.message).toContain('PARAM_UNKNOWN');
+      expect(err?.message).toContain("'tools'");
+      expect(err?.message, 'the refusal has to carry the name that WORKS, or it only tells the author they are lost').toContain('allowedTools');
+      expect(await catalog.exists('issue-55')).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
