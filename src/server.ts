@@ -1110,22 +1110,17 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
         }).catch(() => { sendJson(res, 500, { jsonrpc: '2.0', id: null, error: { code: -32603, message: 'Internal error' } }); });
         return;
       }
-      // v23 Gate 2 re-run (ADJ-A1, ARCH-083 amendment, TASK-120): GET /api/workflows/:name/describe
-      // joins dbindExempt's gated set as the FOURTH member, alongside blob/manifest/mcp above —
-      // admitted only when the peer is loopback-exempt or resolvePrincipal succeeds; otherwise 401 +
-      // WWW-Authenticate, BEFORE any store read. The handler itself (handleDashboardRequest's
-      // describeMatch branch below, DES-132) is unchanged — unauthenticated, no owner branch
-      // (DES-125) — this block only decides whether the request is allowed to reach it.
-      const describeGateMatch = req.method === 'GET'
-        ? /^\/api\/workflows\/([^/]+)\/describe$/.exec((req.url ?? '').split('?')[0]!)
-        : null;
-      if (!dbindExempt && describeGateMatch) {
-        void resolvePrincipal(req, authTokenStore!, wwwChallenge()).then((p) => {
-          if ('status' in p) { send401(); return; }
-          dispatchDashboard();
-        }).catch(() => { sendJson(res, 500, { error: 'auth error' }); });
-        return;
-      }
+      // v24 orchestrator adjudication #8 (H-1, issue #57) OVERRULES ADJ-A1: the auth gate that stood
+      // here — GET /api/workflows/:name/describe as dbindExempt's FOURTH gated member, admitted only
+      // via loopback exemption or resolvePrincipal — is REMOVED, so the route joins the other
+      // unauthenticated dashboard reads (/api/workflows, /api/runs*, /api/home, /api/system).
+      // The dashboard's client is a plain browser fetch with no login and no token, so it satisfied
+      // neither condition: with auth.enabled the one route serving the author's diagram and the
+      // per-agent params answered 401 and the detail pane was blank. ADJ-A1 bought existence-hiding
+      // that /api/workflows already gives away in full (every name, owner, description, versions,
+      // channels and the whole per-agent param spec, anonymously). dbindExempt's three remaining
+      // members (blob/manifest/mcp) are unchanged, and workflow_source — the privileged view, the one
+      // carrying script text — keeps its own protection.
     }
     // D-V2V-2 (REQ-008 route-back): a real browser-renderable HTML/JS dashboard page, on the SAME
     // port as /mcp and /api/runs* (one data model, two transports — now genuinely two). SPA-style

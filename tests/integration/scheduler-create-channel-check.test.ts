@@ -41,7 +41,7 @@ async function call(name: string, args: Record<string, unknown> = {}): Promise<a
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}');
 }
 
-interface Row { id: string; refusalCount?: number; lastRefusalReason?: string; lastRunId?: string }
+interface Row { id: string; claimedBy?: string | null; refusalCount?: number; lastRefusalReason?: string; lastRunId?: string }
 const rowFor = async (id: string): Promise<Row | undefined> =>
   ((await call('schedule_list')).result as Row[]).find((r) => r.id === id);
 
@@ -64,51 +64,70 @@ afterEach(async () => {
   rmSync(workRoot, { recursive: true, force: true });
 });
 
-describe('the release-resolution check lives on the FIRE path, not on schedule_create (IT-093 v24, REQ-115, D-1)', () => {
-  it("a schedule bound to a REGISTERED but UNPUBLISHED workflow is ACCEPTED at creation — REQ-097's draft state is not a creation error any more", async () => {
-    const reg = await call('workflow_register', { name: 'h4-unpublished', script: 'return 1;', mermaid: 'graph TD;' });
-    expect(reg.error).toBeUndefined(); // registered, published to NO channel
-
-    const created = await call('schedule_create', { workflow: 'h4-unpublished', kind: 'cron', cron: '0 3 * * *' });
-
+// v24 orchestrator adjudication #8 (H-2, issue #56) MIGRATION: every case below used to reach its
+// claimed state through `schedule_create({workflow})`. That door is closed — the ruling completes
+// REQ-115's move by deleting the argument, so a schedule is created UNCLAIMED and bound by
+// `workflow_register({triggers:[id]})`. The cases are migrated, not weakened: each still creates
+// first, reaches the SAME claimed state through the new door, and asserts the same fire-path
+// refusal. The claim is taken BEFORE the due instant (`at` is set seconds out, registration happens
+// immediately) so the refusal under test is the one named, never a stray UNCLAIMED from firing
+// during the gap.
+//
+// One case changes REASON as a direct consequence of the ruling: "a schedule naming a workflow that
+// does not exist AT ALL" was the phantom claim issue #56 reports and is now unconstructible over
+// MCP — `workflow_register` cannot claim a name that does not exist because registering CREATES it,
+// and `workflow_deregister` releases claims rather than orphaning them. So that case becomes the
+// refusal REQ-115 actually specifies for it (UNCLAIMED, recorded). `CLAIMED_WORKFLOW_MISSING` stays
+// reachable only for a PRE-v24 legacy row whose `workflow` column outlived its target, and keeps its
+// coverage at the port level in webhook-registry.test.ts (a direct `create({workflow})`, unchanged
+// by this ruling) and in scheduler-refusal.test.ts.
+describe('the release-resolution check lives on the FIRE path, not on schedule_create (IT-093 v24, REQ-115, D-1, adjudication #8 H-2)', () => {
+  it("a schedule CLAIMED by a REGISTERED but UNPUBLISHED workflow is created and claimed — REQ-097's draft state is not a creation error any more", async () => {
+    const created = await call('schedule_create', { kind: 'cron', cron: '0 3 * * *' });
     expect(created.error).toBeUndefined();
-    expect(((created.result ?? created) as { id?: string }).id).toBeTruthy();
+    const id = ((created.result ?? created) as { id?: string }).id;
+    expect(id).toBeTruthy();
+
+    const reg = await call('workflow_register', { name: 'h4-unpublished', script: 'return 1;', mermaid: 'graph TD;', triggers: [id] });
+    expect(reg.error).toBeUndefined(); // registered, published to NO channel — and it claimed anyway
+
+    expect((await rowFor(id!))?.claimedBy).toBe('h4-unpublished');
   });
 
   it('when that schedule comes due it is REFUSED CHANNEL_UNPUBLISHED, the refusal is recorded, and no run starts', async () => {
-    await call('workflow_register', { name: 'h4-unpublished-fire', script: 'return 1;', mermaid: 'graph TD;' });
-    const created = await call('schedule_create', {
-      workflow: 'h4-unpublished-fire', kind: 'once', at: new Date(Date.now() + 300).toISOString(),
-    });
+    const created = await call('schedule_create', { kind: 'once', at: new Date(Date.now() + 3_000).toISOString() });
     const id = ((created.result ?? created) as { id: string }).id;
+    const reg = await call('workflow_register', { name: 'h4-unpublished-fire', script: 'return 1;', mermaid: 'graph TD;', triggers: [id] });
+    expect(reg.error, `claim: ${JSON.stringify(reg.error)}`).toBeUndefined();
 
-    const row = await until(() => rowFor(id), (r) => (r?.refusalCount ?? 0) > 0);
+    const row = await until(() => rowFor(id), (r) => (r?.refusalCount ?? 0) > 0, 12000);
     expect(row?.lastRefusalReason).toBe('CHANNEL_UNPUBLISHED');
     expect(row?.lastRunId).toBeUndefined();
     expect((await call('run_list', { workflow: 'h4-unpublished-fire' })).result ?? []).toEqual([]);
   }, 20000);
 
-  it('a schedule naming a workflow that does not exist AT ALL is likewise accepted, then refused CLAIMED_WORKFLOW_MISSING when due', async () => {
+  it('a schedule nobody ever claimed is likewise created, then refused UNCLAIMED when due — the refusal is recorded, not silent', async () => {
     const created = await call('schedule_create', {
-      workflow: 'h4-never-registered', kind: 'once', at: new Date(Date.now() + 300).toISOString(),
+      kind: 'once', at: new Date(Date.now() + 300).toISOString(),
     });
     expect(created.error).toBeUndefined();
     const id = ((created.result ?? created) as { id: string }).id;
 
     const row = await until(() => rowFor(id), (r) => (r?.refusalCount ?? 0) > 0);
-    expect(row?.lastRefusalReason).toBe('CLAIMED_WORKFLOW_MISSING');
+    expect(row?.lastRefusalReason).toBe('UNCLAIMED');
+    expect(row?.lastRunId).toBeUndefined();
   }, 20000);
 
-  it('GREEN PIN: a PUBLISHED workflow still creates a schedule successfully, and that one really fires', async () => {
-    const reg = await call('workflow_register', { name: 'h4-published', script: 'return 1;', mermaid: 'graph TD;' });
-    await call('workflow_publish', { name: 'h4-published', version: reg.result.version as string, channel: 'release' });
-    const created = await call('schedule_create', {
-      workflow: 'h4-published', kind: 'once', at: new Date(Date.now() + 300).toISOString(),
-    });
+  it('GREEN PIN: a PUBLISHED workflow that claims a schedule still fires it', async () => {
+    const created = await call('schedule_create', { kind: 'once', at: new Date(Date.now() + 3_000).toISOString() });
     expect(created.error).toBeUndefined();
     const id = ((created.result ?? created) as { id: string }).id;
 
-    const row = await until(() => rowFor(id), (r) => r?.lastRunId !== undefined);
+    const reg = await call('workflow_register', { name: 'h4-published', script: 'return 1;', mermaid: 'graph TD;', triggers: [id] });
+    expect(reg.error, `claim: ${JSON.stringify(reg.error)}`).toBeUndefined();
+    await call('workflow_publish', { name: 'h4-published', version: reg.result.version as string, channel: 'release' });
+
+    const row = await until(() => rowFor(id), (r) => r?.lastRunId !== undefined, 12000);
     expect(row?.lastRunId, 'a published, claimed schedule must still fire').toBeTruthy();
     expect(row?.refusalCount ?? 0).toBe(0);
   }, 20000);

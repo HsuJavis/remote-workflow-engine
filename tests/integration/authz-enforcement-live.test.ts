@@ -75,7 +75,9 @@ afterAll(async () => {
 
 describe('authorization enforced through a real auth-enabled boot (IT-124, DES-139/DES-149)', () => {
   it('a schedule is owned by its CREATOR: the creator lists and deletes it, another author cannot', async () => {
-    const created = await callTool('schedule_create', { workflow: WF, cron: '0 3 * * *' }, aliceToken);
+    // v24 adjudication #8 (H-2): a trigger is created UNCLAIMED — this case is about OWNERSHIP
+    // (`createdBy`), which is set by the creating principal and is independent of any claim.
+    const created = await callTool('schedule_create', { cron: '0 3 * * *' }, aliceToken);
     const id = ((created['result'] ?? created) as { id?: string }).id;
     expect(typeof id).toBe('string');
 
@@ -92,7 +94,7 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
   });
 
   it('a webhook is owned by its CREATOR: same three answers, through the OTHER trigger store', async () => {
-    const created = await callTool('webhook_create', { workflow: WF }, aliceToken);
+    const created = await callTool('webhook_create', {}, aliceToken);
     const id = ((created['result'] ?? created) as { webhookId?: string }).webhookId;
     expect(typeof id).toBe('string');
 
@@ -152,11 +154,16 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     // its triggers to UNCLAIMED ("they are the user's resources"), and an unclaimed trigger that
     // fires is refused and recorded. Both halves of what this case actually guards — nothing
     // dispatched, exactly one recorded refusal — are unchanged.
+    // v24 adjudication #8 (H-2): the claim is taken at REGISTRATION (`triggers:[id]`), the only
+    // remaining door — created unclaimed first, due far enough out that the claim, the publish and
+    // the deregister all land before the due instant, so the single recorded refusal below is the
+    // deregistration's, never a stray pre-claim one.
     const WF2 = 'it124-doomed';
-    const reg = await callTool('workflow_register', { name: WF2, script: 'return "x";', mermaid: 'graph TD;' }, aliceToken);
-    await callTool('workflow_publish', { name: WF2, version: `v${reg['version'] as number}`, channel: 'release' }, aliceToken);
-    const created = await callTool('schedule_create', { workflow: WF2, kind: 'once', at: new Date(Date.now() + 1500).toISOString() }, aliceToken);
+    const created = await callTool('schedule_create', { kind: 'once', at: new Date(Date.now() + 3000).toISOString() }, aliceToken);
     const id = ((created['result'] ?? created) as { id?: string }).id;
+    const reg = await callTool('workflow_register', { name: WF2, script: 'return "x";', mermaid: 'graph TD;', triggers: [id] }, aliceToken);
+    expect(codeOf(reg)).toBeUndefined();
+    await callTool('workflow_publish', { name: WF2, version: `v${reg['version'] as number}`, channel: 'release' }, aliceToken);
     expect(codeOf(await callTool('workflow_deregister', { name: WF2 }, aliceToken))).toBeUndefined();
 
     type Row = { id: string; refusalCount?: number; lastRefusalReason?: string; lastRunId?: string };
@@ -177,9 +184,15 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     // workflow". Once `ownerOf` became `createdBy`, that resolved a PRINCIPAL ID as a workflow name
     // and refused every authenticated user's schedule CLAIMED_WORKFLOW_MISSING — invisible to the
     // rest of the suite, which is auth-disabled (`createdBy` null) and so takes the fallback door.
-    const created = await callTool('schedule_create', { workflow: WF, kind: 'once', at: new Date(Date.now() - 1000).toISOString() }, aliceToken);
+    // v24 adjudication #8 (H-2): created unclaimed and claimed at registration, so the due instant
+    // must sit AFTER the claim — a past `at` (the pre-fix shape, which could self-claim at creation)
+    // would now fire unclaimed before any workflow could take it.
+    const created = await callTool('schedule_create', { kind: 'once', at: new Date(Date.now() + 3000).toISOString() }, aliceToken);
     const id = ((created['result'] ?? created) as { id?: string }).id;
     expect(typeof id).toBe('string');
+    const firesReg = await callTool('workflow_register', { name: 'it124-fires', script: 'return "x";', mermaid: 'graph TD;', triggers: [id] }, aliceToken);
+    expect(codeOf(firesReg)).toBeUndefined();
+    expect(codeOf(await callTool('workflow_publish', { name: 'it124-fires', version: `v${firesReg['version'] as number}`, channel: 'release' }, aliceToken))).toBeUndefined();
     // A schedule created from the row's OWN advertised shape (no `enabled` key) is born ENABLED —
     // `tick()` only ever selects `enabled = 1`, so the opposite default registered a trigger that
     // could never fire, in silence. Asserted before the poll so a failure names the real cause.
@@ -191,7 +204,7 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     // "fired" and "refused" distinguishable here.
     type Row = { id: string; lastRunId?: string; refusalCount?: number; lastRefusalReason?: string };
     let row: Row | undefined;
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 100; i++) {
       const rows = (await callTool('schedule_list', {}, aliceToken))['result'] as Row[];
       row = rows.find((r) => r.id === id);
       if (row?.lastRunId || (row?.refusalCount ?? 0) > 0) break;

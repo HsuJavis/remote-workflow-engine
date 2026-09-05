@@ -8271,6 +8271,15 @@ warning is unchanged and is repeated at the end of this section.
   與 `sh .sdlc/trace` 報的 19 個缺口一致。console 同樣只有 favicon 404。
   截圖存於 `evidence/v24-engine-dashboard.png` 與 `evidence/v24-sdlc-dashboard-gaps.png`。
   收尾:兩個測試用連接埠(8792/8799)已關,生產服務 PID 3652391 全程未受影響。
+  **前提條件(2026-09-05 補記,裁定 #8 H-1 / issue #57)**:(a) 這次瀏覽器驗證跑在
+  **`auth.enabled: false`** 的引擎上(8792 埠,設定裡根本沒有 `auth` 區塊)。當時的引擎在
+  `auth.enabled: true` 時,`GET /api/workflows/:name/describe` 是 ADJ-A1 的受管路由,
+  **對沒有 token 的瀏覽器一律回 401**,所以「圖真的顯示出來」這件事**只在產品不會採用的設定下成立**;
+  原始記錄沒有標明這個限制,是我的疏漏 —— 一條只在非產品設定下通過的驗收不算證據。
+  (b) 那個 auth-enabled 的情形正是本次修好的缺陷:裁定 #8 H-1 推翻 ADJ-A1、拿掉該路由的閘門,
+  現在 `auth.enabled: true` 的引擎對**不帶任何 header** 的 GET 也回 200 與完整 mermaid。
+  該情境由 IT-101 的 row 3b 直接涵蓋(loopback 綁定 + auth 開啟 ⇒ `dbindExempt` 依構造為 false),
+  修前實測 401(紅)、修後 200 並逐字比對 mermaid。
 - **iter:** v24
 
 ### VAL-166 — OpenRouter passthrough:v24 唯一沒驗過的 provider 路徑,補驗通過

@@ -116,6 +116,23 @@ export async function callTool(
       'INVALID_ARGUMENT: run_resume does not accept `overrides` — a resumed run replays the parameter snapshot pinned at admission (start a new run to change parameters)',
     );
   }
+  // v24 orchestrator adjudication #8 (H-2, issue #56): the create-time trigger-binding door is
+  // closed. `workflow` is off both create rows' inputSchema, but removal alone would make this
+  // WORSE, not better — `schema()` declares no `additionalProperties:false`, so ajv would admit the
+  // undeclared key and both handlers spread their args straight into the store, self-claiming
+  // exactly as before while no longer advertising it. The refusal is given here, ahead of ajv, for
+  // the same reason `run_resume`'s `overrides` is: the key has a migration answer, and a bare schema
+  // complaint would not carry it. Gate 7.5's D-1 removed the create-time catalog check (REQ-115
+  // moves it to `workflow_register`) and left the argument behind, which turned a documented leftover
+  // into an unguarded path: a trigger could bind to a name that will never exist, and the id was then
+  // unclaimable forever. The store's own `create({workflow})` is unchanged — pre-v24 rows keep firing
+  // on their legacy binding; only this door closes.
+  if ((spec.name === 'schedule_create' || spec.name === 'webhook_create') && a['workflow'] !== undefined) {
+    return refusalEnvelope(
+      'INVALID_ARGUMENT',
+      `INVALID_ARGUMENT: ${spec.name} names no workflow — create the trigger unclaimed, then bind its id with workflow_register({name, script, mermaid, triggers:[id]})`,
+    );
+  }
   // v24 (integrator): `system_info.topN` is the one place two live design statements collide.
   // DES-077 names the behaviour "clamp-not-reject" (IT-069) AND requires the advertised schema to
   // carry `minimum:1, maximum:50` so a schema-only consumer knows the range (IT-072/VAL-088);

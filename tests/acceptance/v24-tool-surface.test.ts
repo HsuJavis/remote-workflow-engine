@@ -203,7 +203,19 @@ describe('REQ-118 — every MCP tool interface exercised once against a live eng
 
   /** register -> publish -> the run states the twelve id-bearing rows need. */
   async function runSetupSequence(): Promise<void> {
-    const registered = await callOk('workflow_register', { name: 'demo', script: FIXTURE_SCRIPT, mermaid: FIXTURE_MERMAID });
+    // v24 orchestrator adjudication #8 (H-2, issue #56): triggers are created UNCLAIMED —
+    // `schedule_create({workflow})` / `webhook_create({workflow})` are refused INVALID_ARGUMENT, and
+    // `workflow_register({triggers:[…]})` is the only binding door. So the two rows that must be
+    // BOUND (`schedule_setEnabled`'s target, and the claim `workflow_deregister`'s happy row reports
+    // as released) are created BEFORE the registration that claims them. `schedule_delete`'s target
+    // stays unclaimed: it is destroyed by its own fixture, and a claim on a deleted row would leave
+    // `workflow_deregister` reporting an id nothing can look up.
+    const schedule = await callOk('schedule_create', { cron: '0 0 1 1 *' });
+    setup.scheduleId = String(schedule.result?.id ?? schedule.id);
+    const webhook = await callOk('webhook_create', {});
+    setup.webhookId = String(webhook.result?.webhookId ?? webhook.webhookId);
+
+    const registered = await callOk('workflow_register', { name: 'demo', script: FIXTURE_SCRIPT, mermaid: FIXTURE_MERMAID, triggers: [setup.scheduleId, setup.webhookId] });
     setup.workflow = 'demo';
     setup.version = String(registered.result?.version ?? registered.version);
     setup.agentLabel = FIXTURE_AGENT_LABEL;
@@ -231,14 +243,10 @@ describe('REQ-118 — every MCP tool interface exercised once against a live eng
     await pollStatus(toSuspend, (s) => s === 'suspended');
     setup.suspendedRunId = toSuspend;
 
-    const schedule = await callOk('schedule_create', { workflow: setup.workflow, cron: '0 0 1 1 *' });
-    setup.scheduleId = String(schedule.result?.id ?? schedule.id);
     // schedule_delete's happy fixture DESTROYS its target, and it sorts before schedule_setEnabled
     // in TOOL_SPECS — one shared id would make the later row fail for the earlier row's reason.
-    const deletable = await callOk('schedule_create', { workflow: setup.workflow, cron: '0 0 2 1 *' });
+    const deletable = await callOk('schedule_create', { cron: '0 0 2 1 *' });
     setup.deletableScheduleId = String(deletable.result?.id ?? deletable.id);
-    const webhook = await callOk('webhook_create', { workflow: setup.workflow });
-    setup.webhookId = String(webhook.result?.webhookId ?? webhook.webhookId);
   }
 
   function requireSetup(): void {

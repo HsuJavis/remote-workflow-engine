@@ -45,37 +45,38 @@ async function mcpCall(name: string, args: Record<string, unknown> = {}) {
 // `CHANNEL_UNPUBLISHED: release` while these schedule-bookkeeping assertions stayed green. Register
 // AND publish, via the shared helper (which throws on either half failing, preserving the old
 // `expect(r.error).toBeUndefined()` oracle).
-async function registerWorkflow(name: string, script: string) {
-  await registerPublishedVia(mcpCall, name, script);
+async function registerWorkflow(name: string, script: string, triggers?: string[]) {
+  await registerPublishedVia(mcpCall, name, script, triggers ? { triggers } : {});
 }
 
 describe('Cron schedule fires a run (REQ-015, E2E-004)', () => {
-  it('schedule_create returns a schedule ID', async () => {
-    await registerWorkflow('cron-target', 'return 1');
-
+  // v24 orchestrator adjudication #8 (H-2, issue #56): `schedule_create({workflow})` is refused —
+  // a trigger is created UNCLAIMED and bound by `workflow_register({triggers:[id]})`, the only door.
+  it('schedule_create returns a schedule ID, and a workflow claims it at registration', async () => {
     // Create a cron schedule with a very tight interval (every minute = the smallest standard cron unit).
     // Note: actual firing requires the engine to tick; this test verifies the tool creates correctly.
     const result = await mcpCall('schedule_create', {
       kind: 'cron',
-      workflow: 'cron-target',
       cron: '* * * * *',
       enabled: true,
     });
     expect(result['error']).toBeUndefined();
-    expect(typeof (result['result'] as Record<string, unknown>)?.['id']).toBe('string');
+    const id = (result['result'] as Record<string, unknown>)?.['id'] as string;
+    expect(typeof id).toBe('string');
+    await registerWorkflow('cron-target', 'return 1', [id]);
   });
 
   // v24 Gate 7.5 (D-1, REQ-115 clause 1 + its last clause): this used to assert `WORKFLOW_NOT_FOUND`
   // AT CREATION. REQ-115 reverses the direction — a trigger is created UNCLAIMED and a workflow
   // claims it at registration — so a name that does not exist yet is the normal case at this door,
   // and the catalog check moves to the FIRE path, where the refusal is recorded on the row
-  // (`CLAIMED_WORKFLOW_MISSING`; IT-093 and VAL-016 pin that end, this file's subject is the cron
-  // firing itself). D-V2I-3's guarantee — an unregistered name never silently starts a run — is
-  // unchanged: no run is ever dispatched for this schedule.
-  it('schedule_create for a never-registered workflow name is ACCEPTED, and no run is ever started for it', async () => {
+  // (adjudication #8 H-2 then closed the create-time door outright, so the refusal is `UNCLAIMED`;
+  // IT-093 and VAL-016 pin that end, this file's subject is the cron firing itself). D-V2I-3's
+  // guarantee — an unregistered name never silently starts a run — is unchanged: no run is ever
+  // dispatched for this schedule.
+  it('a schedule no workflow ever claimed is ACCEPTED at creation, and no run is ever started for it', async () => {
     const result = await mcpCall('schedule_create', {
       kind: 'cron',
-      workflow: 'never-registered-cron-target',
       cron: '* * * * *',
       enabled: true,
     });
@@ -97,16 +98,19 @@ describe('Cron schedule fires a run (REQ-015, E2E-004)', () => {
     // We use an ISO timestamp derived from the clock relative to now.
     // "past" here = just booted, the at time should be a few seconds ago.
     const pastAt = new Date(Date.now() - 5000).toISOString(); // 5s ago
-    await registerWorkflow('once-target', 'return 2');
+    // Adjudication #8 (H-2): the claim can only be taken after the id exists, and a due one-shot
+    // fires on the very next tick — so it is created DISABLED (`tick()` selects `enabled = 1` only),
+    // claimed at registration, then enabled. Its `at` is still in the past when it becomes eligible.
     const createResult = await mcpCall('schedule_create', {
       kind: 'once',
-      workflow: 'once-target',
       at: pastAt,
-      enabled: true,
+      enabled: false,
     });
     expect(createResult['error']).toBeUndefined();
     const id = ((createResult['result'] as Record<string, unknown>))?.['id'] as string;
     expect(typeof id).toBe('string');
+    await registerWorkflow('once-target', 'return 2', [id]);
+    expect((await mcpCall('schedule_setEnabled', { id, enabled: true }))['error']).toBeUndefined();
 
     // After the next tick, the schedule should auto-complete (enabled=false).
     // Poll for up to 5s.
@@ -122,14 +126,14 @@ describe('Cron schedule fires a run (REQ-015, E2E-004)', () => {
   });
 
   it('schedule_delete removes the schedule', async () => {
-    await registerWorkflow('del-target', 'return 3');
     const r = await mcpCall('schedule_create', {
-      kind: 'resident', workflow: 'del-target', enabled: true,
+      kind: 'resident', enabled: true,
     });
     // schedule_create must succeed (fails here if the tool doesn't exist — the forcing assertion)
     expect(r['error']).toBeUndefined();
     const id = ((r['result'] as Record<string, unknown>))?.['id'] as string;
     expect(typeof id).toBe('string');
+    await registerWorkflow('del-target', 'return 3', [id]);
     await mcpCall('schedule_delete', { id });
     const listResult = await mcpCall('schedule_list');
     const list = (listResult['result'] as Array<{ id: string }>) ?? [];

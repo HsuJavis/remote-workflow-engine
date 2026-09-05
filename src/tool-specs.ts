@@ -643,18 +643,22 @@ export const TOOL_SPECS = [
     // unreachable through the tool surface — ajv refused them for a missing `cron` before the store
     // ever saw them. The store has supported all three kinds since v2; only the schema was narrow.
     inputSchema: schema({
-      workflow: { type: 'string' },
       kind: { type: 'string', enum: ['cron', 'once', 'resident'], description: "Defaults to 'cron' when omitted." },
       cron: { type: 'string', description: "A 5-field cron expression, e.g. '0 3 * * *'. Required when kind is 'cron'." },
       at: { type: 'string', description: "An ISO-8601 timestamp. Required when kind is 'once'; a past value fires on the next tick." },
       tz: { type: 'string', description: "IANA timezone the cron fields are read in; UTC when omitted." },
       args: { description: 'Run arguments handed to every firing.' },
       enabled: { type: 'boolean', description: 'Defaults to true when omitted — a schedule created disabled never fires.' },
-    // v24 Gate 7.5 (D-1, REQ-115 clause 1 + ADR-026 scenario S-5): `workflow` is OPTIONAL. The
-    // owner-ruled model is "create the trigger first, then hand its id to workflow_register", and
-    // requiring a workflow here made an unclaimed trigger impossible to create over MCP — the
-    // store has supported one since TASK-141; only this row blocked it. Supplying `workflow`
-    // still binds at creation (the pre-v24 door, kept for the callers that use it).
+    // v24 Gate 7.5 (D-1, REQ-115 clause 1 + ADR-026 scenario S-5): the row required `workflow`, so
+    // an unclaimed trigger was impossible to create over MCP — the store has supported one since
+    // TASK-141; only this row blocked it. v24 orchestrator adjudication #8 (H-2, issue #56) finishes
+    // that move: `workflow` is GONE, not merely optional. D-1 dropped the create-time catalog check
+    // (REQ-115 moves it to `workflow_register`) but left the argument, so the old door kept binding
+    // while validating nothing — a schedule could self-claim a name that will never exist, which
+    // `workflow_register` could then never claim. Binding is `workflow_register({triggers:[id]})`
+    // only, which is what ARCH-099's `create(spec)` says and what this row's description promises.
+    // Passing it is refused INVALID_ARGUMENT with the migration answer (call-tool.ts, ahead of ajv —
+    // `schema()` sets no `additionalProperties:false`, so an undeclared key would still be admitted).
     }),
     outputSchema: OUT,
     // WORKFLOW_NOT_FOUND / VERSION_NOT_FOUND / CHANNEL_UNPUBLISHED are GONE with the create-time
@@ -708,11 +712,13 @@ export const TOOL_SPECS = [
   {
     name: 'webhook_create', entity: 'webhook', key: null,
     description: 'Create a webhook trigger and return its id, url and (once only) secret; the caller becomes its owner. Name no workflow — hand the id to workflow_register({triggers:[id]}) to bind it to a version.',
-    // v24 Gate 7.5 (D-1): `workflow` optional, and no create-time catalog check — see the
-    // schedule_create row above for the same reasoning (REQ-115 clause 1, ADR-026 S-5). An
-    // unclaimed webhook that is delivered to is refused UNCLAIMED at delivery and the refusal is
-    // recorded on the row (`lastRefusalReason`), which is REQ-115's own stated behaviour.
-    inputSchema: schema({ workflow: { type: 'string' } }),
+    // v24 Gate 7.5 (D-1) made `workflow` optional and dropped the create-time catalog check; v24
+    // orchestrator adjudication #8 (H-2, issue #56) removes the argument outright — see the
+    // schedule_create row above for the reasoning (REQ-115 clause 1, ADR-026 S-5, ARCH-099). A
+    // webhook is created unclaimed and bound by `workflow_register({triggers:[id]})`; delivering to
+    // an unclaimed one is refused UNCLAIMED at delivery and the refusal is recorded on the row
+    // (`lastRefusalReason`), which is REQ-115's own stated behaviour.
+    inputSchema: schema({}),
     outputSchema: OUT,
     errors: ['FORBIDDEN_ROLE'],
     seeAlso: [] as string[],

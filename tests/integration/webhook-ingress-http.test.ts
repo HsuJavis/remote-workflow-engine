@@ -33,10 +33,15 @@ afterAll(async () => {
 
 describe('webhook ingress POST /hooks/:id (v8 Defer B, REQ-057)', () => {
   it('a correctly-signed delivery fires the pre-bound workflow; a bad signature does not', async () => {
-    // register the target workflow + a webhook bound to it
-    await registerPublishedVia(callTool, 'on-hook', `return { hooked: args.event };`);
-    const created = await callTool('webhook_create', { workflow: 'on-hook' });
+    // Create the webhook UNCLAIMED, then register+publish the target workflow claiming its id —
+    // v24 orchestrator adjudication #8 (H-2, issue #56) closed `webhook_create({workflow})`, so
+    // `workflow_register({triggers:[id]})` is the only binding door. Same end state as the pre-fix
+    // `webhook_create({workflow:'on-hook'})`: one webhook bound to one published workflow.
+    const created = await callTool('webhook_create', {});
     expect(created.result.secret).toBeTruthy();
+    await registerPublishedVia(callTool, 'on-hook', `return { hooked: args.event };`, {
+      triggers: [(created.result as { webhookId: string }).webhookId],
+    });
     expect(created.result.url).toContain('/hooks/');
     const { url, secret } = created.result as { url: string; secret: string };
 

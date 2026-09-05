@@ -32,15 +32,19 @@ async function call(name: string, args: unknown): Promise<any> {
 beforeAll(async () => {
   workRoot = mkdtempSync(join(tmpdir(), 'rwe-val114-'));
   server = await createServer({ port: 0, bind: '127.0.0.1', workRoot });
-  await registerPublishedVia(call, 'val114-flow', `return 1;`);
 });
 afterAll(async () => { await server?.close(); rmSync(workRoot, { recursive: true, force: true }); });
 
 describe('REQ-103: live trigger bindings on workflow_describe (VAL-114)', () => {
   it('a bound cron schedule is named in `triggers`; deleting it is reflected in the SAME call (no diagram regeneration needed)', async () => {
-    const created = await call('schedule_create', { kind: 'cron', workflow: 'val114-flow', cron: '0 3 * * *', enabled: true });
+    // v24 orchestrator adjudication #8 (H-2, issue #56): `schedule_create({workflow})` is gone, so
+    // the binding this case observes is made the only way left — create the trigger, then claim it
+    // at registration. The subject (a LIVE binding shows up in `workflow_describe.triggers`, and
+    // deleting the row is reflected in the SAME call without regenerating anything) is unchanged.
+    const created = await call('schedule_create', { kind: 'cron', cron: '0 3 * * *', enabled: true });
     const scheduleId = created.result?.id;
     expect(scheduleId).toBeTruthy();
+    await registerPublishedVia(call, 'val114-flow', `return 1;`, { triggers: [scheduleId as string] });
 
     const withSchedule = await call('workflow_describe', { name: 'val114-flow' });
     expect(withSchedule.result?.triggers).toEqual(
@@ -49,7 +53,13 @@ describe('REQ-103: live trigger bindings on workflow_describe (VAL-114)', () => 
 
     await call('schedule_delete', { id: scheduleId });
     const afterDelete = await call('workflow_describe', { name: 'val114-flow' });
-    expect(afterDelete.result?.triggers).toEqual([]);
+    // The deletion is reflected in the SAME call, with the shape the ENGINE gives a declared id
+    // whose row is gone (mcp-facade.ts `_resolveTriggers`: `?? { id, status:'TRIGGER_NOT_FOUND' }`).
+    // Pre-adjudication-#8 this read `[]` because a create-time binding was DISCOVERED from the store
+    // and vanished with it; a version-declared binding is a durable statement by the workflow, so
+    // what changes live is the trigger's status, not the array's length. Asserted exactly, not
+    // loosely: the cron descriptor must be GONE.
+    expect(afterDelete.result?.triggers).toEqual([{ id: scheduleId, status: 'TRIGGER_NOT_FOUND' }]);
   });
 
   // DELETED (v24, TASK-152/TASK-139/TASK-149, DES-156): the `diagramStale` case covered a

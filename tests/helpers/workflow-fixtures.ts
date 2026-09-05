@@ -101,6 +101,12 @@ export interface RegisterPublishOpts {
   /** The alias the synthesized contract declares as every label's `model.default`. Defaults to
    *  `'default'`; pass a key from THIS server's own alias table when it does not define one. */
   model?: string;
+  /** Trigger ids this registration CLAIMS. v24 orchestrator adjudication #8 (H-2, issue #56) closed
+   *  the create-time binding door (`schedule_create({workflow})`), so `workflow_register` is now the
+   *  ONLY way a fixture can bind a trigger to a workflow: create the trigger first, hand its id
+   *  here. Only `registerPublishedVia` honours it — the in-process `registerPublished` talks to the
+   *  catalog directly and its callers have no trigger ids to bind. */
+  triggers?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +213,8 @@ export async function registerPublishedVia(
   const who = typeof opts.principal === 'string' ? { principal: opts.principal } : {};
   const scriptWithMeta = synthesizeMeta(script, opts.model);
   const mermaid = opts.mermaid ?? synthesizeMermaid(scriptWithMeta);
-  const registered = await call('workflow_register', { name, script: scriptWithMeta, mermaid, ...who });
+  const triggers = opts.triggers && opts.triggers.length > 0 ? { triggers: opts.triggers } : {};
+  const registered = await call('workflow_register', { name, script: scriptWithMeta, mermaid, ...triggers, ...who });
   const version = versionOf(registered, name);
   const published = await call('workflow_publish', { name, version, channel: opts.channel ?? 'release', ...who }) as { status?: string; error?: { code?: string; message?: string }; code?: string };
   if (published?.status === 'failed') {

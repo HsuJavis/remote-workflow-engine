@@ -39,8 +39,10 @@ async function call(name: string, args: Record<string, unknown> = {}): Promise<a
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}');
 }
 
-async function registerPublish(name: string): Promise<void> {
-  const reg = await call('workflow_register', { name, script: "return 'ok';", mermaid: 'graph TD;' });
+async function registerPublish(name: string, triggers?: string[]): Promise<void> {
+  // v24 adjudication #8 (H-2): `triggers` is the ONLY door that binds a trigger to a workflow —
+  // `schedule_create({workflow})` / `webhook_create({workflow})` are refused INVALID_ARGUMENT.
+  const reg = await call('workflow_register', { name, script: "return 'ok';", mermaid: 'graph TD;', ...(triggers ? { triggers } : {}) });
   expect(reg.error, `register ${name}: ${JSON.stringify(reg.error)}`).toBeUndefined();
   const pub = await call('workflow_publish', { name, version: reg.result.version as string, channel: 'release' });
   expect(pub.error, `publish ${name}: ${JSON.stringify(pub.error)}`).toBeUndefined();
@@ -85,38 +87,97 @@ describe('triggers are created UNCLAIMED and claimed at registration (IT-128, D-
   });
 });
 
-describe('deregister releases a trigger bound AT CREATION — no phantom fire (IT-128, D-1b, ADR-026)', () => {
+// v24 orchestrator adjudication #8 (H-2, issue #56): the create-time binding door is CLOSED. v22's
+// H4 put a release-resolution check on `schedule_create({workflow})`; REQ-115 MOVED that check to
+// `workflow_register` ("it does not disappear, it changes site") — and v24 Gate 7.5's D-1 fix removed
+// the old check while leaving the argument, so the old door stayed open validating nothing:
+// `schedule_create({kind:'cron', cron:'0 6 * * *', workflow:'definitely-does-not-exist'})` returned
+// `claimedBy:'definitely-does-not-exist'`, a phantom claim on a name that will never exist, which
+// `workflow_register` can then never claim. Both rows' own descriptions already said "Name no
+// workflow — hand the id to workflow_register({triggers:[id]})", and ARCH-099's `create(spec)` takes
+// no workflow. The argument is removed from both inputSchemas and refused by name, ahead of ajv, with
+// the migration answer — the `run_resume({overrides})` precedent in call-tool.ts, for the same reason
+// stated there: `schema()` declares no `additionalProperties:false`, so a merely-undeclared key would
+// be admitted by ajv and spread into the store exactly as before, silently and now undocumented.
+describe('the create-time binding door is CLOSED — `workflow` is refused, not honoured (IT-128, adjudication #8 H-2, issue #56, REQ-115, ARCH-099)', () => {
+  it('schedule_create({workflow}) -> INVALID_ARGUMENT, and NO schedule row is created', async () => {
+    const before = ((await call('schedule_list')).result as unknown[]).length;
+    const created = await call('schedule_create', { kind: 'cron', cron: '0 6 * * *', workflow: 'it128-definitely-does-not-exist' });
+    expect(created.code ?? created.error?.code, `schedule_create({workflow}) was not refused: ${JSON.stringify(created)}`).toBe('INVALID_ARGUMENT');
+    // The refusal must name the replacement door, not just say no (the run_start/run_resume standard).
+    expect(String(created.error?.message ?? '')).toContain('workflow_register');
+    const rows = (await call('schedule_list')).result as Array<{ claimedBy?: string | null }>;
+    expect(rows.length, 'a refused create still wrote a row').toBe(before);
+    expect(rows.some((r) => (r.claimedBy ?? null) === 'it128-definitely-does-not-exist'), 'the phantom claim survived the refusal').toBe(false);
+  });
+
+  it('webhook_create({workflow}) -> INVALID_ARGUMENT, and NO webhook row is created', async () => {
+    const before = ((await call('webhook_list')).result as unknown[]).length;
+    const created = await call('webhook_create', { workflow: 'it128-definitely-does-not-exist' });
+    expect(created.code ?? created.error?.code, `webhook_create({workflow}) was not refused: ${JSON.stringify(created)}`).toBe('INVALID_ARGUMENT');
+    expect(String(created.error?.message ?? '')).toContain('workflow_register');
+    const rows = (await call('webhook_list')).result as Array<{ workflow?: string | null }>;
+    expect(rows.length, 'a refused create still wrote a row').toBe(before);
+    expect(rows.some((r) => (r.workflow ?? null) === 'it128-definitely-does-not-exist')).toBe(false);
+  });
+
+  it('neither create row ADVERTISES `workflow` any more — the schema and the description agree', async () => {
+    const res = await fetch(`${base()}/mcp`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+    const body = await res.json() as { result?: { tools?: Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }> } };
+    for (const name of ['schedule_create', 'webhook_create']) {
+      const tool = body.result?.tools?.find((t) => t.name === name);
+      expect(tool, `${name} missing from tools/list`).toBeDefined();
+      expect(Object.keys(tool!.inputSchema?.properties ?? {}), `${name} still advertises \`workflow\``).not.toContain('workflow');
+    }
+  });
+});
+
+// v24 orchestrator adjudication #8 (H-2, issue #56) MIGRATION: D-1b's subject was a trigger bound
+// AT CREATION (`schedule_create({workflow})`) — the only kind D-1 left creatable at the time — which
+// `workflow_deregister` failed to release because it releases the ids the VERSION rows declare and a
+// create-time binding never entered any version's `triggers[]`. That door is now closed, so the same
+// two cases are driven through the surviving door (`workflow_register({triggers:[id]})`); the
+// property under test is unchanged and still the one ADR-026 exists for — deregister releases, and a
+// same-name re-registration inherits no firing. The create-time binding itself survives only as a
+// PRE-v24 legacy row, where the port-level `create({workflow})` (untouched by this ruling) still
+// covers it in webhook-registry.test.ts.
+describe('deregister releases a claimed trigger — no phantom fire (IT-128, D-1b, ADR-026, adjudication #8 H-2)', () => {
   const WF = 'it128-phantom';
 
-  it('a once-schedule bound at creation fires for its OWN workflow (the positive control)', async () => {
-    await registerPublish(WF);
-    const created = await call('schedule_create', { workflow: WF, kind: 'once', at: new Date(Date.now() + 500).toISOString() });
+  it('a once-schedule claimed at registration fires for its OWN workflow (the positive control)', async () => {
+    const created = await call('schedule_create', { kind: 'once', at: new Date(Date.now() + 3_000).toISOString() });
     expect(created.error).toBeUndefined();
-    for (let i = 0; i < 40 && (await runsOf(WF)).length === 0; i++) await sleep(100);
+    const id = ((created.result ?? created) as { id?: string }).id!;
+    await registerPublish(WF, [id]);
+    for (let i = 0; i < 100 && (await runsOf(WF)).length === 0; i++) await sleep(100);
     expect((await runsOf(WF)).length, 'the schedule never fired — a later "it did not fire" assertion would be vacuous').toBe(1);
   }, 20000);
 
   it('after deregister the claim is released, and a same-name re-registration inherits NO firing', async () => {
-    // A fresh workflow name, its own create-time-bound schedule, due ~4 s out.
+    // A fresh workflow name, its own claimed schedule, due ~5 s out.
     const name = 'it128-phantom-2';
-    await registerPublish(name);
-    const created = await call('schedule_create', { workflow: name, kind: 'once', at: new Date(Date.now() + 4_000).toISOString() });
+    const created = await call('schedule_create', { kind: 'once', at: new Date(Date.now() + 5_000).toISOString() });
     const id = ((created.result ?? created) as { id?: string }).id!;
+    await registerPublish(name, [id]);
 
-    // Deregister BEFORE it is due: the create-time binding must come back as an unclaimed trigger.
+    // Deregister BEFORE it is due: the binding must come back as an unclaimed trigger.
     const dereg = await call('workflow_deregister', { name });
     expect(dereg.error, `deregister: ${JSON.stringify(dereg.error)}`).toBeUndefined();
-    expect(dereg.result.releasedTriggers, 'a create-time binding was not reported as released').toContain(id);
+    expect(dereg.result.releasedTriggers, 'the claimed trigger was not reported as released').toContain(id);
     const row = ((await call('schedule_list')).result as Array<{ id: string; claimedBy?: string | null; workflow?: string | null }>).find((r) => r.id === id);
     expect(row?.claimedBy ?? null, 'claimedBy still points at the deleted workflow').toBeNull();
     expect(row?.workflow ?? null, 'the legacy workflow column still points at the deleted workflow — the fire path falls back to it').toBeNull();
+
 
     // Someone re-registers the freed name and publishes it.
     await registerPublish(name);
 
     // Wait past the due instant plus several ticks: the released trigger must NOT fire for the
     // re-registered workflow — nobody has claimed it.
-    await sleep(6_000);
+    await sleep(7_000);
     expect(await runsOf(name), 'a released trigger fired for a re-registration of the same name (the ADR-026 phantom)').toEqual([]);
   }, 30000);
 });

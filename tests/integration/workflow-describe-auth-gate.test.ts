@@ -1,26 +1,41 @@
-// IT-101 (v23 Gate 8 send-back A1, `ADJ-A1`, 02-architecture.md ARCH-083 amendment,
-// 02-architecture.md:1953/1957 Gate-2-re-run handoff): `GET /api/workflows/:name/describe`
-// (server.ts:1173-1183) is dispatched at server.ts:1918-1930, OUTSIDE the `authHandlers` block
-// (server.ts:1722) that is the only place `dbindExempt`'s four members live — so the route makes NO
-// authorization decision at all today. Under `auth.enabled:true` on a non-loopback bind, an
-// anonymous LAN socket reads `owner` + raw `triggers[]` (cron/tz/enabled/chain upstream) +
-// `versions[]` + `diagram` — none of which are in `EXPECTED_NON_OWNER_KEYS` (workflow-view.ts:59-62).
+// IT-101 (v24 orchestrator adjudication #8, H-1, issue #57 — OVERRULES ADJ-A1): `GET
+// /api/workflows/:name/describe` carries NO authorization gate. It is the only route that serves a
+// workflow's author-supplied Mermaid and its per-agent parameters to the dashboard, and the
+// dashboard's client is a plain browser fetch from a page with no login and no token — under
+// ADJ-A1's gate that client could never be admitted, so with `auth.enabled:true` the workflow-detail
+// pane was blank for every workflow.
 //
-// ADJ-A1's literal rule (02-architecture.md, ARCH-083 amendment): the route is admitted only when
-// `!authEnabled` OR the peer is loopback (REQ-089/D-BIND) OR `resolvePrincipal` returns a principal;
-// otherwise 401 + `WWW-Authenticate`, BEFORE any store read. Gate-2-re-run's own oracle
-// (02-architecture.md:1957): "A1's four-row parameterized route oracle with
-// `{authEnabled:false} -> 200` first" — this file's four `describe('row N…')` blocks below are that
-// oracle, in that order.
+// ADJ-A1 (v23 Gate 2 re-run, ARCH-083 amendment) added the gate to stop an unauthenticated caller
+// learning whether a name exists, and marked itself owner-overrulable at Gate 8. Adjudication #8
+// overrules it: an anonymous `GET /api/workflows` already returns every name, owner, description,
+// versions, channels AND the full per-agent parameter spec, and `/api/home` lists every name too.
+// `describe` adds only `mermaid` and `phases` — and v23 adjudication #1 already ruled phases public,
+// while v24's whole premise (REQ-111) is that the diagram is a workflow's PUBLIC face. The gate shut
+// a side door while the front door stood open, at the cost of the dashboard's main function.
+// `workflow_source` is untouched: it carries script text and is the genuinely privileged view — that
+// difference is exactly why v24 renamed `workflow_get` to `workflow_source`.
+//
+// The rows below are ADJ-A1's own four-row parameterized oracle, REWRITTEN to the new expectation
+// (not deleted): every row that asserted 401 now asserts the response the dashboard actually needs,
+// and each keeps a never-registered name asserting 404 — NOT 401 — which is what proves the gate is
+// gone rather than merely relocated (a surviving gate answers 401 before any store read, so a 404
+// can only come from a route that reached the catalog).
+//
+// Row 3b is the case adjudication #8 says never existed and is the whole point: an engine booted
+// with `auth.enabled:true` on a LOOPBACK bind — the one construction where `dbindExempt` is false by
+// construction (server.ts's D-BIND comment: loopback-BOUND servers are EXCLUDED from the exemption)
+// — answers a GET carrying no auth headers at all with 200 and the full mermaid string, verbatim.
+// That is the exact request the dashboard makes.
 //
 // Mock policy (integration, DES-119): real `createServer` + real HTTP + real on-disk catalog.db (v22
 // schema, mirrors IT-091/IT-089's hand-seed pattern where an anonymous write cannot reach a
 // published starting state under auth) — no mock of the SUT's own auth/routing boundary.
 //
-// Red reason (measured against today's engine, `server.ts:1173-1183`/`:1918-1930`): the route body
-// makes no authorization decision and is dispatched outside `authHandlers`, so row 3's non-loopback
-// peer gets 200 with the full body, never 401 — verified by reading the two cited line ranges before
-// writing these assertions, not assumed.
+// Red reason (measured against 156522d, `server.ts:1113-1127`): that block matched
+// `/^\/api\/workflows\/([^/]+)\/describe$/` on GET and, whenever `dbindExempt` was false, required
+// `resolvePrincipal` to succeed or sent 401 + WWW-Authenticate before any store read — so rows 3a,
+// 3b and row 4's no-bearer case answered 401, never 200/404. Verified by running this file against
+// the unmodified engine before the fix, not assumed.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir, networkInterfaces } from 'node:os';
@@ -41,6 +56,10 @@ function getLanIp(): string | undefined {
 const LAN_IP = getLanIp();
 const HAS_LAN_IP = LAN_IP !== undefined;
 
+/** The author-supplied diagram every seeded workflow below carries — asserted VERBATIM (adjudication
+ *  #8: "200 with the full mermaid string"), never merely truthy. */
+const SEEDED_MERMAID = 'graph TD;\n  A[start] --> B[finish]';
+
 function uniqueName(prefix: string): string {
   return `it101-${prefix}-${randomUUID().slice(0, 8)}`;
 }
@@ -48,12 +67,16 @@ function uniqueName(prefix: string): string {
 /** Hand-seeds an owned, single-version, PUBLISHED workflow directly into catalog.db — the v22 schema
  *  shape (mirrors IT-091/IT-089's own hand-seed helpers; graphAnalyzer stays disabled on every
  *  server below, so no diagram row is ever written and every response's diagram fields are
- *  deterministic without racing an async job). */
+ *  deterministic without racing an async job). The `mermaid` column is v24's (ARCH-098/DES-148,
+ *  added by the catalog's own migration at boot, so `createServer` must have run first) and is
+ *  seeded non-null here: `mermaid:null` would surface as `mermaidNote:'LEGACY_NO_DIAGRAM'`, which
+ *  is exactly the empty-diagram symptom issue #57 reports, and would make the row-3b assertion
+ *  vacuous. */
 function seedPublishedWorkflow(dbPath: string, name: string, owner: string, version: string, script: string): void {
   const db = new Database(dbPath);
   const now = new Date().toISOString();
   db.prepare('INSERT INTO workflows (name, createdAt, owner, release_version) VALUES (?, ?, ?, ?)').run(name, now, owner, version);
-  db.prepare('INSERT INTO workflow_versions (name, version, script, createdAt) VALUES (?, ?, ?, ?)').run(name, version, script, now);
+  db.prepare('INSERT INTO workflow_versions (name, version, script, mermaid, createdAt) VALUES (?, ?, ?, ?, ?)').run(name, version, script, SEEDED_MERMAID, now);
   db.close();
 }
 
@@ -63,7 +86,7 @@ async function getDescribe(base: string, name: string, extraHeaders: Record<stri
 
 // ── Row 1: {authEnabled:false} -> 200 (checked FIRST, per the Gate-2-re-run's own ordering) ───────
 
-describe('row 1: auth DISABLED -> 200 (IT-101, ADJ-A1)', () => {
+describe('row 1: auth DISABLED -> 200 (IT-101, adjudication #8)', () => {
   let server: Server;
   let workRoot: string;
   const NAME = uniqueName('open');
@@ -80,12 +103,13 @@ describe('row 1: auth DISABLED -> 200 (IT-101, ADJ-A1)', () => {
     expect(res.status).toBe(200);
     const body = await res.json() as Record<string, unknown>;
     expect(body['name']).toBe(NAME);
+    expect(body['mermaid']).toBe(SEEDED_MERMAID);
   });
 });
 
 // ── Row 2: {authEnabled:true, loopback peer} -> 200 ─────────────────────────────────────────────
 
-describe('row 2: auth ENABLED, D-BIND loopback-exempt peer -> 200 (IT-101, ADJ-A1)', () => {
+describe('row 2: auth ENABLED, D-BIND loopback peer -> 200 (IT-101, adjudication #8)', () => {
   let server: Server;
   let workRoot: string;
   const NAME = uniqueName('dbind');
@@ -100,7 +124,7 @@ describe('row 2: auth ENABLED, D-BIND loopback-exempt peer -> 200 (IT-101, ADJ-A
   });
   afterAll(async () => { await server?.close(); rmSync(workRoot, { recursive: true, force: true }); });
 
-  it('connecting via 127.0.0.1 to a 0.0.0.0-bound auth-enabled server -> 200, no bearer needed (D-BIND exemption)', async () => {
+  it('connecting via 127.0.0.1 to a 0.0.0.0-bound auth-enabled server -> 200, no bearer needed', async () => {
     const res = await getDescribe(`http://127.0.0.1:${server.port}`, NAME);
     expect(res.status).toBe(200);
     const body = await res.json() as Record<string, unknown>;
@@ -108,18 +132,18 @@ describe('row 2: auth ENABLED, D-BIND loopback-exempt peer -> 200 (IT-101, ADJ-A
   });
 });
 
-// ── Row 3: {authEnabled:true, non-loopback peer, no/invalid bearer} -> 401 + WWW-Authenticate,
-//    zero store reads. Two variants: the genuine non-loopback-peer case (needs a real LAN IP, per
-//    net-guard-bind-integration.test.ts's own precedent — skipIf(!HAS_LAN_IP)) and a
-//    environment-independent guaranteed-red row — bind LOOPBACK with auth enabled: D-BIND's own
-//    comment (server.ts:1717-1718) states loopback-BOUND servers are EXCLUDED from the exemption
-//    ("no non-loopback peers possible"), so `dbindExempt` is unconditionally false there and EVERY
-//    peer — including 127.0.0.1 itself — needs a real bearer, exactly like /mcp on IT-089's
-//    loopback-bound auth-enabled server. ──────────────────────────────────────────────────────────
+// ── Row 3: {authEnabled:true, NON-exempt peer, no/invalid bearer}. Was ADJ-A1's 401 row; under
+//    adjudication #8 it is the DASHBOARD row -> 200 with the diagram. Two variants, both kept: the
+//    genuine non-loopback-peer case (needs a real LAN IP, per net-guard-bind-integration.test.ts's
+//    own precedent — skipIf(!HAS_LAN_IP)) and the environment-independent one — bind LOOPBACK with
+//    auth enabled, where D-BIND's own comment (server.ts) states loopback-BOUND servers are EXCLUDED
+//    from the exemption ("no non-loopback peers possible"), so `dbindExempt` is unconditionally
+//    false and, under ADJ-A1, EVERY peer — including 127.0.0.1 itself — needed a real bearer. ─────
 
-describe('row 3a: auth ENABLED, genuine non-loopback (LAN) peer, no bearer -> 401 (IT-101, ADJ-A1)', () => {
+describe('row 3a: auth ENABLED, genuine non-loopback (LAN) peer, no bearer -> 200 (IT-101, adjudication #8)', () => {
   let server: Server;
   let workRoot: string;
+  const NAME = uniqueName('lan');
 
   beforeAll(async () => {
     workRoot = mkdtempSync(join(tmpdir(), 'rwe-it101-lan-'));
@@ -128,27 +152,33 @@ describe('row 3a: auth ENABLED, genuine non-loopback (LAN) peer, no bearer -> 40
       allowedHosts: LAN_IP ? [LAN_IP] : [],
       auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it101-lan-cid', googleClientSecret: 'it101-lan-cs' },
     } as never);
-    // deliberately NOT seeding a workflow — the zero-store-read oracle below needs a name that was
-    // NEVER registered: if the gate ran AFTER a store read, a nonexistent name would 404
-    // (WORKFLOW_NOT_FOUND); a genuine pre-read gate 401s regardless of whether the name exists.
+    seedPublishedWorkflow(join(workRoot, 'catalog.db'), NAME, 'it101-owner3a@example.com', 'v1', `return 'v1';`);
   });
   afterAll(async () => { await server?.close(); rmSync(workRoot, { recursive: true, force: true }); });
 
-  it.skipIf(!HAS_LAN_IP)('connecting via the LAN IP with no bearer -> 401 + WWW-Authenticate, NOT 404 (zero store reads before the gate)', async () => {
-    const res = await getDescribe(`http://${LAN_IP}:${server.port}`, 'it101-never-registered');
-    expect(res.status).toBe(401);
-    expect(res.headers.get('www-authenticate')).toBeTruthy();
+  it.skipIf(!HAS_LAN_IP)('connecting via the LAN IP with no bearer -> 200 with the diagram', async () => {
+    const res = await getDescribe(`http://${LAN_IP}:${server.port}`, NAME);
+    expect(res.status).toBe(200);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body['name']).toBe(NAME);
+    expect(body['mermaid']).toBe(SEEDED_MERMAID);
   });
 
-  it.skipIf(!HAS_LAN_IP)('an INVALID bearer over the LAN IP also -> 401', async () => {
-    const res = await getDescribe(`http://${LAN_IP}:${server.port}`, 'it101-never-registered', { Authorization: 'Bearer not-a-real-token' });
-    expect(res.status).toBe(401);
+  it.skipIf(!HAS_LAN_IP)('an INVALID bearer over the LAN IP is IGNORED, not refused -> 200 (the route makes no authorization decision at all)', async () => {
+    const res = await getDescribe(`http://${LAN_IP}:${server.port}`, NAME, { Authorization: 'Bearer not-a-real-token' });
+    expect(res.status).toBe(200);
+  });
+
+  it.skipIf(!HAS_LAN_IP)('a NEVER-REGISTERED name over the LAN IP -> 404, not 401 — the request reached the catalog', async () => {
+    const res = await getDescribe(`http://${LAN_IP}:${server.port}`, 'it101-never-registered');
+    expect(res.status).toBe(404);
   });
 });
 
-describe('row 3b: auth ENABLED, LOOPBACK bind (exemption excluded by construction), no bearer -> 401 (IT-101, ADJ-A1, environment-independent)', () => {
+describe('row 3b: auth ENABLED, LOOPBACK bind (exemption excluded by construction), NO headers at all -> 200 + full mermaid — the dashboard\'s own request (IT-101, adjudication #8, issue #57)', () => {
   let server: Server;
   let workRoot: string;
+  const NAME = uniqueName('loopbound');
 
   beforeAll(async () => {
     workRoot = mkdtempSync(join(tmpdir(), 'rwe-it101-loopbound-'));
@@ -156,27 +186,38 @@ describe('row 3b: auth ENABLED, LOOPBACK bind (exemption excluded by constructio
       port: 0, bind: '127.0.0.1', workRoot,
       auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it101-lb-cid', googleClientSecret: 'it101-lb-cs' },
     } as never);
+    seedPublishedWorkflow(join(workRoot, 'catalog.db'), NAME, 'it101-owner3b@example.com', 'v1', `return 'v1';`);
   });
   afterAll(async () => { await server?.close(); rmSync(workRoot, { recursive: true, force: true }); });
 
-  it('a loopback-bound auth-enabled server refuses an unauthenticated describe -> 401 + WWW-Authenticate, NOT 404', async () => {
+  it('a browser GET with NO auth headers on an auth-ENABLED engine -> 200 carrying the author-supplied mermaid VERBATIM', async () => {
+    const res = await getDescribe(`http://127.0.0.1:${server.port}`, NAME);
+    expect(res.status).toBe(200);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body['name']).toBe(NAME);
+    // The whole defect: the dashboard renders THIS string. Exact, not truthy — and no
+    // LEGACY_NO_DIAGRAM stand-in.
+    expect(body['mermaid']).toBe(SEEDED_MERMAID);
+    expect(body['mermaidNote']).toBeNull();
+    // DES-125: one projection for every principal — an anonymous caller still gets no script body.
+    expect(JSON.stringify(body)).not.toContain(`return 'v1';`);
+  });
+
+  it('a NEVER-REGISTERED name on the same auth-enabled server -> 404, not 401 — proof the gate is gone, not relocated', async () => {
     const res = await getDescribe(`http://127.0.0.1:${server.port}`, 'it101-never-registered-2');
-    expect(res.status).toBe(401);
-    expect(res.headers.get('www-authenticate')).toBeTruthy();
+    expect(res.status).toBe(404);
+    expect(res.headers.get('www-authenticate')).toBeNull();
   });
 });
 
-// ── Row 4: {authEnabled:true, non-exempt peer, VALID bearer} -> 200. ADDED at v23 Gate 6.5+7
-//    round 4 (verifier) off a measured coverage hole: the gate's ADMIT line (`dispatchDashboard()`
-//    at server.ts:1904) was executed by no test in the suite — rows 1 and 2 never enter the block
-//    (auth off / D-BIND exempt) and rows 3a/3b stop at the 401. A gate that refused EVERY
-//    authenticated caller would have passed the whole oracle, so this row is what makes rows 3a/3b
-//    mean something. Same loopback-BOUND construction as row 3b (exemption excluded by
-//    construction), with a hand-seeded live bearer — the same `bearer_tokens` seeding pattern
-//    IT-078/auth-routes-integration.test.ts uses, expiry derived RELATIVE to now, never a literal
-//    date. ────────────────────────────────────────────────────────────────────────────────────────
+// ── Row 4: {authEnabled:true, non-exempt peer, VALID bearer} -> 200, identical to the anonymous
+//    body. ADJ-A1 added this row to prove the gate ADMITTED as well as refused; under adjudication
+//    #8 it proves the stronger property — presenting a token changes NOTHING, which is DES-125's
+//    "every principal gets the same shape" made observable. Same loopback-BOUND construction as row
+//    3b, with a hand-seeded live bearer (IT-078/auth-routes-integration.test.ts's `bearer_tokens`
+//    pattern, expiry derived RELATIVE to now, never a literal date). ───────────────────────────────
 
-describe('row 4: auth ENABLED, non-exempt peer, VALID bearer -> 200 (IT-101, ADJ-A1 — the gate admits, not only refuses)', () => {
+describe('row 4: auth ENABLED, non-exempt peer, VALID bearer -> 200 and byte-identical to anonymous (IT-101, adjudication #8, DES-125)', () => {
   let server: Server;
   let workRoot: string;
   const NAME = uniqueName('bearer');
@@ -202,14 +243,16 @@ describe('row 4: auth ENABLED, non-exempt peer, VALID bearer -> 200 (IT-101, ADJ
     expect(res.status).toBe(200);
     const body = await res.json() as Record<string, unknown>;
     expect(body['name']).toBe(NAME);
-    // DES-125: the projection is single — passing the gate does NOT turn the caller into an owner,
+    // DES-125: the projection is single — passing a token does NOT turn the caller into an owner,
     // so the response still carries no script body.
     expect(JSON.stringify(body)).not.toContain(`return 'v1';`);
   });
 
-  it('the SAME server 401s the SAME name with no bearer — so the 200 above is the token, not an open route', async () => {
-    const res = await getDescribe(`http://127.0.0.1:${server.port}`, NAME);
-    expect(res.status).toBe(401);
+  it('the SAME server serves the SAME name with NO bearer, and the body is identical — the token buys nothing here', async () => {
+    const withToken = await getDescribe(`http://127.0.0.1:${server.port}`, NAME, { Authorization: `Bearer ${RAW_TOKEN}` });
+    const anonymous = await getDescribe(`http://127.0.0.1:${server.port}`, NAME);
+    expect(anonymous.status).toBe(200);
+    expect(await anonymous.json()).toEqual(await withToken.json());
   });
 });
 
@@ -224,7 +267,7 @@ describe('parity row: GET /describe and MCP workflow_describe serve the IDENTICA
   beforeAll(async () => {
     workRoot = mkdtempSync(join(tmpdir(), 'rwe-it101-parity-'));
     server = await createServer({ port: 0, bind: '127.0.0.1', workRoot });
-    seedPublishedWorkflow(join(workRoot, 'catalog.db'), NAME, 'it101-owner3@example.com', 'v1', `return 'v1';`);
+    seedPublishedWorkflow(join(workRoot, 'catalog.db'), NAME, 'it101-owner5@example.com', 'v1', `return 'v1';`);
   });
   afterAll(async () => { await server?.close(); rmSync(workRoot, { recursive: true, force: true }); });
 
