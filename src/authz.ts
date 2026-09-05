@@ -5,6 +5,9 @@
 // Pure: no I/O, no clock — ownership reads go through the injected, SYNC `OwnerLookup` port so
 // this module never touches a store directly (ARCH-088's testability lens).
 import type { Role, AuthzRow, ToolAuthz, ToolSpec } from './tool-specs.js';
+// v24 Gate 8 (AF-3, TASK-162): TYPE-ONLY — erases at compile time, adds no runtime edge, and
+// makes `AUTHZ_ERROR_CODES` below checkable against the closed catalog at its declaration.
+import type { ErrorCode } from './errors.js';
 
 export type { Role };
 
@@ -34,7 +37,28 @@ export interface OwnerLookup {
   triggerOwner(id: string): string | null | undefined;
 }
 
-export type AuthzErrorCode = 'FORBIDDEN_ROLE' | 'NOT_RUN_OWNER' | 'NOT_WORKFLOW_OWNER' | 'NOT_TRIGGER_OWNER' | 'PRINCIPAL_REQUIRED';
+// v24 Gate 8 (AF-3, TASK-162): the union is now DERIVED from a runtime array that is itself
+// `satisfies readonly ErrorCode[]`, which closes the CLASS the D-14 fix left open. Before this,
+// `AuthzErrorCode` was a hand-typed string union with no relationship to `ERROR_CATALOG`, so
+// `PRINCIPAL_REQUIRED` could be declared here, returned by `authorize()` (line ~89) and copied
+// unremapped to the wire by `call-tool.ts` (`verdict.code ?? 'FORBIDDEN_ROLE'` only covers a
+// verdict with NO code) while being absent from the catalog: no `see` pointer, in no generated
+// documentation, and invisible to every closure test. Two locks now, not one:
+//   - COMPILE TIME: `satisfies readonly ErrorCode[]` — a member that is not a catalog key is a
+//     type error at this declaration, before any test runs.
+//   - RUNTIME: the array is enumerable, so `tests/unit/error-catalog-closed.test.ts` can assert
+//     membership for EVERY code instead of for the three or four somebody remembered.
+// Gate 7.5 round 3 fixed this exact defect for three trigger codes one function away; fixing the
+// instance rather than the class is why it came back (adjudication #7 G-3).
+export const AUTHZ_ERROR_CODES = [
+  'FORBIDDEN_ROLE',
+  'NOT_RUN_OWNER',
+  'NOT_WORKFLOW_OWNER',
+  'NOT_TRIGGER_OWNER',
+  'PRINCIPAL_REQUIRED',
+] as const satisfies readonly ErrorCode[];
+
+export type AuthzErrorCode = (typeof AUTHZ_ERROR_CODES)[number];
 
 // Flat, not a discriminated union: callers read `verdict.code`/`.crossPrincipalRead`/`.detail`
 // straight off an `ok`-checked verdict without a narrowing type guard in between (`expect(...)`

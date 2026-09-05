@@ -34,6 +34,13 @@ export const ERROR_CATALOG = {
   // Ownership
   NOT_WORKFLOW_OWNER: { see: null, hint: 'the caller does not own this workflow name' },
   NOT_RUN_OWNER: { see: null, hint: 'the caller does not own this run' },
+  // v24 Gate 8 (AF-3, TASK-162): `authz.ts`'s loopback-exempt refusal — a caller reaching a tool
+  // that needs an identity over a connection that carries none. It was DECLARED in
+  // `AuthzErrorCode` and RETURNED by `authorize()` while missing here, so `call-tool.ts:136`
+  // (`verdict.code ?? 'FORBIDDEN_ROLE'` — the fallback only covers a verdict with no code at all)
+  // put an uncatalogued string on the wire. `see: null` like its role/ownership siblings: the fix
+  // is to authenticate, which is a deployment matter, not an authoring one.
+  PRINCIPAL_REQUIRED: { see: null, hint: 'this tool requires an authenticated principal; the caller supplied none' },
   // v24 adjudication #6 F-3 (D-14, REQ-116): thrown from the REGISTRATION path (mcp-facade.ts:313)
   // when a registration declares a trigger someone else created. REQ-116 requires a registration
   // that fails on trigger to point at the guide, and does not carve ownership out of "trigger" —
