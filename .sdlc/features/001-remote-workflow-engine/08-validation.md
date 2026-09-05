@@ -8212,3 +8212,38 @@ warning is unchanged and is repeated at the end of this section.
   items (issue #53 and D-14). D-14 is fixed, so its entry and its operator workaround are gone from
   DEPLOY §6 and from README's mirror of that list — one live item remains, issue #53 (= D-9). The
   round-2 sentence above describing that section still describes round 2.
+
+### VAL-164 — REQ-117 的 tmux 互動演示(擁有者指定的形式),與它找到的引擎缺陷
+- **status:** green
+- **traces:** REQ-117, REQ-110
+- **tier:** acceptance
+- **real:** true
+- **result:** pass (with two findings)
+- **evidence:** 2026-09-05 08:35–08:59。擁有者的 `/goal` 明寫「額外要開一個 tmux 和全新的 claude」,
+  而 VAL-140/VAL-162 用的是 `claude -p`(非互動)。本項補上互動形式。
+  受測環境:`tmux new-session -s rwe-cold`,cwd `/tmp/rwe-cold-tmux-Uvbq6N`(上溯無 `CLAUDE.md`,
+  該路徑無既有記憶,事後已刪),`claude --strict-mcp-config --mcp-config mcp.json
+  --setting-sources local --allowedTools 'mcp__rwe__*'`,只給 `TASK.txt` 與 `mcp.json` 兩個檔;
+  專用引擎 8791 埠、獨立 workRoot、35 支工具。受測者 Opus 5,CLI 2.1.260,共 22m55s。
+  **互動模式證明了 `-p` 模式做不到的一件事**:受測者用背景計時器自行配速輪詢
+  (「用短暫等待來配速,而不是狂打引擎」),`-p` 模式正是因為背景 sleep 不喚醒而在 VAL-140 中途死掉。
+  結果:`workflow_register` **第一次就過**(v1),publish、run、讀回全部正確,**引擎用法零錯誤**。
+  最終 v4 產出一篇 1859 卡林頓事件簡報,run `8ed711cf`,三個 agent 全部 `done`。
+  **交棒是受測者自己驗證的,不是用「有三個 agent 跑過」代替**:researcher 的 logged prompt 含
+  scoper 的原句問題列表,editor 的含 researcher 的原句筆記(連 `[uncertain]` 標記一起)。
+  **走到 v4 的原因與 REQ-117 的判定**:v1 完成但輸出是 tool-call JSON 而非散文 ——
+  `default` alias 指向本地 7B 模型。受測者正確診斷(小模型拿到工具面就會呼叫工具),
+  這**不是引擎用法錯誤**,而是介面只給了 alias 的名字沒給能力(D-12 修的是前者)。
+  v2 綁 haiku 全部 `ANTHROPIC_AUTH_MISSING` —— **orchestrator 架設演示引擎時未帶入
+  `RWE_SECRET_*`,是驗證環境的疏漏,不歸引擎**。OpenRouter passthrough 探測逾時掛住,
+  **OpenRouter 這條路徑本輪未驗證**。
+  **受測者主動報的兩個品質缺失,它沒有掩蓋**:editor 被要求不印 `[uncertain]` 卻印了一個;
+  scoper 的「問題」帶著答案回來、做了 researcher 的工作。它明說這是小模型天花板而非結構問題,
+  並且**刻意不在程式裡把標記拿掉**,理由是「默默刪掉會把 researcher 的保留意見藏起來」。
+- **defect found:** `agent({tools: []})` 被靜默忽略 → issue #55。`LOCKED_KEYS` 列了 `tools`
+  宣稱作者可設,但 `AgentOpts`(types.ts:51-70)沒有這個欄位;`scan-agent-calls.ts` 的
+  `PARAM_UNKNOWN` 出現 0 次,而 `params/contract.ts` 出現 4 次 —— 同一個引擎兩套標準。
+  這正是裁定 #2 A-2 判過的失效模式(「冷模型會從帳單才發現旋鈕沒作用」),
+  而這次真的有一個冷模型付了代價:約 15 分鐘與三次額外註冊。列 v25。
+- **iter:** v24
+
