@@ -2919,7 +2919,7 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   `PARAM_UNKNOWN` case, already satisfied by the guide's error table) is recorded as such rather
   than implied.
 
-  **Amended by the follow-up commit (review pass).** Four things the first pass left: the WIRE was
+  **Amended by `b3c14e5` (review pass).** Four things the first pass left: the WIRE was
   never asserted — UT-165 proved the scanner, and the work order says *at registration*, so IT-085's
   file gains the end-to-end case (real catalog, `SCAN_VIOLATION`, both `'tools'` and `allowedTools`
   in the message, nothing stored), written after the fix and recorded as red-not-observed. UT-165's
@@ -2962,7 +2962,7 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   transitions as well as status" as the tighter signal — this is that signal, which is a
   prerequisite for the fix rather than the fix.
 
-  **Amended by the follow-up commit (review pass).** `_checkTerminalHasTransition` awaited
+  **Amended by `b3c14e5` (review pass).** `_checkTerminalHasTransition` awaited
   `getTransitions` OUTSIDE the sink's try/catch, so a store that threw on that read — an extra read
   `status()` never made before — would have propagated out of a call that used to succeed. The whole
   check body is guarded now. "Observability only" has to mean that literally: an observation that
