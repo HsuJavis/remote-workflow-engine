@@ -45,7 +45,17 @@ import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 import { TOOL_SPECS, resolveFixture, FIXTURE_SCRIPT, FIXTURE_MERMAID, FIXTURE_AGENT_LABEL, type SetupKey } from '../../src/tool-specs.js';
 
-const REPORT_PATH = join(process.cwd(), '.sdlc/features/001-remote-workflow-engine/v24-tool-surface.md');
+// v25 (orchestrator, adjudication #10): this file is BOTH committed evidence (the REQ-118 live tool
+//  table) and a test OUTPUT, and being both is what made it dirty the working tree on every single
+//  acceptance run — it blocked a branch switch twice, blocked a merge once, and the Gate 8 fix pass
+//  reached for `git checkout -- <path>` to clear it, which is the command family CLAUDE.md bans.
+//  So the default target is now scratch, and refreshing the committed evidence is a deliberate act:
+//    RWE_TOOL_SURFACE_REPORT=1 npx vitest run tests/acceptance/v24-tool-surface.test.ts
+//  The assertions are unchanged and run either way; only where the report lands moved.
+const LEDGER_REPORT = join(process.cwd(), '.sdlc/features/001-remote-workflow-engine/v24-tool-surface.md');
+const REPORT_PATH = process.env['RWE_TOOL_SURFACE_REPORT'] === '1'
+  ? LEDGER_REPORT
+  : join(tmpdir(), 'rwe-tool-surface-report.md');
 const ajv = new Ajv();
 
 // Credential-gated per DES-158's boundary — verified live: all five need
