@@ -13,6 +13,13 @@ races with 19 other agents still writing. On 2026-09-04 an implementer reported 
 exactly this. If you think you need a stash, you need `git show` instead.
 
 **Never** run `git checkout <sha> -- <path>` or `git restore --source=<sha> -- <path>`.
+
+**The no-sha forms are dangerous too, for the same reason:** `git checkout -- <path>` and
+`git restore <path>` silently DISCARD every uncommitted change under `<path>`. With one agent that
+only loses your own edits; during an implementation gate it throws away whatever the other ~20
+agents had written there and not yet committed, with no warning and nothing to recover from. If a
+generated artifact keeps showing up dirty, gitignore it or write it to a scratch directory — do not
+reach for checkout to tidy the tree.
 That overwrites the working tree AND stages the overwrite, and it silently destroys
 uncommitted work under `<path>`.
 
