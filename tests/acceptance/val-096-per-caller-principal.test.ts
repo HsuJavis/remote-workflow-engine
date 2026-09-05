@@ -5,8 +5,8 @@
 // REQ-086 acceptance criteria:
 //   Given auth enabled: un-tokened hit to /mcp OR /assets/blob OR /assets/manifest → 401,
 //   NO side effect (no run created, no blob stored, no manifest registered);
-//   Given valid engine bearer (principal=alice@example.com): workflow_run → run record carries
-//   `principal:alice@example.com` (observable via workflow_status); bearer-authed blob upload →
+//   Given valid engine bearer (principal=alice@example.com): run_start → run record carries
+//   `principal:alice@example.com` (observable via run_status); bearer-authed blob upload →
 //   CAS namespace first-writer equals the principal (checked via direct store read);
 //   Given auth disabled: no principal required (open behavior preserved).
 //
@@ -87,6 +87,11 @@ beforeAll(async () => {
       googleBase: `http://127.0.0.1:${fakeGoogPort}`,
       jwksFetch: () => Promise.resolve([JWK]),
     },
+    // v24 (REQ-109 roles, ADR-028): the attribution case registers+publishes its own workflow before
+    // running it, and both writes are `{minRole:'author'}`. An authenticated id not listed here
+    // resolves to `'user'` (fail-closed) and never reaches the run whose `principal` this file
+    // asserts. Mechanical only — the oracle is still "run_status carries principal:<email>".
+    principals: { [TEST_EMAIL]: { role: 'author' } },
   } as never);
 });
 
@@ -136,7 +141,7 @@ describe('REQ-086: protected surfaces reject un-tokened requests (VAL-096)', () 
     const res = await fetch(`${BASE()}/mcp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_run', arguments: { script: 'return 1;' } } }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'run_start', arguments: { script: 'return 1;' } } }),
     });
     expect(res.status).toBe(401);
   });
@@ -160,7 +165,7 @@ describe('REQ-086: protected surfaces reject un-tokened requests (VAL-096)', () 
 });
 
 describe('REQ-086: valid bearer → principal attributed on artifacts (VAL-096)', () => {
-  it('workflow_run with bearer → workflow_status carries principal:<email>', async () => {
+  it('run_start with bearer → run_status carries principal:<email>', async () => {
     const bearer = await getBearer();
 
     // v22: runs are by name only, so register+publish first — through the SAME bearer, so the
@@ -181,7 +186,7 @@ describe('REQ-086: valid bearer → principal attributed on artifacts (VAL-096)'
     const runRes = await fetch(`${BASE()}/mcp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${bearer}` },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_run', arguments: { name: wf } } }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'run_start', arguments: { name: wf } } }),
     });
     expect(runRes.status).toBe(200);
     const rb = await runRes.json() as { result?: { content?: Array<{ text?: string }> } };
@@ -194,7 +199,7 @@ describe('REQ-086: valid bearer → principal attributed on artifacts (VAL-096)'
       const sr = await fetch(`${BASE()}/mcp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${bearer}` },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'workflow_status', arguments: { runId } } }),
+        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'run_status', arguments: { runId } } }),
       });
       const sb = await sr.json() as { result?: { content?: Array<{ text?: string }> } };
       statusResult = JSON.parse(sb.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;

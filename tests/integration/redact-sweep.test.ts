@@ -199,7 +199,10 @@ describe('redact-at-capture completeness sweep — sink (4): appendJournal (DES-
       // entry must be redacted — key.prompt was the live-Ollama Gate-7.5 leak (only .value was redacted).
       const gateway = makeContentGateway(SECRET_VALUE);
       const mgr = new RunManager({ store, clock, workRoot: dir, gateway, secretValueProvider: secretProvider } as any);
-      const runId = await startScript(mgr, `const a = await agent(${JSON.stringify('use token ' + SECRET_VALUE)}); return a;`);
+      // v24 (ADR-029): `agent(LABEL, {prompt})` — the label is a literal identifier and the secret
+      // rides `options.prompt`, which is exactly what run-manager.ts marshals into `CallKey.prompt`
+      // (`prompt = rawOpts.prompt ?? positional`). Same sink, same oracle, new spelling.
+      const runId = await startScript(mgr, `const a = await agent('use', { prompt: ${JSON.stringify('use token ' + SECRET_VALUE)} }); return a;`);
       expect(await pollStatus(mgr, runId, 'completed')).toBe('completed');
 
       // Persisted journal.jsonl (the REPLAY source) is redacted — sink (4).
@@ -258,7 +261,21 @@ describe('redact-at-capture completeness sweep — sink (5): effectiveParams sna
       const gateway = makeContentGateway('ok');
       const mgr = new RunManager({ store, clock, workRoot: dir, gateway, secretValueProvider: secretProvider } as any);
       const appendPrompt = `use token ${SECRET_VALUE}`;
-      const runId = await startScript(mgr, 'return 1;', {}, { appendPrompt });
+      // v24 (DES-145/DES-146): `overrides` is PER-AGENT — `{agents:{'<label>':{appendPrompt}}}`; the
+      // old flat shape is refused PARAM_UNKNOWN. An `appendPrompt` override is only admissible on a
+      // label whose contract DECLARES the key (contract.ts `validateOneAgentOverride`: an undeclared
+      // key on a declared label is PARAM_UNKNOWN), and the fixture helper only synthesizes
+      // model/effort/timeoutMs — so this script carries its own `meta`. The sink under test is
+      // unchanged: the admission snapshot persisted by `createRun` must not contain the raw secret.
+      const script = [
+        "export const meta = { params: { agents: { work: {",
+        "  model: { type: 'string', default: 'default' },",
+        "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
+        "  timeoutMs: { type: 'number', default: 60000 },",
+        "  appendPrompt: { type: 'string' } } } } };",
+        "return await agent('work', {});",
+      ].join('\n');
+      const runId = await startScript(mgr, script, {}, { agents: { work: { appendPrompt } } });
       expect(await pollStatus(mgr, runId, 'completed')).toBe('completed');
 
       const persisted = await store.getEffectiveParams(runId);

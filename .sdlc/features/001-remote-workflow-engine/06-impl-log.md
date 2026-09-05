@@ -2669,3 +2669,216 @@ files `08-validation.md`/`DEPLOY.md`), owned by the validator, not by Gate 6.
   **FLOOR 2b/V-F (`settle_failed`, UT-136):** `_settleUnavailable`'s own `_settle` call is wrapped in a try/catch — if the RECOVERY write itself throws (a permanently-failing store, distinct from UT-130/O2's one-shot fixture whose second write succeeds), no row is written, exactly one journal line fires with `cause:'settle_failed'`, and the closure still does not reject.
   **R-3 (the `_startJob` choke point):** landed as the sequencing condition required (*"a separate RED→GREEN step AFTER inv 2's fix"*) — inv 2 was green first, then this. `_startJob` is now the ONE place `config.enabled` is read for the egress kill-switch: the guard is its first statement, before either claim and before the durable `putDiagramPending` write (which moves INTO `_startJob`, taking `sweepAtBoot`'s attempt stamp as a `bootStamp` parameter — `null` from `enqueue`). `enqueue()`/`sweepAtBoot()` no longer carry their own `enabled` checks; `enqueue()` still reads `priorRow` **before** calling `_startJob`, so B5's prior-`ready` protection and UT-124's fourth (latent-clobber) case are unaffected by where the write lands. `scriptSource` changed from an already-started `Promise<string>` to a `() => Promise<string>` thunk — constructing `sweepAtBoot`'s `catalog.resolve(...)` eagerly would otherwise leave an unawaited, potentially-rejecting promise behind whenever the guard now short-circuits before the closure that would have awaited it exists (the exact unhandled-rejection shape inv 2 exists to close). `server.ts:955`/`mcp-facade.ts:462` are unchanged (defence-in-depth, per R-3's own ruling; IT-103 pins the former, `workflow-describe-facade.test.ts:98` the latter). Named residual, no test contradicts it: `enqueue()`'s `model_unmapped`/`queue_full` checks still run BEFORE `_startJob`'s `enabled` check (they are unrelated to the egress invariant and both are also zero-model-call short-circuits), so a config that is simultaneously `enabled:false` and carries an unmapped model settles `cause:'model_unmapped'`, not `'disabled'` — no test pins this combination (UT-124/UT-135 each vary one axis at a time) and both settle honestly with zero model calls either way.
   **Two reported test defects, RESOLVED (Gate 6 RE-ENTRY, this round).** The prior round reported, and did not fudge, two blockers: UT-125's restored assertion (b) — `putDiagramResult` silently no-ops per DES-130 B6's late-write guard on ANY orphan fixture, so "the row settles to `unavailable`" was structurally unsatisfiable — and UT-135's `queue_full` case, whose fixture reused one name for both `enqueue()` calls so the second was absorbed by the single-flight guard before ever reaching the queue-full check. Neither was a code gap: the Gate 5 RE-ENTRY (verifier, adjudication #8, commit `9fc4439`) ruled UT-125's oracle wrong (re-pointed assertion (b) from the DB row to the journal's `cause:'script_unresolved'` line — direct evidence of the same underlying fact, per DES-130 B6 staying intact) and confirmed UT-135's fixture was already corrected at Gate 6.5+7 round 4 (two distinct names). Re-verified directly this round, not taken on the verifier's word: `npx vitest run tests/unit/graph-analyzer.test.ts` → 43/43 pass (UT-124..137 all green, including UT-125/UT-135); full suite `npx vitest run` → 283 files / 1850 tests, 0 failed, exit 0; `npx tsc --noEmit` clean. No code in `src/graph-analyzer.ts`/`src/server.ts` changed to close either — this entry's `greens` list is amended in place (13/13, was 11/13) rather than filed as a new IMPL.
+
+### IMPL-178 — v24 Gate 6 INTEGRATION pass: the seams three parallel batches correctly refused to cross (adjudication (v24) #4, B-9 stop-loss)
+- **status:** done
+- **traces:** TASK-131, TASK-132, TASK-135, TASK-136, TASK-137, TASK-138, TASK-141, TASK-142, TASK-143, TASK-144, TASK-145, TASK-146, TASK-147, TASK-148, TASK-149, TASK-150, TASK-151, TASK-152, TASK-155, TASK-157, TASK-158, TASK-159, ARCH-087, ARCH-091, ARCH-093, ARCH-094, ARCH-098, ARCH-099, ARCH-103, ARCH-105, ARCH-107, DES-137, DES-138, DES-140, DES-142, DES-144, DES-145, DES-146, DES-149, DES-150, DES-153, DES-154, DES-156, DES-157, DES-158, DES-160, DES-161, REQ-097, REQ-098, REQ-099, REQ-103, REQ-106, REQ-107, REQ-108, REQ-109, REQ-110, REQ-113, REQ-115, REQ-116, REQ-117, REQ-118
+- **greens:** VAL-129, IT-036, IT-116, IT-122, UT-139, UT-161
+- **files:** src/tool-specs.ts, src/errors.ts, src/call-tool.ts, src/mcp-facade.ts, src/run-manager.ts, src/scheduler.ts, src/webhook-registry.ts, src/workflow-catalog.ts, src/workflow-view.ts, src/asset-sync.ts, src/cas-store.ts, src/workspace-gc.ts, src/server.ts, src/submission-validator.ts, src/authoring-guide.ts, src/params/contract.ts, src/gateway/claude-agent-sdk-client.ts, tests/acceptance/v24-tool-surface.test.ts, tests/integration/asset-skill-materialization-wiring.test.ts, tests/integration/resume-legacy-params.test.ts, tests/unit/tool-specs.test.ts, docs/AUTHORING.md, README.md, DEPLOY.md, scripts/smoke.sh (+ ~60 migrated test files)
+- **iter:** v24
+- **note:** **Dispatched as ONE full-scope integrator after adjudication #4 executed B-9's stop-loss.** The three parallel batches partitioned work by file OWNERSHIP, and the residue was SEAMS — defects that live between two owners — so every implementer correctly refused to cross and reported instead. That shape is what this entry closes; the individual findings are in the commits `13721c9`..`df4fc72`, each of which names its adjudication item.
+
+  **The class that dominated.** Twelve of the defects fixed here are the SAME one: a v24 mechanism built end to end except for the single line that hands the value over — the `composeConfig`-forwarding bug class this ledger has recorded since v11, now recorded at scale. `AgentReq.assets` was never populated, so REQ-113's selective materialization had never fired on a real dispatch (adjudication C-2). `agent(LABEL, {prompt})` was never translated at the sandbox boundary, so the per-label parameter slice, `markQueued`'s label, `run_agent_log({label})` and DES-154's declared set ALL silently no-oped — one missing translation held up the whole v24 per-agent chain. `run_start` dropped seed/seedManifest/seedRef/seedManifestRef, and later `args`/`budget`/`channel`. `resolveMcp` was left unbound ("out of scope" in TASK-145's own note) and `WorkflowCatalog.assetsOf()` — written for that call — had zero callers. `scheduler.markRefused` had no caller at all, so REQ-115's "recorded refusals" recorded nothing. `ServerConfig.assetRoot` was resolved by `main.ts` and never read. `reclaimStaleWorkspaces`'s `hasWorkflow` was never passed, so the orphan-asset branch was dead code in production. `workflow_authoring_guide` served a hand-typed paragraph while `buildAuthoringGuide()` had one caller, the doc generator. `workflow_describe.triggers` was a hardcoded `[]`. The CAS namespace was derived on the WRITE side and spelled `'_default'` on the read side, so every seeded run failed `MISSING_BLOBS` naming a sha the engine had just accepted. **The lesson adjudication C-2 drew — check the wiring of EVERY new mechanism, not a sample — is now the ledger's, with twelve instances.**
+
+  **REQ-118 is what found most of them.** Fixing `workflow_register`'s own fixture (adjudication [29], reported three times before anyone acted) and giving DES-158 the SETUP SEQUENCE + `ref()` slots that adjudication [30] demanded turned the acceptance table from an artifact nobody could run into 35/35 rows, 69 green + 5 honestly-UNVERIFIED. The ERROR fixtures [31] are what did the work: eight seams surfaced on the first live pass, every one of them a defect a cold model hits on its first call. That is REQ-118's whole thesis, demonstrated rather than asserted.
+
+  **Error-code drift, both directions.** `IllegalTransitionError`/`CatalogNotFoundError`/`WorkspaceEscapeError` carried no `.code`, so their JS CLASS NAMES were served as machine-readable codes; `UNKNOWN_WORKFLOW`, `SCHEDULE_NOT_FOUND`, `NOT_A_FILE`, `PATH_OUTSIDE_WORKSPACE` were served though none is a catalog member. C-6's bidirectional lock now exists in both the cheap place (a row's fixture codes ⊆ its `errors[]`, no row declares a non-catalog code) and the honest one (every code OBSERVED from a real call must be declared — the direction static analysis structurally cannot see). It caught the adjudication's own example on its first run.
+
+  **Ledger honesty — three facts Gate 8 should see.**
+  (1) Adjudication C-7 [16][27] recorded that some Gate 5 tests "were never actually red on the commit tree". The same caveat applies to parts of THIS entry: several fixes landed in the same commit as their test. Where the red mattered it was MEASURED, not assumed — IT-122's `LEGACY_REREGISTER` gate was verified by short-circuiting the check, observing the failure, and restoring it; IT-036's positive materialization case was verified against the unwired tree. Elsewhere the red is reasoned, and a reasoned red is weaker evidence than an observed one.
+  (2) `06-impl-log.md` had NO v24 entries at all before this one, across four Gate 5 batches. This entry is a summary written by the integrator, not a substitute for the per-task entries those batches owed.
+  (3) Adjudication C-7 [13][14][20][25] refers to numbered items from a Gate 5 batch-3 report that is not on disk anywhere in `.sdlc/`. They could not be actioned because they cannot be READ — the adjudication cites a document the ledger never kept. Recorded here rather than silently skipped.
+
+  **Gate 6.5 SIMPLIFY amendment (verifier, v24) — 3 fixes applied, 2 named and rejected, no behaviour change.** The `/simplify` pass over this entry's own delta (`git diff c9c6592..HEAD -- src`, 5159 insertions across 42 files) found and fixed: (1) **`src/server.ts`** — the `?namespace=` retirement guard was copy-pasted at FOUR upload routes (blob/manifest × auth-gated/no-identity fallback) with its 150-character message re-typed verbatim each time; collapsed into one `refuseNamespaceParam(req, res)` helper next to `sendJson`, the one-declaration rule this ledger has enforced since P6-5. (2) **`src/server.ts`** — the CAS blob-upload failure→HTTP-status mapping (`BLOB_TOO_LARGE`→413 / `BLOB_UPLOAD_TIMEOUT`→408 / `BLOB_SHA_MISMATCH`→409 / else 500) was duplicated verbatim in both copies of the blob route; collapsed into `sendBlobUploadError(res, err)`. (3) **`src/tool-specs.ts`** — `resolveFixture` resolved a `FixtureRef` twice, once for scalars and once inside the array `.map`, duplicating the "was not produced by the setup sequence" throw; one local `fill(v)` closure now serves both. Net −24 lines of src, tsc clean, the 10 touched test files (namespace-derivation / blob-manifest-routes / val-090 / val-091 / auth-routes / v14-schema-drift / val-096 / blob-validators / v24-tool-surface) all green, and the full suite unchanged at 0 failures.
+  REJECTED, with reasons: (a) collapsing the four repeated `errors: [] as ErrorCode[] / seeAlso: [] as string[] / authz: {…} as AuthzRow / fixture: {happy:{},errors:{}}` tails in the 35-row `TOOL_SPECS` table into a spread base — rejected, that table is DECLARATIVE data whose value is that each row is complete and greppable in place, and a shared base would hide which rows genuinely declare nothing; (b) the `/mcp` and `/assets/manifest` handlers being written twice (once behind the DES-096 auth gate, once as the no-identity fallback) — a real ~90-line duplication, but unifying it means restructuring the request pipeline, which is neither quality-only nor surgical at this gate. Recorded as v25 debt, not silently skipped.
+
+  **Oracles that changed, each argued at its site and none weakened.** `val-106`'s "old registrations still run" (v24 deliberately refuses a version with no param contract — the code DES-156 already reported as `runnableReason`); `val-102`'s per-call `model` rung (retired by ARCH-095, re-pointed at the refusal that replaced it); `val-112`'s describe key list (14→16, the four `diagram*` keys DELETED per DES-156); `val-114`'s `diagramStale` case (mechanism retired, deleted with its reason); `params-admission`'s flat-overrides schema lock (replaced by two STRONGER cases — the advertised description plus a behavioural lock over real MCP HTTP importing LOCKED_KEYS/TUNABLE_KEYS so it cannot drift from the constants). Nineteen cases whose body began `if (!HAS_PROVIDER) return;` — reported PASSED having asserted nothing — became `it.skipIf` with the reason in the NAME, so the suite now reports 26 honest skips instead of 26 false greens. That includes `val-003`'s four, which adjudication C-3 asked the integrator to check specifically: the suspicion was correct.
+
+### IMPL-179..183 — v24 Gate 6 backfill, recorded retroactively by the Gate 6.5+7 verifier (EIGHTH occurrence of this ledger-honesty gap)
+
+IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v24 entries at all before this one … not a substitute for the per-task entries those batches owed"). Its `traces:` claims 22 of the 23 v24 TASKs; **five it does not claim shipped anyway** and `sh .sdlc/trace` read them as `未實作`. Each is backfilled below, git-show-attributed and verified against the source tree — never from a commit subject. TASK-153 is deliberately NOT backfilled: it is an EXTERNAL repo (iso-rwe client plugin), owner-scheduled, and its own card says it blocks the REQ-117 probe, not Gate 6.
+
+### IMPL-179 — `src/authz.ts`: `Principal`, `resolveRole`, `authorize()` total over the matrix (TASK-133)
+- **status:** done
+- **traces:** TASK-133, ARCH-088, DES-139, REQ-109
+- **greens:** UT-140
+- **files:** src/authz.ts, src/owner-lookup.ts, tests/unit/authz.test.ts, tests/integration/authz-owner-lookup.test.ts
+- **iter:** v24
+- **note:** Shipped at `2912c05` (`wip(v24): Gate 5 implementation checkpoint before adjudication`), test files touched again at `165385c`. `authorize()` is total over `Principal.kind × row.minRole × row.ownership × mode` in the documented order (auth-disabled short-circuit → row resolution → loopback-exempt → role → ownership), with the tri-state `OwnerLookup` (`undefined` = absent ⇒ ok, `null` = ownerless ⇒ admin-only) and the `detail.mode` refusal shape.
+
+  **Dod NOT met as shipped, and the shortfall was load-bearing.** TASK-133's dod requires "≥40 generated unit rows WITH the `cases.length === N` pin" plus "≥6 integration rows binding the real store columns". The tree carried **8** hand-written unit cases and **3** integration cases whose entire assertion was `expect(typeof lookup.runOwner).toBe('function')`. The Gate 6.5+7 verifier filled both (UT-140 → 50 generated rows + the pin, 59/59 green; IT-105 → real stores). Filling IT-105 immediately exposed **two authorization defects** that the vacuous version could not see — see 05-tests.md's IT-105 entry and the Gate 6.5+7 report. `authz.ts` itself is correct (all 50 matrix rows matched verdicts written from DES-139's text before running the code); the defects are in the ports it is wired to.
+
+### IMPL-180 — the retired-surface deletion: 4 source files, 15 test files, the grep guards (TASK-139)
+- **status:** done
+- **traces:** TASK-139, ARCH-089, ARCH-096, ARCH-101, ARCH-106, DES-159
+- **greens:** UT-161
+- **files:** src/graph-analyzer.ts (DELETED), src/continuation-store.ts (DELETED), src/mcp-registry.ts (DELETED), src/trigger-bindings.ts (DELETED), src/diagram-gate.ts (DELETED), src/server.ts, src/mcp-facade.ts, src/main.ts, src/workflow-view.ts, src/gateway/claude-agent-sdk-client.ts, tests/unit/no-retired-surface.test.ts
+- **iter:** v24
+- **note:** Shipped at `2912c05`; `no-retired-surface.test.ts` re-aimed at `80f9c65`. All four named source files plus `diagram-gate.ts` (a fifth, retired with the model-authored diagram gate that `check-mermaid.ts` replaces) are absent from the tree; the consumer files no longer import them; the 15 test files listed on the card are gone. UT-161's three grep guards are green. `describe.skip('workflow_regenerate_diagram — RETIRED v24 …')` in `workflow-describe-facade.test.ts` is the one deliberate skip left behind as a tombstone.
+
+### IMPL-181 — run store: filtered `list` + its index, `getOwner`, `audit_events` and its reader (TASK-140)
+- **status:** done
+- **traces:** TASK-140, ARCH-092, DES-151, DES-152, REQ-109
+- **greens:** IT-113, IT-114, UT-153
+- **files:** src/store/sqlite-run-store.ts, src/run-store.ts, src/types.ts, src/audited-read.ts, tests/integration/run-list.test.ts, tests/integration/run-store-audit.test.ts, tests/unit/audit-order.test.ts
+- **iter:** v24
+- **note:** Shipped across `2912c05` and `ba46e3b`. The dod's own case-count floor (≥10 / ≥8 / ≥4) is MET on the tree as it stands: `run-list.test.ts` 10, `run-store-audit.test.ts` 10, `audit-order.test.ts` 4 — `ba46e3b` filled the shortfall adjudication v24 #2 A-6 flagged. `auditedWorkspaceRead` appends BEFORE any byte is read and rethrows an append failure as `INTERNAL_ERROR` (fail-closed by construction, guarded around `appendAudit` only, never around `read()`).
+
+### IMPL-182 — the three v15-era harness-`defaults` test files retired against `DEFAULTS_RETIRED` (TASK-154)
+- **status:** done
+- **traces:** TASK-154, ARCH-094, ADR-035, DES-144, DES-148
+- **greens:** UT-138
+- **files:** tests/integration/harness-defaults-validation.test.ts, tests/acceptance/val-098-harness-defaults.test.ts, tests/acceptance/val-103-effort-real.test.ts, src/errors.ts
+- **iter:** v24
+- **note:** Shipped across `2912c05`/`ba46e3b`, with `val-103`'s provider-gated case corrected to `it.skipIf` at `3865dfc`. `grep -rn "HARNESS_DEFAULTS_INVALID" tests/` returns only rows asserting the code is GONE (`error-catalog.test.ts` asserts `ERROR_CATALOG` does not have the property; `harness-defaults-validation.test.ts` asserts a stray top-level `defaults` argument is `not.toBe('HARNESS_DEFAULTS_INVALID')`) plus two explanatory comments — the dod's exact condition. `src/errors.ts`'s header comment, which forewarned the breakage, now records that it happened. Case counts on the tree: 5 / 1 / 2 (1 skipped, provider-gated), all green.
+
+### IMPL-183 — webhook store: the create-copy-drop-rename rebuild so a pre-v24 db accepts an unclaimed row (TASK-156)
+- **status:** done
+- **traces:** TASK-156, ARCH-100, DES-150
+- **greens:** IT-112
+- **files:** src/webhook-registry.ts, tests/integration/webhook-migration.test.ts
+- **iter:** v24
+- **note:** Shipped at `ba46e3b`, refined at `256c686`/`6dcb555`. `webhook-registry.ts` performs the rebuild (`CREATE TABLE webhooks__v24_rebuild` → copy → drop → `RENAME TO webhooks`) only when the live schema still has `workflow NOT NULL`, so an already-migrated db skips the block entirely; the additive claim-model refusal columns follow. `webhook-migration.test.ts` (2 cases) creates the pre-v24 schema, writes a row, opens the store, calls `create({})` with no workflow and checks the pre-existing row survives, then runs the constructor twice for idempotence. Both green.
+
+  **OPEN, and it is what IT-105 went red on:** the card's sibling TASK-142 was to give webhooks a `createdBy` column. It never landed — `webhooks` has no such column, `create()` never records a creator, and `call-tool.ts`'s own comment says so ("every caller sees every webhook until that column lands"). `WebhookRegistry.ownerOf` therefore answers with the CLAIMING WORKFLOW instead of the creating principal, which is half of the authorization defect the Gate 6.5+7 verifier is sending back.
+
+### IMPL-184 — v24 Gate 6.5+7 ROUND 2: the two authorization defects round 1 sent back, the register-time ownership arm, and the unwired `resolveMcp` seam
+- **status:** done
+- **traces:** TASK-133, TASK-142, TASK-144, TASK-147, TASK-148, ARCH-088, ARCH-099, ARCH-100, ARCH-102, DES-139, DES-149, DES-150, DES-153, REQ-109, REQ-113, REQ-115
+- **greens:** IT-105, IT-123, VAL-144, VAL-150, UT-140, UT-144, IT-111, IT-112, E2E-008
+- **files:** src/scheduler.ts, src/webhook-registry.ts, src/call-tool.ts, src/authz.ts, src/mcp-facade.ts, src/server.ts, tests/integration/authz-owner-lookup.test.ts, tests/integration/register-trigger-ownership.test.ts, tests/integration/trigger-claims.test.ts, tests/integration/webhook-registry.test.ts, tests/e2e/register-crash-window.test.ts, tests/unit/path-verdict.test.ts
+- **iter:** v24
+- **note:** **SIMPLIFY (merged Gate 6.5) on this round's own delta, recorded first.** Round 1 ran `/simplify` over `git diff c9c6592..HEAD -- src` and no src commit landed between the rounds, so re-running that range would have been idle — but this entry then changed seven src files, so the Skill was run again scoped to `git diff a3b5d0a..HEAD -- src`. TWO fixes, quality-only, suite re-run green: one `scopeToActor(rows, principal, actor)` declaration replacing the same operator-sees-everything predicate typed twice across `schedule_list`/`webhook_list` (a security-relevant rule that must not drift between the two trigger stores), and the two `subject as string` casts in `authorize()` that this round's own change orphaned. Three candidates named and rejected (the `?? true` rewrite, `resolveMcp`'s wider catalog read, `scheduler.get`'s full projection) with reasons in 05-tests.md's round-2 block. **ROLE CROSSING, DECLARED.** Gate 6.5+7 was re-dispatched with NO Gate 6 commit between round 1's send-back (`a3b5d0a`, 19:57) and this round (`git log` shows the verifier's own commit still at HEAD, the tree clean, ~1 minute elapsed) — an identical second send-back would have been a loop with zero progress. The verifier applied the send-back fix directly, as a normal red→green pass over tests that were ALREADY written and already red (IT-105's six rows). It is logged as an IMPL entry, not folded into the simplify step, because it CHANGES BEHAVIOUR and Gate 6.5 is quality-only by contract.
+
+  **(a) Trigger ownership read the wrong column.** `SqliteSchedulerPort.ownerOf` returned `claimedBy` and `WebhookRegistry.ownerOf` returned `workflow` — the CLAIMING WORKFLOW — where DES-139 (`schedules.createdBy`/`webhooks.createdBy`) and DES-149 step 2 (`createdBy === p.id`) require the CREATING PRINCIPAL. Both now read `createdBy`. `webhooks` had no such column (TASK-142 half-done): added to the `CREATE TABLE`, to the v24 rebuild table, and as the same additive idempotent `ALTER` the refusal-accounting columns use, so a pre-v24 on-disk db migrates without a second rebuild; `create()` takes `createdBy`, `call-tool.ts`'s `webhook_create` supplies the calling principal (`actor ?? undefined`, so `auth-disabled` records nothing, matching `schedule_create`), `WebhookView` carries it, and `webhook_list` is principal-scoped exactly as `schedule_list` is — which is what made that row's own advertised description ("the caller's own webhooks; unfiltered for the operator role") true rather than aspirational. `server.ts`'s ownerless-trigger boot count loses its `as unknown as {createdBy?}` cast, which existed only because the column did not.
+
+  **(b) The moded `workspace_*` rows never ran their ownership check.** `workspace_list`/`workspace_delete`/`workspace_push` carry `key: null` at the SPEC level (their subject differs per mode) while their RESOLVED rows declare `ownership:'run'`/`'workflow'`; `authorize()` computed `subject = undefined`, the real lookup answered "does not exist", and DES-139's own non-leak rule returned **ok** — a silent bypass. `authorize()` now falls back, for a `key: null` spec, to the argument the resolved row's ownership names: `runId` for `'run'`, `workflow` for `'workflow'` — in every case the argument that tool's own `mode()` predicate already required to be present, so the fallback is total by construction. Rejected alternative: a per-row `key` override field on `AuthzRow` (five row edits plus a type change to express what ownership already says).
+
+  **(c) A THIRD defect, found by writing the test round 1 said no test reached.** `McpFacade.workflowRegister`'s step-2 ownership check read `!isAdmin && owner !== null && owner !== actorId` — the `owner !== null` clause let ANY caller adopt an OWNERLESS trigger, contradicting DES-139's explicitly stated operator consequence ("every MIGRATED trigger (`createdBy NULL`) is admin-only — including a re-registration naming a legacy trigger id, which is refused `NOT_TRIGGER_OWNER`") and contradicting `authorize()`'s own ownerless rule. The clause is gone; the two sites now agree. Invisible before because `grep -rn "TRIGGER_ALREADY_CLAIMED|NOT_TRIGGER_OWNER" tests/` returned nothing at all — IT-123 (6 cases, real stores, real facade) is the new pin.
+
+  **(d) Seam hole closed (exit-gate item 6).** `asset-sync.ts`'s exported `resolveMcp` (DES-153, "a PURE helper over the catalog PORT") had ZERO production callers while `server.ts`'s `bindResolveMcp` RE-IMPLEMENTED the same workflow-wins-over-global rule inline over `catalog.assetsOf`. The composition root now calls the exported helper against the `assetCatalogPort` it already builds: one rule, one implementation, and the production path is the one `asset-sync-v24.test.ts` covers. `WorkflowCatalog.assetsOf` is thereby orphaned in production but is still pinned by `catalog-v24.test.ts` — left in place and recorded as v25 debt rather than deleted, because deleting it would mean weakening a test.
+
+  **(e) A CONSUMER OF THE OLD SEMANTICS, broken by (a) and caught before it shipped.** `ownerOf` was doing double duty, and `server.ts`'s fire-path gate `resolveScheduleTarget` read it as "the workflow that holds this trigger": `scheduler.ownerOf(firing.id) ?? firing.workflow`. Once `ownerOf` meant `createdBy`, that resolved a PRINCIPAL ID as a workflow name, so **every authenticated user's schedule would have been refused `CLAIMED_WORKFLOW_MISSING` at fire time** — and the whole existing suite is auth-disabled (`createdBy` always null), so it would have stayed green. Now `scheduler.get(firing.id)?.claimedBy ?? …`; `??` folds "no such row" and "unclaimed" onto the same pre-v24 fallback door as before, so behaviour is otherwise identical. DES-149's signature line is amended in place (bracketed) to say which reader is which, since listing `ownerOf` inside the claim triple is what made the double duty look correct.
+
+  **(f) `schedule_create` was undriveable from its own advertised schema.** `enabled` is an OPTIONAL boolean on the row and `SqliteSchedulerPort.create` stores `s.enabled ? 1 : 0`, so the row's OWN happy fixture — `{workflow, cron}` — created a schedule born DISABLED, which `tick()` never selects: "Register a time trigger for a workflow" registered one that could never fire, silently. Defaulted to `true` in `call-tool.ts` beside the existing `kind` default (an explicit `false` still wins) and the schema key now documents it. Same defect class as `a7696cd`/`0a9cdfd`, found by driving the tool the way a cold model would.
+
+  **(g) `run_result`'s audited cross-read was unreachable in production.** DES-151 states in so many words that "`run_result` is added to the audited set" and its `AuditAction` union names it, but the TOOL_SPECS row carried no `adminCrossRead`, so `authorize()` admitted an admin WITHOUT setting `crossPrincipalRead` and `McpFacade.runResult`'s audited branch never ran: the cross-read happened, unaudited, and the owner's `run_status.adminReads[]` never showed it. One literal added. IT-105 gains a case pinning, against `TOOL_SPECS` itself, exactly which rows carry the flag — the assertion that would have caught this — and its `RUN_STATUS` constant is relabelled an AuthzRow FIXTURE, since its comment claimed to be a copy of the real row and was not (`run_status` correctly has no flag: `McpFacade.runStatus` ignores it and is where `adminReads[]` is ATTACHED).
+
+  **Mutation-checked, not merely green.** Reverting `ownerOf` to `claimedBy` → 4 red; reverting the `key: null` subject fallback → 3 red; restoring the `owner !== null` escape → 1 red; reverting `resolveScheduleTarget` to `ownerOf` → IT-124 red with `CLAIMED_WORKFLOW_MISSING`; reverting the `enabled` default → IT-124 red; reverting `run_result`'s `adminCrossRead` → IT-105 + IT-124 red. Full suite after: 301 files / 2139 tests, 2113 pass / 0 fail / 26 skip, `tsc --noEmit` clean.
+
+  **Also closed this round:** `solid_check`'s single HIGH (ARCH-103's `deps:` now declares ARCH-069 — its `module:` is one FILE nested inside ARCH-069's directory module, so the dependency is real, intended, and was simply undeclared; the repair is documentation, not code) and 28 v24 TASK rows flipped `draft` → `done` (every row an IMPL entry traces; only TASK-153, the external client plugin, stays open by design).
+
+### IMPL-185 — `src/path-verdict.ts`: the shared lexical verdict + injected-realpath containment (TASK-134), backfilled by the Gate 6.5+7 verifier (NINTH occurrence of the ledger-honesty gap)
+- **status:** done
+- **traces:** TASK-134, ARCH-093, DES-142, REQ-108
+- **greens:** UT-144
+- **files:** src/path-verdict.ts, src/path-containment.ts, src/asset-sync.ts, src/workspace-seed.ts, tests/unit/path-verdict.test.ts
+- **iter:** v24
+- **note:** Shipped at `2912c05` with no IMPL entry of its own and left reading `status: draft` — IMPL-178's `traces:` claims 22 of the 23 v24 TASKs and TASK-134 is not among them, the same class of omission IMPL-179..183 backfilled. Verified against the source tree, not from a commit subject: `src/path-verdict.ts` exists and exports `lexicalVerdict` (pure: EMPTY / NUL / ABSOLUTE incl. a drive letter / ESCAPE after backslash normalisation / GIT_INTERNAL / the `.claude` settings+hooks strip on `run-workspace` / `RESERVED_PREFIX` on `asset-tree`) plus `pathVerdict` (the same verdict then `isPathContained` through an INJECTED `realpath`, defaulting to `realpathSync`). The card's grep guard holds exactly: `grep -c "STRIP_RE\|safeRelPath" src/workspace-seed.ts src/asset-sync.ts` → 0/0, so the two private copies really are gone.
+
+  **Dod shortfall found and FILLED, not waived:** the card requires ≥ 30 table rows; the tree carried 15, and the missing arms were not cosmetic (`GIT_INTERNAL`, the `CLAUDE_SETTINGS`/`CLAUDE_HOOKS` reason split, the drive-letter `ABSOLUTE` arm, backslash-normalisation-before-`..`, `RESERVED_PREFIX` being asset-tree-ONLY, and `pathVerdict`'s ok/`abs` return were all unexercised). 25 rows added; 40/40 green. See 05-tests.md's UT-144 entry.
+
+### IMPL-186 — v24 Gate 6.5+7 round 2, coverage pass: nineteen v24-touched functions taken to the per-function bar
+- **status:** done
+- **traces:** TASK-133, TASK-136, TASK-138, TASK-141, TASK-142, TASK-143, TASK-144, TASK-146, TASK-147, DES-138, DES-142, DES-144, DES-147, DES-150, DES-153
+- **greens:** UT-144, UT-149, UT-163, IT-111, IT-112, IT-124
+- **files:** tests/unit/facade-refusal-arms.test.ts, tests/unit/path-verdict.test.ts, tests/unit/check-mermaid.test.ts, tests/unit/workflow-meta.test.ts, tests/unit/params-contract.test.ts, tests/unit/compose-config-v2-wiring.test.ts, tests/unit/workspace-gc.test.ts, tests/integration/webhook-registry.test.ts, tests/integration/schedule-persistence.test.ts
+- **iter:** v24
+- **note:** TEST-ONLY — no `src/` line was changed by this entry, and it is recorded separately from IMPL-184 for exactly that reason. The coverage gate's own instruction is to WRITE the missing tests rather than lower the bar, so the v24-touched per-function offender list went from 26 (round 1) to 8, and the short-function list from 2 to 0. Overall `src/` line coverage 94.91% → **95.53%** (17010/17805, functions 95.48%, re-measured after the simplify pass so the figure matches the committed tree); whole-tree long offenders 91 → 72.
+
+  Every case targets a line the measurement reported missing, and several of them were not merely uncovered but load-bearing: `parseMetaParams` (46.2%) had NEITHER guard arm exercised; `rearmAtBoot` (41.2%) — the method `server.ts` calls at every boot — ran nowhere but its `rows.length === 0` early return; `WebhookRegistry.deliver` produced only ONE of `RefusalReason`'s four members in the whole suite, which is the same blind spot that let the fire-path gate ship answering only `UNCLAIMED`; `validateOneAgentSpec`'s three engine-CEILING refusals were unreached; `composeConfig`'s ADR-028 boot REFUSAL on a malformed role was unreached, though refusing rather than defaulting is the entire point of that code; and `checkMermaid`'s unrecognised-shape catch-all carried a comment admitting it was "not exercised by this task's test scope". `TASK-134`'s dod shortfall (15 rows against a ≥30 floor) is filled here too — see IMPL-185.
+
+  The eight functions still under the bar are each named with a one-line rationale in 05-tests.md's round-2 coverage block; none is waived silently, and one of them (`workflow-catalog`'s member initializer) is under the bar because 47 of its 51 missing lines are the three DEAD `workflow_diagrams` accessors round 1 found have zero callers — a v25 deletion, not a test gap.
+
+
+### IMPL-187 — v24 Gate 7.5 remediation: the twelve defects the real run found, fixed test-first
+- **status:** done
+- **traces:** REQ-109, REQ-110, REQ-111, REQ-112, REQ-113, REQ-114, REQ-115, REQ-116, REQ-117, REQ-118, ARCH-099, ARCH-100, DES-137, DES-138, DES-142, DES-148, DES-149, DES-150, DES-153, DES-154, DES-156, DES-157
+- **greens:** IT-125, IT-126, IT-127, IT-128, IT-129, IT-130, IT-081, IT-093, IT-094, UT-159, UT-160, VAL-016, VAL-117
+- **files:** src/tool-specs.ts, src/mcp-facade.ts, src/workflow-catalog.ts, src/run-manager.ts, src/asset-sync.ts, src/scheduler.ts, src/webhook-registry.ts, src/errors.ts, src/types.ts, src/workflow-meta.ts, src/params/contract.ts, src/authoring-guide.ts, src/server.ts, scripts/gen-authoring-md.ts, docs/AUTHORING.md
+- **iter:** v24
+- **note:** One fixer, no file-ownership split — the previous round proved that partitioning by file is what leaves cross-file defects unfixed, and three of these (D-11, D-3, D-2) are precisely "two implementations of one concept, and the wrong one is the one being called". Each defect got a test that fails against the tree BEFORE its fix and asserts an OUTCOME (what the caller sees, what the host does, what is on disk) — never a classifier's return value or a hand-built row, which is exactly how D-11 and D-8 survived a green suite. Commits, in the dispatch's order: `ebd135c` (D-11), `85781ea` (D-8) + `7a3dbee` (the retired `defaults` column with it), `7fed30c` (D-10), `f510a15` (D-1/D-1b), `eabc17d` (D-2/D-3/D-5), `8099f41` (D-12/D-4), `dc2629d` (D-6/D-7/D-13). D-9 is NOT fixed: adjudication #5 E-7 defers it to v25 and it is filed as issue #53 with the run id, timestamps and transition evidence.
+
+  **Three code deletions the fixes orphaned, removed rather than left as decoration:** `mcp-facade.ts`'s private `toErrEnvelope` (D-3 itself), `errors.ts`'s `catalogResolveErrorEnvelope` (both call sites were the create-time catalog checks D-1 removes), and `WorkflowCatalog._parseParams` — a copy of `workflow-meta.ts`'s `parseMetaParams` made while that function had an arity bug and left in place after the bug was fixed, so the registration path ran the copy. That last one is why D-2's `meta.defaults` half needed finding twice: the check added to the shared function had no effect until the copy was gone. `AssetPathEscapeError` went with D-5.
+
+  **Two pinned tests were rewritten, both executing an adjudicated ruling rather than accommodating the code.** IT-093/IT-094/VAL-016/scheduler-port's create-time `WORKFLOW_NOT_FOUND`/`CHANNEL_UNPUBLISHED` cases pinned the site REQ-115's last clause MOVES the check away from; they now assert the create door's new contract AND the fire path's recorded refusal (`CLAIMED_WORKFLOW_MISSING`, `CHANNEL_UNPUBLISHED`), which is the site that can still answer truthfully. IT-124's fire-path case changed from `CLAIMED_WORKFLOW_MISSING` to `UNCLAIMED` — 08-validation's own observation (b) had already named the old reason as a SYMPTOM of D-1b (the released trigger still pointing at the deleted name through the legacy `workflow` column); both halves that case actually guards, nothing dispatched and exactly one recorded refusal, are unchanged. IT-081's "a stray `defaults` argument is silently ignored" case became "is refused `DEFAULTS_RETIRED`", which is REQ-110's last clause verbatim.
+
+  **Measured at the end (exit 0, both):** `npx tsc --noEmit` clean; `npx vitest run tests/unit tests/integration tests/acceptance` → **300 files (299 passed, 1 skipped), 2152 cases (2126 passed, 26 skipped), 0 failed**. `sh .sdlc/trace` → **1214 work items / 19 gaps** — the gap count is byte-identical to the pre-fix baseline (1197 / 19), and the item count grew by the ten VAL rows the id collision had been hiding, the six new IT items, and this entry.
+
+### IMPL-188 — the post-IMPL-187 `src/` commits, backfilled (DR-1, the TENTH occurrence of this gap)
+- **status:** done
+- **traces:** TASK-163, DES-137, DES-138, DES-156, ARCH-087, ARCH-092, ARCH-105, REQ-109, REQ-112, REQ-116
+- **greens:** IT-129, IT-124, UT-159, UT-160
+- **files:** src/errors.ts, src/mcp-facade.ts, src/workflow-catalog.ts, src/authoring-guide.ts, src/scheduler.ts, src/tool-specs.ts
+- **iter:** v24
+- **note:** Ledger-only entry, written by TASK-163. Four commits landed `src/` changes after
+  IMPL-187 with no IMPL entry of their own. Each is verified from its own diff, not from its
+  subject line:
+
+  - **`d43d6d7`** (`src/errors.ts`, `tests/integration/error-envelope-see-pointer.test.ts`) — D-14 /
+    adjudication #6 F-3: `NOT_TRIGGER_OWNER`, `TRIGGER_NOT_FOUND` and `TRIGGER_ALREADY_CLAIMED` gain
+    `see:'workflow_authoring_guide'`, so a registration refused on a trigger points at the document
+    that explains the create-then-claim lifecycle (REQ-116). +12/-3 in `errors.ts`, +89 test lines.
+  - **`caf15c1`** (`src/mcp-facade.ts`, `src/workflow-catalog.ts`,
+    `tests/integration/authz-enforcement-live.test.ts`) — F-4a: `workflow_list` rows carry `owner`,
+    which the row's own description already promised. +4/-1 and +11/-4, with 18 test lines.
+  - **`e9db0c4`** (`src/authoring-guide.ts`, `tests/unit/authoring-guide.test.ts`) — F-4b: the
+    guide's aggregation example stopped contradicting the guide's own shape table. +7/-1, 54 test
+    lines, `docs/AUTHORING.md` byte-lock re-green.
+  - **`7febc47`** (`src/authoring-guide.ts`, `src/scheduler.ts`, `src/tool-specs.ts`) — the sweep the
+    twelve Gate 7.5 fixes made necessary. **This one is a FOURTH occurrence the review's DR-1 did not
+    count** (it names three); it is recorded here rather than left out, because a backfill that
+    inherits the omission it is fixing is not a backfill. +22/-14 across the three files.
+
+  **The durable fix is NOT this entry.** Ten recorded occurrences (IMPL-179..183, IMPL-185, and now
+  these four) is a missing enforcement point, not ten lapses of memory: nothing in the pipeline can
+  currently answer "did this commit change `src/` without adding an IMPL row?". Recorded as v25 debt
+  D-I in `07-review.md` §8 with the two candidate homes (a Gate 7 check, or a `trace.py` rule).
+
+### IMPL-189 — the three Gate 8 HIGH findings closed test-first (AF-1, AF-2, AF-3)
+- **status:** done
+- **traces:** TASK-160, TASK-161, TASK-162, ARCH-087, ARCH-098, ARCH-099, ARCH-102, DES-137, DES-148, DES-150, DES-153, REQ-113, REQ-115, REQ-116
+- **greens:** IT-131, IT-132, UT-164
+- **files:** src/asset-sync.ts, src/workflow-catalog.ts, src/server.ts, src/workspace-gc.ts, src/authz.ts, src/errors.ts, src/webhook-registry.ts, tests/integration/legacy-asset-migration.test.ts, tests/integration/trigger-release-versioning.test.ts, tests/integration/webhook-registry.test.ts, tests/integration/webhook-migration.test.ts, tests/unit/error-catalog-closed.test.ts
+- **iter:** v24
+- **note:** One fixer, no file-ownership split (IMPL-187's reasoning, and AF-2 proved it again — its
+  fix reaches three files across two modules). Every fix RED first, and the red is quoted rather
+  than asserted. Commits in dispatch order: `9330028` (AF-1), `c2e4b64` (AF-3), `13fe5ee` (AF-2).
+
+  **`9330028` — AF-1, the data-destructive one.** ARCH-098's boot migration had never been written,
+  and the v24 sweep deletes every child of `<assetRoot>/` that is not a live workflow — which is
+  where a pre-v24 deployment's global asset tree lives. `migrateLegacyGlobalAssets()`
+  (`asset-sync.ts`) writes the legacy rows in one catalog transaction, moves the trees to
+  `<workRoot>/_global_assets`, then writes a marker file LAST; `WorkflowCatalog` gains
+  `putLegacyAssets()` and `readLegacyMcpProvisions()`, the latter reading the pre-v24
+  `mcp_provisions` table off DISK at `<workRoot>/mcp-registry.db` (the table `grep` cannot find in
+  `src/` because v24 deleted the module, not the operator's data). `server.ts` runs it BEFORE the GC
+  timer is armed — the ordering is the requirement, and IT-131 pins it by booting with a TTL and
+  asserting the tree survived real sweeps. RED: 4 of 6, first row
+  "the pre-v24 global skill was destroyed by the GC sweep (or never migrated)".
+
+  **`c2e4b64` — AF-3, the class rather than the instance.** `AuthzErrorCode` is now derived from
+  `AUTHZ_ERROR_CODES … as const satisfies readonly ErrorCode[]`, so a member outside the catalog is
+  a compile error at the declaration and the array is enumerable for UT-164. RED twice, both before
+  the key existed: `src/authz.ts(58,3): error TS2322` from `tsc --noEmit`, then 4 runtime failures
+  including `toErrorCode` degrading `PRINCIPAL_REQUIRED` to `INTERNAL_ERROR`.
+
+  **`13fe5ee` — AF-2, and the one place this dispatch deviated from its adjudication.** The storage
+  fix is the single line G-2 called for (`JSON.stringify(triggers ?? [])`). It turned FOUR
+  GREEN-PIN / positive-control tests red, all one class: a trigger bound at creation
+  (`schedule_create({workflow})` / `webhook_create({workflow})` — the door ARCH-099 says `create`
+  no longer has and AF-5 records as still shipped) stopped firing on every v24 workflow. The `NULL`
+  column had been doing double duty: "pre-v24 row" AND "did not arrive through the claim door".
+  Rather than flip those oracles (that closes a shipped door — a product decision, and it makes the
+  "no phantom fire" negatives vacuous) or revert (violates G-2), the membership check is gated on
+  the honest discriminator: `catalog.declaresTrigger(workflow, id)` — "was this id EVER declared by
+  a version of this workflow", the union `deregister` already computed, extracted so both callers
+  share one implementation. No new column, which matters because the webhook store has ONE binding
+  column and could not distinguish the doors any other way. ARCH-099 and DES-150 amended, both
+  noting the clause deletes itself when v25 closes the second door. RED in two stages, quoted in
+  IT-132's entry. **If the orchestrator prefers closing the create-time door instead, that is AF-5's
+  v25 work and `declaresTrigger` goes with it** — this is flagged as a deviation, not buried.
+
+  **Measured at the end (both exit 0):** `npx tsc --noEmit` clean;
+  `npx vitest run tests/unit tests/integration tests/acceptance` →
+  **303 files (302 passed, 1 skipped), 2183 cases (2157 passed, 26 skipped), 0 failed.**

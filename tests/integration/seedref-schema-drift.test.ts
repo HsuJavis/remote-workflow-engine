@@ -1,19 +1,26 @@
-// IT-074 (DES-084, ARCH-052, TASK-079): `workflow_run` TOOL_DEFS `seedRef` schema drift-lock.
+// IT-074 (DES-084, ARCH-052, TASK-079): `run_start` TOOL_DEFS `seedRef` schema drift-lock.
 // Reads the SERVED tools/list (not the raw TOOL_DEFS object) and asserts:
-//   - `seedRef` property is present on `workflow_run`'s inputSchema
+//   - `seedRef` property is present on `run_start`'s inputSchema
 //   - `seedRef.properties.repoUrl` and `seedRef.properties.sha` exist
-//   - `workflow_run` description or `seedRef` description contains "SEEDREF_DISABLED",
+//   - `run_start` description or `seedRef` description contains "SEEDREF_DISABLED",
 //     "seedRefAllowlist", and "mutually exclusive" keywords (consumability per DES-084)
 //   - `seedRef` is NOT in `required` (it is optional, mutually exclusive with seed/seedManifest)
-//   - Error redaction: the description for SEEDREF_EGRESS_DENIED references `attempted:{scheme,host}`
+//   - Error redaction: the description for EGRESS_DENIED references `attempted:{scheme,host}`
 //     but does NOT promise to include the full URL or the allowlist contents
 //
-// Red reason: `workflow_run` TOOL_DEFS in server.ts has no `seedRef` property yet →
+// Red reason: `run_start` TOOL_DEFS in server.ts has no `seedRef` property yet →
 //   the `seedRef` property assertion fails. This is the correct unimplemented-feature red.
 //
 // Mock policy (integration): real `createServer` + real HTTP tools/list round trip.
 //   No mocks of the SUT boundary (same pattern as IT-072 / schema-drift.test.ts).
 
+// v24 (batch B, then CLOSED by the integrator — the four reds below are GREEN now): the report was — PRODUCT defects. `seedRef` is a
+// live v24 argument (restored deliberately by adjudication #2 A-2; `mcp-facade.runStart` forwards
+// it, `seedref-fetcher.ts`/`seedref-egress.ts` consume `repoUrl`/`sha` and answer SEEDREF_DISABLED
+// / EGRESS_DENIED), but `tool-specs.ts` advertises it as a bare `{type:'object'}` with no
+// sub-properties and no description. `seedRefAllowlist` is still the live config key
+// (errors.ts:98, seedref-egress.ts:21) and `SEED_SOURCE_CONFLICT` is still a live run_start error,
+// so both hint literals are current, not stale — the description dropped them.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -61,17 +68,17 @@ afterAll(async () => {
 });
 
 function getWorkflowRun(): ToolDescriptor {
-  const t = allTools.find((t) => t.name === 'workflow_run');
-  if (!t) throw new Error("'workflow_run' not found in served tools/list");
+  const t = allTools.find((t) => t.name === 'run_start');
+  if (!t) throw new Error("'run_start' not found in served tools/list");
   return t;
 }
 
-describe('IT-074: workflow_run seedRef schema drift-lock (DES-084, ARCH-052, TASK-079)', () => {
-  it('workflow_run is in the served tools/list', () => {
-    expect(allTools.some((t) => t.name === 'workflow_run')).toBe(true);
+describe('IT-074: run_start seedRef schema drift-lock (DES-084, ARCH-052, TASK-079)', () => {
+  it('run_start is in the served tools/list', () => {
+    expect(allTools.some((t) => t.name === 'run_start')).toBe(true);
   });
 
-  it('workflow_run.inputSchema has a seedRef property (additive, optional)', () => {
+  it('run_start.inputSchema has a seedRef property (additive, optional)', () => {
     const tool = getWorkflowRun();
     expect(tool.inputSchema.properties).toHaveProperty('seedRef');
   });

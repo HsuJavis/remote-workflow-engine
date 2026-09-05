@@ -26,15 +26,15 @@ import type { GatewayClient } from '../../src/gateway/client.js';
 import { registerPublishedVia, type ToolCaller } from '../helpers/workflow-fixtures.js';
 
 // A gateway that never resolves within this test's lifetime — guarantees the run is still
-// `running` with 0 completed agents when the DAG route is read immediately after `workflow_run`.
+// `running` with 0 completed agents when the DAG route is read immediately after `run_start`.
 const NEVER_RESOLVES_GATEWAY: GatewayClient = {
   invoke: () => new Promise(() => { /* never settles */ }),
 };
 
 const SCRIPT = `
-  const a1 = await agent('do-skel-1');
-  const a2 = await agent('do-skel-2');
-  const a3 = await agent('do-skel-3');
+  const a1 = await agent('do-skel-1', {});
+  const a2 = await agent('do-skel-2', {});
+  const a3 = await agent('do-skel-3', {});
   return { a1, a2, a3 };
 `;
 
@@ -52,6 +52,11 @@ beforeAll(async () => {
       googleClientId: 'it092-client-id', googleClientSecret: 'it092-client-secret',
       googleBase: 'http://127.0.0.1:0', jwksFetch: async () => [],
     },
+    // v24 (REQ-109 roles, ADR-028): the owner bearer minted below must resolve to `author` —
+    // `workflow_register`/`workflow_publish` are `{minRole:'author'}`, and an authenticated id that
+    // is not listed here resolves to `'user'` (fail-closed), so the fixture never gets registered
+    // and the DAG assertion never runs. Mechanical; the masking oracles are untouched.
+    principals: { 'it092-owner@example.com': { role: 'author' } },
   } as never);
 
   openTmpDir = mkdtempSync(join(tmpdir(), 'rwe-it092-open-'));
@@ -94,7 +99,7 @@ function callerFor(server: Server, bearer?: string): ToolCaller {
 
 async function startRunAndGetDag(server: Server, name: string, bearer?: string): Promise<{ kind?: string; cells?: Array<{ id: string }> }> {
   await registerPublishedVia(callerFor(server, bearer), name, SCRIPT);
-  const started = await toolCall(server, 'workflow_run', { name }, bearer);
+  const started = await toolCall(server, 'run_start', { name }, bearer);
   const runId = started['runId'] as string;
   expect(typeof runId).toBe('string');
   // The DAG route itself carries no bearer and needs none to be reached (07-review.md H2: no

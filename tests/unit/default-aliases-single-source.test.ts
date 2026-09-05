@@ -16,8 +16,19 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+//
+// v24 (batch B migration): the FIXTURE moved, the oracle did not. The old fixture registered
+// `return agent('t', {model:'<alias>'})` with no `meta` and no diagram — three separate v24
+// refusals (`SCAN_VIOLATION`/PARAM_IN_SCRIPT for a param key inside an `agent()` options literal,
+// `AGENT_UNDECLARED` for a label with no `meta.params.agents.<label>`, `MERMAID_REQUIRED` for a
+// registration with no diagram), none of them about aliases. v24 reads the alias from
+// `meta.params.agents.<label>.model.default` (script-checks.ts via `WorkflowCatalog.register`),
+// which is exactly where `synthesizeMeta(script, alias)` puts it — so the migrated fixture still
+// makes the SAME claim: an unconfigured server resolves every DEFAULT_ALIASES key without
+// UNKNOWN_ALIAS, through its own composition root's `aliasNames`.
 import { DEFAULT_ALIASES } from '../../src/default-aliases.js';
 import { createServer } from '../../src/server.js';
+import { synthesizeMeta, synthesizeMermaid } from '../helpers/workflow-fixtures.js';
 
 describe('DEFAULT_ALIASES single source (R-1)', () => {
   it('exposes the 4 documented anthropic default aliases with real model IDs (no stale placeholders)', () => {
@@ -38,12 +49,16 @@ describe('DEFAULT_ALIASES single source (R-1)', () => {
     const server = await createServer({ port: 0, bind: '127.0.0.1', workRoot: dir }); // NO aliases config
     try {
       for (const alias of Object.keys(DEFAULT_ALIASES)) {
+        // The alias under test is the declared `model.default` of the script's one agent label —
+        // v24's single alias-resolution site.
+        const script = synthesizeMeta(`return await agent('t', { prompt: 'hi' });`, alias);
+        const mermaid = synthesizeMermaid(script);
         const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             jsonrpc: '2.0', id: 1, method: 'tools/call',
-            params: { name: 'workflow_register', arguments: { name: `r1-${alias}`, script: `return agent('t', {model:'${alias}'});` } },
+            params: { name: 'workflow_register', arguments: { name: `r1-${alias}`, script, mermaid } },
           }),
         });
         const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };

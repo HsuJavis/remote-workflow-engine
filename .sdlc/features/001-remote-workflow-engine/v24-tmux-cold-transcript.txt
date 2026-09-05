@@ -1,0 +1,50 @@
+
+● Done. Here's the report.
+
+  Workflow
+
+  Name: three-agent-brief-relay (registered v1→v4; v4 published to release and run)
+  Topic: the 1859 Carrington Event solar storm
+
+  What each agent does
+
+  The three agents are a relay, not three parallel answerers — each one's prompt is built from the previous one's output:
+
+  1. scoper — answers nothing itself. It decides what the brief must cover and emits exactly four numbered questions (what/when, physical cause, documented effects, present-day implications).
+  2. researcher — receives the scoper's four questions verbatim and answers those and only those, in dense fact with dates and magnitudes, tagging any claim it isn't confident about with [uncertain].
+  3. editor — receives both the scoper's questions and the researcher's notes. It writes the final prose brief using only the researcher's facts, checks the notes against the scoper's questions for
+     coverage, and closes with an Open questions: line.
+
+  I verified the handoff is real rather than nominal: the researcher's logged prompt contains the scoper's exact question list, and the editor's contains the researcher's exact notes — including the
+  [uncertain] tags.
+
+  Run
+
+  - Run id: 8ed711cf-ce4e-477b-a91d-5efedcc59904
+  - Final status: completed (all three agents state: done; ~5 min wall clock)
+
+  Result text
+
+  ▎ The 1859 Carrington Event, a severe solar storm that occurred on September 1-2, 1859, was caused by a coronal mass ejection (CME) from the Sun's corona striking Earth's magnetosphere. The
+  ▎ documented effects included worldwide failures and fires in telegraph systems, with Northern Lights visible as far south as Cuba and Hawaii [uncertain]. Today, modern electrical grids, satellites,
+  ▎ and communication networks are at higher risk due to increased solar activity. Open questions: none.
+
+  What it took to get there, and caveats
+
+  Three things you should know about the output quality:
+
+  - The engine has no remote model auth. v2 pinned the agents to haiku; all three failed instantly with ANTHROPIC_AUTH_MISSING. An OpenRouter passthrough probe (a throwaway model-probe workflow, which
+    is still registered if you want it removed) hung past its timeout, so OpenRouter is unreachable too. The only working model is the local llama-server behind the local/default alias.
+  - That local model always replies with a tool-call envelope. v1 and v3 "completed" but returned {"name":"Grep",...} / {"name":"Write",...} JSON instead of prose — the brief was correct but wrapped.
+    Setting tools: [] in the agent() options did nothing; the harness still hands the agent a curated Write/Edit/Glob/Grep/Bash surface. So v4 makes the envelope deterministic (each agent is told to
+    put its whole answer in the Write call's content) and unwraps it in-script between stages, which is why the result above is clean prose.
+  - Two quality misses I did not paper over. The editor was told to hedge [uncertain] claims in words and never print the tag — it printed one anyway. And the scoper drifted: its "questions" came back
+    with answers already attached, so it did some of the researcher's job. Both are the small local model's ceiling, not the workflow structure; on a real model the same script should behave. I left
+    them visible rather than stripping the tag in code, since silently deleting it would hide the researcher's hedge.
+
+✻ Churned for 22m 55s · done 8:59
+                                                                                                                                                                ✔ Update installed · Restart to update
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ deregister the model-probe workflow
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ accept edits on (shift+tab to cycle)                                                                                                                                                          /rc

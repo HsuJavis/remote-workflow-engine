@@ -2,7 +2,11 @@
 # scripts/smoke.sh -- non-interactive, exit-code deploy smoke check (REQ-011, DES-022, TASK-023).
 #
 # Boots the real server as a background process, submits a sample workflow via
-# workflow_run/tools/call, polls workflow_status/workflow_result until it completes, then shuts
+# v24 (integrator): the whole submit half was dead TWICE — `workflow_run` is not a tool any more
+# (-32601) and inline `script` at run time is closed (INLINE_SCRIPT_CLOSED, REQ-098). The smoke
+# check now walks the real v24 path an operator must use: workflow_register (with the REQUIRED
+# mermaid diagram) -> workflow_publish -> run_start -> poll run_status -> run_result.
+# run_start/tools/call, polls run_status/run_result until it completes, then shuts
 # the server down. Exit code 0 = pass, non-zero = fail (CI/cron-friendly).
 #
 # The sample workflow below never calls agent()/workflow(), so this smoke check exercises the
@@ -61,6 +65,15 @@ call_tool() {
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"${name}\",\"arguments\":${args}}}"
 }
 
+extract_nested() {
+  # v24: workflow_register/publish answer `{result:{…}}` — the field lives one level in.
+  node -e "
+    const envelope = JSON.parse(process.argv[1]);
+    const result = JSON.parse(envelope.result.content[0].text);
+    console.log(String((result.result ?? result)[process.argv[2]]));
+  " "$1" "$2"
+}
+
 extract() {
   # $1 = raw JSON-RPC envelope, $2 = JS field-access expression on the tool's own JSON result
   node -e "
@@ -70,18 +83,35 @@ extract() {
   " "$1" "$2"
 }
 
-echo "[smoke] submitting sample workflow_run..."
-RUN_RESPONSE=$(call_tool workflow_run '{"script":"return 42;"}')
+# A minimal, REAL v24 workflow: no agent() call at all, so it needs no model provider, and a
+# header-only diagram, which `checkMermaid` accepts for a script with zero agent labels.
+SMOKE_WF="rwe-smoke-$$"
+echo "[smoke] registering sample workflow ${SMOKE_WF}..."
+REG_RESPONSE=$(call_tool workflow_register "{\"name\":\"${SMOKE_WF}\",\"script\":\"return 42;\",\"mermaid\":\"graph TD;\"}")
+VERSION=$(extract_nested "$REG_RESPONSE" version)
+if [ -z "$VERSION" ] || [ "$VERSION" = "undefined" ]; then
+  echo "[smoke] FAIL: workflow_register did not return a version: ${REG_RESPONSE}" >&2
+  exit 1
+fi
+
+echo "[smoke] publishing ${SMOKE_WF}@${VERSION} onto release..."
+PUB_RESPONSE=$(call_tool workflow_publish "{\"name\":\"${SMOKE_WF}\",\"version\":\"${VERSION}\",\"channel\":\"release\"}")
+case "$PUB_RESPONSE" in
+  *'"error"'*) echo "[smoke] FAIL: workflow_publish refused: ${PUB_RESPONSE}" >&2; exit 1 ;;
+esac
+
+echo "[smoke] submitting sample run_start..."
+RUN_RESPONSE=$(call_tool run_start "{\"name\":\"${SMOKE_WF}\"}")
 RUN_ID=$(extract "$RUN_RESPONSE" runId)
 if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "undefined" ]; then
-  echo "[smoke] FAIL: workflow_run did not return a runId: ${RUN_RESPONSE}" >&2
+  echo "[smoke] FAIL: run_start did not return a runId: ${RUN_RESPONSE}" >&2
   exit 1
 fi
 echo "[smoke] runId=${RUN_ID}"
 
 STATUS=""
 for _ in $(seq 1 50); do
-  STATUS_RESPONSE=$(call_tool workflow_status "{\"runId\":\"${RUN_ID}\"}")
+  STATUS_RESPONSE=$(call_tool run_status "{\"runId\":\"${RUN_ID}\"}")
   STATUS=$(extract "$STATUS_RESPONSE" status)
   if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
     break
@@ -94,7 +124,7 @@ if [ "$STATUS" != "completed" ]; then
   exit 1
 fi
 
-RESULT_RESPONSE=$(call_tool workflow_result "{\"runId\":\"${RUN_ID}\"}")
+RESULT_RESPONSE=$(call_tool run_result "{\"runId\":\"${RUN_ID}\"}")
 RESULT=$(extract "$RESULT_RESPONSE" result)
 if [ "$RESULT" != "42" ]; then
   echo "[smoke] FAIL: unexpected result: ${RESULT}" >&2
@@ -102,4 +132,5 @@ if [ "$RESULT" != "42" ]; then
 fi
 
 echo "[smoke] PASS: sample workflow completed with result=${RESULT}"
+call_tool workflow_deregister "{\"name\":\"${SMOKE_WF}\"}" >/dev/null 2>&1 || true
 exit 0

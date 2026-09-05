@@ -48,50 +48,82 @@ async function toolCall(name: string, args: Record<string, unknown>): Promise<Re
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
 async function pollUntilSettled(runId: string) {
-  let s = await toolCall('workflow_status', { runId });
+  let s = await toolCall('run_status', { runId });
   for (let i = 0; i < 100 && (s['status'] === 'running' || s['status'] === 'queued'); i++) {
     await new Promise((r) => setTimeout(r, 30));
-    s = await toolCall('workflow_status', { runId });
+    s = await toolCall('run_status', { runId });
   }
   return s;
 }
 
-describe('REQ-096: a pre-v22 catalog boots non-breaking, old registrations still run (VAL-106)', () => {
-  it('the migrated legacy workflow still runs by name via the (now-published) release channel', async () => {
-    const run = await toolCall('workflow_run', { name: 'val106-legacy' });
+// v24 (integrator): REQ-096's subject — "a pre-v22 catalog BOOTS NON-BREAKING" — is unchanged and
+// still pinned below (the migration runs, the row survives, the release channel is published, every
+// later version-history case in this file works against that same booted catalog). What v24
+// deliberately changed is the second half of the old sentence, "old registrations still RUN": a
+// version row with no `params` column predates the per-agent parameter contract (DES-144), so it
+// has no declared model/effort/timeoutMs for any label and cannot be dispatched. DES-156 assigns
+// that exact state the code `LEGACY_REREGISTER` and already reports it as
+// `workflow_describe.runnableReason`; before this iteration `run_start` ran the row anyway with no
+// per-agent slice at all, i.e. the read surfaces and the run path disagreed about one row.
+// The oracle is therefore RE-POINTED, not dropped: the legacy row is refused with the typed,
+// actionable code, the describe surface says the same thing, and RE-REGISTERING it makes it
+// runnable again — which is what "non-breaking" means once a contract exists.
+describe('REQ-096: a pre-v22 catalog boots non-breaking; a pre-v24 registration is refused LEGACY_REREGISTER until re-registered (VAL-106)', () => {
+  it('the migrated legacy workflow is REFUSED LEGACY_REREGISTER by run_start, and workflow_describe says the same', async () => {
+    const run = await toolCall('run_start', { name: 'val106-legacy' });
+    const code = (run['code'] as string | undefined) ?? (run['error'] as { code?: string } | undefined)?.code;
+    expect(code).toBe('LEGACY_REREGISTER');
+    // The two surfaces must agree — that they did not is the defect this re-point records.
+    const described = await toolCall('workflow_describe', { name: 'val106-legacy' });
+    const view = described['result'] as { runnable?: boolean; runnableReason?: string } | undefined;
+    expect(view?.runnable).toBe(false);
+    expect(view?.runnableReason).toBe('LEGACY_REREGISTER');
+  });
+
+  it('re-registering the SAME script under the same name makes it runnable again (the migration is non-breaking, not a dead end)', async () => {
+    const reg = await toolCall('workflow_register', { name: 'val106-legacy', script: `return 'legacy-still-runs';`, mermaid: 'graph TD;' });
+    const version = (reg['result'] as { version?: string } | undefined)?.version as string;
+    expect(version).toBeTruthy();
+    await toolCall('workflow_publish', { name: 'val106-legacy', version, channel: 'release' });
+
+    const run = await toolCall('run_start', { name: 'val106-legacy' });
     expect(run['error']).toBeUndefined();
     const runId = (run['result'] as { runId?: string } | undefined)?.runId as string;
     const settled = await pollUntilSettled(runId);
     expect(settled['status']).toBe('completed');
+    // The pre-v22 row itself is still THERE — the migration preserved history, which is REQ-096's
+    // actual subject.
+    const v1 = await toolCall('workflow_source', { name: 'val106-legacy', version: 'v1' });
+    expect((v1['result'] as { script?: string } | undefined)?.script).toBe(`return 'legacy-still-runs';`);
   });
 });
 
 describe('REQ-096: registering twice keeps BOTH versions retrievable (VAL-106)', () => {
-  it('workflow_get({name, version:"v1"}) returns the first script after a second registration', async () => {
-    const first = await toolCall('workflow_register', { name: 'val106-two', script: `return 'first';` });
+  it('workflow_source({name, version:"v1"}) returns the first script after a second registration', async () => {
+    const first = await toolCall('workflow_register', { name: 'val106-two', script: `return 'first';`, mermaid: 'graph TD;' });
     const v1 = (first['result'] as { version?: string } | undefined)?.version;
-    await toolCall('workflow_register', { name: 'val106-two', script: `return 'second';` });
+    await toolCall('workflow_register', { name: 'val106-two', script: `return 'second';`, mermaid: 'graph TD;' });
 
-    const got = await toolCall('workflow_get', { name: 'val106-two', version: v1 });
+    const got = await toolCall('workflow_source', { name: 'val106-two', version: v1 });
     expect((got['result'] as { script?: string } | undefined)?.script).toBe(`return 'first';`);
   });
 
-  it('a run pins its version; workflow_status still reports it after a THIRD version is registered', async () => {
-    const first = await toolCall('workflow_register', { name: 'val106-pin', script: `return 'pinned';` });
+  it('a run pins its version; run_status still reports it after a THIRD version is registered', async () => {
+    const first = await toolCall('workflow_register', { name: 'val106-pin', script: `return 'pinned';`, mermaid: 'graph TD;' });
     const v1 = (first['result'] as { version?: string } | undefined)?.version as string;
     await toolCall('workflow_publish', { name: 'val106-pin', version: v1, channel: 'release' });
 
-    const run = await toolCall('workflow_run', { name: 'val106-pin' });
+    const run = await toolCall('run_start', { name: 'val106-pin' });
     const runId = (run['result'] as { runId?: string } | undefined)?.runId as string;
     await pollUntilSettled(runId);
 
-    await toolCall('workflow_register', { name: 'val106-pin', script: `return 'newer';` });
-    const status = await toolCall('workflow_status', { runId });
+    await toolCall('workflow_register', { name: 'val106-pin', script: `return 'newer';`, mermaid: 'graph TD;' });
+    const status = await toolCall('run_status', { runId });
     expect((status['result'] as { scriptVersion?: string } | undefined)?.scriptVersion).toBe(v1);
   });
 
   it('workflow_list reports versions[] and channels{} per workflow', async () => {
-    await toolCall('workflow_register', { name: 'val106-listed', script: `return 1;` });
+    await toolCall('workflow_register', { name: 'val106-listed', script: `return 1;`, mermaid: 'graph TD;' });
     const list = await toolCall('workflow_list', {});
     const entry = (list['result'] as Array<Record<string, unknown>> | undefined)?.find((e) => e['name'] === 'val106-listed');
     expect(Array.isArray(entry?.['versions'])).toBe(true);

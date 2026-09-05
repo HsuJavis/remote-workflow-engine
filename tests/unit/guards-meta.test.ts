@@ -8,14 +8,14 @@ describe('checkMeta (compat-spec §1 meta literal, string-aware)', () => {
   it('accepts a pure-literal meta whose description contains semicolons and braces, and strips the WHOLE decl', () => {
     const script =
       "export const meta = { name: 'x', description: 'does a; then b; ends {ok}', phases: [{title:'A'}] };\n" +
-      "return await agent('go');";
+      "return await agent('go', {});";
     const r = checkMeta(script);
     expect(r.found).toBe(true);
     expect(r.pureLiteral).toBe(true);
     expect(r.objectText).toContain("phases");
     // the span covers the full object incl. the in-string semicolons + trailing ; — stripping leaves clean body
     const body = script.replace(r.span!, '');
-    expect(body.trim()).toBe("return await agent('go');");
+    expect(body.trim()).toBe("return await agent('go', {});");
     expect(body).not.toContain('description'); // no dangling meta fragment left behind
   });
 
@@ -45,6 +45,6 @@ describe('checkMeta (compat-spec §1 meta literal, string-aware)', () => {
   });
 
   it('reports found:false when there is no meta declaration', () => {
-    expect(checkMeta('return await agent("go");').found).toBe(false);
+    expect(checkMeta('return await agent("go", {});').found).toBe(false);
   });
 });

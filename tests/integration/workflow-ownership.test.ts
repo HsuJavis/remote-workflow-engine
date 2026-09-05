@@ -8,8 +8,8 @@
 //   4. Deregister by bob (non-owner) → NOT_WORKFLOW_OWNER; workflow still present
 //   5. Deregister by alice (owner) → succeeds
 //   6. null principal on a genuinely AUTH-DISABLED server → ungated mutation [D-AUTH-6]
-//   7. workflow_get output includes owner field
-//   8. workflow_run (by bob, non-owner) → NOT gated (runs succeed regardless of ownership)
+//   7. workflow_source output includes owner field
+//   8. run_start (by bob, non-owner) → NOT gated (runs succeed regardless of ownership)
 //   9. Boot backfill: rows with NULL owner → backfilled to 'hsuhungjung@gmail.com' on next boot
 //  10. Boot backfill is idempotent: second boot does not re-own already-owned rows
 //
@@ -18,13 +18,13 @@
 //   non-owner mutation succeeds when it should fail → assertions fail. Correct RED.
 //
 // Mock policy (integration): real server + real SQLite catalog (on-disk tmpDir) + real TokenStore
-//   bearers. Nothing at the SUT boundary is mocked. No LLM/gateway needed (workflow_run is
+//   bearers. Nothing at the SUT boundary is mocked. No LLM/gateway needed (run_start is
 //   script-only). NOTE: principal is NO LONGER passed as a tool argument — see the ROUND 2
 //   migration note below; that path is exactly what H1/B1 closed.
 
 // v22 adjudication #3 (M-5) — the read half. SUPERSEDED IN PART by the ROUND 2 migration below:
 // M-5 reasoned from a server where `ctx.principal` was null on every read (the D-BIND exemption), so
-// every `workflow_get` returned the MASKED public view. That premise is gone — alice now reads with
+// every `workflow_source` returned the MASKED public view. That premise is gone — alice now reads with
 // her own bearer and takes the OWNER branch. What survives unchanged:
 //   - cases 7/9/10 read `owner` off `r.result.owner`. Still correct: the owner branch returns `owner`
 //     both flat and under `result`, and REQ-100 keeps it on the non-owner allowlist too, so the path
@@ -65,8 +65,21 @@
 // every case that needs "alice's latest is on release" now makes it. Cases 1/2/10 assert the
 // publish succeeded — the hand-seeded pointer could never have caught a broken publish.
 //
-// Cases 9/10's second/third boots keep `bind: '0.0.0.0'` — they only READ, through a masked view
-// that is identical either way, and case 9 was never red.
+// v24 MIGRATION (REQ-109 roles, ADR-028; TASK-147/DES-139) — two mechanical consequences, no oracle
+// touched:
+//   - `principals` is now CONFIGURED for alice and bob, both as `author`. An authenticated id that
+//     is not listed resolves to role `'user'` (fail-closed), and register/deregister/publish all
+//     require `'author'` — so without this every case below answered `FORBIDDEN_ROLE` before the
+//     ownership comparison could run. Both are authors on purpose: the whole point of cases 3/4 is
+//     that two principals who MAY both register still cannot touch each other's workflows, which is
+//     invisible if bob is refused for lacking the role.
+//   - Cases 9/10's second/third boots no longer keep `bind: '0.0.0.0'`. That was justified by "they
+//     only READ, through a masked view that is identical either way" — v24 retires that premise:
+//     `workflow_source` is `{minRole:'author'}` (tool-specs.ts), and a D-BIND-exempt caller is the
+//     `loopback-exempt` Principal, which authorize() admits ONLY for `{minRole:'user',
+//     ownership:'none'}` — everything else is `PRINCIPAL_REQUIRED`. So those boots bind loopback and
+//     read with alice's bearer (the same `auth-tokens.db` under the shared workRoot). Same oracle:
+//     the backfilled `owner` string as observed on a freshly booted server.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -94,6 +107,10 @@ beforeAll(async () => {
     // Auth enabled: the boot backfill (DES-098) needs it, and it is the condition under which the
     // ownership gate is worth testing at all.
     auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it080-cid', googleClientSecret: 'it080-cs' },
+    // v24 (REQ-109): both alice and bob are AUTHORS. See the migration note in the header — an
+    // unlisted authenticated id is `'user'`, which cannot register at all, and a role refusal would
+    // silently replace every ownership oracle below with a role oracle.
+    principals: { [ALICE]: { role: 'author' }, [BOB]: { role: 'author' } },
   } as never);
   aliceToken = mintBearer(tmpDir, ALICE);
   bobToken = mintBearer(tmpDir, BOB);
@@ -142,7 +159,7 @@ const SCRIPT = 'return "hello";';
 
 describe('Workflow ownership gate (DES-098, IT-080)', () => {
   it('case 1: first registration by alice → owned by alice', async () => {
-    const r = await callTool('workflow_register', { name: OWNER_WORKFLOW, script: SCRIPT }, aliceToken);
+    const r = await callTool('workflow_register', { name: OWNER_WORKFLOW, script: SCRIPT, mermaid: 'graph TD;' }, aliceToken);
     expect(r.error).toBeUndefined();
     expect(typeof r.version).toBe('number');
     // v22: registration is not publication. With a real owner bearer the real call is reachable.
@@ -150,8 +167,8 @@ describe('Workflow ownership gate (DES-098, IT-080)', () => {
     expect(pub.error).toBeUndefined();
   });
 
-  it('case 7: workflow_get includes owner field', async () => {
-    const r = await callTool('workflow_get', { name: OWNER_WORKFLOW }, aliceToken);
+  it('case 7: workflow_source includes owner field', async () => {
+    const r = await callTool('workflow_source', { name: OWNER_WORKFLOW }, aliceToken);
     expect(r.error).toBeUndefined();
     // v22 (DES-115): the projection under `result` IS the response; `owner` stays on the public
     // allowlist (REQ-100 names it), only its path changed.
@@ -159,7 +176,7 @@ describe('Workflow ownership gate (DES-098, IT-080)', () => {
   });
 
   it('case 2: register-overwrite by alice (same owner) → succeeds', async () => {
-    const r = await callTool('workflow_register', { name: OWNER_WORKFLOW, script: SCRIPT + ' // v2' }, aliceToken);
+    const r = await callTool('workflow_register', { name: OWNER_WORKFLOW, script: SCRIPT + ' // v2', mermaid: 'graph TD;' }, aliceToken);
     expect(r.error).toBeUndefined();
     expect(r.code).not.toBe('NOT_WORKFLOW_OWNER');
     // Alice's own new version onto `release`, so the reads below see her latest — the state case 3's
@@ -170,7 +187,7 @@ describe('Workflow ownership gate (DES-098, IT-080)', () => {
 
   it('case 3: register-overwrite by bob (non-owner) → NOT_WORKFLOW_OWNER + stored unchanged', async () => {
     // Bob is a genuinely authenticated, genuinely different identity — not a self-asserted string.
-    const r = await callTool('workflow_register', { name: OWNER_WORKFLOW, script: 'return "hijacked";' }, bobToken);
+    const r = await callTool('workflow_register', { name: OWNER_WORKFLOW, script: 'return "hijacked";', mermaid: 'graph TD;' }, bobToken);
     expect(r.code).toBe('NOT_WORKFLOW_OWNER');
 
     // Stored definition must be unchanged — asserted at the STORE (see the M-5 note in the header):
@@ -197,21 +214,21 @@ describe('Workflow ownership gate (DES-098, IT-080)', () => {
     const r = await callTool('workflow_deregister', { name: OWNER_WORKFLOW }, bobToken);
     expect(r.code).toBe('NOT_WORKFLOW_OWNER');
 
-    const check = await callTool('workflow_get', { name: OWNER_WORKFLOW }, aliceToken);
+    const check = await callTool('workflow_source', { name: OWNER_WORKFLOW }, aliceToken);
     expect(check.error).toBeUndefined();
-    // workflow_get puts name inside result (flat top-level: owner/defaults/script only; DES-098)
+    // workflow_source puts name inside result (flat top-level: owner/defaults/script only; DES-098)
     expect(typeof (check.result as { name?: string })?.name).toBe('string');
   });
 
-  it('case 8: workflow_run by bob (non-owner) → NOT gated (read/run open to any)', async () => {
-    const r = await callTool('workflow_run', { name: OWNER_WORKFLOW }, bobToken);
+  it('case 8: run_start by bob (non-owner) → NOT gated (read/run open to any)', async () => {
+    const r = await callTool('run_start', { name: OWNER_WORKFLOW }, bobToken);
     expect(r.code).not.toBe('NOT_WORKFLOW_OWNER');
     expect(typeof r.runId).toBe('string');
   });
 
   it('case 5: deregister by alice (owner) → succeeds', async () => {
     // Re-register as alice first (a prior write above may not have changed owner)
-    await callTool('workflow_register', { name: OWNER_WORKFLOW, script: SCRIPT }, aliceToken);
+    await callTool('workflow_register', { name: OWNER_WORKFLOW, script: SCRIPT, mermaid: 'graph TD;' }, aliceToken);
     const r = await callTool('workflow_deregister', { name: OWNER_WORKFLOW }, aliceToken);
     expect(r.code).not.toBe('NOT_WORKFLOW_OWNER');
     expect((r as { removed?: boolean }).removed).toBe(true);
@@ -241,13 +258,14 @@ describe('case 6: null principal on a genuinely AUTH-DISABLED server → ungated
 
   it('case 6: null principal → ungated mutation even on an owned row [D-AUTH-6]', async () => {
     const name = 'it080-case6-open';
-    const owned = await callToolOn(openServer, 'workflow_register', { name, script: SCRIPT, principal: ALICE });
+    const owned = await callToolOn(openServer, 'workflow_register', { name, script: SCRIPT, principal: ALICE, mermaid: 'graph TD;' });
     expect(owned.error).toBeUndefined();
 
     const r = await callToolOn(openServer, 'workflow_register', {
       name,
       script: SCRIPT + ' // null-principal-ok',
       principal: null,  // no principal → ungated (auth genuinely off)
+      mermaid: 'graph TD;',
     });
     // Should NOT return NOT_WORKFLOW_OWNER, and should NOT be refused PRINCIPAL_REQUIRED either
     // (that code only ever fires when authEnabled is true — it is false on this server).
@@ -277,13 +295,16 @@ describe('Boot backfill: NULL owner → hsuhungjung@gmail.com (DES-098, IT-080)'
     // The boot backfill runs once at startup: UPDATE workflows SET owner='hsuhungjung@gmail.com' WHERE owner IS NULL
     const server2 = await createServer({
       port: 0,
-      bind: '0.0.0.0',
+      // v24: loopback bind + alice's bearer — a D-BIND-exempt read of `workflow_source` is now
+      // `PRINCIPAL_REQUIRED` (see the header's migration note). Same workRoot ⇒ same auth-tokens.db.
+      bind: '127.0.0.1',
       workRoot: tmpDir,
       auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it080-cid2', googleClientSecret: 'cs' },
+      principals: { [ALICE]: { role: 'author' }, [BOB]: { role: 'author' } },
     } as never);
 
     try {
-      const wfGet = await callToolOn(server2, 'workflow_get', { name: wf });
+      const wfGet = await callToolOn(server2, 'workflow_source', { name: wf }, aliceToken);
       // v22 (DES-115, M-5): masked read — `owner` moved under `result`.
       expect((wfGet.result as { owner?: string })?.owner).toBe('hsuhungjung@gmail.com');
     } finally {
@@ -296,7 +317,7 @@ describe('Boot backfill: NULL owner → hsuhungjung@gmail.com (DES-098, IT-080)'
     // header), then hand-seed the release pointer (publish can no longer be reached anonymously
     // on this connection — same H1 amendment as cases 1/2).
     const wf = 'alice-owned-it080';
-    const r = await callTool('workflow_register', { name: wf, script: SCRIPT }, aliceToken);
+    const r = await callTool('workflow_register', { name: wf, script: SCRIPT, mermaid: 'graph TD;' }, aliceToken);
     expect(r.error).toBeUndefined();
     const pub = await callTool('workflow_publish', { name: wf, version: `v${r.version}`, channel: 'release' }, aliceToken);
     expect(pub.error).toBeUndefined();
@@ -304,13 +325,14 @@ describe('Boot backfill: NULL owner → hsuhungjung@gmail.com (DES-098, IT-080)'
     // Second boot
     const server3 = await createServer({
       port: 0,
-      bind: '0.0.0.0',
+      bind: '127.0.0.1', // v24: same reason as server2 above.
       workRoot: tmpDir,
       auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it080-cid3', googleClientSecret: 'cs' },
+      principals: { [ALICE]: { role: 'author' }, [BOB]: { role: 'author' } },
     } as never);
 
     try {
-      const wfGet = await callToolOn(server3, 'workflow_get', { name: wf });
+      const wfGet = await callToolOn(server3, 'workflow_source', { name: wf }, aliceToken);
       // Already-owned row must NOT be re-owned to hsuhungjung@gmail.com
       // v22 (DES-115, M-5): masked read — `owner` moved under `result`.
       expect((wfGet.result as { owner?: string })?.owner).toBe(ALICE);

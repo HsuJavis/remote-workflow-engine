@@ -39,7 +39,7 @@ const FULL: WorkflowOwnerView = {
   description: 'a fixture workflow',
   // v23 (DES-136, TASK-125): the shape `parseMeta` actually produces (`workflow-meta.ts:10`).
   phases: [{ title: 'phase-one' }],
-  params: { knobs: {} } as unknown as WorkflowOwnerView['params'],
+  params: { agents: {} } as unknown as WorkflowOwnerView['params'],
   owner: 'owner@example.com',
   createdAt: '2026-01-01T00:00:00.000Z',
   reportProblem: 'call issue_report({workflow:"wv-fixture"})',
@@ -61,14 +61,14 @@ const FULL: WorkflowOwnerView = {
  *  read" (its `errors` detail is owner-only — the next case pins that). */
 // v23 (DES-136, TASK-125, adjudication #1 2026-09-02): `phases` joins the allowlist, ONE entry
 // (deepFlatten does not recurse into arrays, `:29` below) — 一律公開, ratified by the owner: serving
-// phase titles inside the diagram (REQ-102/A3) while `workflow_get` withheld them would be REQ-100's
+// phase titles inside the diagram (REQ-102/A3) while `workflow_source` withheld them would be REQ-100's
 // own "cannot be side-stepped by asking a different endpoint" clause violated in mirror image.
 const REQ_100_NON_OWNER_KEYS = [
   'channels', 'channels.beta', 'channels.release',
   'description',
   'name',
   'owner',
-  'params', 'params.knobs',
+  'params', 'params.agents',
   'phases',
   'reportProblem',
   'scriptWithheld',

@@ -70,7 +70,7 @@ describe('row 1: auth DISABLED -> 200 (IT-101, ADJ-A1)', () => {
 
   beforeAll(async () => {
     workRoot = mkdtempSync(join(tmpdir(), 'rwe-it101-open-'));
-    server = await createServer({ port: 0, bind: '127.0.0.1', workRoot, graphAnalyzer: { enabled: false } });
+    server = await createServer({ port: 0, bind: '127.0.0.1', workRoot });
     seedPublishedWorkflow(join(workRoot, 'catalog.db'), NAME, 'it101-owner@example.com', 'v1', `return 'v1';`);
   });
   afterAll(async () => { await server?.close(); rmSync(workRoot, { recursive: true, force: true }); });
@@ -93,7 +93,7 @@ describe('row 2: auth ENABLED, D-BIND loopback-exempt peer -> 200 (IT-101, ADJ-A
   beforeAll(async () => {
     workRoot = mkdtempSync(join(tmpdir(), 'rwe-it101-dbind-'));
     server = await createServer({
-      port: 0, bind: '0.0.0.0', workRoot, graphAnalyzer: { enabled: false },
+      port: 0, bind: '0.0.0.0', workRoot,
       auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it101-cid', googleClientSecret: 'it101-cs' },
     } as never);
     seedPublishedWorkflow(join(workRoot, 'catalog.db'), NAME, 'it101-owner2@example.com', 'v1', `return 'v1';`);
@@ -124,7 +124,7 @@ describe('row 3a: auth ENABLED, genuine non-loopback (LAN) peer, no bearer -> 40
   beforeAll(async () => {
     workRoot = mkdtempSync(join(tmpdir(), 'rwe-it101-lan-'));
     server = await createServer({
-      port: 0, bind: '0.0.0.0', workRoot, graphAnalyzer: { enabled: false },
+      port: 0, bind: '0.0.0.0', workRoot,
       allowedHosts: LAN_IP ? [LAN_IP] : [],
       auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it101-lan-cid', googleClientSecret: 'it101-lan-cs' },
     } as never);
@@ -153,7 +153,7 @@ describe('row 3b: auth ENABLED, LOOPBACK bind (exemption excluded by constructio
   beforeAll(async () => {
     workRoot = mkdtempSync(join(tmpdir(), 'rwe-it101-loopbound-'));
     server = await createServer({
-      port: 0, bind: '127.0.0.1', workRoot, graphAnalyzer: { enabled: false },
+      port: 0, bind: '127.0.0.1', workRoot,
       auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it101-lb-cid', googleClientSecret: 'it101-lb-cs' },
     } as never);
   });
@@ -185,7 +185,7 @@ describe('row 4: auth ENABLED, non-exempt peer, VALID bearer -> 200 (IT-101, ADJ
   beforeAll(async () => {
     workRoot = mkdtempSync(join(tmpdir(), 'rwe-it101-bearer-'));
     server = await createServer({
-      port: 0, bind: '127.0.0.1', workRoot, graphAnalyzer: { enabled: false },
+      port: 0, bind: '127.0.0.1', workRoot,
       auth: { enabled: true, issuer: 'http://127.0.0.1:0', googleClientId: 'it101-b-cid', googleClientSecret: 'it101-b-cs' },
     } as never);
     seedPublishedWorkflow(join(workRoot, 'catalog.db'), NAME, 'it101-owner4@example.com', 'v1', `return 'v1';`);
@@ -223,7 +223,7 @@ describe('parity row: GET /describe and MCP workflow_describe serve the IDENTICA
 
   beforeAll(async () => {
     workRoot = mkdtempSync(join(tmpdir(), 'rwe-it101-parity-'));
-    server = await createServer({ port: 0, bind: '127.0.0.1', workRoot, graphAnalyzer: { enabled: false } });
+    server = await createServer({ port: 0, bind: '127.0.0.1', workRoot });
     seedPublishedWorkflow(join(workRoot, 'catalog.db'), NAME, 'it101-owner3@example.com', 'v1', `return 'v1';`);
   });
   afterAll(async () => { await server?.close(); rmSync(workRoot, { recursive: true, force: true }); });

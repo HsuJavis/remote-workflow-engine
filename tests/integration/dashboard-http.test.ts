@@ -40,7 +40,7 @@ async function submitRun(script: string): Promise<string> {
 async function registerWorkflow(name: string, script: string): Promise<void> {
   await fetch(`http://127.0.0.1:${server.port}/mcp`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'workflow_register', arguments: { name, script } } }),
+    body: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'workflow_register', arguments: { name, script, mermaid: 'graph TD;' } } }),
   });
 }
 
@@ -53,7 +53,7 @@ describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
     expect(Array.isArray(body)).toBe(true);
   });
 
-  it('GET /api/runs includes a run that was submitted via MCP workflow_run', async () => {
+  it('GET /api/runs includes a run that was submitted via MCP run_start', async () => {
     const runId = await submitRun('return {dashboard:true}');
     expect(typeof runId).toBe('string');
 
@@ -79,7 +79,7 @@ describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call',
-          params: { name: 'workflow_status', arguments: { runId } } }),
+          params: { name: 'run_status', arguments: { runId } } }),
       });
       const sb = await statusRes.json() as { result?: { content?: Array<{ text?: string }> } };
       const view = JSON.parse(sb.result?.content?.[0]?.text ?? '{}') as { result?: { status?: string } };
@@ -110,7 +110,7 @@ describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call',
-          params: { name: 'workflow_status', arguments: { runId } } }),
+          params: { name: 'run_status', arguments: { runId } } }),
       });
       const sb = await statusRes.json() as { result?: { content?: Array<{ text?: string }> } };
       const v = JSON.parse(sb.result?.content?.[0]?.text ?? '{}') as { result?: { status?: string } };
@@ -188,7 +188,7 @@ describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
     const name = 'dash-deregistered-dag';
     await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'workflow_register', arguments: { name, script: 'return 1;' } } }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'workflow_register', arguments: { name, script: 'return 1;', mermaid: 'graph TD;' } } }),
     });
     const pub = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -197,7 +197,7 @@ describe('Dashboard read-only HTTP endpoints (DES-018, ARCH-011)', () => {
     expect((await pub.json() as { result?: { content?: Array<{ text?: string }> } }).result).toBeDefined();
     const run = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name: 'workflow_run', arguments: { name } } }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name: 'run_start', arguments: { name } } }),
     });
     const runBody = JSON.parse((await run.json() as { result: { content: Array<{ text: string }> } }).result.content[0]!.text) as { runId?: string };
     const runId = runBody.runId!;

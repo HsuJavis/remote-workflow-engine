@@ -37,11 +37,11 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
 async function pollDone(runId: string, maxMs = 8000): Promise<unknown> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
-    const s = await callTool('workflow_status', { runId }) as { status?: string };
+    const s = await callTool('run_status', { runId }) as { status?: string };
     if (s?.status !== 'queued' && s?.status !== 'running') return s;
     await new Promise((r) => setTimeout(r, 40));
   }
-  return callTool('workflow_status', { runId });
+  return callTool('run_status', { runId });
 }
 
 beforeAll(async () => {
@@ -69,6 +69,7 @@ describe('GET /api/home + terminalAt in RunSummary (IT-068, DES-070, DES-071)', 
       name: 'it068-idle',
       script: `export const meta = { name: 'it068-idle', description: 'idle workflow for IT-068' };
                return "idle";`,
+      mermaid: 'graph TD;',
     });
     const res = await fetch(`http://127.0.0.1:${server.port}/api/home`);
     expect(res.status).toBe(200);
@@ -103,7 +104,7 @@ describe('GET /api/home + terminalAt in RunSummary (IT-068, DES-070, DES-071)', 
     const wfName = 'it068-metrics';
     await registerPublishedVia(callTool, wfName, `export const meta = { name: '${wfName}', description: 'metrics test' };
                return "ok";`);
-    const sub = await callTool('workflow_run', { name: wfName }) as { runId?: string };
+    const sub = await callTool('run_start', { name: wfName }) as { runId?: string };
     await pollDone(sub?.runId!);
 
     const res = await fetch(`http://127.0.0.1:${server.port}/api/home`);

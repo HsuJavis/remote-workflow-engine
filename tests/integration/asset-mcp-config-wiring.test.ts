@@ -1,20 +1,20 @@
-// IT-035: superseded scope (test-defect fix, 2026-07-10) — this test originally pinned the v2
-// D-V2V-1 contract (an accepted mcp-config asset_push is threaded into the NEXT agent() call's
-// real Options.mcpServers via `readMcpConfigAssets()`). DES-028/REQ-009's v3 rescope (04-design.md
-// DES-019's own "Gate 6 route-back" note + DES-028) REDIRECTS mcp-config pushes to the Provisioning
-// Registry instead (`mcp_provision`/`McpRegistry`, IT-038/VAL-020) — asset_push no longer
-// materializes or threads mcp-config assets at all, so the original scenario ("push mcp-config,
-// confirm it lands in the next agent() call's options.mcpServers") is now structurally impossible
-// by design. This test is rewritten to pin the v3 replacement contract instead: an mcp-config
-// asset_push is redirected (never stored, never threaded via the old per-asset mechanism), and a
-// run still completes normally. It deliberately does NOT assert that a name provisioned via
-// `mcp_provision` reaches a real agent() call's `options.mcpServers` — that GatewayClient-side
-// threading (`src/session-options-builder.ts`/TASK-032's `buildSessionOptions`) has no production
-// caller yet (confirmed: no non-test caller of `buildSessionOptions` in `src/`), so asserting it
-// here would require new production wiring, not a test-only fix. See needs_clarification.
+// IT-035: v3 rescope (test-defect fix, 2026-07-10) pinned "an accepted mcp-config asset-push is
+// REDIRECTED to the Provisioning Registry, never threaded via the old per-asset options.mcpServers
+// mechanism" (DES-028/REQ-009 v3).
+//
+// v24 (TASK-152, DES-153/DES-154, ARCH-101/103): the v3 redirect mechanism (and the Provisioning
+// Registry it redirected to) is ITSELF retired — an mcp config is now pushed DIRECTLY as
+// `workspace_push({kind:'mcp', config})` (a real catalog row, DES-153) and, when an agent DECLARES
+// it (`meta.params.agents.<label>.mcp`), the SDK gateway's `materializeAssets` (DES-154) resolves
+// it and writes a real `.mcp.json` for that dispatch — the opposite of the old "never reaches
+// options.mcpServers" invariant this file used to pin. Rewritten to the v24 contract: the pushed
+// mcp asset DOES reach the real SDK-gateway call once declared, `strictMcpConfig:true` still holds
+// (D-V2V-1, unchanged since v2), and an UNDECLARED push (no `mcp` key on the label) does NOT reach
+// it (DES-154's `missing[]` case, `tests/unit/materialize-assets.test.ts` covers the fake-fs unit
+// shape; this integration case is the real SDK-gateway-call shape TASK-152 restores here).
 //
 // Mock policy (DES-015, integration tier): real `composeConfig()` + real `createServer()` + real
-// HTTP `asset_push`/`workflow_run`/`workflow_status` round trip (no mock of the SUT's own asset
+// HTTP `workspace_push`/`run_start`/`run_status` round trip (no mock of the SUT's own asset
 // storage, submission, sandbox, or run lifecycle); only the third-party SDK `query()` export
 // (`queryImpl` seam, same convention as IT-021/IT-022) and the managed LiteLLM proxy subprocess
 // (fake `spawnImpl`/`fetchImpl`, same convention) are faked — no real network/process I/O.
@@ -58,7 +58,7 @@ interface CapturedCall {
   options?: { mcpServers?: Record<string, { url?: string; type?: string }>; strictMcpConfig?: boolean };
 }
 
-describe('mcp-config asset_push redirect supersedes the old per-call options.mcpServers threading (IT-035, DES-028, REQ-009 v3 rescope)', () => {
+describe('a workspace_push mcp asset, once declared by an agent, reaches the real SDK-gateway call (IT-035, DES-153/DES-154, v24 rescope)', () => {
   let server: Server;
   let workRoot: string;
   let baseUrl: string;
@@ -69,7 +69,12 @@ describe('mcp-config asset_push redirect supersedes the old per-call options.mcp
     workRoot = mkdtempSync(join(tmpdir(), 'rwe-it035-'));
     queryImpl = vi.fn(() => fakeSuccessSession());
     const config = await composeConfig(
-      { bind: '127.0.0.1', port: 0, workRoot, aliases: ALIASES, gateway: 'sdk', assetRoot: join(workRoot, 'assets') },
+      {
+        bind: '127.0.0.1', port: 0, workRoot, aliases: ALIASES, gateway: 'sdk', assetRoot: join(workRoot, 'assets'),
+        // v24 (DES-153/ADR-030, TASK-152): workspace_push's kind:'mcp' http mode checks egress
+        // BEFORE probing — this file's fake config points at example.com, so allow it.
+        mcpEgressAllowlist: ['https://example.com/'],
+      },
       { queryImpl: queryImpl as unknown as never, proxyManager: makeFakeProxyManager() },
     );
     // FakeMcpProbe: the mcp-config's own live-probe (DES-020) always accepts — this test is about
@@ -93,27 +98,32 @@ describe('mcp-config asset_push redirect supersedes the old per-call options.mcp
     return JSON.parse(body.result!.content[0]!.text);
   }
 
-  it('an mcp-config asset_push is redirected to provisioning (never stored, never threaded via the old per-asset mechanism); a run still completes normally', async () => {
-    const push = await mcpCall('asset_push', {
-      kind: 'mcp-config',
+  it('workspace_push (kind:mcp) stores a real catalog row; a run whose agent DECLARES it reaches the real SDK-gateway call with strictMcpConfig:true', async () => {
+    const push = await mcpCall('workspace_push', {
+      scope: 'global',
+      kind: 'mcp',
       name: 'demo-mcp',
-      files: [
-        {
-          path: 'config.json',
-          contentB64: Buffer.from(JSON.stringify({ type: 'http', url: 'https://example.com/demo-mcp' })).toString('base64'),
-        },
-      ],
+      config: { url: 'https://example.com/demo-mcp' },
     });
-    // v3 rescope (DES-028/REQ-009): mcp-config is redirected, never materialized/stored here.
-    expect(push.result?.stored ?? []).toEqual([]);
-    expect(push.result?.redirected).toBe(true);
+    // v24 (DES-153): kind:'mcp' stores a real catalog row — the v3 "redirected, never stored" shape
+    // is gone along with the provisioning tool it redirected to.
+    expect(push.result?.stored).toBe('demo-mcp');
 
-    const run = await runScriptVia(mcpCall, "return agent('use the pushed mcp tool', {model:'local'});");
+    const script = [
+      "export const meta = { params: { agents: { go: {",
+      "  model: { type: 'string', default: 'local' },",
+      "  effort: { type: 'enum', default: 'low' },",
+      "  timeoutMs: { type: 'number', default: 30000 },",
+      "  mcp: ['demo-mcp'],",
+      "} } } };",
+      "return agent('go', {});",
+    ].join('\n');
+    const run = await runScriptVia(mcpCall, script);
     const runId = run.runId as string;
 
     let done = false;
     for (let i = 0; i < 50 && !done; i++) {
-      const status = await mcpCall('workflow_status', { runId });
+      const status = await mcpCall('run_status', { runId });
       done = status.status === 'completed' || status.status === 'failed';
       if (!done) await new Promise((r) => setTimeout(r, 100));
     }
@@ -121,10 +131,10 @@ describe('mcp-config asset_push redirect supersedes the old per-call options.mcp
     expect(queryImpl).toHaveBeenCalled();
 
     const [[call]] = queryImpl.mock.calls as unknown as [[CapturedCall]];
-    // D-V2V-1's strictMcpConfig:true convention still holds regardless of the rescope.
+    // D-V2V-1's strictMcpConfig:true convention still holds under the v24 rescope.
     expect(call.options?.strictMcpConfig).toBe(true);
-    // The redirected asset must NOT reach options.mcpServers via the old (now-retired for
-    // mcp-config) per-asset `readMcpConfigAssets()` mechanism — it was never written to disk.
-    expect(call.options?.mcpServers?.['demo-mcp']).toBeUndefined();
+    // v24 (DES-154): a DECLARED mcp asset now DOES reach options.mcpServers via materializeAssets —
+    // the opposite of the retired v3 "never reaches it" invariant.
+    expect(call.options?.mcpServers?.['demo-mcp']).toBeDefined();
   }, 20000);
 });

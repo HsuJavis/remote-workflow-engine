@@ -36,10 +36,10 @@ export class SubmissionValidator {
     // ARCH-007 delegate: registered-workflow existence.
     if (this._catalog) {
       if (!(await this._catalog.exists(spec.name))) {
-        return { ok: false, errors: [{ code: 'UNKNOWN_WORKFLOW', message: `Unknown workflow: ${spec.name}`, field: 'name' }] };
+        return { ok: false, errors: [{ code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${spec.name}`, field: 'name' }] };
       }
     } else {
-      return { ok: false, errors: [{ code: 'UNKNOWN_WORKFLOW', message: `Unknown workflow: ${spec.name}`, field: 'name' }] };
+      return { ok: false, errors: [{ code: 'WORKFLOW_NOT_FOUND', message: `Unknown workflow: ${spec.name}`, field: 'name' }] };
     }
 
     return { ok: true };

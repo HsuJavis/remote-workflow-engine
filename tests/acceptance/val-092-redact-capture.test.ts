@@ -2,7 +2,7 @@
 // Binds the REQ-083 acceptance clauses against the REAL engine.
 //
 // REQ-083 acceptance clauses:
-//   1. (LLM-GATED) A workflow whose agent echoes a provisioned secret → workflow_agent_log
+//   1. (LLM-GATED) A workflow whose agent echoes a provisioned secret → run_agent_log
 //      shows ‹secret:NAME› not the raw value; all on-disk artifacts are redacted.
 //   2. Ordinary non-secret string of the same shape is NOT redacted (no over-redaction).
 //   3. kind:'harness' redaction is unchanged (existing behavior).
@@ -57,7 +57,7 @@ async function mcpCall(name: string, args: unknown): Promise<any> {
 
 async function poll(runId: string, ms = 300, maxIter = 80): Promise<any> {
   for (let i = 0; i < maxIter; i++) {
-    const st = await mcpCall('workflow_status', { runId });
+    const st = await mcpCall('run_status', { runId });
     if (['completed', 'failed', 'stopped'].includes(st.status)) return st;
     await new Promise((r) => setTimeout(r, ms));
   }
@@ -98,7 +98,7 @@ describe('REQ-083: redact-at-capture (VAL-092)', () => {
     expect(status.status).toBe('completed');
 
     // The result should contain the ordinary string unchanged
-    const resultR = await mcpCall('workflow_result', { runId });
+    const resultR = await mcpCall('run_result', { runId });
     const resultJson = JSON.stringify(resultR.result ?? {});
     if (resultJson.includes(ORDINARY_STRING)) {
       // Good: the ordinary string passed through
@@ -113,7 +113,7 @@ describe('REQ-083: redact-at-capture (VAL-092)', () => {
     }
     // This script uses agent() which requires a real LLM. The agent is prompted to echo the
     // secret value that it receives via an environment variable (simulating a workspace secret).
-    // After the run, workflow_agent_log must show ‹secret:NAME›, not the raw value.
+    // After the run, run_agent_log must show ‹secret:NAME›, not the raw value.
     //
     // Note: this case is intentionally fragile until the redact wiring is in place.
     // Currently it will FAIL because:
@@ -136,7 +136,7 @@ describe('REQ-083: redact-at-capture (VAL-092)', () => {
     expect(agentIds.length).toBeGreaterThan(0);
 
     for (const agentId of agentIds) {
-      const logR = await mcpCall('workflow_agent_log', { runId, agentId });
+      const logR = await mcpCall('run_agent_log', { runId, agentId });
       const logJson = JSON.stringify(logR.result ?? []);
       // Raw secret must NOT appear in transcript
       expect(logJson).not.toContain(SECRET_VALUE);
@@ -157,7 +157,7 @@ describe('REQ-083: redact-at-capture (VAL-092)', () => {
 
   it('3. kind:harness events: redactHarness still fires (existing behavior unchanged)', async () => {
     // Verify that harness events (model/prompt/tools) are still emitted and stripped from
-    // workflow_agent_log output. This is a regression guard for the DES-088 exclusivity invariant.
+    // run_agent_log output. This is a regression guard for the DES-088 exclusivity invariant.
     // The harness field is stripped from the log but visible as a separate "harness" field per IT-066.
     // This test does not require a real LLM — it checks structural behavior.
     const r = await runScriptVia(mcpCall, 'return "harness-regression-check";');

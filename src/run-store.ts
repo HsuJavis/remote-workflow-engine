@@ -1,7 +1,7 @@
 // RunStore port + InMemoryRunStore (DES-010).
 import { randomUUID } from 'node:crypto';
 import type { Clock } from './clock.js';
-import type { RunSpec, RunStatusView, RunSummary, JournalEntry, TranscriptEvent, RunStatus, AgentRecord, StateTransition } from './types.js';
+import type { RunSpec, RunStatusView, RunSummary, JournalEntry, TranscriptEvent, RunStatus, AgentRecord, StateTransition, RunListFilter, AuditEvent } from './types.js';
 // v21 (ARCH-066, DES-104, TASK-100): the run-immutable admission snapshot type — a type-only import,
 // so this does not create a real runtime cycle with params/resolve.ts's own type-only agent-executor.js import.
 import type { RunParams } from './params/resolve.js';
@@ -29,20 +29,24 @@ export function deriveAgentRecords(
   for (const [agentId, events] of transcripts) {
     const reversed = [...events].reverse();
     const usage = reversed.find((e) => e.kind === 'usage');
+    // v24 (DES-161, TASK-145): the LATEST harness event of this agent is the label source on BOTH
+    // branches — a finished agent (usage branch) must not lose the name its harness event carried.
+    const harnessAny = reversed.find((e) => e.kind === 'harness');
+    const harnessLabel = (harnessAny?.data as { descriptor?: { label?: string } } | undefined)?.descriptor?.label;
     if (usage) {
       // Terminal: usage event wins regardless of harness.
       const data = usage.data as { tokens?: { input: number; output: number }; provider?: string; model?: string; reason?: string };
       if (data.tokens) {
-        records.push({ agentId, state: 'done', provider: data.provider ?? 'unknown', model: data.model ?? '', tokens: data.tokens });
+        records.push({ agentId, state: 'done', provider: data.provider ?? 'unknown', model: data.model ?? '', tokens: data.tokens, ...(harnessLabel !== undefined ? { label: harnessLabel } : {}) });
       } else {
-        records.push({ agentId, state: 'failed', provider: data.provider ?? 'unknown', model: '', tokens: { input: 0, output: 0 } });
+        records.push({ agentId, state: 'failed', provider: data.provider ?? 'unknown', model: '', tokens: { input: 0, output: 0 }, ...(harnessLabel !== undefined ? { label: harnessLabel } : {}) });
       }
       continue;
     }
     // No usage yet — check for a harness event (latest-wins).
-    const harness = reversed.find((e) => e.kind === 'harness');
+    const harness = harnessAny;
     if (harness) {
-      const hd = (harness.data as { descriptor?: { model?: string; provider?: string } }).descriptor;
+      const hd = (harness.data as { descriptor?: { model?: string; provider?: string; label?: string } }).descriptor;
       const nonTerminalState: AgentRecord['state'] = parentStatus === 'running' ? 'running' : 'queued';
       records.push({
         agentId,
@@ -53,6 +57,7 @@ export function deriveAgentRecords(
         provider: hd?.provider ?? 'unknown',
         model: hd?.model ?? '',
         tokens: { input: 0, output: 0 },
+        ...(hd?.label !== undefined ? { label: hd.label } : {}),
       });
     }
     // Neither usage nor harness → never dispatched, omit.
@@ -92,6 +97,11 @@ export interface RunStore {
   getTransitions(runId: string): Promise<StateTransition[]>;
   getRun(runId: string): Promise<RunStatusView | null>;
   listRuns(): Promise<RunSummary[]>;
+  /** v24 (DES-152): filtered/paginated read `run_list` is built on — `workflow`/`status`/`principal`
+   *  narrow with SQL WHERE (SqliteRunStore) or an equivalent in-memory filter (InMemoryRunStore,
+   *  parity required); a row with no `principal` is excluded whenever the filter supplies one (the
+   *  cross-seam agreement with authz's null=ownerless rule). `limit` defaults to 50, capped at 500. */
+  list(filter?: RunListFilter): Promise<RunSummary[]>;
   hydrateAll(): Promise<RunSummary[]>;
   /** Persists the script's return value for a completed run (DES-001/REQ-005: workflow_result
    *  returns the script return value, not the RunStatusView). */
@@ -117,6 +127,11 @@ export interface RunStore {
    *  the pin itself) so it survives a restart and workflow_status/getRun can surface it. No-op for
    *  an unknown runId. */
   recordLegacySubstitution(runId: string, sub: { pinned: string; resolved: string }): Promise<void>;
+  /** v24 (DES-151): synchronous append (better-sqlite3 is sync) — a throw at the call site must
+   *  propagate BEFORE any bytes are read (fail-closed by construction, never caught here). */
+  appendAudit(ev: AuditEvent): void;
+  /** v24 (DES-151): newest-first, capped at `limit` (default 200). */
+  auditFor(runId: string, limit?: number): AuditEvent[];
 }
 
 /** v8 Slice 2c: the persisted DAG detail a getRun overlays after a restart. */
@@ -145,6 +160,7 @@ interface StoredRun {
 /** In-memory fake for unit tests — injected where RunStore is needed. */
 export class InMemoryRunStore implements RunStore {
   private readonly _runs = new Map<string, StoredRun>();
+  private readonly _audit: AuditEvent[] = [];
 
   constructor(private readonly _clock: Clock) {}
 
@@ -246,23 +262,37 @@ export class InMemoryRunStore implements RunStore {
   }
 
   async listRuns(): Promise<RunSummary[]> {
-    const TERMINAL = new Set<RunStatus>(['completed', 'failed', 'stopped']);
-    return [...this._runs.values()].map((r) => {
-      const terminalTransition = r.transitions.find((t) => TERMINAL.has(t.to));
-      return {
-        runId: r.runId,
-        name: r.spec.name,
-        status: r.status,
-        scriptVersion: r.scriptVersion,
-        createdAt: r.createdAt,
-        startedBy: r.spec.startedBy ?? { type: 'unknown' },
-        ...(terminalTransition ? { terminalAt: terminalTransition.ts } : {}),
-      };
-    });
+    return [...this._runs.values()].map((r) => this._toSummary(r));
   }
 
   async hydrateAll(): Promise<RunSummary[]> {
     return this.listRuns();
+  }
+
+  /** v24 (DES-152): parity with SqliteRunStore.list — same filter semantics, in-memory. */
+  async list(filter: RunListFilter = {}): Promise<RunSummary[]> {
+    const limit = Math.min(filter.limit ?? 50, 500);
+    return [...this._runs.values()]
+      .filter((r) => filter.workflow === undefined || r.spec.name === filter.workflow)
+      .filter((r) => filter.status === undefined || r.status === filter.status)
+      .filter((r) => filter.principal === undefined || r.spec.principal === filter.principal)
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
+      .slice(0, limit)
+      .map((r) => this._toSummary(r));
+  }
+
+  private _toSummary(r: StoredRun): RunSummary {
+    const TERMINAL = new Set<RunStatus>(['completed', 'failed', 'stopped']);
+    const terminalTransition = r.transitions.find((t) => TERMINAL.has(t.to));
+    return {
+      runId: r.runId,
+      name: r.spec.name,
+      status: r.status,
+      scriptVersion: r.scriptVersion,
+      createdAt: r.createdAt,
+      startedBy: r.spec.startedBy ?? { type: 'unknown' },
+      ...(terminalTransition ? { terminalAt: terminalTransition.ts } : {}),
+    };
   }
 
   async getJournal(runId: string): Promise<JournalEntry[]> {
@@ -274,5 +304,15 @@ export class InMemoryRunStore implements RunStore {
     const run = this._runs.get(runId);
     if (!run) return [];
     return run.transcripts.get(agentId) ?? [];
+  }
+
+  /** v24 (DES-151): synchronous, in-memory. */
+  appendAudit(ev: AuditEvent): void {
+    this._audit.push(ev);
+  }
+
+  /** v24 (DES-151): newest-first (insertion order reversed — appendAudit is the only writer). */
+  auditFor(runId: string, limit = 200): AuditEvent[] {
+    return this._audit.filter((e) => e.runId === runId).slice(-limit).reverse();
   }
 }

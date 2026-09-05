@@ -5,7 +5,7 @@
 // script-facing budget accessors (`spent: () => 0`, `remaining: () => total`) — never threading the
 // parent process's real live RunGuard._spent counter back to the sandboxed child over IPC. Real
 // repro: budget.spent() read AFTER a real, token-consuming agent() call still returns 0, even though
-// workflow_status.agents[0].tokens on the same run shows real nonzero accounting.
+// run_status.agents[0].tokens on the same run shows real nonzero accounting.
 //
 // D-F8 (binding): script-visible budget.spent()/remaining() must reflect live RunGuard accounting
 // via IPC (piggyback usage on agent() IPC responses and/or a budget query message); no hard-coded
@@ -44,7 +44,7 @@ describe('Live budget accounting observable in-script (IT-018, D-F8)', () => {
 
     const runId = await startScript(mgr, `
         const before = budget.spent();
-        await agent('hi');
+        await agent('hi', {});
         const after = budget.spent();
         return { before, after, remaining: budget.remaining() };
       `, {

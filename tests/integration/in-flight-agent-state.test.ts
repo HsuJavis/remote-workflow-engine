@@ -1,11 +1,11 @@
-// IT-024: in-flight AgentRecord state ('queued'/'running') is observable via workflow_status while
+// IT-024: in-flight AgentRecord state ('queued'/'running') is observable via run_status while
 // an agent() call is dispatched/in-flight, not only once it resolves (D-F12, REQ-007 1st acceptance
 // clause + REQ-002 2nd acceptance clause's observability half).
 //
 // D-F12 (binding): AgentRecord persists queued/running state transitions in real time so
-// workflow_status shows in-flight agents, not only terminal states. `08-validation.md` round-5
+// run_status shows in-flight agents, not only terminal states. `08-validation.md` round-5
 // VAL-002/VAL-007 real repro: launched 3 real concurrent Ollama agent() calls via parallel() and
-// polled workflow_status at t≈2s while the run was still "running" -> `agents:[]` (empty). Only
+// polled run_status at t≈2s while the run was still "running" -> `agents:[]` (empty). Only
 // once the run reached "completed" did all 3 agent records appear, every one already `state:"done"`
 // — `"queued"`/`"running"` (both part of the documented `AgentRecord.state` type, src/types.ts) are
 // never produced by any code path. Root cause confirmed by code:
@@ -40,7 +40,7 @@ function findByLabel(agents: AgentRecord[], label: string): AgentRecord | undefi
   return agents.find((a) => a.label === label);
 }
 
-/** Polls workflow_status until `predicate(view.agents)` holds (or times out). B's `markQueued` is
+/** Polls run_status until `predicate(view.agents)` holds (or times out). B's `markQueued` is
  *  recorded by `_handleAgentRequest` over the sandbox IPC boundary, which lands a beat AFTER A first
  *  reaches the gateway (`aInvokedPromise`) — a single-shot snapshot at that instant races that IPC
  *  hop (~1/3 flake). While A is gated (gateA unreleased) and B is behind the concurrency:1 cap, the
@@ -55,7 +55,7 @@ async function waitForAgents(mgr: RunManager, runId: string, predicate: (agents:
   return view.agents;
 }
 
-describe('in-flight AgentRecord state observable via workflow_status (IT-024, D-F12)', () => {
+describe('in-flight AgentRecord state observable via run_status (IT-024, D-F12)', () => {
   it('shows the in-flight agent as "running" and a same-slot-blocked agent as "queued" before either resolves', async () => {
     let releaseA!: () => void;
     const gateA = new Promise<void>((resolve) => { releaseA = resolve; });

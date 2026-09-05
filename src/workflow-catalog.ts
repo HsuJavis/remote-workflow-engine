@@ -15,28 +15,23 @@
 // this is a manual/ops-owned action, not an in-process timer, keeping the kernel free of unproven
 // background-deletion logic.
 import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync } from 'node:fs';
 import { join, resolve, sep, isAbsolute } from 'node:path';
-import { CatalogNotFoundError, WorkspaceEscapeError, codedError } from './errors.js';
+import { CatalogNotFoundError, WorkspaceEscapeError, codedError, type ErrorCode } from './errors.js';
 import { parseMeta, parseMetaParams } from './workflow-meta.js';
+import { scanAgentCalls } from './scan-agent-calls.js';
+import { checkMermaid } from './check-mermaid.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
-import { validateHarnessDefaults, type HarnessDefaults } from './harness-defaults.js';
 // v21 Gate 6 adjudication (A-1): type-only import — erases at compile, no runtime edge, and this
 // file is not one the sandbox child loads, so the .js->.ts child-import hazard does not apply.
 // Bars a VALUE import only (which would drag the validator into a module the catalog stays
 // independent of); typing get()/getFull()'s `params` as ParamContract|undefined instead of
 // `unknown` is the point of the adjudication; list() carries the same typing.
-import type { ParamContract, Ceilings } from './params/contract.js';
-// v21 adjudication #6 (F-2): value import sanctioned for THIS file only — the catalog already
-// throws PARAM_CONTRACT_INVALID itself (already doing validation) and already carries the A-1
-// type-only import above; a second hand-rolled bounds checker here is exactly the drift class
-// that has bitten this iteration twice (P-A2, R-G10). No sandbox-child hazard: this file is
-// server-side (loads better-sqlite3) and contract.ts is already value-imported by run-manager.ts.
-import { canonicalContract, checkValueAgainstSpec, effectiveBounds } from './params/contract.js';
+import type { ParamContract, AgentParamSpec, Ceilings } from './params/contract.js';
 // v22 (DES-111, DES-112, TASK-107): the lifted, pure registration-enforcement checks (TASK-106) —
 // same codes submission used to produce, so no caller learns a new vocabulary (ADR-013).
-import { validateScriptEntry, violatesFrameDelimiter } from './script-checks.js';
+import { validateScriptEntry } from './script-checks.js';
 
 // v23 (DES-130, DES-123): the eight note codes the store actually persists — DISABLED/NOT_GENERATED
 // are read-time-synthesized only (never written), so the full ten-value DiagramNoteCode (TASK-117)
@@ -58,14 +53,6 @@ export interface DiagramRow {
 // DES-098: hardcoded operator email for boot backfill of NULL-owner rows
 const BOOT_BACKFILL_EMAIL = 'hsuhungjung@gmail.com';
 
-// v21 Gate 5 re-run (A-2, DES-103): does a declared `params.knobs.<key>.default` violate a given
-// spec's type/enum/min/max (either the knob's OWN declared bounds, or a ceiling-narrowed one)?
-// v21 adjudication #6 (F-2): was a hand-rolled duplicate of contract.ts's bounds predicate;
-// now delegates to the shared `checkValueAgainstSpec` (see import above).
-function violatesOwnSpec(value: unknown, spec: Parameters<typeof checkValueAgainstSpec>[2]): boolean {
-  return !checkValueAgainstSpec('', value, spec).ok;
-}
-
 // v22 (DES-110): the total, pure resolution truth table — explicit `version` wins over any
 // `channel` (REQ-097 "regardless of any channel"); a NULL channel pointer is CHANNEL_UNPUBLISHED,
 // NEVER a fallback to the newest row (ADR-009). One caller (resolve()) — kept in this module rather
@@ -73,7 +60,8 @@ function violatesOwnSpec(value: unknown, spec: Parameters<typeof checkValueAgain
 export type Channel = 'beta' | 'release';
 export interface Channels { release: string | null; beta: string | null }
 export interface VersionSelector { version?: string; channel?: Channel }
-export type ResolveErrorCode = 'INVALID_CHANNEL' | 'UNKNOWN_VERSION' | 'CHANNEL_UNPUBLISHED' | 'DANGLING_CHANNEL';
+// v24 (DES-137): constrained to the closed ErrorCode union at its declaration.
+export type ResolveErrorCode = Extract<ErrorCode, 'INVALID_CHANNEL' | 'VERSION_NOT_FOUND' | 'CHANNEL_UNPUBLISHED' | 'DANGLING_CHANNEL'>;
 export type RequestShape = { kind: 'version'; version: string } | { kind: 'channel'; channel: Channel } | { kind: 'default-release' };
 
 export function resolveVersionRequest(
@@ -93,7 +81,7 @@ export function resolveVersionRequest(
     if (known.has(sel.version)) {
       return { ok: true, version: sel.version, requested: { kind: 'version', version: sel.version } };
     }
-    return { ok: false, code: 'UNKNOWN_VERSION', version: sel.version };
+    return { ok: false, code: 'VERSION_NOT_FOUND', version: sel.version };
   }
   // Rows 4-5: named channel.
   if (sel.channel !== undefined) {
@@ -109,7 +97,18 @@ export function resolveVersionRequest(
 
 // v22 (DES-111): VersionEntry is the ONE execution read; WorkflowDetail is the ONE read read
 // (REPLACES getFull()).
-export interface VersionEntry { script: string; version: string; defaults?: HarnessDefaults; params?: ParamContract }
+export interface VersionEntry {
+  script: string;
+  version: string;
+  /** v24 (D-8, REQ-111/DES-156): the author-supplied Mermaid diagram, verbatim; `null` on a legacy
+   *  row registered before ADR-025 required one (`mermaidNote:'LEGACY_NO_DIAGRAM'` downstream). */
+  mermaid: string | null;
+  params?: ParamContract;
+  /** v24 (integrator; DES-150): the trigger ids this VERSION declares — the fire path's
+   *  NOT_IN_RELEASE check needs "does the currently-released version still list this trigger", and
+   *  the column had no reader before this. Absent when the version declares none. */
+  triggers?: string[];
+}
 export interface WorkflowDetail extends VersionEntry {
   name: string; createdAt: string; owner: string | null; channels: Channels; versions: string[];
 }
@@ -241,6 +240,115 @@ export class WorkflowCatalog {
           'GATE_REJECTED_CONTENT','GATE_REJECTED_SHAPE','QUEUE_FULL','RETRIES_EXHAUSTED','MODEL_UNMAPPED')),
         PRIMARY KEY (name, version));
     `);
+
+    // v24 (ARCH-098, DES-148, TASK-143): `mermaid`/`triggers` columns on `workflow_versions` — both
+    // NULL only on pre-v24 rows (ADR-025/026); `validateRegistration` refuses `MERMAID_REQUIRED` on
+    // every NEW row, so no row written from here on can carry `mermaid NULL`.
+    const versionCols = (this._db.prepare('PRAGMA table_info(workflow_versions)').all() as Array<{ name: string }>).map((c) => c.name);
+    if (!versionCols.includes('mermaid')) this._db.exec('ALTER TABLE workflow_versions ADD COLUMN mermaid TEXT');
+    if (!versionCols.includes('triggers')) this._db.exec('ALTER TABLE workflow_versions ADD COLUMN triggers TEXT');
+
+    // v24 (ARCH-098, DES-148, DES-153, TASK-143): the asset store's catalog rows — `workflow = ''` is
+    // the global-scope sentinel (SQLite refuses expressions in a PK). `AssetSyncService` (TASK-144)
+    // is the only writer via `putAsset`/`deleteAsset` below; this catalog knows nothing else about
+    // asset file bytes (those live on disk under `assetRoot`, a server.ts/AssetSyncService concern).
+    this._db.exec(`
+      CREATE TABLE IF NOT EXISTS assets (
+        workflow TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL,
+        pushedBy TEXT, pushedAt TEXT NOT NULL, config TEXT NULL,
+        PRIMARY KEY (workflow, kind, name));
+    `);
+  }
+
+  /** v24 Gate 8 (AF-2, TASK-161): the UNION of `triggers[]` over every version row of `name` — "has
+   *  this workflow ever DECLARED this trigger id?".
+   *
+   *  Why the fire path needs it. `NOT_IN_RELEASE` exists to make "the released version no longer
+   *  lists this trigger" observable. Until AF-2 the check was gated on `triggers !== undefined`,
+   *  using a NULL column as a proxy for "this trigger did not arrive through the registration claim
+   *  door" — the OTHER door (`schedule_create({workflow})` / `webhook_create({workflow})`, which
+   *  ARCH-099 says was removed and AF-5 records as still shipped) binds a trigger that never enters
+   *  any version's `triggers[]`. Once `[]` is stored honestly (as ARCH-098 requires) that proxy is
+   *  gone, and the membership check would refuse every create-time-bound trigger on every v24
+   *  workflow. This predicate is the honest discriminator, and it needs no new column — which
+   *  matters because the webhook store has only ONE binding column and could not tell the two doors
+   *  apart any other way. When v25 closes the create-time door (AF-5) this predicate becomes
+   *  always-true for any trigger that can reach the fire path, and it goes away with the door. */
+  declaredTriggers(name: string): Set<string> {
+    const rows = this._db.prepare('SELECT triggers FROM workflow_versions WHERE name = ?').all(name) as Array<{ triggers: string | null }>;
+    const declared = new Set<string>();
+    for (const row of rows) {
+      if (!row.triggers) continue; // a pre-v24 row declared nothing — the column did not exist
+      for (const id of JSON.parse(row.triggers) as string[]) declared.add(id);
+    }
+    return declared;
+  }
+
+  /** v24 Gate 8 (AF-2, TASK-161): the fire path's one-id form of `declaredTriggers` — see there. */
+  declaresTrigger(name: string, triggerId: string): boolean {
+    return this.declaredTriggers(name).has(triggerId);
+  }
+
+  /** v24 (ARCH-098, DES-153, TASK-143): upsert one asset row. `workflow: ''` = the global scope. */
+  putAsset(row: { workflow: string; kind: string; name: string; pushedBy: string | null; pushedAt: string; config?: string | null }): void {
+    this._db
+      .prepare(`
+        INSERT INTO assets (workflow, kind, name, pushedBy, pushedAt, config)
+        VALUES (@workflow, @kind, @name, @pushedBy, @pushedAt, @config)
+        ON CONFLICT (workflow, kind, name) DO UPDATE SET
+          pushedBy = excluded.pushedBy, pushedAt = excluded.pushedAt, config = excluded.config
+      `)
+      .run({ workflow: row.workflow, kind: row.kind, name: row.name, pushedBy: row.pushedBy, pushedAt: row.pushedAt, config: row.config ?? null });
+  }
+
+  /** v24 (ARCH-098, TASK-160, Gate 8 AF-1): the catalog half of the pre-v24 asset migration — every
+   *  legacy row in ONE `.immediate()` transaction (ARCH-071's precedent), upsert so a re-run after a
+   *  crash writes the same rows rather than failing on the primary key. */
+  putLegacyAssets(rows: readonly { workflow: string; kind: string; name: string; pushedBy: string; pushedAt: string; config: string | null }[]): void {
+    this._db.transaction(() => {
+      for (const row of rows) this.putAsset(row);
+    }).immediate();
+  }
+
+  /** v24 (ARCH-098, TASK-160, Gate 8 AF-1): reads the PRE-v24 `mcp_provisions` table off DISK.
+   *  Pre-v24 that table lived in its own sibling database, `<workRoot>/mcp-registry.db` (pre-v24
+   *  `server.ts:1362`), NOT in `catalog.db`. `grep -rn "mcp_provisions" src/` is empty because v24
+   *  deleted `mcp-registry.ts` — that says nothing about an upgraded deployment's disk, which is
+   *  exactly the confusion AF-1 turned on. The file is left in place afterwards (never dropped): the
+   *  migration marker, not a destructive DDL, is what stops a second copy. */
+  readLegacyMcpProvisions(): Array<{ name: string; config: string; provisionedAt: string }> {
+    const dbPath = join(this._workRoot, 'mcp-registry.db');
+    if (!existsSync(dbPath)) return [];
+    const legacy = new Database(dbPath);
+    try {
+      const table = legacy.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'mcp_provisions'").get();
+      if (!table) return [];
+      return legacy.prepare('SELECT name, config, provisionedAt FROM mcp_provisions ORDER BY name').all() as Array<{
+        name: string; config: string; provisionedAt: string;
+      }>;
+    } finally {
+      legacy.close();
+    }
+  }
+
+  /** v24 (ARCH-098, DES-153, TASK-143): `{deleted:false}` when no such row existed (idempotent). */
+  deleteAsset(workflow: string, kind: string, name: string): { deleted: boolean } {
+    const info = this._db.prepare('DELETE FROM assets WHERE workflow = ? AND kind = ? AND name = ?').run(workflow, kind, name);
+    return { deleted: info.changes > 0 };
+  }
+
+  /** v24 (ARCH-098, DES-153, TASK-143): rows for ONE scope (`workflow` is `''` for global). */
+  listAssets(workflow: string, kind?: string): Array<{ workflow: string; kind: string; name: string; pushedBy: string | null; pushedAt: string; config: string | null }> {
+    const rows = kind === undefined
+      ? this._db.prepare('SELECT workflow, kind, name, pushedBy, pushedAt, config FROM assets WHERE workflow = ? ORDER BY kind, name').all(workflow)
+      : this._db.prepare('SELECT workflow, kind, name, pushedBy, pushedAt, config FROM assets WHERE workflow = ? AND kind = ? ORDER BY name').all(workflow, kind);
+    return rows as Array<{ workflow: string; kind: string; name: string; pushedBy: string | null; pushedAt: string; config: string | null }>;
+  }
+
+  /** v24 (ARCH-098, DES-153, TASK-143): both scopes (workflow ∪ global) in one call — DES-153's
+   *  `resolveMcp`/`AssetSyncService.list` convenience (workflow scope first, global second). */
+  assetsOf(workflow: string): Array<{ workflow: string; kind: string; name: string; pushedBy: string | null; pushedAt: string; config: string | null }> {
+    return [...this.listAssets(workflow), ...this.listAssets('')];
   }
 
   /** v23 (DES-130): stamps the boot sweep's own attempt marker into `generated_at` when given
@@ -308,15 +416,22 @@ export class WorkflowCatalog {
     return this._db.prepare("SELECT name, version FROM workflow_diagrams WHERE status = 'pending'").all() as Array<{ name: string; version: string }>;
   }
 
-  // v15 (DES-098, DES-099, TASK-089): ownership gate + harness defaults registration.
-  async register(
-    name: string,
-    script: string,
-    defaults?: HarnessDefaults,
-    principal: string | null = null,
-  ): Promise<{ version: string }> {
-    // v22 (DES-111, DES-112, DES-117, TASK-107): validateScriptEntry runs FIRST, before any other
-    // check or write (ADR-013 — registration ENFORCES fail-closed). Same codes submission used to
+  // v24 (ARCH-098, DES-148, TASK-143): the diagram-check's fixed size ceiling — same values the
+  // retired `graphAnalyzer.maxBytes`/`maxLines` config defaulted to (rwe.config.example.json, now
+  // author-supplied rather than model-generated, so no config knob is needed for it).
+  private static readonly MERMAID_LIMITS = { maxBytes: 8192, maxLines: 120 };
+
+  /** v24 (ARCH-098, DES-148, TASK-143): every pure registration-time check, PINNED order, NOTHING
+   *  written — `validateScriptEntry` → `scanAgentCalls` → `parseParamContract` → `checkMermaid` →
+   *  version-count ceiling → owner gate (read-only). Used directly by `register()` below, and by the
+   *  facade's trigger-claim sequence (ARCH-091/DES-149: validate → claim each trigger → insertVersion
+   *  → release on throw) — `insertVersion` is a SEPARATE step so a claim can happen in between. */
+  async validateRegistration(req: { name: string; script: string; mermaid: string; principal?: string | null }): Promise<{ params: ParamContract; labels: string[]; agents: Record<string, AgentParamSpec> }> {
+    const { name, script, mermaid, principal = null } = req;
+
+    // v22 (DES-111, DES-112, DES-117, TASK-107): validateScriptEntry runs FIRST — DES-148's own
+    // pinned order (`validateScriptEntry → scanAgentCalls → parseParamContract → checkMermaid → …`)
+    // content checks (ADR-013 — registration ENFORCES fail-closed). Same codes submission used to
     // produce (PARSE_ERROR / UNKNOWN_ALIAS / MCP_NOT_PROVISIONED); all errors surface, the first is
     // thrown, the rest travel in `detail.errors`.
     const scriptCheck = validateScriptEntry(script, {
@@ -329,111 +444,103 @@ export class WorkflowCatalog {
       throw Object.assign(codedError(first!.code, first!.message), { detail: { ...first!.detail, errors: [first, ...rest] } });
     }
 
-    // P6-2 registration half (S-1 debt closed, DES-117): an author-declared defaults.appendPrompt
-    // carrying a forged frame-close delimiter is refused here — same shared predicate the admission
-    // rung (run-manager.ts) re-checks post-merge, reported by size only, never by content.
-    if (defaults && typeof (defaults as Record<string, unknown>)['appendPrompt'] === 'string') {
-      const appendPrompt = (defaults as Record<string, unknown>)['appendPrompt'] as string;
-      if (violatesFrameDelimiter(appendPrompt)) {
-        throw codedError('PARAM_CONTRACT_INVALID', 'defaults.appendPrompt cannot contain the user-instructions frame close delimiter');
-      }
+    // DES-143 (TASK-135): every scannable agent() call's label + any scan violation.
+    const scan = scanAgentCalls(script);
+    if (scan.violations.length > 0) {
+      const v = scan.violations[0]!;
+      throw codedError('SCAN_VIOLATION', `${v.code}: ${v.hint} (line ${v.line})`, { line: v.line, key: v.key });
     }
 
-    // D-AUTH-5 (DES-099): validate defaults before any DB operation (fail-closed, no partial write)
-    if (defaults !== undefined) {
-      const result = validateHarnessDefaults(defaults as Record<string, unknown>, this._aliasNames);
-      if (!result.ok) {
-        throw codedError('HARNESS_DEFAULTS_INVALID', result.message);
-      }
-    }
-
-    // v21 (DES-103, DES-101, ARCH-067, TASK-099): parse+validate meta.params before any DB
-    // operation — fail-closed, nothing stored (same precedent as HARNESS_DEFAULTS_INVALID above).
+    // DES-144 (TASK-136): the per-agent parameter contract — AGENT_UNDECLARED etc.
+    // v24 Gate 7.5 (D-2): this line used to call a PRIVATE COPY of `workflow-meta.ts`'s
+    // `parseMetaParams`, duplicated here while that function still had a call-signature bug and
+    // left behind after it was fixed — the copy was the one the registration path ran, so a check
+    // added to the shared function (`meta.defaults` is retired) would have been invisible in
+    // production. Same defect class as D-3's two `toErrEnvelope`s. The copy is gone; `scan.labels`
+    // is exactly what `parseMetaParams` recomputes internally from the same `scanAgentCalls`.
     const paramsResult = parseMetaParams(script, this._aliasNames ?? new Set());
     if (!paramsResult.ok) {
-      throw codedError(paramsResult.code, paramsResult.message);
-    }
-    const paramsJson = JSON.stringify(paramsResult.value);
-
-    // v21 Gate 5 re-run (A-2, DES-103): cross-validate each declared knob default — against its
-    // own spec, then against defaults.<knob> — before any DB write. A disagreement or an
-    // out-of-own-bounds default is a typed rejection with nothing stored (same D-AUTH-5-E
-    // fail-closed precedent as HARNESS_DEFAULTS_INVALID above). A declared default with no
-    // corresponding defaults.<knob> is accept-and-normalize: written into the stored defaults so
-    // the served default is always DERIVED from the defaults column, never a second source.
-    const effectiveDefaults: Record<string, unknown> = defaults ? { ...defaults } : {};
-    for (const [key, spec] of Object.entries(paramsResult.value.knobs)) {
-      if (spec.default === undefined) continue;
-      if (violatesOwnSpec(spec.default, spec)) {
-        throw codedError('PARAM_CONTRACT_INVALID', `params.knobs.${key}.default violates its own declared bounds`);
-      }
-      // v21 adjudication #6 (F-1): adjudication #5's E-3 ("reject a default for a knob no rung can
-      // apply") is SUPERSEDED — REQ-090's own acceptance text permits a declared default on every
-      // tunable knob, `effort`/`appendPrompt` included (D12). Widen, don't reject: every declared
-      // knob default is normalized into the stored `defaults`/`effectiveDefaults` here; the two
-      // author-only knobs becoming readable by a rung (`defaultRunParams`, KNOWN_KEYS) is TASK-098/104's
-      // side of this fix, not this file's.
-      if (key in effectiveDefaults) {
-        if (effectiveDefaults[key] !== spec.default) {
-          throw codedError('PARAM_CONTRACT_INVALID', `params.knobs.${key}.default disagrees with defaults.${key}`);
-        }
-      } else {
-        effectiveDefaults[key] = spec.default;
-      }
+      throw codedError(paramsResult.code, paramsResult.message, paramsResult.detail);
     }
 
-    // v21 adjudication #6 (F-1 ceiling interaction) + #7 (G-1): ONE ceiling pass over the FINAL
-    // stored defaults — the values that actually reach the `defaults` column, whether they arrived
-    // as a caller-supplied `defaults.<knob>` or were normalized out of a declared
-    // `params.knobs.<knob>.default` above. Running it inside the declared-knob loop (its former
-    // home) left G-1's hole: that loop only ever visits knobs the AUTHOR declared a default for, so
-    // `defaults: {effort:'max'}` with no `params` block at all was ceiling-checked nowhere —
-    // `validateHarnessDefaults` has no ceilings, and admission re-checks only the caller's
-    // `overrides`, never the registered defaults. Bounds come from the canonical contract narrowed
-    // by live config, i.e. the CEILING alone (the author's own bounds are already enforced above),
-    // via the same `effectiveBounds`/`checkValueAgainstSpec` pair the read and admission rungs use —
-    // so registration can never refuse against a different number than admission enforces.
-    const ceilingKnobs = this._ceilings ? effectiveBounds(canonicalContract(), this._ceilings).knobs : undefined;
-    for (const [key, value] of Object.entries(effectiveDefaults)) {
-      const ceilingSpec = ceilingKnobs?.[key];
-      if (ceilingSpec === undefined) continue; // not a ceiling-bounded knob (tools/skills/prompt)
-      // The rejection code follows the value's ORIGIN, so the caller sees the input they supplied
-      // named back: a caller `defaults` key answers under the D-AUTH-5 family's
-      // HARNESS_DEFAULTS_INVALID, a declared knob default under PARAM_CONTRACT_INVALID.
-      const fromCaller = defaults !== undefined && key in defaults;
-      const code = fromCaller ? 'HARNESS_DEFAULTS_INVALID' : 'PARAM_CONTRACT_INVALID';
-      const label = fromCaller ? `defaults.${key}` : `params.knobs.${key}.default`;
-      // appendPrompt's ceiling is a byte cap, not a spec-shaped bound (DES-101 row 6) — checked by
-      // size only, never echoing the text (same "report by size, never by content" rule
-      // contract.ts's validateUserOverrides applies to a caller-supplied appendPrompt).
-      if (key === 'appendPrompt' && typeof value === 'string') {
-        const bytes = Buffer.byteLength(value, 'utf8');
-        if (bytes > this._ceilings!.maxAppendPromptBytes) {
-          throw codedError(code, `${label} exceeds the engine's configured byte ceiling (${bytes} > ${this._ceilings!.maxAppendPromptBytes} bytes)`);
-        }
-        continue;
-      }
-      if (violatesOwnSpec(value, ceilingSpec)) {
-        throw codedError(code, `${label} exceeds the engine's configured ceiling`);
-      }
+    // DES-147 (TASK-138): the author-supplied diagram vs the script's own agent labels + declared
+    // model/effort/timeoutMs. `agentDefaults` is derived from the just-validated contract — the
+    // value-triple check compares the DIAGRAM against what registration is ABOUT to store.
+    const agentDefaults: Record<string, { model?: string; effort?: string; timeoutMs?: number }> = {};
+    for (const [label, spec] of Object.entries(paramsResult.value.agents)) {
+      agentDefaults[label] = {
+        model: typeof spec.model.default === 'string' ? spec.model.default : undefined,
+        effort: typeof spec.effort.default === 'string' ? spec.effort.default : undefined,
+        timeoutMs: typeof spec.timeoutMs.default === 'number' ? spec.timeoutMs.default : undefined,
+      };
+    }
+    // v24 boundary (DES-148): `MERMAID_REQUIRED` on `undefined | ''` — checked here, immediately
+    // before the grammar check itself (step 4 of the pinned order above), so a script that fails an
+    // EARLIER, unrelated check (bad parse / unknown alias / unprovisioned mcp / undeclared agent
+    // label) is still refused with THAT code, not a misleading "you forgot the diagram".
+    if (mermaid === undefined || mermaid === '') {
+      throw codedError('MERMAID_REQUIRED', `MERMAID_REQUIRED: workflow '${name}' registration requires a non-empty mermaid diagram string (ADR-025)`);
+    }
+    // v24 boundary (DES-148): whitespace-only is DISTINCT from empty — `checkMermaid` treats a
+    // document with zero non-blank lines as a legitimately empty (but headed) diagram, so a
+    // string that is present but carries no real content at all (not even a header) is refused
+    // here as MERMAID_INVALID(line 1) rather than silently passing checkMermaid's own
+    // zero-labels/zero-nodes "ok" case.
+    if (mermaid.trim() === '') {
+      throw codedError('MERMAID_INVALID', `MERMAID_INVALID: workflow '${name}' mermaid diagram is whitespace-only (line 1)`, { line: 1 });
+    }
+    const diagramCheck = checkMermaid(mermaid, scan.labels, agentDefaults, WorkflowCatalog.MERMAID_LIMITS);
+    if (!diagramCheck.ok) {
+      const code = diagramCheck.onlyInScript !== undefined || diagramCheck.onlyInDiagram !== undefined ? 'DIAGRAM_MISMATCH' : 'MERMAID_INVALID';
+      throw codedError(code, `${code}: ${diagramCheck.rule ?? 'unknown'}${diagramCheck.line !== undefined ? ` (line ${diagramCheck.line})` : ''}`, {
+        rule: diagramCheck.rule, line: diagramCheck.line, onlyInScript: diagramCheck.onlyInScript, onlyInDiagram: diagramCheck.onlyInDiagram,
+      });
     }
 
-    // v22 (DES-111): register only ever INSERTs a new (name, version) row — never
-    // ON CONFLICT DO UPDATE. version = v<max+1> over that name's OWN rows; published to no channel
-    // (REQ-097 — registration ≠ publication). The ownership read, the version-count read, and the
-    // two writes all live inside ONE `.immediate()` transaction: `.immediate()` acquires the write
-    // lock up front (plain `db.transaction` is deferred — two processes could otherwise both read
-    // the same max(version) before either writes). Residual PK/BUSY races map to a typed
-    // REGISTRATION_CONFLICT instead of an untyped 500.
-    const defaultsJson = Object.keys(effectiveDefaults).length > 0 ? JSON.stringify(effectiveDefaults) : null;
+    // v22 send-back H3 precedent: version-count ceiling is READ-ONLY here (re-checked, defence in
+    // depth, inside insertVersion's transaction below — a read here cannot itself race a write).
+    const existing = this._db.prepare('SELECT owner FROM workflows WHERE name = ?').get(name) as { owner: string | null } | undefined;
+    const count = (this._db.prepare('SELECT COUNT(*) AS n FROM workflow_versions WHERE name = ?').get(name) as { n: number }).n;
+    const maxWorkflowVersions = (this._ceilings as (Ceilings & { maxWorkflowVersions?: number }) | undefined)?.maxWorkflowVersions;
+    if (maxWorkflowVersions !== undefined && count >= maxWorkflowVersions) {
+      throw codedError(
+        'VERSION_CEILING_EXCEEDED',
+        `VERSION_CEILING_EXCEEDED: workflow '${name}' already has ${count} version(s) (maximum ${maxWorkflowVersions}) — deregister an old version, or raise the engine's maxWorkflowVersions ceiling`,
+      );
+    }
+    // DES-098: ownership gate (read-only) — only non-null principal is gated; null principal =
+    // auth-disabled (D-AUTH-6). Re-checked (defence in depth) inside insertVersion's transaction.
+    if (existing && existing.owner && principal !== null && existing.owner !== principal) {
+      throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is owned by ${existing.owner}`);
+    }
+
+    return { params: paramsResult.value, labels: scan.labels, agents: paramsResult.value.agents };
+  }
+
+  /** v24 (ARCH-098, DES-148, TASK-143): the ONE write — INSERTs a new (name, version) row (never
+   *  ON CONFLICT DO UPDATE); version = v<max+1> over that name's OWN rows; published to no channel
+   *  (REQ-097 — registration ≠ publication). The ownership read, the version-count read, and the two
+   *  writes all live inside ONE `.immediate()` transaction (defence in depth — `validateRegistration`
+   *  already checked both, read-only, above). Residual PK/BUSY races map to a typed
+   *  REGISTRATION_CONFLICT instead of an untyped 500. Callers (the facade, ARCH-091/DES-149) run any
+   *  trigger `claim()` BETWEEN `validateRegistration` and this call — this method itself does not
+   *  know about trigger stores. */
+  async insertVersion(req: { name: string; script: string; mermaid: string; triggers?: string[]; params: ParamContract; principal?: string | null }): Promise<{ version: string }> {
+    const { name, script, mermaid, triggers, params, principal = null } = req;
+    const paramsJson = JSON.stringify(params);
+    // v24 Gate 8 (AF-2, TASK-161, adjudication #7 G-2): an EMPTY array is stored as '[]', never as
+    // NULL. `NULL` is reserved for pre-v24 rows — rows written before this column existed — which is
+    // what ARCH-098 says and what both fire paths rely on: `server.ts:775` and
+    // `webhook-registry.ts:279` skip the membership check when `released.triggers === undefined`, so
+    // that the pre-v24 create-time-binding door keeps working. Writing NULL for `[]` made a v24 row
+    // byte-identical to a legacy one, which made NOT_IN_RELEASE unreachable and left "remove a
+    // trigger" as the one direction publishing could not express. `?? []` covers the `register()`
+    // convenience caller too: every row this engine writes from here on is non-NULL.
+    const triggersJson = JSON.stringify(triggers ?? []);
     const createdAt = this._clock.isoNow();
-    let version = '';
     try {
-      version = this._db.transaction((): string => {
-        const existing = this._db.prepare('SELECT owner FROM workflows WHERE name = ?').get(name) as
-          | { owner: string | null }
-          | undefined;
-        // DES-098: ownership gate — only non-null principal is gated; null principal = auth-disabled (D-AUTH-6)
+      const version = this._db.transaction((): string => {
+        const existing = this._db.prepare('SELECT owner FROM workflows WHERE name = ?').get(name) as { owner: string | null } | undefined;
         if (existing && existing.owner && principal !== null && existing.owner !== principal) {
           throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is owned by ${existing.owner}`);
         }
@@ -448,7 +555,6 @@ export class WorkflowCatalog {
         // v22 send-back H3 (07-review.md §4.2, ARCH-071 inv 7): the allocator must be the MAX over
         // the name's existing rows, not a COUNT — a migrated-then-re-registered name (e.g. one row
         // at 'v7') must allocate 'v8', not 'v2'; COUNT also collides on a gapped version history.
-        // Same expression _listVersions (:402) already uses for ordering.
         const maxVersion = (this._db
           .prepare('SELECT MAX(CAST(SUBSTR(version, 2) AS INTEGER)) AS m FROM workflow_versions WHERE name = ?')
           .get(name) as { m: number | null }).m;
@@ -458,10 +564,11 @@ export class WorkflowCatalog {
           this._db.prepare('INSERT INTO workflows (name, createdAt, owner) VALUES (?, ?, ?)').run(name, createdAt, owner);
         }
         this._db
-          .prepare('INSERT INTO workflow_versions (name, version, script, defaults, params, createdAt) VALUES (?, ?, ?, ?, ?, ?)')
-          .run(name, v, script, defaultsJson, paramsJson, createdAt);
+          .prepare('INSERT INTO workflow_versions (name, version, script, defaults, params, mermaid, triggers, createdAt) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)')
+          .run(name, v, script, paramsJson, mermaid, triggersJson, createdAt);
         return v;
       }).immediate();
+      return { version };
     } catch (err) {
       const sqliteCode = (err as { code?: string } | undefined)?.code;
       if (sqliteCode === 'SQLITE_BUSY' || sqliteCode === 'SQLITE_CONSTRAINT_PRIMARYKEY') {
@@ -469,14 +576,30 @@ export class WorkflowCatalog {
       }
       throw err;
     }
-    return { version };
+  }
+
+  /** v24 (ARCH-098, DES-148, TASK-143): convenience composition of `validateRegistration` +
+   *  `insertVersion` for a direct (non-facade) caller with no triggers to claim — `register({name,
+   *  script, mermaid, triggers?, principal?})`. REPLACES the pre-v24 positional
+   *  `register(name, script, defaults, principal)` shape (ADR-035 retires `defaults` from
+   *  registration entirely). The facade (ARCH-091/DES-149) does NOT call this — it calls
+   *  `validateRegistration`/`insertVersion` separately with a trigger-claim step in between. */
+  async register(req: { name: string; script: string; mermaid: string; triggers?: string[]; principal?: string | null }): Promise<{ version: string }> {
+    if (typeof req !== 'object' || req === null || typeof (req as { name?: unknown }).name !== 'string') {
+      throw codedError(
+        'INVALID_ARGUMENT',
+        'register() takes {name, script, mermaid, triggers?, principal?} since v24 (DES-148) — the pre-v24 positional (name, script, defaults, principal) shape is retired (ADR-035).',
+      );
+    }
+    const { params } = await this.validateRegistration(req);
+    return this.insertVersion({ ...req, params });
   }
 
   /** Remove a registered workflow (and every version row) from the catalog. `removed:false` when the
    *  name was not present. Name-granular only — no per-version delete in v22 (DES-111, D2). Prior
    *  runs' journals keep their own scriptVersion pin, so this only affects future run-by-name.
    *  v15 (DES-098, TASK-089): ownership gate — non-owner principal → NOT_WORKFLOW_OWNER. */
-  async deregister(name: string, principal: string | null = null): Promise<{ removed: boolean }> {
+  async deregister(name: string, principal: string | null = null): Promise<{ removed: boolean; claimedTriggers: string[] }> {
     const existing = this._db.prepare('SELECT owner FROM workflows WHERE name = ?').get(name) as
       | { owner: string | null }
       | undefined;
@@ -485,12 +608,20 @@ export class WorkflowCatalog {
       throw codedError('NOT_WORKFLOW_OWNER', `NOT_WORKFLOW_OWNER: workflow '${name}' is owned by ${existing.owner}`);
     }
 
+    // v24 (ARCH-098, DES-148, TASK-143): `claimedTriggers` = the UNION of `triggers[]` over EVERY
+    // version row (a beta-only claim is still a claim) — read BEFORE the delete, inside the same
+    // transaction, so it reflects exactly what is about to be removed. Same union as
+    // `declaredTriggers()` below and computed by it, so the two can never disagree about what
+    // "this workflow declared that trigger" means.
+    let claimed = new Set<string>();
     const info = this._db.transaction(() => {
+      claimed = this.declaredTriggers(name);
       this._db.prepare('DELETE FROM workflow_versions WHERE name = ?').run(name);
       this._db.prepare('DELETE FROM workflow_diagrams WHERE name = ?').run(name); // v23 (DES-130): same transaction, so a mid-transaction throw leaves both present
+      this._db.prepare('DELETE FROM assets WHERE workflow = ?').run(name); // v24 (ARCH-098, DES-148): same transaction, same reasoning
       return this._db.prepare('DELETE FROM workflows WHERE name = ?').run(name);
     }).immediate();
-    return { removed: info.changes > 0 };
+    return { removed: info.changes > 0, claimedTriggers: [...claimed] };
   }
 
   /** v22 (DES-111): row lookup shared by resolve/resolveDetail/publish — throws CatalogNotFoundError
@@ -518,7 +649,7 @@ export class WorkflowCatalog {
     const known = new Set(this._listVersions(name));
     // A name row with zero version rows is unreachable via register() (INSERT is atomic with the
     // workflow_versions row), but is possible if a caller partially seeds a DB directly — treat the
-    // same as an unknown workflow rather than a confusing UNKNOWN_VERSION/CHANNEL_UNPUBLISHED.
+    // same as an unknown workflow rather than a confusing VERSION_NOT_FOUND/CHANNEL_UNPUBLISHED.
     if (known.size === 0) throw new CatalogNotFoundError(name);
     const channels: Channels = { release: row.release_version, beta: row.beta_version };
     const result = resolveVersionRequest(sel, channels, known);
@@ -526,13 +657,27 @@ export class WorkflowCatalog {
       throw codedError(result.code, `${result.code}: ${result.channel ?? result.version ?? ''} (workflow '${name}')`.trim());
     }
     const vrow = this._db
-      .prepare('SELECT script, defaults, params FROM workflow_versions WHERE name = ? AND version = ?')
-      .get(name, result.version) as { script: string; defaults: string | null; params: string | null };
+      // v24 Gate 7.5 (ADR-035): `defaults` is NOT selected — the workflow-wide defaults object is
+      // retired (a registration declaring one is refused DEFAULTS_RETIRED), so the column only ever
+      // holds pre-v24 rows, and any run reaching one of those is already refused LEGACY_REREGISTER
+      // for the missing per-agent contract. Reading a retired column kept a dead value flowing
+      // through the whole admission path.
+      .prepare('SELECT script, mermaid, params, triggers FROM workflow_versions WHERE name = ? AND version = ?')
+      .get(name, result.version) as { script: string; mermaid: string | null; params: string | null; triggers: string | null };
     return {
       script: vrow.script,
       version: result.version,
-      defaults: vrow.defaults ? JSON.parse(vrow.defaults) as HarnessDefaults : undefined,
+      // v24 Gate 7.5 (D-8, REQ-111): the author-supplied diagram. `insertVersion` has written this
+      // column since TASK-143 and NO reader selected it, so every v24 workflow's
+      // `workflow_describe(...).mermaid` was null with `mermaidNote:'LEGACY_NO_DIAGRAM'` — the
+      // iteration's main user-visible feature stored and never delivered. NULL only for a genuinely
+      // legacy row registered before ADR-025 required one, which is what that note is for.
+      mermaid: vrow.mermaid,
       params: vrow.params ? JSON.parse(vrow.params) as ParamContract : undefined,
+      // v24 (integrator; DES-150's NOT_IN_RELEASE): the trigger ids THIS version declares. The
+      // column has existed since TASK-143 and no reader ever selected it, which is why the fire
+      // path could not tell "claimed but omitted from the current release" from "claimed".
+      ...(vrow.triggers ? { triggers: JSON.parse(vrow.triggers) as string[] } : {}),
     };
   }
 
@@ -582,7 +727,7 @@ export class WorkflowCatalog {
     }
     const known = new Set(this._listVersions(name));
     if (!known.has(version)) {
-      throw codedError('UNKNOWN_VERSION', `UNKNOWN_VERSION: '${version}' is not a registered version of '${name}'`);
+      throw codedError('VERSION_NOT_FOUND', `VERSION_NOT_FOUND: '${version}' is not a registered version of '${name}'`);
     }
     const column = channel === 'release' ? 'release_version' : 'beta_version';
     const from = channel === 'release' ? row.release_version : row.beta_version;
@@ -595,14 +740,17 @@ export class WorkflowCatalog {
     return { channel, version, from };
   }
 
-  async list(): Promise<Array<{ name: string; version: string; createdAt: string; description: string; params: ParamContract | undefined; versions: string[]; channels: Channels }>> {
+  async list(): Promise<Array<{ name: string; version: string; createdAt: string; owner: string | null; description: string; params: ParamContract | undefined; versions: string[]; channels: Channels }>> {
     // v9 (REQ-061): surface each workflow's purpose (meta.description) so a client can see WHAT each
     // one does without reading its script — parsed on-demand from the stored script (always in sync).
     // v22 (DES-111): `version`/`description`/`params` describe the RELEASE channel's version when
     // published, else `beta`, else the newest registered version (a draft with no channel is still
     // visible in the listing, just not runnable by name yet).
-    const rows = this._db.prepare('SELECT name, createdAt, release_version, beta_version FROM workflows').all() as Array<{
-      name: string; createdAt: string; release_version: string | null; beta_version: string | null;
+    // v24 adjudication #6 F-4: `owner` joins the projection. `workflow_list` has advertised an
+    // `owner` field since v24 and this query never selected the column, so every caller read
+    // `null` — "this workflow has no owner" — for every workflow on every deployment.
+    const rows = this._db.prepare('SELECT name, createdAt, owner, release_version, beta_version FROM workflows').all() as Array<{
+      name: string; createdAt: string; owner: string | null; release_version: string | null; beta_version: string | null;
     }>;
     return rows.map((r) => {
       const versions = this._listVersions(r.name);
@@ -612,7 +760,7 @@ export class WorkflowCatalog {
         ? (this._db.prepare('SELECT script, params FROM workflow_versions WHERE name = ? AND version = ?').get(r.name, version) as { script: string; params: string | null } | undefined)
         : undefined;
       return {
-        name: r.name, version, createdAt: r.createdAt,
+        name: r.name, version, createdAt: r.createdAt, owner: r.owner,
         description: parseMeta(vrow?.script ?? '').description,
         params: vrow?.params ? JSON.parse(vrow.params) as ParamContract : undefined,
         versions, channels,

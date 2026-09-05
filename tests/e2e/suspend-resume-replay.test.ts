@@ -44,7 +44,7 @@ describe('E2E: suspend / resume / cache replay (REQ-006, REQ-002)', () => {
   async function pollUntil(runId: string, predicate: (status: string) => boolean, maxMs = 25000) {
     const deadline = Date.now() + maxMs;
     while (Date.now() < deadline) {
-      const s = await mcpCall('workflow_status', { runId });
+      const s = await mcpCall('run_status', { runId });
       if (predicate(s.status)) return s;
       await new Promise((r) => setTimeout(r, 200));
     }
@@ -54,7 +54,7 @@ describe('E2E: suspend / resume / cache replay (REQ-006, REQ-002)', () => {
   // D-F3: replaces the previous fixed 100ms pre-suspend sleep. A blind fixed sleep is NOT
   // contention-tolerant in either direction — measured empirically (see 05-tests.md E2E-002 note):
   // under this environment's fast local no-credential agent() rejection path, a run reaches
-  // 'completed' only ~150-200ms after workflow_run, so simply raising the fixed sleep (tried 300ms
+  // 'completed' only ~150-200ms after run_start, so simply raising the fixed sleep (tried 300ms
   // first) made the race deterministically LOSE (suspend always arrived after completion) rather
   // than tolerating contention. Actively polling for 'running' and firing suspend the instant it's
   // observed adapts to however long host contention makes the child actually take to start, without
@@ -62,7 +62,7 @@ describe('E2E: suspend / resume / cache replay (REQ-006, REQ-002)', () => {
   async function waitUntilRunning(runId: string, maxMs = 10000) {
     const deadline = Date.now() + maxMs;
     while (Date.now() < deadline) {
-      const s = await mcpCall('workflow_status', { runId });
+      const s = await mcpCall('run_status', { runId });
       if (s.status === 'running') return;
       if (s.status === 'completed' || s.status === 'failed') return; // let the caller's own assertion surface the mismatch
       await new Promise((r) => setTimeout(r, 20));
@@ -71,30 +71,30 @@ describe('E2E: suspend / resume / cache replay (REQ-006, REQ-002)', () => {
 
   it('suspend stops in-flight work and status becomes suspended', async () => {
     const run = await runScriptVia(mcpCall, `
-        const r = await agent('step-1');
-        const r2 = await agent('step-2');
+        const r = await agent('step-1', {});
+        const r2 = await agent('step-2', {});
         return {r, r2};
       `);
     const runId = run.runId;
 
     await waitUntilRunning(runId);
-    await mcpCall('workflow_suspend', { runId });
+    await mcpCall('run_suspend', { runId });
 
-    const status = await mcpCall('workflow_status', { runId });
+    const status = await mcpCall('run_status', { runId });
     expect(status.status).toBe('suspended');
   }, 30000);
 
   it('resume replays cached agent() calls without re-running them', async () => {
     // First run: stop midway (we simulate by letting a single-agent workflow complete once,
     // stopping it, then resuming with the same script — the first call replays from cache)
-    const run = await runScriptVia(mcpCall, `return agent('the-query');`);
+    const run = await runScriptVia(mcpCall, `return agent('the-query', {});`);
     const runId = run.runId;
 
     await pollUntil(runId, (s) => s === 'completed');
-    await mcpCall('workflow_stop', { runId });
+    await mcpCall('run_stop', { runId });
 
     // Resume with same script — agent should replay from journal, no new model call
-    await mcpCall('workflow_resume', { runId });
+    await mcpCall('run_resume', { runId });
     const resumed = await pollUntil(runId, (s) => s === 'completed' || s === 'failed');
     expect(resumed.status).toBe('completed');
   }, 45000);
@@ -104,11 +104,11 @@ describe('E2E: suspend / resume / cache replay (REQ-006, REQ-002)', () => {
     // with the same work root (same SQLite + journal.jsonl files).
     // v22: the same work root also carries the catalog, so the registered+published version this run
     // is pinned to survives the restart and `_requireLive` re-resolves it by pin (DES-113/ADR-010).
-    const run = await runScriptVia(mcpCall, `return agent('persist-query');`);
+    const run = await runScriptVia(mcpCall, `return agent('persist-query', {});`);
     const runId = run.runId;
 
     await waitUntilRunning(runId);
-    await mcpCall('workflow_suspend', { runId });
+    await mcpCall('run_suspend', { runId });
     await pollUntil(runId, (s) => s === 'suspended');
 
     const workRoot = (server as unknown as { workRoot: string }).workRoot;
@@ -118,10 +118,10 @@ describe('E2E: suspend / resume / cache replay (REQ-006, REQ-002)', () => {
     server = await createServer({ port: 0, bind: '127.0.0.1', workRoot });
     baseUrl = `http://127.0.0.1:${server.port}`;
 
-    const status = await mcpCall('workflow_status', { runId });
+    const status = await mcpCall('run_status', { runId });
     expect(status.status).toBe('suspended');
 
-    await mcpCall('workflow_resume', { runId });
+    await mcpCall('run_resume', { runId });
     const final = await pollUntil(runId, (s) => s === 'completed' || s === 'failed');
     expect(final.status).toBe('completed');
   }, 45000);

@@ -64,13 +64,18 @@ describe('the moved script checks (ADR-013: script-checks.ts, enforced at catalo
 });
 
 describe('SubmissionValidator', () => {
-  it('submission with unknown workflow name returns ok:false with UNKNOWN_WORKFLOW', async () => {
+  // v24 (integrator, DES-137): the code is `WORKFLOW_NOT_FOUND`, not `UNKNOWN_WORKFLOW`.
+  // `ERROR_CATALOG` is the CLOSED `ErrorCode` union and `UNKNOWN_WORKFLOW` is not a member of it —
+  // `run_start` advertises `WORKFLOW_NOT_FOUND` in its own `tools/list` `Errors:` line, so the
+  // engine was answering a name no reader of the tool surface could ever anticipate (found live by
+  // the REQ-118 table). Same rename as `UNKNOWN_VERSION` -> `VERSION_NOT_FOUND` (adjudication #2 A-4).
+  it('submission with unknown workflow name returns ok:false with WORKFLOW_NOT_FOUND', async () => {
     const v = new SubmissionValidator();
     const result = await v.validate({ name: 'nonexistent-workflow-xyz' });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       const codes = result.errors.map((e) => e.code);
-      expect(codes).toContain('UNKNOWN_WORKFLOW');
+      expect(codes).toContain('WORKFLOW_NOT_FOUND');
     }
   });
 

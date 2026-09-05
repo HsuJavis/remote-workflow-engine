@@ -1,8 +1,8 @@
 // #20: a still-running agent's record must surface WHICH model/provider it is waiting on the moment
-// the gateway builds the session (onHarness, before the first token) — so workflow_status is not a
+// the gateway builds the session (onHarness, before the first token) — so run_status is not a
 // blank model:""/provider:"" that makes a hung/slow backend indistinguishable from progress.
 //
-// This pins the LIVE path: run-manager assembles live workflow_status from the executor's in-memory
+// This pins the LIVE path: run-manager assembles live run_status from the executor's in-memory
 // records (getAllRecords), and onHarness calls sink.markHarness. Mock policy: none — the real
 // AgentTranscriptSink, no store/guard.
 import { describe, it, expect } from 'vitest';

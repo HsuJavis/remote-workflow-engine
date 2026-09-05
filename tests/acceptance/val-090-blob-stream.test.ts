@@ -4,7 +4,8 @@
 // REQ-081 acceptance clauses:
 //   1. A blob larger than the JSON-RPC 8 MiB body cap (e.g. 20 MiB) uploads via
 //      POST /assets/blob/:sha and reads back byte-identical (assembled into a run)
-//   2. The SAME blob via blob_put base64 → 413 BODY_TOO_LARGE (trivially passes, existing behavior)
+//   2. The SAME blob via workspace_push's CAS mode (base64) → 413 BODY_TOO_LARGE (trivially
+//      passes, existing behavior)
 //   3. A tampered sha in the path (wrong sha, correct bytes) → BLOB_SHA_MISMATCH, nothing stored
 //   4. An oversized body → BLOB_TOO_LARGE (tested with maxBlobBytes=1MiB, body=1MiB+1)
 //   5. Foreign Host header → 403 (net-guard placement on /assets/blob/:sha)
@@ -13,12 +14,15 @@
 // above the 8 MiB JSON-RPC cap) to confirm the streaming cap is distinct. The full 20 MiB case
 // is gated by `RWE_SKIP_LARGE_UPLOAD_TESTS` for environments where that is too heavy.
 //
-// Red reason: POST /assets/blob/:sha route does not exist in server.ts →
-//   all fetch() calls return 404 → status/body assertions fail for the correct unimplemented reason.
+// v24 (TASK-152, DES-142): `?namespace=` on POST /assets/blob/:sha is RETIRED — the namespace is
+// now derived from the caller's own identity (server.ts:914-917), never a query param, so the
+// blob URLs below carry no `?namespace=` and the CAS-mode push renamed the old asset-push tool's sibling
+// blob-put/asset-push tool to `workspace_push`'s mode A ({sha256, contentB64}, no namespace
+// argument — INVALID_ARGUMENT from the closed schema if one is supplied).
 //
 // Mock policy (acceptance — MUST NOT mock SUT boundaries): real createServer, real HTTP;
 //   real CasStore, real net-guard (isAllowedHost/isAllowedOrigin), real putBlobStream path.
-//   The blob_put base64 case (case 2) exercises the existing MCP path — unchanged behavior.
+//   Case 2 exercises the existing MCP `workspace_push` path — unchanged behavior.
 //
 // Note: real:false — set to true by Gate 7.5 validator after a real verified run.
 
@@ -64,7 +68,6 @@ const sha256 = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 const SKIP_LARGE = !!process.env['RWE_SKIP_LARGE_UPLOAD_TESTS'];
 // maxBlobBytes minimum is 1 MiB per design; use 1 MiB + 1 for the over-cap test
 const ONE_MiB = 1024 * 1024;
-const NAMESPACE = 'val090';
 
 let server: Server;
 let workRoot: string;
@@ -82,7 +85,7 @@ afterAll(async () => {
 });
 
 function blobUrl(sha: string): string {
-  return `http://127.0.0.1:${server.port}/assets/blob/${sha}?namespace=${NAMESPACE}`;
+  return `http://127.0.0.1:${server.port}/assets/blob/${sha}`;
 }
 
 async function mcpCall(name: string, args: unknown): Promise<any> {
@@ -128,7 +131,7 @@ describe('REQ-081: raw HTTP blob upload via POST /assets/blob/:sha (VAL-090)', (
     // fetch/undici silently drops the Host header — use raw node:http to deliver it to the server.
     const status = await rawPost(
       server.port,
-      `/assets/blob/${h}?namespace=${NAMESPACE}`,
+      `/assets/blob/${h}`,
       { Host: 'evil.example.com:9999', 'Content-Type': 'application/octet-stream' },
       data,
     );
@@ -147,7 +150,7 @@ describe('REQ-081: raw HTTP blob upload via POST /assets/blob/:sha (VAL-090)', (
       const SIZE = 9 * ONE_MiB; // 9 MiB — above JSON-RPC 8MiB body cap
       const data = Buffer.alloc(SIZE, 0x41);
       const h = sha256(data);
-      const url = `http://127.0.0.1:${largeServer.port}/assets/blob/${h}?namespace=${NAMESPACE}`;
+      const url = `http://127.0.0.1:${largeServer.port}/assets/blob/${h}`;
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
@@ -165,16 +168,17 @@ describe('REQ-081: raw HTTP blob upload via POST /assets/blob/:sha (VAL-090)', (
     }
   }, 60_000);
 
-  it('2. same blob via blob_put base64 → 413 (trivially passes — existing behavior)', async () => {
-    // blob_put base64 goes through the MCP JSON-RPC body cap (8MiB default).
+  it('2. same blob via workspace_push base64 → 413 (trivially passes — existing behavior)', async () => {
+    // workspace_push's CAS mode (base64) goes through the MCP JSON-RPC body cap (8MiB default).
     // A 9 MiB blob base64-encoded is ~12 MiB — over the cap.
-    // This case trivially passes because blob_put already returns 413 for oversized payloads.
+    // This case trivially passes because workspace_push already returns 413 for oversized payloads.
     // (We test with a small payload to avoid the large body cost; the cap behavior is verified
     // by the existing REQ-024/BODY_TOO_LARGE tests.)
     const small = Buffer.from('small blob for base64 test val090');
     const h = sha256(small);
-    // blob_put with correct data should succeed (verifying the tool is still functional)
-    const r = await mcpCall('blob_put', { namespace: NAMESPACE, sha256: h, contentB64: small.toString('base64') });
+    // workspace_push with correct data should succeed (verifying the tool is still functional);
+    // no `namespace` argument — v24 derives it from the caller's identity (DES-142).
+    const r = await mcpCall('workspace_push', { sha256: h, contentB64: small.toString('base64') });
     // Accepted or already exists → no BODY_TOO_LARGE for a small payload
     expect(r.error?.code).not.toBe('BLOB_TOO_LARGE');
   });

@@ -74,6 +74,13 @@ beforeAll(async () => {
   server = await createServer({
     port: 0, bind: '127.0.0.1', workRoot: tmpDir,
     auth: { enabled: true, issuer: `http://127.0.0.1:0`, googleClientId: CLIENT_ID, googleClientSecret: 'val097-cs', googleBase: `http://127.0.0.1:${fakeGoogPort}`, jwksFetch: () => Promise.resolve([JWK]) },
+    // v24 (REQ-109 roles, ADR-028): alice AND bob are both AUTHORS — that is precisely what REQ-087
+    // is about. An id absent from this map resolves to `'user'`, which cannot register/deregister/
+    // publish at all, so every `NOT_WORKFLOW_OWNER` oracle below would silently degrade into a
+    // `FORBIDDEN_ROLE` role check and stop testing ownership. Both roles are `author` so the only
+    // thing separating them is who owns the row. Alice also needs it to READ: `workflow_source` is
+    // `{minRole:'author', ownership:'none'}`.
+    principals: { [ALICE]: { role: 'author' }, [BOB]: { role: 'author' } },
   } as never);
 });
 
@@ -129,7 +136,7 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
   });
 
   it('alice registers workflow → owned by alice', async () => {
-    const r = await mcp(aliceBearer, 'workflow_register', { name: WF, script: SCRIPT });
+    const r = await mcp(aliceBearer, 'workflow_register', { name: WF, script: SCRIPT, mermaid: 'graph TD;' });
     expect(r.error).toBeUndefined();
     expect(r.code).not.toBe('NOT_WORKFLOW_OWNER');
 
@@ -147,12 +154,12 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
   });
 
   it('bob tries to overwrite alice workflow → NOT_WORKFLOW_OWNER', async () => {
-    const r = await mcp(bobBearer, 'workflow_register', { name: WF, script: 'return "hijacked";' });
+    const r = await mcp(bobBearer, 'workflow_register', { name: WF, script: 'return "hijacked";', mermaid: 'graph TD;' });
     expect(r.code).toBe('NOT_WORKFLOW_OWNER');
   });
 
   it('stored definition unchanged after bob\'s rejected overwrite', async () => {
-    const r = await mcp(aliceBearer, 'workflow_get', { name: WF });
+    const r = await mcp(aliceBearer, 'workflow_source', { name: WF });
     expect((r as { script?: string }).script).not.toContain('hijacked');
   });
 
@@ -174,13 +181,13 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
   });
 
   it('workflow still present after bob\'s rejected deregister', async () => {
-    const r = await mcp(aliceBearer, 'workflow_get', { name: WF });
+    const r = await mcp(aliceBearer, 'workflow_source', { name: WF });
     expect(r.error).toBeUndefined();
     expect(r.code).toBeUndefined();
   });
 
   it('bob can RUN alice\'s workflow (run not gated on ownership)', async () => {
-    const r = await mcp(bobBearer, 'workflow_run', { name: WF });
+    const r = await mcp(bobBearer, 'run_start', { name: WF });
     expect(r.code).not.toBe('NOT_WORKFLOW_OWNER');
     expect(typeof r.runId).toBe('string');
   });
@@ -204,7 +211,7 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
         const b = await r.json() as { result?: { content?: Array<{ text?: string }> } };
         return JSON.parse(b.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
       };
-      // v22 (DES-110): `workflow_get({name})` resolves the RELEASE channel, so the seeded NULL-owner
+      // v22 (DES-110): `workflow_source({name})` resolves the RELEASE channel, so the seeded NULL-owner
       // row must be published or the backfill read-back below gets CHANNEL_UNPUBLISHED. Registered
       // AND published with a null principal — which is the point of this case (a pre-v15 row that
       // predates ownership), so the null default is correct HERE, unlike the alice/bob cases above.
@@ -221,7 +228,7 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
 
     try {
       const b2 = await getBearerFor(ALICE);
-      const r = await mcp(b2, 'workflow_get', { name: wf2 });
+      const r = await mcp(b2, 'workflow_source', { name: wf2 });
       // v22 (DES-115/REQ-100): alice is NOT the backfilled owner, so this read takes the non-owner
       // projection — which is the ENTIRE response body under `result`, with the pre-v22 flat
       // top-level copies deliberately removed (that was the `script` twice-leak DES-115 closes).

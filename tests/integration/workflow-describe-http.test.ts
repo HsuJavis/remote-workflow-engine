@@ -1,6 +1,6 @@
 // IT-097 (TASK-120, DES-132, ARCH-083): the four-surface anti-drift table — ONE secret-bearing
 // script registered once, and the exact secret literal asserted ABSENT from `JSON.stringify` of all
-// four read surfaces: `workflow_get` (non-owner), `workflow_describe`, `GET /api/workflows` (the
+// four read surfaces: `workflow_source` (non-owner), `workflow_describe`, `GET /api/workflows` (the
 // list), and `GET /api/workflows/:name/describe` — with the MCP tool and the HTTP route returning the
 // IDENTICAL object. `/describe` is UNAUTHENTICATED (no bearer/identity plumbing at all, same as the
 // `/skeleton` route it replaces), so the route body is compared against the MCP tool invoked with
@@ -58,7 +58,7 @@ beforeAll(async () => {
 afterAll(async () => { await server?.close(); rmSync(tmpDir, { recursive: true, force: true }); });
 
 describe('four-surface secret-absence anti-drift table (IT-097, DES-132)', () => {
-  it('workflow_get for a NON-OWNER (real masking, exercised against the SAME on-disk catalog this server writes) does not carry the raw secret literal', async () => {
+  it('workflow_source for a NON-OWNER (real masking, exercised against the SAME on-disk catalog this server writes) does not carry the raw secret literal', async () => {
     // The HTTP/mcp endpoint above always resolves ctx.authEnabled from this server's own config
     // (auth off in this fixture -> everyone is the owner branch, existing v22 behavior, unaffected
     // by v23). A genuine non-owner projection needs ctx.authEnabled:true — exercised here via a
@@ -66,7 +66,7 @@ describe('four-surface secret-absence anti-drift table (IT-097, DES-132)', () =>
     // just wrote to, rather than standing up a full OAuth bearer flow for one green-pin assertion.
     const sideCatalog = new WorkflowCatalog(tmpDir);
     const sideFacade = new McpFacade({ runManager: new RunManager({ catalog: sideCatalog }) } as any);
-    const got = await sideFacade.workflow_get({ name: 'drift-fixture' }, { authEnabled: true, principal: 'someone-else@example.com' });
+    const got = await sideFacade.workflowSource({ name: 'drift-fixture' }, { kind: 'user', id: 'someone-else@example.com' });
     expect(JSON.stringify(got)).not.toContain(SECRET);
   });
 

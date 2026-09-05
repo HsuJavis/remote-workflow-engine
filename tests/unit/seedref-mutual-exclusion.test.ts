@@ -1,7 +1,7 @@
 // UT-083 (DES-080, ARCH-052, TASK-077): seed-source mutual-exclusion + pre-createRun precedence.
 // Every test calls RunManager.start() with a spec that should trigger a typed coded error BEFORE
 // any durable work (no run row, no network, no workspace). Precedence order pinned:
-//   SEED_SOURCE_CONFLICT → SEEDREF_DISABLED → INVALID_SEED_SPEC → SEEDREF_EGRESS_DENIED → CAS_UNAVAILABLE
+//   SEED_SOURCE_CONFLICT → SEEDREF_DISABLED → INVALID_SEED_SPEC → EGRESS_DENIED → CAS_UNAVAILABLE
 //
 // Red reason: RunManager has no seedRef awareness yet — none of these codes are thrown;
 // `start()` silently ignores the unrecognised `seedRef` field and either returns a runId or
@@ -43,7 +43,7 @@ describe('seed-source mutual-exclusion (DES-080)', () => {
   });
 });
 
-describe('pre-createRun precedence (DES-080): SEEDREF_DISABLED → INVALID_SEED_SPEC → SEEDREF_EGRESS_DENIED → CAS_UNAVAILABLE', () => {
+describe('pre-createRun precedence (DES-080): SEEDREF_DISABLED → INVALID_SEED_SPEC → EGRESS_DENIED → CAS_UNAVAILABLE', () => {
   it('SEEDREF_DISABLED: seedRef given but no allowlist configured (fail-closed by default)', async () => {
     // RunManager without seedRefAllowlist config → SEEDREF_DISABLED
     const mgr = new RunManager({ seedRefAllowlist: [] } as any);
@@ -90,22 +90,22 @@ describe('pre-createRun precedence (DES-080): SEEDREF_DISABLED → INVALID_SEED_
     ).rejects.toMatchObject({ code: 'INVALID_SEED_SPEC' });
   });
 
-  it('SEEDREF_EGRESS_DENIED fires before CAS_UNAVAILABLE (SSRF URL + no cas)', async () => {
+  it('EGRESS_DENIED fires before CAS_UNAVAILABLE (SSRF URL + no cas)', async () => {
     const mgr = new RunManager({ seedRefAllowlist: ALLOWLIST } as any);
     await expect(
       startScript(mgr, 'return 1;', {
         seedRef: { repoUrl: SSRF_URL, sha: PINNED_SHA },
       } as any)
-    ).rejects.toMatchObject({ code: 'SEEDREF_EGRESS_DENIED' });
+    ).rejects.toMatchObject({ code: 'EGRESS_DENIED' });
   });
 
-  it('SEEDREF_EGRESS_DENIED: file:// scheme denied even with allowlist', async () => {
+  it('EGRESS_DENIED: file:// scheme denied even with allowlist', async () => {
     const mgr = new RunManager({ seedRefAllowlist: ALLOWLIST } as any);
     await expect(
       startScript(mgr, 'return 1;', {
         seedRef: { repoUrl: 'file:///etc/passwd', sha: PINNED_SHA },
       } as any)
-    ).rejects.toMatchObject({ code: 'SEEDREF_EGRESS_DENIED' });
+    ).rejects.toMatchObject({ code: 'EGRESS_DENIED' });
   });
 
   it('CAS_UNAVAILABLE: valid seedRef but no CasStore configured', async () => {

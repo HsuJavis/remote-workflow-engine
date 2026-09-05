@@ -1,10 +1,10 @@
 // VAL-089 (REQ-080, DES-079..085): engine-pull seedRef acceptance test.
-// Binds the REQ-080 acceptance clauses against the REAL engine entrypoint (workflow_run MCP tool
+// Binds the REQ-080 acceptance clauses against the REAL engine entrypoint (run_start MCP tool
 // + real createServer + real CasStore + real git subprocess when online).
 //
 // REQ-080 acceptance clauses tested here:
 //   1. No allowlist → SEEDREF_DISABLED (always runs, no network needed)
-//   2. SSRF URL (169.254.169.254) → SEEDREF_EGRESS_DENIED, zero outbound connection (no network)
+//   2. SSRF URL (169.254.169.254) → EGRESS_DENIED, zero outbound connection (no network)
 //   3. seed + seedRef → SEED_SOURCE_CONFLICT (no network)
 //   4. Real pull of pinned sha → workspace assembled, artifacts list the seeded files (online)
 //   5. Bad sha (non-hex branch ref) → INVALID_SEED_SPEC (no network)
@@ -14,8 +14,8 @@
 // Skip gate: env RWE_SKIP_ONLINE_TESTS=1 skips the real-pull case.
 //
 // Red reason: seedRef is not handled by RunManager or server.ts yet:
-//   - `workflow_run` with seedRef silently ignores the field → no run error, assertions fail
-//   - SEEDREF_DISABLED / SEEDREF_EGRESS_DENIED / SEED_SOURCE_CONFLICT not returned →
+//   - `run_start` with seedRef silently ignores the field → no run error, assertions fail
+//   - SEEDREF_DISABLED / EGRESS_DENIED / SEED_SOURCE_CONFLICT not returned →
 //     `expect(r.error?.code).toBe('SEEDREF_DISABLED')` fails
 //
 // Mock policy (acceptance — MUST NOT mock SUT boundaries): real createServer, real HTTP; the
@@ -58,7 +58,7 @@ const callerFor = (s: Server) => (tool: string, args: Record<string, unknown>) =
 
 async function poll(s: Server, runId: string): Promise<any> {
   for (let i = 0; i < 60; i++) {
-    const st = await call(s, 'workflow_status', { runId });
+    const st = await call(s, 'run_status', { runId });
     if (['completed', 'failed', 'stopped'].includes(st.status)) return st;
     await new Promise((r) => setTimeout(r, 300));
   }
@@ -85,7 +85,7 @@ afterAll(async () => {
 });
 
 describe('VAL-089: REQ-080 engine-pull seedRef — no allowlist → SEEDREF_DISABLED', () => {
-  it('workflow_run with seedRef and no allowlist returns SEEDREF_DISABLED (fail-closed)', async () => {
+  it('run_start with seedRef and no allowlist returns SEEDREF_DISABLED (fail-closed)', async () => {
     const r = await runScriptVia(callerFor(server), `return 'seeded';`, {
       seedRef: { repoUrl: PINNED_REPO, sha: PINNED_SHA },
     });
@@ -96,21 +96,21 @@ describe('VAL-089: REQ-080 engine-pull seedRef — no allowlist → SEEDREF_DISA
   });
 });
 
-describe('VAL-089: REQ-080 — SSRF URL → SEEDREF_EGRESS_DENIED (zero outbound, no network)', () => {
-  it('http://169.254.169.254/ → SEEDREF_EGRESS_DENIED before any network call', async () => {
+describe('VAL-089: REQ-080 — SSRF URL → EGRESS_DENIED (zero outbound, no network)', () => {
+  it('http://169.254.169.254/ → EGRESS_DENIED before any network call', async () => {
     const r = await runScriptVia(callerFor(serverWithAllowlist), `return 'seeded';`, {
       seedRef: { repoUrl: 'http://169.254.169.254/latest/meta-data/', sha: PINNED_SHA },
     });
     const code = r.error?.code ?? (r.status === 'failed' ? r.result?.error?.code : undefined);
-    expect(code).toBe('SEEDREF_EGRESS_DENIED');
+    expect(code).toBe('EGRESS_DENIED');
   });
 
-  it('file:// scheme → SEEDREF_EGRESS_DENIED', async () => {
+  it('file:// scheme → EGRESS_DENIED', async () => {
     const r = await runScriptVia(callerFor(serverWithAllowlist), `return 'seeded';`, {
       seedRef: { repoUrl: 'file:///etc/passwd', sha: PINNED_SHA },
     });
     const code = r.error?.code ?? (r.status === 'failed' ? r.result?.error?.code : undefined);
-    expect(code).toBe('SEEDREF_EGRESS_DENIED');
+    expect(code).toBe('EGRESS_DENIED');
   });
 });
 
@@ -126,9 +126,13 @@ describe('VAL-089: REQ-080 — seed + seedRef → SEED_SOURCE_CONFLICT', () => {
 
   it('supplying both seedManifest and seedRef yields SEED_SOURCE_CONFLICT', async () => {
     const fakeHash = sha256(Buffer.from('x'));
+    // v24 (DES-142/ADR-028, tool-specs.ts `run_start`): `seedNamespace` is gone from the schema and
+    // `run_start` is `additionalProperties:false`, so passing it made ajv answer INVALID_ARGUMENT
+    // before the run-manager's mutual-exclusion check could fire — the conflict oracle below was
+    // unreachable, not failing. The namespace is derived from the caller's identity; dropped, not
+    // renamed.
     const r = await runScriptVia(callerFor(serverWithAllowlist), `return 'seeded';`, {
       seedManifest: [{ path: 'x.txt', sha256: fakeHash }],
-      seedNamespace: '_test',
       seedRef: { repoUrl: PINNED_REPO, sha: PINNED_SHA },
     });
     const code = r.error?.code ?? (r.status === 'failed' ? r.result?.error?.code : undefined);
@@ -153,12 +157,12 @@ describe('VAL-089: REQ-080 — real pull materializes files (skip when offline)'
       return;
     }
 
+    // v24: `seedNamespace` dropped — see the SEED_SOURCE_CONFLICT case above for why.
     const run = await runScriptVia(callerFor(serverWithAllowlist), `return 'seeded from git';`, {
       seedRef: { repoUrl: PINNED_REPO, sha: PINNED_SHA },
-      seedNamespace: '_val089',
     });
 
-    // workflow_run should return a runId immediately (REQ-005)
+    // run_start should return a runId immediately (REQ-005)
     expect(run.result?.runId ?? run.runId).toBeTruthy();
     const runId = run.result?.runId ?? run.runId;
 
@@ -171,7 +175,7 @@ describe('VAL-089: REQ-080 — real pull materializes files (skip when offline)'
     expect(done.result?.seedRef?.latencyMs).toBeGreaterThanOrEqual(0);
 
     // Workspace artifacts: seeded files appear
-    const arts = await call(serverWithAllowlist, 'workflow_artifacts', { runId });
+    const arts = await call(serverWithAllowlist, 'workspace_list', { runId });
     const paths: string[] = (arts.result as Array<{ path: string }>).map((a) => a.path);
     expect(paths.length).toBeGreaterThan(0);
 

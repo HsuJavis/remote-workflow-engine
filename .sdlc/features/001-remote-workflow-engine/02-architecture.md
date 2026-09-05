@@ -26,7 +26,7 @@ status: reviewed
 ### ARCH-003 — Sandbox Host (untrusted-child execution kernel)
 - **status:** draft
 - **traces:** REQ-001, REQ-002
-- **note:** One Node child process per run; restricted **VM context** exposing ONLY the workflow API surface (`agent/parallel/pipeline/phase/log/args/budget/workflow`); determinism guards (`Date.now`,`Math.random`,argless `new Date()` throw); no fs/Node/network/`require` in-context; 512 KB cap; JS-not-TS parse rejection; `meta` literal validation; `parallel`/`pipeline` null-semantics; `workflow()` one-level nesting throw; 4096-item/call cap. Holds **no secrets, no store handle, no network** — marshals each `agent()`/`workflow()` over the IPC seam to ARCH-002; the in-script `budget` is a read-only view (ARCH-002 is source of truth). Depends: ARCH-002 (IPC only).
+- **note:** One Node child process per run; restricted **VM context** exposing ONLY the workflow API surface (`agent/parallel/pipeline/phase/log/args/budget/workflow`); determinism guards (`Date.now`,`Math.random`,argless `new Date()` throw); no fs/Node/network/`require` in-context; 512 KB cap; JS-not-TS parse rejection; `meta` literal validation; `parallel`/`pipeline` null-semantics; `workflow()` nesting bounded by the deployment's configured `maxWorkflowDepth` (default 4) and `maxWorkflowDescendants` (default 256) — **N levels, not one** (v8 REQ-041/043 lifted the one-level `NESTING_ERROR`; corrected here by adjudication (v24) #4 C-5, which found this note, ARCH-107 and DES-157 all still describing the pre-v8 limit while `run-manager.ts`'s depth check had been N-level for four iterations); 4096-item/call cap. Holds **no secrets, no store handle, no network** — marshals each `agent()`/`workflow()` over the IPC seam to ARCH-002; the in-script `budget` is a read-only view (ARCH-002 is source of truth). Depends: ARCH-002 (IPC only).
 - **iter:** v1
 
 ### ARCH-004 — Agent Executor (Claude Agent SDK headless)
@@ -2080,3 +2080,627 @@ ADR-020's conditional `console.warn`; (5) `enqueue()`'s front-door `try`. Gates 
 back and are not re-opened; the next gate to dispatch after this one is **5**. **Gate 8 must re-verify
 each doc-only amendment BY GREP, not by reading this note** — that instruction is repeated verbatim from
 the previous re-run because the item it was written for (`:1708`) survived anyway, one site short.
+
+## v24 slice — interface consolidation, roles, per-agent parameters, the author-supplied diagram (REQ-107..118): ARCH-087..108 + ADR-023..035
+
+**Slice shape (Karpathy check up front).** v24 is **one structural addition, one structural deletion, and a
+lot of renaming**. The addition: a single **tool-spec data array** (`src/tool-specs.ts`) that is the only
+source of `tools/list`, of every tool's `errors:` line, of the **authorization row** each tool is checked
+against **once, before the dispatch switch** (`src/authz.ts`), and of the REQ-118 exercise table. The
+deletion: the whole v23 analyzer subsystem (`graph-analyzer.ts`, the `graphAnalyzer` config block, the
+async generate/reconcile machinery, `diagramStatus`, `workflow_regenerate_diagram`, `workflow_diagrams`),
+replaced by a **pure fixed-grammar Mermaid check** in the repurposed `diagram-gate.ts` that diffs the
+diagram's agent set against the script's literal `agent({label})` set in both directions — statically
+decidable, no model, registration is total again. Everything else (six workspace tools over one
+`pathVerdict`, per-agent parameters, workflow-owned assets with `pushedBy`, claimable triggers, the guide)
+re-shapes existing modules at their existing seams. **Four new pure files** (`tool-specs.ts`, `authz.ts`,
+`path-verdict.ts`, `authoring-guide.ts`) against **three deletions** (`graph-analyzer.ts`,
+`continuation-store.ts`, `mcp-registry.ts`); **zero new services, daemons, ports or runtime dependencies**
+(no `mermaid` — ADR-023); **two new tables** (`assets` in `catalog.db`, `audit_events` in the run store),
+**one dropped** (`workflow_diagrams`), columns on four existing tables. Twenty-two ARCH items ≠ twenty-two
+components: it is twenty-two *module roots touched* (one item per `module:` path, the ledger's convention
+since v21), eighteen of them surgical edits of files that already exist.
+
+**Panel provenance.** Synthesized from the two pre-run round-1 proposals under `.panel/architecture/`
+(`adversarial.r1.md`: security × scalability/consistency × testability; `quality-dimensions.r1.md`:
+observability / replaceability / consumability / self-sustainability). **No round 2 exists and none was
+spawned**: the two headlines are complementary — both rule "one authorization table consulted once, not
+per-`case`", both rule "no `mermaid` dependency, a fixed grammar is the honest 'renders'", both rule "the
+guide is rendered from the enforcement constants", both name the same read-back-seam and config-wiring
+risks. Where they differ (audit read-back, refusal coalescing) the differences are referee-decidable and
+are settled in the Decision rationale below with who conceded and why. **Both proposals predate
+working-notes ch. 16–20**, so several of their "requirement gaps" were already ruled by the owner; each is
+closed by citation in the rationale rather than relayed.
+
+**The tool set, derived once.** Working notes ch. 7 counts 36 (40 − `chain_create`/`chain_list` −
+`workflow_regenerate_diagram` − two workspace tools + `run_list`). Ch. 16.1 then removed `run_trigger` and
+ch. 16.2 merged `mcp_provision` into `workspace_push({kind:'mcp'})`; REQ-116 adds
+`workflow_authoring_guide`. **v24 ships 35 tools**: workflow 7 (`register`, `deregister`, `publish`,
+`describe`, `source`, `list`, `authoring_guide`) · run 8 (`start`, `status`, `result`, `suspend`, `resume`,
+`stop`, `agent_log`, `list`) · workspace 6 (`diff`, `push`, `pull`, `list`, `delete`, `purge`) · triggers 7
+(`schedule_create/list/delete/setEnabled`, `webhook_create/list/delete`) · issues 5 (`issue_report`,
+`issue_get`, `issue_list`, `issue_get_comments`, `issue_comment_post`) · environment 2 (`models_list`,
+`system_info`). This number appears **here once**; `TOOL_SPECS.length` is the assertion (v23 CONS-1: a count
+hand-typed in four places drifted in all four). `state.yaml`'s "40→36" was written before ch. 16.
+
+### ARCH-087 — `TOOL_SPECS`: one data array that is the tool surface — names, schemas, descriptions, `errors:`, authorization row, REQ-118 fixture list
+- **status:** draft
+- **traces:** REQ-107, REQ-109, REQ-116, REQ-118
+- **module:** src/tool-specs.ts
+- **deps:** —
+- **api:** `type Role = 'admin'|'author'|'user'` (declared HERE so the dependency stays one-directional: ARCH-088 imports it); `TOOL_SPECS: ReadonlyArray<ToolSpec>` with `ToolSpec = { name; entity: 'workflow'|'run'|'workspace'|'schedule'|'webhook'|'issue'|'env'; key: 'name'|'runId'|'id'|'number'|null; description; inputSchema; errors: ErrorCode[]; seeAlso?: ToolName[]; authz: { minRole: Role; ownership: 'none'|'run'|'workflow'|'trigger'|'asset'; adminCrossRead?: true } }`; `type ToolName = TOOL_SPECS[number]['name']`; `projectToolsList(): McpToolDescriptor[]` appends `Errors: …` and `See also: …` to each description deterministically. Pure data + one projection; imports nothing from `src/`.
+- **note:** Consumability at agent altitude: for REQ-117 the description text *is* the API, so the two first-try traps notes ch. 10.3/10.4 found live on `run_start`'s own row ("a just-registered workflow has no `release` — `workflow_publish` first or pass `{version}`"; "poll `run_status` until terminal, then `run_result`") and a unit test asserts the row contains both sentences — a REQ-117 doc defect becomes a red test. The REQ-107 prefix rule is a **unit test over the array**, not a review item: `name.startsWith(entity + '_')`, and `entity === 'run' && key !== null ⇒ key === 'runId'` (creators are keyed by the parent's key, so `run_start({name})` has `key: null`). Old names (`workflow_run`, `workflow_get`, `blob_put`, `asset_*`, `workflow_artifact*`, `seed_plan`, `chain_*`, `workflow_trigger`, `mcp_provision`, `workflow_regenerate_diagram`, `issue_comments`, `issue_comment`) are simply **not in the array** → unknown-tool error; there is no alias branch anywhere (owner: no deprecation window). `issue_get_comments` carries `latest` only (ch. 11.2 dropped `since`). The v22-H2 lesson generalized: `mcp_provision` advertised "Admin tool" while its `case` checked nothing because the intent lived only in prose; here the authz row sits on the same object as the prose, and a second unit test asserts a description containing "admin" has `minRole:'admin'` (ARCH-051 drift-lock pattern).
+- **iter:** v24
+
+### ARCH-088 — `authorize()`: three roles, one `Principal` union, ownership through an injected `OwnerLookup` port, evaluated once before the tool switch
+- **status:** draft
+- **traces:** REQ-109, REQ-114, REQ-107
+- **module:** src/authz.ts
+- **deps:** ARCH-087
+- **api:** `Role` imported from ARCH-087; `type Principal = { kind:'authenticated'; id: string; role: Role } | { kind:'auth-disabled'; id: null; role:'admin' } | { kind:'loopback-exempt'; id: null }`; `resolveRole(principals: Record<string, {role: Role}> | undefined, id: string): Role` — listed → its role; unlisted → `principals['*']?.role ?? 'user'`; **map undefined while auth is enabled → `'user'`** (ADR-028: fail closed and loud); `type OwnerLookup = { runOwner(runId): string|null; workflowOwner(name): string|null; triggerOwner(id): string|null }`; `authorize(p: Principal, spec: Pick<ToolSpec,'name'|'key'|'authz'>, args, lookup: OwnerLookup): { ok: true; crossPrincipalRead?: { owner: string } } | { ok: false; code: 'FORBIDDEN_ROLE'|'NOT_RUN_OWNER'|'NOT_WORKFLOW_OWNER'|'NOT_TRIGGER_OWNER'|'PRINCIPAL_REQUIRED'; see: 'workflow_authoring_guide'|null }`. Total over the union: `auth-disabled` → always ok (unchanged single-operator behaviour); `loopback-exempt` → ok only for `minRole:'user'` + `ownership:'none'` rows, else `PRINCIPAL_REQUIRED` (this is the former `authEnabled && principal === null` condition of `resolveWritePrincipal`/`principalRequiredEnvelope`, carried in the type instead of a flag threaded through positional arguments); `admin` → passes role AND ownership, and when the row has `adminCrossRead` and the resource's owner ≠ `p.id` the result carries `crossPrincipalRead` so the caller writes the audit row (ARCH-091/092) **before** serving bytes.
+- **note:** Pure: unit tests pass a `Map`-backed lookup; integration tests pass the stores (`runs.principal`, `workflows.owner`, `schedules.createdBy`/`webhooks.createdBy`). The catalog's own owner checks (`workflow-catalog.ts:437/484`) **stay** as defence in depth — the table decides, the store re-asserts, a disagreement between the two is a test failure not a policy. Role/ownership matrix (working notes ch. 15.2 as amended by ch. 16/19/20): `user` — `workflow_list/describe/authoring_guide`, `run_*` on own runs, `workspace_*({runId})` on own runs, `workspace_diff`/`workspace_push` mode A (own CAS pool), `issue_*`, `models_list`, `system_info`; `author` — additionally `workflow_register`, `workflow_deregister/publish/source` on owned workflows, `schedule_*`/`webhook_*` on triggers they created, `workspace_push` mode B / `workspace_delete` mode B / `workspace_list({workflow,kind})` on owned workflows; `admin` — everything, ownership bypassed (owner ruling), cross-principal run-workspace reads audited. A workflow owner does **not** read other principals' runs of their workflow (ch. 4, carried in). **Karpathy:** no role service, no permission DSL, no per-resource ACLs — three roles, four ownership kinds, one function.
+- **iter:** v24
+- **correction (2026-09-04, orchestrator adjudication v24 #2 A-3):** the api prose above is corrected to the SHIPPED `src/authz.ts:77` / `src/owner-lookup.ts` signatures — principal first (not spec first) and `triggerOwner(id)` one-arg (schedule and webhook ids are disjoint UUID spaces, so the kind was redundant; the return also distinguishes `undefined` = no such id from `null` = exists with no owner). UT-140's RED test is the operative spec under TDD, so the code is right and this document was wrong. Recorded as instance #16 of a description that stopped matching the thing it describes — the recurring cost is that the next reader builds against the prose.
+
+### ARCH-089 — the server wire: `tools/list` as a projection, `Principal` built at the HTTP edge, one `authorize()` call, the old `case` arms gone
+- **status:** draft
+- **traces:** REQ-107, REQ-108, REQ-109, REQ-116
+- **module:** src/server.ts
+- **deps:** ARCH-001, ARCH-051, ARCH-054, ARCH-060, ARCH-063, ARCH-073, ARCH-083, ARCH-087, ARCH-088, ARCH-091
+- **api:** `tools/list` = `projectToolsList()` (ARCH-087) — `TOOL_NAMES` and the hand-kept schema map are deleted; `callTool(name, args, principal)` does `const spec = TOOL_SPECS.find(name) ?? unknownTool()` → `authorize(principal, spec, args, lookup)` → the one `switch` on the 35 new names; `Principal` is built in the `/mcp` handler from `resolvePrincipal` + `authEnabled` + `isLoopbackPeer` (the three shapes of ARCH-088) and threaded as one value; `ServerConfig.principals?: Record<string, {role: Role}>`; `POST /assets/blob/:sha` (ARCH-054) derives `namespace` from the principal exactly as the MCP `workspace_push` mode A now does; `GET /api/workflows/:name/describe` unchanged. Deleted: `case` arms for every old name, `ContinuationStore` construction and the `chain_*` arms, `GraphAnalyzer` construction and the `graphAnalyzer` warn-at-boot, `workflow_regenerate_diagram`, `mcp_provision` (its probe-then-store path now lives behind `workspace_push({kind:'mcp'})`, ARCH-102).
+- **note:** REQ-109's clause "`mcp_provision`'s 'Admin tool' claim becomes true" is satisfied structurally: the mode it became (`workspace_push` mode B, `kind:'mcp'`) has an authz row (`author`, ownership `workflow`; `scope:'global'` → `admin`) and the stdio-transport narrowing of ADR-030. `resolveWritePrincipal`/`principalRequiredEnvelope` (`server.ts:876-886`) collapse into `authorize`. Two mechanical guards carry the REQ-107 rule out of review: the prefix unit test on the array (ARCH-087) and an integration test that `tools/list` over real HTTP contains no old name. Breaking for any client with the old names — by owner decision; the client plugin's guidance skill (ARCH-013, separate repo) must ship the new names **before** the REQ-117 probe (scenario S-8).
+- **iter:** v24
+
+### ARCH-090 — `principals` forwarded in `composeConfig()`, proven by the wiring guard; `graphAnalyzer` removed from the config surface
+- **status:** draft
+- **traces:** REQ-109, REQ-111
+- **module:** src/main.ts
+- **deps:** ARCH-088, ARCH-089
+- **api:** `rwe.config.json` gains `principals?: Record<string, {role:'admin'|'author'|'user'}>` (`"*"` allowed as a key); `composeConfig()` forwards it to `ServerConfig.principals`; a row is added to `tests/unit/compose-config-v2-wiring.test.ts` **in the same change**; the `graphAnalyzer` block is removed from `FileConfig`, `composeConfig()` and the wiring test, and a present-but-unknown `graphAnalyzer` key produces one boot warning naming ADR-025 (so an operator's stale config is not silently ignored).
+- **note:** This project's twice-bitten `composeConfig` bug class (v11 `updateFlagPath`, v15 auth): a new block forgotten in the forward silently no-ops and only a real run catches it. Two defences, both in this item: the wiring-test row, and ADR-028's **fail-closed default** — an undefined `principals` map with auth enabled resolves every authenticated caller to `user`, so an unwired block locks the operator out of `workflow_register` within minutes instead of quietly granting everyone `admin`. `principals` absent (never wired) and auth disabled (deliberate single-operator mode) are different states and must not be conflated in code.
+- **iter:** v24
+
+### ARCH-091 — the facade: the 35 handlers behind the new names — `run_list`, the six `workspace_*` modes, `workflow_list.runnable`, `workflow_source`, per-agent `describe`, `workflow_register({mermaid, triggers})`, `deregister → releasedTriggers`, the audited admin cross-read
+- **status:** draft
+- **traces:** REQ-107, REQ-108, REQ-109, REQ-113, REQ-114, REQ-115, REQ-118
+- **module:** src/mcp-facade.ts
+- **deps:** ARCH-001, ARCH-002, ARCH-007, ARCH-020, ARCH-021, ARCH-037, ARCH-055, ARCH-056, ARCH-071, ARCH-075, ARCH-076, ARCH-082, ARCH-087, ARCH-088, ARCH-092, ARCH-093, ARCH-098, ARCH-099, ARCH-100, ARCH-102, ARCH-105
+- **api:** `run_list({workflow?, status?, limit?})` → `RunSummary[]`, **filtered by principal in SQL** for `user`/`author` (ARCH-092), unfiltered for `admin`; `workflow_list({onlyRunnable?})` → workflows only, each with `runnable` (= `release` pointer non-null), `user` role defaults `onlyRunnable:true`; `workflow_source({name, version?})` = the former `workflow_get` — owner/admin full, non-owner `author` gets the ARCH-075 masked projection with `scriptWithheld:true, see:'workflow_describe'`; `workflow_describe` returns `params.agents.<label>` (ARCH-105) and `mermaid` (string | null for legacy) — `diagramStatus`/`diagramNote`/`diagramStale`/`diagramGeneratedAt` are **removed**; `workflow_register({name, script, mermaid, triggers?})` (no `defaults` — ADR-035) — the facade runs ADR-026's sequence: `catalog.validateRegistration` → `claim` per trigger (ARCH-099/100) → `catalog.insertVersion` → release the claims if the insert throws; `workflow_deregister → {removed, releasedTriggers: string[]}` — catalog deletes, facade releases each claimed trigger; `workspace_diff({manifest})` — no scope arg, pool = the caller's namespace; `workspace_push` mode A `{sha256, contentB64}` → CAS in the caller's namespace, mode B `{workflow, kind:'skill'|'mcp', name, files|config, scope?:'global'}` → ARCH-102; **any `runId` on push → `INVALID_ARGUMENT` with `see:'workflow_authoring_guide'`**; `workspace_pull({runId, path, offset?, length?})`; `workspace_list({runId} | {workflow, kind})`; `workspace_delete({runId, paths[]} | {workflow, kind, name} | {scope:'global', kind, name})`; `workspace_purge({runId})`; `workflow_authoring_guide()` → ARCH-107's text. CAS `namespace = principal.id ?? 'local'` appears **once**, here (ADR-028).
+- **note:** Three consistency points decided at architecture, not left to design. (1) **TOCTOU on "refused while the run is live"**: `workspace_delete`/`workspace_purge` check terminality **inside `RunManager`** (`runManager.withTerminalRun(runId, fn)` holds the in-process run entry — a mutex, not a lock protocol; single process), not by a status read in the facade. (2) **Audit before bytes**: when `authorize()` returns `crossPrincipalRead`, the facade calls `runStore.appendAudit()` and only then reads the filesystem (`workspace_list`, `workspace_pull`, `run_agent_log`); a crash between the two leaves an audit row for a read that did not happen — acceptable; the reverse is not. (3) **`run_status` carries `adminReads[]`** for the run's owner (ADR-027) — the read-back seam this ledger's AC-2 rule requires, with no new tool. Pre-v24 `workflow_artifacts`/`workflow_artifact_get`/`workspace_purge` took `{runId}` and checked nothing (notes ch. 4); the ownership row on every `run_*`/`workspace_*({runId})` closes that. `run_list` needs the composite index of ARCH-092 — required, not optional (a `user` on a busy engine must not page through everyone's rows to have them masked).
+- **iter:** v24
+
+### ARCH-092 — run store: `getOwner`, filtered `list` with its index, and the append-only `audit_events` table with its per-run reader
+- **status:** draft
+- **traces:** REQ-109, REQ-107
+- **module:** src/store/sqlite-run-store.ts
+- **deps:** ARCH-006
+- **api:** `RunStore.getOwner(runId) → string | null` (reads the existing v15 `runs.principal` column — a lookup, not a migration); `RunStore.list({workflow?, status?, principal?, limit}) → RunSummary[]` backed by `CREATE INDEX IF NOT EXISTS runs_name_status_created ON runs(name, status, createdAt DESC)`; `RunStore.appendAudit({ts, actor, action:'workspace_list'|'workspace_pull'|'agent_log_read', runId, owner, path?})` into `audit_events(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts, actor, action, runId, owner, path)` — same append-only idiom as `transitions` (`sqlite-run-store.ts:46`); `RunStore.auditFor(runId) → AuditEvent[]` (the `run_status.adminReads[]` reader). `run-store.ts` port extended with the same three methods.
+- **note:** One `CREATE TABLE`, one insert, one select. Not a log line (nobody reviews a log), not a new tool (REQ-109 says *write*; the reader rides `run_status`), not a separate database (the audit row and the run it concerns share a `Database` handle, so `runId` is a real reference).
+- **iter:** v24
+
+### ARCH-093 — `pathVerdict`: one pure decision for every write, two destination-keyed rule sets
+- **status:** draft
+- **traces:** REQ-108, REQ-065
+- **module:** src/path-verdict.ts
+- **deps:** —
+- **api:** `pathVerdict(dest: {kind:'run-workspace'; root: string} | {kind:'asset-tree'; root: string; reservedPrefix: string}, rel: string) → {verdict:'ok'; abs: string} | {verdict:'stripped'; reason:'CLAUDE_SETTINGS'|'CLAUDE_HOOKS'} | {verdict:'rejected'; reason:'ESCAPE'|'GIT_INTERNAL'|'RESERVED_PREFIX'|'ABSOLUTE'|'SYMLINK'}`. Run-workspace rules: strip `.claude/settings*.json` and `.claude/hooks/**`, reject `.git` internals, `../`, absolute paths and symlink escapes (realpath containment). Asset-tree rules: reject the reserved `rwe-*` prefix, `../`, absolute, symlink escapes.
+- **note:** The one function `materializeSeed`, `materializeManifest` (ARCH-021/037/053/055 call sites in `workspace-seed.ts`), `AssetSyncService.push` (ARCH-102), `workspace_pull` and `workspace_delete` (ARCH-091) all call — REQ-108's last clause ("a single shared path-verdict decides every write … so the two rule sets cannot drift apart") realized as one export. Same shape as ARCH-088: one decision point, a table of rules, a drift-lock (a unit test enumerates both rule sets and asserts every former `STRIP_RE`/`safeRelPath` case lands on the same verdict). `workspace-seed.ts` and `asset-sync.ts` lose their private copies; nothing else in them changes.
+- **iter:** v24
+
+### ARCH-094 — per-agent parameter contract: `ParamContract.agents.<label>`, `UserOverrides.agents.<label>`, ceilings that refuse
+- **status:** draft
+- **traces:** REQ-110, REQ-090, REQ-091
+- **module:** src/params/contract.ts
+- **deps:** ARCH-064
+- **api:** `ParamContract = { agents: Record<label, AgentParamSpec>; args: Record<string, ParamSpec> }` with `AgentParamSpec = { model: ParamSpec; effort: ParamSpec; timeoutMs: ParamSpec; appendPrompt?: ParamSpec; skills?: string[]; mcp?: string[] }` — **`model`/`effort`/`timeoutMs` each REQUIRED with a `default`** (owner ch. 12: every tunable of every agent has a default; ADR-029); `knobs` (the v21 workflow-wide shape) is **removed**, not aliased; `UserOverrides = { agents?: Record<label, Partial<{model; effort; timeoutMs; appendPrompt}>> }` — the flat form is gone (REQ-110: "gone"), and the JSON schema stays closed (`additionalProperties:false` at both levels); `parseParamContract(meta, scriptLabels)` refuses `PARAM_CONTRACT_INVALID` (shape), `AGENT_UNDECLARED { label }` (a script label with no `agents.<label>` entry), `AGENT_DECLARED_NOT_IN_SCRIPT { label }`; `validateOverrides(contract, overrides, ceilings)` refuses `PARAM_LOCKED` (any of the six locked keys, or `skills`/`mcp`), `UNKNOWN_AGENT_LABEL`, `PARAM_OUT_OF_RANGE` (author range **and** engine ceiling — `maxTimeoutMs` 600000, `maxAppendPromptBytes` 1024, `maxEffort` `high` — as a refusal, never a clamp), `UNKNOWN_ALIAS` for `model`. `LOCKED_KEYS`, `TUNABLE_KEYS`, `DEFAULT_CEILINGS` unchanged and still the single exported source the guide interpolates.
+- **note:** `skills`/`mcp` live in the same `agents.<label>` block as the four tunables but are author-owned and locked — the guide states this coexistence in one table (ch. 12.5 / 13). Registration does **not** verify that declared skills/MCP exist (owner 19.5.3 — the two tools are separate and a check would create a circular dependency); a missing asset surfaces at run time in `mcpUnresolved`/the harness descriptor, never as a silent downgrade. Refuse-never-clamp is a consumability decision (QD C-3): `PARAM_OUT_OF_RANGE` teaches the ceiling on the first attempt, which is what REQ-117 measures.
+- **iter:** v24
+
+### ARCH-095 — resolution gains the per-label rung for all four keys; the call rung is gone
+- **status:** draft
+- **traces:** REQ-110, REQ-092, REQ-093
+- **module:** src/params/resolve.ts
+- **deps:** ARCH-065, ARCH-094
+- **api:** `resolveAgentParams(label, contract, overrides, agentTypeDef, engineDefaults) → EffectiveCallParams` with the ladder **override(agents.<label>.<key>) › contract `agents.<label>.<key>.default` › agentType frontmatter (model only, existing) › engine default**, provenance per key ∈ `'override'|'default'|'agentType'|'engine'`; the `'call'` rung is deleted because `agent()` may no longer carry values (ARCH-096). `effectiveBounds` still *reports* the author-range ∩ ceiling intersection for `describe`; admission compares and refuses (ARCH-094).
+- **note:** Today only `model` has an intermediate rung (`resolve.ts:74`: `effort`/`timeoutMs` are call › snapshot › engine); v24 gives all four keys the same per-label rung. Because the three defaults are required per declared agent, the `agentType`/`engine` rungs are reachable only for `appendPrompt` — stated so the design does not build dead paths. Agent-altitude replaceability (QD R-4): with no model name in any script, retiring a model is a `describe` + `run_start({overrides})` decision by the user or a `meta` default edit by the author — never an edit to workflow logic.
+- **iter:** v24
+
+### ARCH-096 — `scanAgentCalls(script)`: literal labels required, values in `agent()` refused, one static pass shared by the contract and the diagram check
+- **status:** draft
+- **traces:** REQ-110, REQ-111
+- **module:** src/workflow-meta.ts
+- **deps:** —
+- **api:** `scanAgentCalls(script) → { labels: string[]; violations: Array<{line; code:'AGENT_LABEL_REQUIRED'|'AGENT_LABEL_NOT_LITERAL'|'AGENT_OPTS_NOT_LITERAL'|'PARAM_IN_SCRIPT'; key?: 'model'|'effort'|'timeoutMs'; hint: string}> }` — extends the existing `CALL_RE` scan to read each `agent(` call's literal options object; `PARAM_IN_SCRIPT` names the key and points at `meta.params.agents.<label>.<key>`; distinct labels are returned (duplicates share one spec, ADR-029). `parseWorkflowSkeleton` stays for its surviving internal consumer (the `/api/runs/:id/dag` predicted overlay, ARCH-042); its analyzer consumer is gone.
+- **note:** Statically decidable requires literal labels: a template string or variable cannot be matched to a Mermaid node at registration, so it is refused and the guide says so in one line. Non-literal option objects (`agent(prompt, opts)`) are refused too (`AGENT_OPTS_NOT_LITERAL`) rather than adding a JS parser dependency for a rule the guide can state — a Karpathy call the design gate may revisit if authors need computed options.
+- **iter:** v24
+
+### ARCH-097 — `checkMermaid`: the repurposed `diagram-gate.ts` — a pure fixed-grammar parser over the REQ-112 vocabulary, bidirectional label diff, value-triple compare, line-numbered refusals
+- **status:** draft
+- **traces:** REQ-111, REQ-112, REQ-116
+- **module:** src/diagram-gate.ts
+- **deps:** —
+- **api:** `checkMermaid(src: string, scriptLabels: ReadonlySet<string>, agentDefaults: Record<label, {model: string; effort: Effort; timeoutMs: number}>, limits: {maxBytes; maxLines}) → { ok: true; agents: string[] } | { ok: false; code: 'MERMAID_INVALID'|'MERMAID_RULE_VIOLATION'|'DIAGRAM_SCRIPT_MISMATCH'|'DIAGRAM_VALUE_MISMATCH'; line?: number; rule?: 'SHAPE'|'AGENT_LABEL_FORMAT'|'COLLAPSED_EDGE'|'SUBGRAPH_TITLE'|'LOOP_LABEL'|'SIZE'; onlyInScript?: string[]; onlyInDiagram?: string[]; valueMismatch?: Array<{label; key; diagram; meta}>; see: 'workflow_authoring_guide' }`. **Closed grammar**: header `flowchart|graph <TD|TB|LR|RL|BT>`; node declarations in exactly five shapes — `[/"…"/]` trigger/output, `(["…"])` agent, `{"…"}` conditional, `{{"…"}}` non-agent aggregation, `["…"]` **nested `workflow()` black box (ADR-023, flagged)**; one edge per line — `-->`, `-->|label|`, `<-->`, `-.->`, `-.->|label|`; `subgraph ID ["title"]` … `end` with optional `direction`; `%%` comments; blank lines. Anything else → `MERMAID_INVALID {line}`. Rules: agent node text matches `^(?<label>[A-Za-z_][\w-]*)<br/>(?<model>[^·]+?) · (?<effort>low|medium|high|xhigh|max) · (?<timeout>\d+(ms|s))$`; `&` in an edge line → `COLLAPSED_EDGE`; empty subgraph title → `SUBGRAPH_TITLE`; an edge that closes a cycle without a `|label|` → `LOOP_LABEL`; `labels(diagram) ≠ scriptLabels` → `DIAGRAM_SCRIPT_MISMATCH` with **both** diff sets; `(model, effort, timeout)` on the node ≠ `agentDefaults[label]` (timeout compared numerically, `120s ≡ 120000`) → `DIAGRAM_VALUE_MISMATCH`. `VOCAB_GLYPHS`, `DIAGRAM_CODEPOINTS` and `gateDiagram` are deleted; the exported grammar constants (`SHAPES`, `EDGE_FORMS`, `AGENT_LABEL_RE`) are the single declaration the guide interpolates (the v23 "one canonical declaration, never re-type" rule, kept for the new vocabulary).
+- **note:** "Does not render" is read as "is not in the grammar" (ADR-023): the grammar is a strict **subset** of Mermaid flowchart syntax, so grammar-valid ⇒ renders by construction, and it is *stricter* than a renderer (a renderer accepts `A --> B & C` and author-invented shapes). Keeping the subset property is a design obligation; a Gate 7.5 one-off renders `GUIDE_EXAMPLES` in a browser as the check on the obligation. **Security**: the diagram is author-supplied and served to *other* principals; `<`/`>` are now legal only inside the two tokens `<br/>` and `<-->`, and the dashboard keeps `textContent` into `<pre>` (ARCH-106) — no client-side Mermaid library, asserted by extending ARCH-084's grep guard. **Consumability**: a bare mismatch fails REQ-117 on the first real run (adversarial R3), so both diff sets and the guide pointer are on every refusal.
+- **iter:** v24
+
+### ARCH-098 — the catalog: `mermaid` + `triggers` on the immutable version row, the `assets` table, `workflow_diagrams` dropped, the register sequence with claims and compensation, `deregister` releasing triggers and deleting assets
+- **status:** draft
+- **traces:** REQ-111, REQ-113, REQ-114, REQ-115, REQ-118
+- **module:** src/workflow-catalog.ts
+- **deps:** ARCH-007, ARCH-061, ARCH-071, ARCH-072, ARCH-094, ARCH-096, ARCH-097
+- **api:** `workflow_versions` gains `mermaid TEXT NULL` and `triggers TEXT NULL` (JSON `string[]`; both `NULL` only on pre-v24 rows — ADR-025/026); `workflow_diagrams` dropped by the boot migration; new table `assets(workflow TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, pushedBy TEXT, pushedAt TEXT NOT NULL, config TEXT NULL, PRIMARY KEY(workflow, kind, name))` — **`workflow = ''` is the global-scope sentinel** (SQLite refuses expressions in a PK); `putAsset/deleteAsset/listAssets(workflow, kind)/assetsOf(workflow)` for ARCH-102; the catalog exposes two halves and knows nothing of the trigger stores (no dependency cycle — the fire path in ARCH-099/100 already depends on this module): `validateRegistration({name, script, mermaid, principal})` — every pure check (`validateScriptEntry`, `scanAgentCalls`, `parseParamContract`, `checkMermaid`), **nothing written**; and `insertVersion({name, script, mermaid, triggers, params, principal})` — the existing `.immediate()` transaction (owner gate, version-count ceiling, the row). The four-step sequence — (1) `validateRegistration` + trigger-id existence/ownership, (2) `claim(id, name)` per trigger in its own store (atomic each; first `ALREADY_CLAIMED`/`NOT_FOUND` → release the ones just claimed, refuse), (3) `insertVersion`, (4) if (3) throws → release the claims — **runs in the facade** (ARCH-091, ADR-026), which already depends on all three stores. `deregister(name)` → inside the existing transaction: delete versions and `assets` rows, then FS removal of `<workRoot>/<name>/assets/` as an after-hook; returns `{removed, claimedTriggers}` (the ids read from the release/latest version's `triggers`), and the facade releases each in its store and reports them as `releasedTriggers`. `list()` rows carry `runnable`. `MERMAID_REQUIRED` refused on the registration path (the column is nullable for legacy rows, so "every post-v24 row has a diagram" is a **code discipline** — one test registers without `mermaid` and asserts the refusal, another asserts no post-migration row is written `NULL`).
+- **note:** Four SQLite files (`catalog.db`, `schedules.db`, `webhooks.db`, run store) mean "claim triggers and insert the version" cannot be one transaction; ADR-026 declines the store merge and relies on the conditional-`UPDATE` claim plus idempotent compensation, with the single-process assumption stated. A crash between deregister's version delete and the release leaves a claim pointing at a deleted workflow — the fire path treats `claimedBy` naming a missing workflow as unclaimed (refuse + record), so the worst case is "trigger needs a manual re-claim", never a phantom fire. Legacy assets in the pre-v24 global tree are migrated at boot into `assets(workflow='', pushedBy='legacy')` rows, `mcp_provisions` rows likewise with `kind:'mcp'` and their `config` — transactional and idempotent per ARCH-071's precedent.
+- **iter:** v24
+
+### ARCH-099 — schedules: created unclaimed, claimed at registration, fire-time membership check, refusals coalesced on the row; the H4 check leaves `create`
+- **status:** draft
+- **traces:** REQ-115, REQ-109, REQ-053
+- **module:** src/scheduler.ts
+- **deps:** ARCH-010, ARCH-071, ARCH-072
+- **api:** `schedules` gains `claimedBy TEXT NULL`, `createdBy TEXT NULL`, `refusalCount INTEGER NOT NULL DEFAULT 0`, `lastRefusedAt TEXT NULL`, `lastRefusalReason TEXT NULL`; the `workflow NOT NULL` column is migrated (`claimedBy = workflow`, then dropped) so existing bound schedules stay claimed; `create(spec)` takes no workflow and performs no catalog resolve (the v22-H4 check **moves** to `workflow_register`, ARCH-098 step 1); `claim(id, workflow) → 'claimed'|'NOT_FOUND'|'ALREADY_CLAIMED'` as `UPDATE schedules SET claimedBy=? WHERE id=? AND (claimedBy IS NULL OR claimedBy=?)` reading `changes`; `release(id, workflow)` symmetric and idempotent; `list()` rows carry `claimedBy`, `createdBy`, the three refusal fields; fire path: `claimedBy` null → refuse `UNCLAIMED`; workflow missing → `CLAIMED_WORKFLOW_MISSING`; `resolve(claimedBy, {channel:'release'})` throws → `CHANNEL_UNPUBLISHED`; the release version's `triggers` is non-`NULL` and does not contain this id **and that id was declared by at least one version of the claimed workflow** → `NOT_IN_RELEASE` — **[AMENDED v24 Gate 8, AF-2 / TASK-161]** the third clause is new: a trigger that entered through the create-time binding door (`schedule_create({workflow})` / `webhook_create({workflow})`, which this same item says `create` no longer accepts but AF-5 records as still shipped) was never declared by any version, so the release list has no jurisdiction over it. Until AF-2 that job was done by proxy — an empty declaration was persisted as `NULL`, so `triggers === undefined` meant both "pre-v24 row" and "came through the other door", which is exactly what made `NOT_IN_RELEASE` unreachable. When v25 closes the second door (AF-5) the clause becomes always-true and is deleted with it; every refusal = `refusalCount+1`, `lastRefusedAt`, `lastRefusalReason` on the row and **no run, no `run_origins` row**. `workflow_trigger`/`run_trigger` and `SCHEDULE_DISABLED`-on-manual-start are deleted (owner ch. 16.1: a disabled schedule means "stop auto-firing", not "forbid manual runs"; a manual start is now truthfully `startedBy:{type:'manual'}`).
+- **note:** Per carried-in rule 3 (a moved check is not finished until everything describing its old site points at the new one): ARCH-072 note 1, the `SqliteSchedulerPort` docblock, `catalogResolveErrorEnvelope`'s call site here, and the test asserting `CHANNEL_UNPUBLISHED` from `schedule_create` all move with it — the design gate lists them by line. Coalescing (ADR-031) is what keeps REQ-115's "never silently dropped" **and** a bounded table: a forgotten cron fires 1440×/day forever and would otherwise write 1440 rows/day nobody reads.
+- **iter:** v24
+
+### ARCH-100 — webhooks: same claim model; verify HMAC and timestamp first, then refuse `409 TRIGGER_UNCLAIMED` and record it
+- **status:** draft
+- **traces:** REQ-115, REQ-109, REQ-058
+- **module:** src/webhook-registry.ts
+- **deps:** ARCH-033, ARCH-071, ARCH-072
+- **api:** `webhooks` gains the same five columns as ARCH-099 (`claimedBy`, `createdBy`, `refusalCount`, `lastRefusedAt`, `lastRefusalReason`) with the same migration; `create()` takes no workflow and does no catalog resolve; `claim`/`release` identical in shape; `deliver()` order: exists+enabled → HMAC over the raw body → ±300 s timestamp → dedup → **then** the claim/membership/publish checks of ARCH-099 → `409 {code:'TRIGGER_UNCLAIMED'|…}` recorded on the row; `list()` carries `claimedBy`, `createdBy`, refusal fields, `secretFingerprint` (never the secret).
+- **note:** An unauthenticated caller must not learn claim state, so the refusal is visible only to a caller who already holds the secret — the check sits after verification, deliberately. Reading the refusal back is through `webhook_list` (QD O-2): ARCH-101's `getTriggerBindings` cannot be that seam because it is keyed by workflow and an unclaimed trigger has none.
+- **iter:** v24
+
+### ARCH-101 — `getTriggerBindings(name)`: reads the claims of the release version; the chain binding and `UNBOUND_ENTRY_LABEL` are deleted
+- **status:** draft
+- **traces:** REQ-115, REQ-107, REQ-103
+- **module:** src/trigger-bindings.ts
+- **deps:** ARCH-071, ARCH-099, ARCH-100
+- **api:** `getTriggerBindings(name) → TriggerBinding[]` where a binding is `{kind:'cron'|'once'|'resident'|'webhook'; id; claimedBy; inRelease: boolean}` — `inRelease` compares against the release version's `triggers` (legacy `NULL` list → `true`); the `chain` kind, `ContinuationStore` read and `UNBOUND_ENTRY_LABEL` (`'workflow_run'`) are gone with `chain_*` (owner ch. 5); `bindingsFingerprint` is deleted with the staleness flag it served (the diagram is no longer derived, so there is nothing to be stale relative to — the author's diagram *is* the declared entry, and `triggers[]` in `describe` is the live truth beside it).
+- **note:** Survives (ch. 1 "存活" list) because `workflow_describe.triggers[]` still needs one projected cross-store snapshot; it shrinks. A chain whose semantics an author needs is written as `workflow()` inside the script (nested up to `maxWorkflowDepth`, default 4 — adjudication (v24) #4 C-5).
+- **iter:** v24
+
+### ARCH-102 — assets owned by their workflow: two trees, `pushedBy` on every row, `kind:'mcp'` probed-then-stored behind an egress gate, discovery of both scopes
+- **status:** draft
+- **traces:** REQ-113, REQ-114, REQ-109, REQ-009, REQ-025
+- **module:** src/asset-sync.ts
+- **deps:** ARCH-012, ARCH-015, ARCH-018, ARCH-052, ARCH-093, ARCH-098
+- **api:** filesystem `<assetRoot>/<workflow>/<kind>/<name>/` (workflow scope; `assetRoot` defaults to `<workRoot>/assets`) and **`<workRoot>/_global_assets/<kind>/<name>/`** (global scope, `builtin:true`) — **[AMENDED v24 Gate 8, adjudication #7 G-1]** the global tree is deliberately OUTSIDE the swept `assets/` root: `reclaimStaleWorkspaces` deletes every child of `<assetRoot>/` that is not a live workflow, and `_global_assets` is not a child of it. The original text here placed the global scope at `<workRoot>/assets/<kind>/<name>/`, i.e. inside the swept tree; the implementation's deviation is the SAFER one (DEPLOY §1b states the reason) so the document follows the code, and the pre-v24 tree that still sits at the old path is relocated by ARCH-098's boot migration (TASK-160) before the sweep is armed; `AssetSyncService.push({scope:'workflow', workflow, kind:'skill', name, files, pushedBy})` / `push({…, kind:'mcp', name, config, pushedBy})` / `push({scope:'global', …})` (admin, ARCH-088); every push writes the FS and a `catalog.assets` row (ARCH-098) with `pushedBy`/`pushedAt`, through `pathVerdict` (ARCH-093, `reservedPrefix:'rwe-*'`); `kind:'mcp'` runs `McpProbe` first and stores nothing on failure (`MCP_PROBE_FAILED`), **`http` transports must pass `isEgressAllowed(url, cfg.mcpEgressAllowlist)` (ARCH-052, default empty = `EGRESS_DENIED`), and `stdio` transports are `admin`-only regardless of scope (ADR-030)**; `hook` is still rejected by construction (`HOOKS_UNSUPPORTED`); `list({workflow, kind}) → Array<{scope:'workflow'|'global'; builtin; kind; name; pushedBy; pushedAt}>` (both scopes in one response); `delete({workflow|scope:'global', kind, name})`; `resolveMcp(workflow, names) → configs` (workflow scope first, then global; the strict-by-name behaviour of the former `mcp-registry.ts` `resolveInjected`). `mcp-registry.ts` and its `mcp_provisions` table are retired (rows migrated by ARCH-098); `mcp-probe.ts` stays as the probe port.
+- **note:** Why a table and not a `rwe-meta.json` per directory: `pushedBy` must be listable and must die with the workflow in the same transaction as the version rows — a sidecar gives neither without a directory walk. Why one table for skills and MCP: one `pushedBy` home, one deregister delete, one list; the alternative left `mcp_provisions` as a second, global-keyed registry with the exact fifty-authors collision REQ-113 exists to end (adversarial G3). Assets are shared across all versions of a name (owner 19.5.2) — the guide states that editing a skill affects versions still on `release`. Global scope lets admins **add and remove** built-ins (owner ch. 20 #7). REQ-114's precondition holds by construction: no push path exists that does not carry `pushedBy`, and `workspace_list` returns it. `resolveMcp` is the one consumer ARCH-103 calls; the design gate decides whether it stays a method here or a pure helper — not a new module either way.
+- **iter:** v24
+
+### ARCH-103 — selective materialization: only the calling agent's declared `skills`/`mcp` enter the run workspace, additively, and the materialized set is recorded
+- **status:** draft
+- **traces:** REQ-113, REQ-110
+- **module:** src/gateway/claude-agent-sdk-client.ts
+- **deps:** ARCH-004, ARCH-017, ARCH-069, ARCH-094, ARCH-102
+- **api:** `materializeAssets(roots: {workflow: string; global: string}, workspace, declared: {skills: string[]; mcp: string[]}) → {skills: string[]; mcp: string[]; missing: string[]}` — copies **only** `declared.skills` (workflow scope wins over global on a name clash) into `<workspace>/.claude/skills/<name>/`, writes `<workspace>/.mcp.json` from `resolveMcp(workflow, declared.mcp)` (ARCH-102), returns what was actually placed and what was declared but absent; called per `agent()` dispatch with that label's `AgentParamSpec.skills/mcp` (ARCH-094).
+- **note:** The pre-v24 loop copied **every** skill in the global tree into **every** run (`claude-agent-sdk-client.ts:166-175`), so trigger-word collisions grew with the number of authors — QD S-5 names this context hygiene, and the fix is that each agent's environment becomes a function of its own declaration. Honest limit (ADR-034): one workspace per run and no agent-level isolation is an existing, stated design (notes ch. 3), so in a `parallel()` the skills of concurrently running agents of the *same workflow* may be present together; an undeclared skill is never present, and a skill from an unrelated author never is. The harness descriptor (ARCH-104) records the **materialized** set, not the declared one (QD-R9). **[AMENDED v24 Gate 6.5+7 round 2, `solid_check` HIGH]:** `deps:` gains **ARCH-069**. ARCH-103's `module:` is a single FILE nested inside ARCH-069's directory module (`src/gateway`), so its imports of its own siblings read to the boundary checker as an undeclared cross-module dependency. The dependency is real and intended — this is a behaviour of the SDK gateway client, not a separate component — so the correct repair is the missing DECLARATION, not a code change; the alternative (promoting the file out of `src/gateway`) would move production code to satisfy a documentation gap.
+- **iter:** v24
+
+### ARCH-104 — dispatch wiring: per-label resolution at every `agent()` and a per-agent harness descriptor with provenance and materialized assets
+- **status:** draft
+- **traces:** REQ-110, REQ-113
+- **module:** src/agent-executor.ts
+- **deps:** ARCH-068, ARCH-094, ARCH-095, ARCH-103
+- **api:** at each `agent()` dispatch `resolveAgentParams(opts.label, contract, run.overrides, …)` (ARCH-095) replaces `resolveCallParams(opts, …)`; the `kind:'harness'` transcript event (ARCH-044/068) gains `label`, per-key `provenance`, and `materialized: {skills[], mcp[], missing[]}` from ARCH-103; `redactHarness` unchanged.
+- **note:** QD O-4: the unit of resolution is now the label, so "which model/effort/timeout did *this* agent get, and from whose default or override?" and "why did skill X not load for this agent?" must both be answerable from the transcript after the fact — otherwise REQ-110 + REQ-113 create a new black box. Declared-vs-materialized divergence is the whole point of selective materialization, so the descriptor observes the materialized set.
+- **iter:** v24
+
+### ARCH-105 — the read projections: `describe` reports `params.agents.<label>` and `mermaid`, `list` reports `runnable`, the `diagramStatus` family is gone
+- **status:** draft
+- **traces:** REQ-110, REQ-111, REQ-118, REQ-101
+- **module:** src/workflow-view.ts
+- **deps:** ARCH-075, ARCH-081, ARCH-094, ARCH-101
+- **api:** `projectWorkflowDescribe` → `{name, version, resolvedBy, channels, versions[], description, params: {agents: Record<label, {model, effort, timeoutMs, appendPrompt?}> /* each with type/default/range ∩ ceiling */, args}, lockedKeys[], owner, reportProblem, triggers[] /* ARCH-101 */, phases, mermaid: string | null, mermaidNote: 'LEGACY_NO_DIAGRAM' | null}` — **never `script`**; `EXPECTED_DESCRIBE_KEYS` re-pinned to this set (the `diagramStatus`/`diagramNote`/`diagramStale`/`diagramGeneratedAt` keys are deleted, not left optional); `projectWorkflowForRead` (the `workflow_source`/`workflow_list` projection) adds `runnable` and `scriptWithheld` carries `see:'workflow_describe'`.
+- **note:** `params` per agent is what makes v24's acceptance hold at the parameter layer (notes ch. 12.4): a user sees "this workflow has `analyze` and `review`, each tunable to X with default Y" before spending anything. Legacy versions honestly report `mermaid: null` with the engine enum, never an invented drawing (v23 A1 carried forward in spirit).
+- **iter:** v24
+
+### ARCH-106 — the dashboard: the author's Mermaid source into `<pre>` via `textContent`; the pending/unavailable branches and per-card describe fetches are gone
+- **status:** draft
+- **traces:** REQ-111
+- **module:** src/dashboard-page.ts
+- **deps:** ARCH-011, ARCH-084, ARCH-089
+- **api:** the workflow-detail `#diagram` `<pre>` shows `describe.mermaid` verbatim (or the `LEGACY_NO_DIAGRAM` note); no `diagramStatus` polling branch; **no client-side Mermaid library** — ARCH-084's grep guard is extended to fail on any `mermaid` import or CDN `<script>` in `src/`.
+- **note:** ADR-033: author-controlled label text (legitimately containing `<br/>`) reaching an HTML renderer in every principal's browser is an XSS surface and a new third-party dependency, and no v24 requirement asks for a rendered picture — the consumer REQ-117 measures is an LLM reading source. A rendered view is a product decision surfaced for the owner, not taken here.
+- **iter:** v24
+
+### ARCH-107 — `workflow_authoring_guide`: assembled from the enforcement constants plus a `GUIDE_EXAMPLES` array a test registers against a booted engine; `docs/AUTHORING.md` generated from the same builder
+- **status:** draft
+- **traces:** REQ-116, REQ-117, REQ-112, REQ-110, REQ-106
+- **module:** src/authoring-guide.ts
+- **deps:** ARCH-087, ARCH-094, ARCH-097
+- **api:** `buildAuthoringGuide({ceilings: DEFAULT_CEILINGS, lockedKeys: LOCKED_KEYS, tunableKeys: TUNABLE_KEYS, grammar: {SHAPES, EDGE_FORMS, AGENT_LABEL_RE}, errors: ERROR_CATALOG, tools: TOOL_SPECS, examples: GUIDE_EXAMPLES}) → string` — one response carrying: the sandbox API (`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget`, `workflow`), the `meta` shape with a **working** `params.agents` example, the authoring rules (v23's four + A3 "structure only, secrets never in the picture" as author responsibility, ch. 11.1), the complete REQ-112 vocabulary with the fan-out / debate / agent-aggregation / non-agent-aggregation / loop / skip patterns drawn once each, the tunable-vs-locked table with where each is written and how a user changes it (ch. 13.1–13.3), the `workflow()` nesting limit — the deployment's configured `maxWorkflowDepth` (default 4), **not one level** (adjudication (v24) #4 C-5; `authoring-guide.ts` already renders the N-level rule and flagged the departure in code) — with the instruction to **flatten** past it and to draw another owner's workflow as a black-box node, and the note that assets are shared across versions; `GUIDE_EXAMPLES: ReadonlyArray<{title; script; mermaid; expectRegister:'ok'}>` exported; `ERROR_CATALOG: Record<ErrorCode, {message; see: 'workflow_authoring_guide' | null}>` (home: `src/errors.ts`, one entry per typed error so REQ-116's "the error points at this tool" holds for errors added after v24). `docs/AUTHORING.md` = the builder's output written by an npm script; a unit test asserts the committed file equals the current output.
+- **note:** Carried-in rule 4 (a guide that teaches an invalid example is worse than none): REQ-116's example-registration test is a *detector*; rendering the guide's **facts** (ceilings, locked keys, vocabulary, error codes, tool names) from the modules the validators read is the *preventer* (QD C-1 / adversarial ARCH-095 — both lenses). One integration test iterates `GUIDE_EXAMPLES`, calls `workflow_register` over real MCP HTTP against `createServer()` and asserts `{version}`. Two sources of authoring truth is how v23 shipped a refused example, hence the generated `AUTHORING.md` rather than a hand-kept one (ADR-032).
+- **iter:** v24
+
+### ARCH-108 — the REQ-118 live-engine exercise as a table-driven acceptance test, and the REQ-117 cold-model probe protocol
+- **status:** draft
+- **traces:** REQ-118, REQ-117
+- **module:** tests/acceptance/v24-tool-surface.test.ts
+- **deps:** ARCH-087, ARCH-107
+- **api:** for each `TOOL_SPECS` row: one happy call with required arguments over real MCP HTTP against a booted engine, one call per `errors[]` entry where constructible (`run_start` on an unpublished workflow → `CHANNEL_UNPUBLISHED`; `workspace_push` mode A with a wrong hash → `BLOB_HASH_MISMATCH`; `workspace_push` with `runId` → `INVALID_ARGUMENT`; `workflow_register` without `mermaid` → `MERMAID_REQUIRED`; a `user` calling `workflow_register` → `FORBIDDEN_ROLE`; …), each response asserted against the row's documented contract; rows needing GitHub/OpenRouter credentials emit `UNVERIFIED(reason)` rows; the table (tool, arguments, observed response, pass/fail/unverified) is **generated** by the test and drift-locked so a row exists for every array entry (QD O-3). REQ-117 protocol (validator-owned at Gate 7.5, named here as an architectural precondition): the subject is a fresh model instance with a stub MCP client and **nothing else**, launched **outside this project tree** so no `CLAUDE.md`/memory of this repo is loaded (the `rwe-workspace-memory-leak` finding), given `tools/list` + `workflow_authoring_guide`, asked to author a multi-agent collaborating workflow with its Mermaid, register, publish, run and read a correct result; any wrong step is a doc defect fixed in ARCH-087/107 and re-run with **another** fresh instance.
+- **note:** A hand-maintained conformance table decays by the next iteration; generation from the array is the same drift-lock shape ARCH-051 established for schemas. REQ-118 observes the interface; ARCH-104's descriptor observes run-time internals — complementary, neither substitutes for the other.
+- **iter:** v24
+
+### ADR-023 — "renders" means "parses under the fixed REQ-112 grammar" — a pure subset-of-Mermaid parser in `diagram-gate.ts`, no `mermaid` dependency; a fifth shape for the nested-workflow black box
+- **status:** draft
+- **traces:** REQ-111, REQ-112
+- **note:** Context: REQ-111 refuses a `mermaid` that "does not render"; the server has three runtime dependencies and no DOM. Options: (a) `mermaid` + jsdom/headless browser at registration; (b) `@mermaid-js/parser` (does not cover flowcharts); (c) a restricted-grammar parser over REQ-112's closed vocabulary. Decision: (c) — both panels independently; zero dependencies, statically decidable, line-numbered errors a cold model can act on ("fix line 7" vs "mermaid threw"), and *stricter* than a renderer (collapsed `A --> B & C`, invented shapes are refused, which REQ-112 requires and a renderer would accept). Consequence: the grammar must stay a strict subset of Mermaid flowchart syntax (design obligation; Gate 7.5 renders `GUIDE_EXAMPLES` once in a browser). Runner-up (a) lost on supply-chain surface, boot cost and parser-quirk lock-in for a systemd-deployed engine. **Addendum (flagged for the owner):** REQ-112's four shapes have none for the black-box node ch. 11.4 tells an author to draw for another owner's `workflow()`; the grammar admits Mermaid's default rectangle `["…"]` for exactly that, excluded from the agent diff. Confirm or choose another.
+- **iter:** v24
+
+### ADR-024 — one tool-spec array with an authorization row per tool, `authorize()` once before dispatch; ownership via an injected port — not per-`case` checks, not a role service
+- **status:** draft
+- **traces:** REQ-109, REQ-107
+- **note:** Context: `mcp_provision` shipped "Admin tool" in its description with no check in its `case`, because intent and enforcement lived in different places; REQ-109 asks for three roles "enforced at every tool". Options: (a) a role check in each of the 35 `case` arms; (b) a separate `AUTHZ` table beside `TOOL_NAMES`; (c) the authz row on the same `ToolSpec` object as the name, schema and description, checked once at the facade. Decision: (c) — a tool without a row cannot exist (the array *is* the tool list), the description-vs-row agreement is a unit test, and a future OIDC-group or external-policy mapping swaps `resolveRole`, not 35 call sites (QD R-1). Ownership predicates read three stores, which would make the function impure — resolved with an injected `OwnerLookup` (testability lens; unit tests pass a map). Runner-up (b) lost because two arrays over the same names is the CONS-1 drift shape in miniature.
+- **iter:** v24
+
+### ADR-025 — `mermaid` lives on the immutable version row; `workflow_diagrams` is dropped; legacy rows are `NULL` and re-registration without a diagram is refused
+- **status:** draft
+- **traces:** REQ-111
+- **note:** Context: v23's ADR-021 put the diagram in a separate mutable table because it was *derived* and regenerated. In v24 it is author-supplied input, validated at registration, never mutated — exactly the properties of the append-only version row (ADR-009). Decision: one nullable column on `workflow_versions`; `deregister` needs no second delete; "a new version requires a fresh `mermaid`" is enforced on the registration path (`MERMAID_REQUIRED`) because a boot migration cannot invent diagrams for existing rows, so the column is nullable and legacy versions report `mermaid: null` + `LEGACY_NO_DIAGRAM`. Consequence: two tests (refusal without `mermaid`; no post-migration `NULL` write) turn the code discipline into a checked one. Runner-up (keep `workflow_diagrams` as a 1:1 table) lost as a second table for one column.
+- **iter:** v24
+
+### ADR-026 — trigger claims: `claimedBy` on the trigger row (name-level exclusivity) + `triggers[]` on the version row (fire-time membership); four SQLite files are not merged — atomic conditional `UPDATE` plus idempotent compensation
+- **status:** draft
+- **traces:** REQ-115, REQ-097
+- **note:** Context: REQ-115 makes the trigger set part of the *versioned* artifact ("`workflow_publish` moving `release` changes the effective trigger set", ch. 2) while exclusivity ("one trigger, one workflow") is a *name*-level property. Options: (a) claim per version (a trigger row referencing `(name, version)`) — then re-claiming on every new version and releasing on publish; (b) claim per name + a version-row list + a fire-time `includes` check; (c) merge `schedules.db`/`webhooks.db` into `catalog.db` for a true transaction. Decision: (b): `claim(id, name)` succeeds when unclaimed or already claimed by the same name (re-registration of a new version is the common path), the fire path resolves `release` and checks the version's `triggers` (legacy `NULL` list ⇒ member, so pre-v24 schedules keep firing), `NOT_IN_RELEASE` is a recorded refusal. Cross-file atomicity: the claim is `UPDATE … WHERE id=? AND (claimedBy IS NULL OR claimedBy=?)` reading `changes`, the register sequence claims before inserting and releases on failure, and the fire path treats a `claimedBy` naming a missing workflow as unclaimed — so both crash windows degrade to "needs re-claim", never to a phantom fire. Single-process, one writer per file — a mutex, not a protocol; stated so it is not dressed as one. Runner-up (c) lost as a live three-table migration for one edge case whose compensation is three lines; if Gate 7.5 ever shows a phantom fire, (c) is the fallback, not more compensation code. Who may claim (adversarial G4): the trigger's creator or an admin, per ch. 15.2 "only their own".
+- **iter:** v24
+
+### ADR-027 — the admin cross-principal read writes one `audit_events` row before serving bytes, read back on the run owner's `run_status.adminReads[]`; no viewer tool
+- **status:** draft
+- **traces:** REQ-109
+- **note:** Context: owner ruling — admin may read another principal's run workspace, "but a permission that leaves no trace cannot be reviewed". Panels split: adversarial — append-only table, no reader ("an admin has the SQLite file"; 40→35 tool pressure); quality-dimensions — a durable row **and** a read-back seam (`run_status` + dashboard), citing this ledger's own AC-2 rule that write-without-readback is graded debt. Decision: the table (both agree) plus the `run_status.adminReads[]` seam for the run's owner (QD wins on read-back: the party whose data was read is the one who can review it, and the seam is one select on an existing response) — but **no new tool and no dashboard panel** (adversarial wins on scope: neither is asked for). Ordering: audit first, then read; a crashed read leaves a row for a read that did not happen — acceptable, the reverse is not. Audited actions: `workspace_list`, `workspace_pull`, `run_agent_log` on a run the admin does not own.
+- **iter:** v24
+
+### ADR-028 — auth-disabled and unwired-config sentinels decided now: principal `{role:'admin', id:null}`, CAS namespace `'local'`, and `principals` undefined with auth enabled ⇒ `user`
+- **status:** draft
+- **traces:** REQ-109, REQ-108
+- **note:** Context: the CAS `namespace` is today a caller-typed string (a partition, not a permission — ch. 4) and becomes the principal id; with auth disabled there is no id. Security wants no caller-typed partition; testability dislikes a sentinel as a second branch. Decision: one constant `'local'` chosen at the edge where `Principal` is built, so `principal.id ?? 'local'` appears exactly once (ARCH-091) and every downstream module sees one code path; it satisfies `isValidNamespace` and cannot collide with an email. Auth disabled ⇒ `role:'admin'` (unchanged single-operator behaviour, owner). **`principals` map undefined while auth is enabled ⇒ everyone `user`** — fail closed and loud (QD-R2): the twice-bitten `composeConfig` class must lock the operator out visibly, not grant everyone `admin` silently; the two states (block never wired / auth deliberately off) are distinct in the `Principal` union.
+- **iter:** v24
+
+### ADR-029 — `agent({label})`: `label` required and a string literal on every call, no values in `agent()`, per-agent defaults for `model`/`effort`/`timeoutMs` required, duplicate labels share one spec
+- **status:** draft
+- **traces:** REQ-110, REQ-111
+- **note:** Context: ch. 12.3 left two points open (is `label` required? are duplicate labels legal?) and the diagram check needs a static key. Decision: `label` is **required on every `agent()`** (unconditionally — an unlabelled agent cannot appear in the diagram, so the bidirectional check would fail by construction anyway) and must be a string literal (`AGENT_LABEL_NOT_LITERAL` otherwise); every label must have a `meta.params.agents.<label>` entry (`AGENT_UNDECLARED`) and that entry must carry defaults for the three tunables (owner ch. 12: "每個 agent 的每個可調項都要有預設值") — which is also what makes ARCH-097's value-triple compare sound (there is always a declared value to compare the picture against); `appendPrompt` default optional; duplicate labels are legal and share one spec (same role run twice; the check counts distinct labels). The timeout on the picture is written `<n>s` or `<n>ms` and compared numerically (owner examples write `120s`, REQ-112 says `timeoutMs`). Runner-up (label optional, tolerate unlabelled agents in the diff) lost because it reopens the drift the check exists to close.
+- **iter:** v24
+
+### ADR-030 — MCP config is an asset kind: `mcp_provision` merges into `workspace_push({kind:'mcp'})`, one `assets` table for all kinds, probe kept; `http` probes pass the egress allowlist and `stdio` configs stay admin-only
+- **status:** draft
+- **traces:** REQ-113, REQ-114, REQ-109
+- **note:** Context: owner ch. 16.2 merged `mcp_provision` into `workspace_push({kind:'mcp'})` and opened it to authors, ch. 17 made `pushedBy` the precondition (REQ-114). Adversarial R1 (BLOCKING) then verified that `McpProbe` `fetch(HEAD)`es an author-supplied URL and `spawn()`s an author-supplied command (`mcp-probe.ts:62/72`) with no egress gate — acceptable while the single operator was the only caller, but for authors it is (a) an SSRF/port-scan oracle and (b) arbitrary command execution on the engine host for `stdio`. Decision: keep the merge and the author permission for **`http` transports, gated by the existing `isEgressAllowed` (ARCH-052, default-empty allowlist ⇒ refused until the operator lists hosts)**; **`stdio` transports remain `admin`-only** — the requirement says "MCP config", and a command-spawning config is read as outside what the owner meant to open. Audit (`pushedBy`) answers *who*; it does not contain *what the probe can reach* — audit ≠ containment. Storage: `mcp_provisions` retired into `catalog.assets` (`kind:'mcp'`, `config` column) so `pushedBy`, deregister-delete and discovery have one home (closes adversarial G3). **This is the one place the architecture narrows a Gate 1 ruling; surfaced in `needs_clarification` as confirm-or-overrule.**
+- **iter:** v24
+
+### ADR-031 — trigger refusals coalesce onto the trigger's own row (count, last time, last reason), read back via `schedule_list`/`webhook_list`; no pause, no per-fire rows
+- **status:** draft
+- **traces:** REQ-115
+- **note:** Context: REQ-115 says a trigger that fires while unclaimed is "REFUSED and the refusal is recorded — never silently dropped". A literal per-fire row from a forgotten cron is 1440 rows/day forever (QD-R1, HIGH). Options: (a) pause the schedule while unclaimed (changes observable behaviour — an owner call); (b) per-fire rows + TTL GC (hides the smell); (c) one coalesced record on the trigger row. Decision: (c) — `refusalCount`/`lastRefusedAt`/`lastRefusalReason ∈ {UNCLAIMED, CLAIMED_WORKFLOW_MISSING, NOT_IN_RELEASE, CHANNEL_UNPUBLISHED}`; every refusal is recorded (the count is exact), nothing is dropped, the table is bounded, and the seam is the trigger's own listing surface (QD O-2). Pause (a) declined because it needs no owner decision this way and would make a later claim silently *not* fire until un-paused. Firing an unpublished-but-claimed workflow is refused and recorded the same way.
+- **iter:** v24
+
+### ADR-032 — the guide is assembled from the enforcement constants and an example array a test registers; `docs/AUTHORING.md` is generated from the same builder and diff-locked
+- **status:** draft
+- **traces:** REQ-116, REQ-117, REQ-106
+- **note:** Context: v23's hand-written `AUTHORING.md` taught a `meta.params` example the engine refused, found only because Gate 7.5 ran it; REQ-116 will carry many more examples and REQ-117 has no margin for a stale ceiling in prose. Options: (a) hand-written guide + example-registration test; (b) guide text interpolating the exported constants (`DEFAULT_CEILINGS`, `LOCKED_KEYS`, grammar constants, `ERROR_CATALOG`, `TOOL_SPECS`) + the same test; (c) delete `AUTHORING.md` in favour of the tool. Decision: (b), with `AUTHORING.md` generated by the builder and a test asserting the committed file equals the output — the owner's rulings name `AUTHORING.md` as a place (ch. 11.1/11.4) and GitHub readers exist, so it stays, but as an artifact not a second source. (a) is a detector, not a preventer; (c) removes a surface the owner named.
+- **iter:** v24
+
+### ADR-033 — the dashboard shows the author's Mermaid as source text; no client-side renderer in v24
+- **status:** draft
+- **traces:** REQ-111
+- **note:** Context: no v24 requirement says where the author's Mermaid is *displayed* (QD-R10). Options: (a) `textContent` into `<pre>` (ARCH-084's path; a reader sees `flowchart` source); (b) a client-side Mermaid renderer fed author-controlled text that legitimately contains `<br/>`. Decision: (a) — zero new dependency, no XSS surface into every principal's browser, and the consumer v24 measures (REQ-117's model) reads source; ARCH-084's grep guard extended to forbid any Mermaid client library. Consequence and the honest cost: a human on the dashboard sees text, not a picture — a consumability regression against the v21 ask that is a product decision, surfaced to the owner, not taken here.
+- **iter:** v24
+
+### ADR-034 — selective materialization is per `agent()` call and additive within the shared run workspace; the descriptor records the materialized set
+- **status:** draft
+- **traces:** REQ-113
+- **note:** Context: owner 19.5.4 fixes the declaration granularity at the agent; the run has one workspace shared by all its agents and no agent isolation (existing design, ch. 3). Options: (a) per-agent workspaces or per-call `CLAUDE_CONFIG_DIR` isolation — a new isolation mechanism; (b) materialize the run's declared union once; (c) materialize each agent's declared set at its dispatch, never removing another in-flight agent's files. Decision: (c) — sequential agents get exactly their set; concurrent agents of the same workflow may see each other's declared skills; undeclared and foreign-author skills never appear, which is the failure REQ-113 names. (a) is a new mechanism no requirement asks for; (b) leaves the intra-workflow collision the owner explicitly rejected. The harness descriptor records what was placed, so the limit is observable, not hidden.
+- **iter:** v24
+
+### ADR-035 — `workflow_register.defaults` is removed; `meta.params.agents.<label>.<key>.default` is the only author-default rung
+- **status:** draft
+- **traces:** REQ-110, REQ-088, REQ-092
+- **note:** Context: v15's REQ-088 bound workflow-wide harness defaults at registration (`defaults`), v21 layered `meta.params.knobs` on top, and REQ-110 now makes every tunable per agent with a required default. Adversarial R7: two rungs describing the same knob confuse a cold model and need a precedence rule nobody can state from `tools/list`. Options: (a) keep `defaults` as the fallback rung below per-agent defaults; (b) refuse `defaults` when `params.agents` is present; (c) remove `defaults`. Decision: (c) — with the three defaults required per declared agent, a workflow-wide fallback is unreachable for `model`/`effort`/`timeoutMs` and only `appendPrompt` could use it; REQ-088/092's intent ("registered defaults actually take effect") is satisfied by the per-agent rung, which is also registration-bound (it is in the registered `meta`). Ch. 9's table still lists `defaults` (it predates ch. 12). **Flagged in `needs_clarification` because it retires a Gate-1-era field.**
+- **iter:** v24
+
+### v24 4+1 views
+
+**(1) Logical view** — one edge, one table, one switch; registration is total again:
+
+```mermaid
+flowchart LR
+  subgraph edge["HTTP edge (ARCH-089)"]
+    RP["resolvePrincipal + authEnabled + isLoopbackPeer"] --> P["Principal<br/>authenticated | auth-disabled | loopback-exempt"]
+    TL["tools/list = projectToolsList()"]
+  end
+  subgraph spec["TOOL_SPECS (ARCH-087) — the one array"]
+    TS[("35 rows: name · entity · key · schema · description · errors · authz")]
+  end
+  TL --> TS
+  P --> AZ["authorize(spec, principal, args, OwnerLookup) (ARCH-088)"]
+  TS --> AZ
+  AZ -->|"ok (+crossPrincipalRead)"| SW["callTool switch — 35 arms (ARCH-089 → ARCH-091)"]
+  AZ -->|"FORBIDDEN_ROLE / NOT_*_OWNER / PRINCIPAL_REQUIRED"| ERR["typed refusal + see: workflow_authoring_guide"]
+  subgraph reg["workflow_register — pure checks, then claims, then the row (ARCH-098)"]
+    SC["scanAgentCalls (ARCH-096)"] --> PC["parseParamContract (ARCH-094)"]
+    PC --> CM["checkMermaid (ARCH-097)<br/>grammar · label diff · value triple"]
+    CM --> CL["claim triggers (ARCH-099/100)"]
+    CL --> VR[("workflow_versions<br/>+mermaid +triggers")]
+  end
+  SW --> reg
+  subgraph ws["workspace_* (ARCH-091) over one verdict"]
+    PV["pathVerdict (ARCH-093)"]
+    AS["AssetSync — two trees, assets table, pushedBy (ARCH-102)"]
+    CAS["CAS pool = principal.id ?? 'local'"]
+  end
+  SW --> ws
+  subgraph run["run_start → per-agent dispatch"]
+    RA["resolveAgentParams(label) (ARCH-095)"] --> MA["materializeAssets(declared) (ARCH-103)"] --> HD["harness descriptor: provenance + materialized (ARCH-104)"]
+  end
+  SW --> run
+  subgraph rd["reads"]
+    DESC["workflow_describe → params.agents · mermaid · triggers (ARCH-105)"]
+    RS["run_status → adminReads[] (ARCH-092)"]
+    AG["workflow_authoring_guide (ARCH-107) ← constants of 087/094/097"]
+  end
+  SW --> rd
+  subgraph gone["DELETED"]
+    X1["GraphAnalyzer · graphAnalyzer config · diagramStatus · workflow_regenerate_diagram"]
+    X2["chain_create / chain_list · ContinuationStore"]
+    X3["mcp_provision · mcp-registry.ts · workflow_diagrams"]
+    X4["every old tool name — no alias"]
+  end
+```
+
+**(2) Development view** — files new / extended / deleted / fenced:
+
+```mermaid
+flowchart TB
+  subgraph new["NEW (pure, server-free)"]
+    TS["tool-specs.ts (ARCH-087)"]
+    AZ["authz.ts (ARCH-088)"]
+    PV["path-verdict.ts (ARCH-093)"]
+    AG["authoring-guide.ts (ARCH-107)"]
+    T["tests/acceptance/v24-tool-surface.test.ts (ARCH-108)"]
+  end
+  subgraph ext["EXTENDED (surgical)"]
+    SRV["server.ts (089)"] --- MN["main.ts (090)"]
+    MF["mcp-facade.ts (091)"] --- RS["store/sqlite-run-store.ts (092)"]
+    PC["params/contract.ts (094)"] --- PR["params/resolve.ts (095)"]
+    WM["workflow-meta.ts (096)"] --- DG["diagram-gate.ts → checkMermaid (097)"]
+    WC["workflow-catalog.ts (098)"] --- SCH["scheduler.ts (099)"]
+    WH["webhook-registry.ts (100)"] --- TB["trigger-bindings.ts (101)"]
+    ASY["asset-sync.ts (102)"] --- SDK["gateway/claude-agent-sdk-client.ts (103)"]
+    AE["agent-executor.ts (104)"] --- WV["workflow-view.ts (105)"]
+    DP["dashboard-page.ts (106)"]
+  end
+  subgraph del["DELETED"]
+    GA["graph-analyzer.ts"]
+    CS["continuation-store.ts"]
+    MR["mcp-registry.ts"]
+  end
+  subgraph fenced["FENCED OFF — do not touch"]
+    F1["workflow_versions immutability (ADR-009)"]
+    F2["sandbox host / child-entry / guards"]
+    F3["redact-at-capture sinks (ARCH-056)"]
+    F4["OAuth AS + token store (ARCH-059)"]
+    F5["cas-store.ts — caller still supplies namespace; the caller changed"]
+  end
+  SRV --> TS
+  SRV --> AZ
+  AZ --> TS
+  MF --> PV
+  ASY --> PV
+  WC --> DG
+  WC --> WM
+  WC --> PC
+  AG --> TS
+  AG --> PC
+  AG --> DG
+  T --> TS
+  T -.->|"renders GUIDE_EXAMPLES once (Gate 7.5)"| BROWSER[("browser, not a dependency")]
+```
+
+**(3) Process view** — register with claims, start with per-agent resolution, the audited cross-read:
+
+```mermaid
+sequenceDiagram
+  participant A as author (MCP client)
+  participant S as server
+  participant Z as authorize
+  participant C as Catalog
+  participant T as Scheduler/Webhooks
+  A->>S: workflow_register({name, script, mermaid, triggers:[t1]})
+  S->>Z: authorize(spec, principal{author}, args)
+  Z-->>S: ok (minRole author; ownership workflow → owner or new)
+  S->>C: register(...)
+  C->>C: scanAgentCalls → parseParamContract → checkMermaid  %% nothing written
+  alt any pure check fails
+    C-->>A: {code, line?, onlyInScript?, onlyInDiagram?, valueMismatch?, see:'workflow_authoring_guide'}
+  else
+    C->>T: claim(t1, name)  %% UPDATE … WHERE claimedBy IS NULL OR claimedBy=name
+    T-->>C: claimed | ALREADY_CLAIMED
+    C->>C: BEGIN IMMEDIATE; INSERT workflow_versions(mermaid, triggers, params); COMMIT
+    Note over C,T: on INSERT failure → release(t1, name) (idempotent compensation)
+    C-->>A: {version}
+  end
+  participant U as user
+  U->>S: run_start({name, overrides:{agents:{review:{effort:'low'}}}})
+  S->>Z: authorize → ok (release must resolve, else CHANNEL_UNPUBLISHED with the fix in the error)
+  S->>C: resolve(release) → version row (params.agents)
+  S->>S: validateOverrides → PARAM_OUT_OF_RANGE | PARAM_LOCKED | UNKNOWN_AGENT_LABEL refuse, never clamp
+  loop each agent() dispatch
+    S->>S: resolveAgentParams(label) → effective + provenance
+    S->>S: materializeAssets(declared.skills/mcp) → materialized
+    S->>S: harness event {label, provenance, materialized}
+  end
+  participant M as admin
+  M->>S: workspace_pull({runId of U's run, path})
+  S->>Z: authorize → ok + crossPrincipalRead{owner:U}
+  S->>S: appendAudit({actor:M, action:'workspace_pull', runId, owner:U, path})  %% BEFORE the read
+  S-->>M: bytes
+  U->>S: run_status({runId})
+  S-->>U: {..., adminReads:[{actor:M, action, ts, path}]}
+```
+
+**(4) Deployment view** — **unchanged topology**: one Node process, the same SQLite files under `workRoot`,
+no new port, sidecar or daemon; **fewer** moving parts (no analyzer model call at registration, no
+continuation reconciler). Operational deltas, all for DEPLOY.md: (i) `principals` config block — auth on and
+no block ⇒ every authenticated caller is `user` (ADR-028), so the operator adds themselves as `admin` in the
+same edit that enables auth; (ii) `mcpEgressAllowlist` (ADR-030) — empty ⇒ author `http` MCP pushes are
+refused until hosts are listed; (iii) the `graphAnalyzer` block is gone and warns once if present; (iv) boot
+migrations: `schedules.workflow`/`webhooks.workflow` → `claimedBy`, global-tree assets and `mcp_provisions`
+→ `catalog.assets` with `pushedBy:'legacy'`, `workflow_diagrams` dropped; (v) **every old tool name is gone**
+— the client plugin (ARCH-013) must ship the new names first; (vi) registration is total: no outbound model
+call, no `diagramStatus`.
+
+**(+1) Scenarios**
+- *S-1 — the cold model (REQ-117, the iteration's acceptance)*: a fresh instance outside this project tree, with `tools/list` + `workflow_authoring_guide` only, authors a multi-agent workflow with its Mermaid, registers, publishes, runs and reads a correct result first try. Every fact it relied on (ceilings, locked keys, shapes, error codes, `run_start`'s two trap sentences) came from constants the validators also read — a wrong step is a red test in ARCH-087/107, fixed and re-run with another fresh instance.
+- *S-2 — the honest author who forgot the picture*: adds `agent(prompt, {label:'verify'})`, re-registers with the old diagram → `DIAGRAM_SCRIPT_MISMATCH { onlyInScript:['verify'], see }`; fixes the diagram but writes `opus · high · 300s` while meta defaults say `sonnet · medium · 120s` → `DIAGRAM_VALUE_MISMATCH`; nothing was stored either time (ADR-025).
+- *S-3 — the user tunes one agent*: `workflow_describe` shows `params.agents.{analyze, review}`; `run_start({overrides:{agents:{review:{timeoutMs: 999999}}}})` → `PARAM_OUT_OF_RANGE` naming `maxTimeoutMs 600000` (never clamped); with `60000` the run's harness event for `review` shows `timeoutMs: 60000, provenance: 'override'` and `analyze` shows its `default`.
+- *S-4 — the audited cross-read*: an `admin` pulls a file from another principal's run; the `audit_events` row exists **before** the bytes are served; the run owner's `run_status` shows `adminReads[]`; a `user` attempting the same gets `NOT_RUN_OWNER`.
+- *S-5 — the forgotten cron*: `schedule_create({cron})` returns an id; nobody claims it; it fires 1440 times in a day and `schedule_list` shows `refusalCount: 1440, lastRefusalReason: 'UNCLAIMED'` — one row, nothing dropped, no run started. `workflow_register({triggers:[id]})` by a different principal → `NOT_TRIGGER_OWNER`; by its creator → claimed; a second workflow claiming it → `TRIGGER_ALREADY_CLAIMED`. `workflow_deregister` returns `releasedTriggers:[id]` and the schedule is unclaimed again, not deleted.
+- *S-6 — fifty authors, one skill name*: two authors each `workspace_push({workflow:<own>, kind:'skill', name:'review'})`; both exist (`<workRoot>/<wf>/assets/skill/review/`), `workspace_list` on either shows only its own plus global `builtin:true` rows, each with `pushedBy`; a run of workflow A whose `analyze` declares `skills:['review']` materializes A's `review` only, and the harness event lists it under `materialized.skills`.
+- *S-7 — the MCP push under the new gate*: an `author` pushes `{kind:'mcp', config:{url:'http://10.0.0.5:9000'}}` with an empty allowlist → `EGRESS_DENIED`, nothing stored, no probe fired; the same with a `command` → `FORBIDDEN_ROLE` (stdio is admin-only); an admin's stdio push is probed then stored with `pushedBy`.
+- *S-8 — the surface itself (REQ-118)*: the generated table has one row per `TOOL_SPECS` entry; `tools/list` over real HTTP contains none of the 15 old names; `issue_comment_post` rows read `UNVERIFIED(no GitHub token)` rather than being absent; the client plugin's guidance skill has been updated to the new names before the S-1 probe runs (its old `workflow_run` would hand the cold client an unknown-tool error).
+- *S-9 — the unwired block*: an operator enables auth and forgets `principals`; the next `workflow_register` from their own account returns `FORBIDDEN_ROLE` (they are `user`) — loud within minutes, never silently `admin` for everyone.
+
+### v24 data architecture
+
+Storage stays SQLite/`better-sqlite3` — no ADR, settled long ago. v24 adds **`assets`** to `catalog.db`,
+**`audit_events`** to the run store, columns to `workflow_versions`, `schedules`, `webhooks`, and drops
+`workflow_diagrams`, `mcp_provisions`, `continuations`. The three trigger/catalog/run databases remain
+**separate files**, which is why claims are compensated rather than joined (ADR-026).
+
+```mermaid
+erDiagram
+  WORKFLOWS ||--o{ WORKFLOW_VERSIONS : "has versions (append-only)"
+  WORKFLOWS ||--o{ ASSETS : "owns (workflow scope); '' = global"
+  WORKFLOWS ||--o{ SCHEDULES : "claimedBy (name-level, exclusive)"
+  WORKFLOWS ||--o{ WEBHOOKS : "claimedBy (name-level, exclusive)"
+  RUNS ||--o{ AUDIT_EVENTS : "admin cross-principal reads"
+  WORKFLOW_VERSIONS {
+    text name PK
+    text version PK
+    text script
+    text params "v24: params.agents.<label> — model/effort/timeoutMs required defaults; skills/mcp locked"
+    text mermaid "v24 NEW — author-supplied, validated by checkMermaid; NULL only on pre-v24 rows"
+    text triggers "v24 NEW — JSON string[] of claimed trigger ids; NULL only on pre-v24 rows (⇒ all claimed fire)"
+  }
+  ASSETS {
+    text workflow PK "v24 NEW table — '' is the global-scope sentinel"
+    text kind PK "skill | mcp (hook rejected by construction)"
+    text name PK
+    text pushedBy "REQ-114 — never null on a post-v24 push; 'legacy' for migrated rows"
+    text pushedAt
+    text config "mcp only — the probed server config (former mcp_provisions.config)"
+  }
+  SCHEDULES {
+    text id PK "schedules.db"
+    text claimedBy "v24 — replaces workflow NOT NULL; NULL = unclaimed"
+    text createdBy "v24 — principal; NULL when auth disabled / legacy"
+    text cron
+    int enabled
+    int refusalCount "v24 — coalesced refusals (ADR-031)"
+    text lastRefusedAt
+    text lastRefusalReason "UNCLAIMED | CLAIMED_WORKFLOW_MISSING | NOT_IN_RELEASE | CHANNEL_UNPUBLISHED"
+  }
+  WEBHOOKS {
+    text id PK "webhooks.db"
+    text claimedBy
+    text createdBy
+    text secret "LIVE CREDENTIAL — verified BEFORE any claim-state answer"
+    int enabled
+    int refusalCount
+    text lastRefusedAt
+    text lastRefusalReason
+  }
+  RUNS {
+    text id PK "run store"
+    text name
+    text status
+    text principal "v15 column — the run owner; v24 indexes (name, status, createdAt)"
+    text createdAt
+  }
+  AUDIT_EVENTS {
+    int seq PK "v24 NEW — AUTOINCREMENT, append-only like transitions"
+    text ts
+    text actor "the admin"
+    text action "workspace_list | workspace_pull | agent_log_read"
+    text runId FK
+    text owner "the principal whose run was read"
+    text path
+  }
+```
+
+- **Indexes**: one new, `runs(name, status, createdAt DESC)` for `run_list` filters (required — ARCH-091). Everything else is by primary key at human-rate row counts.
+- **Lifecycle**: `assets` rows die inside `deregister`'s transaction; the asset directory and the trigger releases are compensating after-hooks. `audit_events` are never deleted (append-only; bounded by admin behaviour, not by traffic). Refusals are coalesced, so no table grows per fire.
+- **Migrations (boot, idempotent, ARCH-071 precedent)**: `schedules.workflow`/`webhooks.workflow` → `claimedBy`; global-tree asset directories → `assets(workflow='', pushedBy='legacy')`; `mcp_provisions` → `assets(kind='mcp', config, pushedBy='legacy')` then dropped; `workflow_diagrams` dropped; `continuations` dropped (any `pending` continuation is logged once and discarded — the tool that created it no longer exists).
+
+### v24 interface & API contracts
+
+| surface | contract delta | errors |
+|---|---|---|
+| `tools/list` | **projection of `TOOL_SPECS`** — 35 names, each description ending in `Errors: …` and `See also: …`; **no old name present**; `workflow_register`'s description tells a cold client to call `workflow_authoring_guide` first | unknown tool for any old name |
+| `workflow_register({name, script, mermaid, triggers?})` | `mermaid` **required**; `triggers` optional ids created earlier; **no `defaults`** (ADR-035); `minRole:'author'`; owner-or-new; every refusal carries `see:'workflow_authoring_guide'` and, where it applies, `line`, `onlyInScript`/`onlyInDiagram`, `valueMismatch` | `PARSE_ERROR`, `AGENT_LABEL_REQUIRED`, `AGENT_LABEL_NOT_LITERAL`, `AGENT_OPTS_NOT_LITERAL`, `PARAM_IN_SCRIPT`, `PARAM_CONTRACT_INVALID`, `AGENT_UNDECLARED`, `AGENT_DECLARED_NOT_IN_SCRIPT`, `MERMAID_REQUIRED`, `MERMAID_INVALID`, `MERMAID_RULE_VIOLATION`, `DIAGRAM_SCRIPT_MISMATCH`, `DIAGRAM_VALUE_MISMATCH`, `TRIGGER_NOT_FOUND`, `TRIGGER_ALREADY_CLAIMED`, `NOT_TRIGGER_OWNER`, `UNKNOWN_ALIAS`, `NOT_WORKFLOW_OWNER`, `FORBIDDEN_ROLE` |
+| `workflow_deregister({name})` | → `{removed, releasedTriggers: string[]}`; deletes versions + assets (rows and tree); releases, never deletes, triggers | `NOT_WORKFLOW_OWNER`, `FORBIDDEN_ROLE` |
+| `workflow_publish`, `workflow_describe`, `workflow_list({onlyRunnable?})`, `workflow_source({name, version?})`, `workflow_authoring_guide()` | `describe.params` is `{agents: Record<label, …>, args}`, `describe.mermaid` string\|null (+ `mermaidNote`), `describe.triggers[]` from claims; `list` rows carry `runnable`, `user` defaults `onlyRunnable:true`; `source` = former `workflow_get`, `minRole:'author'`, non-owner gets the masked projection with `see:'workflow_describe'`; the guide is one text response built from the enforcement constants | `CHANNEL_UNPUBLISHED`, `UNKNOWN_VERSION`, `WORKFLOW_NOT_FOUND`, `FORBIDDEN_ROLE` |
+| `run_start({name, version?\|channel?, args?, seed*, overrides?:{agents:{<label>:{model?, effort?, timeoutMs?, appendPrompt?}}}})` | former `workflow_run`; overrides **per agent only** (flat form gone; closed schema); description carries the two first-try sentences (publish-first; poll `run_status` then `run_result`) | `CHANNEL_UNPUBLISHED` (with the fix), `UNKNOWN_AGENT_LABEL`, `PARAM_LOCKED`, `PARAM_OUT_OF_RANGE`, `UNKNOWN_ALIAS`, `SEED_*` (unchanged) |
+| `run_status`, `run_result`, `run_suspend`, `run_resume`, `run_stop`, `run_agent_log`, `run_list({workflow?, status?, limit?})` | renamed from `workflow_*`; **ownership `run`** on every one (admin bypass; `run_agent_log` cross-read audited); `run_status` adds `adminReads[]` for the owner; `run_list` filters by principal in SQL for non-admins | `NOT_RUN_OWNER`, `RUN_NOT_FOUND` |
+| `workspace_diff({manifest})` | former `seed_plan`; no scope argument; pool = caller's namespace | — |
+| `workspace_push` | mode A `{sha256, contentB64}` → CAS (former `blob_put`; namespace from principal, `'local'` when auth is off); mode B `{workflow, kind:'skill'\|'mcp', name, files\|config, scope?:'global'}` (former `asset_push` + `mcp_provision`); **`runId` present → refused** | `BLOB_HASH_MISMATCH`, `INVALID_ARGUMENT`, `HOOKS_UNSUPPORTED`, `RESERVED_PREFIX`, `MCP_PROBE_FAILED`, `EGRESS_DENIED`, `NOT_WORKFLOW_OWNER`, `FORBIDDEN_ROLE` (stdio or global by a non-admin) |
+| `workspace_pull({runId, path, offset?, length?})`, `workspace_list({runId} \| {workflow, kind})`, `workspace_delete({runId, paths[]} \| {workflow\|scope:'global', kind, name})`, `workspace_purge({runId})` | former `workflow_artifact_get` / `workflow_artifacts`+`asset_list` / `asset_delete`+new partial delete / same; `list({workflow, kind})` returns both scopes with `scope`, `builtin`, `pushedBy`, `pushedAt`; `delete`/`purge` on a `queued\|running\|suspended` run refused inside `RunManager` | `NOT_RUN_OWNER`, `RUN_NOT_TERMINAL`, `PATH_ESCAPE`, `NOT_WORKFLOW_OWNER`, `FORBIDDEN_ROLE` |
+| `schedule_create({cron\|at\|resident})`, `webhook_create()` | **no `workflow` argument, no catalog resolve** (the v22-H4 check moved to `workflow_register`); return `{id}` / `{webhookId, url, secret}` with `createdBy` recorded; `minRole:'author'` | `INVALID_CRON`, `INVALID_AT` |
+| `schedule_list`, `webhook_list`, `schedule_delete`, `schedule_setEnabled`, `webhook_delete` | rows carry `claimedBy`, `createdBy`, `refusalCount`, `lastRefusedAt`, `lastRefusalReason`; mutations are ownership `trigger` (creator or admin) | `NOT_TRIGGER_OWNER` |
+| `POST /webhooks/:id` (ingress) | verify HMAC → timestamp → dedup → **then** claim/membership/publish → `409 TRIGGER_UNCLAIMED\|CLAIMED_WORKFLOW_MISSING\|NOT_IN_RELEASE\|CHANNEL_UNPUBLISHED`, recorded on the row | 401 / 403 / 404 / 409 |
+| `issue_report`, `issue_get`, `issue_list`, `issue_get_comments({number, latest?, limit?})`, `issue_comment_post` | `issue_comments` → `issue_get_comments` (read; `latest` only), `issue_comment` → `issue_comment_post` (write; side effect named); all roles | unchanged |
+| `models_list`, `system_info` | unchanged; all roles | unchanged |
+| `POST /assets/blob/:sha` | namespace from the principal, same rule as `workspace_push` mode A | unchanged |
+| `rwe.config.json` | `+principals?: Record<string, {role}>` (forwarded in `composeConfig()`, wiring-test row, fail-closed default); `+mcpEgressAllowlist?: string[]`; `−graphAnalyzer` (warns once if present) | — |
+| harness transcript event | `+label`, `+provenance` per key (`override\|default\|agentType\|engine`), `+materialized: {skills[], mcp[], missing[]}` | — |
+| `docs/AUTHORING.md` | **generated** from `buildAuthoringGuide()`; a test diffs the committed file against the output | — |
+
+### Decision rationale — v24 (ARCH-087..108, ADR-023..035; REQ-107..118)
+
+- **Convergence.** No round 2 was needed: the two round-1 proposals agree on every structural choice (one
+  authz table before dispatch; fixed grammar not a renderer; guide rendered from constants; per-agent
+  harness descriptor; `principals` into the wiring guard; drop the analyzer as a double win). The
+  remaining differences were referee-decidable: **audit read-back** — QD's `run_status.adminReads[]`
+  adopted over adversarial's "no reader" because this ledger already graded write-without-readback as debt
+  (AC-2/ARCH-085); adversarial's "no new tool / no dashboard panel" kept (ADR-027). **Refusal
+  coalescing** — QD raised the unbounded-rows risk and offered pause-or-coalesce as an owner call;
+  adversarial wrote per-fire rows; coalescing on the trigger row takes QD's bound without changing the
+  owner-visible behaviour, so no ruling was needed (ADR-031). **Value-triple compare** — adversarial only;
+  adopted because ch. 12's "every tunable of every agent has a default" makes it sound, and its absence
+  is the "picture says opus, meta says haiku" failure this ledger has met fifteen times (ADR-029).
+- **Panel gaps already ruled by the owner (closed by citation, not relayed).** Adversarial G1 (`chain_*`
+  deletion unnamed in REQs) — ruled [OWNER] at working notes ch. 5, and REQ-107's tool set is the trace.
+  G3 (`mcp_provisions` scope) — resolved by the owner's asset model (ch. 19 + REQ-113/114 "any asset or
+  MCP config"): MCP is a kind of asset, one table (ADR-030). G4 (who may claim) — ch. 15.2 "only their
+  own": creator or admin (ADR-026). G5 (`run_trigger` breaks the `run_*`-keyed-by-`runId` rule) — moot,
+  ch. 16.1 removed `run_trigger`. Adversarial ADR-030's "keep `mcp_provision`" — superseded by ch. 16.2's
+  merge. QD-R4 (legacy assets owner-less) — migrated as global `pushedBy:'legacy'` rows (ARCH-098).
+- **Altitude.** Both panels: v24 is a control-plane slice argued at system altitude, with agent altitude in
+  exactly three places — the consumer of the surface is an LLM (REQ-116/117: descriptions and error
+  envelopes *are* the API), REQ-110 is LLM-decoupling at the authoring layer (no model name in any
+  script), and REQ-113's selective materialization is context hygiene. Memory metabolism / self-reflection
+  / tool-liveness are named by QD as out of scope and are not smuggled in.
+- **The one push-back on a Gate 1 ruling (ADR-030).** Opening MCP push to authors was justified by
+  traceability (`pushedBy`). Adversarial R1 verified the probe `spawn()`s an author-supplied command and
+  `fetch`es an author-supplied URL with no egress gate — audit answers *who*, not *what the probe can
+  reach*. Architecture fails closed: `http` through the existing allowlist, `stdio` admin-only. Surfaced
+  for confirm-or-overrule; nothing else in this slice narrows an owner ruling.
+- **Karpathy check per lens.** Security: one `Principal` union, one `authorize`, one `pathVerdict`, one
+  egress gate reused — no new trust tier. Scalability/consistency: one index, one compensation sequence,
+  single-process stated; store merge named and declined. Testability: four new files are pure and
+  server-free; every drift rule is a unit test over an array, not a review item. Observability: three
+  "recorded" clauses each have a named reader (`workspace_list.pushedBy`, `run_status.adminReads[]`,
+  `schedule_list/webhook_list` refusal fields); the harness descriptor records what was materialized.
+  Replaceability: role source is one function; model binding leaves scripts entirely. Consumability:
+  refuse-never-clamp, both diff sets on every mismatch, traps on `run_start`'s own row, `runnable` on
+  `list`. Self-sustainability: registration is total (no model, no async, no reconciler); refusals bounded;
+  `principals` fails closed. Simpler-of-equals: `diagram-gate.ts` kept as the module name (REQ-111 says
+  "repurposed"), rectangle for the black box (Mermaid's default), coalesce over pause, source text over a
+  renderer, one `assets` table over two registries.
+- **Requirement notes for the orchestrator (not user decisions).** `state.yaml`'s "40→36" predates ch. 16;
+  the derivation above gives 35 and `TOOL_SPECS.length` is the check. REQ-109's acceptance still names
+  `mcp_provision`; the clause is satisfied by the authz row on the `workspace_push` mcp mode. The client
+  plugin (ARCH-013, separate repo, no ledger) must ship the new tool names before the REQ-117 probe —
+  named in S-8 and the deployment view. **Two shipped REQs now point at deleted code and should be marked superseded in 01-requirements.md by the orchestrator (a ledger-consistency line, not a user decision):** REQ-104 (the `graphAnalyzer` config block) is retired by REQ-111 — working notes ch. 1 marks it 全作廢; REQ-103's staleness clause (`diagramStale`, `bindingsFingerprint`) is superseded because the trigger set is now a declared input on the version row (ARCH-098/101) and cannot go stale relative to a diagram the author drew from it — `describe.triggers[]` remains the live truth REQ-103 asked for.

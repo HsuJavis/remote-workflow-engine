@@ -1,10 +1,10 @@
-// IT-063: `startedBy` persisted in SQLite + surfaced on RunStatusView / workflow_status / GET /api/runs/:id
+// IT-063: `startedBy` persisted in SQLite + surfaced on RunStatusView / run_status / GET /api/runs/:id
 // (DES-063, ARCH-041, TASK-066)
 //
 // Mock policy (integration): real createServer + real SqliteRunStore + real McpFacade; only the
 // GatewayClient is faked (fixed-response, no network). Tests that:
-//   1. workflow_run sets startedBy:{type:'client'} (MCP facade call site)
-//   2. workflow_status returns startedBy on the RunStatusView
+//   1. run_start sets startedBy:{type:'client'} (MCP facade call site)
+//   2. run_status returns startedBy on the RunStatusView
 //   3. GET /api/runs/:id surfaces startedBy
 //   4. A pre-migration row (no started_by column value) coalesces to {type:'unknown'}
 //
@@ -35,11 +35,11 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
 async function pollStatus(runId: string, maxMs = 8000): Promise<unknown> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
-    const s = await callTool('workflow_status', { runId }) as { status?: string };
+    const s = await callTool('run_status', { runId }) as { status?: string };
     if (s?.status !== 'queued' && s?.status !== 'running') return s;
     await new Promise((r) => setTimeout(r, 40));
   }
-  return callTool('workflow_status', { runId });
+  return callTool('run_status', { runId });
 }
 
 beforeAll(async () => {
@@ -53,13 +53,13 @@ afterAll(async () => {
 });
 
 describe('startedBy provenance — HTTP + store (IT-063, DES-063)', () => {
-  it('workflow_run via MCP facade → startedBy:{type:"client"} on workflow_status result', async () => {
+  it('run_start via MCP facade → startedBy:{type:"client"} on run_status result', async () => {
     const sub = await runScriptVia(callTool, 'return "done";') as { runId?: string };
     const runId = sub?.runId;
     expect(runId).toBeTruthy();
     const status = await pollStatus(runId!);
-    // TASK-066/DES-063: startedBy is a RunStatusView field, so workflow_status carries it inside the
-    // ResultEnvelope's `result` (workflow_status returns ResultEnvelope<RunStatusView>), not at the
+    // TASK-066/DES-063: startedBy is a RunStatusView field, so run_status carries it inside the
+    // ResultEnvelope's `result` (run_status returns ResultEnvelope<RunStatusView>), not at the
     // envelope top level. (`pollStatus` returns the whole envelope: {runId, status, result: view}.)
     const view = (status as { result?: Record<string, unknown> })?.result;
     expect(view?.['startedBy']).toBeDefined();
@@ -81,7 +81,7 @@ describe('startedBy provenance — HTTP + store (IT-063, DES-063)', () => {
     const res = await fetch(`http://127.0.0.1:${server.port}/api/runs`);
     const runs = await res.json() as Array<{ startedBy?: { type?: string } }>;
     expect(Array.isArray(runs)).toBe(true);
-    // Every run entry from a workflow_run call must carry startedBy.type='client'
+    // Every run entry from a run_start call must carry startedBy.type='client'
     for (const r of runs) {
       expect(r.startedBy?.type).toBe('client');
     }

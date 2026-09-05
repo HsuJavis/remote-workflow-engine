@@ -3,7 +3,7 @@
 // register), the workflow_get MCP tool, and the dashboard's workflow-card drill-in.
 import { runInNewContext } from 'node:vm';
 import { checkMeta } from './sandbox/guards.js';
-import { parseParamContract, type ParamContract, type Err as ParamContractErr } from './params/contract.js';
+import { parseParamContract, retiredDefaults, type ParamContract, type Err as ParamContractErr } from './params/contract.js';
 
 export interface WorkflowMeta {
   description: string;
@@ -42,17 +42,19 @@ export function parseMeta(script: string): WorkflowMeta {
  *  structural bounds (DES-101), which only ever see a value that already survived evaluation. */
 export const MAX_META_LITERAL_BYTES = 4096;
 
-/** Extracts + validates `meta.params` at registration time (DES-103, ARCH-067). No meta / an
- *  impure meta (rejected elsewhere via INVALID_META) / no declared `params` field all mean
- *  "no contract" — `parseParamContract(undefined, …)` already resolves that to the canonical
- *  4-knob contract (REQ-090 backward compat; the resolver never branches on "contract missing"). */
+/** Extracts + validates `meta.params` at registration time (DES-103, ARCH-067, DES-144). No meta /
+ *  an impure meta (rejected elsewhere via INVALID_META) / no declared `params` field all mean
+ *  "no contract" — `parseParamContract(undefined, scriptLabels, …)` resolves that to the zero-label
+ *  contract when the script has no `agent()` calls, or refuses `AGENT_UNDECLARED` per label
+ *  otherwise (v24; REQ-090's old unconditional canonical-contract compat is retired by DES-144). */
 export function parseMetaParams(
   script: string,
   aliasNames: Set<string>,
 ): { ok: true; value: ParamContract } | ParamContractErr {
+  const labels = scanAgentCalls(script).labels;
   const m = checkMeta(script);
   if (!m.found || !m.pureLiteral || m.objectText === undefined) {
-    return parseParamContract(undefined, aliasNames);
+    return parseParamContract(undefined, labels, aliasNames);
   }
   if (Buffer.byteLength(m.objectText, 'utf8') > MAX_META_LITERAL_BYTES) {
     return {
@@ -66,10 +68,19 @@ export function parseMetaParams(
   try {
     obj = runInNewContext(`(${m.objectText})`, Object.create(null) as object, { timeout: 50 });
   } catch {
-    return parseParamContract(undefined, aliasNames);
+    return parseParamContract(undefined, labels, aliasNames);
+  }
+  // v24 Gate 7.5 (D-2, REQ-110 / ADR-035): `meta.defaults` is a SIBLING of `params`, so
+  // `parseParamContract` — whose first argument IS `meta.params` — never saw it, and a script
+  // declaring one registered `completed` with the whole object silently dropped. The authoring
+  // guide states in as many words that `meta.params.knobs` and `meta.defaults` are both refused
+  // DEFAULTS_RETIRED; only the first of the two was true. Checked HERE, the one place the whole
+  // evaluated meta object is in hand.
+  if (obj && typeof obj === 'object' && (obj as { defaults?: unknown }).defaults !== undefined) {
+    return retiredDefaults('meta.defaults');
   }
   const rawParams = obj && typeof obj === 'object' ? (obj as { params?: unknown }).params : undefined;
-  return parseParamContract(rawParams, aliasNames);
+  return parseParamContract(rawParams, labels, aliasNames);
 }
 
 export type SkeletonKind = 'phase' | 'agent' | 'workflow';
@@ -126,6 +137,157 @@ function matchDelimiter(script: string, openIdx: number, open: string, close: st
     else if (c === close) { depth--; if (depth === 0) return i + 1; }
   }
   return -1;
+}
+
+export type AgentCallViolationCode =
+  | 'AGENT_LABEL_REQUIRED'
+  | 'AGENT_LABEL_NOT_LITERAL'
+  | 'AGENT_LABEL_FORMAT'
+  | 'AGENT_OPTS_NOT_LITERAL'
+  | 'PARAM_IN_SCRIPT';
+
+export interface AgentCallViolation {
+  line: number;
+  code: AgentCallViolationCode;
+  key?: 'model' | 'effort' | 'timeoutMs';
+  hint: string;
+}
+
+export interface AgentCallScan {
+  labels: string[];
+  calls: Array<{ line: number; label: string }>;
+  violations: AgentCallViolation[];
+}
+
+const AGENT_CALL_RE = /(?<!\.)\bagent\s*\(/g;
+const AGENT_LABEL_FORMAT_RE = /^[A-Za-z_][\w-]*$/;
+const LOCKED_PARAM_KEYS = new Set(['model', 'effort', 'timeoutMs']);
+const WORKFLOW_CALL_RE = /(?<!\.)\bworkflow\s*\(/g;
+
+/** DES-143 boundary: "calls inside a nested `workflow(` argument list are NOT scanned" means a
+ *  call to ANOTHER named sub-workflow (`workflow("name", …)` — first arg a string literal), whose
+ *  whole argument-list span (including any inline callback body) is excluded. It does NOT mean the
+ *  top-level bootstrap wrapper (`workflow(() => { … })`, no string first arg) — that one's `agent()`
+ *  calls ARE scanned (UT-145 case 1). */
+function nestedWorkflowSpans(script: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  WORKFLOW_CALL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = WORKFLOW_CALL_RE.exec(script)) !== null) {
+    const openParen = script.indexOf('(', m.index);
+    const closeParen = matchDelimiter(script, openParen, '(', ')');
+    if (closeParen === -1) continue;
+    const [firstArg] = splitTopLevel(script.slice(openParen + 1, closeParen - 1));
+    if (firstArg !== undefined && literalStringValue(firstArg) !== null) spans.push([openParen, closeParen]);
+  }
+  return spans;
+}
+
+/** Splits `text` on its TOP-LEVEL commas (string/template/paren/brace/bracket-aware — the same
+ *  depth-tracking idiom as `matchDelimiter`, generalized to multiple delimiter kinds at once since
+ *  an argument list or an object literal's entries can nest any of them). Used both to split an
+ *  `agent(...)`'s argument list and an options object literal's `key: value` entries. */
+function splitTopLevel(text: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let str: string | null = null;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (str !== null) {
+      if (c === '\\') { i++; continue; }
+      if (c === str) str = null;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') { str = c; continue; }
+    if (c === '(' || c === '{' || c === '[') depth++;
+    else if (c === ')' || c === '}' || c === ']') depth--;
+    else if (c === ',' && depth === 0) { parts.push(text.slice(start, i)); start = i + 1; }
+  }
+  const last = text.slice(start);
+  if (last.trim() !== '') parts.push(last);
+  return parts.map((p) => p.trim());
+}
+
+/** `null` unless `text` is, in full, one quoted string literal token (splitTopLevel already
+ *  isolates a single argument, so no further string-awareness is needed here). */
+function literalStringValue(text: string): string | null {
+  if (text.length >= 2 && (text[0] === '"' || text[0] === "'") && text[text.length - 1] === text[0]) {
+    return text.slice(1, -1);
+  }
+  return null;
+}
+
+/** DES-143/ARCH-096 (TASK-135): what "literal" means for an `agent(label, {options})` call, and the
+ *  1-based line number on every violation. A call is `agent(<expr>, <balanced {…} literal>)`,
+ *  matched with the same string-aware `matchDelimiter` used by `parseWorkflowSkeleton` plus a
+ *  key/value scan — no JS parser dependency (a template/variable label or a non-literal options
+ *  object cannot be checked statically, so both are refused rather than silently accepted).
+ *  `x.agent(`/`agentFoo(` are not calls (the regex requires a preceding non-word/non-dot boundary);
+ *  a commented-out `agent(` IS matched (accepted — the refusal names the line). Duplicate labels are
+ *  legal: `labels` is de-duplicated, `calls` is not. */
+export function scanAgentCalls(script: string): AgentCallScan {
+  const labels: string[] = [];
+  const calls: Array<{ line: number; label: string }> = [];
+  const violations: AgentCallViolation[] = [];
+
+  const lineAt = (idx: number): number => script.slice(0, idx).split('\n').length;
+  const nestedSpans = nestedWorkflowSpans(script);
+  const inNestedWorkflow = (idx: number): boolean => nestedSpans.some(([s, e]) => idx >= s && idx < e);
+
+  AGENT_CALL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = AGENT_CALL_RE.exec(script)) !== null) {
+    if (inNestedWorkflow(m.index)) continue;
+    const line = lineAt(m.index);
+    const openParen = script.indexOf('(', m.index);
+    const closeParen = matchDelimiter(script, openParen, '(', ')');
+    if (closeParen === -1) continue; // unbalanced — not a well-formed call, nothing to report
+    const args = splitTopLevel(script.slice(openParen + 1, closeParen - 1));
+
+    if (args.length < 2) {
+      violations.push({ line, code: 'AGENT_LABEL_REQUIRED', hint: 'agent() needs a literal label and an options object: agent("label", { … })' });
+      calls.push({ line, label: '' });
+      continue;
+    }
+
+    const [labelArg, optsArg] = args;
+    const labelVal = literalStringValue(labelArg!);
+    let validLabel: string | null = null;
+    if (labelVal === null) {
+      violations.push({ line, code: 'AGENT_LABEL_NOT_LITERAL', hint: 'the label must be a literal string, not a template or a variable' });
+    } else if (!AGENT_LABEL_FORMAT_RE.test(labelVal)) {
+      violations.push({ line, code: 'AGENT_LABEL_FORMAT', hint: 'a label must match /^[A-Za-z_][\\w-]*$/' });
+    } else {
+      validLabel = labelVal;
+    }
+
+    const optsText = optsArg!.trim();
+    if (!(optsText.startsWith('{') && optsText.endsWith('}'))) {
+      violations.push({ line, code: 'AGENT_OPTS_NOT_LITERAL', hint: 'the options argument must be a literal object: { … }' });
+    } else {
+      for (const entry of splitTopLevel(optsText.slice(1, -1))) {
+        const colonIdx = entry.indexOf(':');
+        if (colonIdx === -1) continue;
+        let key = entry.slice(0, colonIdx).trim();
+        if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) key = key.slice(1, -1);
+        if (LOCKED_PARAM_KEYS.has(key)) {
+          const label = validLabel ?? '<label>';
+          violations.push({
+            line,
+            code: 'PARAM_IN_SCRIPT',
+            key: key as 'model' | 'effort' | 'timeoutMs',
+            hint: `move '${key}' to meta.params.agents.${label}.${key}.default`,
+          });
+        }
+      }
+    }
+
+    calls.push({ line, label: validLabel ?? labelVal ?? '' });
+    if (validLabel && !labels.includes(validLabel)) labels.push(validLabel);
+  }
+
+  return { labels, calls, violations };
 }
 
 /** Predicted DAG skeleton — a pure static scan of phase()/agent()/parallel()/workflow() calls in

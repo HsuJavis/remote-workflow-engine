@@ -52,7 +52,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
 async function pollDone(runId: string, maxMs = 8000): Promise<void> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
-    const s = await callTool('workflow_status', { runId }) as { status?: string };
+    const s = await callTool('run_status', { runId }) as { status?: string };
     if (s?.status !== 'queued' && s?.status !== 'running') return;
     await new Promise((r) => setTimeout(r, 40));
   }
@@ -100,20 +100,19 @@ describe('VAL-080: graph view returns GraphPayload (REQ-071)', () => {
     expect(html).not.toMatch(/body[^}]*overflow-x\s*:\s*scroll/i);
   });
 
-  it('REQ-071 agent+edge render (LLM-gated — deferred to Gate 7.5 real-run)', async () => {
+  it.skipIf(!HAS_PROVIDER)('REQ-071 agent+edge render (LLM-gated — deferred to Gate 7.5 real-run) [UNVERIFIED here: no provider configured — set ANTHROPIC_API_KEY or OLLAMA_BASE_URL]', async () => {
     // This case requires a real LLM to dispatch agents, producing agent cells + edges in the graph.
     // Skipped in CI; the headless-browser assertion (trigger → Draft parallel → Verify) is at Gate 7.5.
-    if (!HAS_PROVIDER) return;
     await registerPublishedVia(callTool, 'val080-cs', `export const meta = {
         name: 'val080-cs',
         phases: [{ title: 'Draft' }, { title: 'Verify' }],
       };
       const drafts = await parallel([
-        () => agent('draft 1'),
-        () => agent('draft 2'),
+        () => agent('draft 1', {}),
+        () => agent('draft 2', {}),
       ]);
-      return await agent('verify');`);
-    const sub = await callTool('workflow_run', { name: 'val080-cs' }) as { runId?: string };
+      return await agent('verify', {});`);
+    const sub = await callTool('run_start', { name: 'val080-cs' }) as { runId?: string };
     const runId = sub?.runId!;
     await pollDone(runId, 60_000);
 

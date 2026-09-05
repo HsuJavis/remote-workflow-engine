@@ -41,39 +41,66 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Re
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
 
-async function pollUntilHarness(runId: string, agentId: string, maxMs = 8000): Promise<{ harness?: { model?: string; provenance?: Record<string, string> } }> {
+async function pollUntilHarness(runId: string, label: string, maxMs = 8000): Promise<{ harness?: { model?: string; provenance?: Record<string, string> } }> {
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
-    const log = await callTool('workflow_agent_log', { runId, agentId }) as { harness?: { model?: string; provenance?: Record<string, string> } };
+    const log = await callTool('run_agent_log', { runId, label }) as { harness?: { model?: string; provenance?: Record<string, string> } };
     if (log.harness) return log;
     await new Promise((r) => setTimeout(r, 100));
   }
   return {};
 }
 
-// A script with exactly one top-level agent() call always gets agentId 'agent-1' — same fixed
-// naming convention IT-066's `runAndGetAgentId` relies on (workflow_status nests agents under
-// `.result.agents`, not top-level; polling top-level `.agents` would never resolve).
-const SOLE_AGENT_ID = 'agent-1';
+// v24 (integrator): `run_agent_log`'s advertised schema is `{runId, label}` with BOTH required — an
+// engine-minted `agentId` is not something a caller can learn from `tools/list`, which is why
+// DES-161 put the script's own LABEL on the agent record. Addressing by `agentId` alone is now
+// refused INVALID_ARGUMENT by ajv (missing `label`), so the poll below never saw a harness and this
+// file timed out rather than failing on its real subject.
+const SOLE_AGENT_LABEL = 'hi';
 
 describe('REQ-092: registered defaults take effect at run time, observable in the harness descriptor (VAL-102)', () => {
   it('a call with NO per-call model dispatches with the registered default (alias-b), not silently ignored', async () => {
-    await registerPublishedVia(callTool, 'val102-defaults', 'return await agent("hi");', { defaults: { model: 'alias-b' } });
-    const run = await callTool('workflow_run', { name: 'val102-defaults' });
+    // v24 (ADR-035): a flat registered `defaults` no longer exists — the same effect is now a
+    // per-agent `meta.params.agents.<label>.model.default` declared inside the script itself.
+    const script =
+      `export const meta = { params: { agents: { hi: { ` +
+      `model: { type: 'string', default: 'alias-b' }, ` +
+      `effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, ` +
+      `timeoutMs: { type: 'number', default: 60000 } } } } };\n` +
+      `return await agent("hi", {});`;
+    await registerPublishedVia(callTool, 'val102-defaults', script);
+    const run = await callTool('run_start', { name: 'val102-defaults' });
     const runId = run.runId as string;
 
-    const { harness } = await pollUntilHarness(runId, SOLE_AGENT_ID);
+    const { harness } = await pollUntilHarness(runId, SOLE_AGENT_LABEL);
     expect(harness?.model).toBe('alias-b');
     expect(harness?.provenance?.['model']).toBe('default');
   });
 
-  it('the script itself calling agent({model:...}) wins over the registered default (per-call more specific)', async () => {
-    await registerPublishedVia(callTool, 'val102-percall-wins', `return await agent("hi", {model:'default'});`, { defaults: { model: 'alias-b' } });
-    const run = await callTool('workflow_run', { name: 'val102-percall-wins' });
-    const runId = run.runId as string;
-
-    const { harness } = await pollUntilHarness(runId, SOLE_AGENT_ID);
-    expect(harness?.model).toBe('default');
-    expect(harness?.provenance?.['model']).toBe('call');
+  // v24 (integrator): the `'call'` rung is RETIRED, not renamed. ARCH-095/DES-146 deleted it as
+  // unreachable once `model.default` became required per label, and `scanAgentCalls` now REFUSES a
+  // `model`/`effort`/`timeoutMs` written inside an `agent()` call (`PARAM_IN_SCRIPT`, surfaced as
+  // SCAN_VIOLATION) so that the one place a value can be tuned is the contract a caller can read
+  // and override. The case is therefore RE-POINTED at the same seam in its new form — the refusal —
+  // rather than deleted: what must not silently change is that a per-call `model` cannot quietly
+  // win over the declared default.
+  it("the script writing agent({model:...}) is REFUSED at registration (the 'call' rung is retired, not silently ignored)", async () => {
+    const script =
+      `export const meta = { params: { agents: { hi: { ` +
+      `model: { type: 'string', default: 'alias-b' }, ` +
+      `effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, ` +
+      `timeoutMs: { type: 'number', default: 60000 } } } } };\n` +
+      `return await agent("hi", {model:'default'});`;
+    const reg = await callTool('workflow_register', { name: 'val102-percall-wins', script, mermaid: 'graph TD;\nn0(["hi"])' });
+    const code = (reg['code'] as string | undefined) ?? (reg['error'] as { code?: string } | undefined)?.code;
+    expect(code).toBe('SCAN_VIOLATION');
+    const message = (reg['error'] as { message?: string } | undefined)?.message ?? '';
+    // The refusal must NAME the key and where it belongs — a bare SCAN_VIOLATION would leave an
+    // author with no way to act on it.
+    expect(message).toContain('PARAM_IN_SCRIPT');
+    expect(message).toContain('meta.params.agents.hi.model.default');
+    // Nothing stored: the refusal is at registration, before any version row exists.
+    const got = await callTool('workflow_source', { name: 'val102-percall-wins' });
+    expect(got['code']).toBe('WORKFLOW_NOT_FOUND');
   });
 });

@@ -15,14 +15,20 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Clock } from './clock.js';
-import type { ErrEnvelope } from './types.js';
-import { computeNextFire, bootRearm, type StoredSchedule, type ScheduleFiring } from './scheduler-engine.js';
-import { catalogResolveErrorEnvelope } from './errors.js';
+import type { ErrEnvelope, RefusalReason } from './types.js';
+import { computeNextFire, bootRearm, type StoredSchedule } from './scheduler-engine.js';
 
+// v24 (DES-149, ARCH-099, TASK-141): `workflow` becomes OPTIONAL — a trigger can now be created
+// UNCLAIMED (no bound workflow) and claimed later via `claim()`/`release()`/`ownerOf()`. A caller
+// may still supply `workflow` at creation (the pre-v24 door, kept). v24 Gate 7.5 (D-1): the H4
+// catalog-resolve check that used to run on that door is GONE — REQ-115's last clause moves it to
+// the fire path, which refuses and RECORDS the verdict. `claimedBy`/`createdBy` are the
+// new per-trigger ownership fields (ARCH-099's "five columns", the other three being the refusal
+// trio below).
 export type Schedule =
-  | { kind: 'cron'; id: string; workflow: string; args?: unknown; cron: string; tz?: string; enabled: boolean }
-  | { kind: 'once'; id: string; workflow: string; args?: unknown; at: string; enabled: boolean }
-  | { kind: 'resident'; id: string; workflow: string; args?: unknown; enabled: boolean };
+  | { kind: 'cron'; id: string; workflow?: string; claimedBy?: string | null; createdBy?: string; args?: unknown; cron: string; tz?: string; enabled: boolean }
+  | { kind: 'once'; id: string; workflow?: string; claimedBy?: string | null; createdBy?: string; args?: unknown; at: string; enabled: boolean }
+  | { kind: 'resident'; id: string; workflow?: string; claimedBy?: string | null; createdBy?: string; args?: unknown; enabled: boolean };
 
 // Plain `Omit<Schedule, 'id'>` does NOT distribute over a discriminated union (a known TS gotcha —
 // it collapses to only the members' common keys, losing `cron`/`at`) unless the conditional's
@@ -34,12 +40,26 @@ export type NewSchedule = DistributiveOmit<Schedule, 'id'>;
 export interface ScheduleStatus {
   id: string;
   kind: Schedule['kind'];
-  workflow: string;
+  workflow?: string;
+  claimedBy?: string | null;
+  createdBy?: string;
   enabled: boolean;
+  /** v24 (integrator; REQ-103/REQ-015): the schedule's own time expression. It was absent, so
+   *  `schedule_list` and `workflow_describe.triggers[]` could tell you a cron schedule EXISTS but
+   *  never WHEN it fires — the one fact an operator reads a schedule listing for. Present per kind:
+   *  `cron`/`tz` for a cron schedule, `at` for a one-shot; neither for a resident. */
+  cron?: string;
+  tz?: string;
+  at?: string;
   nextFire?: string;
   lastFire?: string;
   lastRunId?: string;
   lastError?: { code: string; at: string };
+  // v24 (DES-150, TASK-141): coalesced fire-path refusal accounting — never touched by a dispatch
+  // failure (`lastError`), only by a policy refusal BEFORE dispatch (`markRefused`).
+  refusalCount?: number;
+  lastRefusedAt?: string;
+  lastRefusalReason?: RefusalReason;
 }
 
 export interface ScheduleResult<T> {
@@ -47,12 +67,13 @@ export interface ScheduleResult<T> {
   error?: ErrEnvelope;
 }
 
-/** Structural seam — matches WorkflowCatalog's own exists()/resolve() signatures without importing
- *  the class. `resolve` widened here for H4 (07-review.md §4.2, ARCH-072 note 1): `create()` needs
- *  the SAME channel-resolution check `workflow_run` uses, not just "the name exists". */
+/** Structural seam — matches WorkflowCatalog's own `exists()` signature without importing the
+ *  class. It was widened to `resolve()` for the v22 H4 check; v24 Gate 7.5 (D-1) removed that
+ *  check from `create()` (REQ-115 moves it to the fire path), leaving `trigger()`'s
+ *  "is this a registered name" as the only catalog question this module asks — so the port is
+ *  narrowed back rather than left advertising a method nothing calls. */
 interface CatalogPort {
   exists(name: string): Promise<boolean>;
-  resolve(name: string, sel: { channel?: string }): Promise<unknown>;
 }
 /** Structural seam — matches RunManager's own start() signature without importing the class. */
 interface RunManagerPort {
@@ -78,7 +99,9 @@ function isValidCron(expr: string): boolean {
 interface ScheduleRow {
   id: string;
   kind: string;
-  workflow: string;
+  workflow: string | null;
+  claimedBy: string | null;
+  createdBy: string | null;
   argsJson: string | null;
   cron: string | null;
   tz: string | null;
@@ -88,29 +111,41 @@ interface ScheduleRow {
   lastFire: string | null;
   lastRunId: string | null;
   lastError: string | null;
+  refusalCount: number;
+  lastRefusedAt: string | null;
+  lastRefusalReason: string | null;
 }
 
 function rowToSchedule(r: ScheduleRow): Schedule {
   const args = r.argsJson != null ? (JSON.parse(r.argsJson) as unknown) : undefined;
+  const shared = { workflow: r.workflow ?? undefined, claimedBy: r.claimedBy, createdBy: r.createdBy ?? undefined };
   if (r.kind === 'cron') {
-    return { kind: 'cron', id: r.id, workflow: r.workflow, args, cron: r.cron!, tz: r.tz ?? undefined, enabled: r.enabled === 1 };
+    return { kind: 'cron', id: r.id, ...shared, args, cron: r.cron!, tz: r.tz ?? undefined, enabled: r.enabled === 1 };
   }
   if (r.kind === 'once') {
-    return { kind: 'once', id: r.id, workflow: r.workflow, args, at: r.at!, enabled: r.enabled === 1 };
+    return { kind: 'once', id: r.id, ...shared, args, at: r.at!, enabled: r.enabled === 1 };
   }
-  return { kind: 'resident', id: r.id, workflow: r.workflow, args, enabled: r.enabled === 1 };
+  return { kind: 'resident', id: r.id, ...shared, args, enabled: r.enabled === 1 };
 }
 
 function rowToStatus(r: ScheduleRow): ScheduleStatus {
   return {
     id: r.id,
     kind: r.kind as Schedule['kind'],
-    workflow: r.workflow,
+    workflow: r.workflow ?? undefined,
+    claimedBy: r.claimedBy,
+    createdBy: r.createdBy ?? undefined,
     enabled: r.enabled === 1,
+    cron: r.cron ?? undefined,
+    tz: r.tz ?? undefined,
+    at: r.at ?? undefined,
     nextFire: r.nextFire != null ? new Date(r.nextFire).toISOString() : undefined,
     lastFire: r.lastFire ?? undefined,
     lastRunId: r.lastRunId ?? undefined,
     lastError: r.lastError != null ? (JSON.parse(r.lastError) as { code: string; at: string }) : undefined,
+    refusalCount: r.refusalCount ?? 0,
+    lastRefusedAt: r.lastRefusedAt ?? undefined,
+    lastRefusalReason: (r.lastRefusalReason as RefusalReason | null) ?? undefined,
   };
 }
 
@@ -132,7 +167,7 @@ export class SqliteSchedulerPort {
       CREATE TABLE IF NOT EXISTS schedules (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL,
-        workflow TEXT NOT NULL,
+        workflow TEXT,
         argsJson TEXT,
         cron TEXT,
         tz TEXT,
@@ -152,20 +187,27 @@ export class SqliteSchedulerPort {
     // sqlite-run-store.ts:65-71) — a pre-v22 `schedules` table gets `lastError` on next boot; a
     // fresh CREATE TABLE above already has it, so this is a silent no-op there.
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN lastError TEXT'); } catch { /* already present */ }
+    // v24 (ARCH-099/DES-149/150, TASK-141): the "five columns" — additive, same idempotent idiom.
+    // `workflow` above is also relaxed from NOT NULL for a FRESH table (an unclaimed trigger has no
+    // bound workflow yet); an existing pre-v24 file predates this and keeps its NOT NULL constraint
+    // (SQLite cannot drop a column constraint via ALTER), which is fine because every pre-v24 row
+    // already carries a real workflow value.
+    try { this._db.exec('ALTER TABLE schedules ADD COLUMN claimedBy TEXT'); } catch { /* already present */ }
+    try { this._db.exec('ALTER TABLE schedules ADD COLUMN createdBy TEXT'); } catch { /* already present */ }
+    try { this._db.exec('ALTER TABLE schedules ADD COLUMN refusalCount INTEGER NOT NULL DEFAULT 0'); } catch { /* already present */ }
+    try { this._db.exec('ALTER TABLE schedules ADD COLUMN lastRefusedAt TEXT'); } catch { /* already present */ }
+    try { this._db.exec('ALTER TABLE schedules ADD COLUMN lastRefusalReason TEXT'); } catch { /* already present */ }
   }
 
   async create(s: NewSchedule): Promise<ScheduleResult<Schedule>> {
-    // v22 send-back (H4, 07-review.md §4.2, ARCH-072 note 1): upgraded from "the name exists" to
-    // "the name resolves on `release`" — a registered-but-unpublished draft (REQ-097's normal
-    // author-loop state) must be refused CHANNEL_UNPUBLISHED HERE, not accepted and left to fail at
-    // every subsequent fire with no operator signal at the point of the actual mistake.
-    try {
-      await this._catalog.resolve(s.workflow, { channel: 'release' });
-    } catch (err) {
-      // Same coded-error shape every `codedError()` throw carries (errors.ts) — e.g.
-      // CHANNEL_UNPUBLISHED/UNKNOWN_VERSION/INVALID_CHANNEL from `resolveVersionRequest`.
-      return { error: catalogResolveErrorEnvelope(err, s.workflow, { field: 'workflow' }) };
-    }
+    // v24 Gate 7.5 (D-1, REQ-115's last clause): the v22 H4 create-time catalog-resolve check is
+    // GONE. REQ-115 moves it: a trigger is created FIRST and claimed by a workflow at registration,
+    // so at creation there is routinely nothing to resolve — and keeping the check for the
+    // bind-at-creation door meant the tool row had to require `workflow`, which made an unclaimed
+    // trigger impossible to create at all (ADR-026 scenario S-5). The check did not disappear, it
+    // changed site: the FIRE path (`resolveScheduleTarget`, server.ts) refuses and RECORDS
+    // UNCLAIMED / CLAIMED_WORKFLOW_MISSING / CHANNEL_UNPUBLISHED / NOT_IN_RELEASE, which is the
+    // signal REQ-115 asks for and the one place the answer is still true at the moment it matters.
     if (s.kind === 'cron' && !isValidCron(s.cron)) {
       return { error: { code: 'INVALID_CRON', message: `Not a valid cron expression: ${s.cron}`, field: 'cron' } };
     }
@@ -183,13 +225,18 @@ export class SqliteSchedulerPort {
       : null;
     this._db
       .prepare(`
-        INSERT INTO schedules (id, kind, workflow, argsJson, cron, tz, at, enabled, nextFire, lastFire, lastRunId)
-        VALUES (@id, @kind, @workflow, @argsJson, @cron, @tz, @at, @enabled, @nextFire, NULL, NULL)
+        INSERT INTO schedules (id, kind, workflow, claimedBy, createdBy, argsJson, cron, tz, at, enabled, nextFire, lastFire, lastRunId)
+        VALUES (@id, @kind, @workflow, @claimedBy, @createdBy, @argsJson, @cron, @tz, @at, @enabled, @nextFire, NULL, NULL)
       `)
       .run({
         id,
         kind: s.kind,
-        workflow: s.workflow,
+        workflow: s.workflow ?? null,
+        // v24: created unclaimed unless a workflow was bound at creation (backward-compat path),
+        // in which case it is its own claim from birth (ARCH-099's migration note, applied fresh
+        // rather than via a stored-row rewrite).
+        claimedBy: s.workflow ?? null,
+        createdBy: s.createdBy ?? null,
         argsJson,
         cron: s.kind === 'cron' ? s.cron : null,
         tz: s.kind === 'cron' ? (s.tz ?? null) : null,
@@ -201,31 +248,51 @@ export class SqliteSchedulerPort {
     return { result: rowToSchedule(row) };
   }
 
+  /** v24 (integrator; DES-156/REQ-103 — `workflow_describe.triggers[]` is resolved BY ID, never by
+   *  workflow: `listByWorkflow` was retired with `trigger-bindings.ts` and left no by-id reader, so
+   *  the facade shipped a hardcoded `triggers: []` with a "until TASK-149 wires it" comment. */
+  get(id: string): ScheduleStatus | null {
+    const row = this._db.prepare('SELECT * FROM schedules WHERE id = ?').get(id) as ScheduleRow | undefined;
+    return row ? rowToStatus(row) : null;
+  }
+
+  /** v24 (integrator; DES-156/REQ-103): the ID SET for one workflow. DES-156 pins the RESOLUTION —
+   *  `scheduler.get(id) ?? webhooks.get(id)`, by id, never a by-workflow BINDING query — and this
+   *  respects that: it returns ids only, which `_resolveTriggers` then resolves one at a time. It
+   *  is NOT a resurrection of the retired `listByWorkflow`, which returned full binding objects for
+   *  the deleted analyzer's diagram fingerprint. It exists because BOTH v24 binding doors are live:
+   *  a trigger declared in a version's `triggers[]` (the claim door) and a trigger bound at
+   *  creation (`schedule_create({workflow})` — an OPTIONAL argument since v24 Gate 7.5's D-1 fix,
+   *  but still a live door). Sourcing ids from only one of them would make REQ-103 unobservable for
+   *  triggers created the other way — and, since D-1b, would also leave the create-time binding
+   *  unreleased at deregister, which is what `McpFacade.workflowDeregister` now calls this for. */
+  claimedIdsFor(workflow: string): string[] {
+    const rows = this._db
+      .prepare('SELECT id FROM schedules WHERE claimedBy = ? OR workflow = ?')
+      .all(workflow, workflow) as Array<{ id: string }>;
+    return rows.map((r) => r.id);
+  }
+
   async list(): Promise<ScheduleStatus[]> {
     const rows = this._db.prepare('SELECT * FROM schedules').all() as ScheduleRow[];
     return rows.map(rowToStatus);
   }
 
-  /** v23 (DES-128, ARCH-078, TASK-126): the SYNC cron-only read `TriggerPorts.schedules` composes
-   *  (getTriggerBindings/the analyzer both need a live, non-async snapshot). Includes DISABLED rows
-   *  (the port's own `enabled` field is how a caller learns that) and excludes `once`/`resident` —
-   *  `TriggerBinding`'s `'cron'` variant is the only shape this port ever produces. */
-  listByWorkflow(workflow: string): Array<{ cron: string; tz?: string; enabled: boolean }> {
-    const rows = this._db
-      .prepare("SELECT cron, tz, enabled FROM schedules WHERE workflow = ? AND kind = 'cron'")
-      .all(workflow) as Array<{ cron: string; tz: string | null; enabled: number }>;
-    return rows.map((r) => ({ cron: r.cron, tz: r.tz ?? undefined, enabled: r.enabled === 1 }));
-  }
-
   async setEnabled(id: string, on: boolean): Promise<ScheduleResult<void>> {
     const info = this._db.prepare('UPDATE schedules SET enabled = ? WHERE id = ?').run(on ? 1 : 0, id);
-    if (info.changes === 0) return { error: { code: 'SCHEDULE_NOT_FOUND', message: `Unknown schedule: ${id}` } };
+    // v24 (integrator, DES-137): `SCHEDULE_NOT_FOUND` is not a member of the closed `ErrorCode`
+    // union — `schedule_delete`/`schedule_setEnabled` both advertise `TRIGGER_NOT_FOUND` in their
+    // `tools/list` `Errors:` line, and a cold model can only anticipate the name it was shown.
+    if (info.changes === 0) return { error: { code: 'TRIGGER_NOT_FOUND', message: `Unknown schedule: ${id}` } };
     return { result: undefined };
   }
 
   async delete(id: string): Promise<ScheduleResult<void>> {
     const info = this._db.prepare('DELETE FROM schedules WHERE id = ?').run(id);
-    if (info.changes === 0) return { error: { code: 'SCHEDULE_NOT_FOUND', message: `Unknown schedule: ${id}` } };
+    // v24 (integrator, DES-137): `SCHEDULE_NOT_FOUND` is not a member of the closed `ErrorCode`
+    // union — `schedule_delete`/`schedule_setEnabled` both advertise `TRIGGER_NOT_FOUND` in their
+    // `tools/list` `Errors:` line, and a cold model can only anticipate the name it was shown.
+    if (info.changes === 0) return { error: { code: 'TRIGGER_NOT_FOUND', message: `Unknown schedule: ${id}` } };
     return { result: undefined };
   }
 
@@ -266,14 +333,24 @@ export class SqliteSchedulerPort {
    *  straight over it — `resident` schedules are excluded (trigger-only, `tick()` never fires
    *  them anyway; DES-016). */
   all(): StoredSchedule[] {
+    // v24 (integrator; ARCH-099, DES-150): the filter was `workflow IS NOT NULL` with a note saying
+    // the fire-path claim check "lands with the facade wiring in TASK-148, out of this task's
+    // scope" — TASK-148 did not land it either, so `markRefused` had NO caller and REQ-115's
+    // "recorded refusals" recorded nothing. Two consequences, both fixed here: an UNCLAIMED due row
+    // was invisible to the driver, so its refusal could never be recorded; and a row claimed AFTER
+    // creation (`claim()` writes `claimedBy`, never `workflow`) would never fire at all. The
+    // authority is `claimedBy` (ARCH-099's rename); `workflow` remains only as the create-time
+    // binding, and an unclaimed row is surfaced with an EMPTY target so the driver refuses it
+    // UNCLAIMED rather than silently skipping it.
     const rows = this._db
       .prepare("SELECT * FROM schedules WHERE enabled = 1 AND kind IN ('cron','once') AND nextFire IS NOT NULL")
       .all() as ScheduleRow[];
-    return rows.map((r): StoredSchedule =>
-      r.kind === 'cron'
-        ? { kind: 'cron', id: r.id, workflow: r.workflow, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, cron: r.cron!, tz: r.tz ?? undefined, enabled: true, nextFire: r.nextFire! }
-        : { kind: 'once', id: r.id, workflow: r.workflow, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, at: r.at!, enabled: true, nextFire: r.nextFire! },
-    );
+    return rows.map((r): StoredSchedule => {
+      const target = r.claimedBy ?? r.workflow ?? '';
+      return r.kind === 'cron'
+        ? { kind: 'cron', id: r.id, workflow: target, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, cron: r.cron!, tz: r.tz ?? undefined, enabled: true, nextFire: r.nextFire! }
+        : { kind: 'once', id: r.id, workflow: target, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, at: r.at!, enabled: true, nextFire: r.nextFire! };
+    });
   }
 
   /** D-V2I-2: records one `tick()` firing's outcome — the driver's own impure edge, called right
@@ -281,20 +358,94 @@ export class SqliteSchedulerPort {
    *  REQ-015 clause 2); `cron` recomputes a fresh future `nextFire` from `clock.now()` (fire-once-
    *  on-catch-up-then-resume, DES-017 — never re-fires the same instant, never backfills). Also
    *  records the scheduleId->runId join (D-V2a) so `originOf()` reports it, same as `trigger()`. */
-  markFired(firing: ScheduleFiring, runId: string): void {
+  markFired(firing: { id: string; kind: Schedule['kind'] }, runId: string): void {
     const ts = this._clock.isoNow();
+    // v24 (DES-150, TASK-141): a successful fire resets the consecutive-refusal counter — the field
+    // reads "refusals since the last successful fire", not a lifetime total.
     if (firing.kind === 'once') {
-      this._db.prepare('UPDATE schedules SET lastFire = ?, lastRunId = ?, enabled = 0 WHERE id = ?').run(ts, runId, firing.id);
+      this._db.prepare('UPDATE schedules SET lastFire = ?, lastRunId = ?, enabled = 0, refusalCount = 0 WHERE id = ?').run(ts, runId, firing.id);
     } else {
       const row = this._db.prepare('SELECT cron, tz FROM schedules WHERE id = ?').get(firing.id) as
         | { cron: string; tz: string | null }
         | undefined;
       const nextFire = row ? computeNextFire(row.cron, row.tz ?? undefined, this._clock.now()) : null;
-      this._db.prepare('UPDATE schedules SET lastFire = ?, lastRunId = ?, nextFire = ? WHERE id = ?').run(ts, runId, nextFire, firing.id);
+      this._db.prepare('UPDATE schedules SET lastFire = ?, lastRunId = ?, nextFire = ?, refusalCount = 0 WHERE id = ?').run(ts, runId, nextFire, firing.id);
     }
     this._db
       .prepare('INSERT OR REPLACE INTO run_origins (runId, scheduleId, kind) VALUES (?, ?, ?)')
       .run(runId, firing.id, firing.kind);
+  }
+
+  /** v24 (DES-150, TASK-141): a fire-path POLICY refusal — the firing was due but refused BEFORE
+   *  dispatch (unclaimed / claimed workflow missing / not in the release version's triggers / the
+   *  claimed workflow's release channel is unpublished). Shares `markFailed`'s exact advance (a
+   *  refused `once` is CONSUMED, a refused `cron` gets a fresh future `nextFire` — never re-fires
+   *  the same due instant) PLUS the refusal trio; unlike `markFailed`, `lastError` is never touched
+   *  — `lastError` means "dispatch failed", `lastRefusalReason` means "policy refused before
+   *  dispatch", never both for one firing. */
+  markRefused(firing: { id: string; kind: Schedule['kind'] }, reason: RefusalReason): void {
+    const ts = this._clock.isoNow();
+    if (firing.kind === 'once') {
+      // Tight-loop trap: once this row is disabled by a refusal, a second refusal call for the
+      // same due firing (two ticks racing the same instant) must not double-count — `enabled = 1`
+      // in the WHERE makes the UPDATE a no-op for that second call.
+      this._db
+        .prepare('UPDATE schedules SET enabled = 0, refusalCount = refusalCount + 1, lastRefusedAt = ?, lastRefusalReason = ? WHERE id = ? AND enabled = 1')
+        .run(ts, reason, firing.id);
+    } else {
+      const row = this._db.prepare('SELECT cron, tz, nextFire FROM schedules WHERE id = ?').get(firing.id) as
+        | { cron: string; tz: string | null; nextFire: number | null }
+        | undefined;
+      // Same trap for `cron`: once the first refusal has advanced `nextFire` past `now`, a second
+      // refusal call at the same instant is a no-op (guarded on the PRE-update `nextFire` still
+      // being due) rather than advancing it again and double-counting.
+      if (row == null || (row.nextFire != null && row.nextFire > this._clock.now())) return;
+      const nextFire = computeNextFire(row.cron, row.tz ?? undefined, this._clock.now());
+      this._db
+        .prepare('UPDATE schedules SET nextFire = ?, refusalCount = refusalCount + 1, lastRefusedAt = ?, lastRefusalReason = ? WHERE id = ?')
+        .run(nextFire, ts, reason, firing.id);
+    }
+  }
+
+  /** v24 (DES-149, TASK-141): per-trigger claim, inside one better-sqlite3 transaction (better-
+   *  sqlite3 is synchronous, so the SELECT-then-UPDATE below is already atomic — no explicit
+   *  `.transaction()` wrapper needed for a single connection). `'held'` (already claimed by the
+   *  SAME workflow) is distinct from `'claimed'` for a reason: compensation on a later failure must
+   *  release only ids THIS call newly claimed, never an id that was already a working claim. */
+  claim(id: string, workflow: string): 'claimed' | 'held' | 'NOT_FOUND' | 'ALREADY_CLAIMED' {
+    const row = this._db.prepare('SELECT claimedBy FROM schedules WHERE id = ?').get(id) as { claimedBy: string | null } | undefined;
+    if (!row) return 'NOT_FOUND';
+    if (row.claimedBy === workflow) return 'held';
+    if (row.claimedBy != null) return 'ALREADY_CLAIMED';
+    const info = this._db
+      .prepare('UPDATE schedules SET claimedBy = ? WHERE id = ? AND claimedBy IS NULL')
+      .run(workflow, id);
+    return info.changes === 1 ? 'claimed' : 'ALREADY_CLAIMED';
+  }
+
+  /** Idempotent: releasing an id not claimed by `workflow` (including one already unclaimed) is a
+   *  no-op, never an error — this is what lets compensation call `release` unconditionally on every
+   *  id it attempted. */
+  release(id: string, workflow: string): void {
+    // v24 Gate 7.5 (D-1b, ADR-026): BOTH columns are cleared. Nulling `claimedBy` alone left the
+    // create-time `workflow` binding in place, and the fire path folds them together
+    // (`all()`'s `claimedBy ?? workflow`, and `resolveScheduleTarget`'s same fallback) — so a
+    // released schedule went on firing, and after a same-name re-registration it fired for a
+    // workflow that had never claimed it (live: 47 s after the deregister). The WHERE matches a
+    // row claimed by this workflow OR a legacy row bound to it before `claimedBy` existed;
+    // releasing is idempotent and touches nothing claimed by anyone else.
+    this._db
+      .prepare('UPDATE schedules SET claimedBy = NULL, workflow = NULL WHERE id = ? AND (claimedBy = ? OR (claimedBy IS NULL AND workflow = ?))')
+      .run(id, workflow, workflow);
+  }
+
+  /** DES-139/DES-149 step 2: the OWNER is the CREATING PRINCIPAL (`createdBy`), never the claiming
+   *  workflow (`claimedBy`) — claiming a trigger for a workflow does not transfer its ownership.
+   *  `undefined` = no trigger with this id in this store (distinct from `null` = a migrated row
+   *  with no recorded creator, which DES-139 makes admin-only). */
+  ownerOf(id: string): string | null | undefined {
+    const row = this._db.prepare('SELECT createdBy FROM schedules WHERE id = ?').get(id) as { createdBy: string | null } | undefined;
+    return row ? row.createdBy : undefined;
   }
 
   /** DES-118: the driver's `.catch()` gets a writer — exactly what `markFired` does minus `runId`
@@ -302,7 +453,7 @@ export class SqliteSchedulerPort {
    *  `nextFire` from `clock.now()`, both record `lastError:{code, at}`. Without this, nothing
    *  advances/disables the schedule after a failed dispatch, so it stays "due" and re-fires at the
    *  driver's tick cadence forever while `schedule_list` shows silence. */
-  markFailed(firing: ScheduleFiring, code: string): void {
+  markFailed(firing: { id: string; kind: Schedule['kind'] }, code: string): void {
     const at = this._clock.isoNow();
     const lastError = JSON.stringify({ code, at });
     if (firing.kind === 'once') {
@@ -322,14 +473,15 @@ export class SqliteSchedulerPort {
    *  already past still comes back due (its `nextFire` is unchanged from its own `at`) — the
    *  driver's first tick fires it exactly as if the server had never restarted. */
   rearmAtBoot(): void {
+    // v24: an unclaimed trigger (`workflow IS NULL`) is excluded — same reasoning as `all()`.
     const rows = this._db
-      .prepare("SELECT * FROM schedules WHERE kind IN ('cron','once')")
+      .prepare("SELECT * FROM schedules WHERE kind IN ('cron','once') AND workflow IS NOT NULL")
       .all() as ScheduleRow[];
     if (rows.length === 0) return;
     const stored: StoredSchedule[] = rows.map((r): StoredSchedule =>
       r.kind === 'cron'
-        ? { kind: 'cron', id: r.id, workflow: r.workflow, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, cron: r.cron!, tz: r.tz ?? undefined, enabled: r.enabled === 1, nextFire: r.nextFire ?? this._clock.now() }
-        : { kind: 'once', id: r.id, workflow: r.workflow, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, at: r.at!, enabled: r.enabled === 1, nextFire: r.nextFire ?? Date.parse(r.at!) },
+        ? { kind: 'cron', id: r.id, workflow: r.workflow!, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, cron: r.cron!, tz: r.tz ?? undefined, enabled: r.enabled === 1, nextFire: r.nextFire ?? this._clock.now() }
+        : { kind: 'once', id: r.id, workflow: r.workflow!, args: r.argsJson != null ? JSON.parse(r.argsJson) : undefined, at: r.at!, enabled: r.enabled === 1, nextFire: r.nextFire ?? Date.parse(r.at!) },
     );
     const rearmed = bootRearm(stored, this._clock);
     const update = this._db.prepare('UPDATE schedules SET nextFire = ? WHERE id = ?');

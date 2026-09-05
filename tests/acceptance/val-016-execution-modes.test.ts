@@ -1,12 +1,20 @@
-// VAL-016: Execution modes — cron schedule fires, one-shot auto-completes, workflow_trigger starts run,
+// VAL-016: Execution modes — cron schedule fires, one-shot auto-completes,
 //           disabled resident rejects; firing logic proven at UT with FixedClock+FakeTicker (REQ-015)
-// RED: schedule_create / workflow_trigger MCP tools do not exist yet — assertions fail.
+// RED: schedule_create MCP tool does not exist yet — assertions fail.
 // Per DES-023: no mock of the SUT boundary; uses real createServer.
-// D-V2I-3 (ORCH binding): schedule/trigger targets are CATALOG-REGISTERED workflows only (REQ-014/
+// D-V2I-3 (ORCH binding): schedule targets are CATALOG-REGISTERED workflows only (REQ-014/
 // REQ-015 wording) — every target below is registered via `workflow_register` first, never a bare
-// `workflow_run({name, script})` (which never persists to WorkflowCatalog — see E2E-004's own note
-// for the exact root cause). Also pins: an unregistered workflow name -> WORKFLOW_NOT_FOUND with a
-// machine-readable code, for both `schedule_create` and `workflow_trigger`.
+// `run_start({name, script})` (which never persists to WorkflowCatalog — see E2E-004's own note
+// for the exact root cause). v24 Gate 7.5 (D-1, REQ-115): D-V2I-3's guarantee is now pinned at the
+// FIRE path — `schedule_create` no longer resolves the catalog (a trigger is created unclaimed and
+// claimed at registration), and an unregistered target is refused CLAIMED_WORKFLOW_MISSING when it
+// comes due, with the refusal recorded on the row and no run started.
+//
+// v24 (TASK-152, ARCH-087, ch.16.1): the tool this file used to call to fire a resident schedule
+// on demand is RETIRED with no v24 replacement — the 35-tool surface has no manual "fire now" tool
+// (a resident still fires automatically off the scheduler; only the manual invocation tool is
+// gone). The "Resident … (REQ-015, clause 3)" describe block below is removed rather than
+// re-pointed at a differently-shaped tool; this is the owner's ch.16.1 decision, not a defect.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -38,17 +46,6 @@ async function mcpCall(name: string, args: Record<string, unknown> = {}) {
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
 
-async function pollUntilTerminal(runId: string, maxMs = 10_000) {
-  const deadline = Date.now() + maxMs;
-  while (Date.now() < deadline) {
-    const r = await mcpCall('workflow_status', { runId });
-    const status = (r['result'] as Record<string, unknown>)?.['status'] as string;
-    if (['completed', 'failed', 'stopped'].includes(status ?? '')) return status;
-    await new Promise((r2) => setTimeout(r2, 200));
-  }
-  return 'timeout';
-}
-
 // v22: a schedule/trigger target is STARTED by name, which resolves the `release` channel — so a
 // bare register leaves it unpublished (CHANNEL_UNPUBLISHED at fire time). Register AND publish.
 // The old `expect(r['error']).toBeUndefined()` setup guard is preserved as the helper's own throw:
@@ -69,13 +66,38 @@ describe('Execution modes (REQ-015, VAL-016)', () => {
       expect(typeof id).toBe('string');
     });
 
-    it('schedule_create for a never-registered workflow name returns WORKFLOW_NOT_FOUND (D-V2I-3)', async () => {
-      const r = await mcpCall('schedule_create', {
-        kind: 'cron', workflow: 'never-registered-val-target', cron: '0 3 * * *', enabled: true,
-      });
-      expect((r['error'] as Record<string, unknown>)?.['code']).toBe('WORKFLOW_NOT_FOUND');
-      expect(r['result']).toBeUndefined();
+    // v24 Gate 7.5 (D-1, REQ-115 clause 1 + its last clause): this used to assert
+    // `WORKFLOW_NOT_FOUND` AT CREATION. REQ-115 reverses the direction — a trigger is created
+    // UNCLAIMED and a workflow claims it at registration — so a name that does not exist yet is
+    // the normal case at this door and the check MOVES to the fire path. D-V2I-3's actual
+    // guarantee ("an unregistered name never silently starts a run") is unchanged and is what the
+    // second half below asserts, at the site that can still answer it truthfully.
+    it('schedule_create needs no workflow at all — an UNCLAIMED trigger is created and returns its id (REQ-115 clause 1)', async () => {
+      const r = await mcpCall('schedule_create', { kind: 'cron', cron: '0 3 * * *', enabled: true });
+      expect(r['error']).toBeUndefined();
+      const created = r['result'] as Record<string, unknown>;
+      expect(typeof created?.['id']).toBe('string');
+      expect(created?.['claimedBy'] ?? null).toBeNull();
     });
+
+    it('a schedule naming a never-registered workflow starts NO run when it comes due — it is refused and the refusal is recorded (D-V2I-3, REQ-115)', async () => {
+      const r = await mcpCall('schedule_create', {
+        kind: 'once', workflow: 'never-registered-val-target', at: new Date(Date.now() + 300).toISOString(), enabled: true,
+      });
+      expect(r['error']).toBeUndefined();
+      const id = (r['result'] as Record<string, unknown>)['id'] as string;
+
+      const rowFor = async () => ((await mcpCall('schedule_list'))['result'] as Array<Record<string, unknown>>).find((x) => x['id'] === id);
+      const deadline = Date.now() + 8000;
+      let row = await rowFor();
+      while (((row?.['refusalCount'] as number) ?? 0) === 0 && Date.now() < deadline) {
+        await new Promise((res) => setTimeout(res, 100));
+        row = await rowFor();
+      }
+      expect(row?.['lastRefusalReason']).toBe('CLAIMED_WORKFLOW_MISSING');
+      expect(row?.['lastRunId']).toBeUndefined();
+      expect((await mcpCall('run_list', { workflow: 'never-registered-val-target' }))['result'] ?? []).toEqual([]);
+    }, 20000);
 
     it('schedule_list returns the created cron schedule', async () => {
       const r = await mcpCall('schedule_list');
@@ -116,32 +138,6 @@ describe('Execution modes (REQ-015, VAL-016)', () => {
         if (found && !found.enabled) { enabled = false; break; }
       }
       expect(enabled).toBe(false);
-    });
-  });
-
-  describe('Resident workflow_trigger (REQ-015, clause 3)', () => {
-    it('workflow_trigger on an enabled resident returns a runId immediately', async () => {
-      await registerWorkflow('resident-val', 'return {ok:true}');
-      await mcpCall('schedule_create', { kind: 'resident', workflow: 'resident-val', enabled: true });
-      const r = await mcpCall('workflow_trigger', { workflow: 'resident-val', args: { k: 1 } });
-      expect(r['error']).toBeUndefined();
-      const runId = (r['result'] as Record<string, unknown>)?.['runId'] as string;
-      expect(typeof runId).toBe('string');
-      const status = await pollUntilTerminal(runId);
-      expect(['completed', 'failed']).toContain(status);
-    });
-
-    it('workflow_trigger on a DISABLED resident returns SCHEDULE_DISABLED (REQ-015, clause 3)', async () => {
-      await registerWorkflow('disabled-val', 'return 0');
-      await mcpCall('schedule_create', { kind: 'resident', workflow: 'disabled-val', enabled: false });
-      const r = await mcpCall('workflow_trigger', { workflow: 'disabled-val' });
-      expect((r['error'] as Record<string, unknown>)?.['code']).toBe('SCHEDULE_DISABLED');
-    });
-
-    it('workflow_trigger for a never-registered workflow name returns WORKFLOW_NOT_FOUND (D-V2I-3)', async () => {
-      const r = await mcpCall('workflow_trigger', { workflow: 'never-registered-val-trigger-target' });
-      expect((r['error'] as Record<string, unknown>)?.['code']).toBe('WORKFLOW_NOT_FOUND');
-      expect(r['result']).toBeUndefined();
     });
   });
 });

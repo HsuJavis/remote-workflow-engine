@@ -8,7 +8,6 @@ import { describe, it, expect } from 'vitest';
 import {
   defaultRunParams,
   mergeRunParams,
-  resolveCallParams,
   composePrompt,
   USER_INSTRUCTIONS_OPEN,
   USER_INSTRUCTIONS_CLOSE,
@@ -17,7 +16,6 @@ import {
 import type { RunParams, ProviderEffortProfile } from '../../src/params/resolve.js';
 import type { HarnessDefaults } from '../../src/harness-defaults.js';
 import type { UserOverrides } from '../../src/params/contract.js';
-import type { AgentTypeDef } from '../../src/agent-executor.js';
 
 describe('defaultRunParams() — the ONLY no-overrides producer', () => {
   it('with no registered defaults, every tunable key provenance is "engine"', () => {
@@ -55,6 +53,18 @@ describe('defaultRunParams() — the ONLY no-overrides producer', () => {
 
 describe('mergeRunParams() — admission-time fold of overrides over registered defaults (ADR-002)', () => {
   const DEFAULTS: HarnessDefaults = { model: 'sonnet', timeoutMs: 30_000, prompt: 'author prompt', tools: ['Read'], skills: ['s1'] };
+  // v24 (DES-145/146, TASK-158): `UserOverrides` is CLOSED and PER-AGENT — it has no flat
+  // `model`/`effort`/`timeoutMs`/`appendPrompt` fields any more, because REQ-110 requires an
+  // override to reach exactly the label it names and never broadcast to a sibling. The four cases
+  // below were written against the retired flat shape; they are MIGRATED (not deleted) onto the
+  // per-agent one, so the provenance matrix they exist to pin still has all four keys covered.
+  const CONTRACT = {
+    w: {
+      model: { type: 'string' as const, default: 'sonnet' },
+      effort: { type: 'enum' as const, enum: ['low', 'medium', 'high'], default: 'medium' },
+      timeoutMs: { type: 'number' as const, default: 30_000 },
+    },
+  };
 
   it('no overrides → registered defaults win, provenance:"default" for model/timeoutMs', () => {
     const rp = mergeRunParams(DEFAULTS, {});
@@ -64,14 +74,14 @@ describe('mergeRunParams() — admission-time fold of overrides over registered 
     expect(rp.provenance.timeoutMs).toBe('default');
   });
 
-  it('override wins for the keys it supplies; provenance:"override"', () => {
-    const overrides: UserOverrides = { model: 'haiku' };
-    const rp = mergeRunParams(DEFAULTS, overrides);
-    expect(rp.model).toBe('haiku');
-    expect(rp.provenance.model).toBe('override');
-    // untouched key falls back to the registered default
-    expect(rp.timeoutMs).toBe(30_000);
-    expect(rp.provenance.timeoutMs).toBe('default');
+  it('override wins for the keys it supplies, on THAT label only; provenance:"override"', () => {
+    const overrides: UserOverrides = { agents: { w: { model: 'haiku' } } };
+    const rp = mergeRunParams(DEFAULTS, overrides, CONTRACT);
+    expect(rp.agents?.['w']?.model).toBe('haiku');
+    expect(rp.agents?.['w']?.provenance.model).toBe('override');
+    // untouched key falls back to the label's own registered default
+    expect(rp.agents?.['w']?.timeoutMs).toBe(30_000);
+    expect(rp.agents?.['w']?.provenance.timeoutMs).toBe('default');
   });
 
   it('folds all 6 registered keys — the author-only pair (prompt/tools) rides the snapshot too (REQ-092 close); skills is NOT a RunParams field (B-3 — skills are global server-side assets, unrelated to this snapshot)', () => {
@@ -88,17 +98,17 @@ describe('mergeRunParams() — admission-time fold of overrides over registered 
 
   it('two rungs holding the SAME value are still distinguished by provenance (not inferred by comparison)', () => {
     // registered default happens to equal what the engine would have chosen anyway ("sonnet")
-    const rpNoOverride = mergeRunParams({ model: 'sonnet' }, {});
-    const rpOverride: RunParams = mergeRunParams(undefined, { model: 'sonnet' });
-    expect(rpNoOverride.model).toBe(rpOverride.model); // same value...
-    expect(rpNoOverride.provenance.model).toBe('default');   // ...but provenance differs
-    expect(rpOverride.provenance.model).toBe('override');
+    const rpNoOverride = mergeRunParams({ model: 'sonnet' }, {}, CONTRACT);
+    const rpOverride: RunParams = mergeRunParams(undefined, { agents: { w: { model: 'sonnet' } } }, CONTRACT);
+    expect(rpNoOverride.agents?.['w']?.model).toBe(rpOverride.agents?.['w']?.model); // same value...
+    expect(rpNoOverride.agents?.['w']?.provenance.model).toBe('default');   // ...but provenance differs
+    expect(rpOverride.agents?.['w']?.provenance.model).toBe('override');
   });
 
   it('appendPrompt: absent by default, "override" when the caller supplies it (no author-side default exists)', () => {
-    const rp = mergeRunParams(DEFAULTS, { appendPrompt: 'extra instructions' });
-    expect(rp.appendPrompt).toBe('extra instructions');
-    expect(rp.provenance.appendPrompt).toBe('override');
+    const rp = mergeRunParams(DEFAULTS, { agents: { w: { appendPrompt: 'extra instructions' } } }, CONTRACT);
+    expect(rp.agents?.['w']?.appendPrompt).toBe('extra instructions');
+    expect(rp.agents?.['w']?.provenance.appendPrompt).toBe('override');
   });
 
   // v21 orchestrator adjudication #6 (2026-09-01, F-5): provenance-matrix coverage gap the
@@ -107,67 +117,21 @@ describe('mergeRunParams() — admission-time fold of overrides over registered 
   // recorded here so the full per-key parity (model/effort/timeoutMs/appendPrompt) is pinned in one
   // place, matching the pattern the other three keys already follow.
   it('overrides.effort wins over a registered default; provenance:"override"', () => {
-    const rp = mergeRunParams(DEFAULTS, { effort: 'low' });
-    expect(rp.effort).toBe('low');
-    expect(rp.provenance.effort).toBe('override');
+    const rp = mergeRunParams(DEFAULTS, { agents: { w: { effort: 'low' } } }, CONTRACT);
+    expect(rp.agents?.['w']?.effort).toBe('low');
+    expect(rp.agents?.['w']?.provenance.effort).toBe('override');
   });
 });
 
-describe('resolveCallParams() — dispatch-time application of the two per-call rungs (ARCH-065)', () => {
-  const RUN_PARAMS: RunParams = {
-    model: 'sonnet', timeoutMs: 30_000,
-    provenance: { model: 'default', effort: 'engine', timeoutMs: 'default', appendPrompt: 'engine' },
-  };
-
-  it('per-call agent() opts.model wins over everything (rung 1)', () => {
-    const eff = resolveCallParams({ model: 'opus' }, undefined, RUN_PARAMS, { model: 'haiku' });
-    expect(eff.model).toBe('opus');
-    expect(eff.provenance.model).toBe('call');
-  });
-
-  it('agentType frontmatter model wins over the run snapshot when no per-call opts.model (rung 2, D12: author config beats a user blanket choice)', () => {
-    const agentTypeDef: AgentTypeDef = { systemPrompt: 'you are an agent', model: 'opus' };
-    const eff = resolveCallParams({}, agentTypeDef, RUN_PARAMS, { model: 'haiku' });
-    expect(eff.model).toBe('opus');
-    expect(eff.provenance.model).toBe('agentType');
-  });
-
-  it('falls back to the run snapshot (override/default rung) when neither call nor agentType supply a value', () => {
-    const eff = resolveCallParams({}, undefined, RUN_PARAMS, { model: 'haiku' });
-    expect(eff.model).toBe('sonnet');
-    expect(eff.provenance.model).toBe('default'); // inherited from RUN_PARAMS.provenance.model
-  });
-
-  it('falls back to the engine default alias as the last rung when nothing else set a model', () => {
-    const empty: RunParams = { provenance: { model: 'engine', effort: 'engine', timeoutMs: 'engine', appendPrompt: 'engine' } };
-    const eff = resolveCallParams({}, undefined, empty, { model: 'haiku' });
-    expect(eff.model).toBe('haiku');
-    expect(eff.provenance.model).toBe('engine');
-  });
-
-  it('effort has no agentType rung: call > override(snapshot) > engine(absent)', () => {
-    const withEffort: RunParams = { ...RUN_PARAMS, effort: 'high', provenance: { ...RUN_PARAMS.provenance, effort: 'override' } };
-    const eff = resolveCallParams({ effort: 'low' }, { systemPrompt: 'x' }, withEffort, {});
-    expect(eff.effort).toBe('low');
-    expect(eff.provenance.effort).toBe('call');
-  });
-
-  it('timeoutMs falls back from call to the snapshot to engine, same 3-rung ladder as effort', () => {
-    const eff = resolveCallParams({}, undefined, RUN_PARAMS, {});
-    expect(eff.timeoutMs).toBe(30_000);
-    expect(eff.provenance.timeoutMs).toBe('default');
-  });
-
-  // v21 orchestrator adjudication #6 (2026-09-01, F-5): provenance-matrix coverage gap the
-  // implementer flagged — no dedicated per-call `opts.timeoutMs` call-rung case existed (only the
-  // fallback-to-snapshot case above). Already correctly implemented today (green) — pins the call
-  // rung explicitly, same pattern as `opts.model`'s "rung 1" case.
-  it('per-call agent() opts.timeoutMs wins over the run snapshot (rung 1, same ladder as model)', () => {
-    const eff = resolveCallParams({ timeoutMs: 5_000 }, undefined, RUN_PARAMS, {});
-    expect(eff.timeoutMs).toBe(5_000);
-    expect(eff.provenance.timeoutMs).toBe('call');
-  });
-});
+// v24 (DES-146, TASK-137): the old `resolveCallParams()` describe block (per-call `agent()` opts
+// and agentType-frontmatter rungs, ARCH-065) was removed here — that function and its two rungs
+// are DELETED from src/params/resolve.ts (see the `resolveAgentParams` block appended below,
+// which supersedes it with the three-rung ladder). Reported as a test_defect in the Gate 6 report
+// rather than silently dropped: the Gate 5 author left this block in place with a comment noting
+// the rewrite was deliberately handed to Gate 6/TASK-137 (this file is in TASK-137's own `files:`
+// and DES-146 marks this file REWRITE [T3]); removing it is required for the module to even
+// link — an ESM named import of a deleted export (`resolveCallParams`) is a load-time failure for
+// every test in this file, not a scoped one.
 
 describe('composePrompt() — five-segment order + byte-identity pin (DES-102, REQ-094)', () => {
   it('BYTE-IDENTITY PIN: no appendPrompt, no author prompt → identical to today’s `${systemPrompt}\\n\\n${prompt}`', () => {
@@ -286,5 +250,82 @@ describe('mapEffort (this file) stays FENCED — zero src/ importers outside res
     };
     walk(srcDir);
     expect(offenders).toEqual([]);
+  });
+});
+
+// UT-148 (DES-146, v24 REWRITE — appended block, [T3]): resolveAgentParams(label, contract,
+// overrides, engineDefaults) — three rungs (override > default > engine), not five; the
+// 'call'/'agentType' rungs are DELETED (Gate 6/TASK-137 — see the resolveCallParams-removal note
+// above the composePrompt describe block).
+import { describe as describeV24, it as itV24, expect as expectV24 } from 'vitest';
+import { resolveAgentParams } from '../../src/params/resolve.js';
+
+const v24Contract = {
+  plan: {
+    model: { default: 'sonnet-5' },
+    effort: { default: 'low' },
+    timeoutMs: { default: 60000 },
+  },
+};
+
+describeV24('v24: resolveAgentParams — three rungs (UT-148, DES-146)', () => {
+  itV24('override wins over the contract default', () => {
+    const eff = resolveAgentParams('plan', v24Contract, { effort: 'high' }, {});
+    expectV24(eff.effort).toBe('high');
+    expectV24(eff.provenance.effort).toBe('override');
+  });
+
+  itV24('with no override, the contract default is used and provenance says default', () => {
+    const eff = resolveAgentParams('plan', v24Contract, {}, {});
+    expectV24(eff.model).toBe('sonnet-5');
+    expectV24(eff.provenance.model).toBe('default');
+  });
+
+  itV24("'engine' is reachable only for appendPrompt (absent ⇒ undefined, provenance 'engine')", () => {
+    const eff = resolveAgentParams('plan', v24Contract, {}, {});
+    expectV24(eff.appendPrompt).toBeUndefined();
+    expectV24(eff.provenance.appendPrompt).toBe('engine');
+  });
+
+  itV24('a label absent from the contract at dispatch throws INTERNAL_ERROR (a programming error, admission already validated it)', () => {
+    expectV24(() => resolveAgentParams('ghost', v24Contract, {}, {})).toThrow(/INTERNAL_ERROR/);
+  });
+
+  itV24('provenance.model is NEVER "call" or "agentType" — those rungs are deleted', () => {
+    const eff = resolveAgentParams('plan', v24Contract, { model: 'sonnet-5' }, {});
+    expectV24(['override', 'default']).toContain(eff.provenance.model);
+  });
+});
+
+// v24 (TASK-158, adjudication A-7 [14][18]): mergeRunParams()/defaultRunParams() reconciled with
+// DES-145's nested `UserOverrides.agents.<label>` shape — the admission snapshot's `.agents` slice
+// (DES-146 boundary), built one `resolveAgentParams` call per declared label. REQ-110's whole
+// defect was that a single caller-supplied value applied to EVERY agent; these cases pin that a
+// per-agent override reaches admission for that label ONLY and never leaks to a sibling.
+import { mergeRunParams as mergeRunParamsV24, defaultRunParams as defaultRunParamsV24 } from '../../src/params/resolve.js';
+
+const twoLabelContract = {
+  plan: { model: { default: 'sonnet-5' }, effort: { default: 'low' }, timeoutMs: { default: 60000 } },
+  write: { model: { default: 'haiku' }, effort: { default: 'medium' }, timeoutMs: { default: 30000 } },
+};
+
+describeV24('v24: mergeRunParams()/defaultRunParams() — per-agent-label admission snapshot (TASK-158, DES-146)', () => {
+  itV24('an override for one label reaches ONLY that label\'s slice — the sibling keeps its own contract default (no broadcast)', () => {
+    const rp = mergeRunParamsV24(undefined, { agents: { plan: { effort: 'high' } } }, twoLabelContract);
+    expectV24(rp.agents?.['plan']?.effort).toBe('high');
+    expectV24(rp.agents?.['plan']?.provenance.effort).toBe('override');
+    expectV24(rp.agents?.['write']?.effort).toBe('medium'); // untouched — its OWN contract default, not 'plan''s override
+    expectV24(rp.agents?.['write']?.provenance.effort).toBe('default');
+  });
+
+  itV24('no overrides at all: every declared label resolves to its own contract default', () => {
+    const rp = defaultRunParamsV24(undefined, twoLabelContract);
+    expectV24(rp.agents?.['plan']?.model).toBe('sonnet-5');
+    expectV24(rp.agents?.['write']?.model).toBe('haiku');
+  });
+
+  itV24('no contract supplied (ad-hoc/legacy script): `.agents` is absent, not an empty object', () => {
+    const rp = mergeRunParamsV24(undefined, {}, undefined);
+    expectV24(rp.agents).toBeUndefined();
   });
 });

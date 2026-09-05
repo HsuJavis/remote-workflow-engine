@@ -67,7 +67,10 @@ describe('RunGuard budget-estimate reservation preserves parallel() concurrency 
     const runId = await startScript(mgr, `
         const thunks = [];
         for (let i = 0; i < ${CALLS}; i++) {
-          thunks.push(async () => agent('call-' + i));
+          // v24 (ADR-029): literal label + prompt-in-options; a computed label is
+          // AGENT_LABEL_NOT_LITERAL. One label, CALLS distinct prompts — the concurrency/budget
+          // oracles below count dispatches, not labels.
+          thunks.push(async () => agent('call', { prompt: 'call-' + i }));
         }
         const results = await parallel(thunks);
         return { results };
@@ -95,7 +98,10 @@ describe('RunGuard budget-estimate reservation preserves parallel() concurrency 
     const runId = await startScript(mgr, `
         const thunks = [];
         for (let i = 0; i < ${CALLS}; i++) {
-          thunks.push(async () => agent('call-' + i));
+          // v24 (ADR-029): literal label + prompt-in-options; a computed label is
+          // AGENT_LABEL_NOT_LITERAL. One label, CALLS distinct prompts — the concurrency/budget
+          // oracles below count dispatches, not labels.
+          thunks.push(async () => agent('call', { prompt: 'call-' + i }));
         }
         const results = await parallel(thunks);
         return { results, finalSpent: budget.spent() };

@@ -31,14 +31,18 @@ import { createServer as createHttpServer, type Server as HttpServer } from 'nod
 import { AgentExecutor } from '../../src/agent-executor.js';
 import { defaultRunParams } from '../../src/params/resolve.js';
 
-const STUB_PORT_A = 38220;
-const STUB_PORT_B = 38221;
+// v24 (integrator): the two stubs used to bind the HARD-CODED ports 38220/38221. This suite boots
+// dozens of ephemeral-port servers, and the kernel hands those out of the same range, so a sibling
+// file could already hold one — which is exactly what happened: an `EADDRINUSE` thrown from
+// `beforeAll` failed this FILE (and therefore the whole run) while both of its tests passed. The
+// stubs now bind port 0 and the baseUrl is read back from the assignment, so there is no port to
+// collide over. `baseUrl` is a getter for that reason: it is not knowable until `listen` resolves.
 
 interface CapturedRequest {
   body: Record<string, unknown>;
 }
 
-function startTextStub(port: number): { server: HttpServer; requests: CapturedRequest[]; baseUrl: string } {
+function startTextStub(): { server: HttpServer; requests: CapturedRequest[]; baseUrl: string } {
   const requests: CapturedRequest[] = [];
   const server = createHttpServer((req, res) => {
     let raw = '';
@@ -62,12 +66,12 @@ function startTextStub(port: number): { server: HttpServer; requests: CapturedRe
       res.end();
     });
   });
-  return { server, requests, baseUrl: `http://127.0.0.1:${port}` };
+  return { server, requests, get baseUrl(): string { return `http://127.0.0.1:${(server.address() as { port: number }).port}`; } };
 }
 
 /** Always answers with an Anthropic-Messages-shaped HTTP error — the real wire shape an invalid
  *  model id / auth failure / rate limit produces. */
-function startErrorStub(port: number): { server: HttpServer; requests: CapturedRequest[]; baseUrl: string } {
+function startErrorStub(): { server: HttpServer; requests: CapturedRequest[]; baseUrl: string } {
   const requests: CapturedRequest[] = [];
   const server = createHttpServer((req, res) => {
     let raw = '';
@@ -84,7 +88,7 @@ function startErrorStub(port: number): { server: HttpServer; requests: CapturedR
       res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'model: haiku-alias is not a valid model ID' } }));
     });
   });
-  return { server, requests, baseUrl: `http://127.0.0.1:${port}` };
+  return { server, requests, get baseUrl(): string { return `http://127.0.0.1:${(server.address() as { port: number }).port}`; } };
 }
 
 /** Bounded wait for the stub to receive at least one request — same skip-guard shape as IT-015. */
@@ -108,11 +112,11 @@ describe('ClaudeAgentSdkGatewayClient — D-F5 route-back defects, real CLI + lo
   let errorStub: ReturnType<typeof startErrorStub>;
 
   beforeAll(async () => {
-    textStub = startTextStub(STUB_PORT_A);
-    errorStub = startErrorStub(STUB_PORT_B);
+    textStub = startTextStub();
+    errorStub = startErrorStub();
     await Promise.all([
-      new Promise<void>((resolve) => textStub.server.listen(STUB_PORT_A, '127.0.0.1', resolve)),
-      new Promise<void>((resolve) => errorStub.server.listen(STUB_PORT_B, '127.0.0.1', resolve)),
+      new Promise<void>((resolve) => textStub.server.listen(0, '127.0.0.1', resolve)),
+      new Promise<void>((resolve) => errorStub.server.listen(0, '127.0.0.1', resolve)),
     ]);
   });
 

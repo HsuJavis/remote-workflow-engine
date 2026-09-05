@@ -17,6 +17,17 @@
 //   no enriched-output shape description (DES-077 adds it) → description assertions fail.
 //   Both = red for the right unimplemented reasons.
 
+// v24 (batch B, then CLOSED by the integrator — GREEN now): each failure was — every remaining failure here is a PRODUCT defect, not a
+// stale test. Both subjects are live v24 tools whose ADVERTISED surface lost what their handlers
+// still do:
+//   * `system_info.inputSchema` is `{properties:{},required:[]}`, but `call-tool.ts:192` still reads
+//     `args.topN` (default 5) and `system-info.ts:200` still clamps it to [1,50] — probed over real
+//     MCP HTTP: `{topN:3}`→3 rows, `{topN:1}`→1 row, `{topN:9999}`→50 rows. The param works and is
+//     undiscoverable, which is exactly the REQ-079/REQ-117 failure these cases exist to catch.
+//   * `models_list`'s description ('List the model catalog: aliases, capability/stability/cost
+//     ratings.') no longer explains the costLevel 0=free..10 scale or its null-when-price-unknown
+//     contract, while `enrichModelEntry` still returns `costLevel:8|null` on every row.
+// Migrating these onto the impoverished description would delete the only guard over the drift.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

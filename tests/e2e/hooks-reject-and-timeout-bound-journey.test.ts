@@ -1,7 +1,8 @@
 // E2E-007: Hooks are rejected by construction + a hung SDK-gateway provider call is bounded and
 // never smuggled as fake success (REQ-019, REQ-020 cross-cutting journey).
-// RED: (a) today's asset_push materializes a hook asset instead of rejecting it; (b) GET
+// RED: (a) today's asset-push tool materializes a hook asset instead of rejecting it; (b) GET
 // /api/status (the D-DOS gauge surface) does not exist yet — always 404 regardless of provider.
+// v24 (TASK-152, DES-153): the asset-push tool this file used to call is renamed workspace_push.
 // Mock policy (E2E — never mocks the SUT's own boundaries): the ONLY fake is the third-party
 // network endpoint the real SDK CLI subprocess dials (ANTHROPIC_BASE_URL → a local stub HTTP
 // server that never responds) — same fault-injection technique as IT-015's stub /v1/messages
@@ -57,18 +58,19 @@ async function mcpCall(name: string, args: Record<string, unknown> = {}) {
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
   });
   const body = await res.json() as { result?: { content?: Array<{ text?: string }> } };
-  // NOTE: workflow_* tools return their own flat envelope directly; asset_push wraps its payload
-  // under `.result` (server.ts's `{ result: await assetSync.push(...) }` shape) — dereferenced
-  // explicitly at the asset_push call site below, not auto-unwrapped here (auto-unwrapping broke
-  // workflow_result's own `.result` field, which is the SCRIPT'S return value, not a wrapper).
+  // NOTE: workflow_* tools return their own flat envelope directly; workspace_push wraps its
+  // payload under `.result` (mcp-facade.ts's `{ result: await assetSync.push(...) }` shape) —
+  // dereferenced explicitly at the workspace_push call site below, not auto-unwrapped here
+  // (auto-unwrapping broke run_result's own `.result` field, which is the SCRIPT'S return value,
+  // not a wrapper).
   return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
 
 function b64(s: string) { return Buffer.from(s, 'utf-8').toString('base64'); }
 
 describe('REQ-019: a hook-kind asset is rejected by construction, the internal PreToolUse boundary hook is unaffected', () => {
-  it('asset_push of a hook is rejected — nothing materialized on disk', async () => {
-    const out = await mcpCall('asset_push', { kind: 'hook', name: 'e2e-evil-hook', files: [{ path: 'h.sh', contentB64: b64('rm -rf /') }] });
+  it('workspace_push of a hook is rejected — nothing materialized on disk', async () => {
+    const out = await mcpCall('workspace_push', { kind: 'hook', name: 'e2e-evil-hook', files: [{ path: 'h.sh', contentB64: b64('rm -rf /') }] });
     const payload = (out['result'] as { stored?: string[] } | undefined) ?? {};
     expect(payload.stored ?? []).toEqual([]);
     expect(existsSync(join(tmpDir, 'assets', 'hook', 'e2e-evil-hook'))).toBe(false);
@@ -80,20 +82,37 @@ describe('REQ-020: a hung SDK-gateway provider call is bounded by timeoutMs — 
     // v22 (adjudication #1 K-1/K-2): inline script is closed at every ingress, so the hung-provider
     // script is registered+published and run by name. The bounded-timeout subject is unchanged —
     // only how the script reaches the engine.
+    // v24 (DES-143/DES-144, TASK-152): agent() now takes a literal label as its first arg
+    // (registration scans it) plus a literal options object — the old single-arg `agent(prompt)`
+    // form is refused AGENT_LABEL_REQUIRED — and registration requires a matching
+    // `meta.params.agents.hang` declaration (AGENT_UNDECLARED otherwise). `model:'default'` resolves
+    // through `DEFAULT_ALIASES` (this file's server has no explicit `aliases`) to the SAME
+    // real-provider dial the hung stub intercepts (`baseUrl` override, `beforeAll` above).
     const run = await runScriptVia(
       mcpCall,
-      `const r = await agent('this call will hang'); return r === null ? 'bounded-null' : 'unexpected-value';`,
+      [
+        "export const meta = { params: { agents: { hang: {",
+        "  model: { type: 'string', default: 'default' },",
+        "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
+        // The declared per-agent timeoutMs is DELIBERATELY the 5000ms this file's `beforeAll`
+        // configures on the gateway: a per-call `opts.timeoutMs` OVERRIDES the client's configured
+        // default (claude-agent-sdk-client.ts:443/457), so a declared 30000 here would have made the
+        // fixture measure a bound nothing in this test set up.
+        "  timeoutMs: { type: 'number', default: 5000 },",
+        "} } } };",
+        "const r = await agent('hang', {}); return r === null ? 'bounded-null' : 'unexpected-value';",
+      ].join('\n'),
     );
     const runId = run['runId'] as string;
     let finalStatus: Record<string, unknown> | undefined;
     for (let i = 0; i < 30; i++) {
-      const s = await mcpCall('workflow_status', { runId });
+      const s = await mcpCall('run_status', { runId });
       if (s['status'] === 'completed' || s['status'] === 'failed') { finalStatus = s; break; }
       await new Promise((r) => setTimeout(r, 1000));
     }
     expect(finalStatus).toBeDefined();
     expect(finalStatus?.['status']).toBe('completed');
-    const result = await mcpCall('workflow_result', { runId });
+    const result = await mcpCall('run_result', { runId });
     expect(result['result']).toBe('bounded-null');
   }, 60000);
 

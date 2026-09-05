@@ -6,8 +6,8 @@
 // workspace; a path escaping via `../`/symlink, or targeting .git internals, is rejected (never
 // written).
 import { mkdirSync, writeFileSync, chmodSync } from 'node:fs';
-import { dirname, join, sep } from 'node:path';
-import { isPathContained } from './path-containment.js';
+import { dirname, join } from 'node:path';
+import { lexicalVerdict, pathVerdict } from './path-verdict.js';
 import type { ManifestEntry } from './types.js';
 
 export interface SeedFile {
@@ -22,24 +22,18 @@ export interface SeedResult {
 }
 
 /** The per-path guardrail verdict, shared by the inline (materializeSeed) and CAS (materializeManifest)
- *  seed paths so they can NEVER diverge. Path plane only — the byte source is irrelevant to policy. */
+ *  seed paths so they can NEVER diverge. Path plane only — the byte source is irrelevant to policy.
+ *  A thin adapter over the shared `pathVerdict` (v24 DES-142/TASK-134) onto this module's own
+ *  ok/stripped/rejected shape, so `SeedResult`'s field names don't change. */
 function seedPathVerdict(workspace: string, rel: string): { verdict: 'ok'; abs: string } | { verdict: 'stripped' | 'rejected' } {
-  if (rel === '') return { verdict: 'rejected' };
-  if (isStrippedSeedPath(rel)) return { verdict: 'stripped' };
-  const norm = '/' + rel.split(sep).join('/');
-  if (norm.includes('/.git/') || norm.endsWith('/.git')) return { verdict: 'rejected' };
-  const abs = join(workspace, rel);
-  if (!isPathContained(abs, workspace)) return { verdict: 'rejected' }; // ../ or symlink escape
-  return { verdict: 'ok', abs };
+  const v = pathVerdict(workspace, rel, undefined, 'run-workspace');
+  if (v.kind === 'ok') return { verdict: 'ok', abs: v.abs ?? join(workspace, rel) };
+  if (v.kind === 'stripped') return { verdict: 'stripped' };
+  return { verdict: 'rejected' };
 }
 
-// `.claude/settings.json`, `.claude/settings.local.json`, anything under `.claude/hooks/` — the
-// entries `settingSources:['project']` would EXECUTE. (A plain `.claude/skills/**` or the user's own
-// CLAUDE.md is NOT stripped — skills are the intended materialized surface; CLAUDE.md is inert data.)
-const STRIP_RE = /(^|\/)\.claude\/(settings[^/]*\.json|hooks\/.*)$/;
-
 export function isStrippedSeedPath(rel: string): boolean {
-  return STRIP_RE.test('/' + rel.split(sep).join('/').replace(/^\/+/, ''));
+  return lexicalVerdict('run-workspace', rel).kind === 'stripped';
 }
 
 export function materializeSeed(workspace: string, seed: SeedFile[]): SeedResult {

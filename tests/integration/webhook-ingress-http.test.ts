@@ -65,7 +65,7 @@ describe('webhook ingress POST /hooks/:id (v8 Defer B, REQ-057)', () => {
     let result: any;
     for (let i = 0; i < 25; i++) {
       await new Promise((r) => setTimeout(r, 200));
-      result = await callTool('workflow_result', { runId: gotoBody.runId });
+      result = await callTool('run_result', { runId: gotoBody.runId });
       if (result.status === 'completed') break;
     }
     expect(result.status).toBe('completed');

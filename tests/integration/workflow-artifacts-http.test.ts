@@ -1,14 +1,14 @@
-// IT-014: workflow_artifacts registered on the real MCP JSON-RPC/HTTP surface (server.ts
+// IT-014: workspace_list registered on the real MCP JSON-RPC/HTTP surface (server.ts
 // TOOL_NAMES + callTool dispatcher), not just the in-process McpFacade (D-R4). IT-010
 // (tests/integration/workspace-artifacts.test.ts) already pins the facade-level method directly
-// (now green — McpFacade.workflow_artifacts genuinely exists and works); this test pins the
+// (now green — McpFacade.workspace_list genuinely exists and works); this test pins the
 // actual delivery interface a real MCP client uses, mirroring VAL-005/mcp-tools.test.ts's
 // HTTP-level pattern (tools/list must advertise it, tools/call must dispatch it).
 //
 // Red reason (2026-07-03, before Gate 6 rework): src/server.ts's TOOL_NAMES const and callTool()
-// switch have no 'workflow_artifacts' case — tools/list omits it, and tools/call for it falls
-// through to `default: throw new Error('Unknown tool: workflow_artifacts')`, returned as a
-// JSON-RPC error envelope, even though McpFacade.workflow_artifacts itself works correctly.
+// switch have no 'workspace_list' case — tools/list omits it, and tools/call for it falls
+// through to `default: throw new Error('Unknown tool: workspace_list')`, returned as a
+// JSON-RPC error envelope, even though McpFacade.workspace_list itself works correctly.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -38,7 +38,7 @@ async function toolCall(baseUrl: string, name: string, args: Record<string, unkn
   return JSON.parse(body.result!.content![0].text);
 }
 
-describe('workflow_artifacts over the real MCP HTTP surface (IT-014, D-R4)', () => {
+describe('workspace_list over the real MCP HTTP surface (IT-014, D-R4)', () => {
   let server: Server;
   let baseUrl: string;
 
@@ -49,23 +49,23 @@ describe('workflow_artifacts over the real MCP HTTP surface (IT-014, D-R4)', () 
 
   afterAll(async () => { await server?.close(); });
 
-  it('tools/list advertises workflow_artifacts', async () => {
+  it('tools/list advertises workspace_list', async () => {
     const body = await rpc(baseUrl, 'tools/list', {});
     const names = (body.result!.tools ?? []).map((t) => t.name);
-    expect(names).toContain('workflow_artifacts');
+    expect(names).toContain('workspace_list');
   });
 
-  it("tools/call workflow_artifacts lists a file written into a completed run's workspace", async () => {
+  it("tools/call workspace_list lists a file written into a completed run's workspace", async () => {
     // v22: inline script is closed, so the run is NAMED and its workspace bucket is that name
     // rather than the pre-v22 '_adhoc' bucket for unnamed runs.
     const wfName = 'it014-artifacts';
     const run = await runScriptVia((tool, args) => toolCall(baseUrl, tool, args), `return 'done';`, { name: wfName });
     const runId = run.runId as string;
 
-    let status = await toolCall(baseUrl, 'workflow_status', { runId });
+    let status = await toolCall(baseUrl, 'run_status', { runId });
     for (let i = 0; i < 60 && (status.status === 'running' || status.status === 'queued'); i++) {
       await new Promise((r) => setTimeout(r, 50));
-      status = await toolCall(baseUrl, 'workflow_status', { runId });
+      status = await toolCall(baseUrl, 'run_status', { runId });
     }
     expect(status.status).toBe('completed');
 
@@ -76,7 +76,7 @@ describe('workflow_artifacts over the real MCP HTTP surface (IT-014, D-R4)', () 
     mkdirSync(workspace, { recursive: true });
     writeFileSync(join(workspace, 'output.txt'), 'artifact content');
 
-    const artifacts = await toolCall(baseUrl, 'workflow_artifacts', { runId });
+    const artifacts = await toolCall(baseUrl, 'workspace_list', { runId });
 
     expect(artifacts.error).toBeUndefined();
     expect((artifacts.result as Array<{ path: string; size: number; sha256: string }>).map((a) => a.path)).toContain('output.txt');

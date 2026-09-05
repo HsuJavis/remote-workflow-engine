@@ -1,220 +1,161 @@
-// UT-113 (TASK-118, DES-125, ARCH-081): pure `projectWorkflowDescribe` + `WorkflowDescribeView` +
-// `EXPECTED_DESCRIBE_KEYS` — the one explain projection, no `script` field in the TYPE, live trigger
-// bindings, and the `diagramStale`/`diagramGeneratedAt` honest-absence rules (DES-127 B3).
+// UT-113/UT-157 (TASK-149, DES-156, ARCH-105/106): pure `projectWorkflowDescribe` +
+// `WorkflowDescribeView` + `EXPECTED_DESCRIBE_KEYS` — the one explain projection, no `script`
+// field in the TYPE, a by-id live `triggers` snapshot, `mermaid`/`mermaidNote` (verbatim stored
+// string, honest-null note) replacing the retired `diagram*` family, `runnable`/`runnableReason`,
+// and `params.agents.<label>` ceiling-bounded projection.
 //
 // Mock policy (unit, DES-119): pure module — plain object fixtures, no I/O, no clock, no auth.
 //
-// Anti-vacuity rule (04-design.md v23 "per-tier mock policy"): EXPECTED_DESCRIBE_KEYS below is a
-// LITERAL array transcribed from DES-125's own field list, never derived from the module under test.
+// v24 Gate 7.5 (D-8) BOUNDARY: every case below feeds `projectWorkflowDescribe` a HAND-BUILT
+// `WorkflowOwnerView`, so it can only ever prove the projection is faithful to the object it is
+// handed — it stayed green for the whole iteration while the catalog read never selected the
+// `mermaid` column and the facade never forwarded it, i.e. while EVERY real
+// `workflow_describe(...).mermaid` was null. The register→SQLite→describe round trip is pinned by
+// tests/integration/describe-mermaid-roundtrip.test.ts (IT-126); do not read this file as evidence
+// that a registered diagram is served.
 //
-// Red reason: `projectWorkflowDescribe`/`EXPECTED_DESCRIBE_KEYS` are not yet exported from
-// `src/workflow-view.ts` -> ESM SyntaxError "does not provide an export named '...'" at collect time
-// (same precedent as UT-069/morandi-renderer.test.ts for a not-yet-exported member of an EXISTING
-// module).
+// v24 [T3] REWRITE (DES-156's own `tests:` line — "today pins diagramStatus"): the whole file is
+// rebuilt against the v24 shape; the pre-v24 diagram*/note-precedence/bindings-fp machinery this
+// file used to pin is gone along with the analyzer/trigger-bindings ports it read (TASK-139).
 import { describe, it, expect } from 'vitest';
 import { projectWorkflowDescribe, EXPECTED_DESCRIBE_KEYS, type WorkflowOwnerView } from '../../src/workflow-view.js';
-import { noteTextFor } from '../../src/graph-analyzer.js';
+import type { Ceilings } from '../../src/params/contract.js';
 
-function deepFlatten(obj: unknown, prefix = ''): Record<string, unknown> {
-  if (obj === null || obj === undefined || typeof obj !== 'object' || Array.isArray(obj)) {
-    return prefix ? { [prefix]: obj } : {};
-  }
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-    const path = prefix ? `${prefix}.${k}` : k;
-    out[path] = v;
-    if (v !== null && typeof v === 'object' && !Array.isArray(v)) Object.assign(out, deepFlatten(v, path));
-  }
-  return out;
-}
+const CEILINGS: Ceilings = { maxTimeoutMs: 300_000, maxAppendPromptBytes: 512, maxEffort: 'high' };
 
-const FULL: WorkflowOwnerView = {
-  name: 'describe-fixture', version: 'v3',
-  channels: { release: 'v2', beta: 'v3' },
-  versions: ['v1', 'v2', 'v3'],
-  description: 'a fixture workflow',
-  phases: [{ title: 'Draft' }, { title: 'Verify' }],
-  params: { knobs: {} } as unknown as WorkflowOwnerView['params'],
-  owner: 'owner@example.com',
-  createdAt: '2026-01-01T00:00:00.000Z',
-  reportProblem: 'call issue_report({workflow:"describe-fixture"})',
-  validation: { ok: true, errors: [] },
-  script: 'return "the actual script bytes";',
+const V24_PARAMS = {
+  agents: {
+    reviewer: {
+      model: { type: 'string' as const, default: 'claude', enum: ['claude', 'gpt'] },
+      effort: { type: 'enum' as const, default: 'medium', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      timeoutMs: { type: 'number' as const, default: 60_000, min: 1000, max: 900_000 },
+    },
+  },
+  args: {},
 };
 
-// Transcribed LITERALLY from DES-125's own `WorkflowDescribeView` field list — `phases`, `versions`,
-// `triggers` each contribute exactly ONE top-level key (deepFlatten does not recurse into arrays).
-const EXPECTED_DESCRIBE_KEYS_LITERAL = [
-  'name', 'version', 'resolvedBy',
-  'channels', 'channels.release', 'channels.beta',
-  'versions', 'description', 'phases',
-  'params', 'params.knobs',
-  'lockedKeys', 'owner', 'reportProblem', 'triggers',
-  'diagram', 'diagramStatus', 'diagramNote', 'diagramGeneratedAt', 'diagramStale',
-].sort();
+const LEGACY_PARAMS = { knobs: {} };
 
-describe('projectWorkflowDescribe — the two-sided key oracle (UT-113, DES-125)', () => {
-  it('a ready diagram: the flattened key set is EXACTLY EXPECTED_DESCRIBE_KEYS_LITERAL — a leaked field OR a dropped one both fail', () => {
-    const view = projectWorkflowDescribe(FULL, {
-      diagram: { status: 'ready', diagram: '╭─Draft─╮', noteCode: null, generatedAt: '2026-09-02T10:00:00.000Z', bindingsFp: 'fp-1' } as any,
-      bindings: [{ kind: 'cron', cron: '0 3 * * *', enabled: true }] as any,
-      bindingsFp: 'fp-1', analyzerEnabled: true,
-    });
-    expect(Object.keys(deepFlatten(view)).sort()).toEqual(EXPECTED_DESCRIBE_KEYS_LITERAL);
-  });
+function fixture(overrides: Partial<WorkflowOwnerView> = {}): WorkflowOwnerView {
+  return {
+    name: 'describe-fixture', version: 'v3',
+    channels: { release: 'v2', beta: 'v3' },
+    versions: ['v1', 'v2', 'v3'],
+    description: 'a fixture workflow',
+    phases: [{ title: 'Draft' }, { title: 'Verify' }],
+    params: V24_PARAMS as unknown as WorkflowOwnerView['params'],
+    owner: 'owner@example.com',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    reportProblem: 'call issue_report({workflow:"describe-fixture"})',
+    validation: { ok: true, errors: [] },
+    script: 'return "the actual script bytes";',
+    mermaid: 'graph TD; A-->B;',
+    ...overrides,
+  };
+}
 
-  it('EXPECTED_DESCRIBE_KEYS (the module\'s own advertised constant) names exactly the response\'s top-level keys', () => {
-    const view = projectWorkflowDescribe(FULL, {
-      diagram: null, bindings: [], bindingsFp: 'fp-empty', analyzerEnabled: true,
-    });
-    const advertisedTopLevel = [...EXPECTED_DESCRIBE_KEYS].filter((k) => !k.includes('.'));
-    expect(Object.keys(view as unknown as Record<string, unknown>).sort()).toEqual(advertisedTopLevel.sort());
+describe('projectWorkflowDescribe — EXPECTED_DESCRIBE_KEYS (UT-113/UT-157, DES-156)', () => {
+  it('the top-level key set is EXACTLY EXPECTED_DESCRIBE_KEYS — a leaked field OR a dropped one both fail', () => {
+    const view = projectWorkflowDescribe(fixture(), { triggers: [] });
+    expect(Object.keys(view).sort()).toEqual([...EXPECTED_DESCRIBE_KEYS].sort());
   });
 
   it('there is no `script` field on the response for ANY input, including the owner-view fixture that carries one', () => {
-    const view = projectWorkflowDescribe(FULL, { diagram: null, bindings: [], bindingsFp: 'fp', analyzerEnabled: true }) as unknown as Record<string, unknown>;
+    const view = projectWorkflowDescribe(fixture(), { triggers: [] }) as unknown as Record<string, unknown>;
     expect('script' in view).toBe(false);
   });
-});
 
-describe('projectWorkflowDescribe — diagram fields (UT-113, DES-125, DES-127 B3)', () => {
-  it('a ready row: diagramStatus="ready", diagram is the stored string, diagramGeneratedAt is the stamp', () => {
-    const view = projectWorkflowDescribe(FULL, {
-      diagram: { status: 'ready', diagram: '╭─Draft─╮', noteCode: null, generatedAt: '2026-09-02T10:00:00.000Z', bindingsFp: 'fp-1' } as any,
-      bindings: [], bindingsFp: 'fp-1', analyzerEnabled: true,
-    });
-    expect(view.diagramStatus).toBe('ready');
-    expect(view.diagram).toBe('╭─Draft─╮');
-    expect(view.diagramGeneratedAt).toBe('2026-09-02T10:00:00.000Z');
-  });
-
-  it('no row at all: diagramStatus="unavailable", diagram is null, diagramGeneratedAt is null (never a lie about when it was drawn)', () => {
-    const view = projectWorkflowDescribe(FULL, { diagram: null, bindings: [], bindingsFp: 'fp', analyzerEnabled: true });
-    expect(view.diagramStatus).toBe('unavailable');
-    expect(view.diagram).toBeNull();
-    expect(view.diagramGeneratedAt).toBeNull();
-  });
-
-  it('a SWEPT pending row (generated_at IS stamped but status is still "pending") still projects diagramGeneratedAt: null — B3\'s honest-absence rule, only "ready" gets a stamp', () => {
-    const view = projectWorkflowDescribe(FULL, {
-      diagram: { status: 'pending', diagram: null, noteCode: null, generatedAt: '2026-09-02T09:00:00.000Z', bindingsFp: 'fp' } as any,
-      bindings: [], bindingsFp: 'fp', analyzerEnabled: true,
-    });
-    expect(view.diagramStatus).toBe('pending');
-    expect(view.diagramGeneratedAt).toBeNull();
-  });
-
-  it('diagramStale is true ONLY for a ready row whose bindingsFp differs from the live fp', () => {
-    const staleView = projectWorkflowDescribe(FULL, {
-      diagram: { status: 'ready', diagram: 'x', noteCode: null, generatedAt: 'now', bindingsFp: 'fp-old' } as any,
-      bindings: [], bindingsFp: 'fp-new', analyzerEnabled: true,
-    });
-    const freshView = projectWorkflowDescribe(FULL, {
-      diagram: { status: 'ready', diagram: 'x', noteCode: null, generatedAt: 'now', bindingsFp: 'fp-same' } as any,
-      bindings: [], bindingsFp: 'fp-same', analyzerEnabled: true,
-    });
-    const noRowView = projectWorkflowDescribe(FULL, { diagram: null, bindings: [], bindingsFp: 'fp-new', analyzerEnabled: true });
-    expect(staleView.diagramStale).toBe(true);
-    expect(freshView.diagramStale).toBe(false);
-    expect(noRowView.diagramStale).toBe(false); // never "stale" when there is nothing to be stale against
+  it('the response has NO diagramStatus/diagramNote/diagramGeneratedAt/diagramStale keys (retired v23 family)', () => {
+    const view = projectWorkflowDescribe(fixture(), { triggers: [] }) as unknown as Record<string, unknown>;
+    for (const retired of ['diagram', 'diagramStatus', 'diagramNote', 'diagramGeneratedAt', 'diagramStale']) {
+      expect(retired in view).toBe(false);
+    }
   });
 });
 
-describe('projectWorkflowDescribe — B1/B2 boundary states (UT-113, DES-127)', () => {
-  it('B2: analyzerEnabled:false + no row -> unavailable, with a note distinct from the enabled+no-row case (DISABLED vs NOT_GENERATED)', () => {
-    const disabledView = projectWorkflowDescribe(FULL, { diagram: null, bindings: [], bindingsFp: 'fp', analyzerEnabled: false });
-    const notGeneratedView = projectWorkflowDescribe(FULL, { diagram: null, bindings: [], bindingsFp: 'fp', analyzerEnabled: true });
-    expect(disabledView.diagramStatus).toBe('unavailable');
-    expect(notGeneratedView.diagramStatus).toBe('unavailable');
-    expect(disabledView.diagramNote).not.toBe(notGeneratedView.diagramNote); // DISABLED reads differently from NOT_GENERATED
-    expect(disabledView.diagramNote.length).toBeGreaterThan(0);
-    expect(notGeneratedView.diagramNote.length).toBeGreaterThan(0);
+describe('projectWorkflowDescribe — mermaid/mermaidNote (UT-157, DES-156)', () => {
+  it('mermaid is the stored string VERBATIM, mermaidNote is null', () => {
+    const view = projectWorkflowDescribe(fixture({ mermaid: 'graph TD; X-->Y;' }), { triggers: [] });
+    expect(view.mermaid).toBe('graph TD; X-->Y;');
+    expect(view.mermaidNote).toBeNull();
+  });
+
+  it('a legacy row with no stored mermaid: mermaid is null and mermaidNote is LEGACY_NO_DIAGRAM', () => {
+    const view = projectWorkflowDescribe(fixture({ mermaid: null }), { triggers: [] });
+    expect(view.mermaid).toBeNull();
+    expect(view.mermaidNote).toBe('LEGACY_NO_DIAGRAM');
+  });
+
+  it('mermaid absent on the owner view (never set) is treated the same as null', () => {
+    const { mermaid: _drop, ...rest } = fixture();
+    const view = projectWorkflowDescribe(rest as WorkflowOwnerView, { triggers: [] });
+    expect(view.mermaid).toBeNull();
+    expect(view.mermaidNote).toBe('LEGACY_NO_DIAGRAM');
   });
 });
 
-describe('projectWorkflowDescribe — triggers are ALWAYS the live snapshot (UT-113, DES-125, ARCH-078)', () => {
-  it('triggers reflects the `bindings` argument verbatim, independent of the stored diagram row', () => {
-    const bindings = [{ kind: 'webhook', enabled: true }] as any;
-    const view = projectWorkflowDescribe(FULL, { diagram: null, bindings, bindingsFp: 'fp', analyzerEnabled: true });
-    expect(view.triggers).toEqual(bindings);
+describe('projectWorkflowDescribe — triggers is the live by-id snapshot verbatim (UT-113, ARCH-078)', () => {
+  it('triggers reflects the ctx.triggers argument verbatim', () => {
+    const triggers = [{ id: 'trg-1', kind: 'webhook' }, { id: 'trg-2', kind: 'cron', cron: '0 3 * * *' }];
+    const view = projectWorkflowDescribe(fixture(), { triggers });
+    expect(view.triggers).toEqual(triggers);
   });
 });
 
-// UT-126 (v23 Gate 2 re-run, send-back `d294880`, V-D — REQUIRED BY ARCH-079 inv 11, ARCH-081):
-// note precedence. Today `analyzerEnabled` is consulted ONLY on the `diagram === null` branch; an
-// `unavailable` row with a persisted `noteCode` takes the next branch and prints THAT note's text
-// regardless of `analyzerEnabled` — so once A2's fix ships (a disabled analyzer always finds a row
-// by guard time), an operator who switched the analyzer off would read "the diagram model could
-// not be reached after several attempts" for a subsystem that made ZERO attempts. This is what
-// stops A2's fix from shipping a lie.
-//
-// Amended rule (verified against workflow-view.ts:129-138 by direct read): a `ready` row's note
-// stays `''`; otherwise, whenever `ctx.analyzerEnabled === false` the note is `DISABLED` —
-// regardless of whether a row exists at all and regardless of what it persists. Full oracle table
-// over `{row: null | pending | unavailable+code | ready} x {analyzerEnabled}` — the two RED cells
-// are the ones where a persisted row exists AND the analyzer is off; the rest are green pins
-// (already correct today, kept here so a regression in either direction is caught).
-//
-// Red reason (measured, pre-fix): both `unavailable+RETRIES_EXHAUSTED x disabled` and
-// `pending x disabled` currently print the WRONG text (the persisted code's text, and `''`,
-// respectively) instead of DISABLED's text —
-// `npx vitest run tests/unit/workflow-describe-projection.test.ts -t 'UT-126'` fails 2/6.
-describe('projectWorkflowDescribe — note precedence table, {row} x {analyzerEnabled} (UT-126, ARCH-081 V-D)', () => {
-  const DISABLED_TEXT = noteTextFor('DISABLED');
-
-  it('[RED] unavailable row with a persisted noteCode + analyzerEnabled:false -> DISABLED, not the persisted code\'s own text', () => {
-    const view = projectWorkflowDescribe(FULL, {
-      diagram: { status: 'unavailable', diagram: null, noteCode: 'RETRIES_EXHAUSTED', generatedAt: '2026-09-02T09:00:00.000Z', bindingsFp: 'fp' } as any,
-      bindings: [], bindingsFp: 'fp', analyzerEnabled: false,
-    });
-    expect(view.diagramNote).toBe(DISABLED_TEXT);
-  });
-
-  it('[RED] a swept pending row (generated_at stamped, status still pending) + analyzerEnabled:false -> DISABLED, not \'\'', () => {
-    const view = projectWorkflowDescribe(FULL, {
-      diagram: { status: 'pending', diagram: null, noteCode: null, generatedAt: '2026-09-02T09:00:00.000Z', bindingsFp: 'fp' } as any,
-      bindings: [], bindingsFp: 'fp', analyzerEnabled: false,
-    });
-    expect(view.diagramNote).toBe(DISABLED_TEXT);
-  });
-
-  it('[green pin] unavailable row with a persisted noteCode + analyzerEnabled:true -> the persisted code\'s own text (unaffected)', () => {
-    const view = projectWorkflowDescribe(FULL, {
-      diagram: { status: 'unavailable', diagram: null, noteCode: 'RETRIES_EXHAUSTED', generatedAt: '2026-09-02T09:00:00.000Z', bindingsFp: 'fp' } as any,
-      bindings: [], bindingsFp: 'fp', analyzerEnabled: true,
-    });
-    expect(view.diagramNote).toBe(noteTextFor('RETRIES_EXHAUSTED'));
-  });
-
-  it('[green pin] no row at all + analyzerEnabled:false -> DISABLED (already correct, B2)', () => {
-    const view = projectWorkflowDescribe(FULL, { diagram: null, bindings: [], bindingsFp: 'fp', analyzerEnabled: false });
-    expect(view.diagramNote).toBe(DISABLED_TEXT);
-  });
-
-  it('[green pin] ready row + analyzerEnabled:false -> \'\' (a ready row\'s note always stays empty)', () => {
-    const view = projectWorkflowDescribe(FULL, {
-      diagram: { status: 'ready', diagram: 'x', noteCode: null, generatedAt: 'now', bindingsFp: 'fp' } as any,
-      bindings: [], bindingsFp: 'fp', analyzerEnabled: false,
-    });
-    expect(view.diagramNote).toBe('');
-  });
-
-  it('[green pin] no row at all + analyzerEnabled:true -> NOT_GENERATED (already correct, B2)', () => {
-    const view = projectWorkflowDescribe(FULL, { diagram: null, bindings: [], bindingsFp: 'fp', analyzerEnabled: true });
-    expect(view.diagramNote).toBe(noteTextFor('NOT_GENERATED'));
-  });
-});
-
-describe('projectWorkflowDescribe — lockedKeys and owner (UT-113, DES-125)', () => {
+describe('projectWorkflowDescribe — lockedKeys and owner (UT-113)', () => {
   it('lockedKeys is present and non-empty (imported from the params contract, never re-typed)', () => {
-    const view = projectWorkflowDescribe(FULL, { diagram: null, bindings: [], bindingsFp: 'fp', analyzerEnabled: true });
+    const view = projectWorkflowDescribe(fixture(), { triggers: [] });
     expect(Array.isArray(view.lockedKeys)).toBe(true);
     expect(view.lockedKeys.length).toBeGreaterThan(0);
   });
 
   it('owner is served to every principal (no viewerIsOwner parameter — the function is 2-ary)', () => {
     expect(projectWorkflowDescribe.length).toBe(2);
-    const view = projectWorkflowDescribe(FULL, { diagram: null, bindings: [], bindingsFp: 'fp', analyzerEnabled: true });
+    const view = projectWorkflowDescribe(fixture(), { triggers: [] });
     expect(view.owner).toBe('owner@example.com');
   });
+});
+
+describe('projectWorkflowDescribe — params.agents.<label> = author ∩ ceiling (UT-157, DES-156)', () => {
+  it('reports {type, default, range} per key, with range NARROWED by the ceiling (never the raw author range)', () => {
+    const view = projectWorkflowDescribe(fixture(), { triggers: [], ceilings: CEILINGS });
+    const reviewer = view.params.agents['reviewer'];
+    expect(reviewer).toBeDefined();
+    expect(reviewer!['timeoutMs']).toMatchObject({ type: 'number', default: 60_000, range: { min: 1000, max: 300_000 } }); // author max 900_000, ceiling 300_000
+    expect((reviewer!['effort']!.range as string[])).not.toContain('xhigh'); // ceiling maxEffort:'high' strips xhigh/max
+  });
+
+  it('a legacy-contract workflow projects an empty params.agents (nothing to bound)', () => {
+    const view = projectWorkflowDescribe(fixture({ params: LEGACY_PARAMS as unknown as WorkflowOwnerView['params'] }), { triggers: [] });
+    expect(view.params.agents).toEqual({});
+  });
+
+  it('an absent ceilings ctx defaults to DEFAULT_CEILINGS rather than throwing', () => {
+    expect(() => projectWorkflowDescribe(fixture(), { triggers: [] })).not.toThrow();
+  });
+});
+
+// DES-156: "a ≥6-row runnable truth table (release set × legacy)" — release channel / beta
+// channel / neither, crossed with legacy-contract yes/no. LEGACY_REREGISTER takes precedence over
+// CHANNEL_UNPUBLISHED (a legacy contract can never be run regardless of publication state).
+describe('projectWorkflowDescribe — runnable/runnableReason truth table (DES-156)', () => {
+  const rows: Array<{ label: string; channels: Record<string, string>; legacy: boolean; runnable: boolean; reason: 'CHANNEL_UNPUBLISHED' | 'LEGACY_REREGISTER' | null }> = [
+    { label: 'release set, current contract', channels: { release: 'v2' }, legacy: false, runnable: true, reason: null },
+    { label: 'beta set (no release), current contract', channels: { beta: 'v3' }, legacy: false, runnable: true, reason: null },
+    { label: 'neither channel set, current contract', channels: {}, legacy: false, runnable: false, reason: 'CHANNEL_UNPUBLISHED' },
+    { label: 'release set, legacy contract', channels: { release: 'v2' }, legacy: true, runnable: false, reason: 'LEGACY_REREGISTER' },
+    { label: 'beta set, legacy contract', channels: { beta: 'v3' }, legacy: true, runnable: false, reason: 'LEGACY_REREGISTER' },
+    { label: 'neither channel set, legacy contract', channels: {}, legacy: true, runnable: false, reason: 'LEGACY_REREGISTER' },
+  ];
+
+  for (const row of rows) {
+    it(row.label, () => {
+      const view = projectWorkflowDescribe(
+        fixture({ channels: row.channels, params: (row.legacy ? LEGACY_PARAMS : V24_PARAMS) as unknown as WorkflowOwnerView['params'] }),
+        { triggers: [] },
+      );
+      expect(view.runnable).toBe(row.runnable);
+      expect(view.runnableReason).toBe(row.reason);
+    });
+  }
 });

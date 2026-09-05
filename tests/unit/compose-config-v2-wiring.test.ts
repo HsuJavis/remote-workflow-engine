@@ -177,35 +177,46 @@ describe('composeConfig() v2 key wiring (DES-022, standing rule 1)', () => {
     expect((cfg as Record<string, unknown>)['maxWorkflowVersions']).toBe(25);
   });
 
-  // v23 (TASK-122, DES-134, ARCH-085): the `graphAnalyzer` config block — same wiring-gap class as
-  // every case above (v11 updateFlagPath / v15 auth / v16 workspaceTtlMs / v22 maxWorkflowVersions).
-  // REQ-104's own acceptance text is explicit that THIS row alone does not close the requirement — a
-  // unit assertion reads its value off the same path that would be broken; only TASK-124's Gate 7.5
-  // real run (an operator edits the config, re-registers, the diagram visibly changes with no
-  // redeploy) is proof. This row is necessary, not sufficient.
-  //
-  // Red reason: `ServerConfig`/`composeConfig()` have no `graphAnalyzer` key at all today (confirmed
-  // by reading `src/server.ts`'s `ServerConfig` interface and `src/main.ts`'s `composeConfig()` body)
-  // -> the forwarded value is `undefined` in every case below. The `as any` cast on the FileConfig
-  // literal is this codebase's own established convention for exercising a not-yet-declared key
-  // (see `tests/unit/put-blob-stream.test.ts`'s `(cas as any)` pattern) — FileConfig would otherwise
-  // reject `graphAnalyzer` at the TS excess-property check before the test ever runs.
-  it('graphAnalyzer block is forwarded from FileConfig into the returned ServerConfig, as a WHOLE object (v23)', async () => {
-    const graphAnalyzer = {
-      enabled: true, model: 'sonnet-5', systemPrompt: 'draw a diagram', tools: [],
-      timeoutMs: 60000, retries: 0, maxBytes: 8192, maxLines: 120, maxQueueDepth: 8,
-    };
-    const cfg = await composeConfig({ graphAnalyzer, gateway: 'direct-fetch' } as any, FAKE_DEPS);
-    expect((cfg as Record<string, unknown>)['graphAnalyzer']).toEqual(graphAnalyzer);
-  });
-
-  it('graphAnalyzer.enabled:false is forwarded (a first-class tested state, never dropped/defaulted-away at this layer)', async () => {
-    const cfg = await composeConfig({ graphAnalyzer: { enabled: false }, gateway: 'direct-fetch' } as any, FAKE_DEPS);
-    expect(((cfg as Record<string, unknown>)['graphAnalyzer'] as Record<string, unknown> | undefined)?.['enabled']).toBe(false);
-  });
-
-  it('graphAnalyzer is undefined when FileConfig omits the block entirely (backward-compat, same convention as `auth`)', async () => {
-    const cfg = await composeConfig({ gateway: 'direct-fetch' }, FAKE_DEPS);
+  // v24 (UT-142, DES-141, ARCH-090, REQ-111): the analyzer subsystem is REMOVED — `graphAnalyzer`
+  // stops being a forwarded config block and becomes an unrecognized TOP-LEVEL key that triggers
+  // ONE console.warn naming it (carrying the ADR-025 sentence), same treatment as any other unknown
+  // key. This REPLACES the three v23 tests above that asserted forwarding — [T3] per DES-159's own
+  // enumeration ("−1 (graphAnalyzer)"). Red reason: `composeConfig()` still forwards `graphAnalyzer`
+  // silently today (no unrecognized-key warn exists at all) — this assertion is false until TASK-146.
+  it('v24: graphAnalyzer is an unrecognized top-level key — warns, and is NOT forwarded onto ServerConfig', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cfg = await composeConfig({ graphAnalyzer: { enabled: true }, gateway: 'direct-fetch' } as any, FAKE_DEPS);
     expect((cfg as Record<string, unknown>)['graphAnalyzer']).toBeUndefined();
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('graphAnalyzer'))).toBe(true);
+    warnSpy.mockRestore();
+  });
+
+  // v24 (UT-142, DES-141, ARCH-090, TASK-146): `principals` and `mcpEgressAllowlist` forwarded IN
+  // THE SAME CHANGE (per DES-141's own instruction, avoiding the v11/v15 wiring-gap bug class this
+  // file exists to catch). Red reason: neither key is forwarded by composeConfig() today.
+  it('v24: principals map is forwarded from FileConfig into ServerConfig', async () => {
+    const principals = { 'alice@x.com': { role: 'admin' }, '*': { role: 'user' } };
+    const cfg = await composeConfig({ principals, gateway: 'direct-fetch' } as any, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['principals']).toEqual(principals);
+  });
+
+  it('v24: mcpEgressAllowlist is forwarded from FileConfig into ServerConfig', async () => {
+    const mcpEgressAllowlist = ['https://api.example.com'];
+    const cfg = await composeConfig({ mcpEgressAllowlist, gateway: 'direct-fetch' } as any, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['mcpEgressAllowlist']).toEqual(mcpEgressAllowlist);
+  });
+
+  // Gate 6.5+7 round 2 (verifier): ADR-028's boot REFUSAL was reached by no test — the whole point
+  // of `normalizePrincipals` returning a failure rather than defaulting is that a typo'd role stops
+  // the process, and only the accepting side was covered.
+  it('v24: a malformed principals role REFUSES the boot, naming the key and the role (ADR-028 fail-closed)', async () => {
+    await expect(composeConfig({ principals: { 'a@x.com': { role: 'admn' } }, gateway: 'direct-fetch' } as any, FAKE_DEPS))
+      .rejects.toThrow(/principals\["a@x.com"\].role is "admn".*Refusing to start/s);
+  });
+
+  it('v24: every VALID role is accepted and forwarded verbatim', async () => {
+    const principals = { 'a@x.com': { role: 'admin' }, 'b@x.com': { role: 'author' }, 'c@x.com': { role: 'user' } };
+    const cfg = await composeConfig({ principals, gateway: 'direct-fetch' } as any, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['principals']).toEqual(principals);
   });
 });

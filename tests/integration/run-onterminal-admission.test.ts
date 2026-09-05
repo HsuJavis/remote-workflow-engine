@@ -56,7 +56,7 @@ describe('onTerminal hook + admission counter (v8 Slice 4, REQ-052/054)', () => 
       store: new InMemoryRunStore(CLOCK), clock: CLOCK, catalog: new WorkflowCatalog(workRoot, CLOCK),
       spawner: blocker, onTerminal: (runId, status) => { events.push({ runId, status }); },
     });
-    const runId = await startScript(mgr, `const a = await agent('A'); return a;`);
+    const runId = await startScript(mgr, `const a = await agent('A', {}); return a;`);
     for (let i = 0; i < 50 && (await mgr.status(runId)).status !== 'running'; i++) await new Promise((r) => setTimeout(r, 20));
     await mgr.stop(runId);
     await new Promise((r) => setTimeout(r, 30));
@@ -83,7 +83,7 @@ describe('onTerminal hook + admission counter (v8 Slice 4, REQ-052/054)', () => 
       store: new InMemoryRunStore(CLOCK), clock: CLOCK, catalog: new WorkflowCatalog(workRoot, CLOCK),
       spawner: blocker, maxConcurrentRuns: 1,
     });
-    const first = await startScript(mgr, `const a = await agent('A'); return a;`); // occupies the 1 slot
+    const first = await startScript(mgr, `const a = await agent('A', {}); return a;`); // occupies the 1 slot
     for (let i = 0; i < 50 && (await mgr.status(first)).status !== 'running'; i++) await new Promise((r) => setTimeout(r, 20));
 
     // Second concurrent start must be rejected before any durable work.

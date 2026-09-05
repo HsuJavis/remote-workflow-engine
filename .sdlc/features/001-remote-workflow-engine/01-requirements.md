@@ -847,6 +847,7 @@ user-facing vehicles are gone; the static-scan guarantee this requirement descri
 - **traces:** REQ-012, REQ-087
 - **acceptance:** Given `workflow_register({name, script, defaults})` where `defaults` is a first-class object of default harness params — at minimum `{model, tools, skills, timeoutMs, prompt}` (the model string / curated tool + skill allowlist / run timeout / a default prompt) — When registered by the owner Then those defaults are stored ALONGSIDE the script (queryable via `workflow_get`, not parsed out of the script body); Given a later `workflow_run({name})` that does NOT override them Then the run executes with the registered defaults applied (observable: the run's effective harness params equal the registered `defaults`); Given a `workflow_run({name, …overrides})` that DOES supply a param Then the per-run value wins for that param only, the rest fall back to the registered defaults (observable: overriding just `timeoutMs` keeps the registered `model`). Given a `defaults` object with an unknown/ill-typed key or a `model`/tool not resolvable by the engine Then `workflow_register` rejects with a typed validation error and stores nothing (fail-closed registration, no silent drop). Backward-compat: Given `workflow_register` is called WITHOUT `defaults` (pre-v15 shape) Then it still registers (defaults absent ⇒ run-time params must be supplied per-run exactly as before).
 - **iter:** v15
+- **superseded-by:** REQ-110 (v24, ADR-035). The workflow-wide `defaults` object is removed: REQ-110 makes `model`/`effort`/`timeoutMs`/`appendPrompt` REQUIRED per declared agent in `meta.params.agents.<label>`, which is registration-bound exactly as `defaults` was, so this requirement's intent survives on the per-agent rung while its named field does not. The locked keys this acceptance also routed through `defaults` (`tools`/`skills`/`prompt`) keep their guarantee: they are written by the author — in `agent()` and, for skills, per agent under REQ-113 — and remain unreachable by any caller (D12). Read the acceptance below as history, not as a live interface contract.
 
 ### REQ-089 — D-BIND fail-closed: non-loopback callers without a valid principal are refused; loopback exempt
 - **status:** draft
@@ -896,6 +897,7 @@ user-facing vehicles are gone; the static-scan guarantee this requirement descri
 - **traces:** REQ-088, REQ-091
 - **acceptance:** Given a workflow registered with `defaults:{model:'M', timeoutMs:T}` and a `workflow_run({name})` supplying no overrides, When a script `agent()` call that specifies **no** `model`/`timeoutMs` of its own dispatches, Then it really dispatches with `M` and `T` — observable in the agent's harness descriptor (`workflow_agent_log(...).harness`) and in the model actually billed/routed, **not** merely in `workflow_get`'s echo of the stored row; Given the same run where the **script itself** passes `agent({model:'S'})` Then the per-call value wins (the author's explicit per-step choice is more specific than a registration-time default); Given the full precedence chain Then it resolves as **per-call `agent()` opts › per-run `overrides` › registered `defaults` › engine default alias**, and a test pins each rung; Given `defaults.skills` / `defaults.tools` / `defaults.prompt` (the locked keys) Then they are applied from the **registration** only and can never be reached by a caller (D12) — closing the current state where they are inert metadata.
 - **iter:** v21
+- **superseded-by:** REQ-110 (v24, ADR-035). The workflow-wide `defaults` object is removed: REQ-110 makes `model`/`effort`/`timeoutMs`/`appendPrompt` REQUIRED per declared agent in `meta.params.agents.<label>`, which is registration-bound exactly as `defaults` was, so this requirement's intent survives on the per-agent rung while its named field does not. The locked keys this acceptance also routed through `defaults` (`tools`/`skills`/`prompt`) keep their guarantee: they are written by the author — in `agent()` and, for skills, per agent under REQ-113 — and remain unreachable by any caller (D12). Read the acceptance below as history, not as a live interface contract.
 
 ### REQ-093 — `effort` is a real end-to-end parameter, not a documented no-op
 - **status:** draft
@@ -1119,3 +1121,132 @@ users see, so REQ-105 removes it from every user-facing surface and keeps the fu
 **Debt carried in from v22** (recorded, not assumed): `chain_create` validates no workflow at all
 (07-review.md §8.2); with no MCP registry configured every referenced MCP name is dropped with no record
 (adjudication #5 O-2); and v22's own 7 MEDIUM + 12 LOW in 07-review.md §4.3.
+
+---
+
+## Iteration v24 — Interface consolidation, roles, per-agent parameters, and the author-supplied diagram
+
+> **v24 goal (owner, Gate 1 interview 2026-09-04)**: v21–v23 built the author/user separation one
+> layer at a time. What is left is that the *surface* does not yet read as one system: three prefixes
+> for one resource, tool names that are implementation terms, no role model at all, parameters that
+> apply to a whole workflow rather than to each agent, and a diagram the engine draws by guessing at
+> the code. v24 makes the surface honest and self-teaching — the acceptance for the whole iteration
+> is that **an LLM with only `tools/list` and the authoring guide can use this engine correctly on the
+> first try**.
+>
+> **Scope decision (owner)**: everything in one iteration — one compatibility window, one Gate 7.5.
+> **No compatibility period for old tool names** (owner): the only caller today is the owner, and
+> carrying both name sets would directly defeat the schema-only goal.
+>
+> Full working notes, with every verification that produced these requirements, are in the Gate 1
+> staging document (`v24-gate1-staging.md`, 20 chapters).
+
+### REQ-107 — one prefix per entity: `workflow_*` / `run_*` / `workspace_*`
+- **status:** draft
+- **traces:** REQ-101, REQ-014
+- **acceptance:** Given `tools/list` Then every tool name begins with a prefix that names the entity it acts on and matches its own key — `workflow_*` keyed by `name`, `run_*` keyed by `runId`, `workspace_*` keyed by `runId` or `kind` — with no tool acting on a run while carrying the `workflow_` prefix; Given the seven run-scoped tools Then they are `run_start`, `run_status`, `run_result`, `run_suspend`, `run_resume`, `run_stop`, `run_agent_log` (`workflow_run` becomes `run_start`, because the old name reads as a property while the tool is an action); Given `workflow_list` Then it returns workflows ONLY — the pre-v24 flat array discriminated by `kind:'workflow'|'run'` is split, and a new `run_list({workflow?, status?, limit?})` returns runs with filters, so "which runs of this workflow failed recently" is answerable without fetching everything; Given `workflow_get` Then it is renamed `workflow_source`, because it is the privileged view and the old name read as the more basic one; Given any old tool name Then it is ABSENT from `tools/list` and calling it is an unknown-tool error — there is no deprecation window (owner decision, Gate 1).
+- **iter:** v24
+
+### REQ-108 — the workspace surface is six tools with per-tool modes, not one overloaded scope rule
+- **status:** draft
+- **traces:** REQ-064, REQ-065, REQ-022, REQ-023, REQ-026
+- **acceptance:** Given the nine pre-v24 file-moving tools (`blob_put`, `seed_plan`, `asset_push`, `asset_list`, `asset_delete`, `workflow_artifacts`, `workflow_artifact_get`, `workspace_purge`, plus the new partial delete) Then they are six: `workspace_diff` (give a manifest, get back which sha256 are still missing), `workspace_push`, `workspace_pull`, `workspace_list`, `workspace_delete`, `workspace_purge`; Given `workspace_push` Then it has exactly two modes — `{sha256, contentB64}` for content-addressed upload (namespace derived from the principal, NO path and NO runId, because a run does not exist yet when seeding) and `{workflow, kind, name, …}` for an asset — and supplying a `runId` to push is rejected, since the workspace is immutable while a run is live and meaningless after it ends; Given `workspace_diff` Then it takes no scope argument at all and compares against the caller's own CAS pool; Given `workspace_delete({runId, paths[]})` Then it deletes named files and is REFUSED while the run is running/suspended/queued, matching `workspace_purge`; Given the engine after v24 Then a single shared path-verdict decides every write, with per-destination rules (a run workspace strips `.claude/settings*.json` and `.claude/hooks/**` and rejects `.git` internals and `../`/symlink escapes; an asset tree rejects reserved `rwe-*`), so the two rule sets cannot drift apart.
+- **iter:** v24
+
+### REQ-109 — three roles, configured per account, enforced at every tool
+- **status:** draft
+- **traces:** REQ-087, REQ-100
+- **acceptance:** Given the engine config Then a `principals` map assigns each account one of `admin` | `author` | `user`, with `"*"` as the default for an authenticated principal not listed (owner: default is `user`), and auth disabled means everyone is `admin` (unchanged single-operator behaviour); Given a `user` Then they may list and describe workflows, start and observe THEIR OWN runs, read/write their own runs' workspaces, and file issues — and `workflow_register`, `workflow_deregister`, `workflow_publish`, `workflow_source`, trigger creation and asset pushes are all refused; Given an `author` Then they may additionally register workflows and act on the ones THEY OWN, and push assets to their own workflows; Given an `admin` Then every gate is passed, INCLUDING ownership (they may deregister or publish another principal's workflow) and including reading another principal's run workspace — and that last one WRITES AN AUDIT RECORD naming the principal, the run and the time, because a permission that leaves no trace cannot be reviewed (owner decision); Given `mcp_provision`'s pre-v24 description Then the claim "Admin tool" becomes true — before v24 that string was advertised on the tool while `case 'mcp_provision'` performed no check at all.
+- **iter:** v24
+
+### REQ-110 — every tunable parameter is declared and overridable PER AGENT
+- **status:** draft
+- **traces:** REQ-090, REQ-091, REQ-092
+- **acceptance:** Given a script Then `agent()` accepts `label` (and `phase`/`schema`) but NOT `model`/`effort`/`timeoutMs` — a value there is refused at registration with a typed error pointing at `meta.params.agents`, so a script carries no model name and stays usable when a model becomes unavailable; Given `meta.params.agents.<label>` Then it declares that agent's `model`/`effort`/`timeoutMs`/`appendPrompt` with type, default and allowed range, AND its `skills`/`mcp` (author-owned, locked); Given `run_start({overrides:{agents:{<label>:{…}}}})` Then a user tunes each agent independently — the pre-v24 flat override that applied one value to every agent is gone; Given `workflow_describe` Then `params` is reported per agent, so a user sees what each agent can be tuned to before spending anything; Given any tunable value Then the engine ceiling is applied as a REFUSAL (`PARAM_OUT_OF_RANGE`), never a silent clamp — `maxTimeoutMs` 600000, `maxAppendPromptBytes` 1024, `maxEffort` `high`; Given the six locked keys Then they remain locked and `PARAM_LOCKED` is returned for any attempt, `prompt` because it IS the workflow's logic and the other five because they are security or isolation boundaries. Given a `workflow_register` call that still passes the retired workflow-wide `defaults` object (ADR-035) Then registration is REFUSED with a typed error naming `meta.params.agents.<label>.<key>.default` — never accepted and silently ignored, because a cold model working from a stale example must be told its knob had no effect rather than discover it in the billing.
+- **iter:** v24
+
+### REQ-111 — the diagram is supplied by the author, and the engine holds it to the script
+- **status:** draft
+- **traces:** REQ-102, REQ-105
+- **acceptance:** Given `workflow_register` Then `mermaid` is REQUIRED alongside `script`, with no exception for dynamically generated workflows (owner decision: consistency over convenience, accepting that a malformed diagram now blocks an otherwise-valid registration); Given a `mermaid` that does not render Then registration is refused with a typed error, and nothing is stored; Given the diagram and the script Then the agent sets must match EXACTLY IN BOTH DIRECTIONS — every `agent({label})` in the script has a node in the diagram and every agent node names a script label — so an author who adds an agent without updating the diagram is refused at registration; **this bidirectional check is what replaces the analyzer as the anti-drift mechanism, and it is statically decidable, needing no model**; Given a new version of the same workflow Then a fresh `mermaid` is required (the engine can no longer re-derive one, so re-supply is the only thing that keeps the picture true); Given the analyzer subsystem built in v23 Then it is REMOVED — `graph-analyzer.ts`, the `graphAnalyzer` config block, the async generate/reconcile machinery, the `diagramStatus` pending/unavailable states and `workflow_regenerate_diagram` all go, while `diagram-gate.ts` is repurposed from validating a model's ASCII against a vocabulary to validating the author's Mermaid.
+- **iter:** v24
+
+### REQ-112 — the Mermaid vocabulary is fixed, so every author's diagram reads the same way
+- **status:** draft
+- **traces:** REQ-111
+- **acceptance:** Given the shapes Then they are fixed and not author-invented: `[/"…"/]` for a trigger or an output artifact, `(["…"])` for one agent, `{"…"}` for a conditional branch, `{{"…"}}` for a NON-agent aggregation (a script-level merge/filter that costs no model call), and `["…"]` (a plain rectangle) for a call into ANOTHER registered workflow, drawn as a black box; Given that black-box node Then it is EXCLUDED from REQ-111's bidirectional agent-label diff, because it names another owner's workflow and not an agent of this one — including it would make the consistency check refuse a legitimate diagram (orchestrator adjudication v24 #1 A-1: working notes ch. 11.4 asked for this node while this list gave it no shape; the plain rectangle was the one unoccupied shape); Given an aggregation performed BY an agent Then the fan-in edges converge directly on that agent's node with no hexagon — so the shape itself answers whether a step costs a model call (owner correction to the first draft, which double-drew the synthesizer); Given an agent node Then its label carries `label<br/>model · effort · timeoutMs`, putting each agent's tunable parameters on the picture; Given fan-out or fan-in Then every edge is written on its own line and the collapsed `A --> B & C & D` form is REFUSED, because collapsing hides the staggering that makes an expansion legible; Given an expansion or a debate Then it is wrapped in a `subgraph` whose title names the pattern, with debate members joined by `<-->`; Given a loop Then it is a labelled back-edge, and a skipped or discarded path is a dashed edge; Given registration Then the shape/label/edge rules are checked mechanically and a violation names the rule and points at `workflow_authoring_guide`.
+- **iter:** v24
+
+### REQ-113 — assets belong to a workflow, are declared per agent, and are materialized selectively
+- **status:** draft
+- **traces:** REQ-009, REQ-025
+- **acceptance:** Given assets Then they live at `<workRoot>/<workflow>/assets/<kind>/<name>/`, owned by that workflow's owner — NOT in the pre-v24 single global tree, where fifty authors pushing a skill called `review` would silently overwrite one another; Given a global asset Then it lives in the engine-level tree, is pushed AND removable by an `admin` only, and is marked `builtin:true` in listings (owner: admin can both add and remove built-ins); Given `workspace_list({workflow, kind})` Then it returns BOTH that workflow's own assets and the global ones, each marked with its scope and `pushedBy`, so an author can see what exists before deciding what to upload — before v24 there was NO way to discover a provisioned MCP at all; Given an agent Then the skills and MCP it uses are declared at `meta.params.agents.<label>` and ONLY those are materialized into the run workspace — the pre-v24 `materializeAssets` copied EVERY skill in the tree into EVERY run, so trigger-word collisions between unrelated skills grew with the number of authors; Given `workflow_deregister` Then that workflow's assets are deleted with it, consistent with the existing transaction that already deletes its versions and diagrams; Given assets and versions Then assets are shared across all versions of a name (no asset versioning), and the authoring guide must state that editing a skill affects versions still on `release`.
+- **iter:** v24
+
+### REQ-114 — every upload records who did it
+- **status:** draft
+- **traces:** REQ-109, REQ-113
+- **acceptance:** Given any asset or MCP config stored by the engine Then the record carries `pushedBy` and `pushedAt` — before v24 the `mcp_provisions` table had only `provisionedAt`, and `asset_push` never read the principal at all, so a violation could be traced to the workflow that used a config but never to whoever installed it; Given `workspace_list` Then `pushedBy` is returned, so an admin can see who placed what; Given the decision to let an `author` (not only an `admin`) push an MCP config Then it is conditional on this requirement — **the two ship together and the acceptance for the open permission includes reading `pushedBy` back**, because the justification for widening the permission is the ability to audit it (owner: traceability first).
+- **iter:** v24
+
+### REQ-115 — triggers are created first and claimed by a workflow at registration
+- **status:** draft
+- **traces:** REQ-053, REQ-058, REQ-097
+- **acceptance:** Given `schedule_create` / `webhook_create` Then they create an UNCLAIMED trigger and return its id, without naming any workflow — reversing the pre-v24 direction where a trigger referenced a workflow by name and therefore ran whatever `release` happened to point at; Given `workflow_register({triggers:[id,…]})` Then that version claims those triggers, making the trigger set part of the versioned artifact and letting the author draw the real entry point in the diagram; Given a registration with no `triggers` Then the workflow is manually-run only; Given a trigger that fires while unclaimed Then it is REFUSED and the refusal is recorded — never silently dropped; Given a trigger already claimed by another workflow Then the claim is refused (a trigger is exclusive, so "what does this webhook start" never requires a reverse lookup); Given `workflow_deregister` Then its claimed triggers return to UNCLAIMED and are NOT deleted — they are the user's resources — and the response returns `releasedTriggers[]` so the caller is told what it now owns; Given `schedule_create`'s pre-v24 release-resolution check (v22 finding H4) Then it MOVES to `workflow_register`, which validates that each claimed id exists and is unclaimed — the check does not disappear, it changes site, and everything that described its old site must be updated with it.
+- **iter:** v24
+
+### REQ-116 — `workflow_authoring_guide`: the engine teaches its own authoring contract
+- **status:** draft
+- **traces:** REQ-106, REQ-107
+- **acceptance:** Given `tools/list` alone Then a cold client discovers `workflow_authoring_guide` and `workflow_register`'s description tells it to call that first; Given the guide Then it returns, in one response: the full sandbox API (`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget`, `workflow`), the `meta` shape with a WORKING `params.agents` example, the authoring rules, the complete Mermaid vocabulary of REQ-112, the tunable-versus-locked table with where each is written and how a user changes it, the one-level nesting limit and the instruction to FLATTEN when more depth is needed, and the note that assets are shared across versions; Given every example the guide hands out Then a test REGISTERS it against the real engine and asserts it is accepted — v23 shipped an `AUTHORING.md` example the engine refused, found only because Gate 7.5 ran it, and this guide will carry many more examples than that file did; Given a registration that fails on parse, contract, diagram or trigger Then the error message points at this tool.
+- **iter:** v24
+
+### REQ-117 — a cold model, given only the schema and the guide, gets it right the first time
+- **status:** draft
+- **traces:** REQ-116, REQ-107, REQ-112
+- **acceptance:** Given a FRESH model instance with NO context from this project's development, handed only `tools/list` and `workflow_authoring_guide` Then it authors a MULTI-AGENT collaborating workflow (with its Mermaid), registers it, publishes it, runs it, and reads back a correct result — **on the first attempt, with no trial and error** (owner); Given any step it gets wrong Then that is recorded as a DEFECT IN THE DOCUMENTATION, not a failure of the model: the insufficient passage is identified and fixed, and the experiment is re-run with ANOTHER fresh instance, because the first is no longer cold; Given the reviewer of this requirement Then anyone who has seen this project's development conversation — including the orchestrator and any advisor — is DISQUALIFIED as a subject, and a description review can never substitute for the run; Given Gate 7.5 Then this requirement is proven by that real run and by nothing else.
+- **iter:** v24
+
+### REQ-118 — every MCP tool's interface is exercised once against a live engine
+- **status:** draft
+- **traces:** REQ-107
+- **acceptance:** Given the v24 tool set Then EACH tool is called at least once over real MCP HTTP against a booted engine, with its required arguments, and its response is asserted against its own documented contract — not merely "did not error"; Given a tool whose contract names typed errors Then at least one error path is exercised too (for example `run_start` on an unpublished workflow returning `CHANNEL_UNPUBLISHED`, `workspace_push` with a mismatched hash returning `BLOB_HASH_MISMATCH`); Given the result Then a table records tool, arguments, observed response and pass/fail, and a tool that cannot be exercised in this environment is listed as UNVERIFIED with the reason, never quietly omitted; Given `workflow_list` Then it also reports `runnable` per workflow and accepts `onlyRunnable`, since a `user` who can only run published workflows should not be shown drafts that will refuse.
+- **iter:** v24
+
+---
+
+### Round v24 — 2026-09-04 (Gate 1 interview, owner-answered in session)
+
+Eleven open points were put to the owner and all were settled. The full record, including every
+source verification that produced them, is in `v24-gate1-staging.md` (20 chapters).
+
+**Scope and compatibility.** One iteration, not two — all the breaking changes take one compatibility
+window and one Gate 7.5. **No deprecation period for old tool names**: the only caller today is the
+owner, and a `tools/list` carrying both name sets would defeat REQ-117 outright.
+
+**Permissions.** `user` by default for an authenticated principal not in the config; `admin` bypasses
+ownership; `admin` may read another principal's run workspace **but that read is audited**. The owner's
+reasoning throughout was that a permission which leaves no trace cannot be reviewed — the same
+principle that made REQ-114 a precondition of REQ-113's open MCP push rather than a later improvement.
+
+**The diagram.** The author supplies it; the engine holds it to the script bidirectionally. The owner
+reached this from a direction worth recording: it is what makes the *diagram drawable at all*. If
+`release` calls `deploy` as a black box, `release`'s picture is either uninformative or silently stale
+whenever `deploy` changes. Flattening — read the callee's script, merge it — keeps the script and the
+picture the same size. That is also why the one-level nesting limit STAYS (and it matches Claude Code's
+own dynamic workflow, which nests one level too).
+
+**Rules carried in from v21–v23, each bought at cost:**
+
+1. **A test whose oracle is the code under test cannot fail when the code is wrong.** v22 produced a
+   fresh instance when `val-107`'s "a non-owner is refused" was rewritten to assert success.
+2. **A test can be built on the very vulnerability it should catch.** IT-080 bound to `0.0.0.0` to take
+   the D-BIND exemption and then self-asserted a principal — the exact shape H1 existed to close.
+3. **Moving a check is not finished until everything describing its old site points at the new one.**
+   Fifteen instances across v21–v23: code comments, docblocks, `02-architecture.md`, retired tests left
+   green, a review finding, ledger rows, a TYPE ANNOTATION the compiler enforced while it was wrong, and
+   a tool description advertising an "Admin tool" that checked nothing. REQ-115 moves a check; the
+   things that describe its old site move with it.
+4. **A guide that teaches an invalid example is worse than no guide.** v23's `AUTHORING.md` example was
+   refused by the engine, found only because Gate 7.5 *ran* it. REQ-116 requires every example to be
+   registered by a test.

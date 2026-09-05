@@ -4800,3 +4800,1010 @@ Gate 7.5 的 validator **把 `docs/AUTHORING.md` 規則 1 的 `meta.params` 範�
 它是**實際執行**發現的,不是閱讀發現的。文件裡的程式碼範例應該像程式碼一樣被驗證 ——
 v24 的 `workflow_authoring_guide` 若要交付,**它給的每個範例都必須有一個測試實際註冊它**,
 否則同一個缺陷會以更大的規模重演(那份 guide 的範例會多得多)。
+
+---
+
+## Orchestrator adjudication (v24) #1 — Gate 2 的三個問題:兩個我裁,一個轉給擁有者 (2026-09-04)
+
+### A-1 — ADR-023(Mermaid 缺一個形狀):**確認採用,是我的規格漏洞**
+工作筆記 ch.11.4 叫作者把他人的 `workflow()` 呼叫畫成黑箱節點,但 REQ-112 的固定形狀表**沒有給它形狀**
+—— 兩處都是我寫的,我沒有把它們對起來。
+
+架構取的預設(純矩形 `["…"]` 作為第五個固定形狀,且**排除在 agent-label 雙向比對之外**)是對的:
+- `[/"…"/]` 已給觸發/產出、`(["…"])` agent、`{"…"}` 分支、`{{"…"}}` 非-agent 彙總 —— 純矩形未被佔用,不衝突
+- **必須排除在比對之外**:它不是本工作流的 agent,若納入 REQ-111 的雙向檢查會直接把合法的巢狀呼叫判成不一致
+
+REQ-112 的形狀表補上第五列,並在 `workflow_authoring_guide` 說明「呼叫他人工作流 = 黑箱矩形」。
+
+### A-2 — ADR-035(退掉 `workflow_register.defaults`):**確認移除,且是全部移除,不保留 appendPrompt**
+架構的理由成立:REQ-110 讓 `model`/`effort`/`timeoutMs` 的預設變成**每個宣告 agent 必填**,
+工作流層級那一階因此對這三個鍵不可達。留著只會多一階**冷模型無法從 `tools/list` 學到的優先序** ——
+直接傷害 REQ-117。
+
+**不保留 appendPrompt 的例外**:REQ-110 的驗收明列 `meta.params.agents.<label>` 宣告
+**四個**鍵(含 `appendPrompt`),所以 `defaults` 對四個鍵**全部**冗餘。留一個只服務單鍵的殘階,
+是「冷模型要學兩套規則」的代價換「幾乎沒有的彈性」,不划算。
+
+REQ-088/092 的意圖由 per-agent 階承接(同樣綁在註冊時的 meta 上)。
+工作筆記 ch.9 的工具表仍列著 `defaults`(它早於 ch.12),**一併更正** —— 否則就是第十六例
+「描述沒跟著搬」。
+
+### A-3 — ADR-030(MCP 推送權限):**轉給擁有者,因為它縮限了擁有者自己的裁定**
+架構對 ch.16.2「管理者與編排者都可推 MCP」提出安全反駁,查證屬實:
+```
+mcp-probe.ts:71   spawn(command, args, …)      ← stdio:拿使用者字串當命令,在引擎主機執行
+mcp-probe.ts:62   fetch(url, …)                ← http:對使用者 URL 發請求,目前無 egress 閘門
+                  isEgressAllowed 只接在 seedRef，沒接 MCP 探測
+```
+架構取的預設(**fail closed**):http 開放給編排者但探測須通過 `isEgressAllowed` 允許清單
+(預設空 = 一律拒);**stdio 維持管理者專屬**。
+
+**這與既有防線一致**:`hook` 資產由構造擋掉上傳,註解寫明「closes the arbitrary-server-side-code
+vector」。stdio MCP 是同一個向量換一條路徑 —— 若對編排者開放,`hook` 那道防線等於繞過。
+
+我不替擁有者決定,但**強烈建議照架構的 fail-closed**:REQ-114 的 `pushedBy` 讓「查得到是誰」,
+但查得到不等於擋得住 —— 追溯是事後的,任意程式碼執行是當下的。
+
+---
+
+# v24 slice — DES-137..162 (TASK-131..153 / ARCH-087..108 / REQ-107..118)
+
+> **Panel provenance:** synthesized from `.panel/design/` — `adversarial.r1/.r2` (interface-contract × boundary/error ×
+> testability) and `quality-dimensions.r1/.r2` (observability / replaceability / consumability / self-sustainability).
+> The two r2 files CROSSED (each read only the other's r1); where they disagree the synthesizer verified the tree and
+> ruled — see "## Decision rationale (v24)" at the end. Numbering continues from DES-136; DES ids are what implementers
+> grep, so each item below is signature + boundary + tests ONLY.
+> **Mock policy (all v24 tests):** unit — mock freely (Map-backed `OwnerLookup`, `FixedClock`, fake `fs`/`realpath`,
+> `FakeMcpProbe`, in-memory catalog); integration — real adjacent components (real SQLite `:memory:`/tmp files, real
+> stores bound to the real ports), mocking only third-party network (LLM provider, GitHub, OpenRouter); E2E/acceptance —
+> NO mock of the SUT's own boundaries: a booted `createServer()` over real MCP HTTP, real SQLite files, real workspace
+> FS; unreachable third parties become an `UNVERIFIED(reason)` ROW, never a mock that reports green.
+
+```mermaid
+classDiagram
+  class ToolSpecs { +TOOL_SPECS: ToolSpec[35] +projectToolsList() +ToolName +ErrorCode(type-only) }
+  class Errors { +ERROR_CATALOG +ErrorCode +codedError(code,msg,detail) +toErrEnvelope(err) +toErrorCode(s) }
+  class Authz { +Principal +resolveRole(map,id) +authorize(spec,p,args,lookup) }
+  class OwnerLookup { <<interface>> +runOwner(id) +workflowOwner(n) +triggerOwner(id) }
+  class Server { +callTool(deps,name,args,principal) +toPublicRunView(v) }
+  class Facade { +run_list +workspace_x6 +workflow_register +deregister +authoring_guide }
+  class PathVerdict { +lexicalVerdict(dest,rel) +pathVerdict(dest,rel,realpath) }
+  class Catalog { +validateRegistration() +insertVersion() +putAsset() +assetsOf() }
+  class Scheduler { +claim(id,wf) +release(id,wf) +ownerOf(id) +markRefused(f,reason) }
+  class Webhooks { +claim +release +ownerOf +deliver() }
+  class RunStore { +getOwner(id) +list(q) +appendAudit(ev) +auditFor(id) }
+  class Params { +parseParamContract() +validateUserOverrides() +resolveAgentParams(label,...) }
+  class CheckMermaid { +checkMermaid(src,labels,defaults,limits) +SHAPES +EDGE_FORMS }
+  class AssetSync { +push(req) +list(q) +delete(req) +resolveMcp(wf,names) }
+  class SdkGateway { +materializeAssets(roots,ws,declared,resolveMcp) }
+  class Guide { +buildAuthoringGuide(inputs) +GUIDE_EXAMPLES }
+  Errors <.. ToolSpecs
+  ToolSpecs <.. Authz
+  Authz ..> OwnerLookup
+  Server ..> Authz
+  Server ..> ToolSpecs
+  Server ..> Facade
+  Facade ..> Catalog
+  Facade ..> Scheduler
+  Facade ..> Webhooks
+  Facade ..> RunStore
+  Facade ..> AssetSync
+  Facade ..> PathVerdict
+  Catalog ..> CheckMermaid
+  Catalog ..> Params
+  SdkGateway ..> AssetSync
+  Guide ..> ToolSpecs
+  Guide ..> Errors
+  Guide ..> CheckMermaid
+```
+
+### DES-137 — `ERROR_CATALOG` is the closed `ErrorCode` union; `see` attached in one place
+- **status:** draft
+- **traces:** ARCH-087, ARCH-107, TASK-131
+- **signature:** `src/errors.ts`: `ERROR_CATALOG = {…} as const satisfies Record<string,{see:'workflow_authoring_guide'|null; hint:string}>` (NO `message` — the call site supplies it); `type ErrorCode = keyof typeof ERROR_CATALOG`; `codedError(code: ErrorCode, message: string, detail?: Record<string,unknown>)`; `toErrEnvelope(err) → {code: ErrorCode; message; see; detail?}` (`see` read from the catalog, never hand-typed); `toErrorCode(s: string): ErrorCode`. Keys = `TOOL_SPECS[].errors` ∪ `INGRESS_CODES` (`BLOB_*`, `MISSING_BLOBS`, `INVALID_BLOB_REQUEST`, the 409 webhook codes). `tool-specs.ts` imports `ErrorCode` TYPE-ONLY.
+- **boundary:** the four upstream result unions (`ParamErr['code']` `contract.ts:57`, `seedref-egress.ts:10`, `resolveVersionRequest`'s result, `validateScriptEntry`'s error) are constrained to `ErrorCode` at their DECLARATION — that is the lock, because six codes (`SEEDREF_EGRESS_DENIED`, `INVALID_CHANNEL`, `CHANNEL_UNPUBLISHED`, `DANGLING_CHANNEL`, `PARAM_LOCKED`, `PARAM_UNKNOWN`) reach `codedError` only through them and appear as no literal anywhere. `toErrorCode` is applied at the ONE genuinely-`string` site, `run-manager.ts:838` (`toErr()` can return `err.name`): unknown ⇒ `INTERNAL_ERROR` + `detail.rawCode` (a greppable production signal). `HARNESS_DEFAULTS_INVALID` retires with the `defaults` path. Outer envelopes unchanged (run tools `{runId,status,error}`, catalog writes `{code,error}`, params `Err`). **[AMENDED v24 Gate 8, AF-3 / TASK-162]** a FIFTH union joins that declaration-site lock: `authz.ts`'s `AuthzErrorCode` is derived from `AUTHZ_ERROR_CODES … as const satisfies readonly ErrorCode[]`. It was a hand-typed union with no relationship to the catalog, which is how `PRINCIPAL_REQUIRED` could be returned by `authorize()` and copied to the wire by `call-tool.ts:136` while absent from `ERROR_CATALOG` — the same defect D-14 fixed for three trigger codes one function away, recurring because that fix closed the instance and not the class.
+- **tests:** `tests/unit/error-catalog.test.ts` (≥7): every literal `codedError('X'` in `src/` is a key [T4]; every key ∈ `errors[]` ∪ `INGRESS_CODES`; `see` attached / `null` for `INTERNAL_ERROR`; `rawCode` passthrough; a `tsc` negative fixture proving `codedError('NOPE',…)` is a type error [T1]. **[v24 Gate 8, TASK-162]** `tests/unit/error-catalog-closed.test.ts` (UT-164) adds the class-level lock: EVERY member of `AUTHZ_ERROR_CODES` is a catalog key and round-trips through `toErrorCode` as itself. The reverse direction stays where it already lives — `tool-specs.test.ts` [C-6] (fixtures ⊆ row `errors[]`, row `errors[]` ⊆ catalog) and the runtime half in `tests/acceptance/v24-tool-surface.test.ts`. **Known gap (v25 debt, not closed here):** the "every key ∈ `errors[]` ∪ `INGRESS_CODES`" case listed above has never been written; `PRINCIPAL_REQUIRED` is itself an example of a live key belonging to no tool row's `errors[]`, so writing it needs a scope decision about authz-layer codes rather than a test edit.
+- **iter:** v24
+
+### DES-138 — `ToolSpec`: 35 rows, args-dependent authz via a `mode()` resolver, fixtures, `outputSchema`
+- **status:** draft
+- **traces:** ARCH-087, ARCH-088, TASK-132
+- **signature:** `AuthzRow = {minRole: Role; ownership:'none'|'run'|'workflow'|'trigger'|'asset'} | {minRole:'admin'|'author'|'user'; ownership:'run'; adminCrossRead: true}`; `ToolSpec = {name; entity; key:'name'|'runId'|'id'|'number'|null; description; inputSchema; outputSchema; errors: ReadonlyArray<ErrorCode>; seeAlso?; authz: AuthzRow | {mode(args): string; rows: Record<string,AuthzRow>}; fixture:{happy; errors?: Partial<Record<ErrorCode, args>>}}`; `TOOL_SPECS` is `as const`; `type ToolName = TOOL_SPECS[number]['name']`; `projectToolsList()` appends deterministic `Errors: …` / `See also: …` to each description. `mode()` is plain code on the row, used by exactly three tools (`workspace_push` → `'cas'|'asset'|'global'|'stdio'|'invalid'`, `workspace_list`, `workspace_delete`).
+- **boundary:** `mode()` is TOTAL — an arg set matching no mode returns `'invalid'` whose row is `{minRole:'user', ownership:'none'}`, so the schema (which runs first) answers `INVALID_ARGUMENT`, not a permission error; `adminCrossRead` exists only on the `ownership:'run'` variant (type-level, not an optional flag); `key: null` only for creators and the two `env` tools; `outputSchema` is a TEST ORACLE, not published in `tools/list` (publishing is deferred until the byte baseline of DES-157 exists).
+- **tests:** `tests/unit/tool-specs.test.ts` (≥12): `length === 35` (the literal 35 lives HERE and in 02-architecture only); prefix rule + `entity==='run' && key!==null ⇒ 'runId'`; the 15 old names absent (typed in the test as the oracle) [T3]; `/admin/i` in a description ⇒ `minRole:'admin'` on the row or some mode row; `run_start`'s two REQ-117 trap sentences as literals [T4]; every fixture arg-set resolves to a named mode; `projectToolsList()` deterministic and its `Errors:` text equals `errors[]` in order.
+- **iter:** v24
+
+### DES-139 — `Principal`, `resolveRole`, `authorize()` — total over kind × role × ownership × mode
+- **status:** draft
+- **traces:** ARCH-088, ADR-024, ADR-028, TASK-133
+- **signature:** `src/authz.ts` per ARCH-088 plus: row resolution `'mode' in spec.authz ? rows[mode(args)] : authz`; subject id = `args[spec.key]`, EXCEPT `ownership:'asset'` (subject `args.workflow`; `scope:'global'` ⇒ role-only) and `ownership:'trigger'` (subject `args.id` through `lookup.triggerOwner(id)` — ONE method, ids are unprefixed UUIDs from two stores) **[AMENDED v24 Gate 6.5+7 round 2]** and, for a spec whose `key` is `null` because its subject differs per MODE (the three `workspace_*` tools), the argument the RESOLVED row's ownership itself names — `runId` for `'run'`, `workflow` for `'workflow'`, in each case the argument that tool's own `mode()` predicate already required to be present, so the rule stays total. Without this third clause `args[spec.key]` was `undefined` on those rows, the lookup answered "does not exist", and the non-leak rule below returned **ok** — a silent ownership bypass (defect (b), IT-105); `OwnerLookup` is SYNC; refusal carries `{code, reason: string, see, detail:{mode?}}` (the resolved mode is in `detail` so a caller refused on a four-outcome tool learns WHICH rule refused).
+- **boundary:** every `OwnerLookup` method is TRI-STATE: `undefined` = does not exist ⇒ `authorize` returns ok and the handler answers `*_NOT_FOUND` (authz never leaks existence); `null` = exists and is ownerless ⇒ admin-only (`user`/`author` ⇒ `NOT_*_OWNER`). `auth-disabled` ⇒ always ok and NEVER emits `crossPrincipalRead` (no actor id ⇒ no audit row). `loopback-exempt` ⇒ ok only for `{minRole:'user', ownership:'none'}`, else `PRINCIPAL_REQUIRED`. `resolveRole(undefined, id)` with auth enabled ⇒ `'user'`; `principals['*']` ⇒ its role; an invalid role string is a BOOT refusal (DES-141), never a runtime default. Operator consequence, stated once: with auth enabled every pre-v15 run (`runs.principal NULL`) and every MIGRATED trigger (`createdBy NULL`) is admin-only — including a re-registration naming a legacy trigger id, which is refused `NOT_TRIGGER_OWNER` (DES-149 step 2).
+- **tests:** `tests/unit/authz.test.ts` (≥40, generated table + a `cases.length === N` pin [T1]); `tests/integration/authz-owner-lookup.test.ts` (≥6) binds `runs.principal`/`workflows.owner`/`schedules.createdBy`/`webhooks.createdBy` and asserts the SAME verdicts (a port wired to the wrong column is what this catches).
+- **iter:** v24
+
+### DES-140 — `callTool(deps, name, args, principal)`: one deps object, schema before authz, one switch
+- **status:** draft
+- **traces:** ARCH-089, ARCH-091, TASK-147
+- **signature:** `ToolDeps = {facade; scheduler; webhooks; webhookBaseUrl; cas; assetSync; mcpProbe; issueReporter; buildModelCatalog; systemInfo; lookup: OwnerLookup; audit: AuditWriter}` (the `continuations`/`mcpRegistry`/`graphAnalyzer` members of `server.ts:900-913` are gone — 17 positional parameters collapse into one object); body = `find spec ?? unknownTool(name)` → `validateArgs(spec.inputSchema)` → `authorize()` → `switch (spec.name)` with `default: never`. `Principal` is built ONCE in the `/mcp` handler from `resolvePrincipal` + `authEnabled` + `isLoopbackPeer`.
+- **boundary:** order is pinned — schema BEFORE authz (a malformed call gets `INVALID_ARGUMENT`, not `FORBIDDEN_ROLE`: a cold model must learn the shape first), authz before any store read other than the owner lookup. `ReadContext{authEnabled, principal}` (`mcp-facade.ts:58-61`) is replaced by `Principal`; the v22 masking rule becomes `p.kind !== 'auth-disabled'`. An old tool name yields the EXISTING JSON-RPC unknown-tool response, not a catalog code.
+- **tests:** `tests/unit/call-tool-order.test.ts` (≥5, recording fakes: a schema failure short-circuits before `authorize` [T1]); `tests/integration/mcp-tools-list-http.test.ts` (rewrite of `mcp-tools-list-schema.test.ts` [T3]): `tools/list` over real HTTP byte-equals `projectToolsList()` and contains no old name; `workflow_run` ⇒ unknown-tool.
+- **iter:** v24
+
+### DES-141 — `composeConfig()` forwards `principals`/`mcpEgressAllowlist`; unknown-key warn; the auth boot announcement
+- **status:** draft
+- **traces:** ARCH-090, ADR-028, ADR-030, TASK-146
+- **signature:** `FileConfig.principals?: Record<string,{role:string}>` → `normalizePrincipals(raw): {ok:true;value:Record<string,{role:Role}>} | {ok:false;key;role}`; `FileConfig.mcpEgressAllowlist?: string[]`; both forwarded in `composeConfig()` with a row each in `compose-config-v2-wiring.test.ts` IN THE SAME CHANGE; `KNOWN_FILE_CONFIG_KEYS: Record<keyof FileConfig, true>` (the `Record<keyof …, true>` form makes the compiler refuse a missing key, so the list cannot rot); boot line `auth: enabled=<bool> principals=<n> defaultRole=<role> ownerlessRuns=<n> ownerlessTriggers=<n>` and `system_info.auth = {enabled, principalsCount, defaultRole}`.
+- **boundary:** an invalid role string ⇒ boot REFUSES (`process.exit(1)` after the message) — a typo `"admn"` must not silently become `user`; a MISSING `principals` map with auth enabled ⇒ everyone `user` (ADR-028 fail-closed) AND the boot line says so — the "visibly" in ADR-028's rationale is built, not asserted; any unrecognized TOP-LEVEL key ⇒ ONE `console.warn` listing all of them, with `graphAnalyzer` carrying the ADR-025 sentence; `"*"` is a legal principal key; email-shaped keys stored verbatim (exact equality).
+- **tests:** `tests/unit/compose-config-v2-wiring.test.ts` +2 rows / −1 (`graphAnalyzer`) [T3]; `tests/unit/normalize-principals.test.ts` (≥5 incl. the malformed-role boot refusal); `tests/integration/main-composition-root.test.ts`: the warn, the boot line, and `system_info.auth` under an empty map reporting `defaultRole:'user'`.
+- **iter:** v24
+
+### DES-142 — `pathVerdict`: lexical pure, containment injected; the three caller-typed namespaces removed
+- **status:** draft
+- **traces:** ARCH-093, ADR-028, TASK-134, TASK-147
+- **signature:** `src/path-verdict.ts`: `lexicalVerdict(dest, rel): Verdict` — PURE (normalizes `\`/`/`; rejects `''`/absolute/`..`/NUL/`.git` segment [run-workspace]/reserved `rwe-*` first segment [asset-tree]; returns `stripped` for the former `STRIP_RE` matches); `pathVerdict(dest, rel, realpath = realpathSync)` = lexical then `isPathContained(path, root, realpath)` — `path-containment.ts:13` is EXTENDED IN PLACE with the injection, never forked. Verdict union = ARCH-093's plus reasons `NUL`, `EMPTY`. `nsOf(p: Principal) = p.id ?? 'local'` lives in `mcp-facade.ts` and is the ONLY namespace expression.
+- **boundary:** a path whose parent does not exist cannot be symlink-checked, so the write path calls containment AGAIN after `mkdir -p` of the parent (verdict before, containment after — stated, not papered). `stripped` is success-with-note for seeds and a REFUSAL (`INVALID_ARGUMENT`, "that path is never written") for `workspace_delete`/`workspace_pull`. Namespace removal: `run_start.seedNamespace` is dropped from the schema (closed ⇒ `INVALID_ARGUMENT`) and `?namespace=` on `POST /assets/blob/:sha` and `POST /assets/manifest` ⇒ `400 INVALID_BLOB_REQUEST` naming the change — this AMENDS ARCH-091's "seed arguments unchanged"; the client plugin break is TASK-153.
+- **tests:** `tests/unit/path-verdict.test.ts` (≥30 table): every former `STRIP_RE` row (`.claude/settings.json`, `.claude/settings.local.json`, `.claude/hooks/x`, nested `a/.claude/hooks/x`; NOT stripped: `.claude/skills/s/SKILL.md`, `CLAUDE.md`) and every `safeRelPath` row (`/etc/x`, `C:\x`, `../x`, `a/../../x`, plus the relative-root regression `./data/assets` + `a/b` accepted) copied as LITERAL rows [T2]; a fake `realpath` escaping ⇒ `SYMLINK`. `tests/integration/namespace-derivation.test.ts` (≥4).
+- **iter:** v24
+
+### DES-143 — `scanAgentCalls(script)`: what "literal" means, and the line number on every violation
+- **status:** draft
+- **traces:** ARCH-096, ADR-029, TASK-135
+- **signature:** `scanAgentCalls(script) → {labels: string[] /* distinct, source order */; calls: Array<{line; label}>; violations: Array<{line; code; key?; hint}>}` with `code ∈ 'AGENT_LABEL_REQUIRED'|'AGENT_LABEL_NOT_LITERAL'|'AGENT_LABEL_FORMAT'|'AGENT_OPTS_NOT_LITERAL'|'PARAM_IN_SCRIPT'`. A call is `agent(<expr>, <balanced {…} literal>)` matched with the existing string-aware `matchDelimiter` (`workflow-meta.ts:113-126`) + a key/value scan — NO JS parser dependency.
+- **boundary:** `agent(prompt)` ⇒ `AGENT_LABEL_REQUIRED`; a template-string or variable label ⇒ `AGENT_LABEL_NOT_LITERAL`; a non-literal options object ⇒ `AGENT_OPTS_NOT_LITERAL`; `model|effort|timeoutMs` keys ⇒ `PARAM_IN_SCRIPT {key}` pointing at `meta.params.agents.<label>.<key>`; a label failing `/^[A-Za-z_][\w-]*$/` ⇒ `AGENT_LABEL_FORMAT` at scan time (the diagram check never sees it); `x.agent(`/`agentFoo(` are not calls; a COMMENTED-OUT `agent(` IS matched (accepted: the refusal names the line, the guide says so — cheaper than a comment stripper); calls inside a nested `workflow()` argument list are NOT scanned; duplicate labels legal, `labels` de-duplicated, `calls` not.
+- **tests:** `tests/unit/scan-agent-calls.test.ts` (≥25): each code with its expected line; nested `workflow(` exclusion; duplicates; every `GUIDE_EXAMPLES[].script` scans clean [T2/T4].
+- **iter:** v24
+
+### DES-144 — `parseParamContract(meta, scriptLabels, aliasNames)` v24; `knobs`/`defaults` refused by name; legacy rows
+- **status:** draft
+- **traces:** ARCH-094, ADR-035, TASK-136
+- **signature:** `ParamContract = {agents: Record<label, AgentParamSpec>; args: Record<string, ParamSpec>}` (`knobs` DELETED from the type); `AgentParamSpec = {model; effort; timeoutMs /* all three REQUIRED with .default */; appendPrompt?; skills?: string[]; mcp?: string[]}`; error union gains `AGENT_UNDECLARED{label}`, `AGENT_DECLARED_NOT_IN_SCRIPT{label}`, `DEFAULTS_RETIRED`, `LEGACY_REREGISTER`.
+- **boundary:** `metaParams === undefined` no longer yields a canonical contract (`contract.ts:218`) — with ≥1 script label it is `AGENT_UNDECLARED` on the first label; with ZERO labels it is `{agents:{},args:{}}` (pure-`workflow()` composition). `model.default` must be a known alias (`UNKNOWN_ALIAS`), `effort.default ∈ Effort ≤ maxEffort`, `timeoutMs.default` integer `1..maxTimeoutMs` — refused AT REGISTRATION above the engine ceiling (`PARAM_OUT_OF_RANGE`, never clamped); `appendPrompt.default` byte-capped + frame-delimiter checked; `skills`/`mcp` are name arrays (`/^[A-Za-z0-9][\w.-]*$/`, no `rwe-` prefix) whose EXISTENCE is not checked (ARCH-094). `meta.params.knobs` or `meta.defaults` ⇒ `DEFAULTS_RETIRED` naming `meta.params.agents.<label>.<key>.default`. LEGACY rows (`params` holding `{knobs,args}` or NULL) are `runnable:false, runnableReason:'LEGACY_REREGISTER'` on `list`/`describe`, and `run_start` on one refuses `LEGACY_REREGISTER` — NO legacy resolution ladder is kept.
+- **tests:** `tests/unit/params-contract.test.ts` (REWRITE [T3] — today asserts a 4-knob canonical contract that no longer exists; ≥30): each code; each ceiling refused at registration; `DEFAULTS_RETIRED` from BOTH sites; the zero-label workflow. Ceiling oracles (600000/1024/`high`) typed as LITERALS, not imported [T2].
+- **iter:** v24
+
+### DES-145 — `validateUserOverrides(contract, raw, aliasNames, ceilings)`: per-agent, closed schema
+- **status:** draft
+- **traces:** ARCH-094, TASK-136
+- **signature:** `UserOverrides = {agents?: Record<label, Partial<{model; effort; timeoutMs; appendPrompt}>>}`; `run_start.inputSchema.overrides` mirrors it with `additionalProperties:false` at BOTH levels; refusals `PARAM_LOCKED`, `UNKNOWN_AGENT_LABEL{label, known: string[]}`, `PARAM_OUT_OF_RANGE`, `UNKNOWN_ALIAS`, each with `detail:{label,key,…}`.
+- **boundary:** the flat v21 form (`overrides:{effort:'low'}`) is `INVALID_ARGUMENT` FROM THE SCHEMA before the validator runs; `skills`/`mcp`/`prompt` inside an agent block are unrepresentable in the schema AND still `PARAM_LOCKED` when the pure function is called directly (both tests exist — the function stays total); author range ∩ engine ceiling: whichever is narrower wins, refuse never clamp; `agents:{}` is a legal no-op (provenance all `default`).
+- **tests:** `tests/unit/params-overrides.test.ts` (≥20: both paths per locked key; range-vs-ceiling in BOTH directions; `known[]`); `tests/integration/params-admission.test.ts` (rewrite [T3]) over a booted engine: a `999999` timeout refusal whose `message` names `maxTimeoutMs 600000`.
+- **iter:** v24
+
+### DES-146 — `resolveAgentParams(label, contract, overrides, engineDefaults)`: three rungs, not five
+- **status:** draft
+- **traces:** ARCH-095, ARCH-104, TASK-137
+- **signature:** `Rung = 'override' | 'default' | 'engine'`; ladder `override(agents.<label>.<key>) › contract agents.<label>.<key>.default › engine`; returns `EffectiveCallParams` with per-key provenance. The `'call'` rung is deleted with the values it carried; the `'agentType'` rung is deleted as UNREACHABLE once `model.default` is required — `agentTypeDef.model` survives as the source of the PROMPT, not the model (this corrects ARCH-095's "(model only, existing)").
+- **boundary:** `'engine'` is reachable only for `appendPrompt` (absent ⇒ `undefined`, provenance `'engine'`); a label absent from the contract at dispatch is a PROGRAMMING error (admission validated it) ⇒ throws `INTERNAL_ERROR`, never silently uses engine defaults [T1]; the pinned run snapshot becomes `effectiveParams = {agents: Record<label, EffectiveCallParams>}` and a resume that reads back the legacy flat shape refuses `LEGACY_REREGISTER` (one typed refusal, not a compatibility reader).
+- **tests:** `tests/unit/params-resolve.test.ts` (REWRITE [T3] — every `'call'`/`'agentType'` assertion goes; ≥15): ladder and provenance per key; the throw for an undeclared label; a POSITIVE assertion that `provenance.model ∈ {'override','default'}` only (the deleted rungs can never appear).
+- **iter:** v24
+
+### DES-147 — `checkMermaid`: tokenizer → node table → edge table → diff → value triple → cycles
+- **status:** draft
+- **traces:** ARCH-097, ADR-023, ADR-029, TASK-138, TASK-151
+- **signature:** `checkMermaid(src, scriptLabels, agentDefaults, limits)` per ARCH-097, implemented in order: (1) normalize `\r\n`→`\n`, `maxBytes`/`maxLines` first (`SIZE`); (2) line classifier — each non-blank non-`%%` line is exactly one of `header|node|edge|subgraph|direction|end`, else `MERMAID_INVALID{line}`; (3) node table `Map<id,{shape,text,line}>`, a second declaration ⇒ `rule:'DUPLICATE_NODE'`; (4) edge table — an id not declared ANYWHERE ⇒ `rule:'UNDECLARED_NODE'`, `&` on an edge line ⇒ `COLLAPSED_EDGE`; (5) agent node text vs `AGENT_LABEL_RE` ⇒ `AGENT_LABEL_FORMAT`; (6) bidirectional label diff over DISTINCT labels; (7) value triple (`model` string-equal, `effort` equal, timeout numeric `120s ≡ 120000`, `\d+(ms|s)` only); (8) cycles — directed graph over `-->`/`-.->` (± `|label|`), `<-->` EXCLUDED, SCC; every edge inside a non-trivial SCC must carry `|label|` else `LOOP_LABEL{line}`; (9) `subgraph` empty/missing title ⇒ `SUBGRAPH_TITLE`, unmatched `end` ⇒ `MERMAID_INVALID`. Exports `SHAPES` (five, each with tokens + role), `EDGE_FORMS`, `AGENT_LABEL_RE`, `HEADER_RE` — the single declaration the guide interpolates.
+- **boundary — enforcement vs guide text, stated:** REQ-112's "wrapped in a subgraph whose title names the pattern" and "a skipped path is dashed" are NOT mechanically decidable; the check enforces non-empty `SUBGRAPH_TITLE` and nothing more, and the guide carries the rest as marked-unchecked authoring conventions. Node text may contain `"` only as `#quot;`; `<`/`>` legal only inside `<br/>` and `<-->`; ids `/^[A-Za-z_][\w]*$/` (no `-`); the black-box rectangle `["…"]` is excluded from the diff and its text is free; a header-only diagram ⇒ `DIAGRAM_SCRIPT_MISMATCH` with `onlyInScript = all labels` (the file is valid, the picture is empty); zero script labels + zero agent nodes ⇒ ok.
+- **tests:** `tests/unit/check-mermaid.test.ts` (≥60 — the largest file in the slice by design): one case per code × rule with its line; `UNDECLARED_NODE`/`DUPLICATE_NODE`; CRLF; the SCC set (self-loop, 2-cycle, 3-cycle, `<-->` not a cycle, unlabelled dashed back-edge refused); timeout equivalence; both diff sets at once; every `GUIDE_EXAMPLES[].mermaid`. SUBSET-PROPERTY check (ADR-023's only real obligation): `tests/acceptance/val-mermaid-renders.test.ts` renders each example in a real browser at Gate 7.5, `UNVERIFIED(no browser)` otherwise — never a unit test pretending to be one [T2].
+- **iter:** v24
+
+### DES-148 — the catalog: validate/insert split, `assets`, the ordered idempotent migration, `deregister`
+- **status:** draft
+- **traces:** ARCH-098, ADR-025, ADR-026, TASK-143
+- **signature:** `validateRegistration({name, script, mermaid, principal}) → {params; labels; agents}` (throws `codedError`) with order PINNED: `validateScriptEntry` → `scanAgentCalls` → `parseParamContract` → `checkMermaid` → version-count ceiling → owner gate (read-only) — NOTHING written; `insertVersion({name, script, mermaid, triggers, params, principal}) → {version}` in the existing `.immediate()` transaction with the ownership re-check kept (defence in depth); `assets` DDL per ARCH-098 (`workflow=''` = global sentinel) + `putAsset/deleteAsset/listAssets/assetsOf`; `deregister(name, principal) → {removed; claimedTriggers}` deletes `workflow_versions`/`workflows`/`assets` in one transaction and returns the UNION of `triggers[]` over ALL versions (a beta-only claim is still a claim).
+- **boundary:** migration is ordered + idempotent, each step guarded by `PRAGMA table_info`/`sqlite_master`: add `mermaid`/`triggers` columns → `CREATE TABLE assets` → walk the pre-v24 global tree into `assets(workflow='', pushedBy='legacy')` **and MOVE it out of the swept `<assetRoot>/` into `<workRoot>/_global_assets/<kind>/<name>` [AMENDED v24 Gate 8, adjudication #7 G-1: "ROWS ONLY, no file moves" was written when the global tree was still believed to live at the path ARCH-102 named; leaving the bytes at `<assetRoot>/<kind>/<name>` leaves them where `reclaimStaleWorkspaces` deletes them, so the rows would describe files the first sweep destroyed]** → copy `mcp_provisions` into `assets(kind='mcp')` from the on-disk sibling db `<workRoot>/mcp-registry.db` (`grep` over `src/` cannot see it — v24 deleted the module, not the operator's table) → drop `workflow_diagrams`, `continuations`; `mcp-registry.db` is NOT dropped — a one-shot marker file (`_global_assets/.v24-legacy-migrated`, written last) is what stops a second copy, so an asset an admin deletes after migrating cannot be resurrected by the next boot; a crash mid-migration re-runs from the first unfinished step. `ALTER TABLE … DROP COLUMN` needs SQLite ≥ 3.35 — bundled is 3.53.2; the floor is a docblock line here and on the scheduler migration. `MERMAID_REQUIRED` on `undefined|''` (whitespace-only ⇒ `MERMAID_INVALID` line 1). The deregister FS removal is an after-hook OUTSIDE the transaction; its failure leaves an orphan tree, reclaimed by `reclaimStaleWorkspaces` (`workspace-gc.ts:12`) taking a `hasWorkflow(name)` port.
+- **tests:** `tests/integration/catalog-v24.test.ts` (≥25): after each refusal code the version-row count is unchanged [T1]; migration from a v23 fixture db, run twice; no post-migration `mermaid NULL` write after ten registrations; deregister's asset deletion + trigger union; orphan tree reclaimed / live tree untouched. **[v24 Gate 8, TASK-160]** the ORDERING half lives in `tests/integration/legacy-asset-migration.test.ts` (IT-131): a real boot with `workspaceTtlMs > 0` over a seeded pre-v24 work root, asserting the legacy tree survives REAL sweeps — a test of the migration alone is green whichever order the two are wired in.
+- **iter:** v24
+
+### DES-149 — trigger claims: `claim`/`release`/`ownerOf`, the register sequence, "omission does not release"
+- **status:** draft
+- **traces:** ARCH-091, ARCH-098, ARCH-099, ARCH-100, ADR-026, TASK-141, TASK-142, TASK-148
+- **signature:** per trigger store, inside ONE better-sqlite3 transaction: `claim(id, workflow) → 'claimed'|'held'|'NOT_FOUND'|'ALREADY_CLAIMED'` — `SELECT claimedBy` (absent ⇒ `NOT_FOUND`; `=== workflow` ⇒ `'held'`, nothing written; other non-null ⇒ `ALREADY_CLAIMED`) then `UPDATE … SET claimedBy=? WHERE id=? AND claimedBy IS NULL` (`changes===1` ⇒ `'claimed'`); `release(id, workflow)` = `UPDATE … SET claimedBy=NULL WHERE id=? AND claimedBy=?` (idempotent); `ownerOf(id) → string|null|undefined` (`undefined` = not in this store). **[AMENDED v24 Gate 6.5+7 round 2]:** `ownerOf` reads **`createdBy`** — the CREATING PRINCIPAL — not `claimedBy`. Listing it inside the claim triple above read as "the claim", and that is how it shipped; DES-139 and step 2 below both require the creator, so a claim/release never moves it (`ownerOf` is the OWNERSHIP reader, `get(id).claimedBy` is the CLAIM reader, and any consumer wanting "which workflow holds this trigger" — e.g. the fire-path `resolveScheduleTarget` — must use the latter). Facade sequence: (1) `validateRegistration`; (2) locate each id by probing both stores, ownership `createdBy === p.id || admin` else `NOT_TRIGGER_OWNER`; (3) `claim` each, first non-`'claimed'` ⇒ release the ids THIS call claimed, in reverse, and refuse `{code, triggerId, claimedBy?}`; (4) `insertVersion`; (5) on throw, release exactly the ids whose `claim` returned `'claimed'`.
+- **boundary:** an id that returned `'held'` is NEVER released by compensation (a failed re-registration must not un-claim a working trigger) — this is why `'held'` exists and one conditional UPDATE is insufficient. Duplicate ids in `triggers[]` ⇒ `INVALID_ARGUMENT` before any claim. A new version omitting a previously-claimed id does NOT release it (name-level claim persists until `workflow_deregister` or the creator deletes the trigger); the fire path then refuses `NOT_IN_RELEASE` and records it — that is the observable signal, and it is one sentence in the guide. A creator deleting a claimed trigger is allowed; the version row keeps a dangling id and `describe.triggers[]` omits it (no repair). Single-process assumed (ADR-026): no cross-store lock is added.
+- **tests:** `tests/integration/trigger-claims.test.ts` (≥20): both stores probed; compensation with a forced `insertVersion` throw asserting `claimedBy IS NULL` ONLY for ids unclaimed before [T1 — a compensation that releases everything is green on the simple case]; omission-does-not-release; duplicates. `tests/e2e/register-crash-window.test.ts` (Gate 7.5): a real engine killed between claim and insert (`RWE_TEST_CRASH_AFTER_CLAIM=1`), restarted, trigger unclaimed in `schedule_list`.
+- **iter:** v24
+
+### DES-150 — fire-path refusals: `markRefused` shares `markFailed`'s advance; `markFired` resets the counter
+- **status:** draft
+- **traces:** ARCH-099, ARCH-100, ADR-031, TASK-141, TASK-142
+- **signature:** `markRefused(firing, reason: RefusalReason)` where `RefusalReason = 'UNCLAIMED'|'CLAIMED_WORKFLOW_MISSING'|'NOT_IN_RELEASE'|'CHANNEL_UNPUBLISHED'` = `markFailed`'s advance (`scheduler.ts:303-317`: `once` ⇒ `enabled=0`; `cron` ⇒ fresh `nextFire` from `clock.now()`) PLUS `refusalCount+1, lastRefusedAt, lastRefusalReason`, and NO `lastError` write; `markFired`'s existing UPDATE (`scheduler.ts:287/293`) gains `refusalCount = 0` so the field reads "consecutive refusals since the last successful fire"; `ScheduleStatus.workflow` → `claimedBy: string|null`, `listByWorkflow` retired with `trigger-bindings.ts`; the driver becomes `resolveTarget(firing) → {workflow, version} | {refused: reason}` then `start` or `markRefused`. Webhook `deliver()` returns `{ok:false, httpStatus:409, code: RefusalReason}` and records the same three fields. Every time read in both stores goes through the injected `Clock` (`clock.now()`/`isoNow()`) — no method reads the wall clock.
+- **boundary:** **[AMENDED v24 Gate 8, AF-2 / TASK-161]** the `NOT_IN_RELEASE` predicate is `released.triggers !== undefined && !released.triggers.includes(id) && catalog.declaresTrigger(workflow, id)` in BOTH fire paths (`server.ts` `resolveScheduleTarget`, `webhook-registry.ts` `deliver`). `declaresTrigger` is the union of `triggers[]` over every version row (the one `deregister` already computed, now extracted so there is one implementation) and it is a REQUIRED member of the webhook `CatalogPort` — a fake omitting it must be a compile error, not a silent `undefined`. It exists because storing `[]` honestly (TASK-161) removes the `NULL` proxy that used to keep the create-time binding door working; without it every create-time-bound trigger on every v24 workflow silently stops firing, which is the same class of failure AF-2 reported. docblock precedence: `lastError` = dispatch failed (gateway/run); `lastRefusalReason` = policy refused before dispatch; never both for one firing. A refused `once` is CONSUMED (it fired, was refused, and says so); claiming it later does not resurrect it. The resident kind is refused identically; manual `run_start` never consults schedules (`SCHEDULE_DISABLED`-on-manual-start deleted). Webhook order: HMAC → timestamp → dedup CHECK → claim checks; the dedup RECORD is written only for an ADMITTED delivery, so a retry after the author finally claims gets a real fire, not a phantom `200 replayed`.
+- **tests:** `tests/unit/scheduler-refusal.test.ts` (≥10, FixedClock, `:memory:`): TWO ticks at the same instant ⇒ `refusalCount === 1` AND `nextFire > now` [the tight-loop trap — a single-tick test is green either way]; refuse ×3 then fire ⇒ `0`; `once` consumed; each reason; `lastError` untouched. `tests/integration/webhook-registry.test.ts` (rewrite [T3] — today's `create({workflow})` shape goes): wrong HMAC on an unclaimed hook ⇒ 401 never 409; same `deliveryId` twice unclaimed ⇒ 409/409 + `refusalCount 2`, then claimed ⇒ 202.
+- **iter:** v24
+
+### DES-151 — audit: `AuditAction ⊂ ToolName`, synchronous append BEFORE bytes, `adminReads[]` attached at the projection
+- **status:** draft
+- **traces:** ARCH-091, ARCH-092, ADR-027, TASK-140, TASK-148
+- **signature:** `type AuditAction = Extract<ToolName, 'workspace_list'|'workspace_pull'|'run_agent_log'|'run_result'>`; `RunStore.appendAudit(ev:{ts;actor;action;runId;owner;path?}): void` — SYNCHRONOUS (better-sqlite3), so `audit(); read();` is ordered by the language; `RunStore.auditFor(runId, limit=200): AuditEvent[]` (`ORDER BY seq DESC LIMIT 200`); `adminReads` is attached by the FACADE's `run_status` projection after the `RunStatusView` is built, only when `p.id === owner` — it is NEVER a field of `RunStatusView` (so the ungated `/api/runs/:id` route cannot serve it by construction, not by a strip rule someone must remember). `InMemoryRunStore` implements both (parity).
+- **boundary:** NO `try/catch` and no `.catch()` around `appendAudit` at the call site: a throw ⇒ the tool returns `INTERNAL_ERROR` and ZERO bytes (fail-closed by construction; `AUDIT_UNAVAILABLE` would dress an engine fault as a caller code). A cross-read that fails AFTER the audit row leaves the row (ADR-027's stated acceptable direction). For a non-owner the key is ABSENT, never `[]` (the `mcpUnresolved` convention). No audit row is ever written when auth is disabled (no actor id exists). `run_result` is added to the audited set — it returns the user's own payload and ADR-027's list omitted it (extends ADR-027 in the safe direction; one literal).
+- **tests:** `tests/unit/audit-order.test.ts` (≥5): recording fake asserting `['appendAudit','readArtifactChunk']` [T1]; a store whose `appendAudit` throws ⇒ `INTERNAL_ERROR` and `readArtifactChunk` never called. `tests/integration/run-store-audit.test.ts` (≥8): both stores; owner-only projection; absent-not-`[]`; the 200 cap. `tests/e2e/admin-cross-read.test.ts` (Gate 7.5, scenario S-4).
+- **iter:** v24
+
+### DES-152 — `run_list` filtered in SQL with its index; `RunStore.list` port parity
+- **status:** draft
+- **traces:** ARCH-091, ARCH-092, TASK-140, TASK-148
+- **signature:** `RunStore.list({workflow?, status?, principal?, limit}) → RunSummary[]` ordered `createdAt DESC`, backed by `CREATE INDEX IF NOT EXISTS runs_name_status_created ON runs(name, status, createdAt DESC)` created beside the existing DDL; `principal` is set BY THE FACADE from `p.id` for `user`/`author` and never from args; `limit` default 50, max 500. `listRuns()` (unfiltered) survives for `hydrateAll` and is exposed by no tool.
+- **boundary:** a `status` outside `RunStatus` ⇒ schema refusal; a caller passing `principal` in args ⇒ `INVALID_ARGUMENT` (the key does not exist on the closed schema); rows with `principal IS NULL` are excluded by `WHERE principal = ?` and are therefore admin-only — this is the CROSS-SEAM AGREEMENT with DES-139's `null` = ownerless rule, and the same fixture is asserted on both sides.
+- **tests:** `tests/integration/run-list.test.ts` (≥10): filters singly and combined; the ownerless-row rule (both sides); `EXPLAIN QUERY PLAN` contains `runs_name_status_created` (the one query-plan assertion in the suite — the only way to prove "required, not optional"); `InMemoryRunStore.list` parity against a HAND-WRITTEN expected array [T2].
+- **iter:** v24
+
+### DES-153 — `AssetSyncService` v24: two scopes, catalog rows, FS-then-row order, `kind:'mcp'` gated
+- **status:** draft
+- **traces:** ARCH-102, ADR-030, TASK-144
+- **signature:** `AssetSyncDeps = {workRoot; globalRoot; selfBind; clock: Clock; catalog: {putAsset; deleteAsset; listAssets}; probe: McpProbe; egressAllowlist: readonly string[]}`; `push(req)` with `req = {scope:'workflow', workflow, kind:'skill', name, files, pushedBy} | {scope:'workflow', workflow, kind:'mcp', name, config, pushedBy} | {scope:'global', …}`; `AssetKind = 'skill'|'mcp'`; `list({workflow, kind}) → Array<{scope; builtin; kind; name; pushedBy; pushedAt}>` (both scopes in one response); `delete(req)`; `resolveMcp(catalogPort, workflow, names) → {configs; missing}` — a PURE helper taking the CATALOG PORT (constructible in a unit test with an in-memory catalog and no tmp roots), workflow scope before global. `pushedAt` comes from `deps.clock`, never `Date.now()`.
+- **boundary:** `kind:'mcp'` order — `classifyTransport` → `stdio` already refused for non-admins by the authz mode row → `http` must pass `isEgressAllowed(url, allowlist)` BEFORE any `fetch` (`EGRESS_DENIED`, nothing probed) → `probe` (`MCP_PROBE_FAILED`, nothing stored) → row. `kind:'skill'`: verdict EVERY file (DES-142) before writing any, write the tree, THEN the row — a crash between leaves an unlisted directory the next push overwrites (acceptable); the reverse is not. `delete` removes the row THEN the tree. `kind:'hook'` is refused by the schema `enum` (`INVALID_ARGUMENT`) and `HOOKS_UNSUPPORTED` is RETIRED from the catalog (a code no path can produce is the first orphan DES-137's lock catches); the sentence "hooks are never accepted — closes the arbitrary-server-side-code vector" moves into the `workspace_push` row description. `pushedBy = p.id ?? 'local'`, never absent.
+- **tests:** `tests/unit/asset-sync-v24.test.ts` (≥20, FakeMcpProbe + FixedClock + tmp roots + in-memory catalog): S-6/S-7 with the probe spy asserting ZERO calls on `EGRESS_DENIED` [T1]; FS-before-row order via a recording catalog fake; both scopes in one `list`. `tests/integration/asset-mcp-tools.test.ts` (rewrite [T3]: the `mcp_provision` name and the `mcp-registry` import go).
+- **iter:** v24
+
+### DES-154 — selective materialization INSIDE the SDK gateway; the direct-fetch path materializes nothing
+- **status:** draft
+- **traces:** ARCH-103, ADR-034, TASK-145
+- **signature:** `materializeAssets(roots:{workflow: string; global: string}, workspace, declared:{skills: string[]; mcp: string[]}, resolveMcp) → {skills: string[]; mcp: string[]; missing: string[]}` REPLACES the copy-all loop at `claude-agent-sdk-client.ts:161-175`, pure over an injected fs facade `{exists, copyDir, writeFile}`. The declared set and roots ride the gateway request: `GatewayRequest.assets?: {workflowRoot; globalRoot; declared:{skills; mcp}}`, filled by `agent-executor.ts` from that label's `AgentParamSpec` (the workflow name comes from the run record). `ClaudeAgentSdkGatewayConfig.mcpRegistryDbPath` is REPLACED by an injected `resolveMcp` bound to the catalog port (`mcp-registry.ts` is deleted). The client puts the result on the descriptor it emits (`HarnessDescriptor.materialized`).
+- **boundary:** workflow scope wins a name clash with global; a declared skill absent in both roots lands in `missing[]` and the run PROCEEDS (owner 19.5.3 — no silent downgrade, no refusal); a skill the workspace already had from a SEED is overwritten by the materialized one; `.mcp.json` is REWRITTEN (never merged) each dispatch, with an empty server map when `declared.mcp` is empty; files from a previous agent of the same run are left in place (ADR-034 additive). The direct-fetch gateway (`gateway/client.ts`, always `surfaceType:'none'`) does NOT materialize — nothing is copied for an agent that cannot use it, and the executor reports the honest empty set (DES-160).
+- **tests:** `tests/unit/materialize-assets.test.ts` (≥12, fake fs): clash rule; `missing`; additive; `.mcp.json` rewrite-to-empty. `tests/integration/asset-skill-materialization-wiring.test.ts` (rewrite [T3] — today asserts "every skill copied", which is now the defect).
+- **iter:** v24
+
+### DES-155 — the six `workspace_*` tools: per-mode closed schemas, all-or-nothing delete, `withTerminalRun`
+- **status:** draft
+- **traces:** ARCH-091, ARCH-093, TASK-148
+- **signature:** `workspace_push.inputSchema = oneOf[modeA {sha256, contentB64}, modeB {workflow, kind, name, files|config, scope?}]`, `additionalProperties:false` in each branch; `workspace_delete({runId, paths: string[] /* 1..200 */}) → {deleted; missing; rejected: Array<{path; reason}>}`; `workspace_diff({manifest}) = cas.missing(nsOf(p), shas)`; `workspace_pull({runId, path, offset?, length?})` = `readArtifactChunk` under `pathVerdict(run-workspace)`; `workspace_list({runId} | {workflow, kind})` (per-file sha256 only under `withSha256:true`); `workspace_purge({runId})`; `RunManager.withTerminalRun(runId, fn)` throws `RUN_NOT_TERMINAL` unless the entry is terminal and holds it across `fn` (single process — a check inside the owner, not a lock protocol).
+- **boundary:** `runId` on `workspace_push` is `INVALID_ARGUMENT` FROM THE SCHEMA, with the row description carrying "a run's workspace is immutable while live and meaningless after"; `workspace_delete` validates every path BEFORE deleting any and is all-or-nothing when `rejected.length > 0`; a `stripped` path is `rejected`; a directory path deletes recursively; `workspace_purge` on a purged run ⇒ `{purged:false}` (idempotent); a run known to the store but not to `RunManager` (restart) is resolved through `store.getRun` and `queued|running|suspended` count as LIVE — never "not in memory ⇒ terminal" [T1].
+- **tests:** `tests/integration/workspace-tools.test.ts` (rewrite of `workspace-artifacts.test.ts` [T3], ≥25): every mode's happy and refusal; the schema refusal of `runId` on push; all-or-nothing delete; delete during a live sandbox run ⇒ `RUN_NOT_TERMINAL`; the restart case with a fresh `RunManager` over the same store.
+- **iter:** v24
+
+### DES-156 — read projections: `describe`, `list.runnable`, `source`, `EXPECTED_*_KEYS` re-pinned; the dashboard `<pre>`
+- **status:** draft
+- **traces:** ARCH-105, ARCH-106, TASK-149
+- **signature:** `WorkflowDescribeView` per ARCH-105 plus `runnable: boolean`, `runnableReason: 'CHANNEL_UNPUBLISHED'|'LEGACY_REREGISTER'|null`, `triggers[]` resolved BY ID (`scheduler.get(id) ?? webhooks.get(id)`, never by workflow — `listByWorkflow` is retired); `EXPECTED_DESCRIBE_KEYS` re-pinned (the four `diagram*` keys DELETED, not left optional); `workflow_list` rows `{name, owner, channels, versions, runnable, runnableReason}` with the response ECHOING the applied filter (`onlyRunnable: boolean`, defaulted `true` for `user`); `workflow_source` = `projectWorkflowForRead` with `scriptWithheld:true, see:'workflow_describe'` for a non-owner `author`. Dashboard: `describe.mermaid` into `<pre>` via `textContent`; the polling/unavailable branches and per-card describe fetches are gone; no client-side Mermaid library.
+- **boundary:** `params.agents.<label>` reports `{type, default, range}` per key with range = author range ∩ engine ceiling (`effectiveBounds`), never the raw author range — a user must see what will be ACCEPTED; `mermaid` is the stored string VERBATIM; `mermaidNote:'LEGACY_NO_DIAGRAM'` iff `mermaid === null`; `describe` never returns `script`.
+- **tests:** `tests/unit/workflow-describe-projection.test.ts` (rewrite [T3] — today pins `diagramStatus`) with HAND-TYPED key oracles; a ≥6-row `runnable` truth table (release set × legacy); `tests/unit/dashboard-diagram-render.test.ts` for the `<pre>`/`textContent` path.
+- **iter:** v24
+
+### DES-157 — the guide builder, `GUIDE_EXAMPLES`, generated `AUTHORING.md`, and which test is the oracle
+- **status:** draft
+- **traces:** ARCH-107, ADR-032, TASK-150
+- **signature:** `buildAuthoringGuide(inputs) → string` — PURE over its inputs (no constant imports inside the builder; the composition root passes the RESOLVED `ServerConfig` ceilings `{maxTimeoutMs, maxAppendPromptBytes, maxEffort}`, not `DEFAULT_CEILINGS`, because they are operator-overridable); `GUIDE_EXAMPLES: ReadonlyArray<{title; script; mermaid; expectRegister:'ok'; expectDescribeAgents: string[]}>` — at least: single agent, three-stage pipeline, fan-out/fan-in, non-agent aggregation, conditional, labelled loop, `<-->` debate subgraph, nested `workflow()` black box, one with `args`, one with `skills`+`mcp`; `scripts/gen-authoring-md.ts` writes `docs/AUTHORING.md` from the same builder.
+- **boundary:** the `AUTHORING.md` diff test and the `tools/list == projectToolsList()` test are DRIFT LOCKS (oracle-from-code) and must be labelled as such in 05-tests.md; the correctness tests are the registered examples and the literal-sentence assertions. The guide marks rules in TWO sections — "enforced (refused with this code)" vs "authoring convention (not checked)" — so an author never fights a checker that isn't there (DES-147's honesty line); it states: `LEGACY_REREGISTER` and what to do, omission-does-not-release, a refused `once` is consumed, assets are shared across versions, the `workflow()` depth limit (`maxWorkflowDepth`, default 4 — N levels, corrected from "one-level" by adjudication (v24) #4 C-5) + flatten past it, the black-box rectangle, and one line pointing a human at a Mermaid live editor (ADR-033's honest cost).
+- **tests:** `tests/integration/guide-examples-register.test.ts` — one `it` PER example over real MCP HTTP against a booted engine asserting `{version}` (≥10); `tests/unit/authoring-guide.test.ts`: a FAKE ceiling appears in the text (proves interpolation, not a hard-coded number [T2]), every `[A-Z_]{6,}` token is an `ERROR_CATALOG` key, every tool name is in `TOOL_SPECS`, no model alias appears in any example script; `tests/unit/authoring-md-generated.test.ts` (diff lock); ONE regression guard on the total projected `tools/list` description bytes against a pinned baseline with a stated tolerance (an always-on per-session cost — a guard, NOT a budget).
+- **iter:** v24
+
+### DES-158 — the REQ-118 table generated from `TOOL_SPECS[].fixture`; `UNVERIFIED` is a row; the REQ-117 protocol
+- **status:** draft
+- **traces:** ARCH-108, TASK-151
+- **signature:** `tests/acceptance/v24-tool-surface.test.ts`: `for (const spec of TOOL_SPECS) describe(spec.name, …)` — one `it` for `fixture.happy`, one per `fixture.errors[code]`, each asserting the typed `error?.code` and validating the happy response against `spec.outputSchema`; an `afterAll` writes `.sdlc/features/001-remote-workflow-engine/v24-tool-surface.md` (tool, arguments, observed response, pass/fail/unverified) and a second test asserts one row per array entry. REQ-117 protocol (validator-owned runbook in 08-validation.md): a FRESH model instance, stub MCP client, launched OUTSIDE this project tree (the `rwe-workspace-memory-leak` finding), given `tools/list` + `workflow_authoring_guide` and nothing else; authors a multi-agent workflow + its Mermaid, registers, publishes, runs, reads the result; ANY wrong step is a documentation defect fixed in DES-138/157 and re-run with ANOTHER fresh instance.
+- **boundary:** the table file is written ONLY when the run covered all 35 rows and carries a `rows: N/35` stamp — a filtered run (`-t`, single file, bail) must not silently truncate a conformance artifact that then looks complete; a non-constructible error path (e.g. `INTERNAL_ERROR`) is an `UNVERIFIED(not constructible)` ROW, never a missing one; credential-dependent rows (`issue_*`, OpenRouter `models_list`) are `it.skip` WITH the reason string; destructive happy fixtures (`workflow_deregister`, `workspace_purge`) run last over their own fixture workflow.
+- **tests:** the file IS the test (≥35 happy + ≥30 error `it`s); `outputSchema` presence is a `tool-specs.test.ts` row.
+- **iter:** v24
+
+### DES-159 — the deletion's definition of done: 4 source files, 15 test deletions, 24 rewrites, 3 grep guards
+- **status:** draft
+- **traces:** ARCH-089, ARCH-096, ARCH-101, ARCH-106, TASK-139, TASK-152
+- **signature:** DELETE `src/graph-analyzer.ts`, `src/continuation-store.ts`, `src/mcp-registry.ts`, `src/trigger-bindings.ts` (whole file: `getTriggerBindings`, `TriggerPorts`, `UNBOUND_ENTRY_LABEL`, `bindingsFingerprint` — after the analyzer deletion nothing needs a by-workflow trigger query, and `describe.triggers[]` is a by-id lookup) plus their consumers (`server.ts:1458-1459`, `mcp-facade.ts:24-25/436`, `listByWorkflow` on both stores); DELETE from surviving files: `gateDiagram`/`VOCAB_GLYPHS`/`DIAGRAM_CODEPOINTS` (`diagram-gate.ts`), `resolveCallParams` (`resolve.ts`), `knobs` (`contract.ts`), the "no meta ⇒ canonical contract" branch. DELETE the 15 test files listed in TASK-139; REWRITE the other 24 that reference a retired symbol or `mcp_provision`. Consumer files keep their subject and lose only the import + the code that used it (`server.ts`, `mcp-facade.ts`, `main.ts`, `workflow-view.ts`, `gateway/claude-agent-sdk-client.ts` — the SDK client's `McpRegistry` read becomes DES-154's injected `resolveMcp` port, left unbound until TASK-145 binds the catalog). The IN-FILE symbol deletions above are performed by the tasks that rewrite those files (TASK-136/137/138), not by the deletion task — two tasks editing one file with different intent is how a rewrite gets reverted. Grep guards in `tests/unit/no-retired-surface.test.ts` (source-text, the ARCH-084 pattern): (1) no `mermaid` import or CDN `<script>` in `src/`; (2) none of the 15 old tool names in `src/`; (3) no `Date.now()`/`new Date()` outside `clock.ts` in the four new files.
+- **boundary:** a test that imports nothing retired but asserts RETIRED BEHAVIOUR is the [T3] case grep cannot find; the four are named here and owned by their feature task: `asset-skill-materialization-wiring` ("every skill copied", DES-154), `params-contract` (the 4-knob canonical contract, DES-144), `params-resolve` (`'call'`/`'agentType'` rungs, DES-146), `webhook-registry` (`create({workflow})`, DES-150). The suite's test count DROPS and the drop is recorded in 05-tests.md — a slice that deletes a subsystem and reports the same count has left retired tests green.
+- **tests:** the three grep guards (≥3); TASK-152's `grep -rlE … → EMPTY` is the sweep's own oracle.
+- **iter:** v24
+
+### DES-160 — the harness descriptor and the run's params snapshot: shapes pinned for the transcript reader
+- **status:** draft
+- **traces:** ARCH-104, ARCH-095, TASK-145
+- **signature:** at the ONE descriptor-decoration site (`agent-executor.ts:410-450`, downstream of BOTH gateways, which already merges `provenance`/`effort`/`timeoutMs`) the decorated `HarnessDescriptor` gains `label: string` (from `req.opts.label`) and `materialized: {skills: string[]; mcp: string[]; missing: string[]}` = `descriptor.materialized ?? {skills:[], mcp:[], missing: declared}` — so a `surfaceType:'none'` dispatch, which materializes nothing (DES-154), reports the honest empty set with its declared names in `missing`. `redactHarness` is UNCHANGED (it runs upstream in the gateway; the new keys are inside `base` and are covered by the existing `redact()` at the persist write). `RunStore.createRun(spec, scriptVersion, effectiveParams: {agents: Record<label, EffectiveCallParams>})`.
+- **boundary:** `provenance` is NOT re-added (it already ships, v21 DES-105); a resumed run whose `getEffectiveParams` returns the legacy flat shape ⇒ `LEGACY_REREGISTER` (DES-146); an unknown run ⇒ existing `RUN_NOT_FOUND`. The three new keys carry no secrets — `redact-sweep.test.ts`'s allowlist gains them.
+- **tests:** `tests/integration/agent-log-harness-shape.test.ts` (rewrite [T3]): `label`/`materialized`/`provenance` present on a CURATED dispatch AND on a direct-fetch (`surfaceType:'none'`) dispatch — the second fixture is the one that stops a future refactor from moving decoration into a gateway and blinding the degraded path; `provenance.model ∈ {'override','default'}` only.
+- **iter:** v24
+
+### DES-161 — `deriveAgentRecords` fills `AgentRecord.label` from the descriptor
+- **status:** draft
+- **traces:** ARCH-104, TASK-145
+- **signature:** `run-store.ts:24` harness branch: `const hd = harness.data.descriptor; records.push({…, ...(hd?.label !== undefined ? {label: hd.label} : {})})`. On the terminal (usage) branch the label is copied from the LATEST harness event of the same agent, so a finished agent does not lose its name.
+- **boundary:** `AgentRecord.label?` ALREADY exists (`types.ts:67`) and is filled only on the live path (`run-manager.ts:868`, in-process state lost on restart) — so today every agent on a still-running run is anonymous after a restart, which is exactly when a human looks; the descriptor is the first DURABLE source. A pre-v24 transcript (no `descriptor.label`) ⇒ the key is ABSENT, never defaulted. `materialized`/`provenance` stay transcript-only (read via `run_agent_log`) — they answer a post-hoc "why did skill X not load", not "what is running now".
+- **tests:** `tests/unit/derive-agent-records-v24.test.ts` (≥6): both branches; latest-wins with two harness events; a pre-v24 fixture (absent); an integration case that writes a harness event, drops the `RunManager`, reads `run_status` from the store and sees the label.
+- **iter:** v24
+
+### DES-162 — `toPublicRunView(view)`: no identity field on an ungated `/api/*` route
+- **status:** draft
+- **traces:** ARCH-091, ADR-027, REQ-109, TASK-147
+- **signature:** `toPublicRunView(v: RunStatusView): Omit<RunStatusView, 'principal'>` applied in `dispatchDashboard` for `/api/runs` and `/api/runs/:id`; the MCP `run_status` path does NOT call it (`adminReads` is not on `RunStatusView` at all — DES-151).
+- **boundary:** the rule is general and stated once: `principal`, `adminReads`, `pushedBy`, `createdBy`, `claimedBy` are never serialized by an UNGATED `/api/*` route. `/api/workflows/:name/describe` is gated (`server.ts:1907`) and unaffected. Observable behaviour change: none — `dashboard*.ts` has no reader of `principal` and no test asserts it over `/api/runs` (checked 2026-09-04), so there is no [T3] exposure; gating the whole dashboard stays out of v24.
+- **tests:** `tests/integration/api-runs-public-projection.test.ts` (≥3): both routes lack `principal` on a run that has one; MCP `run_status` still carries `adminReads` for the owner; a source-text guard that no `/api/` handler serializes `createdBy|claimedBy|pushedBy`.
+- **iter:** v24
+
+## Real-tier validation paths (v24) — the entrypoint that proves each REQ
+
+| REQ | real entrypoint + real wiring | what proves it |
+|---|---|---|
+| REQ-107 (one tool surface) | booted `createServer()`, `tools/list` over real MCP HTTP | `tests/integration/mcp-tools-list-http.test.ts` byte-equal to `projectToolsList()`, no old name; `workflow_run` ⇒ unknown-tool |
+| REQ-108 (one path verdict for every write) | real workspace FS + real CAS through `workspace_push/pull/delete/purge` | `tests/integration/workspace-tools.test.ts` (≥25) + `namespace-derivation.test.ts` over the two real HTTP routes |
+| REQ-109 (three roles, enforced, audited) | engine booted WITH `principals` in `rwe.config.json` + real bearer tokens | `tests/e2e/admin-cross-read.test.ts` (S-4: admin reads another principal's workspace, the owner sees `adminReads[]` on `run_status`) + `authz-owner-lookup.test.ts` against the real store columns |
+| REQ-110 (per-agent params) | real `workflow_register` + `run_start({overrides})` against a booted engine | `tests/integration/params-admission.test.ts` (S-3 refusal names the ceiling) + `agent-log-harness-shape.test.ts` (per-label provenance in the real transcript) |
+| REQ-111 (author-supplied diagram, bidirectional) | real `workflow_register` with a mismatching diagram | `tests/acceptance/v24-tool-surface.test.ts` rows `MERMAID_REQUIRED` / `DIAGRAM_SCRIPT_MISMATCH`; `describe.mermaid` verbatim over HTTP |
+| REQ-112 (the fixed vocabulary) | the ten `GUIDE_EXAMPLES` registered over real MCP HTTP | `guide-examples-register.test.ts` (one `it` each) + `val-mermaid-renders.test.ts` (real browser render, else `UNVERIFIED`) |
+| REQ-113 (workflow-owned assets, selective materialization) | real `workspace_push({workflow,kind})` then a real run whose agent declares one skill | Gate 7.5 run: the workspace contains ONLY the declared skill; `run_agent_log` shows `materialized` |
+| REQ-114 (`pushedBy` traceability) | real push under two principals, then `workspace_list` | `asset-mcp-tools.test.ts` + a Gate 7.5 read of `workspace_list` showing both `pushedBy` values |
+| REQ-115 (trigger claims + recorded refusals) | real scheduler tick against a real `schedules.db`; real webhook POST with a valid HMAC | `trigger-claims.test.ts`, `webhook-registry.test.ts`, `register-crash-window.test.ts` (real engine killed mid-sequence) |
+| REQ-116 (the authoring guide) | `workflow_authoring_guide` over real MCP HTTP, then registering its own examples | `guide-examples-register.test.ts` — every example the tool teaches is registered by a test |
+| REQ-117 (cold model, first try) | a FRESH model instance outside this tree with a stub MCP client, guide + `tools/list` only | the DES-158 runbook in 08-validation.md; blocked by TASK-153 (client plugin sync) |
+| REQ-118 (every tool exercised) | every `TOOL_SPECS` row called against a booted engine | the generated `v24-tool-surface.md` (35/35 rows or the guard fails) |
+
+## Decision rationale (v24)
+
+**Panel process.** The two round-2 files CROSSED (adversarial r2 06:01 read quality-dimensions r1; quality-dimensions r2 06:04 read adversarial r1), so on three points each conceded to a version of the other's r1 that the other had already moved past. Where that happened the synthesizer verified the tree and ruled, citing lines: (1) **descriptor placement** — adversarial r2 wanted `label`/`provenance`/`materialized` as SIBLINGS of `descriptor` to survive `redactHarness`'s two branches; quality-dimensions r2 verified (and I re-verified at `agent-executor.ts:410-450`) that the decoration site is single, downstream of BOTH gateways, and already merges `provenance`. Ruling: the keys go ON the decorated descriptor beside `provenance`, and `deriveAgentRecords` reads `data.descriptor.label` — which is exactly what `run-store.ts:24` already destructures. The sibling placement solved a problem that does not exist. (2) **`adminReads` carrier** — adversarial proposed a `toPublicRunView` strip; QD proposed attaching it at the facade projection so `RunStatusView` never carries it. Both adopted, in their strongest forms: attach-at-projection (by construction, DES-151) AND a reduced `toPublicRunView` that strips only the pre-existing `principal` (DES-162) — five lines that close a v15 deviation instead of documenting it, with adversarial's verification that no test asserts `principal` over `/api/runs`. (3) **`ERROR_CATALOG`'s drift lock** — adversarial's grep lock is blind to six codes that reach `codedError` only through union-typed pass-throughs; QD's fix (constrain the four upstream unions to `ErrorCode`, plus `toErrorCode` at the single genuinely-`string` site `run-manager.ts:838`) makes `tsc` the lock. Adopted; the grep stays as the cheap second lock.
+
+**O-7b (`materialized` on a direct-fetch dispatch) — resolved by moving nothing.** QD asked the synthesizer to check whether the gateway target is knowable before dispatch. It is not knowable per-call, but the question dissolves: ARCH-103 already places `materializeAssets` in `gateway/claude-agent-sdk-client.ts`, where the copy-all loop lives today (`:161-175`) together with MCP resolution; adversarial's DES-154 had MOVED it up to `agent-executor.ts:340`, which is what created the "truthful field that reads as a lie". Keeping the architecture's placement gives QD's preferred option (a) for free — the direct-fetch path copies nothing — and the executor fills `materialized ?? {skills:[],mcp:[],missing:declared}` in one `??`, so "nothing materialized" and "no surface" are both visible. Nobody conceded; the architecture already had it right.
+
+**Contested calls, with who conceded.** `mode(args)` authz resolver (adversarial's biggest interface call): both lenses ENDORSE; adopted with QD's addition that the resolved mode appears in `detail.mode`. `LEGACY_REREGISTER` for pre-v24 param rows: adversarial argued it, QD conceded in full (correcting adversarial's misattribution that consumability would want a dual-shape schema) on one condition — the refusal must be visible at `list`/`describe` time, which DES-156 already carries. `run_result` added to the audited set: uncontested, one literal, extends ADR-027 in the safe direction (it returns the user's payload). `outputSchema` on `ToolSpec`: adopted as a test oracle, publishing DEFERRED until the `tools/list` byte baseline exists (QD's ordering). `AgentRecord` payload: adversarial wanted `label` + `provenance`, QD's final wanted `label` only with `provenance` read from `run_agent_log`; the smaller wins (a second copy of a value one call away is a second thing that can drift). `adminReads` audience: adversarial held owner-only, QD conceded — the trail belongs to the party whose data was read. Task 15 split: adversarial conceded QD's 15a/15b (the `composeConfig` wiring — the twice-bitten bug class — must not be a subsection of the biggest task); the panel's 18 rows plus 14b/15a/19 become TASK-131..153. Guide byte CEILINGS: QD withdrew its own invented 24 KB numbers on arithmetic; what survives is ONE regression guard on always-on `tools/list` bytes. Per-fire refusal rows: never proposed by either lens; ADR-031's coalescing stands, with adversarial's addition that `markRefused` must share `markFailed`'s advance (a `markRefused` without it turns "1440 refusals/day" into one per driver tick, and a single-tick test is green either way).
+
+**Clock seam (exit-gate 5, no asymmetry).** Every method that reads time takes the injected `Clock`: `markRefused` and `markFired` in BOTH trigger stores (`lastRefusedAt`, `nextFire`, `lastFire`), `AssetSyncService.push` (`pushedAt`, via `deps.clock`), the facade's `appendAudit` (`ts`), and the existing `createRun`/transcript sites. DES-159's grep guard (3) — no `Date.now()`/`new Date()` outside `clock.ts` in the four new files — is the lock; the four stores' new methods are named here so a fixed-time test can drive every one of them.
+
+**Architecture amendments recorded at design (NOT edited into 02-architecture.md — recorded by id so Gate 8 does not read them as drift).** ARCH-088: `triggerOwner(id)` tri-state, not `(kind, id)`. ARCH-090: the unknown-key warn is general (`KNOWN_FILE_CONFIG_KEYS`) + an auth boot line. ARCH-091: `run_start.seedNamespace` REMOVED and `?namespace=` dropped on both HTTP routes (ADR-028's "appears once" is false while they exist); `HOOKS_UNSUPPORTED` retired in favour of a schema `enum` refusal. ARCH-093: `pathVerdict` IMPORTS `isPathContained`, extended in place with an injectable `realpath` — it is not a second containment implementation. ARCH-095: the `agentType` rung is deleted (unreachable), `agentTypeDef.model` sources the prompt. ARCH-099: `claim` returns `'held'` as a fourth outcome (two statements in one transaction — one conditional UPDATE cannot tell null→name from name→name, and the compensation rule needs it); `markFired` resets `refusalCount`; `ScheduleStatus.workflow` → `claimedBy`; `listByWorkflow` retired. ARCH-101: `trigger-bindings.ts` is DELETED outright, not shrunk — `describe.triggers[]` is a by-id lookup after the analyzer goes. ARCH-103/104: materialization stays in the SDK gateway client and `materialized` rides the descriptor; the executor fills the direct-fetch empty set. ARCH-107: the builder takes the RESOLVED `ServerConfig` ceilings, not `DEFAULT_CEILINGS`; `ERROR_CATALOG` rows are `{see, hint}` (no `message` — the call site already supplies one with its dynamic detail). ADR-027: `run_result` added to the audited set; `adminReads` absent (not `[]`) for non-owners and attached at the projection.
+
+**Karpathy check.** Nothing speculative was added: no role service, no permission DSL, no per-resource ACLs (three roles, five ownership kinds, one function); no second containment implementation; no `mermaid` dependency; no per-fire audit table; no new isolation mechanism for concurrent agents (ADR-034's honest limit is stated instead); no compatibility readers for legacy shapes (one typed refusal each); no `AUDIT_UNAVAILABLE` code for an engine fault. Two things were REMOVED that the panel would have kept: `provenance` on `AgentRecord` (a duplicate of `run_agent_log`) and the guide byte ceiling (a budget nobody can defend).
+
+---
+
+## Orchestrator adjudication (v24) #2 — Gate 5 的 22 條澄清 (2026-09-04)
+
+**先講方法**:22 條全部逐條到原始碼查證,不採信報告的描述。**4 條已經失效** ——
+實作者寫報告當下為真,同批後面的 implementer 已經修掉。若照單全收去重派,就是 v21
+那次「17 個 agent / 1.1M token 重做已完成工作」的翻版。
+規則(v23 裁定 #4 已記過一次,再記一次):**報告裡的 characterisation 是線索,不是發現。**
+
+### 已失效 — 不派工(查證後撤銷)
+
+| # | 指控 | 查證 |
+|---|---|---|
+| 1 | `workflow-describe-projection.test.ts` 還匯入已刪的 `noteTextFor` | 檔內已無 `noteTextFor`/`graph-analyzer` |
+| 17 | `agent-executor.ts:340` 還呼叫 `resolveCallParams` | 只剩 :350 的註解說它已移除;呼叫點已遷移 |
+| 19 | `owner-lookup.ts` 無人實作 | 29 行完整實作,且 `server.ts:637` 真的接了 |
+| 22 | `mcp-facade.ts:172` 還在用舊 `catalog.register()` | :232/:241 已是 `validateRegistration`/`insertVersion`,補償序列在 :212 |
+
+19 順帶驗掉一個我特別怕的東西:v11/v15 各中過一次的**接線 bug class**(模組建好、
+`composeConfig()` 忘了轉發 → 功能靜默失效,只有真跑抓得到)。這次 `principals` 在
+`main.ts` 有驗證轉發、`authorize()` 在 `call-tool.ts:87` 真的被呼叫。**沒有復發。**
+
+### A-1 [13] — 實作者頂住了一個「照做就會弄壞產品」的 dod,這是本輪最值得記的一件事
+
+TASK-136 的 dod 寫 `grep -c "knobs" src/params/contract.ts` → **0**,
+但 DES-144 **要求**用 `raw.knobs !== undefined` 偵測退場的舊欄位才能回 `DEFAULTS_RETIRED` ——
+「knobs」這個字必須出現在原始碼裡,那條 dod 才可能不成立。兩者無法同時滿足。
+
+實作者選了 DES-144 的正確性,**而且明確拒絕**把識別字拆成 `'kno'+'bs'` 去騙過 grep,
+然後回報 dod 有問題。這正是 `/goal` 擔心的失效模式(低階模型挑最省力的路把關卡弄鬆),
+而它**沒有掉進去**。記錄下來給 Gate 8:配深規格 + 卡得住的 dod,這個組合是有效的。
+
+**缺陷在 dod 那一行,不在實作。** 改成 `grep -cE "^\s*knobs\??:" src/params/contract.ts` → 0
+(禁的是型別欄位,不是偵測字串)。目前 `contract.ts` 有 7 處 `knobs`,全屬偵測與說明,合規。
+
+### A-2 [12] — `run_start` 掉了 seed 欄位:這是規格缺陷,不是實作疏忽
+
+查證屬實:`tool-specs.ts:139` 的 `run_start` 只有 `{name, version, overrides}`,
+`seed`/`seedManifest`/`seedRef`/`seedManifestRef` **四個全不見**。
+
+DES-142 的邊界註記說它「AMENDS ARCH-091 的 seed unchanged」,原意只是拿掉
+`seedNamespace`(改由 principal 推導,ADR-028),不是清空整組 seed 入口。
+ARCH-091 的表(02-architecture.md:2644)仍列 `run_start({…, seed*, …})` 與 `SEED_*` 錯誤碼。
+
+**裁定:四個欄位恢復。** 這條不只是少個參數 ——
+TASK-153 的 plugin 文件已經照 ARCH-091 寫了 `run_start({seedManifestRef})`,
+留著就是**手冊教一個引擎會拒絕的呼叫**,與 v23 裁定 #9 的 AUTHORING.md 同一類缺陷;
+而且 REQ-117 的 seed 探測會因此永遠 UNVERIFIED。**更正我自己上一段的說法**:DES-142 的邊界註記其實只寫了移除 `seedNamespace`,
+它是對的,不需要改。缺陷純粹在 `tool-specs.ts` 的那一列 —— 實作把四個欄位一起清掉了。
+
+### A-3 [20] — ARCH-088 的散文和實際的 `authz.ts` 對不上:改文件,不改程式
+
+查證兩處確定不符:
+```
+ARCH-088 散文   authorize(spec, p, args, lookup)      triggerOwner(kind, id)
+authz.ts:77     authorize(principal, spec, args, lookup)  triggerOwner(id)
+```
+TDD 下 RED 測試(UT-140)是有效規格,實作沒錯。**ARCH-088 的 api 欄位改成實際簽名。**
+這是本專案第 16 例「描述跟不上被描述的東西」——
+前 15 例橫跨註解、docblock、02-architecture.md、退場卻留綠的測試、帳本列、
+一個編譯器強制執行但本身是錯的型別註記,以及一個寫著「Admin tool」卻什麼都不檢查的工具描述。
+每一次的代價都是後面有人照著錯的描述做事。
+
+### A-4 [6] — 錯誤碼二選一:以冷模型看得到的名字為準
+
+兩組近義重複,選 `tool-specs.ts` 那一側,理由是 REQ-117 的冷模型只看得到 `tools/list`:
+- `UNKNOWN_VERSION`(catalog 內部)→ 併入 **`VERSION_NOT_FOUND`**
+- `SEEDREF_EGRESS_DENIED` → 併入 **`EGRESS_DENIED`**
+
+改完要 grep 測試裡的舊名一起換,不能留一個斷言舊名卻仍然綠的測試(那就是第 17 例)。
+報告點名尚未進 `errors[]` 的那批(`SEEDREF_*`、`CAS_UNAVAILABLE`、`NESTING_*`、
+`DESCENDANT_CAP_EXCEEDED`、`REGISTRATION_CONFLICT`、`VERSION_CEILING_EXCEEDED`、
+`PARAM_SECRET_UNAVAILABLE`、`RUN_ADMISSION_LIMIT`、`INVALID_SEED_SPEC`、`SEED_SOURCE_CONFLICT`)
+—— 逐一確認哪個工具真的會丟,補進該列的 `errors[]`;丟得出來卻沒列出來,冷模型就無從預期。
+
+### A-5 [4] — `rwe-` 前綴逐檔檢查:維持,這是刻意的縱深防禦
+
+`workspace_push` 對資產內**每個檔**套用 asset-tree 詞法規則,所以 `rwe-notes.txt`
+也會被拒。實作者問這是不是過寬。**維持 ARCH-093 的規則。**
+理由:`rwe-` 保留前綴的目的是讓引擎自己的檔案在工作區裡不可能被使用者內容冒名;
+只擋資產名不擋內部檔案,等於留下一條用巢狀路徑繞過的路。
+代價是作者不能用這個前綴命名檔案,寫進 `workflow_authoring_guide` 講明即可。
+
+### A-6 [11] — 測試數不足是對 `/goal` 明示要求的違反,必須補滿
+
+`run-list.test.ts` 3 例(dod 要 ≥10)、`run-store-audit.test.ts` 4 例(dod 要 ≥8)。
+實作者按 TDD 紀律沒自己補測試是對的,但這個缺口不能留:
+`/goal` 明寫「測項深度廣度和測項數都要詳細一些用來卡住 sonnet/opus 出錯」——
+測試數就是這一輪的主要防線,少一半等於防線少一半。補滿並含 dod 點名的
+`EXPLAIN QUERY PLAN`、組合過濾、`InMemoryRunStore.list` 對照手寫陣列、
+owner-only 投影、absent-not-`[]` 各案。
+
+### A-7 其餘各條的處置
+
+- **[3] `asset-sync.ts` 兩個 TASK 重疊** — 依實作者建議:TASK-144 在既有 `pathVerdict`
+  接線上續建,不得重新引入 `safeRelPath`。寫進 TASK-144 的 dod。
+- **[5][15] v15 舊測試三檔無人認領** — 建 TASK-154 認領。這正是「退場了卻留著」的類別,
+  不明確指派就會再一次被靜默略過(`errors.ts` 的檔頭註解早就預告了)。
+- **[7] `AuditAction` 用平的字面聯集** — 正確的臨時解(`TOOL_SPECS` 還不是 `as const`,
+  `Extract` 會靜默變成 `never`)。等 TOOL_SPECS 收斂為 `as const` 再換,寫進 TASK-155 的 dod。
+  「靜默變成 never」值得記:那是編譯器不會抗議的錯誤型別,和第 16 例同一種危險。
+- **[8] `RefusalReason`** — 從 `types.ts` 匯入,不得各自重宣告。
+- **[9] webhook 的 `workflow` NOT NULL** — 舊 db 升級會炸,實作者沒寫沒測過的 migration 是對的。
+  建 TASK-156 補「重建表」migration **連同升級測試**。
+- **[10] `audited-read` 的 port 形狀是實作者自創** — 誠實揭露,好。由 TASK-157 統一成
+  `workspace-artifacts.ts` 真實的 `(workspace, path, offset, length)`。
+- **[14][18] `UserOverrides` 變巢狀後,admission 期的 `mergeRunParams`/`defaultRunParams` 無人調和**
+  — 這是 tsc 轉綠的必經之路,建 TASK-158。
+- **[16] `trigger-claims.test.ts` 把 `{result,error}` 信封當成 `{id}` 解構** — 測試缺陷確認
+  (`:29/:41/:52` 三處),歸 TASK-148 修。
+- **[21] `workflow-meta.ts` 三處 2 參數呼叫 3 參數函式** — 確認,`:55/:69/:72`。
+  最高嚴重度,沒有 meta.params 的 script 全部註冊失敗。歸 TASK-159。
+
+### 本輪狀態(給 Gate 6 的實話)
+
+`tsc` 119 錯、68 個測試檔 / 247 個測試紅。批次是中段,不是收尾。
+下一批 impl 的目標就是把上面這些關掉,不是新功能。
+
+---
+
+## Orchestrator adjudication (v24) #3 — Gate 5 第二批的 10 條澄清 (2026-09-04)
+
+先確認一件上一輪擔心的事:**TASK-154..159 有被派工**(agent 結果裡 155/156/157/158/159 都在),
+我新建的卡片沒有被分派步驟略過。
+
+### B-1 [10] `version` 型別:三支工具目前沒有任何寫法能成功 —— 最高優先
+
+查證屬實,而且比報告寫的更硬:
+```
+tool-specs.ts:109/:129/:170   version: { type: 'number' }
+workflow-catalog.ts:660       publish(name, version: string, …)   // 存的鍵是 'v1'
+mcp-facade.ts:267             workflowPublish(a: { version: string })
+
+  傳 1      → ajv 放行 → catalog 找不到 'v1' → UNKNOWN_VERSION
+  傳 "v1"   → ajv 擋下                        → INVALID_ARGUMENT
+  兩條路都死。
+```
+**裁定:schema 改 `type: 'string'`**(catalog 存的就是字串,是 schema 錯)。
+
+**而且欄位的 description 必須寫明格式是 `'v1'`。** 這不是可有可無的潤飾 ——
+REQ-117 的冷模型只讀得到 `tools/list`,它會照 schema 傳值。
+schema 說 number 它就傳 `1`,然後拿到 `UNKNOWN_VERSION`;
+依 REQ-117 的驗收定義,那**就是文件缺陷,本輪驗收不通過**。
+一個型別關鍵字讓整輪驗收翻掉,這是本輪最好的例子說明為什麼 schema 要當文件寫。
+
+### B-2 [7] `workflow_diagrams` 表:退場,連同它的測試一起刪
+
+實作者問得對,而且不擅自跨界是對的。查證:
+- `workflow-catalog.ts:231/295/298/326` 仍有表與 `putDiagramPending`
+- 但 `workflow-view.ts:35-37` 已寫明「**不再有獨立的 diagram row/ctx**,TASK-139 已退掉畫圖的 analyzer」
+- REQ-111 的精神就是**圖由作者提供**,非同步產圖這件事在 v24 沒有存在理由
+
+**裁定:表、`putDiagramPending` 及其存取器全刪;
+`tests/unit/workflow-diagrams-store.test.ts` 一併刪除,dod 要斷言檔案不存在。**
+
+不能留著讓它繼續綠。**「退場的東西留著綠燈的測試」是本帳本反覆記錄的類別** ——
+一個測試綠著,讀的人就以為那個機制還活著、還被保護著,兩者都不成立。
+
+### B-3 [6] 39 處舊式 positional `register()`:併成一張卡,槓桿在 helper
+
+查證:7 個檔、**39 處**呼叫仍是 `catalog.register('name', script, …)` 的舊形狀
+(新物件形式 48 處)。而且測試跑出來的錯不只這個:
+```
+AGENT_UNDECLARED: agent label "plan" has no params.agents.plan declaration
+SCAN_VIOLATION: AGENT_LABEL_REQUIRED
+```
+—— 舊 fixture 的 script 沒有 `meta.params.agents.<label>`,也沒有 `mermaid`。
+這三件事(物件形狀、必填 mermaid、per-agent 宣告)是**同一次遷移**,不是三個問題。
+
+**裁定:歸 TASK-152(rename sweep)一張卡,槓桿點是 `tests/helpers/workflow-fixtures.ts`。**
+讓 helper 從 script 的標籤自動合成最小可用的 `mermaid` 與 `params.agents`,
+67 個走這個 helper 的檔就大部分自己好了。逐檔手改 39 處是最貴的做法。
+dod:走 helper 的檔案失敗數 → 0。
+
+### B-4 [4] TASK-135/138 的 `files:` 路徑是錯的 —— 而且上一輪就報過了
+
+```
+TASK-135  files: src/workflow-meta.ts    實際落地 src/scan-agent-calls.ts
+TASK-138  files: src/diagram-gate.ts     實際落地 src/check-mermaid.ts
+```
+兩個檔都存在,`03-tasks.md` 兩處都沒提到它們。實作者指出這在**上一批就報過**、
+而我的裁定 #2 沒有處理 —— 屬實,是我漏掉的。現在改。
+
+這是第 17 例「描述跟不上被描述的東西」,而且這次的漏接責任在我:
+上一輪 22 條我逐條查了程式碼,卻沒查**帳本自己的欄位**指到的檔案存不存在。
+以後查證要含這一項。
+
+### B-5 [8] 實作者把 A-6 類推到 TASK-136/143:確認,推理正確
+
+它把「測試數低於自己 dod 的下限就補滿,不要退回」從 TASK-140 類推到
+TASK-136(`params-overrides.test.ts` 6→24)與 TASK-143(`catalog-v24.test.ts` 4→25),
+兩個檔都在它自己 TASK 的 `files:` 裡。**確認。** 理由完全一致:
+`/goal` 把測試數與深度指定為這一輪擋低階模型的主防線,而它動的是自己有主權的檔案。
+
+### B-6 [9] 它自己修掉的三個測試撰寫缺陷:確認,而且第一個值得記
+
+在自己有主權的檔案裡直接修、不當問題丟回來,對:
+1. `scheduler-refusal.test.ts` 四處 `.create()` 用 `as never` 繞過必填的 `enabled: true`,
+   **靜默建出已停用的列** —— 型別斷言把一個必填欄位的遺漏藏起來,測試照樣綠。
+   這和 `Extract<…>` 靜默變 `never` 是同一種危險:**編譯器不抗議的錯**。
+2. 「緊迴圈陷阱」的斷言用 `kind:'once'` 驗 nextFire 前進,但 DES-150 規定 once 是靠
+   `enabled=0` 停,`nextFire` 不動 —— 拆成 once 與 cron 兩案。
+3. 兩個過期的 `@ts-expect-error` 斷言一個已經不存在的型別錯誤,本身讓 `tsc` 紅(TS2578)。
+
+### B-7 [1] `ScriptCheckCode` 併入 TASK-155
+
+`script-checks.ts:17` 仍是裸字面聯集,不是 `Extract<ErrorCode, …>`。
+目前三個值都是合法的 catalog 鍵,功能沒壞,但 DES-137 要的型別安全網缺一角。
+**併進 TASK-155**(它本來就在做 `TOOL_SPECS as const` 與錯誤碼收斂)。
+
+### B-8 [2] 平行實作共用一棵工作樹 —— 我改了 `CLAUDE.md`,因為原本那條規則是我寫錯的
+
+實作者回報:約 20 個 implementer 同時在這一棵工作樹上,並提到一次 **git stash 的險些事故**。
+
+`CLAUDE.md` 原本寫「讀舊版檔案用 `git show` **或 `git stash` … `git stash pop`**」。
+那條規則是 2026-08-31 的 ledger 清空事故後我寫的,當時的情境是**一個 agent 單獨工作**。
+在 Gate 5 的平行實作下它是**危險的**:`git stash` 會把**所有人**未提交的修改一起收走,
+`pop` 之前的空窗和另外 19 個還在寫檔的 agent 直接競爭。
+
+已更新 `CLAUDE.md`:`git show <sha>:<path>` 是唯一安全做法;
+**workflow 執行期間 `git stash` 一併禁用**。
+
+值得記的通則:**一條防護規則會隨著它所處的並行度而失效。**
+當初那條規則沒有錯,是它的前提(單一 agent)悄悄不成立了,而規則沒跟著改 ——
+這其實又是一次「描述跟不上被描述的東西」,只是這次描述的是流程而不是程式碼。
+
+### B-9 結構性判斷:下一輪若再停,就換整合者,不再開第四批平行批次
+
+剩下的工作已經不是「各自實作一個模組」,而是**接縫**:
+型別對不齊、死表、fixture 契約、無主的呼叫端。
+平行分派是按檔案所有權切的,而接縫問題**天生跨檔** ——
+所以每個 implementer 都正確地拒絕跨界、改成回報,於是接縫沒有人修,只會累積成下一批澄清。
+
+**規則:再停一次且澄清仍有 10 條以上,就改派一個全域範圍的整合者(opus,`/goal` 的驗證層級),
+不要開第四批平行實作。**
+
+---
+
+## Orchestrator adjudication (v24) #4 — 35 條澄清,B-9 停損執行 (2026-09-04)
+
+第三批:14/14 完成、tsc 67→19,但澄清從 10 條變成 **35 條**。
+裁定 #3 的 B-9 條件成立,**執行停損:改派單一全域整合者(opus),不開第四批平行實作。**
+
+清單本身就是最好的證據 —— 至少 8 條的內容是「這是別的 TASK 的檔案,我不能碰」。
+把工作按檔案所有權切開,再要求它們修**跨檔的接縫**,是自相矛盾的指派:
+每個 implementer 都正確地拒絕越界,於是接縫永遠沒有人修,只會在下一批變成更多澄清。
+這不是實作者的問題,是我派工形狀的問題。
+
+### C-1 兩條直接威脅 `/goal` 驗收的,優先級最高
+
+`/goal` 明寫「**每個 mcp tool 的介面都要實際驗過一次確認 pass**」。下面兩條讓這件事做不到:
+
+**[29] `workflow_register` 的 fixture 自己就不合法**(已查證,`tool-specs.ts:94`):
+```
+script:  workflow(async () => {})     ← 沒有任何 agent 標籤
+mermaid: graph TD; A-->B;             ← 卻宣告了節點 A、B
+         → checkMermaid 判 UNDECLARED_NODE → 註冊失敗
+```
+這一個 fixture 壞掉會連鎖讓 7 列驗證紅。**而且這已經被回報三次沒有人處理**
+(Gate 5 原始的 20/30 fixture 錯誤、測試檔自己的檔頭註解、這次)。
+一個 fixture 的修正,優先於任何其他 fixture 工作。
+
+**[30] 12 列 fixture 寫死了不可能存在的 id**(`runId:'r1'`、`scheduleId:'s1'`)。
+這些工具的目標物件要先有一次真呼叫產生 UUID 才存在,靜態 fixture 永遠滿足不了。
+
+**裁定:不接受「這 12 列記 UNVERIFIED」。** 那正好是 `/goal` 要求驗過的那 12 支。
+DES-158 增修:驗收測試在跑這 12 列前先跑一段**前置序列**(註冊 → 發布 → 起一個 run →
+記下它產生的 id),`TOOL_SPECS.fixture` 增加一個能引用「剛剛那次產生的 id」的方式。
+`run_suspend`/`run_resume`/`run_result` 需要不同狀態,前置序列就跑不只一個 run。
+
+**[31] 35 列的 `fixture.errors` 全是空的**(DES-158 自己的下限是 ≥30)。
+`/goal` 要的是「成功路徑 + 錯誤路徑」都驗 —— **錯誤路徑才驗得出授權有沒有真的接上**
+(v22 的 H2 就是只讀不問才漏掉的)。補滿。
+
+### C-2 [18] REQ-113 的選擇性掛載在真跑時根本不會發生 —— 產品缺陷
+
+查證屬實:`run-manager.ts` 完全沒有填 `AgentReq.assets`,
+`AgentExecutor.run()` 也不從 runParams 推導。所以 DES-154 的選擇性掛載
+**在真實 dispatch 上一次都沒觸發過**,單元測試綠只是因為測試自己塞了 `assets`。
+
+這是 REQ-113(每個 agent 各自宣告需要的 skill,不是整個工作流吃同一份)的核心行為 ——
+沒接上等於這條需求沒實作。**整合者必須從 `entry.spec.name` +
+該標籤的 `AgentParamSpec.skills/mcp` + asset roots 組出 `assets`,並用一個真跑測試釘住。**
+
+這又是「建好但沒接線」那一類(v11、v15 各中一次)。上一輪我查 `authorize()` 的接線確認沒復發,
+但只查了我當時想到的那一個。**教訓:接線檢查要對「本輪所有新機制」做一遍,不是抽查。**
+
+### C-3 [33] 新的一類:舊 fixture 把提示詞當標籤用
+
+`agent('Reply with only the word: PONG')`、`agent('this will hang')`、`agent('draft 1')` ——
+v24 的 `AGENT_LABEL_FORMAT = /^[A-Za-z_][\w-]*$/` 一律拒絕。
+約 10 個檔,**要逐檔改寫成 `agent('identifier', {prompt: '原本那段文字'})`,不是正則能換的**。
+
+實作者另外指出 `val-003` 的「4 tests green」可疑,懷疑是 provider gated 的空過。
+**整合者要確認**:一個因為沒有 provider 而跳過的測試不能算綠。
+
+### C-4 [11] 5 個舊測試檔沒有主人,但它們涵蓋的是仍然活著的行為
+
+`register()` 改成物件形狀後,`workflow-catalog.test.ts` 等 5 檔(17/28 紅)壞掉,
+而它們測的是 **H4 channel-check、VERSION_CEILING、pre-v21 migration —— 都還活著**。
+**裁定:遷移,不刪除。** 刪掉會把還活著的行為的保護一起刪掉。
+(對比 B-2 的 `workflow-diagrams-store.test.ts`:那個是機制真的退場了才刪。
+判準是「被測的東西還在不在」,不是「測試紅不紅」。)
+
+### C-5 [23] ARCH-002 / ARCH-107 還在說「一層巢狀」,但 v8 就做了 N 層
+
+`run-manager.ts:820-850` 的 `maxWorkflowDepth` 是 N 層,兩處架構文件從沒更新,
+DES-157 又繼承了這個過時說法。`authoring-guide.ts` 寫的是正確的 N 層行為並在程式碼裡註明了departure。
+**改文件。** 這是第 18 例「描述跟不上被描述的東西」——
+而且這次它已經污染了下游(DES-157 照抄了錯的前提)。
+
+### C-6 [21] 錯誤碼的孤兒鎖只檢查了單向
+
+`workspace_delete` 的 `errors[]` 沒有 `RUN_NOT_TERMINAL`,但 `withTerminalRun` 真的會丟。
+DES-137 的鎖只查「程式碼丟的碼有沒有在 spec 裡」(正向),
+沒查「spec 漏了程式碼會丟的碼」(反向)。**兩個方向都要查。**
+反向漏掉的後果是冷模型無從預期一個它一定會遇到的錯誤。
+
+### C-7 其餘處置(整合者一併執行)
+
+- **[12]** asset-tree GC 的路徑三處說法不一,且 `server.ts:769` 沒傳 `hasWorkflow`,
+  **生產環境的 asset 清掃分支從來沒跑過**;IT-110 綠是因為測試照 `workspace-gc.ts` 自己的
+  慣例造 fixture,證明不了生產樹。統一路徑並用生產呼叫路徑測。
+- **[28]** resume 讀回舊形狀應回 `LEGACY_REREGISTER`,現在是靜默當成「沒存過」。
+  docstring 還在描述 v24 前的行為。歸整合者,先寫紅測試。
+- **[13][14][20][25]** 都是「A 的 dod 要動 B 的檔案」——整合者有全域範圍,直接做。
+- **[15][17][19][26][27]** 帳本記錄與 dod 措辭的更正,不影響程式碼。
+  **[17] 特別註明**:TASK-159 的 dod 寫「沒有 meta.params 應該註冊成功」,
+  與 DES-144(`≥1 個未宣告標籤 ⇒ AGENT_UNDECLARED`)相反。實作的測試跟 DES-144 是對的,
+  **dod 那句話是錯的** —— 不要有人之後照 dod 把測試「改對」。
+- **[16][27]** 兩件事實記錄:部分測試因為與修正同一個 checkpoint 落地,
+  **從未在提交樹上真正紅過**。這違反「每項都跑過一次確認紅」的宣稱。
+  不追究,但 Gate 8 要看到這句話 —— 沒紅過的綠燈,證明力比紅轉綠低。
+- **[32]** TASK-153 的 plugin 是外部 repo,本 session 構不到(只有非 git 的 plugin cache)。
+  **維持 UNVERIFIED,並在 Gate 7.5 明確記為「阻擋 REQ-117 冷模型探測」**,由擁有者排程。
+
+### C-8 停損之後的做法
+
+派**一個** opus 整合者,全檔案範圍,不切割。目標明確:tsc 0、消掉紅、把上面的接縫接上。
+它不需要問「這是不是我的檔案」—— 那正是前三批卡住的原因。
+
+---
+
+## Orchestrator adjudication (v24) #5 — Gate 7.5 的 13 個缺陷與 6 項待決 (2026-09-04)
+
+Gate 7.5 **未通過,而這是對的**。它把系統真的跑起來,挖出 13 個缺陷,
+其中至少 5 個**只有真跑才看得見**(單元測試全綠、tsc 全清的情況下)。
+這一關的價值在此:mock 綠不等於系統會動。
+
+### E-0 冷模型實驗(REQ-117)—— 差一步
+
+實驗確實跑了(VAL-140,US$2.65,61 turns,233 秒),受測環境正確:
+`/tmp/rwe-cold-g1ITgN`、上溯無 `CLAUDE.md`、該路徑無記憶、`--strict-mcp-config`、
+只給任務敘述與 MCP 連線。**污染陷阱避開了。**
+
+結果:它**寫出了**一個三 agent 的 planner→writer→reviewer 工作流,含 Mermaid,
+註冊、發布、執行、讀回正確結果 —— **但不是第一次就對**。
+
+第一次 `workflow_register` 失敗:`PARAM_CONTRACT_INVALID: default not a known alias:
+claude-haiku-4-5-20251001`。它從 `models_list` 拿了一個 model id,
+因為**整個介面沒有任何地方說這個部署接受哪些 alias 名稱** ——
+guide 只在 `UNKNOWN_ALIAS` 規則行提過 alias,「Engine ceilings」段落列了三個上限卻沒列 aliases,
+沒有任何工具 schema 列出它們,而 `models_list` 列的是 catalog 模型不是 aliases。
+它第二次靠猜 guide 範例裡的 `default` 才過。
+
+**依 REQ-117 自己的規則,這就是文件缺陷(D-12),本輪驗收未過。**
+這正是擁有者定的判準:「一次要寫對,如果有錯要檢討那邊說明不夠」。
+檢討結果明確:**可用的 alias 名稱必須出現在介面上** ——
+`workflow_authoring_guide` 的 ceilings 段落加列 aliases,或給 schema 一個 enum。
+修完**換另一個全新實例重跑**,這一個已經污染。
+
+### E-1 D-11:一個鍵名之差,把 ADR-030 的 fail-closed 整個繞過 —— 最高優先
+
+已在原始碼確認:
+```
+tool-specs.ts:161  pushMode        config.transport === 'stdio'
+mcp-probe.ts:23    classifyTransport   cfg.type    === 'stdio'
+```
+探測器認得的形狀是 `{type:'stdio'}`,而 `pushMode` 找的是 `transport`,
+於是這個 config 落到 `'asset'` 分支(`minRole:'author'`)——
+**管理者專屬的閘門根本沒有執行**,而探測真的 spawn 了作者提供的命令。實測發生過。
+
+這正是 REQ-109 最後一句點名的那一類:「宣稱是 Admin tool 卻什麼都不檢查」。
+我在裁定 #1 A-3 採 fail-closed 時說過「查得到不等於擋得住」——
+現在連擋都沒擋,因為兩處讀了不同的鍵。**兩處統一讀 `type`,並補一個測試釘住
+「作者推 stdio 一定被拒」**,而不是只測 pushMode 的回傳值。
+
+### E-2 D-8:v24 的核心功能從來沒有送到使用者面前
+
+`workflow-catalog.ts:620` 的 `SELECT script, defaults, params, triggers` **沒有 `mermaid`**。
+欄位寫得進去、永遠讀不出來,所以每一個 v24 工作流的 `workflow_describe(...).mermaid` 都是 `null`,
+dashboard 上一張圖都沒有。
+
+「作者供圖、引擎雙向held住」是整個 v24 最主要的使用者可見功能,
+它通過了註冊檢查、存進了資料庫,然後**在交付介面上消失**。
+
+`UT-157` 綠,因為它拿**手工建的列**測投影 —— 測試從沒經過真正的讀取路徑。
+這是 oracle 問題的又一次:**測試驗的是自己造的資料,不是系統真的存了什麼。**
+修正時測試必須從真的 `register` 走到真的 `describe`。
+
+### E-3 D-10:跨 principal 的資料外洩,實測成立
+
+`workflow_deregister` 刪掉 `assets` 資料列,但**磁碟上的 `<assetRoot>/<name>/` 原封不動**。
+實測:`other@` 用同名重新註冊、宣告 `skills:['declared-skill']`(它自己從沒推過,
+`workspace_list` 顯示 `[]`),執行後**前一個擁有者的 `SKILL.md` 被掛進它的 agent 工作區**,
+位元組完全相同。
+
+擁有權模型在資料庫層成立、在檔案系統層不成立。**deregister 必須連磁碟一起清。**
+
+### E-4 D-1 / D-1b:擁有者親自裁定的觸發器模型沒有被實作
+
+擁有者的原話:「要先建立好 trigger 方式(e.g. webhook/schedule),然後再把回傳的 id
+傳入 workflow register 的欄位中」。REQ-115 第一款、ARCH-099/100、ADR-026 場景 S-5 全都這樣寫。
+
+實際上 `schedule_create`/`webhook_create` **兩列都把 `workflow` 設成必填**,
+所以「先建立一個還沒有人認領的觸發器」根本做不到 —— 儲存層支援(`scheduler.ts:243`),
+只有工具列擋著。
+
+Gate 7.5 問「這是缺陷還是沒記錄的設計變更」。**裁定:是缺陷。**
+帳本裡沒有任何一條裁定改過這個模型,而擁有者的裁定是明確的。
+
+更嚴重的是 D-1b:建立時就綁定的觸發器,`workflow_deregister` **不會釋放**
+(`releasedTriggers: []`,`claimedBy` 還留著已刪除的名字)。
+實測:同名重新註冊後,一個真的 cron 在 47 秒後為新註冊的工作流觸發了一次執行 ——
+**這就是 ADR-026 當初點名要防的幽靈觸發**。
+
+### E-5 D-2:我在裁定 #2 A-2 要求的「拒絕而非忽略」沒有被實作
+
+`workflow_register({defaults:{model:'default'}})` 回 `status:"completed"`,
+退場的欄位**被接受並靜默忽略**。REQ-110 最後一款要求回 `DEFAULTS_RETIRED`
+(`meta.params.knobs` 有做到,`meta.defaults` 沒有)。
+
+我當時寫的理由現在原封不動成立:冷模型拿舊範例會從帳單才發現旋鈕沒作用。
+
+### E-6 D-3 / D-4 / D-5:錯誤訊息與手冊的三個洞,全都直接打擊 REQ-117
+
+- **D-3**:`errors.ts:132` 的 `toErrEnvelope` 會從 `ERROR_CATALOG` 組出 `see` 指標,
+  但 `mcp-facade.ts:100` **另外有一個自己的 `toErrEnvelope`**,它的 `ErrEnvelope` 沒有 `see`,
+  而每個 `workflow_*` handler 呼叫的是後者 —— 指標永遠到不了線上。
+  「同一個概念有兩份實作,錯的那份是被呼叫的那份」。
+- **D-4**:guide 說「只有三種節點形狀」,但 `checkMermaid` 實際接受五種
+  (`{"…"}` 條件、`{{"…"}}` 非-agent 彙總都實測註冊成功),
+  也沒提 `<br/>` 三元組、一邊一行、虛線=跳過。REQ-116 要求「REQ-112 的完整詞彙」。
+  **手冊教的比引擎接受的少 —— 冷模型會以為自己不能用那兩種形狀。**
+- **D-5**:`workspace_push` 廣告 `WORKSPACE_ESCAPE`/`RESERVED_PREFIX`,
+  實際回 `AssetPathEscapeError`(裸的 JS class 名,不在 ERROR_CATALOG 裡)。
+  **寫入確實被拒了,洩漏的只是錯誤碼** —— 但冷模型只看得到錯誤碼。
+
+### E-7 D-6 / D-7 / D-9 / D-13:Gate 7.5 問我要不要本輪修
+
+**裁定:D-6、D-7、D-13 本輪修**(都是幾行,而且三個全都是「廣告的與實際的不一致」,
+正是本帳本數到第 18 例的那一類,放著只會變第 19 例):
+- D-6:`HOOKS_UNSUPPORTED` 廣告了但不可達 → 要嘛讓它可達,要嘛從 `errors[]` 移除。
+- D-7:`workflow_describe` 接受 `version`/`channel` 卻只廣告 `name` → schema 補上。
+- D-13:全域資產應標 `builtin:true`,現在是 `false`。
+
+**D-9 不在本輪修,但必須記成已知缺陷。** 一次不可重現的
+suspend→resume→failed,而且 agent 的工作在終態之後還在跑、8 分鐘後才產出真實輸出
+(run `3977b82d`)。**孤兒工作**比 failed 本身嚴重。
+它是 v1 REQ-006 的回歸、非決定性、未歸因到根因 —— 在沒有可靠重現前修它是猜。
+開一個 issue 帶上 run id 與時間戳,列進 v25。
+
+### E-8 其餘待決
+
+- **帳本 ID 撞號**:`08-validation.md` 的 v23 VAL-118..127 和 `05-tests.md` 的 v24 VAL-118..127
+  在 `trace.py` 裡互相遮蔽(後讀的檔勝出),v24 那批對 dashboard 是隱形的。
+  **裁定:重新編號 05 那批**,不接受「隱形但存在」。
+- **REQ-117 的 harness**:`claude -p --strict-mcp-config --setting-sources local`、
+  cwd 在任何 project 之外 —— **確認可用**,它正是避開污染的正確做法。
+  TASK-153 未同步的那個變體維持 `UNVERIFIED(client plugin not synced)`。
+- **8 個孤兒 litellm 行程**(報告寫 6,實際 8,各約 250MB)—— 我清掉。
+- **生產服務 `rwe.service`(PID 3652391,0.0.0.0:8899)正在跑這個 repo 的工作樹**,
+  載入時間 01:33,**早於本輪每一個 commit**。
+  它現在服務的是舊碼;但只要它重啟(當機、開機、自我更新),
+  就會載入磁碟上這份**還沒通過 Gate 8 的**程式碼。
+  **這是擁有者的決定,我不動它** —— 但必須讓擁有者知道這個風險存在。
+
+---
+
+## Orchestrator adjudication (v24) #6 — REQ-117 判定、D-14,與一次「把疑點消掉」的重跑 (2026-09-04)
+
+Gate 7.5 第二輪:**12 條 REQ 有 11 條以真實證據通過**,唯一的紅是 REQ-116 的 D-14(LOW)。
+上一輪的 13 個缺陷,除了刻意延到 v25 的 D-9,全部在真跑上確認修好 ——
+不是「測試綠了」,是驗證者重新用真的引擎再觀察一次(D-10 的檔案真的不見了、
+D-11 的作者推送真的被拒且沒有 spawn、D-8 的圖真的位元組相等地回來了)。
+
+### F-1 REQ-117:**通過**,但我要把判定理由寫清楚,因為它有一個看起來像瑕疵的地方
+
+事實:全新的受測實例在 `/tmp/rwe-cold-H9H0JX`,只給 MCP 連線與任務敘述,
+呼叫序列是 guide → list → **`workflow_register` 恰好一次 ⇒ v1** → publish → run_start
+→ run_status ×8 → run_result,**零個錯誤信封**,寫出三 agent 的
+planner→writer→reviewer(含標記迴圈與 `{{"…"}}` 彙總),在真的 Ollama 上跑完並正確讀回結果。
+
+**看起來像瑕疵的地方**:第一個 `claude -p` 行程在中途結束(print 模式不會被背景 sleep 計時器喚醒),
+**同一個 session** 用一句中性的「continue」續跑了一次,才讀到 `run_result`。
+
+**裁定:通過。** 理由要說清楚 ——
+
+REQ-117 的判準是「**第一次就寫對,不試錯**」,而且它自己定義了失敗的歸屬:
+「任何一步做錯,就記為**文件缺陷**」。這裡:
+- 受測者**沒有做錯任何一步**。註冊一次成功,沒有任何錯誤信封。
+- 行程中止的原因是 `claude -p` 這個 CLI 外殼的特性(print 模式不被背景計時器喚醒),
+  **與引擎、與文件都無關** —— 它不是「模型判斷錯誤」,沒有東西可以歸給文件。
+- 續跑用的是**同一個 session**(上下文延續,不是重新開始),
+  提示是中性的「continue」,**沒有傳遞任何關於引擎的資訊**。
+  如果那句話是「試試看 X」,那就是污染,判定會相反。
+
+「續跑一次」和「試了第二次」是兩件事:前者是行程壽命,後者是對某一步的重試。
+
+**但我承認這裡有一個弱點**:帳本上寫著「resumed once」,
+未來讀的人可能誤讀成「第二次才成功」。所以 ——
+
+### F-2 補一次乾淨的確認跑,把疑點消掉
+
+這是擁有者定的整輪驗收條件,不該留一個需要解釋才成立的證據。
+
+**在 D-14 修完之後,用第三個全新實例再跑一次,harness 改掉那個缺陷**:
+輪詢不得用會讓 print 模式中止的背景 sleep(改用前景輪詢或非 print 模式),
+**全程不得有任何 resume**。
+
+成本約一美元多,相對於整輪的代價微不足道,換到的是一份不需要附註解釋的驗收證據。
+若這次仍然一次寫對,REQ-117 的證據就從「通過(但有 harness 註記)」變成「通過」。
+若它這次卡住,那才是真的有東西沒說清楚,依 REQ-117 的規則歸為文件缺陷。
+
+註:D-14 改的是 `ERROR_CATALOG` 的 `see` 指標,**不改 guide 文字**,
+所以嚴格說 REQ-117 不需要重跑 —— 這次重跑是為了消除 F-1 的註記,不是因為規格變了。
+
+### F-3 D-14:三個碼都要指向 guide,包含 `NOT_TRIGGER_OWNER`
+
+驗證者問我 `NOT_TRIGGER_OWNER` 要不要一起。查證:**三個都從註冊路徑丟得出來** ——
+```
+mcp-facade.ts:308  TRIGGER_NOT_FOUND
+mcp-facade.ts:313  NOT_TRIGGER_OWNER        ← 註冊時認領別人的觸發器
+mcp-facade.ts:322  TRIGGER_ALREADY_CLAIMED
+```
+REQ-116 的原文是「註冊因 parse、contract、diagram **或 trigger** 失敗時,錯誤要指向這個工具」,
+**沒有把擁有權排除在 trigger 之外**。而且 guide 正是說明「先建立觸發器、再由工作流認領」
+這個生命週期的文件 —— 一個冷模型認領到別人的 id,需要看的就是那一段。
+
+**三個都給 `see:'workflow_authoring_guide'`。**
+
+### F-4 Gate 8 的四個觀察(非 REQ 條款)—— 兩個本輪修,兩個列 v25
+
+驗證者另外報了四個不屬於任何 REQ 條款的東西。分開處置:
+
+**本輪修**(都是「廣告的與實際的不一致」,本帳本數到第 18 例的那一類):
+- **`workflow_list.owner` 永遠是 `null`**:`catalog.list()` 從來沒 select 它。
+  手冊已經改成「owner 從 `workflow_describe` 拿」—— **但那是把文件遷就缺陷**。
+  欄位既然在回傳結構裡,就該有值,否則下一個讀的人會以為這個工作流沒有擁有者。
+  修 `list()`,手冊改回來。
+- **guide 的「非-agent 彙總」範例畫成矩形,但它自己的表寫 `{{"…"}}`** ——
+  手冊自我矛盾,而 REQ-117 的受測者只讀這份手冊。
+
+**列 v25**(是設計取捨,不是缺陷,但要記):
+- `schedule_setEnabled`/`schedule_delete` 回 `{}`,沒有確認內容 —— 呼叫者無法從回傳分辨成功與無事發生。
+- `workspace_delete` 一條路徑被拒就否決整批,而它的描述沒說 —— 語意可以接受(全有或全無),
+  缺的是描述。
+
+### F-5 生產服務(第二次提出)
+
+`rwe.service`(PID 3652391)與其 litellm 子行程仍在跑 01:33 載入的**修正前**程式碼。
+本輪之後磁碟上的版本已經完全不同,而且修掉了一個安全繞過(D-11)。
+**它一旦重啟就會載入這份還沒過 Gate 8 的碼。** 我仍然不動它 —— 這是擁有者的決定。
+但風險比上一輪高了:現在磁碟與記憶體的差距包含了一個安全修正。
+
+---
+
+## Orchestrator adjudication (v24) #7 — Gate 8 的三個 HIGH、SF-1,與一個流程缺陷 (2026-09-05)
+
+先講流程:審查送回 5 項之後,workflow 的自動重試派了 **TASK-160..164 —— 那些卡片不存在**。
+實作者拒絕「憑空捏一張任務卡、一條設計列和一個紅測試來滿足派工」,**這是對的**,
+而且正是低階層級應該有的行為。缺的是送回與派工之間的 Gate 3/4/5 delta,我現在補。
+
+### G-1 AF-1(HIGH)—— 升級會毀掉操作者的資料,這是本輪最嚴重的一條
+
+三件事同時成立:
+1. `ARCH-098` 白紙黑字寫了開機遷移(`grep -rn "'legacy'" src/` → **空**,`mcp_provisions` → **空**),**根本沒有實作**。
+2. v24 新的 GC 會刪掉 `<assetRoot>/` 底下每一個不是現存工作流的子目錄(`workspace-gc.ts:66-88`,`server.ts:847` 無條件接線)。
+3. v24 前的全域資產樹就在 `<workRoot>/assets/skill/<name>` —— **正好在被掃的那個目錄裡**。
+
+結論:一個 v24 前的部署升級上來,只要 `workspaceTtlMs > 0`,
+**第一次 GC 就會刪掉操作者的全域 skill**,而且先前所有已 provision 的 MCP config 會直接變成無法解析
+(`resolveMcp` 只讀 `catalog.assets`),**回報 `missing` 而不報錯** —— 靜默失效。
+
+**設計裁定(這是 AF-1 需要的那個決定)**:
+
+- **`_global_assets` 這個路徑保留,`ARCH-102` 改成它。** 實作把全域樹移出被 GC 掃描的目錄是
+  **刻意且更安全**的偏離,`DEPLOY §1b` 也已經寫明理由。這裡是文件跟上實作,不是實作遷就文件 ——
+  判準是哪一邊是對的,而不是哪一邊先寫。
+- **開機遷移把 v24 前的 `<workRoot>/assets/<kind>/<name>` 搬進 `_global_assets`**,
+  並寫入 `assets(workflow='', pushedBy='legacy')`。交易式、可重入(ARCH-098 自己的要求)。
+- **順序是硬性的:遷移必須在 GC 有機會掃描之前完成。** 這不是效能考量,
+  反過來就是資料被刪。要有一個測試釘住這個順序,不能只測遷移本身會動。
+
+**一個容易漏掉的點,寫在這裡免得實作者搞錯**:
+`grep -rn "mcp_provisions" src/` 是空的,因為那個模組在 v24 被刪了 ——
+**但這不代表舊資料庫裡沒有那張表**。遷移要讀的是**磁碟上舊 db 的表**,不是程式碼裡的型別。
+「程式碼裡搜不到」和「資料不存在」是兩件事,這一條的整個風險就建立在這個差別上。
+
+### G-2 AF-2(HIGH)—— 「拿掉一個觸發器」這個方向從來沒有被版本化
+
+`workflow-catalog.ts:472`:
+```js
+const triggers && triggers.length > 0 ? JSON.stringify(triggers) : null
+```
+facade 一定傳陣列,所以一個 v24 的 `triggers: []` 存進去之後**和 v24 前的舊列位元組相同**。
+於是 `server.ts:775` 的 `released.triggers !== undefined` 判斷整個跳過成員檢查。
+
+後果:v1 宣告 `triggers:[t1]`、v2 宣告 `triggers:[]`、把 v2 發到 release ——
+**t1 會永遠繼續觸發 v2**,v1 的認領也永遠不釋放。ADR-026 的 `NOT_IN_RELEASE` 不可達。
+
+ARCH-098 的原文就寫了「兩者**只有** v24 前的列才是 `NULL`」,
+而且**同一句話裡就指定了測試**:「另一個斷言遷移後不會有任何列被寫成 `NULL`」。
+一行修正,測試規格已經現成。
+
+### G-3 AF-3(HIGH)—— 和 D-14 同一個缺陷,只差一個函式沒修到
+
+`authz.ts:89` 會回 `PRINCIPAL_REQUIRED`,`call-tool.ts:136` 的
+`verdict.code ?? 'FORBIDDEN_ROLE'` 只在**完全沒有 code** 時才套用預設,
+所以這個字串會原封不動送到線上 —— 但 `errors.ts` 的 `ERROR_CATALOG` 裡沒有它。
+
+`ERROR_CATALOG` 是整個 v24 介面故事的地基(「引擎丟得出來的每一個碼都是這裡的一個鍵」)。
+一個客戶端真的收得到的碼不在裡面,就沒有 `see` 指標、不出現在任何產生的文件裡、
+而且**對「檢查 catalog 是封閉的」那些鎖定測試是隱形的**。
+
+Gate 7.5 第三輪才剛為三個 trigger 碼修過同一件事(D-14)。
+**這說明當時的修法太窄:修的是那三個碼,不是「怎麼保證沒有漏網的」。**
+所以這次除了補上 `PRINCIPAL_REQUIRED`,還要補一個**兩個方向都查**的鎖定測試:
+每個 `AuthzErrorCode` 都必須是 `ERROR_CATALOG` 的鍵。
+(裁定 #2 A-4 已經講過孤兒鎖只查單向的問題,這是同一個教訓的第二次。)
+
+### G-4 SF-1 —— 我修一個自我矛盾的時候製造了另一個
+
+`CLAUDE.md` 上方被我加了「workflow 執行期間禁用 `git stash`」,
+但下方兩處原文還留著:一處說某個 agent「用 `git stash` … `git stash pop` **是正確的**」,
+一處在建議 trace 基線時說「或者 stash-and-pop」。**同一份檔案同時說禁用與推薦。**
+
+已修:第一處改成「那在**單一 agent 獨自工作時**是安全的選擇,現在不再允許」,
+第二處改成用 `git archive HEAD | tar -x` 取一份乾淨副本。
+
+值得記:**我是在裁定 #3 B-8 修「規則的前提悄悄不成立」的時候,自己犯下同一類錯 ——
+改了規則的頭,沒改規則的身體。** 這正是本帳本數到第 18 例的那一類,而我貢獻了第 19 例。
+
+**而且緊接著就有第 20 例,同一個主題**:我寫這條裁定的 commit 訊息時,
+在雙引號字串裡用反引號括了 `git stash` 這四個字 —— **bash 把它當成命令替換執行了**。
+它把我當時所有未提交的工作(這份裁定、TASK-160..163 四張卡、SF-1 的修正)整包收進 stash,
+commit 因此回報「working tree clean, nothing to commit」,而檔案內容全部消失。
+用 `git stash pop` 復原,無損失。
+
+三件事要記住:
+1. **我親手觸發了自己剛禁掉的那個命令**,而且是在一段解釋為什麼要禁它的文字裡。
+2. 這正好示範了那條禁令為什麼重要:如果當時有 20 個 implementer 在同一棵樹上跑,
+   這一下會把**他們全部的**未提交工作一起收走,而我完全不會知道發生了什麼 ——
+   我看到的只會是「nothing to commit」。
+3. **提交訊息一律用 `-F <file>`,不要用 `-m "…"`。** 這一輪已經因為反引號展開毀掉過兩則
+   提交訊息(內容被吃掉),這次更進一步毀掉了工作樹。反引號在 markdown 裡是正常寫法,
+   而我寫的每一則訊息都充滿程式碼識別字 —— 兩者在 shell 字串裡不能共存。
+
+### G-5 DR-1 —— 第 10 次:改了 src 卻沒有 IMPL 條目
+
+`IMPL-187` 之後有三個動到 `src/` 的提交沒有對應的 IMPL 條目。審查說這是**第 10 次**。
+
+十次同一件事,就不是疏忽而是流程沒有強制點。本輪先補上這三筆,
+但真正的修法要進 v25:**讓「動了 src 就必須有 IMPL 條目」變成可檢查的,而不是靠人記得。**
+(可以是 Gate 7 的一個檢查,或 trace.py 的一條規則。)
+
+### G-6 卡片與派工
+
+補建 TASK-160..163 對應 AF-1 / AF-2 / AF-3 / DR-1。
+SF-1 已由我直接修完(`CLAUDE.md` 是流程文件,不需要走 TDD)。
+MID 16 項與 LOW 44 項依審查建議列為 v25 債務,不在本輪處理。

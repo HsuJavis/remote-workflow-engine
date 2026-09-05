@@ -43,6 +43,6 @@ describe('MCP lifecycle handshake (REQ-005, ARCH-001)', () => {
     await post(server.port, { jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
     const res = await post(server.port, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
     const body = await res.json() as { result?: { tools: Array<{ name: string }> } };
-    expect(body.result!.tools.map((t) => t.name)).toContain('workflow_run');
+    expect(body.result!.tools.map((t) => t.name)).toContain('run_start');
   });
 });

@@ -12,7 +12,7 @@ describe('WorkflowCatalog', () => {
   // An explicit {version} selector always resolves regardless of channel/publish state.
   it('register creates an entry retrievable by resolve({version})', async () => {
     const cat = new WorkflowCatalog(WORK_ROOT);
-    const { version } = await cat.register('my-flow', 'return 1;');
+    const { version } = await cat.register({ name: 'my-flow', script: 'return 1;', mermaid: 'graph TD;' });
     expect(typeof version).toBe('string');
     const entry = await cat.resolve('my-flow', { version });
     expect(entry.script).toBe('return 1;');
@@ -21,8 +21,8 @@ describe('WorkflowCatalog', () => {
 
   it('registering the same name twice bumps the version and keeps BOTH retrievable (v22, REQ-096)', async () => {
     const cat = new WorkflowCatalog(WORK_ROOT);
-    const { version: v1 } = await cat.register('bump-flow', 'return 1;');
-    const { version: v2 } = await cat.register('bump-flow', 'return 2;');
+    const { version: v1 } = await cat.register({ name: 'bump-flow', script: 'return 1;', mermaid: 'graph TD;' });
+    const { version: v2 } = await cat.register({ name: 'bump-flow', script: 'return 2;', mermaid: 'graph TD;' });
     expect(v2).not.toBe(v1);
     expect((await cat.resolve('bump-flow', { version: v2 })).script).toBe('return 2;');
     expect((await cat.resolve('bump-flow', { version: v1 })).script).toBe('return 1;');
@@ -35,7 +35,7 @@ describe('WorkflowCatalog', () => {
 
   it('deregister removes a registered workflow (gone from resolve() and list())', async () => {
     const cat = new WorkflowCatalog(WORK_ROOT);
-    const { version } = await cat.register('temp-flow', 'return 1;');
+    const { version } = await cat.register({ name: 'temp-flow', script: 'return 1;', mermaid: 'graph TD;' });
     const { removed } = await cat.deregister('temp-flow');
     expect(removed).toBe(true);
     await expect(cat.resolve('temp-flow', { version })).rejects.toThrow(CatalogNotFoundError);
@@ -50,8 +50,8 @@ describe('WorkflowCatalog', () => {
 
   it('list() returns all registered workflows', async () => {
     const cat = new WorkflowCatalog(WORK_ROOT);
-    await cat.register('alpha', 'return 1;');
-    await cat.register('beta', 'return 2;');
+    await cat.register({ name: 'alpha', script: 'return 1;', mermaid: 'graph TD;' });
+    await cat.register({ name: 'beta', script: 'return 2;', mermaid: 'graph TD;' });
     const entries = await cat.list();
     const names = entries.map((e) => e.name);
     expect(names).toContain('alpha');

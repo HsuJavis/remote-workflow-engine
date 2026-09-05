@@ -26,13 +26,13 @@ describe('VAL-014: named workflow registry (REQ-014)', () => {
   }
 
   async function runAndWait(name: string, args?: unknown) {
-    const run = await callTool('workflow_run', { name, args });
+    const run = await callTool('run_start', { name, args });
     if (run.status === 'failed') return run;
     const runId = run.runId as string;
     for (let i = 0; i < 30; i++) {
-      const s = await callTool('workflow_status', { runId });
+      const s = await callTool('run_status', { runId });
       if (s.status === 'completed' || s.status === 'failed') {
-        const r = await callTool('workflow_result', { runId });
+        const r = await callTool('run_result', { runId });
         return { ...s, result: r.result, runId };
       }
       await new Promise((r) => setTimeout(r, 200));
@@ -41,13 +41,13 @@ describe('VAL-014: named workflow registry (REQ-014)', () => {
   }
 
   it('workflow_register registers a workflow visible in workflow_list', async () => {
-    await callTool('workflow_register', { name: 'val014-a', script: `return 'registered';` });
+    await callTool('workflow_register', { name: 'val014-a', script: `return 'registered';`, mermaid: 'graph TD;' });
     const list = (await callTool('workflow_list', {})).result;
     const found = (list as Array<{ name: string }>).some((w) => w.name === 'val014-a');
     expect(found).toBe(true);
   });
 
-  it('workflow_run by name executes the registered script', async () => {
+  it('run_start by name executes the registered script', async () => {
     await registerPublishedVia(callTool, 'val014-run', `return args.x * 3;`);
     const r = await runAndWait('val014-run', { x: 7 });
     expect(r.status).toBe('completed');
@@ -64,9 +64,9 @@ describe('VAL-014: named workflow registry (REQ-014)', () => {
     });
     const runId = run.runId as string;
     for (let i = 0; i < 30; i++) {
-      const s = await callTool('workflow_status', { runId });
+      const s = await callTool('run_status', { runId });
       if (s.status === 'completed') {
-        const res = await callTool('workflow_result', { runId });
+        const res = await callTool('run_result', { runId });
         expect(res.result).toBe(105);
         return;
       }
@@ -81,21 +81,25 @@ describe('VAL-014: named workflow registry (REQ-014)', () => {
         try {
           return await workflow('definitely-does-not-exist-xyz', {});
         } catch(e) {
-          // C-2: guards.ts's makeWorkflow now PRESERVES the delegate failure's own code
-          // (CatalogNotFoundError here), not a flat NESTING_ERROR, and keeps the original .message —
-          // REQ-014's "naming the missing workflow" lives in .message.
+          // C-2: guards.ts's makeWorkflow now PRESERVES the delegate failure's own code, not a
+          // flat NESTING_ERROR, and keeps the original .message — REQ-014's "naming the missing
+          // workflow" lives in .message.
           return 'caught: ' + e.message + ' code=' + (e.name || e.code);
         }
       `);
     const runId = run.runId as string;
     for (let i = 0; i < 30; i++) {
-      const s = await callTool('workflow_status', { runId });
+      const s = await callTool('run_status', { runId });
       if (s.status === 'completed') {
-        const res = await callTool('workflow_result', { runId });
+        const res = await callTool('run_result', { runId });
         expect(String(res.result)).toMatch(/caught:/);
         expect(String(res.result)).toMatch(/definitely-does-not-exist-xyz/);
-        // C-2: the preserved code, not a flat NESTING_ERROR.
-        expect(String(res.result)).toMatch(/code=CatalogNotFoundError/);
+        // C-2: the preserved code, not a flat NESTING_ERROR. v24 (errors.ts, integrator note on
+        // `CatalogNotFoundError`): the class now carries `code:'WORKFLOW_NOT_FOUND'`, a member of
+        // the closed ERROR_CATALOG, precisely so the machine-readable signal is no longer the JS
+        // class NAME that no `tools/list` reader can anticipate. Same oracle (the delegate's own
+        // code survives the nesting boundary), migrated spelling.
+        expect(String(res.result)).toMatch(/code=WORKFLOW_NOT_FOUND/);
         return;
       }
       await new Promise((r) => setTimeout(r, 200));

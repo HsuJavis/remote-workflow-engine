@@ -31,7 +31,7 @@ describe('E2E: named workflow registry + per-run workspace isolation (REQ-014, R
   async function pollUntil(runId: string, maxMs = 15000) {
     const deadline = Date.now() + maxMs;
     while (Date.now() < deadline) {
-      const s = await mcpCall('workflow_status', { runId });
+      const s = await mcpCall('run_status', { runId });
       if (['completed', 'failed'].includes(s.status)) return s;
       await new Promise((r) => setTimeout(r, 200));
     }
@@ -39,30 +39,30 @@ describe('E2E: named workflow registry + per-run workspace isolation (REQ-014, R
   }
 
   it('workflow_register saves a workflow and workflow_list shows it', async () => {
-    await mcpCall('workflow_register', { name: 'greet', script: `return 'hello ' + args.who;` });
+    await mcpCall('workflow_register', { name: 'greet', script: `return 'hello ' + args.who;`, mermaid: 'graph TD;' });
     const list = (await mcpCall('workflow_list', {})).result;
     const found = (list as Array<{ name: string }>).some((w) => w.name === 'greet');
     expect(found).toBe(true);
   });
 
-  it('workflow_run with name invokes the registered script', async () => {
+  it('run_start with name invokes the registered script', async () => {
     await registerPublishedVia(mcpCall, 'calc', `return args.a + args.b;`);
-    const run = await mcpCall('workflow_run', { name: 'calc', args: { a: 3, b: 4 } });
+    const run = await mcpCall('run_start', { name: 'calc', args: { a: 3, b: 4 } });
     const runId = run.runId;
     const status = await pollUntil(runId);
     expect(status.status).toBe('completed');
 
-    const result = await mcpCall('workflow_result', { runId });
+    const result = await mcpCall('run_result', { runId });
     expect(result.result).toBe(7);
   }, 20000);
 
   it('workflow(name) inside a script uses the registered version', async () => {
     await registerPublishedVia(mcpCall, 'inner', `return args.val * 2;`);
     await registerPublishedVia(mcpCall, 'outer', `return workflow('inner', {val: args.n});`);
-    const run = await mcpCall('workflow_run', { name: 'outer', args: { n: 5 } });
+    const run = await mcpCall('run_start', { name: 'outer', args: { n: 5 } });
     const status = await pollUntil(run.runId);
     expect(status.status).toBe('completed');
-    const result = await mcpCall('workflow_result', { runId: run.runId });
+    const result = await mcpCall('run_result', { runId: run.runId });
     expect(result.result).toBe(10);
   }, 20000);
 
@@ -72,7 +72,7 @@ describe('E2E: named workflow registry + per-run workspace isolation (REQ-014, R
         catch (e) { return 'caught:' + e.message; }
       `);
     const status = await pollUntil(run.runId);
-    const result = await mcpCall('workflow_result', { runId: run.runId });
+    const result = await mcpCall('run_result', { runId: run.runId });
     expect(String(result.result)).toMatch(/caught:/);
     expect(String(result.result)).toMatch(/no-such-workflow/);
   }, 20000);
@@ -85,30 +85,30 @@ describe('E2E: named workflow registry + per-run workspace isolation (REQ-014, R
     // workflow must each resolve their own args, never the other run's.
     await registerPublishedVia(mcpCall, 'workspace-test', `return args.runId;`);
 
-    const runA = await mcpCall('workflow_run', { name: 'workspace-test', args: { runId: 'A' } });
-    const runB = await mcpCall('workflow_run', { name: 'workspace-test', args: { runId: 'B' } });
+    const runA = await mcpCall('run_start', { name: 'workspace-test', args: { runId: 'A' } });
+    const runB = await mcpCall('run_start', { name: 'workspace-test', args: { runId: 'B' } });
 
     const [statusA, statusB] = await Promise.all([pollUntil(runA.runId), pollUntil(runB.runId)]);
     expect(statusA.status).toBe('completed');
     expect(statusB.status).toBe('completed');
 
-    const resultA = await mcpCall('workflow_result', { runId: runA.runId });
-    const resultB = await mcpCall('workflow_result', { runId: runB.runId });
+    const resultA = await mcpCall('run_result', { runId: runA.runId });
+    const resultB = await mcpCall('run_result', { runId: runB.runId });
     expect(resultA.result).toBe('A');
     expect(resultB.result).toBe('B');
   }, 25000);
 
   it('updating a registered workflow: new runs use new version, prior runs keep their version', async () => {
     await registerPublishedVia(mcpCall, 'versioned', `return 'v1';`);
-    const runV1 = await mcpCall('workflow_run', { name: 'versioned' });
+    const runV1 = await mcpCall('run_start', { name: 'versioned' });
     await pollUntil(runV1.runId);
 
     await registerPublishedVia(mcpCall, 'versioned', `return 'v2';`);
-    const runV2 = await mcpCall('workflow_run', { name: 'versioned' });
+    const runV2 = await mcpCall('run_start', { name: 'versioned' });
     await pollUntil(runV2.runId);
 
-    const r1 = await mcpCall('workflow_result', { runId: runV1.runId });
-    const r2 = await mcpCall('workflow_result', { runId: runV2.runId });
+    const r1 = await mcpCall('run_result', { runId: runV1.runId });
+    const r2 = await mcpCall('run_result', { runId: runV2.runId });
     expect(r1.result).toBe('v1');
     expect(r2.result).toBe('v2');
   }, 30000);

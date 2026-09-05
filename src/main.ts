@@ -19,7 +19,7 @@
 // This entrypoint is the ONLY place that decides between the two — server.ts's own default (an
 // undefined `config.gateway` falling through to LiteLLMGatewayClient) stays exactly as it was for
 // every test caller, none of which sets RWE_CONFIG_PATH/goes through main().
-import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from './server.js';
@@ -30,7 +30,7 @@ import { LiteLLMProxyManager } from './gateway/litellm-proxy.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { assertWorkRootIsolated } from './workroot-guard.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
-import { ANALYZER_SCRATCH_SUBDIR } from './graph-analyzer.js';
+import type { Role } from './tool-specs.js';
 
 type GatewayChoice = 'sdk' | 'direct-fetch';
 
@@ -40,11 +40,16 @@ type GatewayChoice = 'sdk' | 'direct-fetch';
 
 // Omit ServerConfig's own `gateway` field (typed GatewayClient — an object seam, D-F1): the config
 // FILE's `gateway` key is a plain string choice this entrypoint resolves into that object itself.
-interface FileConfig extends Partial<Omit<ServerConfig, 'gateway'>> {
+interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals'>> {
   /** D-F4: which GatewayClient main.ts wires up. Default "sdk" (ClaudeAgentSdkGatewayClient, the
    *  real tool-loop-capable path). "direct-fetch" opts out to the legacy LiteLLMGatewayClient path
    *  (server.ts's own pre-existing default, driven by `aliases`/`useLiteLLMProxy`). */
   gateway?: GatewayChoice;
+  /** v24 (ARCH-090, DES-141): raw role map, as it appears in rwe.config.json — `normalizePrincipals`
+   *  validates each `role` string into `ServerConfig.principals`'s `Role` union (boot REFUSES on a
+   *  typo, per ADR-028 — never a silent 'user' default for a value that was clearly meant to be
+   *  something else). `"*"` is a legal key (the catch-all principal). */
+  principals?: Record<string, { role: string }>;
   /** D-F11: the configurable default core tool set (e.g. `["Read","Write","Bash"]`) forwarded to
    *  ClaudeAgentSdkGatewayConfig.defaultAllowedTools — applied to every call that doesn't carry its
    *  own agentType-derived opts.allowedTools. Only meaningful when `gateway` is "sdk" (the
@@ -59,6 +64,43 @@ interface FileConfig extends Partial<Omit<ServerConfig, 'gateway'>> {
    *  presence. The auth material itself is NEVER read from this JSON file — only from the server-side
    *  secret store (RWE_SECRET_ANTHROPIC_API_KEY / RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN) or plain env. */
   anthropicAuth?: 'api-key' | 'subscription';
+}
+
+// v24 (ARCH-090, DES-141, standing rule 1 — same "twice-bitten composeConfig bug class" convention
+// as compose-config-v2-wiring.test.ts itself): every FileConfig key must appear here. The
+// `Record<keyof FileConfig, true>` form makes the compiler refuse a missing key, so this list
+// cannot silently rot as FileConfig grows — a config key composeConfig() forgets to forward is
+// caught by the wiring test, and a key an operator TYPOS (or a retired key like `graphAnalyzer`
+// they never removed) is caught here, at boot, instead of silently doing nothing either way.
+const KNOWN_FILE_CONFIG_KEYS: Record<keyof FileConfig, true> = {
+  bind: true, port: true, allowedHosts: true, workRoot: true, aliases: true, timeoutMs: true,
+  retries: true, useLiteLLMProxy: true, proxyManager: true, litellmPort: true,
+  agentDefinitionsDir: true, gateway: true, issueReporter: true, mcpProbe: true,
+  schedulerDbPath: true, assetRoot: true, agentSlots: true, workspaceTtlMs: true,
+  modelCatalogFetchers: true, modelCatalog: true, maxWorkflowDepth: true,
+  maxWorkflowDescendants: true, maxConcurrentRuns: true, seedRefAllowlist: true,
+  continuationDbPath: true, casDir: true, maxBlobBytes: true, webhookDbPath: true,
+  updateFlagPath: true, updateResultPath: true, selfUpdateDbPath: true, systemInfo: true,
+  auth: true, maxTimeoutMs: true, maxAppendPromptBytes: true, maxEffort: true,
+  maxWorkflowVersions: true, principals: true, mcpEgressAllowlist: true,
+  defaultAllowedTools: true, anthropicBaseUrl: true, anthropicAuth: true,
+};
+
+/** v24 (ARCH-090, DES-141): validates a raw `FileConfig.principals` role map into
+ *  `ServerConfig.principals`'s typed shape. NEVER throws — an invalid role is reported back
+ *  (`{ok:false, key, role}`) so the caller (composeConfig) can refuse to boot (ADR-028: a typo like
+ *  "admn" must not silently become "user"). Keys (including `"*"`) are stored verbatim — no
+ *  normalization/lowercasing. */
+export function normalizePrincipals(
+  raw: Record<string, { role: string }> | undefined,
+): { ok: true; value: Record<string, { role: Role }> } | { ok: false; key: string; role: string } {
+  const VALID_ROLES: readonly string[] = ['admin', 'author', 'user'];
+  const value: Record<string, { role: Role }> = {};
+  for (const [key, entry] of Object.entries(raw ?? {})) {
+    if (!VALID_ROLES.includes(entry.role)) return { ok: false, key, role: entry.role };
+    value[key] = { role: entry.role as Role };
+  }
+  return { ok: true, value };
 }
 
 function loadFileConfig(): FileConfig {
@@ -85,6 +127,27 @@ interface ComposeConfigDeps {
 // this is what makes a wiring gap here catchable by a unit/integration-tier test that boots the
 // way main.ts itself does, not only by a real-run validation round (ORCH D-F10 structural rule).
 export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigDeps = {}): Promise<ServerConfig> {
+  // v24 (ARCH-090, DES-141): an unrecognized top-level key (a typo, or a retired block an operator
+  // never removed — e.g. `graphAnalyzer`, dropped this iteration with the LLM-drawn-diagram analyzer
+  // it configured) gets ONE visible warning naming all of them, rather than being silently ignored.
+  const unknownKeys = Object.keys(fileConfig).filter((k) => !(k in KNOWN_FILE_CONFIG_KEYS));
+  if (unknownKeys.length > 0) {
+    const graphAnalyzerNote = unknownKeys.includes('graphAnalyzer')
+      ? ' (ADR-025: diagrams are now author-drawn `mermaid` supplied to `workflow_register`, not analyzed by an LLM — `graphAnalyzer` has no replacement and can be removed from rwe.config.json.)'
+      : '';
+    // eslint-disable-next-line no-console
+    console.warn(`[remote-workflow-engine] unrecognized config key(s) in rwe.config.json, ignored: ${unknownKeys.join(', ')}.${graphAnalyzerNote}`);
+  }
+
+  // v24 (ARCH-090, DES-141, ADR-028): boot REFUSES on a malformed role — never a silent 'user'.
+  const principalsResult = fileConfig.principals !== undefined ? normalizePrincipals(fileConfig.principals) : undefined;
+  if (principalsResult && !principalsResult.ok) {
+    throw new Error(
+      `rwe.config.json's principals["${principalsResult.key}"].role is "${principalsResult.role}", which is not a valid role ` +
+        '(must be one of admin/author/user). Refusing to start (ADR-028 fail-closed: a typo must never silently resolve to a role).',
+    );
+  }
+
   const gatewayChoice: GatewayChoice = fileConfig.gateway ?? 'sdk';
   const aliases = fileConfig.aliases;
   const workRoot = process.env['RWE_WORK_ROOT'] ?? fileConfig.workRoot;
@@ -176,12 +239,14 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     webhookDbPath: fileConfig.webhookDbPath,
     casDir: fileConfig.casDir,
     continuationDbPath: fileConfig.continuationDbPath,
-    // v23 (DES-134, ARCH-085, TASK-122): forwarded as a WHOLE object, unmodified — same
-    // composeConfig wiring-gap class as v11 updateFlagPath / v15 auth / v16 workspaceTtlMs / v22
-    // maxWorkflowVersions. No defaults applied here: the one site that constructs the GraphAnalyzer
-    // (server.ts) is the ONE place each of the nine keys defaults (DES-134) — a second defaulting
-    // site here would make "the config's effective value" ambiguous between two call sites.
-    graphAnalyzer: fileConfig.graphAnalyzer,
+    // v24 (ARCH-090, DES-141, TASK-146): forwarded IN THE SAME CHANGE (DES-141's own instruction —
+    // the v11/v15 wiring-gap bug class this file exists to catch). `principalsResult` is already
+    // validated above (boot refuses before reaching here on a malformed role).
+    principals: principalsResult?.value,
+    // v24 (ARCH-102, DES-153, TASK-146): the https-only allowlist gating asset_push({kind:'mcp'})'s
+    // `http` transport — same forwarding convention, no validation needed here (an empty/absent
+    // allowlist just means no `http` MCP config is ever admitted).
+    mcpEgressAllowlist: fileConfig.mcpEgressAllowlist,
   };
 
   if (gatewayChoice === 'sdk') {
@@ -206,21 +271,15 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // — gateway path specifically).
     config.proxyManager = proxy;
     const { baseUrl } = await proxy.start();
-    // v23 (DES-122, TASK-117): this `cwd` is ONLY ever the fallback for a call that carries no
-    // `req.workspace` (every real workflow run's `AgentExecReq.workspace` is non-optional and always
-    // set — agent-executor.ts:133/:470) — so in production the sole caller that ever lands on it is
-    // the graph analyzer's own `invoke()` (DES-122's request shape has no `workspace` field at all).
-    // Repointed to a dedicated scratch subdirectory (created once, here) rather than the whole
-    // server workRoot, so an analyzer session's `cwd` is never the same directory a real run's
-    // workspace lives under.
-    const analyzerScratchCwd = config.workRoot ? join(config.workRoot, ANALYZER_SCRATCH_SUBDIR) : undefined;
-    if (analyzerScratchCwd) mkdirSync(analyzerScratchCwd, { recursive: true });
+    // v24 (TASK-139, DES-159): the analyzer scratch `cwd` fallback is gone with the GraphAnalyzer
+    // that was its sole production caller (`req.workspace` is non-optional on every real workflow
+    // run) — no replacement wiring here, `cwd` is simply omitted (falls back to the gateway's own
+    // `req.workspace ?? undefined`).
     // D-F10(a): forward aliases/timeoutMs/retries — previously omitted, which silently degraded
     // D-F7's timeout/retry bound to dead code and D-F6's alias-aware thinking policy to "always
     // disabled" in production (Gate 7.5 round 4's real repro).
     config.gateway = new ClaudeAgentSdkGatewayClient({
       baseUrl,
-      cwd: analyzerScratchCwd,
       queryImpl: deps.queryImpl,
       aliases,
       // D-G8-4: use the RESOLVED config.timeoutMs (which carries the hardcoded 15000 fallback
@@ -236,11 +295,9 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
       // above) — read fresh on every invoke() call so a push made after boot still reaches the
       // very next run's mcpServers/skill materialization.
       assetRoot: config.assetRoot,
-      // D-V3M-1 (REQ-017, closes ①): the MCP Provisioning Registry DB path — SAME value server.ts
-      // builds the registry at (`join(workRoot,'mcp-registry.db')`) so a name provisioned via
-      // `mcp_provision` is resolvable by the gateway at session-build time. Undefined workRoot ->
-      // no registry-backed MCP injection (matches server.ts's own workRoot-required convention).
-      mcpRegistryDbPath: config.workRoot ? join(config.workRoot, 'mcp-registry.db') : undefined,
+      // v24 (TASK-139, DES-154): the MCP Provisioning Registry is deleted — `resolveMcp` is the
+      // injected port that replaces it, bound to the catalog by TASK-145. Left UNBOUND here (no
+      // replacement wiring in this task): omitted -> no registry-backed MCP injection.
       // D-V3M-1 (REQ-018): the server-side secret store (RWE_SECRET_* env) that resolves
       // `${secret:NAME}` handles inside a provisioned MCP config — never a real key on any
       // agent-reachable path (the value lives only in the parent process env). REQ-037: the SAME

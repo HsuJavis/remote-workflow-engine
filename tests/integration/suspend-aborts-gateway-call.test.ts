@@ -1,4 +1,4 @@
-// IT-019: workflow_suspend aborts an in-flight gateway call (D-F9a, REQ-006 1st acceptance)
+// IT-019: run_suspend aborts an in-flight gateway call (D-F9a, REQ-006 1st acceptance)
 //
 // D-F9(a) (binding): thread the run abort signal from RunManager through AgentExecutor into gateway
 // invoke() (REQ-006's own acceptance line: "in-flight agents are stopped" on suspend).
@@ -25,7 +25,7 @@ import { RunManager } from '../../src/run-manager.js';
 import { startScript } from '../helpers/workflow-fixtures.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
 
-describe('workflow_suspend aborts an in-flight gateway call (IT-019, D-F9a)', () => {
+describe('run_suspend aborts an in-flight gateway call (IT-019, D-F9a)', () => {
   it('the gateway request carries a real AbortSignal that fires when the run is suspended', async () => {
     let receivedSignal: AbortSignal | undefined;
     let abortObserved = false;
@@ -52,7 +52,7 @@ describe('workflow_suspend aborts an in-flight gateway call (IT-019, D-F9a)', ()
     };
     const mgr = new RunManager({ gateway });
 
-    const runId = await startScript(mgr, `return await agent('slow-call');`);
+    const runId = await startScript(mgr, `return await agent('slow-call', {});`);
 
     // Deterministic: wait for the agent() call to have actually reached the gateway (not merely for
     // status==='running', which flips before the sandbox child even boots) before suspending — avoids

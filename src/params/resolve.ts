@@ -8,10 +8,31 @@
 
 import type { Effort, UserOverrides } from './contract.js';
 import type { HarnessDefaults } from '../harness-defaults.js';
-import type { AgentTypeDef } from '../agent-executor.js';
-import type { AgentOpts } from '../types.js';
+import { codedError } from '../errors.js';
 
-export type Rung = 'call' | 'agentType' | 'override' | 'default' | 'engine';
+/** v24 (DES-146, TASK-137/158): the slice of `contract.ts`'s `AgentParamSpec` that
+ *  `resolveAgentParams` actually reads — just the `.default` on each tunable key. A deliberately
+ *  narrower structural type rather than importing `AgentParamSpec` itself: this function is pure
+ *  and cares only about defaults, never about the validation-only fields (`type`, `enum`,
+ *  `min`/`max`, `unit`) that `AgentParamSpec`'s `ParamSpec` carries for registration-time checking.
+ *  `default` is typed `unknown` here (matching `ParamSpec.default?: unknown` exactly, not narrowed
+ *  to each key's own value type) so a real `ParamContract.agents` value is structurally assignable
+ *  at the call site without a cast (TASK-158 — the first caller to pass one in) — this function
+ *  narrows with an explicit `as` per key internally, same as it already did. */
+export type AgentDefaultsSpec = {
+  model: { default?: unknown };
+  effort: { default?: unknown };
+  timeoutMs: { default?: unknown };
+  appendPrompt?: { default?: unknown };
+};
+
+// v24 (DES-146, TASK-137): the ladder is now three rungs — override(agents.<label>.<key>) ›
+// contract agents.<label>.<key>.default › engine. The two per-call dispatch rungs this type used
+// to carry are gone: `agent()` may no longer pass tunable values inline (ARCH-096, scanAgentCalls
+// refuses PARAM_IN_SCRIPT), which retires the per-call rung outright; and once every agent()
+// label's `model.default` is REQUIRED at registration (DES-144), the server-side agent-type
+// registry's model field can never win a resolution — that rung is unreachable, not merely unused.
+export type Rung = 'override' | 'default' | 'engine';
 
 /** ADMISSION snapshot — run-immutable. */
 export interface RunParams {
@@ -28,6 +49,14 @@ export interface RunParams {
   prompt?: string;
   tools?: string[];
   provenance: Record<'model' | 'effort' | 'timeoutMs' | 'appendPrompt', 'override' | 'default' | 'engine'>;
+  /** v24 (DES-146, TASK-158): the pinned run snapshot's per-agent-label slice — one
+   *  `resolveAgentParams` result per declared `agents.<label>`, so a caller's `overrides.agents.
+   *  <label>` reaches admission for THAT label only and never broadcasts to a sibling (REQ-110
+   *  close). The top-level `model`/`effort`/`timeoutMs`/`appendPrompt` fields above are unaffected
+   *  by per-agent overrides now (`UserOverrides` no longer HAS flat fields to fold in) — they still
+   *  carry the registered workflow-level `defaults` (`prompt`/`tools`/legacy `HarnessDefaults`), and
+   *  `agents` is absent when the caller supplied no `contract` (e.g. no registered agents). */
+  agents?: Record<string, EffectiveCallParams>;
 }
 
 export interface EffectiveCallParams extends Omit<RunParams, 'provenance'> {
@@ -40,8 +69,16 @@ export interface EffectiveCallParams extends Omit<RunParams, 'provenance'> {
  *  `HarnessDefaults` itself now declares both fields (`harness-defaults.ts`, KNOWN_KEYS + shape
  *  validation), so the local intersection type and cast this function used while that half was
  *  in flight are gone (adjudication #7 item 4). */
-export function defaultRunParams(defaults: HarnessDefaults | undefined): RunParams {
-  return {
+/** v24 (TASK-158, adjudication A-7 [14][18]): `contract`/`engineDefaults`, when supplied, populate
+ *  the per-label `.agents` slice via `resolveAgentParams` (one call per declared label, `{}`
+ *  overrides — the no-overrides case). Optional so callers with no registered agent contract (an
+ *  ad-hoc/legacy script) still get a valid snapshot with `agents` absent. */
+export function defaultRunParams(
+  defaults: HarnessDefaults | undefined,
+  contract?: Record<string, AgentDefaultsSpec>,
+  engineDefaults: { model?: string } = {},
+): RunParams {
+  const rp: RunParams = {
     model: defaults?.model,
     effort: defaults?.effort,
     timeoutMs: defaults?.timeoutMs,
@@ -55,74 +92,74 @@ export function defaultRunParams(defaults: HarnessDefaults | undefined): RunPara
       appendPrompt: defaults?.appendPrompt !== undefined ? 'default' : 'engine',
     },
   };
-}
-
-/** Admission-time fold of `overrides` over the registered `defaults` (ADR-002): one pass per
- *  tunable key, override wins when supplied, else the registered-default snapshot stands. */
-export function mergeRunParams(defaults: HarnessDefaults | undefined, overrides: UserOverrides): RunParams {
-  const base = defaultRunParams(defaults);
-  const rp: RunParams = { ...base, provenance: { ...base.provenance } };
-  if (overrides.model !== undefined) { rp.model = overrides.model; rp.provenance.model = 'override'; }
-  if (overrides.effort !== undefined) { rp.effort = overrides.effort; rp.provenance.effort = 'override'; }
-  if (overrides.timeoutMs !== undefined) { rp.timeoutMs = overrides.timeoutMs; rp.provenance.timeoutMs = 'override'; }
-  if (overrides.appendPrompt !== undefined) { rp.appendPrompt = overrides.appendPrompt; rp.provenance.appendPrompt = 'override'; }
+  if (contract) {
+    rp.agents = {};
+    for (const label of Object.keys(contract)) rp.agents[label] = resolveAgentParams(label, contract, {}, engineDefaults);
+  }
   return rp;
 }
 
-/** Dispatch-time application of the two per-call rungs on top of the run snapshot (ARCH-065):
- *  per-call `agent()` opts › agentType frontmatter › per-run snapshot (override/default) › engine
- *  default. `effort`/`timeoutMs` have no agentType rung: call › snapshot › engine. */
-export function resolveCallParams(
-  opts: AgentOpts,
-  agentTypeDef: AgentTypeDef | undefined,
-  runParams: RunParams,
+/** Admission-time fold of `overrides` over the registered `defaults` (ADR-002): one pass per
+ *  tunable key, override wins when supplied, else the registered-default snapshot stands.
+ *  v24 (DES-146, TASK-158): `UserOverrides` no longer carries flat tunable fields — every override
+ *  is scoped to `overrides.agents.<label>` (DES-145) — so the fold that used to write the
+ *  top-level `model`/`effort`/`timeoutMs`/`appendPrompt` fields from a flat override is GONE (the
+ *  whole REQ-110 defect it caused: one caller-supplied value broadcasting to every agent). Per-
+ *  agent overrides are resolved into `.agents` instead, each label independently via
+ *  `resolveAgentParams` — a label's override can never leak into a sibling label's slice. */
+export function mergeRunParams(
+  defaults: HarnessDefaults | undefined,
+  overrides: UserOverrides,
+  contract?: Record<string, AgentDefaultsSpec>,
+  engineDefaults: { model?: string } = {},
+): RunParams {
+  const rp = defaultRunParams(defaults);
+  if (contract) {
+    rp.agents = {};
+    for (const label of Object.keys(contract)) rp.agents[label] = resolveAgentParams(label, contract, overrides.agents?.[label] ?? {}, engineDefaults);
+  }
+  return rp;
+}
+
+/** v24 (DES-146, ARCH-095, TASK-137): dispatch-time resolution of ONE script agent() label's
+ *  effective params — three rungs, override(agents.<label>.<key>) › contract default › engine.
+ *  `contract` is the registration's `ParamContract.agents` slice (label → AgentParamSpec, each of
+ *  model/effort/timeoutMs REQUIRED with a `.default`); `overrides` is that same label's slice of
+ *  the run's `UserOverrides.agents` (or `{}` when the run carried none for this label).
+ *  `'engine'` is reachable ONLY for `appendPrompt` — model/effort/timeoutMs always have a
+ *  registered default, so `engineDefaults.model` is a defensive fallback, never exercised by a
+ *  contract admission already validated. A label absent from `contract` at dispatch is a
+ *  PROGRAMMING error (admission already validated every script label has a contract entry) — it
+ *  throws rather than silently falling back to engine defaults. */
+export function resolveAgentParams(
+  label: string,
+  contract: Record<string, AgentDefaultsSpec>,
+  overrides: Partial<{ model: string; effort: Effort; timeoutMs: number; appendPrompt: string }>,
   engineDefaults: { model?: string },
 ): EffectiveCallParams {
-  // model: call > agentType > snapshot (its own provenance) > engine
-  let model = runParams.model;
-  let modelRung: Rung = runParams.provenance.model;
-  if (model === undefined) {
-    model = engineDefaults.model;
-    modelRung = 'engine';
-  }
-  if (agentTypeDef?.model !== undefined) {
-    model = agentTypeDef.model;
-    modelRung = 'agentType';
-  }
-  if (opts.model !== undefined) {
-    model = opts.model;
-    modelRung = 'call';
+  const spec = contract[label];
+  if (spec === undefined) {
+    throw codedError('INTERNAL_ERROR', `INTERNAL_ERROR: agent label "${label}" has no contract entry at dispatch (admission should have refused this run before it reached here)`);
   }
 
-  // effort: call > snapshot (own provenance) > engine — no agentType rung
-  let effort = runParams.effort;
-  let effortRung: Rung = runParams.provenance.effort;
-  if (effort === undefined) effortRung = 'engine';
-  if (opts.effort !== undefined) {
-    effort = opts.effort;
-    effortRung = 'call';
-  }
+  const model = overrides.model ?? (spec.model.default as string | undefined) ?? engineDefaults.model;
+  const modelRung: Rung = overrides.model !== undefined ? 'override' : spec.model.default !== undefined ? 'default' : 'engine';
 
-  // timeoutMs: call > snapshot (own provenance) > engine — no agentType rung
-  let timeoutMs = runParams.timeoutMs;
-  let timeoutMsRung: Rung = runParams.provenance.timeoutMs;
-  if (timeoutMs === undefined) timeoutMsRung = 'engine';
-  if (opts.timeoutMs !== undefined) {
-    timeoutMs = opts.timeoutMs;
-    timeoutMsRung = 'call';
-  }
+  const effort = overrides.effort ?? (spec.effort.default as Effort | undefined);
+  const effortRung: Rung = overrides.effort !== undefined ? 'override' : spec.effort.default !== undefined ? 'default' : 'engine';
 
-  // appendPrompt: no per-call rung exists — snapshot (own provenance) > engine
-  const appendPrompt = runParams.appendPrompt;
-  const appendPromptRung: Rung = appendPrompt === undefined ? 'engine' : runParams.provenance.appendPrompt;
+  const timeoutMs = overrides.timeoutMs ?? (spec.timeoutMs.default as number | undefined);
+  const timeoutMsRung: Rung = overrides.timeoutMs !== undefined ? 'override' : spec.timeoutMs.default !== undefined ? 'default' : 'engine';
+
+  const appendPrompt = overrides.appendPrompt ?? (spec.appendPrompt?.default as string | undefined);
+  const appendPromptRung: Rung =
+    overrides.appendPrompt !== undefined ? 'override' : spec.appendPrompt?.default !== undefined ? 'default' : 'engine';
 
   return {
     model,
     effort,
     timeoutMs,
     appendPrompt,
-    prompt: runParams.prompt,
-    tools: runParams.tools,
     provenance: { model: modelRung, effort: effortRung, timeoutMs: timeoutMsRung, appendPrompt: appendPromptRung },
   };
 }
@@ -130,7 +167,7 @@ export function resolveCallParams(
 export const USER_INSTRUCTIONS_OPEN = '\n\n<user-instructions untrusted="true">\n';
 export const USER_INSTRUCTIONS_CLOSE = '\n</user-instructions>';
 
-/** Five-segment composition (REQ-094, DES-102): [agentType systemPrompt] + [defaults.prompt] +
+/** Five-segment composition (REQ-094, DES-102): [agent-type systemPrompt] + [defaults.prompt] +
  *  [script prompt] + [framed appendPrompt]. The engine's protocol scaffolding is appended AFTER
  *  this by the executor as a non-author non-user fifth segment — not this function's concern.
  *  Byte-identical to today's `${systemPrompt}\n\n${prompt}` / bare `prompt` when authorPrompt and

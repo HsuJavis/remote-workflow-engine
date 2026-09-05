@@ -90,7 +90,12 @@ export interface GatewayClient {
    *  `{kind:'harness'}` transcript event so deriveAgentRecords can surface the dispatched agent's model.
    *  `applied` (DES-106 / TASK-102): the same `EffortApplied` object `mapEffort` computed, when any
    *  effort directive was requested — recorded ≡ applied by object identity, never a re-lookup. */
-  invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>;
+  invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string;
+    /** v24 (ARCH-103/DES-154, TASK-145): this label's declared skill/mcp asset names + the asset
+     *  store's two scope roots — only `ClaudeAgentSdkGatewayClient` consumes it (selective
+     *  materialization); other gateways ignore it, unchanged. Absent -> nothing materialized. */
+    assets?: { roots: { workflow: string; global: string }; declared: { skills: string[]; mcp: string[] }; workflow: string };
+    onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>;
     /** issue #20: called per live transcript event as the session streams it (before the terminal
      *  result), so agent_log grows and lastActivityAt advances DURING the call. Gateways with no
      *  turn-by-turn stream (LiteLLMGatewayClient) never call it — unchanged terminal-only behavior. */

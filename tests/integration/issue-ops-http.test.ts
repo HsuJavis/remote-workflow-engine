@@ -44,7 +44,7 @@ describe('issue read/reply tools over the real MCP HTTP surface (REQ-031..034)',
   it('tools/list advertises the four v6 tools', async () => {
     const body = await rpc(baseUrl, 'tools/list', {});
     const names = (body.result!.tools ?? []).map((t) => t.name);
-    expect(names).toEqual(expect.arrayContaining(['issue_get', 'issue_list', 'issue_comments', 'issue_comment']));
+    expect(names).toEqual(expect.arrayContaining(['issue_get', 'issue_list', 'issue_get_comments', 'issue_comment_post']));
   });
 
   it('issue_get returns the issue view; unknown → ISSUE_NOT_FOUND', async () => {
@@ -59,18 +59,18 @@ describe('issue read/reply tools over the real MCP HTTP surface (REQ-031..034)',
     expect(res.result).toEqual([{ number: 3, title: 'T', state: 'open', labels: ['agent-reported'], url: 'https://x/3' }]);
   });
 
-  it('issue_comments returns the thread; unknown → ISSUE_NOT_FOUND', async () => {
-    const ok = await toolCall(baseUrl, 'issue_comments', { number: 3 });
+  it('issue_get_comments returns the thread; unknown → ISSUE_NOT_FOUND', async () => {
+    const ok = await toolCall(baseUrl, 'issue_get_comments', { number: 3 });
     expect(ok.result).toEqual(COMMENTS);
-    const gone = await toolCall(baseUrl, 'issue_comments', { number: 500 });
+    const gone = await toolCall(baseUrl, 'issue_get_comments', { number: 500 });
     expect(gone.error?.code).toBe('ISSUE_NOT_FOUND');
   });
 
-  it('issue_comment posts a reply and returns {commentId, url}; empty body → ISSUE_COMMENT_INVALID', async () => {
-    const ok = await toolCall(baseUrl, 'issue_comment', { number: 3, body: 'on it' });
+  it('issue_comment_post posts a reply and returns {commentId, url}; empty body → ISSUE_COMMENT_INVALID', async () => {
+    const ok = await toolCall(baseUrl, 'issue_comment_post', { number: 3, body: 'on it' });
     expect(ok.result).toEqual({ commentId: 77, url: 'https://x/3#c77' });
     expect(posted).toEqual([{ number: 3, body: 'on it' }]);
-    const bad = await toolCall(baseUrl, 'issue_comment', { number: 3, body: '  ' });
+    const bad = await toolCall(baseUrl, 'issue_comment_post', { number: 3, body: '  ' });
     expect(bad.error?.code).toBe('ISSUE_COMMENT_INVALID');
   });
 });
@@ -84,8 +84,8 @@ describe('issue read/reply default wiring: no token → GITHUB_TOKEN_MISSING (RE
       const base = `http://127.0.0.1:${server.port}`;
       expect((await toolCall(base, 'issue_get', { number: 1 })).error?.code).toBe('GITHUB_TOKEN_MISSING');
       expect((await toolCall(base, 'issue_list', {})).error?.code).toBe('GITHUB_TOKEN_MISSING');
-      expect((await toolCall(base, 'issue_comments', { number: 1 })).error?.code).toBe('GITHUB_TOKEN_MISSING');
-      expect((await toolCall(base, 'issue_comment', { number: 1, body: 'x' })).error?.code).toBe('GITHUB_TOKEN_MISSING');
+      expect((await toolCall(base, 'issue_get_comments', { number: 1 })).error?.code).toBe('GITHUB_TOKEN_MISSING');
+      expect((await toolCall(base, 'issue_comment_post', { number: 1, body: 'x' })).error?.code).toBe('GITHUB_TOKEN_MISSING');
     } finally {
       await server.close();
       if (saved !== undefined) process.env.RWE_SECRET_GITHUB_TOKEN = saved;

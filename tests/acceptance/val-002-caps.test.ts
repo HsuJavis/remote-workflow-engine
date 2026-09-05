@@ -28,10 +28,16 @@ describe('VAL-002: nesting, concurrency caps, budget accounting (REQ-002)', () =
   async function runAndWait(script: string, opts?: { budget?: number }) {
     const run = await runScriptVia(callTool, script, { budget: opts?.budget });
     const runId = run.runId as string;
+    // A REFUSED run_start returns `runId:''`; polling that yields a `failed` status that has
+    // nothing to do with the script. Without this guard the budget-exceeded case below "passes"
+    // through its `else expect(r.status).toBe('failed')` branch on evidence about the ARGUMENT
+    // SCHEMA, not about RunGuard.assertBudget — a false green of exactly the kind this migration
+    // exists to remove. Surface the refusal instead.
+    if (!runId) throw new Error(`run_start was refused, so nothing about the script was exercised: ${JSON.stringify(run['error'] ?? run)}`);
     for (let i = 0; i < 60; i++) {
-      const s = await callTool('workflow_status', { runId });
+      const s = await callTool('run_status', { runId });
       if (s.status === 'completed' || s.status === 'failed') {
-        const r = await callTool('workflow_result', { runId });
+        const r = await callTool('run_result', { runId });
         return { status: s.status, result: r.result, error: r.error };
       }
       await new Promise((r) => setTimeout(r, 200));
@@ -83,9 +89,14 @@ describe('VAL-002: nesting, concurrency caps, budget accounting (REQ-002)', () =
     // budget: 0 makes the very first call exceed it deterministically (spent starts at 0),
     // independent of whether a live provider is configured (unlike budget: 1, which only a
     // real successful token-consuming call could ever exceed on a single agent() call).
+    // v24 (DES-143/DES-144, TASK-152): `agent()`'s FIRST argument is a literal LABEL matching
+    // /^[A-Za-z_][\w-]*$/ (registration scans it — the old prompt-as-first-arg form is refused
+    // SCAN_VIOLATION/AGENT_LABEL_FORMAT) and the prompt travels as `options.prompt`. The label's
+    // `meta.params.agents.over_budget` declaration is synthesized by `runScriptVia`'s helper.
+    // The budget oracle is unchanged: the guard fires BEFORE dispatch, so the prompt is never sent.
     const r = await runAndWait(`
       try {
-        await agent('call that exceeds budget');
+        await agent('over_budget', { prompt: 'call that exceeds budget' });
         return 'no-throw';
       } catch (e) {
         return 'budget-thrown: ' + e.code;

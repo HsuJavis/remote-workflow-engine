@@ -1,43 +1,34 @@
-// IT-077 (DES-086, DES-087, DES-089, DES-090, ARCH-054, ARCH-055, ARCH-057, ARCH-058, TASK-080..084):
-// Schema drift-lock for all v14 tool schema changes. Asserts structured facts over the SERVED
-// tools/list (not the raw TOOL_DEFS object) — the same pattern as IT-072 / seedref-schema-drift.
+// IT-077 (DES-086, DES-087, DES-088, DES-089, DES-090, ARCH-054, ARCH-055, ARCH-056, ARCH-057,
+// ARCH-058, TASK-080..084): schema drift-lock for v14 tool schema changes. Asserts structured
+// facts over the SERVED tools/list (not the raw TOOL_DEFS object) — same pattern as IT-072 /
+// seedref-schema-drift.
 //
-// DES-089: asset_push kind description must name HOOKS_UNSUPPORTED and mcp_provision.
-// DES-090: workflow_run must NOT advertise scriptSha256 (nor script) — v22 adjudication #3 (M-6):
-//          REQ-085 is SUPERSEDED and REQ-098 closed inline script, so this lock inverted from
-//          presence to absence rather than being retired.
-// DES-087: workflow_run description or property description names seedManifestRef, SEED_SOURCE_CONFLICT,
-//           /assets/manifest (cross-reference to the dark REST endpoint).
-// DES-086: blob_put description names /assets/blob/ and BLOB_SHA_MISMATCH (the streaming alternative).
-//          seed_plan description names /assets/manifest (next-step cross-reference).
+// v24 (TASK-152, DES-159): DES-089 (the old push tool's kind naming HOOKS_UNSUPPORTED and the old
+// MCP-provisioning tool), DES-090 (run_start's absent scriptSha256/script), and DES-087/DES-086
+// (run_start's seedManifestRef cross-reference, the old blob-upload/seed-plan route cross-
+// references) are ALL retired with their subject tools: the pre-v24 asset-push, blob-put and
+// seed-plan tools and `run_start`'s seed-source arguments do not exist under those names/shapes in
+// the v24 tool surface (they fold into `workspace_push`/`workspace_diff` with per-tool modes,
+// REQ-108; `run_start.seedNamespace` and the seed-source arguments are dropped, DES-142; the old
+// MCP-provisioning tool is deleted outright, ARCH-101). Their drift-lock blocks are removed rather
+// than re-pointed at a differently-shaped tool — there is no v24 tool whose kind/description still
+// needs to name the retired HOOKS_UNSUPPORTED-on-push code, the old provisioning tool,
+// SEED_SOURCE_CONFLICT, `/assets/manifest`, `/assets/blob/` or BLOB_SHA_MISMATCH the way the
+// pre-v24 push/blob-put/seed-plan/run_start tools used to.
 //
-// Cases (all RED before implementation):
-//   1. asset_push kind description contains 'HOOKS_UNSUPPORTED'
-//   2. asset_push kind description contains 'mcp_provision'
-//   3. workflow_run has NO scriptSha256 property in inputSchema.properties  [inverted, v22 M-6]
-//   4. workflow_run has NO script property in inputSchema.properties        [inverted, v22 M-6]
-//   5. no workflow_run property description still advertises 'SCRIPT_SHA_MISMATCH' [inverted, v22 M-6]
-//   6. workflow_run has seedManifestRef in description OR in properties
-//   7. workflow_run description (or seedManifestRef property description) names 'SEED_SOURCE_CONFLICT'
-//   8. workflow_run description (or seedManifestRef property description) names '/assets/manifest'
-//   9. blob_put description names '/assets/blob/' (route cross-reference)
-//  10. blob_put description names 'BLOB_SHA_MISMATCH' (error code of streaming route, NOT BLOB_HASH_MISMATCH)
-//  11. seed_plan description names '/assets/manifest' (next-step cross-reference per DES-087)
-//
-// Trivially passing (pre-existing content):
-//   None for the v14 cases above — all are new.
-//
-// Red reason: server.ts TOOL_DEFS does not yet have:
-//   - scriptSha256 property on workflow_run
-//   - seedManifestRef cross-reference in workflow_run description
-//   - HOOKS_UNSUPPORTED/mcp_provision in asset_push kind description
-//   - /assets/blob/ or BLOB_SHA_MISMATCH in blob_put description
-//   - /assets/manifest in seed_plan description
-// → served tools/list shows the old schema → all structured-fact assertions fail.
+// DES-088 survives unchanged in substance (only the tool's name moved, `workflow_agent_log` ->
+// `run_agent_log`, REQ-107): the secret-marker asymmetry sentence documents live redaction
+// behaviour (`redact()`, DES-160 confirms it is unchanged in v24) and is still a real drift risk.
 //
 // Mock policy (integration — DES-091): real `createServer` + real HTTP tools/list round trip.
 //   No SUT-boundary mocks (same pattern as IT-072 / seedref-schema-drift.test.ts).
 
+// v24 (batch B, then CLOSED by the integrator — GREEN now): the case here was — a PRODUCT defect. This file's own v24
+// header already ruled DES-088 "survives unchanged in substance (only the tool's name moved)": the
+// redaction it documents is live (`secret-resolver.ts:95` `MARKER_PREFIX = '‹secret:'`), and
+// `run_agent_log` is a live tool — but its v24 description ("Read one agent's harness log for a
+// run; a cross-principal read of another principal's run is audited.") dropped the secret-marker
+// asymmetry sentence, so the reader of a transcript is no longer told why a value reads as a marker.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -69,97 +60,12 @@ afterAll(async () => {
   rmSync(workRoot, { recursive: true, force: true });
 });
 
-describe('DES-089 — asset_push kind schema honesty (ARCH-057)', () => {
-  it('asset_push kind description names HOOKS_UNSUPPORTED', () => {
-    const kindProp = toolsMap['asset_push']?.inputSchema?.properties?.['kind'];
-    expect(kindProp?.description ?? '').toContain('HOOKS_UNSUPPORTED');
-  });
-
-  it('asset_push kind description names mcp_provision as the alternative', () => {
-    const kindProp = toolsMap['asset_push']?.inputSchema?.properties?.['kind'];
-    expect(kindProp?.description ?? '').toContain('mcp_provision');
-  });
-});
-
-// v22 adjudication #3 (M-6): this block used to pin the PRESENCE of `scriptSha256` and its
-// description. REQ-085 is `[SUPERSEDED v22, owner-confirmed 2026-09-02]` — REQ-098 closed the
-// on-the-wire script the sha guarded, so the parameter is unreachable by construction and was
-// removed (adjudication #1 K-4). The drift-lock is not retired with it: it INVERTS. A schema-reading
-// client must not learn that `script`/`scriptSha256` exist, so their absence is what is pinned now
-// (the same property IT-087 locks for v22; kept here too because this file is the v14 schema's own
-// lock and a re-added field must fail both).
-describe('DES-090 / REQ-085 SUPERSEDED — workflow_run no longer advertises scriptSha256 (ARCH-058, v22 ADR-010/K-4)', () => {
-  it('workflow_run has NO scriptSha256 property in inputSchema', () => {
-    const props = toolsMap['workflow_run']?.inputSchema?.properties ?? {};
-    expect(Object.keys(props)).not.toContain('scriptSha256');
-  });
-
-  it('workflow_run has NO script property in inputSchema (REQ-098: inline script is closed)', () => {
-    const props = toolsMap['workflow_run']?.inputSchema?.properties ?? {};
-    expect(Object.keys(props)).not.toContain('script');
-  });
-
-  it('no other advertised workflow_run parameter re-introduces SCRIPT_SHA_MISMATCH as a live contract', () => {
-    const propDescs = Object.values(toolsMap['workflow_run']?.inputSchema?.properties ?? {})
-      .map((p) => p.description ?? '')
-      .join(' ');
-    expect(propDescs).not.toContain('SCRIPT_SHA_MISMATCH');
-  });
-});
-
-describe('DES-087 — workflow_run seedManifestRef cross-reference (ARCH-055)', () => {
-  it('workflow_run schema (description or properties) names seedManifestRef', () => {
-    const toolDesc = toolsMap['workflow_run']?.description ?? '';
-    const props = toolsMap['workflow_run']?.inputSchema?.properties ?? {};
-    const hasSeedManifestRef =
-      toolDesc.includes('seedManifestRef') ||
-      'seedManifestRef' in props ||
-      Object.values(props).some((p) => (p.description ?? '').includes('seedManifestRef'));
-    expect(hasSeedManifestRef).toBe(true);
-  });
-
-  it('workflow_run schema names SEED_SOURCE_CONFLICT (mutual exclusion error code)', () => {
-    const toolDesc = toolsMap['workflow_run']?.description ?? '';
-    const propDescs = Object.values(toolsMap['workflow_run']?.inputSchema?.properties ?? {})
-      .map((p) => p.description ?? '')
-      .join(' ');
-    expect(toolDesc + ' ' + propDescs).toContain('SEED_SOURCE_CONFLICT');
-  });
-
-  it('workflow_run schema names /assets/manifest (dark REST endpoint cross-reference)', () => {
-    const toolDesc = toolsMap['workflow_run']?.description ?? '';
-    const propDescs = Object.values(toolsMap['workflow_run']?.inputSchema?.properties ?? {})
-      .map((p) => p.description ?? '')
-      .join(' ');
-    expect(toolDesc + ' ' + propDescs).toContain('/assets/manifest');
-  });
-});
-
-describe('DES-086 — blob_put / seed_plan cross-references to raw endpoints (ARCH-054/055)', () => {
-  it('blob_put description names /assets/blob/ (the streaming alternative)', () => {
-    const desc = toolsMap['blob_put']?.description ?? '';
-    expect(desc).toContain('/assets/blob/');
-  });
-
-  it('blob_put description names BLOB_SHA_MISMATCH (error code of streaming route)', () => {
-    const desc = toolsMap['blob_put']?.description ?? '';
-    // Note: blob_put uses BLOB_HASH_MISMATCH for its own path; the streaming route is BLOB_SHA_MISMATCH
-    // The description should name BLOB_SHA_MISMATCH as the streaming-route error code.
-    expect(desc).toContain('BLOB_SHA_MISMATCH');
-  });
-
-  it('seed_plan description names /assets/manifest (next-step cross-reference per DES-087)', () => {
-    const desc = toolsMap['seed_plan']?.description ?? '';
-    expect(desc).toContain('/assets/manifest');
-  });
-});
-
-describe('DES-088 — workflow_agent_log secret-marker doc (ARCH-056, TASK-082)', () => {
-  // DRIFT-LOCK: workflow_agent_log description MUST contain the exact ‹secret:NAME› asymmetry
+describe('DES-088 — run_agent_log secret-marker doc (ARCH-056, TASK-082)', () => {
+  // DRIFT-LOCK: run_agent_log description MUST contain the exact ‹secret:NAME› asymmetry
   // sentence per DES-088 consumability (orchestrator decision, option-a: add+test).
   // Exit-gate rule 3: untested doc is silently driftable; this assertion pins the exact phrase.
-  it('workflow_agent_log description contains the secret-marker asymmetry sentence', () => {
-    const desc = toolsMap['workflow_agent_log']?.description ?? '';
+  it('run_agent_log description contains the secret-marker asymmetry sentence', () => {
+    const desc = toolsMap['run_agent_log']?.description ?? '';
     expect(desc).toContain('Secret values are replaced with ‹secret:NAME› markers in persisted transcripts.');
   });
 });

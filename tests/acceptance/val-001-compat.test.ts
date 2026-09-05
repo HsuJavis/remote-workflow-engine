@@ -19,9 +19,9 @@ describe('VAL-001: 100% workflow JS API compatibility (REQ-001)', () => {
     const run = await runScriptVia(callTool, script, { args });
     const runId = run.runId as string;
     for (let i = 0; i < 50; i++) {
-      const s = await callTool('workflow_status', { runId });
+      const s = await callTool('run_status', { runId });
       if (s.status === 'completed' || s.status === 'failed') {
-        const r = await callTool('workflow_result', { runId });
+        const r = await callTool('run_result', { runId });
         return { status: s.status as string, result: r.result, error: r.error };
       }
       await new Promise((r) => setTimeout(r, 200));
@@ -90,7 +90,7 @@ describe('VAL-001: 100% workflow JS API compatibility (REQ-001)', () => {
     const run = await runScriptVia(callTool, `phase('init'); phase('process'); return 'done';`);
     const runId = run.runId as string;
     for (let i = 0; i < 30; i++) {
-      const s = await callTool('workflow_status', { runId });
+      const s = await callTool('run_status', { runId });
       if (s.status === 'completed') {
         const phases = (s.result.phases as Array<{ title: string }>).map((p) => p.title);
         expect(phases).toContain('init');

@@ -53,15 +53,11 @@
     "googleClientId": "<your Google Cloud Console OAuth 2.0 client ID>",
     "googleClientSecret": "<your Google OAuth 2.0 client secret>"
   },
-  "graphAnalyzer": {
-    "enabled": true,
-    "model": "default",
-    "systemPrompt": "Draw an ASCII diagram of this workflow script's shape (phases, agent fan-out/order, child workflow() calls, trigger bindings) using only printable ASCII plus the glyphs ◇ ⟲ ─ │ ┬ ┴ ├ ┤ ▶ ╭ ╮ ╰ ╯. Label each node from the workflow's own phase/agent/child-workflow/trigger names or a configured model alias only; if a node's model is chosen at run time, write the literal token model:param. Invent nothing else.",
-    "tools": [],
-    "timeoutMs": 60000,
-    "retries": 0,
-    "maxBytes": 8192,
-    "maxLines": 120,
-    "maxQueueDepth": 8
-  }
+  "principals": {
+    "alice@example.com": { "role": "admin" },
+    "*": { "role": "user" }
+  },
+  "mcpEgressAllowlist": [
+    "https://api.example.com"
+  ]
 }

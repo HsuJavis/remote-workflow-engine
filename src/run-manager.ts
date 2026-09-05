@@ -9,9 +9,10 @@ import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { materializeSeed, materializeManifest } from './workspace-seed.js';
 import type { CasStore } from './cas-store.js';
+import { casNamespaceFor } from './cas-store.js';
 import { initGitBaseline } from './workspace-git.js';
 import { listArtifacts, type ArtifactEntry } from './workspace-artifacts.js';
-import { IllegalTransitionError, codedError } from './errors.js';
+import { IllegalTransitionError, codedError, toErrorCode } from './errors.js';
 import { isEgressAllowed, normalizeSeedRefAllowlist } from './seedref-egress.js';
 import type { SeedRefFetcher } from './seedref-fetcher.js';
 import { HardenedSeedRefFetcher } from './seedref-fetcher.js';
@@ -35,12 +36,12 @@ import { redact, hasSecretMarker } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
 import { ResumeCache, MISS, type ResumePlan } from './resume-cache.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
+import { assetRootsFor, defaultAssetRoot, globalAssetRoot } from './asset-sync.js';
 import type { GatewayClient, GatewayConfig } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
-import { validateUserOverrides, validateDeclaredArgs, canonicalContract, isKnownAlias, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
+import { validateUserOverrides, validateDeclaredArgs, isKnownAlias, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
 import { defaultRunParams, mergeRunParams, type RunParams } from './params/resolve.js';
-import type { HarnessDefaults } from './harness-defaults.js';
 
 // Default gateway config (REQ-004) for the gateway RunManager builds when no GatewayClient is
 // injected — routes through the single-source DEFAULT_ALIASES table (src/default-aliases.ts).
@@ -56,6 +57,11 @@ export interface RunManagerDeps {
   catalog?: WorkflowCatalog;
   concurrency?: number;
   workRoot?: string;
+  /** v24 (integrator; REQ-113, DES-154/ARCH-103): the resolved asset roots this run's dispatches
+   *  materialize from. Omitted -> derived from `workRoot` with the SAME two functions
+   *  `AssetSyncService` and the GC sweep use (`asset-sync.ts`), never re-spelt here. */
+  assetRoot?: string;
+  globalAssetRoot?: string;
   /** Server-side agent-type registry (D-F2), forwarded unchanged into every AgentExecutor this
    *  manager constructs — populated at the composition root (createServer()) from agents/*.md. */
   agentTypes?: Record<string, AgentTypeDef>;
@@ -155,6 +161,26 @@ interface RunEntry {
   /** v21 (ARCH-066, DES-104, TASK-100): the run-immutable admission-time parameter snapshot —
    *  computed once in start() (or rehydrated in _requireLive() on resume), never re-resolved. */
   effectiveParams: RunParams;
+  /** v24 (integrator; REQ-113, DES-154): the author-DECLARED asset names per agent label, taken
+   *  from the registered `ParamContract`'s `agents.<label>.skills/.mcp` at admission. `RunParams`
+   *  deliberately does not carry `skills`/`mcp` (they are author-only, not tunable), so the
+   *  declared set has to travel beside the resolved one — and without it `AgentReq.assets` was
+   *  never populated at all, which is why DES-154's selective materialization had never fired on a
+   *  real dispatch (adjudication #4 C-2). Empty for an unregistered/legacy contract. */
+  declaredAssets: Record<string, { skills: string[]; mcp: string[] }>;
+}
+
+/** v24 (integrator; REQ-113, DES-154): the author-DECLARED per-label asset names, lifted out of the
+ *  registered `ParamContract` at admission so `_handleAgentRequest` can hand the dispatching
+ *  gateway the set THIS label declared — the input DES-154's selective materialization takes and
+ *  which nothing ever produced. Pure; an absent contract yields `{}` (no label declares anything,
+ *  so every dispatch materializes nothing, which is the honest v24 default). */
+function declaredAssetsOf(contract: ParamContract | undefined): Record<string, { skills: string[]; mcp: string[] }> {
+  const out: Record<string, { skills: string[]; mcp: string[] }> = {};
+  for (const [label, spec] of Object.entries(contract?.agents ?? {})) {
+    out[label] = { skills: spec.skills ?? [], mcp: spec.mcp ?? [] };
+  }
+  return out;
 }
 
 export class RunManager {
@@ -165,6 +191,8 @@ export class RunManager {
   private readonly _catalog: WorkflowCatalog;
   private readonly _concurrency: number;
   private readonly _workRoot: string;
+  private readonly _assetRoot: string;
+  private readonly _globalAssetRoot: string;
   private readonly _agentTypes: Record<string, AgentTypeDef>;
   private readonly _semaphore: Semaphore;
   private readonly _maxWorkflowDepth: number;
@@ -201,6 +229,8 @@ export class RunManager {
     this._gateway = deps.gateway ?? new LiteLLMGatewayClient(DEFAULT_GATEWAY_CONFIG);
     this._concurrency = deps.concurrency ?? Math.max(1, Math.min(16, cpus().length - 2));
     this._workRoot = deps.workRoot ?? join(tmpdir(), 'remote-workflow-runs');
+    this._assetRoot = deps.assetRoot ?? defaultAssetRoot(this._workRoot);
+    this._globalAssetRoot = deps.globalAssetRoot ?? globalAssetRoot(this._workRoot);
     this._catalog = deps.catalog ?? new WorkflowCatalog(this._workRoot, this._clock);
     this._agentTypes = deps.agentTypes ?? {};
     // D-V3M-2: unbounded local default (1024 ≫ the 1000-agent lifetime cap) preserves the exact
@@ -282,7 +312,7 @@ export class RunManager {
     // schema entirely and calls RunManager directly). resume() never applies this check: a run
     // suspended before the ban shipped has a persisted spec.script and must still resume.
     if (spec.script !== undefined) {
-      throw codedError('INLINE_SCRIPT_CLOSED', 'Inline scripts are no longer accepted at run start; register once (workflow_register) then run by name: workflow_register({script}) then workflow_run({name})');
+      throw codedError('INLINE_SCRIPT_CLOSED', 'Inline scripts are no longer accepted at run start; register once (workflow_register) then run by name: workflow_register({name, script, mermaid}) then run_start({name})');
     }
     // v22 (DES-114, TASK-109): `scriptSha256` was REQ-085's integrity guard for INLINE scripts
     // only — with inline scripts closed above and REQ-085 `[SUPERSEDED v22]`, it has nothing left
@@ -319,7 +349,7 @@ export class RunManager {
       }
     }
     // v13 REQ-080 (DES-080, TASK-077): seedRef pre-createRun validation — pinned precedence:
-    //   SEEDREF_DISABLED → INVALID_SEED_SPEC → SEEDREF_EGRESS_DENIED → CAS_UNAVAILABLE
+    //   SEEDREF_DISABLED → INVALID_SEED_SPEC → EGRESS_DENIED → CAS_UNAVAILABLE
     // (SEED_SOURCE_CONFLICT is now the 4-way check above.)
     if (spec.seedRef !== undefined) {
       if (this._seedRefAllowlist.length === 0) {
@@ -346,7 +376,7 @@ export class RunManager {
     //   spec.seedManifest so the EXISTING materializeManifest branch runs unchanged (inline+ref parity).
     if (spec.seedManifestRef !== undefined) {
       if (!this._cas) throw codedError('CAS_UNAVAILABLE', 'seedManifestRef requires a configured content store');
-      const ns = spec.seedNamespace ?? '_default';
+      const ns = spec.seedNamespace ?? casNamespaceFor(spec.principal);
       // Check the manifest blob is present in the namespace (security boundary: namespace-scoped check).
       const manifestMissing = await this._cas.missing(ns, [spec.seedManifestRef]);
       if (manifestMissing.length > 0) {
@@ -374,7 +404,7 @@ export class RunManager {
     // hasn't uploaded — surface the missing shas so the client blob_put's them and retries.
     if (spec.seedManifest && spec.seedManifest.length > 0) {
       if (!this._cas) throw codedError('CAS_UNAVAILABLE', 'seedManifest requires a configured content store');
-      const ns = spec.seedNamespace ?? '_default';
+      const ns = spec.seedNamespace ?? casNamespaceFor(spec.principal);
       const missing = await this._cas.missing(ns, spec.seedManifest.map((e) => e.sha256));
       if (missing.length > 0) throw codedError('MISSING_BLOBS', `upload ${missing.length} blob(s) first: ${missing.slice(0, 8).join(',')}${missing.length > 8 ? '…' : ''}`);
     }
@@ -382,7 +412,6 @@ export class RunManager {
     let scriptVersion = 1;
     let resolvedVersion = 'v1'; // catalog version string actually executed (D-V7) — threaded into RunStore.createRun
     let registeredContract: ParamContract | undefined;
-    let registeredDefaults: HarnessDefaults | undefined;
     if (spec.name && !spec.script) {
       // v22 (REQ-097, DES-114, TASK-109): the wire selector — explicit `version` wins over `channel`;
       // neither supplied defaults to `release` (DES-110's resolveVersionRequest truth table).
@@ -391,7 +420,21 @@ export class RunManager {
       resolvedVersion = registered.version;
       scriptVersion = Number(registered.version.replace(/^v/, '')) || 1;
       registeredContract = registered.params as ParamContract | undefined;
-      registeredDefaults = registered.defaults;
+      // v24 (integrator; DES-144/DES-156, flagged by the Batch-A executor as unowned): a version
+      // row whose `params` column is NULL predates the per-agent contract. Every v24 registration
+      // writes one unconditionally (`insertVersion` JSON-stringifies the parsed contract, `{}`
+      // included), so `undefined` here means exactly "registered before v24". `workflow_describe`
+      // and `workflow_list` ALREADY report such a version as `runnableReason:'LEGACY_REREGISTER'`;
+      // `run_start` accepted it anyway and ran it with no per-agent slice at all — the read
+      // surfaces and the run path disagreed about the same row. Same code, same reason, same
+      // remedy as the resume readback gate below.
+      if (registeredContract === undefined) {
+        throw codedError(
+          'LEGACY_REREGISTER',
+          `LEGACY_REREGISTER: workflow '${spec.name}' version ${resolvedVersion} predates the v24 per-agent parameter contract and cannot be run; re-register it`,
+          { workflow: spec.name, version: resolvedVersion },
+        );
+      }
     }
 
     // v21 (ARCH-066 inv-6, DES-104, TASK-100): admission rung — ONE task by decree (validate +
@@ -400,7 +443,12 @@ export class RunManager {
     // durable work (createRun/runWorkspace/sandbox spawn) — an ad-hoc inline script (no registered
     // contract) is bound by the canonical 4-knob contract, same as a registered script with no
     // `params` block (DES-101). Order pinned: overrides -> declared args -> merge.
-    const contract = registeredContract ?? canonicalContract();
+    // v24 (DES-144): the "canonical 4-knob contract" fallback is RETIRED (params/contract.ts no
+    // longer exports it) — an unregistered/legacy contract reads back as the zero-label shape.
+    // v24 (TASK-136/137/158): `validateUserOverrides`/`validateDeclaredArgs` already validate the
+    // real per-agent `{agents:{...}}}` shape (DES-145) — the merge below (TASK-158) is what folds
+    // that validated per-label result into the admission snapshot's `.agents` slice.
+    const contract = registeredContract ?? ({ agents: {}, args: {} } as ParamContract);
     const overridesResult = validateUserOverrides(contract, overrides, this._aliasNames, this._ceilings);
     if (!overridesResult.ok) throw paramCodedError(overridesResult);
     const argsResult = validateDeclaredArgs(contract, spec.args);
@@ -408,34 +456,47 @@ export class RunManager {
     // defaultRunParams is the ONLY no-overrides producer (DES-104) — the callers that never supply
     // `overrides` (schedule/webhook/chain triggers) must not each reach for `overrides ?? {}`.
     const effectiveParams: RunParams = overrides === undefined
-      ? defaultRunParams(registeredDefaults)
-      : mergeRunParams(registeredDefaults, overridesResult.value);
+      // v24 Gate 7.5 (ADR-035): the workflow-wide `defaults` object is retired and no longer read
+      // from the catalog, so the first argument — the registered HarnessDefaults snapshot — is
+      // always absent. Every value now comes from the per-agent contract (`contract.agents`).
+      ? defaultRunParams(undefined, contract.agents)
+      : mergeRunParams(undefined, overridesResult.value, contract.agents);
     // v21 Gate 8 RE-REVIEW (review §R2 (b), R-G2 HIGH): validateUserOverrides only re-checks a
     // CALLER-SUPPLIED overrides.model; a registered defaults.model that was valid at registration
     // but has since fallen out of the configured alias table (a config change between restarts)
     // was never re-examined — every un-overridden submission using it was silently admitted. Same
     // UNKNOWN_ALIAS code, same "before any durable work" placement as the override-rung check.
-    if (effectiveParams.model !== undefined && !isKnownAlias(effectiveParams.model, this._aliasNames)) {
-      throw paramCodedError({
-        ok: false,
-        code: 'UNKNOWN_ALIAS',
-        message: `model is not a known alias: ${effectiveParams.model}`,
-        detail: { param: 'model', supplied: effectiveParams.model, allowed: { enum: [...this._aliasNames] } },
-      });
+    // v24 (TASK-158): re-checked over EVERY label's resolved model too, not just the (now largely
+    // vestigial, HarnessDefaults-only) top-level field — a per-agent override/default is just as
+    // reachable here as the old flat one was.
+    const modelsToCheck = [effectiveParams.model, ...Object.values(effectiveParams.agents ?? {}).map((a) => a.model)];
+    for (const m of modelsToCheck) {
+      if (m !== undefined && !isKnownAlias(m, this._aliasNames)) {
+        throw paramCodedError({
+          ok: false,
+          code: 'UNKNOWN_ALIAS',
+          message: `model is not a known alias: ${m}`,
+          detail: { param: 'model', supplied: m, allowed: { enum: [...this._aliasNames] } },
+        });
+      }
     }
     // v21 Gate 8 RE-REVIEW #6 (P6-2, review §T5/§T6): mirrors R-G2 one field over — F2
     // (validateUserOverrides in contract.ts) only frame-checks a CALLER-SUPPLIED
     // overrides.appendPrompt; a registered defaults.appendPrompt origin reaches this point
     // unchecked on every no-overrides submission. Re-check the EFFECTIVE post-merge value before
     // any durable work, same shared FRAME_CLOSE_FORGERY constant, reported by size only (DES-101
-    // row 6 discipline: never echo caller/author text).
-    if (typeof effectiveParams.appendPrompt === 'string' && FRAME_CLOSE_FORGERY.test(effectiveParams.appendPrompt)) {
-      throw paramCodedError({
-        ok: false,
-        code: 'PARAM_OUT_OF_RANGE',
-        message: 'appendPrompt cannot contain the user-instructions frame close delimiter',
-        detail: { param: 'appendPrompt', suppliedBytes: Buffer.byteLength(effectiveParams.appendPrompt, 'utf8') },
-      });
+    // row 6 discipline: never echo caller/author text). v24 (TASK-158): same widen as the alias
+    // check above — every label's resolved appendPrompt, not just the top-level field.
+    const appendPromptsToCheck = [effectiveParams.appendPrompt, ...Object.values(effectiveParams.agents ?? {}).map((a) => a.appendPrompt)];
+    for (const ap of appendPromptsToCheck) {
+      if (typeof ap === 'string' && FRAME_CLOSE_FORGERY.test(ap)) {
+        throw paramCodedError({
+          ok: false,
+          code: 'PARAM_OUT_OF_RANGE',
+          message: 'appendPrompt cannot contain the user-instructions frame close delimiter',
+          detail: { param: 'appendPrompt', suppliedBytes: Buffer.byteLength(ap, 'utf8') },
+        });
+      }
     }
     // DES-088/ARCH-056 (REQ-083 sink-completeness sweep): this is a NEW persist sink — redact
     // BEFORE the durable write, same convention as the journal/snapshot sinks below. The live
@@ -453,7 +514,7 @@ export class RunManager {
     let seedRefView: RunEntry['seedRef'];
     let seedRefFail: { code: string; message: string } | undefined;
     if (spec.seedRef !== undefined) {
-      const ns = spec.seedNamespace ?? '_default';
+      const ns = spec.seedNamespace ?? casNamespaceFor(spec.principal);
       const t0 = this._clock.now();
       try {
         const r = await this._seedFetcher.fetch(
@@ -509,6 +570,7 @@ export class RunManager {
       nestedFrameSeq: 0,
       workflowNodes: [],
       effectiveParams,
+      declaredAssets: declaredAssetsOf(contract),
     };
     this._runs.set(runId, entry);
     entry.seedRef = seedRefView; // v13: overlaid onto RunStatusView by _mergeLive (present on success AND failure)
@@ -552,7 +614,10 @@ export class RunManager {
     // delimiter any more than it silently re-dispatches an unrestorable secret marker (same "refuse,
     // never dispatch" discipline as the check above). Shares contract.ts's exported FRAME_CLOSE_FORGERY
     // pattern so the two refusal sites can never drift onto different shapes.
-    if (typeof entry.effectiveParams.appendPrompt === 'string' && FRAME_CLOSE_FORGERY.test(entry.effectiveParams.appendPrompt)) {
+    // v24 (TASK-158): same per-label widen as the admission-time check above — a forged
+    // appendPrompt could equally have been persisted under a per-agent-label slice.
+    const resumeAppendPrompts = [entry.effectiveParams.appendPrompt, ...Object.values(entry.effectiveParams.agents ?? {}).map((a) => a.appendPrompt)];
+    if (resumeAppendPrompts.some((ap) => typeof ap === 'string' && FRAME_CLOSE_FORGERY.test(ap))) {
       throw codedError('PARAM_OUT_OF_RANGE', `Run ${runId}'s admission-time appendPrompt carries the user-instructions frame close delimiter and cannot be resumed`);
     }
     // v22 (DES-113/DES-114, TASK-109): the replacement-script parameter is CLOSED with inline
@@ -609,6 +674,22 @@ export class RunManager {
     return { ok: false, error: { code: 'RUN_NOT_TERMINAL', message: `Run ${runId} has not completed (status: ${view?.status ?? 'unknown'})` } };
   }
 
+  /** v24 (DES-155, ARCH-091 note 1, TASK-148): the TOCTOU guard `workspace_delete`/`workspace_purge`
+   *  need — "refused while the run is live" is checked HERE, against the store (not a facade-side
+   *  status read that a concurrent start()/resume() could race), single process (a check inside the
+   *  owner, not a lock protocol — ADR-026's same assumption as the trigger stores). A run known to
+   *  the store but not to this process's `_runs` map (a restart) is resolved through `store.getRun`
+   *  and `queued`/`running`/`suspended` all count as LIVE — "not in memory" is never treated as
+   *  terminal. */
+  async withTerminalRun<T>(runId: string, fn: () => Promise<T> | T): Promise<T> {
+    const view = await this._store.getRun(runId);
+    if (!view) throw codedError('RUN_NOT_FOUND', `Run not found: ${runId}`);
+    if (!TERMINAL.includes(view.status)) {
+      throw codedError('RUN_NOT_TERMINAL', `run ${runId} is ${view.status}, not terminal`);
+    }
+    return fn();
+  }
+
   /** Looks up a live RunEntry, rehydrating one from persisted state (REQ-006 restart survival)
    *  when this run isn't in this process's memory — e.g. after a server restart, a suspend/resume/
    *  stop call for a run that was suspended/stopped before the restart. Live per-process state
@@ -630,7 +711,7 @@ export class RunManager {
     // script from the catalog the SAME way start() does, or the resumed run executes an empty script
     // and returns undefined. (Pre-Defer-A, no test covered a named-workflow restart-resume.)
     let script = spec.script ?? '';
-    let registeredDefaults: HarnessDefaults | undefined;
+    let registeredContract: ParamContract | undefined;
     if (spec.name && !spec.script) {
       // v22 (DES-113, ADR-010, TASK-108): resolve the PIN (view.scriptVersion), never the current
       // `release` — a suspended run continues the version it started with. Legacy-cohort fallback
@@ -640,12 +721,12 @@ export class RunManager {
       try {
         const registered = await this._catalog.resolve(spec.name, { version: view.scriptVersion });
         script = registered.script;
-        registeredDefaults = registered.defaults;
+        registeredContract = registered.params as ParamContract | undefined;
       } catch (err) {
-        if ((err as { code?: string } | undefined)?.code !== 'UNKNOWN_VERSION') throw err;
+        if ((err as { code?: string } | undefined)?.code !== 'VERSION_NOT_FOUND') throw err;
         const registered = await this._catalog.resolve(spec.name, {});
         script = registered.script;
-        registeredDefaults = registered.defaults;
+        registeredContract = registered.params as ParamContract | undefined;
         const sub = { pinned: view.scriptVersion, resolved: registered.version };
         await this._store.recordLegacySubstitution(runId, sub);
         console.log(`run.legacySubstitution: ${JSON.stringify({ runId, name: spec.name, ...sub })}`);
@@ -664,7 +745,23 @@ export class RunManager {
     // marker spelling, never possessed the secret, got it substituted into a dispatched prompt on
     // resume). If a marker survives in the snapshot, `resume()` below refuses typed instead —
     // "byte-identical to admission, or a typed refusal" never "silently dispatch the marker".
-    const effectiveParams = (await this._store.getEffectiveParams(runId)) ?? defaultRunParams(registeredDefaults);
+    const storedParams = await this._store.getEffectiveParams(runId);
+    // v24 (integrator; DES-146/DES-156 boundary, adjudication #4 C-7 [28]): a snapshot persisted
+    // BEFORE the per-agent contract has no `.agents` key at all — every v24 admission writes one
+    // (`{}` at minimum, since `contract.agents` is always passed). Reading that legacy flat shape
+    // back and resuming on it SILENTLY dropped every per-label model/effort/timeout: the run
+    // continued with the run-wide fields and nobody was told. `LEGACY_REREGISTER` is the code the
+    // design assigns ("this version predates the v24 contract and cannot run; re-register it") and
+    // it is already what `workflow_describe`/`workflow_list` report as `runnableReason`, so the
+    // refusal a caller meets here matches what the read surfaces already told it.
+    if (storedParams !== null && storedParams.agents === undefined) {
+      throw codedError(
+        'LEGACY_REREGISTER',
+        `LEGACY_REREGISTER: run ${runId} was admitted before the v24 per-agent parameter contract and cannot be resumed; re-register the workflow and start a new run`,
+        { runId, ...(spec.name !== undefined ? { workflow: spec.name } : {}) },
+      );
+    }
+    const effectiveParams = storedParams ?? defaultRunParams(undefined, registeredContract?.agents);
 
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
     const guard = new RunGuard({ concurrency: this._concurrency, budget: spec.budget ?? null });
@@ -696,6 +793,7 @@ export class RunManager {
       nestedFrameSeq: 0,
       workflowNodes: [],
       effectiveParams,
+      declaredAssets: declaredAssetsOf(registeredContract),
     };
     this._runs.set(runId, entry);
     return entry;
@@ -835,15 +933,33 @@ export class RunManager {
     const outcome = await nested.run(`${runId}-nested`, registered.script, args, entry.guard.budgetView().total);
     if ('result' in outcome) return outcome.result;
     const err = toErr(outcome.error);
-    throw codedError(err.code, err.message);
+    // v24 (DES-137): the one genuinely-`string` site — `toErr()` can return a raw `Error.name`
+    // (e.g. `SCRIPT_ERROR` from an uncaught throw). An unrecognized code becomes INTERNAL_ERROR
+    // with `detail.rawCode` set, a greppable production signal rather than a silent passthrough.
+    const mapped = toErrorCode(err.code);
+    throw codedError(mapped, err.message, mapped === 'INTERNAL_ERROR' && err.code !== 'INTERNAL_ERROR' ? { rawCode: err.code } : undefined);
   }
 
   /** Handles one child agent() call: replay from the resume cache when available, otherwise
    *  enforce budget + concurrency (RunGuard, single authority) and dispatch to the AgentSpawner. */
-  private async _handleAgentRequest(runId: string, prompt: string, opts: unknown, callSeq: number, framePath = ''): Promise<unknown> {
+  private async _handleAgentRequest(runId: string, positional: string, opts: unknown, callSeq: number, framePath = ''): Promise<unknown> {
     const entry = this._runs.get(runId);
     if (!entry) throw new Error(`Unknown run: ${runId}`);
-    const key: CallKey = { prompt, opts: (opts ?? {}) as AgentOpts };
+    // v24 (integrator; DES-143/ADR-029 + REQ-110/REQ-113): the script-facing call is
+    // `agent(LABEL, {prompt, …})` — `scanAgentCalls` REFUSES registration unless the first
+    // positional is a literal label matching `/^[A-Za-z_][\w-]*$/` and a declared
+    // `meta.params.agents.<label>`. The sandbox API (`guards.ts`) still marshals that positional
+    // through as `prompt` and nothing ever set `opts.label`, so on a REAL dispatch: the per-label
+    // parameter slice below (`entry.effectiveParams.agents[label]`) never resolved, `markQueued`
+    // recorded every agent as anonymous, `run_agent_log({label})` could not find its agent, and
+    // DES-154's selective materialization had no declared set to materialize. The whole v24
+    // per-agent chain hung off one translation nobody wrote. It is written here, at the single
+    // point the positional crosses the sandbox boundary, so every caller (agent(), parallel(),
+    // pipeline(), a nested workflow() frame) gets it once.
+    const rawOpts = (opts ?? {}) as AgentOpts & { prompt?: unknown };
+    const label = typeof rawOpts.label === 'string' && rawOpts.label !== '' ? rawOpts.label : positional;
+    const prompt = typeof rawOpts.prompt === 'string' ? rawOpts.prompt : positional;
+    const key: CallKey = { prompt, opts: { ...rawOpts, label } };
     if (entry.cachePlan) {
       const cached = entry.cachePlan.replay(callSeq, key);
       if (cached !== MISS) return cached;
@@ -875,6 +991,30 @@ export class RunManager {
         // D-V3M-2 (REQ-020 D-DOS): the actual gateway dispatch (the SDK-CLI subprocess spawn) runs
         // inside the process-global semaphore slot — so `GET /api/status`'s inUse reflects real
         // concurrent spawns across all runs and returns to baseline once each settles.
+        // v24 (DES-146, TASK-158): when this call's script label has its OWN per-agent slice in
+        // the admission snapshot (`entry.effectiveParams.agents[label]`), its resolved
+        // model/effort/timeoutMs/appendPrompt + provenance override the run-wide flat fields for
+        // THIS call only — a sibling label's call reads its own slice, never this one's (REQ-110
+        // close). `prompt`/`tools` stay the run-wide (workflow-level, not per-agent) fields. No
+        // label, or no contract at admission (ad-hoc/legacy script) → the flat snapshot unchanged,
+        // same as before this task.
+        const labelParams = key.opts.label ? entry.effectiveParams.agents?.[key.opts.label] : undefined;
+        const runParams: RunParams = labelParams
+          ? { ...entry.effectiveParams, model: labelParams.model, effort: labelParams.effort, timeoutMs: labelParams.timeoutMs, appendPrompt: labelParams.appendPrompt, provenance: labelParams.provenance }
+          : entry.effectiveParams;
+        // v24 (integrator; REQ-113, ARCH-103/DES-154, adjudication #4 C-2): `AgentReq.assets` —
+        // THE missing wire. `agent-executor.ts` forwards it, `claude-agent-sdk-client.ts` acts on
+        // it and `materialize-assets.test.ts` proved the algorithm, but NOBODY produced the value,
+        // so on every real dispatch `req.assets` was `undefined` and the gateway took its
+        // "no workspace / no assets -> materialize nothing" branch. REQ-113 ("each agent declares
+        // the skills IT needs, not one set for the whole workflow") therefore had no runtime
+        // behaviour at all. Built here from the three things only this scope has together: the run's
+        // workflow name, THIS label's declared `skills`/`mcp`, and the resolved asset roots.
+        // Absent for an ad-hoc/unnamed run or an unlabelled call — nothing to scope assets BY.
+        const declared = key.opts.label ? entry.declaredAssets[key.opts.label] : undefined;
+        const assets = entry.name !== undefined && declared !== undefined
+          ? { roots: assetRootsFor(this._assetRoot, this._globalAssetRoot, entry.name), declared, workflow: entry.name }
+          : undefined;
         const outcome = await this._semaphore.withSlot(() =>
           entry.spawner.run({
             runId,
@@ -883,10 +1023,12 @@ export class RunManager {
             opts: key.opts,
             workspace: entry.workspace,
             signal: entry.abortController.signal,
+            ...(assets !== undefined ? { assets } : {}),
             // v21 (ARCH-068, DES-105, TASK-101): the run-immutable admission-time snapshot — one
             // per run (incl. nested workflow() frames, which share the parent's entry), never
-            // re-resolved per call.
-            runParams: entry.effectiveParams,
+            // re-resolved per call. v24 (TASK-158): narrowed to this call's label above when the
+            // admission snapshot has a per-label slice for it.
+            runParams,
           }),
         );
         const value = outcome.kind === 'null' ? null : outcome.value;

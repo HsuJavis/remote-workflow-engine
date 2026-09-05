@@ -18,7 +18,7 @@
 //   4. Un-tokened POST /assets/blob/:sha → 401 (before putBlobStream consumes req)
 //   5. Un-tokened POST /assets/manifest → 401 (before body read)
 //   6. Valid engine bearer → POST /mcp initialize → 200
-//   7. I-2 hermeticity (DES-096 DoD): workflow_run with valid bearer → workflow_status carries
+//   7. I-2 hermeticity (DES-096 DoD): run_start with valid bearer → run_status carries
 //      `principal:<email>` AND the principal is absent from the sandbox child env vars
 //
 // Red reason: `src/auth/token-store.ts` + `src/auth/auth-service.ts` do not exist →
@@ -27,7 +27,7 @@
 //
 // Mock policy (integration — DES-100): real `createServer` + real HTTP + real net-guard +
 //   real SQLite token-store; Google is a legitimately-doubled external dep (injected jwksFetch
-//   + googleBase pointing at a local test stub). No LLM/gateway mock (workflow_run uses
+//   + googleBase pointing at a local test stub). No LLM/gateway mock (run_start uses
 //   script-only, no real model call).
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -93,6 +93,12 @@ beforeAll(async () => {
       googleBase: 'http://127.0.0.1:0',      // unused in these tests (no full OAuth flow)
       jwksFetch: fakeJwksFetch,
     },
+    // v24 (REQ-109 roles, ADR-028): I-2's hermeticity case registers+publishes a workflow with its
+    // own bearer, and `workflow_register`/`workflow_publish` are `{minRole:'author'}`. An
+    // authenticated id absent from this map resolves to `'user'` and is refused FORBIDDEN_ROLE.
+    // Only the ids that perform a catalog WRITE are listed — every other case in this file exercises
+    // the auth ROUTES (token/JWKS/401), which are role-free.
+    principals: { 'hermetic-it078@example.com': { role: 'author' } },
   } as never); // `auth` not yet in ServerConfig → cast to avoid TS error
 });
 
@@ -203,7 +209,7 @@ describe('Valid bearer → 200 on protected surfaces (DES-095, DES-096, IT-078)'
 // ── 4. I-2 hermeticity: principal present on status, absent from sandbox env ─
 
 describe('I-2 hermeticity (DES-096 DoD, IT-078)', () => {
-  it('workflow_run with bearer → workflow_status carries principal:<email> AND principal absent from run workspace files', async () => {
+  it('run_start with bearer → run_status carries principal:<email> AND principal absent from run workspace files', async () => {
     const email = 'hermetic-it078@example.com';
     const token = await mintTestBearer(email);
 
@@ -233,7 +239,7 @@ describe('I-2 hermeticity (DES-096 DoD, IT-078)', () => {
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({
           jsonrpc: '2.0', id: 2, method: 'tools/call',
-          params: { name: 'workflow_status', arguments: { runId } },
+          params: { name: 'run_status', arguments: { runId } },
         }),
       });
       const sBody = await sRes.json() as { result?: { content?: Array<{ text?: string }> } };

@@ -4,14 +4,14 @@ import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
 
 const REQUIRED_TOOLS = [
-  'workflow_run',
-  'workflow_status',
-  'workflow_result',
-  'workflow_suspend',
-  'workflow_resume',
-  'workflow_stop',
+  'run_start',
+  'run_status',
+  'run_result',
+  'run_suspend',
+  'run_resume',
+  'run_stop',
   'workflow_list',
-  'workflow_agent_log',
+  'run_agent_log',
 ];
 
 describe('MCP Facade — tool registration (ARCH-001)', () => {

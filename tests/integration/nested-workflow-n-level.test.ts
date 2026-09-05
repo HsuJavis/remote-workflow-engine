@@ -139,8 +139,8 @@ describe('N-level workflow() composition (v8 Slice 1, REQ-041..044)', () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
     // leaf catches its own agent() failure and reports the code as a VALUE — so the shared-budget
     // block is observed directly (an uncaught agent throw flattens to SCRIPT_ERROR in evaluateScript).
-    await registerPublished(catalog, 'leaf', `try { const l = await agent('L'); return { l }; } catch (e) { return { blocked: e && (e.name || e.code) }; }`);
-    await registerPublished(catalog, 'mid', `const m = await agent('M'); const x = await workflow('leaf', {}); return { m, x };`);
+    await registerPublished(catalog, 'leaf', `try { const l = await agent('L', {}); return { l }; } catch (e) { return { blocked: e && (e.name || e.code) }; }`);
+    await registerPublished(catalog, 'mid', `const m = await agent('M', {}); const x = await workflow('leaf', {}); return { m, x };`);
     const store = new InMemoryRunStore(CLOCK);
     const gwCounts = new Map<string, number>();
     const gateway: GatewayClient = {
@@ -155,7 +155,7 @@ describe('N-level workflow() composition (v8 Slice 1, REQ-041..044)', () => {
     // the SHARED guard — proving the nested level did NOT get a fresh per-level budget.
     const runId = await startScript(
       mgr,
-      `const t = await agent('T'); const w = await workflow('mid', {}); return { t, w };`,
+      `const t = await agent('T', {}); const w = await workflow('mid', {}); return { t, w };`,
       { budget: 2000 },
     );
     expect(await completedValue(mgr, runId)).toEqual({ t: 'T', w: { m: 'M', x: { blocked: 'BudgetExceededError' } } });
@@ -167,13 +167,13 @@ describe('N-level workflow() composition (v8 Slice 1, REQ-041..044)', () => {
   // ── REQ-044(b): journal callSeq unique + MAX_SAFE_INTEGER-safe at depth 3 ─────────────────
   it('REQ-044 keeps nested journal callSeq keys unique and within MAX_SAFE_INTEGER at depth 3', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    await registerPublished(catalog, 'leaf', `const l = await agent('L'); return l;`);
-    await registerPublished(catalog, 'mid', `const m = await agent('M'); const x = await workflow('leaf', {}); return { m, x };`);
+    await registerPublished(catalog, 'leaf', `const l = await agent('L', {}); return l;`);
+    await registerPublished(catalog, 'mid', `const m = await agent('M', {}); const x = await workflow('leaf', {}); return { m, x };`);
     const store = new CapturingStore(CLOCK);
     const mgr = new RunManager({ store, clock: CLOCK, catalog, spawner: echoSpawner(), maxWorkflowDepth: 3 });
 
     // top(0):agent(T) → mid(1):agent(M) → leaf(2):agent(L). Three agent() journal entries in ONE run.
-    const runId = await startScript(mgr, `const t = await agent('T'); const w = await workflow('mid', {}); return { t, w };`);
+    const runId = await startScript(mgr, `const t = await agent('T', {}); const w = await workflow('mid', {}); return { t, w };`);
     const value = await completedValue(mgr, runId);
     expect(value).toEqual({ t: 'T', w: { m: 'M', x: 'L' } });
 
