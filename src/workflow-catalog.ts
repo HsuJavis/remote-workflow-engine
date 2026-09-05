@@ -266,14 +266,14 @@ export class WorkflowCatalog {
    *  Why the fire path needs it. `NOT_IN_RELEASE` exists to make "the released version no longer
    *  lists this trigger" observable. Until AF-2 the check was gated on `triggers !== undefined`,
    *  using a NULL column as a proxy for "this trigger did not arrive through the registration claim
-   *  door" — the OTHER door (`schedule_create({workflow})` / `webhook_create({workflow})`, which
-   *  ARCH-099 says was removed and AF-5 records as still shipped) binds a trigger that never enters
-   *  any version's `triggers[]`. Once `[]` is stored honestly (as ARCH-098 requires) that proxy is
+   *  door" — the OTHER door (`schedule_create({workflow})` / `webhook_create({workflow})`, closed
+   *  on the tool surface by v24 adjudication #8 (H-2, issue #56) and now reachable only as a pre-v24
+   *  legacy row) binds a trigger that never enters any version's `triggers[]`. Once `[]` is stored honestly (as ARCH-098 requires) that proxy is
    *  gone, and the membership check would refuse every create-time-bound trigger on every v24
    *  workflow. This predicate is the honest discriminator, and it needs no new column — which
    *  matters because the webhook store has only ONE binding column and could not tell the two doors
-   *  apart any other way. When v25 closes the create-time door (AF-5) this predicate becomes
-   *  always-true for any trigger that can reach the fire path, and it goes away with the door. */
+   *  apart any other way. Adjudication #8 closed the door for NEW triggers, but the legacy rows
+   *  it left behind still reach the fire path, so the predicate stays until they are gone. */
   declaredTriggers(name: string): Set<string> {
     const rows = this._db.prepare('SELECT triggers FROM workflow_versions WHERE name = ?').all(name) as Array<{ triggers: string | null }>;
     const declared = new Set<string>();

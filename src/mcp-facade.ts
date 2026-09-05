@@ -259,9 +259,11 @@ export class McpFacade {
    *  reported as `{id, status:'TRIGGER_NOT_FOUND'}` rather than dropped — a trigger the released
    *  version claims but no store knows is precisely what the reader needs to see. */
   private _resolveTriggers(workflow: string, declaredIds: readonly string[]): unknown[] {
-    // Both v24 binding doors, de-duplicated in declaration-then-discovery order: the ids the
-    // RESOLVED VERSION declares, plus the ids either store reports as bound to this workflow (a
-    // `schedule_create({workflow})` binds at creation and never enters a version's `triggers[]`).
+    // Both binding doors, de-duplicated in declaration-then-discovery order: the ids the RESOLVED
+    // VERSION declares, plus the ids either store reports as bound to this workflow (a create-time
+    // `schedule_create({workflow})` binding never entered a version's `triggers[]`). v24
+    // adjudication #8 (H-2) closed the create-time door, so the second source now reaches PRE-v24
+    // legacy rows only — and still must, or those rows become invisible here.
     const ids = [...new Set([
       ...declaredIds,
       ...(this.schedulerClaims.claimedIdsFor?.(workflow) ?? []),
@@ -340,8 +342,9 @@ export class McpFacade {
   async workflowDeregister(a: { name: string }, principal: Principal): Promise<Record<string, unknown>> {
     try {
       // v24 Gate 7.5 (D-1b, REQ-115/ADR-026): the catalog reports the ids the VERSION ROWS declare
-      // — the claim door. A trigger bound AT CREATION (`schedule_create({workflow})`, the other
-      // v24 door) never enters a version's `triggers[]`, so deregister released nothing, the row
+      // — the claim door, and since adjudication #8 (H-2, issue #56) the only one a new trigger can
+      // use. A trigger bound AT CREATION (`schedule_create({workflow})`, now reachable only as a
+      // pre-v24 legacy row) never enters a version's `triggers[]`, so deregister released nothing, the row
       // kept pointing at the deleted name, and a same-name re-registration inherited it: live, a
       // real cron fired a run for the new registration 47 s later. `claimedIdsFor()` — the exact
       // reader `workflow_describe` already uses to SHOW both doors — is now consulted here too, so

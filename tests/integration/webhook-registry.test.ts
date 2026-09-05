@@ -334,7 +334,9 @@ describe('v24: webhooks created unclaimed, claimed at registration (IT-112, DES-
 
       // v24 Gate 8 (AF-2, TASK-161): the OTHER door. The released version declares a NON-EMPTY
       // trigger list that omits this id, but no version ever declared it either — it was bound at
-      // creation (`webhook_create({workflow})`, AF-5's surviving door). A list it was never in has
+      // creation (`webhook_create({workflow})` — AF-5's door, closed on the tool surface by
+      // adjudication #8; this file drives the PORT directly, which still accepts it exactly as a
+      // pre-v24 row does). A list it was never in has
       // no jurisdiction over it, so it fires. Before TASK-161 this case was indistinguishable from
       // the first one, because an empty declaration was persisted as NULL.
       triggers = ['some-other-trigger-id'];

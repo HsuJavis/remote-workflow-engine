@@ -261,11 +261,12 @@ export class SqliteSchedulerPort {
    *  respects that: it returns ids only, which `_resolveTriggers` then resolves one at a time. It
    *  is NOT a resurrection of the retired `listByWorkflow`, which returned full binding objects for
    *  the deleted analyzer's diagram fingerprint. It exists because BOTH v24 binding doors are live:
-   *  a trigger declared in a version's `triggers[]` (the claim door) and a trigger bound at
-   *  creation (`schedule_create({workflow})` — an OPTIONAL argument since v24 Gate 7.5's D-1 fix,
-   *  but still a live door). Sourcing ids from only one of them would make REQ-103 unobservable for
-   *  triggers created the other way — and, since D-1b, would also leave the create-time binding
-   *  unreleased at deregister, which is what `McpFacade.workflowDeregister` now calls this for. */
+   *  a trigger declared in a version's `triggers[]` (the claim door — the ONLY door since v24
+   *  adjudication #8, H-2/issue #56, removed `workflow` from `schedule_create`) and a trigger bound
+   *  at creation, which now means a PRE-v24 legacy row only. Sourcing ids from only one of them
+   *  would make REQ-103 unobservable for triggers bound the other way — and, since D-1b, would also
+   *  leave a legacy binding unreleased at deregister, which is what `McpFacade.workflowDeregister`
+   *  calls this for. */
   claimedIdsFor(workflow: string): string[] {
     const rows = this._db
       .prepare('SELECT id FROM schedules WHERE claimedBy = ? OR workflow = ?')

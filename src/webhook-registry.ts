@@ -281,10 +281,11 @@ export class WebhookRegistry {
     // Membership, with BOTH guards (v24 Gate 8, AF-2 / TASK-161):
     //   - `triggers !== undefined` still covers a genuine PRE-v24 version row, whose column did not
     //     exist and therefore says nothing;
-    //   - `declaresTrigger` covers the create-time binding door (`webhook_create({workflow})`, which
-    //     AF-5 records as still shipped): such a webhook never entered ANY version's `triggers[]`,
-    //     so the released version's list has no jurisdiction over it and refusing it would silently
-    //     stop every webhook bound that way.
+    //   - `declaresTrigger` covers the create-time binding door (`webhook_create({workflow})`):
+    //     such a webhook never entered ANY version's `triggers[]`, so the released version's list
+    //     has no jurisdiction over it and refusing it would silently stop every webhook bound that
+    //     way. v24 adjudication #8 (H-2, issue #56) closed that door on the tool surface (AF-5
+    //     fixed), so this guard now protects PRE-v24 legacy rows — which still exist and still fire.
     // The first guard used to carry both jobs by proxy, because an empty declaration was stored as
     // NULL — which is the very conflation AF-2 is about, and why fixing the storage without fixing
     // this line trades one silent failure for another.

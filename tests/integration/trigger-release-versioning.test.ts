@@ -126,7 +126,8 @@ describe('moving `release` to a version that declares no triggers un-declares th
 
   // The other half of the same rule, and the reason the storage fix alone is not the whole fix.
   // A trigger BOUND AT CREATION (`webhook_create({workflow})` / `schedule_create({workflow})` — the
-  // door ARCH-099 says was removed but AF-5 records as still shipped) never enters ANY version's
+  // door ARCH-099 says was removed, which v24 adjudication #8 (H-2, issue #56) finally closed on the
+  // tool surface; the pre-v24 rows it bound survive, which is why this half still matters) never enters ANY version's
   // `triggers[]`. Before this change the fire path used "the version list is NULL" as its proxy for
   // "this trigger did not come through the claim door"; once `[]` is stored honestly that proxy is
   // gone, and a naive membership check refuses every create-time-bound trigger on every v24
