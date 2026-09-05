@@ -1198,7 +1198,7 @@ users see, so REQ-105 removes it from every user-facing surface and keeps the fu
 ### REQ-116 — `workflow_authoring_guide`: the engine teaches its own authoring contract
 - **status:** draft
 - **traces:** REQ-106, REQ-107
-- **acceptance:** Given `tools/list` alone Then a cold client discovers `workflow_authoring_guide` and `workflow_register`'s description tells it to call that first; Given the guide Then it returns, in one response: the full sandbox API (`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget`, `workflow`), the `meta` shape with a WORKING `params.agents` example, the authoring rules, the complete Mermaid vocabulary of REQ-112, the tunable-versus-locked table with where each is written and how a user changes it, the one-level nesting limit and the instruction to FLATTEN when more depth is needed, and the note that assets are shared across versions; Given every example the guide hands out Then a test REGISTERS it against the real engine and asserts it is accepted — v23 shipped an `AUTHORING.md` example the engine refused, found only because Gate 7.5 ran it, and this guide will carry many more examples than that file did; Given a registration that fails on parse, contract, diagram or trigger Then the error message points at this tool.
+- **acceptance:** Given `tools/list` alone Then a cold client discovers `workflow_authoring_guide` and `workflow_register`'s description tells it to call that first; Given the guide Then it returns, in one response: the full sandbox API (`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget`, `workflow`), the `meta` shape with a WORKING `params.agents` example, the authoring rules, the complete Mermaid vocabulary of REQ-112, the tunable-versus-locked table with where each is written and how a user changes it, this deployment's resolved `maxWorkflowDepth` and what happens at the limit **(corrected 2026-09-05, orchestrator adjudication #9: this clause said 'the one-level nesting limit and the instruction to FLATTEN'. v8 shipped N-level `maxWorkflowDepth` (run-manager.ts) and neither this requirement nor ARCH-002/ARCH-107 followed; adjudication #4 C-5 corrected the two architecture rows and missed this one. The independent verifier registered a three-level chain and the engine accepted all three, so the guide — which documents the configurable depth and explicitly retires the old teaching — is right and this text was wrong)**, and the note that assets are shared across versions; Given every example the guide hands out Then a test REGISTERS it against the real engine and asserts it is accepted — v23 shipped an `AUTHORING.md` example the engine refused, found only because Gate 7.5 ran it, and this guide will carry many more examples than that file did; Given a registration that fails on parse, contract, diagram or trigger Then the error message points at this tool.
 - **iter:** v24
 
 ### REQ-117 — a cold model, given only the schema and the guide, gets it right the first time
@@ -1235,6 +1235,13 @@ reached this from a direction worth recording: it is what makes the *diagram dra
 whenever `deploy` changes. Flattening — read the callee's script, merge it — keeps the script and the
 picture the same size. That is also why the one-level nesting limit STAYS (and it matches Claude Code's
 own dynamic workflow, which nests one level too).
+
+> **Annotation (2026-09-05, adjudication #9)** — this paragraph is about the DIAGRAM: how deep a
+> picture may go before a callee becomes a black box. It is NOT about `maxWorkflowDepth`, the
+> runtime nesting v8 shipped, which is N-level and configurable. REQ-116's acceptance conflated the
+> two and asked the guide to teach a one-level RUNTIME cap; the independent verifier registered a
+> three-level chain and the engine accepted all three, so that clause was corrected above. This
+> paragraph stands as written — the diagram rule it decides is still in force.
 
 **Rules carried in from v21–v23, each bought at cost:**
 

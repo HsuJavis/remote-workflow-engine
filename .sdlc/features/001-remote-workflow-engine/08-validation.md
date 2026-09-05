@@ -8309,3 +8309,43 @@ warning is unchanged and is repeated at the end of this section.
   **OpenRouter(passthrough)**。
 - **iter:** v24
 
+### VAL-167 — 獨立驗證者逐條驗十二個 REQ(v24 合併之後)
+- **status:** green
+- **traces:** REQ-107, REQ-108, REQ-109, REQ-110, REQ-111, REQ-112, REQ-113, REQ-114, REQ-115, REQ-116, REQ-117, REQ-118
+- **tier:** acceptance
+- **real:** true
+- **result:** 8 PASS / 1 FAIL / 2 PARTIAL / 1 PASS-with-caveat
+- **evidence:** 2026-09-05,擁有者要求。一個**全新的 Claude 實例**,在 tmux 互動視窗、
+  `/tmp/rwe-req-verify`(上溯無 `CLAUDE.md`、該路徑無記憶),拿到十二條驗收條文、
+  三個角色的 bearer(以引擎自己的 `TokenStore` 鑄)、一台 auth 開啟的專用引擎(8794),
+  以及 Playwright。**它不得改動引擎原始碼,只驗證。**
+  完整報告見 `v24-independent-req-verification.md`(1264 行,逐條含呼叫、回應、瀏覽器所見)。
+
+  **它抓到兩個此前所有 gate 都沒抓到的缺陷,兩個我都親手複驗並修掉:**
+  - **REQ-115 FAIL → issue #56**:`schedule_create({workflow:'不存在的名字'})` 成功建出
+    `claimedBy` 幽靈的排程。v22 的 H4 鎖被搬到 `workflow_register`,**舊門卻留著不驗任何東西**。
+    Gate 8 把它列 AF-5、判 MID 延到 v25;那個判斷(以及我裁定 #7 對它的接受)漏掉了
+    「拿掉檢查而留著參數會改變嚴重性」。已修(裁定 #8 H-2),**尚未由驗證者重驗**。
+  - **dashboard 看不到圖 → issue #57**:`/api/workflows/:name/describe` 是所有 dashboard 路由中
+    唯一被 auth 閘門擋住的,而 dashboard 的前端是無 token 的瀏覽器 GET。已修(裁定 #8 H-1),
+    **尚未由驗證者重驗**。
+
+  **驗證者對自己證據的三個誠實限制**(它主動寫出來,沒有人問):
+  1. REQ-117 的受測者是它自己派生的新 context,**同一個模型家族**,不是獨立來源的實例 ——
+     「這是本環境能取得最冷的受測者,但不是需求設想的完全獨立實例」。
+  2. **它給了受測者一個 guide 裡沒有的提示**(這個部署的模型很慢、`timeoutMs` 要 ≥300000),
+     並明說那是提示。
+  3. 它自己讀過驗收條文,所以**不具備當受測者的資格**,只當驗證者。
+
+  **REQ-116 PARTIAL 的三項落差,其中一項是需求本身過期**:
+  REQ-116 要求 guide 教「一層巢狀上限與 FLATTEN 指示」,但 guide 教的是可設定的
+  `maxWorkflowDepth`,並明文退掉舊教法;驗證者實測註冊三層鏈 `depth3→depth2→depth1` **全部接受**。
+  **引擎與 guide 一致,錯的是需求** —— 與裁定 #4 C-5 判 ARCH-002/ARCH-107 過期是同一件事,
+  當時漏了 REQ-116 這一處。另兩項是真的文件缺口:`workflow_register` 的描述只寫
+  「See also」而非「先呼叫它」;鎖定/可調的「表」實際是兩句話,沒說各自寫在哪、使用者怎麼改。
+
+  **REQ-118 PARTIAL**:30 pass、5 UNVERIFIED(該引擎無 GitHub token,五個 `issue_*`,理由有記)、
+  2 個契約偏差。**REQ-117** 的作者契約通過,但讀回的結果內容不正確 ——
+  本地 7B 模型吐 tool-call JSON 而非散文,與 issue #55 同一個根因。
+- **iter:** v24
+
