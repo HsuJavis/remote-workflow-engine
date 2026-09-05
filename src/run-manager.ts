@@ -22,7 +22,7 @@ import { HardenedSeedRefFetcher } from './seedref-fetcher.js';
 const SEEDREF_TIMEOUT_MS = 30_000;
 const SEEDREF_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 const SEEDREF_MAX_FILE_BYTES = 10 * 1024 * 1024;
-import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry } from './types.js';
+import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning } from './types.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore, sumUsageTokens } from './run-store.js';
 import type { Clock } from './clock.js';
@@ -82,6 +82,13 @@ export interface RunManagerDeps {
    *  top-level run reaching completed/failed/stopped. Fire-and-forget (a throwing listener never
    *  wedges the run's terminal write). The continuation store subscribes here (REQ-053). */
   onTerminal?: (runId: string, status: RunStatus) => void;
+  /** v25 (issue #53, adjudication #9 I-2): sink for structured observations about the terminal path
+   *  — a run going terminal with live agents, or a terminal status with no matching transition row.
+   *  Defaults to `console.warn` of the JSON record, which is what puts it in the engine log with no
+   *  operator wiring: a sink that only exists when a composition root remembers to pass it is the
+   *  bug class this codebase has already hit twice (v11 updateFlagPath, v15 auth). Fire-and-forget,
+   *  like `onTerminal` — a throwing listener never wedges a run. */
+  onWarning?: (warning: EngineWarning) => void;
   /** v8 Slice 4 (REQ-054): max live (non-terminal) top-level runs; an over-limit start() is rejected
    *  with RUN_ADMISSION_LIMIT before any durable work. Default 64. Invalid (≤0/non-integer) rejected. */
   maxConcurrentRuns?: number;
@@ -198,6 +205,7 @@ export class RunManager {
   private readonly _maxWorkflowDepth: number;
   private readonly _maxWorkflowDescendants: number;
   private readonly _onTerminal: ((runId: string, status: RunStatus) => void) | undefined;
+  private readonly _onWarning: (warning: EngineWarning) => void;
   private readonly _maxConcurrentRuns: number;
   private readonly _cas: CasStore | undefined;
   /** v13 (REQ-080, TASK-077): normalized allowlist for seedRef egress gate; [] = disabled. */
@@ -211,6 +219,9 @@ export class RunManager {
   /** v21 Gate 8 send-back (review §4 B1): configured alias-name set for admission-time UNKNOWN_ALIAS. */
   private readonly _aliasNames: Set<string>;
   private readonly _runs = new Map<string, RunEntry>();
+  /** v25 (#53): runIds already reported for `terminal_without_transition` — one record per run,
+   *  not one per poll (a terminal run is polled until the caller notices it is terminal). */
+  private readonly _warnedMissingTransition = new Set<string>();
 
   /** v8 Slice 1: config values are positive integers — reject bad config loudly at construction
    *  (the composition root builds RunManager from rwe.config.json, so this IS the config-load check). */
@@ -239,6 +250,7 @@ export class RunManager {
     this._maxWorkflowDepth = RunManager._positiveInt(deps.maxWorkflowDepth, 4, 'maxWorkflowDepth');
     this._maxWorkflowDescendants = RunManager._positiveInt(deps.maxWorkflowDescendants, 256, 'maxWorkflowDescendants');
     this._onTerminal = deps.onTerminal;
+    this._onWarning = deps.onWarning ?? ((w) => { console.warn(`[remote-workflow-engine] ${JSON.stringify(w)}`); });
     this._maxConcurrentRuns = RunManager._positiveInt(deps.maxConcurrentRuns, 64, 'maxConcurrentRuns');
     this._cas = deps.cas;
     // v13 (REQ-080, TASK-077): normalize allowlist at construction (config-load check); default [] = disabled.
@@ -649,7 +661,45 @@ export class RunManager {
   async status(runId: string): Promise<RunStatusView> {
     const view = await this._store.getRun(runId);
     if (!view) throw new IllegalTransitionError('unknown', 'status');
+    await this._checkTerminalHasTransition(runId, view);
     return this._mergeLive(runId, view);
+  }
+
+  /** v25 (issue #53, adjudication #9 I-2, warning 2): the invariant ARCH-006 promises — a terminal
+   *  status has a matching row in `transitions`, because `recordTransition` is the single writer of
+   *  both and writes them together. Run 3977b82d violated it: `run_status` said `failed`, the trail
+   *  had no `failed` row, and there was no error anywhere to explain either.
+   *
+   *  Checked HERE, on the READ, rather than after the write. A check straight after
+   *  `recordTransition` would be near-vacuous for the store production runs on — SqliteRunStore
+   *  INSERTs the row and only then UPDATEs the status, so a status it wrote always has its row —
+   *  whereas the read side is where the broken state was actually OBSERVED, and it fires whatever
+   *  produced it. The trigger is `terminalAt` being absent (both stores derive it from the
+   *  transitions themselves, so it is a genuine cross-check against `status`, not a re-read of the
+   *  same field) and costs nothing on the healthy path: the transitions are fetched only once the
+   *  invariant is already broken.
+   *
+   *  Once per runId — a terminal run gets polled, and one record is evidence while one per poll is
+   *  noise that buries it. Observability only: the view returned is byte-identical either way. */
+  private async _checkTerminalHasTransition(runId: string, view: RunStatusView): Promise<void> {
+    if (!TERMINAL.includes(view.status) || view.terminalAt !== undefined) return;
+    if (this._warnedMissingTransition.has(runId)) return;
+    this._warnedMissingTransition.add(runId);
+    const transitions = await this._store.getTransitions(runId);
+    const entry = this._runs.get(runId);
+    this._warn({
+      kind: 'terminal_without_transition',
+      ts: this._clock.isoNow(),
+      runId,
+      terminalState: view.status,
+      reason: entry?.resultError ? `${entry.resultError.code}: ${entry.resultError.message}` : null,
+      transitions: transitions.map((t) => `${t.from ?? 'null'}->${t.to}`),
+    });
+  }
+
+  /** Fire-and-forget, like `onTerminal`: a throwing sink never wedges the path it observes. */
+  private _warn(warning: EngineWarning): void {
+    try { this._onWarning(warning); } catch { /* an observer's failure is never the run's */ }
   }
 
   /** Overlays this-process live data (phases observed, agent records captured) onto the
@@ -813,6 +863,26 @@ export class RunManager {
         agents = redact(agents, secrets) as typeof agents;
       }
       await this._store.saveSnapshot(runId, { phases: entry.phases, agents, workflowNodes: entry.workflowNodes });
+      // v25 (issue #53, adjudication #9 I-2, warning 1): the run is terminal — is anything it owns
+      // still running? Run 3977b82d was in EXACTLY this state (its agent ran on for ~36 seconds
+      // after the terminal write and produced real output) and nothing was recorded. Emitted from
+      // the REDACTED array on purpose: a label or state that carried a secret value must not reach
+      // the log by this new route (DES-088's redact-at-capture sink, same array, same reason).
+      //
+      // This does NOT abort the agent. Making a terminal state stop the work it owns is a separate
+      // decision with its own tests (adjudication #9 I-2: "不改變任何現有行為"); the point here is
+      // that when it happens again there is a record naming what was left running.
+      for (const a of agents) {
+        if (a.state !== 'queued' && a.state !== 'running') continue;
+        this._warn({
+          kind: 'agent_live_at_terminal',
+          ts: this._clock.isoNow(),
+          runId,
+          terminalState: to,
+          reason: entry.resultError ? `${entry.resultError.code}: ${entry.resultError.message}` : null,
+          agent: { agentId: a.agentId, ...(a.label !== undefined ? { label: a.label } : {}), state: a.state },
+        });
+      }
     }
     // v8 REQ-052: fire onTerminal from the ONE authoritative choke (covers stopped, which the
     // un-.catch'd .then in _runLive never sees) — AFTER the transition is persisted, and NOT awaited,

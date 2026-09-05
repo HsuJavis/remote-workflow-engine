@@ -11,6 +11,36 @@ export type StartedBy = {
 // (not terminal), distinct from a user `suspended`/`stopped`. hydrateAll assigns it at boot recovery.
 export type RunStatus = 'queued' | 'running' | 'suspended' | 'stopped' | 'completed' | 'failed' | 'interrupted';
 
+/** v25 (issue #53, adjudication #9 I-2): one structured observation about a run's terminal path.
+ *  OBSERVABILITY ONLY — emitting one changes no control flow, refuses nothing and is never surfaced
+ *  to a caller; it exists so the next occurrence of #53 leaves evidence at the scene instead of
+ *  being caught by coincidence a second time.
+ *
+ *  Run `3977b82d-5a01-4b37-a4db-d4ea4feca17a` reached `failed` 8ms after a resume with (a) no
+ *  `failed` row in its `transitions` and (b) its agent still running, for another ~36 seconds,
+ *  producing output nobody would ever read. Both symptoms are directly detectable; neither left a
+ *  line behind. These are the two detections, and each names the run so the two can be joined. */
+export interface EngineWarning {
+  /** `agent_live_at_terminal` — a run reached a terminal state while one of its agents was still
+   *  `queued`/`running` (the orphan half; one record per such agent).
+   *  `terminal_without_transition` — a run's queryable status is terminal but no matching row exists
+   *  in its transitions (the unexplained half; the invariant ARCH-006's "one writer of every state
+   *  transition" is supposed to make unbreakable). */
+  kind: 'agent_live_at_terminal' | 'terminal_without_transition';
+  /** ISO timestamp from the engine's own Clock — the field #53's investigation had to do without. */
+  ts: string;
+  runId: string;
+  terminalState: RunStatus;
+  /** Why the run went terminal, when the engine knows it (a failed run's error); `null` otherwise —
+   *  `null` is itself the finding for #53, whose failure had no reason anywhere. */
+  reason: string | null;
+  /** `agent_live_at_terminal` only: the agent that was still live, and what state it was in. */
+  agent?: { agentId: string; label?: string; state: string };
+  /** `terminal_without_transition` only: the rows that DID land, as `"from->to"` — "which
+   *  transitions were recorded" is the first question #53 raised and nothing could answer. */
+  transitions?: string[];
+}
+
 /** O-2 (review finding): one recorded state transition — the audit trail ARCH-006 promises
  *  ("one writer of every state transition, timestamp+runId"). `from` is null for the initial
  *  queued state. Persisted by RunStore.recordTransition, read back via RunStore.getTransitions. */
