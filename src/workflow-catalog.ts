@@ -260,6 +260,35 @@ export class WorkflowCatalog {
     `);
   }
 
+  /** v24 Gate 8 (AF-2, TASK-161): the UNION of `triggers[]` over every version row of `name` — "has
+   *  this workflow ever DECLARED this trigger id?".
+   *
+   *  Why the fire path needs it. `NOT_IN_RELEASE` exists to make "the released version no longer
+   *  lists this trigger" observable. Until AF-2 the check was gated on `triggers !== undefined`,
+   *  using a NULL column as a proxy for "this trigger did not arrive through the registration claim
+   *  door" — the OTHER door (`schedule_create({workflow})` / `webhook_create({workflow})`, which
+   *  ARCH-099 says was removed and AF-5 records as still shipped) binds a trigger that never enters
+   *  any version's `triggers[]`. Once `[]` is stored honestly (as ARCH-098 requires) that proxy is
+   *  gone, and the membership check would refuse every create-time-bound trigger on every v24
+   *  workflow. This predicate is the honest discriminator, and it needs no new column — which
+   *  matters because the webhook store has only ONE binding column and could not tell the two doors
+   *  apart any other way. When v25 closes the create-time door (AF-5) this predicate becomes
+   *  always-true for any trigger that can reach the fire path, and it goes away with the door. */
+  declaredTriggers(name: string): Set<string> {
+    const rows = this._db.prepare('SELECT triggers FROM workflow_versions WHERE name = ?').all(name) as Array<{ triggers: string | null }>;
+    const declared = new Set<string>();
+    for (const row of rows) {
+      if (!row.triggers) continue; // a pre-v24 row declared nothing — the column did not exist
+      for (const id of JSON.parse(row.triggers) as string[]) declared.add(id);
+    }
+    return declared;
+  }
+
+  /** v24 Gate 8 (AF-2, TASK-161): the fire path's one-id form of `declaredTriggers` — see there. */
+  declaresTrigger(name: string, triggerId: string): boolean {
+    return this.declaredTriggers(name).has(triggerId);
+  }
+
   /** v24 (ARCH-098, DES-153, TASK-143): upsert one asset row. `workflow: ''` = the global scope. */
   putAsset(row: { workflow: string; kind: string; name: string; pushedBy: string | null; pushedAt: string; config?: string | null }): void {
     this._db
@@ -499,7 +528,15 @@ export class WorkflowCatalog {
   async insertVersion(req: { name: string; script: string; mermaid: string; triggers?: string[]; params: ParamContract; principal?: string | null }): Promise<{ version: string }> {
     const { name, script, mermaid, triggers, params, principal = null } = req;
     const paramsJson = JSON.stringify(params);
-    const triggersJson = triggers && triggers.length > 0 ? JSON.stringify(triggers) : null;
+    // v24 Gate 8 (AF-2, TASK-161, adjudication #7 G-2): an EMPTY array is stored as '[]', never as
+    // NULL. `NULL` is reserved for pre-v24 rows — rows written before this column existed — which is
+    // what ARCH-098 says and what both fire paths rely on: `server.ts:775` and
+    // `webhook-registry.ts:279` skip the membership check when `released.triggers === undefined`, so
+    // that the pre-v24 create-time-binding door keeps working. Writing NULL for `[]` made a v24 row
+    // byte-identical to a legacy one, which made NOT_IN_RELEASE unreachable and left "remove a
+    // trigger" as the one direction publishing could not express. `?? []` covers the `register()`
+    // convenience caller too: every row this engine writes from here on is non-NULL.
+    const triggersJson = JSON.stringify(triggers ?? []);
     const createdAt = this._clock.isoNow();
     try {
       const version = this._db.transaction((): string => {
@@ -573,14 +610,12 @@ export class WorkflowCatalog {
 
     // v24 (ARCH-098, DES-148, TASK-143): `claimedTriggers` = the UNION of `triggers[]` over EVERY
     // version row (a beta-only claim is still a claim) — read BEFORE the delete, inside the same
-    // transaction, so it reflects exactly what is about to be removed.
-    const claimed = new Set<string>();
+    // transaction, so it reflects exactly what is about to be removed. Same union as
+    // `declaredTriggers()` below and computed by it, so the two can never disagree about what
+    // "this workflow declared that trigger" means.
+    let claimed = new Set<string>();
     const info = this._db.transaction(() => {
-      const rows = this._db.prepare('SELECT triggers FROM workflow_versions WHERE name = ?').all(name) as Array<{ triggers: string | null }>;
-      for (const row of rows) {
-        if (!row.triggers) continue;
-        for (const id of JSON.parse(row.triggers) as string[]) claimed.add(id);
-      }
+      claimed = this.declaredTriggers(name);
       this._db.prepare('DELETE FROM workflow_versions WHERE name = ?').run(name);
       this._db.prepare('DELETE FROM workflow_diagrams WHERE name = ?').run(name); // v23 (DES-130): same transaction, so a mid-transaction throw leaves both present
       this._db.prepare('DELETE FROM assets WHERE workflow = ?').run(name); // v24 (ARCH-098, DES-148): same transaction, same reasoning

@@ -27,6 +27,11 @@ interface RunManagerPort {
  *  is dropped — `create()` was its only caller in this file. */
 interface CatalogPort {
   resolve(name: string, sel: { channel?: string }): Promise<{ triggers?: string[] } | unknown>;
+  /** v24 Gate 8 (AF-2, TASK-161): "has this workflow EVER declared this trigger id, in any version?"
+   *  REQUIRED, not optional (ADR-028 fail-closed reasoning applied to a port): a fake that omits it
+   *  must be a compile error, not a silent `undefined` that turns the membership check below into
+   *  whatever `undefined` happens to mean that day. */
+  declaresTrigger(name: string, triggerId: string): boolean;
 }
 
 export interface WebhookRegistryDeps {
@@ -273,10 +278,17 @@ export class WebhookRegistry {
       this._recordRefusal(id, reason);
       return { ok: false, httpStatus: 409, reason: `claimed workflow '${row.workflow}' cannot be fired: ${reason}`, code: reason };
     }
-    // Only when the released version declares a trigger list at all — a version that declares none
-    // never claimed anything through that door, and treating it as a refusal would break every
-    // webhook created the pre-v24 way.
-    if (released?.triggers !== undefined && !released.triggers.includes(id)) {
+    // Membership, with BOTH guards (v24 Gate 8, AF-2 / TASK-161):
+    //   - `triggers !== undefined` still covers a genuine PRE-v24 version row, whose column did not
+    //     exist and therefore says nothing;
+    //   - `declaresTrigger` covers the create-time binding door (`webhook_create({workflow})`, which
+    //     AF-5 records as still shipped): such a webhook never entered ANY version's `triggers[]`,
+    //     so the released version's list has no jurisdiction over it and refusing it would silently
+    //     stop every webhook bound that way.
+    // The first guard used to carry both jobs by proxy, because an empty declaration was stored as
+    // NULL — which is the very conflation AF-2 is about, and why fixing the storage without fixing
+    // this line trades one silent failure for another.
+    if (released?.triggers !== undefined && !released.triggers.includes(id) && this._catalog.declaresTrigger(row.workflow, id)) {
       this._recordRefusal(id, 'NOT_IN_RELEASE');
       return { ok: false, httpStatus: 409, reason: `webhook ${id} is not in workflow '${row.workflow}'s released version`, code: 'NOT_IN_RELEASE' };
     }

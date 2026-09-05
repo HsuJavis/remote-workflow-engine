@@ -18,7 +18,9 @@ function fakeRunManager() {
   return { async start() { return 'run-1'; } };
 }
 function fakeCatalog() {
-  return { async resolve() { return { script: '', version: 'v1' }; } };
+  // v24 Gate 8 (AF-2, TASK-161): `declaresTrigger` is a required port member; this fake's `resolve`
+  // returns no `triggers`, so the membership branch never reaches it.
+  return { async resolve() { return { script: '', version: 'v1' }; }, declaresTrigger(): boolean { return false; } };
 }
 
 /** Hand-writes the pre-v24 schema (`workflow TEXT NOT NULL`, no refusal-accounting columns) and

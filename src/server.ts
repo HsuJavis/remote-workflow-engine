@@ -769,10 +769,15 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
       return { refused: 'CLAIMED_WORKFLOW_MISSING' };
     }
     // NOT_IN_RELEASE: the workflow still exists and is published, but the RELEASED version no
-    // longer declares this trigger id. Only checked when the released version declares a trigger
-    // list at all — a version that declares none never claimed anything through this door, and
-    // treating that as a refusal would disable every schedule created the pre-v24 way.
-    if (released.triggers !== undefined && !released.triggers.includes(firing.id)) return { refused: 'NOT_IN_RELEASE' };
+    // longer declares this trigger id. Two guards, and they are NOT the same guard twice (v24
+    // Gate 8, AF-2 / TASK-161):
+    //   - `triggers !== undefined` covers a genuine PRE-v24 version row, whose column did not exist;
+    //   - `declaresTrigger` covers the create-time binding door (`schedule_create({workflow})`,
+    //     which ARCH-099 says was removed and AF-5 records as still shipped): a schedule bound that
+    //     way never entered any version's `triggers[]`, so the release list has no jurisdiction
+    //     over it. Until AF-2, the first guard did this job by proxy because an empty declaration
+    //     was persisted as NULL — the exact conflation that made NOT_IN_RELEASE unreachable.
+    if (released.triggers !== undefined && !released.triggers.includes(firing.id) && catalog.declaresTrigger(claimedBy, firing.id)) return { refused: 'NOT_IN_RELEASE' };
     return { workflow: claimedBy };
   }
   ticker.start(() => {

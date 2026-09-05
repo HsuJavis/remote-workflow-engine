@@ -22,6 +22,12 @@ function fakeCatalog(known: Set<string>) {
       if (!known.has(name)) throw new CatalogNotFoundError(name);
       return { script: '', version: 'v1' };
     },
+    // v24 Gate 8 (AF-2, TASK-161): the port's new REQUIRED member. This fake's `resolve` returns no
+    // `triggers` at all, so the membership branch short-circuits on `triggers === undefined` and
+    // this is never consulted; `false` is the honest answer regardless — a fake catalog holding no
+    // version rows has never declared any trigger. The NOT_IN_RELEASE path is covered against the
+    // REAL catalog in tests/integration/trigger-release-versioning.test.ts.
+    declaresTrigger(): boolean { return false; },
   };
 }
 function fakeRunManager() {
@@ -302,9 +308,19 @@ describe('v24: webhooks created unclaimed, claimed at registration (IT-112, DES-
     const dir = mkdtempSync(join(tmpdir(), 'rwe-wh-v24-'));
     try {
       let triggers: string[] | undefined = [];
-      const catalog = { async resolve() { return { script: '', version: 'v1', ...(triggers !== undefined ? { triggers } : {}) }; } };
+      // v24 Gate 8 (AF-2, TASK-161): `declaresTrigger` answers "did ANY version of this workflow
+      // ever declare this trigger id". `true` is what this case models and what its own title says
+      // — a release that "no longer declares" an id is one that once DID, i.e. the id arrived
+      // through the registration claim door. The third phase below flips it to model the OTHER
+      // door, which this fake previously could not express at all (it used `as never`, so the
+      // missing member was not even a compile error).
+      let everDeclared = true;
+      const catalog = {
+        async resolve() { return { script: '', version: 'v1', ...(triggers !== undefined ? { triggers } : {}) }; },
+        declaresTrigger(): boolean { return everDeclared; },
+      };
       const runManager = fakeRunManager();
-      const reg = new WebhookRegistry({ clock: CLOCK, runManager, catalog: catalog as never, dbPath: join(dir, 'wh.db') });
+      const reg = new WebhookRegistry({ clock: CLOCK, runManager, catalog, dbPath: join(dir, 'wh.db') });
       const { webhookId, secret } = (await reg.create({ workflow: 'deploy', createdBy: 'alice@x.com' })) as { webhookId: string; secret: string };
 
       expect(await deliverTo(reg, webhookId, secret, 'd-notin'))
@@ -315,6 +331,16 @@ describe('v24: webhooks created unclaimed, claimed at registration (IT-112, DES-
       triggers = undefined;
       expect(await deliverTo(reg, webhookId, secret, 'd-pre-v24')).toMatchObject({ ok: true, httpStatus: 202 });
       expect(runManager.started).toHaveLength(1);
+
+      // v24 Gate 8 (AF-2, TASK-161): the OTHER door. The released version declares a NON-EMPTY
+      // trigger list that omits this id, but no version ever declared it either — it was bound at
+      // creation (`webhook_create({workflow})`, AF-5's surviving door). A list it was never in has
+      // no jurisdiction over it, so it fires. Before TASK-161 this case was indistinguishable from
+      // the first one, because an empty declaration was persisted as NULL.
+      triggers = ['some-other-trigger-id'];
+      everDeclared = false;
+      expect(await deliverTo(reg, webhookId, secret, 'd-create-door')).toMatchObject({ ok: true, httpStatus: 202 });
+      expect(runManager.started).toHaveLength(2);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
