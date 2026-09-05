@@ -2882,3 +2882,69 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   **Measured at the end (both exit 0):** `npx tsc --noEmit` clean;
   `npx vitest run tests/unit tests/integration tests/acceptance` →
   **303 files (302 passed, 1 skipped), 2183 cases (2157 passed, 26 skipped), 0 failed.**
+
+### IMPL-190 — #55 closed as what it actually was: a name, two casts, and an options object that accepted anything
+- **status:** done
+- **traces:** TASK-164, ARCH-096, ARCH-107, ARCH-095, DES-163, DES-164, REQ-117
+- **greens:** UT-165, UT-166
+- **files:** src/types.ts, src/agent-executor.ts, src/gateway/claude-agent-sdk-client.ts, src/params/contract.ts, src/errors.ts, src/tool-specs.ts, src/workflow-meta.ts, src/authoring-guide.ts, docs/AUTHORING.md, tests/unit/agent-opts-unknown-key.test.ts, tests/unit/scan-agent-calls.test.ts, tests/unit/params-contract.test.ts, tests/unit/authoring-guide.test.ts, tests/unit/claude-agent-sdk-gateway-allowed-tools.test.ts, tests/unit/claude-agent-sdk-gateway-permission-hardening.test.ts
+- **iter:** v25
+- **note:** Commit `0cddeac`. The orchestrator's live verification held: the capability was never
+  missing, only unnamed. **Which side of the naming moved, and why** — the LIST moved, not the
+  pipeline. `allowedTools` is already the effective name at every rung, so renaming the pipeline
+  would have had to move the agentType frontmatter key and the whole precedence chain to satisfy a
+  list that addressed nothing. Checked before deciding: `src`'s two other `'tools'` spellings are
+  DIFFERENT layers that must not move (`agent-definitions.ts:46` parses an agentType definition's
+  frontmatter, `harness-defaults.ts:39` validates `defaults.tools`).
+
+  **The second cast the work order did not name.** `claude-agent-sdk-client.ts:470` carried the same
+  `(req.opts as AgentOpts & {allowedTools})` as `agent-executor.ts:359`, and it is the one that
+  decides what the session actually receives. Both are gone. So are two `@ts-expect-error`
+  directives whose own comments read *"allowedTools is a verifier-authored design extension to
+  AgentOpts, not yet in src/types.ts (flagged for Gate 6)"* — the flag stayed open for three
+  iterations, which is the mechanical reason no author-facing surface could name the option.
+
+  **A fourth instance of the drift class, found en route.** `scanAgentCalls` hard-coded three of the
+  four `TUNABLE_KEYS`, so `appendPrompt` inside an `agent()` call took the silently-accepted path its
+  three siblings were refused on. Derived from `TUNABLE_KEYS` now. The accepted-key set is a
+  `Record<keyof AgentOpts | 'prompt', true>` so it cannot fall behind the type, and
+  `tool-specs.ts`'s `run_start.overrides` description INTERPOLATES `LOCKED_KEYS` instead of
+  transcribing it — a hand-copied vocabulary is exactly how `tools` outlived the pipeline.
+
+  **A test was rewritten, not deleted.** UT-145's "an unrelated key (e.g. appendPrompt) inside the
+  options literal is NOT a violation" states the defect as an expectation; it now states the ruling,
+  per the discipline adjudication #8 H-1 required when it overturned ADJ-A1.
+
+  RED quoted in 05-tests.md for each change; the one place red was NOT observed (UT-166's
+  `PARAM_UNKNOWN` case, already satisfied by the guide's error table) is recorded as such rather
+  than implied.
+
+### IMPL-191 — #53 gets instrumentation, not a guess at the race
+- **status:** done
+- **traces:** TASK-165, ARCH-002, ARCH-006, DES-165, REQ-006
+- **greens:** IT-133
+- **files:** src/types.ts, src/run-manager.ts, tests/integration/terminal-state-warnings.test.ts
+- **iter:** v25
+- **note:** Commit `2032747`. Observability only — no control-flow change, and in particular a
+  terminal state still does not abort the work it owns (a separate decision with its own tests).
+
+  **The one judgment worth recording is where warning 2 lives.** The obvious site is straight after
+  `recordTransition` in `_transition`, and it is nearly VACUOUS there: `SqliteRunStore` INSERTs the
+  transitions row and only then UPDATEs the queryable status, and `_transition` is the single writer,
+  so a terminal status that store wrote always has its row. The check sits on the READ (`status()`)
+  instead, because that is where run 3977b82d's broken state was actually observed and the read
+  catches it whatever produced it. The trigger is `terminalAt` being absent — both stores derive it
+  from the transitions, so it is a real cross-check against `status`, not a re-read of the same
+  field — and it costs nothing on the healthy path (the transitions are fetched only once the
+  invariant is already broken). One record per runId: a terminal run gets polled, and one record is
+  evidence while one per poll buries it.
+
+  The sink defaults to `console.warn`, deliberately: a sink that only exists when a composition root
+  remembers to pass it is the `composeConfig` bug class this ledger has recorded twice (v11
+  `updateFlagPath`, v15 auth), and IT-133 pins the default rather than trusting it. Warning 1 is
+  emitted from the REDACTED agent array so the new route cannot become a secret sink (DES-088).
+
+  Issue #53 is left OPEN. Its title is the non-deterministic failure and the orphaned work; neither
+  is fixed. Its own "What a fix needs first" asks for a reliable repro and names "assert on
+  transitions as well as status" as the tighter signal — this is that signal, which is a
+  prerequisite for the fix rather than the fix.

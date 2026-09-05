@@ -9495,3 +9495,69 @@ carry the catalog's `see`/`hint` so it appears in generated documentation. The r
 NOT duplicated here — `tool-specs.test.ts` [C-6] and `tests/acceptance/v24-tool-surface.test.ts`
 already hold it. Red before the fix, in two stages: `tsc --noEmit` on the
 `satisfies readonly ErrorCode[]` declaration (TS2322), then 4 of 4 at runtime.
+
+### UT-165 — an unknown `agent()` option key is refused, naming it and listing what is accepted (#55)
+- **status:** green
+- **traces:** REQ-117, ARCH-096, DES-163, TASK-164
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v25
+
+File: `tests/unit/agent-opts-unknown-key.test.ts` (11 cases). Pure over `scanAgentCalls` — no mocks,
+nothing to fake. The refusal itself, the accepted-key list in the hint (a refusal that does not say
+what IS accepted only moves the guessing), and THE incident reduced to one assertion: `tools: []`
+answers `PARAM_UNKNOWN` with a hint pointing at `allowedTools`. Then the two directions that keep it
+honest: `allowedTools` and every other declared `AgentOpts` key pass clean (no false refusal of the
+documented surface), and `model`/`effort`/`timeoutMs` keep their MORE SPECIFIC `PARAM_IN_SCRIPT`,
+which names the declaration site a generic "unknown key" would throw away. `appendPrompt` joins them
+— it is the fourth `TUNABLE_KEYS` member and the scanner's hard-coded triple never knew it, so it
+had been taking the silently-accepted path its three siblings were refused on. Four boundary cases
+pin what is deliberately NOT refused: a spread entry and a shorthand key (neither carries a colon), a
+nested object's inner keys, and a quoted key (unquoted before the check).
+Red before the fix, quoted: `expected undefined not to be undefined` on the first case, and
+`accepted key prompt not listed: expected '' to contain 'prompt'` on the hint — 5 of 11 failing,
+`violations` empty in every one, because the scanner had no notion of an unaccepted key at all.
+
+### UT-166 — the guide teaches `allowedTools`, the three layers, and why a prose-only task empties the surface (#55)
+- **status:** green
+- **traces:** REQ-117, REQ-116, ARCH-107, DES-164, TASK-164
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v25
+
+Cases appended to `tests/unit/authoring-guide.test.ts` (5). Two separate failures met in the v24
+tmux experiment: the CAPABILITY had shipped in v21 under a name no author-facing surface printed,
+and the KNOWLEDGE — a small model handed Write/Edit/Bash answers with a tool-call envelope instead
+of prose — the cold subject had to derive from a failing run. REQ-117's standing rule is that
+knowledge a cold model had to derive belongs on the surface. The cases assert the guide names
+`allowedTools`, shows the `allowedTools: []` spelling verbatim, states the small-model lesson, and
+disambiguates the three layers by their real names (`allowedTools` / `agentType` frontmatter
+`tools` / `defaultAllowedTools`) — guessing between those three is the whole defect.
+`docs/AUTHORING.md` is regenerated from the same builder, so UT-160's byte-lock covers the prose.
+Red before the fix: 4 of 5 (the fifth, `PARAM_UNKNOWN`, was already in the guide's error table —
+recorded as NOT observed red, rather than implied).
+
+### IT-133 — a terminal state that leaves live work behind, and a terminal status with no transition row, are both recorded (#53)
+- **status:** green
+- **traces:** REQ-006, ARCH-002, ARCH-006, DES-165, TASK-165
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v25
+
+File: `tests/integration/terminal-state-warnings.test.ts` (5 cases). Real RunManager, real RunGuard,
+real AgentExecutor, real sandbox child process, real `SqliteRunStore`; only `GatewayClient` is faked,
+and faked in the ONE way that reproduces #53's orphan — it IGNORES the abort signal, so the agent is
+provably `running` at the moment the run is written terminal (a fake that aborts obediently would
+test the case that never fails). The second half needs no fake at all: it puts a real SQLite store
+into #53's exact on-disk shape (`runs.status='failed'`, no `failed` row in `transitions`) with one
+`UPDATE`, a state no engine path is supposed to be able to produce. Both positive controls are
+present and were GREEN at red, which is what makes the two failing cases mean anything: a run whose
+agents all settled produces no warning, and a healthy terminal run produces none either. One further
+case asserts the DEFAULT sink is `console.warn` with no `onWarning` passed — the composeConfig bug
+class (v11 `updateFlagPath`, v15 auth) is a sink that only exists when a composition root remembers
+it. Red before the fix, quoted: `expected [] to have a length of 1 but got +0` on both detections,
+and `expected false to be true` on the default sink — which is precisely what run 3977b82d left
+behind: nothing.
