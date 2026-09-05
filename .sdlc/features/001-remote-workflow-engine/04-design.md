@@ -5807,3 +5807,83 @@ commit 因此回報「working tree clean, nothing to commit」,而檔案內容�
 補建 TASK-160..163 對應 AF-1 / AF-2 / AF-3 / DR-1。
 SF-1 已由我直接修完(`CLAUDE.md` 是流程文件,不需要走 TDD)。
 MID 16 項與 LOW 44 項依審查建議列為 v25 債務,不在本輪處理。
+
+---
+
+## Orchestrator adjudication (v24) #8 — 推翻 ADJ-A1,並關掉觸發器的那道無鎖之門 (2026-09-05)
+
+兩個缺陷都由**獨立驗證者**在 v24 合併之後找到 —— 一個全新的 Claude 實例,拿到十二條驗收條文、
+三個角色的 bearer 和一台活的引擎,被要求逐條驗證。它報了 8 PASS / 1 FAIL / 2 PARTIAL。
+兩個我都親手複驗過。
+
+### H-1 [#57] 推翻 ADJ-A1:`/api/workflows/:name/describe` 的 auth 閘門拿掉
+
+**症狀(擁有者回報)**:auth 開啟時 dashboard 的工作流詳情永遠空白,看不到圖也看不到參數。
+
+**根因**:`server.ts:1119-1127` 把這條路由放進 `dbindExempt` 的受管集合,
+要求 loopback-exempt 或 `resolvePrincipal` 成功。
+dashboard 的前端是**瀏覽器 GET,沒有登入、沒有 token**,兩個條件都不滿足。
+它是所有 dashboard 路由中**唯一**被擋的一條,而它偏偏是唯一提供圖與 per-agent 參數的那條。
+
+**ADJ-A1 當初的理由**(v23 Gate 2 re-run,journal:1556 原文):
+「未認證的呼叫者能得知某個名字是否存在」—— 防的是 404 vs 200 的存在性洩漏。
+該裁定自己註明 **owner-overrulable at Gate 8**。
+
+**推翻的理由:那個前提現在不成立,而且從來就不太成立。** 實測匿名打 `/api/workflows`:
+```
+200 → [{"name":"dashcheck","owner":"author@verify.local","description":"dash check",
+        "versions":["v1"],"channels":{...},
+        "params":{"agents":{"a":{"model":{...},"effort":{...},"timeoutMs":{...}}}}}]
+```
+**全部名字、擁有者、描述、以及每個 agent 的完整參數規格,匿名就拿得到。**
+`/api/home` 同樣匿名列出所有名字。`describe` 比清單頁多的只有 `mermaid` 與 `phases` ——
+而 v23 裁定 #1 已經判過 phases **一律公開**,v24 的整個設計前提是**圖是工作流的公開面貌**
+(REQ-111:作者供圖、引擎驗證、dashboard 呈現)。
+
+所以這道閘門**關的是側門,而正門開著**,代價是 dashboard 的主要功能整個不能用。
+一個買不到任何東西的安全控制,不是保守,是壞掉。
+
+**裁定:拿掉閘門。** `describe` 加入其他未認證的 dashboard 讀取路由。
+`workflow_source`(有腳本內容、有 `scriptWithheld` 遮蔽)**不動** —— 那條才是特權視圖,
+兩者的差別正是 v24 把 `workflow_get` 改名成 `workflow_source` 的原因。
+
+**測試怎麼改**:`workflow-describe-auth-gate.test.ts` 現有的斷言是 ADJ-A1 的實作,
+**改寫成新的預期,不准刪除**。而且必須補一條現在沒有的:
+**在 `auth.enabled: true` 的引擎上,不帶任何 header 的 GET 要拿到 200 與完整的 mermaid** ——
+那正是 dashboard 真實發出的請求,也正是現有測試從來沒有涵蓋的情境。
+
+**順帶記一筆我自己的錯**:VAL-165 我寫「dashboard 真的顯示了圖」,那次 Playwright 驗證跑在
+**auth 關閉**的引擎上,而我沒有在帳本裡標明這個前提。
+**一條只在產品不會採用的設定下才通過的驗收,不算證據。** VAL-165 要補上這個限制條件。
+
+### H-2 [#56] 觸發器可以綁到不存在的工作流 —— 檢查搬走了,門沒關
+
+REQ-115 判 FAIL,而且不是殘留參數那麼簡單。實測(我親手複驗):
+```
+schedule_create({kind:'cron', cron:'0 6 * * *', workflow:'definitely-does-not-exist'})
+  → {"id":"469112af…","workflow":"definitely-does-not-exist",
+     "claimedBy":"definitely-does-not-exist","enabled":true}
+```
+v24 前那道門**是有鎖的**(v22 的 H4 在建立時驗發布狀態)。
+REQ-115 說那道鎖「**搬到** `workflow_register`,不是消失」。鎖確實搬到新址了
+(`TRIGGER_NOT_FOUND` 實測有效),**但舊門留在原地、不再驗任何東西**。
+
+Gate 8 的記錄把「多餘的 `workflow` 參數」列為 AF-5、判 MID 延到 v25。
+**那個判斷漏掉的是:拿掉檢查而留著參數,把一個無害的殘留變成了有防護缺口的路徑。**
+這是我裁定 #7 沒抓到的 —— 我看了那條記錄,接受了「MID、延後」,沒有問「檢查拿掉之後那扇門還在嗎」。
+
+而且 `tool-specs.ts` 自己就自相矛盾:
+```
+:640  description: "…Name no workflow — hand the id to workflow_register…"
+:715  inputSchema: schema({ workflow: { type: 'string' } })
+```
+**描述叫呼叫者不要傳,schema 卻收,而且收了會自我認領。** 第 21 例。
+
+**裁定:關門,不是在舊址補鎖。** 兩個 create 的 `inputSchema` 移除 `workflow`,
+綁定只能經由 `workflow_register({triggers:[…]})` —— 那正是 ARCH-099 寫的
+(`create(spec)` 不收 workflow),也正是那兩行描述已經承諾的。
+v24 前的舊資料列不受影響(觸發路徑本來就容忍 legacy 綁定)。
+
+**測試**:一條紅測試斷言 `schedule_create({workflow:…})` 被拒(`INVALID_ARGUMENT`),
+webhook 同理;並保留 REQ-115 所有已經通過的行為(獨佔性、擁有權、拒絕記錄、deregister 釋放)
+—— 驗證者把那些逐條列出來了,修的人不能碰壞它們。
