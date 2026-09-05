@@ -8273,3 +8273,30 @@ warning is unchanged and is repeated at the end of this section.
   收尾:兩個測試用連接埠(8792/8799)已關,生產服務 PID 3652391 全程未受影響。
 - **iter:** v24
 
+### VAL-166 — OpenRouter passthrough:v24 唯一沒驗過的 provider 路徑,補驗通過
+- **status:** green
+- **traces:** REQ-038, REQ-110, REQ-118
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** 2026-09-05,擁有者提供金鑰(`~/.OPENROUTER`)後補驗。
+  VAL-140/VAL-162/VAL-164 三次冷模型跑都沒能驗到這條路徑:VAL-164 的受測者探測 OpenRouter 時
+  逾時掛住,**原因是 orchestrator 架設演示引擎時沒有把金鑰帶進環境**(已記於 VAL-164)。
+  **先確認金鑰本身有效**(不經引擎):`GET https://openrouter.ai/api/v1/models` ⇒ `200`,431 個 model。
+  **再確認金鑰真的進到引擎行程**:`/proc/<pid>/environ` 含 `OPENROUTER_API_KEY`。
+  專用引擎 8793 埠、獨立 workRoot、`gateway:"sdk"`。
+  註冊 `or-probe`:兩個 agent(`asker` → `answerer`)接力,兩者的
+  `model.default` 都是 `openrouter/openai/gpt-4o-mini` —— **這不是預先列出的 alias**,
+  由 `script-checks.ts:33` 的 `OPENROUTER_PASSTHROUGH` 依前綴放行(REQ-038),
+  Mermaid 的節點標籤也帶著這個完整 model 字串。註冊 ⇒ `v1`,發布 ⇒ `release`。
+  `run_start` ⇒ run `eef21e9a-1bd3-49f3-a866-612e71eefde3`,約 15 秒後 `completed`。
+  結果:`{"question":"What is the average distance from the Earth to the Moon?",
+  "answer":"The average distance … is approximately 238,855 miles (384,400 kilometers)."}` ——
+  第二個 agent 的輸入確實是第一個的輸出。
+  **關鍵的反向確認(避免「跑通了但其實回退到本地模型」的假通過)**:`run_status.agents` 兩列都是
+  `state:done`、`model:"openrouter/openai/gpt-4o-mini"`,token 數
+  (asker 1722/13、answerer 1726/23)是真實遠端呼叫的量級,**不是 Ollama 本地回退**。
+  至此 v24 已驗過的 provider 路徑:Anthropic(subscription)、Ollama(本地)、
+  **OpenRouter(passthrough)**。
+- **iter:** v24
+
