@@ -40,7 +40,11 @@ type GatewayChoice = 'sdk' | 'direct-fetch';
 
 // Omit ServerConfig's own `gateway` field (typed GatewayClient — an object seam, D-F1): the config
 // FILE's `gateway` key is a plain string choice this entrypoint resolves into that object itself.
-interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals'>> {
+// v25 (REQ-119, DES-166): `diagramRender` is omitted for the same reason as `gateway` — its one
+// meaningful field is a FUNCTION (the injected renderer), which a JSON config file cannot express.
+// Its two numeric knobs are engine constants on purpose (`diagram-render.ts`), so there is nothing
+// here for composeConfig to forward and therefore nothing it can forget to forward.
+interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals' | 'diagramRender'>> {
   /** D-F4: which GatewayClient main.ts wires up. Default "sdk" (ClaudeAgentSdkGatewayClient, the
    *  real tool-loop-capable path). "direct-fetch" opts out to the legacy LiteLLMGatewayClient path
    *  (server.ts's own pre-existing default, driven by `aliases`/`useLiteLLMProxy`). */

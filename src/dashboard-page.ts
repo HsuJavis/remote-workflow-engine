@@ -114,6 +114,7 @@ a{color:var(--link);text-decoration:none}
 .pill{display:inline-block;padding:1px 7px;border-radius:100px;font-size:11px;border:1px solid var(--line)}
 /* Morandi-muted semantic state colours (low-saturation, legible on the light greige ground). */
 .st-queued{color:#B08A5B}.st-running{color:#6E8199}.st-done,.st-completed{color:#7A9078}.st-failed{color:#B0776E}.st-stopped,.st-suspended{color:#9A948A}.st-interrupted{color:#B08A5B}
+#diagram-img{max-width:100%;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0}
 #tree{margin-top:6px}
 .grp{border-left:2px solid var(--line);margin:6px 0 6px 4px;padding:2px 0 2px 12px}
 .grp-h{font-size:12px;color:var(--muted);margin:4px 0}
@@ -172,6 +173,7 @@ pre{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);p
       <svg id="dag-graph" xmlns="http://www.w3.org/2000/svg" style="display:block"></svg>
     </div>
     <div id="tree"></div>
+    <img id="diagram-img" alt="workflow diagram" style="display:none">
     <pre id="diagram" style="display:none"></pre>
     <p id="mermaidNote" style="display:none"></p>
     <h2>Transcript <span id="tr-agent" class="mdl"></span></h2>
@@ -218,9 +220,46 @@ async function renderDescribe(name){
   var badge=document.getElementById('detail-status'); badge.textContent=s.runnable?'runnable':(s.runnableReason||''); badge.className='pill';
   renderPhases([], ''); document.getElementById('transcript').textContent=s.description||'(no description)';
   var pre=document.getElementById('diagram'); var note=document.getElementById('mermaidNote');
-  pre.style.display='block'; pre.textContent=s.mermaid||'';
-  if(s.mermaid){ note.style.display='none'; note.textContent=''; }
-  else { note.style.display='block'; note.textContent=s.mermaidNote||''; }
+  pre.textContent=s.mermaid||'';
+  if(s.mermaid){ renderDiagram(name, s.version); }
+  else {
+    // Nothing to draw (a legacy row): the honest note, and no request to the render route.
+    diagramKey=null; document.getElementById('diagram-img').style.display='none';
+    pre.style.display='block'; note.style.display='block'; note.textContent=s.mermaidNote||'';
+  }
+}
+// v25 (REQ-119, DES-166, TASK-166): the PICTURE. It is rendered SERVER-SIDE and arrives as an
+// image/svg+xml, loaded into an <img> tag — never an object or embed element, which load an SVG as
+// a DOCUMENT and would execute script inside it (UT-169 greps this file for those two tag names, so
+// they are spelled out here in prose deliberately). That is how REQ-119 keeps both of ADR-033's
+// reasons while
+// overruling its display decision: no author-controlled text reaches an HTML renderer here, and no
+// Mermaid library is shipped to the client (UT-161's grep guard is untouched).
+// Memoized on (name, version): render() re-enters this on every 3s tick, and a version's diagram is
+// immutable (REQ-111), so one fetch per version per viewer is exactly right. A failure is memoized
+// too — the fallback below is already showing the source, and re-asking every 3s would hammer an
+// anonymous, render-capable route.
+var diagramKey=null, diagramUrl=null;
+async function renderDiagram(name, version){
+  var key=name+'@'+version;
+  if(diagramKey===key) return;
+  diagramKey=key;
+  var img=document.getElementById('diagram-img'); var pre=document.getElementById('diagram'); var note=document.getElementById('mermaidNote');
+  pre.style.display='block'; // the source is visible while the first render is in flight
+  var r=null; try{ r=await fetch('/api/workflows/'+encodeURIComponent(name)+'/diagram.svg?version='+encodeURIComponent(version)); }catch(e){ r=null; }
+  if(r&&r.ok){
+    var blob=await r.blob();
+    if(diagramUrl) URL.revokeObjectURL(diagramUrl);
+    diagramUrl=URL.createObjectURL(blob);
+    img.src=diagramUrl; img.style.display='block';
+    pre.style.display='none'; note.style.display='none';
+    return;
+  }
+  // Degrade to the pre-v25 display with an observable reason — never a blank pane.
+  var reason='unreachable';
+  try{ var j=r?await r.json():null; if(j&&j.reason) reason=j.reason; }catch(e){}
+  img.removeAttribute('src'); img.style.display='none';
+  note.style.display='block'; note.textContent='diagram not rendered ('+reason+') — showing the source';
 }
 // v11 F1 (REQ-074/075, DES-070/071): home view — 3-way grouped cards with metrics.
 function fmtMetric(val,suffix){ return val==null?'—':Math.round(val)+suffix; }

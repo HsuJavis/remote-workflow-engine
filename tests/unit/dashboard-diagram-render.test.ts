@@ -70,3 +70,57 @@ describe('v24: dashboard renders mermaid, not diagramStatus (UT-158, DES-156)', 
     expect(DASHBOARD_HTML.toLowerCase()).not.toMatch(/mermaid\.min\.js|cdn.*mermaid/);
   });
 });
+
+// UT-169 (v25, REQ-119, DES-166, TASK-166): the dashboard shows a RENDERED PICTURE, and the way it
+// loads that picture is itself the security property.
+//
+// REQ-119 overrules ADR-033's display decision but keeps BOTH of its reasons: the rendering happens
+// server-side, so (1) author-controlled label text never reaches an HTML renderer in a viewer's
+// browser and (2) no Mermaid library ships to the client — UT-161's grep guard above is untouched
+// and stays green. The `<img>` requirement is not stylistic: `<object>` and `<embed>` load an SVG as
+// a DOCUMENT, where script inside it executes; `<img>` does not.
+//
+// Same mock policy as the cases above (DES-119): `dashboard-page.ts`'s browser logic lives inside an
+// embedded `<script>` STRING with no jsdom harness in this repo, so these are source-level
+// assertions over the served page. The behavioural proof is VAL-152 (a real engine, a real render).
+describe('v25: the dashboard loads the rendered diagram as an image (UT-169, REQ-119, DES-166)', () => {
+  it('fetches the server-rendered /diagram.svg for the resolved version', () => {
+    expect(DASHBOARD_HTML).toContain('/diagram.svg');
+    expect(DASHBOARD_HTML).toMatch(/version=/);
+  });
+
+  it('renders it in an <img> — never <object>/<embed>, which execute script inside an SVG', () => {
+    expect(DASHBOARD_HTML).toContain('id="diagram-img"');
+    expect(DASHBOARD_HTML).not.toContain('<object');
+    expect(DASHBOARD_HTML).not.toContain('<embed');
+  });
+
+  it('keeps a client-side Mermaid library out — UT-161\'s guard, restated at the display site', () => {
+    expect(DASHBOARD_HTML).not.toMatch(/from ['"]mermaid['"]/);
+    expect(DASHBOARD_HTML).not.toMatch(/cdn.*mermaid/i);
+  });
+
+  it('never writes the fetched diagram through innerHTML', () => {
+    const fn = DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf('async function renderDiagram('));
+    const body = fn.slice(0, fn.indexOf('\n}'));
+    expect(body).not.toContain('innerHTML');
+    expect(body).toContain('createObjectURL');
+    // A blob URL held across the 3s tick is a leak unless the previous one is released.
+    expect(body).toContain('revokeObjectURL');
+  });
+
+  it('fetches ONCE per (name, version), not once per 3s poll tick', () => {
+    // render() re-enters renderDescribe on every tick; without a memo each viewer would pull a
+    // ~60KB SVG every three seconds forever.
+    expect(DASHBOARD_HTML).toContain('diagramKey');
+  });
+
+  it('falls back to the source <pre> with the reason when the render is unavailable — never a blank pane', () => {
+    const fn = DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf('async function renderDiagram('));
+    const body = fn.slice(0, fn.indexOf('\n}'));
+    // The pre-v25 display is the fallback, not deleted: `pre.textContent = s.mermaid` (asserted
+    // above) still runs, and the failure branch is what makes it visible.
+    expect(body).toMatch(/pre\.style\.display\s*=\s*'block'/);
+    expect(body).toContain('reason');
+  });
+});

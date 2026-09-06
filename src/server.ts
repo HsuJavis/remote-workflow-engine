@@ -60,6 +60,7 @@ import { toPublicRunView } from './run-view.js';
 import { projectToolsList } from './tool-specs.js';
 import { resolveRole, type Principal } from './authz.js';
 import { createOwnerLookup } from './owner-lookup.js';
+import { DiagramRenderer, renderWithMmdc, type DiagramRendererOpts } from './diagram-render.js';
 
 export interface ServerConfig {
   bind?: string;   // default '127.0.0.1'
@@ -178,6 +179,14 @@ export interface ServerConfig {
   // config's `http` transport BEFORE any probe/fetch (EGRESS_DENIED otherwise). Absent -> no http
   // MCP config is ever probed.
   mcpEgressAllowlist?: string[];
+  // v25 (REQ-119, DES-166, TASK-166): the lazy server-side Mermaid→SVG renderer behind
+  // `GET /api/workflows/:name/diagram.svg`. Every field is optional and the defaults are the
+  // production ones (real mmdc child process, `MAX_CONCURRENT_RENDERS`, `RENDER_TIMEOUT_MS`);
+  // tests inject a counting `render` so the three anti-exhaustion clauses (cache-first,
+  // single-flight, cap) can be asserted by RENDER COUNT. Deliberately NOT forwarded from
+  // rwe.config.json: no operator knob is asked for, and every unforwarded config block this repo
+  // has added became a silent-failure bug (the composeConfig class, twice).
+  diagramRender?: DiagramRendererOpts;
 }
 
 export interface Server {
@@ -317,6 +326,8 @@ async function handleDashboardRequest(
   // v24 (DES-141): the same {enabled, principalsCount, defaultRole} shape as the boot line, computed
   // once at boot — GET /api/system's `auth` key (ARCH-090).
   authAnnounce: { enabled: boolean; principalsCount: number; defaultRole: 'user' } = { enabled: false, principalsCount: 0, defaultRole: 'user' },
+  // v25 (REQ-119, DES-166): the (name, version)-keyed SVG cache in front of the renderer.
+  diagrams: DiagramRenderer = new DiagramRenderer(),
 ): Promise<void> {
   if (req.method !== 'GET') {
     sendJson(res, 405, { error: 'Dashboard API is read-only: only GET is supported.' });
@@ -330,6 +341,9 @@ async function handleDashboardRequest(
   // which branched on `authEnabled` to choose WHAT to disclose — `workflow_describe` makes no
   // masking decision on `ctx` at all: every principal gets the same shape (DES-125).
   const describeMatch = /^\/api\/workflows\/([^/]+)\/describe$/.exec(path);
+  // v25 (REQ-119, DES-166, TASK-166): the RENDERED diagram, as an image. Anonymous like /describe
+  // beside it — which is exactly why `diagrams` is cache-first, single-flight and capped.
+  const diagramMatch = /^\/api\/workflows\/([^/]+)\/diagram\.svg$/.exec(path);
   const runMatch = /^\/api\/runs\/([^/]+)$/.exec(path);
   const issuesDetailMatch = /^\/api\/issues\/(\d+)$/.exec(path);
   try {
@@ -380,6 +394,52 @@ async function handleDashboardRequest(
         return;
       }
       sendJson(res, 200, resp.result);
+      return;
+    }
+    // v25 (REQ-119, DES-166, TASK-166): the author's diagram, RENDERED — server-side, so the only
+    // thing a viewer's browser receives is an image. The dashboard loads it with `<img>`; author
+    // label text never reaches an HTML renderer in anyone's browser (ADR-033's surviving reason)
+    // and no Mermaid library ships to the client (UT-161's guard, unchanged).
+    if (diagramMatch) {
+      const name = decodeURIComponent(diagramMatch[1]!);
+      const version = new URL(req.url ?? '/', 'http://x').searchParams.get('version') ?? undefined;
+      const resp = await facade.workflowDescribe({ name, version }, { kind: 'auth-disabled' }) as {
+        status: string; error?: { message?: string }; result?: { version: string; mermaid: string | null; mermaidNote: string | null };
+      };
+      if (resp.status === 'failed' || !resp.result) {
+        sendJson(res, 404, { code: 'WORKFLOW_NOT_FOUND', error: resp.error?.message ?? `Workflow not found: ${name}` });
+        return;
+      }
+      const { version: resolved, mermaid, mermaidNote } = resp.result;
+      // Nothing to draw (a pre-v24 row, ADR-025). 404 with the reason the read surface already
+      // reports — and, importantly, no render is started.
+      if (!mermaid) {
+        sendJson(res, 404, { code: 'DIAGRAM_UNAVAILABLE', reason: mermaidNote ?? 'LEGACY_NO_DIAGRAM' });
+        return;
+      }
+      // Keyed by the RESOLVED version, never by the requested selector: `?version=v1`, `release`
+      // and the bare default must share one cache entry when they name the same row.
+      const out = await diagrams.get(name, resolved, mermaid);
+      if (!out.ok) {
+        // Degrade, never pretend: the dashboard falls back to today's source display on a non-200,
+        // and the reason is observable to the client (code) and to the operator (log, with detail —
+        // an anonymous caller is told WHICH degradation, never the renderer's stderr).
+        console.warn(JSON.stringify({ event: 'diagram_render_failed', workflow: name, version: resolved, reason: out.reason, detail: out.detail }));
+        sendJson(res, 503, { code: 'DIAGRAM_RENDER_UNAVAILABLE', reason: out.reason });
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'image/svg+xml; charset=utf-8',
+        // The image is served to an <img> tag; nosniff + a no-privilege CSP also make a DIRECT
+        // navigation to this URL inert, where an SVG loads as a document and could otherwise run
+        // script. `style-src 'unsafe-inline'` is required: mermaid emits an inline <style> block.
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+        // (name, 'v1') is reusable after a deregister, so a browser must not hold it independently.
+        'Cache-Control': 'no-store',
+        'X-Diagram-Cache': out.cached ? 'hit' : 'miss',
+      });
+      res.end(out.svg);
       return;
     }
     // v11 (REQ-067): GET /api/issues — read-only issues dashboard list, partitioned by state.
@@ -659,7 +719,10 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // (see `facade.bindAssetSync` near the bottom — it needs the server's own bound port).
   // v24 Gate 7.5 (D-12): `aliasNames` — the SAME resolved Set admission and registration validate
   // against — reaches the facade so `workflow_authoring_guide` names the accepted aliases.
-  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, aliasNames });
+  // v25 (REQ-119, DES-166, TASK-166): one renderer/cache per engine. The default render function is
+  // the real mmdc child process; `config.diagramRender.render` replaces it in tests.
+  const diagrams = new DiagramRenderer({ render: renderWithMmdc, ...config?.diagramRender });
+  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, aliasNames, diagramCache: diagrams });
 
   // v24 (DES-139, ARCH-088, TASK-147): authorize()'s OwnerLookup is SYNC (a pure decision
   // function), while RunStore/WorkflowCatalog are async ports — a second connection to each
@@ -944,7 +1007,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
     // the two copies would mask on one path and not the other, with no type error. Same
     // one-declaration rule as `DEFAULT_CEILINGS`/`UNBOUND_ENTRY_LABEL`.
     const dispatchDashboard = (): void => {
-      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, buildModelCatalog, !!authCfg, authAnnounce).catch(() => {
+      handleDashboardRequest(req, res, store, runManager, issueReporter, facade, systemInfoSampler, buildModelCatalog, !!authCfg, authAnnounce, diagrams).catch(() => {
         sendJson(res, 200, { degraded: 'internal dashboard error' });
       });
     };

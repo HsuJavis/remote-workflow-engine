@@ -104,6 +104,17 @@ export interface McpFacadeDeps {
    *  NOT_FOUND for everything, rather than crashing. */
   schedulerClaims?: TriggerClaimStore;
   webhookClaims?: TriggerClaimStore;
+  /** v25 (REQ-119, DES-166): the rendered-diagram cache, so `workflow_deregister` can drop this
+   *  name's entries. REQ-111 makes a version's `mermaid` immutable, so a DELETE is the only event
+   *  that can stale the cache — and it can, because `insertVersion` allocates `v${max+1}` over the
+   *  name's own rows: deregister + re-register reuses the same (name, 'v1') key. Optional, exactly
+   *  like `assetSync` — a unit-constructed facade has no cache bound. */
+  diagramCache?: DiagramInvalidator;
+}
+
+/** The one method `workflowDeregister` needs from `DiagramRenderer` (v25, DES-166). */
+export interface DiagramInvalidator {
+  invalidate(name: string): void;
 }
 
 /** Robustness at the MCP boundary: some MCP clients serialize the untyped `args` object into a JSON
@@ -224,6 +235,7 @@ export class McpFacade {
   // constructs it AFTER `http.listen()`, well after the facade). `bindAssetSync` lets the
   // composition root supply it once that port is known.
   private assetSync?: AssetSyncService;
+  private readonly diagramCache?: DiagramInvalidator;
   private readonly schedulerClaims: TriggerClaimStore;
   private readonly webhookClaims: TriggerClaimStore;
 
@@ -239,6 +251,7 @@ export class McpFacade {
     this.aliasNames = deps.aliasNames ?? new Set();
     this.cas = deps.cas;
     this.assetSync = deps.assetSync;
+    this.diagramCache = deps.diagramCache;
     this.schedulerClaims = deps.schedulerClaims ?? NEVER_CLAIMS;
     this.webhookClaims = deps.webhookClaims ?? NEVER_CLAIMS;
   }
@@ -364,6 +377,10 @@ export class McpFacade {
       // nothing here either), and optional-chained because a unit-constructed facade may have no
       // asset sync bound at all.
       if (removed) this.assetSync?.deleteWorkflowTree(a.name);
+      // v25 (REQ-119, DES-166): and the rendered diagrams — same reason as the asset tree above.
+      // The freed name is re-registrable at the SAME version number, so a surviving cache entry
+      // would serve the deleted workflow's picture to the next owner of the name.
+      if (removed) this.diagramCache?.invalidate(a.name);
       // v24 (integrator, REQ-118): the CATALOG method is deliberately total (`removed:false`, never
       // throws — catalog-v24.test.ts pins that contract, and it stays). The TOOL is not: its own
       // advertised `errors[]` promises `WORKFLOW_NOT_FOUND`, and a caller that deletes a name that
