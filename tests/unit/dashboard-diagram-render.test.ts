@@ -82,7 +82,7 @@ describe('v24: dashboard renders mermaid, not diagramStatus (UT-158, DES-156)', 
 //
 // Same mock policy as the cases above (DES-119): `dashboard-page.ts`'s browser logic lives inside an
 // embedded `<script>` STRING with no jsdom harness in this repo, so these are source-level
-// assertions over the served page. The behavioural proof is VAL-152 (a real engine, a real render).
+// assertions over the served page. The behavioural proof is VAL-169 (a real engine, a real render).
 describe('v25: the dashboard loads the rendered diagram as an image (UT-169, REQ-119, DES-166)', () => {
   it('fetches the server-rendered /diagram.svg for the resolved version', () => {
     expect(DASHBOARD_HTML).toContain('/diagram.svg');

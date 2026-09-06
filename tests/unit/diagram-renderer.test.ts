@@ -13,7 +13,7 @@
 // Mock policy (unit, DES-119): the render function is the injected seam — a COUNTING fake, never a
 // real spawn. Counting renders is the whole oracle here, and 10 concurrent real Chromes in vitest
 // would be the very resource exhaustion this file exists to prevent. The real spawn path is covered
-// by UT-168 (a stub `mmdc`, real child process, no Chrome) and end-to-end by VAL-152 (real mmdc +
+// by UT-168 (a stub `mmdc`, real child process, no Chrome) and end-to-end by VAL-169 (real mmdc +
 // real Chrome).
 import { describe, it, expect } from 'vitest';
 import { DiagramRenderer, type RenderFn, type RenderOutcome } from '../../src/diagram-render.js';

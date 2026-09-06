@@ -231,10 +231,9 @@ async function renderDescribe(name){
 // v25 (REQ-119, DES-166, TASK-166): the PICTURE. It is rendered SERVER-SIDE and arrives as an
 // image/svg+xml, loaded into an <img> tag — never an object or embed element, which load an SVG as
 // a DOCUMENT and would execute script inside it (UT-169 greps this file for those two tag names, so
-// they are spelled out here in prose deliberately). That is how REQ-119 keeps both of ADR-033's
-// reasons while
-// overruling its display decision: no author-controlled text reaches an HTML renderer here, and no
-// Mermaid library is shipped to the client (UT-161's grep guard is untouched).
+// they are named in prose here deliberately). That is how REQ-119 keeps both of ADR-033's reasons
+// while overruling its display decision: no author-controlled text reaches an HTML renderer here,
+// and no Mermaid library is shipped to the client (UT-161's grep guard is untouched).
 // Memoized on (name, version): render() re-enters this on every 3s tick, and a version's diagram is
 // immutable (REQ-111), so one fetch per version per viewer is exactly right. A failure is memoized
 // too — the fallback below is already showing the source, and re-asking every 3s would hammer an

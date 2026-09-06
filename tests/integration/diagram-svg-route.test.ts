@@ -6,7 +6,7 @@
 // the RENDER function, injected as `ServerConfig.diagramRender.render` — a COUNTING fake. That is
 // the point of the file: REQ-119's three defences are statements about HOW MANY RENDERS HAPPEN,
 // and counting them is only possible with a countable renderer. Real mmdc + real Chrome (including
-// the hostile-label case adjudication #11 requires) is VAL-152, real tier.
+// the hostile-label case adjudication #11 requires) is VAL-169, real tier.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

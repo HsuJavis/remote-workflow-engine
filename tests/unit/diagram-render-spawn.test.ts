@@ -9,7 +9,7 @@
 // proving are process-shaped: a malformed output file must not be served as a diagram, and a hung
 // render must have its whole PROCESS GROUP killed, because mmdc spawns Chrome and killing only mmdc
 // leaves a ~300MB orphan behind. A mocked `spawn` could not observe either. Real mmdc + real Chrome
-// is VAL-152 (real tier).
+// is VAL-169 (real tier).
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';

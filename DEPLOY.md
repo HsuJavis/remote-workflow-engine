@@ -318,6 +318,22 @@ curl -s http://localhost:8787/api/models | python3 -c \
   只有實際用到代理的呼叫失敗成 `PROVIDER_UNREACHABLE`——兩種情況都見 §5 的對應處置。
   正常關機（`SIGTERM`）會連帶停掉這個子行程，不留孤兒；可在 `rwe.config.json` 用 `litellmPort`
   鍵讓每個實例指定不同 port（省略則綁一個 OS 分配的 ephemeral 空閒 port，天生不會多實例撞號）。
+- **（選用，v25）dashboard 的流程圖渲染 —— headless Chrome**：dashboard 的工作流詳情頁顯示的是
+  **伺服端畫出來的 SVG**（`GET /api/workflows/:name/diagram.svg`），渲染用 `@mermaid-js/mermaid-cli`
+  + puppeteer 的 headless Chrome 子行程。兩者都宣告在 `package.json` 的 **`optionalDependencies`**：
+  - 裝得起來就自動裝（`npm install` / `npm ci` 照舊，Chrome 由 puppeteer 的 postinstall 下載約 150MB）。
+  - **裝不起來也不會讓安裝失敗**（optional 的語意），引擎照常啟動，dashboard 自動**降級成顯示
+    Mermaid 原始碼**，並在頁面上標出原因（`RENDERER_MISSING`）。引擎核心完全不依賴它。
+  - 機器上已經有 Chrome/Chromium 時，用 puppeteer 自己的原生環境變數指定，引擎直接繼承：
+    ```bash
+    PUPPETEER_SKIP_DOWNLOAD=1 npm install          # 安裝時不要再下載一份 Chrome
+    export PUPPETEER_EXECUTABLE_PATH=/path/to/chrome   # 啟動 rwe 前 export，渲染子行程會繼承
+    ```
+    沒設定這個變數、puppeteer 也找不到自己那份 Chrome 時，渲染失敗會被歸類成
+    `RENDER_FAILED`/`RENDERER_MISSING` 並降級，不會讓整頁空白。
+  - 渲染是**第一次瀏覽時才做並快取**（快取鍵 `(name, version)`），單次渲染硬逾時 20s、
+    全引擎同時最多 2 個渲染子行程；超過上限的請求直接降級回原始碼，不排隊。
+    這條路由**不需要認證**（dashboard 的瀏覽器沒有 token），所以這三道限制是它的防護，不是最佳化。
 - 外部依賴：不需要資料庫伺服器（狀態存在本機檔案：SQLite + JSONL journal，路徑見 `workRoot`）。
 - LLM 供應商（依你要用的模型別名擇一或多個）：對應的環境變數（`ANTHROPIC_API_KEY`／`OPENAI_API_KEY`／
   `GEMINI_API_KEY`／`OLLAMA_BASE_URL`／`OPENROUTER_API_KEY`／`CLAUDE_CODE_OAUTH_TOKEN`／`OPENAI_API_BASE`）

@@ -2969,3 +2969,36 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   can break the thing it observes is not an observation. Confirmed while checking coverage that
   `run_status` — the tool that observed #53 — does reach `RunManager.status()`
   (`mcp-facade.ts:572`), so the instrumented read is the one the incident went through.
+
+### IMPL-192 — the picture, drawn on the server
+- **status:** done
+- **traces:** TASK-166, ARCH-109, ADR-036, DES-166, REQ-119
+- **greens:** UT-167, UT-168, UT-169, IT-134, VAL-169
+- **files:** src/diagram-render.ts, src/server.ts, src/mcp-facade.ts, src/main.ts, src/dashboard-page.ts, package.json, package-lock.json
+- **iter:** v25
+- **note:** Three judgments worth recording.
+
+  **(1) The cache is the rate limiter.** Adjudication #12 L-2 named the combination (anonymous route
+  + lazy render) but the fix has a shape worth stating: cache-first, single-flight and the cap are
+  ONE object, and the route holds none of that logic. The in-flight map is written before the first
+  await — a `get()` that awaited first would let a second concurrent caller past the check and spawn
+  a second browser, which is exactly the bug the clause exists to prevent. Over the cap the answer is
+  an immediate refusal, not a queue: an unbounded queue in front of an anonymous route is the same
+  exhaustion with a longer fuse, and REQ-119 already permits falling back to source.
+
+  **(2) `htmlLabels:false` is the security control, and it was found by measurement, not reasoning.**
+  Rendering the hostile diagram with mermaid's DEFAULT settings put a live `<img src="x">` inside a
+  `<foreignObject>` in the output and made the engine's own Chrome attempt the fetch (visible in the
+  render log as `ERR_FILE_NOT_FOUND`) — an author-chosen URL fetched by the server. With SVG text
+  labels the same text comes back entity-escaped in a `<tspan>`, no fetch is attempted, and REQ-112's
+  `<br/>` triple STILL breaks into two rows, which is the display the requirement asks for. A
+  `--proxy-server=127.0.0.1:9` blackhole was added beside it so the render makes no outbound
+  connection even if a future mermaid feature tries.
+
+  **(3) The dependency is declared, and deliberately optional (ADR-036).** The `npx` path that proved
+  the render works would have let an ANONYMOUS request trigger a package download on the engine host;
+  a hard dependency would make `npm ci` — the step `rwe-update.sh` reverts a release on — download a
+  ~150MB Chrome. `optionalDependencies` + `createRequire().resolve()` gives an auditable version, an
+  install that cannot fail the deploy, and a box without Chrome that simply degrades to the source
+  display. Cost recorded rather than hidden: +188 packages and 11 `npm audit` advisories in that
+  subtree (the engine's own three runtime dependencies remain clean).

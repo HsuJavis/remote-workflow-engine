@@ -8891,7 +8891,7 @@ real run, per the mock hard-rule (a REQ is verified only by a `real:true` green 
 
 **Gate 7.5 (validator, v24) — real-tier evidence lives in `VAL-130` (08-validation.md): result pass.** `real:` stays `false` here — this item is the in-process vitest floor; `VAL-130` is the deploy.sh-booted run.
 
-**Gate 7.5 ROUND 2 (validator, v24, delta re-run at `946b46c`) — real-tier evidence lives in `VAL-152` (08-validation.md): result pass.** `real:` stays `false` here for the same reason.
+**Gate 7.5 ROUND 2 (validator, v24, delta re-run at `946b46c`) — real-tier evidence lives in `VAL-169` (08-validation.md): result pass.** `real:` stays `false` here for the same reason.
 
 Proven by: IT-106 (`mcp-tools-list-http.test.ts`, byte-equal to `projectToolsList()`, no old
 name, `workflow_run` ⇒ unknown-tool) + UT-139 (`tool-specs.test.ts`, the prefix/length/old-name
@@ -9580,3 +9580,107 @@ class (v11 `updateFlagPath`, v15 auth) is a sink that only exists when a composi
 it. Red before the fix, quoted: `expected [] to have a length of 1 but got +0` on both detections,
 and `expected false to be true` on the default sink — which is precisely what run 3977b82d left
 behind: nothing.
+
+### UT-167 — the three defences that make a lazy render safe on an anonymous route
+- **status:** green
+- **traces:** REQ-119, ARCH-109, DES-166, TASK-166
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v25
+
+`tests/unit/diagram-renderer.test.ts` (12). Written test-first and staged so each clause was seen RED
+on its own rather than as one import error: with cache-first alone the file was 7 pass / 5 fail
+(single-flight's ten concurrent gets rendered ten times, the cap never refused, the deadline never
+fired); with single-flight added, 9 / 3; with cap + deadline, 12 / 0. The oracle throughout is the
+RENDER COUNT from a counting fake — the second request must invoke nothing, ten concurrent requests
+must invoke once, and a follower must not consume a slot. Also pinned: failures are never
+negative-cached, a throwing renderer is a `RENDER_FAILED` answer rather than a rejected `get()`, the
+timeout ABORTS the signal (which is what kills mmdc's process group) and frees the slot, and the
+cache is bounded.
+
+### UT-168 — every render degradation is typed, and a hung render's whole process group dies
+- **status:** green
+- **traces:** REQ-119, ARCH-109, ADR-036, DES-166, TASK-166
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v25
+
+`tests/unit/diagram-render-spawn.test.ts` (7). RED first (`renderWithMmdc is not a function`, 7/7).
+The child is REAL — a stub `mmdc` written to a temp dir and driven by an env var — because both
+properties worth proving are process-shaped and a mocked `spawn` could observe neither: malformed
+output (and an exit-0 run that wrote no file) must never be served as a picture, and a hung render
+must have its process GROUP killed. The stub's hang mode spawns a grandchild standing in for the
+Chrome mmdc starts and records both pids; the test asserts BOTH are gone after the deadline. The
+missing-renderer case is the `optionalDependency`-absent deployment (ADR-036), answered
+`RENDERER_MISSING` rather than thrown.
+
+### UT-169 — the dashboard loads a picture, in an `<img>`, with the source as its fallback
+- **status:** green
+- **traces:** REQ-119, ARCH-106, ARCH-109, DES-166, TASK-166
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v25
+
+Six cases appended to `tests/unit/dashboard-diagram-render.test.ts` (13 in the file). RED first (5 of
+the 6). Source-level guards, same mock policy as the UT-116/UT-158 cases above it (no jsdom harness
+in this repo; the served page's browser logic is an embedded string): the page fetches
+`/diagram.svg`, renders it into `id="diagram-img"`, contains no object/embed element anywhere, uses
+`createObjectURL`/`revokeObjectURL` and never `innerHTML` in that function, memoizes on `diagramKey`
+so the 3s poll does not re-pull a 60KB SVG per tick, and keeps the `<pre>` + reason fallback. UT-161's
+grep guard is restated here at the display site and stays green — no client-side Mermaid library was
+added. One case caught its own author: the explanatory comment originally SPELLED the two forbidden
+tag names inside the page string and tripped the guard; the comment was reworded, the assertion was
+not weakened.
+
+### IT-134 — the anonymous `/diagram.svg` route over real HTTP, counted
+- **status:** green
+- **traces:** REQ-119, ARCH-109, DES-166, TASK-166
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v25
+
+`tests/integration/diagram-svg-route.test.ts` (9). RED first (7 fail / 2 pass — the two that passed
+were the 404-on-unknown and POST-405 cases, which a nonexistent route also satisfies; a reminder that
+a passing case is not always evidence). Real `createServer()`, real MCP registration, real SQLite,
+real HTTP, real headers; the RENDER function is the injected counting fake, because REQ-119's clauses
+are statements about how many renders happen. Cases: first view renders and reports
+`X-Diagram-Cache: miss`, the second is a `hit` with the SAME bytes and NO render; the response is
+`image/svg+xml` + `nosniff` + a `default-src 'none'` CSP; the cache is keyed by the RESOLVED version
+(v1 and v2 are different pictures, each cached); ten genuinely concurrent GETs render once and all
+receive identical bytes; a render failure is `503 {code:'DIAGRAM_RENDER_UNAVAILABLE', reason}` and
+never a fake SVG; an unknown name and a legacy `mermaid IS NULL` row are 404 with NO render started;
+and deregister → re-register under the same name (same `v1` key) serves the NEW diagram.
+
+### VAL-169 — the real render, and the hostile-label red test
+- **status:** green
+- **traces:** REQ-119, ARCH-109, ADR-036, DES-166, TASK-166
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v25
+
+`tests/acceptance/val-169-diagram-render.test.ts` (6, 1.3s). No fake anywhere: a booted engine with
+its production renderer (real `mmdc`, real headless Chrome), a real registration whose free-text
+diagram nodes carry `<img src=x onerror=alert(1)>` and `</svg><script>alert(2)</script>` — accepted
+by `checkMermaid`, because those shapes are deliberately free text — and the real bytes the
+dashboard's `<img>` would load. Asserts a real `<svg>` (not the source), the REQ-112 triple on TWO
+rendered rows (`writer` / `sonnet · low · 60000`), a real-tier cache HIT, and the adjudication #11
+red test: no `<script>`, no `onerror`, no inline event handler, no `<img>`, no `<foreignObject>`, and
+the payload present as escaped text (`&lt;img`) so an author still sees their own mistake.
+
+**This file's one honest gap, and its compensation.** VAL-169 was written AFTER the code, so its
+first run was green — the RED was never observed for it as written. Instead the security assertion
+was given a NEGATIVE CONTROL: flipping `MERMAID_CONFIG.htmlLabels` back to mermaid's default `true`
+and re-running turned it RED (3 of 6 — `<img` present in the document, the payload not escaped, and
+the two-row triple gone because the label became a `<foreignObject>` with no `<text>` at all), and
+restoring `false` turned it green again. That is stronger evidence than an ordering claim: it shows
+the assertion fails when the specific defence is removed. It also measured the finding the
+requirement never mentions — with HTML labels the engine's own Chrome FETCHES a URL an author put in
+a label.
+
+Skips (loudly, with a printed reason — never a silent green) when `@mermaid-js/mermaid-cli` or a
+Chrome is absent; that host is the `RENDERER_MISSING` degradation IT-134 covers.

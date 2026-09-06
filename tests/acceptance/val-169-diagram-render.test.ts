@@ -1,4 +1,4 @@
-// VAL-152 (v25, REQ-119, DES-166, TASK-166) — REAL TIER. No fake anywhere in this file: a booted
+// VAL-169 (v25, REQ-119, DES-166, TASK-166) — REAL TIER. No fake anywhere in this file: a booted
 // `createServer()` with its PRODUCTION renderer (a real `mmdc` child process driving a real headless
 // Chrome), a real registration through real MCP HTTP, and the real bytes the dashboard's <img> would
 // load.
@@ -79,7 +79,7 @@ const reason = !cli
   : !chrome
     ? 'SKIPPED: no puppeteer Chrome found (set PUPPETEER_EXECUTABLE_PATH or run puppeteer\'s browser install)'
     : null;
-if (reason) console.warn(`[VAL-152] ${reason} — the render path is NOT verified in this run.`);
+if (reason) console.warn(`[VAL-169] ${reason} — the render path is NOT verified in this run.`);
 const itReal = reason ? it.skip : it;
 
 async function call(name: string, args: unknown): Promise<any> {
@@ -110,7 +110,7 @@ beforeAll(async () => {
 }, 120000);
 afterAll(async () => { await server?.close(); rmSync(tmpDir, { recursive: true, force: true }); });
 
-describe('VAL-152 — the diagram is really drawn, server-side, by a real headless Chrome (REQ-119)', () => {
+describe('VAL-169 — the diagram is really drawn, server-side, by a real headless Chrome (REQ-119)', () => {
   itReal('serves a real SVG document, not the Mermaid source', () => {
     expect(svg.trimStart().startsWith('<svg')).toBe(true);
     expect(svg.length).toBeGreaterThan(5000); // a real rendered flowchart, not a stub
@@ -138,7 +138,7 @@ describe('VAL-152 — the diagram is really drawn, server-side, by a real headle
   });
 });
 
-describe('VAL-152 — the hostile-label red test (adjudication (v24) #11, REQ-119)', () => {
+describe('VAL-169 — the hostile-label red test (adjudication (v24) #11, REQ-119)', () => {
   itReal('nothing executable survives into the served document', () => {
     expect(svg).not.toContain('onerror');
     expect(svg).not.toContain('<script');
