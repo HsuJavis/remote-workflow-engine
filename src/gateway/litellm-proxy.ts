@@ -4,7 +4,7 @@
 // AliasMap GatewayConfig already carries — one source of truth for alias→provider/model, no
 // duplicate bookkeeping in a second config format.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, readdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
@@ -90,6 +90,16 @@ export class LiteLLMProxyManager {
   private readonly _fetchImpl: typeof fetch;
   // S-2: post-start liveness supervision state.
   private _stopped = false;
+  /** #60 (v25): the temp dir this manager created for its config.yaml, so `stop()` can remove
+   *  it. Before this existed the dir was created and forgotten — 11,251 of them accumulated on
+   *  the owner's host in six days. DEPLOY.md's "SIGTERM leaves no orphan" promise was about the
+   *  PROCESS and was true; nothing owned the directory. */
+  private _tempDir: string | undefined;
+  /** #60: the sweep runs ONCE per manager, on its first start — not on the supervised auto-restart
+   *  path. It reads the whole of `tmpdir()`, which on a real host is tens of thousands of entries,
+   *  and the existing supervision test caught the cost immediately: a crash-restart that used to be
+   *  instant started waiting on that scan. Hygiene must not sit on a recovery path. */
+  private _swept = false;
   private _restarts = 0;
   private readonly _maxRestarts: number;
   private readonly _restartDelayMs: number;
@@ -147,7 +157,18 @@ export class LiteLLMProxyManager {
     }
     const port = this._port;
 
+    // #60: sweep first. A teardown-only fix cannot converge, because an engine that dies without
+    //  running stop() (crash, SIGKILL, host reset) leaves its dir behind — which is how six days
+    //  produced 11,251 of them. Best-effort and never fatal: a start must not fail because /tmp
+    //  was unreadable or another engine removed a dir between the readdir and the rm.
+    if (!this._swept) { this._swept = true; await this._sweepStaleTempDirs(); }
     const dir = await mkdtemp(path.join(tmpdir(), 'rwe-litellm-'));
+    this._tempDir = dir;
+    // #60: stamp the OWNING pid. Age alone is the wrong discriminator for "in use" — a stable
+    //  long-running engine's dir is old PRECISELY BECAUSE it is stable, and the first version of
+    //  this sweep deleted the production engine's live dir within minutes of shipping. litellm had
+    //  already read its config so it survived, but its own supervised restart would not have.
+    await writeFile(path.join(dir, 'owner.pid'), String(process.pid), 'utf8').catch(() => {});
     const configPath = path.join(dir, 'config.yaml');
     await writeFile(configPath, generateLiteLLMConfig(this._aliases), 'utf8');
 
@@ -272,6 +293,45 @@ export class LiteLLMProxyManager {
     this._proc = undefined;
     this._baseUrl = undefined;
     this._startPromise = undefined;
+    // #60: the process and its directory are torn down on the SAME path, so neither can be
+    //  cleaned up while the other is forgotten. Best-effort: a failure here must not make stop()
+    //  throw, or a shutdown could hang on a filesystem problem.
+    const dir = this._tempDir;
+    this._tempDir = undefined;
+    if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+
+  /** #60: remove `rwe-litellm-*` dirs left by engines that are GONE. Ownership, not age, decides:
+   *  each dir carries the pid that made it, and a dir whose owner is still alive is never touched.
+   *  Age is a fallback for dirs written before this stamp existed, and only for old ones.
+   *
+   *  The first version of this swept purely on age and deleted the production engine's live dir
+   *  minutes after shipping — a stable engine's dir is old exactly because the engine is stable.
+   *  A second instance on another port is a documented setup (DEPLOY §0), so this must be right.
+   *  Best-effort throughout: hygiene, never a reason a start fails. */
+  private async _sweepStaleTempDirs(legacyMaxAgeMs = 24 * 3600_000): Promise<void> {
+    try {
+      const names = (await readdir(tmpdir())).filter((n) => n.startsWith('rwe-litellm-'));
+      const cutoff = Date.now() - legacyMaxAgeMs;
+      await Promise.all(names.map(async (n) => {
+        const p = path.join(tmpdir(), n);
+        try {
+          const owner = await readFile(path.join(p, 'owner.pid'), 'utf8').then(
+            (s) => Number.parseInt(s.trim(), 10),
+            () => undefined,
+          );
+          if (owner !== undefined && Number.isFinite(owner)) {
+            // `kill(pid, 0)` tests liveness without signalling. Alive → someone owns it, leave it.
+            try { process.kill(owner, 0); return; } catch { /* owner gone — reclaimable */ }
+            await rm(p, { recursive: true, force: true });
+            return;
+          }
+          // No stamp: predates this fix. Age is all we have, so be conservative about it.
+          const st = await stat(p);
+          if (st.mtimeMs < cutoff) await rm(p, { recursive: true, force: true });
+        } catch { /* vanished or unreadable — someone else's problem, not a start failure */ }
+      }));
+    } catch { /* tmpdir unreadable — never fatal */ }
   }
 
   /** S-2: attach a one-shot exit watcher to a freshly-healthy proxy proc. Skipped for a test double
