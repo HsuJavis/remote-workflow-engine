@@ -702,7 +702,14 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // not a per-request read); `getRun` (not `listRuns`, which doesn't project `principal`) is the
   // only RunStore read that already carries it (pre-v24, DES-096).
   const principalsCount = Object.keys(config?.principals ?? {}).length;
-  const authAnnounceEnabled = config?.principals !== undefined || !!config?.auth?.enabled;
+  // v25 (#59): `enabled` follows the auth GATE, not the presence of a config key. It used to be
+  //  `principals !== undefined || auth.enabled`, which announced `enabled=true` for the exact
+  //  shape `rwe.config.example.json` ships — a principals map WITH `auth.enabled:false` — on
+  //  every first deployment, while auth was off. DEPLOY.md makes the firewall allowlist
+  //  MANDATORY in that state, so the line was hiding a required safety step, not just a boolean.
+  //  `principalsCount` still reports what is configured: a role table that is inert because auth
+  //  is off is worth seeing, and conflating the two is what caused this.
+  const authAnnounceEnabled = !!config?.auth?.enabled;
   const bootRunSummaries = await store.listRuns();
   const bootRunDetails = await Promise.all(bootRunSummaries.map((r) => store.getRun(r.runId)));
   const ownerlessRuns = bootRunDetails.filter((r) => r && !r.principal).length;

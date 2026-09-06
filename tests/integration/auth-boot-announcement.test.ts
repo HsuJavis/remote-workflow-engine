@@ -18,11 +18,34 @@ describe('auth boot announcement (IT-107, DES-141)', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     server = await createServer({
       port: 0, bind: '127.0.0.1',
+      auth: { enabled: true },
       principals: { 'alice@x.com': { role: 'admin' } },
-    });
+    } as never);
     const bootLine = logSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes('auth:'));
     expect(bootLine).toBeDefined();
+    // #59: `auth: { enabled: true }` is now REQUIRED for this expectation. Before the fix this case
+    // passed without it, because a present principals map alone announced enabled=true — the very
+    // conflation that made every fresh deployment misreport its auth state.
     expect(bootLine).toMatch(/auth: enabled=true principals=1 defaultRole=user/);
+    logSpy.mockRestore();
+  });
+
+  // #59 (v25): the combination `rwe.config.example.json` actually SHIPS — a principals map present
+  // AND `auth.enabled:false` — which deploy.sh copies verbatim on every first deployment. The line
+  // used to say `enabled=true` here because server.ts treated a present principals map as proof of
+  // auth. That is not cosmetic: DEPLOY.md makes the firewall allowlist MANDATORY when auth is off,
+  // and an operator reading `enabled=true` on their own boot log would reasonably skip it.
+  it('principals present but auth.enabled:false announces enabled=FALSE — the shipped example config (#59)', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    server = await createServer({
+      port: 0, bind: '127.0.0.1',
+      auth: { enabled: false },
+      principals: { 'alice@example.com': { role: 'admin' }, '*': { role: 'user' } },
+    } as never);
+    const bootLine = logSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes('auth:'));
+    expect(bootLine).toBeDefined();
+    // The count still reports what is configured — an inert role table is worth seeing.
+    expect(bootLine).toMatch(/auth: enabled=false principals=2 defaultRole=user/);
     logSpy.mockRestore();
   });
 
@@ -37,8 +60,9 @@ describe('auth boot announcement (IT-107, DES-141)', () => {
   it('GET /api/system reports auth = {enabled, principalsCount, defaultRole}', async () => {
     server = await createServer({
       port: 0, bind: '127.0.0.1',
+      auth: { enabled: true },
       principals: { '*': { role: 'user' } },
-    });
+    } as never);
     const res = await fetch(`http://127.0.0.1:${server.port}/api/system`);
     const body = (await res.json()) as { auth?: unknown };
     expect(body.auth).toEqual({ enabled: true, principalsCount: 1, defaultRole: 'user' });
