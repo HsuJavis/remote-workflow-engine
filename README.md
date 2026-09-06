@@ -51,7 +51,10 @@
 - **作者附上的結構圖**：`workflow_register` 必須帶一個非空的 **Mermaid** `mermaid`
   字串（少了就 `MERMAID_REQUIRED`），而且圖裡的 stadium 節點 `id(["label"])` 要跟腳本的 agent label
   **雙向完全對應**（對不上就 `DIAGRAM_MISMATCH`）。`workflow_describe` 會原文回傳這張圖（`mermaid` 欄位），也接受 `version`／`channel` 指定要看哪個版本。
-  **引擎不自己畫圖**，註冊也不會把腳本本文送給任何模型。
+  **註冊時引擎不產生圖**（圖由作者附上），註冊也不會把腳本本文送給任何模型。
+  註冊之後,dashboard 會在**第一次瀏覽時於伺服端**把那張圖畫成 SVG 並快取
+  （`GET /api/workflows/:name/diagram.svg`,v25 REQ-119）——
+  瀏覽器只收到圖片,作者的標籤文字不會進入任何人瀏覽器的 HTML 渲染器。
 - **排程**：`schedule_create`/`schedule_list`/`schedule_delete`/`schedule_setEnabled`（cron/once/resident）。
   觸發器**先建立、再由工作流程認領**：`schedule_create`／`webhook_create` 都不需要 `workflow`，回一個 id，
   再交給 `workflow_register({triggers:[id]})` 綁定到某個版本（仍可在建立時直接帶 `workflow` 綁定）。
@@ -74,7 +77,8 @@
 - **系統監控**：`system_info`（CPU 負載 + 核心數 + 利用率 %、記憶體 total/used/free、磁碟、引擎行程 + 主機 Top-N 行程 + 系統行程統計，`GET /api/system`）
 - **模型目錄**：`models_list`（跨供應商統一目錄，含 `capability`/`stability`/`costLevel 0–10`/`modalities`/`ref` 等豐富欄位，支援多維篩選，`GET /api/models`）
 - **儀表板**：`GET /dashboard`（首頁：工作流程卡片按 RUNNING/REGISTERED/OTHER 分組，各附描述 +
-  可靠性指標；點進工作流程可看作者附上的 Mermaid 圖原文，沒有圖時顯示 `mermaidNote`；System 面板：即時主機資源；
+  可靠性指標；點進工作流程會看到**畫出來的流程圖**（伺服端渲染的 SVG）,渲染器不可用時退回顯示 Mermaid 原文,
+  沒有圖時顯示 `mermaidNote`；System 面板：即時主機資源；
   Models 面板：模型目錄）、`GET /dashboard/issues`（Issues 頁面：Open/Resolved 分組、點擊顯示 detail）、
   `GET /dashboard/<runId>`（run 詳情：DAG + 逐字稿）
 - **可觀測性**：`GET /api/home`（首頁工作流程分組 JSON）、`GET /api/status`（agentSemaphore）、

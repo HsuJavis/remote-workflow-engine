@@ -72,7 +72,8 @@ RWE_CONFIG_PATH=/path/to/another/rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=879
    （$workRoot/store、run 工作目錄、           / 本機 Ollama
      資產樹、每個版本的 mermaid 圖）
 ```
-（`workflow_register` 不經過 gateway：結構圖由作者自己附上 `mermaid`，引擎不畫圖；
+（`workflow_register` 不經過 gateway：結構圖由作者自己附上 `mermaid`，**註冊時**引擎不畫圖
+（畫圖發生在第一次瀏覽 dashboard 時,見 §1a 的伺服端渲染）；
 LiteLLM 只服務 `agent()` 這一個消費者。）
 
 停止服務：`kill $(cat .rwe.pid)`。不加 `--background` 則前景執行、Ctrl-C 停止。
@@ -364,6 +365,23 @@ curl -s http://localhost:8787/api/models | python3 -c \
     ```
     第 2 步是關鍵：**服務 log 的 `diagram_render_failed.detail` 會截斷**，而 puppeteer 的錯誤
     原因寫在訊息開頭，被截掉之後只剩一串看不出所以然的堆疊。要診斷就手跑 mmdc。
+  - **磁碟需求:實測 651MB,不是 150MB。** puppeteer 25.x 會抓**兩個**瀏覽器
+    (`chrome` 與 `chrome-headless-shell`,同版本),乾淨快取實測解壓後共 **651MB**。
+    小磁碟的 VPS 要先確認空間,這是「能不能跑」的差別。
+  - **最小化伺服器／精簡容器要先裝共享函式庫。** `chrome-headless-shell` 依賴 **46 個**共享物件,
+    含 `libnss3`、`libatk-bridge-2.0`、`libgbm`、`libasound2`、`libxkbcommon`、`libdrm`、`libcups`。
+    桌面版發行版通常都有;精簡映像檔沒有,Chrome 會直接死掉而你只會看到不透明的 `RENDER_FAILED`。
+    先查:`ldd ~/.cache/puppeteer/chrome-headless-shell/*/chrome-headless-shell-linux64/chrome-headless-shell | grep 'not found'`
+    ——**沒有輸出才算過**。
+  - **這條路由的完整介面**(§1b 沒有它的列,補在這裡):
+    | | |
+    |---|---|
+    | `GET /api/workflows/<name>/diagram.svg` | 預設版本(release) |
+    | `?version=v2` | 指定版本 |
+    | `200` | `image/svg+xml`,回應含 `X-Diagram-Cache: hit｜miss`、`X-Content-Type-Options: nosniff`、`Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src data:` |
+    | `404` | 該名稱／版本沒有圖(`LEGACY_NO_DIAGRAM`)或工作流不存在 |
+    | `503` | `{"code":"DIAGRAM_RENDER_UNAVAILABLE","reason":"RENDER_FAILED｜RENDERER_MISSING"}` — 渲染器不可用,dashboard 會自動退回顯示原始碼 |
+    **快取是行程內的**:重啟引擎後同一個 `(name, version)` 會再 `miss` 一次。
   - **不裝也可以**：`@mermaid-js/mermaid-cli` 與 `puppeteer` 在 `optionalDependencies`，
     沒有它們引擎照常啟動與運作，dashboard 只是退回顯示 Mermaid 原始碼（`RENDERER_MISSING`）。
     容器／離線／低磁碟環境可以刻意不裝。
@@ -787,7 +805,7 @@ channels, runnable}`（從不含腳本本文；`owner` 是註冊者的身分—�
 時維持開放。**擋下的時機很重要**：名稱存在與不存在都是同一個 401，未授權的呼叫端沒辦法靠
 「回 404 還是回 200」去試探某個工作流程名稱存不存在。
 
-結構圖由作者附上、引擎不畫圖：`workflow_register` 必須
+結構圖由作者附上、**註冊時**引擎不畫圖(渲染發生在第一次瀏覽,見 §1a):`workflow_register` 必須
 帶一個非空的 **Mermaid** `mermaid` 字串（少了就 `MERMAID_REQUIRED`），圖裡的 stadium 節點
 `id(["label"])` 要跟腳本的 `agent()` label 雙向完全對上（對不上就 `DIAGRAM_MISMATCH`）。
 `workflow_describe` 的 `mermaid` 欄位設計上回傳這張圖的原文；沒有圖的版本回 `mermaid:null` +
