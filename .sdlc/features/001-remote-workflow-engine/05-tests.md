@@ -9635,6 +9635,12 @@ added. One case caught its own author: the explanatory comment originally SPELLE
 tag names inside the page string and tripped the guard; the comment was reworded, the assertion was
 not weakened.
 
+A seventh case was added after review: `#detail` is ONE pane shared by the workflow view and the run
+view, and `loadDag` never hid the diagram surface — so a picture of workflow A would sit above run
+B's DAG. The v24 `<pre>` had the SAME defect and nobody noticed, which is the argument for closing it
+here rather than calling it adjacent code: a block of text is easy to miss, a 60KB picture is not.
+RED observed by removing the one `hideDiagram()` call (1 fail / 13 pass), green with it.
+
 ### IT-134 — the anonymous `/diagram.svg` route over real HTTP, counted
 - **status:** green
 - **traces:** REQ-119, ARCH-109, DES-166, TASK-166
@@ -9682,5 +9688,20 @@ the assertion fails when the specific defence is removed. It also measured the f
 requirement never mentions — with HTML labels the engine's own Chrome FETCHES a URL an author put in
 a label.
 
-Skips (loudly, with a printed reason — never a silent green) when `@mermaid-js/mermaid-cli` or a
-Chrome is absent; that host is the `RENDERER_MISSING` degradation IT-134 covers.
+**The skip gate is a LIVE PROBE, and that is a deploy-safety decision.** `deploy/rwe-update.sh` runs
+this suite as its restart gate and REVERTS the release on failure. A presence check would have said
+"renderer available" on a server where `npm ci` downloaded Chrome but the binary cannot LAUNCH
+(missing `libnss3`/`libatk` — the normal state of a box that never had a browser), and this file
+would then have failed the deploy of an unrelated release: an `optionalDependency` chosen precisely
+so it cannot break an install, undone by a test that breaks the deploy. So `beforeAll` first RENDERS
+a trivial diagram and, on any failure, skips every case via `ctx.skip()` (visibly `6 skipped`, with
+the real reason and detail printed — never a vacuous green). Both paths were exercised: forced-skip
+prints the reason and reports 6 skipped; the normal path reports 6 passed in 1.3s. Trade-off stated
+rather than hidden: on such a host a genuine regression that turns every render into `RENDER_FAILED`
+is masked AT THIS TIER — UT-168 and IT-134 catch that class and need no browser.
+
+**Not proven anywhere in this repo:** that the `<img>` actually PAINTS in a real browser. VAL-169
+proves the route, the bytes and their headers; `val-018-dashboard-browser-ui.test.ts` is HTTP +
+source assertions, not a browser driver (this repo has no Playwright dependency). The first clause of
+REQ-119 — "he sees the picture" — therefore still needs the validator's own browser pass at Gate 7.5,
+the same way VAL-113/VAL-116 covered the earlier dashboard views.

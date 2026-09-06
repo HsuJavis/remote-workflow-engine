@@ -26,7 +26,7 @@ import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
-import { resolveMmdcCli } from '../../src/diagram-render.js';
+import { renderWithMmdc, resolveMmdcCli } from '../../src/diagram-render.js';
 
 let server: Server;
 let tmpDir: string;
@@ -74,13 +74,25 @@ function findChrome(): string | null {
 
 const cli = resolveMmdcCli();
 const chrome = findChrome();
-const reason = !cli
+// The gate is a LIVE PROBE (below, in beforeAll), not the presence of files. `deploy/rwe-update.sh`
+// runs this suite as its restart gate and REVERTS the release when it fails: a host where `npm ci`
+// installed Chrome but the binary cannot LAUNCH (missing libnss3/libatk — the normal state of a
+// server that never had a browser) would look "renderer available" to a presence check and then
+// fail here, turning an optionalDependency that deliberately cannot break the install into a test
+// that breaks the deploy. So the probe RENDERS something trivial first and skips on any failure,
+// printing the real reason. Trade-off, stated rather than hidden: on such a host a genuine
+// regression that turns every render into RENDER_FAILED is masked at THIS tier — UT-168 and IT-134
+// catch that class, and they need no browser.
+let reason: string | null = !cli
   ? 'SKIPPED: @mermaid-js/mermaid-cli (optionalDependency) is not installed on this host'
   : !chrome
     ? 'SKIPPED: no puppeteer Chrome found (set PUPPETEER_EXECUTABLE_PATH or run puppeteer\'s browser install)'
     : null;
-if (reason) console.warn(`[VAL-169] ${reason} — the render path is NOT verified in this run.`);
-const itReal = reason ? it.skip : it;
+/** An `it` that becomes a no-op when the probe said this host cannot render — never a silent green:
+ *  `beforeAll` prints the reason once, and the skip is visible in the run's stdout. */
+const itReal = (name: string, fn: () => void | Promise<void>, timeout?: number): void => {
+  it(name, async (ctx) => { if (reason) ctx.skip(); await fn(); }, timeout);
+};
 
 async function call(name: string, args: unknown): Promise<any> {
   const res = await fetch(`${base()}/mcp`, {
@@ -96,7 +108,12 @@ let svg = '';
 
 beforeAll(async () => {
   if (chrome) process.env['PUPPETEER_EXECUTABLE_PATH'] = chrome; // inherited by the render child
-  tmpDir = mkdtempSync(join(tmpdir(), 'rwe-val152-'));
+  if (!reason) {
+    const probe = await renderWithMmdc('graph TD;\nA(["a"])', new AbortController().signal);
+    if (!probe.ok) reason = `SKIPPED: the renderer is installed but cannot render on this host — ${probe.reason}: ${probe.detail ?? ''}`;
+  }
+  if (reason) console.warn(`[VAL-169] ${reason} — the render path is NOT verified in this run.`);
+  tmpDir = mkdtempSync(join(tmpdir(), 'rwe-val169-'));
   server = await createServer({ port: 0, bind: '127.0.0.1', workRoot: tmpDir });
   const reg = await call('workflow_register', { name: WF, script: SCRIPT, mermaid: MERMAID });
   expect(reg.error).toBeUndefined(); // the hostile labels are ACCEPTED by checkMermaid — free text

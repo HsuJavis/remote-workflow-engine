@@ -239,6 +239,13 @@ async function renderDescribe(name){
 // too — the fallback below is already showing the source, and re-asking every 3s would hammer an
 // anonymous, render-capable route.
 var diagramKey=null, diagramUrl=null;
+function hideDiagram(){
+  diagramKey=null;
+  var img=document.getElementById('diagram-img'); img.removeAttribute('src'); img.style.display='none';
+  if(diagramUrl){ URL.revokeObjectURL(diagramUrl); diagramUrl=null; }
+  document.getElementById('diagram').style.display='none';
+  document.getElementById('mermaidNote').style.display='none';
+}
 async function renderDiagram(name, version){
   var key=name+'@'+version;
   if(diagramKey===key) return;
@@ -452,6 +459,10 @@ function renderGraph(payload, runId){
 
 async function loadDag(runId){
   document.getElementById('detail-runid').textContent=runId;
+  // v25 (REQ-119, DES-166): #detail is ONE pane shared by the workflow view and the run view, so a
+  // diagram left over from a previously-viewed workflow would sit above this run's DAG. The <pre>
+  // had this defect since v24 and it was easy to miss; a 60KB picture is not, so it is closed here.
+  hideDiagram();
   var view=await getJSON('/api/runs/'+encodeURIComponent(runId));
   var status=view?view.status:'';
   var badge=document.getElementById('detail-status'); badge.textContent=status; badge.className='pill st-'+status;

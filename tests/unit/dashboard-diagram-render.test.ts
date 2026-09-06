@@ -124,3 +124,20 @@ describe('v25: the dashboard loads the rendered diagram as an image (UT-169, REQ
     expect(body).toContain('reason');
   });
 });
+
+// UT-169 (v25, REQ-119, DES-166): `#detail` is ONE pane shared by the workflow view and the run
+// view. The v24 `<pre>` was never hidden when the pane switched to a run — a latent defect that a
+// block of text made easy to miss and a 60KB picture would not.
+describe('v25: the diagram does not survive into the run view (UT-169, REQ-119)', () => {
+  it('loadDag clears the diagram surface before drawing a run', () => {
+    const fn = DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf('async function loadDag('));
+    const body = fn.slice(0, fn.indexOf('\n}'));
+    expect(body).toContain('hideDiagram()');
+    // and hideDiagram really clears all three surfaces + the memo, so the next workflow view refetches
+    const hide = DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf('function hideDiagram('));
+    const hideBody = hide.slice(0, hide.indexOf('\n}'));
+    expect(hideBody).toContain('diagramKey=null');
+    expect(hideBody).toContain('revokeObjectURL');
+    expect(hideBody).toContain("getElementById('diagram').style.display='none'");
+  });
+});
