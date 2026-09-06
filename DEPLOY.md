@@ -331,6 +331,42 @@ curl -s http://localhost:8787/api/models | python3 -c \
     ```
     沒設定這個變數、puppeteer 也找不到自己那份 Chrome 時，渲染失敗會被歸類成
     `RENDER_FAILED`/`RENDERER_MISSING` 並降級，不會讓整頁空白。
+  - **機器上沒有 Chrome 時，要裝的是「兩個」二進位檔，不是一個**（2026-09-06 實機踩過，
+    兩次都以 `503 RENDER_FAILED` 收場才找出來）：
+    ```bash
+    npx puppeteer browsers install chrome                  # 完整版 Chrome
+    npx puppeteer browsers install chrome-headless-shell   # ← mmdc 實際啟動的是這個
+    ```
+    **只裝 `chrome` 不夠。** `mermaid-cli` 走的是 `chrome-headless-shell` 這個獨立的 headless
+    二進位檔；只裝完整版 Chrome 時 `node -e "require('puppeteer').launch(...)"` 會回報
+    `launch OK`，而 `mmdc` 仍然失敗 —— 兩者用的不是同一個執行檔，所以**不能拿 puppeteer 能啟動
+    當作 mmdc 能渲染的證據**。
+  - **版本必須與 `node_modules/puppeteer` 對得上。** 快取裡有一份舊版（例如先前驗證留下的
+    `linux-150.x`）而 puppeteer 要 `152.x` 時，錯誤是 `Could not find chrome (ver. 152...)`；
+    上面兩條 `install` 指令會自動抓當前 puppeteer 要的版本，不要手動挑版本號。
+  - **驗證方式（照這個順序，不要跳）**：
+    ```bash
+    # 1) 兩個二進位檔都在
+    ls -d ~/.cache/puppeteer/chrome/*/ ~/.cache/puppeteer/chrome-headless-shell/*/
+
+    # 2) 直接渲一張，看得到真正的錯誤（服務 log 會截斷）
+    T=$(mktemp -d); cd "$T"
+    printf 'graph TD\na(["x"])\n' > in.mmd
+    echo '{"args":["--no-sandbox","--disable-setuid-sandbox","--proxy-server=127.0.0.1:9"]}' > p.json
+    echo '{"htmlLabels":false}' > m.json
+    node <repo>/node_modules/@mermaid-js/mermaid-cli/src/cli.js -i in.mmd -o out.svg -c m.json -p p.json
+    # 預期：Generating single mermaid chart，且 out.svg 存在
+
+    # 3) 經由引擎驗（服務啟動後；先註冊並發布一個帶圖的工作流）
+    curl -s -o /tmp/d.svg -w '%{http_code} %{content_type} %{size_download}\n' \
+      http://127.0.0.1:<port>/api/workflows/<name>/diagram.svg
+    # 預期：200 image/svg+xml <數萬 bytes>；再打一次 X-Diagram-Cache 應為 hit
+    ```
+    第 2 步是關鍵：**服務 log 的 `diagram_render_failed.detail` 會截斷**，而 puppeteer 的錯誤
+    原因寫在訊息開頭，被截掉之後只剩一串看不出所以然的堆疊。要診斷就手跑 mmdc。
+  - **不裝也可以**：`@mermaid-js/mermaid-cli` 與 `puppeteer` 在 `optionalDependencies`，
+    沒有它們引擎照常啟動與運作，dashboard 只是退回顯示 Mermaid 原始碼（`RENDERER_MISSING`）。
+    容器／離線／低磁碟環境可以刻意不裝。
   - 渲染是**第一次瀏覽時才做並快取**（快取鍵 `(name, version)`），單次渲染硬逾時 20s、
     全引擎同時最多 2 個渲染子行程；超過上限的請求直接降級回原始碼，不排隊。
     這條路由**不需要認證**（dashboard 的瀏覽器沒有 token），所以這三道限制是它的防護，不是最佳化。
