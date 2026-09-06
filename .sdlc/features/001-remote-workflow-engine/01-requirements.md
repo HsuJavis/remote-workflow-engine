@@ -1257,3 +1257,31 @@ own dynamic workflow, which nests one level too).
 4. **A guide that teaches an invalid example is worse than no guide.** v23's `AUTHORING.md` example was
    refused by the engine, found only because Gate 7.5 *ran* it. REQ-116 requires every example to be
    registered by a test.
+
+### REQ-119 — dashboard 把作者的圖畫出來,而且渲染不發生在使用者的瀏覽器裡
+- **status:** draft
+- **traces:** REQ-111, REQ-112
+- **acceptance:** Given 一個已註冊且圖通過 `checkMermaid` 的工作流版本 When 有人在 dashboard 上
+  瀏覽它 Then 他看到的是**畫出來的流程圖**,不是 Mermaid 原始碼 —— 擁有者 2026-09-06 的產品裁決,
+  推翻 ADR-033 的後果(該 ADR 自己就把這件事標為「呈報給擁有者」)。
+  Given 渲染 Then 它發生在**伺服端**,瀏覽器只收到一張 `image/svg+xml`,並以 `<img>` 載入
+  (不得用 `<object>`/`<embed>`,那兩者會執行 SVG 內的 script)—— 這保住 ADR-033 的兩個理由:
+  作者可控的標籤文字永遠不進入任何人瀏覽器的 HTML 渲染器,前端不新增函式庫,
+  `UT-161` 禁止前端 mermaid 的 grep 守衛**維持不變**。
+  Given `label<br/>model · effort · timeoutMs` 三元組 Then 它在圖上**換行顯示**(實測已驗證:
+  `writer` / `default · low · 120000` 兩行)—— 這是伺服端渲染相對前端渲染的決定性差異,
+  前端要開 `securityLevel:'strict'` 才安全,而開了之後 `<br/>` 會顯示成字面文字。
+  Given 渲染時機 Then 是**首次瀏覽時才渲並快取**(擁有者裁決),不是註冊時 ——
+  註冊路徑不因此變慢,代價是第一個瀏覽者要等。
+  Given 快取鍵 Then 是 `(name, version)`:同一個版本的 mermaid 不可變(REQ-111 要求改 script
+  必須重附圖),所以**快取永不需要失效**,只在 `workflow_deregister` 時連同刪除。
+  Given 渲染失敗(逾時、Chrome 缺席、mermaid-cli 缺席)Then **降級回現行的原始碼顯示**,
+  並回報可觀測的原因 —— 不得整頁空白,也不得假裝成功。
+  **Given 這條路由是匿名可存取的**(裁定 #8 H-1 拿掉了它的 auth 閘門,好讓 dashboard 讀得到)
+  **Then 匿名請求不得能夠任意觸發 headless Chrome**:必須 (a) **快取優先** ——
+  命中快取時完全不啟動 Chrome;(b) **single-flight** —— 同一個 `(name, version)` 同時來十個請求
+  只渲一次,其餘等同一份結果;(c) **併發上限與逾時** —— 同時進行的渲染數有上限,
+  超過時排隊或降級回原始碼,單次渲染有硬逾時。
+  三者缺一,這條匿名路由就是一個資源耗盡的入口。
+- **iter:** v25
+
