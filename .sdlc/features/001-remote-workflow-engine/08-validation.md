@@ -8349,3 +8349,41 @@ warning is unchanged and is repeated at the end of this section.
   本地 7B 模型吐 tool-call JSON 而非散文,與 issue #55 同一個根因。
 - **iter:** v24
 
+### VAL-168 — 生產部署補上 `principals`,三角色在真機上生效;dashboard 的圖到得了瀏覽器
+- **status:** green
+- **traces:** REQ-109, REQ-111
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** 2026-09-06,擁有者指示。生產機(`rwe.service`,`0.0.0.0:8899`)重啟到含
+  #55/#56/#57 修正的碼(PID 419224 → 724802 → 725448)。
+
+  **先發現的事:重啟後沒有任何人能註冊工作流。** `rwe.config.json` 沒有 `principals` 區塊,
+  v24 的角色解析在 auth 開啟且對照表缺席時一律回 `user`(ADR-028 fail-closed),
+  而 `user` 低於 `workflow_register` 需要的 `author`。
+  **這不是缺陷,`DEPLOY.md:434` 早就寫了警告**(「啟用 auth 卻沒設定 `principals` 的話,
+  沒有人能註冊任何東西」)—— 是 orchestrator 沒讀文件就重啟。
+
+  **另一個實測發現(D-BIND 的實際手感)**:從 `127.0.0.1` 連 `0.0.0.0` 綁定的服務時,
+  `/mcp` 的認證區塊整個跳過,**bearer 在那條連線上根本不會被驗證**,身分是 `loopback-exempt`,
+  回的是 `PRINCIPAL_REQUIRED` 而不是 `FORBIDDEN_ROLE`。改從 LAN IP(`192.168.0.125`)連,
+  bearer 才被驗證,才拿到 `FORBIDDEN_ROLE: role 'user' is below the required 'author'` ——
+  **要用 token 就必須從非 loopback 位址連,從 localhost 連反而降權。**
+  `DEPLOY.md §5` 有記這個陷阱。
+
+  **設定與驗證**:`principals` 加入 `hsuhungjung@gmail.com: admin`、`hsujavis@gmail.com: author`
+  (設定檔在 `.gitignore` 內,不進 repo;原檔備份 `/tmp/rwe.config.json.bak`)。重啟後實測:
+  `hsujavis@gmail.com` 以 author 身分從 LAN IP `workflow_register` ⇒ `v1`、`workflow_publish`
+  ⇒ `release`,兩者都成功。
+  **REQ-111 在生產機上的閉環(#57 的修正)**:匿名、不帶任何 header 的
+  `GET /api/workflows/dash-demo/describe` ⇒ `200`,`mermaid` 130 字元與註冊值一致,
+  `owner: hsujavis@gmail.com`,**無 `script` 洩漏**;從 LAN IP 同樣 `200`。
+  這正是 dashboard 前端發出的請求,也正是 #57 修正前回 `401` 的那一個。
+
+  **一併記下擁有者的觀察與它的定位**:擁有者截圖(NAS `rwe_dashboard.png`)顯示 dashboard 上
+  是 **Mermaid 原始碼文字,不是圖形**。這是 **ADR-033 刻意的決定**,不是缺陷 ——
+  該 ADR 自陳「誠實的代價:dashboard 上的人看到的是文字,不是圖,這是產品決定,呈報給擁有者」。
+  VAL-165 也記了這個限制。**但 orchestrator 在對話中反覆說「看得到圖」,用詞蓋過了那個限制**,
+  才造成期望落差。渲染與否現在回到擁有者手上決定(見 04-design.md 裁定 #11)。
+- **iter:** v24
+
