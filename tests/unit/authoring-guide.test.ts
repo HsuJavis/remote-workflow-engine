@@ -6,11 +6,11 @@ import { describe, it, expect } from 'vitest';
 import { buildAuthoringGuide, GUIDE_EXAMPLES } from '../../src/authoring-guide.js';
 import { SHAPES, EDGE_FORMS } from '../../src/check-mermaid.js';
 
-const CEILINGS = { maxTimeoutMs: 600000, maxAppendPromptBytes: 1024, maxEffort: 'high' as const, aliases: ['default', 'sonnet'] };
+const CEILINGS = { maxTimeoutMs: 600000, maxAppendPromptBytes: 1024, maxEffort: 'high' as const, aliases: ['default', 'sonnet'], runConcurrency: 24 };
 
 describe('buildAuthoringGuide (UT-159, DES-157)', () => {
   it('a FAKE ceiling appears verbatim in the text (proves interpolation, not a hard-coded 600000)', () => {
-    const text = buildAuthoringGuide({ maxTimeoutMs: 12345, maxAppendPromptBytes: 999, maxEffort: 'medium', aliases: ['default'] });
+    const text = buildAuthoringGuide({ maxTimeoutMs: 12345, maxAppendPromptBytes: 999, maxEffort: 'medium', aliases: ['default'], runConcurrency: 24 });
     expect(text).toMatch(/12345/);
   });
 
@@ -40,6 +40,30 @@ describe('buildAuthoringGuide (UT-159, DES-157)', () => {
     const text = buildAuthoringGuide(CEILINGS);
     expect(text).toMatch(/LEGACY_REREGISTER/);
   });
+
+  // v25 (DES-168, REQ-120, issue #61): the limit an author had NO way to learn. The owner's 3-wide
+  // parallel() ran 2 branches in production and the guide said nothing about budget, fan-out width,
+  // or their interaction — REQ-120 makes teaching it acceptance, not a nicety.
+  it("the guide teaches how wide a parallel() really runs, from THIS deployment's resolved cap", () => {
+    const text = buildAuthoringGuide({ ...CEILINGS, runConcurrency: 77 });
+    const section = text.slice(text.indexOf('Budget, concurrency'));
+    expect(section).toMatch(/77/); // interpolated, never a hard-coded 24
+    expect(section).toMatch(/runConcurrency/);
+    expect(section).toMatch(/queue/i); // past the cap calls QUEUE — a fan-out is slower, not truncated
+    expect(buildAuthoringGuide(CEILINGS)).not.toMatch(/\b77\b/);
+  });
+
+  it('the guide states the honest budget contract: a stop signal, with a bounded overshoot', () => {
+    const text = buildAuthoringGuide(CEILINGS);
+    const section = text.slice(text.indexOf('Budget, concurrency'));
+    expect(section).toMatch(/not a hard ceiling/i);
+    expect(section).toMatch(/overshoot/i);
+    expect(section).toMatch(/BUDGET_EXCEEDED/);
+    expect(section).toMatch(/unbounded/); // omitted/null budget
+    // …and that an engine refusal is NOT the author's own thunk throwing (the #61 conflation).
+    expect(section).toMatch(/refused/);
+    expect(section).toMatch(/null/);
+  });
 });
 
 // v24 Gate 7.5 (D-12, REQ-117): the cold subject's FIRST registration was refused
@@ -51,7 +75,7 @@ describe('buildAuthoringGuide (UT-159, DES-157)', () => {
 // documentation is at fault"), that is a documentation defect.
 describe('the accepted model aliases are ON the surface (UT-159 v24, D-12, REQ-117)', () => {
   it("this deployment's alias names appear in the ceilings section, interpolated — never a hard-coded table", () => {
-    const text = buildAuthoringGuide({ maxTimeoutMs: 600000, maxAppendPromptBytes: 1024, maxEffort: 'high', aliases: ['zz-alpha', 'zz-beta'] });
+    const text = buildAuthoringGuide({ maxTimeoutMs: 600000, maxAppendPromptBytes: 1024, maxEffort: 'high', aliases: ['zz-alpha', 'zz-beta'], runConcurrency: 24 });
     const section = text.slice(text.indexOf('Engine ceilings (this deployment)'));
     expect(section).toMatch(/zz-alpha/);
     expect(section).toMatch(/zz-beta/);

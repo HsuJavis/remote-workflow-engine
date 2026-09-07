@@ -80,7 +80,7 @@ const KNOWN_FILE_CONFIG_KEYS: Record<keyof FileConfig, true> = {
   bind: true, port: true, allowedHosts: true, workRoot: true, aliases: true, timeoutMs: true,
   retries: true, useLiteLLMProxy: true, proxyManager: true, litellmPort: true,
   agentDefinitionsDir: true, gateway: true, issueReporter: true, mcpProbe: true,
-  schedulerDbPath: true, assetRoot: true, agentSlots: true, workspaceTtlMs: true,
+  schedulerDbPath: true, assetRoot: true, agentSlots: true, runConcurrency: true, workspaceTtlMs: true,
   modelCatalogFetchers: true, modelCatalog: true, maxWorkflowDepth: true,
   maxWorkflowDescendants: true, maxConcurrentRuns: true, seedRefAllowlist: true,
   continuationDbPath: true, casDir: true, maxBlobBytes: true, webhookDbPath: true,
@@ -200,6 +200,10 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     maxWorkflowDescendants: fileConfig.maxWorkflowDescendants,
     // v8 Slice 4 (REQ-054): forwarded like the other RunManager caps; RunManager defaults 64 + validates.
     maxConcurrentRuns: fileConfig.maxConcurrentRuns,
+    // v25 (DES-168, REQ-120): per-run in-flight agent() cap (default 24 in RunManager). Forwarded
+    // here or it silently no-ops — the twice-bitten composeConfig bug class (ARCH-090, standing
+    // rule 1); the wiring UT carries a row for it.
+    runConcurrency: fileConfig.runConcurrency,
     // v13 (REQ-080): forward the seedRef egress allowlist so rwe.config.json can enable engine-pull;
     // absent → RunManager keeps it fail-closed (SEEDREF_DISABLED). Same convention as maxConcurrentRuns.
     seedRefAllowlist: fileConfig.seedRefAllowlist,

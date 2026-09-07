@@ -29,6 +29,12 @@ export interface GuideCeilings {
    *  `aliasNames`). An empty array means the deployment configured none, in which case the
    *  validator accepts any string — the guide says so rather than printing an empty list. */
   aliases: readonly string[];
+  /** v25 (DES-168, REQ-120, issue #61): this deployment's per-RUN in-flight `agent()` cap — how wide
+   *  a `parallel()` actually runs at once (`runConcurrency`, default DEFAULT_RUN_CONCURRENCY). It
+   *  belongs here for the same reason the other ceilings do: an author sizing a fan-out has no other
+   *  way to learn it, and issue #61 was reported by an author who could not. Resolved, never a
+   *  literal — a deployment that raises it renders its own number. */
+  runConcurrency: number;
 }
 
 export interface GuideExample {
@@ -363,6 +369,45 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         // because it read a model id out of `models_list` (which lists catalog MODELS, not
         // aliases) — nothing on the surface named what belongs in `model.default`.
         aliasSentence(ceilings.aliases),
+    ),
+  );
+
+  parts.push(
+    section(
+      'Budget, concurrency, and how wide a fan-out really runs',
+      // v25 (DES-168, REQ-120, issue #61): the limit an author had NO way to learn. The owner hit it
+      // in production — a 3-wide parallel() silently ran 2 — and the guide said nothing about budget
+      // interacting with fan-out width at all.
+      `\`parallel([a, b, c, ...])\` dispatches every thunk, and this deployment runs up to ` +
+        `**${ceilings.runConcurrency}** of them at a time (\`runConcurrency\`, operator-configurable). ` +
+        'Past that they QUEUE and run as slots free: a wider fan-out is slower, never truncated.\n\n' +
+        "`run_start`'s `budget` is a **stop-dispatching signal, not a hard ceiling**, and this is the " +
+        'honest description of what the engine can enforce. Before each dispatch it asks one question: ' +
+        'has this run already spent `budget` tokens? If yes, the call is refused ' +
+        '`BUDGET_EXCEEDED`; if no, it goes. What a call will cost cannot be known before it finishes, ' +
+        'so the calls already in flight when the budget runs out still complete — a run can therefore ' +
+        `overshoot its budget by up to one concurrency window (${ceilings.runConcurrency} x one ` +
+        'call\'s cost). Size the budget for the whole workflow, not per call; an omitted or `null` ' +
+        '`budget` means unbounded.\n\n' +
+        'A refusal is visible, and is NOT the same thing as your own thunk throwing:\n\n' +
+        '- your thunk throws → `parallel()`/`pipeline()` give that slot `null` and the rest keep going ' +
+        '(the documented contract);\n' +
+        '- the ENGINE refuses to dispatch → the error PROPAGATES out of `parallel()` with the code ' +
+        '`BUDGET_EXCEEDED`, the run fails with that code unless you catch it, and the refused call ' +
+        "appears in `run_status.agents` as `state: 'refused'` with `reasonCode: 'BUDGET_EXCEEDED'`. " +
+        'A refusal rejects the WHOLE `parallel()` call, so its already-completed branches are not ' +
+        'returned to you either. Catch it only if the run has something useful to do without them:' +
+        '\n\n' +
+        '```js\n' +
+        'let findings = [];\n' +
+        'try {\n' +
+        '  findings = await parallel(lenses.map((lens) => () => agent(\'researcher\', { prompt: lens })));\n' +
+        '} catch (e) {\n' +
+        '  if (e.code !== \'BUDGET_EXCEEDED\') throw e;\n' +
+        '  // Out of budget: `findings` is still [] — this phase produced nothing. Continue with what\n' +
+        '  // earlier phases returned, or rethrow to fail the run with BUDGET_EXCEEDED.\n' +
+        '}\n' +
+        '```',
     ),
   );
 

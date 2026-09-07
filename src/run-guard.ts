@@ -4,12 +4,29 @@ import type { Budget } from './types.js';
 
 const AGENT_CAP = 1000;
 
-// D-V2G8-2 (review finding V4): fraction of the TOTAL budget each agent() call reserves ahead of
-// dispatch. There's no per-call cost estimate, so reserve() takes a flat share rather than the whole
-// remainder — reserving 100% collapsed parallel() to 1 concurrent call; a HALF lets a burst push at
-// most 2 calls' reservations through before the 3rd hits a real assertBudget() check against what's
-// actually left. Restores genuine concurrency while still hard-capping overshoot on a tight budget.
-const RESERVATION_FRACTION = 0.5;
+// v25 (DES-167, REQ-120, issue #61, OWNER RULING 2026-09-07): there is no reservation here any
+// more, and there must not be one again.
+//
+// What was here: `RESERVATION_FRACTION = 0.5`, `reserve()`, `releaseReserved()` and a `_reserved`
+// counter. Each about-to-dispatch agent() call reserved half the TOTAL budget, so two concurrent
+// calls reserved 100% and the THIRD call's `assertBudget()` threw BudgetExceededError however
+// little had actually been spent. Arithmetic, not a race: every budgeted `parallel()` wider than 2
+// silently lost every branch past the second (issue #61, run a88e5d07).
+//
+// Why the whole mechanism is gone rather than re-tuned: what one call will cost is unknowable
+// before it finishes, so any per-call reservation is a guess — guess high and you cap fan-out
+// (the bug), guess low and you protect nothing. Learning the estimate from the run's own history
+// does not rescue it either: a workflow whose FIRST act is an N-wide fan-out has no observation
+// yet, so the bootstrap value becomes the new cap in exactly the case being fixed. An engine should
+// not pretend to a guarantee it cannot hold.
+//
+// The two concerns are now separate, each held by the thing that can actually hold it:
+//   - CONCURRENCY is capped by `acquireSlot()` below, which QUEUES at the cap rather than refusing
+//     (the reservation arithmetic was what silently cut that cap from 14 to 2 on the owner's host);
+//   - BUDGET is the run's total spend: `assertBudget()` checks `spent >= total`, nothing else.
+// So a budget is a STOP-DISPATCHING signal, not a hard ceiling: calls already in flight can
+// overshoot it by at most one concurrency window (concurrency × one call's cost). That is exactly
+// what the engine can enforce, and `workflow_authoring_guide` says so in those words.
 
 export interface RunGuardConfig {
   concurrency: number;
@@ -20,7 +37,6 @@ export class RunGuard {
   readonly concurrency: number;
   private readonly total: number | null;
   private _spent = 0;
-  private _reserved = 0;
   private _agentsIssued = 0;
   private _inFlight = 0;
   private readonly _queue: Array<() => void> = [];
@@ -84,30 +100,14 @@ export class RunGuard {
     };
   }
 
+  /** The ONE budget door: this run has spent its whole allowance, so stop dispatching. Nothing
+   *  about reservations, in-flight calls or per-call estimates enters this decision (v25 ruling —
+   *  see the header). RunManager calls it immediately before each dispatch and turns the throw into
+   *  a `refused` AgentRecord carrying BUDGET_EXCEEDED, so the caller learns why instead of silently
+   *  losing a branch. */
   assertBudget(): void {
-    if (this.total !== null && this._spent + this._reserved >= this.total) {
+    if (this.total !== null && this._spent >= this.total) {
       throw new BudgetExceededError(this._spent, this.total);
     }
-  }
-
-  /** Atomically reserves a per-call share (RESERVATION_FRACTION of the total budget, capped at what's
-   *  actually left) for one about-to-dispatch agent() call — synchronous, no `await` before the
-   *  caller's own assertBudget() check, so a burst of concurrent parallel() calls cannot all pass
-   *  assertBudget() before any one of them has recorded real spend via addTokens(). See
-   *  RESERVATION_FRACTION (top of file) for why a flat fraction, not the whole remainder (D-V2G8-2,
-   *  review finding V4). No-op (returns 0) when the budget is unbounded. Release the returned amount
-   *  via releaseReserved() once the call settles, regardless of its real cost. */
-  reserve(): number {
-    if (this.total === null) return 0;
-    const remaining = Math.max(0, this.total - this._spent - this._reserved);
-    const amount = Math.min(remaining, this.total * RESERVATION_FRACTION);
-    this._reserved += amount;
-    return amount;
-  }
-
-  /** Releases a reservation obtained from reserve() — the call's real cost (if any) was already
-   *  recorded separately via addTokens(), so this only frees the reservation, never touches _spent. */
-  releaseReserved(amount: number): void {
-    this._reserved -= amount;
   }
 }

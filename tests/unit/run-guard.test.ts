@@ -45,16 +45,41 @@ describe('RunGuard', () => {
     expect(guard.budgetView().total).toBe(500);
   });
 
+  // v25 (DES-167, REQ-120, issue #61, owner ruling 2026-09-07) — REWRITTEN, not deleted. The two
+  // cases below used to read `assertBudget()` while a RESERVATION mechanism also existed; that
+  // mechanism (RESERVATION_FRACTION / reserve() / releaseReserved() / _reserved) is now GONE, so
+  // what they pin is the whole budget door rather than one half of it. The behaviour they asserted
+  // is unchanged and still asserted: a spent budget refuses, an unbounded one never does.
   it('assertBudget throws BudgetExceededError when spent reaches the total', () => {
     const guard = new RunGuard({ concurrency: 4, budget: 100 });
     guard.addTokens(100);
     expect(() => guard.assertBudget()).toThrow(BudgetExceededError);
   });
 
-  it('remaining() is Infinity when budget total is null', () => {
+  it('remaining() is Infinity and assertBudget never throws when budget total is null', () => {
     const guard = new RunGuard({ concurrency: 4, budget: null });
     guard.addTokens(9999);
     expect(guard.budgetView().remaining()).toBe(Infinity);
+    // "Omitted or null means unbounded" (tool-specs.ts) — pinned as a non-regressable clause of
+    // REQ-120, not merely inherited behaviour.
     expect(() => guard.assertBudget()).not.toThrow();
   });
+
+  // ── UT-170 (v25, DES-167, REQ-120, issue #61): budget is SPEND, and only spend ──────────────
+  it('an unspent budget admits an arbitrarily wide burst — no reservation caps it at two', () => {
+    // The exact arithmetic from the report: reserve() took 50% of the TOTAL per call, so two
+    // concurrent calls held 100% and the third threw BudgetExceededError with ZERO tokens spent.
+    // Nothing may refuse a call while the run has spent nothing, however many calls are in flight.
+    const guard = new RunGuard({ concurrency: 24, budget: 1_500_000 });
+    for (let i = 0; i < 24; i++) expect(() => guard.assertBudget()).not.toThrow();
+  });
+
+  it('refuses exactly when cumulative spend reaches the total, and not one call before', () => {
+    const guard = new RunGuard({ concurrency: 24, budget: 1000 });
+    guard.addTokens(999);
+    expect(() => guard.assertBudget()).not.toThrow(); // 1 token left is still budget left
+    guard.addTokens(1);
+    expect(() => guard.assertBudget()).toThrow(BudgetExceededError);
+  });
+
 });

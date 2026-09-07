@@ -61,6 +61,28 @@ The ceilings below are this build's resolved values — operator-overridable, so
 
 A declared `model.default` (and every entry of a declared `model.enum`) must be one of this deployment's model ALIAS names — `sonnet`, `haiku`, `opus`, `default` — not a provider model id. `models_list` shows the catalog MODELS an alias may resolve to; it is not the alias table, and passing an id from it is refused `PARAM_CONTRACT_INVALID: default not a known alias`. An `agent()` call naming an unknown alias is refused `UNKNOWN_ALIAS`. (The one exception is an `openrouter/<model-id>` passthrough, which the validator accepts by prefix and needs no entry in the table above.)
 
+## Budget, concurrency, and how wide a fan-out really runs
+
+`parallel([a, b, c, ...])` dispatches every thunk, and this deployment runs up to **24** of them at a time (`runConcurrency`, operator-configurable). Past that they QUEUE and run as slots free: a wider fan-out is slower, never truncated.
+
+`run_start`'s `budget` is a **stop-dispatching signal, not a hard ceiling**, and this is the honest description of what the engine can enforce. Before each dispatch it asks one question: has this run already spent `budget` tokens? If yes, the call is refused `BUDGET_EXCEEDED`; if no, it goes. What a call will cost cannot be known before it finishes, so the calls already in flight when the budget runs out still complete — a run can therefore overshoot its budget by up to one concurrency window (24 x one call's cost). Size the budget for the whole workflow, not per call; an omitted or `null` `budget` means unbounded.
+
+A refusal is visible, and is NOT the same thing as your own thunk throwing:
+
+- your thunk throws → `parallel()`/`pipeline()` give that slot `null` and the rest keep going (the documented contract);
+- the ENGINE refuses to dispatch → the error PROPAGATES out of `parallel()` with the code `BUDGET_EXCEEDED`, the run fails with that code unless you catch it, and the refused call appears in `run_status.agents` as `state: 'refused'` with `reasonCode: 'BUDGET_EXCEEDED'`. A refusal rejects the WHOLE `parallel()` call, so its already-completed branches are not returned to you either. Catch it only if the run has something useful to do without them:
+
+```js
+let findings = [];
+try {
+  findings = await parallel(lenses.map((lens) => () => agent('researcher', { prompt: lens })));
+} catch (e) {
+  if (e.code !== 'BUDGET_EXCEEDED') throw e;
+  // Out of budget: `findings` is still [] — this phase produced nothing. Continue with what
+  // earlier phases returned, or rethrow to fail the run with BUDGET_EXCEEDED.
+}
+```
+
 ## The author-supplied diagram
 
 Every registration requires a non-empty Mermaid `mermaid` string (`MERMAID_REQUIRED`) — the engine no longer draws the diagram for you (that generator is retired: registering a script used to send the whole script body to an LLM as a prompt; the diagram is now yours to draw, so nothing you write is sent anywhere just to produce a picture). A node is `id<shape>`, one per line, and these are the shapes this engine accepts — nothing else parses:
@@ -113,6 +135,7 @@ Registering a script that predates the v24 contract (or was never migrated) reso
 - `DESCENDANT_CAP_EXCEEDED` — nested workflow() calls exceed the configured maxWorkflowDescendants
 - `TRIGGER_NOT_FOUND` — no trigger (schedule or webhook) is registered under this id
 - `TRIGGER_ALREADY_CLAIMED` — this trigger id is already claimed by a different workflow
+- `BUDGET_EXCEEDED` — the run's token budget is spent; the engine refused to dispatch this agent() call
 - `RESERVED_PREFIX` — the name or a path segment starts with the engine-reserved 'rwe-' prefix (ARCH-093)
 
 ## Authoring convention (not checked)

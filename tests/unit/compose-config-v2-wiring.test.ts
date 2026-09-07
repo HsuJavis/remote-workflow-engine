@@ -219,4 +219,14 @@ describe('composeConfig() v2 key wiring (DES-022, standing rule 1)', () => {
     const cfg = await composeConfig({ principals, gateway: 'direct-fetch' } as any, FAKE_DEPS);
     expect((cfg as Record<string, unknown>)['principals']).toEqual(principals);
   });
+
+  // v25 (DES-168, REQ-120, issue #61): `runConcurrency` — the per-run in-flight agent() cap that
+  // replaced `min(16, cores-2)`. It is exactly the shape of this file's standing bug class: a new
+  // config key that composeConfig() forgets to forward silently no-ops, and only a real run notices
+  // (v11 updateFlagPath and v15 auth each cost an iteration this way). An operator who raises this
+  // to widen a fan-out would see no change at all.
+  it('v25: runConcurrency is forwarded from FileConfig into the returned ServerConfig', async () => {
+    const cfg = await composeConfig({ runConcurrency: 40, gateway: 'direct-fetch' } as any, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['runConcurrency']).toBe(40);
+  });
 });

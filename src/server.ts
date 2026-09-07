@@ -113,6 +113,11 @@ export interface ServerConfig {
   // Defaults to 32 (a generous backstop that never throttles a single workflow, whose own per-run
   // concurrency is already capped at min(16, cores-2)).
   agentSlots?: number;
+  // v25 (DES-168, REQ-120, owner ruling 2026-09-07): per-RUN in-flight agent() cap — how wide one
+  // workflow's parallel() may actually run. Defaults to DEFAULT_RUN_CONCURRENCY (24); `acquireSlot()`
+  // queues past it, so a wider fan-out is slower, never truncated. Distinct from `agentSlots` above,
+  // which rations spawns across ALL runs.
+  runConcurrency?: number;
   // REQ-026 (v2): run-workspace retention TTL in ms. When set (>0), a periodic GC reclaims TERMINAL
   // run workspaces older than this (never active/suspended). Omitted -> no auto-GC (workspaces are
   // kept until an explicit workspace_purge), so no surprise deletion by default.
@@ -677,7 +682,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // DEFAULT_GATEWAY_CONFIG), never "accept everything". Feeding an empty Set here left the B1/B2
   // admission control inert on exactly the deployment shape most installs use.
   const aliasNames = new Set(Object.keys(config?.aliases ?? DEFAULT_ALIASES));
-  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, agentTypes, semaphore: agentSemaphore, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, agentTypes, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/
@@ -729,7 +734,7 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v25 (REQ-119, DES-166, TASK-166): one renderer/cache per engine. The default render function is
   // the real mmdc child process; `config.diagramRender.render` replaces it in tests.
   const diagrams = new DiagramRenderer({ render: renderWithMmdc, ...config?.diagramRender });
-  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, aliasNames, diagramCache: diagrams });
+  const facade = new McpFacade({ clock, store, runManager, validator, ceilings, cas, schedulerClaims: scheduler, webhookClaims: webhooks, aliasNames, diagramCache: diagrams, runConcurrency: config?.runConcurrency });
 
   // v24 (DES-139, ARCH-088, TASK-147): authorize()'s OwnerLookup is SYNC (a pure decision
   // function), while RunStore/WorkflowCatalog are async ports — a second connection to each

@@ -129,6 +129,25 @@ function guardedMath(): typeof Math {
   });
 }
 
+// v25 (DES-167, REQ-120, issue #61): codes the ENGINE raises when it REFUSED to dispatch a call at
+// all. They are NOT failures of the author's own code, and `parallel()`/`pipeline()` must not fold
+// them into their documented null-for-a-throwing-thunk contract — doing so is what made the owner's
+// lost third researcher invisible (no code, no log, no event; the only trace was a callSeq gap).
+// The set is deliberately tiny: a call that reached a gateway and FAILED there (timeout, provider
+// error) is still a thunk that threw, and still nulls.
+// Inlined rather than imported from ../errors.js on purpose — this module is loaded by the sandbox
+// CHILD, which does not resolve `.js`→`.ts` for value imports (see the checkMeta note at the top).
+const ENGINE_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED']);
+
+/** The refusal code carried by `err`, or null when `err` is anything else. Child-entry rejects an
+ *  `agentThrow` with `name` set to the IPC code, so `name` is the live field here; `code` is
+ *  checked first for an error thrown in-process (e.g. a GuardError). */
+function refusalCode(err: unknown): string | null {
+  const e = err as { code?: unknown; name?: unknown } | null | undefined;
+  const code = (typeof e?.code === 'string' && e.code) || (typeof e?.name === 'string' && e.name) || '';
+  return ENGINE_REFUSAL_CODES.has(code) ? code : null;
+}
+
 type Thunk = () => Promise<unknown>;
 type Stage = (prev: unknown, item: unknown, index: number) => Promise<unknown>;
 
@@ -144,7 +163,11 @@ function makeParallel() {
       thunks.map(async (thunk) => {
         try {
           return await thunk();
-        } catch {
+        } catch (err) {
+          // An engine REFUSAL is not the author's thunk failing — propagate it with its code so the
+          // caller (and the run's terminal error) says why. Everything else keeps the documented
+          // null-for-a-throwing-thunk contract.
+          if (refusalCode(err) !== null) throw err;
           return null;
         }
       }),
@@ -166,7 +189,8 @@ function makePipeline() {
         for (const stage of stages) {
           try {
             prev = await stage(prev, item, index);
-          } catch {
+          } catch (err) {
+            if (refusalCode(err) !== null) throw err; // same rule as parallel() above
             return null;
           }
         }
@@ -261,6 +285,15 @@ export async function evaluateScript(script: string, api: SandboxApi): Promise<S
   } catch (err) {
     if (err instanceof GuardError) {
       return { kind: 'error', error: { code: err.code, message: err.message } };
+    }
+    // v25 (DES-167, REQ-120): an uncaught engine REFUSAL keeps its own code instead of flattening to
+    // SCRIPT_ERROR (which run-manager's toErrorCode would then map to INTERNAL_ERROR). This is what
+    // makes `run_result.error.code === 'BUDGET_EXCEEDED'` true for the caller — the owner's ask:
+    // 「如果是 budget 問題 應該 fail 時 client 知道」. Covers both the sequential `await agent()` and
+    // the refusal parallel()/pipeline() re-threw above.
+    const refusal = refusalCode(err);
+    if (refusal !== null) {
+      return { kind: 'error', error: { code: refusal, message: err instanceof Error ? err.message : String(err) } };
     }
     return { kind: 'error', error: { code: 'SCRIPT_ERROR', message: err instanceof Error ? err.message : String(err) } };
   }

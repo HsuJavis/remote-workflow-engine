@@ -8,7 +8,7 @@ import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore } from './run-store.js';
-import { RunManager } from './run-manager.js';
+import { RunManager, DEFAULT_RUN_CONCURRENCY } from './run-manager.js';
 import { resolveVersionRequest, type WorkflowDetail, type Channel, type VersionSelector } from './workflow-catalog.js';
 import { SubmissionValidator } from './submission-validator.js';
 // v24 Gate 7.5 (D-3): `toErrEnvelope` is IMPORTED, not re-implemented. This file used to carry a
@@ -97,6 +97,10 @@ export interface McpFacadeDeps {
    *  `aliasNames`), so `workflow_authoring_guide` can NAME them instead of leaving a cold model to
    *  guess. Absent (unit construction) renders the "no alias table configured" sentence. */
   aliasNames?: Set<string>;
+  /** v25 (DES-168, REQ-120, issue #61): this deployment's resolved per-run in-flight agent() cap, so
+   *  `workflow_authoring_guide` states the REAL fan-out width instead of a literal. Same
+   *  "resolved, never hard-coded" rule as `ceilings`/`aliasNames` above. */
+  runConcurrency?: number;
   cas?: CasStore;
   assetSync?: AssetSyncService;
   /** v24 (DES-149): the two trigger-claim stores the register/deregister sequence calls into.
@@ -230,6 +234,7 @@ export class McpFacade {
   private readonly validator: SubmissionValidator;
   private readonly ceilings: Ceilings;
   private readonly aliasNames: Set<string>;
+  private readonly runConcurrency: number;
   private readonly cas?: CasStore;
   // Not readonly: `AssetSyncService` needs the server's bound port for `selfBind` (server.ts
   // constructs it AFTER `http.listen()`, well after the facade). `bindAssetSync` lets the
@@ -249,6 +254,7 @@ export class McpFacade {
     this.validator = deps.validator ?? new SubmissionValidator({ catalog: this.runManager.catalog });
     this.ceilings = deps.ceilings ?? DEFAULT_CEILINGS;
     this.aliasNames = deps.aliasNames ?? new Set();
+    this.runConcurrency = deps.runConcurrency ?? DEFAULT_RUN_CONCURRENCY;
     this.cas = deps.cas;
     this.assetSync = deps.assetSync;
     this.diagramCache = deps.diagramCache;
@@ -534,7 +540,7 @@ export class McpFacade {
   async workflowAuthoringGuide(): Promise<ResultEnvelope<{ text: string }>> {
     // v24 Gate 7.5 (D-12): the alias names travel with the ceilings — both are "what THIS
     // deployment accepts", and the guide is the only place the surface states either.
-    return { runId: '', status: 'completed', result: { text: buildAuthoringGuide({ ...this.ceilings, aliases: [...this.aliasNames] }) } };
+    return { runId: '', status: 'completed', result: { text: buildAuthoringGuide({ ...this.ceilings, aliases: [...this.aliasNames], runConcurrency: this.runConcurrency }) } };
   }
 
   // ============================================================================================

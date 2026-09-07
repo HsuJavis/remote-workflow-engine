@@ -4,7 +4,7 @@
 // observable elsewhere (DES-003 signature). Owns one RunGuard + one SandboxHost per run so caps
 // and in-flight processes never leak across runs; suspend/stop actually abort in-flight agent()
 // calls (AbortSignal) and kill the sandbox child, not just flip the status flag.
-import { cpus, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { materializeSeed, materializeManifest } from './workspace-seed.js';
@@ -55,6 +55,14 @@ export interface RunManagerDeps {
   spawner?: AgentSpawner;
   gateway?: GatewayClient;
   catalog?: WorkflowCatalog;
+  /** v25 (DES-168, REQ-120, owner ruling 2026-09-07): max agent() calls this run may have IN FLIGHT
+   *  at once. `acquireSlot()` QUEUES at the cap — a wider fan-out is slower, never truncated.
+   *  Default DEFAULT_RUN_CONCURRENCY (24), an explicit number rather than the pre-v25
+   *  `min(16, cores-2)`: how wide a workflow may fan out has nothing to do with how many cores the
+   *  box has, and deriving it from the CPU count made the real ceiling invisible to the author.
+   *  Operators set it via `runConcurrency` in rwe.config.json. Invalid (≤0/non-integer) is rejected
+   *  at construction. The HOST-wide `agentSlots` semaphore (default 32) is a different layer: it
+   *  rations spawns across ALL runs and is unchanged. */
   concurrency?: number;
   workRoot?: string;
   /** v24 (integrator; REQ-113, DES-154/ARCH-103): the resolved asset roots this run's dispatches
@@ -114,6 +122,12 @@ export interface RunManagerDeps {
    *  aliases means every alias passes; the gateway itself is the fail point). */
   aliasNames?: Set<string>;
 }
+
+/** v25 (DES-168, REQ-120, owner ruling): the default per-run in-flight agent() cap. Explicit and
+ *  host-independent — it replaces `Math.max(1, Math.min(16, cpus().length - 2))`, which made the
+ *  real fan-out ceiling a function of the machine (14 on the owner's host, and cut to 2 by the
+ *  reservation arithmetic issue #61 removed). Overridable per deployment via `runConcurrency`. */
+export const DEFAULT_RUN_CONCURRENCY = 24;
 
 const TERMINAL: RunStatus[] = ['stopped', 'completed', 'failed'];
 
@@ -238,7 +252,7 @@ export class RunManager {
     this._store = deps.store ?? new InMemoryRunStore(this._clock);
     this._spawnerOverride = deps.spawner;
     this._gateway = deps.gateway ?? new LiteLLMGatewayClient(DEFAULT_GATEWAY_CONFIG);
-    this._concurrency = deps.concurrency ?? Math.max(1, Math.min(16, cpus().length - 2));
+    this._concurrency = RunManager._positiveInt(deps.concurrency, DEFAULT_RUN_CONCURRENCY, 'runConcurrency');
     this._workRoot = deps.workRoot ?? join(tmpdir(), 'remote-workflow-runs');
     this._assetRoot = deps.assetRoot ?? defaultAssetRoot(this._workRoot);
     this._globalAssetRoot = deps.globalAssetRoot ?? globalAssetRoot(this._workRoot);
@@ -1041,104 +1055,115 @@ export class RunManager {
       if (cached !== MISS) return cached;
     }
 
-    entry.guard.assertBudget();
-    // D-G8-6 + D-V2G8-2: reserve a per-call SHARE of this run's remaining budget for this one
-    // about-to-dispatch call BEFORE releasing control (no `await` between assertBudget() and
-    // reserve() — an atomic gate). There is no per-call cost estimate ahead of time, so reserve()
-    // takes a flat fraction (RESERVATION_FRACTION, see run-guard.ts) rather than the entire
-    // remainder: reserving 100% (the original D-G8-6 fix) stopped the TOCTOU race but collapsed
-    // parallel() concurrency to exactly 1; the fractional reserve stops a burst of concurrent
-    // calls from ALL passing the stale pre-dispatch check while still restoring real concurrency
-    // (review findings V2/V4). Released in the finally block below regardless of the call's real cost.
-    const reserved = entry.guard.reserve();
+    // D-F12: allocate the agentId and mark it "queued" BEFORE acquiring a concurrency slot — so a
+    // call genuinely blocked behind the concurrency cap is observable via workflow_status right
+    // away, not only once it resolves (round-5 VAL-002/VAL-007's `agents:[]`-while-running gap).
+    // v25 (REQ-120): it is also what gives a call the engine later REFUSES a record to carry the
+    // reason on — before v25 a refused call had no record at all.
+    const agentId = entry.guard.nextAgentId();
+    if (entry.spawner instanceof AgentExecutor) {
+      entry.spawner.markQueued(agentId, key.opts.label, key.opts.phase, framePath);
+    }
+    const release = await entry.guard.acquireSlot();
     try {
-      // D-F12: allocate the agentId and mark it "queued" BEFORE acquiring a concurrency slot — so a
-      // call genuinely blocked behind the concurrency cap is observable via workflow_status right
-      // away, not only once it resolves (round-5 VAL-002/VAL-007's `agents:[]`-while-running gap).
-      const agentId = entry.guard.nextAgentId();
-      if (entry.spawner instanceof AgentExecutor) {
-        entry.spawner.markQueued(agentId, key.opts.label, key.opts.phase, framePath);
-      }
-      const release = await entry.guard.acquireSlot();
+      // v25 (DES-167, REQ-120, issue #61, owner ruling): ONE budget door — "has this run already
+      // spent its whole allowance?" — evaluated HERE, holding the concurrency slot, immediately
+      // before dispatch. The position is load-bearing: checked before acquireSlot() (where the v2
+      // code checked it), every call of a wide parallel() passes while spend is still 0 and then
+      // queues, so the budget stops nothing at all. Checked after the slot, only the calls actually
+      // IN FLIGHT can overshoot — which is precisely the bound the guide now states (budget is a
+      // stop-dispatching signal; overshoot ≤ concurrency × one call's cost).
+      //
+      // What this replaces: the v2 `assertBudget()` + `reserve()` pair, where each call reserved
+      // half the TOTAL budget, so two concurrent calls reserved 100% and a third branch of any
+      // budgeted parallel() threw however little had been spent (issue #61). The reservation is
+      // gone entirely — see run-guard.ts's header for why no formula replaces it.
       try {
+        entry.guard.assertBudget();
+      } catch (err) {
+        // A real refusal — record it as a terminal `refused` agent carrying its named code, then
+        // let it propagate. `parallel()` (sandbox/guards.ts) re-throws refusal codes rather than
+        // swallowing them to null, so the caller learns why instead of silently losing a branch.
         if (entry.spawner instanceof AgentExecutor) {
-          entry.spawner.markRunning(agentId, this._clock.isoNow());
+          entry.spawner.markRefused(agentId, 'BUDGET_EXCEEDED', this._clock.isoNow());
         }
-        // D-V3M-2 (REQ-020 D-DOS): the actual gateway dispatch (the SDK-CLI subprocess spawn) runs
-        // inside the process-global semaphore slot — so `GET /api/status`'s inUse reflects real
-        // concurrent spawns across all runs and returns to baseline once each settles.
-        // v24 (DES-146, TASK-158): when this call's script label has its OWN per-agent slice in
-        // the admission snapshot (`entry.effectiveParams.agents[label]`), its resolved
-        // model/effort/timeoutMs/appendPrompt + provenance override the run-wide flat fields for
-        // THIS call only — a sibling label's call reads its own slice, never this one's (REQ-110
-        // close). `prompt`/`tools` stay the run-wide (workflow-level, not per-agent) fields. No
-        // label, or no contract at admission (ad-hoc/legacy script) → the flat snapshot unchanged,
-        // same as before this task.
-        const labelParams = key.opts.label ? entry.effectiveParams.agents?.[key.opts.label] : undefined;
-        const runParams: RunParams = labelParams
-          ? { ...entry.effectiveParams, model: labelParams.model, effort: labelParams.effort, timeoutMs: labelParams.timeoutMs, appendPrompt: labelParams.appendPrompt, provenance: labelParams.provenance }
-          : entry.effectiveParams;
-        // v24 (integrator; REQ-113, ARCH-103/DES-154, adjudication #4 C-2): `AgentReq.assets` —
-        // THE missing wire. `agent-executor.ts` forwards it, `claude-agent-sdk-client.ts` acts on
-        // it and `materialize-assets.test.ts` proved the algorithm, but NOBODY produced the value,
-        // so on every real dispatch `req.assets` was `undefined` and the gateway took its
-        // "no workspace / no assets -> materialize nothing" branch. REQ-113 ("each agent declares
-        // the skills IT needs, not one set for the whole workflow") therefore had no runtime
-        // behaviour at all. Built here from the three things only this scope has together: the run's
-        // workflow name, THIS label's declared `skills`/`mcp`, and the resolved asset roots.
-        // Absent for an ad-hoc/unnamed run or an unlabelled call — nothing to scope assets BY.
-        const declared = key.opts.label ? entry.declaredAssets[key.opts.label] : undefined;
-        const assets = entry.name !== undefined && declared !== undefined
-          ? { roots: assetRootsFor(this._assetRoot, this._globalAssetRoot, entry.name), declared, workflow: entry.name }
-          : undefined;
-        const outcome = await this._semaphore.withSlot(() =>
-          entry.spawner.run({
-            runId,
-            agentId,
-            prompt,
-            opts: key.opts,
-            workspace: entry.workspace,
-            signal: entry.abortController.signal,
-            ...(assets !== undefined ? { assets } : {}),
-            // v21 (ARCH-068, DES-105, TASK-101): the run-immutable admission-time snapshot — one
-            // per run (incl. nested workflow() frames, which share the parent's entry), never
-            // re-resolved per call. v24 (TASK-158): narrowed to this call's label above when the
-            // admission snapshot has a per-label slice for it.
-            runParams,
-          }),
-        );
-        const value = outcome.kind === 'null' ? null : outcome.value;
-        const journalEntry: JournalEntry = {
-          callSeq,
-          key,
-          value,
-          ts: this._clock.isoNow(),
-          scriptVersion: `v${entry.scriptVersion}`,
-          // D-F13: a null caused by suspend/stop aborting this call mid-flight must MISS on resume
-          // (re-run live), never replay as if it were a genuinely-completed terminal null.
-          aborted: outcome.kind === 'null' && outcome.aborted === true,
-        };
-        entry.journal.push(journalEntry);
-        // DES-088 (TASK-082) sink (4): redact the ENTIRE JournalEntry (key.prompt + key.opts + value)
-        // at the persist-write site only. The live in-memory journal (entry.journal, the replay cache)
-        // keeps the raw key+value so same-process suspend/resume matches exactly; only the durable
-        // journal.jsonl is redacted. Accepted caveat — invariant (c) EXTENDED to call params: if a
-        // provisioned secret rides a prompt/opts (e.g. a prior agent's MCP result echoed into a later
-        // prompt), a HARD-CRASH resume reads the redacted key from disk, MISSes that call's key
-        // (sameKey compares prompt+opts, resume-cache.ts:14) and re-runs it + the tail LIVE — correct
-        // values, just recomputed. Strictly more graceful than a redacted VALUE (which feeds a marker
-        // back as data). (Future option, not built: persist a keyHash of the raw key so replay matches
-        // without the raw prompt — see DES-088 Decision rationale.)
-        const journalToStore = this._secretValueProvider
-          ? (redact(journalEntry, this._secretValueProvider.entries()) as JournalEntry)
-          : journalEntry;
-        await this._store.appendJournal(runId, journalToStore);
-        return value;
-      } finally {
-        release();
+        throw err;
       }
+      if (entry.spawner instanceof AgentExecutor) {
+        entry.spawner.markRunning(agentId, this._clock.isoNow());
+      }
+      // D-V3M-2 (REQ-020 D-DOS): the actual gateway dispatch (the SDK-CLI subprocess spawn) runs
+      // inside the process-global semaphore slot — so `GET /api/status`'s inUse reflects real
+      // concurrent spawns across all runs and returns to baseline once each settles.
+      // v24 (DES-146, TASK-158): when this call's script label has its OWN per-agent slice in
+      // the admission snapshot (`entry.effectiveParams.agents[label]`), its resolved
+      // model/effort/timeoutMs/appendPrompt + provenance override the run-wide flat fields for
+      // THIS call only — a sibling label's call reads its own slice, never this one's (REQ-110
+      // close). `prompt`/`tools` stay the run-wide (workflow-level, not per-agent) fields. No
+      // label, or no contract at admission (ad-hoc/legacy script) → the flat snapshot unchanged,
+      // same as before this task.
+      const labelParams = key.opts.label ? entry.effectiveParams.agents?.[key.opts.label] : undefined;
+      const runParams: RunParams = labelParams
+        ? { ...entry.effectiveParams, model: labelParams.model, effort: labelParams.effort, timeoutMs: labelParams.timeoutMs, appendPrompt: labelParams.appendPrompt, provenance: labelParams.provenance }
+        : entry.effectiveParams;
+      // v24 (integrator; REQ-113, ARCH-103/DES-154, adjudication #4 C-2): `AgentReq.assets` —
+      // THE missing wire. `agent-executor.ts` forwards it, `claude-agent-sdk-client.ts` acts on
+      // it and `materialize-assets.test.ts` proved the algorithm, but NOBODY produced the value,
+      // so on every real dispatch `req.assets` was `undefined` and the gateway took its
+      // "no workspace / no assets -> materialize nothing" branch. REQ-113 ("each agent declares
+      // the skills IT needs, not one set for the whole workflow") therefore had no runtime
+      // behaviour at all. Built here from the three things only this scope has together: the run's
+      // workflow name, THIS label's declared `skills`/`mcp`, and the resolved asset roots.
+      // Absent for an ad-hoc/unnamed run or an unlabelled call — nothing to scope assets BY.
+      const declared = key.opts.label ? entry.declaredAssets[key.opts.label] : undefined;
+      const assets = entry.name !== undefined && declared !== undefined
+        ? { roots: assetRootsFor(this._assetRoot, this._globalAssetRoot, entry.name), declared, workflow: entry.name }
+        : undefined;
+      const outcome = await this._semaphore.withSlot(() =>
+        entry.spawner.run({
+          runId,
+          agentId,
+          prompt,
+          opts: key.opts,
+          workspace: entry.workspace,
+          signal: entry.abortController.signal,
+          ...(assets !== undefined ? { assets } : {}),
+          // v21 (ARCH-068, DES-105, TASK-101): the run-immutable admission-time snapshot — one
+          // per run (incl. nested workflow() frames, which share the parent's entry), never
+          // re-resolved per call. v24 (TASK-158): narrowed to this call's label above when the
+          // admission snapshot has a per-label slice for it.
+          runParams,
+        }),
+      );
+      const value = outcome.kind === 'null' ? null : outcome.value;
+      const journalEntry: JournalEntry = {
+        callSeq,
+        key,
+        value,
+        ts: this._clock.isoNow(),
+        scriptVersion: `v${entry.scriptVersion}`,
+        // D-F13: a null caused by suspend/stop aborting this call mid-flight must MISS on resume
+        // (re-run live), never replay as if it were a genuinely-completed terminal null.
+        aborted: outcome.kind === 'null' && outcome.aborted === true,
+      };
+      entry.journal.push(journalEntry);
+      // DES-088 (TASK-082) sink (4): redact the ENTIRE JournalEntry (key.prompt + key.opts + value)
+      // at the persist-write site only. The live in-memory journal (entry.journal, the replay cache)
+      // keeps the raw key+value so same-process suspend/resume matches exactly; only the durable
+      // journal.jsonl is redacted. Accepted caveat — invariant (c) EXTENDED to call params: if a
+      // provisioned secret rides a prompt/opts (e.g. a prior agent's MCP result echoed into a later
+      // prompt), a HARD-CRASH resume reads the redacted key from disk, MISSes that call's key
+      // (sameKey compares prompt+opts, resume-cache.ts:14) and re-runs it + the tail LIVE — correct
+      // values, just recomputed. Strictly more graceful than a redacted VALUE (which feeds a marker
+      // back as data). (Future option, not built: persist a keyHash of the raw key so replay matches
+      // without the raw prompt — see DES-088 Decision rationale.)
+      const journalToStore = this._secretValueProvider
+        ? (redact(journalEntry, this._secretValueProvider.entries()) as JournalEntry)
+        : journalEntry;
+      await this._store.appendJournal(runId, journalToStore);
+      return value;
     } finally {
-      entry.guard.releaseReserved(reserved);
+      release();
     }
   }
 }

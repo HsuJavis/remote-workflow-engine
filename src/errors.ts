@@ -96,6 +96,13 @@ export const ERROR_CATALOG = {
   RUN_ADMISSION_LIMIT: { see: null, hint: 'the configured maxConcurrentRuns is already reached' },
   ILLEGAL_TRANSITION: { see: null, hint: 'the requested run-status transition is not allowed from its current state' },
   AGENT_LOG_NOT_FOUND: { see: null, hint: 'no transcript is recorded for this agentId on this run' },
+  // v25 (DES-167, REQ-120, issue #61): the budget refusal finally has a CODE. It was thrown by
+  // `RunGuard` since v1 as a bare `BudgetExceededError` whose class NAME reached the wire (the same
+  // defect v24 fixed for IllegalTransitionError/CatalogNotFoundError/WorkspaceEscapeError), and
+  // `parallel()` swallowed it to `null` on the way, so a refused dispatch left no code, no record
+  // and no event. `see` points at the guide because REQ-120 requires the guide to explain how a
+  // budget interacts with fan-out width — the refusal is now self-documenting.
+  BUDGET_EXCEEDED: { see: 'workflow_authoring_guide', hint: 'the run\'s token budget is spent; the engine refused to dispatch this agent() call' },
   PARAM_SECRET_UNAVAILABLE: { see: null, hint: 'a resumed run\'s admission-time parameters carry a redaction marker that resume cannot restore' },
 
   // Workspace / assets / seeds / CAS
@@ -164,6 +171,10 @@ export class AgentCapError extends Error {
 }
 
 export class BudgetExceededError extends Error {
+  /** v25 (DES-167, REQ-120): carries the catalog code, so `ipcErrorCode`/`toErrEnvelope` surface
+   *  `BUDGET_EXCEEDED` instead of the class name — same fix, same reason, as the three v24 classes
+   *  below. A script catching it reads `e.code`/`e.name === 'BUDGET_EXCEEDED'`. */
+  readonly code: ErrorCode = 'BUDGET_EXCEEDED';
   constructor(spent: number, total: number) {
     super(`Budget exceeded: spent ${spent} >= total ${total}`);
     this.name = 'BudgetExceededError';

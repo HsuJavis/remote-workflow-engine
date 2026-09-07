@@ -1749,6 +1749,16 @@ crash/import error) — exactly matching the review's cited `timeoutMs !== undef
 `claude-agent-sdk-client.ts:78`.
 
 ### IT-030 — Concurrent parallel() dispatch against a near-exhausted budget cannot materially overshoot (D-G8-6)
+
+> **v25 AMENDMENT (REQ-120, issue #61, owner ruling 2026-09-07) — this case was REWRITTEN, not
+> deleted, and its oracle changed for a reason worth stating.** It asserted `succeeded <= 2`, which
+> is not a budget property at all: it is `1/RESERVATION_FRACTION`. The reservation that produced the
+> 2 is gone (DES-167), because the same mechanism cost every fan-out wider than 2 (this file's own
+> sibling defect, reported from production). What the file pins now is the bound the engine can
+> actually hold — dispatch stops as soon as recorded spend reaches the total, so a run overshoots by
+> at most ONE CONCURRENCY WINDOW — plus the refusal's named code and its `refused` records. The
+> ORIGINAL defect this row exists for (an unbounded burst spending N x the ceiling) is still caught:
+> with concurrency 2, ten thunks cannot spend ten calls' worth.
 - **status:** green
 - **traces:** ARCH-002, REQ-002
 - **tier:** integration
@@ -3003,6 +3013,17 @@ has no `env` option in its call-site options object at all; the fake `spawnImpl`
 args show `spawnOpts.env` is `undefined` — not an import/syntax error.
 
 ### IT-037 — RunGuard budget-estimate reservation preserves parallel() concurrency under a bounded budget (V4 regression pin)
+
+> **v25 AMENDMENT (REQ-120, issue #61, owner ruling 2026-09-07) — REWRITTEN and RENAMED to
+> `tests/integration/parallel-budget-bounded-fanout.test.ts`.** The file was named after
+> `RunGuard.reserve()`, which no longer exists, so its name described nothing (v21-v23 rule 3).
+> Case 1 survives, strengthened: with headroom and a concurrency cap of CALLS, `maxInFlight` is now
+> CALLS, not merely `> 1` — the v2 fix raised the real ceiling from 1 to 2 and stopped there, which
+> is issue #61. Case 2's oracle `succeeded < CALLS` is REPLACED: it asserted that an insufficient
+> budget must lose a branch, and losing a branch is exactly what the owner reported as the bug. A
+> call's cost is unknowable before dispatch, so the branch that would exceed the budget is
+> indistinguishable from the one that fits; the case now pins that all three run, that the overshoot
+> is one concurrency window, and that the NEXT call is refused `BUDGET_EXCEEDED`.
 - **status:** green
 - **traces:** ARCH-002, ARCH-003
 - **tier:** integration
@@ -9705,3 +9726,98 @@ proves the route, the bytes and their headers; `val-018-dashboard-browser-ui.tes
 source assertions, not a browser driver (this repo has no Playwright dependency). The first clause of
 REQ-119 — "he sees the picture" — therefore still needs the validator's own browser pass at Gate 7.5,
 the same way VAL-113/VAL-116 covered the earlier dashboard views.
+
+### UT-170 — budget is SPEND, and only spend (the reservation cannot come back unnoticed)
+- **status:** green
+- **traces:** REQ-120, ARCH-002, DES-167, TASK-167
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v25
+
+File: `tests/unit/run-guard.test.ts`. Two v2 cases were REWRITTEN, not deleted: they read
+`assertBudget()` while a reservation mechanism also existed, so what they pinned was one half of the
+budget door; they now pin the whole of it (a spent budget refuses, an unbounded one never does).
+Deliberately NOT preserved: `assertBudget()`'s other half, which also threw on RESERVATIONS — the
+arithmetic by which two concurrent calls holding 50% + 50% of the total killed every budgeted
+`parallel()` wider than 2 (issue #61). The new cases state that directly: 24 consecutive checks with
+nothing spent all pass (nothing may refuse a call while the run has spent nothing, however many are
+in flight), and a run refuses exactly when cumulative spend REACHES the total and not one call
+before.
+
+### UT-171 — the per-run fan-out cap is an explicit number, not a function of the host
+- **status:** green
+- **traces:** REQ-120, ARCH-002, DES-168, TASK-168
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v25
+
+File: `tests/unit/run-concurrency-default.test.ts`. `DEFAULT_RUN_CONCURRENCY === 24`; an operator
+value is accepted and an invalid one (0, negative, fractional) is refused at construction naming
+`runConcurrency`. The third case is a SOURCE guard: no `cpus()` derivation may survive in
+`run-manager.ts`. A value oracle alone cannot catch a re-introduction — `min(24, cores)` reads 24 on
+a big box and silently smaller on the owner's, which is precisely how the old ceiling (14 there)
+stayed invisible for four iterations. Same technique as UT-161's front-end-mermaid grep guard.
+
+### IT-135..IT-139 — a budget does not cost `parallel()` its branches, and a refusal is visible
+- **status:** green
+- **traces:** REQ-120, REQ-002, ARCH-002, ARCH-003, DES-167, DES-168, TASK-167, TASK-168
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v25
+
+File: `tests/integration/parallel-budget-fanout-width.test.ts`. Mock policy (DES-015): real
+RunManager + real RunGuard + real AgentExecutor + real sandbox child process + the real `parallel()`
+VM guard; only the GatewayClient is faked, with an artificial resolve delay so overlap is
+deterministic rather than a timing coin-flip (IT-030's own technique).
+
+**Written RED first, and the red is the report.** Against `RESERVATION_FRACTION = 0.5`: IT-135's
+3-wide fan-out under the owner's own 1.5M budget returned `[ 'ok', 'ok' ]` — "expected to have a
+length of 3 but got 2" — and its 6-wide sibling returned exactly two as well, which is the whole
+finding in one line: the ceiling was 2 regardless of width or headroom. IT-136 observed `completed`
+where a refusal should have been visible.
+
+- **IT-135** — 3-wide and 6-wide `parallel()` under an ample budget: every branch dispatches, every
+  branch is a `done` AgentRecord, spend equals the real cost.
+- **IT-136** — a budget spent by a call that COMPLETED first (the only condition under which the
+  engine now refuses): the run FAILS with `run_result.error.code === 'BUDGET_EXCEEDED'`, each refused
+  call is an AgentRecord `{state:'refused', reasonCode:'BUDGET_EXCEEDED', tokens: 0}` carrying its
+  label, and the gateway is invoked exactly once. Its second case is the anti-conflation pin REQ-120
+  demands in words: an author's own throwing thunk STILL yields `null` beside a successful sibling.
+- **IT-137** — the honest contract: a full concurrency window arriving with nothing spent dispatches
+  and overshoots (2 x 1000 against a budget of 1000), and the next wave is refused by name. This is
+  what the authoring guide states, asserted rather than asserted-away.
+- **IT-138** — a 5-wide fan-out under a concurrency cap of 2 returns FIVE results with
+  `maxInFlight === 2`: the cap QUEUES, it does not truncate, which is why removing the budget
+  reservation costs no protection.
+- **IT-139** — regression pin for a clause that was already true and must stay true: an omitted
+  budget is unbounded (`budget.total === null`), and an 8-wide fan-out under it dispatches all eight.
+
+### VAL-170 — the real tier for #61: three branches dispatch, and a refusal is visible on the wire
+- **status:** green
+- **traces:** REQ-120, ARCH-002, ARCH-003, DES-167, DES-168, TASK-167, TASK-168
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v25
+
+File: `tests/acceptance/val-170-budget-fanout.test.ts`. A really booted engine, over real MCP HTTP,
+through the same door the owner used: `workflow_register` + `workflow_publish` + `run_start` +
+`run_status` + `run_result` + `workflow_authoring_guide`, no SUT boundary mocked. This is the tier
+that mattered for this defect — #61 survived 250 test files and was found by a person running a
+3-lens workflow on another machine, on a run that reported success.
+
+Stated rather than hidden: no model provider is configured, so each dispatched `agent()` fails at
+the gateway instead of returning text. That is enough for every clause and is the SHARPER oracle
+here — a dispatched call leaves a `failed` AgentRecord and a refused one leaves `refused`, so "did
+the third branch exist at all" is answered by records rather than by counting non-null results. The
+token-spend half is covered at the integration tier (IT-030/IT-037/IT-137).
+
+Cases: (1) a 3-wide `parallel()` under the owner's own 1.5M budget produces THREE `researcher`
+records, none refused (before v25: two records, and the third existed nowhere); (2) `budget: 0`
+fails the run with `run_result.error.code === 'BUDGET_EXCEEDED'` and shows every branch as
+`{state:'refused', reasonCode:'BUDGET_EXCEEDED'}` in `run_status.agents`; (3) an omitted budget is
+unbounded — three records, nothing refused; (4) the guide served by the LIVE tool (not the builder)
+teaches `runConcurrency`, `BUDGET_EXCEEDED`, the stop-dispatching framing and the overshoot bound.

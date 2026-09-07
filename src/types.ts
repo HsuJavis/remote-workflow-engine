@@ -1,5 +1,6 @@
 // Shared domain types — no implementation, pure TypeScript interfaces.
 import type { ToolName } from './tool-specs.js';
+import type { ErrorCode } from './errors.js';
 
 /** v11 Sprint 3 (TASK-066 / DES-063): who triggered a run — total (never undefined/null/throws). */
 export type StartedBy = {
@@ -116,7 +117,11 @@ export interface AgentRecord {
   agentId: string;
   label?: string;
   phase?: string;
-  state: 'queued' | 'running' | 'done' | 'failed';
+  /** v25 (REQ-120, issue #61): `refused` is a TERMINAL state meaning the engine declined to
+   *  dispatch this call at all — it never reached a gateway, so it has no tokens, no transcript and
+   *  no `startedAt`. Before v25 such a call had no record of any kind (the reported run's only trace
+   *  was a gap in the journal's callSeq), which is exactly what made the loss invisible. */
+  state: 'queued' | 'running' | 'done' | 'failed' | 'refused';
   provider: string;
   model: string;
   tokens: { input: number; output: number };
@@ -129,6 +134,9 @@ export interface AgentRecord {
   startedAt?: string;
   /** v8 Slice 2b (REQ-051): ISO time this agent settled (done/failed). Absent while in flight. */
   endedAt?: string;
+  /** v25 (REQ-120): the named reason a `refused` record exists — a closed-catalog ErrorCode
+   *  (`BUDGET_EXCEEDED` today). Absent on every other state. */
+  reasonCode?: ErrorCode;
   /** issue #20: ISO time of the most recent live transcript event (message/tool_call/tool_result)
    *  the gateway streamed for this still-running agent — bumped per message by the onEvent hook. Lets
    *  workflow_status distinguish a PROGRESSING agent (lastActivityAt advancing past startedAt) from a

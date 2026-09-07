@@ -15,8 +15,17 @@ export type WorkflowRequestHandler = (ref: unknown, args: unknown, callSeq: numb
 
 /** C-2 (review finding): carry the underlying error's OWN code across the sandbox IPC boundary
  *  instead of flattening every agent()/workflow() failure to one of two generic codes — so a caller
- *  can branch on `BudgetExceededError` / `AgentCapError` / `CatalogNotFoundError` / `WorkspaceEscapeError`
- *  etc. Falls back to `fallback` only for anonymous errors (a bare `new Error()`, name === 'Error'). */
+ *  can branch on the code the error itself carries. Falls back to `fallback` only for anonymous
+ *  errors (a bare `new Error()`, name === 'Error').
+ *
+ *  v25 (DES-167, REQ-120): the `.code` branch above is now the live one for budget refusals. This
+ *  docblock used to name `BudgetExceededError` / `AgentCapError` / `CatalogNotFoundError` /
+ *  `WorkspaceEscapeError` — CLASS NAMES — as what a script branches on, because those classes
+ *  carried no `.code` and `e.name` was all that crossed the boundary. v24 gave the last two (plus
+ *  `IllegalTransitionError`) their catalog codes and v25 gives `BudgetExceededError` its
+ *  `BUDGET_EXCEEDED`, so a script now reads a closed-catalog code a `tools/list` reader can
+ *  anticipate. `AgentCapError` is the one still surfacing as its class name (out of scope here,
+ *  recorded so the next reader knows it is a leftover, not a design). */
 export function ipcErrorCode(err: unknown, fallback: string): string {
   if (err && typeof err === 'object') {
     const e = err as { code?: unknown; name?: unknown };

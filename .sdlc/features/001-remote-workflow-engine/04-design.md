@@ -138,6 +138,25 @@ Boundary/error: at exactly `concurrency` in-flight, the (N+1)th `acquireSlot()` 
 > tight for real (IT-030's near-exhausted regression guard, re-verified green). See
 > `src/run-guard.ts`.
 
+> **v25 REPEAL of BOTH notes above (DES-167, REQ-120, issue #61, owner ruling 2026-09-07).** The two
+> route-backs above describe a mechanism that NO LONGER EXISTS: `reserve()`, `releaseReserved()`,
+> `_reserved` and `RESERVATION_FRACTION` are deleted, and `assertBudget()` checks `spent >= total`
+> and nothing else. Read them as history, not as the current design.
+>
+> D-V2G8-2's flat half was reported from production as a bug and it was one: two concurrent calls
+> reserved 50% + 50% of the TOTAL, so the THIRD branch of ANY budgeted `parallel()` threw
+> `BudgetExceededError` however little had been spent — arithmetic, not a race, and the owner's run
+> `a88e5d07` lost a third of its research silently (`makeParallel`'s `catch { return null }`
+> discarded the reason; the only trace was a callSeq gap). D-G8-6's 100% and D-V2G8-2's 50% are the
+> same mistake in opposite directions, which is the evidence that no third fraction is the answer:
+> what one call will cost is unknowable before it finishes, so every per-call reservation is a
+> guess. The ruling separates the concerns instead — CONCURRENCY is bounded by the per-run cap
+> (`acquireSlot()`, which QUEUES, DES-168), BUDGET is bounded by cumulative spend — and states the
+> honest consequence in `workflow_authoring_guide`: a budget is a stop-dispatching signal, and a run
+> can overshoot it by up to one concurrency window, because that is what the engine can enforce.
+> D-G8-6's original defect (an unbounded burst spending N x the ceiling) is still closed, by the
+> concurrency cap plus checking the budget INSIDE the slot rather than before it. See DES-167.
+
 ### DES-003 — Run state machine + suspend/resume/stop lifecycle
 - **status:** draft
 - **traces:** ARCH-002, TASK-004
@@ -5145,6 +5164,22 @@ classDiagram
 - **invalidation:** REQ-111/ADR-025 make a version's `mermaid` immutable — `insertVersion` only ever INSERTs a fresh `v<max+1>` row and no `UPDATE … SET mermaid` exists anywhere in `src/` (verified, not assumed) — so an edit can never stale the cache. A DELETE can: the version allocator counts the NAME'S OWN rows and `deregister` deletes them all, so deregister + re-register reuses the same `(name, 'v1')` key with a different diagram. Hence `invalidate(name)` on the deregister path, beside the asset-tree delete that exists for the identical reason (v24 D-10).
 - **client:** `dashboard-page.ts` — `renderDiagram(name, version)` fetches the SVG, wraps the blob in `URL.createObjectURL` and assigns it to `<img id="diagram-img">`, revoking the previous object URL. `<img>` and not an object/embed element: those load an SVG as a DOCUMENT and execute script inside it. Memoized on `name@version` because `render()` re-enters every 3s tick (a 60KB SVG per viewer per tick otherwise), including on failure — the source is already showing, and re-asking every 3s would hammer a render-capable anonymous route. The failure branch shows `<pre>` + the reason code; there is no state in which the pane is blank. `loadDag` calls `hideDiagram()` first, because `#detail` is one pane shared with the run view — the v24 `<pre>` was never cleared on that switch either, and a 60KB image makes the same latent defect impossible to ignore.
 - **tests:** `tests/unit/diagram-renderer.test.ts` (UT-167, 12), `tests/unit/diagram-render-spawn.test.ts` (UT-168, 7, real child process + a stub mmdc), `tests/unit/dashboard-diagram-render.test.ts` (UT-169, 6 appended), `tests/integration/diagram-svg-route.test.ts` (IT-134, 9), `tests/acceptance/val-169-diagram-render.test.ts` (VAL-169, 6, real mmdc + real Chrome incl. the hostile-label red test).
+- **iter:** v25
+
+### DES-167 — budget is spend, and only spend: the reservation is deleted, and a refusal becomes visible
+- **status:** draft
+- **traces:** ARCH-002, ARCH-003, REQ-120, TASK-167
+- **signature:** `RunGuard.assertBudget(): void` — throws `BudgetExceededError` iff `spent >= total` (null total = unbounded, no-op). `reserve()`, `releaseReserved()`, `_reserved` and `RESERVATION_FRACTION` are DELETED. `BudgetExceededError.code = 'BUDGET_EXCEEDED'` (new `ERROR_CATALOG` key, `see: 'workflow_authoring_guide'`). `AgentRecord.state` gains `'refused'` + `reasonCode?: ErrorCode`; `AgentExecutor.markRefused(agentId, reasonCode, endedAt?)`. In `guards.ts`, `ENGINE_REFUSAL_CODES = {BUDGET_EXCEEDED}` — `parallel()`/`pipeline()` re-throw those instead of nulling them, and `evaluateScript` preserves the code instead of flattening to `SCRIPT_ERROR`. Supersedes D-G8-6 and D-V2G8-2 (see their annotations above).
+- **boundary:** The check MOVES to immediately before dispatch, INSIDE the concurrency slot (`run-manager.ts`, after `acquireSlot()`). That position is load-bearing and is the difference between a budget that works and one that does not: checked before the slot — where the v2 code checked it — every call of a wide `parallel()` passes while `spent` is still 0 and then queues, so the budget stops nothing at all. Checked after the slot, only the calls genuinely IN FLIGHT can overshoot, which is exactly the bound the guide states (`overshoot <= runConcurrency x one call's cost`). WHY THE RESERVATION IS GONE RATHER THAN RE-TUNED (owner ruling 2026-09-07): what one call will cost is unknowable before it finishes, so every per-call reservation is a guess — guess high and it caps fan-out (issue #61: two concurrent calls each reserved 50% of the TOTAL, so a third branch threw with nothing spent), guess low and it protects nothing. Learning the estimate from the run's own history does not rescue it: a workflow whose FIRST act is an N-wide fan-out has no observation yet, so the bootstrap value becomes the new cap in exactly the case being fixed. An engine must not pretend to a guarantee it cannot hold. The `null`-for-a-throwing-thunk contract SURVIVES for the author's own errors — only engine refusals propagate, so the two are distinguishable rather than merged the other way (REQ-120).
+- **tests:** `tests/unit/run-guard.test.ts` (UT-002/UT-170), `tests/integration/parallel-budget-fanout-width.test.ts` (IT-135..IT-139), `tests/integration/parallel-budget-concurrency.test.ts` (IT-030, rewritten), `tests/integration/parallel-budget-bounded-fanout.test.ts` (IT-037, rewritten + renamed).
+- **iter:** v25
+
+### DES-168 — the per-run fan-out cap is an explicit, configurable 24, and the guide says so
+- **status:** draft
+- **traces:** ARCH-002, REQ-120, TASK-168
+- **signature:** `DEFAULT_RUN_CONCURRENCY = 24` (exported from `run-manager.ts`), validated through the existing `RunManager._positiveInt(deps.concurrency, …, 'runConcurrency')`. `ServerConfig.runConcurrency?: number` → forwarded by `composeConfig()` and into `new RunManager({concurrency})`. `GuideCeilings.runConcurrency: number` → `McpFacadeDeps.runConcurrency` (resolved) and `scripts/gen-authoring-md.ts` (the documented default), so `workflow_authoring_guide` renders THIS deployment's number and never a literal.
+- **boundary:** Replaces `Math.max(1, Math.min(16, cpus().length - 2))`. How wide a workflow may fan out has nothing to do with how many cores the box has, and deriving it from the host made the real ceiling invisible to the author, the guide and the operator alike (14 on the owner's machine, and cut to 2 by the reservation DES-167 deletes). `acquireSlot()` is unchanged and already correct: at the cap calls QUEUE, so a wider fan-out is slower, never truncated — which is why deleting the budget reservation costs no protection. The host-wide `agentSlots` semaphore (default 32, D-DOS) is a DIFFERENT layer and is untouched. New config key ⇒ a `compose-config-v2-wiring.test.ts` row, per this repo's twice-bitten `composeConfig` bug class (ARCH-090, standing rule 1).
+- **tests:** `tests/unit/run-concurrency-default.test.ts` (UT-171, incl. a source guard that no `cpus()` derivation returns), `tests/unit/compose-config-v2-wiring.test.ts` (UT-033 row), `tests/unit/authoring-guide.test.ts` (UT-159 v25 cases), `tests/integration/parallel-budget-fanout-width.test.ts` (IT-138).
 - **iter:** v25
 
 ## Real-tier validation paths (v25)

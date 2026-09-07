@@ -1,3 +1,36 @@
+- 2026-09-07 — **v25 / issue #61 — the budget reservation is deleted, not re-tuned (owner ruling).**
+Reproduced RED first, and the red is the whole report: a 3-wide `parallel()` under the owner's own
+1.5M budget returned `[ 'ok', 'ok' ]` ("expected to have a length of 3 but got 2"), and a 6-wide one
+returned exactly two as well — the ceiling was literally 2, independent of width or headroom.
+`RESERVATION_FRACTION = 0.5` meant two concurrent calls held 100% of the TOTAL, so the third
+`assertBudget()` threw with ~nothing spent. Arithmetic, not a race.
+
+I proposed two replacement formulas; the owner rejected both and removed the mechanism. The reason is
+worth keeping: what one call will cost is unknowable before it finishes, so every per-call reservation
+is a guess — high caps fan-out, low protects nothing — and my "learn the estimate from the run's own
+history" version dies on one sentence, that a workflow whose FIRST act is an N-wide fan-out has no
+observation yet, so the bootstrap value becomes the new cap in exactly the case being fixed. **An
+engine must not pretend to a guarantee it cannot hold.** Concurrency is now bounded by the per-run cap
+(which QUEUES — it always did, and the reservation was what cut it from 14 to 2 on that host), budget
+by cumulative spend, and the honest consequence is written into `workflow_authoring_guide`: a budget
+is a stop-dispatching signal, and a run may overshoot by up to one concurrency window.
+
+**Two things I would have shipped wrong without a test.** (1) I first kept the check where v2 had it —
+before `acquireSlot()` — and the rewritten IT-030 came back with `refusedCode: null`: with the
+reservation gone, every call of a wide `parallel()` passes the budget door while `spent` is still 0
+and *then* queues, so the budget stops nothing whatsoever. Moving the check INSIDE the slot is what
+makes the "one concurrency window" bound true rather than aspirational. (2) `min(16, cpus-2)` had to
+become an explicit `runConcurrency` (24) with a SOURCE guard in UT-171, because a value oracle alone
+would pass on `min(24, cores)` — 24 on my box, silently smaller on the owner's, which is precisely how
+14 stayed invisible for four iterations.
+
+**Ledger:** DES-167/168, TASK-167/168, UT-170/171, IT-135..139 (+ IT-030 and IT-037 REWRITTEN with
+their reasons at the assertion; IT-037's file renamed off the deleted mechanism), VAL-170 (real tier,
+real booted engine over MCP HTTP), IMPL-193. `sh .sdlc/trace --check`: 19 gaps / 1270 items vs a
+21-gap / 1262-item baseline computed from `git archive HEAD` into a scratch copy — **zero new gaps,
+two closed** (REQ-120 未實作 + 未驗證). `npx tsc --noEmit` clean; unit+integration+acceptance
+2254 pass / 26 skipped / 0 fail.
+
 - 2026-09-04 — v23 Gate 8 RE-REVIEW #2 (reviewer, consistency review + retro) **CLOSE — `send_back=[]`,
 0 HIGH**. Third Gate 8 pass for v23, after RE-REVIEW #1 sent back `["architecture","tests","impl"]` on one
 HIGH. **That HIGH is closed and re-verified on disk**, not from the commit's own claims:

@@ -158,7 +158,13 @@ describe('N-level workflow() composition (v8 Slice 1, REQ-041..044)', () => {
       `const t = await agent('T', {}); const w = await workflow('mid', {}); return { t, w };`,
       { budget: 2000 },
     );
-    expect(await completedValue(mgr, runId)).toEqual({ t: 'T', w: { m: 'M', x: { blocked: 'BudgetExceededError' } } });
+    // v25 (DES-167, REQ-120, issue #61) — REWRITTEN, not weakened: the expected value was
+    // `'BudgetExceededError'`, the CLASS NAME, because `BudgetExceededError` carried no `.code` and
+    // `ipcErrorCode` fell back to `err.name`. It now carries the closed-catalog code, so a script
+    // catching a budget refusal reads a code a `tools/list` reader can anticipate — the same fix v24
+    // applied to IllegalTransitionError/CatalogNotFoundError/WorkspaceEscapeError. What this case
+    // actually pins (a nested agent() at depth 2 shares the parent's ONE budget) is unchanged.
+    expect(await completedValue(mgr, runId)).toEqual({ t: 'T', w: { m: 'M', x: { blocked: 'BUDGET_EXCEEDED' } } });
     expect(gwCounts.get('T')).toBe(1);
     expect(gwCounts.get('M')).toBe(1);
     expect(gwCounts.get('L')).toBeUndefined(); // never dispatched — shared budget already exhausted

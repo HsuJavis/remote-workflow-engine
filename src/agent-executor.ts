@@ -9,6 +9,7 @@ import type { SecretValueProvider } from './secret-resolver.js';
 import { composePrompt, type RunParams, type EffectiveCallParams } from './params/resolve.js';
 import { isEffort } from './params/contract.js';
 import { codedError } from './errors.js';
+import type { ErrorCode } from './errors.js';
 
 const PROMPT_CAP = 4096;
 const PROMPT_CAP_HALF = 2048;
@@ -211,6 +212,19 @@ export class AgentTranscriptSink {
   markRunning(agentId: string, startedAt?: string): void {
     const existing = this._records.get(agentId);
     this._records.set(agentId, { ...(existing ?? { agentId, provider: '', model: '', tokens: { input: 0, output: 0 } }), agentId, state: 'running', startedAt: startedAt ?? existing?.startedAt });
+  }
+
+  /** v25 (DES-167, REQ-120, issue #61): records a call the ENGINE refused to dispatch — terminal,
+   *  no gateway, no tokens, no transcript, but VISIBLE in `run_status.agents` with a named reason.
+   *  Until v25 a budget refusal produced no record at all: `parallel()` swallowed the throw to
+   *  `null` and the only durable trace anywhere was a gap in the journal's callSeq. Merges onto the
+   *  markQueued record so label/phase/frame survive. */
+  markRefused(agentId: string, reasonCode: ErrorCode, endedAt?: string): void {
+    const existing = this._records.get(agentId);
+    this._records.set(agentId, {
+      ...(existing ?? { agentId, provider: '', model: '', tokens: { input: 0, output: 0 } }),
+      agentId, state: 'refused', reasonCode, endedAt,
+    });
   }
 
   /** #20: the moment the gateway builds the session (onHarness, BEFORE the first token), stamp WHICH
@@ -506,6 +520,12 @@ export class AgentExecutor implements AgentSpawner {
    *  genuinely dispatched to the gateway — observable as "running" until capture() resolves it. */
   markRunning(agentId: string, startedAt?: string): void {
     this._sink.markRunning(agentId, startedAt);
+  }
+
+  /** v25 (REQ-120): RunManager calls this when RunGuard refuses this call's budget admission — the
+   *  call is terminal before it ever reaches a gateway, and says why. */
+  markRefused(agentId: string, reasonCode: ErrorCode, endedAt?: string): void {
+    this._sink.markRefused(agentId, reasonCode, endedAt);
   }
 
   /** Exposes the captured AgentRecord for a completed/failed agent (DES-008). */
