@@ -3072,3 +3072,58 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   only ways to tighten it are a per-call cost estimate (rejected above) or a lower `runConcurrency`,
   which is exactly the knob the operator now has. `rtm.md` remains un-regenerated for v25 (it is
   trace.py-generated, and was already stale before this change).
+
+### IMPL-194 — the refusal reaches the script, not just the client (#63, the unfinished half of #61)
+- **status:** done
+- **traces:** REQ-120, TASK-169, DES-169, ARCH-003
+- **files:** src/sandbox/child-entry.ts, src/sandbox/guards.ts, src/authoring-guide.ts, docs/AUTHORING.md, tests/integration/sandbox-refusal-error-code.test.ts, tests/acceptance/val-170-budget-fanout.test.ts
+- **iter:** v25
+
+  **Reproduced before anything was touched, at both tiers.** IT-140's in-VM dump returned
+  `code: undefined`, `hasOwnCode: false`, `ownKeys: ["stack","message","name"]` — the owner's live
+  probe byte for byte — for the sequential `await agent()` AND the `parallel()` refusal; the case
+  running the guide's literal predicate ended `{ error: … }`. 4 failed, 1 passed of 5. On the real
+  tier, VAL-170's new case (the guide's snippet lifted out of the SERVED text, run under `budget: 0`
+  on a booted engine over real MCP HTTP) failed `expected 'failed' to be 'completed'`. That is the
+  defect in one line: the documentation promised a recoverable case and its own example failed it.
+
+  **The fix is one line, and the grep that justified it mattered more than the line.** Every value a
+  script can catch off the IPC seam funnels through `child-entry.ts`'s `agentThrow` rejection, which
+  carried the catalog code into `name` and nothing into `code`. Writing it to BOTH fixes
+  `BUDGET_EXCEEDED` from `agent()` and `NESTING_DEPTH_EXCEEDED`/`NESTING_CYCLE`/
+  `DESCENDANT_CAP_EXCEEDED` from `workflow()` at once. `Object.assign(new Error` across `src/`
+  returns exactly two hits — this one and `codedError()` (host-side, already `code`-bearing) — so
+  the list was verified rather than trusted. `name` is kept beside `code`: scripts have had nothing
+  else, `String(e)` renders from it, and `guards.ts`'s `refusalCode()` reads it (its docblock, which
+  said `name` was "the live field", is corrected).
+
+  **The second site named in the report needed no change, and that was measured, not assumed.**
+  `GuardError` already carries an own `code` — its TS parameter property survives
+  `--experimental-transform-types` (`ownKeys: ["stack","message","code","name"]`) — which is also
+  why `workflow()` was never broken: `makeWorkflow` re-wraps a delegate throw in one. That
+  asymmetry, agent() bare and workflow() wrapped, is precisely what let the defect hide behind a
+  passing path, so IT-140 pins both sources together.
+
+  **`e instanceof Error` is documented, not fixed — and the probe is why.** It is false; so is
+  `args instanceof Object`, and so is `args.xs instanceof Array` while `Array.isArray(args.xs)` is
+  true. The failure is not about errors, it is what a `node:vm` context IS. Fixing it for errors
+  alone teaches a half-truth an author would then be bitten by on `args`, and it would force
+  `evaluateScript`'s `err instanceof GuardError` — the terminal-code path #61 has just fixed — to be
+  replaced by a brand check, while degrading every host-side `err instanceof Error ? err.message :
+  String(err)` to `"CODE: message"`. A new bug class on the refusal path to buy a papercut. The
+  guide now states the boundary and names the realm-safe alternatives (`e.code`, `Array.isArray`),
+  and IT-140 pins the false results as DOCUMENTED behaviour — rewritten, not deleted, if the
+  boundary is ever made realm-correct.
+
+  **The v23 lesson is built into the test rather than remembered.** This repo has shipped an
+  AUTHORING.md example the engine refused, caught only because Gate 7.5 ran it. VAL-170's new case
+  does not re-type the snippet: it regexes the ```js block out of what `workflow_authoring_guide`
+  actually serves and executes that, so the manual and its proof cannot drift.
+
+  **Measured:** `npx tsc --noEmit` clean; `npx vitest run tests/unit tests/integration
+  tests/acceptance` → 313 files passed / 1 skipped, 2260 tests passed / 26 skipped, 0 failed.
+
+  **Known and not hidden:** `src/sandbox/child-entry.ts` is the ONE file `tsconfig.json` excludes
+  (it is executed directly by `node --experimental-transform-types`), so `tsc` does not check the
+  changed line. IT-140 is its only guard, which is the same arrangement the file has always had.
+  `rtm.md` remains un-regenerated for v25 (trace.py-generated, stale before this change).

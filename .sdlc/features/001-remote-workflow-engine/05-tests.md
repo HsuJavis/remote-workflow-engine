@@ -9821,3 +9821,57 @@ fails the run with `run_result.error.code === 'BUDGET_EXCEEDED'` and shows every
 `{state:'refused', reasonCode:'BUDGET_EXCEEDED'}` in `run_status.agents`; (3) an omitted budget is
 unbounded — three records, nothing refused; (4) the guide served by the LIVE tool (not the builder)
 teaches `runConcurrency`, `BUDGET_EXCEEDED`, the stop-dispatching framing and the overshoot bound.
+
+### IT-140 — the error a SCRIPT catches carries `.code` (issue #63, the unfinished half of #61)
+- **status:** green
+- **traces:** REQ-120, ARCH-003, DES-169, TASK-169
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v25
+
+File: `tests/integration/sandbox-refusal-error-code.test.ts`. Mock policy (DES-015): the real
+`SandboxHost` forks the real child process and runs the real VM guards — nothing about the sandbox
+is faked. Only the `agent()`/`workflow()` handler is stubbed, which is this seam's documented
+dry-run mode (DES-006) and the same door the real `AgentExecutor` is wired into; no model call is
+needed to observe the SHAPE of a refusal.
+
+**Written RED first, and the red is the report.** The dump taken from inside the VM returned
+`code: undefined` / `hasOwnCode: false` for both the sequential `await agent()` and the `parallel()`
+refusal — `ownKeys: ["stack","message","name"]`, matching the owner's live probe byte for byte —
+and the case that runs the guide's literal predicate ended `{ error: … }` instead of recovering:
+4 failed, 1 passed of 5.
+
+- **the one that passed red** — `workflow()`'s nesting refusal ALREADY carried its `code`, because
+  `makeWorkflow` re-wraps a delegate throw in a `GuardError` whose TS parameter property survives
+  type-stripping. Kept as a regression pin: that asymmetry (workflow() wrapped, agent() did not) is
+  exactly what let #63 hide, and the two sources must not drift apart again.
+- **the guide's own catch condition** — `if (e.code !== 'BUDGET_EXCEEDED') throw e;` run verbatim;
+  the script must reach its recovery path rather than rethrow.
+- **`name` is asserted beside `code` everywhere**, never instead of it: `name` has been the only
+  handle scripts had and something in the wild may rely on it.
+- **DOCUMENTED-LIMIT pin** — `e instanceof Error` is `false` AND `args instanceof Object` is `false`.
+  This asserts the boundary the guide now states (DES-169): cross-realm identity fails for
+  everything the engine hands the script, not just for errors, which is why `.code` (a plain own
+  property) is the handle and `Array.isArray` is the realm-safe check. If a future iteration makes
+  the boundary realm-correct, this case is REWRITTEN to assert `true` and the guide sentence it pins
+  is updated — it is not deleted.
+
+### VAL-170 — v25 amendment (issue #63): the guide's recovery example is EXTRACTED from the live guide and RUN
+- **status:** green
+- **traces:** REQ-120, ARCH-003, DES-169, TASK-169
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v25
+
+A fifth case appended to `tests/acceptance/val-170-budget-fanout.test.ts`. The fourth case checks
+that the guide CONTAINS the right words; this one checks that what it teaches WORKS. The ```js block
+is regexed out of the text `workflow_authoring_guide` actually serves, given the one free binding it
+reads (`lenses`) and a return, registered and published through real MCP HTTP, and run under
+`budget: 0` on a booted engine.
+
+**Red first:** `expected 'failed' to be 'completed'` — the documented recovery rethrew, which is the
+whole of #63 in one line on the real tier. Lifting the snippet instead of re-typing it is the guard
+the v23 incident lacked (this repo shipped an AUTHORING.md example the engine refused, found only
+because Gate 7.5 ran it): change the guide's predicate and this case runs the NEW predicate.

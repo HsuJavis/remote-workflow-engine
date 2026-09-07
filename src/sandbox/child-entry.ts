@@ -56,7 +56,17 @@ process.on('message', (msg: InMsg) => {
       if (!p) return;
       pendingAgent.delete(msg.callSeq);
       pendingWorkflow.delete(msg.callSeq);
-      p.reject(Object.assign(new Error(msg.error.message), { name: msg.error.code }));
+      // v25 (DES-169, REQ-120, issue #63): the catalog code is written to BOTH `code` and `name`.
+      // Until now only `name` was set, so the guide's own recovery example
+      // (`if (e.code !== 'BUDGET_EXCEEDED') throw e;`) rethrew every time — a script following the
+      // documentation failed the run in exactly the case it was told it could handle. `.code` is
+      // what every other surface of this engine uses for a catalog code (`run_result.error.code`,
+      // `reasonCode`, `ipcErrorCode`), so it is the field the script gets too. `name` STAYS: it has
+      // been the only handle scripts had, `String(e)` renders from it, and `refusalCode()` in
+      // guards.ts reads it. Every refusal a script can catch off this seam is fixed at this one
+      // line — BUDGET_EXCEEDED from agent(), and NESTING_DEPTH_EXCEEDED / NESTING_CYCLE /
+      // DESCENDANT_CAP_EXCEEDED from workflow() (which additionally re-wrap in a GuardError).
+      p.reject(Object.assign(new Error(msg.error.message), { name: msg.error.code, code: msg.error.code }));
       return;
     }
     case 'workflowResult': {

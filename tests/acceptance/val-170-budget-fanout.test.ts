@@ -118,4 +118,41 @@ describe('VAL-170: a budget does not truncate a fan-out, and a refusal is visibl
     expect(text).toMatch(/stop-dispatching signal/);
     expect(text).toMatch(/overshoot/);
   }, 30000);
+
+  // v25 (DES-169, REQ-120, issue #63): the guide's recovery example is EXTRACTED from the live tool
+  // and RUN, not read. This repo has shipped a guide example the engine refused before (v23
+  // AUTHORING.md), found only because Gate 7.5 ran it; #63 is the same class of defect one layer
+  // down — the example parsed and registered fine, it just always rethrew. Lifting the snippet out
+  // of the served text (rather than re-typing it here) is what stops the test and the manual
+  // drifting apart: change the guide's predicate and this case runs the NEW predicate.
+  it("the guide's BUDGET_EXCEEDED recovery example, extracted from the live guide, actually recovers", async () => {
+    const guide = await callTool('workflow_authoring_guide', {});
+    const text = (guide['result'] as { text?: string } | undefined)?.text ?? '';
+    expect(text.length).toBeGreaterThan(0);
+
+    const snippet = [...text.matchAll(/```js\n([\s\S]*?)```/g)]
+      .map((m) => m[1]!)
+      .find((block) => block.includes('BUDGET_EXCEEDED') && block.includes('parallel('));
+    expect(snippet, 'the guide no longer contains a js example that catches BUDGET_EXCEEDED').toBeDefined();
+
+    // The snippet is a fragment: it reads a free `lenses` and returns nothing. Supply the binding
+    // and a verdict around it — the CATCH BLOCK ITSELF is untouched guide text.
+    const script =
+      "const lenses = ['lens A', 'lens B', 'lens C'];\n" +
+      snippet! +
+      '\nreturn { recovered: true, findings: findings.length };\n';
+
+    const name = `val170-guide-example-${Date.now()}`;
+    await registerPublishedVia(callTool, name, script);
+
+    // budget 0 is spent before the run starts, so `parallel()` meets a genuinely exhausted budget
+    // and the guide's catch is the only thing between this run and a failure.
+    const { view, result } = await runAndWait(name, 0);
+
+    // Before the #63 fix `e.code` was undefined inside the sandbox, so `e.code !== 'BUDGET_EXCEEDED'`
+    // was always true, the example rethrew, and the run this documentation promised was recoverable
+    // ended `failed` with BUDGET_EXCEEDED.
+    expect(view.status).toBe('completed');
+    expect((result['result'] as { recovered?: boolean } | undefined)?.recovered).toBe(true);
+  }, 60000);
 });

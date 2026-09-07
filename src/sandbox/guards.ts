@@ -139,9 +139,11 @@ function guardedMath(): typeof Math {
 // CHILD, which does not resolve `.js`→`.ts` for value imports (see the checkMeta note at the top).
 const ENGINE_REFUSAL_CODES = new Set(['BUDGET_EXCEEDED']);
 
-/** The refusal code carried by `err`, or null when `err` is anything else. Child-entry rejects an
- *  `agentThrow` with `name` set to the IPC code, so `name` is the live field here; `code` is
- *  checked first for an error thrown in-process (e.g. a GuardError). */
+/** The refusal code carried by `err`, or null when `err` is anything else. `code` is the live field
+ *  for both sources since v25 (DES-169, issue #63): child-entry rejects an `agentThrow` with the IPC
+ *  code on `code` AND `name`, and an in-process GuardError carries `code` as an own property. The
+ *  `name` fallback is kept deliberately — it costs nothing and covers any error that reaches here
+ *  carrying only the older shape. */
 function refusalCode(err: unknown): string | null {
   const e = err as { code?: unknown; name?: unknown } | null | undefined;
   const code = (typeof e?.code === 'string' && e.code) || (typeof e?.name === 'string' && e.name) || '';

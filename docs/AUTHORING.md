@@ -83,6 +83,8 @@ try {
 }
 ```
 
+Branch on `e.code` — not on `e instanceof Error`. Your script runs in a `node:vm` context whose intrinsics are a different realm from the engine that raises these errors, so `instanceof` is **false** for anything the engine hands you: engine errors, and `args` and its contents alike (`args instanceof Object` is false; `Array.isArray(args.xs)` is true — realm-safe checks work). Errors you construct yourself inside the script are ordinary and unaffected. Every engine refusal carries the same `e.code`/`e.name` catalog code as `run_result.error.code`, plus a human `e.message`.
+
 ## The author-supplied diagram
 
 Every registration requires a non-empty Mermaid `mermaid` string (`MERMAID_REQUIRED`) — the engine no longer draws the diagram for you (that generator is retired: registering a script used to send the whole script body to an LLM as a prompt; the diagram is now yours to draw, so nothing you write is sent anywhere just to produce a picture). A node is `id<shape>`, one per line, and these are the shapes this engine accepts — nothing else parses:

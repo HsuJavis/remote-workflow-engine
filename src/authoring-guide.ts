@@ -407,7 +407,18 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '  // Out of budget: `findings` is still [] — this phase produced nothing. Continue with what\n' +
         '  // earlier phases returned, or rethrow to fail the run with BUDGET_EXCEEDED.\n' +
         '}\n' +
-        '```',
+        '```\n\n' +
+        // v25 (DES-169, REQ-120, issue #63): the example above rethrew every time until v25, because
+        // the code rode on `name` and nothing set `code`. The realm caveat is stated rather than
+        // fixed — see the DES entry: it is a property of `node:vm`, not of errors, and holds for
+        // `args` too, so "fix it for errors" would teach a half-truth.
+        'Branch on `e.code` — not on `e instanceof Error`. Your script runs in a `node:vm` context ' +
+        'whose intrinsics are a different realm from the engine that raises these errors, so ' +
+        '`instanceof` is **false** for anything the engine hands you: engine errors, and `args` and ' +
+        'its contents alike (`args instanceof Object` is false; `Array.isArray(args.xs)` is true — ' +
+        'realm-safe checks work). Errors you construct yourself inside the script are ordinary and ' +
+        'unaffected. Every engine refusal carries the same `e.code`/`e.name` catalog code as ' +
+        '`run_result.error.code`, plus a human `e.message`.',
     ),
   );
 
