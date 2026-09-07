@@ -1285,3 +1285,28 @@ own dynamic workflow, which nests one level too).
   三者缺一,這條匿名路由就是一個資源耗盡的入口。
 - **iter:** v25
 
+### REQ-120 — 設了預算不該讓 `parallel()` 失去第三路,而且被拒絕的呼叫必須讓呼叫者知道
+- **status:** draft
+- **traces:** REQ-001, REQ-119
+- **acceptance:** 由擁有者在另一台機器實際使用時撞到(issue #61),orchestrator 定位根因。
+  **Given** 一個 run 帶了 `budget`,**When** `parallel()` 同時派出三個以上的 `agent()`,
+  **Then** 全部都要執行 —— 現行的 `RESERVATION_FRACTION = 0.5`(`run-guard.ts:12`)讓前兩個各保留
+  總預算的 50%,第三個的 `assertBudget()` 因此**必然**丟 `BudgetExceededError`,
+  **與實際花掉多少無關**(實測那個 run 當時幾乎沒花)。這不是競態而是算術必然,
+  所以任何設了預算的 `parallel()` 都只能跑兩路。
+  保留機制的目的(防止併發爆衝超出預算)必須保留 —— 修的是「用總預算的固定比例」這個做法,
+  不是拿掉保護。
+  **Given** 預算真的用完了,**When** 一個 `agent()` 因此被拒絕,
+  **Then** 呼叫者必須知道:該次呼叫要出現在 `run_status.agents`(帶狀態與具名原因碼),
+  且 `parallel()` 不得把它和「作者自己的 thunk 丟例外」混為一談。
+  現行 `sandbox/guards.ts:143-151` 的 `catch { return null }` **把原因整個丟棄** ——
+  沒有碼、沒有日誌、沒有事件;唯一殘留的證據是 journal 的 `callSeq` 跳號
+  (實測 `0, 1, [2 缺], 3, 4`),而那是沒有人會去找的東西。
+  擁有者的話:「如果是 budget 問題,應該 fail 時 client 知道,不然他會認為這是問題。」
+  **Given** `run_start` 沒有指定 `budget`(或給 `null`),**Then** 該 run 不受預算限制 ——
+  這**已經是現行行為**(`tool-specs.ts:352` 寫明 "Omitted or null means unbounded",
+  `reserve()` 對 `null` 回 0),本條只是把它釘成不得回歸的驗收條款。
+  **Given** 任何預算相關的限制,**Then** `workflow_authoring_guide` 要說明它 ——
+  作者現在無從得知「設了預算就只能兩路併發」。
+- **iter:** v25
+
