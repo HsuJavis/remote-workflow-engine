@@ -9797,7 +9797,7 @@ where a refusal should have been visible.
 
 ### VAL-170 — the real tier for #61: three branches dispatch, and a refusal is visible on the wire
 - **status:** green
-- **traces:** REQ-120, ARCH-002, ARCH-003, DES-167, DES-168, TASK-167, TASK-168
+- **traces:** REQ-120, ARCH-002, ARCH-003, DES-167, DES-168, TASK-167, TASK-168, DES-169, TASK-169
 - **tier:** acceptance
 - **real:** true
 - **result:** pass
@@ -9821,6 +9821,17 @@ fails the run with `run_result.error.code === 'BUDGET_EXCEEDED'` and shows every
 `{state:'refused', reasonCode:'BUDGET_EXCEEDED'}` in `run_status.agents`; (3) an omitted budget is
 unbounded — three records, nothing refused; (4) the guide served by the LIVE tool (not the builder)
 teaches `runConcurrency`, `BUDGET_EXCEEDED`, the stop-dispatching framing and the overshoot bound.
+
+- **v25 amendment (issue #63, DES-169, TASK-169) — a FIFTH case: the guide's recovery example is
+  EXTRACTED from the live guide and RUN.** Case (4) above checks that the guide CONTAINS the right
+  words; this one checks that what it teaches WORKS. The ```js block is regexed out of the text
+  `workflow_authoring_guide` actually serves, given the one free binding it reads (`lenses`) and a
+  return, registered and published through real MCP HTTP, and run under `budget: 0` on a booted
+  engine. **Red first:** `expected 'failed' to be 'completed'` — the documented recovery rethrew,
+  because `e.code` was undefined inside the sandbox; that is the whole of #63 in one line on the
+  real tier. Lifting the snippet instead of re-typing it is the guard the v23 incident lacked (this
+  repo shipped an AUTHORING.md example the engine refused, found only because Gate 7.5 ran it):
+  change the guide's predicate and this case runs the NEW predicate.
 
 ### IT-140 — the error a SCRIPT catches carries `.code` (issue #63, the unfinished half of #61)
 - **status:** green
@@ -9856,22 +9867,3 @@ and the case that runs the guide's literal predicate ended `{ error: … }` inst
   property) is the handle and `Array.isArray` is the realm-safe check. If a future iteration makes
   the boundary realm-correct, this case is REWRITTEN to assert `true` and the guide sentence it pins
   is updated — it is not deleted.
-
-### VAL-170 — v25 amendment (issue #63): the guide's recovery example is EXTRACTED from the live guide and RUN
-- **status:** green
-- **traces:** REQ-120, ARCH-003, DES-169, TASK-169
-- **tier:** acceptance
-- **real:** true
-- **result:** pass
-- **iter:** v25
-
-A fifth case appended to `tests/acceptance/val-170-budget-fanout.test.ts`. The fourth case checks
-that the guide CONTAINS the right words; this one checks that what it teaches WORKS. The ```js block
-is regexed out of the text `workflow_authoring_guide` actually serves, given the one free binding it
-reads (`lenses`) and a return, registered and published through real MCP HTTP, and run under
-`budget: 0` on a booted engine.
-
-**Red first:** `expected 'failed' to be 'completed'` — the documented recovery rethrew, which is the
-whole of #63 in one line on the real tier. Lifting the snippet instead of re-typing it is the guard
-the v23 incident lacked (this repo shipped an AUTHORING.md example the engine refused, found only
-because Gate 7.5 ran it): change the guide's predicate and this case runs the NEW predicate.
