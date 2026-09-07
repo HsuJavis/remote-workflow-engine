@@ -2327,3 +2327,18 @@ directly; the plugin's newer `trace.py` additionally reports `REQ-037/038/040 �
 
 `07-review.md` new top section written; the v23 RE-REVIEW #2 section marked superseded.
 **`.panel/` retained** — `send_back` is non-empty, so the re-run gates and the re-review still need it.
+
+## 2026-09-08 — v26 Gate 1 (orchestrator, owner-answered in session) — REQ-121..130 drafted from the issue #64–#75 intake
+Twelve agent-reported issues (filed 2026-09-07 evening by the owner's cold run on another machine) were each
+checked at source or reproduced live before anything was ruled on: the OpenRouter key in `rwe.env` was
+invalid (401) while the engine only reads the env; the Claude CLI retries a 401 ten times and `_drain`
+never sees `api_retry`; gpt-4.1 through LiteLLM fills every optional tool field (`pages:""`), so the Read
+exclusion from 0f79f04 still holds — the owner chose to drop gpt-4.1 and the whole `openai` provider rather
+than keep a per-provider patch; the SDK's `usage.input_tokens` excludes the two cache fields (18 vs ~40k
+measured). Six open questions were put to the owner and settled (Q1 甲 author-drawn + strict validation,
+Q2 LR mandatory for new registrations only + zoom, Q3 keep the determinism guard + document it, Q4 remove
+the exclusion and the openai/gemini paths, Q5 budget in cost from per-model prices, Q6 restart now — done,
+new key loaded, passthrough answers). Full record: `v26-gate1-working-notes.md`; Round v26 + REQ-121..130
+in `01-requirements.md`. `state.yaml` bumped to `iteration: v26`, `current_stage: requirements`. No product
+code changed. Probe artefacts (workflow `i66-probe`, runs 0449d511/55b34b9a/b0be6f5f) removed; the
+owner's evidence runs kept.

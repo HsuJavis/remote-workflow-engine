@@ -56,6 +56,14 @@ const CONTRACT = (role) => `${SKILL}/references/contracts/${role}.md`
 // Per-task override: args.models values may be a tier name OR any concrete model id
 // (e.g. { implement: 'my-local-qwen', design_synth: 'strong' }); the command reads
 // state.yaml `model_policy:` and passes it as args.models.
+// v2.2 SCALE (S/M/L/XL): measured by scale_probe at Gate 0, recorded in state.yaml scale:, passed as
+// args.scale. S→lean, M→full (tier mapping unchanged); L/XL additionally REQUIRE module build contracts
+// (ARCH build:/selftest:), the 02 Feature model section, and module_check at Gate 6.5+7.
+const SCALE = (A.scale || 'M').toUpperCase()
+const IS_LARGE = SCALE === 'L' || SCALE === 'XL'
+const SCALE_RULE = IS_LARGE
+  ? `SCALE(${SCALE} — large system): every ARCH module MUST declare build: (one command that builds ONLY that module) + selftest: (module-scoped tests); switchable capabilities go in the 02 "Feature model" section as FLAG-* (default/depends) referenced by ARCH flag:; trace --check enforces 旗標斷鏈/旗標循環/旗標依賴倒置 and module_check verifies independent builds + the all_off/all_on build matrix.`
+  : ''
 const TIERS = { strong: 'opus', mid: 'sonnet', fast: 'haiku', ...(A.modelTiers && typeof A.modelTiers === 'object' ? A.modelTiers : {}) }
 const MODEL_POLICY = {
   arch_synth: 'strong',       // Gate 2 synthesizer/decider
@@ -90,6 +98,16 @@ const SAFETY_RULE = IS_SAFETY
 // with args.gates this is the middle path between /sdlc-fix (F1–F6) and a full re-run — e.g. an
 // arch-touching change runs gates:['architecture','design','tests','impl','verify','validation','review']
 // but each gate edits ONLY the closure instead of re-decomposing the system.
+// ── v2.4.1 send-back repair scoping (issue #16) ────────────
+// While Gate 8's auto re-run repairs the gates listed in send_back, this context is non-null and every
+// gate prompt carries a REPAIR rule scoped to the review's named findings — the re-run must NOT redo
+// the whole gate (observed twice: an unscoped impl re-run re-partitioned ALL TASKs and fanned out ~10
+// zero-change implementers). The impl runner additionally skips partition/fan-out entirely.
+let SENDBACK_CTX = null
+const SENDBACK_RULE = () => SENDBACK_CTX
+  ? `SEND-BACK REPAIR RUN (Gate 8 blocking findings): fix ONLY the findings listed here — ${SENDBACK_CTX.findings.filter(Boolean).map((f, i) => `(${i + 1}) ${f}`).join(' ')} — update the touched items/code in place and bump their iter:. Do NOT redo the rest of the gate: no re-decomposition, no re-partitioning, no re-running work that was not named blocking. If a finding turns out to require broader changes than named, STOP and return needs_clarification instead of expanding scope.`
+  : ''
+
 const DELTA_IDS = (A.mode !== 'fix' && A.impactIds) ? (Array.isArray(A.impactIds) ? A.impactIds.filter(Boolean) : [A.impactIds]) : []
 const DELTA_RULE = DELTA_IDS.length
   ? `DELTA ITERATION on an EXISTING feature — impact closure: ${DELTA_IDS.join(', ')}; iteration ${A.iteration || 'vNext'}. Work ONLY within the closure: UPDATE existing items in place and bump their iter: (docs and code are two faces of the same iteration), do NOT open a new ledger or ID namespace, keep every existing trace link intact. If the change outgrows the closure, STOP and return needs_clarification instead of silently expanding scope.`
@@ -106,6 +124,10 @@ const GATE = {
       type: 'array', items: { type: 'string' },
       description: 'things needing a user/product/technical decision you cannot make alone; empty array if none',
     },
+    owner_decisions: {
+      type: 'array', items: { type: 'string' },
+      description: 'PRODUCT decisions you deferred to the owner in a document (e.g. an ADR): one string each, same text as the item\'s `- **owner_decision:** pending — …` metadata. MUST mirror every pending marker you wrote — a deferral that exists only in prose is a contract violation (an unmarked deferral counts as YOUR decision). Empty array = explicit attestation none were deferred. Unlike needs_clarification this does NOT stop the run; the workflow collects and surfaces them.',
+    },
     test_defects: {
       type: 'array',
       description: '(implementation stage only) tests judged "the test itself is wrong" rather than code wrong; empty otherwise',
@@ -118,7 +140,7 @@ const GATE = {
       },
     },
   },
-  required: ['passed', 'completed_ids', 'gate_check', 'needs_clarification', 'test_defects'],
+  required: ['passed', 'completed_ids', 'gate_check', 'needs_clarification', 'test_defects', 'owner_decisions'],
 }
 // Experts write the full proposal to a file and return only a pointer — context via files, not prompt text.
 const PROPOSAL = {
@@ -137,11 +159,14 @@ const REVIEW = {
     drift: { type: 'string', description: 'doc↔code drift summary' },
     arch_consistent: { type: 'boolean', description: 'whether implementation matches the Gate 2 architecture decisions (consolidated from N architecture experts)' },
     arch_violations: { type: 'array', items: { type: 'string' }, description: 'where it violates/deviates from the architecture decisions; empty if none' },
+    owner_decisions: { type: 'array', items: { type: 'string' }, description: 'UNANSWERED owner_decision: pending markers found anywhere in the ledger at review time (reconcile the metadata key mechanically — never by grepping prose phrases); [] = all answered/none' },
     send_back: { type: 'array', items: { type: 'string', enum: ['architecture', 'design', 'tests', 'impl', 'verify', 'validation'] },
       description: 'BLOCKING findings only — the gate(s) that must re-run to fix them. In the full run the workflow AUTO RE-RUNS each listed gate ONCE and then re-reviews; still-blocking after that hands back to the orchestrator. Non-blocking findings go to recorded tech debt with send_back=[] (the iteration closes).' },
+    blocking_findings: { type: 'array', items: { type: 'string' },
+      description: 'REQUIRED NON-EMPTY whenever send_back is non-empty (issue #16): one entry per blocking finding, each actionable on its own — "<ID or file>: <what is wrong> → <what fixed looks like>". These are handed VERBATIM to the repair agent as its ONLY scope, so a finding not listed here will NOT be fixed (prose in conclusion is never parsed — same structured-channel rule as issue #15). [] when send_back is [].' },
     conclusion: { type: 'string', description: 'can close / send back to which Gate (must agree with send_back)' },
   },
-  required: ['gaps_high', 'gaps_mid', 'gaps_low', 'drift', 'arch_consistent', 'arch_violations', 'send_back', 'conclusion'],
+  required: ['gaps_high', 'gaps_mid', 'gaps_low', 'drift', 'arch_consistent', 'arch_violations', 'owner_decisions', 'send_back', 'blocking_findings', 'conclusion'],
 }
 // Gate 7.5 Validation: real-run grounding + mock census + human handover docs
 const VALIDATION = {
@@ -156,11 +181,12 @@ const VALIDATION = {
         required: ['req', 'status', 'evidence'] } },
     mock_census: { type: 'string', description: 'trace.py result: verified-real=N / mock-only=M / unverified=K' },
     docs_written: { type: 'array', items: { type: 'string' }, description: 'human handover docs written, e.g. README.md, DEPLOY.md' },
+    owner_decisions: { type: 'array', items: { type: 'string' }, description: 'product decisions deferred to the owner (mirror of any owner_decision: pending markers written); [] = none' },
     unreachable_deps: { type: 'array', items: { type: 'string' }, description: 'real dependencies that could not be reached (explicit gaps, not mock-passed)' },
     gate_check: { type: 'string' },
     needs_clarification: { type: 'array', items: { type: 'string' } },
   },
-  required: ['passed', 'completed_ids', 'booted_from_docs_only', 'real_tier', 'mock_census', 'docs_written', 'unreachable_deps', 'gate_check', 'needs_clarification'],
+  required: ['passed', 'completed_ids', 'booted_from_docs_only', 'real_tier', 'mock_census', 'docs_written', 'unreachable_deps', 'gate_check', 'needs_clarification', 'owner_decisions'],
 }
 // Parallel implementation: split TASKs into parallel-safe batches
 const BATCHES = {
@@ -250,7 +276,7 @@ const DES_LENSES = [
 // v2.0: role gates run on GENERIC agents (agentType) + a role-CONTRACT file the prompt orders them to
 // read first (single source of the role text), + a policy model (never inherited from the caller).
 const S_ARCH   = { phase: 'Architecture', gate: 'architecture', next: 'design', agentType: AT('executor'), contract: CONTRACT('architect'), model: M('arch_synth'), rounds: 2,
-                   scope: 'Decompose all REQs in 01-requirements.md into a Software Architecture Document (SAD): ARCH-* modules (each traces back to its REQ, with module:/deps: metadata for solid_check), ADR-* records for contested technology choices, 4+1-view mermaid diagrams + data architecture + API contracts per the 02-architecture template', lenses: ARCH_LENSES }
+                   scope: 'Decompose all REQs in 01-requirements.md (functional AND kind:nfr — non-functional requirements get architecture too: where do the logs/healthcheck/limits live) into a Software Architecture Document (SAD): ARCH-* modules (each traces back to its REQ, with module:/deps: metadata for solid_check; on L/XL scale also build:/selftest:/flag: per the SCALE rule), FLAG-* feature model for switchable capabilities, ADR-* records for contested technology choices, 4+1-view mermaid diagrams + data architecture + API contracts per the 02-architecture template', lenses: ARCH_LENSES }
 // v1.21: Gate 3 (tasks) is MERGED into the design dispatch — the designer/synthesizer writes 03-tasks.md
 // then 04-design.md in one pass (the task layer is a thin ARCH→DES bridge; a separate dispatch re-paid
 // a full agent boot + doc reread for it). TASK ids/format/traces are unchanged; trace.py sees no difference.
@@ -263,24 +289,29 @@ const S_IMPL   = { phase: 'Implement GREEN', gate: 'impl', next: 'verification',
 // v1.21: Gate 6.5 (/simplify) is MERGED into the Gate 7 dispatch — one agent does simplify-then-regression
 // (a separate simplify agent re-ran the full suite that Gate 7 immediately re-ran again).
 const S_VERIFY = { phase: 'Verify', gate: 'verification', next: 'validation', agentType: AT('executor'), contract: CONTRACT('verifier'), model: M('verify'),
-                   scope: '[merged Gate 6.5+7] FIRST apply the /simplify spirit to the code implemented at Gate 6 (reuse/simplification/efficiency/altitude cleanup; QUALITY ONLY, no behavior change; use the Skill tool to call simplify if available, else simplify manually by its principles; if code changed update the matching IMPL-* in 06-impl-log.md; revert any cleanup that goes red); THEN [Mode B regression] run the FULL regression, add system-level IT/E2E/VAL, mark passing green/pass; THEN [coverage gate] measure UT/IT line coverage over layout.src — every function/method (>5 lines) must be ≥ 95%, short functions (≤5 lines) may miss at most 1 line, and the whole tree must be ≥ 90% (state.yaml coverage: overrides); a shortfall means WRITE the missing tests (logged in 05-tests.md) and re-measure, never pass under the bar; report overall % + worst per-function offenders in gate_check' + KARPATHY_SUFFIX }
+                   scope: '[merged Gate 6.5+7] FIRST apply the /simplify spirit to the code implemented at Gate 6 (reuse/simplification/efficiency/altitude cleanup; QUALITY ONLY, no behavior change; use the Skill tool to call simplify if available, else simplify manually by its principles; if code changed update the matching IMPL-* in 06-impl-log.md; revert any cleanup that goes red); THEN [Mode B regression] run the FULL regression, add system-level IT/E2E/VAL, mark passing green/pass; THEN [coverage gate] measure UT/IT line coverage over layout.src — every function/method (>5 lines) must be ≥ 95%, short functions (≤5 lines) may miss at most 1 line, and the whole tree must be ≥ 90% (state.yaml coverage: overrides); a shortfall means WRITE the missing tests (logged in 05-tests.md) and re-measure, never pass under the bar; report overall % + worst per-function offenders in gate_check; THEN [module gate, dormant unless ARCH declares build:] run \`sh <trace> --tool module_check <ledger> --selftest --matrix\` — every module must build independently and the all_off/all_on matrix must pass; a failure is a gate failure (fix the module boundary, never delete the build: contract to pass)' + KARPATHY_SUFFIX }
 const S_VALIDATE = { phase: 'Validation', gate: 'validation', next: 'review', agentType: AT('executor'), contract: CONTRACT('validator'), model: M('validate'),
                      scope: '[Gate 7.5 real-run] boot the real system from documented steps, exercise each REQ against real wiring (no SUT-boundary mock), write 08-validation.md + human README/DEPLOY' }
 
 // ── Prompt generators ──────────────────────────────────
 const baseRules = (s) => [
+  ...(SENDBACK_CTX ? [SENDBACK_RULE()] : []),
   ...(DELTA_RULE ? [DELTA_RULE] : []),
   `Feature workspace: ${FEATURE} (docs ${SDLC}/; code/test locations in ${SDLC}/state.yaml layout; tech stack in tech_stack — follow it, don't pick your own).`,
+  `OWNER-DEFERRAL RULE (issue #15): a decision you must NOT take yourself (a product call, anything "owner-overrulable") goes into BOTH structured channels — (a) on the item: \`- **owner_decision:** pending — <the exact question>\` (fixed metadata key, language-independent, trace.py parses it and BLOCKS Gate 8 while unanswered), and (b) your report's owner_decisions array (same text). Prose-only deferral is a contract violation: an unmarked deferral counts as YOUR OWN decision and you carry it at review.`,
   `Work-item format (trace.py parses it; metadata MUST be "- **key:** value" bold-colon, NOT plain "key: value"): one "### <ID> — <title>" level-3 heading per item, followed by lines like "- **status:** …", "- **traces:** <upstream IDs, comma-separated>", "- **iter:** v1"; write into the matching ${SDLC}/0X file.`,
   `When done, self-run \`sh ${TRACE} ${SDLC}\` (add --check at verification); confirm the exit Gate and no new gaps.`,
   `On Gate pass, update ${SDLC}/state.yaml: gates.${s.gate}.passed=true, current_stage=${s.next}, updated; append a line to ${SDLC}/journal.md. This is your job, not a clarification.`,
   ...(SAFETY_RULE ? [SAFETY_RULE] : []),
+  ...(SCALE_RULE ? [SCALE_RULE] : []),
 ]
 
 const gatePrompt = (s) => [
   `You are the "${s.phase}" subagent of the iso-agile-sdlc workflow.`,
   `1. READ YOUR ROLE CONTRACT FIRST${s.contract ? `: ${s.contract}` : ''} — then execute strictly per it (inputs→actions→outputs→exit-Gate self-check→report format).`,
-  `2. This scope: ${s.scope}.`,
+  // issue #16: during a send-back repair the normal gate objective is SUSPENDED — a contradictory
+  // "do the whole gate" line here is exactly what weak executors follow instead of the repair rule.
+  `2. This scope: ${SENDBACK_CTX ? `**SUSPENDED — SEND-BACK REPAIR RUN.** Your ONLY objective is the SEND-BACK REPAIR rule below (fix the listed findings, nothing else). The normal scope, for role context only, was: ${s.scope}` : s.scope}.`,
   ...baseRules(s).map((t, i) => `${i + 3}. ${t}`),
   `${baseRules(s).length + 3}. Report GATE: passed, completed_ids, gate_check; needs_clarification only for user/product/technical decisions (process & state maintenance don't count), else empty.`,
   `${baseRules(s).length + 4}. test_defects (implementation stage only): if a test fails but you judge "the test itself is wrong" not your code — don't change the test, don't fudge the code; list {test_id,problem,fix} and the workflow auto-routes it back to the verifier; empty for other stages.`,
@@ -294,7 +325,7 @@ const gatePrompt = (s) => [
 const leanGatePrompt = (s) => [
   `You are the "${s.phase}" decider of the iso-agile-sdlc workflow, running in LEAN tier — this is a small, low-risk, single-area feature, so NO expert panel is spawned; you self-apply the review lenses as a checklist and decide.`,
   `1. READ YOUR ROLE CONTRACT FIRST${s.contract ? `: ${s.contract}` : ''} — then execute strictly per it (inputs→actions→outputs→exit-Gate self-check→report format).`,
-  `2. This scope: ${s.scope}.`,
+  `2. This scope: ${SENDBACK_CTX ? `**SUSPENDED — SEND-BACK REPAIR RUN.** Your ONLY objective is the SEND-BACK REPAIR rule below (fix the listed findings, nothing else). The normal scope, for role context only, was: ${s.scope}` : s.scope}.`,
   `3. **Self-apply these lenses as a checklist** (you carry them yourself since no panel runs — for each, note in the item's note or a file-end "## Decision rationale" how you satisfied it; a silently-skipped lens is a defect):`,
   ...(s.lenses || []).map((L) => `   • ${L.lens}`),
   `4. **Escalation fail-safe**: if you hit a genuine cross-cutting trade-off you CANNOT resolve alone (two lenses materially conflict and choosing wrong is costly), do NOT guess — return needs_clarification=['request-panel: <one line naming what conflicts>'] and STOP; the workflow will re-run THIS gate as a full adversarial panel. Use this ONLY for real conflicts, not for ordinary judgement calls.`,
@@ -398,8 +429,11 @@ const archConsistencyPrompt = (L, dir) => [
 // ── Flow-control helpers ───────────────────────────────
 const results = []
 const clarifications = []
+const ownerDecisions = []   // issue #15: deferrals collected across gates; surfaced in the final result — the orchestrator MUST relay them to the owner
+const collectOD = (phase, r) => { if (r && Array.isArray(r.owner_decisions) && r.owner_decisions.length) ownerDecisions.push({ phase, items: r.owner_decisions }) }
 function stopIf(phase, r) {
-  if (!r) return { stopped: `Gate "${phase}" execution failed`, results, clarifications }
+  collectOD(phase, r)
+  if (!r) return { stopped: `Gate "${phase}" execution failed`, results, clarifications, owner_decisions: ownerDecisions }
   if (r.needs_clarification && r.needs_clarification.length) {
     clarifications.push({ phase, items: r.needs_clarification })
     return { stopped: 'has items needing a user decision; handed back to orchestrator', clarifications, results, hint: 'after the main conversation answers, resume with resumeFromRunId' }
@@ -528,6 +562,7 @@ const verifyOutputs = (s) => async (r) => agent([
   `You are the iso-agile-sdlc gate-output VERIFIER — a liveness/completeness check, NOT the gate worker; do NOT redo the work.`,
   `The "${s.phase}" gate just reported passed=true with ids: ${(r.completed_ids || []).join(', ') || '(none)'}.`,
   `Independently CONFIRM the artifacts landed: in ${SDLC}/ open the relevant 0X stage doc(s) — ids may span two docs on a merged gate (e.g. TASK-* in 03-tasks.md AND DES-* in 04-design.md) — and confirm EACH reported id has a real "### <ID> — …" heading with metadata (not merely mentioned); then run \`sh ${TRACE} ${SDLC} --check\` and confirm NO new broken-links/orphans/TDD-violation were introduced (pre-existing mock-only / real:true-pending gaps are allowed).`,
+  `OWNER-DEFERRAL RECONCILIATION: grep the gate doc(s) for the fixed metadata key \`owner_decision:\` — every \`pending\` marker on disk MUST appear in the report's owner_decisions array (and vice versa). A mismatch (deferral on disk missing from the report, or reported but not marked) → ok=false naming the item id.`,
   ...(s.gate === 'impl' ? [`DES-CONFORMANCE SPOT CHECK (weak-executor guard): pick 2–3 of the reported IMPL ids, open the implemented interface(s) their files declare, and compare against the matching DES-* signature/schema in ${SDLC}/04-design.md — name, parameters, return/response shape must match. A green suite does NOT excuse a signature that drifted from the design; any mismatch → ok=false naming the DES id.`] : []),
   `Report ok=true ONLY if every reported id exists on disk AND trace shows no new structural gap; else ok=false with a one-line reason.`,
 ].join('\n'), { schema: { type: 'object', properties: { ok: { type: 'boolean' }, reason: { type: 'string' } }, required: ['ok', 'reason'] }, label: `verify:${s.phase}`, model: M('cheap') })
@@ -716,7 +751,7 @@ if (A.mode === 'fix') {
   logCost('Fix F6 review')
   log(`fix done: gaps high=${fixReview ? fixReview.gaps_high : '?'} mid=${fixReview ? fixReview.gaps_mid : '?'} low=${fixReview ? fixReview.gaps_low : '?'}; arch_consistent=${fixReview ? fixReview.arch_consistent : '?'}`)
   log(`cost profile: ${costLog.map((c) => `${c.phase}=${c.ktokens}k`).join(' · ')}`)
-  return { feature: FEATURE, mode: 'fix', impact: IMPACT, iteration: ITER, results, clarifications, review: fixReview, cost_profile: costLog }
+  return { feature: FEATURE, mode: 'fix', impact: IMPACT, iteration: ITER, results, clarifications, owner_decisions: ownerDecisions, review: fixReview, cost_profile: costLog }
 }
 
 // ═══ v2.0 GATE-AS-WORKFLOW REGISTRY ═════════════════════════════════════════
@@ -778,8 +813,11 @@ tests: async () => {
 impl: async () => {
   if ((st = budgetStop('Implement GREEN'))) return st
   phase('Implement GREEN')
-  // 6a partition: split TASKs into parallel-safe batches (independent, non-overlapping files)
-  const part = await agent(partitionPrompt(), { schema: BATCHES, label: 'impl:partition', agentType: AT('researcher'), model: M('partition') })
+  // 6a partition: split TASKs into parallel-safe batches (independent, non-overlapping files).
+  // v2.4.1 (issue #16): a SEND-BACK REPAIR re-run skips partition/fan-out entirely — one scoped
+  // implementer repairs only the named findings; re-partitioning ALL TASKs here was the observed bug.
+  const part = SENDBACK_CTX ? null : await agent(partitionPrompt(), { schema: BATCHES, label: 'impl:partition', agentType: AT('researcher'), model: M('partition') })
+  if (SENDBACK_CTX) log('send-back repair: skipping partition/parallel fan-out — single scoped implementer only')
   const batches = part && Array.isArray(part.batches) ? part.batches.filter((b) => b && b.length) : []
   let allImpls = [], parDefects = [], parClar = []
   // 6b implement each batch in parallel (implementer chunks concurrent within a batch, batches sequential; code only, no shared docs)
@@ -803,7 +841,7 @@ impl: async () => {
       return { stopped: 'parallel implementation needs clarification', clarifications, results, hint: 'after the main conversation answers, resume with resumeFromRunId' }
     }
   } else {
-    log('partition failed / no batches → fall back to a single sequential implementer')
+    if (!SENDBACK_CTX) log('partition failed / no batches → fall back to a single sequential implementer')
   }
   // 6c integrate (parallel) or single implement (fallback) + red-green self-repair loop
   let implR, repair = 0
@@ -889,16 +927,18 @@ review: async () => {
       : `The ${archChecks.length} architecture-consistency experts ALREADY RAN (their reports are in ${rdir}/) — consolidate from them only; do NOT spawn more experts.`,
     `1. Regenerate the dashboard sh ${TRACE} ${SDLC}; run --check for gaps; check doc↔code iter drift.`,
     `1b. **DASHBOARD QA (the deliverable must actually render)**: run \`sh ${TRACE} --tool dashboard_check ${SDLC}\` — it verifies every SoT file:line link target exists (file present, line within range) and every embedded mermaid block passes a lexical sanity check. If the playwright browser tools are available in your session, ALSO open ${SDLC}/dashboard.html in the browser, switch through the tabs, and confirm each diagram rendered to an <svg> (no mermaid error text, no forever-blank block) and spot-click 2–3 SoT links. A dashboard that fails to render or whose links dead-end is a Gate 8 FINDING (fix the doc/diagram or record it) — never report "review done" over a broken dashboard.`,
+    `1c2. **MODULE BUILD CHECK (dormant unless ARCH declares build:)**: run \`sh ${TRACE} --tool module_check ${SDLC}\` — independent-build failures are findings (send back to impl).`,
     `1c. **MODULE-BOUNDARY CHECK (SOLID enforcement)**: run \`sh ${TRACE} --tool solid_check ${SDLC}\` — it builds the import graph of layout.src and flags undeclared cross-module dependencies, dependency cycles, deep-internal imports bypassing a module's public surface, and god-modules, against the module:/deps: declarations on the ARCH-* items. Violations are findings (send back to Gate 6, or record as accepted debt with a reason).`,
     LEAN
       ? `2. **Architecture consistency**: from the self-check above, record "does the implementation match the Gate 2 architecture decisions (ARCH/INV/rationale)", list violations.`
       : `2. **Architecture consistency**: read the ${archChecks.length} architecture-expert reports under ${rdir}/, consolidate "does the implementation match the Gate 2 architecture decisions (ARCH/INV/rationale)", list violations.`,
     `3. **Validation & handover**: confirm Gate 7.5 — trace.py shows no 未真實驗證(mock-only)/未驗證 gaps (every REQ has a real:true green), ${SDLC}/08-validation.md exists, and the handover docs at state.yaml layout.readme/layout.deploy (product root) exist, are step-by-step, written in 淺顯易懂的繁體中文 (ASCII diagrams where structure helps), and read as CURRENT-STATE (no superseded instructions/keys/ports anywhere; **history-free manuals** — no changelog/version-diff content at all, history lives only in the .sdlc ledger; a single deduplicated 設定總表 is the only place config keys are documented; **DEPLOY.md leads with a working 一鍵部署 command that Gate 7.5 actually ran**). Any REQ on mock-only evidence, missing handover doc, a manual carrying history/stale/duplicated instructions, or a missing/unverified one-command deploy is a finding (send back to Gate 7.5).`,
     `3b. **SPECIAL-FILE REVIEWS (only for files THIS iteration touched — check 06-impl-log files: + git status)**: touched CLAUDE.md or AGENTS.md → review it with the claude-md-improver skill (Skill tool); touched any SKILL.md → review it with the skill-creator skill. If the Skill tool or those skills are unavailable in your session, review the file manually against their principles (accuracy, no stale instructions, concise imperative guidance) and note the degraded mode. Findings here follow the same blocking/debt routing as everything else.`,
-    `4. Write ${SDLC}/07-review.md (traceability-consistency + architecture-consistency + dashboard-QA + module-boundary + validation/handover sections + retro).`,
+    `3c. **OWNER-DEFERRAL LEDGER SWEEP (issue #15)**: mechanically reconcile deferred product decisions — run \`grep -rn "owner_decision" ${SDLC}\` (a FIXED metadata key; never grep prose phrases, they vary by language). Every \`pending\` hit is an owner decision that never got answered: list them ALL in your report's owner_decisions array (trace --check also flags them as 待業主決策 high gaps — the iteration cannot close over an unanswered one; the orchestrator must relay them and the item updated to \`answered(<date>) — <ruling>\` after the owner rules). Also spot-check the ADRs for decision-shaped hedging WITHOUT the marker ("not taken here", "product decision" in any language) — an unmarked deferral is a producer contract violation: report it as a finding against that gate.`,
+    `4. Write ${SDLC}/07-review.md (traceability-consistency + architecture-consistency + dashboard-QA + module-boundary + owner-deferral + validation/handover sections + retro).`,
     `4b. On pass, update ${SDLC}/state.yaml: gates.review.passed=true, current_stage=review, updated; append a journal line. This is your job, not a clarification (found in E2E: the fix-mode F6 prompt had this step but the full-run Gate 8 prompt didn't, leaving the review gate un-landed in state.yaml).`,
     `5. **Cleanup transient artifacts — ONLY when closing (send_back is empty)**: the debate/panel proposal files under ${SDLC}/.panel/ are process scratch (trace.py already ignores them; their decisions are baked into 02-architecture.md / 04-design.md and this review). If and only if you are NOT sending anything back, remove them with \`rm -rf ${SDLC}/.panel\` to keep the ledger lean. When send_back is non-empty, LEAVE .panel in place — the re-run gates and the re-review still need it. (A mid-run resume relies on them too.)`,
-    `Report REVIEW: gaps_high/mid/low, drift, arch_consistent, arch_violations, send_back (BLOCKING findings → the owning gate keys, e.g. ["validation"]; recorded-debt-only → []), conclusion (must agree with send_back; architecture inconsistency, a mock-only/undocumented REQ, a non-rendering dashboard, module-boundary violations, or a history-carrying/no-一鍵部署 manual must be reflected).`,
+    `Report REVIEW: gaps_high/mid/low, drift, arch_consistent, arch_violations, send_back (BLOCKING findings → the owning gate keys, e.g. ["validation"]; recorded-debt-only → []), blocking_findings (MANDATORY whenever send_back is non-empty — one actionable entry per blocking finding, "<ID or file>: <what is wrong> → <what fixed looks like>"; the repair agent receives ONLY this list as its scope, so anything you leave to prose will NOT be fixed), conclusion (must agree with send_back; architecture inconsistency, a mock-only/undocumented REQ, a non-rendering dashboard, module-boundary violations, or a history-carrying/no-一鍵部署 manual must be reflected).`,
   ].join('\n'), { schema: REVIEW, label: pass > 1 ? `review#${pass}` : 'review', agentType: AT('reviewer'), model: M('review') }))
 
   let review = await reviewOnce(1)
@@ -907,8 +947,16 @@ review: async () => {
   const sbOf = (r) => (r && Array.isArray(r.send_back)) ? [...new Set(r.send_back.filter((g) => RUNNERS[g] && g !== 'review'))] : []
   const sb = sbOf(review)
   if (sb.length) {
-    log(`review send-back (BLOCKING): ${sb.join(', ')} → auto re-running each gate ONCE, then re-reviewing (capped at one loop)`)
-    for (const g of sb) { const st2 = await RUNNERS[g](); if (st2) return st2 }
+    log(`review send-back (BLOCKING): ${sb.join(', ')} → auto re-running each gate ONCE (scoped to the named findings, issue #16), then re-reviewing (capped at one loop)`)
+    SENDBACK_CTX = { gates: sb,
+      findings: ((review.blocking_findings && review.blocking_findings.length)
+        ? review.blocking_findings
+        : [...(review.arch_violations || []), review.conclusion]).filter(Boolean).slice(0, 12) }
+    try {
+      for (const g of sb) { const st2 = await RUNNERS[g](); if (st2) return st2 }
+    } finally {
+      SENDBACK_CTX = null   // the re-review is a normal verification pass, never a repair run
+    }
     review = await reviewOnce(2, sb)
     finalReview = review
     logCost('Review (re-review)')
@@ -964,4 +1012,4 @@ for (const g of RUN_LIST) {
 }
 
 log(`cost profile: ${costLog.map((c) => `${c.phase}=${c.ktokens}k`).join(' · ')}`)
-return { feature: FEATURE, gates_run: RUN_LIST, ...(A.gate ? { gate: A.gate, io: GATE_IO[A.gate] } : {}), results, clarifications, review: finalReview, validation: finalVal, cost_profile: costLog }
+return { feature: FEATURE, gates_run: RUN_LIST, ...(A.gate ? { gate: A.gate, io: GATE_IO[A.gate] } : {}), results, clarifications, owner_decisions: ownerDecisions, review: finalReview, validation: finalVal, cost_profile: costLog }

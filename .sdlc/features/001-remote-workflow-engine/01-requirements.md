@@ -1324,3 +1324,220 @@ own dynamic workflow, which nests one level too).
   作者現在無從得知「設了預算就只能兩路併發」。
 - **iter:** v25
 
+
+## Iteration v26 — 圖的契約、三條 provider 路、真實的錢與可見的失敗 (REQ-121..130)
+
+### Round v26 — 2026-09-08 (Gate 1 interview, owner-answered in session)
+
+來源是 2026-09-07 晚間擁有者從另一台電腦冷跑五個 workflow 時,agent 以 `issue_report` 回報的
+#64–#75 共 12 個 issue。orchestrator 先對每一條宣稱做原始碼對照或實跑重現(全文與重現方式在
+`v26-gate1-working-notes.md`),再把六個開放問題交給擁有者,全部在 session 內裁定:
+
+**圖的真相來源(Q1)—— 甲。** 作者畫圖,引擎用 script skeleton 嚴驗到 lane / tools / edge。
+REQ-111「圖由作者提供」**維持**;#75 提案的 `mermaid:"auto"`(引擎產圖)**不採**。
+
+**方向與版本(Q2)—— `graph LR` 成為硬規則,但只對 v26 之後的新註冊。** 擁有者的理由:回頭強制
+會把既有 workflow 的圖全刪掉。既有版本不重驗、不刪、照原圖渲染。dashboard 要支援 zoom。
+
+**沙箱(Q3)—— 維持禁用,補文件。** 擁有者原句「A先維持好了但schema 要說禁用那些以及可以用什麼方式
+取代」,讀為「先維持現狀」:`Date.now()` / 無參數 `new Date()` / `Math.random()` 繼續丟
+`DETERMINISM_GUARD`(REQ-001 不變),但 guide 與 schema 必須列出禁了什麼、為什麼、用什麼取代。
+(若擁有者本意是放行,請在 Gate 2 暫停點更正;那會變成 REQ-001 的修訂。)
+
+**Provider 路徑(Q4 + 補充)—— 只剩三條:anthropic、openrouter、ollama,三條都拿完整工具面。**
+移除 `NON_ANTHROPIC_EXCLUDED_TOOLS` 與 gpt-4.1 相關程式碼,「不支援就好了」,「不要有類似的 patch」;
+**整條 `openai` provider 移除**,理由是 OpenRouter 上有 OpenAI 的模型;「請清乾淨一點」。
+orchestrator 標明兩個後果,照裁決執行:(1) DEPLOY.md 記載的「自架 OpenAI 相容端點」路徑
+(vLLM/TGI/llama.cpp 經 `OPENAI_API_BASE`)隨之消失,本機模型仍有 Ollama;(2) `gemini` 直連 provider
+(只存在於 `gateway:"direct-fetch"` 舊路徑)一併移除,Gemini 模型走 OpenRouter。
+
+**budget 單位(Q5)—— 依各模型的價格算花費。** 四欄 token(input / output / cache read / cache write)
+乘上該模型的價格;models_list 已有價格(OpenRouter 由上游 `pricing` 帶 cache 欄位)。
+
+**重啟(Q6)—— 現在。** 已於 2026-09-08 04:0x 重啟,新 OpenRouter key 載入,
+`openrouter/google/gemini-3.8-flash` 經正式 LiteLLM 回 "Paris"。
+
+**延後:** #73「每週對 OpenRouter 探測並更新 models_list」是之後的排程工作;v26 只加宣告欄位。
+
+### REQ-121 — `seed` 只帶 sha256 必須被拒絕,而且 schema 要說清楚三種 seed 形狀
+- **status:** draft
+- **traces:** REQ-025, REQ-065, REQ-082
+- **acceptance:** issue #64。現況 `workspace-seed.ts:46` 寫 `contentB64 ?? ''`,`tool-specs.ts:378` 的
+  schema 只有 `seed: {type:'array'}`,所以 `[{path, sha256}]` 被接受並寫出 0-byte 檔,五個 run 在空
+  工作區上跑完而沒有任何人被告知。
+  **Given** `run_start.seed` 的任一元素缺 `contentB64`(或不是 string)**Then** `INVALID_SEED_SPEC`,
+  訊息點名該 `path`,並指出「只帶 sha256 請用 `seedManifest`」;不寫任何檔案。
+  **Given** 合法的 `seed`(每個元素都有 `contentB64`)**Then** 行為與 v25 完全相同。
+  **Given** `tools/list` 的 `run_start` schema **Then** `seed` 與 `seedManifest` 的 `items` 形狀有定義、
+  有描述(`seed` 帶內容、`seedManifest` 帶 sha256 從內容庫取、`seedManifestRef` 帶 manifest 的 sha)。
+  `additionalProperties:false` 加到 items 之前,先確認 plugin client `push_workspace.py` 不多送欄位。
+  **紅測:** `run_start({seed:[{path:'a.txt', sha256:'…'}]})` 現況 accepted → 期望 refused。
+- **iter:** v26
+
+### REQ-122 — provider 的認證與模型不存在錯誤,一個 attempt 內就以 terminal 回報,不可等到 timeout
+- **status:** draft
+- **traces:** REQ-020, REQ-037, REQ-038
+- **acceptance:** issue #65 引擎端。實測:Claude CLI 收到 401 會自己重試 10 次(退避 0.5s→20s+),期間發
+  `system/api_retry`(`error_status`, `error`);`claude-agent-sdk-client.ts:656` 的 `_drain` 只處理
+  `result`,`api_retry` 被丟掉,引擎只看到 `timeoutMs` 到期;`invoke():444` 的 retry loop 對任何非 ok
+  結果再跑一輪 → 240 秒、`events: []`、沒有錯誤文字。
+  **Given** session 發出 `system/api_retry` 且 `error_status ∈ {401, 403, 404}` **Then** 該 attempt 立即以
+  `{ok:false, reason:'terminal', detail}` 結束,`detail` 含 provider、status 與 CLI 給的 `error`;同一筆
+  寫成 transcript 事件(`run_agent_log.events` 非空),AgentRecord 為 `failed` 並帶同一 detail。
+  **Given** `error_status` 為 429 或 5xx **Then** 維持交給 CLI 重試(那些會好)。
+  **Given** 一個標為 non-retryable 的 terminal **Then** gateway 的 retry loop **不**再跑一次。
+  **Given** `run_status.agents[]` 該筆 **Then** provider 仍是解析後的值(見 REQ-125),讓事後查得出是哪條路壞。
+  **紅測:** 假 session 連發 `api_retry(401)`、永不發 `result` → 期望 1 秒內 terminal、events 含錯誤;
+  現況要等到 timeout × (1+retries)。
+- **iter:** v26
+
+### REQ-123 — 只有三條 provider 路(anthropic、openrouter、ollama),三條都拿完整工具面;openai 與 gemini 直連整條移除
+- **status:** draft
+- **traces:** REQ-016, REQ-037, REQ-038
+- **acceptance:** issue #66 與擁有者 2026-09-08 裁決。現況 `NON_ANTHROPIC_EXCLUDED_TOOLS = {'Read'}`
+  (commit 0f79f04,2026-07-12)對所有非 Anthropic provider 剔除 Read 並強加 Bash;決策與證據只存在
+  commit message。今日重測 5/5:gpt-4.1 經 LiteLLM(OpenAI Responses API)把每個 optional 欄位填滿
+  (`pages:""`),Read 必壞 —— 擁有者選擇**不支援 gpt-4.1**而不是保留 patch。
+  **Given** 原始碼 **Then** 不存在 `NON_ANTHROPIC_EXCLUDED_TOOLS`、`curateToolsForProvider`、
+  provider `'openai'`、provider `'gemini'` 的任何分支;`AliasMap` 的 provider 聯集只剩三個;
+  model catalog 沒有 openai 靜態列;`generateLiteLLMConfig` 不再產生 openai 條目;
+  `OPENAI_API_KEY` / `OPENAI_API_BASE` / `GEMINI_API_KEY` 不再被引擎讀取或記載
+  (grep 守衛,`no-retired-surface.test.ts` 的既有做法)。
+  **Given** 任一 provider 的 `agent()` 帶 `allowedTools` **Then** harness 紀錄的 `tools` 與呼叫端一致 ——
+  不剔除、不強加;`[]` 仍是空(DES-120 維持)。
+  **Given** `rwe.config.json` 的 alias 寫了三個以外的 provider **Then** 開機拒絕並指出是哪一列、合法值是什麼
+  (fail-closed;訊息**逐列點名**要刪掉哪幾個 alias 與合法值清單)。**部署順序是驗收的一部分:** 正式機現有
+  gpt4omini/gpt41mini/gpt41nano/gpt41 四列必須在重啟**之前**由 Gate 7.5 的部署步驟連同擁有者移除 ——
+  自我更新路徑會在 release 後自動重啟,一個帶著舊列的 config 會讓服務起不來。DEPLOY.md 與 rwe.env 範本
+  不再記載 `OPENAI_API_KEY` / `OPENAI_API_BASE` / `GEMINI_API_KEY`。
+  **Given** Gate 7.5 **Then** 三條路各有一次真跑,且 **ollama(`default` alias,qwen2.5:7b)那次的工具面含 Read**
+  —— 本條拿掉的正是這個部署自己預設路徑上的剔除,不能只驗 anthropic 與 openrouter 這兩條明顯會過的。
+  **Given** `thinkingFor` **Then** 不再對非 Anthropic 一律 `disabled`(REQ-126 接手)。
+  **Given** DEPLOY.md / README.md / guide **Then** 沒有 openai provider 的部署說明;DEPLOY.md 的
+  「自架 OpenAI 相容端點」段落改為「本機用 Ollama,雲端用 OpenRouter」。
+  **Given** 帳本 **Then** 有一條 ADR 記下 0f79f04 的原決策、今日重測、與被推翻的理由。
+  **紅測:** `curateToolsForProvider(['Read','Bash'],'ollama')` 現況少 Read → 期望函式不存在;
+  provider `'openai'` 的 alias 現況通過 → 期望開機拒絕。
+- **iter:** v26
+
+### REQ-124 — run DAG 的每個 agent 落在正確的 phase 欄,既有的 run 也一樣
+- **status:** draft
+- **traces:** REQ-008, REQ-119
+- **acceptance:** issue #70。現況 100% 的 run 全部 frame-grouped:`run-manager.ts:1065` 用
+  `key.opts.phase`(沒有任何 script 會設),`dashboard.ts:285` 以 `a.phase ?? ''` 對 skeleton。
+  **Given** 新 run 的 `agent()` 派發 **Then** AgentRecord.phase 是派發當下最後一次 `phase()` 的標題
+  (nested `workflow()` frame 共用同一條 phase 時間軸,記為已知近似)。
+  **Given** 既有 run(record 無 `phase`、有 `startedAt`;run 有帶時間戳的 `phases[]`)**Then** `layoutGraph`
+  以「`startedAt` 之前最後一個 phase」推回;`server.ts:507` 把 `view.phases` 一起傳入。
+  **Given** 動態 phase 標題(`phase('fork:'+tier)`)**Then** skeleton 以 phase **順序**對位,不靠字串相等。
+  **Given** 三元/if 兩個互斥 `agent()` **Then** skeleton 收成一個 slot 帶候選 label 集合。
+  **Given** 正式機現有的 run(如 77f74018)**Then** `GET /api/runs/<id>/dag` 的 `warnings` 為空。
+  **紅測:** `layoutGraph(skeleton, agents 無 phase 有 startedAt, {phases})` 現況每 agent 一條 warning →
+  期望零 warning、欄位正確。
+- **iter:** v26
+
+### REQ-125 — 終態紀錄保留解析後的 provider 與 model,傳輸層另開欄位
+- **status:** draft
+- **traces:** REQ-037, REQ-020
+- **acceptance:** issue #72。現況 `agent-executor.ts:259-274` 在 done/failed 用 gateway result 的
+  `provider:'claude-agent-sdk'`(傳輸層)與 alias 覆蓋 markHarness 寫的解析值。
+  **Given** agent 結束(done 或 failed)**Then** `run_status.agents[]` 的 `provider`/`model` 與 harness 事件的
+  解析值一致(`openrouter` / `google/gemini-3.8-flash`;`anthropic` / `claude-haiku-4-5-20251001`);
+  新增 `transport`(`claude-agent-sdk` | `direct-fetch`)與 `proxyModel`(如 `rwe-proxy-haiku`,無則省略)。
+  **Given** usage 事件 **Then** 同樣帶解析後的 provider/model。
+  **紅測:** markHarness(openrouter, gemini) 後 markDone({provider:'claude-agent-sdk', model:'gem'}) →
+  現況紀錄變 claude-agent-sdk/gem → 期望仍是 openrouter/gemini。
+- **iter:** v26
+
+### REQ-126 — effort 對宣告支援 reasoning 的 OpenRouter 模型生效;models_list 宣告每列的工具與 effort 支援
+- **status:** draft
+- **traces:** REQ-110, REQ-038, REQ-078
+- **acceptance:** issue #71(effort)、#73(宣告欄位)。現況 `EFFORT_PROFILES` 只有 anthropic,
+  `thinkingFor` 對所有非 Anthropic 強制 `{type:'disabled'}`。私有 LiteLLM 實測:Anthropic 格式的
+  `thinking:{type:'enabled', budget_tokens}` 被翻成上游 `reasoning_effort`,OpenRouter 回 `reasoning_tokens`;
+  `output_config.effort` 不被翻譯。
+  **Given** `openrouter/<id>` 且 OpenRouter `supported_parameters` 含 `reasoning` **Then** `effort`
+  low/medium/high 經 `thinking.budget_tokens` 映射為上游 `reasoning_effort`,harness 的 `effortApplied`
+  為 `applied:true` 並記下 wire 位置與值;low 與 high 在真跑上可觀察到 reasoning 用量或行為差異(Gate 7.5)。
+  **Given** 模型不宣告 `reasoning` **Then** `effortApplied: {applied:false, reason}`,reason 指出該模型不支援。
+  **Given** anthropic **Then** 現行 `output_config.effort` 路徑不變(UT-101 的 byte-identical 維持)。
+  **Given** ollama **Then** `applied:false` 且 reason 明確;**wire 上 `thinking` 維持 `disabled`**(v3 harness spike:
+  qwen2.5:7b 只在 thinking 關閉時跑得通),對不宣告 `reasoning` 的 openrouter 模型亦同 —— 只有宣告
+  reasoning 的列才拿到 budget 映射;REQ-123 說的「不再一律 disabled」指的就是這個分流,不是「交給 SDK 預設」。
+  **Given** `models_list` **Then** 每列有 `toolUseDeclared`(boolean|'unknown')與 `effortDeclared`
+  (boolean|'unknown'),明寫是**宣告**(來自上游清單或 provider 常識)不是探測;現有 `toolUse` 改名或保留為別名。
+  **紅測:** `mapEffort(profileFor('openrouter'), 'low')` 現況 `applied:false` → 期望 `applied:true`。
+- **iter:** v26
+
+### REQ-127 — token 四欄、依模型價格算花費、budget 以花費計
+- **status:** draft
+- **traces:** REQ-120, REQ-078, REQ-001
+- **acceptance:** issue #74 與擁有者裁決 Q5。現況 `claude-agent-sdk-client.ts:673` 只讀 `input_tokens`;
+  實測 haiku 三回合:`input 18 / cache_creation 20,762 / cache_read 19,522 / output 282`,引擎記 18。
+  **Given** 任一 agent 呼叫結束 **Then** `tokens = {input, output, cacheRead, cacheWrite}`:SDK 路徑取
+  `result.usage` 四欄(或 `modelUsage` 加總);OpenRouter 直連取 `prompt_tokens_details.cached_tokens` /
+  `cache_write_tokens`;Ollama cache 兩欄為 0。
+  **Given** 該呼叫解析到的模型 **Then** 以該模型的四個單價算出 `costUSD`:anthropic 由靜態表(in/out/cacheRead/
+  cacheWrite);openrouter 由 `/models` 的 `pricing.prompt / completion / input_cache_read / input_cache_write`;
+  ollama 為 0;查不到價格 → `costUSD: null` 且 run 的 `meta.unpricedCalls` 計數,**不得**靜默當 0。
+  **Given** `run_start.budget` **Then** 單位是 **USD**(schema 描述與 guide 改寫;數值語義變更在
+  guide 與 tool description 明寫);`assertBudget()` 比較累計 `costUSD`;script 內 `budget.spent()` 回 USD,
+  另提供 `budget.tokens()` 四欄合計。
+  **Given** `run_result.meta` / `run_status.agents[]` / dashboard **Then** 四欄與 costUSD 都看得到。
+  **公開的後果,交 Gate 2 決定形狀:** 這個部署的 `default` alias 是 ollama qwen2.5:7b,價格為 0,所以純 USD 的
+  budget 永遠停不住一個本機 run。兩個選項 —— (i) guide 明寫「本機模型不受花費預算限制」;(ii) `budget` 同時接受
+  一個可選的 token 上限(四欄合計)與花費上限,任一到達即停派。不得默默採 (i)。
+  **紅測:** 假 result 帶四欄 usage → 現況只記 input/output → 期望四欄齊全且 costUSD 正確到分。
+- **iter:** v26
+
+### REQ-128 — 泳道圖契約:LR、每 phase 一條 lane、節點寫工具面、邊對 skeleton;只對 v26 之後的新註冊強制
+- **status:** draft
+- **traces:** REQ-111, REQ-112, REQ-116, REQ-117
+- **acceptance:** issue #75 / #67 / #68,擁有者裁決 Q1 甲、Q2。現況 `check-mermaid.ts` 只比 label 集合、
+  `&`、未宣告 id、cycle 標籤;guide 卻寫「逐邊比對」(第 22 個描述不符)。
+  **Given** v26 之後的新註冊 **Then** 頭必須是 `graph LR` 或 `flowchart LR`(`DIAGRAM_DIRECTION`);
+  `subgraph` 的數量與順序等於 script 的 `phase()` 呼叫、每個 agent 節點在它被派發的那個 phase 的 lane
+  (`LANE_MISMATCH`);stadium 第三段 `tools: …` 等於該 label 的 `allowedTools`(空為 `none`)(`TOOLS_MISMATCH`);
+  邊與 skeleton 一致 —— 順序呼叫→一條邊、`parallel()` 成員同 lane 扇入、三元/if→菱形加標籤邊
+  (`EDGE_MISMATCH`);四個碼皆 `see: workflow_authoring_guide`,訊息指出第幾行、期望什麼。
+  既有的 label 雙向比對、cycle 標籤、`COLLAPSED_EDGE` 規則保留。
+  **Given** v26 之前註冊的版本 **Then** 不重驗、不刪、照原圖渲染(以版本列上新增的契約欄位或
+  `createdAt` 判定;`workflow_describe` 標示 `diagramContract: 'v1'|'v2'`)。
+  **Given** guide **Then** 有「Canonical diagram」一段把上述規則寫成作者看得懂的話,十個範例全部改為 LR 泳道,
+  `workflow_register.mermaid` 的描述帶同一規則;「逐邊比對」那句成為實話。
+  **Given** dashboard 的 workflow 頁 **Then** 作者圖旁有每個 agent 的 harness 參數表
+  (label / 宣告 model → 解析 model / effort / timeout / tools)—— #68 在「甲」方向的落地。
+  **Given** 一個只讀 guide 的冷模型 **Then** 第一次註冊就通過(REQ-117 的延伸,Gate 7.5 實測)。
+  **紅測:** 註冊 `a-->c` 但 script 為 a→b→c 現況通過 → 期望 `EDGE_MISMATCH`;`graph TD` 新註冊現況通過 →
+  期望 `DIAGRAM_DIRECTION`;既有 TD 版本重啟後仍渲染。
+- **iter:** v26
+
+### REQ-129 — dashboard 兩張圖都隨視窗縮放,並可 zoom / pan
+- **status:** draft
+- **traces:** REQ-119, REQ-008
+- **acceptance:** issue #69。現況 `dashboard-page.ts:117` 以 `max-width:100%` 硬縮作者 SVG;`:394-403`
+  的 run DAG 用固定像素與絕對 `width/height`。
+  **Given** run DAG **Then** SVG 帶 `viewBox` 與 `width=100%`、`preserveAspectRatio`,隨容器縮放。
+  **Given** 作者圖與 run DAG **Then** 支援滑鼠滾輪 zoom 與拖曳 pan,並有「fit」重置;既有 TD 圖同樣適用
+  (渲染層,不動圖本身)。
+  **Given** 11 節點的 TD 圖與 9 agent 五 phase 的寬 run **Then** 在 1100px 寬視窗內一眼可讀(Playwright 截圖為證)。
+  **紅測:** 產出的 run DAG SVG 現況無 `viewBox` → 期望有。
+- **iter:** v26
+
+### REQ-130 — guide 補齊冷 client 白跑的五個缺口,含沙箱禁用清單與替代方式
+- **status:** draft
+- **traces:** REQ-116, REQ-117, REQ-001
+- **acceptance:** issue #71 文件部分,擁有者裁決 Q3(維持禁用、補說明)。
+  **Given** guide **Then** 有(a)「Seeding a workspace」:`workspace_push(sha256, contentB64)` → `seedManifest`,
+  inline `seed:[{path, contentB64}]`,`seedManifestRef`,並說明只帶 sha256 的 `seed` 會被拒絕(REQ-121);
+  (b)「沙箱裡有什麼、沒有什麼」:完整全域清單(`agent/parallel/pipeline/phase/log/args/budget/workflow`),
+  明列會丟 `DETERMINISM_GUARD` 的三個呼叫與**原因**(resume 回放以 prompt+opts 為 key),與**替代方式**
+  (時間:用 `run_status`/`run_result` 的時間戳或由 `args` 傳入;隨機:由 `args` 傳 seed;`setTimeout`/`fetch`/
+  `console` 等不存在,`log` 是 no-op);(c) `meta.params.args` 的合法型別 `string | number | enum`;
+  (d) 每個 alias 的 provider / 工具支援 / effort 是否生效的表,與 alias 清單**同源產生**;
+  (e) `models_list` 的能力旗標是宣告不是探測。
+  **Given** `run_start` 的 tool description **Then** 同樣說明 seed 三形狀(REQ-121)與 budget 單位(REQ-127)。
+  **Given** guide 的產生器 **Then** 上述文字由引擎常數渲染(ADR-032 的既有做法),`docs/AUTHORING.md` 由同一
+  builder 重生成。
+  **紅測:** 現行 guide 文字不含「DETERMINISM_GUARD」與 `seedManifest` → 期望含。
+- **iter:** v26
