@@ -58,8 +58,8 @@ RWE_CONFIG_PATH=/path/to/another/rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=879
 ```
 
 設了 `RWE_CONFIG_PATH`，步驟 2 就完全針對那一份檔案：檢查、（不存在時）從
-`rwe.config.example.json` 建立、並在訊息裡印出它的完整路徑——不會再去動、也不會再回報 repo 根目錄
-那份引擎根本不會讀的 `rwe.config.json`。路徑所在的目錄要先存在，否則腳本會在步驟 2 停下來。
+`rwe.config.example.json` 建立、並在訊息裡印出它的完整路徑；repo 根目錄的 `rwe.config.json`
+不會被檢查、建立或提及。路徑所在的目錄要先存在，否則腳本會在步驟 2 停下來。
 
 系統概觀：
 
@@ -773,7 +773,7 @@ npm run start
   跑任何搬移指令、也不需要換 workRoot。**資料**：既有排程（含 `claimedBy`／`createdBy`／
   `refusalCount`／`lastError` 等欄位）與 `run_origins` 全部原封不動搬過去。**中途斷電**：交易沒
   commit，舊表完好，下次啟動再重建一次即可（重建有冪等保護，已經正確的資料庫完全不會被碰）。
-  同樣的重建 `webhooks` 早就做過了，這次補上 `schedules`。
+  `webhooks` 資料表有同樣的自動重建。
 
 **日誌與狀態位置**：日誌僅 stdout/stderr（`[remote-workflow-engine] ...` 前綴），交給你的
 process manager（systemd/pm2/docker）收集；沒有另外寫檔案 log。狀態存在 `$workRoot/store`

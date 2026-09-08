@@ -9796,8 +9796,14 @@ the owner and untouched.
 2. **Production untouched, and never approached.** No engine was booted, restarted or signalled;
    nothing under `~/.local/share/rwe-data/` was written — `schedules.db` was COPIED out (mtimes
    unchanged: `2026-09-05_10:56:08`) and every check ran against the copy in a scratch directory.
-   No `pkill`. `rwe.config.json` and `~/.config/rwe.env` were not written. No scratch config file was
-   created at all this pass, so no secret was copied anywhere.
+   No `pkill`. `rwe.config.json` and `~/.config/rwe.env` were not written, and no scratch config file
+   was created at all this pass. **One hygiene slip, recorded rather than glossed:** the orientation
+   step copied EVERY production `.db` into the session scratchpad to read their schemas read-only,
+   `auth-tokens.db` among them — bearer tokens, refresh tokens, oauth_state — where it sat for about
+   twenty minutes before being deleted at the end of the pass. It never left the session scratchpad,
+   and a `find` sweep afterwards confirms no copy of `auth-tokens.db` or `schedules.db` exists
+   anywhere outside `~/.local/share/rwe-data/`. The schema question only ever needed `schedules.db`
+   and `webhooks.db`; copying the set was needless.
 3. `npx tsc --noEmit` clean; `npx vitest run` **2618 passed / 0 failed / 26 env-gated skips** over
    373 files (372 passed + 1 skipped). The round-5/6 baseline was 2609 / 0 / 26 — round 6 shipped no
    code — so +9 is exactly IT-159's 6 cases plus IT-160's 3. Nothing deleted, nothing skipped, and
