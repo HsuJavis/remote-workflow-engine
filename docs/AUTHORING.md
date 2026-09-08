@@ -25,6 +25,8 @@ This is documented as HYGIENE, not a security boundary — `node:vm` is not a sa
 
 ## Declaring the parameter contract
 
+**The script body is a bare async function body.** The statements you send as `script` ARE the body of an `async function` the engine wraps for you: `await` at the top level is fine, and a `return` returns the run result. Do not wrap it yourself — `export default async function () { … }`, a `function` wrapper of any kind, and any top-level `import` are refused `PARSE_ERROR` (which names the line and the construct). `export const meta = {…}` is the ONE exception, and it must be written exactly that way, as a literal object: dropping the `export` makes the whole declaration invisible to the engine, and every `agent()` label is then refused `AGENT_UNDECLARED`.
+
 Every `agent(label, ...)` call in the script needs a matching `meta.params.agents.<label>` declaration — `model`, `effort`, and `timeoutMs` are all required, each with a `.default` (v24: there is no implicit engine default per agent). `appendPrompt`, `skills`, and `mcp` are optional. A working example:
 
 ```js

@@ -55,6 +55,49 @@ function extractMcpNames(script: string): string[] {
   return names;
 }
 
+/** v26 Gate 7.5 round 1 (defect D6): same line count, no content — see the call site. */
+function blankLines(span: string): string {
+  return '\n'.repeat((span.match(/\n/g) ?? []).length);
+}
+
+/** v26 Gate 7.5 round 1 (defect D6): the constructs an author reaches for when they mistake the
+ *  script body for a MODULE. The round-1 cold subject wrote `export default async function () {…}`
+ *  and got back `Unexpected token 'export'` — true, and useless: it named neither the line nor what
+ *  about it was wrong, so the subject's next guess (strip `export` off `meta` too) made things
+ *  worse. Order matters: `export default` before the bare `export` catch-all. */
+const OFFENDING_CONSTRUCTS: ReadonlyArray<{ re: RegExp; name: string; why: string }> = [
+  { re: /^\s*export\s+default\b/, name: 'export default', why: 'the body is not a module, so it has nothing to default-export' },
+  { re: /^\s*export\b/, name: 'export', why: '`export const meta = {…}` is the ONE export a script may carry' },
+  { re: /^\s*import\b/, name: 'import', why: 'there is no module loader in the sandbox — the globals listed in the guide are all there is' },
+  { re: /^\s*(?:async\s+)?function\b/, name: 'function', why: 'the body IS the function — do not declare another one around it' },
+];
+
+/** v26 Gate 7.5 round 1 (defect D6): V8 puts the location in `err.stack`'s first line
+ *  (`workflow-script.js:<n>`), never in `err.message`. `n` counts the `(async () => {` wrapper line
+ *  this checker prepends, so the author's own line is `n - 1`. */
+function parseErrorFor(script: string, err: unknown): ScriptCheckError {
+  const raw = err instanceof Error ? err.message : String(err);
+  const wrapped = Number(/workflow-script\.js:(\d+)/.exec(err instanceof Error ? (err.stack ?? '') : '')?.[1]);
+  const line = Number.isFinite(wrapped) ? wrapped - 1 : undefined;
+  const source = line !== undefined ? script.split('\n')[line - 1]?.trim() : undefined;
+  const hit = source !== undefined ? OFFENDING_CONSTRUCTS.find((c) => c.re.test(source)) : undefined;
+  const where = line !== undefined && source !== undefined ? ` at line ${line}: \`${source}\`` : '';
+  const named = hit ? ` — \`${hit.name}\` is not accepted here: ${hit.why}.` : '';
+  return {
+    code: 'PARSE_ERROR',
+    message:
+      `${raw}${where}.${named} A workflow script body is a BARE async function body — statements and a ` +
+      '`return`, with no `export default`, no `function` wrapper and no top-level `import`; ' +
+      '`export const meta = {…}` is the one exception and it must be written exactly that way.',
+    detail: {
+      field: 'script',
+      ...(line !== undefined ? { line } : {}),
+      ...(source !== undefined ? { source } : {}),
+      ...(hit ? { construct: hit.name } : {}),
+    },
+  };
+}
+
 export function validateScriptEntry(
   script: string,
   ports: ScriptCheckPorts,
@@ -66,14 +109,13 @@ export function validateScriptEntry(
   // wrapper, exactly as the sandbox's evaluateScript strips it before compiling.
   try {
     const meta = checkMeta(script);
-    const body = meta.span !== undefined ? script.replace(meta.span, '') : script;
+    // v26 Gate 7.5 round 1 (defect D6): the meta span is blanked to its OWN line count rather than
+    // deleted, so every line below it keeps the number it has in the author's file — the line V8
+    // reports is then the line the author can actually look at.
+    const body = meta.span !== undefined ? script.replace(meta.span, blankLines(meta.span)) : script;
     new vm.Script(`(async () => {\n${body}\n})`, { filename: 'workflow-script.js' });
   } catch (err) {
-    errors.push({
-      code: 'PARSE_ERROR',
-      message: err instanceof Error ? err.message : String(err),
-      detail: { field: 'script' },
-    });
+    errors.push(parseErrorFor(script, err));
   }
 
   // ARCH-005 delegate: model-alias resolve.

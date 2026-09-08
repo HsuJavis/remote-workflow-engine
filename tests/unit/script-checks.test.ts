@@ -107,3 +107,50 @@ describe('exactly one frame-delimiter regex exists under src/ (structural, DES-1
     expect(declares).toEqual(['params/contract.ts']);
   });
 });
+
+// UT-214 (v26 Gate 7.5 round 1, defect D6): `PARSE_ERROR` names the LINE and the OFFENDING
+// CONSTRUCT, not just V8's raw one-liner. The round-1 cold subject wrapped its body in
+// `export default async function () {…}` and got back `Unexpected token 'export'` — a message that
+// names neither where the token is nor why a script body may not carry one, which cost it its first
+// registration attempt (VAL-188). The line number is the ORIGINAL script's, counted with the
+// `export const meta = {…}` block still in place (the checker strips it before compiling).
+// Mock policy (unit): pure, no I/O.
+describe('PARSE_ERROR names the line and the construct (UT-214, defect D6)', () => {
+  const META = "export const meta = {\n  description: 'x',\n  params: { agents: {} },\n};\n";
+
+  function parseError(script: string) {
+    const r = validateScriptEntry(script, ports());
+    if (r.ok) throw new Error('expected a refusal');
+    const e = r.errors.find((x) => x.code === 'PARSE_ERROR');
+    if (!e) throw new Error(`expected PARSE_ERROR, got ${r.errors.map((x) => x.code).join(',')}`);
+    return e;
+  }
+
+  it('an `export default async function` wrapper is refused naming line, source and construct', () => {
+    const e = parseError(`${META}\nexport default async function () {\n  return 1;\n}\n`);
+    expect(e.detail['line']).toBe(6);
+    expect(e.detail['source']).toBe('export default async function () {');
+    expect(e.detail['construct']).toBe('export default');
+    expect(e.message).toContain('line 6');
+    expect(e.message).toContain('export default async function () {');
+    // The rule itself, at the point of refusal — a cold client never has to guess it.
+    expect(e.message).toMatch(/bare async function body/i);
+  });
+
+  it('a top-level import is refused naming the import construct', () => {
+    const e = parseError(`${META}\nimport fs from 'node:fs';\nreturn 1;\n`);
+    expect(e.detail['line']).toBe(6);
+    expect(e.detail['construct']).toBe('import');
+  });
+
+  it('the raw parser message is kept, so nothing a caller already matched on is lost', () => {
+    const e = parseError(`${META}\nexport default async function () {}\n`);
+    expect(e.message).toContain("Unexpected token 'export'");
+  });
+
+  it('a parse error with no meta block still reports the line it is on', () => {
+    const e = parseError('const a = 1;\nconst b = ((( ;\n');
+    expect(e.detail['line']).toBe(2);
+    expect(e.detail['source']).toBe('const b = ((( ;');
+  });
+});

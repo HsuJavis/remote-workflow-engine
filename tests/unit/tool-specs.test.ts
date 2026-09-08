@@ -48,3 +48,51 @@ describe('run_start tools/list schema describes all three seed shapes (UT-175, D
     expect(props.seed?.items?.properties?.contentB64?.description).toMatch(/seedManifest/);
   });
 });
+
+// UT-213 (v26 Gate 7.5 round 1, defect D1): every array-typed property ANYWHERE in TOOL_SPECS
+// declares `items`. A bare `{type:'array'}` is not merely under-documented — Google/Gemini-family
+// clients reject the WHOLE `tools/list` payload with
+// `400 … function_declarations[0].parameters.properties[triggers].items: missing field`, so one
+// missing key costs every tool on the surface for a whole client family (observed for real: the
+// round-1 cold-model probe died before its first tool call). REQ-121/DES-170 closed this for
+// `run_start.seed`; this walk is the drift-lock so the fifth site cannot be added in silence.
+// The walk recurses through `properties`/`items`/`oneOf`/`anyOf`/`allOf` — `workspace_push`'s
+// `files` lives inside a `oneOf` branch, which a flat top-level scan would miss.
+// Mock policy (unit): pure data assertion over TOOL_SPECS, no I/O.
+function arraysWithoutItems(node: unknown, path: string): string[] {
+  if (!node || typeof node !== 'object') return [];
+  const n = node as Record<string, unknown>;
+  const found: string[] = [];
+  if (n['type'] === 'array' && n['items'] === undefined) found.push(path);
+  for (const key of ['oneOf', 'anyOf', 'allOf']) {
+    const branches = n[key];
+    if (Array.isArray(branches)) {
+      branches.forEach((b, i) => found.push(...arraysWithoutItems(b, `${path}.${key}[${i}]`)));
+    }
+  }
+  const props = n['properties'];
+  if (props && typeof props === 'object') {
+    for (const [name, sub] of Object.entries(props as Record<string, unknown>)) {
+      found.push(...arraysWithoutItems(sub, `${path}.${name}`));
+    }
+  }
+  if (n['items'] !== undefined) found.push(...arraysWithoutItems(n['items'], `${path}[]`));
+  return found;
+}
+
+describe('every array-typed property in TOOL_SPECS declares items (UT-213, defect D1)', () => {
+  it('no tool advertises a bare {type:"array"} on any input schema, at any depth', () => {
+    const offenders = TOOL_SPECS.flatMap((s) => arraysWithoutItems(s.inputSchema, s.name));
+    expect(offenders).toEqual([]);
+  });
+
+  it('the four named round-1 sites each carry an items schema', () => {
+    const props = (name: string) =>
+      (TOOL_SPECS.find((s) => s.name === name)!.inputSchema as any).properties;
+    expect(props('workflow_register').triggers.items.type).toBe('string');
+    expect(props('workspace_diff').manifest.items.required).toEqual(expect.arrayContaining(['sha256']));
+    expect(props('workspace_delete').paths.items.type).toBe('string');
+    const pushModeB = (TOOL_SPECS.find((s) => s.name === 'workspace_push')!.inputSchema as any).oneOf[1];
+    expect(pushModeB.properties.files.items.required).toEqual(expect.arrayContaining(['path', 'contentB64']));
+  });
+});

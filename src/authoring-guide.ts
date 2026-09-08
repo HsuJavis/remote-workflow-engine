@@ -459,7 +459,20 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
   parts.push(
     section(
       'Declaring the parameter contract',
-      'Every `agent(label, ...)` call in the script needs a matching `meta.params.agents.<label>` ' +
+      // v26 Gate 7.5 round 1 (defect D6): the ten examples all SHOW this shape and no sentence ever
+      // STATED it, which is what cost the round-1 cold subject its first registration (VAL-188): it
+      // wrapped the body in `export default async function () {…}` (PARSE_ERROR), then stripped the
+      // `export` off `meta` to dodge that (AGENT_UNDECLARED, twice). Both mistakes are named here,
+      // in the first section that shows a script.
+      '**The script body is a bare async function body.** The statements you send as `script` ARE ' +
+        'the body of an `async function` the engine wraps for you: `await` at the top level is ' +
+        'fine, and a `return` returns the run result. Do not wrap it yourself — ' +
+        '`export default async function () { … }`, a `function` wrapper of any kind, and any ' +
+        'top-level `import` are refused `PARSE_ERROR` (which names the line and the construct). ' +
+        '`export const meta = {…}` is the ONE exception, and it must be written exactly that way, ' +
+        'as a literal object: dropping the `export` makes the whole declaration invisible to the ' +
+        'engine, and every `agent()` label is then refused `AGENT_UNDECLARED`.\n\n' +
+        'Every `agent(label, ...)` call in the script needs a matching `meta.params.agents.<label>` ' +
         'declaration — `model`, `effort`, and `timeoutMs` are all required, each with a `.default` (v24: ' +
         'there is no implicit engine default per agent). `appendPrompt`, `skills`, and `mcp` are optional. ' +
         'A working example:\n\n' +

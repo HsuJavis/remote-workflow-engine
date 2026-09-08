@@ -256,3 +256,22 @@ describe('the guide closes the five cold-client gaps (UT-159x, DES-187, REQ-130)
     expect(text).toMatch(/stop-dispatching/i);
   });
 });
+
+// UT-215 (v26 Gate 7.5 round 1, defect D6): the guide STATES the script-body form. Ten examples
+// showed it and no sentence said it, so the round-1 cold subject wrapped its body in
+// `export default async function () {…}` and lost its first-attempt registration (VAL-188, REQ-128).
+describe('the guide states the script-body form (UT-215, defect D6)', () => {
+  const text = buildAuthoringGuide(CEILINGS);
+
+  it('says the body is a bare async function body and refuses the three module constructs by name', () => {
+    expect(text).toMatch(/bare async function body/i);
+    expect(text).toMatch(/export default/);
+    expect(text).toMatch(/top-level `import`/);
+  });
+
+  it('says `export const meta` is the one exception and that dropping its export costs AGENT_UNDECLARED', () => {
+    const para = text.slice(text.indexOf('bare async function body'), text.indexOf('bare async function body') + 900);
+    expect(para).toMatch(/export const meta/);
+    expect(para).toMatch(/AGENT_UNDECLARED/);
+  });
+});

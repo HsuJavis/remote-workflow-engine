@@ -137,6 +137,13 @@ export const FIXTURE_MERMAID = 'graph LR\nsubgraph "Greet"\ngreet(["greet"])\nen
 /** The one label `FIXTURE_SCRIPT` declares — `run_agent_log`'s happy fixture needs it by name. */
 export const FIXTURE_AGENT_LABEL = 'greet';
 
+/** ARRAY_ITEMS_RULE — v26 Gate 7.5 round 1 (defect D1): EVERY array-typed property on any schema
+ *  in this file must declare `items`. This is not a documentation nicety: a Google/Gemini-family
+ *  MCP client rejects the WHOLE `tools/list` payload with `400 INVALID_ARGUMENT …
+ *  properties[<name>].items: missing field`, so one bare `{type:'array'}` costs every tool on the
+ *  surface for that entire client family (observed live — the round-1 cold-model probe died before
+ *  its first tool call). REQ-121/DES-170 closed it for `run_start.seed`; UT-213 walks every schema
+ *  (through `oneOf`/`anyOf`/`properties`/`items`) so a fifth site cannot be added in silence. */
 function schema(properties: Record<string, unknown>, required: string[] = []): Record<string, unknown> {
   return { type: 'object', properties, required };
 }
@@ -153,7 +160,12 @@ function pushInputSchema(): Record<string, unknown> {
       { type: 'object', properties: { sha256: { type: 'string' }, contentB64: { type: 'string' } }, required: ['sha256', 'contentB64'], additionalProperties: false },
       {
         type: 'object',
-        properties: { workflow: { type: 'string' }, kind: { type: 'string' }, name: { type: 'string' }, files: { type: 'array' }, config: { type: 'object' }, scope: { type: 'string' } },
+        properties: {
+          workflow: { type: 'string' }, kind: { type: 'string' }, name: { type: 'string' },
+          // v26 Gate 7.5 round 1 (defect D1): item schema — see ARRAY_ITEMS_RULE below.
+          files: { type: 'array', description: "A skill's files — each element is {path, contentB64}, the file bytes as base64.", items: { type: 'object', required: ['path', 'contentB64'], properties: { path: { type: 'string' }, contentB64: { type: 'string' } } } },
+          config: { type: 'object' }, scope: { type: 'string' },
+        },
         required: ['kind', 'name'],
         additionalProperties: false,
       },
@@ -224,7 +236,8 @@ export const TOOL_SPECS = [
           'refusal returns the STRUCTURE it expected, never a corrected diagram. Versions registered ' +
           'before v26 keep diagramContract:"v1" and are never re-checked.',
       },
-      triggers: { type: 'array' },
+      // v26 Gate 7.5 round 1 (defect D1): item schema — see ARRAY_ITEMS_RULE below.
+      triggers: { type: 'array', description: 'Trigger ids (from schedule_create / webhook_create) this version claims. Each element is the id string.', items: { type: 'string' } },
     }, ['name', 'script']),
     outputSchema: OUT,
     // v24 (integrator; adjudication #4 C-6 [21] + #2 A-4): reconciled BOTH ways against what the
@@ -621,7 +634,8 @@ export const TOOL_SPECS = [
   {
     name: 'workspace_diff', entity: 'workspace', key: null,
     description: "Diff a manifest against the caller's own content-addressed blob pool.",
-    inputSchema: schema({ manifest: { type: 'array' } }, ['manifest']),
+    // v26 Gate 7.5 round 1 (defect D1): item schema — see ARRAY_ITEMS_RULE below.
+    inputSchema: schema({ manifest: { type: 'array', description: 'The files you intend to seed — each element is {path, sha256}. Only the sha256 is compared; `missing` answers which hashes are not in your pool yet.', items: { type: 'object', required: ['sha256'], properties: { path: { type: 'string' }, sha256: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } } }, ['manifest']),
     outputSchema: OUT,
     errors: ['INVALID_ARGUMENT'],
     seeAlso: [] as string[],
@@ -711,7 +725,8 @@ export const TOOL_SPECS = [
   {
     name: 'workspace_delete', entity: 'workspace', key: null,
     description: "Delete files from a run's workspace, an asset under a workflow, or (admin) a global asset.",
-    inputSchema: schema({ runId: { type: 'string' }, paths: { type: 'array' }, workflow: { type: 'string' }, kind: { type: 'string' }, name: { type: 'string' }, scope: { type: 'string' } }),
+    // v26 Gate 7.5 round 1 (defect D1): item schema — see ARRAY_ITEMS_RULE below.
+    inputSchema: schema({ runId: { type: 'string' }, paths: { type: 'array', description: "Workspace-relative file paths to delete, each a string.", items: { type: 'string' } }, workflow: { type: 'string' }, kind: { type: 'string' }, name: { type: 'string' }, scope: { type: 'string' } }),
     outputSchema: OUT,
     // v24 (integrator; adjudication #4 C-6 [21] — the found example): `withTerminalRun` really
     // throws RUN_NOT_TERMINAL on a live run and this row never said so, so a cold model could not
