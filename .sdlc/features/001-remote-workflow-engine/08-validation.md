@@ -9208,3 +9208,111 @@ no-button mousemove afterwards changes nothing.
    Gate 6 with D9/D10 above. Note for Gate 8: round 1's REQ-127 green was honest — it ran a
    one-alias scratch config. Round 3 ran the production alias table and the price book collapsed
    under it. That is Gate 7.5 doing its job, not a regression introduced by the fix pass.
+
+## v26 GATE 7.5 ROUND 3 — FIX PASS re-verification (2026-09-09, fixer)
+
+The two defects round 3 routed back to Gate 6 — **D9** (REQ-127 inert on any real deployment) and
+**D10** (the author figure cannot be drag-panned) — closed on commit `a376093`, each with a test
+measured RED first and each re-verified against a REAL engine. Production `rwe.service` (user unit,
+`0.0.0.0:8899`) was **never restarted and never touched**: `ActiveState=active`, `MainPID=1188044`,
+`NRestarts=0` before and after this pass, still listening on 8899, and its `litellm` child
+(pid 1188078) was never signalled. The one engine booted below is a scratch instance on port 8933
+with its own `workRoot` (`~/.local/share/rwe-val-r4/work`, outside every Claude project) and its own
+config copy — never `rwe.config.json`, never `~/.config/rwe.env` — killed by the PID `deploy.sh`
+printed (2106886), never `pkill -f`; its own `litellm` child (2106916) died with it, confirmed by
+`ps`.
+
+### VAL-195 — REQ-127: on the PRODUCTION alias table, a real Anthropic call is priced again (D9 closed)
+- **status:** green
+- **traces:** REQ-127, DES-178, ARCH-116
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Round 3's own counterfactual, re-run on the fixed tree with the variable it isolated
+  left at the BROKEN setting: the engine booted from DEPLOY.md §0's documented second-instance form
+  (`RWE_CONFIG_PATH=~/.local/share/rwe-val-r4/cfg.json RWE_BIND=127.0.0.1 RWE_PORT=8933
+  ./deploy.sh --background`) over a config that is a copy of the production `rwe.config.json` with
+  ONLY `workRoot`/`bind`/`port` moved and `auth` off — **the alias table byte-identical, five models
+  with two aliases each**. Health check passed on the documented output.
+  **(a) The admission pin, at zero provider spend.** A workflow declaring
+  `params.agents.cloudone.model default 'haiku'` whose `agent()` call sits inside `if (false)` —
+  nothing dispatches, so no provider is contacted, but the model is still reachable and must be
+  pinned WITH a price. Run `659b6fcf-754e-4455-902f-1af4d036ab63` ⇒ `meta.budgetEnforceable
+  {"usd":true,"tokens":true,"unpricedModels":[]}`. Round 3 on this same table:
+  `{"usd":false,...,"unpricedModels":["anthropic/claude-haiku-4-5-20251001"]}`.
+  **(b) A real Anthropic Haiku call on the same engine and the same table.** Run
+  `d6c0b7a1-c1d5-4515-8bf4-d06196c39857` ⇒
+  `{"label":"cloudone","provider":"anthropic","model":"claude-haiku-4-5-20251001","state":"done",
+  "tokens":{"input":160,"output":46,"cacheRead":0,"cacheWrite":0},"costUSD":0.00039,
+  "unpriced":false}` and `meta.budgetEnforceable {"usd":true,"tokens":true,"unpricedModels":[]}`.
+  Recomputed by hand against the corrected static table: `160x1e-6 + 46x5e-6 = 0.00039` — exact.
+  Round 3's reading for the identical shape was `costUSD 0, unpriced:true`.
+  **(c) The regression lock.** UT-223 (the index rule, both orders + the production-shaped table
+  through the real `buildCatalog`) and IT-157 (the same live consequence through a real
+  `createServer()`), both measured RED first: `expected null to deeply equal { in: 0.000005, out:
+  0.000025, …(2) }` and `expected +0 to be close to 0.0023872`.
+  **(d) STILL OPEN, and a correction to D9's own note.** D9 recorded that "the public `/api/models`
+  surface dedupes, so it still shows exactly one, correctly priced, row per anthropic model". It
+  does not — `filterCatalog` performs no dedupe. Measured on this engine, `models_list
+  {provider:'anthropic'}` returns **8 rows**: `claude-opus-4-8/opus/$5/1M`,
+  `claude-sonnet-5/sonnet/$2/1M`, `claude-haiku-4-5-20251001/haiku/$1/1M` — and then the same three
+  models AGAIN under their second alias (`claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`)
+  each advertising `price:"unknown", ratesPerM:null`, plus both `claude-fable-5` rows (that model has
+  no static price row at all, which is honest, not a defect). REQ-127's clause is about tokens, cost
+  and budget and is now green; this is a models-catalog DISPLAY defect for the orchestrator to route,
+  not something this fix pass patched. Harness + raw capture:
+  `evidence/v26/req127-round4-harness.mjs`, `evidence/v26/req127-round4-prodalias.json`.
+- **iter:** v26
+
+### VAL-196 — REQ-129: the author figure pans the full gesture and stops on mouseup (D10 closed)
+- **status:** green
+- **traces:** REQ-129, DES-186, ARCH-120
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** **The exact reproduction VAL-189 recorded, repeated on the fixed tree** — round 3's
+  own harness re-run VERBATIM (`evidence/v26/req129-round3-author-sticky-harness.mjs`, unmodified),
+  real Chromium 25 `headless:'new'` at 1100x900 against the scratch engine on port 8933 whose
+  `workRoot` is a byte copy of production, on the real production workflow `gp-runner`. Captured
+  (`evidence/v26/req129-round4-author-sticky.json`, beside round 3's
+  `req129-round3-author-sticky.json` for line-by-line comparison):
+  `transformAfterDragGesture: "translate(-160px, -80px) scale(1)"` for a (-160,-80) gesture — the
+  FULL delta (round 3: `translate(-20px, -10px)`); `eventsDuringGesture: ["mouseup"]` (round 3:
+  `["dragstart:diagram-img","dragend"]` — no mouseup at all); and then the sticky clause, a mousemove
+  with NO button held twice over: `transformAfterMouseMoveWithNoButton` and
+  `transformAfterSecondMouseMoveWithNoButton` both `"translate(-160px, -80px) scale(1)"`, i.e.
+  unchanged (round 3: `translate(200px, 100px)` then `translate(-300px, -150px)`).
+  **A second harness covers what the fix could have broken** (`evidence/v26/req129-round4-harness.mjs`,
+  capture `req129-round4-browser.json`, screenshots `req129-round4-author-{before-pan,after-pan,
+  after-fit}.png` and `req129-round4-dag-after-cell-click.png`): `imgDraggableAttr:"false"`,
+  `imgUserDrag:"none"`; a real (-180,-90) drag ⇒ `translate(-180px, -90px) scale(1)`;
+  `hitAtFitCentreAfterPan: "button#diagram-fit"` and a REAL `page.mouse.click` on it ⇒
+  `[{"trusted":true}]` and `translate(0px, 0px) scale(1)` (VAL-191's clause survives); and — because
+  the fix adds `e.preventDefault()` to the `.zoomable` mousedown the run DAG SHARES — a REAL mouse
+  click on a real production run's agent cell (`f6953a1e-9b04-43a0-a962-d8dfbd06684c`, cell `probe`)
+  still opens that agent's transcript: `transcriptBefore "Select an agent node above."` ⇒
+  `transcriptAfterRealCellClick "{\"runId\": \"f6953a1e-…\", \"status\": \"completed\", \"harness\":
+  {\"model\": \"claude-haiku-4-5-20251001\", …}"`. preventDefault on mousedown does not cancel a
+  click — measured, not assumed.
+  **The regression lock** is VAL-197 (`tests/acceptance/val-197-diagram-drag-pan.test.ts`), a real
+  Chromium drag against a real server-side mermaid render, whose own red was
+  `AssertionError: expected 'translate(-15px,-8px)scale(1)' to be 'translate(-180px,-90px)scale(1)'`,
+  mirrored in the fast suite by UT-224.
+- **iter:** v26
+
+### Gate self-check (v26 round-3 fix pass)
+
+1. **Both defects have a test measured RED first**, quoted above and in 05-tests.md (UT-223, IT-157,
+   VAL-197). UT-224 is a page-source mirror, not independently forced red — its three strings occur
+   zero times in the pre-fix file.
+2. **Both re-verifications are REAL** — one booted engine from the documented steps, the production
+   alias table verbatim, a real Anthropic call, a real Chromium with real mouse input against real
+   production run data. No SUT-boundary mock in either.
+3. **Production untouched**: `NRestarts=0`, `MainPID=1188044`, `ActiveState=active`, port 8899 still
+   served by pid 1188060 — identical before and after. The scratch engine was killed by its own PID.
+4. `npx tsc --noEmit` clean; `npx vitest run` 2596 passed / 0 failed / 26 env-gated skips (the round-3
+   baseline was 2589 passed / 26 skips; +7 = the 7 new cases). Nothing deleted, nothing skipped.
+5. **Not closed here, reported instead:** the duplicate catalog ROWS on `models_list` / `/api/models`
+   (VAL-195(d)) — a display defect outside REQ-127's clause and outside this fix order's ruling,
+   which was explicitly "fix the index".
+6. `gates.validation.passed` is NOT flipped by this pass — the next delta re-run does that.

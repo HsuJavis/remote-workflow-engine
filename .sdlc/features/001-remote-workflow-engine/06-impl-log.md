@@ -3623,3 +3623,45 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   for openrouter). ROUTING IS UNCHANGED and the test pins that it is. REQ-126's acceptance is NOT
   amended — the owner's call. STILL FALSE and out of this scope: the guide's provider table asserts
   「`openrouter` — effort applies: yes」.
+
+### IMPL-214 — D9: an unpriced row can never displace a priced one, so REQ-127 works on a real deployment
+- **status:** done
+- **traces:** TASK-178, DES-178, ARCH-116, REQ-127
+- **greens:** UT-223, IT-157
+- **files:** src/models/model-book.ts, tests/unit/model-book.test.ts, tests/integration/duplicate-alias-pricing.test.ts
+- **commit:** a376093
+- **iter:** v26
+- **note:** REQ-127 was inert on every deployment whose alias table names one model twice — which is
+  every Anthropic model on this box (`haiku` AND `claude-haiku-4-5`, and the same for
+  sonnet/opus/fable). `overlayAliases` attaches an alias only to an entry whose `alias` is still
+  undefined, so the SECOND alias appends a synthetic row carrying `ratesPerM:null`; `_refresh` built
+  its index with a bare `index.set`, the unpriced duplicate overwrote the priced static row, and
+  `lookup()` answered `price:null` — its own anthropic static fallback unreachable, because the key
+  WAS found. Every Anthropic call therefore recorded `costUSD 0 / unpriced:true` and a USD budget
+  could never bind. FIX: the index build states its resolution order and enforces it — a PRICED row
+  wins over an unpriced one; otherwise the FIRST row in source order wins. That is the ONE line the
+  fix order ruled on; `overlayAliases` is untouched. NOT FIXED, and out of this scope: the same
+  duplicate rows are still SERVED by `models_list` / `/api/models` (`filterCatalog` does not dedupe)
+  — measured live on the production table, 8 anthropic rows of which 4 advertise `price:"unknown"`
+  for models that are priced. That contradicts D9's own note ("the public surface dedupes") and is a
+  models-catalog display defect, not REQ-127's clause; reported to the orchestrator rather than
+  patched here.
+
+### IMPL-215 — D10: the author figure pans under a real mouse, and stops when the button comes up
+- **status:** done
+- **traces:** TASK-191, DES-186, ARCH-120, ADR-044, REQ-129
+- **greens:** VAL-197, UT-224
+- **files:** src/dashboard-page.ts, tests/acceptance/val-197-diagram-drag-pan.test.ts, tests/unit/dashboard-page-source.test.ts
+- **commit:** a376093
+- **iter:** v26
+- **note:** `#diagram-img` is an `<img>` with the default `draggable`, so a real press-and-move handed
+  the gesture to the browser's own image drag: `dragstart` fired, the remaining mousemoves arrived as
+  `drag` events the page never sees, and NO `mouseup` was delivered (only `dragend`) — the figure
+  moved by exactly one mousemove and then followed the cursor with no button held, because
+  `initZoomable`'s `dragging` flag stayed true. Three edits, all in `dashboard-page.ts`:
+  `draggable="false"` on the img, `-webkit-user-drag:none;user-select:none` on its CSS rule, and
+  `e.preventDefault()` first in the shared `.zoomable` mousedown handler so a future non-img child
+  cannot reintroduce it. The run DAG is an `<svg>`, has no native drag, and was never affected —
+  which is why round 1's single "drag-pan works" line was true and still missed this. `preventDefault`
+  on mousedown does NOT cancel the later click: measured live, a REAL mouse click on a DAG agent cell
+  still opens that agent's transcript, and a real click on `Fit` still resets (VAL-196).

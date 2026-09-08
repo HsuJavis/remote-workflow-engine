@@ -11185,3 +11185,71 @@ that claim false on the wire: neither outbound body carries `reasoning`, `reason
 `AssertionError: expected true to be false`. A second case was added pinning that the three
 openrouter reasons are three distinct strings. **REQ-126's acceptance is NOT amended** — that is the
 owner's call, and routing was deliberately not changed.
+
+### UT-223 — a second alias on one model must not un-price it (D9)
+- **status:** green
+- **traces:** DES-178, ARCH-116, REQ-127
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/model-book.test.ts` (extended, 2 cases). Case 1 builds the catalog through the
+REAL `buildCatalog` over a PRODUCTION-shaped alias table — five models, TWO aliases each, exactly
+what `rwe.config.json` carries — with both live fetchers stubbed non-ok, and asserts every
+`STATIC_ANTHROPIC_RATES` model still prices. Case 2 is the index rule itself: a priced row and a
+`ratesPerM:null` row for the same key, BOTH orders. The existing fixtures all used one alias per
+model, which is why UT-185 never saw this. RED (measured, both cases):
+`AssertionError: expected null to deeply equal { in: 0.000005, out: 0.000025, …(2) }` and
+`AssertionError: expected null to deeply equal { in: 0.000001, out: 0.000005, …(2) }`.
+
+### IT-157 — a duplicate-alias table still prices a real call (D9)
+- **status:** green
+- **traces:** DES-178, DES-183, ARCH-118, REQ-127
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/integration/duplicate-alias-pricing.test.ts` (new, 1 case). The live consequence UT-223
+only pins structurally, asserted where REQ-127's clause lives: real `createServer()` over the
+production-shaped alias table and the REAL `buildCatalog`, real MCP HTTP, real sandbox child, real
+admission pin, real `foldUsage`; the provider network is the one faked boundary (the same
+`createServer({gateway})` seam IT-148/IT-150 use). Asserts the agent record's `costUSD` equals the
+static table's own arithmetic, `unpriced:false`, `budgetEnforceable.unpricedModels []` and
+`.usd true`. RED (measured): `AssertionError: expected +0 to be close to 0.0023872, received
+difference is 0.0023872, but expected 5e-11` — the same figure VAL-187 measured on the real
+deployment's single-alias arm.
+
+### VAL-197 — real Chromium: the author figure drag-pans, and stops on mouseup (D10)
+- **status:** green
+- **traces:** REQ-129, DES-186, ARCH-120
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v26
+
+File: `tests/acceptance/val-197-diagram-drag-pan.test.ts` (new, 1 case). Real `createServer()`, real
+MCP HTTP, real sandbox child, real server-side mermaid render (mmdc + headless Chrome), real
+Chromium, real mouse input; no gateway is injected because no provider is involved. Skips with a
+printed reason when EITHER Chrome or mmdc is absent (with no mmdc the `<img>` never gets a `src` and
+there is nothing to drag). Asserts the FULL requested delta after a real press-move-release, and
+that a further mousemove with NO button held changes the transform by nothing. Only a real browser
+can see either half — a synthetic event sequence never starts the native image drag. RED (measured):
+`AssertionError: expected 'translate(-15px,-8px)scale(1)' to be 'translate(-180px,-90px)scale(1)'`
+— one mousemove, then the browser's own image drag took the gesture.
+
+### UT-224 — page-source lock for the non-draggable figure (D10)
+- **status:** green
+- **traces:** DES-186, REQ-129
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/dashboard-page-source.test.ts` (extended, 3 cases). Mirrors, in the fast suite
+(no Chrome, no mmdc), the three source facts VAL-197 proves behaviourally: `draggable="false"` on
+`#diagram-img`, `-webkit-user-drag:none;user-select:none` in its CSS rule, and `e.preventDefault()`
+as the first statement of the shared `.zoomable` mousedown handler. Not independently forced red —
+all three strings occur ZERO times in the pre-fix file
+(`git show HEAD:src/dashboard-page.ts | grep -c` ⇒ 0, 0, 0).
