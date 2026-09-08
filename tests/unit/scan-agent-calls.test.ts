@@ -18,7 +18,11 @@ describe('scanAgentCalls (UT-145, DES-143)', () => {
   it('AGENT_LABEL_REQUIRED still records a call entry (empty label) so callers can report the line', () => {
     const src = 'agent("only-arg");';
     const { calls, violations } = scanAgentCalls(src);
-    expect(calls).toEqual([{ line: 1, label: '' }]);
+    // v26 (DES-174, TASK-184): `AgentCallScan.calls[]` deliberately gained `index`/`allowedTools`/
+    // `group` — the skeleton<->scan join key and the data `deriveExpectedGraph` needs. The property
+    // this case pins is unchanged (exactly ONE call entry, at this line, with this label), so the
+    // oracle names the two fields it is about instead of the whole widened row.
+    expect(calls).toEqual([expect.objectContaining({ line: 1, label: '' })]);
     expect(violations).toContainEqual(expect.objectContaining({ line: 1, code: 'AGENT_LABEL_REQUIRED' }));
   });
 
@@ -134,7 +138,11 @@ describe('scanAgentCalls (UT-145, DES-143)', () => {
     const src = 'workflow("child", () => { agent("inner", {}); });\nagent("outer", {});';
     const { labels, calls } = scanAgentCalls(src);
     expect(labels).toEqual(['outer']);
-    expect(calls).toEqual([{ line: 2, label: 'outer' }]);
+    // v26 (DES-174, TASK-184): `AgentCallScan.calls[]` deliberately gained `index`/`allowedTools`/
+    // `group` — the skeleton<->scan join key and the data `deriveExpectedGraph` needs. The property
+    // this case pins is unchanged (exactly ONE call entry, at this line, with this label), so the
+    // oracle names the two fields it is about instead of the whole widened row.
+    expect(calls).toEqual([expect.objectContaining({ line: 2, label: 'outer' })]);
   });
 
   it('the top-level bootstrap wrapper workflow(() => {...}) (no string first arg) is NOT excluded — its agent() calls ARE scanned', () => {
@@ -152,7 +160,11 @@ describe('scanAgentCalls (UT-145, DES-143)', () => {
   it('a commented-out agent( IS matched (accepted: the refusal names the line, cheaper than a comment stripper)', () => {
     const src = '// agent("ghost", {});';
     const { calls } = scanAgentCalls(src);
-    expect(calls).toEqual([{ line: 1, label: 'ghost' }]);
+    // v26 (DES-174, TASK-184): `AgentCallScan.calls[]` deliberately gained `index`/`allowedTools`/
+    // `group` — the skeleton<->scan join key and the data `deriveExpectedGraph` needs. The property
+    // this case pins is unchanged (exactly ONE call entry, at this line, with this label), so the
+    // oracle names the two fields it is about instead of the whole widened row.
+    expect(calls).toEqual([expect.objectContaining({ line: 1, label: 'ghost' })]);
   });
 
   it('duplicate labels are legal — labels de-duplicated, calls are not', () => {

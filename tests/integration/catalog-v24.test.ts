@@ -251,7 +251,11 @@ describe('WorkflowCatalog v24 — mermaid/triggers required, assets, deregister 
         .prepare('PRAGMA table_info(workflow_versions)')
         .all() as Array<{ name: string }>;
       expect(colsAfterFirst.map((c) => c.name).sort()).toEqual(
-        ['name', 'version', 'script', 'defaults', 'params', 'createdAt', 'mermaid', 'triggers'].sort(),
+        // v26 (DES-184, TASK-184, REQ-128): `diagram_contract` — the per-version stamp that says
+        // whether this version's diagram was checked against the v2 LR-swimlane grammar. A row
+        // migrated from a pre-v26 db has it NULL, read back as 'v1' (grandfathered, never
+        // re-checked), which is why the column joins the pinned set rather than replacing anything.
+        ['name', 'version', 'script', 'defaults', 'params', 'createdAt', 'mermaid', 'triggers', 'diagram_contract'].sort(),
       );
       // Re-opening a SECOND WorkflowCatalog over the SAME already-migrated file must not throw
       // (a non-guarded `ALTER TABLE ADD COLUMN` on an existing column throws SQLITE_ERROR) and must

@@ -36,9 +36,19 @@ const ALIASES = {
   'helper-alias': { provider: 'ollama' as const, model: 'helper-specific-model' },
 };
 
+// v26 (DES-178, TASK-178): `RunManager.start()` now takes an admission-time price pin from the
+// `ModelBook`, whose production source federates the live model catalog — which probes THIS same
+// stub at `GET /api/tags` (`model-catalog.ts`'s `fetchOllama`). That probe is not an LLM dispatch,
+// so the stub answers it with an empty model list and does NOT record it: `requests` stays the
+// count of real `/api/generate` calls, which is exactly what this item's oracle has always meant.
 function startStubOllamaServer(): { server: HttpServer; requests: Array<{ prompt: string; model: string }> } {
   const requests: Array<{ prompt: string; model: string }> = [];
   const server = createHttpServer((req, res) => {
+    if ((req.url ?? '').startsWith('/api/tags')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ models: [] }));
+      return;
+    }
     let raw = '';
     req.on('data', (c) => (raw += c));
     req.on('end', () => {
