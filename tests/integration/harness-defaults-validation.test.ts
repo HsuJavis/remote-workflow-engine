@@ -68,7 +68,7 @@ async function callTool(name: string, args: Record<string, unknown>) {
 describe('v24 retirement regression (IT-081, TASK-154, DES-144/DES-148): the v15 defaults/knobs door is gone', () => {
   it('meta.params.knobs -> DEFAULTS_RETIRED over real MCP HTTP, nothing stored', async () => {
     const script = `export const meta = { params: { knobs: { effort: { type: 'enum', enum: ['low','high'], default: 'low' } } } };\nreturn 1;`;
-    const r = await callTool('workflow_register', { name: 'it081-retired-knobs', script, mermaid: 'graph TD;' });
+    const r = await callTool('workflow_register', { name: 'it081-retired-knobs', script, mermaid: 'graph LR' });
     expect((r.error as { code?: string } | undefined)?.code ?? r.code).toBe('DEFAULTS_RETIRED');
 
     const check = await callTool('workflow_source', { name: 'it081-retired-knobs' });
@@ -77,7 +77,7 @@ describe('v24 retirement regression (IT-081, TASK-154, DES-144/DES-148): the v15
 
   it('meta.params.defaults (the OTHER retired site) -> DEFAULTS_RETIRED, nothing stored', async () => {
     const script = `export const meta = { params: { defaults: { effort: 'low' } } };\nreturn 1;`;
-    const r = await callTool('workflow_register', { name: 'it081-retired-defaults', script, mermaid: 'graph TD;' });
+    const r = await callTool('workflow_register', { name: 'it081-retired-defaults', script, mermaid: 'graph LR' });
     expect((r.error as { code?: string } | undefined)?.code ?? r.code).toBe('DEFAULTS_RETIRED');
 
     const check = await callTool('workflow_source', { name: 'it081-retired-defaults' });
@@ -92,7 +92,7 @@ describe('v24 retirement regression (IT-081, TASK-154, DES-144/DES-148): the v15
     const r = await callTool('workflow_register', {
       name: 'it081-stray-defaults-arg',
       script: 'return "ok";',
-      mermaid: 'graph TD;',
+      mermaid: 'graph LR',
       defaults: { model: 'sonnet', timeoutMs: 30_000 }, // the pre-v24 field
     });
     expect((r.error as { code?: string } | undefined)?.code ?? r.code).toBe('DEFAULTS_RETIRED');
@@ -109,7 +109,7 @@ describe('v24 retirement regression (IT-081, TASK-154, DES-144/DES-148): the v15
   // refused DEFAULTS_RETIRED. The guide was right about the intent and wrong about the engine.
   it('a top-level `meta.defaults` (sibling to params, not nested under it) is REFUSED DEFAULTS_RETIRED', async () => {
     const script = `export const meta = { defaults: { model: 'sonnet', timeoutMs: 30000 } };\nreturn 1;`;
-    const r = await callTool('workflow_register', { name: 'it081-meta-defaults-sibling', script, mermaid: 'graph TD;' });
+    const r = await callTool('workflow_register', { name: 'it081-meta-defaults-sibling', script, mermaid: 'graph LR' });
     expect((r.error as { code?: string } | undefined)?.code ?? r.code).toBe('DEFAULTS_RETIRED');
 
     const check = await callTool('workflow_source', { name: 'it081-meta-defaults-sibling' });
@@ -126,7 +126,7 @@ describe('v24 retirement regression (IT-081, TASK-154, DES-144/DES-148): the v15
     // succeeds. Found while porting this file off `registerPublishedVia`; reported as a cross-task
     // defect (tool-specs.ts is TASK-132's file, mcp-facade.ts/workflow-catalog.ts are outside
     // TASK-154), not fixed here.
-    const r = await callTool('workflow_register', { name: 'it081-no-params', script: 'return "ok";', mermaid: 'graph TD;' });
+    const r = await callTool('workflow_register', { name: 'it081-no-params', script: 'return "ok";', mermaid: 'graph LR' });
     expect(r.error).toBeUndefined();
     expect(typeof r['version']).toBe('number');
   });

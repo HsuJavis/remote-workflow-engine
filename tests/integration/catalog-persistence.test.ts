@@ -28,7 +28,7 @@ describe('WorkflowCatalog SQLite persistence (IT-012, D-V2)', () => {
 
   it('a registration survives a new WorkflowCatalog instance on the same workRoot', async () => {
     const cat1 = new WorkflowCatalog(dir, CLOCK);
-    const { version } = await cat1.register({ name: 'persist-flow', script: `return 1;`, mermaid: 'graph TD;' });
+    const { version } = await cat1.register({ name: 'persist-flow', script: `return 1;`, mermaid: 'graph LR' });
 
     // New instance simulates a server restart against the same on-disk workRoot.
     // v22 (DES-111): get() is deleted — resolve() with an explicit {version} selector always
@@ -41,7 +41,7 @@ describe('WorkflowCatalog SQLite persistence (IT-012, D-V2)', () => {
 
   it('list() on a fresh instance still shows a workflow registered by a prior instance', async () => {
     const cat1 = new WorkflowCatalog(dir, CLOCK);
-    await cat1.register({ name: 'persist-list', script: `return 2;`, mermaid: 'graph TD;' });
+    await cat1.register({ name: 'persist-list', script: `return 2;`, mermaid: 'graph LR' });
 
     const cat2 = new WorkflowCatalog(dir, CLOCK);
     const names = (await cat2.list()).map((e) => e.name);
@@ -58,7 +58,7 @@ describe('WorkflowCatalog SQLite persistence (IT-012, D-V2)', () => {
 
   it('a pre-v21 row (registered with no meta.params) reads back resolve().params as the canonical contract shape, not a raw undefined key omission', async () => {
     const cat = new WorkflowCatalog(dir, CLOCK);
-    const { version } = await cat.register({ name: 'it012-no-params', script: 'return 1;', mermaid: 'graph TD;' });
+    const { version } = await cat.register({ name: 'it012-no-params', script: 'return 1;', mermaid: 'graph LR' });
     const entry = await cat.resolve('it012-no-params', { version });
     // `resolve()`'s return type has no `params` key at all when the row carries none; once
     // TASK-096/099 land this must be an explicit key (even if its value is `undefined`) so

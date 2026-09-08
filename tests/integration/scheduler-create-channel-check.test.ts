@@ -88,7 +88,7 @@ describe('the release-resolution check lives on the FIRE path, not on schedule_c
     const id = ((created.result ?? created) as { id?: string }).id;
     expect(id).toBeTruthy();
 
-    const reg = await call('workflow_register', { name: 'h4-unpublished', script: 'return 1;', mermaid: 'graph TD;', triggers: [id] });
+    const reg = await call('workflow_register', { name: 'h4-unpublished', script: 'return 1;', mermaid: 'graph LR', triggers: [id] });
     expect(reg.error).toBeUndefined(); // registered, published to NO channel — and it claimed anyway
 
     expect((await rowFor(id!))?.claimedBy).toBe('h4-unpublished');
@@ -97,7 +97,7 @@ describe('the release-resolution check lives on the FIRE path, not on schedule_c
   it('when that schedule comes due it is REFUSED CHANNEL_UNPUBLISHED, the refusal is recorded, and no run starts', async () => {
     const created = await call('schedule_create', { kind: 'once', at: new Date(Date.now() + 3_000).toISOString() });
     const id = ((created.result ?? created) as { id: string }).id;
-    const reg = await call('workflow_register', { name: 'h4-unpublished-fire', script: 'return 1;', mermaid: 'graph TD;', triggers: [id] });
+    const reg = await call('workflow_register', { name: 'h4-unpublished-fire', script: 'return 1;', mermaid: 'graph LR', triggers: [id] });
     expect(reg.error, `claim: ${JSON.stringify(reg.error)}`).toBeUndefined();
 
     const row = await until(() => rowFor(id), (r) => (r?.refusalCount ?? 0) > 0, 12000);
@@ -123,7 +123,7 @@ describe('the release-resolution check lives on the FIRE path, not on schedule_c
     expect(created.error).toBeUndefined();
     const id = ((created.result ?? created) as { id: string }).id;
 
-    const reg = await call('workflow_register', { name: 'h4-published', script: 'return 1;', mermaid: 'graph TD;', triggers: [id] });
+    const reg = await call('workflow_register', { name: 'h4-published', script: 'return 1;', mermaid: 'graph LR', triggers: [id] });
     expect(reg.error, `claim: ${JSON.stringify(reg.error)}`).toBeUndefined();
     await call('workflow_publish', { name: 'h4-published', version: reg.result.version as string, channel: 'release' });
 

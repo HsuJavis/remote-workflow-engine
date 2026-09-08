@@ -31,7 +31,7 @@ const WF = 'it126-diagram';
 // stadium agent nodes the script dispatches, and a labelled edge — the shape an author actually
 // draws, so a projection that dropped part of the text would be visible too.
 const MERMAID = [
-  'graph TD;',
+  'graph LR',
   'trig[/"cron"/]',
   'planner(["planner"])',
   'writer(["writer"])',
@@ -84,7 +84,7 @@ describe('the registered diagram is served back verbatim (IT-126, D-8, REQ-111)'
   });
 
   it('an explicitly-selected version serves ITS diagram, not the release pointer\'s', async () => {
-    const v2Mermaid = ['graph TD;', 'planner(["planner"])', 'writer(["writer"])', 'planner-->writer'].join('\n');
+    const v2Mermaid = ['graph LR', 'planner(["planner"])', 'writer(["writer"])', 'planner-->writer'].join('\n');
     const reg2 = await call('workflow_register', { name: WF, script: SCRIPT, mermaid: v2Mermaid });
     expect(reg2.error).toBeUndefined();
     const v2 = await call('workflow_describe', { name: WF, version: `v${reg2.version as number}` });

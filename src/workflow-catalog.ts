@@ -18,7 +18,13 @@ import Database from 'better-sqlite3';
 import { mkdirSync, existsSync } from 'node:fs';
 import { join, resolve, sep, isAbsolute } from 'node:path';
 import { CatalogNotFoundError, WorkspaceEscapeError, codedError, type ErrorCode } from './errors.js';
-import { parseMeta, parseMetaParams } from './workflow-meta.js';
+import { parseMeta, parseMetaParams, parseWorkflowSkeleton } from './workflow-meta.js';
+// v26 integration (REQ-128, DES-184/DES-174, ADR-048): the registration half of "one derivation,
+// two consumers" — the SAME `deriveExpectedGraph` the run-DAG layout uses. ADR-048 put
+// `skeleton-graph.ts` on ADR-022's internal-module allowlist for exactly this call site: the only
+// thing it projects is the `expected:` block of a refusal, returned to the author who just
+// submitted that script.
+import { deriveExpectedGraph } from './skeleton-graph.js';
 import { scanAgentCalls } from './scan-agent-calls.js';
 import { checkMermaid, type Rule } from './check-mermaid.js';
 import type { Clock } from './clock.js';
@@ -522,7 +528,24 @@ export class WorkflowCatalog {
     if (mermaid.trim() === '') {
       throw codedError('MERMAID_INVALID', `MERMAID_INVALID: workflow '${name}' mermaid diagram is whitespace-only (line 1)`, { line: 1 });
     }
-    const diagramCheck = checkMermaid(mermaid, scan.labels, agentDefaults, WorkflowCatalog.MERMAID_LIMITS);
+    // v26 integration (REQ-128, DES-184, ADR-043, clarification 29): registration-time v2 GATING.
+    // TASK-189 built `checkMermaid`'s v2 arm and `insertVersion` already writes
+    // `diagram_contract='v2'` on every new row — but nothing ever passed the 5th argument, so the
+    // column was a STAMP claiming a check that never ran. REQ-128's own acceptance ("v26 之後的新
+    // 註冊 … 頭必須是 graph LR … subgraph 的數量與順序等於 script 的 phase() 呼叫") makes this
+    // unconditional for NEW registrations; pre-v26 rows keep `'v1'`, are never re-checked, and
+    // still render (version rows are immutable, ADR-025, so no v1 row can drift into needing one).
+    // A derive REFUSAL is answered with its own code and line rather than a bare SCAN_VIOLATION —
+    // DES-184's boundary requires that, and REQ-117's first-try bar depends on it.
+    const derived = deriveExpectedGraph(parseWorkflowSkeleton(script), scan);
+    if (!derived.ok) {
+      throw codedError(
+        derived.rule,
+        `${derived.rule}: ${derived.message} (line ${derived.line})`,
+        { rule: derived.rule, line: derived.line, ...(derived.label !== null ? { label: derived.label } : {}) },
+      );
+    }
+    const diagramCheck = checkMermaid(mermaid, scan.labels, agentDefaults, WorkflowCatalog.MERMAID_LIMITS, { expected: derived.graph });
     if (!diagramCheck.ok) {
       // v26 (DES-184, TASK-189): RULE_CODE replaces the old two-way ternary — every `ok:false`
       // path above sets `rule` (the flat-shape comment on CheckMermaidResult explains why the type

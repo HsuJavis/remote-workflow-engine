@@ -117,17 +117,22 @@ const FIXTURE_AGENT_SPEC =
  *  because every one of them keys off the `demo` workflow this call was supposed to create
  *  (adjudication (v24) #4 C-1 [29] — reported three times before it was fixed). It is now a real
  *  minimal v24 workflow: one declared agent label, matched one-for-one by the diagram. */
+// v26 (REQ-128, DES-184): the fixture is now a v2-CONTRACT workflow, because registration checks
+// one. `phase('Greet')` is not decoration — rule L2 refuses an `agent()` dispatched before the
+// first `phase()`, so the published happy fixture must show the shape it is asking authors for.
 export const FIXTURE_SCRIPT =
   "export const meta = {\n" +
   "  description: 'Greet the caller in one sentence',\n" +
   `  params: { agents: { greet: ${FIXTURE_AGENT_SPEC} } },\n` +
   '};\n' +
+  "phase('Greet');\n" +
   "return await agent('greet', { prompt: 'Say hello' });";
 
-/** Exactly the labels `FIXTURE_SCRIPT` uses, in the minimal form `checkMermaid` accepts (one
- *  stadium node, no `<br/>` value triple, no edges — an edge to an undeclared node is what the
- *  old fixture got wrong). */
-export const FIXTURE_MERMAID = 'graph TD;\ngreet(["greet"])';
+/** Exactly the labels `FIXTURE_SCRIPT` uses, in the minimal form `checkMermaid` accepts.
+ *  v26 (REQ-128, DES-184): the v2 swimlane — `graph LR`, one `subgraph` per `phase()` in call
+ *  order, the agent's stadium node inside its own phase's lane. No `<br/>` value triple and no
+ *  `tools:` segment: both are optional, and this fixture is the MINIMUM a v2 registration accepts. */
+export const FIXTURE_MERMAID = 'graph LR\nsubgraph "Greet"\ngreet(["greet"])\nend';
 
 /** The one label `FIXTURE_SCRIPT` declares — `run_agent_log`'s happy fixture needs it by name. */
 export const FIXTURE_AGENT_LABEL = 'greet';
@@ -214,6 +219,13 @@ export const TOOL_SPECS = [
       'SCRIPT_INVALID', 'PARSE_ERROR', 'UNKNOWN_ALIAS', 'MCP_NOT_PROVISIONED', 'SCAN_VIOLATION',
       'AGENT_UNDECLARED', 'AGENT_DECLARED_NOT_IN_SCRIPT', 'PARAM_CONTRACT_INVALID', 'DEFAULTS_RETIRED',
       'MERMAID_REQUIRED', 'MERMAID_INVALID', 'DIAGRAM_MISMATCH',
+      // v26 (REQ-128, DES-184): the v2 diagram contract's own refusals, plus the two
+      // `deriveExpectedGraph` rules registration now answers with before it ever reads the diagram.
+      // Advertised because `advertised-surface-truth`/`facade-refusal-arms` pin "every code this
+      // tool can throw is on its errors list" — and because a cold model that cannot see
+      // AGENT_BEFORE_PHASE cannot satisfy REQ-117's first-try bar.
+      'AGENT_BEFORE_PHASE', 'UNDECIDABLE_SHAPE',
+      'DIAGRAM_DIRECTION', 'LANE_MISMATCH', 'TOOLS_MISMATCH', 'EDGE_MISMATCH',
       'NOT_WORKFLOW_OWNER', 'REGISTRATION_CONFLICT', 'VERSION_CEILING_EXCEEDED',
       'INVALID_ARGUMENT', 'TRIGGER_NOT_FOUND', 'NOT_TRIGGER_OWNER', 'TRIGGER_ALREADY_CLAIMED',
       'FORBIDDEN_ROLE',
@@ -224,8 +236,11 @@ export const TOOL_SPECS = [
       happy: { name: 'demo', script: FIXTURE_SCRIPT, mermaid: FIXTURE_MERMAID },
       errors: {
         MERMAID_REQUIRED: { name: 'fixture-no-mermaid', script: 'return 1;' },
-        DIAGRAM_MISMATCH: { name: 'fixture-mismatch', script: FIXTURE_SCRIPT, mermaid: 'graph TD;\nother(["other"])' },
-        SCAN_VIOLATION: { name: 'fixture-scan', script: 'const l = "greet";\nreturn await agent(l, {});', mermaid: FIXTURE_MERMAID },
+        // v26: an LR swimlane whose ONE node names a label the script does not declare — the
+        // mismatch is still the subject; the direction/lane rules are satisfied so the refusal
+        // that comes back is DIAGRAM_MISMATCH and not DIAGRAM_DIRECTION.
+        DIAGRAM_MISMATCH: { name: 'fixture-mismatch', script: FIXTURE_SCRIPT, mermaid: 'graph LR\nsubgraph "Greet"\nother(["other"])\nend' },
+        SCAN_VIOLATION: { name: 'fixture-scan', script: "phase('Greet');\nconst l = \"greet\";\nreturn await agent(l, {});", mermaid: FIXTURE_MERMAID },
       },
     },
   },

@@ -46,7 +46,7 @@ describe('workflow_describe — resolve table-driven parity with run-admission (
   ];
 
   it.each(CASES)('$label: workflow_describe\'s code equals resolveVersionRequest\'s code for the same input', async ({ sel }) => {
-    const { version } = await catalog.register({ name: 'describe-parity', script: `return 1;`, mermaid: 'graph TD;' });
+    const { version } = await catalog.register({ name: 'describe-parity', script: `return 1;`, mermaid: 'graph LR' });
     await catalog.publish('describe-parity', version, 'release', null);
     const known = new Set([version]);
     const channels: Channels = { release: version, beta: null };
@@ -66,7 +66,7 @@ describe('workflow_describe — resolve table-driven parity with run-admission (
   });
 
   it('DANGLING_CHANNEL is NOT collapsed into CHANNEL_UNPUBLISHED — a pruned-version pointer is a different operator fault', async () => {
-    const { version: v1 } = await catalog.register({ name: 'dangling-fixture', script: `return 1;`, mermaid: 'graph TD;' });
+    const { version: v1 } = await catalog.register({ name: 'dangling-fixture', script: `return 1;`, mermaid: 'graph LR' });
     await catalog.publish('dangling-fixture', v1, 'beta', null);
     // Simulate a dangling pointer directly against the resolve truth table (same technique as the
     // catalog's own resolve() unit coverage — no version-pruning API exists to reach this state

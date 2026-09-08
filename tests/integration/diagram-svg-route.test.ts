@@ -33,7 +33,7 @@ const SCRIPT = [
   "if (false) { await agent('writer', {}); }",
   "return 'ok';",
 ].join('\n');
-const mermaidFor = (note: string): string => ['graph TD;', `trig[/"${note}"/]`, 'writer(["writer"])', 'trig-->writer'].join('\n');
+const mermaidFor = (note: string): string => ['graph LR', `trig[/"${note}"/]`, 'writer(["writer"])', 'trig-->writer'].join('\n');
 
 async function call(name: string, args: unknown): Promise<any> {
   const res = await fetch(`${base()}/mcp`, {

@@ -60,7 +60,7 @@ describe('REQ-098: inline script is closed — runtime refusal even off the adve
     // header alone is the whole diagram a zero-agent script needs. Written out here rather than
     // routed through tests/helpers/workflow-fixtures.ts on purpose: this case's whole point is that
     // the HAND-ROLLED sanctioned sequence still works, so it must stay hand-rolled.
-    const reg = await toolCall('workflow_register', { name: 'it088-sanctioned', script: `return 'ok';`, mermaid: 'graph TD;' });
+    const reg = await toolCall('workflow_register', { name: 'it088-sanctioned', script: `return 'ok';`, mermaid: 'graph LR' });
     expect(reg['error']).toBeUndefined();
     const version = (reg['result'] as { version?: string } | undefined)?.version ?? 'v1';
     const pub = await toolCall('workflow_publish', { name: 'it088-sanctioned', version, channel: 'release' });

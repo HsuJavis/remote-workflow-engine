@@ -100,8 +100,8 @@ describe('boot migration: pre-v22 catalog.db → workflow_versions (ADR-011, DES
 describe('version history: both versions of a twice-registered name remain retrievable (REQ-096, IT-084)', () => {
   it('register twice under the same name never overwrites the earlier script', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    const { version: v1 } = await catalog.register({ name: 'two-versions', script: `return 'first';`, mermaid: 'graph TD;' });
-    const { version: v2 } = await catalog.register({ name: 'two-versions', script: `return 'second';`, mermaid: 'graph TD;' });
+    const { version: v1 } = await catalog.register({ name: 'two-versions', script: `return 'first';`, mermaid: 'graph LR' });
+    const { version: v2 } = await catalog.register({ name: 'two-versions', script: `return 'second';`, mermaid: 'graph LR' });
     expect(v1).not.toBe(v2);
     const first = await catalog.resolve('two-versions', { version: v1 });
     const second = await catalog.resolve('two-versions', { version: v2 });
@@ -111,7 +111,7 @@ describe('version history: both versions of a twice-registered name remain retri
 
   it('registration is not automatically published to any channel (REQ-097: registration ≠ publication)', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    const { version } = await catalog.register({ name: 'unpublished', script: `return 1;`, mermaid: 'graph TD;' });
+    const { version } = await catalog.register({ name: 'unpublished', script: `return 1;`, mermaid: 'graph LR' });
     const detail = await catalog.resolveDetail('unpublished', { version });
     expect(detail.channels.release).not.toBe(version);
     expect(detail.channels.beta).not.toBe(version);
@@ -119,7 +119,7 @@ describe('version history: both versions of a twice-registered name remain retri
 
   it('publish moves the named channel pointer; a non-owner is refused NOT_WORKFLOW_OWNER', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    const { version } = await catalog.register({ name: 'publishable', script: `return 1;`, mermaid: 'graph TD;', principal: 'owner@example.com' });
+    const { version } = await catalog.register({ name: 'publishable', script: `return 1;`, mermaid: 'graph LR', principal: 'owner@example.com' });
     await catalog.publish('publishable', version, 'release', 'owner@example.com');
     const resolved = await catalog.resolve('publishable', {});
     expect(resolved.version).toBe(version);
@@ -128,14 +128,14 @@ describe('version history: both versions of a twice-registered name remain retri
 
   it('listVersions reports every registered version for a name, ascending', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    const { version: v1 } = await catalog.register({ name: 'list-versions', script: `return 1;`, mermaid: 'graph TD;' });
-    const { version: v2 } = await catalog.register({ name: 'list-versions', script: `return 2;`, mermaid: 'graph TD;' });
+    const { version: v1 } = await catalog.register({ name: 'list-versions', script: `return 1;`, mermaid: 'graph LR' });
+    const { version: v2 } = await catalog.register({ name: 'list-versions', script: `return 2;`, mermaid: 'graph LR' });
     expect(await catalog.listVersions('list-versions')).toEqual([v1, v2]);
   });
 
   it('publish naming a version that was never registered is refused VERSION_NOT_FOUND; no pointer moves (Gate 6.5+7 coverage)', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    await catalog.register({ name: 'publish-unknown-version', script: `return 1;`, mermaid: 'graph TD;', principal: 'owner@example.com' });
+    await catalog.register({ name: 'publish-unknown-version', script: `return 1;`, mermaid: 'graph LR', principal: 'owner@example.com' });
     await expect(
       catalog.publish('publish-unknown-version', 'v99', 'release', 'owner@example.com')
     ).rejects.toThrow(/VERSION_NOT_FOUND/);
@@ -160,7 +160,7 @@ describe("version allocator: MAX over a name's rows, not COUNT (ARCH-071 inv 7, 
       { name: 'h3-migrated', script: `return 'v7';`, version: 'v7', createdAt: '2025-01-01T00:00:00.000Z', owner: 'owner@example.com' },
     ]);
     const catalog = new WorkflowCatalog(workRoot, CLOCK); // triggers the boot migration (v7 lands in workflow_versions)
-    const { version } = await catalog.register({ name: 'h3-migrated', script: `return 'v8-body';`, mermaid: 'graph TD;' });
+    const { version } = await catalog.register({ name: 'h3-migrated', script: `return 'v8-body';`, mermaid: 'graph LR' });
     // Today: COUNT(*) over the 1 migrated row + 1 = 'v2' — OLDER-numbered than 'v7', the version
     // it supersedes (ARCH-071 inv 7 violated). Correct: MAX(7) + 1 = 'v8'.
     expect(version).toBe('v8');
@@ -183,7 +183,7 @@ describe("version allocator: MAX over a name's rows, not COUNT (ARCH-071 inv 7, 
     // (PRIMARY KEY (name, version)) -> maps to REGISTRATION_CONFLICT ("retry") -> retrying
     // recomputes the SAME 'v3' every time -> permanently bricked, exactly H3's "any migrated
     // multi-registration workflow" scenario. Correct: MAX(1,3) + 1 = 'v4', no collision.
-    const { version } = await catalog.register({ name: 'h3-gapped', script: `return 'v4-body';`, mermaid: 'graph TD;', principal: 'owner2@example.com' });
+    const { version } = await catalog.register({ name: 'h3-gapped', script: `return 'v4-body';`, mermaid: 'graph LR', principal: 'owner2@example.com' });
     expect(version).toBe('v4');
   });
 });
@@ -191,9 +191,9 @@ describe("version allocator: MAX over a name's rows, not COUNT (ARCH-071 inv 7, 
 describe('per-name version ceiling (ADR-014, S-1 debt closed, IT-084)', () => {
   it('an (N+1)th registration is refused VERSION_CEILING_EXCEEDED, naming both remedies', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK, { ceilings: { maxTimeoutMs: 600_000, maxAppendPromptBytes: 1024, maxEffort: 'high', maxWorkflowVersions: 2 } as never });
-    await catalog.register({ name: 'ceiling-test', script: `return 1;`, mermaid: 'graph TD;' });
-    await catalog.register({ name: 'ceiling-test', script: `return 2;`, mermaid: 'graph TD;' });
-    await expect(catalog.register({ name: 'ceiling-test', script: `return 3;`, mermaid: 'graph TD;' })).rejects.toMatchObject({ code: 'VERSION_CEILING_EXCEEDED' });
+    await catalog.register({ name: 'ceiling-test', script: `return 1;`, mermaid: 'graph LR' });
+    await catalog.register({ name: 'ceiling-test', script: `return 2;`, mermaid: 'graph LR' });
+    await expect(catalog.register({ name: 'ceiling-test', script: `return 3;`, mermaid: 'graph LR' })).rejects.toMatchObject({ code: 'VERSION_CEILING_EXCEEDED' });
     expect(await catalog.listVersions('ceiling-test')).toHaveLength(2); // refused registration stores nothing
   });
 });

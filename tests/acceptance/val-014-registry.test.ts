@@ -41,7 +41,7 @@ describe('VAL-014: named workflow registry (REQ-014)', () => {
   }
 
   it('workflow_register registers a workflow visible in workflow_list', async () => {
-    await callTool('workflow_register', { name: 'val014-a', script: `return 'registered';`, mermaid: 'graph TD;' });
+    await callTool('workflow_register', { name: 'val014-a', script: `return 'registered';`, mermaid: 'graph LR' });
     const list = (await callTool('workflow_list', {})).result;
     const found = (list as Array<{ name: string }>).some((w) => w.name === 'val014-a');
     expect(found).toBe(true);

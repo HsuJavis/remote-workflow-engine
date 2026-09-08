@@ -98,7 +98,7 @@ describe('VAL-084: home card metrics — avg success rate + avg execution time (
       name: wfName,
       script: `export const meta = { name: '${wfName}', description: 'never run' };
                return "unreachable";`,
-      mermaid: 'graph TD;',
+      mermaid: 'graph LR',
     });
 
     const res = await fetch(`http://127.0.0.1:${server.port}/api/home`);

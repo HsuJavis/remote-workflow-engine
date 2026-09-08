@@ -34,13 +34,18 @@ import { projectToolsList } from '../../src/tool-specs.js';
 import { join, relative } from 'node:path';
 
 const SRC_ROOT = join(__dirname, '..', '..', 'src');
-// v26 (ADR-048, REQ-128, ARCH-113): a FIFTH entry, added by the new adjudication ADR-022 demanded
-// rather than by a mechanical edit. `skeleton-graph.ts` (`deriveExpectedGraph`) passes criterion S-2:
-// the only thing it projects is the `expected:` block inside a DIAGRAM_DIRECTION / LANE_MISMATCH /
-// TOOLS_MISMATCH / EDGE_MISMATCH refusal, returned to the caller who just submitted that very script
-// in the same `workflow_register` call — a derivation of the author's OWN input, never a
-// cross-principal projection, which is the leak ADR-022 exists to prevent.
-const ALLOWLIST = new Set(['workflow-meta.ts', 'dashboard.ts', 'server.ts', 'graph-analyzer.ts', 'skeleton-graph.ts']);
+// v26 (ADR-048, REQ-128, ARCH-113): a FIFTH and a SIXTH entry, added by the new adjudication
+// ADR-022 demanded rather than by a mechanical edit. `skeleton-graph.ts` (`deriveExpectedGraph`)
+// passes criterion S-2: the only thing it projects is the `expected:` block inside a
+// DIAGRAM_DIRECTION / LANE_MISMATCH / TOOLS_MISMATCH / EDGE_MISMATCH refusal, returned to the caller
+// who just submitted that very script in the same `workflow_register` call — a derivation of the
+// author's OWN input, never a cross-principal projection, which is the leak ADR-022 exists to
+// prevent. `workflow-catalog.ts` joins on exactly the same argument, because ADR-048's own sentence
+// describes THAT file: `validateRegistration` is the call site that invokes the derivation and
+// throws the refusal.
+// FLAGGED for Gate 8: ADR-048's Action line names only `skeleton-graph.ts`; it should be amended to
+// name its one caller too, since the adjudication's reasoning is about that caller's behaviour.
+const ALLOWLIST = new Set(['workflow-meta.ts', 'dashboard.ts', 'server.ts', 'graph-analyzer.ts', 'skeleton-graph.ts', 'workflow-catalog.ts']);
 
 function listTsFiles(dir: string): string[] {
   const out: string[] = [];
@@ -65,10 +70,11 @@ describe('no-skeleton-surface guard (UT-115, ADR-022, REQ-105)', () => {
     expect(violators).toEqual([]);
   });
 
-  it('a SIXTH allowlist entry would still fail — the allowlist is exactly five, not "five or more"', () => {
-    // v26 (ADR-048): four became five by ADJUDICATION, and the pin moves with it — the guard's
-    // point is that growth costs an argument, not that the number never changes.
-    expect(ALLOWLIST.size).toBe(5);
+  it('a SEVENTH allowlist entry would still fail — the allowlist is exactly six, not "six or more"', () => {
+    // v26 (ADR-048): four became six by ONE adjudication covering the derivation and its single
+    // caller. The pin moves with it — the guard's point is that growth costs an ARGUMENT, not that
+    // the number can never change.
+    expect(ALLOWLIST.size).toBe(6);
   });
 
   // v24 (integrator): the advertised surface MOVED. `server.ts`'s `TOOL_METADATA` object is gone —

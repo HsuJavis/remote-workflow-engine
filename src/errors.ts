@@ -62,6 +62,11 @@ export const ERROR_CATALOG = {
   LANE_MISMATCH: { see: 'workflow_authoring_guide', hint: 'the diagram\'s subgraph lanes (count/order/title, or a stadium\'s containing lane) disagree with the script\'s phases' },
   TOOLS_MISMATCH: { see: 'workflow_authoring_guide', hint: 'a stadium\'s tools: line disagrees with the script\'s allowedTools for that label' },
   EDGE_MISMATCH: { see: 'workflow_authoring_guide', hint: 'the diagram\'s edges do not realise the script\'s consecutive-slot flow' },
+  // v26 integration (DES-184 boundary, REQ-128, REQ-117): the two `deriveExpectedGraph` refusals.
+  // Registration must answer these with their OWN line-pointed code, because a bare SCAN_VIOLATION
+  // fails REQ-117's first-try bar — an author told only "scan violation" cannot find the phase().
+  AGENT_BEFORE_PHASE: { see: 'workflow_authoring_guide', hint: 'under the v2 diagram contract every agent() must be dispatched inside a phase() — add a phase() before the first agent()' },
+  UNDECIDABLE_SHAPE: { see: 'workflow_authoring_guide', hint: 'the script\'s agent() shape cannot be statically resolved into a diagram slot' },
   AGENT_UNDECLARED: { see: 'workflow_authoring_guide', hint: 'a script agent() label has no params.agents.<label> declaration' },
   AGENT_DECLARED_NOT_IN_SCRIPT: { see: 'workflow_authoring_guide', hint: 'params.agents declares a label no agent() call in the script uses' },
   PARAM_CONTRACT_INVALID: { see: 'workflow_authoring_guide', hint: 'the declared parameter contract itself is malformed or out of its own bounds' },

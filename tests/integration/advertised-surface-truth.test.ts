@@ -41,12 +41,12 @@ const propsOf = (name: string) => (specFor(name).inputSchema as { properties?: R
 beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'rwe-it130-'));
   server = await createServer({ port: 0, bind: '127.0.0.1', workRoot: tmpDir });
-  const reg = await call('workflow_register', { name: WF, script: "return 'ok';", mermaid: 'graph TD;' });
+  const reg = await call('workflow_register', { name: WF, script: "return 'ok';", mermaid: 'graph LR' });
   expect(reg.error).toBeUndefined();
   const pub = await call('workflow_publish', { name: WF, version: reg.result.version as string, channel: 'release' });
   expect(pub.error).toBeUndefined();
   // A SECOND version, left unpublished — the draft `version:` selection reads it back.
-  const reg2 = await call('workflow_register', { name: WF, script: "return 'ok2';", mermaid: 'graph TD;' });
+  const reg2 = await call('workflow_register', { name: WF, script: "return 'ok2';", mermaid: 'graph LR' });
   expect(reg2.error).toBeUndefined();
 });
 afterAll(async () => { await server?.close(); rmSync(tmpDir, { recursive: true, force: true }); });
@@ -69,7 +69,7 @@ describe('workflow_describe advertises the arguments it accepts (IT-130, D-7, RE
 
   it("`version` is the ONLY way to see a never-published workflow at all — without it the call is refused, which is why advertising it matters", async () => {
     const name = 'it130-never-published';
-    const reg = await call('workflow_register', { name, script: "return 'draft';", mermaid: 'graph TD;' });
+    const reg = await call('workflow_register', { name, script: "return 'draft';", mermaid: 'graph LR' });
     expect(reg.error).toBeUndefined();
 
     const bare = await call('workflow_describe', { name });

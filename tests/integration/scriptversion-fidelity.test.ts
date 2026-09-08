@@ -48,14 +48,14 @@ describe('scriptVersion fidelity across a workflow update (IT-011, D-V7, v22 rew
     const runManager = new RunManager({ store, clock: CLOCK, workRoot });
     const facade = new McpFacade({ clock: CLOCK, store, runManager });
 
-    const { version: v1 } = await runManager.catalog.register({ name: 'sv-fidelity', script: `return 'version-one';`, mermaid: 'graph TD;' });
+    const { version: v1 } = await runManager.catalog.register({ name: 'sv-fidelity', script: `return 'version-one';`, mermaid: 'graph LR' });
     await runManager.catalog.publish('sv-fidelity', v1, 'release', null);
     const run1 = await facade.runStart({ name: 'sv-fidelity' }, AUTH_DISABLED);
     const status1 = await pollUntilSettled(facade, run1.result!.runId);
     expect(status1.status).toBe('completed');
     expect(status1.result!.scriptVersion).toBe('v1'); // literal, per v22 Rule 1
 
-    const { version: v2 } = await runManager.catalog.register({ name: 'sv-fidelity', script: `return 'version-two';`, mermaid: 'graph TD;' });
+    const { version: v2 } = await runManager.catalog.register({ name: 'sv-fidelity', script: `return 'version-two';`, mermaid: 'graph LR' });
     await runManager.catalog.publish('sv-fidelity', v2, 'release', null);
     const run2 = await facade.runStart({ name: 'sv-fidelity' }, AUTH_DISABLED);
     const status2 = await pollUntilSettled(facade, run2.result!.runId);
@@ -63,7 +63,7 @@ describe('scriptVersion fidelity across a workflow update (IT-011, D-V7, v22 rew
     expect(status2.result!.scriptVersion).toBe('v2'); // literal, per v22 Rule 1
 
     // After a THIRD version is registered+published, run 1's own record is unchanged — still 'v1'.
-    const { version: v3 } = await runManager.catalog.register({ name: 'sv-fidelity', script: `return 'version-three';`, mermaid: 'graph TD;' });
+    const { version: v3 } = await runManager.catalog.register({ name: 'sv-fidelity', script: `return 'version-three';`, mermaid: 'graph LR' });
     await runManager.catalog.publish('sv-fidelity', v3, 'release', null);
     const stillStatus1 = await facade.runStatus({ runId: run1.result!.runId }, AUTH_DISABLED, false, null);
     expect(stillStatus1.result!.scriptVersion).toBe('v1');

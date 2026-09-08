@@ -79,7 +79,7 @@ beforeAll(async () => {
   } as never);
   authorToken = mintBearer(tmpDir, AUTHOR);
   adminToken = mintBearer(tmpDir, ADMIN);
-  const reg = await callTool('workflow_register', { name: WF, script: 'return "hello";', mermaid: 'graph TD;' }, authorToken);
+  const reg = await callTool('workflow_register', { name: WF, script: 'return "hello";', mermaid: 'graph LR' }, authorToken);
   expect(reg['error']).toBeUndefined();
 });
 

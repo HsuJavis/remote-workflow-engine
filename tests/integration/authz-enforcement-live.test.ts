@@ -62,7 +62,7 @@ beforeAll(async () => {
   aliceToken = mintBearer(tmpDir, ALICE);
   bobToken = mintBearer(tmpDir, BOB);
   rootToken = mintBearer(tmpDir, ROOT);
-  const reg = await callTool('workflow_register', { name: WF, script: 'return "hello";', mermaid: 'graph TD;' }, aliceToken);
+  const reg = await callTool('workflow_register', { name: WF, script: 'return "hello";', mermaid: 'graph LR' }, aliceToken);
   expect(reg['error']).toBeUndefined();
   const pub = await callTool('workflow_publish', { name: WF, version: `v${reg['version'] as number}`, channel: 'release' }, aliceToken);
   expect(pub['error']).toBeUndefined();
@@ -161,7 +161,7 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     const WF2 = 'it124-doomed';
     const created = await callTool('schedule_create', { kind: 'once', at: new Date(Date.now() + 3000).toISOString() }, aliceToken);
     const id = ((created['result'] ?? created) as { id?: string }).id;
-    const reg = await callTool('workflow_register', { name: WF2, script: 'return "x";', mermaid: 'graph TD;', triggers: [id] }, aliceToken);
+    const reg = await callTool('workflow_register', { name: WF2, script: 'return "x";', mermaid: 'graph LR', triggers: [id] }, aliceToken);
     expect(codeOf(reg)).toBeUndefined();
     await callTool('workflow_publish', { name: WF2, version: `v${reg['version'] as number}`, channel: 'release' }, aliceToken);
     expect(codeOf(await callTool('workflow_deregister', { name: WF2 }, aliceToken))).toBeUndefined();
@@ -190,7 +190,7 @@ describe('authorization enforced through a real auth-enabled boot (IT-124, DES-1
     const created = await callTool('schedule_create', { kind: 'once', at: new Date(Date.now() + 3000).toISOString() }, aliceToken);
     const id = ((created['result'] ?? created) as { id?: string }).id;
     expect(typeof id).toBe('string');
-    const firesReg = await callTool('workflow_register', { name: 'it124-fires', script: 'return "x";', mermaid: 'graph TD;', triggers: [id] }, aliceToken);
+    const firesReg = await callTool('workflow_register', { name: 'it124-fires', script: 'return "x";', mermaid: 'graph LR', triggers: [id] }, aliceToken);
     expect(codeOf(firesReg)).toBeUndefined();
     expect(codeOf(await callTool('workflow_publish', { name: 'it124-fires', version: `v${firesReg['version'] as number}`, channel: 'release' }, aliceToken))).toBeUndefined();
     // A schedule created from the row's OWN advertised shape (no `enabled` key) is born ENABLED —

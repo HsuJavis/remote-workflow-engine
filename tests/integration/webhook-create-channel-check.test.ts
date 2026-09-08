@@ -58,7 +58,7 @@ describe('webhook_create is a create-then-claim door, not a catalog check (IT-09
 
   it("a webhook bound at creation to a REGISTERED but UNPUBLISHED workflow is ACCEPTED — REQ-097's draft state is not a creation error any more", async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    await catalog.register({ name: 'h4-wh-unpublished', script: `return 1;`, mermaid: 'graph TD;' }); // on NO channel
+    await catalog.register({ name: 'h4-wh-unpublished', script: `return 1;`, mermaid: 'graph LR' }); // on NO channel
     const reg = new WebhookRegistry({ clock: CLOCK, runManager: makeFakeRunManager(), catalog, dbPath: join(dir, 'wh.db') });
 
     const result = await reg.create({ workflow: 'h4-wh-unpublished' });
@@ -80,7 +80,7 @@ describe('webhook_create is a create-then-claim door, not a catalog check (IT-09
 
   it('GREEN PIN: a PUBLISHED workflow still creates a webhook, and the claim door still works', async () => {
     const catalog = new WorkflowCatalog(workRoot, CLOCK);
-    const { version } = await catalog.register({ name: 'h4-wh-published', script: `return 1;`, mermaid: 'graph TD;' });
+    const { version } = await catalog.register({ name: 'h4-wh-published', script: `return 1;`, mermaid: 'graph LR' });
     await catalog.publish('h4-wh-published', version, 'release', null);
     const reg = new WebhookRegistry({ clock: CLOCK, runManager: makeFakeRunManager(), catalog, dbPath: join(dir, 'wh.db') });
 

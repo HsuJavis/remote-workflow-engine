@@ -42,7 +42,7 @@ async function call(name: string, args: Record<string, unknown> = {}): Promise<a
 async function registerPublish(name: string, triggers?: string[]): Promise<void> {
   // v24 adjudication #8 (H-2): `triggers` is the ONLY door that binds a trigger to a workflow —
   // `schedule_create({workflow})` / `webhook_create({workflow})` are refused INVALID_ARGUMENT.
-  const reg = await call('workflow_register', { name, script: "return 'ok';", mermaid: 'graph TD;', ...(triggers ? { triggers } : {}) });
+  const reg = await call('workflow_register', { name, script: "return 'ok';", mermaid: 'graph LR', ...(triggers ? { triggers } : {}) });
   expect(reg.error, `register ${name}: ${JSON.stringify(reg.error)}`).toBeUndefined();
   const pub = await call('workflow_publish', { name, version: reg.result.version as string, channel: 'release' });
   expect(pub.error, `publish ${name}: ${JSON.stringify(pub.error)}`).toBeUndefined();
@@ -76,13 +76,13 @@ describe('triggers are created UNCLAIMED and claimed at registration (IT-128, D-
     expect(typeof id).toBe('string');
 
     const name = 'it128-claimer';
-    const reg = await call('workflow_register', { name, script: "return 'ok';", mermaid: 'graph TD;', triggers: [id] });
+    const reg = await call('workflow_register', { name, script: "return 'ok';", mermaid: 'graph LR', triggers: [id] });
     expect(reg.error, `register with triggers: ${JSON.stringify(reg.error)}`).toBeUndefined();
     const row = ((await call('webhook_list')).result as Array<{ id: string; workflow?: string | null }>).find((r) => r.id === id);
     expect(row?.workflow).toBe(name);
 
     // …and the claim is exclusive: a second workflow naming the same id is refused.
-    const clash = await call('workflow_register', { name: 'it128-clash', script: "return 'ok';", mermaid: 'graph TD;', triggers: [id] });
+    const clash = await call('workflow_register', { name: 'it128-clash', script: "return 'ok';", mermaid: 'graph LR', triggers: [id] });
     expect((clash.code ?? clash.error?.code)).toBe('TRIGGER_ALREADY_CLAIMED');
   });
 });

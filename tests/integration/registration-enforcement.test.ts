@@ -107,8 +107,8 @@ describe('per-name version ceiling refused before any write, message names both 
         mcpLookup: () => true,
         ceilings: { maxTimeoutMs: 600_000, maxAppendPromptBytes: 1024, maxEffort: 'high', maxWorkflowVersions: 1 },
       } as never);
-      await catalog.register({ name: 'one-slot', script: `return 1;`, mermaid: 'graph TD;' });
-      await expect(catalog.register({ name: 'one-slot', script: `return 2;`, mermaid: 'graph TD;' })).rejects.toMatchObject({ code: 'VERSION_CEILING_EXCEEDED' });
+      await catalog.register({ name: 'one-slot', script: `return 1;`, mermaid: 'graph LR' });
+      await expect(catalog.register({ name: 'one-slot', script: `return 2;`, mermaid: 'graph LR' })).rejects.toMatchObject({ code: 'VERSION_CEILING_EXCEEDED' });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

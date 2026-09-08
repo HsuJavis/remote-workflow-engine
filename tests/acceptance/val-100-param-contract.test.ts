@@ -76,7 +76,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Re
 describe('REQ-090 real-tier: a malformed/poisoned params contract must not durably break workflow discovery (v21 Gate 8 RE-REVIEW #4, A1)', () => {
   it('a pre-existing poisoned row (seeded directly against catalog.db, simulating data written before the registration guard existed) does not crash workflow_source, nor break workflow_list for a sibling healthy workflow', async () => {
     // A healthy sibling MUST still be discoverable after the poisoned entry is introduced.
-    const sib = await callTool('workflow_register', { name: 'val100-poison-sibling', script: 'return 1;', mermaid: 'graph TD;' });
+    const sib = await callTool('workflow_register', { name: 'val100-poison-sibling', script: 'return 1;', mermaid: 'graph LR' });
     expect(sib['error']).toBeUndefined();
 
     // Seed the poisoned row directly — bypasses workflow_register (and thus any registration-time

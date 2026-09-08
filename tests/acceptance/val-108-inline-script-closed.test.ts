@@ -54,7 +54,7 @@ describe('REQ-098: a hand-rolled inline-script call is refused, real HTTP (VAL-1
   it('a plain run_resume({runId}) with no script parameter is never refused INLINE_SCRIPT_CLOSED (unchanged plain-resume path)', async () => {
     // v24 (DES-148, REQ-111): registration REQUIRES a non-empty `mermaid` (MERMAID_REQUIRED). A
     // zero-agent script needs only the header — `checkMermaid` requires no nodes and no edges.
-    const reg = await toolCall('workflow_register', { name: 'val108-resume', script: `return 'resumed-ok';`, mermaid: 'graph TD;' });
+    const reg = await toolCall('workflow_register', { name: 'val108-resume', script: `return 'resumed-ok';`, mermaid: 'graph LR' });
     const version = (reg['result'] as { version?: string } | undefined)?.version as string;
     await toolCall('workflow_publish', { name: 'val108-resume', version, channel: 'release' });
     const run = await toolCall('run_start', { name: 'val108-resume' });

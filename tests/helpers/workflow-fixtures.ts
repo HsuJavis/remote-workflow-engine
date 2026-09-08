@@ -30,7 +30,8 @@ import type { RunManager } from '../../src/run-manager.js';
 import type { McpFacade } from '../../src/mcp-facade.js';
 import type { WorkflowCatalog } from '../../src/workflow-catalog.js';
 import type { RunSpec } from '../../src/types.js';
-import { scanAgentCalls } from '../../src/workflow-meta.js';
+import { scanAgentCalls, parseWorkflowSkeleton } from '../../src/workflow-meta.js';
+import { deriveExpectedGraph } from '../../src/skeleton-graph.js';
 import type { Principal } from '../../src/authz.js';
 
 export type Channel = 'beta' | 'release';
@@ -43,15 +44,102 @@ export function uniqueWorkflowName(prefix = 'fx'): string {
   return `${prefix}-${randomUUID().slice(0, 8)}`;
 }
 
-/** The minimal diagram `checkMermaid` accepts for `script`: one stadium node per agent label found
- *  by the real `scanAgentCalls`, no value-triple, no edges. A script with no `agent()` calls at all
- *  gets a header-only diagram (zero nodes is legal — nothing in `checkMermaid` requires any). */
+/** v26 (REQ-128, DES-184, integrator): registration now GATES on the v2 swimlane contract — the
+ *  header must be `graph LR`, there is one `subgraph` per `phase()` in call order, every stadium
+ *  node sits in its own phase's lane, and the edges must realise the script's consecutive-slot
+ *  flow. Every fixture that registers through this file therefore needs a real LR swimlane, derived
+ *  from the script it is given.
+ *
+ *  This is TEST SCAFFOLDING, not the production `mermaid:"auto"` the owner rejected at Gate 2 (Q1
+ *  甲): `workflow_register` still requires the author's own diagram and hands back structure, never
+ *  corrected Mermaid. Nothing here is reachable from src/.
+ *
+ *  It reuses the REAL `deriveExpectedGraph` — the same function registration itself now calls — so
+ *  the fixture diagram cannot drift from what the checker expects; a second, independent renderer
+ *  would just be a second opinion to keep in sync. `tools:` segments are omitted deliberately: rule
+ *  12 SKIPS the comparison entirely when the expected value is `'default'`, which is every call
+ *  with no literal `allowedTools`. A script whose shape `deriveExpectedGraph` refuses gets `null`
+ *  and the caller falls back to the pre-v26 `graph TD` form (still correct for the tests that
+ *  deliberately register a v1-shaped fixture and assert the refusal). */
+export function synthesizeLrSwimlane(script: string): string | null {
+  const derived = deriveExpectedGraph(parseWorkflowSkeleton(script), scanAgentCalls(script));
+  if (!derived.ok) return null;
+  const { lanes, slots, edges } = derived.graph;
+  // One node id per DISTINCT label, at the lane of the label's FIRST slot: `checkMermaid` keys its
+  // label→node map by label, so a label used in two slots can only ever have one node.
+  const idOf = new Map<string, string>();
+  const laneNodes = new Map<number, string[]>();
+  for (const slot of slots) {
+    for (const label of slot.labels) {
+      if (idOf.has(label)) continue;
+      const id = `n${idOf.size}`;
+      idOf.set(label, id);
+      const arr = laneNodes.get(slot.lane) ?? [];
+      arr.push(`${id}(["${label}"])`);
+      laneNodes.set(slot.lane, arr);
+    }
+  }
+  // A DYNAMIC lane (an agent() inside a loop/switch body) yields NO slots by design — the shape is
+  // runtime-dependent — but `checkMermaid` step (6) still compares the diagram's stadium labels
+  // against the script's own, both ways. So every scanned label with no slot gets a node too,
+  // declared inside the first dynamic lane (the one whose contents the derivation declined to
+  // predict), or the last lane when none is dynamic. This is what an author writing the diagram by
+  // hand must do as well: name the agent that runs in the loop, in the loop's lane.
+  const unslotted = [...new Set(scanAgentCalls(script).labels)].filter((l) => !idOf.has(l));
+  if (unslotted.length > 0 && lanes.length > 0) {
+    const home = lanes.find((l) => l.dynamic)?.index ?? lanes[lanes.length - 1]!.index;
+    const arr = laneNodes.get(home) ?? [];
+    for (const label of unslotted) {
+      const id = `n${idOf.size}`;
+      idOf.set(label, id);
+      arr.push(`${id}(["${label}"])`);
+    }
+    laneNodes.set(home, arr);
+  }
+
+  const out: string[] = ['graph LR'];
+  for (const lane of lanes) {
+    // A `null` title is a runtime-computed `phase()` — rule 11 accepts any non-empty title there.
+    out.push(`subgraph "${lane.title ?? `lane${lane.index}`}"`);
+    out.push(...(laneNodes.get(lane.index) ?? []));
+    out.push('end');
+  }
+  const firstIdOf = (slotIndex: number): string | undefined => {
+    const label = slots.find((s) => s.index === slotIndex)?.labels[0];
+    return label !== undefined ? idOf.get(label) : undefined;
+  };
+  for (const e of edges) {
+    const from = firstIdOf(e.from);
+    const to = firstIdOf(e.to);
+    if (from !== undefined && to !== undefined && from !== to) out.push(`${from} --> ${to}`);
+  }
+  return out.join('\n');
+}
+
+/** The minimal diagram `checkMermaid` accepts for `script`: the v2 LR swimlane when the script's
+ *  shape derives, else the pre-v26 `graph TD` form — one stadium node per agent label found by the
+ *  real `scanAgentCalls`, no value-triple, no edges. A script with no `agent()` calls at all gets a
+ *  header-only diagram (zero nodes is legal — nothing in `checkMermaid` requires any). */
 export function synthesizeMermaid(script: string): string {
+  const lr = synthesizeLrSwimlane(script);
+  if (lr !== null) return lr;
   const { labels } = scanAgentCalls(script);
   // No trailing `;` — `check-mermaid.ts`'s STADIUM_RE is `^(\w+)\(\["(.*)"\]\)$`, anchored right
   // after the closing `"])` with no semicolon allowance (a stadium node's own line ends there).
   const lines = labels.map((label, i) => `n${i}(["${label}"])`);
   return ['graph TD;', ...lines].join('\n');
+}
+
+/** v26 (REQ-128, integrator): rule L2 refuses an `agent()` dispatched before the first `phase()`,
+ *  so a pre-v26 fixture script — which typically has no `phase()` at all — cannot be registered
+ *  from v26 on. The same scaffolding convention `synthesizeMeta` already uses for the v24 parameter
+ *  contract: a script that declares its own `phase()` is returned UNCHANGED (a test about phases
+ *  keeps exactly the lanes it wrote), and only a phase-less script with `agent()` calls gets one
+ *  synthesized. A script with no `agent()` calls needs nothing — L2 has nothing to refuse. */
+export function synthesizePhase(script: string): string {
+  if (/(?<!\.)\bphase\s*\(/.test(script)) return script;
+  if (scanAgentCalls(script).labels.length === 0) return script;
+  return `phase('main');\n${script}`;
 }
 
 /** `export const meta = {…}` locator used ONLY to detect "does this script already declare its
@@ -122,7 +210,7 @@ export async function registerPublished(
   opts: RegisterPublishOpts = {},
 ): Promise<{ version: string }> {
   const principal = opts.principal ?? null;
-  const scriptWithMeta = synthesizeMeta(script, opts.model);
+  const scriptWithMeta = synthesizeMeta(synthesizePhase(script), opts.model);
   const mermaid = opts.mermaid ?? synthesizeMermaid(scriptWithMeta);
   const { version } = await catalog.register({ name, script: scriptWithMeta, mermaid, principal });
   await catalog.publish(name, version, opts.channel ?? 'release', principal);
@@ -211,7 +299,7 @@ export async function registerPublishedVia(
   // identity in `facadeCaller(facade, principal)` instead. Either way the SAME principal must
   // register and publish: `publish` only skips the ownership gate when the principal is null.
   const who = typeof opts.principal === 'string' ? { principal: opts.principal } : {};
-  const scriptWithMeta = synthesizeMeta(script, opts.model);
+  const scriptWithMeta = synthesizeMeta(synthesizePhase(script), opts.model);
   const mermaid = opts.mermaid ?? synthesizeMermaid(scriptWithMeta);
   const triggers = opts.triggers && opts.triggers.length > 0 ? { triggers: opts.triggers } : {};
   const registered = await call('workflow_register', { name, script: scriptWithMeta, mermaid, ...triggers, ...who });

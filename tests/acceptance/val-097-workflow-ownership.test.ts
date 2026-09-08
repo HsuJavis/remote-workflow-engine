@@ -136,7 +136,7 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
   });
 
   it('alice registers workflow → owned by alice', async () => {
-    const r = await mcp(aliceBearer, 'workflow_register', { name: WF, script: SCRIPT, mermaid: 'graph TD;' });
+    const r = await mcp(aliceBearer, 'workflow_register', { name: WF, script: SCRIPT, mermaid: 'graph LR' });
     expect(r.error).toBeUndefined();
     expect(r.code).not.toBe('NOT_WORKFLOW_OWNER');
 
@@ -154,7 +154,7 @@ describe('REQ-087: workflow ownership gate (VAL-097)', () => {
   });
 
   it('bob tries to overwrite alice workflow → NOT_WORKFLOW_OWNER', async () => {
-    const r = await mcp(bobBearer, 'workflow_register', { name: WF, script: 'return "hijacked";', mermaid: 'graph TD;' });
+    const r = await mcp(bobBearer, 'workflow_register', { name: WF, script: 'return "hijacked";', mermaid: 'graph LR' });
     expect(r.code).toBe('NOT_WORKFLOW_OWNER');
   });
 

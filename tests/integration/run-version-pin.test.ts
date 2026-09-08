@@ -82,7 +82,7 @@ describe('resume determinism: a suspended run continues the version it PINNED, n
       expect(suspended.status).toBe('suspended'); // sanity: suspend itself already works, unchanged
 
       // Register+publish a DIFFERENT script under the SAME name while the run is suspended.
-      const { version: v2 } = await catalog.register({ name: 'rvp-flow', script: `return 'V2-ENTIRELY-DIFFERENT';`, mermaid: 'graph TD;' });
+      const { version: v2 } = await catalog.register({ name: 'rvp-flow', script: `return 'V2-ENTIRELY-DIFFERENT';`, mermaid: 'graph LR' });
       await catalog.publish('rvp-flow', v2, 'release', null);
       expect(v2).not.toBe(v1);
 
@@ -107,15 +107,15 @@ describe('resume determinism: a suspended run continues the version it PINNED, n
       const store = new SqliteRunStore(join(dir, 'store'), CLOCK);
       const runManager = new RunManager({ store, clock: CLOCK, workRoot: dir, catalog });
 
-      const { version: v1 } = await catalog.register({ name: 'rvp-third', script: `return 'one';`, mermaid: 'graph TD;' });
+      const { version: v1 } = await catalog.register({ name: 'rvp-third', script: `return 'one';`, mermaid: 'graph LR' });
       await catalog.publish('rvp-third', v1, 'release', null);
       const runId = await runManager.start({ name: 'rvp-third' });
       const settled = await pollUntilSettled(runManager, runId);
       expect(settled.status).toBe('completed');
 
-      const { version: v2 } = await catalog.register({ name: 'rvp-third', script: `return 'two';`, mermaid: 'graph TD;' });
+      const { version: v2 } = await catalog.register({ name: 'rvp-third', script: `return 'two';`, mermaid: 'graph LR' });
       await catalog.publish('rvp-third', v2, 'release', null);
-      const { version: v3 } = await catalog.register({ name: 'rvp-third', script: `return 'three';`, mermaid: 'graph TD;' });
+      const { version: v3 } = await catalog.register({ name: 'rvp-third', script: `return 'three';`, mermaid: 'graph LR' });
       await catalog.publish('rvp-third', v3, 'release', null);
       expect([v1, v2, v3]).toEqual(['v1', 'v2', 'v3']);
 
@@ -142,7 +142,7 @@ describe('legacy-cohort fallback: a run whose pin is absent from workflow_versio
       const store = new SqliteRunStore(join(dir, 'store'), CLOCK);
       const runManager = new RunManager({ store, clock: CLOCK, workRoot: dir, catalog });
 
-      const { version } = await catalog.register({ name: 'legacy-cohort-flow', script: `return 'release-script';`, mermaid: 'graph TD;' });
+      const { version } = await catalog.register({ name: 'legacy-cohort-flow', script: `return 'release-script';`, mermaid: 'graph LR' });
       await catalog.publish('legacy-cohort-flow', version, 'release', null);
 
       // Hand-seed a run whose pin ('v-gone') was never a real workflow_versions row (DES-109's own

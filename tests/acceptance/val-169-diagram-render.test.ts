@@ -39,7 +39,7 @@ const WF = 'val152-hostile';
 const IMG_PAYLOAD = '<img src=x onerror=alert(1)>';
 const SCRIPT_PAYLOAD = '</svg><script>alert(2)</script>';
 const MERMAID = [
-  'graph TD;',
+  'graph LR',
   `trig[/"${IMG_PAYLOAD}"/]`,
   `xss["${SCRIPT_PAYLOAD}"]`,
   'writer(["writer<br/>sonnet · low · 60000"])',
@@ -131,7 +131,7 @@ describe('VAL-169 — the diagram is really drawn, server-side, by a real headle
   itReal('serves a real SVG document, not the Mermaid source', () => {
     expect(svg.trimStart().startsWith('<svg')).toBe(true);
     expect(svg.length).toBeGreaterThan(5000); // a real rendered flowchart, not a stub
-    expect(svg).not.toContain('graph TD;');
+    expect(svg).not.toContain('graph LR');
   });
 
   itReal('renders the REQ-112 value triple on TWO lines — the display server-side rendering buys', () => {
