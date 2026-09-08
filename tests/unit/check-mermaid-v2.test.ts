@@ -131,3 +131,49 @@ describe('checkMermaid v2 rules (UT-196, DES-184)', () => {
     expect((checkMermaid(src, ['writer', 'critic'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any).ok).toBe(true);
   });
 });
+
+// UT-208 (DES-184, ARCH-119, TASK-189, v26, REQ-128): the two LANE_MISMATCH arms `checkLanes` opens
+// BEFORE the per-slot node lookup UT-196 already covers — a lane COUNT mismatch (the author drew
+// fewer/more swimlanes than the script has `phase()` calls) and a lane TITLE mismatch (the right
+// number of lanes, in the wrong order or under the wrong names). Both were unreached by any test:
+// coverage showed `checkLanes`' first two `return err(...)` lines dead, which means a diagram with
+// the wrong number of lanes could have registered as conformant.
+// Mock policy (unit): pure function, no I/O.
+describe('checkLanes — count and title (UT-208, DES-184)', () => {
+  const lane = (index: number, title: string | null) => ({ index, title, dynamic: false, slots: [] as number[] });
+
+  it('too FEW subgraphs for the expected lanes is LANE_MISMATCH, reported at line 1 with every expected lane', () => {
+    const src = 'graph LR\nsubgraph "draft"\nend';
+    const expected = { lanes: [lane(0, 'draft'), lane(1, 'revise')], slots: [], edges: [] };
+    const result = checkMermaid(src, [], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+    expect(result.ok).toBe(false);
+    expect(result.rule).toBe('LANE_MISMATCH');
+    expect(result.line).toBe(1);
+    expect(result.expected).toHaveLength(2);
+  });
+
+  it('too MANY subgraphs is the same refusal (a lane the script never phases into)', () => {
+    const src = 'graph LR\nsubgraph "draft"\nend\nsubgraph "extra"\nend';
+    const expected = { lanes: [lane(0, 'draft')], slots: [], edges: [] };
+    const result = checkMermaid(src, [], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+    expect(result.ok).toBe(false);
+    expect(result.rule).toBe('LANE_MISMATCH');
+  });
+
+  it('the right COUNT under the wrong TITLE is LANE_MISMATCH, reported at that subgraph\'s own line', () => {
+    const src = 'graph LR\nsubgraph "draft"\nend\nsubgraph "polish"\nend';
+    const expected = { lanes: [lane(0, 'draft'), lane(1, 'revise')], slots: [], edges: [] };
+    const result = checkMermaid(src, [], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+    expect(result.ok).toBe(false);
+    expect(result.rule).toBe('LANE_MISMATCH');
+    expect(result.line).toBeGreaterThan(1);
+    expect(result.expected).toMatchObject({ index: 1, title: 'revise' });
+  });
+
+  it('a null (dynamic) expected title accepts whatever the author named that lane', () => {
+    const src = 'graph LR\nsubgraph "draft"\nend\nsubgraph "whatever the loop computed"\nend';
+    const expected = { lanes: [lane(0, 'draft'), lane(1, null)], slots: [], edges: [] };
+    const result = checkMermaid(src, [], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+    expect(result.rule).not.toBe('LANE_MISMATCH');
+  });
+});

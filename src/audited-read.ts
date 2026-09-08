@@ -36,7 +36,7 @@ export async function auditedWorkspaceRead<T>(store: AuditReadStore, args: Audit
   const { actor, action, runId, owner, path } = args;
   if (actor !== null) {
     try {
-      store.appendAudit({ ts: new Date().toISOString(), actor, action, runId, owner, path });
+      store.appendAudit({ ts: new Date().toISOString(), actor, action, runId, owner, path }); // det:allow — the audit row stamps when the read actually happened (event recording, not a decision); same disposition as clock.ts:22
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       throw codedError('INTERNAL_ERROR', `INTERNAL_ERROR: audit append failed, read refused: ${message}`);

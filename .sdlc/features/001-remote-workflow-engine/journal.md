@@ -2673,3 +2673,67 @@ argv reads `... loader.mjs src/main.ts`, not `tsx src/main.ts`. Two consequences
 pattern-kill during any future gate is one string away from taking production down, and a restart
 of that service picks up whatever is in this tree — so the v26 config migration (carried-forward
 item 2) must land before it is next restarted.
+
+## 2026-09-09 — v26 Gate 6.5+7 (simplify + verification closeout, verifier)
+
+Gate PASSED. Suite 2534 passed / 0 failed / 26 pre-existing skips over 367 files; `tsc` clean;
+`trace` 1432 items / 29 gaps with the gap set byte-identical to Gate 6's; `solid_check` 0 high /
+0 mid; `determinism_check` exit 0; `TZ='Pacific/Kiritimati'` re-run identical test-for-test.
+
+**Simplify found the same shape twice: scaffolding that outlived its reason.** Both fixes were
+comments the parallel implementation phase left behind as promises. `dashboard.ts` carried a local
+copy of `ExpectedGraph` whose own note said *"replace with a real import once `skeleton-graph.ts`
+ships"* — it had shipped, and `workflow-catalog.ts` was already importing it statically. `server.ts`
+imported `skeleton-graph.js` DYNAMICALLY behind an optional-member cast and two presence guards,
+justified by "a static import here would break every file that imports server.ts before it lands".
+Three declarations of one contract is exactly the drift ARCH-113 exists to prevent, one layer down,
+and structural typing hides it until a field diverges. `check-mermaid.ts`'s third copy stays: ADR-022's
+`skeleton` allowlist excludes that file and even a type import would put the word in its source text —
+its own comment already said so, which is the difference between a deliberate copy and a stale one.
+
+**The determinism gate did not reproduce its own last-recorded result, and that was worth chasing.**
+v24 round 2 recorded `determinism_check src --check: exit 0`. At plugin 2.4.3 it exits 1 with 18
+hits — and 14 of them are PRE-EXISTING at `ce2b10a` (measured against a `git archive` extract, never
+a checkout). Thirteen are comments or refusal-message string literals; four of those are in
+`sandbox/guards.ts`, the file whose entire job is BLOCKING those APIs. Those got `det:allow` with the
+reason they are not calls. Three are deliberate real time. The last two were the ones that mattered:
+`auth-service.ts` computed the OAuth `expires_in` as `(expiresAt - Date.now())/1000` where `expiresAt`
+came from `TokenStore`'s **injected** clock. Two different clocks — nonsense under any fake clock, a
+second short under the real one. The contract forbids `det:allow` on time used for a decision, so it
+had to be fixed rather than annotated; and the fix was to delete the subtraction, because `issue()`
+stamps `expiresAt = now + bearerTtlMs`, so the lifetime IS `bearerTtlMs`. A lint rule found a real
+latent defect in a module v26 never touched. Declared as a verifier-applied code change.
+
+**Coverage found the column the reconciliation was written for.** The per-function bar over the v26
+delta started at 17 long offenders. Eleven were closed by writing tests, and one was not a formality:
+the `unmappedMessages` counting loop was unreached in BOTH Σ-folds. IMPL-198's whole claim is that the
+live fold and the at-rest fold "count the same subtypes by the same rule" — and the one column that
+claim is about had no test on either side. Either fold could have returned `{}` forever with every
+existing green staying green, which is this repo's `composeConfig` wiring class wearing a different
+hat. IT-156 now drives it end to end through a real RunManager. Also closed: `checkLanes`' lane-COUNT
+and lane-TITLE refusals were dead, so a diagram with the wrong number of swimlanes could have
+registered as conformant; and `materializeSeed`'s throw — the exact line that replaced issue #64's
+`contentB64 ?? ''` — had no reader. Six offenders remain, each with a rationale; three of them are a
+measurement blind spot rather than a gap (a spawned child process the parent's v8 coverage cannot see,
+covered at a higher tier by IT-143's real `tsx src/main.ts --check-config` child).
+
+**Six blocked VALs, and why that is not a shortfall.** VAL-172/173/175/176/178/180 stay
+`blocked`/`not-run`: a real revoked OpenRouter key, the deployed box, a real OpenRouter key, a
+`--detailed_debug` proxy capture, and REQ-117's cold-model protocol — which disqualifies this verifier
+as a subject by its own text. Six instead of v24's two because this iteration's REQs are unusually
+external-dependency-heavy. What the real smoke COULD reach is recorded as an `amended` bullet on
+VAL-174/177/178, each marked explicitly as evidence and NOT the acceptance clause: a real two-phase
+Ollama run whose `/dag` returns `warnings: []` with zero `__skel_` ghosts, four real token columns with
+`costUSD: 0` / `unpriced: false` (the known-zero discriminator), and a real-engine `AGENT_BEFORE_PHASE`
+refusal carrying line and label.
+
+**Two process notes.** (1) Commit `ad0d803` landed mid-gate from a concurrent committer on this shared
+working tree and swept up this pass's `dashboard.ts` edit into its own commit. Nothing was lost — the
+HEAD content is byte-for-byte what was written here — but `git log` does not name it, so IMPL-206
+records it and IMPL-205 carries an amendment pointing at it. (2) **I repeated the near-miss the
+previous entry had just finished documenting**: a `pkill -f "tsx src/main.ts"` while tearing down the
+smoke engine. Production survived for the same reason as last time (its argv reads `loader.mjs
+src/main.ts`) — confirmed after the fact, not assumed: `NRestarts=0` and an unchanged
+`ExecMainStartTimestamp`. Reading a warning is not the same as having it to hand at the moment you
+type the command. The teardown should have been `kill <pid-from-ss-on-the-scratch-port>` from the
+start, which is what actually stopped it.

@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 
 export interface TokenStoreSeams {
-  /** Returns current time in milliseconds (injected — never Date.now() in this module). */
+  /** Returns current time in milliseconds (injected — never Date.now() in this module). det:allow — the seam's own doc naming what it replaces; this module calls none of it */
   clock: () => number;
   /** Returns `n` cryptographically random bytes (injected — never randomBytes() in this module). */
   csprng: (n: number) => Buffer;

@@ -220,7 +220,7 @@ export class SqliteSchedulerPort {
     const id = randomUUID();
     const argsJson = s.args !== undefined ? JSON.stringify(s.args) : null;
     // DES-017: `nextFire` is computed once at creation (via the injected Clock, never a bare
-    // Date.now()) so the firing engine's `tick()` has an immediately-usable due-time for cron/once
+    // Date.now()) so the firing engine's `tick()` has an immediately-usable due-time for cron/once det:allow — a comment naming the API, not a call
     // schedules; `resident` schedules never fire via tick() (trigger-only) and get no nextFire.
     const nextFire: number | null =
       s.kind === 'cron' ? computeNextFire(s.cron, s.tz, this._clock.now() - 1)

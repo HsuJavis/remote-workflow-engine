@@ -10664,6 +10664,14 @@ real nested-frame run over real MCP HTTP). Gate 7.5 owns the cross-check against
 production runId (the design's own "an existing production run" clause) and an interrupted-run
 reconstruction with no snapshot — this tier cannot reach the owner's real box.
 
+- **amended (2026-09-09, Gate 6.5+7 verifier — real-tier evidence, NOT the acceptance clause):** a real
+  scratch engine (127.0.0.1:8917, its own workRoot, production `rwe.service` on 8899 untouched —
+  `NRestarts=0`) ran a real two-phase / two-agent workflow against real Ollama over direct-fetch, then
+  `GET /api/runs/<runId>/dag` returned `warnings: []`, one cell per agent in its own column
+  (`agent-1` col 1, `agent-2` col 2, both `state:'done'`), a `__trigger__` cell and the edge chain —
+  ZERO `__skel_` duplicates. This confirms the LAYOUT half for real. It is NOT this VAL's acceptance
+  clause, which names an ACTUAL EXISTING production runId on the owner's box plus an interrupted-run
+  reconstruction with no snapshot; both stay Gate 7.5's.
 ### VAL-175 — REQ-125: the openrouter run's provider/model/transport/proxyModel resolve correctly
 - **status:** blocked
 - **traces:** REQ-125
@@ -10706,6 +10714,14 @@ counter). The real-money clause (`costUSD` within an order of magnitude of the S
 `total_cost_usd` on a REAL haiku call) needs a real Anthropic key and is a Gate 7.5 cross-check by
 the design's own text — no test at this tier can BE that comparison without one.
 
+- **amended (2026-09-09, Gate 6.5+7 verifier — real-tier evidence, NOT the acceptance clause):** the same
+  real Ollama run reported all four token columns for real (`{input:76, output:4, cacheRead:0,
+  cacheWrite:0}`), `costUSD: 0` with `unpriced: false` — the KNOWN-zero discriminator that proves the
+  admission price pin reached the capture site rather than the counter merely never moving — plus
+  `unpricedCalls: 0` and `unmappedMessages: {}`. Every agent carried `provider:'ollama'`,
+  `model:'qwen2.5:7b'` (the RESOLVED id, not the alias), `transport:'direct-fetch'` and
+  `phase`/`phaseIndex`. The real-MONEY clause (costUSD within an order of magnitude of the SDK's own
+  `total_cost_usd` on a real haiku call) needs an Anthropic key and stays Gate 7.5's.
 ### VAL-178 — REQ-128: a cold model, given only tools/list + the guide, registers an LR swimlane first try
 - **status:** blocked
 - **traces:** REQ-128
@@ -10722,6 +10738,13 @@ itself — this verifier, having read the whole codebase, is exactly the disqual
 UT-197/IT-151/IT-155 cover every v2 rule and the guide-corpus-as-conformance-test claim at the
 vitest floor. `status:blocked`/`result:not-run`, per the v24 VAL-128 precedent exactly.
 
+- **amended (2026-09-09, Gate 6.5+7 verifier — real-tier evidence, NOT the acceptance clause):** the v2
+  registration contract was exercised on the real booted engine over real MCP HTTP, both arms: a
+  phase-carrying script with an LR swimlane diagram REGISTERED (`workflow_register` → `v1`), and a
+  phase-less one was REFUSED `AGENT_BEFORE_PHASE` with `detail: {rule, line: 5, label: 'writer'}` and
+  `see: 'workflow_authoring_guide'`. The MECHANISM is real-confirmed. The acceptance clause is the
+  REQ-117-derived cold-model protocol, which this verifier is disqualified from being the subject of —
+  unchanged, still Gate 7.5's, and this bullet does not flip `status`/`result`.
 ### VAL-179 — REQ-129: both dashboard figures readable at 1100px, wheel-zoom + fit survive the poll
 - **status:** green
 - **traces:** REQ-129, DES-186
@@ -10810,7 +10833,10 @@ or REQ-117's disqualified-cold-model protocol (which this verifier is, by that r
 text, disqualified from being the subject of). Nothing was flipped on faith: every flipped item's
 own named `File:` was matched against the run's per-file result.
 
-**Eight new work items** were written by this gate to close the per-function coverage bar (below).
+**Eight new work items** were written by this gate to close the per-function coverage bar (below):
+UT-205, UT-206, UT-208..UT-212 and IT-156. There is deliberately no UT-207 — the item drafted under
+that number is the cross-tier fold reconciliation, which belongs at the integration tier and was
+written as IT-156; the number is left unused rather than reassigned so nothing is renumbered.
 
 ### UT-205 — parseBudget's two refusals that no test reached
 - **status:** green
@@ -10927,28 +10953,38 @@ run with no unmapped subtypes.
 ### Coverage gate — measured, and what is left
 
 `@vitest/coverage-v8@1.6.1` (`npm install --no-save`, `coverage/` gitignored), whole tree over
-`src/**/*.ts`. Overall **lines 96.15%**, functions 95.9% — above the 90% bar and above v24 round 2's
-95.53%. The per-function bar was applied to the **v26 delta** (`git diff ce2b10a..HEAD -- src`, the
-functions whose line ranges the delta touches): **17 long offenders at the start of this gate, 9
-after the fills above**; 0 short offenders throughout. The nine remaining each carry a one-line
-Decision rationale, and none is "we chose not to test it":
+`src/**/*.ts`, measured AFTER the simplify pass and the fills above so the figures match the
+committed tree. Overall **lines 96.15% (20902/21738)**, functions 95.84% (739/771), branches 89.23%
+— above the 90% bar and above v24 round 2's 95.53%.
 
-- `src/sandbox/child-entry.ts` (0/153) and `src/main.ts`'s `main`/`runCheckConfig`/`loadFileConfig`
-  (0%) — a MEASUREMENT blind spot, not a test gap: both run in a SPAWNED CHILD PROCESS the parent's
+The per-function bar was applied to the **v26 delta** (the functions whose line ranges
+`git diff ce2b10a..HEAD -- src` touches — 160 of the tree's 771): **17 long offenders at the start of
+this gate, 6 after the fills above; 0 short offenders throughout.** Whole tree for context: 72 long
++ 7 short, none of the 7 short inside the v26 delta (`run-store.getResult`,
+`auth-service.jwksFetch`, `errors.NotImplementedError`, `secret-resolver.names`,
+`tool-specs.listMode`, `workflow-catalog.listPendingDiagrams`, `litellm-proxy.get baseUrl` — all
+pre-v26, carried, not introduced here).
+
+The six remaining v26-delta offenders each carry a one-line Decision rationale, and none of them is
+"we chose not to test it":
+
+- `src/sandbox/child-entry.ts` (0/153), `src/main.ts` `main` (0/33) and `runCheckConfig` (0/20) — a
+  MEASUREMENT blind spot, not a test gap: all three run in a SPAWNED CHILD PROCESS that the parent's
   v8 instrumentation cannot see. `child-entry.ts` is excluded from `tsconfig` for the same reason;
-  `--check-config` is covered by IT-143, which drives a real `tsx src/main.ts --check-config` child.
-  These are tested at a HIGHER tier than coverage can observe.
+  `--check-config` IS covered, by IT-143, which drives a real `tsx src/main.ts --check-config` child
+  process and asserts the exit code, the refusal message and that no port was bound. These are
+  exercised at a HIGHER tier than line coverage can observe, and reporting them as untested would be
+  the false statement.
 - `src/server.ts` `createServer` 86.1% (820/952) — the composition root; the uncovered remainder
-  needs real external deps (a real litellm binary, a real GitHub credential, a real stdio MCP peer).
+  needs real external dependencies (a real `litellm` binary, a real GitHub credential, a real stdio
+  MCP peer). Unchanged disposition from v24 round 2, and Gate 7.5's real boot is its tier.
+- `src/main.ts` `composeConfig` 88.9% (193/217) — chiefly the litellm `onSupervisionEvent` closure;
+  no `litellm` binary is on PATH in this sandbox (it lives in a pinned venv, see DEPLOY.md §1).
   Unchanged disposition from v24 round 2.
-- `src/main.ts` `composeConfig` 88.9% — the litellm `onSupervisionEvent` closure; no litellm binary
-  on PATH in this sandbox. Unchanged disposition from v24 round 2.
-- `src/workflow-catalog.ts`'s member initializer 92.5% — the bulk of the missing lines are still the
-  three `workflow_diagrams` accessors (`putDiagramPending` 10%, `putDiagramResult` 4%, `getDiagram`
-  8.3%) that v24 round 1 found have ZERO production callers. A DELETION, not a test gap; carried
-  forward as debt rather than papered over with tests for dead code.
-- `src/agent-executor.ts` `parseJsonContent`, `src/scheduler-engine.ts` `fieldsAt`,
-  `src/gateway/claude-agent-sdk-client.ts` `makePreToolUseHook`, `src/cli-lifecycle.ts` `killGroup` —
-  each needs a real subprocess/provider fault this tier cannot produce; listed in the gate report.
+- `src/workflow-catalog.ts`'s member initializer 92.5% (632/683) — the bulk of the missing lines are
+  still the three `workflow_diagrams` accessors (`putDiagramResult` 4%, `getDiagram` 8.3%,
+  `putDiagramPending` 10%) that v24 round 1 found have ZERO production callers. That is a DELETION,
+  not a test gap; writing tests for dead code would make the number green and the tree worse. Carried
+  forward as recorded debt.
 
 No bar was lowered, and no test was weakened, deleted or re-scoped to reach these numbers.

@@ -53,3 +53,40 @@ describe('RunGuard two independent limits (UT-193, DES-181)', () => {
     expect(() => guard.assertBudget()).not.toThrow();
   });
 });
+
+// UT-206 (DES-181/DES-183, TASK-181, v26): `setSpent`'s BARE-NUMBER arm — the one line coverage
+// showed no caller reached. `setSpent` was widened to `{usd, tokens}` for the resume path (which
+// folds all four columns plus USD), but the scalar arm was kept "for a caller that genuinely only
+// holds a token count". A kept arm with no test is how the widening could have silently dropped it,
+// or — worse — made a scalar SILENTLY zero the USD side. Both halves are pinned here.
+// Mock policy (unit): pure class, no I/O.
+describe('RunGuard.setSpent — the surviving scalar arm (UT-206, DES-181/DES-183)', () => {
+  it('a bare number re-arms the TOKEN limit at that count', () => {
+    const guard = new RunGuard({ concurrency: 4, budget: { usd: null, tokens: 100 } } as any);
+    guard.setSpent(100);
+    expect(() => guard.assertBudget()).toThrow(BudgetExceededError);
+  });
+
+  it('a bare number LEAVES the USD side alone — it does not reset an already-hydrated USD total to 0', () => {
+    const guard = new RunGuard({ concurrency: 4, budget: { usd: 10, tokens: 100 } } as any);
+    guard.setSpent({ usd: 10, tokens: 0 });
+    guard.setSpent(1);                       // scalar: tokens only
+    expect(() => guard.assertBudget()).toThrow(/usd/);
+  });
+
+  it('the object arm re-arms BOTH limits, which is the whole reason it was widened', () => {
+    const guard = new RunGuard({ concurrency: 4, budget: { usd: 5, tokens: 5000 } } as any);
+    guard.setSpent({ usd: 5, tokens: 0 });
+    expect(() => guard.assertBudget()).toThrow(/usd/);
+    const other = new RunGuard({ concurrency: 4, budget: { usd: 5, tokens: 5000 } } as any);
+    other.setSpent({ usd: 0, tokens: 5000 });
+    expect(() => other.assertBudget()).toThrow(/tokens/);
+  });
+
+  it('setSpent REPLACES rather than accumulates (the resume path must not double-count the journal)', () => {
+    const guard = new RunGuard({ concurrency: 4, budget: { usd: null, tokens: 100 } } as any);
+    guard.setSpent(99);
+    guard.setSpent(1);
+    expect(() => guard.assertBudget()).not.toThrow();
+  });
+});

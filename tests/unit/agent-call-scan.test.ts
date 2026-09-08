@@ -68,3 +68,45 @@ describe('scanAgentCalls calls[] gains allowedTools / index / group (UT-172, DES
     expect((scan.calls[0] as any).group).toBeUndefined();
   });
 });
+
+// UT-209 (DES-174, ARCH-113, TASK-184, v26): the two DEFENSIVE fallbacks of the alt-span scanners
+// (`findMatchingColon` -> -1, `findArmEnd` -> end-of-script), which per-function coverage showed no
+// test reached. Both exist so a MALFORMED or truncated script — the state the dashboard's own
+// `/dag` read path and the registration checker both hit on real author text — degrades to "no alt
+// group detected" instead of throwing or fabricating a span that swallows the rest of the file.
+// `scanAgentCalls` is TOTAL by design; these pin that it stays total, and that a `?` which is not a
+// ternary never groups two independent calls together.
+// Mock policy (unit): pure function, no I/O.
+describe('scanAgentCalls stays total on malformed ternaries (UT-209, DES-174)', () => {
+  it('a `?` whose then-arm closes its enclosing bracket before any `:` groups nothing (findMatchingColon -> -1)', () => {
+    const script = `const v = (x ? agent('a', { prompt: 'p' }));\nawait agent('b', { prompt: 'q' });`;
+    const scan = scanAgentCalls(script);
+    expect(scan.calls).toHaveLength(2);
+    expect(scan.calls.map((c) => c.label)).toEqual(['a', 'b']);
+    expect((scan.calls[0] as any).group).toBeUndefined();
+    expect((scan.calls[1] as any).group).toBeUndefined();
+  });
+
+  it('a `?` at the very end of the script groups nothing rather than throwing', () => {
+    const scan = scanAgentCalls(`await agent('a', { prompt: 'p' }); const t = cond ?`);
+    expect(scan.calls).toHaveLength(1);
+    expect((scan.calls[0] as any).group).toBeUndefined();
+  });
+
+  it('an else-arm that runs to end-of-script with no `;` still yields a well-formed scan (findArmEnd -> script.length)', () => {
+    const script = `const r = cond ? await agent('a', { prompt: 'p' }) : await agent('b', { prompt: 'q' })`;
+    const scan = scanAgentCalls(script);
+    expect(scan.calls).toHaveLength(2);
+    const [a, b] = scan.calls as any[];
+    expect(a.group).toBeDefined();
+    expect(a.group.kind).toBe('alt');
+    expect(b.group).toEqual(a.group);
+  });
+
+  it('the unterminated-arm scan does not swallow a LATER call into the same alt group', () => {
+    const script = `const r = cond ? await agent('a', { prompt: 'p' }) : await agent('b', { prompt: 'q' });\nawait agent('c', { prompt: 'z' });`;
+    const scan = scanAgentCalls(script);
+    expect(scan.calls).toHaveLength(3);
+    expect((scan.calls[2] as any).group).toBeUndefined();
+  });
+});

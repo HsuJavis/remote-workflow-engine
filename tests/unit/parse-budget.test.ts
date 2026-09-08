@@ -48,3 +48,38 @@ describe('parseBudget — one door, two sources, a bare number means different t
     }
   });
 });
+
+// UT-205 (DES-181, TASK-181, v26): the two refusal arms `parseBudget`'s own coverage showed no test
+// reached — a non-object/array `budget` (line 80) and an unknown key (line 85). Both are the shapes
+// a hand-rolled MCP client actually sends, and both must refuse with a code the caller can act on,
+// not fall through to `parseField` and read `undefined` as "not set".
+// Mock policy (unit): pure function, no I/O.
+describe('parseBudget — the two refusals with no reader (UT-205, DES-181)', () => {
+  it.each([
+    ['a string', '200000'],
+    ['an array', [200000]],
+    ['a boolean', true],
+  ] as const)('wire: %s is refused as neither null, a number, nor {usd?,tokens?}', (_label, value) => {
+    expect(() => parseBudget(value as unknown, { source: 'wire' })).toThrow(/must be null, a number .* or \{usd\?, tokens\?\}/);
+  });
+
+  it('store: the same non-object refusal applies on the store side too (a corrupt row is not silently unbounded)', () => {
+    expect(() => parseBudget('200000' as unknown, { source: 'store' })).toThrow(/must be null, a number/);
+  });
+
+  it('an unknown key is refused BY NAME, on either source', () => {
+    for (const source of ['wire', 'store'] as const) {
+      expect(() => parseBudget({ usd: 5, credits: 10 } as unknown, { source })).toThrow(/unknown key 'credits'/);
+    }
+  });
+
+  it('the unknown-key refusal fires BEFORE the empty-object refusal, so `{typo: 1}` names the typo', () => {
+    try {
+      parseBudget({ tokenz: 5000 } as unknown, { source: 'wire' });
+      throw new Error('did not throw');
+    } catch (err) {
+      expect(String(err)).toMatch(/unknown key 'tokenz'/);
+      expect(String(err)).not.toMatch(/at least one of/);
+    }
+  });
+});

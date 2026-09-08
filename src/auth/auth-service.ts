@@ -300,8 +300,11 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
           return;
         }
         const bearerTtlMs = 7 * 24 * 3600_000;
-        const { token: newBearer, expiresAt } = tokenStore.issue(row.principal, bearerTtlMs);
-        const expiresIn = Math.floor((expiresAt - Date.now()) / 1000);
+        const { token: newBearer } = tokenStore.issue(row.principal, bearerTtlMs);
+        // `issue()` stamps `expiresAt = <its injected clock> + bearerTtlMs`, so the lifetime IS
+        // `bearerTtlMs` — re-deriving it by subtracting the WALL clock from that expiry mixed two
+        // different clocks (the store's is injected) and could report one second short.
+        const expiresIn = Math.floor(bearerTtlMs / 1000);
         const { token: newRefresh } = tokenStore.issueRefresh(row.principal, row.scope, row.clientId, REFRESH_TTL_MS);
         localSendJson(res, 200, {
           access_token: newBearer,
@@ -340,8 +343,10 @@ export function createAuthRouteHandlers(cfg: AuthConfig, tokenStore: TokenStore)
       }
       // Issue bearer token (weeks-scale TTL per DES-095)
       const bearerTtlMs = 7 * 24 * 3600_000; // 1 week
-      const { token, expiresAt } = tokenStore.issue(codeData.principal, bearerTtlMs);
-      const expiresIn = Math.floor((expiresAt - Date.now()) / 1000);
+      const { token } = tokenStore.issue(codeData.principal, bearerTtlMs);
+      // Same as the refresh arm above: the lifetime is `bearerTtlMs`, not a wall-clock subtraction
+      // against an expiry the store stamped with its own injected clock.
+      const expiresIn = Math.floor(bearerTtlMs / 1000);
       // v20a: scope ALWAYS echoed (stored null → ''); refresh_token issued iff offline_access granted.
       const scope = codeData.scope ?? '';
       const responseBody: Record<string, unknown> = {

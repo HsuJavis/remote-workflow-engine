@@ -2,7 +2,7 @@
 // scheduler. `tick(schedules, now)` is a PURE function of persisted schedules + `now` — it decides
 // what is due, it never starts a run itself (the impure driver loop does that). Every method that
 // reads time takes the injected Clock explicitly (Exit-Gate-5 seam consistency, DES-014) — this
-// module never calls `Date.now()`/`setTimeout` itself.
+// module never calls `Date.now()`/`setTimeout` itself. // det:allow — a comment naming the API, not a call
 import type { Clock } from './clock.js';
 
 /** The persisted schedule shape this engine operates on (a superset of scheduler.ts's own CRUD

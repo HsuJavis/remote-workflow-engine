@@ -31,6 +31,7 @@ import { CasStore, isValidSha256Hex, isValidNamespace } from './cas-store.js';
 import type { SecretValueProvider } from './secret-resolver.js';
 import { isAllowedHost, isAllowedOrigin, isLoopback, isLoopbackPeer } from './net-guard.js';
 import { parseWorkflowSkeleton, scanAgentCalls } from './workflow-meta.js';
+import { deriveExpectedGraph, v1FallbackGraph } from './skeleton-graph.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
 import { AssetSyncService, defaultAssetRoot, globalAssetRoot, migrateLegacyGlobalAssets, resolveMcp, type AssetCatalogPort, type AssetCatalogRow, type AssetKind } from './asset-sync.js';
 import { RealMcpProbe, type McpProbe } from './mcp-probe.js';
@@ -505,33 +506,24 @@ async function handleDashboardRequest(
       // script-derived skeleton overlay is withheld; live agent nodes still render (layoutGraph
       // below still receives view.agents).
       // v26 (DES-176, ARCH-114/113, TASK-187): the predicted overlay is now an `ExpectedGraph`
-      // (ARCH-113/TASK-185's `deriveExpectedGraph`), not a flat `SkeletonNode[]`. `skeleton-graph.ts`
-      // is DYNAMICALLY imported — TASK-185 ships it separately, and a static import here would break
-      // every file that imports server.ts before it lands. Its absence (or a script that fails to
-      // parse into a predicted graph) degrades to an EMPTY overlay: live agent nodes still render,
-      // only the predicted/inert-skeleton cells are withheld — the same graceful-degradation
-      // contract auth-masking already relies on, never a 500 over a dashboard read.
+      // (ARCH-113/TASK-185's `deriveExpectedGraph`), not a flat `SkeletonNode[]`. A script that
+      // fails to parse into a predicted graph degrades to an EMPTY overlay: live agent nodes still
+      // render, only the predicted/inert-skeleton cells are withheld — the same graceful-
+      // degradation contract auth-masking already relies on, never a 500 over a dashboard read.
       let expectedGraph: ExpectedGraph = { lanes: [], slots: [], edges: [] };
       if (!authEnabled) {
         try {
-          const mod = await import('./skeleton-graph.js') as {
-            deriveExpectedGraph?: (nodes: unknown, scan: unknown) => { ok: boolean; graph?: ExpectedGraph };
-            v1FallbackGraph?: (nodes: unknown, scan: unknown) => ExpectedGraph;
-          };
-          if (mod.deriveExpectedGraph) {
-            const nodes = parseWorkflowSkeleton(skeletonScript);
-            const scan = scanAgentCalls(skeletonScript);
-            const derived = mod.deriveExpectedGraph(nodes, scan);
-            // v26 integration (DES-176 boundary): a REFUSAL here does not mean "no overlay" — at
-            // layout it means "this is a v1-contract script" (typically: it has no `phase()` at
-            // all, which rule L2 refuses at REGISTRATION but which is perfectly legal to run and
-            // to draw). Collapsing it to the empty overlay withheld every predicted cell from
-            // every pre-v26 workflow's graph; REQ-124 requires those runs to render as before.
-            if (derived.ok && derived.graph) expectedGraph = derived.graph;
-            else if (mod.v1FallbackGraph) expectedGraph = mod.v1FallbackGraph(nodes, scan);
-          }
+          const nodes = parseWorkflowSkeleton(skeletonScript);
+          const scan = scanAgentCalls(skeletonScript);
+          const derived = deriveExpectedGraph(nodes, scan);
+          // v26 integration (DES-176 boundary): a REFUSAL here does not mean "no overlay" — at
+          // layout it means "this is a v1-contract script" (typically: it has no `phase()` at
+          // all, which rule L2 refuses at REGISTRATION but which is perfectly legal to run and
+          // to draw). Collapsing it to the empty overlay withheld every predicted cell from
+          // every pre-v26 workflow's graph; REQ-124 requires those runs to render as before.
+          expectedGraph = derived.ok ? derived.graph : v1FallbackGraph(nodes, scan);
         } catch {
-          // TASK-185 not landed on this deployment yet — degrade to an empty predicted overlay.
+          // A parse/derivation fault degrades to an empty predicted overlay rather than a 500.
         }
       }
       const layout = layoutGraph(expectedGraph, view.agents, view.phases, { startedByType: view.startedBy?.type });

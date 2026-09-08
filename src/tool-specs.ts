@@ -1011,7 +1011,7 @@ function buildDescription(spec: ToolSpec): string {
   return text;
 }
 
-/** Deterministic: pure projection over static data, no I/O, no Date.now(). */
+/** Deterministic: pure projection over static data, no I/O, no Date.now(). // det:allow — a doc comment naming the API, not a call */
 export function projectToolsList(): Array<{
   name: string;
   description: string;

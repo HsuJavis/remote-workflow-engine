@@ -101,17 +101,17 @@ export interface DeterminismGuard {
 
 export const DETERMINISM_GUARDED: readonly DeterminismGuard[] = [
   {
-    call: 'Date.now()',
+    call: 'Date.now()', // det:allow — the guard TABLE names the API it blocks inside a script; this file calls none of them
     why: "resume replays agent() calls keyed by prompt+opts, so a wall-clock value baked into that key would change it on replay and re-dispatch an already-paid call.",
     instead: 'read a timestamp off run_status/run_result, or pass one in via args.',
   },
   {
-    call: 'Math.random()',
-    why: 'the same replay-key hazard as Date.now() — a random value baked into the key changes on every run.',
+    call: 'Math.random()', // det:allow — guard-table literal, not a call
+    why: 'the same replay-key hazard as Date.now() — a random value baked into the key changes on every run.', // det:allow — guard-table literal, not a call
     instead: 'pass a seed in via args.',
   },
   {
-    call: 'new Date()',
+    call: 'new Date()', // det:allow — guard-table literal, not a call
     why: 'called with no arguments this reads the wall clock, the same hazard as Date.now().',
     instead: "pass an argument — new Date('2026-01-01') is allowed.",
   },
@@ -139,13 +139,13 @@ function guardedDate(): typeof Date {
   class GuardedDate extends Date {
     constructor(...args: unknown[]) {
       if (args.length === 0) {
-        throw new GuardError('DETERMINISM_GUARD', 'new Date() without arguments is not allowed inside a workflow script');
+        throw new GuardError('DETERMINISM_GUARD', 'new Date() without arguments is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
       }
       // @ts-expect-error — variadic forwarding to whichever Date overload matches at runtime
       super(...args);
     }
     static override now(): number {
-      throw new GuardError('DETERMINISM_GUARD', 'Date.now() is not allowed inside a workflow script');
+      throw new GuardError('DETERMINISM_GUARD', 'Date.now() is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
     }
   }
   return GuardedDate as unknown as typeof Date;
@@ -156,7 +156,7 @@ function guardedMath(): typeof Math {
     get(target, prop, receiver) {
       if (prop === 'random') {
         return () => {
-          throw new GuardError('DETERMINISM_GUARD', 'Math.random() is not allowed inside a workflow script');
+          throw new GuardError('DETERMINISM_GUARD', 'Math.random() is not allowed inside a workflow script'); // det:allow — refusal message naming the blocked API, not a call
         };
       }
       return Reflect.get(target, prop, receiver);
@@ -280,7 +280,7 @@ function checkMetaLiteral(script: string): { cleaned: string; error?: { code: st
 
 /**
  * Evaluate a workflow script string in a restricted VM context.
- * Guards: Date.now(), Math.random(), new Date() (no args) throw inside the script.
+ * Guards: Date.now(), Math.random(), new Date() (no args) throw inside the script. det:allow — a doc comment naming the blocked APIs, not a call
  * TS syntax, >512KB scripts, and >4096-item parallel()/pipeline() calls are rejected.
  */
 export async function evaluateScript(script: string, api: SandboxApi): Promise<ScriptResult> {

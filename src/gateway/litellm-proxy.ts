@@ -202,9 +202,9 @@ export class LiteLLMProxyManager {
     proc.once('error', (err: Error) => { spawnError = err; });
     const baseUrl = `http://127.0.0.1:${port}`;
 
-    const deadline = Date.now() + this._startupTimeoutMs;
+    const deadline = Date.now() + this._startupTimeoutMs; // det:allow — real elapsed time waiting for an external subprocess to become ready; an injected clock would never advance and the poll would never time out
     let lastErr: unknown;
-    while (Date.now() < deadline) {
+    while (Date.now() < deadline) { // det:allow — same readiness poll as the deadline above
       if (spawnError !== undefined) {
         throw new Error(`litellm proxy failed to spawn: ${spawnError.message}`);
       }
@@ -312,7 +312,7 @@ export class LiteLLMProxyManager {
   private async _sweepStaleTempDirs(legacyMaxAgeMs = 24 * 3600_000): Promise<void> {
     try {
       const names = (await readdir(tmpdir())).filter((n) => n.startsWith('rwe-litellm-'));
-      const cutoff = Date.now() - legacyMaxAgeMs;
+      const cutoff = Date.now() - legacyMaxAgeMs; // det:allow — compared against filesystem mtimes, which are real OS wall-clock facts, not engine state
       await Promise.all(names.map(async (n) => {
         const p = path.join(tmpdir(), n);
         try {

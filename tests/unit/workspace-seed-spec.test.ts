@@ -66,3 +66,42 @@ describe('validateSeedSpec — one door, refuses the first offender, never throw
     expect(result.message).toContain(SEED_ITEM_HINT);
   });
 });
+
+// UT-211 (DES-170, ARCH-110, TASK-175, v26, issue #64): the two refusal/guard lines per-function
+// coverage showed unreached — `validateSeedSpec`'s `exec` type check on the seedManifest arm, and
+// `materializeSeed`'s DEFENCE-IN-DEPTH throw. The latter is the line that replaced `contentB64 ?? ''`,
+// i.e. the exact bug issue #64 was filed about: with no test, a regression there re-introduces a
+// silently-empty seeded file, the one outcome the design says seeding must never have.
+// Mock policy (unit): pure functions; `materializeSeed` writes to a real temp dir (its own I/O, not
+// a mocked boundary).
+describe('the seed guards with no reader (UT-211, DES-170)', () => {
+  it('seedManifest: a non-boolean exec is refused BY NAME', () => {
+    const result = validateSeedSpec('seedManifest', [{ path: 'a.sh', sha256: '0'.repeat(64), exec: 'yes' }]) as any;
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('exec must be a boolean');
+    expect(result.path).toBe('a.sh');
+  });
+
+  it('seedManifest: exec omitted, true and false are all accepted', () => {
+    for (const exec of [undefined, true, false]) {
+      const el: Record<string, unknown> = { path: 'a.sh', sha256: '0'.repeat(64) };
+      if (exec !== undefined) el['exec'] = exec;
+      expect((validateSeedSpec('seedManifest', [el]) as any).ok).toBe(true);
+    }
+  });
+
+  it('materializeSeed THROWS INVALID_SEED_SPEC rather than writing a 0-byte file for a contentless element', async () => {
+    const { mkdtempSync, rmSync, existsSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { materializeSeed } = await import('../../src/workspace-seed.js');
+    const ws = mkdtempSync(join(tmpdir(), 'ut211-'));
+    try {
+      expect(() => materializeSeed(ws, [{ path: 'a.txt', sha256: '0'.repeat(64) } as any]))
+        .toThrow(/INVALID_SEED_SPEC.*a\.txt.*no contentB64/);
+      expect(existsSync(join(ws, 'a.txt'))).toBe(false);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+});

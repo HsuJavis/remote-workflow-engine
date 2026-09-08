@@ -74,3 +74,64 @@ describe('layoutGraph joins by lane ordinal (UT-183, DES-176)', () => {
     }
   });
 });
+
+// UT-212 (DES-176, ARCH-114/113, TASK-187, v26, REQ-124): the two `layoutGraph` branches
+// per-function coverage showed unreached — (a) a DYNAMIC lane holding live agents, and (b) a live
+// agent whose `phaseIndex` is BEYOND the predicted lane set. Both are real production shapes on the
+// owner's box: (a) is any `phase()` inside a loop, (b) is a run whose script was re-registered with
+// fewer phases than the run in flight. Both must still DRAW the agent (ARCH-042's never-drop-a-live-
+// agent rule) and say why in `warnings`, and neither may be silently swallowed.
+// Mock policy (unit): pure function, no I/O — synthetic ExpectedGraph/AgentRecord fixtures.
+describe('layoutGraph — dynamic lanes and lanes beyond the prediction (UT-212, DES-176)', () => {
+  const agent = (id: string, phaseIndex: number | undefined, label: string) => ({
+    agentId: id, label, state: 'done', startedAt: '2026-01-01T00:00:00.000Z',
+    ...(phaseIndex !== undefined ? { phaseIndex } : {}),
+  } as any);
+
+  it('a DYNAMIC lane draws every live agent in it and warns per agent AND per lane', () => {
+    const expected = {
+      lanes: [{ index: 0, title: 'loop', dynamic: true, slots: [] }],
+      slots: [], edges: [],
+    } as any;
+    const out = layoutGraph(expected, [agent('a1', 0, 'x'), agent('a2', 0, 'y')], [] as any);
+    expect(out.cells.filter((c) => c.agentId).map((c) => c.agentId)).toEqual(['a1', 'a2']);
+    expect(out.warnings.some((w) => /lane 0 \(loop\) is dynamic/.test(w))).toBe(true);
+    expect(out.warnings.filter((w) => /unmatched to the predicted layout: frame-grouped/.test(w))).toHaveLength(2);
+  });
+
+  it('a dynamic lane emits NO inert __skel_ cells (nothing can be statically slotted there)', () => {
+    const expected = {
+      lanes: [{ index: 0, title: null, dynamic: true, slots: [0] }],
+      slots: [{ index: 0, lane: 0, labels: ['x'], kind: 'single', tools: { x: 'default' } }],
+      edges: [],
+    } as any;
+    const out = layoutGraph(expected, [agent('a1', 0, 'x')], [] as any);
+    expect(out.cells.filter((c) => String(c.id).startsWith('__skel_'))).toHaveLength(0);
+  });
+
+  it('an agent in a lane BEYOND the predicted set is appended, in its own column, with a warning', () => {
+    const expected = {
+      lanes: [{ index: 0, title: 'one', dynamic: false, slots: [] }],
+      slots: [], edges: [],
+    } as any;
+    const out = layoutGraph(expected, [agent('a1', 0, 'x'), agent('a9', 2, 'z')], [] as any);
+    const drawn = out.cells.filter((c) => c.agentId).map((c) => c.agentId);
+    expect(drawn).toContain('a9');
+    expect(out.warnings).toContain('lane 2 is beyond the predicted layout: appended');
+    expect(out.cells.find((c) => c.agentId === 'a9')!.col).toBe(3);
+  });
+
+  it('several beyond-the-prediction lanes are appended in ASCENDING lane order, one warning each', () => {
+    const expected = { lanes: [{ index: 0, title: 'one', dynamic: false, slots: [] }], slots: [], edges: [] } as any;
+    const out = layoutGraph(expected, [agent('b', 5, 'b'), agent('a', 3, 'a')], [] as any);
+    const beyond = out.warnings.filter((w) => /beyond the predicted layout/.test(w));
+    expect(beyond).toEqual(['lane 3 is beyond the predicted layout: appended', 'lane 5 is beyond the predicted layout: appended']);
+  });
+
+  it('the maxNodes cap still truncates a beyond-the-prediction lane rather than drawing past it', () => {
+    const expected = { lanes: [{ index: 0, title: 'one', dynamic: false, slots: [] }], slots: [], edges: [] } as any;
+    const out = layoutGraph(expected, [agent('a1', 0, 'x'), agent('a2', 4, 'y'), agent('a3', 4, 'z')], [] as any, { maxNodes: 2 });
+    expect(out.truncated).toBe(true);
+    expect(out.cells.filter((c) => c.agentId)).toHaveLength(2);
+  });
+});

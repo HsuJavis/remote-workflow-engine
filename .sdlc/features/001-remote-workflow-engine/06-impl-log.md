@@ -3428,7 +3428,76 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   rather than fabricating `{reasoning:false}`, which would silently disable effort while looking
   identical to a model that truthfully declares none.
 
+- **amended (2026-09-09, Gate 6.5+7 verifier):** the `src/dashboard.ts` diff carried by this commit
+  ALSO contains a Gate 6.5 simplify change this entry did not write — the three `Expected*` interface
+  declarations replaced by an import + re-export from `skeleton-graph.ts`. See IMPL-206; it was in the
+  working tree when this commit was made and was swept up by it.
+
   Writing it also documented a live trap: the effective model comes from `runParams`, not
   `opts.model` — ARCH-096 refuses a tunable written inside the agent() options, so `effectiveOpts.model`
   is overwritten from the run's admission snapshot. A caps test driven off `opts.model` passes
   through a code path production never takes.
+
+### IMPL-206 — Gate 6.5's simplify pass, and the two clocks `expires_in` was subtracting
+- **status:** done
+- **traces:** TASK-185, TASK-187, DES-174, DES-176, ARCH-113, ARCH-114, REQ-124
+- **greens:** UT-183, UT-212, IT-151, IT-146
+- **files:** src/dashboard.ts, src/server.ts, src/auth/auth-service.ts, src/auth/token-store.ts, src/audited-read.ts, src/scheduler.ts, src/scheduler-engine.ts, src/tool-specs.ts, src/sandbox/guards.ts, src/gateway/litellm-proxy.ts
+- **iter:** v26
+- **note:** The merged Gate 6.5 pass over `git diff ce2b10a..HEAD -- src` (35 files, +3501/-595).
+  `/simplify` was invoked through the Skill tool; the Agent fan-out is unavailable in this context, so
+  it ran as a SINGLE-PASS inline review across all four angles — stated, not glossed.
+
+  **TWO fixes, quality-only, zero behaviour change, full suite green after.**
+
+  (1) **`ExpectedGraph` had THREE declarations of one contract.** `dashboard.ts` carried a local
+  structural copy whose own comment read *"canonical home: `src/skeleton-graph.ts`, TASK-185 — not
+  landed as of TASK-187 … replace with a real import once `skeleton-graph.ts` ships"*. It has shipped,
+  and `workflow-catalog.ts` already imports it statically. `dashboard.ts` now imports the three types
+  and re-exports them, so every existing importer of these names from `./dashboard.js` is unaffected;
+  type-only, nothing changes at runtime. ARCH-113's load-bearing property is "one derivation, two
+  consumers" — a second declaration of the shape those two consumers JOIN ON is the same drift risk
+  one layer down, and structural typing hides it until a field diverges. `check-mermaid.ts`'s copy is
+  DELIBERATELY left: UT-115/ADR-022's `skeleton` allowlist does not include that file and even a type
+  import would put the word in its source text — its own comment says so.
+
+  (2) **`server.ts`'s `/dag` route stopped pretending TASK-185 might not exist.** The route dynamically
+  imported `./skeleton-graph.js` behind an optional-member cast and two presence guards, justified by
+  a comment that "a static import here would break every file that imports server.ts before it lands".
+  That was true during the 22-way parallel phase and is false now. Static import; the `try/catch` is
+  KEPT unchanged, because it is what makes the never-500-over-a-dashboard-read contract hold for a
+  parse fault, not merely for a missing module. `solid_check` re-run: unchanged at 0 high / 0 mid
+  (its JS import regex already matched the dynamic form, so the declared dependency set is the same).
+
+  **FIVE candidates NAMED AND REJECTED.** `UNKNOWN_CAPS` declared in both `models/model-book.ts` and
+  `gateway/claude-agent-sdk-client.ts` — deduping needs a new cross-module edge for one three-field
+  literal that `tsc` already keeps in sync (both are typed `Caps`). `foldUsage` (over persisted events)
+  vs `foldUsageFromRecords` (over `AgentRecord`s) — a documented live/at-rest PAIR with different
+  `unpriced` rules over different inputs; the design's lock is that they AGREE, not that they are one
+  function. `run-manager.ts`'s two three-line `validateSeedSpec` blocks — a loop over a 2-tuple saves
+  one line and costs greppability. `v1FallbackGraph`'s unused `nodes` parameter — signature-parallel
+  with `deriveExpectedGraph` at the one call site that switches between them; FLAGGED, not churned.
+  `authoring-guide.ts`'s example corpus — already factored behind `stadiumNode`/`agentSpec`; the rest
+  is data that is right to keep explicit. Altitude reviewed at both new decision points and found right.
+
+  **ONE determinism fix, which is why exit-gate item 4 now passes.**
+  `determinism_check src --check` exited 1 with 18 hits (14 of them PRE-EXISTING at `ce2b10a`; the 4
+  new ones are string literals in `guards.ts`'s own guard TABLE — the file whose job is BLOCKING those
+  APIs). Thirteen are comments or refusal-message literals and now carry `det:allow` with the reason
+  they are not calls. Three are deliberate real time (`audited-read.ts`'s audit-row `ts` — when the
+  read actually happened, the same disposition `clock.ts:22` already carries; `litellm-proxy.ts`'s
+  subprocess readiness poll, which an injected clock would never advance; and its legacy-temp-dir
+  sweep, compared against filesystem mtimes). The remaining TWO were NOT allowed, because the contract
+  forbids `det:allow` on time used for a decision: `auth-service.ts` computed the OAuth `expires_in` as
+  `(expiresAt - Date.now())/1000`, where `expiresAt` came from `TokenStore`'s INJECTED clock — two
+  different clocks, so under any fake clock the number is nonsense, and even under the real one it can
+  report a second short. The subtraction was also redundant: `issue()` stamps `expiresAt = now +
+  bearerTtlMs`, so the lifetime IS `bearerTtlMs`. Both sites now say so, with no clock read at all.
+  `determinism_check` exits 0; `token-store.test.ts` + `auth-routes-integration.test.ts` green.
+
+  **Attribution, on the record.** The `dashboard.ts` half of fix (1) was written by this verifier in
+  the working tree and then SWEPT UP by a concurrent committer into `ad0d803` (the Gate 6 integrator's
+  own IMPL-205 commit, landed mid-gate on this shared tree) rather than being committed by this pass.
+  Nothing was lost and the change in HEAD is byte-for-byte the one written here, but the commit does
+  not name it — recorded here so `git log` is not the only story. The `server.ts` half and the whole
+  determinism fix are this pass's own commit.
