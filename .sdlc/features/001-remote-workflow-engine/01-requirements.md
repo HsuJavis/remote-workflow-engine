@@ -125,6 +125,13 @@ flowchart LR
   - Given a script calling `workflow({scriptPath}, args)` When executed Then the child runs inline sharing the parent's concurrency cap / agent counter / budget, and a second-level nested `workflow()` call inside the child throws
   - Given a configured per-run concurrency cap N and a `parallel()` of more than N thunks When executed Then at most N agents run simultaneously (observable via run status) and all thunks still complete; and total agent count is capped at 1000 per run
   - Given a run started with a token budget T When cumulative output tokens across all agents reach T Then subsequent `agent()` calls throw, and `budget.total/spent()/remaining()` values observable in the script match the server's accounting
+    **SUPERSEDED IN PART BY REQ-127 (v26, 2026-09-08).** The owner's Q5 ruling made the budget a **cost**
+    budget, so from v26 `budget.total/spent()/remaining()` are **USD**, not tokens; the four token columns
+    are read through the new `budget.tokens()`. The clause above still binds in substance — the values a
+    script observes must match the server's accounting, and reaching the limit still stops dispatch — only
+    the UNIT changed. The v25-era tests that assert token semantics on `spent()` (IT-018 / VAL-002 /
+    IT-037 / IT-135 / IT-137) are to be rewritten against `budget.tokens()`, not deleted: the property they
+    pin (script view == server accounting) is exactly what REQ-127 still requires.
 - **iter:** v1
 
 ### REQ-003 — Real agent execution per `agent()` via Claude Agent SDK
