@@ -51,7 +51,10 @@ describe('VAL-170: a budget does not truncate a fan-out, and a refusal is visibl
   }
 
   /** The MCP envelope is `{runId, status, result: <the view>}` — the agents live on `result`. */
-  async function runAndWait(name: string, budget: number | undefined) {
+  // v26 (owner ruling Q5, ADR-037, DES-181): `budget` is an OBJECT on the wire — a bare number is
+  // refused ahead of ajv with a migration hint (`{tokens: N}`). Every case below arms a TOKEN limit,
+  // which is exactly what these v25 cases always meant, so the property each one pins is unchanged.
+  async function runAndWait(name: string, budget: { usd?: number; tokens?: number } | undefined) {
     const started = await callTool('run_start', { name, ...(budget === undefined ? {} : { budget }) });
     const runId = started['runId'] as string;
     if (!runId) throw new Error(`run_start refused, so nothing was exercised: ${JSON.stringify(started)}`);
@@ -73,7 +76,7 @@ describe('VAL-170: a budget does not truncate a fan-out, and a refusal is visibl
     // The owner's own budget. Before v25 the reservation arithmetic (2 x 50% of the TOTAL) refused
     // the third call outright, so `agents` held two researcher records and the third existed
     // nowhere — not as a record, not as a log, not as an event.
-    const { view } = await runAndWait(name, 1_500_000);
+    const { view } = await runAndWait(name, { tokens: 1_500_000 });
     const researchers = (view.agents ?? []).filter((a) => a.label === 'researcher');
 
     expect(researchers).toHaveLength(3);
@@ -87,7 +90,7 @@ describe('VAL-170: a budget does not truncate a fan-out, and a refusal is visibl
     await registerPublishedVia(callTool, name, FAN_OUT);
 
     // budget 0 is spent before the run starts, so every branch meets a genuinely exhausted budget.
-    const { view, result } = await runAndWait(name, 0);
+    const { view, result } = await runAndWait(name, { tokens: 0 });
 
     // 「如果是 budget 問題 應該 fail 時 client 知道 不然他會認為這是問題」 — the owner, on #61.
     expect(view.status).toBe('failed');
@@ -147,7 +150,7 @@ describe('VAL-170: a budget does not truncate a fan-out, and a refusal is visibl
 
     // budget 0 is spent before the run starts, so `parallel()` meets a genuinely exhausted budget
     // and the guide's catch is the only thing between this run and a failure.
-    const { view, result } = await runAndWait(name, 0);
+    const { view, result } = await runAndWait(name, { tokens: 0 });
 
     // Before the #63 fix `e.code` was undefined inside the sandbox, so `e.code !== 'BUDGET_EXCEEDED'`
     // was always true, the example rethrew, and the run this documentation promised was recoverable

@@ -113,7 +113,9 @@ describe('a bounded budget does not throttle parallel() (IT-037, REQ-120 owner r
         } catch (e) {
           refusedCode = e && (e.code || e.name);
         }
-        return { results, refusedCode, finalSpent: budget.spent() };
+        // v26 (owner ruling Q5, ADR-037, DES-182): budget.spent() is USD; the TOKEN counter this
+        // token-limited run is accounted against is budget.tokens().sum. Same number, new accessor.
+        return { results, refusedCode, finalSpent: budget.tokens().sum };
       `, {
       budget: BUDGET,
     });

@@ -26,11 +26,33 @@ import type { Server } from '../../src/server.js';
 import type { GatewayClient } from '../../src/gateway/client.js';
 import { registerPublishedVia, runScriptVia } from '../helpers/workflow-fixtures.js';
 
+// Integrator (v26 Gate 6, work order §B root-cause note): `budget.spent()` is USD from v26
+// (ADR-037/DES-182), so this test can only observe a non-zero value if the model the fake gateway
+// claims to have served is actually PRICED in the run's admission pin. Two halves, both here in the
+// test rather than in production:
+//   (a) the fake names the model the `default` alias really resolves to, so the pin key
+//       `${provider}/${model}` the capture site looks up is the one `RunManager.start()` pinned;
+//   (b) an INJECTED catalog (the existing `createServer({modelCatalog})` seam that feeds
+//       `ModelBook`) gives that model a rate. The static Anthropic table is deliberately NOT grown
+//       to make a test pass — it is a claim about real published prices.
+const PRICED_MODEL = 'claude-3-5-sonnet-20241022'; // DEFAULT_ALIASES.default.model
 const FAKE_PRICED_GATEWAY: GatewayClient = {
   async invoke() {
-    return { ok: true, provider: 'anthropic', model: 'm', tokens: { input: 10, output: 5 }, content: 'x' };
+    return { ok: true, provider: 'anthropic', model: PRICED_MODEL, tokens: { input: 10, output: 5 }, content: 'x' };
   },
 } as GatewayClient;
+
+const INJECTED_CATALOG = async (): Promise<any[]> => [{
+  provider: 'anthropic',
+  model: PRICED_MODEL,
+  description: 'test-priced model',
+  modalities: { in: ['text'], out: ['text'] },
+  contextWindow: 200_000,
+  price: { in: '$1000/1M', out: '$2000/1M' },
+  toolUse: true,
+  location: 'remote',
+  ratesPerM: { in: 0.001, out: 0.002, cacheRead: 0, cacheWrite: 0 },
+}];
 
 let server: Server;
 let baseUrl: string;
@@ -56,7 +78,7 @@ async function pollUntil(runId: string, maxMs = 15000): Promise<any> {
 }
 
 beforeAll(async () => {
-  server = await createServer({ port: 0, bind: '127.0.0.1', gateway: FAKE_PRICED_GATEWAY });
+  server = await createServer({ port: 0, bind: '127.0.0.1', gateway: FAKE_PRICED_GATEWAY, modelCatalog: INJECTED_CATALOG });
   baseUrl = `http://127.0.0.1:${server.port}`;
 });
 afterAll(async () => { await server?.close(); });

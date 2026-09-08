@@ -10,7 +10,20 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import type { GatewayClient } from '../../src/gateway/client.js';
 import { runScriptVia, uniqueWorkflowName } from '../helpers/workflow-fixtures.js';
+
+// Integrator (v26 Gate 6): the item counts `unpricedCalls`, and only a call that actually SUCCEEDS
+// can be unpriced (DES-180: a failed call carries no usage and moves no counter, precisely so an
+// outage cannot inflate this counter). With no provider credentials in this sandbox the real
+// gateway fails every dispatch, so the run produced zero `done` calls and the counter was
+// structurally unreachable — the same scaffolding gap IT-148 documents for its own fake. The
+// injected catalog stays EMPTY: that, not the gateway, is what makes the model unpriced.
+const FAKE_OK_GATEWAY: GatewayClient = {
+  async invoke() {
+    return { ok: true, provider: 'anthropic', model: 'claude-3-5-sonnet-20241022', tokens: { input: 7, output: 3 }, content: 'x' };
+  },
+} as GatewayClient;
 
 let server: Server;
 
@@ -36,7 +49,7 @@ async function poll(runId: string, maxMs = 15000): Promise<any> {
 
 beforeAll(async () => {
   // an empty catalog -> every model is unlisted -> unpriced
-  server = await createServer({ port: 0, bind: '127.0.0.1', modelCatalog: async () => [] });
+  server = await createServer({ port: 0, bind: '127.0.0.1', gateway: FAKE_OK_GATEWAY, modelCatalog: async () => [] });
 });
 afterAll(async () => { await server?.close(); });
 

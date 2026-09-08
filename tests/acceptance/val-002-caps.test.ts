@@ -25,7 +25,9 @@ describe('VAL-002: nesting, concurrency caps, budget accounting (REQ-002)', () =
     return JSON.parse(body.result!.content[0].text);
   }
 
-  async function runAndWait(script: string, opts?: { budget?: number }) {
+  // v26 (owner ruling Q5 / ADR-037 / DES-181): `budget` is an OBJECT on the wire — a bare number is
+  // refused ahead of ajv with a migration hint. A token limit is now spelled `{tokens: N}`.
+  async function runAndWait(script: string, opts?: { budget?: { usd?: number; tokens?: number } }) {
     const run = await runScriptVia(callTool, script, { budget: opts?.budget });
     const runId = run.runId as string;
     // A REFUSED run_start returns `runId:''`; polling that yields a `failed` status that has
@@ -65,22 +67,41 @@ describe('VAL-002: nesting, concurrency caps, budget accounting (REQ-002)', () =
     expect(r.status).toBe('completed');
   }, 30000);
 
-  it('budget total/spent()/remaining() in script match server accounting', async () => {
-    // Run a script that checks budget.remaining() and budget.total
+  it('budget limits/tokens()/spent() in script match server accounting', async () => {
+    // v26 UNIT CHANGE (owner ruling Q5, ADR-037, REQ-127; REQ-002's third acceptance clause amended
+    // in 01-requirements.md): `budget.total`/`spent()`/`remaining()` are USD from v26, and the four
+    // token columns are read through `budget.tokens()`. This run arms a TOKEN limit only, so the USD
+    // accessors correctly report "no USD limit armed" (`null`, never Infinity — SandboxBudget's own
+    // doc) while `limits.tokens`/`tokens()` carry the limit and the accounting.
+    // The PROPERTY pinned is unchanged and is the whole point of REQ-002's clause: the script's view
+    // of the budget is the server's real accounting, not a stub — every field below is read from the
+    // sandboxed child and compared against what the caller asked for.
     const r = await runAndWait(`
       return {
-        total: budget.total,
-        spent: budget.spent(),
-        remaining: budget.remaining(),
+        limits: budget.limits,
+        tokensSum: budget.tokens().sum,
+        usdTotal: budget.total,
+        usdSpent: budget.spent(),
+        usdRemaining: budget.remaining(),
       };
-    `, { budget: 500 });
+    `, { budget: { tokens: 500 } });
     expect(r.status).toBe('completed');
-    // Budget fields should be present and consistent
-    const result = r.result as { total: number; spent: number; remaining: number } | undefined;
+    const result = r.result as {
+      limits: { usd: number | null; tokens: number | null };
+      tokensSum: number; usdTotal: number | null; usdSpent: number; usdRemaining: number | null;
+    } | undefined;
+    expect(result).toBeDefined();
     if (result) {
-      expect(result.total).toBe(500);
-      expect(result.spent).toBeGreaterThanOrEqual(0);
-      expect(result.remaining).toBe(result.total - result.spent);
+      expect(result.limits.tokens).toBe(500);
+      expect(result.limits.usd).toBeNull();
+      // No agent() ran, so the server's own accounting is zero on both counters — and the script
+      // sees exactly that, with the token headroom equal to the whole limit.
+      expect(result.tokensSum).toBe(0);
+      expect(result.limits.tokens! - result.tokensSum).toBe(500);
+      expect(result.usdSpent).toBe(0);
+      // The USD arm is unarmed under a tokens-only budget: `null`, and NOT `Infinity`.
+      expect(result.usdTotal).toBeNull();
+      expect(result.usdRemaining).toBeNull();
     }
   }, 20000);
 
@@ -101,7 +122,7 @@ describe('VAL-002: nesting, concurrency caps, budget accounting (REQ-002)', () =
       } catch (e) {
         return 'budget-thrown: ' + e.code;
       }
-    `, { budget: 0 });
+    `, { budget: { tokens: 0 } });
     // Either the run fails with budget exceeded, or the script catches it
     if (r.status === 'completed') {
       expect(String(r.result)).toMatch(/budget-thrown/i);

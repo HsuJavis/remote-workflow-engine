@@ -43,7 +43,11 @@ function fanOutScript(calls: number): string {
       thunks.push(async () => agent('researcher', { prompt: 'lens-' + i }));
     }
     const results = await parallel(thunks);
-    return { results, spent: budget.spent() };
+    // v26 (owner ruling Q5, ADR-037, DES-182): \`budget.spent()\` is USD; the four TOKEN columns are
+    // read through \`budget.tokens()\`. This run's limit is a token limit, so \`.sum\` is the counter
+    // the oracle below compares against the server's own accounting — same property as v25, new
+    // accessor for the same number.
+    return { results, spent: budget.tokens().sum };
   `;
 }
 
@@ -216,7 +220,8 @@ describe('the honest budget contract: a stop signal, not a hard ceiling (IT-137,
       } catch (e) {
         refusedCode = e && (e.code || e.name);
       }
-      return { wave1, refusedCode, spent: budget.spent() };
+      // v26: token accounting reads through budget.tokens() (budget.spent() is USD) — see fanOutScript.
+      return { wave1, refusedCode, spent: budget.tokens().sum };
     `, { budget: BUDGET });
     const view = await pollUntilSettled(mgr, runId);
     expect(view.status).toBe('completed');

@@ -601,7 +601,16 @@ export class RunManager {
     // here would mean the admission table and the pin table disagreed — never expected in practice.
     const bookSnapshot = await this._modelBook.snapshot();
     const pinned: PriceBook['pinned'] = {};
-    for (const m of modelsToCheck) {
+    // v26 integration (INV-V26-4): the pin is a SUPERSET of the admission set, and the extra member
+    // is `'default'`. `reachableModels` only sees models the AUTHOR named; a script whose `agent()`
+    // calls carry no `model` at all (the common case — `defaultRunParams` leaves `model` undefined)
+    // names none, so the pin came out EMPTY and every call in such a run priced `null`, i.e. REQ-127
+    // recorded nothing for most real runs. Both gateways fall back to the `'default'` alias
+    // (`req.opts.model ?? 'default'`), so it is genuinely reachable and must be pinned. Added HERE
+    // and not inside `reachableModels` on purpose: the admission UNKNOWN_ALIAS check must keep
+    // judging exactly what the author wrote, and `resolveAlias` simply yields nothing for a
+    // deployment whose table has no `'default'` row.
+    for (const m of [...new Set([...modelsToCheck, 'default'])]) {
       const resolved = resolveAlias(this._aliasMap, m);
       if (!resolved) continue;
       pinned[`${resolved.provider}/${resolved.model}`] = bookSnapshot.lookup(resolved.provider, resolved.model);
