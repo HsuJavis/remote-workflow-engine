@@ -2342,3 +2342,30 @@ new key loaded, passthrough answers). Full record: `v26-gate1-working-notes.md`;
 in `01-requirements.md`. `state.yaml` bumped to `iteration: v26`, `current_stage: requirements`. No product
 code changed. Probe artefacts (workflow `i66-probe`, runs 0449d511/55b34b9a/b0be6f5f) removed; the
 owner's evidence runs kept.
+
+## 2026-09-08 — v26 Gate 2 architecture (architect, synthesis of the pre-run lens panel) — ARCH-110..121 + ADR-037..047, PASSED
+The two grouped lens subagents had already run and their four proposals were on disk, so no new panel was
+spawned: `.panel/architecture/adversarial.r{1,2}.md` (security × scalability/consistency × testability) and
+`quality-dimensions.r{1,2}.md` (observability / replaceability / consumability / self-sustainability) were read
+in full, round 2 first, and reconciled into `02-architecture.md`. The slice is four corrections (REQ-121/122/
+124/125), two structural additions — one pure `ExpectedGraph` shared by the diagram checker and the run-DAG
+layout, one `ModelBook` pinned onto the run row at admission — and one large deletion (openai, gemini, the
+non-Anthropic tool curation, two dead effort tables): three new pure files, two new SQLite columns, no new
+service or runtime dependency. Contested points and who conceded are recorded in the file-end **Decision
+rationale — v26**; the ones that moved most: quality-dimensions gave up the bounded unmapped-payload (kept
+subtype+count with a 64-byte cap and a dashboard reader) and the `meta.warnings[]` umbrella (named counters
+won); adversarial gave up title-position matching for the phase ordinal and folded `EFFORT_PROFILES` into one
+`providers.ts` table under a ">=2 readers earns a column" rule; both moved on ADR-038, which narrowed to
+"refuse only when a USD-only budget meets an unpriced model". Two decisions were NOT taken here and carry
+`owner_decision: pending` (they block Gate 8 only): ADR-038's deviation from REQ-127's literal `costUSD:null`
++ count, and ADR-047 — no trigger-started run has ever had a spend cap although `04-design.md` D-V2h says one
+exists and marks it "Resolved"; the ledger rows get corrected at Gate 4 whichever way that is ruled. No
+`FLAG-*` and no `build:`/`selftest:` fields: scale is undeclared, v26 adds no switchable capability, and the
+109 prior ARCH items use the S/M form. archify's doctor passes but no Typed JSON IR was authored — a v26-only
+map would fail `dashboard_check`'s both-ways ARCH↔node cross-check against 109 pre-existing modules, and the
+mermaid 4+1 views remain the baseline (soft dependency, never blocking). `sh .sdlc/trace` reports 39 gaps,
+byte-identical to the pre-gate baseline (0 broken links, 0 orphans; the 20 未實作/未驗證 rows are REQ-121..130
+waiting for Gates 3–7). `state.yaml`: `gates.architecture.passed=true`, `current_stage: design`. The v26 ERD adds a FOURTH instance of the
+already-recorded `dashboard_check` false positive (erDiagram crow's-foot `||--o{` defeats the lexical bracket counter;
+the three existing ones are at `02-architecture.md:935/1199/1646`) — the four flowchart/sequence blocks pass the same
+checker cleanly. No product code changed.
