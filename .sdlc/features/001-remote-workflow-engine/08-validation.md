@@ -9700,3 +9700,121 @@ OpenRouter wire) and, new this round, VAL-187's `owner_decision` (the misnamed p
    by design.
 6. `gates.validation.passed` is flipped to **true** by this pass — that is this gate's job, and the
    closure it was given (REQ-127, REQ-129) is green on this round's own evidence.
+
+## Gate 7.5 round 7 — the out-of-closure fix pass (D13, D14)
+
+Round 6 passed the gate and recorded two findings it deliberately did not fix. The orchestrator
+ruled both into scope for one pass and routed them here; this section records what was measured.
+**No gate flag is flipped by this pass** — `gates.validation.passed` stays as round 6 left it, and
+Gate 8 stays blocked by the two `owner_decision: pending` markers (VAL-186, VAL-187), which are with
+the owner and untouched.
+
+### VAL-200 — an upgraded deployment can create a schedule again (D13 closed)
+- **status:** green
+- **traces:** REQ-115, DES-149, ARCH-099
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **scope note (orchestrator ruling, round 7):** D13 is OUTSIDE the REQ-121..130 closure, and is
+  recorded as a decision rather than silent creep: it is a live, user-facing breakage on **every
+  upgraded deployment**, found by this iteration's own validation, with a one-shot root cause.
+  Shipping v26 with it known-broken means the next release still cannot create a schedule.
+- **evidence:** Full transcript at `evidence/v26/d13-round7-schedules-migration-livecheck.txt`.
+  **Boundary, stated plainly:** this is the real migration and the real `SqliteSchedulerPort.create`
+  running against a **byte copy of this box's production `schedules.db`** (`+ -wal/-shm`, copied out
+  of `~/.local/share/rwe-data/`; the original was never opened, and its mtimes are unchanged). No
+  engine was booted and the MCP HTTP layer was NOT exercised — `schedule_create` delegates to
+  `deps.scheduler.create({...withKind, enabled, createdBy})` in one line (`call-tool.ts:222`) and the
+  check calls exactly that with exactly those defaults. Nothing at the boundary under test is mocked;
+  the injected `catalog`/`runManager` are never reached by `create()`.
+  **(a) The database as production actually holds it.** BEFORE:
+  `workflow` = `{"cid":2,"name":"workflow","type":"TEXT","notnull":1,"dflt_value":null,"pk":0}`, with
+  the six ALTER-added columns already present — i.e. a database that HAS booted v24+ code and still
+  carries the constraint. 0 schedules, 0 run_origins, matching round 6's reading.
+  **(b) The migration ran on construction and left the fresh shape.** AFTER:
+  `CREATE TABLE "schedules" (…)` — the quoted name is the rename's own fingerprint — with
+  `workflow` = `{"cid":2,…,"notnull":0,…}` and all seventeen columns in the fresh order, including
+  `refusalCount INTEGER NOT NULL DEFAULT 0`.
+  **(c) `schedule_create` succeeds on that database:**
+  `{"result":{"kind":"once","id":"ec9675a7-0007-4ecd-8934-20d47717bc2c","claimedBy":null,
+  "createdBy":"operator","at":"2030-01-01T00:00:00.000Z","enabled":true}}` — an UNCLAIMED trigger,
+  which is the shape REQ-115 requires and the exact call that returned
+  `error -32000 NOT NULL constraint failed: schedules.workflow` in round 6. The stored row reads
+  `refusalCount:0`, proving the rebuilt DEFAULT is live (`create()`'s INSERT does not name it).
+  **(d) Row preservation, measured non-vacuously.** Production holds 0 schedules, so "every row
+  intact" would prove nothing there. Run B injects one row of real legacy shape INTO THE COPY before
+  the migration — every v24 column populated (`claimedBy`, `createdBy:'principal-42'`,
+  `refusalCount:3`, `lastRefusedAt`, `lastRefusalReason:'UNCLAIMED'`, a `lastError` JSON) plus a
+  `run_origins` row — and it comes out the far side byte-identical, with the new unclaimed schedule
+  alongside it. Row preservation is also asserted column-by-column in IT-159.
+  **(e) Sibling table checked, as ordered.** `webhooks` is already correct: v24's TASK-156 rebuilt
+  it, and the production copy reads `workflow TEXT` (nullable) under the rebuild's quoted table
+  name. No other trigger table exists. REPORT-ONLY: production's `continuations.db` carries
+  `workflow TEXT NOT NULL`, but nothing in the tree creates or reads that table any more (the
+  continuation store was retired — `call-tool.ts:28`), so it is a dead file, not drift.
+  **(f) The regression lock** is IT-159, measured RED first against BOTH old shapes — never against
+  a fresh database, which is what let D13 through two iterations:
+  `SqliteError: NOT NULL constraint failed: schedules.workflow` at
+  `SqliteSchedulerPort.create src/scheduler.ts:234:8`, and
+  `AssertionError: expected [ Array(17) ] to deeply equal [ Array(17) ]` for the
+  `PRAGMA table_info`-equals-fresh case.
+- **iter:** v26
+
+### VAL-201 — deploy.sh step 2 names the config file the engine will actually read (D14 closed)
+- **status:** green
+- **traces:** REQ-011, DES-022, ARCH-014
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **scope note (orchestrator ruling, round 7):** the second out-of-closure finding round 6 recorded;
+  folded into this pass on the orchestrator's instruction rather than run separately.
+- **evidence:** Red transcript at `evidence/v26/d14-round7-deploy-step2-red.txt`, measured against
+  the PRE-FIX script read with `git show HEAD:deploy.sh` (never checked out). The real step-2 block
+  was executed, stopping before step 3, so no npm/uv/engine was started and production was not
+  approached.
+  **(a) The wrong output, verbatim.** With `RWE_CONFIG_PATH=/tmp/rwe-red-TkHzut/second-instance.json`
+  the old block printed `== 步驟 2/5：確認設定檔 (rwe.config.json) ==` and
+  `rwe.config.json 已存在，保留不覆蓋。` — a line about the repo-root file the engine would not read
+  — and the file at `RWE_CONFIG_PATH` was never created.
+  **(b) The same block after the fix** prints `== 步驟 2/5：確認設定檔
+  (/tmp/…/second-instance.json) ==` and either `已從 rwe.config.example.json 建立 <that path>` or
+  `<that path> 已存在，保留不覆蓋。`, and with the variable unset still resolves to
+  `<repo>/rwe.config.json`.
+  **(c) The regression lock** is IT-160, which executes the REAL block out of the REAL `deploy.sh`
+  rather than a copy of its text. Its own RED was the anchor check: `from=54 to=34` — the pre-fix
+  script resolved `RWE_CONFIG_PATH` at step 4, AFTER step 2 had already run.
+  **(d) Behaviour change, deliberate and documented:** a missing config at a custom
+  `RWE_CONFIG_PATH` is now created THERE, and a path whose directory does not exist stops the script
+  at step 2 rather than booting on the wrong config. DEPLOY.md §0's second-instance block says both.
+- **iter:** v26
+
+### Gate self-check (v26 round-7 fix pass — D13, D14)
+
+1. **Both defects have a test measured RED first**, quoted above and in 05-tests.md (IT-159,
+   IT-160). D13's test never uses a fresh database as its subject and D14's never uses a copy of the
+   script's text — in each case the thing that hid the defect is the thing the test refuses to do.
+2. **Production untouched, and never approached.** No engine was booted, restarted or signalled;
+   nothing under `~/.local/share/rwe-data/` was written — `schedules.db` was COPIED out (mtimes
+   unchanged: `2026-09-05_10:56:08`) and every check ran against the copy in a scratch directory.
+   No `pkill`. `rwe.config.json` and `~/.config/rwe.env` were not written. No scratch config file was
+   created at all this pass, so no secret was copied anywhere.
+3. `npx tsc --noEmit` clean; `npx vitest run` **2618 passed / 0 failed / 26 env-gated skips** over
+   373 files (372 passed + 1 skipped). The round-5/6 baseline was 2609 / 0 / 26 — round 6 shipped no
+   code — so +9 is exactly IT-159's 6 cases plus IT-160's 3. Nothing deleted, nothing skipped, and
+   no existing assertion was changed or appeased.
+4. **The manuals now say what an operator needs.** README's schedule section and DEPLOY.md §6 no
+   longer carry D13 as a known limitation with a workaround — both state that an upgraded workRoot
+   heals itself on the next start, that there is nothing to run, that existing schedules and their
+   claim/refusal columns move across untouched, and that a crash mid-rebuild simply retries. DEPLOY
+   §0 gained the `RWE_CONFIG_PATH` behaviour D14 changed.
+5. **No gate flag flipped.** `gates.validation.passed` stays as round 6 set it; Gate 8 stays blocked
+   by VAL-186 and VAL-187's `owner_decision: pending`, which are the owner's and were not touched.
+6. **Traceability: no new broken link, no new orphan.** `sh .sdlc/trace` reads 1485 items / 24 gaps
+   against a baseline of 1479 / 22, measured by extracting commit `cbfa89d` with `git archive` into
+   a scratch tree and running there — never by checking the ledger backwards in place (CLAUDE.md).
+   Both counts contain **zero 斷鏈 and zero 孤兒**; the +2 delta is two `sev:low` 漂移 markers,
+   DES-022 and DES-149, raised because a v26 IMPL now traces a v2 / v24 design — i.e. those design
+   documents are older than the fix that references them. **Left for the designer, not edited here**,
+   per the round-3 precedent restated in the round-5 carry-forward: a fixer does not amend a design
+   document. DES-149's signature says `workflow` becomes nullable but nothing in it mentions a
+   migration for an existing file; DES-022 predates `RWE_CONFIG_PATH` entirely.

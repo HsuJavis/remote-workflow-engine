@@ -3737,3 +3737,73 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   `claude-sonnet-5` — a misnamed alias (that name is a different, $3/$15 model), visible in the
   round-5 evidence as `claude-sonnet-5 aliases:["sonnet","claude-sonnet-4-6"]`. The config file is
   off-limits to this pass; it is an owner decision, not a code defect.
+
+### IMPL-218 — D13: an upgraded deployment can create a schedule again
+- **status:** done
+- **traces:** TASK-141, DES-149, ARCH-099, REQ-115
+- **greens:** IT-159
+- **files:** src/scheduler.ts, tests/integration/scheduler-migration.test.ts, DEPLOY.md, README.md
+- **commit:** 5f5742b
+- **iter:** v26
+- **scope note (orchestrator ruling, round 7):** D13 is OUTSIDE the REQ-121..130 closure. It was put
+  in scope deliberately, and recorded here so Gate 8 sees a decision rather than silent creep: it is
+  a live, user-facing breakage on **every upgraded deployment**, found by this iteration's own
+  validation, with a one-shot root cause. Shipping v26 with it known-broken means the next release
+  still cannot create a schedule.
+- **note:** v24 (REQ-115) made a trigger creatable before any workflow claims it, so `create()`
+  inserts `workflow = NULL` — and the matching relaxation to `workflow TEXT` landed only in the
+  `CREATE TABLE IF NOT EXISTS` that runs for a NEW database. SQLite cannot drop a NOT NULL via
+  ALTER and no rebuild was written for `schedules`, so every workRoot created before that change
+  kept `workflow TEXT NOT NULL` and answered `NOT NULL constraint failed: schedules.workflow` to
+  every `schedule_create`. Fresh boxes worked, upgraded boxes had been unable to mint a trigger
+  since v24, and **every test missed it because every test builds a fresh database**.
+  The fix is the documented table-rebuild — create the correct shape under a temp name, copy, drop,
+  rename — in ONE transaction (SQLite DDL is transactional, so a crash mid-rebuild leaves the
+  original table and the next boot simply redoes it), guarded by `PRAGMA table_info(schedules)` so
+  it is a no-op on a database that is already correct and never even rewrites its schema text.
+  **Placement, chosen deliberately and against the twin's:** `webhook-registry.ts:112` runs its
+  rebuild BEFORE its additive ALTERs, which was right there because it ran on the FIRST v24 boot,
+  when the source table could only be the old 5-column one. `schedules` never got that boot —
+  production has already ALTERed in all six v24 columns and STILL carries the NOT NULL (dumped
+  read-only: `workflow TEXT NOT NULL, … , lastError TEXT, claimedBy TEXT, createdBy TEXT,
+  refusalCount INTEGER NOT NULL DEFAULT 0, lastRefusedAt TEXT, lastRefusalReason TEXT`). Running
+  AFTER the ALTERs makes the source column set identical for a pre-v22 file and for today's
+  production file, so the `INSERT … SELECT` names all seventeen columns explicitly instead of
+  guessing which exist — the alternative would have silently dropped `claimedBy`/`createdBy`/
+  refusal accounting from any box that had them populated.
+  **Sibling table checked, as ordered:** `webhooks` is already correct — v24's TASK-156 rebuilt it,
+  and the production copy reads `workflow TEXT` (nullable) with the rebuild's quoted table name
+  still visible in `sqlite_master`. No other trigger table exists. Two REPORT-ONLY observations,
+  neither touched: production's `continuations.db` carries `workflow TEXT NOT NULL`, but nothing in
+  the tree creates or reads that table any more (the continuation store was retired — see
+  `call-tool.ts:28`), so it is a dead file, not drift, and `server.ts`'s `continuationDbPath` option
+  is vestigial with it.
+  The deleted comment at the old `scheduler.ts:194-197` ("an existing pre-v24 file … keeps its NOT
+  NULL constraint … which is fine because every pre-v24 row already carries a real workflow value")
+  WAS the bug, written down as a reassurance: it reasoned about existing rows and never about the
+  next INSERT. It is gone rather than annotated.
+
+### IMPL-219 — D14: deploy.sh reports on the config file the engine will actually read
+- **status:** done
+- **traces:** TASK-023, DES-022, ARCH-014, REQ-011
+- **greens:** IT-160
+- **files:** deploy.sh, tests/integration/deploy-config-path.test.ts, DEPLOY.md
+- **commit:** 5f5742b
+- **iter:** v26
+- **scope note (orchestrator ruling, round 7):** also outside the closure, folded into the D13 pass
+  on the orchestrator's instruction rather than run as a separate pass; it is the second
+  out-of-closure finding round 6 recorded and routed.
+- **note:** Step 2 checked, created and reported on the repo-root `rwe.config.json` unconditionally
+  while step 4 launched the engine with `RWE_CONFIG_PATH` (`export
+  RWE_CONFIG_PATH="${RWE_CONFIG_PATH:-$(pwd)/rwe.config.json}"`), so every second-instance boot
+  printed `rwe.config.json 已存在，保留不覆蓋。` about a file the engine would not read. The engine
+  itself was always right (`.rwe.log`'s `workRoot=` line proves it) — only the message misled.
+  The resolution line moved above step 2 and step 2 now uses `$RWE_CONFIG_PATH` for the `-f` test,
+  the `cp` target, the step header and both messages. **Fixing only the message would have been
+  incoherent**: with the `-f` test still on the repo-root file, "／path/to/other.json 已存在" would
+  have been a NEW lie whenever the repo-root file was the one that existed.
+  **Deliberate behaviour change, named here:** the `cp` target is now `$RWE_CONFIG_PATH`, so a
+  missing config at a custom path is created THERE (previously a useless repo-root file was created
+  and the engine still found nothing), and a path whose directory does not exist stops the script at
+  step 2 under `set -e` instead of booting on the wrong config. DEPLOY.md §0's second-instance block
+  states both.

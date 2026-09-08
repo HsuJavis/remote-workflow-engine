@@ -11325,3 +11325,52 @@ boundary, as in IT-157. Asserts one row per model, no `price:"unknown"` / `rates
 `AssertionError: expected 4 to be 8 // Object.is equality` — eight served rows for four models, the
 exact shape VAL-195(d) measured on the real deployment — and
 `AssertionError: expected undefined to deeply equal [ 'haiku', 'claude-haiku-4-5' ]`.
+
+### IT-159 — an UPGRADED schedules db ends up shaped exactly like a fresh one (D13)
+- **status:** green
+- **traces:** DES-149, ARCH-099, REQ-115
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/integration/scheduler-migration.test.ts` (new, 6 cases). The twin of
+`webhook-migration.test.ts` (IT-*, TASK-156) for the table that never got the rebuild. **No case
+uses a fresh database as the subject** — that is precisely what let D13 through two iterations —
+so the file hand-writes the two pre-migration shapes that exist in the wild: the pre-v22 11-column
+table, and TODAY'S PRODUCTION SHAPE (dumped read-only from this box's `~/.local/share/rwe-data/
+schedules.db`: the 11 original columns plus the six ALTER-added ones, still `workflow TEXT NOT
+NULL`). The load-bearing case is `PRAGMA table_info` deep-equality against a fresh db — cid, name,
+type, notnull, dflt_value and pk, in order — which encodes the invariant D13 broke ("upgraded ==
+fresh") instead of re-testing the happy path; it also catches a rebuild that drops
+`refusalCount INTEGER NOT NULL DEFAULT 0`, load-bearing because `create()`'s INSERT does not name
+that column (`scheduler.ts:230`). The other cases: the seeded row survives with all seventeen
+columns byte-equal (every v24 column carries a NON-default value so preservation is a real
+assertion) and `run_origins` with it; running the constructor twice leaves `sqlite_master.sql`
+byte-identical and does not duplicate a row; and on an already-correct db the stored CREATE keeps
+its UNQUOTED table name — a rebuild would leave `CREATE TABLE "schedules"` — proving the PRAGMA
+guard skipped the block entirely. RED (measured):
+`SqliteError: NOT NULL constraint failed: schedules.workflow` at `SqliteSchedulerPort.create
+src/scheduler.ts:234:8` (`code: 'SQLITE_CONSTRAINT_NOTNULL'`), plus
+`AssertionError: expected [ Array(17) ] to deeply equal [ Array(17) ]` on both shapes.
+
+### IT-160 — deploy.sh step 2 acts on the config file the engine will actually read (D14)
+- **status:** green
+- **traces:** DES-022, ARCH-014, REQ-011
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/integration/deploy-config-path.test.ts` (new, 3 cases). Executes the REAL step-2 block
+extracted from the REAL `deploy.sh` between two structural anchors (the `export RWE_CONFIG_PATH=`
+line and the step-3 header) and stops before step 3, so no npm/uv/engine is started — the assertion
+is on behaviour, not on a source grep. Cases: with `RWE_CONFIG_PATH` set to a temp path, the header
+and the creation message name THAT path, the file is created there with `rwe.config.example.json`'s
+bytes, and no message names a bare `rwe.config.json`; with the target already present it is kept
+byte-for-byte and the keep message names its full path; and with the variable unset the resolution
+still defaults to `<repo>/rwe.config.json`. RED (measured against `git show HEAD:deploy.sh`, before
+the fix): the `beforeAll` anchor check fails outright — `from=54 to=34`, i.e. the script resolved
+`RWE_CONFIG_PATH` at step 4, AFTER step 2 had already run — and the old block prints
+`== 步驟 2/5：確認設定檔 (rwe.config.json) ==` / `rwe.config.json 已存在，保留不覆蓋。` while
+`RWE_CONFIG_PATH` points elsewhere; the target file is never created.
