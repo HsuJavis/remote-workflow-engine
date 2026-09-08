@@ -8930,7 +8930,7 @@ on that port — never `pkill -f`.
   4 unpriced call(s) · (lower bound)` (`evidence/v26/req129-round2-after-pan.png`).
 - **iter:** v26
 
-### VAL-192 — REQ-128: a FOURTH fresh cold model registers on the FIRST attempt (defect D6 closed)
+### VAL-192 — REQ-128: another fresh cold model registers on the FIRST attempt (defect D6 closed)
 - **status:** green
 - **traces:** REQ-128, REQ-117, REQ-130, REQ-121
 - **tier:** acceptance
@@ -8943,7 +8943,11 @@ on that port — never `pkill -f`.
   Boot: scratch engine on port 8923, own `workRoot` outside every Claude project, `gateway:"sdk"`,
   `default`→ollama `qwen2.5:7b`. The engine's workflow table was empty at the start, so nothing on
   it could be read as a worked example. Full transcript:
-  `.sdlc/features/001-remote-workflow-engine/evidence/v26/req128-round2-deepseek-firsttry.json`.
+  `.sdlc/features/001-remote-workflow-engine/evidence/v26/req128-round2-deepseek-firsttry.json`;
+  the probe harness itself is committed beside it as `req128-round2-harness.mjs` so the delta
+  re-run can repeat the protocol verbatim and can SEE the truncation fix in the code (the
+  transcript records tool results at 4 000 chars, so the JSON alone cannot show what the subject
+  was served).
   **Result: `registerAttempts: 1`, `refusals: 0`, over 24 tool calls.** It read
   `workflow_authoring_guide` FIRST, then `models_list`/`system_info`, then registered ONCE:
   `{"status":"completed","version":1,"result":{"name":"cold-probe-d","version":"v1"}}`. Its single
