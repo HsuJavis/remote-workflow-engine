@@ -20,7 +20,7 @@ import type { ClaudeAgentSdkGatewayConfig } from '../../src/gateway/claude-agent
 // Neutralize main.ts's boot side-effects (same pattern as IT-021/IT-022).
 vi.mock('node:child_process', () => ({ spawn: vi.fn(() => ({ on: vi.fn(), kill: vi.fn(), pid: 99 })) }));
 process.exit = vi.fn() as unknown as typeof process.exit;
-import { composeConfig } from '../../src/main.js';
+import { composeConfig, KNOWN_FILE_CONFIG_KEYS } from '../../src/main.js';
 
 // Fake deps that neutralize all real subprocess/network boundaries.
 // queryImpl is typed against the REAL seam (ClaudeAgentSdkGatewayConfig['queryImpl'] = typeof
@@ -229,4 +229,95 @@ describe('composeConfig() v2 key wiring (DES-022, standing rule 1)', () => {
     const cfg = await composeConfig({ runConcurrency: 40, gateway: 'direct-fetch' } as any, FAKE_DEPS);
     expect((cfg as Record<string, unknown>)['runConcurrency']).toBe(40);
   });
+});
+
+// v26 Gate 7.5 round 1 (defect D7): `agentSlots` — the THIRD time this file's bug class has bitten
+// (v11 `updateFlagPath`, v15 `auth`, now this). It is declared in `KNOWN_FILE_CONFIG_KEYS`, is
+// documented, is read by `createServer` (`config?.agentSlots ?? 32`) — and `composeConfig()` never
+// forwarded it, so booting with `"agentSlots": 7` still reported `agentSemaphore.total 32` on
+// `/api/status`. A one-off fix invites a fourth, so the sweep below is mechanical over the key list
+// itself rather than one more hand-written case.
+describe('agentSlots is wired (UT-218, defect D7)', () => {
+  it('agentSlots is forwarded from FileConfig into the returned ServerConfig', async () => {
+    const cfg = await composeConfig({ agentSlots: 7, gateway: 'direct-fetch' } as any, FAKE_DEPS);
+    expect((cfg as Record<string, unknown>)['agentSlots']).toBe(7);
+  });
+});
+
+// UT-219 (v26 Gate 7.5 round 1, defect D7): the mechanical sweep. Every key in
+// `KNOWN_FILE_CONFIG_KEYS` is either PROBED here (a value goes in, the same value must come out of
+// composeConfig) or EXCLUDED with a stated reason. The totality assertion is what makes it a
+// drift-lock: a new FileConfig key with neither a probe nor an exclusion fails this test, which is
+// the signal the previous three misses never had.
+const EXCLUDED: Record<string, string> = {
+  // Consumed by composeConfig itself (it selects the gateway branch); `config.gateway` holds the
+  // constructed GatewayClient, not this string.
+  gateway: 'consumed as the branch selector, never forwarded as a value',
+  // JSON-inexpressible injected seams. They are typed into FileConfig only because it is declared
+  // `Partial<Omit<ServerConfig, ...>>`; a config FILE can never carry a function or a class
+  // instance, so "forwarding" them is meaningless. Reported to the owner as an Omit candidate.
+  issueReporter: 'injected seam (an object with methods) — cannot come from JSON',
+  mcpProbe: 'injected seam — cannot come from JSON',
+  modelCatalogFetchers: 'injected seam (fetch functions) — cannot come from JSON',
+  modelCatalog: 'injected seam (a function) — cannot come from JSON',
+  systemInfo: 'injected seam (a sampler object) — cannot come from JSON',
+  proxyManager: 'injected seam (a LiteLLMProxyManager instance) — cannot come from JSON',
+  // Documented as sdk-branch-only: these three reach ClaudeAgentSdkGatewayConfig at construction,
+  // never ServerConfig, and have no effect on the direct-fetch path by design (FileConfig's own
+  // doc comments say so).
+  defaultAllowedTools: 'sdk branch only — passed to ClaudeAgentSdkGatewayClient, not onto ServerConfig',
+  anthropicBaseUrl: 'sdk branch only — passed to ClaudeAgentSdkGatewayClient, not onto ServerConfig',
+  anthropicAuth: 'sdk branch only — passed to ClaudeAgentSdkGatewayClient, not onto ServerConfig',
+  // Covered by its own cases above (the raw role map is TRANSFORMED, not copied).
+  principals: 'validated + transformed by normalizePrincipals — covered by its own two cases above',
+};
+
+const PROBES: Record<string, unknown> = {
+  bind: '127.0.0.2',
+  port: 8123,
+  allowedHosts: ['probe.example'],
+  workRoot: '/var/rwe/probe-root',
+  aliases: { default: { provider: 'ollama', model: 'probe-model' } },
+  timeoutMs: 4321,
+  retries: 3,
+  useLiteLLMProxy: false,
+  litellmPort: 4099,
+  agentDefinitionsDir: '/var/rwe/agents',
+  schedulerDbPath: '/var/rwe/sched.db',
+  assetRoot: '/var/rwe/assets',
+  agentSlots: 7,
+  runConcurrency: 40,
+  workspaceTtlMs: 7200000,
+  maxWorkflowDepth: 5,
+  maxWorkflowDescendants: 300,
+  maxConcurrentRuns: 65,
+  seedRefAllowlist: ['https://seeds.example/'],
+  continuationDbPath: '/var/rwe/cont.db',
+  casDir: '/var/rwe/cas',
+  maxBlobBytes: 33_554_432,
+  webhookDbPath: '/var/rwe/hooks.db',
+  updateFlagPath: '/var/rwe/update.flag',
+  updateResultPath: '/var/rwe/update.json',
+  selfUpdateDbPath: '/var/rwe/selfupdate.db',
+  auth: { enabled: false },
+  maxTimeoutMs: 900000,
+  maxAppendPromptBytes: 2048,
+  maxEffort: 'medium',
+  maxWorkflowVersions: 12,
+  mcpEgressAllowlist: ['https://mcp.example/'],
+};
+
+describe('every KNOWN_FILE_CONFIG_KEYS entry is probed or excluded (UT-219, defect D7)', () => {
+  it('the key list is exactly PROBES + EXCLUDED — a new key with neither fails here', () => {
+    const known = Object.keys(KNOWN_FILE_CONFIG_KEYS).sort();
+    const accounted = [...Object.keys(PROBES), ...Object.keys(EXCLUDED)].sort();
+    expect(accounted).toEqual(known);
+  });
+
+  for (const [key, value] of Object.entries(PROBES)) {
+    it(`${key} survives composeConfig()`, async () => {
+      const cfg = await composeConfig({ [key]: value, gateway: 'direct-fetch' } as any, FAKE_DEPS);
+      expect((cfg as Record<string, unknown>)[key]).toEqual(value);
+    });
+  }
 });

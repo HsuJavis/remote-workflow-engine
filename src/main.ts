@@ -77,7 +77,11 @@ interface FileConfig extends Partial<Omit<ServerConfig, 'gateway' | 'principals'
 // cannot silently rot as FileConfig grows — a config key composeConfig() forgets to forward is
 // caught by the wiring test, and a key an operator TYPOS (or a retired key like `graphAnalyzer`
 // they never removed) is caught here, at boot, instead of silently doing nothing either way.
-const KNOWN_FILE_CONFIG_KEYS: Record<keyof FileConfig, true> = {
+// v26 Gate 7.5 round 1 (defect D7): EXPORTED so the wiring test can sweep this list mechanically —
+// every entry must be probed (a value in, the same value out of composeConfig) or excluded with a
+// stated reason. Three misses (v11 `updateFlagPath`, v15 `auth`, v26 `agentSlots`) were each found
+// by a real run instead of by a test; a hand-written case per key is what let the fourth hide.
+export const KNOWN_FILE_CONFIG_KEYS: Record<keyof FileConfig, true> = {
   bind: true, port: true, allowedHosts: true, workRoot: true, aliases: true, timeoutMs: true,
   retries: true, useLiteLLMProxy: true, proxyManager: true, litellmPort: true,
   agentDefinitionsDir: true, gateway: true, issueReporter: true, mcpProbe: true,
@@ -233,6 +237,12 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // here or it silently no-ops — the twice-bitten composeConfig bug class (ARCH-090, standing
     // rule 1); the wiring UT carries a row for it.
     runConcurrency: fileConfig.runConcurrency,
+    // v26 Gate 7.5 round 1 (defect D7): the HOST-wide agent-slot ceiling (`createServer` reads
+    // `config?.agentSlots ?? 32`). Declared, documented and never forwarded — the THIRD instance of
+    // the bug class the two lines above name, found by a real boot reporting `agentSemaphore.total
+    // 32` under `"agentSlots": 7`. UT-219 now sweeps the whole key list instead of trusting that
+    // each new key remembered to add its own case.
+    agentSlots: fileConfig.agentSlots,
     // v13 (REQ-080): forward the seedRef egress allowlist so rwe.config.json can enable engine-pull;
     // absent → RunManager keeps it fail-closed (SEEDREF_DISABLED). Same convention as maxConcurrentRuns.
     seedRefAllowlist: fileConfig.seedRefAllowlist,
