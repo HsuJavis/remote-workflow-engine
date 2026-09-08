@@ -6,7 +6,7 @@
 #   ./deploy.sh                 # 前景啟動 (Ctrl+C 停止；適合第一次跑/除錯)
 #   ./deploy.sh --background    # 背景啟動 (寫 PID 到 .rwe.pid，適合驗證腳本/CI)
 #
-# 冪等：已存在的 rwe.config.json / litellm venv 不會被覆蓋或重建。
+# 冪等：已存在的設定檔 ($RWE_CONFIG_PATH，預設 repo 根目錄的 rwe.config.json) / litellm venv 不會被覆蓋或重建。
 # 任何無法自動化的步驟，本腳本會停下並印出清楚的下一步指示，而不是猜測。
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -17,19 +17,24 @@ RWE_BIND="${RWE_BIND:-127.0.0.1}"
 echo "== 步驟 1/5：安裝 Node 依賴 (npm install) =="
 npm install
 
-echo "== 步驟 2/5：確認設定檔 (rwe.config.json) =="
-if [ ! -f rwe.config.json ]; then
-  cp rwe.config.example.json rwe.config.json
-  echo "已從 rwe.config.example.json 建立 rwe.config.json — 請視需要編輯 workRoot / aliases。"
+# 引擎讀哪一個設定檔由 RWE_CONFIG_PATH 決定（未設定時才是 repo 根目錄的 rwe.config.json）。
+# 這一行必須在步驟 2 之前解析：否則跑第二個實例（RWE_CONFIG_PATH 指到別處）時，步驟 2 會去檢查、
+# 建立、並回報 repo 根目錄那一份「引擎根本不會讀」的檔案（v26 Gate 7.5 round 6 defect D14）。
+export RWE_CONFIG_PATH="${RWE_CONFIG_PATH:-$(pwd)/rwe.config.json}"
+
+echo "== 步驟 2/5：確認設定檔 ($RWE_CONFIG_PATH) =="
+if [ ! -f "$RWE_CONFIG_PATH" ]; then
+  cp rwe.config.example.json "$RWE_CONFIG_PATH"
+  echo "已從 rwe.config.example.json 建立 $RWE_CONFIG_PATH — 請視需要編輯 workRoot / aliases。"
   if [ -z "${RWE_WORK_ROOT:-}" ]; then
     # 範例設定檔的 workRoot 預設為系統路徑 (/var/lib/remote-workflow-engine)，非 root 無法寫入。
     # 首次部署且呼叫端未指定 RWE_WORK_ROOT 時，改用使用者可寫的預設路徑，讓一鍵部署免 root 也能成功；
     # 這只在「剛建立全新設定檔」時發生一次，不會覆蓋既有部署的設定。
     export RWE_WORK_ROOT="${RWE_WORK_ROOT:-$HOME/.local/share/remote-workflow-engine}"
-    echo "首次部署且未指定 RWE_WORK_ROOT：改用非 root 可寫的預設路徑 $RWE_WORK_ROOT（如需自訂，設定環境變數 RWE_WORK_ROOT 或編輯 rwe.config.json 的 workRoot 後重跑）。"
+    echo "首次部署且未指定 RWE_WORK_ROOT：改用非 root 可寫的預設路徑 $RWE_WORK_ROOT（如需自訂，設定環境變數 RWE_WORK_ROOT 或編輯 $RWE_CONFIG_PATH 的 workRoot 後重跑）。"
   fi
 else
-  echo "rwe.config.json 已存在，保留不覆蓋。"
+  echo "$RWE_CONFIG_PATH 已存在，保留不覆蓋。"
 fi
 
 echo "== 步驟 3/5：確認 LiteLLM Python venv (gateway:\"sdk\" 需要) =="
@@ -52,7 +57,6 @@ export PATH="$LITELLM_VENV/bin:$PATH"
 
 echo "== 步驟 4/5：啟動服務 (RWE_BIND=$RWE_BIND RWE_PORT=$RWE_PORT) =="
 export RWE_BIND RWE_PORT
-export RWE_CONFIG_PATH="${RWE_CONFIG_PATH:-$(pwd)/rwe.config.json}"
 
 start_cmd=(node node_modules/tsx/dist/cli.mjs src/main.ts)
 

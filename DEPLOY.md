@@ -57,6 +57,10 @@ litellm 已存在於 ~/.rwe-litellm-venv/bin/litellm，略過建立。
 RWE_CONFIG_PATH=/path/to/another/rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=8792 ./deploy.sh --background
 ```
 
+設了 `RWE_CONFIG_PATH`，步驟 2 就完全針對那一份檔案：檢查、（不存在時）從
+`rwe.config.example.json` 建立、並在訊息裡印出它的完整路徑——不會再去動、也不會再回報 repo 根目錄
+那份引擎根本不會讀的 `rwe.config.json`。路徑所在的目錄要先存在，否則腳本會在步驟 2 停下來。
+
 系統概觀：
 
 ```
@@ -759,13 +763,17 @@ npm run start
   丟掉這個參數）。`run_agent_log` 的 `harness.effortApplied` **會如實回報 `{applied:false, reason:…}`
   並說明原因**。Anthropic 別名的 `effort` 有作用（spawn 出來的 CLI argv 上看得到 `--effort <值>`）。
 
-- **舊部署（升級上來的 workRoot）建不了新的排程。** 呼叫 `schedule_create` 會回
-  `NOT NULL constraint failed: schedules.workflow`。原因是 `schedules` 資料表在早期版本把
-  `workflow` 欄位設成「不可為空」，而 SQLite 不能事後改欄位的可空性，也還沒有重建資料表的搬移
-  程式；全新建立的 workRoot 沒有這個問題（實測：同一份設定、同一個引擎版本，複製自本機生產環境的
-  workRoot 會失敗，空的 workRoot 會成功）。**影響範圍**：只影響「新增排程」；已存在的排程照跑，
-  webhook 觸發（`POST /hooks/:id`）不受影響，`agent()`／`run_start` 全部不受影響。**暫時做法**：
-  需要新排程時，改用 webhook 觸發，或在一個全新的 workRoot 上部署。
+- **舊部署（升級上來的 workRoot）：`schedules` 資料表會在下次啟動時自動重建，你不必做任何事。**
+  `schedules` 在早期版本把 `workflow` 欄位設成「不可為空」（那時觸發器一定綁著工作流程）；自從
+  觸發器改成「先建立、再由工作流程認領」之後，`schedule_create` 會寫入 `workflow = NULL`，於是
+  升級上來的資料庫會回 `NOT NULL constraint failed: schedules.workflow`，而全新的 workRoot 正常。
+  SQLite 不能事後改欄位的可空性，所以引擎改用官方的「重建資料表」做法：**啟動時**檢查
+  `PRAGMA table_info(schedules)`，只有在 `workflow` 還是 NOT NULL 時，才在**一個交易裡**建新表、
+  逐列複製、drop、rename。**你要做的事：沒有**——升級後正常啟動即可，不需要停機以外的動作、不需要
+  跑任何搬移指令、也不需要換 workRoot。**資料**：既有排程（含 `claimedBy`／`createdBy`／
+  `refusalCount`／`lastError` 等欄位）與 `run_origins` 全部原封不動搬過去。**中途斷電**：交易沒
+  commit，舊表完好，下次啟動再重建一次即可（重建有冪等保護，已經正確的資料庫完全不會被碰）。
+  同樣的重建 `webhooks` 早就做過了，這次補上 `schedules`。
 
 **日誌與狀態位置**：日誌僅 stdout/stderr（`[remote-workflow-engine] ...` 前綴），交給你的
 process manager（systemd/pm2/docker）收集；沒有另外寫檔案 log。狀態存在 `$workRoot/store`

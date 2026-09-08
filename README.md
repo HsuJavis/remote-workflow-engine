@@ -389,9 +389,9 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # 沒有被任何版本認領的觸發器到期時會被拒絕，理由記在 schedule_list 那一列的 lastRefusalReason（UNCLAIMED）。
 ```
 
-> 從舊版本一路升級上來的 `workRoot`，`schedule_create` 目前會回
-> `NOT NULL constraint failed: schedules.workflow`（資料表舊欄位限制，尚未有搬移程式）。全新的
-> `workRoot` 不受影響；細節與暫時做法見 DEPLOY.md §6。webhook 觸發不受影響。
+> 從舊版本一路升級上來的 `workRoot` **不需要任何手動步驟**：`schedules` 資料表在早期版本把
+> `workflow` 欄位設成「不可為空」（那時觸發器一定綁著工作流程），引擎會在**下次啟動時自動重建**
+> 這張表，把既有排程原封不動搬過去。細節見 DEPLOY.md §6。
 
 ## 安全模型
 

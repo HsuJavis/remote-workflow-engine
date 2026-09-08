@@ -1,0 +1,159 @@
+# D13 live check — migration + schedule_create against a COPY of this box's production schedules.db
+# 2026-09-09. Source: /home/user/.local/share/rwe-data/schedules.db (+ -wal/-shm), copied read-only;
+# the original was never opened by this check. Script: .rwe-d13-livecheck.ts (scratch, deleted after).
+
+##### RUN A — the copy exactly as production is (0 schedules, 0 run_origins)
+
+---------- BEFORE (copy of production schedules.db, engine never opened) ----------
+sqlite_master.sql:
+CREATE TABLE schedules (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        workflow TEXT NOT NULL,
+        argsJson TEXT,
+        cron TEXT,
+        tz TEXT,
+        at TEXT,
+        enabled INTEGER NOT NULL,
+        nextFire INTEGER,
+        lastFire TEXT,
+        lastRunId TEXT
+      , lastError TEXT, claimedBy TEXT, createdBy TEXT, refusalCount INTEGER NOT NULL DEFAULT 0, lastRefusedAt TEXT, lastRefusalReason TEXT)
+workflow column: {"cid":2,"name":"workflow","type":"TEXT","notnull":1,"dflt_value":null,"pk":0}
+columns: id, kind, workflow, argsJson, cron, tz, at, enabled, nextFire, lastFire, lastRunId, lastError, claimedBy, createdBy, refusalCount, lastRefusedAt, lastRefusalReason
+schedules rows (0): []
+run_origins rows (0): []
+
+---------- AFTER constructing SqliteSchedulerPort (migration ran) ----------
+sqlite_master.sql:
+CREATE TABLE "schedules" (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            workflow TEXT,
+            argsJson TEXT,
+            cron TEXT,
+            tz TEXT,
+            at TEXT,
+            enabled INTEGER NOT NULL,
+            nextFire INTEGER,
+            lastFire TEXT,
+            lastRunId TEXT,
+            lastError TEXT,
+            claimedBy TEXT,
+            createdBy TEXT,
+            refusalCount INTEGER NOT NULL DEFAULT 0,
+            lastRefusedAt TEXT,
+            lastRefusalReason TEXT
+          )
+workflow column: {"cid":2,"name":"workflow","type":"TEXT","notnull":0,"dflt_value":null,"pk":0}
+columns: id, kind, workflow, argsJson, cron, tz, at, enabled, nextFire, lastFire, lastRunId, lastError, claimedBy, createdBy, refusalCount, lastRefusedAt, lastRefusalReason
+schedules rows (0): []
+run_origins rows (0): []
+
+---------- schedule_create (scheduler.create, call-tool.ts:222) ----------
+{"result":{"kind":"once","id":"ec9675a7-0007-4ecd-8934-20d47717bc2c","claimedBy":null,"createdBy":"operator","at":"2030-01-01T00:00:00.000Z","enabled":true}}
+
+---------- AFTER schedule_create ----------
+sqlite_master.sql:
+CREATE TABLE "schedules" (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            workflow TEXT,
+            argsJson TEXT,
+            cron TEXT,
+            tz TEXT,
+            at TEXT,
+            enabled INTEGER NOT NULL,
+            nextFire INTEGER,
+            lastFire TEXT,
+            lastRunId TEXT,
+            lastError TEXT,
+            claimedBy TEXT,
+            createdBy TEXT,
+            refusalCount INTEGER NOT NULL DEFAULT 0,
+            lastRefusedAt TEXT,
+            lastRefusalReason TEXT
+          )
+workflow column: {"cid":2,"name":"workflow","type":"TEXT","notnull":0,"dflt_value":null,"pk":0}
+columns: id, kind, workflow, argsJson, cron, tz, at, enabled, nextFire, lastFire, lastRunId, lastError, claimedBy, createdBy, refusalCount, lastRefusedAt, lastRefusalReason
+schedules rows (1): [{"id":"ec9675a7-0007-4ecd-8934-20d47717bc2c","kind":"once","workflow":null,"argsJson":null,"cron":null,"tz":null,"at":"2030-01-01T00:00:00.000Z","enabled":1,"nextFire":1893456000000,"lastFire":null,"lastRunId":null,"lastError":null,"claimedBy":null,"createdBy":"operator","refusalCount":0,"lastRefusedAt":null,"lastRefusalReason":null}]
+run_origins rows (0): []
+
+
+##### RUN B — same copy, but one pre-existing row of legacy shape INJECTED INTO THE COPY first
+# (production holds 0 schedules, so row preservation would otherwise be vacuous on the real file)
+
+---------- BEFORE (copy of production schedules.db, engine never opened) ----------
+sqlite_master.sql:
+CREATE TABLE schedules (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        workflow TEXT NOT NULL,
+        argsJson TEXT,
+        cron TEXT,
+        tz TEXT,
+        at TEXT,
+        enabled INTEGER NOT NULL,
+        nextFire INTEGER,
+        lastFire TEXT,
+        lastRunId TEXT
+      , lastError TEXT, claimedBy TEXT, createdBy TEXT, refusalCount INTEGER NOT NULL DEFAULT 0, lastRefusedAt TEXT, lastRefusalReason TEXT)
+workflow column: {"cid":2,"name":"workflow","type":"TEXT","notnull":1,"dflt_value":null,"pk":0}
+columns: id, kind, workflow, argsJson, cron, tz, at, enabled, nextFire, lastFire, lastRunId, lastError, claimedBy, createdBy, refusalCount, lastRefusedAt, lastRefusalReason
+schedules rows (1): [{"id":"legacy-prod-row","kind":"cron","workflow":"nightly-report","argsJson":"{\"tz\":\"Asia/Taipei\"}","cron":"0 3 * * *","tz":"Asia/Taipei","at":null,"enabled":1,"nextFire":1735700000000,"lastFire":"2024-12-31T19:00:00.000Z","lastRunId":"run-abc","lastError":"{\"code\":\"DISPATCH_FAILED\",\"at\":\"2025-01-01T00:00:00.000Z\"}","claimedBy":"nightly-report","createdBy":"principal-42","refusalCount":3,"lastRefusedAt":"2025-01-02T00:00:00.000Z","lastRefusalReason":"UNCLAIMED"}]
+run_origins rows (1): [{"runId":"run-abc","scheduleId":"legacy-prod-row","kind":"cron"}]
+
+---------- AFTER constructing SqliteSchedulerPort (migration ran) ----------
+sqlite_master.sql:
+CREATE TABLE "schedules" (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            workflow TEXT,
+            argsJson TEXT,
+            cron TEXT,
+            tz TEXT,
+            at TEXT,
+            enabled INTEGER NOT NULL,
+            nextFire INTEGER,
+            lastFire TEXT,
+            lastRunId TEXT,
+            lastError TEXT,
+            claimedBy TEXT,
+            createdBy TEXT,
+            refusalCount INTEGER NOT NULL DEFAULT 0,
+            lastRefusedAt TEXT,
+            lastRefusalReason TEXT
+          )
+workflow column: {"cid":2,"name":"workflow","type":"TEXT","notnull":0,"dflt_value":null,"pk":0}
+columns: id, kind, workflow, argsJson, cron, tz, at, enabled, nextFire, lastFire, lastRunId, lastError, claimedBy, createdBy, refusalCount, lastRefusedAt, lastRefusalReason
+schedules rows (1): [{"id":"legacy-prod-row","kind":"cron","workflow":"nightly-report","argsJson":"{\"tz\":\"Asia/Taipei\"}","cron":"0 3 * * *","tz":"Asia/Taipei","at":null,"enabled":1,"nextFire":1735700000000,"lastFire":"2024-12-31T19:00:00.000Z","lastRunId":"run-abc","lastError":"{\"code\":\"DISPATCH_FAILED\",\"at\":\"2025-01-01T00:00:00.000Z\"}","claimedBy":"nightly-report","createdBy":"principal-42","refusalCount":3,"lastRefusedAt":"2025-01-02T00:00:00.000Z","lastRefusalReason":"UNCLAIMED"}]
+run_origins rows (1): [{"runId":"run-abc","scheduleId":"legacy-prod-row","kind":"cron"}]
+
+---------- schedule_create (scheduler.create, call-tool.ts:222) ----------
+{"result":{"kind":"once","id":"3a1ea579-16ee-4e04-bb49-afdeb3044426","claimedBy":null,"createdBy":"operator","at":"2030-01-01T00:00:00.000Z","enabled":true}}
+
+---------- AFTER schedule_create ----------
+sqlite_master.sql:
+CREATE TABLE "schedules" (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            workflow TEXT,
+            argsJson TEXT,
+            cron TEXT,
+            tz TEXT,
+            at TEXT,
+            enabled INTEGER NOT NULL,
+            nextFire INTEGER,
+            lastFire TEXT,
+            lastRunId TEXT,
+            lastError TEXT,
+            claimedBy TEXT,
+            createdBy TEXT,
+            refusalCount INTEGER NOT NULL DEFAULT 0,
+            lastRefusedAt TEXT,
+            lastRefusalReason TEXT
+          )
+workflow column: {"cid":2,"name":"workflow","type":"TEXT","notnull":0,"dflt_value":null,"pk":0}
+columns: id, kind, workflow, argsJson, cron, tz, at, enabled, nextFire, lastFire, lastRunId, lastError, claimedBy, createdBy, refusalCount, lastRefusedAt, lastRefusalReason
+schedules rows (2): [{"id":"3a1ea579-16ee-4e04-bb49-afdeb3044426","kind":"once","workflow":null,"argsJson":null,"cron":null,"tz":null,"at":"2030-01-01T00:00:00.000Z","enabled":1,"nextFire":1893456000000,"lastFire":null,"lastRunId":null,"lastError":null,"claimedBy":null,"createdBy":"operator","refusalCount":0,"lastRefusedAt":null,"lastRefusalReason":null},{"id":"legacy-prod-row","kind":"cron","workflow":"nightly-report","argsJson":"{\"tz\":\"Asia/Taipei\"}","cron":"0 3 * * *","tz":"Asia/Taipei","at":null,"enabled":1,"nextFire":1735700000000,"lastFire":"2024-12-31T19:00:00.000Z","lastRunId":"run-abc","lastError":"{\"code\":\"DISPATCH_FAILED\",\"at\":\"2025-01-01T00:00:00.000Z\"}","claimedBy":"nightly-report","createdBy":"principal-42","refusalCount":3,"lastRefusedAt":"2025-01-02T00:00:00.000Z","lastRefusalReason":"UNCLAIMED"}]
+run_origins rows (1): [{"runId":"run-abc","scheduleId":"legacy-prod-row","kind":"cron"}]

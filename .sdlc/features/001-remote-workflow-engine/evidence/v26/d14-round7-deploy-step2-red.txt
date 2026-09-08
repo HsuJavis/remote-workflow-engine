@@ -1,0 +1,11 @@
+# D14 red — the new test measured against the PRE-FIX deploy.sh (git show HEAD:deploy.sh, 2026-09-09)
+
+beforeAll anchors: from=54 to=34  (test asserts from>-1 AND to>from)
+RED: beforeAll assertion fails — deploy.sh does not resolve RWE_CONFIG_PATH before step 2
+--- old step 2 stdout with RWE_CONFIG_PATH=/tmp/rwe-red-lqn0jv/second-instance.json ---
+== 步驟 2/5：確認設定檔 (rwe.config.json) ==
+rwe.config.json 已存在，保留不覆蓋。
+--- assertions the new test makes ---
+out contains "確認設定檔 (/tmp/rwe-red-lqn0jv/second-instance.json)" ? false
+target file created ? false
+out has NO bare rwe.config.json ? false

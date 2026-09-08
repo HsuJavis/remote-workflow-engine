@@ -191,15 +191,62 @@ export class SqliteSchedulerPort {
     // fresh CREATE TABLE above already has it, so this is a silent no-op there.
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN lastError TEXT'); } catch { /* already present */ }
     // v24 (ARCH-099/DES-149/150, TASK-141): the "five columns" — additive, same idempotent idiom.
-    // `workflow` above is also relaxed from NOT NULL for a FRESH table (an unclaimed trigger has no
-    // bound workflow yet); an existing pre-v24 file predates this and keeps its NOT NULL constraint
-    // (SQLite cannot drop a column constraint via ALTER), which is fine because every pre-v24 row
-    // already carries a real workflow value.
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN claimedBy TEXT'); } catch { /* already present */ }
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN createdBy TEXT'); } catch { /* already present */ }
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN refusalCount INTEGER NOT NULL DEFAULT 0'); } catch { /* already present */ }
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN lastRefusedAt TEXT'); } catch { /* already present */ }
     try { this._db.exec('ALTER TABLE schedules ADD COLUMN lastRefusalReason TEXT'); } catch { /* already present */ }
+    // v26 Gate 7.5 round 6, defect D13: the `CREATE TABLE` above relaxed `workflow` to nullable for
+    // a FRESH database only — an already-created file keeps `workflow TEXT NOT NULL`, and since
+    // REQ-115 made a trigger creatable before any workflow claims it, `create()` inserts NULL there
+    // and every UPGRADED deployment fails `schedule_create` outright. SQLite cannot drop a NOT NULL
+    // via ALTER, so this is the documented table-rebuild: create the correct shape under a temp
+    // name, copy every row, drop, rename. Same migration `webhook-registry.ts:112` already runs for
+    // the twin table — `schedules` was simply missed in v24.
+    //
+    // WHY IT SITS AFTER THE ALTERs (and the webhooks one sits before them): the webhooks rebuild
+    // ran on the FIRST v24 boot, so the source table could only be the old 5-column one. `schedules`
+    // never got that boot — production has already ALTERed in all six columns and STILL carries the
+    // NOT NULL. Running after the ALTERs makes the source column set identical for both a pre-v22
+    // file and today's production file, so the copy can name all seventeen columns explicitly
+    // instead of guessing which exist. Idempotent: a fresh or already-rebuilt db has `workflow`
+    // nullable, so the PRAGMA guard skips the block entirely and does not even rewrite the schema.
+    const workflowIsNotNull = (this._db.prepare('PRAGMA table_info(schedules)').all() as Array<{ name: string; notnull: number }>)
+      .some((c) => c.name === 'workflow' && c.notnull === 1);
+    if (workflowIsNotNull) {
+      // Transactional (SQLite DDL is transactional): a crash mid-rebuild leaves the original
+      // `schedules` untouched and the next boot's PRAGMA check simply redoes it, rather than
+      // stranding rows in a half-renamed table.
+      this._db.transaction(() => {
+        this._db.exec(`
+          CREATE TABLE schedules__d13_rebuild (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            workflow TEXT,
+            argsJson TEXT,
+            cron TEXT,
+            tz TEXT,
+            at TEXT,
+            enabled INTEGER NOT NULL,
+            nextFire INTEGER,
+            lastFire TEXT,
+            lastRunId TEXT,
+            lastError TEXT,
+            claimedBy TEXT,
+            createdBy TEXT,
+            refusalCount INTEGER NOT NULL DEFAULT 0,
+            lastRefusedAt TEXT,
+            lastRefusalReason TEXT
+          );
+          INSERT INTO schedules__d13_rebuild
+            SELECT id, kind, workflow, argsJson, cron, tz, at, enabled, nextFire, lastFire, lastRunId,
+                   lastError, claimedBy, createdBy, refusalCount, lastRefusedAt, lastRefusalReason
+              FROM schedules;
+          DROP TABLE schedules;
+          ALTER TABLE schedules__d13_rebuild RENAME TO schedules;
+        `);
+      })();
+    }
   }
 
   async create(s: NewSchedule): Promise<ScheduleResult<Schedule>> {
