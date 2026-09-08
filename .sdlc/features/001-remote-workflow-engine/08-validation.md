@@ -8925,7 +8925,12 @@ never reads it (harmless, left alone — it is the owner's file, not a repo arti
   `Input.synthesizeScrollGesture{gestureSourceType:'mouse'}` (the real compositor input pipeline) ⇒
   `scale(2.85312)`, with a control gesture over a plain area of the same page scrolling it 134 px, so
   the pipeline is provably live. Fit then resets both: author `hit "BUTTON#diagram-fit"`,
-  `isTrusted:true` ⇒ `translate(0px, 0px) scale(1)`; DAG the same (`target "dag-fit"`).
+  `isTrusted:true` ⇒ `translate(0px, 0px) scale(1)`; DAG the same (`target "dag-fit"`). **Provenance,
+  because it changes which earlier evidence to trust:** rounds 1 and 3 both recorded the author
+  figure's wheel as green (`dZoom … scale(1.1)`), but they read it with a harness-registered listener
+  present on the page — which is exactly the condition that changes Chromium's wheel routing. This is
+  the first round to measure that clause under uninstrumented real input, with the compositor gesture
+  and its control scroll as the cross-check.
   **(d) The grandfathered TD figure** — the clause 「既有 TD 圖同樣適用(渲染層,不動圖本身)」
   (`req129-round6-tdfigure-harness.mjs`, capture `req129-round6-tdfigure.json`, screenshots
   `req129-round6-td-{figure-1100px,after-pan,wheel-zoomed}.png`). All five figures on their release
