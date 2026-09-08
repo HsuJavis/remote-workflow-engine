@@ -604,6 +604,18 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         'cacheWrite, sum}` spent so far. A USD budget counts only calls the model catalog can price ' +
         '— an unpriced call adds 0 to USD spend and never trips a USD limit — so set `budget.tokens` ' +
         'for a limit that binds on every model, including local ones with no listed price.\n\n' +
+        // v26 Gate 7.5 round 1 (defect D4): the four columns are priced at FOUR rates, and an
+        // author sizing a USD budget for a cache-heavy workflow has no other way to learn which
+        // cache-write multiplier the engine assumes.
+        'The four token columns are priced at four different rates, not one. On the Anthropic ' +
+        'models this deployment prices statically, a cache READ costs about a tenth of a fresh ' +
+        'input token and a cache WRITE costs more than one: the published multipliers are 1.25x ' +
+        'input for a 5-minute cache and 2x for a 1-hour one. **This engine bills every cache write ' +
+        'at 2x** — the usage it receives reports a single `cacheWrite` figure with no TTL in it, so ' +
+        'the two cannot be told apart, and the more expensive of the two is the safe assumption for ' +
+        'a spend limit (a budget that stops slightly early is recoverable; one that stops late is ' +
+        'not). Your `costUSD` for a cache-writing call is therefore an upper bound, never an ' +
+        'undercount.\n\n' +
         'A refusal is visible, and is NOT the same thing as your own thunk throwing:\n\n' +
         '- your thunk throws → `parallel()`/`pipeline()` give that slot `null` and the rest keep going ' +
         '(the documented contract);\n' +

@@ -275,3 +275,17 @@ describe('the guide states the script-body form (UT-215, defect D6)', () => {
     expect(para).toMatch(/AGENT_UNDECLARED/);
   });
 });
+
+// UT-221 (v26 Gate 7.5 round 1, defect D4): the guide states WHICH cache-write multiplier the
+// engine bills at and why — an author sizing a USD budget for a cache-heavy workflow cannot learn
+// it anywhere else, and the engine had to pick one because the usage it receives carries no TTL.
+describe('the guide states the cache-write multiplier it bills (UT-221, defect D4)', () => {
+  const text = buildAuthoringGuide(CEILINGS);
+
+  it('names both published multipliers, the one this engine uses, and the reason', () => {
+    expect(text).toMatch(/1\.25x/);
+    expect(text).toMatch(/every cache write \*\*? ?at 2x|cache write.{0,40}2x/i);
+    expect(text).toMatch(/no TTL|without a TTL|no TTL in it/i);
+    expect(text).toMatch(/upper bound/i);
+  });
+});

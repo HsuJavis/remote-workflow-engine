@@ -213,3 +213,49 @@ describe('filterCatalog (REQ-040)', () => {
     expect(filterCatalog(many, { limit: 5 }).length).toBe(5);
   });
 });
+
+// UT-220 (v26 Gate 7.5 round 1, defects D3 + D4): the static Anthropic price table is the ONE input
+// to every `costUSD` and to any USD budget on an anthropic alias, so a wrong row is not cosmetic.
+// D3: `claude-sonnet-5` was carried at $3/$15 (Sonnet 4.6's price) — the real rate is $2/$10.
+// D4: cache read and cache write were both priced at the INPUT rate on the grounds that no per-TTL
+// breakdown was published; the published multipliers are ~0.1x input for a READ and 1.25x (5m) /
+// 2x (1h) for a WRITE, so a cache read was over-charged ~10x and a write under-charged.
+// Source for every number here: the claude-api skill's cached model table (2026-06-24 cache), the
+// same source VAL-187 cross-checked the haiku figure against.
+// Mock policy (unit): pure data assertion, no I/O.
+import { STATIC_ANTHROPIC_RATES, displayPrice } from '../../src/models/model-catalog.js';
+import { priceCall } from '../../src/run-guard.js';
+
+describe('the static anthropic price table (UT-220, defects D3/D4)', () => {
+  it('claude-sonnet-5 is $2/$10 per MTok, not $3/$15', () => {
+    const rates = STATIC_ANTHROPIC_RATES['claude-sonnet-5']!;
+    expect(rates.in).toBe(2e-6);
+    expect(rates.out).toBe(10e-6);
+    expect(displayPrice(rates)).toEqual({ in: '$2/1M', out: '$10/1M' });
+  });
+
+  it('the two rows that were already right are untouched', () => {
+    expect(STATIC_ANTHROPIC_RATES['claude-opus-4-8']!.in).toBe(5e-6);
+    expect(STATIC_ANTHROPIC_RATES['claude-opus-4-8']!.out).toBe(25e-6);
+    expect(STATIC_ANTHROPIC_RATES['claude-haiku-4-5-20251001']!.in).toBe(1e-6);
+    expect(STATIC_ANTHROPIC_RATES['claude-haiku-4-5-20251001']!.out).toBe(5e-6);
+  });
+
+  it('every row prices a cache READ at 0.1x input and a cache WRITE at 2x input (the 1h TTL)', () => {
+    for (const [model, rates] of Object.entries(STATIC_ANTHROPIC_RATES)) {
+      expect(rates.cacheRead, `${model} cacheRead`).toBeCloseTo(rates.in * 0.1, 12);
+      expect(rates.cacheWrite, `${model} cacheWrite`).toBeCloseTo(rates.in * 2, 12);
+    }
+  });
+
+  // VAL-187 / the Gate 6 journal recorded `costUSD 0.003011` for 2796 input + 43 output on
+  // claude-haiku-4-5-20251001 against a REAL anthropic-direct call. Haiku's rates were not among
+  // the wrong ones, so the number must survive this change — re-derived here rather than assumed.
+  it('re-derives the recorded smoke number: 2796 in + 43 out on haiku is still $0.003011', () => {
+    const cost = priceCall(
+      { input: 2796, output: 43, cacheRead: 0, cacheWrite: 0 },
+      STATIC_ANTHROPIC_RATES['claude-haiku-4-5-20251001']!,
+    );
+    expect(cost).toBeCloseTo(0.003011, 9);
+  });
+});

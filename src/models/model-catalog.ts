@@ -97,14 +97,27 @@ export const ZERO_RATES: FourRates = { in: 0, out: 0, cacheRead: 0, cacheWrite: 
 /** v26 (DES-178, ARCH-116, TASK-178): numeric per-token rates for the static anthropic table —
  *  the ONE source of truth `STATIC_ANTHROPIC`'s display price is derived from AND `ModelBook`'s
  *  own last-resort fallback (`model-book.ts`) reads directly, so the two can never disagree.
- *  No published per-TTL cache-tier breakdown exists for these models yet, so cache read/write are
- *  priced at the `in` rate — the same "missing cache rate → prompt rate, an upper bound" convention
- *  `ratesFromOpenRouterPricing` uses below. Reviewed 2026-09-08 against the claude-api skill.
- *  Prices displayed as "$5/1M" etc. below are exactly `rates × 1e6`, checked by `displayPrice`. */
+ *  Prices displayed as "$5/1M" etc. below are exactly `rates × 1e6`, checked by `displayPrice`.
+ *
+ *  v26 Gate 7.5 round 1 (defects D3 + D4), re-derived against the claude-api skill's cached model
+ *  table (2026-06-24) — the same source VAL-187 cross-checked the haiku figure against:
+ *  - D3: `claude-sonnet-5` was carried at $3/$15. That is SONNET 4.6's price; Sonnet 5 is $2/$10.
+ *    Opus 4.8 ($5/$25) and Haiku 4.5 ($1/$5) were already right and are unchanged.
+ *  - D4: both cache columns were priced at the `in` rate, justified by "no published per-TTL
+ *    cache-tier breakdown exists for these models yet". That is no longer true. The published
+ *    multipliers are ~0.1x input for a cache READ and 1.25x (5m TTL) / 2x (1h TTL) for a cache
+ *    WRITE, so the old flat rate over-charged a read ~10x and under-charged a write.
+ *    WHICH WRITE MULTIPLIER: 2x, the 1h TTL. LiteLLM's usage reports ONE
+ *    `cache_creation_input_tokens` figure with no TTL split, so the engine cannot tell the two
+ *    apart and must pick one; 2x is the upper bound of the two, which is the same "conservative for
+ *    a spend limit, never invented" convention `ratesFromOpenRouterPricing` below already applies —
+ *    a budget that stops slightly early is safe, one that stops late is not. It is also the TTL
+ *    VAL-187 actually observed on the wire: the CLI's own `total_cost_usd` cross-check
+ *    (`cache_creation 7940` tokens) reconciled at 2x input, not 1.25x. */
 export const STATIC_ANTHROPIC_RATES: Record<string, FourRates> = {
-  'claude-opus-4-8': { in: 0.000005, out: 0.000025, cacheRead: 0.000005, cacheWrite: 0.000005 },
-  'claude-sonnet-5': { in: 0.000003, out: 0.000015, cacheRead: 0.000003, cacheWrite: 0.000003 },
-  'claude-haiku-4-5-20251001': { in: 0.000001, out: 0.000005, cacheRead: 0.000001, cacheWrite: 0.000001 },
+  'claude-opus-4-8': { in: 0.000005, out: 0.000025, cacheRead: 0.0000005, cacheWrite: 0.00001 },
+  'claude-sonnet-5': { in: 0.000002, out: 0.00001, cacheRead: 0.0000002, cacheWrite: 0.000004 },
+  'claude-haiku-4-5-20251001': { in: 0.000001, out: 0.000005, cacheRead: 0.0000001, cacheWrite: 0.000002 },
 };
 
 /** Static table of the well-known current Anthropic models (REQ-039). Values I'm confident about
@@ -116,7 +129,7 @@ export const STATIC_ANTHROPIC_RATES: Record<string, FourRates> = {
 // `supported_parameters` — the static table never sets it) — the SAME fact, computed the same way.
 const STATIC_ANTHROPIC: ModelEntry[] = [
   { provider: 'anthropic', model: 'claude-opus-4-8', description: 'Claude Opus 4.8 — most capable Opus-tier model', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 1_000_000, price: { in: '$5/1M', out: '$25/1M' }, toolUse: true, location: 'remote', ratesPerM: STATIC_ANTHROPIC_RATES['claude-opus-4-8'], effortDeclared: 'unknown', declaredSource: 'static' },
-  { provider: 'anthropic', model: 'claude-sonnet-5', description: 'Claude Sonnet 5 — balanced speed/intelligence', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 1_000_000, price: { in: '$3/1M', out: '$15/1M' }, toolUse: true, location: 'remote', ratesPerM: STATIC_ANTHROPIC_RATES['claude-sonnet-5'], effortDeclared: 'unknown', declaredSource: 'static' },
+  { provider: 'anthropic', model: 'claude-sonnet-5', description: 'Claude Sonnet 5 — balanced speed/intelligence', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 1_000_000, price: { in: '$2/1M', out: '$10/1M' }, toolUse: true, location: 'remote', ratesPerM: STATIC_ANTHROPIC_RATES['claude-sonnet-5'], effortDeclared: 'unknown', declaredSource: 'static' },
   { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', description: 'Claude Haiku 4.5 — fastest, most cost-effective', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 200_000, price: { in: '$1/1M', out: '$5/1M' }, toolUse: true, location: 'remote', ratesPerM: STATIC_ANTHROPIC_RATES['claude-haiku-4-5-20251001'], effortDeclared: 'unknown', declaredSource: 'static' },
 ];
 
