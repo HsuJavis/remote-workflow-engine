@@ -419,7 +419,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `useLiteLLMProxy` | `direct-fetch` 路徑是否額外走 LiteLLM 代理（`false` 時 ollama 走原生直連 `localhost:11434`，完全不碰 LiteLLM，免依賴部署常用） | `boolean` / `true` | 否 | v1 |
 | `rwe.config.json` → `agentDefinitionsDir` | `agentType` composition-root loader 讀取 `*.md` 定義的目錄（`name`/`model`/`tools` frontmatter + 內文即 systemPrompt）；省略時 agentType 註冊表為空 | `string` / — | 否 | v1 |
 | `rwe.config.json` → `defaultAllowedTools` | `gateway:"sdk"` 路徑下，`agent()` 呼叫沒帶 `opts.allowedTools`（且 `agentType` 無 `tools:` frontmatter）時套用的預設工具清單；優先序：呼叫端 `opts.allowedTools` > `agentType` 的 `tools:` > 此鍵 > 內建預設 | `string[]` / `["Read","Write","Edit","Glob","Grep","Bash"]` | 否 | v3 |
-| `rwe.config.json` → `aliases` | 模型別名 → `{provider,model}` 對照表；`provider` 僅 `"anthropic"｜"openrouter"｜"ollama"`（三選一；出現第四種一律開機拒絕，見§情境配方 0）；省略時內建預設等同拿掉 `local` 那份（全指向 anthropic）。⚠ **同一個 Anthropic 模型只設一個別名**——設兩個以上，該模型的花費會全部記成 0/`unpriced`（見 §6） | `object` / 見 `rwe.config.example.json` | 否 | v26 |
+| `rwe.config.json` → `aliases` | 模型別名 → `{provider,model}` 對照表；`provider` 僅 `"anthropic"｜"openrouter"｜"ollama"`（三選一；出現第四種一律開機拒絕，見§情境配方 0）；省略時內建預設等同拿掉 `local` 那份（全指向 anthropic）。**同一個模型可以掛多個別名**（例如 `haiku` 與 `claude-haiku-4-5` 同時指向同一個模型）——價格表以 `provider/model` 為鍵，有價格的那筆永遠不會被沒有價格的那筆蓋掉，花費照記 | `object` / 見 `rwe.config.example.json` | 否 | v26 |
 | `rwe.config.json` → `allowedHosts` | `bind:"0.0.0.0"` 時額外允許的 Host/Origin authority（LAN IP、代理主機名）清單，供 Host/Origin 白名單（§6）核對 | `string[]` / `[]` | 否（`0.0.0.0` bind 時建議設定） | v11 |
 | `rwe.config.json` → `anthropicBaseUrl` | `anthropic` provider 直連（LiteLLM-bypassed）路徑打的真實 Anthropic API base | `string` / `'https://api.anthropic.com'` | 否 | v7 |
 | `rwe.config.json` → `anthropicAuth` | Anthropic 直連認證模式：`"api-key"`（真實 `ANTHROPIC_API_KEY`）或 `"subscription"`（`claude setup-token` 產生的 `CLAUDE_CODE_OAUTH_TOKEN`）；認證素材本身一律來自 secret store／環境變數，絕不放進此檔 | `"api-key"｜"subscription"` / 依偵測到的 secret 自動判斷 | 否 | v7 |
@@ -758,22 +758,6 @@ npm run start
   `reasoning_effort` 欄位（CLI 把預算收斂成 `thinking:{type:"adaptive"}`，LiteLLM 再對 openrouter
   丟掉這個參數）。`run_agent_log` 的 `harness.effortApplied` **會如實回報 `{applied:false, reason:…}`
   並說明原因**。Anthropic 別名的 `effort` 有作用（spawn 出來的 CLI argv 上看得到 `--effort <值>`）。
-
-- **同一個 Anthropic 模型設兩個以上別名 → 那個模型的花費全部記成 0。** 例：`aliases` 裡
-  `haiku` 和 `claude-haiku-4-5` 都指向 `anthropic/claude-haiku-4-5-20251001`。這種設定下，每筆
-  呼叫的四欄 token 仍然正確，但 `costUSD` 是 0、紀錄標 `unpriced:true`、
-  `run_result.meta.budgetEnforceable.usd` 是 `false`（美金上限綁不住任何東西）。
-  **實測**：同一個工作流程、同一個模型，別名表有重複時 `{"costUSD":0,"unpriced":true}`；
-  把重複別名拿掉後同一支流程記到 `{"costUSD":0.0023872,"unpriced":false}`。
-  **處理方式（現在就能做）**：每個 Anthropic 模型只留一個別名。要多個名字時，改用 token 上限
-  （`budget.tokens`）來控管；`rwe.config.example.json` 目前的 `sonnet` 與 `default` 就是重複的一組，
-  複製後請自行改掉其中一個。
-
-- **工作流程頁的作者圖不能用滑鼠拖曳平移。** 一按住圖往旁邊拖，瀏覽器會改成執行它自己的
-  「拖曳圖片」動作：圖只跟著移動第一小段就停住，放開之後圖還會黏著游標繼續跑（因為瀏覽器在
-  拖曳期間不發 `mouseup`）。**實測**：要求位移 (-180,-90)，實際只走了 (-18,-9)。
-  **處理方式**：改用滾輪縮放；圖跑掉了就按圖旁邊的 `Fit` 復原（`Fit` 一定按得到，已實測）。
-  run DAG（run 詳細頁的那張圖）是 SVG，不受影響，拖曳平移正常。
 
 **日誌與狀態位置**：日誌僅 stdout/stderr（`[remote-workflow-engine] ...` 前綴），交給你的
 process manager（systemd/pm2/docker）收集；沒有另外寫檔案 log。狀態存在 `$workRoot/store`

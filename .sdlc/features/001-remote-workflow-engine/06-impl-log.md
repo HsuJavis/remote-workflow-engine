@@ -3628,7 +3628,7 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
 - **status:** done
 - **traces:** TASK-178, DES-178, ARCH-116, REQ-127
 - **greens:** UT-223, IT-157
-- **files:** src/models/model-book.ts, tests/unit/model-book.test.ts, tests/integration/duplicate-alias-pricing.test.ts
+- **files:** src/models/model-book.ts, tests/unit/model-book.test.ts, tests/integration/duplicate-alias-pricing.test.ts, README.md, DEPLOY.md
 - **commit:** a376093
 - **iter:** v26
 - **note:** REQ-127 was inert on every deployment whose alias table names one model twice — which is
@@ -3645,13 +3645,16 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   — measured live on the production table, 8 anthropic rows of which 4 advertise `price:"unknown"`
   for models that are priced. That contradicts D9's own note ("the public surface dedupes") and is a
   models-catalog display defect, not REQ-127's clause; reported to the orchestrator rather than
-  patched here.
+  patched here. DOCS (the manuals state today's behaviour, by their own contract): round 3 wrote the
+  hazard into DEPLOY.md §1b's `aliases` row, §6's limitations list and README's cost bullet +
+  known-defects list. All four now state the current fact — a model may carry several aliases; the
+  price book keys by `provider/model` and a priced row is never displaced.
 
 ### IMPL-215 — D10: the author figure pans under a real mouse, and stops when the button comes up
 - **status:** done
 - **traces:** TASK-191, DES-186, ARCH-120, ADR-044, REQ-129
 - **greens:** VAL-197, UT-224
-- **files:** src/dashboard-page.ts, tests/acceptance/val-197-diagram-drag-pan.test.ts, tests/unit/dashboard-page-source.test.ts
+- **files:** src/dashboard-page.ts, tests/acceptance/val-197-diagram-drag-pan.test.ts, tests/unit/dashboard-page-source.test.ts, README.md, DEPLOY.md
 - **commit:** a376093
 - **iter:** v26
 - **note:** `#diagram-img` is an `<img>` with the default `draggable`, so a real press-and-move handed
@@ -3664,4 +3667,6 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   cannot reintroduce it. The run DAG is an `<svg>`, has no native drag, and was never affected —
   which is why round 1's single "drag-pan works" line was true and still missed this. `preventDefault`
   on mousedown does NOT cancel the later click: measured live, a REAL mouse click on a DAG agent cell
-  still opens that agent's transcript, and a real click on `Fit` still resets (VAL-196).
+  still opens that agent's transcript, and a real click on `Fit` still resets (VAL-196). DOCS: the
+  「作者圖不能拖曳平移」 bullet is removed from DEPLOY.md §6 and from README's known-defects list —
+  both described a defect that no longer exists.

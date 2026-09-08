@@ -11195,8 +11195,8 @@ owner's call, and routing was deliberately not changed.
 - **iter:** v26
 
 File: `tests/unit/model-book.test.ts` (extended, 2 cases). Case 1 builds the catalog through the
-REAL `buildCatalog` over a PRODUCTION-shaped alias table — five models, TWO aliases each, exactly
-what `rwe.config.json` carries — with both live fetchers stubbed non-ok, and asserts every
+REAL `buildCatalog` over a PRODUCTION-shaped alias table — four models, TWO aliases each, the shape
+`rwe.config.json` carries — with both live fetchers stubbed non-ok, and asserts every
 `STATIC_ANTHROPIC_RATES` model still prices. Case 2 is the index rule itself: a priced row and a
 `ratesPerM:null` row for the same key, BOTH orders. The existing fixtures all used one alias per
 model, which is why UT-185 never saw this. RED (measured, both cases):

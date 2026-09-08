@@ -9315,4 +9315,11 @@ printed (2106886), never `pkill -f`; its own `litellm` child (2106916) died with
 5. **Not closed here, reported instead:** the duplicate catalog ROWS on `models_list` / `/api/models`
    (VAL-195(d)) — a display defect outside REQ-127's clause and outside this fix order's ruling,
    which was explicitly "fix the index".
-6. `gates.validation.passed` is NOT flipped by this pass — the next delta re-run does that.
+6. **The manuals were re-synced, not left describing the defects.** Round 3 recorded D9 as "a
+   documentation duty as well as a code defect" and wrote it into DEPLOY.md §1b's `aliases` row,
+   DEPLOY.md §6 and README's cost bullet; D10 had a §6 bullet and a README known-defect entry too.
+   All of those described behaviour that no longer exists, and both manuals are history-free by
+   contract, so they now state the current fact: a model may carry several aliases and stays priced;
+   the author figure drag-pans. `rwe.config.example.json` is deliberately untouched — its
+   `sonnet`+`default` pair pointing at one model is now a legitimate, safe shape.
+7. `gates.validation.passed` is NOT flipped by this pass — the next delta re-run does that.
