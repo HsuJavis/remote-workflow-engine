@@ -15,12 +15,31 @@ describe('wireEffort — total over provider x pinned capability (UT-187, DES-17
     expect(r.applied).toEqual({ applied: true, param: 'effort', restPath: ['output_config', 'effort'], value: 'high' });
   });
 
-  it('openrouter with caps.reasoning===true: thinking.budgetTokens, applied:true', () => {
+  // AMENDED at v26 Gate 7.5 round 1 (fix-order item 8, REQ-126). The ROUTING is unchanged and still
+  // pinned below: `thinking:{type:'enabled',budgetTokens:N}` is still what the SDK is handed. What
+  // changed is the CLAIM. VAL-186 captured both outbound bodies through a recording pass-through in
+  // front of the real OpenRouter API: neither carries `reasoning`, `reasoning_effort` or
+  // `thinking`, and `low` and `high` are byte-identical on the wire — the Claude CLI collapses the
+  // budget to `thinking:{type:'adaptive'}` before LiteLLM ever sees it, and LiteLLM then drops the
+  // parameter for OpenRouter. Reporting `{applied:true, param:'thinking', value:1024}` for a
+  // request that carries no reasoning field at all is a false record, and REQ-125 exists to prevent
+  // exactly that. Whether the ROUTING should change is the owner's call and is untouched here.
+  it('openrouter with caps.reasoning===true: thinking.budgetTokens is still wired, but applied:false with the real reason', () => {
     const r = wireEffort('openrouter', { reasoning: true, tools: true, source: 'upstream' }, 'low') as any;
     expect(r.thinking).toEqual({ type: 'enabled', budgetTokens: 1024 });
-    expect(r.applied.applied).toBe(true);
-    expect(r.applied.param).toBe('thinking');
-    expect(r.applied.restPath).toEqual(['thinking', 'budget_tokens']);
+    expect(r.applied.applied).toBe(false);
+    expect(r.applied.reason).toMatch(/adaptive/i);
+    expect(r.applied.reason).toMatch(/low and high|indistinguishable|byte-identical/i);
+    // No half-truth left behind: an applied:false record carries no param/value to read as applied.
+    expect(r.applied.param).toBeUndefined();
+    expect(r.applied.value).toBeUndefined();
+  });
+
+  it('the openrouter reason is DISTINCT from the two non-reasoning ones (three different facts)', () => {
+    const declared = wireEffort('openrouter', { reasoning: true, tools: true, source: 'upstream' }, 'low') as any;
+    const notDeclared = wireEffort('openrouter', { reasoning: false, tools: true, source: 'upstream' }, 'low') as any;
+    const unknown = wireEffort('openrouter', { reasoning: 'unknown', tools: 'unknown', source: 'unknown' }, 'low') as any;
+    expect(new Set([declared.applied.reason, notDeclared.applied.reason, unknown.applied.reason]).size).toBe(3);
   });
 
   it('openrouter with caps.reasoning===false: thinking disabled, applied:false naming "does not declare"', () => {

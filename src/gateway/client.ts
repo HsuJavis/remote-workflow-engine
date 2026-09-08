@@ -86,9 +86,26 @@ export function wireEffort(
   if (provider === 'openrouter') {
     if (caps.reasoning === true) {
       const budgetTokens = REASONING_BUDGET[effort];
+      // v26 Gate 7.5 round 1 (fix-order item 8, REQ-126, VAL-186): the ROUTING is unchanged — the
+      // SDK is still handed the budget — but the RECORD no longer claims it landed. A recording
+      // pass-through in front of the REAL OpenRouter API captured both bodies: neither carries
+      // `reasoning`, `reasoning_effort` or `thinking`, and low and high are byte-identical. The
+      // chain, isolated hop by hop: the SDK maps `thinking:{type:'enabled',budgetTokens:N}` to
+      // `--max-thinking-tokens N`; the Claude CLI then sends `thinking:{type:'adaptive'}`, which
+      // has no budget in it, so low and high collapse to the same request; LiteLLM turns that into
+      // `reasoning_effort` and DROPS it for OpenRouter. `{applied:true, value:1024}` for a request
+      // with no reasoning field on it is the exact class of false record REQ-125 exists to prevent.
+      // Whether the routing should change (a proxy `allowed_openai_params`, a different hop) is the
+      // OWNER's call, deliberately not made here.
       return {
         thinking: { type: 'enabled', budgetTokens },
-        applied: { applied: true, param: 'thinking', restPath: ['thinking', 'budget_tokens'], value: budgetTokens },
+        applied: {
+          applied: false,
+          reason:
+            `effort mapped to a ${budgetTokens}-token thinking budget, but the Claude CLI collapses it to ` +
+            'thinking:{type:"adaptive"} and LiteLLM drops the parameter for openrouter — low and high are ' +
+            'byte-identical on the wire (verified against the real API, VAL-186)',
+        },
       };
     }
     return {
