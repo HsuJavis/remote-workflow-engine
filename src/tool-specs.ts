@@ -952,7 +952,10 @@ export const TOOL_SPECS = [
     // undiscoverable. A cold model reading `{properties:{}}` cannot filter a catalog it must choose
     // a model from.
     description:
-      'List the model catalog. Each row carries provider, model, description, modalities, ' +
+      'List the model catalog. ONE row per model: `aliases` lists EVERY alias name this ' +
+      'deployment configures for it (a model named twice is one priced row, not two rows one of ' +
+      'which claims `price:"unknown"`), and `ref` is the first of them — the string to pass to ' +
+      '`agent({model})`. Each row also carries provider, model, description, modalities, ' +
       'contextWindow, price, location, plus the engine ratings: `capability` (a one-line ' +
       'summary), `stability`, and `costLevel` — an integer 0..10 where 0 is free and 10 is the most ' +
       'expensive tier, null when the provider publishes no price. v26: `toolUseDeclared` / ' +

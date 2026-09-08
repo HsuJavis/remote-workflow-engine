@@ -278,7 +278,7 @@ async function renderDescribe(name){
 // v26 (DES-184, ARCH-119, TASK-192, REQ-128/REQ-110): one row per params.agents.<label> — label /
 // declared model -> resolved model / effort / timeoutMs / tools, every cell via textContent (no
 // innerHTML on any run- or author-derived string). "resolved model" joins the declared alias
-// against the SAME /api/models catalog the Models panel already fetches (ModelEntry.alias, DES-076)
+// against the SAME /api/models catalog the Models panel already fetches (ModelEntry.aliases, DES-076)
 // — the live alias->provider/model resolution, never a fabricated value. re-entrant: renderDescribe
 // re-runs on every 3s tick, so this clears+rebuilds rather than appending.
 async function renderHarnessTable(agents,toolSurface){
@@ -290,7 +290,10 @@ async function renderHarnessTable(agents,toolSurface){
   section.style.display='block';
   var models=await getJSON('/api/models');
   var byAlias={};
-  if(models&&Array.isArray(models)){ models.forEach(function(m){ if(m.alias) byAlias[m.alias]=m; }); }
+  // v26 round 4 (D11): a catalog row carries EVERY alias that resolves to it (ModelEntry.aliases),
+  // because the served catalog is now one row per model. Indexing the old singular m.alias would
+  // resolve only the first name and answer unresolved for claude-haiku-4-5 / claude-fable-5 / ...
+  if(models&&Array.isArray(models)){ models.forEach(function(m){ (m.aliases||[]).forEach(function(a){ byAlias[a]=m; }); }); }
   function cellText(spec,key){ return spec&&spec[key]&&spec[key].default!=null?String(spec[key].default):'—'; }
   var t=document.createElement('table'); t.className='models-table';
   var thead=document.createElement('thead'); var hrow=document.createElement('tr');

@@ -69,7 +69,7 @@ The six locked keys are engine-owned and can never be overridden by a caller: pr
 
 The ceilings below are this build's resolved values — operator-overridable, so a different deployment's engine may render different numbers here: a declared agent's `timeoutMs.default` may not exceed 600000ms, a declared `appendPrompt.default` may not exceed 1024 bytes, and a declared `effort.default` may not rank above 'high'. A declaration above any of these ceilings is refused `PARAM_OUT_OF_RANGE` at registration — never silently clamped.
 
-A declared `model.default` (and every entry of a declared `model.enum`) must be one of this deployment's model ALIAS names — `sonnet`, `haiku`, `opus`, `default` — not a provider model id. `models_list` shows the catalog MODELS an alias may resolve to; it is not the alias table, and passing an id from it is refused `PARAM_CONTRACT_INVALID: default not a known alias`. An `agent()` call naming an unknown alias is refused `UNKNOWN_ALIAS`. (The one exception is an `openrouter/<model-id>` passthrough, which the validator accepts by prefix and needs no entry in the table above.)
+A declared `model.default` (and every entry of a declared `model.enum`) must be one of this deployment's model ALIAS names — `sonnet`, `haiku`, `opus`, `default` — not a provider model id. `models_list` shows the catalog MODELS an alias may resolve to; it is not the alias table, and passing an id from it is refused `PARAM_CONTRACT_INVALID: default not a known alias`. Each catalog row does carry an `aliases` list — every configured name that resolves to that one model — so a row is where you LOOK UP a legal name, and the row itself is never the answer. An `agent()` call naming an unknown alias is refused `UNKNOWN_ALIAS`. (The one exception is an `openrouter/<model-id>` passthrough, which the validator accepts by prefix and needs no entry in the table above.)
 
 ## Providers and the model catalog
 
@@ -81,7 +81,7 @@ Every model alias resolves to exactly one of three providers, each with its own 
 
 There is no `openai` row: OpenRouter is the many-model front door for everything that is not Anthropic-direct or a local Ollama model, so swapping a model — or a transport — is a config change to an alias, not a new provider.
 
-`models_list` shows the CATALOG this deployment's aliases can resolve into — it is not the alias table (see "Engine ceilings" above). Its `toolUseDeclared`/`effortDeclared` flags and `costLevel` rating are DECLARED capability, never probed by dispatching a call, and carry their own provenance: `declaredSource` ('upstream'|'static'|'unknown') says where the flag came from, and `catalogFetchedAt` is per-row catalog provenance (a timestamp, or `null`).
+`models_list` shows the CATALOG this deployment's aliases can resolve into — it is not the alias table (see "Engine ceilings" above). It serves ONE row per model, and that row lists in `aliases` every configured name resolving to it (`ref` is the first — the one to pass to `agent({model})`), so a model named twice is one priced row, never a duplicate that reports `price:"unknown"`. Its `toolUseDeclared`/`effortDeclared` flags and `costLevel` rating are DECLARED capability, never probed by dispatching a call, and carry their own provenance: `declaredSource` ('upstream'|'static'|'unknown') says where the flag came from, and `catalogFetchedAt` is per-row catalog provenance (a timestamp, or `null`).
 
 ## Budget, concurrency, and how wide a fan-out really runs
 

@@ -9262,6 +9262,10 @@ printed (2106886), never `pkill -f`; its own `litellm` child (2106916) died with
   and budget and is now green; this is a models-catalog DISPLAY defect for the orchestrator to route,
   not something this fix pass patched. Harness + raw capture:
   `evidence/v26/req127-round4-harness.mjs`, `evidence/v26/req127-round4-prodalias.json`.
+- **(d) is CLOSED as of round 5** — the orchestrator ruled it back in scope as defect **D11** (and
+  the unpriced `claude-fable-5` it mentions as **D12**, which round 4 called "honest, not a defect":
+  honest about the table, but the table itself was missing a row for an alias this deployment
+  names). Closed by VAL-198 / VAL-199 below; this bullet is an amendment, not a re-statement.
 - **iter:** v26
 
 ### VAL-196 — REQ-129: the author figure pans the full gesture and stops on mouseup (D10 closed)
@@ -9322,4 +9326,105 @@ printed (2106886), never `pkill -f`; its own `litellm` child (2106916) died with
    contract, so they now state the current fact: a model may carry several aliases and stays priced;
    the author figure drag-pans. `rwe.config.example.json` is deliberately untouched — its
    `sonnet`+`default` pair pointing at one model is now a legitimate, safe shape.
+7. `gates.validation.passed` is NOT flipped by this pass — the next delta re-run does that.
+
+### VAL-198 — REQ-127: `models_list` / `GET /api/models` serve ONE priced row per model (D11 closed)
+- **status:** green
+- **traces:** REQ-127, DES-178, ARCH-116
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **scope note (orchestrator ruling, round 5):** round 4 reported D11 as outside its own fix order's
+  ruling ("fix the index") and left it open; the orchestrator put it IN scope and asked for the
+  reason to be recorded here so Gate 8 sees a decision, not silent creep. The owner's Q5 ruling made
+  the budget a COST budget and rested that ruling on the model catalogue carrying the prices —
+  verbatim,「每個模型的價格不同(要參考使用模型的價格, model list 有提供)」. A catalogue that answers
+  "price unknown" for a model it prices breaks REQ-127's premise even though the arithmetic behind
+  it (IMPL-214/VAL-195) is now correct.
+- **evidence:** A scratch engine booted from DEPLOY.md §0's documented second-instance form
+  (`RWE_CONFIG_PATH=~/.local/share/rwe-val-r5/cfg.json RWE_BIND=127.0.0.1 RWE_PORT=8934
+  ./deploy.sh --background`) over a copy of the production `rwe.config.json` with ONLY
+  `workRoot`/`bind`/`port` moved and `auth` off — **the alias table byte-identical, five models with
+  two aliases each**. Health check passed on the documented output (`/api/status` 200).
+  **(a) `models_list {provider:'anthropic'}`, verbatim.** FOUR rows for four models
+  (round 4 on this same table: EIGHT rows for four models), `unknownPriced: []`:
+  `claude-fable-5 aliases:["fable","claude-fable-5"] price:{"in":"$10/1M","out":"$50/1M"} ref:"fable" costLevel:9`,
+  `claude-opus-4-8 aliases:["opus","claude-opus-4-8"] price:{"in":"$5/1M","out":"$25/1M"} ref:"opus" costLevel:8`,
+  `claude-sonnet-5 aliases:["sonnet","claude-sonnet-4-6"] price:{"in":"$2/1M","out":"$10/1M"} ref:"sonnet" costLevel:7`,
+  `claude-haiku-4-5-20251001 aliases:["haiku","claude-haiku-4-5"] price:{"in":"$1/1M","out":"$5/1M"} ref:"haiku" costLevel:6`.
+  Every second alias round 4 saw on a `price:"unknown", ratesPerM:null` row is still discoverable —
+  on the priced row, under `aliases` — so nothing an author needs for `model.default` was dropped.
+  **(b) `GET /api/models` (the dashboard surface) answers the same four rows**, same `aliases`, same
+  prices — the two surfaces cannot disagree, they share `filterCatalog`/`enrichModelEntry`.
+  **(c) The regression lock.** UT-225 (the builder, on a production-shaped fixture: two aliases on
+  one priced model), IT-158 (both served surfaces through a real `createServer()` + real MCP HTTP)
+  and UT-227 (the dashboard's alias index, which the collapse would otherwise have regressed), all
+  measured RED first: `expected 2 to be 1`, `expected 4 to be 8` and
+  `expected undefined to deeply equal [ 'haiku', 'claude-haiku-4-5' ]`.
+  Harness + raw capture: `evidence/v26/d11-d12-round5-harness.mjs`,
+  `evidence/v26/d11-d12-round5-prodalias.json`.
+- **iter:** v26
+
+### VAL-199 — REQ-127: a run through the `fable` alias is priced and USD-enforceable (D12 closed)
+- **status:** green
+- **traces:** REQ-127, DES-178, ARCH-116
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **scope note (orchestrator ruling, round 5):** same ruling as VAL-198 — a catalogue with NO price
+  at all for an alias the deployment names breaks REQ-127's premise. Round 4 recorded the unpriced
+  `claude-fable-5` rows as "honest, not a defect"; that reading is corrected here: honest about the
+  static table, but the table was missing a row for a model this box's own alias table names twice.
+- **evidence:** The same scratch engine and the same byte-identical alias table as VAL-198.
+  **(a) The admission pin, at zero provider spend.** A workflow declaring
+  `params.agents.fableone.model default 'fable'` whose `agent()` call sits inside `if (false)` —
+  nothing dispatches, so no provider is contacted and no money is spent, but the model is reachable
+  and must be pinned WITH a price. Run `8c2c69b9-01cf-4c51-954f-adca26e3f6a1`, status `completed` ⇒
+  `meta.budgetEnforceable {"usd":true,"tokens":true,"unpricedModels":[]}`. Before this fix the same
+  arm on the same table reported `usd:false` with `unpricedModels:["anthropic/claude-fable-5"]` —
+  the exact shape VAL-195(a) measured for haiku before D9 was fixed.
+  **(b) The price the catalogue now serves for it** (VAL-198(a), same run of the harness):
+  `$10/1M` in, `$50/1M` out, `ratesPerM {"in":0.00001,"out":0.00005,"cacheRead":0.000001,
+  "cacheWrite":0.00002}` — $10/$50 per MTok from the claude-api skill's cached model table
+  (2026-06-24), the same source UT-220's rows were re-derived against, with THIS table's own cache
+  multipliers (0.1x input for a read, 2x for a write at the 1h TTL). No new rule: the $0.25/MTok
+  cache read published for Claude **Fable 5.1** is a different model and was deliberately not applied.
+  **(c) The other three anthropic rows were audited against the same source**, as ordered:
+  `claude-opus-4-8` $5/$25 ✓, `claude-sonnet-5` $2/$10 ✓, `claude-haiku-4-5-20251001` $1/$5 ✓ —
+  none stale, none missing. Two REPORT-ONLY findings, neither changed: the haiku row's id is
+  date-suffixed while the source table lists `claude-haiku-4-5` (VAL-195(b) proves the dated id
+  resolves on the real wire, and both config aliases point at it); and this box's `rwe.config.json`
+  maps the alias `claude-sonnet-4-6` to model `claude-sonnet-5` — a misnamed alias (that name is a
+  different, $3/$15 model), visible verbatim in VAL-198(a). The config file is off-limits to this
+  pass and the second is an owner decision, not a code defect.
+  **(d) The regression lock.** UT-226 (the static row, the served row, and the consequence walked
+  through the real `buildCatalog` -> `ModelBook.lookup` chain) and IT-158, measured RED first:
+  `expected undefined to deeply equal { in: 0.00001, out: 0.00005, …(2) }` (no row in the table at
+  all) and `expected null to deeply equal { in: 0.00001, out: 0.00005, …(2) }` (the pin).
+- **iter:** v26
+
+### Gate self-check (v26 round-5 fix pass — D11, D12)
+
+1. **Both defects have a test measured RED first**, quoted above and in 05-tests.md (UT-225, UT-226,
+   IT-158, UT-227). The D11 test uses a fixture shaped like the real config — two aliases on one
+   PRICED model — as ordered.
+2. **Both re-verifications are REAL**: one engine booted from the documented deploy steps over a
+   byte-identical copy of the production alias table, both served catalog surfaces read over real
+   HTTP, and a real run admitted through the real price-book pin. No SUT-boundary mock. The
+   `fable` arm spends nothing at the provider by construction (`if (false)`).
+3. **Production untouched**: never restarted, never signalled; port 8899 answered `/api/status` 200
+   before and after. The scratch engine on 8934 was killed by the PID `deploy.sh` printed (2150238);
+   no `pkill` was used. `rwe.config.json` and `~/.config/rwe.env` were not written — the scratch
+   config lives at `~/.local/share/rwe-val-r5/cfg.json` (mode 0600) and its `workRoot` is outside
+   every Claude project.
+4. `npx tsc --noEmit` clean; `npx vitest run` **2609 passed / 0 failed / 26 env-gated skips** (the
+   round-4 baseline was 2596 passed / 26 skips; +13 = the 13 new cases). Nothing deleted, nothing
+   skipped. Six pre-existing assertions were updated for the deliberate `alias`->`aliases` rename,
+   each with the reason inline; none was appeased (they assert the same property under the new name).
+5. **The manuals state today's behaviour** (both are history-free by contract): README's model-catalog
+   bullet and cost bullet, DEPLOY.md §1b's `aliases` row, the `models_list` tool description and the
+   authoring guide now say one row per model with `aliases` listing every configured name;
+   `docs/AUTHORING.md` was regenerated by `npm run gen:authoring` (UT-160's drift lock).
+6. **Reported, not closed here:** the misnamed production alias `claude-sonnet-4-6` -> `claude-sonnet-5`
+   (VAL-199(c)) — an owner decision about a config file this pass may not write.
 7. `gates.validation.passed` is NOT flipped by this pass — the next delta re-run does that.

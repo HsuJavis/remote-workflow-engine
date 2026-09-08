@@ -91,9 +91,11 @@
   `budget.tokens()`（四欄＋`sum`）、`budget.limits`。
   本機 Ollama 模型價格是 0，所以純美金上限永遠停不住本機 run——要限制本機 run 請用 `tokens` 上限。
   同一個模型掛多個別名（例如 `haiku` 和 `claude-haiku-4-5` 都指向同一個模型）不影響計價：價格表
-  以 `provider/model` 為鍵，有價格的那筆不會被沒有價格的蓋掉。
+  以 `provider/model` 為鍵，有價格的那筆不會被沒有價格的蓋掉，`models_list` 也只會回一列（別名
+  全部列在該列的 `aliases`），不會出現一列有價、一列 `price:"unknown"` 的重複列。
 - **系統監控**：`system_info`（CPU 負載 + 核心數 + 利用率 %、記憶體 total/used/free、磁碟、引擎行程 + 主機 Top-N 行程 + 系統行程統計，`GET /api/system`）
-- **模型目錄**：`models_list`（跨供應商統一目錄，含 `capability`/`stability`/`costLevel 0–10`/`modalities`/`ref` 等豐富欄位，支援多維篩選，`GET /api/models`）
+- **模型目錄**：`models_list`（跨供應商統一目錄，含 `capability`/`stability`/`costLevel 0–10`/`modalities`/`ref` 等豐富欄位，支援多維篩選，`GET /api/models`）。
+  **每個模型只有一列**；該列的 `aliases` 列出這台部署所有指向它的別名（`ref` 是其中第一個，也就是可以直接丟給 `agent({model})` 的那個字串）。
 - **儀表板**：`GET /dashboard`（首頁：工作流程卡片按 RUNNING/REGISTERED/OTHER 分組，各附描述 +
   可靠性指標；點進工作流程會看到**畫出來的流程圖**（伺服端渲染的 SVG）,渲染器不可用時退回顯示 Mermaid 原文,
   沒有圖時顯示 `mermaidNote`；System 面板：即時主機資源；

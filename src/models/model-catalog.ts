@@ -11,8 +11,12 @@ import type { FourRates } from '../types.js';
 export interface ModelEntry {
   provider: string;
   model: string;
-  /** Set when a curated alias points at this exact provider+model (or on an alias-only entry). */
-  alias?: string;
+  /** v26 (D11): EVERY curated alias that resolves to this exact provider+model, in alias-table
+   *  order — absent when no alias names it. Replaces the singular `alias` (no alias window, the
+   *  standing v24 ruling): this deployment names each model TWICE (`haiku` AND `claude-haiku-4-5`),
+   *  and one row can only tell the truth about that as a list. `ref` below stays the ONE
+   *  agent-ready id (the first alias), so the two are not two names for one fact. */
+  aliases?: string[];
   description: string;
   modalities: { in: string[]; out: string[] };
   contextWindow: number | null;
@@ -115,6 +119,15 @@ export const ZERO_RATES: FourRates = { in: 0, out: 0, cacheRead: 0, cacheWrite: 
  *    VAL-187 actually observed on the wire: the CLI's own `total_cost_usd` cross-check
  *    (`cache_creation 7940` tokens) reconciled at 2x input, not 1.25x. */
 export const STATIC_ANTHROPIC_RATES: Record<string, FourRates> = {
+  // v26 Gate 7.5 round 4 (defect D12, REQ-127): `claude-fable-5` had NO row here while this
+  // deployment's alias table names it twice (`fable`, `claude-fable-5`), so every run through that
+  // alias recorded `unpriced:true` and `budgetEnforceable.usd:false` — the owner's Q5 COST budget
+  // rests on the catalogue carrying the price, so a missing row makes REQ-127 inert for that model.
+  // $10/1M in, $50/1M out from the SAME source the rows below use (the claude-api skill's cached
+  // model table, 2026-06-24); the cache columns follow this table's own multipliers (0.1x input for
+  // a READ, 2x for a WRITE at the 1h TTL) — no new rule, and the 0.25$/MTok cache read published
+  // for Claude Fable 5.1 is a DIFFERENT model and is deliberately not applied here.
+  'claude-fable-5': { in: 0.00001, out: 0.00005, cacheRead: 0.000001, cacheWrite: 0.00002 },
   'claude-opus-4-8': { in: 0.000005, out: 0.000025, cacheRead: 0.0000005, cacheWrite: 0.00001 },
   'claude-sonnet-5': { in: 0.000002, out: 0.00001, cacheRead: 0.0000002, cacheWrite: 0.000004 },
   'claude-haiku-4-5-20251001': { in: 0.000001, out: 0.000005, cacheRead: 0.0000001, cacheWrite: 0.000002 },
@@ -128,6 +141,7 @@ export const STATIC_ANTHROPIC_RATES: Record<string, FourRates> = {
 // static-table row mirrors `model-book.ts`'s own `capsFromRow` exactly for a bare anthropic row (no
 // `supported_parameters` — the static table never sets it) — the SAME fact, computed the same way.
 const STATIC_ANTHROPIC: ModelEntry[] = [
+  { provider: 'anthropic', model: 'claude-fable-5', description: 'Claude Fable 5 — most capable, long-horizon agentic tier', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 1_000_000, price: { in: '$10/1M', out: '$50/1M' }, toolUse: true, location: 'remote', ratesPerM: STATIC_ANTHROPIC_RATES['claude-fable-5'], effortDeclared: 'unknown', declaredSource: 'static' },
   { provider: 'anthropic', model: 'claude-opus-4-8', description: 'Claude Opus 4.8 — most capable Opus-tier model', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 1_000_000, price: { in: '$5/1M', out: '$25/1M' }, toolUse: true, location: 'remote', ratesPerM: STATIC_ANTHROPIC_RATES['claude-opus-4-8'], effortDeclared: 'unknown', declaredSource: 'static' },
   { provider: 'anthropic', model: 'claude-sonnet-5', description: 'Claude Sonnet 5 — balanced speed/intelligence', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 1_000_000, price: { in: '$2/1M', out: '$10/1M' }, toolUse: true, location: 'remote', ratesPerM: STATIC_ANTHROPIC_RATES['claude-sonnet-5'], effortDeclared: 'unknown', declaredSource: 'static' },
   { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', description: 'Claude Haiku 4.5 — fastest, most cost-effective', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 200_000, price: { in: '$1/1M', out: '$5/1M' }, toolUse: true, location: 'remote', ratesPerM: STATIC_ANTHROPIC_RATES['claude-haiku-4-5-20251001'], effortDeclared: 'unknown', declaredSource: 'static' },
@@ -236,19 +250,29 @@ async function fetchOpenRouter(fetchImpl: typeof fetch, timeoutMs: number): Prom
   return out;
 }
 
-/** Overlays the curated alias table: sets `alias` on the first entry matching provider+model, or
- *  adds an alias-only entry when the aliased model isn't otherwise in the catalog. */
+/** Overlays the curated alias table. ONE row per (provider, model): an alias naming a model the
+ *  catalog already lists is APPENDED to that row's `aliases`; only a model no source listed gets an
+ *  alias-only row, which a second alias for it then joins the same way.
+ *
+ *  v26 Gate 7.5 round 4 (defect D11, REQ-127): this is the catalogue's side of `ModelBook`'s index
+ *  rule (`model-book.ts`: a PRICED row beats an unpriced one, else source order) — stated in one
+ *  place on each side so the served catalog and the price book can never answer two different
+ *  prices for one key. It used to attach an alias only to an entry whose `alias` was still
+ *  `undefined`, so a SECOND alias appended a `ratesPerM:null` twin: on this deployment's own table
+ *  `models_list` / `GET /api/models` advertised 8 anthropic rows for 4 models, 4 of them saying
+ *  `price:"unknown"` for a model the other 4 priced. Collapsing them must not lose an alias NAME —
+ *  that name is what an author writes in `model.default` — hence `aliases`, not a dropped row. */
 function overlayAliases(entries: ModelEntry[], aliases: AliasMap): ModelEntry[] {
   const out = entries.map((e) => ({ ...e }));
   for (const [alias, target] of Object.entries(aliases)) {
-    const match = out.find((e) => e.provider === target.provider && e.model === target.model && e.alias === undefined);
+    const match = out.find((e) => e.provider === target.provider && e.model === target.model);
     if (match) {
-      match.alias = alias;
+      match.aliases = [...(match.aliases ?? []), alias];
     } else {
       out.push({
         provider: target.provider,
         model: target.model,
-        alias,
+        aliases: [alias],
         description: `Curated alias '${alias}' -> ${target.provider}/${target.model}`,
         modalities: { in: ['text'], out: ['text'] },
         contextWindow: null,
@@ -287,13 +311,14 @@ export async function buildCatalog(opts: BuildCatalogOptions = {}): Promise<Mode
 }
 
 /** issue #28: derive the two actionability fields AFTER alias overlay (so `alias` is known):
- *  - `ref` (agent-ready id): the alias if any; else an openrouter passthrough id; else omitted (the
+ *  - `ref` (agent-ready id): the FIRST alias if any (v26/D11: a row can carry several); else an
+ *    openrouter passthrough id; else omitted (the
  *    entry needs a configured alias to resolve — advertising `anthropic/<model>` would not work).
  *  - `besteffort`: OpenRouter's own `:free` variant marker — an exact suffix check, not a price
  *    inference (a $0-formatted paid route must not be misflagged). */
 function annotate(entries: ModelEntry[]): ModelEntry[] {
   return entries.map((e) => {
-    const ref = e.alias ?? (e.provider === 'openrouter' ? `openrouter/${e.model}` : undefined);
+    const ref = e.aliases?.[0] ?? (e.provider === 'openrouter' ? `openrouter/${e.model}` : undefined);
     const besteffort = e.model.endsWith(':free') ? true : undefined;
     return { ...e, ...(ref !== undefined ? { ref } : {}), ...(besteffort !== undefined ? { besteffort } : {}) };
   });
@@ -429,7 +454,7 @@ export function filterCatalog(entries: ModelEntry[], filter: CatalogFilter = {})
     }
     if (filter.query !== undefined && filter.query !== '') {
       const q = filter.query.toLowerCase();
-      const hay = `${e.model} ${e.description} ${e.alias ?? ''}`.toLowerCase();
+      const hay = `${e.model} ${e.description} ${(e.aliases ?? []).join(' ')}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;

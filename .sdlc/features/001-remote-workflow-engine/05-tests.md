@@ -11253,3 +11253,75 @@ File: `tests/unit/dashboard-page-source.test.ts` (extended, 3 cases). Mirrors, i
 as the first statement of the shared `.zoomable` mousedown handler. Not independently forced red —
 all three strings occur ZERO times in the pre-fix file
 (`git show HEAD:src/dashboard-page.ts | grep -c` ⇒ 0, 0, 0).
+
+### UT-225 — one catalog row per model, carrying every alias that resolves to it (D11)
+- **status:** green
+- **traces:** DES-178, ARCH-116, REQ-127
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/model-catalog.test.ts` (extended, 5 cases). The fixture is shaped like the real
+`rwe.config.json` — TWO aliases on one PRICED model, twice over (`haiku`+`claude-haiku-4-5`,
+`opus`+`claude-opus-4-8`) — with both live fetchers stubbed non-ok, so only the static table and the
+alias overlay remain (UT-223's isolation). Asserts: one row per (provider,model); the surviving row
+is the PRICED one and no anthropic row says `price:"unknown"`; BOTH alias names are still on that
+row in table order and `ref` is still the first; an alias-only model named twice is also one row;
+and a model with no alias carries no alias names at all (the fix must not invent an empty list).
+RED (measured): `AssertionError: expected 2 to be 1 // Object.is equality`,
+`AssertionError: expected [ …(2) ] to deeply equal []` and
+`AssertionError: expected undefined to deeply equal [ 'haiku', 'claude-haiku-4-5' ]`.
+
+### UT-226 — claude-fable-5 is priced (D12)
+- **status:** green
+- **traces:** DES-178, ARCH-116, REQ-127
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/model-catalog.test.ts` (extended, 3 cases). The static table row ($10/1M in,
+$50/1M out, cache read 0.1x and cache write 2x input — the multipliers UT-220 already locks for
+every row), the catalog serving it as ONE priced row under both configured alias names, and the
+consequence walked through the real chain `buildCatalog` -> `ModelBook.lookup`, because REQ-127's
+clause is about the admission-time pin, not the display. RED (measured):
+`AssertionError: expected undefined to deeply equal { in: 0.00001, out: 0.00005, …(2) }` (no row in
+`STATIC_ANTHROPIC_RATES` at all) and
+`AssertionError: expected null to deeply equal { in: 0.00001, out: 0.00005, …(2) }` (the pin).
+
+### UT-227 — the harness table indexes EVERY alias a catalog row carries (D11)
+- **status:** green
+- **traces:** DES-184, ARCH-119, REQ-128
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/dashboard-page-source.test.ts` (extended, 2 cases). `renderHarnessTable` resolves a
+run's declared alias against `/api/models`, and indexed the SINGULAR `m.alias` — which only ever
+resolved a second alias (`claude-haiku-4-5`, `claude-fable-5`, …) BECAUSE D11 served that alias as
+its own duplicate row. Collapsing the rows without this change would have silently regressed the
+panel to "unresolved" for every second name. Page-source assertions (the UT-222/UT-224 pattern):
+the `if(m.alias)` index is gone, and the page loops the row's `aliases`. RED (measured):
+`expected '<!DOCTYPE html>…' not to contain 'if(m.alias)'` and
+`expected '<!DOCTYPE html>…' to match /\(m\.aliases\|\|\[\]\)\.forEach…/`.
+
+### IT-158 — the SERVED catalog is one priced row per model (D11 + D12)
+- **status:** green
+- **traces:** DES-178, ARCH-116, REQ-127
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/integration/models-list-duplicate-alias.test.ts` (new, 3 cases). UT-225/UT-226 pin the
+builder; `filterCatalog` and `enrichModelEntry` sit between it and the caller and neither dedupes,
+so this asserts the two SERVED surfaces through a real `createServer()`: `models_list` over real MCP
+HTTP and `GET /api/models`, over this deployment's alias table verbatim (five models, two aliases
+each, including `fable`). Only the two live catalog fetchers are stubbed non-ok — the un-runnable
+boundary, as in IT-157. Asserts one row per model, no `price:"unknown"` / `ratesPerM:null` /
+`costLevel:null`, both alias names discoverable, and fable priced $10/$50. RED (measured):
+`AssertionError: expected 4 to be 8 // Object.is equality` — eight served rows for four models, the
+exact shape VAL-195(d) measured on the real deployment — and
+`AssertionError: expected undefined to deeply equal [ 'haiku', 'claude-haiku-4-5' ]`.

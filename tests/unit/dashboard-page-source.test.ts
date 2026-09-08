@@ -58,3 +58,19 @@ describe("the author's diagram can be drag-panned: no native image drag (UT-224,
     expect(DASHBOARD_HTML).toMatch(/addEventListener\('mousedown', function\(e\)\{ e\.preventDefault\(\);/);
   });
 });
+
+// UT-227 (v26 Gate 7.5 round 4, defect D11): the harness table resolves a run's declared alias by
+// indexing `/api/models` on the catalog row's alias name. It indexed the SINGULAR `m.alias`, which
+// only ever worked for a second alias (`claude-haiku-4-5`, `claude-fable-5`, …) because the defect
+// D11 fixes served that alias as its OWN duplicate row. With one row per model, an index over
+// `m.alias` would resolve the first alias and silently answer "unresolved" for every other name
+// this deployment configures — so the page must read the row's full `aliases` list.
+describe('the harness table indexes EVERY alias a catalog row carries (UT-227, D11)', () => {
+  it('the singular m.alias index is GONE', () => {
+    expect(DASHBOARD_HTML).not.toContain('if(m.alias)');
+  });
+
+  it('the page indexes byAlias over every name in the row aliases list', () => {
+    expect(DASHBOARD_HTML).toMatch(/\(m\.aliases\|\|\[\]\)\.forEach\(function\(a\)\{ byAlias\[a\]=m; \}\)/);
+  });
+});

@@ -88,8 +88,10 @@ describe('buildCatalog federation + mapping (REQ-039)', () => {
     };
     const entries = await buildCatalog({ ollamaFetch: jsonFetch({ models: [] }), openrouterFetch: jsonFetch({ data: [] }), aliases });
     const opus = entries.find((e) => e.model === 'claude-opus-4-8')!;
-    expect(opus.alias).toBe('opus');
-    const custom = entries.find((e) => e.alias === 'custom')!;
+    // v26 round 4 (D11): the field is `aliases` (plural) — one row now carries every alias that
+    // resolves to it, so the singular name could no longer tell the truth. Deliberate rename.
+    expect(opus.aliases).toEqual(['opus']);
+    const custom = entries.find((e) => (e.aliases ?? []).includes('custom'))!;
     expect(custom).toMatchObject({ provider: 'openrouter', model: 'some/unlisted-model', location: 'remote' });
   });
 
@@ -98,7 +100,7 @@ describe('buildCatalog federation + mapping (REQ-039)', () => {
     const entries = await buildCatalog({ ollamaFetch: throwingFetch(), openrouterFetch: throwingFetch(), aliases });
     expect(entries.some((e) => e.provider === 'ollama')).toBe(false);
     expect(entries.some((e) => e.provider === 'openrouter')).toBe(false);
-    expect(entries.find((e) => e.model === 'claude-opus-4-8')?.alias).toBe('opus');
+    expect(entries.find((e) => e.model === 'claude-opus-4-8')?.aliases).toEqual(['opus']); // v26/D11 rename
   });
 
   it('a non-ok live response degrades to no entries for that source', async () => {
@@ -145,7 +147,7 @@ describe('issue #28: ref (agent-ready id) + besteffort annotation', () => {
     const opus = entries.find((e) => e.provider === 'anthropic' && e.model === 'claude-opus-4-8')!;
     expect(opus.ref).toBe('opus'); // alias wins
     const sonnet = entries.find((e) => e.provider === 'anthropic' && e.model === 'claude-sonnet-5')!;
-    expect(sonnet.alias).toBeUndefined();
+    expect(sonnet.aliases).toBeUndefined(); // v26/D11 rename
     expect(sonnet.ref).toBeUndefined(); // non-aliased anthropic: no hand-joined provider/model ref
     expect(sonnet.besteffort).toBeUndefined();
   });
@@ -225,6 +227,10 @@ describe('filterCatalog (REQ-040)', () => {
 // Mock policy (unit): pure data assertion, no I/O.
 import { STATIC_ANTHROPIC_RATES, displayPrice } from '../../src/models/model-catalog.js';
 import { priceCall } from '../../src/run-guard.js';
+// v26 round 4 (D12): the fable row's consequence is a PIN, so the test walks the real chain —
+// `buildCatalog` -> `ModelBook.lookup` — rather than asserting the table twice.
+import { ModelBook } from '../../src/models/model-book.js';
+import { FixedClock } from '../../src/clock.js';
 
 describe('the static anthropic price table (UT-220, defects D3/D4)', () => {
   it('claude-sonnet-5 is $2/$10 per MTok, not $3/$15', () => {
@@ -257,5 +263,109 @@ describe('the static anthropic price table (UT-220, defects D3/D4)', () => {
       STATIC_ANTHROPIC_RATES['claude-haiku-4-5-20251001']!,
     );
     expect(cost).toBeCloseTo(0.003011, 9);
+  });
+});
+
+// UT-225 (v26 Gate 7.5 round 4, defect D11, REQ-127): the CATALOGUE's own duplicate rule. On this
+// deployment's alias table every anthropic model is named TWICE (`haiku` AND `claude-haiku-4-5`,
+// and so on), and `overlayAliases` only attached an alias to an entry whose `alias` was still
+// undefined — so the second name appended a SECOND, `ratesPerM:null` row for a model the first row
+// prices. `models_list` / `GET /api/models` therefore served 8 anthropic rows for 4 models, 4 of
+// them advertising `price:"unknown"`. `ModelBook`'s index already resolves this (UT-223: a priced
+// row beats an unpriced one, else source order); the served catalogue must not contradict it, and
+// must not lose an alias name in the process — that name is what an author writes in `model.default`.
+// Mock policy (unit): both live fetchers stubbed non-ok, so only the static table + the alias
+// overlay remain — the same isolation UT-223 uses.
+describe('one row per model, carrying every alias that resolves to it (UT-225, D11, REQ-127)', () => {
+  const HAIKU = 'claude-haiku-4-5-20251001';
+  const notOk = (): typeof fetch => jsonFetch({}, false);
+
+  /** Shaped like the real `rwe.config.json`: two aliases on one PRICED model, twice over. */
+  const TWO_ALIASES_PER_MODEL: AliasMap = {
+    haiku: { provider: 'anthropic', model: HAIKU },
+    opus: { provider: 'anthropic', model: 'claude-opus-4-8' },
+    'claude-haiku-4-5': { provider: 'anthropic', model: HAIKU },
+    'claude-opus-4-8': { provider: 'anthropic', model: 'claude-opus-4-8' },
+  };
+  const built = (aliases: AliasMap): Promise<ModelEntry[]> =>
+    buildCatalog({ aliases, ollamaFetch: notOk(), openrouterFetch: notOk() });
+
+  it('a model named by two aliases is ONE row, not two', async () => {
+    const entries = await built(TWO_ALIASES_PER_MODEL);
+    const anthropic = entries.filter((e) => e.provider === 'anthropic');
+    expect(anthropic.filter((e) => e.model === HAIKU).length).toBe(1);
+    expect(new Set(anthropic.map((e) => e.model)).size).toBe(anthropic.length);
+  });
+
+  it('the row that survives is the PRICED one — no anthropic row says "unknown"', async () => {
+    const entries = await built(TWO_ALIASES_PER_MODEL);
+    const haiku = entries.find((e) => e.provider === 'anthropic' && e.model === HAIKU)!;
+    expect(haiku.ratesPerM).toEqual(STATIC_ANTHROPIC_RATES[HAIKU]);
+    expect(haiku.price).toEqual({ in: '$1/1M', out: '$5/1M' });
+    expect(entries.filter((e) => e.provider === 'anthropic' && e.price === 'unknown')).toEqual([]);
+  });
+
+  it('every alias that resolves to the model is still discoverable ON that row, in table order', async () => {
+    const entries = await built(TWO_ALIASES_PER_MODEL);
+    const haiku = entries.find((e) => e.provider === 'anthropic' && e.model === HAIKU)!;
+    expect(haiku.aliases).toEqual(['haiku', 'claude-haiku-4-5']);
+    const opus = entries.find((e) => e.provider === 'anthropic' && e.model === 'claude-opus-4-8')!;
+    expect(opus.aliases).toEqual(['opus', 'claude-opus-4-8']);
+    expect(haiku.ref).toBe('haiku'); // the first alias stays the agent-ready id
+  });
+
+  it('a model the catalog does not otherwise list, named twice, is also ONE row with both names', async () => {
+    const entries = await built({
+      cheap: { provider: 'openrouter', model: 'some/unlisted-model' },
+      'some-unlisted': { provider: 'openrouter', model: 'some/unlisted-model' },
+    });
+    const rows = entries.filter((e) => e.model === 'some/unlisted-model');
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.aliases).toEqual(['cheap', 'some-unlisted']);
+  });
+
+  it('a model with no alias carries no alias names at all (absent, not an empty lie)', async () => {
+    const entries = await built({ haiku: { provider: 'anthropic', model: HAIKU } });
+    const sonnet = entries.find((e) => e.provider === 'anthropic' && e.model === 'claude-sonnet-5')!;
+    expect(sonnet.aliases).toBeUndefined();
+    expect(sonnet.ref).toBeUndefined();
+  });
+});
+
+// UT-226 (v26 Gate 7.5 round 4, defect D12, REQ-127): `claude-fable-5` had no row in
+// `STATIC_ANTHROPIC_RATES`, so every run through this deployment's own `fable` alias recorded
+// `unpriced:true` and `budgetEnforceable.usd:false` — REQ-127's COST budget cannot bind on a model
+// the catalogue does not price. Rates from the SAME source UT-220 used (the claude-api skill's
+// cached model table): Claude Fable 5 is $10/1M in, $50/1M out; the cache columns follow the table's
+// own multipliers (0.1x input for a READ, 2x for a WRITE at the 1h TTL), not a new rule.
+// Mock policy (unit): pure data + the same stubbed-fetch catalog build as UT-225.
+describe('claude-fable-5 is priced (UT-226, D12, REQ-127)', () => {
+  const FABLE_RATES = { in: 10e-6, out: 50e-6, cacheRead: 1e-6, cacheWrite: 20e-6 };
+  const FABLE_ALIASES: AliasMap = {
+    fable: { provider: 'anthropic', model: 'claude-fable-5' },
+    'claude-fable-5': { provider: 'anthropic', model: 'claude-fable-5' },
+  };
+  const notOk = (): typeof fetch => jsonFetch({}, false);
+
+  it('the static table prices it $10/$50 per MTok, on the cache multipliers every row uses', () => {
+    const rates = STATIC_ANTHROPIC_RATES['claude-fable-5'];
+    expect(rates).toEqual(FABLE_RATES);
+    expect(displayPrice(rates!)).toEqual({ in: '$10/1M', out: '$50/1M' });
+  });
+
+  it('the catalog serves it as ONE priced row under both configured alias names', async () => {
+    const entries = await buildCatalog({ aliases: FABLE_ALIASES, ollamaFetch: notOk(), openrouterFetch: notOk() });
+    const rows = entries.filter((e) => e.provider === 'anthropic' && e.model === 'claude-fable-5');
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.ratesPerM).toEqual(FABLE_RATES);
+    expect(rows[0]!.price).toEqual({ in: '$10/1M', out: '$50/1M' });
+    expect(rows[0]!.aliases).toEqual(['fable', 'claude-fable-5']);
+  });
+
+  it('a run through the `fable` alias can be priced: ModelBook answers a rate, never null', async () => {
+    const entries = await buildCatalog({ aliases: FABLE_ALIASES, ollamaFetch: notOk(), openrouterFetch: notOk() });
+    const book = new ModelBook(async () => entries, { ttlMs: 3_600_000, clock: new FixedClock(new Date('2026-09-09T00:00:00Z')) });
+    const snap = await book.snapshot();
+    expect(snap.lookup('anthropic', 'claude-fable-5').price).toEqual(FABLE_RATES);
   });
 });

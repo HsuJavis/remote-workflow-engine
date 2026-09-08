@@ -357,7 +357,9 @@ function aliasSentence(aliases: readonly string[]): string {
     `this deployment's model ALIAS names — ${aliases.map((a) => `\`${a}\``).join(', ')} — not a ` +
     'provider model id. `models_list` shows the catalog MODELS an alias may resolve to; it is not ' +
     'the alias table, and passing an id from it is refused `PARAM_CONTRACT_INVALID: default not a ' +
-    'known alias`. An `agent()` call naming an unknown alias is refused `UNKNOWN_ALIAS`. (The one ' +
+    'known alias`. Each catalog row does carry an `aliases` list — every configured name that ' +
+    'resolves to that one model — so a row is where you LOOK UP a legal name, and the row itself ' +
+    'is never the answer. An `agent()` call naming an unknown alias is refused `UNKNOWN_ALIAS`. (The one ' +
     'exception is an `openrouter/<model-id>` passthrough, which the validator accepts by prefix ' +
     'and needs no entry in the table above.)';
 }
@@ -577,7 +579,10 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "not Anthropic-direct or a local Ollama model, so swapping a model — or a transport — is a " +
         'config change to an alias, not a new provider.\n\n' +
         "`models_list` shows the CATALOG this deployment's aliases can resolve into — it is not the " +
-        'alias table (see "Engine ceilings" above). Its `toolUseDeclared`/`effortDeclared` flags and ' +
+        'alias table (see "Engine ceilings" above). It serves ONE row per model, and that row lists ' +
+        'in `aliases` every configured name resolving to it (`ref` is the first — the one to pass to ' +
+        '`agent({model})`), so a model named twice is one priced row, never a duplicate that reports ' +
+        '`price:"unknown"`. Its `toolUseDeclared`/`effortDeclared` flags and ' +
         '`costLevel` rating are DECLARED capability, never probed by dispatching a call, and carry ' +
         "their own provenance: `declaredSource` ('upstream'|'static'|'unknown') says where the flag " +
         'came from, and `catalogFetchedAt` is per-row catalog provenance (a timestamp, or `null`).',

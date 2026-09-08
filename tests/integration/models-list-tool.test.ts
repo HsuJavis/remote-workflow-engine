@@ -77,7 +77,8 @@ describe('models_list wired into MCP (REQ-039/040)', () => {
     expect(models).toContain('qwen2.5:7b'); // ollama
     expect(models).toContain('qwen/qwen-2.5-7b-instruct'); // openrouter
     expect(models).toContain('claude-opus-4-8'); // static anthropic
-    expect(out.result.find((e) => e.model === 'claude-opus-4-8')?.alias).toBe('opus'); // curated
+    // v26 round 4 (D11): `alias` -> `aliases`, the full list of names resolving to this row.
+    expect(out.result.find((e) => e.model === 'claude-opus-4-8')?.aliases).toEqual(['opus']); // curated
   });
 
   it('filters narrow the catalog (remote + toolUseDeclared + cheap + query)', async () => {
@@ -101,7 +102,7 @@ describe('models_list wired into MCP (REQ-039/040)', () => {
       const models = out.result.map((e) => e.model);
       expect(models).not.toContain('qwen2.5:7b');
       expect(models).toContain('claude-opus-4-8'); // static survives
-      expect(out.result.find((e) => e.model === 'claude-opus-4-8')?.alias).toBe('opus'); // curated survives
+      expect(out.result.find((e) => e.model === 'claude-opus-4-8')?.aliases).toEqual(['opus']); // curated survives
     } finally {
       await downServer.close();
       rmSync(dir, { recursive: true, force: true });
