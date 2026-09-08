@@ -136,25 +136,14 @@ export function deriveAgentRecords(
   return records;
 }
 
-/** DES-068 (TASK-071): pure fold — sums all `kind:'usage'` token counts in a transcript slice.
- *  Never throws; missing/absent `tokens` field contributes 0.
- *
- *  v26 integration: SUPERSEDED as the resume-hydration fold. It sums only `input + output`, which
- *  since v26 is not what the live accumulator counts (`RunGuard.addUsage` → `sumTokens`, all four
- *  columns) and carries no USD at all, so `RunManager._requireLive` now hydrates from
- *  `foldUsage` (run-guard.ts) instead. Kept exported because UT-071 (`tests/unit/budget-fold.test.ts`)
- *  pins its two-column arithmetic as a pure fold and that property is still true — it simply has no
- *  production caller any more. DES-181 proposes deleting it; that is a ledger decision for Gate 8,
- *  not something to do by removing a passing test. */
-export function sumUsageTokens(events: TranscriptEvent[]): number {
-  let total = 0;
-  for (const ev of events) {
-    if (ev.kind !== 'usage') continue;
-    const tok = (ev.data as { tokens?: { input?: number; output?: number } }).tokens;
-    if (tok) total += (tok.input ?? 0) + (tok.output ?? 0);
-  }
-  return total;
-}
+// v26 (DES-181, TASK-181, integrator): the v13 two-column resume fold that used to live here is
+// DELETED, not merely unused. It summed input+output only and carried no USD, so once the live
+// accumulator moved to four columns plus a USD counter it was a SECOND, disagreeing arithmetic for
+// the same question — and a run that resumed enforced a different total than the same run without a
+// restart. `foldUsage` (run-guard.ts) is the one read path; `RunManager._requireLive` hydrates the
+// guard from it. Its own unit test (UT-071, tests/unit/budget-fold.test.ts) moved with it and pins
+// the same properties over the same fixtures. Also one of the ten identifiers the v26 retirement
+// grep guard (no-retired-surface.test.ts) requires absent from src/.
 
 export interface RunStore {
   /** `scriptVersion` (D-V7) is the resolved catalog version ("v2", ...) actually executed for this

@@ -71,10 +71,14 @@ describe('buildCatalog federation + mapping (REQ-039)', () => {
     expect(free.price).toBe('free');
   });
 
-  it('includes the static openai/anthropic table', async () => {
+  // v26 (REQ-123, DES-173, TASK-174, issue #66): the `openai` provider is RETIRED and its sibling
+  // `STATIC_OPENAI` table is deleted — anthropic is the only static table left. The property this
+  // case pins is unchanged (a catalog built with both live sources empty still serves the built-in
+  // static rows); the retired half is asserted ABSENT, which is the v26 fact.
+  it('includes the static anthropic table, and no retired openai rows', async () => {
     const entries = await buildCatalog({ ollamaFetch: jsonFetch({ models: [] }), openrouterFetch: jsonFetch({ data: [] }) });
     expect(entries.some((e) => e.provider === 'anthropic' && e.model === 'claude-opus-4-8')).toBe(true);
-    expect(entries.some((e) => e.provider === 'openai' && e.model === 'gpt-4.1')).toBe(true);
+    expect(entries.some((e) => e.provider === 'openai')).toBe(false);
   });
 
   it('overlays curated aliases onto matching entries and adds alias-only entries', async () => {
@@ -156,15 +160,19 @@ describe('issue #28: ref (agent-ready id) + besteffort annotation', () => {
 });
 
 describe('filterCatalog (REQ-040)', () => {
+  // v26 (DES-178): `maxPricePerM` filters on `ratesPerM`, the numeric source of truth, not on the
+  // derived "$X/1M" display string — so every priced fixture states both, consistently.
   const entries: ModelEntry[] = [
-    { provider: 'ollama', model: 'qwen2.5:7b', description: 'qwen local', modalities: { in: ['text'], out: ['text'] }, contextWindow: null, price: 'free', toolUse: 'unknown', location: 'local' },
-    { provider: 'openrouter', model: 'qwen/qwen-2.5-7b-instruct', description: 'qwen remote', modalities: { in: ['text'], out: ['text'] }, contextWindow: 32768, price: { in: '$0.2/1M', out: '$0.6/1M' }, toolUse: true, location: 'remote' },
-    { provider: 'openrouter', model: 'big/model', description: 'expensive vision', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 200000, price: { in: '$5/1M', out: '$15/1M' }, toolUse: true, location: 'remote' },
-    { provider: 'anthropic', model: 'claude-opus-4-8', description: 'opus', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 1000000, price: { in: '$5/1M', out: '$25/1M' }, toolUse: true, location: 'remote' },
+    { provider: 'ollama', model: 'qwen2.5:7b', description: 'qwen local', modalities: { in: ['text'], out: ['text'] }, contextWindow: null, price: 'free', ratesPerM: { in: 0, out: 0, cacheRead: 0, cacheWrite: 0 }, toolUse: 'unknown', location: 'local' },
+    { provider: 'openrouter', model: 'qwen/qwen-2.5-7b-instruct', description: 'qwen remote', modalities: { in: ['text'], out: ['text'] }, contextWindow: 32768, price: { in: '$0.2/1M', out: '$0.6/1M' }, ratesPerM: { in: 0.2e-6, out: 0.6e-6, cacheRead: 0.2e-6, cacheWrite: 0.2e-6 }, toolUse: true, location: 'remote' },
+    { provider: 'openrouter', model: 'big/model', description: 'expensive vision', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 200000, price: { in: '$5/1M', out: '$15/1M' }, ratesPerM: { in: 5e-6, out: 15e-6, cacheRead: 5e-6, cacheWrite: 5e-6 }, toolUse: true, location: 'remote' },
+    { provider: 'anthropic', model: 'claude-opus-4-8', description: 'opus', modalities: { in: ['text', 'image'], out: ['text'] }, contextWindow: 1000000, price: { in: '$5/1M', out: '$25/1M' }, ratesPerM: { in: 5e-6, out: 25e-6, cacheRead: 5e-6, cacheWrite: 5e-6 }, toolUse: true, location: 'remote' },
   ];
 
   it('AND-filters: remote + toolUse + cheap + query', () => {
-    const out = filterCatalog(entries, { location: 'remote', toolUse: true, maxPricePerM: 1, query: 'qwen' });
+    // v26 (DES-179): the input filter is `toolUseDeclared`, renamed on BOTH sides in one commit with
+    // no alias window (the standing v24 ruling) — same AND-filter property, current key name.
+    const out = filterCatalog(entries, { location: 'remote', toolUseDeclared: true, maxPricePerM: 1, query: 'qwen' });
     expect(out.map((e) => e.model)).toEqual(['qwen/qwen-2.5-7b-instruct']);
   });
 
@@ -183,13 +191,15 @@ describe('filterCatalog (REQ-040)', () => {
   });
 
   it('maxPricePerM excludes unknown-priced and dearer models; free passes', () => {
-    const withUnknown: ModelEntry[] = [...entries, { provider: 'openai', model: 'gpt-4.1', description: 'x', modalities: { in: ['text'], out: ['text'] }, contextWindow: 1000000, price: 'unknown', toolUse: true, location: 'remote' }];
+    // v26 (REQ-123): the unknown-priced row is no longer an `openai` one — that provider is retired.
+    // The property is about PRICE, not provider: an entry whose rates are unknown is excluded.
+    const withUnknown: ModelEntry[] = [...entries, { provider: 'openrouter', model: 'unlisted/model', description: 'x', modalities: { in: ['text'], out: ['text'] }, contextWindow: 1000000, price: 'unknown', ratesPerM: null, toolUse: true, location: 'remote' }];
     const out = filterCatalog(withUnknown, { maxPricePerM: 1 });
     const models = out.map((e) => e.model);
     expect(models).toContain('qwen2.5:7b'); // free -> 0
     expect(models).toContain('qwen/qwen-2.5-7b-instruct'); // max(0.2,0.6)=0.6
     expect(models).not.toContain('big/model'); // 15 > 1
-    expect(models).not.toContain('gpt-4.1'); // unknown -> excluded
+    expect(models).not.toContain('unlisted/model'); // unknown -> excluded
   });
 
   it('empty match returns [] (not an error)', () => {

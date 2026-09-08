@@ -22,16 +22,32 @@ import type { ModelEntry } from '../../src/models/model-catalog.js';
 
 // ---- fixture helpers ----
 
+// v26 (DES-178, ARCH-116, TASK-178): `price` is now the DERIVED display string and `ratesPerM` is
+// the numeric source of truth `maxPricePerMOf`/`computeCostLevel`/`ModelBook` all read. These UT-079
+// /UT-081 fixtures were written when the display string WAS the source, so every one of them would
+// otherwise describe an unpriced model and `computeCostLevel` would correctly answer `null`.
+// Deriving the rates from the same `price` each case already declares keeps every case's intent —
+// and its oracle — exactly as written; only where the fixture states its price has moved.
+function ratesFor(price: ModelEntry['price']): ModelEntry['ratesPerM'] {
+  if (price === 'unknown') return null;
+  if (price === 'free') return { in: 0, out: 0, cacheRead: 0, cacheWrite: 0 };
+  const perToken = (s: string): number => Number(s.replace(/[^0-9.]/g, '')) / 1_000_000;
+  const inRate = perToken(price.in);
+  return { in: inRate, out: perToken(price.out), cacheRead: inRate, cacheWrite: inRate };
+}
+
 function makeEntry(overrides: Partial<ModelEntry> & { model?: string }): ModelEntry {
+  const price = overrides.price ?? { in: '$1.00/1M', out: '$3.00/1M' };
   return {
     provider: 'anthropic',
     model: overrides.model ?? 'test-model',
     description: 'A test model',
     modalities: { in: ['text'], out: ['text'] },
     contextWindow: 200_000,
-    price: { in: '$1.00/1M', out: '$3.00/1M' },
+    price,
     toolUse: true,
     location: 'remote',
+    ratesPerM: ratesFor(price),
     ...overrides,
   };
 }
@@ -222,8 +238,8 @@ describe('costLevel monotonicity w.r.t. maxPricePerMOf (UT-081, DES-075)', () =>
 
     // Sort by maxPricePerMOf ascending (free=0, unknown=null goes to end but we have no unknown here)
     const sorted = [...pricedEntries].sort((a, b) => {
-      const pa = maxPricePerMOf(a.price) ?? Infinity;
-      const pb = maxPricePerMOf(b.price) ?? Infinity;
+      const pa = maxPricePerMOf(a.ratesPerM ?? null) ?? Infinity;
+      const pb = maxPricePerMOf(b.ratesPerM ?? null) ?? Infinity;
       return pa - pb;
     });
 

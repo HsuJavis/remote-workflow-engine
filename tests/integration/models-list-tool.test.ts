@@ -4,7 +4,9 @@
 // v24 (batch B, then CLOSED by the integrator — GREEN now): the first case was — a PRODUCT defect. `models_list`'s
 // advertised `inputSchema` is `{properties:{},required:[]}`, yet `filterCatalog` (model-catalog.ts)
 // still implements every one of provider/query/modalityIn/modalityOut/maxPricePerM/minContext/
-// toolUse/location/limit — proved by the three GREEN cases below, which filter over real MCP HTTP.
+// toolUseDeclared/location/limit — proved by the three GREEN cases below, which filter over real MCP
+// HTTP. v26 (DES-179): the capability filter is `toolUseDeclared` on BOTH sides (schema +
+// filterCatalog), renamed in one commit with no alias window per the standing v24 ruling.
 // The filters work and are undiscoverable (REQ-079/REQ-117).
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -64,7 +66,9 @@ describe('models_list wired into MCP (REQ-039/040)', () => {
     const tool = body.result?.tools?.find((t) => t.name === 'models_list');
     expect(tool).toBeDefined();
     const props = Object.keys(tool?.inputSchema?.properties ?? {});
-    expect(props).toEqual(expect.arrayContaining(['provider', 'query', 'maxPricePerM', 'minContext', 'toolUse', 'location', 'limit']));
+    expect(props).toEqual(expect.arrayContaining(['provider', 'query', 'maxPricePerM', 'minContext', 'toolUseDeclared', 'location', 'limit']));
+    // …and the retired name is gone from the advertised surface, not merely joined by the new one.
+    expect(props).not.toContain('toolUse');
   });
 
   it('unfiltered list federates static + curated alias + fake Ollama + fake OpenRouter', async () => {
@@ -76,8 +80,8 @@ describe('models_list wired into MCP (REQ-039/040)', () => {
     expect(out.result.find((e) => e.model === 'claude-opus-4-8')?.alias).toBe('opus'); // curated
   });
 
-  it('filters narrow the catalog (remote + toolUse + cheap + query)', async () => {
-    const out = await callTool(server.port, 'models_list', { location: 'remote', toolUse: true, maxPricePerM: 1, query: 'qwen' });
+  it('filters narrow the catalog (remote + toolUseDeclared + cheap + query)', async () => {
+    const out = await callTool(server.port, 'models_list', { location: 'remote', toolUseDeclared: true, maxPricePerM: 1, query: 'qwen' });
     expect(out.result.map((e) => e.model)).toEqual(['qwen/qwen-2.5-7b-instruct']);
   });
 
