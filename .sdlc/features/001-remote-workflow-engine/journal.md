@@ -2539,3 +2539,100 @@ together: 7/7 red, both for the stated (now corrected/strengthened) reasons.
 links, 0 orphans — unchanged (this pass touched only prose/notes and one injected test fixture, no
 work items added or removed). `gates.tests.passed` stays `true`. Sitting uncommitted on top of the
 durable `ce2b10a` WIP checkpoint, same as the first correction above.
+
+---
+
+## 2026-09-09 — v26 Gate 6 (implementation), integration pass
+
+The 22-way parallel phase landed everything it was asked for and left the tree at 34 failed / 2453
+passed / 18 failing files, 27 tsc errors, 45 clarifications. Every remaining failure was a
+cross-file seam by construction: a file-partitioned implementer cannot touch the other half of a
+wire. One full-scope integrator closed them. Closing state: **364 files / 2498 tests passed, 26
+skipped, 0 failed; `tsc --noEmit` clean; trace 1422 items / 29 gaps (was 65), 0 broken links, 0
+orphans.**
+
+### The thing worth remembering
+
+**Four values were computed and never forwarded, and every unit test was green.** This is the
+`composeConfig()` wiring-bug class the ledger has now hit three times, and this iteration is the
+first where it was hunted deliberately rather than discovered by accident:
+
+- the admission price pin never reached `AgentExecutor` — so REQ-127 recorded `unpriced:true` on
+  every real call;
+- `guard.addUsage` had **zero** production callers — so `assertBudget()`'s USD arm was dead code;
+- `supported_parameters` never reached `ModelEntry`, and `GatewayClient.invoke`'s `caps?` field was
+  never filled by anyone — so `wireEffort` saw `UNKNOWN_CAPS` on every call and REQ-126 applied
+  effort to nothing;
+- the harness descriptor carried the `rwe-proxy-*` cloak in `model` — so `record.model ===
+  record.proxyModel` on every proxied call, which is the one thing REQ-125 exists to prevent.
+
+Two of the four were reported by the parallel implementers as clarifications, in the file they
+could see. Two were only visible from above. **The lesson the process should keep: a
+file-partitioned gate needs an integrator whose brief is explicitly "find the values nobody
+forwarded", because the partition that makes parallel work safe is exactly what hides a wire.**
+
+And a corollary that cost real time to learn: the work order named four seams, and two of them were
+**one hop longer than reported** (`caps` needed a thread the design assigned to a task that had
+already reported done; the pin needed the implicit `default` alias, which `reachableModels` never
+saw). "The reported half is the whole seam" is not a safe assumption.
+
+### The measurement that changed a decision
+
+REQ-128's registration-time v2 gating was reported at Gate 6 as an intentional deferral because
+wiring it "would refuse essentially every existing TD-diagram fixture across the whole suite". That
+was true and it was not a reason to defer: the owner's acceptance text is unconditional for new
+registrations. The blast radius was **measured at every step** rather than argued about —
+104 files red, then 52 (quoted subgraph titles), 22 (bare `graph TD;` headers, published fixtures),
+10, 3, 0 — and each drop named its own cause. Measuring instead of estimating also turned up three
+REAL defects that a deferral would have shipped: `checkMermaid` could not express one label in two
+lanes (the guide's OWN canonical example), `phase('fork:' + tier)` recorded the truncated literal
+`fork:` as a lane title, and `switch` was missing from `DYNAMIC_OPENERS`. All three are fixed in
+`src/`; none was appeased in a test.
+
+### Honesty notes, recorded rather than smoothed
+
+- **One Gate 5 fixture was amended, with the reason in the fixture.** The `switch` pair expected
+  `UNDECIDABLE_SHAPE` at line 3. `deriveExpectedGraph` receives no script text and neither scan
+  reported anything switch-shaped, so no rule in the adopted set could fire and the arm had no
+  producer anywhere in `src/`; and `line: 3` is `phase('one');` under this repo's own convention.
+  The property (a switch cannot be statically slotted) is kept, as the dynamic lane ARCH-113's own
+  note groups it with. `UNDECIDABLE_SHAPE` is now a producerless arm — flagged for Gate 8.
+- **`sumUsageTokens` was kept, then deleted.** The first pass kept it on the reading that removing a
+  passing test is forbidden; the Gate 5 retirement guard is primary evidence that overrides that
+  reading. Both its tests moved to `foldUsage` with every property and fixture intact.
+- **A door was deliberately left closed-open.** `additionalProperties:false` on `run_start.seed.items`
+  was verified safe for the plugin and is still not applied: ajv would answer `INVALID_ARGUMENT`
+  before `validateSeedSpec` runs, and IT-141/DES-170/REQ-121 exist to guarantee the typed
+  `INVALID_SEED_SPEC` that names the offending path — the whole content of issue #64. Measured, not
+  assumed: closing it turns IT-141 red for exactly that reason.
+
+### The real run
+
+A scratch engine on port 8911 with its own workRoot outside every Claude project (production
+`rwe.service` on 8899 untouched, never restarted, never pointed at). Two runs:
+
+1. **ollama through the managed LiteLLM proxy** — a two-agent, two-phase workflow registered with a
+   real LR swimlane. Both agents `done`, `phase`/`phaseIndex` set (0 and 1), `provider: "ollama"`,
+   `model: "qwen2.5:7b"`, `proxyModel: "rwe-proxy-local"`, `transport: "claude-agent-sdk"`,
+   `costUSD: 0` with `unpriced: false`. Four distinct facts under four distinct names — before this
+   iteration, `model` and `proxyModel` were both the cloak and `unpriced` was `true`.
+2. **anthropic-direct** — `costUSD: 0.003011` for 2796 input + 43 output on
+   `claude-haiku-4-5-20251001`, arithmetically exact against the static table, and the script's own
+   `budget.spent()` returned the same number.
+
+Green unit tests could not see any of it. The first ollama call also timed out at 120s on a cold
+model load and produced its answer one second later — the documented cold-start behaviour, recorded
+because it is exactly the shape REQ-117's cold-model protocol has to plan around.
+
+### Carried forward, not hidden
+
+1. **REQ-128 makes every phase-less script unregistrable from v26 on.** Existing versions are
+   grandfathered (never re-checked, still rendered), but the next re-registration of any workflow
+   without `phase()` calls is refused `AGENT_BEFORE_PHASE`. That is the owner's own acceptance text,
+   not a choice made here — it belongs in DEPLOY's migration note.
+2. **The deployed `rwe.config.json` still declares four `openai` aliases**, which REQ-123's
+   `validateAliases` now refuses at boot. A config migration, and TASK-172's `--check-config` exists
+   precisely to catch it before a restart — but it needs doing.
+3. **ADR-048's Action line names only `skeleton-graph.ts`**; its own argument covers
+   `workflow-catalog.ts` too, which is the call site the adjudication describes. Both are on the
+   allowlist; the ADR should be amended to match.

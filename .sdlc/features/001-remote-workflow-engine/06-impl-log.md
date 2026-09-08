@@ -3127,3 +3127,236 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   (it is executed directly by `node --experimental-transform-types`), so `tsc` does not check the
   changed line. IT-140 is its only guard, which is the same arrangement the file has always had.
   `rtm.md` remains un-regenerated for v25 (trace.py-generated, stale before this change).
+
+### IMPL-197 — the admission price pin actually reaches the capture site (both start and resume)
+- **status:** done
+- **traces:** TASK-178, DES-178, ARCH-116, REQ-127
+- **greens:** IT-148, IT-150, IT-147
+- **files:** src/run-manager.ts, tests/integration/nested-frame-budget.test.ts, tests/integration/run-result-meta.test.ts
+- **iter:** v26
+- **note:** Answers clarification 27. `start()` computed a `PriceBook` and passed it to
+  `store.createRun`, then constructed the `AgentExecutor` without it; `_requireLive` never read the
+  persisted `runs.price_book` row at all. Every real call therefore priced `null` → `unpriced:true`,
+  `costUSD:0`, and REQ-127 was inert in production with every unit test green — the `composeConfig()`
+  wiring-bug class this ledger has hit twice before. Two constructor keys, plus a `getPriceBook`
+  read on the resume path (the port and both stores already had it).
+
+  **A second, quieter half of the same seam.** The pin was keyed ONLY over models the AUTHOR named
+  (`reachableModels` reads `params.model` and each label's `model`), and `defaultRunParams` leaves
+  `model` undefined — so a script whose `agent()` calls carry no model, the common case, pinned an
+  EMPTY table and priced nothing even after the wiring. Both gateways fall back to the `'default'`
+  alias, so the pin now covers it. Added at the pin site rather than inside `reachableModels`: the
+  admission UNKNOWN_ALIAS check must keep judging exactly what the author wrote, and the pin must be
+  a SUPERSET of it (INV-V26-4 is only as strong as the set it pins over).
+
+  **Test scaffolding, not a static-table edit.** IT-148 asserts `budget.spent() > 0`, which is USD
+  from v26, so it needs a PRICED model: the fake gateway now names the model the `default` alias
+  really resolves to and an injected `modelCatalog` gives it a rate, through the existing
+  `createServer({modelCatalog})` seam. `STATIC_ANTHROPIC_RATES` is a claim about real published
+  prices and was not grown to make a test pass.
+
+### IMPL-198 — `guard.addUsage` gets its production caller; the two Σ-folds are reconciled
+- **status:** done
+- **traces:** TASK-181, TASK-183, DES-181, DES-183, ARCH-118, REQ-127, REQ-120
+- **greens:** UT-071, IT-067, IT-149, IT-150, IT-152
+- **files:** src/agent-executor.ts, src/run-guard.ts, src/run-manager.ts, src/run-store.ts, src/types.ts, tests/unit/budget-fold.test.ts, tests/integration/budget-resume-hydration.test.ts
+- **iter:** v26
+- **note:** Answers clarifications 31, 35, 37, 38, 39. `capture()` called `addTokens(input+output)`
+  and nothing else, so `assertBudget()`'s USD arm was dead code and the two cache columns never
+  counted against a token budget either. The call now sits BELOW the pricing collapse — it needs
+  `costUSD`/`unpriced`, which do not exist until `priceCall` has run — and `addUsage` folds its token
+  total through `addTokens`, so UT-008's per-call delta stays observable exactly where it was.
+
+  **Resume was enforcing a different number than a fresh run.** `setSpent` took a bare token count
+  folded by the v13 `sumUsageTokens`, which sums TWO columns and carries no USD. Widened to
+  `{usd, tokens}` and fed from `foldUsage`, so a resumed run re-arms BOTH limits at the numbers the
+  same run would have reached uninterrupted.
+
+  **`sumUsageTokens` is deleted, and neither of its tests is.** It is one of the ten identifiers
+  `no-retired-surface.test.ts` requires absent from src/ and DES-181 named it for deletion. UT-071
+  and IT-067 move to `foldUsage` keeping every property, every fixture and literal oracles; UT-071
+  gains two cases for the reason the retirement happened (the four-column sum, and the USD counter
+  the two-column fold could never carry).
+
+  **The two folds no longer disagree on a whole column.** `GatewayResult.unmapped` was counted by the
+  gateway and then died at the capture boundary, so `RunUsage.unmappedMessages` was structurally
+  `{}`. It now rides the persisted usage event AND `AgentRecord`, `deriveAgentRecords` derives it
+  back the same way, and `foldUsageFromRecords` counts it — live fold and at-rest fold, one
+  arithmetic. `transport`/`proxyModel` got the same treatment for the same reason: both were on the
+  live record and the snapshot but not on the durable event, so a snapshot-less read after a restart
+  rebuilt the record without them and DES-188's derived≡snapshot lock was false on every
+  real-gateway run.
+
+### IMPL-199 — `supported_parameters` reaches the pin, and the pin reaches `wireEffort`
+- **status:** done
+- **traces:** TASK-178, TASK-179, DES-178, DES-179, ARCH-116, ARCH-117, REQ-126
+- **greens:** UT-079, UT-081, IT-016
+- **files:** src/models/model-catalog.ts, src/agent-executor.ts, src/run-manager.ts, tests/unit/model-catalog.test.ts, tests/unit/model-catalog-enrich.test.ts, tests/integration/models-list-tool.test.ts, tests/integration/agent-type-composition-root.test.ts
+- **iter:** v26
+- **note:** Answers clarification 14. `ModelBook.capsFromRow` reads `supported_parameters`, and
+  `ModelEntry` — the type the production `ModelBook` source is built over — projected that array into
+  `toolUse`/`effortDeclared`/`declaredSource` and then dropped it. Every real OpenRouter pin
+  therefore answered `caps.reasoning:'unknown'`. The raw array travels through now and is dropped
+  again at `enrichModelEntry`, so `models_list` keeps one name per fact.
+
+  **The seam was one hop longer than reported.** Even with a correct pin, nothing ever filled
+  `GatewayClient.invoke`'s `caps?` field — the gateway's own comment said the executor wiring "lands
+  separately". DES-179's signature line says the executor threads it from the RUN'S PIN, so the
+  executor now resolves this call's effective alias against the run's alias table and passes the
+  PINNED caps. Without this half, `wireEffort` saw `UNKNOWN_CAPS` on every call and REQ-126 applied
+  effort to nothing, with the unit tests green because they call `wireEffort` directly.
+
+  **Also here, TASK-178/TASK-179's shared file merged rather than overwritten** (clarification 15):
+  both branches are kept; what was stale were the v12 UT-079/UT-081 fixtures, which declared only the
+  DERIVED display price and so described unpriced models to a `computeCostLevel` that now reads
+  `ratesPerM`. The fixture helper derives the rates from the price each case already states — every
+  oracle unchanged.
+
+### IMPL-200 — the terminal record names the backend, not the proxy cloak
+- **status:** done
+- **traces:** TASK-177, DES-177, ARCH-115, REQ-125
+- **greens:** UT-184, UT-183, VAL-102
+- **files:** src/types.ts, src/agent-executor.ts, src/gateway/claude-agent-sdk-client.ts, src/gateway/client.ts, tests/acceptance/val-102-registered-defaults-effect.test.ts
+- **iter:** v26
+- **note:** Answers clarification 26. `redactHarness` was handed `modelName` — which on the LiteLLM
+  route is the `rwe-proxy-*` cloak — and `markHarness` stamps the descriptor onto the live record,
+  where `capture()`'s harness-wins merge keeps it. So `record.model === record.proxyModel` on every
+  proxied call: the terminal record named the proxy instead of the backend that served it, which is
+  the one thing REQ-125 exists to prevent. `HarnessDescriptor` gains `proxyModel` and the descriptor
+  is built with the RESOLVED id in `model` — the same two values under the same two names that
+  `GatewayResult` already carried. Both gateways, since the legacy direct-fetch path had the same
+  defect one step worse (it stamped the ALIAS name).
+
+  **VAL-102 moves with it, not around it:** the case asserts what `alias-b` resolves to instead of
+  the alias string. Same property — the label's registered `model.default` is what dispatched —
+  pinned one hop closer to the wire.
+
+  **Observed live** (§E smoke, ollama through the managed LiteLLM proxy):
+  `model: "qwen2.5:7b"`, `proxyModel: "rwe-proxy-local"`, `provider: "ollama"`,
+  `transport: "claude-agent-sdk"` — four distinct facts under four distinct names.
+
+### IMPL-201 — registration-time v2 gating: `diagram_contract='v2'` becomes a verified fact
+- **status:** done
+- **traces:** TASK-189, TASK-192, DES-184, DES-174, ARCH-119, ARCH-113, ADR-043, ADR-048, REQ-128, REQ-117
+- **greens:** IT-151, UT-196, UT-173, IT-118, UT-115
+- **files:** src/workflow-catalog.ts, src/check-mermaid.ts, src/errors.ts, src/skeleton-graph.ts, src/workflow-meta.ts, src/server.ts, src/tool-specs.ts, src/authoring-guide.ts, src/mcp-facade.ts, src/dashboard-page.ts, docs/AUTHORING.md, tests/helpers/workflow-fixtures.ts, tests/unit/check-mermaid-v2.test.ts, tests/unit/no-skeleton-surface.test.ts, tests/unit/skeleton-graph.test.ts, tests/unit/graph-layout.test.ts, tests/fixtures/expected-graph-fixtures.ts, tests/integration/diagram-contract-grandfather.test.ts, + the registration fixtures across ~40 test files
+- **iter:** v26
+- **note:** Answers clarifications 23, 29, 4, 5, 6, 30, 43, 44, 45. `checkMermaid`'s v2 arm was built
+  and `insertVersion` already wrote `'v2'` on every new row, but nothing ever passed the 5th
+  argument — the column was a STAMP for a check that never ran. `validateRegistration` now derives
+  the script's `ExpectedGraph` and hands it over; a derive refusal answers with its OWN code and line
+  (`AGENT_BEFORE_PHASE`/`UNDECIDABLE_SHAPE`, two new ERROR_CATALOG rows) because a bare
+  SCAN_VIOLATION fails REQ-117's first-try bar.
+
+  **Blast radius measured, not estimated:** 104 files / 303 tests red on the first wiring, then 52,
+  22, 10, 3, 0. The scaffolding is `synthesizeLrSwimlane` + `synthesizePhase` in the fixture helper,
+  reusing the REAL `deriveExpectedGraph` so a fixture diagram cannot drift from the checker. This is
+  test scaffolding, NOT the production `mermaid:"auto"` the owner rejected at Gate 2 (Q1 甲).
+
+  **Three real defects the sweep exposed, each fixed in src/ rather than appeased:**
+  (a) `checkMermaid`'s v2 arm could not express ONE LABEL IN TWO LANES — `labelToNode` is
+  latest-wins, so the guide's own canonical `draft, critique, revise` example (the same `writer` in
+  two phases, which DES-174's "duplicate labels" fixture says is legal) was refused LANE_MISMATCH.
+  The v2 checks are per-SLOT and now resolve the node in that slot's own lane.
+  (b) `phase('fork:' + tier)` recorded the TRUNCATED literal `fork:` as a lane title — ARCH-114 names
+  this case, and under REQ-128 the checker would have demanded the author write `fork:`. A title is
+  recorded only when the argument is, in full, a string literal.
+  (c) `switch` was missing from `DYNAMIC_OPENERS` beside `for`/`while`/`if`, so a switch over
+  `agent()` calls derived two confident STATIC slots.
+
+  **REQ-124's fallback, which the wiring nearly deleted:** the dag route collapsed a derive refusal
+  to an EMPTY overlay. At registration rule L2 refuses a phase-less script; at LAYOUT that same
+  script is a legal pre-v26 workflow, and every one of them lost every predicted cell from its graph.
+  `v1FallbackGraph` rebuilds the pre-v26 shape from the same two scans, with no warning.
+
+  **ADR-048 applied and extended by its own argument:** `skeleton-graph.ts` joins ADR-022's
+  allowlist, and so does `workflow-catalog.ts` — ADR-048's sentence ("returned to the caller who just
+  submitted that very script in the same `workflow_register` call") describes that file, which is the
+  call site. FLAGGED for Gate 8: ADR-048's Action line names only the first of the two.
+
+  **REQ-128's prose (no TASK owned it):** the guide's "Canonical diagram" section teaches the four
+  rules with their codes and a worked example; `workflow_register.mermaid` carries the same rule
+  compressed for a client that reads only `tools/list`; `docs/AUTHORING.md` regenerated.
+
+  **CONSEQUENCE, recorded so nobody meets it first in production:** REQ-128 as accepted makes every
+  phase-less script UNREGISTRABLE from v26 on. Grandfathering protects existing VERSIONS (never
+  re-checked, still rendered), but the next re-registration of a workflow without `phase()` calls is
+  refused `AGENT_BEFORE_PHASE`.
+
+### IMPL-202 — the record's phase survives a restart, and the harness table stops saying "—"
+- **status:** done
+- **traces:** TASK-186, TASK-192, DES-175, DES-176, DES-188, ARCH-114, REQ-124, REQ-128
+- **greens:** IT-152, IT-153, IT-154, UT-162
+- **files:** src/types.ts, src/agent-executor.ts, src/run-store.ts, src/mcp-facade.ts, src/dashboard-page.ts, tests/integration/diagram-contract-grandfather.test.ts
+- **iter:** v26
+- **note:** Answers clarifications 17 and 24. DES-176 cohort (i) says a v26 record's lane is exact
+  "from the live stamp OR the harness event" — only the live-stamp half was built, so a `done` record
+  rebuilt by `deriveAgentRecords` after a restart lost `phase`/`phaseIndex` and fell back to
+  frame-grouping, which is the REQ-124 defect itself. The descriptor carries both now, beside `label`
+  and for the same reason. Invisible until §A3 made phases universal.
+
+  **`toolSurface`:** `workflow_describe` gains it (on the `diagramContract` precedent — derived from
+  the SCRIPT, which the projection deliberately never sees) and the dashboard's tools column renders
+  it. Read with the SAME `scanAgentCalls` the diagram's `tools:` segment is checked against, so the
+  table and the diagram cannot disagree; `—` now means only "a pre-v26 server".
+
+### IMPL-203 — the small reconciliations, and one closed door deliberately left open
+- **status:** done
+- **traces:** TASK-171, TASK-176, TASK-182, TASK-189, TASK-194, DES-170, DES-171, DES-182, DES-184, REQ-121, REQ-127
+- **greens:** IT-141, UT-180, UT-196
+- **files:** src/ipc/protocol.ts, src/workspace-seed.ts, src/gateway/claude-agent-sdk-client.ts, src/tool-specs.ts, tests/unit/check-mermaid-v2.test.ts
+- **iter:** v26
+- **note:** Answers clarifications 3, 10, 11, 30, 36.
+  `ipc/protocol.ts`'s `init` still declared `budget: {total}` for a message DES-182 replaced (36).
+  `materializeSeed`'s `contentB64 ?? ''` narrows and throws (3) — the old fallback silently wrote a
+  0-BYTE FILE, which is the one outcome a seeding bug must not have. `MAX_ERROR_DETAIL_BYTES` caps
+  the api_retry/terminal detail string where it is built (11); redaction was already free through the
+  existing sweep, so this is a size bound only. `EDGE_MISMATCH` gets the negative fixtures it never
+  had (30) — one per arm of `checkEdges`, plus the positive that a labelled non-consecutive edge IS
+  accepted.
+
+  **`additionalProperties:false` on `run_start.seed.items` is NOT applied, and the reason is the
+  point** (10). TASK-194's cross-repo read confirmed it would not break the plugin, and it is still
+  wrong: ajv would answer `INVALID_ARGUMENT` before `validateSeedSpec` runs, and IT-141 /
+  DES-170 / REQ-121 exist to guarantee the typed `INVALID_SEED_SPEC` that NAMES the offending path
+  and points at `seedManifest` — the entire content of issue #64. Measured: closing it turns IT-141
+  red for exactly that reason. The reasoning is recorded at the schema, not just here.
+
+### IMPL-204 — the v26 parallel phase, recorded: the nine TASKs that landed without an IMPL row of their own
+- **status:** done
+- **traces:** TASK-170, TASK-172, TASK-173, TASK-174, TASK-180, TASK-190, TASK-191, TASK-193, TASK-195, DES-172, DES-173, DES-180, DES-185, DES-186, DES-187, DES-189, DES-190, ADR-041, ADR-042, ADR-045, ADR-046, ADR-047, ADR-044, ARCH-112, ARCH-118, ARCH-119, ARCH-120, ARCH-121, ARCH-108, REQ-123, REQ-127, REQ-128, REQ-129, REQ-130, REQ-070, REQ-116, REQ-117, REQ-118, REQ-121, REQ-001
+- **greens:** UT-172, UT-174, UT-175, UT-176, UT-177, UT-180, UT-181, UT-182, UT-186, UT-197, UT-198, UT-199, UT-200, UT-201, UT-202, UT-203, IT-142, IT-143, IT-118, IT-155
+- **files:** src/main.ts, src/update-types.ts, src/server.ts, src/dashboard-page.ts, src/dashboard.ts, src/gateway/client.ts, src/gateway/claude-agent-sdk-client.ts, src/gateway/litellm-proxy.ts, src/models/model-catalog.ts, src/params/resolve.ts, src/session-options-builder.ts, src/default-aliases.ts, src/providers.ts, src/types.ts, src/run-guard.ts, src/agent-executor.ts, src/sandbox/guards.ts, src/authoring-guide.ts, src/tool-specs.ts, scripts/gen-authoring-md.ts, deploy/rwe-update.sh, DEPLOY.md, README.md, rwe.env.example, rwe.config.example.json, docs/AUTHORING.md, .sdlc/features/001-remote-workflow-engine/04-design.md, .sdlc/features/001-remote-workflow-engine/v24-tool-surface.md, tests/integration/check-config-cli.test.ts, tests/unit/update-outcome-config-check.test.ts, tests/unit/no-retired-surface.test.ts, tests/unit/litellm-config-generate.test.ts, tests/integration/ollama-tools-verbatim.test.ts, tests/unit/price-call.test.ts, tests/unit/token-extraction.test.ts, tests/unit/dashboard-page-source.test.ts, tests/integration/guide-examples-register.test.ts, tests/unit/dag-box.test.ts, tests/unit/dashboard-zoom-source.test.ts, tests/unit/authoring-guide.test.ts, tests/unit/sandbox-globals-lock.test.ts, tests/unit/authoring-md-generated.test.ts, tests/acceptance/v24-tool-surface.test.ts
+- **iter:** v26
+- **note:** Bookkeeping row written by the INTEGRATOR, not a claim of authorship. Gate 6 ran 22
+  file-partitioned implementers in parallel and the contract forbids them touching `06-impl-log.md`
+  ("the integrator writes those"), so nine landed TASKs had no row and showed as
+  `未實作` in `trace`. Each is recorded here against its own dod, re-run and green at integration:
+
+  - **TASK-170** (doc-only, executed at Gate 4): the three v2-era rows that asserted a trigger budget
+    which was never built now carry `ADR-047(b)` and state that trigger-started runs are unbounded by
+    owner ruling, with spend RECORDING as the compensating control.
+  - **TASK-172**: `--check-config` runs before the updater restarts, and `configCheck`
+    (`passed`/`skipped`/`failed`, plus an older updater's absent key) renders on the banner.
+  - **TASK-173 / TASK-174**: the retired surface was re-pointed BEFORE the deletion, then deleted —
+    `openai`, `gemini`, per-provider tool curation and three effort tables leave the tree, guarded by
+    a grep over 10 identifiers, 2 provider literals and 3 env names, paired with the behavioural
+    assertion that an ollama `allowedTools` reaches the session verbatim.
+  - **TASK-180**: four-column `Tokens`, `priceCall`, and the `costUSD`/`unpriced` collapse at the one
+    capture site, including the camelCase `modelUsage` fallback and the DAG cell's `sumTokens()` +
+    `$0.0000` + `(unpriced)` badge.
+  - **TASK-190**: the twelve guide examples are LR swimlanes that register green — and, since §A3,
+    they are checked by the REAL v2 arm rather than merely parsed (see IMPL-201's per-slot fix,
+    which the corpus itself exposed).
+  - **TASK-191**: the run DAG scales with its container and both figures zoom/pan/fit; a re-render
+    leaves the user's zoom transform alone (REQ-129).
+  - **TASK-193**: the guide's five gaps render from exported constants with drift locks that
+    EXECUTE — `SANDBOX_GLOBALS` deep-equals the real context's keys, and every
+    `DETERMINISM_GUARDED.call` really throws in a real `vm` (REQ-130).
+  - **TASK-195**: every `TOOL_SPECS` row exercised once against a booted engine including its error
+    path; the committed surface table is regenerated LAST in this iteration, after every tool-specs
+    edit, so it reflects the true final v26 surface.
+
+  **Still open by design, not by omission:** `TASK-018` is a v3 `blocked` row (the OIDC swap seam)
+  and `TASK-153` is EXTERNAL — the client plugin repo, owner-scheduled, and its own dod says it
+  "blocks the REQ-117 probe, not Gate 6". Neither is an integration gap.
