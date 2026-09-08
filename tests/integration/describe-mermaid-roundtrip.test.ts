@@ -30,11 +30,16 @@ const WF = 'it126-diagram';
 // A real diagram, not the minimal one the fixture helper synthesizes: a trigger trapezoid, the two
 // stadium agent nodes the script dispatches, and a labelled edge — the shape an author actually
 // draws, so a projection that dropped part of the text would be visible too.
+// v26 (REQ-128): one subgraph lane per `phase()`. The dispatch sits behind `if (false)` (this file
+// only round-trips the DIAGRAM, it never runs the workflow), so the lane is dynamic and its two
+// nodes carry no predicted slot — they are still declared inside the lane, as an author would.
 const MERMAID = [
   'graph LR',
   'trig[/"cron"/]',
+  'subgraph "Plan"',
   'planner(["planner"])',
   'writer(["writer"])',
+  'end',
   'trig-->planner',
   'planner-->|plan|writer',
 ].join('\n');
@@ -44,6 +49,7 @@ const SCRIPT = [
   "  planner: { model: { type: 'string', default: 'sonnet' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },",
   "  writer: { model: { type: 'string', default: 'sonnet' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },",
   '} } };',
+  "phase('Plan');",
   "if (false) { await agent('planner', {}); await agent('writer', {}); }",
   "return 'ok';",
 ].join('\n');
@@ -84,7 +90,10 @@ describe('the registered diagram is served back verbatim (IT-126, D-8, REQ-111)'
   });
 
   it('an explicitly-selected version serves ITS diagram, not the release pointer\'s', async () => {
-    const v2Mermaid = ['graph LR', 'planner(["planner"])', 'writer(["writer"])', 'planner-->writer'].join('\n');
+    // v26 (REQ-128): a DIFFERENT valid v2 diagram for the same script — the lane is required, the
+    // trapezoid trigger node is not, which is exactly the "per-version, verbatim" difference this
+    // case is about.
+    const v2Mermaid = ['graph LR', 'subgraph "Plan"', 'planner(["planner"])', 'writer(["writer"])', 'end', 'planner-->writer'].join('\n');
     const reg2 = await call('workflow_register', { name: WF, script: SCRIPT, mermaid: v2Mermaid });
     expect(reg2.error).toBeUndefined();
     const v2 = await call('workflow_describe', { name: WF, version: `v${reg2.version as number}` });

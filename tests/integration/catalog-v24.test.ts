@@ -77,17 +77,17 @@ describe('WorkflowCatalog v24 — mermaid/triggers required, assets, deregister 
   });
 
   it('a valid zero-label registration (flowchart-only diagram, no agent calls) succeeds and stores a non-null mermaid', async () => {
-    const { version } = await catalog.register({ name: 'wf-v24-ok', script: 'workflow(() => {});', mermaid: 'flowchart TD' });
+    const { version } = await catalog.register({ name: 'wf-v24-ok', script: 'workflow(() => {});', mermaid: 'flowchart LR' });
     expect(version).toBe('v1');
     const row = (catalog as unknown as { _db: Database.Database })._db
       .prepare('SELECT mermaid FROM workflow_versions WHERE name = ? AND version = ?')
       .get('wf-v24-ok', version) as { mermaid: string | null };
-    expect(row.mermaid).toBe('flowchart TD');
+    expect(row.mermaid).toBe('flowchart LR');
   });
 
   it('ten successful registrations under distinct names — no row is written with mermaid NULL', async () => {
     for (let i = 0; i < 10; i++) {
-      await catalog.register({ name: `wf-v24-ten-${i}`, script: 'workflow(() => {});', mermaid: 'flowchart TD' });
+      await catalog.register({ name: `wf-v24-ten-${i}`, script: 'workflow(() => {});', mermaid: 'flowchart LR' });
     }
     const nullCount = (
       (catalog as unknown as { _db: Database.Database })._db
@@ -105,7 +105,7 @@ describe('WorkflowCatalog v24 — mermaid/triggers required, assets, deregister 
   });
 
   it('deregister() deletes every `assets` row for that workflow, in the same transaction as the version rows', async () => {
-    await catalog.register({ name: 'wf-v24-assets', script: 'workflow(() => {});', mermaid: 'flowchart TD' });
+    await catalog.register({ name: 'wf-v24-assets', script: 'workflow(() => {});', mermaid: 'flowchart LR' });
     catalog.putAsset({ workflow: 'wf-v24-assets', kind: 'skill', name: 'demo', pushedBy: 'tester', pushedAt: new Date().toISOString() });
     expect(catalog.listAssets('wf-v24-assets')).toHaveLength(1);
     await catalog.deregister('wf-v24-assets');
@@ -113,15 +113,15 @@ describe('WorkflowCatalog v24 — mermaid/triggers required, assets, deregister 
   });
 
   it('deregister() returns the UNION of triggers[] across every version row for that name', async () => {
-    await catalog.register({ name: 'wf-v24-trig', script: 'workflow(() => {});', mermaid: 'flowchart TD', triggers: ['t1', 't2'] });
-    await catalog.register({ name: 'wf-v24-trig', script: 'workflow(() => {});', mermaid: 'flowchart TD', triggers: ['t2', 't3'] });
+    await catalog.register({ name: 'wf-v24-trig', script: 'workflow(() => {});', mermaid: 'flowchart LR', triggers: ['t1', 't2'] });
+    await catalog.register({ name: 'wf-v24-trig', script: 'workflow(() => {});', mermaid: 'flowchart LR', triggers: ['t2', 't3'] });
     const result = await catalog.deregister('wf-v24-trig');
     expect(result.removed).toBe(true);
     expect(new Set(result.claimedTriggers)).toEqual(new Set(['t1', 't2', 't3']));
   });
 
   it('deregister() of a name with no triggers on any version ⇒ claimedTriggers is empty, removed is true', async () => {
-    await catalog.register({ name: 'wf-v24-notrig', script: 'workflow(() => {});', mermaid: 'flowchart TD' });
+    await catalog.register({ name: 'wf-v24-notrig', script: 'workflow(() => {});', mermaid: 'flowchart LR' });
     const result = await catalog.deregister('wf-v24-notrig');
     expect(result).toEqual({ removed: true, claimedTriggers: [] });
   });
@@ -158,7 +158,7 @@ describe('WorkflowCatalog v24 — mermaid/triggers required, assets, deregister 
     `;
     const before = await catalog.list();
     await expect(
-      catalog.register({ name: 'wf-v24-mismatch', script, mermaid: 'flowchart TD' }),
+      catalog.register({ name: 'wf-v24-mismatch', script, mermaid: 'flowchart LR' }),
     ).rejects.toMatchObject({ code: 'AGENT_UNDECLARED' });
     const after = await catalog.list();
     expect(after.length).toBe(before.length);
@@ -171,27 +171,27 @@ describe('WorkflowCatalog v24 — mermaid/triggers required, assets, deregister 
       });
     `;
     const before = await catalog.list();
-    await expect(catalog.register({ name: 'wf-v24-scanviol', script, mermaid: 'flowchart TD' })).rejects.toMatchObject({ code: 'SCAN_VIOLATION' });
+    await expect(catalog.register({ name: 'wf-v24-scanviol', script, mermaid: 'flowchart LR' })).rejects.toMatchObject({ code: 'SCAN_VIOLATION' });
     const after = await catalog.list();
     expect(after.length).toBe(before.length);
   });
 
   it('a VERSION_CEILING_EXCEEDED refusal leaves the version-row count unchanged [T1]', async () => {
     const capped = new WorkflowCatalog(join(dir, 'capped'), undefined, { ceilings: { maxTimeoutMs: 600_000, maxAppendPromptBytes: 1024, maxEffort: 'high', maxWorkflowVersions: 1 } as never });
-    await capped.register({ name: 'wf-v24-ceiling', script: 'workflow(() => {});', mermaid: 'flowchart TD' });
+    await capped.register({ name: 'wf-v24-ceiling', script: 'workflow(() => {});', mermaid: 'flowchart LR' });
     const before = await capped.list();
     await expect(
-      capped.register({ name: 'wf-v24-ceiling', script: 'workflow(() => {});', mermaid: 'flowchart TD' }),
+      capped.register({ name: 'wf-v24-ceiling', script: 'workflow(() => {});', mermaid: 'flowchart LR' }),
     ).rejects.toMatchObject({ code: 'VERSION_CEILING_EXCEEDED' });
     const after = await capped.list();
     expect(after.length).toBe(before.length);
   });
 
   it('a NOT_WORKFLOW_OWNER refusal (auth enabled, wrong principal) leaves the version-row count unchanged [T1]', async () => {
-    await catalog.register({ name: 'wf-v24-owned', script: 'workflow(() => {});', mermaid: 'flowchart TD', principal: 'alice@example.com' });
+    await catalog.register({ name: 'wf-v24-owned', script: 'workflow(() => {});', mermaid: 'flowchart LR', principal: 'alice@example.com' });
     const before = await catalog.list();
     await expect(
-      catalog.register({ name: 'wf-v24-owned', script: 'workflow(() => {});', mermaid: 'flowchart TD', principal: 'mallory@example.com' }),
+      catalog.register({ name: 'wf-v24-owned', script: 'workflow(() => {});', mermaid: 'flowchart LR', principal: 'mallory@example.com' }),
     ).rejects.toMatchObject({ code: 'NOT_WORKFLOW_OWNER' });
     const after = await catalog.list();
     expect(after.length).toBe(before.length);
@@ -199,19 +199,19 @@ describe('WorkflowCatalog v24 — mermaid/triggers required, assets, deregister 
 
   it('validateRegistration() alone writes NOTHING — insertVersion() is the ONE write', async () => {
     const before = await catalog.list();
-    const { params, labels, agents } = await catalog.validateRegistration({ name: 'wf-v24-split', script: 'workflow(() => {});', mermaid: 'flowchart TD' });
+    const { params, labels, agents } = await catalog.validateRegistration({ name: 'wf-v24-split', script: 'workflow(() => {});', mermaid: 'flowchart LR' });
     expect(params).toBeDefined();
     expect(labels).toEqual([]);
     expect(agents).toEqual({});
     const after = await catalog.list();
     expect(after.length).toBe(before.length); // still nothing written — insertVersion was never called
-    const { version } = await catalog.insertVersion({ name: 'wf-v24-split', script: 'workflow(() => {});', mermaid: 'flowchart TD', params });
+    const { version } = await catalog.insertVersion({ name: 'wf-v24-split', script: 'workflow(() => {});', mermaid: 'flowchart LR', params });
     expect(version).toBe('v1');
     expect((await catalog.list()).length).toBe(before.length + 1);
   });
 
   it('register() stores `triggers[]` on the version row, readable back via resolve()', async () => {
-    await catalog.register({ name: 'wf-v24-trigrow', script: 'workflow(() => {});', mermaid: 'flowchart TD', triggers: ['hook-a', 'hook-b'] });
+    await catalog.register({ name: 'wf-v24-trigrow', script: 'workflow(() => {});', mermaid: 'flowchart LR', triggers: ['hook-a', 'hook-b'] });
     const row = (catalog as unknown as { _db: Database.Database })._db
       .prepare('SELECT triggers FROM workflow_versions WHERE name = ?')
       .get('wf-v24-trigrow') as { triggers: string | null };
@@ -219,10 +219,10 @@ describe('WorkflowCatalog v24 — mermaid/triggers required, assets, deregister 
   });
 
   it('re-registering a deregistered name allocates a fresh version number, not a reused one', async () => {
-    await catalog.register({ name: 'wf-v24-realloc', script: 'workflow(() => {});', mermaid: 'flowchart TD' });
-    await catalog.register({ name: 'wf-v24-realloc', script: 'workflow(() => {});', mermaid: 'flowchart TD' });
+    await catalog.register({ name: 'wf-v24-realloc', script: 'workflow(() => {});', mermaid: 'flowchart LR' });
+    await catalog.register({ name: 'wf-v24-realloc', script: 'workflow(() => {});', mermaid: 'flowchart LR' });
     await catalog.deregister('wf-v24-realloc');
-    const { version } = await catalog.register({ name: 'wf-v24-realloc', script: 'workflow(() => {});', mermaid: 'flowchart TD' });
+    const { version } = await catalog.register({ name: 'wf-v24-realloc', script: 'workflow(() => {});', mermaid: 'flowchart LR' });
     expect(version).toBe('v1'); // fresh row set (workflow row deleted by deregister) — allocator restarts clean
   });
 
@@ -286,7 +286,7 @@ describe('WorkflowCatalog v24 — mermaid/triggers required, assets, deregister 
 
   describe('orphan asset-tree GC sweep (workspace-gc.ts, ARCH-098)', () => {
     it('an orphan `<workRoot>/assets/<name>/` tree is reclaimed while a live workflow tree is not', async () => {
-      await catalog.register({ name: 'wf-v24-live', script: 'workflow(() => {});', mermaid: 'flowchart TD' });
+      await catalog.register({ name: 'wf-v24-live', script: 'workflow(() => {});', mermaid: 'flowchart LR' });
       const liveDir = join(dir, 'assets', 'wf-v24-live');
       const orphanDir = join(dir, 'assets', 'wf-v24-orphan-gone');
       mkdirSync(liveDir, { recursive: true });

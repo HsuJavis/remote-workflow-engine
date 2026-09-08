@@ -59,6 +59,9 @@ function declaredScript(spec: {
     `  effort: { type: 'enum', enum: ['low','medium','high'], default: ${JSON.stringify(spec.effort ?? 'low')} },`,
     `  timeoutMs: { type: 'number', default: ${spec.timeoutMs ?? 60000} },`,
     `  appendPrompt: ${appendPrompt} } } } };`,
+    // v26 (REQ-128): rule L2 — every agent() is dispatched inside a phase(). The cases that pass
+    // this script to `synthesizeMermaid` get the matching LR swimlane for free.
+    `phase('Work');`,
     `return await agent('${LABEL}', ${opts});`,
   ].join('\n');
 }

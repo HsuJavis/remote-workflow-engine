@@ -30,10 +30,16 @@ const SCRIPT = [
   "export const meta = { description: 'diagram route', params: { agents: {",
   "  writer: { model: { type: 'string', default: 'sonnet' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },",
   '} } };',
+  // v26 (REQ-128): rule L2 — every agent() is dispatched inside a phase(), and the diagram carries
+  // one subgraph lane per phase() in call order. The `if (false)` guard (this test never RUNS the
+  // workflow, it only renders its diagram) makes the lane dynamic, so the writer node lives in the
+  // lane without a predicted slot — exactly what an author writes for a conditional dispatch.
+  "phase('Write');",
   "if (false) { await agent('writer', {}); }",
   "return 'ok';",
 ].join('\n');
-const mermaidFor = (note: string): string => ['graph LR', `trig[/"${note}"/]`, 'writer(["writer"])', 'trig-->writer'].join('\n');
+const mermaidFor = (note: string): string =>
+  ['graph LR', `trig[/"${note}"/]`, 'subgraph "Write"', 'writer(["writer"])', 'end', 'trig-->writer'].join('\n');
 
 async function call(name: string, args: unknown): Promise<any> {
   const res = await fetch(`${base()}/mcp`, {

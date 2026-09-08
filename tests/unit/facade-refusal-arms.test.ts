@@ -35,7 +35,7 @@ afterEach(() => { rmSync(workRoot, { recursive: true, force: true }); });
 
 describe('McpFacade refusal arms (UT-163)', () => {
   it('workflowDeregister turns a catalog THROW into the failed envelope (the catch arm)', async () => {
-    await catalog.register({ name: 'owned', script: 'return 1;', mermaid: 'graph TD', principal: ALICE.id });
+    await catalog.register({ name: 'owned', script: 'return 1;', mermaid: 'graph LR', principal: ALICE.id });
     const res = await facade.workflowDeregister({ name: 'owned' }, BOB) as Record<string, unknown>;
     expect(res['status']).toBe('failed');
     expect(res['code']).toBe('NOT_WORKFLOW_OWNER');
@@ -49,7 +49,7 @@ describe('McpFacade refusal arms (UT-163)', () => {
   });
 
   it('workflowPublish refuses an unrecognised channel INVALID_CHANNEL rather than quietly meaning beta', async () => {
-    const { version } = await catalog.register({ name: 'pub', script: 'return 1;', mermaid: 'graph TD' });
+    const { version } = await catalog.register({ name: 'pub', script: 'return 1;', mermaid: 'graph LR' });
     const res = await facade.workflowPublish({ name: 'pub', version, channel: 'nightly' as never }, OPEN) as Record<string, unknown>;
     expect(res['status']).toBe('failed');
     expect(res['code']).toBe('INVALID_CHANNEL');
@@ -89,7 +89,7 @@ describe('McpFacade refusal arms (UT-163)', () => {
 
 describe('WorkflowCatalog non-default arms (UT-163)', () => {
   it('deregister refuses a non-owner NOT_WORKFLOW_OWNER naming the real owner', async () => {
-    await catalog.register({ name: 'owned2', script: 'return 1;', mermaid: 'graph TD', principal: ALICE.id });
+    await catalog.register({ name: 'owned2', script: 'return 1;', mermaid: 'graph LR', principal: ALICE.id });
     await expect(catalog.deregister('owned2', BOB.id)).rejects.toMatchObject({ code: 'NOT_WORKFLOW_OWNER' });
     // the owner may, and the row really goes
     await expect(catalog.deregister('owned2', ALICE.id)).resolves.toMatchObject({ removed: true });
@@ -106,7 +106,7 @@ describe('WorkflowCatalog non-default arms (UT-163)', () => {
   it('a meta literal over the source-size bound is refused PARAM_CONTRACT_INVALID, not evaluated', async () => {
     const filler = 'x'.repeat(MAX_META_LITERAL_BYTES + 100);
     const script = `export const meta = { description: '${filler}' };\nreturn 1;`;
-    await expect(catalog.register({ name: 'huge-meta', script, mermaid: 'graph TD' }))
+    await expect(catalog.register({ name: 'huge-meta', script, mermaid: 'graph LR' }))
       .rejects.toMatchObject({ code: 'PARAM_CONTRACT_INVALID' });
   });
 
@@ -117,7 +117,7 @@ describe('WorkflowCatalog non-default arms (UT-163)', () => {
     // `_parseParams`' eval-catch arm, and the design says such a script degrades to "no params"
     // rather than failing the registration.
     const script = `export const meta = { __proto__: {}, __proto__: {} };\nreturn 1;`;
-    const { version } = await catalog.register({ name: 'odd-meta', script, mermaid: 'graph TD' });
+    const { version } = await catalog.register({ name: 'odd-meta', script, mermaid: 'graph LR' });
     expect(version).toBe('v1');
     const resolved = await catalog.resolve('odd-meta', { version }) as { params?: { agents?: unknown; args?: unknown } };
     expect(resolved.params).toEqual({ agents: {}, args: {} }); // the empty contract, not a refusal
@@ -165,25 +165,25 @@ describe('WorkflowCatalog.insertVersion refusal arms (UT-163)', () => {
   const params = { agents: {}, args: {} } as never;
 
   it('a non-owner inserting a new version of an owned workflow is refused NOT_WORKFLOW_OWNER', async () => {
-    await catalog.insertVersion({ name: 'iv-owned', script: 'return 1;', mermaid: 'graph TD', params, principal: ALICE.id });
-    await expect(catalog.insertVersion({ name: 'iv-owned', script: 'return 2;', mermaid: 'graph TD', params, principal: BOB.id }))
+    await catalog.insertVersion({ name: 'iv-owned', script: 'return 1;', mermaid: 'graph LR', params, principal: ALICE.id });
+    await expect(catalog.insertVersion({ name: 'iv-owned', script: 'return 2;', mermaid: 'graph LR', params, principal: BOB.id }))
       .rejects.toMatchObject({ code: 'NOT_WORKFLOW_OWNER' });
     // the OWNER may, and the allocator moves to v2
-    await expect(catalog.insertVersion({ name: 'iv-owned', script: 'return 2;', mermaid: 'graph TD', params, principal: ALICE.id }))
+    await expect(catalog.insertVersion({ name: 'iv-owned', script: 'return 2;', mermaid: 'graph LR', params, principal: ALICE.id }))
       .resolves.toEqual({ version: 'v2' });
   });
 
   it('a null principal (auth-disabled) is NOT treated as "some other owner"', async () => {
-    await catalog.insertVersion({ name: 'iv-open', script: 'return 1;', mermaid: 'graph TD', params, principal: ALICE.id });
-    await expect(catalog.insertVersion({ name: 'iv-open', script: 'return 2;', mermaid: 'graph TD', params, principal: null }))
+    await catalog.insertVersion({ name: 'iv-open', script: 'return 1;', mermaid: 'graph LR', params, principal: ALICE.id });
+    await expect(catalog.insertVersion({ name: 'iv-open', script: 'return 2;', mermaid: 'graph LR', params, principal: null }))
       .resolves.toEqual({ version: 'v2' });
   });
 
   it('inserting past the maxWorkflowVersions ceiling is refused VERSION_CEILING_EXCEEDED', async () => {
     const capped = new WorkflowCatalog(join(workRoot, 'capped'), CLOCK, { ceilings: { maxWorkflowVersions: 2 } as never });
-    await capped.insertVersion({ name: 'iv-cap', script: 'return 1;', mermaid: 'graph TD', params });
-    await capped.insertVersion({ name: 'iv-cap', script: 'return 2;', mermaid: 'graph TD', params });
-    await expect(capped.insertVersion({ name: 'iv-cap', script: 'return 3;', mermaid: 'graph TD', params }))
+    await capped.insertVersion({ name: 'iv-cap', script: 'return 1;', mermaid: 'graph LR', params });
+    await capped.insertVersion({ name: 'iv-cap', script: 'return 2;', mermaid: 'graph LR', params });
+    await expect(capped.insertVersion({ name: 'iv-cap', script: 'return 3;', mermaid: 'graph LR', params }))
       .rejects.toMatchObject({ code: 'VERSION_CEILING_EXCEEDED' });
   });
 });

@@ -84,10 +84,14 @@ describe('REQ-106/REQ-117: the authoring rules are discoverable from the MCP sur
     const script = [
       "export const meta = { params: { agents: { go: { model: { type: 'string', default: 'val117-fast' },",
       "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } } } } };",
+      // v26 (REQ-128): rule L2 plus the LR swimlane — the `if (false)` guard keeps this a
+      // registration-only case (nothing dispatches), which makes the lane dynamic, so the node
+      // lives in the lane with no predicted slot.
+      "phase('Go');",
       "if (false) { await agent('go', {}); }",
       "return 'ok';",
     ].join('\n');
-    const reg = await rpc('tools/call', { name: 'workflow_register', arguments: { name: 'val117-alias-check', script, mermaid: 'graph TD;\ngo(["go"])' } });
+    const reg = await rpc('tools/call', { name: 'workflow_register', arguments: { name: 'val117-alias-check', script, mermaid: 'graph LR\nsubgraph "Go"\ngo(["go"])\nend' } });
     const regPayload = JSON.parse(reg.result?.content?.[0]?.text ?? '{}') as { error?: { code?: string } };
     expect(regPayload.error).toBeUndefined();
   });

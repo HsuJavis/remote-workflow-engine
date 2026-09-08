@@ -59,7 +59,7 @@ describe('register crash window — trigger stays unclaimed after a crash before
       catalog.insertVersion = async () => { throw new Error('simulated crash before insertVersion completed'); };
 
       const res = await facade.workflowRegister(
-        { name: 'wf-crash', script: 'return 1;', mermaid: 'graph TD', triggers: [id] },
+        { name: 'wf-crash', script: 'return 1;', mermaid: 'graph LR', triggers: [id] },
         { kind: 'auth-disabled' },
       );
       expect(res['status']).toBe('failed');

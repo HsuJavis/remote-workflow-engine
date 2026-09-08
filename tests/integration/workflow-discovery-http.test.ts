@@ -47,17 +47,26 @@ const SCRIPT = `export const meta = {
     verify: ${AGENT_SPEC('medium', 90000)},
   } },
 };
+phase('Draft');
 const drafts = await parallel([ () => agent('draft_1', { prompt: 'draft one' }), () => agent('draft_2', { prompt: 'draft two' }) ]);
+phase('Verify');
 const final = await agent('verify', { prompt: 'verify: ' + drafts.join(', ') });
 const extra = await workflow('log-it', {});
 return final;`;
 
 // The nested `workflow('log-it')` call is drawn as the black-box rectangle the guide prescribes;
 // only stadium nodes are matched against the script's agent labels (both directions).
-const MERMAID = `graph TD
+// v26 (REQ-128): the LR swimlane — the meta's own two phases are now real `phase()` calls, so the
+// diagram carries one subgraph per lane. The nested `workflow('log-it')` stays the black-box
+// rectangle the guide prescribes and is transparent to the derivation (rule S4).
+const MERMAID = `graph LR
+subgraph "Draft"
 draft_1(["draft_1"])
 draft_2(["draft_2"])
+end
+subgraph "Verify"
 verify(["verify"])
+end
 logit["workflow: log-it (black box)"]
 draft_1-->verify
 draft_2-->verify`;

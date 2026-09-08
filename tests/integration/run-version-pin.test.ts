@@ -67,10 +67,12 @@ describe('resume determinism: a suspended run continues the version it PINNED, n
         "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
         "  timeoutMs: { type: 'number', default: 60000 },",
         "} } } };",
+        // v26 (REQ-128): rule L2 — every agent() inside a phase(); the diagram is the LR swimlane.
+        "phase('Work');",
         "const a = await agent('slow', { prompt: 'take your time' });",
         "return 'V1:' + a;",
       ].join('\n');
-      const { version: v1 } = await catalog.register({ name: 'rvp-flow', script: v1Script, mermaid: 'graph TD;\nn0(["slow"])' });
+      const { version: v1 } = await catalog.register({ name: 'rvp-flow', script: v1Script, mermaid: 'graph LR\nsubgraph "Work"\nn0(["slow"])\nend' });
       await catalog.publish('rvp-flow', v1, 'release', null);
 
       const runId = await runManager.start({ name: 'rvp-flow' });

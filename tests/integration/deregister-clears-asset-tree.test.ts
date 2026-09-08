@@ -56,8 +56,11 @@ const AGENT_BLOCK = (skills: string[]) =>
 
 const SCRIPT = (skills: string[]) =>
   `export const meta = { params: { agents: { worker: ${AGENT_BLOCK(skills)} } } };\n` +
+  // v26 (REQ-128): rule L2 — every agent() inside a phase(); the lane name matches the diagram.
+  `phase('Work');\n` +
   `return await agent('worker', { prompt: 'go' });`;
-const MERMAID = 'graph TD;\nworker(["worker"])';
+// v26 (REQ-128): the LR swimlane — one subgraph per phase(), the agent's node inside its lane.
+const MERMAID = 'graph LR\nsubgraph "Work"\nworker(["worker"])\nend';
 
 describe('deregister removes the workflow\'s asset tree from disk, not only its rows (IT-127, D-10, REQ-113)', () => {
   let server: Server;

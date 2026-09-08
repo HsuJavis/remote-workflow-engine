@@ -72,8 +72,10 @@ describe('registration enforces validateScriptEntry — same codes submission us
         `model: { type: 'string', default: 'sonnet' }, ` +
         `effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, ` +
         `timeoutMs: { type: 'number', default: 60000 } } } } };\n` +
+        // v26 (REQ-128): rule L2 — every agent() inside a phase(); the diagram is the LR swimlane.
+        `phase('Work');\n` +
         `await agent('a', { mcp: ['known'] });`;
-      const { version } = await catalog.register({ name: 'clean', script, mermaid: 'graph TD;\nn0(["a"])' });
+      const { version } = await catalog.register({ name: 'clean', script, mermaid: 'graph LR\nsubgraph "Work"\nn0(["a"])\nend' });
       expect(version).toBeTruthy();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });

@@ -42,7 +42,11 @@ const MERMAID = [
   'graph LR',
   `trig[/"${IMG_PAYLOAD}"/]`,
   `xss["${SCRIPT_PAYLOAD}"]`,
+  // v26 (REQ-128): the agent node lives in its phase's lane. The hostile free-text nodes stay
+  // OUTSIDE the lane — they are exactly the untrusted-label case this file is about.
+  'subgraph "Write"',
   'writer(["writer<br/>sonnet · low · 60000"])',
+  'end',
   'trig-->writer',
   'xss-->writer',
 ].join('\n');
@@ -50,6 +54,7 @@ const SCRIPT = [
   "export const meta = { description: 'hostile labels', params: { agents: {",
   "  writer: { model: { type: 'string', default: 'sonnet' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },",
   '} } };',
+  "phase('Write');",
   "if (false) { await agent('writer', {}); }",
   "return 'ok';",
 ].join('\n');

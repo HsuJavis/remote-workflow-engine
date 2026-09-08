@@ -29,7 +29,9 @@ import { WebhookRegistry } from '../../src/webhook-registry.js';
 import { SystemClock } from '../../src/clock.js';
 
 const SCRIPT = 'workflow(() => {});';
-const MERMAID = 'flowchart TD';
+// v26 (REQ-128): a new registration must be an LR swimlane. This script declares no agent()
+// labels at all, so the header is the whole contract here.
+const MERMAID = 'flowchart LR';
 
 let dir: string;
 let catalog: WorkflowCatalog;

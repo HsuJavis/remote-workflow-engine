@@ -66,10 +66,12 @@ describe('REQ-099: registration enforces the checks the engine used to run only 
       "  effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },",
       "  timeoutMs: { type: 'number', default: 60000 },",
       "} } } };",
+      // v26 (REQ-128): rule L2 — every agent() is dispatched inside a phase().
+      "phase('Work');",
       "await agent('a', { prompt: 'do the thing' });",
       "return 'ok';",
     ].join('\n');
-    const reg = await toolCall('workflow_register', { name: 'val109-clean', script, mermaid: 'graph TD;\nn0(["a"])' });
+    const reg = await toolCall('workflow_register', { name: 'val109-clean', script, mermaid: 'graph LR\nsubgraph "Work"\nn0(["a"])\nend' });
     expect(reg['error']).toBeUndefined();
   });
 });

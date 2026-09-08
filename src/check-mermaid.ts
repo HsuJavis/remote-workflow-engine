@@ -233,11 +233,21 @@ export function checkMermaid(
   // Rectangle/trapezoid nodes are free text, excluded (DES-147 boundary).
   const diagramLabels = new Set<string>();
   const labelToNode = new Map<string, NodeRecord>();
+  // v26 integration (DES-174's own "duplicate labels — two distinct slots joined by offset, not
+  // label" fixture): ONE label may legitimately appear in several lanes — the guide's canonical
+  // `draft, critique, revise` example dispatches the SAME `writer` in two phases, so its diagram
+  // declares two stadium nodes carrying that label. `labelToNode` (latest-wins) is fine for the v1
+  // set/triple checks below, which are per-LABEL; the v2 lane/tools/edge checks are per-SLOT and
+  // must resolve the node that sits in THAT slot's lane, which needs every node for the label.
+  const labelToNodes = new Map<string, NodeRecord[]>();
   for (const n of nodes.values()) {
     if (n.shape !== 'stadium') continue;
     const label = n.text.split('<br/>')[0]!;
     diagramLabels.add(label);
     labelToNode.set(label, n);
+    const arr = labelToNodes.get(label) ?? [];
+    arr.push(n);
+    labelToNodes.set(label, arr);
   }
   const scriptSet = new Set(scriptLabels);
   const onlyInScript = [...scriptSet].filter((l) => !diagramLabels.has(l));
@@ -279,13 +289,13 @@ export function checkMermaid(
     const directionErr = checkDirection(headerLine);
     if (directionErr) return directionErr;
 
-    const laneErr = checkLanes(v2.expected, subgraphBlocks, labelToNode);
+    const laneErr = checkLanes(v2.expected, subgraphBlocks, labelToNodes);
     if (laneErr) return laneErr;
 
-    const toolsErr = checkTools(v2.expected, labelToNode);
+    const toolsErr = checkTools(v2.expected, subgraphBlocks, labelToNodes);
     if (toolsErr) return toolsErr;
 
-    const edgeErr = checkEdges(v2.expected, nodes, edges, labelToNode);
+    const edgeErr = checkEdges(v2.expected, nodes, edges, subgraphBlocks, labelToNodes);
     if (edgeErr) return edgeErr;
   }
 
@@ -305,7 +315,14 @@ function checkDirection(headerLine: string): CheckMermaidResult | null {
 /** (11) LANE_MISMATCH: the count/order/title of top-level `subgraph` blocks vs `expected.lanes`,
  *  then — for every expected slot — that its labelled stadium node(s) are actually declared inside
  *  the subgraph at `slot.lane`'s position. */
-function checkLanes(expected: ExpectedGraph, subgraphBlocks: SubgraphBlock[], labelToNode: Map<string, NodeRecord>): CheckMermaidResult | null {
+/** v26 integration: the stadium node carrying `label` that is declared INSIDE `block` — the only
+ *  correct resolution once one label may have several nodes (see `labelToNodes` above). */
+function nodeInLane(labelNodes: NodeRecord[] | undefined, block: SubgraphBlock | undefined): NodeRecord | undefined {
+  if (labelNodes === undefined || block === undefined) return undefined;
+  return labelNodes.find((n) => block.nodeIds.has(n.id));
+}
+
+function checkLanes(expected: ExpectedGraph, subgraphBlocks: SubgraphBlock[], labelToNodes: Map<string, NodeRecord[]>): CheckMermaidResult | null {
   if (subgraphBlocks.length !== expected.lanes.length) {
     return err('LANE_MISMATCH', { line: 1, expected: expected.lanes });
   }
@@ -319,10 +336,9 @@ function checkLanes(expected: ExpectedGraph, subgraphBlocks: SubgraphBlock[], la
   }
   for (const slot of expected.slots) {
     for (const label of slot.labels) {
-      const node = labelToNode.get(label);
       const block = subgraphBlocks[slot.lane];
-      if (!node || !block || !block.nodeIds.has(node.id)) {
-        return err('LANE_MISMATCH', { line: node?.line ?? 1, expected: slot });
+      if (nodeInLane(labelToNodes.get(label), block) === undefined) {
+        return err('LANE_MISMATCH', { line: labelToNodes.get(label)?.[0]?.line ?? 1, expected: slot });
       }
     }
   }
@@ -331,12 +347,13 @@ function checkLanes(expected: ExpectedGraph, subgraphBlocks: SubgraphBlock[], la
 
 /** (12) TOOLS_MISMATCH: the stadium's third `<br/>` segment vs `slot.tools[label]` — `'default'`
  *  is SKIPPED ENTIRELY (never read, never partially compared). */
-function checkTools(expected: ExpectedGraph, labelToNode: Map<string, NodeRecord>): CheckMermaidResult | null {
+function checkTools(expected: ExpectedGraph, subgraphBlocks: SubgraphBlock[], labelToNodes: Map<string, NodeRecord[]>): CheckMermaidResult | null {
   for (const slot of expected.slots) {
     for (const label of slot.labels) {
       const toolsExpected = slot.tools[label];
       if (toolsExpected === undefined || toolsExpected === 'default') continue;
-      const node = labelToNode.get(label);
+      // The node in THIS slot's lane — the same label in another lane is another slot's business.
+      const node = nodeInLane(labelToNodes.get(label), subgraphBlocks[slot.lane]);
       const expectedStr = toolsExpected.length === 0 ? 'tools: none' : `tools: ${[...toolsExpected].sort().join(', ')}`;
       const actual = node?.text.split('<br/>')[2]?.trim();
       if (actual !== expectedStr) {
@@ -355,8 +372,15 @@ function checkEdges(
   expected: ExpectedGraph,
   nodes: Map<string, NodeRecord>,
   edges: EdgeRecord[],
-  labelToNode: Map<string, NodeRecord>,
+  subgraphBlocks: SubgraphBlock[],
+  labelToNodes: Map<string, NodeRecord[]>,
 ): CheckMermaidResult | null {
+  // Every id resolution below is per-SLOT (the node in that slot's own lane), so a label reused in
+  // two lanes contributes a DIFFERENT node to each of its two slots.
+  const idsForSlot = (slot: ExpectedSlot): string[] =>
+    slot.labels
+      .map((l) => nodeInLane(labelToNodes.get(l), subgraphBlocks[slot.lane])?.id)
+      .filter((id): id is string => id !== undefined);
   const adj = new Map<string, string[]>();
   const addEdge = (from: string, to: string) => {
     if (!adj.has(from)) adj.set(from, []);
@@ -370,10 +394,7 @@ function checkEdges(
   const slotById = new Map<number, ExpectedSlot>(expected.slots.map((s) => [s.index, s]));
   const nodeToSlot = new Map<string, number>();
   for (const slot of expected.slots) {
-    for (const label of slot.labels) {
-      const node = labelToNode.get(label);
-      if (node) nodeToSlot.set(node.id, slot.index);
-    }
+    for (const id of idsForSlot(slot)) nodeToSlot.set(id, slot.index);
   }
 
   // (a) reachability through non-agent intermediates.
@@ -381,8 +402,8 @@ function checkEdges(
     const fromSlot = slotById.get(ee.from);
     const toSlot = slotById.get(ee.to);
     if (!fromSlot || !toSlot) continue;
-    const targets = new Set(toSlot.labels.map((l) => labelToNode.get(l)?.id).filter((id): id is string => id !== undefined));
-    const starts = fromSlot.labels.map((l) => labelToNode.get(l)?.id).filter((id): id is string => id !== undefined);
+    const targets = new Set(idsForSlot(toSlot));
+    const starts = idsForSlot(fromSlot);
     const reached = starts.some((startId) => pathThroughNonAgents(startId, targets, adj, nodes));
     if (!reached) return err('EDGE_MISMATCH', { line: 1, expected: ee });
   }
@@ -401,7 +422,7 @@ function checkEdges(
   // (c) no edges among members of the SAME parallel/alt slot.
   for (const slot of expected.slots) {
     if (slot.kind === 'single' || slot.labels.length < 2) continue;
-    const ids = new Set(slot.labels.map((l) => labelToNode.get(l)?.id).filter((id): id is string => id !== undefined));
+    const ids = new Set(idsForSlot(slot));
     for (const e of edges) {
       if (ids.has(e.from) && ids.has(e.to)) return err('EDGE_MISMATCH', { line: e.line, expected: slot });
     }

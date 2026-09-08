@@ -28,7 +28,7 @@ import { join } from 'node:path';
 // UNKNOWN_ALIAS, through its own composition root's `aliasNames`.
 import { DEFAULT_ALIASES } from '../../src/default-aliases.js';
 import { createServer } from '../../src/server.js';
-import { synthesizeMeta, synthesizeMermaid } from '../helpers/workflow-fixtures.js';
+import { synthesizeMeta, synthesizeMermaid, synthesizePhase } from '../helpers/workflow-fixtures.js';
 
 describe('DEFAULT_ALIASES single source (R-1)', () => {
   it('exposes the 4 documented anthropic default aliases with real model IDs (no stale placeholders)', () => {
@@ -51,7 +51,9 @@ describe('DEFAULT_ALIASES single source (R-1)', () => {
       for (const alias of Object.keys(DEFAULT_ALIASES)) {
         // The alias under test is the declared `model.default` of the script's one agent label —
         // v24's single alias-resolution site.
-        const script = synthesizeMeta(`return await agent('t', { prompt: 'hi' });`, alias);
+        // v26 (REQ-128): rule L2 — the fixture helper's own phase synthesis, same as every other
+        // registration path in this suite.
+        const script = synthesizeMeta(synthesizePhase(`return await agent('t', { prompt: 'hi' });`), alias);
         const mermaid = synthesizeMermaid(script);
         const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
           method: 'POST',

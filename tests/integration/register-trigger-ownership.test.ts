@@ -21,7 +21,8 @@ const ALICE: Principal = { kind: 'author', id: 'alice@x.com' };
 const BOB: Principal = { kind: 'author', id: 'bob@x.com' };
 const ADMIN: Principal = { kind: 'admin', id: 'root@x.com' };
 const SCRIPT = 'return 1;';
-const MERMAID = 'graph TD';
+// v26 (REQ-128): a new registration must be an LR swimlane; this script has no agent() labels.
+const MERMAID = 'graph LR';
 
 describe('workflowRegister trigger ownership (IT-123, DES-139/DES-149 step 2)', () => {
   let dir: string;

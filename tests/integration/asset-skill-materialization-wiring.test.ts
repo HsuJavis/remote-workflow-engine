@@ -137,8 +137,11 @@ describe('REQ-113 selective skill materialization on a REAL dispatch (IT-036/IT-
 
     const script =
       `export const meta = { params: { agents: { picky: ${agentBlock({ skills: ['declared-skill'] })} } } };\n` +
+      // v26 (REQ-128): rule L2 — every agent() is dispatched inside a phase(); the lane name
+      // matches the diagram's subgraph title.
+      `phase('Work');\n` +
       `return await agent('picky', { prompt: 'use the declared skill' });`;
-    const runId = await registerRunAndWait(script, 'graph TD;\npicky(["picky"])');
+    const runId = await registerRunAndWait(script, 'graph LR\nsubgraph "Work"\npicky(["picky"])\nend');
     const workspace = expectedWorkspace(runId);
 
     // THE pin: without `run-manager.ts` populating `AgentReq.assets`, `req.assets` is undefined,
@@ -163,8 +166,9 @@ describe('REQ-113 selective skill materialization on a REAL dispatch (IT-036/IT-
   it('a label declaring an ABSENT skill still runs, and run_agent_log reports it in materialized.missing (DES-154 boundary + DES-160)', async () => {
     const script =
       `export const meta = { params: { agents: { hopeful: ${agentBlock({ skills: ['never-pushed'] })} } } };\n` +
+      `phase('Work');\n` +
       `return await agent('hopeful', { prompt: 'ask for a skill nobody pushed' });`;
-    const runId = await registerRunAndWait(script, 'graph TD;\nhopeful(["hopeful"])');
+    const runId = await registerRunAndWait(script, 'graph LR\nsubgraph "Work"\nhopeful(["hopeful"])\nend');
 
     const status = await mcpCall('run_status', { runId });
     expect(status.result.status, 'a missing skill must NOT fail the run (owner 19.5.3)').toBe('completed');
@@ -177,8 +181,9 @@ describe('REQ-113 selective skill materialization on a REAL dispatch (IT-036/IT-
   it('a label declaring NO assets materializes neither of two stored skills (selective, not copy-all)', async () => {
     const script =
       `export const meta = { params: { agents: { plain: ${agentBlock()} } } };\n` +
+      `phase('Work');\n` +
       `return await agent('plain', { prompt: 'noop' });`;
-    const runId = await registerRunAndWait(script, 'graph TD;\nplain(["plain"])');
+    const runId = await registerRunAndWait(script, 'graph LR\nsubgraph "Work"\nplain(["plain"])\nend');
     const workspace = expectedWorkspace(runId);
     expect(existsSync(join(workspace, '.claude', 'skills', 'declared-skill'))).toBe(false);
     expect(existsSync(join(workspace, '.claude', 'skills', 'undeclared-skill'))).toBe(false);
