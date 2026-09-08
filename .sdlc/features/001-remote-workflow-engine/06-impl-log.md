@@ -3190,8 +3190,8 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
 ### IMPL-199 — `supported_parameters` reaches the pin, and the pin reaches `wireEffort`
 - **status:** done
 - **traces:** TASK-178, TASK-179, DES-178, DES-179, ARCH-116, ARCH-117, REQ-126
-- **greens:** UT-079, UT-081, IT-016
-- **files:** src/models/model-catalog.ts, src/agent-executor.ts, src/run-manager.ts, tests/unit/model-catalog.test.ts, tests/unit/model-catalog-enrich.test.ts, tests/integration/models-list-tool.test.ts, tests/integration/agent-type-composition-root.test.ts
+- **greens:** UT-079, UT-081, UT-186, IT-016, UT-187 (amendment)
+- **files:** src/models/model-catalog.ts, src/agent-executor.ts, src/run-manager.ts, tests/unit/model-catalog.test.ts, tests/unit/model-catalog-enrich.test.ts, tests/integration/models-list-tool.test.ts, tests/integration/agent-type-composition-root.test.ts, tests/unit/agent-executor-pinned-caps.test.ts
 - **iter:** v26
 - **note:** Answers clarification 14. `ModelBook.capsFromRow` reads `supported_parameters`, and
   `ModelEntry` — the type the production `ModelBook` source is built over — projected that array into
@@ -3286,7 +3286,7 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
 ### IMPL-202 — the record's phase survives a restart, and the harness table stops saying "—"
 - **status:** done
 - **traces:** TASK-186, TASK-192, DES-175, DES-176, DES-188, ARCH-114, REQ-124, REQ-128
-- **greens:** IT-152, IT-153, IT-154, UT-162
+- **greens:** IT-152, IT-153, IT-154, UT-162, UT-182
 - **files:** src/types.ts, src/agent-executor.ts, src/run-store.ts, src/mcp-facade.ts, src/dashboard-page.ts, tests/integration/diagram-contract-grandfather.test.ts
 - **iter:** v26
 - **note:** Answers clarifications 17 and 24. DES-176 cohort (i) says a v26 record's lane is exact
@@ -3303,7 +3303,7 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
 ### IMPL-203 — the small reconciliations, and one closed door deliberately left open
 - **status:** done
 - **traces:** TASK-171, TASK-176, TASK-182, TASK-189, TASK-194, DES-170, DES-171, DES-182, DES-184, REQ-121, REQ-127
-- **greens:** IT-141, UT-180, UT-196
+- **greens:** IT-141, UT-180, UT-196, UT-176, UT-177, IT-142
 - **files:** src/ipc/protocol.ts, src/workspace-seed.ts, src/gateway/claude-agent-sdk-client.ts, src/tool-specs.ts, tests/unit/check-mermaid-v2.test.ts
 - **iter:** v26
 - **note:** Answers clarifications 3, 10, 11, 30, 36.
@@ -3322,16 +3322,24 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   and points at `seedManifest` — the entire content of issue #64. Measured: closing it turns IT-141
   red for exactly that reason. The reasoning is recorded at the schema, not just here.
 
-### IMPL-204 — the v26 parallel phase, recorded: the nine TASKs that landed without an IMPL row of their own
+### IMPL-204 — the v26 parallel phase, recorded: the fourteen TASKs that landed without an IMPL row of their own
 - **status:** done
-- **traces:** TASK-170, TASK-172, TASK-173, TASK-174, TASK-180, TASK-190, TASK-191, TASK-193, TASK-195, DES-172, DES-173, DES-180, DES-185, DES-186, DES-187, DES-189, DES-190, ADR-041, ADR-042, ADR-045, ADR-046, ADR-047, ADR-044, ARCH-112, ARCH-118, ARCH-119, ARCH-120, ARCH-121, ARCH-108, REQ-123, REQ-127, REQ-128, REQ-129, REQ-130, REQ-070, REQ-116, REQ-117, REQ-118, REQ-121, REQ-001
-- **greens:** UT-172, UT-174, UT-175, UT-176, UT-177, UT-180, UT-181, UT-182, UT-186, UT-197, UT-198, UT-199, UT-200, UT-201, UT-202, UT-203, IT-142, IT-143, IT-118, IT-155
+- **traces:** TASK-170, TASK-172, TASK-173, TASK-174, TASK-175, TASK-180, TASK-184, TASK-185, TASK-187, TASK-188, TASK-190, TASK-191, TASK-193, TASK-195, DES-170, DES-172, DES-173, DES-174, DES-175, DES-176, DES-180, DES-185, DES-186, DES-187, DES-188, DES-189, DES-190, ADR-039, ADR-041, ADR-042, ADR-044, ADR-045, ADR-046, ADR-047, ARCH-108, ARCH-110, ARCH-112, ARCH-113, ARCH-114, ARCH-115, ARCH-118, ARCH-119, ARCH-120, ARCH-121, REQ-001, REQ-008, REQ-070, REQ-116, REQ-117, REQ-118, REQ-120, REQ-121, REQ-123, REQ-124, REQ-125, REQ-127, REQ-128, REQ-129, REQ-130
+- **greens:** UT-172, UT-174, UT-175, UT-180, UT-181, UT-197, UT-198, UT-199, UT-200, UT-201, UT-202, UT-203, IT-143, IT-118, IT-155
 - **files:** src/main.ts, src/update-types.ts, src/server.ts, src/dashboard-page.ts, src/dashboard.ts, src/gateway/client.ts, src/gateway/claude-agent-sdk-client.ts, src/gateway/litellm-proxy.ts, src/models/model-catalog.ts, src/params/resolve.ts, src/session-options-builder.ts, src/default-aliases.ts, src/providers.ts, src/types.ts, src/run-guard.ts, src/agent-executor.ts, src/sandbox/guards.ts, src/authoring-guide.ts, src/tool-specs.ts, scripts/gen-authoring-md.ts, deploy/rwe-update.sh, DEPLOY.md, README.md, rwe.env.example, rwe.config.example.json, docs/AUTHORING.md, .sdlc/features/001-remote-workflow-engine/04-design.md, .sdlc/features/001-remote-workflow-engine/v24-tool-surface.md, tests/integration/check-config-cli.test.ts, tests/unit/update-outcome-config-check.test.ts, tests/unit/no-retired-surface.test.ts, tests/unit/litellm-config-generate.test.ts, tests/integration/ollama-tools-verbatim.test.ts, tests/unit/price-call.test.ts, tests/unit/token-extraction.test.ts, tests/unit/dashboard-page-source.test.ts, tests/integration/guide-examples-register.test.ts, tests/unit/dag-box.test.ts, tests/unit/dashboard-zoom-source.test.ts, tests/unit/authoring-guide.test.ts, tests/unit/sandbox-globals-lock.test.ts, tests/unit/authoring-md-generated.test.ts, tests/acceptance/v24-tool-surface.test.ts
 - **iter:** v26
 - **note:** Bookkeeping row written by the INTEGRATOR, not a claim of authorship. Gate 6 ran 22
   file-partitioned implementers in parallel and the contract forbids them touching `06-impl-log.md`
-  ("the integrator writes those"), so nine landed TASKs had no row and showed as
-  `未實作` in `trace`. Each is recorded here against its own dod, re-run and green at integration:
+  ("the integrator writes those"), so fourteen landed TASKs had no row. Each is recorded here
+  against its own dod, re-run and green at integration:
+
+  **Read the count as fourteen, not nine.** The first draft of this row listed nine because it was
+  assembled from `trace`'s `未實作` list — and `trace` computes "implemented" by REACHABILITY
+  (`reachable_from("build")`), so a TASK whose ARCH/DES ids are traced by ANY IMPL row is silently
+  considered covered even when nothing names the TASK itself. Five more (TASK-175, 184, 185, 187,
+  188) were in exactly that state: real, landed, green work with no row of its own and no gap
+  raised. They are named below. The lesson is about the tool, not the ledger: `trace`'s silence on
+  a TASK is not evidence that a TASK was implemented.
 
   - **TASK-170** (doc-only, executed at Gate 4): the three v2-era rows that asserted a trigger budget
     which was never built now carry `ADR-047(b)` and state that trigger-started runs are unbounded by
@@ -3356,7 +3364,71 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   - **TASK-195**: every `TOOL_SPECS` row exercised once against a booted engine including its error
     path; the committed surface table is regenerated LAST in this iteration, after every tool-specs
     edit, so it reflects the true final v26 surface.
+  - **TASK-175**: `validateSeedSpec` is the one door for `INVALID_SEED_SPEC`, refusing the first
+    offender before the first byte is materialized (`materializeSeed` now narrows and throws rather
+    than defaulting `contentB64 ?? ''`). The schema door beside it was deliberately left open — see
+    IMPL-203's D-item 10.
+  - **TASK-184**: `AgentCallScan` learns `allowedTools`/`index`/`group`, and the shared
+    `(script, expectedGraph)` corpus ships with it as `tests/fixtures/expected-graph-fixtures.ts` —
+    the single source both consumers of the derivation are tested against.
+  - **TASK-185**: `deriveExpectedGraph` is total and discriminated, with ONE derivation feeding both
+    consumers (the registration gate and the dag route). Its `UNDECIDABLE_SHAPE` arm has no producer
+    — recorded as a carry-forward for Gate 8, not silently deleted.
+  - **TASK-187**: `layoutGraph` joins by LANE ORDINAL, never by phase-title string, and `inferPhase`
+    repairs pre-v26 snapshots at read. Amended at §A3 review — see IMPL-205.
+  - **TASK-188**: `deriveAgentRecords` carries the WHOLE record across a restart (`unmapped`,
+    `transport`, `proxyModel`, and the shared `label`/`phase`/`phaseIndex` on all three
+    harness-reading branches), so DES-188's derived-equals-snapshot lock holds.
+
+  **Green attribution corrected at §A3 review.** UT-176/UT-177/IT-142 (TASK-176's `classifyApiError`
+  arms) moved to IMPL-203, UT-182 (TASK-186's phase stamp at IPC receipt) to IMPL-202, and UT-186
+  (TASK-178's `maxPricePerMOf`) to IMPL-199 — the rows that actually own those TASKs. A green listed
+  under the wrong row still passes `trace`'s link check, which is precisely why it had to be read
+  rather than counted.
 
   **Still open by design, not by omission:** `TASK-018` is a v3 `blocked` row (the OIDC swap seam)
   and `TASK-153` is EXTERNAL — the client plugin repo, owner-scheduled, and its own dod says it
   "blocks the REQ-117 probe, not Gate 6". Neither is an integration gap.
+
+### IMPL-205 — a grandfathered lane draws each call ONCE, and the caps thread stops being untested
+- **status:** done
+- **traces:** TASK-187, TASK-179, DES-176, DES-179, ARCH-114, ARCH-117, REQ-124, REQ-126
+- **greens:** IT-151, UT-187
+- **files:** src/dashboard.ts, tests/integration/diagram-contract-grandfather.test.ts, tests/unit/agent-executor-pinned-caps.test.ts
+- **iter:** v26
+- **note:** Two defects found reviewing §A3's own repair, both of the same shape: a behaviour that is
+  correct in the case the test looks at and wrong in the case production is in.
+
+  **(1) The v1 fallback doubled every COMPLETED agent.** IMPL-201 restored `v1FallbackGraph` so a
+  grandfathered run renders predicted cells instead of an empty overlay. But a v1 script has no
+  `phase()`, so a finished v1 agent has no `phaseIndex` and nothing to infer one from: it lands in
+  `implicitLane0` and is placed there. The inert-cell pass then asked whether `byLane.get(0)` covered
+  each predicted slot — and `byLane` never held the implicit agents. Every slot therefore looked
+  unmatched, and a run with two completed calls drew two live cells PLUS `__skel_0__`/`__skel_1__`
+  for the very same two calls. `layoutGraph` now tests coverage against everything PLACED in the lane
+  (`const covering = lane.index === 0 ? [...laneAgents, ...implicitLane0] : laneAgents`), which is
+  where the two sets have to meet because the fallback predicts its slots in lane 0.
+
+  Why IT-151's existing REQ-124 case did not catch it: it GETs the dag immediately after `run_start`,
+  when no agent has a record yet — the not-yet-run case, where predicted cells are exactly right.
+  REQ-124's actual cohort is the owner's ~30 production runs, most of them FINISHED, which is the
+  state Gate 7.5 opens the dashboard on. The new case boots its own engine with a fake gateway, polls
+  to `completed`, and asserts zero `__skel_` cells, exactly two cells carrying an `agentId`, and
+  `warnings: []`. Measured RED against the pre-fix code (`expected [__skel_0__, __skel_1__] to
+  deeply equal []`), green after.
+
+  **(2) The caps thread had no test at all.** IMPL-199 closed DES-179's second hop — the executor
+  filling `GatewayRequest.caps` from the run's pin — but its greens (UT-079/UT-081/IT-016) stay green
+  if `_pinnedCapsFor` returns `undefined` forever, because UT-187 proves `wireEffort` by CALLING it
+  directly and never asks where `caps` came from. That is this repo's twice-shipped `composeConfig()`
+  wiring class exactly: a value computed correctly, forwarded nowhere, unit tests green. A UT-187
+  amendment file now pins the seam a fake gateway can observe — an aliased model's pinned caps arrive
+  verbatim; a call with NO model resolves the implicit `default` alias and still carries its pin (the
+  production common case); and both "no alias table" and "model not in the pin" leave `caps` ABSENT
+  rather than fabricating `{reasoning:false}`, which would silently disable effort while looking
+  identical to a model that truthfully declares none.
+
+  Writing it also documented a live trap: the effective model comes from `runParams`, not
+  `opts.model` — ARCH-096 refuses a tunable written inside the agent() options, so `effectiveOpts.model`
+  is overwritten from the run's admission snapshot. A caps test driven off `opts.model` passes
+  through a code path production never takes.

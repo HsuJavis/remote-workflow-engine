@@ -7,6 +7,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from '../../src/server.js';
 import type { Server } from '../../src/server.js';
+import type { GatewayClient } from '../../src/gateway/client.js';
 import { registerPublishedVia, uniqueWorkflowName, synthesizeMeta } from '../helpers/workflow-fixtures.js';
 import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -99,4 +100,63 @@ describe('workflow_describe reports diagramContract (IT-151, DES-184)', () => {
     // REQ-124's own bar for existing production runs: no warnings at all.
     expect(dag.warnings ?? []).toEqual([]);
   }, 20000);
+});
+
+// The same grandfathered cohort, one step further along: REQ-124's runs on the owner's box are
+// mostly FINISHED, and a finished v1 agent has no `phaseIndex` and no `phase()` to infer one from,
+// so it resolves to the implicit lane. The predicted slots live in lane 0 too. If the inert-cell
+// pass does not count the implicit-lane agents as covering their slots, every completed call is
+// drawn twice — once live, once as a `__skel_` ghost. That is what Gate 7.5 opens the dashboard on.
+describe('REQ-124: a grandfathered v1 run that has FINISHED draws each call ONCE (IT-151)', () => {
+  it('live cells replace the predicted ones — no __skel_ ghost beside a completed agent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rwe-it151b-'));
+    let srv: Server | undefined;
+    try {
+      const gateway: GatewayClient = {
+        invoke: async () => ({ ok: true, provider: 'fake', model: 'm', tokens: { input: 1, output: 1 }, content: 'done' }),
+      };
+      srv = await createServer({ port: 0, bind: '127.0.0.1', workRoot: dir, gateway });
+      const call = async (name: string, args: unknown): Promise<any> => {
+        const res = await fetch(`http://127.0.0.1:${srv!.port}/mcp`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+        });
+        const body = (await res.json()) as { result?: { content?: Array<{ text?: string }> } };
+        return JSON.parse(body.result?.content?.[0]?.text ?? '{}');
+      };
+
+      const name = uniqueWorkflowName('it151-v1done');
+      const v1Script = "export const meta = { params: { agents: { a: { model: { type: 'string', default: 'default' },"
+        + " effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },"
+        + " timeoutMs: { type: 'number', default: 60000 } } } } };\n"
+        + "await agent('a', { prompt: 'p' });\nawait agent('a', { prompt: 'q' });\nreturn 'ok';";
+      await registerPublishedVia(call, name, `phase('one');\nawait agent('a', { prompt: 'p' });`);
+      const db = new Database(join(dir, 'catalog.db'));
+      db.prepare('UPDATE workflow_versions SET script = ?, mermaid = ?, diagram_contract = NULL WHERE name = ?')
+        .run(v1Script, 'graph TD;\na(["a"])', name);
+      db.close();
+
+      const started = await call('run_start', { name });
+      let status = 'queued';
+      for (let i = 0; i < 200 && (status === 'queued' || status === 'running'); i++) {
+        await new Promise((r) => setTimeout(r, 30));
+        status = (await call('run_status', { runId: started.runId })).status as string;
+      }
+      expect(status).toBe('completed');
+
+      const dag = await (await fetch(`http://127.0.0.1:${srv.port}/api/runs/${started.runId}/dag`)).json() as
+        { cells?: Array<{ id: string; agentId?: string; state?: string }>; warnings?: string[] };
+      const cells = dag.cells ?? [];
+      // Both calls ran, so nothing is still merely PREDICTED — the ghosts are gone…
+      expect(cells.filter((c) => c.id.startsWith('__skel_'))).toEqual([]);
+      // …and each call is present exactly once, as itself.
+      expect(cells.filter((c) => c.agentId !== undefined)).toHaveLength(2);
+      expect(cells.map((c) => c.id)).toContain('__trigger__');
+      // REQ-124's bar, unchanged for the finished case: a v1 run raises no warning.
+      expect(dag.warnings ?? []).toEqual([]);
+    } finally {
+      await srv?.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
 });

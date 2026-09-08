@@ -2636,3 +2636,40 @@ because it is exactly the shape REQ-117's cold-model protocol has to plan around
 3. **ADR-048's Action line names only `skeleton-graph.ts`**; its own argument covers
    `workflow-catalog.ts` too, which is the call site the adjudication describes. Both are on the
    allowlist; the ADR should be amended to match.
+4. **`UNDECIDABLE_SHAPE` is an arm of `DeriveResult` with no producer.** Kept rather than deleted so
+   the discriminated union stays honest about the case it was designed for; flagged for Gate 8 to
+   either give it a producer or retire it deliberately.
+5. **Passthrough `openrouter/<id>` models are never pinned.** `resolveAlias` is a strict alias-table
+   lookup, in `start()` and in `_pinnedCapsFor` alike, so REQ-126/REQ-127 cover ALIASED OpenRouter
+   models only — a model named by raw id at the call site carries no pinned price and no pinned
+   caps. Pre-existing to TASK-178's design, not introduced here, but the owner should know which
+   route is covered before reading a cost report as complete.
+
+## 2026-09-09 — Gate 6 post-closeout review (§A3 re-read)
+
+Reviewing my own §A3 repair turned up two defects of the same shape — correct in the case the test
+looks at, wrong in the case production is in — plus a ledger-honesty problem. All three are fixed;
+see IMPL-205 and the amendments to IMPL-199/202/203/204.
+
+1. **The v1 fallback doubled every COMPLETED agent** (REQ-124's actual cohort). `v1FallbackGraph`
+   restored the predicted cells, but a finished v1 agent has no `phaseIndex`, lands in
+   `implicitLane0`, and the inert-cell pass only asked whether `byLane.get(0)` covered each slot —
+   so a run with two completed calls drew two live cells AND two `__skel_` ghosts. IT-151's existing
+   case reads the dag immediately after `run_start`, before any agent has a record, which is the
+   one state where the old behaviour looks right. The new case polls to `completed` first. Measured
+   RED against the pre-fix code, green after.
+2. **The caps thread had no test.** IMPL-199 closed DES-179's second hop, but nothing would have
+   gone red if `_pinnedCapsFor` returned `undefined` forever — UT-187 proves `wireEffort` by calling
+   it directly. That is this repo's twice-shipped `composeConfig()` wiring class, one refactor away
+   from returning. A UT-187 amendment file now observes the seam through a fake gateway.
+3. **`trace`'s silence on a TASK is not evidence a TASK was implemented.** It computes "implemented"
+   by reachability, so five landed-but-unrecorded TASKs (175, 184, 185, 187, 188) raised no gap.
+   IMPL-204 now records fourteen, not nine, and four greens moved to the rows that own their TASKs.
+
+**Near-miss worth recording.** The production service (PID 1188060, port 8899, up since 2026-09-08)
+runs `src/main.ts` FROM THIS WORKING TREE via tsx, and its managed LiteLLM proxy is its child. A
+`pkill -f "tsx src/main.ts"` issued while cleaning up the smoke test missed it only because its
+argv reads `... loader.mjs src/main.ts`, not `tsx src/main.ts`. Two consequences for DEPLOY: a
+pattern-kill during any future gate is one string away from taking production down, and a restart
+of that service picks up whatever is in this tree — so the v26 config migration (carried-forward
+item 2) must land before it is next restarted.

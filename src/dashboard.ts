@@ -4,6 +4,7 @@
 // HTTP transport + live-tail polling (TASK-025) reads this VM; not built here (distinct test seam,
 // D-V2f task split).
 import type { RunSummary, RunStatusView, TranscriptEvent, AgentRecord, PhaseView } from './types.js';
+import type { ExpectedLane, ExpectedSlot, ExpectedGraph } from './skeleton-graph.js';
 import { sumTokens } from './run-guard.js';
 
 export interface DashboardVM {
@@ -222,29 +223,15 @@ export function buildHomeView(
 // spot the old `a.phase ?? ''` string join could never resolve (100% of runs were frame-grouped).
 // `ExpectedGraph` replaces the flat `SkeletonNode[]` skeleton as the predicted-layout input.
 
-/** Local structural copy of ARCH-113's `ExpectedGraph` (canonical home: `src/skeleton-graph.ts`,
- *  TASK-185 — not landed as of TASK-187). Byte-identical shape to
- *  `tests/fixtures/expected-graph-fixtures.ts`'s own local copy, for the same reason: a value
- *  import of a module that does not exist yet would break every file that imports this one.
- *  Replace with a real import once `skeleton-graph.ts` ships. */
-export interface ExpectedLane {
-  index: number;
-  title: string | null;
-  dynamic: boolean;
-  slots: number[];
-}
-export interface ExpectedSlot {
-  index: number;
-  lane: number;
-  labels: string[];
-  kind: 'single' | 'parallel' | 'alt';
-  tools: Record<string, string[] | 'default'>;
-}
-export interface ExpectedGraph {
-  lanes: ExpectedLane[];
-  slots: ExpectedSlot[];
-  edges: Array<{ from: number; to: number }>;
-}
+/** ARCH-113's `ExpectedGraph`, re-exported from its canonical home `src/skeleton-graph.ts`
+ *  (TASK-185, which HAS now landed — this used to be a local structural copy carrying the note
+ *  "replace with a real import once skeleton-graph.ts ships"). Type-only, so nothing changes at
+ *  runtime, and existing importers of these names from `./dashboard.js` keep working. ARCH-113's
+ *  load-bearing property is "one derivation, two consumers"; a second declaration of the shape the
+ *  two consumers join on is the same drift risk one layer down. (`check-mermaid.ts` keeps its own
+ *  local copy on purpose — see its comment: UT-115/ADR-022's `skeleton` allowlist does not include
+ *  that file, and even a type import would put the word in its source text.) */
+export type { ExpectedLane, ExpectedSlot, ExpectedGraph };
 
 /** Logical grid cell — NO pixel coords (no x/y/width/height). Stable id across re-layout calls. */
 export interface LayoutCell {
@@ -416,9 +403,17 @@ export function layoutGraph(
       if (!matched) warnings.push(`agent ${a.agentId} unmatched to the predicted layout: frame-grouped`);
     }
     // Inert cells for predicted slots that matched no live agent yet (v11 DES-064 behavior kept).
+    //
+    // A slot is COVERED by any agent that was PLACED in this lane — which in lane 0 includes the
+    // implicit-lane agents placed above, not just `byLane.get(0)`. Without them a grandfathered v1
+    // run (REQ-124: no `phase()`, so every record resolves to no lane and lands in `implicitLane0`)
+    // rendered its live cell AND a `__skel_` cell for the very same call, doubling every completed
+    // agent in the v1 cohort's dashboard. The v1 fallback graph predicts its slots in lane 0, so
+    // that is exactly where the two sets have to meet.
+    const covering = lane.index === 0 ? [...laneAgents, ...implicitLane0] : laneAgents;
     if (!truncated) {
       for (const s of laneSlots) {
-        if (laneAgents.some((a) => a.label !== undefined && s.labels.includes(a.label))) continue;
+        if (covering.some((a) => a.label !== undefined && s.labels.includes(a.label))) continue;
         if (agentCellCount >= maxNodes) { truncated = true; break; }
         placeCell(lane.index, { id: `__skel_${s.index}__`, kind: 'agent', laneSpan: 1 });
       }
