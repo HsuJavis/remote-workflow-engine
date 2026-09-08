@@ -21,3 +21,21 @@ describe('the DAG cell renders sumTokens() + costUSD + unpriced badge (UT-191, D
     expect(DASHBOARD_HTML).toMatch(/unpriced/);
   });
 });
+
+// UT-222 (v26 Gate 7.5 round 1, defects D8 + REQ-129's fit clause): the two page-source facts the
+// browser test (VAL-193) proves behaviourally, pinned here so a CSS/render regression is caught by
+// the fast suite too — and so the reason survives next to the rule.
+describe('the run page renders four token columns and keeps Fit clickable (UT-222, D8/REQ-129)', () => {
+  it('.fit-btn is positioned with a z-index (a transformed .zoomable paints above in-flow content)', () => {
+    expect(DASHBOARD_HTML).toMatch(/\.fit-btn\{position:relative;z-index:1;/);
+  });
+
+  it('the run usage summary renders all four columns by name, not only their sum', () => {
+    expect(DASHBOARD_HTML).toMatch(/function tokenCols/);
+    expect(DASHBOARD_HTML).toMatch(/'in '\+\(t\.input\|\|0\)/);
+    expect(DASHBOARD_HTML).toMatch(/cache read/);
+    expect(DASHBOARD_HTML).toMatch(/cache write/);
+    // the sum stays — it is what a budget.tokens ceiling counts
+    expect(DASHBOARD_HTML).toMatch(/sumTokens\(usage\.tokens\)/);
+  });
+});

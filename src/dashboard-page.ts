@@ -123,7 +123,13 @@ a{color:var(--link);text-decoration:none}
    DAG svg and the author's diagram img — the wheel/drag transform lives HERE, never on the SVG
    children renderGraph() rebuilds every 3s poll, so a user's zoom never snaps back. */
 .zoomable{transform-origin:0 0;touch-action:none}
-.fit-btn{font-size:11px;padding:2px 9px;border-radius:100px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer;margin:4px 0}
+/* v26 Gate 7.5 round 1 (REQ-129's fit clause): position:relative;z-index:1 is load-bearing, not
+   styling. .zoomable below it is a TRANSFORMED element, which paints in the positioned layer —
+   above an in-flow button that merely precedes it in the source — so the moment a drag-pan
+   translated the graph upward it covered this control and swallowed the click
+   (document.elementFromPoint(<centre of #dag-fit>) returned the graph, VAL-189). A programmatic
+   .click() still worked, which is why only a REAL mouse click ever saw it (VAL-193). */
+.fit-btn{position:relative;z-index:1;font-size:11px;padding:2px 9px;border-radius:100px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer;margin:4px 0}
 .fit-btn:hover{border-color:var(--link)}
 #tree{margin-top:6px}
 .grp{border-left:2px solid var(--line);margin:6px 0 6px 4px;padding:2px 0 2px 12px}
@@ -141,6 +147,7 @@ a{color:var(--link);text-decoration:none}
    call count and a "lower bound" qualifier whenever costUSD cannot be the whole story. */
 #run-usage{margin:2px 0 8px;font-size:11.5px;color:var(--muted)}
 #run-usage span{margin-right:12px}
+#run-usage .usage-cols{font-family:ui-monospace,Consolas,monospace;font-size:11px}
 #run-usage .usage-lowerbound{color:var(--warn,#B08A5B)}
 #phases{margin:8px 0 4px}
 .ph-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-right:6px}
@@ -458,10 +465,20 @@ function renderPhases(phases, status){
 }
 // v26 (DES-183, TASK-183, REQ-127): the run-level usage summary — token/USD total, the unpriced-
 // call count and a "lower bound" qualifier whenever unpricedCalls > 0 (costUSD then undercounts).
+// v26 Gate 7.5 round 1 (defect D8): the FOUR columns, not just their sum. REQ-127 names the
+// dashboard among the surfaces where a human must be able to read input / output / cacheRead /
+// cacheWrite without leaving the page, and the sum alone cannot answer "was that a cache hit?".
+// The sum stays beside them because the sum is what a budget.tokens ceiling actually counts.
+function tokenCols(t){
+  if(!t||typeof t!=='object') return null;
+  return 'in '+(t.input||0)+' · out '+(t.output||0)+' · cache read '+(t.cacheRead||0)+' · cache write '+(t.cacheWrite||0);
+}
 function renderUsage(usage){
   var box=document.getElementById('run-usage'); box.innerHTML='';
   if(!usage) return;
   box.appendChild(el('span','usage-tok',sumTokens(usage.tokens)+' tok'));
+  var cols=tokenCols(usage.tokens);
+  if(cols) box.appendChild(el('span','usage-cols',cols));
   box.appendChild(el('span','usage-cost','$'+(usage.costUSD||0).toFixed(4)));
   if(usage.unpricedCalls>0){
     box.appendChild(el('span','usage-unpriced',usage.unpricedCalls+' unpriced call(s)'));
