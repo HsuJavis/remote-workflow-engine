@@ -394,7 +394,14 @@ function seedShapeRows(): string {
 function providerCapsRows(): string {
   return PROVIDERS.map((p) => {
     const caps = PROVIDER_CAPS[p];
-    return `- \`${p}\` — tool surface: ${caps.tools}, effort applies: ${caps.effort !== null ? 'yes' : 'no'}`;
+    // v26 Gate 7.5 round 1 (REQ-126, VAL-186): rendered from `effortDelivered`, the OBSERVED fact,
+    // not from `effort !== null`, which only says the provider has a dial. openrouter has one and the
+    // dispatch path never delivers it; a manual that says otherwise sends authors chasing a no-op.
+    return `- \`${p}\` — tool surface: ${caps.tools}, effort applies: ${caps.effortDelivered ? 'yes' : 'no'}${
+      caps.effort !== null && !caps.effortDelivered
+        ? ' (the provider has a reasoning dial, but this deployment\'s dispatch path does not carry it — `effortApplied` says so per call)'
+        : ''
+    }`;
   }).join('\n');
 }
 

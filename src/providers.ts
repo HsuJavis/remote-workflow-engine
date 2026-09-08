@@ -19,11 +19,24 @@ export type EffortProfile = { param: string; restPath: string[] };
 
 export const PROVIDER_CAPS: Record<
   Provider,
-  { tools: 'all'; effort: EffortProfile | null; thinking: 'sdk-default' | 'budget-when-declared' | 'disabled' }
+  {
+    tools: 'all';
+    effort: EffortProfile | null;
+    thinking: 'sdk-default' | 'budget-when-declared' | 'disabled';
+    /** v26 Gate 7.5 round 1 (REQ-126, VAL-186): whether a mapped effort directive actually REACHES
+     *  the provider on this deployment's dispatch path, which is not the same question as whether
+     *  the provider has a dial. `effort` above stays the routing fact (what the gateway maps, owner's
+     *  call to change); this is the OBSERVED fact, captured against the real API. The guide's provider
+     *  table renders THIS one, so the manual stops promising something the wire never carries. */
+    effortDelivered: boolean;
+  }
 > = {
-  anthropic: { tools: 'all', effort: { param: 'effort', restPath: ['output_config', 'effort'] }, thinking: 'sdk-default' },
-  openrouter: { tools: 'all', effort: { param: 'thinking', restPath: ['thinking', 'budget_tokens'] }, thinking: 'budget-when-declared' },
-  ollama: { tools: 'all', effort: null, thinking: 'disabled' },
+  anthropic: { tools: 'all', effort: { param: 'effort', restPath: ['output_config', 'effort'] }, thinking: 'sdk-default', effortDelivered: true },
+  // VAL-186: the SDK maps the budget to `--max-thinking-tokens`, the Claude CLI collapses that to
+  // `thinking:{type:'adaptive'}` (budget and the low/high distinction gone at hop 1), and LiteLLM
+  // drops the parameter for openrouter — low and high are byte-identical on the wire.
+  openrouter: { tools: 'all', effort: { param: 'thinking', restPath: ['thinking', 'budget_tokens'] }, thinking: 'budget-when-declared', effortDelivered: false },
+  ollama: { tools: 'all', effort: null, thinking: 'disabled', effortDelivered: false },
 };
 
 type AliasEntry = { provider: string; model: string; proxyModel?: string };

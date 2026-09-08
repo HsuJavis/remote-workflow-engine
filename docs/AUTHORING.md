@@ -76,7 +76,7 @@ A declared `model.default` (and every entry of a declared `model.enum`) must be 
 Every model alias resolves to exactly one of three providers, each with its own declared capability row — read from the SAME table `resolveAlias`/`validateAliases` check against, labelled **declared, not probed**: nothing here is learned by dispatching a call.
 
 - `anthropic` — tool surface: all, effort applies: yes
-- `openrouter` — tool surface: all, effort applies: yes
+- `openrouter` — tool surface: all, effort applies: no (the provider has a reasoning dial, but this deployment's dispatch path does not carry it — `effortApplied` says so per call)
 - `ollama` — tool surface: all, effort applies: no
 
 There is no `openai` row: OpenRouter is the many-model front door for everything that is not Anthropic-direct or a local Ollama model, so swapping a model — or a transport — is a config change to an alias, not a new provider.
