@@ -1,555 +1,399 @@
 ---
 stage: design
 lens: quality-dimensions
-iteration: v24
+iteration: v26
 round: 2 (response + final position)
-reads: adversarial.r1.md (DES-137..160), quality-dimensions.r1.md
+reads: "adversarial.r1.md (DES-170..186, its 18-row task partition, R1..R12, its ten internal tie-breaks); quality-dimensions.r1.md (my O-9..O-14 / R-8..R-11 / C-8..C-12 / S-9..S-12); HEAD source re-verified at every point I hold"
 ---
 # Quality-dimensions — round 2 (Observability / Replaceability / Consumability / Self-sustainability)
 
-## What I read and what changed
+## summary
 
-I read `adversarial.r1.md` in full (DES-137..160, the 18-row task partition, R1..R10, the seven
-internal tie-breaks) and re-verified in the tree every point where we disagree. **Three of my r1
-items were wrong on the facts and I concede them outright**; two more I concede in substance and keep
-only a test obligation; one (C-6) I downgrade myself, HIGH→MID, because the failure mode I named does
-not survive arithmetic. In exchange the verification turned up four things neither r1 had:
+The adversarial round-1 proposal is stronger than mine on eight of the fourteen items where we
+overlap, and I concede all eight below **by number**, including the two it flagged as
+"synthesizer call" (its R8 and R9) — those are now arbitrated and the synthesizer does not have to
+rule on them. What survives is small and almost entirely *verified holes in DES-170..186 as written*
+rather than re-argument: **seven holds and three new findings**, all re-checked against HEAD this
+round. Two of the new ones are defects in the adversarial design itself (a pin-less-run `TypeError`
+on the first resume after the upgrade, and a re-pointed price function with nothing to read).
 
-- **`provenance` already ships.** `agent-executor.ts:414-424` is described in its own comment as
-  "the ONE descriptor-decoration site" and already merges `provenance: eff.provenance` (v21,
-  DES-105/TASK-101) onto the descriptor coming back from **either** gateway. ARCH-104 adds `label`
-  and `materialized`, not three fields.
-- **`AgentRecord.label` already exists** (`types.ts:67`) and is populated **only on the live path**
-  (`run-manager.ts:868`, `markQueued(agentId, key.opts.label, …)` — in-process spawner state, lost on
-  restart). `deriveAgentRecords` (`run-store.ts:24`) never sets it. v24's `descriptor.label` is the
-  first durable source for it, and closing that is one line.
-- **`codedError` has 25 distinct literal codes across 8 files and 9 non-literal call sites — and I
-  checked the types of all nine.** Eight already carry closed literal unions (`ParamErr['code']`,
-  `contract.ts:57`; the egress verdict, `seedref-egress.ts:10`; `resolveVersionRequest`'s result;
-  a locally inferred `'A'|'B'` at `workflow-catalog.ts:411`), so DES-137's narrowing compiles there.
-  Exactly **one** is genuinely `string` — `toErr` (`run-manager.ts:115-121`), which can return
-  `err.name`. But those unions carry **six codes that never appear as a `codedError('X'` literal
-  anywhere**, so DES-137's grep-based drift lock reports complete while the catalog is missing them.
-- **`lastFire` is written only on an admitted fire** (`scheduler.ts:248/287/293`, always beside a
-  `runId`); `markFailed` (`:305-317`) does not touch it. That makes `refusalCount`'s reset rule a
-  one-clause change to an UPDATE that already exists.
+The single highest-value item this round is **the budget gate at `run-manager.ts:840`**. DES-179
+sources `RunStatusView.usage` from the live guard and saves `RunDagSnapshot.usage` at terminal;
+the guard is hydrated from the journal only `if (spec.budget !== null && spec.budget !== undefined)`.
+So an **unbudgeted resumed run** — the common case — reports zero usage in `run_status.usage`, zero
+in `run_result.meta.usage`, and **persists the zero into the terminal snapshot**. The fix is deleting
+one `if`. The `usage-live-equals-fold` IT as designed (a completed run in one process) cannot catch
+it, and a *budgeted* resumed run passes through the gate and goes green — so the IT must name an
+**unbudgeted resumed** run explicitly.
 
-## Adjudication table
-
-| # | Item | Their position | Verdict | One-line reason |
-|---|---|---|---|---|
-| O-7 | descriptor fields on both `redactHarness` branches | DES-160: "`redactHarness` unchanged" | **CONCEDE** (seam was wrong) | the decoration site is single and downstream of both gateways; keep only the direct-fetch test |
-| O-7b | `materialized` on a `surfaceType:'none'` dispatch | DES-154 materializes before the gateway call, unconditionally | **HOLD (new, MID)** | it reports files the direct-fetch agent cannot use — a truthful field that reads as a lie |
-| O-8 | name ARCH-104's consumer | not named in DES-160 | **HOLD, sharpened** | `deriveAgentRecords` drops `label`; restart-reconstructed agents are anonymous today |
-| O-9 | `adminReads` visibility + `/api/*` projection | DES-151: owner-only on `run_status` | **CONCEDE the rule, HOLD the carrier** | attach at the facade projection, not on `RunStatusView` — then the ungated route cannot leak it |
-| O-10 | audit-write failure fails closed | DES-151: append is synchronous | **CONVERGED, cheaper** | synchronous + no `try/catch` = fail-closed by construction; say it, test it |
-| O-11a | `lastError` vs `lastRefusalReason` | DES-150: distinct, `lastError` untouched, tested | **CONCEDE** | they supplied the stated precedence I demanded |
-| O-11b | `refusalCount` unbounded in meaning | not addressed | **HOLD, now concrete** | reset to 0 in the admitted-fire UPDATE (`scheduler.ts:287/293`) |
-| O-11c | `schedules.workflow` consumers | not enumerated | **HOLD** | `ScheduleStatus.workflow` (`:37`) and `listByWorkflow`'s `WHERE workflow=?` (`:213-217`) read the dropped column |
-| O-12 | REQ-118 table path | DES-158: exact path + `UNVERIFIED(reason)` rows | **CONCEDE (theirs is better)** + one defect | an `afterAll` writer truncates the table on a filtered run |
-| R-6 | null-owner rule | DES-139 tri-state `undefined`/`null`, DES-152 | **CONCEDE (theirs is better)** | existence-neutral `undefined` vs ownerless `null` is strictly stronger than my one rule |
-| R-6b | the operator consequence | not stated | **HOLD** | every migrated trigger and legacy run goes admin-only the day auth is enabled — that is a DEPLOY line |
-| R-7 | `pathVerdict` imports containment | DES-142: exactly that, plus purity split | **CONCEDE (theirs is better)** | lexical-pure / containment-injected + re-check after `mkdir -p` is the sharper form |
-| R-7b | `seedNamespace` / `?namespace=` removal | DES-142 removes all three | **ENDORSE**, with a cost I own | it is a third break in the client plugin — see QD-R11 |
-| R-8 | `resolveMcp` as a pure helper | DES-153: pure over `listAssets` | **CONVERGED** | one clause: it takes the catalog port, not `AssetSyncService` |
-| R-9 | stale-`graphAnalyzer` boot warning | DES-141: one `console.warn` + integration test | **CONCEDE the item, HOLD the generalization** | warn on *any* unrecognized top-level key; `graphAnalyzer` gets the ADR-025 sentence |
-| R-10 | no model alias in `GUIDE_EXAMPLES` | DES-143 refuses `model|effort|timeoutMs` and scans every example | **CONCEDE — subsumed** | their test implies mine |
-| C-5 | fence `ERROR_CATALOG`, don't migrate call sites | DES-137: narrow `codedError`, catalog covers all of `src/` | **CONCEDE the fence, FIX the drift lock** | it is cheaper than I feared and than they specified — but the grep lock has a six-code hole |
-| C-6 | byte ceiling on guide + `tools/list` | not addressed | **DOWNGRADE myself, HIGH→MID** | ~10k tokens is not an overflow; re-aim at always-on cost and regression |
-| C-7 | guide interpolates effective ceilings | DES-157: pure over inputs + fake-ceiling test | **CONVERGED**, one clause | the root must pass *resolved `ServerConfig`* ceilings, not re-import `DEFAULT_CEILINGS` |
-| C-8 | echo the applied `onlyRunnable` filter | DES-156 defaults it, does not echo | **HOLD (LOW)** | a silent default filter is the refuse-never-clamp rule (C-3) inverted |
-| C-9 | Mermaid source, not a picture | — | **CONVERGED**, no dispute | one honesty line in README/guide |
-| S-7 | the *loud* half of fail-closed | DES-141 refuses a malformed block at boot; says nothing about a missing one | **HOLD — this is my main open item** | ADR-028's justification is still asserted, not built |
-| S-8a | `DROP COLUMN` SQLite ≥ 3.35 floor | DES-148 covers catalog migration; task 11 does not state the floor | **HOLD (LOW)** | one note beside the migration |
-| S-8b | legacy global assets are rows-only | DES-148 walks the tree into rows | **CONVERGED** | agreed, no FS move |
-| S-8c | orphan asset tree after a failed deregister hook | DES-148 deletes rows in one transaction; FS is the after-hook | **HOLD (LOW)** | reclaim in the existing workspace-GC sweep |
-| — | `mode(args)` authz resolver (DES-138, their biggest call) | — | **ENDORSE**, one addition | the resolved mode must appear in the refusal envelope's `detail` |
-| — | `outputSchema` on `ToolSpec` (DES-158) | flagged as possible scope creep | **ENDORSE from consumability** | typed I/O is the dimension; but publishing it interacts with C-6 |
-| — | `LEGACY_REREGISTER` (their R6) | expects me to want a compatibility window | **CONCEDE — misattributed** | I never asked for a dual-shape schema; one condition attached |
-| — | REQ-112 advice-vs-enforcement honesty (their R10) | — | **ENDORSE**, one addition | the guide must *mark* which rules are checked |
+This round is deliberately shorter than my r1. Where DES-17x already carries a finding, I say
+"converged" and stop.
 
 ---
 
-## 1. Observability
+## A. Concessions — I drop my version and adopt theirs
 
-*(traceability fold: REQ-109's rows, REQ-114's `pushedBy`, REQ-115's counters and O-12's generated
-artifact are what make an action traceable to a principal at Gate 8 — a row no projection returns and
-a table that lives only in test stdout are both untraceable in the sense this ledger grades.)*
+| my r1 item | their item | verdict | engineering reason |
+|---|---|---|---|
+| **C-8** `budget.limits:{usd,tokens}` | DES-179 `Budget.tokens(): Tokens & {total,limit}` | **concede** | Their accessor carries spend *and* limit in one call and is already threaded through the four-column work; `total===null && tokens().limit!==null` disambiguates "tokens-only" from "unbounded", and their `sandbox-budget-api.test.ts` already pins it. A fourth accessor to re-say it is the feature I accused them of. **Held residue:** one guide clause (§3). |
+| **O-12** journal the unmapped subtype | DES-179 usage event carries `unmapped`; `foldUsage` folds it | **concede — converged** | My ask was "a counter that dies with the process is not observability". Their usage-event shape meets it exactly. |
+| **O-12 corollary** derive `unpricedCalls`, don't keep a live counter | DES-179 two producers + `usage-live-equals-fold` IT (their tie-break 10) | **concede** | An asserted equality between two producers is a stronger lock than my "one derivation rule", and the live path genuinely must not re-read transcripts per poll. **Held residue:** the IT's cohort (§B-1). |
+| **R-9** `toolUse` renames IN and OUT | DES-178 | **converged** | Same finding, independently reached. No dispute. |
+| **R-10** runtime totality test over provider-keyed sites | DES-172 `never` switches + `AliasMap` narrowed to `Record<string,{provider:Provider,…}>` | **concede** | I checked the one site I thought a `never` switch could not reach: `default-aliases.ts:15` is typed `AliasMap`, so the narrowing makes it a *compile-time* error. Compile-time totality beats my runtime loop. Drop my extra test. |
+| **their R8** — `catalogFetchedAt` per row vs a wrapper object | DES-178 per-row | **concede, arbitrated** | Consumability is measured in caller breakage, not payload bytes. A wrapper breaks the dashboard models panel, `models-list-tool.test.ts`, VAL-087 and the plugin's schema notes to dedupe ~24 bytes/row. Per-row, and the *deviation, property preserved* label is correct. |
+| **their R9** — `tools: default` literal vs skip-entirely (my D7) | DES-181 literal word | **concede, arbitrated** | The comparison is one string equality against a constant the guide already renders; it closes the T4 at zero consumability cost. My D7 argued against *comparing a resolved list*, which the literal does not do. Record no accepted risk — I am not holding. |
+| **S-10** add `'unavailable'` to `price_book.source` | DES-177's existing three values | **concede** | Re-reading DES-177's fallback chain, `'static'` already *means* "no live fetch has ever succeeded in this process" and `'last-good'` means "fetched, now stale" — the two operator actions I wanted distinguished already are. **Held residue:** one sentence, §4. |
+| **anticipated:** `PRICE_UNKNOWN` carries a retry-after | — | **I never asked; declining pre-emptively** | Agreed with their reasoning: a retry hint encodes the TTL in a user-facing string (T4 on the next change). `source` + `fetchedAt` is the right amount. |
+| **anticipated:** count the benign SDK subtypes too | DES-171 `BENIGN_SYSTEM_SUBTYPES` + empty-on-healthy fixture | **agree, not a disagreement** | My D1/D3 condition was "a named counter with a reader". A counter non-zero on every healthy run has no reader in practice — their behavioural lock is the right shape. **One cheap integration:** record the installed SDK version in the healthy-fixture header comment, so a bump that adds a subtype is diagnosable in one line instead of bisected. |
 
-### O-7 — CONCEDE. My seam was wrong; the invariant it protected is not.
+---
 
-My r1 claim was that `redactHarness` (`agent-executor.ts:39-64`) returns from two branches and the
-`surfaceType:'none'` branch would drop the new fields. Verified: the two branches are real, and the
-`'none'` branch is the *entire direct-fetch gateway* (`gateway/client.ts:344-351` always passes
-`surfaceType:'none'`; `claude-agent-sdk-client.ts:595` always `'curated'`). **But** the transcript
-event is not written by either gateway. It is written at `agent-executor.ts:414-424`, which its own
-comment calls "the ONE descriptor-decoration site", and which already spreads `provenance`,
-`effort`, `timeoutMs` and `effortApplied` onto whatever descriptor came back — for both gateways,
-both branches. DES-160's "`redactHarness` unchanged" is **correct**, and my QD-D1 is withdrawn.
+## B. Holds — each is a verified hole in DES-170..186 as written
 
-What survives is one test obligation, and it is worth stating because the property is load-bearing
-and undefended: **a direct-fetch (`surfaceType:'none'`) dispatch must produce a transcript event
-carrying `label`, `provenance` and `materialized`.** DES-160's test
-(`agent-log-harness-shape.test.ts`) should have that as a second case, not only the curated one —
-otherwise a future refactor that moves decoration up into a gateway passes on the curated path and
-blinds the degraded one. Cost: one fixture. (**QD-D1 severity HIGH → LOW**, kept only as this case.)
-
-### O-7b — HOLD (new, MID). `materialized` on a direct-fetch dispatch is a truthful field that reads as a lie.
-
-DES-154 calls `materializeAssets` at the dispatch site (`agent-executor.ts:~340`) **before** the
-gateway call, so it runs regardless of which gateway ends up serving. On the direct-fetch path there
-is no curated surface and no MCP: the files are copied into the workspace and the agent has no way to
-use them. `materialized:{skills:['x'],mcp:['y']}` beside `surfaceType:'none'` is then simultaneously
-accurate and misleading, which is the worst kind of observability field.
-
-Two honest options; design must pick one, not leave it:
-- **(a) skip materialization when the target resolves to a direct-fetch gateway** and emit
-  `materialized:{skills:[],mcp:[],missing:declared}` — truthful, and it deletes pure-waste FS copies.
-  *Open question the synthesizer must check:* whether the gateway target is resolvable at `:340`,
-  before `_invokeOnce`. If it is not, (a) is not available and this is not a free choice.
-- **(b) keep unconditional materialization** and state in the field's docblock and in the agent-log
-  line that `materialized` records **what was written to the workspace**, which on
-  `surfaceType:'none'` is *not* what the agent received.
-
-I prefer (a) on cost grounds, but I expect (b) is where this lands: gateway selection happens inside
-`gateway/client.ts`'s routing, downstream of `:340`, so the target very likely is **not** known at the
-materialization site — in which case (a) is not available and (b) is the honest answer. What I will
-not take is neither.
-
-### O-8 — HOLD, and it is now one line instead of a design debate.
-
-`AgentRecord.label?: string` already exists (`types.ts:67`). It is populated on the **live** path only
-(`run-manager.ts:868` → `markQueued(agentId, key.opts.label, …)`), from in-process spawner state that
-does not survive a restart. `deriveAgentRecords` (`run-store.ts:24`, called at
-`sqlite-run-store.ts:241` and `run-store.ts:227`) reconstructs `run_status.agents[]` from transcript
-events and sets only `agentId/state/provider/model/tokens` — so **after a restart every agent on a
-still-running run is anonymous**, which is exactly when a human is looking.
-
-v24's `descriptor.label` is the first durable source for that field. The change is:
+### B-1 (HIGH, observability) — delete the budget gate at `run-manager.ts:840`, and make the equality IT cover an *unbudgeted resumed* run
+**Verified on HEAD** (`run-manager.ts:837-845`):
 ```
-const hd = (harness.data as { descriptor?: { model?; provider?; label? } }).descriptor;
-records.push({ agentId, ..., ...(hd?.label !== undefined ? { label: hd.label } : {}) });
+const guard = new RunGuard({ concurrency: this._concurrency, budget: spec.budget ?? null });
+if (spec.budget !== null && spec.budget !== undefined) {
+  … guard.setSpent(sumUsageTokens(allEvents));
+}
 ```
-with one integration test: write a harness event, drop the `RunManager`, read `run_status` from the
-store, assert the label. `materialized` and `provenance` stay transcript-only and are read via
-`run_agent_log` (they answer a post-hoc "why did skill X not load", not a "what is running now").
+DES-179 makes the guard the **live producer of `RunStatusView.usage`** and saves
+`RunDagSnapshot.usage` at terminal. The gate was written for DES-068's purpose — hydrate spend so the
+*budget cap* enforces correctly on resume — and that purpose no longer describes what the guard's
+usage is for. Consequence after v26, in three steps: an unbudgeted run is interrupted → resumed →
+the fold is skipped → `run_status.usage` is zero, `run_result.meta.usage` is zero, **and the zero is
+persisted into the terminal snapshot**. That is not a transient poll artifact; it is a wrong number at
+rest, which is the class ADR-046 exists to close. Fix: **delete the `if`** (the fold is pure and
+never throws; `setUsage(fold)` runs unconditionally). Test condition: `usage-live-equals-fold` as
+written is a completed run in one process and cannot see this, and a *budgeted* resumed run passes
+through the gate and goes green — the IT must add **one unbudgeted, resumed** case. And the design
+must **name which producer writes `RunDagSnapshot.usage`**; if it is the guard, this deletion is
+load-bearing for stored data, not for a view. Pre-empting the obvious objection — *"that adds a
+full transcript read to every unbudgeted resume"* — the **budgeted** path already performs exactly
+that read at `:841-843`, an unbudgeted run's journal is no larger, and the fold is pure and never
+throws.
 
-This is a **task-boundary** item, not a test-list item — see §5. (**QD-D2 stays HIGH** in
-consequence, MINIMAL in cost.)
+### B-2 (HIGH, observability) — the derive path drops v26's *optional* fields, and no drift lock can catch it
+**DES-175 converges with my O-9** on the part that matters most: it names the real function
+(`deriveAgentRecords`, against ARCH-114's non-existent `buildRecordsFromTranscript`) and sets
+`startedAt` from the harness event's `ts`. I concede that half; my "three sites, not two" quibble is
+answered by `harnessAny` being computed above the `if (usage)`.
 
-### O-9 — CONCEDE the visibility rule; the carrier fix is cheaper than my strip rule.
+What remains is not covered by any DES: `costUSD`, `transport`, `proxyModel` and `detail` are
+**optional** fields on `AgentRecord`, and `tsc` therefore says nothing when the derive path's three
+object literals omit them. Only `tokens` is caught, because widening it to a four-field required type
+is a compile error. And **DES-186's `EXPECTED_AGENT_RECORD_KEYS` is a superset pin — it is satisfied
+by a record carrying none of them**, so it structurally cannot catch omission; the adversarial's own
+claim that it catches "I forgot to persist `transport`" holds only against a fixture that already
+asserts presence. DES-176 puts all four fields *on the usage event*, so the data is in the journal —
+the reader is what is missing. **Ask:** task 11 gains "`deriveAgentRecords` reads `costUSD`,
+`transport`, `proxyModel`, `detail` from the usage event", plus **one presence assertion on a
+transcript-only (snapshot-less) run fixture**. That fixture is also QD-R2's mitigation.
 
-DES-151 makes `adminReads` present only when `p.id === owner`. I had also wanted it visible to an
-admin; **I concede** — the trail is the owner's, and an admin who needs it has a store, not a
-projection. Honest-absence (absent, not `[]`) holds either way and both r1s agree on it.
+### B-3 (HIGH, observability) — a `refused` record still does not survive a restart; DES-175's own cohort sentence is false
+**Verified:** `markRefused` (`agent-executor.ts:222-228`) writes only the in-process `_records` map —
+no transcript event — and `deriveAgentRecords` omits any agent with neither a usage nor a harness
+event (`run-store.ts:31-63`). DES-175's boundary states cohort (i) as *"v26 runs exact (incl.
+`refused` records — `markQueued` precedes `assertBudget`)"*. That is true in-process and in the
+**terminal snapshot**, and **false for any interrupted run reconstructed by `deriveAgentRecords`** —
+which is precisely the run a reader consults a DAG for. This is not "QD wants one more write path":
+it is the design's own sentence describing behaviour the tree does not have.
 
-On the carrier I keep the finding but adopt a better fix. Verified again: `GET /api/runs/:id`
-(`server.ts:1272`) returns `buildDashboardModel([], view).selected` — the whole `RunStatusView` —
-through `dispatchDashboard` (`server.ts:1953`), which is **not** in the gated set (`server.ts:1852`
-`/mcp`, `1792` blob, `1816` manifest, `1907` describe). So a *strip* rule is a rule someone must
-remember. **Converged form: `adminReads` is attached by the facade's `run_status` projection, after
-the `RunStatusView` is built, only for the owner — it is never a field of `RunStatusView`.** Then the
-HTTP route cannot serve it, by construction rather than by discipline, and DES-151's owner-only test
-is the only test needed. This is strictly better than what I proposed in r1.
+Two acceptable fixes; silence is the third and it is what we have today.
+- **(a), my preference — journal it.** `TranscriptEvent.kind` gains `'refused'`
+  (`types.ts:364`, a closed five-member union today) with
+  `data: {reasonCode, label?, frame?, phase?, phaseIndex?}`. **The cost is concrete, and I checked
+  it:** two call sites need a decision — `run-store.ts:31` (a new terminal branch) and
+  `run-store.ts:74`/`foldUsage` (skip; it already skips non-`usage`, and a refusal has no usage to
+  fold) — plus the signature: the journal is per-run, so `runId` is threaded into **both**
+  `markRefused` definitions (`agent-executor.ts:222`, the in-process sink; `:527`, the
+  `AgentExecutor` delegate — and it is the delegate that holds `store`, so that is where the write
+  goes), from a caller that already has it. Two sites then handle it for free: `mcp-facade.ts:661`
+  puts it in the `nonHarness` list
+  `workflow_agent_log` already renders, and `server.ts:788`'s tail is generic. Adding a union member
+  is `tsc`-visible, which is the property my r1 asked for and a `data`-marker on `kind:'usage'` would
+  not have. Every field is **engine-authored** (an `ErrorCode`, a label, a frame path, a phase title),
+  so the security objection to a new persisted event does not apply here — one clause, not a debate.
+- **(b) fallback I accept** — DES-175's cohort sentence is corrected to exclude `refused`/`queued`
+  records on the derive path, and REQ-124's acceptance says so out loud.
 
-What that does **not** fix, and what I still hold: `RunStatusView` already carries `principal`
-(`types.ts:135-137`) on that same ungated route today. That is a v15-era condition and not v24's to
-repair — but v24 chose this carrier, so the ledger should carry the rule once: **no identity field
-(`actor`, `principal`, `pushedBy`, `createdBy`, `claimedBy`) is served on an ungated `/api/*`
-route**, with the existing `principal` exposure named as a known deviation with a REQ pointer, or
-fixed. Silently inheriting it while adding an audit trail beside it is the part I will not sign.
+v25 minted this record *because* an invisible refusal cost every branch past the second of a
+`parallel()` (issue #61). Re-losing it on restart is ADR-046's class, caught at the design gate,
+which is the cheapest place it can be caught.
 
-### O-10 — CONVERGED, and DES-151 makes it nearly free.
+### B-4 (HIGH, observability) — the dashboard drops 99% of a cached call's tokens, and `tsc` is silent
+**Verified:** `DagAgentNode.tokens: number` (`dashboard.ts:22`) is filled by
+`tokens: a.tokens.input + a.tokens.output` (`dashboard.ts:56`) and rendered by
+`(a.tokens||0)+' tok'` (`dashboard-page.ts:359`). After `Tokens` widens, **that expression still
+compiles** and silently drops both cache columns. On the Gate 1 haiku sample
+(`input 18 / cache_creation 20,762 / cache_read 19,522 / output 282`) the cell renders **`300 tok`
+against a true `40,584`** — a 99.3% under-report on the page REQ-127 exists to make honest. This
+site is in no DES and no task row (task 15 is `dagBox`/`viewBox`/`.zoomable`/the harness table).
 
-DES-151's "`appendAudit` is synchronous under better-sqlite3, so `audit(); read();` is ordered by the
-language" also answers my failure-path question: a synchronous throw propagates and the read never
-runs — **fail-closed by construction**. The design need only state the negative invariant — *no
-`try/catch` around `appendAudit` at the call site, and no `.catch()` swallow* — and add one case to
-their `audit-order.test.ts`: a fake store whose `appendAudit` throws ⇒ the tool returns the error and
-`readArtifactChunk` was never called. That is one more `it` in a file they already specified.
-(**QD-D9 MID → LOW.**)
+**Minimal fix, deliberately not the widening:** `tokens: sumTokens(a.tokens)` — the function DES-179
+already exports — leaving `DagAgentNode.tokens: number` and the renderer untouched. Widening the cell
+to the object is the path that makes `dashboard-page.ts:359` render `[object Object] tok`, because
+string concatenation of an object is legal in the browser and in TypeScript; I am not asking for it.
+Separately, `DagAgentNode` gains `costUSD?: number | null` **rendered three-valued** — `0` = never
+dispatched (a `refused` call: truly zero), `null` = dispatched but unpriceable, a number = priced.
+Collapsing `null` to `0` re-introduces the silent default one layer above where ADR-046 removed it.
+One page-source assertion covers both.
 
-### O-11 — one concede, two holds.
+### B-5 (MEDIUM, observability + consumability) — the nested `SandboxHost` is missing two callbacks, in a constructor two DES items already edit
+**Verified** (`run-manager.ts:1011-1021`): the nested host is constructed with `workspaceRoot`,
+`onAgentRequest`, `onWorkflowRequest` — **and nothing else**. The top-level `_newSandbox`
+(`:915-925`) passes `onPhase` and `onBudgetSnapshot`. Two consequences:
 
-**(a) CONCEDE.** DES-150 keeps `lastError` and `lastRefusalReason` distinct, writes **no** `lastError`
-on a refusal, gives the reason ("dispatch failed" vs "policy refused" are two questions) and tests it
-(`lastError` untouched). My r1 said I would not concede "two last-failure fields with *no stated
-precedence*" — they stated it. Adopted; ADR-031's three-field shape stands.
+- **`onPhase` (my O-14).** `host.ts:139` is `this._config.onPhase?.(msg.title)`, so a `phase()` inside
+  a `workflow()` is discarded **silently**. DES-175 supplies `currentPhase` to both hosts — that is
+  the *read* side, and it correctly makes a nested frame with no `phase()` inherit the parent's lane
+  (E2E-010). The *write* side is still absent, so a nested frame that **does** call `phase()` gets
+  nothing: the title never reaches `entry.phases`, and `currentPhase` keeps returning the parent's.
+  ARCH-114's own cohort rule ("`k >= lanes.length` — nested frames pushing onto the parent timeline —
+  appends a lane WITH a warning") is unreachable code without it. **Consequence I state up front so
+  it is not a surprise:** once wired, the parent's later agents inherit the nested `'X'` until the
+  parent's next `phase()` — that *is* what REQ-124's "nested frames share the same phase timeline"
+  means, and ARCH-114 already warns on it. E2E-010 gains a second case (a nested frame that *does*
+  call `phase()`). **Fallback I still accept:** leave it unwired and say "`phase()` inside a nested
+  `workflow()` is a no-op" in the guide (ARCH-121 (b)) plus a registration-time warning. Silence is
+  the only option I refuse.
+- **`onBudgetSnapshot` (my C-9).** `host.ts:109` sends `spent: this._config.onBudgetSnapshot?.()`, so
+  with no callback the field is absent and `child-entry.ts`'s `budget.spent()` reads `0` in every
+  sub-workflow — **for ever**, not as a lag. After REQ-127 that is a money meter reading `$0.00`
+  inside every nested frame. DES-179 names `run-manager.ts:925/956/1023`, but `:1023` is the
+  `nested.run(…, budgetView().total)` **argument**, not the host **config** at `:1011`. One line, in
+  a constructor DES-179 is already editing for `start.budget`.
 
-Their "expected disagreements" also predicts that *the observability lens may want a per-fire audit of
-refusals instead of coalescing*. **Not my position either** — ADR-031's coalescing is settled, I
-adopted it in r1 as S-1, and I have never asked for per-fire rows. The only thing I add to the
-refusal path is (b) below.
+### B-6 (MEDIUM, replaceability) — one numeric price, or the catalog filter and the spend meter answer differently
+**Verified:** `maxPricePerMOf` (`model-catalog.ts:250-258`) extracts a number from the **display
+string** with `/\$([0-9.]+)\/1M/`; `computeCostLevel` (`:272`) rides it and `filterCatalog:311` rides
+that for the `maxPricePerM` filter. DES-177 makes numeric `ratesPerM` primary and the display string
+**derived** (`displayPrice(rates)`). Left alone, the filter becomes `parse(display(rates))` — a round
+trip through a formatted string, in the same iteration ADR-045 deleted the twin-derivation defect for
+effort. The failure is silent and one-directional: any format `displayPrice` produces that the regex
+does not match (scientific notation for a sub-cent rate, a thousands separator, a second decimal
+group) yields `null`, and `null` **excludes** the model from a `maxPricePerM` filter — a model
+disappears from `models_list` because of a formatting choice.
 
-**(b) HOLD, now concrete.** Nothing bounds `refusalCount`'s meaning. Verified: `lastFire` is written
-only on an **admitted** fire (`scheduler.ts:248/287/293`, always with a `runId`); `markFailed`
-(`:305-317`) does not touch it. So the reset has an obvious home: **`refusalCount = 0` in the same
-UPDATE that writes `lastFire` on an admitted fire.** `refusalCount` then reads as *consecutive
-refusals since the last successful fire* — self-documenting, bounded in meaning, and a health signal
-rather than a lifetime tally that says `10080` about a trigger that has worked fine all week. One
-column in two existing UPDATEs, one assertion in DES-150's `scheduler-refusal.test.ts` (refuse twice,
-claim, fire, assert `0`). The same rule applies to the webhook store's admitted-delivery path; I do
-not name its statement because I have not read it.
+**Sharpened this round (this is a signature requirement, not just "re-point the function"):**
+`filterCatalog` and `computeCostLevel` run over `snapshot().entries: ModelEntry[]`, **not** over
+`lookup()`, and DES-177 puts `FourRates` on `BookEntry` (the pin) — so `ModelEntry` must itself carry
+the numeric rates or the re-pointed function has nothing to read. Ask:
+`ModelEntry` gains `ratesPerM: FourRates | null`; `maxPricePerMOf(rates: FourRates | null): number | null`;
+the `"$5/1M"` string is human-facing only; and the design **states that the scalar stays `max(in,out)`
+and therefore ignores the two cache rates** — true today by accident, a decision now that four exist.
 
-**(c) HOLD.** ARCH-099/100 replace `schedules.workflow` with `claimedBy`, and two consumers read the
-dropped column: `ScheduleStatus.workflow` (`scheduler.ts:37`, projected at `:111`) and
-`listByWorkflow`'s `WHERE workflow = ?` (`scheduler.ts:213-217`), which the sync port's
-`getTriggerBindings` composes. Neither appears in DES-149/150 or in task 11's description. Enumerate
-both at design: everything describing the old field moves with it, or `schedule_list` returns a
-column that no longer exists.
-
-### O-12 — CONCEDE (theirs is better), plus one defect in it.
-
-DES-158's exact path (`.sdlc/features/001-remote-workflow-engine/v24-tool-surface.md`),
-`UNVERIFIED(reason)` as a **row** with its reason string, and the per-array-entry assertion are
-exactly what I asked for and more precisely. Adopted; my O-12 is closed.
-
-The defect: an `afterAll` writer means **any filtered run (`-t`, a single-file run, a bail) rewrites
-the repo file with a truncated table** — and a truncated conformance artifact that looks complete is
-worse than none. Fix: write only when the run covered every `TOOL_SPECS` row (the file already
-asserts one row per entry — gate the write on that same count), or stamp the artifact with
-`rows: N/35` and let the second test fail on a short count. Either is one condition.
-
----
-
-## 2. Replaceability
-
-### R-6 — CONCEDE; DES-139 is strictly stronger than my rule.
-
-I proposed one rule: NULL owner ⇒ admin-only, fail closed. DES-139 splits it correctly into a
-**tri-state**: `undefined` = does not exist ⇒ `authorize` returns ok and the handler answers
-`*_NOT_FOUND` (authz never leaks existence), `null` = exists and is ownerless ⇒ admin-only. That is
-the right decomposition — collapsing them would either leak existence to probers or make every legacy
-row readable. DES-152's "a `user` never sees ownerless runs" falls out as a consequence rather than a
-second rule, which is what I wanted from the "same rule on both sides of the seam" clause. Fully
-adopted; my R-6 as written is withdrawn in favour of theirs.
-
-### R-6b — HOLD. The operator-visible consequence is still unwritten.
-
-`OwnerLookup.triggerOwner` reads `createdBy`, which ARCH-099/100 add as `TEXT NULL` — so it is
-`NULL` on **every migrated legacy trigger**, and `runs.principal` is `NULL` on every pre-v15 run and
-every run submitted with auth disabled. Under DES-139 that means: **the day an operator enables auth,
-every pre-existing trigger and run becomes admin-only.** That is the correct behaviour and it is a
-support incident if it is discovered rather than announced. It belongs in DEPLOY/README in one
-sentence and in S-7's boot line as a count ("N ownerless triggers, M ownerless runs — admin-only
-under auth"). This is a replaceability item because it is the cost of swapping the auth backend on,
-and the cost has to be legible before the swap, not after.
-
-### R-7 — CONCEDE (theirs is better) and ENDORSE the namespace removal, owning its cost.
-
-DES-142's split — `lexicalVerdict` pure and table-tested, `pathVerdict` taking an injected `realpath`
-and delegating containment to `isPathContained` (`path-containment.ts:13`, already the shared jail
-test for `workspace-seed.ts:10`, `workspace-artifacts.ts:9`,
-`gateway/claude-agent-sdk-client.ts:20`, `self-update.ts:12`) — is the sharper form of my R-7, and
-their "check containment **again** after `mkdir -p` of the parent, because a not-yet-created symlink
-is undetectable" is a boundary I did not have. Their fixture rule (old `STRIP_RE` / `safeRelPath`
-cases copied as **literal rows**, not imported) is also the right answer to my "unnamed fixture list"
-complaint. Adopted wholesale; **QD-D12 closed**.
-
-I **endorse** DES-142's removal of the three caller-typed namespace sites (`run_start.seedNamespace`,
-`?namespace=` on blob and manifest): a namespace that the caller types is a partition the caller can
-choose, which is a permission by another name, and ADR-028's "appears once" is false while they
-exist. But it is my lens that owns the consumability bill: this is the **third** independent break in
-the client plugin (tool renames, `?namespace=`, guidance text) — see QD-R11 in §5.
-
-### R-8 — CONVERGED, one clause.
-
-DES-153 makes `resolveMcp` "a pure helper over `listAssets` (not a method that needs FS)", which is
-the call I made. One clause to pin: it takes the **catalog port**, not `AssetSyncService`, so it is
-constructible in a unit test with an in-memory catalog and no tmp roots — otherwise "pure helper"
-degrades to "method that happens not to touch the disk yet".
-
-### R-9 — CONCEDE the item; HOLD the generalization.
-
-DES-141 specifies what I asked for: an unknown `graphAnalyzer` key ⇒ one `console.warn` naming
-ADR-025, with `main-composition-root.test.ts` asserting it and the wiring test **losing** its
-`graphAnalyzer` row. My r1 concern (a type removal is compile-time and does nothing at runtime) is
-answered. **QD-D10 closed as specified.**
-
-I hold one amendment: make the check **general** — warn once, listing every unrecognized top-level
-key, with `graphAnalyzer` carrying the ADR-025 sentence as a special case. The single-key version has
-to be re-added by hand the next time a config block is retired, and the twice-bitten `composeConfig`
-bug class is precisely "a config block that is present and does nothing". A general unknown-key
-warning is the same code with a `Set` difference instead of one `if`. DES-141's malformed-role
-`process.exit(1)` I endorse without reservation and note that it is *louder* than I proposed.
-
-### R-10 — CONCEDE, subsumed.
-
-DES-143 refuses `model|effort|timeoutMs` keys in any `agent()` call (`PARAM_IN_SCRIPT{key}`) and
-tests that every `GUIDE_EXAMPLES[].script` scans clean. My "no model alias appears in any example"
-test is implied by theirs. Withdrawn.
-
-**Standing (not disputed):** ADR-033 settled the diagram cost question; with no model name legal in
-any script, retiring a provider is a `meta` default edit or a `run_start({overrides})`, never a
-workflow-logic edit. That is the v24 replaceability win and it needs no further design.
+### B-7 (MEDIUM, self-sustainability) — `configCheck` needs its four moving parts in one task, or `skipped` is a value nothing displays
+DES-172 / task 13 stop at `write_result` gaining a `configCheck` field and VAL-078 asserting the
+order. **Verified**, the reader half is four things that must move together: the fixed four-key
+`printf` in `write_result` (`deploy/rwe-update.sh:39-60`), the `UpdateOutcome` type, the ingestion
+(`server.ts:157`, `main.ts:217`) and the dashboard banner (`dashboard-page.ts:57-65`). Ship three of
+four and `configCheck:'skipped'` — the **silent** outcome by construction, the one that says the
+deployment's only fail-open path was taken — becomes a string in a JSON file nobody opens. This is my
+own D3 condition applied to the deployment path rather than the run page, and it is one sub-bullet on
+task 13, not a new task.
 
 ---
 
-## 3. Consumability
+## C. New this round — two defects in DES-179/177 as written, one sequencing sentence
 
-### C-5 — CONCEDE the fence; DES-137 is cheaper than I feared, and its drift lock has a hole.
+**C-1 (HIGH, self-sustainability) — nothing says what a pin-less run prices against, and all three
+readings of the silence are wrong.**
+DES-177 types `AgentExecutorDeps.priceBook` as present while `getSpec` returns
+`priceBook?: PinnedBook` and its own `sqlite-run-store.test.ts` case says a pre-v26 row reads
+`priceBook: undefined`. So resume must pass *something* to the executor and the design does not say
+what. `spec.priceBook!` with DES-179's `pin.pinned[…]?.price` — the `?.` guards the *entry*, not the
+*pin* — is a `TypeError` on the first dispatch of every run resumed across the upgrade;
+`?? staticBook` silently re-prices a legacy run against today's catalog, which is the exact thing
+INV-V26-4 forbids; only an explicit rule is correct. My r1's S-9 predicted a missing price here; the
+real exposure is that the missing case is unspecified.
+DES-178 handles the absent pin for **caps** ("absent pin → `caps` undefined → the fail-safe branch")
+and nobody handles it for **price**. Fix, one line and one boundary sentence:
+`pin?.pinned[…]?.price ?? null`, and **a pin-less run prices every call `costUSD: null` and is never
+re-priced against today's catalog** — the same rule ARCH-118 already sets for two-column legacy usage
+events. One `parseBudget`-style row in `price-call.test.ts`.
 
-My r1 fenced `ERROR_CATALOG` to "codes named by `TOOL_SPECS` plus new v24 codes" and forbade touching
-existing `codedError()` call sites, fearing a 40-file refactor. **Measured:** `src/` contains **25
-distinct literal codes** across 8 files, and **9 non-literal call sites**. I then checked the type of
-the value at each of those nine, which is what settles the cost:
+**C-2 (MEDIUM, self-sustainability) — `reachableModels` must be the *extraction* of `run-manager.ts:498`, not a second derivation.**
+DES-177 introduces `reachableModels(effectiveParams)` (`{model} ∪ agents[*].model`). Admission
+already computes exactly that set at `run-manager.ts:498`
+(`modelsToCheck = [effectiveParams.model, ...Object.values(effectiveParams.agents ?? {}).map((a) => a.model)]`) for its existing
+alias check. If the pin derives the set a second time, INV-V26-4 pins over a set that can differ from
+the one admission validated — and the divergence appears only when the two expressions drift, i.e.
+in a later iteration, silently. Ask: one sentence in DES-177 saying `reachableModels` **is** `:498`
+refactored, with `:498` re-pointed at it in the same task.
 
-| site | what `code` is typed as | narrows? |
-|---|---|---|
-| `run-manager.ts:111` | `ParamErr['code']` — a 5-member union (`contract.ts:57`) | yes |
-| `run-manager.ts:337` | `'SEEDREF_DISABLED' \| 'SEEDREF_EGRESS_DENIED'` (`seedref-egress.ts:10`) | yes |
-| `workflow-catalog.ts:329` / `:354` | `validateScriptEntry` / `parseParamContract` error unions | yes |
-| `workflow-catalog.ts:412` / `:417` | `const code = fromCaller ? 'HARNESS_DEFAULTS_INVALID' : 'PARAM_CONTRACT_INVALID'` — inferred literal union (`:411`) | yes |
-| `workflow-catalog.ts:526` | `resolveVersionRequest`'s result union (`:89-106`) | yes |
-| `workflow-catalog.ts:443` | a literal | yes |
-| **`run-manager.ts:838`** | **`toErr(): { code: string }`** (`:115-121`) — returns `err.name` for a non-coded throw | **no** |
-
-So my fence is withdrawn *and* my r1 fear was wrong in the other direction too: DES-137's stronger
-scope is affordable, and **eight of the nine sites need nothing at all**. Only `toErr` does.
-
-**The real finding — DES-137's drift lock has a six-code hole.** Their lock is "every
-`codedError('X'` literal in `src/` is a catalog key", which by construction only sees literals. But
-`SEEDREF_EGRESS_DENIED`, `INVALID_CHANNEL`, `CHANNEL_UNPUBLISHED`, `DANGLING_CHANNEL`, `PARAM_LOCKED`
-and `PARAM_UNKNOWN` reach `codedError` **only** through those union-typed pass-throughs and appear as
-a literal nowhere — they are absent from the 25. A catalog assembled from the grep is silently
-incomplete, and the lock says it is complete.
-
-**Proposal, two parts:**
-1. **Let `tsc` be the lock, not grep.** The four upstream result types are already closed unions, so
-   constrain each one's `code` to `ErrorCode` at its declaration (`contract.ts:57`,
-   `seedref-egress.ts:10`, `resolveVersionRequest`'s result, `validateScriptEntry`'s error). Then a
-   code that is not catalogued is a compile error at the *source* of the value rather than at a
-   `codedError` call the grep cannot see. Cost: four type annotations, no call-site edits, and it
-   turns the six invisible codes into six catalog rows the compiler demands.
-2. **One runtime guard at the one genuinely-`string` site.** Export `toErrorCode(s: string):
-   ErrorCode` beside the catalog — the key if present, else `'INTERNAL_ERROR'` with the original in
-   `detail.rawCode` (DES-137's own `toErrEnvelope` passthrough mapping, pulled one layer earlier so
-   the same rule applies whether a bad code arrives at the envelope or at the throw). Apply it at
-   `run-manager.ts:838` only. A `rawCode` in production is then a real signal — an uncatalogued code
-   escaped — and it is greppable.
-
-Keep their literal grep as a *second* lock; it is cheap and catches the common case. It just cannot
-be the only one. (**QD-D11 stays MID**, re-aimed from "unscoped catalog" to "a drift lock that
-reports complete while six codes are missing".)
-
-### C-6 — I downgrade my own item, HIGH → MID, and re-aim it.
-
-My r1 claimed REQ-117's context budget is unbounded and that the guide plus 35 tool descriptions
-could overflow the subject. Doing the arithmetic honestly: DES-157's ≥10 examples plus the vocabulary
-and tables is plausibly 15–30KB, and the projected descriptions a few KB more — order **10k tokens**,
-a few percent of a modern context window. **Overflow is the wrong failure mode**, and the real risk
-(attention dilution) is not something a byte ceiling measures. QD-D4 drops to MID and my invented
-24KB numbers are withdrawn.
-
-What is still worth one test, re-aimed: **`tools/list` description bytes are an always-on cost** —
-paid on every session by every client, including ones that never read the guide — while the guide is
-paid on demand. So the guard belongs there: one test that records the total projected `tools/list`
-byte count against a pinned baseline and fails on a jump beyond a stated tolerance. That is a
-**regression guard**, not a budget, and it should be labelled as such in 05-tests.md next to their R8
-list of drift locks. It costs one assertion and it is the only thing that will notice the surface
-doubling three iterations from now.
-
-This interacts with one of their items: **DES-158's `outputSchema`.** From consumability I
-**endorse** it — structured, typed I/O is exactly this dimension, and without it REQ-118's "asserted
-against its own documented contract" has no document. But if `outputSchema` is ever *published* in
-`tools/list` (rather than staying a test oracle), it multiplies the always-on payload by 35 rows. So:
-adopt it as a `ToolSpec` field and a test oracle now; treat publishing it as a separate decision that
-must be taken **after** the byte baseline exists, not before. Naming that ordering is the whole of my
-contribution here.
-
-### C-7 — CONVERGED, one clause.
-
-DES-157 makes `buildAuthoringGuide` **pure over its inputs**, with no constant imports inside the
-builder, so a test can pass a fake ceiling and prove interpolation rather than a hard-coded number —
-that is C-7 and a better test than the one I proposed. One clause to nail down: the composition root
-must pass the **resolved `ServerConfig` ceilings**, not re-import `DEFAULT_CEILINGS` at the root.
-Purity of the builder is defeated by an impure caller, and `maxTimeoutMs`/`maxAppendPromptBytes`/
-`maxEffort` are operator-overridable (they are already rows in
-`compose-config-v2-wiring.test.ts:130-145`). Add one boot-level test with a non-default ceiling
-asserting the guide text carries it. (**QD-D7 stays MID** until that root-side test exists.)
-
-### C-8 — HOLD (LOW).
-
-DES-156 defaults `onlyRunnable:true` for `user` and does not echo it. A user whose `workflow_list`
-comes back empty cannot tell "nothing registered" from "everything filtered". Echo the applied filter
-in the response (`filter:{onlyRunnable:true}`). Same principle as refuse-never-clamp (C-3, adopted as
-ARCH-094): the caller learns the rule from the response, on the first attempt.
-
-### C-9 / `LEGACY_REREGISTER` — CONCEDE, with one condition, and a misattribution corrected.
-
-Their "expected disagreements" predicts that *quality-dimensions/consumability* will want `run_start`
-to accept the flat override form behind a deprecation note. **That is not my position and never
-was.** A schema accepting two shapes is two rules for every future caller to learn — the exact cost
-adjudication A-2 refused for `defaults`. I concede their R6 in full: `runnable:false` +
-`LEGACY_REREGISTER`.
-
-The consumability condition on that concession: **the refusal must be discoverable before it is
-hit.** DES-156 already carries `runnable` and `runnableReason` on both `workflow_list` and
-`describe`, which satisfies it — so the condition is met by their own design, and what remains is one
-guide sentence naming `LEGACY_REREGISTER` and what to do about it. A typed refusal at run time that
-the caller could have seen at list time is a support ticket; one that was already visible is a
-migration note.
-
-### ENDORSE — REQ-112 advice-vs-enforcement honesty (their R10), with one addition.
-
-DES-147's honesty about which REQ-112 clauses are mechanically decidable is right, and their tie-break
-("a rule that cannot be tested cannot be claimed") is the correct one. Addition from this lens: the
-**guide must mark them differently** — an "enforced (refused with this code)" section and an
-"authoring convention (not checked)" section. An author who cannot tell which is which either fights
-a checker that isn't there or ships a diagram that silently violates a rule they were told was a
-rule. Same one-line cost as writing them in one undifferentiated list.
-
-### ENDORSE — the `mode(args)` resolver (DES-138), with one addition.
-
-Their biggest interface call gets a second vote: a `mode()` function on the row is code, but it is
-co-located with the row, total (their `'invalid'` fallback routing to a schema error, not a
-permission error, is the right choice for a cold model), and enumerable by a fixture test.
-Escalation logic in the handler is the v22-H2 defect class. **Addition:** when `authorize` refuses,
-the resolved **mode must appear in the refusal envelope's `detail`** (`detail.mode:'stdio'`).
-Otherwise a caller refused on `workspace_push` — which has four outcomes — cannot tell which rule
-refused them, and neither can an operator reading the log. One field, and it is the difference
-between an authz seam that is observable and one that is merely correct.
+**C-3 (LOW, consumability) — `budget: <number>` deserves the migration answer, not ajv's.**
+DES-179 refuses a bare number with a schema `description` that explains why. A description is not an
+error message: ajv answers a type mismatch with `INVALID_ARGUMENT: budget must be object` and the
+caller never sees the description. **The precedent is in the same file** — `call-tool.ts:103-105`
+answers the retired inline `script` key with `INLINE_SCRIPT_CLOSED` *ahead of ajv*, for exactly this
+reason ("technically true and completely useless"). Ask: `run_start` with a numeric `budget` gets a
+named answer stating the old meaning (tokens), the new shape and the unit. One `if`, beside the one
+already there, no new error code needed if `INVALID_ARGUMENT` carries the message.
 
 ---
 
-## 4. Self-sustainability
+## 1. Observability — final position
 
-### S-7 — HOLD. This is my main remaining open item.
+Transparency of internal state, traceability folded in. The question v26 must answer from the
+**persisted** record — because the box restarts on every release — is *"which of the three provider
+paths broke, what did it cost, and in which phase"*.
 
-DES-141 handles the **malformed** case well (an invalid role string refuses boot with
-`process.exit(1)` — louder than I proposed, and I endorse it). It says nothing about the **missing**
-case, which is the one ADR-028's rationale rests on: an unwired or absent `principals` block "locks
-the operator out visibly, not grants everyone `admin` silently". **Visibility is still asserted, not
-built.** Nothing announces the state; an operator discovers it by trying `workflow_register` and
-being refused, then guessing why.
+- **Held:** B-1 (the `:840` gate — the only item where a wrong number reaches *storage*), B-2 (the
+  derive path drops the optional v26 fields; no superset pin can catch it), B-3 (a `refused` record
+  still dies on restart; fix the write or fix DES-175's sentence), B-4 (the DAG cell under-reports a
+  cached call by 99.3% and `tsc` is silent), B-5's `onPhase` half.
+- **Conceded:** O-12 and its corollary — DES-179's usage-event `unmapped` + the two-producer equality
+  IT are what I asked for, in a better shape.
+- **Converged:** DES-175 names `deriveAgentRecords` and derives `startedAt` — ARCH-114's phantom
+  `buildRecordsFromTranscript` is dead; DES-171's benign set with an empty-on-healthy fixture is the
+  right answer to "a counter that means something".
+- **Agent altitude, answered:** chain-of-thought is out of scope by owner ruling, but token usage
+  (four columns), tool-call sequence (the transcript) and the dispatch decision (`effortApplied`,
+  `transport`, `proxyModel`, `detail`) are all inspectable per call and all persisted. The one
+  remaining black box after v26 is a refused call on an interrupted run — B-3.
 
-The build is small and I hold it unchanged from r1: **one startup line and three `system_info`
-fields** stating auth mode, `principals` entry count, and the effective default role — plus, per
-R-6b, the ownerless-row counts. `system_info` already exists, is read-only, and is one of the 35.
-Then "locked out within minutes" is *announced* rather than *discovered*, and the `composeConfig`
-bug class — which has now bitten this project twice (v11 `updateFlagPath`, v15 auth) and whose only
-existing detector is a real Gate 7.5 run — gains a detector that fires at boot.
+## 2. Replaceability — final position
 
-Anticipating the simplicity objection: this is one `console.log` and three fields on an existing
-read-only tool. It is not a subsystem. The asymmetry it fixes is that v24 spends real design effort on
-failing closed and zero on saying so.
+Decoupling and pluggability; no single-vendor lock-in.
 
-### S-8 — one converged, two held (both LOW).
+- **Held:** B-6 (one numeric price derivation, and `ModelEntry` must carry the rates for the
+  re-pointed function to read).
+- **Conceded:** R-10 in full — DES-172's `never` switches plus the narrowed `AliasMap` make provider
+  totality a **compile-time** property, which is strictly better than the runtime test I proposed;
+  `default-aliases.ts:15` is covered by the narrowing, which was my one counter-example.
+- **Converged:** R-9 (`toolUse` renamed IN and OUT — same finding, independently); ADR-041's
+  three-provider table with one `PROVIDER_CAPS`.
+- **Held, small (R-11):** v26 narrows five provider paths to three, which is a real reduction in this
+  dimension. The compensating facts — OpenRouter is the many-model front door, so *swap the model*
+  stays a config change; two `GatewayClient` implementations behind one interface keep *swap the
+  transport* a config change — are recorded in ADR-041 for the ledger. DES-184 (d)'s alias table
+  should say it to the **caller** in one sentence, so "why is there no `openai` row" has a published
+  answer rather than a removed one.
 
-**(b) CONVERGED.** DES-148 walks the pre-v24 global tree into `assets(workflow='',
-pushedBy='legacy')` rows with no FS move — the global tree path is unchanged in ARCH-102. Agreed;
-rows only, one fewer task, no half-moved tree.
+## 3. Consumability — final position
 
-**(a) HOLD.** `schedules.workflow → claimedBy, then drop` uses SQLite `ALTER TABLE … DROP COLUMN`,
-which needs **SQLite ≥ 3.35**. better-sqlite3 bundles a newer one, so this is fine today — but a
-rebuild against a system SQLite turns it into a boot failure nobody predicted, and the note costs one
-line beside the migration in task 11. DES-148 pins the catalog migration's ordering and idempotency
-carefully; the scheduler migration deserves the same sentence.
+Interface friendliness; the caller's learning and integration cost. At agent altitude the refusal
+envelope and the description **are** the API.
 
-**(c) HOLD.** `deregister` deletes `workflow_versions`/`workflows`/`assets` rows in one transaction
-(DES-148) while the FS removal is an after-hook outside it (ARCH-098). A failure there leaves an
-orphan `<workRoot>/<name>/assets/` tree with no row — unreachable, uncounted, growing. Pin the
-reclaim to the **existing workspace-GC sweep** (ARCH-022 / `workspace-gc.ts`): reclaim asset trees
-with no `assets` row. Not a log line, not a manual runbook step. Note this is the same shape as
-DES-153's accepted "crash between tree and row leaves an unlisted directory that the next push
-overwrites" — except deregister has no next push, so it needs the sweep.
+- **Held:** B-5's `onBudgetSnapshot` half (a `budget.spent()` that reads `$0.00` in every nested
+  frame is a lying interface, not a missing feature); C-3 (the migration answer ahead of ajv, with
+  the `call-tool.ts` precedent); C-10 unchanged and narrow — the seed item `description` and the
+  validator `hint` render from **one exported constant**, `required:['path']` stays (adding
+  `contentB64` would make `INVALID_SEED_SPEC` unreachable behind live ajv), and
+  `TOOL_SPECS.run_start.errors[]` **already** lists `INVALID_SEED_SPEC`/`SEED_SOURCE_CONFLICT`
+  (`tool-specs.ts:394`) so nobody should "add" a duplicate — only `errors.ts:112`'s `see: null` needs
+  the fix ARCH-110 specifies.
+- **Conceded:** C-8 → DES-179's `Budget.tokens()`. **Residue, one clause:** ARCH-121's honesty line
+  must name which accessor answers which limit, because `total === null` alone still reads
+  "unbounded" to a v25 script; the disambiguation `total === null && tokens().limit !== null` is
+  already pinned by their `sandbox-budget-api.test.ts`, so this is a sentence, not a test.
+- **Arbitrated for the synthesizer:** their R8 (per-row `catalogFetchedAt` — adopted) and their R9
+  (`tools: default` compared as the literal word — adopted). Neither needs a ruling now.
+- **C-12, narrowed:** their task 17 (ADR-047) is already CONDITIONAL with an unconditional ledger
+  half — converged with my obligations 7/8. The remaining gap is **ADR-038's `PRICE_UNKNOWN`**: DES-180
+  makes the *predicate* a clean toggle ("delete the call, the predicate, its catalog row and its
+  test"), but the `ERROR_CATALOG` row, the `run_start.errors[]` entry and the guide sentence are
+  **published tool surface**, and un-publishing a described error after Gate 6 is a second
+  `tools/list` byte re-pin. Ask: keep those three pieces in **one** task and mark it GATED, so the
+  owner's overrule is one revert.
 
-### S-9 — standing, no dispute.
+## 4. Self-sustainability — final position
 
-The v24 autonomy ledger is net positive and should be claimed in the design: **deleted** an async
-single-flight LLM subsystem, its config block, its reconcile machinery, two `diagramStatus` states and
-a regenerate tool; **added** two tables, five columns and one bounded coalesced counter (bounded in
-meaning too, once O-11b's reset lands). Registration no longer depends on a provider being reachable.
+Closed-loop autonomy; minimum human intervention.
 
-**Still out of scope, one sentence each** (unchanged from r1, and no other lens has proposed
-otherwise): **tool-liveness probing** — REQ-113 gives an author *discovery* of provisioned MCP for the
-first time, which is the precondition, but nothing asks for probing, and the one probe that exists
-(`mcp-probe.ts`, at push time) is a validation gate, not a liveness monitor; **memory metabolism /
-context compression** — runs are bounded and journalled, there is no resident memory to compress;
-**self-reflection / prompt calibration** — nothing in REQ-107..118 asks for it, and inventing it is
-scope invention, not quality.
-
----
-
-## 5. Task partition — every r1 rule of mine adjudicated against their 18-row table
-
-| my r1 rule | their tasks | verdict |
-|---|---|---|
-| 1. `TOOL_SPECS` + `authorize()` + the server wire are ONE task | 2, 3, 15 | **CONCEDE the split, one condition** |
-| 2. `principals` wiring + its wiring-test row + S-7's announcement are one task | folded into 15 | **HOLD — split task 15** |
-| 3. descriptor + `deriveAgentRecords` are one task | 10 (run store) / 14 (asset-sync + descriptor) | **HOLD — assign to 14** |
-| 4. `ERROR_CATALOG` lands before any v24 typed error | 1 | **CONVERGED** |
-| 5. migrations precede the facade | 13 before 15 | **CONVERGED** |
-| 6. guide builder last among code tasks; REQ-118 table after it | 16 then 17 | **CONVERGED** |
-| 7. the client-plugin rename needs a tracked task | absent | **HOLD — add task 19** |
-
-**Rule 1 — CONCEDE, conditioned.** Their defence is sound: task 2's drift-locks run over
-`projectToolsList()` and task 3's over `authorize()`, both pure, both green in isolation. My r1 worry
-("green at no intermediate state") was about a *live-server* lock, so the condition is placement, not
-merging: **the "`tools/list` over real HTTP contains none of the 15 old names" assertion belongs to
-task 15 (or 17), not task 2.** DES-140 already puts `mcp-tools-list-http.test.ts` at task 15 — so
-this is agreement once stated. Task 2's own old-name lock stays over the projection.
-
-**Rule 2 — HOLD, and it is really a "task 15 is too big" objection.** Task 15 currently carries
-DES-140 + 141 + 149 + 155 + 156: `callTool`'s deps refactor, `composeConfig` forwarding, the facade
-register/claim sequence, six `workspace_*` tools, and four read projections. That is the largest task
-in the table by a wide margin and it is the one a lower-tier implementer is running. Split it:
-**15a** = `Principal` at the edge + `composeConfig` forwarding + `normalizePrincipals` + the S-7 boot
-announcement + the wiring-test rows; **15b** = `callTool(deps)` + the register/claim sequence +
-`workspace_*` + projections. 15a is small, self-contained, and is the task whose *absence* is the
-twice-repeated `composeConfig` bug — it should not be a subsection of the biggest task in the run.
-
-**Rule 3 — HOLD.** The `deriveAgentRecords` one-liner and its `run_status` test belong to **task 14**
-(which already owns the descriptor via DES-154/160), not task 10 (run store) and not "wherever". A
-task boundary between a field's producer and its consumer is exactly how a write-only field ships,
-and this one has a live example: `label` has been on `AgentRecord` since v1 (`git log -S`) and the
-reconstruct path has never once populated it.
-
-**Rule 7 — HOLD, and it grew.** The client plugin (ARCH-013, separate repo, no SDLC ledger of its own)
-now takes **three** independent v24 breaks: the 15 tool renames, `?namespace=` removal on both HTTP
-routes (DES-142), and its guidance skill still teaching the old surface. REQ-117 is measured on what
-a **cold client** sees, and a cold client sees the plugin. Add **task 19: "client plugin v24 sync —
-external, owner-scheduled, blocks the REQ-117 probe"**. A task that says so is honest; no task at all
-is how the probe gets run against a plugin still saying `workflow_run`. (**QD-R11 stays MID, scope
-tripled.**)
-
-**Their two ordering constraints — CONCEDE both, one condition.** Task 9 (deletion) before task 15,
-and task 18 (the 113-file rename sweep) last but before Gate 5's RED confirmation: both are right,
-and the second is the difference between 113 rename failures drowning the genuine REDs and not.
-Condition, from this project's own history: **a WIP commit per task**, because the window between
-task 9 and task 15 is a deliberately red tree, and this ledger has already lost a full iteration's
-work to an agent operating on a tree it could not cleanly diff (CLAUDE.md, 2026-08-31). Also, task
-18 should land as a **mechanical commit whose message carries the `grep -c` before/after counts**, so
-a 113-file diff is reviewable as a number rather than by reading it.
+- **Held:** C-1 (the pin-less-run `TypeError` — a crash on the first resume across the upgrade),
+  C-2 (`reachableModels` is `:498` extracted, not re-derived), B-7 (`configCheck` needs its four
+  moving parts in one task or `skipped` has no reader).
+- **Conceded:** S-10 — DES-177's existing `'static'` already means "never fetched successfully in
+  this process" and `'last-good'` means "fetched, now stale", which is the operator-action split I
+  wanted; no fourth value. **Residue, one sentence:** DES-180's `PRICE_UNKNOWN` message must render
+  `source:'static'` as *"the catalog has not been reachable since this process started"* rather than
+  the bare word, or the distinction exists in the type and not in the refusal.
+- **Converged:** ARCH-116's TTL + single-flight + last-good with an injected clock (DES-177);
+  the pin read back at resume so a catalog change cannot rewrite a run's spend (INV-V26-4).
+- **S-12, held (one paragraph, no code):** this dimension's agent half asks for tool-liveness probing.
+  v26 builds the **reactive** form and should claim it in 04-design: `classifyApiError` recognises
+  *cannot succeed*, the `finally` abort kills the CLI's remaining retries, and the guard slot plus
+  host semaphore free in seconds instead of `timeoutMs × (1+retries)` — on a 24-wide `parallel()`
+  that is the difference between a degraded run and a dead host. The **proactive** form (#73's weekly
+  probe) is deferred by owner ruling; `declaredSource` + `catalogFetchedAt` are its attachment seam,
+  and v26 is right to decline a per-row `declaredAt` for it now. Without the paragraph Gate 8 reads
+  the dimension as unaddressed.
+- **Explicitly excluded, unchanged from r1 and from Gate 2:** memory metabolism / context compression
+  (runs are bounded, journalled and terminal; there is no resident agent memory to compress, and
+  inventing one is scope invention) and self-reflection / prompt calibration (nothing in
+  REQ-121..130 asks for it). Naming them is the dimension being answered, not skipped.
 
 ---
 
-## Remaining disagreements (what round 3 or the synthesizer must settle)
+## D. Task-partition deltas — against their 18-row table, not a parallel list
 
-1. **S-7 — the boot announcement.** Held, unaddressed by the adversarial group. One log line + three
-   `system_info` fields. If the synthesizer strikes it, ADR-028's rationale sentence ("locks the
-   operator out *visibly*") should be edited to drop the word, because it would no longer be true.
-2. **O-7b — `materialized` on a `surfaceType:'none'` dispatch.** Option (a) skip-and-report-empty vs
-   (b) keep-and-document. Contingent on whether the gateway target is resolvable before dispatch,
-   which the synthesizer must check.
-3. **O-8 / task 14 — the descriptor's consumer.** Agreement on the field, no agreement yet on who
-   owns `deriveAgentRecords`.
-4. **R-9's generalization** — warn on *any* unrecognized top-level config key, not only
-   `graphAnalyzer`. Minor, and I hold it lightly.
-5. **O-11b/c** — `refusalCount`'s reset, and the two `schedules.workflow` consumers not yet
-   enumerated.
-5b. **C-5's lock** — whether the four upstream result types are constrained to `ErrorCode` (making
-   `tsc` the lock) or the grep lock ships alone with its six-code hole.
-6. **Splitting task 15.** A partition objection, not a design objection; the synthesizer decides.
-7. **`outputSchema` publishing.** Endorsed as an oracle; publishing deferred until the `tools/list`
-   byte baseline exists. Not a conflict, an ordering.
+Their partition is better than the eight obligations I wrote in r1 (it is ordered, it names the trap
+each row closes, and its constraints — deletion before the gateway, the fixture module before both
+consumers, `parseBudget` before every reader — are the ones I would have asked for). I adopt it and
+ask for **six edits**, not a rewrite:
 
-## Withdrawn this round (so the synthesizer does not carry them)
+1. **Task 11** gains: *"`deriveAgentRecords` reads `costUSD`/`transport`/`proxyModel`/`detail` from
+   the usage event"* + one transcript-only (snapshot-less) fixture asserting **presence**. Today
+   task 10 gives that function `phase`/`startedAt` and task 11 gives the usage event the four new
+   fields — the *reader* falls between the two rows, which is the exact seam ADR-046 names (B-2).
+2. **Task 11** gains: *delete the `spec.budget` gate at `run-manager.ts:840`*, and
+   `usage-live-equals-fold` gains an **unbudgeted resumed** case; the design names which producer
+   writes `RunDagSnapshot.usage` (B-1).
+3. **Task 11 or 15** gains the two dashboard readers by name — `dashboard.ts:56`
+   (`sumTokens(a.tokens)`) and `DagAgentNode.costUSD` three-valued — with one page-source assertion.
+   Neither site appears in any current row, and neither failure mode is a compile error (B-4).
+4. **Task 10** gains `onPhase` **and** task 12 gains `onBudgetSnapshot` on the nested `SandboxHost`
+   at `run-manager.ts:1011`; E2E-010 gains the nested-frame-that-*does*-call-`phase()` case (B-5).
+5. **Task 13** gains the reader half of `configCheck`: `UpdateOutcome`, the ingestion at
+   `server.ts:157`/`main.ts:217`, the dashboard banner at `dashboard-page.ts:57-65` (B-7).
+6. **Task 5** gains `ModelEntry.ratesPerM` + the re-pointed `maxPricePerMOf`/`computeCostLevel`
+   (B-6), and the pin-less `costUSD: null` rule (C-1) is an explicit sub-bullet of task 11 rather
+   than an inference from DES-177's `priceBook: undefined` test.
 
-QD-D1 (HIGH → LOW, kept only as a direct-fetch fixture) · QD-D4 (HIGH → MID, re-aimed at always-on
-`tools/list` bytes as a regression guard, my invented 24KB numbers dropped) · QD-D5 (closed by
-DES-139, which is stronger) · QD-D9 (MID → LOW, free under DES-151's synchronous append) · QD-D10
-(closed as specified by DES-141) · QD-D12 (closed by DES-142) · C-5's fence (withdrawn; eight of the nine
-non-literal sites need nothing, and the finding is now the grep lock's six-code hole) · R-10's test (subsumed by DES-143) · O-12 (closed by DES-158,
-minus the `afterAll` truncation defect) · my r1 partition rules 1, 4, 5 and 6 (converged with their
-table).
+One sequencing point their constraints do not state: **task 2's `Tokens` widening must land with the
+`dashboard.ts:56` edit in the same commit.** Every other consumer of `Tokens` fails to compile; that
+one does not, so it is the single site where a partial rollout is invisible until someone reads the
+page.
+
+---
+
+## E. Risks — delta on my r1 list
+
+- **QD-R2 → resolved-if-B-2-lands.** DES-175's `startedAt`-from-`ts` removes the `inferPhase`
+  starvation I flagged; the residue is the optional-field omission, mitigated by the presence
+  fixture.
+- **QD-R3 → mostly resolved.** DES-179 journals `unmapped` on the usage event. The surviving half is
+  B-1: the *fold* is gated, so an unbudgeted resumed run empties every counter at once.
+- **NEW QD-R10 (HIGH):** a pin-less run **throws** rather than under-reports (C-1). Every run resumed
+  across the v26 upgrade takes this path on its first dispatch. Mitigation: `pin?.pinned` + the
+  stated `costUSD: null` rule (never `staticBook`) + one test row.
+- **NEW QD-R11 (MEDIUM):** `RunDagSnapshot.usage` persists a wrong number if the guard writes it and
+  the `:840` gate stays — a stored artefact, not a view (B-1). Mitigation: delete the gate, name the
+  producer.
+- **QD-R1, QD-R4..R9** stand as written, with QD-R1's mitigation now pointing at delta 3 and QD-R4's
+  at B-6.
+
+## F. Remaining disagreements after this round
+
+1. **B-3 (the refusal write path)** — the only item where I expect a genuine "no". I hold that
+   DES-175's cohort sentence and the tree disagree, and one of the two must change. I have costed
+   the write precisely (one union member; two call sites decide, two get it free) and shown the data
+   is engine-authored so the security objection does not attach. **I accept fallback (b)** — correct
+   the sentence and REQ-124's acceptance — but not the current state, where the architecture claims
+   the record survives and the code drops it.
+2. **B-5's `onPhase`** — I accept either the wire (my preference; one line, and it makes ARCH-114's
+   own cohort rule reachable) or a documented no-op plus a registration-time warning. I do not accept
+   shipping the architecture's sentence and the tree's silence together. `onBudgetSnapshot` in the
+   same constructor I do **not** offer as optional: `$0.00` in every nested frame is a lying
+   interface after REQ-127.
+3. **C-3 (migration answer ahead of ajv)** — testability may say "a release note is not a test".
+   Agreed, and I am not asking for one: the testable half is the migration-message assertion on the
+   `call-tool.ts:103-105` precedent. The release note is the human half, one line per break, for the
+   three breaking changes (`budget` number→object, `models_list.toolUse`→`toolUseDeclared`,
+   `run_status.agents[].tokens` two→four columns).
+4. **Everything else is converged or arbitrated.** Their R8 and R9 are resolved in their favour and
+   need no synthesizer ruling; my C-8, S-10, R-10, O-12 and the benign-subtype question are conceded
+   in theirs.
