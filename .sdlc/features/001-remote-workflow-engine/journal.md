@@ -2369,3 +2369,11 @@ waiting for Gates 3–7). `state.yaml`: `gates.architecture.passed=true`, `curre
 already-recorded `dashboard_check` false positive (erDiagram crow's-foot `||--o{` defeats the lexical bracket counter;
 the three existing ones are at `02-architecture.md:935/1199/1646`) — the four flowchart/sequence blocks pass the same
 checker cleanly. No product code changed.
+
+## 2026-09-08 — v26 Gate 2 owner decisions settled in session (orchestrator)
+The architect deferred two product calls; the owner ruled before Gate 4 synthesis: an unpriced model is
+charged 0 (recorded as unpriced, never refused — `PRICE_UNKNOWN` overruled); trigger-started runs carry no
+spend limit (D-V2h re-decided), because the author knows the cost at trigger creation. Standing principle
+recorded in Round v26: a budget is optional and absent means unbounded, but every run's spend must be
+tracked, recorded and queryable afterwards. Markers in 02-architecture.md flipped to DECIDED; REQ-127
+amended.

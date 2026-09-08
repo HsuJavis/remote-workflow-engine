@@ -1359,6 +1359,14 @@ orchestrator 標明兩個後果,照裁決執行:(1) DEPLOY.md 記載的「自架
 
 **延後:** #73「每週對 OpenRouter 探測並更新 models_list」是之後的排程工作;v26 只加宣告欄位。
 
+**Gate 2 之後的補充裁決(2026-09-08 上午,架構師以 owner_decision 呈報,擁有者在 session 內裁定):**
+(1) **沒有價格的模型以 0 計費**,不拒絕 run;紀錄仍要標示「未定價」並可查詢,供事後調整價格表。
+架構師提議的 `PRICE_UNKNOWN` fail-closed 拒絕**不採**。
+(2) **trigger 啟動的 run(cron / once / resident / webhook)不設花費上限** —— 編寫者建立 trigger 時已經知道
+要花多少;D-V2h 據此重新裁定。
+**擁有者立下的原則(所有 budget 相關設計都要遵守):預算不是一定要設的,不設就是沒有上限;
+但每一個 run 的花費一定要追蹤、紀錄、事後可查詢,讓人回頭調整。**
+
 ### REQ-121 — `seed` 只帶 sha256 必須被拒絕,而且 schema 要說清楚三種 seed 形狀
 - **status:** draft
 - **traces:** REQ-025, REQ-065, REQ-082
@@ -1479,7 +1487,12 @@ orchestrator 標明兩個後果,照裁決執行:(1) DEPLOY.md 記載的「自架
   `cache_write_tokens`;Ollama cache 兩欄為 0。
   **Given** 該呼叫解析到的模型 **Then** 以該模型的四個單價算出 `costUSD`:anthropic 由靜態表(in/out/cacheRead/
   cacheWrite);openrouter 由 `/models` 的 `pricing.prompt / completion / input_cache_read / input_cache_write`;
-  ollama 為 0;查不到價格 → `costUSD: null` 且 run 的 `meta.unpricedCalls` 計數,**不得**靜默當 0。
+  ollama 為 0;**查不到價格 → 以 0 計費(`costUSD: 0`),但該筆紀錄標 `unpriced: true`、run 的
+  `meta.unpricedCalls` 計數 —— 擁有者 2026-09-08 裁決:不拒絕、以 0 計,可查詢即可**(原稿的 `null` 改為 0)。
+  **Given** 任何 run,不論由 `run_start` 或 trigger 啟動、不論有沒有設 budget **Then** 每個 agent 的四欄與
+  `costUSD`、整個 run 的合計,都持久化並可由 `run_status` / `run_result.meta` / dashboard 查到 ——
+  擁有者原則:預算可以不設(= 無上限),追蹤與紀錄不能不做。
+  **Given** trigger 啟動的 run **Then** 不帶花費上限(擁有者 2026-09-08 裁決 (b),D-V2h 重新裁定),花費照上一條紀錄。
   **Given** `run_start.budget` **Then** 單位是 **USD**(schema 描述與 guide 改寫;數值語義變更在
   guide 與 tool description 明寫);`assertBudget()` 比較累計 `costUSD`;script 內 `budget.spent()` 回 USD,
   另提供 `budget.tokens()` 四欄合計。
