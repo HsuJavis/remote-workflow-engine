@@ -115,8 +115,20 @@ export class ModelBook {
       }
     }
     const index = new Map<string, BookEntry>();
+    // v26 Gate 7.5 round 3 (defect D9, REQ-127): several rows can carry the SAME provider/model key.
+    // A curated alias table with TWO aliases on one model — the shape every Anthropic model has on
+    // the real deployment (`haiku` and `claude-haiku-4-5` both -> claude-haiku-4-5-20251001) — makes
+    // `overlayAliases` append a second, `ratesPerM:null` row for it. A bare `index.set` let that
+    // later unpriced row OVERWRITE the priced static one, and `lookup()` then answered `price:null`
+    // (the anthropic static fallback below is unreachable — the key WAS found), so every real
+    // Anthropic call recorded `costUSD 0 / unpriced:true` and a USD budget could never bind.
+    // RESOLUTION ORDER, stated: a PRICED row wins over an unpriced one; otherwise the FIRST row in
+    // source order wins. "We have no price for this" must never displace a price already known.
     for (const row of entries) {
-      index.set(`${row.provider}/${row.model}`, { price: priceFromRow(row), caps: capsFromRow(row) });
+      const key = `${row.provider}/${row.model}`;
+      const entry = { price: priceFromRow(row), caps: capsFromRow(row) };
+      const incumbent = index.get(key);
+      if (incumbent === undefined || (incumbent.price === null && entry.price !== null)) index.set(key, entry);
     }
     this._cache = { index, fetchedAt, source };
     this._lastFetchMs = this._clock.now();

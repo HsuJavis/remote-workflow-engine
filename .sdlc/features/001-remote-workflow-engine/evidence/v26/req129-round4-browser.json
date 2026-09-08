@@ -1,0 +1,35 @@
+{
+ "at": "2026-09-08T21:45:19.323Z",
+ "port": "8933",
+ "workflow": "gp-runner",
+ "runId": "f6953a1e-9b04-43a0-a962-d8dfbd06684c",
+ "imgDraggableAttr": "false",
+ "imgUserDrag": "none",
+ "imgRect": {
+  "cx": 550,
+  "cy": 695,
+  "w": 1052,
+  "h": 212
+ },
+ "transformInitial": "translate(0px, 0px) scale(1)",
+ "transformAfterRealDrag": "translate(-180px, -90px) scale(1)",
+ "gestureRequested": {
+  "dx": -180,
+  "dy": -90
+ },
+ "hitAtFitCentreAfterPan": "button#diagram-fit",
+ "realFitClick": [
+  {
+   "trusted": true
+  }
+ ],
+ "transformAfterFitClick": "translate(0px, 0px) scale(1)",
+ "dagCell": {
+  "cx": 519,
+  "cy": 277,
+  "label": "probe"
+ },
+ "transcriptBefore": "Select an agent node above.",
+ "transcriptAfterRealCellClick": "{\n  \"runId\": \"f6953a1e-9b04-43a0-a962-d8dfbd06684c\",\n  \"status\": \"completed\",\n  \"harness\": {\n    \"model\": \"claude-haiku-4-5-20251001\",\n    \"provider\": \"anthropic\",\n    \"prompt\": \"Reply with exactly th",
+ "dagTransformAfterCellClick": "translate(0px, 0px) scale(1)"
+}

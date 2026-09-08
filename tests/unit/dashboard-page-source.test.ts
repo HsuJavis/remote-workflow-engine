@@ -39,3 +39,22 @@ describe('the run page renders four token columns and keeps Fit clickable (UT-22
     expect(DASHBOARD_HTML).toMatch(/sumTokens\(usage\.tokens\)/);
   });
 });
+
+// UT-224 (v26 Gate 7.5 round 3, defect D10): the three page-source facts VAL-197 proves
+// behaviourally in a real browser, pinned here so the fast suite (no Chrome, no mmdc) catches a
+// regression too — and so the REASON survives next to the rule. Not independently forced red: all
+// three strings occur ZERO times in the pre-fix file (`git show HEAD:src/dashboard-page.ts | grep
+// -c` ⇒ 0, 0, 0).
+describe("the author's diagram can be drag-panned: no native image drag (UT-224, D10/REQ-129)", () => {
+  it('the diagram <img> is explicitly non-draggable', () => {
+    expect(DASHBOARD_HTML).toMatch(/<img id="diagram-img"[^>]*draggable="false"/);
+  });
+
+  it('#diagram-img also disables the webkit image drag and text selection', () => {
+    expect(DASHBOARD_HTML).toMatch(/#diagram-img\{[^}]*-webkit-user-drag:none;user-select:none\}/);
+  });
+
+  it("the zoomable's mousedown preventDefault()s the browser's own press action", () => {
+    expect(DASHBOARD_HTML).toMatch(/addEventListener\('mousedown', function\(e\)\{ e\.preventDefault\(\);/);
+  });
+});

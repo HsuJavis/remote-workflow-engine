@@ -118,7 +118,10 @@ a{color:var(--link);text-decoration:none}
 .pill{display:inline-block;padding:1px 7px;border-radius:100px;font-size:11px;border:1px solid var(--line)}
 /* Morandi-muted semantic state colours (low-saturation, legible on the light greige ground). */
 .st-queued{color:#B08A5B}.st-running{color:#6E8199}.st-done,.st-completed{color:#7A9078}.st-failed{color:#B0776E}.st-stopped,.st-suspended{color:#9A948A}.st-interrupted{color:#B08A5B}
-#diagram-img{max-width:100%;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0}
+/* v26 Gate 7.5 round 3 (defect D10, REQ-129): -webkit-user-drag:none is load-bearing, not styling —
+   see the draggable="false" note on the <img> itself. user-select:none stops a drag across the
+   figure from painting a text selection instead of panning. */
+#diagram-img{max-width:100%;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0;-webkit-user-drag:none;user-select:none}
 /* v26 (DES-186, ARCH-120, ADR-044, TASK-191, REQ-129): one .zoomable wrapper serves BOTH the run
    DAG svg and the author's diagram img — the wheel/drag transform lives HERE, never on the SVG
    children renderGraph() rebuilds every 3s poll, so a user's zoom never snaps back. */
@@ -204,7 +207,13 @@ pre{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);p
     <!-- The diagram figure has no separate clipping ancestor (unlike #graph-container above): a
          zoomed-in author SVG may spill past this pane's edge — accepted, Gate 7.5 tracks it. -->
     <div id="diagram-zoom" class="zoomable" style="display:none">
-      <img id="diagram-img" alt="workflow diagram">
+      <!-- v26 Gate 7.5 round 3 (defect D10, REQ-129): draggable="false" is REQUIRED for the pan.
+           A default-draggable <img> hands a real press-and-move to the browser's own image drag:
+           dragstart fires, the remaining mousemoves arrive as drag events the page never sees,
+           and NO mouseup is delivered (only dragend) — so the figure moved by one mousemove and
+           then followed the cursor with no button held (VAL-189). The run DAG is an <svg>, has no
+           native drag, and was unaffected — which is why round 1 missed it. -->
+      <img id="diagram-img" alt="workflow diagram" draggable="false">
     </div>
     <button type="button" id="diagram-fit" class="fit-btn" style="display:none">Fit</button>
     <pre id="diagram" style="display:none"></pre>
@@ -680,7 +689,11 @@ function initZoomable(el, fitBtn){
     scale=next; apply();
   }, {passive:false});
   var dragging=false, sx=0, sy=0, stx=0, sty=0;
-  el.addEventListener('mousedown', function(e){ dragging=true; sx=e.clientX; sy=e.clientY; stx=tx; sty=ty; });
+  // v26 Gate 7.5 round 3 (D10): preventDefault() here kills the browser's default press action for
+  // whatever child is under the cursor — the native image drag (belt-and-braces with the img's own
+  // draggable="false") and the text/selection drag. It does NOT cancel the later click, so the DAG
+  // cells' own onclick transcript links still fire.
+  el.addEventListener('mousedown', function(e){ e.preventDefault(); dragging=true; sx=e.clientX; sy=e.clientY; stx=tx; sty=ty; });
   window.addEventListener('mousemove', function(e){ if(!dragging) return; tx=stx+(e.clientX-sx); ty=sty+(e.clientY-sy); apply(); });
   window.addEventListener('mouseup', function(){ dragging=false; });
   if(fitBtn) fitBtn.onclick=fit;

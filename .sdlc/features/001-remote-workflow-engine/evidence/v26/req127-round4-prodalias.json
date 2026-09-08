@@ -1,0 +1,132 @@
+{
+ "port": "8933",
+ "at": "2026-09-08T21:46:35.957Z",
+ "pinOnly": {
+  "register": {
+   "version": "v1"
+  },
+  "started": "running",
+  "runId": "659b6fcf-754e-4455-902f-1af4d036ab63",
+  "status": "completed",
+  "agents": [],
+  "meta": {
+   "usage": {
+    "tokens": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "costUSD": 0,
+    "unpricedCalls": 0,
+    "unmappedMessages": {}
+   },
+   "budgetEnforceable": {
+    "usd": true,
+    "tokens": true,
+    "unpricedModels": []
+   }
+  }
+ },
+ "realCall": {
+  "register": {
+   "version": "v1"
+  },
+  "started": "running",
+  "runId": "d6c0b7a1-c1d5-4515-8bf4-d06196c39857",
+  "status": "completed",
+  "agents": [
+   {
+    "label": "cloudone",
+    "provider": "anthropic",
+    "model": "claude-haiku-4-5-20251001",
+    "state": "done",
+    "tokens": {
+     "input": 160,
+     "output": 46,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "costUSD": 0.00039,
+    "unpriced": false
+   }
+  ],
+  "meta": {
+   "usage": {
+    "tokens": {
+     "input": 160,
+     "output": 46,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "costUSD": 0.00039,
+    "unpricedCalls": 0,
+    "unmappedMessages": {}
+   },
+   "budgetEnforceable": {
+    "usd": true,
+    "tokens": true,
+    "unpricedModels": []
+   }
+  }
+ },
+ "modelsListAnthropic": [
+  {
+   "model": "claude-opus-4-8",
+   "alias": "opus",
+   "price": {
+    "in": "$5/1M",
+    "out": "$25/1M"
+   },
+   "ratesPerM": "priced"
+  },
+  {
+   "model": "claude-sonnet-5",
+   "alias": "sonnet",
+   "price": {
+    "in": "$2/1M",
+    "out": "$10/1M"
+   },
+   "ratesPerM": "priced"
+  },
+  {
+   "model": "claude-haiku-4-5-20251001",
+   "alias": "haiku",
+   "price": {
+    "in": "$1/1M",
+    "out": "$5/1M"
+   },
+   "ratesPerM": "priced"
+  },
+  {
+   "model": "claude-fable-5",
+   "alias": "fable",
+   "price": "unknown",
+   "ratesPerM": null
+  },
+  {
+   "model": "claude-opus-4-8",
+   "alias": "claude-opus-4-8",
+   "price": "unknown",
+   "ratesPerM": null
+  },
+  {
+   "model": "claude-sonnet-5",
+   "alias": "claude-sonnet-4-6",
+   "price": "unknown",
+   "ratesPerM": null
+  },
+  {
+   "model": "claude-haiku-4-5-20251001",
+   "alias": "claude-haiku-4-5",
+   "price": "unknown",
+   "ratesPerM": null
+  },
+  {
+   "model": "claude-fable-5",
+   "alias": "claude-fable-5",
+   "price": "unknown",
+   "ratesPerM": null
+  }
+ ]
+}
