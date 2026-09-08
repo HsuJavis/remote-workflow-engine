@@ -1,0 +1,78 @@
+{
+ "port": "8931",
+ "runId": "77f74018-6542-4430-be4c-a93ea80bd325",
+ "at": "2026-09-08T20:53:36.615Z",
+ "svg": {
+  "viewBox": "0 0 938 188",
+  "width": "100%",
+  "preserveAspectRatio": "xMinYMin meet",
+  "renderedW": 1052,
+  "renderedH": 211,
+  "windowW": 1100,
+  "rects": 10,
+  "labels": [
+   "client",
+   "triage",
+   "fork_lite",
+   "fork_lite",
+   "fork_lite",
+   "clerk",
+   "checker",
+   "checker",
+   "checker",
+   "reconciler"
+  ]
+ },
+ "d8": {
+  "runUsageText": "33949 tokin 11968 · out 21981 · cache read 0 · cache write 0$0.00009 unpriced call(s)(lower bound)",
+  "usageColsSpan": "in 11968 · out 21981 · cache read 0 · cache write 0",
+  "firstAgentNode": null,
+  "agentNodeTexts": []
+ },
+ "phases": [
+  "triage",
+  "fork:lite x3",
+  "evidence",
+  "check",
+  "reconcile"
+ ],
+ "fitButtonCentre": {
+  "cx": 40.1171875,
+  "cy": 215,
+  "w": 32.234375,
+  "h": 18
+ },
+ "hitBeforeAnything": "button#dag-fit",
+ "transformInitial": "translate(0px, 0px) scale(1)",
+ "transformAfterWheelZoom": "translate(-52.6px, -10.5px) scale(1.1)",
+ "hitAfterWheelZoom": "button#dag-fit",
+ "afterZoomFitClick": {
+  "transform": "translate(0px, 0px) scale(1)",
+  "hits": [
+   {
+    "trusted": true,
+    "target": "dag-fit"
+   }
+  ]
+ },
+ "transformAfterPan": "translate(-220px, -120px) scale(1)",
+ "hitAfterPan": "button#dag-fit",
+ "realClickAfterPan": [
+  {
+   "trusted": true,
+   "target": "dag-fit"
+  }
+ ],
+ "transformAfterFitClick": "translate(0px, 0px) scale(1)",
+ "pollSurvival": {
+  "before": "translate(-90px, -40px) scale(1)",
+  "after4200ms": "translate(-90px, -40px) scale(1)"
+ },
+ "authorDiagram": {
+  "zoomVisible": "none",
+  "fitVisible": "none",
+  "imgSrc": null,
+  "renderedW": 0,
+  "renderedH": 0
+ }
+}

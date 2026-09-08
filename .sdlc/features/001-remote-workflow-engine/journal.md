@@ -2803,3 +2803,38 @@ into a scratch copy and serving THAT with v26 code — which also proved the mig
 re-hydrated 30 real runs and returned `warnings: []` for the runId the REQ names. Teardown was
 `kill <pid from ss on the scratch port>` every single time, never `pkill -f`. `rwe.service`:
 `NRestarts=0`, same `ExecMainStartTimestamp`, before and after.
+
+## 2026-09-09 — v26 Gate 7.5 round 3 (validator): NOT PASSED — REQ-128 closed, two new real defects
+
+Delta re-run over the impact closure REQ-127/128/129 on the fix pass's tree (`242b5a0`). Three scratch
+engines, each started with DEPLOY.md §0's own documented second-instance form
+(`RWE_CONFIG_PATH=… RWE_BIND=127.0.0.1 RWE_PORT=89xx ./deploy.sh --background`): A (8930, production
+alias table, fresh workRoot), B (8931, byte copy of the production workRoot, for the browser work),
+C (8932, one alias per model — the counterfactual). Production `rwe.service` was never restarted
+(`NRestarts=0`, `ActiveEnterTimestamp` unchanged before and after).
+
+**REQ-128 green.** The cold-model clause re-run by the validator with a third subject family —
+`x-ai/grok-4.6`, fresh instance, only `tools/list` + the guide — registered on the FIRST attempt with
+a conformant v2 LR swimlane, 0 refusals over 42 tool calls, and ran its workflow to a terminal result.
+VAL-188 red → green.
+
+**REQ-127 red (new defect D9).** With the production alias table, every Anthropic call records
+`costUSD 0`, `unpriced:true`, `budgetEnforceable.usd:false`: a second alias on the same model makes
+`overlayAliases` append a `ratesPerM:null` row, and `ModelBook`'s index build lets that duplicate
+overwrite the priced static row. The same workflow on a one-alias engine records `costUSD 0.0023872`,
+exact to the corrected D3/D4 table. Everything else in REQ-127 re-measured green, including the first
+real `cacheWrite 15272` / `cacheRead 15272` this iteration has ever seen through the engine, both
+budget arms binding, and D8's four dashboard columns on a real production run. VAL-187 green → red.
+
+**REQ-129 red (new defect D10).** Round 1's clause is genuinely fixed (real pan, real trusted click on
+`Fit`, hit test returns `button#dag-fit`), but the author figure cannot be drag-panned at all: the
+browser's native image drag takes over after one mousemove and never delivers `mouseup`, so the figure
+then follows the cursor with no button held. Counterfactual `draggable=false` delivers the full
+gesture. VAL-189 stays red for a different clause than round 1.
+
+REQ-126 stays with the owner — VAL-186 now carries the `owner_decision: pending` marker. README/DEPLOY
+rewritten to current state (§0 gained the env-file line actually used; §1b round-trips 43 keys both
+ways; the `aliases` row, README and §6 carry D9/D10 for operators; four history phrasings removed).
+`rwe.config.example.json` itself reproduces D9 (`sonnet` + `default` on one model) — documented, not
+silently patched. trace 1463/22 (0 未驗證, 0 未真實驗證; 3 new low-severity drift rows named in
+08-validation). rtm regenerated: 0 ❌, 3 ⚠️. Next: Gate 6 for D9 + D10, then a round-4 delta re-run.

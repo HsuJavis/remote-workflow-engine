@@ -90,6 +90,9 @@
   `state:"refused"`、`reasonCode:"BUDGET_EXCEEDED"`）。腳本裡讀 `budget.spent()`（美金）、
   `budget.tokens()`（四欄＋`sum`）、`budget.limits`。
   本機 Ollama 模型價格是 0，所以純美金上限永遠停不住本機 run——要限制本機 run 請用 `tokens` 上限。
+  ⚠ 同一個 Anthropic 模型若在 `aliases` 裡設了兩個以上別名（例如 `haiku` 和 `claude-haiku-4-5`
+  都指向同一個模型），該模型的每一筆呼叫目前都會被記成 `unpriced:true`、`costUSD` 0，美金上限也
+  就綁不住——處理方式見 `DEPLOY.md` §6。
 - **系統監控**：`system_info`（CPU 負載 + 核心數 + 利用率 %、記憶體 total/used/free、磁碟、引擎行程 + 主機 Top-N 行程 + 系統行程統計，`GET /api/system`）
 - **模型目錄**：`models_list`（跨供應商統一目錄，含 `capability`/`stability`/`costLevel 0–10`/`modalities`/`ref` 等豐富欄位，支援多維篩選，`GET /api/models`）
 - **儀表板**：`GET /dashboard`（首頁：工作流程卡片按 RUNNING/REGISTERED/OTHER 分組，各附描述 +
@@ -413,13 +416,17 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 - **`effort` 對 OpenRouter 模型目前沒有作用**：引擎會把 `effort` 換算成 thinking 預算送進 CLI，
   但這個值到不了 OpenRouter——實測 `low` 與 `high` 送出的請求內容完全相同、也沒有 `reasoning_effort` 欄位
   （CLI 把預算收斂成 `thinking:{type:"adaptive"}`，LiteLLM 再對 openrouter 丟掉這個參數）。
-  v26 Gate 7.5 起 `run_agent_log` 的 `harness.effortApplied` 會如實回報 `{applied:false, reason:…}`
-  並寫明原因，不再宣稱已套用。Anthropic 別名的 `effort` 是有作用的（CLI 收到 `--effort <值>`）。
+  `run_agent_log` 的 `harness.effortApplied` 會如實回報 `{applied:false, reason:…}` 並寫明原因。
+  Anthropic 別名的 `effort` 是有作用的（CLI 收到 `--effort <值>`）。
 - **目前已知、尚未修復的缺陷**（詳細指令與輸出見 `DEPLOY.md` §6）：
   1. **偶發的 `suspend` → `resume` → `failed`，而且 agent 的工作在終態之後還在跑**
      （run `3977b82d`，無法穩定重現、尚未歸因；
      [issue #53](https://github.com/HsuJavis/remote-workflow-engine/issues/53)）。
      對策：suspend/resume 之後用 `run_status` 確認狀態，發現無故 `failed` 時把 run id 貼進該 issue。
+  2. **同一個 Anthropic 模型設兩個以上別名 → 該模型記不到花費**（`costUSD` 0、`unpriced:true`、
+     美金上限失效）。對策：暫時讓每個 Anthropic 模型只留一個別名。
+  3. **工作流程頁的作者圖不能用滑鼠拖曳平移**（一拖就變成瀏覽器自己的「拖圖片」，圖還會黏著游標）。
+     對策：用滾輪縮放，或按 `Fit` 復原；run DAG 的拖曳平移不受影響。
 
 ## 更多
 

@@ -26,6 +26,7 @@ per-run principal attribution、D-BIND fail-closed（非 loopback 來源無有�
 啟動 → 健康檢查）：
 
 ```bash
+set -a; . ~/.config/rwe.env; set +a   # 供應商金鑰 / secret（沒有這個檔就跳過，見 §1b）
 ./deploy.sh --background
 ```
 
@@ -398,7 +399,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
   每一個都只在 §1b 設定總表列出一次，請直接查表。
 
   **未設定的供應商不會擋住啟動** —— 對應別名的 `agent()` 呼叫只會在真正被呼叫時，走 D-G 電路斷路器
-  邏輯解析成 `null`（run 繼續跑，不會掛住），已於 Gate 7.5 對真實不可達端點與缺金鑰兩種情境都實測確認
+  邏輯解析成 `null`（run 繼續跑，不會掛住），真實不可達端點與缺金鑰兩種情境都是這個行為
   （`gateway:"sdk"`/`"direct-fetch"` 兩條路徑皆適用）。
 
 ## 1b. 設定總表 Configuration Reference
@@ -418,7 +419,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `useLiteLLMProxy` | `direct-fetch` 路徑是否額外走 LiteLLM 代理（`false` 時 ollama 走原生直連 `localhost:11434`，完全不碰 LiteLLM，免依賴部署常用） | `boolean` / `true` | 否 | v1 |
 | `rwe.config.json` → `agentDefinitionsDir` | `agentType` composition-root loader 讀取 `*.md` 定義的目錄（`name`/`model`/`tools` frontmatter + 內文即 systemPrompt）；省略時 agentType 註冊表為空 | `string` / — | 否 | v1 |
 | `rwe.config.json` → `defaultAllowedTools` | `gateway:"sdk"` 路徑下，`agent()` 呼叫沒帶 `opts.allowedTools`（且 `agentType` 無 `tools:` frontmatter）時套用的預設工具清單；優先序：呼叫端 `opts.allowedTools` > `agentType` 的 `tools:` > 此鍵 > 內建預設 | `string[]` / `["Read","Write","Edit","Glob","Grep","Bash"]` | 否 | v3 |
-| `rwe.config.json` → `aliases` | 模型別名 → `{provider,model}` 對照表；`provider` 僅 `"anthropic"｜"openrouter"｜"ollama"`（三選一；出現第四種一律開機拒絕，見§情境配方 0）；省略時內建預設等同拿掉 `local` 那份（全指向 anthropic） | `object` / 見 `rwe.config.example.json` | 否 | v1 |
+| `rwe.config.json` → `aliases` | 模型別名 → `{provider,model}` 對照表；`provider` 僅 `"anthropic"｜"openrouter"｜"ollama"`（三選一；出現第四種一律開機拒絕，見§情境配方 0）；省略時內建預設等同拿掉 `local` 那份（全指向 anthropic）。⚠ **同一個 Anthropic 模型只設一個別名**——設兩個以上，該模型的花費會全部記成 0/`unpriced`（見 §6） | `object` / 見 `rwe.config.example.json` | 否 | v26 |
 | `rwe.config.json` → `allowedHosts` | `bind:"0.0.0.0"` 時額外允許的 Host/Origin authority（LAN IP、代理主機名）清單，供 Host/Origin 白名單（§6）核對 | `string[]` / `[]` | 否（`0.0.0.0` bind 時建議設定） | v11 |
 | `rwe.config.json` → `anthropicBaseUrl` | `anthropic` provider 直連（LiteLLM-bypassed）路徑打的真實 Anthropic API base | `string` / `'https://api.anthropic.com'` | 否 | v7 |
 | `rwe.config.json` → `anthropicAuth` | Anthropic 直連認證模式：`"api-key"`（真實 `ANTHROPIC_API_KEY`）或 `"subscription"`（`claude setup-token` 產生的 `CLAUDE_CODE_OAUTH_TOKEN`）；認證素材本身一律來自 secret store／環境變數，絕不放進此檔 | `"api-key"｜"subscription"` / 依偵測到的 secret 自動判斷 | 否 | v7 |
@@ -429,11 +430,12 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `maxWorkflowDescendants` | 巢狀 `workflow()` 呼叫總數上限（整棵 fan-out × depth 樹）；超過回 `DESCENDANT_CAP_EXCEEDED` | `number` / `256` | 否 | v8 |
 | `rwe.config.json` → `maxWorkflowVersions` | 同一工作流程名稱累積保留的版本數上限；達上限時 `workflow_register` 回 `VERSION_CEILING_EXCEEDED`（需先 `workflow_deregister` 舊版本或調高此值） | `number` / 省略 = 不設上限 | 否 | v22 |
 | `rwe.config.json` → `principals` | 角色對照表：鍵是 principal id（OAuth 下的使用者 email，或 `"*"` 代表所有已驗證但未列名者），值是 `{role:"admin"｜"author"｜"user"}`；角色字串打錯（例如 `"admn"`）**開機直接拒絕啟動**，絕不會靜默退回 `"user"`（ADR-028 fail-closed）；整個鍵省略時，`auth.enabled:true` 下每個已驗證呼叫者一律 `"user"`（同樣是 fail-closed，且開機那行 `auth:` log 會如實顯示） | `object` / 省略 | 否 | v24 |
+| `rwe.config.json` → `proxyManager` / `issueReporter` / `mcpProbe` / `modelCatalog` / `modelCatalogFetchers` / `systemInfo` | **程式注入用的替身接點，JSON 設定檔設不了**（值是函式/物件）。列在這裡只是為了說明：把它們寫進 `rwe.config.json` 不會被當成「不認得的鍵」警告，但也不會有任何效果 | 物件/函式 / — | 否 | v26 |
 | `rwe.config.json` → `mcpEgressAllowlist` | `workspace_push({kind:"mcp"})` 註冊 `http` transport 時的 https-only 白名單（URL 前綴比對，同 `seedRefAllowlist` 的 fail-closed 慣例）；省略/空陣列＝任何 `http` MCP 設定一律 `EGRESS_DENIED`（探測前就擋，探測次數為零） | `string[]` / `[]` | 否 | v24 |
 | `rwe.config.json` → `seedRefAllowlist` | engine-pull `seedRef:{repoUrl,sha}` 的 egress 白名單（`https://` URL 前綴）；**fail-closed**：省略/空陣列 = 任何 seedRef 回 `SEEDREF_DISABLED`；不命中前綴（含 `169.254.169.254`/`localhost`/私有 IP/`file://`）→ `SEEDREF_EGRESS_DENIED`（SSRF 安全） | `string[]` / `[]` | 否 | v13 |
 | `rwe.config.json` → `maxBlobBytes` | `POST /assets/blob/:sha`（streaming raw-body 上傳）最大 body bytes；超過 → HTTP 413 `BLOB_TOO_LARGE` | `number` / `268435456`（256 MiB，最小 1048576） | 否 | v10 |
-| `rwe.config.json` → `runConcurrency` | **單一 run 內同時在飛的 `agent()` 上限** —— 一個 `parallel()` 實際跑多寬。達上限的呼叫在 `acquireSlot()` **排隊**（不拒絕、不丟棄），所以更寬的 fan-out 只是比較慢。另有一層跨所有 run 的主機層上限（agent 號誌），由 `agentSlots` 設定、預設 32（v26 Gate 7.5 修好轉發：實測 `"agentSlots": 7` 之後 `/api/status` 的 `agentSemaphore.total` 就是 7） | `number` / `24` | 否 | v25 |
-| `rwe.config.json` → `agentSlots` | **跨所有 run 的主機層 agent 號誌上限** —— 同一時間允許幾個 agent 子行程存在；達上限的呼叫排隊等槽位。可在 `/api/status` 的 `agentSemaphore.total` 直接看到生效值。（v26 Gate 7.5 之前這個鍵被 `composeConfig()` 漏掉、寫了不生效；現已修好並實測。）與 `runConcurrency`（單一 run 內）是兩層不同的上限 | `number` / `32` | 否 | v26 修復（鍵自 v3 起存在） |
+| `rwe.config.json` → `runConcurrency` | **單一 run 內同時在飛的 `agent()` 上限** —— 一個 `parallel()` 實際跑多寬。達上限的呼叫在 `acquireSlot()` **排隊**（不拒絕、不丟棄），所以更寬的 fan-out 只是比較慢。另有一層跨所有 run 的主機層上限（agent 號誌），由 `agentSlots` 設定 | `number` / `24` | 否 | v25 |
+| `rwe.config.json` → `agentSlots` | **跨所有 run 的主機層 agent 號誌上限** —— 同一時間允許幾個 agent 子行程存在；達上限的呼叫排隊等槽位。可在 `/api/status` 的 `agentSemaphore.total` 直接看到生效值（設 `"agentSlots": 7` 就會讀到 7）。與 `runConcurrency`（單一 run 內）是兩層不同的上限 | `number` / `32` | 否 | v26 |
 | `rwe.config.json` → `maxConcurrentRuns` | 頂層 run 並行上限（run-admission counter）；達上限時 `start()` 在任何持久化動作之前以 `RUN_ADMISSION_LIMIT` 拒絕；巢狀 `workflow()` 不佔用槽位 | `number` / `64` | 否 | v8 |
 | `rwe.config.json` → `workspaceTtlMs` | Workspace GC sweep 間隔（ms）：回收閒置舊 workspace 目錄（REQ-026），**同時決定 auth-table GC（`gcExpired()`）間隔**；`0`/省略 = workspace reclaim 關閉，auth 啟用但未設此鍵時 sweep 每小時跑一次 | `number` / `0`（停用） | 否 | v16 |
 | `rwe.config.json` → `continuationDbPath` | on-completion chaining 續接的 SQLite 檔路徑；引擎會開這個檔，但 35 個工具裡沒有任何一個對應到它（沒有 `chain_*` 工具），設了不影響行為 | `string` / `$workRoot/continuations.db` | 否 | v24 |
@@ -754,9 +756,24 @@ npm run start
 - **`effort` 對 OpenRouter 模型沒有作用。** 引擎會把 `effort` 換算成 thinking 預算交給 CLI，但這個值
   到不了 OpenRouter：實測攔下真正送出的請求，`low` 與 `high` 兩次的內容完全相同、也沒有
   `reasoning_effort` 欄位（CLI 把預算收斂成 `thinking:{type:"adaptive"}`，LiteLLM 再對 openrouter
-  丟掉這個參數）。v26 Gate 7.5 起 `run_agent_log` 的 `harness.effortApplied` **會如實回報
-  `{applied:false, reason:…}` 並說明原因**，不再宣稱已套用；路由本身未變動，是否要改由擁有者裁決。
-  Anthropic 別名的 `effort` 有作用（spawn 出來的 CLI argv 上看得到 `--effort <值>`）。
+  丟掉這個參數）。`run_agent_log` 的 `harness.effortApplied` **會如實回報 `{applied:false, reason:…}`
+  並說明原因**。Anthropic 別名的 `effort` 有作用（spawn 出來的 CLI argv 上看得到 `--effort <值>`）。
+
+- **同一個 Anthropic 模型設兩個以上別名 → 那個模型的花費全部記成 0。** 例：`aliases` 裡
+  `haiku` 和 `claude-haiku-4-5` 都指向 `anthropic/claude-haiku-4-5-20251001`。這種設定下，每筆
+  呼叫的四欄 token 仍然正確，但 `costUSD` 是 0、紀錄標 `unpriced:true`、
+  `run_result.meta.budgetEnforceable.usd` 是 `false`（美金上限綁不住任何東西）。
+  **實測**：同一個工作流程、同一個模型，別名表有重複時 `{"costUSD":0,"unpriced":true}`；
+  把重複別名拿掉後同一支流程記到 `{"costUSD":0.0023872,"unpriced":false}`。
+  **處理方式（現在就能做）**：每個 Anthropic 模型只留一個別名。要多個名字時，改用 token 上限
+  （`budget.tokens`）來控管；`rwe.config.example.json` 目前的 `sonnet` 與 `default` 就是重複的一組，
+  複製後請自行改掉其中一個。
+
+- **工作流程頁的作者圖不能用滑鼠拖曳平移。** 一按住圖往旁邊拖，瀏覽器會改成執行它自己的
+  「拖曳圖片」動作：圖只跟著移動第一小段就停住，放開之後圖還會黏著游標繼續跑（因為瀏覽器在
+  拖曳期間不發 `mouseup`）。**實測**：要求位移 (-180,-90)，實際只走了 (-18,-9)。
+  **處理方式**：改用滾輪縮放；圖跑掉了就按圖旁邊的 `Fit` 復原（`Fit` 一定按得到，已實測）。
+  run DAG（run 詳細頁的那張圖）是 SVG，不受影響，拖曳平移正常。
 
 **日誌與狀態位置**：日誌僅 stdout/stderr（`[remote-workflow-engine] ...` 前綴），交給你的
 process manager（systemd/pm2/docker）收集；沒有另外寫檔案 log。狀態存在 `$workRoot/store`
