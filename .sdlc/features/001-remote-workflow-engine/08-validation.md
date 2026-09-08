@@ -9159,7 +9159,7 @@ its index with `index.set(`${provider}/${model}`, …)` over that array, so the 
 **overwrites** the priced static row, and `lookup()` returns `{price:null}` — its own
 `STATIC_ANTHROPIC_RATES` fallback is never reached, because the key WAS found. Reproduction (no
 engine needed): `buildCatalog({aliases: <production table>})` ⇒ 8 anthropic rows, the first three
-priced and the last four `ratesPerM null`; `snapshot().lookup('anthropic','claude-haiku-4-5-20251001')`
+priced and the remaining five `ratesPerM null` (`claude-fable-5` appears twice, both null); `snapshot().lookup('anthropic','claude-haiku-4-5-20251001')`
 ⇒ `{"price":null,…}`. Live consequence: VAL-187(a) above. **Why it survived every earlier gate:**
 the public `/api/models` surface dedupes, so it still shows exactly one, correctly priced, row per
 anthropic model — the drift is invisible there, and round 1's scratch config happened to give each
