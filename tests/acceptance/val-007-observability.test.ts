@@ -69,7 +69,9 @@ describe('VAL-007: per-agent observability (REQ-007)', () => {
     // Each entry should have ts, kind, data
     const entry = (transcript as Array<{ ts: string; kind: string; data: unknown }>)[0];
     expect(typeof entry.ts).toBe('string');
-    expect(['message', 'tool_call', 'tool_result', 'usage']).toContain(entry.kind);
+    // v26 (DES-188, TASK-188): TranscriptEvent.kind gains 'harness' (v24) and 'refused' (v26, the
+    // engine-refusal journal row markRefused now emits) in the SAME commit as the union member.
+    expect(['message', 'tool_call', 'tool_result', 'usage', 'harness', 'refused']).toContain(entry.kind);
   }, 120000);
 
   it('phases appear in run_status with their titles', async () => {

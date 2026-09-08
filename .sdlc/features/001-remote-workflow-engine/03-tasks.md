@@ -1412,7 +1412,7 @@ recorded `unpriced: true`; there is no admission refusal and no `PRICE_UNKNOWN`;
 
 ### TASK-173 — re-point every test that names the retired surface (BEFORE the deletion)
 - **status:** draft
-- **traces:** ADR-041, ADR-045, REQ-123
+- **traces:** ARCH-112, ADR-041, ADR-045, REQ-123
 - **files:** tests/unit/no-retired-surface.test.ts, plus every file the dod grep enumerates (v25 count: the `curateToolsForProvider` / `EFFORT_PROFILES` / `thinkingFor` / `sumUsageTokens` families)
 - **des:** DES-173
 - **dod:** `grep -rln "curateToolsForProvider\|NON_ANTHROPIC_EXCLUDED_TOOLS\|EFFORT_PROFILES\|thinkingFor\|mapEffort\|profileFor\|STATIC_OPENAI\|ProviderEffortProfile\|effortMapping\|sumUsageTokens" tests/` → the enumerated list is pasted in the commit message and every file on it either asserts the REPLACEMENT behaviour or is deleted with its REQ trace re-pointed in the same commit; `npx vitest run` stays green with the old source still present.

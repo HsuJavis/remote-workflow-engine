@@ -40,3 +40,25 @@ describe('every GUIDE_EXAMPLES entry registers over real MCP HTTP (IT-118, DES-1
     expect(GUIDE_EXAMPLES.length).toBeGreaterThan(0);
   });
 });
+
+// v26 (DES-185, ARCH-119/107, ADR-039, TASK-190, REQ-128/116/117): the guide examples ARE the v2
+// conformance corpus — every v2 construct (phase lane, parallel slot, alt slot, tools:none,
+// tools:default, dynamic title, nested workflow() rectangle) plus the five ADR-039 narrowings in
+// their LEGAL rewritten form must register GREEN, and NO NEGATIVE fixture belongs in the guide (an
+// example a model might copy is worse than none). Written test-first (Gate 5, RED): today's
+// GUIDE_EXAMPLES are `graph TD` diagrams (pre-v26), not LR swimlanes, so this coverage claim is not
+// yet true, and no v2 rule codes exist to check the guide text against.
+describe('the guide examples are the v2 conformance corpus (DES-185, v26)', () => {
+  it('every example is an LR swimlane (graph LR / flowchart LR), not graph TD', () => {
+    for (const ex of GUIDE_EXAMPLES as Array<{ title: string; mermaid: string }>) {
+      expect(ex.mermaid.trim()).toMatch(/^(graph|flowchart)\s+LR\b/);
+    }
+  });
+
+  it('none of the four v2 negative rule codes appear as literal text anywhere in the guide corpus', () => {
+    const text = (GUIDE_EXAMPLES as Array<{ script: string; mermaid: string }>).map((e) => e.script + e.mermaid).join('\n');
+    for (const code of ['DIAGRAM_DIRECTION', 'LANE_MISMATCH', 'TOOLS_MISMATCH', 'EDGE_MISMATCH']) {
+      expect(text).not.toContain(code);
+    }
+  });
+});

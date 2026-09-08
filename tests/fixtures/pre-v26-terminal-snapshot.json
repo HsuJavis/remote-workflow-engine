@@ -1,0 +1,54 @@
+{
+  "_fixtureMeta": {
+    "note": "v26 Gate 5 (DES-176/TASK-187) obligation: a REAL pre-v26 terminal snapshot, engine-generated at HEAD (commit 525ade4, 2026-09-08) via RunManager against a real AgentExecutor + InMemoryRunStore with SystemClock and a fake GatewayClient (the one un-runnable third-party network boundary) — not literally copied from the owner's production box (no local SQLite run store was reachable in this sandbox). Confirms the design's own risk: this shape genuinely has NO per-agent phase/phaseIndex field on either agent, exactly what layoutGraph's pre-v26 fallback (100% frame-grouped) is about. Gate 7.5 still owns the production-runId cross-check per the design's own three-cohort note.",
+    "script": "export const meta = { name: 'pre-v26-fixture-wf', params: { agents: { a: {...}, b: {...} } } };\nphase('collect');\nawait agent('a', { prompt: 'p1' });\nphase('review');\nawait agent('b', { prompt: 'p2' });"
+  },
+  "runId": "a08497e5-3229-433a-b288-b55450bb20c1",
+  "status": "completed",
+  "scriptVersion": "v3",
+  "phases": [
+    {
+      "title": "collect",
+      "ts": "2026-09-08T07:08:39.090Z"
+    },
+    {
+      "title": "review",
+      "ts": "2026-09-08T07:08:39.125Z"
+    }
+  ],
+  "agents": [
+    {
+      "agentId": "agent-1",
+      "label": "a",
+      "frame": "",
+      "startedAt": "2026-09-08T07:08:39.091Z",
+      "endedAt": "2026-09-08T07:08:39.123Z",
+      "state": "done",
+      "provider": "anthropic",
+      "model": "default",
+      "tokens": {
+        "input": 10,
+        "output": 5
+      }
+    },
+    {
+      "agentId": "agent-2",
+      "label": "b",
+      "frame": "",
+      "startedAt": "2026-09-08T07:08:39.125Z",
+      "endedAt": "2026-09-08T07:08:39.155Z",
+      "state": "done",
+      "provider": "anthropic",
+      "model": "default",
+      "tokens": {
+        "input": 10,
+        "output": 5
+      }
+    }
+  ],
+  "workflowNodes": [],
+  "startedBy": {
+    "type": "unknown"
+  },
+  "terminalAt": "2026-09-08T07:08:39.156Z"
+}

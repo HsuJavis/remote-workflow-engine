@@ -74,4 +74,19 @@ describe('GET /dashboard — real browser-renderable HTML page on the same port 
     const body = await res.text();
     expect(body).toMatch(/\/api\/runs\/.*\/agents\//);
   });
+
+  // v26 (DES-186, ARCH-120, ADR-044, TASK-191, REQ-129/119): both figures scale with their
+  // container and support zoom/pan/fit — the served page must carry the viewBox + .zoomable
+  // wrapper markers this real-tier readability clause depends on (dag-box.test.ts and
+  // dashboard-zoom-source.test.ts cover the pure box math and full page-source assertions at Gate
+  // 5; the pixel-level "readable at 1100px, wheel-zoom, fit" screenshot check is a Gate 7.5
+  // real-browser runbook item — Puppeteer is available in this environment as an optional
+  // dependency but no headless-Chromium screenshot harness exists in this test tier yet). Written
+  // test-first (Gate 5, RED): no viewBox/.zoomable markers exist on the served page today.
+  it('the served page carries the viewBox + .zoomable markers zoom/pan/fit depend on (REQ-129)', async () => {
+    const res = await fetch(`${baseUrl}/dashboard`);
+    const body = await res.text();
+    expect(body).toMatch(/viewBox/);
+    expect(body).toMatch(/zoomable/);
+  });
 });

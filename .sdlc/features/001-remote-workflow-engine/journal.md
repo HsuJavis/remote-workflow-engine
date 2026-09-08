@@ -2377,3 +2377,98 @@ spend limit (D-V2h re-decided), because the author knows the cost at trigger cre
 recorded in Round v26: a budget is optional and absent means unbounded, but every run's spend must be
 tracked, recorded and queryable afterwards. Markers in 02-architecture.md flipped to DECIDED; REQ-127
 amended.
+
+## 2026-09-08 — v26 Gate 3+4 (merged): tasks + detailed design (designer)
+Synthesized the pre-run two-group design panel (`.panel/design/adversarial.r{1,2}.md`,
+`quality-dimensions.r{1,2}.md`) into **TASK-170..195** (26 tasks, every ARCH-110..121 covered, each card carrying
+`files:`/`des:`/`dod:` with ONE runnable command and its expected outcome) and **DES-170..190** (lean rows:
+signature / boundary / tests; a classDiagram; the per-tier mock policy; the REQ-121..130 real-tier table; one
+file-end Decision rationale recording who conceded). One trap had to be navigated first: the adversarial `r1`
+on disk was REWRITTEN after its own `r2`, so its numbering differs and it regressed on two items `r2` had
+conceded — the rule applied throughout is **an r2 arbitration beats either r1**, so the design names the real
+`deriveAgentRecords` (not ARCH-114's phantom `buildRecordsFromTranscript`) and puts `catalogFetchedAt` per row
+(verified: `models_list` returns a bare array at `call-tool.ts:255`, so a wrapper would break four readers).
+The gate's single most load-bearing act is stating the **owner-corrected money rule once**, at the top of the
+v26 design section, because the architecture BODY still specifies the design the owner struck at `eaf6546`:
+`costUSD: number` + `unpriced: boolean` (never a nullable number), **no `PRICE_UNKNOWN` anywhere** (a deletion
+item with a grep guard, not an implementation item), the price book pinned in `RunManager.start()` where all
+four starters meet (a facade pin would report a plausible `$0.00` for exactly the unattended runs the ruling is
+about), `addUsage` and the resume fold unconditional (the `spec.budget` gate at `run-manager.ts:840` is
+deleted), and `budget: null` still accepted. REQ-127's "不得默默採 (i)" is met without reopening the ruling by
+deriving `meta.budgetEnforceable {usd, tokens, unpricedModels}` at READ from the pin — the quality lens's own
+fallback — while its proposed `warnings[]` response envelope is declined. Also folded in from r2: journal the
+`refused` record so it survives a restart, a nested `phase()` lands on its own sub-card (option b′, which
+neither group's r1 had), a total `RULE_CODE` map so REQ-128's four names become real catalog codes instead of
+a hint that lies to a cold model, and the zoom transform on the `.zoomable` wrapper (a `<g>` inside `#dag-graph`
+is destroyed by the 3-second poll). **ADR-047's ledger amendment was executed here, not deferred** (DES-190 /
+TASK-170): the `Schedule` union comment, DES-017's KP-9 + overlap accepted risk and D-V2h now say trigger-started
+runs are unbounded by owner ruling and that the compensating control is spend RECORDING and post-hoc query, not
+a cap. `sh .sdlc/trace` reports 1354 items / 65 gaps = the 39-gap pre-gate baseline + exactly 26 low-severity
+"task not implemented" rows (one per new TASK, expected until Gate 6); **0 broken links, 0 orphans**. One
+mechanical lesson worth keeping: `INV-V26-*` must never appear in a `traces:` field — trace.py's `ID_RE` reads
+`V26-1` out of `INV-V26-1` and mints a broken link (caught and fixed inside this gate). `state.yaml`:
+`gates.tasks.passed=true`, `gates.design.passed=true`, `current_stage: tests`. NO new `owner_decision` marker was
+minted; the two v26 ones are DECIDED. Housekeeping left for the architect (02-architecture.md is not this gate's
+file): eight stale spots still specify the struck refusal, plus `buildRecordsFromTranscript`, the top-level
+`catalogFetchedAt`, ARCH-114's nested-lane cohort sentence and REQ-124's "shared phase timeline" clause — all
+listed in 04-design.md. No product code changed.
+
+## 2026-09-08 — v26 Gate 5 (verifier, test-first RED)
+
+PASSED. 59 new work items (UT-172..204, IT-141..155, E2E-010, VAL-171..180) written test-first,
+before any v26 implementation, across every DES-170..189 (DES-190 is doc-only, TASK-170, already
+executed by the designer at Gate 4 — no test item) and every REQ-121..130. Three shared fixture
+modules: `tests/fixtures/expected-graph-fixtures.ts` (14 hand-written `(script, expectedGraph)`
+pairs feeding both the v2 diagram checker and the run-DAG layout test files — INV-V26-3 as a test),
+`tests/fixtures/pre-v26-terminal-snapshot.json` (a REAL pre-v26 terminal snapshot, engine-generated
+at Gate 5 commit 525ade4 via a real RunManager/AgentExecutor/InMemoryRunStore + SystemClock — no
+local production SQLite store was reachable in this sandbox, recorded honestly in the fixture's own
+`_fixtureMeta`), `tests/fixtures/v26-public-shapes.ts` (the literal expected JSON of the eight
+public shapes DES-189 names).
+
+Every item was run once and confirmed red for the stated reason: whole-file import failure for 3
+brand-new source modules (`src/providers.ts`, `src/skeleton-graph.ts`, `src/models/model-book.ts`);
+`TypeError: x is not a function` for new exports added to 11 EXISTING modules (vitest/esbuild does
+not type-check, so the import resolves but the export is `undefined`); genuine behavioural red
+against 14 existing modules that still exhibit pre-v26 behaviour (`workspace-seed.ts`'s seed
+validation, `claude-agent-sdk-client.ts`'s tool curation + `_drain`'s silent `api_retry` drop,
+`gateway/client.ts`'s two-column tokens, `dashboard.ts`'s frame-grouped `layoutGraph`,
+`dashboard-page.ts`'s `(a.tokens||0)` literal, `check-mermaid.ts`/`workflow-catalog.ts`'s v1-only
+grammar, `run-store.ts`'s two-branch `deriveAgentRecords`, `run-guard.ts`'s single-number budget,
+`models/model-catalog.ts`'s string-regex `maxPricePerMOf`, `authoring-guide.ts`'s missing five
+sections, `sandbox/guards.ts`'s inline (unexported) sandbox context, `sandbox/host.ts`'s
+positional-args `AgentRequestHandler`, `run-manager.ts`'s unguarded seed-array check). Six
+appended-to files (`no-retired-surface.test.ts`, `authoring-guide.test.ts`,
+`guide-examples-register.test.ts`, `val-007-observability.test.ts`,
+`val-018-dashboard-browser-ui.test.ts`) were re-run in full after the append and their pre-existing
+cases still pass — regression intact.
+
+Four items are GREEN-BY-CONSTRUCTION invariants (Mode C characterization, held green through
+implementation per the verifier contract, not forced red): `IT-145`'s CallKey-byte-identity and
+v25-journal-replay cases (INV-V26-1 — nothing currently writes `phase` into `key.opts`, and a v25
+journal fixture already replays as a hit), `IT-154`'s `PRICE_UNKNOWN` grep (ADR-038's decision was a
+deletion item, never implemented — the grep guard's own source splits the needle string so it
+cannot self-match, the same trick `no-retired-surface.test.ts` already established).
+
+Ten VAL items trace one v26 REQ each per `04-design.md`'s own "Real-tier validation paths (v26)"
+table; six of them (`VAL-172/173/175/176/178/180`, REQ-122/123/125/126/128/130) are
+`status:blocked`/`result:not-run`, per the v24 `VAL-128` precedent — each needs a real revoked
+credential + `ps aux`, the deployed production box, a real OpenRouter key, a `--detailed_debug`
+LiteLLM proxy capture, or the REQ-117-derived disqualified-cold-model protocol (this verifier,
+having read the whole codebase, is exactly the disqualified subject), none of which a Gate-5 vitest
+tier can honestly fake. `VAL-171/174/177/179` are `red`, proven at this tier by the corresponding
+UT/IT items, with their real-tier residue named as a Gate 7.5 scope note rather than dropped.
+
+Confirmed defect found while authoring: `UT-188`'s `effortDeclared`/`declaredSource` cases assert
+via loose `typeof`/array-membership rather than a hard oracle and therefore pass today by accident
+— recorded honestly in the item's own note (05-tests.md) rather than silently strengthened past
+what this pass allowed; the sibling `UT-187` (`wire-effort.test.ts`) already locks the real
+`EnrichedModelEntry` shape this field depends on, so the coverage gap is narrow and named, not
+hidden.
+
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` (post-append): 1413 items / 65 gaps — the
+UNCHANGED v26 Gate-3+4 baseline (39 pre-gate + 26 "task not implemented" rows, one per TASK-171..195,
+expected until Gate 6); 0 broken links, 0 orphans; every new item's `traces:` resolved cleanly (no
+new gap introduced by 59 new items). `gates.tests.passed=true`, `current_stage: impl`. NO new
+`owner_decision` marker minted. Next: Gate 6 (implementer) — turn all 25 TASK-171..195 green,
+starting from the fixtures (everything else imports them) per this gate's own note in 05-tests.md.

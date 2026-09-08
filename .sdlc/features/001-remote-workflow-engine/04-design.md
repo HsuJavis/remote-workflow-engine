@@ -6249,17 +6249,17 @@ timeline" clause (DES-175 makes a nested `phase()` a sub-card fact, not a parent
 ```mermaid
 classDiagram
   class ModelBook {
-    -source() Promise~ModelEntry[]~
+    -source() Promise~ModelEntryList~
     -clock Clock
     +snapshot() Promise~BookSnapshot~
   }
   class BookSnapshot {
     +fetchedAt string
-    +source live|last-good|static
+    +source ProvenanceWord
     +lookup(provider, model) BookEntry
   }
   class BookEntry {
-    +price FourRates|null
+    +price FourRatesOrNull
     +caps Caps
   }
   class PinnedBook {
@@ -6276,9 +6276,9 @@ classDiagram
   }
   class Budget {
     +limits LimitPair
-    +total number|null
+    +total UsdOrNull
     +spent() number
-    +remaining() number|null
+    +remaining() UsdOrNull
     +tokens() TokensAndSum
   }
   class ExpectedGraph {
@@ -6448,7 +6448,7 @@ classDiagram
 ### DES-188 — the restart-reconstruction seam: `deriveAgentRecords` carries the whole record on four branches, and a refusal is journaled
 - **status:** draft
 - **traces:** ARCH-114, ARCH-115, ARCH-118, ARCH-111, ADR-046, TASK-188, REQ-124, REQ-125, REQ-127, REQ-120
-- **signature:** The real function is **`deriveAgentRecords(transcripts, parentStatus)` (`run-store.ts:24`)** — ARCH-114's `buildRecordsFromTranscript` exists in neither `src/` nor `tests/`. It is what `getRun` uses whenever there is no terminal snapshot (`run-store.ts:243`, `sqlite-run-store.ts:260`). Four branches, each built through ONE local `base(agentId, harness)` helper so no branch can forget a field: **(1) usage/done** — four-column `tokens` (a legacy two-column event → zeros in the cache columns), `costUSD` (legacy → 0 + `unpriced`), `unpriced`, `provider`/`model`/`transport`/`proxyModel` from the usage event, `startedAt` from the FIRST harness event's `ts`, `endedAt` from the usage `ts`, `phase`/`phaseIndex`/`frame`/`label` from the latest harness descriptor; **(2) usage/failed** — the same with `ZERO_TOKENS`, `costUSD: 0`, `unpriced: false`, `detail` from the event, `model` from the harness descriptor (not `''`); **(3) refused** — from a `kind:'refused'` event: `state:'refused'`, `reasonCode`, `endedAt` from the event `ts`, `label`/`phase`/`phaseIndex`/`frame` from the event's own data (a refused call never has a harness event), `ZERO_TOKENS`, `costUSD: 0`, `unpriced: false`; **(4) harness-only** — as today plus `startedAt` from the event `ts` and the phase fields. Precedence: usage > refused > harness. `markRefused(runId, agentId, reasonCode, endedAt): Promise<void>` updates `_records` as today AND emits `{ts: endedAt, kind:'refused', data:{reasonCode, label?, frame?, phase?, phaseIndex?}}` through the existing `_emit` (the redact-at-capture sink); the call site (`run-manager.ts:1088`) awaits it before `throw err`. `TranscriptEvent.kind` gains `'refused'`. `foldUsage` ignores `refused` events.
+- **signature:** The real function is **`deriveAgentRecords(transcripts, parentStatus)` (`run-store.ts:24`)** — ARCH-114's `buildRecordsFromTranscript` exists in neither `src/` nor `tests/`. It is what `getRun` uses whenever there is no terminal snapshot (`run-store.ts:243`, `sqlite-run-store.ts:260`). Four branches, each built through ONE local `base(agentId, harness)` helper so no branch can forget a field: **(1) usage/done** — four-column `tokens` (a legacy two-column event → zeros in the cache columns), `costUSD` (legacy → 0 + `unpriced`), `unpriced`, `provider`/`model`/`transport`/`proxyModel` from the usage event, `startedAt` from the FIRST harness event's `ts`, `endedAt` from the usage `ts`, `phase`/`phaseIndex`/`frame`/`label` from the latest harness descriptor; **(2) usage/failed** — the same with `ZERO_TOKENS`, `costUSD: 0`, `unpriced: false`, `detail` from the event, `model` from the harness descriptor (not `''`); **(3) refused** — from a `kind:'refused'` event: `state:'refused'`, `reasonCode`, `endedAt` from the event `ts`, `label`/`phase`/`phaseIndex`/`frame` from the event's own data (a refused call never has a harness event), `ZERO_TOKENS`, `costUSD: 0`, `unpriced: false`; **(4) harness-only** — as today plus `startedAt` from the event `ts`, the phase fields, and `tokens: ZERO_TOKENS`, `costUSD: 0`, `unpriced: false` (the live side matches: `markQueued` initialises the same three, so a harness-only record is byte-identical on both producers). Precedence: usage > refused > harness. `markRefused(runId, agentId, reasonCode, endedAt): Promise<void>` updates `_records` as today AND emits `{ts: endedAt, kind:'refused', data:{reasonCode, label?, frame?, phase?, phaseIndex?}}` through the existing `_emit` (the redact-at-capture sink); the call site (`run-manager.ts:1088`) awaits it before `throw err`. `TranscriptEvent.kind` gains `'refused'`. `foldUsage` ignores `refused` events.
 - **boundary:** `costUSD`, `transport`, `proxyModel`, `detail`, `unpriced` are OPTIONAL on `AgentRecord`, so `tsc` says nothing when a derive branch omits them and a superset key-pin cannot catch it either — the derived≡snapshot equality below is the only lock that can. Replay is untouched by construction: `ResumeCache.build(entry.journal, …)` (`run-manager.ts:653`) reads the JOURNAL, not transcripts, so a new transcript kind cannot alter a `CallKey` (INV-V26-1). The `refused` event carries only engine-authored data (a closed `ErrorCode`, a script label, a frame path, a phase title) — REQ-083's sweep gains a row, not a new class. `workflowNodes` on the snapshot-less path stay `[]` — pre-existing, out of scope, stated so Gate 7.5 does not read it as a v26 regression.
 - **tests:** UT — one HAND-WRITTEN expected record per branch (the legacy two-column event; a harness-less refused event; `startedAt` from the harness `ts`; a `failed` event keeping the harness model). IT (**the lock**) — a fake-gateway workflow with one done, one failed and one budget-refused call runs to completion; `deriveAgentRecords(allTranscripts)` deep-equals `run_snapshots.agents` minus `lastActivityAt`, so a field one writer has and the other lacks fails here whichever task added it. IT — a budget refusal read back from a FRESH store over the same SQLite file with no snapshot: the `refused` record with its `reasonCode` and phase, and `GET /api/runs/:id/dag` → `warnings: []`. `val-007`'s transcript-kind list is extended to include `harness` and `refused` in the SAME commit as the union member.
 - **iter:** v26

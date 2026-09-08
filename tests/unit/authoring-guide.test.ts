@@ -217,3 +217,42 @@ describe('the guide teaches the per-agent tool surface and why to empty it (UT-1
     expect(text).toMatch(/PARAM_UNKNOWN/);
   });
 });
+
+// v26 (DES-187, ARCH-121, TASK-193, REQ-130/121/127/001, issue #71): the guide's five gaps a cold
+// client white-ran into — seeding, sandbox globals+determinism guards, meta.params.args types, the
+// alias/provider/effort table, and models_list's declared-not-probed flags. Written test-first
+// (Gate 5, RED): today's guide has none of these five sections.
+describe('the guide closes the five cold-client gaps (UT-159x, DES-187, REQ-130)', () => {
+  const text = buildAuthoringGuide(CEILINGS);
+
+  it('(a) Seeding a workspace: names all three shapes and the sha256-only refusal', () => {
+    expect(text).toMatch(/seedManifest/);
+    expect(text).toMatch(/seedManifestRef/);
+    expect(text).toMatch(/contentB64/);
+    expect(text).toMatch(/DETERMINISM_GUARD|INVALID_SEED_SPEC/);
+  });
+
+  it('(b) What the sandbox has and lacks: names the determinism guard by its real code and the why/instead', () => {
+    expect(text).toMatch(/DETERMINISM_GUARD/);
+    expect(text).toMatch(/Math\.random/);
+    expect(text).toMatch(/run_status|run_result/);
+  });
+
+  it('(c) meta.params.args legal types', () => {
+    expect(text).toMatch(/string \| number \| enum|string\|number\|enum/);
+  });
+
+  it('(d) the alias table is generated, labelled "declared, not probed"', () => {
+    expect(text).toMatch(/declared,? not probed/i);
+  });
+
+  it('(e) models_list flags are declarations with declaredSource and catalogFetchedAt', () => {
+    expect(text).toMatch(/declaredSource/);
+    expect(text).toMatch(/catalogFetchedAt/);
+  });
+
+  it('the budget section is rewritten for {usd, tokens} and names which accessor answers which limit', () => {
+    expect(text).toMatch(/budget\.tokens\(\)/);
+    expect(text).toMatch(/stop-dispatching/i);
+  });
+});
