@@ -1,0 +1,25 @@
+{
+ "what": "schedule_create with no workflow (the shape its own tool description prescribes) on two engines that differ ONLY in the age of the workRoot database",
+ "legacyDb_port8935_workRootCopiedFromProduction": {
+  "envelopeError": {
+   "code": -32000,
+   "message": "NOT NULL constraint failed: schedules.workflow"
+  }
+ },
+ "freshDb_port8936_emptyWorkRoot": {
+  "result": {
+   "kind": "once",
+   "id": "674c9295-7a58-4f7a-b0fa-fba2ed246910",
+   "claimedBy": null,
+   "at": "2027-01-01T00:00:00.000Z",
+   "enabled": true
+  }
+ },
+ "schema_production": [
+  "workflow TEXT NOT NULL,"
+ ],
+ "schema_freshWorkRoot": [
+  "workflow TEXT,"
+ ],
+ "codeSaysNullable": "173:        workflow TEXT,"
+}

@@ -759,6 +759,14 @@ npm run start
   丟掉這個參數）。`run_agent_log` 的 `harness.effortApplied` **會如實回報 `{applied:false, reason:…}`
   並說明原因**。Anthropic 別名的 `effort` 有作用（spawn 出來的 CLI argv 上看得到 `--effort <值>`）。
 
+- **舊部署（升級上來的 workRoot）建不了新的排程。** 呼叫 `schedule_create` 會回
+  `NOT NULL constraint failed: schedules.workflow`。原因是 `schedules` 資料表在早期版本把
+  `workflow` 欄位設成「不可為空」，而 SQLite 不能事後改欄位的可空性，也還沒有重建資料表的搬移
+  程式；全新建立的 workRoot 沒有這個問題（實測：同一份設定、同一個引擎版本，複製自本機生產環境的
+  workRoot 會失敗，空的 workRoot 會成功）。**影響範圍**：只影響「新增排程」；已存在的排程照跑，
+  webhook 觸發（`POST /hooks/:id`）不受影響，`agent()`／`run_start` 全部不受影響。**暫時做法**：
+  需要新排程時，改用 webhook 觸發，或在一個全新的 workRoot 上部署。
+
 **日誌與狀態位置**：日誌僅 stdout/stderr（`[remote-workflow-engine] ...` 前綴），交給你的
 process manager（systemd/pm2/docker）收集；沒有另外寫檔案 log。狀態存在 `$workRoot/store`
 （SQLite run 索引 + 具名工作流程註冊表）與 `$workRoot/workflows/<name>/runs/<runId>/`（每次

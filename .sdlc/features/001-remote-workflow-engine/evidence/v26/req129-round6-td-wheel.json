@@ -1,0 +1,41 @@
+{
+ "port": "8935",
+ "workflow": "gp-runner",
+ "runId": "77f74018-6542-4430-be4c-a93ea80bd325",
+ "at": "2026-09-08T23:02:14.904Z",
+ "author": {
+  "box": {
+   "cx": 549.9921875,
+   "cy": 744.5
+  },
+  "before": "translate(0px, 0px) scale(1)",
+  "afterRawMouseWheel": "translate(-52.5px, -16.1px) scale(1.1)",
+  "pageScrollAfterRawMouseWheel": 0,
+  "documentIsScrollable": true,
+  "afterSynthesizedWheel": "translate(-1690.49px, -520.218px) scale(2.85312)",
+  "pageScrollAfterSynthesizedWheel": 0,
+  "fitHit": "BUTTON#diagram-fit",
+  "fitClick": [
+   {
+    "trusted": true
+   }
+  ],
+  "afterFit": "translate(0px, 0px) scale(1)",
+  "controlPlainAreaScrollY": 127
+ },
+ "dag": {
+  "box": {
+   "cx": 550,
+   "cy": 333.421875
+  },
+  "before": "translate(0px, 0px) scale(1)",
+  "afterSynthesizedWheel": "translate(-1365.43px, -272.566px) scale(2.59374)",
+  "fitClick": [
+   {
+    "trusted": true,
+    "target": "dag-fit"
+   }
+  ],
+  "afterFit": "translate(0px, 0px) scale(1)"
+ }
+}

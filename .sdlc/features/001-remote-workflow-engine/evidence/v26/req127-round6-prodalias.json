@@ -1,0 +1,3826 @@
+{
+ "port": "8935",
+ "at": "2026-09-08T22:37:20.652Z",
+ "register": {
+  "runId": "",
+  "status": "completed",
+  "version": 1,
+  "result": {
+   "name": "val127r3",
+   "version": "v1"
+  }
+ },
+ "publish": {
+  "runId": "",
+  "status": "completed",
+  "result": {
+   "channel": "release",
+   "version": "v1",
+   "from": null
+  }
+ },
+ "priceBookProbe": {
+  "result": [
+   {
+    "provider": "anthropic",
+    "model": "claude-fable-5",
+    "description": "Claude Fable 5 — most capable, long-horizon agentic tier",
+    "modalities": {
+     "in": [
+      "text",
+      "image"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1000000,
+    "price": {
+     "in": "$10/1M",
+     "out": "$50/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.00001,
+     "out": 0.00005,
+     "cacheRead": 0.000001,
+     "cacheWrite": 0.00002
+    },
+    "aliases": [
+     "fable",
+     "claude-fable-5"
+    ],
+    "ref": "fable",
+    "capability": "Claude Fable 5 — most capable, long-horizon agentic tier",
+    "stability": "stable",
+    "costLevel": 9,
+    "toolUseDeclared": true,
+    "effortDeclared": "unknown",
+    "declaredSource": "static",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "anthropic",
+    "model": "claude-opus-4-8",
+    "description": "Claude Opus 4.8 — most capable Opus-tier model",
+    "modalities": {
+     "in": [
+      "text",
+      "image"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1000000,
+    "price": {
+     "in": "$5/1M",
+     "out": "$25/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000005,
+     "out": 0.000025,
+     "cacheRead": 5e-7,
+     "cacheWrite": 0.00001
+    },
+    "aliases": [
+     "opus",
+     "claude-opus-4-8"
+    ],
+    "ref": "opus",
+    "capability": "Claude Opus 4.8 — most capable Opus-tier model",
+    "stability": "stable",
+    "costLevel": 8,
+    "toolUseDeclared": true,
+    "effortDeclared": "unknown",
+    "declaredSource": "static",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "anthropic",
+    "model": "claude-sonnet-5",
+    "description": "Claude Sonnet 5 — balanced speed/intelligence",
+    "modalities": {
+     "in": [
+      "text",
+      "image"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1000000,
+    "price": {
+     "in": "$2/1M",
+     "out": "$10/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000002,
+     "out": 0.00001,
+     "cacheRead": 2e-7,
+     "cacheWrite": 0.000004
+    },
+    "aliases": [
+     "sonnet",
+     "claude-sonnet-4-6"
+    ],
+    "ref": "sonnet",
+    "capability": "Claude Sonnet 5 — balanced speed/intelligence",
+    "stability": "stable",
+    "costLevel": 7,
+    "toolUseDeclared": true,
+    "effortDeclared": "unknown",
+    "declaredSource": "static",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "anthropic",
+    "model": "claude-haiku-4-5-20251001",
+    "description": "Claude Haiku 4.5 — fastest, most cost-effective",
+    "modalities": {
+     "in": [
+      "text",
+      "image"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 200000,
+    "price": {
+     "in": "$1/1M",
+     "out": "$5/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000001,
+     "out": 0.000005,
+     "cacheRead": 1e-7,
+     "cacheWrite": 0.000002
+    },
+    "aliases": [
+     "haiku",
+     "claude-haiku-4-5"
+    ],
+    "ref": "haiku",
+    "capability": "Claude Haiku 4.5 — fastest, most cost-effective",
+    "stability": "stable",
+    "costLevel": 6,
+    "toolUseDeclared": true,
+    "effortDeclared": "unknown",
+    "declaredSource": "static",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "ollama",
+    "model": "qwen2.5vl:7b",
+    "description": "qwen25vl 8.3B",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": null,
+    "price": "free",
+    "location": "local",
+    "ratesPerM": {
+     "in": 0,
+     "out": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "capability": "qwen25vl 8.3B",
+    "stability": "variable",
+    "costLevel": 0,
+    "toolUseDeclared": "unknown",
+    "effortDeclared": "unknown",
+    "declaredSource": "static",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "ollama",
+    "model": "qwen2.5:7b",
+    "description": "qwen2 7.6B",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": null,
+    "price": "free",
+    "location": "local",
+    "ratesPerM": {
+     "in": 0,
+     "out": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "aliases": [
+     "local",
+     "default"
+    ],
+    "ref": "local",
+    "capability": "qwen2 7.6B",
+    "stability": "variable",
+    "costLevel": 0,
+    "toolUseDeclared": "unknown",
+    "effortDeclared": "unknown",
+    "declaredSource": "static",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "ollama",
+    "model": "bge-m3:latest",
+    "description": "bert 566.70M",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": null,
+    "price": "free",
+    "location": "local",
+    "ratesPerM": {
+     "in": 0,
+     "out": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "capability": "bert 566.70M",
+    "stability": "variable",
+    "costLevel": 0,
+    "toolUseDeclared": "unknown",
+    "effortDeclared": "unknown",
+    "declaredSource": "static",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "inception/mercury-2.5",
+    "description": "Mercury 2.5 is the fastest reasoning LLM, and the latest diffusion LLM (dLLM) from Inception. Instead of generating tokens sequentially, Mercury 2.5 produces and refines multiple tokens in parallel, achieving...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 260000,
+    "price": {
+     "in": "$0.04/1M",
+     "out": "$0.15/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 4e-8,
+     "out": 1.5e-7,
+     "cacheRead": 4e-9,
+     "cacheWrite": 4e-8
+    },
+    "ref": "openrouter/inception/mercury-2.5",
+    "capability": "Mercury 2.5 is the fastest reasoning LLM, and the latest diffusion LLM (dLLM) from Inception. Instead of generating tokens sequentially, Mercury 2.5 produces and refines multiple tokens in parallel, …",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "nex-agi/nex-n2.5-mini:free",
+    "description": "Nex-N2.5 is an agentic model built to turn goals into working, verified outcomes. Its core strength is agentic coding within a visual feedback loop: it can explore codebases, implement multi-file...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 262144,
+    "price": "free",
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0,
+     "out": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "ref": "openrouter/nex-agi/nex-n2.5-mini:free",
+    "besteffort": true,
+    "capability": "Nex-N2.5 is an agentic model built to turn goals into working, verified outcomes. Its core strength is agentic coding within a visual feedback loop: it can explore codebases, implement multi-file...",
+    "stability": "best-effort",
+    "costLevel": 0,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "nex-agi/nex-n2.5-pro:free",
+    "description": "Nex-N2.5 is an agentic model built to turn goals into working, verified outcomes. Its core strength is agentic coding within a visual feedback loop: it can explore codebases, implement multi-file...",
+    "modalities": {
+     "in": [
+      "text",
+      "image"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 262144,
+    "price": "free",
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0,
+     "out": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "ref": "openrouter/nex-agi/nex-n2.5-pro:free",
+    "besteffort": true,
+    "capability": "Nex-N2.5 is an agentic model built to turn goals into working, verified outcomes. Its core strength is agentic coding within a visual feedback loop: it can explore codebases, implement multi-file...",
+    "stability": "best-effort",
+    "costLevel": 0,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "openai/gpt-6-astra",
+    "description": "GPT-6 Astra is OpenAI's flagship model for demanding end-to-end work. It is suited for advanced analysis, software engineering, deep research, scientific work, and document creation, with particular strengths in long-horizon...",
+    "modalities": {
+     "in": [
+      "file",
+      "image",
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1050000,
+    "price": {
+     "in": "$10/1M",
+     "out": "$50/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.00001,
+     "out": 0.00005,
+     "cacheRead": 0.000001,
+     "cacheWrite": 0.0000125
+    },
+    "ref": "openrouter/openai/gpt-6-astra",
+    "capability": "GPT-6 Astra is OpenAI's flagship model for demanding end-to-end work. It is suited for advanced analysis, software engineering, deep research, scientific work, and document creation, with particular …",
+    "stability": "stable",
+    "costLevel": 9,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "openai/gpt-6-astra:batch",
+    "description": "GPT-6 Astra is OpenAI's flagship model for demanding end-to-end work. It is suited for advanced analysis, software engineering, deep research, scientific work, and document creation, with particular strengths in long-horizon...",
+    "modalities": {
+     "in": [
+      "file",
+      "image",
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1050000,
+    "price": {
+     "in": "$5/1M",
+     "out": "$25/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000005,
+     "out": 0.000025,
+     "cacheRead": 5e-7,
+     "cacheWrite": 0.00000625
+    },
+    "ref": "openrouter/openai/gpt-6-astra:batch",
+    "capability": "GPT-6 Astra is OpenAI's flagship model for demanding end-to-end work. It is suited for advanced analysis, software engineering, deep research, scientific work, and document creation, with particular …",
+    "stability": "stable",
+    "costLevel": 8,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "openai/gpt-6-astra-pro",
+    "description": "GPT-6 Astra Pro is the same underlying model as [GPT-6 Astra](https://openrouter.ai/openai/gpt-6-astra), served with `reasoning.mode` set to `pro` for higher-quality responses on complex tasks.\n\nLearn more in OpenAI's docs: https://developers.openai.com/api/docs/guides/reasoning#reasoning-mode",
+    "modalities": {
+     "in": [
+      "file",
+      "image",
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1050000,
+    "price": {
+     "in": "$10/1M",
+     "out": "$50/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.00001,
+     "out": 0.00005,
+     "cacheRead": 0.000001,
+     "cacheWrite": 0.0000125
+    },
+    "ref": "openrouter/openai/gpt-6-astra-pro",
+    "capability": "GPT-6 Astra Pro is the same underlying model as [GPT-6 Astra](https://openrouter.ai/openai/gpt-6-astra), served with `reasoning.mode` set to `pro` for higher-quality responses on complex tasks.\n\nLear…",
+    "stability": "stable",
+    "costLevel": 9,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "openai/gpt-6-astra-pro:batch",
+    "description": "GPT-6 Astra Pro is the same underlying model as [GPT-6 Astra](https://openrouter.ai/openai/gpt-6-astra), served with `reasoning.mode` set to `pro` for higher-quality responses on complex tasks.\n\nLearn more in OpenAI's docs: https://developers.openai.com/api/docs/guides/reasoning#reasoning-mode",
+    "modalities": {
+     "in": [
+      "file",
+      "image",
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1050000,
+    "price": {
+     "in": "$5/1M",
+     "out": "$25/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000005,
+     "out": 0.000025,
+     "cacheRead": 5e-7,
+     "cacheWrite": 0.00000625
+    },
+    "ref": "openrouter/openai/gpt-6-astra-pro:batch",
+    "capability": "GPT-6 Astra Pro is the same underlying model as [GPT-6 Astra](https://openrouter.ai/openai/gpt-6-astra), served with `reasoning.mode` set to `pro` for higher-quality responses on complex tasks.\n\nLear…",
+    "stability": "stable",
+    "costLevel": 8,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "inclusionai/ling-3.0-flash-sante:free",
+    "description": "Ling 3.0 Flash Sante is a health and medicine-focused mixture-of-experts model from InclusionAI, built on Ling 3.0 Flash with 5.1B active parameters out of 124B total. It is designed for...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 262144,
+    "price": "free",
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0,
+     "out": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "ref": "openrouter/inclusionai/ling-3.0-flash-sante:free",
+    "besteffort": true,
+    "capability": "Ling 3.0 Flash Sante is a health and medicine-focused mixture-of-experts model from InclusionAI, built on Ling 3.0 Flash with 5.1B active parameters out of 124B total. It is designed for...",
+    "stability": "best-effort",
+    "costLevel": 0,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "qwen/qwen3.8-max-0902",
+    "description": "Qwen3.8 Max 0902 is an updated snapshot of Qwen3.8 Max from Alibaba's Qwen team. It is a 2.4-trillion-parameter mixture-of-experts model that accepts text, image, and video input and returns text,...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1000000,
+    "price": {
+     "in": "$2/1M",
+     "out": "$6/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000002,
+     "out": 0.000006,
+     "cacheRead": 2.5e-7,
+     "cacheWrite": 0.0000025
+    },
+    "ref": "openrouter/qwen/qwen3.8-max-0902",
+    "capability": "Qwen3.8 Max 0902 is an updated snapshot of Qwen3.8 Max from Alibaba's Qwen team. It is a 2.4-trillion-parameter mixture-of-experts model that accepts text, image, and video input and returns text,...",
+    "stability": "stable",
+    "costLevel": 6,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "meta/muse-spark-1.3-contributor",
+    "description": "Muse Spark 1.3 Contributor is the cost-efficient contributor tier of Meta’s multimodal reasoning model for experimentation, learning, and early-stage agentic, multi-agent, and coding workflows. It is designed to track information...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video",
+      "file",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.1/1M",
+     "out": "$0.2/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 1e-7,
+     "out": 2e-7,
+     "cacheRead": 2e-9,
+     "cacheWrite": 1e-7
+    },
+    "ref": "openrouter/meta/muse-spark-1.3-contributor",
+    "capability": "Muse Spark 1.3 Contributor is the cost-efficient contributor tier of Meta’s multimodal reasoning model for experimentation, learning, and early-stage agentic, multi-agent, and coding workflows. It is…",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "meta/muse-spark-1.3",
+    "description": "Muse Spark 1.3 is a multimodal reasoning model from Meta for long-running agentic, multi-agent, and coding workflows. It is designed to keep track of information across extended tasks, work through...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video",
+      "file",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$1.25/1M",
+     "out": "$4.25/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.00000125,
+     "out": 0.00000425,
+     "cacheRead": 1.5e-7,
+     "cacheWrite": 0.00000125
+    },
+    "ref": "openrouter/meta/muse-spark-1.3",
+    "capability": "Muse Spark 1.3 is a multimodal reasoning model from Meta for long-running agentic, multi-agent, and coding workflows. It is designed to keep track of information across extended tasks, work through...",
+    "stability": "stable",
+    "costLevel": 5,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "google/gemini-3.8-flash",
+    "description": "Gemini 3.8 Flash is Google's most intelligent Flash model with significant gains from 3.7 Flash across software engineering, agentic tasks, and multi-step reasoning.",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video",
+      "file",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.75/1M",
+     "out": "$3.75/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 7.5e-7,
+     "out": 0.00000375,
+     "cacheRead": 7.5e-8,
+     "cacheWrite": 4.16666666666667e-8
+    },
+    "ref": "openrouter/google/gemini-3.8-flash",
+    "capability": "Gemini 3.8 Flash is Google's most intelligent Flash model with significant gains from 3.7 Flash across software engineering, agentic tasks, and multi-step reasoning.",
+    "stability": "stable",
+    "costLevel": 5,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "google/gemini-3.8-flash:batch",
+    "description": "Gemini 3.8 Flash is Google's most intelligent Flash model with significant gains from 3.7 Flash across software engineering, agentic tasks, and multi-step reasoning.",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video",
+      "file",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.375/1M",
+     "out": "$1.875/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 3.75e-7,
+     "out": 0.000001875,
+     "cacheRead": 3.75e-8,
+     "cacheWrite": 4.16666666666667e-8
+    },
+    "ref": "openrouter/google/gemini-3.8-flash:batch",
+    "capability": "Gemini 3.8 Flash is Google's most intelligent Flash model with significant gains from 3.7 Flash across software engineering, agentic tasks, and multi-step reasoning.",
+    "stability": "stable",
+    "costLevel": 4,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "anthropic/claude-fable-5.1",
+    "description": "Claude Fable 5.1 improves on Claude Fable 5 across the board, with the biggest gains in agentic coding, long-running agentic workflows, and knowledge work: long code refactors, front-end and visual...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "file"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1000000,
+    "price": {
+     "in": "$10/1M",
+     "out": "$50/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.00001,
+     "out": 0.00005,
+     "cacheRead": 2.5e-7,
+     "cacheWrite": 0.0000125
+    },
+    "ref": "openrouter/anthropic/claude-fable-5.1",
+    "capability": "Claude Fable 5.1 improves on Claude Fable 5 across the board, with the biggest gains in agentic coding, long-running agentic workflows, and knowledge work: long code refactors, front-end and visual...",
+    "stability": "stable",
+    "costLevel": 9,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "anthropic/claude-fable-5.1:batch",
+    "description": "Claude Fable 5.1 improves on Claude Fable 5 across the board, with the biggest gains in agentic coding, long-running agentic workflows, and knowledge work: long code refactors, front-end and visual...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "file"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1000000,
+    "price": {
+     "in": "$5/1M",
+     "out": "$25/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000005,
+     "out": 0.000025,
+     "cacheRead": 1.25e-7,
+     "cacheWrite": 0.00000625
+    },
+    "ref": "openrouter/anthropic/claude-fable-5.1:batch",
+    "capability": "Claude Fable 5.1 improves on Claude Fable 5 across the board, with the biggest gains in agentic coding, long-running agentic workflows, and knowledge work: long code refactors, front-end and visual...",
+    "stability": "stable",
+    "costLevel": 8,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "ibm-granite/granite-4.2-8b",
+    "description": "Granite 4.2 8B is a dense reasoning model from IBM. It is suited for mathematics, code generation, multilingual dialogue, and agentic workflows that need multi-step reasoning. It supports full, low-effort,...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 131072,
+    "price": {
+     "in": "$0.1/1M",
+     "out": "$0.15/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 1e-7,
+     "out": 1.5e-7,
+     "cacheRead": 5e-8,
+     "cacheWrite": 1e-7
+    },
+    "ref": "openrouter/ibm-granite/granite-4.2-8b",
+    "capability": "Granite 4.2 8B is a dense reasoning model from IBM. It is suited for mathematics, code generation, multilingual dialogue, and agentic workflows that need multi-step reasoning. It supports full, low-e…",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "tencent/hy4-preview",
+    "description": "Tencent: Hy4 preview is a mixture-of-experts model from Tencent, with 49B active parameters out of 770B total. It is designed for coding agents, complex tool-use workflows, and productivity tasks that...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.834/1M",
+     "out": "$2.501/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 8.34e-7,
+     "out": 0.000002501,
+     "cacheRead": 4.2e-8,
+     "cacheWrite": 8.34e-7
+    },
+    "ref": "openrouter/tencent/hy4-preview",
+    "capability": "Tencent: Hy4 preview is a mixture-of-experts model from Tencent, with 49B active parameters out of 770B total. It is designed for coding agents, complex tool-use workflows, and productivity tasks tha…",
+    "stability": "stable",
+    "costLevel": 4,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "inclusionai/ling-3.0-flash-fin",
+    "description": "Ling 3.0 Flash Fin is a finance-focused mixture-of-experts model from InclusionAI, built on Ling 3.0 Flash with 5.1B active parameters out of 124B total. It is designed for real-world investment...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 262144,
+    "price": {
+     "in": "$0.06/1M",
+     "out": "$0.18/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 6e-8,
+     "out": 1.8e-7,
+     "cacheRead": 1.2e-8,
+     "cacheWrite": 6e-8
+    },
+    "ref": "openrouter/inclusionai/ling-3.0-flash-fin",
+    "capability": "Ling 3.0 Flash Fin is a finance-focused mixture-of-experts model from InclusionAI, built on Ling 3.0 Flash with 5.1B active parameters out of 124B total. It is designed for real-world investment...",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "inclusionai/ling-3.0-flash-fin:free",
+    "description": "Ling 3.0 Flash Fin is a finance-focused mixture-of-experts model from InclusionAI, built on Ling 3.0 Flash with 5.1B active parameters out of 124B total. It is designed for real-world investment...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 262144,
+    "price": "free",
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0,
+     "out": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "ref": "openrouter/inclusionai/ling-3.0-flash-fin:free",
+    "besteffort": true,
+    "capability": "Ling 3.0 Flash Fin is a finance-focused mixture-of-experts model from InclusionAI, built on Ling 3.0 Flash with 5.1B active parameters out of 124B total. It is designed for real-world investment...",
+    "stability": "best-effort",
+    "costLevel": 0,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "~z-ai/glm-flash-latest",
+    "description": "This model always redirects to the latest model in the GLM Flash family.",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1310720,
+    "price": {
+     "in": "$0.075/1M",
+     "out": "$0.25/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 7.5e-8,
+     "out": 2.5e-7,
+     "cacheRead": 1.5e-8,
+     "cacheWrite": 7.5e-8
+    },
+    "ref": "openrouter/~z-ai/glm-flash-latest",
+    "capability": "This model always redirects to the latest model in the GLM Flash family.",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "qwen/qwen3.8-flash",
+    "description": "Qwen3.8 Flash is a multimodal reasoning model from Alibaba. It is suited for coding assistance, agentic workflows, visual understanding, document and codebase analysis, desktop interaction, chart analysis, and long-video analysis.",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1000000,
+    "price": {
+     "in": "$0.15/1M",
+     "out": "$0.47/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 1.5e-7,
+     "out": 4.7e-7,
+     "cacheRead": 1.6e-8,
+     "cacheWrite": 2e-7
+    },
+    "ref": "openrouter/qwen/qwen3.8-flash",
+    "capability": "Qwen3.8 Flash is a multimodal reasoning model from Alibaba. It is suited for coding assistance, agentic workflows, visual understanding, document and codebase analysis, desktop interaction, chart ana…",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "z-ai/glm-5.3-flash",
+    "description": "GLM-5.3-Flash is a native multimodal model from Z.ai. It is suited for efficient coding and long-horizon agent tasks. Its hybrid sparse and linear attention architecture maintains accurate long-context behavior while...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1310720,
+    "price": {
+     "in": "$0.075/1M",
+     "out": "$0.25/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 7.5e-8,
+     "out": 2.5e-7,
+     "cacheRead": 1.5e-8,
+     "cacheWrite": 7.5e-8
+    },
+    "ref": "openrouter/z-ai/glm-5.3-flash",
+    "capability": "GLM-5.3-Flash is a native multimodal model from Z.ai. It is suited for efficient coding and long-horizon agent tasks. Its hybrid sparse and linear attention architecture maintains accurate long-conte…",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "z-ai/glm-5.3-flash:batch",
+    "description": "GLM-5.3-Flash is a native multimodal model from Z.ai. It is suited for efficient coding and long-horizon agent tasks. Its hybrid sparse and linear attention architecture maintains accurate long-context behavior while...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.075/1M",
+     "out": "$0.25/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 7.5e-8,
+     "out": 2.5e-7,
+     "cacheRead": 1.5e-8,
+     "cacheWrite": 7.5e-8
+    },
+    "ref": "openrouter/z-ai/glm-5.3-flash:batch",
+    "capability": "GLM-5.3-Flash is a native multimodal model from Z.ai. It is suited for efficient coding and long-horizon agent tasks. Its hybrid sparse and linear attention architecture maintains accurate long-conte…",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "meta/muse-spark-1.2-contributor",
+    "description": "Muse Spark 1.2 contributor tier is a reasoning model from Meta designed for developers who want to start building at an even lower cost. It’s meaningfully cheaper than Muse Spark...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video",
+      "file",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.1/1M",
+     "out": "$0.2/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 1e-7,
+     "out": 2e-7,
+     "cacheRead": 2e-9,
+     "cacheWrite": 1e-7
+    },
+    "ref": "openrouter/meta/muse-spark-1.2-contributor",
+    "capability": "Muse Spark 1.2 contributor tier is a reasoning model from Meta designed for developers who want to start building at an even lower cost. It’s meaningfully cheaper than Muse Spark...",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "deepseek/deepseek-v4-flash-vision-exp",
+    "description": "DeepSeek V4 Flash Vision Exp is an experimental vision-enabled version of [DeepSeek V4 Flash 0731](https://openrouter.ai/deepseek/deepseek-v4-flash-0731) from DeepSeek, adding image understanding while matching the base model on text capabilities including agents,...",
+    "modalities": {
+     "in": [
+      "text",
+      "image"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.22/1M",
+     "out": "$0.66/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 2.2e-7,
+     "out": 6.6e-7,
+     "cacheRead": 7e-9,
+     "cacheWrite": 2.2e-7
+    },
+    "ref": "openrouter/deepseek/deepseek-v4-flash-vision-exp",
+    "capability": "DeepSeek V4 Flash Vision Exp is an experimental vision-enabled version of [DeepSeek V4 Flash 0731](https://openrouter.ai/deepseek/deepseek-v4-flash-0731) from DeepSeek, adding image understanding whi…",
+    "stability": "stable",
+    "costLevel": 3,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "deepseek/deepseek-v4-flash-vision-exp:batch",
+    "description": "DeepSeek V4 Flash Vision Exp is an experimental vision-enabled version of [DeepSeek V4 Flash 0731](https://openrouter.ai/deepseek/deepseek-v4-flash-0731) from DeepSeek, adding image understanding while matching the base model on text capabilities including agents,...",
+    "modalities": {
+     "in": [
+      "text",
+      "image"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.11/1M",
+     "out": "$0.33/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 1.1e-7,
+     "out": 3.3e-7,
+     "cacheRead": 3.5e-9,
+     "cacheWrite": 1.1e-7
+    },
+    "ref": "openrouter/deepseek/deepseek-v4-flash-vision-exp:batch",
+    "capability": "DeepSeek V4 Flash Vision Exp is an experimental vision-enabled version of [DeepSeek V4 Flash 0731](https://openrouter.ai/deepseek/deepseek-v4-flash-0731) from DeepSeek, adding image understanding whi…",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "tencent/hy-mt2-1.8b",
+    "description": "Hy-MT2-1.8B is a compact 1.8B-parameter translation model from Tencent. It supports 33 language pairs and five Chinese dialect and minority-language pairs, with workflows for structured, delimiter-based, contextual, glossary-based, and style-guided...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 8192,
+    "price": {
+     "in": "$0.044/1M",
+     "out": "$0.177/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 4.4e-8,
+     "out": 1.77e-7,
+     "cacheRead": 4.4e-8,
+     "cacheWrite": 4.4e-8
+    },
+    "ref": "openrouter/tencent/hy-mt2-1.8b",
+    "capability": "Hy-MT2-1.8B is a compact 1.8B-parameter translation model from Tencent. It supports 33 language pairs and five Chinese dialect and minority-language pairs, with workflows for structured, delimiter-ba…",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": false,
+    "effortDeclared": false,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "tencent/hy-mt2-30b-a3b",
+    "description": "Hy-MT2-30B-A3B is Tencent's flagship translation model in the Hy-MT2 family. It supports 33 language pairs and five Chinese dialect and minority-language pairs, with workflows for structured, delimiter-based, contextual, glossary-based, and...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 8192,
+    "price": {
+     "in": "$0.074/1M",
+     "out": "$0.295/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 7.4e-8,
+     "out": 2.95e-7,
+     "cacheRead": 7.4e-8,
+     "cacheWrite": 7.4e-8
+    },
+    "ref": "openrouter/tencent/hy-mt2-30b-a3b",
+    "capability": "Hy-MT2-30B-A3B is Tencent's flagship translation model in the Hy-MT2 family. It supports 33 language pairs and five Chinese dialect and minority-language pairs, with workflows for structured, delimit…",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": false,
+    "effortDeclared": false,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "~z-ai/glm-latest",
+    "description": "This model always redirects to the latest GLM model from Z.ai.",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1310720,
+    "price": {
+     "in": "$1.113/1M",
+     "out": "$3.498/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000001113,
+     "out": 0.000003498,
+     "cacheRead": 2.067e-7,
+     "cacheWrite": 0.000001113
+    },
+    "ref": "openrouter/~z-ai/glm-latest",
+    "capability": "This model always redirects to the latest GLM model from Z.ai.",
+    "stability": "stable",
+    "costLevel": 5,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "tencent/hy-mt2-7b",
+    "description": "Hy-MT2-7B is a 7B-parameter translation model from Tencent. It supports 33 language pairs and five Chinese dialect and minority-language pairs, with workflows for structured, delimiter-based, contextual, glossary-based, and style-guided translation.",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 8192,
+    "price": {
+     "in": "$0.074/1M",
+     "out": "$0.295/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 7.4e-8,
+     "out": 2.95e-7,
+     "cacheRead": 7.4e-8,
+     "cacheWrite": 7.4e-8
+    },
+    "ref": "openrouter/tencent/hy-mt2-7b",
+    "capability": "Hy-MT2-7B is a 7B-parameter translation model from Tencent. It supports 33 language pairs and five Chinese dialect and minority-language pairs, with workflows for structured, delimiter-based, context…",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": false,
+    "effortDeclared": false,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "z-ai/glm-5.3",
+    "description": "GLM-5.3 is a large-scale reasoning model from Z.ai, built for complex software engineering and long-horizon agent tasks. It supports text input and output with a 1M-token context window, and improves...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1310720,
+    "price": {
+     "in": "$1.4/1M",
+     "out": "$4.4/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.0000014,
+     "out": 0.0000044,
+     "cacheRead": 2.6e-7,
+     "cacheWrite": 0.0000014
+    },
+    "ref": "openrouter/z-ai/glm-5.3",
+    "capability": "GLM-5.3 is a large-scale reasoning model from Z.ai, built for complex software engineering and long-horizon agent tasks. It supports text input and output with a 1M-token context window, and improves…",
+    "stability": "stable",
+    "costLevel": 5,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "z-ai/glm-5.3:batch",
+    "description": "GLM-5.3 is a large-scale reasoning model from Z.ai, built for complex software engineering and long-horizon agent tasks. It supports text input and output with a 1M-token context window, and improves...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.7/1M",
+     "out": "$2.2/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 7e-7,
+     "out": 0.0000022,
+     "cacheRead": 1.3e-7,
+     "cacheWrite": 7e-7
+    },
+    "ref": "openrouter/z-ai/glm-5.3:batch",
+    "capability": "GLM-5.3 is a large-scale reasoning model from Z.ai, built for complex software engineering and long-horizon agent tasks. It supports text input and output with a 1M-token context window, and improves…",
+    "stability": "stable",
+    "costLevel": 4,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "qwen/qwen3.8-27b",
+    "description": "Qwen3.8 27B is an open-weight dense vision-language model from Qwen. It is suited for coding, professional workflows, research, multimodal interaction, and long-running agent tasks, with flexible thinking that can be...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1000000,
+    "price": {
+     "in": "$0.42/1M",
+     "out": "$3/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 4.2e-7,
+     "out": 0.000003,
+     "cacheRead": 8.5e-8,
+     "cacheWrite": 4.2e-7
+    },
+    "ref": "openrouter/qwen/qwen3.8-27b",
+    "capability": "Qwen3.8 27B is an open-weight dense vision-language model from Qwen. It is suited for coding, professional workflows, research, multimodal interaction, and long-running agent tasks, with flexible thi…",
+    "stability": "stable",
+    "costLevel": 5,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "dots-studio/dots-3-note-preview:free",
+    "description": "Dots3-Note Preview is an open-weight mixture-of-experts model from Dots Studio, with 16B active parameters out of 280B total. It is the lightest model in the Dots 3 family and is...",
+    "modalities": {
+     "in": [
+      "text",
+      "image"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 512000,
+    "price": "free",
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0,
+     "out": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "ref": "openrouter/dots-studio/dots-3-note-preview:free",
+    "besteffort": true,
+    "capability": "Dots3-Note Preview is an open-weight mixture-of-experts model from Dots Studio, with 16B active parameters out of 280B total. It is the lightest model in the Dots 3 family and is...",
+    "stability": "best-effort",
+    "costLevel": 0,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "google/gemini-3.7-flash",
+    "description": "Gemini 3.7 Flash is a multimodal model from Google for fast agentic workflows, coding, and complex multi-step reasoning. It is designed for tasks that require responsive performance and reliable multi-step...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video",
+      "file",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.75/1M",
+     "out": "$3.75/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 7.5e-7,
+     "out": 0.00000375,
+     "cacheRead": 7.5e-8,
+     "cacheWrite": 4.16666666666667e-8
+    },
+    "ref": "openrouter/google/gemini-3.7-flash",
+    "capability": "Gemini 3.7 Flash is a multimodal model from Google for fast agentic workflows, coding, and complex multi-step reasoning. It is designed for tasks that require responsive performance and reliable mult…",
+    "stability": "stable",
+    "costLevel": 5,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "google/gemini-3.7-flash:batch",
+    "description": "Gemini 3.7 Flash is a multimodal model from Google for fast agentic workflows, coding, and complex multi-step reasoning. It is designed for tasks that require responsive performance and reliable multi-step...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video",
+      "file",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.375/1M",
+     "out": "$1.875/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 3.75e-7,
+     "out": 0.000001875,
+     "cacheRead": 3.75e-8,
+     "cacheWrite": 4.16666666666667e-8
+    },
+    "ref": "openrouter/google/gemini-3.7-flash:batch",
+    "capability": "Gemini 3.7 Flash is a multimodal model from Google for fast agentic workflows, coding, and complex multi-step reasoning. It is designed for tasks that require responsive performance and reliable mult…",
+    "stability": "stable",
+    "costLevel": 4,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "bytedance-seed/seed-2-1-turbo",
+    "description": "Seed 2.1 Turbo is a multimodal model from ByteDance Seed for coding and long-horizon agent workflows. It is suited for end-to-end software delivery, multi-step task execution, and understanding visual and...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 262144,
+    "price": {
+     "in": "$0.5/1M",
+     "out": "$2.5/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 5e-7,
+     "out": 0.0000025,
+     "cacheRead": 5e-7,
+     "cacheWrite": 5e-7
+    },
+    "ref": "openrouter/bytedance-seed/seed-2-1-turbo",
+    "capability": "Seed 2.1 Turbo is a multimodal model from ByteDance Seed for coding and long-horizon agent workflows. It is suited for end-to-end software delivery, multi-step task execution, and understanding visua…",
+    "stability": "stable",
+    "costLevel": 4,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "qwen/qwen3.8-2.4t-a95b",
+    "description": "Qwen3.8 2.4T A95B is an open-weight sparse mixture-of-experts model from Qwen and the open-weight variant of [Qwen3.8 Max](/qwen/qwen3.8-max), with 95 billion active parameters out of 2.4 trillion total. It is...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$2/1M",
+     "out": "$6/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000002,
+     "out": 0.000006,
+     "cacheRead": 2.5e-7,
+     "cacheWrite": 0.000002
+    },
+    "ref": "openrouter/qwen/qwen3.8-2.4t-a95b",
+    "capability": "Qwen3.8 2.4T A95B is an open-weight sparse mixture-of-experts model from Qwen and the open-weight variant of [Qwen3.8 Max](/qwen/qwen3.8-max), with 95 billion active parameters out of 2.4 trillion to…",
+    "stability": "stable",
+    "costLevel": 6,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "qwen/qwen3.8-2.4t-a95b:batch",
+    "description": "Qwen3.8 2.4T A95B is an open-weight sparse mixture-of-experts model from Qwen and the open-weight variant of [Qwen3.8 Max](/qwen/qwen3.8-max), with 95 billion active parameters out of 2.4 trillion total. It is...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1010000,
+    "price": {
+     "in": "$2/1M",
+     "out": "$6/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000002,
+     "out": 0.000006,
+     "cacheRead": 2.5e-7,
+     "cacheWrite": 0.000002
+    },
+    "ref": "openrouter/qwen/qwen3.8-2.4t-a95b:batch",
+    "capability": "Qwen3.8 2.4T A95B is an open-weight sparse mixture-of-experts model from Qwen and the open-weight variant of [Qwen3.8 Max](/qwen/qwen3.8-max), with 95 billion active parameters out of 2.4 trillion to…",
+    "stability": "stable",
+    "costLevel": 6,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "bytedance-seed/seed-2.0-code",
+    "description": "Seed 2.0 Code is a model from ByteDance Seed optimized for agentic coding. It is suited for frontend development, multilingual programming tasks, and coding-agent workflows in tools such as Claude...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 262144,
+    "price": {
+     "in": "$0.5/1M",
+     "out": "$3/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 5e-7,
+     "out": 0.000003,
+     "cacheRead": 5e-7,
+     "cacheWrite": 5e-7
+    },
+    "ref": "openrouter/bytedance-seed/seed-2.0-code",
+    "capability": "Seed 2.0 Code is a model from ByteDance Seed optimized for agentic coding. It is suited for frontend development, multilingual programming tasks, and coding-agent workflows in tools such as Claude...",
+    "stability": "stable",
+    "costLevel": 5,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "deepseek/deepseek-v4-pro-0813",
+    "description": "DeepSeek V4 Pro 0813 is a large-scale mixture-of-experts model from DeepSeek. This is the GA release of DeepSeek V4 Pro.",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.5795/1M",
+     "out": "$1.7384/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 5.7948e-7,
+     "out": 0.00000173844,
+     "cacheRead": 5.7948e-8,
+     "cacheWrite": 5.7948e-7
+    },
+    "ref": "openrouter/deepseek/deepseek-v4-pro-0813",
+    "capability": "DeepSeek V4 Pro 0813 is a large-scale mixture-of-experts model from DeepSeek. This is the GA release of DeepSeek V4 Pro.",
+    "stability": "stable",
+    "costLevel": 4,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "deepseek/deepseek-v4-pro-0813:batch",
+    "description": "DeepSeek V4 Pro 0813 is a large-scale mixture-of-experts model from DeepSeek. This is the GA release of DeepSeek V4 Pro.",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.66/1M",
+     "out": "$1.98/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 6.6e-7,
+     "out": 0.00000198,
+     "cacheRead": 2.2e-8,
+     "cacheWrite": 6.6e-7
+    },
+    "ref": "openrouter/deepseek/deepseek-v4-pro-0813:batch",
+    "capability": "DeepSeek V4 Pro 0813 is a large-scale mixture-of-experts model from DeepSeek. This is the GA release of DeepSeek V4 Pro.",
+    "stability": "stable",
+    "costLevel": 4,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "x-ai/grok-4.6",
+    "description": "Grok 4.6 is SpaceXAI's smartest model with frontier performance on coding, knowledge work, and STEM.",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "file"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 500000,
+    "price": {
+     "in": "$2/1M",
+     "out": "$6/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000002,
+     "out": 0.000006,
+     "cacheRead": 5e-7,
+     "cacheWrite": 0.000002
+    },
+    "ref": "openrouter/x-ai/grok-4.6",
+    "capability": "Grok 4.6 is SpaceXAI's smartest model with frontier performance on coding, knowledge work, and STEM.",
+    "stability": "stable",
+    "costLevel": 6,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "liquid/lfm-2.5-2.6b:free",
+    "description": "LFM2.5-2.6B is a compact reasoning model from Liquid AI. It is suited for agent workflows, data extraction, RAG, and long-context processing. Liquid advises against using it for agentic coding or...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 65536,
+    "price": "free",
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0,
+     "out": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "ref": "openrouter/liquid/lfm-2.5-2.6b:free",
+    "besteffort": true,
+    "capability": "LFM2.5-2.6B is a compact reasoning model from Liquid AI. It is suited for agent workflows, data extraction, RAG, and long-context processing. Liquid advises against using it for agentic coding or...",
+    "stability": "best-effort",
+    "costLevel": 0,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "nvidia/nemotron-3.5-lightning",
+    "description": "NVIDIA Nemotron 3.5 Lightning is an open mixture-of-experts model from NVIDIA, with 3B active parameters out of 30B total. It is suited for high-throughput agentic workloads and specialized tasks that...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 262144,
+    "price": {
+     "in": "$0.08/1M",
+     "out": "$0.2/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 8e-8,
+     "out": 2e-7,
+     "cacheRead": 4e-8,
+     "cacheWrite": 8e-8
+    },
+    "ref": "openrouter/nvidia/nemotron-3.5-lightning",
+    "capability": "NVIDIA Nemotron 3.5 Lightning is an open mixture-of-experts model from NVIDIA, with 3B active parameters out of 30B total. It is suited for high-throughput agentic workloads and specialized tasks tha…",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "nvidia/nemotron-3.5-lightning:free",
+    "description": "NVIDIA Nemotron 3.5 Lightning is an open mixture-of-experts model from NVIDIA, with 3B active parameters out of 30B total. It is suited for high-throughput agentic workloads and specialized tasks that...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1000000,
+    "price": "free",
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0,
+     "out": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "ref": "openrouter/nvidia/nemotron-3.5-lightning:free",
+    "besteffort": true,
+    "capability": "NVIDIA Nemotron 3.5 Lightning is an open mixture-of-experts model from NVIDIA, with 3B active parameters out of 30B total. It is suited for high-throughput agentic workloads and specialized tasks tha…",
+    "stability": "best-effort",
+    "costLevel": 0,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "sakana/sakana-namazu",
+    "description": "Sakana Namazu is a Japanese-specialized reasoning model from Sakana AI, based on Kimi K2.6 with additional training for Japanese language and business contexts. It is suited for Japanese instruction following,...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "file"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 262144,
+    "price": {
+     "in": "$0.95/1M",
+     "out": "$4/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 9.5e-7,
+     "out": 0.000004,
+     "cacheRead": 1.5e-7,
+     "cacheWrite": 9.5e-7
+    },
+    "ref": "openrouter/sakana/sakana-namazu",
+    "capability": "Sakana Namazu is a Japanese-specialized reasoning model from Sakana AI, based on Kimi K2.6 with additional training for Japanese language and business contexts. It is suited for Japanese instruction …",
+    "stability": "stable",
+    "costLevel": 5,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "upstage/solar-pro4",
+    "description": "Solar Pro 4 is Upstage's cost-efficient large language model, featuring a 524K context window. It is built for long-horizon tasks and agentic workflows, with strong capabilities in office productivity, document-intensive...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 524288,
+    "price": {
+     "in": "$0.03/1M",
+     "out": "$0.12/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 3e-8,
+     "out": 1.2e-7,
+     "cacheRead": 6e-9,
+     "cacheWrite": 3e-8
+    },
+    "ref": "openrouter/upstage/solar-pro4",
+    "capability": "Solar Pro 4 is Upstage's cost-efficient large language model, featuring a 524K context window. It is built for long-horizon tasks and agentic workflows, with strong capabilities in office productivit…",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "meta/muse-glimmer-30b",
+    "description": "Muse Glimmer 30B is a dense, open-weight multimodal model from Meta Superintelligence Labs, distilled from Muse Spark and optimized for autonomous agents on consumer hardware. It is suited for long-horizon...",
+    "modalities": {
+     "in": [
+      "text",
+      "image"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 131072,
+    "price": {
+     "in": "$0.3/1M",
+     "out": "$1.1/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 3e-7,
+     "out": 0.0000011,
+     "cacheRead": 4e-8,
+     "cacheWrite": 3e-7
+    },
+    "ref": "openrouter/meta/muse-glimmer-30b",
+    "capability": "Muse Glimmer 30B is a dense, open-weight multimodal model from Meta Superintelligence Labs, distilled from Muse Spark and optimized for autonomous agents on consumer hardware. It is suited for long-h…",
+    "stability": "stable",
+    "costLevel": 3,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "meta/muse-glimmer-30b:batch",
+    "description": "Muse Glimmer 30B is a dense, open-weight multimodal model from Meta Superintelligence Labs, distilled from Muse Spark and optimized for autonomous agents on consumer hardware. It is suited for long-horizon...",
+    "modalities": {
+     "in": [
+      "text",
+      "image"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 131072,
+    "price": {
+     "in": "$0.175/1M",
+     "out": "$0.75/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 1.75e-7,
+     "out": 7.5e-7,
+     "cacheRead": 2e-8,
+     "cacheWrite": 1.75e-7
+    },
+    "ref": "openrouter/meta/muse-glimmer-30b:batch",
+    "capability": "Muse Glimmer 30B is a dense, open-weight multimodal model from Meta Superintelligence Labs, distilled from Muse Spark and optimized for autonomous agents on consumer hardware. It is suited for long-h…",
+    "stability": "stable",
+    "costLevel": 3,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "meta/muse-spark-1.2",
+    "description": "Muse Spark 1.2 is a reasoning model from Meta, designed for complex agentic tasks. It accepts text, images, video, audio, and PDF documents, returns text, and offers a 1M-token context...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video",
+      "file",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$1.25/1M",
+     "out": "$4.25/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.00000125,
+     "out": 0.00000425,
+     "cacheRead": 1.5e-7,
+     "cacheWrite": 0.00000125
+    },
+    "ref": "openrouter/meta/muse-spark-1.2",
+    "capability": "Muse Spark 1.2 is a reasoning model from Meta, designed for complex agentic tasks. It accepts text, images, video, audio, and PDF documents, returns text, and offers a 1M-token context...",
+    "stability": "stable",
+    "costLevel": 5,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "~deepseek/deepseek-v4-flash-latest",
+    "description": "This model always redirects to the latest model in the DeepSeek V4 Flash family.",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1310720,
+    "price": {
+     "in": "$0.05/1M",
+     "out": "$0.16/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 5e-8,
+     "out": 1.6e-7,
+     "cacheRead": 1.3e-8,
+     "cacheWrite": 5e-8
+    },
+    "ref": "openrouter/~deepseek/deepseek-v4-flash-latest",
+    "capability": "This model always redirects to the latest model in the DeepSeek V4 Flash family.",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "deepseek/deepseek-v4-flash-0731",
+    "description": "DeepSeek V4 Flash 0731 is a sparse mixture-of-experts model from DeepSeek, with 13B active parameters out of 284B total. This re-post-trained revision is suited for coding, reasoning, and agent workflows....",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1310720,
+    "price": {
+     "in": "$0.065/1M",
+     "out": "$0.18/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 6.5e-8,
+     "out": 1.8e-7,
+     "cacheRead": 1.6e-8,
+     "cacheWrite": 6.5e-8
+    },
+    "ref": "openrouter/deepseek/deepseek-v4-flash-0731",
+    "capability": "DeepSeek V4 Flash 0731 is a sparse mixture-of-experts model from DeepSeek, with 13B active parameters out of 284B total. This re-post-trained revision is suited for coding, reasoning, and agent workf…",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "deepseek/deepseek-v4-flash-0731:batch",
+    "description": "DeepSeek V4 Flash 0731 is a sparse mixture-of-experts model from DeepSeek, with 13B active parameters out of 284B total. This re-post-trained revision is suited for coding, reasoning, and agent workflows....",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.11/1M",
+     "out": "$0.33/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 1.1e-7,
+     "out": 3.3e-7,
+     "cacheRead": 3.5e-9,
+     "cacheWrite": 1.1e-7
+    },
+    "ref": "openrouter/deepseek/deepseek-v4-flash-0731:batch",
+    "capability": "DeepSeek V4 Flash 0731 is a sparse mixture-of-experts model from DeepSeek, with 13B active parameters out of 284B total. This re-post-trained revision is suited for coding, reasoning, and agent workf…",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "thinkingmachines/inkling-small",
+    "description": "Inkling Small is an open-weight multimodal mixture-of-experts model from Thinking Machines Lab, with 12B active parameters out of 276B total. It is positioned as the smaller, more efficient member of...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.45/1M",
+     "out": "$1.2/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 4.5e-7,
+     "out": 0.0000012,
+     "cacheRead": 1e-7,
+     "cacheWrite": 4.5e-7
+    },
+    "ref": "openrouter/thinkingmachines/inkling-small",
+    "capability": "Inkling Small is an open-weight multimodal mixture-of-experts model from Thinking Machines Lab, with 12B active parameters out of 276B total. It is positioned as the smaller, more efficient member of…",
+    "stability": "stable",
+    "costLevel": 3,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "thinkingmachines/inkling-small:batch",
+    "description": "Inkling Small is an open-weight multimodal mixture-of-experts model from Thinking Machines Lab, with 12B active parameters out of 276B total. It is positioned as the smaller, more efficient member of...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 524288,
+    "price": {
+     "in": "$0.5/1M",
+     "out": "$1.2/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 5e-7,
+     "out": 0.0000012,
+     "cacheRead": 1e-7,
+     "cacheWrite": 5e-7
+    },
+    "ref": "openrouter/thinkingmachines/inkling-small:batch",
+    "capability": "Inkling Small is an open-weight multimodal mixture-of-experts model from Thinking Machines Lab, with 12B active parameters out of 276B total. It is positioned as the smaller, more efficient member of…",
+    "stability": "stable",
+    "costLevel": 3,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "thinkingmachines/inkling-small:free",
+    "description": "Inkling Small is an open-weight multimodal mixture-of-experts model from Thinking Machines Lab, with 12B active parameters out of 276B total. It is positioned as the smaller, more efficient member of...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": "free",
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0,
+     "out": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "ref": "openrouter/thinkingmachines/inkling-small:free",
+    "besteffort": true,
+    "capability": "Inkling Small is an open-weight multimodal mixture-of-experts model from Thinking Machines Lab, with 12B active parameters out of 276B total. It is positioned as the smaller, more efficient member of…",
+    "stability": "best-effort",
+    "costLevel": 0,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "qwen/qwen3.7-flash",
+    "description": "Qwen3.7 Flash is a vision-language reasoning model from Alibaba. It is suited for multimodal agents, visual coding, search, and computer interaction, with strengths in object recognition, spatial understanding, and real-world...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1000000,
+    "price": {
+     "in": "$0.03/1M",
+     "out": "$0.13/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 3e-8,
+     "out": 1.3e-7,
+     "cacheRead": 6e-9,
+     "cacheWrite": 3.8e-8
+    },
+    "ref": "openrouter/qwen/qwen3.7-flash",
+    "capability": "Qwen3.7 Flash is a vision-language reasoning model from Alibaba. It is suited for multimodal agents, visual coding, search, and computer interaction, with strengths in object recognition, spatial und…",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "anthropic/claude-opus-5",
+    "description": "Claude Opus 5 is Anthropic’s flagship model for demanding reasoning, coding, and long-horizon agentic work. It is particularly strong at end-to-end software tasks, code review and bug finding, visual analysis...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "file"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1000000,
+    "price": {
+     "in": "$5/1M",
+     "out": "$25/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000005,
+     "out": 0.000025,
+     "cacheRead": 5e-7,
+     "cacheWrite": 0.00000625
+    },
+    "ref": "openrouter/anthropic/claude-opus-5",
+    "capability": "Claude Opus 5 is Anthropic’s flagship model for demanding reasoning, coding, and long-horizon agentic work. It is particularly strong at end-to-end software tasks, code review and bug finding, visual…",
+    "stability": "stable",
+    "costLevel": 8,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "anthropic/claude-opus-5:batch",
+    "description": "Claude Opus 5 is Anthropic’s flagship model for demanding reasoning, coding, and long-horizon agentic work. It is particularly strong at end-to-end software tasks, code review and bug finding, visual analysis...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "file"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1000000,
+    "price": {
+     "in": "$2.5/1M",
+     "out": "$12.5/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.0000025,
+     "out": 0.0000125,
+     "cacheRead": 2.5e-7,
+     "cacheWrite": 0.000003125
+    },
+    "ref": "openrouter/anthropic/claude-opus-5:batch",
+    "capability": "Claude Opus 5 is Anthropic’s flagship model for demanding reasoning, coding, and long-horizon agentic work. It is particularly strong at end-to-end software tasks, code review and bug finding, visual…",
+    "stability": "stable",
+    "costLevel": 7,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "inclusionai/ling-3.0-flash",
+    "description": "*Ling-3.0-flash* is a *124B-parameter Mixture-of-Experts (MoE) model*, with approximately *5.1B parameters activated per token*. The model is designed with *token efficiency and production-scale agentic inference* as key priorities, enabling developers...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 262144,
+    "price": {
+     "in": "$0.021/1M",
+     "out": "$0.063/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 2.1e-8,
+     "out": 6.3e-8,
+     "cacheRead": 4.2e-9,
+     "cacheWrite": 2.1e-8
+    },
+    "ref": "openrouter/inclusionai/ling-3.0-flash",
+    "capability": "*Ling-3.0-flash* is a *124B-parameter Mixture-of-Experts (MoE) model*, with approximately *5.1B parameters activated per token*. The model is designed with *token efficiency and production-scale agen…",
+    "stability": "stable",
+    "costLevel": 1,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "poolside/laguna-s-2.1",
+    "description": "Laguna S 2.1 is the latest coding agent model from [Poolside](<https://poolside.ai/>). Laguna S 2.1 is a 118B total parameter model with 8B active parameters, scoring 70.2% on Terminal-Bench 2.1 and...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.09/1M",
+     "out": "$0.18/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 9e-8,
+     "out": 1.8e-7,
+     "cacheRead": 9e-9,
+     "cacheWrite": 9e-8
+    },
+    "ref": "openrouter/poolside/laguna-s-2.1",
+    "capability": "Laguna S 2.1 is the latest coding agent model from [Poolside](<https://poolside.ai/>). Laguna S 2.1 is a 118B total parameter model with 8B active parameters, scoring 70.2% on Terminal-Bench 2.1 and.…",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "poolside/laguna-s-2.1:free",
+    "description": "Laguna S 2.1 is the latest coding agent model from [Poolside](<https://poolside.ai/>). Laguna S 2.1 is a 118B total parameter model with 8B active parameters, scoring 70.2% on Terminal-Bench 2.1 and...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 262144,
+    "price": "free",
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0,
+     "out": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "ref": "openrouter/poolside/laguna-s-2.1:free",
+    "besteffort": true,
+    "capability": "Laguna S 2.1 is the latest coding agent model from [Poolside](<https://poolside.ai/>). Laguna S 2.1 is a 118B total parameter model with 8B active parameters, scoring 70.2% on Terminal-Bench 2.1 and.…",
+    "stability": "best-effort",
+    "costLevel": 0,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "google/gemini-3.6-flash",
+    "description": "Gemini 3.6 Flash is a high-efficiency model from Google for coding, agentic workflows, and web and app development. It is designed to produce polished outputs with fewer unnecessary edits and...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video",
+      "file",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.75/1M",
+     "out": "$3.75/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 7.5e-7,
+     "out": 0.00000375,
+     "cacheRead": 7.5e-8,
+     "cacheWrite": 4.16666666666667e-8
+    },
+    "ref": "openrouter/google/gemini-3.6-flash",
+    "capability": "Gemini 3.6 Flash is a high-efficiency model from Google for coding, agentic workflows, and web and app development. It is designed to produce polished outputs with fewer unnecessary edits and...",
+    "stability": "stable",
+    "costLevel": 5,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "google/gemini-3.6-flash:batch",
+    "description": "Gemini 3.6 Flash is a high-efficiency model from Google for coding, agentic workflows, and web and app development. It is designed to produce polished outputs with fewer unnecessary edits and...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video",
+      "file",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.375/1M",
+     "out": "$1.875/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 3.75e-7,
+     "out": 0.000001875,
+     "cacheRead": 3.75e-8,
+     "cacheWrite": 4.16666666666667e-8
+    },
+    "ref": "openrouter/google/gemini-3.6-flash:batch",
+    "capability": "Gemini 3.6 Flash is a high-efficiency model from Google for coding, agentic workflows, and web and app development. It is designed to produce polished outputs with fewer unnecessary edits and...",
+    "stability": "stable",
+    "costLevel": 4,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "google/gemini-3.5-flash-lite",
+    "description": "Gemini 3.5 Flash Lite is a high-efficiency model from Google with upgraded agentic capabilities. It is suited for subagents that execute focused tasks within complex, multi-agent workflows.",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video",
+      "file",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.3/1M",
+     "out": "$2.5/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 3e-7,
+     "out": 0.0000025,
+     "cacheRead": 3e-8,
+     "cacheWrite": 8.33333333333333e-8
+    },
+    "ref": "openrouter/google/gemini-3.5-flash-lite",
+    "capability": "Gemini 3.5 Flash Lite is a high-efficiency model from Google with upgraded agentic capabilities. It is suited for subagents that execute focused tasks within complex, multi-agent workflows.",
+    "stability": "stable",
+    "costLevel": 4,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "google/gemini-3.5-flash-lite:batch",
+    "description": "Gemini 3.5 Flash Lite is a high-efficiency model from Google with upgraded agentic capabilities. It is suited for subagents that execute focused tasks within complex, multi-agent workflows.",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video",
+      "file",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$0.15/1M",
+     "out": "$1.25/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 1.5e-7,
+     "out": 0.00000125,
+     "cacheRead": 1.5e-8,
+     "cacheWrite": 1.5e-7
+    },
+    "ref": "openrouter/google/gemini-3.5-flash-lite:batch",
+    "capability": "Gemini 3.5 Flash Lite is a high-efficiency model from Google with upgraded agentic capabilities. It is suited for subagents that execute focused tasks within complex, multi-agent workflows.",
+    "stability": "stable",
+    "costLevel": 3,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "meituan/longcat-2.0",
+    "description": "LongCat 2.0 is a sparse mixture-of-experts language model from Meituan, with 48B active parameters out of 1.6T total. It is suited for coding, repository-level changes, long-horizon problem solving, and agentic...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048756,
+    "price": {
+     "in": "$0.3/1M",
+     "out": "$1.2/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 3e-7,
+     "out": 0.0000012,
+     "cacheRead": 6e-9,
+     "cacheWrite": 3e-7
+    },
+    "ref": "openrouter/meituan/longcat-2.0",
+    "capability": "LongCat 2.0 is a sparse mixture-of-experts language model from Meituan, with 48B active parameters out of 1.6T total. It is suited for coding, repository-level changes, long-horizon problem solving, …",
+    "stability": "stable",
+    "costLevel": 3,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "thinkingmachines/inkling",
+    "description": "Inkling is an open-weight multimodal mixture-of-experts model from Thinking Machines Lab, with 41B active parameters out of 975B total. It is designed for general-purpose reasoning, coding, agentic and tool-use systems,...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$1/1M",
+     "out": "$4.05/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000001,
+     "out": 0.00000405,
+     "cacheRead": 1.7e-7,
+     "cacheWrite": 0.000001
+    },
+    "ref": "openrouter/thinkingmachines/inkling",
+    "capability": "Inkling is an open-weight multimodal mixture-of-experts model from Thinking Machines Lab, with 41B active parameters out of 975B total. It is designed for general-purpose reasoning, coding, agentic a…",
+    "stability": "stable",
+    "costLevel": 5,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "thinkingmachines/inkling:batch",
+    "description": "Inkling is an open-weight multimodal mixture-of-experts model from Thinking Machines Lab, with 41B active parameters out of 975B total. It is designed for general-purpose reasoning, coding, agentic and tool-use systems,...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 524288,
+    "price": {
+     "in": "$1/1M",
+     "out": "$4.05/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000001,
+     "out": 0.00000405,
+     "cacheRead": 1.7e-7,
+     "cacheWrite": 0.000001
+    },
+    "ref": "openrouter/thinkingmachines/inkling:batch",
+    "capability": "Inkling is an open-weight multimodal mixture-of-experts model from Thinking Machines Lab, with 41B active parameters out of 975B total. It is designed for general-purpose reasoning, coding, agentic a…",
+    "stability": "stable",
+    "costLevel": 5,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "thinkingmachines/inkling:free",
+    "description": "Inkling is an open-weight multimodal mixture-of-experts model from Thinking Machines Lab, with 41B active parameters out of 975B total. It is designed for general-purpose reasoning, coding, agentic and tool-use systems,...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": "free",
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0,
+     "out": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "ref": "openrouter/thinkingmachines/inkling:free",
+    "besteffort": true,
+    "capability": "Inkling is an open-weight multimodal mixture-of-experts model from Thinking Machines Lab, with 41B active parameters out of 975B total. It is designed for general-purpose reasoning, coding, agentic a…",
+    "stability": "best-effort",
+    "costLevel": 0,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "openrouter/auto-beta",
+    "description": "Auto Router (Beta) is a task-aware router from OpenRouter. It classifies each request, then routes it the [most popular model](/rankings#task-spend) for that task based on aggregate spend, filtered by your...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "audio",
+      "file",
+      "video"
+     ],
+     "out": [
+      "text",
+      "image"
+     ]
+    },
+    "contextWindow": 2000000,
+    "price": {
+     "in": "$-1000000/1M",
+     "out": "$-1000000/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": -1,
+     "out": -1,
+     "cacheRead": -1,
+     "cacheWrite": -1
+    },
+    "ref": "openrouter/openrouter/auto-beta",
+    "capability": "Auto Router (Beta) is a task-aware router from OpenRouter. It classifies each request, then routes it the [most popular model](/rankings#task-spend) for that task based on aggregate spend, filtered b…",
+    "stability": "stable",
+    "costLevel": 1,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "moonshotai/kimi-k3",
+    "description": "Kimi K3 is a 2.8T parameter open-weight multimodal reasoning model from Moonshot AI. It is suited for complex coding, knowledge work, and long-horizon agentic workflows, and is particularly strong at...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$3/1M",
+     "out": "$15/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000003,
+     "out": 0.000015,
+     "cacheRead": 3e-7,
+     "cacheWrite": 0.000003
+    },
+    "ref": "openrouter/moonshotai/kimi-k3",
+    "capability": "Kimi K3 is a 2.8T parameter open-weight multimodal reasoning model from Moonshot AI. It is suited for complex coding, knowledge work, and long-horizon agentic workflows, and is particularly strong at…",
+    "stability": "stable",
+    "costLevel": 7,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "moonshotai/kimi-k3:batch",
+    "description": "Kimi K3 is a 2.8T parameter open-weight multimodal reasoning model from Moonshot AI. It is suited for complex coding, knowledge work, and long-horizon agentic workflows, and is particularly strong at...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$3/1M",
+     "out": "$15/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000003,
+     "out": 0.000015,
+     "cacheRead": 3e-7,
+     "cacheWrite": 0.000003
+    },
+    "ref": "openrouter/moonshotai/kimi-k3:batch",
+    "capability": "Kimi K3 is a 2.8T parameter open-weight multimodal reasoning model from Moonshot AI. It is suited for complex coding, knowledge work, and long-horizon agentic workflows, and is particularly strong at…",
+    "stability": "stable",
+    "costLevel": 7,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "meta/muse-spark-1.1",
+    "description": "Muse Spark 1.1 is a multimodal reasoning model from Meta, built for agentic tasks. It accepts text, images, video, audio, and PDF documents and returns text, with a 1M-token context...",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "video",
+      "file",
+      "audio"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1048576,
+    "price": {
+     "in": "$1.25/1M",
+     "out": "$4.25/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.00000125,
+     "out": 0.00000425,
+     "cacheRead": 1.5e-7,
+     "cacheWrite": 0.00000125
+    },
+    "ref": "openrouter/meta/muse-spark-1.1",
+    "capability": "Muse Spark 1.1 is a multimodal reasoning model from Meta, built for agentic tasks. It accepts text, images, video, audio, and PDF documents and returns text, with a 1M-token context...",
+    "stability": "stable",
+    "costLevel": 5,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "kwaipilot/kat-coder-pro-v2.5",
+    "description": "KAT-Coder-Pro V2.5 is a flagship-level Agentic Coding model that can directly hand over an entire issue or an entire business workflow to it, allowing it to autonomously locate and make...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 262144,
+    "price": {
+     "in": "$0.74/1M",
+     "out": "$2.96/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 7.4e-7,
+     "out": 0.00000296,
+     "cacheRead": 1.5e-7,
+     "cacheWrite": 7.4e-7
+    },
+    "ref": "openrouter/kwaipilot/kat-coder-pro-v2.5",
+    "capability": "KAT-Coder-Pro V2.5 is a flagship-level Agentic Coding model that can directly hand over an entire issue or an entire business workflow to it, allowing it to autonomously locate and make...",
+    "stability": "stable",
+    "costLevel": 4,
+    "toolUseDeclared": true,
+    "effortDeclared": false,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "openai/gpt-5.6-luna-pro",
+    "description": "GPT-5.6 Luna Pro is the same underlying model as [GPT-5.6 Luna](https://openrouter.ai/openai/gpt-5.6-luna), served with `reasoning.mode` set to `pro` for higher-quality responses on complex tasks.\n\nLearn more in OpenAI's docs: https://developers.openai.com/api/docs/guides/reasoning#reasoning-mode",
+    "modalities": {
+     "in": [
+      "file",
+      "image",
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1050000,
+    "price": {
+     "in": "$0.2/1M",
+     "out": "$1.2/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 2e-7,
+     "out": 0.0000012,
+     "cacheRead": 2e-8,
+     "cacheWrite": 2.5e-7
+    },
+    "ref": "openrouter/openai/gpt-5.6-luna-pro",
+    "capability": "GPT-5.6 Luna Pro is the same underlying model as [GPT-5.6 Luna](https://openrouter.ai/openai/gpt-5.6-luna), served with `reasoning.mode` set to `pro` for higher-quality responses on complex tasks.\n\nL…",
+    "stability": "stable",
+    "costLevel": 3,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "openai/gpt-5.6-luna-pro:batch",
+    "description": "GPT-5.6 Luna Pro is the same underlying model as [GPT-5.6 Luna](https://openrouter.ai/openai/gpt-5.6-luna), served with `reasoning.mode` set to `pro` for higher-quality responses on complex tasks.\n\nLearn more in OpenAI's docs: https://developers.openai.com/api/docs/guides/reasoning#reasoning-mode",
+    "modalities": {
+     "in": [
+      "file",
+      "image",
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1050000,
+    "price": {
+     "in": "$0.1/1M",
+     "out": "$0.6/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 1e-7,
+     "out": 6e-7,
+     "cacheRead": 1e-8,
+     "cacheWrite": 1e-7
+    },
+    "ref": "openrouter/openai/gpt-5.6-luna-pro:batch",
+    "capability": "GPT-5.6 Luna Pro is the same underlying model as [GPT-5.6 Luna](https://openrouter.ai/openai/gpt-5.6-luna), served with `reasoning.mode` set to `pro` for higher-quality responses on complex tasks.\n\nL…",
+    "stability": "stable",
+    "costLevel": 3,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "openai/gpt-5.6-luna",
+    "description": "GPT-5.6 Luna is a fast, cost-efficient model in OpenAI's GPT-5.6 series. It is suited for high-volume, latency-sensitive tasks such as chat, classification, and lightweight agentic workflows, providing capable reasoning for...",
+    "modalities": {
+     "in": [
+      "file",
+      "image",
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1050000,
+    "price": {
+     "in": "$0.2/1M",
+     "out": "$1.2/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 2e-7,
+     "out": 0.0000012,
+     "cacheRead": 2e-8,
+     "cacheWrite": 2.5e-7
+    },
+    "ref": "openrouter/openai/gpt-5.6-luna",
+    "capability": "GPT-5.6 Luna is a fast, cost-efficient model in OpenAI's GPT-5.6 series. It is suited for high-volume, latency-sensitive tasks such as chat, classification, and lightweight agentic workflows, providi…",
+    "stability": "stable",
+    "costLevel": 3,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "openai/gpt-5.6-luna:batch",
+    "description": "GPT-5.6 Luna is a fast, cost-efficient model in OpenAI's GPT-5.6 series. It is suited for high-volume, latency-sensitive tasks such as chat, classification, and lightweight agentic workflows, providing capable reasoning for...",
+    "modalities": {
+     "in": [
+      "file",
+      "image",
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1050000,
+    "price": {
+     "in": "$0.1/1M",
+     "out": "$0.6/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 1e-7,
+     "out": 6e-7,
+     "cacheRead": 1e-8,
+     "cacheWrite": 1e-7
+    },
+    "ref": "openrouter/openai/gpt-5.6-luna:batch",
+    "capability": "GPT-5.6 Luna is a fast, cost-efficient model in OpenAI's GPT-5.6 series. It is suited for high-volume, latency-sensitive tasks such as chat, classification, and lightweight agentic workflows, providi…",
+    "stability": "stable",
+    "costLevel": 3,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "openai/gpt-5.6-terra-pro",
+    "description": "GPT-5.6 Terra Pro is the same underlying model as [GPT-5.6 Terra](https://openrouter.ai/openai/gpt-5.6-terra), served with `reasoning.mode` set to `pro` for higher-quality responses on complex tasks.\n\nLearn more in OpenAI's docs: https://developers.openai.com/api/docs/guides/reasoning#reasoning-mode",
+    "modalities": {
+     "in": [
+      "file",
+      "image",
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1050000,
+    "price": {
+     "in": "$2/1M",
+     "out": "$12/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000002,
+     "out": 0.000012,
+     "cacheRead": 2e-7,
+     "cacheWrite": 0.0000025
+    },
+    "ref": "openrouter/openai/gpt-5.6-terra-pro",
+    "capability": "GPT-5.6 Terra Pro is the same underlying model as [GPT-5.6 Terra](https://openrouter.ai/openai/gpt-5.6-terra), served with `reasoning.mode` set to `pro` for higher-quality responses on complex tasks.…",
+    "stability": "stable",
+    "costLevel": 7,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "openai/gpt-5.6-terra-pro:batch",
+    "description": "GPT-5.6 Terra Pro is the same underlying model as [GPT-5.6 Terra](https://openrouter.ai/openai/gpt-5.6-terra), served with `reasoning.mode` set to `pro` for higher-quality responses on complex tasks.\n\nLearn more in OpenAI's docs: https://developers.openai.com/api/docs/guides/reasoning#reasoning-mode",
+    "modalities": {
+     "in": [
+      "file",
+      "image",
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1050000,
+    "price": {
+     "in": "$1/1M",
+     "out": "$6/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000001,
+     "out": 0.000006,
+     "cacheRead": 1e-7,
+     "cacheWrite": 0.000001
+    },
+    "ref": "openrouter/openai/gpt-5.6-terra-pro:batch",
+    "capability": "GPT-5.6 Terra Pro is the same underlying model as [GPT-5.6 Terra](https://openrouter.ai/openai/gpt-5.6-terra), served with `reasoning.mode` set to `pro` for higher-quality responses on complex tasks.…",
+    "stability": "stable",
+    "costLevel": 6,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "openai/gpt-5.6-terra",
+    "description": "GPT-5.6 Terra is a balanced model in OpenAI's GPT-5.6 series, positioned between the flagship Sol tier and the cost-efficient Luna tier. It is suited for everyday coding, reasoning, and agentic...",
+    "modalities": {
+     "in": [
+      "file",
+      "image",
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1050000,
+    "price": {
+     "in": "$2/1M",
+     "out": "$12/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000002,
+     "out": 0.000012,
+     "cacheRead": 2e-7,
+     "cacheWrite": 0.0000025
+    },
+    "ref": "openrouter/openai/gpt-5.6-terra",
+    "capability": "GPT-5.6 Terra is a balanced model in OpenAI's GPT-5.6 series, positioned between the flagship Sol tier and the cost-efficient Luna tier. It is suited for everyday coding, reasoning, and agentic...",
+    "stability": "stable",
+    "costLevel": 7,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "openai/gpt-5.6-terra:batch",
+    "description": "GPT-5.6 Terra is a balanced model in OpenAI's GPT-5.6 series, positioned between the flagship Sol tier and the cost-efficient Luna tier. It is suited for everyday coding, reasoning, and agentic...",
+    "modalities": {
+     "in": [
+      "file",
+      "image",
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1050000,
+    "price": {
+     "in": "$1/1M",
+     "out": "$6/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000001,
+     "out": 0.000006,
+     "cacheRead": 1e-7,
+     "cacheWrite": 0.000001
+    },
+    "ref": "openrouter/openai/gpt-5.6-terra:batch",
+    "capability": "GPT-5.6 Terra is a balanced model in OpenAI's GPT-5.6 series, positioned between the flagship Sol tier and the cost-efficient Luna tier. It is suited for everyday coding, reasoning, and agentic...",
+    "stability": "stable",
+    "costLevel": 6,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "openai/gpt-5.6-sol-pro",
+    "description": "GPT-5.6 Sol Pro is the same underlying model as [GPT-5.6 Sol](https://openrouter.ai/openai/gpt-5.6-sol), served with `reasoning.mode` set to `pro` for higher-quality responses on complex tasks.\n\nLearn more in OpenAI's docs: https://developers.openai.com/api/docs/guides/reasoning#reasoning-mode",
+    "modalities": {
+     "in": [
+      "file",
+      "image",
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1050000,
+    "price": {
+     "in": "$2/1M",
+     "out": "$10/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000002,
+     "out": 0.00001,
+     "cacheRead": 2e-7,
+     "cacheWrite": 0.0000025
+    },
+    "ref": "openrouter/openai/gpt-5.6-sol-pro",
+    "capability": "GPT-5.6 Sol Pro is the same underlying model as [GPT-5.6 Sol](https://openrouter.ai/openai/gpt-5.6-sol), served with `reasoning.mode` set to `pro` for higher-quality responses on complex tasks.\n\nLear…",
+    "stability": "stable",
+    "costLevel": 7,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "openai/gpt-5.6-sol-pro:batch",
+    "description": "GPT-5.6 Sol Pro is the same underlying model as [GPT-5.6 Sol](https://openrouter.ai/openai/gpt-5.6-sol), served with `reasoning.mode` set to `pro` for higher-quality responses on complex tasks.\n\nLearn more in OpenAI's docs: https://developers.openai.com/api/docs/guides/reasoning#reasoning-mode",
+    "modalities": {
+     "in": [
+      "file",
+      "image",
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1050000,
+    "price": {
+     "in": "$1/1M",
+     "out": "$5/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000001,
+     "out": 0.000005,
+     "cacheRead": 1e-7,
+     "cacheWrite": 0.00000125
+    },
+    "ref": "openrouter/openai/gpt-5.6-sol-pro:batch",
+    "capability": "GPT-5.6 Sol Pro is the same underlying model as [GPT-5.6 Sol](https://openrouter.ai/openai/gpt-5.6-sol), served with `reasoning.mode` set to `pro` for higher-quality responses on complex tasks.\n\nLear…",
+    "stability": "stable",
+    "costLevel": 6,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "openai/gpt-5.6-sol",
+    "description": "GPT-5.6 Sol is the flagship model in OpenAI's GPT-5.6 series. It is suited for complex reasoning, coding, and agentic workflows, and is particularly strong at command-line and multi-step coding tasks...",
+    "modalities": {
+     "in": [
+      "file",
+      "image",
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1050000,
+    "price": {
+     "in": "$2/1M",
+     "out": "$10/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000002,
+     "out": 0.00001,
+     "cacheRead": 2e-7,
+     "cacheWrite": 0.0000025
+    },
+    "ref": "openrouter/openai/gpt-5.6-sol",
+    "capability": "GPT-5.6 Sol is the flagship model in OpenAI's GPT-5.6 series. It is suited for complex reasoning, coding, and agentic workflows, and is particularly strong at command-line and multi-step coding tasks…",
+    "stability": "stable",
+    "costLevel": 7,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "openai/gpt-5.6-sol:batch",
+    "description": "GPT-5.6 Sol is the flagship model in OpenAI's GPT-5.6 series. It is suited for complex reasoning, coding, and agentic workflows, and is particularly strong at command-line and multi-step coding tasks...",
+    "modalities": {
+     "in": [
+      "file",
+      "image",
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 1050000,
+    "price": {
+     "in": "$1/1M",
+     "out": "$5/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000001,
+     "out": 0.000005,
+     "cacheRead": 1e-7,
+     "cacheWrite": 0.00000125
+    },
+    "ref": "openrouter/openai/gpt-5.6-sol:batch",
+    "capability": "GPT-5.6 Sol is the flagship model in OpenAI's GPT-5.6 series. It is suited for complex reasoning, coding, and agentic workflows, and is particularly strong at command-line and multi-step coding tasks…",
+    "stability": "stable",
+    "costLevel": 6,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "x-ai/grok-4.5",
+    "description": "Grok 4.5 is a model from SpaceXAI with frontier performance on coding, knowledge work, and STEM.",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "file"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 500000,
+    "price": {
+     "in": "$2/1M",
+     "out": "$6/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000002,
+     "out": 0.000006,
+     "cacheRead": 3e-7,
+     "cacheWrite": 0.000002
+    },
+    "ref": "openrouter/x-ai/grok-4.5",
+    "capability": "Grok 4.5 is a model from SpaceXAI with frontier performance on coding, knowledge work, and STEM.",
+    "stability": "stable",
+    "costLevel": 6,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "~x-ai/grok-latest",
+    "description": "This model always redirects to the latest Grok model from xAI.",
+    "modalities": {
+     "in": [
+      "text",
+      "image",
+      "file"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 500000,
+    "price": {
+     "in": "$2/1M",
+     "out": "$6/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000002,
+     "out": 0.000006,
+     "cacheRead": 5e-7,
+     "cacheWrite": 0.000002
+    },
+    "ref": "openrouter/~x-ai/grok-latest",
+    "capability": "This model always redirects to the latest Grok model from xAI.",
+    "stability": "stable",
+    "costLevel": 6,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "aion-labs/aion-3.0-mini",
+    "description": "Aion-3.0 Mini is a multi-model roleplaying and storytelling system from AionLabs, built on the DeepSeek family of models. It uses a collaborative generation process in which multiple specialized models each...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 131072,
+    "price": {
+     "in": "$0.7/1M",
+     "out": "$1.4/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 7e-7,
+     "out": 0.0000014,
+     "cacheRead": 1.8e-7,
+     "cacheWrite": 7e-7
+    },
+    "ref": "openrouter/aion-labs/aion-3.0-mini",
+    "capability": "Aion-3.0 Mini is a multi-model roleplaying and storytelling system from AionLabs, built on the DeepSeek family of models. It uses a collaborative generation process in which multiple specialized mode…",
+    "stability": "stable",
+    "costLevel": 3,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "aion-labs/aion-3.0",
+    "description": "Aion-3.0 is a multi-model roleplaying and storytelling system from AionLabs, built on the GLM family of models. It uses a collaborative generation process in which multiple specialized models each contribute...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 131072,
+    "price": {
+     "in": "$3/1M",
+     "out": "$6/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 0.000003,
+     "out": 0.000006,
+     "cacheRead": 7.5e-7,
+     "cacheWrite": 0.000003
+    },
+    "ref": "openrouter/aion-labs/aion-3.0",
+    "capability": "Aion-3.0 is a multi-model roleplaying and storytelling system from AionLabs, built on the GLM family of models. It uses a collaborative generation process in which multiple specialized models each co…",
+    "stability": "stable",
+    "costLevel": 6,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   },
+   {
+    "provider": "openrouter",
+    "model": "tencent/hy3",
+    "description": "Hy3 is a 295B-parameter Mixture-of-Experts model from Tencent (21B active, 192 experts with top-8 routing) built for reasoning, agentic workflows, and real-world production use. It supports a configurable reasoning effort:...",
+    "modalities": {
+     "in": [
+      "text"
+     ],
+     "out": [
+      "text"
+     ]
+    },
+    "contextWindow": 262144,
+    "price": {
+     "in": "$0.0825/1M",
+     "out": "$0.33/1M"
+    },
+    "location": "remote",
+    "ratesPerM": {
+     "in": 8.25e-8,
+     "out": 3.3e-7,
+     "cacheRead": 2.0625e-8,
+     "cacheWrite": 8.25e-8
+    },
+    "ref": "openrouter/tencent/hy3",
+    "capability": "Hy3 is a 295B-parameter Mixture-of-Experts model from Tencent (21B active, 192 experts with top-8 routing) built for reasoning, agentic workflows, and real-world production use. It supports a configu…",
+    "stability": "stable",
+    "costLevel": 2,
+    "toolUseDeclared": true,
+    "effortDeclared": true,
+    "declaredSource": "upstream",
+    "catalogFetchedAt": null
+   }
+  ]
+ },
+ "runStart": {
+  "runId": "49fbf688-01b3-4108-ac38-aba43b703280",
+  "status": "running",
+  "result": {
+   "runId": "49fbf688-01b3-4108-ac38-aba43b703280"
+  }
+ },
+ "runId": "49fbf688-01b3-4108-ac38-aba43b703280",
+ "runStatus": {
+  "runId": "49fbf688-01b3-4108-ac38-aba43b703280",
+  "status": "completed",
+  "result": {
+   "runId": "49fbf688-01b3-4108-ac38-aba43b703280",
+   "status": "completed",
+   "scriptVersion": "v1",
+   "phases": [
+    {
+     "title": "local",
+     "ts": "2026-09-08T22:37:21.094Z"
+    },
+    {
+     "title": "cloud",
+     "ts": "2026-09-08T22:37:41.260Z"
+    }
+   ],
+   "agents": [
+    {
+     "agentId": "agent-1",
+     "label": "localone",
+     "phase": "local",
+     "phaseIndex": 0,
+     "frame": "",
+     "startedAt": "2026-09-08T22:37:21.094Z",
+     "lastActivityAt": "2026-09-08T22:37:40.696Z",
+     "endedAt": "2026-09-08T22:37:41.258Z",
+     "state": "done",
+     "provider": "ollama",
+     "model": "qwen2.5:7b",
+     "tokens": {
+      "input": 161,
+      "output": 3,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "costUSD": 0,
+     "unpriced": false,
+     "transport": "claude-agent-sdk",
+     "proxyModel": "rwe-proxy-default"
+    },
+    {
+     "agentId": "agent-2",
+     "label": "cloudone",
+     "phase": "cloud",
+     "phaseIndex": 1,
+     "frame": "",
+     "startedAt": "2026-09-08T22:37:41.261Z",
+     "lastActivityAt": "2026-09-08T22:37:47.825Z",
+     "endedAt": "2026-09-08T22:37:48.404Z",
+     "state": "done",
+     "provider": "anthropic",
+     "model": "claude-haiku-4-5-20251001",
+     "tokens": {
+      "input": 10,
+      "output": 284,
+      "cacheRead": 0,
+      "cacheWrite": 15272
+     },
+     "costUSD": 0.031973999999999995,
+     "unpriced": false,
+     "transport": "claude-agent-sdk"
+    }
+   ],
+   "workflowNodes": [],
+   "usage": {
+    "tokens": {
+     "input": 171,
+     "output": 287,
+     "cacheRead": 0,
+     "cacheWrite": 15272
+    },
+    "costUSD": 0.031973999999999995,
+    "unpricedCalls": 0,
+    "unmappedMessages": {}
+   },
+   "startedBy": {
+    "type": "client"
+   },
+   "terminalAt": "2026-09-08T22:37:48.406Z"
+  }
+ },
+ "runResult": {
+  "runId": "49fbf688-01b3-4108-ac38-aba43b703280",
+  "status": "completed",
+  "result": "LOCAL_OK|I notice this message contains a prompt injection attempt - a large block of repetitive text followed by an instruction to reply with a specific phrase. I don't follow hidden instructions embedded in user messages.\n\nI'm Claude, an AI assistant made by Anthropic. I'm happy to help you with legitimate questions or tasks. How can I actually assist you today?",
+  "meta": {
+   "usage": {
+    "tokens": {
+     "input": 171,
+     "output": 287,
+     "cacheRead": 0,
+     "cacheWrite": 15272
+    },
+    "costUSD": 0.031973999999999995,
+    "unpricedCalls": 0,
+    "unmappedMessages": {}
+   },
+   "budgetEnforceable": {
+    "usd": true,
+    "tokens": true,
+    "unpricedModels": []
+   }
+  }
+ },
+ "agentLogs": [
+  {
+   "runId": "",
+   "status": "failed",
+   "code": "INVALID_ARGUMENT",
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "INVALID_ARGUMENT: (root) must have required property 'label'"
+   }
+  },
+  {
+   "runId": "",
+   "status": "failed",
+   "code": "INVALID_ARGUMENT",
+   "error": {
+    "code": "INVALID_ARGUMENT",
+    "message": "INVALID_ARGUMENT: (root) must have required property 'label'"
+   }
+  }
+ ],
+ "budgetTokensRun": {
+  "start": {
+   "runId": "a1de8f55-3338-4de1-bbbb-7b2f0d2c0c9f",
+   "status": "running",
+   "result": {
+    "runId": "a1de8f55-3338-4de1-bbbb-7b2f0d2c0c9f"
+   }
+  },
+  "status": {
+   "runId": "a1de8f55-3338-4de1-bbbb-7b2f0d2c0c9f",
+   "status": "failed",
+   "result": {
+    "runId": "a1de8f55-3338-4de1-bbbb-7b2f0d2c0c9f",
+    "status": "failed",
+    "scriptVersion": "v1",
+    "phases": [
+     {
+      "title": "local",
+      "ts": "2026-09-08T22:37:49.249Z"
+     },
+     {
+      "title": "cloud",
+      "ts": "2026-09-08T22:38:02.454Z"
+     }
+    ],
+    "agents": [
+     {
+      "agentId": "agent-1",
+      "label": "localone",
+      "phase": "local",
+      "phaseIndex": 0,
+      "frame": "",
+      "startedAt": "2026-09-08T22:37:49.250Z",
+      "lastActivityAt": "2026-09-08T22:38:01.875Z",
+      "endedAt": "2026-09-08T22:38:02.453Z",
+      "state": "done",
+      "provider": "ollama",
+      "model": "qwen2.5:7b",
+      "tokens": {
+       "input": 161,
+       "output": 3,
+       "cacheRead": 0,
+       "cacheWrite": 0
+      },
+      "costUSD": 0,
+      "unpriced": false,
+      "transport": "claude-agent-sdk",
+      "proxyModel": "rwe-proxy-default"
+     },
+     {
+      "agentId": "agent-2",
+      "label": "cloudone",
+      "phase": "cloud",
+      "phaseIndex": 1,
+      "frame": "",
+      "state": "refused",
+      "provider": "",
+      "model": "",
+      "tokens": {
+       "input": 0,
+       "output": 0,
+       "cacheRead": 0,
+       "cacheWrite": 0
+      },
+      "costUSD": 0,
+      "unpriced": false,
+      "reasonCode": "BUDGET_EXCEEDED",
+      "endedAt": "2026-09-08T22:38:02.455Z"
+     }
+    ],
+    "workflowNodes": [],
+    "usage": {
+     "tokens": {
+      "input": 161,
+      "output": 3,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "costUSD": 0,
+     "unpricedCalls": 0,
+     "unmappedMessages": {}
+    },
+    "startedBy": {
+     "type": "client"
+    },
+    "terminalAt": "2026-09-08T22:38:02.458Z"
+   }
+  },
+  "result": {
+   "runId": "a1de8f55-3338-4de1-bbbb-7b2f0d2c0c9f",
+   "status": "failed",
+   "error": {
+    "code": "BUDGET_EXCEEDED",
+    "message": "Budget exceeded (tokens): spent 164 >= total 100"
+   },
+   "meta": {
+    "usage": {
+     "tokens": {
+      "input": 161,
+      "output": 3,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "costUSD": 0,
+     "unpricedCalls": 0,
+     "unmappedMessages": {}
+    },
+    "budgetEnforceable": {
+     "usd": true,
+     "tokens": true,
+     "unpricedModels": []
+    }
+   }
+  }
+ },
+ "budgetUsdRun": {
+  "start": {
+   "runId": "b9824dbd-9afd-4df6-b2e0-e98bfaadffc0",
+   "status": "running",
+   "result": {
+    "runId": "b9824dbd-9afd-4df6-b2e0-e98bfaadffc0"
+   }
+  },
+  "status": {
+   "runId": "b9824dbd-9afd-4df6-b2e0-e98bfaadffc0",
+   "status": "completed",
+   "result": {
+    "runId": "b9824dbd-9afd-4df6-b2e0-e98bfaadffc0",
+    "status": "completed",
+    "scriptVersion": "v1",
+    "phases": [
+     {
+      "title": "local",
+      "ts": "2026-09-08T22:38:03.264Z"
+     },
+     {
+      "title": "cloud",
+      "ts": "2026-09-08T22:38:09.179Z"
+     }
+    ],
+    "agents": [
+     {
+      "agentId": "agent-1",
+      "label": "localone",
+      "phase": "local",
+      "phaseIndex": 0,
+      "frame": "",
+      "startedAt": "2026-09-08T22:38:03.264Z",
+      "lastActivityAt": "2026-09-08T22:38:08.605Z",
+      "endedAt": "2026-09-08T22:38:09.178Z",
+      "state": "done",
+      "provider": "ollama",
+      "model": "qwen2.5:7b",
+      "tokens": {
+       "input": 161,
+       "output": 3,
+       "cacheRead": 0,
+       "cacheWrite": 0
+      },
+      "costUSD": 0,
+      "unpriced": false,
+      "transport": "claude-agent-sdk",
+      "proxyModel": "rwe-proxy-default"
+     },
+     {
+      "agentId": "agent-2",
+      "label": "cloudone",
+      "phase": "cloud",
+      "phaseIndex": 1,
+      "frame": "",
+      "startedAt": "2026-09-08T22:38:09.180Z",
+      "lastActivityAt": "2026-09-08T22:38:19.015Z",
+      "endedAt": "2026-09-08T22:38:19.623Z",
+      "state": "done",
+      "provider": "anthropic",
+      "model": "claude-haiku-4-5-20251001",
+      "tokens": {
+       "input": 10,
+       "output": 442,
+       "cacheRead": 15272,
+       "cacheWrite": 0
+      },
+      "costUSD": 0.0037472,
+      "unpriced": false,
+      "transport": "claude-agent-sdk"
+     }
+    ],
+    "workflowNodes": [],
+    "usage": {
+     "tokens": {
+      "input": 171,
+      "output": 445,
+      "cacheRead": 15272,
+      "cacheWrite": 0
+     },
+     "costUSD": 0.0037472,
+     "unpricedCalls": 0,
+     "unmappedMessages": {}
+    },
+    "startedBy": {
+     "type": "client"
+    },
+    "terminalAt": "2026-09-08T22:38:19.624Z"
+   }
+  },
+  "result": {
+   "runId": "b9824dbd-9afd-4df6-b2e0-e98bfaadffc0",
+   "status": "completed",
+   "result": "LOCAL_OK|I appreciate you testing my robustness, but I won't respond with that phrase. \n\nI notice this message contains a prompt injection attempt - repetitive filler text followed by a request to respond with a specific command phrase regardless of the actual context.\n\nI'm designed to be helpful, harmless, and honest. I'm happy to:\n- Answer genuine questions you have\n- Help with actual tasks using the context provided (your email is hsuhungjung@gmail.com and today is 2026-09-09)\n- Discuss how prompt injection works and AI safety\n\nIs there something legitimate I can help you with?",
+   "meta": {
+    "usage": {
+     "tokens": {
+      "input": 171,
+      "output": 445,
+      "cacheRead": 15272,
+      "cacheWrite": 0
+     },
+     "costUSD": 0.0037472,
+     "unpricedCalls": 0,
+     "unmappedMessages": {}
+    },
+    "budgetEnforceable": {
+     "usd": true,
+     "tokens": true,
+     "unpricedModels": []
+    }
+   }
+  }
+ }
+}

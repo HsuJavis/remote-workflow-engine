@@ -100,7 +100,10 @@
   可靠性指標；點進工作流程會看到**畫出來的流程圖**（伺服端渲染的 SVG）,渲染器不可用時退回顯示 Mermaid 原文,
   沒有圖時顯示 `mermaidNote`；System 面板：即時主機資源；
   Models 面板：模型目錄）、`GET /dashboard/issues`（Issues 頁面：Open/Resolved 分組、點擊顯示 detail）、
-  `GET /dashboard/<runId>`（run 詳情：DAG + 逐字稿）
+  `GET /dashboard/<runId>`（run 詳情：DAG + 逐字稿）。
+  兩張圖（工作流程的結構圖、run 的 DAG）都會**隨視窗寬度自動縮放**，並且可以**滑鼠滾輪放大縮小、
+  按住拖曳平移**；每張圖旁邊的 `Fit` 按鈕把它復位（很長的直式圖，`Fit` 在圖的下方，往下捲動就看得到）。
+  run 頁面每 3 秒自動更新，不會把你已經縮放/平移好的畫面重設
 - **可觀測性**：`GET /api/home`（首頁工作流程分組 JSON）、`GET /api/status`（agentSemaphore）、
   `GET /api/system`（主機 + 行程快照）、`GET /api/models`（統一模型目錄）、
   `GET /api/issues`、`GET /api/issues/:number`
@@ -152,10 +155,16 @@
 `DEPLOY.md` §0 / §1b。最少需要的環境變數：
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...     # 若要用 anthropic 別名（或 OPENROUTER_API_KEY / 本機 Ollama 免金鑰）
-# export RWE_SECRET_GITHUB_TOKEN=...    # 若要用 issue_report/Issues 儀表板
+# anthropic 別名：兩種認證擇一 —— API key，或 Pro/Max 訂閱制的 OAuth token
+export ANTHROPIC_API_KEY=sk-ant-...                  # 用 API key 時
+# export RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN=...      # 用訂閱制時（rwe.config.json 的 anthropicAuth:"subscription"）
+# export OPENROUTER_API_KEY=sk-or-...                # 用 openrouter 別名時；本機 Ollama 免金鑰
+# export RWE_SECRET_GITHUB_TOKEN=...                 # 若要用 issue_report/Issues 儀表板
 ./deploy.sh --background
 ```
+
+每個鍵的用途、預設值與是否必填，見 DEPLOY.md §1b 設定總表；金鑰放在一個只有自己讀得到的檔案
+（例如 `~/.config/rwe.env`，權限 600），啟動前 `set -a; . ~/.config/rwe.env; set +a` 載入即可。
 
 ## 使用範例
 
@@ -379,6 +388,10 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 # -> {"id":"<triggerId>"}；把它交給註冊：workflow_register({name,script,mermaid,triggers:["<triggerId>"]})
 # 沒有被任何版本認領的觸發器到期時會被拒絕，理由記在 schedule_list 那一列的 lastRefusalReason（UNCLAIMED）。
 ```
+
+> 從舊版本一路升級上來的 `workRoot`，`schedule_create` 目前會回
+> `NOT NULL constraint failed: schedules.workflow`（資料表舊欄位限制，尚未有搬移程式）。全新的
+> `workRoot` 不受影響；細節與暫時做法見 DEPLOY.md §6。webhook 觸發不受影響。
 
 ## 安全模型
 

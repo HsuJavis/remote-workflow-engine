@@ -8671,13 +8671,82 @@ never reads it (harmless, left alone — it is the owner's file, not a repo arti
 - **owner_decision:** pending — REQ-126 says `effort` must take effect for OpenRouter models that declare reasoning support, but on this deployment's dispatch path it never reaches the wire (SDK → `--max-thinking-tokens` → the CLI collapses it to `thinking:{type:'adaptive'}` → LiteLLM drops it for openrouter; the explicit shape 400s). The code now reports `effortApplied {applied:false, reason:…}` honestly. Which does the owner want: (a) amend REQ-126's acceptance to "declared, and reported honestly when undeliverable", (b) change routing (bypass the CLI for OpenRouter so the reasoning field is sent), or (c) accept it as a documented limitation and close the REQ as-is?
 - **iter:** v26
 
-### VAL-187 — REQ-127: the four columns and the cost arithmetic are right, but this deployment prices no Anthropic call at all
-- **status:** red
+### VAL-187 — REQ-127: four token columns, per-model cost, and both budget ceilings — real on the production alias table
+- **status:** green
 - **traces:** REQ-127, DES-178, DES-180, DES-181, DES-183
 - **tier:** acceptance
 - **real:** true
-- **result:** fail
-- **evidence:** **ROUND 3 (2026-09-09, validator, on the fixed tree at `242b5a0`) — RED, defect D9.**
+- **result:** pass
+- **owner_decision:** pending — this box's `rwe.config.json` maps the alias `claude-sonnet-4-6` to model `claude-sonnet-5`. The engine prices the row correctly for what it RESOLVES to ($2/$10, measured in the round-6 catalog capture), so nothing is wrong in the code; the NAME is what misleads whoever writes it in `model.default` — Sonnet 4.6 is a different, $3/$15 model. Does the owner want the alias (a) renamed to match its target, (b) repointed at a real Sonnet 4.6 model row, or (c) kept deliberately as a legacy pointer? A gate may not edit the deployed config.
+- **evidence:** **ROUND 6 (2026-09-09, validator, on `d1c453b`) — GREEN. Every clause re-measured by the
+  validator on a scratch engine booted from DEPLOY.md §0's documented second-instance form
+  (`RWE_CONFIG_PATH=~/.local/share/rwe-val-r6/cfg.json RWE_BIND=127.0.0.1 RWE_PORT=8935
+  ./deploy.sh --background`) over a config carrying the PRODUCTION alias table verbatim — five models,
+  two aliases each — with only `workRoot`/`bind`/`port`/`updateFlagPath` moved, `auth` off and the
+  secrets blanked (the round-5 hygiene rule: a scratch engine never gets a byte copy of the deployed
+  config). Production `rwe.service` was never restarted (`NRestarts=0`, `MainPID` and
+  `ActiveEnterTimestamp` identical before and after).**
+  **(a) D9 is closed where round 3 measured it red.** Round 3's own harness
+  (`req127-round3-harness.mjs`, unmodified) re-run on this engine, run
+  `49fbf688-01b3-4108-ac38-aba43b703280`: `{"label":"cloudone","provider":"anthropic",
+  "model":"claude-haiku-4-5-20251001","state":"done","tokens":{"input":10,"output":284,
+  "cacheRead":0,"cacheWrite":15272},"costUSD":0.031974,"unpriced":false}` and
+  `meta.budgetEnforceable {"usd":true,"tokens":true,"unpricedModels":[]}`. Round 3's reading for the
+  identical shape on the identical table was `costUSD 0, unpriced:true, usd:false`. Recomputed by
+  hand against the corrected static table: `10×1e-6 + 284×5e-6 + 15272×2e-6 = 0.031974` — exact,
+  cache WRITE at the 2× (1 h) multiplier. The same run's local arm:
+  `{"provider":"ollama","model":"qwen2.5:7b","tokens":{"input":161,"output":3,"cacheRead":0,
+  "cacheWrite":0},"costUSD":0,"unpriced":false}` — the known-zero discriminator, not an unpriced hole.
+  **(b) The cache-READ multiplier, on a real cache hit.** The repeat call in the same harness's third
+  arm: `{"input":10,"output":442,"cacheRead":15272,"cacheWrite":0,"costUSD":0.0037472}` =
+  `10×1e-6 + 442×5e-6 + 15272×1e-7`, i.e. 0.1× input for a read — exact.
+  **(c) The USD ceiling binds on this table** (`req127-round3-usdbudget-harness.mjs`, unmodified,
+  same engine — round 3 could only run it on a one-alias engine). Two priced Haiku calls under
+  `budget:{usd:0.000001}` ⇒ run `a78431b3-fbfa-4ee5-9251-afe33059b7dd` `failed`,
+  `BUDGET_EXCEEDED: Budget exceeded (usd): spent 0.000644 >= total 0.000001`, `agents[1]
+  {"state":"refused","reasonCode":"BUDGET_EXCEEDED"}`; the same workflow under `budget:{usd:10}`
+  completes, `costUSD 0.001219`. (`159×1e-6 + 97×5e-6 = 0.000644` — exact.) Note for a reader of the
+  raw capture: the round-3 harness's own USD arm inside `req127-round6-prodalias.json` shows
+  `completed` under `usd:0.0000001` — correct, not a miss: the ceiling is checked BEFORE each
+  dispatch and that workflow's only priced call is its LAST dispatch, so nothing remains to refuse.
+  The binding measurement is `req127-round6-usdbudget.json`.
+  **(d) The token ceiling binds** on the same engine: `budget:{tokens:100}` ⇒ run
+  `a1de8f55-3338-4de1-bbbb-7b2f0d2c0c9f` `failed`, `Budget exceeded (tokens): spent 164 >= total
+  100`, second dispatch `state:"refused"`. This is REQ-127's own 「公開的後果」 resolved as option
+  (ii): a token ceiling binds on a free local model where a USD one never could.
+  **(e) OpenRouter pricing — the arm no previous round ever measured.** Rounds 1/3/4/5 priced only
+  anthropic and ollama; REQ-127's clause also names openrouter's `/models` `pricing.*` as the price
+  source, and that lookup goes through the same ModelBook index D9/D11 rewired. One real call through
+  the `gpt41nano` alias (`req127-round6-openrouter-harness.mjs`), run
+  `4e071218-fa14-44c4-8987-380bf89e0cf1`: `{"provider":"openrouter","model":"openai/gpt-4.1-nano",
+  "tokens":{"input":128,"output":3,"cacheRead":0,"cacheWrite":0},"costUSD":0.000014,
+  "unpriced":false}`. Cross-checked against OpenRouter's own public `/api/v1/models` in the same
+  harness — `pricing {prompt:"0.0000001", completion:"0.0000004", input_cache_read:"0.000000025"}` —
+  hand-recomputed `128×1e-7 + 3×4e-7 = 0.000014`, `deltaAbs 0`. The served catalog row agrees:
+  `price {in:"$0.1/1M", out:"$0.4/1M"}`, `aliases ["gpt41nano"]`.
+  **(f) The catalogue serves ONE priced row per model** (D11/D12, re-measured independently with the
+  fixer's own harness `d11-d12-round5-harness.mjs`): `models_list {provider:'anthropic'}` ⇒ FOUR rows
+  for four models, `unknownPriced []` — `claude-fable-5 ["fable","claude-fable-5"] $10/$50`,
+  `claude-opus-4-8 ["opus","claude-opus-4-8"] $5/$25`, `claude-sonnet-5 ["sonnet","claude-sonnet-4-6"]
+  $2/$10`, `claude-haiku-4-5-20251001 ["haiku","claude-haiku-4-5"] $1/$5`; `GET /api/models` serves
+  the same four. The `fable` admission pin at zero provider spend (run
+  `e1e82894-542a-441f-b4ae-d66e60f6286d`) reports `budgetEnforceable {"usd":true,"tokens":true,
+  "unpricedModels":[]}`.
+  **(g) A trigger-started run carries no ceiling and still records everything**
+  (`req127-round6-trigger-harness.mjs`): a `once` schedule claimed by
+  `workflow_register({triggers:[id]})`, fired by the scheduler's own tick ⇒ run
+  `3fddeac5-5e17-4aa2-a7bb-f628bfb60cd8`, `startedBy {"type":"schedule",…}`, script-visible
+  `budget.limits {"usd":null,"tokens":null}`, and usage still recorded on a PRICED model:
+  `{"input":161,"output":47,"cacheRead":0,"cacheWrite":0}`, `costUSD 0.000396` (`161×1e-6 + 47×5e-6`
+  — exact), `unpriced:false`. **This arm ran on a second scratch engine with a FRESH workRoot
+  (port 8936) because the production-shaped one refuses `schedule_create` outright — see defect D13
+  below; the refusal is in v24 trigger-ownership migration code, not in REQ-127's accounting.**
+  **(h) The dashboard shows the four columns** (D8) — see VAL-189's round-6 block: `#run-usage` on
+  real production run `77f74018-…` reads `33949 tok · in 11968 · out 21981 · cache read 0 ·
+  cache write 0 · $0.0000 · 9 unpriced call(s) · (lower bound)`.
+  Harnesses + raw captures: `evidence/v26/req127-round6-{prodalias,usdbudget,catalog,openrouter,
+  trigger}.json`, `evidence/v26/req127-round6-{openrouter,trigger}-harness.mjs`.
+  **ROUND 3 (2026-09-09, validator, on the fixed tree at `242b5a0`) — RED, defect D9, kept for the record.**
   Two scratch engines booted from `./deploy.sh` (§0 form), differing in ONE thing: the alias table.
   **(a) Engine A — a byte copy of the PRODUCTION alias table** (`haiku` *and* `claude-haiku-4-5`
   both → `anthropic/claude-haiku-4-5-20251001`, same for sonnet/opus/fable). Real run
@@ -8812,15 +8881,72 @@ never reads it (harmless, left alone — it is the owner's file, not a repo arti
   be re-verified with ANOTHER fresh instance.
 - **iter:** v26
 
-### VAL-189 — REQ-129: `Fit` is reachable again, but the author figure cannot be dragged at all
-- **status:** red
+### VAL-189 — REQ-129: both figures scale, wheel-zoom, drag-pan and reset — measured with real mouse input
+- **status:** green
 - **traces:** REQ-129, DES-186
 - **tier:** acceptance
 - **real:** true
-- **result:** fail
-- **evidence:** **ROUND 3 (2026-09-09, validator, real Chromium 25 `headless:'new'`, 1100x900,
-  against a scratch engine on port 8931 whose workRoot is a byte copy of production) — RED, defect
-  D10; round 1's own clause is CLOSED.**
+- **result:** pass
+- **evidence:** **ROUND 6 (2026-09-09, validator, on `d1c453b`) — GREEN. Real Chromium 25
+  (`headless:'new'`), 1100×900 viewport, against the scratch engine on port 8935 whose workRoot is a
+  copy of production, on real production data.**
+  **(a) The run DAG** (`req129-round3-harness.mjs`, round 3's own harness, unmodified; capture
+  `req129-round6-dag.json`), real production run `77f74018-6542-4430-be4c-a93ea80bd325` — the REQ's
+  own wide case, 9 agents over 5 phases: `svg {viewBox:"0 0 938 188", width:"100%",
+  preserveAspectRatio:"xMinYMin meet", renderedW:1052, renderedH:211}` in the 1100 px window, all 10
+  cells and their labels legible in one screen, `phases ["triage","fork:lite x3","evidence","check",
+  "reconcile"]`. Real wheel ⇒ `scale(1.1)`; real `mouse.down`→`move(steps:15)`→`mouse.up` pan ⇒
+  `translate(-220px, -120px)`; `hitAfterPan "button#dag-fit"` and a REAL `page.mouse.click` at its
+  centre fires the button's own listener (`isTrusted:true`) and resets to `translate(0px, 0px)
+  scale(1)`; the 3 s poll does not reset a user's pan (`translate(-90px,-40px)` identical after
+  4.2 s). **D8 in the same capture:** `#run-usage` reads `33949 tok · in 11968 · out 21981 ·
+  cache read 0 · cache write 0 · $0.0000 · 9 unpriced call(s) · (lower bound)` — the four columns
+  are readable without leaving the page.
+  **(b) The author figure — D10 is closed.** Round 3's own reproduction harness
+  (`req129-round3-author-sticky-harness.mjs`, unmodified; capture `req129-round6-author-sticky.json`):
+  a (-160,-80) gesture ⇒ `translate(-160px, -80px) scale(1)` — the FULL delta (round 3:
+  `translate(-20px, -10px)`); `eventsDuringGesture ["mouseup"]` (round 3:
+  `["dragstart:diagram-img","dragend"]`, no mouseup at all); and moving the mouse afterwards with NO
+  button held leaves the transform unchanged, twice over (round 3: the figure followed the cursor).
+  The clean-protocol harness (`req129-round3-author-harness.mjs`, unmodified; capture
+  `req129-round6-author.json`) adds: `transformAfterPan "translate(-180px, -90px) scale(1)"` for a
+  (-180,-90) gesture, `nativeDragEvents []`, `hitOnFitAfterPan "button#diagram-fit"`, a REAL click
+  ⇒ `isTrusted:true` and `translate(0px, 0px) scale(1)`, and the counterfactual that isolated D10
+  (`draggable=false`) now delivering the SAME full gesture as the shipped page.
+  **(c) Wheel zoom on BOTH figures, and the measurement trap that hid it**
+  (`req129-round6-wheel-harness.mjs`, capture `req129-round6-wheel.json`): `page.mouse.wheel()` sends
+  a raw `Input.dispatchMouseEvent{type:'mouseWheel'}`, which is validated against the BROWSER WINDOW,
+  not the emulated viewport. Headless Chromium's default window is 800×600, so with
+  `setViewport(1100×900)` every wheel below y=600 is silently dropped: the author figure sits at
+  y≈695 and looked completely dead (page handler never ran AND the scrollable document did not
+  scroll), while the run DAG at y≈333 zoomed fine — and adding any document-level wheel listener from
+  the harness made the same dead call work, which is exactly what a real defect would NOT do. With
+  `--window-size=1120,960` both APIs agree: raw wheel ⇒ `translate(-52.5px, -11.2px) scale(1.1)`, and
+  `Input.synthesizeScrollGesture{gestureSourceType:'mouse'}` (the real compositor input pipeline) ⇒
+  `scale(2.85312)`, with a control gesture over a plain area of the same page scrolling it 134 px, so
+  the pipeline is provably live. Fit then resets both: author `hit "BUTTON#diagram-fit"`,
+  `isTrusted:true` ⇒ `translate(0px, 0px) scale(1)`; DAG the same (`target "dag-fit"`).
+  **(d) The grandfathered TD figure** — the clause 「既有 TD 圖同樣適用(渲染層,不動圖本身)」
+  (`req129-round6-tdfigure-harness.mjs`, capture `req129-round6-tdfigure.json`, screenshots
+  `req129-round6-td-{figure-1100px,after-pan,wheel-zoomed}.png`). All five figures on their release
+  channel are `graph LR` after the v26 migration, so the scratch engine published this box's own
+  pre-v26 `gp-runner v3` — a real `graph TD`, 9 nodes (the largest grandfathered TD this deployment
+  still holds; the REQ names an 11-node figure, which no longer exists here). It renders 1052×2329 in
+  the 1100 px window (`fitsWidth true`), a real drag ⇒ the full `translate(-180px, -90px)`,
+  `eventsDuringGesture ["mouseup:diagram-img"]`, no sticky follow, wheel ⇒ `scale(1.1)` raw /
+  `scale(2.85312)` synthesized, and its Fit — which on a figure this tall sits below the fold at
+  document y 2932 — resets it after a normal page scroll: `hit "BUTTON#diagram-fit"`,
+  `isTrusted:true` ⇒ `translate(0px, 0px) scale(1)`.
+  **(e) The fix's blast radius, re-checked** (`req129-round4-harness.mjs`, unmodified; capture
+  `req129-round6-cellclick.json`): `imgDraggableAttr "false"`, `imgUserDrag "none"`, and because the
+  D10 fix adds `e.preventDefault()` to the `.zoomable` mousedown the run DAG SHARES, a REAL mouse
+  click on a real run's agent cell (`f6953a1e-…`, cell `probe`) still opens that agent's transcript:
+  `"Select an agent node above."` ⇒ `{"runId":"f6953a1e-…","status":"completed","harness":{"model":
+  "claude-haiku-4-5-20251001",…}`.
+  **ROUND 3 (2026-09-09, validator) — RED, defect D10, kept for the record.**
+  **ROUND 3 (2026-09-09, validator, real Chromium 25 `headless:'new'`, 1100x900, against a scratch
+  engine on port 8931 whose workRoot is a byte copy of production) — RED, defect D10; round 1's own
+  clause is CLOSED.**
   **(a) Round 1's failure is genuinely fixed, re-measured by the validator, not inherited.** Real
   production run `77f74018-6542-4430-be4c-a93ea80bd325` (9 agents, 5 phases — the REQ's own wide
   case): `svg {viewBox:"0 0 938 188", width:"100%", preserveAspectRatio:"xMinYMin meet",
@@ -9428,3 +9554,144 @@ printed (2106886), never `pkill -f`; its own `litellm` child (2106916) died with
 6. **Reported, not closed here:** the misnamed production alias `claude-sonnet-4-6` -> `claude-sonnet-5`
    (VAL-199(c)) — an owner decision about a config file this pass may not write.
 7. `gates.validation.passed` is NOT flipped by this pass — the next delta re-run does that.
+
+## v26 GATE 7.5 ROUND 6 (validator) — delta re-run of the REQ-127 / REQ-129 impact closure
+
+### Boot record — documented steps only
+
+Two scratch engines, both brought up by DEPLOY.md §0's own second-instance form. Nothing outside the
+documented path was needed; production was never touched.
+
+```bash
+# baseline, before anything (kept for the after-comparison)
+systemctl --user show rwe.service -p NRestarts,MainPID,ActiveEnterTimestamp,ActiveState
+#   ActiveState=active  ActiveEnterTimestamp=Tue 2026-09-08 04:20:27 CST  MainPID=1188044  NRestarts=0
+
+# engine A — the PRODUCTION alias table (five models, two aliases each), workRoot = a copy of the
+# production one (it holds the real runs/workflows the browser clauses need), secrets BLANKED
+# (round-5 hygiene rule), auth off, its own updateFlagPath so it can never touch production's.
+set -a; . ~/.config/rwe.env; set +a
+RWE_CONFIG_PATH=/home/user/.local/share/rwe-val-r6/cfg.json RWE_BIND=127.0.0.1 RWE_PORT=8935 \
+  ./deploy.sh --background
+#   健康檢查通過：{"agentSemaphore":{"total":32,"inUse":0,"queued":0},
+#                 "version":"0.1.0 (v0.20.0-261-gd1c453b)", ...}
+#   部署完成。服務位址：http://127.0.0.1:8935/mcp   (PID 2159999, copied out of .rwe.pid at once)
+
+# engine B — same config, FRESH empty workRoot, for the trigger clause (see D13)
+RWE_CONFIG_PATH=/home/user/.local/share/rwe-val-r6/cfg-fresh.json RWE_BIND=127.0.0.1 RWE_PORT=8936 \
+  ./deploy.sh --background
+#   健康檢查通過：{"agentSemaphore":{"total":32,...},"version":"0.1.0 (v0.20.0-261-gd1c453b)"}
+#   (PID 2170988)
+
+# surface check on engine A, against DEPLOY §0's own expected numbers
+curl -s -X POST http://127.0.0.1:8935/mcp -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ... → tools: 35        # §0 says 35
+head -5 .rwe.log → listening on http://127.0.0.1:8935/mcp (workRoot=/home/user/.local/share/rwe-val-r6/work)
+
+# teardown: each engine killed by the PID deploy.sh printed (no pkill), scratch tree deleted
+kill 2159999 ; kill 2170988 ; rm -rf ~/.local/share/rwe-val-r6
+systemctl --user show rwe.service -p NRestarts,MainPID,ActiveEnterTimestamp,ActiveState  # identical
+```
+
+**Secret hygiene, done here.** Round 5's standing rule (a scratch engine gets blanked secrets, never a
+byte copy of the deployed config) was followed for both engines. Auditing `~/.local/share` afterwards
+also turned up two leftovers the round-5 cleanup missed: `rwe-val-r3/` (round 3's two workRoots — one
+of them, `wr-b/auth-tokens.db`, still held **1 bearer token and 12 registered OAuth clients** copied
+from production) and `rwe-smoke-r5/`. Nothing was running against either (no process, no listening
+port); both were deleted. `~/.local/share` now holds only `rwe-data` (production), `rwe-sdlc-agents`
+and `rwe-update`.
+
+### Doc / deploy gaps found and filled
+
+- **None that block a boot.** Both engines came up from §0 verbatim, and §0's own expected outputs
+  (health JSON, `tools: 35`) matched what the running engines answered.
+- **README's minimum-env block named only `ANTHROPIC_API_KEY` — filled.** This very deployment runs
+  `anthropicAuth:"subscription"`, i.e. its anthropic calls authenticate with
+  `RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN` and there is no `ANTHROPIC_API_KEY` anywhere on the box; a
+  reader following README verbatim would have exported a key they do not have. §1b already documented
+  both modes, so README now names the alternative and points at §1b (the single settings reference),
+  plus the `set -a; . ~/.config/rwe.env; set +a` line this round actually used.
+- **The dashboard's zoom/pan was in neither manual — filled.** REQ-129's whole user-visible outcome
+  (both figures scale to the window, wheel zoom, drag pan, `Fit` resets, the 3 s poll does not undo
+  your view, and on a very tall figure `Fit` is below it) was documented nowhere after round 5 removed
+  the D10 warning. README's dashboard bullet now states it as current behaviour.
+- **D13 written into both manuals** — DEPLOY §6 as a known limitation with its workaround, and a short
+  callout under README's `schedule_create` example, because that example fails verbatim on an
+  upgraded workRoot.
+- **One cosmetic inaccuracy in `deploy.sh`, recorded not patched:** step 2 always reports on the
+  repo-root `rwe.config.json` (`rwe.config.json 已存在，保留不覆蓋。`) even when `RWE_CONFIG_PATH`
+  points somewhere else, so a second-instance boot prints a line about a file it will not read. The
+  engine itself loads the right file — `.rwe.log`'s own `workRoot=` line proves it. Behaviour is
+  correct; only the message is misleading. Left for the orchestrator to route (a one-line fix in
+  `deploy.sh`, outside the REQ-127/129 closure).
+
+### Config-file sync check
+
+**No config file changed this round, and none needed to.** This round shipped no code change at all
+(the validator measures; the D9/D10/D11/D12 fixes landed in earlier passes), so there is no new key,
+no changed default, no new port and no new flag. Round-trip re-run mechanically against the current
+tree anyway:
+
+- `KNOWN_FILE_CONFIG_KEYS` (`src/main.ts`) = **43 keys**; every one has a row in DEPLOY.md §1b
+  (missing: none), and every `rwe.config.json` row in §1b maps to a live key (dead rows: none).
+- Every `process.env.*` the code reads (**10** names) appears in §1b too.
+- `rwe.config.example.json` is unchanged and still correct: its `sonnet` + `default` pair pointing at
+  one model is a legitimate shape now that D9 is fixed (a model may carry several aliases and stays
+  priced — measured this round).
+
+### Defects found this pass (for Gate 6 / the owner)
+
+**D13 — an upgraded deployment cannot create a schedule at all: `NOT NULL constraint failed:
+schedules.workflow`.** `schedule_create`'s own tool description says 「Name no workflow — hand the id
+to `workflow_register({triggers:[id]})`」, and `src/scheduler.ts:170` creates the table with
+`workflow TEXT` (nullable). But that CREATE only runs for a NEW database: SQLite cannot ALTER a
+column's nullability and no table-rebuild migration exists, so every workRoot created before that
+change keeps `workflow TEXT NOT NULL` — including **this box's production `rwe-data`**. Measured on
+two engines that differ only in the age of the database
+(`evidence/v26/d13-round6-schedule-legacy-db.json`):
+
+| engine | workRoot | `schedule_create {kind:'once', at, enabled:true}` |
+|---|---|---|
+| 8935 | copy of production | `error -32000 NOT NULL constraint failed: schedules.workflow` |
+| 8936 | fresh, empty | `{"kind":"once","id":"674c9295-…","claimedBy":null,"enabled":true}` |
+
+Production's own `schedules.db` schema line is `workflow TEXT NOT NULL,`; the fresh one is
+`workflow TEXT,`. Production currently holds **0 schedules and 0 run_origins**, so nothing is
+firing today and nothing is lost — but no new trigger can be minted there until a migration ships.
+This is v24 trigger-ownership code, **outside the REQ-127/REQ-129 closure**: recorded, not fixed
+here, and routed to the orchestrator. REQ-127's own trigger clause is unaffected and green — it is
+about accounting on a trigger-started run, measured for real on engine B (VAL-187(g)).
+
+**Not a defect, recorded so round 7 does not spend an hour on it:** the headless wheel trap in
+VAL-189(c) — `page.mouse.wheel()` is validated against the browser WINDOW (default 800×600), not the
+emulated viewport, so any wheel below y=600 silently reaches nothing and the author figure looks
+dead. `--window-size` matching the viewport removes it; `Input.synthesizeScrollGesture` confirms
+independently.
+
+**Still with the owner, unchanged:** VAL-186's `owner_decision` (REQ-126 `effort` never reaching the
+OpenRouter wire) and, new this round, VAL-187's `owner_decision` (the misnamed production alias
+`claude-sonnet-4-6` → model `claude-sonnet-5`).
+
+### Gate self-check (v26 round 6)
+
+1. **Booted from documented steps only** — §0's one-command `./deploy.sh --background` (with the
+   env-file line above it) brought both engines up and self-health-checked; no undocumented step was
+   needed, so nothing had to be folded into DEPLOY.md to make the boot work.
+2. **Both closure REQs have a `real:true` green with no SUT-boundary mock.** REQ-127 (VAL-187):
+   real Anthropic and real OpenRouter calls through the real MCP HTTP surface on the real production
+   alias table, prices hand-recomputed against the published tables, both budget arms binding, a real
+   scheduler tick. REQ-129 (VAL-189): a real Chromium with real mouse input and a real compositor
+   scroll gesture against real production run data, both figures plus a grandfathered TD one.
+3. **Production untouched**: `NRestarts=0`, `MainPID=1188044`, `ActiveEnterTimestamp` unchanged
+   before and after; port 8899 answered `/api/status` throughout. Both scratch engines were killed by
+   the PID `deploy.sh` printed — no `pkill` — and `~/.local/share/rwe-val-r6` (which held a copy of
+   production's `auth-tokens.db`) was deleted afterwards.
+4. **Manuals re-checked against the running system, not rewritten for their own sake**: §1b
+   round-trips 43 code keys + 10 env names both ways, §0's expected `tools: 35` matches, and the
+   history greps (`舊版/原本/previously/Changelog/now use`) and the dead-field grep (`.alias`) come
+   back clean. §6 gains D13 as a current known limitation.
+5. **Out-of-closure findings are recorded, not silently fixed**: D13 (migration) and the `deploy.sh`
+   step-2 message. Two `owner_decision: pending` markers stand (VAL-186, VAL-187) and block Gate 8
+   by design.
+6. `gates.validation.passed` is flipped to **true** by this pass — that is this gate's job, and the
+   closure it was given (REQ-127, REQ-129) is green on this round's own evidence.

@@ -1,0 +1,44 @@
+{
+ "port": "8935",
+ "workflow": "gp-runner",
+ "at": "2026-09-08T22:54:26.778Z",
+ "source": {
+  "version": "v3",
+  "orientation": "graph TD",
+  "nodes": 9
+ },
+ "figure": {
+  "naturalW": 67,
+  "naturalH": 150,
+  "renderedW": 1052,
+  "renderedH": 2329,
+  "windowW": 1100,
+  "windowH": 900,
+  "fitsWidth": true
+ },
+ "grabPoint": {
+  "x": 549.9921875,
+  "y": 744.5
+ },
+ "transformInitial": "translate(0px, 0px) scale(1)",
+ "transformAfterPan": "translate(-180px, -90px) scale(1)",
+ "eventsDuringGesture": [
+  "mouseup:diagram-img"
+ ],
+ "transformAfterMouseMoveWithNoButton": "translate(-180px, -90px) scale(1)",
+ "fitBeforeScroll": {
+  "y": 2932,
+  "inViewport": false
+ },
+ "fitAfterScroll": {
+  "cx": 40.1171875,
+  "cy": 511.078125,
+  "hit": "BUTTON#diagram-fit"
+ },
+ "fitClick": [
+  {
+   "trusted": true
+  }
+ ],
+ "transformAfterFit": "translate(0px, 0px) scale(1)"
+}

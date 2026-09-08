@@ -1,0 +1,17 @@
+{
+ "headless": "new",
+ "at": "2026-09-08T22:41:19.570Z",
+ "port": "8935",
+ "workflow": "gp-runner",
+ "transformInitial": "translate(0px, 0px) scale(1)",
+ "gestureRequested": {
+  "dx": -160,
+  "dy": -80
+ },
+ "transformAfterDragGesture": "translate(-160px, -80px) scale(1)",
+ "eventsDuringGesture": [
+  "mouseup"
+ ],
+ "transformAfterMouseMoveWithNoButton": "translate(-160px, -80px) scale(1)",
+ "transformAfterSecondMouseMoveWithNoButton": "translate(-160px, -80px) scale(1)"
+}

@@ -1,0 +1,77 @@
+{
+ "port": "8935",
+ "at": "2026-09-08T22:40:32.686Z",
+ "register": {
+  "version": "v1"
+ },
+ "runId": "4e071218-fa14-44c4-8987-380bf89e0cf1",
+ "status": "completed",
+ "agents": [
+  {
+   "label": "orone",
+   "provider": "openrouter",
+   "model": "openai/gpt-4.1-nano",
+   "state": "done",
+   "tokens": {
+    "input": 128,
+    "output": 3,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "costUSD": 0.000014,
+   "unpriced": false
+  }
+ ],
+ "meta": {
+  "usage": {
+   "tokens": {
+    "input": 128,
+    "output": 3,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "costUSD": 0.000014,
+   "unpricedCalls": 0,
+   "unmappedMessages": {}
+  },
+  "budgetEnforceable": {
+   "usd": true,
+   "tokens": true,
+   "unpricedModels": []
+  }
+ },
+ "result": "OR_OK",
+ "engineRow": [
+  {
+   "model": "openai/gpt-4.1-nano",
+   "aliases": [
+    "gpt41nano"
+   ],
+   "price": {
+    "in": "$0.1/1M",
+    "out": "$0.4/1M"
+   },
+   "ratesPerM": {
+    "in": 1e-7,
+    "out": 4e-7,
+    "cacheRead": 2.5e-8,
+    "cacheWrite": 1e-7
+   }
+  }
+ ],
+ "openrouterPublished": {
+  "id": "openai/gpt-4.1-nano",
+  "pricing": {
+   "prompt": "0.0000001",
+   "completion": "0.0000004",
+   "web_search": "0.01",
+   "input_cache_read": "0.000000025"
+  }
+ },
+ "handCheck": {
+  "formula": "input*prompt + output*completion + cacheRead*input_cache_read + cacheWrite*input_cache_write",
+  "expected": 0.000014,
+  "recorded": 0.000014,
+  "deltaAbs": 0
+ }
+}

@@ -1,0 +1,57 @@
+{
+ "port": "8936",
+ "at": "2026-09-08T22:59:09.433Z",
+ "schedule": {
+  "kind": "once",
+  "id": "8432be4e-61ff-4f49-8162-5a885dd69255",
+  "claimedBy": null,
+  "at": "2026-09-08T22:59:29.434Z",
+  "enabled": true
+ },
+ "register": {
+  "version": "v1"
+ },
+ "run": {
+  "runId": "3fddeac5-5e17-4aa2-a7bb-f628bfb60cd8",
+  "status": "completed",
+  "startedBy": {
+   "type": "schedule",
+   "id": "val127r6trig-1788908349433"
+  },
+  "agents": [
+   {
+    "label": "cloudone",
+    "provider": "anthropic",
+    "model": "claude-haiku-4-5-20251001",
+    "state": "done",
+    "tokens": {
+     "input": 161,
+     "output": 47,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "costUSD": 0.000396,
+    "unpriced": false
+   }
+  ]
+ },
+ "result": "limits={\"usd\":null,\"tokens\":null}|TRIG_OK",
+ "meta": {
+  "usage": {
+   "tokens": {
+    "input": 161,
+    "output": 47,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "costUSD": 0.000396,
+   "unpricedCalls": 0,
+   "unmappedMessages": {}
+  },
+  "budgetEnforceable": {
+   "usd": true,
+   "tokens": true,
+   "unpricedModels": []
+  }
+ }
+}

@@ -2838,3 +2838,43 @@ ways; the `aliases` row, README and §6 carry D9/D10 for operators; four history
 `rwe.config.example.json` itself reproduces D9 (`sonnet` + `default` on one model) — documented, not
 silently patched. trace 1463/22 (0 未驗證, 0 未真實驗證; 3 new low-severity drift rows named in
 08-validation). rtm regenerated: 0 ❌, 3 ⚠️. Next: Gate 6 for D9 + D10, then a round-4 delta re-run.
+
+## 2026-09-09 — v26 Gate 7.5 round 6 (validator): PASSED, the REQ-127/REQ-129 closure is real-green
+
+Delta re-run of the impact closure on the fix tree (`d1c453b`). Two scratch engines, both from
+DEPLOY.md §0's own second-instance form: **A (8935)** carries the production alias table verbatim over
+a copy of the production workRoot — secrets blanked, its own `updateFlagPath`, per the round-5 hygiene
+rule — and **B (8936)** the same config over a fresh workRoot. Production `rwe.service` was never
+restarted (`NRestarts=0`, `MainPID 1188044`, `ActiveEnterTimestamp` unchanged).
+
+**REQ-127 green (VAL-187 red → green).** Round 3's own harness, unmodified, on the alias table that
+made it red: a real Haiku call now records `costUSD 0.031974`, `unpriced:false`,
+`budgetEnforceable {usd:true,tokens:true,unpricedModels:[]}` — hand-recomputed exact, cache WRITE at
+2×, and on the repeat call cache READ 15272 at 0.1× (`0.0037472`). The USD ceiling binds on that same
+table (`spent 0.000644 >= 0.000001`, second dispatch refused) and the token ceiling binds
+(`164 >= 100`). The catalogue serves four rows for four models, none unknown, `fable` priced. Two arms
+no earlier round ever ran: a real **OpenRouter** call priced `0.000014`, cross-checked against
+OpenRouter's own published `/models` prices (`deltaAbs 0`), and a real **scheduler-fired** run with
+`budget.limits {usd:null,tokens:null}` still recording four columns + `costUSD 0.000396`.
+
+**REQ-129 green (VAL-189 red → green).** Real Chromium, real mouse, real production run `77f74018`:
+the run DAG scales and its `Fit` survives a pan; the author figure now pans the **full** (-180,-90)
+gesture with `mouseup` delivered and no sticky follow (D10 closed, measured with round 3's own
+harnesses unmodified); wheel zoom green on both figures; the agent-cell transcript click still fires
+after the fix's `preventDefault`; and the grandfathered TD figure (`gp-runner v3`, 9 nodes) pans,
+zooms and resets too. Recorded for round 7: `page.mouse.wheel()` is validated against the browser
+WINDOW, not the emulated viewport — below y=600 in a default headless window it reaches nothing, which
+looks exactly like a dead handler.
+
+**New defect, outside the closure: D13.** An upgraded `workRoot` keeps `schedules.workflow NOT NULL`,
+so `schedule_create` — whose own tool description takes no workflow — fails on this box's
+production-shaped database while a fresh one succeeds. Production holds 0 schedules, so nothing is
+firing; written into DEPLOY §6 + README and routed to the orchestrator, not fixed here.
+
+Manuals re-synced to current state: §1b round-trips 43 config keys + 10 env names both ways, §0's
+`tools: 35` matches the running engine, and three real gaps were filled (README's minimum-env named
+only `ANTHROPIC_API_KEY` although this box runs `anthropicAuth:"subscription"`; the dashboard's
+zoom/pan was documented nowhere; D13). No config file changed — this round shipped no code.
+trace 1479/22 (0 未驗證, 0 未真實驗證; the 22 are pre-existing low-severity drift/未實作/TDD).
+rtm regenerated: 0 ❌, 1 ⚠️. `gates.validation.passed=true`, `current_stage: review` — and Gate 8 is
+blocked by design until the owner answers VAL-186 and VAL-187's `owner_decision` markers.

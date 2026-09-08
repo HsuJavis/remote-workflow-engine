@@ -1,0 +1,239 @@
+{
+ "register": {
+  "runId": "",
+  "status": "completed",
+  "version": 1,
+  "result": {
+   "name": "val127usd",
+   "version": "v1"
+  }
+ },
+ "publish": {
+  "runId": "",
+  "status": "completed",
+  "result": {
+   "channel": "release",
+   "version": "v1",
+   "from": null
+  }
+ },
+ "capped": {
+  "start": {
+   "runId": "a78431b3-fbfa-4ee5-9251-afe33059b7dd",
+   "status": "running",
+   "result": {
+    "runId": "a78431b3-fbfa-4ee5-9251-afe33059b7dd"
+   }
+  },
+  "status": {
+   "runId": "a78431b3-fbfa-4ee5-9251-afe33059b7dd",
+   "status": "failed",
+   "scriptVersion": "v1",
+   "phases": [
+    {
+     "title": "one",
+     "ts": "2026-09-08T22:38:53.561Z"
+    },
+    {
+     "title": "two",
+     "ts": "2026-09-08T22:38:59.316Z"
+    }
+   ],
+   "agents": [
+    {
+     "agentId": "agent-1",
+     "label": "first",
+     "phase": "one",
+     "phaseIndex": 0,
+     "frame": "",
+     "startedAt": "2026-09-08T22:38:53.561Z",
+     "lastActivityAt": "2026-09-08T22:38:58.723Z",
+     "endedAt": "2026-09-08T22:38:59.315Z",
+     "state": "done",
+     "provider": "anthropic",
+     "model": "claude-haiku-4-5-20251001",
+     "tokens": {
+      "input": 159,
+      "output": 97,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "costUSD": 0.000644,
+     "unpriced": false,
+     "transport": "claude-agent-sdk"
+    },
+    {
+     "agentId": "agent-2",
+     "label": "second",
+     "phase": "two",
+     "phaseIndex": 1,
+     "frame": "",
+     "state": "refused",
+     "provider": "",
+     "model": "",
+     "tokens": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "costUSD": 0,
+     "unpriced": false,
+     "reasonCode": "BUDGET_EXCEEDED",
+     "endedAt": "2026-09-08T22:38:59.317Z"
+    }
+   ],
+   "workflowNodes": [],
+   "usage": {
+    "tokens": {
+     "input": 159,
+     "output": 97,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "costUSD": 0.000644,
+    "unpricedCalls": 0,
+    "unmappedMessages": {}
+   },
+   "startedBy": {
+    "type": "client"
+   },
+   "terminalAt": "2026-09-08T22:38:59.317Z"
+  },
+  "result": {
+   "runId": "a78431b3-fbfa-4ee5-9251-afe33059b7dd",
+   "status": "failed",
+   "error": {
+    "code": "BUDGET_EXCEEDED",
+    "message": "Budget exceeded (usd): spent 0.000644 >= total 0.000001"
+   },
+   "meta": {
+    "usage": {
+     "tokens": {
+      "input": 159,
+      "output": 97,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "costUSD": 0.000644,
+     "unpricedCalls": 0,
+     "unmappedMessages": {}
+    },
+    "budgetEnforceable": {
+     "usd": true,
+     "tokens": true,
+     "unpricedModels": []
+    }
+   }
+  }
+ },
+ "roomy": {
+  "start": {
+   "runId": "7c1f516f-51d3-4e4d-b3fa-d9830bc959e6",
+   "status": "running",
+   "result": {
+    "runId": "7c1f516f-51d3-4e4d-b3fa-d9830bc959e6"
+   }
+  },
+  "status": {
+   "runId": "7c1f516f-51d3-4e4d-b3fa-d9830bc959e6",
+   "status": "completed",
+   "scriptVersion": "v1",
+   "phases": [
+    {
+     "title": "one",
+     "ts": "2026-09-08T22:38:59.600Z"
+    },
+    {
+     "title": "two",
+     "ts": "2026-09-08T22:39:05.283Z"
+    }
+   ],
+   "agents": [
+    {
+     "agentId": "agent-1",
+     "label": "first",
+     "phase": "one",
+     "phaseIndex": 0,
+     "frame": "",
+     "startedAt": "2026-09-08T22:38:59.600Z",
+     "lastActivityAt": "2026-09-08T22:39:04.616Z",
+     "endedAt": "2026-09-08T22:39:05.282Z",
+     "state": "done",
+     "provider": "anthropic",
+     "model": "claude-haiku-4-5-20251001",
+     "tokens": {
+      "input": 159,
+      "output": 92,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "costUSD": 0.000619,
+     "unpriced": false,
+     "transport": "claude-agent-sdk"
+    },
+    {
+     "agentId": "agent-2",
+     "label": "second",
+     "phase": "two",
+     "phaseIndex": 1,
+     "frame": "",
+     "startedAt": "2026-09-08T22:39:05.284Z",
+     "lastActivityAt": "2026-09-08T22:39:09.849Z",
+     "endedAt": "2026-09-08T22:39:10.450Z",
+     "state": "done",
+     "provider": "anthropic",
+     "model": "claude-haiku-4-5-20251001",
+     "tokens": {
+      "input": 160,
+      "output": 88,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "costUSD": 0.0006000000000000001,
+     "unpriced": false,
+     "transport": "claude-agent-sdk"
+    }
+   ],
+   "workflowNodes": [],
+   "usage": {
+    "tokens": {
+     "input": 319,
+     "output": 180,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "costUSD": 0.001219,
+    "unpricedCalls": 0,
+    "unmappedMessages": {}
+   },
+   "startedBy": {
+    "type": "client"
+   },
+   "terminalAt": "2026-09-08T22:39:10.451Z"
+  },
+  "result": {
+   "runId": "7c1f516f-51d3-4e4d-b3fa-d9830bc959e6",
+   "status": "completed",
+   "result": "ONE_OK|TWO_OK",
+   "meta": {
+    "usage": {
+     "tokens": {
+      "input": 319,
+      "output": 180,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "costUSD": 0.001219,
+     "unpricedCalls": 0,
+     "unmappedMessages": {}
+    },
+    "budgetEnforceable": {
+     "usd": true,
+     "tokens": true,
+     "unpricedModels": []
+    }
+   }
+  }
+ }
+}

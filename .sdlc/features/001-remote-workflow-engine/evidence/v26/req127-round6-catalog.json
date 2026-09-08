@@ -1,0 +1,143 @@
+{
+ "port": "8935",
+ "at": "2026-09-08T22:39:26.807Z",
+ "modelsListAnthropic": [
+  {
+   "model": "claude-fable-5",
+   "aliases": [
+    "fable",
+    "claude-fable-5"
+   ],
+   "price": {
+    "in": "$10/1M",
+    "out": "$50/1M"
+   },
+   "ratesPerM": {
+    "in": 0.00001,
+    "out": 0.00005,
+    "cacheRead": 0.000001,
+    "cacheWrite": 0.00002
+   },
+   "ref": "fable",
+   "costLevel": 9
+  },
+  {
+   "model": "claude-opus-4-8",
+   "aliases": [
+    "opus",
+    "claude-opus-4-8"
+   ],
+   "price": {
+    "in": "$5/1M",
+    "out": "$25/1M"
+   },
+   "ratesPerM": {
+    "in": 0.000005,
+    "out": 0.000025,
+    "cacheRead": 5e-7,
+    "cacheWrite": 0.00001
+   },
+   "ref": "opus",
+   "costLevel": 8
+  },
+  {
+   "model": "claude-sonnet-5",
+   "aliases": [
+    "sonnet",
+    "claude-sonnet-4-6"
+   ],
+   "price": {
+    "in": "$2/1M",
+    "out": "$10/1M"
+   },
+   "ratesPerM": {
+    "in": 0.000002,
+    "out": 0.00001,
+    "cacheRead": 2e-7,
+    "cacheWrite": 0.000004
+   },
+   "ref": "sonnet",
+   "costLevel": 7
+  },
+  {
+   "model": "claude-haiku-4-5-20251001",
+   "aliases": [
+    "haiku",
+    "claude-haiku-4-5"
+   ],
+   "price": {
+    "in": "$1/1M",
+    "out": "$5/1M"
+   },
+   "ratesPerM": {
+    "in": 0.000001,
+    "out": 0.000005,
+    "cacheRead": 1e-7,
+    "cacheWrite": 0.000002
+   },
+   "ref": "haiku",
+   "costLevel": 6
+  }
+ ],
+ "modelsListRowCount": 4,
+ "modelsListDistinctModels": 4,
+ "modelsListUnknownPriced": [],
+ "apiModelsAnthropic": [
+  {
+   "model": "claude-fable-5",
+   "aliases": [
+    "fable",
+    "claude-fable-5"
+   ],
+   "price": {
+    "in": "$10/1M",
+    "out": "$50/1M"
+   }
+  },
+  {
+   "model": "claude-opus-4-8",
+   "aliases": [
+    "opus",
+    "claude-opus-4-8"
+   ],
+   "price": {
+    "in": "$5/1M",
+    "out": "$25/1M"
+   }
+  },
+  {
+   "model": "claude-sonnet-5",
+   "aliases": [
+    "sonnet",
+    "claude-sonnet-4-6"
+   ],
+   "price": {
+    "in": "$2/1M",
+    "out": "$10/1M"
+   }
+  },
+  {
+   "model": "claude-haiku-4-5-20251001",
+   "aliases": [
+    "haiku",
+    "claude-haiku-4-5"
+   ],
+   "price": {
+    "in": "$1/1M",
+    "out": "$5/1M"
+   }
+  }
+ ],
+ "fablePin": {
+  "register": {
+   "version": "v1"
+  },
+  "runId": "e1e82894-542a-441f-b4ae-d66e60f6286d",
+  "status": "completed",
+  "budgetEnforceable": {
+   "usd": true,
+   "tokens": true,
+   "unpricedModels": []
+  }
+ }
+}

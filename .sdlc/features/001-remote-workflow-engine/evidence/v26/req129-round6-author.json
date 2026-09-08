@@ -1,0 +1,41 @@
+{
+ "port": "8935",
+ "workflow": "gp-runner",
+ "at": "2026-09-08T22:41:13.607Z",
+ "figure": {
+  "cx": 550,
+  "cy": 695,
+  "w": 1052,
+  "h": 212,
+  "windowW": 1100
+ },
+ "fitCentre": {
+  "cx": 40.1171875,
+  "cy": 824.03125
+ },
+ "transformInitial": "translate(0px, 0px) scale(1)",
+ "hitOnFitBeforeAnything": "button#diagram-fit",
+ "gestureRequested": {
+  "dx": -180,
+  "dy": -90
+ },
+ "transformAfterPan": "translate(-180px, -90px) scale(1)",
+ "nativeDragEvents": [],
+ "hitOnFitAfterPan": "button#diagram-fit",
+ "realClickAfterPan": [
+  {
+   "trusted": true
+  }
+ ],
+ "transformAfterFitClick": "translate(0px, 0px) scale(1)",
+ "transformAfterWheel": "translate(0px, 0px) scale(1)",
+ "transformAfterSecondFit": "translate(0px, 0px) scale(1)",
+ "realClickAfterZoom": [
+  {
+   "trusted": true
+  }
+ ],
+ "counterfactualDraggableFalse": {
+  "transformAfterSameGesture": "translate(-180px, -90px) scale(1)"
+ }
+}
