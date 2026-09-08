@@ -8861,3 +8861,71 @@ never reads it (harmless, left alone — it is the owner's file, not a repo arti
 5. **Gate NOT passed** — three real-tier RED clauses, all with a named defect and a reproduction.
    Send back: REQ-126 (engine + proxy config), REQ-128 (guide/PARSE_ERROR then re-run the cold-model
    protocol with a fresh subject), REQ-129 (dashboard fit control z-order).
+
+## v26 GATE 7.5 ROUND 1 — FIX PASS re-verification (2026-09-09, fixer)
+
+The seven defects routed by `v26-gate75-fix-order.md`, closed on commits `55144ba`, `2fee320`,
+`a8e304a`, `1200dd3`, `6663646`, `fa90010`. Production `rwe.service` (user unit, `0.0.0.0:8899`) was
+**never restarted and never touched** — `NRestarts=0`,
+`ExecMainStartTimestamp=Tue 2026-09-08 04:20:27 CST`, unchanged before and after this pass, and its
+own `litellm` child (pid 1188078) was never signalled. Every engine below is a scratch instance on
+its own port with its own `workRoot` outside every Claude project, killed by the PID `ss` reported
+on that port — never `pkill -f`.
+
+### VAL-191 — REQ-129: after a REAL drag-pan, a REAL mouse click on `Fit` resets the figure
+- **status:** green
+- **traces:** REQ-129, DES-186, ARCH-120
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** The exact reproduction VAL-189 recorded, repeated on the fixed tree: real Chromium
+  (puppeteer 25, `headless:'new'`) at 1100x900 against a scratch engine on port 8924 whose
+  `workRoot` is a **byte copy of the production one** (`cp -a /home/user/.local/share/rwe-data/.`),
+  on the REAL production run `f6953a1e-9b04-43a0-a962-d8dfbd06684c`. Captured verbatim
+  (`.sdlc/features/001-remote-workflow-engine/evidence/v26/req129-round2-browser.json`):
+  `svg {viewBox:"0 0 476 246", width:"100%", preserveAspectRatio:"xMinYMin meet",
+  renderedW:1052, renderedH:544}`; `fitButtonCentre {cx:40.1171875, cy:215}`;
+  `hitBeforePan: "button#dag-fit"`; a real `mouse.down` → `mouse.move(steps:15)` → `mouse.up` pan
+  ⇒ `transformAfterPan: "translate(-220px, -120px) scale(1)"`; and then the two lines that were red
+  in round 1 — **`hitAfterPan: "button#dag-fit"`** (round 1: `svg#dag-graph`) and
+  **`realClickReachedButtonListener: true`** (round 1: the button's own click listener never fired).
+  `page.mouse.click` at that centre ⇒ `transformAfterFitClick: "translate(0px, 0px) scale(1)"`.
+  Screenshots before pan / after pan / after fit:
+  `evidence/v26/req129-round2-{before-pan,after-pan,after-fit}.png` — the after-pan shot shows the
+  `Fit` pill painted ON TOP of the translated graph, which is the whole fix. Regression-locked by
+  VAL-193 (`tests/acceptance/val-193-dag-fit-and-columns.test.ts`), whose own red was
+  `expected 'rect#' to be 'button#dag-fit'`.
+- **iter:** v26
+
+### VAL-194 — D1, D2 and D7 re-verified against live systems (not only against tests)
+- **status:** green
+- **traces:** REQ-118, REQ-121, REQ-125, REQ-123, REQ-020, REQ-127
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:**
+  **(a) D1 — a controlled A/B against the REAL Google API.** The same subject that died before its
+  first tool call in round 1 (`google/gemini-3.8-flash`, via OpenRouter) was offered this engine's
+  live `tools/list` — all 35 tools — with a trivial prompt. **HTTP 200**, `provider:"Google"`,
+  `content:"ready"`, `prompt_tokens:3879`. The counterfactual, same model and same request with only
+  the four new `items` schemas stripped back out of the payload: **HTTP 400**, raw provider error
+  `"* GenerateContentRequest.tools[0].function_declarations[0].parameters.properties[triggers].items:
+  missing field.\n* …[15]…properties[manifest].items: missing field.\n* …[19]…properties[paths].items:
+  missing field."`, `status:"INVALID_ARGUMENT"` — round 1's error, verbatim, from the same live API.
+  **(b) D2 — a scratch engine on port 8921, `gateway:"direct-fetch"` with `useLiteLLMProxy` left at
+  its default, real litellm, real ollama.** BEFORE the fix, run `6669bad0-ddd2-4ebe-abb4-1ce0334aa1f0`
+  ⇒ `agents[0] {state:"failed", tokens:{0,0,0,0}, transport:"direct-fetch", proxyModel:"local"}`, and
+  the proxy probed directly answered `HTTP 400 litellm.BadRequestError: You passed in model=local.
+  There are no healthy deployments for this model` while `model=rwe-proxy-local` answered `HTTP 200`
+  with usage. AFTER, run `415e9f32-d7f4-4c8e-bfba-e318b8272730` ⇒
+  `{state:"done", tokens:{input:39,output:2,cacheRead:0,cacheWrite:0}, transport:"direct-fetch",
+  proxyModel:"rwe-proxy-local"}` and `run_result.result: "hello"`. **D2's second sentence does NOT
+  reproduce:** that terminal failure was recorded `state:"failed"`, never `"done"` — see the BEFORE
+  record above, taken on the unfixed tree in the reported configuration. UT-217 locks the behaviour
+  rather than claiming a fix for a defect that was not there.
+  **(c) D7 — a scratch engine on port 8922 booted with `"agentSlots": 7`** ⇒ `GET /api/status`
+  reports `agentSemaphore: {"total": 7, "inUse": 0, "queued": 0}` (round 1: always 32).
+  **(d) D8 — visible on the same real-production page as VAL-191**: the run header of
+  `f6953a1e` reads `968 tok · in 650 · out 318 · cache read 0 · cache write 0 · $0.0000 ·
+  4 unpriced call(s) · (lower bound)` (`evidence/v26/req129-round2-after-pan.png`).
+- **iter:** v26

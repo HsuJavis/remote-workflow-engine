@@ -411,16 +411,10 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
   `gateway:"direct-fetch"` + `useLiteLLMProxy:false`（本機 Ollama 直連，完全不需要 litellm）。
 
 - **`effort` 對 OpenRouter 模型目前沒有作用**：引擎會把 `effort` 換算成 thinking 預算送進 CLI，
-  但這個值到不了 OpenRouter——實測 `low` 與 `high` 送出的請求內容完全相同、也沒有 `reasoning_effort` 欄位。
-  `run_agent_log` 的 `harness.effortApplied` 仍會顯示已套用，請不要據此判斷。
-  Anthropic 別名的 `effort` 是有作用的（CLI 收到 `--effort <值>`）。
-- **儀表板的圖拖曳（pan）之後按不到 fit**：run DAG 拖曳過後，被平移的圖層會蓋住左上角的 `Fit` 按鈕，
-  滑鼠點不到。用瀏覽器重新整理該頁即可回到原始比例；只縮放（滾輪）不拖曳時 `Fit` 正常。
-- **Gemini 家族的 MCP 用戶端載不進工具面**：`tools/list` 有三個陣列參數缺少 `items` 型別
-  （`workflow_register.triggers`、`workspace_diff.manifest`、`workspace_delete.paths`），
-  Google 的 API 會整份工具清單退回 `INVALID_ARGUMENT`。其他家的用戶端不受影響。
-- **`gateway:"direct-fetch"` 一定要同時設 `useLiteLLMProxy:false`**：只設 `gateway:"direct-fetch"`
-  時代理仍然開著，而送到代理的模型名稱對不上代理自己的表，每次 `agent()` 都會失敗（該筆 token 記 0）。
+  但這個值到不了 OpenRouter——實測 `low` 與 `high` 送出的請求內容完全相同、也沒有 `reasoning_effort` 欄位
+  （CLI 把預算收斂成 `thinking:{type:"adaptive"}`，LiteLLM 再對 openrouter 丟掉這個參數）。
+  v26 Gate 7.5 起 `run_agent_log` 的 `harness.effortApplied` 會如實回報 `{applied:false, reason:…}`
+  並寫明原因，不再宣稱已套用。Anthropic 別名的 `effort` 是有作用的（CLI 收到 `--effort <值>`）。
 - **目前已知、尚未修復的缺陷**（詳細指令與輸出見 `DEPLOY.md` §6）：
   1. **偶發的 `suspend` → `resume` → `failed`，而且 agent 的工作在終態之後還在跑**
      （run `3977b82d`，無法穩定重現、尚未歸因；

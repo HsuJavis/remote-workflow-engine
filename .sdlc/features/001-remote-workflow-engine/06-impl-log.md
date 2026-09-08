@@ -3501,3 +3501,125 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   Nothing was lost and the change in HEAD is byte-for-byte the one written here, but the commit does
   not name it — recorded here so `git log` is not the only story. The `server.ts` half and the whole
   determinism fix are this pass's own commit, `0697679`.
+
+### IMPL-207 — D1: four array parameters get item schemas, and the rule becomes a walk
+- **status:** done
+- **traces:** TASK-175, DES-170, ARCH-110, REQ-121, REQ-118, REQ-117
+- **greens:** UT-213
+- **files:** src/tool-specs.ts, tests/unit/tool-specs.test.ts, .sdlc/features/001-remote-workflow-engine/v24-tool-surface.md
+- **commit:** 55144ba
+- **iter:** v26
+- **note:** Closes defect D1. `workflow_register.triggers`, `workspace_diff.manifest`,
+  `workspace_delete.paths` — and a FOURTH the recursive walk found, `workspace_push`'s modeB `files`
+  inside its `oneOf` — were bare `{type:'array'}`. Google's API rejects the WHOLE `tools/list`
+  payload over one of them, so a single missing key costs an entire client family every tool. The
+  `ARRAY_ITEMS_RULE` comment now sits on `schema()` where the next author will meet it, and UT-213
+  walks `properties`/`items`/`oneOf`/`anyOf`/`allOf` so a fifth site cannot be added in silence.
+  Live A/B against the real Google API in VAL-194. Tool-surface table re-run with
+  `RWE_TOOL_SURFACE_REPORT=1` (35/35 pass).
+
+### IMPL-208 — D6: the guide states the script-body form, and PARSE_ERROR names the line
+- **status:** done
+- **traces:** TASK-193, TASK-150, DES-112, DES-157, DES-187, ARCH-121, REQ-128, REQ-117, REQ-130
+- **greens:** UT-214, UT-215
+- **files:** src/script-checks.ts, src/authoring-guide.ts, docs/AUTHORING.md, tests/unit/script-checks.test.ts, tests/unit/authoring-guide.test.ts
+- **commit:** 55144ba
+- **iter:** v26
+- **note:** Closes defect D6. Two halves. (a) The guide's first section that shows a script now says
+  the body IS an async function body — no `export default`, no `function` wrapper, no top-level
+  `import` — and that `export const meta = {…}` is the one exception which must be written exactly
+  that way, because the round-1 subject's SECOND mistake was stripping that `export` to dodge its
+  first (VAL-188). (b) `PARSE_ERROR` names the author's own line number, the offending source line
+  and the construct. The line number is only correct because the meta span is now blanked to its own
+  line count rather than deleted — deleting it shifted every line below. Deliberately confined to
+  `script-checks.ts` (the registration path a cold client actually meets); `guards.ts:315` is loaded
+  by the sandbox CHILD, which does not resolve `.js`→`.ts` value imports, and is left alone.
+  `docs/AUTHORING.md` regenerated via `npm run gen:authoring`.
+
+### IMPL-209 — D2: the proxied direct-fetch arm puts the cloaked model on the wire
+- **status:** done
+- **traces:** TASK-177, DES-177, ARCH-115, REQ-125, REQ-123
+- **greens:** UT-216, UT-217
+- **files:** src/gateway/client.ts, tests/unit/gateway-client.test.ts, tests/unit/agent-record-resolution.test.ts, README.md, DEPLOY.md
+- **commit:** 2fee320
+- **iter:** v26
+- **note:** Closes defect D2's first half and DISPROVES its second. `callViaLiteLLMProxy` sent the
+  bare alias to a proxy whose `model_list` only ever contains `rwe-proxy-<alias>`, so
+  `gateway:"direct-fetch"` with the proxy left on failed every `agent()` call with
+  `400 … no healthy deployments for this model`. `proxyModelName()`'s own doc comment says the
+  prefix must be applied identically on both sides; this side was missed. The two `proxyModel`
+  reports now name what is actually on the wire, which is what DES-177 says that field means.
+  SECOND HALF NOT REPRODUCED: the terminal failure was recorded `state:"failed"`, not `"done"`, on
+  this tree and configuration (VAL-194) — recorded as a lock (UT-217), not as a fix for a defect
+  that was not there. Both manuals lose the "set `useLiteLLMProxy:false` as well" workaround.
+
+### IMPL-210 — D7: agentSlots is forwarded, and the key list is swept mechanically
+- **status:** done
+- **traces:** TASK-146, DES-141, ARCH-090, REQ-020
+- **greens:** UT-218, UT-219
+- **files:** src/main.ts, tests/unit/compose-config-v2-wiring.test.ts, DEPLOY.md
+- **commit:** a8e304a
+- **iter:** v26
+- **note:** Closes defect D7, the THIRD instance of this repo's `composeConfig` wiring class (v11
+  `updateFlagPath`, v15 `auth`). `KNOWN_FILE_CONFIG_KEYS` is now exported and UT-219 sweeps it: 32
+  probed keys round-trip, 11 are excluded WITH a stated reason. The sweep's verdict on the rest —
+  every other JSON-expressible key already forwards. The 11: `gateway` (the branch selector itself);
+  six injected seams a JSON file cannot express (`issueReporter`, `mcpProbe`,
+  `modelCatalogFetchers`, `modelCatalog`, `systemInfo`, `proxyManager`), which are in `FileConfig`
+  only because it is declared `Partial<Omit<ServerConfig,…>>` and are an `Omit` candidate for the
+  owner; three documented sdk-branch-only keys (`defaultAllowedTools`, `anthropicBaseUrl`,
+  `anthropicAuth`); and `principals`, which is transformed rather than copied. DEPLOY §1b gets its
+  `agentSlots` row back.
+
+### IMPL-211 — D3 + D4: Sonnet 5's real price, and the cache columns' real multipliers
+- **status:** done
+- **traces:** TASK-178, DES-178, ARCH-116, REQ-127
+- **greens:** UT-220, UT-221
+- **files:** src/models/model-catalog.ts, src/authoring-guide.ts, docs/AUTHORING.md, tests/unit/model-catalog.test.ts, tests/unit/authoring-guide.test.ts
+- **commit:** 1200dd3
+- **iter:** v26
+- **note:** Closes D3 and D4. `claude-sonnet-5` was carried at $3/$15 — that is Sonnet 4.6's price;
+  Sonnet 5 is $2/$10 (claude-api skill, 2026-06-24 cache — the same source VAL-187 cross-checked
+  haiku against). Opus 4.8 and Haiku 4.5 were already right. Both cache columns were priced at the
+  `in` rate on a justification that no longer holds; the published multipliers are ~0.1x input for a
+  READ and 1.25x (5m) / 2x (1h) for a WRITE. The engine bills the WRITE at 2x — stated in the code
+  and in the guide's cost paragraph — because LiteLLM reports one `cache_creation_input_tokens` with
+  no TTL split, the upper bound is the safe end for a spend ceiling (the convention
+  `ratesFromOpenRouterPricing` already applies), and 2x is the TTL VAL-187's own CLI cross-check
+  reconciled against. The recorded smoke number was RE-DERIVED, not assumed: 2796 in + 43 out on
+  haiku is still $0.003011, now asserted by UT-220 over the real table.
+
+### IMPL-212 — REQ-129's fit control, and D8's four columns
+- **status:** done
+- **traces:** TASK-191, TASK-183, DES-186, DES-183, ARCH-120, ADR-044, REQ-129, REQ-127
+- **greens:** VAL-193, UT-222
+- **files:** src/dashboard-page.ts, tests/acceptance/val-193-dag-fit-and-columns.test.ts, tests/unit/dashboard-page-source.test.ts, README.md, DEPLOY.md
+- **commit:** 6663646
+- **iter:** v26
+- **note:** `.zoomable` is a TRANSFORMED element, so it paints in the positioned layer — above an
+  in-flow button that merely precedes it in source order. A drag-pan that translated the graph
+  upward laid it over `Fit` and swallowed every real click, while a programmatic `.click()` still
+  reset (which is why round 1 could only see it with a hit test). `.fit-btn` is now
+  `position:relative;z-index:1`, which covers both figures. For D8, `#run-usage` now renders
+  `in / out / cache read / cache write` beside the sum (the sum stays: it is the unit a
+  `budget.tokens` ceiling counts). Recorded while fixing it: on the CURRENT dashboard the per-agent
+  DAG cell renders no tokens at all — `renderGraph`'s SVG cells carry a label only, and
+  `renderAgent`'s tok/cost spans are reachable solely on the legacy DagNode fallback — so the run
+  header was the one rendered surface showing a sum in place of the four.
+
+### IMPL-213 — item 8: effortApplied stops claiming a field that is not on the wire
+- **status:** done
+- **traces:** TASK-179, DES-179, ARCH-117, ADR-045, REQ-126, REQ-125
+- **greens:** UT-187 (amended)
+- **files:** src/gateway/client.ts, tests/unit/wire-effort.test.ts, README.md, DEPLOY.md
+- **commit:** fa90010
+- **iter:** v26
+- **note:** The single honesty fix the fix order reserved out of REQ-126's routing question.
+  VAL-186 captured both outbound bodies through a recording pass-through in front of the REAL
+  OpenRouter API: neither carries `reasoning`, `reasoning_effort` or `thinking`, and low and high
+  are byte-identical — yet the engine reported `effortApplied {"param":"thinking","value":1024}`.
+  `wireEffort`'s openrouter arm now returns `{applied:false, reason:…}` naming the real cause (the
+  Claude CLI collapses the budget to `thinking:{type:"adaptive"}`; LiteLLM then drops the parameter
+  for openrouter). ROUTING IS UNCHANGED and the test pins that it is. REQ-126's acceptance is NOT
+  amended — the owner's call. STILL FALSE and out of this scope: the guide's provider table asserts
+  「`openrouter` — effort applies: yes」.

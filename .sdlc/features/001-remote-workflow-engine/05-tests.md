@@ -11018,3 +11018,170 @@ The six remaining v26-delta offenders each carry a one-line Decision rationale, 
   forward as recorded debt.
 
 No bar was lowered, and no test was weakened, deleted or re-scoped to reach these numbers.
+
+---
+
+## Gate 7.5 round 1 — the fix pass's own work items (2026-09-09, fixer)
+
+Ten items written while closing the seven defects Gate 7.5 round 1 routed to Gate 6
+(`v26-gate75-fix-order.md`). Every one was **measured red before its fix**, with the red message
+quoted in the item; the two exceptions are stated as such (UT-217 is a green-by-construction lock
+for a defect that did not reproduce, Mode C; UT-222 mirrors a behaviour VAL-193 measured red at the
+browser tier). One existing item, UT-187, is AMENDED — see the note at the end.
+
+### UT-213 — every array-typed property in TOOL_SPECS declares `items` (defect D1)
+- **status:** green
+- **traces:** DES-170, REQ-121, REQ-118
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/tool-specs.test.ts` (extended). A recursive walk through
+`properties`/`items`/`oneOf`/`anyOf`/`allOf` over every tool's input schema. RED:
+`expected [ 'workflow_register.triggers', 'workspace_diff.manifest',
+'workspace_push.oneOf[1].files', 'workspace_delete.paths' ] to deeply equal []` — FOUR sites, one
+more than the defect report named, because `workspace_push`'s `files` is inside a `oneOf` branch
+that a flat top-level scan cannot see.
+
+### UT-214 — PARSE_ERROR names the line, the source and the construct (defect D6)
+- **status:** green
+- **traces:** DES-112, REQ-128, REQ-117
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/script-checks.test.ts` (extended). RED: `expected undefined to be 6`
+(`detail.line`). The line number is the AUTHOR's own — the checker now blanks the `export const
+meta` span to its own line count instead of deleting it, so V8's reported line survives the strip.
+
+### UT-215 — the guide STATES the script-body form (defect D6)
+- **status:** green
+- **traces:** DES-157, DES-187, REQ-128, REQ-130
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/authoring-guide.test.ts` (extended). RED: `expected '# Authoring a workflow
+script…' to match /bare async function body/i`. Ten examples showed the shape; no sentence stated
+it, and the round-1 cold subject lost its first attempt to exactly that (VAL-188).
+
+### UT-216 — the proxied direct-fetch arm cloaks the model name (defect D2)
+- **status:** green
+- **traces:** DES-177, REQ-125, REQ-123
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/gateway-client.test.ts` (extended). RED: `expected 'local' to be
+'rwe-proxy-local'`, twice — once for the model on the wire, once for the `proxyModel` the harness
+descriptor and the result stamp report.
+
+### UT-217 — a gateway refusal is never recorded as done (defect D2, second half)
+- **status:** green
+- **traces:** DES-177, DES-180, REQ-125
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/agent-record-resolution.test.ts` (extended). **Written green-by-construction
+(Mode C), not forced red**: the reported half of D2 — a `400 no healthy deployments` terminal being
+recorded `state:"done"` — did NOT reproduce. A live scratch engine on the same tree and
+configuration recorded `state:"failed"`, tokens 0 (VAL-194). The item exists so the claim cannot
+quietly become true later.
+
+### UT-218 — agentSlots is forwarded by composeConfig (defect D7)
+- **status:** green
+- **traces:** DES-141, ARCH-090, REQ-020
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/compose-config-v2-wiring.test.ts` (extended). RED: `expected undefined to be 7`.
+
+### UT-219 — every KNOWN_FILE_CONFIG_KEYS entry is probed or excluded (defect D7)
+- **status:** green
+- **traces:** DES-141, ARCH-090
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/compose-config-v2-wiring.test.ts` (extended). The mechanical sweep the fix order
+asked for: 32 probed keys + 11 excluded-with-a-reason must exactly equal the exported key list.
+RED: `TypeError: Cannot convert undefined or null to object` (the list was not exported) and
+`expected undefined to deeply equal 7`. This is what turns a hand-written case per key — the shape
+that let three misses through — into a structural gate.
+
+### UT-220 — the static anthropic price table (defects D3 + D4)
+- **status:** green
+- **traces:** DES-178, ARCH-116, REQ-127
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/model-catalog.test.ts` (extended). RED: `expected 0.000003 to be 0.000002`
+(Sonnet 5 was carried at Sonnet 4.6's price) and `claude-opus-4-8 cacheRead: expected 0.000005 to be
+close to 5.000000000000001e-7`. Also re-derives the recorded smoke number — 2796 in + 43 out on
+`claude-haiku-4-5-20251001` is still `$0.003011` — from the real table rather than assuming it.
+
+### UT-221 — the guide states the cache-write multiplier it bills (defect D4)
+- **status:** green
+- **traces:** DES-157, DES-178, REQ-127, REQ-130
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/authoring-guide.test.ts` (extended). RED: `expected '# Authoring a workflow
+script…' to match /1\.25x/`. The engine must pick one write multiplier because LiteLLM reports one
+`cache_creation_input_tokens` with no TTL; the guide now says WHICH (2x, the 1h rate) and why.
+
+### UT-222 — page-source lock for the fit control and the four columns (D8 + REQ-129)
+- **status:** green
+- **traces:** DES-183, DES-186, REQ-127, REQ-129
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/dashboard-page-source.test.ts` (extended). Not independently forced red — it
+mirrors, in the fast suite, what VAL-193 measured red in a real browser. Both of its assertions
+occur ZERO times in the pre-fix file (`git show HEAD:src/dashboard-page.ts | grep -c` ⇒ 0, 0).
+
+### VAL-193 — real Chromium: Fit survives a pan, and the four columns are readable (D8 + REQ-129)
+- **status:** green
+- **traces:** REQ-129, REQ-127, DES-186, DES-183
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **iter:** v26
+
+File: `tests/acceptance/val-193-dag-fit-and-columns.test.ts` (new). Real `createServer()`, real MCP
+HTTP, real sandbox child, real dashboard page, real Chromium, real mouse events; the provider
+network is the one faked boundary (the same `createServer({gateway})` seam IT-148 uses), so the
+agent records the page reads come out of the real capture path. Skips with a printed reason on a
+host with no Chrome. RED, both halves:
+`AssertionError: expected 'rect#' to be 'button#dag-fit'` (`document.elementFromPoint` at the
+button's own centre after a real drag-pan) and
+`AssertionError: expected '212 tok$0.00004 unpriced call(s)(lowe…' to match /in\D*156/`.
+
+**UT-187 was AMENDED by this pass (fix-order item 8, REQ-126).** Written as a note, not as a
+second heading carrying the same id — a duplicate `### UT-187` makes trace.py read the amendment as
+an orphaned work item (the #63 lesson, commit 525ade4).
+
+`tests/unit/wire-effort.test.ts`'s openrouter-with-declared-reasoning case asserted
+`applied.applied === true, param:'thinking', restPath:['thinking','budget_tokens']`. VAL-186 proved
+that claim false on the wire: neither outbound body carries `reasoning`, `reasoning_effort` or
+`thinking`, and low and high are byte-identical. The case now pins the ROUTING unchanged
+(`thinking:{type:'enabled',budgetTokens:1024}` is still handed to the SDK) and the RECORD honest
+(`applied:false` with a reason naming the CLI's `adaptive` collapse). RED after amendment:
+`AssertionError: expected true to be false`. A second case was added pinning that the three
+openrouter reasons are three distinct strings. **REQ-126's acceptance is NOT amended** — that is the
+owner's call, and routing was deliberately not changed.

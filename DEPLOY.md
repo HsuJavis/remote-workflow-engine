@@ -432,7 +432,8 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `mcpEgressAllowlist` | `workspace_push({kind:"mcp"})` 註冊 `http` transport 時的 https-only 白名單（URL 前綴比對，同 `seedRefAllowlist` 的 fail-closed 慣例）；省略/空陣列＝任何 `http` MCP 設定一律 `EGRESS_DENIED`（探測前就擋，探測次數為零） | `string[]` / `[]` | 否 | v24 |
 | `rwe.config.json` → `seedRefAllowlist` | engine-pull `seedRef:{repoUrl,sha}` 的 egress 白名單（`https://` URL 前綴）；**fail-closed**：省略/空陣列 = 任何 seedRef 回 `SEEDREF_DISABLED`；不命中前綴（含 `169.254.169.254`/`localhost`/私有 IP/`file://`）→ `SEEDREF_EGRESS_DENIED`（SSRF 安全） | `string[]` / `[]` | 否 | v13 |
 | `rwe.config.json` → `maxBlobBytes` | `POST /assets/blob/:sha`（streaming raw-body 上傳）最大 body bytes；超過 → HTTP 413 `BLOB_TOO_LARGE` | `number` / `268435456`（256 MiB，最小 1048576） | 否 | v10 |
-| `rwe.config.json` → `runConcurrency` | **單一 run 內同時在飛的 `agent()` 上限** —— 一個 `parallel()` 實際跑多寬。達上限的呼叫在 `acquireSlot()` **排隊**（不拒絕、不丟棄），所以更寬的 fan-out 只是比較慢。另有一層跨所有 run 的主機層上限（agent 號誌），目前固定為 32、設定檔改不動（見 §6「主機層 agent 號誌固定 32」） | `number` / `24` | 否 | v25 |
+| `rwe.config.json` → `runConcurrency` | **單一 run 內同時在飛的 `agent()` 上限** —— 一個 `parallel()` 實際跑多寬。達上限的呼叫在 `acquireSlot()` **排隊**（不拒絕、不丟棄），所以更寬的 fan-out 只是比較慢。另有一層跨所有 run 的主機層上限（agent 號誌），由 `agentSlots` 設定、預設 32（v26 Gate 7.5 修好轉發：實測 `"agentSlots": 7` 之後 `/api/status` 的 `agentSemaphore.total` 就是 7） | `number` / `24` | 否 | v25 |
+| `rwe.config.json` → `agentSlots` | **跨所有 run 的主機層 agent 號誌上限** —— 同一時間允許幾個 agent 子行程存在；達上限的呼叫排隊等槽位。可在 `/api/status` 的 `agentSemaphore.total` 直接看到生效值。（v26 Gate 7.5 之前這個鍵被 `composeConfig()` 漏掉、寫了不生效；現已修好並實測。）與 `runConcurrency`（單一 run 內）是兩層不同的上限 | `number` / `32` | 否 | v26 修復（鍵自 v3 起存在） |
 | `rwe.config.json` → `maxConcurrentRuns` | 頂層 run 並行上限（run-admission counter）；達上限時 `start()` 在任何持久化動作之前以 `RUN_ADMISSION_LIMIT` 拒絕；巢狀 `workflow()` 不佔用槽位 | `number` / `64` | 否 | v8 |
 | `rwe.config.json` → `workspaceTtlMs` | Workspace GC sweep 間隔（ms）：回收閒置舊 workspace 目錄（REQ-026），**同時決定 auth-table GC（`gcExpired()`）間隔**；`0`/省略 = workspace reclaim 關閉，auth 啟用但未設此鍵時 sweep 每小時跑一次 | `number` / `0`（停用） | 否 | v16 |
 | `rwe.config.json` → `continuationDbPath` | on-completion chaining 續接的 SQLite 檔路徑；引擎會開這個檔，但 35 個工具裡沒有任何一個對應到它（沒有 `chain_*` 工具），設了不影響行為 | `string` / `$workRoot/continuations.db` | 否 | v24 |
@@ -752,18 +753,10 @@ npm run start
 
 - **`effort` 對 OpenRouter 模型沒有作用。** 引擎會把 `effort` 換算成 thinking 預算交給 CLI，但這個值
   到不了 OpenRouter：實測攔下真正送出的請求，`low` 與 `high` 兩次的內容完全相同、也沒有
-  `reasoning_effort` 欄位。`run_agent_log` 的 `harness.effortApplied` 仍會顯示已套用，請不要據此判斷。
+  `reasoning_effort` 欄位（CLI 把預算收斂成 `thinking:{type:"adaptive"}`，LiteLLM 再對 openrouter
+  丟掉這個參數）。v26 Gate 7.5 起 `run_agent_log` 的 `harness.effortApplied` **會如實回報
+  `{applied:false, reason:…}` 並說明原因**，不再宣稱已套用；路由本身未變動，是否要改由擁有者裁決。
   Anthropic 別名的 `effort` 有作用（spawn 出來的 CLI argv 上看得到 `--effort <值>`）。
-- **`gateway:"direct-fetch"` 必須同時設 `useLiteLLMProxy:false`。** 只設前者時代理仍會啟動，而送進
-  代理的模型名稱對不上代理自己的表，每一次 `agent()` 都會失敗（該筆 token 記 0）。兩個鍵一起設才是
-  完整的免-LiteLLM 部署。
-- **主機層 agent 號誌固定 32。** `rwe.config.json` 寫 `agentSlots` 不會生效（`/api/status` 的
-  `agentSemaphore.total` 永遠是 32）。要限制單一 run 的併發寬度請用 `runConcurrency`（見 §1b）。
-- **Gemini 家族的 MCP 用戶端載不進工具面。** `tools/list` 有三個陣列參數沒有宣告 `items` 型別
-  （`workflow_register.triggers`、`workspace_diff.manifest`、`workspace_delete.paths`），Google 的 API
-  會把整份工具清單退回 `INVALID_ARGUMENT`。其他家的用戶端（OpenAI 家族、Anthropic）不受影響。
-- **儀表板的圖拖曳過後按不到 `Fit`。** run DAG 用滑鼠拖曳平移後，被平移的圖層會蓋住左上角的 `Fit`
-  按鈕；重新整理該頁即可回到原始比例。只用滾輪縮放不拖曳時 `Fit` 正常。
 
 **日誌與狀態位置**：日誌僅 stdout/stderr（`[remote-workflow-engine] ...` 前綴），交給你的
 process manager（systemd/pm2/docker）收集；沒有另外寫檔案 log。狀態存在 `$workRoot/store`

@@ -1,0 +1,20 @@
+{
+ "svg": {
+  "viewBox": "0 0 476 246",
+  "width": "100%",
+  "preserveAspectRatio": "xMinYMin meet",
+  "renderedW": 1052,
+  "renderedH": 544
+ },
+ "fitButtonCentre": {
+  "cx": 40.1171875,
+  "cy": 215
+ },
+ "hitBeforePan": "button#dag-fit",
+ "transformBefore": "translate(0px, 0px) scale(1)",
+ "transformAfterPan": "translate(-220px, -120px) scale(1)",
+ "hitAfterPan": "button#dag-fit",
+ "realClickReachedButtonListener": true,
+ "transformAfterFitClick": "translate(0px, 0px) scale(1)",
+ "diagramFitPresent": "none"
+}
