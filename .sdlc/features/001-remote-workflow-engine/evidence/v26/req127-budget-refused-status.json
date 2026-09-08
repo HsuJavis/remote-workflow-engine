@@ -1,0 +1,80 @@
+{
+ "runId": "544b7d32-5709-4873-9b65-0738254cc8f1",
+ "status": "completed",
+ "result": {
+  "runId": "544b7d32-5709-4873-9b65-0738254cc8f1",
+  "status": "completed",
+  "scriptVersion": "v1",
+  "phases": [
+   {
+    "title": "one",
+    "ts": "2026-09-08T18:18:48.612Z"
+   },
+   {
+    "title": "two",
+    "ts": "2026-09-08T18:18:56.813Z"
+   }
+  ],
+  "agents": [
+   {
+    "agentId": "agent-1",
+    "label": "first",
+    "phase": "one",
+    "phaseIndex": 0,
+    "frame": "",
+    "startedAt": "2026-09-08T18:18:48.612Z",
+    "lastActivityAt": "2026-09-08T18:18:56.238Z",
+    "endedAt": "2026-09-08T18:18:56.811Z",
+    "state": "done",
+    "provider": "ollama",
+    "model": "qwen2.5:7b",
+    "tokens": {
+     "input": 162,
+     "output": 2,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "costUSD": 0,
+    "unpriced": false,
+    "transport": "claude-agent-sdk",
+    "proxyModel": "rwe-proxy-local"
+   },
+   {
+    "agentId": "agent-2",
+    "label": "second",
+    "phase": "two",
+    "phaseIndex": 1,
+    "frame": "",
+    "state": "refused",
+    "provider": "",
+    "model": "",
+    "tokens": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "costUSD": 0,
+    "unpriced": false,
+    "reasonCode": "BUDGET_EXCEEDED",
+    "endedAt": "2026-09-08T18:18:56.813Z"
+   }
+  ],
+  "workflowNodes": [],
+  "usage": {
+   "tokens": {
+    "input": 162,
+    "output": 2,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "costUSD": 0,
+   "unpricedCalls": 0,
+   "unmappedMessages": {}
+  },
+  "startedBy": {
+   "type": "client"
+  },
+  "terminalAt": "2026-09-08T18:18:56.815Z"
+ }
+}

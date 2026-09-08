@@ -2737,3 +2737,69 @@ src/main.ts`) — confirmed after the fact, not assumed: `NRestarts=0` and an un
 `ExecMainStartTimestamp`. Reading a warning is not the same as having it to hand at the moment you
 type the command. The teardown should have been `kill <pid-from-ss-on-the-scratch-port>` from the
 start, which is what actually stopped it.
+
+## 2026-09-09 — v26 Gate 7.5 ROUND 1 (validator, real-run validation & handover) — NOT PASSED
+
+Gate NOT passed. Ten REQs, ten real-tier items, **seven green and three red** — and the three reds are
+the reason this iteration is not done, not a shortage of evidence. `trace` 1442 items / 19 gaps: every
+one of the ten `未真實驗證` gaps for REQ-121..130 is closed, and what remains is the byte-identical
+pre-existing 16 `漂移` + 2 `未實作` + 1 TDD set from Gate 6/7. `rtm.md` regenerated: 0 ❌, 3 ⚠️.
+
+**The one-command deploy is the boot-from-docs evidence, and it found its own gaps.** `./deploy.sh
+--background` brought boot A up and printed its own healthcheck. Then `scripts/smoke.sh` — the
+documented smoke check — **failed on a correct engine**: it registers `mermaid:"graph TD;"`, which
+v26 now refuses `DIAGRAM_DIRECTION (line 1)`. That is the shape of every doc gap this pass found: the
+manuals and scripts were still teaching the pre-v26 diagram. README's two `agent()` examples had the
+same disease plus two more (no `phase()`, no lanes), and its `timeoutMs: 60000` **actually timed out**
+on this deployment before I raised it. Four gaps, all folded back into the artefacts and re-run
+verbatim — `ping` and `greet2` now complete for real against Ollama.
+
+**REQ-126 is the find of this pass, and it needed a real wire to see.** The harness says
+`effortApplied {param:'thinking', value:1024|4096}` — applied. The wire says otherwise. I put a
+transparent recording pass-through in front of the REAL OpenRouter API (it forwards every byte
+upstream, so OpenRouter really answered both runs) and the `low` and `high` request bodies are
+indistinguishable, with no `reasoning`/`reasoning_effort` field at all. The chain came apart in three
+places: the SDK turns `thinking.budgetTokens` into `--max-thinking-tokens`, the CLI then puts
+`thinking:{type:'adaptive'}` on the wire — the budget, and with it the whole low/high distinction, is
+gone at the FIRST hop — and LiteLLM maps that to `reasoning_effort` and drops it for openrouter.
+Sending the intended shape explicitly gets `400 UnsupportedParamsError` from the very proxy config
+`generateLiteLLMConfig` emits. The guide meanwhile teaches 「`openrouter` — effort applies: yes」.
+A design that was honest enough to write "the real-tier confirmation is still pending" in its own
+source comment got exactly the confirmation it asked for, and it is negative.
+
+**REQ-128's contract passed; its cold model did not.** All five refusal codes fire live with a line,
+an `expected` structure as data and `see: workflow_authoring_guide`; a conformant LR swimlane
+registers as `diagramContract:'v2'` while all five production workflows stay `'v1'`, unre-checked and
+still rendering. Then a fresh `openai/gpt-5.6-luna`, given only `tools/list` and whatever it fetched
+itself, needed **four** `workflow_register` calls. Not one refusal was about the diagram. The first
+was `PARSE_ERROR: Unexpected token 'export'` — it had wrapped the body in `export default async
+function () {…}`, because every example in the guide shows a module but no sentence says the body IS
+the function body. By the runbook's own rule that is a documentation defect, so the clause fails and
+the fix has to be re-verified with ANOTHER fresh subject.
+
+**REQ-129 failed on the one interaction I nearly did not test.** `viewBox` + `width=100%` +
+`preserveAspectRatio`, wheel zoom, drag pan, survival of the 3-second poll — all real-green in a real
+1100 px Chromium against the production data copy. But after a *pan*, `Fit` stops working:
+`document.elementFromPoint` at the button's own centre returns `svg#dag-graph`, the pan-translated
+figure now covering its own reset control. A programmatic `.click()` still resets, which is what told
+me it is z-order, not a dead handler. My first script called this "fit didn't reset" and moved on;
+the second run reproduced it and the third pinned the cause. The difference between a vague finding
+and an actionable one was three cheap experiments.
+
+**Four more defects nobody asked me to look for.** The first cold-model probe never made a single
+tool call: `google/gemini-3.8-flash` rejected the ENTIRE tool surface because three array parameters
+(`workflow_register.triggers`, `workspace_diff.manifest`, `workspace_delete.paths`) declare no
+`items` — the same schema hole REQ-121 just fixed for `seed`, in three other places, and it costs the
+product a whole provider family. `gateway:"direct-fetch"` without `useLiteLLMProxy:false` fails every
+`agent()` call (the proxy is asked for `local`, its table only has `rwe-proxy-local`) and records the
+terminal failure as `state:"done"`. `agentSlots` is in `KNOWN_FILE_CONFIG_KEYS` but `composeConfig()`
+never forwards it — this repo's own `composeConfig` wiring bug class, caught by booting with
+`agentSlots: 7` and reading `agentSemaphore.total: 32`. And the static price table says Sonnet 5 is
+$3/$15 when it is $2/$10.
+
+**Production was never touched.** Every engine was a scratch instance on its own port and workRoot;
+REQ-124's clause about a real production run was answered by `cp -a`-ing the production `workRoot`
+into a scratch copy and serving THAT with v26 code — which also proved the migration path, since it
+re-hydrated 30 real runs and returned `warnings: []` for the runId the REQ names. Teardown was
+`kill <pid from ss on the scratch port>` every single time, never `pkill -f`. `rwe.service`:
+`NRestarts=0`, same `ExecMainStartTimestamp`, before and after.

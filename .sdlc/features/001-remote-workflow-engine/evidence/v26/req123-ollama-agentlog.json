@@ -1,0 +1,92 @@
+{
+ "runId": "bc8de979-1bae-4ea1-b43d-ccd17d549bc0",
+ "status": "completed",
+ "harness": {
+  "model": "qwen2.5:7b",
+  "proxyModel": "rwe-proxy-local",
+  "provider": "ollama",
+  "prompt": "Use the Read tool to read the file a.txt in your working directory and reply with its exact contents.",
+  "tools": [
+   "Read"
+  ],
+  "skills": [],
+  "mcpServers": [],
+  "surfaceType": "curated",
+  "materialized": {
+   "skills": [],
+   "mcp": [],
+   "missing": []
+  },
+  "effort": "low",
+  "timeoutMs": 300000,
+  "provenance": {
+   "model": "default",
+   "effort": "default",
+   "timeoutMs": "default",
+   "appendPrompt": "engine"
+  },
+  "label": "reader",
+  "phase": "read",
+  "phaseIndex": 0,
+  "effortApplied": {
+   "reason": "no reasoning dial for this provider"
+  }
+ },
+ "events": [
+  {
+   "ts": "2026-09-08T17:55:53.260Z",
+   "kind": "message",
+   "data": {
+    "type": "text",
+    "text": "{\"name\": \"Read\", \"arguments\": {\"file_path\": \"./a.txt\"}}"
+   }
+  },
+  {
+   "ts": "2026-09-08T17:55:53.561Z",
+   "kind": "usage",
+   "data": {
+    "tokens": {
+     "input": 681,
+     "output": 18,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "costUSD": 0,
+    "unpriced": false,
+    "provider": "ollama",
+    "model": "qwen2.5:7b",
+    "transport": "claude-agent-sdk",
+    "proxyModel": "rwe-proxy-local"
+   }
+  }
+ ],
+ "result": [
+  {
+   "ts": "2026-09-08T17:55:53.260Z",
+   "kind": "message",
+   "data": {
+    "type": "text",
+    "text": "{\"name\": \"Read\", \"arguments\": {\"file_path\": \"./a.txt\"}}"
+   }
+  },
+  {
+   "ts": "2026-09-08T17:55:53.561Z",
+   "kind": "usage",
+   "data": {
+    "tokens": {
+     "input": 681,
+     "output": 18,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "costUSD": 0,
+    "unpriced": false,
+    "provider": "ollama",
+    "model": "qwen2.5:7b",
+    "transport": "claude-agent-sdk",
+    "proxyModel": "rwe-proxy-local"
+   }
+  }
+ ],
+ "hasMore": false
+}

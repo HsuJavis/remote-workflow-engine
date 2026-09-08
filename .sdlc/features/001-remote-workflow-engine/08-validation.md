@@ -8449,3 +8449,415 @@ is now held to, on the SAME single run:
 **Not yet run.** No fresh-instance session has been convened as of this Gate 6 pass.
 `result: not-run` stands for both VAL-178 and VAL-180.
 
+
+## v26 GATE 7.5 ROUND 1 (validator, 2026-09-09) — NOT PASSED
+
+**Tree:** `44178cd` (working tree; `package-lock.json` re-aligned to `package.json` by the documented
+`npm install` inside `deploy.sh`, and `scripts/smoke.sh` fixed — see "doc/deploy gaps" below).
+**Production `rwe.service` (`0.0.0.0:8899`) was never restarted and never touched** — `NRestarts=0`,
+`ExecMainStartTimestamp=Tue 2026-09-08 04:20:27 CST` before and after this pass. Every engine in this
+pass is a scratch instance on its own port + its own `workRoot`, torn down by `kill <pid from ss on
+the scratch port>` (never `pkill -f`, the near-miss the last two journal entries record).
+
+### Boot record — documented steps only
+
+| # | port | how it was started | config | purpose |
+|---|---|---|---|---|
+| A | 8901 | **`./deploy.sh --background`** (DEPLOY.md §0, the one-command path, with the documented `RWE_CONFIG_PATH`/`RWE_PORT` second-instance override) | `gateway:"sdk"`, ollama `default`/`local`, anthropic `haiku`, openrouter `orfree`, auth off | REQ-121/123/127/128/130, README quickstart re-run |
+| B | 8902 | `node node_modules/tsx/dist/cli.mjs src/main.ts` (DEPLOY.md §0 expanded step 6) | `gateway:"sdk"`, openrouter `reasoner`(declares reasoning)/`noreason` | REQ-126 wire capture |
+| C | 8903 | same | same as B but `OPENROUTER_API_KEY=<revoked>` | REQ-122 |
+| D | 8904 | same | a **byte copy of the production `workRoot`** (`cp -a /home/user/.local/share/rwe-data/. <scratch>`), production aliases | REQ-124 against real production runs, REQ-129 real browser |
+| E | 8905 | same | `gateway:"direct-fetch"` (± `useLiteLLMProxy:false`) | REQ-125 second transport |
+
+Env for every boot: `set -a; . /home/user/.config/rwe.env; set +a` then `unset OPENAI_API_KEY` —
+booting and running all three provider paths **without** that variable is half of REQ-123's evidence
+(the other half is the source grep below).
+
+`./deploy.sh --background` output (boot A, verbatim tail): `健康檢查通過:
+{"agentSemaphore":{"total":32,"inUse":0,"queued":0},"version":"0.1.0 (v0.20.0-241-g44178cd)"}` /
+`部署完成。服務位址:http://127.0.0.1:8901/mcp`.
+
+### Doc / deploy gaps found and filled
+
+1. **`scripts/smoke.sh` was dead on arrival** — it registers with `mermaid:"graph TD;"`, which v26
+   refuses `DIAGRAM_DIRECTION (line 1)`. The documented smoke check therefore failed on a correct
+   engine. FIXED in the deploy path (`graph TD;` → `graph LR;`); re-run green:
+   `[smoke] PASS: sample workflow completed with result=42`, exit 0.
+2. **README's two `agent()` examples were unrunnable** under the v2 diagram contract (no `phase()`,
+   `graph TD`, no lanes). Rewritten to `phase()` + an LR swimlane and **re-run verbatim** against
+   boot A: `ping` ⇒ `v3` registered, run `f97a9885` `completed`, `ping:done ollama/qwen2.5:7b
+   tok=2851/13`; `greet2` (with the `overrides` example) ⇒ run `5ce72da2` `completed`, `greet:done
+   tok=2865/27`.
+3. **README's example `timeoutMs: 60000` always times out on this deployment** — first re-run gave
+   `ping:failed`, `run_agent_log` ⇒ `{"reason":"timeout", "detail":"no response from model
+   \"rwe-proxy-default\" (provider \"ollama\") — timeout"}`. Raised to `300000` in the example plus a
+   one-line note; both examples then green (above).
+4. **README's `schedule_create` example still passed `workflow`** (the tool now says "Name no
+   workflow — hand the id to `workflow_register({triggers:[id]})`"). Rewritten to the create → claim
+   → publish order that this pass actually exercised.
+5. DEPLOY.md/README.md rewritten to current state (supersede-not-append): every `v26 起 …` /
+   `v26 遷移注意` / 「舊版可用…」 block removed, the retired-provider prose replaced by 「本機用
+   Ollama,雲端用 OpenRouter」, `graph TD` gone from both manuals, and §6 given the five limitations
+   this pass measured.
+
+### Config-file sync check
+
+`rwe.config.json` / `rwe.config.example.json` / `deploy/*.service` / `docker-compose.yml`:
+**this iteration added no new config key** — round-tripped `KNOWN_FILE_CONFIG_KEYS` (src/main.ts:80)
+against DEPLOY.md §1b: every JSON key has a row and every row maps to a key `composeConfig()`
+forwards, with ONE exception now recorded as a defect (D7 `agentSlots`, below). `OPENAI_API_KEY` /
+`OPENAI_API_BASE` / `GEMINI_API_KEY` appear nowhere in `src/`, in either manual, or in the example
+config. The owner's live `~/.config/rwe.env` still carries a stale `OPENAI_API_KEY` line; the engine
+never reads it (harmless, left alone — it is the owner's file, not a repo artifact).
+
+### VAL-181 — REQ-121: a booted engine refuses a sha256-only seed, and the schema teaches the three shapes
+- **status:** green
+- **traces:** REQ-121, DES-170
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Boot A over real MCP HTTP. `run_start({name:'probe-lr', seed:[{path:'a.txt',
+  sha256:'e3b0c442…'}]})` ⇒ `{"error":{"code":"INVALID_SEED_SPEC","message":"seed[0] (a.txt):
+  contentB64 is required and must be a string — each seed[] element must supply contentB64 … (large
+  trees, or content you already have a sha256 for, should use seedManifest instead)","see":
+  "workflow_authoring_guide","detail":{"index":0,"path":"a.txt"}}}` — names the path, points at
+  `seedManifest`. Filesystem oracle: `<workRoot>/workflows/probe-lr/runs/` contained **no** directory
+  for that request (only the later accepted run). Legal seed unchanged: the same workflow with
+  `seed:[{path:'a.txt',contentB64:'…'}]` ran, and the bytes were on disk —
+  `cat <workRoot>/workflows/haiku-read/runs/52b9d78a…/a.txt` ⇒ `v26-anthropic-seed-marker-4419`.
+  `tools/list` `run_start`: `seed.items` = `{required:[path], properties:{path, contentB64:{…"should
+  use seedManifest instead"}}}`, `seedManifest.items` = `{required:[path,sha256], sha256 pattern
+  ^[0-9a-f]{64}$, exec?}`, `seedManifestRef` = a `^[0-9a-f]{64}$` string with its own description —
+  three shapes, three descriptions. Independently re-confirmed by the cold subject (VAL-188), which
+  chose inline `seed:[{path:'notes.txt',contentB64:…}]` unaided and got the bytes on disk.
+- **iter:** v26
+
+### VAL-182 — REQ-122: a revoked OpenRouter key ends the attempt inside ONE attempt, with no surviving CLI child
+- **status:** green
+- **traces:** REQ-122
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Boot C (`OPENROUTER_API_KEY=sk-or-v1-revoked…`, `timeoutMs:300000`, `retries:1`, so a
+  timeout path could not have finished in under 600 s). `run_start({name:'badkey-probe'})` ⇒ run
+  `abf1ffc7` terminal in **9 s wall clock** (`startedAt 18:06:48.780` → `endedAt 18:06:55.647`).
+  `run_agent_log` `events` is NON-empty and carries the classification:
+  `{"kind":"message","data":{"type":"error","detail":"authentication_failed (status 401) — provider
+  ended the attempt (attempt 1)","status":401,"kind":"authentication_failed","attempt":1}}` — note
+  `attempt: 1`, i.e. the gateway retry loop did NOT run a second attempt. AgentRecord:
+  `state:"failed"`, same detail on the usage event, `provider:"openrouter"` and
+  `model:"inclusionai/ling-3.0-flash"` (the RESOLVED values, REQ-125's cross-clause).
+  `ps -eo pid,args | grep claude-agent-sdk-linux-x64/claude` ⇒ **0** surviving CLI children.
+  The 403/404 arm and the 429/5xx "leave it to the CLI" arm stay at the vitest floor (UT-176/UT-177):
+  no revoked-403 credential and no reproducible 429 were available here.
+- **iter:** v26
+
+### VAL-183 — REQ-123: three real provider runs, ollama keeps `Read`, and a retired provider is refused at boot
+- **status:** green
+- **traces:** REQ-123
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** **(a) ollama keeps Read — the clause this REQ exists for.** Boot A, workflow
+  `ollama-read`, `agent('reader',{allowedTools:['Read']})`. The spawned CLI's OWN argv, read from
+  `/proc/<pid>/cmdline` while it ran: `… --thinking disabled --model rwe-proxy-local
+  --permission-prompt-tool stdio --allowedTools Read --tools Read --setting-sources=project
+  --strict-mcp-config --permission-mode default` — `Read` present, no `Bash` force-added.
+  `run_agent_log` `harness.tools` ⇒ `["Read"]`, verbatim what the caller passed.
+  **(b) anthropic:** run `52b9d78a`, argv `… --effort low --model claude-haiku-4-5-20251001
+  --allowedTools Read --tools Read …`, `state:"done"`. **(c) openrouter:** run `229c4fd5`
+  (`inclusionai/ling-3.0-flash`), `state:"done"`, real answer, `tokens {input:176, output:64}`.
+  **(d) fail-closed config, per row:** `RWE_CONFIG_PATH=<config with provider:"openai" and
+  provider:"gemini"> npm run check-config` ⇒ exit 1 and `rwe.config.json: unsupported provider
+  'openai' on aliases gpt41; unsupported provider 'gemini' on aliases gem — remove these rows.
+  Allowed providers: anthropic, openrouter, ollama.`; a real boot with the same file ⇒ `fatal startup
+  error: Error: rwe.config.json: unsupported provider 'openai' …`, exit 1.
+  **(e) source/grep:** `grep -rniE "openai|gemini" src/` yields only comments and OpenRouter model
+  ids — no `NON_ANTHROPIC_EXCLUDED_TOOLS`, no `curateToolsForProvider`, no `openai`/`gemini` provider
+  branch; the engine's env reads are `ANTHROPIC_API_KEY`, `RWE_SECRET_ANTHROPIC_API_KEY`,
+  `CLAUDE_CODE_OAUTH_TOKEN`, `RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN`, `OPENROUTER_API_KEY`,
+  `OLLAMA_BASE_URL`, `ANTHROPIC_BASE_URL`, `RWE_*` only. All five boots ran with `OPENAI_API_KEY`
+  unset. The generated LiteLLM config (`/tmp/rwe-litellm-*/config.yaml`) has no openai entry.
+  **(f) deploy order:** the production `rwe.config.json` no longer carries any `openai` row (the four
+  `gpt4*` aliases now point at `openrouter`), so the self-update restart cannot land on a config the
+  new binary refuses; the updater's own gate is `deploy/rwe-update.sh:168-177` — `npm run
+  check-config` non-zero ⇒ `revert_and_fail "$CONFIG_CHECK_OUT" "failed"` **before** `systemctl
+  restart rwe`. The check itself is real-verified in (d); the full updater run was NOT executed
+  (it does `git fetch`/checkout on this shared working tree and would restart production).
+  **(g) ledger clause:** the original 0f79f04 decision, today's re-test and the reversal are recorded
+  in `02-architecture.md` (2 citations of the sha).
+- **iter:** v26
+
+### VAL-184 — REQ-124: every agent lands in its phase column, including on real pre-v26 production runs
+- **status:** green
+- **traces:** REQ-124, DES-175, DES-176
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Boot D serves a byte copy of the owner's production `workRoot`; it re-hydrated **30
+  real production runs** (`[RunStore] hydrateAll: re-hydrated 30 run(s)`), which is also a live
+  migration check of v26 code against real pre-v26 data. `GET /api/runs/77f74018-6542-4430-be4c-
+  a93ea80bd325/dag` (the runId REQ-124 names) ⇒ **`"warnings": []`** with 10 cells:
+  `__trigger__` col 0, `triage` col 1, three `fork_lite` col 2 rows 0/1/2, `clerk` col 3, three
+  `checker` col 4, `reconciler` col 5. That record is genuinely pre-v26: its stored agents carry
+  `agentId,label,frame,startedAt,lastActivityAt,endedAt,state,provider,model,tokens` and **no
+  `phase` field**, so the column came from the `startedAt`-vs-`phases[]` back-inference, with
+  `view.phases` (`triage → fork:lite x3 → evidence → check → reconcile`) supplied by the API.
+  Census over all 30 production runs (`.sdlc/features/001-remote-workflow-engine/evidence/v26/req124-prod-census.txt`): 7 with zero warnings, 23 with 1–3
+  **lane-level** notes only (`lane N is beyond the predicted layout: appended`, `lane N (…) is
+  dynamic: agents cannot be statically slotted`) — never the pre-v26 one-warning-per-agent failure;
+  agents are columned by phase in every one of them (e.g. `430a7758`: researcher×3 col 1, critic col
+  2, synthesizer col 3). New runs carry the field directly: `agent-1 phase:"read" phaseIndex:0`,
+  and the cold subject's two-phase run `80379509` ⇒ `probe1 Stage 1#0`, `probe2 Stage 2#1`.
+- **iter:** v26
+
+### VAL-185 — REQ-125: the terminal record keeps the resolved provider/model; transport and proxyModel are their own columns
+- **status:** green
+- **traces:** REQ-125
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Four real runs, all four shapes observed on `run_status.agents[]`:
+  ollama via SDK+LiteLLM ⇒ `provider:"ollama"`, `model:"qwen2.5:7b"` (resolved, not the alias
+  `local`), `transport:"claude-agent-sdk"`, `proxyModel:"rwe-proxy-local"`;
+  anthropic-direct ⇒ `provider:"anthropic"`, `model:"claude-haiku-4-5-20251001"`,
+  `transport:"claude-agent-sdk"`, **no `proxyModel`** (absent, as the REQ requires when there is no
+  cloak); openrouter ⇒ `provider:"openrouter"`, `model:"inclusionai/ling-3.0-flash"`,
+  `proxyModel:"rwe-proxy-reasoner"`; boot E with `gateway:"direct-fetch"`+`useLiteLLMProxy:false` ⇒
+  `transport:"direct-fetch"`, no `proxyModel`, `tokens {input:35, output:2}`. The failure path keeps
+  it too: VAL-182's failed record still reads `provider:"openrouter"`. The usage EVENT carries the
+  same resolved pair: `{"kind":"usage","data":{…,"provider":"ollama","model":"qwen2.5:7b",
+  "transport":"claude-agent-sdk","proxyModel":"rwe-proxy-local"}}`.
+- **iter:** v26
+
+### VAL-186 — REQ-126: `effort` never reaches OpenRouter — the harness says applied, the wire says otherwise
+- **status:** red
+- **traces:** REQ-126
+- **tier:** acceptance
+- **real:** true
+- **result:** fail
+- **evidence:** Boot B, alias `reasoner` → `inclusionai/ling-3.0-flash`, whose own catalog row says
+  `effortDeclared: true`. A **transparent recording pass-through** was placed in front of the REAL
+  OpenRouter API (`OPENROUTER_API_BASE=http://127.0.0.1:8911/api/v1`, forwards every request upstream
+  unchanged and logs it; captured bodies: `.sdlc/features/001-remote-workflow-engine/evidence/v26/or-wire.log`) — no mock: OpenRouter answered both runs.
+  `effort:"low"` ⇒ `harness.effortApplied {"param":"thinking","value":1024}`;
+  `effort:"high"` ⇒ `{"param":"thinking","value":4096}` — the engine claims applied both times.
+  **The captured wire disagrees:** neither outbound body contains `reasoning`, `reasoning_effort` or
+  `thinking`; the two bodies are byte-for-byte the same size (884) apart from nothing — low and high
+  are indistinguishable on the wire. Chain isolated hop by hop:
+  (1) the SDK maps `thinking:{type:'enabled',budgetTokens:N}` to **`--max-thinking-tokens N`**
+  (`sdk.mjs`: `case"enabled": if(budgetTokens===undefined) push("--thinking","adaptive"); else
+  push("--max-thinking-tokens", …)`), and
+  (2) the CLI then sends `thinking: {'type': 'adaptive'}` — the budget is gone, so low and high
+  collapse to the same request (observed in a `litellm --detailed_debug` capture of the CLI's own
+  ingress, reproducing the engine's exact argv), and
+  (3) LiteLLM turns that into `reasoning_effort='high'` and then **drops it**: the outbound body to
+  OpenRouter has no such field. Sent explicitly as `thinking:{type:'enabled',budget_tokens:4096}` the
+  same proxy answers `400 litellm.UnsupportedParamsError: openrouter does not support parameters:
+  ['reasoning_effort'] … To drop these, set drop_params… or send allowed_openai_params=
+  ['reasoning_effort']` — i.e. even the intended shape cannot work through this deployment's proxy
+  config as generated. **Green sub-clauses (recorded, not enough to pass the REQ):** the
+  non-declaring arm is correct — alias `noreason` → `tencent/hy-mt2-7b` ⇒
+  `effortApplied {"reason":"model does not declare reasoning"}`; ollama ⇒ `{"reason":"no reasoning
+  dial for this provider"}` **and `--thinking disabled` on the real argv**; anthropic keeps the
+  `output_config.effort` path — `--effort low` on the real argv and `effortApplied
+  {"param":"effort","value":"low"}`; `models_list` carries `toolUseDeclared` / `effortDeclared`
+  (90 of 100 rows `true`, `false` rows exist, `unknown` on the static anthropic rows) with
+  `declaredSource` provenance, and the guide says 「declared, not probed」.
+  **Defect, needs Gate 6:** the wire mapping and the `effortApplied` claim disagree; the guide's own
+  provider table asserts 「`openrouter` — effort applies: yes」, which this deployment does not
+  deliver. A fix has to cover both the CLI hop (the budget is lost before LiteLLM) and the proxy
+  config (`allowed_openai_params`/`drop_params` are not emitted by `generateLiteLLMConfig`).
+- **iter:** v26
+
+### VAL-187 — REQ-127: four token columns, per-model cost, and a budget that binds in USD *and* tokens
+- **status:** green
+- **traces:** REQ-127, DES-178, DES-180, DES-181, DES-183
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** **(a) four columns on every path:** ollama/SDK ⇒ `{input:681,output:18,cacheRead:0,
+  cacheWrite:0}`; anthropic/haiku ⇒ `{input:34767,output:2186,cacheRead:0,cacheWrite:0}` and a second
+  tiny call ⇒ `{input:160,output:85,…}`; openrouter ⇒ `{input:176,output:64,…}`; direct-fetch ollama
+  ⇒ `{input:35,output:2,…}`. **(b) cost:** haiku `costUSD 0.045697` for 34767 in / 2186 out is
+  exactly `34767×$1/M + 2186×$5/M`, and $1/$5 per MTok is Haiku 4.5's real price (claude-api skill);
+  cross-checked against the CLI's own `total_cost_usd` on a standalone call with the same argv
+  (`0.0189595` for `input 18 / cache_creation 7940 / cache_read 7635 / output 338`, which is
+  $1/M input + $5/M output + a 1h cache write at 2× input) — same price basis. ollama ⇒ `costUSD 0`
+  with **`unpriced:false`** (the known-zero discriminator) and `unpricedCalls:0`.
+  **(c) budget is a two-key object in USD and tokens:** `run_start.budget` schema ⇒ `{usd?:number,
+  tokens?:integer, additionalProperties:false, minProperties:1}` described as 「`usd` … USD ceiling,
+  `tokens` … the four-column sum」. Script-visible: `budget.limits` ⇒ `{"usd":null,"tokens":300}`,
+  `budget.spent()` ⇒ `0` (USD), `budget.tokens()` ⇒ `{input:162,output:2,cacheRead:0,cacheWrite:0,
+  sum:164}`. **Enforcement observed:** the same two-agent workflow under `budget:{tokens:100}` ⇒ the
+  second dispatch refused — `agents[1] {"state":"refused","reasonCode":"BUDGET_EXCEEDED"}`, the
+  script caught `BUDGET_EXCEEDED`, run usage stopped at the first call. This is the REQ's own
+  「公開的後果」 resolved as option (ii): a token ceiling binds on a free local model where a USD
+  ceiling never could. **(d) trigger-started run:** a `once` schedule created first, claimed by
+  `workflow_register({triggers:[id]})`, published, fired on its own tick ⇒ run `92fe5cb5`
+  `startedBy:{"type":"schedule","id":"budget-probe"}` with **no cap** (`budget.limits`
+  ⇒ `{"usd":null,"tokens":null}`) and full usage still recorded (`{input:324,output:4,…}`, per-agent
+  `costUSD`/`unpriced`). **(e) surfaces:** all four columns are readable on `run_status.agents[].tokens` and
+  `run_result.meta.usage.tokens` (every quote above). The dashboard renders the four-column **sum**
+  plus cost: the run header shows `33949 tok $0.0000 9 unpriced call(s) (lower bound)` and each agent
+  node shows `<sum> tok $<costUSD>` + an `(unpriced)` marker (`sumTokens()`/`renderUsage()` in the
+  page source) — the four columns are NOT broken out per column there (minor finding D8; the REQ's
+  substance — persisted, queryable, per-model-priced — holds on the two API surfaces) (screenshot `.sdlc/features/001-remote-workflow-engine/evidence/v26/req129-run-dag-1100px.png`). **Two accuracy findings recorded
+  as defects, not clause failures:** D3 (the static `claude-sonnet-5` row is $3/$15; the real price
+  is $2/$10) and D4 (cache read is priced at the input rate; the real multipliers are ~0.1× read /
+  1.25×–2× write). Cache columns were 0 on every engine call because these curated sessions stay
+  under Anthropic's minimum cacheable prefix — the same CLI with a larger prompt reports
+  `cache_creation_input_tokens 27258`, and the extractor reads exactly those four keys.
+- **iter:** v26
+
+### VAL-188 — REQ-128: the v2 swimlane contract holds, but a cold model did not register first try
+- **status:** red
+- **traces:** REQ-128
+- **tier:** acceptance
+- **real:** true
+- **result:** fail
+- **evidence:** **Green half — the contract itself, all five codes live on boot A**, each with
+  `see:"workflow_authoring_guide"`, a line and the expected structure as DATA:
+  `DIAGRAM_DIRECTION (line 1) detail{expected:{direction:"LR"}}`;
+  `LANE_MISMATCH detail{expected:[{index:0,title:"one",dynamic:false,slots:[0]},…]}`;
+  `TOOLS_MISMATCH (line 3) detail{expected:{label:"a",tools:["Read"]}}`;
+  `EDGE_MISMATCH detail{expected:{from:0,to:1}}`;
+  `AGENT_BEFORE_PHASE: every agent must be dispatched inside a phase (line 5) detail{label:"a"}`;
+  and the conformant LR swimlane registers (`diagcase-ok_v2 v1`). Version gating is real: a new
+  registration reports `diagramContract:"v2"`, while all five workflows in the production copy report
+  `"v1"`, are not re-checked, and still render (`GET /api/workflows/gp-runner/diagram.svg?version=v4`
+  ⇒ 200, 352 520 bytes, `width="100%"` + `viewBox`). The dashboard workflow page shows the per-agent
+  harness table beside the drawn diagram (`.sdlc/features/001-remote-workflow-engine/evidence/v26/req129-author-diagram-1100px.png`, 8 rows: label /
+  declared model / resolved model / effort / timeoutMs / tools).
+  **Red — the REQ's own cold-model clause** 「一個只讀 guide 的冷模型 → 第一次註冊就通過」:
+  subject `openai/gpt-5.6-luna` over the OpenRouter API, a fresh instance whose entire context was
+  the operator task + this engine's `tools/list` (35 tools) and whatever it fetched itself; no source
+  tree, no transcript, no plugin (full transcript: `.sdlc/features/001-remote-workflow-engine/evidence/v26/req128-cold-probe.json`).
+  It called `workflow_authoring_guide` FIRST (good), then
+  `workflow_register` **four times**: (1) `PARSE_ERROR: Unexpected token 'export'` — it had wrapped
+  the body in `export default async function () { … }`; (2)(3) `AGENT_UNDECLARED: agent label
+  "probe1" has no params.agents.probe1 declaration` after it stripped `export` from `meta` to dodge
+  (1); (4) success once it had reverse-engineered the shape by reading another workflow's source.
+  **The diagram was never the problem** — no `DIAGRAM_*`/`LANE_*`/`TOOLS_*`/`EDGE_*` refusal appears
+  anywhere in the transcript. The documentation defect is D6: the guide's ten examples all show the
+  bare top-level body (`export const meta = …` then statements ending in `return await agent(…)`) but
+  no sentence states that the body IS the function body and that a second `export` is not accepted,
+  and `PARSE_ERROR`'s message names neither the line nor the offending construct. Per the Gate 6
+  runbook's own rule («any wrong step is a documentation defect»), this fails the clause; a fix must
+  be re-verified with ANOTHER fresh instance.
+- **iter:** v26
+
+### VAL-189 — REQ-129: both figures scale and zoom, but `Fit` is unreachable after a pan
+- **status:** red
+- **traces:** REQ-129, DES-186
+- **tier:** acceptance
+- **real:** true
+- **result:** fail
+- **evidence:** Real Chromium (puppeteer 25, `headless:'new'`) at a 1100×900 viewport against boot D
+  (real production data). **Green:** the run DAG SVG is `viewBox="0 0 938 188"`, `width="100%"`,
+  `preserveAspectRatio="xMinYMin meet"`, rendered 1052 px wide inside the 1100 px window with all ten
+  cells and their labels legible in one screen (`.sdlc/features/001-remote-workflow-engine/evidence/v26/req129-run-dag-1100px.png`, a 5-phase 9-agent run);
+  the author diagram is served as SVG and rendered 1052×212 from a 2346-px-wide source
+  (`.sdlc/features/001-remote-workflow-engine/evidence/v26/req129-author-diagram-1100px.png`). Wheel zoom works on both (`#dag-zoom` transform
+  `scale(1)` → `scale(1.1)`; `#diagram-zoom` likewise) and drag-pan works
+  (`translate(0,0)` → `translate(-202.6px,-80.5px)`), and the 3-second dashboard poll does **not**
+  reset either (transform identical after 4 s). The author diagram's `Fit` resets correctly
+  (`translate(0px, 0px) scale(1)`). **Red:** on the run DAG, after a drag-pan a real mouse click on
+  `#dag-fit` does nothing — reproduced deterministically, and hit-tested:
+  `document.elementFromPoint(<centre of #dag-fit>)` returns `BUTTON#dag-fit` before any interaction
+  and after wheel-zoom, but returns **`svg#dag-graph`** after a pan; an event trace shows
+  `mousedown/mouseup/click` arriving at those coordinates while the button's own click listener never
+  fires (a programmatic `document.getElementById('dag-fit').click()` still resets, proving the
+  handler is live and it is purely the pan-translated graph covering the control). The clause
+  「並有『fit』重置」 therefore fails for the run DAG under normal mouse use.
+- **iter:** v26
+
+### VAL-190 — REQ-130: the guide's five gaps are closed, and a cold client seeded a workspace unaided
+- **status:** green
+- **traces:** REQ-130
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** `workflow_authoring_guide` on boot A returns 36 659 chars containing, verifiably:
+  **(a)** 「Seeding a workspace」 with all three shapes (`seed:[{path,contentB64}]`, `seedManifest`
+  with `sha256`, `seedManifestRef`) AND the sentence that a `seed` element carrying only a `sha256`
+  is refused `INVALID_SEED_SPEC` naming the path; **(b)** the complete global list
+  (`agent/parallel/pipeline/phase/log/args/budget/workflow`, plus guarded `Date`/`Math`), the three
+  `DETERMINISM_GUARD` calls **with the replay-key reason and a substitute for each**
+  (timestamp from `run_status`/`run_result` or `args`; a seed via `args`; `new Date('2026-01-01')`
+  allowed), and the explicit 「`setTimeout`, `fetch`, `console`, `require`, `process`, `fs` are simply
+  absent」; **(c)** `meta.params.args` limited to `string | number | enum`; **(d)** the provider
+  capability table AND the alias list rendered from THIS deployment's own aliases (boot A's guide
+  names `default`, `local`, `haiku`, `orfree` — the four aliases in boot A's config file, i.e. the
+  same table `resolveAlias`/`validateAliases` read), with 「There is no `openai` row」; **(e)**
+  「Its `toolUseDeclared`/`effortDeclared` flags … are DECLARED capability, never probed by
+  dispatching a call」 plus `declaredSource`/`catalogFetchedAt` provenance. `run_start`'s own tool
+  description carries the seed shapes (per-key descriptions, VAL-181) and the budget unit
+  (`{usd?: <USD ceiling>, tokens?: <token ceiling, the four-column sum>}`).
+  **Unaided behaviour of a real cold client** (same subject and session as VAL-188): it seeded the
+  workspace with the documented inline shape without being told how — `run_start({name:'cold-probe-b',
+  channel:'release', seed:[{path:'notes.txt', contentB64:'Y29sZC1wcm9iZS1pbnB1dA=='}]})` — and the
+  bytes were on disk (`cat <workRoot>/workflows/cold-probe-b/runs/80379509…/notes.txt` ⇒
+  `cold-probe-input`); its run completed with both agents in their own phases. Its scripts never
+  called `Date.now()`, `Math.random()`, `new Date()`, `setTimeout` or `fetch`, and never declared an
+  `args` type outside the legal three — no `DETERMINISM_GUARD` or `PARAM_CONTRACT_INVALID` refusal
+  appears in the transcript. (The one thing it got wrong was the script BODY form, which is REQ-128's
+  clause and defect D6, not one of REQ-130's five gaps.)
+- **iter:** v26
+
+### Defects found this pass (for Gate 6 / the owner)
+
+- **D1 — three `tools/list` array parameters have no `items`, and Gemini-family clients reject the
+  whole tool surface because of it.** `workflow_register.triggers`, `workspace_diff.manifest`,
+  `workspace_delete.paths`. Observed for real: the first cold-model probe (`google/gemini-3.8-flash`)
+  died before its first tool call with `400 … GenerateContentRequest.tools[0].function_declarations[0]
+  .parameters.properties[triggers].items: missing field` (+ the other two, by index). Same class as
+  the `seed` schema REQ-121 fixed, in three other places. OpenAI-family clients tolerate it.
+- **D2 — `gateway:"direct-fetch"` alone silently breaks every `agent()` call.** With
+  `useLiteLLMProxy` left at its default `true`, `callViaLiteLLMProxy` sends `model: <aliasName>`
+  (client.ts:364) while `generateLiteLLMConfig` only registers `rwe-proxy-<alias>` — the proxy answers
+  `400 … You passed in model=local. There are no healthy deployments for this model`, the call ends
+  `reason:"terminal"`, tokens 0. `proxyModelName()`'s own doc comment says it 「MUST be applied
+  identically here and where the gateway sets query()'s model」; the LiteLLMGatewayClient side was
+  missed. Aggravating: that terminal failure is recorded as `state:"done"` on the AgentRecord
+  (the SDK path correctly records `state:"failed"` — VAL-182). Documented workaround now in both
+  manuals: set `useLiteLLMProxy:false` together with `gateway:"direct-fetch"` (verified green).
+- **D3 — the static price row for `claude-sonnet-5` is wrong**: `model-catalog.ts:106` says
+  `in 3e-6 / out 15e-6` ($3/$15 per MTok); Sonnet 5's real price is **$2/$10** (claude-api skill,
+  cached 2026-06-24). `claude-opus-4-8` ($5/$25) and `claude-haiku-4-5-20251001` ($1/$5) are correct.
+  Affects `costUSD` and any USD budget on a sonnet alias.
+- **D4 — cache rates are the input rate, and the stated reason no longer holds.** The table comments
+  「No published per-TTL cache-tier breakdown exists for these models yet」; the published multipliers
+  are ~0.1× input for a cache READ and 1.25× (5 m) / 2× (1 h) for a cache WRITE, so a cache read is
+  currently over-charged ~10× and a cache write under-charged. Not observable in this deployment yet
+  (cache columns were 0 in every engine call, VAL-187).
+- **D5 — `scripts/smoke.sh` registered `graph TD;`** and was refused by the v2 contract. FIXED in
+  this pass (it is the documented deploy path, not product logic); re-run green.
+- **D6 — the authoring guide never states the script-body form**, and `PARSE_ERROR`'s message names
+  neither the line nor the offending construct. This is what cost the cold subject its first try
+  (VAL-188). Fix belongs in `src/authoring-guide.ts` / the `PARSE_ERROR` message, then the WHOLE
+  cold-model protocol must be re-run with another fresh instance.
+- **D8 — the dashboard shows the token SUM, not the four columns.** `sumTokens()` collapses
+  `{input,output,cacheRead,cacheWrite}` into one number for both the per-agent node and the run
+  header (cost and the unpriced marker ARE shown). REQ-127 lists the dashboard among the three
+  surfaces where 「四欄與 costUSD 都看得到」; the two API surfaces do show all four. Recorded for the
+  reviewer to rule on rather than silently counted as met.
+- **D7 — `agentSlots` is declared but never wired.** It is in `KNOWN_FILE_CONFIG_KEYS`
+  (main.ts:84) yet `composeConfig()` never forwards it: booting with `"agentSlots": 7` still reports
+  `{"agentSemaphore":{"total":32,…}}` on `/api/status`. This is the repo's own `composeConfig`
+  wiring bug class. DEPLOY.md §1b/§6 now say the host-level ceiling is fixed at 32 rather than
+  documenting a key that does nothing.
+
+### Gate self-check (v26 round 1)
+
+1. Booted from documented steps only — **yes**, with the four doc gaps above folded back into
+   `scripts/smoke.sh` / README.md / DEPLOY.md (never worked around silently).
+2. Every REQ has a real-tier item: **yes, 10/10 run against real wiring** — but three are RED
+   (REQ-126, REQ-128, REQ-129). No REQ was closed on mock evidence, and no REQ was left unreachable.
+3. README.md / DEPLOY.md rewritten to current state and re-run verbatim (quickstart, both `agent()`
+   examples, the smoke check).
+4. `sh .sdlc/trace … --check`: the ten `未真實驗證` gaps for REQ-121..130 are gone; the remaining
+   gaps are the unchanged pre-existing 16 `漂移` + 2 `未實作` + 1 TDD set from Gate 6/7.
+5. **Gate NOT passed** — three real-tier RED clauses, all with a named defect and a reproduction.
+   Send back: REQ-126 (engine + proxy config), REQ-128 (guide/PARSE_ERROR then re-run the cold-model
+   protocol with a fresh subject), REQ-129 (dashboard fit control z-order).

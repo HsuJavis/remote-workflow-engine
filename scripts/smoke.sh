@@ -87,7 +87,7 @@ extract() {
 # header-only diagram, which `checkMermaid` accepts for a script with zero agent labels.
 SMOKE_WF="rwe-smoke-$$"
 echo "[smoke] registering sample workflow ${SMOKE_WF}..."
-REG_RESPONSE=$(call_tool workflow_register "{\"name\":\"${SMOKE_WF}\",\"script\":\"return 42;\",\"mermaid\":\"graph TD;\"}")
+REG_RESPONSE=$(call_tool workflow_register "{\"name\":\"${SMOKE_WF}\",\"script\":\"return 42;\",\"mermaid\":\"graph LR;\"}")
 VERSION=$(extract_nested "$REG_RESPONSE" version)
 if [ -z "$VERSION" ] || [ "$VERSION" = "undefined" ]; then
   echo "[smoke] FAIL: workflow_register did not return a version: ${REG_RESPONSE}" >&2

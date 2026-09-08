@@ -18,7 +18,7 @@
   另有 `run_suspend`/`run_resume`/`run_stop`、`run_agent_log`（依腳本宣告的 agent label 讀該次 harness
   逐字稿）、`run_list`，以及當機可續跑（重啟後 `interrupted` → `run_resume`）
 - **版本與發布頻道**：同一個工作流程名稱可以註冊多次——每次註冊都保留成一個新版本（`v1`、`v2`、…），
-  舊版本不會被覆蓋。擁有者用 `workflow_publish({name,version,channel})` 把 `release`（穩定）或 `beta`
+  既有版本不會被覆蓋。擁有者用 `workflow_publish({name,version,channel})` 把 `release`（穩定）或 `beta`
   （測試）頻道指到某個版本（三個參數都是必填，`version` 是 `workflow_register` 回傳的**字串**如 `'v1'`）；
   `run_start({name})` 不指定版本時永遠跑 `release` 指到的版本（避免不小心
   跑到還在測試的草稿），`run_start({name,channel:'beta'})` 跑 beta，`run_start({name,version:'v3'})`
@@ -48,12 +48,20 @@
   用途、解析到的版本與是哪個頻道解析的、階段名稱、逐 agent 的可調參數契約（含型別/預設值/上限）、
   被鎖定的鍵名、所有版本與頻道指向、擁有者、怎麼回報問題、能不能跑（`runnable`/`runnableReason`），
   以及作者附上的 **Mermaid 結構圖**（`mermaid`）。回應裡**永遠沒有腳本本文**。
-- **作者附上的結構圖**：`workflow_register` 必須帶一個非空的 **Mermaid** `mermaid`
-  字串（少了就 `MERMAID_REQUIRED`），而且圖裡的 stadium 節點 `id(["label"])` 要跟腳本的 agent label
-  **雙向完全對應**（對不上就 `DIAGRAM_MISMATCH`）。`workflow_describe` 會原文回傳這張圖（`mermaid` 欄位），也接受 `version`／`channel` 指定要看哪個版本。
+- **作者附上的結構圖（泳道圖契約）**：`workflow_register` 必須帶一個非空的 **Mermaid** `mermaid`
+  字串（少了就 `MERMAID_REQUIRED`）。新註冊的版本要通過五條規則，每條各有自己的錯誤碼，
+  訊息會指出第幾行、期望什麼，並附 `see: workflow_authoring_guide`：
+  第一行必須是 `graph LR`／`flowchart LR`（`DIAGRAM_DIRECTION`）；
+  每呼叫一次 `phase()` 就有一條同順序的 `subgraph` 泳道，agent 節點要在它被派發的那條泳道裡
+  （`LANE_MISMATCH`）；每個 `agent()` 都要在某個 `phase()` 之後才派發（`AGENT_BEFORE_PHASE`）；
+  節點第三段 `tools: …` 要等於該次呼叫的 `allowedTools`（`TOOLS_MISMATCH`）；
+  邊要對得上腳本的先後順序（`EDGE_MISMATCH`）。stadium 節點 `id(["label"])` 與腳本 agent label 的
+  **雙向完全對應**同樣照舊（對不上就 `DIAGRAM_MISMATCH`）。
+  `workflow_describe` 的 `diagramContract` 欄位會顯示該版本是用哪一版契約收下的：
+  `v2` 是套用上述規則收下的版本，`v1` 是更早註冊的版本——`v1` 不重驗、不刪、照原圖渲染。`workflow_describe` 會原文回傳這張圖（`mermaid` 欄位），也接受 `version`／`channel` 指定要看哪個版本。
   **註冊時引擎不產生圖**（圖由作者附上），註冊也不會把腳本本文送給任何模型。
   註冊之後,dashboard 會在**第一次瀏覽時於伺服端**把那張圖畫成 SVG 並快取
-  （`GET /api/workflows/:name/diagram.svg`,v25 REQ-119）——
+  （`GET /api/workflows/:name/diagram.svg`）——
   瀏覽器只收到圖片,作者的標籤文字不會進入任何人瀏覽器的 HTML 渲染器。
 - **排程**：`schedule_create`/`schedule_list`/`schedule_delete`/`schedule_setEnabled`（cron/once/resident）。
   觸發器**先建立、再由工作流程認領**：`schedule_create`／`webhook_create` 都不需要 `workflow`，回一個 id，
@@ -74,6 +82,14 @@
   `POST /assets/manifest`（manifest-as-CAS-blob，`seedManifestRef = sha256(bytes)`，可由用戶端自行推導）；
   engine-pull `seedRef:{repoUrl,sha}`（`HardenedSeedRefFetcher`，SSRF-safe egress allowlist，`seedRefAllowlist:[]` 省略則 `SEEDREF_DISABLED`）
 - **問題回報**：`issue_report`（版本欄位自動填入，caller 可覆寫；`issue_list`/`issue_get`/`issue_get_comments`/`issue_comment_post`；必填欄位是 `title`/`reproSteps`/`analysis`）
+- **用量與花費**：每個 `agent()` 呼叫結束都記四欄 token（`input`／`output`／`cacheRead`／`cacheWrite`）
+  與依模型單價算出的 `costUSD`；查不到價格的呼叫記 `unpriced:true` 並計入 `run_result.meta.usage.unpricedCalls`
+  （以 0 計費，不拒絕）。整個 run 的合計看 `run_status` / `run_result.meta.usage` / 儀表板。
+  `run_start.budget` 是物件 `{usd?, tokens?}`：`usd` 是美金上限，`tokens` 是四欄合計上限，
+  兩者可各自省略（省略＝不設限）。任一上限用完後**下一次**派發會被拒（該筆記
+  `state:"refused"`、`reasonCode:"BUDGET_EXCEEDED"`）。腳本裡讀 `budget.spent()`（美金）、
+  `budget.tokens()`（四欄＋`sum`）、`budget.limits`。
+  本機 Ollama 模型價格是 0，所以純美金上限永遠停不住本機 run——要限制本機 run 請用 `tokens` 上限。
 - **系統監控**：`system_info`（CPU 負載 + 核心數 + 利用率 %、記憶體 total/used/free、磁碟、引擎行程 + 主機 Top-N 行程 + 系統行程統計，`GET /api/system`）
 - **模型目錄**：`models_list`（跨供應商統一目錄，含 `capability`/`stability`/`costLevel 0–10`/`modalities`/`ref` 等豐富欄位，支援多維篩選，`GET /api/models`）
 - **儀表板**：`GET /dashboard`（首頁：工作流程卡片按 RUNNING/REGISTERED/OTHER 分組，各附描述 +
@@ -141,13 +157,14 @@ export ANTHROPIC_API_KEY=sk-ant-...     # 若要用 anthropic 別名（或 OPENR
 
 ```bash
 # 第一步：註冊一個工作流程（一律要先註冊、再指名執行）
-# mermaid 是必填：少了就 MERMAID_REQUIRED。這個腳本沒有 agent() 呼叫，
-# 所以圖裡只要有一個矩形黑箱節點即可（stadium 節點才需要對上 agent label）。
+# mermaid 是必填：少了就 MERMAID_REQUIRED。圖的第一行必須是 graph LR（或 flowchart LR）。
+# 這個腳本沒有 agent() 呼叫，所以圖裡只要有一個矩形黑箱節點即可
+# （stadium 節點才需要對上 agent label，而且要放進 phase 的泳道裡）。
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_register","arguments":{"name":"greet","script":"return {answer:42,tags:[\"a\",\"b\"]}","mermaid":"graph TD;\nout[\"return a fixed result\"]"}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow_register","arguments":{"name":"greet","script":"return {answer:42,tags:[\"a\",\"b\"]}","mermaid":"graph LR;\nout[\"return a fixed result\"]"}}}'
 # -> {"result":{"content":[{"type":"text","text":"{\"status\":\"completed\",\"version\":1,\"result\":{\"name\":\"greet\",\"version\":\"v1\"}}"}]}}
-# 每次 workflow_register 都是新版本（v1、v2、…），舊版本不會被覆蓋或刪除。
+# 每次 workflow_register 都是新版本（v1、v2、…），既有版本不會被覆蓋或刪除。
 
 # 第二步：把該版本發布到 release 頻道（沒發布過的頻道跑不了，見下方 CHANNEL_UNPUBLISHED）
 curl -s -X POST http://127.0.0.1:8787/mcp \
@@ -169,8 +186,14 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 
 # 跑包含 agent() 的工作流程（需要 gateway:"sdk" + LiteLLM + 供應商 key）——一樣先註冊、發布、再指名執行
 # agent() 第一個參數是「label」，prompt 走 options.prompt；每個 label 都要有
-# meta.params.agents.<label> 契約（model/effort/timeoutMs，各自要有 .default），
-# 而且 mermaid 的 stadium 節點要跟 label 一一對上。
+# meta.params.agents.<label> 契約（model/effort/timeoutMs，各自要有 .default）。
+# 圖的規則（四條，違反時錯誤訊息會指出第幾行與期望值）：
+#   1. 第一行是 graph LR（或 flowchart LR）
+#   2. 每呼叫一次 phase() 就要有一個同順序的 subgraph 泳道，agent 節點放在它被派發的那條泳道裡
+#   3. 每個 agent() 一定要在某個 phase() 之後才派發（否則 AGENT_BEFORE_PHASE）
+#   4. stadium 節點 id(["label"]) 要跟腳本的 agent label 一一對上
+# timeoutMs 給大一點：本機 7B 模型走完整 harness（預設六個工具）在一般機器上要好幾分鐘，
+# 給 60000 幾乎一定會 timeout（該次 agent 記 state:"failed"、tokens 全 0）。上限見 maxTimeoutMs。
 # 腳本與圖寫成檔案、再組 JSON，比一長串跳脫好讀也好改：
 cat > /tmp/ping.js <<'JS'
 export const meta = {
@@ -178,12 +201,18 @@ export const meta = {
   params: { agents: { ping: {
     model: { type: 'string', default: 'default' },
     effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },
-    timeoutMs: { type: 'number', default: 60000 },
+    timeoutMs: { type: 'number', default: 300000 },
   } } },
 };
+phase('ping');
 return await agent('ping', { prompt: 'Reply with only the word: PONG' });
 JS
-printf 'graph TD;\nping(["ping"])\n' > /tmp/ping.mmd
+cat > /tmp/ping.mmd <<'MMD'
+graph LR
+subgraph "ping"
+ping(["ping"])
+end
+MMD
 python3 - <<'PY' > /tmp/ping-register.json
 import json
 print(json.dumps({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
@@ -206,7 +235,9 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_status","arguments":{"runId":"<上面的 runId>"}}}'
 # -> status:"completed"  agents[0].label/provider/model/tokens
 # -> result.scriptVersion 永遠是這次 run 實際執行的版本，即使之後又註冊了新版本也不會變
-# 到終態後用 run_result 取結果："PONG"；想看該次 agent 的 harness 逐字稿：
+# 到終態後用 run_result 取結果（本機 7B 模型常常回一段「看起來像工具呼叫」的文字而不是乾淨的
+# "PONG"，見「已知限制」；換成 anthropic/openrouter 別名就會是乾淨答案）；
+# 想看該次 agent 的 harness 逐字稿：
 #   run_agent_log({runId, label:"ping"})——label 就是腳本裡宣告的那個，不是引擎內部編號。
 
 # 註冊一個宣告可調參數契約的工作流程，並在執行時逐 agent 覆寫
@@ -216,13 +247,19 @@ export const meta = {
   params: { agents: { greet: {
     model: { type: 'string', default: 'default' },
     effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' },
-    timeoutMs: { type: 'number', default: 60000 },
+    timeoutMs: { type: 'number', default: 300000 },
     appendPrompt: { type: 'string', default: '' },
   } } },
 };
+phase('greet');
 return await agent('greet', { prompt: 'Say hello' });
 JS
-printf 'graph TD;\ngreet(["greet"])\n' > /tmp/greet2.mmd
+cat > /tmp/greet2.mmd <<'MMD'
+graph LR
+subgraph "greet"
+greet(["greet"])
+end
+MMD
 python3 - <<'PY' > /tmp/greet2-register.json
 import json
 print(json.dumps({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
@@ -331,10 +368,12 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"webhook_create","arguments":{"workflow":"daily-report"}}}'
 # -> {webhookId, secret (只出現一次), url}
 
-# 排程（`workflow` 必填，而且要先 workflow_register + workflow_publish；建立當下就綁定該工作流程）
+# 排程：先建立觸發器拿到 id，再由 workflow_register({triggers:[id]}) 認領，最後 workflow_publish
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"schedule_create","arguments":{"kind":"cron","workflow":"daily-report","cron":"0 3 * * *","enabled":true}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"schedule_create","arguments":{"kind":"cron","cron":"0 3 * * *","enabled":true}}}'
+# -> {"id":"<triggerId>"}；把它交給註冊：workflow_register({name,script,mermaid,triggers:["<triggerId>"]})
+# 沒有被任何版本認領的觸發器到期時會被拒絕，理由記在 schedule_list 那一列的 lastRefusalReason（UNCLAIMED）。
 ```
 
 ## 安全模型
@@ -371,6 +410,17 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
   兩種情況的處置都一樣：照「前置需求」把 venv 的 `bin/` 加進 `PATH`，或改用
   `gateway:"direct-fetch"` + `useLiteLLMProxy:false`（本機 Ollama 直連，完全不需要 litellm）。
 
+- **`effort` 對 OpenRouter 模型目前沒有作用**：引擎會把 `effort` 換算成 thinking 預算送進 CLI，
+  但這個值到不了 OpenRouter——實測 `low` 與 `high` 送出的請求內容完全相同、也沒有 `reasoning_effort` 欄位。
+  `run_agent_log` 的 `harness.effortApplied` 仍會顯示已套用，請不要據此判斷。
+  Anthropic 別名的 `effort` 是有作用的（CLI 收到 `--effort <值>`）。
+- **儀表板的圖拖曳（pan）之後按不到 fit**：run DAG 拖曳過後，被平移的圖層會蓋住左上角的 `Fit` 按鈕，
+  滑鼠點不到。用瀏覽器重新整理該頁即可回到原始比例；只縮放（滾輪）不拖曳時 `Fit` 正常。
+- **Gemini 家族的 MCP 用戶端載不進工具面**：`tools/list` 有三個陣列參數缺少 `items` 型別
+  （`workflow_register.triggers`、`workspace_diff.manifest`、`workspace_delete.paths`），
+  Google 的 API 會整份工具清單退回 `INVALID_ARGUMENT`。其他家的用戶端不受影響。
+- **`gateway:"direct-fetch"` 一定要同時設 `useLiteLLMProxy:false`**：只設 `gateway:"direct-fetch"`
+  時代理仍然開著，而送到代理的模型名稱對不上代理自己的表，每次 `agent()` 都會失敗（該筆 token 記 0）。
 - **目前已知、尚未修復的缺陷**（詳細指令與輸出見 `DEPLOY.md` §6）：
   1. **偶發的 `suspend` → `resume` → `failed`，而且 agent 的工作在終態之後還在跑**
      （run `3977b82d`，無法穩定重現、尚未歸因；

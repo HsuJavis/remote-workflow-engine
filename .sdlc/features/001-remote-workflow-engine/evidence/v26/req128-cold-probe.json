@@ -1,0 +1,296 @@
+{
+ "model": "openai/gpt-5.6-luna",
+ "name": "cold-probe-b",
+ "toolCount": 35,
+ "calls": 17,
+ "refusals": [
+  {
+   "tool": "workflow_register",
+   "text": "{\"runId\":\"\",\"status\":\"failed\",\"code\":\"PARSE_ERROR\",\"error\":{\"code\":\"PARSE_ERROR\",\"message\":\"Unexpected token 'export'\",\"see\":\"workflow_authoring_guide\",\"detail\":{\"field\":\"script\",\"errors\":[{\"code\":\"PARSE_ERROR\",\"message\":\"Unexpected token 'export'\",\"detail\":{\"field\":\"script\"}}]}}}"
+  },
+  {
+   "tool": "workflow_register",
+   "text": "{\"runId\":\"\",\"status\":\"failed\",\"code\":\"AGENT_UNDECLARED\",\"error\":{\"code\":\"AGENT_UNDECLARED\",\"message\":\"agent label \\\"probe1\\\" has no params.agents.probe1 declaration\",\"see\":\"workflow_authoring_guide\",\"detail\":{\"label\":\"probe1\"}}}"
+  },
+  {
+   "tool": "workflow_register",
+   "text": "{\"runId\":\"\",\"status\":\"failed\",\"code\":\"AGENT_UNDECLARED\",\"error\":{\"code\":\"AGENT_UNDECLARED\",\"message\":\"agent label \\\"probe1\\\" has no params.agents.probe1 declaration\",\"see\":\"workflow_authoring_guide\",\"detail\":{\"label\":\"probe1\"}}}"
+  }
+ ],
+ "registerAttempts": [
+  {
+   "name": "cold-probe-b",
+   "script": "export const meta = {\n  description: 'Run two cold-probe agents in separate stages.',\n  params: {\n    agents: {\n      probe1: {\n        model: { type: 'string', default: 'default' },\n        effort: { type: 'enum', enum: ['low', 'medium', 'high'], default: 'low' },\n        timeoutMs: { type: 'number', default: 60000 }\n      },\n      probe2: {\n        model: { type: 'string', default: 'default' },\n        effort: { type: 'enum', enum: ['low', 'medium', 'high'], default: 'low' },\n        timeoutMs: { type: 'number', default: 60000 }\n      }\n    }\n  }\n};\n\nexport default async function () {\n  phase('Stage 1');\n  await agent('probe1', {\n    prompt: 'Read notes.txt and report its exact contents.',\n    allowedTools: ['Read']\n  });\n  phase('Stage 2');\n  await agent('probe2', {\n    prompt: 'Read notes.txt and report its exact contents, then confirm this is the second stage.',\n    allowedTools: ['Read']\n  });\n}\n",
+   "mermaid": "graph LR\n  subgraph \"Stage 1\"\n    probe1[\"probe1<br/>default · low · 60000<br/>tools: Read\"]\n  end\n  subgraph \"Stage 2\"\n    probe2[\"probe2<br/>default · low · 60000<br/>tools: Read\"]\n  end\n  probe1 --> probe2"
+  },
+  {
+   "name": "cold-probe-b",
+   "script": "const meta = {\n  description: 'Run two cold-probe agents in separate stages.',\n  params: {\n    agents: {\n      probe1: {\n        model: { type: 'string', default: 'default' },\n        effort: { type: 'enum', enum: ['low', 'medium', 'high'], default: 'low' },\n        timeoutMs: { type: 'number', default: 60000 }\n      },\n      probe2: {\n        model: { type: 'string', default: 'default' },\n        effort: { type: 'enum', enum: ['low', 'medium', 'high'], default: 'low' },\n        timeoutMs: { type: 'number', default: 60000 }\n      }\n    }\n  }\n};\n\nasync function main() {\n  phase('Stage 1');\n  await agent('probe1', {\n    prompt: 'Read notes.txt and report its exact contents.',\n    allowedTools: ['Read']\n  });\n  phase('Stage 2');\n  await agent('probe2', {\n    prompt: 'Read notes.txt and report its exact contents, then confirm this is the second stage.',\n    allowedTools: ['Read']\n  });\n}\n"
+  },
+  {
+   "name": "cold-probe-b",
+   "script": "meta = {\n  params: {\n    agents: {\n      probe1: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },\n      probe2: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }\n    }\n  }\n};\nphase('Stage 1');\nawait agent('probe1', { prompt: 'Read notes.txt and report its exact contents.', allowedTools: ['Read'] });\nphase('Stage 2');\nawait agent('probe2', { prompt: 'Read notes.txt and report its exact contents, then confirm this is the second stage.', allowedTools: ['Read'] });",
+   "mermaid": "graph LR\n  subgraph \"Stage 1\"\n    probe1[\"probe1<br/>default · low · 60000<br/>tools: Read\"]\n  end\n  subgraph \"Stage 2\"\n    probe2[\"probe2<br/>default · low · 60000<br/>tools: Read\"]\n  end\n  probe1 --> probe2"
+  },
+  {
+   "name": "cold-probe-b",
+   "script": "export const meta = {\n  description: 'Run two cold-probe agents in separate stages.',\n  params: { agents: {\n    probe1: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },\n    probe2: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }\n  } }\n};\nphase('Stage 1');\nawait agent('probe1', { prompt: 'Read notes.txt and report its exact contents.', allowedTools: ['Read'] });\nphase('Stage 2');\nreturn await agent('probe2', { prompt: 'Read notes.txt and report its exact contents, then confirm this is the second stage.', allowedTools: ['Read'] });\n",
+   "mermaid": "graph LR\n  subgraph \"Stage 1\"\n    probe1([\"probe1<br/>default · low · 60000<br/>tools: Read\"])\n  end\n  subgraph \"Stage 2\"\n    probe2([\"probe2<br/>default · low · 60000<br/>tools: Read\"])\n  end\n  probe1 --> probe2"
+  }
+ ],
+ "transcript": [
+  {
+   "role": "operator-task",
+   "content": "You are talking to a running \"remote-workflow-engine\" MCP server through the tools below.\nYou have never seen this server before. Everything you need to know is discoverable through its own tools.\n\nDo this, in one go, without asking me anything:\n1. Author and REGISTER a workflow named \"cold-probe-b\" that dispatches TWO agents in TWO separate stages,\n   using this deployment's default model alias.\n2. Give the run a starting file: the workspace must contain a file \"notes.txt\" whose content is the\n   text \"cold-probe-input\". Use whichever of the engine's documented ways of doing that you judge right.\n3. Publish it to the release channel and start a run with that starting file.\n4. Poll until the run reaches a terminal state and report the result.\n\nReport at the end: what you registered, whether anything was refused and why, and the final run result."
+  },
+  {
+   "role": "subject",
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "workflow_authoring_guide",
+     "args": "{}"
+    }
+   ]
+  },
+  {
+   "role": "engine",
+   "tool": "workflow_authoring_guide",
+   "result": "{\"runId\":\"\",\"status\":\"completed\",\"result\":{\"text\":\"# Authoring a workflow script\\n\\nThis engine has no bundled guidance skill — the tool schemas returned by `tools/list` are the only documentation a cold MCP client ever sees, and `workflow_authoring_guide` (this text) is what every authoring error's `see` field points back to.\\n\\n## The sandbox API\\n\\nA workflow script runs inside a restricted VM context with exactly these globals — nothing else is reachable (`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget`, `workflow`, `Date`, `Math`; `Date`/`Math` are GUARDED, see below):\\n\\n- `await agent(label, options)` — dispatches one agent call. `label` MUST be a literal string identifier (`/^[A-Za-z_][\\\\w-]*$/`) matching a `meta.params.agents.<label>` declaration; `options` MUST be a literal object (no variable, no spread).\\n- `await parallel([thunk, ...])` — runs an array of zero-argument thunks concurrently, each returning `null` on its own thrown error rather than rejecting the whole call.\\n- `await pipeline([item, ...], stage1, stage2, ...)` — runs each item through the stage chain.\\n- `phase(title)` — names the current step for observability. Titles are public (see below).\\n- `log(...)` — a no-op placeholder in this sandbox (accepted, does nothing).\\n- `args` — the caller-supplied run arguments, shaped by `meta.params.args`.\\n- `budget` — read-only: `{limits: {usd, tokens}, total, spent(), remaining(), tokens()}` (see \\\"Budget, concurrency\\\" below for which accessor answers which limit).\\n- `await workflow(name, args)` — runs another registered workflow. A workflow() call may itself call workflow() again, recursing up to this deployment's configured `maxWorkflowDepth` (cycle-checked, descendant-capped) — a call that exceeds the depth is refused `NESTING_DEPTH_EXCEEDED`, one that would re-enter an ancestor on its own chain is refused `NESTING_CYCLE`, and one that pushes the run past its descendant cap is refused `DESCENDANT_CAP_EXCEEDED`. (An earlier one-level cap with a flatten-it instruction is what an older draft of this guide taught — that no longer matches what's shipped.) Even with depth available, the simplest and most readable script still flattens a needless wrapper into its caller, and draws another owner's workflow as a black-box rectangle node in your diagram rather than expanding it. A nested workflow()'s own phase() calls are recorded on THAT sub-workflow's card, not folded into the parent run as one of its lanes.\\n\\n`Date` and `Math` are present but GUARDED — three calls are refused `DETERMINISM_GUARD` because resume replays agent() calls keyed by prompt+opts, so a wall-clock or random value baked into that key would change it on replay and re-dispatch an already-paid call:\\n\\n- `Date.now()` — refused `DETERMINISM_GUARD`. resume replays agent() calls keyed by prompt+opts, so a wall-clock value baked into that key would change it on replay and re-dispatch an already-paid call. Instead: read a timestamp off run_status/ru"
+  },
+  {
+   "role": "subject",
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "workflow_register",
+     "args": "{\"name\":\"cold-probe-b\",\"script\":\"export const meta = {\\n  description: 'Run two cold-probe agents in separate stages.',\\n  params: {\\n    agents: {\\n      probe1: {\\n        model: { type: 'string', default: 'default' },\\n        effort: { type: 'enum', enum: ['low', 'medium', 'high'], default: 'low' },\\n        timeoutMs: { type: 'number', default: 60000 }\\n      },\\n      probe2: {\\n        model: { type: 'string', default: 'default' },\\n        effort: { type: 'enum', enum: ['low', 'medium', 'high'], default: 'low' },\\n        timeoutMs: { type: 'number', default: 60000 }\\n      }\\n    }\\n  }\\n};\\n\\nexport default async function () {\\n  phase('Stage 1');\\n  await agent('probe1', {\\n    prompt: 'Read notes.txt and report its exact contents.',\\n    allowedTools: ['Read']\\n  });\\n  phase('Stage 2');\\n  await agent('probe2', {\\n    prompt: 'Read notes.txt and report its exact contents, then confirm this is the second stage.',\\n    allowedTools: ['Read']\\n  });\\n}\\n\",\"mermaid\":\"graph LR\\n  subgraph \\\"Stage 1\\\"\\n    probe1[\\\"probe1<br/>default · low · 60000<br/>tools: Read\\\"]\\n  end\\n  subgraph \\\"Stage 2\\\"\\n    probe2[\\\"probe2<br/>default · low · 60000<br/>tools: Read\\\"]\\n  end\\n  probe1 --> probe2\"}"
+    }
+   ]
+  },
+  {
+   "role": "engine",
+   "tool": "workflow_register",
+   "result": "{\"runId\":\"\",\"status\":\"failed\",\"code\":\"PARSE_ERROR\",\"error\":{\"code\":\"PARSE_ERROR\",\"message\":\"Unexpected token 'export'\",\"see\":\"workflow_authoring_guide\",\"detail\":{\"field\":\"script\",\"errors\":[{\"code\":\"PARSE_ERROR\",\"message\":\"Unexpected token 'export'\",\"detail\":{\"field\":\"script\"}}]}}}"
+  },
+  {
+   "role": "subject",
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "workflow_register",
+     "args": "{\"name\":\"cold-probe-b\",\"script\":\"const meta = {\\n  description: 'Run two cold-probe agents in separate stages.',\\n  params: {\\n    agents: {\\n      probe1: {\\n        model: { type: 'string', default: 'default' },\\n        effort: { type: 'enum', enum: ['low', 'medium', 'high'], default: 'low' },\\n        timeoutMs: { type: 'number', default: 60000 }\\n      },\\n      probe2: {\\n        model: { type: 'string', default: 'default' },\\n        effort: { type: 'enum', enum: ['low', 'medium', 'high'], default: 'low' },\\n        timeoutMs: { type: 'number', default: 60000 }\\n      }\\n    }\\n  }\\n};\\n\\nasync function main() {\\n  phase('Stage 1');\\n  await agent('probe1', {\\n    prompt: 'Read notes.txt and report its exact contents.',\\n    allowedTools: ['Read']\\n  });\\n  phase('Stage 2');\\n  await agent('probe2', {\\n    prompt: 'Read notes.txt and report its exact contents, then confirm this is the second stage.',\\n    allowedTools: ['Read']\\n  });\\n}\\n\"}"
+    }
+   ]
+  },
+  {
+   "role": "engine",
+   "tool": "workflow_register",
+   "result": "{\"runId\":\"\",\"status\":\"failed\",\"code\":\"AGENT_UNDECLARED\",\"error\":{\"code\":\"AGENT_UNDECLARED\",\"message\":\"agent label \\\"probe1\\\" has no params.agents.probe1 declaration\",\"see\":\"workflow_authoring_guide\",\"detail\":{\"label\":\"probe1\"}}}"
+  },
+  {
+   "role": "subject",
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "workflow_authoring_guide",
+     "args": "{}"
+    }
+   ]
+  },
+  {
+   "role": "engine",
+   "tool": "workflow_authoring_guide",
+   "result": "{\"runId\":\"\",\"status\":\"completed\",\"result\":{\"text\":\"# Authoring a workflow script\\n\\nThis engine has no bundled guidance skill — the tool schemas returned by `tools/list` are the only documentation a cold MCP client ever sees, and `workflow_authoring_guide` (this text) is what every authoring error's `see` field points back to.\\n\\n## The sandbox API\\n\\nA workflow script runs inside a restricted VM context with exactly these globals — nothing else is reachable (`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget`, `workflow`, `Date`, `Math`; `Date`/`Math` are GUARDED, see below):\\n\\n- `await agent(label, options)` — dispatches one agent call. `label` MUST be a literal string identifier (`/^[A-Za-z_][\\\\w-]*$/`) matching a `meta.params.agents.<label>` declaration; `options` MUST be a literal object (no variable, no spread).\\n- `await parallel([thunk, ...])` — runs an array of zero-argument thunks concurrently, each returning `null` on its own thrown error rather than rejecting the whole call.\\n- `await pipeline([item, ...], stage1, stage2, ...)` — runs each item through the stage chain.\\n- `phase(title)` — names the current step for observability. Titles are public (see below).\\n- `log(...)` — a no-op placeholder in this sandbox (accepted, does nothing).\\n- `args` — the caller-supplied run arguments, shaped by `meta.params.args`.\\n- `budget` — read-only: `{limits: {usd, tokens}, total, spent(), remaining(), tokens()}` (see \\\"Budget, concurrency\\\" below for which accessor answers which limit).\\n- `await workflow(name, args)` — runs another registered workflow. A workflow() call may itself call workflow() again, recursing up to this deployment's configured `maxWorkflowDepth` (cycle-checked, descendant-capped) — a call that exceeds the depth is refused `NESTING_DEPTH_EXCEEDED`, one that would re-enter an ancestor on its own chain is refused `NESTING_CYCLE`, and one that pushes the run past its descendant cap is refused `DESCENDANT_CAP_EXCEEDED`. (An earlier one-level cap with a flatten-it instruction is what an older draft of this guide taught — that no longer matches what's shipped.) Even with depth available, the simplest and most readable script still flattens a needless wrapper into its caller, and draws another owner's workflow as a black-box rectangle node in your diagram rather than expanding it. A nested workflow()'s own phase() calls are recorded on THAT sub-workflow's card, not folded into the parent run as one of its lanes.\\n\\n`Date` and `Math` are present but GUARDED — three calls are refused `DETERMINISM_GUARD` because resume replays agent() calls keyed by prompt+opts, so a wall-clock or random value baked into that key would change it on replay and re-dispatch an already-paid call:\\n\\n- `Date.now()` — refused `DETERMINISM_GUARD`. resume replays agent() calls keyed by prompt+opts, so a wall-clock value baked into that key would change it on replay and re-dispatch an already-paid call. Instead: read a timestamp off run_status/ru"
+  },
+  {
+   "role": "subject",
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "workflow_register",
+     "args": "{\"name\":\"cold-probe-b\",\"script\":\"meta = {\\n  params: {\\n    agents: {\\n      probe1: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },\\n      probe2: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }\\n    }\\n  }\\n};\\nphase('Stage 1');\\nawait agent('probe1', { prompt: 'Read notes.txt and report its exact contents.', allowedTools: ['Read'] });\\nphase('Stage 2');\\nawait agent('probe2', { prompt: 'Read notes.txt and report its exact contents, then confirm this is the second stage.', allowedTools: ['Read'] });\",\"mermaid\":\"graph LR\\n  subgraph \\\"Stage 1\\\"\\n    probe1[\\\"probe1<br/>default · low · 60000<br/>tools: Read\\\"]\\n  end\\n  subgraph \\\"Stage 2\\\"\\n    probe2[\\\"probe2<br/>default · low · 60000<br/>tools: Read\\\"]\\n  end\\n  probe1 --> probe2\"}"
+    }
+   ]
+  },
+  {
+   "role": "engine",
+   "tool": "workflow_register",
+   "result": "{\"runId\":\"\",\"status\":\"failed\",\"code\":\"AGENT_UNDECLARED\",\"error\":{\"code\":\"AGENT_UNDECLARED\",\"message\":\"agent label \\\"probe1\\\" has no params.agents.probe1 declaration\",\"see\":\"workflow_authoring_guide\",\"detail\":{\"label\":\"probe1\"}}}"
+  },
+  {
+   "role": "subject",
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "workflow_list",
+     "args": "{\"onlyRunnable\":false}"
+    }
+   ]
+  },
+  {
+   "role": "engine",
+   "tool": "workflow_list",
+   "result": "{\"runId\":\"\",\"status\":\"completed\",\"result\":[{\"name\":\"probe-lr\",\"owner\":null,\"versions\":[\"v1\"],\"channels\":{\"release\":\"v1\",\"beta\":null},\"runnable\":true},{\"name\":\"ollama-read\",\"owner\":null,\"versions\":[\"v1\"],\"channels\":{\"release\":\"v1\",\"beta\":null},\"runnable\":true},{\"name\":\"haiku-read\",\"owner\":null,\"versions\":[\"v1\"],\"channels\":{\"release\":\"v1\",\"beta\":null},\"runnable\":true},{\"name\":\"haiku-pong\",\"owner\":null,\"versions\":[\"v1\"],\"channels\":{\"release\":\"v1\",\"beta\":null},\"runnable\":true}]}"
+  },
+  {
+   "role": "subject",
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "workflow_describe",
+     "args": "{\"name\":\"probe-lr\",\"version\":\"v1\",\"channel\":\"release\"}"
+    },
+    {
+     "name": "workflow_describe",
+     "args": "{\"name\":\"haiku-read\",\"version\":\"v1\",\"channel\":\"release\"}"
+    }
+   ]
+  },
+  {
+   "role": "engine",
+   "tool": "workflow_describe",
+   "result": "{\"runId\":\"\",\"status\":\"completed\",\"result\":{\"name\":\"probe-lr\",\"version\":\"v1\",\"resolvedBy\":\"version\",\"channels\":{\"release\":\"v1\",\"beta\":null},\"versions\":[\"v1\"],\"description\":\"\",\"phases\":[],\"params\":{\"agents\":{},\"args\":{}},\"lockedKeys\":[\"prompt\",\"allowedTools\",\"skills\",\"mcp\",\"workdir\",\"cwd\"],\"owner\":null,\"reportProblem\":\"this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: \\\"probe-lr\\\"})\",\"triggers\":[],\"mermaid\":\"graph LR;\",\"mermaidNote\":null,\"runnable\":true,\"runnableReason\":null,\"diagramContract\":\"v2\",\"toolSurface\":{}}}"
+  },
+  {
+   "role": "engine",
+   "tool": "workflow_describe",
+   "result": "{\"runId\":\"\",\"status\":\"completed\",\"result\":{\"name\":\"haiku-read\",\"version\":\"v1\",\"resolvedBy\":\"version\",\"channels\":{\"release\":\"v1\",\"beta\":null},\"versions\":[\"v1\"],\"description\":\"read the seeded file with the Read tool on the anthropic path\",\"phases\":[],\"params\":{\"agents\":{\"reader\":{\"model\":{\"type\":\"string\",\"default\":\"haiku\"},\"effort\":{\"type\":\"enum\",\"default\":\"low\",\"range\":[\"low\",\"medium\",\"high\"]},\"timeoutMs\":{\"type\":\"number\",\"default\":300000,\"range\":{\"max\":600000}}}},\"args\":{}},\"lockedKeys\":[\"prompt\",\"allowedTools\",\"skills\",\"mcp\",\"workdir\",\"cwd\"],\"owner\":null,\"reportProblem\":\"this workflow has no recorded owner (ask an operator to run the boot backfill); to report a problem: issue_report({workflow: \\\"haiku-read\\\"})\",\"triggers\":[],\"mermaid\":\"graph LR\\nsubgraph \\\"read\\\"\\nreader([\\\"reader<br/>haiku · low · 300000<br/>tools: Read\\\"])\\nend\\n\",\"mermaidNote\":null,\"runnable\":true,\"runnableReason\":null,\"diagramContract\":\"v2\",\"toolSurface\":{\"reader\":[\"Read\"]}}}"
+  },
+  {
+   "role": "subject",
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "workflow_source",
+     "args": "{\"name\":\"haiku-read\",\"version\":\"v1\"}"
+    }
+   ]
+  },
+  {
+   "role": "engine",
+   "tool": "workflow_source",
+   "result": "{\"runId\":\"\",\"status\":\"completed\",\"owner\":null,\"params\":{\"agents\":{\"reader\":{\"model\":{\"type\":\"string\",\"default\":\"haiku\"},\"effort\":{\"type\":\"enum\",\"enum\":[\"low\",\"medium\",\"high\"],\"default\":\"low\"},\"timeoutMs\":{\"type\":\"number\",\"default\":300000,\"max\":600000,\"ceilingKey\":\"maxTimeoutMs\"}}},\"args\":{}},\"script\":\"export const meta = {\\n  description: 'read the seeded file with the Read tool on the anthropic path',\\n  params: { agents: { reader: { model: { type: 'string', default: 'haiku' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 300000 } } } },\\n};\\nphase('read');\\nreturn await agent('reader', { prompt: 'Read the file a.txt in your working directory with the Read tool, then reply with ONLY its exact contents and nothing else.', allowedTools: ['Read'] });\\n\",\"result\":{\"name\":\"haiku-read\",\"version\":\"v1\",\"createdAt\":\"2026-09-08T17:56:43.817Z\",\"description\":\"read the seeded file with the Read tool on the anthropic path\",\"phases\":[],\"script\":\"export const meta = {\\n  description: 'read the seeded file with the Read tool on the anthropic path',\\n  params: { agents: { reader: { model: { type: 'string', default: 'haiku' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 300000 } } } },\\n};\\nphase('read');\\nreturn await agent('reader', { prompt: 'Read the file a.txt in your working directory with the Read tool, then reply with ONLY its exact contents and nothing else.', allowedTools: ['Read'] });\\n\",\"owner\":null,\"params\":{\"agents\":{\"reader\":{\"model\":{\"type\":\"string\",\"default\":\"haiku\"},\"effort\":{\"type\":\"enum\",\"enum\":[\"low\",\"medium\",\"high\"],\"default\":\"low\"},\"timeoutMs\":{\"type\":\"number\",\"default\":300000,\"max\":600000,\"ceilingKey\":\"maxTimeoutMs\"}}},\"args\":{}},\"validation\":{\"ok\":true,\"errors\":[]}}}"
+  },
+  {
+   "role": "subject",
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "workflow_register",
+     "args": "{\"name\":\"cold-probe-b\",\"script\":\"export const meta = {\\n  description: 'Run two cold-probe agents in separate stages.',\\n  params: { agents: {\\n    probe1: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } },\\n    probe2: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'low' }, timeoutMs: { type: 'number', default: 60000 } }\\n  } }\\n};\\nphase('Stage 1');\\nawait agent('probe1', { prompt: 'Read notes.txt and report its exact contents.', allowedTools: ['Read'] });\\nphase('Stage 2');\\nreturn await agent('probe2', { prompt: 'Read notes.txt and report its exact contents, then confirm this is the second stage.', allowedTools: ['Read'] });\\n\",\"mermaid\":\"graph LR\\n  subgraph \\\"Stage 1\\\"\\n    probe1([\\\"probe1<br/>default · low · 60000<br/>tools: Read\\\"])\\n  end\\n  subgraph \\\"Stage 2\\\"\\n    probe2([\\\"probe2<br/>default · low · 60000<br/>tools: Read\\\"])\\n  end\\n  probe1 --> probe2\"}"
+    }
+   ]
+  },
+  {
+   "role": "engine",
+   "tool": "workflow_register",
+   "result": "{\"runId\":\"\",\"status\":\"completed\",\"version\":1,\"result\":{\"name\":\"cold-probe-b\",\"version\":\"v1\"}}"
+  },
+  {
+   "role": "subject",
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "workflow_publish",
+     "args": "{\"name\":\"cold-probe-b\",\"version\":\"v1\",\"channel\":\"release\"}"
+    }
+   ]
+  },
+  {
+   "role": "engine",
+   "tool": "workflow_publish",
+   "result": "{\"runId\":\"\",\"status\":\"completed\",\"result\":{\"channel\":\"release\",\"version\":\"v1\",\"from\":null}}"
+  },
+  {
+   "role": "subject",
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "run_start",
+     "args": "{\"name\":\"cold-probe-b\",\"channel\":\"release\",\"seed\":[{\"path\":\"notes.txt\",\"contentB64\":\"Y29sZC1wcm9iZS1pbnB1dA==\"}]}"
+    }
+   ]
+  },
+  {
+   "role": "engine",
+   "tool": "run_start",
+   "result": "{\"runId\":\"80379509-128d-4194-a24e-bdfe46e18132\",\"status\":\"running\",\"result\":{\"runId\":\"80379509-128d-4194-a24e-bdfe46e18132\"}}"
+  },
+  {
+   "role": "subject",
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "run_status",
+     "args": "{\"runId\":\"80379509-128d-4194-a24e-bdfe46e18132\"}"
+    }
+   ]
+  },
+  {
+   "role": "engine",
+   "tool": "run_status",
+   "result": "{\"runId\":\"80379509-128d-4194-a24e-bdfe46e18132\",\"status\":\"running\",\"result\":{\"runId\":\"80379509-128d-4194-a24e-bdfe46e18132\",\"status\":\"running\",\"scriptVersion\":\"v1\",\"phases\":[{\"title\":\"Stage 1\",\"ts\":\"2026-09-08T18:15:29.263Z\"}],\"agents\":[{\"agentId\":\"agent-1\",\"label\":\"probe1\",\"phase\":\"Stage 1\",\"phaseIndex\":0,\"frame\":\"\",\"state\":\"running\",\"provider\":\"ollama\",\"model\":\"qwen2.5:7b\",\"tokens\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0},\"costUSD\":0,\"unpriced\":false,\"startedAt\":\"2026-09-08T18:15:29.263Z\"}],\"workflowNodes\":[],\"usage\":{\"tokens\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0},\"costUSD\":0,\"unpricedCalls\":0,\"unmappedMessages\":{}},\"startedBy\":{\"type\":\"client\"}}}"
+  },
+  {
+   "role": "subject",
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "run_status",
+     "args": "{\"runId\":\"80379509-128d-4194-a24e-bdfe46e18132\"}"
+    }
+   ]
+  },
+  {
+   "role": "engine",
+   "tool": "run_status",
+   "result": "{\"runId\":\"80379509-128d-4194-a24e-bdfe46e18132\",\"status\":\"running\",\"result\":{\"runId\":\"80379509-128d-4194-a24e-bdfe46e18132\",\"status\":\"running\",\"scriptVersion\":\"v1\",\"phases\":[{\"title\":\"Stage 1\",\"ts\":\"2026-09-08T18:15:29.263Z\"}],\"agents\":[{\"agentId\":\"agent-1\",\"label\":\"probe1\",\"phase\":\"Stage 1\",\"phaseIndex\":0,\"frame\":\"\",\"state\":\"running\",\"provider\":\"ollama\",\"model\":\"qwen2.5:7b\",\"tokens\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0},\"costUSD\":0,\"unpriced\":false,\"startedAt\":\"2026-09-08T18:15:29.263Z\"}],\"workflowNodes\":[],\"usage\":{\"tokens\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0},\"costUSD\":0,\"unpricedCalls\":0,\"unmappedMessages\":{}},\"startedBy\":{\"type\":\"client\"}}}"
+  },
+  {
+   "role": "subject",
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "run_status",
+     "args": "{\"runId\":\"80379509-128d-4194-a24e-bdfe46e18132\"}"
+    }
+   ]
+  },
+  {
+   "role": "engine",
+   "tool": "run_status",
+   "result": "{\"runId\":\"80379509-128d-4194-a24e-bdfe46e18132\",\"status\":\"running\",\"result\":{\"runId\":\"80379509-128d-4194-a24e-bdfe46e18132\",\"status\":\"running\",\"scriptVersion\":\"v1\",\"phases\":[{\"title\":\"Stage 1\",\"ts\":\"2026-09-08T18:15:29.263Z\"}],\"agents\":[{\"agentId\":\"agent-1\",\"label\":\"probe1\",\"phase\":\"Stage 1\",\"phaseIndex\":0,\"frame\":\"\",\"state\":\"running\",\"provider\":\"ollama\",\"model\":\"qwen2.5:7b\",\"tokens\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0},\"costUSD\":0,\"unpriced\":false,\"startedAt\":\"2026-09-08T18:15:29.263Z\"}],\"workflowNodes\":[],\"usage\":{\"tokens\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0},\"costUSD\":0,\"unpricedCalls\":0,\"unmappedMessages\":{}},\"startedBy\":{\"type\":\"client\"}}}"
+  },
+  {
+   "role": "subject",
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "run_status",
+     "args": "{\"runId\":\"80379509-128d-4194-a24e-bdfe46e18132\"}"
+    }
+   ]
+  },
+  {
+   "role": "engine",
+   "tool": "run_status",
+   "result": "{\"runId\":\"80379509-128d-4194-a24e-bdfe46e18132\",\"status\":\"running\",\"result\":{\"runId\":\"80379509-128d-4194-a24e-bdfe46e18132\",\"status\":\"running\",\"scriptVersion\":\"v1\",\"phases\":[{\"title\":\"Stage 1\",\"ts\":\"2026-09-08T18:15:29.263Z\"}],\"agents\":[{\"agentId\":\"agent-1\",\"label\":\"probe1\",\"phase\":\"Stage 1\",\"phaseIndex\":0,\"frame\":\"\",\"state\":\"running\",\"provider\":\"ollama\",\"model\":\"qwen2.5:7b\",\"tokens\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0},\"costUSD\":0,\"unpriced\":false,\"startedAt\":\"2026-09-08T18:15:29.263Z\"}],\"workflowNodes\":[],\"usage\":{\"tokens\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0},\"costUSD\":0,\"unpricedCalls\":0,\"unmappedMessages\":{}},\"startedBy\":{\"type\":\"client\"}}}"
+  },
+  {
+   "role": "subject",
+   "content": "",
+   "tool_calls": [
+    {
+     "name": "run_status",
+     "args": "{\"runId\":\"80379509-128d-4194-a24e-bdfe46e18132\"}"
+    }
+   ]
+  },
+  {
+   "role": "engine",
+   "tool": "run_status",
+   "result": "{\"runId\":\"80379509-128d-4194-a24e-bdfe46e18132\",\"status\":\"running\",\"result\":{\"runId\":\"80379509-128d-4194-a24e-bdfe46e18132\",\"status\":\"running\",\"scriptVersion\":\"v1\",\"phases\":[{\"title\":\"Stage 1\",\"ts\":\"2026-09-08T18:15:29.263Z\"}],\"agents\":[{\"agentId\":\"agent-1\",\"label\":\"probe1\",\"phase\":\"Stage 1\",\"phaseIndex\":0,\"frame\":\"\",\"state\":\"running\",\"provider\":\"ollama\",\"model\":\"qwen2.5:7b\",\"tokens\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0},\"costUSD\":0,\"unpriced\":false,\"startedAt\":\"2026-09-08T18:15:29.263Z\"}],\"workflowNodes\":[],\"usage\":{\"tokens\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0},\"costUSD\":0,\"unpricedCalls\":0,\"unmappedMessages\":{}},\"startedBy\":{\"type\":\"client\"}}}"
+  }
+ ]
+}

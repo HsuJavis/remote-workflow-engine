@@ -1,0 +1,48 @@
+{
+ "dag": {
+  "viewBox": "0 0 938 188",
+  "width": "100%",
+  "preserve": "xMinYMin meet",
+  "renderedW": 1052,
+  "renderedH": 211,
+  "viewportW": 1100,
+  "groups": 10,
+  "texts": [
+   "client",
+   "triage",
+   "fork_lite",
+   "fork_lite",
+   "fork_lite",
+   "clerk",
+   "checker",
+   "checker",
+   "checker",
+   "reconciler"
+  ]
+ },
+ "dagTransform": {
+  "t0": "translate(0px, 0px) scale(1)",
+  "tZoom": "translate(-52.6px, -10.5px) scale(1.1)",
+  "tPan": "translate(-202.6px, -80.5px) scale(1.1)",
+  "tAfterPoll": "translate(-202.6px, -80.5px) scale(1.1)",
+  "tFit": "translate(-202.6px, -80.5px) scale(1.1)"
+ },
+ "clicked": true,
+ "diagram": {
+  "hasSrc": true,
+  "natural": "300x56",
+  "renderedW": 1052,
+  "renderedH": 212,
+  "zoomVisible": "block",
+  "fitVisible": "inline-block",
+  "harnessRows": 8
+ },
+ "diagramTransform": {
+  "d0": "translate(0px, 0px) scale(1)",
+  "dZoom": "translate(-52.6px, -11.4px) scale(1.1)",
+  "dFit": "translate(0px, 0px) scale(1)"
+ },
+ "log": [
+  "http404: http://127.0.0.1:8904/favicon.ico"
+ ]
+}

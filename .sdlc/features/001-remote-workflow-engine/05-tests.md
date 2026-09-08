@@ -10620,6 +10620,9 @@ Proven at this tier by IT-141 (`tests/integration/run-start-seed-refusal.test.ts
 `createServer()`, real MCP HTTP, a filesystem oracle for "no workspace materialized". Gate 7.5 owns
 the real-box confirmation that the workspace directory genuinely never exists on disk in production.
 
+- **amended (2026-09-09, Gate 7.5 v26 round 1 validator):** the real tier for this REQ was run and is
+  recorded as VAL-181 in `08-validation.md` (green); this item's Gate-5 status stands as written.
+
 ### VAL-172 — REQ-122: a revoked OpenRouter key ends the attempt within ONE, with no surviving CLI child
 - **status:** blocked
 - **traces:** REQ-122
@@ -10636,6 +10639,9 @@ logic in full at the vitest floor. `status:blocked`/`result:not-run` records thi
 v24 VAL-128 precedent (rule 1, carried from v22's val-107): no mocked stand-in for "a real subprocess
 that either does or does not survive."
 
+- **amended (2026-09-09, Gate 7.5 v26 round 1 validator):** the real tier for this REQ was run and is
+  recorded as VAL-182 in `08-validation.md` (green); this item's Gate-5 status stands as written.
+
 ### VAL-173 — REQ-123: three real provider runs; ollama keeps Read; the ADR-042 deploy-order check
 - **status:** blocked
 - **traces:** REQ-123
@@ -10650,6 +10656,9 @@ with the service staying on its prior version. IT-144 covers the tool-curation L
 floor (an injected `queryImpl`, never a real ollama daemon); IT-143 covers the `--check-config` CLI
 contract locally. The deploy-ORDER clause (a real restart against a real still-bad config, on the
 real box) is unreachable from this tier by construction. `status:blocked`/`result:not-run`.
+
+- **amended (2026-09-09, Gate 7.5 v26 round 1 validator):** the real tier for this REQ was run and is
+  recorded as VAL-183 in `08-validation.md` (green); this item's Gate-5 status stands as written.
 
 ### VAL-174 — REQ-124: GET /api/runs/<production runId>/dag on the real box shows zero warnings
 - **status:** green
@@ -10672,6 +10681,9 @@ reconstruction with no snapshot — this tier cannot reach the owner's real box.
   ZERO `__skel_` duplicates. This confirms the LAYOUT half for real. It is NOT this VAL's acceptance
   clause, which names an ACTUAL EXISTING production runId on the owner's box plus an interrupted-run
   reconstruction with no snapshot; both stay Gate 7.5's.
+- **amended (2026-09-09, Gate 7.5 v26 round 1 validator):** the real tier for this REQ was run and is
+  recorded as VAL-184 in `08-validation.md` (green); this item's Gate-5 status stands as written.
+
 ### VAL-175 — REQ-125: the openrouter run's provider/model/transport/proxyModel resolve correctly
 - **status:** blocked
 - **traces:** REQ-125
@@ -10686,6 +10698,9 @@ the vitest floor with a fake gateway; a real OpenRouter API key is not configure
 environment (`ANTHROPIC_API_KEY`/`OLLAMA_BASE_URL`-gated acceptance tests elsewhere in this suite
 already `skipIf` on exactly this absence — same precedent). `status:blocked`/`result:not-run`.
 
+- **amended (2026-09-09, Gate 7.5 v26 round 1 validator):** the real tier for this REQ was run and is
+  recorded as VAL-185 in `08-validation.md` (green); this item's Gate-5 status stands as written.
+
 ### VAL-176 — REQ-126: a --detailed_debug LiteLLM capture shows reasoning_effort; low vs high differ
 - **status:** blocked
 - **traces:** REQ-126
@@ -10699,6 +10714,9 @@ through the SDK — the real-tier protocol is a `--detailed_debug` proxy capture
 WIRE-SHAPE logic exhaustively (8-row table) at the vitest floor; a real LiteLLM proxy capture against
 a declared-reasoning OpenRouter model is a Gate 7.5 runbook item by the design's own admission.
 `status:blocked`/`result:not-run`.
+
+- **amended (2026-09-09, Gate 7.5 v26 round 1 validator):** the real tier for this REQ was run and is
+  recorded as VAL-186 in `08-validation.md` (**RED**); this item's Gate-5 status stands as written.
 
 ### VAL-177 — REQ-127: a real haiku run's four columns; a trigger-started run's usage is non-zero
 - **status:** green
@@ -10722,6 +10740,9 @@ the design's own text — no test at this tier can BE that comparison without on
   `model:'qwen2.5:7b'` (the RESOLVED id, not the alias), `transport:'direct-fetch'` and
   `phase`/`phaseIndex`. The real-MONEY clause (costUSD within an order of magnitude of the SDK's own
   `total_cost_usd` on a real haiku call) needs an Anthropic key and stays Gate 7.5's.
+- **amended (2026-09-09, Gate 7.5 v26 round 1 validator):** the real tier for this REQ was run and is
+  recorded as VAL-187 in `08-validation.md` (green); this item's Gate-5 status stands as written.
+
 ### VAL-178 — REQ-128: a cold model, given only tools/list + the guide, registers an LR swimlane first try
 - **status:** blocked
 - **traces:** REQ-128
@@ -10745,6 +10766,9 @@ vitest floor. `status:blocked`/`result:not-run`, per the v24 VAL-128 precedent e
   `see: 'workflow_authoring_guide'`. The MECHANISM is real-confirmed. The acceptance clause is the
   REQ-117-derived cold-model protocol, which this verifier is disqualified from being the subject of —
   unchanged, still Gate 7.5's, and this bullet does not flip `status`/`result`.
+- **amended (2026-09-09, Gate 7.5 v26 round 1 validator):** the real tier for this REQ was run and is
+  recorded as VAL-188 in `08-validation.md` (**RED**); this item's Gate-5 status stands as written.
+
 ### VAL-179 — REQ-129: both dashboard figures readable at 1100px, wheel-zoom + fit survive the poll
 - **status:** green
 - **traces:** REQ-129, DES-186
@@ -10759,6 +10783,9 @@ clause is a Gate 7.5 real-browser runbook item (no headless-Chromium screenshot 
 this vitest tier yet, though Puppeteer is present as an optional dependency) — recorded as a scope
 note in UT-200 rather than silently dropped or faked with a DOM-only assertion masquerading as a
 visual one.
+
+- **amended (2026-09-09, Gate 7.5 v26 round 1 validator):** the real tier for this REQ was run and is
+  recorded as VAL-189 in `08-validation.md` (**RED**); this item's Gate-5 status stands as written.
 
 ### VAL-180 — REQ-130: the cold-model probe seeds a workspace and answers the sandbox questions unaided
 - **status:** blocked
@@ -10792,6 +10819,9 @@ the identifier it names:
 - `tests/unit/openrouter-provider.test.ts`
 - `tests/unit/params-resolve.test.ts`
 - `tests/unit/provider-tool-curation.test.ts`
+
+- **amended (2026-09-09, Gate 7.5 v26 round 1 validator):** the real tier for this REQ was run and is
+  recorded as VAL-190 in `08-validation.md` (green); this item's Gate-5 status stands as written.
 
 ### Gate 5 exit-gate self-check summary (v26)
 

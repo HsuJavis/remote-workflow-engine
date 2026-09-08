@@ -1,0 +1,91 @@
+{
+ "runId": "229c4fd5-1800-40f7-bbc2-3728745287db",
+ "status": "completed",
+ "harness": {
+  "model": "inclusionai/ling-3.0-flash",
+  "proxyModel": "rwe-proxy-reasoner",
+  "provider": "openrouter",
+  "prompt": "A farmer has 17 sheep. All but 9 run away. How many are left? Answer with just the number.",
+  "tools": [],
+  "skills": [],
+  "mcpServers": [],
+  "surfaceType": "curated",
+  "materialized": {
+   "skills": [],
+   "mcp": [],
+   "missing": []
+  },
+  "effort": "low",
+  "timeoutMs": 120000,
+  "provenance": {
+   "model": "default",
+   "effort": "default",
+   "timeoutMs": "default",
+   "appendPrompt": "engine"
+  },
+  "label": "think",
+  "phase": "think",
+  "phaseIndex": 0,
+  "effortApplied": {
+   "param": "thinking",
+   "value": 1024
+  }
+ },
+ "events": [
+  {
+   "ts": "2026-09-08T18:02:53.492Z",
+   "kind": "message",
+   "data": {
+    "type": "text",
+    "text": "9"
+   }
+  },
+  {
+   "ts": "2026-09-08T18:02:54.083Z",
+   "kind": "usage",
+   "data": {
+    "tokens": {
+     "input": 176,
+     "output": 64,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "costUSD": 0.000007728,
+    "unpriced": false,
+    "provider": "openrouter",
+    "model": "inclusionai/ling-3.0-flash",
+    "transport": "claude-agent-sdk",
+    "proxyModel": "rwe-proxy-reasoner"
+   }
+  }
+ ],
+ "result": [
+  {
+   "ts": "2026-09-08T18:02:53.492Z",
+   "kind": "message",
+   "data": {
+    "type": "text",
+    "text": "9"
+   }
+  },
+  {
+   "ts": "2026-09-08T18:02:54.083Z",
+   "kind": "usage",
+   "data": {
+    "tokens": {
+     "input": 176,
+     "output": 64,
+     "cacheRead": 0,
+     "cacheWrite": 0
+    },
+    "costUSD": 0.000007728,
+    "unpriced": false,
+    "provider": "openrouter",
+    "model": "inclusionai/ling-3.0-flash",
+    "transport": "claude-agent-sdk",
+    "proxyModel": "rwe-proxy-reasoner"
+   }
+  }
+ ],
+ "hasMore": false
+}

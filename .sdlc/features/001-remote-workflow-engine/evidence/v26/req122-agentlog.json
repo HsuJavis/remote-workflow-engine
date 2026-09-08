@@ -1,0 +1,81 @@
+{
+ "runId": "abf1ffc7-1eee-4f9e-8364-a1927c20ae36",
+ "status": "completed",
+ "harness": {
+  "model": "inclusionai/ling-3.0-flash",
+  "proxyModel": "rwe-proxy-orbad",
+  "provider": "openrouter",
+  "prompt": "Say pong",
+  "tools": [],
+  "skills": [],
+  "mcpServers": [],
+  "surfaceType": "curated",
+  "materialized": {
+   "skills": [],
+   "mcp": [],
+   "missing": []
+  },
+  "effort": "low",
+  "timeoutMs": 300000,
+  "provenance": {
+   "model": "default",
+   "effort": "default",
+   "timeoutMs": "default",
+   "appendPrompt": "engine"
+  },
+  "label": "doomed",
+  "phase": "call",
+  "phaseIndex": 0,
+  "effortApplied": {
+   "param": "thinking",
+   "value": 1024
+  }
+ },
+ "events": [
+  {
+   "ts": "2026-09-08T18:06:53.644Z",
+   "kind": "message",
+   "data": {
+    "type": "error",
+    "detail": "authentication_failed (status 401) — provider ended the attempt (attempt 1)",
+    "status": 401,
+    "kind": "authentication_failed",
+    "attempt": 1
+   }
+  },
+  {
+   "ts": "2026-09-08T18:06:55.647Z",
+   "kind": "usage",
+   "data": {
+    "reason": "terminal",
+    "provider": "openrouter",
+    "detail": "authentication_failed (status 401) — provider ended the attempt (attempt 1)",
+    "transport": "claude-agent-sdk"
+   }
+  }
+ ],
+ "result": [
+  {
+   "ts": "2026-09-08T18:06:53.644Z",
+   "kind": "message",
+   "data": {
+    "type": "error",
+    "detail": "authentication_failed (status 401) — provider ended the attempt (attempt 1)",
+    "status": 401,
+    "kind": "authentication_failed",
+    "attempt": 1
+   }
+  },
+  {
+   "ts": "2026-09-08T18:06:55.647Z",
+   "kind": "usage",
+   "data": {
+    "reason": "terminal",
+    "provider": "openrouter",
+    "detail": "authentication_failed (status 401) — provider ended the attempt (attempt 1)",
+    "transport": "claude-agent-sdk"
+   }
+  }
+ ],
+ "hasMore": false
+}
