@@ -8929,3 +8929,54 @@ on that port — never `pkill -f`.
   `f6953a1e` reads `968 tok · in 650 · out 318 · cache read 0 · cache write 0 · $0.0000 ·
   4 unpriced call(s) · (lower bound)` (`evidence/v26/req129-round2-after-pan.png`).
 - **iter:** v26
+
+### VAL-192 — REQ-128: a FOURTH fresh cold model registers on the FIRST attempt (defect D6 closed)
+- **status:** green
+- **traces:** REQ-128, REQ-117, REQ-130, REQ-121
+- **tier:** acceptance
+- **real:** true
+- **result:** pass
+- **evidence:** Subject **`deepseek/deepseek-v4-pro-0813`** over the OpenRouter API — a different
+  model id and a different family from round 1's `openai/gpt-5.6-luna` — a fresh instance whose
+  entire context was the operator task (reused VERBATIM from round 1, only the workflow name
+  changed) plus this engine's own `tools/list` (35 tools). No source tree, no transcript, no plugin.
+  Boot: scratch engine on port 8923, own `workRoot` outside every Claude project, `gateway:"sdk"`,
+  `default`→ollama `qwen2.5:7b`. The engine's workflow table was empty at the start, so nothing on
+  it could be read as a worked example. Full transcript:
+  `.sdlc/features/001-remote-workflow-engine/evidence/v26/req128-round2-deepseek-firsttry.json`.
+  **Result: `registerAttempts: 1`, `refusals: 0`, over 24 tool calls.** It read
+  `workflow_authoring_guide` FIRST, then `models_list`/`system_info`, then registered ONCE:
+  `{"status":"completed","version":1,"result":{"name":"cold-probe-d","version":"v1"}}`. Its single
+  diagram was a conformant v2 LR swimlane, drawn before ever seeing a refusal —
+  `graph LR` / `subgraph "read"` / `reader(["reader<br/>default · low · 60000<br/>tools: none"])` /
+  `end` / `subgraph "report"` / `writer([…])` / `end` / `reader-->writer` — one lane per `phase()`
+  call, stadium agent nodes, the value triple matching its own declared defaults, `tools: none` for
+  `allowedTools: []`, and the consecutive-call edge. Its script body carried **no `export default`
+  wrapper and no second `export`** — the D6 defect that cost round 1 its first attempt — and its own
+  final report calls the script 「body only, as required」, i.e. it read the new sentence and applied
+  it. It then published to `release`, seeded with the documented inline shape
+  (`seed:[{path:'notes.txt', contentB64:'Y29sZC1wcm9iZS1pbnB1dA=='}]`), polled to terminal, and read
+  its own result: run `67dd3992-94d3-4d90-9ad1-140481c78342` ⇒ `completed`, `result:"STAGE2_OK"`,
+  `usage.tokens {input:345, output:10, cacheRead:0, cacheWrite:0}`. It verified the seed itself —
+  `workspace_list` ⇒ `notes.txt` 16 bytes, `workspace_pull` ⇒ base64
+  `Y29sZC1wcm9iZS1pbnB1dA==` = `cold-probe-input`. No `DETERMINISM_GUARD`, no
+  `PARAM_CONTRACT_INVALID`, no `INVALID_SEED_SPEC`, no `SCAN_VIOLATION`, no `DIAGRAM_*`/`LANE_*`/
+  `TOOLS_*`/`EDGE_*` anywhere in the transcript. REQ-130's unaided-comprehension check passes on the
+  same run.
+- **A HARNESS DEFECT FOUND AND FIXED DURING THIS RE-VERIFICATION — three earlier runs are
+  INVALIDATED as REQ-128 evidence, and are recorded rather than dropped.** The first probe harness
+  passed tool results back to the subject truncated at 12 000 characters. The authoring guide is
+  **38 041** characters: the script-body paragraph sits at char **3 736** (inside the window) but the
+  node-shape table is at **14 672** and `LANE_MISMATCH` at **17 144** (both past the cut). Three
+  subjects — `qwen/qwen3.8-max-0902`, `moonshotai/kimi-k3`, `z-ai/glm-5.3` — were therefore asked to
+  draw a diagram to a contract they had never been shown, and all three failed exactly there
+  (`DIAGRAM_SCRIPT_MISMATCH`, `MERMAID_INVALID`), the kimi subject only recovering by reading GitHub
+  issue #75 through the engine's own `issue_get`. Those runs prove nothing about the guide's diagram
+  section. They DO stand as independent D6 evidence, because the body paragraph WAS inside the
+  window: **3 of 3 got the script body right, with zero `PARSE_ERROR` and zero `AGENT_UNDECLARED`
+  between them** — the exact two refusals that cost round 1 its first attempt. One is kept as
+  `evidence/v26/req128-round2-INVALID-truncated-guide-kimi.json`, named so it can never be misread
+  as a result. A fourth run (`google/gemini-3.8-flash`) died on an OpenRouter thought-signature
+  round-trip error before its first `workflow_register`; that subject's own D1 evidence is in
+  VAL-194 instead.
+- **iter:** v26
