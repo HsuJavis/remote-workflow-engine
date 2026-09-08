@@ -42,11 +42,23 @@ describe('Live budget accounting observable in-script (IT-018, D-F8)', () => {
     };
     const mgr = new RunManager({ gateway });
 
+    // v26 (owner ruling Q5, ADR-037, DES-182): `budget.total`/`spent()`/`remaining()` are USD; the
+    // four TOKEN columns are read through `budget.tokens()`. This run arms a TOKEN limit (500), so
+    // `tokens().sum` is the counter that must move from 0 to the fake gateway's known fixed cost —
+    // exactly the property D-F8/REQ-002 put here ("no hard-coded stubs; the script sees the real
+    // parent-side RunGuard accounting"), read through the accessor that now carries that number.
+    // The USD accessors are asserted too, in their unarmed state, so a future unit slip that makes
+    // `spent()` silently mean tokens again fails HERE.
     const runId = await startScript(mgr, `
-        const before = budget.spent();
+        const before = budget.tokens().sum;
         await agent('hi', {});
-        const after = budget.spent();
-        return { before, after, remaining: budget.remaining() };
+        const after = budget.tokens().sum;
+        return {
+          before, after,
+          remaining: budget.limits.tokens - after,
+          usdSpent: budget.spent(),
+          usdRemaining: budget.remaining(),
+        };
       `, {
       budget: 500,
     });
@@ -56,12 +68,18 @@ describe('Live budget accounting observable in-script (IT-018, D-F8)', () => {
     const result = await mgr.result(runId);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    const { before, after, remaining } = result.value as { before: number; after: number; remaining: number };
+    const { before, after, remaining, usdSpent, usdRemaining } = result.value as {
+      before: number; after: number; remaining: number; usdSpent: number; usdRemaining: number | null;
+    };
 
     expect(before).toBe(0);
-    // Forcing red: child-entry.ts's budget.spent() is a hard-coded stub that always returns 0,
+    // The original red: child-entry.ts's accessors were hard-coded stubs that always returned 0,
     // regardless of the real parent-side RunGuard accounting (input 20 + output 10 = 30 tokens).
     expect(after).toBe(30);
     expect(remaining).toBe(500 - 30);
+    // The fake gateway's model is not in any price book, so the USD arm is genuinely 0 spent, and
+    // `remaining()` is `null` — no USD limit armed — never `Infinity` (SandboxBudget's own doc).
+    expect(usdSpent).toBe(0);
+    expect(usdRemaining).toBeNull();
   }, 20000);
 });

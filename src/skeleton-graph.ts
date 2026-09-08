@@ -161,3 +161,33 @@ export function deriveExpectedGraph(nodes: SkeletonNode[], scan: AgentCallScan):
 
   return { ok: true, graph: { lanes, slots, edges } };
 }
+
+/** v26 integration (DES-176's own boundary: "at layout the same negative arm means 'v1-contract
+ *  script' and the layout falls back"): the predicted overlay for a script `deriveExpectedGraph`
+ *  REFUSES. At registration a refusal is an error code (rule L2 — under the v2 contract every
+ *  agent must be dispatched inside a phase); at LAYOUT the very same script is simply a legal
+ *  pre-v26 workflow, and REQ-124 requires the dashboard to keep rendering it exactly as it did.
+ *
+ *  Collapsing a refusal to an empty overlay — which is what the dag route did — deleted every
+ *  predicted/inert cell from every v1-contract run's graph, i.e. from every workflow on the owner's
+ *  box that has no `phase()` calls. This rebuilds the pre-v26 shape from the same two scans: ONE
+ *  implicit lane (title `null`, never `dynamic`, so the layout raises no warning) holding one
+ *  `single` slot per scanned agent call, in source order, with the same edge chain E1 builds.
+ *  Never throws, for the same reason `deriveExpectedGraph` never does. */
+export function v1FallbackGraph(nodes: SkeletonNode[], scan: AgentCallScan): ExpectedGraph {
+  const safeCalls: ScanCall[] = Array.isArray(scan?.calls) ? scan.calls : [];
+  const slots: ExpectedSlot[] = safeCalls.map((call, i) => ({
+    index: i,
+    lane: 0,
+    labels: [call.label],
+    kind: 'single' as const,
+    tools: { [call.label]: toolsFor(call.allowedTools) },
+  }));
+  const edges: ExpectedEdge[] = slots.slice(1).map((s) => ({ from: s.index - 1, to: s.index }));
+  if (slots.length === 0) return { lanes: [], slots: [], edges: [] };
+  return {
+    lanes: [{ index: 0, title: null, dynamic: false, slots: slots.map((s) => s.index) }],
+    slots,
+    edges,
+  };
+}

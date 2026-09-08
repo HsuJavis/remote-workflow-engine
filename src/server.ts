@@ -516,12 +516,19 @@ async function handleDashboardRequest(
         try {
           const mod = await import('./skeleton-graph.js') as {
             deriveExpectedGraph?: (nodes: unknown, scan: unknown) => { ok: boolean; graph?: ExpectedGraph };
+            v1FallbackGraph?: (nodes: unknown, scan: unknown) => ExpectedGraph;
           };
           if (mod.deriveExpectedGraph) {
             const nodes = parseWorkflowSkeleton(skeletonScript);
             const scan = scanAgentCalls(skeletonScript);
             const derived = mod.deriveExpectedGraph(nodes, scan);
+            // v26 integration (DES-176 boundary): a REFUSAL here does not mean "no overlay" — at
+            // layout it means "this is a v1-contract script" (typically: it has no `phase()` at
+            // all, which rule L2 refuses at REGISTRATION but which is perfectly legal to run and
+            // to draw). Collapsing it to the empty overlay withheld every predicted cell from
+            // every pre-v26 workflow's graph; REQ-124 requires those runs to render as before.
             if (derived.ok && derived.graph) expectedGraph = derived.graph;
+            else if (mod.v1FallbackGraph) expectedGraph = mod.v1FallbackGraph(nodes, scan);
           }
         } catch {
           // TASK-185 not landed on this deployment yet — degrade to an empty predicted overlay.

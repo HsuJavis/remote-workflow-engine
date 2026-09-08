@@ -352,7 +352,19 @@ export class AgentTranscriptSink {
       // gateway reported none, so a pre-v26 event and an empty-array event stay the same shape.
       await this._emit(runId, req.agentId, {
         ts, kind: 'usage',
-        data: { tokens, costUSD, unpriced, provider, model, ...(result.unmapped && result.unmapped.length > 0 ? { unmapped: result.unmapped } : {}) },
+        data: {
+          tokens, costUSD, unpriced, provider, model,
+          // v26 integration (DES-177/DES-188, REQ-125): `transport`/`proxyModel` ride the event too.
+          // They were written onto the LIVE record and onto the terminal snapshot (which is folded
+          // from records) but NOT onto the durable event, so a snapshot-less read after a restart
+          // rebuilt the record WITHOUT them — REQ-125's "which wire, which backend" answer survived
+          // exactly as long as the process did, and DES-188's derived≡snapshot lock was false on
+          // every real-gateway run (the fake gateways in the v26 fixtures set neither field, which
+          // is why nothing caught it).
+          ...(result.transport !== undefined ? { transport: result.transport } : {}),
+          ...(result.proxyModel !== undefined ? { proxyModel: result.proxyModel } : {}),
+          ...(result.unmapped && result.unmapped.length > 0 ? { unmapped: result.unmapped } : {}),
+        },
       });
     } else {
       this._records.set(req.agentId, {
@@ -372,7 +384,12 @@ export class AgentTranscriptSink {
       for (const ev of result.events ?? []) {
         await this._emit(runId, req.agentId, ev);
       }
-      await this._emit(runId, req.agentId, { ts, kind: 'usage', data: { reason: result.reason, provider: result.provider, detail: result.detail } });
+      await this._emit(runId, req.agentId, {
+        ts, kind: 'usage',
+        // v26 integration: same reason as the done branch — a failed call's record carries
+        // `transport` live, so the event must carry it or the restart-rebuilt record loses it.
+        data: { reason: result.reason, provider: result.provider, detail: result.detail, ...(result.transport !== undefined ? { transport: result.transport } : {}) },
+      });
     }
   }
 

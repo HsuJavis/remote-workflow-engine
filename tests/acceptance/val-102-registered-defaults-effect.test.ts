@@ -73,7 +73,13 @@ describe('REQ-092: registered defaults take effect at run time, observable in th
     const runId = run.runId as string;
 
     const { harness } = await pollUntilHarness(runId, SOLE_AGENT_LABEL);
-    expect(harness?.model).toBe('alias-b');
+    // v26 (DES-177, REQ-125, integrator): the harness descriptor's `model` is the RESOLVED provider
+    // model id, never the alias name and never the proxy cloak — REQ-125 exists so the record names
+    // the backend that served the call. `alias-b` resolves to `qwen2.5:7b-haiku-stand-in` in this
+    // server's own alias table (above), so asserting that id pins the SAME property this case
+    // always pinned — the label's registered `model.default` (alias-b) is what actually dispatched,
+    // not the run-wide default — and it now pins it one hop closer to the wire.
+    expect(harness?.model).toBe('qwen2.5:7b-haiku-stand-in');
     expect(harness?.provenance?.['model']).toBe('default');
   });
 

@@ -102,7 +102,12 @@ export interface SkeletonNode {
 const CALL_RE = /\b(phase|agent|parallel|workflow)\s*\(/g;
 const STRING_ARG_RE = /^\s*(['"])(.*?)\1/;
 // keyword that opens a runtime-dependent (loop/map/conditional) body — nodes within are `dynamic`.
-const DYNAMIC_OPENERS = /\b(for|while|if)\s*\(|\.(map|forEach|filter|reduce)\s*\(/g;
+// v26 integration: `switch` joins the list. ARCH-113's own note groups "a `switch`" with "an
+// `agent()` inside a loop body" as the same narrowed-contract category, and a switch arm is exactly
+// as runtime-dependent as an `if` arm — its omission here was a gap in the list, not a decision.
+// Without it a `switch (mode) { case: agent(...) }` produced two ordinary STATIC slots, i.e. the
+// derivation claimed to know a shape it cannot know.
+const DYNAMIC_OPENERS = /\b(for|while|if|switch)\s*\(|\.(map|forEach|filter|reduce)\s*\(/g;
 
 /** Scans the script for the ranges [start,end) that are inside a loop/map/if body — used to mark
  *  skeleton nodes `dynamic`. Best-effort + string/paren-aware enough for typical workflow scripts. */
@@ -532,8 +537,20 @@ export function parseWorkflowSkeleton(script: string): SkeletonNode[] {
     }
     const node: SkeletonNode = { kind };
     if (kind === 'phase' || kind === 'workflow') {
-      const arg = STRING_ARG_RE.exec(script.slice(openParen + 1));
-      if (arg) { if (kind === 'phase') node.title = arg[2]; else node.workflow = arg[2]; }
+      // v26 integration (ARCH-113 L1, ARCH-114): a title/name is recorded ONLY when the first
+      // argument is, in full, a string literal. `phase('fork:' + tier)` used to record the
+      // TRUNCATED fragment `fork:`, which is worse than recording nothing: ARCH-114 names this case
+      // explicitly ("dynamic titles are truncated to `fork:` … so string equality cannot place
+      // them"), and under REQ-128 the v2 checker would have demanded the author write `fork:` in
+      // their diagram. An absent title is the honest "computed at runtime", and DES-174's rule L1
+      // then matches that lane BY POSITION.
+      const rest = script.slice(openParen + 1);
+      const arg = STRING_ARG_RE.exec(rest);
+      if (arg) {
+        const after = rest.slice(arg[0].length).trimStart();
+        const wholeArgument = after.startsWith(')') || after.startsWith(',');
+        if (wholeArgument) { if (kind === 'phase') node.title = arg[2]; else node.workflow = arg[2]; }
+      }
     }
     const group = parallelSpans.find((p) => callAt > p.start && callAt < p.end);
     if (group) node.parallel = group.id;

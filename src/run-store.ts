@@ -73,6 +73,7 @@ export function deriveAgentRecords(
       const data = usage.data as {
         tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
         provider?: string; model?: string; costUSD?: number; unpriced?: boolean; unmapped?: string[];
+        transport?: 'claude-agent-sdk' | 'direct-fetch'; proxyModel?: string;
       };
       const startedAt = firstHarnessTs;
       const endedAt = usage.ts;
@@ -83,8 +84,11 @@ export function deriveAgentRecords(
           // A legacy (pre-v26) usage event carries neither field — the honest reading is "never
           // priced", not "free" (ADR-046).
           costUSD: data.costUSD ?? 0, unpriced: data.unpriced ?? true,
-          // v26 integration (DES-183, DES-188 lock): derived exactly as `capture()` sets it live —
-          // present only when non-empty — so the reconstructed record stays byte-identical.
+          // v26 integration (DES-183/DES-177, DES-188 lock): each derived exactly as `capture()`
+          // sets it live — present only when the event carries it — so the reconstructed record
+          // stays byte-identical to the live one it is standing in for.
+          ...(data.transport !== undefined ? { transport: data.transport } : {}),
+          ...(data.proxyModel !== undefined ? { proxyModel: data.proxyModel } : {}),
           ...(data.unmapped && data.unmapped.length > 0 ? { unmapped: data.unmapped } : {}),
           ...(startedAt !== undefined ? { startedAt } : {}),
           ...(endedAt !== undefined ? { endedAt } : {}),
@@ -93,6 +97,7 @@ export function deriveAgentRecords(
         records.push(withCommon({
           agentId, state: 'failed', provider: data.provider ?? 'unknown', model: harnessDescriptor?.model ?? '',
           tokens: ZERO_TOKENS, costUSD: 0, unpriced: false,
+          ...(data.transport !== undefined ? { transport: data.transport } : {}),
           ...(startedAt !== undefined ? { startedAt } : {}),
           ...(endedAt !== undefined ? { endedAt } : {}),
         }, { label: harnessDescriptor?.label }));

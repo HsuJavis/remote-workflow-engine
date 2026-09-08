@@ -317,9 +317,35 @@ export const GRAPH_FIXTURES: GraphFixture[] = [
     expected: { ok: false, rule: 'AGENT_BEFORE_PHASE', line: 3, label: 'a', message: 'every agent must be dispatched inside a phase' },
   },
   {
-    name: 'switch — existing SCAN_VIOLATION shape, undecidable here',
+    // v26 Gate 6 (integrator) — AMENDED, with the reason recorded rather than the oracle bent:
+    // this pair originally expected `{ok:false, rule:'UNDECIDABLE_SHAPE', line:3}`. Two facts make
+    // that unreachable as written. (1) `deriveExpectedGraph(nodes, scan)` receives NO script text,
+    // and neither `parseWorkflowSkeleton` nor `scanAgentCalls` reported anything switch-shaped
+    // (verified: `violations: []`, two plain `{kind:'agent'}` nodes) — so no rule in DES-174's
+    // adopted set (L1/L2/S1–S4/T1/E1) could fire, and `UNDECIDABLE_SHAPE` had no producer anywhere
+    // in src/. (2) `line: 3` is `phase('one');` under this repo's own 1-based convention (the
+    // AGENT_BEFORE_PHASE pair above pins that convention and passes); the switch's first agent()
+    // call is on line 5.
+    // The PROPERTY is kept exactly: a `switch` over agent() calls cannot be statically resolved
+    // into slots. It is now expressed the way ARCH-113's own note groups it — "a `switch`, an
+    // `agent()` inside a loop body" as ONE narrowed-contract category — i.e. as the SAME dynamic
+    // lane the `for`-body pair below produces: no slots, no edges, and `dynamic: true` telling both
+    // consumers (the v2 checker and the run-DAG layout) not to claim a shape they cannot know.
+    // `switch` was missing from `DYNAMIC_OPENERS` in workflow-meta.ts, beside `for`/`while`/`if`;
+    // that gap is what made the derivation confidently emit two static slots, and it is now closed.
+    // FLAGGED FOR GATE 8: `UNDECIDABLE_SHAPE` is now an arm of `DeriveResult` with no producer.
+    // Either a later iteration gives the scanner a switch-shaped violation to report, or the arm
+    // should be removed from the union.
+    name: 'switch — dynamic lane, no static slot (undecidable, same category as a loop body)',
     script: switchScript,
-    expected: { ok: false, rule: 'UNDECIDABLE_SHAPE', line: 3, label: null, message: 'a switch over agent() calls cannot be statically resolved into a slot' },
+    expected: {
+      ok: true,
+      graph: {
+        lanes: [{ index: 0, title: 'one', dynamic: true, slots: [] }],
+        slots: [],
+        edges: [],
+      },
+    },
   },
   {
     name: 'agent() inside a for body — dynamic lane, no static slot',
