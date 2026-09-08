@@ -142,3 +142,33 @@ child-side IPC wire change (19) · `agent-record-resolution.test.ts`'s two reds 
 5. Flip `gates.impl.passed: true` in `state.yaml` with a note listing what was integrated, set
    `current_stage: verification`, and append a `journal.md` entry.
 6. Commit your work. If you run out of budget mid-way, commit what is green and say exactly what is left.
+
+---
+
+## F. Post-integration: production config migrated (orchestrator, 2026-09-09 01:2x)
+
+The integrator's carried-forward item 2 plus its second safety finding combined into a live
+production-down risk, so it was closed immediately rather than left for Gate 7.5:
+
+- `readlink /proc/<MainPID>/cwd` → `/home/user/Documents/remote-workflow`. **Production runs `src/main.ts`
+  from THIS working tree** (via `tsx`, not `tsx watch`), started 2026-09-08 04:20 — before any v26 code
+  landed. The running process holds the old code; **any restart loads whatever is in this tree.**
+- The deployed `rwe.config.json` still declared four `openai` aliases. `npx tsx src/main.ts --check-config`
+  (TASK-172's own tool, its first real use) refused them verbatim: *"unsupported provider 'openai' on aliases
+  gpt4omini, gpt41mini, gpt41nano, gpt41 — remove these rows."* Gate 7.5 conventionally restarts
+  `rwe.service` to load the tree, so this was one restart away from a dead engine.
+- **18 registered workflow versions reference `gpt41`** (every version of the owner's five cold-run
+  workflows). Deleting the rows, as the checker's message suggests, would have left all eighteen failing
+  `UNKNOWN_ALIAS` at run time instead of at boot.
+- **Action taken: repointed, not deleted.** The four aliases keep their names and move to
+  `{provider:'openrouter', model:'openai/gpt-4.1[-mini|-nano]'|'openai/gpt-4o-mini'}` — exactly the owner's
+  own rationale for retiring the provider ("OpenRouter 有 OpenAI 的模型"). `--check-config` → **OK**;
+  `openai/gpt-4.1` answered "Paris" live through OpenRouter with the deployed key. The running process was
+  NOT restarted; the config is read at boot, so the change is inert until the next restart, which will now
+  succeed. Backup: `~/rwe.config.json.bak-pre-v26-20260909-012417`.
+
+**For DEPLOY.md (Gate 7.5's job):** (a) `--check-config` must run BEFORE any restart on a host whose config
+predates v26; (b) an alias migration must repoint rather than delete wherever registered versions still name
+the alias; (c) production running out of a live git working tree means a gate that edits `src/` changes what
+the next restart will boot — and a `pkill -f "tsx src/main.ts"` misses it only by argv spelling
+(`... loader.mjs src/main.ts`), which is one string away from taking production down during a gate.
