@@ -3500,4 +3500,4 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
   own IMPL-205 commit, landed mid-gate on this shared tree) rather than being committed by this pass.
   Nothing was lost and the change in HEAD is byte-for-byte the one written here, but the commit does
   not name it — recorded here so `git log` is not the only story. The `server.ts` half and the whole
-  determinism fix are this pass's own commit.
+  determinism fix are this pass's own commit, `0697679`.
