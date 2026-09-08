@@ -80,3 +80,49 @@ describe('LiteLLMGatewayClient', () => {
     expect(typeof result.ok).toBe('boolean');
   });
 });
+
+// UT-216 (v26 Gate 7.5 round 1, defect D2): the LiteLLM-proxied arm of the direct-fetch transport
+// puts the CLOAKED model name on the wire. `proxyModelName()`'s own doc comment says the prefix
+// "MUST be applied identically here and where the gateway sets query()'s model" — this side was
+// missed, so `gateway:"direct-fetch"` with the proxy left on sent the bare alias to a proxy whose
+// model_list only knows `rwe-proxy-<alias>`, and EVERY agent() call died
+// `400 … You passed in model=local. There are no healthy deployments for this model`
+// (reproduced live against a real litellm on this tree before this fix).
+// Mock policy (unit): fake fetch + fake proxy manager; the real proxy behaviour is Gate 7.5's tier.
+describe('the proxied direct-fetch arm cloaks the model name (UT-216, defect D2)', () => {
+  function capturingClient() {
+    const seen: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: string, init: { body: string }) => {
+      seen.push(JSON.parse(init.body));
+      return {
+        ok: true, status: 200,
+        json: async () => ({ content: [{ text: 'ok' }], usage: { input_tokens: 3, output_tokens: 1 } }),
+      };
+    }) as unknown as typeof fetch;
+    const client = new LiteLLMGatewayClient({
+      ...CONFIG,
+      fetchImpl,
+      useLiteLLMProxy: true,
+      proxyManager: { start: async () => ({ baseUrl: 'http://127.0.0.1:4000', port: 4000 }), stop: async () => {} } as never,
+    });
+    return { client, seen };
+  }
+
+  it('sends `rwe-proxy-<alias>` as the model, never the bare alias', async () => {
+    const { client, seen } = capturingClient();
+    const r = await client.invoke({ prompt: 'hi', opts: { model: 'local' }, runId: 'r', agentId: 'a' });
+    expect(r.ok).toBe(true);
+    expect(seen[0]!['model']).toBe('rwe-proxy-local');
+  });
+
+  it('reports the name it actually put on the wire as proxyModel (DES-177: LiteLLM\'s resolution target)', async () => {
+    const { client } = capturingClient();
+    const harness: Array<Record<string, unknown>> = [];
+    const r = await client.invoke({
+      prompt: 'hi', opts: { model: 'local' }, runId: 'r', agentId: 'a',
+      onHarness: async (h) => { harness.push(h as unknown as Record<string, unknown>); },
+    });
+    expect((r as { proxyModel?: string }).proxyModel).toBe('rwe-proxy-local');
+    expect(harness[0]!['proxyModel']).toBe('rwe-proxy-local');
+  });
+});

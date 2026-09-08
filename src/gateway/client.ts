@@ -4,7 +4,7 @@
 // Sole custody of provider API keys lives here (parent-only, never exposed to the sandboxed script).
 import type { AgentOpts, Caps, HarnessDescriptor, TranscriptEvent } from '../types.js';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
-import { LiteLLMProxyManager } from './litellm-proxy.js';
+import { LiteLLMProxyManager, proxyModelName } from './litellm-proxy.js';
 import { redactHarness } from '../agent-executor.js';
 import type { Provider } from '../providers.js';
 
@@ -361,7 +361,12 @@ async function callViaLiteLLMProxy(
         'x-api-key': 'litellm-proxy', 'anthropic-version': '2023-06-01', 'content-type': 'application/json',
         'x-run-id': req.runId, 'x-agent-id': req.agentId,
       },
-      body: JSON.stringify({ model: aliasName, max_tokens: 1024, messages: [{ role: 'user', content: req.prompt }], ...effortBodyFields(applied) }),
+      // v26 Gate 7.5 round 1 (defect D2): the CLOAKED name, never the bare alias.
+      // `generateLiteLLMConfig` registers `rwe-proxy-<alias>` and nothing else, so a bare alias is
+      // answered `400 … no healthy deployments for this model` and every agent() call on
+      // `gateway:"direct-fetch"` (proxy left on) died. `proxyModelName`'s own doc comment says the
+      // prefix must be applied identically on both sides; this side was the one that was missed.
+      body: JSON.stringify({ model: proxyModelName(aliasName), max_tokens: 1024, messages: [{ role: 'user', content: req.prompt }], ...effortBodyFields(applied) }),
     });
     if (!res.ok) return { ok: false, provider: target.provider, reason: res.status >= 500 ? 'unreachable' : 'terminal' };
     const data = (await res.json()) as any;
@@ -414,7 +419,9 @@ export class LiteLLMGatewayClient implements GatewayClient {
           // the two the same way the result does, and `markHarness` can no longer stamp a cloak
           // (or a bare alias) where the backend model belongs.
           surfaceType: 'none', modelName: target.model, provider: target.provider, prompt: req.prompt,
-          ...(this._proxy ? { proxyModel: aliasName } : {}),
+          // v26 Gate 7.5 round 1 (defect D2): the cloak that is actually on the wire (DES-177:
+          // "the proxy-facing model id actually put on the wire"), same value `stamp()` reports.
+          ...(this._proxy ? { proxyModel: proxyModelName(aliasName) } : {}),
           curatedTools: [], mergedMcp: [], skills: [],
         }),
         ...(applied !== undefined ? { effortApplied: applied } : {}),
@@ -431,7 +438,7 @@ export class LiteLLMGatewayClient implements GatewayClient {
     // proxy branch also puts a cloak (`aliasName`, LiteLLM's own resolution target) on the wire,
     // reportable on the ok:true arm only (the type's own convention — see GatewayResult).
     const stamp = (r: GatewayResult): GatewayResult =>
-      r.ok && this._proxy ? { ...r, transport: 'direct-fetch', proxyModel: aliasName } : { ...r, transport: 'direct-fetch' };
+      r.ok && this._proxy ? { ...r, transport: 'direct-fetch', proxyModel: proxyModelName(aliasName) } : { ...r, transport: 'direct-fetch' };
     let last: GatewayResult = { ok: false, provider: target.provider, reason: 'terminal' };
     for (let i = 0; i < attempts; i++) {
       last = stamp(
