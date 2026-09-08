@@ -129,6 +129,32 @@ Edges:
 
 An edge may carry a label as `a-->|text|b`. Write ONE edge per line: the `&` fan-out shorthand (`a-->b & c`) is refused `COLLAPSED_EDGE` — the checker matches your diagram against your script edge by edge. Any edge that sits inside a cycle (a directed loop back to an ancestor, or a self-loop) MUST carry a `|label|` — describe what the loop is doing (e.g. `|revise|`), not just that it loops. A `subgraph "title"` / `end` pair boxes related nodes (e.g. a debate) under a mandatory quoted title. For a live preview before you register, paste your diagram into a Mermaid live editor (e.g. https://mermaid.live/) — this guide only checks the grammar, it does not render.
 
+## Canonical diagram
+
+From v26 every NEW registration is checked against the shape of your own script, not just against its label set. Four rules, each with its own refusal code, each carrying the line and the structure the checker EXPECTED (as data — the engine never hands you a corrected diagram; writing it is the point).
+
+1. **Direction — `DIAGRAM_DIRECTION`.** The first line must be `graph LR` or `flowchart LR`. The diagram is a swimlane read left to right; `TD` is refused before anything structural is looked at, because a top-down diagram has no lanes to check.
+2. **Lanes — `LANE_MISMATCH`.** One `subgraph "title"` / `end` block per `phase()` call in your script, in CALL ORDER, and every agent node declared inside the lane of the `phase()` it is dispatched under. A phase title computed at runtime (`phase('tier:' + args.tier)`) is matched by POSITION, so any non-empty title is accepted for that lane. This is why every `agent()` must sit inside a `phase()`: a call before your first `phase()` is refused `AGENT_BEFORE_PHASE`, since an unnamed zeroth lane is neither checkable nor drawable.
+3. **Tools — `TOOLS_MISMATCH`.** An agent node may carry a third `<br/>` segment naming its tool surface: `label<br/>model · effort · timeout<br/>tools: Edit, Read` — the names sorted, comma-space separated, exactly the literal `allowedTools` array on that `agent()` call, or `tools: none` when you passed `allowedTools: []`. If the call declares no `allowedTools` at all, the segment is NOT compared: write `tools: default` (the honest word for "whatever this deployment configures") or leave the segment off.
+4. **Edges — `EDGE_MISMATCH`.** Consecutive calls in your script must be joined in the diagram, across lane boundaries too. A path may run through non-agent shapes (a diamond for a branch, an aggregation for a non-agent join), which is how you draw a ternary or an `if/else`. A direct agent→agent edge between calls that are NOT consecutive needs a `|label|` saying what it means. Members of one `parallel([...])` (or of the two arms of one branch) are never edged to each other — they fan in to whatever follows.
+
+A script whose shape a static read cannot resolve at all — an `agent()` inside a `for`, `while` or `switch` body — makes that lane DYNAMIC: it predicts no slots, so rules 3 and 4 have nothing to compare there. Declare the agent's node inside that lane anyway; the label check (both ways) still applies.
+
+Minimal accepted example:
+
+```
+graph LR
+subgraph "draft"
+writer(["writer"])
+end
+subgraph "review"
+critic(["critic"])
+end
+writer-->critic
+```
+
+Versions registered BEFORE v26 are grandfathered: they keep `diagramContract: 'v1'`, are never re-checked, and render exactly as they always did. `workflow_describe` tells you which contract a version was admitted under.
+
 ## Seeding a workspace
 
 A run's workspace can be pre-populated three ways on `run_start`, mutually exclusive with each other and with `seedRef` (a mixed request is refused `SEED_SOURCE_CONFLICT`):

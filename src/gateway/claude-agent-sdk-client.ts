@@ -438,6 +438,17 @@ const BENIGN_SYSTEM_SUBTYPES = new Set<string>([
   'task_progress', 'task_started', 'task_updated', 'thinking_tokens', 'worker_shutting_down',
 ]);
 
+/** v26 (DES-171, clarification 11): the byte bound on an error `detail` string built from provider
+ *  text. 1024 is DES-171's own number. Truncation is marked, never silent — an operator reading a
+ *  transcript must be able to tell a short provider message from a cut one. */
+export const MAX_ERROR_DETAIL_BYTES = 1024;
+
+function capErrorDetail(detail: string): string {
+  return Buffer.byteLength(detail, 'utf8') <= MAX_ERROR_DETAIL_BYTES
+    ? detail
+    : `${Buffer.from(detail, 'utf8').subarray(0, MAX_ERROR_DETAIL_BYTES).toString('utf8')}…[truncated]`;
+}
+
 /** v26 (DES-171): an unmapped subtype is COUNTED, never stored as a payload — capped at 64 bytes,
  *  restricted to `[a-z0-9_.-]` (anything else becomes `?`) so a subtype string can never smuggle
  *  arbitrary message content into `GatewayResult.unmapped`/a log line. */
@@ -785,7 +796,12 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
             // Terminal: end the attempt NOW, instead of waiting out the rest of `timeoutMs` for a
             // `result` that will never come — the ONE error event for this call (D-G8-2's
             // duplicate trap: never both streamed AND accumulated).
-            const detail = `${kind}${status !== null ? ` (status ${status})` : ''} — provider ended the attempt (attempt ${attempt})`;
+            // v26 (DES-171, clarification 11): SIZE-capped. Redaction of this string is already
+            // free — every TranscriptEvent, including this one, goes through `capture()`/`_emit`'s
+            // existing `redact()` sweep before it is persisted — so the cap is a bound on how much
+            // provider-authored text a single failure can put in a transcript, applied where the
+            // string is built rather than at the sink.
+            const detail = capErrorDetail(`${kind}${status !== null ? ` (status ${status})` : ''} — provider ended the attempt (attempt ${attempt})`);
             const errEv: TranscriptEvent = { ts: new Date().toISOString(), kind: 'message', data: { type: 'error', detail, status, kind, attempt } }; // det:allow — transcript timestamp
             if (streaming) { await onEvent!(errEv); } else { events.push(errEv); }
             return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail, error: { kind, status, attempt }, events, unmapped };
@@ -803,7 +819,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
         }
         if (msg.subtype !== 'success' || msg.is_error) {
           const m = msg as unknown as { subtype?: string; result?: string; error?: string };
-          const detail = [m.subtype, m.result ?? m.error].filter(Boolean).join(': ') || 'error';
+          const detail = capErrorDetail([m.subtype, m.result ?? m.error].filter(Boolean).join(': ') || 'error');
           const errEv: TranscriptEvent = { ts: new Date().toISOString(), kind: 'message', data: { type: 'error', detail } }; // det:allow — transcript timestamp
           if (streaming) { await onEvent!(errEv); } else { events.push(errEv); }
           return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', detail, events, unmapped };

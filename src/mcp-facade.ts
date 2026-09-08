@@ -21,6 +21,7 @@ import { parseMeta } from './workflow-meta.js';
 import { buildAuthoringGuide } from './authoring-guide.js';
 import { effectiveAgentBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type AgentParamSpec } from './params/contract.js';
 import { projectWorkflowForRead, projectWorkflowDescribe, type WorkflowOwnerView } from './workflow-view.js';
+import { scanAgentCalls } from './scan-agent-calls.js';
 import type { Principal } from './authz.js';
 import { pathVerdict } from './path-verdict.js';
 import { auditedWorkspaceRead } from './audited-read.js';
@@ -472,7 +473,21 @@ export class McpFacade {
     // through `WorkflowOwnerView`/`WorkflowDescribeView` (workflow-view.ts, no v26 task's file
     // list): `full.diagramContract` ('v1'/'v2', catalog-computed) is exactly the resolved version's
     // own value, so a spread over the projected view is the same fact, one hop shorter.
-    return { runId: '', status: 'completed', result: { ...view, diagramContract: full.diagramContract } };
+    // v26 integration (REQ-128 acceptance "dashboard 的 workflow 頁 … tools", clarification 24):
+    // `toolSurface` — the literal `allowedTools` each label's `agent()` call declares, or
+    // `'default'` when it declares none. Added here, on the `diagramContract` precedent one line
+    // above, rather than on `WorkflowDescribeView`: it is derived from the SCRIPT (which the
+    // projection deliberately never sees), read with the SAME `scanAgentCalls` the registration
+    // checker and `deriveExpectedGraph` use, so the dashboard's tools column and the diagram's
+    // `tools:` segment can never disagree. Names only — never a resolved list, never prompt text.
+    const toolSurface: Record<string, string[] | 'default'> = {};
+    for (const call of scanAgentCalls(full.script).calls) {
+      if (call.label === '') continue;
+      toolSurface[call.label] = call.allowedTools === undefined || call.allowedTools === 'absent'
+        ? 'default'
+        : [...call.allowedTools].sort();
+    }
+    return { runId: '', status: 'completed', result: { ...view, diagramContract: full.diagramContract, toolSurface } };
   }
 
   /** v24 rename of `workflow_get` (ARCH-091: "the former workflow_get") — owner/admin full,

@@ -500,6 +500,17 @@ export interface HarnessDescriptor {
    *  source `deriveAgentRecords` reads (DES-161); absent for a call with no `opts.label` and for
    *  every pre-v24 record. */
   label?: string;
+  /** v26 integration (DES-176 cohort (i), REQ-124): the phase lane this call was RECEIVED in —
+   *  `markQueued`'s receipt-time snapshot, carried onto the descriptor at the one decoration site.
+   *  DES-176 says a v26 record's lane is "exact from the live stamp OR the harness event"; only the
+   *  live-stamp half existed, so a `done` record reconstructed by `deriveAgentRecords` after a
+   *  restart (no snapshot) lost its lane and fell back to frame-grouping — the exact defect
+   *  REQ-124 is about, invisible until v26 made phases universal. Absent on a pre-v26 record and on
+   *  a call dispatched before the script's first `phase()`. */
+  phase?: string;
+  /** v26 integration (DES-176): the 0-based lane ordinal beside `phase`, which is the key
+   *  `layoutGraph` actually joins on. Absent exactly when `phase` is absent. */
+  phaseIndex?: number;
   /** v24 (ARCH-103/DES-154/DES-160, TASK-145): the ACTUAL materialized set for this dispatch — not
    *  the declared one (a declared-but-absent name lands in `missing`, never silently dropped). A
    *  `surfaceType:'none'` dispatch materializes nothing (DES-154), so its `skills`/`mcp` are empty

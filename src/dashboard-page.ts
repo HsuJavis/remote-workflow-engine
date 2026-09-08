@@ -257,7 +257,7 @@ async function renderDescribe(name){
     diagramKey=null; document.getElementById('diagram-zoom').style.display='none'; document.getElementById('diagram-fit').style.display='none';
     pre.style.display='block'; note.style.display='block'; note.textContent=s.mermaidNote||'';
   }
-  await renderHarnessTable(s.params&&s.params.agents);
+  await renderHarnessTable(s.params&&s.params.agents,s.toolSurface);
 }
 // v26 (DES-184, ARCH-119, TASK-192, REQ-128/REQ-110): one row per params.agents.<label> — label /
 // declared model -> resolved model / effort / timeoutMs / tools, every cell via textContent (no
@@ -265,7 +265,7 @@ async function renderDescribe(name){
 // against the SAME /api/models catalog the Models panel already fetches (ModelEntry.alias, DES-076)
 // — the live alias->provider/model resolution, never a fabricated value. re-entrant: renderDescribe
 // re-runs on every 3s tick, so this clears+rebuilds rather than appending.
-async function renderHarnessTable(agents){
+async function renderHarnessTable(agents,toolSurface){
   var section=document.getElementById('harness-table-section');
   var box=document.getElementById('harness-table');
   box.innerHTML='';
@@ -293,9 +293,14 @@ async function renderHarnessTable(agents){
     tr.appendChild(td(resolved));
     tr.appendChild(td(cellText(spec,'effort')));
     tr.appendChild(td(cellText(spec,'timeoutMs')));
-    // tools: not exposed by workflow_describe's params.agents today (DES-156/workflow-view.ts,
-    // outside this task's file scope) — the honest absence, not a fabricated value.
-    tr.appendChild(td('—'));
+    // v26 integration (REQ-128 acceptance, clarification 24): the tool surface now ARRIVES —
+    // workflow_describe.toolSurface[label] is the literal allowedTools that label's agent() call
+    // declares, read by the engine with the same scanner the diagram's tools: segment is checked
+    // against. 'default' is the honest word for this deployment's configured surface; 'none' is an
+    // explicit empty array; the em dash survives only for a pre-v26 server that sends no
+    // toolSurface at all, which is a real absence and not a fabricated value.
+    var ts=toolSurface?toolSurface[label]:null;
+    tr.appendChild(td(ts==='default'?'default':Array.isArray(ts)?(ts.length?ts.join(', '):'none'):'—'));
     tbody.appendChild(tr);
   });
   t.appendChild(tbody); box.appendChild(t);

@@ -19,4 +19,7 @@ export type ParentMsg =
   | { t: 'workflowResult'; callSeq: number; value: unknown }
   | { t: 'agentThrow';     callSeq: number; error: { code: string; message: string } }
   | { t: 'abort';          reason: 'suspend' | 'stop' }
-  | { t: 'init';           args: unknown; budget: { total: number | null } };
+  // v26 (DES-182, ADR-037, integrator — clarification 36): the SHAPE the wire actually carries is
+  // the two independent limits, not a single `total`. `host.ts`/`child-entry.ts` moved with
+  // DES-182; this declaration was left behind describing a message that no longer exists.
+  | { t: 'init';           args: unknown; budget: { usd: number | null; tokens: number | null } | null };

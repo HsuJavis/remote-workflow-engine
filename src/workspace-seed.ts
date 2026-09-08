@@ -9,6 +9,7 @@ import { mkdirSync, writeFileSync, chmodSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { lexicalVerdict, pathVerdict } from './path-verdict.js';
 import type { ManifestEntry } from './types.js';
+import { codedError } from './errors.js';
 
 export interface SeedFile {
   path: string;
@@ -93,8 +94,17 @@ export function materializeSeed(workspace: string, seed: SeedFile[]): SeedResult
     const rel = String(f?.path ?? '');
     const v = seedPathVerdict(workspace, rel);
     if (v.verdict !== 'ok') { res[v.verdict].push(rel); continue; }
+    // v26 (DES-170 boundary, clarification 3): DEFENCE IN DEPTH, never the gate — `validateSeedSpec`
+    // is the enforced check and refuses INVALID_SEED_SPEC long before this runs. The old
+    // `contentB64 ?? ''` silently materialized a 0-BYTE FILE for any element that reached here
+    // without content, which is the one outcome a seeding bug must not have: a workflow reading an
+    // empty file it believes it seeded. Throwing keeps the two possible states (written, or a typed
+    // refusal) and removes the third.
+    if (typeof f.contentB64 !== 'string') {
+      throw codedError('INVALID_SEED_SPEC', `INVALID_SEED_SPEC: seed element '${rel}' has no contentB64 — use seedManifest for content referenced by hash`, { path: rel });
+    }
     mkdirSync(dirname(v.abs), { recursive: true });
-    writeFileSync(v.abs, Buffer.from(f.contentB64 ?? '', 'base64'));
+    writeFileSync(v.abs, Buffer.from(f.contentB64, 'base64'));
     res.written.push(rel);
   }
   return res;

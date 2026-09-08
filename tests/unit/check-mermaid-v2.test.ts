@@ -56,4 +56,78 @@ describe('checkMermaid v2 rules (UT-196, DES-184)', () => {
     const fx = GRAPH_FIXTURES.find((f) => f.name === 'no allowedTools — "default"')!;
     expect((fx.expected as any).graph?.slots?.[0]?.tools?.a).toBe('default');
   });
+
+  // v26 integration (clarification 30): rule 13 was implemented to spec and had NO negative
+  // fixture, so nothing proved it ever fired — the one v2 code with no test of its own. Three
+  // cases, one per arm of checkEdges.
+  it('a consecutive-slot edge the diagram never draws is EDGE_MISMATCH (arm a: reachability)', () => {
+    const src = 'graph LR\nsubgraph "one"\na(["a"])\nend\nsubgraph "two"\nb(["b"])\nend';
+    const expected = {
+      lanes: [{ index: 0, title: 'one', dynamic: false, slots: [0] }, { index: 1, title: 'two', dynamic: false, slots: [1] }],
+      slots: [
+        { index: 0, lane: 0, labels: ['a'], kind: 'single' as const, tools: { a: 'default' as const } },
+        { index: 1, lane: 1, labels: ['b'], kind: 'single' as const, tools: { b: 'default' as const } },
+      ],
+      edges: [{ from: 0, to: 1 }],
+    };
+    const result = checkMermaid(src, ['a', 'b'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+    expect(result.ok).toBe(false);
+    expect(result.rule).toBe('EDGE_MISMATCH');
+    expect(result.expected).toEqual({ from: 0, to: 1 });
+  });
+
+  it('a direct agent→agent edge skipping a slot needs a |label| (arm b)', () => {
+    // a --> c jumps slot 0 to slot 2 with no label. The expected consecutive edges ARE drawn.
+    const src = [
+      'graph LR', 'subgraph "one"', 'a(["a"])', 'end', 'subgraph "two"', 'b(["b"])', 'end',
+      'subgraph "three"', 'c(["c"])', 'end', 'a-->b', 'b-->c', 'a-->c',
+    ].join('\n');
+    const expected = {
+      lanes: [0, 1, 2].map((i) => ({ index: i, title: ['one', 'two', 'three'][i]!, dynamic: false, slots: [i] })),
+      slots: [
+        { index: 0, lane: 0, labels: ['a'], kind: 'single' as const, tools: { a: 'default' as const } },
+        { index: 1, lane: 1, labels: ['b'], kind: 'single' as const, tools: { b: 'default' as const } },
+        { index: 2, lane: 2, labels: ['c'], kind: 'single' as const, tools: { c: 'default' as const } },
+      ],
+      edges: [{ from: 0, to: 1 }, { from: 1, to: 2 }],
+    };
+    const result = checkMermaid(src, ['a', 'b', 'c'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+    expect(result.ok).toBe(false);
+    expect(result.rule).toBe('EDGE_MISMATCH');
+    // …and the SAME diagram with the jump labelled is accepted — the label is what the rule asks for.
+    const labelled = src.replace('a-->c', 'a-->|retry|c');
+    expect((checkMermaid(labelled, ['a', 'b', 'c'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any).ok).toBe(true);
+  });
+
+  it('two members of one parallel slot edged to each other is EDGE_MISMATCH (arm c)', () => {
+    const src = 'graph LR\nsubgraph "one"\na(["a"])\nb(["b"])\nend\na-->b';
+    const expected = {
+      lanes: [{ index: 0, title: 'one', dynamic: false, slots: [0] }],
+      slots: [{ index: 0, lane: 0, labels: ['a', 'b'], kind: 'parallel' as const, tools: { a: 'default' as const, b: 'default' as const } }],
+      edges: [],
+    };
+    const result = checkMermaid(src, ['a', 'b'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any;
+    expect(result.ok).toBe(false);
+    expect(result.rule).toBe('EDGE_MISMATCH');
+  });
+
+  // v26 integration: the same label in TWO lanes — the guide's own `draft, critique, revise`
+  // example. Before this, `labelToNode` was latest-wins and the first slot could never find its
+  // node, so the canonical example was refused LANE_MISMATCH.
+  it('one label used in two lanes resolves per-SLOT, not latest-wins', () => {
+    const src = [
+      'graph LR', 'subgraph "draft"', 'w1(["writer"])', 'end', 'subgraph "critique"', 'c(["critic"])', 'end',
+      'subgraph "revise"', 'w2(["writer"])', 'end', 'w1-->c', 'c-->w2',
+    ].join('\n');
+    const expected = {
+      lanes: [0, 1, 2].map((i) => ({ index: i, title: ['draft', 'critique', 'revise'][i]!, dynamic: false, slots: [i] })),
+      slots: [
+        { index: 0, lane: 0, labels: ['writer'], kind: 'single' as const, tools: { writer: 'default' as const } },
+        { index: 1, lane: 1, labels: ['critic'], kind: 'single' as const, tools: { critic: 'default' as const } },
+        { index: 2, lane: 2, labels: ['writer'], kind: 'single' as const, tools: { writer: 'default' as const } },
+      ],
+      edges: [{ from: 0, to: 1 }, { from: 1, to: 2 }],
+    };
+    expect((checkMermaid(src, ['writer', 'critic'], {}, { maxBytes: 100000, maxLines: 1000 }, { expected } as any) as any).ok).toBe(true);
+  });
 });

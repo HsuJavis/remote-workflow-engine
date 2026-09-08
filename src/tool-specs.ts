@@ -202,7 +202,30 @@ export const TOOL_SPECS = [
   {
     name: 'workflow_register', entity: 'workflow', key: null,
     description: 'Register a new workflow version under a name; the caller becomes its owner.',
-    inputSchema: schema({ name: { type: 'string' }, script: { type: 'string' }, mermaid: { type: 'string' }, triggers: { type: 'array' } }, ['name', 'script']),
+    inputSchema: schema({
+      name: { type: 'string' },
+      script: { type: 'string' },
+      // v26 (REQ-128, DES-184, integrator): the v2 swimlane contract, compressed to what a cold
+      // client reading only `tools/list` needs to get it right FIRST TRY (REQ-117). The full prose,
+      // with the four codes and a worked example, is `workflow_authoring_guide`'s "Canonical
+      // diagram" section — every one of these codes points back at it via `see`.
+      mermaid: {
+        type: 'string',
+        description:
+          'Required. From v26 a NEW registration must be an LR swimlane matching the script: header ' +
+          '`graph LR` (or `flowchart LR`) — `DIAGRAM_DIRECTION`; one `subgraph "title"`/`end` block ' +
+          'per `phase()` call in call order, with each agent node declared inside the lane of the ' +
+          'phase it is dispatched under — `LANE_MISMATCH` (and every `agent()` must be inside some ' +
+          '`phase()` — `AGENT_BEFORE_PHASE`); an agent node reads ' +
+          '`label<br/>model · effort · timeout<br/>tools: a, b` (sorted; `tools: none` for ' +
+          '`allowedTools: []`; the segment is not compared when the call declares no allowedTools) ' +
+          '— `TOOLS_MISMATCH`; consecutive calls joined by an edge, paths through non-agent shapes ' +
+          'allowed, a non-consecutive agent→agent edge needs a `|label|` — `EDGE_MISMATCH`. Every ' +
+          'refusal returns the STRUCTURE it expected, never a corrected diagram. Versions registered ' +
+          'before v26 keep diagramContract:"v1" and are never re-checked.',
+      },
+      triggers: { type: 'array' },
+    }, ['name', 'script']),
     outputSchema: OUT,
     // v24 (integrator; adjudication #4 C-6 [21] + #2 A-4): reconciled BOTH ways against what the
     // register path actually throws — `script-checks.ts` (PARSE_ERROR / UNKNOWN_ALIAS /
@@ -421,6 +444,15 @@ export const TOOL_SPECS = [
         seed: {
           type: 'array',
           description: 'Seed files by inline content — each element is {path, contentB64}, the file bytes as base64. Refused INVALID_SEED_SPEC if any element is missing contentB64.',
+          // v26 (clarification 10) — DELIBERATELY LEFT OPEN, decision recorded rather than applied.
+          // TASK-194's cross-repo read confirmed `additionalProperties:false` would not break the
+          // plugin (it never sends an inline `seed` at all). It would, however, change WHICH
+          // refusal a caller meets: ajv would answer `INVALID_ARGUMENT` before `validateSeedSpec`
+          // ever runs, and IT-141/DES-170/REQ-121 exist precisely to guarantee the typed
+          // `INVALID_SEED_SPEC` that NAMES the offending path and points at `seedManifest` — the
+          // whole content of issue #64. A schema refusal is strictly less useful to the author, so
+          // the enforced gate stays where the requirement put it. (Measured: closing it turns
+          // IT-141 red for exactly this reason.)
           items: {
             type: 'object',
             required: ['path'],

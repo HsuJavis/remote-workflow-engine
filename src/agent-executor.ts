@@ -589,12 +589,19 @@ export class AgentExecutor implements AgentSpawner {
       // fills the honest empty set — every declared name (skills+mcp) lands in `missing`, never
       // silently absent.
       const declaredNames = req.assets ? [...req.assets.declared.skills, ...req.assets.declared.mcp] : [];
+      // v26 integration (DES-176 cohort (i), REQ-124): the receipt-time phase lane `markQueued`
+      // stamped on the live record travels onto the DURABLE descriptor here, beside `label` and for
+      // the same reason — `deriveAgentRecords` reads the harness event to rebuild a record after a
+      // restart, and without this the lane existed only in this process's memory.
+      const queued = sink.getRecord(req.agentId);
       const decorated: HarnessDescriptor = {
         ...descriptor,
         effort: eff.effort,
         timeoutMs: eff.timeoutMs,
         provenance: eff.provenance,
         ...(req.opts.label !== undefined ? { label: req.opts.label } : {}),
+        ...(queued?.phase !== undefined ? { phase: queued.phase } : {}),
+        ...(queued?.phaseIndex !== undefined ? { phaseIndex: queued.phaseIndex } : {}),
         materialized: descriptor.materialized ?? { skills: [], mcp: [], missing: declaredNames },
         ...(applied !== undefined ? { effortApplied: applied.applied ? { param: applied.param, value: applied.value } : { reason: applied.reason } } : {}),
       };

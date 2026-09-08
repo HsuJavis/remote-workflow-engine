@@ -52,7 +52,14 @@ export function deriveAgentRecords(
     // source on every branch that reads it — a finished/failed/queued agent must not lose the name
     // (or, for a failed call, the model) its harness event carried.
     const harnessAny = reversed.find((e) => e.kind === 'harness');
-    const harnessDescriptor = (harnessAny?.data as { descriptor?: { model?: string; provider?: string; label?: string } } | undefined)?.descriptor;
+    const harnessDescriptor = (harnessAny?.data as { descriptor?: { model?: string; provider?: string; label?: string; phase?: string; phaseIndex?: number } } | undefined)?.descriptor;
+    // v26 integration (DES-176 cohort (i)): the lane is read from the harness event on EVERY branch
+    // that reads that event at all — DES-176's own "exact from the live stamp OR the harness event".
+    const harnessCommon = {
+      label: harnessDescriptor?.label,
+      phase: harnessDescriptor?.phase,
+      phaseIndex: harnessDescriptor?.phaseIndex,
+    };
     // v26 (DES-188): startedAt is the FIRST harness event's ts (dispatch time), not the latest.
     const firstHarnessTs = events.find((e) => e.kind === 'harness')?.ts;
 
@@ -92,7 +99,7 @@ export function deriveAgentRecords(
           ...(data.unmapped && data.unmapped.length > 0 ? { unmapped: data.unmapped } : {}),
           ...(startedAt !== undefined ? { startedAt } : {}),
           ...(endedAt !== undefined ? { endedAt } : {}),
-        }, { label: harnessDescriptor?.label }));
+        }, harnessCommon));
       } else {
         records.push(withCommon({
           agentId, state: 'failed', provider: data.provider ?? 'unknown', model: harnessDescriptor?.model ?? '',
@@ -100,7 +107,7 @@ export function deriveAgentRecords(
           ...(data.transport !== undefined ? { transport: data.transport } : {}),
           ...(startedAt !== undefined ? { startedAt } : {}),
           ...(endedAt !== undefined ? { endedAt } : {}),
-        }, { label: harnessDescriptor?.label }));
+        }, harnessCommon));
       }
       continue;
     }
@@ -134,7 +141,7 @@ export function deriveAgentRecords(
         // harness-only record is byte-identical to its live counterpart.
         tokens: ZERO_TOKENS, costUSD: 0, unpriced: false,
         ...(firstHarnessTs !== undefined ? { startedAt: firstHarnessTs } : {}),
-      }, { label: harnessDescriptor?.label }));
+      }, harnessCommon));
     }
     // Neither usage, refused, nor harness → never dispatched, omit.
   }
