@@ -9902,11 +9902,11 @@ No time-related literal appears anywhere in this batch; every clock-dependent ca
 as future/past against `Date.now()`).
 
 ### UT-172 — scanAgentCalls learns allowedTools / index / group
-- **status:** red
+- **status:** green
 - **traces:** DES-174, ARCH-113
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/agent-call-scan.test.ts` (8 cases). Red (measured): 7/8 fail (behavioural — the
@@ -9914,22 +9914,22 @@ three new fields read `undefined`); 1 legitimate green pin (a sequential call al
 `group`, true today by absence of the feature).
 
 ### UT-173 — deriveExpectedGraph: total, discriminated, one derivation
-- **status:** red
+- **status:** green
 - **traces:** DES-174, ARCH-113
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/skeleton-graph.test.ts` (the 14-fixture shared corpus + 4 never-throws/refusal
 cases). Red (measured): whole-file red — `src/skeleton-graph.ts` does not exist.
 
 ### UT-174 — validateSeedSpec: one door, refuses the first offender
-- **status:** red
+- **status:** green
 - **traces:** DES-170, ARCH-110, REQ-121
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/workspace-seed-spec.test.ts` (18 cases: 14-row table + first-offender/non-array/
@@ -9937,22 +9937,22 @@ never-throws/message/`SEED_ITEM_HINT`-drift-lock cases). Red (measured): whole-f
 — `TypeError: validateSeedSpec is not a function` (new export on the existing `workspace-seed.ts`).
 
 ### UT-175 — tools/list describes all three seed shapes
-- **status:** red
+- **status:** green
 - **traces:** DES-170, ARCH-110, REQ-121
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/tool-specs.test.ts` (5 cases). Red (measured): 5/5 fail — today's `seed`/
 `seedManifest` schema properties are bare `{type:'array'}` with no `items`.
 
 ### IT-141 — run_start refuses a sha256-only seed element over the real facade
-- **status:** red
+- **status:** green
 - **traces:** DES-170, ARCH-110, REQ-121
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/integration/run-start-seed-refusal.test.ts` (2 cases). Real `createServer()` + real MCP
@@ -9963,11 +9963,11 @@ today (the malformed `[{path,sha256}]` is silently ACCEPTED and would write a 0-
 unchanged).
 
 ### UT-176 — classifyApiError: total over the closed SDK error union
-- **status:** red
+- **status:** green
 - **traces:** DES-171, ARCH-111, ADR-040, REQ-122
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/classify-api-error.test.ts` (15-row table, pinned against the INSTALLED
@@ -9975,11 +9975,11 @@ File: `tests/unit/classify-api-error.test.ts` (15-row table, pinned against the 
 union confirmed by direct read). Red (measured): whole-file red — `classifyApiError` does not exist.
 
 ### UT-177 — _drain reads system/api_retry; the AbortController is always created and always aborted
-- **status:** red
+- **status:** green
 - **traces:** DES-171, ARCH-111, ADR-040, REQ-122
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/sdk-drain-api-retry.test.ts` (6 cases, via the real `invoke()` with an injected
@@ -9991,11 +9991,11 @@ fail for the same root cause (the feature doesn't exist). 2 legitimate green pin
 construction, once the whole-file default is "ignore everything unmapped").
 
 ### IT-142 — a terminal classification stops the retry loop
-- **status:** red
+- **status:** green
 - **traces:** DES-171, ARCH-111, ADR-040, REQ-122
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/integration/gateway-terminal-no-retry.test.ts` (2 cases). Red (measured): the terminal
@@ -10004,33 +10004,33 @@ a 401 the configured `1+retries` times instead of stopping after one; the retrya
 regression case passes (legacy retry-on-anything behaviour unchanged for a non-terminal failure).
 
 ### UT-178 — providers.ts: closed union, one capability table, validateAliases
-- **status:** red
+- **status:** green
 - **traces:** DES-172, ARCH-112, ADR-041, ADR-045, REQ-123
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/providers.test.ts` (11 cases). Red (measured): whole-file red — `src/providers.ts`
 does not exist.
 
 ### UT-179 — PROVIDER_CAPS totality over PROVIDERS
-- **status:** red
+- **status:** green
 - **traces:** DES-172, ARCH-112, REQ-123
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/providers-totality.test.ts` (3 cases — the RUNTIME lock vitest needs since `npm
 test` is `vitest run`, not `tsc --noEmit`). Red (measured): whole-file red.
 
 ### IT-143 — main.ts --check-config: validate without binding a port
-- **status:** red
+- **status:** green
 - **traces:** DES-172, ARCH-112, ADR-042, REQ-123, REQ-070
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/integration/check-config-cli.test.ts` (2 cases, a REAL `tsx` child process against a
@@ -10042,11 +10042,11 @@ short-circuit the proxy spawn — a secondary, environment-specific finding [no 
 this sandbox] layered on the primary, stated defect).
 
 ### UT-180 — UpdateOutcome.configCheck renders on the dashboard banner
-- **status:** red
+- **status:** green
 - **traces:** DES-172, ARCH-112, ADR-042, REQ-123
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/update-outcome-config-check.test.ts` (4 cases). Red (measured): 2/4 fail
@@ -10055,11 +10055,11 @@ green pins (`skipped` and the no-`configCheck`-key legacy row both happen to ren
 "undefined" substring today, since the field is simply never read).
 
 ### UT-181 — the deletion's paired behavioural assertions (models_list, generateLiteLLMConfig)
-- **status:** red
+- **status:** green
 - **traces:** DES-173, ARCH-112, REQ-123
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/litellm-config-generate.test.ts` (2 cases). Red (measured): the `models_list` case
@@ -10069,11 +10069,11 @@ mentions `openai/` today either, since none was passed — the meaningful guard 
 removal, asserted by the first case).
 
 ### IT-144 — ollama preserves the caller allowedTools verbatim (REQ-123's own named acceptance)
-- **status:** red
+- **status:** green
 - **traces:** DES-173, ARCH-112, REQ-123
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/integration/ollama-tools-verbatim.test.ts` (1 case, via a real `ClaudeAgentSdkGatewayClient`
@@ -10082,11 +10082,11 @@ for any non-anthropic provider; an ollama call with `allowedTools:['Read','Bash'
 session with only `['Bash']`.
 
 ### UT-203 — grep guards: v26 provider retirement is complete
-- **status:** red
+- **status:** green
 - **traces:** DES-173, ARCH-112, REQ-123
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/no-retired-surface.test.ts` (extended — 3 new cases appended to the existing v24
@@ -10096,11 +10096,11 @@ all 3 new cases fail — 10 retired identifiers, 2 provider literals, and 3 env 
 are all still present today.
 
 ### UT-182 — the phase is stamped at IPC receipt, not handler time
-- **status:** red
+- **status:** green
 - **traces:** DES-175, ARCH-114, REQ-124, REQ-008
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/phase-stamp-ordering.test.ts` (1 case, a REAL forked sandbox child — a fake IPC
@@ -10123,11 +10123,11 @@ Both must STAY green once DES-175 lands the phase-tracking feature — this is t
 not a feature-red test.
 
 ### E2E-010 — a nested workflow() phase() lands on its own sub-card, not the parent timeline
-- **status:** red
+- **status:** green
 - **traces:** DES-175, ARCH-114, REQ-124, REQ-008
 - **tier:** e2e
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/e2e/nested-frame-phase.test.ts` (1 case, real `createServer()`, real MCP HTTP, real
@@ -10137,11 +10137,11 @@ partial green — nothing currently leaks it upward); the sub-card assertion fai
 `WorkflowNodeView.phases` is `undefined` (the field does not exist).
 
 ### UT-183 — layoutGraph joins by lane ordinal; inferPhase boundaries
-- **status:** red
+- **status:** green
 - **traces:** DES-176, ARCH-114, ARCH-113, REQ-124, REQ-008
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/layout-graph-phase.test.ts` (5 `inferPhase` boundary cases + a `phaseIndex`-wins
@@ -10151,11 +10151,11 @@ equality (always `''`), producing a `frame-grouped` warning for every live agent
 expected lane shape.
 
 ### IT-146 — a real pre-v26 snapshot places every agent with zero warnings (REQ-124's own acceptance)
-- **status:** red
+- **status:** green
 - **traces:** DES-176, ARCH-114, ARCH-113, REQ-124, REQ-008
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/integration/dag-warnings-empty.test.ts` (1 case) over `tests/fixtures/pre-v26-terminal-snapshot.json`
@@ -10163,11 +10163,11 @@ File: `tests/integration/dag-warnings-empty.test.ts` (1 case) over `tests/fixtur
 `deriveExpectedGraph` does not exist.
 
 ### UT-184 — capture() keeps the harness-resolved provider/model; transport says which wire
-- **status:** red
+- **status:** green
 - **traces:** DES-177, ARCH-115, REQ-125
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/agent-record-resolution.test.ts` (3 cases). Red (measured): 2/3 fail — today's
@@ -10177,22 +10177,22 @@ never read at all. 1 legitimate green pin (a pre-harness terminal already takes 
 without crashing).
 
 ### UT-185 — ModelBook: TTL, single-flight, last-good/static
-- **status:** red
+- **status:** green
 - **traces:** DES-178, ARCH-116, ADR-038, REQ-127, REQ-126
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/model-book.test.ts` (9 cases: TTL x2, single-flight, last-good, static, and the
 5-row `lookup` table). Red (measured): whole-file red — `src/models/model-book.ts` does not exist.
 
 ### UT-186 — maxPricePerMOf reads FourRates directly
-- **status:** red
+- **status:** green
 - **traces:** DES-178, ARCH-116, REQ-127
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/max-price-per-m.test.ts` (4 cases). Red (measured): 3/4 fail — today's function
@@ -10200,11 +10200,11 @@ regex-parses a `{in:string,out:string}` display-string shape and mis-parses a nu
 object (returns `null` instead of a number); the null-input case is a legitimate green pin.
 
 ### IT-147 — a webhook-started run gets a non-null price_book pin
-- **status:** red
+- **status:** green
 - **traces:** DES-178, ARCH-116, ADR-038, REQ-127
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/integration/price-book-pinned-by-trigger.test.ts` (1 case, real `createServer()`, real
@@ -10213,11 +10213,11 @@ webhook HTTP ingress, an injected `modelCatalog` source standing in for the live
 webhook-started or otherwise, exposes a usage/pricing surface.
 
 ### UT-187 — wireEffort: total over provider × pinned capability
-- **status:** red
+- **status:** green
 - **traces:** DES-179, ARCH-117, ADR-045, REQ-126
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/wire-effort.test.ts` (8 cases: anthropic, openrouter×reasoning-true, ×false,
@@ -10225,12 +10225,25 @@ File: `tests/unit/wire-effort.test.ts` (8 cases: anthropic, openrouter×reasonin
 Red (measured): whole-file red — `wireEffort` does not exist (`thinkingFor`/`mapEffort`/`profileFor`
 are the pre-v26 functions it replaces).
 
+- **Amendment (v26 integrator, Gate 6 §A3 review) — second file:
+  `tests/unit/agent-executor-pinned-caps.test.ts` (4 cases).** The 8 cases above prove `wireEffort`
+  by CALLING it, so they stay green even if nothing ever fills `GatewayRequest.caps` — which was the
+  actual state of the tree until IMPL-199, and would silently become it again after one refactor
+  (this repo's `composeConfig()` wiring class). The amendment observes the SEAM through a fake
+  gateway: an aliased model's pinned caps arrive verbatim; a call with NO model resolves the implicit
+  `default` alias and still carries its pin (the production common case); and both "no alias table"
+  and "model absent from the pin" leave `caps` UNDEFINED rather than fabricating `{reasoning:false}`,
+  which would disable effort while looking identical to a model that truthfully declares none.
+  Note for whoever edits it: the effective model comes from `runParams`, not `opts.model` (ARCH-096
+  refuses a tunable inside the agent() options, so `effectiveOpts.model` is overwritten from the run's
+  admission snapshot) — a caps test driven off `opts.model` exercises a path production never takes.
+
 ### UT-188 — EnrichedModelEntry carries declared-not-probed capability fields
-- **status:** red
+- **status:** green
 - **traces:** DES-179, ARCH-117, REQ-126
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/models-list-declared.test.ts` (4 cases). Red (measured): the `toolUseDeclared`
@@ -10240,22 +10253,22 @@ tightened, since the intent (the fields must exist post-rename) is unambiguous f
 cases and the shared corpus this file's sibling (UT-187) already locks the real shape.
 
 ### UT-189 — priceCall: four-column price, null survives exactly one hop
-- **status:** red
+- **status:** green
 - **traces:** DES-180, ARCH-118, ADR-046, REQ-127
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/price-call.test.ts` (6 cases). Red (measured): whole-file red — neither `priceCall`
 nor `sumTokens`/`ZERO_TOKENS` exist in `run-guard.ts` yet.
 
 ### UT-190 — four-column token extraction (SDK path + camelCase modelUsage fallback)
-- **status:** red
+- **status:** green
 - **traces:** DES-180, ARCH-118, REQ-127
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/token-extraction.test.ts` (3 cases, via the real `invoke()` with an injected
@@ -10264,11 +10277,11 @@ a real haiku-shaped usage object (18/282/19522/20762) records `tokens:{input:18,
 >97% of the actual usage, exactly as the design's own motivating example states.
 
 ### UT-191 — the DAG cell renders sumTokens() + costUSD + unpriced badge
-- **status:** red
+- **status:** green
 - **traces:** DES-180, ARCH-118, REQ-127
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/dashboard-page-source.test.ts` (3 cases). Red (measured): 3/3 fail —
@@ -10276,11 +10289,11 @@ File: `tests/unit/dashboard-page-source.test.ts` (3 cases). Red (measured): 3/3 
 at all.
 
 ### UT-192 — parseBudget: one door, two sources, a bare number means different things
-- **status:** red
+- **status:** green
 - **traces:** DES-181, ARCH-118, ADR-037, REQ-127, REQ-120
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/parse-budget.test.ts` (11 cases: the 5-row table × source, bare-number-refused,
@@ -10288,11 +10301,11 @@ empty-object-refused, negative-refused, store-number-rehydrates, store-null-unbo
 message). Red (measured): whole-file red — `parseBudget` does not exist.
 
 ### UT-193 — RunGuard two independent limits {usd, tokens}
-- **status:** red
+- **status:** green
 - **traces:** DES-181, ARCH-118, ADR-037, REQ-120
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/run-guard-two-limits.test.ts` (6 cases: an isolation case plus usd-only,
@@ -10311,11 +10324,11 @@ assertion failure, not a masking TypeError — proving the shape gap directly an
 `addUsage`'s absence.
 
 ### UT-194 — run_start budget migration (bare number refused ahead of ajv; null/`{}` handled)
-- **status:** red
+- **status:** green
 - **traces:** DES-181, ARCH-118, ADR-037, REQ-127, REQ-120
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/call-tool-budget-migration.test.ts` (3 cases, over the real facade — the
@@ -10324,11 +10337,11 @@ and `{}` cases fail (today's schema accepts a number and has no object-shape val
 `budget:null` case is a legitimate green pin (already unbounded today).
 
 ### UT-195 — the sandbox budget wire is {usd, tokens} end to end
-- **status:** red
+- **status:** green
 - **traces:** DES-182, ARCH-118, ARCH-114, REQ-127, REQ-120, REQ-001
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/sandbox-budget-api.test.ts` (3 cases, a REAL forked sandbox child, DES-006's own
@@ -10336,11 +10349,11 @@ master-test-seam precedent). Red (measured): 3/3 fail — today's IPC `budgetTot
 the child's script-visible object have no `limits`/`tokens()` at all.
 
 ### IT-148 — a nested frame observes the PARENT run's real spend, not 0
-- **status:** red
+- **status:** green
 - **traces:** DES-182, ARCH-118, ARCH-114, REQ-127, REQ-120
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/integration/nested-frame-budget.test.ts` (1 case, real `createServer()`, real MCP HTTP,
@@ -10365,11 +10378,11 @@ though the parent run has genuinely, verifiably spent 15 tokens, because
 `currentPhase`. This is now a clean behavioural red directly on the seam this item names.
 
 ### IT-149 — live ≡ fold ≡ snapshot usage, including an UNBUDGETED resumed run
-- **status:** red
+- **status:** green
 - **traces:** DES-183, ARCH-118, ADR-046, ADR-047, REQ-127
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/integration/usage-live-equals-fold.test.ts` (2 cases, real RunManager + real
@@ -10379,11 +10392,11 @@ reports 0 usage for an unbounded run, exactly the `run-manager.ts:840` `if (spec
 gate this item names for deletion.
 
 ### IT-150 — run_result.meta names an unpriced model and admits the call anyway
-- **status:** red
+- **status:** green
 - **traces:** DES-183, ARCH-118, ADR-046, REQ-127
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/integration/run-result-meta.test.ts` (1 case, real `createServer()`, an empty injected
@@ -10391,11 +10404,11 @@ File: `tests/integration/run-result-meta.test.ts` (1 case, real `createServer()`
 `undefined`.
 
 ### UT-196 — checkMermaid v2 rules
-- **status:** red
+- **status:** green
 - **traces:** DES-184, ARCH-119, ADR-043, ADR-039, REQ-128, REQ-116
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/check-mermaid-v2.test.ts` (6 cases: DIAGRAM_DIRECTION refuse+pass, LANE_MISMATCH,
@@ -10407,11 +10420,11 @@ does-not-refuse-direction case — the latter passes vacuously since NO v2 rule 
 anything yet).
 
 ### UT-197 — RULE_CODE is total; the four v2 codes are real catalog rows
-- **status:** red
+- **status:** green
 - **traces:** DES-184, ARCH-119, ADR-043, REQ-128
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/rule-code-map.test.ts` (3 cases). Red (measured): 3/3 fail — none of the four v2
@@ -10419,23 +10432,32 @@ codes are `ERROR_CATALOG` keys yet, and `workflow-catalog.ts` exports no `RULE_C
 the two-way ternary at `:492-499`).
 
 ### IT-151 — workflow_describe reports diagramContract
-- **status:** red
+- **status:** green
 - **traces:** DES-184, ARCH-119, ADR-043, REQ-128
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/integration/diagram-contract-grandfather.test.ts` (1 case, real `createServer()`, real
 MCP HTTP, real SQLite catalog). Red (measured): fails — `workflow_describe`'s result carries no
 `diagramContract` key at all today.
 
+- **Amendment (v26 integrator) — the file grew to 5 cases**, same real-`createServer()` policy: the
+  v2 stamp is CHECKED (a TD diagram is refused), an `agent()` before the first `phase()` answers its
+  own `AGENT_BEFORE_PHASE` code, and REQ-124's grandfathered cohort is covered in BOTH of its states.
+  Two states, because they are not the same test: a v1 run read immediately after `run_start` has no
+  agent records and must still render its PREDICTED cells (`v1FallbackGraph`, or the overlay is
+  empty and every pre-v26 graph blanks); a v1 run polled to `completed` must render each call ONCE,
+  with zero `__skel_` cells — the state the owner's ~30 production runs are actually in, and the one
+  that was doubling every finished agent until IMPL-205. Both assert `warnings: []`.
+
 ### UT-198 — the workflow page renders a per-agent harness table via textContent
-- **status:** red
+- **status:** green
 - **traces:** DES-184, ARCH-119, REQ-128, REQ-110
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/workflow-page-harness-table.test.ts` (2 cases, page-source assertion over
@@ -10443,11 +10465,11 @@ File: `tests/unit/workflow-page-harness-table.test.ts` (2 cases, page-source ass
 cell text, exists on the workflow describe panel today.
 
 ### IT-155 — the guide examples are the v2 conformance corpus
-- **status:** red
+- **status:** green
 - **traces:** DES-185, ARCH-119, ARCH-107, ADR-039, REQ-128, REQ-116, REQ-117
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/integration/guide-examples-register.test.ts` (extended — 2 new cases appended to the
@@ -10459,22 +10481,22 @@ absence case is a legitimate green pin (no v2 rule-code strings exist anywhere y
 appear in the guide text).
 
 ### UT-199 — dagBox: pure box math for the run DAG viewBox
-- **status:** red
+- **status:** green
 - **traces:** DES-186, ARCH-120, ADR-044, REQ-129, REQ-119
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/dag-box.test.ts` (3 cases). Red (measured): whole-file red — `dagBox` does not
 exist.
 
 ### UT-200 — the run DAG and author SVG scale via viewBox + one .zoomable wrapper
-- **status:** red
+- **status:** green
 - **traces:** DES-186, ARCH-120, ADR-044, REQ-129, REQ-119
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/dashboard-zoom-source.test.ts` (4 cases). Also extends `tests/acceptance/val-018-dashboard-browser-ui.test.ts`
@@ -10489,11 +10511,11 @@ Chromium screenshot harness exists in this test tier yet; recorded as a scope no
 dropped.
 
 ### UT-201 — sandbox globals + determinism guard drift locks
-- **status:** red
+- **status:** green
 - **traces:** DES-187, ARCH-121, REQ-130, REQ-121, REQ-127, REQ-001
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/sandbox-globals-lock.test.ts` (3 cases, a REAL `vm` context via the real
@@ -10501,11 +10523,11 @@ File: `tests/unit/sandbox-globals-lock.test.ts` (3 cases, a REAL `vm` context vi
 `createSandboxContext` do not exist in `src/sandbox/guards.ts` yet.
 
 ### UT-204 — the guide closes the five cold-client gaps
-- **status:** red
+- **status:** green
 - **traces:** DES-187, ARCH-121, REQ-130, REQ-121, REQ-127, REQ-001
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/authoring-guide.test.ts` (extended — 7 new cases appended to the existing v24
@@ -10515,11 +10537,11 @@ globals+determinism guards, `meta.params.args` types, the declared alias table, 
 declared-not-probed flags) nor the `{usd,tokens}` budget rewrite are in the served guide text today.
 
 ### UT-202 — deriveAgentRecords: four branches, one base() helper
-- **status:** red
+- **status:** green
 - **traces:** DES-188, ARCH-114, ARCH-115, ARCH-118, ARCH-111, ADR-046, REQ-124, REQ-125, REQ-127, REQ-120
 - **tier:** unit
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/unit/derive-agent-records.test.ts` (4 cases). Red (measured): 4/4 fail — today's
@@ -10528,11 +10550,11 @@ neither existing branch fills `cacheRead`/`cacheWrite`/`costUSD`/`unpriced`/`sta
 FIRST harness event) or preserves the harness-resolved model on a failed call.
 
 ### IT-152 — THE LOCK: deriveAgentRecords deep-equals the terminal snapshot, minus lastActivityAt
-- **status:** red
+- **status:** green
 - **traces:** DES-188, ARCH-114, ARCH-115, ARCH-118, ARCH-111, REQ-124, REQ-125, REQ-127, REQ-120
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/integration/derived-equals-snapshot.test.ts` (1 case, real RunManager + real
@@ -10542,11 +10564,11 @@ the terminal snapshot's `agents[]` at all today (the whole point of the lock: wh
 future task updates, this test catches the other one falling behind).
 
 ### IT-153 — a refused call survives a fresh-store restart with no snapshot
-- **status:** red
+- **status:** green
 - **traces:** DES-188, ARCH-114, ARCH-115, ARCH-118, ARCH-111, ADR-046, REQ-124, REQ-125, REQ-127, REQ-120
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/integration/refused-survives-restart.test.ts` (1 case, a REAL `SqliteRunStore` over a
@@ -10561,11 +10583,11 @@ the design's own instruction, even though it cannot itself force a runtime red h
 fallthrough swallows it, since `TranscriptEvent.kind` has no `'refused'` member for it to match).
 
 ### IT-154 — the v26 public-shapes pin
-- **status:** red
+- **status:** green
 - **traces:** DES-189, ARCH-110, ARCH-115, ARCH-118, ARCH-117, REQ-121, REQ-125, REQ-126, REQ-127
 - **tier:** integration
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 File: `tests/integration/public-shapes-pin.test.ts` (2 cases, over `tests/fixtures/v26-public-shapes.ts`).
@@ -10587,11 +10609,11 @@ disqualified-subject cold-model protocol, the deployed production box) is record
 this tier must not fake.
 
 ### VAL-171 — REQ-121: a booted engine refuses a sha256-only seed over real MCP HTTP
-- **status:** red
+- **status:** green
 - **traces:** REQ-121, DES-170
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 Proven at this tier by IT-141 (`tests/integration/run-start-seed-refusal.test.ts`) — real
@@ -10630,11 +10652,11 @@ contract locally. The deploy-ORDER clause (a real restart against a real still-b
 real box) is unreachable from this tier by construction. `status:blocked`/`result:not-run`.
 
 ### VAL-174 — REQ-124: GET /api/runs/<production runId>/dag on the real box shows zero warnings
-- **status:** red
+- **status:** green
 - **traces:** REQ-124, DES-176, DES-175
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 Proven at this tier by IT-146 (a real, Gate-5-captured pre-v26 terminal snapshot) and E2E-010 (a
@@ -10671,11 +10693,11 @@ a declared-reasoning OpenRouter model is a Gate 7.5 runbook item by the design's
 `status:blocked`/`result:not-run`.
 
 ### VAL-177 — REQ-127: a real haiku run's four columns; a trigger-started run's usage is non-zero
-- **status:** red
+- **status:** green
 - **traces:** REQ-127, DES-178, DES-180, DES-181, DES-183
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 Proven at this tier (fake-gateway floor) by UT-189/UT-190 (extraction+pricing logic), IT-147
@@ -10701,11 +10723,11 @@ UT-197/IT-151/IT-155 cover every v2 rule and the guide-corpus-as-conformance-tes
 vitest floor. `status:blocked`/`result:not-run`, per the v24 VAL-128 precedent exactly.
 
 ### VAL-179 — REQ-129: both dashboard figures readable at 1100px, wheel-zoom + fit survive the poll
-- **status:** red
+- **status:** green
 - **traces:** REQ-129, DES-186
 - **tier:** acceptance
 - **real:** false
-- **result:** fail
+- **result:** pass
 - **iter:** v26
 
 Proven at this tier by UT-199 (box math) and UT-200 (page-source markers, including the extended
@@ -10777,3 +10799,156 @@ TOOL_SPECS)` generator already exercises every `TOOL_SPECS` row (including v26's
 budget/models_list/diagramContract rows) automatically once the implementer updates `TOOL_SPECS`'s
 own `fixture` rows — writing a parallel assertion here would lock a SECOND, driftable copy of the
 same claim.
+
+## Gate 6.5+7 — v26 simplify + regression closeout, and the coverage gate (2026-09-09, verifier)
+
+**Status flips.** All 52 v26 items that were `red`/`fail` at Gate 5 are now `green`/`pass`; their
+dated Gate-5 red-reason prose is left VERBATIM as the record of why each was red. The six
+`blocked`/`not-run` items (VAL-172/173/175/176/178/180) are UNCHANGED — each needs a real revoked
+OpenRouter credential, the deployed box, a real OpenRouter key, a `--detailed_debug` LiteLLM capture,
+or REQ-117's disqualified-cold-model protocol (which this verifier is, by that requirement's own
+text, disqualified from being the subject of). Nothing was flipped on faith: every flipped item's
+own named `File:` was matched against the run's per-file result.
+
+**Eight new work items** were written by this gate to close the per-function coverage bar (below).
+
+### UT-205 — parseBudget's two refusals that no test reached
+- **status:** green
+- **traces:** DES-181
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/parse-budget.test.ts` (extended). Coverage showed lines 80 and 85 — a
+non-object/array `budget`, and an unknown key — with no reader at all, i.e. two shapes a hand-rolled
+MCP client really sends could have fallen through to `parseField` and read `undefined` as "not set".
+6 cases, including that the unknown-key refusal fires BEFORE the empty-object one so `{tokenz: N}`
+names the typo.
+
+### UT-206 — RunGuard.setSpent's surviving scalar arm
+- **status:** green
+- **traces:** DES-181, DES-183
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/run-guard-two-limits.test.ts` (extended). `setSpent` was widened to `{usd, tokens}`
+for the resume path; the bare-number arm was kept "for a caller that genuinely only holds a token
+count" and had no test — so the widening could have dropped it, or made a scalar silently zero the
+USD side. 4 cases pin both halves plus replace-not-accumulate.
+
+### UT-208 — checkLanes' count and title refusals
+- **status:** green
+- **traces:** DES-184, ARCH-119
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/check-mermaid-v2.test.ts` (extended). UT-196 covered the per-slot node lookup;
+`checkLanes`' first two `return err(...)` lines — a lane COUNT mismatch and a lane TITLE mismatch —
+were dead, meaning a diagram with the wrong number of swimlanes could have registered as conformant.
+4 cases, including that a `null` (dynamic) expected title still accepts any authored name.
+
+### UT-209 — scanAgentCalls stays total on a malformed ternary
+- **status:** green
+- **traces:** DES-174, ARCH-113
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/agent-call-scan.test.ts` (extended). The two defensive fallbacks of the alt-span
+scanners (`findMatchingColon → -1`, `findArmEnd → script.length`) had no test. Both exist so
+malformed/truncated author text — which the `/dag` read path and the registration checker both hit —
+degrades to "no alt group" instead of throwing or fabricating a span that swallows the rest of the
+file. 4 cases, including that an unterminated arm does not swallow a LATER call into its group.
+
+### UT-210 — resolveAlias carries proxyModel only when the row has one
+- **status:** green
+- **traces:** DES-172, DES-177
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/providers.test.ts` (extended). The `proxyModel` arm was unreached. Not cosmetic:
+DES-177 makes `record.proxyModel` reportable only when a cloak really went on the wire, and an alias
+without one must not grow the KEY (a `'proxyModel' in record` reader and a JSON reader disagree about
+an explicit `undefined`). 3 cases.
+
+### UT-211 — the two seed guards with no reader
+- **status:** green
+- **traces:** DES-170, ARCH-110
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/workspace-seed-spec.test.ts` (extended). `validateSeedSpec`'s `exec`-type refusal
+and `materializeSeed`'s defence-in-depth throw were both unreached — the latter is the exact line
+that replaced `contentB64 ?? ''`, i.e. issue #64's own bug, so a regression there silently
+re-introduces a 0-byte seeded file. 3 cases; the throw case asserts the file does NOT exist after.
+
+### UT-212 — layoutGraph's dynamic lanes and lanes beyond the prediction
+- **status:** green
+- **traces:** DES-176, ARCH-114
+- **tier:** unit
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/unit/layout-graph-phase.test.ts` (extended). Two unreached branches, both real shapes on
+the owner's box: a DYNAMIC lane holding live agents (any `phase()` inside a loop) and an agent whose
+`phaseIndex` is beyond the predicted lane set (a script re-registered with fewer phases than the run
+in flight). Both must still draw the agent (ARCH-042) and say why in `warnings`. 5 cases, including
+ascending append order and that the `maxNodes` cap still truncates the appended lane.
+
+### IT-156 — the unmappedMessages column, counted the same by both folds
+- **status:** green
+- **traces:** DES-183, ARCH-118, REQ-127
+- **tier:** integration
+- **real:** false
+- **result:** pass
+- **iter:** v26
+
+File: `tests/integration/unmapped-column-folds.test.ts` (new). IMPL-198's whole claim is that the
+LIVE fold (`foldUsageFromRecords`) and the AT-REST fold (`foldUsage`) "count the same subtypes by the
+same rule" — and coverage showed the counting loop unreached in BOTH, i.e. the one column the
+reconciliation was written for had no test and either fold could have returned `{}` forever with
+every existing green staying green. Real RunManager + real InMemoryRunStore + real AgentExecutor; a
+fake gateway is the only stand-in, and it is the component that legitimately produces
+`GatewayResult.unmapped`. Two agents so the counter must ADD across calls (`task_progress` ×3,
+`mirror_error` ×1) rather than overwrite; the second case pins `{}` (never a missing field) for a
+run with no unmapped subtypes.
+
+### Coverage gate — measured, and what is left
+
+`@vitest/coverage-v8@1.6.1` (`npm install --no-save`, `coverage/` gitignored), whole tree over
+`src/**/*.ts`. Overall **lines 96.15%**, functions 95.9% — above the 90% bar and above v24 round 2's
+95.53%. The per-function bar was applied to the **v26 delta** (`git diff ce2b10a..HEAD -- src`, the
+functions whose line ranges the delta touches): **17 long offenders at the start of this gate, 9
+after the fills above**; 0 short offenders throughout. The nine remaining each carry a one-line
+Decision rationale, and none is "we chose not to test it":
+
+- `src/sandbox/child-entry.ts` (0/153) and `src/main.ts`'s `main`/`runCheckConfig`/`loadFileConfig`
+  (0%) — a MEASUREMENT blind spot, not a test gap: both run in a SPAWNED CHILD PROCESS the parent's
+  v8 instrumentation cannot see. `child-entry.ts` is excluded from `tsconfig` for the same reason;
+  `--check-config` is covered by IT-143, which drives a real `tsx src/main.ts --check-config` child.
+  These are tested at a HIGHER tier than coverage can observe.
+- `src/server.ts` `createServer` 86.1% (820/952) — the composition root; the uncovered remainder
+  needs real external deps (a real litellm binary, a real GitHub credential, a real stdio MCP peer).
+  Unchanged disposition from v24 round 2.
+- `src/main.ts` `composeConfig` 88.9% — the litellm `onSupervisionEvent` closure; no litellm binary
+  on PATH in this sandbox. Unchanged disposition from v24 round 2.
+- `src/workflow-catalog.ts`'s member initializer 92.5% — the bulk of the missing lines are still the
+  three `workflow_diagrams` accessors (`putDiagramPending` 10%, `putDiagramResult` 4%, `getDiagram`
+  8.3%) that v24 round 1 found have ZERO production callers. A DELETION, not a test gap; carried
+  forward as debt rather than papered over with tests for dead code.
+- `src/agent-executor.ts` `parseJsonContent`, `src/scheduler-engine.ts` `fieldsAt`,
+  `src/gateway/claude-agent-sdk-client.ts` `makePreToolUseHook`, `src/cli-lifecycle.ts` `killGroup` —
+  each needs a real subprocess/provider fault this tier cannot produce; listed in the gate report.
+
+No bar was lowered, and no test was weakened, deleted or re-scoped to reach these numbers.
