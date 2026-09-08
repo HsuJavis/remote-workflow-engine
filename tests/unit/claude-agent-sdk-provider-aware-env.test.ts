@@ -2,7 +2,7 @@
 //  - anthropic provider -> ANTHROPIC_BASE_URL = REAL Anthropic API (LiteLLM bypassed), real auth
 //    injected (never the dummy); api-key sets ANTHROPIC_API_KEY, subscription sets
 //    CLAUDE_CODE_OAUTH_TOKEN and NO ANTHROPIC_API_KEY.
-//  - openai/openrouter/ollama/gemini/unknown -> ANTHROPIC_BASE_URL = LiteLLM proxy baseUrl + DUMMY.
+//  - openrouter/ollama/unknown -> ANTHROPIC_BASE_URL = LiteLLM proxy baseUrl + DUMMY.
 //  - the chosen mode's secret missing -> typed terminal failure (detail ANTHROPIC_AUTH_MISSING),
 //    never a silent dummy-key attempt.
 //  - SECURITY INVARIANT: the real key / oauth token is injected ONLY into the SDK subprocess env —
@@ -32,7 +32,7 @@ function req(opts: AgentOpts = {}, extra: Record<string, unknown> = {}) {
 
 const ALIASES: AliasMap = {
   sonnet: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
-  gpt: { provider: 'openai', model: 'gpt-4.1' },
+  gpt: { provider: 'openrouter', model: 'gpt-4.1' },
   local: { provider: 'ollama', model: 'qwen2.5:7b' },
 };
 
@@ -150,7 +150,7 @@ describe('ClaudeAgentSdkGatewayClient — provider-aware env (REQ-037)', () => {
     expect(queryMock).not.toHaveBeenCalled(); // never spawned a session with the dummy key
   });
 
-  it('non-anthropic provider (openai) keeps LiteLLM base + dummy, never a real key', async () => {
+  it('non-anthropic provider (openrouter) keeps LiteLLM base + dummy, never a real key', async () => {
     process.env['ANTHROPIC_API_KEY'] = REAL_KEY; // even with a real host key present
     const { ClaudeAgentSdkGatewayClient } = await import('../../src/gateway/claude-agent-sdk-client.js');
     const client = new ClaudeAgentSdkGatewayClient({

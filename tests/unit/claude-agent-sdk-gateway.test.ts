@@ -74,7 +74,9 @@ describe('ClaudeAgentSdkGatewayClient (UT-018, D-F1)', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.content).toBe('pong');
-      expect(result.tokens).toEqual({ input: 3, output: 2 });
+      // v26 (DES-180, TASK-180): tokens widened to four columns — cacheRead/cacheWrite are a KNOWN
+      // 0 here (the fixture's `usage` carries no cache fields), never absent.
+      expect(result.tokens).toEqual({ input: 3, output: 2, cacheRead: 0, cacheWrite: 0 });
     }
   });
 

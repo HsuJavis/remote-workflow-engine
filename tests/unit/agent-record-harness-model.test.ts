@@ -11,7 +11,7 @@ import { AgentTranscriptSink } from '../../src/agent-executor.js';
 describe('AgentTranscriptSink.markHarness surfaces model/provider on the live record (#20)', () => {
   it('a running agent shows blank model/provider until the harness arrives, then the real backend', () => {
     const sink = new AgentTranscriptSink();
-    sink.markQueued('agent-1', 'lean:Architecture');
+    sink.markQueued('agent-1', { label: 'lean:Architecture' });
     sink.markRunning('agent-1', '2026-01-01T00:00:00.000Z');
 
     // Before the session is built, the record is running but the backend is not yet known.
@@ -61,7 +61,7 @@ describe('AgentTranscriptSink.markHarness surfaces model/provider on the live re
 
   it('a failed/timed-out call preserves the markHarness model (post-mortem: which model failed) — #22', async () => {
     const sink = new AgentTranscriptSink();
-    sink.markQueued('agent-x', 'lean:Architecture');
+    sink.markQueued('agent-x', { label: 'lean:Architecture' });
     sink.markRunning('agent-x', '2026-01-01T00:00:00.000Z');
     sink.markHarness('agent-x', 'rwe-proxy-claude-opus-4-8', 'ollama');
     // The gateway call times out (no model of its own on the failure result).

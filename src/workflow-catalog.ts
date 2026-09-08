@@ -20,7 +20,7 @@ import { join, resolve, sep, isAbsolute } from 'node:path';
 import { CatalogNotFoundError, WorkspaceEscapeError, codedError, type ErrorCode } from './errors.js';
 import { parseMeta, parseMetaParams } from './workflow-meta.js';
 import { scanAgentCalls } from './scan-agent-calls.js';
-import { checkMermaid } from './check-mermaid.js';
+import { checkMermaid, type Rule } from './check-mermaid.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
 // v21 Gate 6 adjudication (A-1): type-only import — erases at compile, no runtime edge, and this
@@ -49,6 +49,32 @@ export interface DiagramRow {
   generatedAt: string | null;
   bindingsFp: string | null;
 }
+
+// v26 (DES-184, ARCH-119, ADR-043, TASK-189): the TOTAL map from every `checkMermaid` rule to the
+// `ErrorCode` `validateRegistration` throws — replaces the two-way
+// `onlyInScript/onlyInDiagram !== undefined ? 'DIAGRAM_MISMATCH' : 'MERMAID_INVALID'` ternary this
+// module used to hide every OTHER rule's code decision behind. `satisfies Record<Rule, ErrorCode>`
+// IS the "never" exhaustiveness check the design calls for: a new `Rule` member added to
+// check-mermaid.ts without a matching key here is a compile error, not a silent MERMAID_INVALID.
+// The five pre-existing "strays" (no distinct code of their own) map to MERMAID_INVALID EXPLICITLY
+// — a named, greppable decision instead of the ternary's silence; DIAGRAM_SCRIPT_MISMATCH keeps its
+// existing DIAGRAM_MISMATCH mapping; the four v2 rules are real ERROR_CATALOG rows and self-map.
+export const RULE_CODE = {
+  SIZE: 'MERMAID_INVALID',
+  SUBGRAPH_TITLE: 'MERMAID_INVALID',
+  MERMAID_INVALID: 'MERMAID_INVALID',
+  DUPLICATE_NODE: 'MERMAID_INVALID',
+  COLLAPSED_EDGE: 'MERMAID_INVALID',
+  UNDECLARED_NODE: 'MERMAID_INVALID',
+  AGENT_LABEL_FORMAT: 'MERMAID_INVALID',
+  DIAGRAM_SCRIPT_MISMATCH: 'DIAGRAM_MISMATCH',
+  VALUE_MISMATCH: 'MERMAID_INVALID',
+  LOOP_LABEL: 'MERMAID_INVALID',
+  DIAGRAM_DIRECTION: 'DIAGRAM_DIRECTION',
+  LANE_MISMATCH: 'LANE_MISMATCH',
+  TOOLS_MISMATCH: 'TOOLS_MISMATCH',
+  EDGE_MISMATCH: 'EDGE_MISMATCH',
+} as const satisfies Record<Rule, ErrorCode>;
 
 // DES-098: hardcoded operator email for boot backfill of NULL-owner rows
 const BOOT_BACKFILL_EMAIL = 'hsuhungjung@gmail.com';
@@ -108,6 +134,9 @@ export interface VersionEntry {
    *  NOT_IN_RELEASE check needs "does the currently-released version still list this trigger", and
    *  the column had no reader before this. Absent when the version declares none. */
   triggers?: string[];
+  /** v26 (DES-184, ARCH-119, TASK-189): `'v1'` for a NULL (pre-v26) row, `'v2'` for every row
+   *  `insertVersion` writes from here on — a grandfathered row is never re-checked with `v2`. */
+  diagramContract: 'v1' | 'v2';
 }
 export interface WorkflowDetail extends VersionEntry {
   name: string; createdAt: string; owner: string | null; channels: Channels; versions: string[];
@@ -247,6 +276,10 @@ export class WorkflowCatalog {
     const versionCols = (this._db.prepare('PRAGMA table_info(workflow_versions)').all() as Array<{ name: string }>).map((c) => c.name);
     if (!versionCols.includes('mermaid')) this._db.exec('ALTER TABLE workflow_versions ADD COLUMN mermaid TEXT');
     if (!versionCols.includes('triggers')) this._db.exec('ALTER TABLE workflow_versions ADD COLUMN triggers TEXT');
+    // v26 (DES-184, ARCH-119, TASK-189): `NULL` (every pre-v26 row) reads as `'v1'` — a grandfathered
+    // row is never re-checked and renders as before (ADR-025: version rows are immutable). Every row
+    // `insertVersion` writes from here on carries `'v2'` explicitly.
+    if (!versionCols.includes('diagram_contract')) this._db.exec('ALTER TABLE workflow_versions ADD COLUMN diagram_contract TEXT');
 
     // v24 (ARCH-098, DES-148, DES-153, TASK-143): the asset store's catalog rows — `workflow = ''` is
     // the global-scope sentinel (SQLite refuses expressions in a PK). `AssetSyncService` (TASK-144)
@@ -491,9 +524,15 @@ export class WorkflowCatalog {
     }
     const diagramCheck = checkMermaid(mermaid, scan.labels, agentDefaults, WorkflowCatalog.MERMAID_LIMITS);
     if (!diagramCheck.ok) {
-      const code = diagramCheck.onlyInScript !== undefined || diagramCheck.onlyInDiagram !== undefined ? 'DIAGRAM_MISMATCH' : 'MERMAID_INVALID';
+      // v26 (DES-184, TASK-189): RULE_CODE replaces the old two-way ternary — every `ok:false`
+      // path above sets `rule` (the flat-shape comment on CheckMermaidResult explains why the type
+      // still carries it as optional); `!` is safe here, inside `!diagramCheck.ok`.
+      const code = RULE_CODE[diagramCheck.rule!];
+      // v26: the detail literal is widened to carry `expected` — the v2 refusal's lane/slot/edge
+      // structure as data (TASK-194 pins one such envelope as a literal fixture).
       throw codedError(code, `${code}: ${diagramCheck.rule ?? 'unknown'}${diagramCheck.line !== undefined ? ` (line ${diagramCheck.line})` : ''}`, {
         rule: diagramCheck.rule, line: diagramCheck.line, onlyInScript: diagramCheck.onlyInScript, onlyInDiagram: diagramCheck.onlyInDiagram,
+        expected: diagramCheck.expected,
       });
     }
 
@@ -564,8 +603,8 @@ export class WorkflowCatalog {
           this._db.prepare('INSERT INTO workflows (name, createdAt, owner) VALUES (?, ?, ?)').run(name, createdAt, owner);
         }
         this._db
-          .prepare('INSERT INTO workflow_versions (name, version, script, defaults, params, mermaid, triggers, createdAt) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)')
-          .run(name, v, script, paramsJson, mermaid, triggersJson, createdAt);
+          .prepare('INSERT INTO workflow_versions (name, version, script, defaults, params, mermaid, triggers, createdAt, diagram_contract) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)')
+          .run(name, v, script, paramsJson, mermaid, triggersJson, createdAt, 'v2');
         return v;
       }).immediate();
       return { version };
@@ -662,8 +701,8 @@ export class WorkflowCatalog {
       // holds pre-v24 rows, and any run reaching one of those is already refused LEGACY_REREGISTER
       // for the missing per-agent contract. Reading a retired column kept a dead value flowing
       // through the whole admission path.
-      .prepare('SELECT script, mermaid, params, triggers FROM workflow_versions WHERE name = ? AND version = ?')
-      .get(name, result.version) as { script: string; mermaid: string | null; params: string | null; triggers: string | null };
+      .prepare('SELECT script, mermaid, params, triggers, diagram_contract FROM workflow_versions WHERE name = ? AND version = ?')
+      .get(name, result.version) as { script: string; mermaid: string | null; params: string | null; triggers: string | null; diagram_contract: string | null };
     return {
       script: vrow.script,
       version: result.version,
@@ -678,6 +717,8 @@ export class WorkflowCatalog {
       // column has existed since TASK-143 and no reader ever selected it, which is why the fire
       // path could not tell "claimed but omitted from the current release" from "claimed".
       ...(vrow.triggers ? { triggers: JSON.parse(vrow.triggers) as string[] } : {}),
+      // v26 (DES-184, TASK-189): NULL (every pre-v26 row) reads as 'v1' (ADR-025 grandfather).
+      diagramContract: vrow.diagram_contract === 'v2' ? 'v2' : 'v1',
     };
   }
 

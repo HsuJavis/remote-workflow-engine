@@ -158,7 +158,9 @@ describe('a genuinely exhausted budget refuses VISIBLY (IT-136, REQ-120, issue #
     for (const a of refused) {
       expect(a.reasonCode).toBe('BUDGET_EXCEEDED');
       expect(a.label).toBe('researcher');
-      expect(a.tokens).toEqual({ input: 0, output: 0 }); // it never reached a gateway
+      // v26 (DES-180/DES-188): tokens widened to four columns — a refused call's cache columns are
+      // the SAME known zero as input/output (it never reached a gateway).
+      expect(a.tokens).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
     }
 
     // Only the seed call was ever dispatched: the budget stopped dispatch, as advertised.

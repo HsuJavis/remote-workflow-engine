@@ -8,6 +8,10 @@ import { ERROR_CATALOG, type ErrorCode } from './errors.js';
 // that vocabulary is what let `tools` survive here after the pipeline moved to `allowedTools`.
 // `params/contract.ts` is pure (no I/O, no VM) and imports only `ErrorCode`, so this adds no cycle.
 import { LOCKED_KEYS } from './params/contract.js';
+// v26 (DES-170, TASK-175, issue #64): another value import — SEED_ITEM_HINT so the
+// `run_start` schema's `seed.items.contentB64` description and validateSeedSpec's refusal message
+// (run-manager.ts, via workspace-seed.ts) can never drift apart. Pure (no I/O), no cycle.
+import { SEED_ITEM_HINT } from './workspace-seed.js';
 
 /** Declared here (not authz.ts) so the dependency between the two files stays one-directional —
  *  authz.ts imports Role from this module (ARCH-088). */
@@ -349,7 +353,23 @@ export const TOOL_SPECS = [
         // `meta.params.args` example teaches — so the engine advertised a workflow API it then
         // refused to be called with.
         args: { description: "Run arguments, shaped by the script's own `meta.params.args` declaration and read in-script as `args.<key>`." },
-        budget: { type: ['number', 'null'], description: 'Total token budget for the whole run, shared by every agent() call including nested workflow() frames. Omitted or null means unbounded.' },
+        // v26 (DES-181, ARCH-118, ADR-037, TASK-181, REQ-127/REQ-120): a bare number was the v25
+        // shape (a token-only limit) — no longer advertised, and refused ahead of ajv (call-tool.ts)
+        // with a migration message, the same precedent as the retired `{script}` door (call-tool.ts). `null`
+        // must keep meaning unbounded (the owner's own published principle); `{}` is refused by
+        // `minProperties`, since "explicitly no limits" is spelled `null`, never `{}`.
+        budget: {
+          anyOf: [
+            { type: 'null' },
+            {
+              type: 'object',
+              properties: { usd: { type: 'number', minimum: 0 }, tokens: { type: 'integer', minimum: 0 } },
+              additionalProperties: false,
+              minProperties: 1,
+            },
+          ],
+          description: 'Total budget for the whole run, shared by every agent() call including nested workflow() frames: {usd?: <USD ceiling>, tokens?: <token ceiling, the four-column sum>}. Either key may be omitted; an unpriced model call adds 0 to the USD spend/limit. Omitted or null means unbounded.',
+        },
         // B-1 (v24 adjudication #3): a STRING, the exact value workflow_register's
         // `result.version` returns — see workflow_publish's row for why.
         version: { type: 'string', description: "The version string returned by workflow_register, e.g. 'v1'." },
@@ -375,8 +395,36 @@ export const TOOL_SPECS = [
             // second literal is one more thing that can fall behind it.
             `${LOCKED_KEYS.join('/')} are author-locked (PARAM_LOCKED).`,
         },
-        seed: { type: 'array' },
-        seedManifest: { type: 'array' },
+        // v26 (DES-170, TASK-175, issue #64): item schemas — a bare `{type:'array'}` told a caller
+        // nothing about the required shape, which is exactly how a sha256-only `seed` element (the
+        // `seedManifest` shape, missing `contentB64`) slipped past `tools/list` and was silently
+        // materialized as a 0-byte file. `additionalProperties` stays OPEN here (see DES-170
+        // boundary note): `required` alone carries the refusal until TASK-194 closes it.
+        // v26 (DES-187, ARCH-121, TASK-193, REQ-121): a top-level `description` on the three seed
+        // shapes themselves — `tools/list` is the only documentation a cold client ever reads, and
+        // the authoring guide interpolates these three strings rather than re-typing them (ADR-032).
+        seed: {
+          type: 'array',
+          description: 'Seed files by inline content — each element is {path, contentB64}, the file bytes as base64. Refused INVALID_SEED_SPEC if any element is missing contentB64.',
+          items: {
+            type: 'object',
+            required: ['path'],
+            properties: { path: { type: 'string' }, contentB64: { type: 'string', description: SEED_ITEM_HINT } },
+          },
+        },
+        seedManifest: {
+          type: 'array',
+          description: 'Seed files already pushed to the CAS via workspace_push — each element is {path, sha256, exec?}, referenced by hash rather than carrying content inline. Use for large trees, or content you already have a sha256 for.',
+          items: {
+            type: 'object',
+            required: ['path', 'sha256'],
+            properties: {
+              path: { type: 'string' },
+              sha256: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+              exec: { type: 'boolean' },
+            },
+          },
+        },
         // v24 (integrator, REQ-080 — found by the Batch-B executor): a bare `{type:'object'}` told
         // a caller nothing about the two fields the fetcher requires, nor that the whole feature is
         // fail-closed behind the operator's `seedRefAllowlist`.
@@ -386,7 +434,11 @@ export const TOOL_SPECS = [
           properties: { repoUrl: { type: 'string' }, sha: { type: 'string', description: 'The exact commit sha to fetch; a mismatch is SEEDREF_SHA_MISMATCH.' } },
           required: ['repoUrl', 'sha'],
         },
-        seedManifestRef: { type: 'string' },
+        seedManifestRef: {
+          type: 'string',
+          pattern: '^[0-9a-f]{64}$',
+          description: 'Seed the whole workspace from ONE manifest previously pushed as a CAS blob — the sha256 of that manifest.',
+        },
       }, ['name']),
       additionalProperties: false,
     },
@@ -414,7 +466,11 @@ export const TOOL_SPECS = [
   },
   {
     name: 'run_result', entity: 'run', key: 'runId' as const,
-    description: "Fetch a terminal run's result payload.",
+    // v26 (DES-183, ARCH-118, TASK-183, REQ-127): declares `meta` in the DESCRIPTION (never a
+    // specialised outputSchema — see DES-183's own boundary) — `meta.usage` is this run's token/USD
+    // total plus `unpricedCalls`/`unmappedMessages`; `meta.budgetEnforceable` names which limits can
+    // actually bind given the models this run can reach, and which of those have no known price.
+    description: "Fetch a terminal run's result payload. The response also carries `meta.usage` (tokens, USD cost, unpriced-call count) and `meta.budgetEnforceable` (which limits can bind, and which reachable models have no known price).",
     inputSchema: schema({ runId: { type: 'string' } }, ['runId']),
     outputSchema: OUT,
     errors: ['RUN_NOT_FOUND', 'RUN_NOT_TERMINAL', 'NOT_RUN_OWNER', 'NESTING_DEPTH_EXCEEDED', 'NESTING_CYCLE', 'DESCENDANT_CAP_EXCEEDED'],
@@ -835,9 +891,12 @@ export const TOOL_SPECS = [
     // a model from.
     description:
       'List the model catalog. Each row carries provider, model, description, modalities, ' +
-      'contextWindow, price, toolUse, location, plus the engine ratings: `capability` (a one-line ' +
+      'contextWindow, price, location, plus the engine ratings: `capability` (a one-line ' +
       'summary), `stability`, and `costLevel` — an integer 0..10 where 0 is free and 10 is the most ' +
-      'expensive tier, null when the provider publishes no price.',
+      'expensive tier, null when the provider publishes no price. v26: `toolUseDeclared` / ' +
+      '`effortDeclared` (boolean, or \'unknown\' when the catalog said nothing) and `declaredSource` ' +
+      "('upstream'|'static'|'unknown') are DECLARED capability, never probed by dispatching a call; " +
+      '`catalogFetchedAt` is per-row catalog provenance (string timestamp, or null).',
     inputSchema: schema({
       provider: { type: 'string', description: "Exact provider id, e.g. 'anthropic' or 'ollama'." },
       query: { type: 'string', description: 'Substring match over the model id and description.' },
@@ -845,7 +904,7 @@ export const TOOL_SPECS = [
       modalityOut: { type: 'string' },
       maxPricePerM: { type: 'number', description: 'Upper bound on price per million tokens.' },
       minContext: { type: 'number', description: 'Lower bound on contextWindow.' },
-      toolUse: { type: 'boolean' },
+      toolUseDeclared: { type: 'boolean' },
       location: { type: 'string', enum: ['local', 'remote'] },
       limit: { type: 'number' },
     }),

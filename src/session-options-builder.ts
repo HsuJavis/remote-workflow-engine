@@ -15,7 +15,6 @@ export interface ProviderProfile {
   supportsExtendedThinking: boolean;
   timeoutMs: number;
   retries: number;
-  effortMapping?: Record<string, unknown>;
 }
 
 export type ThinkingMode = 'disabled' | 'sdk-default';

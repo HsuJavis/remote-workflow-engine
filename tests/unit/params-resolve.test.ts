@@ -1,9 +1,17 @@
 // UT-099 (DES-102, ARCH-065, TASK-098, TASK-104): pure src/params/resolve.ts — two-moment merge,
-// per-key provenance, five-segment composePrompt, mapEffort tri-state.
+// per-key provenance, five-segment composePrompt.
 //
 // Mock policy (unit): pure module, zero I/O.
 //
 // Red reason: src/params/resolve.ts does not exist yet → MODULE NOT FOUND (correct v21 red).
+//
+// v26 (DES-173, ARCH-112, TASK-173/174, issue #66): the `mapEffort()`/`ProviderEffortProfile`
+// describe blocks that used to live below (this file's OWN fenced, "unsafe to adopt" duplicate of
+// `gateway/client.ts`'s `mapEffort` — v21 Gate 8 RE-REVIEW #6, QD-REP-1) are REMOVED, not rewritten:
+// `src/params/resolve.ts` is in TASK-174's `files:` and both identifiers are on DES-173's retired
+// list. The duplicate had zero src/ importers even before retirement (that was the whole point of
+// the FENCED pin), so there is no successor behaviour to re-point to — UT-099's remaining coverage
+// (defaultRunParams/mergeRunParams/composePrompt) is unaffected and stays below.
 import { describe, it, expect } from 'vitest';
 import {
   defaultRunParams,
@@ -11,9 +19,8 @@ import {
   composePrompt,
   USER_INSTRUCTIONS_OPEN,
   USER_INSTRUCTIONS_CLOSE,
-  mapEffort,
 } from '../../src/params/resolve.js';
-import type { RunParams, ProviderEffortProfile } from '../../src/params/resolve.js';
+import type { RunParams } from '../../src/params/resolve.js';
 import type { HarnessDefaults } from '../../src/harness-defaults.js';
 import type { UserOverrides } from '../../src/params/contract.js';
 
@@ -186,70 +193,6 @@ describe('composePrompt() — five-segment order + byte-identity pin (DES-102, R
     // never reach this function un-refused (documented above), not something this function fixes.
     expect(closeCount).toBe(2);
     expect(result.endsWith(USER_INSTRUCTIONS_CLOSE)).toBe(true);
-  });
-});
-
-describe('mapEffort() — pure, provider-keyed, tri-state (DES-102, ARCH-069)', () => {
-  const ANTHROPIC_PROFILE: ProviderEffortProfile = {
-    param: 'thinking_budget',
-    values: { low: 1024, medium: 4096, high: 16384, xhigh: 32768, max: 65536 },
-  };
-  const NO_DIAL_PROFILE: ProviderEffortProfile = { noop: true, reason: 'no reasoning dial for this provider' };
-
-  it('applied: a profile with a dial returns {applied:true, param, value}', () => {
-    const r = mapEffort(ANTHROPIC_PROFILE, 'max');
-    expect(r).toEqual({ applied: true, param: 'thinking_budget', value: 65536 });
-  });
-
-  it('not-applied-with-reason: an explicit no-dial profile degrades without failing', () => {
-    const r = mapEffort(NO_DIAL_PROFILE, 'max');
-    expect(r).toEqual({ applied: false, reason: 'no reasoning dial for this provider' });
-  });
-
-  it('absent (never requested): no effort supplied at all → undefined, distinguishable from "dropped"', () => {
-    expect(mapEffort(ANTHROPIC_PROFILE, undefined)).toBeUndefined();
-    expect(mapEffort(undefined, undefined)).toBeUndefined();
-  });
-
-  it('low vs max map to different wire values on the same profile', () => {
-    const low = mapEffort(ANTHROPIC_PROFILE, 'low');
-    const max = mapEffort(ANTHROPIC_PROFILE, 'max');
-    expect(low).not.toEqual(max);
-  });
-});
-
-// v21 Gate 8 RE-REVIEW #6 (QD-REP-1, LOW, review §T5/§T6): this file's `mapEffort` (above) is a
-// declared "unsafe to adopt" duplicate of `gateway/client.ts`'s `mapEffort` (this copy's
-// `{applied:true,param,value}` return shape has no `restPath` — adopting it in `src/` would
-// regress P-A1's REST transport-contract fix). The parallel fence for `session-options-builder.ts`
-// (ADR-006) has a standing zero-importer structural pin (`gateway-effort.test.ts`); this one never
-// did. Result: GREEN on write — it pins the current, already-true state, not a defect.
-describe('mapEffort (this file) stays FENCED — zero src/ importers outside resolve.ts itself (QD-REP-1, R-1 debt)', () => {
-  it('no file under src/ (other than params/resolve.ts) imports the { mapEffort } binding from params/resolve.js', async () => {
-    const { readdirSync, readFileSync, statSync } = await import('node:fs');
-    const { join } = await import('node:path');
-    const srcDir = join(import.meta.dirname, '../../src');
-    const offenders: string[] = [];
-    const walk = (dir: string): void => {
-      for (const name of readdirSync(dir)) {
-        const p = join(dir, name);
-        if (statSync(p).isDirectory()) { walk(p); continue; }
-        if (!name.endsWith('.ts') || p.endsWith('params/resolve.ts')) continue;
-        const src = readFileSync(p, 'utf8');
-        // Only an actual import of `mapEffort` FROM resolve.js counts — a different local
-        // `mapEffort` (e.g. gateway/client.ts's own, real, restPath-bearing one) is not an offender.
-        // Two forms checked (matchAll, not a single .exec, so a SECOND import statement in the same
-        // file can't hide behind a first, innocuous one): a named `{ mapEffort }` import, and a
-        // namespace `import * as x` import followed by an `x.mapEffort(...)` call.
-        const namedImports = [...src.matchAll(/import\s*\{([^}]*)\}\s*from\s*['"][^'"]*params\/resolve(?:\.js)?['"]/g)];
-        const namedOffender = namedImports.some((m) => /\bmapEffort\b/.test(m[1]!));
-        const namespaceImport = /import\s*\*\s*as\s+(\w+)\s+from\s*['"][^'"]*params\/resolve(?:\.js)?['"]/.exec(src);
-        const namespaceOffender = namespaceImport !== null && new RegExp(`\\b${namespaceImport[1]}\\.mapEffort\\b`).test(src);
-        if (namedOffender || namespaceOffender) offenders.push(p);
-      }
-    };
-    walk(srcDir);
-    expect(offenders).toEqual([]);
   });
 });
 

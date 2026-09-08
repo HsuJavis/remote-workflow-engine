@@ -184,18 +184,3 @@ export function composePrompt(
     ? `${body}${USER_INSTRUCTIONS_OPEN}${appendPrompt}${USER_INSTRUCTIONS_CLOSE}`
     : body;
 }
-
-/** NEW type in src/params/, deliberately distinct from the fenced ProviderProfile.effortMapping
- *  (session-options-builder.ts:18, ADR-006). A provider with no dial gets an explicit
- *  {noop:true, reason} entry — adding a provider is a config row, not executor code. */
-export type ProviderEffortProfile = { param: string; values: Record<Effort, unknown> } | { noop: true; reason: string };
-
-/** Pure, provider-keyed, tri-state: applied / not-applied-with-reason / never-asked (undefined). */
-export function mapEffort(
-  profile: ProviderEffortProfile | undefined,
-  effort?: Effort,
-): { applied: true; param: string; value: unknown } | { applied: false; reason: string } | undefined {
-  if (effort === undefined || profile === undefined) return undefined;
-  if ('noop' in profile) return { applied: false, reason: profile.reason };
-  return { applied: true, param: profile.param, value: profile.values[effort] };
-}

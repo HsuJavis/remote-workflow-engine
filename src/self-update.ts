@@ -10,7 +10,7 @@ import Database from 'better-sqlite3';
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isPathContained } from './path-containment.js';
-import type { UpdateOutcome, UpdateStatus } from './update-types.js';
+import type { ConfigCheckOutcome, UpdateOutcome, UpdateStatus } from './update-types.js';
 import type { Clock } from './clock.js';
 
 // ─── Boot guard ───────────────────────────────────────────────────────────────
@@ -134,6 +134,9 @@ export class SelfUpdateDb {
 // TASK-064 consumes it from here (no circular dep: self-update.ts does not import server.ts).
 
 const VALID_STATUSES = new Set<UpdateStatus>(['pending', 'applied', 'failed', 'skipped']);
+// v26 (DES-172, ARCH-112, TASK-172, REQ-123/070): tolerant reader validates configCheck the same
+// way it validates status — an unrecognized/malformed value is simply omitted, never surfaced.
+const VALID_CONFIG_CHECKS = new Set<ConfigCheckOutcome>(['passed', 'skipped', 'failed']);
 const MAX_DETAIL_BYTES = 4096;
 
 /**
@@ -183,5 +186,10 @@ export function readUpdateResult(
     ts: obj['ts'] as string,
   };
   if (detail !== undefined) outcome.detail = detail;
+  // v26 (DES-172): absent on a pre-v26 result file (the older updater never wrote the key) —
+  // stays absent, never defaulted, so the dashboard can tell "not checked" from "checked".
+  if (VALID_CONFIG_CHECKS.has(obj['configCheck'] as ConfigCheckOutcome)) {
+    outcome.configCheck = obj['configCheck'] as ConfigCheckOutcome;
+  }
   return outcome;
 }

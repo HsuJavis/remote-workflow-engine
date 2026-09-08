@@ -10295,10 +10295,20 @@ message). Red (measured): whole-file red — `parseBudget` does not exist.
 - **result:** fail
 - **iter:** v26
 
-File: `tests/unit/run-guard-two-limits.test.ts` (5 cases: usd-only, tokens-only, both-armed, the
-negative test — neither armed, addUsage still accumulates — and an under-limit case). Red
-(measured): 5/5 fail — `RunGuard`'s constructor takes `budget: number | null` today and exposes
-`addTokens`, not `addUsage`; the whole two-limit shape does not exist.
+File: `tests/unit/run-guard-two-limits.test.ts` (6 cases: an isolation case plus usd-only,
+tokens-only, both-armed, the negative test — neither armed, addUsage still accumulates — and an
+under-limit case). Red (measured): 6/6 fail. Post-review correction (advisor, Gate 5): the five
+original cases all failed on `TypeError: guard.addUsage is not a function` at their FIRST line —
+correct red (the two-limit shape genuinely does not exist), but it masked whether the described
+per-case claim (which limit name is thrown) would ever be reachable once `addUsage` exists, since
+none of the five ever got past line one. Added one case that isolates the budget-SHAPE gap on its
+own, with NO `addUsage` call: `new RunGuard({budget:{usd:0,tokens:null}})` then bare
+`assertBudget()` — today's constructor stores the `{usd,tokens}` object opaquely as `total`, and
+`spent(0) >= total` coerces the object to `NaN` via default `valueOf`/`toString`, so the comparison
+is always `false` and an already-exhausted `usd:0` cap is silently never enforced. This case fails
+cleanly on `AssertionError: expected [Function] to throw an error` — a genuine behavioural
+assertion failure, not a masking TypeError — proving the shape gap directly and independent of
+`addUsage`'s absence.
 
 ### UT-194 — run_start budget migration (bare number refused ahead of ajv; null/`{}` handled)
 - **status:** red
@@ -10334,11 +10344,25 @@ the child's script-visible object have no `limits`/`tokens()` at all.
 - **iter:** v26
 
 File: `tests/integration/nested-frame-budget.test.ts` (1 case, real `createServer()`, real MCP HTTP,
-real sandbox children, a faked provider network). Red (measured): fails — the run fails at admission
-today, since `budget: {usd, tokens}` is not yet an accepted wire shape (DES-181 lands first); the
-nested `onBudgetSnapshot` wiring this item is actually about is downstream of that and equally
-unbuilt (`run-manager.ts:1011-1023`'s nested host today receives neither `onBudgetSnapshot` nor
-`currentPhase`).
+real sandbox children; the gateway's provider network is faked via an injected `GatewayClient` —
+`createServer({gateway: FAKE_PRICED_GATEWAY})`, the same seam `dag-masking-auth.test.ts`/IT-153
+already use — that always resolves `ok:true` with nonzero tokens). Two post-review corrections
+(advisor, Gate 5), both against the SAME finished item, not two separate re-reviews:
+(a) the original case passed `budget: {usd, tokens}` (v26's object shape, DES-181), which today's
+`ajv` schema (`budget?: number | null`) refuses at admission — the run died as `status:'failed'`
+before the nested frame ever ran, so `spentInNested` was never reached; that is IT-194/UT-192's own
+claim, not this item's. Switched to a BARE-NUMBER `budget: 100` (today's still-valid wire shape) so
+the run is genuinely admitted and reaches the nested `workflow()` frame.
+(b) with no gateway injected, `agent('a', {prompt:'p'})` genuinely FAILED in this sandbox (no
+`ANTHROPIC_API_KEY`/`OLLAMA_BASE_URL` configured) — `AgentExecutor.capture()`'s `if (result.ok)`
+guard never called `guard.addTokens`, so the PARENT's own real spend stayed 0 regardless of the
+nested-wiring bug, making `spentInNested > 0` unreachable even AFTER the fix this item targets, not
+merely red today. Added `FAKE_PRICED_GATEWAY` (`ok:true`, `tokens:{input:10,output:5}`) so the
+parent's spend is a real, guaranteed-nonzero 15 tokens independent of sandbox credentials.
+Red (measured): fails — `expected 0 to be greater than 0` — `spentInNested` reads exactly `0` even
+though the parent run has genuinely, verifiably spent 15 tokens, because
+`run-manager.ts:1011-1023`'s nested host is given neither `onBudgetSnapshot` nor
+`currentPhase`. This is now a clean behavioural red directly on the seam this item names.
 
 ### IT-149 — live ≡ fold ≡ snapshot usage, including an UNBUDGETED resumed run
 - **status:** red
@@ -10703,14 +10727,35 @@ Same cold-model protocol and disqualification rule as VAL-178/REQ-128 (both REQ-
 UT-204 covers every one of the guide's five textual gaps at the vitest floor. `status:blocked`/
 `result:not-run`, per the v24 VAL-128 precedent.
 
+**Re-point targets (TASK-173's own dod grep, run now so the enumerated list has a source instead of
+being re-derived at Gate 6).** `grep -rln "curateToolsForProvider\|NON_ANTHROPIC_EXCLUDED_TOOLS\|
+EFFORT_PROFILES\|thinkingFor\|mapEffort\|profileFor\|STATIC_OPENAI\|ProviderEffortProfile\|
+effortMapping\|sumUsageTokens" tests/` returns 15 files. Five are this Gate's OWN new v26 files —
+already pointed at the replacement behaviour, not re-point targets: `no-retired-surface.test.ts`
+(the grep guard itself), `litellm-config-generate.test.ts`, `ollama-tools-verbatim.test.ts`,
+`wire-effort.test.ts`, `usage-live-equals-fold.test.ts`. The remaining ten are PRE-v26 tests that
+still name the retired surface and are TASK-173/174's re-point targets — each must assert the
+replacement behaviour or be deleted with its REQ trace re-pointed, in the same commit that deletes
+the identifier it names:
+- `tests/acceptance/val-019-non-anthropic-harness.test.ts`
+- `tests/integration/budget-resume-hydration.test.ts`
+- `tests/integration/main-composition-root.test.ts`
+- `tests/unit/budget-fold.test.ts`
+- `tests/unit/claude-agent-sdk-gateway-allowed-tools.test.ts`
+- `tests/unit/claude-agent-sdk-gateway-thinking.test.ts`
+- `tests/unit/gateway-effort.test.ts`
+- `tests/unit/openrouter-provider.test.ts`
+- `tests/unit/params-resolve.test.ts`
+- `tests/unit/provider-tool-curation.test.ts`
+
 ### Gate 5 exit-gate self-check summary (v26)
 
-39 UT + 15 IT + 1 E2E + 10 VAL (one per REQ-121..130; VAL-172/173/175/176/178/180 are
+33 UT + 15 IT + 1 E2E + 10 VAL (one per REQ-121..130; VAL-172/173/175/176/178/180 are
 `status:blocked`/`result:not-run` by the same REQ-117-derived / real-credential / real-box rule v24's
 VAL-128 established, not silently skipped) span every DES-170..189 (DES-190 is doc-only, TASK-170,
 executed by the designer at Gate 4 — no test item, per its own "tests: none (doc)" line) and every
 ARCH-110..121 they trace to. Every item was run once and confirmed red for the stated reason — either
-a whole-file import failure (nine brand-new source files: `providers.ts`, `skeleton-graph.ts`,
+a whole-file import failure (three brand-new source files: `providers.ts`, `skeleton-graph.ts`,
 `models/model-book.ts` — plus new EXPORTS on eleven existing modules surfacing as
 `TypeError: x is not a function`, which vitest/esbuild's no-type-check semantics make indistinguishable
 from a whole-file failure until the export exists) or a genuine behavioural red against existing code
@@ -10719,7 +10764,7 @@ from a whole-file failure until the export exists) or a genuine behavioural red 
 `models/model-catalog.ts`, `authoring-guide.ts`, `sandbox/guards.ts`, `sandbox/host.ts`,
 `run-manager.ts` — still exhibit pre-v26 behaviour). Four green-by-construction invariants (IT-145's
 two cases, IT-154's grep case, and UT-179's totality shape once `PROVIDER_CAPS` exists) are Mode C
-characterization locks, not forced red — recorded as such, not fudged. Six appended-to files
+characterization locks, not forced red — recorded as such, not fudged. Five appended-to files
 (`no-retired-surface.test.ts`, `authoring-guide.test.ts`, `guide-examples-register.test.ts`,
 `val-007-observability.test.ts`, `val-018-dashboard-browser-ui.test.ts`) were re-run in full after
 the append and their pre-existing cases still pass (regression intact). Test-defect note: UT-188's

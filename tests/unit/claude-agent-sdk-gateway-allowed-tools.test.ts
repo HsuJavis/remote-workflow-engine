@@ -107,35 +107,11 @@ describe('ClaudeAgentSdkGatewayClient curates options.allowedTools per call (UT-
   });
 });
 
-// UT-110 (TASK-116, DES-120, ARCH-079/ADR-020): `curateToolsForProvider` must PRESERVE an
-// explicitly-empty tool set — today it silently AUGMENTS `[]` to `['Bash']` for any non-Anthropic
-// provider, which falsifies ADR-020's "the default blast radius is nil": `graphAnalyzer.tools: []`
-// (the analyzer's default) would ship a Bash-enabled session whose prompt is attacker-authored
-// script text, on this deployment's own default path (gateway:"sdk" + a local Ollama alias).
-//
-// Mock policy (unit): pure function under test, zero I/O — direct call, no gateway construction.
-//
-// Red reason: confirmed by reading `src/gateway/claude-agent-sdk-client.ts:223-227` —
-// `curateToolsForProvider([], 'ollama')` returns `['Bash']` today (the `filtered.includes('Bash') ?
-// filtered : [...filtered, 'Bash']` line adds Bash unconditionally for a non-Anthropic provider,
-// with no early-return for an empty input). This is a REAL behavioral red, not an import/syntax gap.
-describe('curateToolsForProvider preserves an intentionally-empty tool set (UT-110, D-F11 general fix, DES-120)', () => {
-  it('an explicitly-empty tool set for a non-Anthropic provider (ollama) stays EMPTY — no Bash augmentation', async () => {
-    // Dynamic import (same convention as every other case in this file): a static top-level VALUE
-    // import of this module would load it — and its own @anthropic-ai/claude-agent-sdk import —
-    // before `const queryMock = vi.fn()` below initializes, breaking the hoisted vi.mock factory.
-    const { curateToolsForProvider } = await import('../../src/gateway/claude-agent-sdk-client.js');
-    expect(curateToolsForProvider([], 'ollama')).toEqual([]);
-  });
-
-  it('an explicitly-empty tool set for undefined/anthropic provider is unaffected (already correct, green pin)', async () => {
-    const { curateToolsForProvider } = await import('../../src/gateway/claude-agent-sdk-client.js');
-    expect(curateToolsForProvider([], undefined)).toEqual([]);
-    expect(curateToolsForProvider([], 'anthropic')).toEqual([]);
-  });
-
-  it('a NON-empty tool set for a non-Anthropic provider is UNCHANGED by this fix — still Bash-augmented (green pin; UT-024\'s fallback path)', async () => {
-    const { curateToolsForProvider } = await import('../../src/gateway/claude-agent-sdk-client.js');
-    expect(curateToolsForProvider(['Write'], 'ollama')).toEqual(['Write', 'Bash']);
-  });
-});
+// UT-110 (TASK-116, DES-120, ARCH-079/ADR-020) — REMOVED, not rewritten (v26, DES-173, ARCH-112,
+// TASK-173/174, issue #66). Its whole point was `curateToolsForProvider`'s per-PROVIDER Bash
+// augmentation (a non-empty ollama tool set stayed "still Bash-augmented"); REQ-123 retires that
+// function entirely — ollama now receives the caller's `allowedTools` UNCHANGED, no Bash added, no
+// Read dropped, empty or not. The `curateToolsForProvider` import itself becomes a load-time failure
+// once TASK-174 deletes the export, so keeping the describe block (even edited) is not an option.
+// Re-pointed to IT-144 (`tests/integration/ollama-tools-verbatim.test.ts`, REQ-123), which is the
+// DES-173-named "load-bearing paired behavioural assertion for deleting curateToolsForProvider".

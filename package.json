@@ -7,6 +7,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "start": "tsx src/main.ts",
+    "check-config": "tsx src/main.ts --check-config",
     "build": "tsc --noEmit",
     "gen:authoring": "tsx scripts/gen-authoring-md.ts"
   },

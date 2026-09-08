@@ -8387,3 +8387,65 @@ warning is unchanged and is repeated at the end of this section.
   才造成期望落差。渲染與否現在回到擁有者手上決定(見 04-design.md 裁定 #11)。
 - **iter:** v24
 
+## v26 GATE 6 — VAL-178/VAL-180/REQ-117+128+130 runbook (owner-run at Gate 7.5, TASK-195/DES-189)
+
+**Recorded here at Gate 6 (implementer) as the runbook text only — this is a procedure, not a
+result.** VAL-178 and VAL-180 stay `status:blocked`/`result:not-run` (05-tests.md) until an owner
+actually runs this; per REQ-117's own acceptance text, cross-referenced by both REQ-128 and REQ-130
+("proven by that [Gate 7.5] real run and by nothing else... anyone who has seen this project's
+development conversation — including the orchestrator and any advisor — is DISQUALIFIED as a
+subject"), no Gate 6 implementer or Gate 7.5 validator who has read this codebase may BE the fresh
+model instance; they may only prepare the harness and observe the transcript afterward.
+
+**This is an EXTENSION of the v24 REQ-117 runbook above, not a replacement.** The v24 protocol's
+core shape (fresh instance, outside this project tree, `tools/list` + `workflow_authoring_guide` as
+the ONLY inputs, no source tree, no prior transcript) is unchanged and has real precedent — VAL-140/
+VAL-162/VAL-164 all ran it successfully with no plugin at all, so the plugin-mediated variant
+(TASK-153) is a SEPARATE, weaker claim that stays `UNVERIFIED(client plugin not synced)` regardless;
+it does not gate the core probe. What v26 adds to the SAME protocol is the pass/fail bar the subject
+is now held to, on the SAME single run:
+
+**Protocol (v26 additions to DES-158's signature, restated as steps):**
+1. Boot this engine for real (`createServer()` over real MCP HTTP), fully v26 — every new
+   registration is checked under the v2 diagram contract (`diagramContract:'v2'` on the version row);
+   `no-retired-surface.test.ts` and the v26 acceptance suite green is a precondition, not proof.
+2. Launch a **fresh** model instance **outside this project tree** (same rule as v24: a workRoot
+   nested under a Claude project directory would let it load the operator's `MEMORY.md`/`CLAUDE.md`,
+   bypassing the tool jail and contaminating "cold").
+3. Give that instance a stub MCP client wired to this engine's real HTTP surface, exposing only
+   `tools/list` and `workflow_authoring_guide` — nothing else: no source tree, no prior transcript,
+   no plugin.
+4. Ask it to (a) author a multi-agent workflow **with its Mermaid diagram drawn as an LR swimlane**
+   (`graph LR`/`flowchart LR`, one `subgraph` per `phase()` call, each agent node inside its phase's
+   lane, the third `<br/>` segment naming its tools — REQ-128's v2 contract, exactly the shape
+   `GUIDE_EXAMPLES` now teaches, DES-185/TASK-190), and (b) **seed a workspace** using any one of the
+   three documented shapes (inline `seed:[{path,contentB64}]`, `seedManifest` with real `sha256`, or
+   `seedManifestRef`) as part of that same run (REQ-121/REQ-130's gap (a)).
+5. Watch it: `workflow_register` → `workflow_publish` → `run_start` (carrying the seed) → poll
+   `run_status` → `run_result`. Record whether the registration's diagram passed the v2 checker on
+   the FIRST `workflow_register` call (no `DIAGRAM_DIRECTION`/`LANE_MISMATCH`/`TOOLS_MISMATCH`/
+   `EDGE_MISMATCH` refusal at any point in the transcript) and whether the seed was accepted (no
+   `INVALID_SEED_SPEC`).
+6. **Unaided-comprehension check (REQ-130):** without prompting beyond the guide it already read,
+   the transcript must show no attempt to call a determinism-guarded primitive (`Date.now()`,
+   `Math.random()`, a bare `new Date()`, `setTimeout`, `fetch`) inside the script it authors, and no
+   attempt to declare a `meta.params.args` type outside `string | number | enum`. If the subject asks
+   a direct question the guide is supposed to answer (what's in the sandbox, why a call is guarded,
+   what the budget unit is, which alias names are legal), its own next action must show it read the
+   answer from the guide text, not from trial and error against the engine.
+7. **Any wrong step is a documentation defect**, not a model-capability failure to shrug off — fix
+   it in `src/tool-specs.ts` (schemas/descriptions) or `src/authoring-guide.ts`
+   (`buildAuthoringGuide`/`GUIDE_EXAMPLES`), whichever surface misled it, then re-run the WHOLE
+   protocol with **another** fresh instance (a corrected doc re-verified by the same contaminated
+   subject proves nothing — same rule as v24 D-12/VAL-140→VAL-162).
+8. Success = the fresh instance registers an LR-swimlane diagram that passes the v2 checker FIRST
+   TRY, seeds a workspace successfully, publishes, runs, and reads its own result, with no
+   undocumented trial-and-error and no attempt to reach a guarded sandbox primitive. Record the
+   transcript's outcome (pass/fail + which step + which doc was corrected) in this section when the
+   owner runs it, and flip VAL-178 and VAL-180 to `status:done`/`result:pass`/`real:true`
+   (05-tests.md) only then — they may resolve on the SAME run (both derive from REQ-117's protocol)
+   or on separate runs if one surface needs a documentation fix the other does not.
+
+**Not yet run.** No fresh-instance session has been convened as of this Gate 6 pass.
+`result: not-run` stands for both VAL-178 and VAL-180.
+

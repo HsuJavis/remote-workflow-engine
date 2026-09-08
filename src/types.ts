@@ -71,12 +71,104 @@ export interface ResultEnvelope<T = unknown> {
   /** v15 (REQ-086 / DES-096): set only on workflow_status responses when auth is enabled and the
    *  run has an attributed principal. Absent (not null) when auth disabled or no attribution. */
   principal?: string;
+  /** v26 (DES-183, ARCH-118, TASK-183, REQ-127): `run_result`'s usage read path — the run's
+   *  persisted `RunUsage` plus whether a budget could actually bind, derived at READ from the
+   *  run's price pin (never stored twice). Always present on a `run_result` response. */
+  meta?: { usage: RunUsage; budgetEnforceable: { usd: boolean; tokens: boolean; unpricedModels: string[] } };
+}
+
+/** v26 (DES-183, ARCH-118, ADR-046/047, TASK-183, REQ-127): one run's usage total — THREE
+ *  producers share this one shape (live guard overlay, at-rest fold over persisted transcripts,
+ *  terminal snapshot), so "what a run has spent" cannot drift between them. `unpricedCalls` counts
+ *  only `done` calls whose price could not be resolved (ADR-046); `unmappedMessages` counts
+ *  unmapped provider system-message subtypes observed, keyed by subtype name. */
+export interface RunUsage {
+  tokens: Tokens;
+  costUSD: number;
+  unpricedCalls: number;
+  unmappedMessages: Record<string, number>;
 }
 
 export interface Budget {
   total: number | null;
   spent(): number;
-  remaining(): number;
+  // v26 (DES-182, TASK-182): widened from `number` — `SandboxBudget.remaining()` below returns
+  // `null` when no USD limit is armed, and this interface's only two producers (`run-guard.ts`'s
+  // `budgetView()`, which still returns a plain `number`/`Infinity`, and `SandboxBudget` itself)
+  // both satisfy this wider signature; no caller does arithmetic assuming non-null.
+  remaining(): number | null;
+}
+
+/** v26 (DES-180, ARCH-118, TASK-180): the four-column token count for one call — a strict,
+ *  fully-populated shape (unlike `AgentRecord.tokens`/`GatewayResult['tokens']`, which keep
+ *  `cacheRead`/`cacheWrite` OPTIONAL for pre-v26 backward compatibility). Runtime values
+ *  (`ZERO_TOKENS`, `sumTokens`, `priceCall`) live in `run-guard.ts`; the type lives here beside
+ *  `FourRates`, the price shape it is priced against. */
+export interface Tokens {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/** v26 (DES-182, ARCH-118/114, TASK-182, ADR-037): the sandbox SCRIPT-VISIBLE `budget` object —
+ *  distinct from `Budget` above (`run-guard.ts`'s pre-v26, token-only `budgetView()`, unchanged).
+ *  `total`/`spent()`/`remaining()` are USD (ARCH-118: "the script-visible `budget` keeps `total` /
+ *  `spent()` / `remaining()` in USD and gains `tokens()`"); `limits`/`total`/`remaining()` are
+ *  `null` — never `Infinity` — when no USD limit is armed: `null` is `===`-detectable but NOT
+ *  comparison-safe (`null < 1000` is `true`), which is why this ships paired with the authoring
+ *  guide sentence naming which accessor answers which limit (DES-187), not instead of it. Live,
+ *  not resume-stable, like the `Budget` it replaces on this one surface. */
+export interface SandboxBudget {
+  limits: { usd: number | null; tokens: number | null };
+  /** alias of limits.usd (ADR-037) */
+  total: number | null;
+  /** USD spent so far */
+  spent(): number;
+  remaining(): number | null;
+  tokens(): Tokens & { sum: number };
+}
+
+/** v26 (DES-178, ARCH-116, ADR-038, TASK-178): USD-per-TOKEN rates for one model — four columns
+ *  because a cache read/write is priced differently from a fresh input/output token. `null` means
+ *  "we don't know" (never guessed); an all-zero object (ollama, a genuinely free openrouter route)
+ *  is a KNOWN fact and must never collapse to `null`. */
+export interface FourRates {
+  in: number;
+  out: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/** v26 (DES-178): declared (never probed) per-(provider,model) capability, carried beside price so
+ *  a run's pin can answer "does this model take a reasoning/tool-use dial" without a second lookup
+ *  at dispatch time. `source` names where the DECLARATION came from — 'upstream' (a fetched catalog
+ *  row), 'static' (the built-in fallback table), 'unknown' (no data at all). */
+export interface Caps {
+  reasoning: boolean | 'unknown';
+  tools: boolean | 'unknown';
+  source: 'upstream' | 'static' | 'unknown';
+}
+
+/** v26 (DES-178): one (provider,model)'s pinned price + capability — `price:null` and
+ *  `caps:{...:'unknown'}` together mean "we looked and found nothing", distinguishable from "we
+ *  never looked" only by the row's PRESENCE in `PriceBook.pinned` (ARCH-116's "the pin is never
+ *  empty"). */
+export interface BookEntry {
+  price: FourRates | null;
+  caps: Caps;
+}
+
+/** v26 (DES-178, ADR-038): the admission-time price/capability pin written once by
+ *  `RunManager.start()` (never re-resolved on resume — pinning is what makes a run's arithmetic
+ *  immune to a mid-run price change or a listing outage). `fetchedAt`/`source` describe the
+ *  UNDERLYING catalog snapshot this pin was built from, not the run's own start time. `pinned` is
+ *  keyed `"<provider>/<model>"`, one entry per model this run can reach — present even when every
+ *  entry prices `null` (that emptiness is itself the honest "we looked and found nothing"). */
+export interface PriceBook {
+  fetchedAt: string;
+  source: 'live' | 'last-good' | 'static';
+  pinned: Record<string, BookEntry>;
 }
 
 export interface AgentOpts {
@@ -117,6 +209,11 @@ export interface AgentRecord {
   agentId: string;
   label?: string;
   phase?: string;
+  /** v26 (DES-175, ARCH-114, TASK-186): the phase lane's ordinal (0-based), snapshotted at IPC
+   *  receipt alongside `phase` — `layoutGraph` (DES-176) joins by this ordinal rather than by
+   *  re-matching the title string. Absent exactly when `phase` is absent (pre-v26 record / no
+   *  phase() dispatched yet). */
+  phaseIndex?: number;
   /** v25 (REQ-120, issue #61): `refused` is a TERMINAL state meaning the engine declined to
    *  dispatch this call at all — it never reached a gateway, so it has no tokens, no transcript and
    *  no `startedAt`. Before v25 such a call had no record of any kind (the reported run's only trace
@@ -124,7 +221,28 @@ export interface AgentRecord {
   state: 'queued' | 'running' | 'done' | 'failed' | 'refused';
   provider: string;
   model: string;
-  tokens: { input: number; output: number };
+  /** v26 (DES-177, ARCH-115, TASK-177, REQ-125): which wire actually carried this call — distinct
+   *  from `provider`/`model`, which are now the RESOLVED provider/model the harness stamped (never
+   *  the transport name). Optional: absent on a pre-v26 record and on a call that never reached a
+   *  gateway (queued/refused). */
+  transport?: 'claude-agent-sdk' | 'direct-fetch';
+  /** v26 (DES-177, TASK-177): the LiteLLM-proxy-facing model id actually put on the wire (the
+   *  `rwe-proxy-*` cloak or a raw passthrough id) — present only on the LiteLLM-proxy route,
+   *  absent on an Anthropic-direct dispatch (there is no cloak to report). */
+  proxyModel?: string;
+  /** v26 (DES-180, DES-188): `cacheRead`/`cacheWrite` are optional so a pre-v26 record (persisted
+   *  before the four-column split) keeps type-checking with only `input`/`output` — a legacy
+   *  two-column usage event derives BOTH to `0` (a KNOWN zero, not an absence). */
+  tokens: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
+  /** v26 (DES-180, DES-188, ADR-046): USD cost of this call, derived via `priceCall`; OPTIONAL —
+   *  absence means "pre-v26 record" (never re-priced against today's catalog), never "free". */
+  costUSD?: number;
+  /** v26 (DES-180, DES-188): true iff `costUSD` could not be priced (no rate for this model) —
+   *  counts only on a `done` call; a `refused` call is genuinely `unpriced:false` (it never
+   *  dispatched). OPTIONAL for the same pre-v26 reason as `costUSD`. Deliberately left optional on
+   *  `AgentRecord` (DES-188's own boundary) — the derived≡snapshot lock, not `tsc`, is what catches
+   *  a branch that forgets to set it. */
+  unpriced?: boolean;
   /** v8 Slice 2 (REQ-045): the composite nesting frame this agent ran in — `""` for the top-level
    *  script's own agents; a nested workflow()'s agents carry a non-root frame whose parent frame is a
    *  strict prefix (so the dashboard groups + nests agents by frame). Absent for pre-v8 records. */
@@ -160,6 +278,11 @@ export interface WorkflowNodeView {
   name: string;
   parentFrame: string;
   depth: number;
+  /** v26 (DES-175, ARCH-114, TASK-186, REQ-124): titles this nested frame's OWN `phase()` calls
+   *  recorded — additive, persisted with the snapshot. A nested frame's phase() call lands HERE,
+   *  never on the parent run's `phases` timeline (pushing it there would warn on a legal parent
+   *  script). Absent/`[]` for a frame that never called `phase()` of its own. */
+  phases?: string[];
 }
 
 export interface RunStatusView {
@@ -199,6 +322,10 @@ export interface RunStatusView {
    *  `release` instead. The pin itself is NEVER rewritten; this is a sibling record of what
    *  actually happened. Absent for every run that resolved its own pin normally. */
   legacySubstitution?: { pinned: string; resolved: string };
+  /** v26 (DES-183, ARCH-118, TASK-183, REQ-127): this run's usage total — live-overlaid for an
+   *  in-process run, folded from persisted transcripts otherwise (`getRun`'s own fallback, mirroring
+   *  `agents` above). Absent only for a run row that predates this field (never re-derived as 0). */
+  usage?: RunUsage;
 }
 
 export interface RunSummary {
@@ -255,7 +382,11 @@ export interface RunSpec {
    *  still resume through it (`_requireLive` in run-manager.ts). Never populated by a new run. */
   script?: string;
   args?: unknown;
-  budget?: number | null;
+  /** v26 (DES-181, ARCH-118, TASK-181): widened from `number | null` — the `number` arm survives
+   *  ONLY because persisted pre-v26 rows contain it (`parseBudget(v, {source:'store'})` rehydrates
+   *  it as `{tokens: n}`, its true v25 meaning); a fresh wire admission sending a bare number is
+   *  refused (`call-tool.ts`, ahead of ajv). */
+  budget?: number | { usd?: number; tokens?: number } | null;
   /** v22 (REQ-097 / DES-114, TASK-109): explicit version selector — wins over any `channel`.
    *  Ignored (never resolved) unless `name` is set. */
   version?: string;
@@ -317,7 +448,7 @@ export interface JournalEntry {
 /** DES-066 (TASK-069): the post-curation session surface — names only, never secrets or resolved configs. */
 export interface HarnessDescriptor {
   model: string;
-  /** Resolved provider for `model` (e.g. 'anthropic'/'ollama'/'openai'). Emitted at session-build
+  /** Resolved provider for `model` (e.g. 'anthropic'/'ollama'/'openrouter'). Emitted at session-build
    *  time so workflow_status can show WHICH backend a still-running agent is waiting on — before the
    *  first token, so a hung/slow backend is diagnosable rather than a blank `provider:""` (issue #20). */
   provider: string;
@@ -361,6 +492,10 @@ export interface HarnessDescriptor {
 
 export interface TranscriptEvent {
   ts: string;
-  kind: 'message' | 'tool_call' | 'tool_result' | 'usage' | 'harness';
+  /** v26 (DES-188, TASK-188, ADR-046, REQ-120): `'refused'` — the engine declined to dispatch this
+   *  call at all (`markRefused`'s own journal row), so a budget refusal read back after a restart
+   *  with no terminal snapshot still reconstructs (`deriveAgentRecords`'s branch (3)) rather than
+   *  being silently omitted. */
+  kind: 'message' | 'tool_call' | 'tool_result' | 'usage' | 'harness' | 'refused';
   data: unknown;
 }

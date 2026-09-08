@@ -17,7 +17,10 @@ import type { ErrEnvelope, RefusalReason } from './types.js';
 
 /** Structural seam — matches RunManager.start() without importing the class (as scheduler/continuation). */
 interface RunManagerPort {
-  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | null; startedBy?: { type: string; id?: string } }): Promise<string>;
+  // v26 (DES-181, ARCH-118, TASK-181): `budget` widened to match `RunSpec` — a fire-path caller
+  // never sets it (undefined), but the port's inline shape must stay a superset of `RunSpec`'s or
+  // `RunManager` stops structurally satisfying this seam.
+  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | { usd?: number; tokens?: number } | null; startedBy?: { type: string; id?: string } }): Promise<string>;
 }
 /** Structural seam — matches WorkflowCatalog's own resolve() signature without importing the class.
  *  Widened for H4's second site (07-review.md §4.2/§8.1, ARCH-072 note 1): `create()` needs the SAME

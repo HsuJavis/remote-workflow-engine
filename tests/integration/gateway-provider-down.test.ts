@@ -101,7 +101,9 @@ describe('GatewayClient provider-down handling (ARCH-005, D-R1 retimed via injec
     if (result.ok) {
       expect(typeof result.provider).toBe('string');
       expect(typeof result.model).toBe('string');
-      expect(result.tokens).toEqual({ input: 5, output: 2 });
+      // v26 (DES-180, TASK-180): tokens widened to four columns — cacheRead/cacheWrite are a KNOWN
+      // 0 here (the fixture's `usage` carries no cache fields).
+      expect(result.tokens).toEqual({ input: 5, output: 2, cacheRead: 0, cacheWrite: 0 });
       expect(result.content).toBe('hello');
     }
   });

@@ -30,13 +30,14 @@ import { WebhookRegistry } from './webhook-registry.js';
 import { CasStore, isValidSha256Hex, isValidNamespace } from './cas-store.js';
 import type { SecretValueProvider } from './secret-resolver.js';
 import { isAllowedHost, isAllowedOrigin, isLoopback, isLoopbackPeer } from './net-guard.js';
-import { parseWorkflowSkeleton } from './workflow-meta.js';
+import { parseWorkflowSkeleton, scanAgentCalls } from './workflow-meta.js';
 import { tick, RealTicker, type Ticker } from './scheduler-engine.js';
 import { AssetSyncService, defaultAssetRoot, globalAssetRoot, migrateLegacyGlobalAssets, resolveMcp, type AssetCatalogPort, type AssetCatalogRow, type AssetKind } from './asset-sync.js';
 import { RealMcpProbe, type McpProbe } from './mcp-probe.js';
 import { IssueReporter, resolveEngineVersion, type IssueReportInput, type IssueListFilter } from './github/issue-reporter.js';
 import { loadSecretSourceFromEnv } from './secret-source.js';
 import { buildCatalog, filterCatalog, enrichModelEntry, type ModelEntry, type CatalogFilter } from './models/model-catalog.js';
+import { ModelBook } from './models/model-book.js';
 import { SystemInfoSampler, RealSystemProbe, UTIL_PCT_CONVENTION } from './system-info.js';
 import { assertUpdatePathsOutsideWorkRoot, writeUpdateFlag, SelfUpdateDb, readUpdateResult } from './self-update.js';
 import type { UpdateOutcome } from './update-types.js';
@@ -50,7 +51,7 @@ import { DEFAULT_CEILINGS, type Ceilings, type Effort } from './params/contract.
 
 // REQ-066 (v11): engine version from package.json + best-effort git describe, replacing the hardcoded '1.0.0'.
 const ENGINE_VERSION = resolveEngineVersion();
-import { buildDashboardModel, layoutGraph, buildHomeView, computeWorkflowMetrics } from './dashboard.js';
+import { buildDashboardModel, layoutGraph, buildHomeView, computeWorkflowMetrics, type ExpectedGraph } from './dashboard.js';
 import { DASHBOARD_HTML, buildDashboardHtml } from './dashboard-page.js';
 import type { RunStore } from './run-store.js';
 // v24 (DES-140/162, ARCH-089, TASK-147): the new tool surface — one deps object, schema-before-
@@ -503,8 +504,30 @@ async function handleDashboardRequest(
       // same rule the sibling /api/workflows/:name/skeleton route already applies. The
       // script-derived skeleton overlay is withheld; live agent nodes still render (layoutGraph
       // below still receives view.agents).
-      const skeletonNodes = authEnabled ? [] : parseWorkflowSkeleton(skeletonScript);
-      const layout = layoutGraph(skeletonNodes, view.agents, { startedByType: view.startedBy?.type });
+      // v26 (DES-176, ARCH-114/113, TASK-187): the predicted overlay is now an `ExpectedGraph`
+      // (ARCH-113/TASK-185's `deriveExpectedGraph`), not a flat `SkeletonNode[]`. `skeleton-graph.ts`
+      // is DYNAMICALLY imported — TASK-185 ships it separately, and a static import here would break
+      // every file that imports server.ts before it lands. Its absence (or a script that fails to
+      // parse into a predicted graph) degrades to an EMPTY overlay: live agent nodes still render,
+      // only the predicted/inert-skeleton cells are withheld — the same graceful-degradation
+      // contract auth-masking already relies on, never a 500 over a dashboard read.
+      let expectedGraph: ExpectedGraph = { lanes: [], slots: [], edges: [] };
+      if (!authEnabled) {
+        try {
+          const mod = await import('./skeleton-graph.js') as {
+            deriveExpectedGraph?: (nodes: unknown, scan: unknown) => { ok: boolean; graph?: ExpectedGraph };
+          };
+          if (mod.deriveExpectedGraph) {
+            const nodes = parseWorkflowSkeleton(skeletonScript);
+            const scan = scanAgentCalls(skeletonScript);
+            const derived = mod.deriveExpectedGraph(nodes, scan);
+            if (derived.ok && derived.graph) expectedGraph = derived.graph;
+          }
+        } catch {
+          // TASK-185 not landed on this deployment yet — degrade to an empty predicted overlay.
+        }
+      }
+      const layout = layoutGraph(expectedGraph, view.agents, view.phases, { startedByType: view.startedBy?.type });
       // DES-064: flat GraphPayload — cells/edges/warnings/truncated at top level (not nested under 'layout').
       const payload: Record<string, unknown> = {
         kind: 'run',
@@ -682,7 +705,25 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // DEFAULT_GATEWAY_CONFIG), never "accept everything". Feeding an empty Set here left the B1/B2
   // admission control inert on exactly the deployment shape most installs use.
   const aliasNames = new Set(Object.keys(config?.aliases ?? DEFAULT_ALIASES));
-  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, agentTypes, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames });
+  // v26 (DES-178, ARCH-116, TASK-178): `aliasMap` mirrors `aliasNames` one line up (same source,
+  // same DEFAULT_ALIASES fallback) — RunManager resolves a reachable alias to {provider,model} with
+  // it when building each run's price-book pin.
+  const aliasMap = config?.aliases ?? DEFAULT_ALIASES;
+  // v7 (REQ-039/040): the `models_list` catalog builder — federates the config's curated aliases +
+  // the injectable live fetchers (default real fetch). Hoisted above RunManager (was built later,
+  // only for callTool/the dashboard) so the SAME builder is also `ModelBook`'s injected source
+  // (ARCH-116's own note: "the loader IS the already-injectable config.modelCatalog") — one catalog
+  // fetch, not two independently-configured ones. A fully injectable builder wins when provided.
+  const buildModelCatalog = config?.modelCatalog ?? ((): Promise<ModelEntry[]> => buildCatalog({
+    aliases: config?.aliases,
+    ollamaFetch: config?.modelCatalogFetchers?.ollamaFetch,
+    openrouterFetch: config?.modelCatalogFetchers?.openrouterFetch,
+    ollamaBaseUrl: config?.modelCatalogFetchers?.ollamaBaseUrl,
+  }));
+  // v26 (DES-178, ARCH-116, TASK-178): one TTL'd, single-flight snapshot shared by every run's
+  // admission-time pin — never one fetch per run, let alone per agent() call.
+  const modelBook = new ModelBook(buildModelCatalog, { clock });
+  const runManager = new RunManager({ store, clock, catalog, workRoot, assetRoot, globalAssetRoot: globalAssetRoot(workRoot), gateway, agentTypes, semaphore: agentSemaphore, concurrency: config?.runConcurrency, maxWorkflowDepth: config?.maxWorkflowDepth, maxWorkflowDescendants: config?.maxWorkflowDescendants, maxConcurrentRuns: config?.maxConcurrentRuns, seedRefAllowlist: config?.seedRefAllowlist, cas, secretValueProvider, ceilings, aliasNames, modelBook, aliasMap });
   // v8 Defer B (REQ-057/058): durable webhook ingress registry, same workRoot convention.
   const webhooks = new WebhookRegistry({ clock, runManager, catalog, dbPath: config?.webhookDbPath ?? join(workRoot, 'webhooks.db') });
   // v22 (DES-113, TASK-108) SHRINK: SubmissionValidatorDeps is now `{catalog}` — the alias/MCP-name/
@@ -799,15 +840,6 @@ export async function createServer(config?: ServerConfig): Promise<Server> {
   // v5 (REQ-027..030): the issue_report reporter. Token from the server-side secret store
   // (RWE_SECRET_GITHUB_TOKEN), never workspace-reachable. A test seam replaces it with a fake.
   const issueReporter = config?.issueReporter ?? new IssueReporter({ secretSource: loadSecretSourceFromEnv(), engineVersion: ENGINE_VERSION, runDiagnostics });
-  // v7 (REQ-039/040): the `models_list` catalog builder — federates the config's curated aliases +
-  // the injectable live fetchers (default real fetch). Built per call inside callTool so a live
-  // source recovering after boot is reflected. A fully injectable builder wins when provided.
-  const buildModelCatalog = config?.modelCatalog ?? ((): Promise<ModelEntry[]> => buildCatalog({
-    aliases: config?.aliases,
-    ollamaFetch: config?.modelCatalogFetchers?.ollamaFetch,
-    openrouterFetch: config?.modelCatalogFetchers?.openrouterFetch,
-    ollamaBaseUrl: config?.modelCatalogFetchers?.ollamaBaseUrl,
-  }));
   // v12 (REQ-076/077, DES-073): ONE SystemInfoSampler instance shared between the system_info tool
   // and GET /api/system (DES-073 "sample once"). Tests inject a StubProbe-backed sampler via
   // config.systemInfo; production defaults to a RealSystemProbe.

@@ -4,6 +4,7 @@
 // is rendered client-side (textContent-only, XSS-safe) from the injected window.__RWE_INIT__ var.
 import type { UpdateOutcome } from './update-types.js';
 import { UTIL_PCT_CONVENTION } from './system-info.js';
+import { DAG_BOX_DEFAULTS } from './dashboard.js';
 
 // ─── DES-065 (TASK-068): pure logical→pixel mapper + Morandi palette ─────────────────────────────
 
@@ -73,6 +74,9 @@ var clr={pending:'#d29922',applied:'#3fb950',failed:'#f85149',skipped:'#8b97a6'}
 p.style.color=clr[u.status]||'inherit';
 p.textContent='update '+u.tag+': '+u.status;
 if(u.detail){var d=document.createElement('pre');d.style.cssText='margin:2px 0;font-size:10px';d.textContent=u.detail;p.appendChild(d);}
+// v26 (DES-172, TASK-172): configCheck — VISIBLE text, never a silent 'skipped'; the guard means
+// an absent key (a pre-v26 result file) renders nothing rather than a stray literal.
+if(u.configCheck){var cc=document.createElement('span');cc.style.cssText='margin-left:6px;font-size:11px;color:#8b97a6';cc.textContent='config check: '+u.configCheck;p.appendChild(cc);}
 // DES-061: call-to-action when applied + interrupted runs (update caused restart mid-run).
 if(u.status==='applied'&&i.interruptedRuns>0){var c=document.createElement('span');c.style.cssText='margin-left:8px;font-size:11px;color:#d29922';c.textContent=i.interruptedRuns+' run(s) interrupted by the update; use workflow_resume';p.appendChild(c);}
 h.appendChild(p);
@@ -115,6 +119,12 @@ a{color:var(--link);text-decoration:none}
 /* Morandi-muted semantic state colours (low-saturation, legible on the light greige ground). */
 .st-queued{color:#B08A5B}.st-running{color:#6E8199}.st-done,.st-completed{color:#7A9078}.st-failed{color:#B0776E}.st-stopped,.st-suspended{color:#9A948A}.st-interrupted{color:#B08A5B}
 #diagram-img{max-width:100%;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0}
+/* v26 (DES-186, ARCH-120, ADR-044, TASK-191, REQ-129): one .zoomable wrapper serves BOTH the run
+   DAG svg and the author's diagram img — the wheel/drag transform lives HERE, never on the SVG
+   children renderGraph() rebuilds every 3s poll, so a user's zoom never snaps back. */
+.zoomable{transform-origin:0 0;touch-action:none}
+.fit-btn{font-size:11px;padding:2px 9px;border-radius:100px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer;margin:4px 0}
+.fit-btn:hover{border-color:var(--link)}
 #tree{margin-top:6px}
 .grp{border-left:2px solid var(--line);margin:6px 0 6px 4px;padding:2px 0 2px 12px}
 .grp-h{font-size:12px;color:var(--muted);margin:4px 0}
@@ -124,7 +134,14 @@ a{color:var(--link);text-decoration:none}
 .node .dot{width:8px;height:8px;border-radius:50%;background:currentColor;flex:none}
 .node .lbl{font-weight:600}.node .mdl{color:var(--muted);font-family:ui-monospace,Consolas,monospace;font-size:11.5px}
 .node .tok{color:var(--muted);font-size:11px;margin-left:auto}
+.node .cost{color:var(--muted);font-size:11px}
+.node .unpriced{color:var(--warn,#B08A5B);font-size:10.5px}
 .node .dur{color:var(--muted);font-size:11px}
+/* v26 (DES-183, TASK-183, REQ-127): the run-level usage summary — token/USD total, the unpriced-
+   call count and a "lower bound" qualifier whenever costUSD cannot be the whole story. */
+#run-usage{margin:2px 0 8px;font-size:11.5px;color:var(--muted)}
+#run-usage span{margin-right:12px}
+#run-usage .usage-lowerbound{color:var(--warn,#B08A5B)}
 #phases{margin:8px 0 4px}
 .ph-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-right:6px}
 .phase{display:inline-block;padding:2px 9px;margin:2px 5px 2px 0;border-radius:100px;border:1px solid var(--line);font-size:11.5px;color:var(--muted)}
@@ -169,13 +186,26 @@ pre{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);p
     <p><a class="back" href="/dashboard">&larr; all runs</a></p>
     <h2>Run <span id="detail-runid"></span> <span id="detail-status" class="pill"></span></h2>
     <div id="phases"></div>
-    <div id="graph-container" style="overflow-x:auto;overflow-y:visible;margin:10px 0">
-      <svg id="dag-graph" xmlns="http://www.w3.org/2000/svg" style="display:block"></svg>
+    <div id="run-usage"></div>
+    <div id="graph-container" style="overflow:hidden;height:420px;margin:10px 0">
+      <button type="button" id="dag-fit" class="fit-btn">Fit</button>
+      <div id="dag-zoom" class="zoomable">
+        <svg id="dag-graph" xmlns="http://www.w3.org/2000/svg" style="display:block"></svg>
+      </div>
     </div>
     <div id="tree"></div>
-    <img id="diagram-img" alt="workflow diagram" style="display:none">
+    <!-- The diagram figure has no separate clipping ancestor (unlike #graph-container above): a
+         zoomed-in author SVG may spill past this pane's edge — accepted, Gate 7.5 tracks it. -->
+    <div id="diagram-zoom" class="zoomable" style="display:none">
+      <img id="diagram-img" alt="workflow diagram">
+    </div>
+    <button type="button" id="diagram-fit" class="fit-btn" style="display:none">Fit</button>
     <pre id="diagram" style="display:none"></pre>
     <p id="mermaidNote" style="display:none"></p>
+    <div id="harness-table-section" style="display:none">
+      <h2>Agents</h2>
+      <div id="harness-table"></div>
+    </div>
     <h2>Transcript <span id="tr-agent" class="mdl"></span></h2>
     <pre id="transcript">Select an agent node above.</pre>
   </section>
@@ -224,9 +254,51 @@ async function renderDescribe(name){
   if(s.mermaid){ renderDiagram(name, s.version); }
   else {
     // Nothing to draw (a legacy row): the honest note, and no request to the render route.
-    diagramKey=null; document.getElementById('diagram-img').style.display='none';
+    diagramKey=null; document.getElementById('diagram-zoom').style.display='none'; document.getElementById('diagram-fit').style.display='none';
     pre.style.display='block'; note.style.display='block'; note.textContent=s.mermaidNote||'';
   }
+  await renderHarnessTable(s.params&&s.params.agents);
+}
+// v26 (DES-184, ARCH-119, TASK-192, REQ-128/REQ-110): one row per params.agents.<label> — label /
+// declared model -> resolved model / effort / timeoutMs / tools, every cell via textContent (no
+// innerHTML on any run- or author-derived string). "resolved model" joins the declared alias
+// against the SAME /api/models catalog the Models panel already fetches (ModelEntry.alias, DES-076)
+// — the live alias->provider/model resolution, never a fabricated value. re-entrant: renderDescribe
+// re-runs on every 3s tick, so this clears+rebuilds rather than appending.
+async function renderHarnessTable(agents){
+  var section=document.getElementById('harness-table-section');
+  var box=document.getElementById('harness-table');
+  box.innerHTML='';
+  var labels=agents?Object.keys(agents):[];
+  if(!labels.length){ section.style.display='none'; return; }
+  section.style.display='block';
+  var models=await getJSON('/api/models');
+  var byAlias={};
+  if(models&&Array.isArray(models)){ models.forEach(function(m){ if(m.alias) byAlias[m.alias]=m; }); }
+  function cellText(spec,key){ return spec&&spec[key]&&spec[key].default!=null?String(spec[key].default):'—'; }
+  var t=document.createElement('table'); t.className='models-table';
+  var thead=document.createElement('thead'); var hrow=document.createElement('tr');
+  ['label','declared model','resolved model','effort','timeoutMs','tools'].forEach(function(h){ var th=document.createElement('th'); th.textContent=h; hrow.appendChild(th); });
+  thead.appendChild(hrow); t.appendChild(thead);
+  var tbody=document.createElement('tbody');
+  labels.forEach(function(label){
+    var spec=agents[label]||{};
+    var declared=cellText(spec,'model');
+    var resolvedEntry=byAlias[declared];
+    var resolved=resolvedEntry?(resolvedEntry.provider+'/'+resolvedEntry.model):'—';
+    var tr=document.createElement('tr');
+    function td(v){ var c=document.createElement('td'); c.textContent=v; return c; }
+    tr.appendChild(td(label));
+    tr.appendChild(td(declared));
+    tr.appendChild(td(resolved));
+    tr.appendChild(td(cellText(spec,'effort')));
+    tr.appendChild(td(cellText(spec,'timeoutMs')));
+    // tools: not exposed by workflow_describe's params.agents today (DES-156/workflow-view.ts,
+    // outside this task's file scope) — the honest absence, not a fabricated value.
+    tr.appendChild(td('—'));
+    tbody.appendChild(tr);
+  });
+  t.appendChild(tbody); box.appendChild(t);
 }
 // v25 (REQ-119, DES-166, TASK-166): the PICTURE. It is rendered SERVER-SIDE and arrives as an
 // image/svg+xml, loaded into an <img> tag — never an object or embed element, which load an SVG as
@@ -241,7 +313,8 @@ async function renderDescribe(name){
 var diagramKey=null, diagramUrl=null;
 function hideDiagram(){
   diagramKey=null;
-  var img=document.getElementById('diagram-img'); img.removeAttribute('src'); img.style.display='none';
+  var img=document.getElementById('diagram-img'); img.removeAttribute('src');
+  document.getElementById('diagram-zoom').style.display='none'; document.getElementById('diagram-fit').style.display='none';
   if(diagramUrl){ URL.revokeObjectURL(diagramUrl); diagramUrl=null; }
   document.getElementById('diagram').style.display='none';
   document.getElementById('mermaidNote').style.display='none';
@@ -257,14 +330,14 @@ async function renderDiagram(name, version){
     var blob=await r.blob();
     if(diagramUrl) URL.revokeObjectURL(diagramUrl);
     diagramUrl=URL.createObjectURL(blob);
-    img.src=diagramUrl; img.style.display='block';
+    img.src=diagramUrl; document.getElementById('diagram-zoom').style.display='block'; document.getElementById('diagram-fit').style.display='inline-block';
     pre.style.display='none'; note.style.display='none';
     return;
   }
   // Degrade to the pre-v25 display with an observable reason — never a blank pane.
   var reason='unreachable';
   try{ var j=r?await r.json():null; if(j&&j.reason) reason=j.reason; }catch(e){}
-  img.removeAttribute('src'); img.style.display='none';
+  img.removeAttribute('src'); document.getElementById('diagram-zoom').style.display='none'; document.getElementById('diagram-fit').style.display='none';
   note.style.display='block'; note.textContent='diagram not rendered ('+reason+') — showing the source';
 }
 // v11 F1 (REQ-074/075, DES-070/071): home view — 3-way grouped cards with metrics.
@@ -351,12 +424,19 @@ async function loadTranscript(runId, agentId, label){
   document.getElementById('transcript').textContent = ev? JSON.stringify(ev,null,2) : '(no transcript)';
 }
 
+// v26 (DES-180, TASK-180): mirrors run-guard.ts's sumTokens (same duplication convention as
+// cellToPixelLocal above) — DagAgentNode.tokens already arrives as the server-summed four-column
+// total (a plain number, dashboard.ts's buildDagModel), so the object branch here is a defensive
+// guard against the exact widening trap DES-180 names ([object Object] tok), not the common case.
+function sumTokens(t){ return (t&&typeof t==='object') ? ((t.input||0)+(t.output||0)+(t.cacheRead||0)+(t.cacheWrite||0)) : (t||0); }
 function renderAgent(runId, a){
   var n=el('div','node st-'+a.state); n.appendChild(el('span','dot'));
   n.appendChild(el('span','lbl',a.label||a.agentId));
   n.appendChild(el('span','mdl',a.model||'—'));
   n.appendChild(el('span','st-'+a.state,a.state));
-  n.appendChild(el('span','tok',(a.tokens||0)+' tok'));
+  n.appendChild(el('span','tok',sumTokens(a.tokens)+' tok'));
+  n.appendChild(el('span','cost','$'+(a.costUSD||0).toFixed(4)));
+  if(a.unpriced){ n.appendChild(el('span','unpriced','(unpriced)')); }
   if(a.durationMs!=null){ n.appendChild(el('span','dur',a.durationMs+' ms')); }
   n.onclick=function(){ loadTranscript(runId,a.agentId,a.label); };
   return n;
@@ -371,6 +451,22 @@ function renderPhases(phases, status){
     var c=el('span','phase'+(cur?' cur':''), p.title); if(p.ts) c.title=p.ts; box.appendChild(c);
   });
 }
+// v26 (DES-183, TASK-183, REQ-127): the run-level usage summary — token/USD total, the unpriced-
+// call count and a "lower bound" qualifier whenever unpricedCalls > 0 (costUSD then undercounts).
+function renderUsage(usage){
+  var box=document.getElementById('run-usage'); box.innerHTML='';
+  if(!usage) return;
+  box.appendChild(el('span','usage-tok',sumTokens(usage.tokens)+' tok'));
+  box.appendChild(el('span','usage-cost','$'+(usage.costUSD||0).toFixed(4)));
+  if(usage.unpricedCalls>0){
+    box.appendChild(el('span','usage-unpriced',usage.unpricedCalls+' unpriced call(s)'));
+    box.appendChild(el('span','usage-lowerbound','(lower bound)'));
+  }
+  var unmappedNames=Object.keys(usage.unmappedMessages||{});
+  if(unmappedNames.length){
+    box.appendChild(el('span','usage-unmapped','unmapped: '+unmappedNames.map(function(k){ return k+'×'+usage.unmappedMessages[k]; }).join(', ')));
+  }
+}
 // Recursively render a DagNode. Root: agents + children directly. Composite: a labeled group.
 function renderNode(runId, node, container){
   (node.agents||[]).forEach(function(a){ container.appendChild(renderAgent(runId,a)); });
@@ -383,6 +479,9 @@ function renderNode(runId, node, container){
 // DES-065 (TASK-068): Morandi palette + DES-073 util convention — derived from server-side TS constants.
 var MORANDI_PALETTE=${JSON.stringify(MORANDI_PALETTE)};
 var UTIL_PCT_CONVENTION=${JSON.stringify(UTIL_PCT_CONVENTION)};
+// v26 (DES-186, TASK-191): the same cell-box numbers dagBox() (src/dashboard.ts) is unit-tested
+// against — interpolated so the two can never drift, same pattern as MORANDI_PALETTE above.
+var DAG_BOX=${JSON.stringify(DAG_BOX_DEFAULTS)};
 function stableHash(s){ var h=0; for(var i=0;i<s.length;i++){ h=((Math.imul(31,h)+s.charCodeAt(i))>>>0); } return h; }
 function morandiHue(frame){ return MORANDI_PALETTE[stableHash(frame)%MORANDI_PALETTE.length]; }
 function cellToPixelLocal(cell,box){ return {x:cell.col*(box.cellW+box.gap),y:cell.row*(box.cellH+box.gap),width:box.cellW,height:cell.laneSpan*box.cellH+(cell.laneSpan-1)*box.gap}; }
@@ -391,16 +490,23 @@ function cellToPixelLocal(cell,box){ return {x:cell.col*(box.cellW+box.gap),y:ce
 function renderGraph(payload, runId){
   var svgEl=document.getElementById('dag-graph');
   svgEl.innerHTML='';
-  var BOX={cellW:140,cellH:44,gap:14};
+  var BOX=DAG_BOX;
   var cells=(payload.cells)||[];
   var edges=(payload.edges)||[];
-  if(!cells.length){ svgEl.setAttribute('width','0'); svgEl.setAttribute('height','0'); return; }
+  // No cells (the legacy DagNode/tree fallback, or a genuinely empty run) — hidden, not an empty
+  // ~470px band of viewBox at width:100%; a REAL non-empty payload always sets 'block' below.
+  svgEl.style.display=cells.length?'block':'none';
+  if(!cells.length) return;
+  // v26 (DES-186, ARCH-120, ADR-044, TASK-191, REQ-129): dagBox's own formula (src/dashboard.ts).
   var maxCol=0,maxRow=0,maxSpan=1;
   cells.forEach(function(c){ if(c.col>maxCol)maxCol=c.col; if(c.row>maxRow)maxRow=c.row; if(c.laneSpan>maxSpan)maxSpan=c.laneSpan; });
   var svgW=(maxCol+1)*(BOX.cellW+BOX.gap)+BOX.gap;
   var svgH=(maxRow+maxSpan)*(BOX.cellH+BOX.gap)+BOX.gap;
-  svgEl.setAttribute('width',String(svgW));
-  svgEl.setAttribute('height',String(svgH));
+  // The run DAG scales with its container: viewBox + width:100% + preserveAspectRatio, NO absolute
+  // pixel width/height (those would defeat the container-relative scaling REQ-129 asks for).
+  svgEl.setAttribute('viewBox','0 0 '+svgW+' '+svgH);
+  svgEl.setAttribute('width','100%');
+  svgEl.setAttribute('preserveAspectRatio','xMinYMin meet');
   var ns='http://www.w3.org/2000/svg';
   // Edge layer (drawn first, behind nodes).
   edges.forEach(function(e){
@@ -463,18 +569,24 @@ async function loadDag(runId){
   // diagram left over from a previously-viewed workflow would sit above this run's DAG. The <pre>
   // had this defect since v24 and it was easy to miss; a 60KB picture is not, so it is closed here.
   hideDiagram();
+  // v26 (DES-184, TASK-192): same shared-pane defect for the harness table — a previously-viewed
+  // workflow's per-agent table must not linger above this run's DAG.
+  document.getElementById('harness-table-section').style.display='none';
+  document.getElementById('harness-table').innerHTML='';
   var view=await getJSON('/api/runs/'+encodeURIComponent(runId));
   var status=view?view.status:'';
   var badge=document.getElementById('detail-status'); badge.textContent=status; badge.className='pill st-'+status;
   renderPhases((view&&view.phases)||[], status);
+  renderUsage(view&&view.usage);
   var payload=await getJSON('/api/runs/'+encodeURIComponent(runId)+'/dag');
   // Handle both the new GraphPayload (kind:'run') and the legacy DagNode (kind:'root').
   if(payload && payload.kind==='run'){
     renderGraph(payload, runId);
     var tree=document.getElementById('tree'); tree.innerHTML='';
   } else {
-    document.getElementById('dag-graph').setAttribute('width','0');
-    document.getElementById('dag-graph').setAttribute('height','0');
+    // v26 (DES-186): the legacy DagNode/tree fallback has no cells — reuse renderGraph's own empty
+    // path so the SVG resets to the same non-zero minimum viewBox (never the old width='0' vanish).
+    renderGraph({cells:[],edges:[],warnings:[]}, runId);
     var tree=document.getElementById('tree'); tree.innerHTML='';
     if(!payload){ tree.appendChild(el('div','empty','(run not found)')); return; }
     if(!(payload.agents||[]).length && !(payload.children||[]).length){ tree.appendChild(el('div','empty','(no agents yet)')); }
@@ -526,6 +638,35 @@ async function loadIssues(){
   renderIssueList(data.open||[], openEl);
   renderIssueList(data.resolved||[], resolvedEl);
 }
+
+// v26 (DES-186, ARCH-120, ADR-044, TASK-191, REQ-129/REQ-119): wheel-zoom + drag-pan + fit for ONE
+// .zoomable wrapper (shared by both the run DAG svg and the author's diagram img, ADR-044's own
+// "no library" call — ~40 lines). The transform lives on 'el' (the WRAPPER) — el's own CHILDREN are
+// rebuilt wholesale by renderGraph() every 3s poll and by renderDiagram()'s img.src swap, so this
+// never touches them: a user's zoom survives both. fit() resets to identity, called on load, on the
+// fit button, and on window resize (a viewBox recompute alone does NOT re-fit — only these three do).
+function initZoomable(el, fitBtn){
+  var scale=1, tx=0, ty=0;
+  function apply(){ el.style.transform='translate('+tx+'px,'+ty+'px) scale('+scale+')'; }
+  function fit(){ scale=1; tx=0; ty=0; apply(); }
+  el.addEventListener('wheel', function(e){
+    e.preventDefault();
+    var rect=el.getBoundingClientRect();
+    var mx=e.clientX-rect.left, my=e.clientY-rect.top;
+    var next=Math.min(4, Math.max(0.25, scale*(e.deltaY<0?1.1:0.9)));
+    tx=mx-(mx-tx)*(next/scale); ty=my-(my-ty)*(next/scale);
+    scale=next; apply();
+  }, {passive:false});
+  var dragging=false, sx=0, sy=0, stx=0, sty=0;
+  el.addEventListener('mousedown', function(e){ dragging=true; sx=e.clientX; sy=e.clientY; stx=tx; sty=ty; });
+  window.addEventListener('mousemove', function(e){ if(!dragging) return; tx=stx+(e.clientX-sx); ty=sty+(e.clientY-sy); apply(); });
+  window.addEventListener('mouseup', function(){ dragging=false; });
+  if(fitBtn) fitBtn.onclick=fit;
+  window.addEventListener('resize', fit);
+  fit();
+}
+initZoomable(document.getElementById('dag-zoom'), document.getElementById('dag-fit'));
+initZoomable(document.getElementById('diagram-zoom'), document.getElementById('diagram-fit'));
 
 async function render(){
   var runId=currentRunId();

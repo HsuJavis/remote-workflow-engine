@@ -12,11 +12,13 @@ import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { CanUseTool, HookCallback, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync, readdirSync, statSync, mkdirSync, copyFileSync, writeFileSync } from 'node:fs';
 import { join, isAbsolute, dirname } from 'node:path';
-import type { AgentOpts, HarnessDescriptor, TranscriptEvent } from '../types.js';
+import type { AgentOpts, Caps, HarnessDescriptor, TranscriptEvent, Tokens } from '../types.js';
+import { ZERO_TOKENS } from '../run-guard.js';
 import { redactHarness } from '../agent-executor.js';
 import type { McpServerConfig } from '../mcp-probe.js';
 import type { AliasMap, EffortApplied, GatewayClient, GatewayResult } from './client.js';
-import { resolveTimeout, mapEffort, profileFor } from './client.js';
+import { resolveTimeout, wireEffort } from './client.js';
+import { resolveAlias, type Provider } from '../providers.js';
 import { isPathContained } from '../path-containment.js';
 import { resolveConfig, type SecretSource } from '../secret-resolver.js';
 import { proxyModelName } from './litellm-proxy.js';
@@ -36,7 +38,7 @@ export interface ClaudeAgentSdkGatewayConfig {
    *  so the thinking policy below can tell an Anthropic-mapped alias from a non-Anthropic one.
    *  Optional: when omitted (or the alias isn't found), the alias is treated as non-Anthropic
    *  (the safe default — thinking disabled) since that's the failure mode this policy exists to
-   *  prevent (a non-reasoning Ollama/OpenAI/Gemini model 400ing on think:true). */
+   *  prevent (a non-reasoning Ollama/OpenRouter model 400ing on think:true). */
   aliases?: AliasMap;
   /** D-F7: bounds invoke() with an AbortController race exactly like LiteLLMGatewayClient — a
    *  hung/stuck session resolves `{ok:false, reason:'timeout'}` instead of hanging unbounded.
@@ -187,17 +189,6 @@ export async function materializeAssets(
  *  the engine's own orchestration+DOS model respectively. */
 const BUILT_IN_CORE_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'];
 
-// A: built-in tools whose Anthropic-tuned schemas non-Anthropic models mis-use through LiteLLM's
-// translation. `Read` is the verified offender (its PDF `pages` field makes gpt-4.1 fail ~2/3 with
-// "invalid pages parameter"); its reliable replacement is a Bash `cat`/`grep`/`sed`.
-const NON_ANTHROPIC_EXCLUDED_TOOLS = new Set(['Read']);
-
-/** The provider a model alias maps to (or undefined when unknown / no alias table) — the same
- *  lookup thinkingFor uses. */
-export function providerOf(aliases: AliasMap | undefined, model: string | undefined): string | undefined {
-  return model !== undefined ? aliases?.[model]?.provider : undefined;
-}
-
 /** REQ-038 passthrough: a model already in `openrouter/<id>` form is NOT a configured alias — its
  *  provider is the prefix and it must NOT be proxy-cloaked (`rwe-proxy-*`). It matches LiteLLM's
  *  `openrouter/*` wildcard route verbatim; a slashed id is never a bare CLI shorthand, so there is
@@ -206,21 +197,16 @@ export function isPassthroughModel(model: string | undefined): model is string {
   return typeof model === 'string' && model.startsWith('openrouter/');
 }
 
-/** The effective provider for routing/curation: the prefix for a passthrough model, else the alias's
- *  configured provider. */
+/** v26 (DES-173, ARCH-112, TASK-174, REQ-123): the effective provider for routing — the prefix for
+ *  a passthrough model, else the alias's configured provider, now resolved via `resolveAlias`
+ *  (`providers.ts`, DES-172) — `effectiveProvider`'s OWN former inline lookup (`providerOf`) MOVED
+ *  there rather than being retired, per DES-173's own boundary. All three remaining providers get
+ *  the caller's `allowedTools` verbatim (REQ-123 retires per-provider tool curation outright, along
+ *  with `NON_ANTHROPIC_EXCLUDED_TOOLS`/`curateToolsForProvider`) — this is now used only for
+ *  auth/wire routing (thinking policy, effort, anthropic-direct dispatch), never tool curation. */
 export function effectiveProvider(aliases: AliasMap | undefined, model: string | undefined): string | undefined {
-  return isPassthroughModel(model) ? 'openrouter' : providerOf(aliases, model);
-}
-
-/** A (per-provider tool curation): for a KNOWN non-Anthropic provider, drop the quirky-schema
- *  built-ins non-Anthropic models mis-use and ensure Bash is present (file ops route through the
- *  shell, verified reliable). Anthropic or an unknown/absent provider is returned unchanged, so
- *  Claude keeps its native tools and direct/test callers are unaffected. */
-export function curateToolsForProvider(tools: string[], provider: string | undefined): string[] {
-  if (provider === undefined || provider === 'anthropic') return tools;
-  if (tools.length === 0) return []; // DES-120: an intentionally-empty set is never Bash-augmented
-  const filtered = tools.filter((t) => !NON_ANTHROPIC_EXCLUDED_TOOLS.has(t));
-  return filtered.includes('Bash') ? filtered : [...filtered, 'Bash'];
+  if (isPassthroughModel(model)) return 'openrouter';
+  return model !== undefined && aliases !== undefined ? resolveAlias(aliases, model)?.provider : undefined;
 }
 
 /** D-V2G8-1(d): true only when `candidate` resolves to a path genuinely inside `root` (or IS
@@ -316,13 +302,13 @@ function makePreToolUseHook(root: string | undefined): HookCallback {
   };
 }
 
-/** D-F6: DISABLED for any alias not confirmed to map to the 'anthropic' provider (Ollama/OpenAI/
- *  Gemini via the LiteLLM proxy reject `think:true` on non-reasoning models) — SDK default (left
- *  unset) only for a confirmed Anthropic-mapped alias. */
-function thinkingFor(aliases: AliasMap | undefined, model: string | undefined): Options['thinking'] {
-  const target = model !== undefined ? aliases?.[model] : undefined;
-  return target?.provider === 'anthropic' ? undefined : { type: 'disabled' };
-}
+/** v26 (DES-179, ARCH-117, TASK-179, REQ-126): the fail-safe capability this gateway resolves
+ *  `wireEffort` against when no run pin was threaded onto `req.caps` — no agent-executor.ts wiring
+ *  exists yet (out of this task's scope; `caps` is optional exactly so that lands separately without
+ *  a second breaking change here). `reasoning:'unknown'` still keeps `resolveThinkingMode`'s retired
+ *  alias-aware behavior byte-identical: `wireEffort`'s anthropic arm never reads `caps`, and every
+ *  other/absent provider disables thinking regardless of it (see wireEffort's own doc comment). */
+const UNKNOWN_CAPS: Caps = { reasoning: 'unknown', tools: 'unknown', source: 'unknown' };
 
 // Never a real credential (D-R2): the SDK still requires ANTHROPIC_API_KEY to be non-empty even
 // when ANTHROPIC_BASE_URL points somewhere else entirely (a local proxy, or a local stub server).
@@ -388,6 +374,78 @@ function extractEvents(msg: SDKMessage, ts: string): TranscriptEvent[] {
   return events;
 }
 
+/** v26 (DES-180, ARCH-118, TASK-180): four-column extraction off a real 'result' message — SDK
+ *  `result.usage` `{input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens}`
+ *  when present; falling back to the SUM over `modelUsage[*]` (camelCase field names) when `usage`
+ *  is absent; all-zero `Tokens` when neither is present. Runtime-checked rather than trusting the
+ *  SDK's own `usage: NonNullableUsage` type — a queryImpl fake (or a future SDK build) may omit it.
+ *  `cache_creation_input_tokens` flattens the 5-minute/1-hour TTL cache-write breakdown into one
+ *  column, priced downstream at one flat rate (ADR-046's named, bounded approximation). */
+function extractTokens(msg: unknown): Tokens {
+  const m = msg as { usage?: Record<string, number>; modelUsage?: Record<string, Record<string, number>> };
+  if (m.usage) {
+    return {
+      input: m.usage['input_tokens'] ?? 0,
+      output: m.usage['output_tokens'] ?? 0,
+      cacheRead: m.usage['cache_read_input_tokens'] ?? 0,
+      cacheWrite: m.usage['cache_creation_input_tokens'] ?? 0,
+    };
+  }
+  if (m.modelUsage && typeof m.modelUsage === 'object') {
+    const t = { ...ZERO_TOKENS };
+    for (const row of Object.values(m.modelUsage)) {
+      t.input += row['inputTokens'] ?? 0;
+      t.output += row['outputTokens'] ?? 0;
+      t.cacheRead += row['cacheReadInputTokens'] ?? 0;
+      t.cacheWrite += row['cacheCreationInputTokens'] ?? 0;
+    }
+    return t;
+  }
+  return ZERO_TOKENS;
+}
+
+// v26 (DES-171, ARCH-111, ADR-040, TASK-176, issue #65): `classifyApiError` is total over the
+// closed 10-member `SDKAssistantMessageError` union (pinned against the INSTALLED
+// @anthropic-ai/claude-agent-sdk@0.3.199's sdk.d.ts, confirmed by direct read). `kind` is widened
+// to `| string` on purpose — the value crosses an IPC boundary from a CLI whose version the
+// updater moves independently of this codebase, so a future SDK's eleventh kind must never crash
+// this classifier: it falls through to the SAME status-code heuristic as the SDK's own `'unknown'`.
+const TERMINAL_ERROR_KINDS = new Set<string>([
+  'authentication_failed', 'oauth_org_not_allowed', 'billing_error', 'invalid_request', 'model_not_found',
+]);
+const RETRYABLE_ERROR_KINDS = new Set<string>(['rate_limit', 'overloaded', 'server_error', 'max_output_tokens']);
+
+export function classifyApiError(kind: string, status: number | null): 'terminal' | 'retry' {
+  if (TERMINAL_ERROR_KINDS.has(kind)) return 'terminal';
+  if (RETRYABLE_ERROR_KINDS.has(kind)) return 'retry';
+  // 'unknown' and anything outside the closed union: retry unless the status is a definite 4xx a
+  // provider that already answered will not fix by waiting — 408/429 stay retryable (a timeout/
+  // rate-limit is transient by nature despite being technically 4xx).
+  return status !== null && status >= 400 && status < 500 && status !== 408 && status !== 429 ? 'terminal' : 'retry';
+}
+
+// v26 (DES-171, ARCH-111): the CLOSED set of `system` message subtypes this SDK version emits as
+// routine control-plane chatter — read from the installed sdk.d.ts at Gate 5, recorded here so an
+// SDK upgrade that adds a subtype counts it (the safe default) rather than silently widening the
+// skip list. `api_retry` is handled separately, above; everything NOT in this set and NOT
+// `api_retry` is COUNTED (never stored as a payload — see `_drain` below), including the four
+// diagnostics (`model_refusal_fallback`/`model_refusal_no_fallback`/`permission_denied`/
+// `mirror_error`) and any subtype a future SDK adds.
+const BENIGN_SYSTEM_SUBTYPES = new Set<string>([
+  'init', 'compact_boundary', 'status', 'commands_changed', 'elicitation_complete', 'files_persisted',
+  'hook_progress', 'hook_response', 'hook_started', 'informational', 'local_command_output',
+  'memory_recall', 'notification', 'plugin_install', 'session_state_changed', 'task_notification',
+  'task_progress', 'task_started', 'task_updated', 'thinking_tokens', 'worker_shutting_down',
+]);
+
+/** v26 (DES-171): an unmapped subtype is COUNTED, never stored as a payload — capped at 64 bytes,
+ *  restricted to `[a-z0-9_.-]` (anything else becomes `?`) so a subtype string can never smuggle
+ *  arbitrary message content into `GatewayResult.unmapped`/a log line. */
+function sanitizeSubtype(subtype: unknown): string {
+  const raw = typeof subtype === 'string' && subtype.length > 0 ? subtype : '?';
+  return raw.slice(0, 64).replace(/[^a-z0-9_.-]/g, '?');
+}
+
 /** One @anthropic-ai/claude-agent-sdk headless session per agent() call: reads only the final
  *  `result` message off the session's own async-generator agent loop. */
 export class ClaudeAgentSdkGatewayClient implements GatewayClient {
@@ -435,7 +493,11 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     return { configs: out, missing: resolved.missing };
   }
 
-  async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; assets?: { roots: { workflow: string; global: string }; declared: { skills: string[]; mcp: string[] }; workflow: string }; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void> }): Promise<GatewayResult> {
+  async invoke(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; assets?: { roots: { workflow: string; global: string }; declared: { skills: string[]; mcp: string[] }; workflow: string }; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void>;
+    /** v26 (DES-179, ARCH-117, TASK-179): the run's admission-time pinned capability for THIS call's
+     *  model (ARCH-116) — threaded by the executor when it wires the pin (out of this task's scope);
+     *  absent -> UNKNOWN_CAPS, `wireEffort`'s documented fail-safe branch. */
+    caps?: Caps }): Promise<GatewayResult> {
     // D-F7: bounded race only when a timeout is in effect — otherwise unchanged legacy behavior (a
     // single unbounded attempt). issue #24/#22: a per-call AgentOpts.timeoutMs counts as "in effect"
     // even when the gateway has no configured default, so a config-less gateway still bounds+retries
@@ -446,11 +508,16 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     for (let i = 0; i < attempts; i++) {
       last = await this._invokeOnce(req);
       if (last.ok) return last;
+      // v26 (DES-171, ARCH-111, TASK-176, issue #65): a classifyApiError-terminal failure ends the
+      // attempt immediately — retrying costs a full timeoutMs against a provider that already said
+      // no. `retryable` is `false` ONLY on that classification; every other failure reason (absent
+      // `retryable`) keeps retrying up to the configured bound, unchanged.
+      if (!last.ok && last.retryable === false) break;
     }
     return last;
   }
 
-  private async _invokeOnce(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; assets?: { roots: { workflow: string; global: string }; declared: { skills: string[]; mcp: string[] }; workflow: string }; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void> }): Promise<GatewayResult> {
+  private async _invokeOnce(req: { prompt: string; opts: AgentOpts; runId: string; agentId: string; signal?: AbortSignal; workspace?: string; assets?: { roots: { workflow: string; global: string }; declared: { skills: string[]; mcp: string[] }; workflow: string }; onHarness?: (h: HarnessDescriptor, applied?: EffortApplied) => Promise<void>; onEvent?: (ev: TranscriptEvent) => void | Promise<void>; caps?: Caps }): Promise<GatewayResult> {
     // issue #24/#22: per-call AgentOpts.timeoutMs overrides the configured default (both directions);
     // MUST match invoke()'s attempts calc above so a bounded attempt count never pairs with an
     // unbounded timer (or vice-versa). resolveTimeout rejects a bad value → gateway default applies.
@@ -459,9 +526,13 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // documented cancellation hook (Options.abortController, sdk.d.ts:1275) — otherwise aborting it
     // only resolves this class's own local await-race while the real spawned `claude` CLI
     // subprocess keeps running unbounded (Gate 7.5 round 4's real repro).
-    const controller = timeoutMs !== undefined || req.signal !== undefined ? new AbortController() : undefined;
-    const timer = timeoutMs !== undefined ? setTimeout(() => controller!.abort(), timeoutMs) : undefined;
-    const onExternalAbort = () => controller?.abort();
+    // v26 (DES-171, ARCH-111): created UNCONDITIONALLY (not only when a timeout/signal is
+    // configured) and always aborted once the call settles (see the `finally` below) — this is
+    // v26's reactive tool-liveness answer: a slot/host semaphore frees in seconds instead of
+    // waiting out `timeoutMs × (1+retries)` on every call, timed or not.
+    const controller = new AbortController();
+    const timer = timeoutMs !== undefined ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+    const onExternalAbort = () => controller.abort();
     req.signal?.addEventListener('abort', onExternalAbort, { once: true });
 
     // D-F11: caller-supplied (agentType-derived) curation wins; else the configured default core
@@ -473,12 +544,11 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       req.opts.allowedTools ??
       this._config.defaultAllowedTools ??
       BUILT_IN_CORE_TOOLS;
-    // A (per-provider tool curation): a non-Anthropic model driving the claude CLI mis-uses the
-    // CLI's Anthropic-tuned built-in tool schemas via LiteLLM's translation — verified: gpt-4.1's
-    // `Read` fails ~2/3 ("invalid pages parameter", the PDF `pages` field), while Bash-based file
-    // ops are 3/3. So for a non-Anthropic-mapped alias, drop the offending tools and ensure Bash is
-    // present so reads/edits route through the shell. Anthropic (or unknown-provider) is unchanged.
-    const curatedTools = curateToolsForProvider(baseTools, effectiveProvider(this._config.aliases, req.opts.model));
+    // v26 (DES-173, ARCH-112, TASK-174, REQ-123): per-provider tool curation is RETIRED — every
+    // remaining provider (anthropic/openrouter/ollama) gets `baseTools` verbatim (no Read dropped,
+    // no Bash force-added). The `curateToolsForProvider` special-case existed only for `openai`
+    // (gpt-4.1's PDF-schema `Read` bug via LiteLLM's translation), which is gone with the provider.
+    const curatedTools = baseTools;
 
     // v24 (ARCH-103/DES-154, TASK-145): a known run workspace + a known `req.assets` (this call's
     // label declared skill/mcp names + the asset store's two scope roots, threaded by the executor
@@ -507,17 +577,14 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     // name must be the REAL Anthropic id (`target.model`), not the proxy-cloaked `rwe-proxy-*` name
     // the LiteLLM path needs. Every other provider keeps the proxy path (dummy key + proxyModelName).
     const provider = effectiveProvider(this._config.aliases, req.opts.model);
-    // DES-106/ARCH-069 (TASK-102): computed ONCE per invoke, inside the gateway (the provider is
-    // only resolvable here) — the SAME object travels to onHarness AND (below) onto `options`.
-    // `thinkingFor` below stays the SOLE writer of `options.thinking`; this writes a different wire
-    // field (`options.effort`, only for the profile-named param) and never touches `options.thinking`.
-    const applied: EffortApplied | undefined = mapEffort(profileFor(provider), req.opts.effort);
-    const envResult = buildSubprocessEnv(this._config, provider);
-    if (!envResult.ok) {
-      // A missing real key/oauth token for the chosen Anthropic auth mode is a typed terminal
-      // failure — never a silent attempt with the dummy key against the real Anthropic API.
-      return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', detail: envResult.detail };
-    }
+    // v26 (DES-179, ARCH-117, TASK-179): computed ONCE per invoke, inside the gateway (the provider
+    // is only resolvable here) — the SAME `wireEffort` result travels to onHarness AND (below) onto
+    // BOTH `options.thinking` and `options.effort`; `wireEffort` is now the sole writer of each.
+    // `req.caps` is the run's admission-time pin (ARCH-116) when the executor threads one; absent ->
+    // UNKNOWN_CAPS, the documented fail-safe branch (byte-identical to the retired alias-aware
+    // `resolveThinkingMode`, see UNKNOWN_CAPS's own doc comment).
+    const wired = wireEffort(provider as Provider | undefined, req.caps ?? UNKNOWN_CAPS, req.opts.effort);
+    const applied: EffortApplied = wired.applied;
     const anthropicTarget = provider === 'anthropic' && req.opts.model !== undefined ? this._config.aliases?.[req.opts.model] : undefined;
     // REQ-038: a passthrough `openrouter/<id>` goes on the wire RAW (matches LiteLLM's `openrouter/*`
     // wildcard); anthropic-direct uses the real id; every other case keeps the `rwe-proxy-*` cloak.
@@ -526,6 +593,31 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       : isPassthroughModel(req.opts.model)
         ? req.opts.model
         : proxyModelName(req.opts.model ?? 'default');
+    // v26 (DES-177, ARCH-115, TASK-177, REQ-125): the RESOLVED model id this call actually reached —
+    // never the alias, never the `rwe-proxy-*` cloak `modelName` puts on the wire. An anthropic-direct
+    // or passthrough dispatch already has the resolved id in `modelName`; every other alias resolves
+    // through the SAME alias table `anthropicTarget` reads above, just unconditional on provider.
+    const aliasTarget = req.opts.model !== undefined ? this._config.aliases?.[req.opts.model] : undefined;
+    const resolvedModel = aliasTarget?.model ?? modelName;
+    // v26 (DES-177): the proxy-facing cloak is reportable only when one was actually put on the wire
+    // (the LiteLLM-proxy route) — absent on an anthropic-direct dispatch and on a raw passthrough
+    // (sent verbatim, no cloak to report).
+    const proxyModel = anthropicTarget === undefined && !isPassthroughModel(req.opts.model) ? modelName : undefined;
+    // v26 (DES-177): one stamping seam for every GatewayResult this call can produce (`_drain`'s
+    // internal returns included, via `enrich(outcome)` below) — `provider` becomes the RESOLVED
+    // provider (never the transport name `_drain`/the early-exit literals below still hard-code) and
+    // `transport` names the wire; `model`/`proxyModel` are corrected only on the ok:true arm, where a
+    // resolved model exists.
+    const stamp = (r: GatewayResult): GatewayResult =>
+      r.ok
+        ? { ...r, provider: provider ?? r.provider, transport: 'claude-agent-sdk', model: resolvedModel, ...(proxyModel !== undefined ? { proxyModel } : {}) }
+        : { ...r, provider: provider ?? r.provider, transport: 'claude-agent-sdk' };
+    const envResult = buildSubprocessEnv(this._config, provider);
+    if (!envResult.ok) {
+      // A missing real key/oauth token for the chosen Anthropic auth mode is a typed terminal
+      // failure — never a silent attempt with the dummy key against the real Anthropic API.
+      return stamp({ ok: false, provider: 'claude-agent-sdk', reason: 'terminal', detail: envResult.detail });
+    }
 
     const options: Options = {
       cwd: req.workspace ?? this._config.cwd,
@@ -534,7 +626,7 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // CLI would otherwise expand a bare shorthand like `haiku` to a dated Anthropic id the LiteLLM
       // proxy has no entry for (0-token `terminal`). An absent model resolves to `default`.
       model: modelName,
-      thinking: thinkingFor(this._config.aliases, req.opts.model),
+      thinking: wired.thinking,
       // D-V2G8-1(a): 'bypassPermissions' skipped EVERY tool-call decision outright — paired with a
       // curated-but-still-Bash-capable-by-opt-in tool set and no path check, this let any agent()
       // call drive a fully-privileged shell in the parent trust zone. 'default' + the canUseTool
@@ -581,9 +673,9 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       // call fails typed BEFORE query() is ever spawned.
       env: envResult.env,
     };
-    // DES-106 (TASK-102): the mapped effort directive on the wire — a distinct `Options` field from
-    // `options.thinking` above, one cast to keep the `Options` object literal itself clean.
-    if (applied?.applied) (options as unknown as Record<string, unknown>)[applied.param] = applied.value;
+    // v26 (DES-179, ARCH-117, TASK-179): `wireEffort` already resolved the flat `Options.effort`
+    // field alongside `thinking` above — set only when it actually applies (the anthropic arm).
+    if (wired.effort !== undefined) options.effort = wired.effort;
     // DES-066 (TASK-069): emit harness descriptor eagerly at session-build time (post-curation, before query).
     if (req.onHarness) {
       const descriptor = redactHarness({
@@ -608,7 +700,13 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
       if (materialized) descriptor.materialized = materialized;
       // `applied` travels to the caller as onHarness's own second argument (the single source of
       // truth downstream decoration reads) — no separate write onto `descriptor` needed here.
-      await req.onHarness(descriptor, applied);
+      // v26 (DES-179): `wireEffort.applied` is ALWAYS present (its own doc comment), but the
+      // PERSISTED `effortApplied` field's presence still means "an effort was actually requested"
+      // (agent-executor.ts:492's `applied !== undefined` gate) — unchanged from v25 and matching the
+      // direct-fetch gateway's `resolveEffortApplied`, which still returns `undefined` here. Passing
+      // `wired.applied` unconditionally would silently add `effortApplied:{reason:'no effort
+      // requested'}` to EVERY SDK-gateway record, a persisted-shape change no DES asked for.
+      await req.onHarness(descriptor, req.opts.effort !== undefined ? applied : undefined);
     }
     const session = this._query({ prompt: req.prompt, options });
     const drain = this._drain(session, req.opts.model, req.onEvent);
@@ -620,23 +718,27 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     const namedDetail = (reason: string): string => `no response from model "${modelName}" (provider "${provider}") — ${reason}`;
     const enrich = (r: GatewayResult): GatewayResult => (!r.ok && r.detail === undefined ? { ...r, detail: namedDetail(r.reason) } : r);
 
-    if (controller === undefined) return enrich(await drain);
-
     // D-F7/D-F9a: race the session against a timeoutMs-bounded timer and/or the caller's own
     // (RunManager-owned) AbortSignal — whichever fires first wins, exactly like
-    // LiteLLMGatewayClient's per-attempt AbortController race.
+    // LiteLLMGatewayClient's per-attempt AbortController race. Raced unconditionally now that the
+    // controller always exists (v26) — `bound` simply never resolves when neither a timer nor an
+    // external signal is configured, so `drain` alone decides the outcome, unchanged.
     const bound = new Promise<'aborted'>((resolve) => {
       controller.signal.addEventListener('abort', () => resolve('aborted'), { once: true });
     });
 
     try {
       const outcome = await Promise.race([drain, bound]);
-      if (outcome !== 'aborted') return enrich(outcome);
+      if (outcome !== 'aborted') return stamp(enrich(outcome));
       const reason = timeoutMs !== undefined ? 'timeout' : 'terminal';
-      return { ok: false, provider: 'claude-agent-sdk', reason, detail: namedDetail(reason) };
+      return stamp({ ok: false, provider: 'claude-agent-sdk', reason, detail: namedDetail(reason) });
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       req.signal?.removeEventListener('abort', onExternalAbort);
+      // v26 (DES-171): abort AFTER the race has settled (never inside `_drain`, which would let
+      // the timeout arm win and misreport `reason:'timeout'` for a call that actually completed) —
+      // idempotent (a no-op if already aborted by the timer/external signal above).
+      controller.abort();
     }
   }
 
@@ -646,6 +748,9 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
    *  reasoning/tool-call trace `workflow_agent_log` is built to show. */
   private async _drain(session: ReturnType<QueryImpl>, model: string | undefined, onEvent?: (ev: TranscriptEvent) => void | Promise<void>): Promise<GatewayResult> {
     const events: TranscriptEvent[] = [];
+    // v26 (DES-171, ARCH-111): unmapped `system` subtypes observed this call — counted, never
+    // their payload (see BENIGN_SYSTEM_SUBTYPES/sanitizeSubtype above).
+    const unmapped: string[] = [];
     // issue #20: when a live-event sink is provided, STREAM each transcript event as it arrives (so
     // agent_log grows + lastActivityAt advances mid-call) and DON'T also return them in the result —
     // capture() would otherwise re-emit the same events at terminal (duplicates). No sink → unchanged
@@ -653,6 +758,38 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     const streaming = onEvent !== undefined;
     try {
       for await (const msg of session as AsyncIterable<SDKMessage>) {
+        if (msg.type === 'system') {
+          const sys = msg as unknown as {
+            subtype?: string; error?: string; error_status?: number | null; attempt?: number;
+            max_retries?: number; retry_delay_ms?: number;
+          };
+          if (sys.subtype === 'api_retry') {
+            const kind = sys.error ?? 'unknown';
+            const status = sys.error_status ?? null;
+            const attempt = sys.attempt ?? 0;
+            if (classifyApiError(kind, status) === 'retry') {
+              // A scalar retry event (five fields plus the free delay; no provider prose) — the
+              // CLI's own backoff continues, this attempt is NOT over.
+              const ev: TranscriptEvent = {
+                ts: new Date().toISOString(), kind: 'message', // det:allow — transcript timestamp
+                data: { type: 'api_retry', status, kind, attempt, max_retries: sys.max_retries, retry_delay_ms: sys.retry_delay_ms },
+              };
+              if (streaming) { await onEvent!(ev); } else { events.push(ev); }
+              continue;
+            }
+            // Terminal: end the attempt NOW, instead of waiting out the rest of `timeoutMs` for a
+            // `result` that will never come — the ONE error event for this call (D-G8-2's
+            // duplicate trap: never both streamed AND accumulated).
+            const detail = `${kind}${status !== null ? ` (status ${status})` : ''} — provider ended the attempt (attempt ${attempt})`;
+            const errEv: TranscriptEvent = { ts: new Date().toISOString(), kind: 'message', data: { type: 'error', detail, status, kind, attempt } }; // det:allow — transcript timestamp
+            if (streaming) { await onEvent!(errEv); } else { events.push(errEv); }
+            return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', retryable: false, detail, error: { kind, status, attempt }, events, unmapped };
+          }
+          // Every other `system` subtype is COUNTED (never its payload) unless it's routine
+          // control-plane chatter — includes any subtype a future SDK adds, the safe default.
+          if (!BENIGN_SYSTEM_SUBTYPES.has(sys.subtype ?? '')) unmapped.push(sanitizeSubtype(sys.subtype));
+          continue;
+        }
         if (msg.type !== 'result') {
           const evs = extractEvents(msg, new Date().toISOString()); // det:allow — transcript timestamp, not a decision
           if (streaming) { for (const ev of evs) await onEvent!(ev); }
@@ -664,22 +801,23 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
           const detail = [m.subtype, m.result ?? m.error].filter(Boolean).join(': ') || 'error';
           const errEv: TranscriptEvent = { ts: new Date().toISOString(), kind: 'message', data: { type: 'error', detail } }; // det:allow — transcript timestamp
           if (streaming) { await onEvent!(errEv); } else { events.push(errEv); }
-          return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', detail, events };
+          return { ok: false, provider: 'claude-agent-sdk', reason: 'terminal', detail, events, unmapped };
         }
         return {
           ok: true,
           provider: 'claude-agent-sdk',
           model: model ?? 'default',
-          tokens: { input: msg.usage.input_tokens ?? 0, output: msg.usage.output_tokens ?? 0 },
+          tokens: extractTokens(msg),
           content: msg.result,
           events,
+          unmapped,
         };
       }
       // Session ended without ever emitting a result message.
-      return { ok: false, provider: 'claude-agent-sdk', reason: 'unreachable' };
+      return { ok: false, provider: 'claude-agent-sdk', reason: 'unreachable', unmapped };
     } catch (err) {
       const timedOut = err instanceof Error && err.name === 'AbortError';
-      return { ok: false, provider: 'claude-agent-sdk', reason: timedOut ? 'timeout' : 'unreachable' };
+      return { ok: false, provider: 'claude-agent-sdk', reason: timedOut ? 'timeout' : 'unreachable', unmapped };
     }
   }
 }

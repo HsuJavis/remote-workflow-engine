@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import type { Clock } from '../clock.js';
 import type { RunStore, RunDagSnapshot } from '../run-store.js';
 import { deriveAgentRecords } from '../run-store.js';
+import { foldUsage } from '../run-guard.js';
 import type { RunParams } from '../params/resolve.js';
 import type {
   RunSpec,
@@ -18,6 +19,7 @@ import type {
   StateTransition,
   RunListFilter,
   AuditEvent,
+  PriceBook,
 } from '../types.js';
 
 export class SqliteRunStore implements RunStore {
@@ -74,6 +76,10 @@ export class SqliteRunStore implements RunStore {
     // v22 (DES-113, TASK-108): additive migration — the legacy-cohort fallback record (never the
     // pin itself, which stays in `scriptVersion`). Same idempotent idiom as the columns above.
     try { this._db.exec('ALTER TABLE runs ADD COLUMN legacy_substitution TEXT'); } catch { /* already exists */ }
+    // v26 (DES-178, ARCH-116, TASK-178): additive migration — the admission-time price/capability
+    // pin. A pre-v26 row reads back NULL; every downstream reader treats that as "unpinned", never
+    // a crash (DES-178's own "a pre-v26 run row has no pin" boundary).
+    try { this._db.exec('ALTER TABLE runs ADD COLUMN price_book TEXT'); } catch { /* already exists */ }
     // v24 (DES-152, TASK-140): the one query-plan the filtered run_list projection needs — leading
     // column `name` so a workflow-only filter still uses it (SQLite can use a prefix of a composite
     // index), status/createdAt narrow/order the rest.
@@ -97,12 +103,12 @@ export class SqliteRunStore implements RunStore {
     return join(this._dir, 'runs', runId);
   }
 
-  async createRun(spec: RunSpec, scriptVersion = 'v1', effectiveParams?: RunParams): Promise<string> {
+  async createRun(spec: RunSpec, scriptVersion = 'v1', effectiveParams?: RunParams, priceBook?: PriceBook): Promise<string> {
     const runId = randomUUID();
     const ts = this._clock.isoNow();
     this._db
-      .prepare('INSERT INTO runs (runId, name, status, scriptVersion, createdAt, script, args, budget, started_by, principal, effective_params) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(runId, spec.name ?? null, 'queued', scriptVersion, ts, spec.script ?? null, JSON.stringify(spec.args ?? null), JSON.stringify(spec.budget ?? null), spec.startedBy ? JSON.stringify(spec.startedBy) : null, spec.principal ?? null, effectiveParams ? JSON.stringify(effectiveParams) : null);
+      .prepare('INSERT INTO runs (runId, name, status, scriptVersion, createdAt, script, args, budget, started_by, principal, effective_params, price_book) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(runId, spec.name ?? null, 'queued', scriptVersion, ts, spec.script ?? null, JSON.stringify(spec.args ?? null), JSON.stringify(spec.budget ?? null), spec.startedBy ? JSON.stringify(spec.startedBy) : null, spec.principal ?? null, effectiveParams ? JSON.stringify(effectiveParams) : null, priceBook ? JSON.stringify(priceBook) : null);
     mkdirSync(this._runDir(runId), { recursive: true });
     return runId;
   }
@@ -112,6 +118,14 @@ export class SqliteRunStore implements RunStore {
     const row = this._db.prepare('SELECT effective_params FROM runs WHERE runId = ?').get(runId) as { effective_params: string | null } | undefined;
     if (!row || row.effective_params === null) return null;
     return JSON.parse(row.effective_params) as RunParams;
+  }
+
+  /** v26 (DES-178, ARCH-116, TASK-178): reads back the pinned price/capability book; NULL for a
+   *  pre-v26 row. Same row `getEffectiveParams` reads. */
+  async getPriceBook(runId: string): Promise<PriceBook | null> {
+    const row = this._db.prepare('SELECT price_book FROM runs WHERE runId = ?').get(runId) as { price_book: string | null } | undefined;
+    if (!row || row.price_book === null) return null;
+    return JSON.parse(row.price_book) as PriceBook;
   }
 
   /** v23 (DES-128, ARCH-078, TASK-126): the SYNC `TriggerPorts.runs` read — the chain-upstream join
@@ -259,6 +273,8 @@ export class SqliteRunStore implements RunStore {
       phases: snap?.phases ?? [],
       agents: snap?.agents ?? deriveAgentRecords(this._allTranscripts(runId), row.status as RunStatus),
       workflowNodes: snap?.workflowNodes ?? [],
+      // v26 (DES-183, TASK-183): same fallback shape as `agents` above.
+      usage: snap?.usage ?? foldUsage([...this._allTranscripts(runId).values()].flat()),
       startedBy: row.started_by ? (JSON.parse(row.started_by) as RunStatusView['startedBy']) : { type: 'unknown' },
       terminalAt: termRow?.ts,
       // v15 (DES-096): omit when absent (conditional spread mirrors terminalAt pattern).

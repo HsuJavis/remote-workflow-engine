@@ -12,6 +12,15 @@ import { BudgetExceededError } from '../../src/errors.js';
 const T = (input: number) => ({ input, output: 0, cacheRead: 0, cacheWrite: 0 });
 
 describe('RunGuard two independent limits (UT-193, DES-181)', () => {
+  it('the object shape alone is unenforced — assertBudget() does not throw on an exhausted {usd:0} cap ' +
+    'even with NO addUsage call (isolates the budget-shape gap from the addUsage-is-missing gap: today\'s ' +
+    'constructor stores the {usd,tokens} object opaquely as `total`, and `spent >= total` coerces the object ' +
+    'to NaN, so the comparison is always false — the cap is silently never enforced, not merely unreachable ' +
+    'because addUsage does not exist yet)', () => {
+    const guard = new RunGuard({ concurrency: 4, budget: { usd: 0, tokens: null } } as any);
+    expect(() => guard.assertBudget()).toThrow();
+  });
+
   it('usd-only: assertBudget throws naming limit "usd" once spend reaches the cap', () => {
     const guard = new RunGuard({ concurrency: 4, budget: { usd: 1, tokens: null } } as any);
     (guard as any).addUsage(T(1), 1, false);

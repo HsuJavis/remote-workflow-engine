@@ -56,6 +56,12 @@ export const ERROR_CATALOG = {
   MERMAID_INVALID: { see: 'workflow_authoring_guide', hint: 'the diagram does not parse under checkMermaid\'s grammar' },
   MERMAID_REQUIRED: { see: 'workflow_authoring_guide', hint: 'v24 registration requires a non-empty mermaid diagram string (ADR-025)' },
   DIAGRAM_MISMATCH: { see: 'workflow_authoring_guide', hint: 'the diagram\'s agent labels disagree with the script\'s' },
+  // v26 (DES-184, ARCH-119, ADR-043/039, TASK-189): checkMermaid v2 — four rules compared against
+  // the script's own derived ExpectedGraph (lane/slot/edge shape), each carrying {rule, line, expected}.
+  DIAGRAM_DIRECTION: { see: 'workflow_authoring_guide', hint: 'a v2 diagram header must be graph LR / flowchart LR' },
+  LANE_MISMATCH: { see: 'workflow_authoring_guide', hint: 'the diagram\'s subgraph lanes (count/order/title, or a stadium\'s containing lane) disagree with the script\'s phases' },
+  TOOLS_MISMATCH: { see: 'workflow_authoring_guide', hint: 'a stadium\'s tools: line disagrees with the script\'s allowedTools for that label' },
+  EDGE_MISMATCH: { see: 'workflow_authoring_guide', hint: 'the diagram\'s edges do not realise the script\'s consecutive-slot flow' },
   AGENT_UNDECLARED: { see: 'workflow_authoring_guide', hint: 'a script agent() label has no params.agents.<label> declaration' },
   AGENT_DECLARED_NOT_IN_SCRIPT: { see: 'workflow_authoring_guide', hint: 'params.agents declares a label no agent() call in the script uses' },
   PARAM_CONTRACT_INVALID: { see: 'workflow_authoring_guide', hint: 'the declared parameter contract itself is malformed or out of its own bounds' },
@@ -109,7 +115,9 @@ export const ERROR_CATALOG = {
   WORKSPACE_ESCAPE: { see: null, hint: 'the resolved path escapes the run or asset workspace root' },
   RESERVED_PREFIX: { see: 'workflow_authoring_guide', hint: "the name or a path segment starts with the engine-reserved 'rwe-' prefix (ARCH-093)" },
   HOOKS_UNSUPPORTED: { see: null, hint: 'the requested Claude hook is not supported by the sandbox' },
-  INVALID_SEED_SPEC: { see: null, hint: 'the seed/seedManifest/seedManifestRef payload does not match its declared shape' },
+  // v26 (DES-170, TASK-175, issue #64): now guide-pointing — a caller reading tools/list's item
+  // schemas needs the same door to workflow_authoring_guide the other authoring refusals get.
+  INVALID_SEED_SPEC: { see: 'workflow_authoring_guide', hint: 'the seed/seedManifest/seedManifestRef payload does not match its declared shape' },
   SEED_SOURCE_CONFLICT: { see: null, hint: 'more than one of seed/seedManifest/seedRef/seedManifestRef was supplied' },
   MISSING_BLOBS: { see: null, hint: 'one or more referenced blobs are not present in the content store' },
   INVALID_BLOB_REQUEST: { see: null, hint: 'a blob upload/manifest request is malformed' },
@@ -175,8 +183,23 @@ export class BudgetExceededError extends Error {
    *  `BUDGET_EXCEEDED` instead of the class name — same fix, same reason, as the three v24 classes
    *  below. A script catching it reads `e.code`/`e.name === 'BUDGET_EXCEEDED'`. */
   readonly code: ErrorCode = 'BUDGET_EXCEEDED';
-  constructor(spent: number, total: number) {
-    super(`Budget exceeded: spent ${spent} >= total ${total}`);
+  /** v26 (DES-181, ARCH-118, TASK-181): which of the two independent limits (`usd`/`tokens`) was
+   *  hit — absent on the pre-v26 positional form (kept for `sandbox-refusal-error-code.test.ts`,
+   *  which only needs A BudgetExceededError instance, not a real limit). */
+  readonly limit?: 'usd' | 'tokens';
+  readonly spent: number;
+  readonly total: number;
+  constructor(spentOrDetail: number | { limit: 'usd' | 'tokens'; spent: number; total: number }, total?: number) {
+    if (typeof spentOrDetail === 'number') {
+      super(`Budget exceeded: spent ${spentOrDetail} >= total ${total}`);
+      this.spent = spentOrDetail;
+      this.total = total as number;
+    } else {
+      super(`Budget exceeded (${spentOrDetail.limit}): spent ${spentOrDetail.spent} >= total ${spentOrDetail.total}`);
+      this.limit = spentOrDetail.limit;
+      this.spent = spentOrDetail.spent;
+      this.total = spentOrDetail.total;
+    }
     this.name = 'BudgetExceededError';
   }
 }

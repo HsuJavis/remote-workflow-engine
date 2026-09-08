@@ -2437,7 +2437,7 @@ validation, `claude-agent-sdk-client.ts`'s tool curation + `_drain`'s silent `ap
 grammar, `run-store.ts`'s two-branch `deriveAgentRecords`, `run-guard.ts`'s single-number budget,
 `models/model-catalog.ts`'s string-regex `maxPricePerMOf`, `authoring-guide.ts`'s missing five
 sections, `sandbox/guards.ts`'s inline (unexported) sandbox context, `sandbox/host.ts`'s
-positional-args `AgentRequestHandler`, `run-manager.ts`'s unguarded seed-array check). Six
+positional-args `AgentRequestHandler`, `run-manager.ts`'s unguarded seed-array check). Five
 appended-to files (`no-retired-surface.test.ts`, `authoring-guide.test.ts`,
 `guide-examples-register.test.ts`, `val-007-observability.test.ts`,
 `val-018-dashboard-browser-ui.test.ts`) were re-run in full after the append and their pre-existing
@@ -2472,3 +2472,70 @@ expected until Gate 6); 0 broken links, 0 orphans; every new item's `traces:` re
 new gap introduced by 59 new items). `gates.tests.passed=true`, `current_stage: impl`. NO new
 `owner_decision` marker minted. Next: Gate 6 (implementer) — turn all 25 TASK-171..195 green,
 starting from the fixtures (everything else imports them) per this gate's own note in 05-tests.md.
+
+## 2026-09-08 — v26 Gate 5 self-review correction (verifier, same pass, post advisor())
+
+Three ledger-accuracy fixes made on top of the same Gate-5 pass above, before reporting done (found
+via `advisor()`, not a new defect discovered post-Gate-6):
+
+1. **Count correction**: the pass minted 33 UT items (UT-172..204), not 39 — 33+15+1+10 = 59
+   matches the trace delta exactly. Corrected in 05-tests.md's "Gate 5 exit-gate self-check summary
+   (v26)" and in `state.yaml`'s `gates.tests.note`.
+2. **UT-193 red-reason precision**: the original 5 cases all failed on `TypeError:
+   guard.addUsage is not a function` at their first line, which is correct red but never reached the
+   per-case claim (which limit name `assertBudget` throws). Added a 6th case that isolates the
+   budget-SHAPE gap alone (no `addUsage` call — `assertBudget()` on an exhausted `{usd:0}` cap):
+   fails cleanly on `AssertionError: expected [Function] to throw an error`, proving the shape gap
+   independent of the missing method.
+3. **IT-148 red-reason correction**: the original case constructed `budget: {usd,tokens}` (v26's
+   object shape), which today's ajv schema refuses at ADMISSION — the run failed before the nested
+   frame it claims to test ever ran (that's IT-194/UT-192's claim, not IT-148's). Switched to a
+   bare-number `budget: 100` (today's still-valid shape) so the run is admitted and genuinely
+   reaches the nested frame; now fails cleanly on `expected 0 to be greater than 0` — the real
+   `onBudgetSnapshot`/`currentPhase` wiring gap this item names.
+4. **Re-point targets enumerated** (TASK-173's own dod grep, run now rather than left for Gate 6 to
+   re-derive): 15 files match; 5 are this gate's own new v26 files (already correct), the other 10
+   pre-existing tests are TASK-173/174's targets — listed in 05-tests.md under the Gate 5 summary.
+
+Re-ran `tests/unit/run-guard-two-limits.test.ts` (6/6 red, confirmed) and
+`tests/integration/nested-frame-budget.test.ts` (1/1 red, confirmed, new reason) after the edits.
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine` re-run: unchanged 1413 items/65 gaps, 0
+broken links, 0 orphans (no item added or removed by this correction, only note/status text and one
+new `it()` case inside an existing UT file). `gates.tests.passed` stays `true`; no re-open needed —
+these were ledger-accuracy fixes to items already correctly `status:red`/`result:fail`, not a
+verdict change. `ce2b10a` is the durable WIP checkpoint for the main 59-item pass; this correction
+sits on top of it, uncommitted at write time (commits are owned by the workflow's WIP hook, not
+issued directly by this agent per the tool's own git-safety protocol).
+
+## 2026-09-08 — v26 Gate 5, second self-review pass (verifier, same pass, post second advisor())
+
+Second `advisor()` call (per this agent's own "call again before declaring done" discipline) found
+three more issues, all fixed and re-verified before reporting:
+
+1. **Two count errors in the same Gate-5 summary paragraph as the 39→33 UT fix**: "nine brand-new
+   source files" corrected to "three" (`providers.ts`, `skeleton-graph.ts`, `models/model-book.ts`
+   — the list itself was always right, only the number was wrong); "Six appended-to files" corrected
+   to "Five" (the list has 5 entries). Both fixed in 05-tests.md's summary AND in the ORIGINAL
+   journal entry above (same "Six" error existed there verbatim).
+2. **IT-148 viable-green-path check**: instrumented the test with a temporary debug print (reverted
+   before finalizing) and found the parent's own `agent('a')` call was genuinely FAILING in this
+   sandbox (no `ANTHROPIC_API_KEY`/`OLLAMA_BASE_URL`), `state:'failed'`, `tokens:{input:0,output:0}`
+   — so `AgentExecutor.capture()`'s `if (result.ok)` guard never fed `RunGuard.addTokens`, meaning
+   the parent's real spend was 0 for a reason having NOTHING to do with the nested-wiring bug this
+   item targets. Fixed by injecting a fake `GatewayClient` via `createServer({gateway})` (the same
+   seam `dag-masking-auth.test.ts`/IT-153 already establish) that always resolves `ok:true` with
+   `tokens:{input:10,output:5}` — the parent's spend is now a real, guaranteed-nonzero 15 tokens
+   independent of sandbox credentials, so the test is reachable-green once the nested
+   `onBudgetSnapshot` wiring lands, not permanently red for an unrelated environmental reason.
+   Re-verified: same failure message (`expected 0 to be greater than 0`), now against a genuine
+   nonzero parent spend.
+3. **`usage-live-equals-fold.test.ts` re-checked** against the re-point-targets list: its one
+   `sumUsageTokens` hit is a comment only (`// ... sumUsageTokens, returns a ...`), not a value
+   import — correctly left in the "already this gate's own v26 file" column, not the re-point list.
+
+Re-ran `tests/unit/run-guard-two-limits.test.ts` + `tests/integration/nested-frame-budget.test.ts`
+together: 7/7 red, both for the stated (now corrected/strengthened) reasons.
+`sh .sdlc/trace .sdlc/features/001-remote-workflow-engine`: still 1413 items/65 gaps, 0 broken
+links, 0 orphans — unchanged (this pass touched only prose/notes and one injected test fixture, no
+work items added or removed). `gates.tests.passed` stays `true`. Sitting uncommitted on top of the
+durable `ce2b10a` WIP checkpoint, same as the first correction above.

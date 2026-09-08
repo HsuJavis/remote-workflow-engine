@@ -16,7 +16,7 @@ import { SubmissionValidator } from './submission-validator.js';
 // called the local one, the catalog's `see:'workflow_authoring_guide'` pointer never reached the
 // wire — the guide a cold model is told to consult was unreachable from the errors that tell it to.
 import { CatalogNotFoundError, codedError, toErrEnvelope, type ErrorCode } from './errors.js';
-import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent, HarnessDescriptor, RunListFilter, AuditAction, RunSpec } from './types.js';
+import type { ErrEnvelope, ResultEnvelope, RunStatusView, RunSummary, TranscriptEvent, HarnessDescriptor, RunListFilter, AuditAction, RunSpec, RunUsage } from './types.js';
 import { parseMeta } from './workflow-meta.js';
 import { buildAuthoringGuide } from './authoring-guide.js';
 import { effectiveAgentBounds, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type AgentParamSpec } from './params/contract.js';
@@ -468,7 +468,11 @@ export class McpFacade {
     // never by workflow, because `listByWorkflow` was retired with `trigger-bindings.ts` and
     // because a claim belongs to a version, not to a name.
     const view = projectWorkflowDescribe(ownerView, { ceilings: this.ceilings, triggers: this._resolveTriggers(full.name, full.triggers ?? []) });
-    return { runId: '', status: 'completed', result: view };
+    // v26 (DES-184, ARCH-119, TASK-189): `diagramContract` — added here rather than threading
+    // through `WorkflowOwnerView`/`WorkflowDescribeView` (workflow-view.ts, no v26 task's file
+    // list): `full.diagramContract` ('v1'/'v2', catalog-computed) is exactly the resolved version's
+    // own value, so a spread over the projected view is the same fact, one hop shorter.
+    return { runId: '', status: 'completed', result: { ...view, diagramContract: full.diagramContract } };
   }
 
   /** v24 rename of `workflow_get` (ARCH-091: "the former workflow_get") — owner/admin full,
@@ -612,8 +616,22 @@ export class McpFacade {
       ? await auditedWorkspaceRead({ appendAudit: (ev) => this.store.appendAudit(ev) }, { actor, action: 'run_result' as AuditAction, runId: a.runId, owner }, doRead)
       : await doRead();
     const o = outcome as Awaited<ReturnType<RunManager['result']>>;
-    if (o.ok) return { runId: a.runId, status: view.status, result: o.value };
-    return { runId: a.runId, status: view.status, error: o.error };
+    const meta = await this._resultMeta(a.runId, view);
+    if (o.ok) return { runId: a.runId, status: view.status, result: o.value, meta };
+    return { runId: a.runId, status: view.status, error: o.error, meta };
+  }
+
+  /** v26 (DES-183, ARCH-118, TASK-183, REQ-127): `run_result.meta` — the run's persisted usage
+   *  (`store.getRun` already folds/snapshots it, mirroring `agents`) plus `budgetEnforceable`,
+   *  derived at READ from the run's price pin — never stored twice. A pre-v26 run (no pin
+   *  persisted) reports `usd:false`: "we cannot claim every reachable model is priced" is the
+   *  honest answer, never a crash. */
+  private async _resultMeta(runId: string, view: RunStatusView): Promise<{ usage: RunUsage; budgetEnforceable: { usd: boolean; tokens: boolean; unpricedModels: string[] } }> {
+    const usage = view.usage ?? { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, costUSD: 0, unpricedCalls: 0, unmappedMessages: {} };
+    const priceBook = await this.store.getPriceBook(runId);
+    const unpricedModels = priceBook ? Object.entries(priceBook.pinned).filter(([, e]) => e.price === null).map(([k]) => k) : [];
+    const budgetEnforceable = { usd: priceBook !== null && unpricedModels.length === 0, tokens: true, unpricedModels };
+    return { usage, budgetEnforceable };
   }
 
   async runSuspend(a: { runId: string }, _principal: Principal): Promise<ResultEnvelope> {

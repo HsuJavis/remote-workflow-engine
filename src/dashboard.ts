@@ -3,8 +3,8 @@
 // it shapes exactly the existing RunSummary[]/RunStatusView/TranscriptEvent[] shapes (DES-010).
 // HTTP transport + live-tail polling (TASK-025) reads this VM; not built here (distinct test seam,
 // D-V2f task split).
-import type { RunSummary, RunStatusView, TranscriptEvent, AgentRecord } from './types.js';
-import type { SkeletonNode } from './workflow-meta.js';
+import type { RunSummary, RunStatusView, TranscriptEvent, AgentRecord, PhaseView } from './types.js';
+import { sumTokens } from './run-guard.js';
 
 export interface DashboardVM {
   runs: RunSummary[];
@@ -19,7 +19,15 @@ export interface DagAgentNode {
   label?: string;
   state: AgentRecord['state'];
   model: string;
+  // v26 (DES-180, ARCH-118, TASK-180): stays `number` — the four-column SUM (`sumTokens`), never
+  // the `Tokens` object itself. Widening this field to the object would compile here but silently
+  // break the client's `(a.tokens||0)+' tok'` render into `[object Object] tok` (see DES-180's own
+  // boundary note); the client renders the breakdown via costUSD/unpriced below instead.
   tokens: number;
+  /** v26 (DES-180, DES-188): USD cost of this call (absent on a pre-v26 record — never re-priced). */
+  costUSD?: number;
+  /** v26 (DES-180, DES-188): true iff costUSD could not be priced — see AgentRecord's own doc. */
+  unpriced?: boolean;
   // v8 Slice 2b (REQ-051): per-agent timing; durationMs is undefined while unfinished.
   startedAt?: string;
   endedAt?: string;
@@ -53,7 +61,10 @@ export function buildDagModel(view: RunStatusView): DagNode {
   for (const a of view.agents ?? []) {
     const target = byFrame.get(a.frame ?? '') ?? root;
     const durationMs = a.startedAt && a.endedAt ? Math.max(0, Date.parse(a.endedAt) - Date.parse(a.startedAt)) : undefined;
-    target.agents.push({ agentId: a.agentId, label: a.label, state: a.state, model: a.model, tokens: a.tokens.input + a.tokens.output, startedAt: a.startedAt, endedAt: a.endedAt, durationMs });
+    // v26 (DES-180): the four-column sum, not the pre-v26 two-column `input+output` (which silently
+    // dropped >97% of a cache-heavy call's real usage).
+    const tokens = sumTokens({ input: a.tokens.input, output: a.tokens.output, cacheRead: a.tokens.cacheRead ?? 0, cacheWrite: a.tokens.cacheWrite ?? 0 });
+    target.agents.push({ agentId: a.agentId, label: a.label, state: a.state, model: a.model, tokens, costUSD: a.costUSD, unpriced: a.unpriced, startedAt: a.startedAt, endedAt: a.endedAt, durationMs });
   }
   return root;
 }
@@ -205,6 +216,35 @@ export function buildHomeView(
 }
 
 // ── v11 Sprint 3 (TASK-067 / DES-064): pure graph layout ──
+// v26 (DES-176, ARCH-114/113, TASK-187): `layoutGraph` now joins live agents to their skeleton
+// LANE by ORDINAL (`record.phaseIndex ?? inferPhase(record, phases)?.index`), never by re-matching
+// the phase TITLE string — duplicate phase titles and dynamic (runtime-only) titles were the blind
+// spot the old `a.phase ?? ''` string join could never resolve (100% of runs were frame-grouped).
+// `ExpectedGraph` replaces the flat `SkeletonNode[]` skeleton as the predicted-layout input.
+
+/** Local structural copy of ARCH-113's `ExpectedGraph` (canonical home: `src/skeleton-graph.ts`,
+ *  TASK-185 — not landed as of TASK-187). Byte-identical shape to
+ *  `tests/fixtures/expected-graph-fixtures.ts`'s own local copy, for the same reason: a value
+ *  import of a module that does not exist yet would break every file that imports this one.
+ *  Replace with a real import once `skeleton-graph.ts` ships. */
+export interface ExpectedLane {
+  index: number;
+  title: string | null;
+  dynamic: boolean;
+  slots: number[];
+}
+export interface ExpectedSlot {
+  index: number;
+  lane: number;
+  labels: string[];
+  kind: 'single' | 'parallel' | 'alt';
+  tools: Record<string, string[] | 'default'>;
+}
+export interface ExpectedGraph {
+  lanes: ExpectedLane[];
+  slots: ExpectedSlot[];
+  edges: Array<{ from: number; to: number }>;
+}
 
 /** Logical grid cell — NO pixel coords (no x/y/width/height). Stable id across re-layout calls. */
 export interface LayoutCell {
@@ -230,21 +270,77 @@ export interface LayoutGraphOpts {
   maxNodes?: number;
 }
 
+/** v26 (DES-186, ARCH-120, ADR-044, TASK-191, REQ-129): the ONE cell-box constant — `dashboard-page.ts`
+ *  interpolates this literal (`${JSON.stringify(DAG_BOX_DEFAULTS)}`, the same `MORANDI_PALETTE`
+ *  pattern) into its client-side `renderGraph` rather than re-declaring the numbers, so the two
+ *  cannot drift even though the CLIENT still recomputes `svgW`/`svgH` itself (live `cells` data is
+ *  only known in the browser; `dagBox` below is what makes the FORMULA unit-testable server-side). */
+export const DAG_BOX_DEFAULTS = { cellW: 140, cellH: 44, gap: 14 };
+
+/** v26 (DES-186, ARCH-120, ADR-044, TASK-191, REQ-129): the box math the client interpolates into
+ *  the run DAG's `viewBox` — extracted verbatim from `dashboard-page.ts`'s own inline client JS
+ *  (`renderGraph`'s `svgW`/`svgH` computation). Never `0×0` for empty cells (a `viewBox="0 0 0 0"`
+ *  SVG vanishes) — the `+1`/`maxSpan` floor of 1 already guarantees a minimum box even with no
+ *  cells (the client itself never calls this path empty; see `renderGraph`'s own early return). */
+export function dagBox(
+  cells: LayoutCell[],
+  box: { cellW: number; cellH: number; gap: number } = DAG_BOX_DEFAULTS,
+): { width: number; height: number } {
+  const safeCells = Array.isArray(cells) ? cells : [];
+  let maxCol = 0;
+  let maxRow = 0;
+  let maxSpan = 1;
+  for (const c of safeCells) {
+    if (c.col > maxCol) maxCol = c.col;
+    if (c.row > maxRow) maxRow = c.row;
+    if (c.laneSpan > maxSpan) maxSpan = c.laneSpan;
+  }
+  return {
+    width: (maxCol + 1) * (box.cellW + box.gap) + box.gap,
+    height: (maxRow + maxSpan) * (box.cellH + box.gap) + box.gap,
+  };
+}
+
+/** v26 (DES-176, TASK-187): the last `phases[i]` with `ts <= (record.startedAt ?? record.endedAt)`
+ *  — pure, INCLUSIVE at an exact tie, `undefined` when the record precedes every phase (or
+ *  `phases` is empty/absent). `layoutGraph` calls this only when `record.phaseIndex` is absent (a
+ *  pre-v26 record, or one dispatched before the IPC-receipt phase stamp, DES-175/TASK-186). */
+export function inferPhase(record: AgentRecord, phases: PhaseView[]): { title: string; index: number } | undefined {
+  const at = record.startedAt ?? record.endedAt;
+  if (at === undefined || !Array.isArray(phases) || phases.length === 0) return undefined;
+  const atMs = Date.parse(at);
+  let found: { title: string; index: number } | undefined;
+  for (let i = 0; i < phases.length; i++) {
+    const p = phases[i]!;
+    if (Date.parse(p.ts) <= atMs) found = { title: p.title, index: i };
+  }
+  return found;
+}
+
 /**
- * PURE: derives a logical grid layout from skeleton nodes + live agent records.
+ * PURE: derives a logical grid layout from the predicted `ExpectedGraph` + live agent records.
  * Never throws, never mutates inputs, never accesses I/O, DOM, or the clock.
  *
- * Join order: phase → (ordered-set within phase, tied by startedAt). The same-label+different-
- * startedAt case is intentionally handled — two parallel agents in the same group produce TWO
- * cells, not one collapsed cell (DES-064 ARCH-042).
- *
- * Unmatched live agents (dynamic/conditional) → frame-grouped fallback cell + warnings[].
- * Unmatched skeleton nodes (predicted but not yet run) → inert cell (no agentId/state).
+ * v26 (DES-176): joins by LANE ORDINAL (`record.phaseIndex ?? inferPhase(record, phases)?.index`),
+ * never by phase-title string equality — duplicate/dynamic phase titles no longer collide. Warning
+ * outcome pinned PER BRANCH:
+ *  - no lane resolvable (record precedes every phase, or the run has no phases at all) → implicit
+ *    lane 0, NO warning (a v1-contract script may legally dispatch before its first `phase()`).
+ *  - lane in range and NOT dynamic → placed in that lane, slot-matched by LABEL against the union
+ *    of that lane's own slots' labels, NO warning on a match.
+ *  - lane in range and `dynamic` → frame-grouped fallback cell in that lane's column, WITH a
+ *    warning (PLUS one standing warning for the lane's mere existence, even with zero live agents
+ *    there yet — the layout is genuinely unpredictable ahead of a run, not only once an agent lands).
+ *  - lane beyond the predicted set (`k >= lanes.length`) → appended live, WITH a warning (reachable
+ *    only when a script's runtime `phase()` count exceeds the predicted skeleton's).
+ * A predicted slot that matched no live agent renders as an INERT cell (id `__skel_<slotIndex>__`,
+ * no agentId/state) — the v11 DES-064 "predicted but not yet run" behavior, preserved.
  * maxNodes (default 200) caps agent cells; trigger is always present in addition.
  */
 export function layoutGraph(
-  skeletonNodes: SkeletonNode[],
+  expected: ExpectedGraph,
   liveAgents: AgentRecord[],
+  phases: PhaseView[],
   opts?: LayoutGraphOpts,
 ): { cells: LayoutCell[]; edges: LayoutEdge[]; warnings: string[]; truncated?: boolean } {
   const warnings: string[] = [];
@@ -253,93 +349,91 @@ export function layoutGraph(
   const maxNodes = opts?.maxNodes ?? 200;
 
   // Guard against garbage input (pure: never throws)
-  const safeNodes = Array.isArray(skeletonNodes) ? skeletonNodes : [];
+  const lanes = Array.isArray(expected?.lanes) ? expected.lanes : [];
+  const slots = Array.isArray(expected?.slots) ? expected.slots : [];
   const safeAgents = Array.isArray(liveAgents) ? liveAgents : [];
+  const safePhases = Array.isArray(phases) ? phases : [];
 
   // --- Trigger cell (always present, always col:0) ---
   cells.push({ id: '__trigger__', kind: 'trigger', col: 0, row: 0, laneSpan: 1, label: opts?.startedByType ?? 'trigger' });
 
-  // --- Build skeleton slots (agent nodes per phase, in order) ---
-  // Track phases in order of first appearance (explicit phase node OR first agent in implicit phase).
-  const phaseOrder: string[] = [];
-  const slotsPerPhase = new Map<string, { skeletonIdx: number; row: number }[]>();
-  const rowCounters = new Map<string, number>(); // phase → next row index
-  let curPhaseKey = '';
-  for (let i = 0; i < safeNodes.length; i++) {
-    const node = safeNodes[i]!;
-    if (node.kind === 'phase') {
-      curPhaseKey = node.title ?? '';
-      if (!phaseOrder.includes(curPhaseKey)) phaseOrder.push(curPhaseKey);
-    } else if (node.kind === 'agent') {
-      // Add implicit phase key on first encounter (skeleton agent before any explicit phase node)
-      if (!phaseOrder.includes(curPhaseKey)) phaseOrder.push(curPhaseKey);
-      const row = rowCounters.get(curPhaseKey) ?? 0;
-      rowCounters.set(curPhaseKey, row + 1);
-      const slots = slotsPerPhase.get(curPhaseKey) ?? [];
-      slots.push({ skeletonIdx: i, row });
-      slotsPerPhase.set(curPhaseKey, slots);
-    }
-  }
-  // Add any live-agent phases not already in skeleton's phase order
-  for (const a of safeAgents) {
-    const k = a.phase ?? '';
-    if (!phaseOrder.includes(k)) phaseOrder.push(k);
-  }
-  // col: 1-based (col 0 = trigger)
-  const phaseColMap = new Map(phaseOrder.map((p, i) => [p, i + 1]));
-
-  // --- Sort live agents within each phase by startedAt (ordered-set join) ---
-  const liveByPhase = new Map<string, AgentRecord[]>();
-  for (const a of safeAgents) {
-    const k = a.phase ?? '';
-    const arr = liveByPhase.get(k) ?? [];
-    arr.push(a);
-    liveByPhase.set(k, arr);
-  }
-  for (const arr of liveByPhase.values()) {
-    arr.sort((a, b) => (a.startedAt ?? '').localeCompare(b.startedAt ?? ''));
-  }
-
-  // --- Positional match: skeleton slot[i] → live agent[i] within each phase ---
-  const matchedIds = new Set<string>();
   let agentCellCount = 0;
   let truncated = false;
+  const rowCounters = new Map<number, number>(); // laneIndex -> next row
+  const nextRow = (laneIdx: number): number => {
+    const row = rowCounters.get(laneIdx) ?? 0;
+    rowCounters.set(laneIdx, row + 1);
+    return row;
+  };
+  const placeCell = (laneIdx: number, cell: Omit<LayoutCell, 'col' | 'row'>): void => {
+    cells.push({ ...cell, col: laneIdx + 1, row: nextRow(laneIdx) });
+    agentCellCount++;
+  };
 
-  for (const phaseKey of phaseOrder) {
-    const slots = slotsPerPhase.get(phaseKey) ?? [];
-    const liveInPhase = liveByPhase.get(phaseKey) ?? [];
-    const col = phaseColMap.get(phaseKey) ?? 1;
+  // --- Group live agents by resolved LANE ORDINAL (never by phase-title string) ---
+  const byLane = new Map<number, AgentRecord[]>();
+  const implicitLane0: AgentRecord[] = [];
+  for (const a of safeAgents) {
+    const laneIdx = a.phaseIndex ?? inferPhase(a, safePhases)?.index;
+    if (laneIdx === undefined) { implicitLane0.push(a); continue; }
+    const arr = byLane.get(laneIdx) ?? [];
+    arr.push(a);
+    byLane.set(laneIdx, arr);
+  }
+  const byStartedAt = (a: AgentRecord, b: AgentRecord) => (a.startedAt ?? '').localeCompare(b.startedAt ?? '');
+  for (const arr of byLane.values()) arr.sort(byStartedAt);
+  implicitLane0.sort(byStartedAt);
 
-    for (let si = 0; si < slots.length; si++) {
-      if (agentCellCount >= maxNodes) { truncated = true; break; }
-      const slot = slots[si]!;
-      const live = liveInPhase[si];
-      if (live) matchedIds.add(live.agentId);
-
-      const id = live ? live.agentId : `__skel_${slot.skeletonIdx}__`;
-      const cell: LayoutCell = { id, kind: 'agent', col, row: slot.row, laneSpan: 1 };
-      if (live?.label != null) cell.label = live.label;
-      if (live?.state != null) cell.state = live.state;
-      if (live?.agentId != null) cell.agentId = live.agentId;
-      cells.push(cell);
-      agentCellCount++;
-    }
-    if (truncated) break;
+  // --- Implicit lane 0 (no resolvable lane — legally before the first phase()) ---
+  for (const a of implicitLane0) {
+    if (agentCellCount >= maxNodes) { truncated = true; break; }
+    placeCell(0, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId });
   }
 
-  // --- Unmatched live agents → frame-grouped fallback ---
-  if (!truncated) {
-    for (const a of safeAgents) {
-      if (matchedIds.has(a.agentId)) continue;
+  // --- Declared lanes: label-matched (static) or frame-grouped-with-warning (dynamic) ---
+  for (const lane of lanes) {
+    if (truncated) break;
+    const laneAgents = byLane.get(lane.index) ?? [];
+    if (lane.dynamic) {
+      // Standing warning: the layout is unpredictable ahead of a run, independent of live data.
+      warnings.push(`lane ${lane.index}${lane.title ? ` (${lane.title})` : ''} is dynamic: agents cannot be statically slotted`);
+      for (const a of laneAgents) {
+        if (agentCellCount >= maxNodes) { truncated = true; break; }
+        placeCell(lane.index, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId });
+        warnings.push(`agent ${a.agentId} unmatched to the predicted layout: frame-grouped`);
+      }
+      continue;
+    }
+    // Static lane: match by LABEL against the union of this lane's own slots' labels — never a
+    // global label search (that would re-collide "duplicate labels — two distinct slots joined by
+    // offset, not label", the exact case this rewrite fixes).
+    const laneSlots = (Array.isArray(lane.slots) ? lane.slots : []).map((si) => slots[si]).filter((s): s is ExpectedSlot => s !== undefined);
+    const labelSet = new Set(laneSlots.flatMap((s) => s.labels));
+    for (const a of laneAgents) {
       if (agentCellCount >= maxNodes) { truncated = true; break; }
-      const k = a.phase ?? '';
-      const col = phaseColMap.get(k) ?? 1;
-      const row = rowCounters.get(k) ?? 0;
-      rowCounters.set(k, row + 1);
-      cells.push({ id: a.agentId, kind: 'agent', col, row, laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId });
-      matchedIds.add(a.agentId);
-      agentCellCount++;
-      warnings.push(`agent ${a.agentId} unmatched to the predicted layout: frame-grouped`);
+      const matched = a.label !== undefined && labelSet.has(a.label);
+      placeCell(lane.index, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId });
+      if (!matched) warnings.push(`agent ${a.agentId} unmatched to the predicted layout: frame-grouped`);
+    }
+    // Inert cells for predicted slots that matched no live agent yet (v11 DES-064 behavior kept).
+    if (!truncated) {
+      for (const s of laneSlots) {
+        if (laneAgents.some((a) => a.label !== undefined && s.labels.includes(a.label))) continue;
+        if (agentCellCount >= maxNodes) { truncated = true; break; }
+        placeCell(lane.index, { id: `__skel_${s.index}__`, kind: 'agent', laneSpan: 1 });
+      }
+    }
+  }
+
+  // --- Lanes beyond the predicted set (k >= lanes.length): appended live, WITH a warning ---
+  if (!truncated) {
+    for (const laneIdx of [...byLane.keys()].filter((k) => k >= lanes.length).sort((a, b) => a - b)) {
+      if (truncated) break;
+      warnings.push(`lane ${laneIdx} is beyond the predicted layout: appended`);
+      for (const a of byLane.get(laneIdx)!) {
+        if (agentCellCount >= maxNodes) { truncated = true; break; }
+        placeCell(laneIdx, { id: a.agentId, kind: 'agent', laneSpan: 1, label: a.label, state: a.state, agentId: a.agentId });
+      }
     }
   }
 

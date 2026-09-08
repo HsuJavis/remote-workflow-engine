@@ -164,7 +164,20 @@ export interface AgentCallViolation {
 
 export interface AgentCallScan {
   labels: string[];
-  calls: Array<{ line: number; label: string }>;
+  calls: Array<{
+    line: number;
+    label: string;
+    /** DES-174 (TASK-184): the AGENT_CALL_RE match character offset — the skeleton↔scan join key
+     *  (character offset, not label: two calls may legally share a label, e.g. a retry shape). */
+    index: number;
+    /** DES-174: the literal array when the options object carries `allowedTools` (including `[]`,
+     *  recorded verbatim); `'absent'` when the call has no `allowedTools` key at all. */
+    allowedTools?: string[] | 'absent';
+    /** DES-174: both arms of one ternary or one if/else, or every member of one `parallel([...])`,
+     *  share one `{kind, id}` — detected with the same string-aware `matchDelimiter` below. Absent
+     *  for a plain sequential call. */
+    group?: { kind: 'parallel' | 'alt'; id: number };
+  }>;
   violations: AgentCallViolation[];
 }
 
@@ -265,6 +278,132 @@ function literalStringValue(text: string): string | null {
   return null;
 }
 
+/** `null` unless `text` is, in full, a `[...]` literal of quoted string tokens — used to read
+ *  `allowedTools: [...]` verbatim (DES-174/TASK-184) without a JS parser dependency. `[]` returns
+ *  `[]`, not `null` — `allowedTools: []` must be recorded, not treated as absent. */
+function parseStringArrayLiteral(text: string): string[] | null {
+  const t = text.trim();
+  if (!(t.startsWith('[') && t.endsWith(']'))) return null;
+  const out: string[] = [];
+  for (const item of splitTopLevel(t.slice(1, -1))) {
+    const v = literalStringValue(item);
+    if (v === null) return null;
+    out.push(v);
+  }
+  return out;
+}
+
+const GROUP_PARALLEL_CALL_RE = /(?<!\.)\bparallel\s*\(/g;
+
+/** DES-174 (TASK-184): the `[start,end)` argument-list span of every `parallel([...])` call, each
+ *  with its own group id — every `agent()` call whose AGENT_CALL_RE offset falls inside one span
+ *  shares `{kind:'parallel', id}`. Independent of `parseWorkflowSkeleton`'s own parallel-span scan
+ *  (that one groups SkeletonNodes, this one groups scanned agent() calls). */
+function parallelCallSpans(script: string): Array<{ id: number; start: number; end: number }> {
+  const spans: Array<{ id: number; start: number; end: number }> = [];
+  GROUP_PARALLEL_CALL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  let seq = 0;
+  while ((m = GROUP_PARALLEL_CALL_RE.exec(script)) !== null) {
+    const openParen = script.indexOf('(', m.index);
+    if (openParen === -1) continue;
+    const end = matchDelimiter(script, openParen, '(', ')');
+    if (end === -1) continue;
+    spans.push({ id: ++seq, start: openParen, end });
+  }
+  return spans;
+}
+
+interface AltSpan { id: number; armAStart: number; armAEnd: number; armBStart: number; armBEnd: number }
+
+/** From `start` (just after a ternary's '?'), scans forward tracking bracket depth and strings for
+ *  the ':' that closes the "then" arm at relative depth 0 (an object literal's own `key: value`
+ *  colon sits at depth > 0 and is skipped). -1 if the arm exits its enclosing bracket unmatched. */
+function findMatchingColon(script: string, start: number): number {
+  let depth = 0;
+  let str: string | null = null;
+  for (let i = start; i < script.length; i++) {
+    const c = script[i];
+    if (str !== null) { if (c === '\\') { i++; continue; } if (c === str) str = null; continue; }
+    if (c === "'" || c === '"' || c === '`') { str = c; continue; }
+    if (c === '(' || c === '{' || c === '[') depth++;
+    else if (c === ')' || c === '}' || c === ']') { if (depth === 0) return -1; depth--; }
+    else if (c === ':' && depth === 0) return i;
+  }
+  return -1;
+}
+
+/** From `start` (just after the ternary's ':'), scans forward for the end of the "else" arm: the
+ *  first `;`/`,` at relative depth 0, or an enclosing close-bracket the arm does not own. */
+function findArmEnd(script: string, start: number): number {
+  let depth = 0;
+  let str: string | null = null;
+  for (let i = start; i < script.length; i++) {
+    const c = script[i];
+    if (str !== null) { if (c === '\\') { i++; continue; } if (c === str) str = null; continue; }
+    if (c === "'" || c === '"' || c === '`') { str = c; continue; }
+    if (c === '(' || c === '{' || c === '[') depth++;
+    else if (c === ')' || c === '}' || c === ']') { if (depth === 0) return i; depth--; }
+    else if ((c === ';' || c === ',') && depth === 0) return i;
+  }
+  return script.length;
+}
+
+const IF_RE = /\bif\s*\(/g;
+
+/** DES-174/ARCH-113 rule S3 (TASK-184): the two arms of one ternary or one `if (…) {…} else {…}`
+ *  at the same delimiter depth — every `agent()` call whose offset falls inside either arm shares
+ *  `{kind:'alt', id}`. Best-effort, matching this file's existing regex+matchDelimiter scanning
+ *  style: an `else if` chain (no `{…}` immediately after `else`) is not recognized. */
+function altSpans(script: string): AltSpan[] {
+  const spans: AltSpan[] = [];
+  let seq = 0;
+
+  IF_RE.lastIndex = 0;
+  let mi: RegExpExecArray | null;
+  while ((mi = IF_RE.exec(script)) !== null) {
+    const condOpen = script.indexOf('(', mi.index);
+    const condClose = matchDelimiter(script, condOpen, '(', ')');
+    if (condClose === -1) continue;
+    let i = condClose;
+    while (i < script.length && /\s/.test(script[i]!)) i++;
+    if (script[i] !== '{') continue;
+    const ifBodyStart = i;
+    const ifBodyEnd = matchDelimiter(script, i, '{', '}');
+    if (ifBodyEnd === -1) continue;
+    let j = ifBodyEnd;
+    while (j < script.length && /\s/.test(script[j]!)) j++;
+    if (script.slice(j, j + 4) !== 'else') continue;
+    j += 4;
+    while (j < script.length && /\s/.test(script[j]!)) j++;
+    if (script[j] !== '{') continue;
+    const elseBodyStart = j;
+    const elseBodyEnd = matchDelimiter(script, j, '{', '}');
+    if (elseBodyEnd === -1) continue;
+    spans.push({ id: ++seq, armAStart: ifBodyStart, armAEnd: ifBodyEnd, armBStart: elseBodyStart, armBEnd: elseBodyEnd });
+  }
+
+  for (let i = 0; i < script.length; i++) {
+    const c = script[i];
+    if (c === "'" || c === '"' || c === '`') {
+      // skip the whole string literal so a '?' inside it is never mistaken for a ternary.
+      let j = i + 1;
+      while (j < script.length && script[j] !== c) { if (script[j] === '\\') j++; j++; }
+      i = j;
+      continue;
+    }
+    // skip optional chaining (`?.`), and BOTH characters of nullish coalescing (`??`) — without
+    // the `i - 1` check the second `?` of `a ?? b` reads as a ternary start of its own.
+    if (c !== '?' || script[i + 1] === '.' || script[i + 1] === '?' || script[i - 1] === '?') continue;
+    const colonIdx = findMatchingColon(script, i + 1);
+    if (colonIdx === -1) continue;
+    const armEnd = findArmEnd(script, colonIdx + 1);
+    spans.push({ id: ++seq, armAStart: i + 1, armAEnd: colonIdx, armBStart: colonIdx + 1, armBEnd: armEnd });
+  }
+
+  return spans;
+}
+
 /** DES-143/ARCH-096 (TASK-135): what "literal" means for an `agent(label, {options})` call, and the
  *  1-based line number on every violation. A call is `agent(<expr>, <balanced {…} literal>)`,
  *  matched with the same string-aware `matchDelimiter` used by `parseWorkflowSkeleton` plus a
@@ -275,18 +414,29 @@ function literalStringValue(text: string): string | null {
  *  legal: `labels` is de-duplicated, `calls` is not. */
 export function scanAgentCalls(script: string): AgentCallScan {
   const labels: string[] = [];
-  const calls: Array<{ line: number; label: string }> = [];
+  const calls: AgentCallScan['calls'] = [];
   const violations: AgentCallViolation[] = [];
 
   const lineAt = (idx: number): number => script.slice(0, idx).split('\n').length;
   const nestedSpans = nestedWorkflowSpans(script);
   const inNestedWorkflow = (idx: number): boolean => nestedSpans.some(([s, e]) => idx >= s && idx < e);
+  const parallelSpans = parallelCallSpans(script);
+  const altSpansList = altSpans(script);
+  const groupFor = (idx: number): { kind: 'parallel' | 'alt'; id: number } | undefined => {
+    const par = parallelSpans.find((p) => idx > p.start && idx < p.end);
+    if (par) return { kind: 'parallel', id: par.id };
+    const alt = altSpansList.find((a) => (idx >= a.armAStart && idx < a.armAEnd) || (idx >= a.armBStart && idx < a.armBEnd));
+    if (alt) return { kind: 'alt', id: alt.id };
+    return undefined;
+  };
 
   AGENT_CALL_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = AGENT_CALL_RE.exec(script)) !== null) {
     if (inNestedWorkflow(m.index)) continue;
-    const line = lineAt(m.index);
+    const index = m.index;
+    const line = lineAt(index);
+    const group = groupFor(index);
     const openParen = script.indexOf('(', m.index);
     const closeParen = matchDelimiter(script, openParen, '(', ')');
     if (closeParen === -1) continue; // unbalanced — not a well-formed call, nothing to report
@@ -294,7 +444,7 @@ export function scanAgentCalls(script: string): AgentCallScan {
 
     if (args.length < 2) {
       violations.push({ line, code: 'AGENT_LABEL_REQUIRED', hint: 'agent() needs a literal label and an options object: agent("label", { … })' });
-      calls.push({ line, label: '' });
+      calls.push({ line, label: '', index, allowedTools: 'absent', group });
       continue;
     }
 
@@ -309,6 +459,7 @@ export function scanAgentCalls(script: string): AgentCallScan {
       validLabel = labelVal;
     }
 
+    let allowedTools: string[] | 'absent' = 'absent';
     const optsText = optsArg!.trim();
     if (!(optsText.startsWith('{') && optsText.endsWith('}'))) {
       violations.push({ line, code: 'AGENT_OPTS_NOT_LITERAL', hint: 'the options argument must be a literal object: { … }' });
@@ -318,6 +469,10 @@ export function scanAgentCalls(script: string): AgentCallScan {
         if (colonIdx === -1) continue;
         let key = entry.slice(0, colonIdx).trim();
         if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) key = key.slice(1, -1);
+        if (key === 'allowedTools') {
+          const parsed = parseStringArrayLiteral(entry.slice(colonIdx + 1));
+          if (parsed !== null) allowedTools = parsed;
+        }
         if (LOCKED_PARAM_KEYS.has(key)) {
           const label = validLabel ?? '<label>';
           violations.push({
@@ -345,7 +500,7 @@ export function scanAgentCalls(script: string): AgentCallScan {
       }
     }
 
-    calls.push({ line, label: validLabel ?? labelVal ?? '' });
+    calls.push({ line, label: validLabel ?? labelVal ?? '', index, allowedTools, group });
     if (validLabel && !labels.includes(validLabel)) labels.push(validLabel);
   }
 

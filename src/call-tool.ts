@@ -4,6 +4,7 @@
 // names (TOOL_SPECS, tool-specs.ts) so this is a fresh dispatcher, not an in-place edit.
 import Ajv from 'ajv';
 import { TOOL_SPECS } from './tool-specs.js';
+import { parseBudget } from './run-guard.js';
 import { authorize as realAuthorize, type Principal, type OwnerLookup, type AuthzVerdict } from './authz.js';
 import type { McpFacade } from './mcp-facade.js';
 import { INLINE_SCRIPT_CLOSED_MESSAGE } from './mcp-facade.js';
@@ -102,6 +103,19 @@ export async function callTool(
   // (found by the Batch-E executor).
   if ((spec.name === 'run_start' || spec.name === 'run_resume') && a['script'] !== undefined) {
     return refusalEnvelope('INLINE_SCRIPT_CLOSED', INLINE_SCRIPT_CLOSED_MESSAGE);
+  }
+  // v26 (DES-181, ARCH-118, ADR-037, TASK-181): the SAME precedent, one door down — `budget` was a
+  // bare number pre-v26 (a token-only limit); `tool-specs.ts`'s advertised schema no longer accepts
+  // one at all, so ajv's own complaint would be the generic "must be object" a cold caller cannot
+  // act on. `parseBudget`'s own message (naming the USD/tokens migration) is reused here rather than
+  // duplicated — it is the one door budget values pass through on the store side too.
+  if (spec.name === 'run_start' && typeof a['budget'] === 'number') {
+    try {
+      parseBudget(a['budget'], { source: 'wire' });
+    } catch (err) {
+      const e = err as { message?: string; detail?: Record<string, unknown> };
+      return refusalEnvelope('INVALID_ARGUMENT', e.message ?? 'INVALID_ARGUMENT: budget', e.detail);
+    }
   }
   // v24 (integrator; DES-104 rule (a), found by the Batch-A executor): "the PRESENCE of an
   // `overrides` field on resume is a typed error, full stop — no absent-vs-`{}`-vs-equal semantics

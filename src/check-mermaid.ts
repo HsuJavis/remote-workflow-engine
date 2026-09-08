@@ -8,16 +8,51 @@
 // (3) node table (4) edge table (5) agent node text vs AGENT_LABEL_RE (6) bidirectional label diff
 // (7) value triple (8) cycles (9) subgraph title / unmatched end.
 
+// v26 (DES-184, ARCH-119, ADR-043, TASK-189): local structural copy of ARCH-113's predicted-graph
+// shape (lane/slot/edge) — NOT an import of its canonical TASK-185 home, which UT-115's guard test
+// (ADR-022) closes to an exactly-four-file allowlist this file is not on; a value/type import would
+// put the forbidden word in this file's own source text regardless of import kind. Same convention
+// `tests/fixtures/expected-graph-fixtures.ts` and `dashboard.ts` already use for the same reason.
+interface ExpectedLane {
+  index: number;
+  title: string | null;
+  dynamic: boolean;
+  slots: number[];
+}
+interface ExpectedSlot {
+  index: number;
+  lane: number;
+  labels: string[];
+  kind: 'single' | 'parallel' | 'alt';
+  tools: Record<string, string[] | 'default'>;
+}
+interface ExpectedGraph {
+  lanes: ExpectedLane[];
+  slots: ExpectedSlot[];
+  edges: Array<{ from: number; to: number }>;
+}
+
+// Every distinct `rule` literal this file can emit — v1 (unchanged) plus the four v26 v2 rules.
+// `RULE_CODE` (workflow-catalog.ts) is `Record<Rule, ErrorCode>`, so a new rule added here without
+// a matching RULE_CODE entry is a compile error there (the DES's "never exhaustiveness check").
+export type Rule =
+  | 'SIZE' | 'SUBGRAPH_TITLE' | 'MERMAID_INVALID' | 'DUPLICATE_NODE' | 'COLLAPSED_EDGE'
+  | 'UNDECLARED_NODE' | 'AGENT_LABEL_FORMAT' | 'DIAGRAM_SCRIPT_MISMATCH' | 'VALUE_MISMATCH'
+  | 'LOOP_LABEL' | 'DIAGRAM_DIRECTION' | 'LANE_MISMATCH' | 'TOOLS_MISMATCH' | 'EDGE_MISMATCH';
+
 // A flat (non-discriminated) shape rather than a `{ok:true} | {ok:false; rule...}` union: callers
 // commonly assert `result.ok` and `result.rule` in separate statements (no `if` narrowing between
 // them), which a strict discriminated union would reject at the type level for no runtime benefit
 // — `rule`/`line`/etc. are simply absent (`undefined`) on an `ok:true` result.
 export interface CheckMermaidResult {
   ok: boolean;
-  rule?: string;
+  rule?: Rule;
   line?: number;
   onlyInScript?: string[];
   onlyInDiagram?: string[];
+  // v26 (DES-184): every v2 refusal carries the expected lane/slot/edge STRUCTURE as data — never
+  // corrected Mermaid (REQ-111: handing back passing text would defeat the point of authoring it).
+  expected?: unknown;
 }
 
 interface NodeRecord {
@@ -33,6 +68,15 @@ interface EdgeRecord {
   arrow: '-->' | '<-->' | '-.->';
   label?: string;
   line: number;
+}
+
+/** v26 (DES-184): one TOP-LEVEL `subgraph` block, tracked only for the `v2` lane checks — `nodeIds`
+ *  collects every node (nested subgraphs included, by design: only the outermost lane matters here)
+ *  declared while this block is open. */
+interface SubgraphBlock {
+  title: string;
+  line: number;
+  nodeIds: Set<string>;
 }
 
 /** Agent (stadium) node shape: `id(["text"])` — the only shape that participates in the
@@ -83,7 +127,7 @@ function parseTimeout(v: string): number | null {
   return m[2] === 's' ? n * 1000 : n;
 }
 
-function err(rule: string, extra?: Omit<CheckMermaidResult, 'ok' | 'rule'>): CheckMermaidResult {
+function err(rule: Rule, extra?: Omit<CheckMermaidResult, 'ok' | 'rule'>): CheckMermaidResult {
   return { ok: false, rule, ...extra };
 }
 
@@ -92,6 +136,9 @@ export function checkMermaid(
   scriptLabels: string[],
   agentDefaults: Record<string, { model?: string; effort?: string; timeoutMs?: number }>,
   limits: { maxBytes: number; maxLines: number },
+  // v26 (DES-184, ARCH-119, TASK-189): steps (10)-(13) below run ONLY when present — a v1 caller
+  // (every pre-v26 call site) passes nothing and gets exactly the pre-v26 checks.
+  v2?: { expected: ExpectedGraph },
 ): CheckMermaidResult {
   // (1) normalize + size — checked before anything else touches the text.
   const normalized = src.replace(/\r\n/g, '\n');
@@ -104,6 +151,9 @@ export function checkMermaid(
   const edgeLines: Array<{ text: string; line: number }> = [];
   let classifyErr: CheckMermaidResult | null = null;
   let openSubgraphs = 0;
+  // v26 (DES-184): TOP-LEVEL subgraph blocks, in source order — the `v2` lane checks' only input.
+  const subgraphStack: SubgraphBlock[] = [];
+  const subgraphBlocks: SubgraphBlock[] = [];
 
   for (let i = 0; i < rawLines.length; i++) {
     const line = rawLines[i]!.trim();
@@ -115,11 +165,14 @@ export function checkMermaid(
     if (subMatch) {
       openSubgraphs++;
       if (subMatch[1] === '') { classifyErr = err('SUBGRAPH_TITLE', { line: lineNo }); break; }
+      subgraphStack.push({ title: subMatch[1]!, line: lineNo, nodeIds: new Set() });
       continue;
     }
     if (line === 'end') {
       if (openSubgraphs === 0) { classifyErr = err('MERMAID_INVALID', { line: lineNo }); break; }
       openSubgraphs--;
+      const closed = subgraphStack.pop();
+      if (closed && subgraphStack.length === 0) subgraphBlocks.push(closed);
       continue;
     }
     if (ARROW_TOKEN_RE.test(line)) {
@@ -145,6 +198,7 @@ export function checkMermaid(
               ? 'diamond'
               : 'rectangle';
       nodes.set(id!, { id: id!, shape, text: text!, line: lineNo });
+      if (subgraphStack.length > 0) subgraphStack[0]!.nodeIds.add(id!);
       continue;
     }
     // Unrecognized shape — not exercised by this task's test scope; MERMAID_INVALID is the
@@ -217,7 +271,160 @@ export function checkMermaid(
   const cycleErr = checkCycleLabels(directed);
   if (cycleErr) return cycleErr;
 
+  // (10)-(13) v26 (DES-184): only when the caller supplies `v2` — the script's derived expected
+  // lane/slot/edge shape. Order pinned by DES-184's boundary: direction FIRST (a TD diagram's
+  // lanes are meaningless, so a LANE_MISMATCH would send the author to the wrong fix).
+  if (v2) {
+    const headerLine = rawLines[0]?.trim() ?? '';
+    const directionErr = checkDirection(headerLine);
+    if (directionErr) return directionErr;
+
+    const laneErr = checkLanes(v2.expected, subgraphBlocks, labelToNode);
+    if (laneErr) return laneErr;
+
+    const toolsErr = checkTools(v2.expected, labelToNode);
+    if (toolsErr) return toolsErr;
+
+    const edgeErr = checkEdges(v2.expected, nodes, edges, labelToNode);
+    if (edgeErr) return edgeErr;
+  }
+
   return { ok: true };
+}
+
+/** (10) DIAGRAM_DIRECTION: the header's direction token must be exactly `LR` (a trailing `;`, as
+ *  `synthesizeMermaid` emits on pre-v26 `graph TD;` diagrams, is tolerated). */
+function checkDirection(headerLine: string): CheckMermaidResult | null {
+  const m = /^(graph|flowchart)\s+(\S+?);?$/.exec(headerLine);
+  if (m?.[2] !== 'LR') {
+    return err('DIAGRAM_DIRECTION', { line: 1, expected: { direction: 'LR' } });
+  }
+  return null;
+}
+
+/** (11) LANE_MISMATCH: the count/order/title of top-level `subgraph` blocks vs `expected.lanes`,
+ *  then — for every expected slot — that its labelled stadium node(s) are actually declared inside
+ *  the subgraph at `slot.lane`'s position. */
+function checkLanes(expected: ExpectedGraph, subgraphBlocks: SubgraphBlock[], labelToNode: Map<string, NodeRecord>): CheckMermaidResult | null {
+  if (subgraphBlocks.length !== expected.lanes.length) {
+    return err('LANE_MISMATCH', { line: 1, expected: expected.lanes });
+  }
+  for (const lane of expected.lanes) {
+    const block = subgraphBlocks[lane.index]!;
+    // A `null` title (a dynamic phase() title) accepts any non-empty title at that position —
+    // SUBGRAPH_TITLE (step 2) already refused an empty one, so `block.title` is never ''.
+    if (lane.title !== null && block.title !== lane.title) {
+      return err('LANE_MISMATCH', { line: block.line, expected: lane });
+    }
+  }
+  for (const slot of expected.slots) {
+    for (const label of slot.labels) {
+      const node = labelToNode.get(label);
+      const block = subgraphBlocks[slot.lane];
+      if (!node || !block || !block.nodeIds.has(node.id)) {
+        return err('LANE_MISMATCH', { line: node?.line ?? 1, expected: slot });
+      }
+    }
+  }
+  return null;
+}
+
+/** (12) TOOLS_MISMATCH: the stadium's third `<br/>` segment vs `slot.tools[label]` — `'default'`
+ *  is SKIPPED ENTIRELY (never read, never partially compared). */
+function checkTools(expected: ExpectedGraph, labelToNode: Map<string, NodeRecord>): CheckMermaidResult | null {
+  for (const slot of expected.slots) {
+    for (const label of slot.labels) {
+      const toolsExpected = slot.tools[label];
+      if (toolsExpected === undefined || toolsExpected === 'default') continue;
+      const node = labelToNode.get(label);
+      const expectedStr = toolsExpected.length === 0 ? 'tools: none' : `tools: ${[...toolsExpected].sort().join(', ')}`;
+      const actual = node?.text.split('<br/>')[2]?.trim();
+      if (actual !== expectedStr) {
+        return err('TOOLS_MISMATCH', { line: node?.line ?? 1, expected: { label, tools: toolsExpected } });
+      }
+    }
+  }
+  return null;
+}
+
+/** (13) EDGE_MISMATCH: (a) every expected consecutive-slot edge is realised by a path from one of
+ *  its `from` slot's nodes to one of its `to` slot's nodes through non-agent intermediates only;
+ *  (b) no DIRECT agent→agent edge links non-consecutive slots unless it carries `|label|`; (c) no
+ *  two members of the SAME `parallel`/`alt` slot are directly edge-connected. */
+function checkEdges(
+  expected: ExpectedGraph,
+  nodes: Map<string, NodeRecord>,
+  edges: EdgeRecord[],
+  labelToNode: Map<string, NodeRecord>,
+): CheckMermaidResult | null {
+  const adj = new Map<string, string[]>();
+  const addEdge = (from: string, to: string) => {
+    if (!adj.has(from)) adj.set(from, []);
+    adj.get(from)!.push(to);
+  };
+  for (const e of edges) {
+    addEdge(e.from, e.to);
+    if (e.arrow === '<-->') addEdge(e.to, e.from);
+  }
+
+  const slotById = new Map<number, ExpectedSlot>(expected.slots.map((s) => [s.index, s]));
+  const nodeToSlot = new Map<string, number>();
+  for (const slot of expected.slots) {
+    for (const label of slot.labels) {
+      const node = labelToNode.get(label);
+      if (node) nodeToSlot.set(node.id, slot.index);
+    }
+  }
+
+  // (a) reachability through non-agent intermediates.
+  for (const ee of expected.edges) {
+    const fromSlot = slotById.get(ee.from);
+    const toSlot = slotById.get(ee.to);
+    if (!fromSlot || !toSlot) continue;
+    const targets = new Set(toSlot.labels.map((l) => labelToNode.get(l)?.id).filter((id): id is string => id !== undefined));
+    const starts = fromSlot.labels.map((l) => labelToNode.get(l)?.id).filter((id): id is string => id !== undefined);
+    const reached = starts.some((startId) => pathThroughNonAgents(startId, targets, adj, nodes));
+    if (!reached) return err('EDGE_MISMATCH', { line: 1, expected: ee });
+  }
+
+  // (b) a direct agent→agent edge linking non-consecutive slots needs a `|label|`.
+  for (const e of edges) {
+    if (nodes.get(e.from)?.shape !== 'stadium' || nodes.get(e.to)?.shape !== 'stadium') continue;
+    const fromSlot = nodeToSlot.get(e.from);
+    const toSlot = nodeToSlot.get(e.to);
+    if (fromSlot === undefined || toSlot === undefined) continue;
+    if (Math.abs(fromSlot - toSlot) !== 1 && !e.label) {
+      return err('EDGE_MISMATCH', { line: e.line, expected: { from: fromSlot, to: toSlot } });
+    }
+  }
+
+  // (c) no edges among members of the SAME parallel/alt slot.
+  for (const slot of expected.slots) {
+    if (slot.kind === 'single' || slot.labels.length < 2) continue;
+    const ids = new Set(slot.labels.map((l) => labelToNode.get(l)?.id).filter((id): id is string => id !== undefined));
+    for (const e of edges) {
+      if (ids.has(e.from) && ids.has(e.to)) return err('EDGE_MISMATCH', { line: e.line, expected: slot });
+    }
+  }
+
+  return null;
+}
+
+/** BFS from `startId`: reaches a member of `targets` while every intermediate hop (never `startId`
+ *  itself, never a `targets` member) is a non-agent (non-stadium) shape. */
+function pathThroughNonAgents(startId: string, targets: Set<string>, adj: Map<string, string[]>, nodes: Map<string, NodeRecord>): boolean {
+  if (targets.has(startId)) return true;
+  const visited = new Set<string>([startId]);
+  const queue = [startId];
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    for (const to of adj.get(cur) ?? []) {
+      if (targets.has(to)) return true;
+      if (nodes.get(to)?.shape === 'stadium') continue; // only non-agent intermediates allowed
+      if (!visited.has(to)) { visited.add(to); queue.push(to); }
+    }
+  }
+  return false;
 }
 
 /** Tarjan's SCC over the directed (non-`<-->`) edges; every edge whose endpoints share a

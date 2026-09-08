@@ -1,8 +1,9 @@
 // AgentExecutor (DES-007 / ARCH-004) + AgentTranscriptSink (DES-008 / TASK-010).
 import Ajv from 'ajv';
-import type { AgentOpts, AgentRecord, HarnessDescriptor, TranscriptEvent } from './types.js';
+import type { AgentOpts, AgentRecord, HarnessDescriptor, TranscriptEvent, PriceBook } from './types.js';
 import type { GatewayClient, GatewayResult } from './gateway/client.js';
 import type { RunGuard } from './run-guard.js';
+import { ZERO_TOKENS, priceCall } from './run-guard.js';
 import type { RunStore } from './run-store.js';
 import { redact } from './secret-resolver.js';
 import type { SecretValueProvider } from './secret-resolver.js';
@@ -179,6 +180,12 @@ export class AgentTranscriptSink {
     private readonly _guard?: RunGuard,
     private readonly _store?: RunStore,
     private readonly _secretValueProvider?: SecretValueProvider,
+    /** v26 (DES-180, ARCH-118, TASK-180): the run's admission-time price/capability pin
+     *  (`RunManager.start()`, TASK-178) — looked up ONCE at the capture site by `provider/model`.
+     *  Absent (not wired by every caller yet — see this task's `needs_clarification`) means every
+     *  call prices `null` through `priceCall`, which is DES-180's own documented "we don't know"
+     *  semantics (`costUSD: 0, unpriced: true`), not a stub. */
+    private readonly _priceBook?: PriceBook,
   ) {}
 
   private async _emit(runId: string, agentId: string, ev: TranscriptEvent): Promise<void> {
@@ -199,11 +206,19 @@ export class AgentTranscriptSink {
 
   /** D-F12: records an agentId as queued the moment RunGuard allocates it — BEFORE it has acquired
    *  a concurrency slot or reached the gateway — so workflow_status can observe it immediately
-   *  rather than only once capture() resolves it (round-5 VAL-002/VAL-007's `agents:[]` gap). */
-  markQueued(agentId: string, label?: string, phase?: string, frame?: string): void {
+   *  rather than only once capture() resolves it (round-5 VAL-002/VAL-007's `agents:[]` gap).
+   *  v26 (DES-175, ARCH-114, TASK-186): an OPTIONS OBJECT, not a positional reorder of the old
+   *  `(agentId, label?, phase?, frame?)` — silently swapping two optional positionals is the trap
+   *  DES-175 calls out by name. `opts.phase` is the receipt-time `{title,index}` snapshot
+   *  (SandboxHostConfig.currentPhase, threaded through RunManager._handleAgentRequest) — never the
+   *  script's own (unrelated, unused) `AgentOpts.phase` per-call option. */
+  markQueued(agentId: string, opts?: { label?: string; frame?: string; phase?: { title: string; index: number } }): void {
     this._records.set(agentId, {
-      agentId, label, phase, frame,
-      state: 'queued', provider: '', model: '', tokens: { input: 0, output: 0 },
+      agentId, label: opts?.label, phase: opts?.phase?.title, phaseIndex: opts?.phase?.index, frame: opts?.frame,
+      // v26 (DES-180, DES-188): a queued call never dispatched — the SAME three zeros
+      // `deriveAgentRecords`'s harness-only/refused branches derive, so a restart-reconstructed
+      // record is byte-identical to this live one (DES-188's own boundary).
+      state: 'queued', provider: '', model: '', tokens: ZERO_TOKENS, costUSD: 0, unpriced: false,
     });
   }
 
@@ -211,19 +226,34 @@ export class AgentTranscriptSink {
    *  genuinely dispatched to the gateway — still observable in workflow_status while in flight. */
   markRunning(agentId: string, startedAt?: string): void {
     const existing = this._records.get(agentId);
-    this._records.set(agentId, { ...(existing ?? { agentId, provider: '', model: '', tokens: { input: 0, output: 0 } }), agentId, state: 'running', startedAt: startedAt ?? existing?.startedAt });
+    this._records.set(agentId, { ...(existing ?? { agentId, provider: '', model: '', tokens: ZERO_TOKENS, costUSD: 0, unpriced: false }), agentId, state: 'running', startedAt: startedAt ?? existing?.startedAt });
   }
 
   /** v25 (DES-167, REQ-120, issue #61): records a call the ENGINE refused to dispatch — terminal,
-   *  no gateway, no tokens, no transcript, but VISIBLE in `run_status.agents` with a named reason.
-   *  Until v25 a budget refusal produced no record at all: `parallel()` swallowed the throw to
-   *  `null` and the only durable trace anywhere was a gap in the journal's callSeq. Merges onto the
-   *  markQueued record so label/phase/frame survive. */
-  markRefused(agentId: string, reasonCode: ErrorCode, endedAt?: string): void {
+   *  no gateway, no tokens, but VISIBLE in `run_status.agents` with a named reason. Until v25 a
+   *  budget refusal produced no record at all: `parallel()` swallowed the throw to `null` and the
+   *  only durable trace anywhere was a gap in the journal's callSeq. Merges onto the markQueued
+   *  record so label/phase/frame survive.
+   *  v26 (DES-188, TASK-188, ADR-046, REQ-120): ALSO emits a `kind:'refused'` transcript event
+   *  carrying the same reasonCode/label/phase/phaseIndex/frame — a refused call never has a harness
+   *  event, so this is the ONLY durable trace a fresh store (no snapshot, e.g. a crash before the
+   *  terminal snapshot save) can reconstruct after a restart (`deriveAgentRecords`'s branch (3)). */
+  async markRefused(runId: string, agentId: string, reasonCode: ErrorCode, endedAt?: string): Promise<void> {
     const existing = this._records.get(agentId);
-    this._records.set(agentId, {
-      ...(existing ?? { agentId, provider: '', model: '', tokens: { input: 0, output: 0 } }),
-      agentId, state: 'refused', reasonCode, endedAt,
+    const merged: AgentRecord = {
+      ...(existing ?? { agentId, provider: '', model: '', tokens: ZERO_TOKENS, costUSD: 0, unpriced: false }),
+      agentId, state: 'refused', reasonCode, endedAt, tokens: ZERO_TOKENS, costUSD: 0, unpriced: false,
+    };
+    this._records.set(agentId, merged);
+    await this._emit(runId, agentId, {
+      ts: endedAt ?? '', kind: 'refused',
+      data: {
+        reasonCode,
+        ...(merged.label !== undefined ? { label: merged.label } : {}),
+        ...(merged.frame !== undefined ? { frame: merged.frame } : {}),
+        ...(merged.phase !== undefined ? { phase: merged.phase } : {}),
+        ...(merged.phaseIndex !== undefined ? { phaseIndex: merged.phaseIndex } : {}),
+      },
     });
   }
 
@@ -245,18 +275,46 @@ export class AgentTranscriptSink {
   }
 
   /** Records the outcome of one agent() call: captures the usage event and feeds RunGuard.addTokens exactly once. */
-  async capture(runId: string, req: { agentId: string; label?: string; phase?: string }, result: GatewayResult, ts: string): Promise<void> {
+  async capture(runId: string, req: { agentId: string; label?: string }, result: GatewayResult, ts: string): Promise<void> {
     const prev = this._records.get(req.agentId); // v8 Slice 2/2b: carry frame (markQueued) + startedAt (markRunning)
     const frame = prev?.frame, startedAt = prev?.startedAt;
+    // v26 (DES-175, ARCH-114, TASK-186): phase/phaseIndex are stamped ONCE, at markQueued (the
+    // receipt-time snapshot) — carried forward here exactly like frame/startedAt, never re-derived
+    // from this call's own opts (a script's `agent()` never sets these; the workflow's phase() lane
+    // is the only writer). Losing them at the done/failed transition would erase the phase from
+    // every agent that finishes before workflow_status is read — nearly all of them.
+    const phase = prev?.phase, phaseIndex = prev?.phaseIndex;
     // #20: carry lastActivityAt into the terminal record too — its absence on a failed/timed-out agent
     // (never produced an event) vs its presence (got partway) is diagnostic post-mortem.
     const lastActivityAt = prev?.lastActivityAt;
     if (result.ok) {
-      const delta = result.tokens.input + result.tokens.output;
+      // v26 (DES-180): GatewayResult.tokens keeps cacheRead/cacheWrite OPTIONAL (back-compat with
+      // ~30 existing test-fake literals — see client.ts's own doc) — normalized to the strict
+      // four-column `Tokens` shape here, the one place `sumTokens`/`priceCall` are ever called from
+      // a gateway result.
+      const tokens = { input: result.tokens.input, output: result.tokens.output, cacheRead: result.tokens.cacheRead ?? 0, cacheWrite: result.tokens.cacheWrite ?? 0 };
+      const delta = tokens.input + tokens.output;
       this._guard?.addTokens(delta);
+      // v26 (DES-177, ARCH-115, TASK-177, REQ-125): the harness stamp WINS where one exists — a
+      // done result claiming its own transport-hardcoded provider/model (a pre-v26 gateway, or a
+      // gateway that genuinely never fired onHarness) must not clobber what markHarness already
+      // recorded. `prev?.provider`/`prev?.model` are '' until the first markHarness/markQueued, so
+      // `||` falls through to the gateway's own value exactly on a pre-harness terminal (empty prev).
+      const provider = prev?.provider || result.provider;
+      const model = prev?.model || result.model;
+      // v26 (DES-180, ARCH-118, TASK-180): the ONE capture site — `priced === null` ("we don't know
+      // this model's price") collapses to `{costUSD: 0, unpriced: true}` here; it never reaches the
+      // persisted record or the usage event as a nullable number. Keyed identically to
+      // `RunManager.start()`'s own pin (`run-manager.ts:571`): `${resolved.provider}/${resolved.model}`
+      // against this SAME merged (harness-resolved, never transport-hardcoded) provider/model.
+      const priced = priceCall(tokens, this._priceBook?.pinned[`${provider}/${model}`]?.price ?? null);
+      const costUSD = priced ?? 0;
+      const unpriced = priced === null;
       this._records.set(req.agentId, {
-        agentId: req.agentId, label: req.label, phase: req.phase, frame, startedAt, lastActivityAt, endedAt: ts,
-        state: 'done', provider: result.provider, model: result.model, tokens: result.tokens,
+        agentId: req.agentId, label: req.label, phase, phaseIndex, frame, startedAt, lastActivityAt, endedAt: ts,
+        state: 'done', provider, model, tokens, costUSD, unpriced,
+        ...(result.transport !== undefined ? { transport: result.transport } : {}),
+        ...(result.proxyModel !== undefined ? { proxyModel: result.proxyModel } : {}),
       });
       // D-G8-2: forward the real message/tool_call/tool_result stream the gateway captured (when
       // present — only ClaudeAgentSdkGatewayClient produces these today) BEFORE the terminal usage
@@ -264,14 +322,23 @@ export class AgentTranscriptSink {
       for (const ev of result.events ?? []) {
         await this._emit(runId, req.agentId, ev);
       }
-      await this._emit(runId, req.agentId, { ts, kind: 'usage', data: { tokens: result.tokens, provider: result.provider, model: result.model } });
+      // `record ≡ usage-event` (DES-177's own test): the SAME merged provider/model, never
+      // `result.provider`/`result.model` directly — otherwise the LiteLLM route's usage event would
+      // disagree with the record it sits beside. v26 (DES-180): costUSD/unpriced ride the SAME event
+      // as tokens — "persisted on the usage event and on AgentRecord", one collapse, two writers.
+      await this._emit(runId, req.agentId, { ts, kind: 'usage', data: { tokens, costUSD, unpriced, provider, model } });
     } else {
       this._records.set(req.agentId, {
-        agentId: req.agentId, label: req.label, phase: req.phase, frame, startedAt, lastActivityAt, endedAt: ts,
+        agentId: req.agentId, label: req.label, phase, phaseIndex, frame, startedAt, lastActivityAt, endedAt: ts,
         // #20: preserve the model markHarness stamped on the live record — a failed/timed-out call
         // carries no model of its own, and post-mortem (after the operator stops the run) is exactly
         // when "which model failed" matters most. Don't wipe it back to ''.
-        state: 'failed', provider: result.provider, model: prev?.model ?? '', tokens: { input: 0, output: 0 },
+        // v26 (DES-177): same harness-wins rule as the done branch, for the pre-harness terminal case.
+        // v26 (DES-180 boundary): "a failed call carries no usage and moves no counter" — the SAME
+        // known-zero `ZERO_TOKENS` DES-188's derive branch (2) uses, `unpriced: false` (never
+        // dispatched, so genuinely not an unpriced call).
+        state: 'failed', provider: prev?.provider || result.provider, model: prev?.model ?? '', tokens: ZERO_TOKENS, costUSD: 0, unpriced: false,
+        ...(result.transport !== undefined ? { transport: result.transport } : {}),
       });
       // Forward any partial transcript + the CLI error detail captured before a terminal failure,
       // so a 0-token `terminal` is diagnosable (the error subtype/text) instead of opaque.
@@ -300,6 +367,9 @@ export interface AgentExecutorDeps {
   agentTypes?: Record<string, AgentTypeDef>;
   /** DES-088 (TASK-082): inject to enable redact-at-capture on all transcript persist sinks. */
   secretValueProvider?: SecretValueProvider;
+  /** v26 (DES-180, ARCH-118, TASK-180): this run's admission-time price/capability pin — see
+   *  `AgentTranscriptSink`'s own doc for the absent-pin fallback. */
+  priceBook?: PriceBook;
 }
 
 /** Bounded retry budget for schema-mismatched agent() responses (D-V4) — never an infinite loop. */
@@ -322,7 +392,7 @@ export class AgentExecutor implements AgentSpawner {
   constructor(deps: AgentExecutorDeps = {}) {
     this._gateway = deps.gateway ?? NULL_GATEWAY;
     this._secretValueProvider = deps.secretValueProvider;
-    this._sink = new AgentTranscriptSink(deps.guard, deps.store, deps.secretValueProvider);
+    this._sink = new AgentTranscriptSink(deps.guard, deps.store, deps.secretValueProvider, deps.priceBook);
     this._store = deps.store;
     this._clock = deps.clock ?? { isoNow: () => new Date().toISOString() }; // det:allow — transcript timestamp, not a decision
     this._agentTypes = deps.agentTypes ?? {};
@@ -339,7 +409,7 @@ export class AgentExecutor implements AgentSpawner {
       const detail = `PARAM_OUT_OF_RANGE: effort '${String(req.opts.effort)}' is not a recognized effort level`;
       await this._sink.capture(
         req.runId,
-        { agentId: req.agentId, label: req.opts.label, phase: req.opts.phase },
+        { agentId: req.agentId, label: req.opts.label },
         { ok: false, provider: '', reason: 'terminal', detail },
         this._clock.isoNow(),
       );
@@ -413,7 +483,7 @@ export class AgentExecutor implements AgentSpawner {
       if (outcome === 'aborted') return { kind: 'null', aborted: true };
       const result = outcome;
 
-      await this._sink.capture(req.runId, { agentId: req.agentId, label: effectiveOpts.label, phase: effectiveOpts.phase }, result, this._clock.isoNow());
+      await this._sink.capture(req.runId, { agentId: req.agentId, label: effectiveOpts.label }, result, this._clock.isoNow());
 
       if (!result.ok) return { kind: 'null' };
       if (!validate) return { kind: 'text', value: String(result.content) };
@@ -512,8 +582,8 @@ export class AgentExecutor implements AgentSpawner {
 
   /** D-F12: RunManager calls this the moment it allocates an agentId (before acquireSlot()
    *  resolves) so the in-flight agent is observable via workflow_status as "queued", not absent. */
-  markQueued(agentId: string, label?: string, phase?: string, frame?: string): void {
-    this._sink.markQueued(agentId, label, phase, frame);
+  markQueued(agentId: string, opts?: { label?: string; frame?: string; phase?: { title: string; index: number } }): void {
+    this._sink.markQueued(agentId, opts);
   }
 
   /** D-F12: RunManager calls this once the agentId's concurrency slot is acquired and it is
@@ -523,9 +593,12 @@ export class AgentExecutor implements AgentSpawner {
   }
 
   /** v25 (REQ-120): RunManager calls this when RunGuard refuses this call's budget admission — the
-   *  call is terminal before it ever reaches a gateway, and says why. */
-  markRefused(agentId: string, reasonCode: ErrorCode, endedAt?: string): void {
-    this._sink.markRefused(agentId, reasonCode, endedAt);
+   *  call is terminal before it ever reaches a gateway, and says why.
+   *  v26 (DES-188, TASK-188): now ASYNC — it journals a `kind:'refused'` transcript event (the only
+   *  durable trace across a restart with no snapshot), so callers must `await` it before proceeding
+   *  (RunManager awaits it before re-throwing the refusal). */
+  async markRefused(runId: string, agentId: string, reasonCode: ErrorCode, endedAt?: string): Promise<void> {
+    await this._sink.markRefused(runId, agentId, reasonCode, endedAt);
   }
 
   /** Exposes the captured AgentRecord for a completed/failed agent (DES-008). */

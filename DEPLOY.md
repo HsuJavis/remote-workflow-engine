@@ -8,7 +8,8 @@
 這是一個可遠端操控的 **Claude 工作流程執行引擎**：一台常駐伺服器，透過 **MCP Streamable HTTP**
 介面對外提供 **35 個工具**（`workflow_*` 7、`run_*` 8、`workspace_*` 6、`schedule_*` 4、`webhook_*` 3、
 `issue_*` 5、`models_list`/`system_info`），並把每個 `agent()` 呼叫路由到你設定的 LLM 供應商
-（Anthropic / OpenAI / Gemini / 本機 Ollama）。狀態全存在本機檔案（SQLite + JSONL journal），
+（Anthropic / OpenRouter / 本機 Ollama——v26 起僅此三條路，見下方 §0 附錄）。狀態全存在本機檔案
+（SQLite + JSONL journal），
 不需要外部資料庫伺服器。**權威工具清單是 `src/tool-specs.ts`**——不在那張表上的名字，引擎一律回
 JSON-RPC `-32601 Unknown tool`。
 
@@ -68,7 +69,7 @@ RWE_CONFIG_PATH=/path/to/another/rwe.config.json RWE_BIND=127.0.0.1 RWE_PORT=879
    └─────────┬───────────┘        結果        └──────────┬───────────┘
              │                                            │
              ▼                                            ▼
-   本機檔案：SQLite + JSONL journal             Anthropic / OpenAI / Gemini
+   本機檔案：SQLite + JSONL journal             Anthropic / OpenRouter
    （$workRoot/store、run 工作目錄、           / 本機 Ollama
      資產樹、每個版本的 mermaid 圖）
 ```
@@ -150,17 +151,20 @@ curl -s http://localhost:8787/api/models | python3 -c \
 # 預期：models: N / first: ollama/...（或 anthropic/...，依 aliases）
 ```
 
-## 情境配方：gateway:sdk + LiteLLM 前置「外部 OpenAI 相容端點」跑完整 sdlc-run
+## 情境配方：gateway:sdk + LiteLLM 前置「本機/雲端模型」跑完整 sdlc-run
 >
-> 目標：把引擎部署在一台**自架多個開源大模型、對外只暴露一個 OpenAI 相容 `/v1` 端點**的環境上，
-> 讓遠端 agent 走**完整 Claude harness**（工具迴圈 + agentType + MCP），能跑真正的 iso-agile-sdlc
-> `sdlc-run`。以下每一步都經本機端對端實測（用 Ollama 的 `/v1` 代打「外部端點」驗證整條鏈路）。
+> 目標：讓遠端 agent 走**完整 Claude harness**（工具迴圈 + agentType + MCP），能跑真正的
+> iso-agile-sdlc `sdlc-run`。以下每一步都經本機端對端實測。
 >
-> ### 0) 那個端點是什麼牌子其實不重要
-> 我們**自己再跑一個 LiteLLM** 擋在前面，把它端點當成「一個 OpenAI 相容 server」。你只需確認
-> `POST $BASE/v1/chat/completions`（OpenAI 格式）能正常回應即可（要辨牌子見本文件底部「附錄：辨識端點」）。
-> `provider` 別名只支援 `anthropic|openai|gemini|ollama` 四種前綴；**任何 OpenAI 相容端點一律用
-> `provider:"openai"` + `OPENAI_API_BASE` 指過去**（vLLM/TGI/llama.cpp server/LiteLLM… 皆同一招）。
+> ### 0) 能力異動（v26，issue #66，擁有者裁決）：不再支援任意「自架 OpenAI 相容端點」
+> 舊版可用一個現已移除的 provider + 一個現已移除的 base-URL 環境變數，把任何 OpenAI 相容 server
+> （vLLM/TGI/llama.cpp/自架 LiteLLM…）當「外部端點」接上——**這條路已整條移除**（該 provider 與
+> `curateToolsForProvider` 一併刪除，見 §1b）。取代方式只有兩條，都是一等公民：
+> - **本機/自架模型 → Ollama**：把你的模型放在一個真正的 Ollama（或 Ollama API 相容）伺服器後面，
+>   `provider:"ollama"` + `OLLAMA_BASE_URL` 指過去（見下方§1、§2）。
+> - **雲端模型 → OpenRouter**：`provider:"openrouter"` + `OPENROUTER_API_KEY`，單一 key 開放整個
+>   OpenRouter 目錄（`models_list` 可查），或 `agent({model:"openrouter/<id>"})` passthrough。
+> `provider` 別名現在只支援 `anthropic|openrouter|ollama` 三種前綴。
 >
 > ### 1) 設定檔（`rwe.config.json`）
 > ```json
@@ -171,30 +175,30 @@ curl -s http://localhost:8787/api/models | python3 -c \
 >   "agentDefinitionsDir": "/opt/rwe-sdlc-agents",   ⟵ 見第3步：放 iso-agile-sdlc 的 sdlc-*.md
 >   "defaultAllowedTools": ["Read","Write","Edit","Glob","Grep","Bash"],
 >   "aliases": {
->     "default":           { "provider": "openai", "model": "<你端點上的某個模型id>" },
->     "claude-opus-4-8":   { "provider": "openai", "model": "<最強的那顆，給架構/設計決策 gate>" },
->     "claude-sonnet-4-6": { "provider": "openai", "model": "<中階，給實作/驗證/審查>" },
->     "haiku":             { "provider": "openai", "model": "<便宜快的，給 precheck/referee>" }
+>     "default":           { "provider": "ollama", "model": "<你 Ollama 伺服器上的某個模型 tag>" },
+>     "claude-opus-4-8":   { "provider": "openrouter", "model": "<最強的那顆，給架構/設計決策 gate>" },
+>     "claude-sonnet-4-6": { "provider": "openrouter", "model": "<中階，給實作/驗證/審查>" },
+>     "haiku":             { "provider": "ollama", "model": "<便宜快的，給 precheck/referee>" }
 >   }
 > }
 > ```
-> 別名右邊的 `model` 就是**打到 `$BASE/v1/models` 看到的那些 id**。`sdlc-run` 內部用
-> `claude-opus-4-8`/`claude-sonnet-4-6`/`haiku` 這三個別名選 tier（角色→tier 對照見 iso-agile-sdlc 的 SKILL.md §2.5 表），
-> 所以**這三個別名一定要在 aliases 表裡**、指向你端點上實際存在的模型。
+> 別名右邊的 `model` 就是**你 Ollama `/api/tags` 或 OpenRouter `/api/v1/models` 看到的那些 id**。
+> `sdlc-run` 內部用 `claude-opus-4-8`/`claude-sonnet-4-6`/`haiku` 這三個別名選 tier（角色→tier
+> 對照見 iso-agile-sdlc 的 SKILL.md §2.5 表），所以**這三個別名一定要在 aliases 表裡**、指向你環境
+> 裡實際存在的模型（哪個 provider 不拘，三選一）。
 > **模型能力提醒**：架構/設計是「決策 + 產生可追溯文件 + 工具呼叫」的 gate，**別用太小的模型**
 > （7B 級的原生 tool-use 不穩、且當 synthesizer 會亂丟 `request-panel` 無限升級）；決策 gate 請挑
-> 你環境裡最能穩定做 native tool-use 的那顆（實測 gpt-4.1 級可、qwen2.5:7b 不行）。
+> 你環境裡最能穩定做 native tool-use 的那顆（實測 OpenRouter 上的旗艦模型可、本機 qwen2.5:7b 不行）。
 >
-> ### 2) 憑證環境變數（指向外部端點的關鍵）
+> ### 2) 憑證環境變數
 > ```bash
-> export OPENAI_API_BASE="http://<那台或端點host>:<port>/v1"   # ← 讓所有 openai/ 別名導向你的端點
-> export OPENAI_API_KEY="<端點需要的 key；不需認證就給任意非空字串，如 sk-dummy>"
+> export OLLAMA_BASE_URL="http://<你的 Ollama 伺服器host>:11434"   # ← 讓所有 ollama 別名導向它（本機用預設值可省略）
+> export OPENROUTER_API_KEY="<你的 OpenRouter key，sk-or-...>"       # ← 用到 openrouter 別名才需要
 > ```
-> LiteLLM 子行程以 `{...process.env}` 繼承這兩個變數，`openai/<model>` 就會打到 `OPENAI_API_BASE`
-> 而非 api.openai.com——**這是純設定、不需改任何程式**（本機用 Ollama `/v1` 端對端實測通過）。
-> ⚠️ **key 檔格式坑**：若你的 key 存成 `OPENAI_API_KEY=sk-...` 這種**整行**檔，別直接 `$(cat 檔)`
-> （會把 `OPENAI_API_KEY=` 也當成 key 值 → LiteLLM 401）。要萃取值：
-> `export OPENAI_API_KEY="$(grep -oE 'sk-[A-Za-z0-9_-]+' 你的keyfile | head -1)"`。
+> LiteLLM 子行程以 `{...process.env}` 繼承這兩個變數。
+> ⚠️ **key 檔格式坑**：若你的 key 存成 `OPENROUTER_API_KEY=sk-...` 這種**整行**檔，別直接
+> `$(cat 檔)`（會把 `OPENROUTER_API_KEY=` 也當成 key 值 → 401）。要萃取值：
+> `export OPENROUTER_API_KEY="$(grep -oE 'sk-or-[A-Za-z0-9_-]+' 你的keyfile | head -1)"`。
 > ⚠️ **PATH**：`gateway:sdk` 開機會 `spawn('litellm')`，systemd/啟動 unit 的 `PATH` 必須含 litellm
 > venv 的 `bin/`（見 §1a 前置條件），否則 `ENOENT`。
 >
@@ -224,20 +228,21 @@ curl -s http://localhost:8787/api/models | python3 -c \
 > - **model shorthand 自動處理**：`haiku`/`sonnet`/`opus` 被 CLI 展開成 Anthropic id 的老問題已由
 >   `proxyModelName` 前綴根治，你不需做任何事。
 > - **budget**：sdlc 全流程**吃 input token 很兇**（每個 agent 重讀 seed/docs，實作階段還會裝 venv 撐大
->   context）。設 `budget`（token 數）當硬上限；實測一次 lean 全流程到 Gate 6 約 ~3M token。撞上限會在
->   當前 gate 停（非 bug），可用 `resumeFromRunId` 續跑或調高 budget。
+>   context）。v26 起 `budget` 是物件（裸數字改回 `INVALID_ARGUMENT`，見下方§4後「v26 遷移注意」）：設
+>   `budget:{tokens:<數量>}` 當硬上限；實測一次 lean 全流程到 Gate 6 約 ~3M token。撞上限會在
+>   當前 gate 停（非 bug），可用 `resumeFromRunId` 續跑或調高 `tokens`。
 > - **拉回產物**：完成後用 plugin 的 `pull_workspace`（引擎側是 `workspace_list` 遞迴列檔 +
 >   `workspace_pull` 分塊取回）把
 >   `src/`、`tests/`、`.sdlc/*.md` 拉回本地；`.git/` 與 venv 不會列進 artifact（引擎已排除 `.git/`）。
 >
 > ### 5) 驗證這條路通了（花錢前先確認）
 > ```bash
-> # A. 我方 LiteLLM 真的把 openai/<model> 導到你的端點：
+> # A. 我方 LiteLLM 真的把 ollama/<model>（或 openrouter/<model>）導到你的端點：
 > LPORT=$(pgrep -af '[l]itellm --config' | grep -oE 'port [0-9]+' | awk '{print $2}')
 > curl -s -X POST http://127.0.0.1:$LPORT/v1/messages -H 'content-type: application/json' \
 >   -H 'x-api-key: dummy' -H 'anthropic-version: 2023-06-01' \
 >   -d '{"model":"rwe-proxy-default","max_tokens":10,"messages":[{"role":"user","content":"ping"}]}'
-> #   → 回 anthropic 格式 message + usage>0 ⇒ 端點通；回 401/No deployments ⇒ 檢查 OPENAI_API_BASE/KEY。
+> #   → 回 anthropic 格式 message + usage>0 ⇒ 端點通；回 401/No deployments ⇒ 檢查 OLLAMA_BASE_URL / OPENROUTER_API_KEY。
 > # B. 一個極小 agent 端對端：先 workflow_register（腳本 `return await agent('probe',{prompt:'say ROUTED'})`
 > #    ＋ 契約 meta.params.agents.probe ＋ mermaid `graph TD;\nprobe(["probe"])`）→ workflow_publish → run_start
 > #    回 "ROUTED" 且 agent tokens>0 ⇒ 整條 gateway:sdk→LiteLLM→你的端點 打通。
@@ -389,8 +394,8 @@ curl -s http://localhost:8787/api/models | python3 -c \
     全引擎同時最多 2 個渲染子行程；超過上限的請求直接降級回原始碼，不排隊。
     這條路由**不需要認證**（dashboard 的瀏覽器沒有 token），所以這三道限制是它的防護，不是最佳化。
 - 外部依賴：不需要資料庫伺服器（狀態存在本機檔案：SQLite + JSONL journal，路徑見 `workRoot`）。
-- LLM 供應商（依你要用的模型別名擇一或多個）：對應的環境變數（`ANTHROPIC_API_KEY`／`OPENAI_API_KEY`／
-  `GEMINI_API_KEY`／`OLLAMA_BASE_URL`／`OPENROUTER_API_KEY`／`CLAUDE_CODE_OAUTH_TOKEN`／`OPENAI_API_BASE`）
+- LLM 供應商（依你要用的模型別名擇一或多個）：對應的環境變數（`ANTHROPIC_API_KEY`／
+  `OLLAMA_BASE_URL`／`OPENROUTER_API_KEY`／`CLAUDE_CODE_OAUTH_TOKEN`）
   每一個都只在 §1b 設定總表列出一次，請直接查表。
 
   **未設定的供應商不會擋住啟動** —— 對應別名的 `agent()` 呼叫只會在真正被呼叫時，走 D-G 電路斷路器
@@ -414,7 +419,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `useLiteLLMProxy` | `direct-fetch` 路徑是否額外走 LiteLLM 代理（`false` 時 ollama 走原生直連 `localhost:11434`，完全不碰 LiteLLM，免依賴部署常用） | `boolean` / `true` | 否 | v1 |
 | `rwe.config.json` → `agentDefinitionsDir` | `agentType` composition-root loader 讀取 `*.md` 定義的目錄（`name`/`model`/`tools` frontmatter + 內文即 systemPrompt）；省略時 agentType 註冊表為空 | `string` / — | 否 | v1 |
 | `rwe.config.json` → `defaultAllowedTools` | `gateway:"sdk"` 路徑下，`agent()` 呼叫沒帶 `opts.allowedTools`（且 `agentType` 無 `tools:` frontmatter）時套用的預設工具清單；優先序：呼叫端 `opts.allowedTools` > `agentType` 的 `tools:` > 此鍵 > 內建預設 | `string[]` / `["Read","Write","Edit","Glob","Grep","Bash"]` | 否 | v3 |
-| `rwe.config.json` → `aliases` | 模型別名 → `{provider,model}` 對照表；`provider` 僅 `"anthropic"｜"openai"｜"gemini"｜"ollama"`；省略時內建預設等同拿掉 `local` 那份（全指向 anthropic） | `object` / 見 `rwe.config.example.json` | 否 | v1 |
+| `rwe.config.json` → `aliases` | 模型別名 → `{provider,model}` 對照表；`provider` 僅 `"anthropic"｜"openrouter"｜"ollama"`（v26 起三選一；`openai`/`gemini` 已整條移除，見§情境配方 0）；省略時內建預設等同拿掉 `local` 那份（全指向 anthropic） | `object` / 見 `rwe.config.example.json` | 否 | v1 |
 | `rwe.config.json` → `allowedHosts` | `bind:"0.0.0.0"` 時額外允許的 Host/Origin authority（LAN IP、代理主機名）清單，供 Host/Origin 白名單（§6）核對 | `string[]` / `[]` | 否（`0.0.0.0` bind 時建議設定） | v11 |
 | `rwe.config.json` → `anthropicBaseUrl` | `anthropic` provider 直連（LiteLLM-bypassed）路徑打的真實 Anthropic API base | `string` / `'https://api.anthropic.com'` | 否 | v7 |
 | `rwe.config.json` → `anthropicAuth` | Anthropic 直連認證模式：`"api-key"`（真實 `ANTHROPIC_API_KEY`）或 `"subscription"`（`claude setup-token` 產生的 `CLAUDE_CODE_OAUTH_TOKEN`）；認證素材本身一律來自 secret store／環境變數，絕不放進此檔 | `"api-key"｜"subscription"` / 依偵測到的 secret 自動判斷 | 否 | v7 |
@@ -435,7 +440,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | `rwe.config.json` → `webhookDbPath` | webhook 註冊表（`webhooks`+`webhook_deliveries`）SQLite 檔路徑；**secret 明文儲存**於此檔（HMAC 驗簽需要），存取權限即機密邊界；`webhook_list` 只回 sha256 前綴指紋 | `string` / `$workRoot/webhooks.db` | 否 | v8 |
 | `rwe.config.json` → `casDir` | 內容定址 blob 儲存庫（CAS）目錄；`workspace_push({sha256,contentB64})` 以內容 sha256 為鍵（伺服器 byte-verify）。namespace 一律由呼叫者身份推導，不接受呼叫端指定 | `string` / `$workRoot/cas` | 否 | v10 |
 | `rwe.config.json` → `updateFlagPath` | GitHub tag/release webhook 觸發自我更新的旗標檔路徑（mode 0600，原子寫入）；**必須在所有 `workRoot` 之外**（違反則 `UPDATE_FLAG_INSIDE_WORKROOT` 拒絕啟動）；省略時 `/github/webhook` 對已驗簽事件回 503 | `string` / — | 否 | v11 |
-| `rwe.config.json` → `updateResultPath` | 特權 bash helper 寫入更新結果 JSON（`{tag,status,ts,detail?}`）的路徑；同樣必須在 `workRoot` 之外 | `string` / — | 否 | v11 |
+| `rwe.config.json` → `updateResultPath` | 特權 bash helper 寫入更新結果 JSON（`{tag,status,ts,detail?,configCheck?}`——`configCheck` 是 v26 新增的第五個鍵，`'passed'\|'skipped'\|'failed'`，舊版 helper 寫的檔案沒有這個鍵）的路徑；同樣必須在 `workRoot` 之外 | `string` / — | 否 | v11 |
 | `rwe.config.json` → `selfUpdateDbPath` | 自更新 delivery 去重 + pending outcome 的 SQLite 路徑 | `string` / `$workRoot/self-update.db` | 否 | v11 |
 | `rwe.config.json` → `maxTimeoutMs` | `timeoutMs` 的 engine 端 ceiling，**兩處都管**：送出時的 `overrides.timeoutMs`，以及註冊時腳本宣告的 `meta.params.agents.<label>.timeoutMs.default`。超過一律拒絕、不靜默改小。唯一不受此上限約束的是腳本內 `agent()` 的逐次 opts | `number` / `600000` | 否 | v21 |
 | `rwe.config.json` → `maxAppendPromptBytes` | `overrides.appendPrompt` 的位元組上限；超過在送出時以 `PARAM_OUT_OF_RANGE` 拒絕（不截斷、原文不回顯於錯誤訊息） | `number` / `1024` | 否 | v21 |
@@ -459,10 +464,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 | env `RWE_SECRET_ANTHROPIC_API_KEY` | 同上，但走伺服器端 secret store（`gateway:"sdk"` 直連 Anthropic 時優先於 `ANTHROPIC_API_KEY`） | `string` / 無預設 | 否 | v7 |
 | env `CLAUDE_CODE_OAUTH_TOKEN` | `provider:"anthropic"` **直連**的**訂閱制**認證（`anthropicAuth:"subscription"`），用 `claude setup-token`（Pro/Max 帳號）產生；設定時**不要**同時設 `ANTHROPIC_API_KEY` | `string` / 無預設 | 否 | v7 |
 | env `RWE_SECRET_CLAUDE_CODE_OAUTH_TOKEN` | 同上，但走伺服器端 secret store（優先於 `CLAUDE_CODE_OAUTH_TOKEN`） | `string` / 無預設 | 否 | v7 |
-| env `OPENAI_API_KEY` | `provider:"openai"` 別名的 API key；打自架 OpenAI 相容端點時可給任意非空字串 | `string` / 無預設 | 用到 openai 別名時 | v1 |
-| env `OPENAI_API_BASE` | 由 LiteLLM 子行程讀取：讓所有 `provider:"openai"` 別名改打這個 base URL（vLLM／TGI／llama.cpp／LiteLLM 等 OpenAI 相容端點，見上方「情境配方」） | `string` / `https://api.openai.com/v1` | 否 | v7 |
-| env `GEMINI_API_KEY` | `provider:"gemini"` 別名的 API key | `string` / 無預設 | 用到 gemini 別名時 | v1 |
-| env `OLLAMA_BASE_URL` | `provider:"ollama"` 別名要打的 Ollama 位址（本機/內網模型，免金鑰；見 §6「本機小模型能力上限」） | `string` / `http://localhost:11434` | 否 | v1 |
+| env `OLLAMA_BASE_URL` | `provider:"ollama"` 別名要打的 Ollama 位址（本機/內網/自架模型，免金鑰；見 §6「本機小模型能力上限」；v26 起也是「自架 OpenAI 相容端點」的取代路徑，見§情境配方 0） | `string` / `http://localhost:11434` | 否 | v1 |
 | env `OPENROUTER_API_KEY` | `provider:"openrouter"` 別名與 `agent({model:"openrouter/<id>"})` passthrough 的 API key（`sk-or-…`）；LiteLLM 以原生 `openrouter/<model>` 路由自動讀取，一把 key 開放整個 OpenRouter 目錄（`models_list` 可查） | `string` / 無預設 | 用到 openrouter 時 | v9 |
 | env `RWE_SECRET_GITHUB_WEBHOOK_SECRET` | 標籤觸發式自動更新的 GitHub webhook HMAC 共享密鑰；`POST /github/webhook` 以此對原始 body bytes 算 HMAC-SHA256 比對 `X-Hub-Signature-256`；缺少（且未設 `updateFlagPath`）則路由回 503 `UPDATE_WEBHOOK_UNCONFIGURED` | `string` / 無預設 | 否（缺少則自動更新停用） | v11 |
 
@@ -538,7 +540,7 @@ curl -s http://localhost:8787/api/models | python3 -c \
 仍可透過 `agentType` 的 `tools:` frontmatter 或呼叫端 `opts.allowedTools` 明確啟用，只是預設集不
 含它們。
 
-**(c) 供應商 API 金鑰的存放位置**：真實的供應商金鑰（`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/...）
+**(c) 供應商 API 金鑰的存放位置**：真實的供應商金鑰（`ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY`/...）
 只存在於「啟動這個伺服器的那個 process 自己的環境變數」與「伺服器內部管理的 LiteLLM 代理子行程
 自己的環境變數」這兩個地方（`LiteLLMProxyManager._doStart()` 明確用 `env: { ...process.env }`
 把這些真實金鑰交給代理子行程——這是它需要真的把呼叫路由到對應供應商所必需的）。**被 spawn 出來、
@@ -721,12 +723,23 @@ npm run start
 狀態（run 記錄、journal、具名工作流程註冊表）存在 `workRoot`（SQLite + `agent-*.jsonl`），回滾程式碼
 **不會**清掉這些檔案；若新舊版本的資料格式不相容，需另外決定是否保留/搬移 `workRoot`。
 
+> **v26 遷移注意（三個不相容變更，一次到位，無過渡期）**：(1) `run_start`/`workflow_register` 的
+> `budget` 參數從裸數字（token 上限）改成物件 `{usd?: <USD>, tokens?: <四欄合計 token 數>}`——舊的
+> 裸數字呼叫會收到 `INVALID_ARGUMENT`，訊息內附遷移建議（把舊數字塞進 `{tokens: N}`）；
+> `null`/省略仍是「無上限」。(2) `models_list` 的 `toolUse` 欄位改名 `toolUseDeclared`（語意不變，
+> 只是欄位名——呼叫端若寫死這個鍵名要一併改）。(3) 用量欄位從兩欄（`input`/`output`）擴成四欄
+> （`input`/`output`/`cacheRead`/`cacheWrite`）；同時新增 `costUSD`/`unpriced` 欄位（見
+> `run_status.agents[].tokens`／`run_result.meta.usage`）。這三個變更沒有相容窗口（v24 的既定原則：
+> 部署是單一擁有者，不維護雙欄位過渡期）；跨 repo 的 `remote-workflow-plugin`（`push_workspace.py`）
+> 走的是 `/assets/manifest` + `seedManifestRef`（blob CAS），從不呼叫 `run_start` 的 inline
+> `seed`/`budget`/讀 `models_list.toolUse`，故未受影響（v26 Gate 6 交叉查核記錄）。
+
 ## 5. 疑難排解 Troubleshooting
 | 症狀 | 可能原因 | 處置 |
 |------|----------|------|
 | 啟動失敗 `EADDRINUSE` | port 已被另一個 remote-workflow-engine process 占用 | `RWE_PORT=<other>` 換一個 port，或先確認/停掉舊 process（`ps aux \| grep "main.ts"`） |
 | `pip install 'litellm[proxy]'` 失敗（`uvloop`/`orjson` 編譯錯誤） | 系統 Python 版本太新（如 3.13/3.14），沒有預編譯 wheel | 用 §1a 的 `uv python install 3.12` 取得一份獨立的 3.12，改用它裝 |
-| `agent()` 一律回傳 `null`、`run_status.agents[].state === "failed"` | 該別名對應的 provider 沒有可用憑證/端點（伺服器不會掛住，只會讓該次呼叫失敗回 `null`） | 確認 `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY`/`OLLAMA_BASE_URL` 已正確設定，且 `rwe.config.json` 的 `aliases` 有指到你要的 provider/model |
+| `agent()` 一律回傳 `null`、`run_status.agents[].state === "failed"` | 該別名對應的 provider 沒有可用憑證/端點（伺服器不會掛住，只會讓該次呼叫失敗回 `null`） | 確認 `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY`/`OLLAMA_BASE_URL` 已正確設定，且 `rwe.config.json` 的 `aliases` 有指到你要的 provider/model |
 | `workflow_register` 回 `UNKNOWN_ALIAS` | 腳本 `meta.params.agents.<label>.model.default` 的別名沒在 `aliases` 設定檔裡 | 補上該別名，或改用已存在的別名——這是在**註冊當下**就報錯（`model` 不能寫在 `agent()` 呼叫裡，寫了是 `SCAN_VIOLATION`），不會跑到一半才失敗 |
 | 任何工具呼叫回 JSON-RPC `-32601 Unknown tool` | 用的工具名不存在（例如 `workflow_run`／`workflow_status`／`asset_push`／`mcp_provision`／`chain_create`） | 用 `tools/list`（35 個）查現行名稱；權威清單是 `src/tool-specs.ts` |
 | 開機 log 出現 `unrecognized config key(s) in rwe.config.json, ignored: …` | `rwe.config.json` 有引擎不認得的鍵（打錯字，或已不存在的鍵，例如 `graphAnalyzer`） | 把該鍵從設定檔移除；有效鍵只有 §1b 設定總表列出的那些 |
@@ -848,7 +861,7 @@ immutable-pool GC。同樣受 Host/Origin 白名單過渡管控，非公開端�
 `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`），不會原封不動傳入整個 `process.env`——避免主機上其他
 機密環境變數（如其他 provider 的 API key、雲端憑證）意外流入子行程。
 
-**未驗證的真實依賴**：付費供應商（Anthropic/OpenAI/Gemini）需要一組 sandbox/test key 才能驗證
+**未驗證的真實依賴**：付費供應商（Anthropic/OpenRouter）需要一組 sandbox/test key 才能驗證
 「真正成功呼叫」的情境（含這些供應商上工具迴圈是否正常，目前只在本機 Ollama 上確認過小模型限制）。
 `gateway:"sdk"`（預設）+ 本機 Ollama 的純文字問答成功案例已驗證；部署到正式環境前，建議至少用一組
 sandbox/test key 針對付費供應商跑一次 `agent()` 成功案例。
@@ -963,6 +976,17 @@ RWE_SECRET_GITHUB_WEBHOOK_SECRET=<你在 GitHub 設的 Secret>
 
 （`selfUpdateDbPath` 省略即用預設 `$workRoot/self-update.db`。）
 
+> **v26（DES-172, REQ-123/070）：重啟前的設定檢查。** 若 `rwe-update.sh` 執行時的環境變數帶了
+> `RWE_CONFIG_PATH`（指向這台機器實際要用的 `rwe.config.json`——寫在下面步驟五 unit 的 `Environment=`
+> 或 `EnvironmentFile=` 都行，跟 `RWE_UPDATE_FLAG` 等變數同一個機制；範本 `deploy/rwe-update.service`
+> 內建 `EnvironmentFile=-/etc/rwe/update.env`，這條線前面的 `-` 代表檔案不存在也不報錯），
+> `deploy/rwe-update.sh` 會在 `npm test` 綠燈之後、真正 `systemctl restart` 之前，額外跑一次
+> `npm run check-config`——用**同一條** `composeConfig()` 翻譯路徑驗證設定值（例如 `aliases` 有沒有
+> 殘留已下架的 provider 列），但完全不 spawn litellm、不綁 port。驗證失敗會跟建置/測試失敗一樣安全
+> 失敗（退回前一個 SHA，不重啟），並把 `configCheck:"failed"` 寫進結果檔；沒設 `RWE_CONFIG_PATH` 則記
+> `configCheck:"skipped"`（不是靜默略過——面板上看得到）。也可以手動跑一次同一個檢查：
+> `RWE_CONFIG_PATH=<path> npm run check-config`（離線用，不用真的觸發更新）。
+
 ### 步驟五：安裝特權更新 systemd 單元
 
 > 特權 helper（`deploy/rwe-update.sh`）負責 git checkout + build + restart，須以有 `systemctl restart rwe` 權限的使用者執行。對 systemd user service 部署，`rwe-update.service` 作為 user service 即可（user service 可 `systemctl --user restart` 自己的服務）。
@@ -980,6 +1004,8 @@ systemctl --user enable rwe-update.path  # 讓 .path 在登入後自動監看
 #   RWE_UPDATE_RESULT = /home/<user>/.local/share/rwe-flags/update-result.json
 #   RWE_UPDATE_LOCK   = /home/<user>/.local/share/rwe-flags/update.lock
 #   RWE_OFFICIAL_REMOTE = <git remote URL，只接受此來源的 tag>
+# 選用（v26，見上方「重啟前的設定檢查」）：
+#   RWE_CONFIG_PATH   = 這台機器實際要用的 rwe.config.json 路徑——省略則 configCheck 記 skipped
 ```
 
 `deploy/rwe-update.path` 使用 `PathExists=` + `PathChanged=`（**不**用 `PathModified=`，避免
@@ -990,8 +1016,8 @@ systemctl --user enable rwe-update.path  # 讓 .path 在登入後自動監看
 ```bash
 # 觀察最後一次更新的結果
 curl -s http://localhost:8787/api/status | jq .lastUpdate
-# 範例輸出（已 apply）：
-# { "tag": "v1.5.0", "status": "applied", "ts": "2026-08-09T12:34:56Z" }
+# 範例輸出（已 apply，含 v26 的 configCheck）：
+# { "tag": "v1.5.0", "status": "applied", "ts": "2026-08-09T12:34:56Z", "configCheck": "passed" }
 # 範例輸出（build 失敗）：
 # { "tag": "v1.5.0", "status": "failed", "ts": "2026-08-09T12:35:10Z", "detail": "npm ci failed ..." }
 
@@ -1011,25 +1037,16 @@ curl -s http://localhost:8787/api/version
 
 本機制設計只支援**單一引擎實例**。多實例部署（多個 rwe 綁不同 port 共用同一 git 工作目錄）會造成 helper 在其中一個實例的 `systemctl restart rwe` 時中斷另一個，不在支援範圍內。多實例需求請用多套獨立部署（各自的 git clone + service unit + flag 路徑）。
 
-## 附錄：辨識端點是 LiteLLM / vLLM / Ollama / 其他（`⭐ 情境配方` §0 引用）
+## 附錄：辨識端點（v26 起僅供 Ollama 除錯用）
 
-> 對本部署**不影響做法**（一律當 OpenAI 相容端點用 `provider:"openai"` + `OPENAI_API_BASE` 接），
-> 純供判斷對方在跑什麼。由能連到端點的機器執行，`BASE=http://那台:PORT`：
+> v26（issue #66）起，`provider` 只剩 `anthropic|openrouter|ollama` 三種——不再有「接任意 OpenAI
+> 相容端點」這條路（見§情境配方 0）。以下只用來確認你的**自架 Ollama（或 Ollama API 相容）伺服器**
+> 是否真的活著，由能連到端點的機器執行，`BASE=http://那台:PORT`：
 
 ```bash
 BASE=http://那台:PORT
-curl -s $BASE/health/liveliness ; echo    # LiteLLM ⇒ "I'm alive!"（其他多半 404）
-curl -s $BASE/version ; echo              # vLLM ⇒ {"version":"0.x.x"}
 curl -s $BASE/api/version ; echo          # Ollama ⇒ {"version":"0.x.x"}（另有 /api/tags）
-curl -s $BASE/v1/models | head -c 400     # 通用：看有哪些模型 id（右邊 aliases.model 就填這些）
-# 最有力：真打一次，看『回應標頭』指紋
-curl -s -D - -o /dev/null -X POST $BASE/v1/chat/completions \
-  -H 'content-type: application/json' -H 'authorization: Bearer dummy' \
-  -d '{"model":"<某個model>","messages":[{"role":"user","content":"hi"}],"max_tokens":5}' \
-  | grep -iE 'server:|x-litellm|x-vllm|openai-|via:'
+curl -s $BASE/api/tags | head -c 400      # 看有哪些模型 tag（右邊 aliases.model 就填這些）
 ```
-- 回應標頭有 `x-litellm-*` ⇒ **LiteLLM**；`server: uvicorn` + 有 `/version` ⇒ **vLLM**；
-  有 `/api/version` ⇒ **Ollama**；三個探針都 404 但 `/v1/chat/completions` 正常 ⇒ 其他直連
-  OpenAI 相容 server（TGI/llama.cpp/LMDeploy…）。**只要最後那條 `/v1/chat/completions` 通，就能接。**
 
 

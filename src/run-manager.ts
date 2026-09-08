@@ -7,7 +7,7 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
-import { materializeSeed, materializeManifest } from './workspace-seed.js';
+import { materializeSeed, materializeManifest, validateSeedSpec } from './workspace-seed.js';
 import type { CasStore } from './cas-store.js';
 import { casNamespaceFor } from './cas-store.js';
 import { initGitBaseline } from './workspace-git.js';
@@ -22,12 +22,12 @@ import { HardenedSeedRefFetcher } from './seedref-fetcher.js';
 const SEEDREF_TIMEOUT_MS = 30_000;
 const SEEDREF_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 const SEEDREF_MAX_FILE_BYTES = 10 * 1024 * 1024;
-import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning } from './types.js';
+import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning, PriceBook, Tokens, RunUsage } from './types.js';
 import type { RunStore } from './run-store.js';
 import { InMemoryRunStore, sumUsageTokens } from './run-store.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
-import { RunGuard } from './run-guard.js';
+import { RunGuard, parseBudget } from './run-guard.js';
 import { createSemaphore, type Semaphore, type SemaphoreGauge } from './agent-semaphore.js';
 import { SandboxHost } from './sandbox/host.js';
 import type { AgentSpawner, AgentTypeDef } from './agent-executor.js';
@@ -37,11 +37,13 @@ import type { SecretValueProvider } from './secret-resolver.js';
 import { ResumeCache, MISS, type ResumePlan } from './resume-cache.js';
 import { WorkflowCatalog } from './workflow-catalog.js';
 import { assetRootsFor, defaultAssetRoot, globalAssetRoot } from './asset-sync.js';
-import type { GatewayClient, GatewayConfig } from './gateway/client.js';
+import type { GatewayClient, GatewayConfig, AliasMap } from './gateway/client.js';
 import { LiteLLMGatewayClient } from './gateway/client.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
 import { validateUserOverrides, validateDeclaredArgs, isKnownAlias, FRAME_CLOSE_FORGERY, DEFAULT_CEILINGS, type ParamContract, type Ceilings, type Err as ParamErr } from './params/contract.js';
 import { defaultRunParams, mergeRunParams, type RunParams } from './params/resolve.js';
+import { resolveAlias } from './providers.js';
+import { ModelBook, reachableModels } from './models/model-book.js';
 
 // Default gateway config (REQ-004) for the gateway RunManager builds when no GatewayClient is
 // injected — routes through the single-source DEFAULT_ALIASES table (src/default-aliases.ts).
@@ -121,6 +123,15 @@ export interface RunManagerDeps {
    *  admission-time UNKNOWN_ALIAS check against it. Omitted/empty = D-AUTH-5-B (no configured
    *  aliases means every alias passes; the gateway itself is the fail point). */
   aliasNames?: Set<string>;
+  /** v26 (DES-178, ARCH-116, ADR-038, TASK-178): the TTL'd, single-flight catalog snapshot this
+   *  manager pins onto every run at admission (`start()`) — never re-resolved on resume. Omitted ->
+   *  an always-empty source (still prices anthropic-static/ollama-zero; everything else `null`). */
+  modelBook?: ModelBook;
+  /** v26 (DES-178, TASK-178): the alias table `reachableModels`'s output is resolved against when
+   *  building the price-book pin — the SAME table `aliasNames` above is derived from, so a model
+   *  this run legally reaches (having already passed the UNKNOWN_ALIAS check) always resolves.
+   *  Omitted -> DEFAULT_ALIASES, same fallback as the gateway's own default config. */
+  aliasMap?: AliasMap;
 }
 
 /** v25 (DES-168, REQ-120, owner ruling): the default per-run in-flight agent() cap. Explicit and
@@ -155,6 +166,12 @@ interface RunEntry {
   name?: string;
   status: RunStatus;
   guard: RunGuard;
+  /** v26 (DES-182, ARCH-118, TASK-182, ADR-037): the SAME `{usd, tokens}` limits `guard` was built
+   *  from (`parseBudget(spec.budget, {source:'store'})`), kept alongside it — `RunGuard` exposes no
+   *  public accessor for its own two totals (`budgetView()` stays the pre-v26, token-only view),
+   *  so this is where `_newSandbox`/the nested `SandboxHost` constructor read the two independent
+   *  limits to hand the sandbox's `SandboxHostConfig.budget`. */
+  budgetLimits: { usd: number | null; tokens: number | null };
   abortController: AbortController;
   sandbox: SandboxHost;
   spawner: AgentSpawner;
@@ -204,6 +221,29 @@ function declaredAssetsOf(contract: ParamContract | undefined): Record<string, {
   return out;
 }
 
+/** v26 (DES-183, ARCH-118, ADR-046, TASK-183, REQ-127): pure — the LIVE `RunUsage` producer,
+ *  folded from `AgentRecord.tokens`/`.costUSD`/`.unpriced` (populated by
+ *  `AgentTranscriptSink.capture()` independently of `RunGuard`, which has no production caller of
+ *  `addUsage` yet). Read by `_mergeLive` (in-process status), the terminal snapshot writer
+ *  (`_transition`) and `_budgetSnapshotFor` (its own USD/tokens projection) — one fold, not three.
+ *  `unmappedMessages` stays `{}`: no v26 producer in this task's scope stamps `unmapped` onto
+ *  `AgentRecord` — `foldUsage` (run-guard.ts) is the producer that reads it, off the persisted
+ *  usage event, for the at-rest path. */
+function foldUsageFromRecords(records: AgentRecord[]): RunUsage {
+  const tokens: Tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  let costUSD = 0;
+  let unpricedCalls = 0;
+  for (const r of records) {
+    tokens.input += r.tokens.input;
+    tokens.output += r.tokens.output;
+    tokens.cacheRead += r.tokens.cacheRead ?? 0;
+    tokens.cacheWrite += r.tokens.cacheWrite ?? 0;
+    costUSD += r.costUSD ?? 0;
+    if (r.state === 'done' && r.unpriced === true) unpricedCalls += 1;
+  }
+  return { tokens, costUSD, unpricedCalls, unmappedMessages: {} };
+}
+
 export class RunManager {
   private readonly _store: RunStore;
   private readonly _clock: Clock;
@@ -232,6 +272,10 @@ export class RunManager {
   private readonly _ceilings: Ceilings;
   /** v21 Gate 8 send-back (review §4 B1): configured alias-name set for admission-time UNKNOWN_ALIAS. */
   private readonly _aliasNames: Set<string>;
+  /** v26 (DES-178, TASK-178): catalog snapshot pinned onto every run's price_book at admission. */
+  private readonly _modelBook: ModelBook;
+  /** v26 (DES-178, TASK-178): resolves a reachable alias/model string to {provider, model} for the pin. */
+  private readonly _aliasMap: AliasMap;
   private readonly _runs = new Map<string, RunEntry>();
   /** v25 (#53): runIds already reported for `terminal_without_transition` — one record per run,
    *  not one per poll (a terminal run is polled until the caller notices it is terminal). */
@@ -281,6 +325,11 @@ export class RunManager {
     // (server.ts) — undefined/omitted -> empty Set (D-AUTH-5-B: no configured aliases means the
     // check is a no-op, same as before this fix, never a false-positive UNKNOWN_ALIAS).
     this._aliasNames = deps.aliasNames ?? new Set();
+    // v26 (DES-178, TASK-178): an always-empty default source still prices anthropic-static/
+    // ollama-zero via ModelBook's own built-in fallback — never a crash for a caller that doesn't
+    // inject a real catalog (e.g. a direct RunManager unit test).
+    this._modelBook = deps.modelBook ?? new ModelBook(async () => [], { clock: this._clock });
+    this._aliasMap = deps.aliasMap ?? DEFAULT_ALIASES;
   }
 
   /** v8 Slice 4 (REQ-054): count of live (non-terminal) top-level runs in this process — the
@@ -351,16 +400,18 @@ export class RunManager {
     if (this._liveRunCount() >= this._maxConcurrentRuns) {
       throw codedError('RUN_ADMISSION_LIMIT', `maxConcurrentRuns=${this._maxConcurrentRuns} reached; run rejected`);
     }
-    // Defense-in-depth (issue #21): the seed params are arrays, but a non-compliant / schema-blind MCP
-    // client can hand a JSON-stringified array through (the crash the schema fix in server.ts prevents
-    // for compliant clients). A bare string has `.length` and passes `&& length > 0`, then `.map(...)`
-    // throws a raw `TypeError: … .map is not a function`. Reject a non-array here with a typed,
-    // actionable error BEFORE any durable work, whatever the client's serialization quirk.
-    if (spec.seed !== undefined && !Array.isArray(spec.seed)) {
-      throw codedError('INVALID_SEED_SPEC', `seed must be an array of {path, contentB64}; got ${typeof spec.seed}`);
+    // v26 (DES-170, TASK-175, issue #64): validateSeedSpec is the ONE door for INVALID_SEED_SPEC —
+    // it replaces the old array-shape-only checks (which let a well-formed array of {path, sha256}
+    // elements through `seed` and materializeSeed wrote 0-byte files via `contentB64 ?? ''`).
+    // Validate-all-then-write: nothing is materialized until every element passes, so this must run
+    // BEFORE any durable work — same position as the checks it replaces.
+    if (spec.seed !== undefined) {
+      const v = validateSeedSpec('seed', spec.seed);
+      if (!v.ok) throw codedError('INVALID_SEED_SPEC', v.message, { index: v.index, path: v.path });
     }
-    if (spec.seedManifest !== undefined && !Array.isArray(spec.seedManifest)) {
-      throw codedError('INVALID_SEED_SPEC', `seedManifest must be an array of {path, sha256, exec?}; got ${typeof spec.seedManifest}`);
+    if (spec.seedManifest !== undefined) {
+      const v = validateSeedSpec('seedManifest', spec.seedManifest);
+      if (!v.ok) throw codedError('INVALID_SEED_SPEC', v.message, { index: v.index, path: v.path });
     }
     // v14 REQ-082 (DES-087): 4-way mutual-exclusion — {seed, seedManifest, seedRef, seedManifestRef}:
     //   >1 of these present → SEED_SOURCE_CONFLICT (highest precedence; fires before any CAS lookup).
@@ -495,7 +546,9 @@ export class RunManager {
     // v24 (TASK-158): re-checked over EVERY label's resolved model too, not just the (now largely
     // vestigial, HarnessDefaults-only) top-level field — a per-agent override/default is just as
     // reachable here as the old flat one was.
-    const modelsToCheck = [effectiveParams.model, ...Object.values(effectiveParams.agents ?? {}).map((a) => a.model)];
+    // v26 (DES-178, ARCH-116, TASK-178): extracted to `reachableModels` so this admission check and
+    // the price-book pin below derive the SAME reachable set from ONE place (INV-V26-4).
+    const modelsToCheck = reachableModels(effectiveParams);
     for (const m of modelsToCheck) {
       if (m !== undefined && !isKnownAlias(m, this._aliasNames)) {
         throw paramCodedError({
@@ -531,7 +584,24 @@ export class RunManager {
       ? (redact(effectiveParams, this._secretValueProvider.entries()) as RunParams)
       : effectiveParams;
 
-    const runId = await this._store.createRun(spec, resolvedVersion, persistedParams);
+    // v26 (DES-178, ARCH-116, ADR-038, TASK-178, REQ-127/126): pin price/capability at admission —
+    // "however started" (ADR-047(b)): every start() call reaches here, including trigger-started
+    // runs (schedule/webhook/chain), so a run's spend is trackable even though it carries no cap.
+    // Pinned here, never re-resolved on resume — a mid-run price change or listing outage cannot
+    // move a pinned run's arithmetic. One entry per reachable model, present even when every entry
+    // prices `null` ("we looked and found nothing" vs "we never looked" stay distinguishable only
+    // because the key is THERE). `m` is already alias-validated above, so `resolveAlias` failing
+    // here would mean the admission table and the pin table disagreed — never expected in practice.
+    const bookSnapshot = await this._modelBook.snapshot();
+    const pinned: PriceBook['pinned'] = {};
+    for (const m of modelsToCheck) {
+      const resolved = resolveAlias(this._aliasMap, m);
+      if (!resolved) continue;
+      pinned[`${resolved.provider}/${resolved.model}`] = bookSnapshot.lookup(resolved.provider, resolved.model);
+    }
+    const priceBook: PriceBook = { fetchedAt: bookSnapshot.fetchedAt, source: bookSnapshot.source, pinned };
+
+    const runId = await this._store.createRun(spec, resolvedVersion, persistedParams, priceBook);
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
     // v13 REQ-080 (DES-083, TASK-078): engine-pull seedRef — fetch the tree AFTER createRun, feed the
     // fetched entries into the EXISTING seedManifest materialize branch below (guard-parity is structural:
@@ -575,7 +645,12 @@ export class RunManager {
       // Best-effort: a null baseSha never fails the run.
       initGitBaseline(workspace);
     }
-    const guard = new RunGuard({ concurrency: this._concurrency, budget: spec.budget ?? null });
+    // v26 (DES-181, ARCH-118, TASK-181): 'store' — by the time a WIRE admission reaches here it has
+    // already passed call-tool.ts's ahead-of-ajv bare-number refusal and the schema's object/null
+    // shape, so a bare number here is either a legacy persisted row (the resume path below) or a
+    // direct-construction test caller; both mean the v25 token-only shape.
+    const budgetLimits = parseBudget(spec.budget, { source: 'store' });
+    const guard = new RunGuard({ concurrency: this._concurrency, budget: budgetLimits });
     const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, agentTypes: this._agentTypes, secretValueProvider: this._secretValueProvider });
     const entry: RunEntry = {
       script,
@@ -583,8 +658,9 @@ export class RunManager {
       name: spec.name,
       status: 'queued',
       guard,
+      budgetLimits,
       abortController: new AbortController(),
-      sandbox: this._newSandbox(runId, workspace, spec.name),
+      sandbox: this._newSandbox(runId, workspace, spec.name, budgetLimits),
       spawner,
       workspace,
       journal: [],
@@ -653,7 +729,7 @@ export class RunManager {
     const cachePlan = ResumeCache.build(entry.journal, entry.script);
     entry.scriptVersion += 1;
     entry.abortController = new AbortController();
-    entry.sandbox = this._newSandbox(runId, entry.workspace, entry.name);
+    entry.sandbox = this._newSandbox(runId, entry.workspace, entry.name, entry.budgetLimits);
     // v8 REQ-044: reset the deterministic nested-frame allocator + descendant counter so a resumed
     // re-execution re-allocates the SAME frame bases in the same order (replay-stable callSeqs).
     entry.descendants = 0;
@@ -728,7 +804,11 @@ export class RunManager {
     const entry = this._runs.get(runId);
     if (!entry) return view;
     const agents = entry.spawner instanceof AgentExecutor ? entry.spawner.getAllRecords() : view.agents;
-    return { ...view, phases: entry.phases, agents, workflowNodes: entry.workflowNodes, ...(entry.seedRef !== undefined ? { seedRef: entry.seedRef } : {}), ...(entry.seedManifestRef !== undefined ? { seedManifestRef: entry.seedManifestRef } : {}) };
+    // v26 (DES-183, ARCH-118, TASK-183): the live RunUsage overlay — folded from the SAME agent
+    // records just overlaid above (never from `entry.guard`, which has no production caller of
+    // `addUsage` yet — see `foldUsageFromRecords`'s own doc).
+    const usage = entry.spawner instanceof AgentExecutor ? foldUsageFromRecords(agents) : view.usage;
+    return { ...view, phases: entry.phases, agents, workflowNodes: entry.workflowNodes, ...(usage !== undefined ? { usage } : {}), ...(entry.seedRef !== undefined ? { seedRef: entry.seedRef } : {}), ...(entry.seedManifestRef !== undefined ? { seedManifestRef: entry.seedManifestRef } : {}) };
   }
 
   /** The script return value for a completed run, or the failure error (DES-001 workflow_result). */
@@ -834,15 +914,22 @@ export class RunManager {
     const effectiveParams = storedParams ?? defaultRunParams(undefined, registeredContract?.agents);
 
     const workspace = this._catalog.runWorkspace(spec.name ?? '_adhoc', runId);
-    const guard = new RunGuard({ concurrency: this._concurrency, budget: spec.budget ?? null });
+    // v26 (DES-181, ARCH-118, TASK-181): 'store' — by the time a WIRE admission reaches here it has
+    // already passed call-tool.ts's ahead-of-ajv bare-number refusal and the schema's object/null
+    // shape, so a bare number here is either a legacy persisted row (the resume path below) or a
+    // direct-construction test caller; both mean the v25 token-only shape.
+    const budgetLimits = parseBudget(spec.budget, { source: 'store' });
+    const guard = new RunGuard({ concurrency: this._concurrency, budget: budgetLimits });
     // DES-068 (TASK-071): hydrate the guard's spent count from the persisted journal transcripts so
     // the budget cap is correctly enforced on resume. Fold-only (pure); never adds snapshot totals.
-    if (spec.budget !== null && spec.budget !== undefined) {
-      const allEvents = (await Promise.all(
-        view.agents.map((a) => this._store.getTranscript(runId, a.agentId)),
-      )).flat();
-      guard.setSpent(sumUsageTokens(allEvents));
-    }
+    // v26 (DES-183, TASK-183, ADR-047(b)): UNCONDITIONAL — the old `if (spec.budget !== null...)`
+    // gate was written to hydrate the CAP, but it also meant an unbudgeted (trigger-started) run
+    // never hydrated a spent count on resume at all; tracking-without-a-cap (the v25/ADR-047(b)
+    // principle) applies here too.
+    const allEvents = (await Promise.all(
+      view.agents.map((a) => this._store.getTranscript(runId, a.agentId)),
+    )).flat();
+    guard.setSpent(sumUsageTokens(allEvents));
     const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, agentTypes: this._agentTypes, secretValueProvider: this._secretValueProvider });
     const entry: RunEntry = {
       script,
@@ -850,8 +937,9 @@ export class RunManager {
       name: spec.name,
       status: view.status,
       guard,
+      budgetLimits,
       abortController: new AbortController(),
-      sandbox: this._newSandbox(runId, workspace, spec.name),
+      sandbox: this._newSandbox(runId, workspace, spec.name, budgetLimits),
       spawner,
       workspace,
       journal: persistedJournal,
@@ -882,7 +970,9 @@ export class RunManager {
         const secrets = this._secretValueProvider.entries();
         agents = redact(agents, secrets) as typeof agents;
       }
-      await this._store.saveSnapshot(runId, { phases: entry.phases, agents, workflowNodes: entry.workflowNodes });
+      // v26 (DES-183, TASK-183): the run's usage total, folded from the SAME (possibly redacted)
+      // agents array persisted beside it — one fold, not a second derivation that could disagree.
+      await this._store.saveSnapshot(runId, { phases: entry.phases, agents, workflowNodes: entry.workflowNodes, usage: foldUsageFromRecords(agents) });
       // v25 (issue #53, adjudication #9 I-2, warning 1): the run is terminal — is anything it owns
       // still running? Run 3977b82d was in EXACTLY this state (its agent ran on for ~36 seconds
       // after the terminal write and produced real output) and nothing was recorded. Emitted from
@@ -913,16 +1003,39 @@ export class RunManager {
     }
   }
 
-  private _newSandbox(runId: string, workspace: string, topName?: string): SandboxHost {
+  /** v26 (DES-175, ARCH-114, TASK-186): the run's CURRENT phase lane (title+ordinal), read fresh
+   *  each call — the last entry of `entry.phases` (pushed by `onPhase` below). Shared, byRunId,
+   *  by BOTH the top-level host and every nested host: a nested frame with no `phase()` of its own
+   *  inherits the parent's lane exactly because it reads this SAME function. */
+  private _currentPhaseFor(runId: string): { title: string; index: number } | undefined {
+    const phases = this._runs.get(runId)?.phases;
+    if (!phases || phases.length === 0) return undefined;
+    return { title: phases[phases.length - 1]!.title, index: phases.length - 1 };
+  }
+
+  /** v26 (DES-182, ARCH-118, TASK-182, ADR-037): the run's live `{usd, tokens}` spend — a
+   *  projection of `foldUsageFromRecords` (DES-183/TASK-183's own fold, called through per the
+   *  note this replaces). Shared, byRunId, by BOTH the top-level host and every nested host, exactly
+   *  like `_currentPhaseFor` above — a nested frame reads the SAME parent-run total. */
+  private _budgetSnapshotFor(runId: string): { usd: number; tokens: Tokens } {
+    const entry = this._runs.get(runId);
+    const records = entry?.spawner instanceof AgentExecutor ? entry.spawner.getAllRecords() : [];
+    const { costUSD, tokens } = foldUsageFromRecords(records);
+    return { usd: costUSD, tokens };
+  }
+
+  private _newSandbox(runId: string, workspace: string, topName: string | undefined, budgetLimits: { usd: number | null; tokens: number | null }): SandboxHost {
     // v8 REQ-042: seed the top-level nesting chain with the run's own workflow name (if any), so a
     // composite that eventually calls back into itself is caught as a cycle.
     const topAncestors = new Set<string>(topName ? [topName] : []);
     return new SandboxHost({
       workspaceRoot: workspace,
-      onAgentRequest: (prompt, opts, callSeq) => this._handleAgentRequest(runId, prompt, opts, callSeq, ''),
+      budget: budgetLimits,
+      onAgentRequest: (prompt, opts, callSeq, phase) => this._handleAgentRequest(runId, prompt, opts, callSeq, '', phase),
       onWorkflowRequest: (ref, args, callSeq) => this._handleWorkflowRequest(runId, ref, args, '', callSeq, 1, topAncestors),
       onPhase: (title) => { this._runs.get(runId)?.phases.push({ title, ts: this._clock.isoNow() }); },
-      onBudgetSnapshot: () => this._runs.get(runId)?.guard.budgetView().spent() ?? 0,
+      onBudgetSnapshot: () => this._budgetSnapshotFor(runId),
+      currentPhase: () => this._currentPhaseFor(runId),
     });
   }
 
@@ -952,8 +1065,12 @@ export class RunManager {
    *  run's terminal status (completed/failed) unless suspend/stop already moved it on (DES-003). */
   private _runLive(runId: string, entry: RunEntry, script: string, cachePlan: ResumePlan | null): void {
     entry.cachePlan = cachePlan;
+    // v26 (DES-182, ARCH-118, TASK-182): the legacy positional is `null` here on purpose — the two
+    // limits already travelled onto `entry.sandbox`'s own `SandboxHostConfig.budget` at construction
+    // (`_newSandbox`, above), which now wins; `entry.guard.budgetView().total` is TOKENS (the pre-
+    // v26 view) and would be a wrong-unit value on this parameter today.
     entry.sandbox
-      .run(runId, script, entry.args, entry.guard.budgetView().total)
+      .run(runId, script, entry.args, null)
       .then(async (outcome) => {
         if (entry.status !== 'running') return; // suspend/stop already recorded the terminal transition
         if ('result' in outcome) {
@@ -1006,21 +1123,41 @@ export class RunManager {
     const frameBase = this._frameBaseFor(entry, framePathKey);
     const childAncestors = new Set(ancestors).add(name);
     // v8 REQ-046: record this nested workflow() call as a composite-boundary node (dashboard sub-card).
-    entry.workflowNodes.push({ frame: framePathKey, name, parentFrame: parentPathKey, depth });
+    // v26 (DES-175, ARCH-114, TASK-186, REQ-124): `node` is captured by reference so the nested
+    // host's own `onPhase` below can push onto THIS SAME sub-card's `phases[]` — never onto the
+    // parent run's `entry.phases` timeline (a nested frame's own phase() belongs on its card, not
+    // the parent's lanes).
+    const node: WorkflowNodeView = { frame: framePathKey, name, parentFrame: parentPathKey, depth, phases: [] };
+    entry.workflowNodes.push(node);
 
     const nested = new SandboxHost({
       workspaceRoot: entry.workspace,
+      // v26 (DES-182, ARCH-118, TASK-182): the SAME `{usd, tokens}` limits the top-level host got
+      // (`_newSandbox`) — one budget for the whole graph, unchanged; a nested frame's `budget.limits`
+      // reads the parent run's own two limits, never a nested-only allowance.
+      budget: entry.budgetLimits,
       // v8 REQ-044: nested agent() callSeqs are namespaced into this frame's base (see _frameBaseFor)
       // so they never collide with the parent's own or a sibling frame's entries in the shared journal.
       // v8 REQ-045: the nested agents are tagged with THIS frame's path so the dashboard nests them.
-      onAgentRequest: (prompt, opts, callSeq) =>
-        this._handleAgentRequest(runId, prompt, opts, frameBase + callSeq, framePathKey),
+      onAgentRequest: (prompt, opts, callSeq, phase) =>
+        this._handleAgentRequest(runId, prompt, opts, frameBase + callSeq, framePathKey, phase),
       // v8 REQ-041: a deeper workflow() recurses here one level down, carrying this frame's path +
       // the extended ancestor set — enabling N-level composition (was: no delegate → NESTING_ERROR).
       onWorkflowRequest: (ref2, args2, callSeq2) =>
         this._handleWorkflowRequest(runId, ref2, args2, framePathKey, callSeq2, depth + 1, childAncestors),
+      // v26 (DES-175): a nested frame with no phase() of its own inherits the PARENT's lane — same
+      // closure, same runId, as the top-level host (`_newSandbox`) gets.
+      currentPhase: () => this._currentPhaseFor(runId),
+      // v26 (DES-182, DES-175): the SAME fold `_newSandbox` gives the top-level host — reads the
+      // parent run's real spend (`entry.spawner.getAllRecords()`), not a nested-only accumulator.
+      onBudgetSnapshot: () => this._budgetSnapshotFor(runId),
+      // v26 (DES-175, REQ-124): this frame's OWN phase() call lands on its sub-card, not the parent
+      // timeline — zero warnings on a legal parent script, per DES-176's own boundary.
+      onPhase: (title) => { node.phases!.push(title); },
     });
-    const outcome = await nested.run(`${runId}-nested`, registered.script, args, entry.guard.budgetView().total);
+    // v26 (DES-182): `null` positionally — the limits already travelled via `SandboxHostConfig.budget`
+    // above, which wins (see `SandboxHost.run`'s own doc).
+    const outcome = await nested.run(`${runId}-nested`, registered.script, args, null);
     if ('result' in outcome) return outcome.result;
     const err = toErr(outcome.error);
     // v24 (DES-137): the one genuinely-`string` site — `toErr()` can return a raw `Error.name`
@@ -1032,7 +1169,7 @@ export class RunManager {
 
   /** Handles one child agent() call: replay from the resume cache when available, otherwise
    *  enforce budget + concurrency (RunGuard, single authority) and dispatch to the AgentSpawner. */
-  private async _handleAgentRequest(runId: string, positional: string, opts: unknown, callSeq: number, framePath = ''): Promise<unknown> {
+  private async _handleAgentRequest(runId: string, positional: string, opts: unknown, callSeq: number, framePath = '', phase?: { title: string; index: number }): Promise<unknown> {
     const entry = this._runs.get(runId);
     if (!entry) throw new Error(`Unknown run: ${runId}`);
     // v24 (integrator; DES-143/ADR-029 + REQ-110/REQ-113): the script-facing call is
@@ -1062,7 +1199,10 @@ export class RunManager {
     // reason on — before v25 a refused call had no record at all.
     const agentId = entry.guard.nextAgentId();
     if (entry.spawner instanceof AgentExecutor) {
-      entry.spawner.markQueued(agentId, key.opts.label, key.opts.phase, framePath);
+      // v26 (DES-175, ARCH-114, TASK-186, INV-V26-1): `phase` is the receipt-time snapshot threaded
+      // in above — NEVER `key.opts.phase` (the script's own unrelated, unused per-call opt; reading
+      // it into the replay key's neighbourhood is exactly the mistake INV-V26-1 forbids).
+      entry.spawner.markQueued(agentId, { label: key.opts.label, phase, frame: framePath });
     }
     const release = await entry.guard.acquireSlot();
     try {
@@ -1084,8 +1224,11 @@ export class RunManager {
         // A real refusal — record it as a terminal `refused` agent carrying its named code, then
         // let it propagate. `parallel()` (sandbox/guards.ts) re-throws refusal codes rather than
         // swallowing them to null, so the caller learns why instead of silently losing a branch.
+        // v26 (DES-188, TASK-188): AWAITED — markRefused now journals a `kind:'refused'` transcript
+        // event (the only durable trace across a restart with no snapshot), so it must land before
+        // the throw propagates, not race it.
         if (entry.spawner instanceof AgentExecutor) {
-          entry.spawner.markRefused(agentId, 'BUDGET_EXCEEDED', this._clock.isoNow());
+          await entry.spawner.markRefused(runId, agentId, 'BUDGET_EXCEEDED', this._clock.isoNow());
         }
         throw err;
       }

@@ -19,6 +19,16 @@ import { ERROR_CATALOG } from './errors.js';
 // carry a comment saying this file should interpolate them; it did not, and the hand-written prose
 // taught three of the five shapes `checkMermaid` accepts.
 import { SHAPES, EDGE_FORMS } from './check-mermaid.js';
+// v26 (DES-187, ARCH-121, TASK-193): the sandbox's own exported globals list and determinism-guard
+// data — rendered here rather than re-typed, so this section cannot drift from what evaluateScript
+// actually builds (guards.ts exports these; no new import enters the sandbox child).
+import { SANDBOX_GLOBALS, DETERMINISM_GUARDED } from './sandbox/guards.js';
+// v26 (DES-187, ARCH-121, TASK-193): the three seed shapes and workspace_push's own description,
+// read from the SAME schema `tools/list` serves — a cold client's only documentation (ADR-032).
+import { TOOL_SPECS } from './tool-specs.js';
+// v26 (DES-187, ARCH-121, TASK-193, ADR-041): the provider capability table, read from the same
+// data resolveAlias/validateAliases check against.
+import { PROVIDER_CAPS, PROVIDERS } from './providers.js';
 
 export interface GuideCeilings {
   maxTimeoutMs: number;
@@ -52,9 +62,26 @@ function agentSpec(effort: 'low' | 'medium' | 'high', timeoutMs: number): string
   return `{ model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: '${effort}' }, timeoutMs: { type: 'number', default: ${timeoutMs} } }`;
 }
 
-// v24 (ARCH-107, DES-157): the ten named patterns, each a real script + a real author-supplied
-// Mermaid diagram, registered over a booted engine by tests/integration/guide-examples-register.
-// test.ts — a guide that teaches an invalid example is worse than none (v23's own defect).
+/** v26 (DES-185, ARCH-119, TASK-190): a v2-conformant stadium (agent) node —
+ *  `id(["label<br/>model · effort · timeoutMs<br/>tools: …"])`. The middle segment must literally
+ *  equal the agent's resolved `model.default`/`effort.default`/`timeoutMs.default` (checkMermaid's
+ *  existing v1 value-triple check, step 7). `tools` is the sorted, comma-space `allowedTools`
+ *  array, `'none'` for `[]`, or `'default'` when the call carries no `allowedTools` key — ARCH-119
+ *  rule (12) skips comparing the 'default' case entirely, so the exact text there is never
+ *  checked, but writing it out keeps every example visually consistent. */
+function stadiumNode(id: string, label: string, effort: string, timeoutMs: number, tools: 'default' | 'none' | string[]): string {
+  const toolsText = tools === 'default' ? 'tools: default' : tools === 'none' ? 'tools: none' : `tools: ${[...tools].sort().join(', ')}`;
+  return `${id}(["${label}<br/>default · ${effort} · ${timeoutMs}<br/>${toolsText}"])`;
+}
+
+// v26 (DES-185, ARCH-119/107, ADR-039, TASK-190): the thirteen named patterns, each a real script +
+// a real author-supplied LR SWIMLANE Mermaid diagram, registered over a booted engine by
+// tests/integration/guide-examples-register.test.ts — the guide examples ARE the v2 conformance
+// corpus (a guide that teaches an invalid example is worse than none, v23's own defect). Every
+// v2 construct (phase lane, `parallel` slot, `alt` slot via ternary AND if/else, `tools: none`,
+// `tools: default`, a dynamic title, a nested `workflow()` rectangle) and all five of ADR-039's
+// contract edges (agent-before-phase, nested `workflow()`, `parallel()` of `workflow()`, tools
+// absent, dynamic title) appear here in their LEGAL, registering form — no negative fixture.
 export const GUIDE_EXAMPLES: GuideExample[] = [
   {
     title: 'single agent',
@@ -63,8 +90,11 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
       `  description: 'Summarize the given topic in one paragraph',\n` +
       `  params: { agents: { writer: ${agentSpec('low', 60000)} } },\n` +
       `};\n` +
+      `phase('summarize');\n` +
       `return await agent('writer', { prompt: 'Summarize the topic' });`,
-    mermaid: `graph TD\nwriter(["writer"])`,
+    mermaid:
+      `graph LR\n` +
+      `subgraph "summarize"\n${stadiumNode('writer', 'writer', 'low', 60000, 'default')}\nend`,
     expectRegister: 'ok',
   },
   {
@@ -80,7 +110,12 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
       `const edited = await agent('edit', { prompt: 'Improve the draft: ' + drafted });\n` +
       `phase('final');\n` +
       `return await agent('final', { prompt: 'Polish: ' + edited });`,
-    mermaid: `graph TD\ndraft(["draft"])\nedit(["edit"])\nfinal(["final"])\ndraft-->edit\nedit-->final`,
+    mermaid:
+      `graph LR\n` +
+      `subgraph "draft"\n${stadiumNode('draft', 'draft', 'low', 60000, 'default')}\nend\n` +
+      `subgraph "edit"\n${stadiumNode('edit', 'edit', 'low', 60000, 'default')}\nend\n` +
+      `subgraph "final"\n${stadiumNode('final', 'final', 'low', 60000, 'default')}\nend\n` +
+      `draft-->edit\nedit-->final`,
     expectRegister: 'ok',
   },
   {
@@ -88,30 +123,44 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
     script:
       `export const meta = {\n` +
       `  description: 'Fan out research to three topics in parallel, then combine the results',\n` +
-      `  params: { agents: { researcher: ${agentSpec('low', 60000)}, combiner: ${agentSpec('medium', 90000)} } },\n` +
+      `  params: { agents: { alpha: ${agentSpec('low', 60000)}, beta: ${agentSpec('low', 60000)}, gamma: ${agentSpec('low', 60000)}, combiner: ${agentSpec('medium', 90000)} } },\n` +
       `};\n` +
-      `const topics = ['a', 'b', 'c'];\n` +
-      `const results = await parallel(topics.map((t) => () => agent('researcher', { prompt: 'Research ' + t })));\n` +
+      `phase('research');\n` +
+      `const results = await parallel([\n` +
+      `  () => agent('alpha', { prompt: 'Research topic A' }),\n` +
+      `  () => agent('beta', { prompt: 'Research topic B' }),\n` +
+      `  () => agent('gamma', { prompt: 'Research topic C' }),\n` +
+      `]);\n` +
+      `phase('combine');\n` +
       `return await agent('combiner', { prompt: 'Combine: ' + results.join(', ') });`,
-    mermaid: `graph TD\nr1(["researcher"])\nr2(["researcher"])\nr3(["researcher"])\ncombiner(["combiner"])\nr1-->combiner\nr2-->combiner\nr3-->combiner`,
+    mermaid:
+      `graph LR\n` +
+      `subgraph "research"\n` +
+      `${stadiumNode('alpha', 'alpha', 'low', 60000, 'default')}\n${stadiumNode('beta', 'beta', 'low', 60000, 'default')}\n${stadiumNode('gamma', 'gamma', 'low', 60000, 'default')}\n` +
+      `end\n` +
+      `subgraph "combine"\n${stadiumNode('combiner', 'combiner', 'medium', 90000, 'default')}\nend\n` +
+      `alpha-->combiner\nbeta-->combiner\ngamma-->combiner`,
     expectRegister: 'ok',
   },
   {
-    title: 'non-agent aggregation',
+    title: 'ternary routing',
     script:
       `export const meta = {\n` +
-      `  description: 'Score three candidates with an agent, then pick the best score without another agent call',\n` +
-      `  params: { agents: { scorer: ${agentSpec('low', 60000)} } },\n` +
+      `  description: 'Classify urgency, then route to a fast or thorough agent',\n` +
+      `  params: { agents: { classifier: ${agentSpec('low', 60000)}, fast: ${agentSpec('low', 60000)}, thorough: ${agentSpec('high', 120000)} } },\n` +
       `};\n` +
-      `const items = ['x', 'y', 'z'];\n` +
-      `const scores = await parallel(items.map((it) => () => agent('scorer', { prompt: 'Score ' + it })));\n` +
-      `return scores.reduce((best, s) => (Number(s) > Number(best) ? s : best), scores[0]);`,
-    // v24 adjudication #6 F-4: this drew the aggregation as a RECTANGLE `aggregate["…"]`, the shape
-    // this same guide's SHAPES table reserves for the nested-workflow black box. `checkMermaid`
-    // accepts either (both free text), so only a reader notices — and the only reader this guide
-    // has is a cold model with no other documentation. `{{"…"}}` is the shape the table declares
-    // for exactly this node, and it is what the example teaches now.
-    mermaid: `graph TD\nscorer(["scorer"])\naggregate{{"pick the best score (no agent call)"}}\nscorer-->aggregate`,
+      `phase('classify');\n` +
+      `const urgency = await agent('classifier', { prompt: 'Classify urgency: fast or thorough?' });\n` +
+      `phase('route');\n` +
+      `return await (urgency === 'fast' ? agent('fast', { prompt: 'Answer quickly' }) : agent('thorough', { prompt: 'Answer thoroughly' }));`,
+    // REQ-128's own rule: a ternary/if branch draws as a diamond with LABELLED edges to each arm
+    // (`三元/if→菱形加標籤邊`) — the diamond is the non-agent intermediate node EDGE_MISMATCH allows
+    // on a path between consecutive slots.
+    mermaid:
+      `graph LR\n` +
+      `subgraph "classify"\n${stadiumNode('classifier', 'classifier', 'low', 60000, 'default')}\nend\n` +
+      `subgraph "route"\nrouteChoice{"fast or thorough?"}\n${stadiumNode('fast', 'fast', 'low', 60000, 'default')}\n${stadiumNode('thorough', 'thorough', 'high', 120000, 'default')}\nend\n` +
+      `classifier-->routeChoice\nrouteChoice-->|fast|fast\nrouteChoice-->|thorough|thorough`,
     expectRegister: 'ok',
   },
   {
@@ -121,42 +170,68 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
       `  description: 'Classify the input, then branch to one of two agents',\n` +
       `  params: { agents: { classifier: ${agentSpec('low', 60000)}, simple: ${agentSpec('low', 60000)}, complex: ${agentSpec('high', 120000)} } },\n` +
       `};\n` +
+      `phase('classify');\n` +
       `const kind = await agent('classifier', { prompt: 'Classify the request' });\n` +
+      `phase('handle');\n` +
       `if (kind === 'simple') {\n` +
       `  return await agent('simple', { prompt: 'Handle the simple case' });\n` +
-      `}\n` +
-      `return await agent('complex', { prompt: 'Handle the complex case' });`,
-    mermaid: `graph TD\nclassifier(["classifier"])\nsimple(["simple"])\ncomplex(["complex"])\nclassifier-->simple\nclassifier-->complex`,
+      `} else {\n` +
+      `  return await agent('complex', { prompt: 'Handle the complex case' });\n` +
+      `}`,
+    mermaid:
+      `graph LR\n` +
+      `subgraph "classify"\n${stadiumNode('classifier', 'classifier', 'low', 60000, 'default')}\nend\n` +
+      `subgraph "handle"\nhandleChoice{"simple or complex?"}\n${stadiumNode('simple', 'simple', 'low', 60000, 'default')}\n${stadiumNode('complex', 'complex', 'high', 120000, 'default')}\nend\n` +
+      `classifier-->handleChoice\nhandleChoice-->|simple|simple\nhandleChoice-->|complex|complex`,
     expectRegister: 'ok',
   },
   {
-    title: 'labelled loop',
+    title: 'non-agent aggregation',
     script:
       `export const meta = {\n` +
-      `  description: 'Draft and critique in a bounded loop until the critic approves',\n` +
+      `  description: 'Score three candidates with an agent, then pick the best score without another agent call',\n` +
+      `  params: { agents: { scorerX: ${agentSpec('low', 60000)}, scorerY: ${agentSpec('low', 60000)}, scorerZ: ${agentSpec('low', 60000)} } },\n` +
+      `};\n` +
+      `phase('score');\n` +
+      `const scores = await parallel([\n` +
+      `  () => agent('scorerX', { prompt: 'Score candidate X' }),\n` +
+      `  () => agent('scorerY', { prompt: 'Score candidate Y' }),\n` +
+      `  () => agent('scorerZ', { prompt: 'Score candidate Z' }),\n` +
+      `]);\n` +
+      `return scores.reduce((best, s) => (Number(s) > Number(best) ? s : best), scores[0]);`,
+    // v24 adjudication #6 F-4: the aggregation is drawn as a RECTANGLE `aggregate["…"]`, the shape
+    // this same guide's SHAPES table reserves for the nested-workflow black box. `checkMermaid`
+    // accepts either (both free text), so only a reader notices — and the only reader this guide
+    // has is a cold model with no other documentation. `{{"…"}}` is the shape the table declares
+    // for exactly this node, and it is what the example teaches now.
+    mermaid:
+      `graph LR\n` +
+      `subgraph "score"\n` +
+      `${stadiumNode('scorerX', 'scorerX', 'low', 60000, 'default')}\n${stadiumNode('scorerY', 'scorerY', 'low', 60000, 'default')}\n${stadiumNode('scorerZ', 'scorerZ', 'low', 60000, 'default')}\n` +
+      `aggregate{{"pick the best score (no agent call)"}}\n` +
+      `end\n` +
+      `scorerX-->aggregate\nscorerY-->aggregate\nscorerZ-->aggregate`,
+    expectRegister: 'ok',
+  },
+  {
+    title: 'draft, critique, revise',
+    script:
+      `export const meta = {\n` +
+      `  description: 'Write a draft, get one round of critique, then revise — an unrolled fixed-length sequence (an agent call inside a loop body cannot be statically checked)',\n` +
       `  params: { agents: { writer: ${agentSpec('low', 60000)}, critic: ${agentSpec('low', 60000)} } },\n` +
       `};\n` +
-      `let draft = await agent('writer', { prompt: 'Write a draft' });\n` +
-      `for (let i = 0; i < 3; i++) {\n` +
-      `  const verdict = await agent('critic', { prompt: 'Critique: ' + draft });\n` +
-      `  if (verdict === 'approved') break;\n` +
-      `  draft = await agent('writer', { prompt: 'Revise using: ' + verdict });\n` +
-      `}\n` +
-      `return draft;`,
-    mermaid: `graph TD\nwriter(["writer"])\ncritic(["critic"])\nwriter-->|draft|critic\ncritic-->|revise|writer`,
-    expectRegister: 'ok',
-  },
-  {
-    title: 'debate subgraph',
-    script:
-      `export const meta = {\n` +
-      `  description: "Two agents debate a proposition, each seeing the other's point",\n` +
-      `  params: { agents: { proponent: ${agentSpec('medium', 90000)}, opponent: ${agentSpec('medium', 90000)} } },\n` +
-      `};\n` +
-      `const a = await agent('proponent', { prompt: 'Argue for the proposition' });\n` +
-      `const b = await agent('opponent', { prompt: 'Argue against, given: ' + a });\n` +
-      `return { a, b };`,
-    mermaid: `graph TD\nsubgraph "debate"\nproponent(["proponent"])\nopponent(["opponent"])\nproponent<-->opponent\nend`,
+      `phase('draft');\n` +
+      `const drafted = await agent('writer', { prompt: 'Write a draft' });\n` +
+      `phase('critique');\n` +
+      `const verdict = await agent('critic', { prompt: 'Critique: ' + drafted });\n` +
+      `phase('revise');\n` +
+      `return await agent('writer', { prompt: 'Revise using: ' + verdict });`,
+    mermaid:
+      `graph LR\n` +
+      `subgraph "draft"\n${stadiumNode('writer1', 'writer', 'low', 60000, 'default')}\nend\n` +
+      `subgraph "critique"\n${stadiumNode('critic', 'critic', 'low', 60000, 'default')}\nend\n` +
+      `subgraph "revise"\n${stadiumNode('writer2', 'writer', 'low', 60000, 'default')}\nend\n` +
+      `writer1-->critic\ncritic-->writer2`,
     expectRegister: 'ok',
   },
   {
@@ -166,9 +241,32 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
       `  description: 'Delegates to another registered workflow, then summarizes its result',\n` +
       `  params: { agents: { summarizer: ${agentSpec('low', 60000)} } },\n` +
       `};\n` +
+      `phase('delegate');\n` +
       `const child = await workflow('other-team-etl', { since: 'yesterday' });\n` +
+      `phase('summarize');\n` +
       `return await agent('summarizer', { prompt: 'Summarize: ' + JSON.stringify(child) });`,
-    mermaid: `graph TD\netl["workflow: other-team-etl (black box)"]\nsummarizer(["summarizer"])\netl-->summarizer`,
+    mermaid:
+      `graph LR\n` +
+      `subgraph "delegate"\netl["workflow: other-team-etl (black box)"]\nend\n` +
+      `subgraph "summarize"\n${stadiumNode('summarizer', 'summarizer', 'low', 60000, 'default')}\nend`,
+    expectRegister: 'ok',
+  },
+  {
+    title: 'parallel workflow() delegation',
+    script:
+      `export const meta = {\n` +
+      `  description: 'Delegates to two other registered workflows in parallel — a parallel() of workflow() calls yields no agent slot',\n` +
+      `  params: { agents: {} },\n` +
+      `};\n` +
+      `phase('delegate');\n` +
+      `const [a, b] = await parallel([\n` +
+      `  () => workflow('sub-a', {}),\n` +
+      `  () => workflow('sub-b', {}),\n` +
+      `]);\n` +
+      `return { a, b };`,
+    mermaid:
+      `graph LR\n` +
+      `subgraph "delegate"\nsubA["workflow: sub-a (black box)"]\nsubB["workflow: sub-b (black box)"]\nend`,
     expectRegister: 'ok',
   },
   {
@@ -178,19 +276,53 @@ export const GUIDE_EXAMPLES: GuideExample[] = [
       `  description: 'Uses a declared arg to steer the single agent call',\n` +
       `  params: { args: { topic: { type: 'string' } }, agents: { writer: ${agentSpec('low', 60000)} } },\n` +
       `};\n` +
+      `phase('write');\n` +
       `return await agent('writer', { prompt: 'Write about: ' + args.topic });`,
-    mermaid: `graph TD\nwriter(["writer"])`,
+    mermaid:
+      `graph LR\n` +
+      `subgraph "write"\n${stadiumNode('writer', 'writer', 'low', 60000, 'default')}\nend`,
+    expectRegister: 'ok',
+  },
+  {
+    title: 'dynamic phase title',
+    script:
+      `export const meta = {\n` +
+      `  description: 'The phase title is computed from a declared arg — a static scan cannot know it in advance',\n` +
+      `  params: { args: { tier: { type: 'string' } }, agents: { worker: ${agentSpec('low', 60000)} } },\n` +
+      `};\n` +
+      `phase('tier:' + args.tier);\n` +
+      `return await agent('worker', { prompt: 'Handle the request' });`,
+    mermaid:
+      `graph LR\n` +
+      `subgraph "processing"\n${stadiumNode('worker', 'worker', 'low', 60000, 'default')}\nend`,
     expectRegister: 'ok',
   },
   {
     title: 'skills and mcp',
     script:
       `export const meta = {\n` +
-      `  description: 'An agent declared with a skill name and an mcp server name',\n` +
+      `  description: 'An agent declared with a skill name, an mcp server name, and a curated tool set',\n` +
       `  params: { agents: { coder: { model: { type: 'string', default: 'default' }, effort: { type: 'enum', enum: ['low','medium','high'], default: 'medium' }, timeoutMs: { type: 'number', default: 120000 }, skills: ['repo-search'], mcp: ['project-tracker'] } } },\n` +
       `};\n` +
-      `return await agent('coder', { prompt: 'Fix the failing test' });`,
-    mermaid: `graph TD\ncoder(["coder"])`,
+      `phase('code');\n` +
+      `return await agent('coder', { prompt: 'Fix the failing test', allowedTools: ['Read', 'Edit'] });`,
+    mermaid:
+      `graph LR\n` +
+      `subgraph "code"\n${stadiumNode('coder', 'coder', 'medium', 120000, ['Read', 'Edit'])}\nend`,
+    expectRegister: 'ok',
+  },
+  {
+    title: 'no tools — pure reasoning',
+    script:
+      `export const meta = {\n` +
+      `  description: 'A judge agent restricted to no tools at all — pure text reasoning',\n` +
+      `  params: { agents: { judge: ${agentSpec('low', 60000)} } },\n` +
+      `};\n` +
+      `phase('judge');\n` +
+      `return await agent('judge', { prompt: 'Answer PASS or FAIL', allowedTools: [] });`,
+    mermaid:
+      `graph LR\n` +
+      `subgraph "judge"\n${stadiumNode('judge', 'judge', 'low', 60000, 'none')}\nend`,
     expectRegister: 'ok',
   },
 ];
@@ -235,6 +367,37 @@ function shapeRows(): string {
   return SHAPES.map((s) => `- \`${s.open}…${s.close}\` (${s.name}) — ${s.role}`).join('\n');
 }
 
+/** v26 (DES-187, TASK-193): the three guarded determinism calls, rendered from guards.ts's own
+ *  DATA export — each with the resume-replay reasoning and the safe alternative. */
+function determinismGuardRows(): string {
+  return DETERMINISM_GUARDED.map(
+    (g) => `- \`${g.call}\` — refused \`DETERMINISM_GUARD\`. ${g.why} Instead: ${g.instead}`,
+  ).join('\n');
+}
+
+/** v26 (DES-187, TASK-193, REQ-121): the three seed shapes plus workspace_push, read from the SAME
+ *  `run_start`/`workspace_push` schema `tools/list` serves — never a second hand-typed list. */
+function seedShapeRows(): string {
+  const runStart = TOOL_SPECS.find((t) => t.name === 'run_start')!;
+  const props = (runStart.inputSchema as unknown as { properties: Record<string, { description?: string }> }).properties;
+  const workspacePush = TOOL_SPECS.find((t) => t.name === 'workspace_push')!;
+  return [
+    `- \`seed\` — ${props.seed?.description ?? ''}`,
+    `- \`seedManifest\` — ${props.seedManifest?.description ?? ''}`,
+    `- \`seedManifestRef\` — ${props.seedManifestRef?.description ?? ''}`,
+    `- \`workspace_push\` — ${workspacePush.description}`,
+  ].join('\n');
+}
+
+/** v26 (DES-187, TASK-193, ADR-041): one row per provider, read from `PROVIDER_CAPS` — the SAME
+ *  table `resolveAlias`/`validateAliases` check against. */
+function providerCapsRows(): string {
+  return PROVIDERS.map((p) => {
+    const caps = PROVIDER_CAPS[p];
+    return `- \`${p}\` — tool surface: ${caps.tools}, effort applies: ${caps.effort !== null ? 'yes' : 'no'}`;
+  }).join('\n');
+}
+
 /** v24 Gate 7.5 (D-4): the edge table, likewise read from the checker rather than re-typed. */
 function edgeRows(): string {
   return EDGE_FORMS.map((e) => `- \`a${e.token}b\` — ${e.role}`).join('\n');
@@ -259,7 +422,7 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
     section(
       'The sandbox API',
       'A workflow script runs inside a restricted VM context with exactly these globals — nothing else ' +
-        'is reachable (`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget`, `workflow`):\n\n' +
+        `is reachable (\`${SANDBOX_GLOBALS.join('\`, \`')}\`; \`Date\`/\`Math\` are GUARDED, see below):\n\n` +
         "- `await agent(label, options)` — dispatches one agent call. `label` MUST be a literal string " +
         'identifier (`/^[A-Za-z_][\\w-]*$/`) matching a `meta.params.agents.<label>` declaration; ' +
         '`options` MUST be a literal object (no variable, no spread).\n' +
@@ -269,7 +432,8 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "- `phase(title)` — names the current step for observability. Titles are public (see below).\n" +
         '- `log(...)` — a no-op placeholder in this sandbox (accepted, does nothing).\n' +
         '- `args` — the caller-supplied run arguments, shaped by `meta.params.args`.\n' +
-        '- `budget` — `{total, spent(), remaining()}`, read-only.\n' +
+        '- `budget` — read-only: `{limits: {usd, tokens}, total, spent(), remaining(), tokens()}` (see ' +
+        '"Budget, concurrency" below for which accessor answers which limit).\n' +
         '- `await workflow(name, args)` — runs another registered workflow. A workflow() call may ' +
         "itself call workflow() again, recursing up to this deployment's configured `maxWorkflowDepth` " +
         '(cycle-checked, descendant-capped) — a call that exceeds the depth is refused ' +
@@ -279,7 +443,16 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         "what an older draft of this guide taught — that no longer matches what's shipped.) Even with " +
         "depth available, the simplest and most readable script still flattens a needless wrapper into " +
         "its caller, and draws another owner's workflow as a black-box rectangle node in your diagram " +
-        'rather than expanding it.',
+        "rather than expanding it. A nested workflow()'s own phase() calls are recorded on THAT " +
+        "sub-workflow's card, not folded into the parent run as one of its lanes.\n\n" +
+        '`Date` and `Math` are present but GUARDED — three calls are refused `DETERMINISM_GUARD` ' +
+        "because resume replays agent() calls keyed by prompt+opts, so a wall-clock or random value " +
+        'baked into that key would change it on replay and re-dispatch an already-paid call:\n\n' +
+        determinismGuardRows() +
+        '\n\nThis is documented as HYGIENE, not a security boundary — `node:vm` is not a sandbox, and ' +
+        'the real containment is the per-run child PROCESS, which holds no secrets/store/network ' +
+        'handle, not these two guarded globals. `setTimeout`, `fetch`, `console`, `require`, ' +
+        '`process`, and `fs` are simply absent from the context, not merely shadowed.',
     ),
   );
 
@@ -302,7 +475,8 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '```\n\n' +
         '`meta.params.args` declares the run-time inputs the script reads off `args.<name>` — `{type, ' +
         'enum?, min?, max?}`, no `.default` (a declared args default is refused: it is advertised but ' +
-        'never applied).\n\n' +
+        "never applied). `type` is one of `string | number | enum` (an `enum` type requires the " +
+        '`enum` array of legal values).\n\n' +
         `\`meta.params.knobs\` and \`meta.defaults\` are retired — a script that declares either is ` +
         `refused \`DEFAULTS_RETIRED\`, naming \`meta.params.agents.<label>.<key>.default\` as the ` +
         `replacement.\n\n` +
@@ -374,6 +548,24 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
 
   parts.push(
     section(
+      'Providers and the model catalog',
+      'Every model alias resolves to exactly one of three providers, each with its own declared ' +
+        'capability row — read from the SAME table `resolveAlias`/`validateAliases` check against, ' +
+        'labelled **declared, not probed**: nothing here is learned by dispatching a call.\n\n' +
+        providerCapsRows() +
+        '\n\nThere is no `openai` row: OpenRouter is the many-model front door for everything that is ' +
+        "not Anthropic-direct or a local Ollama model, so swapping a model — or a transport — is a " +
+        'config change to an alias, not a new provider.\n\n' +
+        "`models_list` shows the CATALOG this deployment's aliases can resolve into — it is not the " +
+        'alias table (see "Engine ceilings" above). Its `toolUseDeclared`/`effortDeclared` flags and ' +
+        '`costLevel` rating are DECLARED capability, never probed by dispatching a call, and carry ' +
+        "their own provenance: `declaredSource` ('upstream'|'static'|'unknown') says where the flag " +
+        'came from, and `catalogFetchedAt` is per-row catalog provenance (a timestamp, or `null`).',
+    ),
+  );
+
+  parts.push(
+    section(
       'Budget, concurrency, and how wide a fan-out really runs',
       // v25 (DES-168, REQ-120, issue #61): the limit an author had NO way to learn. The owner hit it
       // in production — a 3-wide parallel() silently ran 2 — and the guide said nothing about budget
@@ -381,14 +573,24 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
       `\`parallel([a, b, c, ...])\` dispatches every thunk, and this deployment runs up to ` +
         `**${ceilings.runConcurrency}** of them at a time (\`runConcurrency\`, operator-configurable). ` +
         'Past that they QUEUE and run as slots free: a wider fan-out is slower, never truncated.\n\n' +
-        "`run_start`'s `budget` is a **stop-dispatching signal, not a hard ceiling**, and this is the " +
-        'honest description of what the engine can enforce. Before each dispatch it asks one question: ' +
-        'has this run already spent `budget` tokens? If yes, the call is refused ' +
-        '`BUDGET_EXCEEDED`; if no, it goes. What a call will cost cannot be known before it finishes, ' +
-        'so the calls already in flight when the budget runs out still complete — a run can therefore ' +
-        `overshoot its budget by up to one concurrency window (${ceilings.runConcurrency} x one ` +
-        'call\'s cost). Size the budget for the whole workflow, not per call; an omitted or `null` ' +
-        '`budget` means unbounded.\n\n' +
+        "`run_start`'s `budget` takes TWO independent limits — `{usd?, tokens?}` — either of which " +
+        'may be omitted or `null` for unbounded. Each is a **stop-dispatching signal, not a hard ' +
+        'ceiling**, and this is the honest description of what the engine can enforce. Before each ' +
+        'dispatch it asks one question per armed limit: has this run already spent it? If yes, the ' +
+        'call is refused `BUDGET_EXCEEDED`; if no, it goes. What a call will cost cannot be known ' +
+        'before it finishes, so calls already in flight when a limit runs out still complete — a run ' +
+        `can therefore overshoot EITHER limit by up to one concurrency window ` +
+        `(${ceilings.runConcurrency} x one call's cost). Size a budget for the whole workflow, not ` +
+        'per call.\n\n' +
+        'Inside the script, the read-only `budget` object answers each limit with its own accessor: ' +
+        '`budget.limits.usd` / `budget.limits.tokens` are the two ceilings (`null` when that limit is ' +
+        'unbounded — `null` is `===`-detectable but NOT comparison-safe, `null < 1000` is `true`); ' +
+        '`budget.total` aliases `budget.limits.usd`; `budget.spent()` / `budget.remaining()` answer ' +
+        'the USD limit only (`remaining()` is `null` when no USD limit is armed); `budget.tokens()` ' +
+        'answers the token limit — it returns the four-column `{input, output, cacheRead, ' +
+        'cacheWrite, sum}` spent so far. A USD budget counts only calls the model catalog can price ' +
+        '— an unpriced call adds 0 to USD spend and never trips a USD limit — so set `budget.tokens` ' +
+        'for a limit that binds on every model, including local ones with no listed price.\n\n' +
         'A refusal is visible, and is NOT the same thing as your own thunk throwing:\n\n' +
         '- your thunk throws → `parallel()`/`pipeline()` give that slot `null` and the rest keep going ' +
         '(the documented contract);\n' +
@@ -449,6 +651,21 @@ export function buildAuthoringGuide(ceilings: GuideCeilings): string {
         '(e.g. a debate) under a mandatory quoted title. For a live preview before you register, paste ' +
         'your diagram into a Mermaid live editor (e.g. https://mermaid.live/) — this guide only checks ' +
         'the grammar, it does not render.',
+    ),
+  );
+
+  parts.push(
+    section(
+      'Seeding a workspace',
+      "A run's workspace can be pre-populated three ways on `run_start`, mutually exclusive with " +
+        'each other and with `seedRef` (a mixed request is refused `SEED_SOURCE_CONFLICT`):\n\n' +
+        seedShapeRows() +
+        '\n\nEvery `seed`/`seedManifest`/`seedManifestRef` element that does not match its declared ' +
+        'shape is refused `INVALID_SEED_SPEC` before a single byte is written — a `seed` element ' +
+        'missing `contentB64` (or carrying only a `sha256`) does NOT silently materialize a 0-byte ' +
+        'file; the refusal names the offending `path` and points at `seedManifest` instead. Content ' +
+        'referenced only by hash (`seedManifest`, `seedManifestRef`) must already exist in the CAS ' +
+        '— push it first with `workspace_push`.',
     ),
   );
 

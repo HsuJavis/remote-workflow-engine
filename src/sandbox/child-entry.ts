@@ -9,6 +9,15 @@
 // relative imports use explicit `.ts` extensions, which is what plain Node's loader resolves.
 import { evaluateScript } from './guards.ts';
 import type { SandboxApi } from './guards.ts';
+import type { SandboxBudget } from '../types.ts';
+
+// v26 (DES-182, ARCH-118, TASK-182): the live `{usd, tokens}` spend snapshot — piggybacked onto
+// both the initial `start` message (a frame that never calls agent(), e.g. a nested workflow()
+// reading `budget.spent()` cold, would otherwise see no accounting at all) and every subsequent
+// `agentResult`. Inlined (not imported from `run-guard.ts`'s `ZERO_TOKENS`) — this module does not
+// resolve local `.js`→`.ts` value imports (see the `checkMeta` note in `guards.ts`).
+interface Spend { usd: number; tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } }
+const ZERO_SPEND: Spend = { usd: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 
 // Extends the DES-006 ParentMsg 'init' shape with the fields a standalone child process needs
 // at spawn time (script text, runId) that the seam's steady-state protocol doesn't carry.
@@ -17,9 +26,13 @@ interface StartMsg {
   runId: string;
   script: string;
   args: unknown;
-  budgetTotal: number | null;
+  /** v26 (DES-182, ADR-037): was `budgetTotal: number | null` (a bare token count) — now the two
+   *  independent limits, or `null` for unbounded on both. */
+  budget: { usd: number | null; tokens: number | null } | null;
+  /** v26 (DES-182): the live spend as of run start (absent -> the dry-run seam, treated as zero). */
+  spent?: Spend;
 }
-interface AgentResultMsg { t: 'agentResult'; callSeq: number; value: unknown; spent?: number }
+interface AgentResultMsg { t: 'agentResult'; callSeq: number; value: unknown; spent?: Spend }
 interface AgentThrowMsg { t: 'agentThrow'; callSeq: number; error: { code: string; message: string } }
 interface WorkflowResultMsg { t: 'workflowResult'; callSeq: number; value: unknown }
 interface AbortMsg { t: 'abort'; reason: 'suspend' | 'stop' }
@@ -29,10 +42,10 @@ type InMsg = StartMsg | AgentResultMsg | AgentThrowMsg | WorkflowResultMsg | Abo
 let nextCallSeq = 0;
 const pendingAgent = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
 const pendingWorkflow = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-// D-F8: live script-visible budget accounting, kept current by the `spent` field piggybacked
-// onto every agentResult message (the parent's real RunGuard total as of that call) — never a
-// hard-coded stub.
-let spentSoFar = 0;
+// D-F8 / v26 (DES-182): live script-visible budget accounting, kept current by the `spent` field
+// piggybacked onto the initial `start` message and onto every agentResult message (the parent's
+// real accounting as of that call) — never a hard-coded stub.
+let spentSoFar: Spend = ZERO_SPEND;
 
 function send(msg: unknown): void {
   process.send?.(msg);
@@ -80,12 +93,32 @@ process.on('message', (msg: InMsg) => {
       process.exit(0);
       break;
     case 'start':
+      if (msg.spent !== undefined) spentSoFar = msg.spent;
       void main(msg);
       break;
   }
 });
 
 async function main(msg: StartMsg): Promise<void> {
+  // v26 (DES-182, ARCH-118, ADR-037): `total`/`spent()`/`remaining()` are USD (the alias/unit the
+  // architecture keeps on these three names); `limits`/`tokens()` are the new accessors — a
+  // tokens-only budget shows up as `limits.usd === null` / `total === null` / `remaining() ===
+  // null` (never `Infinity` — see `SandboxBudget`'s own doc) while `limits.tokens` is a number.
+  // Built via a NAMED, explicitly-typed variable (not an inline object literal in `api` below) so
+  // its extra fields over `Budget` (`SandboxApi.budget`'s own declared type) don't trip TS's
+  // excess-property check.
+  const limits = { usd: msg.budget?.usd ?? null, tokens: msg.budget?.tokens ?? null };
+  const sandboxBudget: SandboxBudget = {
+    limits,
+    total: limits.usd,
+    spent: () => spentSoFar.usd,
+    remaining: () => (limits.usd === null ? null : limits.usd - spentSoFar.usd),
+    tokens: () => {
+      const t = spentSoFar.tokens;
+      return { ...t, sum: t.input + t.output + t.cacheRead + t.cacheWrite };
+    },
+  };
+
   const api: SandboxApi = {
     async agent(prompt: string, opts?: unknown): Promise<unknown> {
       const callSeq = nextCallSeq++;
@@ -94,11 +127,7 @@ async function main(msg: StartMsg): Promise<void> {
       return result;
     },
     args: msg.args,
-    budget: {
-      total: msg.budgetTotal,
-      spent: () => spentSoFar,
-      remaining: () => (msg.budgetTotal === null ? Infinity : msg.budgetTotal - spentSoFar),
-    },
+    budget: sandboxBudget,
     async workflow(nameOrRef: unknown, wfArgs?: unknown): Promise<unknown> {
       const callSeq = nextCallSeq++;
       const result = new Promise<unknown>((resolve, reject) => pendingWorkflow.set(callSeq, { resolve, reject }));

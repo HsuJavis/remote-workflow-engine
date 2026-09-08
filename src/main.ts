@@ -31,6 +31,7 @@ import { loadSecretSourceFromEnv } from './secret-source.js';
 import { assertWorkRootIsolated } from './workroot-guard.js';
 import { DEFAULT_ALIASES } from './default-aliases.js';
 import type { Role } from './tool-specs.js';
+import { validateAliases } from './providers.js';
 
 type GatewayChoice = 'sdk' | 'direct-fetch';
 
@@ -124,6 +125,12 @@ function loadFileConfig(): FileConfig {
 interface ComposeConfigDeps {
   queryImpl?: ClaudeAgentSdkGatewayConfig['queryImpl'];
   proxyManager?: LiteLLMProxyManager;
+  /** v26 (DES-172, ARCH-112, TASK-172, REQ-123/070): `--check-config` passes `false` to validate
+   *  config values (aliases, principals, workRoot isolation, ...) WITHOUT spawning the managed
+   *  litellm proxy subprocess — composeConfig() skips calling `proxy.start()` entirely rather than
+   *  relying on the caller's proxyManager alone to be a well-behaved no-op. Omitted/`true` ->
+   *  unchanged real-boot behavior. */
+  listen?: boolean;
 }
 
 // D-F10(a/b): the FileConfig -> ServerConfig translation main() performs, extracted into an
@@ -154,6 +161,28 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
 
   const gatewayChoice: GatewayChoice = fileConfig.gateway ?? 'sdk';
   const aliases = fileConfig.aliases;
+  // v26 (DES-172, ARCH-112, TASK-171/172, REQ-123): REFUSE boot when any alias names a retired/
+  // unsupported provider (e.g. `openai`, `gemini`) — enumerates EVERY offending row, the deliberate
+  // opposite of a first-offender rule (DES-170's validateSeedSpec): the consumer here is a human
+  // editing several bad rows at once during a release. Also what `--check-config` (below) exists to
+  // catch before a restart, without booting anything else.
+  if (aliases !== undefined) {
+    const aliasCheck = validateAliases(aliases);
+    if (!aliasCheck.ok) {
+      const byProvider = new Map<string, string[]>();
+      for (const offender of aliasCheck.offenders) {
+        const names = byProvider.get(offender.provider) ?? [];
+        names.push(offender.alias);
+        byProvider.set(offender.provider, names);
+      }
+      const parts = [...byProvider.entries()].map(
+        ([provider, names]) => `unsupported provider '${provider}' on aliases ${names.join(', ')}`,
+      );
+      throw new Error(
+        `rwe.config.json: ${parts.join('; ')} — remove these rows. Allowed providers: ${aliasCheck.allowed.join(', ')}.`,
+      );
+    }
+  }
   const workRoot = process.env['RWE_WORK_ROOT'] ?? fileConfig.workRoot;
   // D-V3M-5 (REQ-021): fail-closed if the configured workRoot is inside a Claude Code project — a
   // nested run workspace makes the SDK-gateway agent CLI load that project's CLAUDE.md/auto-memory
@@ -278,7 +307,11 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
     // Gate-7.5-reproduced orphan-litellm-on-shutdown hazard, for this — the mandated default (D-F4)
     // — gateway path specifically).
     config.proxyManager = proxy;
-    const { baseUrl } = await proxy.start();
+    // v26 (DES-172, TASK-172): `deps.listen === false` (only `--check-config` sets this) skips
+    // `proxy.start()` entirely — no subprocess spawn, no port bind — belt-and-suspenders alongside
+    // the caller's own NOOP proxyManager, since `--check-config` never uses `baseUrl` for anything
+    // (it never reaches createServer()).
+    const baseUrl = deps.listen === false ? '' : (await proxy.start()).baseUrl;
     // v24 (TASK-139, DES-159): the analyzer scratch `cwd` fallback is gone with the GraphAnalyzer
     // that was its sole production caller (`req.workspace` is non-optional on every real workflow
     // run) — no replacement wiring here, `cwd` is simply omitted (falls back to the gateway's own
@@ -322,7 +355,38 @@ export async function composeConfig(fileConfig: FileConfig, deps: ComposeConfigD
   return config;
 }
 
+// v26 (DES-172, ARCH-112, TASK-172, REQ-123/070, issue #66): `--check-config` — validate
+// rwe.config.json (closed-provider aliases, principals roles, workRoot isolation, ...) via the
+// SAME composeConfig() translation a real boot uses, but with NO side effects: no litellm
+// subprocess spawn, no port bind (a post-call port probe in IT-143 asserts it). Exit 0/1 with
+// composeConfig's own refusal message, so deploy/rwe-update.sh can gate a restart on it BEFORE the
+// live service is ever touched.
+async function runCheckConfig(): Promise<void> {
+  try {
+    const fileConfig = loadFileConfig();
+    // A NOOP proxy manager stand-in, paired with deps.listen:false (composeConfig skips calling
+    // `.start()` on it entirely) — belt-and-suspenders against ever spawning a real litellm
+    // subprocess from a config-validation invocation.
+    const noopProxyManager = new LiteLLMProxyManager(fileConfig.aliases ?? DEFAULT_ALIASES, {
+      spawnImpl: (() => {
+        throw new Error('--check-config must never spawn a proxy subprocess');
+      }) as unknown as typeof import('node:child_process').spawn,
+    });
+    await composeConfig(fileConfig, { proxyManager: noopProxyManager, listen: false });
+    // eslint-disable-next-line no-console
+    console.log('[remote-workflow-engine] --check-config: OK');
+    process.exit(0);
+  } catch (err) {
+    console.error(`[remote-workflow-engine] --check-config: ${(err as Error).message}`);
+    process.exit(1);
+  }
+}
+
 async function main(): Promise<void> {
+  if (process.argv.includes('--check-config')) {
+    await runCheckConfig();
+    return;
+  }
   const config = await composeConfig(loadFileConfig());
   const server = await createServer(config);
   // eslint-disable-next-line no-console

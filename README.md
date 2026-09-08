@@ -8,7 +8,7 @@
 一個可遠端操控的 **Claude 工作流程執行引擎**：把 Claude「Workflow 工具」風格的 `.js` 工作流程腳本
 （用到 `phase()`、`log()`、`agent()`、`pipeline()`、`parallel()`、`budget`、具名 `workflow()` 等 API）
 跑在一台伺服器上，透過 **MCP Streamable HTTP** 介面遠端送出、追蹤、暫停/續跑/停止，並
-把每個 `agent()` 呼叫真正路由到你設定的 LLM 供應商（Anthropic / OpenAI / Gemini / 本機 Ollama）。
+把每個 `agent()` 呼叫真正路由到你設定的 LLM 供應商（Anthropic / OpenRouter / 本機 Ollama）。
 
 **目前功能**：
 
@@ -115,7 +115,7 @@
   LiteLLM 只有**一個**消費者：`agent()` 呼叫（`workflow_register` 不走 gateway）。要略過 Python/LiteLLM，在 `rwe.config.json` 設 `gateway:"direct-fetch"` +
   `useLiteLLMProxy:false`（本機 Ollama 直連）。留著預設值 `gateway:"sdk"` 卻沒裝 `litellm`，
   服務會在**開機階段**就拒絕啟動（見「已知限制」）。
-- 至少一個可用的 LLM 供應商（Anthropic / OpenAI / Gemini API key，或本機 Ollama）
+- 至少一個可用的 LLM 供應商（Anthropic / OpenRouter API key，或本機 Ollama）
 
 ## 快速開始 Quickstart
 
@@ -132,7 +132,7 @@
 `DEPLOY.md` §0 / §1b。最少需要的環境變數：
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...     # 若要用 anthropic 別名（或 OPENAI_API_KEY / GEMINI_API_KEY / 本機 Ollama 免金鑰）
+export ANTHROPIC_API_KEY=sk-ant-...     # 若要用 anthropic 別名（或 OPENROUTER_API_KEY / 本機 Ollama 免金鑰）
 # export RWE_SECRET_GITHUB_TOKEN=...    # 若要用 issue_report/Issues 儀表板
 ./deploy.sh --background
 ```
@@ -296,7 +296,7 @@ curl -s http://127.0.0.1:8787/api/models
 # 透過 MCP 查詢模型目錄（支援多維篩選）
 curl -s -X POST http://127.0.0.1:8787/mcp \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"models_list","arguments":{"location":"remote","toolUse":true,"maxPricePerM":1}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"models_list","arguments":{"location":"remote","toolUseDeclared":true,"maxPricePerM":1}}}'
 
 # 儀表板（瀏覽器直接開）
 open http://127.0.0.1:8787/dashboard           # run 清單 + DAG
@@ -358,7 +358,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp \
 
 ## 已知限制
 
-- **本機 7B 小模型工具呼叫**：`qwen2.5:7b` 透過 SDK gateway 不會真的觸發 tool_use，只生成看起來像工具結果的文字。建議使用 32B 以上本機模型或付費供應商（Anthropic/OpenAI/Gemini）。
+- **本機 7B 小模型工具呼叫**：`qwen2.5:7b` 透過 SDK gateway 不會真的觸發 tool_use，只生成看起來像工具結果的文字。建議使用 32B 以上本機模型或付費供應商（Anthropic/OpenRouter）。
 - **OAuth 2.0 auth 為 opt-in**：`auth.enabled:false`（預設／省略）= 無 auth 開放行為（任何連得到 `/mcp` 的人皆可呼叫）；啟用後需要 Google Cloud Console client_id/secret，且引擎需有 HTTPS 公開 callback URL（`/oauth/google/callback`，讓 Google 能回呼）。
 - **docker/sudo 部署未驗證**：環境沒有 docker 也沒有 sudo，docker-compose 與 root systemd 路徑未跑過（僅語法驗證）；npm path 路徑 + systemd user service 已對真實 process 驗證。
 - **`run_status.agents[]` 暫停後 state 不自動更新**：被 `run_suspend`/`run_stop` 中止的 agent 記錄永遠停在 `"running"`；續跑後會多出一筆新紀錄，純屬顯示瑕疵。

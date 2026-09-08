@@ -36,28 +36,34 @@ LOCK="${RWE_UPDATE_LOCK}"
 REMOTE="${RWE_OFFICIAL_REMOTE}"
 
 # ── write_result: atomic temp+rename so a half-written file is never seen ─────
+# v26 (DES-172, ARCH-112, TASK-172, REQ-123/070): $4 = configCheck ('passed'|'skipped'|'failed'),
+# omitted when the config-check step hasn't run yet (a build/test-gate failure, or the
+# already-applied skip) — matches UpdateOutcome.configCheck's own "absent means not evaluated"
+# convention (never defaulted).
 write_result() {
   local STATUS="$1"
   local TAG="$2"
   local DETAIL="${3:-}"
+  local CONFIG_CHECK="${4:-}"
   local TS
   TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
   local TMP
   TMP="$(mktemp "${RESULT}.XXXXXX")"
 
+  local JSON="{\"tag\":\"$TAG\",\"status\":\"$STATUS\",\"ts\":\"$TS\""
   if [ -n "$DETAIL" ]; then
     # Sanitize: strip quotes and backslashes that would break JSON; flatten newlines.
     local D
     D="$(printf '%s' "$DETAIL" | tr -d '"\\' | tr '\n' ' ')"
     # Cap at 4 KB (head+tail truncation for large logs; tests only assert on tag/status).
     D="${D:0:4096}"
-    printf '{"tag":"%s","status":"%s","ts":"%s","detail":"%s"}\n' \
-      "$TAG" "$STATUS" "$TS" "$D" > "$TMP"
-  else
-    printf '{"tag":"%s","status":"%s","ts":"%s"}\n' \
-      "$TAG" "$STATUS" "$TS" > "$TMP"
+    JSON="$JSON,\"detail\":\"$D\""
   fi
+  if [ -n "$CONFIG_CHECK" ]; then
+    JSON="$JSON,\"configCheck\":\"$CONFIG_CHECK\""
+  fi
+  printf '%s}\n' "$JSON" > "$TMP"
 
   mv "$TMP" "$RESULT"
 }
@@ -128,9 +134,9 @@ fi
 # and abort BEFORE systemctl restart. Reverting (not just "abort before restart")
 # means a later restart/reboot boots the last-good code, not the broken new tag —
 # the running process AND every future boot stay on the prior version.
-revert_and_fail() {  # $1 = failure detail
+revert_and_fail() {  # $1 = failure detail, $2 = configCheck (optional, DES-172)
   "$GIT" checkout "$CURRENT_SHA" > /dev/null 2>&1 || true
-  write_result "failed" "$T" "$1"
+  write_result "failed" "$T" "$1" "${2:-}"
   exit 30
 }
 if ! "$NPM" ci 2>&1; then
@@ -153,10 +159,27 @@ if [ "${RWE_UPDATE_SKIP_TESTS:-}" != "1" ]; then
   fi
 fi
 
+# ── config check: validate rwe.config.json BEFORE restart (v26, DES-172, ARCH-112, TASK-172,
+# REQ-123/070). Runs only when RWE_CONFIG_PATH is set for this updater — 'skipped' otherwise,
+# recorded, never a silent pass. A refusal (e.g. a retired provider row) safe-fails exactly like a
+# build/test failure: revert to the prior SHA, no restart — a bad config must never boot the live
+# service onto the new tag.
+CONFIG_CHECK="skipped"
+if [ -n "${RWE_CONFIG_PATH:-}" ]; then
+  if CONFIG_CHECK_OUT="$("$NPM" run check-config 2>&1)"; then
+    CONFIG_CHECK="passed"
+  else
+    # write_result's own sanitize+cap (write_result's $3) carries the refusal message (e.g. which
+    # alias rows are unsupported) into the result file — never just "failed", or the operator has
+    # to go find journalctl for the row names composeConfig() already named.
+    revert_and_fail "$CONFIG_CHECK_OUT" "failed"
+  fi
+fi
+
 # ── success: write applied result, flush to disk, THEN restart ───────────────
 # Write-ordering invariant (DES-060): result flushed before restart so the restarted
 # engine can ingest it at boot (ARCH-034 crash-durability, ARCH-040 observability).
-write_result "applied" "$T"
+write_result "applied" "$T" "" "$CONFIG_CHECK"
 sync
 
 "$SYSTEMCTL" restart rwe

@@ -7,7 +7,6 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { LiteLLMGatewayClient } from '../../src/gateway/client.js';
 import type { GatewayConfig } from '../../src/gateway/client.js';
 import { generateLiteLLMConfig, toLiteLLMModelName } from '../../src/gateway/litellm-proxy.js';
-import { curateToolsForProvider } from '../../src/gateway/claude-agent-sdk-client.js';
 import { validateScriptEntry } from '../../src/script-checks.js';
 
 const ALIASES: GatewayConfig['aliases'] = {
@@ -46,7 +45,9 @@ describe('openrouter provider — direct-fetch routing (REQ-038)', () => {
     if (result.ok) {
       expect(result.provider).toBe('openrouter');
       expect(result.model).toBe('qwen/qwen-2.5-7b-instruct');
-      expect(result.tokens).toEqual({ input: 7, output: 3 });
+      // v26 (DES-180, TASK-180): tokens widened to four columns — cacheRead/cacheWrite are a KNOWN
+      // 0 here (the fixture's `usage` carries no `prompt_tokens_details`/`cache_write_tokens`).
+      expect(result.tokens).toEqual({ input: 7, output: 3, cacheRead: 0, cacheWrite: 0 });
       expect(result.content).toBe('canned openrouter response');
     }
     const call = fetchRec.last()!;
@@ -83,13 +84,12 @@ describe('openrouter LiteLLM native naming + passthrough wildcard (REQ-038)', ()
   });
 });
 
-describe('openrouter per-provider tool curation (REQ-038)', () => {
-  it('drops the quirky Read and ensures Bash for the openrouter (non-anthropic) provider', () => {
-    const curated = curateToolsForProvider(['Read', 'Write', 'Edit'], 'openrouter');
-    expect(curated).not.toContain('Read');
-    expect(curated).toContain('Bash');
-  });
-});
+// "openrouter per-provider tool curation (REQ-038)" — REMOVED, not rewritten (v26, DES-173,
+// ARCH-112, TASK-173/174, issue #66): it pinned `curateToolsForProvider` dropping Read/adding Bash
+// for openrouter, which REQ-123 reverses (no provider-based tool curation at all; openrouter now
+// gets the caller's `allowedTools` verbatim, same as ollama). Re-pointed to IT-144
+// (`tests/integration/ollama-tools-verbatim.test.ts`, REQ-123) — DES-173's own load-bearing
+// behavioural pair for this deletion.
 
 // v22 adjudication #3 (M-6): the alias check these three cases exercise MOVED out of
 // SubmissionValidator into `src/script-checks.ts`, enforced at `WorkflowCatalog.register()`

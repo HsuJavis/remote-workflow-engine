@@ -77,7 +77,10 @@ interface CatalogPort {
 }
 /** Structural seam — matches RunManager's own start() signature without importing the class. */
 interface RunManagerPort {
-  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | null; startedBy?: { type: string; id?: string } }): Promise<string>;
+  // v26 (DES-181, ARCH-118, TASK-181): `budget` widened to match `RunSpec` — a fire-path caller
+  // never sets it (undefined), but the port's inline shape must stay a superset of `RunSpec`'s or
+  // `RunManager` stops structurally satisfying this seam.
+  start(spec: { name?: string; script?: string; args?: unknown; budget?: number | { usd?: number; tokens?: number } | null; startedBy?: { type: string; id?: string } }): Promise<string>;
 }
 
 export interface SchedulerPortDeps {

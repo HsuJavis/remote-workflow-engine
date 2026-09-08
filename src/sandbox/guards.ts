@@ -82,6 +82,41 @@ export interface SandboxApi {
 const MAX_SCRIPT_BYTES = 512 * 1024;
 const MAX_ITEMS = 4096;
 
+// v26 (DES-187, ARCH-121, TASK-193, REQ-130/121/127/001): the sandbox's exposed globals, as DATA —
+// the authoring guide (src/authoring-guide.ts) renders this list instead of re-typing one that can
+// drift from the `sandbox` object literal `evaluateScript` actually constructs below. Exports only
+// — no new value import enters this file, which the sandbox CHILD also loads (see the checkMeta
+// note at the top: it does not resolve `.js`→`.ts` for value imports).
+export const SANDBOX_GLOBALS = ['agent', 'parallel', 'pipeline', 'phase', 'log', 'args', 'budget', 'workflow', 'Date', 'Math'] as const;
+
+/** One of the three calls `guardedDate`/`guardedMath` above refuse, plus the guide-facing reasoning
+ *  DES-187 asks for: WHY it is refused (the resume-replay hazard both guards share) and INSTEAD
+ *  (what an author writes to get the same value safely). */
+export interface DeterminismGuard {
+  /** a script fragment that trips the guard when evaluated. */
+  call: string;
+  why: string;
+  instead: string;
+}
+
+export const DETERMINISM_GUARDED: readonly DeterminismGuard[] = [
+  {
+    call: 'Date.now()',
+    why: "resume replays agent() calls keyed by prompt+opts, so a wall-clock value baked into that key would change it on replay and re-dispatch an already-paid call.",
+    instead: 'read a timestamp off run_status/run_result, or pass one in via args.',
+  },
+  {
+    call: 'Math.random()',
+    why: 'the same replay-key hazard as Date.now() — a random value baked into the key changes on every run.',
+    instead: 'pass a seed in via args.',
+  },
+  {
+    call: 'new Date()',
+    why: 'called with no arguments this reads the wall clock, the same hazard as Date.now().',
+    instead: "pass an argument — new Date('2026-01-01') is allowed.",
+  },
+];
+
 /** Errors raised by the guard functions themselves — carry the guard's error code through the VM boundary. */
 class GuardError extends Error {
   constructor(public readonly code: string, message: string) {
