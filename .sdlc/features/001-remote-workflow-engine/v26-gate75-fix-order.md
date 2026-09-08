@@ -114,3 +114,34 @@ OpenRouter. Do **not** change routing, and do not amend REQ-126's acceptance —
    notes on a block scalar or escape properly).
 6. Commit with `git commit -F <file>`, never `-m` with backticks. Do not flip
    `gates.validation.passed` — the Gate 7.5 delta re-run does that, not you.
+
+---
+
+## G. Round 5 carry-forward (orchestrator, 2026-09-09 06:4x)
+
+The D11/D12 pass closed both defects live (`models_list` now answers four rows for four models on the
+production alias table, `unknownPriced: []`, and a `fable` pin reports `budgetEnforceable.usd:true`).
+Four items it deliberately did not close, recorded here so none is lost:
+
+1. **Design drift — needs the designer's amendment bullet, not an edit by a fixer.** `04-design.md:1441`
+   (DES-076) still describes `ModelEntry` as `{provider, model, alias?, …}`; the field is now
+   `aliases?: string[]`. Round 3 set the precedent that a fixer leaves design drift to the designer.
+2. **Breaking MCP surface change, decided deliberately and to be announced.** `models_list` and
+   `GET /api/models` rows no longer carry `alias`; a client reading `.alias` gets `undefined` and must
+   read `aliases` (or `ref`). This follows the standing no-alias-window ruling (the same one that made
+   `toolUse` → `toolUseDeclared`). It belongs on v26's client-facing breaking-change list beside the
+   budget object, that rename, and `seed.items`' `additionalProperties:false`.
+3. **A misnamed alias in the deployed config — owner's call, a config a gate may not write.** This box's
+   `rwe.config.json` maps the alias `claude-sonnet-4-6` to model `claude-sonnet-5`. Sonnet 4.6 is a
+   different model at $3/$15; the row prices correctly for what it RESOLVES to, so nothing is wrong in
+   the engine — the NAME misleads whoever writes it in `model.default`. Renaming it is a one-line config
+   edit the owner should make (or keep deliberately, as a legacy pointer).
+4. **A trap for anyone editing `src/dashboard-page.ts`:** the page source is a template literal, so a
+   backtick anywhere inside it — including in a comment — silently breaks the whole file
+   (`ERROR: Expected ";" but found "aliases"`). The fixer hit it and reworded.
+
+**Secret hygiene, done here:** scratch validation dirs held byte-copies of the production config. The
+round-5 copy carried the REAL `auth.googleClientSecret` at mode 0600; a v24-era copy carried a
+placeholder but at mode 0664 (world-readable). Both removed, along with the round-4 and smoke workRoots.
+`~/.local/share/` now holds no secret outside the production `rwe-data`. **Rule for future gates: a
+scratch engine gets a config with the secrets blanked, never a byte copy of the deployed one.**
