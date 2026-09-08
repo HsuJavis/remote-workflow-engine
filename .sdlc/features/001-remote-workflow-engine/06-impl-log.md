@@ -3676,7 +3676,7 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
 - **traces:** TASK-178, DES-178, ARCH-116, REQ-127
 - **greens:** UT-225, UT-227, IT-158
 - **files:** src/models/model-catalog.ts, src/dashboard-page.ts, src/tool-specs.ts, src/authoring-guide.ts, docs/AUTHORING.md, README.md, tests/unit/model-catalog.test.ts, tests/unit/dashboard-page-source.test.ts, tests/integration/models-list-duplicate-alias.test.ts, tests/integration/models-list-tool.test.ts, tests/unit/model-catalog-enrich.test.ts
-- **commit:** <this commit>
+- **commit:** e55a680
 - **iter:** v26
 - **scope note (orchestrator ruling, round 5):** IMPL-214 reported this as out of ITS ruling's scope
   ("fix the index") and the orchestrator put it back IN scope, recorded here rather than left as
@@ -3713,7 +3713,7 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
 - **traces:** TASK-178, DES-178, ARCH-116, REQ-127
 - **greens:** UT-226, IT-158
 - **files:** src/models/model-catalog.ts, tests/unit/model-catalog.test.ts, tests/integration/models-list-duplicate-alias.test.ts
-- **commit:** <this commit>
+- **commit:** e55a680
 - **iter:** v26
 - **scope note (orchestrator ruling, round 5):** same ruling as IMPL-216 — a catalogue with NO price
   for an alias the deployment names breaks REQ-127's premise, so the orchestrator put it in scope.
