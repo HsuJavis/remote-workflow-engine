@@ -43,6 +43,17 @@ export interface ModelEntry {
    *  `capsFromRow`'s own source values ('upstream' — the row declared it; 'static' — the built-in
    *  anthropic/ollama fallback; 'unknown' — no declaration at all). Absent -> 'unknown'. */
   declaredSource?: 'upstream' | 'static' | 'unknown';
+  /** v26 integration (DES-178/DES-179, ARCH-116/117, REQ-126, clarification 14): OpenRouter's OWN
+   *  `supported_parameters` array, carried through UNINTERPRETED. `ModelBook` is constructed over
+   *  this very type (`server.ts:725`, `source: () => Promise<ModelEntry[]>` structurally satisfying
+   *  `CatalogSourceRow[]`) and its `capsFromRow` reads exactly this field to decide
+   *  `caps.reasoning`/`caps.tools`. Without it every real OpenRouter pin came back
+   *  `caps.reasoning:'unknown'`, and since `wireEffort` reads capability off the pin (INV-V26-4),
+   *  effort was never applied to any OpenRouter model in a real deployment — REQ-126 inert, with
+   *  every unit test green because the tests feed `ModelBook` raw rows that DO carry the field.
+   *  Dropped again at `enrichModelEntry` (below): `toolUseDeclared`/`effortDeclared` are the named
+   *  projection of this same signal, and the output surface must not carry it twice. */
+  supported_parameters?: string[];
 }
 
 export interface CatalogFilter {
@@ -204,6 +215,9 @@ async function fetchOpenRouter(fetchImpl: typeof fetch, timeoutMs: number): Prom
       // second interpretation of the one signal `toolUse` above already reads.
       effortDeclared: supported ? supported.includes('reasoning') : 'unknown',
       declaredSource: supported ? 'upstream' : 'unknown',
+      // v26 integration (clarification 14): the raw array travels on too, so `ModelBook.capsFromRow`
+      // sees the SAME declaration these two derived fields were computed from.
+      ...(supported ? { supported_parameters: supported } : {}),
     });
   }
   return out;
@@ -286,7 +300,7 @@ export type Stability = 'stable' | 'variable' | 'best-effort';
  *  `Omit<ModelEntry, 'toolUse' | 'effortDeclared' | 'declaredSource'>`: the base's raw `toolUse` and
  *  the (optional, absence-prone) raw `effortDeclared`/`declaredSource` never leak through under two
  *  names at once. All fields are computed at call time from the base entry; never persisted. */
-export interface EnrichedModelEntry extends Omit<ModelEntry, 'toolUse' | 'effortDeclared' | 'declaredSource'> {
+export interface EnrichedModelEntry extends Omit<ModelEntry, 'toolUse' | 'effortDeclared' | 'declaredSource' | 'supported_parameters'> {
   /** Short capability description (max 200 chars, truncated with '…' if longer; never null). */
   capability: string;
   /** Reliability/SLA tier: stable = paid/curated; variable = local Ollama; best-effort = free-tier. */
@@ -367,7 +381,9 @@ export function enrichModelEntry(e: ModelEntry): EnrichedModelEntry {
 
   // v26 (DES-179): `toolUse`/`effortDeclared`/`declaredSource` are dropped from the base spread and
   // re-emitted under their v26 names below — no alias window, `toolUse` never reaches the output.
-  const { toolUse, effortDeclared, declaredSource, ...rest } = e;
+  // v26 integration: `supported_parameters` is dropped for the same reason — it is the RAW signal
+  // the two `*Declared` fields below project, and the output must carry one name per fact.
+  const { toolUse, effortDeclared, declaredSource, supported_parameters: _supported, ...rest } = e;
   return {
     ...rest,
     capability,

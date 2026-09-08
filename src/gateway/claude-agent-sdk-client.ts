@@ -680,7 +680,12 @@ export class ClaudeAgentSdkGatewayClient implements GatewayClient {
     if (req.onHarness) {
       const descriptor = redactHarness({
         surfaceType: 'curated',
-        modelName,
+        // v26 integration (DES-177, REQ-125, clarification 26): the RESOLVED model id, not
+        // `modelName` (which is the `rwe-proxy-*` cloak on the LiteLLM route). The cloak travels
+        // beside it as `proxyModel`, exactly as it already does on `GatewayResult` via `stamp()`
+        // above — same two values, same two names, on both objects the record is built from.
+        modelName: resolvedModel,
+        ...(proxyModel !== undefined ? { proxyModel } : {}),
         provider,
         prompt: req.prompt,
         curatedTools,

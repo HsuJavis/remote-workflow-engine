@@ -243,6 +243,13 @@ export interface AgentRecord {
    *  `AgentRecord` (DES-188's own boundary) — the derived≡snapshot lock, not `tsc`, is what catches
    *  a branch that forgets to set it. */
   unpriced?: boolean;
+  /** v26 integration (DES-183, clarification 38): the provider system-message subtypes this call
+   *  produced that the engine could not map — carried on the record so the LIVE fold
+   *  (`foldUsageFromRecords`) and the AT-REST fold (`foldUsage` over persisted usage events) reach
+   *  the SAME `RunUsage.unmappedMessages` instead of the live one being structurally `{}` forever.
+   *  Absent (never `[]`) when the call produced none, so a pre-v26 record and a clean v26 record
+   *  keep the same shape and DES-188's derived≡snapshot deep-equal lock still holds. */
+  unmapped?: string[];
   /** v8 Slice 2 (REQ-045): the composite nesting frame this agent ran in — `""` for the top-level
    *  script's own agents; a nested workflow()'s agents carry a non-root frame whose parent frame is a
    *  strict prefix (so the dashboard groups + nests agents by frame). Absent for pre-v8 records. */
@@ -447,7 +454,17 @@ export interface JournalEntry {
 
 /** DES-066 (TASK-069): the post-curation session surface — names only, never secrets or resolved configs. */
 export interface HarnessDescriptor {
+  /** v26 integration (DES-177, REQ-125, clarification 26): the RESOLVED provider model id this
+   *  dispatch actually reached (e.g. `google/gemini-3.8-flash`) — never the `rwe-proxy-*` cloak.
+   *  The descriptor is what `markHarness` stamps onto the live `AgentRecord`, and `capture()`'s
+   *  harness-wins merge keeps it, so putting the cloak here made `record.model === record.proxyModel`
+   *  on every LiteLLM-route call — exactly the thing REQ-125 exists to prevent. */
   model: string;
+  /** v26 integration (DES-177, REQ-125): the proxy-facing model id actually put on the wire (the
+   *  `rwe-proxy-*` cloak). Present only on the LiteLLM-proxy route — absent on an anthropic-direct
+   *  dispatch and on a raw `openrouter/<id>` passthrough, where there is no cloak to report.
+   *  Mirrors `AgentRecord.proxyModel`/`GatewayResult.proxyModel`, one meaning across all three. */
+  proxyModel?: string;
   /** Resolved provider for `model` (e.g. 'anthropic'/'ollama'/'openrouter'). Emitted at session-build
    *  time so workflow_status can show WHICH backend a still-running agent is waiting on — before the
    *  first token, so a hung/slow backend is diagnosable rather than a blank `provider:""` (issue #20). */

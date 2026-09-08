@@ -72,7 +72,7 @@ export function deriveAgentRecords(
       // Terminal: usage event wins regardless of refused/harness.
       const data = usage.data as {
         tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
-        provider?: string; model?: string; costUSD?: number; unpriced?: boolean;
+        provider?: string; model?: string; costUSD?: number; unpriced?: boolean; unmapped?: string[];
       };
       const startedAt = firstHarnessTs;
       const endedAt = usage.ts;
@@ -83,6 +83,9 @@ export function deriveAgentRecords(
           // A legacy (pre-v26) usage event carries neither field — the honest reading is "never
           // priced", not "free" (ADR-046).
           costUSD: data.costUSD ?? 0, unpriced: data.unpriced ?? true,
+          // v26 integration (DES-183, DES-188 lock): derived exactly as `capture()` sets it live —
+          // present only when non-empty — so the reconstructed record stays byte-identical.
+          ...(data.unmapped && data.unmapped.length > 0 ? { unmapped: data.unmapped } : {}),
           ...(startedAt !== undefined ? { startedAt } : {}),
           ...(endedAt !== undefined ? { endedAt } : {}),
         }, { label: harnessDescriptor?.label }));
@@ -134,8 +137,15 @@ export function deriveAgentRecords(
 }
 
 /** DES-068 (TASK-071): pure fold — sums all `kind:'usage'` token counts in a transcript slice.
- *  Never throws; missing/absent `tokens` field contributes 0. Used by the resume path to hydrate
- *  RunGuard.spent without double-counting a snapshot already reflected in the guard. */
+ *  Never throws; missing/absent `tokens` field contributes 0.
+ *
+ *  v26 integration: SUPERSEDED as the resume-hydration fold. It sums only `input + output`, which
+ *  since v26 is not what the live accumulator counts (`RunGuard.addUsage` → `sumTokens`, all four
+ *  columns) and carries no USD at all, so `RunManager._requireLive` now hydrates from
+ *  `foldUsage` (run-guard.ts) instead. Kept exported because UT-071 (`tests/unit/budget-fold.test.ts`)
+ *  pins its two-column arithmetic as a pure fold and that property is still true — it simply has no
+ *  production caller any more. DES-181 proposes deleting it; that is a ledger decision for Gate 8,
+ *  not something to do by removing a passing test. */
 export function sumUsageTokens(events: TranscriptEvent[]): number {
   let total = 0;
   for (const ev of events) {

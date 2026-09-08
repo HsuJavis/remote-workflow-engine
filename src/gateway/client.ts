@@ -408,7 +408,13 @@ export class LiteLLMGatewayClient implements GatewayClient {
     if (req.onHarness) {
       const descriptor: HarnessDescriptor = {
         ...redactHarness({
-          surfaceType: 'none', modelName: aliasName, provider: target.provider, prompt: req.prompt,
+          // v26 integration (DES-177, REQ-125, clarification 26): the RESOLVED model id, not the
+          // alias name. `stamp()` below already reports `aliasName` as `proxyModel` on the proxied
+          // arm — it is the id LiteLLM resolves, i.e. this route's cloak — so the descriptor names
+          // the two the same way the result does, and `markHarness` can no longer stamp a cloak
+          // (or a bare alias) where the backend model belongs.
+          surfaceType: 'none', modelName: target.model, provider: target.provider, prompt: req.prompt,
+          ...(this._proxy ? { proxyModel: aliasName } : {}),
           curatedTools: [], mergedMcp: [], skills: [],
         }),
         ...(applied !== undefined ? { effortApplied: applied } : {}),

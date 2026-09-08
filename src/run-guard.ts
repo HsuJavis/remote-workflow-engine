@@ -192,10 +192,10 @@ export class RunGuard {
     return `agent-${this._agentsIssued}`;
   }
 
-  /** v25/pre-v26 accounting path, kept for callers that only ever knew a single token count
-   *  (`agent-executor.ts`'s current capture site, TASK-180's own file — not touched here). Folds
-   *  into the SAME `_spentTokens` counter `addUsage` accumulates, so a run mixing old and new
-   *  callers (there is exactly one production caller today) still enforces one true total. */
+  /** The single token accumulator. `addUsage` (below) folds its four columns through HERE rather
+   *  than touching `_spentTokens` itself, so there is exactly one place a token total can move —
+   *  and UT-008's spy on this method still observes the real per-call delta now that the capture
+   *  site calls `addUsage`. Still callable on its own by a caller that only holds a scalar. */
   addTokens(delta: number): void {
     this._spentTokens += delta;
   }
@@ -208,15 +208,26 @@ export class RunGuard {
    *  affects either limit. */
   addUsage(tokens: Tokens, costUSD: number, unpriced: boolean, _unmapped?: string[]): void {
     this._spentUsd += costUSD;
-    this._spentTokens += sumTokens(tokens);
+    this.addTokens(sumTokens(tokens));
     if (unpriced) this._unpriced += 1;
   }
 
-  /** DES-068 (TASK-071): set the already-spent TOKEN count on resume — called ONCE by the resume
-   *  path after folding the persisted journal (sumUsageTokens), never by addTokens/addUsage again
-   *  for those events. Prevents double-counting snapshot tokens already captured before a crash. */
-  setSpent(n: number): void {
-    this._spentTokens = n;
+  /** DES-068 (TASK-071): set the already-spent totals on resume — called ONCE by the resume path
+   *  after folding the persisted journal, never by addTokens/addUsage again for those events.
+   *  Prevents double-counting snapshot tokens already captured before a crash.
+   *
+   *  v26 integration (DES-181/DES-183): widened from a bare token count to `{usd, tokens}`. The
+   *  resume path folds with `foldUsage` (four columns + USD), so a resumed run re-arms BOTH limits
+   *  at the same numbers a fresh run would have reached; hydrating tokens alone left `_spentUsd` at
+   *  0 and the USD arm of `assertBudget` unenforced for the whole rest of a resumed run. The bare-
+   *  number arm survives for a caller that genuinely only holds a token count. */
+  setSpent(spent: number | { usd: number; tokens: number }): void {
+    if (typeof spent === 'number') {
+      this._spentTokens = spent;
+      return;
+    }
+    this._spentUsd = spent.usd;
+    this._spentTokens = spent.tokens;
   }
 
   /** v25-shaped view, unchanged: today's only consumer (the sandbox script-visible `budget` object,

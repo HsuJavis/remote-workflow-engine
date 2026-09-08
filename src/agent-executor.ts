@@ -1,6 +1,7 @@
 // AgentExecutor (DES-007 / ARCH-004) + AgentTranscriptSink (DES-008 / TASK-010).
 import Ajv from 'ajv';
-import type { AgentOpts, AgentRecord, HarnessDescriptor, TranscriptEvent, PriceBook } from './types.js';
+import type { AgentOpts, AgentRecord, HarnessDescriptor, TranscriptEvent, PriceBook, Caps } from './types.js';
+import { resolveAlias } from './providers.js';
 import type { GatewayClient, GatewayResult } from './gateway/client.js';
 import type { RunGuard } from './run-guard.js';
 import { ZERO_TOKENS, priceCall } from './run-guard.js';
@@ -37,10 +38,17 @@ export function capPrompt(prompt: string): string {
  *  - prompt passes through UNCUT — see `capPrompt` (R-G9: cap after redact, never before).
  *  - `unresolvedMcp` (v22, REQ-099 / adjudication #4 N-1): referenced MCP names the dispatch site
  *    could not resolve. Carried onto `mcpUnresolved` only when non-empty, so an unaffected run's
- *    descriptor keeps exactly the keys it had before. */
+ *    descriptor keeps exactly the keys it had before.
+ *  - `modelName` (v26 integration, REQ-125, clarification 26) is the RESOLVED provider model id,
+ *    and the `rwe-proxy-*` cloak — when the dispatch used one — travels separately as `proxyModel`.
+ *    The caller used to pass the cloak as `modelName`, and since `markHarness` stamps this
+ *    descriptor onto the live AgentRecord and `capture()`'s harness-wins merge keeps it, every
+ *    LiteLLM-route record ended up with `model === proxyModel`: the terminal record named the proxy
+ *    instead of the backend that served the call, which is precisely what REQ-125 forbids. */
 export function redactHarness(resolved: {
   surfaceType: 'curated' | 'none';
   modelName: string;
+  proxyModel?: string;
   provider?: string;
   prompt: string;
   curatedTools: string[];
@@ -50,11 +58,15 @@ export function redactHarness(resolved: {
 }): HarnessDescriptor {
   const provider = resolved.provider ?? '';
   const prompt = resolved.prompt;
+  // Absent (never `undefined`-valued) when the dispatch put no cloak on the wire, so an
+  // anthropic-direct descriptor keeps exactly the keys it had before v26.
+  const proxy = resolved.proxyModel !== undefined ? { proxyModel: resolved.proxyModel } : {};
   if (resolved.surfaceType === 'none') {
-    return { model: resolved.modelName, provider, prompt, tools: [], skills: [], mcpServers: [], surfaceType: 'none' };
+    return { model: resolved.modelName, ...proxy, provider, prompt, tools: [], skills: [], mcpServers: [], surfaceType: 'none' };
   }
   return {
     model: resolved.modelName,
+    ...proxy,
     provider,
     prompt,
     tools: resolved.curatedTools,
@@ -293,8 +305,6 @@ export class AgentTranscriptSink {
       // four-column `Tokens` shape here, the one place `sumTokens`/`priceCall` are ever called from
       // a gateway result.
       const tokens = { input: result.tokens.input, output: result.tokens.output, cacheRead: result.tokens.cacheRead ?? 0, cacheWrite: result.tokens.cacheWrite ?? 0 };
-      const delta = tokens.input + tokens.output;
-      this._guard?.addTokens(delta);
       // v26 (DES-177, ARCH-115, TASK-177, REQ-125): the harness stamp WINS where one exists — a
       // done result claiming its own transport-hardcoded provider/model (a pre-v26 gateway, or a
       // gateway that genuinely never fired onHarness) must not clobber what markHarness already
@@ -310,11 +320,20 @@ export class AgentTranscriptSink {
       const priced = priceCall(tokens, this._priceBook?.pinned[`${provider}/${model}`]?.price ?? null);
       const costUSD = priced ?? 0;
       const unpriced = priced === null;
+      // v26 integration (DES-181, TASK-181, REQ-127, clarifications 31/35): the ONE production
+      // caller of `addUsage`. It has to sit HERE, below the pricing collapse, not up beside the
+      // token normalization — the guard needs `costUSD`/`unpriced`, which do not exist until
+      // `priceCall` has run. Before this line the guard only ever saw `addTokens(input+output)`,
+      // so the USD arm of `assertBudget()` was dead code and the two cache columns never counted
+      // against a token budget either. `addUsage` folds its token total through `addTokens`, so
+      // the per-call token delta stays observable exactly where it always was.
+      this._guard?.addUsage(tokens, costUSD, unpriced, result.unmapped);
       this._records.set(req.agentId, {
         agentId: req.agentId, label: req.label, phase, phaseIndex, frame, startedAt, lastActivityAt, endedAt: ts,
         state: 'done', provider, model, tokens, costUSD, unpriced,
         ...(result.transport !== undefined ? { transport: result.transport } : {}),
         ...(result.proxyModel !== undefined ? { proxyModel: result.proxyModel } : {}),
+        ...(result.unmapped && result.unmapped.length > 0 ? { unmapped: result.unmapped } : {}),
       });
       // D-G8-2: forward the real message/tool_call/tool_result stream the gateway captured (when
       // present — only ClaudeAgentSdkGatewayClient produces these today) BEFORE the terminal usage
@@ -326,7 +345,15 @@ export class AgentTranscriptSink {
       // `result.provider`/`result.model` directly — otherwise the LiteLLM route's usage event would
       // disagree with the record it sits beside. v26 (DES-180): costUSD/unpriced ride the SAME event
       // as tokens — "persisted on the usage event and on AgentRecord", one collapse, two writers.
-      await this._emit(runId, req.agentId, { ts, kind: 'usage', data: { tokens, costUSD, unpriced, provider, model } });
+      // v26 integration (DES-183, clarification 38): `unmapped` rides the usage event too. Without
+      // it `foldUsage`'s `unmappedMessages` is structurally always `{}` — the gateway counts the
+      // subtypes it could not map and then the count died at this boundary, so REQ-127's "tell me
+      // what the provider said that we did not understand" was unanswerable. Omitted when the
+      // gateway reported none, so a pre-v26 event and an empty-array event stay the same shape.
+      await this._emit(runId, req.agentId, {
+        ts, kind: 'usage',
+        data: { tokens, costUSD, unpriced, provider, model, ...(result.unmapped && result.unmapped.length > 0 ? { unmapped: result.unmapped } : {}) },
+      });
     } else {
       this._records.set(req.agentId, {
         agentId: req.agentId, label: req.label, phase, phaseIndex, frame, startedAt, lastActivityAt, endedAt: ts,
@@ -370,6 +397,15 @@ export interface AgentExecutorDeps {
   /** v26 (DES-180, ARCH-118, TASK-180): this run's admission-time price/capability pin — see
    *  `AgentTranscriptSink`'s own doc for the absent-pin fallback. */
   priceBook?: PriceBook;
+  /** v26 integration (DES-179, ARCH-116/117, INV-V26-4, REQ-126, clarification 14): the alias table
+   *  the pin above was KEYED by. The executor needs it to turn this call's effective alias
+   *  (`opts.model`, resolved by the parameter-precedence chain here, which is the only place that
+   *  knows it) into the `provider/model` key `priceBook.pinned` uses, so it can thread the pinned
+   *  `caps` onto the gateway request. Without this, `wireEffort` always saw `UNKNOWN_CAPS` and no
+   *  OpenRouter model ever got an effort dial — REQ-126 inert in production, every unit test green
+   *  because the unit tests pass `caps` to `wireEffort` directly. Absent -> the same fail-safe
+   *  `'unknown'` branch as an absent pin. */
+  aliases?: Record<string, { provider: string; model: string; proxyModel?: string }>;
 }
 
 /** Bounded retry budget for schema-mismatched agent() responses (D-V4) — never an infinite loop. */
@@ -388,6 +424,8 @@ export class AgentExecutor implements AgentSpawner {
   private readonly _clock: { isoNow(): string };
   private readonly _agentTypes: Record<string, AgentTypeDef>;
   private readonly _secretValueProvider?: SecretValueProvider;
+  private readonly _priceBook?: PriceBook;
+  private readonly _aliases?: Record<string, { provider: string; model: string; proxyModel?: string }>;
 
   constructor(deps: AgentExecutorDeps = {}) {
     this._gateway = deps.gateway ?? NULL_GATEWAY;
@@ -396,6 +434,21 @@ export class AgentExecutor implements AgentSpawner {
     this._store = deps.store;
     this._clock = deps.clock ?? { isoNow: () => new Date().toISOString() }; // det:allow — transcript timestamp, not a decision
     this._agentTypes = deps.agentTypes ?? {};
+    this._priceBook = deps.priceBook;
+    this._aliases = deps.aliases;
+  }
+
+  /** v26 integration (DES-179, INV-V26-4, REQ-126): the run's PINNED capability for this call's
+   *  effective alias — never a fresh catalog lookup at dispatch. Keyed exactly as
+   *  `RunManager.start()` keyed the pin (`${resolved.provider}/${resolved.model}`). Returns
+   *  `undefined` when there is no pin, no alias table, or the alias is not in it; the gateway then
+   *  falls through to its own `UNKNOWN_CAPS`, which is the documented fail-safe (effort not
+   *  applied, and `effortApplied.reason` says the catalog could not be read). */
+  private _pinnedCapsFor(model: string | undefined): Caps | undefined {
+    if (!this._priceBook || !this._aliases) return undefined;
+    const resolved = resolveAlias(this._aliases, model ?? 'default');
+    if (!resolved) return undefined;
+    return this._priceBook.pinned[`${resolved.provider}/${resolved.model}`]?.caps;
   }
 
   async run(req: AgentReq): Promise<AgentOutcome> {
@@ -573,7 +626,11 @@ export class AgentExecutor implements AgentSpawner {
       }
       sink.markActivity(req.agentId, ev.ts);
     };
-    const invokePromise = this._gateway.invoke({ prompt, opts, runId: req.runId, agentId: req.agentId, signal: req.signal, workspace: req.workspace, assets: req.assets, onHarness, onEvent });
+    // v26 integration (DES-179's own signature line: "`GatewayClient.invoke(req)` gains `caps?:
+    // Caps`, threaded by the executor from the RUN'S PIN"). This is that thread; before it, the
+    // field existed on both sides and nothing ever filled it.
+    const caps = this._pinnedCapsFor(opts.model);
+    const invokePromise = this._gateway.invoke({ prompt, opts, runId: req.runId, agentId: req.agentId, signal: req.signal, workspace: req.workspace, assets: req.assets, onHarness, onEvent, ...(caps !== undefined ? { caps } : {}) });
     const aborted = new Promise<'aborted'>((resolve) => {
       req.signal.addEventListener('abort', () => resolve('aborted'), { once: true });
     });

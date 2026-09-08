@@ -24,10 +24,10 @@ const SEEDREF_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 const SEEDREF_MAX_FILE_BYTES = 10 * 1024 * 1024;
 import type { RunSpec, RunStatusView, RunStatus, CallKey, AgentOpts, JournalEntry, PhaseView, AgentRecord, WorkflowNodeView, ManifestEntry, EngineWarning, PriceBook, Tokens, RunUsage } from './types.js';
 import type { RunStore } from './run-store.js';
-import { InMemoryRunStore, sumUsageTokens } from './run-store.js';
+import { InMemoryRunStore } from './run-store.js';
 import type { Clock } from './clock.js';
 import { SystemClock } from './clock.js';
-import { RunGuard, parseBudget } from './run-guard.js';
+import { RunGuard, parseBudget, foldUsage, sumTokens } from './run-guard.js';
 import { createSemaphore, type Semaphore, type SemaphoreGauge } from './agent-semaphore.js';
 import { SandboxHost } from './sandbox/host.js';
 import type { AgentSpawner, AgentTypeDef } from './agent-executor.js';
@@ -226,13 +226,17 @@ function declaredAssetsOf(contract: ParamContract | undefined): Record<string, {
  *  `AgentTranscriptSink.capture()` independently of `RunGuard`, which has no production caller of
  *  `addUsage` yet). Read by `_mergeLive` (in-process status), the terminal snapshot writer
  *  (`_transition`) and `_budgetSnapshotFor` (its own USD/tokens projection) — one fold, not three.
- *  `unmappedMessages` stays `{}`: no v26 producer in this task's scope stamps `unmapped` onto
- *  `AgentRecord` — `foldUsage` (run-guard.ts) is the producer that reads it, off the persisted
- *  usage event, for the at-rest path. */
+ *  v26 integration (clarifications 38/39): `unmappedMessages` is no longer hard-coded `{}`. The
+ *  capture site now stamps `AgentRecord.unmapped` from the same `GatewayResult.unmapped` it writes
+ *  onto the persisted usage event, and `deriveAgentRecords` derives it back the same way, so this
+ *  LIVE fold and `foldUsage`'s AT-REST fold (run-guard.ts) count the same subtypes by the same
+ *  rule — one arithmetic, two entry points, instead of two folds that silently disagreed on a
+ *  whole column of `RunUsage`. */
 function foldUsageFromRecords(records: AgentRecord[]): RunUsage {
   const tokens: Tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   let costUSD = 0;
   let unpricedCalls = 0;
+  const unmappedMessages: Record<string, number> = {};
   for (const r of records) {
     tokens.input += r.tokens.input;
     tokens.output += r.tokens.output;
@@ -240,8 +244,11 @@ function foldUsageFromRecords(records: AgentRecord[]): RunUsage {
     tokens.cacheWrite += r.tokens.cacheWrite ?? 0;
     costUSD += r.costUSD ?? 0;
     if (r.state === 'done' && r.unpriced === true) unpricedCalls += 1;
+    for (const name of r.unmapped ?? []) {
+      unmappedMessages[name] = (unmappedMessages[name] ?? 0) + 1;
+    }
   }
-  return { tokens, costUSD, unpricedCalls, unmappedMessages: {} };
+  return { tokens, costUSD, unpricedCalls, unmappedMessages };
 }
 
 export class RunManager {
@@ -651,7 +658,11 @@ export class RunManager {
     // direct-construction test caller; both mean the v25 token-only shape.
     const budgetLimits = parseBudget(spec.budget, { source: 'store' });
     const guard = new RunGuard({ concurrency: this._concurrency, budget: budgetLimits });
-    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, agentTypes: this._agentTypes, secretValueProvider: this._secretValueProvider });
+    // v26 integration (DES-178, TASK-178, REQ-127, clarification 27): the pin computed just above
+    // must actually REACH the capture site, or every call is `unpriced:true` with `costUSD: 0` and
+    // REQ-127 is inert in production while every unit test stays green (the composeConfig() wiring
+    // bug class). This is the `start()` half; `_requireLive` reads the same pin back from the row.
+    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, agentTypes: this._agentTypes, secretValueProvider: this._secretValueProvider, priceBook, aliases: this._aliasMap });
     const entry: RunEntry = {
       script,
       args: spec.args,
@@ -926,11 +937,23 @@ export class RunManager {
     // gate was written to hydrate the CAP, but it also meant an unbudgeted (trigger-started) run
     // never hydrated a spent count on resume at all; tracking-without-a-cap (the v25/ADR-047(b)
     // principle) applies here too.
+    // v26 integration (DES-181/DES-183, clarification 37): folded with `foldUsage`, not the v13
+    // `sumUsageTokens`. Two reasons, both correctness: (a) `sumUsageTokens` sums only input+output,
+    // while the live accumulator (`addUsage` → `sumTokens`) sums all FOUR columns, so a resumed run
+    // used to enforce a different token total than the same run would have hit without a restart;
+    // (b) it carries no USD at all, so the USD arm of `assertBudget` re-armed at 0 on resume. One
+    // read path, one arithmetic, both limits.
     const allEvents = (await Promise.all(
       view.agents.map((a) => this._store.getTranscript(runId, a.agentId)),
     )).flat();
-    guard.setSpent(sumUsageTokens(allEvents));
-    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, agentTypes: this._agentTypes, secretValueProvider: this._secretValueProvider });
+    const resumedUsage = foldUsage(allEvents);
+    guard.setSpent({ usd: resumedUsage.costUSD, tokens: sumTokens(resumedUsage.tokens) });
+    // v26 integration (DES-178, clarification 27): the resume half of the price-book wiring — read
+    // the pin back from the persisted `runs.price_book` row (the same row `getEffectiveParams`
+    // reads just above), never re-resolved from today's catalog. `null` for a pre-v26 row leaves
+    // the sink unpriced, which is its documented "we never looked" state.
+    const persistedPriceBook = await this._store.getPriceBook(runId);
+    const spawner = this._spawnerOverride ?? new AgentExecutor({ gateway: this._gateway, guard, store: this._store, clock: this._clock, agentTypes: this._agentTypes, secretValueProvider: this._secretValueProvider, aliases: this._aliasMap, ...(persistedPriceBook !== null ? { priceBook: persistedPriceBook } : {}) });
     const entry: RunEntry = {
       script,
       args: spec.args,
