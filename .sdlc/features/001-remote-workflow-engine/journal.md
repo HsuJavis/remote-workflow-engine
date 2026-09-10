@@ -2937,6 +2937,14 @@ IT-057, UT-010, UT-058, UT-064, UT-094, UT-095 — which is the verifier's side,
 remaining 3 gaps are not drift: TASK-018 / TASK-153 (task without implementation) and IMPL-082
 (implementation without a test).
 
+**Reported, not fixed — an ARCHITECTURE row that contradicts the shipped schema.** Writing DES-149's
+amendment surfaced it: ARCH-099's `api` line has the `schedules.workflow NOT NULL` column *migrated
+(`claimedBy = workflow`) and then DROPPED*. The engine did neither — it keeps `workflow TEXT` nullable
+**alongside** `claimedBy` (the `CREATE TABLE`, the D13 rebuild's seventeen columns and `create`'s INSERT
+all name both), and `release()` treats a legacy `claimedBy IS NULL AND workflow = ?` row as claimed
+instead of backfilling it. No backfill and no column drop was ever written. That is the architect's row,
+not a design-only pass's, so it is recorded at DES-149 and routed here rather than edited.
+
 **Declared cost.** The pass added 11 lines above `04-design.md:3526`, so three line-number
 cross-references into that file shift by 11: `tests/helpers/workflow-fixtures.ts:294` now means `:3537`
 — a TEST comment, which a design-only pass may not edit, so it is routed here rather than fixed — and
