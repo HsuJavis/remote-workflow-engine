@@ -3971,6 +3971,7 @@ IMPL-178 is the integrator's own summary and says so ("`06-impl-log.md` had NO v
 - **traces:** TASK-183, DES-183, DES-180, ARCH-118, REQ-127
 - **greens:** IT-156
 - **files:** src/run-guard.ts, src/types.ts, src/run-manager.ts, src/agent-executor.ts, tests/integration/unmapped-column-folds.test.ts
+- **commit:** 4517926
 - **iter:** v26
 - **note (owner instruction 2026-09-11 — close the two MID items Gate 8 carried as recorded debt):**
   `foldUsage` (`run-guard.ts`) began with `if (!data.tokens) continue;`, which ran BEFORE the
