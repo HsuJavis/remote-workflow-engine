@@ -110,7 +110,7 @@ analyzer to be *given the trigger bindings* so the diagram's entry node names cr
 `src/graph-analyzer.ts:299` builds the prompt from `systemPrompt` + the script only —
 `getTriggerBindings()` feeds nothing but the token allowlist and the staleness fingerprint. Proven live:
 the same `(name, version)` analyzed with and without a live cron binding reported the **identical**
-`promptTokens: 297`, and the regenerated diagram names no trigger. `04-design.md:4224` narrowed the
+`promptTokens: 297`, and the regenerated diagram names no trigger. `04-design.md:4235` narrowed the
 acceptance to the `triggers`-field + staleness arm with no adjudication recording the drop. Route: Gate
 6 (feed the projected bindings into the prompt) or an owner-signed REQ-103 amendment; not fixed here.
 **Docs rewritten to current state**: tool count 38 → 40 (counted live), DEPLOY §6's `workflow_get.skeleton`

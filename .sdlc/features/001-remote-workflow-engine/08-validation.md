@@ -6060,7 +6060,7 @@ claims were stale and are corrected in this round's doc rewrite.
   from "the workflow's own … trigger names" — instructions the model has no data to satisfy, so the
   only way a diagram could name a trigger today is invention (which the allowlist would even permit,
   since `b.kind` is allow-listed whenever a binding exists).
-  Design trace: `04-design.md:4224` narrowed REQ-103's acceptance to the `triggers`-field + staleness
+  Design trace: `04-design.md:4235` narrowed REQ-103's acceptance to the `triggers`-field + staleness
   arm; ADR-019 decided **not to regenerate** on binding changes (correct, and unrelated), but no
   adjudication records dropping the "analyzer is given the bindings" clause. **Route: Gate 6** (feed
   the projected bindings into the analyzer prompt alongside the script), **or** an owner-signed

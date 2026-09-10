@@ -2240,6 +2240,27 @@ hand-typed in four places drifted in all four). `state.yaml`'s "40→36" was wri
 - **deps:** ARCH-010, ARCH-071, ARCH-072
 - **api:** `schedules` gains `claimedBy TEXT NULL`, `createdBy TEXT NULL`, `refusalCount INTEGER NOT NULL DEFAULT 0`, `lastRefusedAt TEXT NULL`, `lastRefusalReason TEXT NULL`; the `workflow NOT NULL` column is migrated (`claimedBy = workflow`, then dropped) so existing bound schedules stay claimed; `create(spec)` takes no workflow and performs no catalog resolve (the v22-H4 check **moves** to `workflow_register`, ARCH-098 step 1); `claim(id, workflow) → 'claimed'|'NOT_FOUND'|'ALREADY_CLAIMED'` as `UPDATE schedules SET claimedBy=? WHERE id=? AND (claimedBy IS NULL OR claimedBy=?)` reading `changes`; `release(id, workflow)` symmetric and idempotent; `list()` rows carry `claimedBy`, `createdBy`, the three refusal fields; fire path: `claimedBy` null → refuse `UNCLAIMED`; workflow missing → `CLAIMED_WORKFLOW_MISSING`; `resolve(claimedBy, {channel:'release'})` throws → `CHANNEL_UNPUBLISHED`; the release version's `triggers` is non-`NULL` and does not contain this id **and that id was declared by at least one version of the claimed workflow** → `NOT_IN_RELEASE` — **[AMENDED v24 Gate 8, AF-2 / TASK-161]** the third clause is new: a trigger that entered through the create-time binding door (`schedule_create({workflow})` / `webhook_create({workflow})`, which this same item says `create` no longer accepts but AF-5 records as still shipped) was never declared by any version, so the release list has no jurisdiction over it. Until AF-2 that job was done by proxy — an empty declaration was persisted as `NULL`, so `triggers === undefined` meant both "pre-v24 row" and "came through the other door", which is exactly what made `NOT_IN_RELEASE` unreachable. When v25 closes the second door (AF-5) the clause becomes always-true and is deleted with it; every refusal = `refusalCount+1`, `lastRefusedAt`, `lastRefusalReason` on the row and **no run, no `run_origins` row**. `workflow_trigger`/`run_trigger` and `SCHEDULE_DISABLED`-on-manual-start are deleted (owner ch. 16.1: a disabled schedule means "stop auto-firing", not "forbid manual runs"; a manual start is now truthfully `startedBy:{type:'manual'}`).
 - **note:** Per carried-in rule 3 (a moved check is not finished until everything describing its old site points at the new one): ARCH-072 note 1, the `SqliteSchedulerPort` docblock, `catalogResolveErrorEnvelope`'s call site here, and the test asserting `CHANNEL_UNPUBLISHED` from `schedule_create` all move with it — the design gate lists them by line. Coalescing (ADR-031) is what keeps REQ-115's "never silently dropped" **and** a bounded table: a forgotten cron fires 1440×/day forever and would otherwise write 1440 rows/day nobody reads.
+- **AMENDED v26 (orchestrator, 2026-09-10) — the shipped schema DIVERGED from this row's `api` line, and the divergence is load-bearing. Recorded, not resolved: routed to Gate 8.**
+  This row prescribes that `workflow NOT NULL` be **migrated (`claimedBy = workflow`) and then DROPPED**.
+  Neither half was ever written. The engine keeps `workflow TEXT` **nullable alongside** `claimedBy` — the
+  `CREATE TABLE`, D13's seventeen-column rebuild (IMPL-218) and `create`'s INSERT all name both — and
+  compensates for the missing backfill by folding the two columns together at read time
+  (`all()`'s `claimedBy ?? workflow`, `resolveScheduleTarget`'s same fallback, `release()`'s
+  `claimedBy = ? OR (claimedBy IS NULL AND workflow = ?)`, and the lookup at `scheduler.ts:322`).
+  Found by the v26 design-amendment pass, which correctly refused to edit an architecture row and reported
+  it (`1f57f20`); the orchestrator verified it at source before writing this.
+  **A concrete asymmetry falls out of it, and it is the reason this is not a documentation-only note:**
+  `claim()` (`scheduler.ts:466-475`) reads **only** `claimedBy`, so a legacy row — `claimedBy IS NULL` with
+  `workflow` set — is claimable by ANY workflow, while `release()` and the `:322` lookup both treat that same
+  row as bound to the workflow named in `workflow`. A second workflow can therefore claim a trigger the
+  other two predicates still consider owned. **No row on this deployment can hit it today** (measured
+  2026-09-10 on the live `schedules.db`: 0 legacy-shaped rows, 0 rows total), which is why it is being
+  recorded rather than hot-fixed.
+  **For Gate 8 to rule:** either (a) write the backfill and the column drop this row already prescribes, and
+  delete the three compatibility folds, or (b) amend this `api` line to the two-column shape that actually
+  shipped and make `claim()` honour `workflow` the way its two siblings do. Do not close it by declaring the
+  code correct while this line still says otherwise — that is the "description doesn't match the thing"
+  class this ledger has now counted past twenty times.
 - **iter:** v24
 
 ### ARCH-100 — webhooks: same claim model; verify HMAC and timestamp first, then refuse `409 TRIGGER_UNCLAIMED` and record it

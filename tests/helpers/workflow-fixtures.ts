@@ -291,7 +291,7 @@ export async function registerPublishedVia(
 ): Promise<{ version: string }> {
   // `opts.principal` travels as a TOOL ARG here — that is how the ownership fixtures inject an
   // identity without a bearer token. v24 note (integrator): the v24 dispatch rewrite dropped this
-  // path and it has been RESTORED to exactly the scope 04-design.md:3526 gives it — the argument is
+  // path and it has been RESTORED to exactly the scope 04-design.md:3537 gives it — the argument is
   // honoured for attribution/ownership ONLY when the server is genuinely auth-DISABLED
   // (`mcp-facade.ts`'s `attributionWithArg`/`bypassWithArg`). On an auth-ENABLED server it is
   // ignored, so a fixture there must mint a real bearer; self-asserted identity reaching an
